@@ -397,7 +397,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, inject, onMounted, ref, useTemplateRef, watch, provide } from 'vue';
+import { computed, inject, onMounted, reactive, ref, useTemplateRef, watch, provide } from 'vue';
 import * as mfm from 'mfc-js';
 import * as Misskey from 'cherrypick-js';
 import { isLink } from '@@/js/is-link.js';
@@ -502,6 +502,9 @@ if (noteViewInterruptors.length > 0) {
 		note = result as Misskey.entities.Note;
 	}
 }
+
+// Plugins may replace the clone, so make the final displayed note reactive.
+note = reactive(note);
 
 const isRenote = Misskey.note.isPureRenote(note);
 const appearNote = getAppearNote(note) ?? note;

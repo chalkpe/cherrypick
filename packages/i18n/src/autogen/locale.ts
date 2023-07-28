@@ -13264,6 +13264,10 @@ export interface Locale extends ILocale {
     };
     "_moderationLogTypes": {
         /**
+         * ノートの公開範囲を変更
+         */
+        "updateNote": string;
+        /**
          * ジョブキューをクリア
          */
         "clearQueue": string;
@@ -15577,4 +15581,12 @@ export interface Locale extends ILocale {
      * ミュートしたユーザーを匿名化
      */
     "deidentifyMutedUsers": string;
+    /**
+     * 公開範囲を変更
+     */
+    "changeVisibility": string;
+    /**
+     * このノートの公開範囲を変更しますか？
+     */
+    "changeVisibilityConfirm": string;
 }

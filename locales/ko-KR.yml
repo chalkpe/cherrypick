@@ -3412,6 +3412,7 @@ _abuseReport:
     notifiedWebhook: "사용할 Webhook"
     deleteConfirm: "수신자를 삭제할까요?"
 _moderationLogTypes:
+  updateNote: "노트 공개 범위 변경"
   clearQueue: "작업 대기열 비우기"
   promoteQueue: "큐에 대기중인 작업 다시 시도"
   createRole: "역할 생성"
@@ -4034,3 +4035,7 @@ _noteVisibilityLimit:
 showRemoteAvatarDecorations: "리모트 유저의 아바타 장식 표시"
 
 deidentifyMutedUsers: "뮤트한 유저 비식별화"
+
+changeVisibility: "공개 범위 변경"
+
+changeVisibilityConfirm: "이 노트의 공개 범위를 변경하시겠습니까?"

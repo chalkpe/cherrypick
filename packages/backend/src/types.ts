@@ -103,6 +103,7 @@ export const moderationLogTypes = [
 	'resumeQueue',
 	'deleteDriveFile',
 	'deleteNote',
+	'updateNote',
 	'createGlobalAnnouncement',
 	'createUserAnnouncement',
 	'updateGlobalAnnouncement',
@@ -225,6 +226,15 @@ export type ModerationLogPayloads = {
 		fileUserUsername: string | null;
 		fileUserHost: string | null;
 	};
+	updateNote: {
+		noteId: string;
+		noteUserId: string;
+		noteUserUsername: string;
+		noteUserHost: string | null;
+		before: typeof noteVisibilities[number];
+		after: typeof noteVisibilities[number];
+	};
+
 	deleteNote: {
 		noteId: string;
 		noteUserId: string;

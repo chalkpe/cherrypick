@@ -198,6 +198,18 @@ export function getNoteMenu(props: {
 
 	const cleanups = [] as (() => void)[];
 
+	async function changeVisibility(visibility: Misskey.entities.Note['visibility']): Promise<void> {
+		const { canceled } = await os.confirm({
+			type: 'warning',
+			text: i18n.ts.changeVisibilityConfirm,
+		});
+		if (canceled) return;
+		await os.apiWithDialog('notes/update', { noteId: appearNote.id, visibility }).then(({ updatedNote }) => {
+			Object.assign(appearNote, updatedNote);
+			if (updatedNote.isHidden) globalEvents.emit('noteDeleted', appearNote.id);
+		}).catch(() => { /* apiWithDialog already displays the error. */ });
+	}
+
 	function del(): void {
 		os.confirm({
 			type: 'warning',
@@ -690,6 +702,20 @@ export function getNoteMenu(props: {
 					}
 					return channelChildMenu;
 				},
+			});
+		}
+
+		if (($i.isModerator || $i.isAdmin) && appearNote.channel == null) {
+			menuItems.push({
+				type: 'parent',
+				icon: 'ti ti-world',
+				text: i18n.ts.changeVisibility,
+				children: (['public', 'home', 'followers', 'specified'] as const).map(visibility => ({
+					text: i18n.ts._visibility[visibility],
+					icon: { public: 'ti ti-world', home: 'ti ti-home', followers: 'ti ti-lock', specified: 'ti ti-mail' }[visibility],
+					disabled: appearNote.visibility === visibility,
+					action: () => changeVisibility(visibility),
+				})),
 			});
 		}
 

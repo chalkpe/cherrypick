@@ -10,6 +10,7 @@ import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { NoteUpdateService } from '@/core/NoteUpdateService.js';
 import { DI } from '@/di-symbols.js';
 import { GetterService } from '@/server/api/GetterService.js';
+import { RoleService } from '@/core/RoleService.js';
 import { MAX_NOTE_TEXT_LENGTH } from '@/const.js';
 import type { DriveFilesRepository, MiDriveFile } from '@/models/_.js';
 import { ApiError } from '../../error.js';
@@ -18,7 +19,6 @@ export const meta = {
 	tags: ['notes'],
 
 	requireCredential: true,
-	requiredRolePolicy: 'canEditNote',
 
 	kind: 'write:notes',
 
@@ -28,7 +28,22 @@ export const meta = {
 		minInterval: ms('1sec'),
 	},
 
+	res: {
+		type: 'object', optional: false, nullable: false,
+		properties: {
+			updatedNote: { type: 'object', optional: false, nullable: false, ref: 'Note' },
+		},
+	},
+
 	errors: {
+		accessDenied: {
+			message: 'Access denied.', code: 'ACCESS_DENIED',
+			id: 'd4af81dd-f7d8-46ef-acad-318f11782035',
+		},
+		invalidParam: {
+			message: 'Invalid param.', code: 'INVALID_PARAM',
+			id: '1fd3a0de-120b-40a7-88d5-6dc104e67bb4',
+		},
 		noSuchNote: {
 			message: 'No such note.',
 			code: 'NO_SUCH_NOTE',
@@ -65,6 +80,7 @@ export const paramDef = {
 	type: 'object',
 	properties: {
 		noteId: { type: 'string', format: 'misskey:id' },
+		visibility: { type: 'string', enum: ['public', 'home', 'followers', 'specified'] },
 		text: {
 			type: 'string',
 			minLength: 1,
@@ -113,7 +129,7 @@ export const paramDef = {
 			},
 		},
 		cw: { type: 'string', nullable: true, maxLength: 100 },
-		disableRightClick: { type: 'boolean', default: false },
+		disableRightClick: { type: 'boolean' },
 		scheduledDelete: {
 			type: 'object',
 			nullable: true,
@@ -123,7 +139,7 @@ export const paramDef = {
 			},
 		},
 	},
-	required: ['noteId', 'text', 'cw'],
+	required: ['noteId'],
 } as const;
 
 @Injectable()
@@ -133,17 +149,39 @@ export default class extends Endpoint<typeof meta, typeof paramDef> {
 		private driveFilesRepository: DriveFilesRepository,
 
 		private getterService: GetterService,
+		private roleService: RoleService,
 		private noteEntityService: NoteEntityService,
 		private noteUpdateService: NoteUpdateService,
 	) {
-		super({
-			...meta,
-			requiredRolePolicy: 'canEditNote', // 修正された部分
-		}, paramDef, async (ps, me) => {
+		super(meta, paramDef, async (ps, me, token) => {
 			const note = await this.getterService.getNote(ps.noteId).catch(err => {
 				if (err.id === '9725d0ce-ba28-4dde-95a7-2cbb2c15de24') throw new ApiError(meta.errors.noSuchNote);
 				throw err;
 			});
+
+			// Moderation is a separate operation: it must never pass through the content editor.
+			if (ps.visibility !== undefined) {
+				if (token != null || !await this.roleService.isModerator(me)) {
+					throw new ApiError(meta.errors.accessDenied);
+				}
+				if (ps.text !== undefined || ps.cw !== undefined || ps.fileIds !== undefined || ps.mediaIds !== undefined ||
+					ps.poll !== undefined || ps.event !== undefined || ps.disableRightClick !== undefined || ps.scheduledDelete !== undefined) {
+					throw new ApiError(meta.errors.invalidParam);
+				}
+				// Channel notes have a fixed audience and must remain public within the channel.
+				if (note.channelId != null && ps.visibility !== note.visibility) {
+					throw new ApiError(meta.errors.invalidParam);
+				}
+				const updatedNote = await this.noteUpdateService.updateVisibility(me, note, ps.visibility);
+				return { updatedNote: await this.noteEntityService.pack(updatedNote, me) };
+			}
+
+			if (!(await this.roleService.getUserPolicies(me.id)).canEditNote && !await this.roleService.isAdministrator(me)) {
+				throw new ApiError(meta.errors.accessDenied);
+			}
+			if (ps.text === undefined || ps.cw === undefined) {
+				throw new ApiError(meta.errors.invalidParam);
+			}
 
 			if (note.userId !== me.id) {
 				throw new ApiError(meta.errors.noSuchNote);
@@ -209,7 +247,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> {
 				} : null,
 				text: ps.text ?? null,
 				cw: ps.cw ?? null,
-				disableRightClick: ps.disableRightClick,
+				disableRightClick: ps.disableRightClick ?? false,
 				deleteAt: ps.scheduledDelete?.deleteAt ? new Date(ps.scheduledDelete.deleteAt) : ps.scheduledDelete?.deleteAfter ? new Date(Date.now() + ps.scheduledDelete.deleteAfter) : null,
 			};
 

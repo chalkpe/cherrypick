@@ -3407,6 +3407,7 @@ _abuseReport:
     notifiedWebhook: "Webhook to use"
     deleteConfirm: "Are you sure that you want to delete the notification recipient?"
 _moderationLogTypes:
+  updateNote: "Change note visibility"
   clearQueue: "Clear queue"
   promoteQueue: "Promote queue"
   createRole: "Role created"
@@ -4028,3 +4029,7 @@ _noteVisibilityLimit:
 showRemoteAvatarDecorations: "Show remote users’ avatar decorations"
 
 deidentifyMutedUsers: "De-identify muted users"
+
+changeVisibility: "Change visibility"
+
+changeVisibilityConfirm: "Change the visibility of this note?"

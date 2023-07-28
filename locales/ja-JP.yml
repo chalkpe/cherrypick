@@ -3503,6 +3503,7 @@ _abuseReport:
     deleteConfirm: "通知先を削除しますか？"
 
 _moderationLogTypes:
+  updateNote: "ノートの公開範囲を変更"
   clearQueue: "ジョブキューをクリア"
   promoteQueue: "キューのジョブを再試行"
   createRole: "ロールを作成"
@@ -4166,3 +4167,7 @@ _noteVisibilityLimit:
 showRemoteAvatarDecorations: "リモートユーザーのアイコンのデコレーションを表示"
 
 deidentifyMutedUsers: "ミュートしたユーザーを匿名化"
+
+changeVisibility: "公開範囲を変更"
+
+changeVisibilityConfirm: "このノートの公開範囲を変更しますか？"

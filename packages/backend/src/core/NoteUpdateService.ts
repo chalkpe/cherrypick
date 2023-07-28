@@ -4,7 +4,6 @@
  */
 
 import { setImmediate } from 'node:timers/promises';
-import util from 'util';
 import { In, DataSource } from 'typeorm';
 import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common';
 import * as mfm from 'mfc-js';
@@ -31,9 +30,14 @@ import { MiPoll, IPoll } from '@/models/Poll.js';
 import { concat } from '@/misc/prelude/array.js';
 import { extractHashtags } from '@/misc/extract-hashtags.js';
 import { extractCustomEmojisFromMfm } from '@/misc/extract-custom-emojis-from-mfm.js';
+import { FanoutTimelineService } from '@/core/FanoutTimelineService.js';
+import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
+import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { NoteHistorySerivce } from './NoteHistoryService.js';
 
 type Option = {
+	visibility?: MiNote['visibility'];
+	visibleUserIds?: MiNote['visibleUserIds'];
 	updatedAt?: Date | null;
 	files?: MiDriveFile[] | null;
 	name?: string | null;
@@ -70,7 +74,74 @@ export class NoteUpdateService implements OnApplicationShutdown {
 		private searchService: SearchService,
 		private activeUsersChart: ActiveUsersChart,
 		private noteHistoryService: NoteHistorySerivce,
+		private fanoutTimelineService: FanoutTimelineService,
+		private moderationLogService: ModerationLogService,
+		private noteEntityService: NoteEntityService,
 	) { }
+
+	/** Change only the audience; author editing and its poll/event/history handling stay separate. */
+	@bindThis
+	public async updateVisibility(moderator: MiUser, note: MiNote, visibility: MiNote['visibility']): Promise<MiNote> {
+		if (visibility === note.visibility) return note;
+
+		const updatedAt = new Date();
+		await this.db.transaction(async manager => {
+			await manager.update(MiNote, { id: note.id }, { visibility, updatedAt });
+			if (note.hasPoll) await manager.update(MiPoll, { noteId: note.id }, { noteVisibility: visibility });
+			if (note.hasEvent) await manager.update(MiEvent, { noteId: note.id }, { noteVisibility: visibility });
+		});
+		const updatedNote = await this.notesRepository.findOneByOrFail({ id: note.id });
+
+		await this.removeFromLocalTimeline(updatedNote);
+
+		// Notify the previous audience without content so clients that lost access also refetch.
+		this.globalEventService.publishNoteStream(note, 'updated', { updatedAt });
+		await this.searchService.unindexNote(note);
+		await this.searchService.indexNote(updatedNote);
+
+		const author = await this.usersRepository.findOneByOrFail({ id: note.userId });
+		await this.moderationLogService.log(moderator, 'updateNote', {
+			noteId: note.id,
+			noteUserId: author.id,
+			noteUserUsername: author.username,
+			noteUserHost: author.host,
+			before: note.visibility,
+			after: visibility,
+		});
+
+		// Notify previous recipients of the new audience using the unchanged content snapshot.
+		// An Update avoids a terminal Delete racing an Update at a shared inbox.
+		if (this.userEntityService.isLocalUser(author) && !note.localOnly) {
+			const activity = await this.renderNoteActivity(new MiNote({ ...note, visibility, updatedAt }), author);
+			if (note.visibility !== 'specified' || visibility !== 'specified') {
+				await this.apDeliverManagerService.deliverToFollowers(author, activity);
+			}
+			if (note.visibility === 'public' || note.visibility === 'home' || visibility === 'public') {
+				await this.relayService.deliverToRelays(author, activity);
+			}
+			const previousRecipients = await this.getMentionedRemoteUsers(note);
+			const explicitRecipients = note.visibleUserIds.length === 0 ? [] : await this.usersRepository.find({
+				where: { id: In(note.visibleUserIds) },
+			});
+			await this.apDeliverManagerService.deliverToUsers(author, activity, [
+				...previousRecipients,
+				...explicitRecipients.filter(recipient => recipient.host != null) as MiRemoteUser[],
+			]);
+		}
+		return updatedNote;
+	}
+
+	@bindThis
+	private async removeFromLocalTimeline(note: MiNote): Promise<void> {
+		if (note.visibility === 'public') return;
+		await Promise.all([
+			this.fanoutTimelineService.remove('localTimeline', note.id),
+			this.fanoutTimelineService.remove('localTimelineWithFiles', note.id),
+			this.fanoutTimelineService.remove('localTimelineWithReplies', note.id),
+			this.fanoutTimelineService.remove('localTimelineWithCats', note.id),
+			...(note.replyUserId ? [this.fanoutTimelineService.remove(`localTimelineWithReplyTo:${note.replyUserId}`, note.id)] : []),
+		]);
+	}
 
 	@bindThis
 	public async update(user: {
@@ -113,6 +184,13 @@ export class NoteUpdateService implements OnApplicationShutdown {
 		const updatedNote = await this.updateNote(user, note, data, tags, emojis);
 
 		if (updatedNote) {
+			if (updatedNote.visibility !== note.visibility ||
+				updatedNote.visibleUserIds.length !== note.visibleUserIds.length ||
+				updatedNote.visibleUserIds.some(id => !note.visibleUserIds.includes(id))) {
+				await this.removeFromLocalTimeline(updatedNote);
+				await this.searchService.unindexNote(note);
+				this.globalEventService.publishNoteStream(note, 'updated', { updatedAt: data.updatedAt });
+			}
 			setImmediate('post updated', { signal: this.#shutdownController.signal }).then(
 				() => this.postNoteUpdated(updatedNote, user, silent),
 				() => { /* aborted, ignore this */ },
@@ -130,6 +208,8 @@ export class NoteUpdateService implements OnApplicationShutdown {
 
 		const values = new MiNote({
 			updatedAt: data.updatedAt,
+			...(data.visibility !== undefined ? { visibility: data.visibility } : {}),
+			...(data.visibleUserIds !== undefined ? { visibleUserIds: data.visibleUserIds } : {}),
 			fileIds: data.files ? data.files.map(file => file.id) : [],
 			text: data.text,
 			hasPoll: data.poll != null,
@@ -173,6 +253,10 @@ export class NoteUpdateService implements OnApplicationShutdown {
 			if (needsTransaction) {
 				await this.db.transaction(async transactionalEntityManager => {
 					await transactionalEntityManager.update(MiNote, { id: note.id }, values);
+					if (data.visibility !== undefined) {
+						if (note.hasPoll) await transactionalEntityManager.update(MiPoll, { noteId: note.id }, { noteVisibility: data.visibility ?? note.visibility });
+						if (note.hasEvent) await transactionalEntityManager.update(MiEvent, { noteId: note.id }, { noteVisibility: data.visibility ?? note.visibility });
+					}
 
 					if (note.hasPoll && values.hasPoll) {
 						const old_poll = await transactionalEntityManager.findOneBy(MiPoll, { noteId: note.id });
@@ -184,7 +268,7 @@ export class NoteUpdateService implements OnApplicationShutdown {
 								expiresAt: data.poll!.expiresAt,
 								multiple: data.poll!.multiple,
 								votes: new Array(data.poll!.choices.length).fill(0),
-								noteVisibility: note.visibility,
+								noteVisibility: data.visibility ?? note.visibility,
 								userId: user.id,
 								userHost: user.host,
 							});
@@ -197,7 +281,7 @@ export class NoteUpdateService implements OnApplicationShutdown {
 							expiresAt: data.poll!.expiresAt,
 							multiple: data.poll!.multiple,
 							votes: new Array(data.poll!.choices.length).fill(0),
-							noteVisibility: note.visibility,
+							noteVisibility: data.visibility ?? note.visibility,
 							userId: user.id,
 							userHost: user.host,
 						});
@@ -222,7 +306,7 @@ export class NoteUpdateService implements OnApplicationShutdown {
 								start: data.event!.start,
 								end: data.event!.end ?? undefined,
 								metadata: data.event!.metadata,
-								noteVisibility: note.visibility,
+								noteVisibility: data.visibility ?? note.visibility,
 								userId: user.id,
 								userHost: user.host,
 							});
@@ -235,7 +319,7 @@ export class NoteUpdateService implements OnApplicationShutdown {
 							start: data.event!.start,
 							end: data.event!.end ?? undefined,
 							metadata: data.event!.metadata,
-							noteVisibility: note.visibility,
+							noteVisibility: data.visibility ?? note.visibility,
 							userId: user.id,
 							userHost: user.host,
 						});
@@ -282,7 +366,7 @@ export class NoteUpdateService implements OnApplicationShutdown {
 				});
 			}
 
-			this.globalEventService.publishNoteStream(note, 'updated', { cw: note.cw, text: note.text, disableRightClick: note.disableRightClick, deleteAt: note.deleteAt });
+			this.globalEventService.publishNoteStream(note, 'updated', { updatedAt: note.updatedAt ?? new Date() });
 
 			//#region AP deliver
 			if (this.userEntityService.isLocalUser(user) && !note.localOnly) {
@@ -303,7 +387,20 @@ export class NoteUpdateService implements OnApplicationShutdown {
 
 	@bindThis
 	private async renderNoteActivity(note: MiNote, user: MiUser) {
-		const content = this.apRendererService.renderUpdate(await this.apRendererService.renderNote(note, false), user);
+		const object = await this.apRendererService.renderNote(note, false);
+		if (note.visibility === 'specified') {
+			// Existing mentions are not the audience after a moderation change to specified.
+			const recipients = note.visibleUserIds.length === 0 ? [] : await this.usersRepository.find({
+				where: { id: In(note.visibleUserIds) },
+			});
+			object.to = recipients.flatMap(recipient => recipient.host == null
+				? [this.userEntityService.genLocalUserUri(recipient.id)]
+				: recipient.uri ? [recipient.uri] : []);
+			object.cc = [];
+		}
+		const content = this.apRendererService.renderUpdate(object, user);
+		content.to = object.to;
+		content.cc = object.cc;
 
 		return this.apRendererService.addContext(content);
 	}
@@ -336,12 +433,20 @@ export class NoteUpdateService implements OnApplicationShutdown {
 
 	@bindThis
 	private async deliverToConcerned(user: { id: MiLocalUser['id']; host: null; }, note: MiNote, content: any) {
-		console.log('deliverToConcerned', util.inspect(content, { depth: null }));
+		if (note.visibility === 'specified') {
+			const recipients = note.visibleUserIds.length === 0 ? [] : await this.usersRepository.find({
+				where: { id: In(note.visibleUserIds) },
+			});
+			await this.apDeliverManagerService.deliverToUsers(user, content, recipients.filter(recipient => recipient.host != null) as MiRemoteUser[]);
+			return;
+		}
 		await this.apDeliverManagerService.deliverToFollowers(user, content);
-		await this.relayService.deliverToRelays(user, content);
+		if (note.visibility === 'public') await this.relayService.deliverToRelays(user, content);
 		const remoteUsers = await this.getMentionedRemoteUsers(note);
 		for (const remoteUser of remoteUsers) {
-			await this.apDeliverManagerService.deliverToUser(user, content, remoteUser);
+			if (await this.noteEntityService.isVisibleForMe(note, remoteUser.id)) {
+				await this.apDeliverManagerService.deliverToUser(user, content, remoteUser);
+			}
 		}
 	}
 

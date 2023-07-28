@@ -393,6 +393,13 @@ export class ApNoteService {
 
 		const actor = await this.apPersonService.resolvePerson(getOneApId(note.attributedTo), resolver) as MiRemoteUser;
 
+		if (actor.id !== target.userId) {
+			throw new Error('cannot update another actor’s note');
+		}
+		const audience = note.to !== undefined || note.cc !== undefined
+			? await this.apAudienceService.parseAudience(actor, note.to, note.cc, resolver)
+			: null;
+
 		// 投稿者が凍結されていたらスキップ
 		if (actor.isSuspended) {
 			throw new Error('actor has been suspended');
@@ -433,6 +440,8 @@ export class ApNoteService {
 
 		try {
 			return await this.noteUpdateService.update(actor, {
+				visibility: audience?.visibility,
+				visibleUserIds: audience?.visibleUsers.map(user => user.id),
 				updatedAt: note.updated ? new Date(note.updated) : null,
 				files,
 				name: note.name,

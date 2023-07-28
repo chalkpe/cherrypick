@@ -112,10 +112,7 @@ export interface NoteEventTypes {
 		deletedAt: Date;
 	};
 	updated: {
-		cw: string | null;
-		text: string | null;
-		disableRightClick: boolean | null;
-		deleteAt: Date | null;
+		updatedAt: Date;
 	};
 	reacted: {
 		reaction: string;
@@ -136,6 +133,8 @@ type NoteStreamEventTypes = {
 		userId: MiNote['userId'];
 		visibility: MiNote['visibility'];
 		visibleUserIds: MiNote['visibleUserIds'];
+		mentions?: MiNote['mentions'];
+		replyUserId?: MiNote['replyUserId'];
 		body: NoteEventTypes[key];
 	};
 };
@@ -412,6 +411,8 @@ export class GlobalEventService {
 			userId: note.userId,
 			visibility: note.visibility,
 			visibleUserIds: note.visibleUserIds,
+			mentions: note.mentions,
+			replyUserId: note.replyUserId,
 			body: value,
 		});
 	}

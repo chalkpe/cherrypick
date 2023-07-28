@@ -240,7 +240,8 @@ export default class Connection {
 			}
 
 			// 公開範囲がフォロワーで自分がフォロワーでない
-			if (data.body.visibility === 'followers' && !Object.hasOwn(this.following, data.body.userId)) {
+			if (data.body.visibility === 'followers' && !Object.hasOwn(this.following, data.body.userId) &&
+				!(this.user && (data.body.replyUserId === this.user.id || data.body.mentions?.includes(this.user.id)))) {
 				return;
 			}
 		}

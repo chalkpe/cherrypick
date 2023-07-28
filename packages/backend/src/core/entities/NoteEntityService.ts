@@ -198,6 +198,7 @@ export class NoteEntityService implements OnModuleInit {
 		packedNote.files = [];
 		packedNote.text = null;
 		packedNote.poll = undefined;
+		packedNote.event = undefined;
 		packedNote.cw = null;
 		packedNote.isHidden = true;
 		// TODO: hiddenReason みたいなのを提供しても良さそう

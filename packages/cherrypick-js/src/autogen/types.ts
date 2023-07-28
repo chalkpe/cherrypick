@@ -34479,7 +34479,9 @@ export interface operations {
                 'application/json': {
                     /** Format: misskey:id */
                     noteId: string;
-                    text: string;
+                    /** @enum {string} */
+                    visibility?: 'public' | 'home' | 'followers' | 'specified';
+                    text?: string;
                     fileIds?: string[];
                     mediaIds?: string[];
                     poll?: {
@@ -34494,8 +34496,7 @@ export interface operations {
                         end?: number | null;
                         metadata?: Record<string, never>;
                     } | null;
-                    cw: string | null;
-                    /** @default false */
+                    cw?: string | null;
                     disableRightClick?: boolean;
                     scheduledDelete?: {
                         deleteAt?: number | null;
@@ -34505,10 +34506,15 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK (without any results) */
-            204: {
+            /** @description OK (with results) */
+            200: {
                 headers: {
                     [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        updatedNote: components['schemas']['Note'];
+                    };
                 };
             };
             /** @description Client error */

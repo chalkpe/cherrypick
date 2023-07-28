@@ -1195,6 +1195,9 @@ export class ApInboxService {
 			await this.apPersonService.updatePerson(actor.uri, resolver, object);
 			return 'ok: Person updated';
 		} else if (getApType(object) === 'Question') {
+			// Questions are notes too: apply verified content/audience changes before poll totals.
+			const result = await this.updateNote(resolver, actor, object, false, activity);
+			if (result !== 'ok') return result;
 			await this.apQuestionService.updateQuestion(object, actor, resolver).catch(err => console.error(err));
 			return 'ok: Question updated';
 		} else if (getApType(object) === 'Note') {

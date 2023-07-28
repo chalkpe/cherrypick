@@ -114,10 +114,11 @@ function pollingSubscribe(props: {
 }
 
 function realtimeSubscribe(props: {
-	note: Pick<Misskey.entities.Note, 'id' | 'createdAt' | 'updatedAt' | 'cw' | 'text'>;
+	note: Misskey.entities.Note;
 }): void {
 	const note = props.note;
 	const connection = useStream();
+	let updateRequest = 0;
 
 	function onStreamNoteUpdated(noteData: NoteUpdatedEvent): void {
 		const { type, id, body } = noteData;
@@ -151,9 +152,22 @@ function realtimeSubscribe(props: {
 			}
 
 			case 'updated': {
-				note.updatedAt = new Date().toISOString();
-				note.cw = body.cw;
-				note.text = body.text;
+				const request = ++updateRequest;
+				misskeyApi('notes/show', { noteId: id }).then(updatedNote => {
+					if (request !== updateRequest) return;
+					if (updatedNote.isHidden) globalEvents.emit('noteDeleted', id);
+					Object.assign(note, updatedNote);
+				}).catch(() => {
+					if (request !== updateRequest) return;
+					// Lost access must not leave previously visible content on screen.
+					note.text = null;
+					note.cw = null;
+					note.files = [];
+					note.fileIds = [];
+					note.poll = undefined;
+					note.event = undefined;
+					globalEvents.emit('noteDeleted', id);
+				});
 				break;
 			}
 
