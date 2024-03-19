@@ -502,6 +502,7 @@ export class ApNoteService {
 		return await Promise.all(eomjiTags.map(async tag => {
 			const name = tag.name.replaceAll(':', '');
 			tag.icon = toSingle(tag.icon);
+			const isSensitive = tag.sensitive === true;
 
 			const exists = existingEmojis.find(x => x.name === name);
 
@@ -510,6 +511,7 @@ export class ApNoteService {
 					|| (tag.id != null && exists.uri == null)
 					|| (new Date(tag.updated) > exists.updatedAt)
 					|| (tag.icon.url !== exists.originalUrl)
+					|| (isSensitive !== exists.isSensitive)
 				) {
 					await this.emojisRepository.update({
 						host,
@@ -519,6 +521,7 @@ export class ApNoteService {
 						originalUrl: tag.icon.url,
 						publicUrl: tag.icon.url,
 						updatedAt: new Date(),
+						isSensitive,
 						// _misskey_license が存在しなければ `null`
 						license: (tag._misskey_license?.freeText ?? null),
 					});
@@ -541,6 +544,7 @@ export class ApNoteService {
 				originalUrl: tag.icon.url,
 				publicUrl: tag.icon.url,
 				updatedAt: new Date(),
+				isSensitive,
 				aliases: [],
 				// _misskey_license が存在しなければ `null`
 				license: (tag._misskey_license?.freeText ?? null),
