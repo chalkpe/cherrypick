@@ -19,7 +19,18 @@ export const packedNoteReactionSchema = {
 		user: {
 			type: 'object',
 			optional: false, nullable: false,
-			ref: 'UserLite',
+			allOf: [{
+				type: 'object',
+				ref: 'UserLite',
+			}, {
+				type: 'object',
+				properties: {
+					isMuted: {
+						type: 'boolean',
+						optional: true, nullable: false,
+					},
+				},
+			}],
 		},
 		type: {
 			type: 'string',

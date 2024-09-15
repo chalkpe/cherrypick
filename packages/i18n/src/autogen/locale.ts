@@ -15573,4 +15573,8 @@ export interface Locale extends ILocale {
      * リモートユーザーのアイコンのデコレーションを表示
      */
     "showRemoteAvatarDecorations": string;
+    /**
+     * ミュートしたユーザーを匿名化
+     */
+    "deidentifyMutedUsers": string;
 }

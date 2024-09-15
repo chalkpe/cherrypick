@@ -16,6 +16,7 @@ import type { MiNoteReaction } from '@/models/NoteReaction.js';
 import type { ReactionService } from '../ReactionService.js';
 import type { UserEntityService } from './UserEntityService.js';
 import type { NoteEntityService } from './NoteEntityService.js';
+import type { CacheService } from '../CacheService.js';
 import { ModuleRef } from '@nestjs/core';
 
 @Injectable()
@@ -24,6 +25,7 @@ export class NoteReactionEntityService implements OnModuleInit {
 	private noteEntityService: NoteEntityService;
 	private reactionService: ReactionService;
 	private idService: IdService;
+	private cacheService: CacheService;
 
 	constructor(
 		private moduleRef: ModuleRef,
@@ -43,6 +45,7 @@ export class NoteReactionEntityService implements OnModuleInit {
 		this.noteEntityService = this.moduleRef.get('NoteEntityService');
 		this.reactionService = this.moduleRef.get('ReactionService');
 		this.idService = this.moduleRef.get('IdService');
+		this.cacheService = this.moduleRef.get('CacheService');
 	}
 
 	@bindThis
@@ -51,7 +54,8 @@ export class NoteReactionEntityService implements OnModuleInit {
 		me?: { id: MiUser['id'] } | null | undefined,
 		options?: object,
 		hints?: {
-			packedUser?: Packed<'UserLite'>
+			packedUser?: Packed<'UserLite'>,
+			mutingIds?: Set<MiUser['id']>,
 		},
 	): Promise<Packed<'NoteReaction'>> {
 		const _opts = Object.assign({
@@ -59,10 +63,15 @@ export class NoteReactionEntityService implements OnModuleInit {
 
 		const reaction = typeof src === 'object' ? src : await this.noteReactionsRepository.findOneByOrFail({ id: src });
 
+		const packedUser = hints?.packedUser ?? await this.userEntityService.pack(reaction.user ?? reaction.userId, me);
+		// bscone: attach isMuted to the lite user so the client can de-identify muted reactors without packing detailed profiles
+		const mutingIds = hints?.mutingIds ?? (me ? await this.cacheService.userMutingsCache.fetch(me.id) : null);
+		const user = mutingIds ? { ...packedUser, isMuted: mutingIds.has(reaction.userId) } : packedUser;
+
 		return {
 			id: reaction.id,
 			createdAt: this.idService.parse(reaction.id).date.toISOString(),
-			user: hints?.packedUser ?? await this.userEntityService.pack(reaction.user ?? reaction.userId, me),
+			user,
 			type: this.reactionService.convertLegacyReaction(reaction.reaction),
 		};
 	}
@@ -78,7 +87,9 @@ export class NoteReactionEntityService implements OnModuleInit {
 		const _users = reactions.map(({ user, userId }) => user ?? userId);
 		const _userMap = await this.userEntityService.packMany(_users, me)
 			.then(users => new Map(users.map(u => [u.id, u])));
-		return Promise.all(reactions.map(reaction => this.pack(reaction, me, opts, { packedUser: _userMap.get(reaction.userId) })));
+		// bscone: fetch the mute list once for isMuted (see pack)
+		const mutingIds = me ? await this.cacheService.userMutingsCache.fetch(me.id) : undefined;
+		return Promise.all(reactions.map(reaction => this.pack(reaction, me, opts, { packedUser: _userMap.get(reaction.userId), mutingIds })));
 	}
 
 	@bindThis

@@ -4026,3 +4026,5 @@ _noteVisibilityLimit:
   replyLocked: "Replies to direct notes can only use Direct visibility."
 
 showRemoteAvatarDecorations: "Show remote users’ avatar decorations"
+
+deidentifyMutedUsers: "De-identify muted users"

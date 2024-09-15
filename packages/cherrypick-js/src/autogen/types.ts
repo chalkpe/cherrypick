@@ -5018,7 +5018,9 @@ export type components = {
             id: string;
             /** Format: date-time */
             createdAt: string;
-            user: components['schemas']['UserLite'];
+            user: components['schemas']['UserLite'] & {
+                isMuted?: boolean;
+            };
             type: string;
         };
         NoteReactionWithNote: {

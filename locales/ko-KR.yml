@@ -4032,3 +4032,5 @@ _noteVisibilityLimit:
   replyLocked: "다이렉트 노트에 대한 답글은 다이렉트로만 작성할 수 있습니다."
 
 showRemoteAvatarDecorations: "리모트 유저의 아바타 장식 표시"
+
+deidentifyMutedUsers: "뮤트한 유저 비식별화"

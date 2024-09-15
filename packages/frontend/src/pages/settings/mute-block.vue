@@ -111,28 +111,34 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<template #icon><i class="ti ti-eye-off"></i></template>
 					<template #label>{{ i18n.ts.mutedUsers }}</template>
 
-					<MkPagination :paginator="mutingPaginator" withControl>
-						<template #empty><MkResult type="empty" :text="i18n.ts.noUsers"/></template>
+					<div class="_gaps_m">
+						<SearchMarker :keywords="['mute', 'user', 'deidentify']">
+							<MkSwitch v-model="deidentifyMutedUsers"><SearchLabel>{{ i18n.ts.deidentifyMutedUsers }}</SearchLabel></MkSwitch>
+						</SearchMarker>
 
-						<template #default="{ items }">
-							<div class="_gaps_s">
-								<div v-for="item in items" :key="item.mutee.id" :class="[$style.userItem, { [$style.userItemOpend]: expandedMuteItems.includes(item.id) }]">
-									<div :class="$style.userItemMain">
-										<MkA :class="$style.userItemMainBody" :to="userPage(item.mutee)">
-											<MkUserCardMini :user="item.mutee"/>
-										</MkA>
-										<button class="_button" :class="$style.userToggle" @click="toggleMuteItem(item)"><i :class="$style.chevron" class="ti ti-chevron-down"></i></button>
-										<button class="_button" :class="$style.remove" @click="unmute(item.mutee, $event)"><i class="ti ti-x"></i></button>
-									</div>
-									<div v-if="expandedMuteItems.includes(item.id)" :class="$style.userItemSub">
-										<div>Muted at: <MkTime :time="item.createdAt" mode="detail"/></div>
-										<div v-if="item.expiresAt">Period: {{ new Date(item.expiresAt).toLocaleString() }}</div>
-										<div v-else>Period: {{ i18n.ts.indefinitely }}</div>
+						<MkPagination :paginator="mutingPaginator" withControl>
+							<template #empty><MkResult type="empty" :text="i18n.ts.noUsers"/></template>
+
+							<template #default="{ items }">
+								<div class="_gaps_s">
+									<div v-for="item in items" :key="item.mutee.id" :class="[$style.userItem, { [$style.userItemOpend]: expandedMuteItems.includes(item.id) }]">
+										<div :class="$style.userItemMain">
+											<MkA :class="$style.userItemMainBody" :to="userPage(item.mutee)">
+												<MkUserCardMini :user="item.mutee"/>
+											</MkA>
+											<button class="_button" :class="$style.userToggle" @click="toggleMuteItem(item)"><i :class="$style.chevron" class="ti ti-chevron-down"></i></button>
+											<button class="_button" :class="$style.remove" @click="unmute(item.mutee, $event)"><i class="ti ti-x"></i></button>
+										</div>
+										<div v-if="expandedMuteItems.includes(item.id)" :class="$style.userItemSub">
+											<div>Muted at: <MkTime :time="item.createdAt" mode="detail"/></div>
+											<div v-if="item.expiresAt">Period: {{ new Date(item.expiresAt).toLocaleString() }}</div>
+											<div v-else>Period: {{ i18n.ts.indefinitely }}</div>
+										</div>
 									</div>
 								</div>
-							</div>
-						</template>
-					</MkPagination>
+							</template>
+						</MkPagination>
+					</div>
 				</MkFolder>
 			</SearchMarker>
 
@@ -211,6 +217,7 @@ const expandedRenoteMuteItems = ref<string[]>([]);
 const expandedMuteItems = ref<string[]>([]);
 const expandedBlockItems = ref<string[]>([]);
 
+const deidentifyMutedUsers = prefer.model('deidentifyMutedUsers');
 const showSoftWordMutedWord = prefer.model('showSoftWordMutedWord');
 
 watch([

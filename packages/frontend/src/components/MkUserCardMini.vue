@@ -6,17 +6,22 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <div v-adaptive-bg :class="[$style.root]">
 	<MkAvatar :class="$style.avatar" :user="user" indicator/>
-	<div :class="$style.body">
+	<div v-if="deidentified" :class="$style.body">
+		<span :class="$style.name">{{ i18n.ts.mutedUsers }}</span>
+	</div>
+	<div v-else :class="$style.body">
 		<span :class="$style.name"><MkUserName :user="user"/></span>
 		<span :class="$style.sub"><slot name="sub"><span class="_monospace">@{{ acct(user) }}</span></slot></span>
 	</div>
-	<MkMiniChart v-if="chartValues" :class="$style.chart" :src="chartValues"/>
+	<MkMiniChart v-if="!deidentified && chartValues" :class="$style.chart" :src="chartValues"/>
 </div>
 </template>
 
 <script lang="ts" setup>
 import * as Misskey from 'cherrypick-js';
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
+import { prefer } from '@/preferences.js';
+import { i18n } from '@/i18n.js';
 import MkMiniChart from '@/components/MkMiniChart.vue';
 import { misskeyApiGet } from '@/utility/misskey-api.js';
 import { acct } from '@@/js/user.js';
@@ -27,6 +32,8 @@ const props = withDefaults(defineProps<{
 }>(), {
 	withChart: true,
 });
+
+const deidentified = computed(() => prefer.r.deidentifyMutedUsers.value && 'isMuted' in props.user && props.user.isMuted === true);
 
 const chartValues = ref<number[] | null>(null);
 

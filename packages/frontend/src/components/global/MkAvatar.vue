@@ -4,12 +4,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<component :is="link ? MkA : 'span'" v-user-preview="preview ? user.id : undefined" v-bind="bound" class="_noSelect" :class="[$style.root, { [$style.animation]: animation && (!isToastAvatar && !isFloatingBtn), [$style.cat]: user.isCat && (!isToastAvatar && !isFloatingBtn), [$style.square]: squareAvatars && !isFloatingBtn, [$style.isFloatingBtn]: isFloatingBtn }]" :style="{ color }" :title="acct(user)" @click="onClick">
+<component :is="link ? MkA : 'span'" v-user-preview="preview && !deidentified ? user.id : undefined" v-bind="bound" class="_noSelect" :class="[$style.root, { [$style.animation]: animation && (!isToastAvatar && !isFloatingBtn), [$style.cat]: !deidentified && user.isCat && (!isToastAvatar && !isFloatingBtn), [$style.square]: squareAvatars && !isFloatingBtn, [$style.isFloatingBtn]: isFloatingBtn }]" :style="{ color }" :title="deidentified ? i18n.ts.mutedUsers : acct(user)" @click="onClick">
 	<MkImgWithBlurhash
 		v-if="prefer.s.enableHighQualityImagePlaceholders"
 		:class="[$style.inner, { [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.scrollToTransparent]: showEl && !forceOpacity, [$style.isFloatingBtn]: isFloatingBtn }]"
-		:src="url"
-		:hash="user.avatarBlurhash"
+		:src="deidentified ? (instance.iconUrl || '/favicon.ico') : url"
+		:hash="deidentified ? null : user.avatarBlurhash"
 		:cover="true"
 		:onlyAvgColor="true"
 		@mouseover="prefer.s.showingAnimatedImages === 'interaction' ? playAnimation = true : ''"
@@ -20,7 +20,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<img
 		v-else
 		:class="[$style.inner, { [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.scrollToTransparent]: showEl && !forceOpacity, [$style.isFloatingBtn]: isFloatingBtn }]"
-		:src="url"
+		:src="deidentified ? (instance.iconUrl || '/favicon.ico') : url"
 		alt=""
 		decoding="async"
 		style="pointer-events: none;"
@@ -29,8 +29,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		@touchstart="prefer.s.showingAnimatedImages === 'interaction' ? playAnimation = true : ''"
 		@touchend="prefer.s.showingAnimatedImages === 'interaction' ? playAnimation = false : ''"
 	/>
-	<MkUserOnlineIndicator v-if="indicator && !isToastAvatar" :class="$style.indicator" :user="user"/>
-	<div v-if="user.isCat && !isToastAvatar" :class="[$style.ears]">
+	<MkUserOnlineIndicator v-if="!deidentified && indicator && !isToastAvatar" :class="$style.indicator" :user="user"/>
+	<div v-if="!deidentified && user.isCat && !isToastAvatar" :class="[$style.ears]">
 		<div :class="$style.earLeft">
 			<div v-if="false" :class="$style.layer">
 				<div :class="$style.plot" :style="{ backgroundImage: `url(${JSON.stringify(url)})` }"></div>
@@ -76,6 +76,8 @@ import { getStaticImageUrl } from '@/utility/media-proxy.js';
 import { acct, userPage } from '@@/js/user.js';
 import MkUserOnlineIndicator from '@/components/MkUserOnlineIndicator.vue';
 import { prefer } from '@/preferences.js';
+import { instance } from '@/instance.js';
+import { i18n } from '@/i18n.js';
 import { scrollToVisibility } from '@/utility/scroll-to-visibility.js';
 
 const { showEl } = scrollToVisibility();
@@ -115,10 +117,11 @@ const emit = defineEmits<{
 }>();
 
 const squareAvatars = ref((!prefer.s.setFederationAvatarShape && prefer.s.squareAvatars) || (prefer.s.setFederationAvatarShape && !props.user.setFederationAvatarShape && prefer.s.squareAvatars) || (prefer.s.setFederationAvatarShape && props.user.setFederationAvatarShape && props.user.isSquareAvatars));
+const deidentified = computed(() => prefer.r.deidentifyMutedUsers.value && 'isMuted' in props.user && props.user.isMuted === true);
 const decorationMuted = computed(() => prefer.r.mutedAvatarDecorationUsers.value.includes(props.user.id));
 const remoteDecorationVisible = computed(() => props.user.host == null || prefer.r.showRemoteAvatarDecorations.value);
-const showDecoration = computed(() => (props.forceShowDecoration || (prefer.r.showAvatarDecorations.value && remoteDecorationVisible.value)) && !props.isFloatingBtn && !decorationMuted.value);
-const showDecorationWithFloatingBtn = computed(() => props.isFloatingBtn && prefer.r.showAvatarDecorations.value && remoteDecorationVisible.value && prefer.r.friendlyUiShowAvatarDecorationsInNavBtn.value && !decorationMuted.value);
+const showDecoration = computed(() => (props.forceShowDecoration || (prefer.r.showAvatarDecorations.value && remoteDecorationVisible.value)) && !props.isFloatingBtn && !decorationMuted.value && !deidentified.value);
+const showDecorationWithFloatingBtn = computed(() => props.isFloatingBtn && prefer.r.showAvatarDecorations.value && remoteDecorationVisible.value && prefer.r.friendlyUiShowAvatarDecorationsInNavBtn.value && !decorationMuted.value && !deidentified.value);
 
 const bound = computed(() => props.link
 	? { to: userPage(props.user), target: props.target }

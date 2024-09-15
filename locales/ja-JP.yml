@@ -4164,3 +4164,5 @@ _noteVisibilityLimit:
   replyLocked: "ダイレクトノートへの返信はダイレクトでのみ投稿できます。"
 
 showRemoteAvatarDecorations: "リモートユーザーのアイコンのデコレーションを表示"
+
+deidentifyMutedUsers: "ミュートしたユーザーを匿名化"

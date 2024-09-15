@@ -103,6 +103,13 @@ export class UserPreview {
 		this.el.removeEventListener('mouseover', this.onMouseover);
 		this.el.removeEventListener('mouseleave', this.onMouseleave);
 		this.el.removeEventListener('click', this.onClick);
+		if (this.showTimer != null) window.clearTimeout(this.showTimer);
+		if (this.hideTimer != null) window.clearTimeout(this.hideTimer);
+		if (this.checkTimer != null) window.clearInterval(this.checkTimer);
+		this.showTimer = null;
+		this.hideTimer = null;
+		this.checkTimer = null;
+		this.close();
 	}
 }
 
@@ -118,8 +125,15 @@ export const userPreviewDirective = {
 		states.set(el, preview);
 	},
 
-	unmounted(el, binding) {
-		if (binding.value == null) return;
+	updated(el, binding) {
+		if (binding.value === binding.oldValue) return;
+		states.get(el)?.detach();
+		states.delete(el);
+		if (binding.value == null || isTouchUsing) return;
+		states.set(el, new UserPreview(el, binding.value));
+	},
+
+	unmounted(el) {
 		const preview = states.get(el);
 		if (preview) {
 			preview.detach();
