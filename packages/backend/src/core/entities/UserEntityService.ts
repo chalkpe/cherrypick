@@ -571,6 +571,7 @@ export class UserEntityService implements OnModuleInit {
 				followingVisibility: profile!.followingVisibility,
 				chatScope: user.chatScope,
 				canChat: this.isLocalUser(user) ? this.roleService.getUserPolicies(user.id).then(r => r.chatAvailability !== 'unavailable') : (user.canChat ?? true),
+				bridgeHomeVisibility: profile!.bridgeHomeVisibility,
 				roles: this.roleService.getUserRoles(user.id).then(roles => roles.filter(role => role.isPublic).sort((a, b) => b.displayOrder - a.displayOrder).map(role => ({
 					id: role.id,
 					name: role.name,
@@ -607,6 +608,7 @@ export class UserEntityService implements OnModuleInit {
 				autoAcceptFollowed: profile!.autoAcceptFollowed,
 				noCrawle: profile!.noCrawle,
 				preventAiLearning: profile!.preventAiLearning,
+				bridgeHomeVisibility: profile!.bridgeHomeVisibility,
 				isExplorable: user.isExplorable,
 				isDeleted: user.isDeleted,
 				twoFactorBackupCodesStock: profile?.twoFactorBackupSecret?.length === 5 ? 'full' : (profile?.twoFactorBackupSecret?.length ?? 0) > 0 ? 'partial' : 'none',

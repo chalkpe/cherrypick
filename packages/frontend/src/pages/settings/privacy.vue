@@ -72,6 +72,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</MkSwitch>
 		</SearchMarker>
 
+		<SearchMarker :keywords="['bluesky', 'bridge', 'note', 'visibility']">
+			<MkSwitch v-model="bridgeHomeVisibility" @update:modelValue="save()">
+				<template #label><SearchLabel>{{ i18n.ts.bridgeHomeVisibility }}</SearchLabel></template>
+				<template #caption>
+					<div><SearchText>{{ i18n.ts.bridgeHomeVisibilityDescription1 }}</SearchText></div>
+					<div><i class="ti ti-alert-triangle" style="color: var(--MI_THEME-warn);"></i> <SearchText>{{ i18n.ts.bridgeHomeVisibilityDescription2 }}</SearchText></div>
+				</template>
+			</MkSwitch>
+		</SearchMarker>
+
 		<SearchMarker :keywords="['chat']">
 			<FormSection>
 				<template #label><SearchLabel>{{ i18n.ts.directMessage }}</SearchLabel></template>
@@ -278,6 +288,7 @@ const hideOnlineStatus = ref($i.hideOnlineStatus);
 const publicReactions = ref($i.publicReactions);
 const autoDeleteNotesAfterDays = ref<number | null>($i?.autoDeleteNotesAfterDays ?? null);
 const autoDeleteKeepFavorites = ref($i?.autoDeleteKeepFavorites ?? false);
+const bridgeHomeVisibility = ref($i.bridgeHomeVisibility);
 
 const {
 	model: followingVisibility,
@@ -461,6 +472,7 @@ function save() {
 		followingVisibility: followingVisibility.value,
 		followersVisibility: followersVisibility.value,
 		chatScope: chatScope.value,
+		bridgeHomeVisibility: !!bridgeHomeVisibility.value,
 	});
 }
 

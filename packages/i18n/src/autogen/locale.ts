@@ -1092,6 +1092,18 @@ export interface Locale extends ILocale {
      */
     "defaultNoteVisibility": string;
     /**
+     * Bridgy Fed(bsky.brid.gy)にホーム公開範囲の投稿を伝える
+     */
+    "bridgeHomeVisibility": string;
+    /**
+     * デフォルトでは、Bridgy Fedはホーム公開範囲ノートをBlueskyに転送しないように実装されています。この設定を有効にすると、ホーム公開範囲ノートがBridgy Fedに転送されます。
+     */
+    "bridgeHomeVisibilityDescription1": string;
+    /**
+     * Bridgy Fedにホーム公開範囲ノートを転送する場合、フル公開範囲に切り替えられて転送されることに注意してください。
+     */
+    "bridgeHomeVisibilityDescription2": string;
+    /**
      * フォロー
      */
     "follow": string;

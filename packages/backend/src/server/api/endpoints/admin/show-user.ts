@@ -196,6 +196,10 @@ export const meta = {
 				type: 'string',
 				optional: false, nullable: true,
 			},
+			bridgeHomeVisibility: {
+				type: 'boolean',
+				nullable: false, optional: false,
+			},
 		},
 	},
 } as const;
@@ -280,6 +284,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				isSquareAvatars: user.isSquareAvatars,
 				approved: user.approved,
 				signupReason: user.signupReason,
+				bridgeHomeVisibility: profile.bridgeHomeVisibility,
 			};
 		});
 	}

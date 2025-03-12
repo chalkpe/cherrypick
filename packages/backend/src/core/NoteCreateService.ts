@@ -937,7 +937,8 @@ export class NoteCreateService implements OnApplicationShutdown {
 			if (!data.localOnly && this.userEntityService.isLocalUser(user)) {
 				await (async () => {
 					const noteActivity = await this.renderNoteOrRenoteActivity(data, note);
-					const dm = this.apDeliverManagerService.createDeliverManager(user, noteActivity);
+					const profile = await this.userProfilesRepository.findOneBy({ userId: user.id });
+					const dm = this.apDeliverManagerService.createDeliverManager(user, noteActivity, profile?.bridgeHomeVisibility);
 
 					// メンションされたリモートユーザーに配送
 					for (const u of mentionedUsers.filter(u => this.userEntityService.isRemoteUser(u))) {

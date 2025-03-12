@@ -4474,6 +4474,7 @@ export type components = {
             twoFactorEnabled?: boolean;
             usePasswordLessLogin?: boolean;
             securityKeys?: boolean;
+            bridgeHomeVisibility: boolean;
             isFollowing?: boolean;
             isFollowed?: boolean;
             hasPendingFollowRequestFromYou?: boolean;
@@ -13257,6 +13258,7 @@ export interface operations {
                         isSquareAvatars: boolean | null;
                         approved: boolean;
                         signupReason: string | null;
+                        bridgeHomeVisibility: boolean;
                     };
                 };
             };
@@ -29656,6 +29658,7 @@ export interface operations {
                     followersVisibility?: 'public' | 'followers' | 'private';
                     /** @enum {string} */
                     chatScope?: 'everyone' | 'followers' | 'following' | 'mutual' | 'none';
+                    bridgeHomeVisibility?: boolean;
                     /** Format: misskey:id */
                     pinnedPageId?: string | null;
                     mutedWords?: (string[] | string)[];
