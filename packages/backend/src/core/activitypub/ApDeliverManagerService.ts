@@ -11,10 +11,11 @@ import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import { QueueService } from '@/core/QueueService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { bindThis } from '@/decorators.js';
-import type { IActivity } from '@/core/activitypub/type.js';
+import { isCreate, isNote, type IActivity, type IObject } from '@/core/activitypub/type.js';
 import { ThinUser } from '@/queue/types.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import type Logger from '@/logger.js';
+import { toArray } from '@/misc/prelude/array.js';
 
 interface IRecipe {
 	type: string;
@@ -214,6 +215,32 @@ class DeliverManager {
 			if (recipe.to.inbox === null) continue;
 
 			inboxes.set(recipe.to.inbox, false);
+		}
+
+		// deliver to bsky.brid.gy sharedInbox with changes visibility `home` to `public`
+		const bskyBridgySharedInbox = 'https://bsky.brid.gy/ap/sharedInbox';
+		const isCreateNote = this.activity !== null && isCreate(this.activity) && isNote(this.activity.object);
+		const isHomeVisibility = toArray(this.activity?.cc)[0] === 'https://www.w3.org/ns/activitystreams#Public';
+		const hasBridgySharedInbox = inboxes.has(bskyBridgySharedInbox);
+
+		if (isCreateNote && isHomeVisibility && hasBridgySharedInbox) {
+			const homeToPublicObject: IObject = {
+				...this.activity.object,
+				to: this.activity.object.cc,
+				cc: this.activity.object.to,
+			};
+
+			const homeToPublicActivity: IActivity = {
+				...this.activity,
+				object: homeToPublicObject,
+				to: this.activity.cc,
+				cc: this.activity.to,
+			};
+
+			await this.queueService.deliver(this.actor, homeToPublicActivity, bskyBridgySharedInbox, true);
+
+			// remove bsky.brid.gy sharedInbox from inboxes
+			inboxes.delete(bskyBridgySharedInbox);
 		}
 
 		// deliver
