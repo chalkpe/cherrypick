@@ -115,8 +115,9 @@ const emit = defineEmits<{
 }>();
 
 const squareAvatars = ref((!prefer.s.setFederationAvatarShape && prefer.s.squareAvatars) || (prefer.s.setFederationAvatarShape && !props.user.setFederationAvatarShape && prefer.s.squareAvatars) || (prefer.s.setFederationAvatarShape && props.user.setFederationAvatarShape && props.user.isSquareAvatars));
-const showDecoration = (props.forceShowDecoration || prefer.s.showAvatarDecorations) && !props.isFloatingBtn;
-const showDecorationWithFloatingBtn = props.isFloatingBtn && prefer.s.showAvatarDecorations && prefer.s.friendlyUiShowAvatarDecorationsInNavBtn;
+const decorationMuted = computed(() => prefer.r.mutedAvatarDecorationUsers.value.includes(props.user.id));
+const showDecoration = computed(() => (props.forceShowDecoration || prefer.r.showAvatarDecorations.value) && !props.isFloatingBtn && !decorationMuted.value);
+const showDecorationWithFloatingBtn = computed(() => props.isFloatingBtn && prefer.r.showAvatarDecorations.value && prefer.r.friendlyUiShowAvatarDecorationsInNavBtn.value && !decorationMuted.value);
 
 const bound = computed(() => props.link
 	? { to: userPage(props.user), target: props.target }

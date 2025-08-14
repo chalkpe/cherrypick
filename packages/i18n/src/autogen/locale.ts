@@ -1280,6 +1280,14 @@ export interface Locale extends ILocale {
      */
     "renoteMute": string;
     /**
+     * アバター装飾をミュート
+     */
+    "avatarDecoMute": string;
+    /**
+     * アバター装飾のミュートを解除
+     */
+    "avatarDecoUnmute": string;
+    /**
      * リノートのミュートを解除
      */
     "renoteUnmute": string;

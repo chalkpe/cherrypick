@@ -615,6 +615,18 @@ export function getUserMenu(user: Misskey.entities.UserDetailed, router: Router 
 			text: user.isRenoteMuted ? i18n.ts.renoteUnmute : i18n.ts.renoteMute,
 			action: toggleRenoteMute,
 		}, {
+			icon: 'ti ti-sparkles',
+			text: prefer.s.mutedAvatarDecorationUsers.includes(user.id) ? i18n.ts.avatarDecoUnmute : i18n.ts.avatarDecoMute,
+			action: async () => {
+				const list = prefer.s.mutedAvatarDecorationUsers;
+				if (list.includes(user.id)) {
+					prefer.commit('mutedAvatarDecorationUsers', list.filter(x => x !== user.id));
+				} else {
+					prefer.commit('mutedAvatarDecorationUsers', list.concat(user.id));
+				}
+				await os.success();
+			},
+		}, {
 			icon: 'ti ti-ban',
 			text: user.isBlocking ? i18n.ts.unblock : i18n.ts.block,
 			action: toggleBlock,

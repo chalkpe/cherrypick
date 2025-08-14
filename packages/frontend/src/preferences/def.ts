@@ -288,6 +288,10 @@ export const PREF_DEF = definePreferences({
 	showAvatarDecorations: {
 		default: true,
 	},
+	mutedAvatarDecorationUsers: {
+		accountDependent: true,
+		default: [] as string[],
+	},
 	numberOfPageCache: {
 		default: 3,
 	},
