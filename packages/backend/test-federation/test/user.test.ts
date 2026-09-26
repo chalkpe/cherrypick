@@ -46,6 +46,7 @@ describe('User', () => {
 					'createdAt',
 					'lastFetchedAt',
 					'publicReactions',
+					'approved',
 				]);
 			});
 		});
@@ -518,14 +519,9 @@ describe('User', () => {
 					},
 				);
 
-				// FIXME: resolving also fails
-				await rejects(
-					async () => await resolveRemoteUser('a.test', alice.id, bob),
-					(err: any) => {
-						strictEqual(err.code, 'INTERNAL_ERROR');
-						return true;
-					},
-				);
+				const resolved = await resolveRemoteUser('a.test', alice.id, bob);
+				strictEqual(resolved.username, alice.username);
+				strictEqual(resolved.host, 'a.test');
 			});
 
 			/**
@@ -549,14 +545,9 @@ describe('User', () => {
 				await bob.client.request('following/create', { userId: renewedaliceInB.id });
 				await waitForFollowers(alice, 1);
 
-				// FIXME: but resolving still fails ...
-				await rejects(
-					async () => await resolveRemoteUser('a.test', alice.id, bob),
-					(err: any) => {
-						strictEqual(err.code, 'INTERNAL_ERROR');
-						return true;
-					},
-				);
+				const resolved = await resolveRemoteUser('a.test', alice.id, bob);
+				strictEqual(resolved.username, alice.username);
+				strictEqual(resolved.host, 'a.test');
 			});
 		});
 	});

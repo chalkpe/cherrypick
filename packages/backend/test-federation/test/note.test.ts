@@ -57,8 +57,11 @@ describe('Note', () => {
 				replyId: _replyedNote.id,
 			})).createdNote;
 			// NOTE: the repliedCount is incremented, so fetch again
-			const replyedNote = await alice.client.request('notes/show', { noteId: _replyedNote.id });
-			strictEqual(replyedNote.repliesCount, 1);
+			const replyedNote = await vi.waitFor(async () => {
+				const current = await alice.client.request('notes/show', { noteId: _replyedNote.id });
+				strictEqual(current.repliesCount, 1);
+				return current;
+			}, WAIT_FOR_FEDERATION);
 
 			const resolvedNote = await resolveRemoteNote('a.test', note.id, bob);
 			deepStrictEqualWithExcludedFields(note, resolvedNote, [

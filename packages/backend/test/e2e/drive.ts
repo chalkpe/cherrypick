@@ -62,6 +62,7 @@ describe('Drive', () => {
 		const note1 = await post(alice, { fileIds: [ids[0], ids[1]] });
 
 		const attached0 = await api('drive/files/attached-notes', { fileId: ids[0] }, alice);
+		assert.strictEqual(attached0.status, 200, JSON.stringify(attached0.body));
 		assert.strictEqual(attached0.body.length, 2);
 		assert.strictEqual(attached0.body[0].id, note1.id);
 		assert.strictEqual(attached0.body[1].id, note0.id);

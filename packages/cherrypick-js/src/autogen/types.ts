@@ -4416,6 +4416,7 @@ export type components = {
                 iconUrl: string | null;
                 displayOrder: number;
             }[];
+            approved: boolean;
             setFederationAvatarShape?: boolean | null;
             isSquareAvatars?: boolean | null;
         };
@@ -4732,6 +4733,7 @@ export type components = {
                 /** Format: date-time */
                 lastUsed: string;
             }[];
+            signupReason?: string | null;
             autoDeleteNotesAfterDays: number | null;
             autoDeleteKeepFavorites: boolean;
         };

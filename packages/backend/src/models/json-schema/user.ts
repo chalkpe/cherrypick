@@ -207,6 +207,10 @@ export const packedUserLiteSchema = {
 				},
 			},
 		},
+		approved: {
+			type: 'boolean',
+			nullable: false, optional: false,
+		},
 		setFederationAvatarShape: {
 			type: 'boolean',
 			nullable: true, optional: true,
@@ -716,6 +720,10 @@ export const packedMeDetailedOnlySchema = {
 					},
 				},
 			},
+		},
+		signupReason: {
+			type: 'string',
+			nullable: true, optional: true,
 		},
 		//#endregion
 		autoDeleteNotesAfterDays: {

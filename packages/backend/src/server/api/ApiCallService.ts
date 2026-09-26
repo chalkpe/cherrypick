@@ -517,7 +517,7 @@ export class ApiCallService implements OnApplicationShutdown {
 
 		// The API span starts in handleRequest/handleMultipartRequest so it also covers
 		// authentication, rate limiting, and parameter validation.
-		return await ep.exec(data, user, token, file, request.ip, request.headers)
+		return await ep.exec(data, user, token, flashToken, file, request.ip, request.headers)
 			.catch((err: Error) => this.#onExecError(ep, data, err, user?.id));
 	}
 

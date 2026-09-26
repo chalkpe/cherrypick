@@ -44,11 +44,15 @@ services:
         read_only: true
       - type: bind
         source: ../vitest.config.ts
-        target: /misskey/packages/backend/vitest.config.ts
+        target: /cherrypick/packages/backend/vitest.config.ts
         read_only: true
       - type: bind
         source: ../vitest.config.fed.ts
-        target: /misskey/packages/backend/vitest.config.fed.ts
+        target: /cherrypick/packages/backend/vitest.config.fed.ts
+        read_only: true
+      - type: bind
+        source: ./.config/dummy.yml
+        target: /cherrypick/.config/test.yml
         read_only: true
       - type: bind
         source: ../scripts/compile_config.js

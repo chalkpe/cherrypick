@@ -36,7 +36,7 @@ services:
         read_only: true
       - type: bind
         source: ../src-js
-        target: /misskey/packages/backend/src-js
+        target: /cherrypick/packages/backend/src-js
         read_only: true
       - type: bind
         source: ../migration

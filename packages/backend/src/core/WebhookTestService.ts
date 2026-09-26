@@ -447,6 +447,7 @@ export class WebhookTestService {
 			emojis: await this.customEmojiService.populateEmojis(user.emojis, user.host),
 			onlineStatus: 'active',
 			badgeRoles: [],
+			approved: user.approved,
 			setFederationAvatarShape: user.setFederationAvatarShape,
 			isSquareAvatars: user.isSquareAvatars,
 			...override,

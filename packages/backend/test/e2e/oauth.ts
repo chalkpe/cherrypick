@@ -174,7 +174,7 @@ describe('OAuth', () => {
 	}, 1000 * 60 * 2);
 
 	beforeEach(async () => {
-		await sendEnvUpdateRequest({ key: 'CHERRYPICK_TEST_CHECK_IP_RANGE', value: '' });
+		await sendEnvUpdateRequest({ key: 'MISSKEY_TEST_CHECK_IP_RANGE', value: '' });
 		sender = (reply): void => {
 			reply.send(`
 				<!DOCTYPE html>
