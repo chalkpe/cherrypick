@@ -1,9 +1,10 @@
-name: Publish Docker image (develop)
+name: Publish Docker image (develop / beta)
 
 on:
   push:
     branches:
       - develop
+      - beta
   workflow_dispatch:
 
 env:
@@ -20,7 +21,7 @@ jobs:
         platform:
           - linux/amd64
           - linux/arm64
-    if: github.repository == 'chalkpe/cherrypick'
+    if: github.repository == 'chalkpe/cherrypick' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/beta')
     permissions:
       contents: read
       packages: write
@@ -58,7 +59,7 @@ jobs:
           push: true
           platforms: ${{ matrix.platform }}
           provenance: false
-          labels: develop
+          labels: org.opencontainers.image.ref.name=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
@@ -100,8 +101,8 @@ jobs:
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create --tag ${{ env.REGISTRY_IMAGE }}:develop \
+          docker buildx imagetools create --tag ${{ env.REGISTRY_IMAGE }}:${{ github.ref_name }} \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:develop
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ github.ref_name }}
