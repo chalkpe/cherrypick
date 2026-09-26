@@ -8,6 +8,7 @@ import { Brackets } from 'typeorm';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { DI } from '@/di-symbols.js';
 import { QueryService } from '@/core/QueryService.js';
+import { IdService } from '@/core/IdService.js';
 import type { AbuseReportResolversRepository } from '@/models/_.js';
 
 export const meta = {
@@ -21,6 +22,16 @@ export const meta = {
 		items: {
 			type: 'object',
 			properties: {
+				id: {
+					type: 'string',
+					optional: false, nullable: false,
+					format: 'id',
+				},
+				createdAt: {
+					type: 'string',
+					optional: false, nullable: false,
+					format: 'date-time',
+				},
 				name: {
 					type: 'string',
 					nullable: false, optional: false,
@@ -40,6 +51,11 @@ export const meta = {
 				expiresAt: {
 					type: 'string',
 					nullable: false, optional: false,
+				},
+				expirationDate: {
+					type: 'string',
+					format: 'date-time',
+					nullable: true, optional: false,
 				},
 				forward: {
 					type: 'boolean',
@@ -67,6 +83,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> {
 		private abuseReportResolversRepository: AbuseReportResolversRepository,
 
 		private queryService: QueryService,
+		private idService: IdService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const query = this.queryService.makePaginationQuery(this.abuseReportResolversRepository.createQueryBuilder('abuseReportResolvers'), ps.sinceId, ps.untilId)
@@ -76,8 +93,11 @@ export default class extends Endpoint<typeof meta, typeof paramDef> {
 				}))
 				.take(ps.limit);
 
-			return await query.getMany();
+			return (await query.getMany()).map(resolver => ({
+				...resolver,
+				createdAt: this.idService.parse(resolver.id).date.toISOString(),
+				expirationDate: resolver.expirationDate?.toISOString() ?? null,
+			}));
 		});
 	}
 }
-

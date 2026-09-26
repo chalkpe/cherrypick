@@ -188,6 +188,8 @@ export function getNoteMenu(props: {
 	collapsed?: Ref<boolean>;
 	translation: Ref<Misskey.entities.NotesTranslateResponse | null>;
 	translating: Ref<boolean>;
+	viewTextSource?: Ref<boolean>;
+	noNyaize?: Ref<boolean>;
 	currentClip?: Misskey.entities.Clip | null;
 	currentAntenna?: Misskey.entities.Antenna | null;
 }) {
@@ -429,15 +431,15 @@ export function getNoteMenu(props: {
 	}
 
 	function showViewTextSource(): void {
-		props.viewTextSource.value = true;
+		if (props.viewTextSource) props.viewTextSource.value = true;
 	}
 
 	function noNyaizeText(): void {
-		props.noNyaize.value = true;
+		if (props.noNyaize) props.noNyaize.value = true;
 	}
 
 	function revertNoNyaizeText(): void {
-		props.noNyaize.value = false;
+		if (props.noNyaize) props.noNyaize.value = false;
 	}
 
 	async function unRenoteAll(): Promise<void> {
@@ -602,7 +604,7 @@ export function getNoteMenu(props: {
 				});
 
 				if (!prefer.s.disableNyaize) {
-					if (props.noNyaize.value) {
+					if (props.noNyaize?.value) {
 						noteChildMenu.push({
 							icon: 'ti ti-paw-filled',
 							text: i18n.ts.revertNoNyaization,
@@ -802,7 +804,7 @@ export function getNoteMenu(props: {
 					action: showViewTextSource,
 				});
 
-				if (props.noNyaize.value) {
+				if (props.noNyaize?.value) {
 					noteChildMenu.push({
 						icon: 'ti ti-paw-filled',
 						text: i18n.ts.revertNoNyaization,

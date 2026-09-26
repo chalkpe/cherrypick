@@ -963,7 +963,7 @@ export class ChatService {
 	@bindThis
 	public async leaveRoom(userId: MiUser['id'], roomId: MiChatRoom['id']) {
 		const membership = await this.chatRoomMembershipsRepository.findOneByOrFail({ roomId, userId });
-		const room = await this.chatRoomsRepository.findOne({ where: { id: roomId }, relations: ['owner'] });
+		const room = await this.chatRoomsRepository.findOne({ where: { id: roomId }, relations: { owner: true } });
 		const leavingUser = await this.usersRepository.findOneByOrFail({ id: userId });
 
 		await this.chatRoomMembershipsRepository.delete(membership.id);

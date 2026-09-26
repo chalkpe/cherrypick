@@ -51,7 +51,7 @@ import { ReversiChannel } from './api/stream/channels/reversi.js';
 import { ReversiGameChannel } from './api/stream/channels/reversi-game.js';
 import { NoteStreamingHidingService } from './api/stream/NoteStreamingHidingService.js';
 import { SigninWithPasskeyApiService } from './api/SigninWithPasskeyApiService.js';
-import { BubbleTimelineChannelService } from './api/stream/channels/bubble-timeline.js';
+import { BubbleTimelineChannel } from './api/stream/channels/bubble-timeline.js';
 
 @Module({
 	imports: [
@@ -103,7 +103,7 @@ import { BubbleTimelineChannelService } from './api/stream/channels/bubble-timel
 		NoteStreamingHidingService,
 		OpenApiServerService,
 		OAuth2ProviderService,
-		BubbleTimelineChannelService,
+		BubbleTimelineChannel,
 	],
 	exports: [
 		ServerService,

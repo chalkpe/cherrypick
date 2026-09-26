@@ -132,6 +132,10 @@ export interface Locale extends ILocale {
      */
     "forceCollapseAllRenotes": string;
     /**
+     * キャット付きのみ
+     */
+    "showCatOnly": string;
+    /**
      * 私または相手がリノートしたすべてのノートをたたんで表示します。
      */
     "forceCollapseAllRenotesDescription": string;
@@ -6451,6 +6455,30 @@ export interface Locale extends ILocale {
      * ピクセルアート拡大モード
      */
     "pixelatedZoom": string;
+    "_nsfwOpenBehavior": {
+        /**
+         * タップして開く
+         */
+        "click": string;
+        /**
+         * 二回タップして開く
+         */
+        "doubleClick": string;
+    };
+    "_showingAnimatedImages": {
+        /**
+         * 常に再生
+         */
+        "always": string;
+        /**
+         * インタラクト時に再生
+         */
+        "interaction": string;
+        /**
+         * 一定時間経過すると再生
+         */
+        "inactive": string;
+    };
     "_imageEditing": {
         "_vars": {
             /**
@@ -9370,6 +9398,18 @@ export interface Locale extends ILocale {
              * 翻訳機能の利用
              */
             "canUseTranslator": string;
+            /**
+             * 自動翻訳機能の利用
+             */
+            "canUseAutoTranslate": string;
+            /**
+             * 自動翻訳機能を有効にしたユーザーは、タイムラインのすべてのノートが自動的に翻訳され、これにより翻訳サービス提供者が設定したAPI制限に非常に早く到達し、翻訳機能を一時的に使用できなくなる可能性があります。
+             * これは、サーバー内のすべてのユーザーがAPIを一時的に使用できなくなる可能性があることを意味します。
+             * また、翻訳サービスの提供者によっては、APIの使用による料金が過度に発生する可能性があります。
+             *
+             * <b>それでも続けましょうか？</b>
+             */
+            "canUseAutoTranslateDescription": string;
             /**
              * チャンネルの作成
              */

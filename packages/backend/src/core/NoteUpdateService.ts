@@ -270,7 +270,7 @@ export class NoteUpdateService implements OnApplicationShutdown {
 
 			if (note.deleteAt) {
 				const delay = note.deleteAt.getTime() - Date.now();
-				await this.queueService.scheduledNoteDeleteQueue.remove(note.id);
+				await (await this.queueService.scheduledNoteDeleteQueue.getJob(note.id))?.remove();
 				await this.queueService.scheduledNoteDeleteQueue.add(note.id, {
 					noteId: note.id,
 				}, {
@@ -279,7 +279,7 @@ export class NoteUpdateService implements OnApplicationShutdown {
 				});
 			}
 
-			this.globalEventService.publishNoteStream(note.id, 'updated', { cw: note.cw, text: note.text, disableRightClick: note.disableRightClick, deleteAt: note.deleteAt });
+			this.globalEventService.publishNoteStream(note, 'updated', { cw: note.cw, text: note.text, disableRightClick: note.disableRightClick, deleteAt: note.deleteAt });
 
 			//#region AP deliver
 			if (this.userEntityService.isLocalUser(user) && !note.localOnly) {

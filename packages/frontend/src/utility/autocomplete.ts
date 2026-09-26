@@ -376,7 +376,7 @@ export class Autocomplete {
 				const pos = trimmedBefore.length + (props.value.length + 1);
 				this.textarea.setSelectionRange(pos, pos);
 			});
-		} else if (type === 'htmlTag') {
+		} else if (isCompleteType('htmlTag', props)) {
 			const source = this.text;
 
 			const before = source.substring(0, caret);
@@ -384,36 +384,36 @@ export class Autocomplete {
 			const after = source.substring(caret);
 
 			// 挿入
-			if (value === 'bold') this.text = `${trimmedBefore}<b>${after}</b>`;
-			if (value === 'strike') this.text = `${trimmedBefore}~~${after}~~`;
-			if (value === 'italic') this.text = `${trimmedBefore}<i>${after}</i>`;
-			if (value === 'small') this.text = `${trimmedBefore}<small>${after}</small>`;
-			if (value === 'center') this.text = `${trimmedBefore}<center>${after}</center>`;
-			if (value === 'plain') this.text = `${trimmedBefore}<plain>${after}</plain>`;
-			if (value === 'inlinecode') this.text = trimmedBefore + '`' + after + '`';
-			if (value === 'blockcode') this.text = trimmedBefore + '```' + '\n' + after + '\n' + '```';
-			if (value === 'mathinline') this.text = trimmedBefore + '\\(' + after + '\\)';
-			if (value === 'mathblock') this.text = trimmedBefore + '\\(' + after + '\\\\ \\)';
+			if (props.value === 'bold') this.text = `${trimmedBefore}<b>${after}</b>`;
+			if (props.value === 'strike') this.text = `${trimmedBefore}~~${after}~~`;
+			if (props.value === 'italic') this.text = `${trimmedBefore}<i>${after}</i>`;
+			if (props.value === 'small') this.text = `${trimmedBefore}<small>${after}</small>`;
+			if (props.value === 'center') this.text = `${trimmedBefore}<center>${after}</center>`;
+			if (props.value === 'plain') this.text = `${trimmedBefore}<plain>${after}</plain>`;
+			if (props.value === 'inlinecode') this.text = trimmedBefore + '`' + after + '`';
+			if (props.value === 'blockcode') this.text = trimmedBefore + '```' + '\n' + after + '\n' + '```';
+			if (props.value === 'mathinline') this.text = trimmedBefore + '\\(' + after + '\\)';
+			if (props.value === 'mathblock') this.text = trimmedBefore + '\\(' + after + '\\\\ \\)';
 
 			// キャレットを戻す
 			nextTick(() => {
 				this.textarea.focus();
-				const pos = trimmedBefore.length + (value.length + (
-					value.includes('bold')
+				const pos = trimmedBefore.length + (props.value.length + (
+					props.value.includes('bold')
 						? -1
-						: value.includes('strike')
+						: props.value.includes('strike')
 							?	-4
-							: value.includes('italic')
+							: props.value.includes('italic')
 								? -3
-								: value.includes('small') || value.includes('center') || value.includes('plain')
+								: props.value.includes('small') || props.value.includes('center') || props.value.includes('plain')
 									? 2
-									: value.includes('inlinecode')
+									: props.value.includes('inlinecode')
 										? -9
-										: value.includes('blockcode')
+										: props.value.includes('blockcode')
 											? -5
-											: value.includes('mathinline')
+											: props.value.includes('mathinline')
 												? -8
-												: value.includes('mathblock')
+												: props.value.includes('mathblock')
 													? -7
 													: 3
 				));

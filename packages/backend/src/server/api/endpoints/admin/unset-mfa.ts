@@ -25,12 +25,12 @@ export const meta = {
 		noSuchUser: {
 			message: 'No such user.',
 			code: 'NO_SUCH_USER',
-			id: 'ccafc7fe-5074-4edd-9dc0-8ef9ef6a701d',
+			id: 'fd17203d-68fb-491f-8bd0-827f6f5f35a4',
 		},
 		accessDenied: {
 			message: 'Access denied.',
 			code: 'ACCESS_DENIED',
-			id: 'cda8f8ce-89a6-4f92-8055-33bbe0c1464d',
+			id: 'a32093d8-e6f9-4030-855b-dac6580f5f24',
 		},
 	},
 } as const;

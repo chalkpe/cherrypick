@@ -210,6 +210,7 @@ import JSON5 from 'json5';
 import defaultLightTheme from '@@/themes/l-cherrypick.json5';
 import defaultDarkTheme from '@@/themes/d-cherrypick.json5';
 import { isSafeMode } from '@@/js/config.js';
+import { uniqueBy } from '@@/js/array.js';
 import type { Theme } from '@@/js/theme.js';
 import * as os from '@/os.js';
 import MkSwitch from '@/components/MkSwitch.vue';

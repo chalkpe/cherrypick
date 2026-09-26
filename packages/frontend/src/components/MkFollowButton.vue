@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <button
-	v-if="(!disableIfFollowing || !isFollowing) && ($i != null && $i.id != user.id) && (!user.isBlocked && !user.isBlocking)"
+	v-if="(!disableIfFollowing || !isFollowing) && ($i != null && $i.id != user.id) && (!userDetails.isBlocked && !userDetails.isBlocking)"
 	class="_button"
 	:class="[$style.root, { [$style.wait]: wait, [$style.active]: isFollowing || hasPendingFollowRequestFromYou, [$style.full]: full, [$style.large]: large }]"
 	:disabled="wait"
@@ -63,7 +63,7 @@ import { useRouter } from '@/router.js';
 const router = useRouter();
 
 const props = withDefaults(defineProps<{
-	user: Misskey.entities.UserDetailed,
+	user: Misskey.entities.UserDetailed | Misskey.entities.UserLite,
 	full?: boolean,
 	large?: boolean,
 
@@ -81,12 +81,13 @@ const emit = defineEmits<{
 	(_: 'update:user', value: Misskey.entities.UserDetailed): void
 }>();
 
-const isFollowing = ref(props.user.isFollowing);
-const hasPendingFollowRequestFromYou = ref(props.user.hasPendingFollowRequestFromYou);
+const userDetails = props.user as Partial<Misskey.entities.UserDetailed>;
+const isFollowing = ref(userDetails.isFollowing ?? false);
+const hasPendingFollowRequestFromYou = ref(userDetails.hasPendingFollowRequestFromYou ?? false);
 const wait = ref(false);
 const connection = useStream().useChannel('main');
 
-if (props.user.isFollowing == null && $i) {
+if (userDetails.isFollowing == null && $i) {
 	misskeyApi('users/show', {
 		userId: props.user.id,
 	})
@@ -95,8 +96,8 @@ if (props.user.isFollowing == null && $i) {
 
 function onFollowChange(user: Misskey.entities.UserDetailed) {
 	if (user.id === props.user.id) {
-		isFollowing.value = user.isFollowing;
-		hasPendingFollowRequestFromYou.value = user.hasPendingFollowRequestFromYou;
+		isFollowing.value = user.isFollowing ?? false;
+		hasPendingFollowRequestFromYou.value = user.hasPendingFollowRequestFromYou ?? false;
 	}
 }
 
@@ -160,10 +161,12 @@ async function onClick() {
 				userId: props.user.id,
 				withReplies: prefer.s.defaultFollowWithReplies,
 			});
-			emit('update:user', {
-				...props.user,
-				withReplies: prefer.s.defaultFollowWithReplies,
-			});
+			if ('isFollowing' in props.user) {
+				emit('update:user', {
+					...props.user,
+					withReplies: prefer.s.defaultFollowWithReplies,
+				} as Misskey.entities.UserDetailed);
+			}
 			hasPendingFollowRequestFromYou.value = true;
 
 			if ($i == null) {

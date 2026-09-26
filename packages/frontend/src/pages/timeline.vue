@@ -15,7 +15,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</button>
 		</MkInfo>
 		<MkPostForm v-if="prefer.r.showFixedPostForm.value" :class="$style.postForm" class="_panel" fixed style="margin-bottom: var(--MI-margin);"/>
-		<div v-if="!isAvailableBasicTimeline(src) && !src.startsWith('list:')" :class="[$style.disabled, $style.tl]">
+		<div v-if="!src.startsWith('list:') && (!isBasicTimeline(src) || !isAvailableBasicTimeline(src))" :class="[$style.disabled, $style.tl]">
 			<p :class="$style.disabledTitle">
 				<i class="ti ti-circle-minus"></i>
 				{{ i18n.ts._disabledTimeline.title }}
@@ -145,6 +145,128 @@ const withSensitive = computed<boolean>({
 });
 
 const showFixedPostForm = prefer.model('showFixedPostForm');
+
+const enableWidgetsArea = ref(prefer.s.enableWidgetsArea);
+const friendlyUiEnableNotificationsArea = ref(prefer.s.friendlyUiEnableNotificationsArea);
+
+const enableHomeTimeline = ref(prefer.s.enableHomeTimeline);
+const enableLocalTimeline = ref(prefer.s.enableLocalTimeline);
+const enableSocialTimeline = ref(prefer.s.enableSocialTimeline);
+const enableGlobalTimeline = ref(prefer.s.enableGlobalTimeline);
+const enableMediaTimeline = ref(prefer.s.enableMediaTimeline);
+const enableBubbleTimeline = ref(prefer.s.enableBubbleTimeline);
+const enableListTimeline = ref(prefer.s.enableListTimeline);
+const enableAntennaTimeline = ref(prefer.s.enableAntennaTimeline);
+const enableChannelTimeline = ref(prefer.s.enableChannelTimeline);
+
+const forceCollapseAllRenotes = ref(prefer.s.forceCollapseAllRenotes);
+const collapseRenotes = ref(prefer.s.collapseRenotes);
+const collapseReplies = ref(prefer.s.collapseReplies);
+const collapseLongNoteContent = ref(prefer.s.collapseLongNoteContent);
+const collapseDefault = ref(prefer.s.collapseDefault);
+const alwaysShowCw = ref(prefer.s.alwaysShowCw);
+const showReplyTargetNote = ref(prefer.s.showReplyTargetNote);
+const disableNyaize = ref(prefer.s.disableNyaize);
+
+watch(enableWidgetsArea, (x) => {
+	prefer.commit('enableWidgetsArea', x);
+	suggestReload();
+});
+
+watch(friendlyUiEnableNotificationsArea, (x) => {
+	prefer.commit('friendlyUiEnableNotificationsArea', x);
+	suggestReload();
+});
+
+watch(enableHomeTimeline, (x) => {
+	prefer.commit('enableHomeTimeline', x);
+	suggestReload();
+});
+
+watch(enableLocalTimeline, (x) => {
+	prefer.commit('enableLocalTimeline', x);
+	suggestReload();
+});
+
+watch(enableSocialTimeline, (x) => {
+	prefer.commit('enableSocialTimeline', x);
+	suggestReload();
+});
+
+watch(enableGlobalTimeline, (x) => {
+	prefer.commit('enableGlobalTimeline', x);
+	suggestReload();
+});
+
+watch(enableMediaTimeline, (x) => {
+	prefer.commit('enableMediaTimeline', x);
+	suggestReload();
+});
+
+watch(enableBubbleTimeline, (x) => {
+	prefer.commit('enableBubbleTimeline', x);
+	suggestReload();
+});
+
+watch(enableListTimeline, (x) => {
+	prefer.commit('enableListTimeline', x);
+	suggestReload();
+});
+
+watch(enableAntennaTimeline, (x) => {
+	prefer.commit('enableAntennaTimeline', x);
+	suggestReload();
+});
+
+watch(enableChannelTimeline, (x) => {
+	prefer.commit('enableChannelTimeline', x);
+	suggestReload();
+});
+
+watch(forceCollapseAllRenotes, (x) => {
+	prefer.commit('forceCollapseAllRenotes', x);
+	reloadTimeline();
+});
+
+watch(collapseRenotes, (x) => {
+	prefer.commit('collapseRenotes', x);
+	reloadTimeline();
+});
+
+watch(collapseReplies, (x) => {
+	prefer.commit('collapseReplies', x);
+	reloadTimeline();
+});
+
+watch(collapseLongNoteContent, (x) => {
+	prefer.commit('collapseLongNoteContent', x);
+	reloadTimeline();
+	reloadNotification();
+});
+
+watch(collapseDefault, (x) => {
+	prefer.commit('collapseDefault', x);
+	reloadTimeline();
+	reloadNotification();
+});
+
+watch(alwaysShowCw, (x) => {
+	prefer.commit('alwaysShowCw', x);
+	reloadTimeline();
+	reloadNotification();
+});
+
+watch(showReplyTargetNote, (x) => {
+	prefer.commit('showReplyTargetNote', x);
+	reloadTimeline();
+	reloadNotification();
+});
+
+watch(disableNyaize, (x) => {
+	prefer.commit('disableNyaize', x);
+	reloadTimeline();
+	reloadNotification();
+});
 
 async function chooseList(ev: PointerEvent): Promise<void> {
 	const lists = await userListsCache.fetch();

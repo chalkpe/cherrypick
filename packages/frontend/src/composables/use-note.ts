@@ -225,7 +225,7 @@ export function useNote(
 		if (!isLoggedIn) return;
 		showMovedDialog();
 		if (els.renoteButton == null) return;
-		const { menu } = getRenoteMenu({
+		const { menu } = await getRenoteMenu({
 			note: rawNote,
 			renoteButton: els.renoteButton,
 			mock: props.mock,

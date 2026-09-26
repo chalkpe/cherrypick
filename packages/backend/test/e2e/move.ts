@@ -8,6 +8,8 @@ import { INestApplicationContext } from '@nestjs/common';
 process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
+import { api, castAsError, initTestDb, signup, successfulApiCall, uploadFile } from '../utils.js';
+import type * as misskey from 'cherrypick-js';
 import { afterAll, beforeAll, afterEach, describe, test, vi } from 'vitest';
 import { loadConfig } from '@/config.js';
 import { MiRepository, MiUser, UsersRepository, miRepository } from '@/models/_.js';

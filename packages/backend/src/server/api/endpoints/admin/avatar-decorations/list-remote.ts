@@ -23,6 +23,10 @@ export const meta = {
 			type: 'object',
 			optional: false, nullable: false,
 			properties: {
+				host: {
+					type: 'string',
+					optional: false, nullable: true,
+				},
 				id: {
 					type: 'string',
 					optional: false, nullable: false,

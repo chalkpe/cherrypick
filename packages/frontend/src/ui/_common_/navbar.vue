@@ -212,6 +212,10 @@ function toggleRealtimeMode(ev: PointerEvent) {
 	}], ev.currentTarget ?? ev.target);
 }
 
+function toggleBannerDisplay() {
+	bannerDisplay.value = prefer.s.bannerDisplay;
+}
+
 async function openAccountMenu(ev: PointerEvent) {
 	const menuItems = await getAccountMenu({
 		withExtraOperation: true,

@@ -1181,7 +1181,7 @@ export class ApInboxService {
 			return 'skip: invalid actor';
 		}
 
-		this.logger.debug(`Update: ${uri}`);
+		this.logger.debug(`Update: ${getApId(activity.object)}`);
 
 		// eslint-disable-next-line no-param-reassign
 		resolver ??= await this.apResolverService.createResolver();

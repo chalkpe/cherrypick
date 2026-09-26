@@ -98,6 +98,12 @@ const $systemWebhookDeliver: Provider = {
 	inject: [DI.config],
 };
 
+const $scheduledNoteDelete: Provider = {
+	provide: 'queue:scheduledNoteDelete',
+	useFactory: (config: Config) => createQueue<ScheduledNoteDeleteJobData>(QUEUE.SCHEDULED_NOTE_DELETE, config),
+	inject: [DI.config],
+};
+
 @Module({
 	imports: [
 	],

@@ -70,6 +70,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { watch, ref, computed } from 'vue';
+import MkRippleEffect from '@/components/MkRippleEffect.vue';
 import * as Misskey from 'cherrypick-js';
 import type { MediaComponentExposes } from '@/types/media-component.js';
 import { getStaticImageUrl } from '@/utility/media-proxy.js';
@@ -108,6 +109,14 @@ const url = computed(() => (props.raw || prefer.s.loadRawImages)
 	: (prefer.s.disableShowingAnimatedImages || prefer.s.dataSaver.media) || (['interaction', 'inactive'].includes(<string>prefer.s.showingAnimatedImages) && !playAnimation.value)
 		? getStaticImageUrl(props.image.url)
 		: props.image.thumbnailUrl!,
+);
+
+const clickToShowMessage = computed(() => prefer.s.nsfwOpenBehavior === 'click'
+	? i18n.ts.clickToShow
+	// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+	: prefer.s.nsfwOpenBehavior === 'doubleClick'
+		? i18n.ts.doubleClickToShow
+		: '',
 );
 
 async function onClick(ev: PointerEvent) {

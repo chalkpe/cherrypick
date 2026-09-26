@@ -12,13 +12,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkAvatar :class="$style.avatar" :user="$i"/>
 	</div>
 	<div v-else-if="!thin_ && canBack" :class="$style.buttonsLeft">
-		<div v-if="narrow && !hideTitle" :class="$style.button"/>
-		<div v-else-if="actions && actions.length > 0" :class="$style.button"/>
-		<div v-if="actions && actions.length > 1 && ['index', 'my-notifications', 'chat'].includes(<string>mainRouter.currentRoute.value.name)" :class="$style.button"/>
-		<div v-if="actions && actions.length > 2" :class="$style.button"/>
+		<div v-if="narrow && !hideTitle" :class="$style.button"></div>
+		<div v-else-if="actions && actions.length > 0" :class="$style.button"></div>
+		<div v-if="actions && actions.length > 1 && ['index', 'my-notifications', 'chat'].includes(<string>mainRouter.currentRoute.value.name)" :class="$style.button"></div>
+		<div v-if="actions && actions.length > 2" :class="$style.button"></div>
 	</div>
 	<div v-if="pageMetadata && pageMetadata.avatar && !thin_ && mainRouter.currentRoute.value.name === 'user' && ($i != null && $i.id != pageMetadata.avatar.id)">
-		<div :class="$style.button"/>
+		<div :class="$style.button"></div>
 	</div>
 
 	<template v-if="pageMetadata">
@@ -48,13 +48,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div ref="tabHighlightEl" :class="$style.tabHighlight"></div>
 		</div>
 	</template>
-	<div v-if="!thin_ && !narrow && (actions && actions.length > 0) && hideTitle && ['index'].includes(<string>mainRouter.currentRoute.value.name)" :class="[$style.buttons, $style.buttonsRight]"/>
+	<div v-if="!thin_ && !narrow && (actions && actions.length > 0) && hideTitle && ['index'].includes(<string>mainRouter.currentRoute.value.name)" :class="[$style.buttons, $style.buttonsRight]"></div>
 	<div v-if="(!thin_ && narrow && !hideTitle) || (actions && actions.length > 0)" :class="[$style.buttons, $style.buttonsRight]">
 		<template v-for="action in actions">
 			<button v-tooltip.noDelay="action.text" class="_button" :class="[$style.button, { [$style.highlighted]: action.highlighted }]" @click.stop="action.handler" @touchstart="preventDrag"><i :class="action.icon"></i></button>
 		</template>
 	</div>
-	<div v-else-if="!thin_ && !canBack && !(actions && actions.length > 0)" :class="[$style.buttons, $style.buttonsRight]"/>
+	<div v-else-if="!thin_ && !canBack && !(actions && actions.length > 0)" :class="[$style.buttons, $style.buttonsRight]"></div>
 	<div v-if="pageMetadata && pageMetadata.avatar && ($i && $i.id !== pageMetadata.userName?.id) && !disableFollowButton" :class="$style.followButton">
 		<MkFollowButton v-if="mainRouter.currentRoute.value.name === 'user'" :user="pageMetadata.avatar" :transparent="false" :full="!narrow"/>
 	</div>
@@ -71,7 +71,7 @@ type Tab = {
 	title: string;
 	icon?: string;
 	iconOnly?: boolean;
-	onClick?: (ev: MouseEvent) => void;
+	onClick?: (ev: PointerEvent) => void;
 };
 
 export type PageHeaderProps = {
@@ -110,7 +110,7 @@ const props = withDefaults(defineProps<PageHeaderProps>(), {
 });
 
 const emit = defineEmits<{
-	(ev: 'update:tab', key: string);
+	(ev: 'update:tab', key: string): void;
 }>();
 
 //const viewId = inject(DI.viewId);
@@ -139,7 +139,7 @@ const showTabsPopup = (ev: MouseEvent) => {
 		text: tab.title,
 		icon: tab.icon,
 		active: tab.key != null && tab.key === props.tab,
-		action: (ev) => {
+		action: (ev: PointerEvent) => {
 			onTabClick(tab, ev);
 		},
 	}));
@@ -182,7 +182,7 @@ function onTabMousedown(tab: Tab, ev: MouseEvent): void {
 	}
 }
 
-function onTabClick(tab: Tab, ev: MouseEvent): void {
+function onTabClick(tab: Tab, ev: PointerEvent): void {
 	if (tab.onClick) {
 		ev.preventDefault();
 		ev.stopPropagation();

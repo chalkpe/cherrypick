@@ -36,6 +36,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkRadios
 			v-model="menuDisplay"
 			:options="[
+				{ value: 'top', label: i18n.ts._menuDisplay.top },
 				{ value: 'sideFull', label: i18n.ts._menuDisplay.sideFull },
 				{ value: 'sideIcon', label: i18n.ts._menuDisplay.sideIcon },
 			]"
@@ -53,14 +54,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 		<SearchMarker :keywords="['banner', 'display']">
 			<MkPreferenceContainer k="bannerDisplay">
-				<MkRadios v-model="bannerDisplay">
+				<MkRadios v-model="bannerDisplay" :options="[
+					{ value: 'all', label: i18n.ts._bannerDisplay.all },
+					{ value: 'topBottom', label: i18n.ts._bannerDisplay.topBottom },
+					{ value: 'top', label: i18n.ts._bannerDisplay.top },
+					{ value: 'bottom', label: i18n.ts._bannerDisplay.bottom },
+					{ value: 'bg', label: i18n.ts._bannerDisplay.bg },
+					{ value: 'hide', label: i18n.ts._bannerDisplay.hide },
+				]">
 					<template #label><SearchLabel>{{ i18n.ts.displayBanner }}</SearchLabel> <span class="_beta" style="vertical-align: middle;">CherryPick</span></template>
-					<option value="all">{{ i18n.ts._bannerDisplay.all }}</option>
-					<option value="topBottom">{{ i18n.ts._bannerDisplay.topBottom }}</option>
-					<option value="top">{{ i18n.ts._bannerDisplay.top }}</option>
-					<option value="bottom">{{ i18n.ts._bannerDisplay.bottom }}</option>
-					<option value="bg">{{ i18n.ts._bannerDisplay.bg }}</option>
-					<option value="hide">{{ i18n.ts._bannerDisplay.hide }}</option>
 				</MkRadios>
 			</MkPreferenceContainer>
 		</SearchMarker>
@@ -119,7 +121,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, ref } from 'vue';
+import { onUnmounted, computed, ref } from 'vue';
 import MkRadios from '@/components/MkRadios.vue';
 import MkButton from '@/components/MkButton.vue';
 import FormSlot from '@/components/form/slot.vue';
@@ -159,14 +161,14 @@ const menuDisplay = store.model('menuDisplay');
 const showNavbarSubButtons = prefer.model('showNavbarSubButtons');
 const bannerDisplay = prefer.model('bannerDisplay');
 
-const showMenuButtonInNavbar = computed(store.makeGetterSetter('showMenuButtonInNavbar'));
-const showHomeButtonInNavbar = computed(store.makeGetterSetter('showHomeButtonInNavbar'));
-const showExploreButtonInNavbar = computed(store.makeGetterSetter('showExploreButtonInNavbar'));
-const showSearchButtonInNavbar = computed(store.makeGetterSetter('showSearchButtonInNavbar'));
-const showNotificationButtonInNavbar = computed(store.makeGetterSetter('showNotificationButtonInNavbar'));
-const showChatButtonInNavbar = computed(store.makeGetterSetter('showChatButtonInNavbar'));
-const showWidgetButtonInNavbar = computed(store.makeGetterSetter('showWidgetButtonInNavbar'));
-const showPostButtonInNavbar = computed(store.makeGetterSetter('showPostButtonInNavbar'));
+const showMenuButtonInNavbar = store.model('showMenuButtonInNavbar');
+const showHomeButtonInNavbar = store.model('showHomeButtonInNavbar');
+const showExploreButtonInNavbar = store.model('showExploreButtonInNavbar');
+const showSearchButtonInNavbar = store.model('showSearchButtonInNavbar');
+const showNotificationButtonInNavbar = store.model('showNotificationButtonInNavbar');
+const showChatButtonInNavbar = store.model('showChatButtonInNavbar');
+const showWidgetButtonInNavbar = store.model('showWidgetButtonInNavbar');
+const showPostButtonInNavbar = store.model('showPostButtonInNavbar');
 
 async function addItem(ev: MouseEvent) {
 	const menu = Object.keys(navbarItemDef).filter(k => !itemTypeValues.value.includes(k));

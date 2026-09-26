@@ -135,6 +135,8 @@ export interface IPost extends IObject {
 	_misskey_content?: string;
 	_misskey_talk?: boolean;
 	quoteUrl?: string;
+	disableRightClick?: boolean;
+	deleteAt?: string;
 }
 
 export interface IQuestion extends IObject {

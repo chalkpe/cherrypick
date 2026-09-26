@@ -4,6 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
+import type { Logging } from '@google-cloud/logging';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import Logger from '@/logger.js';

@@ -121,6 +121,8 @@ import { ModerationLogEntityService } from './entities/ModerationLogEntityServic
 import { MutingEntityService } from './entities/MutingEntityService.js';
 import { RenoteMutingEntityService } from './entities/RenoteMutingEntityService.js';
 import { NoteEntityService } from './entities/NoteEntityService.js';
+import { NoteHistoryEntityService } from './entities/NoteHistoryEntityService.js';
+import { NoteHistorySerivce } from './NoteHistoryService.js';
 import { NoteFavoriteEntityService } from './entities/NoteFavoriteEntityService.js';
 import { NoteReactionEntityService } from './entities/NoteReactionEntityService.js';
 import { NoteDraftEntityService } from './entities/NoteDraftEntityService.js';

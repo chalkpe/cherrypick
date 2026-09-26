@@ -240,6 +240,7 @@ export type Channels = {
 			ended: (payload: { winnerId: User['id'] | null; game: ReversiGameDetailed; }) => void;
 			canceled: (payload: { userId: User['id']; }) => void;
 			changeReadyStates: (payload: { user1: boolean; user2: boolean; }) => void;
+			reacted: (payload: { userId: User['id']; reaction: string; }) => void;
 			updateSettings: <K extends ReversiUpdateKey>(payload: { userId: User['id']; key: K; value: ReversiGameDetailed[K]; }) => void;
 			log: (payload: {
 				time: number;

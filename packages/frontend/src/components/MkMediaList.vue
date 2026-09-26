@@ -295,8 +295,4 @@ defineExpose({
 	}
 }
 
-.pswp__file-name {
-	@extend .pswp__alt-text;
-	max-height: 16em;
-}
 </style>

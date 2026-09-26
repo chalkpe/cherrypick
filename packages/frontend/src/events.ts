@@ -28,6 +28,7 @@ type Events = {
 	hasRequireRefresh: (value: boolean) => void;
 	reloadTimeline: () => void;
 	reloadNotification: () => void;
+	themeChanging: () => void;
 };
 
 export const globalEvents = new EventEmitter<Events>();

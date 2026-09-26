@@ -13,7 +13,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { computed, watch, ref, onMounted, shallowRef, onUnmounted } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { url } from '@@/js/config.js';
-import { useInterval } from '@@/js/use-interval.js';
 import GameSetting from './game.setting.vue';
 import GameBoard from './game.board.vue';
 import { misskeyApi } from '@/utility/misskey-api.js';

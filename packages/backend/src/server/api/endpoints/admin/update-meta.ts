@@ -4,6 +4,7 @@
  */
 
 import { Injectable, Inject } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { DI } from '@/di-symbols.js';
 import type { MiMeta } from '@/models/Meta.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
@@ -279,6 +280,7 @@ export const paramDef = {
 @Injectable()
 export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-disable-line import/no-default-export
 	constructor(
+		private moduleRef: ModuleRef,
 		@Inject(DI.meta)
 		private serverSettings: MiMeta,
 

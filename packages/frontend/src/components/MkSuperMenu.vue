@@ -28,7 +28,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<span v-if="item.icon" class="icon"><i :class="item.icon" class="ti-fw"></i></span>
 							<span class="text">{{ item.text }}</span>
 						</span>
-						<span v-if="item.indicated" class="itemIndicator _blink"><i class="_indicatorCircle"></i></span>
+						<span v-if="'indicated' in item && item.indicated" class="itemIndicator _blink"><i class="_indicatorCircle"></i></span>
 					</a>
 					<button v-else-if="item.type === 'button'" class="_button item" :class="{ danger: item.danger, active: item.active }" :disabled="item.active" @click="ev => item.action(ev)">
 						<span>
@@ -94,6 +94,7 @@ export type SuperMenuDef = {
 		danger?: boolean;
 		active?: boolean;
 		action: (ev: PointerEvent) => Awaitable<void>;
+		indicated?: boolean;
 	} | {
 		type?: 'link';
 		to: string;

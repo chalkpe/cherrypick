@@ -25,3 +25,8 @@ declare module 'search-index:settings' {
 declare module 'search-index:admin' {
 	export const searchIndexes: XGeneratedSearchIndexItem[];
 }
+
+declare module 'prismjs/components/prism-core' {
+	export const languages: { regex: Record<string, unknown> };
+	export function highlight(code: string, grammar: Record<string, unknown>): string;
+}

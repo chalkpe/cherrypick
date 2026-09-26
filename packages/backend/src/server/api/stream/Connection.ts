@@ -20,6 +20,7 @@ import type { MiUser } from '@/models/User.js';
 import { MainChannel } from '@/server/api/stream/channels/main.js';
 import { HomeTimelineChannel } from '@/server/api/stream/channels/home-timeline.js';
 import { LocalTimelineChannel } from '@/server/api/stream/channels/local-timeline.js';
+import { BubbleTimelineChannel } from '@/server/api/stream/channels/bubble-timeline.js';
 import { HybridTimelineChannel } from '@/server/api/stream/channels/hybrid-timeline.js';
 import { GlobalTimelineChannel } from '@/server/api/stream/channels/global-timeline.js';
 import { UserListChannel } from '@/server/api/stream/channels/user-list.js';
@@ -338,6 +339,7 @@ export default class Connection {
 			case 'main': return MainChannel;
 			case 'homeTimeline': return HomeTimelineChannel;
 			case 'localTimeline': return LocalTimelineChannel;
+			case 'bubbleTimeline': return BubbleTimelineChannel;
 			case 'hybridTimeline': return HybridTimelineChannel;
 			case 'globalTimeline': return GlobalTimelineChannel;
 			case 'userList': return UserListChannel;

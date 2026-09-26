@@ -23,7 +23,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div :class="$style.divider"></div>
 			<MkA v-if="$i && ($i.isAdmin || $i.isModerator)" v-click-anime v-tooltip="i18n.ts.controlPanel" class="item" :activeClass="$style.active" to="/admin" :behavior="settingsWindowed ? 'window' : null">
 				<i :class="$style.itemIcon" class="ti ti-dashboard ti-fw"></i>
-				<span v-if="controlPanelIndicated" class="indicator _blink"><i class="_indicatorCircle"></i></span>
+				<span v-if="otherNavItemIndicated" class="indicator _blink"><i class="_indicatorCircle"></i></span>
 			</MkA>
 			<button v-click-anime :class="$style.item" class="_button" @click="more">
 				<i :class="$style.itemIcon" class="ti ti-dots ti-fw"></i>

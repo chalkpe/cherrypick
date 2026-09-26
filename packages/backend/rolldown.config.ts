@@ -102,6 +102,7 @@ export default defineConfig((args) => {
 		're2',
 		'ipaddr.js',
 		'file-type',
+		'argon2',
 		// バンドルするとSentryの自動計装が正しく行われなくなるため外しておく
 		'pg',
 	];

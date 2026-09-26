@@ -110,9 +110,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<div><b>{{ i18n.ts._serverSetupWizard.donationRequest }}</b></div>
 						<div>{{ i18n.ts._serverSetupWizard._donationRequest.text1 }}<br>{{ i18n.ts._serverSetupWizard._donationRequest.text2 }}<br>{{ i18n.ts._serverSetupWizard._donationRequest.text3 }}</div>
 						<!--<MkLink target="_blank" url="https://misskey-hub.net/docs/donate/" style="margin: 0 auto;">{{ i18n.ts.learnMore }}</MkLink>-->
-						<MkA class="_link" style="margin: 0 auto;" @click="donateCherryPick">
+						<button type="button" class="_link _button" style="margin: 0 auto;" @click="donateCherryPick">
 							<i class="ti ti-pig-money"></i> {{ i18n.ts._aboutMisskey._cherrypick.donate }} <i class="ti ti-external-link"></i>
-						</MkA>
+						</button>
 					</div>
 					<div class="_buttonsCenter">
 						<MkButton gradate large rounded data-testid="next" style="margin: 0 auto;" @click="finish">
@@ -128,7 +128,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { ref } from 'vue';
-import { host, version } from '@@/js/config.js';
+import { host, version, gitHash } from '@@/js/config.js';
 import MkButton from '@/components/MkButton.vue';
 import MkInput from '@/components/MkInput.vue';
 import * as os from '@/os.js';

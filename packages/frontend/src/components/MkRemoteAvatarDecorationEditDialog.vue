@@ -60,7 +60,7 @@ const props = defineProps<{
 		name: string,
 		description: string,
 		url: string,
-		host: string,
+		host: string | null,
 	},
 }>();
 

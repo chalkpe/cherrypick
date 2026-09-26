@@ -75,7 +75,7 @@ const searchQuery = ref('');
 const searched = ref(false);
 const searchResults = ref<Misskey.entities.ChatMessage[]>([]);
 
-function start(ev: PointerEvent) {
+function start(ev: MouseEvent) {
 	os.popupMenu([{
 		text: i18n.ts._chat.individualChat,
 		caption: i18n.ts._chat.individualChat_description,

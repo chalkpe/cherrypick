@@ -8,21 +8,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<div>
 		<span v-if="note.isHidden" style="opacity: 0.5">({{ i18n.ts.private }})</span>
 		<span v-if="note.deletedAt" style="opacity: 0.5">({{ i18n.ts.deletedNote }})</span>
-		<MkA v-if="note.replyId" :class="$style.reply" :to="`/notes/${note.replyId}`"><i class="ti ti-arrow-back-up"></i></MkA>
-		<Mfm v-if="note.text" :text="note.text" :author="note.user" :nyaize="'respect'" :emojiUrls="note.emojis"/>
-		<MkA v-if="note.renoteId" :class="$style.rp" :to="`/notes/${note.renoteId}`">RN: ...</MkA>
-	</div>
-	<details v-if="note.files && note.files.length > 0">
-		<summary>({{ i18n.tsx.withNFiles({ n: note.files.length }) }})</summary>
-		<MkMediaList :mediaList="note.files" :user="note.user"/>
-	</details>
-	<details v-if="note.poll">
-		<summary>{{ i18n.ts.poll }}</summary>
-		<MkPoll
-			:noteId="note.id"
-			:multiple="note.poll.multiple"
-			:expiresAt="note.poll.expiresAt"
-			:choices="note.poll.choices"
+		<MkA v-if="note.replyId" :class="$style.reply" :to="`/notes/${note.replyId}`" @click.stop><i class="ti ti-arrow-back-up"></i></MkA>
+		<Mfm
+			v-if="note.text"
+			:parsedNodes="parsed"
+			:text="note.text"
 			:author="note.user"
 			:nyaize="prefer.s.disableNyaize || noNyaize ? false : 'respect'"
 			:emojiUrls="note.emojis"
@@ -457,7 +447,7 @@ function react(): void {
 	}
 }
 
-async function toggleReaction(reaction) {
+async function toggleReaction(reaction: string) {
 	const oldReaction = note.myReaction;
 	if (oldReaction) {
 		const confirm = await os.confirm({

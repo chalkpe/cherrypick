@@ -22,9 +22,9 @@ export const QUEUE = {
 	SCHEDULED_NOTE_DELETE: 'scheduledNoteDelete',
 };
 
-export function baseQueueOptions(config: Config, queueName: typeof QUEUE[keyof typeof QUEUE], redisConnection: Redis.Redis): Bull.QueueOptions {
+export function baseQueueOptions(config: Config, queueName: typeof QUEUE[keyof typeof QUEUE], redisConnection?: Redis.Redis): Bull.QueueOptions {
 	return {
-		connection: redisConnection,
+		connection: redisConnection ?? { ...config.redisForJobQueue, keyPrefix: undefined },
 		prefix: config.redisForJobQueue.prefix ? `${config.redisForJobQueue.prefix}:queue:${queueName}` : `queue:${queueName}`,
 	};
 }

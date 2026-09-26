@@ -77,6 +77,7 @@ export const packedNoteHistorySchema = {
 				},
 				metadata: {
 					type: 'object',
+					additionalProperties: true,
 				},
 			},
 		},

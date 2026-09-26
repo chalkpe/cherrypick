@@ -95,9 +95,9 @@ const value = computed({
 			forward: false,
 			previousExpiresAt: undefined,
 		};
-		for (const [key, _value] of Object.entries(data)) {
+		for (const [key, _value] of Object.entries(data) as [keyof typeof data, unknown][]) {
 			if (_value === null) {
-				data[key] = '';
+				data[key] = '' as never;
 			}
 		}
 		if (props.modelValue && props.editable) {
@@ -127,7 +127,7 @@ const expiresAtDef = computed(() => {
 	return items;
 });
 
-function highlighter(code) {
+function highlighter(code: string) {
 	return highlight(code, languages.regex);
 }
 

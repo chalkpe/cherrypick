@@ -86,10 +86,10 @@ const skipVersion = ref(meta.skipVersion);
 const skipCherryPickVersion = ref(meta.skipCherryPickVersion);
 const cherryPickResponse = await window.fetch('https://api.github.com/repos/kokonect-link/cherrypick/releases');
 const cherryPickData = await cherryPickResponse.json();
-const releasesCherryPick = ref(meta.enableReceivePrerelease ? cherryPickData : cherryPickData.filter(x => !x.prerelease));
+const releasesCherryPick = ref(meta.enableReceivePrerelease ? cherryPickData : cherryPickData.filter((x: { prerelease: boolean }) => !x.prerelease));
 const misskeyResponse = await window.fetch('https://api.github.com/repos/misskey-dev/misskey/releases');
 const misskeyData = await misskeyResponse.json();
-const releasesMisskey = ref(meta.enableReceivePrerelease ? misskeyData : misskeyData.filter(x => !x.prerelease));
+const releasesMisskey = ref(meta.enableReceivePrerelease ? misskeyData : misskeyData.filter((x: { prerelease: boolean }) => !x.prerelease));
 const cherryPickTagsMap = new Map<string, string>();
 const misskeyTagsMap = new Map<string, string>();
 

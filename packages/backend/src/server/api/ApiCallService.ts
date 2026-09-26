@@ -212,7 +212,7 @@ export class ApiCallService implements OnApplicationShutdown {
 		}
 
 		return this.telemetryService.startSpan('API: ' + endpoint.name, () => this.authenticateService.authenticate(token).then(([user, app]) => {
-			const call = this.call(endpoint, user, app, body, null, request).then((res) => {
+			const call = this.call(endpoint, user, app, null, body, null, request).then((res) => {
 				if (request.method === 'GET' && endpoint.meta.cacheSec && !token && !user) {
 					reply.header('Cache-Control', `public, max-age=${endpoint.meta.cacheSec}`);
 				}
@@ -282,7 +282,7 @@ export class ApiCallService implements OnApplicationShutdown {
 			}
 
 			return await this.telemetryService.startSpan('API: ' + endpoint.name, () => this.authenticateService.authenticate(token).then(([user, app]) => {
-				const call = this.call(endpoint, user, app, fields, {
+				const call = this.call(endpoint, user, app, null, fields, {
 					name: multipartData.filename,
 					path: path,
 				}, request).then((res) => {

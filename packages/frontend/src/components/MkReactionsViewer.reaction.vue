@@ -37,7 +37,7 @@ import MkReactionEffect from '@/components/MkReactionEffect.vue';
 import { i18n } from '@/i18n.js';
 import * as sound from '@/utility/sound.js';
 // import { checkReactionPermissions } from '@/utility/check-reaction-permissions.js';
-import { customEmojisMap } from '@/custom-emojis.js';
+import { customEmojis, customEmojisMap } from '@/custom-emojis.js';
 import { prefer } from '@/preferences.js';
 import { DI } from '@/di.js';
 import { noteEvents } from '@/composables/use-note-capture.js';
@@ -67,6 +67,7 @@ const buttonEl = useTemplateRef('buttonEl');
 const emojiName = computed(() => getEmojiNameFromReaction(props.reaction));
 
 const isLocalCustomEmoji = computed(() => isLocalCustomEmojiReaction(props.reaction));
+const canGetInfo = computed(() => isLocalCustomEmoji.value);
 
 const canToggle = computed(() => {
 	const emoji = isLocalCustomEmoji.value ? customEmojisMap.get(emojiName.value) : getUnicodeEmojiOrNull(props.reaction);
@@ -180,17 +181,24 @@ async function toggleReaction(ev: MouseEvent) {
 	}
 }
 
-async function menu(ev: PointerEvent) {
+function stealReaction(ev: Event) {
+	haptic();
+
 	let menuItems: MenuItem[] = [];
 
-	if (isLocalCustomEmoji.value) {
+	menuItems.push({
+		type: 'label',
+		text: `:${reactionName.value}:`,
+	});
+
+	if (canGetInfo.value) {
 		menuItems.push({
 			text: i18n.ts.info,
 			icon: 'ti ti-info-circle',
 			action: async () => {
 				const { dispose } = os.popup(MkCustomEmojiDetailedDialog, {
 					emoji: await misskeyApiGet('emoji', {
-						name: emojiName.value,
+						name: props.reaction.replace(/:/g, '').replace(/@\./, ''),
 					}),
 				}, {
 					closed: () => dispose(),
@@ -243,7 +251,7 @@ async function menu(ev: PointerEvent) {
 			action: () => {
 				os.confirm({
 					type: 'question',
-					title: i18n.tsx.unmuteX({ x: isLocalCustomEmoji ? `:${emojiName.value}:` : props.reaction }),
+					title: i18n.tsx.unmuteX({ x: isLocalCustomEmoji.value ? `:${emojiName.value}:` : props.reaction }),
 				}).then(({ canceled }) => {
 					if (canceled) return;
 					unmuteEmoji(props.reaction);
@@ -257,7 +265,7 @@ async function menu(ev: PointerEvent) {
 			action: () => {
 				os.confirm({
 					type: 'question',
-					title: i18n.tsx.muteX({ x: isLocalCustomEmoji ? `:${emojiName.value}:` : props.reaction }),
+					title: i18n.tsx.muteX({ x: isLocalCustomEmoji.value ? `:${emojiName.value}:` : props.reaction }),
 				}).then(({ canceled }) => {
 					if (canceled) return;
 					muteEmoji(props.reaction);
@@ -266,10 +274,10 @@ async function menu(ev: PointerEvent) {
 		});
 	}
 
-	os.popupMenu(menuItems, ev.currentTarget ?? ev.target);
+	os.popupMenu(menuItems, buttonEl.value ?? ev.currentTarget ?? ev.target);
 }
 
-async function menu(ev) {
+async function menu(ev: PointerEvent) {
 	let menuItems: MenuItem[] = [];
 
 	menuItems.push({
@@ -384,7 +392,7 @@ function anime() {
 	});
 }
 
-function chooseAlternative(ev) {
+function chooseAlternative(ev: MouseEvent) {
 	// メニュー表示にして、モデレーター以上の場合は登録もできるように
 	if (!alternative.value) return;
 	console.log(alternative.value);
@@ -394,9 +402,9 @@ function chooseAlternative(ev) {
 	});
 }
 
-async function openEmojiMenu(ev) {
+function openEmojiMenu(ev: TouchEvent) {
 	longTouchEmoji.value = true;
-	window.setTimeout(async () => {
+	window.setTimeout(() => {
 		if (longTouchEmoji.value === true) stealReaction(ev);
 	}, 500);
 }

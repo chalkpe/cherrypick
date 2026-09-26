@@ -5,7 +5,7 @@
 
 import { watch, version as vueVersion, defineAsyncComponent } from 'vue';
 import { compareVersions } from 'compare-versions';
-import { version, lang, isSafeMode } from '@@/js/config.js';
+import { version, basedMisskeyVersion, lang, isSafeMode } from '@@/js/config.js';
 import defaultLightTheme from '@@/themes/l-light.json5';
 import defaultDarkTheme from '@@/themes/d-green-lime.json5';
 import { storeBootloaderErrors } from '@@/js/store-boot-errors';
@@ -31,6 +31,7 @@ import { prefer } from '@/preferences.js';
 import { $i } from '@/i.js';
 import { launchPlugins } from '@/plugin.js';
 import { initTelemetry } from '@/telemetry.js';
+import { popup } from '@/os.js';
 
 export async function common(createVue: () => Promise<App<Element>>) {
 	console.info(`CherryPick v${version}`);

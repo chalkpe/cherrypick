@@ -259,6 +259,13 @@ let textAutocomplete: Autocomplete | null = null;
 let cwAutocomplete: Autocomplete | null = null;
 let hashtagAutocomplete: Autocomplete | null = null;
 
+const scheduledNoteDelete = ref<DeleteScheduleEditorModelValue | null>(null);
+const scheduledDeleteAt = computed(() => {
+	if (scheduledNoteDelete.value?.deleteAt) return scheduledNoteDelete.value.deleteAt;
+	else if (scheduledNoteDelete.value?.deleteAfter) return Date.now() + scheduledNoteDelete.value.deleteAfter;
+	return null;
+});
+
 const uploader = useUploader({
 	multiple: true,
 });
@@ -975,6 +982,11 @@ type StoredDrafts = {
 			text: string;
 			useCw: boolean;
 			cw: string | null;
+			disableRightClick?: boolean;
+			saveToDraft?: boolean;
+			event?: unknown;
+			scheduledNoteDelete?: DeleteScheduleEditorModelValue | null;
+			deliveryTargets?: DeliveryTargetEditorModelValue | null;
 			visibility: 'public' | 'home' | 'followers' | 'specified';
 			localOnly: boolean;
 			files: Misskey.entities.DriveFile[];
@@ -1252,7 +1264,9 @@ async function post(ev?: PointerEvent) {
 			clear();
 		}
 
-		globalEvents.emit('notePosted', res.createdNote);
+		if (res && typeof res === 'object' && 'createdNote' in res) {
+			globalEvents.emit('notePosted', res.createdNote as Misskey.entities.Note);
+		}
 
 		nextTick(() => {
 			deleteDraft();
@@ -1432,9 +1446,6 @@ function showActions(ev: PointerEvent) {
 
 async function openMfmCheatSheet() {
 	const { dispose } = os.popup(defineAsyncComponent(() => import('@/components/MkMfmCheatSheetDialog.vue')), {}, {
-		cancel: () => {
-
-		},
 		closed: () => {
 			dispose();
 		},
@@ -1508,7 +1519,7 @@ async function openAccountMenu(ev: PointerEvent) {
 				replyTargetNote.value = draft.reply;
 				reactionAcceptance.value = draft.reactionAcceptance;
 				scheduledAt.value = draft.scheduledAt ?? null;
-				deliveryTargets.value = draft.deliveryTargets ?? null;
+				deliveryTargets.value = draft.deliveryTargets ? { mode: draft.deliveryTargets.mode, hosts: draft.deliveryTargets.hosts ?? [] } : null;
 				if (draft.channel) targetChannel.value = draft.channel as unknown as Misskey.entities.Channel;
 
 				visibleUsers.value = [];
@@ -1694,8 +1705,8 @@ onMounted(() => {
 				text.value = draft.data.text;
 				useCw.value = draft.data.useCw;
 				cw.value = draft.data.cw;
-				disableRightClick.value = draft.data.disableRightClick;
-				saveToDraft.value = draft.data.saveToDraft;
+				disableRightClick.value = draft.data.disableRightClick ?? false;
+				saveToDraft.value = draft.data.saveToDraft ?? false;
 				visibility.value = draft.data.visibility;
 				localOnly.value = draft.data.localOnly;
 				files.value = (draft.data.files || []).filter(draftFile => draftFile);
@@ -1764,7 +1775,7 @@ onMounted(() => {
 					deleteAfter: null,
 				};
 			}
-			deliveryTargets.value = init.deliveryTargets ?? null;
+			deliveryTargets.value = init.deliveryTargets ? { mode: init.deliveryTargets.mode, hosts: init.deliveryTargets.hosts ?? [] } : null;
 		}
 
 		nextTick(() => watchForDraft());

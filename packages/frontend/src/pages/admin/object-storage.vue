@@ -117,13 +117,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</template>
 
 					<div class="_gaps">
-						<SearchMarker>
-							<MkInput v-model="objectStorageSecretKey" type="password" autocomplete="new-password">
-								<template #prefix><i class="ti ti-key"></i></template>
-								<template #label><SearchLabel>Secret key</SearchLabel></template>
-							</MkInput>
-						</SearchMarker>
-
 						<template v-if="remoteObjectStorageForm.state.useRemoteObjectStorage">
 							<SearchMarker>
 								<MkInput v-model="remoteObjectStorageForm.state.remoteObjectStorageBaseUrl" :placeholder="'https://example.com'" type="url">

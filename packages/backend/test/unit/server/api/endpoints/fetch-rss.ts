@@ -61,7 +61,7 @@ describe('fetch-rss endpoint', () => {
 	});
 
 	async function exec(url: string) {
-		return await endpoint.exec({ url }, null, null);
+		return await endpoint.exec({ url }, null, null, null);
 	}
 
 	async function expectApiError(promise: Promise<unknown>, code: string, status: number) {

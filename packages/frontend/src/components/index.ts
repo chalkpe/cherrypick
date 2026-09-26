@@ -36,11 +36,11 @@ import SearchLabel from './global/SearchLabel.vue';
 import SearchText from './global/SearchText.vue';
 import SearchIcon from './global/SearchIcon.vue';
 
-import type { App } from 'vue';
+import type { App, Component } from 'vue';
 
 export default function(app: App) {
 	for (const [key, value] of Object.entries(components)) {
-		app.component(key, value);
+		app.component(key, value as Component);
 	}
 }
 

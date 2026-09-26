@@ -26,9 +26,10 @@ const themeColorCherry = chalk.hex('#ffbcdc');
 const themeColorPick = chalk.hex('#b1d3ff');
 const themeColorMisskey = chalk.hex('#9ec23f');
 const themeColorWarning = chalk.hex('#ffbb00');
+const themeColor = themeColorMisskey;
 
 /** 起動時の案内を、選択されたログ形式に合わせて出力します。 */
-function greet(props: { version: string; format: LogFormat }) {
+function greet(props: { version: string; format: LogFormat; url: string }) {
 	if (!envOption.quiet && props.format === 'json') {
 		// JSONモードでは生のコンソール出力を避け、各案内を1件ずつ構造化ログにします。
 		bootLogger.info('Welcome to Misskey!');
@@ -56,16 +57,6 @@ function greet(props: { version: string; format: LogFormat }) {
 		console.log(themeColorWarning(' ・Kakao Pay: https://qr.kakaopay.com/Ej9SHx6pQ'));
 		console.log(themeColorWarning(' ・pixivFANBOX: https://noridev.fanbox.cc/plans'));
 
-		let config!: Config;
-
-		// initialize app
-		try {
-			config = loadConfigBoot(false);
-		} catch (e) {
-			bootLogger.error('Fatal error occurred during initialization', null, true);
-			process.exit(1);
-		}
-
 		const kokonectHosts = [
 			'kokonect.link',
 			'beta.kokonect.link',
@@ -87,7 +78,7 @@ function greet(props: { version: string; format: LogFormat }) {
 			}
 		}
 
-		const currentHost = getHostToCompare(config.url);
+		const currentHost = getHostToCompare(props.url);
 
 		if (currentHost && kokonectHosts.includes(currentHost)) {
 			console.log('');
@@ -113,7 +104,7 @@ export async function masterMain() {
 		config = loadConfigBoot();
 		logger.info(`Start main process... pid: ${process.pid}`);
 		bootLogger.createSubLogger('config').succ('Loaded');
-		greet({ version: config.version, format: config.logging?.format ?? 'pretty' });
+		greet({ version: config.version, format: config.logging?.format ?? 'pretty', url: config.url });
 		showEnvironment();
 		await showMachineInfo(bootLogger);
 		showNodejsVersion();

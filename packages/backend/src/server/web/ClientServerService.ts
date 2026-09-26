@@ -890,14 +890,12 @@ export class ClientServerService {
 		fastify.get('/bios', async (request, reply) => {
 			return await HtmlTemplateService.replyHtml(reply, BiosPage({
 				version: this.config.version,
-				basedMisskeyVersion: this.config.basedMisskeyVersion,
 			}));
 		});
 
 		fastify.get('/cli', async (request, reply) => {
 			return await HtmlTemplateService.replyHtml(reply, CliPage({
 				version: this.config.version,
-				basedMisskeyVersion: this.config.basedMisskeyVersion,
 			}));
 		});
 

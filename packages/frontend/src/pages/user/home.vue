@@ -210,6 +210,13 @@ import { getStaticImageUrl } from '@/utility/media-proxy.js';
 import MkSparkle from '@/components/MkSparkle.vue';
 import { prefer } from '@/preferences.js';
 import MkPullToRefresh from '@/components/MkPullToRefresh.vue';
+import { miLocalStorage } from '@/local-storage.js';
+import { editNickname } from '@/utility/edit-nickname.js';
+import { haptic, hapticConfirm } from '@/utility/haptic.js';
+import detectLanguage from '@/utility/detect-language.js';
+import { globalEvents } from '@/events.js';
+import { notesSearchAvailable, canSearchNonLocalNotes } from '@/utility/check-permissions.js';
+import { store } from '@/store.js';
 import { isBirthday } from '@/utility/is-birthday.js';
 
 function calcAge(birthdate: string): number {

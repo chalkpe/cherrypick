@@ -24,6 +24,8 @@ function generateDummyUser(override?: Partial<MiUser>): MiUser {
 		lastFetchedAt: new Date(Date.now() - oneDayMillis * 5),
 		lastActiveDate: new Date(Date.now() - oneDayMillis * 3),
 		hideOnlineStatus: false,
+		approved: true,
+		signupReason: null,
 		username: 'dummy1',
 		usernameLower: 'dummy1',
 		name: 'DummyUser1',

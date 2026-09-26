@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <PageWithHeader v-model:tab="tab" :actions="headerActions" :tabs="headerTabs">
 	<div class="_spacer" style="--MI_SPACER-w: 900px;">
-		<div :class="$style.root" class="_gaps">
+		<div v-if="tab === 'list'" :class="$style.root" class="_gaps">
 			<div :class="$style.subMenus" class="_gaps">
 				<MkButton type="routerLink" to="/admin/abuse-report-notification-recipient" primary>{{ i18n.ts.notificationSetting }}</MkButton>
 			</div>
@@ -43,41 +43,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<XAbuseReport v-for="report in items" :key="report.id" :report="report" @resolved="resolved"/>
 				</div>
 
-				<MkTip k="abuses">
-					{{ i18n.ts._abuseUserReport.resolveTutorial }}
-				</MkTip>
-
-				<div :class="$style.inputs" class="_gaps">
-					<MkSelect v-model="state" :items="stateDef" :class="$style.state">
-						<template #label>{{ i18n.ts.state }}</template>
-					</MkSelect>
-					<MkSelect v-model="targetUserOrigin" :items="targetUserOriginDef" :class="$style.targetUserOrigin">
-						<template #label>{{ i18n.ts.reporteeOrigin }}</template>
-					</MkSelect>
-					<MkSelect v-model="reporterOrigin" :items="reporterOriginDef" :class="$style.reporterOrigin">
-						<template #label>{{ i18n.ts.reporterOrigin }}</template>
-					</MkSelect>
-				</div>
-
-				<!-- TODO
-				<div class="inputs" style="display: flex; padding-top: 1.2em;">
-					<MkInput ref="searchUsernameEl" v-model="searchUsername" style="margin: 0; flex: 1;" type="text" :spellcheck="false">
-						<span>{{ i18n.ts.username }}</span>
-						<template v-if="searchUsername != ''" #suffix><button type="button" :class="$style.deleteBtn" tabindex="-1" @click="searchUsername = ''; searchUsernameEl?.focus();"><i class="ti ti-x"></i></button></template>
-					</MkInput>
-					<MkInput ref="searchHostEl" v-model="searchHost" style="margin: 0; flex: 1;" type="text" :spellcheck="false" :disabled="paginator.computedParams.value.origin === 'local'">
-						<span>{{ i18n.ts.host }}</span>
-						<template v-if="searchHost != ''" #suffix><button type="button" :class="$style.deleteBtn" tabindex="-1" @click="searchHost = ''; searchHostEl?.focus();"><i class="ti ti-x"></i></button></template>
-					</MkInput>
-				</div>
-				-->
-
-				<MkPagination v-slot="{items}" :paginator="paginator">
-					<div class="_gaps">
-						<XAbuseReport v-for="report in items" :key="report.id" :report="report" @resolved="resolved"/>
-					</div>
-				</MkPagination>
-			</div>
+			</MkPagination>
 		</div>
 
 		<div v-else>
@@ -114,6 +80,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { computed, ref, markRaw } from 'vue';
+import type * as Misskey from 'cherrypick-js';
 import * as os from '@/os.js';
 import MkSelect from '@/components/MkSelect.vue';
 import MkPagination from '@/components/MkPagination.vue';
@@ -204,6 +171,8 @@ const paginator = markRaw(new Paginator('admin/abuse-user-reports', {
 	})),
 }));
 
+const resolverPaginator = markRaw(new Paginator('admin/abuse-report-resolver/list', { limit: 10 }));
+
 function resolved(reportId: string) {
 	paginator.removeItem(reportId);
 }
@@ -213,6 +182,7 @@ function edit(id: string) {
 }
 
 function save(): void {
+	if (editableResolver.value == null) return;
 	os.apiWithDialog('admin/abuse-report-resolver/update', {
 		resolverId: editableResolver.value,
 		name: editingResolver.value.name,
@@ -220,7 +190,7 @@ function save(): void {
 		reporterPattern: editingResolver.value.reporterPattern || null,
 		reportContentPattern: editingResolver.value.reportContentPattern || null,
 		...(editingResolver.value.previousExpiresAt && editingResolver.value.previousExpiresAt === editingResolver.value.expiresAt ? {} : {
-			expiresAt: editingResolver.value.expiresAt,
+			expiresAt: editingResolver.value.expiresAt as Misskey.entities.AdminAbuseReportResolverUpdateRequest['expiresAt'],
 		}),
 		forward: editingResolver.value.forward,
 	}).then(() => {
@@ -242,7 +212,7 @@ function create(): void {
 		targetUserPattern: newResolver.value.targetUserPattern || null,
 		reporterPattern: newResolver.value.reporterPattern || null,
 		reportContentPattern: newResolver.value.reportContentPattern || null,
-		expiresAt: newResolver.value.expiresAt,
+		expiresAt: newResolver.value.expiresAt as Misskey.entities.AdminAbuseReportResolverCreateRequest['expiresAt'],
 		forward: newResolver.value.forward,
 	}).then(() => {
 		resolverPaginator.reload();

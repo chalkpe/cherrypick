@@ -159,8 +159,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<template v-else-if="notification.type === 'groupInvited'">
 				<span style="font-weight: bold;">{{ notification.invitation.group.name }}</span>
 				<div v-if="full && !groupInviteDone" :class="$style.followRequestCommands">
-					<MkButton :class="$style.followRequestCommandButton" rounded primary @click="acceptGroupInvitation()"><i class="ti ti-check"/> {{ i18n.ts.accept }}</MkButton>
-					<MkButton :class="$style.followRequestCommandButton" rounded danger @click="rejectGroupInvitation()"><i class="ti ti-x"/> {{ i18n.ts.reject }}</MkButton>
+					<MkButton :class="$style.followRequestCommandButton" rounded primary @click="acceptGroupInvitation()"><i class="ti ti-check"></i> {{ i18n.ts.accept }}</MkButton>
+					<MkButton :class="$style.followRequestCommandButton" rounded danger @click="rejectGroupInvitation()"><i class="ti ti-x"></i> {{ i18n.ts.reject }}</MkButton>
 				</div>
 			</template>
 			<span v-else-if="notification.type === 'test'" :class="$style.text">{{ i18n.ts._notification.notificationWillBeDisplayedLikeThis }}</span>
@@ -258,11 +258,13 @@ function getActualReactedUsersCount(notification: Misskey.entities.Notification)
 }
 
 const acceptGroupInvitation = () => {
+	if (props.notification.type !== 'groupInvited') return;
 	groupInviteDone.value = true;
 	misskeyApi('users/groups/invitations/accept', { invitationId: props.notification.invitation.id });
 };
 
 const rejectGroupInvitation = () => {
+	if (props.notification.type !== 'groupInvited') return;
 	groupInviteDone.value = true;
 	misskeyApi('users/groups/invitations/reject', { invitationId: props.notification.invitation.id });
 };

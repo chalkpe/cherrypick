@@ -47,7 +47,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						</SearchMarker>
 
 						<FormLink to="/settings/account-stats">
-							<template #icon><i class="ti ti-info-circle"/></template>{{ i18n.ts.statistics }}
+							<template #icon><i class="ti ti-info-circle"></i></template>{{ i18n.ts.statistics }}
 						</FormLink>
 					</div>
 				</MkFolder>

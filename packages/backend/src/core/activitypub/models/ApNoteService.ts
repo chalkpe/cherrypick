@@ -360,7 +360,7 @@ export class ApNoteService {
 
 	@bindThis
 	public async updateNote(value: string | IObject, target: MiNote, resolver?: Resolver, silent = false): Promise<MiNote | null> {
-		if (resolver == null) resolver = this.apResolverService.createResolver();
+		if (resolver == null) resolver = await this.apResolverService.createResolver();
 
 		const object = await resolver.resolve(value);
 		const entryUri = getApId(value);
@@ -434,7 +434,7 @@ export class ApNoteService {
 				apEmojis,
 				poll,
 				event,
-				deleteAt: note.deleteAt,
+				deleteAt: note.deleteAt ? new Date(note.deleteAt) : null,
 			}, target, silent);
 		} catch (err: any) {
 			this.logger.warn(`note update failed: ${err}`);

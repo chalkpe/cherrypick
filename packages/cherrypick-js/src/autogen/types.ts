@@ -4871,7 +4871,16 @@ export type components = {
             emojis?: {
                 [key: string]: string;
             };
-            event?: Record<string, never> | null;
+            event?: {
+                title: string;
+                /** Format: date-time */
+                start: string;
+                /** Format: date-time */
+                end: string | null;
+                metadata: {
+                    [key: string]: unknown;
+                };
+            } | null;
             /**
              * Format: id
              * @example xxxxxxxxxx
@@ -5203,6 +5212,15 @@ export type components = {
             /** @enum {string} */
             type: 'renote:grouped';
             note: components['schemas']['Note'];
+            users: components['schemas']['UserLite'][];
+        } | {
+            /** Format: id */
+            id: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** @enum {string} */
+            type: 'note:grouped';
+            noteIds: string[];
             users: components['schemas']['UserLite'][];
         } | {
             /** Format: id */
@@ -6183,7 +6201,9 @@ export type components = {
                 start: string;
                 /** Format: date-time */
                 end: string | null;
-                metadata: Record<string, never>;
+                metadata: {
+                    [key: string]: unknown;
+                };
             } | null;
             fileIds?: string[];
             files?: components['schemas']['DriveFile'][];
@@ -6365,11 +6385,17 @@ export interface operations {
                 };
                 content: {
                     'application/json': {
+                        /** Format: id */
+                        id: string;
+                        /** Format: date-time */
+                        createdAt: string;
                         name: string;
                         targetUserPattern: string | null;
                         reporterPattern: string | null;
                         reportContentPattern: string | null;
                         expiresAt: string;
+                        /** Format: date-time */
+                        expirationDate: string | null;
                         forward: boolean;
                     }[];
                 };
@@ -8148,6 +8174,7 @@ export interface operations {
                 };
                 content: {
                     'application/json': {
+                        host: string | null;
                         /**
                          * Format: id
                          * @example xxxxxxxxxx

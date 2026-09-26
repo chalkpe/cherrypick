@@ -25,7 +25,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div>
 				<div v-if="newNote.cw != null" :class="$style.cw">
 					<Mfm v-if="newNote.cw != ''" :text="newNote.cw" :author="originalNote.user" :nyaize="'respect'" :emojiUrls="newNote.emojis"/>
-					<MkCwButton v-model="showContent" :text="newNote.text" :files="newNote.files" :poll="newNote.poll"/>
+					<MkCwButton v-model="showContent" :text="newNote.text" :files="newNote.files" :poll="newNote.poll ? { ...newNote.poll, choices: newNote.poll.choices.map(text => ({ text, votes: 0, isVoted: false })) } : null"/>
 				</div>
 				<div v-show="newNote.cw == null || showContent">
 					<div v-if="newNote.text">
@@ -33,7 +33,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							v-if="raw"
 							:context="5"
 							:hideHeader="true"
-							:oldString="oldNote ? oldNote.text : null"
+							:oldString="oldNote?.text ?? ''"
 							:newString="newNote.text"
 						/>
 						<Mfm

@@ -31,6 +31,7 @@ scheduledToDeleteOnX: "{x}に削除が予約されています"
 showGapBodyOfTheNote: "ノートの本文を離して表示"
 replyTo: "{user}さんに返信"
 forceCollapseAllRenotes: "すべてのリノートの省略"
+showCatOnly: "キャット付きのみ"
 forceCollapseAllRenotesDescription: "私または相手がリノートしたすべてのノートをたたんで表示します。"
 overrideRobotsTxt: "robots.txtの上書き"
 overrideRobotsTxtDescription: "robots.txtの内容を上書きします。最大2048文字です。"
@@ -1607,6 +1608,15 @@ urlPreviewSensitiveList: "サムネイルの表示を制限するURL"
 urlPreviewSensitiveListDescription: "スペースで区切るとAND指定になり、改行で区切るとOR指定になります。スラッシュで囲むと正規表現になります。一致した場合、サムネイルが表示されなくなります。"
 pixelatedZoom: "ピクセルアート拡大モード"
 
+_nsfwOpenBehavior:
+  click: "タップして開く"
+  doubleClick: "二回タップして開く"
+
+_showingAnimatedImages:
+  always: "常に再生"
+  interaction: "インタラクト時に再生"
+  inactive: "一定時間経過すると再生"
+
 _imageEditing:
   _vars:
     caption: "ファイルのキャプション"
@@ -2426,6 +2436,8 @@ _role:
     canSearchNotes: "ノート検索の利用"
     canSearchUsers: "ユーザー検索の利用"
     canUseTranslator: "翻訳機能の利用"
+    canUseAutoTranslate: "自動翻訳機能の利用"
+    canUseAutoTranslateDescription: "自動翻訳機能を有効にしたユーザーは、タイムラインのすべてのノートが自動的に翻訳され、これにより翻訳サービス提供者が設定したAPI制限に非常に早く到達し、翻訳機能を一時的に使用できなくなる可能性があります。\nこれは、サーバー内のすべてのユーザーがAPIを一時的に使用できなくなる可能性があることを意味します。\nまた、翻訳サービスの提供者によっては、APIの使用による料金が過度に発生する可能性があります。\n\n<b>それでも続けましょうか？</b>"
     canCreateChannel: "チャンネルの作成"
     avatarDecorationLimit: "アイコンデコレーションの最大取付個数"
     canImportAntennas: "アンテナのインポートを許可"

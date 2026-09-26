@@ -889,6 +889,42 @@ export class MiMeta {
 		showTimelineForVisitor: boolean;
 		showActivitiesForVisitor: boolean;
 	};
+
+	@Column('boolean', { default: false })
+	public doNotSendNotificationEmailsForAbuseReport: boolean;
+
+	@Column('varchar', { length: 1024, nullable: true })
+	public emailToReceiveAbuseReport: string | null;
+
+	@Column('boolean', { default: false })
+	public enableReceivePrerelease: boolean;
+
+	@Column('boolean', { default: false })
+	public skipVersion: boolean;
+
+	@Column('varchar', { length: 32, nullable: true })
+	public skipCherryPickVersion: string | null;
+
+	@Column('varchar', { length: 1024, array: true, default: '{}' })
+	public customSplashText: string[];
+
+	@Column('boolean', { default: true })
+	public disableRegistrationWhenInactive: boolean;
+
+	@Column('boolean', { default: false })
+	public disablePublicNoteWhenInactive: boolean;
+
+	@Column('integer', { default: 7 })
+	public moderatorInactivityLimitDays: number;
+
+	@Column('varchar', { length: 256, array: true, default: '{}' })
+	public bubbleInstances: string[];
+
+	@Column('varchar', { length: 2048, nullable: true })
+	public customRobotsTxt: string | null;
+
+	@Column('boolean', { default: false })
+	public approvalRequiredForSignup: boolean;
 }
 
 export type SoftwareSuspension = {

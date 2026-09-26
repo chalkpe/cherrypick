@@ -38,7 +38,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				</div>
 
 				<div v-if="showPrev" class="_margin">
-					<MkNotesTimeline :withControl="false" :pullToRefresh="false" class="" :paginator="showPrev === 'channel' ? prevChannelPaginator : showNext === 'user'? prevUserPaginator : showNext === 'home' ? prevHomePaginator : prevLocalPaginator" :noGap="!prefer.s.showGapBetweenNotesInTimeline"/>
+					<MkNotesTimeline :withControl="false" :pullToRefresh="false" class="" :paginator="showPrev === 'channel' ? prevChannelPaginator : showPrev === 'user' ? prevUserPaginator : showPrev === 'home' ? prevHomePaginator : prevLocalPaginator" :noGap="!prefer.s.showGapBetweenNotesInTimeline"/>
 				</div>
 			</div>
 			<MkError v-else-if="error" @retry="fetchNote()"/>
@@ -79,8 +79,8 @@ const props = defineProps<{
 
 const note = ref<null | Misskey.entities.Note>(CTX_NOTE);
 const clips = ref<Misskey.entities.Clip[]>();
-const showPrev = ref<'user' | 'channel' | false>(false);
-const showNext = ref<'user' | 'channel' | false>(false);
+const showPrev = ref<'user' | 'channel' | 'home' | 'local' | false>(false);
+const showNext = ref<'user' | 'channel' | 'home' | 'local' | false>(false);
 const initialTab = computed<'reactions' | 'replies' | 'renotes' | undefined>(() => {
 	if (['reactions', 'replies', 'renotes'].includes(props.initialTab ?? '')) {
 		return props.initialTab as 'reactions' | 'replies' | 'renotes';

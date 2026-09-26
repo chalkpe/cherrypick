@@ -4,41 +4,41 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="note.files.length > 0" :class="[$style.root, $style.visible]">
-	<div v-if="!showingFiles.includes(note.files[0].id)" :key="note.id + note.files[0].id" :class="$style.img" @click="onClick($event, note.files[0])" @dblclick="onDblClick(note.files[0])">
+<div v-if="files.length > 0" :class="[$style.root, $style.visible]">
+	<div v-if="!showingFiles.includes(files[0].id)" :key="note.id + files[0].id" :class="$style.img" @click="onClick($event, files[0])" @dblclick="onDblClick(files[0])">
 		<MkImgWithBlurhash
 			v-if="isThumbnailAvailable && prefer.s.enableHighQualityImagePlaceholders"
-			:hash="note.files[0].blurhash"
+			:hash="files[0].blurhash"
 			:src="url"
-			:alt="note.files[0].comment ?? undefined"
-			:title="note.files[0].name"
+			:alt="files[0].comment ?? undefined"
+			:title="files[0].name"
 			:class="$style.sensitiveImg"
 			:cover="true"
 			:forceBlurhash="true"
 		/>
 		<img
-			v-else-if="isThumbnailAvailable && note.files[0].thumbnailUrl != null"
+			v-else-if="isThumbnailAvailable && files[0].thumbnailUrl != null"
 			:src="url ?? undefined"
-			:alt="note.files[0].name"
-			:title="note.files[0].name"
+			:alt="files[0].name"
+			:title="files[0].name"
 			:class="$style.thumbnail"
 			style="object-fit: cover;"
 		/>
 		<div :class="$style.sensitive">
 			<div>
-				<div v-if="note.files[0].isSensitive" style="display: block;"><i class="ti ti-eye-exclamation"></i> {{ i18n.ts.sensitive }}{{ prefer.s.dataSaver.media ? ` (${i18n.ts.image}${note.files[0].size ? ' ' + bytes(note.files[0].size) : ''})` : '' }}</div>
-				<div v-else style="display: block;"><i class="ti ti-photo"></i> {{ prefer.s.dataSaver.media && note.files[0].size ? bytes(note.files[0].size) : i18n.ts.image }}</div>
+				<div v-if="files[0].isSensitive" style="display: block;"><i class="ti ti-eye-exclamation"></i> {{ i18n.ts.sensitive }}{{ prefer.s.dataSaver.media ? ` (${i18n.ts.image}${files[0].size ? ' ' + bytes(files[0].size) : ''})` : '' }}</div>
+				<div v-else style="display: block;"><i class="ti ti-photo"></i> {{ prefer.s.dataSaver.media && files[0].size ? bytes(files[0].size) : i18n.ts.image }}</div>
 				<div>{{ i18n.ts.clickToShow }}</div>
 			</div>
 		</div>
 	</div>
-	<MkA v-else :class="[$style.img, { [$style.multipleImg]: note.files.length > 1 }]" :to="notePage(note)">
+	<MkA v-else :class="[$style.img, { [$style.multipleImg]: files.length > 1 }]" :to="notePage(note)">
 		<MkImgWithBlurhash
 			v-if="isThumbnailAvailable && prefer.s.enableHighQualityImagePlaceholders"
-			:hash="note.files[0].blurhash"
+			:hash="files[0].blurhash"
 			:src="url"
-			:alt="note.files[0].comment ?? undefined"
-			:title="note.files[0].name"
+			:alt="files[0].comment ?? undefined"
+			:title="files[0].name"
 			:class="$style.thumbnail"
 			:cover="true"
 			:forceBlurhash="false"
@@ -48,22 +48,22 @@ SPDX-License-Identifier: AGPL-3.0-only
 			@touchend="prefer.s.showingAnimatedImages === 'interaction' ? playAnimation = false : ''"
 		/>
 		<img
-			v-else-if="isThumbnailAvailable && note.files[0].thumbnailUrl != null"
+			v-else-if="isThumbnailAvailable && files[0].thumbnailUrl != null"
 			:src="url ?? undefined"
-			:alt="note.files[0].name"
-			:title="note.files[0].name"
+			:alt="files[0].name"
+			:title="files[0].name"
 			:class="$style.thumbnail"
 			style="object-fit: cover;"
 		/>
 		<div :class="$style.indicators">
-			<div v-if="['image/gif'].includes(note.files[0].type)" :class="$style.indicator">GIF</div>
-			<div v-if="['image/apng'].includes(note.files[0].type)" :class="$style.indicator">APNG</div>
-			<div v-if="note.files[0].comment" :class="$style.indicator">ALT</div>
-			<div v-if="note.files[0].isSensitive" :class="$style.indicator" style="color: var(--MI_THEME-warn);" :title="i18n.ts.sensitive"><i class="ti ti-eye-exclamation"></i></div>
+			<div v-if="['image/gif'].includes(files[0].type)" :class="$style.indicator">GIF</div>
+			<div v-if="['image/apng'].includes(files[0].type)" :class="$style.indicator">APNG</div>
+			<div v-if="files[0].comment" :class="$style.indicator">ALT</div>
+			<div v-if="files[0].isSensitive" :class="$style.indicator" style="color: var(--MI_THEME-warn);" :title="i18n.ts.sensitive"><i class="ti ti-eye-exclamation"></i></div>
 		</div>
 	</MkA>
-	<div v-if="note.files.length > 1" :class="$style.multiple">
-		<span style="text-align: center; margin-right: 0.25em;">{{ note.files.length }}</span>
+	<div v-if="files.length > 1" :class="$style.multiple">
+		<span style="text-align: center; margin-right: 0.25em;">{{ files.length }}</span>
 		<i class="ti ti-box-multiple-filled"></i>
 	</div>
 	<div :class="$style.time">
@@ -86,20 +86,21 @@ import { i18n } from '@/i18n.js';
 import MkRippleEffect from '@/components/MkRippleEffect.vue';
 
 const props = defineProps<{
-	user: Misskey.entities.UserDetailed;
-	note: Misskey.entities.Note & { files: Misskey.entities.DriveFile[] };
+	user: Misskey.entities.User;
+	note: Misskey.entities.Note;
 }>();
 
 const showingFiles = ref<string[]>([]);
+const files = computed(() => props.note.files ?? []);
 
 const is = computed(() => {
-	if (props.note.files[0].type.startsWith('image/')) return 'image';
-	if (props.note.files[0].type.startsWith('video/')) return 'video';
-	if (props.note.files[0].type === 'audio/midi') return 'midi';
-	if (props.note.files[0].type.startsWith('audio/')) return 'audio';
-	if (props.note.files[0].type.endsWith('/csv')) return 'csv';
-	if (props.note.files[0].type.endsWith('/pdf')) return 'pdf';
-	if (props.note.files[0].type.startsWith('text/')) return 'textfile';
+	if (files.value[0].type.startsWith('image/')) return 'image';
+	if (files.value[0].type.startsWith('video/')) return 'video';
+	if (files.value[0].type === 'audio/midi') return 'midi';
+	if (files.value[0].type.startsWith('audio/')) return 'audio';
+	if (files.value[0].type.endsWith('/csv')) return 'csv';
+	if (files.value[0].type.endsWith('/pdf')) return 'pdf';
+	if (files.value[0].type.startsWith('text/')) return 'textfile';
 	if ([
 		'application/zip',
 		'application/x-cpio',
@@ -110,12 +111,12 @@ const is = computed(() => {
 		'application/x-tar',
 		'application/gzip',
 		'application/x-7z-compressed',
-	].some(archiveType => archiveType === props.note.files[0].type)) return 'archive';
+	].some(archiveType => archiveType === files.value[0].type)) return 'archive';
 	return 'unknown';
 });
 
 const isThumbnailAvailable = computed(() => {
-	return props.note.files[0].thumbnailUrl || (['interaction', 'inactive'].includes(<string>prefer.s.showingAnimatedImages) && !playAnimation.value)
+	return files.value[0].thumbnailUrl || (['interaction', 'inactive'].includes(<string>prefer.s.showingAnimatedImages) && !playAnimation.value)
 		? (is.value === 'image' || is.value === 'video')
 		: false;
 });
@@ -124,10 +125,10 @@ const playAnimation = ref(true);
 if (prefer.s.showingAnimatedImages === 'interaction') playAnimation.value = false;
 let playAnimationTimer = window.setTimeout(() => playAnimation.value = false, 5000);
 const url = computed(() => (prefer.s.loadRawImages)
-	? props.note.files[0].url
+	? files.value[0].url
 	: (prefer.s.disableShowingAnimatedImages || prefer.s.dataSaver.media) || (['interaction', 'inactive'].includes(<string>prefer.s.showingAnimatedImages) && !playAnimation.value)
-		? getStaticImageUrl(props.note.files[0].url)
-		: props.note.files[0].thumbnailUrl,
+		? getStaticImageUrl(files.value[0].url)
+		: files.value[0].thumbnailUrl,
 );
 
 async function onClick(ev: MouseEvent, image: Misskey.entities.DriveFile) {
@@ -155,7 +156,7 @@ watch(() => props.note, () => {
 	if (prefer.s.nsfw === 'force' || prefer.s.dataSaver.media) {
 		//hide = true;
 	} else {
-		for (const image of props.note.files) {
+		for (const image of files.value) {
 			if (image.isSensitive) {
 				if (prefer.s.nsfw !== 'ignore') {
 					//hide = true;

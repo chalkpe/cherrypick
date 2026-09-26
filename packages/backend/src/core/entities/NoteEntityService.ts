@@ -18,6 +18,7 @@ import { IdService } from '@/core/IdService.js';
 import { shouldHideNoteByTime } from '@/misc/should-hide-note-by-time.js';
 import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
 import { CacheService } from '@/core/CacheService.js';
+import type { RoleService } from '@/core/RoleService.js';
 import type { OnModuleInit } from '@nestjs/common';
 import type { CustomEmojiService } from '../CustomEmojiService.js';
 import type { ReactionService } from '../ReactionService.js';
@@ -241,8 +242,8 @@ export class NoteEntityService implements OnModuleInit {
 		const event = await this.eventsRepository.findOneByOrFail({ noteId: note.id });
 		return {
 			title: event.title,
-			start: event.start,
-			end: event.end,
+			start: event.start.toISOString(),
+			end: event.end?.toISOString() ?? null,
 			metadata: event.metadata,
 		};
 	}

@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <PageWithHeader v-model:tab="tab" :actions="headerActions" :tabs="headerTabs">
 	<div class="_spacer" style="--MI_SPACER-w: 900px;">
-		<div class="_gaps">
+		<div v-if="tab === 'local'" class="_gaps">
 			<MkFoldableSection v-for="category in Object.keys(groupedDecorations)" :key="category" :expanded="true">
 				<template #header>{{ category || i18n.ts.other }}</template>
 				<div :class="$style.decorations">
@@ -23,6 +23,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 				</div>
 			</MkFoldableSection>
 		</div>
+		<div v-else-if="tab === 'remote'" :class="$style.decorations">
+			<div v-for="remoteDecoration in remoteAvatarDecorations" :key="remoteDecoration.id" v-panel :class="$style.decoration" @click="remoteMenu(remoteDecoration, $event)">
+				<div :class="$style.decorationName"><MkCondensedLine :minScale="0.5">{{ remoteDecoration.name }}</MkCondensedLine></div>
+				<MkAvatar style="width: 60px; height: 60px;" :user="$i" :decorations="[{ url: remoteDecoration.url }]" forceShowDecoration/>
+			</div>
+		</div>
 	</div>
 </PageWithHeader>
 </template>
@@ -36,12 +42,14 @@ import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
 import { definePage } from '@/page.js';
 import MkFoldableSection from '@/components/MkFoldableSection.vue';
+import MkRemoteAvatarDecorationEditDialog from '@/components/MkRemoteAvatarDecorationEditDialog.vue';
 import { groupAvatarDecorations } from '@/utility/group-avatar-decorations.js';
 
 const $i = ensureSignin();
 
 const tab = ref('local');
 const avatarDecorations = ref<Misskey.entities.AdminAvatarDecorationsListResponse>([]);
+const remoteAvatarDecorations = ref<Misskey.entities.AdminAvatarDecorationsListRemoteResponse>([]);
 const groupedDecorations = computed(() => groupAvatarDecorations(avatarDecorations.value));
 
 function load() {
@@ -89,7 +97,8 @@ async function edit(avatarDecoration: Misskey.entities.AdminAvatarDecorationsLis
 	});
 }
 
-const remoteMenu = (remoteDecoration, ev: MouseEvent) => {
+type RemoteDecoration = Misskey.entities.AdminAvatarDecorationsListRemoteResponse[number];
+const remoteMenu = (remoteDecoration: RemoteDecoration, ev: PointerEvent) => {
 	os.popupMenu([{
 		type: 'label',
 		text: remoteDecoration.name,
@@ -104,7 +113,7 @@ const remoteMenu = (remoteDecoration, ev: MouseEvent) => {
 	}], ev.currentTarget ?? ev.target);
 };
 
-const detailRemoteDecoration = (remoteDecoration) => {
+const detailRemoteDecoration = (remoteDecoration: RemoteDecoration) => {
 	const { dispose } = os.popup(MkRemoteAvatarDecorationEditDialog, {
 		decoration: remoteDecoration,
 	}, {
@@ -117,7 +126,7 @@ const detailRemoteDecoration = (remoteDecoration) => {
 	});
 };
 
-const importDecoration = (decoration) => {
+const importDecoration = (decoration: RemoteDecoration) => {
 	os.apiWithDialog('admin/avatar-decorations/copy', {
 		decorationId: decoration.id,
 	});

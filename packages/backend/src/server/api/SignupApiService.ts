@@ -4,7 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import bcrypt from 'bcryptjs';
+import * as argon2 from 'argon2';
 import { IsNull, LessThanOrEqual } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { RegistrationTicketsRepository, UsedUsernamesRepository, UserPendingsRepository, UserProfilesRepository, UsersRepository, MiRegistrationTicket, MiMeta, UserIpsRepository } from '@/models/_.js';
@@ -210,7 +210,6 @@ export class SignupApiService {
 			const code = secureRndstr(16, { chars: L_CHARS });
 
 			// Generate hash of password
-			//const salt = await bcrypt.genSalt(8);
 			const hash = await argon2.hash(password);
 
 			if (ticket && !await this.claimRegistrationTicket(ticket)) {
@@ -225,6 +224,7 @@ export class SignupApiService {
 					email: emailAddress!,
 					username: username,
 					password: hash,
+					reason: reason ?? '',
 				});
 
 				const link = `${this.config.url}/signup-complete/${code}`;
@@ -400,10 +400,6 @@ export class SignupApiService {
 					usedById: account.id,
 					pendingUserId: null,
 				});
-			}
-
-			if (pendingUser.requestOriginIp) {
-				this.logIp(pendingUser.requestOriginIp, this.idService.parse(pendingUser.id).date, account.id);
 			}
 
 			// The sign-up request and the confirmation may've come from different addresses: log both

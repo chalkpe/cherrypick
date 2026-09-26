@@ -33,11 +33,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</MkInput>
 				</div>
 
-				<MkRadios
-					v-model="searchScope"
-					:options="searchScopeDef"
-				>
-				</MkRadios>
 				-->
 
 				<MkSelect v-model="searchScope" :items="searchScopeDef" small></MkSelect>
@@ -148,7 +143,6 @@ import MkNotesTimeline from '@/components/MkNotesTimeline.vue';
 import MkRadios from '@/components/MkRadios.vue';
 import MkUserCardMini from '@/components/MkUserCardMini.vue';
 import { Paginator } from '@/utility/paginator.js';
-import type { MkRadiosOption } from '@/components/MkRadios.vue';
 
 const props = withDefaults(defineProps<{
 	query?: string;
@@ -222,24 +216,6 @@ const searchScope = ref<'all' | 'local' | 'server' | 'user'>((() => {
 	if (hostInput.value) return 'server';
 	return 'all';
 })());
-
-const searchScopeDef = computed<MkRadiosOption[]>(() => {
-	const options: MkRadiosOption[] = [];
-
-	if (instance.federation !== 'none' && noteSearchableScope === 'global') {
-		options.push({ value: 'all', label: i18n.ts._search.searchScopeAll });
-	}
-
-	options.push({ value: 'local', label: instance.federation === 'none' ? i18n.ts._search.searchScopeAll : i18n.ts._search.searchScopeLocal });
-
-	if (instance.federation !== 'none' && noteSearchableScope === 'global') {
-		options.push({ value: 'server', label: i18n.ts._search.searchScopeServer });
-	}
-
-	options.push({ value: 'user', label: i18n.ts._search.searchScopeUser });
-
-	return options;
-});
 
 type SearchParams = {
 	readonly query: string;

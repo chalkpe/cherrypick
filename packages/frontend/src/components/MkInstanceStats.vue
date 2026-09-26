@@ -285,21 +285,21 @@ onMounted(() => {
 	misskeyApiGet('federation/remote-software', {}).then(fedStats => {
 		type ChartData = {
 			name: string,
-			color: string | null,
+		color: string,
 			value: number,
 			onClick?: () => void,
 		}[];
 
 		const softwareData: ChartData = fedStats.map(x => ({
 			name: x.softwareName,
-			color: x.color,
+			color: x.color ?? '#80808080',
 			value: x.count,
 			onClick: () => {},
 		}));
 
 		const sortedSoftwareData = softwareData.sort((a, b) => a.value > b.value ? -1 : 1);
 
-		createDoughnut(softwareDoughnutEl.value, externalTooltipHandler3, sortedSoftwareData);
+		if (softwareDoughnutEl.value) createDoughnut(softwareDoughnutEl.value, externalTooltipHandler3, sortedSoftwareData);
 	});
 });
 

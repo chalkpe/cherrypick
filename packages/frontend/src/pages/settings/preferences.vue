@@ -1066,20 +1066,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</MkPreferenceContainer>
 						</SearchMarker>
 
-						<SearchMarker :keywords="['font', 'size']">
-							<MkRadios
-								v-model="fontSize"
-								:options="[
-									{ value: null, label: 'Aa', labelStyle: 'font-size: 14px;' },
-									{ value: '1', label: 'Aa', labelStyle: 'font-size: 15px;' },
-									{ value: '2', label: 'Aa', labelStyle: 'font-size: 16px;' },
-									{ value: '3', label: 'Aa', labelStyle: 'font-size: 17px;' },
-								]"
-							>
-								<template #label><SearchLabel>{{ i18n.ts.fontSize }}</SearchLabel></template>
-							</MkRadios>
-						</SearchMarker>
-
 						<SearchMarker :keywords="['font', 'system', 'native']">
 							<MkSwitch v-model="useSystemFont">
 								<template #label><SearchLabel>{{ i18n.ts.useSystemFont }}</SearchLabel></template>
@@ -1474,6 +1460,13 @@ const $i = ensureSignin();
 const lang = ref(miLocalStorage.getItem('lang'));
 const dataSaver = ref(prefer.s.dataSaver);
 const realtimeMode = store.model('realtimeMode');
+const trustedDomains = ref(prefer.s.trustedDomains.join('\n'));
+
+// const fontSize = ref(miLocalStorage.getItem('fontSize'));
+const fontSize = prefer.model('fontSize');
+const fontSizeBefore = ref(miLocalStorage.getItem('fontSize'));
+const useSystemFont = ref(miLocalStorage.getItem('useSystemFont') != null);
+const useBoldFont = ref(miLocalStorage.getItem('useBoldFont') === 'true');
 
 const overridedDeviceKind = prefer.model('overridedDeviceKind');
 const pollingInterval = prefer.model('pollingInterval');
@@ -1537,8 +1530,53 @@ const menuStyle = prefer.model('menuStyle');
 const makeEveryTextElementsSelectable = prefer.model('makeEveryTextElementsSelectable');
 const showPreview = prefer.model('showPreview');
 
-const fontSize = ref(miLocalStorage.getItem('fontSize') as '1' | '2' | '3' | null);
-const useSystemFont = ref(miLocalStorage.getItem('useSystemFont') != null);
+const forceCollapseAllRenotes = prefer.model('forceCollapseAllRenotes');
+const collapseReplies = prefer.model('collapseReplies');
+const collapseLongNoteContent = prefer.model('collapseLongNoteContent');
+const collapseDefault = prefer.model('collapseDefault');
+const allMediaNoteCollapse = prefer.model('allMediaNoteCollapse');
+const showSubNoteFooterButton = prefer.model('showSubNoteFooterButton');
+const infoButtonForNoteActionsEnabled = prefer.model('infoButtonForNoteActionsEnabled');
+const showTranslateButtonInNote = prefer.model('showTranslateButtonInNote');
+const showGapBodyOfTheNote = prefer.model('showGapBodyOfTheNote');
+const showReplyButtonInNoteFooter = prefer.model('showReplyButtonInNoteFooter');
+const showRenoteButtonInNoteFooter = prefer.model('showRenoteButtonInNoteFooter');
+const showLikeButtonInNoteFooter = prefer.model('showLikeButtonInNoteFooter');
+const showDoReactionButtonInNoteFooter = prefer.model('showDoReactionButtonInNoteFooter');
+const showQuoteButtonInNoteFooter = prefer.model('showQuoteButtonInNoteFooter');
+const showMoreButtonInNoteFooter = prefer.model('showMoreButtonInNoteFooter');
+const selectReaction = prefer.model('selectReaction');
+const showReplyInNotification = prefer.model('showReplyInNotification');
+const renoteQuoteButtonSeparation = prefer.model('renoteQuoteButtonSeparation');
+const renoteVisibilitySelection = prefer.model('renoteVisibilitySelection');
+const forceRenoteVisibilitySelection = prefer.model('forceRenoteVisibilitySelection');
+const showFixedPostFormInReplies = prefer.model('showFixedPostFormInReplies');
+const showNoAltTextWarning = prefer.model('showNoAltTextWarning');
+const alwaysShowCw = prefer.model('alwaysShowCw');
+const autoLoadMoreReplies = prefer.model('autoLoadMoreReplies');
+const autoLoadMoreConversation = prefer.model('autoLoadMoreConversation');
+const useAutoTranslate = prefer.model('useAutoTranslate');
+const welcomeBackToast = prefer.model('welcomeBackToast');
+const disableNyaize = prefer.model('disableNyaize');
+const requireRefreshBehavior = prefer.model('requireRefreshBehavior');
+const newNoteReceivedNotificationBehavior = prefer.model('newNoteReceivedNotificationBehavior');
+const externalNavigationWarning = prefer.model('externalNavigationWarning');
+const searchEngine = store.model('searchEngine');
+const searchEngineUrl = store.model('searchEngineUrl');
+const searchEngineUrlQuery = store.model('searchEngineUrlQuery');
+const removeModalBgColorForBlur = prefer.model('removeModalBgColorForBlur');
+const setFederationAvatarShape = prefer.model('setFederationAvatarShape');
+const showUnreadNotificationsCount = prefer.model('showUnreadNotificationsCount');
+const filesGridLayoutInUserPage = prefer.model('filesGridLayoutInUserPage');
+const hideAvatarsInNote = prefer.model('hideAvatarsInNote');
+const enableAbsoluteTime = prefer.model('enableAbsoluteTime');
+const enableMarkByDate = prefer.model('enableMarkByDate');
+const showReplyTargetNote = prefer.model('showReplyTargetNote');
+const showReplyTargetNoteInSemiTransparent = prefer.model('showReplyTargetNoteInSemiTransparent');
+const nsfwOpenBehavior = prefer.model('nsfwOpenBehavior');
+const showProfilePreview = prefer.model('showProfilePreview');
+const showingAnimatedImages = prefer.model('showingAnimatedImages');
+const smoothTransitionAnimations = prefer.model('smoothTransitionAnimations', v => !v, v => !v);
 
 watch(lang, () => {
 	miLocalStorage.setItem('lang', lang.value as string);

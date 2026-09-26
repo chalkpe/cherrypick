@@ -34,7 +34,7 @@ const props = withDefaults(defineProps<{
 	limit: 50,
 });
 
-const chartSrc = ref<'per-user-notes' | 'per-user-pv'>('per-user-notes');
+const chartSrc = ref<'per-user-notes' | 'per-user-pv' | 'per-user-following' | 'per-user-followers'>('per-user-notes');
 
 function showMenu(ev: PointerEvent) {
 	os.popupMenu([{
@@ -51,11 +51,13 @@ function showMenu(ev: PointerEvent) {
 		},
 	}, {
 		text: i18n.ts.following,
+		active: chartSrc.value === 'per-user-following',
 		action: () => {
 			chartSrc.value = 'per-user-following';
 		},
 	}, {
 		text: i18n.ts.followers,
+		active: chartSrc.value === 'per-user-followers',
 		action: () => {
 			chartSrc.value = 'per-user-followers';
 		},

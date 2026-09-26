@@ -185,9 +185,10 @@ onUnmounted(() => {
 	globalEvents.off('themeChanging', calcBg);
 });
 
-const onContextmenu = (ev) => {
+const onContextmenu = (ev: PointerEvent) => {
+	if (!(ev.target instanceof HTMLElement)) return;
 	if (isLink(ev.target)) return;
-	if (['INPUT', 'TEXTAREA', 'IMG', 'VIDEO', 'CANVAS'].includes(ev.target.tagName) || ev.target.attributes['contenteditable']) return;
+	if (['INPUT', 'TEXTAREA', 'IMG', 'VIDEO', 'CANVAS'].includes(ev.target.tagName) || ev.target.hasAttribute('contenteditable')) return;
 	if (window.getSelection()?.toString() !== '') return;
 	const path = mainRouter.getCurrentFullPath();
 	os.contextMenu([{

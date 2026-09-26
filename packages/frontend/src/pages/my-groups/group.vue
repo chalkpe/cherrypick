@@ -15,7 +15,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<div v-for="user in users" :key="user.id" :class="$style.user" class="_panel">
 								<MkAvatar :user="user" :class="$style.avatar" link preview/>
 								<div :class="$style.body">
-									<MkA v-user-preview="user" :class="$style.username" :to="userPage(user)">
+									<MkA v-user-preview="user.id" :class="$style.username" :to="userPage(user)">
 										<MkUserName :user="user" :class="$style.name"/>
 									</MkA>
 									<MkAcct :user="user" :class="$style.acct"/>
@@ -36,6 +36,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { computed, ref, useTemplateRef, watch } from 'vue';
+import * as Misskey from 'cherrypick-js';
 import * as os from '@/os.js';
 import { $i } from '@/i.js';
 import { mainRouter } from '@/router.js';
@@ -49,8 +50,8 @@ const props = defineProps<{
 	groupId: string;
 }>();
 
-const group = ref();
-const users = ref();
+const group = ref<Misskey.Endpoints['users/groups/show']['res'] | null>(null);
+const users = ref<Misskey.entities.UserDetailed[]>([]);
 
 function fetchGroup() {
 	misskeyApi('users/groups/show', {
@@ -58,7 +59,7 @@ function fetchGroup() {
 	}).then(_group => {
 		group.value = _group;
 		misskeyApi('users/show', {
-			userIds: group.value.userIds,
+			userIds: _group.userIds ?? [],
 		}).then(_users => {
 			users.value = _users;
 		});
@@ -66,23 +67,27 @@ function fetchGroup() {
 }
 
 function invite() {
+	if (!group.value) return;
+	const groupId = group.value.id;
 	os.selectUser({ includeSelf: false, localOnly: true }).then(user => {
 		os.apiWithDialog('users/groups/invite', {
-			groupId: group.value.id,
+			groupId,
 			userId: user.id,
 		});
 	});
 }
 
-async function removeUser(user) {
+async function removeUser(user: Misskey.entities.User) {
+	if (!group.value) return;
+	const currentGroup = group.value;
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx._group.banishConfirm({ name: user.name || user.username, group: group.value.name }),
+		text: i18n.tsx._group.banishConfirm({ name: user.name || user.username, group: currentGroup.name }),
 	});
 	if (canceled) return;
 
 	os.apiWithDialog('users/groups/pull', {
-		groupId: group.value.id,
+		groupId: currentGroup.id,
 		userId: user.id,
 	}).then(() => {
 		users.value = users.value.filter(x => x.id !== user.id);
@@ -90,38 +95,44 @@ async function removeUser(user) {
 }
 
 async function renameGroup() {
+	if (!group.value) return;
+	const currentGroup = group.value;
 	const { canceled, result: name } = await os.inputText({
 		title: i18n.ts.groupName,
-		default: group.value.name,
+		default: currentGroup.name,
 	});
 	if (canceled) return;
 
 	await os.apiWithDialog('users/groups/update', {
-		groupId: group.value.id,
+		groupId: currentGroup.id,
 		name: name,
 	});
 
-	group.value.name = name;
+	currentGroup.name = name;
 }
 
 function transfer() {
+	if (!group.value) return;
+	const groupId = group.value.id;
 	os.selectUser({ includeSelf: false, localOnly: true }).then(user => {
 		os.apiWithDialog('users/groups/transfer', {
-			groupId: group.value.id,
+			groupId,
 			userId: user.id,
 		});
 	});
 }
 
 async function deleteGroup() {
+	if (!group.value) return;
+	const currentGroup = group.value;
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.removeAreYouSure({ x: group.value.name }),
+		text: i18n.tsx.removeAreYouSure({ x: currentGroup.name }),
 	});
 	if (canceled) return;
 
 	await os.apiWithDialog('users/groups/delete', {
-		groupId: group.value.id,
+		groupId: currentGroup.id,
 	});
 	mainRouter.push('/my/groups');
 }

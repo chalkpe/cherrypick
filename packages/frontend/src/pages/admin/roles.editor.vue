@@ -77,7 +77,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<div class="_gaps_s">
 			<MkInput ref="queryEl" v-model="q" type="search">
 				<template #prefix><i class="ti ti-search"></i></template>
-				<template v-if="q != ''" #suffix><button type="button" :class="$style.deleteBtn" tabindex="-1" @click="q = ''; queryEl?.focus();"><i class="ti ti-x"></i></button></template>
+				<template v-if="q != ''" #suffix><button type="button" class="_button" tabindex="-1" @click="q = ''; queryEl?.focus();"><i class="ti ti-x"></i></button></template>
 			</MkInput>
 
 			<XPolicyEditor
@@ -107,9 +107,12 @@ import MkSwitch from '@/components/MkSwitch.vue';
 import FormSlot from '@/components/form/slot.vue';
 import XPolicyEditor from './roles.policy-editor.vue';
 import { i18n } from '@/i18n.js';
+import * as os from '@/os.js';
 import { instance } from '@/instance.js';
 import { deepClone } from '@/utility/clone.js';
 import type { PolicyMeta } from './roles.policy-editor.vue';
+
+const queryEl = useTemplateRef('queryEl');
 
 type RoleLike = Pick<Misskey.entities.Role, 'name' | 'description' | 'isAdministrator' | 'isModerator' | 'color' | 'iconUrl' | 'target' | 'isPublic' | 'isExplorable' | 'asBadge' | 'canEditMembersByModerator' | 'displayOrder' | 'preserveAssignmentOnMoveAccount'> & {
 	id?: Misskey.entities.Role['id'] | null;

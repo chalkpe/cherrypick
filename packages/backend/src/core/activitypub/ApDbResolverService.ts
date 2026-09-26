@@ -166,7 +166,7 @@ export class ApDbResolverService implements OnApplicationShutdown {
 	} | null> {
 		const user = await this.apPersonService.resolvePerson(uri) as MiRemoteUser;
 		if (user.isDeleted) {
-			const jobs = await this.dbQueue.getJobs(['active', 'delayed', 'paused', 'wait', 'waiting', 'waiting-children']);
+			const jobs = await this.dbQueue.getJobs(['active', 'delayed', 'wait', 'waiting', 'waiting-children']);
 
 			const isUserDeletingNow = jobs.filter(e => e.name === 'deleteAccount').map(e => JSON.parse(e.data)).find(e => e.user.id === user.id);
 

@@ -124,6 +124,15 @@ function share() {
 	});
 }
 
+function shareQRCode() {
+	if (!post.value) return;
+	const { dispose } = popup(defineAsyncComponent(() => import('@/components/MkQRCode.vue')), {
+		qrCode: `${url}/gallery/${post.value.id}`,
+	}, {
+		closed: () => dispose(),
+	});
+}
+
 function shareWithNote() {
 	if (!post.value) return;
 	os.post({

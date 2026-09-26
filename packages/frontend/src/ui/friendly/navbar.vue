@@ -28,10 +28,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<div v-if="item === '-'" :class="$style.divider"></div>
 				<component
 					:is="navbarItemDef[item].to ? 'MkA' : 'button'"
-					v-else-if="navbarItemDef[item] && (navbarItemDef[item].show !== false)"
+					v-else-if="navbarItemDef[item] && (navbarItemDef[item].show?.value !== false)"
 					v-tooltip.noDelay.right="navbarItemDef[item].title"
 					class="_button"
-					:class="[$style.item, { [$style.active]: navbarItemDef[item].active }]"
+					:class="$style.item"
 					:activeClass="$style.active"
 					:to="navbarItemDef[item].to"
 					v-on="navbarItemDef[item].action ? { click: navbarItemDef[item].action } : {}"
@@ -75,7 +75,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<button v-else-if="$i != null" v-tooltip.noDelay.right="`${i18n.ts.account}: @${$i.username}`" class="_button" :class="[$style.account]" @click="openProfile">
 					<MkAvatar :user="$i" :class="$style.avatar" style="viewTransitionName: navbar-avatar;"/><MkUserName class="_nowrap" :class="$style.acct" :user="$i"/><div v-if="$i.isLocked"><i class="ti ti-lock"></i></div>
 				</button>
-				<button v-if="!iconOnly" class="_button" :class="[$style.drawer]" @click="openAccountMenu"><i class="ti ti-chevron-up"/></button>
+				<button v-if="!iconOnly" class="_button" :class="[$style.drawer]" @click="openAccountMenu"><i class="ti ti-chevron-up"></i></button>
 			</div>
 		</div>
 	</div>

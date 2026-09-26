@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<MkModal ref="modal" :zPriority="'middle'" @closed="$emit('closed')">
+<MkModal ref="modal" :zPriority="'middle'" @closed="emit('closed')">
 	<div :class="$style.root">
 		<div :class="$style.body">
 			<div :class="$style.title">{{ i18n.ts._getQRCode.title }}</div>
@@ -24,6 +24,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
+const emit = defineEmits<{ (ev: 'closed'): void }>();
 import { computed, onMounted, useTemplateRef } from 'vue';
 import QRCodeStyling from 'qr-code-styling';
 import tinycolor from 'tinycolor2';

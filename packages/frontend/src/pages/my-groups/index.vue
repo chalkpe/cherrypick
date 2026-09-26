@@ -47,6 +47,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { computed, markRaw, ref } from 'vue';
+import * as Misskey from 'cherrypick-js';
 import MkPagination from '@/components/MkPagination.vue';
 import MkButton from '@/components/MkButton.vue';
 import MkAvatars from '@/components/MkAvatars.vue';
@@ -81,7 +82,7 @@ async function create() {
 	});
 }
 
-async function acceptInvite(invitation) {
+async function acceptInvite(invitation: Misskey.Endpoints['i/user-group-invites']['res'][number]) {
 	os.apiWithDialog('users/groups/invitations/accept', {
 		invitationId: invitation.id,
 	}).then(() => {
@@ -91,7 +92,7 @@ async function acceptInvite(invitation) {
 	});
 }
 
-function rejectInvite(invitation) {
+function rejectInvite(invitation: Misskey.Endpoints['i/user-group-invites']['res'][number]) {
 	os.apiWithDialog('users/groups/invitations/reject', {
 		invitationId: invitation.id,
 	}).then(() => {
@@ -101,7 +102,7 @@ function rejectInvite(invitation) {
 	});
 }
 
-async function leave(group) {
+async function leave(group: Misskey.Endpoints['users/groups/joined']['res'][number]) {
 	const { canceled } = await os.confirm({
 		type: 'warning',
 		text: i18n.tsx.leaveGroupConfirm({ name: group.name }),

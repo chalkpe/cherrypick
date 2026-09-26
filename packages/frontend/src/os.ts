@@ -268,7 +268,7 @@ export function alert(props: {
 	caption?: string | null;
 }): Promise<void> {
 	return new Promise(resolve => {
-		const { dispose } = popup(MkDialog, props, {
+		const { dispose } = popup(MkDialog, { ...props, caption: props.caption ?? undefined }, {
 			done: () => {
 				resolve();
 			},
@@ -288,6 +288,7 @@ export function confirm(props: {
 	return new Promise(resolve => {
 		const { dispose } = popup(MkDialog, {
 			...props,
+			caption: props.caption ?? undefined,
 			showCancelButton: true,
 		}, {
 			done: result => {
@@ -315,6 +316,7 @@ export function actions<const T extends ActionsAction[]>(props: {
 	return new Promise(resolve => {
 		const { dispose } = popup(MkDialog, {
 			...props,
+			caption: props.caption ?? undefined,
 			actions: props.actions.map(a => ({
 				text: a.text,
 				primary: a.primary,

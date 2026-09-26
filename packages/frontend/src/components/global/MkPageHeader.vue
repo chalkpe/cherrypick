@@ -43,7 +43,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<button v-tooltip.noDelay="action.text" class="_button" :class="[$style.button, { [$style.highlighted]: action.highlighted }]" @click.stop="action.handler" @touchstart="preventDrag"><i :class="action.icon"></i></button>
 			</template>
 		</div>
-		<div v-else-if="!thin_ && !canBack && !(actions && actions.length > 0)" :class="[$style.buttons, $style.buttonsRight]"/>
+		<div v-else-if="!thin_ && !canBack && !(actions && actions.length > 0)" :class="[$style.buttons, $style.buttonsRight]"></div>
 		<div v-if="pageMetadata && pageMetadata.avatar && ($i && $i.id !== pageMetadata.userName?.id) && mainRouter.currentRoute.value.name === 'user' && !disableFollowButton && !notification" :class="$style.followButton">
 			<MkFollowButton :user="pageMetadata.avatar" :transparent="false" :full="!narrow"/>
 		</div>
@@ -171,6 +171,21 @@ async function openAccountMenu(ev: PointerEvent) {
 
 	os.popupMenu(menuItems, ev.currentTarget ?? ev.target);
 }
+
+const topWithMenu = (ev: MouseEvent) => {
+	const pos = getScrollPosition(el.value as HTMLElement);
+	if (el.value && pos !== 0) {
+		scrollToTop(el.value as HTMLElement, { behavior: 'smooth' });
+	} else if (pos === 0) {
+		os.popupMenu([{
+			text: i18n.ts.reload,
+			icon: 'ti ti-refresh',
+			action: () => {
+				window.location.reload();
+			},
+		}], ev.currentTarget ?? ev.target);
+	}
+};
 
 function onTabClick(): void {
 	top();

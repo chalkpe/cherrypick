@@ -13,6 +13,7 @@ import type {
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import type { Packed } from '@/misc/json-schema.js';
+import { getNextBirthdayDate } from '@/misc/next-birthday-date.js';
 
 export const meta = {
 	tags: ['users'],
@@ -144,16 +145,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			return birthdayUsers
 				.map(item => {
-					const birthday = new Date();
-					birthday.setHours(0, 0, 0, 0);
-					// item.birthday_date は mmdd の形式の最大4桁の数字（例: 8月30日 → 830）で出力されるので、日付に戻してDateオブジェクトに設定
-					birthday.setMonth(Math.floor(item.birthday_date / 100) - 1, item.birthday_date % 100);
-
-					if (birthday.getTime() < new Date().setHours(0, 0, 0, 0)) {
-						birthday.setFullYear(new Date().getFullYear() + 1);
-					}
-
-					const birthdayStr = `${birthday.getFullYear()}-${(birthday.getMonth() + 1).toString().padStart(2, '0')}-${(birthday.getDate()).toString().padStart(2, '0')}`;
+					// birthday_date is encoded as mmdd (for example, August 30 is 830).
+					const birthdayStr = getNextBirthdayDate(Math.floor(item.birthday_date / 100), item.birthday_date % 100);
 					return {
 						id: item.user_id,
 						birthday: birthdayStr,

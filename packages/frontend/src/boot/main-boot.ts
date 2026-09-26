@@ -29,6 +29,9 @@ import { prefer } from '@/preferences.js';
 import { updateCurrentAccountPartial } from '@/accounts.js';
 import { unisonReload } from '@/utility/unison-reload.js';
 import { isBirthday } from '@/utility/is-birthday.js';
+import { userName } from '@/filters/user.js';
+import { misskeyApi } from '@/utility/misskey-api.js';
+import * as os from '@/os.js';
 
 export async function mainBoot() {
 	const { isClientUpdated, isClientMigrated, lastVersion } = await common(async () => {
