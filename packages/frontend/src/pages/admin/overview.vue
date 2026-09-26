@@ -114,9 +114,7 @@ const filesPagination = {
 	noPaging: true,
 };
 
-const meta = useTemplateRef('meta');
-
-function onInstanceClick(i) {
+function onInstanceClick(i: Misskey.entities.FederationInstance) {
 	os.pageWindow(`/instance-info/${i.host}`);
 }
 

@@ -117,7 +117,7 @@ export class ApInboxService {
 		if (isCollectionOrOrderedCollection(activity)) {
 			const results = [] as [string, string | void][];
 			// eslint-disable-next-line no-param-reassign
-			resolver ??= this.apResolverService.createResolver();
+			resolver ??= await this.apResolverService.createResolver();
 
 			const items = toArray(isCollection(activity) ? activity.items : activity.orderedItems);
 			if (items.length >= resolver.getRecursionLimit()) {
@@ -245,7 +245,7 @@ export class ApInboxService {
 		this.logger.info(`Accept: ${uri}`);
 
 		// eslint-disable-next-line no-param-reassign
-		resolver ??= this.apResolverService.createResolver();
+		resolver ??= await this.apResolverService.createResolver();
 
 		const object = await resolver.resolve(activity.object).catch(err => {
 			this.logger.error(`Resolution failed: ${err}`);
@@ -337,7 +337,7 @@ export class ApInboxService {
 
 	@bindThis
 	private async add(actor: MiRemoteUser, activity: IAdd, resolver?: Resolver): Promise<string | void> {
-		if (actor.uri !== activity.actor) {
+		if (actor.uri !== getApId(activity.actor)) {
 			return 'invalid actor';
 		}
 
@@ -362,7 +362,7 @@ export class ApInboxService {
 		this.logger.info(`Announce: ${uri}`);
 
 		// eslint-disable-next-line no-param-reassign
-		resolver ??= this.apResolverService.createResolver();
+		resolver ??= await this.apResolverService.createResolver();
 
 		if (!activity.object) return 'skip: activity has no object property';
 		const targetUri = getApId(activity.object);
@@ -380,19 +380,19 @@ export class ApInboxService {
 
 	@bindThis
 	private async announceNote(actor: MiRemoteUser, activity: IAnnounce, target: IPost, resolver?: Resolver): Promise<string | void> {
-		const uri = getApId(activity);
-
 		if (actor.isSuspended) {
 			return;
 		}
 
+		// リレーからのAnnounceかチェック
+		const fromRelay = await this.relayService.isRelayActor(actor);
+		const uri = getApId(fromRelay ? target : activity);
+
 		// アナウンス先が許可されているかチェック
 		if (!this.utilityService.isFederationAllowedUri(uri)) return;
 
-		const relays = await this.relayService.getAcceptedRelays();
-		const fromRelay = !!actor.inbox && relays.map(r => r.inbox).includes(actor.inbox);
-
-		const unlock = await acquireApObjectLock(this.redisClient, uri);
+		const activityUri = getApId(activity);
+		const unlock = await acquireApObjectLock(this.redisClient, activityUri);
 
 		try {
 			// 既に同じURIを持つものが登録されていないかチェック
@@ -415,6 +415,14 @@ export class ApInboxService {
 					return `Error in announce target ${target.id} - ${err.statusCode}`;
 				}
 				throw err;
+			}
+
+			// リレーからのAnnounceはリノートを作成せず、ノートを直接公開する
+			if (fromRelay) {
+				this.logger.info(`Publishing relay-delivered note: ${uri}`);
+				const noteObj = await this.noteEntityService.pack(renote, null, { skipHide: true, withReactionAndUserPairCache: true });
+				this.globalEventService.publishNotesStream(noteObj);
+				return;
 			}
 
 			if (!await this.noteEntityService.isVisibleForMe(renote, actor.id)) {
@@ -493,7 +501,7 @@ export class ApInboxService {
 		}
 
 		// eslint-disable-next-line no-param-reassign
-		resolver ??= this.apResolverService.createResolver();
+		resolver ??= await this.apResolverService.createResolver();
 
 		const object = await resolver.resolve(activity.object).catch(e => {
 			this.logger.error(`Resolution failed: ${e}`);
@@ -731,7 +739,7 @@ export class ApInboxService {
 
 	@bindThis
 	private async delete(actor: MiRemoteUser, activity: IDelete): Promise<string> {
-		if (actor.uri !== activity.actor) {
+		if (actor.uri !== getApId(activity.actor)) {
 			return 'invalid actor';
 		}
 
@@ -847,7 +855,7 @@ export class ApInboxService {
 		this.logger.info(`Reject: ${uri}`);
 
 		// eslint-disable-next-line no-param-reassign
-		resolver ??= this.apResolverService.createResolver();
+		resolver ??= await this.apResolverService.createResolver();
 
 		const object = await resolver.resolve(activity.object).catch(e => {
 			this.logger.error(`Resolution failed: ${e}`);
@@ -950,7 +958,7 @@ export class ApInboxService {
 
 	@bindThis
 	private async remove(actor: MiRemoteUser, activity: IRemove, resolver?: Resolver): Promise<string | void> {
-		if (actor.uri !== activity.actor) {
+		if (actor.uri !== getApId(activity.actor)) {
 			return 'invalid actor';
 		}
 
@@ -995,7 +1003,7 @@ export class ApInboxService {
 
 	@bindThis
 	private async undo(actor: MiRemoteUser, activity: IUndo, resolver?: Resolver): Promise<string> {
-		if (actor.uri !== activity.actor) {
+		if (actor.uri !== getApId(activity.actor)) {
 			return 'invalid actor';
 		}
 
@@ -1004,7 +1012,7 @@ export class ApInboxService {
 		this.logger.info(`Undo: ${uri}`);
 
 		// eslint-disable-next-line no-param-reassign
-		resolver ??= this.apResolverService.createResolver();
+		resolver ??= await this.apResolverService.createResolver();
 
 		const object = await resolver.resolve(activity.object).catch(e => {
 			this.logger.error(`Resolution failed: ${e}`);
@@ -1169,16 +1177,14 @@ export class ApInboxService {
 
 	@bindThis
 	private async update(actor: MiRemoteUser, activity: IUpdate, resolver?: Resolver): Promise<string> {
-		const uri = getApId(activity);
-
-		if (actor.uri !== activity.actor) {
+		if (actor.uri !== getApId(activity.actor)) {
 			return 'skip: invalid actor';
 		}
 
 		this.logger.debug(`Update: ${uri}`);
 
 		// eslint-disable-next-line no-param-reassign
-		resolver ??= this.apResolverService.createResolver();
+		resolver ??= await this.apResolverService.createResolver();
 
 		const object = await resolver.resolve(activity.object).catch(e => {
 			this.logger.error(`Resolution failed: ${e}`);

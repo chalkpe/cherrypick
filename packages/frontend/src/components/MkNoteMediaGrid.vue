@@ -6,16 +6,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <template v-for="file in note.files">
 	<div
-		v-if="(((
-			(prefer.s.nsfw === 'force' || file.isSensitive) &&
-			prefer.s.nsfw !== 'ignore'
-		) || (prefer.s.dataSaver.media && file.type.startsWith('image/'))) &&
-			!showingFiles.has(file.id)
-		)"
+		v-if="isHiding(file)"
 		:class="[$style.filePreview, { [$style.square]: square }]"
-		:data-scroll-anchor="file.id"
-		@click="onClick($event, file)"
-		@dblclick="onDblClick(file)"
+		:data-scroll-anchor="`${note.id}:${file.id}`"
+		@click="reveal(file)"
 	>
 		<MkDriveFileThumbnail
 			:file="file"
@@ -45,7 +39,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</div>
 		</div>
 	</div>
-	<MkA v-else :class="[$style.filePreview, { [$style.square]: square }]" :data-scroll-anchor="file.id" :to="notePage(note)">
+	<MkA v-else :class="[$style.filePreview, { [$style.square]: square }]" :data-scroll-anchor="`${note.id}:${file.id}`" :to="notePage(note)">
 		<MkDriveFileThumbnail
 			:file="file"
 			fit="cover"
@@ -82,6 +76,7 @@ import * as os from '@/os.js';
 import { notePage } from '@/filters/note.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
+import { shouldHideFileByDefault, canRevealFile } from '@/utility/sensitive-file.js';
 import bytes from '@/filters/bytes.js';
 
 import MkDriveFileThumbnail from '@/components/MkDriveFileThumbnail.vue';
@@ -96,25 +91,22 @@ defineProps<{
 
 const showingFiles = ref<Set<string>>(new Set());
 
-async function onClick(ev: MouseEvent, image: Misskey.entities.DriveFile) {
-	if (!showingFiles.value.has(image.id)) {
-		ev.stopPropagation();
-		if (image.isSensitive && prefer.s.confirmWhenRevealingSensitiveMedia) {
-			const { canceled } = await os.confirm({
-				type: 'question',
-				text: i18n.ts.sensitiveMediaRevealConfirm,
-			});
-			if (canceled) return;
-			showingFiles.value.add(image.id);
+function isHiding(file: Misskey.entities.DriveFile) {
+	if (shouldHideFileByDefault(file) && !showingFiles.value.has(file.id)) {
+		if (!file.isSensitive && !file.type.startsWith('image/')) {
+			return false;
 		}
+		return true;
 	}
-
-	if (prefer.s.nsfwOpenBehavior === 'doubleClick') os.popup(MkRippleEffect, { x: ev.clientX, y: ev.clientY }, {});
-	if (prefer.s.nsfwOpenBehavior === 'click') showingFiles.value.add(image.id);
+	return false;
 }
 
-async function onDblClick(image: Misskey.entities.DriveFile) {
-	if (!showingFiles.value.has(image.id) && prefer.s.nsfwOpenBehavior === 'doubleClick') showingFiles.value.add(image.id);
+async function reveal(file: Misskey.entities.DriveFile) {
+	if (!(await canRevealFile(file))) {
+		return;
+	}
+
+	showingFiles.value.add(file.id);
 }
 </script>
 

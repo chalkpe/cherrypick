@@ -929,6 +929,7 @@ information: "Informácie"
 inMinutes: "min"
 inDays: "dní"
 widgets: "Widgety"
+previewingThemeRestore: "Obnoviť"
 _imageEditing:
   _vars:
     filename: "Názov súboru"
@@ -1312,6 +1313,14 @@ _widgets:
   aichan: "Ai"
   _userList:
     chooseList: "Vyberte zoznam"
+_widgetOptions:
+  height: "Výška"
+  _button:
+    colored: "Farebné"
+  _clock:
+    size: "Veľkosť"
+  _birthdayFollowings:
+    period: "Trvanie"
 _cw:
   hide: "Skryť"
   show: "Zobraziť viac"

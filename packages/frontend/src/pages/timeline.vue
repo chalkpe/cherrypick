@@ -45,6 +45,7 @@ import { computed, watch, provide, useTemplateRef, defineAsyncComponent, ref, on
 import type { Tab } from '@/components/global/MkPageHeader.tabs.vue';
 import type { MenuItem } from '@/types/menu.js';
 import type { BasicTimelineType } from '@/timelines.js';
+import type { PageHeaderItem } from '@/types/page-header.js';
 import MkStreamingNotesTimeline from '@/components/MkStreamingNotesTimeline.vue';
 import MkPostForm from '@/components/MkPostForm.vue';
 import * as os from '@/os.js';
@@ -145,129 +146,7 @@ const withSensitive = computed<boolean>({
 
 const showFixedPostForm = prefer.model('showFixedPostForm');
 
-const enableWidgetsArea = ref(prefer.s.enableWidgetsArea);
-const friendlyUiEnableNotificationsArea = ref(prefer.s.friendlyUiEnableNotificationsArea);
-
-const enableHomeTimeline = ref(prefer.s.enableHomeTimeline);
-const enableLocalTimeline = ref(prefer.s.enableLocalTimeline);
-const enableSocialTimeline = ref(prefer.s.enableSocialTimeline);
-const enableGlobalTimeline = ref(prefer.s.enableGlobalTimeline);
-const enableMediaTimeline = ref(prefer.s.enableMediaTimeline);
-const enableBubbleTimeline = ref(prefer.s.enableBubbleTimeline);
-const enableListTimeline = ref(prefer.s.enableListTimeline);
-const enableAntennaTimeline = ref(prefer.s.enableAntennaTimeline);
-const enableChannelTimeline = ref(prefer.s.enableChannelTimeline);
-
-const forceCollapseAllRenotes = ref(prefer.s.forceCollapseAllRenotes);
-const collapseRenotes = ref(prefer.s.collapseRenotes);
-const collapseReplies = ref(prefer.s.collapseReplies);
-const collapseLongNoteContent = ref(prefer.s.collapseLongNoteContent);
-const collapseDefault = ref(prefer.s.collapseDefault);
-const alwaysShowCw = ref(prefer.s.alwaysShowCw);
-const showReplyTargetNote = ref(prefer.s.showReplyTargetNote);
-const disableNyaize = ref(prefer.s.disableNyaize);
-
-watch(enableWidgetsArea, (x) => {
-	prefer.commit('enableWidgetsArea', x);
-	suggestReload();
-});
-
-watch(friendlyUiEnableNotificationsArea, (x) => {
-	prefer.commit('friendlyUiEnableNotificationsArea', x);
-	suggestReload();
-});
-
-watch(enableHomeTimeline, (x) => {
-	prefer.commit('enableHomeTimeline', x);
-	suggestReload();
-});
-
-watch(enableLocalTimeline, (x) => {
-	prefer.commit('enableLocalTimeline', x);
-	suggestReload();
-});
-
-watch(enableSocialTimeline, (x) => {
-	prefer.commit('enableSocialTimeline', x);
-	suggestReload();
-});
-
-watch(enableGlobalTimeline, (x) => {
-	prefer.commit('enableGlobalTimeline', x);
-	suggestReload();
-});
-
-watch(enableMediaTimeline, (x) => {
-	prefer.commit('enableMediaTimeline', x);
-	suggestReload();
-});
-
-watch(enableBubbleTimeline, (x) => {
-	prefer.commit('enableBubbleTimeline', x);
-	suggestReload();
-});
-
-watch(enableListTimeline, (x) => {
-	prefer.commit('enableListTimeline', x);
-	suggestReload();
-});
-
-watch(enableAntennaTimeline, (x) => {
-	prefer.commit('enableAntennaTimeline', x);
-	suggestReload();
-});
-
-watch(enableChannelTimeline, (x) => {
-	prefer.commit('enableChannelTimeline', x);
-	suggestReload();
-});
-
-watch(forceCollapseAllRenotes, (x) => {
-	prefer.commit('forceCollapseAllRenotes', x);
-	reloadTimeline();
-});
-
-watch(collapseRenotes, (x) => {
-	prefer.commit('collapseRenotes', x);
-	reloadTimeline();
-});
-
-watch(collapseReplies, (x) => {
-	prefer.commit('collapseReplies', x);
-	reloadTimeline();
-});
-
-watch(collapseLongNoteContent, (x) => {
-	prefer.commit('collapseLongNoteContent', x);
-	reloadTimeline();
-	reloadNotification();
-});
-
-watch(collapseDefault, (x) => {
-	prefer.commit('collapseDefault', x);
-	reloadTimeline();
-	reloadNotification();
-});
-
-watch(alwaysShowCw, (x) => {
-	prefer.commit('alwaysShowCw', x);
-	reloadTimeline();
-	reloadNotification();
-});
-
-watch(showReplyTargetNote, (x) => {
-	prefer.commit('showReplyTargetNote', x);
-	reloadTimeline();
-	reloadNotification();
-});
-
-watch(disableNyaize, (x) => {
-	prefer.commit('disableNyaize', x);
-	reloadTimeline();
-	reloadNotification();
-});
-
-async function chooseList(ev: MouseEvent): Promise<void> {
+async function chooseList(ev: PointerEvent): Promise<void> {
 	const lists = await userListsCache.fetch();
 	const items: (MenuItem | undefined)[] = [
 		...lists.map(list => ({
@@ -286,7 +165,7 @@ async function chooseList(ev: MouseEvent): Promise<void> {
 	os.popupMenu(items.filter(i => i != null), ev.currentTarget ?? ev.target);
 }
 
-async function chooseAntenna(ev: MouseEvent): Promise<void> {
+async function chooseAntenna(ev: PointerEvent): Promise<void> {
 	const antennas = await antennasCache.fetch();
 	const items: (MenuItem | undefined)[] = [
 		...antennas.map(antenna => ({
@@ -306,7 +185,7 @@ async function chooseAntenna(ev: MouseEvent): Promise<void> {
 	os.popupMenu(items.filter(i => i != null), ev.currentTarget ?? ev.target);
 }
 
-async function chooseChannel(ev: MouseEvent): Promise<void> {
+async function chooseChannel(ev: PointerEvent): Promise<void> {
 	const channels = await favoritedChannelsCache.fetch();
 	const items: (MenuItem | undefined)[] = [
 		...channels.map(channel => {
@@ -382,8 +261,8 @@ onActivated(() => {
 	switchTlIfNeeded();
 });
 
-const headerActions = computed(() => {
-	const items = [{
+const headerActions = computed<PageHeaderItem[]>(() => {
+	const items: PageHeaderItem[] = [{
 		icon: 'ti ti-dots',
 		text: i18n.ts.options,
 		handler: (ev) => {
@@ -571,7 +450,7 @@ const headerActions = computed(() => {
 		items.unshift({
 			icon: 'ti ti-refresh',
 			text: i18n.ts.reload,
-			handler: (ev: Event) => {
+			handler: () => {
 				tlComponent.value?.reloadTimeline();
 			},
 		});

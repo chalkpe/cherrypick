@@ -6,6 +6,7 @@
 import { computed, reactive } from 'vue';
 import { ui } from '@@/js/config.js';
 import { clearCache } from './utility/clear-cache.js';
+import type { ComputedRef } from 'vue';
 import { $i } from '@/i.js';
 import { miLocalStorage } from '@/local-storage.js';
 import { openInstanceMenu, openToolsMenu } from '@/ui/_common_/common.js';
@@ -15,7 +16,17 @@ import { i18n } from '@/i18n.js';
 import { unisonReload } from '@/utility/unison-reload.js';
 import { donateCherryPick } from '@/utility/donate-cherrypick.js';
 
-export const navbarItemDef = reactive({
+export const navbarItemDef = reactive<{
+	[key: string]: {
+		title: string;
+		icon: string;
+		show?: ComputedRef<boolean>;
+		indicated?: ComputedRef<boolean>;
+		indicateValue?: ComputedRef<string>;
+		to?: string;
+		action?: (ev: PointerEvent) => void;
+	};
+}>({
 	notifications: {
 		title: i18n.ts.notifications,
 		icon: 'ti ti-bell',
@@ -144,7 +155,7 @@ export const navbarItemDef = reactive({
 	ui: {
 		title: i18n.ts.switchUi,
 		icon: 'ti ti-devices',
-		action: (ev: MouseEvent) => {
+		action: (ev) => {
 			os.popupMenu([{
 				text: 'Friendly',
 				active: ui === 'friendly' || ui === null,

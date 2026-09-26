@@ -39,11 +39,7 @@ export interface BroadcastTypes {
 		emojis: Packed<'EmojiDetailed'>[];
 	};
 	emojiDeleted: {
-		emojis: {
-			id?: string;
-			name: string;
-			[other: string]: any;
-		}[];
+		emojis: Packed<'EmojiDetailed'>[];
 	};
 	announcementCreated: {
 		announcement: Packed<'Announcement'>;
@@ -136,6 +132,9 @@ export interface NoteEventTypes {
 type NoteStreamEventTypes = {
 	[key in keyof NoteEventTypes]: {
 		id: MiNote['id'];
+		userId: MiNote['userId'];
+		visibility: MiNote['visibility'];
+		visibleUserIds: MiNote['visibleUserIds'];
 		body: NoteEventTypes[key];
 	};
 };
@@ -275,7 +274,7 @@ export interface InternalEventTypes {
 	userListMemberRemoved: { userListId: MiUserList['id']; memberId: MiUser['id']; };
 }
 
-type EventTypesToEventPayload<T> = EventUnionFromDictionary<UndefinedAsNullAll<SerializedAll<T>>>;
+export type EventTypesToEventPayload<T> = EventUnionFromDictionary<UndefinedAsNullAll<SerializedAll<T>>>;
 
 // name/messages(spec) pairs dictionary
 export type GlobalEvents = {
@@ -397,9 +396,12 @@ export class GlobalEventService {
 	}
 
 	@bindThis
-	public publishNoteStream<K extends keyof NoteEventTypes>(noteId: MiNote['id'], type: K, value?: NoteEventTypes[K]): void {
-		this.publish(`noteStream:${noteId}`, type, {
-			id: noteId,
+	public publishNoteStream<K extends keyof NoteEventTypes>(note: MiNote, type: K, value?: NoteEventTypes[K]): void {
+		this.publish(`noteStream:${note.id}`, type, {
+			id: note.id,
+			userId: note.userId,
+			visibility: note.visibility,
+			visibleUserIds: note.visibleUserIds,
 			body: value,
 		});
 	}

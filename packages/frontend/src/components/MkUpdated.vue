@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<MkModal v-if="!showChangelog" ref="modal" preferType="dialog" :zPriority="'middle'" @click="modal?.close()" @closed="$emit('closed')">
+<MkModal ref="modal" preferType="dialog" :zPriority="'middle'" @click="modal?.close()" @closed="emit('closed')">
 	<div :class="$style.root">
 		<div style="display: grid;">
 			<Mfm text="$[tada 🎉]"/>
@@ -49,18 +49,19 @@ const showChangelog = ref(false);
 
 const modal = useTemplateRef('modal');
 
+const emit = defineEmits<{
+	(ev: 'closed'): void;
+}>();
+
 const isBeta = version.includes('-beta') || version.includes('-alpha') || version.includes('-rc');
 
-/**
- * function whatIsNewMisskey() {
- * 	// modal.value?.close();
- * 	window.open(`https://misskey-hub.net/docs/releases/#_${basedMisskeyVersion.replace(/\./g, '')}`, '_blank');
- * }
- */
-
-function whatIsNewCherryPick() {
-	// modal.value?.close();
-	window.open(`https://github.com/kokonect-link/cherrypick/blob/develop/CHANGELOG_CHERRYPICK.md#${version.replace(/\./g, '')}`, '_blank');
+function whatIsNew() {
+	modal.value?.close();
+	if (isBeta) {
+		window.open(`https://github.com/misskey-dev/misskey/releases/tag/${version}`, '_blank');
+	} else {
+		window.open(`https://misskey-hub.net/docs/releases/#_${version.replace(/\./g, '')}`, '_blank');
+	}
 }
 
 const close = async () => {

@@ -1,6 +1,6 @@
-# syntax = docker/dockerfile:1.4
+# syntax = docker/dockerfile:1.23
 
-ARG NODE_VERSION=22.15.0-bookworm
+ARG NODE_VERSION=26.4.0-trixie
 
 # build assets & compile TypeScript
 
@@ -40,7 +40,6 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=locked \
 
 COPY --link . ./
 
-RUN git submodule update --init
 RUN pnpm build
 RUN rm -rf .git/
 
@@ -74,6 +73,8 @@ FROM --platform=$TARGETPLATFORM node:${NODE_VERSION}-slim AS runner
 ARG UID="991"
 ARG GID="991"
 
+ENV PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
+
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
 	ffmpeg tini curl libjemalloc-dev libjemalloc2 \
@@ -92,19 +93,18 @@ RUN node -e "console.log(JSON.parse(require('node:fs').readFileSync('./package.j
 USER cherrypick
 WORKDIR /cherrypick
 
-COPY --chown=cherrypick:cherrypick --from=target-builder /cherrypick/node_modules ./node_modules
-COPY --chown=cherrypick:cherrypick --from=target-builder /cherrypick/packages/backend/node_modules ./packages/backend/node_modules
-COPY --chown=cherrypick:cherrypick --from=target-builder /cherrypick/packages/cherrypick-js/node_modules ./packages/cherrypick-js/node_modules
-COPY --chown=cherrypick:cherrypick --from=target-builder /cherrypick/packages/misskey-reversi/node_modules ./packages/misskey-reversi/node_modules
-COPY --chown=cherrypick:cherrypick --from=target-builder /cherrypick/packages/misskey-bubble-game/node_modules ./packages/misskey-bubble-game/node_modules
-COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/built ./built
-COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/packages/cherrypick-js/built ./packages/cherrypick-js/built
-COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/packages/misskey-reversi/built ./packages/misskey-reversi/built
-COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/packages/misskey-bubble-game/built ./packages/misskey-bubble-game/built
-COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/packages/backend/built ./packages/backend/built
-COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/packages/i18n/built ./packages/i18n/built
-COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/fluent-emojis /cherrypick/fluent-emojis
-COPY --chown=cherrypick:cherrypick . ./
+COPY --chown=misskey:misskey --from=target-builder /misskey/node_modules ./node_modules
+COPY --chown=misskey:misskey --from=target-builder /misskey/packages/backend/node_modules ./packages/backend/node_modules
+COPY --chown=misskey:misskey --from=target-builder /misskey/packages/misskey-js/node_modules ./packages/misskey-js/node_modules
+COPY --chown=misskey:misskey --from=target-builder /misskey/packages/misskey-reversi/node_modules ./packages/misskey-reversi/node_modules
+COPY --chown=misskey:misskey --from=target-builder /misskey/packages/misskey-bubble-game/node_modules ./packages/misskey-bubble-game/node_modules
+COPY --chown=misskey:misskey --from=native-builder /misskey/built ./built
+COPY --chown=misskey:misskey --from=native-builder /misskey/packages/misskey-js/built ./packages/misskey-js/built
+COPY --chown=misskey:misskey --from=native-builder /misskey/packages/misskey-reversi/built ./packages/misskey-reversi/built
+COPY --chown=misskey:misskey --from=native-builder /misskey/packages/misskey-bubble-game/built ./packages/misskey-bubble-game/built
+COPY --chown=misskey:misskey --from=native-builder /misskey/packages/backend/built ./packages/backend/built
+COPY --chown=misskey:misskey --from=native-builder /misskey/packages/i18n/built ./packages/i18n/built
+COPY --chown=misskey:misskey . ./
 
 ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so
 ENV MALLOC_CONF=background_thread:true,metadata_thp:auto,dirty_decay_ms:30000,muzzy_decay_ms:30000

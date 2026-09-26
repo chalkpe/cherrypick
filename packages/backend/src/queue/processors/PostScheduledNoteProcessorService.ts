@@ -31,7 +31,10 @@ export class PostScheduledNoteProcessorService {
 
 	@bindThis
 	public async process(job: Bull.Job<PostScheduledNoteJobData>): Promise<void> {
-		const draft = await this.noteDraftsRepository.findOne({ where: { id: job.data.noteDraftId }, relations: ['user'] });
+		const draft = await this.noteDraftsRepository.findOne({
+			where: { id: job.data.noteDraftId },
+			relations: { user: true },
+		});
 		if (draft == null || draft.user == null || draft.scheduledAt == null || !draft.isActuallyScheduled) {
 			return;
 		}
@@ -71,7 +74,7 @@ export class PostScheduledNoteProcessorService {
 			this.notificationService.createNotification(draft.userId, 'scheduledNotePosted', {
 				noteId: note.id,
 			});
-		} catch (err) {
+		} catch (_) {
 			this.notificationService.createNotification(draft.userId, 'scheduledNotePostFailed', {
 				noteDraftId: draft.id,
 			});

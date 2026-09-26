@@ -34,7 +34,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { onBeforeUnmount, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue';
 import { miLocalStorage } from '@/local-storage.js';
 import { prefer } from '@/preferences.js';
-import { globalEvents } from '@/events.js';
+import { themeManager } from '@/theme.js';
 import { getBgColor } from '@/utility/get-bg-color.js';
 import { mainRouter } from '@/router.js';
 import { deviceKind } from '@/utility/device-kind.js';
@@ -106,7 +106,7 @@ function updateBgColor() {
 
 onMounted(() => {
 	updateBgColor();
-	globalEvents.on('themeChanging', updateBgColor);
+	themeManager.on('themeChanging', updateBgColor);
 });
 
 onUnmounted(() => {
@@ -114,7 +114,7 @@ onUnmounted(() => {
 });
 
 onBeforeUnmount(() => {
-	globalEvents.off('themeChanging', updateBgColor);
+	themeManager.off('themeChanging', updateBgColor);
 });
 </script>
 

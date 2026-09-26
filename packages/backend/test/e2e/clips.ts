@@ -6,6 +6,8 @@
 process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
+import { describe, beforeAll, beforeEach, afterEach, test } from 'vitest';
+import { DEFAULT_POLICIES } from '@/core/RoleService.js';
 import { api, ApiRequest, failedApiCall, hiddenNote, post, signup, successfulApiCall } from '../utils.js';
 import type * as Misskey from 'cherrypick-js';
 import { DEFAULT_POLICIES } from '@/core/RoleService.js';
@@ -176,7 +178,9 @@ describe('クリップ', () => {
 		{ label: 'descriptionがnull', parameters: { description: null } },
 		{ label: 'descriptionが最大長', parameters: { description: 'a'.repeat(2048) } },
 	];
-	test.each(createClipAllowedPattern)('の作成は$labelでもできる', async ({ parameters }) => await create(parameters));
+	test.each(createClipAllowedPattern)('の作成は$labelでもできる', async ({ parameters }) => {
+		await create(parameters);
+	});
 
 	const createClipDenyPattern = [
 		{ label: 'nameがnull', parameters: { name: null } },
@@ -233,11 +237,13 @@ describe('クリップ', () => {
 		assert.strictEqual(res.isFavorited, false);
 	});
 
-	test.each(createClipAllowedPattern)('の更新は$labelでもできる', async ({ parameters }) => await update({
-		clipId: (await create()).id,
-		name: 'updated',
-		...parameters,
-	}));
+	test.each(createClipAllowedPattern)('の更新は$labelでもできる', async ({ parameters }) => {
+		await update({
+			clipId: (await create()).id,
+			name: 'updated',
+			...parameters,
+		});
+	});
 
 	test.each([
 		{ label: 'clipIdがnull', parameters: { clipId: null } },

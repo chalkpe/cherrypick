@@ -96,6 +96,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 					<div>
 						<MkButton v-if="user.host == null" inline style="margin-right: 8px;" @click="resetPassword"><i class="ti ti-key"></i> {{ i18n.ts.resetPassword }}</MkButton>
+						<MkButton v-if="user.host == null" inline @click="unsetMfa"><i class="ti ti-shield"></i> {{ i18n.ts.unsetMfa }}</MkButton>
 					</div>
 
 					<MkFolder>
@@ -103,7 +104,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<template #label>{{ i18n.ts._role.policies }}</template>
 						<div class="_gaps">
 							<div v-for="policy in Object.keys(info.policies)" :key="policy">
-								{{ policy }} ... {{ info.policies[policy] }}
+								{{ policy }} ... {{ info.policies[policy as keyof typeof info.policies] }}
 							</div>
 						</div>
 					</MkFolder>
@@ -334,7 +335,7 @@ async function resetPassword() {
 	if (confirm.canceled) {
 		return;
 	} else {
-		const { password } = await misskeyApi('admin/reset-password', {
+		const { password } = await os.apiWithDialog('admin/reset-password', {
 			userId: user.value.id,
 		});
 		os.alert({
@@ -344,7 +345,21 @@ async function resetPassword() {
 	}
 }
 
-async function toggleSuspend(v) {
+async function unsetMfa() {
+	const confirm = await os.confirm({
+		type: 'warning',
+		text: i18n.ts.unsetMfaConfirm,
+	});
+	if (confirm.canceled) {
+		return;
+	} else {
+		await os.apiWithDialog('admin/unset-mfa', {
+			userId: user.value.id,
+		});
+	}
+}
+
+async function toggleSuspend(v: boolean) {
 	const confirm = await os.confirm({
 		type: 'warning',
 		text: v ? i18n.ts.suspendConfirm : i18n.ts.unsuspendConfirm,
@@ -475,7 +490,7 @@ async function assignRole() {
 	refreshUser();
 }
 
-async function unassignRole(role: typeof info.value.roles[number], ev: MouseEvent) {
+async function unassignRole(role: typeof info.value.roles[number], ev: PointerEvent) {
 	os.popupMenu([{
 		text: i18n.ts.unassign,
 		icon: 'ti ti-x',
@@ -503,7 +518,7 @@ async function createAnnouncement() {
 	});
 }
 
-async function editAnnouncement(announcement) {
+async function editAnnouncement(announcement: Misskey.entities.AdminAnnouncementsListResponse[number]) {
 	const { dispose } = await os.popupAsyncWithDialog(import('@/components/MkUserAnnouncementEditDialog.vue').then(x => x.default), {
 		user: user.value,
 		announcement,

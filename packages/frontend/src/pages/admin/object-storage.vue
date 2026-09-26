@@ -118,10 +118,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 					<div class="_gaps">
 						<SearchMarker>
-							<MkSwitch v-model="remoteObjectStorageForm.state.useRemoteObjectStorage">
-								<template #label>{{ i18n.ts.useObjectStorage }} ({{ i18n.ts.remote }})<span v-if="remoteObjectStorageForm.modifiedStates.useRemoteObjectStorage" class="_modified">{{ i18n.ts.modified }}</span></template>
-								<template #caption>{{ i18n.ts.objectStorageRemoteEnableDesc }}</template>
-							</MkSwitch>
+							<MkInput v-model="objectStorageSecretKey" type="password" autocomplete="new-password">
+								<template #prefix><i class="ti ti-key"></i></template>
+								<template #label><SearchLabel>Secret key</SearchLabel></template>
+							</MkInput>
 						</SearchMarker>
 
 						<template v-if="remoteObjectStorageForm.state.useRemoteObjectStorage">

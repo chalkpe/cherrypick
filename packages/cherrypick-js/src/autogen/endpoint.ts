@@ -94,11 +94,13 @@ import type {
 	AdminQueueInboxDelayedResponse,
 	AdminQueueJobsRequest,
 	AdminQueueJobsResponse,
+	AdminQueuePauseRequest,
 	AdminQueuePromoteJobsRequest,
 	AdminQueueQueueStatsRequest,
 	AdminQueueQueueStatsResponse,
 	AdminQueueQueuesResponse,
 	AdminQueueRemoveJobRequest,
+	AdminQueueResumeRequest,
 	AdminQueueRetryJobRequest,
 	AdminQueueShowJobRequest,
 	AdminQueueShowJobResponse,
@@ -143,6 +145,7 @@ import type {
 	AdminSystemWebhookTestRequest,
 	AdminSystemWebhookUpdateRequest,
 	AdminSystemWebhookUpdateResponse,
+	AdminUnsetMfaRequest,
 	AdminUnsetUserAvatarRequest,
 	AdminUnsetUserBannerRequest,
 	AdminUnsuspendUserRequest,
@@ -161,6 +164,7 @@ import type {
 	AntennasListResponse,
 	AntennasNotesRequest,
 	AntennasNotesResponse,
+	AntennasRemoveNoteRequest,
 	AntennasShowRequest,
 	AntennasShowResponse,
 	AntennasUpdateRequest,
@@ -380,6 +384,8 @@ import type {
 	FollowingDeleteResponse,
 	FollowingInvalidateRequest,
 	FollowingInvalidateResponse,
+	FollowingListRequest,
+	FollowingListResponse,
 	FollowingRequestsAcceptRequest,
 	FollowingRequestsCancelRequest,
 	FollowingRequestsCancelResponse,
@@ -651,6 +657,8 @@ import type {
 	UsersFollowingResponse,
 	UsersGalleryPostsRequest,
 	UsersGalleryPostsResponse,
+	UsersGetFollowingUsersByBirthdayRequest,
+	UsersGetFollowingUsersByBirthdayResponse,
 	UsersGetFrequentlyRepliedUsersRequest,
 	UsersGetFrequentlyRepliedUsersResponse,
 	UsersGroupsCreateRequest,
@@ -783,10 +791,12 @@ export type Endpoints = {
 	'admin/queue/deliver-delayed': { req: EmptyRequest; res: AdminQueueDeliverDelayedResponse };
 	'admin/queue/inbox-delayed': { req: EmptyRequest; res: AdminQueueInboxDelayedResponse };
 	'admin/queue/jobs': { req: AdminQueueJobsRequest; res: AdminQueueJobsResponse };
+	'admin/queue/pause': { req: AdminQueuePauseRequest; res: EmptyResponse };
 	'admin/queue/promote-jobs': { req: AdminQueuePromoteJobsRequest; res: EmptyResponse };
 	'admin/queue/queue-stats': { req: AdminQueueQueueStatsRequest; res: AdminQueueQueueStatsResponse };
 	'admin/queue/queues': { req: EmptyRequest; res: AdminQueueQueuesResponse };
 	'admin/queue/remove-job': { req: AdminQueueRemoveJobRequest; res: EmptyResponse };
+	'admin/queue/resume': { req: AdminQueueResumeRequest; res: EmptyResponse };
 	'admin/queue/retry-job': { req: AdminQueueRetryJobRequest; res: EmptyResponse };
 	'admin/queue/show-job': { req: AdminQueueShowJobRequest; res: AdminQueueShowJobResponse };
 	'admin/queue/show-job-logs': { req: AdminQueueShowJobLogsRequest; res: AdminQueueShowJobLogsResponse };
@@ -817,6 +827,7 @@ export type Endpoints = {
 	'admin/system-webhook/show': { req: AdminSystemWebhookShowRequest; res: AdminSystemWebhookShowResponse };
 	'admin/system-webhook/test': { req: AdminSystemWebhookTestRequest; res: EmptyResponse };
 	'admin/system-webhook/update': { req: AdminSystemWebhookUpdateRequest; res: AdminSystemWebhookUpdateResponse };
+	'admin/unset-mfa': { req: AdminUnsetMfaRequest; res: EmptyResponse };
 	'admin/unset-user-avatar': { req: AdminUnsetUserAvatarRequest; res: EmptyResponse };
 	'admin/unset-user-banner': { req: AdminUnsetUserBannerRequest; res: EmptyResponse };
 	'admin/unsuspend-user': { req: AdminUnsuspendUserRequest; res: EmptyResponse };
@@ -830,6 +841,7 @@ export type Endpoints = {
 	'antennas/delete': { req: AntennasDeleteRequest; res: EmptyResponse };
 	'antennas/list': { req: EmptyRequest; res: AntennasListResponse };
 	'antennas/notes': { req: AntennasNotesRequest; res: AntennasNotesResponse };
+	'antennas/remove-note': { req: AntennasRemoveNoteRequest; res: EmptyResponse };
 	'antennas/show': { req: AntennasShowRequest; res: AntennasShowResponse };
 	'antennas/update': { req: AntennasUpdateRequest; res: AntennasUpdateResponse };
 	'ap/get': { req: ApGetRequest; res: ApGetResponse };
@@ -961,6 +973,7 @@ export type Endpoints = {
 	'following/create': { req: FollowingCreateRequest; res: FollowingCreateResponse };
 	'following/delete': { req: FollowingDeleteRequest; res: FollowingDeleteResponse };
 	'following/invalidate': { req: FollowingInvalidateRequest; res: FollowingInvalidateResponse };
+	'following/list': { req: FollowingListRequest; res: FollowingListResponse };
 	'following/requests/accept': { req: FollowingRequestsAcceptRequest; res: EmptyResponse };
 	'following/requests/cancel': { req: FollowingRequestsCancelRequest; res: FollowingRequestsCancelResponse };
 	'following/requests/list': { req: FollowingRequestsListRequest; res: FollowingRequestsListResponse };
@@ -1146,6 +1159,7 @@ export type Endpoints = {
 	'users/followers': { req: UsersFollowersRequest; res: UsersFollowersResponse };
 	'users/following': { req: UsersFollowingRequest; res: UsersFollowingResponse };
 	'users/gallery/posts': { req: UsersGalleryPostsRequest; res: UsersGalleryPostsResponse };
+	'users/get-following-users-by-birthday': { req: UsersGetFollowingUsersByBirthdayRequest; res: UsersGetFollowingUsersByBirthdayResponse };
 	'users/get-frequently-replied-users': { req: UsersGetFrequentlyRepliedUsersRequest; res: UsersGetFrequentlyRepliedUsersResponse };
 	'users/groups/create': { req: UsersGroupsCreateRequest; res: UsersGroupsCreateResponse };
 	'users/groups/delete': { req: UsersGroupsDeleteRequest; res: EmptyResponse };

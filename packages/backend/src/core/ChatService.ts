@@ -637,6 +637,27 @@ export class ChatService {
 	}
 
 	@bindThis
+	public async hasPermissionToViewRoomInfo(meId: MiUser['id'], room: MiChatRoom) {
+		if (room.ownerId === meId) {
+			return true;
+		}
+
+		if (await this.isRoomMember(room, meId)) {
+			return true;
+		}
+
+		if (await this.chatRoomInvitationsRepository.findOneBy({ roomId: room.id, userId: meId })) {
+			return true;
+		}
+
+		if (await this.roleService.isModerator({ id: meId })) {
+			return true;
+		}
+
+		return false;
+	}
+
+	@bindThis
 	public async hasPermissionToDeleteRoom(meId: MiUser['id'], room: MiChatRoom) {
 		if (room.ownerId === meId) {
 			return true;
@@ -687,7 +708,10 @@ export class ChatService {
 
 	@bindThis
 	public async findRoomById(roomId: MiChatRoom['id']) {
-		return this.chatRoomsRepository.findOne({ where: { id: roomId }, relations: ['owner'] });
+		return this.chatRoomsRepository.findOne({
+			where: { id: roomId },
+			relations: { owner: true },
+		});
 	}
 
 	@bindThis
@@ -1138,16 +1162,17 @@ export class ChatService {
 		const room = message.toRoomId ? await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }) : null;
 
 		if (room) {
-			if (!await this.isRoomMember(room, userId)) {
+			if (!(await this.isRoomMember(room, userId))) {
 				throw new Error('cannot react to others message');
 			}
 		}
 
 		await this.chatMessagesRepository.createQueryBuilder().update()
 			.set({
-				reactions: () => `array_append("reactions", '${userId}/${reaction}')`,
+				reactions: () => `array_append("reactions", :pair)`,
 			})
 			.where('id = :id', { id: message.id })
+			.setParameter('pair', `${userId}/${reaction}`)
 			.execute();
 
 		if (room) {
@@ -1189,9 +1214,10 @@ export class ChatService {
 
 		await this.chatMessagesRepository.createQueryBuilder().update()
 			.set({
-				reactions: () => `array_remove("reactions", '${userId}/${reaction}')`,
+				reactions: () => `array_remove("reactions", :pair)`,
 			})
 			.where('id = :id', { id: message.id })
+			.setParameter('pair', `${userId}/${reaction}`)
 			.execute();
 
 		// TODO: 実際に削除が行われたときのみイベントを発行する

@@ -99,6 +99,8 @@ export const moderationLogTypes = [
 	'deleteRole',
 	'clearQueue',
 	'promoteQueue',
+	'pauseQueue',
+	'resumeQueue',
 	'deleteDriveFile',
 	'deleteNote',
 	'createGlobalAnnouncement',
@@ -123,6 +125,7 @@ export const moderationLogTypes = [
 	'createAvatarDecoration',
 	'updateAvatarDecoration',
 	'deleteAvatarDecoration',
+	'unsetMfa',
 	'unsetUserAvatar',
 	'unsetUserBanner',
 	'createSystemWebhook',
@@ -214,6 +217,8 @@ export type ModerationLogPayloads = {
 	};
 	clearQueue: Record<string, never>;
 	promoteQueue: Record<string, never>;
+	pauseQueue: Record<string, never>;
+	resumeQueue: Record<string, never>;
 	deleteDriveFile: {
 		fileId: string;
 		fileUserId: string | null;
@@ -338,6 +343,11 @@ export type ModerationLogPayloads = {
 		avatarDecorationId: string;
 		avatarDecoration: any;
 	};
+	unsetMfa: {
+		userId: string;
+		userUsername: string;
+		userHost: string | null;
+	};
 	unsetUserAvatar: {
 		userId: string;
 		userUsername: string;
@@ -429,3 +439,5 @@ export type FilterUnionByProperty<
 	Property extends string | number | symbol,
 	Condition,
 > = Union extends Record<Property, Condition> ? Union : never;
+
+export type Awaitable<T> = T | Promise<T>;

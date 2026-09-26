@@ -5,34 +5,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <div ref="root" :class="['chromatic-ignore', $style.root, { [$style.cover]: cover }]" :title="title ?? ''">
-	<canvas
-		v-show="hide"
-		key="canvas"
-		ref="canvas"
-		:class="$style.canvas"
-		:width="canvasWidth"
-		:height="canvasHeight"
-		:title="title ?? undefined"
-		draggable="false"
-		tabindex="-1"
-		style="-webkit-user-drag: none;"
-	/>
-	<img
-		v-show="!hide"
-		key="img"
-		ref="img"
-		:height="imgHeight ?? undefined"
-		:width="imgWidth ?? undefined"
-		:class="$style.img"
-		:src="src ?? undefined"
-		:title="title ?? undefined"
-		:alt="alt ?? undefined"
-		loading="eager"
-		decoding="async"
-		draggable="false"
-		tabindex="-1"
-		style="-webkit-user-drag: none;"
-	/>
+	<canvas v-show="hide" key="canvas" ref="canvas" :class="$style.canvas" :width="canvasWidth" :height="canvasHeight" :title="title ?? undefined" tabindex="-1"></canvas>
+	<img v-show="!hide" key="img" ref="img" :height="imgHeight ?? undefined" :width="imgWidth ?? undefined" :class="$style.img" :src="src ?? undefined" :title="title ?? undefined" :alt="alt ?? undefined" loading="eager" decoding="async" tabindex="-1"/>
 </div>
 </template>
 

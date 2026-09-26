@@ -32,7 +32,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 									<span v-if="user.isBot"><i class="ti ti-robot"></i></span>
 									<span v-if="'isProxy' in user && user.isProxy" v-tooltip="i18n.ts.proxyAccount"><i class="ti ti-ghost"></i></span>
 									<button v-if="$i && !isEditingMemo && !memoDraft" class="_button add-note-button" @click="showMemoTextarea">
-										<i class="ti ti-edit"/> {{ i18n.ts.addMemo }}
+										<i class="ti ti-edit"></i> {{ i18n.ts.addMemo }}
 									</button>
 								</div>
 							</div>
@@ -79,7 +79,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</div>
 						</div>
 						<div v-if="isEditingMemo || memoDraft" class="memo" :class="{'no-memo': !memoDraft}">
-							<div class="heading" v-text="i18n.ts.memo"/>
+							<div class="heading">{{ i18n.ts.memo }}</div>
 							<textarea
 								ref="memoTextareaEl"
 								v-model="memoDraft"
@@ -87,7 +87,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 								@focus="isEditingMemo = true"
 								@blur="updateMemo"
 								@input="adjustMemoTextarea"
-							/>
+							></textarea>
 						</div>
 						<div class="description">
 							<MkOmit>
@@ -210,13 +210,7 @@ import { getStaticImageUrl } from '@/utility/media-proxy.js';
 import MkSparkle from '@/components/MkSparkle.vue';
 import { prefer } from '@/preferences.js';
 import MkPullToRefresh from '@/components/MkPullToRefresh.vue';
-import { miLocalStorage } from '@/local-storage.js';
-import { editNickname } from '@/utility/edit-nickname.js';
-import { haptic, hapticConfirm } from '@/utility/haptic.js';
-import detectLanguage from '@/utility/detect-language.js';
-import { globalEvents } from '@/events.js';
-import { notesSearchAvailable, canSearchNonLocalNotes } from '@/utility/check-permissions.js';
-import { store } from '@/store.js';
+import { isBirthday } from '@/utility/is-birthday.js';
 
 function calcAge(birthdate: string): number {
 	const date = new Date(birthdate);
@@ -289,7 +283,7 @@ const age = computed(() => {
 	return props.user.birthday ? calcAge(props.user.birthday) : NaN;
 });
 
-function menu(ev: MouseEvent) {
+function menu(ev: PointerEvent) {
 	const { menu, cleanup } = getUserMenu(user.value, router);
 	os.popupMenu(menu, ev.currentTarget ?? ev.target).finally(cleanup);
 }
@@ -395,16 +389,10 @@ function disposeBannerParallaxResizeObserver() {
 onMounted(() => {
 	narrow.value = rootEl.value!.clientWidth < 1000;
 
-	if (props.user.birthday) {
-		const m = new Date().getMonth() + 1;
-		const d = new Date().getDate();
-		const bm = parseInt(props.user.birthday.split('-')[1]);
-		const bd = parseInt(props.user.birthday.split('-')[2]);
-		if (m === bm && d === bd) {
-			confetti({
-				duration: 1000 * 4,
-			});
-		}
+	if (isBirthday(user.value)) {
+		confetti({
+			duration: 1000 * 4,
+		});
 	}
 
 	nextTick(() => {

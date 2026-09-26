@@ -4,18 +4,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="show" ref="el" :class="[$style.root, { [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.scrollToTransparent]: showEl }]">
-	<div :class="[$style.upper, { [$style.slim]: narrow || isFriendly().value, [$style.thin]: thin_, [$style.hideTitle]: hideTitle && isFriendly().value }]">
-		<div v-if="!thin_ && !canBack && !notification" :class="$style.buttonsLeft">
-			<button class="_button" :class="[$style.button, $style.goBack]" @click.stop="goBack" @touchstart="preventDrag"><i class="ti ti-arrow-left"></i></button>
-		</div>
-		<div v-if="!thin_ && narrow && props.displayMyAvatar && $i && !isFriendly().value && !notification" class="_button" :class="$style.buttonsLeft" @click="openAccountMenu">
+<div v-if="show" ref="el" :class="[$style.root]">
+	<div :class="[$style.upper, { [$style.slim]: narrow, [$style.thin]: thin_ }]">
+		<div v-if="!thin_ && (narrow || deviceKind === 'smartphone') && props.displayMyAvatar && $i" class="_button" @click="openAccountMenu">
 			<MkAvatar :class="$style.avatar" :user="$i"/>
 		</div>
-		<div v-else-if="!thin_ && narrow && !hideTitle && canBack" :class="[$style.buttons, $style.buttonsLeft]"/>
-		<div v-if="leftSpacing" :class="leftSpacing.class ? $style.buttonsLeft : undefined" :style="leftSpacing.style">
-			<div v-for="(width, index) in leftSpacing.children" :key="index" :style="width"/>
-		</div>
+		<div v-else-if="!thin_ && narrow && !hideTitle" :class="$style.buttons"></div>
 
 		<template v-if="props.title || props.icon">
 			<div v-if="!hideTitle" :class="[$style.titleContainer, { [$style.titleContainer_canBack]: !canBack }]" @click="top">
@@ -44,8 +38,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</div>
 			<XTabs v-if="(!narrow || hideTitle) && !isFriendly().value" :class="[$style.tabs, { [$style.tabs_canBack]: !canBack }]" :tab="tab" :tabs="tabs" :rootEl="el" @update:tab="key => emit('update:tab', key)" @tabClick="onTabClick"/>
 		</template>
-		<div v-if="!thin_ && !narrow && (actions && actions.length > 0) && hideTitle && ['index'].includes(<string>mainRouter.currentRoute.value.name)" :class="[$style.buttons, $style.buttonsRight]"/>
-		<div v-if="(!thin_ && narrow && !hideTitle) || (actions && actions.length > 0)" :class="[$style.buttons, $style.buttonsRight]">
+		<div v-if="(!thin_ && narrow && !hideTitle) || (actions && actions.length > 0)" :class="$style.buttons">
 			<template v-for="action in actions">
 				<button v-tooltip.noDelay="action.text" class="_button" :class="[$style.button, { [$style.highlighted]: action.highlighted }]" @click.stop="action.handler" @touchstart="preventDrag"><i :class="action.icon"></i></button>
 			</template>
@@ -88,8 +81,8 @@ export type PageHeaderProps = {
 import { onMounted, onUnmounted, ref, inject, useTemplateRef, computed } from 'vue';
 import { getScrollPosition, scrollToTop } from '@@/js/scroll.js';
 import XTabs from './MkPageHeader.tabs.vue';
-import { globalEvents } from '@/events.js';
 import { getAccountMenu } from '@/accounts.js';
+import { deviceKind } from '@/utility/device-kind.js';
 import { $i } from '@/i.js';
 import { DI } from '@/di.js';
 import * as os from '@/os.js';
@@ -110,7 +103,7 @@ const props = withDefaults(defineProps<PageHeaderProps>(), {
 });
 
 const emit = defineEmits<{
-	(ev: 'update:tab', key: string);
+	(ev: 'update:tab', key: string): void;
 }>();
 
 //const viewId = inject(DI.viewId);
@@ -171,24 +164,7 @@ const top = () => {
 	}
 };
 
-const topWithMenu = (ev: MouseEvent) => {
-	const pos = getScrollPosition(el.value as HTMLElement);
-	if (el.value && pos !== 0) {
-		scrollToTop(el.value as HTMLElement, { behavior: 'smooth' });
-	} else if (pos === 0) {
-		os.popupMenu([{
-			text: i18n.ts.reload,
-			icon: 'ti ti-refresh',
-			action: () => {
-				window.location.reload();
-			},
-		}], ev.currentTarget ?? ev.target);
-	}
-};
-
-async function openAccountMenu(ev: MouseEvent) {
-	haptic();
-
+async function openAccountMenu(ev: PointerEvent) {
 	const menuItems = await getAccountMenu({
 		withExtraOperation: true,
 	});
@@ -270,10 +246,12 @@ onUnmounted(() => {
 	align-items: center;
 	height: var(--height);
 
-	.tabs:first-child {
+	.tabs:first-child,
+	&:not(.slim) > :not(.titleContainer) ~ .tabs {
 		margin-left: auto;
 		padding: 0 12px;
 	}
+
 	.tabs {
 		margin-right: auto;
 	}

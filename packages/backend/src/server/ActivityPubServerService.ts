@@ -31,7 +31,6 @@ import { IActivity } from '@/core/activitypub/type.js';
 import { isQuote, isRenote } from '@/misc/is-renote.js';
 import * as Acct from '@/misc/acct.js';
 import { FanoutTimelineEndpointService } from '@/core/FanoutTimelineEndpointService.js';
-import { ActivityPubAccessControlService } from '@/core/ActivityPubAccessControlService.js';
 import type { FastifyInstance, FastifyRequest, FastifyReply, FastifyPluginOptions, FastifyBodyParser } from 'fastify';
 import type { FindOptionsWhere } from 'typeorm';
 
@@ -121,7 +120,7 @@ export class ActivityPubServerService {
 
 		try {
 			signature = httpSignature.parseRequest(request.raw, { 'headers': ['(request-target)', 'host', 'date'], authorizationHeaderName: 'signature' });
-		} catch (e) {
+		} catch (_) {
 			reply.code(401);
 			return;
 		}
@@ -136,6 +135,7 @@ export class ActivityPubServerService {
 		if (signature.params.headers.indexOf('digest') === -1) {
 			// Digest not found.
 			reply.code(401);
+			return;
 		} else {
 			const digest = request.headers.digest;
 
@@ -178,13 +178,17 @@ export class ActivityPubServerService {
 			}
 		}
 
-		const activity = request.body as IActivity;
-		if (!activity.type || !signature.keyId) {
+		const body = request.body;
+
+		// Reject structurally invalid activities (e.g. missing actor) here instead
+		// of letting them fail deep inside the inbox processor. An actor-less
+		// activity can never be authenticated, so there is no point enqueueing it.
+		if (typeof body !== 'object' || body == null || !('actor' in body) || body.actor == null) {
 			reply.code(400);
 			return;
 		}
 
-		this.queueService.inbox(activity, signature);
+		this.queueService.inbox(body as IActivity, signature);
 
 		reply.code(202);
 	}
@@ -664,6 +668,10 @@ export class ActivityPubServerService {
 		};
 
 		fastify.register(fastifyAccepts);
+
+		// raw-body shares `request.raw` with the body parser, so a string parser here would switch that stream
+		// to string mode and break raw-body. Keep only the `parseAs: 'buffer'` parsers below. The rest get 415 error.
+		fastify.removeAllContentTypeParsers();
 		fastify.addContentTypeParser('application/activity+json', { parseAs: 'buffer' }, almostDefaultJsonParser);
 		fastify.addContentTypeParser('application/ld+json', { parseAs: 'buffer' }, almostDefaultJsonParser);
 
@@ -884,6 +892,8 @@ export class ActivityPubServerService {
 			}
 
 			const acct = Acct.parse(request.params.acct);
+			// normalize acct host
+			if (this.utilityService.isSelfHost(acct.host)) acct.host = null;
 
 			const user = await this.usersRepository.findOneBy({
 				usernameLower: acct.username.toLowerCase(),

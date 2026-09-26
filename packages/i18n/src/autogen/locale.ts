@@ -2864,6 +2864,10 @@ export interface Locale extends ILocale {
      */
     "limitTo": ParameterizedString<"x">;
     /**
+     * 画面幅が広いときはメディアリストを横並びで表示する
+     */
+    "showMediaListByGridInWideArea": string;
+    /**
      * フォロー申請はありません
      */
     "noFollowRequests": string;
@@ -3167,6 +3171,14 @@ export interface Locale extends ILocale {
      * リモートユーザー情報の更新
      */
     "updateRemoteUser": string;
+    /**
+     * 二要素認証を解除
+     */
+    "unsetMfa": string;
+    /**
+     * 二要素認証を解除しますか？
+     */
+    "unsetMfaConfirm": string;
     /**
      * アイコンを解除
      */
@@ -3703,6 +3715,14 @@ export interface Locale extends ILocale {
      * このノートはすでにクリップ「{name}」に含まれています。ノートをこのクリップから除外しますか？
      */
     "confirmToUnclipAlreadyClippedNote": ParameterizedString<"name">;
+    /**
+     * このアンテナから削除
+     */
+    "removeFromAntenna": string;
+    /**
+     * 「{name}」からこのノートを削除しますか？
+     */
+    "removeNoteFromAntennaConfirm": ParameterizedString<"name">;
     /**
      * パブリック
      */
@@ -4861,6 +4881,10 @@ export interface Locale extends ILocale {
      */
     "cannotLoad": string;
     /**
+     * プレビューできません
+     */
+    "cannotPreview": string;
+    /**
      * プロフィール表示回数
      */
     "numberOfProfileView": string;
@@ -5613,6 +5637,10 @@ export interface Locale extends ILocale {
      */
     "unnotifyNotes": string;
     /**
+     * 投稿通知を設定したユーザー
+     */
+    "notifyUsers": string;
+    /**
      * 認証
      */
     "authentication": string;
@@ -6185,14 +6213,6 @@ export interface Locale extends ILocale {
      */
     "directMessage_short": string;
     /**
-     * 旧設定情報を移行
-     */
-    "migrateOldSettings": string;
-    /**
-     * 通常これは自動で行われていますが、何らかの理由により上手く移行されなかった場合は手動で移行処理をトリガーできます。現在の設定情報は上書きされます。
-     */
-    "migrateOldSettings_description": string;
-    /**
      * 圧縮
      */
     "compress": string;
@@ -6212,10 +6232,6 @@ export interface Locale extends ILocale {
      * 埋め込み
      */
     "embed": string;
-    /**
-     * 設定を移行しています。しばらくお待ちください... (後ほど、設定→その他→旧設定情報を移行 で手動で移行することもできます)
-     */
-    "settingsMigrating": string;
     /**
      * 読み取り専用
      */
@@ -6384,73 +6400,57 @@ export interface Locale extends ILocale {
      */
     "zeroPadding": string;
     /**
-     * 下書き一覧
+     * 設定項目はありません
      */
-    "draftNoteList": string;
+    "nothingToConfigure": string;
     /**
-     * 下書きで保存
+     * リノート先のチャンネルを見る
      */
-    "saveAsDraft": string;
+    "viewRenotedChannel": string;
     /**
-     * 未読の通知の数を表示する
+     * テーマのプレビュー中
      */
-    "showUnreadNotificationsCount": string;
+    "previewingTheme": string;
     /**
-     * キャット付きのみ
+     * 元に戻す
      */
-    "showCatOnly": string;
+    "previewingThemeRestore": string;
     /**
-     * Playへの追加許可
+     * アクセストークン
      */
-    "additionalPermissionsForFlash": string;
+    "accessToken": string;
     /**
-     * このPlayは以下の権限を要求しています
+     * 絵文字パレットを選択
      */
-    "thisFlashRequiresTheFollowingPermissions": string;
+    "chooseEmojiPalette": string;
     /**
-     * このPlayによるアカウントへのアクセスを許可しますか？
+     * 絵文字パレットに追加
      */
-    "doYouWantToAllowThisPlayToAccessYourAccount": string;
+    "addToEmojiPalette": string;
     /**
-     * プロフィールを翻訳する
+     * この絵文字はすでにこの絵文字パレットに含まれています。追加しなおしますか？
      */
-    "translateProfile": string;
+    "emojiPaletteAlreadyAddedConfirm": string;
     /**
-     * 外部サイトへのリンク警告 除外リスト
+     * 末尾に追加
      */
-    "trustedLinkUrlPatterns": string;
+    "append": string;
     /**
-     * スペースで区切るとAND指定になり、改行で区切るとOR指定になります。スラッシュで囲むと正規表現になります。ドメイン名だけ書くと後方一致になります。
+     * 先頭に追加
      */
-    "trustedLinkUrlPatternsDescription": string;
+    "prepend": string;
     /**
-     * 開く
+     * サムネイルの表示を制限するURL
      */
-    "open": string;
-    "_nsfwOpenBehavior": {
-        /**
-         * タップして開く
-         */
-        "click": string;
-        /**
-         * 二回タップして開く
-         */
-        "doubleClick": string;
-    };
-    "_showingAnimatedImages": {
-        /**
-         * 常に再生
-         */
-        "always": string;
-        /**
-         * インタラクト時に再生
-         */
-        "interaction": string;
-        /**
-         * 一定時間経過すると再生
-         */
-        "inactive": string;
-    };
+    "urlPreviewSensitiveList": string;
+    /**
+     * スペースで区切るとAND指定になり、改行で区切るとOR指定になります。スラッシュで囲むと正規表現になります。一致した場合、サムネイルが表示されなくなります。
+     */
+    "urlPreviewSensitiveListDescription": string;
+    /**
+     * ピクセルアート拡大モード
+     */
+    "pixelatedZoom": string;
     "_imageEditing": {
         "_vars": {
             /**
@@ -9303,6 +9303,10 @@ export interface Locale extends ILocale {
              */
             "maxFileSize_caption": string;
             /**
+             * サーバー全体の最大ファイルサイズ設定は {max} です。これより大きいファイルをアップロードできるようにするには、Misskeyの設定ファイルからこの設定を緩和してください。
+             */
+            "maxFileSize_caption2": ParameterizedString<"max">;
+            /**
              * ファイルにNSFWを常に付与
              */
             "alwaysMarkNsfw": string;
@@ -9367,17 +9371,9 @@ export interface Locale extends ILocale {
              */
             "canUseTranslator": string;
             /**
-             * 自動翻訳機能の利用
+             * チャンネルの作成
              */
-            "canUseAutoTranslate": string;
-            /**
-             * 自動翻訳機能を有効にしたユーザーは、タイムラインのすべてのノートが自動的に翻訳され、これにより翻訳サービス提供者が設定したAPI制限に非常に早く到達し、翻訳機能を一時的に使用できなくなる可能性があります。
-             * これは、サーバー内のすべてのユーザーがAPIを一時的に使用できなくなる可能性があることを意味します。
-             * また、翻訳サービスの提供者によっては、APIの使用による料金が過度に発生する可能性があります。
-             *
-             * <b>それでも続けましょうか？</b>
-             */
-            "canUseAutoTranslateDescription": string;
+            "canCreateChannel": string;
             /**
              * アイコンデコレーションの最大取付個数
              */
@@ -9557,6 +9553,42 @@ export interface Locale extends ILocale {
          * 静止画に加えて動画も解析するようにします。サーバーの負荷が少し増えます。
          */
         "analyzeVideosDescription": string;
+        /**
+         * センシティブメディアの判定は外部サービス (sensitive-detector) に分離されました。この機能を利用するには、別途サイドカーサービスをセットアップし、下記の接続先を設定する必要があります。接続先が未設定の場合、判定は行われません (非センシティブ扱い)。
+         */
+        "externalServiceInfo": string;
+        /**
+         * 判定サービスの接続先URL
+         */
+        "apiUrl": string;
+        /**
+         * sensitive-detector サービスのベースURL (例: http://localhost:3009)。プライベートネットワーク上のサービスに接続する場合は、設定ファイルの allowedPrivateNetworks で接続先ネットワークを許可してください。プロキシを使用している場合は、proxyBypassHosts も設定してください。空欄の場合、センシティブ判定は行われません。
+         */
+        "apiUrlDescription": string;
+        /**
+         * APIキー
+         */
+        "apiKey": string;
+        /**
+         * 判定サービス側で認証 (Bearerトークン) を設定している場合に入力します。設定していない場合は空欄のままにしてください。
+         */
+        "apiKeyDescription": string;
+        /**
+         * タイムアウト (ミリ秒)
+         */
+        "timeout": string;
+        /**
+         * 判定リクエスト1回あたりのタイムアウト時間です。
+         */
+        "timeoutDescription": string;
+        /**
+         * 1リクエストあたりの最大画像数
+         */
+        "maxImagesPerRequest": string;
+        /**
+         * 動画など複数フレームを判定する際、1回のリクエストにまとめて送る画像の最大枚数です。これを超える分は分割して順次送信されます。sensitive-detector 側の maxParts 設定（デフォルト: 10）を超えないように設定してください。超えた場合、そのチャンクは全件非センシティブ扱いとなります。
+         */
+        "maxImagesPerRequestDescription": string;
     };
     "_emailUnavailable": {
         /**
@@ -11106,6 +11138,10 @@ export interface Locale extends ILocale {
          */
         "write:admin:suspend-user": string;
         /**
+         * ユーザーの二要素認証を解除する
+         */
+        "write:admin:unset-mfa": string;
+        /**
          * ユーザーのアバターを削除する
          */
         "write:admin:unset-user-avatar": string;
@@ -11484,7 +11520,7 @@ export interface Locale extends ILocale {
          */
         "clicker": string;
         /**
-         * 今日誕生日のユーザー
+         * もうすぐ誕生日のユーザー
          */
         "birthdayFollowings": string;
         /**
@@ -11503,6 +11539,144 @@ export interface Locale extends ILocale {
          * 天気
          */
         "weather": string;
+    };
+    "_widgetOptions": {
+        /**
+         * ヘッダーを表示
+         */
+        "showHeader": string;
+        /**
+         * 背景を透明にする
+         */
+        "transparent": string;
+        /**
+         * 高さ
+         */
+        "height": string;
+        "_button": {
+            /**
+             * 色付き
+             */
+            "colored": string;
+        };
+        "_clock": {
+            /**
+             * サイズ
+             */
+            "size": string;
+            /**
+             * 針の太さ
+             */
+            "thickness": string;
+            /**
+             * 細い
+             */
+            "thicknessThin": string;
+            /**
+             * 普通
+             */
+            "thicknessMedium": string;
+            /**
+             * 太い
+             */
+            "thicknessThick": string;
+            /**
+             * 文字盤の目盛り
+             */
+            "graduations": string;
+            /**
+             * ドット
+             */
+            "graduationDots": string;
+            /**
+             * アラビア数字
+             */
+            "graduationArabic": string;
+            /**
+             * 目盛りをフェード
+             */
+            "fadeGraduations": string;
+            /**
+             * 秒針のアニメーション
+             */
+            "sAnimation": string;
+            /**
+             * リアル
+             */
+            "sAnimationElastic": string;
+            /**
+             * 滑らか
+             */
+            "sAnimationEaseOut": string;
+            /**
+             * 24時間表示
+             */
+            "twentyFour": string;
+            /**
+             * 時刻
+             */
+            "labelTime": string;
+            /**
+             * タイムゾーン
+             */
+            "labelTz": string;
+            /**
+             * 時刻とタイムゾーン
+             */
+            "labelTimeAndTz": string;
+            /**
+             * タイムゾーン
+             */
+            "timezone": string;
+            /**
+             * ミリ秒を表示
+             */
+            "showMs": string;
+            /**
+             * ラベルを表示
+             */
+            "showLabel": string;
+        };
+        "_jobQueue": {
+            /**
+             * 音を鳴らす
+             */
+            "sound": string;
+        };
+        "_rss": {
+            /**
+             * RSSフィードのURL
+             */
+            "url": string;
+            /**
+             * 更新間隔(秒)
+             */
+            "refreshIntervalSec": string;
+            /**
+             * 最大表示件数
+             */
+            "maxEntries": string;
+        };
+        "_rssTicker": {
+            /**
+             * 表示順をシャッフル
+             */
+            "shuffle": string;
+            /**
+             * ティッカーのスクロール速度(秒)
+             */
+            "duration": string;
+            /**
+             * 逆方向にスクロール
+             */
+            "reverse": string;
+        };
+        "_birthdayFollowings": {
+            /**
+             * 期間
+             */
+            "period": string;
+        };
     };
     "_cw": {
         /**
@@ -13003,6 +13177,10 @@ export interface Locale extends ILocale {
          */
         "deleteAvatarDecoration": string;
         /**
+         * ユーザーの二要素認証を解除
+         */
+        "unsetMfa": string;
+        /**
          * ユーザーのアイコンを解除
          */
         "unsetUserAvatar": string;
@@ -14048,9 +14226,17 @@ export interface Locale extends ILocale {
          */
         "pleaseSelectUser": string;
         /**
-         * 例: cherrypick.example.com
+         * 例: misskey.example.com
          */
         "serverHostPlaceholder": string;
+        /**
+         * 投稿日時from
+         */
+        "postFrom": string;
+        /**
+         * 投稿日時to
+         */
+        "postTo": string;
     };
     "_serverSetupWizard": {
         /**
@@ -14440,10 +14626,6 @@ export interface Locale extends ILocale {
          */
         "discardChangesConfirm": string;
         /**
-         * 設定項目はありません
-         */
-        "nothingToConfigure": string;
-        /**
          * 画像の読み込みに失敗しました
          */
         "failedToLoadImage": string;
@@ -14643,25 +14825,17 @@ export interface Locale extends ILocale {
              */
             "centerY": string;
             /**
-             * スムージング
+             * 密度
              */
-            "zoomLinesSmoothing": string;
+            "density": string;
             /**
-             * スムージングと集中線の幅の設定は併用できません。
+             * 線の影の太さ
              */
-            "zoomLinesSmoothingDescription": string;
-            /**
-             * 集中線の幅
-             */
-            "zoomLinesThreshold": string;
+            "zoomLinesOutlineThickness": string;
             /**
              * 中心径
              */
             "zoomLinesMaskSize": string;
-            /**
-             * 黒色にする
-             */
-            "zoomLinesBlack": string;
             /**
              * 円形
              */

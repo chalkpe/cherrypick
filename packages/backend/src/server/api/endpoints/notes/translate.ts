@@ -92,7 +92,12 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.cannotTranslateInvisibleNote);
 			}
 
-			if (note.text == null) {
+			let text = note.text ?? '';
+			if (note.cw != null) {
+				text = `${note.cw}\n-----\n${text}`;
+			}
+
+			if (text.trim() === '') {
 				return;
 			}
 
@@ -112,21 +117,11 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			let translationResult;
 			if (this.serverSettings.translatorType === 'deepl') {
-				if (this.serverSettings.deeplAuthKey == null) {
-					throw new ApiError(meta.errors.unavailable);
-				}
+				if (this.serverSettings.deeplAuthKey == null) throw new ApiError(meta.errors.unavailable);
 				translationResult = await this.translateDeepL((note.cw ? note.cw + '\n' : '') + note.text, targetLang, this.serverSettings.deeplAuthKey, this.serverSettings.deeplIsPro, this.serverSettings.translatorType);
 			} else if (this.serverSettings.translatorType === 'google_no_api') {
-				let targetLang = ps.targetLang;
-				if (targetLang.includes('-')) targetLang = targetLang.split('-')[0];
-
 				const { text, raw } = await translate((note.cw ? note.cw + '\n' : '') + note.text, { to: targetLang });
-
-				return {
-					sourceLang: raw.src,
-					text: text,
-					translator: this.serverSettings.translatorType, // 修正点: 配列ではなく単一の文字列
-				};
+				translationResult = { sourceLang: raw.src, text, translator: this.serverSettings.translatorType };
 			} else if (this.serverSettings.translatorType === 'ctav3') {
 				if (this.serverSettings.ctav3SaKey == null) return Promise.resolve(204);
 				else if (this.serverSettings.ctav3ProjectId == null) return Promise.resolve(204);

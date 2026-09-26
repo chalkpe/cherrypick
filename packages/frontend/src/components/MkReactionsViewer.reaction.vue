@@ -14,7 +14,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	@touchend.stop="closeEmojiMenu"
 	@contextmenu.prevent.stop="menu"
 >
-	<MkReactionIcon style="pointer-events: none;" :class="prefer.s.limitWidthOfReaction ? $style.limitWidth : ''" :reaction="reaction" :emojiUrl="reactionEmojis[reaction.substring(1, reaction.length - 1)]" @click.stop="(ev) => { canToggle || alternative ? toggleReaction(ev) : stealReaction(ev) }"/>
+	<MkReactionIcon style="pointer-events: none;" :class="prefer.s.limitWidthOfReaction ? $style.limitWidth : ''" :reaction="reaction" :emojiUrl="reactionEmojis[emojiName]"/>
 	<span :class="$style.count">{{ count }}</span>
 </button>
 </template>
@@ -23,6 +23,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { computed, inject, onMounted, ref, useTemplateRef, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { getUnicodeEmojiOrNull } from '@@/js/emojilist.js';
+import { getEmojiNameFromReaction, isLocalCustomEmojiReaction } from '@@/js/emoji-name.js';
 import MkCustomEmojiDetailedDialog from './MkCustomEmojiDetailedDialog.vue';
 import type { MenuItem } from '@/types/menu';
 import type { ComputedRef } from 'vue';
@@ -35,12 +36,13 @@ import { $i } from '@/i.js';
 import MkReactionEffect from '@/components/MkReactionEffect.vue';
 import { i18n } from '@/i18n.js';
 import * as sound from '@/utility/sound.js';
-import { checkReactionPermissions } from '@/utility/check-reaction-permissions.js';
-import { customEmojis, customEmojisMap } from '@/custom-emojis.js';
+// import { checkReactionPermissions } from '@/utility/check-reaction-permissions.js';
+import { customEmojisMap } from '@/custom-emojis.js';
 import { prefer } from '@/preferences.js';
 import { DI } from '@/di.js';
 import { noteEvents } from '@/composables/use-note-capture.js';
 import { mute as muteEmoji, unmute as unmuteEmoji, checkMuted as isEmojiMuted } from '@/utility/emoji-mute.js';
+import { addToEmojiPalette } from '@/utility/emoji-palette.js';
 import { haptic } from '@/utility/haptic.js';
 import { copyToClipboard } from '@/utility/copy-to-clipboard.js';
 
@@ -62,17 +64,17 @@ const emit = defineEmits<{
 
 const buttonEl = useTemplateRef('buttonEl');
 
-const emojiName = computed(() => props.reaction.replace(/:/g, '').replace(/@\./, ''));
+const emojiName = computed(() => getEmojiNameFromReaction(props.reaction));
+
+const isLocalCustomEmoji = computed(() => isLocalCustomEmojiReaction(props.reaction));
 
 const canToggle = computed(() => {
-	const emoji = customEmojisMap.get(emojiName.value) ?? getUnicodeEmojiOrNull(props.reaction);
+	const emoji = isLocalCustomEmoji.value ? customEmojisMap.get(emojiName.value) : getUnicodeEmojiOrNull(props.reaction);
 
 	// TODO
-	//return !props.reaction.match(/@\w/) && $i && emoji && checkReactionPermissions($i, props.note, emoji);
-	return props.reaction.match(/@\w/) == null && $i != null && emoji != null;
+	//return $i != null && emoji != null && checkReactionPermissions($i, props.note, emoji);
+	return $i != null && emoji != null;
 });
-const canGetInfo = computed(() => !props.reaction.match(/@\w/) && props.reaction.includes(':'));
-const isLocalCustomEmoji = props.reaction[0] === ':' && props.reaction.includes('@.');
 
 const reactionName = computed(() => {
 	const r = props.reaction.replace(':', '');
@@ -127,7 +129,9 @@ async function toggleReaction(ev: MouseEvent) {
 					reaction: props.reaction,
 				}).then(() => {
 					const emoji = customEmojisMap.get(emojiName.value);
-					if (emoji == null) return;
+					if (emoji == null && getUnicodeEmojiOrNull(props.reaction) == null) {
+						return;
+					}
 					noteEvents.emit(`reacted:${props.noteId}`, {
 						userId: me.id,
 						reaction: props.reaction,
@@ -159,7 +163,9 @@ async function toggleReaction(ev: MouseEvent) {
 			reaction: props.reaction,
 		}).then(() => {
 			const emoji = customEmojisMap.get(emojiName.value);
-			if (emoji == null) return;
+			if (emoji == null && getUnicodeEmojiOrNull(props.reaction) == null) {
+				return;
+			}
 
 			noteEvents.emit(`reacted:${props.noteId}`, {
 				userId: me.id,
@@ -174,24 +180,17 @@ async function toggleReaction(ev: MouseEvent) {
 	}
 }
 
-function stealReaction(ev: MouseEvent) {
-	haptic();
-
+async function menu(ev: PointerEvent) {
 	let menuItems: MenuItem[] = [];
 
-	menuItems.push({
-		type: 'label',
-		text: `:${reactionName.value}:`,
-	});
-
-	if (canGetInfo.value) {
+	if (isLocalCustomEmoji.value) {
 		menuItems.push({
 			text: i18n.ts.info,
 			icon: 'ti ti-info-circle',
 			action: async () => {
 				const { dispose } = os.popup(MkCustomEmojiDetailedDialog, {
 					emoji: await misskeyApiGet('emoji', {
-						name: props.reaction.replace(/:/g, '').replace(/@\./, ''),
+						name: emojiName.value,
 					}),
 				}, {
 					closed: () => dispose(),
@@ -338,7 +337,7 @@ async function menu(ev) {
 			action: () => {
 				os.confirm({
 					type: 'question',
-					title: i18n.tsx.unmuteX({ x: isLocalCustomEmoji ? `:${emojiName.value}:` : props.reaction }),
+					title: i18n.tsx.unmuteX({ x: isLocalCustomEmoji.value ? `:${emojiName.value}:` : props.reaction }),
 				}).then(({ canceled }) => {
 					if (canceled) return;
 					unmuteEmoji(props.reaction);
@@ -352,11 +351,21 @@ async function menu(ev) {
 			action: () => {
 				os.confirm({
 					type: 'question',
-					title: i18n.tsx.muteX({ x: isLocalCustomEmoji ? `:${emojiName.value}:` : props.reaction }),
+					title: i18n.tsx.muteX({ x: isLocalCustomEmoji.value ? `:${emojiName.value}:` : props.reaction }),
 				}).then(({ canceled }) => {
 					if (canceled) return;
 					muteEmoji(props.reaction);
 				});
+			},
+		});
+	}
+
+	if (canToggle.value) {
+		menuItems.push({
+			text: i18n.ts.addToEmojiPalette,
+			icon: 'ti ti-palette',
+			action: () => {
+				addToEmojiPalette(isLocalCustomEmoji.value ? `:${emojiName.value}:` : props.reaction);
 			},
 		});
 	}
@@ -408,11 +417,10 @@ if (!mock) {
 	useTooltip(buttonEl, async (showing) => {
 		if (buttonEl.value == null) return;
 
-		const reactions = await misskeyApiGet('notes/reactions', {
+		const reactions = await misskeyApi('notes/reactions', {
 			noteId: props.noteId,
 			type: props.reaction,
 			limit: 10,
-			_cacheKey_: props.count,
 		});
 
 		const users = reactions.map(x => x.user);

@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <SearchMarker path="/settings/preferences" :label="i18n.ts.preferences" :keywords="['general', 'preferences']" icon="ti ti-adjustments">
 	<div class="_gaps_m">
-		<MkFeatureBanner icon="/client-assets/gear_3d.png" color="#00ff9d">
+		<MkFeatureBanner icon="/fluent-emoji/2699.png" color="#00ff9d">
 			<SearchText>{{ i18n.ts._settings.preferencesBanner }}</SearchText>
 		</MkFeatureBanner>
 
@@ -31,12 +31,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 						</SearchMarker>
 
 						<SearchMarker :keywords="['device', 'type', 'kind', 'smartphone', 'tablet', 'desktop']">
-							<MkRadios v-model="overridedDeviceKind">
+							<MkRadios
+								v-model="overridedDeviceKind"
+								:options="[
+									{ value: null, label: i18n.ts.auto },
+									{ value: 'smartphone', label: i18n.ts.smartphone, icon: 'ti ti-device-mobile' },
+									{ value: 'tablet', label: i18n.ts.tablet, icon: 'ti ti-device-tablet' },
+									{ value: 'desktop', label: i18n.ts.desktop, icon: 'ti ti-device-desktop' },
+								]"
+							>
 								<template #label><SearchLabel>{{ i18n.ts.overridedDeviceKind }}</SearchLabel></template>
-								<option :value="null">{{ i18n.ts.auto }}</option>
-								<option value="smartphone"><i class="ti ti-device-mobile"/> {{ i18n.ts.smartphone }}</option>
-								<option value="tablet"><i class="ti ti-device-tablet"/> {{ i18n.ts.tablet }}</option>
-								<option value="desktop"><i class="ti ti-device-desktop"/> {{ i18n.ts.desktop }}</option>
 							</MkRadios>
 						</SearchMarker>
 
@@ -105,11 +109,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<SearchMarker :keywords="['emoji', 'style', 'native', 'system', 'fluent', 'twemoji']">
 							<MkPreferenceContainer k="emojiStyle">
 								<div>
-									<MkRadios v-model="emojiStyle">
+									<MkRadios
+										v-model="emojiStyle"
+										:options="[
+											{ value: 'native', label: i18n.ts.native },
+											{ value: 'fluentEmoji', label: 'Fluent Emoji' },
+											{ value: 'twemoji', label: 'Twemoji' },
+										]"
+									>
 										<template #label><SearchLabel>{{ i18n.ts.emojiStyle }}</SearchLabel></template>
-										<option value="native">{{ i18n.ts.native }}</option>
-										<option value="fluentEmoji">Fluent Emoji</option>
-										<option value="twemoji">Twemoji</option>
 									</MkRadios>
 									<div style="margin: 8px 0 0 0; font-size: 1.5em;"><Mfm :key="emojiStyle" text="🍮🍦🍭🍩🍰🍫🍬🥞🍪"/></div>
 								</div>
@@ -607,11 +615,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 							<SearchMarker :keywords="['reaction', 'size', 'scale', 'display']">
 								<MkPreferenceContainer k="reactionsDisplaySize">
-									<MkRadios v-model="reactionsDisplaySize">
+									<MkRadios
+										v-model="reactionsDisplaySize"
+										:options="[
+											{ value: 'small', label: i18n.ts.small },
+											{ value: 'medium', label: i18n.ts.medium },
+											{ value: 'large', label: i18n.ts.large },
+										]"
+									>
 										<template #label><SearchLabel>{{ i18n.ts.reactionsDisplaySize }}</SearchLabel></template>
-										<option value="small">{{ i18n.ts.small }}</option>
-										<option value="medium">{{ i18n.ts.medium }}</option>
-										<option value="large">{{ i18n.ts.large }}</option>
 									</MkRadios>
 								</MkPreferenceContainer>
 							</SearchMarker>
@@ -626,31 +638,44 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 							<SearchMarker :keywords="['attachment', 'image', 'photo', 'picture', 'media', 'thumbnail', 'list', 'size', 'height']">
 								<MkPreferenceContainer k="mediaListWithOneImageAppearance">
-									<MkRadios v-model="mediaListWithOneImageAppearance">
+									<MkRadios
+										v-model="mediaListWithOneImageAppearance"
+										:options="[
+											{ value: 'expand', label: i18n.ts.default },
+											{ value: '16_9', label: i18n.tsx.limitTo({ x: '16:9' }) },
+											{ value: '1_1', label: i18n.tsx.limitTo({ x: '1:1' }) },
+											{ value: '2_3', label: i18n.tsx.limitTo({ x: '2:3' }) },
+										]"
+									>
 										<template #label><SearchLabel>{{ i18n.ts.mediaListWithOneImageAppearance }}</SearchLabel></template>
-										<option value="expand">{{ i18n.ts.default }}</option>
-										<option value="16_9">{{ i18n.tsx.limitTo({ x: '16:9' }) }}</option>
-										<option value="1_1">{{ i18n.tsx.limitTo({ x: '1:1' }) }}</option>
-										<option value="2_3">{{ i18n.tsx.limitTo({ x: '2:3' }) }}</option>
 									</MkRadios>
 								</MkPreferenceContainer>
 							</SearchMarker>
 
-							<SearchMarker :keywords="['ticker', 'information', 'label', 'instance', 'server', 'host', 'federation']">
-								<MkPreferenceContainer k="instanceTicker">
-									<MkSelect
-										v-if="instance.federation !== 'none'"
-										v-model="instanceTicker"
-										:items="[
-											{ label: i18n.ts._instanceTicker.none, value: 'none' },
-											{ label: i18n.ts._instanceTicker.remote, value: 'remote' },
-											{ label: i18n.ts._instanceTicker.always, value: 'always' },
-										]"
-									>
-										<template #label><SearchLabel>{{ i18n.ts.instanceTicker }}</SearchLabel></template>
-									</MkSelect>
+							<SearchMarker :keywords="['attachment', 'image', 'photo', 'picture', 'media', 'thumbnail', 'grid', 'wide', 'area']">
+								<MkPreferenceContainer k="showMediaListByGridInWideArea">
+									<MkSwitch v-model="showMediaListByGridInWideArea">
+										<template #label><SearchLabel>{{ i18n.ts.showMediaListByGridInWideArea }}</SearchLabel></template>
+									</MkSwitch>
 								</MkPreferenceContainer>
 							</SearchMarker>
+
+							<template v-if="instance.federation !== 'none'">
+								<SearchMarker :keywords="['ticker', 'information', 'label', 'instance', 'server', 'host', 'federation']">
+									<MkPreferenceContainer k="instanceTicker">
+										<MkSelect
+											v-model="instanceTicker"
+											:items="[
+												{ label: i18n.ts._instanceTicker.none, value: 'none' },
+												{ label: i18n.ts._instanceTicker.remote, value: 'remote' },
+												{ label: i18n.ts._instanceTicker.always, value: 'always' },
+											]"
+										>
+											<template #label><SearchLabel>{{ i18n.ts.instanceTicker }}</SearchLabel></template>
+										</MkSelect>
+									</MkPreferenceContainer>
+								</SearchMarker>
+							</template>
 
 							<SearchMarker :keywords="['attachment', 'image', 'photo', 'picture', 'media', 'thumbnail', 'nsfw', 'sensitive', 'display', 'show', 'hide', 'visibility']">
 								<MkPreferenceContainer k="nsfw">
@@ -797,22 +822,30 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 						<SearchMarker :keywords="['position']">
 							<MkPreferenceContainer k="notificationPosition">
-								<MkRadios v-model="notificationPosition">
+								<MkRadios
+									v-model="notificationPosition"
+									:options="[
+										{ value: 'leftTop', label: i18n.ts.leftTop, icon: 'ti ti-align-box-left-top' },
+										{ value: 'rightTop', label: i18n.ts.rightTop, icon: 'ti ti-align-box-right-top' },
+										{ value: 'leftBottom', label: i18n.ts.leftBottom, icon: 'ti ti-align-box-left-bottom' },
+										{ value: 'rightBottom', label: i18n.ts.rightBottom, icon: 'ti ti-align-box-right-bottom' },
+									]"
+								>
 									<template #label><SearchLabel>{{ i18n.ts.position }}</SearchLabel></template>
-									<option value="leftTop"><i class="ti ti-align-box-left-top"></i> {{ i18n.ts.leftTop }}</option>
-									<option value="rightTop"><i class="ti ti-align-box-right-top"></i> {{ i18n.ts.rightTop }}</option>
-									<option value="leftBottom"><i class="ti ti-align-box-left-bottom"></i> {{ i18n.ts.leftBottom }}</option>
-									<option value="rightBottom"><i class="ti ti-align-box-right-bottom"></i> {{ i18n.ts.rightBottom }}</option>
 								</MkRadios>
 							</MkPreferenceContainer>
 						</SearchMarker>
 
 						<SearchMarker :keywords="['stack', 'axis', 'direction']">
 							<MkPreferenceContainer k="notificationStackAxis">
-								<MkRadios v-model="notificationStackAxis">
+								<MkRadios
+									v-model="notificationStackAxis"
+									:options="[
+										{ value: 'vertical', label: i18n.ts.vertical, icon: 'ti ti-carousel-vertical' },
+										{ value: 'horizontal', label: i18n.ts.horizontal, icon: 'ti ti-carousel-horizontal' },
+									]"
+								>
 									<template #label><SearchLabel>{{ i18n.ts.stackAxis }}</SearchLabel></template>
-									<option value="vertical"><i class="ti ti-carousel-vertical"></i> {{ i18n.ts.vertical }}</option>
-									<option value="horizontal"><i class="ti ti-carousel-horizontal"></i> {{ i18n.ts.horizontal }}</option>
 								</MkRadios>
 							</MkPreferenceContainer>
 						</SearchMarker>
@@ -895,7 +928,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<template #icon><SearchIcon><i class="ti ti-accessible"></i></SearchIcon></template>
 
 					<div class="_gaps_m">
-						<MkFeatureBanner icon="/client-assets/mens_room_3d.png" color="#0011ff">
+						<MkFeatureBanner icon="/fluent-emoji/1f6b9.png" color="#0011ff">
 							<SearchText>{{ i18n.ts._settings.accessibilityBanner }}</SearchText>
 						</MkFeatureBanner>
 
@@ -1031,6 +1064,26 @@ SPDX-License-Identifier: AGPL-3.0-only
 									<template #label><SearchLabel>{{ i18n.ts._contextMenu.title }}</SearchLabel></template>
 								</MkSelect>
 							</MkPreferenceContainer>
+						</SearchMarker>
+
+						<SearchMarker :keywords="['font', 'size']">
+							<MkRadios
+								v-model="fontSize"
+								:options="[
+									{ value: null, label: 'Aa', labelStyle: 'font-size: 14px;' },
+									{ value: '1', label: 'Aa', labelStyle: 'font-size: 15px;' },
+									{ value: '2', label: 'Aa', labelStyle: 'font-size: 16px;' },
+									{ value: '3', label: 'Aa', labelStyle: 'font-size: 17px;' },
+								]"
+							>
+								<template #label><SearchLabel>{{ i18n.ts.fontSize }}</SearchLabel></template>
+							</MkRadios>
+						</SearchMarker>
+
+						<SearchMarker :keywords="['font', 'system', 'native']">
+							<MkSwitch v-model="useSystemFont">
+								<template #label><SearchLabel>{{ i18n.ts.useSystemFont }}</SearchLabel></template>
+							</MkSwitch>
 						</SearchMarker>
 					</div>
 				</MkFolder>
@@ -1304,10 +1357,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 						<SearchMarker>
 							<MkPreferenceContainer k="hemisphere">
-								<MkRadios v-model="hemisphere">
+								<MkRadios
+									v-model="hemisphere"
+									:options="[
+										{ value: 'N', label: i18n.ts._hemisphere.N },
+										{ value: 'S', label: i18n.ts._hemisphere.S },
+									]"
+								>
 									<template #label><SearchLabel>{{ i18n.ts.hemisphere }}</SearchLabel></template>
-									<option value="N">{{ i18n.ts._hemisphere.N }}</option>
-									<option value="S">{{ i18n.ts._hemisphere.S }}</option>
 									<template #caption>{{ i18n.ts._hemisphere.caption }}</template>
 								</MkRadios>
 							</MkPreferenceContainer>
@@ -1416,14 +1473,7 @@ const $i = ensureSignin();
 
 const lang = ref(miLocalStorage.getItem('lang'));
 const dataSaver = ref(prefer.s.dataSaver);
-const realtimeMode = computed(store.makeGetterSetter('realtimeMode'));
-const trustedDomains = ref(prefer.s.trustedDomains.join('\n'));
-
-// const fontSize = ref(miLocalStorage.getItem('fontSize'));
-const fontSize = prefer.model('fontSize');
-const fontSizeBefore = ref(miLocalStorage.getItem('fontSize'));
-const useSystemFont = ref(miLocalStorage.getItem('useSystemFont') != null);
-const useBoldFont = ref(miLocalStorage.getItem('useBoldFont') === 'true');
+const realtimeMode = store.model('realtimeMode');
 
 const overridedDeviceKind = prefer.model('overridedDeviceKind');
 const pollingInterval = prefer.model('pollingInterval');
@@ -1459,6 +1509,7 @@ const notificationStackAxis = prefer.model('notificationStackAxis');
 const instanceTicker = prefer.model('instanceTicker');
 const highlightSensitiveMedia = prefer.model('highlightSensitiveMedia');
 const mediaListWithOneImageAppearance = prefer.model('mediaListWithOneImageAppearance');
+const showMediaListByGridInWideArea = prefer.model('showMediaListByGridInWideArea');
 const reactionsDisplaySize = prefer.model('reactionsDisplaySize');
 const limitWidthOfReaction = prefer.model('limitWidthOfReaction');
 const squareAvatars = prefer.model('squareAvatars');
@@ -1486,53 +1537,8 @@ const menuStyle = prefer.model('menuStyle');
 const makeEveryTextElementsSelectable = prefer.model('makeEveryTextElementsSelectable');
 const showPreview = prefer.model('showPreview');
 
-const forceCollapseAllRenotes = prefer.model('forceCollapseAllRenotes');
-const collapseReplies = prefer.model('collapseReplies');
-const collapseLongNoteContent = prefer.model('collapseLongNoteContent');
-const collapseDefault = prefer.model('collapseDefault');
-const allMediaNoteCollapse = prefer.model('allMediaNoteCollapse');
-const showSubNoteFooterButton = prefer.model('showSubNoteFooterButton');
-const infoButtonForNoteActionsEnabled = prefer.model('infoButtonForNoteActionsEnabled');
-const showTranslateButtonInNote = prefer.model('showTranslateButtonInNote');
-const showGapBodyOfTheNote = prefer.model('showGapBodyOfTheNote');
-const showReplyButtonInNoteFooter = prefer.model('showReplyButtonInNoteFooter');
-const showRenoteButtonInNoteFooter = prefer.model('showRenoteButtonInNoteFooter');
-const showLikeButtonInNoteFooter = prefer.model('showLikeButtonInNoteFooter');
-const showDoReactionButtonInNoteFooter = prefer.model('showDoReactionButtonInNoteFooter');
-const showQuoteButtonInNoteFooter = prefer.model('showQuoteButtonInNoteFooter');
-const showMoreButtonInNoteFooter = prefer.model('showMoreButtonInNoteFooter');
-const selectReaction = prefer.model('selectReaction');
-const showReplyInNotification = prefer.model('showReplyInNotification');
-const renoteQuoteButtonSeparation = prefer.model('renoteQuoteButtonSeparation');
-const renoteVisibilitySelection = prefer.model('renoteVisibilitySelection');
-const forceRenoteVisibilitySelection = prefer.model('forceRenoteVisibilitySelection');
-const showFixedPostFormInReplies = prefer.model('showFixedPostFormInReplies');
-const showNoAltTextWarning = prefer.model('showNoAltTextWarning');
-const alwaysShowCw = prefer.model('alwaysShowCw');
-const autoLoadMoreReplies = prefer.model('autoLoadMoreReplies');
-const autoLoadMoreConversation = prefer.model('autoLoadMoreConversation');
-const useAutoTranslate = prefer.model('useAutoTranslate');
-const welcomeBackToast = prefer.model('welcomeBackToast');
-const disableNyaize = prefer.model('disableNyaize');
-const requireRefreshBehavior = prefer.model('requireRefreshBehavior');
-const newNoteReceivedNotificationBehavior = prefer.model('newNoteReceivedNotificationBehavior');
-const externalNavigationWarning = prefer.model('externalNavigationWarning');
-const searchEngine = computed(store.makeGetterSetter('searchEngine'));
-const searchEngineUrl = computed(store.makeGetterSetter('searchEngineUrl'));
-const searchEngineUrlQuery = computed(store.makeGetterSetter('searchEngineUrlQuery'));
-const removeModalBgColorForBlur = prefer.model('removeModalBgColorForBlur');
-const setFederationAvatarShape = prefer.model('setFederationAvatarShape');
-const showUnreadNotificationsCount = prefer.model('showUnreadNotificationsCount');
-const filesGridLayoutInUserPage = prefer.model('filesGridLayoutInUserPage');
-const hideAvatarsInNote = prefer.model('hideAvatarsInNote');
-const enableAbsoluteTime = prefer.model('enableAbsoluteTime');
-const enableMarkByDate = prefer.model('enableMarkByDate');
-const showReplyTargetNote = prefer.model('showReplyTargetNote');
-const showReplyTargetNoteInSemiTransparent = prefer.model('showReplyTargetNoteInSemiTransparent');
-const nsfwOpenBehavior = prefer.model('nsfwOpenBehavior');
-const showProfilePreview = prefer.model('showProfilePreview');
-const showingAnimatedImages = prefer.model('showingAnimatedImages');
-const smoothTransitionAnimations = prefer.model('smoothTransitionAnimations', v => !v, v => !v);
+const fontSize = ref(miLocalStorage.getItem('fontSize') as '1' | '2' | '3' | null);
+const useSystemFont = ref(miLocalStorage.getItem('useSystemFont') != null);
 
 watch(lang, () => {
 	miLocalStorage.setItem('lang', lang.value as string);
@@ -1686,9 +1692,9 @@ function downloadEmojiIndex(lang: typeof emojiIndexLangs[number]) {
 
 		function download() {
 			switch (lang) {
-				case 'en-US': return import('../../unicode-emoji-indexes/en-US.json').then(x => x.default);
-				case 'ja-JP': return import('../../unicode-emoji-indexes/ja-JP.json').then(x => x.default);
-				case 'ja-JP_hira': return import('../../unicode-emoji-indexes/ja-JP_hira.json').then(x => x.default);
+				case 'en-US': return import('@misskey-dev/emoji-data/indexes/en-US.json').then(x => x.default);
+				case 'ja-JP': return import('@misskey-dev/emoji-data/indexes/ja-JP.json').then(x => x.default);
+				case 'ja-JP_hira': return import('@misskey-dev/emoji-data/indexes/ja-JP_hira.json').then(x => x.default);
 				default: throw new Error('unrecognized lang: ' + lang);
 			}
 		}
@@ -1729,13 +1735,17 @@ function removePinnedList() {
 
 function enableAllDataSaver() {
 	const g = { ...prefer.s.dataSaver };
-	Object.keys(g).forEach((key) => { g[key] = true; });
+
+	(Object.keys(g) as (keyof typeof g)[]).forEach((key) => { g[key] = true; });
+
 	dataSaver.value = g;
 }
 
 function disableAllDataSaver() {
 	const g = { ...prefer.s.dataSaver };
-	Object.keys(g).forEach((key) => { g[key] = false; });
+
+	(Object.keys(g) as (keyof typeof g)[]).forEach((key) => { g[key] = false; });
+
 	dataSaver.value = g;
 }
 
