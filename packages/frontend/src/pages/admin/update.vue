@@ -24,9 +24,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<template #label>{{ instanceName }}</template>
 				<MkKeyValue @click="whatIsNewCherryPick">
 					<template #key>{{ i18n.ts.currentVersion }} <i class="ti ti-external-link"></i></template>
-					<template #value>{{ version }} <span :class="$style.commitHash" @click.stop="openCommitPage('kokonect-link/cherrypick', gitHash)">({{ gitHash.substring(0, 8) }})</span></template>
+					<template #value>{{ version }} <span :class="$style.commitHash" @click.stop="openCommitPage('chalkpe/cherrypick', gitHash)">({{ gitHash.substring(0, 8) }})</span></template>
 				</MkKeyValue>
-				<MkKeyValue v-if="version < releasesCherryPick[0].tag_name && !skipVersion" style="margin-top: 10px;" @click="whatIsNewLatestCherryPick">
+				<MkKeyValue v-if="compareVersions(version, releasesCherryPick[0].tag_name) < 0 && !skipVersion" style="margin-top: 10px;" @click="whatIsNewLatestCherryPick">
 					<template #key>{{ i18n.ts.latestVersion }} <i class="ti ti-external-link"></i></template>
 					<template #value>{{ releasesCherryPick[0].tag_name }} <span :class="$style.commitHash" @click.stop="openCommitPage('kokonect-link/cherrypick', cherryPickTagsMap.get(releasesCherryPick[0].tag_name) || '')">({{ (cherryPickTagsMap.get(releasesCherryPick[0].tag_name) || 'unknown').substring(0, 8) }})</span></template>
 				</MkKeyValue>

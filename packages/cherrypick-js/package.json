@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "cherrypick-js",
-	"version": "4.18.0-beta.1",
+	"version": "2026.9.1+choco.0",
 	"basedMisskeyVersion": "2026.9.1",
 	"description": "Misskey SDK for JavaScript",
 	"license": "MIT",
@@ -37,7 +37,7 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/kokonect-link/cherrypick.git",
+		"url": "git+https://github.com/chalkpe/cherrypick.git",
 		"directory": "packages/cherrypick-js"
 	},
 	"devDependencies": {

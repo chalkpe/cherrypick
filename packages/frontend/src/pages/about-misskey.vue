@@ -12,7 +12,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<div ref="containerEl" class="container" :class="{ playing: easterEggEngine != null }">
 						<img src="/client-assets/about-icon.png" alt="" class="icon" draggable="false" @load="iconLoaded" @click="gravity"/>
 						<div class="cherrypick">CherryPick</div>
-						<div class="version" @click="whatIsNewCherryPick">v{{ version }} <span class="commit-hash" @click.stop="openCommitPage('kokonect-link/cherrypick', gitHash)">({{ gitHash.substring(0, 8) }})</span></div>
+						<div class="version" @click="whatIsNewCherryPick">v{{ version }} <span class="commit-hash" @click.stop="openCommitPage('chalkpe/cherrypick', gitHash)">({{ gitHash.substring(0, 8) }})</span></div>
 						<div class="version" style="font-size: 11px;" @click="whatIsNewMisskey">v{{ basedMisskeyVersion }} (Based on Misskey)</div>
 						<span v-for="emoji in easterEggEmojis" :key="emoji.id" class="emoji" :data-physics-x="emoji.left" :data-physics-y="emoji.top" :class="{ _physics_circle_: !emoji.emoji.startsWith(':') }">
 							<MkCustomEmoji v-if="emoji.emoji[0] === ':'" class="emoji" :name="emoji.emoji" :normal="true" :noStyle="true" :fallbackToImage="true"/>
@@ -40,6 +40,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<FormSection>
 					<template #label>CherryPick</template>
 					<div class="_gaps_s">
+						<FormLink v-if="instance.repositoryUrl" :to="sourceCodeUrl(instance.repositoryUrl, gitHash) ?? undefined" external>
+							<template #icon><i class="ti ti-code"></i></template>
+							{{ i18n.ts._aboutMisskey.source }}
+						</FormLink>
 						<FormLink to="https://github.com/kokonect-link/cherrypick" external>
 							<template #icon><i class="ti ti-code"></i></template>
 							{{ i18n.ts._aboutMisskey.source }} ({{ i18n.ts._aboutMisskey.original }})
@@ -86,7 +90,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						</FormLink>
 					</div>
 				</FormSection>
-				<FormSection v-if="instance.repositoryUrl !== 'https://github.com/kokonect-link/cherrypick'">
+				<FormSection v-if="instance.repositoryUrl !== 'https://github.com/chalkpe/cherrypick'">
 					<div class="_gaps_s">
 						<MkInfo>
 							{{ i18n.tsx._aboutMisskey.thisIsModifiedVersion({ name: instance.name ?? host }) }}
@@ -240,6 +244,7 @@ import { $i } from '@/i.js';
 import { prefer } from '@/preferences.js';
 import { donateCherryPick } from '@/utility/donate-cherrypick.js';
 import { openCommitPage } from '@/utility/fetch-releases.js';
+import { sourceCodeUrl } from '@/utility/source-code-url.js';
 
 const patronsWithIconWithCherryPick = [{
 	name: 'Etone Sabasappugawa',

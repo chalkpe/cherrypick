@@ -31,7 +31,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<template #icon><i class="ti ti-info-circle"></i></template>
 				{{ i18n.ts.aboutMisskey }}
 			</FormLink>
-			<FormLink v-if="instance.repositoryUrl || instance.providesTarball" :to="instance.repositoryUrl || `/tarball/cherrypick-${version}.tar.gz`" external>
+			<FormLink v-if="instance.repositoryUrl || instance.providesTarball" :to="sourceCodeUrl(instance.repositoryUrl, gitHash) || `/tarball/cherrypick-${version}.tar.gz`" external>
 				<template #icon><i class="ti ti-code"></i></template>
 				{{ i18n.ts.sourceCode }}
 			</FormLink>
@@ -147,6 +147,7 @@ import MkKeyValue from '@/components/MkKeyValue.vue';
 import MkLink from '@/components/MkLink.vue';
 import MkInfo from '@/components/MkInfo.vue';
 import { donateCherryPick } from '@/utility/donate-cherrypick.js';
+import { sourceCodeUrl } from '@/utility/source-code-url.js';
 
 const initStats = () => misskeyApi('stats', {});
 </script>

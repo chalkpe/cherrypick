@@ -17,7 +17,7 @@ export const comment = `<!--
 
  Thank you for using CherryPick!
  If you are reading this message... how about joining the development?
- https://github.com/kokonect-link/cherrypick
+ https://github.com/chalkpe/cherrypick
 
 -->`;
 
