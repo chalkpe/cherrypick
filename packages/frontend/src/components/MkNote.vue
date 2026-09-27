@@ -869,12 +869,6 @@ async function react(): Promise<void> {
 async function toggleReaction(reaction: string) {
 	const oldReaction = $appearNote.myReaction;
 	if (oldReaction) {
-		const confirm = await os.confirm({
-			type: 'warning',
-			text: oldReaction !== reaction ? i18n.ts.changeReactionConfirm : i18n.ts.cancelReactionConfirm,
-		});
-		if (confirm.canceled) return;
-
 		sound.playMisskeySfx('reaction');
 
 		await misskeyApi('notes/reactions/delete', { noteId: appearNote.id });

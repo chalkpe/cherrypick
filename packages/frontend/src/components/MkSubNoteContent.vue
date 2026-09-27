@@ -448,14 +448,8 @@ function react(): void {
 }
 
 async function toggleReaction(reaction: string) {
-	const oldReaction = note.myReaction;
+	const oldReaction = $note.myReaction;
 	if (oldReaction) {
-		const confirm = await os.confirm({
-			type: 'warning',
-			text: oldReaction !== reaction ? i18n.ts.changeReactionConfirm : i18n.ts.cancelReactionConfirm,
-		});
-		if (confirm.canceled) return;
-
 		sound.playMisskeySfx('reaction');
 
 		misskeyApi('notes/reactions/delete', {

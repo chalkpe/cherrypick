@@ -101,12 +101,6 @@ async function toggleReaction(ev: MouseEvent) {
 
 	const oldReaction = props.myReaction;
 	if (oldReaction) {
-		const confirm = await os.confirm({
-			type: 'warning',
-			text: oldReaction !== props.reaction ? i18n.ts.changeReactionConfirm : i18n.ts.cancelReactionConfirm,
-		});
-		if (confirm.canceled) return;
-
 		if (oldReaction !== props.reaction) {
 			sound.playMisskeySfx('reaction');
 			haptic();
