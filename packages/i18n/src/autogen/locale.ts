@@ -15569,4 +15569,8 @@ export interface Locale extends ILocale {
          */
         "replyLocked": string;
     };
+    /**
+     * リモートユーザーのアイコンのデコレーションを表示
+     */
+    "showRemoteAvatarDecorations": string;
 }

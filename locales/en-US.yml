@@ -4024,3 +4024,5 @@ _noteVisibilityLimit:
   personalLocked: "Unlock in Settings → Privacy → Note visibility limit."
   roleLocked: "Locked by the server’s role policy. Contact a server administrator to change it."
   replyLocked: "Replies to direct notes can only use Direct visibility."
+
+showRemoteAvatarDecorations: "Show remote users’ avatar decorations"
