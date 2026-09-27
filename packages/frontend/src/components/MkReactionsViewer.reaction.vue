@@ -111,30 +111,36 @@ async function toggleReaction(ev: MouseEvent) {
 			return;
 		}
 
-		misskeyApi('notes/reactions/delete', {
-			noteId: props.noteId,
-		}).then(() => {
-			noteEvents.emit(`unreacted:${props.noteId}`, {
-				userId: me.id,
-				reaction: oldReaction,
-			});
-			if (oldReaction !== props.reaction) {
-				misskeyApi('notes/reactions/create', {
-					noteId: props.noteId,
-					reaction: props.reaction,
-				}).then(() => {
-					const emoji = customEmojisMap.get(emojiName.value);
-					if (emoji == null && getUnicodeEmojiOrNull(props.reaction) == null) {
-						return;
-					}
-					noteEvents.emit(`reacted:${props.noteId}`, {
-						userId: me.id,
-						reaction: props.reaction,
-						emoji: emoji,
-					});
+		if (oldReaction === props.reaction) {
+			misskeyApi('notes/reactions/delete', {
+				noteId: props.noteId,
+			}).then(() => {
+				noteEvents.emit(`unreacted:${props.noteId}`, {
+					userId: me.id,
+					reaction: oldReaction,
 				});
-			}
-		});
+			});
+		} else {
+			// 既存のリアクションはサーバー側で置き換えられるので delete は呼ばない (delete の間隔制限を避ける)
+			misskeyApi('notes/reactions/create', {
+				noteId: props.noteId,
+				reaction: props.reaction,
+			}).then(() => {
+				noteEvents.emit(`unreacted:${props.noteId}`, {
+					userId: me.id,
+					reaction: oldReaction,
+				});
+				const emoji = customEmojisMap.get(emojiName.value);
+				if (emoji == null && getUnicodeEmojiOrNull(props.reaction) == null) {
+					return;
+				}
+				noteEvents.emit(`reacted:${props.noteId}`, {
+					userId: me.id,
+					reaction: props.reaction,
+					emoji: emoji,
+				});
+			});
+		}
 	} else {
 		if (prefer.s.confirmOnReact) {
 			const confirm = await os.confirm({

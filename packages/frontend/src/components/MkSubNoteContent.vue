@@ -452,16 +452,31 @@ async function toggleReaction(reaction: string) {
 	if (oldReaction) {
 		sound.playMisskeySfx('reaction');
 
-		misskeyApi('notes/reactions/delete', {
-			noteId: note.id,
-		}).then(() => {
-			if (oldReaction !== reaction) {
-				misskeyApi('notes/reactions/create', {
-					noteId: note.id,
+		if (oldReaction === reaction) {
+			misskeyApi('notes/reactions/delete', {
+				noteId: note.id,
+			}).then(() => {
+				noteEvents.emit(`unreacted:${note.id}`, {
+					userId: $i!.id,
+					reaction: oldReaction,
+				});
+			});
+		} else {
+			// 既存のリアクションはサーバー側で置き換えられるので delete は呼ばない (delete の間隔制限を避ける)
+			misskeyApi('notes/reactions/create', {
+				noteId: note.id,
+				reaction: reaction,
+			}).then(() => {
+				noteEvents.emit(`unreacted:${note.id}`, {
+					userId: $i!.id,
+					reaction: oldReaction,
+				});
+				noteEvents.emit(`reacted:${note.id}`, {
+					userId: $i!.id,
 					reaction: reaction,
 				});
-			}
-		});
+			});
+		}
 	} else {
 		sound.playMisskeySfx('reaction');
 

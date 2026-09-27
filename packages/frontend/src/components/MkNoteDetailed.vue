@@ -717,11 +717,16 @@ async function toggleReaction(reaction: string) {
 	if (oldReaction) {
 		sound.playMisskeySfx('reaction');
 
-		await misskeyApi('notes/reactions/delete', { noteId: appearNote.id });
-		if ($i) noteEvents.emit(`unreacted:${appearNote.id}`, { userId: $i.id, reaction: oldReaction });
-		if (oldReaction !== reaction) {
+		if (oldReaction === reaction) {
+			await misskeyApi('notes/reactions/delete', { noteId: appearNote.id });
+			if ($i) noteEvents.emit(`unreacted:${appearNote.id}`, { userId: $i.id, reaction: oldReaction });
+		} else {
+			// 既存のリアクションはサーバー側で置き換えられるので delete は呼ばない (delete の間隔制限を避ける)
 			await misskeyApi('notes/reactions/create', { noteId: appearNote.id, reaction });
-			if ($i) noteEvents.emit(`reacted:${appearNote.id}`, { userId: $i.id, reaction });
+			if ($i) {
+				noteEvents.emit(`unreacted:${appearNote.id}`, { userId: $i.id, reaction: oldReaction });
+				noteEvents.emit(`reacted:${appearNote.id}`, { userId: $i.id, reaction });
+			}
 		}
 	} else {
 		sound.playMisskeySfx('reaction');
