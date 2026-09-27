@@ -100,6 +100,8 @@ function onTabMousedown(tab: Tab, ev: MouseEvent): void {
 }
 
 function onTabClick(t: Tab, ev: PointerEvent): void {
+	haptic();
+
 	emit('tabClick', t.key);
 
 	if (t.onClick) {

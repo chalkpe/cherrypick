@@ -4,12 +4,18 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="show" ref="el" :class="[$style.root]">
-	<div :class="[$style.upper, { [$style.slim]: narrow, [$style.thin]: thin_ }]">
-		<div v-if="!thin_ && (narrow || deviceKind === 'smartphone') && props.displayMyAvatar && $i" class="_button" @click="openAccountMenu">
+<div v-if="show" ref="el" :class="[$style.root, { [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.scrollToTransparent]: showEl }]">
+	<div :class="[$style.upper, { [$style.slim]: narrow || isFriendly().value, [$style.thin]: thin_, [$style.hideTitle]: hideTitle && isFriendly().value }]">
+		<div v-if="!thin_ && !canBack && !notification" :class="$style.buttonsLeft">
+			<button class="_button" :class="[$style.button, $style.goBack]" @click.stop="goBack" @touchstart="preventDrag"><i class="ti ti-arrow-left"></i></button>
+		</div>
+		<div v-if="!thin_ && (narrow || deviceKind === 'smartphone') && props.displayMyAvatar && $i && !isFriendly().value && !notification" class="_button" :class="$style.buttonsLeft" @click="openAccountMenu">
 			<MkAvatar :class="$style.avatar" :user="$i"/>
 		</div>
-		<div v-else-if="!thin_ && narrow && !hideTitle" :class="$style.buttons"></div>
+		<div v-else-if="!thin_ && narrow && !hideTitle && canBack" :class="[$style.buttons, $style.buttonsLeft]"></div>
+		<div v-if="leftSpacing" :class="leftSpacing.class ? $style.buttonsLeft : undefined" :style="leftSpacing.style">
+			<div v-for="(width, index) in leftSpacing.children" :key="index" :style="width"></div>
+		</div>
 
 		<template v-if="props.title || props.icon">
 			<div v-if="!hideTitle" :class="[$style.titleContainer, { [$style.titleContainer_canBack]: !canBack }]" @click="top">
@@ -38,7 +44,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</div>
 			<XTabs v-if="(!narrow || hideTitle) && !isFriendly().value" :class="[$style.tabs, { [$style.tabs_canBack]: !canBack }]" :tab="tab" :tabs="tabs" :rootEl="el" @update:tab="key => emit('update:tab', key)" @tabClick="onTabClick"/>
 		</template>
-		<div v-if="(!thin_ && narrow && !hideTitle) || (actions && actions.length > 0)" :class="$style.buttons">
+		<div v-if="!thin_ && !narrow && (actions && actions.length > 0) && hideTitle && ['index'].includes(<string>mainRouter.currentRoute.value.name)" :class="[$style.buttons, $style.buttonsRight]"></div>
+		<div v-if="(!thin_ && narrow && !hideTitle) || (actions && actions.length > 0)" :class="[$style.buttons, $style.buttonsRight]">
 			<template v-for="action in actions">
 				<button v-tooltip.noDelay="action.text" class="_button" :class="[$style.button, { [$style.highlighted]: action.highlighted }]" @click.stop="action.handler" @touchstart="preventDrag"><i :class="action.icon"></i></button>
 			</template>
@@ -164,14 +171,6 @@ const top = () => {
 	}
 };
 
-async function openAccountMenu(ev: PointerEvent) {
-	const menuItems = await getAccountMenu({
-		withExtraOperation: true,
-	});
-
-	os.popupMenu(menuItems, ev.currentTarget ?? ev.target);
-}
-
 const topWithMenu = (ev: MouseEvent) => {
 	const pos = getScrollPosition(el.value as HTMLElement);
 	if (el.value && pos !== 0) {
@@ -186,6 +185,16 @@ const topWithMenu = (ev: MouseEvent) => {
 		}], ev.currentTarget ?? ev.target);
 	}
 };
+
+async function openAccountMenu(ev: PointerEvent) {
+	haptic();
+
+	const menuItems = await getAccountMenu({
+		withExtraOperation: true,
+	});
+
+	os.popupMenu(menuItems, ev.currentTarget ?? ev.target);
+}
 
 function onTabClick(): void {
 	top();
@@ -261,12 +270,10 @@ onUnmounted(() => {
 	align-items: center;
 	height: var(--height);
 
-	.tabs:first-child,
-	&:not(.slim) > :not(.titleContainer) ~ .tabs {
+	.tabs:first-child {
 		margin-left: auto;
 		padding: 0 12px;
 	}
-
 	.tabs {
 		margin-right: auto;
 	}

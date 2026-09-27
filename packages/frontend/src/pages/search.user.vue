@@ -13,18 +13,21 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<button type="button" :class="$style.searchInputButton" tabindex="-1" @click="search"><i class="ti ti-search"></i></button>
 			</template>
 		</MkInput>
-		<MkRadios
-			v-if="instance.federation !== 'none'"
-			v-model="searchOrigin"
-			:options="[
-				{ value: 'combined', label: i18n.ts.all },
-				{ value: 'local', label: i18n.ts.local },
-				{ value: 'remote', label: i18n.ts.remote },
-			]"
-			@update:modelValue="search()"
-		>
-		</MkRadios>
-		<MkButton large primary gradate rounded @click="search">{{ i18n.ts.search }}</MkButton>
+		<MkFoldableSection expanded>
+			<template #header>{{ i18n.ts.options }}</template>
+
+			<div class="_gaps_m">
+				<!--
+				<MkRadios v-if="instance.federation !== 'none'" v-model="searchOrigin" @update:modelValue="search()">
+					<option value="combined">{{ i18n.ts.all }}</option>
+					<option value="local">{{ i18n.ts.local }}</option>
+					<option value="remote">{{ i18n.ts.remote }}</option>
+				</MkRadios>
+				-->
+				<MkSelect v-model="searchOrigin" :items="searchOriginDef" small @update:modelValue="search()"></MkSelect>
+			</div>
+		</MkFoldableSection>
+		<!-- <MkButton large primary gradate rounded @click="search">{{ i18n.ts.search }}</MkButton> -->
 	</div>
 
 	<MkFoldableSection v-if="paginator">
@@ -40,8 +43,6 @@ import type { Endpoints } from 'cherrypick-js';
 import type { MkSelectItem } from '@/components/MkSelect.vue';
 import MkUserList from '@/components/MkUserList.vue';
 import MkInput from '@/components/MkInput.vue';
-import MkRadios from '@/components/MkRadios.vue';
-import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
 import { instance } from '@/instance.js';
 import * as os from '@/os.js';

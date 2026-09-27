@@ -33,8 +33,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</MkInput>
 				</div>
 
-				-->
-
 				<MkSelect v-model="searchScope" :items="searchScopeDef" small></MkSelect>
 
 				<div v-if="instance.federation !== 'none' && searchScope === 'server'" :class="$style.subOptionRoot">
@@ -140,9 +138,9 @@ import MkButton from '@/components/MkButton.vue';
 import MkFoldableSection from '@/components/MkFoldableSection.vue';
 import MkInput from '@/components/MkInput.vue';
 import MkNotesTimeline from '@/components/MkNotesTimeline.vue';
-import MkRadios from '@/components/MkRadios.vue';
 import MkUserCardMini from '@/components/MkUserCardMini.vue';
 import { Paginator } from '@/utility/paginator.js';
+import MkSelect from '@/components/MkSelect.vue';
 
 const props = withDefaults(defineProps<{
 	query?: string;
