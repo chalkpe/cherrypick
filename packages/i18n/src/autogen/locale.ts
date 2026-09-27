@@ -136,6 +136,34 @@ export interface Locale extends ILocale {
      */
     "showCatOnly": string;
     /**
+     * Playへの追加許可
+     */
+    "additionalPermissionsForFlash": string;
+    /**
+     * このPlayは以下の権限を要求しています
+     */
+    "thisFlashRequiresTheFollowingPermissions": string;
+    /**
+     * このPlayによるアカウントへのアクセスを許可しますか？
+     */
+    "doYouWantToAllowThisPlayToAccessYourAccount": string;
+    /**
+     * プロフィールを翻訳する
+     */
+    "translateProfile": string;
+    /**
+     * 外部サイトへのリンク警告 除外リスト
+     */
+    "trustedLinkUrlPatterns": string;
+    /**
+     * スペースで区切るとAND指定になり、改行で区切るとOR指定になります。スラッシュで囲むと正規表現になります。ドメイン名だけ書くと後方一致になります。
+     */
+    "trustedLinkUrlPatternsDescription": string;
+    /**
+     * 開く
+     */
+    "open": string;
+    /**
      * 私または相手がリノートしたすべてのノートをたたんで表示します。
      */
     "forceCollapseAllRenotesDescription": string;
@@ -6403,6 +6431,18 @@ export interface Locale extends ILocale {
      * ゼロ埋め
      */
     "zeroPadding": string;
+    /**
+     * 下書き一覧
+     */
+    "draftNoteList": string;
+    /**
+     * 下書きで保存
+     */
+    "saveAsDraft": string;
+    /**
+     * 未読の通知の数を表示する
+     */
+    "showUnreadNotificationsCount": string;
     /**
      * 設定項目はありません
      */
