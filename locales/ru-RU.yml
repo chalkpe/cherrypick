@@ -2588,6 +2588,7 @@ _notification:
     pollEnded: "Окончания опросов"
     receiveFollowRequest: "Получен запрос на подписку"
     followRequestAccepted: "Запрос на подписку одобрен"
+    groupInvited: "Приглашение в группы"
     chatRoomInvitationReceived: "Пригласили в чат"
     achievementEarned: "Получение достижений"
     login: "Войти"

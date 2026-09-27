@@ -2610,6 +2610,7 @@ _notification:
     roleAssigned: "Peran Diberikan"
     chatRoomInvitationReceived: "Diundang ke dalam ruang chat"
     achievementEarned: "Pencapaian didapatkan"
+    groupInvited: "Diundang ke grup"
     exportCompleted: "Ekspor telah selesai"
     login: "Masuk"
     createToken: "Buat token akses"
