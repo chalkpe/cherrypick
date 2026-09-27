@@ -74,6 +74,11 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.btlDisabled);
 			}
 
+			// バブルインスタンスが未設定なら `IN ()` を生成して SQL エラーになるため空で返す
+			if (this.serverSettings.bubbleInstances.length === 0) {
+				return [];
+			}
+
 			const [
 				followings,
 			] = me ? await Promise.all([
