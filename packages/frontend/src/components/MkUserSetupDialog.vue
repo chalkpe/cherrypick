@@ -80,7 +80,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<template v-else-if="page === 3">
 				<div style="height: 100cqh; overflow: auto;">
 					<div class="_spacer" style="--MI_SPACER-min: 20px; --MI_SPACER-max: 28px;">
-						<XFollow/>
+						<XFontSize/>
 					</div>
 					<div :class="$style.pageFooter">
 						<div class="_buttonsCenter">

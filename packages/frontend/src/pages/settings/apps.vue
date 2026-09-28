@@ -69,7 +69,13 @@ const paginator = markRaw(new Paginator('i/apps', {
 	},
 }));
 
-function revoke(token: Misskey.entities.IAppsResponse[number]) {
+async function revoke(token: Misskey.entities.IAppsResponse[number]) {
+	const { canceled } = await os.confirm({
+		type: 'warning',
+		text: i18n.tsx.removeAreYouSure({ x: token.name ?? '' }),
+	});
+	if (canceled) return;
+
 	misskeyApi('i/revoke-token', { tokenId: token.id }).then(() => {
 		paginator.reload();
 	});

@@ -387,6 +387,11 @@ export class ClientServerService {
 		});
 
 		fastify.get('/robots.txt', async (request, reply) => {
+			if (this.meta.customRobotsTxt) {
+				reply.header('Content-Type', 'text/plain; charset=utf-8');
+				return await reply.send(this.meta.customRobotsTxt);
+			}
+
 			const disallowedPaths = [
 				'/settings',
 				'/admin',
@@ -806,7 +811,7 @@ export class ClientServerService {
 
 			reply.header('Cache-Control', 'public, max-age=3600');
 			return await HtmlTemplateService.replyHtml(reply, BaseEmbed({
-				title: this.meta.name ?? 'Misskey',
+				title: this.meta.name ?? 'CherryPick',
 				...(await this.htmlTemplateService.getCommonData()),
 				embedCtxJson: htmlSafeJsonStringify({
 					user: _user,
@@ -836,7 +841,7 @@ export class ClientServerService {
 
 			reply.header('Cache-Control', 'public, max-age=3600');
 			return await HtmlTemplateService.replyHtml(reply, BaseEmbed({
-				title: this.meta.name ?? 'Misskey',
+				title: this.meta.name ?? 'CherryPick',
 				...(await this.htmlTemplateService.getCommonData()),
 				embedCtxJson: htmlSafeJsonStringify({
 					note: _note,
@@ -857,7 +862,7 @@ export class ClientServerService {
 
 			reply.header('Cache-Control', 'public, max-age=3600');
 			return await HtmlTemplateService.replyHtml(reply, BaseEmbed({
-				title: this.meta.name ?? 'Misskey',
+				title: this.meta.name ?? 'CherryPick',
 				...(await this.htmlTemplateService.getCommonData()),
 				embedCtxJson: htmlSafeJsonStringify({
 					clip: _clip,
@@ -870,7 +875,7 @@ export class ClientServerService {
 
 			reply.header('Cache-Control', 'public, max-age=3600');
 			return await HtmlTemplateService.replyHtml(reply, BaseEmbed({
-				title: this.meta.name ?? 'Misskey',
+				title: this.meta.name ?? 'CherryPick',
 				...(await this.htmlTemplateService.getCommonData()),
 			}));
 		});

@@ -4,7 +4,7 @@
  */
 
 import * as assert from 'assert';
-import * as mfm from 'mfm-js';
+import * as mfm from 'mfc-js';
 import { beforeAll, describe, test } from 'vitest';
 import { Test } from '@nestjs/testing';
 

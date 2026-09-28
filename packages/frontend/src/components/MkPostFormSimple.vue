@@ -184,7 +184,7 @@ import MkRippleEffect from '@/components/MkRippleEffect.vue';
 import { miLocalStorage } from '@/local-storage.js';
 import { claimAchievement } from '@/utility/achievements.js';
 import { emojiPicker } from '@/utility/emoji-picker.js';
-import { mfmFunctionPicker } from '@/utility/mfm-function-picker.js';
+import { mfmFunctionPicker, insertMfmFunction as insertMfmTag } from '@/utility/mfm-function-picker.js';
 import { prefer } from '@/preferences.js';
 import { getPluginHandlers } from '@/plugin.js';
 import { DI } from '@/di.js';
@@ -1365,15 +1365,10 @@ async function insertMfmFunction(ev: PointerEvent) {
 	mfmFunctionPicker(
 		ev.currentTarget ?? ev.target,
 		(tag) => {
-			if (pos === posEnd) {
-				text.value = `${text.value.substring(0, pos)}$[${tag} ]${text.value.substring(pos)}`;
-				pos += tag.length + 3;
-				posEnd = pos;
-			} else {
-				text.value = `${text.value.substring(0, pos)}$[${tag} ${text.value.substring(pos, posEnd)}]${text.value.substring(posEnd)}`;
-				pos += tag.length + 3;
-				posEnd = pos;
-			}
+			const inserted = insertMfmTag(text.value, pos, posEnd, tag);
+			text.value = inserted.text;
+			pos = inserted.start;
+			posEnd = inserted.end;
 		},
 		() => {
 			nextTick(() => {
@@ -1759,9 +1754,9 @@ onMounted(() => {
 			reactionAcceptance.value = init.reactionAcceptance;
 			disableRightClick.value = init.disableRightClick != null;
 			saveToDraft.value = false;
-			if (init.deletedAt) {
+			if (init.deleteAt) {
 				scheduledNoteDelete.value = {
-					deleteAt: init.deletedAt ? (new Date(init.deletedAt)).getTime() : null,
+					deleteAt: init.deleteAt ? (new Date(init.deleteAt)).getTime() : null,
 					deleteAfter: null,
 				};
 			}

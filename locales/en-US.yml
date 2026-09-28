@@ -3695,7 +3695,7 @@ _search:
   searchScopeUser: "Specific user"
   pleaseEnterServerHost: "Enter the server host"
   pleaseSelectUser: "Select user"
-  serverHostPlaceholder: "Example: misskey.example.com"
+  serverHostPlaceholder: "Example: cherrypick.example.com"
   postFrom: "Date posted from"
   postTo: "Date posted to"
 _serverSetupWizard:

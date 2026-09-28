@@ -14,13 +14,12 @@ if (import.meta.env.DEV) {
 
 import '@/style.scss';
 import { createApp, defineAsyncComponent } from 'vue';
-import defaultLightTheme from '@@/themes/l-light.json5';
-import defaultDarkTheme from '@@/themes/d-dark.json5';
+import defaultLightTheme from '@@/themes/l-cherrypick.json5';
+import defaultDarkTheme from '@@/themes/d-cherrypick.json5';
 import { MediaProxy } from '@@/js/media-proxy.js';
 import { storeBootloaderErrors } from '@@/js/store-boot-errors';
 import { url, version, basedMisskeyVersion, lang } from '@@/js/config.js';
 import { parseEmbedParams } from '@@/js/embed-page.js';
-import type { Theme } from '@/theme.js';
 import { applyTheme, assertIsTheme } from '@/theme.js';
 import { fetchCustomEmojis } from '@/custom-emojis.js';
 import { DI } from '@/di.js';
@@ -31,7 +30,7 @@ import { i18n } from '@/i18n.js';
 
 import type { Theme } from '@@/js/theme.js';
 
-console.log('Misskey Embed');
+console.log('CherryPick Embed');
 
 //#region Embedパラメータの取得・パース
 const params = new URLSearchParams(window.location.search);

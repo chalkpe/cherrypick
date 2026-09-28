@@ -3,6 +3,7 @@ import pluginVue from '@vitejs/plugin-vue';
 import { defineConfig, type UserConfig } from 'vite';
 import { load as loadYaml } from 'js-yaml';
 import { promises as fsp } from 'fs';
+import { execaSync } from 'execa';
 
 import locales from 'i18n';
 import meta from '../../package.json';
@@ -13,6 +14,17 @@ import { Features } from 'lightningcss';
 
 const url = process.env.NODE_ENV === 'development' ? (loadYaml(await fsp.readFile('../../.config/default.yml', 'utf-8')) as any).url : null;
 const host = url ? (new URL(url)).hostname : undefined;
+
+function getGitHash(): string {
+	try {
+		return execaSync('git', ['rev-parse', 'HEAD'], { cwd: path.resolve(__dirname, '../..') }).stdout.trim();
+	} catch (error) {
+		console.warn('Failed to get git hash:', error);
+		return 'unknown';
+	}
+}
+
+const gitHash = getGitHash();
 
 const extensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.json', '.json5', '.svg', '.sass', '.scss', '.css', '.vue'];
 
@@ -38,7 +50,7 @@ const externalPackages = [
 		name: 'tinyld',
 		match: /^tinyld$/,
 		path(): string {
-			return `https://cdn.jsdelivr.net/npm/tinyld@${packageInfo.dependencies.tinyld}/dist/tinyld.normal.node.mjs`
+			return `https://cdn.jsdelivr.net/npm/tinyld@${packageInfo.dependencies.tinyld}/dist/tinyld.normal.node.mjs`;
 		},
 	},
 ];
@@ -132,6 +144,7 @@ export function getConfig(): UserConfig {
 		define: {
 			_VERSION_: JSON.stringify(meta.version),
 			_BASEDMISSKEYVERSION_: JSON.stringify(meta.basedMisskeyVersion),
+			_GIT_HASH_: JSON.stringify(gitHash),
 			_LANGS_: JSON.stringify(Object.entries(locales).map(([k, v]) => [k, v._lang_])),
 			_ENV_: JSON.stringify(process.env.NODE_ENV),
 			_DEV_: process.env.NODE_ENV !== 'production',

@@ -15,7 +15,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	@afterLeave="onAfterLeave"
 >
 	<!-- v-ifを使うとfalseになったとき(transitionが行われている間)子コンポーネントの更新が停止するのか子コンポーネントがアニメーションされなくなる -->
-	<div v-show="showing" ref="rootEl" v-hotkey.global="keymap" :class="$style.root" :style="{ zIndex }">
+	<div v-show="showing" ref="rootEl" v-hotkey.global="keymap" :class="$style.root" :style="{ zIndex }" @contextmenu="props.disableRightClick && $event.preventDefault()">
 		<div :class="[$style.bg]" class="_modalBg"></div>
 		<div ref="mainEl" :class="$style.main">
 			<div
@@ -62,6 +62,7 @@ import { focusTrap } from '@/utility/focus-trap.js';
 
 const props = withDefaults(defineProps<{
 	defaultIndex?: number;
+	disableRightClick?: boolean;
 	contents: Content[];
 	initiallyRevealedContentIds?: string[];
 	user?: Misskey.entities.User | null; // DriveFileのuserはnullになることがある。その場合に使用する所有者情報

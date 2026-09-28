@@ -3276,7 +3276,7 @@ _search:
   searchScopeUser: "Especificar usuari"
   pleaseEnterServerHost: "Introdueix l'adreça de la instància "
   pleaseSelectUser: "Selecciona un usuari"
-  serverHostPlaceholder: "Ex: misskey.example.com"
+  serverHostPlaceholder: "Ex: cherrypick.example.com"
   postFrom: "Publicat el"
   postTo: "Publicat el"
 _serverSetupWizard:

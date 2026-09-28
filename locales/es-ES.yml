@@ -3361,7 +3361,7 @@ _search:
   searchScopeUser: "Especificar usuario"
   pleaseEnterServerHost: "Introduce la dirección del servidor/Instancia"
   pleaseSelectUser: "Selecciona un usuario, por favor"
-  serverHostPlaceholder: "Ejemplo: misskey.example.com"
+  serverHostPlaceholder: "Ejemplo: cherrypick.example.com"
   postFrom: "Publicado desde"
   postTo: "Publicado el"
 _serverSetupWizard:

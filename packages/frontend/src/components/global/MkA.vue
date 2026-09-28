@@ -93,6 +93,8 @@ function openWindow() {
 }
 
 function nav(ev: PointerEvent) {
+	haptic();
+
 	// 制御キーとの組み合わせは無視（shiftを除く）
 	if (ev.metaKey || ev.altKey || ev.ctrlKey) return;
 

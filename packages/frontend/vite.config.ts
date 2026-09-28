@@ -42,7 +42,7 @@ function getBundleVisualizerPlugin(): PluginOption[] {
 	if (process.env.FRONTEND_BUNDLE_VISUALIZER !== 'true') return [];
 
 	const visualizerOptions = {
-		title: 'Misskey frontend bundle visualizer',
+		title: 'CherryPick frontend bundle visualizer',
 		gzipSize: true,
 		brotliSize: true,
 		projectRoot: path.resolve(__dirname, '../..'),
@@ -103,7 +103,7 @@ const externalPackages = [
 		name: 'tinyld',
 		match: /^tinyld$/,
 		path(): string {
-			return `https://cdn.jsdelivr.net/npm/tinyld@${packageInfo.dependencies.tinyld}/dist/tinyld.normal.node.mjs`
+			return `https://cdn.jsdelivr.net/npm/tinyld@${packageInfo.dependencies.tinyld}/dist/tinyld.normal.node.mjs`;
 		},
 	},
 ];
@@ -218,7 +218,7 @@ export function getConfig(): UserConfig {
 			_LANGS_: JSON.stringify(Object.entries(locales).map(([k, v]) => [k, v._lang_])),
 			_ENV_: JSON.stringify(process.env.NODE_ENV),
 			_DEV_: process.env.NODE_ENV !== 'production',
-			_PERF_PREFIX_: JSON.stringify('Misskey:'),
+			_PERF_PREFIX_: JSON.stringify('CherryPick:'),
 			__VUE_OPTIONS_API__: false,
 			__VUE_PROD_DEVTOOLS__: false,
 		},

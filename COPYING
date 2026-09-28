@@ -1,7 +1,9 @@
 Unless otherwise stated this repository is
-Copyright © 2014-2026 syuilo and contributors
+Copyright © 2014-2026 syuilo & noridev and contributors
 
 And is distributed under The GNU Affero General Public License Version 3, you should have received a copy of the license file as LICENSE.
+
+CherryPick includes several third-party Open-Source softwares.
 
 RsaSignature2017 implementation by Transmute Industries Inc
 License: MIT

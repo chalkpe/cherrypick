@@ -9,7 +9,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 		v-if="isHiding(file)"
 		:class="[$style.filePreview, { [$style.square]: square }]"
 		:data-scroll-anchor="`${note.id}:${file.id}`"
-		@click="reveal(file)"
+		role="button"
+		tabindex="0"
+		@click="onClick(file, $event)"
+		@dblclick.stop="prefer.s.nsfwOpenBehavior === 'doubleClick' && reveal(file)"
+		@keydown.enter.stop="reveal(file)"
+		@keydown.space.prevent.stop="reveal(file)"
 	>
 		<MkDriveFileThumbnail
 			:file="file"
@@ -35,7 +40,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div>
 				<div v-if="file.isSensitive"><i class="ti ti-eye-exclamation"></i> {{ i18n.ts.sensitive }}{{ prefer.s.dataSaver.media && file.size ? ` (${bytes(file.size)})` : '' }}</div>
 				<div v-else><i class="ti ti-photo"></i> {{ prefer.s.dataSaver.media && file.size ? bytes(file.size) : i18n.ts.image }}</div>
-				<div>{{ i18n.ts.clickToShow }}</div>
+				<div>{{ prefer.s.nsfwOpenBehavior === 'doubleClick' ? i18n.ts.doubleClickToShow : i18n.ts.clickToShow }}</div>
 			</div>
 		</div>
 	</div>
@@ -99,6 +104,17 @@ function isHiding(file: Misskey.entities.DriveFile) {
 		return true;
 	}
 	return false;
+}
+
+function onClick(file: Misskey.entities.DriveFile, ev: MouseEvent) {
+	ev.stopPropagation();
+	if (prefer.s.nsfwOpenBehavior === 'doubleClick') {
+		const { dispose } = os.popup(MkRippleEffect, { x: ev.clientX, y: ev.clientY }, {
+			end: () => dispose(),
+		});
+	} else {
+		void reveal(file);
+	}
 }
 
 async function reveal(file: Misskey.entities.DriveFile) {

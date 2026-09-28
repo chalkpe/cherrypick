@@ -33,7 +33,7 @@
 		"build-cherrypick-js-with-types": "pnpm build-pre && pnpm --filter backend... --filter=!cherrypick-js build && pnpm --filter backend generate-api-json --no-build && ncp packages/backend/built/api.json packages/cherrypick-js/generator/api.json && pnpm --filter cherrypick-js update-autogen-code && pnpm --filter cherrypick-js build && pnpm --filter cherrypick-js api",
 		"start": "cd packages/backend && pnpm compile-config && node ./built/entry.js",
 		"start:inspect": "cd packages/backend && pnpm compile-config && node --inspect ./built/entry.js",
-		"start:test": "ncp ./.github/misskey/test.yml ./.config/test.yml && cd packages/backend && cross-env NODE_ENV=test pnpm compile-config && cross-env NODE_ENV=test node ./built/entry.js",
+		"start:test": "ncp ./.github/cherrypick/test.yml ./.config/test.yml && cd packages/backend && cross-env NODE_ENV=test pnpm compile-config && cross-env NODE_ENV=test node ./built/entry.js",
 		"cli": "cd packages/backend && pnpm cli",
 		"init": "pnpm migrate",
 		"migrate": "cd packages/backend && pnpm migrate",
@@ -52,7 +52,8 @@
 		"test-and-coverage": "pnpm -r test-and-coverage",
 		"clean": "node scripts/clean.mjs",
 		"clean-all": "node scripts/clean-all.mjs",
-		"cleanall": "pnpm clean-all"
+		"cleanall": "pnpm clean-all",
+		"biome-lint": "pnpm -r --if-present biome-lint"
 	},
 	"dependencies": {
 		"esbuild": "0.28.2",
@@ -62,6 +63,7 @@
 		"tar": "7.5.22"
 	},
 	"devDependencies": {
+		"@biomejs/biome": "2.3.11",
 		"@eslint/js": "9.39.5",
 		"@misskey-dev/eslint-plugin": "2.1.0",
 		"@types/node": "26.4.0",

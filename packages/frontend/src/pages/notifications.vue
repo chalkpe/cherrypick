@@ -74,7 +74,13 @@ function setFilter(ev: PointerEvent) {
 	os.popupMenu(items, ev.currentTarget ?? ev.target);
 }
 
-const headerActions = computed<PageHeaderItem[]>(() => ([tab.value === 'all' ? {
+const headerActions = computed<PageHeaderItem[]>(() => ([deviceKind === 'desktop' && !props.disableRefreshButton ? {
+	icon: 'ti ti-refresh',
+	text: i18n.ts.reload,
+	handler: () => {
+		globalEvents.emit('reloadNotification');
+	},
+} : undefined, tab.value === 'all' ? {
 	text: i18n.ts.filter,
 	icon: 'ti ti-filter',
 	highlighted: includeTypes.value != null,

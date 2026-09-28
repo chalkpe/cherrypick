@@ -6,17 +6,13 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { MoreThan, IsNull } from 'typeorm';
 import RE2 from 're2';
-import sanitizeHtml from 'sanitize-html';
 import { bindThis } from '@/decorators.js';
 import type Logger from '@/logger.js';
-import { RoleService } from '@/core/RoleService.js';
-import { MetaService } from '@/core/MetaService.js';
-import { EmailService } from '@/core/EmailService.js';
-import { GlobalEventService } from '@/core/GlobalEventService.js';
 import type { AbuseReportResolversRepository, AbuseUserReportsRepository, UsersRepository } from '@/models/_.js';
 import { DI } from '@/di-symbols.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { SystemAccountService } from '@/core/SystemAccountService.js';
+import { AbuseReportNotificationService } from '@/core/AbuseReportNotificationService.js';
 import { QueueService } from '@/core/QueueService.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 import type { DbAbuseReportJobData } from '../types.js';
@@ -37,13 +33,10 @@ export class ReportAbuseProcessorService {
 		private usersRepository: UsersRepository,
 
 		private queueLoggerService: QueueLoggerService,
-		private globalEventService: GlobalEventService,
 		private systemAccountService: SystemAccountService,
 		private apRendererService: ApRendererService,
-		private roleService: RoleService,
-		private metaService: MetaService,
-		private emailService: EmailService,
 		private queueService: QueueService,
+		private abuseReportNotificationService: AbuseReportNotificationService,
 	) {
 		this.logger = this.queueLoggerService.logger.createSubLogger('report-abuse');
 	}
@@ -51,6 +44,9 @@ export class ReportAbuseProcessorService {
 	@bindThis
 	public async process(job: Bull.Job<DbAbuseReportJobData>): Promise<void> {
 		this.logger.info('Running...');
+
+		const report = await this.abuseUserReportsRepository.findOneBy({ id: job.data.id });
+		if (report == null || report.resolved) return;
 
 		const resolvers = await this.abuseReportResolversRepository.find({
 			where: [
@@ -76,13 +72,21 @@ export class ReportAbuseProcessorService {
 			if (!(resolver.targetUserPattern || resolver.reporterPattern || resolver.reportContentPattern)) {
 				continue;
 			}
-			const isTargetUserPatternMatched = resolver.targetUserPattern ? new RE2(resolver.targetUserPattern).test(targetUserAcct) : true;
-			const isReporterPatternMatched = resolver.reporterPattern ? new RE2(resolver.reporterPattern).test(reporterAcct) : true;
-			const isReportContentPatternMatched = resolver.reportContentPattern ? new RE2(resolver.reportContentPattern).test(job.data.comment) : true;
+			let matched: boolean;
+			try {
+				matched = (!resolver.targetUserPattern || new RE2(resolver.targetUserPattern).test(targetUserAcct))
+					&& (!resolver.reporterPattern || new RE2(resolver.reporterPattern).test(reporterAcct))
+					&& (!resolver.reportContentPattern || new RE2(resolver.reportContentPattern).test(job.data.comment));
+			} catch (error) {
+				// Older resolver validation accepted RegExp syntax unsupported by RE2.
+				// A broken rule must not prevent delivery of moderation notifications.
+				this.logger.warn({ message: 'Skipping invalid abuse report resolver', attributes: { resolverId: resolver.id }, error });
+				continue;
+			}
 
-			if (isTargetUserPatternMatched && isReporterPatternMatched && isReportContentPatternMatched) {
+			if (matched) {
 				if (resolver.forward && job.data.targetUserHost !== null && job.data.reporterHost === null) {
-					this.queueService.deliver(actor, this.apRendererService.addContext(this.apRendererService.renderFlag(actor, targetUser.uri!, job.data.comment)), targetUser.inbox, false);
+					await this.queueService.deliver(actor, this.apRendererService.addContext(this.apRendererService.renderFlag(actor, targetUser.uri!, job.data.comment)), targetUser.inbox, false);
 				}
 
 				await this.abuseUserReportsRepository.update(job.data.id, {
@@ -91,29 +95,16 @@ export class ReportAbuseProcessorService {
 					forwarded: resolver.forward && job.data.targetUserHost !== null && job.data.reporterHost === null,
 				});
 
+				const resolvedReport = await this.abuseUserReportsRepository.findOneByOrFail({ id: report.id });
+				await this.abuseReportNotificationService.notifySystemWebhook([resolvedReport], 'abuseReportResolved');
 				return;
 			}
 		}
 
-		// Publish event to moderators
-		setImmediate(async () => {
-			const moderators = await this.roleService.getModerators();
-
-			for (const moderator of moderators) {
-				this.globalEventService.publishAdminStream(moderator.id, 'newAbuseUserReport', {
-					id: job.data.id,
-					targetUserId: job.data.targetUserId,
-					reporterId: job.data.reporterId,
-					comment: job.data.comment,
-				});
-			}
-
-			const meta = await this.metaService.fetch();
-			if ((meta.emailToReceiveAbuseReport || meta.email) && !meta.doNotSendNotificationEmailsForAbuseReport) {
-				this.emailService.sendEmail(meta.emailToReceiveAbuseReport ?? meta.email!, 'New abuse report',
-					sanitizeHtml(job.data.comment),
-					sanitizeHtml(job.data.comment));
-			}
-		});
+		await Promise.all([
+			this.abuseReportNotificationService.notifyAdminStream([report]),
+			this.abuseReportNotificationService.notifySystemWebhook([report], 'abuseReport'),
+			this.abuseReportNotificationService.notifyMail([report]),
+		]);
 	}
 }

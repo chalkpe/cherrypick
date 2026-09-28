@@ -45,7 +45,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<span v-else-if="emailState === 'error'" style="color: var(--MI_THEME-error)"><i class="ti ti-alert-triangle ti-fw"></i> {{ i18n.ts.error }}</span>
 				</template>
 			</MkInput>
-			<MkInput v-model="password" type="password" autocomplete="new-password" required data-testid="signup-password" @update:modelValue="onChangePassword">
+			<MkInput v-model="password" :type="showPassword ? 'text' : 'password'" autocomplete="new-password" required data-testid="signup-password" @update:modelValue="onChangePassword" @keydown="checkCapsLock" @focus="checkCapsLock" @click="checkCapsLock">
 				<template #label>{{ i18n.ts.password }}</template>
 				<template #prefix><i class="ti ti-lock"></i></template>
 				<template #suffix>
@@ -58,7 +58,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<span v-if="passwordStrength == 'high'" style="color: var(--MI_THEME-success)"><i class="ti ti-check ti-fw"></i> {{ i18n.ts.strongPassword }}</span>
 				</template>
 			</MkInput>
-			<MkInput v-model="retypedPassword" type="password" autocomplete="new-password" required data-testid="signup-password-retype" @update:modelValue="onChangePasswordRetype">
+			<MkInput v-model="retypedPassword" :type="showPassword2 ? 'text' : 'password'" autocomplete="new-password" required data-testid="signup-password-retype" @update:modelValue="onChangePasswordRetype" @keydown="checkCapsLock" @focus="checkCapsLock" @click="checkCapsLock">
 				<template #label>{{ i18n.ts.password }} ({{ i18n.ts.retype }})</template>
 				<template #prefix><i class="ti ti-lock"></i></template>
 				<template #suffix>
@@ -79,12 +79,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkCaptcha v-if="instance.enableRecaptcha" ref="recaptcha" v-model="reCaptchaResponse" :class="$style.captcha" provider="recaptcha" :sitekey="instance.recaptchaSiteKey"/>
 			<MkCaptcha v-if="instance.enableTurnstile" ref="turnstile" v-model="turnstileResponse" :class="$style.captcha" provider="turnstile" :sitekey="instance.turnstileSiteKey"/>
 			<MkCaptcha v-if="instance.enableTestcaptcha" ref="testcaptcha" v-model="testcaptchaResponse" :class="$style.captcha" provider="testcaptcha" :sitekey="null"/>
-			<MkButton type="submit" :disabled="shouldDisableSubmitting" large gradate rounded data-testid="signup-submit" style="margin: 0 auto;">
-				<template v-if="submitting">
-					<MkLoading :em="true" :colored="false"/>
-				</template>
-				<template v-else>{{ i18n.ts.start }}</template>
-			</MkButton>
+			<div class="_buttonsCenter">
+				<MkButton inline rounded @click="goBack"><i class="ti ti-arrow-left"></i> {{ i18n.ts.goBack }}</MkButton>
+				<MkButton type="submit" :disabled="shouldDisableSubmitting" inline gradate rounded data-testid="signup-submit">
+					<template v-if="submitting">
+						<MkLoading :em="true" :colored="false"/>
+					</template>
+					<template v-else>{{ i18n.ts.start }}</template>
+				</MkButton>
+			</div>
 		</form>
 	</div>
 </div>
@@ -356,8 +359,8 @@ function onSignupApiError() {
 	});
 }
 
-function checkCapsLock(ev: KeyboardEvent) {
-	isCapsLock.value = ev.getModifierState('CapsLock');
+function checkCapsLock(ev: KeyboardEvent | MouseEvent | FocusEvent) {
+	if ('getModifierState' in ev) isCapsLock.value = ev.getModifierState('CapsLock');
 }
 
 function togglePassword() {

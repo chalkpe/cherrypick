@@ -67,11 +67,7 @@ export class AbuseReportService {
 			reports.push(report);
 		}
 
-		return Promise.all([
-			this.abuseReportNotificationService.notifyAdminStream(reports),
-			this.abuseReportNotificationService.notifySystemWebhook(reports, 'abuseReport'),
-			this.abuseReportNotificationService.notifyMail(reports),
-		]);
+		return Promise.all(reports.map(report => this.queueService.createReportAbuseJob(report)));
 	}
 
 	/**

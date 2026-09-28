@@ -185,3 +185,17 @@ describe('ThemeManager', () => {
 		]);
 	});
 });
+
+describe('bundled themes', () => {
+	test('all selectable themes compile against their current base', async () => {
+		const { compile, getBuiltinThemes, themeProps } = await import('@@/js/theme.js');
+		const themes = await getBuiltinThemes();
+		for (const theme of themes) {
+			const base = theme.base === 'dark' ? darkTheme : lightTheme;
+			const compiled = compile({ ...theme, props: { ...base.props, ...theme.props } });
+			for (const key of themeProps) {
+				assert.ok(compiled[key], `${theme.name}: missing ${key}`);
+			}
+		}
+	});
+});

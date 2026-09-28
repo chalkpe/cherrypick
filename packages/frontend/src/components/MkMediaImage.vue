@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div :class="[hide ? $style.hidden : $style.visible, (image.isSensitive && prefer.s.highlightSensitiveMedia) && $style.sensitive]" @click="onClick" @contextmenu.stop="onContextmenu">
+<div :role="hide && controls ? 'button' : undefined" :tabindex="hide && controls ? 0 : undefined" :class="[hide ? $style.hidden : $style.visible, (image.isSensitive && prefer.s.highlightSensitiveMedia) && $style.sensitive]" @keydown.enter.self.stop="controls && hide && reveal()" @keydown.space.self.prevent.stop="controls && hide && reveal()" @click="onClick" @dblclick="onDblClick" @mouseenter="setInteraction(true)" @mouseleave="setInteraction(false)" @touchstart="setInteraction(true)" @touchend="setInteraction(false)" @touchcancel="setInteraction(false)" @contextmenu.stop="onContextmenu">
 	<component
 		:is="(disableImageLink || hide) ? 'div' : 'a'"
 		v-bind="(disableImageLink || hide) ? {
@@ -69,7 +69,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { watch, ref, computed } from 'vue';
+import { watch, ref, computed, onMounted, onUnmounted } from 'vue';
 import MkRippleEffect from '@/components/MkRippleEffect.vue';
 import * as Misskey from 'cherrypick-js';
 import type { MediaComponentExposes } from '@/types/media-component.js';
@@ -103,7 +103,7 @@ const hide = ref(true);
 
 const playAnimation = ref(true);
 if (prefer.s.showingAnimatedImages === 'interaction') playAnimation.value = false;
-let playAnimationTimer = window.setTimeout(() => playAnimation.value = false, 5000);
+let playAnimationTimer: number | undefined;
 const url = computed(() => (props.raw || prefer.s.loadRawImages)
 	? props.image.url
 	: (prefer.s.disableShowingAnimatedImages || prefer.s.dataSaver.media) || (['interaction', 'inactive'].includes(<string>prefer.s.showingAnimatedImages) && !playAnimation.value)
@@ -119,34 +119,34 @@ const clickToShowMessage = computed(() => prefer.s.nsfwOpenBehavior === 'click'
 		: '',
 );
 
+async function reveal() {
+	if (await canRevealFile(props.image)) hide.value = false;
+}
+
 async function onClick(ev: PointerEvent) {
-	if (!props.controls) {
+	if (!props.controls || !hide.value) {
 		emit('mediaClick', ev);
 		return;
 	}
 
-	if (hide.value) {
-		ev.stopPropagation();
-		if (!(await canRevealFile(props.image))) {
-			return;
-		}
-
-		hide.value = false;
-	} else {
-		emit('mediaClick', ev);
-	}
-
+	ev.stopPropagation();
 	if (prefer.s.nsfwOpenBehavior === 'doubleClick') {
 		const { dispose } = os.popup(MkRippleEffect, { x: ev.clientX, y: ev.clientY }, {
 			end: () => dispose(),
 		});
+		return;
 	}
-	if (prefer.s.nsfwOpenBehavior === 'click') hide.value = false;
+	await reveal();
 }
 
-function onDblClick() {
-	if (!props.controls) return;
-	if (hide.value && prefer.s.nsfwOpenBehavior === 'doubleClick') hide.value = false;
+async function onDblClick(ev: MouseEvent) {
+	if (!props.controls || !hide.value || prefer.s.nsfwOpenBehavior !== 'doubleClick') return;
+	ev.stopPropagation();
+	await reveal();
+}
+
+function setInteraction(active: boolean) {
+	if (prefer.s.showingAnimatedImages === 'interaction') playAnimation.value = active;
 }
 
 function resetTimer() {
@@ -154,6 +154,22 @@ function resetTimer() {
 	window.clearTimeout(playAnimationTimer);
 	playAnimationTimer = window.setTimeout(() => playAnimation.value = false, 5000);
 }
+
+onMounted(() => {
+	if (prefer.s.showingAnimatedImages === 'inactive') {
+		resetTimer();
+		window.addEventListener('mousemove', resetTimer);
+		window.addEventListener('touchstart', resetTimer);
+		window.addEventListener('touchend', resetTimer);
+	}
+});
+
+onUnmounted(() => {
+	window.clearTimeout(playAnimationTimer);
+	window.removeEventListener('mousemove', resetTimer);
+	window.removeEventListener('touchstart', resetTimer);
+	window.removeEventListener('touchend', resetTimer);
+});
 
 // Plugin:register_note_view_interruptor を使って書き換えられる可能性があるためwatchする
 watch(() => props.image, (newImage) => {

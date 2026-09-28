@@ -177,14 +177,11 @@ async function openGallery(id?: string) {
 		defaultIndex: contents.findIndex(conten => conten.id === id),
 		contents: contents,
 		initiallyRevealedContentIds,
+		disableRightClick: props.disableRightClick,
 		user: props.user,
 	}, {
 		closed: () => dispose(),
 	});
-}
-
-function preventRightClick(event: MouseEvent) {
-	event.preventDefault();
 }
 
 defineExpose({

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { Readable } from 'node:stream';
 import { describe, expect, test, vi } from 'vitest';
 import { ApiCallService } from '@/server/api/ApiCallService.js';
 import Logger from '@/logger.js';
@@ -42,7 +43,7 @@ function createService() {
 		apiLoggerService as never,
 		telemetryService as never,
 	);
-	return { service, telemetryService };
+	return { service, telemetryService, authenticateService };
 }
 
 describe('ApiCallService structured error logging', () => {
@@ -95,4 +96,29 @@ describe('ApiCallService structured error logging', () => {
 			logManager.setBackend(new PrettyConsoleBackend({ output: () => undefined }));
 		}
 	});
+});
+
+describe('Play token authorization', () => {
+	for (const multipart of [false, true]) {
+		for (const secure of [false, true]) {
+			test(`rejects ${secure ? 'secure' : 'ungranted'} endpoints over ${multipart ? 'multipart' : 'JSON'}`, async () => {
+				const { service, authenticateService } = createService();
+				authenticateService.authenticate.mockResolvedValue([{ id: 'user' }, null, { permissions: [] }]);
+				const endpoint = { name: 'test', meta: { secure, kind: 'write:notes', requireCredential: true }, params: {}, exec: vi.fn() };
+				const reply = createReply();
+				const request = {
+					method: 'POST', body: { i: 'flash-token' }, headers: {}, ip: '127.0.0.1',
+					file: async () => ({ file: Readable.from(['test']), filename: 'test.txt', fields: { i: { value: 'flash-token' } } }),
+				};
+				try {
+					if (multipart) await service.handleMultipartRequest(endpoint as never, request as never, reply as never);
+					else await service.handleRequest(endpoint as never, request as never, reply as never);
+					expect(endpoint.exec).not.toHaveBeenCalled();
+					expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: secure ? 'ACCESS_DENIED' : 'PERMISSION_DENIED' }) }));
+				} finally {
+					service.dispose();
+				}
+			});
+		}
+	}
 });

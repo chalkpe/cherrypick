@@ -9,8 +9,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<div>
 			<MkResult v-if="antennas.length === 0" type="empty"/>
 
-			<MkButton type="routerLink" to="/my/antennas/create" primary :class="$style.add"><i class="ti ti-plus"></i> {{ i18n.ts.add }}</MkButton>
-
 			<div v-if="antennas.length > 0" class="_gaps">
 				<MkA v-for="antenna in antennas" :key="antenna.id" :class="$style.antenna" :to="`/timeline/antenna/${antenna.id}`">
 					<div class="name">{{ antenna.name }}</div>
@@ -67,10 +65,6 @@ onActivated(() => {
 </script>
 
 <style lang="scss" module>
-.add {
-	margin: 0 auto 16px auto;
-}
-
 .antenna {
 	display: block;
 	padding: 16px;

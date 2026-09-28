@@ -14306,7 +14306,7 @@ export interface Locale extends ILocale {
          */
         "pleaseSelectUser": string;
         /**
-         * 例: misskey.example.com
+         * 例: cherrypick.example.com
          */
         "serverHostPlaceholder": string;
         /**

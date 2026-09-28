@@ -92,7 +92,7 @@ export class AbuseReportNotificationService implements OnApplicationShutdown {
 	 */
 	@bindThis
 	public async notifyMail(abuseReports: MiAbuseUserReport[]) {
-		if (abuseReports.length <= 0) {
+		if (this.meta.doNotSendNotificationEmailsForAbuseReport || abuseReports.length <= 0) {
 			return;
 		}
 
@@ -103,7 +103,7 @@ export class AbuseReportNotificationService implements OnApplicationShutdown {
 		);
 
 		recipientEMailAddresses.push(
-			...(this.meta.email ? [this.meta.email] : []),
+			...((this.meta.emailToReceiveAbuseReport ?? this.meta.email) ? [this.meta.emailToReceiveAbuseReport ?? this.meta.email!] : []),
 		);
 
 		if (recipientEMailAddresses.length <= 0) {

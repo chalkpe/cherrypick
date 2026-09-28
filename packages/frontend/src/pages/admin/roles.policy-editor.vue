@@ -35,11 +35,32 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</template>
 		</XFolder>
 
+		<XFolder v-if="matchQuery([i18n.ts._role._options.btlAvailable, 'btlAvailable'])" v-model:policyMeta="policyMetaModel.btlAvailable" :isBaseRole="isBaseRole" :readonly="readonly">
+			<template #label>{{ i18n.ts._role._options.btlAvailable }}</template>
+			<template #valueText>{{ valuesModel.btlAvailable ? i18n.ts.yes : i18n.ts.no }}</template>
+			<template #default="{ disabled }">
+				<MkInfo v-if="isBaseRole" warn>{{ i18n.ts.bubbleTimelineDescription }}</MkInfo>
+				<MkSwitch v-model="valuesModel.btlAvailable" :disabled="disabled">
+					<template #label>{{ i18n.ts.enable }}</template>
+				</MkSwitch>
+			</template>
+		</XFolder>
+
 		<XFolder v-if="matchQuery([i18n.ts._role._options.canPublicNote, 'canPublicNote'])" v-model:policyMeta="policyMetaModel.canPublicNote" :isBaseRole="isBaseRole" :readonly="readonly">
 			<template #label>{{ i18n.ts._role._options.canPublicNote }}</template>
 			<template #valueText>{{ valuesModel.canPublicNote ? i18n.ts.yes : i18n.ts.no }}</template>
 			<template #default="{ disabled }">
 				<MkSwitch v-model="valuesModel.canPublicNote" :disabled="disabled">
+					<template #label>{{ i18n.ts.enable }}</template>
+				</MkSwitch>
+			</template>
+		</XFolder>
+
+		<XFolder v-if="matchQuery([i18n.ts._role._options.canEditNote, 'canEditNote'])" v-model:policyMeta="policyMetaModel.canEditNote" :isBaseRole="isBaseRole" :readonly="readonly">
+			<template #label>{{ i18n.ts._role._options.canEditNote }}</template>
+			<template #valueText>{{ valuesModel.canEditNote ? i18n.ts.yes : i18n.ts.no }}</template>
+			<template #default="{ disabled }">
+				<MkSwitch v-model="valuesModel.canEditNote" :disabled="disabled">
 					<template #label>{{ i18n.ts.enable }}</template>
 				</MkSwitch>
 			</template>
@@ -156,6 +177,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<template #valueText>{{ valuesModel.canUseTranslator ? i18n.ts.yes : i18n.ts.no }}</template>
 			<template #default="{ disabled }">
 				<MkSwitch v-model="valuesModel.canUseTranslator" :disabled="disabled">
+					<template #label>{{ i18n.ts.enable }}</template>
+				</MkSwitch>
+			</template>
+		</XFolder>
+
+		<XFolder v-if="matchQuery([i18n.ts._role._options.canUseAutoTranslate, 'canUseAutoTranslate'])" v-model:policyMeta="policyMetaModel.canUseAutoTranslate" :isBaseRole="isBaseRole" :readonly="readonly">
+			<template #label>{{ i18n.ts._role._options.canUseAutoTranslate }}</template>
+			<template #valueText>{{ valuesModel.canUseAutoTranslate ? i18n.ts.yes : i18n.ts.no }}</template>
+			<template #default="{ disabled }">
+				<MkSwitch v-model="valuesModel.canUseAutoTranslate" :disabled="disabled || !valuesModel.canUseTranslator" @update:modelValue="learnMoreAutoTranslate">
 					<template #label>{{ i18n.ts.enable }}</template>
 				</MkSwitch>
 			</template>
@@ -388,6 +419,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</template>
 		</XFolder>
 
+		<XFolder v-if="matchQuery([i18n.ts._role._options.canSetFederationAvatarShape, 'canSetFederationAvatarShape'])" v-model:policyMeta="policyMetaModel.canSetFederationAvatarShape" :isBaseRole="isBaseRole" :readonly="readonly">
+			<template #label>{{ i18n.ts._role._options.canSetFederationAvatarShape }}</template>
+			<template #valueText>{{ valuesModel.canSetFederationAvatarShape ? i18n.ts.yes : i18n.ts.no }}</template>
+			<template #default="{ disabled }">
+				<MkSwitch v-model="valuesModel.canSetFederationAvatarShape" :disabled="disabled">
+					<template #label>{{ i18n.ts.enable }}</template>
+				</MkSwitch>
+			</template>
+		</XFolder>
+
 		<XFolder v-if="matchQuery([i18n.ts._role._options.watermarkAvailable, 'watermarkAvailable'])" v-model:policyMeta="policyMetaModel.watermarkAvailable" :isBaseRole="isBaseRole" :readonly="readonly">
 			<template #label>{{ i18n.ts._role._options.watermarkAvailable }}</template>
 			<template #valueText>{{ valuesModel.watermarkAvailable ? i18n.ts.yes : i18n.ts.no }}</template>
@@ -419,6 +460,8 @@ import { computed, ref, watch } from 'vue';
 import { i18n } from '@/i18n.js';
 import XFolder from './roles.policy-editor.folder.vue';
 
+import MkInfo from '@/components/MkInfo.vue';
+import * as os from '@/os.js';
 import MkInput from '@/components/MkInput.vue';
 import MkTextarea from '@/components/MkTextarea.vue';
 import MkRange from '@/components/MkRange.vue';
@@ -464,6 +507,17 @@ watch(policyMetaModel, (newVal) => {
 watch(() => props.policiesMeta, () => {
 	policyMetaModel.value = setPolicyMeta(props.policiesMeta);
 }, { deep: true });
+
+async function learnMoreAutoTranslate() {
+	if (!valuesModel.value.canUseAutoTranslate) return;
+
+	const { canceled } = await os.confirm({
+		type: 'warning',
+		title: i18n.ts.useAutoTranslate,
+		text: i18n.ts._role._options.canUseAutoTranslateDescription,
+	});
+	if (canceled) valuesModel.value.canUseAutoTranslate = false;
+}
 
 function matchQuery(keywords: string[]): boolean {
 	if (props.roleQuery == null || props.roleQuery.trim().length === 0) return true;

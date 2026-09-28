@@ -183,6 +183,8 @@ const settingsButtonEl = useTemplateRef('settingsButtonEl');
 const swicthProfileButtonEl = useTemplateRef('swicthProfileButtonEl');
 
 async function addColumn(ev: PointerEvent) {
+	haptic();
+
 	const { canceled, result: column } = await os.select({
 		title: i18n.ts._deck.addColumn,
 		items: columnTypes.filter(column => column !== 'chat' || $i == null || $i.policies.chatAvailability !== 'unavailable').map(column => ({

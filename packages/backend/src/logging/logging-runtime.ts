@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import type { Log } from '@google-cloud/logging';
+import { CloudLoggingBackend } from './CloudLoggingBackend.js';
 import { LogManager } from './LogManager.js';
 import { BootstrapConsoleBackend } from './BootstrapConsoleBackend.js';
 import { JsonConsoleBackend } from './JsonConsoleBackend.js';
@@ -15,7 +17,14 @@ import type { LogBackend } from './LogBackend.js';
  * プロセス内のすべてのLoggerが共有するLogManagerです。
  * Logger作成後も同じLogManagerを参照するため、出力先の切り替えを一括で反映できます。
  */
-export const logManager = new LogManager(new BootstrapConsoleBackend());
+let consoleBackend: LogBackend = new BootstrapConsoleBackend();
+let cloudLog: Log | undefined;
+export const logManager = new LogManager(consoleBackend);
+
+export function configureCloudLogging(log: Log): void {
+	cloudLog = log;
+	logManager.setBackend(new CloudLoggingBackend(consoleBackend, log));
+}
 
 /** ログ形式を検証し、指定された形式に対応する出力処理を作成します。 */
 function createLoggingBackend(format: unknown): LogBackend {
@@ -29,7 +38,8 @@ export function configureLogging(configuration?: LogManagerConfiguration & { rea
 	// 出力処理を先に検証し、設定値が不正な場合は現在の出力処理を壊さないようにします。
 	const backend = createLoggingBackend(configuration?.format);
 	const warnings = logManager.configure(configuration);
-	logManager.setBackend(backend);
+	consoleBackend = backend;
+	logManager.setBackend(cloudLog ? new CloudLoggingBackend(backend, cloudLog) : backend);
 	// 設定を無視した理由を、選択済みの形式で起動時に一度だけ知らせます。
 	for (const message of warnings) {
 		logManager.write({

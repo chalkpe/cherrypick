@@ -8,6 +8,7 @@ import type { Logging } from '@google-cloud/logging';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import Logger from '@/logger.js';
+import { configureCloudLogging } from '@/logging/logging-runtime.js';
 import { bindThis } from '@/decorators.js';
 import type { Keyword } from 'color-convert';
 
@@ -20,6 +21,9 @@ export class LoggerService {
 		@Inject(DI.cloudLogging)
 		private cloudLogging: Logging | null,
 	) {
+		if (this.cloudLogging) {
+			configureCloudLogging(this.cloudLogging.log(this.config.cloudLogging?.logName ?? 'cherrypick'));
+		}
 	}
 
 	@bindThis

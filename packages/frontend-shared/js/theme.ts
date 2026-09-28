@@ -35,6 +35,13 @@ export const themeProps = Object.keys(lightTheme.props).filter(key => !key.start
 
 export const getBuiltinThemes = () => Promise.all(
 	[
+		'l-cherrypick',
+		'l-rosepinedawn',
+		'l-mirerado',
+		'l-byeolvit-polaris',
+		'l-scone-color',
+		'l-stella-r2',
+		'l-birdsite',
 		'l-light',
 		'l-coffee',
 		'l-apricot',
@@ -45,6 +52,15 @@ export const getBuiltinThemes = () => Promise.all(
 		'l-sushi',
 		'l-u0',
 
+		'd-cherrypick',
+		'd-rosepine',
+		'd-rosepinemoon',
+		'd-mirerado',
+		'd-byeolvit-noctiluca',
+		'd-scone-color',
+		'd-stella-r2',
+		'd-qdon',
+		'd-birdsite',
 		'd-dark',
 		'd-persimmon',
 		'd-astro',

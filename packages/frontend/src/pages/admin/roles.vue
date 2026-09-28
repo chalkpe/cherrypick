@@ -84,17 +84,6 @@ function create() {
 	router.push('/admin/roles/new');
 }
 
-async function learnMoreAutoTranslate() {
-	if (!policies.canUseAutoTranslate) return;
-
-	const confirm = await os.confirm({
-		type: 'warning',
-		title: i18n.ts.useAutoTranslate,
-		text: i18n.ts._role._options.canUseAutoTranslateDescription,
-	});
-	if (confirm.canceled) policies.canUseAutoTranslate = false;
-}
-
 const headerActions = computed(() => [{
 	icon: 'ti ti-plus',
 	text: i18n.ts._role.new,

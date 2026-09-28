@@ -25,7 +25,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<!-- ブラウザ オートコンプリート用 -->
 			<input type="hidden" name="username" autocomplete="username" :value="user.username">
 
-			<MkInput v-model="password" :placeholder="i18n.ts.password" type="password" autocomplete="current-password webauthn" :withPasswordToggle="true" required autofocus data-testid="signin-password">
+			<MkInput v-model="password" :placeholder="i18n.ts.password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password webauthn" required autofocus data-testid="signin-password" @keydown="checkCapsLock" @focus="checkCapsLock" @click="checkCapsLock">
 				<template #prefix><i class="ti ti-lock"></i></template>
 				<template #suffix>
 					<div v-if="isCapsLock" :class="$style.isCapslock"><i class="ti ti-arrow-big-up-line"></i></div>
@@ -42,7 +42,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<MkCaptcha v-if="instance.enableTestcaptcha" ref="testcaptcha" v-model="testcaptchaResponse" provider="testcaptcha" :sitekey="null"/>
 			</div>
 
-			<MkButton type="submit" :disabled="needCaptcha && captchaFailed" large primary rounded style="margin: 0 auto;" data-testid="signin-page-password-continue">{{ i18n.ts.continue }} <i class="ti ti-arrow-right"></i></MkButton>
+			<div class="_buttonsCenter">
+				<MkButton inline rounded @click="goBack"><i class="ti ti-arrow-left"></i> {{ i18n.ts.goBack }}</MkButton>
+				<MkButton type="submit" :disabled="needCaptcha && captchaFailed" inline primary rounded data-testid="signin-page-password-continue">{{ i18n.ts.continue }} <i class="ti ti-arrow-right"></i></MkButton>
+			</div>
 		</form>
 	</div>
 </div>
@@ -157,8 +160,8 @@ function goBack() {
 	emit('back');
 }
 
-function checkCapsLock(ev: KeyboardEvent) {
-	isCapsLock.value = ev.getModifierState('CapsLock');
+function checkCapsLock(ev: KeyboardEvent | MouseEvent | FocusEvent) {
+	if ('getModifierState' in ev) isCapsLock.value = ev.getModifierState('CapsLock');
 }
 
 function togglePassword() {

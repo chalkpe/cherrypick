@@ -639,6 +639,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ApPersonService,
 		$ApQuestionService,
 		$TelemetryService,
+		$ApEventService,
 		//#endregion
 	],
 	exports: [
@@ -952,6 +953,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ApPersonService,
 		$ApQuestionService,
 		$TelemetryService,
+		$ApEventService,
 		//#endregion
 	],
 })

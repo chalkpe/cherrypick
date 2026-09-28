@@ -46,6 +46,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div :class="$style.divider"></div>
 			<MkA v-if="$i != null && ($i.isAdmin || $i.isModerator)" v-tooltip.noDelay.right="i18n.ts.controlPanel" :class="$style.item" :activeClass="$style.active" to="/admin">
 				<i :class="$style.itemIcon" class="ti ti-dashboard ti-fw" style="view-transition-name: navbar-controlPanel;"></i><span :class="$style.itemText">{{ i18n.ts.controlPanel }}</span>
+				<span v-if="controlPanelIndicated" :class="$style.itemIndicator" class="_blink"><i class="_indicatorCircle"></i></span>
 			</MkA>
 			<button class="_button" :class="$style.item" @click="more">
 				<i :class="$style.itemIcon" class="ti ti-grid-dots ti-fw" style="view-transition-name: navbar-more;"></i><span :class="$style.itemText">{{ i18n.ts.more }}</span>
@@ -64,8 +65,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<i v-if="store.r.realtimeMode.value" class="ti ti-bolt ti-fw"></i>
 				<i v-else class="ti ti-bolt-off ti-fw"></i>
 			</button>
-			<button v-tooltip.noDelay.right="i18n.ts.note" class="_button" :class="[$style.post]" data-testid="open-post-form" @click="() => { os.post(); }">
-				<i class="ti ti-pencil ti-fw" :class="$style.postIcon"></i><span :class="$style.postText">{{ i18n.ts.note }}</span>
+			<button v-tooltip.noDelay.right="prefer.s.renameTheButtonInPostFormToNya ? i18n.ts.nya : i18n.ts.note" class="_button" :class="[$style.post]" data-testid="open-post-form" @click="() => { os.post(); }">
+				<i class="ti ti-fw" :class="[$style.postIcon, prefer.s.renameTheButtonInPostFormToNya ? 'ti-paw-filled' : 'ti-pencil']"></i><span :class="$style.postText">{{ prefer.s.renameTheButtonInPostFormToNya ? i18n.ts.nya : i18n.ts.note }}</span>
 			</button>
 			<button v-if="$i != null" v-tooltip.noDelay.right="`${i18n.ts.account}: @${$i.username}`" class="_button" :class="[$style.account]" @click="openAccountMenu">
 				<MkAvatar :user="$i" :class="$style.avatar" style="view-transition-name: navbar-avatar;"/><MkAcct class="_nowrap" :class="$style.acct" :user="$i"/>
@@ -149,7 +150,7 @@ const otherMenuItemIndicated = computed(() => {
 const controlPanelIndicated = ref(false);
 const bannerDisplay = ref(prefer.s.bannerDisplay);
 
-if ($i && ($i.isAdmin ?? $i.isModerator)) {
+if ($i && ($i.isAdmin || $i.isModerator)) {
 	misskeyApi('admin/abuse-user-reports', {
 		state: 'unresolved',
 		limit: 1,
@@ -217,6 +218,8 @@ function toggleBannerDisplay() {
 }
 
 async function openAccountMenu(ev: PointerEvent) {
+	haptic();
+
 	const menuItems = await getAccountMenu({
 		withExtraOperation: true,
 	});
@@ -225,6 +228,8 @@ async function openAccountMenu(ev: PointerEvent) {
 }
 
 async function more(ev: PointerEvent) {
+	haptic();
+
 	const target = getHTMLElementOrNull(ev.currentTarget ?? ev.target);
 	if (!target) return;
 	const { dispose } = await os.popupAsyncWithDialog(import('@/components/MkLaunchPad.vue').then(x => x.default), {

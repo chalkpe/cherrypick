@@ -51,14 +51,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 	<MkFoldableSection v-if="paginator">
 		<template #header>{{ i18n.ts.searchResult }}</template>
-		<MkNotesTimeline :key="key" :paginator="paginator" :getDate="eventSort === 'startDate' ? (note: Misskey.entities.Note) => note.event?.start ?? note.createdAt : undefined"/>
+		<MkNotesTimeline :key="key" :paginator="paginator"/>
 	</MkFoldableSection>
 </div>
 </template>
 
 <script lang="ts" setup>
 import { computed, markRaw, ref, shallowRef, useTemplateRef } from 'vue';
-import * as Misskey from 'cherrypick-js';
 import type { MkSelectItem } from '@/components/MkSelect.vue';
 import MkNotesTimeline from '@/components/MkNotesTimeline.vue';
 import MkInput from '@/components/MkInput.vue';

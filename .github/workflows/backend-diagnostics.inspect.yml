@@ -67,7 +67,7 @@ jobs:
     - name: Configure base
       working-directory: base
       run: |
-        cp .github/misskey/test.yml .config/default.yml
+        cp .github/cherrypick/test.yml .config/default.yml
         pnpm compile-config
     - name: Build base
       working-directory: base
@@ -81,7 +81,7 @@ jobs:
     - name: Configure head
       working-directory: head
       run: |
-        cp .github/misskey/test.yml .config/default.yml
+        cp .github/cherrypick/test.yml .config/default.yml
         pnpm compile-config
     - name: Build head
       working-directory: head

@@ -21,9 +21,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 				</component>
 			</template>
 			<div :class="$style.divider"></div>
-			<MkA v-if="$i && ($i.isAdmin || $i.isModerator)" v-click-anime v-tooltip="i18n.ts.controlPanel" class="item" :activeClass="$style.active" to="/admin" :behavior="settingsWindowed ? 'window' : null">
+			<MkA v-if="$i && ($i.isAdmin || $i.isModerator)" v-click-anime v-tooltip="i18n.ts.controlPanel" :class="$style.item" :activeClass="$style.active" to="/admin" :behavior="settingsWindowed ? 'window' : null">
 				<i :class="$style.itemIcon" class="ti ti-dashboard ti-fw"></i>
-				<span v-if="otherNavItemIndicated" class="indicator _blink"><i class="_indicatorCircle"></i></span>
+				<span v-if="controlPanelIndicated" :class="$style.indicator" class="_blink"><i class="_indicatorCircle"></i></span>
 			</MkA>
 			<button v-click-anime :class="$style.item" class="_button" @click="more">
 				<i :class="$style.itemIcon" class="ti ti-dots ti-fw"></i>
@@ -86,7 +86,32 @@ const otherNavItemIndicated = computed<boolean>(() => {
 	return false;
 });
 
+const controlPanelIndicated = ref(false);
+
+if ($i && ($i.isAdmin || $i.isModerator)) {
+	misskeyApi('admin/abuse-user-reports', {
+		state: 'unresolved',
+		limit: 1,
+	}).then(reports => {
+		if (reports.length > 0) controlPanelIndicated.value = true;
+	});
+
+	misskeyApi('admin/show-users', {
+		state: 'pending',
+		origin: 'local',
+		limit: 1,
+	}).then(approvals => {
+		if (approvals.length > 0) controlPanelIndicated.value = true;
+	});
+
+	fetchCherrypickReleases().then((result) => {
+		if (result) controlPanelIndicated.value = true;
+	});
+}
+
 async function more(ev: PointerEvent) {
+	haptic();
+
 	const target = getHTMLElementOrNull(ev.currentTarget ?? ev.target);
 	if (!target) return;
 
@@ -99,6 +124,8 @@ async function more(ev: PointerEvent) {
 }
 
 async function openAccountMenu(ev: PointerEvent) {
+	haptic();
+
 	const menuItems = await getAccountMenu({
 		withExtraOperation: true,
 	});

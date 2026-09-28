@@ -107,7 +107,6 @@ import MkSwitch from '@/components/MkSwitch.vue';
 import FormSlot from '@/components/form/slot.vue';
 import XPolicyEditor from './roles.policy-editor.vue';
 import { i18n } from '@/i18n.js';
-import * as os from '@/os.js';
 import { instance } from '@/instance.js';
 import { deepClone } from '@/utility/clone.js';
 import type { PolicyMeta } from './roles.policy-editor.vue';
@@ -213,17 +212,6 @@ const save = throttle(100, () => {
 
 	emit('update:modelValue', data);
 });
-
-async function learnMoreAutoTranslate() {
-	if (!role.value.policies.canUseAutoTranslate.value) return;
-
-	const confirm = await os.confirm({
-		type: 'warning',
-		title: i18n.ts.useAutoTranslate,
-		text: i18n.ts._role._options.canUseAutoTranslateDescription,
-	});
-	if (confirm.canceled) role.value.policies.canUseAutoTranslate.value = false;
-}
 
 watch(() => JSON.stringify(role.value), save);
 </script>

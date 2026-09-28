@@ -117,6 +117,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</template>
 
 					<div class="_gaps">
+						<SearchMarker>
+							<MkSwitch v-model="remoteObjectStorageForm.state.useRemoteObjectStorage">
+								<template #label>{{ i18n.ts.useObjectStorage }} ({{ i18n.ts.remote }})<span v-if="remoteObjectStorageForm.modifiedStates.useRemoteObjectStorage" class="_modified">{{ i18n.ts.modified }}</span></template>
+							</MkSwitch>
+						</SearchMarker>
+
 						<template v-if="remoteObjectStorageForm.state.useRemoteObjectStorage">
 							<SearchMarker>
 								<MkInput v-model="remoteObjectStorageForm.state.remoteObjectStorageBaseUrl" :placeholder="'https://example.com'" type="url">

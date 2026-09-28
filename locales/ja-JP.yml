@@ -3807,7 +3807,7 @@ _search:
   searchScopeUser: "ユーザー指定"
   pleaseEnterServerHost: "サーバーのホストを入力してください"
   pleaseSelectUser: "ユーザーを選択してください"
-  serverHostPlaceholder: "例: misskey.example.com"
+  serverHostPlaceholder: "例: cherrypick.example.com"
   postFrom: "投稿日時from"
   postTo: "投稿日時to"
 

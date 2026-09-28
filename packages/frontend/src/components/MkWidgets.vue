@@ -11,19 +11,24 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<template #label>{{ i18n.ts.selectWidget }}</template>
 			</MkSelect>
 			<MkButton inline primary data-testid="widget-add" @click="addWidget"><i class="ti ti-plus"></i> {{ i18n.ts.add }}</MkButton>
-			<MkButton inline @click="emit('exit')">{{ i18n.ts.close }}</MkButton>
+			<MkButton inline @click="emit('exit')"><i class="ti ti-check"></i> {{ i18n.ts.close }}</MkButton>
 		</header>
 		<MkDraggable
 			:modelValue="props.widgets"
 			direction="vertical"
 			withGaps
 			group="MkWidgets"
+			manualDragStart
 			@update:modelValue="v => emit('updateWidgets', v)"
 		>
-			<template #default="{ item }">
+			<template #default="{ item, dragStart }">
 				<div :class="[$style.widget, $style.customizeContainer]" data-testid="customize-container">
-					<button :class="$style.customizeContainerConfig" class="_button" @click.prevent.stop="configWidget(item.id)"><i class="ti ti-settings"></i></button>
-					<button :class="$style.customizeContainerRemove" data-testid="customize-container-remove" class="_button" @click.prevent.stop="removeWidget(item)"><i class="ti ti-x"></i></button>
+					<header draggable="true" @dragstart.stop="dragStart">
+						<span :class="$style.widgetContainerHandle"><i class="ti ti-menu"></i></span>
+						<span :class="$style.widgetName">{{ i18n.ts._widgets[item.name as typeof widgetDefs[number]] }}</span>
+						<button :class="$style.widgetContainerConfig" class="_button" :aria-label="i18n.ts.settings" @click.prevent.stop="configWidget(item.id)"><i class="ti ti-settings"></i></button>
+						<button :class="$style.widgetContainerRemove" data-testid="customize-container-remove" class="_button" :aria-label="i18n.ts.remove" @click.prevent.stop="removeWidget(item)"><i class="ti ti-x"></i></button>
+					</header>
 					<component :is="`widget-${item.name}`" :ref="(el: any) => widgetRefs[item.id] = el" :class="$style.customizeContainerHandleWidget" :widget="item" @updateProps="updateWidget(item.id, $event)"/>
 				</div>
 			</template>
@@ -168,7 +173,9 @@ function onContextmenu(widget: Widget, ev: PointerEvent) {
 
 	> header {
 		position: relative;
-		line-height: 25px;
+		line-height: 32px;
+		padding-right: 64px;
+		cursor: move;
 
 		&Config,
 		&Remove {
@@ -194,6 +201,11 @@ function onContextmenu(widget: Widget, ev: PointerEvent) {
 		}
 	}
 
+}
+
+.widgetName {
+	font-size: 12px;
+	font-weight: bold;
 }
 
 .widgetContainerHandle {

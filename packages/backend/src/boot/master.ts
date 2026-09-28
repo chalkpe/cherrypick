@@ -26,28 +26,30 @@ const themeColorCherry = chalk.hex('#ffbcdc');
 const themeColorPick = chalk.hex('#b1d3ff');
 const themeColorMisskey = chalk.hex('#9ec23f');
 const themeColorWarning = chalk.hex('#ffbb00');
-const themeColor = themeColorMisskey;
 
 /** 起動時の案内を、選択されたログ形式に合わせて出力します。 */
-function greet(props: { version: string; format: LogFormat; url: string }) {
+function greet(props: { version: string; basedMisskeyVersion: string; format: LogFormat; url: string }) {
 	if (!envOption.quiet && props.format === 'json') {
 		// JSONモードでは生のコンソール出力を避け、各案内を1件ずつ構造化ログにします。
-		bootLogger.info('Welcome to Misskey!');
-		bootLogger.info(`Misskey v${props.version}`, null, true);
-		bootLogger.info('Misskey is an open-source decentralized microblogging platform.');
-		bootLogger.info('If you like Misskey, please consider donating to support dev. https://misskey-hub.net/docs/donate/');
+		bootLogger.info('Welcome to CherryPick!');
+		bootLogger.info(`CherryPick v${props.version} (Based on Misskey v${props.basedMisskeyVersion})`, null, true);
+		bootLogger.info('CherryPick is an open-source decentralized microblogging platform based on Misskey.');
+		bootLogger.info('If you like CherryPick, please consider donating to support dev. https://github.com/sponsors/noridev');
 		return;
 	}
 
 	if (!envOption.quiet) {
-		//#region Misskey logo
-		const v = `v${props.version}`;
-		console.log(themeColor('  _____ _         _           '));
-		console.log(themeColor(' |     |_|___ ___| |_ ___ _ _ '));
-		console.log(themeColor(' | | | | |_ -|_ -| \'_| -_| | |'));
-		console.log(themeColor(' |_|_|_|_|___|___|_,_|___|_  |'));
-		console.log(' ' + chalk.gray(v) + themeColor('                        |___|\n'.substring(v.length)));
+		//#region CherryPick logo
+		console.log(themeColorCherry.bold('   _____ _                         ') + themeColorPick.bold(' _____ _      _'));
+		console.log(themeColorCherry.bold('  / ____| |                        ') + themeColorPick.bold('|  __ (_)    | |'));
+		console.log(themeColorCherry.bold(' | |    | |__   ___ _ __ _ __ _   _') + themeColorPick.bold('| |__) |  ___| | __'));
+		console.log(themeColorCherry.bold(' | |    | \'_ \\ / _ \\ \'__| \'__| | | ') + themeColorPick.bold('|  ___/ |/ __| |/ /'));
+		console.log(themeColorCherry.bold(' | |____| | | |  __/ |  | |  | |_| ') + themeColorPick.bold('| |   | | (__|   <'));
+		console.log(themeColorCherry.bold('  \\_____|_| |_|\\___|_|  |_|   \\__, ') + themeColorPick.bold('|_|   |_|\\___|_|\\_\\'));
+		console.log(themeColorCherry.bold('                               __/ |'));
+		console.log(themeColorCherry.bold('                              |___/'));
 		//#endregion
+		console.log(chalk.gray(` CherryPick v${props.version} (Based on Misskey v${props.basedMisskeyVersion})`));
 
 		console.log(themeColorCherry.bold(' Cherry') + themeColorPick.bold('Pick') + (' is an open-source decentralized microblogging platform based from') + (themeColorMisskey.bold(' Misskey') + ('.')));
 		console.log(themeColorWarning(' If you like ') + themeColorCherry.bold('Cherry') + themeColorPick.bold('Pick') + themeColorWarning(', please consider donating to support dev.'));
@@ -89,8 +91,8 @@ function greet(props: { version: string; format: LogFormat; url: string }) {
 		console.log(chalkTemplate`--- ${os.hostname()} {gray (PID: ${process.pid.toString()})} ---`);
 	}
 
-	bootLogger.info('Welcome to Misskey!');
-	bootLogger.info(`Misskey v${props.version}`, null, true);
+	bootLogger.info('Welcome to CherryPick!');
+	bootLogger.info(`CherryPick v${props.version} (Based on Misskey v${props.basedMisskeyVersion})`, null, true);
 }
 
 /**
@@ -104,7 +106,7 @@ export async function masterMain() {
 		config = loadConfigBoot();
 		logger.info(`Start main process... pid: ${process.pid}`);
 		bootLogger.createSubLogger('config').succ('Loaded');
-		greet({ version: config.version, format: config.logging?.format ?? 'pretty', url: config.url });
+		greet({ version: config.version, basedMisskeyVersion: config.basedMisskeyVersion, format: config.logging?.format ?? 'pretty', url: config.url });
 		showEnvironment();
 		await showMachineInfo(bootLogger);
 		showNodejsVersion();

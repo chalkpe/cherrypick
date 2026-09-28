@@ -101,14 +101,15 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				return;
 			}
 
+			const translatorType = this.serverSettings.translatorType?.toLowerCase();
 			const translatorServices = [
 				'deepl',
 				'google_no_api',
 				'ctav3',
-				'Libretranslate',
+				'libretranslate',
 			];
 
-			if (this.serverSettings.translatorType == null || !translatorServices.includes(this.serverSettings.translatorType)) {
+			if (translatorType == null || !translatorServices.includes(translatorType)) {
 				throw new ApiError(meta.errors.noTranslateService);
 			}
 
@@ -116,21 +117,21 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (targetLang.includes('-')) targetLang = targetLang.split('-')[0];
 
 			let translationResult;
-			if (this.serverSettings.translatorType === 'deepl') {
+			if (translatorType === 'deepl') {
 				if (this.serverSettings.deeplAuthKey == null) throw new ApiError(meta.errors.unavailable);
-				translationResult = await this.translateDeepL((note.cw ? note.cw + '\n' : '') + note.text, targetLang, this.serverSettings.deeplAuthKey, this.serverSettings.deeplIsPro, this.serverSettings.translatorType);
-			} else if (this.serverSettings.translatorType === 'google_no_api') {
-				const { text, raw } = await translate((note.cw ? note.cw + '\n' : '') + note.text, { to: targetLang });
-				translationResult = { sourceLang: raw.src, text, translator: this.serverSettings.translatorType };
-			} else if (this.serverSettings.translatorType === 'ctav3') {
+				translationResult = await this.translateDeepL(text, targetLang, this.serverSettings.deeplAuthKey, this.serverSettings.deeplIsPro, translatorType);
+			} else if (translatorType === 'google_no_api') {
+				const { text: translatedText, raw } = await translate(text, { to: targetLang });
+				translationResult = { sourceLang: raw.src, text: translatedText, translator: translatorType };
+			} else if (translatorType === 'ctav3') {
 				if (this.serverSettings.ctav3SaKey == null) return Promise.resolve(204);
 				else if (this.serverSettings.ctav3ProjectId == null) return Promise.resolve(204);
 				else if (this.serverSettings.ctav3Location == null) return Promise.resolve(204);
-				translationResult = await this.apiCloudTranslationAdvanced((note.cw ? note.cw + '\n' : '') + note.text, targetLang, this.serverSettings.ctav3SaKey, this.serverSettings.ctav3ProjectId, this.serverSettings.ctav3Location, this.serverSettings.ctav3Model, this.serverSettings.ctav3Glossary, this.serverSettings.translatorType);
-			} else if (this.serverSettings.translatorType === 'Libretranslate') {
+				translationResult = await this.apiCloudTranslationAdvanced(text, targetLang, this.serverSettings.ctav3SaKey, this.serverSettings.ctav3ProjectId, this.serverSettings.ctav3Location, this.serverSettings.ctav3Model, this.serverSettings.ctav3Glossary, translatorType);
+			} else if (translatorType === 'libretranslate') {
 				const endPoint = this.serverSettings.libreTranslateEndPoint;
 				if (endPoint === null) throw new Error('libreTranslateEndPoint is null');
-				translationResult = await this.translateLibretranslate((note.cw ? note.cw + '\n' : '') + note.text, targetLang, endPoint, this.serverSettings.libreTranslateApiKey);
+				translationResult = await this.translateLibretranslate(text, targetLang, endPoint, this.serverSettings.libreTranslateApiKey);
 			} else {
 				throw new Error('Unsupported translator type');
 			}
@@ -246,7 +247,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		return {
 			sourceLang: json.detectedLanguage.language,
 			text: json.translatedText,
-			translator: 'Libretranslate',
+			translator: 'libretranslate',
 		};
 	}
 }
