@@ -17,7 +17,7 @@ describe('nodeinfo', () => {
 
 		const nodeInfo = await res.json() as any;
 		assert.strictEqual(nodeInfo.software.name, 'cherrypick');
-		assert.strictEqual(nodeInfo.software.version, '2026.9.1+choco.3');
+		assert.strictEqual(nodeInfo.software.version, '2026.9.1+choco.4');
 		assert.strictEqual(nodeInfo.software.repository, 'https://github.com/chalkpe/cherrypick');
 	});
 
