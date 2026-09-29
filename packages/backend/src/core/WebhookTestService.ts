@@ -490,6 +490,7 @@ export class WebhookTestService {
 			twoFactorEnabled: false,
 			usePasswordLessLogin: false,
 			securityKeys: false,
+			bridgeHomeVisibility: false,
 			roles: [],
 			memo: null,
 			moderationNote: undefined,

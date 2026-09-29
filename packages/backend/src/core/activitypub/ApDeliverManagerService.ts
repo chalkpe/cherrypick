@@ -224,22 +224,25 @@ class DeliverManager {
 		// deliver to bsky.brid.gy sharedInbox with changes visibility `home` to `public`
 		if (this.bridgeHomeVisibility) {
 			const bskyBridgySharedInbox = 'https://bsky.brid.gy/ap/sharedInbox';
-			const isCreateNote = this.activity !== null && isCreate(this.activity) && isNote(this.activity.object);
-			const isHomeVisibility = toArray(this.activity?.cc)[0] === 'https://www.w3.org/ns/activitystreams#Public';
+			// narrow via local consts: TypeScript does not narrow mutable `this.activity` through aliased conditions
+			const activity = this.activity;
+			const object = activity?.object;
+			const isCreateNote = activity !== null && isCreate(activity) && typeof object === 'object' && isNote(object);
+			const isHomeVisibility = toArray(activity?.cc)[0] === 'https://www.w3.org/ns/activitystreams#Public';
 			const hasBridgySharedInbox = inboxes.has(bskyBridgySharedInbox);
 
 			if (isCreateNote && isHomeVisibility && hasBridgySharedInbox) {
 				const homeToPublicObject: IObject = {
-					...this.activity.object,
-					to: this.activity.object.cc,
-					cc: this.activity.object.to,
+					...object,
+					to: object.cc,
+					cc: object.to,
 				};
 
 				const homeToPublicActivity: IActivity = {
-					...this.activity,
+					...activity,
 					object: homeToPublicObject,
-					to: this.activity.cc,
-					cc: this.activity.to,
+					to: activity.cc,
+					cc: activity.to,
 				};
 
 				await this.queueService.deliver(this.actor, homeToPublicActivity, bskyBridgySharedInbox, true);
