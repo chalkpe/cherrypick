@@ -20,15 +20,18 @@ import { ApImageService } from '@/core/activitypub/models/ApImageService.js';
 import { ApNoteService } from '@/core/activitypub/models/ApNoteService.js';
 import { ApPersonService } from '@/core/activitypub/models/ApPersonService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
+import { ApResolverService } from '@/core/activitypub/ApResolverService.js';
 import { JsonLdService } from '@/core/activitypub/JsonLdService.js';
 import { CONTEXT } from '@/core/activitypub/misc/contexts.js';
 import { GlobalModule } from '@/GlobalModule.js';
 import { CoreModule } from '@/core/CoreModule.js';
 import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
 import { LoggerService } from '@/core/LoggerService.js';
-import { MiMeta, MiNote, UserProfilesRepository } from '@/models/_.js';
+import { HttpRequestService } from '@/core/HttpRequestService.js';
+import { MiMeta, MiNote, NotesRepository, UserProfilesRepository } from '@/models/_.js';
 import { DI } from '@/di-symbols.js';
 import { secureRndstr } from '@/misc/secure-rndstr.js';
+import { StatusError } from '@/misc/status-error.js';
 import { DownloadService } from '@/core/DownloadService.js';
 import { genAidx } from '@/misc/id/aidx.js';
 
@@ -94,10 +97,13 @@ async function createRandomRemoteUser(
 
 describe('ActivityPub', () => {
 	let userProfilesRepository: UserProfilesRepository;
+	let notesRepository: NotesRepository;
 	let imageService: ApImageService;
 	let noteService: ApNoteService;
 	let personService: ApPersonService;
 	let rendererService: ApRendererService;
+	let apResolverService: ApResolverService;
+	let httpRequestService: HttpRequestService;
 	let jsonLdService: JsonLdService;
 	let resolver: MockResolver;
 
@@ -146,10 +152,13 @@ describe('ActivityPub', () => {
 		app.enableShutdownHooks();
 
 		userProfilesRepository = app.get(DI.userProfilesRepository);
+		notesRepository = app.get(DI.notesRepository);
 
 		noteService = app.get<ApNoteService>(ApNoteService);
 		personService = app.get<ApPersonService>(ApPersonService);
 		rendererService = app.get<ApRendererService>(ApRendererService);
+		apResolverService = app.get<ApResolverService>(ApResolverService);
+		httpRequestService = app.get<HttpRequestService>(HttpRequestService);
 		imageService = app.get<ApImageService>(ApImageService);
 		jsonLdService = app.get<JsonLdService>(JsonLdService);
 		resolver = new MockResolver(await app.resolve<LoggerService>(LoggerService));
@@ -396,6 +405,86 @@ describe('ActivityPub', () => {
 
 			const note = await noteService.createNote(firstNote.id as string, undefined, resolver);
 			assert.strictEqual(note?.uri, firstNote.id);
+		});
+	});
+
+	describe('Reply chain', () => {
+		// chain[0] is the root, and chain[i] replies to chain[i - 1]
+		function createReplyChain(actor: NonTransientIActor, length: number): NonTransientIPost[] {
+			const chain: NonTransientIPost[] = [];
+			for (let i = 0; i < length; i++) {
+				chain.push({
+					...createRandomNote(actor),
+					'@context': 'https://www.w3.org/ns/activitystreams',
+					to: 'https://www.w3.org/ns/activitystreams#Public',
+					content: `chain ${i}`,
+					inReplyTo: chain.at(-1)?.id,
+				});
+			}
+			return chain;
+		}
+
+		// Use the real Resolver so that its recursion limit applies; only the HTTP fetch is replaced
+		function serveRemoteObjects(objects: (NonTransientIActor | NonTransientIPost)[]): void {
+			const objectMap = new Map<string, IObject>(objects.map(object => [object.id, object]));
+			vi.spyOn(httpRequestService, 'getActivityJson').mockImplementation(async (url: string) => {
+				const object = objectMap.get(url);
+				if (object == null) throw new StatusError('Internal Server Error', 500, 'Internal Server Error');
+				return object;
+			});
+		}
+
+		async function collectStoredAncestors(note: MiNote): Promise<MiNote[]> {
+			const notes = [note];
+			let replyId = note.replyId;
+			while (replyId != null) {
+				const reply = await notesRepository.findOneByOrFail({ id: replyId });
+				notes.push(reply);
+				replyId = reply.replyId;
+			}
+			return notes;
+		}
+
+		test('Cut a reply chain that exceeds the recursion limit and keep the parent URL', async () => {
+			const actor = createRandomActor();
+			const realResolver = await apResolverService.createResolver();
+			const chain = createReplyChain(actor, realResolver.getRecursionLimit() + 10);
+			serveRemoteObjects([actor, ...chain]);
+
+			const tip = chain[chain.length - 1];
+			const note = await noteService.createNote(tip.id, undefined, realResolver, true);
+			assert.ok(note);
+
+			// The stored notes keep the reply links in the original order
+			const stored = await collectStoredAncestors(note);
+			const cutIndex = chain.length - stored.length;
+			assert.ok(cutIndex > 0, 'the chain should be cut before reaching the root');
+			assert.deepStrictEqual(
+				stored.map(x => x.uri),
+				chain.slice(cutIndex).map(x => x.id).reverse(),
+			);
+			assert.strictEqual(note.text, `chain ${chain.length - 1}`);
+
+			// The note at the cut has no reply, but its text links to the parent that was not fetched
+			const cutNote = stored[stored.length - 1];
+			const unresolvedParent = chain[cutIndex - 1];
+			assert.strictEqual(cutNote.replyId, null);
+			assert.strictEqual(await notesRepository.findOneBy({ uri: unresolvedParent.id }), null);
+			assert.ok(cutNote.text?.startsWith(`chain ${cutIndex}`));
+			assert.ok(cutNote.text?.includes(unresolvedParent.id));
+		});
+
+		test('Do not cut a reply chain when the parent fails to be fetched', async () => {
+			const actor = createRandomActor();
+			const [parent, reply] = createReplyChain(actor, 2);
+			serveRemoteObjects([actor, reply]);
+
+			await assert.rejects(
+				noteService.createNote(reply.id, undefined, await apResolverService.createResolver(), true),
+				(err: unknown) => err instanceof StatusError && err.statusCode === 500,
+			);
+			assert.strictEqual(await notesRepository.findOneBy({ uri: parent.id }), null);
+			assert.strictEqual(await notesRepository.findOneBy({ uri: reply.id }), null);
 		});
 	});
 

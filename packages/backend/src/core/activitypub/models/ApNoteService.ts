@@ -254,6 +254,15 @@ export class ApNoteService {
 					return x;
 				})
 				.catch(async err => {
+					// リプライチェーンが長すぎて遡りきれない場合は、ここでちぎってリプライ先のないノートとして登録する
+					// ちぎられたことが分かるように、解決できなかったリプライ先のURLを本文に残す
+					if (err instanceof IdentifiableError && err.id === 'd592da9f-822f-4d91-83d7-4ceefabcf3d2') { // hit recursion limit
+						const replyUri = getApId(note.inReplyTo);
+						this.logger.warn(`Reply chain is too deep, cutting it at ${note.id} (inReplyTo ${replyUri})`);
+						text = text ? `${text}\n\nRE: ${replyUri}` : `RE: ${replyUri}`;
+						return null;
+					}
+
 					this.logger.warn(`Error in inReplyTo ${note.inReplyTo} - ${err.statusCode ?? err}`);
 					throw err;
 				})
