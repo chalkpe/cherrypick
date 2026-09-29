@@ -14,6 +14,7 @@ import { MiLocalUser } from '@/models/User.js';
 import { UserService } from '@/core/UserService.js';
 import { AuthenticateService, AuthenticationError } from './AuthenticateService.js';
 import MainStreamConnection, { ConnectionRequest } from './stream/Connection.js';
+import { MastodonStreamingService } from './mastodon/MastodonStreamingService.js';
 import type * as http from 'node:http';
 import { ContextIdFactory, ModuleRef } from '@nestjs/core';
 
@@ -30,6 +31,7 @@ export class StreamingApiServerService {
 		private moduleRef: ModuleRef,
 		private authenticateService: AuthenticateService,
 		private usersService: UserService,
+		private mastodonStreamingService: MastodonStreamingService,
 	) {
 	}
 
@@ -43,6 +45,12 @@ export class StreamingApiServerService {
 			if (request.url == null) {
 				socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
 				socket.destroy();
+				return;
+			}
+
+			// The Mastodon-compatible streaming API speaks a different protocol
+			if (this.mastodonStreamingService.handles(request)) {
+				await this.mastodonStreamingService.handleUpgrade(request, socket, head);
 				return;
 			}
 

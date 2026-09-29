@@ -35,6 +35,7 @@ import Logger from '@/logger.js';
 import { StatusError } from '@/misc/status-error.js';
 import { HtmlTemplateService } from '@/server/web/HtmlTemplateService.js';
 import { OAuthPage } from '@/server/web/views/oauth.js';
+import { MastodonOAuthService } from '@/server/api/mastodon/MastodonOAuthService.js';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
 // TODO: Consider migrating to @node-oauth/oauth2-server once
@@ -412,6 +413,7 @@ export class OAuth2ProviderService implements OnApplicationShutdown {
 		private httpRequestService: HttpRequestService,
 		private cacheService: CacheService,
 		private htmlTemplateService: HtmlTemplateService,
+		private mastodonOAuthService: MastodonOAuthService,
 		loggerService: LoggerService,
 	) {
 		this.#authorizationTransactionCache = new MemoryKVCache<AuthorizationTransaction>(1000 * 60 * 5);
@@ -537,6 +539,13 @@ export class OAuth2ProviderService implements OnApplicationShutdown {
 		registerFormBodyParser(fastify);
 
 		fastify.get('/authorize', async (request, reply) => {
+			// Mastodon clients use app IDs instead of URLs as client_id.
+			const query = request.query as OAuthRequestParameters;
+			if (this.mastodonOAuthService.isMastodonRequest(query)) {
+				applyNoStore(reply);
+				return await this.mastodonOAuthService.authorize(query, reply);
+			}
+
 			let validatedRedirectUri: string | undefined;
 			let state: string | undefined;
 
@@ -629,6 +638,11 @@ export class OAuth2ProviderService implements OnApplicationShutdown {
 			}
 		});
 
+		// Mastodon clients revoke their token on logout.
+		fastify.post('/revoke', async (request, reply) => {
+			await this.mastodonOAuthService.revoke(toRequestParameters(request.body), reply);
+		});
+
 		fastify.all('/*', async (_request, reply) => {
 			reply.code(404);
 			reply.send({
@@ -649,6 +663,11 @@ export class OAuth2ProviderService implements OnApplicationShutdown {
 
 		fastify.post('', async (request, reply) => {
 			applyNoStore(reply);
+
+			const mastodonParams = toRequestParameters(request.body);
+			if (this.mastodonOAuthService.isMastodonRequest(mastodonParams)) {
+				return await this.mastodonOAuthService.token(mastodonParams, reply);
+			}
 
 			try {
 				const body = toRequestParameters(request.body);
