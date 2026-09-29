@@ -95,8 +95,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<div class="_spacer" style="--MI_SPACER-min: 20px; --MI_SPACER-max: 28px;">
 						<XBlur/>
 						<div class="_buttonsCenter" style="margin-top: 16px;">
-							<MkButton rounded data-cy-user-setup-back @click="page--"><i class="ti ti-arrow-left"></i> {{ i18n.ts.goBack }}</MkButton>
-							<MkButton primary rounded gradate data-cy-user-setup-continue @click="page++">{{ i18n.ts.continue }} <i class="ti ti-arrow-right"></i></MkButton>
+							<MkButton rounded data-testid="user-setup-back" @click="page--"><i class="ti ti-arrow-left"></i> {{ i18n.ts.goBack }}</MkButton>
+							<MkButton primary rounded gradate data-testid="user-setup-continue" @click="page++">{{ i18n.ts.continue }} <i class="ti ti-arrow-right"></i></MkButton>
 						</div>
 					</div>
 				</div>
@@ -106,8 +106,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<div class="_spacer" style="--MI_SPACER-min: 20px; --MI_SPACER-max: 28px;">
 						<XMfm/>
 						<div class="_buttonsCenter" style="margin-top: 16px;">
-							<MkButton rounded data-cy-user-setup-back @click="page--"><i class="ti ti-arrow-left"></i> {{ i18n.ts.goBack }}</MkButton>
-							<MkButton primary rounded gradate data-cy-user-setup-continue @click="page++">{{ i18n.ts.continue }} <i class="ti ti-arrow-right"></i></MkButton>
+							<MkButton rounded data-testid="user-setup-back" @click="page--"><i class="ti ti-arrow-left"></i> {{ i18n.ts.goBack }}</MkButton>
+							<MkButton primary rounded gradate data-testid="user-setup-continue" @click="page++">{{ i18n.ts.continue }} <i class="ti ti-arrow-right"></i></MkButton>
 						</div>
 					</div>
 				</div>
@@ -119,8 +119,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</div>
 					<div :class="$style.pageFooter">
 						<div class="_buttonsCenter">
-							<MkButton rounded data-cy-user-setup-back @click="page--"><i class="ti ti-arrow-left"></i> {{ i18n.ts.goBack }}</MkButton>
-							<MkButton primary rounded gradate data-cy-user-setup-continue @click="page++">{{ i18n.ts.continue }} <i class="ti ti-arrow-right"></i></MkButton>
+							<MkButton rounded data-testid="user-setup-back" @click="page--"><i class="ti ti-arrow-left"></i> {{ i18n.ts.goBack }}</MkButton>
+							<MkButton primary rounded gradate data-testid="user-setup-continue" @click="page++">{{ i18n.ts.continue }} <i class="ti ti-arrow-right"></i></MkButton>
 						</div>
 					</div>
 				</div>
