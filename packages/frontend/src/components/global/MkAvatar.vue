@@ -131,6 +131,7 @@ const url = computed(() => {
 });
 
 function onClick(ev: PointerEvent): void {
+	if (props.noteClick) ev.stopPropagation();
 	if (props.link) return;
 	emit('click', ev);
 }
