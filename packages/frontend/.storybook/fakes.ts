@@ -307,7 +307,6 @@ export function userDetailed(id = 'someuserid', username = 'cherrypikist', host:
 		pinnedPageId: null,
 		publicReactions: false,
 		securityKeys: false,
-		bridgeHomeVisibility: false,
 		twoFactorEnabled: false,
 		usePasswordLessLogin: false,
 		twoFactorBackupCodesStock: 'none',

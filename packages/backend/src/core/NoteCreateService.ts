@@ -937,8 +937,11 @@ export class NoteCreateService implements OnApplicationShutdown {
 			if (!data.localOnly && this.userEntityService.isLocalUser(user)) {
 				await (async () => {
 					const noteActivity = await this.renderNoteOrRenoteActivity(data, note);
-					const profile = await this.userProfilesRepository.findOneBy({ userId: user.id });
-					const dm = this.apDeliverManagerService.createDeliverManager(user, noteActivity, profile?.bridgeHomeVisibility);
+					// Bridgy Fed 向けの公開範囲変換は home のノートにしか効かないので、それ以外ではプロフィールを引かない
+					const bridgeHomeVisibility = note.visibility === 'home'
+						? (await this.cacheService.userProfileCache.fetch(user.id)).bridgeHomeVisibility
+						: false;
+					const dm = this.apDeliverManagerService.createDeliverManager(user, noteActivity, bridgeHomeVisibility);
 
 					// メンションされたリモートユーザーに配送
 					for (const u of mentionedUsers.filter(u => this.userEntityService.isRemoteUser(u))) {

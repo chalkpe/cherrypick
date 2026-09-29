@@ -4474,7 +4474,6 @@ export type components = {
             twoFactorEnabled?: boolean;
             usePasswordLessLogin?: boolean;
             securityKeys?: boolean;
-            bridgeHomeVisibility: boolean;
             isFollowing?: boolean;
             isFollowed?: boolean;
             hasPendingFollowRequestFromYou?: boolean;
@@ -4503,6 +4502,7 @@ export type components = {
             autoAcceptFollowed: boolean;
             noCrawle: boolean;
             preventAiLearning: boolean;
+            bridgeHomeVisibility: boolean;
             isExplorable: boolean;
             isDeleted: boolean;
             /** @enum {string} */
