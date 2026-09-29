@@ -463,9 +463,10 @@ export class ApiCallService implements OnApplicationShutdown {
 			}
 		}
 
-		if (ep.meta.requiredRolePolicy != null && (this.meta.rootUserId !== user!.id)) {
-			const myRoles = await this.roleService.getUserRoles(user!.id);
-			const policies = await this.roleService.getUserPolicies(user!.id);
+		// Endpoints that allow anonymous access are checked against the default policies when not signed in
+		if (ep.meta.requiredRolePolicy != null && (user == null || this.meta.rootUserId !== user.id)) {
+			const myRoles = user != null ? await this.roleService.getUserRoles(user.id) : [];
+			const policies = await this.roleService.getUserPolicies(user?.id ?? null);
 			if (!policies[ep.meta.requiredRolePolicy] && !myRoles.some(r => r.isAdministrator)) {
 				throw new ApiError({
 					message: 'You are not assigned to a required role.',
