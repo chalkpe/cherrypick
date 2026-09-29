@@ -11,6 +11,10 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2025122](CHANG
   - 초대 코드를 공유하지 않고도 가입 사유를 확인해 원하는 유저만 가입을 승인할 수 있습니다.
   - 가입을 승인하면 해당 유저에게 가입이 승인되었음을 알리는 이메일이 전송됩니다.
   - 가입 사유는 관리자 및 모더레이터 권한이 있는 유저만 확인할 수 있습니다.
+- Feat: Bluesky 브릿지(Bridgy Fed)와 홈 공개 노트로 소통할 수 있음 (ZerglingGo/misskey#2, [ZerglingGo/misskey@b709efe2](https://github.com/ZerglingGo/misskey/commit/b709efe29ff6164dc5131ed9e3df6c1f398f6816), [ZerglingGo/misskey@78b89a2f](https://github.com/ZerglingGo/misskey/commit/78b89a2f200193365a4429a94d3441b266659025), [ZerglingGo/misskey@0f65af5e](https://github.com/ZerglingGo/misskey/commit/0f65af5ea1fbec7a7102df667fd61d08648e3c79))
+  - `설정 > 프라이버시`에서 `Bridgy Fed(bsky.brid.gy)에게 홈 공개 범위 노트 전달`을 켜면, 홈 공개 노트도 Bridgy Fed를 거쳐 Bluesky에 전달됩니다.
+  - Bridgy Fed에는 노트가 전체 공개로 바뀌어 전달되며, 다른 서버에는 기존처럼 홈 공개로 전달됩니다.
+  - 이 설정은 기본적으로 꺼져 있습니다.
 
 ### Client
 - Fix: 답글란의 입력란에서 `입력란 도움말 표시`가 작동하지 않을 수 있음
