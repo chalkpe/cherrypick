@@ -61,6 +61,7 @@ const exampleCWNote = reactive<Misskey.entities.Note>({
 		emojis: {},
 		onlineStatus: 'unknown',
 		badgeRoles: [],
+		approved: true,
 	},
 	text: i18n.ts._initialTutorial._postNote._cw._exampleNote.note,
 	cw: i18n.ts._initialTutorial._postNote._cw._exampleNote.cw,
