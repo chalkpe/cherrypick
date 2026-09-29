@@ -207,8 +207,12 @@ async function close(skip: boolean) {
 	}
 
 	dialog.value?.close();
-	store.set('accountSetupWizard', -1);
-	unisonReload();
+	// 保存が終わる前にリロードすると、次の起動時にウィザードがまた開いてしまう
+	try {
+		await store.set('accountSetupWizard', -1);
+	} finally {
+		unisonReload();
+	}
 }
 
 function setupComplete() {
