@@ -123,7 +123,8 @@ const onKeydown = (ev: KeyboardEvent) => {
 
 	if (ev.code === 'Enter') {
 		focused.value = false;
-		inputEl.value?.blur();
+		// keydown中にblurするとフォームの暗黙送信が起きなくなるので、キーイベントの処理が終わってから外す
+		window.setTimeout(() => inputEl.value?.blur());
 		emit('enter', ev);
 	}
 };
