@@ -30,6 +30,9 @@ export const MASTODON_STREAMING_PATH = '/api/v1/streaming';
 // Below the per-connection limit of the Misskey stream Connection
 const MAX_WATCHED_NOTES = 1024;
 
+// Bound the bridge's own maps before forwarding to Connection, which has the same channel limit.
+const MAX_CHANNELS_PER_CONNECTION = 32;
+
 /**
  * A Misskey channel opened on behalf of a Mastodon stream
  */
@@ -279,7 +282,7 @@ class MastodonStreamBridge {
 		} catch {
 			return;
 		}
-		if (typeof message.stream !== 'string') return;
+		if (message == null || typeof message !== 'object' || Array.isArray(message) || typeof message.stream !== 'string') return;
 
 		const params = {
 			tag: typeof message.tag === 'string' ? message.tag : undefined,
@@ -300,6 +303,10 @@ class MastodonStreamBridge {
 		}
 		if (this.me == null && resolved.some(s => s.channel === 'homeTimeline' || s.channel === 'main')) {
 			this.sendToClient({ error: 'Missing access token', status: 401 });
+			return;
+		}
+		if (this.channels.size + resolved.length > MAX_CHANNELS_PER_CONNECTION) {
+			this.sendToClient({ error: 'Too many subscriptions', status: 429 });
 			return;
 		}
 

@@ -49,6 +49,14 @@ export class MastodonClientService {
 	public async requireAuth(request: FastifyRequest, permission?: string): Promise<MiLocalUser> {
 		const [me, token, flashToken] = await this.authenticateService.authenticate(getAccessToken(request));
 		if (me == null) throw new AuthenticationError('Credential required.');
+		if (me.isSuspended) {
+			throw new ApiError({
+				message: 'Your account has been suspended.',
+				code: 'YOUR_ACCOUNT_SUSPENDED',
+				kind: 'permission',
+				id: 'a8c724b3-6e9c-4b46-b1a8-bc3ed6258370',
+			});
+		}
 
 		// Native user tokens carry no permission list and may do anything
 		const permissions = token?.permission ?? flashToken?.permissions;
