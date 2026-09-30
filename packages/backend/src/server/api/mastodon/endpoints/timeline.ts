@@ -43,9 +43,10 @@ export class ApiTimelineMastodon {
 			const data = toBoolean(request.query.local)
 				? await client.getLocalTimeline(query)
 				: await client.getPublicTimeline(query);
-			const response = await promiseMap(sortNewestFirst(data.data), async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
+			const response = await this.mastoConverters.convertStatuses(sortNewestFirst(data.data), me);
 
-			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
+			// Paginate by the fetched page, as statuses the viewer cannot see may leave nothing of it
+			attachMinMaxPagination(request, reply, data.data, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
@@ -53,9 +54,10 @@ export class ApiTimelineMastodon {
 			const { client, me } = await this.clientService.getAuthClient(request);
 			const query = parseTimelineArgs(request.query);
 			const data = await client.getHomeTimeline(query);
-			const response = await promiseMap(sortNewestFirst(data.data), async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
+			const response = await this.mastoConverters.convertStatuses(sortNewestFirst(data.data), me);
 
-			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
+			// Paginate by the fetched page, as statuses the viewer cannot see may leave nothing of it
+			attachMinMaxPagination(request, reply, data.data, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
@@ -65,9 +67,10 @@ export class ApiTimelineMastodon {
 			const { client, me } = await this.clientService.getAuthClient(request);
 			const query = parseTimelineArgs(request.query);
 			const data = await client.getTagTimeline(request.params.hashtag, query);
-			const response = await promiseMap(sortNewestFirst(data.data), async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
+			const response = await this.mastoConverters.convertStatuses(sortNewestFirst(data.data), me);
 
-			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
+			// Paginate by the fetched page, as statuses the viewer cannot see may leave nothing of it
+			attachMinMaxPagination(request, reply, data.data, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
@@ -77,9 +80,10 @@ export class ApiTimelineMastodon {
 			const { client, me } = await this.clientService.getAuthClient(request);
 			const query = parseTimelineArgs(request.query);
 			const data = await client.getListTimeline(request.params.id, query);
-			const response = await promiseMap(sortNewestFirst(data.data), async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
+			const response = await this.mastoConverters.convertStatuses(sortNewestFirst(data.data), me);
 
-			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
+			// Paginate by the fetched page, as statuses the viewer cannot see may leave nothing of it
+			attachMinMaxPagination(request, reply, data.data, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
@@ -136,7 +140,7 @@ export class ApiTimelineMastodon {
 			const data = await client.getLists();
 			const response = data.data.map((list: Entity.List) => convertList(list));
 
-			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
+			// All lists are returned at once, so there is no next page to link to
 			return reply.send(response);
 		});
 
@@ -147,7 +151,7 @@ export class ApiTimelineMastodon {
 			const data = await client.getAccountsInList(request.params.id, parseTimelineArgs(request.query));
 			const response = await promiseMap(data.data, async (account: Entity.Account) => await this.mastoConverters.convertAccount(account), { limiter: 4 });
 
-			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
+			// All members are returned at once, so there is no next page to link to
 			return reply.send(response);
 		});
 

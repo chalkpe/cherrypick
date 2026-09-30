@@ -26,6 +26,7 @@ import { CacheService } from '@/core/CacheService.js';
 import { isRenote } from '@/misc/is-renote.js';
 import { promiseMap } from '@/misc/promise-map.js';
 import { emojiRegex } from '@/misc/emoji-regex.js';
+import { ApiError } from '@/server/api/error.js';
 
 // Mastodon requires a header image URL even when the user has none.
 const TRANSPARENT_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
@@ -387,6 +388,23 @@ export class MastodonConverters {
 			filtered,
 			reactions: this.convertReactions(status.emoji_reactions),
 		});
+	}
+
+	/**
+	 * Converts the statuses of a list, leaving out those the viewer cannot see (any more),
+	 * such as a bookmarked followers-only note of someone they stopped following.
+	 * One such status must not fail the whole list.
+	 */
+	public async convertStatuses(statuses: Entity.Status[], me: MiLocalUser | null, limiter = 4): Promise<MastodonEntity.Status[]> {
+		const converted = await promiseMap(statuses, async status => {
+			try {
+				return await this.convertStatus(status, me);
+			} catch (err) {
+				if (err instanceof ApiError && err.code === 'NO_SUCH_NOTE') return null;
+				throw err;
+			}
+		}, { limiter });
+		return converted.filter(status => status != null);
 	}
 
 	/**

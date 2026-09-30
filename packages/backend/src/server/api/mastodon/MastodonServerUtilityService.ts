@@ -144,20 +144,13 @@ export class MastodonServerUtilityService {
 
 	@bindThis
 	public addFormUrlEncodedContentType(fastify: FastifyInstance) {
-		fastify.addContentTypeParser('application/x-www-form-urlencoded', (_, payload, done) => {
-			let body = '';
-			payload.on('data', (data) => {
-				body += data;
-			});
-			payload.on('end', () => {
-				try {
-					const parsed = querystring.parse(body);
-					done(null, parsed);
-				} catch (e) {
-					done(e as Error);
-				}
-			});
-			payload.on('error', done);
+		// Parsed as a string so that Fastify applies its body size limit, which it does not do for parsers reading the stream themselves
+		fastify.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_, body, done) => {
+			try {
+				done(null, querystring.parse(body as string));
+			} catch (e) {
+				done(e as Error);
+			}
 		});
 	}
 

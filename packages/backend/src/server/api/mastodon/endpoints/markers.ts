@@ -81,8 +81,7 @@ export class ApiMarkersMastodon {
 
 	public register(fastify: FastifyInstance): void {
 		fastify.get<{ Querystring: { timeline?: string | string[] } }>('/v1/markers', async (request, reply) => {
-			const me = await this.clientService.getAuth(request);
-			if (me == null) return reply.code(401).send({ error: 'The access token is invalid' });
+			const me = await this.clientService.requireAuth(request, 'read:account');
 
 			const requested = request.query.timeline == null
 				? []
@@ -93,10 +92,10 @@ export class ApiMarkersMastodon {
 		});
 
 		fastify.post<{ Body?: MarkersBody }>('/v1/markers', async (request, reply) => {
-			const me = await this.clientService.getAuth(request);
-			if (me == null) return reply.code(401).send({ error: 'The access token is invalid' });
-
 			const body = request.body ?? {};
+			// The notifications marker marks notifications as read, like notifications/mark-all-as-read
+			const me = await this.clientService.requireAuth(request, readLastReadId(body, 'notifications') != null ? 'write:notifications' : 'write:account');
+
 			const updated: Timeline[] = [];
 			for (const timeline of TIMELINES) {
 				const lastReadId = readLastReadId(body, timeline);

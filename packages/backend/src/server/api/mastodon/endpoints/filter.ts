@@ -86,18 +86,12 @@ export class ApiFilterMastodon {
 		private readonly filterService: MastodonFilterService,
 	) {}
 
-	private async requireMe(request: FastifyRequest, reply: FastifyReply): Promise<MiLocalUser | null> {
-		const me = await this.clientService.getAuth(request);
-		if (me == null) reply.code(401).send({ error: 'The access token is invalid' });
-		return me;
-	}
-
 	/**
 	 * Runs a filter operation, answering 404 for unknown filters and keywords as Mastodon does.
 	 */
 	private async withFilters<T>(request: FastifyRequest, reply: FastifyReply, run: (me: MiLocalUser, body: Record<string, unknown>) => Promise<T>): Promise<FastifyReply> {
-		const me = await this.requireMe(request, reply);
-		if (me == null) return reply;
+		// Filters are read from the word mutes of the profile directly. Changes go through i/update, which checks its own permission.
+		const me = await this.clientService.requireAuth(request, 'read:account');
 
 		// Some clients, such as Ice Cubes, send keywords as query parameters
 		const body = { ...(request.query as Record<string, unknown>), ...unflattenFormBody((request.body ?? {}) as Record<string, unknown>) };

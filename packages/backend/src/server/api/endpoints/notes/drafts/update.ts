@@ -294,7 +294,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				fileIds: ps.fileIds,
 				pollChoices: ps.poll?.choices,
 				pollMultiple: ps.poll?.multiple,
-				pollExpiresAt: ps.poll?.expiresAt ? new Date(ps.poll.expiresAt) : null,
+				// An omitted poll or scheduled deletion keeps the one of the draft, like an omitted event below
+				...(ps.poll !== undefined ? { pollExpiresAt: ps.poll?.expiresAt ? new Date(ps.poll.expiresAt) : null } : {}),
 				pollExpiredAfter: ps.poll?.expiredAfter,
 				text: ps.text,
 				replyId: ps.replyId,
@@ -318,7 +319,9 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					// The column is NOT NULL. The metadata is spread into the ActivityPub object of the posted note, so it gets no "@context" of its own, as in notes/create.
 					eventMetadata: ps.event?.metadata ?? {},
 				} : {}),
-				deleteAt: ps.scheduledDelete?.deleteAt ? new Date(ps.scheduledDelete.deleteAt) : ps.scheduledDelete?.deleteAfter ? new Date(Date.now() + ps.scheduledDelete.deleteAfter) : null,
+				...(ps.scheduledDelete !== undefined ? {
+					deleteAt: ps.scheduledDelete?.deleteAt ? new Date(ps.scheduledDelete.deleteAt) : ps.scheduledDelete?.deleteAfter ? new Date(Date.now() + ps.scheduledDelete.deleteAfter) : null,
+				} : {}),
 				deliveryTargets: ps.deliveryTargets,
 			}).catch((err) => {
 				if (err instanceof IdentifiableError) {

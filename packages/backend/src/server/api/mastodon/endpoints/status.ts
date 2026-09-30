@@ -15,7 +15,7 @@ import type { Packed } from '@/misc/json-schema.js';
 import type { MiLocalUser } from '@/models/User.js';
 import { convertAttachment, convertPoll, escapeMFM, isUnicodeEmojiReaction, MastodonConverters, toMisskeyReaction } from '../MastodonConverters.js';
 import type { Entity, MastodonEntity, Misskey, MisskeyEntity } from 'megalodon';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 type Visibility = 'public' | 'unlisted' | 'private' | 'direct' | 'local';
 
@@ -54,12 +54,6 @@ export class ApiStatusMastodon {
 		private readonly mastodonDataService: MastodonDataService,
 		private readonly preferenceService: MastodonPreferenceService,
 	) {}
-
-	private async requireMe(request: FastifyRequest, reply: FastifyReply): Promise<MiLocalUser | null> {
-		const me = await this.clientService.getAuth(request);
-		if (me == null) reply.code(401).send({ error: 'The access token is invalid' });
-		return me;
-	}
 
 	/**
 	 * A scheduled Misskey note draft as a Mastodon ScheduledStatus.
@@ -105,7 +99,7 @@ export class ApiStatusMastodon {
 		}
 
 		const { data } = await client.callApi<{ createdDraft: Packed<'NoteDraft'> }>('/api/notes/drafts/create', {
-			text: body.status ?? null,
+			text: body.status?.trim() ? body.status : null,
 			cw: body.spoiler_text || null,
 			visibility: body.visibility ? Converter.encodeVisibility(body.visibility) : 'public',
 			localOnly: body.visibility === 'local' || toBoolean(body.local_only) === true,
@@ -156,8 +150,8 @@ export class ApiStatusMastodon {
 
 			const { client, me } = await this.clientService.getAuthClient(_request);
 			const { data } = await client.getStatusContext(_request.params.id, parseTimelineArgs(_request.query));
-			const ancestors = await promiseMap(data.ancestors, async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
-			const descendants = await promiseMap(data.descendants, async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
+			const ancestors = await this.mastoConverters.convertStatuses(data.ancestors, me);
+			const descendants = await this.mastoConverters.convertStatuses(data.descendants, me);
 			const response = { ancestors, descendants };
 
 			return reply.send(response);
@@ -525,7 +519,7 @@ export class ApiStatusMastodon {
 				sinceId: args.min_id ?? args.since_id,
 			});
 			const baseUrl = this.clientService.getPublicBaseUrl();
-			const response = await promiseMap(renotes.filter(isQuoteNote), async note => await this.mastoConverters.convertStatus(Converter.note(note, baseUrl), me), { limiter: 4 });
+			const response = await this.mastoConverters.convertStatuses(renotes.filter(isQuoteNote).map(note => Converter.note(note, baseUrl)), me);
 
 			// Paginate by the renotes, as pure renotes among them are left out
 			attachMinMaxPagination(request, reply, renotes, baseUrl);
@@ -590,9 +584,7 @@ export class ApiStatusMastodon {
 		});
 
 		fastify.delete<{ Params: { id: string } }>('/v1/scheduled_statuses/:id', async (request, reply) => {
-			const me = await this.requireMe(request, reply);
-			if (me == null) return;
-
+			await this.clientService.requireAuth(request);
 			await this.clientService.callApi(request, 'notes/drafts/delete', { draftId: request.params.id });
 			return reply.send({});
 		});

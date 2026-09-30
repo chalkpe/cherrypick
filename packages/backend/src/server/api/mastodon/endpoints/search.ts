@@ -68,7 +68,7 @@ export class ApiSearchMastodon {
 			const response = {
 				...data,
 				accounts: await promiseMap(data.accounts, (account: Entity.Account) => this.mastoConverters.convertAccount(account), { limiter: 3 }),
-				statuses: await promiseMap(data.statuses, (status: Entity.Status) => this.mastoConverters.convertStatus(status, me), { limiter: 3 }),
+				statuses: await this.mastoConverters.convertStatuses(data.statuses, me, 3),
 			};
 
 			if (type === 'hashtags') {
@@ -108,7 +108,7 @@ export class ApiSearchMastodon {
 			]);
 			const response = {
 				accounts: acct ? await promiseMap(acct.data.accounts, async (account: Entity.Account) => await this.mastoConverters.convertAccount(account), { limiter: 3 }) : [],
-				statuses: stat ? await promiseMap(stat.data.statuses, async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 3 }) : [],
+				statuses: stat ? await this.mastoConverters.convertStatuses(stat.data.statuses, me, 3) : [],
 				hashtags: tags?.data.hashtags ?? [],
 			};
 
@@ -134,7 +134,7 @@ export class ApiSearchMastodon {
 				: [];
 			const me = await this.clientService.getAuth(request);
 			const baseUrl = this.clientService.getPublicBaseUrl();
-			const response = await promiseMap(data.slice(offset, offset + limit), async note => await this.mastoConverters.convertStatus(Converter.note(note, baseUrl), me), { limiter: 4 });
+			const response = await this.mastoConverters.convertStatuses(data.slice(offset, offset + limit).map(note => Converter.note(note, baseUrl)), me);
 
 			attachOffsetPagination(request, reply, response, baseUrl);
 			return reply.send(response);

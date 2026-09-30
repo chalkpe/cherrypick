@@ -193,8 +193,7 @@ export class MastodonApiServerService {
 		});
 
 		fastify.get('/v1/preferences', async (request, reply) => {
-			const me = await this.clientService.getAuth(request);
-			if (me == null) return reply.code(401).send({ error: 'The access token is invalid' });
+			const me = await this.clientService.requireAuth(request, 'read:account');
 			return reply.send(await this.preferenceService.getPreferences(me.id));
 		});
 
@@ -267,7 +266,7 @@ export class MastodonApiServerService {
 			const { client, me } = await this.clientService.getAuthClient(_request);
 
 			const data = await client.getBookmarks(parseTimelineArgs(_request.query));
-			const response = await promiseMap(data.data, async (status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
+			const response = await this.mastoConverters.convertStatuses(data.data, me);
 
 			// Misskey paginates by the favorite records rather than by the notes
 			attachMinMaxPagination(_request, reply, data.pageIds, this.clientService.getPublicBaseUrl());
@@ -291,7 +290,7 @@ export class MastodonApiServerService {
 				userId: me.id,
 			};
 			const data = await client.getFavourites(args);
-			const response = await promiseMap(data.data, async (status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
+			const response = await this.mastoConverters.convertStatuses(data.data, me);
 
 			// Misskey paginates by the reaction records rather than by the notes
 			attachMinMaxPagination(_request, reply, data.pageIds, this.clientService.getPublicBaseUrl());

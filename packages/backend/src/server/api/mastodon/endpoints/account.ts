@@ -17,7 +17,7 @@ import type { FollowRequestsRepository, FollowingsRepository, UserMemoRepository
 import type { MiLocalUser } from '@/models/User.js';
 import { MastodonConverters, convertRelationship, convertFeaturedTag, convertList } from '../MastodonConverters.js';
 import type { Misskey, MastodonEntity, Entity } from 'megalodon';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 
 interface ApiAccountMastodonRoute {
 	Params: { id?: string },
@@ -74,12 +74,6 @@ export class ApiAccountMastodon {
 		private readonly preferenceService: MastodonPreferenceService,
 	) {}
 
-	private async requireMe(request: FastifyRequest, reply: FastifyReply): Promise<MiLocalUser | null> {
-		const me = await this.clientService.getAuth(request);
-		if (me == null) reply.code(401).send({ error: 'The access token is invalid' });
-		return me;
-	}
-
 	/**
 	 * The current user as a CredentialAccount, with the source of the profile.
 	 */
@@ -132,7 +126,8 @@ export class ApiAccountMastodon {
 
 		fastify.patch<{ Body?: Record<string, unknown> }>('/v1/accounts/update_credentials', async (_request, reply) => {
 			const client = this.clientService.getClient(_request);
-			const me = await this.clientService.getAuth(_request);
+			// The default visibility is written here rather than through the Misskey API, so its permission is checked here
+			const me = await this.clientService.requireAuth(_request, 'write:account');
 			// Multipart and form clients send "fields_attributes[0][name]" and "source[privacy]", and a request carrying only the images has no fields
 			const body = unflattenFormBody(_request.body ?? {});
 			const source = (body.source != null && typeof body.source === 'object' ? body.source : {}) as Record<string, unknown>;
@@ -163,7 +158,7 @@ export class ApiAccountMastodon {
 
 			// The default visibility is not a Misskey profile setting
 			const privacy = source.privacy;
-			if (me && isVisibility(privacy)) {
+			if (isVisibility(privacy)) {
 				await this.preferenceService.setDefaultVisibility(me.id, privacy);
 			}
 
@@ -224,8 +219,7 @@ export class ApiAccountMastodon {
 
 		// Accounts followed by the current user that also follow each given account
 		fastify.get<{ Querystring: { id?: string | string[] } }>('/v1/accounts/familiar_followers', async (request, reply) => {
-			const me = await this.requireMe(request, reply);
-			if (me == null) return;
+			const me = await this.clientService.requireAuth(request, 'read:following');
 
 			const ids = request.query.id == null ? [] : Array.isArray(request.query.id) ? request.query.id : [request.query.id];
 			const response = await promiseMap(ids, async id => {
@@ -281,9 +275,10 @@ export class ApiAccountMastodon {
 			const data = await client.getAccountStatuses(request.params.id, args);
 			// Pinned statuses keep the order the user pinned them in
 			const statuses = args.pinned ? data.data : sortNewestFirst(data.data);
-			const response = await promiseMap(statuses, async status => await this.mastoConverters.convertStatus(status, me), { limiter: 2 });
+			const response = await this.mastoConverters.convertStatuses(statuses, me, 2);
 
-			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
+			// Pinned statuses are returned at once. The others are paginated by the fetched page, as statuses the viewer cannot see may leave nothing of it.
+			if (!args.pinned) attachMinMaxPagination(request, reply, statuses, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 

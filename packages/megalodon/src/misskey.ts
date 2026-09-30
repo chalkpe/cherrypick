@@ -11,6 +11,12 @@ const ACCT_PATTERN = /^@?(?<user>[a-zA-Z0-9_]+)(?:@(?<host>[a-zA-Z0-9-.]+\.[a-zA
 
 const emptyResults = (): Entity.Results => ({ accounts: [], statuses: [], hashtags: [] })
 
+// The most notes notes/children and notes/conversation return at once
+const CONTEXT_PAGE_LIMIT = 100
+// Bounds on fetching the replies below the direct replies of a note
+const CONTEXT_MAX_REQUESTS = 20
+const CONTEXT_MAX_DESCENDANTS = 300
+
 /**
  * Ignores the Misskey API errors that only mean the note already is in the requested state,
  * as the matching Mastodon actions succeed when repeated.
@@ -1005,7 +1011,8 @@ export default class Misskey implements MegalodonInterface {
     }
   ): Promise<Response<Entity.Status>> {
     let params = {
-      text: status
+      // Clients send an empty status along with media or a poll, which Misskey takes as no text
+      text: status.trim() === '' ? null : status
     }
     if (options) {
       if (options.sensitive && options.media_ids) {
@@ -1160,20 +1167,21 @@ export default class Misskey implements MegalodonInterface {
 
   /**
    * POST /api/notes/children
+   * POST /api/notes/conversation
+   *
+   * notes/children only returns the direct replies of a note, so the replies below them are fetched level by level.
    */
   public async getStatusContext(
     id: string,
     options?: { limit?: number; max_id?: string; since_id?: string }
   ): Promise<Response<Entity.Context>> {
+    // Mastodon clients ask for the whole thread without a limit, while Misskey returns 10 notes by default
+    const limit = Math.min(options?.limit || CONTEXT_PAGE_LIMIT, CONTEXT_PAGE_LIMIT)
     let params = {
-      noteId: id
+      noteId: id,
+      limit
     }
     if (options) {
-      if (options.limit) {
-        params = Object.assign(params, {
-          limit: options.limit
-        })
-      }
       if (options.max_id) {
         params = Object.assign(params, {
           untilId: options.max_id
@@ -1185,25 +1193,34 @@ export default class Misskey implements MegalodonInterface {
         })
       }
     }
-    return this.client.post<Array<MisskeyAPI.Entity.Note>>('/api/notes/children', params).then(async res => {
-      const conversation = await this.client.post<Array<MisskeyAPI.Entity.Note>>("/api/notes/conversation", params);
-      const parents = await Promise.all(
-        conversation.data.map((n) =>
-        MisskeyAPI.Converter.note(
-            n,
-            this.baseUrl
-          ),
-        ),
-      );
-      const context: Entity.Context = {
-        ancestors: parents.reverse(),
-        descendants: this.dfs(await Promise.all(res.data.map(n => MisskeyAPI.Converter.note(n, this.baseUrl))), id)
+    const [res, conversation] = await Promise.all([
+      this.client.post<Array<MisskeyAPI.Entity.Note>>('/api/notes/children', params),
+      this.client.post<Array<MisskeyAPI.Entity.Note>>('/api/notes/conversation', params)
+    ])
+
+    const replies = [...res.data]
+    const seen = new Set(replies.map(n => n.id))
+    const pending = replies.filter(n => n.replyId === id && n.repliesCount > 0)
+    for (let requests = 0; pending.length > 0 && requests < CONTEXT_MAX_REQUESTS && replies.length < CONTEXT_MAX_DESCENDANTS; requests++) {
+      const parent = pending.shift()!
+      const children = await this.client.post<Array<MisskeyAPI.Entity.Note>>('/api/notes/children', { noteId: parent.id, limit: CONTEXT_PAGE_LIMIT })
+      for (const child of children.data) {
+        // notes/children also returns quotes, which are not part of the thread
+        if (child.replyId !== parent.id || seen.has(child.id)) continue
+        seen.add(child.id)
+        replies.push(child)
+        if (child.repliesCount > 0) pending.push(child)
       }
-      return {
-        ...res,
-        data: context
-      }
-    })
+    }
+
+    const context: Entity.Context = {
+      ancestors: conversation.data.map(n => MisskeyAPI.Converter.note(n, this.baseUrl)).reverse(),
+      descendants: this.dfs(replies.map(n => MisskeyAPI.Converter.note(n, this.baseUrl)), id)
+    }
+    return {
+      ...res,
+      data: context
+    }
   }
 
   private dfs(graph: Entity.Status[], rootId: string) {

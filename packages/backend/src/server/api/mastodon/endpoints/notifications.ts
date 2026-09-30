@@ -12,7 +12,7 @@ import { attachMinMaxPagination, sortNewestFirst } from '@/server/api/mastodon/p
 import { promiseMap } from '@/misc/promise-map.js';
 import type { MiLocalUser } from '@/models/User.js';
 import { MastodonClientService } from '../MastodonClientService.js';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 
 interface ApiNotifyMastodonRoute {
 	Params: {
@@ -124,14 +124,6 @@ export class ApiNotificationsMastodon {
 		private readonly notificationService: MastodonNotificationService,
 	) {}
 
-	private async requireMe(request: FastifyRequest, reply: FastifyReply): Promise<MiLocalUser | null> {
-		const me = await this.clientService.getAuth(request);
-		if (me == null) {
-			reply.code(401).send({ error: 'The access token is invalid' });
-		}
-		return me;
-	}
-
 	public register(fastify: FastifyInstance): void {
 		fastify.get<{ Querystring: NotificationsQuery }>('/v1/notifications', async (request, reply) => {
 			const { client, me } = await this.clientService.getAuthClient(request);
@@ -171,8 +163,7 @@ export class ApiNotificationsMastodon {
 
 		for (const path of ['/v1/notifications/unread_count', '/v2/notifications/unread_count']) {
 			fastify.get<{ Querystring: { limit?: string } }>(path, async (request, reply) => {
-				const me = await this.requireMe(request, reply);
-				if (me == null) return;
+				const me = await this.clientService.requireAuth(request, 'read:notifications');
 
 				// Mastodon caps the count, as clients only show a badge
 				const limit = toLimit(request.query.limit, 100, 1000);
@@ -185,8 +176,7 @@ export class ApiNotificationsMastodon {
 			fastify.get<ApiNotifyMastodonRoute & { Params: { id?: string } }>(path, async (request, reply) => {
 				if (!request.params.id) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required parameter "id"' });
 
-				const me = await this.requireMe(request, reply);
-				if (me == null) return;
+				const me = await this.clientService.requireAuth(request, 'read:notifications');
 
 				const response = await this.notificationService.show(me, request.params.id);
 				if (!response) return reply.code(404).send({ error: 'Record not found' });
@@ -199,8 +189,7 @@ export class ApiNotificationsMastodon {
 			fastify.post<ApiNotifyMastodonRoute & { Params: { id?: string } }>(path, async (request, reply) => {
 				if (!request.params.id) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required parameter "id"' });
 
-				const me = await this.requireMe(request, reply);
-				if (me == null) return;
+				const me = await this.clientService.requireAuth(request, 'write:notifications');
 
 				await this.notificationService.dismiss(me.id, request.params.id);
 				return reply.send({});
@@ -333,8 +322,7 @@ export class ApiNotificationsMastodon {
 		});
 
 		fastify.get<{ Params: { group_key: string } }>('/v2/notifications/:group_key', async (request, reply) => {
-			const me = await this.requireMe(request, reply);
-			if (me == null) return;
+			const me = await this.clientService.requireAuth(request, 'read:notifications');
 
 			const notification = await this.findGroupNotification(me, request.params.group_key);
 			if (notification == null) return reply.code(404).send({ error: 'Record not found' });
@@ -358,16 +346,14 @@ export class ApiNotificationsMastodon {
 		});
 
 		fastify.get<{ Params: { group_key: string } }>('/v2/notifications/:group_key/accounts', async (request, reply) => {
-			const me = await this.requireMe(request, reply);
-			if (me == null) return;
+			const me = await this.clientService.requireAuth(request, 'read:notifications');
 
 			const notification = await this.findGroupNotification(me, request.params.group_key);
 			return reply.send(notification ? [notification.account] : []);
 		});
 
 		fastify.post<{ Params: { group_key: string } }>('/v2/notifications/:group_key/dismiss', async (request, reply) => {
-			const me = await this.requireMe(request, reply);
-			if (me == null) return;
+			const me = await this.clientService.requireAuth(request, 'write:notifications');
 
 			const notificationId = request.params.group_key.split('-').at(-1);
 			if (notificationId) await this.notificationService.dismiss(me.id, notificationId);

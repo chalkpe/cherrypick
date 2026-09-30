@@ -7,6 +7,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { DI } from '@/di-symbols.js';
 import { IdService } from '@/core/IdService.js';
+import { CacheService } from '@/core/CacheService.js';
 import { MemoryKVCache } from '@/misc/cache.js';
 import { checkWordMute } from '@/misc/check-word-mute.js';
 import type { MiNote, UserProfilesRepository } from '@/models/_.js';
@@ -109,6 +110,7 @@ export class MastodonFilterService {
 
 		private readonly idService: IdService,
 		private readonly clientService: MastodonClientService,
+		private readonly cacheService: CacheService,
 	) {}
 
 	private key(userId: MiUser['id']): string {
@@ -135,8 +137,13 @@ export class MastodonFilterService {
 		this.storedCache.delete(userId);
 	}
 
-	private async getWordMutes(userId: MiUser['id']): Promise<Record<MuteList, MuteEntry[]>> {
-		const profile = await this.userProfilesRepository.findOneByOrFail({ userId });
+	/**
+	 * @param cached Reads the cached profile, for matching every status of a list. Changes are always based on the stored profile.
+	 */
+	private async getWordMutes(userId: MiUser['id'], cached = false): Promise<Record<MuteList, MuteEntry[]>> {
+		const profile = cached
+			? await this.cacheService.userProfileCache.fetch(userId)
+			: await this.userProfilesRepository.findOneByOrFail({ userId });
 		return { warn: profile.mutedWords, hide: profile.hardMutedWords };
 	}
 
@@ -192,8 +199,8 @@ export class MastodonFilterService {
 	 * All filters of a user, as Mastodon filters that still hold only the keywords present in the word mutes.
 	 * Expired filters are removed along with their word mutes when a request is given.
 	 */
-	private async resolve(userId: MiUser['id'], request?: FastifyRequest): Promise<StoredFilter[]> {
-		const [stored, mutes] = await Promise.all([this.loadStored(userId), this.getWordMutes(userId)]);
+	private async resolve(userId: MiUser['id'], request?: FastifyRequest, cached = false): Promise<StoredFilter[]> {
+		const [stored, mutes] = await Promise.all([this.loadStored(userId), this.getWordMutes(userId, cached)]);
 
 		const expired = stored.filter(f => f.expiresAt != null && f.expiresAt <= Date.now());
 		if (expired.length > 0 && request) {
@@ -313,7 +320,7 @@ export class MastodonFilterService {
 		if (note.userId === me.id || (!note.text && !note.cw)) return [];
 
 		const results: MastodonEntity.FilterResult[] = [];
-		for (const filter of await this.resolve(me.id)) {
+		for (const filter of await this.resolve(me.id, undefined, true)) {
 			const matches: string[] = [];
 			for (const keyword of filter.keywords) {
 				if (await checkWordMute(note, me, [keywordEntry(keyword)])) matches.push(keyword.keyword);

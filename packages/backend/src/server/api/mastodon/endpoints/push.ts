@@ -62,6 +62,11 @@ export class ApiPushMastodon {
 			reply.code(401).send({ error: 'The access token is invalid' });
 			return null;
 		}
+		// Pushes carry the notifications themselves
+		if (!token.permission.includes('read:notifications')) {
+			reply.code(403).send({ error: 'This action is outside the authorized scopes' });
+			return null;
+		}
 		return { me, accessTokenId: token.id };
 	}
 

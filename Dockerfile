@@ -98,10 +98,12 @@ WORKDIR /cherrypick
 COPY --chown=cherrypick:cherrypick --from=target-builder /cherrypick/node_modules ./node_modules
 COPY --chown=cherrypick:cherrypick --from=target-builder /cherrypick/packages/backend/node_modules ./packages/backend/node_modules
 COPY --chown=cherrypick:cherrypick --from=target-builder /cherrypick/packages/cherrypick-js/node_modules ./packages/cherrypick-js/node_modules
+COPY --chown=cherrypick:cherrypick --from=target-builder /cherrypick/packages/megalodon/node_modules ./packages/megalodon/node_modules
 COPY --chown=cherrypick:cherrypick --from=target-builder /cherrypick/packages/misskey-reversi/node_modules ./packages/misskey-reversi/node_modules
 COPY --chown=cherrypick:cherrypick --from=target-builder /cherrypick/packages/misskey-bubble-game/node_modules ./packages/misskey-bubble-game/node_modules
 COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/built ./built
 COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/packages/cherrypick-js/built ./packages/cherrypick-js/built
+COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/packages/megalodon/built ./packages/megalodon/built
 COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/packages/misskey-reversi/built ./packages/misskey-reversi/built
 COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/packages/misskey-bubble-game/built ./packages/misskey-bubble-game/built
 COPY --chown=cherrypick:cherrypick --from=native-builder /cherrypick/packages/backend/built ./packages/backend/built

@@ -8,7 +8,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { MiLocalUser } from '@/models/User.js';
-import { AuthenticateService } from '@/server/api/AuthenticateService.js';
+import { AuthenticateService, AuthenticationError } from '@/server/api/AuthenticateService.js';
+import { ApiError } from '@/server/api/error.js';
 import type { FastifyRequest } from 'fastify';
 
 @Injectable()
@@ -38,6 +39,28 @@ export class MastodonClientService {
 	public async getAuth(request: FastifyRequest, accessToken?: string | null): Promise<MiLocalUser | null> {
 		accessToken = accessToken !== undefined ? accessToken : getAccessToken(request);
 		const [me] = await this.authenticateService.authenticate(accessToken);
+		return me;
+	}
+
+	/**
+	 * Gets the authenticated user of a request, for routes that read or write data directly instead of through the Misskey API.
+	 * Fails with 401 when there is none, and with 403 when the access token lacks the permission the Misskey API would ask for.
+	 */
+	public async requireAuth(request: FastifyRequest, permission?: string): Promise<MiLocalUser> {
+		const [me, token] = await this.authenticateService.authenticate(getAccessToken(request));
+		if (me == null) throw new AuthenticationError('Credential required.');
+
+		// Native user tokens carry no permission list and may do anything
+		if (permission != null && token != null && !token.permission.includes(permission)) {
+			throw new ApiError({
+				message: 'Your app does not have the necessary permissions to use this endpoint.',
+				code: 'PERMISSION_DENIED',
+				id: '1370e5b7-d4eb-4566-bb1d-7748ee6a1838',
+				kind: 'permission',
+				httpStatusCode: 403,
+			});
+		}
+
 		return me;
 	}
 
