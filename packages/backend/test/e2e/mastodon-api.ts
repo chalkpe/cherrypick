@@ -754,6 +754,29 @@ describe('Mastodon API', () => {
 			assert.deepStrictEqual(familiar.accounts.map(a => a.id), [liam.id]);
 		});
 
+		test('keeps private follow lists out of familiar followers', async () => {
+			const familiar = async (): Promise<string[]> => {
+				const [entry] = await get<{ accounts: { id: string }[] }[]>(`/api/v1/accounts/familiar_followers?id[]=${kate.id}`);
+				return entry.accounts.map(a => a.id);
+			};
+			onTestFinished(async () => {
+				await api('i/update', { followingVisibility: 'public' }, liam);
+				await api('i/update', { followersVisibility: 'public' }, kate);
+			});
+
+			// jack follows liam, so a follow list open to followers is open to him
+			await api('i/update', { followingVisibility: 'followers' }, liam);
+			await api('i/update', { followersVisibility: 'private' }, kate);
+			assert.deepStrictEqual(await familiar(), [liam.id]);
+
+			await api('i/update', { followingVisibility: 'private' }, liam);
+			assert.deepStrictEqual(await familiar(), []);
+
+			// The follower list of kate shows the relationship as well once it is public
+			await api('i/update', { followersVisibility: 'public' }, kate);
+			assert.deepStrictEqual(await familiar(), [liam.id]);
+		});
+
 		test('removes followers', async () => {
 			const res = await send<{ followed_by: boolean }>('POST', `/api/v1/accounts/${kate.id}/remove_from_followers`);
 			assert.strictEqual(res.status, 200);

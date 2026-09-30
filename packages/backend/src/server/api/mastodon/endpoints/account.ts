@@ -14,6 +14,7 @@ import { CacheService } from '@/core/CacheService.js';
 import { attachMinMaxPagination, sortNewestFirst } from '@/server/api/mastodon/pagination.js';
 import { promiseMap } from '@/misc/promise-map.js';
 import type { FollowRequestsRepository, FollowingsRepository, UserMemoRepository } from '@/models/_.js';
+import { MiUserProfile } from '@/models/_.js';
 import type { MiLocalUser } from '@/models/User.js';
 import { MastodonConverters, convertRelationship, convertFeaturedTag, convertList } from '../MastodonConverters.js';
 import type { Misskey, MastodonEntity, Entity } from 'megalodon';
@@ -222,15 +223,26 @@ export class ApiAccountMastodon {
 			const me = await this.clientService.requireAuth(request, 'read:following');
 
 			const ids = request.query.id == null ? [] : Array.isArray(request.query.id) ? request.query.id : [request.query.id];
+			const myFollowings = await this.cacheService.userFollowingsCache.fetch(me.id);
 			const response = await promiseMap(ids, async id => {
-				const followers = await this.followingsRepository.createQueryBuilder('following')
+				// Whether the user may see the follower list of the account, as users/followers decides it
+				const followersVisibility = id === me.id ? 'public' : (await this.cacheService.userProfileCache.fetch(id).catch(() => null))?.followersVisibility;
+				const seesFollowers = followersVisibility === 'public' || (followersVisibility === 'followers' && Object.hasOwn(myFollowings, id));
+
+				const query = this.followingsRepository.createQueryBuilder('following')
 					.select('following.followerId', 'followerId')
 					.where('following.followeeId = :id', { id })
 					.andWhere(`following.followerId IN (${
 						this.followingsRepository.createQueryBuilder('mine').select('mine.followeeId').where('mine.followerId = :meId').getQuery()
-					})`, { meId: me.id })
-					.limit(10)
-					.getRawMany<{ followerId: string }>();
+					})`, { meId: me.id });
+				if (!seesFollowers) {
+					// The relationship is then only known from the follow list of the follower, whom the user follows,
+					// so it stays hidden when that list is private
+					query
+						.innerJoin(MiUserProfile, 'profile', 'profile.userId = following.followerId')
+						.andWhere('profile.followingVisibility != \'private\'');
+				}
+				const followers = await query.limit(10).getRawMany<{ followerId: string }>();
 				const users = (await Promise.all(followers.map(f => this.cacheService.findUserById(f.followerId).catch(() => null)))).filter(u => u != null);
 				return { id, accounts: await promiseMap(users, async u => await this.mastoConverters.convertAccount(u), { limiter: 2 }) };
 			}, { limiter: 2 });
