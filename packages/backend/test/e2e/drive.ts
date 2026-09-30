@@ -89,10 +89,12 @@ describe('Drive', () => {
 describe('Drive unused files', () => {
 	let carol: misskey.entities.SignupResponse;
 	let dave: misskey.entities.SignupResponse;
+	let eve: misskey.entities.SignupResponse;
 
 	beforeAll(async () => {
 		carol = await signup({ username: 'unused_carol' });
 		dave = await signup({ username: 'unused_dave' });
+		eve = await signup({ username: 'unused_eve' });
 	}, 1000 * 60 * 2);
 
 	async function unusedIds(user: misskey.entities.SignupResponse): Promise<string[]> {
@@ -135,5 +137,96 @@ describe('Drive unused files', () => {
 		const res = await api('drive/files/unused', { limit: 2 }, carol);
 		assert.strictEqual(res.status, 200);
 		assert.strictEqual(res.body.length, 2);
+	});
+
+	test('下書きに添付されたファイルは返らない', async () => {
+		const file = (await uploadFile(carol)).body!;
+		const res = await api('notes/drafts/create', { text: 'draft', fileIds: [file.id] }, carol);
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+
+		assert.ok(!(await unusedIds(carol)).includes(file.id));
+	});
+
+	test('ノートの編集履歴に残ったファイルは返らない', async () => {
+		const before = (await uploadFile(carol)).body!;
+		const after = (await uploadFile(carol)).body!;
+		const note = await post(carol, { text: 'edit me', fileIds: [before.id] });
+		const res = await api('notes/update', { noteId: note.id, text: 'edited', cw: null, fileIds: [after.id] }, carol);
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+
+		const ids = await unusedIds(carol);
+		assert.ok(!ids.includes(before.id), 'history keeps the old attachment');
+		assert.ok(!ids.includes(after.id), 'note keeps the new attachment');
+	});
+
+	test('チャットに添付したファイルは返らない (ファイル無しのメッセージがあっても他の未使用ファイルは返る)', async () => {
+		await api('i/update', { chatScope: 'everyone' }, dave);
+		await api('i/update', { chatScope: 'everyone' }, eve);
+		const file = (await uploadFile(carol)).body!;
+		const free = (await uploadFile(carol)).body!;
+		const withFile = await api('chat/messages/create-to-user', { toUserId: dave.id, text: 'hi', fileId: file.id }, carol);
+		assert.strictEqual(withFile.status, 200, JSON.stringify(withFile.body));
+		// 同じ相手へ連投すると ChatService の承認行 insert (await なし) が重複キーで unhandled rejection になるため、別の相手へ送る
+		const withoutFile = await api('chat/messages/create-to-user', { toUserId: eve.id, text: 'no file' }, carol);
+		assert.strictEqual(withoutFile.status, 200, JSON.stringify(withoutFile.body));
+
+		const ids = await unusedIds(carol);
+		assert.ok(!ids.includes(file.id));
+		assert.ok(ids.includes(free.id));
+
+		// ChatService は送信 3 秒後に未読チェックのタイマーを起動する。テストサーバー終了後に発火すると Redis 切断でプロセスが落ちるため、発火を待つ
+		await new Promise(resolve => setTimeout(resolve, 3500));
+	}, 1000 * 15);
+
+	test('ギャラリーに使ったファイルは返らない', async () => {
+		const file = (await uploadFile(carol)).body!;
+		const res = await api('gallery/posts/create', { title: 'g', fileIds: [file.id] }, carol);
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+
+		assert.ok(!(await unusedIds(carol)).includes(file.id));
+	});
+
+	test('ページのアイキャッチと本文(入れ子ブロック)の画像は返らない', async () => {
+		const eyeCatching = (await uploadFile(carol)).body!;
+		const topLevel = (await uploadFile(carol)).body!;
+		const nested = (await uploadFile(carol)).body!;
+		const res = await api('pages/create', {
+			title: 'p',
+			name: 'unused-page-' + Math.random().toString(36).slice(2),
+			content: [
+				{ id: 'a', type: 'image', fileId: topLevel.id },
+				{ id: 'b', type: 'section', title: 's', children: [
+					{ id: 'c', type: 'image', fileId: nested.id },
+				] },
+			],
+			variables: [],
+			script: '',
+			eyeCatchingImageId: eyeCatching.id,
+		}, carol);
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+
+		const ids = await unusedIds(carol);
+		assert.ok(!ids.includes(eyeCatching.id), 'eye catching image');
+		assert.ok(!ids.includes(topLevel.id), 'top-level image block');
+		assert.ok(!ids.includes(nested.id), 'nested image block');
+	});
+
+	test('チャンネルのバナーは返らない', async () => {
+		const file = (await uploadFile(carol)).body!;
+		const res = await api('channels/create', { name: 'c', bannerId: file.id }, carol);
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+
+		assert.ok(!(await unusedIds(carol)).includes(file.id));
+	});
+
+	test('アバターとバナーは返らない', async () => {
+		const avatar = (await uploadFile(carol)).body!;
+		const banner = (await uploadFile(carol)).body!;
+		const res = await api('i/update', { avatarId: avatar.id, bannerId: banner.id }, carol);
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+
+		const ids = await unusedIds(carol);
+		assert.ok(!ids.includes(avatar.id));
+		assert.ok(!ids.includes(banner.id));
 	});
 });
