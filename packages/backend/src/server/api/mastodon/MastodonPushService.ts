@@ -13,6 +13,7 @@ import type { MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { CacheService } from '@/core/CacheService.js';
 import { LoggerService } from '@/core/LoggerService.js';
+import { HttpRequestService } from '@/core/HttpRequestService.js';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 
@@ -103,6 +104,7 @@ export class MastodonPushService implements OnApplicationShutdown {
 
 		private readonly cacheService: CacheService,
 		loggerService: LoggerService,
+		private readonly httpRequestService: HttpRequestService,
 	) {
 		this.logger = loggerService.getLogger('masto-push');
 		this.redisForSub.on('message', this.onRedisMessage);
@@ -260,7 +262,10 @@ export class MastodonPushService implements OnApplicationShutdown {
 				// Mastodon clients before RFC 8291 support, such as the official apps, decrypt aesgcm
 				contentEncoding: subscription.standard ? 'aes128gcm' : 'aesgcm',
 				TTL: PUSH_TTL_SECONDS,
-				proxy: this.config.proxy,
+				// Subscription endpoints are untrusted. Apply the same connection-time
+				// private-address filtering and proxy policy as other outbound requests.
+				agent: this.httpRequestService.getAgentForHttps(new URL(subscription.endpoint)),
+				timeout: 10_000,
 			});
 		} catch (err) {
 			const statusCode = (err as { statusCode?: number }).statusCode;
