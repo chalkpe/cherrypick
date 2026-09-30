@@ -149,6 +149,15 @@ function fetchDriveInfo(): void {
 	});
 }
 
+// 一覧を再マウントせずに使用量だけ更新する。
+// 削除直後に一覧を取り直すと、サーバー側の削除 (deletePostProcess は await されない) がまだ終わっておらず消したはずのファイルが戻ってくることがある
+function refreshUsage(): void {
+	misskeyApi('drive').then(info => {
+		capacity.value = info.capacity;
+		usage.value = info.usage;
+	});
+}
+
 function genUsageBar(fsize: number): StyleValue {
 	return {
 		width: `${fsize / usage.value * 100}%`,
@@ -203,7 +212,7 @@ async function deleteSelected(): Promise<void> {
 	if (deleted.length > 0) {
 		globalEvents.emit('driveFilesDeleted', deleted);
 	}
-	fetchDriveInfo();
+	refreshUsage();
 
 	if (failed) {
 		os.alert({
