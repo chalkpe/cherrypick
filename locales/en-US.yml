@@ -3330,6 +3330,14 @@ _disabledTimeline:
 _drivecleaner:
   orderBySizeDesc: "Descending Filesizes"
   orderByCreatedAtAsc: "Ascending Dates"
+  unusedOnly: "Show unused files only"
+  unusedOnlyDescription: "Shows files that are not attached to any note, draft, chat message, gallery post, page or profile, regardless of folder. Files referenced only by a URL pasted into text cannot be detected."
+  selectAll: "Select all"
+  deselectAll: "Deselect all"
+  deleteSelected: "Delete selected files"
+  selectedFilesSummary: "{n} selected ({size})"
+  deleteSelectedConfirm: "Delete {n} selected file(s) ({size})? This cannot be undone."
+  deleteSelectedFailed: "Some files could not be deleted. The files that were not deleted remain selected."
 _webhookSettings:
   createWebhook: "Create Webhook"
   modifyWebhook: "Modify Webhook"

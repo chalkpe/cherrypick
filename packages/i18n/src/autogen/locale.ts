@@ -12972,6 +12972,38 @@ export interface Locale extends ILocale {
          * 追加日が古い順
          */
         "orderByCreatedAtAsc": string;
+        /**
+         * 未使用のファイルのみ表示
+         */
+        "unusedOnly": string;
+        /**
+         * ノート、下書き、チャット、ギャラリー、ページ、プロフィールなどのどこにも添付されていないファイルを、フォルダに関係なく表示します。本文にURLとして直接貼り付けたファイルは検出できません。
+         */
+        "unusedOnlyDescription": string;
+        /**
+         * すべて選択
+         */
+        "selectAll": string;
+        /**
+         * 選択を解除
+         */
+        "deselectAll": string;
+        /**
+         * 選択したファイルを削除
+         */
+        "deleteSelected": string;
+        /**
+         * {n}件を選択中 ({size})
+         */
+        "selectedFilesSummary": ParameterizedString<"n" | "size">;
+        /**
+         * 選択した{n}件のファイル ({size}) を削除しますか？この操作は取り消せません。
+         */
+        "deleteSelectedConfirm": ParameterizedString<"n" | "size">;
+        /**
+         * 一部のファイルを削除できませんでした。削除できなかったファイルは選択されたままです。
+         */
+        "deleteSelectedFailed": string;
     };
     "_webhookSettings": {
         /**

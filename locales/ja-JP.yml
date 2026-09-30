@@ -3422,6 +3422,14 @@ _disabledTimeline:
 _drivecleaner:
   orderBySizeDesc: "サイズが大きい順"
   orderByCreatedAtAsc: "追加日が古い順"
+  unusedOnly: "未使用のファイルのみ表示"
+  unusedOnlyDescription: "ノート、下書き、チャット、ギャラリー、ページ、プロフィールなどのどこにも添付されていないファイルを、フォルダに関係なく表示します。本文にURLとして直接貼り付けたファイルは検出できません。"
+  selectAll: "すべて選択"
+  deselectAll: "選択を解除"
+  deleteSelected: "選択したファイルを削除"
+  selectedFilesSummary: "{n}件を選択中 ({size})"
+  deleteSelectedConfirm: "選択した{n}件のファイル ({size}) を削除しますか？この操作は取り消せません。"
+  deleteSelectedFailed: "一部のファイルを削除できませんでした。削除できなかったファイルは選択されたままです。"
 
 _webhookSettings:
   createWebhook: "Webhookを作成"
