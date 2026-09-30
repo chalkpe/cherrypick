@@ -11,8 +11,25 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
 import { createTemp } from '@/misc/create-temp.js';
 import { bindThis } from '@/decorators.js';
+import { ApiError } from '@/server/api/error.js';
 import type { Config } from '@/config.js';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+
+export type SavedRequestFile = NonNullable<FastifyRequest['savedRequestFiles']>[number];
+
+/**
+ * Reads a file saved by the multipart hook below, for uploading it through the Misskey API.
+ * Its stream has already been written to the temporary file, so the data has to come from there.
+ */
+export async function readSavedRequestFile(file: SavedRequestFile): Promise<File> {
+	const buffer = await fs.promises.readFile(file.filepath);
+	return new File([new Uint8Array(buffer)], file.filename || file.fieldname, {
+		type: file.mimetype,
+	});
+}
+
+// Profile updates carry an avatar and a header, and media uploads a thumbnail along with the file
+const MAX_FILES = 4;
 
 async function saveToTempFile(stream: NodeJS.ReadableStream & { truncated?: boolean }): Promise<string> {
 	const [filepath, cleanup] = await createTemp();
@@ -44,10 +61,11 @@ export class MastodonServerUtilityService {
 
 	@bindThis
 	public addMultipartFormDataContentType(fastify: FastifyInstance): void {
+		// The number of files is limited in the hook below rather than by busboy,
+		// whose files limit stops the file being read at that moment and leaves the request hanging
 		fastify.register(multipart, {
 			limits: {
 				fileSize: this.config.maxFileSize,
-				files: 1,
 			},
 		});
 
@@ -59,6 +77,7 @@ export class MastodonServerUtilityService {
 				// Instead, recreate it manually.
 				// https://github.com/fastify/fastify-multipart/issues/549
 
+				let tooManyFiles = false;
 				for await (const part of request.parts()) {
 					if (part.type === 'field') {
 						const k = part.fieldname;
@@ -79,6 +98,13 @@ export class MastodonServerUtilityService {
 							body[k] = [existing, v];
 						}
 					} else { // Otherwise it's a file
+						if ((request.savedRequestFiles?.length ?? 0) >= MAX_FILES) {
+							// Read the rest of the request, so that it can be answered once the parts are done
+							part.file.resume();
+							tooManyFiles = true;
+							continue;
+						}
+
 						try {
 							const filepath = await saveToTempFile(part.file);
 
@@ -98,6 +124,19 @@ export class MastodonServerUtilityService {
 							throw e;
 						}
 					}
+				}
+
+				if (tooManyFiles) {
+					await request.cleanRequestFiles();
+					request.tmpUploads = null;
+					request.savedRequestFiles = null;
+					throw new ApiError({
+						message: `A request can carry at most ${MAX_FILES} files.`,
+						code: 'TOO_MANY_FILES',
+						id: '79856fc3-0032-47af-b64c-e979960fd1d9',
+						kind: 'client',
+						httpStatusCode: 413,
+					});
 				}
 			}
 		});

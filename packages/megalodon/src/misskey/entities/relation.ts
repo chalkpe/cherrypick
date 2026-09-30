@@ -10,4 +10,5 @@ export interface Relation {
 	isRenoteMuted: boolean
 	isInstanceMuted?: boolean
 	memo?: string | null
+	following?: { notify?: 'normal' | 'none' | null } | null
 }

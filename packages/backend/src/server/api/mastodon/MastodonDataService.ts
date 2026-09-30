@@ -7,7 +7,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { IsNull } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import { QueryService } from '@/core/QueryService.js';
-import type { MiChannel, MiNote, NotesRepository } from '@/models/_.js';
+import type { MiChannel, MiNote, NoteFavoritesRepository, NotesRepository, NoteThreadMutingsRepository, UserNotePiningsRepository } from '@/models/_.js';
 import type { MiLocalUser, MiUser } from '@/models/User.js';
 import { ApiError } from '../error.js';
 
@@ -19,6 +19,15 @@ export class MastodonDataService {
 	constructor(
 		@Inject(DI.notesRepository)
 		private readonly notesRepository: NotesRepository,
+
+		@Inject(DI.noteFavoritesRepository)
+		private readonly noteFavoritesRepository: NoteFavoritesRepository,
+
+		@Inject(DI.userNotePiningsRepository)
+		private readonly userNotePiningsRepository: UserNotePiningsRepository,
+
+		@Inject(DI.noteThreadMutingsRepository)
+		private readonly noteThreadMutingsRepository: NoteThreadMutingsRepository,
 
 		@Inject(QueryService)
 		private readonly queryService: QueryService,
@@ -90,6 +99,17 @@ export class MastodonDataService {
 	}
 
 	/**
+	 * ID of the pure renote of a note by the current user, if any.
+	 */
+	public async findReblogId(noteId: string, me: MiLocalUser): Promise<string | null> {
+		const reblog = await this.notesRepository.findOne({
+			select: { id: true },
+			where: { userId: me.id, renoteId: noteId, text: IsNull(), cw: IsNull(), replyId: IsNull(), hasPoll: false, fileIds: '{}' },
+		});
+		return reblog?.id ?? null;
+	}
+
+	/**
 	 * Checks where the current user has made a reblog / boost / pure renote of a given target note.
 	 */
 	public async hasReblog(noteId: string, me: MiLocalUser | null | undefined): Promise<boolean> {
@@ -107,6 +127,35 @@ export class MastodonDataService {
 			hasPoll: false,
 			fileIds: '{}',
 		});
+	}
+
+	/**
+	 * Number of pure renotes of a note. Misskey's renoteCount also counts quotes, which Mastodon counts separately.
+	 */
+	public async countPureRenotes(noteId: string): Promise<number> {
+		return await this.notesRepository.countBy({
+			renoteId: noteId,
+			text: IsNull(),
+			cw: IsNull(),
+			replyId: IsNull(),
+			hasPoll: false,
+			fileIds: '{}',
+		});
+	}
+
+	/**
+	 * State of a note for the current user, as Mastodon statuses report it:
+	 * bookmarked (a Misskey favorite), pinned to the user's own profile, and in a muted thread.
+	 */
+	public async getNoteState(note: Pick<MiNote, 'id' | 'userId' | 'threadId'>, me: MiLocalUser | null | undefined): Promise<{ bookmarked: boolean, pinned: boolean, muted: boolean }> {
+		if (!me) return { bookmarked: false, pinned: false, muted: false };
+
+		const [bookmarked, pinned, muted] = await Promise.all([
+			this.noteFavoritesRepository.existsBy({ userId: me.id, noteId: note.id }),
+			note.userId === me.id ? this.userNotePiningsRepository.existsBy({ userId: me.id, noteId: note.id }) : false,
+			this.noteThreadMutingsRepository.existsBy({ userId: me.id, threadId: note.threadId ?? note.id }),
+		]);
+		return { bookmarked, pinned, muted };
 	}
 }
 

@@ -11,6 +11,7 @@ export const Update = 'update' as const;
 export const Move = 'move' as const;
 export const AdminSignup = 'admin.sign_up' as const;
 export const AdminReport = 'admin.report' as const;
+export const Quote = 'quote' as const;
 
 export class UnknownNotificationTypeError extends Error {
 	// Fix the error name in stack traces - https://stackoverflow.com/a/71573071
@@ -31,6 +32,7 @@ export const notificationTypes = [
 	Move,
 	AdminSignup,
 	AdminReport,
+	Quote,
 ];
 
 export type NotificationType = typeof notificationTypes[number];

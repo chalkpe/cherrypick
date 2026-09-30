@@ -1,3 +1,4 @@
+import type { FilterResult } from './filter.js';
 import type { Attachment } from './attachment.js';
 import type { Mention } from './mention.js';
 import type { Card } from './card.js';
@@ -39,9 +40,26 @@ export interface Status {
 	bookmarked?: boolean
 	// These parameters are unique parameters in fedibird.com for quote.
 	quote_id?: string
-	quote?: Status | null
+	// Mastodon 4.5 quote. A visible quoted status also comes with its own fields, for clients that read quotes the Fedibird way.
+	quote?: (Status & Quote) | Quote | null
+	quote_approval?: QuoteApproval
+	quotes_count?: number
+	local_only?: boolean
+	// Filters of the current user that match the status
+	filtered?: Array<FilterResult>
 	// These parameters are unique to glitch-soc for emoji reactions.
 	reactions?: Reaction[]
+}
+
+export interface Quote {
+	state: 'pending' | 'accepted' | 'rejected' | 'revoked' | 'deleted' | 'unauthorized'
+	quoted_status: Status | null
+}
+
+export interface QuoteApproval {
+	automatic: Array<'public' | 'followers' | 'following'>
+	manual: Array<'public' | 'followers' | 'following'>
+	current_user: 'automatic' | 'manual' | 'denied' | 'unknown'
 }
 
 export interface StatusTag {

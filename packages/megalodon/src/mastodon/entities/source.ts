@@ -6,4 +6,5 @@ export interface Source {
 	language: string | null
 	note: string
 	fields: Array<Field>
+	follow_requests_count?: number
 }

@@ -11,6 +11,8 @@ import type { MiMeta } from '@/models/_.js';
 import { MastodonConverters } from '@/server/api/mastodon/MastodonConverters.js';
 import { MastodonClientService } from '@/server/api/mastodon/MastodonClientService.js';
 import { RoleService } from '@/core/RoleService.js';
+import { CacheService } from '@/core/CacheService.js';
+import { escapeHtml } from '@/misc/escape-html.js';
 import type { FastifyInstance } from 'fastify';
 import type { MastodonEntity } from 'megalodon';
 
@@ -26,26 +28,64 @@ export class ApiInstanceMastodon {
 		private readonly mastoConverters: MastodonConverters,
 		private readonly clientService: MastodonClientService,
 		private readonly roleService: RoleService,
+		private readonly cacheService: CacheService,
 	) {}
+
+	/**
+	 * The administrator account shown as the contact.
+	 * meta.rootUser is a relation that is never loaded, so the user is looked up by its ID.
+	 */
+	private async getContactAccount(): Promise<MastodonEntity.Account | null> {
+		if (this.meta.rootUserId == null) return null;
+		const rootUser = await this.cacheService.findUserById(this.meta.rootUserId).catch(() => null);
+		return rootUser ? await this.mastoConverters.convertAccount(rootUser) : null;
+	}
 
 	// Mastodon clients append /api/v1/streaming to this URL.
 	private get streamingUrl(): string {
 		return this.config.url.replace(/^http/, 'ws').replace(/\/$/, '');
 	}
 
-	// "like Akkoma" makes clients enable the Pleroma-family extensions such as emoji reactions.
+	// Clients such as Ice Cubes enable features by the Mastodon version this starts with, and 4.5 is the API level served here.
+	// "like Akkoma" makes clients enable the Pleroma-family extensions such as emoji reactions and local-only posts.
 	private get version(): string {
-		return `3.0.0 (compatible; CherryPick ${this.config.version}; like Akkoma)`;
+		return `4.5.0 (compatible; CherryPick ${this.config.version}; like Akkoma)`;
+	}
+
+	// Mastodon clients expect absolute URLs for images
+	private absoluteUrl(url: string): string {
+		return new URL(url, this.config.url).href;
+	}
+
+	private get thumbnailUrl(): string {
+		return this.absoluteUrl(this.meta.backgroundImageUrl || '/static-assets/transparent.png');
+	}
+
+	private get translationEnabled(): boolean {
+		return this.meta.translatorType != null;
+	}
+
+	/**
+	 * A text page of the instance, as Mastodon serves its extended description, privacy policy and terms of service.
+	 */
+	private textPage(html: string): { updated_at: string, content: string } {
+		return { updated_at: new Date(0).toISOString(), content: html };
+	}
+
+	private linkPage(url: string | null): { updated_at: string, content: string } | null {
+		if (!url) return null;
+		const escaped = escapeHtml(url);
+		return this.textPage(`<p><a href="${escaped}">${escaped}</a></p>`);
 	}
 
 	public register(fastify: FastifyInstance): void {
 		fastify.get('/v1/instance', async (_request, reply) => {
 			const { client, me } = await this.clientService.getAuthClient(_request);
-			const data = await client.getInstance();
-			const contact = this.meta.rootUser != null
-				? await this.mastoConverters.convertAccount(this.meta.rootUser)
-				: null;
-			const roles = await this.roleService.getUserPolicies(me?.id ?? null);
+			const [data, contact, roles] = await Promise.all([
+				client.getInstance(),
+				this.getContactAccount(),
+				this.roleService.getUserPolicies(me?.id ?? null),
+			]);
 
 			const instance = data.data;
 			const response: MastodonEntity.Instance = {
@@ -62,7 +102,7 @@ export class ApiInstanceMastodon {
 					status_count: instance.stats.status_count,
 					domain_count: instance.stats.domain_count,
 				},
-				thumbnail: this.meta.backgroundImageUrl || '/static-assets/transparent.png',
+				thumbnail: this.thumbnailUrl,
 				languages: this.meta.langs,
 				registrations: !this.meta.disableRegistration || instance.registrations,
 				approval_required: this.meta.approvalRequiredForSignup,
@@ -106,9 +146,7 @@ export class ApiInstanceMastodon {
 			const { client, me } = await this.clientService.getAuthClient(_request);
 			const [data, contact, roles] = await Promise.all([
 				client.getInstance(),
-				this.meta.rootUser != null
-					? this.mastoConverters.convertAccount(this.meta.rootUser)
-					: null,
+				this.getContactAccount(),
 				this.roleService.getUserPolicies(me?.id ?? null),
 			]);
 
@@ -126,19 +164,19 @@ export class ApiInstanceMastodon {
 					},
 				},
 				thumbnail: {
-					url: this.meta.backgroundImageUrl || '/static-assets/transparent.png',
+					url: this.thumbnailUrl,
 					blurhash: undefined,
 					versions: {
-						'@1x': this.meta.backgroundImageUrl || '/static-assets/transparent.png',
+						'@1x': this.thumbnailUrl,
 					},
 				},
 				icon: [
 					{
-						src: this.meta.app192IconUrl || '/static-assets/icons/192.png',
+						src: this.absoluteUrl(this.meta.app192IconUrl || '/static-assets/icons/192.png'),
 						size: '192x192',
 					},
 					{
-						src: this.meta.app512IconUrl || '/static-assets/icons/512.png',
+						src: this.absoluteUrl(this.meta.app512IconUrl || '/static-assets/icons/512.png'),
 						size: '512x512',
 					},
 				],
@@ -183,12 +221,13 @@ export class ApiInstanceMastodon {
 						max_reactions: 1,
 					},
 					translation: {
-						enabled: false,
+						enabled: this.translationEnabled && roles.canUseTranslator,
 					},
 					timelines_access: {
+						// meta.policies holds only the administrator's overrides, so read the resolved policies
 						live_feeds: {
-							local: this.meta.policies.ltlAvailable ? 'public' : 'disabled',
-							remote: this.meta.policies.gtlAvailable ? 'public' : 'disabled',
+							local: roles.ltlAvailable ? 'public' : 'disabled',
+							remote: roles.gtlAvailable ? 'public' : 'disabled',
 						},
 						hashtag_feeds: {
 							local: 'public',
@@ -209,8 +248,8 @@ export class ApiInstanceMastodon {
 					min_age: null,
 					url: null,
 				},
-				// 2 = grouped notifications (Mastodon 4.3)
-				api_versions: { mastodon: 2 },
+				// 2 = grouped notifications (Mastodon 4.3), 7 = quotes (Mastodon 4.5)
+				api_versions: { mastodon: 7 },
 				contact: {
 					email: instance.email || '',
 					account: contact,
@@ -219,6 +258,36 @@ export class ApiInstanceMastodon {
 			};
 
 			return reply.send(response);
+		});
+
+		fastify.get('/v1/instance/rules', async (_request, reply) => {
+			return reply.send(this.meta.serverRules.map((text, i) => ({ id: String(i + 1), text, hint: '' })));
+		});
+
+		fastify.get('/v1/instance/extended_description', async (_request, reply) => {
+			return reply.send(this.textPage(this.meta.description ? `<p>${escapeHtml(this.meta.description).replace(/\r?\n/g, '<br>')}</p>` : ''));
+		});
+
+		// CherryPick links to these documents rather than hosting their text
+		for (const [path, field] of [['/v1/instance/privacy_policy', 'privacyPolicyUrl'], ['/v1/instance/terms_of_service', 'termsOfServiceUrl']] as const) {
+			fastify.get(path, async (_request, reply) => {
+				const page = this.linkPage(this.meta[field]);
+				if (!page) return reply.code(404).send({ error: 'Record not found' });
+				return reply.send(page);
+			});
+		}
+
+		// Supported language pairs depend on the translation service, which does not list them
+		fastify.get('/v1/instance/translation_languages', async (_request, reply) => {
+			return reply.send({});
+		});
+
+		// Weekly activity is not tracked, and blocked domains are not published
+		fastify.get('/v1/instance/activity', async (_request, reply) => {
+			return reply.send([]);
+		});
+		fastify.get('/v1/instance/domain_blocks', async (_request, reply) => {
+			return reply.send([]);
 		});
 	}
 }

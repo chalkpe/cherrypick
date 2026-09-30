@@ -57,6 +57,8 @@ export class MastodonClientService {
 				// Loopback is a trusted proxy by default, so rate limits keep applying per client
 				'X-Forwarded-For': request.ip,
 			},
+			// The request carries the user's access token, so it must not leave the host through an HTTP(S)_PROXY
+			proxy: false,
 		});
 	}
 

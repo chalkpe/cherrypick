@@ -18,39 +18,51 @@ const user: MisskeyEntity.User = {
 describe('api_client', () => {
   describe('notification', () => {
     describe('encode', () => {
-      it('megalodon notification type should be encoded to misskey notification type', () => {
-        const cases: Array<{ src: MegalodonEntity.NotificationType; dist: MisskeyEntity.NotificationType }> = [
+      it('megalodon notification types should be encoded to every misskey notification type behind them', () => {
+        const cases: Array<{ src: Array<MegalodonEntity.NotificationType>; dist: Array<MisskeyEntity.NotificationType> }> = [
           {
-            src: MegalodonNotificationType.Follow,
-            dist: MisskeyNotificationType.Follow
+            src: [MegalodonNotificationType.Follow],
+            dist: [MisskeyNotificationType.Follow]
           },
           {
-            src: MegalodonNotificationType.Mention,
-            dist: MisskeyNotificationType.Reply
+            src: [MegalodonNotificationType.Mention],
+            dist: [MisskeyNotificationType.Mention, MisskeyNotificationType.Reply]
           },
           {
-            src: MegalodonNotificationType.Favourite,
-            dist: MisskeyNotificationType.Reaction
+            src: [MegalodonNotificationType.Favourite],
+            dist: [MisskeyNotificationType.Reaction]
           },
           {
-            src: MegalodonNotificationType.EmojiReaction,
-            dist: MisskeyNotificationType.Reaction
+            src: [MegalodonNotificationType.EmojiReaction],
+            dist: [MisskeyNotificationType.Reaction]
           },
           {
-            src: MegalodonNotificationType.Reblog,
-            dist: MisskeyNotificationType.Renote
+            src: [MegalodonNotificationType.Reblog],
+            dist: [MisskeyNotificationType.Renote]
           },
           {
-            src: MegalodonNotificationType.PollVote,
-            dist: MisskeyNotificationType.PollVote
+            src: [MegalodonNotificationType.Quote],
+            dist: [MisskeyNotificationType.Quote]
           },
           {
-            src: MegalodonNotificationType.FollowRequest,
-            dist: MisskeyNotificationType.ReceiveFollowRequest
+            src: [MegalodonNotificationType.PollExpired],
+            dist: [MisskeyNotificationType.PollEnded]
+          },
+          {
+            src: [MegalodonNotificationType.Status],
+            dist: [MisskeyNotificationType.Note]
+          },
+          {
+            src: [MegalodonNotificationType.FollowRequest],
+            dist: [MisskeyNotificationType.ReceiveFollowRequest]
+          },
+          {
+            src: [MegalodonNotificationType.Update, MegalodonNotificationType.AdminReport],
+            dist: []
           }
         ]
         cases.forEach(c => {
-          expect(MisskeyAPI.Converter.encodeNotificationType(c.src)).toEqual(c.dist)
+          expect(MisskeyAPI.Converter.encodeNotificationTypes(c.src).sort()).toEqual(c.dist.sort())
         })
       })
     })
@@ -75,7 +87,7 @@ describe('api_client', () => {
           },
           {
             src: MisskeyNotificationType.Quote,
-            dist: MegalodonNotificationType.Reblog
+            dist: MegalodonNotificationType.Quote
           },
           {
             src: MisskeyNotificationType.Reaction,
@@ -90,8 +102,12 @@ describe('api_client', () => {
             dist: MegalodonNotificationType.FollowRequest
           },
           {
-            src: MisskeyNotificationType.FollowRequestAccepted,
-            dist: MegalodonNotificationType.Follow
+            src: MisskeyNotificationType.PollEnded,
+            dist: MegalodonNotificationType.PollExpired
+          },
+          {
+            src: MisskeyNotificationType.Note,
+            dist: MegalodonNotificationType.Status
           }
         ]
         cases.forEach(c => {

@@ -48,6 +48,7 @@ const writePermissions = [
 	'write:notes',
 	'write:notifications',
 	'write:reactions',
+	'write:report-abuse',
 	'write:votes',
 ];
 const followPermissions = ['read:following', 'write:following', 'read:blocks', 'write:blocks', 'read:mutes', 'write:mutes'];
@@ -302,7 +303,6 @@ export class MastodonOAuthService {
 			await this.accessTokensRepository.delete({ appId: app.id, token });
 
 			// RFC 7009: respond with 200 whether or not the token existed.
-			reply.header('Access-Control-Allow-Origin', '*');
 			reply.send({});
 		} catch (err) {
 			this.sendError(reply, err);

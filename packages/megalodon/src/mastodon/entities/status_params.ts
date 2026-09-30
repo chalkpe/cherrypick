@@ -7,4 +7,13 @@ export interface StatusParams {
 	visibility: 'public' | 'unlisted' | 'private' | 'direct' | null
 	scheduled_at: string | null
 	application_id: number
+	poll?: StatusParamsPoll | null
+	language?: string | null
+}
+
+export interface StatusParamsPoll {
+	options: Array<string>
+	expires_in: string
+	multiple: boolean
+	hide_totals: boolean
 }

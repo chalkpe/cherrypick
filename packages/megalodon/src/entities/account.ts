@@ -31,5 +31,5 @@ export interface Account {
 	bot: boolean | null
 	source?: Source
 	role?: Role
-	mute_expires_at?: string
+	mute_expires_at?: string | null
 }

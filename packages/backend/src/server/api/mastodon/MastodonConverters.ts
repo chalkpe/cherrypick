@@ -19,6 +19,7 @@ import { DriveFileEntityService } from '@/core/entities/DriveFileEntityService.j
 import { IdService } from '@/core/IdService.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { MastodonDataService } from '@/server/api/mastodon/MastodonDataService.js';
+import { MastodonFilterService } from '@/server/api/mastodon/MastodonFilterService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { GetterService } from '@/server/api/GetterService.js';
 import { CacheService } from '@/core/CacheService.js';
@@ -72,6 +73,7 @@ export class MastodonConverters {
 		private readonly mastodonDataService: MastodonDataService,
 		private readonly userEntityService: UserEntityService,
 		private readonly cacheService: CacheService,
+		private readonly filterService: MastodonFilterService,
 	) {}
 
 	/**
@@ -184,7 +186,10 @@ export class MastodonConverters {
 		};
 	}
 
-	public async convertAccount(account: Entity.Account | MiUser): Promise<MastodonEntity.Account> {
+	/**
+	 * @param me The viewer, who always sees the follower counts of their own account
+	 */
+	public async convertAccount(account: Entity.Account | MiUser, me?: MiLocalUser | null): Promise<MastodonEntity.Account> {
 		const [user, profile] = await Promise.all([
 			this.getterService.getUser(account.id),
 			this.cacheService.userProfileCache.fetch(account.id).catch(() => undefined),
@@ -210,8 +215,8 @@ export class MastodonConverters {
 			display_name: user.name ?? user.username,
 			locked: user.isLocked,
 			created_at: this.idService.parse(user.id).date.toISOString(),
-			followers_count: profile?.followersVisibility === 'public' ? user.followersCount : 0,
-			following_count: profile?.followingVisibility === 'public' ? user.followingCount : 0,
+			followers_count: profile?.followersVisibility === 'public' || me?.id === user.id ? user.followersCount : 0,
+			following_count: profile?.followingVisibility === 'public' || me?.id === user.id ? user.followingCount : 0,
 			statuses_count: user.notesCount,
 			note: bioText ?? '',
 			url: user.uri ?? acctUrl,
@@ -226,6 +231,7 @@ export class MastodonConverters {
 			bot: user.isBot,
 			discoverable: user.isExplorable,
 			noindex: profile?.noCrawle ?? false,
+			hide_collections: profile != null && (profile.followersVisibility !== 'public' || profile.followingVisibility !== 'public'),
 			group: null,
 			suspended: user.isSuspended || user.isDeleted,
 			limited: false,
@@ -285,13 +291,7 @@ export class MastodonConverters {
 		return history;
 	}
 
-	private async convertReblog(status: Entity.Status | null, me: MiLocalUser | null): Promise<MastodonEntity.Status | null> {
-		if (!status) return null;
-		return await this.convertStatus(status, me);
-	}
-
 	public async convertStatus(status: Entity.Status, me: MiLocalUser | null, hints?: { note?: MiNote, user?: MiUser }): Promise<MastodonEntity.Status> {
-		const convertedAccount = this.convertAccount(status.account);
 		const note = hints?.note ?? await this.mastodonDataService.requireNote(status.id, me);
 		const noteUser = hints?.user ?? note.user ?? await this.getterService.getUser(status.account.id);
 		const mentionedRemoteUsers = JSON.parse(note.mentionedRemoteUsers);
@@ -311,31 +311,49 @@ export class MastodonConverters {
 		// This must mirror the usual isQuote / isPureRenote logic used elsewhere.
 		const isQuote = note.renoteId && (note.text || note.cw || note.fileIds.length > 0 || note.hasPoll || note.replyId);
 
-		const renote: Promise<MiNote> | null = note.renoteId ? this.mastodonDataService.requireNote(note.renoteId, me) : null;
+		// The renoted note is fetched once for both the quote link and the embedded status.
+		// A pure renote shows nothing but its target, so it fails without it, while a quote is still shown.
+		const [renote, reblogged, state, filtered, pureRenotes] = await Promise.all([
+			note.renoteId
+				? isQuote ? this.mastodonDataService.getNote(note.renoteId, me) : this.mastodonDataService.requireNote(note.renoteId, me)
+				: null,
+			this.mastodonDataService.hasReblog(note.id, me),
+			this.mastodonDataService.getNoteState(note, me),
+			me ? this.filterService.match(note, me) : undefined,
+			// Most notes are never renoted, so only those that are need counting
+			note.renoteCount > 0 ? this.mastodonDataService.countPureRenotes(note.id) : 0,
+		]);
 
-		const quoteUri = Promise.resolve(renote).then(renote => {
-			if (!renote || !isQuote) return null;
-			return renote.url ?? renote.uri ?? `${this.config.url}/notes/${renote.id}`;
-		});
+		const quoteUri = isQuote && renote
+			? renote.url ?? renote.uri ?? `${this.config.url}/notes/${renote.id}`
+			: null;
+		const embedded = status.reblog && renote
+			? this.convertStatus(status.reblog, me, { note: renote })
+			: null;
+
+		// Mastodon 4.5 quote. A visible quoted status also comes with its own fields, for clients that read quotes the Fedibird way.
+		const quote = isQuote
+			? embedded
+				? embedded.then(quoted => ({ ...quoted, state: 'accepted' as const, quoted_status: quoted }))
+				: { state: 'unauthorized' as const, quoted_status: null }
+			: null;
 
 		const text = note.text;
 		const content = text !== null
-			? quoteUri.then(quote => this.toMastoHtml(text, mentionedRemoteUsers, quote))
+			? this.toMastoHtml(text, mentionedRemoteUsers, quoteUri)
 			: '';
 
 		const cw = note.cw ?? '';
-
-		const reblogged = await this.mastodonDataService.hasReblog(note.id, me);
 
 		// noinspection ES6MissingAwait
 		return await awaitAll({
 			id: note.id,
 			uri: note.uri ?? `${this.config.url}/notes/${note.id}`,
 			url: note.url ?? note.uri ?? `${this.config.url}/notes/${note.id}`,
-			account: convertedAccount,
+			account: this.convertAccount(status.account),
 			in_reply_to_id: note.replyId,
 			in_reply_to_account_id: note.replyUserId,
-			reblog: !isQuote ? this.convertReblog(status.reblog, me) : null,
+			reblog: !isQuote ? embedded : null,
 			content: content,
 			content_type: 'text/x.misskeymarkdown',
 			text: note.text,
@@ -343,14 +361,17 @@ export class MastodonConverters {
 			edited_at: note.updatedAt?.toISOString() ?? null,
 			emojis: emoji,
 			replies_count: note.repliesCount,
-			reblogs_count: note.renoteCount,
+			reblogs_count: pureRenotes,
+			quotes_count: note.renoteCount - pureRenotes,
 			favourites_count: status.favourites_count,
 			reblogged,
 			favourited: status.favourited,
-			muted: status.muted,
+			muted: state.muted,
 			sensitive: status.sensitive || !!cw,
 			spoiler_text: cw,
 			visibility: status.visibility,
+			// Glitch-soc and Hometown mark local-only posts this way, which clients unaware of the "local" visibility still read
+			local_only: note.localOnly,
 			media_attachments: status.media_attachments.map((a: Entity.Attachment) => convertAttachment(a)),
 			mentions: mentions,
 			tags: tags,
@@ -358,10 +379,12 @@ export class MastodonConverters {
 			poll: status.poll ?? null,
 			application: null, //FIXME
 			language: null, //FIXME
-			pinned: false, //FIXME
-			bookmarked: false, //FIXME
-			quote_id: isQuote ? status.reblog?.id : undefined,
-			quote: isQuote ? this.convertReblog(status.reblog, me) : null,
+			pinned: state.pinned,
+			bookmarked: state.bookmarked,
+			quote_id: isQuote && embedded ? status.reblog?.id : undefined,
+			quote,
+			quote_approval: getQuoteApproval(note, me),
+			filtered,
 			reactions: this.convertReactions(status.emoji_reactions),
 		});
 	}
@@ -429,7 +452,20 @@ export class MastodonConverters {
 			id: notification.id,
 			status: target ?? undefined,
 			type,
+			...(notification.emoji ? this.convertNotificationEmoji(notification.emoji, target) : {}),
 		};
+	}
+
+	/**
+	 * The reaction of a reaction notification as Pleroma / Akkoma send it: the emoji itself, or ":name:" with an image URL for custom emoji.
+	 */
+	private convertNotificationEmoji(reaction: string, status: MastodonEntity.Status | null): { emoji: string, emoji_url: string | null } {
+		const name = fromMisskeyReaction(reaction);
+		if (isUnicodeEmojiReaction(name)) return { emoji: name, emoji_url: null };
+
+		// Remote emoji come with their URL in the status, while local ones are served through /emoji/
+		const url = status?.reactions?.find(r => r.name === name)?.url ?? `${this.config.url}/emoji/${name}.webp`;
+		return { emoji: `:${name}:`, emoji_url: url };
 	}
 
 	public convertApplication(app: MisskeyEntity.App): MastodonEntity.Application {
@@ -440,6 +476,19 @@ export class MastodonConverters {
 			redirect_uris: [app.callbackUrl],
 		};
 	}
+}
+
+/**
+ * Who can quote a note, as Misskey allows renoting it: anyone for public and home notes, and only the author for followers-only notes.
+ */
+function getQuoteApproval(note: MiNote, me: MiLocalUser | null): MastodonEntity.QuoteApproval {
+	const open = note.visibility === 'public' || note.visibility === 'home';
+	const canQuote = open || (note.visibility === 'followers' && me?.id === note.userId);
+	return {
+		automatic: open ? ['public'] : [],
+		manual: [],
+		current_user: me ? (canQuote ? 'automatic' : 'denied') : 'unknown',
+	};
 }
 
 const unicodeEmojiReactionRegex = new RegExp(`^${emojiRegex.source}$`);

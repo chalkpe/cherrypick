@@ -19,11 +19,32 @@ import { ApiNotificationsMastodon } from '@/server/api/mastodon/endpoints/notifi
 import { ApiTimelineMastodon } from '@/server/api/mastodon/endpoints/timeline.js';
 import { ApiSearchMastodon } from '@/server/api/mastodon/endpoints/search.js';
 import { ApiError } from '@/server/api/error.js';
-import { MastodonServerUtilityService } from '@/server/api/mastodon/MastodonServerUtilityService.js';
-import { parseTimelineArgs, TimelineArgs, toBoolean } from './argsUtils.js';
+import { MastodonServerUtilityService, readSavedRequestFile } from '@/server/api/mastodon/MastodonServerUtilityService.js';
+import { attachMinMaxPagination } from '@/server/api/mastodon/pagination.js';
+import { MastodonPreferenceService } from '@/server/api/mastodon/MastodonPreferenceService.js';
+import { parseTimelineArgs, TimelineArgs, toBoolean, unflattenFormBody } from './argsUtils.js';
 import { convertAnnouncement, convertAttachment, MastodonConverters, convertRelationship } from './MastodonConverters.js';
 import type { Entity } from 'megalodon';
 import type { FastifyInstance, FastifyPluginOptions } from 'fastify';
+
+const MASTODON_API_PREFIXES = ['/api/v1/', '/api/v2/'];
+
+export function isMastodonApiUrl(url: string): boolean {
+	return MASTODON_API_PREFIXES.some(prefix => url.startsWith(prefix));
+}
+
+/**
+ * Mastodon (Rails) ignores trailing slashes, and some clients rely on it, such as Moshidon requesting "/api/v1/mutes/".
+ */
+export function stripMastodonTrailingSlash(url: string): string {
+	if (!isMastodonApiUrl(url)) return url;
+
+	const queryIndex = url.indexOf('?');
+	const pathEnd = queryIndex < 0 ? url.length : queryIndex;
+	let end = pathEnd;
+	while (end > MASTODON_API_PREFIXES[0].length && url[end - 1] === '/') end--;
+	return end === pathEnd ? url : url.slice(0, end) + url.slice(pathEnd);
+}
 
 @Injectable()
 export class MastodonApiServerService {
@@ -42,6 +63,7 @@ export class MastodonApiServerService {
 		private readonly apiStatusMastodon: ApiStatusMastodon,
 		private readonly apiTimelineMastodon: ApiTimelineMastodon,
 		private readonly serverUtilityService: MastodonServerUtilityService,
+		private readonly preferenceService: MastodonPreferenceService,
 	) {}
 
 	@bindThis
@@ -116,11 +138,11 @@ export class MastodonApiServerService {
 			return reply.send(response);
 		});
 
-		fastify.post<{ Body: { id?: string } }>('/v1/announcements/:id/dismiss', async (_request, reply) => {
-			if (!_request.body.id) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required payload "id"' });
+		fastify.post<{ Params: { id?: string } }>('/v1/announcements/:id/dismiss', async (_request, reply) => {
+			if (!_request.params.id) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required parameter "id"' });
 
 			const client = this.clientService.getClient(_request);
-			const data = await client.dismissInstanceAnnouncement(_request.body.id);
+			const data = await client.dismissInstanceAnnouncement(_request.params.id);
 
 			return reply.send(data.data);
 		});
@@ -131,10 +153,7 @@ export class MastodonApiServerService {
 				return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'No image' });
 			}
 
-			const buffer = await multipartData.toBuffer();
-			const file = new File([new Uint8Array(buffer)], multipartData.filename || multipartData.fieldname, {
-				type: multipartData.mimetype,
-			});
+			const file = await readSavedRequestFile(multipartData);
 			const client = this.clientService.getClient(_request);
 			const data = await client.uploadMedia(file);
 			const response = convertAttachment(data.data as Entity.Attachment);
@@ -147,10 +166,7 @@ export class MastodonApiServerService {
 			if (!multipartData) {
 				return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'No image' });
 			}
-			const buffer = await multipartData.toBuffer();
-			const file = new File([new Uint8Array(buffer)], multipartData.filename || multipartData.fieldname, {
-				type: multipartData.mimetype,
-			});
+			const file = await readSavedRequestFile(multipartData);
 
 			const client = this.clientService.getClient(_request);
 			const data = await client.uploadMedia(file, _request.body);
@@ -176,10 +192,10 @@ export class MastodonApiServerService {
 			return reply.send([]);
 		});
 
-		fastify.get('/v1/preferences', async (_request, reply) => {
-			const client = this.clientService.getClient(_request);
-			const data = await client.getPreferences();
-			return reply.send(data.data);
+		fastify.get('/v1/preferences', async (request, reply) => {
+			const me = await this.clientService.getAuth(request);
+			if (me == null) return reply.code(401).send({ error: 'The access token is invalid' });
+			return reply.send(await this.preferenceService.getPreferences(me.id));
 		});
 
 		fastify.get('/v1/followed_tags', async (_request, reply) => {
@@ -188,12 +204,73 @@ export class MastodonApiServerService {
 			return reply.send(data.data);
 		});
 
+		fastify.post<{ Body?: Record<string, unknown> }>('/v1/reports', async (request, reply) => {
+			const body = unflattenFormBody(request.body ?? {}) as { account_id?: string, status_ids?: string | string[], comment?: string, category?: string, forward?: string | boolean };
+			if (!body.account_id) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required payload "account_id"' });
+
+			// Misskey reports only carry a comment, so the category and the reported statuses (as links) go into it
+			const baseUrl = this.clientService.getPublicBaseUrl();
+			const statusIds = body.status_ids == null ? [] : Array.isArray(body.status_ids) ? body.status_ids : [body.status_ids];
+			const category = body.category ?? 'other';
+			const comment = [
+				category !== 'other' ? `[${category}]` : null,
+				body.comment,
+				...statusIds.map(id => `${baseUrl}/notes/${id}`),
+			].filter(Boolean).join('\n') || `Reported (${category})`;
+
+			const { client } = await this.clientService.getAuthClient(request);
+			await client.callApi('/api/users/report-abuse', { userId: body.account_id, comment });
+			const account = await client.getAccount(body.account_id);
+
+			return reply.send({
+				// Misskey does not return the report
+				id: String(Date.now()),
+				action_taken: false,
+				action_taken_at: null,
+				category,
+				comment: body.comment ?? '',
+				forwarded: false,
+				created_at: new Date().toISOString(),
+				status_ids: statusIds,
+				rule_ids: [],
+				target_account: await this.mastoConverters.convertAccount(account.data),
+			});
+		});
+
+		// Blocking a domain is a Misskey instance mute
+		fastify.get('/v1/domain_blocks', async (request, reply) => {
+			const me = await this.clientService.callApi<{ mutedInstances?: string[] }>(request, 'i', {});
+			return reply.send(me.mutedInstances ?? []);
+		});
+
+		for (const method of ['POST', 'DELETE'] as const) {
+			fastify.route<{ Body?: { domain?: string }, Querystring: { domain?: string } }>({
+				method,
+				url: '/v1/domain_blocks',
+				handler: async (request, reply) => {
+					const domain = (request.body?.domain ?? request.query.domain)?.trim().toLowerCase();
+					if (!domain) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required payload "domain"' });
+
+					const me = await this.clientService.callApi<{ mutedInstances?: string[] }>(request, 'i', {});
+					const current = me.mutedInstances ?? [];
+					const mutedInstances = method === 'POST'
+						? [...new Set([...current, domain])]
+						: current.filter(host => host !== domain);
+					await this.clientService.callApi(request, 'i/update', { mutedInstances });
+
+					return reply.send({});
+				},
+			});
+		}
+
 		fastify.get<{ Querystring: TimelineArgs }>('/v1/bookmarks', async (_request, reply) => {
 			const { client, me } = await this.clientService.getAuthClient(_request);
 
 			const data = await client.getBookmarks(parseTimelineArgs(_request.query));
 			const response = await promiseMap(data.data, async (status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
 
+			// Misskey paginates by the favorite records rather than by the notes
+			attachMinMaxPagination(_request, reply, data.pageIds, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
@@ -216,6 +293,8 @@ export class MastodonApiServerService {
 			const data = await client.getFavourites(args);
 			const response = await promiseMap(data.data, async (status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
 
+			// Misskey paginates by the reaction records rather than by the notes
+			attachMinMaxPagination(_request, reply, data.pageIds, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
@@ -223,8 +302,13 @@ export class MastodonApiServerService {
 			const client = this.clientService.getClient(_request);
 
 			const data = await client.getMutes(parseTimelineArgs(_request.query));
-			const response = await promiseMap(data.data, async (account) => await this.mastoConverters.convertAccount(account), { limiter: 4 });
+			const response = await promiseMap(data.data, async (account) => ({
+				...await this.mastoConverters.convertAccount(account),
+				mute_expires_at: account.mute_expires_at ?? null,
+			}), { limiter: 4 });
 
+			// Misskey paginates by the muting records rather than by the accounts
+			attachMinMaxPagination(_request, reply, data.pageIds, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
@@ -234,16 +318,19 @@ export class MastodonApiServerService {
 			const data = await client.getBlocks(parseTimelineArgs(_request.query));
 			const response = await promiseMap(data.data, async (account) => await this.mastoConverters.convertAccount(account), { limiter: 4 });
 
+			// Misskey paginates by the blocking records rather than by the accounts
+			attachMinMaxPagination(_request, reply, data.pageIds, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
-		fastify.get<{ Querystring: { limit?: string } }>('/v1/follow_requests', async (_request, reply) => {
+		fastify.get<{ Querystring: TimelineArgs }>('/v1/follow_requests', async (_request, reply) => {
 			const client = this.clientService.getClient(_request);
 
-			const limit = _request.query.limit ? parseInt(_request.query.limit) : 20;
-			const data = await client.getFollowRequests(limit);
+			const data = await client.getFollowRequests(parseTimelineArgs(_request.query));
 			const response = await promiseMap(data.data, async (account) => await this.mastoConverters.convertAccount(account), { limiter: 4 });
 
+			// Misskey paginates by the follow request records rather than by the accounts
+			attachMinMaxPagination(_request, reply, data.pageIds, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 

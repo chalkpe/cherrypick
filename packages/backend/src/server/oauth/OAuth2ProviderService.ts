@@ -638,11 +638,6 @@ export class OAuth2ProviderService implements OnApplicationShutdown {
 			}
 		});
 
-		// Mastodon clients revoke their token on logout.
-		fastify.post('/revoke', async (request, reply) => {
-			await this.mastodonOAuthService.revoke(toRequestParameters(request.body), reply);
-		});
-
 		fastify.all('/*', async (_request, reply) => {
 			reply.code(404);
 			reply.send({
@@ -653,6 +648,20 @@ export class OAuth2ProviderService implements OnApplicationShutdown {
 					kind: 'client',
 				},
 			});
+		});
+	}
+
+	/**
+	 * POST /oauth/revoke, which Mastodon clients call on logout.
+	 * Browser-based clients call it from other origins like the token endpoint, so it answers CORS preflights too.
+	 */
+	@bindThis
+	public async createRevokeServer(fastify: FastifyInstance): Promise<void> {
+		registerFormBodyParser(fastify);
+		fastify.register(fastifyCors);
+
+		fastify.post('', async (request, reply) => {
+			await this.mastodonOAuthService.revoke(toRequestParameters(request.body), reply);
 		});
 	}
 

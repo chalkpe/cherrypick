@@ -309,10 +309,15 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				channelId: ps.channelId,
 				scheduledAt: ps.scheduledAt ? new Date(ps.scheduledAt) : null,
 				isActuallyScheduled: ps.isActuallyScheduled,
-				eventStart: ps.event?.start ? new Date(ps.event.start) : null,
-				eventEnd: ps.event?.end ? new Date(ps.event.end) : null,
-				eventTitle: ps.event?.title ? ps.event.title! : null,
-				eventMetadata: ps.event?.metadata ? ps.event.metadata : null,
+				// An omitted event keeps the one of the draft, such as when only the schedule is cancelled, and null removes it
+				...(ps.event !== undefined ? {
+					hasEvent: ps.event != null,
+					eventStart: ps.event?.start ? new Date(ps.event.start) : null,
+					eventEnd: ps.event?.end ? new Date(ps.event.end) : null,
+					eventTitle: ps.event?.title ? ps.event.title! : null,
+					// The column is NOT NULL. The metadata is spread into the ActivityPub object of the posted note, so it gets no "@context" of its own, as in notes/create.
+					eventMetadata: ps.event?.metadata ?? {},
+				} : {}),
 				deleteAt: ps.scheduledDelete?.deleteAt ? new Date(ps.scheduledDelete.deleteAt) : ps.scheduledDelete?.deleteAfter ? new Date(Date.now() + ps.scheduledDelete.deleteAfter) : null,
 				deliveryTargets: ps.deliveryTargets,
 			}).catch((err) => {

@@ -32,7 +32,7 @@ import { HealthServerService } from './HealthServerService.js';
 import { ClientServerService } from './web/ClientServerService.js';
 import { OpenApiServerService } from './api/openapi/OpenApiServerService.js';
 import { OAuth2ProviderService } from './oauth/OAuth2ProviderService.js';
-import { MastodonApiServerService } from './api/mastodon/MastodonApiServerService.js';
+import { MastodonApiServerService, stripMastodonTrailingSlash } from './api/mastodon/MastodonApiServerService.js';
 import { registerHttpAccessLog } from './http-access-log.js';
 
 const _dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -81,6 +81,7 @@ export class ServerService implements OnApplicationShutdown {
 		const fastify = Fastify({
 			trustProxy: this.config.trustProxy,
 			logger: false,
+			rewriteUrl: (request) => stripMastodonTrailingSlash(request.url ?? '/'),
 		});
 		this.#fastify = fastify;
 		registerHttpAccessLog(fastify);
@@ -163,6 +164,7 @@ export class ServerService implements OnApplicationShutdown {
 		fastify.register(this.wellKnownServerService.createServer);
 		fastify.register(this.oauth2ProviderService.createServer, { prefix: '/oauth' });
 		fastify.register(this.oauth2ProviderService.createTokenServer, { prefix: '/oauth/token' });
+		fastify.register(this.oauth2ProviderService.createRevokeServer, { prefix: '/oauth/revoke' });
 		fastify.register(this.healthServerService.createServer, { prefix: '/healthz' });
 
 		fastify.get<{ Params: { path: string }; Querystring: { static?: any; badge?: any; }; }>('/emoji/:path(.*)', async (request, reply) => {
@@ -245,6 +247,8 @@ export class ServerService implements OnApplicationShutdown {
 		fastify.get<{ Params: { x: string } }>('/identicon/:x', async (request, reply) => {
 			reply.header('Content-Type', 'image/png');
 			reply.header('Cache-Control', 'public, max-age=86400');
+			// Web clients on other origins read avatars through canvas, for example to pick accent colors
+			reply.header('Access-Control-Allow-Origin', '*');
 
 			if (this.meta.enableIdenticonGeneration) {
 				return await genIdenticon(request.params.x);

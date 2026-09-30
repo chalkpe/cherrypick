@@ -136,10 +136,12 @@ export namespace Converter {
 		}
 	}
 
-	export const encodeVisibility = (v: 'public' | 'unlisted' | 'private' | 'direct'): 'public' | 'home' | 'followers' | 'specified' => {
+	export const encodeVisibility = (v: 'public' | 'unlisted' | 'private' | 'direct' | 'local'): 'public' | 'home' | 'followers' | 'specified' => {
 		switch (v) {
+			// Pleroma / Akkoma local-only posts are public notes with localOnly
+			case 'local':
 			case 'public':
-				return v
+				return 'public'
 			case 'unlisted':
 				return 'home'
 			case 'private':
@@ -204,7 +206,8 @@ export namespace Converter {
 			domain_blocking: r.isInstanceMuted ?? false,
 			showing_reblogs: !r.isRenoteMuted,
 			endorsed: false,
-			notifying: !r.isMuted,
+			// Notifications of new notes are a setting of the following itself
+			notifying: r.following?.notify === 'normal',
 			note: r.memo ?? '',
 		}
 	}
@@ -389,51 +392,40 @@ export namespace Converter {
 		exclusive: null
 	})
 
-	export const encodeNotificationType = (
-		e: MegalodonEntity.NotificationType
-	): Entity.NotificationType | UnknownNotificationTypeError => {
-		switch (e) {
-			case NotificationType.Follow:
-				return MisskeyNotificationType.Follow
-			case NotificationType.Mention:
-				return MisskeyNotificationType.Reply
-			case NotificationType.Favourite:
-			case NotificationType.EmojiReaction:
-				return MisskeyNotificationType.Reaction
-			case NotificationType.Reblog:
-				return MisskeyNotificationType.Renote
-			case NotificationType.PollVote:
-				return MisskeyNotificationType.PollVote
-			case NotificationType.FollowRequest:
-				return MisskeyNotificationType.ReceiveFollowRequest
-			default:
-				return new UnknownNotificationTypeError()
-		}
+	// Misskey notification types that have a megalodon counterpart. Notification lists leave out the others.
+	const notificationTypeMap: ReadonlyMap<Entity.NotificationType, MegalodonEntity.NotificationType> = new Map([
+		// followRequestAccepted means the other user accepted our request, which Mastodon has no notification for
+		[MisskeyNotificationType.Follow, NotificationType.Follow],
+		[MisskeyNotificationType.Mention, NotificationType.Mention],
+		[MisskeyNotificationType.Reply, NotificationType.Mention],
+		[MisskeyNotificationType.Renote, NotificationType.Reblog],
+		[MisskeyNotificationType.Quote, NotificationType.Quote],
+		[MisskeyNotificationType.Reaction, NotificationType.EmojiReaction],
+		[MisskeyNotificationType.PollVote, NotificationType.PollVote],
+		[MisskeyNotificationType.PollEnded, NotificationType.PollExpired],
+		[MisskeyNotificationType.Note, NotificationType.Status],
+		[MisskeyNotificationType.ReceiveFollowRequest, NotificationType.FollowRequest],
+	])
+
+	/**
+	 * Misskey notification types that decodeNotificationType can decode.
+	 */
+	export const decodableNotificationTypes: ReadonlyArray<Entity.NotificationType> = [...notificationTypeMap.keys()]
+
+	/**
+	 * Misskey notification types behind the given megalodon notification types, the reverse of decodeNotificationType.
+	 * Types without a Misskey counterpart are left out.
+	 */
+	export const encodeNotificationTypes = (types: ReadonlyArray<MegalodonEntity.NotificationType>): Array<Entity.NotificationType> => {
+		// Misskey reactions are favourites as well
+		const wanted = new Set(types.map(t => (t === NotificationType.Favourite ? NotificationType.EmojiReaction : t)))
+		return decodableNotificationTypes.filter(t => wanted.has(notificationTypeMap.get(t)!))
 	}
 
 	export const decodeNotificationType = (
 		e: Entity.NotificationType
 	): MegalodonEntity.NotificationType | UnknownNotificationTypeError => {
-		switch (e) {
-			case MisskeyNotificationType.Follow:
-				return NotificationType.Follow
-			case MisskeyNotificationType.Mention:
-			case MisskeyNotificationType.Reply:
-				return NotificationType.Mention
-			case MisskeyNotificationType.Renote:
-			case MisskeyNotificationType.Quote:
-				return NotificationType.Reblog
-			case MisskeyNotificationType.Reaction:
-				return NotificationType.EmojiReaction
-			case MisskeyNotificationType.PollVote:
-				return NotificationType.PollVote
-			case MisskeyNotificationType.ReceiveFollowRequest:
-				return NotificationType.FollowRequest
-			case MisskeyNotificationType.FollowRequestAccepted:
-				return NotificationType.Follow
-			default:
-				return new UnknownNotificationTypeError()
-		}
+		return notificationTypeMap.get(e) ?? new UnknownNotificationTypeError()
 	}
 
 	export const notification = (n: Entity.Notification): MegalodonEntity.Notification | UnknownNotificationTypeError => {
@@ -441,9 +433,14 @@ export namespace Converter {
 		if (notificationType instanceof UnknownNotificationTypeError) {
 			return notificationType
 		}
+		// Notifications from the system, such as ended polls, have no user, so they come from the author of the note
+		const account = n.user ?? n.note?.user
+		if (!account) {
+			return new UnknownNotificationTypeError()
+		}
 		let notification = {
 			id: n.id,
-			account: user(n.user),
+			account: user(account),
 			created_at: n.createdAt,
 			type: notificationType
 		}
@@ -547,6 +544,8 @@ export interface ClientOptions {
 	socketPath?: string
 	/** Headers sent with every request */
 	headers?: { [key: string]: string }
+	/** false to connect directly, ignoring the HTTP_PROXY / HTTPS_PROXY environment variables axios follows by default */
+	proxy?: false
 }
 
 /**
@@ -561,6 +560,7 @@ export class Client implements Interface {
 	private abortController: AbortController
 	private socketPath: string | undefined
 	private defaultHeaders: { [key: string]: string }
+	private proxy: false | undefined
 
 	/**
 	 * @param baseUrl hostname or base URL
@@ -575,6 +575,7 @@ export class Client implements Interface {
 		this.abortController = new AbortController();
 		this.socketPath = options.socketPath
 		this.defaultHeaders = options.headers ?? {}
+		this.proxy = options.proxy
 	}
 
 	/**
@@ -596,6 +597,7 @@ export class Client implements Interface {
 			maxBodyLength: Infinity,
 			signal: this.abortController.signal,
 			socketPath: this.socketPath,
+			proxy: this.proxy,
 		}
 		return axios.get<T>(this.baseUrl + path, options).then((resp: AxiosResponse<T>) => {
 			const res: Response<T> = {
@@ -629,6 +631,7 @@ export class Client implements Interface {
 			maxBodyLength: Infinity,
 			signal: this.abortController.signal,
 			socketPath: this.socketPath,
+			proxy: this.proxy,
 		}
 
 		return axios.post<T>(this.baseUrl + path, params, options).then((resp: AxiosResponse<T>) => {

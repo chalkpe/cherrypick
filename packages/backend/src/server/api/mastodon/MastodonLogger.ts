@@ -106,6 +106,11 @@ export function getErrorException(error: unknown): Error | null {
 		return null;
 	}
 
+	// Client errors of the Misskey API, such as a missing note, are logged as error responses instead
+	if (error instanceof ApiError && error.kind !== 'server') {
+		return null;
+	}
+
 	return error;
 }
 
@@ -198,9 +203,10 @@ function unpackAxiosError(error: unknown): unknown {
 }
 
 function convertApiError(apiError: ApiError): MastodonError {
+	// Mastodon clients show "error" to the user as it is, so it carries the message rather than the Misskey error code
 	return {
-		error: apiError.code,
-		error_description: apiError.message,
+		error: apiError.message,
+		error_description: apiError.code,
 	};
 }
 
@@ -226,6 +232,20 @@ function convertMastodonError(error: MastodonError): MastodonError {
 }
 
 export function getErrorStatus(error: unknown): number {
+	const status = getResponseStatus(error);
+
+	// Mastodon answers 404 for missing records, which clients take as deleted statuses and accounts
+	if (status === 400) {
+		const data = unpackAxiosError(error);
+		if (data && typeof(data) === 'object' && 'code' in data && typeof(data.code) === 'string' && data.code.startsWith('NO_SUCH_')) {
+			return 404;
+		}
+	}
+
+	return status;
+}
+
+function getResponseStatus(error: unknown): number {
 	if (error instanceof AuthenticationError) {
 		return 401;
 	}

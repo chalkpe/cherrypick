@@ -981,6 +981,41 @@ describe('Note', () => {
 		});
 	});
 
+	describe('notes/drafts', () => {
+		type Draft = { id: string; event?: { title: string; metadata: Record<string, unknown> } };
+
+		test('creates drafts without an event, scheduled or not', async () => {
+			const draft = await api('notes/drafts/create', { text: 'a draft' }, alice);
+			assert.strictEqual(draft.status, 200);
+			assert.strictEqual((draft.body.createdDraft as Draft).event, undefined);
+
+			const scheduled = await api('notes/drafts/create', { text: 'posted later', scheduledAt: Date.now() + 60 * 60 * 1000, isActuallyScheduled: true }, alice);
+			assert.strictEqual(scheduled.status, 200);
+			assert.strictEqual((scheduled.body.createdDraft as Draft).event, undefined);
+			await api('notes/drafts/delete', { draftId: scheduled.body.createdDraft.id }, alice);
+		});
+
+		test('keeps the event of a draft when an update leaves it out, and removes it with null', async () => {
+			const start = Date.now() + 24 * 60 * 60 * 1000;
+			const created = await api('notes/drafts/create', { text: 'party', event: { title: 'party', start } }, alice);
+			assert.strictEqual(created.status, 200);
+			const draft = created.body.createdDraft as Draft;
+			// The metadata is spread into the ActivityPub object of the note, so it must not bring a "@context" of its own
+			assert.deepStrictEqual(draft.event?.metadata, {});
+
+			// Cancelling a schedule, as the web client does, sends no event
+			const kept = await api('notes/drafts/update', { draftId: draft.id, isActuallyScheduled: false, scheduledAt: null }, alice);
+			assert.strictEqual(kept.status, 200);
+			assert.strictEqual((kept.body.updatedDraft as Draft).event?.title, 'party');
+
+			const removed = await api('notes/drafts/update', { draftId: draft.id, event: null }, alice);
+			assert.strictEqual((removed.body.updatedDraft as Draft).event, undefined);
+
+			const added = await api('notes/drafts/update', { draftId: draft.id, event: { title: 'again', start } }, alice);
+			assert.strictEqual((added.body.updatedDraft as Draft).event?.title, 'again');
+		});
+	});
+
 	describe('notes/translate', () => {
 		describe('翻訳機能の利用が許可されていない場合', () => {
 			let cannotTranslateRole: misskey.entities.Role;

@@ -260,13 +260,15 @@ export interface MegalodonInterface {
    * Follow the given account. Can also be used to update whether to show reblogs or enable notifications.
    *
    * @param id The account ID.
-   * @param reblog Receive this account's reblogs in home timeline.
+   * @param options.reblogs Receive this account's reblogs in home timeline.
+   * @param options.notify Receive notifications when this account posts a status.
    * @return Relationship
    */
   followAccount(
     id: string,
     options?: {
-      reblog?: boolean
+      reblogs?: boolean
+      notify?: boolean
     }
   ): Promise<Response<Entity.Relationship>>
   /**
@@ -295,9 +297,10 @@ export interface MegalodonInterface {
    *
    * @param id The account ID.
    * @param notifications Mute notifications in addition to statuses.
+   * @param options.duration How long the mute should last, in seconds. 0 or unset mutes indefinitely.
    * @return Relationship
    */
-  muteAccount(id: string, notifications: boolean): Promise<Response<Entity.Relationship>>
+  muteAccount(id: string, notifications: boolean, options?: { duration?: number }): Promise<Response<Entity.Relationship>>
   /**
    * Unmute the given account.
    *
@@ -376,7 +379,7 @@ export interface MegalodonInterface {
    * @param options.min_id Return results immediately newer than ID.
    * @return Array of statuses.
    */
-  getFavourites(options?: { limit?: number; max_id?: string; min_id?: string }): Promise<Response<Array<Entity.Status>>>
+  getFavourites(options?: { limit?: number; max_id?: string; since_id?: string; min_id?: string }): Promise<Response<Array<Entity.Status>>>
   // ======================================
   // accounts/mutes
   // ======================================
@@ -388,7 +391,7 @@ export interface MegalodonInterface {
    * @param options.min_id Return results immediately newer than ID.
    * @return Array of accounts.
    */
-  getMutes(options?: { limit?: number; max_id?: string; min_id?: string }): Promise<Response<Array<Entity.Account>>>
+  getMutes(options?: { limit?: number; max_id?: string; since_id?: string; min_id?: string }): Promise<Response<Array<Entity.Account>>>
   // ======================================
   // accounts/blocks
   // ======================================
@@ -400,7 +403,7 @@ export interface MegalodonInterface {
    * @param options.min_id Return results immediately newer than ID.
    * @return Array of accounts.
    */
-  getBlocks(options?: { limit?: number; max_id?: string; min_id?: string }): Promise<Response<Array<Entity.Account>>>
+  getBlocks(options?: { limit?: number; max_id?: string; since_id?: string; min_id?: string }): Promise<Response<Array<Entity.Account>>>
   // ======================================
   // accounts/domain_blocks
   // ======================================
@@ -518,10 +521,13 @@ export interface MegalodonInterface {
   /**
    * Get pending follow requests.
    *
-   * @param limit Maximum number of results.
+   * @param options.limit Maximum number of results.
+   * @param options.max_id Return results older than ID.
+   * @param options.since_id Return results newer than ID.
+   * @param options.min_id Return results immediately newer than ID.
    * @return Array of account or follow request.
    */
-  getFollowRequests(limit?: number): Promise<Response<Array<Entity.Account | Entity.FollowRequest>>>
+  getFollowRequests(options?: { limit?: number; max_id?: string; since_id?: string; min_id?: string }): Promise<Response<Array<Entity.Account | Entity.FollowRequest>>>
   /**
    * Accept the follow request.
    *
@@ -1115,6 +1121,7 @@ export interface MegalodonInterface {
    * @param options.max_id Return results older than ID.
    * @param options.since_id Return results newer than ID.
    * @param options.min_id Return results immediately newer than ID.
+   * @param options.types Array of types to include.
    * @param options.exclude_types Array of types to exclude.
    * @param options.account_id Return only notifications received from this account.
    * @return Array of notifications.
@@ -1124,6 +1131,7 @@ export interface MegalodonInterface {
     max_id?: string
     since_id?: string
     min_id?: string
+    types?: Array<Entity.NotificationType>
     exclude_types?: Array<Entity.NotificationType>
     account_id?: string
   }): Promise<Response<Array<Entity.Notification>>>

@@ -1,4 +1,4 @@
-import { type Response } from './response.js'
+import { type Response, type PagedResponse } from './response.js'
 import * as OAuth from './oauth.js'
 import { isCancel, RequestCanceledError } from './cancel.js'
 import { type MegalodonInterface, NoImplementedError } from './megalodon.js'
@@ -13,6 +13,7 @@ import * as MisskeyEntity from './misskey/entity.js';
 
 export {
 	type Response,
+	type PagedResponse,
 	OAuth,
 	RequestCanceledError,
 	isCancel,

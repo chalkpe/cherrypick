@@ -12,6 +12,8 @@ export interface Account {
 	discoverable?: boolean
 	group: boolean | null
 	noindex: boolean | null
+	// Whether the followers and following lists are hidden (Mastodon 4.1+)
+	hide_collections?: boolean
 	suspended: boolean | null
 	limited: boolean | null
 	created_at: string
@@ -30,5 +32,5 @@ export interface Account {
 	bot: boolean
 	source?: Source
 	role?: Role
-	mute_expires_at?: string
+	mute_expires_at?: string | null
 }

@@ -5,12 +5,29 @@
 
 import { Injectable } from '@nestjs/common';
 import { MastodonClientService } from '@/server/api/mastodon/MastodonClientService.js';
-import { attachMinMaxPagination } from '@/server/api/mastodon/pagination.js';
+import { attachMinMaxPagination, sortNewestFirst } from '@/server/api/mastodon/pagination.js';
 import { promiseMap } from '@/misc/promise-map.js';
 import { convertList, MastodonConverters } from '../MastodonConverters.js';
-import { parseTimelineArgs, TimelineArgs, toBoolean } from '../argsUtils.js';
+import { parseTimelineArgs, TimelineArgs, toBoolean, unflattenFormBody } from '../argsUtils.js';
 import type { Entity } from 'megalodon';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+
+interface ListAccountsRoute {
+	Params: { id?: string },
+	Querystring: { account_ids?: string | string[] },
+	Body?: Record<string, unknown>,
+}
+
+/**
+ * Account IDs to add to or remove from a list.
+ * Mastodon takes them as "account_ids[]" in the body, but some clients send them in the query string, especially with DELETE.
+ */
+function getListAccountIds(request: FastifyRequest<ListAccountsRoute>): string[] {
+	const body = unflattenFormBody(request.body ?? {}) as { account_ids?: unknown };
+	const value = body.account_ids ?? request.query.account_ids;
+	const ids = Array.isArray(value) ? value : [value];
+	return ids.filter((id): id is string => typeof id === 'string' && id !== '');
+}
 
 @Injectable()
 export class ApiTimelineMastodon {
@@ -26,9 +43,9 @@ export class ApiTimelineMastodon {
 			const data = toBoolean(request.query.local)
 				? await client.getLocalTimeline(query)
 				: await client.getPublicTimeline(query);
-			const response = await promiseMap(data.data, async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
+			const response = await promiseMap(sortNewestFirst(data.data), async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
 
-			attachMinMaxPagination(request, reply, response);
+			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
@@ -36,9 +53,9 @@ export class ApiTimelineMastodon {
 			const { client, me } = await this.clientService.getAuthClient(request);
 			const query = parseTimelineArgs(request.query);
 			const data = await client.getHomeTimeline(query);
-			const response = await promiseMap(data.data, async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
+			const response = await promiseMap(sortNewestFirst(data.data), async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
 
-			attachMinMaxPagination(request, reply, response);
+			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
@@ -48,9 +65,9 @@ export class ApiTimelineMastodon {
 			const { client, me } = await this.clientService.getAuthClient(request);
 			const query = parseTimelineArgs(request.query);
 			const data = await client.getTagTimeline(request.params.hashtag, query);
-			const response = await promiseMap(data.data, async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
+			const response = await promiseMap(sortNewestFirst(data.data), async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
 
-			attachMinMaxPagination(request, reply, response);
+			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
@@ -60,9 +77,9 @@ export class ApiTimelineMastodon {
 			const { client, me } = await this.clientService.getAuthClient(request);
 			const query = parseTimelineArgs(request.query);
 			const data = await client.getListTimeline(request.params.id, query);
-			const response = await promiseMap(data.data, async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
+			const response = await promiseMap(sortNewestFirst(data.data), async (status: Entity.Status) => await this.mastoConverters.convertStatus(status, me), { limiter: 4 });
 
-			attachMinMaxPagination(request, reply, response);
+			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
@@ -70,10 +87,38 @@ export class ApiTimelineMastodon {
 			const { client, me } = await this.clientService.getAuthClient(request);
 			const query = parseTimelineArgs(request.query);
 			const data = await client.getConversationTimeline(query);
-			const response = await promiseMap(data.data, async (conversation: Entity.Conversation) => await this.mastoConverters.convertConversation(conversation, me), { limiter: 4 });
+			const response = await promiseMap(sortNewestFirst(data.data), async (conversation: Entity.Conversation) => await this.mastoConverters.convertConversation(conversation, me), { limiter: 4 });
 
-			attachMinMaxPagination(request, reply, response);
+			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
+		});
+
+		fastify.post<{ Params: { id: string } }>('/v1/conversations/:id/read', async (request, reply) => {
+			const { client, me } = await this.clientService.getAuthClient(request);
+			const data = await client.readConversation(request.params.id);
+			return reply.send(await this.mastoConverters.convertConversation(data.data, me));
+		});
+
+		// A conversation is a direct note of someone, which cannot be hidden from the list
+		fastify.delete('/v1/conversations/:id', async (_request, reply) => {
+			return reply.code(422).send({ error: 'Removing conversations is not supported by this server' });
+		});
+
+		fastify.get<{ Params: { name: string } }>('/v1/tags/:name', async (request, reply) => {
+			const client = this.clientService.getClient(request);
+			return reply.send((await client.getTag(request.params.name)).data);
+		});
+
+		// Misskey has no hashtag following, and pretending to follow would leave the home timeline without the hashtag
+		for (const path of ['/v1/tags/:name/follow', '/v1/tags/:name/unfollow']) {
+			fastify.post(path, async (_request, reply) => {
+				return reply.code(422).send({ error: 'Following hashtags is not supported by this server' });
+			});
+		}
+
+		// Trending links are not tracked, so no statuses share them
+		fastify.get('/v1/timelines/link', async (_request, reply) => {
+			return reply.send([]);
 		});
 
 		fastify.get<{ Params: { id?: string } }>('/v1/lists/:id', async (_request, reply) => {
@@ -91,7 +136,7 @@ export class ApiTimelineMastodon {
 			const data = await client.getLists();
 			const response = data.data.map((list: Entity.List) => convertList(list));
 
-			attachMinMaxPagination(request, reply, response);
+			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
@@ -102,26 +147,28 @@ export class ApiTimelineMastodon {
 			const data = await client.getAccountsInList(request.params.id, parseTimelineArgs(request.query));
 			const response = await promiseMap(data.data, async (account: Entity.Account) => await this.mastoConverters.convertAccount(account), { limiter: 4 });
 
-			attachMinMaxPagination(request, reply, response);
+			attachMinMaxPagination(request, reply, response, this.clientService.getPublicBaseUrl());
 			return reply.send(response);
 		});
 
-		fastify.post<{ Params: { id?: string }, Querystring: { accounts_id?: string[] } }>('/v1/lists/:id/accounts', async (_request, reply) => {
+		fastify.post<ListAccountsRoute>('/v1/lists/:id/accounts', async (_request, reply) => {
 			if (!_request.params.id) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required parameter "id"' });
-			if (!_request.query.accounts_id) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required property "accounts_id"' });
+			const accountIds = getListAccountIds(_request);
+			if (accountIds.length === 0) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required property "account_ids"' });
 
 			const client = this.clientService.getClient(_request);
-			const data = await client.addAccountsToList(_request.params.id, _request.query.accounts_id);
+			const data = await client.addAccountsToList(_request.params.id, accountIds);
 
 			return reply.send(data.data);
 		});
 
-		fastify.delete<{ Params: { id?: string }, Querystring: { accounts_id?: string[] } }>('/v1/lists/:id/accounts', async (_request, reply) => {
+		fastify.delete<ListAccountsRoute>('/v1/lists/:id/accounts', async (_request, reply) => {
 			if (!_request.params.id) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required parameter "id"' });
-			if (!_request.query.accounts_id) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required property "accounts_id"' });
+			const accountIds = getListAccountIds(_request);
+			if (accountIds.length === 0) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required property "account_ids"' });
 
 			const client = this.clientService.getClient(_request);
-			const data = await client.deleteAccountsFromList(_request.params.id, _request.query.accounts_id);
+			const data = await client.deleteAccountsFromList(_request.params.id, accountIds);
 
 			return reply.send(data.data);
 		});

@@ -4,7 +4,6 @@
  */
 
 import { FastifyReply, FastifyRequest } from 'fastify';
-import { getBaseUrl } from '@/server/api/mastodon/MastodonClientService.js';
 
 interface AnyEntity {
 	readonly id: string;
@@ -17,20 +16,24 @@ interface AnyEntity {
  *
  * @param request Fastify request object
  * @param reply Fastify reply object
- * @param results Results array, ordered in ascending or descending order
+ * @param results Results array, ordered in ascending or descending order.
+ *   IDs can be passed instead, for lists paginated by records other than the returned entities (see megalodon's PagedResponse).
+ * @param baseUrl Public base URL of this server. The request's own protocol and host may be those behind a reverse proxy.
  */
-export function attachMinMaxPagination(request: FastifyRequest, reply: FastifyReply, results: AnyEntity[]): void {
+export function attachMinMaxPagination(request: FastifyRequest, reply: FastifyReply, results: readonly AnyEntity[] | readonly string[], baseUrl: string): void {
+	const ids = results.map((r: AnyEntity | string) => typeof r === 'string' ? r : r.id);
+
 	// No results, nothing to do
-	if (!hasItems(results)) return;
+	if (!hasItems(ids)) return;
 
 	// "next" link - older results
-	const oldest = findOldest(results);
-	const nextUrl = createPaginationUrl(request, { max_id: oldest }); // Next page (older) has IDs less than the oldest of this page
+	const oldest = findOldest(ids);
+	const nextUrl = createPaginationUrl(request, baseUrl, { max_id: oldest }); // Next page (older) has IDs less than the oldest of this page
 	const next = `<${nextUrl}>; rel="next"`;
 
 	// "prev" link - newer results
-	const newest = findNewest(results);
-	const prevUrl = createPaginationUrl(request, { min_id: newest }); // Previous page (newer) has IDs greater than the newest of this page
+	const newest = findNewest(ids);
+	const prevUrl = createPaginationUrl(request, baseUrl, { min_id: newest }); // Previous page (newer) has IDs greater than the newest of this page
 	const prev = `<${prevUrl}>; rel="prev"`;
 
 	// https://docs.joinmastodon.org/api/guidelines/#pagination
@@ -46,8 +49,9 @@ export function attachMinMaxPagination(request: FastifyRequest, reply: FastifyRe
  * @param request Fastify request object
  * @param reply Fastify reply object
  * @param results Results array, ordered in ascending or descending order
+ * @param baseUrl Public base URL of this server. The request's own protocol and host may be those behind a reverse proxy.
  */
-export function attachOffsetPagination(request: FastifyRequest, reply: FastifyReply, results: unknown[]): void {
+export function attachOffsetPagination(request: FastifyRequest, reply: FastifyReply, results: unknown[], baseUrl: string): void {
 	const links: string[] = [];
 
 	// Find initial offset
@@ -57,7 +61,7 @@ export function attachOffsetPagination(request: FastifyRequest, reply: FastifyRe
 	// "next" link - older results
 	if (hasItems(results)) {
 		const oldest = offset + results.length;
-		const nextUrl = createPaginationUrl(request, { offset: oldest }); // Next page (older) has entries less than the oldest of this page
+		const nextUrl = createPaginationUrl(request, baseUrl, { offset: oldest }); // Next page (older) has entries less than the oldest of this page
 		links.push(`<${nextUrl}>; rel="next"`);
 	}
 
@@ -67,10 +71,10 @@ export function attachOffsetPagination(request: FastifyRequest, reply: FastifyRe
 		// Make sure we don't cross below 0, as that will produce an API error
 		if (limit <= offset) {
 			const newest = offset - limit;
-			const prevUrl = createPaginationUrl(request, { offset: newest }); // Previous page (newer) has entries greater than the newest of this page
+			const prevUrl = createPaginationUrl(request, baseUrl, { offset: newest }); // Previous page (newer) has entries greater than the newest of this page
 			links.push(`<${prevUrl}>; rel="prev"`);
 		} else {
-			const prevUrl = createPaginationUrl(request, { offset: 0, limit: offset }); // Previous page (newer) has entries greater than the newest of this page
+			const prevUrl = createPaginationUrl(request, baseUrl, { offset: 0, limit: offset }); // Previous page (newer) has entries greater than the newest of this page
 			links.push(`<${prevUrl}>; rel="prev"`);
 		}
 	}
@@ -82,7 +86,16 @@ export function attachOffsetPagination(request: FastifyRequest, reply: FastifyRe
 	}
 }
 
-function hasItems<T>(items: T[]): items is [T, ...T[]] {
+/**
+ * Sorts a page newest first, in place.
+ * Misskey returns a page oldest first when only sinceId is given (Mastodon's min_id and since_id),
+ * but Mastodon clients expect every page newest first.
+ */
+export function sortNewestFirst<T extends AnyEntity>(items: T[]): T[] {
+	return items.sort((a, b) => isOlder(a.id, b.id) ? 1 : isOlder(b.id, a.id) ? -1 : 0);
+}
+
+function hasItems<T>(items: readonly T[]): items is [T, ...T[]] {
 	return items.length > 0;
 }
 
@@ -122,16 +135,16 @@ function findLimit(request: FastifyRequest): number | null {
 	return isNaN(limit) ? null : limit;
 }
 
-function findOldest(items: [AnyEntity, ...AnyEntity[]]): string {
-	const first = items[0].id;
-	const last = items[items.length - 1].id;
+function findOldest(ids: [string, ...string[]]): string {
+	const first = ids[0];
+	const last = ids[ids.length - 1];
 
 	return isOlder(first, last) ? first : last;
 }
 
-function findNewest(items: [AnyEntity, ...AnyEntity[]]): string {
-	const first = items[0].id;
-	const last = items[items.length - 1].id;
+function findNewest(ids: [string, ...string[]]): string {
+	const first = ids[0];
+	const last = ids[ids.length - 1];
 
 	return isOlder(first, last) ? last : first;
 }
@@ -146,13 +159,12 @@ function isOlder(a: string, b: string): boolean {
 	return a < b;
 }
 
-function createPaginationUrl(request: FastifyRequest, data: {
+function createPaginationUrl(request: FastifyRequest, baseUrl: string, data: {
 	min_id?: string;
 	max_id?: string;
 	offset?: number;
 	limit?: number;
 }): string {
-	const baseUrl = getBaseUrl(request);
 	const requestUrl = new URL(request.url, baseUrl);
 
 	// Remove any existing pagination

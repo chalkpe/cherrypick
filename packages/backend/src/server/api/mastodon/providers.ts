@@ -7,9 +7,11 @@ import { MastodonApiServerService } from './MastodonApiServerService.js';
 import { MastodonClientService } from './MastodonClientService.js';
 import { MastodonConverters } from './MastodonConverters.js';
 import { MastodonDataService } from './MastodonDataService.js';
+import { MastodonFilterService } from './MastodonFilterService.js';
 import { MastodonLogger } from './MastodonLogger.js';
 import { MastodonNotificationService } from './MastodonNotificationService.js';
 import { MastodonOAuthService } from './MastodonOAuthService.js';
+import { MastodonPreferenceService } from './MastodonPreferenceService.js';
 import { MastodonPushService } from './MastodonPushService.js';
 import { MastodonServerUtilityService } from './MastodonServerUtilityService.js';
 import { MastodonStreamingService } from './MastodonStreamingService.js';
@@ -32,9 +34,11 @@ export const mastodonProviders = [
 	MastodonClientService,
 	MastodonConverters,
 	MastodonDataService,
+	MastodonFilterService,
 	MastodonLogger,
 	MastodonNotificationService,
 	MastodonOAuthService,
+	MastodonPreferenceService,
 	MastodonPushService,
 	MastodonServerUtilityService,
 	MastodonStreamingService,

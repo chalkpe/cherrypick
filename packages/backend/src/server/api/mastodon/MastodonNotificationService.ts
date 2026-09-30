@@ -16,21 +16,10 @@ import { MastodonConverters } from '@/server/api/mastodon/MastodonConverters.js'
 import type { MastodonEntity, MisskeyEntity } from 'megalodon';
 
 /**
- * Misskey notification types that have a Mastodon counterpart.
+ * Misskey notification types that have a Mastodon counterpart, the same ones notification lists show.
  * Others (achievements, role assignments, exports...) are not shown to Mastodon clients.
  */
-const MASTODON_VISIBLE_TYPES: ReadonlySet<string> = new Set([
-	'follow',
-	'receiveFollowRequest',
-	'followRequestAccepted',
-	'mention',
-	'reply',
-	'renote',
-	'quote',
-	'reaction',
-	'pollEnded',
-	'note',
-]);
+const MASTODON_VISIBLE_TYPES: ReadonlySet<string> = new Set(Converter.decodableNotificationTypes);
 
 function compareStreamIds(a: string, b: string): number {
 	const [aMs, aSeq] = a.split('-').map(x => BigInt(x));
