@@ -128,11 +128,8 @@ export async function closeUserSetupDialogIfVisible(page: Page): Promise<void> {
 }
 
 export async function postNote(page: Page, noteText: string, timeout = 15_000): Promise<void> {
-	// The frontend diagnostics run this against the base of a pull request too,
-	// whose CherryPick navigation bar may still mark the button with data-cy-open-post-form
-	const openPostForm = page.locator('[data-testid="open-post-form"]:visible, [data-cy-open-post-form]:visible').first();
-	await openPostForm.waitFor({ state: 'visible' });
-	await openPostForm.click();
+	await page.getByTestId('open-post-form').waitFor({ state: 'visible' });
+	await page.getByTestId('open-post-form').click();
 	await page.getByTestId('post-form-text').fill(noteText);
 	await page.getByTestId('post-form-submit').click();
 	await page.getByText(noteText).waitFor({ timeout });
