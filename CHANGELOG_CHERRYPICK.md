@@ -11,6 +11,7 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#202691](CHANGE
   - `설정 > 프라이버시`에서 `Bridgy Fed(bsky.brid.gy)에게 홈 공개 범위 노트 전달`을 켜면, 홈 공개 노트도 Bridgy Fed를 거쳐 Bluesky에 전달됩니다.
   - Bridgy Fed에는 노트가 전체 공개로 바뀌어 전달되며, 다른 서버에는 기존처럼 홈 공개로 전달됩니다.
   - 이 설정은 기본적으로 꺼져 있습니다.
+- Feat: Phanpy, Moshidon, Ice Cubes 등 Mastodon 클라이언트로 로그인해 사용할 수 있음 (TransFem-org/Sharkey 기반 Mastodon 호환 API, OAuth 2.0 · 스트리밍 · Web Push 지원)
 - Fix: Misskey 2026.9.1 병합 과정에서 병합 전 상태로 되돌려졌던 로케일 파일(ko-KR 등)을 복구하여, 누락되었던 번역(예: 노트 검색의 `게시 날짜` 옵션)이 다시 표시됩니다.
 - Fix: 병합 과정에서 누락된 번역(민감한 콘텐츠로 표시된 미디어 열기 옵션, 고양이만 보기, 위젯 이름 등)을 복원했습니다.
 
@@ -29,7 +30,6 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#202691](CHANGE
 ### Server
 - Fix: 버블 인스턴스가 설정되지 않은 서버에서 버블 타임라인이 오류를 반환하던 문제를 수정했습니다.
 - Fix: 답글 타래가 너무 긴 리모트 노트를 받거나 조회할 수 없고, 그때마다 서버가 느려질 수 있음
-- Feat: Phanpy, Moshidon, Ice Cubes 등 Mastodon 클라이언트로 로그인해 사용할 수 있음 (TransFem-org/Sharkey 기반 Mastodon 호환 API, OAuth 2.0 · 스트리밍 · Web Push 지원)
 
 ---
 
