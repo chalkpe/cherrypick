@@ -57,7 +57,7 @@
 
 ## `kind` の値
 
-完全な一覧は [`packages/misskey-js/src/consts.ts`](../../../../../packages/misskey-js/src/consts.ts) の `permissions` 配列。代表例:
+完全な一覧は [`packages/cherrypick-js/src/consts.ts`](../../../../../packages/cherrypick-js/src/consts.ts) の `permissions` 配列。代表例:
 
 | パターン | 例 |
 |---|---|
@@ -125,7 +125,7 @@ res: {
 },
 ```
 
-各プロパティに `optional: false, nullable: false` を **必ず明示する**。省略すると schema が緩くなり、生成される misskey-js 型も曖昧になる。
+各プロパティに `optional: false, nullable: false` を **必ず明示する**。省略すると schema が緩くなり、生成される cherrypick-js 型も曖昧になる。
 
 ## `paramDef` (AJV) 実用パターン
 
@@ -288,21 +288,21 @@ PR レビューで頻発するミスを「**症状 → 原因 → 修正**」で
 - **原因**: [endpoint-list.ts](../../../../../packages/backend/src/server/api/endpoint-list.ts) への登録漏れ。エンドポイントは glob 自動収集されない
 - **修正**: → [knowledge/endpoint-list.md](endpoint-list.md)
 
-### 2. CI `check-misskey-js-autogen` で落ちる
+### 2. CI `check-cherrypick-js-autogen` で落ちる
 
-- **症状**: PR に `Please regenerate misskey-js` のコメント
-- **原因**: `meta` / `paramDef` / `res` を変えたのに misskey-js の自動生成物を再生成していない
+- **症状**: PR に `Please regenerate cherrypick-js` のコメント
+- **原因**: `meta` / `paramDef` / `res` を変えたのに cherrypick-js の自動生成物を再生成していない
 - **修正**: → [shipping-misskey-change/references/tasks/regenerate-misskey-js.md](../../../shipping-misskey-change/references/tasks/regenerate-misskey-js.md)
 
 ### 3. CI `spdx` ジョブで落ちる
 
 - **症状**: `SPDX header missing` のメッセージ
 - **原因**: 新規 `.ts` ファイルに SPDX ヘッダーが無い
-- **修正**: ファイル冒頭に SPDX を貼る。注: `packages/misskey-js/` 配下は MIT 別ライセンスなので SPDX 不要
+- **修正**: ファイル冒頭に SPDX を貼る。注: `packages/cherrypick-js/` 配下は MIT 別ライセンスなので SPDX 不要
 
 ### 4. クライアントが 500 + error 型不在 を受け取る
 
-- **症状**: フロントエンド側で `result.error.code` を分岐したいが、misskey-js の型に出てこない。レスポンスは 500
+- **症状**: フロントエンド側で `result.error.code` を分岐したいが、cherrypick-js の型に出てこない。レスポンスは 500
 - **原因**: `meta.errors` に列挙していないエラーを `throw new ApiError({...})` または `throw new Error(...)` した
 - **修正**: 業務エラーは必ず `meta.errors` に登録してから `throw new ApiError(meta.errors.<key>)`
 - **逆方向の罠**: 「想定外バグまで全部 `ApiError` で包む」のもダメ。`endpoints/notes/create.ts` の `catch` 節末尾の `throw err;` が手本
@@ -315,7 +315,7 @@ PR レビューで頻発するミスを「**症状 → 原因 → 修正**」で
 
 ### 6. UUID が他エンドポイントと衝突
 
-- **症状**: `errors.id` を再利用してしまうと misskey-js 側で型が混線
+- **症状**: `errors.id` を再利用してしまうと cherrypick-js 側で型が混線
 - **原因**: UUID をハードコードして再利用
 - **修正**: 衝突確認
 

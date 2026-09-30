@@ -21,7 +21,7 @@
    - 対象と判定は [scripts/check-spdx.mjs](scripts/check-spdx.mjs) が一元管理する
    - `node scripts/check-spdx.mjs` を 1 回実行し、欠落は `--fix` で補う。
      `SPDX: OK` なら追加の目視確認はしない
-   - `packages/misskey-js` は MIT ライセンスのサブパッケージなので、この AGPL ヘッダーを一律に付けない (サブパッケージ固有の `package.json` / `LICENSE` / 既存ファイルのヘッダーに従う)
+   - `packages/cherrypick-js` は MIT ライセンスのサブパッケージなので、この AGPL ヘッダーを一律に付けない (サブパッケージ固有の `package.json` / `LICENSE` / 既存ファイルのヘッダーに従う)
 
 2. **`locales/ja-JP.yml` 以外の locale YAML を手動編集しない**
    - 他言語ファイル (`en-US.yml` など `ja-JP.yml` 以外すべて) は Crowdin の自動配信先。手動編集すると次の同期で上書き喪失する
@@ -65,7 +65,7 @@
 
 1. **lint / test**: ESLint 対象の変更ファイルへ package root から `eslint --quiet` を最後に 1 回実行し、実装変更には最も近い test を選んで実行する。
    package / repo 全体 lint と広域 test は任意
-2. **backend API 変更時**: `pnpm build-misskey-js-with-types` を実行し `packages/misskey-js/src/autogen/` の差分も commit に含めた
+2. **backend API 変更時**: `pnpm build-cherrypick-js-with-types` を実行し `packages/cherrypick-js/src/autogen/` の差分も commit に含めた
 3. **entity / migration 変更時**: `pnpm --filter backend check-migrations` が pending DDL 0 件で通る / 新規 migration は `up()` と `down()` 両方実装済
 4. **SPDX**: `node scripts/check-spdx.mjs` が `SPDX: OK` を返すことを確認する
 5. **locale safety**: commit 済み・未commit・untracked の変更集合に `locales/ja-JP.yml` 以外の locale YAML が無いことを確認する
@@ -84,8 +84,8 @@
 | Backend federation test | `pnpm --filter backend test:fed` |
 | Frontend unit test | `pnpm --filter frontend test` |
 | Migration 差分検査 (pending DDL) | `pnpm --filter backend check-migrations` |
-| `misskey-js` 再生成 (API 変更後必須) | `pnpm build-misskey-js-with-types` |
+| `cherrypick-js` 再生成 (API 変更後必須) | `pnpm build-cherrypick-js-with-types` |
 | 全体ビルド | `pnpm build` |
 | 開発サーバー (backend + frontend watch) | `pnpm dev` |
 
-**注意:** backend テスト (`test` / `test:e2e` / `test:fed`) 実行前に `.config/test.yml` が必要 (`ncp .github/misskey/test.yml .config/test.yml` または `cp .github/misskey/test.yml .config/test.yml` で作成)。
+**注意:** backend テスト (`test` / `test:e2e` / `test:fed`) 実行前に `.config/test.yml` が必要 (`ncp .github/cherrypick/test.yml .config/test.yml` または `cp .github/cherrypick/test.yml .config/test.yml` で作成)。

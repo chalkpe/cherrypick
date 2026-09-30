@@ -29,7 +29,7 @@
   -->
   ```
 
-  `packages/misskey-js` は MIT ライセンスのサブパッケージなので、この AGPL ヘッダーを一律に付けない (サブパッケージ固有の `package.json` / `LICENSE` / 既存ファイルのヘッダーに従う)。
+  `packages/cherrypick-js` は MIT ライセンスのサブパッケージなので、この AGPL ヘッダーを一律に付けない (サブパッケージ固有の `package.json` / `LICENSE` / 既存ファイルのヘッダーに従う)。
   SPDX の合否は CI と skill が同じ `scripts/check-spdx.mjs` で判定するため、code review で目視チェックを重ねない。
   CI は `--ci` で SPDX 行の有無を検査し、既定モードは加えて `.vue` / `.html` のコメント形式を検査する。
 
@@ -54,7 +54,7 @@
 
 1. ESLint 対象の変更ファイルへ package root から `eslint --quiet` を最後に 1 回実行し、実装変更には最も近い test を選んで実行する。
    package / repo 全体 lint と広域 test は任意
-2. backend で `meta` / `paramDef` / `res` を変更した → `pnpm build-misskey-js-with-types` を実行し `packages/misskey-js/src/autogen/` の差分も commit に含めた
+2. backend で `meta` / `paramDef` / `res` を変更した → `pnpm build-cherrypick-js-with-types` を実行し `packages/cherrypick-js/src/autogen/` の差分も commit に含めた
 3. entity / migration を変更した → `pnpm --filter backend check-migrations` が pending DDL 0 件で通る / 新規 migration は `up()` と `down()` 両方実装済
 4. `node scripts/check-spdx.mjs` が `SPDX: OK` を返した
 5. ユーザーが明示しない限り `CHANGELOG.md` を編集しない。
@@ -70,9 +70,9 @@
 - Backend federation test: `pnpm --filter backend test:fed`
 - Frontend test: `pnpm --filter frontend test`
 - Migration 差分検査: `pnpm --filter backend check-migrations`
-- `misskey-js` 再生成 (API 変更後必須): `pnpm build-misskey-js-with-types`
+- `cherrypick-js` 再生成 (API 変更後必須): `pnpm build-cherrypick-js-with-types`
 
-**注意:** backend テスト (`test` / `test:e2e` / `test:fed`) 実行前に `.config/test.yml` が必要。未作成の場合は `ncp .github/misskey/test.yml .config/test.yml` (または `cp .github/misskey/test.yml .config/test.yml`) を実行してから走らせる。各テストスクリプトが内部で `cross-env NODE_ENV=test pnpm compile-config` を呼ぶため、コピー済みであれば追加の compile-config は不要。
+**注意:** backend テスト (`test` / `test:e2e` / `test:fed`) 実行前に `.config/test.yml` が必要。未作成の場合は `ncp .github/cherrypick/test.yml .config/test.yml` (または `cp .github/cherrypick/test.yml .config/test.yml`) を実行してから走らせる。各テストスクリプトが内部で `cross-env NODE_ENV=test pnpm compile-config` を呼ぶため、コピー済みであれば追加の compile-config は不要。
 
 変更範囲に応じて最も近いコマンドから優先して検証し、必要なら全体コマンドに広げること。
 
