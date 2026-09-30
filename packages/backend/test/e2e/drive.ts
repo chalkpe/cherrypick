@@ -139,6 +139,21 @@ describe('Drive unused files', () => {
 		assert.strictEqual(res.body.length, 2);
 	});
 
+	test('offset でページ送りできる (サイズ順でも重複・欠落なし)', async () => {
+		await Promise.all([uploadFile(carol), uploadFile(carol), uploadFile(carol)]);
+		const all = await api('drive/files/unused', { limit: 100, sort: '+size' }, carol);
+		assert.strictEqual(all.status, 200);
+		assert.ok(all.body.length >= 3);
+
+		const paged: string[] = [];
+		for (let offset = 0; offset < all.body.length; offset += 2) {
+			const page = await api('drive/files/unused', { limit: 2, offset, sort: '+size' }, carol);
+			assert.strictEqual(page.status, 200);
+			paged.push(...page.body.map(f => f.id));
+		}
+		assert.deepStrictEqual(paged, all.body.map(f => f.id));
+	});
+
 	test('下書きに添付されたファイルは返らない', async () => {
 		const file = (await uploadFile(carol)).body!;
 		const res = await api('notes/drafts/create', { text: 'draft', fileIds: [file.id] }, carol);

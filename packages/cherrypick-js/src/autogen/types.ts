@@ -1930,7 +1930,7 @@ export type paths = {
     '/drive/files/unused': {
         /**
          * drive/files/unused
-         * @description List drive files that are not referenced by any note, draft, chat message, gallery post, page, channel, avatar or banner. Folders are ignored.
+         * @description List drive files that are not referenced by any note, draft, chat message, gallery post, page, channel, avatar or banner. Folders are ignored. Paginate with offset (an id cursor does not work with the size / name sorts).
          *
          *     **Credential required**: *Yes* / **Permission**: *read:drive*
          */
@@ -21650,12 +21650,8 @@ export interface operations {
                 'application/json': {
                     /** @default 10 */
                     limit?: number;
-                    /** Format: misskey:id */
-                    sinceId?: string;
-                    /** Format: misskey:id */
-                    untilId?: string;
-                    sinceDate?: number;
-                    untilDate?: number;
+                    /** @default 0 */
+                    offset?: number;
                     /** @enum {string|null} */
                     sort?: '+createdAt' | '-createdAt' | '+name' | '-name' | '+size' | '-size' | null;
                 };

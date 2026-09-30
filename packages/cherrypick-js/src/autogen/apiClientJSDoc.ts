@@ -2353,7 +2353,7 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * List drive files that are not referenced by any note, draft, chat message, gallery post, page, channel, avatar or banner. Folders are ignored.
+     * List drive files that are not referenced by any note, draft, chat message, gallery post, page, channel, avatar or banner. Folders are ignored. Paginate with offset (an id cursor does not work with the size / name sorts).
      * 
      * **Credential required**: *Yes* / **Permission**: *read:drive*
      */

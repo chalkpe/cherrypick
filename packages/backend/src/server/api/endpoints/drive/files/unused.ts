@@ -6,7 +6,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import type { DriveFilesRepository } from '@/models/_.js';
-import { QueryService } from '@/core/QueryService.js';
 import { DriveFileEntityService } from '@/core/entities/DriveFileEntityService.js';
 import { DriveFileUsageService } from '@/core/DriveFileUsageService.js';
 import { DI } from '@/di-symbols.js';
@@ -18,7 +17,7 @@ export const meta = {
 
 	kind: 'read:drive',
 
-	description: 'List drive files that are not referenced by any note, draft, chat message, gallery post, page, channel, avatar or banner. Folders are ignored.',
+	description: 'List drive files that are not referenced by any note, draft, chat message, gallery post, page, channel, avatar or banner. Folders are ignored. Paginate with offset (an id cursor does not work with the size / name sorts).',
 
 	res: {
 		type: 'array',
@@ -35,10 +34,7 @@ export const paramDef = {
 	type: 'object',
 	properties: {
 		limit: { type: 'integer', minimum: 1, maximum: 100, default: 10 },
-		sinceId: { type: 'string', format: 'misskey:id' },
-		untilId: { type: 'string', format: 'misskey:id' },
-		sinceDate: { type: 'integer' },
-		untilDate: { type: 'integer' },
+		offset: { type: 'integer', minimum: 0, default: 0 },
 		sort: { type: 'string', nullable: true, enum: ['+createdAt', '-createdAt', '+name', '-name', '+size', '-size', null] },
 	},
 	required: [],
@@ -52,23 +48,24 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 		private driveFileEntityService: DriveFileEntityService,
 		private driveFileUsageService: DriveFileUsageService,
-		private queryService: QueryService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
-			const query = this.queryService.makePaginationQuery(this.driveFilesRepository.createQueryBuilder('file'), ps.sinceId, ps.untilId, ps.sinceDate, ps.untilDate);
+			const query = this.driveFilesRepository.createQueryBuilder('file');
 
 			this.driveFileUsageService.applyUnusedFilter(query, me.id);
 
+			// 同じサイズ・名前が並んだときにページ間で順序が揺れないよう、常に id を第二キーにする
 			switch (ps.sort) {
-				case '+createdAt': query.orderBy('file.id', 'DESC'); break;
 				case '-createdAt': query.orderBy('file.id', 'ASC'); break;
-				case '+name': query.orderBy('file.name', 'DESC'); break;
-				case '-name': query.orderBy('file.name', 'ASC'); break;
-				case '+size': query.orderBy('file.size', 'DESC'); break;
-				case '-size': query.orderBy('file.size', 'ASC'); break;
+				case '+name': query.orderBy('file.name', 'DESC').addOrderBy('file.id', 'DESC'); break;
+				case '-name': query.orderBy('file.name', 'ASC').addOrderBy('file.id', 'DESC'); break;
+				case '+size': query.orderBy('file.size', 'DESC').addOrderBy('file.id', 'DESC'); break;
+				case '-size': query.orderBy('file.size', 'ASC').addOrderBy('file.id', 'DESC'); break;
+				case '+createdAt':
+				default: query.orderBy('file.id', 'DESC'); break;
 			}
 
-			const files = await query.limit(ps.limit).getMany();
+			const files = await query.offset(ps.offset).limit(ps.limit).getMany();
 
 			return await this.driveFileEntityService.packMany(files, { detail: false, self: true });
 		});
