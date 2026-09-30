@@ -47,11 +47,12 @@ export class MastodonClientService {
 	 * Fails with 401 when there is none, and with 403 when the access token lacks the permission the Misskey API would ask for.
 	 */
 	public async requireAuth(request: FastifyRequest, permission?: string): Promise<MiLocalUser> {
-		const [me, token] = await this.authenticateService.authenticate(getAccessToken(request));
+		const [me, token, flashToken] = await this.authenticateService.authenticate(getAccessToken(request));
 		if (me == null) throw new AuthenticationError('Credential required.');
 
 		// Native user tokens carry no permission list and may do anything
-		if (permission != null && token != null && !token.permission.includes(permission)) {
+		const permissions = token?.permission ?? flashToken?.permissions;
+		if (permission != null && permissions != null && !permissions.includes(permission)) {
 			throw new ApiError({
 				message: 'Your app does not have the necessary permissions to use this endpoint.',
 				code: 'PERMISSION_DENIED',

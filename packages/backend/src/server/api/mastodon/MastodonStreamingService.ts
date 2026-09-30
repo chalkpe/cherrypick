@@ -170,7 +170,11 @@ export class MastodonStreamingService implements OnApplicationShutdown {
 		let user: MiLocalUser | null = null;
 		let app: MiAccessToken | null = null;
 		try {
-			[user, app] = await this.authenticateService.authenticate(token);
+			const [authenticatedUser, authenticatedApp, flashToken] = await this.authenticateService.authenticate(token);
+			// Plays use the HTTP API with per-operation permissions, not unrestricted streaming sessions.
+			if (flashToken != null) throw new AuthenticationError('Flash tokens cannot use the Mastodon streaming API.');
+			user = authenticatedUser;
+			app = authenticatedApp;
 
 			if (app !== null && !app.permission.some(p => p === 'read:account')) {
 				throw new AuthenticationError('Your app does not have necessary permissions to use websocket API.');

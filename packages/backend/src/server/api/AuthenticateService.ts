@@ -12,6 +12,7 @@ import { MemoryKVCache } from '@/misc/cache.js';
 import type { MiApp } from '@/models/App.js';
 import { CacheService } from '@/core/CacheService.js';
 import { isNativeUserToken } from '@/misc/token.js';
+import { MASTODON_OAUTH_PREFIX } from '@/misc/mastodon-oauth.js';
 import { bindThis } from '@/decorators.js';
 import type { FlashToken } from '@/misc/flash-token.js';
 
@@ -89,7 +90,7 @@ export class AuthenticateService implements OnApplicationShutdown {
 
 				return [user, {
 					id: accessToken.id,
-					permission: app.permission,
+					permission: accessToken.session?.startsWith(MASTODON_OAUTH_PREFIX) ? accessToken.permission : app.permission,
 				} as MiAccessToken, null];
 			} else {
 				return [user, accessToken, null];

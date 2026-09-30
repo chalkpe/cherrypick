@@ -4,6 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
+import { IsNull } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { AccessTokensRepository, AppsRepository } from '@/models/_.js';
 import type { Packed } from '@/misc/json-schema.js';
@@ -50,6 +51,8 @@ export class AppEntityService {
 				isAuthorized: await this.accessTokensRepository.countBy({
 					appId: app.id,
 					userId: me.id,
+					// Only legacy grants authorize the entire app. A scoped OAuth grant must not auto-approve wider access.
+					session: IsNull(),
 				}).then(count => count > 0),
 			} : {}),
 		};

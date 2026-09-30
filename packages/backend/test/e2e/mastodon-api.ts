@@ -199,6 +199,88 @@ describe('Mastodon API', () => {
 			assert.strictEqual((await res.json() as { error: string }).error, 'invalid_client');
 		});
 
+		test('never redeems an OAuth code through the legacy userkey endpoint', async () => {
+			const { challenge } = pkcePair();
+			const code = await authorize(app, alice, { code_challenge: challenge, code_challenge_method: 'S256' });
+			const legacy = await api('auth/session/userkey', { appSecret: app.client_secret, token: code });
+			assert.notStrictEqual(legacy.status, 200);
+			const rejected = await requestToken({ grant_type: 'authorization_code', client_id: app.client_id, client_secret: app.client_secret, code });
+			assert.strictEqual(rejected.status, 400);
+		});
+
+		test('limits each issued token to its authorization scope', async () => {
+			const code = await authorize(app, alice, { scope: 'read' });
+			const issued = await requestToken({ grant_type: 'authorization_code', client_id: app.client_id, client_secret: app.client_secret, code });
+			assert.strictEqual(issued.status, 200);
+			const token = await issued.json() as { access_token: string; scope: string };
+			assert.strictEqual(token.scope, 'read');
+			assert.strictEqual((await mastodonGet('/api/v1/accounts/verify_credentials', token.access_token)).status, 200);
+			assert.strictEqual((await mastodonSend('POST', '/api/v1/statuses', token.access_token, { status: 'must not be posted' })).status, 403);
+			assert.strictEqual((await api('notes/create', { text: 'must not be posted' }, { token: token.access_token })).status, 403);
+		});
+
+		test('never exposes a redeemed OAuth token through MiAuth check', async () => {
+			const code = await authorize(app, alice);
+			const issued = await requestToken({ grant_type: 'authorization_code', client_id: app.client_id, client_secret: app.client_secret, code });
+			assert.strictEqual(issued.status, 200);
+			const check = await fetch(`${host}/api/miauth/${encodeURIComponent(code)}/check`, { method: 'POST' });
+			assert.deepStrictEqual(await check.json(), { ok: false });
+		});
+
+		test('redeems an authorization code only once under concurrent requests', async () => {
+			const code = await authorize(app, alice);
+			const params = { grant_type: 'authorization_code', client_id: app.client_id, client_secret: app.client_secret, code };
+			const responses = await Promise.all([requestToken(params), requestToken(params)]);
+			assert.deepStrictEqual(responses.map(r => r.status).sort(), [200, 400]);
+		});
+
+		test('rejects authorization scopes outside the registered permissions', async () => {
+			const readApp = await (await registerApp({ scopes: 'read' })).json() as RegisteredApp;
+			const query = new URLSearchParams({ client_id: readApp.client_id, redirect_uri: redirectUri, response_type: 'code', scope: 'write' });
+			const res = await fetch(`${host}/oauth/authorize?${query}`, { redirect: 'manual' });
+			assert.strictEqual(res.status, 400);
+			assert.strictEqual((await res.json() as { error: string }).error, 'invalid_scope');
+		});
+
+		test('enforces flash token permissions on direct Mastodon operations', async () => {
+			const flash = await api('flash/gen-token', { permissions: [] }, alice);
+			assert.strictEqual(flash.status, 200);
+			const token = flash.body.token;
+			assert.strictEqual((await mastodonGet('/api/v1/notifications/unread_count', token)).status, 403);
+			assert.strictEqual((await mastodonSend('POST', '/api/v1/markers', token, { notifications: { last_read_id: alice.id } })).status, 403);
+			const allowed = await api('flash/gen-token', { permissions: ['read:notifications'] }, alice);
+			assert.strictEqual((await mastodonGet('/api/v1/notifications/unread_count', allowed.body.token)).status, 200);
+		});
+
+		test('does not treat a scoped OAuth grant as legacy app-wide consent', async () => {
+			const scopedApp = await (await registerApp({ client_name: 'Scoped consent test' })).json() as RegisteredApp;
+			const code = await authorize(scopedApp, alice, { scope: 'read' });
+			const issued = await requestToken({ grant_type: 'authorization_code', client_id: scopedApp.client_id, client_secret: scopedApp.client_secret, code });
+			assert.strictEqual(issued.status, 200);
+			const generated = await api('auth/session/generate', { appSecret: scopedApp.client_secret });
+			const session = await api('auth/session/show', { token: generated.body.token }, alice);
+			assert.strictEqual(session.body.app.isAuthorized, false);
+			const apps = await api('i/apps', {}, alice);
+			const grant = apps.body.find(a => a.name === 'Scoped consent test');
+			assert.ok(grant?.permission.includes('read:account'));
+			assert.ok(!grant?.permission.includes('write:notes'));
+			await api('auth/accept', { token: generated.body.token }, alice);
+			const legacy = await api('auth/session/userkey', { appSecret: scopedApp.client_secret, token: generated.body.token });
+			assert.strictEqual(legacy.status, 200);
+			assert.strictEqual((await api('notes/create', { text: 'legacy grant still works' }, { token: legacy.body.accessToken })).status, 200);
+		});
+
+		test('rejects flash tokens at the Mastodon websocket boundary', async () => {
+			const flash = await api('flash/gen-token', { permissions: [] }, alice);
+			const status = await new Promise<number>((resolve, reject) => {
+				const ws = new WebSocket(`ws://127.0.0.1:${port}/api/v1/streaming?stream=user`, flash.body.token);
+				ws.on('error', () => {});
+				ws.once('open', () => { ws.close(); reject(new Error('Flash token accepted by streaming')); });
+				ws.once('unexpected-response', (_request, response) => { response.resume(); ws.terminate(); resolve(response.statusCode!); });
+			});
+			assert.strictEqual(status, 401);
+		});
+
 		test('checks the PKCE code_verifier', async () => {
 			const { verifier, challenge } = pkcePair();
 			const code = await authorize(app, alice, { code_challenge: challenge, code_challenge_method: 'S256' });

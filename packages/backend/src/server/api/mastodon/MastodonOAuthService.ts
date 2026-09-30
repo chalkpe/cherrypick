@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { verifyChallenge } from 'pkce-challenge';
@@ -14,6 +14,8 @@ import { IdService } from '@/core/IdService.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
+import { MASTODON_OAUTH_PREFIX } from '@/misc/mastodon-oauth.js';
+import { secureRndstr } from '@/misc/secure-rndstr.js';
 import type { FastifyReply } from 'fastify';
 
 export type MastodonOAuthParameters = Record<string, string | string[] | undefined>;
@@ -184,15 +186,21 @@ export class MastodonOAuthService {
 				throw new MastodonOAuthError('invalid_request', 'code_challenge_method must be S256');
 			}
 
+			const scopes = parseMastodonScopes(params.scope);
+			const permissions = toCherryPickPermissions(scopes);
+			if (permissions.some(permission => !app.permission.includes(permission))) {
+				throw new MastodonOAuthError('invalid_scope', 'The requested scope exceeds the registered permissions');
+			}
+
 			const session = await this.authSessionsRepository.insertOne({
 				id: this.idService.gen(),
 				appId: app.id,
-				token: randomUUID(),
+				token: MASTODON_OAUTH_PREFIX + randomUUID(),
 			});
 
 			const pending: PendingAuthorization = {
 				redirectUri,
-				scope: parseMastodonScopes(params.scope).join(' '),
+				scope: scopes.join(' '),
 				codeChallenge,
 			};
 			await this.redisClient.set(this.pendingKey(session.token), JSON.stringify(pending), 'EX', AUTHORIZATION_TTL_SECONDS);
@@ -241,7 +249,7 @@ export class MastodonOAuthService {
 			const app = await this.findApp(params, true);
 
 			const code = firstValue(params.code);
-			if (!code) throw new MastodonOAuthError('invalid_grant', 'code is required');
+			if (!code?.startsWith(MASTODON_OAUTH_PREFIX)) throw new MastodonOAuthError('invalid_grant', 'Invalid authorization code');
 
 			const session = await this.authSessionsRepository.findOneBy({ token: code, appId: app.id });
 			if (session == null || session.userId == null) {
@@ -266,16 +274,25 @@ export class MastodonOAuthService {
 				}
 			}
 
-			const accessToken = await this.accessTokensRepository.findOneBy({ appId: app.id, userId: session.userId });
-			if (accessToken == null) {
-				throw new MastodonOAuthError('invalid_grant', 'No access token was issued for this authorization');
+			// Claim the code atomically only after all checks. Concurrent exchanges must not issue two tokens.
+			if (await this.redisClient.getdel(this.pendingKey(code)) == null) {
+				throw new MastodonOAuthError('invalid_grant', 'The authorization code has expired or was already used');
 			}
+			await this.authSessionsRepository.delete(session.id);
 
-			// Authorization codes are single use.
-			await Promise.all([
-				this.authSessionsRepository.delete(session.id),
-				this.redisClient.del(this.pendingKey(code)),
-			]);
+			// Each grant has its own immutable permissions; legacy app-wide tokens must never be reused.
+			const token = secureRndstr(32);
+			const accessToken = await this.accessTokensRepository.insertOne({
+				id: this.idService.gen(),
+				appId: app.id,
+				userId: session.userId,
+				// Never expose the token through the unauthenticated MiAuth session/check endpoint.
+				session: MASTODON_OAUTH_PREFIX + randomUUID(),
+				fetched: true,
+				token,
+				hash: createHash('sha256').update(token + app.secret).digest('hex'),
+				permission: toCherryPickPermissions(parseMastodonScopes(pending.scope)),
+			});
 
 			this.logger.info(`Issued access token of app ${app.id} for user ${session.userId}`);
 			reply.send({

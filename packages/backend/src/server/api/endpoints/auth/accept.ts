@@ -5,6 +5,8 @@
 
 import * as crypto from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
+import { IsNull } from 'typeorm';
+import { MASTODON_OAUTH_PREFIX } from '@/misc/mastodon-oauth.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import type { AuthSessionsRepository, AppsRepository, AccessTokensRepository } from '@/models/_.js';
 import { IdService } from '@/core/IdService.js';
@@ -59,6 +61,12 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.noSuchSession);
 			}
 
+			// OAuth issues a scoped token only after the authorization code and PKCE are checked.
+			if (session.token.startsWith(MASTODON_OAUTH_PREFIX)) {
+				await this.authSessionsRepository.update(session.id, { userId: me.id });
+				return;
+			}
+
 			const accessToken = secureRndstr(32);
 
 			// Fetch exist access token
@@ -66,6 +74,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				where: {
 					appId: session.appId,
 					userId: me.id,
+					session: IsNull(),
 				},
 			});
 
@@ -84,6 +93,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					lastUsedAt: now,
 					appId: session.appId,
 					userId: me.id,
+					session: null,
 					token: accessToken,
 					hash: hash,
 				});
