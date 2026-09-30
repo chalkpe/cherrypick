@@ -29,6 +29,7 @@ import { FeedService } from './web/FeedService.js';
 import { UrlPreviewService } from './web/UrlPreviewService.js';
 import { ClientLoggerService } from './web/ClientLoggerService.js';
 import { OAuth2ProviderService } from './oauth/OAuth2ProviderService.js';
+import { mastodonProviders } from './api/mastodon/providers.js';
 
 import MainStreamConnection from '@/server/api/stream/Connection.js';
 import { MainChannel } from './api/stream/channels/main.js';
@@ -104,6 +105,7 @@ import { BubbleTimelineChannel } from './api/stream/channels/bubble-timeline.js'
 		OpenApiServerService,
 		OAuth2ProviderService,
 		BubbleTimelineChannel,
+		...mastodonProviders,
 	],
 	exports: [
 		ServerService,

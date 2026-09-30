@@ -14,6 +14,7 @@ import { DI } from '@/di-symbols.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { bindThis } from '@/decorators.js';
 import endpoints from './endpoints.js';
+import { isMastodonApiUrl } from './mastodon/MastodonApiServerService.js';
 import { ApiCallService } from './ApiCallService.js';
 import { SignupApiService } from './SignupApiService.js';
 import { SigninApiService } from './SigninApiService.js';
@@ -47,6 +48,8 @@ export class ApiServerService {
 	public createServer(fastify: FastifyInstance, options: FastifyPluginOptions, done: (err?: Error) => void) {
 		fastify.register(cors, {
 			origin: '*',
+			// The Mastodon-compatible API shares the /api prefix, so its preflight requests are answered here as well
+			methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
 		});
 
 		fastify.register(multipart, {
@@ -190,17 +193,27 @@ export class ApiServerService {
 		// Make sure any unknown path under /api returns HTTP 404 Not Found,
 		// because otherwise ClientServerService will return the base client HTML
 		// page with HTTP 200.
-		fastify.get('/*', (request, reply) => {
-			reply.code(404);
-			// Mock ApiCallService.send's error handling
-			reply.send({
-				error: {
-					message: 'Unknown API endpoint.',
-					code: 'UNKNOWN_API_ENDPOINT',
-					id: '2ca3b769-540a-4f08-9dd5-b5a825b6d0f1',
-					kind: 'client',
-				},
-			});
+		// Other methods are answered here too, so that browsers can read the 404 with the CORS headers of this server.
+		fastify.route({
+			method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+			url: '/*',
+			handler: (request, reply) => {
+				reply.code(404);
+				// Mastodon clients read the error as a string, as Mastodon answers unknown routes
+				if (isMastodonApiUrl(request.url)) {
+					reply.send({ error: 'Not Found' });
+					return;
+				}
+				// Mock ApiCallService.send's error handling
+				reply.send({
+					error: {
+						message: 'Unknown API endpoint.',
+						code: 'UNKNOWN_API_ENDPOINT',
+						id: '2ca3b769-540a-4f08-9dd5-b5a825b6d0f1',
+						kind: 'client',
+					},
+				});
+			},
 		});
 
 		done();

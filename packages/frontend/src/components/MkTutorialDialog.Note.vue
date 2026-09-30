@@ -59,6 +59,7 @@ const exampleNote = reactive<Misskey.entities.Note>({
 		emojis: {},
 		onlineStatus: 'unknown',
 		badgeRoles: [],
+		approved: true,
 	},
 	text: 'just setting up my crpk',
 	cw: null,

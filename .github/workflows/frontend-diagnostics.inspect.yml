@@ -21,7 +21,7 @@ on:
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - .node-version
-      - .github/misskey/test.yml
+      - .github/cherrypick/test.yml
       - packages-private/diagnostics-shared/**
       - packages-private/diagnostics-frontend/**
       - .github/workflows/frontend-diagnostics.inspect.yml
@@ -47,7 +47,7 @@ jobs:
         ports:
           - 54312:5432
         env:
-          POSTGRES_DB: test-misskey
+          POSTGRES_DB: test-cherrypick
           POSTGRES_HOST_AUTH_METHOD: trust
       redis:
         image: redis:8
@@ -97,7 +97,7 @@ jobs:
 
       - name: Configure base
         working-directory: base
-        run: cp .github/misskey/test.yml .config
+        run: cp .github/cherrypick/test.yml .config
 
       - name: Build base
         working-directory: base
@@ -112,7 +112,7 @@ jobs:
 
       - name: Configure head
         working-directory: head
-        run: cp .github/misskey/test.yml .config
+        run: cp .github/cherrypick/test.yml .config
 
       - name: Build head
         working-directory: head

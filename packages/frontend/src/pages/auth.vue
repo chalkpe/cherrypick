@@ -17,7 +17,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				v-if="state == 'waiting'"
 				class="form"
 				:session="session"
-				@denied="state = 'denied'"
+				@denied="denied"
 				@accepted="accepted"
 			/>
 			<div v-if="state == 'denied'">
@@ -58,9 +58,59 @@ const props = defineProps<{
 const state = ref<'waiting' | 'accepted' | 'fetch-session-error' | 'denied' | null>(null);
 const session = ref<Misskey.entities.AuthSessionShowResponse | null>(null);
 
+// Keep in sync with FORBIDDEN_REDIRECT_PROTOCOLS in the backend MastodonOAuthService
+const MASTODON_FORBIDDEN_REDIRECT_PROTOCOLS = ['javascript:', 'data:', 'vbscript:', 'file:', 'blob:'];
+
+// Mastodon-compatible OAuth (/oauth/authorize) sends the user here with these parameters
+const mastodonParams = (() => {
+	const params = new URLSearchParams(window.location.search);
+	if (params.get('mastodon') !== 'true') return null;
+	return {
+		redirectUri: params.get('redirect_uri'),
+		oauthState: params.get('state'),
+	};
+})();
+
+// Only a URI registered for the app, and never one that runs in this origin, is accepted
+function getMastodonRedirectUrl(): URL | null {
+	if (session.value == null || mastodonParams == null) return null;
+
+	const registeredUris = (session.value.app.callbackUrl ?? '').split(/\s+/);
+	const redirectUri = mastodonParams.redirectUri;
+	if (redirectUri == null || !registeredUris.includes(redirectUri) || !URL.canParse(redirectUri)) return null;
+
+	const url = new URL(redirectUri);
+	if (MASTODON_FORBIDDEN_REDIRECT_PROTOCOLS.includes(url.protocol)) return null;
+	return url;
+}
+
+// Returns the result to the Mastodon client. The session token serves as the authorization code.
+function redirectToMastodonClient(result: { code: string } | { error: string }) {
+	if (mastodonParams == null) return;
+
+	const url = getMastodonRedirectUrl();
+	if (url == null) {
+		state.value = 'fetch-session-error';
+		return;
+	}
+
+	for (const [key, value] of Object.entries(result)) {
+		url.searchParams.set(key, value);
+	}
+	if (mastodonParams.oauthState != null) url.searchParams.set('state', mastodonParams.oauthState);
+	window.location.href = url.toString();
+}
+
+function denied() {
+	state.value = 'denied';
+	redirectToMastodonClient({ error: 'access_denied' });
+}
+
 function accepted() {
 	state.value = 'accepted';
-	if (session.value && session.value.app.callbackUrl) {
+	if (session.value && mastodonParams != null) {
+		redirectToMastodonClient({ code: session.value.token });
+	} else if (session.value && session.value.app.callbackUrl) {
 		const url = new URL(session.value.app.callbackUrl);
 		if (['javascript:', 'file:', 'data:', 'mailto:', 'tel:', 'vbscript:'].includes(url.protocol)) throw new Error('invalid url');
 		window.location.href = `${session.value.app.callbackUrl}?token=${session.value.token}`;
@@ -79,6 +129,12 @@ onMounted(async () => {
 			token: props.token,
 		});
 		session.value = result;
+
+		// Reject a tampered Mastodon redirect before anything is approved
+		if (mastodonParams != null && getMastodonRedirectUrl() == null) {
+			state.value = 'fetch-session-error';
+			return;
+		}
 
 		// 既に連携していた場合
 		if (result.app.isAuthorized) {

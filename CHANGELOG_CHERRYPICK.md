@@ -26,6 +26,7 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2025122](CHANG
 
 ### Server
 - Fix: 답글 타래가 너무 긴 리모트 노트를 받거나 조회할 수 없고, 그때마다 서버가 느려질 수 있음
+- Feat: Phanpy, Moshidon, Ice Cubes 등 Mastodon 클라이언트로 로그인해 사용할 수 있음 (TransFem-org/Sharkey 기반 Mastodon 호환 API)
 
 ---
 

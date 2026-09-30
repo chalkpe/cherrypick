@@ -14,6 +14,7 @@ on:
       - packages/icons-subsetter/**
       - packages/sw/**
       - packages/cherrypick-js/**
+      - packages/megalodon/**
       - packages/misskey-bubble-game/**
       - packages/misskey-reversi/**
       - packages/shared/eslint.config.js
@@ -32,6 +33,7 @@ on:
       - packages/icons-subsetter/**
       - packages/sw/**
       - packages/cherrypick-js/**
+      - packages/megalodon/**
       - packages/misskey-bubble-game/**
       - packages/misskey-reversi/**
       - packages/shared/eslint.config.js
@@ -105,6 +107,7 @@ jobs:
         - frontend
         - sw
         - cherrypick-js
+        - megalodon
     steps:
     - uses: actions/checkout@v7.0.1
       with:

@@ -4,6 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
+import { MASTODON_OAUTH_PREFIX } from '@/misc/mastodon-oauth.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import type { AccessTokensRepository } from '@/models/_.js';
 import { DI } from '@/di-symbols.js';
@@ -95,7 +96,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				name: token.name ?? token.app?.name,
 				createdAt: this.idService.parse(token.id).date.toISOString(),
 				lastUsedAt: token.lastUsedAt?.toISOString(),
-				permission: token.app ? token.app.permission : token.permission,
+				permission: token.app && !token.session?.startsWith(MASTODON_OAUTH_PREFIX) ? token.app.permission : token.permission,
 				iconUrl: token.iconUrl,
 				description: token.description ?? token.app?.description ?? null,
 			})));

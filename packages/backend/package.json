@@ -112,6 +112,7 @@
 		"json5": "2.2.3",
 		"jsonld": "9.0.0",
 		"juice": "12.1.2",
+		"megalodon": "workspace:*",
 		"meilisearch": "0.60.0",
 		"mfc-js": "0.1.0",
 		"mfm-js": "0.26.0",

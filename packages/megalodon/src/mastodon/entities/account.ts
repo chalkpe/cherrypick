@@ -1,0 +1,36 @@
+import type { Emoji } from './emoji.js';
+import type { Field } from './field.js';
+import type { Source } from './source.js';
+import type { Role } from './role.js';
+
+export interface Account {
+	id: string
+	username: string
+	acct: string
+	display_name: string
+	locked: boolean
+	discoverable?: boolean
+	group: boolean | null
+	noindex: boolean | null
+	// Whether the followers and following lists are hidden (Mastodon 4.1+)
+	hide_collections?: boolean
+	suspended: boolean | null
+	limited: boolean | null
+	created_at: string
+	followers_count: number
+	following_count: number
+	statuses_count: number
+	note: string
+	url: string
+	avatar: string
+	avatar_static: string
+	header: string
+	header_static: string
+	emojis: Array<Emoji>
+	moved: Account | null
+	fields: Array<Field>
+	bot: boolean
+	source?: Source
+	role?: Role
+	mute_expires_at?: string | null
+}

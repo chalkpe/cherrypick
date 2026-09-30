@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { IsNull } from 'typeorm';
+import { MASTODON_OAUTH_PREFIX } from '@/misc/mastodon-oauth.js';
 import { Inject, Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import type { AppsRepository, AccessTokensRepository, AuthSessionsRepository } from '@/models/_.js';
@@ -92,7 +94,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				appId: app.id,
 			});
 
-			if (session == null) {
+			if (session == null || session.token.startsWith(MASTODON_OAUTH_PREFIX)) {
 				throw new ApiError(meta.errors.noSuchSession);
 			}
 
@@ -104,6 +106,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			const accessToken = await this.accessTokensRepository.findOneByOrFail({
 				appId: app.id,
 				userId: session.userId,
+				session: IsNull(),
 			});
 
 			// Delete session

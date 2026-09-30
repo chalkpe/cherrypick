@@ -1,0 +1,41 @@
+{
+	"type": "module",
+	"name": "megalodon",
+	"version": "7.0.1",
+	"private": true,
+	"description": "Mastodon API compatibility layer for CherryPick (forked from h3poteto/megalodon via Sharkey)",
+	"main": "./built/index.js",
+	"types": "./built/index.d.ts",
+	"exports": {
+		".": {
+			"import": "./built/index.js",
+			"types": "./built/index.d.ts",
+			"default": "./built/index.js"
+		}
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"watch": "tsc -p tsconfig.json --watch",
+		"typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+		"lint": "pnpm typecheck",
+		"test": "vitest run"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/h3poteto/megalodon.git"
+	},
+	"author": "h3poteto",
+	"license": "MIT",
+	"dependencies": {
+		"axios": "1.19.0",
+		"dayjs": "1.11.21"
+	},
+	"devDependencies": {
+		"@types/node": "26.4.0",
+		"vitest": "4.1.11"
+	},
+	"files": [
+		"built"
+	],
+	"sideEffects": false
+}

@@ -57,7 +57,7 @@ const { default: MkPostFormSimple } = await import('@/components/MkPostFormSimpl
 
 describe.each([
 	{ name: 'MkPostForm', component: MkPostForm, submitSelector: '[data-testid="post-form-submit"]' },
-	{ name: 'MkPostFormSimple', component: MkPostFormSimple, submitSelector: '[data-cy-open-post-form-submit]' },
+	{ name: 'MkPostFormSimple', component: MkPostFormSimple, submitSelector: '[data-testid="post-form-submit"]' },
 ])('$name', ({ component, submitSelector }) => {
 	const driveFile = {
 		id: 'drive-file-1',
