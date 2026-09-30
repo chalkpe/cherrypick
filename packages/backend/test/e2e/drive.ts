@@ -230,3 +230,54 @@ describe('Drive unused files', () => {
 		assert.ok(!ids.includes(banner.id));
 	});
 });
+
+describe('Drive bulk delete', () => {
+	let erin: misskey.entities.SignupResponse;
+	let frank: misskey.entities.SignupResponse;
+
+	beforeAll(async () => {
+		erin = await signup({ username: 'bulk_erin' });
+		frank = await signup({ username: 'bulk_frank' });
+	}, 1000 * 60 * 2);
+
+	async function exists(user: misskey.entities.SignupResponse, fileId: string): Promise<boolean> {
+		const res = await api('drive/files/show', { fileId }, user);
+		return res.status === 200;
+	}
+
+	// DriveService.deleteFile はレコード削除 (deletePostProcess) を await せずに返すため、消えるまで少し待つ
+	async function waitUntilDeleted(user: misskey.entities.SignupResponse, fileId: string): Promise<boolean> {
+		for (let i = 0; i < 20; i++) {
+			if (!(await exists(user, fileId))) return true;
+			await new Promise(resolve => setTimeout(resolve, 100));
+		}
+		return false;
+	}
+
+	test('自分のファイルをまとめて削除できる', async () => {
+		const files = (await Promise.all([uploadFile(erin), uploadFile(erin), uploadFile(erin)])).map(r => r.body!);
+
+		const res = await api('drive/files/delete-bulk', { fileIds: files.map(f => f.id) }, erin);
+		assert.strictEqual(res.status, 204, JSON.stringify(res.body));
+
+		for (const f of files) {
+			assert.strictEqual(await waitUntilDeleted(erin, f.id), true);
+		}
+	});
+
+	test('他人のファイルと存在しない ID は無視して残りを削除する', async () => {
+		const mine = (await uploadFile(erin)).body!;
+		const franks = (await uploadFile(frank)).body!;
+
+		const res = await api('drive/files/delete-bulk', { fileIds: [mine.id, franks.id, '0000000000000000'] }, erin);
+		assert.strictEqual(res.status, 204, JSON.stringify(res.body));
+
+		assert.strictEqual(await waitUntilDeleted(erin, mine.id), true);
+		assert.strictEqual(await exists(frank, franks.id), true);
+	});
+
+	test('空の配列は 400', async () => {
+		const res = await api('drive/files/delete-bulk', { fileIds: [] }, erin);
+		assert.strictEqual(res.status, 400);
+	});
+});

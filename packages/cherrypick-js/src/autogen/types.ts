@@ -1882,6 +1882,15 @@ export type paths = {
          */
         post: operations['drive___files___delete'];
     };
+    '/drive/files/delete-bulk': {
+        /**
+         * drive/files/delete-bulk
+         * @description Delete multiple drive files owned by the requesting user. IDs of files that do not exist or belong to someone else are skipped.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:drive*
+         */
+        post: operations['drive___files___delete-bulk'];
+    };
     '/drive/files/find': {
         /**
          * drive/files/find
@@ -21249,6 +21258,68 @@ export interface operations {
                 'application/json': {
                     /** Format: misskey:id */
                     fileId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (without any results) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'drive___files___delete-bulk': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    fileIds: string[];
                 };
             };
         };
