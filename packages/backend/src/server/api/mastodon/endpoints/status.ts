@@ -46,6 +46,13 @@ function isQuoteNote(note: MisskeyEntity.Note): boolean {
 	return note.renoteId != null && (note.text != null || note.cw != null || note.fileIds.length > 0 || note.poll != null || note.replyId != null);
 }
 
+/** Validate before sensitive media updates fan out into one internal request per file. */
+function isValidMediaIds(value: unknown): boolean {
+	return value == null || (Array.isArray(value) && value.length <= 16
+		&& value.every(id => typeof id === 'string' && id.length > 0)
+		&& new Set(value).size === value.length);
+}
+
 @Injectable()
 export class ApiStatusMastodon {
 	constructor(
@@ -222,6 +229,7 @@ export class ApiStatusMastodon {
 		}>('/v1/statuses', async (_request, reply) => {
 			// Form clients send "media_ids[]" and "poll[options][]" instead of nested values
 			const body = unflattenFormBody((_request.body ?? {}) as Record<string, unknown>) as PostStatusBody;
+			if (!isValidMediaIds(body.media_ids)) return reply.code(400).send({ error: 'media_ids must be an array of at most 16 unique file IDs' });
 			const text = body.status ??= ' ';
 			const removed = text.replace(/@\S+/g, '').replace(/\s|/g, '');
 			const isDefaultEmoji = isUnicodeEmojiReaction(removed);
@@ -295,6 +303,7 @@ export class ApiStatusMastodon {
 				},
 			}
 		}>('/v1/statuses/:id', async (_request, reply) => {
+			if (!isValidMediaIds(_request.body.media_ids)) return reply.code(400).send({ error: 'media_ids must be an array of at most 16 unique file IDs' });
 			const { client, me } = await this.clientService.getAuthClient(_request);
 			const body = _request.body;
 
