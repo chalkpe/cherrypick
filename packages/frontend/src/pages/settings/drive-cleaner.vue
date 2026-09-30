@@ -25,7 +25,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 					class="_button"
 					:role="unusedOnly ? 'checkbox' : undefined"
 					:aria-checked="unusedOnly ? selectedIds.includes(file.id) : undefined"
+					:tabindex="unusedOnly ? 0 : undefined"
 					@click="$event => onClick($event, file)"
+					@keydown.enter.prevent="onKeyToggle(file)"
+					@keydown.space.prevent="onKeyToggle(file)"
 					@contextmenu.stop="$event => onContextMenu($event, file)"
 				>
 					<div :class="[$style.file, { [$style.selected]: unusedOnly && selectedIds.includes(file.id) }]">
@@ -208,6 +211,11 @@ async function deleteSelected(): Promise<void> {
 			text: i18n.ts._drivecleaner.deleteSelectedFailed,
 		});
 	}
+}
+
+function onKeyToggle(file: Misskey.entities.DriveFile): void {
+	if (!unusedOnly.value) return;
+	toggleSelection(file);
 }
 
 function onClick(ev: PointerEvent, file: Misskey.entities.DriveFile) {
