@@ -7,6 +7,9 @@ import { Inject, Injectable } from '@nestjs/common';
 import { IsNull } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import { QueryService } from '@/core/QueryService.js';
+import { CacheService } from '@/core/CacheService.js';
+import { IdService } from '@/core/IdService.js';
+import { shouldHideNoteByTime } from '@/misc/should-hide-note-by-time.js';
 import type { MiChannel, MiNote, NoteFavoritesRepository, NotesRepository, NoteThreadMutingsRepository, UserNotePiningsRepository } from '@/models/_.js';
 import type { MiLocalUser, MiUser } from '@/models/User.js';
 import { ApiError } from '../error.js';
@@ -31,6 +34,9 @@ export class MastodonDataService {
 
 		@Inject(QueryService)
 		private readonly queryService: QueryService,
+
+		private readonly cacheService: CacheService,
+		private readonly idService: IdService,
 	) {}
 
 	/**
@@ -96,6 +102,32 @@ export class MastodonDataService {
 		}
 
 		return await query.getOne() as NoteWithRelations<Rel> | null;
+	}
+
+	/**
+	 * Whether the content of a note is hidden from the current user by a setting of its author:
+	 * signed-in viewers only, notes hidden after a while, or notes limited to followers after a while.
+	 * The visibility query of getNote does not know these, so this must mirror NoteEntityService.shouldHideNote for them.
+	 */
+	public async isContentHidden(
+		note: Pick<MiNote, 'id' | 'userId' | 'visibility' | 'replyUserId' | 'mentions'>,
+		author: Pick<MiUser, 'requireSigninToViewContents' | 'makeNotesHiddenBefore' | 'makeNotesFollowersOnlyBefore'>,
+		me: MiLocalUser | null | undefined,
+	): Promise<boolean> {
+		if (me?.id === note.userId) return false;
+		if (author.requireSigninToViewContents && me == null) return true;
+
+		const createdAt = this.idService.parse(note.id).date;
+		if (shouldHideNoteByTime(author.makeNotesHiddenBefore, createdAt)) return true;
+
+		if ((note.visibility === 'public' || note.visibility === 'home') && shouldHideNoteByTime(author.makeNotesFollowersOnlyBefore, createdAt)) {
+			if (me == null) return true;
+			if (note.replyUserId === me.id || note.mentions.includes(me.id)) return false;
+			const followings = await this.cacheService.userFollowingsCache.fetch(me.id);
+			return !Object.hasOwn(followings, note.userId);
+		}
+
+		return false;
 	}
 
 	/**

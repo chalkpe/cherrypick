@@ -250,6 +250,10 @@ export class MastodonConverters {
 		}
 
 		const noteUser = await this.getterService.getUser(note.userId);
+		if (await this.mastodonDataService.isContentHidden(note, noteUser, me)) {
+			return [];
+		}
+
 		const account = await this.convertAccount(noteUser);
 		const histories = await this.noteHistoryRepository.find({ where: { noteId: note.id }, order: { updatedAt: 'ASC' } });
 		if (histories.length === 0) {
@@ -297,12 +301,15 @@ export class MastodonConverters {
 		const noteUser = hints?.user ?? note.user ?? await this.getterService.getUser(status.account.id);
 		const mentionedRemoteUsers = JSON.parse(note.mentionedRemoteUsers);
 
-		const emoji = await this.resolveEmojis(note.emojis, noteUser.host);
+		// The author may hide the content of their notes. The attachments and the poll come from the status, where they are hidden already.
+		const hidden = await this.mastodonDataService.isContentHidden(note, noteUser, me);
 
-		const mentionedUsers = await Promise.all(note.mentions.map(id => this.cacheService.findUserById(id).catch(() => null)));
+		const emoji = hidden ? [] : await this.resolveEmojis(note.emojis, noteUser.host);
+
+		const mentionedUsers = hidden ? [] : await Promise.all(note.mentions.map(id => this.cacheService.findUserById(id).catch(() => null)));
 		const mentions = mentionedUsers.filter(u => u != null).map(u => this.encode(u, mentionedRemoteUsers));
 
-		const tags = note.tags.map(tag => {
+		const tags = (hidden ? [] : note.tags).map(tag => {
 			return {
 				name: tag,
 				url: `${this.config.url}/tags/${tag}`,
@@ -320,7 +327,7 @@ export class MastodonConverters {
 				: null,
 			this.mastodonDataService.hasReblog(note.id, me),
 			this.mastodonDataService.getNoteState(note, me),
-			me ? this.filterService.match(note, me) : undefined,
+			me && !hidden ? this.filterService.match(note, me) : undefined,
 			// Most notes are never renoted, so only those that are need counting
 			note.renoteCount > 0 ? this.mastodonDataService.countPureRenotes(note.id) : 0,
 		]);
@@ -339,12 +346,12 @@ export class MastodonConverters {
 				: { state: 'unauthorized' as const, quoted_status: null }
 			: null;
 
-		const text = note.text;
+		const text = hidden ? null : note.text;
 		const content = text !== null
 			? this.toMastoHtml(text, mentionedRemoteUsers, quoteUri)
 			: '';
 
-		const cw = note.cw ?? '';
+		const cw = hidden ? '' : note.cw ?? '';
 
 		// noinspection ES6MissingAwait
 		return await awaitAll({
@@ -357,7 +364,7 @@ export class MastodonConverters {
 			reblog: !isQuote ? embedded : null,
 			content: content,
 			content_type: 'text/x.misskeymarkdown',
-			text: note.text,
+			text,
 			created_at: status.created_at,
 			edited_at: note.updatedAt?.toISOString() ?? null,
 			emojis: emoji,

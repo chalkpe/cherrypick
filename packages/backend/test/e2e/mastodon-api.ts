@@ -1056,6 +1056,79 @@ describe('Mastodon API', () => {
 		});
 	});
 
+	describe('Notes hidden by their author', () => {
+		let author: misskey.entities.SignupResponse;
+		let follower: misskey.entities.SignupResponse;
+		let stranger: misskey.entities.SignupResponse;
+		let authorToken: string;
+		let followerToken: string;
+		let strangerToken: string;
+		let noteId: string;
+
+		type Status = { id: string; content: string; text: string | null; spoiler_text: string; mentions: unknown[]; tags: unknown[] };
+
+		async function show(accessToken?: string): Promise<Status> {
+			const res = await mastodonGet(`/api/v1/statuses/${noteId}`, accessToken);
+			assert.strictEqual(res.status, 200);
+			return await res.json() as Status;
+		}
+
+		function assertHidden(status: Status): void {
+			assert.strictEqual(status.content, '');
+			assert.strictEqual(status.text, null);
+			assert.strictEqual(status.spoiler_text, '');
+			assert.deepStrictEqual(status.mentions, []);
+			assert.deepStrictEqual(status.tags, []);
+		}
+
+		async function configure(settings: Record<string, unknown>): Promise<void> {
+			const res = await api('i/update', { requireSigninToViewContents: false, makeNotesHiddenBefore: null, makeNotesFollowersOnlyBefore: null, ...settings }, author);
+			assert.strictEqual(res.status, 200);
+		}
+
+		beforeAll(async () => {
+			author = await signup({ username: 'hider' });
+			follower = await signup({ username: 'hiderfollower' });
+			stranger = await signup({ username: 'hiderstranger' });
+			[authorToken, followerToken, strangerToken] = await Promise.all([author, follower, stranger].map(issueToken));
+			await api('following/create', { userId: author.id }, follower);
+			noteId = (await api('notes/create', { text: 'secret @alice #hiddentag', cw: 'secret warning' }, author)).body.createdNote.id;
+		});
+
+		// A positive value is a point in time: notes created before it are affected
+		const future = (): number => Math.floor(Date.now() / 1000) + 3600;
+
+		test('does not show the content of notes that are hidden after a while', async () => {
+			await configure({ makeNotesHiddenBefore: future() });
+
+			assertHidden(await show(strangerToken));
+			assertHidden(await show(followerToken));
+			assertHidden(await show());
+			assert.strictEqual((await show(authorToken)).text, 'secret @alice #hiddentag');
+
+			const history = await mastodonGet(`/api/v1/statuses/${noteId}/history`, strangerToken);
+			assert.deepStrictEqual(await history.json(), []);
+		});
+
+		test('shows notes that became followers-only to followers only', async () => {
+			await configure({ makeNotesFollowersOnlyBefore: future() });
+
+			assertHidden(await show(strangerToken));
+			assertHidden(await show());
+			assert.strictEqual((await show(followerToken)).spoiler_text, 'secret warning');
+		});
+
+		test('does not show the content to anonymous viewers when the author requires signing in', async () => {
+			await configure({ requireSigninToViewContents: true });
+
+			const res = await mastodonGet(`/api/v1/accounts/${author.id}/statuses`);
+			assert.strictEqual(res.status, 200);
+			const statuses = await res.json() as Status[];
+			assertHidden(statuses.find(s => s.id === noteId)!);
+			assert.strictEqual((await show(strangerToken)).spoiler_text, 'secret warning');
+		});
+	});
+
 	describe('Web Push subscriptions', () => {
 		let aliceToken: string;
 		const subscription = {
