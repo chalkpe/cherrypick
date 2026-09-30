@@ -1041,6 +1041,19 @@ describe('Mastodon API', () => {
 			const comment = reports.find(r => r.targetUserId === olga.id)?.comment ?? '';
 			assert.ok(comment.startsWith('[spam]\nbad\n') && comment.endsWith(`/notes/${note.id}`), comment);
 		});
+
+		test('suggests neither the user themselves nor the accounts they follow', async () => {
+			const pat = await signup({ username: 'pat' });
+			await api('following/create', { userId: pat.id }, mia);
+
+			const accounts = (await get<{ id: string }[]>('/api/v1/suggestions?limit=80')).map(a => a.id);
+			const entries = (await get<{ account: { id: string } }[]>('/api/v2/suggestions?limit=80')).map(e => e.account.id);
+			for (const ids of [accounts, entries]) {
+				assert.ok(ids.includes(nick.id));
+				assert.ok(!ids.includes(mia.id));
+				assert.ok(!ids.includes(pat.id));
+			}
+		});
 	});
 
 	describe('Web Push subscriptions', () => {

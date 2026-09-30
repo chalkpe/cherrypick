@@ -6,12 +6,13 @@
 import { Injectable } from '@nestjs/common';
 import { MastodonClientService } from '@/server/api/mastodon/MastodonClientService.js';
 import { RoleService } from '@/core/RoleService.js';
+import { CacheService } from '@/core/CacheService.js';
 import type { MiLocalUser } from '@/models/User.js';
 import { attachMinMaxPagination, attachOffsetPagination } from '@/server/api/mastodon/pagination.js';
 import { promiseMap } from '@/misc/promise-map.js';
 import { MastodonConverters } from '../MastodonConverters.js';
 import { parseTimelineArgs, TimelineArgs, toBoolean, toInt } from '../argsUtils.js';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Converter } from 'megalodon';
 import type { Entity, MisskeyEntity } from 'megalodon';
 
@@ -29,6 +30,7 @@ export class ApiSearchMastodon {
 		private readonly mastoConverters: MastodonConverters,
 		private readonly clientService: MastodonClientService,
 		private readonly roleService: RoleService,
+		private readonly cacheService: CacheService,
 	) {}
 
 	/**
@@ -39,6 +41,34 @@ export class ApiSearchMastodon {
 	private async canSearchStatuses(q: string, me: MiLocalUser | null): Promise<boolean> {
 		if (/^https?:\/\//.test(q)) return true;
 		return (await this.roleService.getUserPolicies(me?.id ?? null)).canSearchNotes;
+	}
+
+	/**
+	 * The most followed local accounts, without the user themselves and the accounts they already follow.
+	 * The user list cannot leave those out by itself, so it is read in pages until enough accounts are left.
+	 */
+	private async suggestAccounts(request: FastifyRequest<ApiSearchMastodonRoute>): Promise<Entity.Account[]> {
+		const args = parseTimelineArgs(request.query);
+		const limit = Math.min(Math.max(args.limit ?? 20, 1), 80);
+		const offset = Math.max(args.offset ?? 0, 0);
+		const me = await this.clientService.getAuth(request);
+		const followings = me ? await this.cacheService.userFollowingsCache.fetch(me.id) : {};
+
+		const pageSize = 100;
+		const accounts: Entity.Account[] = [];
+		for (let page = 0; page < 5 && accounts.length < offset + limit; page++) {
+			const data = await this.clientService.callApi<Entity.Account[]>(request, 'users', {
+				limit: pageSize,
+				offset: page * pageSize,
+				origin: 'local',
+				sort: '+follower',
+				state: 'alive',
+			});
+			accounts.push(...data.filter(account => account.id !== me?.id && !Object.hasOwn(followings, account.id)));
+			if (data.length < pageSize) break;
+		}
+
+		return accounts.slice(offset, offset + limit);
 	}
 
 	public register(fastify: FastifyInstance): void {
@@ -142,12 +172,7 @@ export class ApiSearchMastodon {
 
 		// Mastodon 2.x suggestions are plain accounts
 		fastify.get<ApiSearchMastodonRoute>('/v1/suggestions', async (request, reply) => {
-			const data = await this.clientService.callApi<Entity.Account[]>(request, 'users', {
-				limit: parseTimelineArgs(request.query).limit ?? 20,
-				origin: 'local',
-				sort: '+follower',
-				state: 'alive',
-			});
+			const data = await this.suggestAccounts(request);
 			const response = await promiseMap(data, async account => await this.mastoConverters.convertAccount(account), { limiter: 4 });
 
 			return reply.send(response);
@@ -159,12 +184,7 @@ export class ApiSearchMastodon {
 		});
 
 		fastify.get<ApiSearchMastodonRoute>('/v2/suggestions', async (request, reply) => {
-			const data = await this.clientService.callApi<Entity.Account[]>(request, 'users', {
-				limit: parseTimelineArgs(request.query).limit ?? 20,
-				origin: 'local',
-				sort: '+follower',
-				state: 'alive',
-			});
+			const data = await this.suggestAccounts(request);
 			const response = await promiseMap(data, async entry => ({
 				source: 'global',
 				account: await this.mastoConverters.convertAccount(entry),
