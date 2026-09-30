@@ -7,11 +7,11 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#202691](CHANGE
 
 ### General
 - Enhance: Misskey 2026.9.1 기반으로 업데이트했습니다.
-- Feat: Bluesky 브릿지(Bridgy Fed)와 홈 공개 노트로 소통할 수 있음 (ZerglingGo/misskey#2, [ZerglingGo/misskey@b709efe2](https://github.com/ZerglingGo/misskey/commit/b709efe29ff6164dc5131ed9e3df6c1f398f6816), [ZerglingGo/misskey@78b89a2f](https://github.com/ZerglingGo/misskey/commit/78b89a2f200193365a4429a94d3441b266659025), [ZerglingGo/misskey@0f65af5e](https://github.com/ZerglingGo/misskey/commit/0f65af5ea1fbec7a7102df667fd61d08648e3c79))
+- Feat: Bluesky 브릿지(Bridgy Fed)와 홈 공개 노트로 소통할 수 있습니다. (ZerglingGo/misskey#2, [ZerglingGo/misskey@b709efe2](https://github.com/ZerglingGo/misskey/commit/b709efe29ff6164dc5131ed9e3df6c1f398f6816), [ZerglingGo/misskey@78b89a2f](https://github.com/ZerglingGo/misskey/commit/78b89a2f200193365a4429a94d3441b266659025), [ZerglingGo/misskey@0f65af5e](https://github.com/ZerglingGo/misskey/commit/0f65af5ea1fbec7a7102df667fd61d08648e3c79))
   - `설정 > 프라이버시`에서 `Bridgy Fed(bsky.brid.gy)에게 홈 공개 범위 노트 전달`을 켜면, 홈 공개 노트도 Bridgy Fed를 거쳐 Bluesky에 전달됩니다.
   - Bridgy Fed에는 노트가 전체 공개로 바뀌어 전달되며, 다른 서버에는 기존처럼 홈 공개로 전달됩니다.
   - 이 설정은 기본적으로 꺼져 있습니다.
-- Feat: Phanpy, Moshidon, Ice Cubes 등 Mastodon 클라이언트로 로그인해 사용할 수 있음 (TransFem-org/Sharkey 기반 Mastodon 호환 API, OAuth 2.0 · 스트리밍 · Web Push 지원)
+- Feat: Phanpy, Moshidon, Ice Cubes 등 Mastodon 클라이언트로 로그인해 사용할 수 있습니다. (TransFem-org/Sharkey 기반 Mastodon 호환 API, OAuth 2.0 · 스트리밍 · Web Push 지원)
 - Fix: Misskey 2026.9.1 병합 과정에서 병합 전 상태로 되돌려졌던 로케일 파일(ko-KR 등)을 복구하여, 누락되었던 번역(예: 노트 검색의 `게시 날짜` 옵션)이 다시 표시됩니다.
 - Fix: 병합 과정에서 누락된 번역(민감한 콘텐츠로 표시된 미디어 열기 옵션, 고양이만 보기, 위젯 이름 등)을 복원했습니다.
 
@@ -24,12 +24,12 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#202691](CHANGE
 - Enhance: 리액션을 변경하거나 취소할 때 확인 팝업 없이 바로 적용됩니다.
 - Fix: 리액션을 연달아 변경하면 두 번째 변경이 반영되지 않던 문제를 수정했습니다.
 - Fix: `모달 배경색 제거`를 켜도 모달 배경이 어둡게 표시되어, 반투명한 노트 작성 폼 등 모달 창까지 어둡게 보이던 문제를 수정했습니다.
-- Fix: 노트 작성란에서 드라이브의 파일을 첨부해도 첨부 목록에 표시되지 않을 수 있음
-- Fix: 노트의 아바타를 누르면 유저 페이지 대신 노트 상세 페이지가 열리고, 뒤로 가기를 하면 유저 페이지를 거쳐야 이전 화면으로 돌아갈 수 있음
+- Fix: 노트 작성란에서 드라이브의 파일을 첨부해도 첨부 목록에 표시되지 않던 문제를 수정했습니다.
+- Fix: 노트의 아바타를 누르면 유저 페이지 대신 노트 상세 페이지가 열리고, 뒤로 가기를 하면 유저 페이지를 거쳐야 이전 화면으로 돌아갈 수 있던 문제를 수정했습니다.
 
 ### Server
 - Fix: 버블 인스턴스가 설정되지 않은 서버에서 버블 타임라인이 오류를 반환하던 문제를 수정했습니다.
-- Fix: 답글 타래가 너무 긴 리모트 노트를 받거나 조회할 수 없고, 그때마다 서버가 느려질 수 있음
+- Fix: 답글 타래가 너무 긴 리모트 노트를 받거나 조회할 수 없고, 그때마다 서버가 느려지던 문제를 수정했습니다.
 
 ---
 
