@@ -85,3 +85,55 @@ describe('Drive', () => {
 		assert.strictEqual('error' in res.body, true);
 	});
 });
+
+describe('Drive unused files', () => {
+	let carol: misskey.entities.SignupResponse;
+	let dave: misskey.entities.SignupResponse;
+
+	beforeAll(async () => {
+		carol = await signup({ username: 'unused_carol' });
+		dave = await signup({ username: 'unused_dave' });
+	}, 1000 * 60 * 2);
+
+	async function unusedIds(user: misskey.entities.SignupResponse): Promise<string[]> {
+		const res = await api('drive/files/unused', { limit: 100 }, user);
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+		return res.body.map(f => f.id);
+	}
+
+	test('ノートに添付されていないファイルだけが返る', async () => {
+		const attached = (await uploadFile(carol)).body!;
+		const free = (await uploadFile(carol)).body!;
+		await post(carol, { text: 'with file', fileIds: [attached.id] });
+
+		const ids = await unusedIds(carol);
+		assert.ok(ids.includes(free.id));
+		assert.ok(!ids.includes(attached.id));
+	});
+
+	test('フォルダ内のファイルも返る', async () => {
+		const folder = await api('drive/folders/create', { name: 'unused-folder' }, carol);
+		assert.strictEqual(folder.status, 200);
+		const inFolder = (await uploadFile(carol)).body!;
+		const moved = await api('drive/files/update', { fileId: inFolder.id, folderId: folder.body.id }, carol);
+		assert.strictEqual(moved.status, 200, JSON.stringify(moved.body));
+
+		const ids = await unusedIds(carol);
+		assert.ok(ids.includes(inFolder.id));
+	});
+
+	test('他人のファイルは返らない', async () => {
+		const davesFile = (await uploadFile(dave)).body!;
+
+		const ids = await unusedIds(carol);
+		assert.ok(!ids.includes(davesFile.id));
+		assert.ok((await unusedIds(dave)).includes(davesFile.id));
+	});
+
+	test('limit で件数が制限される', async () => {
+		await Promise.all([uploadFile(carol), uploadFile(carol), uploadFile(carol)]);
+		const res = await api('drive/files/unused', { limit: 2 }, carol);
+		assert.strictEqual(res.status, 200);
+		assert.strictEqual(res.body.length, 2);
+	});
+});

@@ -1401,6 +1401,12 @@ type DriveFilesShowRequest = operations['drive___files___show']['requestBody']['
 type DriveFilesShowResponse = operations['drive___files___show']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type DriveFilesUnusedRequest = operations['drive___files___unused']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type DriveFilesUnusedResponse = operations['drive___files___unused']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type DriveFilesUpdateRequest = operations['drive___files___update']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -1922,6 +1928,8 @@ declare namespace entities {
         DriveFilesMoveBulkRequest,
         DriveFilesShowRequest,
         DriveFilesShowResponse,
+        DriveFilesUnusedRequest,
+        DriveFilesUnusedResponse,
         DriveFilesUpdateRequest,
         DriveFilesUpdateResponse,
         DriveFilesUploadFromUrlRequest,
