@@ -21,6 +21,9 @@ import type { MastodonEntity, MisskeyEntity } from 'megalodon';
  */
 const MASTODON_VISIBLE_TYPES: ReadonlySet<string> = new Set(Converter.decodableNotificationTypes);
 
+// Digits of an integer notification ID that tell apart notifications of the same millisecond
+const NUMERIC_ID_SCALE = 1000;
+
 function compareStreamIds(a: string, b: string): number {
 	const [aMs, aSeq] = a.split('-').map(x => BigInt(x));
 	const [bMs, bSeq] = b.split('-').map(x => BigInt(x));
@@ -68,7 +71,38 @@ export class MastodonNotificationService {
 		return JSON.parse(entry[1][1]) as MiNotification;
 	}
 
-	public async find(userId: MiUser['id'], notificationId: string): Promise<MiNotification | null> {
+	/**
+	 * Integer form of a notification ID, for the fields that Mastodon gives as integers and strict clients only accept as such.
+	 * Notification IDs do not fit in an integer, so it is the time of the notification in milliseconds
+	 * followed by three digits of the rest of its ID, which resolveId finds the notification by.
+	 * It stays a safe integer until the year 2255.
+	 */
+	public toNumericId(notificationId: string): number {
+		const { date, additional } = this.idService.parseFull(notificationId);
+		return date * NUMERIC_ID_SCALE + Number(BigInt.asUintN(64, additional) % BigInt(NUMERIC_ID_SCALE));
+	}
+
+	/**
+	 * Notification ID for an ID sent by a client, which may be the integer form from toNumericId.
+	 * An integer whose notification is gone becomes an ID of the same time, so that paginating from it still works.
+	 */
+	public async resolveId(userId: MiUser['id'], id: string): Promise<string> {
+		if (!/^\d+$/.test(id)) return id;
+
+		const numericId = Number(id);
+		const time = Math.floor(numericId / NUMERIC_ID_SCALE);
+		// Notification IDs may consist of digits alone too. In practice those are too long for an integer or read as a time no ID carries.
+		if (!Number.isSafeInteger(numericId) || !this.idService.isSafeT(time)) return id;
+
+		const rest = BigInt(numericId % NUMERIC_ID_SCALE);
+		// Incomplete stream IDs cover every entry of the millisecond
+		const entries = await this.redisClient.xrange(this.streamKey(userId), time.toString(), time.toString());
+		const entry = entries.find(([streamId]) => BigInt(streamId.split('-')[1]) % BigInt(NUMERIC_ID_SCALE) === rest);
+		return entry ? this.parseEntry(entry).id : this.idService.gen(time);
+	}
+
+	public async find(userId: MiUser['id'], id: string): Promise<MiNotification | null> {
+		const notificationId = await this.resolveId(userId, id);
 		const streamId = this.toStreamId(notificationId);
 		if (streamId == null) return null;
 
@@ -98,8 +132,8 @@ export class MastodonNotificationService {
 	/**
 	 * Deletes a single notification.
 	 */
-	public async dismiss(userId: MiUser['id'], notificationId: string): Promise<void> {
-		const streamId = this.toStreamId(notificationId);
+	public async dismiss(userId: MiUser['id'], id: string): Promise<void> {
+		const streamId = this.toStreamId(await this.resolveId(userId, id));
 		if (streamId == null) return;
 		await this.redisClient.xdel(this.streamKey(userId), streamId);
 	}

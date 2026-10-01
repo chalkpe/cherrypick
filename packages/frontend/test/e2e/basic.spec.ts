@@ -133,6 +133,19 @@ test.describe('After user signup', () => {
 		await signinResponse;
 	});
 
+	// An Android WebView leaves DOM storage off by default, which makes localStorage null.
+	// Mastodon clients such as Tusky show the sign-in page in such a WebView.
+	test('signin without localStorage', async ({ page }) => {
+		await page.addInitScript(() => {
+			Object.defineProperty(window, 'localStorage', { get: () => null, configurable: true });
+		});
+
+		await signIn(page, 'alice', 'alice1234');
+
+		// Shown only when the session survives the reload that follows signing in
+		await page.getByTestId('user-setup-continue').waitFor({ state: 'visible', timeout: 30000 });
+	});
+
 	test('suspend', async ({ page }) => {
 		await page.request.post(`${BASE_URL}/api/admin/suspend-user`, {
 			data: {
