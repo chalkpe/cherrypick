@@ -48,8 +48,8 @@ export class DriveFileUsageService {
 			)
 		)`);
 
-		// チャンネルのバナー
-		q.andWhere('NOT EXISTS (SELECT 1 FROM "channel" WHERE "channel"."userId" = :userId AND "channel"."bannerId" = file.id)');
+		// チャンネルのバナー (モデレーターは他人のチャンネルのバナーを自分のファイルに差し替えられるので、チャンネルの持ち主では絞らない)
+		q.andWhere('NOT EXISTS (SELECT 1 FROM "channel" WHERE "channel"."bannerId" = file.id)');
 
 		// アバター・バナー
 		q.andWhere('NOT EXISTS (SELECT 1 FROM "user" WHERE "user"."id" = :userId AND ("user"."avatarId" = file.id OR "user"."bannerId" = file.id))');

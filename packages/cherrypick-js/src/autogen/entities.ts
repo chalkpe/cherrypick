@@ -314,6 +314,7 @@ export type DriveFilesCreateRequest = operations['drive___files___create']['requ
 export type DriveFilesCreateResponse = operations['drive___files___create']['responses']['200']['content']['application/json'];
 export type DriveFilesDeleteRequest = operations['drive___files___delete']['requestBody']['content']['application/json'];
 export type DriveFilesDeleteBulkRequest = operations['drive___files___delete-bulk']['requestBody']['content']['application/json'];
+export type DriveFilesDeleteBulkResponse = operations['drive___files___delete-bulk']['responses']['200']['content']['application/json'];
 export type DriveFilesFindRequest = operations['drive___files___find']['requestBody']['content']['application/json'];
 export type DriveFilesFindResponse = operations['drive___files___find']['responses']['200']['content']['application/json'];
 export type DriveFilesFindByHashRequest = operations['drive___files___find-by-hash']['requestBody']['content']['application/json'];

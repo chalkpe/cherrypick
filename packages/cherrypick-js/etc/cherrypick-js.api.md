@@ -1374,6 +1374,9 @@ type DriveFilesCreateResponse = operations['drive___files___create']['responses'
 type DriveFilesDeleteBulkRequest = operations['drive___files___delete-bulk']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
+type DriveFilesDeleteBulkResponse = operations['drive___files___delete-bulk']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type DriveFilesDeleteRequest = operations['drive___files___delete']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -1925,6 +1928,7 @@ declare namespace entities {
         DriveFilesCreateResponse,
         DriveFilesDeleteRequest,
         DriveFilesDeleteBulkRequest,
+        DriveFilesDeleteBulkResponse,
         DriveFilesFindRequest,
         DriveFilesFindResponse,
         DriveFilesFindByHashRequest,

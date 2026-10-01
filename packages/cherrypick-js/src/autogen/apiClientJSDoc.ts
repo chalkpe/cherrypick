@@ -2298,7 +2298,7 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * Delete multiple drive files owned by the requesting user. IDs of files that do not exist or belong to someone else are skipped.
+     * Delete multiple drive files owned by the requesting user that are not referenced anywhere (the same check as drive/files/unused). Files that are in use, belong to someone else or do not exist are skipped. Returns the IDs that were actually deleted.
      * 
      * **Credential required**: *Yes* / **Permission**: *write:drive*
      */
@@ -2353,7 +2353,7 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * List drive files that are not referenced by any note, draft, chat message, gallery post, page, channel, avatar or banner. Folders are ignored. Paginate with offset (an id cursor does not work with the size / name sorts).
+     * List drive files that are not referenced by any note, draft, chat message, gallery post, page, channel, avatar or banner. Folders are ignored. To paginate, pass the last file of the previous page as untilId, plus its size as untilSize (size sorts) or its name as untilName (name sorts).
      * 
      * **Credential required**: *Yes* / **Permission**: *read:drive*
      */

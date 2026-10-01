@@ -1885,7 +1885,7 @@ export type paths = {
     '/drive/files/delete-bulk': {
         /**
          * drive/files/delete-bulk
-         * @description Delete multiple drive files owned by the requesting user. IDs of files that do not exist or belong to someone else are skipped.
+         * @description Delete multiple drive files owned by the requesting user that are not referenced anywhere (the same check as drive/files/unused). Files that are in use, belong to someone else or do not exist are skipped. Returns the IDs that were actually deleted.
          *
          *     **Credential required**: *Yes* / **Permission**: *write:drive*
          */
@@ -1930,7 +1930,7 @@ export type paths = {
     '/drive/files/unused': {
         /**
          * drive/files/unused
-         * @description List drive files that are not referenced by any note, draft, chat message, gallery post, page, channel, avatar or banner. Folders are ignored. Paginate with offset (an id cursor does not work with the size / name sorts).
+         * @description List drive files that are not referenced by any note, draft, chat message, gallery post, page, channel, avatar or banner. Folders are ignored. To paginate, pass the last file of the previous page as untilId, plus its size as untilSize (size sorts) or its name as untilName (name sorts).
          *
          *     **Credential required**: *Yes* / **Permission**: *read:drive*
          */
@@ -21324,10 +21324,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK (without any results) */
-            204: {
+            /** @description OK (with results) */
+            200: {
                 headers: {
                     [name: string]: unknown;
+                };
+                content: {
+                    'application/json': string[];
                 };
             };
             /** @description Client error */
@@ -21650,8 +21653,10 @@ export interface operations {
                 'application/json': {
                     /** @default 10 */
                     limit?: number;
-                    /** @default 0 */
-                    offset?: number;
+                    /** Format: misskey:id */
+                    untilId?: string;
+                    untilSize?: number;
+                    untilName?: string;
                     /** @enum {string|null} */
                     sort?: '+createdAt' | '-createdAt' | '+name' | '-name' | '+size' | '-size' | null;
                 };

@@ -10,10 +10,11 @@ import { describe, beforeAll, test } from 'vitest';
 import { api, makeStreamCatcher, post, signup, uploadFile } from '../utils.js';
 import type * as misskey from 'cherrypick-js';
 
-describe('Drive', () => {
-	let alice: misskey.entities.SignupResponse;
-	let bob: misskey.entities.SignupResponse;
+// このファイルで最初に signup する alice が root (モデレーター権限あり) になる
+let alice: misskey.entities.SignupResponse;
+let bob: misskey.entities.SignupResponse;
 
+describe('Drive', () => {
 	beforeAll(async () => {
 		alice = await signup({ username: 'alice' });
 		bob = await signup({ username: 'bob' });
@@ -139,19 +140,33 @@ describe('Drive unused files', () => {
 		assert.strictEqual(res.body.length, 2);
 	});
 
-	test('offset でページ送りできる (サイズ順でも重複・欠落なし)', async () => {
-		await Promise.all([uploadFile(carol), uploadFile(carol), uploadFile(carol)]);
-		const all = await api('drive/files/unused', { limit: 100, sort: '+size' }, carol);
-		assert.strictEqual(all.status, 200);
-		assert.ok(all.body.length >= 3);
+	test('untilId で前ページ末尾から読み進められる (どの並び順でも重複・欠落なし)', async () => {
+		// 同じサイズのファイルを混ぜ、第二キー (id) での並びも確かめる
+		await Promise.all([uploadFile(carol), uploadFile(carol), uploadFile(carol), uploadFile(carol, { path: 'anime.gif' })]);
 
-		const paged: string[] = [];
-		for (let offset = 0; offset < all.body.length; offset += 2) {
-			const page = await api('drive/files/unused', { limit: 2, offset, sort: '+size' }, carol);
-			assert.strictEqual(page.status, 200);
-			paged.push(...page.body.map(f => f.id));
+		for (const sort of ['+createdAt', '-createdAt', '+name', '-name', '+size', '-size'] as const) {
+			const all = await api('drive/files/unused', { limit: 100, sort }, carol);
+			assert.strictEqual(all.status, 200);
+			assert.ok(all.body.length >= 4);
+
+			const paged: string[] = [];
+			let cursor: { untilId: string; untilSize: number; untilName: string } | undefined;
+			for (;;) {
+				const page = await api('drive/files/unused', { limit: 2, sort, ...cursor }, carol);
+				assert.strictEqual(page.status, 200, JSON.stringify(page.body));
+				if (page.body.length === 0) break;
+				paged.push(...page.body.map(f => f.id));
+				const last = page.body.at(-1)!;
+				cursor = { untilId: last.id, untilSize: last.size, untilName: last.name };
+			}
+			assert.deepStrictEqual(paged, all.body.map(f => f.id), sort);
 		}
-		assert.deepStrictEqual(paged, all.body.map(f => f.id));
+	});
+
+	test('サイズ順・名前順で並び替えキーを省いた untilId はエラー', async () => {
+		const file = (await uploadFile(carol)).body!;
+		assert.strictEqual((await api('drive/files/unused', { sort: '+size', untilId: file.id }, carol)).status, 400);
+		assert.strictEqual((await api('drive/files/unused', { sort: '+name', untilId: file.id }, carol)).status, 400);
 	});
 
 	test('下書きに添付されたファイルは返らない', async () => {
@@ -234,6 +249,16 @@ describe('Drive unused files', () => {
 		assert.ok(!(await unusedIds(carol)).includes(file.id));
 	});
 
+	test('モデレーターが他人のチャンネルのバナーに設定したファイルは返らない', async () => {
+		const channel = await api('channels/create', { name: 'c2' }, carol);
+		assert.strictEqual(channel.status, 200, JSON.stringify(channel.body));
+		const file = (await uploadFile(alice)).body!;
+		const res = await api('channels/update', { channelId: channel.body.id, bannerId: file.id }, alice);
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+
+		assert.ok(!(await unusedIds(alice)).includes(file.id));
+	});
+
 	test('アバターとバナーは返らない', async () => {
 		const avatar = (await uploadFile(carol)).body!;
 		const banner = (await uploadFile(carol)).body!;
@@ -260,23 +285,16 @@ describe('Drive bulk delete', () => {
 		return res.status === 200;
 	}
 
-	// DriveService.deleteFile はレコード削除 (deletePostProcess) を await せずに返すため、消えるまで少し待つ
-	async function waitUntilDeleted(user: misskey.entities.SignupResponse, fileId: string): Promise<boolean> {
-		for (let i = 0; i < 20; i++) {
-			if (!(await exists(user, fileId))) return true;
-			await new Promise(resolve => setTimeout(resolve, 100));
-		}
-		return false;
-	}
-
-	test('自分のファイルをまとめて削除できる', async () => {
+	test('自分の未使用ファイルをまとめて削除し、削除した ID を返す', async () => {
 		const files = (await Promise.all([uploadFile(erin), uploadFile(erin), uploadFile(erin)])).map(r => r.body!);
 
 		const res = await api('drive/files/delete-bulk', { fileIds: files.map(f => f.id) }, erin);
-		assert.strictEqual(res.status, 204, JSON.stringify(res.body));
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+		assert.deepStrictEqual([...res.body].sort(), files.map(f => f.id).sort());
 
+		// レコード削除まで待ってから返すので、直後に引いても残っていない
 		for (const f of files) {
-			assert.strictEqual(await waitUntilDeleted(erin, f.id), true);
+			assert.strictEqual(await exists(erin, f.id), false);
 		}
 	});
 
@@ -285,10 +303,24 @@ describe('Drive bulk delete', () => {
 		const franks = (await uploadFile(frank)).body!;
 
 		const res = await api('drive/files/delete-bulk', { fileIds: [mine.id, franks.id, '0000000000000000'] }, erin);
-		assert.strictEqual(res.status, 204, JSON.stringify(res.body));
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+		assert.deepStrictEqual(res.body, [mine.id]);
 
-		assert.strictEqual(await waitUntilDeleted(erin, mine.id), true);
+		assert.strictEqual(await exists(erin, mine.id), false);
 		assert.strictEqual(await exists(frank, franks.id), true);
+	});
+
+	test('一覧を取得した後に使われたファイルは削除しない', async () => {
+		const attached = (await uploadFile(erin)).body!;
+		const free = (await uploadFile(erin)).body!;
+		await post(erin, { text: 'attached after listing', fileIds: [attached.id] });
+
+		const res = await api('drive/files/delete-bulk', { fileIds: [attached.id, free.id] }, erin);
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+		assert.deepStrictEqual(res.body, [free.id]);
+
+		assert.strictEqual(await exists(erin, attached.id), true);
+		assert.strictEqual(await exists(erin, free.id), false);
 	});
 
 	test('空の配列は 400', async () => {
