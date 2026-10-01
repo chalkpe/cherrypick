@@ -7,6 +7,12 @@
 
 // ブロックの中に入れないと、定義した変数がブラウザのグローバルスコープに登録されてしまい邪魔なので
 (async () => {
+	// localStorage is null where DOM storage is disabled, e.g. the Android WebView some Mastodon clients sign in with.
+	// sessionStorage is still there, and it keeps the session across the reload that follows signing in.
+	if (window.localStorage == null) {
+		Object.defineProperty(window, 'localStorage', { value: window.sessionStorage, configurable: true });
+	}
+
 	window.onerror = (e) => {
 		console.error(e);
 		renderError('SOMETHING_HAPPENED', e);
