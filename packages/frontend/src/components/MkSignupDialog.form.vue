@@ -314,14 +314,22 @@ async function onSubmit(): Promise<void> {
 	});
 
 	if (res && res.ok) {
-		if (instance.approvalRequiredForSignup) {
+		// メール認証が必要な場合は承認制でも先にメール認証になる (承認待ちはその後)
+		if (instance.emailRequiredForSignup) {
+			os.alert({
+				type: 'success',
+				title: i18n.ts._signup.almostThere,
+				text: i18n.tsx._signup.emailSent({ email: email.value }),
+			});
+			emit('signupEmailPending');
+		} else if (instance.approvalRequiredForSignup) {
 			os.alert({
 				type: 'success',
 				title: i18n.ts._signup.almostThere,
 				text: i18n.ts._signup.approvalPending,
 			});
 			emit('approvalPending');
-		} else if (res.status === 204 || instance.emailRequiredForSignup) {
+		} else if (res.status === 204) {
 			os.alert({
 				type: 'success',
 				title: i18n.ts._signup.almostThere,
