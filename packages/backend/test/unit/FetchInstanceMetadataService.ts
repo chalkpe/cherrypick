@@ -63,7 +63,7 @@ describe('FetchInstanceMetadataService', () => {
 				if (token === HttpRequestService) {
 					return { getJson: vi.fn(), getHtml: vi.fn(), send: vi.fn() };
 				} else if (token === FederatedInstanceService) {
-					return { fetchOrRegister: vi.fn() };
+					return { fetchOrRegister: vi.fn(), update: vi.fn() };
 				} else if (token === DI.redis) {
 					return createMockRedis();
 				}
@@ -141,5 +141,26 @@ describe('FetchInstanceMetadataService', () => {
 		expect(unlockSpy).toHaveBeenCalledTimes(1);
 		expect(federatedInstanceService.fetchOrRegister).toHaveBeenCalledTimes(0);
 		expect(httpRequestService.getJson).toHaveBeenCalled();
+	});
+
+	test.each([
+		['2.1', ['2.0', '2.1']],
+		['2.0', ['2.0']],
+	])('Records NodeInfo %s as the version the instance provides', async (expected, provided) => {
+		federatedInstanceService.fetchOrRegister.mockResolvedValue({ infoUpdatedAt: null } as any);
+		httpRequestService.getHtml.mockRejectedValue(new Error('Not Found'));
+		httpRequestService.getJson.mockImplementation(async (url: string) => {
+			if (url === 'https://example.com/.well-known/nodeinfo') {
+				return { links: provided.map(version => ({ rel: `http://nodeinfo.diaspora.software/ns/schema/${version}`, href: `https://example.com/nodeinfo/${version}` })) };
+			}
+			if (url === `https://example.com/nodeinfo/${expected}`) {
+				return { version: expected, software: { name: 'Mastodon', version: '4.5.0' } };
+			}
+			throw new Error('Not Found');
+		});
+
+		await fetchInstanceMetadataService.fetchInstanceMetadata({ id: 'instance1', host: 'example.com' } as any);
+
+		expect(federatedInstanceService.update).toHaveBeenCalledWith('instance1', expect.objectContaining({ softwareName: 'mastodon', nodeinfoVersion: expected }));
 	});
 });

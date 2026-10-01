@@ -92,11 +92,12 @@ export class FetchInstanceMetadataService {
 
 			this.logger.info(`Fetching metadata of ${instance.host} ...`);
 
-			const [info, dom, manifest] = await Promise.all([
+			const [nodeinfo, dom, manifest] = await Promise.all([
 				this.fetchNodeinfo(instance).catch(() => null),
 				this.fetchDom(instance).catch(() => null),
 				this.fetchManifest(instance).catch(() => null),
 			]);
+			const info = nodeinfo?.info ?? null;
 
 			const [favicon, icon, themeColor, name, description] = await Promise.all([
 				this.fetchFaviconUrl(instance, dom).catch(() => null),
@@ -115,6 +116,7 @@ export class FetchInstanceMetadataService {
 			if (info) {
 				updates.softwareName = typeof info.software?.name === 'string' ? info.software.name.toLowerCase() : '?';
 				updates.softwareVersion = info.software?.version;
+				updates.nodeinfoVersion = nodeinfo?.version;
 				updates.openRegistrations = info.openRegistrations;
 				updates.maintainerName = info.metadata ? info.metadata.maintainer ? (info.metadata.maintainer.name ?? null) : null : null;
 				updates.maintainerEmail = info.metadata ? info.metadata.maintainer ? (info.metadata.maintainer.email ?? null) : null : null;
@@ -137,7 +139,7 @@ export class FetchInstanceMetadataService {
 	}
 
 	@bindThis
-	private async fetchNodeinfo(instance: MiInstance): Promise<NodeInfo> {
+	private async fetchNodeinfo(instance: MiInstance): Promise<{ info: NodeInfo; version: string; }> {
 		this.logger.info(`Fetching nodeinfo of ${instance.host} ...`);
 
 		try {
@@ -172,7 +174,10 @@ export class FetchInstanceMetadataService {
 
 			this.logger.succ(`Successfuly fetched nodeinfo of ${instance.host}`);
 
-			return info as NodeInfo;
+			return {
+				info: info as NodeInfo,
+				version: link === link2_1 ? '2.1' : link === link2_0 ? '2.0' : '1.0',
+			};
 		} catch (err) {
 			this.logger.error(`Failed to fetch nodeinfo of ${instance.host}: ${err}`);
 

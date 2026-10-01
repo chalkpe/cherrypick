@@ -117,6 +117,12 @@ export class MiInstance {
 	})
 	public softwareVersion: string | null;
 
+	@Column('varchar', {
+		length: 8, nullable: true,
+		comment: 'The newest NodeInfo schema version the Instance provides.',
+	})
+	public nodeinfoVersion: string | null;
+
 	@Column('boolean', {
 		nullable: true,
 	})
