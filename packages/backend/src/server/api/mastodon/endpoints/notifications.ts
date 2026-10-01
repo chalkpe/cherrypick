@@ -34,7 +34,7 @@ interface NotificationGroup {
 	group_key: string;
 	notifications_count: number;
 	type: string;
-	most_recent_notification_id: string;
+	most_recent_notification_id: number;
 	page_min_id: string;
 	page_max_id: string;
 	latest_page_notification_at: string;
@@ -133,7 +133,7 @@ export class ApiNotificationsMastodon {
 			if (quoteAsMention) wanted.push('quote');
 
 			const data = await client.getNotifications({
-				...parseTimelineArgs(request.query),
+				...await this.parsePageArgs(me, request.query),
 				types: toMegalodonTypes(wanted),
 			});
 			const notifications = await promiseMap(sortNewestFirst(data.data), async n => await this.mastoConverters.convertNotification(n, me), { limiter: 4 });
@@ -266,7 +266,7 @@ export class ApiNotificationsMastodon {
 			if (quoteAsMention) wanted.push('quote');
 
 			const data = await client.getNotifications({
-				...parseTimelineArgs(request.query),
+				...await this.parsePageArgs(me, request.query),
 				limit,
 				types: toMegalodonTypes(wanted),
 			});
@@ -292,7 +292,7 @@ export class ApiNotificationsMastodon {
 						group_key: groupable ? `${notification.type}-${statusId ?? '0'}-${notification.id}` : `ungrouped-${notification.id}`,
 						notifications_count: 0,
 						type: notification.type,
-						most_recent_notification_id: notification.id,
+						most_recent_notification_id: this.notificationService.toNumericId(notification.id),
 						page_min_id: notification.id,
 						page_max_id: notification.id,
 						latest_page_notification_at: notification.created_at,
@@ -335,7 +335,7 @@ export class ApiNotificationsMastodon {
 					group_key: request.params.group_key,
 					notifications_count: 1,
 					type,
-					most_recent_notification_id: notification.id,
+					most_recent_notification_id: this.notificationService.toNumericId(notification.id),
 					page_min_id: notification.id,
 					page_max_id: notification.id,
 					latest_page_notification_at: notification.created_at,
@@ -359,6 +359,22 @@ export class ApiNotificationsMastodon {
 			if (notificationId) await this.notificationService.dismiss(me.id, notificationId);
 			return reply.send({});
 		});
+	}
+
+	/**
+	 * Pagination arguments, with the integer notification IDs that grouped notifications give turned back into notification IDs.
+	 */
+	private async parsePageArgs(me: MiLocalUser | null, query: TimelineArgs): Promise<ReturnType<typeof parseTimelineArgs>> {
+		const args = parseTimelineArgs(query);
+		if (me == null) return args;
+
+		const resolve = async (id: string | undefined) => id == null ? undefined : await this.notificationService.resolveId(me.id, id);
+		return {
+			...args,
+			max_id: await resolve(args.max_id),
+			min_id: await resolve(args.min_id),
+			since_id: await resolve(args.since_id),
+		};
 	}
 
 	/**

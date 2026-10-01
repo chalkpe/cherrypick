@@ -484,7 +484,7 @@ describe('Mastodon API', () => {
 		let aliceToken: string;
 		let carol: misskey.entities.SignupResponse;
 
-		interface Group { group_key: string; type: string; notifications_count: number; sample_account_ids: string[]; status_id: string | null; most_recent_notification_id: string }
+		interface Group { group_key: string; type: string; notifications_count: number; sample_account_ids: string[]; status_id: string | null; most_recent_notification_id: number; page_max_id: string }
 
 		beforeAll(async () => {
 			aliceToken = await issueToken(alice);
@@ -497,8 +497,8 @@ describe('Mastodon API', () => {
 			return (await res.json() as { count: number }).count;
 		}
 
-		async function latestGroups(): Promise<Group[]> {
-			const res = await mastodonGet('/api/v2/notifications?limit=20', aliceToken);
+		async function latestGroups(query = ''): Promise<Group[]> {
+			const res = await mastodonGet(`/api/v2/notifications?limit=20${query}`, aliceToken);
 			assert.strictEqual(res.status, 200);
 			return (await res.json() as { notification_groups: Group[] }).notification_groups;
 		}
@@ -511,6 +511,34 @@ describe('Mastodon API', () => {
 			const group = await waitFor(async () => (await latestGroups()).find(g => g.status_id === note.id && g.notifications_count === 2));
 			assert.strictEqual(group.type, 'favourite');
 			assert.deepStrictEqual([...group.sample_account_ids].sort(), [bob.id, carol.id].sort());
+		});
+
+		// Mastodon gives this ID as an integer, and clients such as Ice Cubes accept nothing else
+		test('gives the most recent notification ID as an integer that pages and refreshes', async () => {
+			const olderNote = (await api('notes/create', { text: `@${alice.username} older` }, bob)).body.createdNote;
+			const newerNote = (await api('notes/create', { text: `@${alice.username} newer` }, carol)).body.createdNote;
+			const [older, newer] = await waitFor(async () => {
+				const groups = await latestGroups();
+				const found = [olderNote, newerNote].map(note => groups.find(g => g.status_id === note.id));
+				return found.every(g => g != null) && found as Group[];
+			});
+
+			assert.ok(Number.isSafeInteger(older.most_recent_notification_id));
+			assert.ok(Number.isSafeInteger(newer.most_recent_notification_id));
+			assert.ok(newer.most_recent_notification_id > older.most_recent_notification_id);
+
+			const olderPage = (await latestGroups(`&max_id=${newer.most_recent_notification_id}`)).map(g => g.group_key);
+			assert.ok(olderPage.includes(older.group_key));
+			assert.ok(!olderPage.includes(newer.group_key));
+
+			const newerPage = (await latestGroups(`&since_id=${older.most_recent_notification_id}`)).map(g => g.group_key);
+			assert.ok(newerPage.includes(newer.group_key));
+			assert.ok(!newerPage.includes(older.group_key));
+
+			// Paginating from a notification that has been dismissed in the meantime still works
+			await mastodonSend('POST', `/api/v1/notifications/${newer.most_recent_notification_id}/dismiss`, aliceToken);
+			const pageAfterDismissal = (await latestGroups(`&max_id=${newer.most_recent_notification_id}`)).map(g => g.group_key);
+			assert.ok(pageAfterDismissal.includes(older.group_key));
 		});
 
 		test('shows, counts and dismisses single notifications without marking them read', async () => {
@@ -540,7 +568,7 @@ describe('Mastodon API', () => {
 
 			const save = await mastodonSend('POST', '/api/v1/markers', aliceToken, {
 				home: { last_read_id: 'somestatusid' },
-				notifications: { last_read_id: mention.most_recent_notification_id },
+				notifications: { last_read_id: String(mention.most_recent_notification_id) },
 			});
 			assert.strictEqual(save.status, 200);
 
@@ -551,7 +579,8 @@ describe('Mastodon API', () => {
 			const markers = await mastodonGet('/api/v1/markers?timeline[]=home&timeline[]=notifications', aliceToken);
 			const body = await markers.json() as Record<string, { last_read_id: string; version: number }>;
 			assert.strictEqual(body.home.last_read_id, 'somestatusid');
-			assert.strictEqual(body.notifications.last_read_id, mention.most_recent_notification_id);
+			// Markers hold the notification ID itself, the one notification lists and pagination use
+			assert.strictEqual(body.notifications.last_read_id, mention.page_max_id);
 		});
 
 		test('reports no keyword filters', async () => {

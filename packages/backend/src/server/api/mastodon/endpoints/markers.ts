@@ -98,8 +98,10 @@ export class ApiMarkersMastodon {
 
 			const updated: Timeline[] = [];
 			for (const timeline of TIMELINES) {
-				const lastReadId = readLastReadId(body, timeline);
+				let lastReadId = readLastReadId(body, timeline);
 				if (lastReadId == null) continue;
+				// Clients of grouped notifications send the integer ID of the group's most recent notification
+				if (timeline === 'notifications') lastReadId = await this.notificationService.resolveId(me.id, lastReadId);
 
 				const stored = await this.getStored(me.id, timeline);
 				const marker: Marker = {
