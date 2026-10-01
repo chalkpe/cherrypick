@@ -202,15 +202,15 @@ export class GlobalModule implements OnApplicationShutdown {
 	public async dispose(): Promise<void> {
 		// Wait for all potential DB queries
 		await allSettled();
-		// And then disconnect from DB
+		// Finish pending Redis commands before closing their connections.
 		await Promise.all([
 			this.db.destroy(),
-			this.redisClient.disconnect(),
-			this.redisForPub.disconnect(),
-			this.redisForSub.disconnect(),
-			this.redisForTimelines.disconnect(),
-			this.redisForReactions.disconnect(),
-			this.redisForJobQueue.disconnect(),
+			this.redisClient.quit(),
+			this.redisForPub.quit(),
+			this.redisForSub.quit(),
+			this.redisForTimelines.quit(),
+			this.redisForReactions.quit(),
+			this.redisForJobQueue.quit(),
 		]);
 	}
 
