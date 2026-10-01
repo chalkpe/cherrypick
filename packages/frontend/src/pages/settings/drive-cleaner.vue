@@ -13,8 +13,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<template #caption>{{ i18n.ts._drivecleaner.unusedOnlyDescription }}</template>
 	</MkSwitch>
 	<div v-if="unusedOnly" :class="$style.selectionBar">
-		<MkButton inline @click="toggleSelectAll">{{ allLoadedSelected ? i18n.ts._drivecleaner.deselectAll : i18n.ts._drivecleaner.selectAll }}</MkButton>
-		<MkButton inline danger :disabled="selectedIds.length === 0" @click="deleteSelected"><i class="ti ti-trash"></i> {{ i18n.ts._drivecleaner.deleteSelected }}</MkButton>
+		<MkButton inline :disabled="deleting" @click="toggleSelectAll">{{ allLoadedSelected ? i18n.ts._drivecleaner.deselectAll : i18n.ts._drivecleaner.selectAll }}</MkButton>
+		<MkButton inline danger :disabled="selectedIds.length === 0 || deleting" @click="deleteSelected"><i class="ti ti-trash"></i> {{ i18n.ts._drivecleaner.deleteSelected }}</MkButton>
 		<span v-if="selectedIds.length > 0">{{ i18n.tsx._drivecleaner.selectedFilesSummary({ n: selectedIds.length, size: bytes(selectedSize) }) }}</span>
 	</div>
 	<div v-if="!fetching">
@@ -25,6 +25,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					class="_button"
 					:role="unusedOnly ? 'checkbox' : undefined"
 					:aria-checked="unusedOnly ? selectedIds.includes(file.id) : undefined"
+					:aria-disabled="unusedOnly && deleting ? true : undefined"
 					:tabindex="unusedOnly ? 0 : undefined"
 					@click="$event => onClick($event, file)"
 					@keydown.enter.prevent="onKeyToggle(file)"
@@ -88,15 +89,16 @@ const paginator = markRaw(new Paginator('drive/files', {
 	limit: 10,
 	computedParams: computed(() => ({ sort: sortMode.value })),
 }));
-// サイズ順・名前順は id カーソルと相性が悪いので、未使用一覧は offset で読み進める
+// サイズ順・名前順でも読み進められるよう、未使用一覧は末尾のファイルをカーソルにする
 const unusedPaginator = markRaw(new Paginator('drive/files/unused', {
 	limit: 30,
-	offsetMode: true,
+	olderCursorParams: (last) => ({ untilId: last.id, untilSize: last.size, untilName: last.name }),
 	computedParams: computed(() => ({ sort: sortMode.value })),
 }));
 
 const unusedOnly = ref(false);
 const selectedIds = ref<string[]>([]);
+const deleting = ref(false);
 
 const selectedFiles = computed(() => unusedPaginator.items.value.filter(f => selectedIds.value.includes(f.id)));
 const selectedSize = computed(() => selectedFiles.value.reduce((sum, f) => sum + f.size, 0));
@@ -149,12 +151,13 @@ function fetchDriveInfo(): void {
 	});
 }
 
-// 一覧を再マウントせずに使用量だけ更新する。
-// 削除直後に一覧を取り直すと、サーバー側の削除 (deletePostProcess は await されない) がまだ終わっておらず消したはずのファイルが戻ってくることがある
+// 使用量だけを更新する。fetchDriveInfo は読み込み中表示に切り替わって一覧が再マウントされ、読み進めた位置が失われる
 function refreshUsage(): void {
 	misskeyApi('drive').then(info => {
 		capacity.value = info.capacity;
 		usage.value = info.usage;
+	}).catch(() => {
+		// 使用量の表示が古いままになるだけなので握りつぶす
 	});
 }
 
@@ -182,6 +185,7 @@ function toggleSelectAll(): void {
 }
 
 async function deleteSelected(): Promise<void> {
+	if (deleting.value) return;
 	const targets = selectedFiles.value;
 	if (targets.length === 0) return;
 
@@ -191,45 +195,59 @@ async function deleteSelected(): Promise<void> {
 	});
 	if (canceled) return;
 
-	// 100件ずつ delete-bulk を呼ぶ。失敗した塊以降は中断し、成功した分だけ一覧から消す
+	// 100件ずつ delete-bulk を呼ぶ。失敗した塊以降は中断する
+	// サーバーは削除直前に未使用かどうかを確かめ直し、実際に消した ID だけを返す
 	const deleted: Misskey.entities.DriveFile[] = [];
+	const skipped: Misskey.entities.DriveFile[] = [];
 	let failed = false;
-	for (let i = 0; i < targets.length; i += BULK_DELETE_CHUNK) {
-		const chunk = targets.slice(i, i + BULK_DELETE_CHUNK);
-		try {
-			await misskeyApi('drive/files/delete-bulk', { fileIds: chunk.map(f => f.id) });
-			deleted.push(...chunk);
-		} catch {
-			failed = true;
-			break;
+	deleting.value = true;
+	try {
+		for (let i = 0; i < targets.length; i += BULK_DELETE_CHUNK) {
+			const chunk = targets.slice(i, i + BULK_DELETE_CHUNK);
+			try {
+				const deletedIds = await misskeyApi('drive/files/delete-bulk', { fileIds: chunk.map(f => f.id) });
+				for (const f of chunk) {
+					(deletedIds.includes(f.id) ? deleted : skipped).push(f);
+				}
+			} catch {
+				failed = true;
+				break;
+			}
 		}
+	} finally {
+		deleting.value = false;
 	}
 
-	for (const f of deleted) {
-		unusedPaginator.removeItem(f.id);
-	}
-	selectedIds.value = selectedIds.value.filter(id => !deleted.some(f => f.id === id));
+	// 一覧と選択からの除去は driveFilesDeleted のハンドラーに任せる
 	if (deleted.length > 0) {
 		globalEvents.emit('driveFilesDeleted', deleted);
 	}
+	// 一覧を取得した後に使われたファイルはもう未使用ではないので、一覧と選択から外すだけにする
+	for (const f of skipped) {
+		unusedPaginator.removeItem(f.id);
+	}
+	selectedIds.value = selectedIds.value.filter(id => !skipped.some(f => f.id === id));
 	refreshUsage();
 
-	if (failed) {
+	const messages: string[] = [];
+	if (failed) messages.push(i18n.ts._drivecleaner.deleteSelectedFailed);
+	if (skipped.length > 0) messages.push(i18n.tsx._drivecleaner.deleteSelectedSkipped({ n: skipped.length }));
+	if (messages.length > 0) {
 		os.alert({
-			type: 'error',
-			text: i18n.ts._drivecleaner.deleteSelectedFailed,
+			type: failed ? 'error' : 'info',
+			text: messages.join('\n'),
 		});
 	}
 }
 
 function onKeyToggle(file: Misskey.entities.DriveFile): void {
-	if (!unusedOnly.value) return;
+	if (!unusedOnly.value || deleting.value) return;
 	toggleSelection(file);
 }
 
 function onClick(ev: PointerEvent, file: Misskey.entities.DriveFile) {
 	if (unusedOnly.value) {
-		toggleSelection(file);
+		if (!deleting.value) toggleSelection(file);
 		return;
 	}
 	os.popupMenu(getDriveFileMenu(file), (ev.currentTarget ?? ev.target ?? undefined) as HTMLElement | undefined);

@@ -3430,6 +3430,7 @@ _drivecleaner:
   selectedFilesSummary: "{n}件を選択中 ({size})"
   deleteSelectedConfirm: "選択した{n}件のファイル ({size}) を削除しますか？この操作は取り消せません。"
   deleteSelectedFailed: "一部のファイルを削除できませんでした。削除できなかったファイルは選択されたままです。"
+  deleteSelectedSkipped: "{n}件のファイルは一覧を表示した後に使用されたため、削除しませんでした。"
 
 _webhookSettings:
   createWebhook: "Webhookを作成"

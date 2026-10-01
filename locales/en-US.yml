@@ -3338,6 +3338,7 @@ _drivecleaner:
   selectedFilesSummary: "{n} selected ({size})"
   deleteSelectedConfirm: "Delete {n} selected file(s) ({size})? This cannot be undone."
   deleteSelectedFailed: "Some files could not be deleted. The files that were not deleted remain selected."
+  deleteSelectedSkipped: "{n} file(s) were not deleted because they started being used after the list was loaded."
 _webhookSettings:
   createWebhook: "Create Webhook"
   modifyWebhook: "Modify Webhook"

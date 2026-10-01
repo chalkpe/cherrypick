@@ -13004,6 +13004,10 @@ export interface Locale extends ILocale {
          * 一部のファイルを削除できませんでした。削除できなかったファイルは選択されたままです。
          */
         "deleteSelectedFailed": string;
+        /**
+         * {n}件のファイルは一覧を表示した後に使用されたため、削除しませんでした。
+         */
+        "deleteSelectedSkipped": ParameterizedString<"n">;
     };
     "_webhookSettings": {
         /**
