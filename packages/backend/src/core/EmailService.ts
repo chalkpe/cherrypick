@@ -44,6 +44,8 @@ export class EmailService {
 
 		const iconUrl = `${this.config.url}/static-assets/mi-white.png`;
 		const emailSettingUrl = `${this.config.url}/settings/email`;
+		// CSS に埋め込むため、形式が正しいものだけ使う
+		const accentColor = /^#[0-9a-fA-F]{6}$/.test(this.meta.themeColor ?? '') ? this.meta.themeColor! : '#ffbcdc';
 
 		const enableAuth = this.meta.smtpUser != null && this.meta.smtpUser !== '';
 
@@ -80,7 +82,7 @@ export class EmailService {
 
 			a {
 				text-decoration: none;
-				color: #ffbcdc;
+				color: ${ accentColor };
 			}
 			a:hover {
 				text-decoration: underline;
@@ -94,7 +96,7 @@ export class EmailService {
 			}
 				main > header {
 					padding: 32px;
-					background: #ffbcdc;
+					background: ${ accentColor };
 				}
 					main > header > img {
 						max-width: 128px;
