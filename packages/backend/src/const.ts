@@ -8,6 +8,10 @@ export const MAX_NOTE_TEXT_LENGTH = 3000;
 export const USER_ONLINE_THRESHOLD = 1000 * 60 * 10; // 10min
 export const USER_ACTIVE_THRESHOLD = 1000 * 60 * 60 * 24 * 3; // 3days
 
+// メール認証待ちの仮登録: リンクの有効期限と、再送信のために期限切れ後も残しておく期間
+export const SIGNUP_PENDING_EXPIRES_IN = 1000 * 60 * 60 * 24; // 24hours
+export const SIGNUP_PENDING_RETENTION = 1000 * 60 * 60 * 24 * 7; // 7days
+
 export const PER_NOTE_REACTION_USER_PAIR_CACHE_MAX = 16;
 
 //#region hard limits

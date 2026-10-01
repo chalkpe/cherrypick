@@ -1546,6 +1546,10 @@ export type Endpoints = Overwrite<Endpoints_2, {
         req: SignupPendingRequest;
         res: SignupPendingResponse;
     };
+    'signup-pending/resend': {
+        req: SignupPendingRequest;
+        res: null;
+    };
     'signin-flow': {
         req: SigninFlowRequest;
         res: SigninFlowResponse;
@@ -3662,6 +3666,8 @@ type SignupPendingRequest = {
 type SignupPendingResponse = {
     id: User['id'];
     i: string;
+} | {
+    pendingApproval: true;
 };
 
 // @public (undocumented)

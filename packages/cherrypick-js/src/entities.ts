@@ -138,6 +138,9 @@ export type SignupPendingRequest = {
 export type SignupPendingResponse = {
 	id: User['id'],
 	i: string,
+} | {
+	// サーバーが承認制の場合、メール認証後もログインせずに承認待ちになる
+	pendingApproval: true,
 };
 
 export type SigninFlowRequest = {

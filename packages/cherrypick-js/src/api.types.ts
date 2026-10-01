@@ -93,6 +93,11 @@ export type Endpoints = Overwrite<
 			res: SignupPendingResponse;
 		},
 		// api.jsonには載せないものなのでここで定義
+		'signup-pending/resend': {
+			req: SignupPendingRequest;
+			res: null;
+		},
+		// api.jsonには載せないものなのでここで定義
 		'signin-flow': {
 			req: SigninFlowRequest;
 			res: SigninFlowResponse;

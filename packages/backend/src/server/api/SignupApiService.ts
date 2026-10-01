@@ -21,9 +21,35 @@ import { L_CHARS, secureRndstr } from '@/misc/secure-rndstr.js';
 import { RoleService } from '@/core/RoleService.js';
 import Logger from '@/logger.js';
 import { LoggerService } from '@/core/LoggerService.js';
+import { getIpHash } from '@/misc/get-ip-hash.js';
+import { SIGNUP_PENDING_EXPIRES_IN } from '@/const.js';
+import { RateLimiterService } from './RateLimiterService.js';
 import { SigninService } from './SigninService.js';
 import type { FindOptionsWhere } from 'typeorm';
 import type { FastifyRequest, FastifyReply } from 'fastify';
+
+const SIGNUP_PENDING_ERRORS = {
+	noSuchCode: {
+		message: 'No such code.',
+		code: 'NO_SUCH_CODE',
+		id: 'deace71c-8578-4021-b413-c85879600c52',
+	},
+	expired: {
+		message: 'The verification link has expired.',
+		code: 'EXPIRED',
+		id: 'e20e8e57-4ea8-44c3-8a7f-cf4d7b677ed5',
+	},
+	resendNotAvailable: {
+		message: 'The verification email cannot be resent. Please sign up again.',
+		code: 'RESEND_NOT_AVAILABLE',
+		id: 'f1882baa-89b6-45a8-8236-4908b3e380de',
+	},
+	rateLimitExceeded: {
+		message: 'Rate limit exceeded. Please try again later.',
+		code: 'RATE_LIMIT_EXCEEDED',
+		id: 'ec8daf37-1f0e-420b-864b-11804118b874',
+	},
+};
 
 @Injectable()
 export class SignupApiService {
@@ -62,6 +88,7 @@ export class SignupApiService {
 		private emailService: EmailService,
 		private roleService: RoleService,
 		private loggerService: LoggerService,
+		private rateLimiterService: RateLimiterService,
 	) {
 		this.logger = this.loggerService.getLogger('Signup');
 	}
@@ -181,8 +208,8 @@ export class SignupApiService {
 					return;
 				}
 
-				// 認証しておらず、メール送信から30分以内ならエラー
-				if (ticket.usedAt && ticket.usedAt.getTime() + (1000 * 60 * 30) > Date.now()) {
+				// 認証しておらず、認証リンクの有効期限内ならエラー
+				if (ticket.usedAt && ticket.usedAt.getTime() + SIGNUP_PENDING_EXPIRES_IN > Date.now()) {
 					reply.code(400);
 					return;
 				}
@@ -227,11 +254,7 @@ export class SignupApiService {
 					reason: reason ?? '',
 				});
 
-				const link = `${this.config.url}/signup-complete/${code}`;
-
-				this.emailService.sendEmail(emailAddress!, 'Signup',
-					`To complete signup, please click this link:<br><a href="${link}">${link}</a>`,
-					`To complete signup, please click this link: ${link}`);
+				this.sendSignupEmail(emailAddress!, code);
 
 				if (ticket) {
 					await this.registrationTicketsRepository.update(ticket.id, {
@@ -330,12 +353,12 @@ export class SignupApiService {
 			{ id: ticket.id, usedById: IsNull(), usedAt: IsNull() },
 		];
 
-		// メアド認証が有効の場合、認証されないままメール送信から30分経過したコードは再び使用できる
+		// メアド認証が有効の場合、認証されないまま認証リンクの有効期限が切れたコードは再び使用できる
 		if (this.meta.emailRequiredForSignup) {
 			where.push({
 				id: ticket.id,
 				usedById: IsNull(),
-				usedAt: LessThanOrEqual(new Date(Date.now() - (1000 * 60 * 30))),
+				usedAt: LessThanOrEqual(new Date(Date.now() - SIGNUP_PENDING_EXPIRES_IN)),
 			});
 		}
 
@@ -363,18 +386,117 @@ export class SignupApiService {
 	}
 
 	@bindThis
+	private sendSignupEmail(emailAddress: string, code: string) {
+		const link = `${this.config.url}/signup-complete/${code}`;
+		const expiresIn = `${SIGNUP_PENDING_EXPIRES_IN / (1000 * 60 * 60)} hours`;
+
+		this.emailService.sendEmail(emailAddress, 'Signup',
+			`To complete signup, please click this link:<br><a href="${link}">${link}</a><br>This link expires in ${expiresIn}.`,
+			`To complete signup, please click this link: ${link}\nThis link expires in ${expiresIn}.`);
+	}
+
+	/**
+	 * 仮登録を新しいコードで作り直し、認証メールを再送信する
+	 *
+	 * 期限切れの仮登録にも使える。古いコードは無効になる
+	 */
+	@bindThis
+	public async resendSignupPending(request: FastifyRequest<{ Body: { code: string; } }>, reply: FastifyReply) {
+		const code = request.body['code'];
+
+		if (typeof code !== 'string') {
+			reply.code(400);
+			return;
+		}
+
+		if (this.config.enableIpRateLimit) {
+			const rateLimit = await this.rateLimiterService.limit({ key: 'signupPendingResend', duration: 60 * 60 * 1000, max: 5, minInterval: 60 * 1000 }, getIpHash(request.ip));
+			if (rateLimit != null) {
+				reply.code(429);
+				return { error: SIGNUP_PENDING_ERRORS.rateLimitExceeded };
+			}
+		}
+
+		const pendingUser = await this.userPendingsRepository.findOneBy({ code });
+
+		if (pendingUser == null) {
+			reply.code(400);
+			return { error: SIGNUP_PENDING_ERRORS.noSuchCode };
+		}
+
+		if (await this.usersRepository.exists({ where: { usernameLower: pendingUser.username.toLowerCase(), host: IsNull() } })) {
+			reply.code(400);
+			return { error: SIGNUP_PENDING_ERRORS.resendNotAvailable };
+		}
+
+		const ticket = await this.registrationTicketsRepository.findOneBy({ pendingUserId: pendingUser.id, usedById: IsNull() });
+
+		// 招待制の場合、招待コードを保持したままの仮登録でなければ再送信できない
+		// (期限切れの間に他の人がコードを使った場合など)
+		if (this.meta.disableRegistration && (ticket == null || (ticket.expiresAt && ticket.expiresAt < new Date()))) {
+			reply.code(400);
+			return { error: SIGNUP_PENDING_ERRORS.resendNotAvailable };
+		}
+
+		const renewed = await this.userPendingsRepository.insertOne({
+			id: this.idService.gen(),
+			code: secureRndstr(16, { chars: L_CHARS }),
+			email: pendingUser.email,
+			username: pendingUser.username,
+			password: pendingUser.password,
+			reason: pendingUser.reason,
+		});
+
+		if (ticket) {
+			const result = await this.registrationTicketsRepository.update({
+				id: ticket.id,
+				pendingUserId: pendingUser.id,
+				usedById: IsNull(),
+			}, {
+				pendingUserId: renewed.id,
+				usedAt: new Date(),
+			});
+
+			// 確認後に他のリクエストがコードを確保した
+			if ((result.affected ?? 0) === 0 && this.meta.disableRegistration) {
+				await this.userPendingsRepository.delete({ id: renewed.id });
+				reply.code(400);
+				return { error: SIGNUP_PENDING_ERRORS.resendNotAvailable };
+			}
+		}
+
+		await this.userPendingsRepository.delete({ id: pendingUser.id });
+
+		this.sendSignupEmail(renewed.email, renewed.code);
+
+		reply.code(204);
+		return;
+	}
+
+	@bindThis
 	public async signupPending(request: FastifyRequest<{ Body: { code: string; } }>, reply: FastifyReply) {
 		const body = request.body;
 
 		const code = body['code'];
 
+		if (typeof code !== 'string') {
+			reply.code(400);
+			return;
+		}
+
+		const pendingUser = await this.userPendingsRepository.findOneBy({ code });
+
+		if (pendingUser == null) {
+			reply.code(400);
+			return { error: SIGNUP_PENDING_ERRORS.noSuchCode };
+		}
+
+		if (this.idService.parse(pendingUser.id).date.getTime() + SIGNUP_PENDING_EXPIRES_IN < Date.now()) {
+			reply.code(400);
+			return { error: SIGNUP_PENDING_ERRORS.expired };
+		}
+
 		try {
-			const pendingUser = await this.userPendingsRepository.findOneByOrFail({ code });
-
-			if (this.idService.parse(pendingUser.id).date.getTime() + (1000 * 60 * 30) < Date.now()) {
-				throw new FastifyReplyError(400, 'EXPIRED');
-			}
-
 			const { account } = await this.signupService.signup({
 				username: pendingUser.username,
 				passwordHash: pendingUser.password,
