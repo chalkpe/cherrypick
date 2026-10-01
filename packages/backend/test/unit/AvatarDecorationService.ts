@@ -40,7 +40,7 @@ describe('AvatarDecorationService', () => {
 	}
 
 	beforeEach(() => {
-		instance = { host: 'remote.example', softwareName: 'misskey', nodeinfoVersion: '2.1' };
+		instance = { host: 'remote.example', softwareName: 'misskey', supportsAvatarDecorations: false };
 		decorations = [];
 		send = vi.fn();
 		updateUser = vi.fn().mockResolvedValue({ affected: 1 });
@@ -66,12 +66,13 @@ describe('AvatarDecorationService', () => {
 
 	describe('remoteUserUpdate', () => {
 		test.each([
-			['misskey', '2.1'],
-			['cherrypick', '2.0'],
-			// Mastodon itself only provides NodeInfo 2.0, so this is a compatible server or a fork that may serve the Misskey API
-			['mastodon', '2.1'],
-		])('applies the decorations of a user on %s providing NodeInfo %s', async (softwareName, nodeinfoVersion) => {
-			instance = { ...instance, softwareName, nodeinfoVersion };
+			// Misskey and its forks serve the API without saying so
+			['misskey', false],
+			['cherrypick', false],
+			['mastodon', true],
+			['pleroma', true],
+		])('applies the decorations of a user on %s (advertising avatar decorations: %s)', async (softwareName, supportsAvatarDecorations) => {
+			instance = { ...instance, softwareName, supportsAvatarDecorations };
 			serveDecorations();
 
 			await service.remoteUserUpdate(user);
@@ -83,11 +84,10 @@ describe('AvatarDecorationService', () => {
 		});
 
 		test.each([
-			['mastodon', '2.0'],
-			['mastodon', null],
-			['pleroma', '2.1'],
-		])('does not ask %s providing NodeInfo %s', async (softwareName, nodeinfoVersion) => {
-			instance = { ...instance, softwareName, nodeinfoVersion };
+			['mastodon'],
+			[null],
+		])('does not ask %s that does not advertise avatar decorations', async (softwareName) => {
+			instance = { ...instance, softwareName, supportsAvatarDecorations: false };
 			serveDecorations();
 
 			await service.remoteUserUpdate(user);
@@ -96,8 +96,8 @@ describe('AvatarDecorationService', () => {
 			expect(updateUser).not.toHaveBeenCalled();
 		});
 
-		test('leaves the user alone when a Mastodon providing NodeInfo 2.1 does not serve the Misskey API', async () => {
-			instance = { ...instance, softwareName: 'mastodon', nodeinfoVersion: '2.1' };
+		test('leaves the user alone when an instance advertising avatar decorations fails to serve them', async () => {
+			instance = { ...instance, softwareName: 'mastodon', supportsAvatarDecorations: true };
 			send.mockRejectedValue(new Error('404 Not Found'));
 
 			await expect(service.remoteUserUpdate(user)).resolves.toBeUndefined();

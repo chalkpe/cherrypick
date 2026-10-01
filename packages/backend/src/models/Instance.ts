@@ -117,11 +117,11 @@ export class MiInstance {
 	})
 	public softwareVersion: string | null;
 
-	@Column('varchar', {
-		length: 8, nullable: true,
-		comment: 'The newest NodeInfo schema version the Instance provides.',
+	@Column('boolean', {
+		default: false,
+		comment: 'Whether the Instance advertises avatar decorations in its NodeInfo.',
 	})
-	public nodeinfoVersion: string | null;
+	public supportsAvatarDecorations: boolean;
 
 	@Column('boolean', {
 		nullable: true,

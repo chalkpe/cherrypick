@@ -18,7 +18,7 @@ import { HttpRequestService } from '@/core/HttpRequestService.js';
 import { appendQuery, query } from '@/misc/prelude/url.js';
 import type { Config } from '@/config.js';
 
-// Software that serves the Misskey API, which avatar decorations are fetched through
+// Software that serves the Misskey API, which avatar decorations are fetched through, without saying so
 const DECORATION_SOFTWARE = ['misskey', 'cherrypick', 'sharkey'];
 
 // TODO:
@@ -135,14 +135,13 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 
 	/**
 	 * Whether the instance serves the API that avatar decorations are fetched through.
-	 * Mastodon itself only provides NodeInfo 2.0, so a Mastodon providing 2.1 is a compatible server
-	 * or a fork such as Sharlayan Mastodon, which is likely to serve that API but may not.
+	 * Other software, such as Sharlayan Mastodon, serves it as well and advertises that in its NodeInfo.
 	 */
 	@bindThis
-	private getDecorationSupport(instance: MiInstance | null): 'certain' | 'likely' | 'none' {
-		if (instance?.softwareName == null) return 'none';
-		if (DECORATION_SOFTWARE.includes(instance.softwareName)) return 'certain';
-		if (instance.softwareName === 'mastodon' && instance.nodeinfoVersion === '2.1') return 'likely';
+	private getDecorationSupport(instance: MiInstance | null): 'certain' | 'advertised' | 'none' {
+		if (instance == null) return 'none';
+		if (instance.softwareName != null && DECORATION_SOFTWARE.includes(instance.softwareName)) return 'certain';
+		if (instance.supportsAvatarDecorations) return 'advertised';
 		return 'none';
 	}
 
@@ -166,8 +165,8 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 
 			userData = await res.json();
 		} catch (err) {
-			// An instance only likely to serve the API turned out not to
-			if (support === 'likely') return;
+			// What other software serves is not the API itself, so its failure must not fail the update of the user
+			if (support === 'advertised') return;
 			throw err;
 		}
 		const userAvatarDecorations = userData.avatarDecorations ?? undefined;
