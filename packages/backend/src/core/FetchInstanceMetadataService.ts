@@ -33,6 +33,8 @@ type NodeInfo = {
 			email?: unknown;
 		};
 		themeColor?: unknown;
+		features?: unknown;
+		avatarDecorations?: unknown;
 	};
 };
 
@@ -115,6 +117,7 @@ export class FetchInstanceMetadataService {
 			if (info) {
 				updates.softwareName = typeof info.software?.name === 'string' ? info.software.name.toLowerCase() : '?';
 				updates.softwareVersion = info.software?.version;
+				updates.supportsAvatarDecorations = this.advertisesAvatarDecorations(info);
 				updates.openRegistrations = info.openRegistrations;
 				updates.maintainerName = info.metadata ? info.metadata.maintainer ? (info.metadata.maintainer.name ?? null) : null : null;
 				updates.maintainerEmail = info.metadata ? info.metadata.maintainer ? (info.metadata.maintainer.email ?? null) : null : null;
@@ -134,6 +137,16 @@ export class FetchInstanceMetadataService {
 		} finally {
 			await this.unlock(host);
 		}
+	}
+
+	/**
+	 * Whether the NodeInfo says that avatar decorations can be fetched from the instance,
+	 * as Sharlayan Mastodon does: "avatarDecorations" among the features in the metadata, or a flag of that name.
+	 */
+	@bindThis
+	private advertisesAvatarDecorations(info: NodeInfo): boolean {
+		const features = info.metadata?.features;
+		return (Array.isArray(features) && features.includes('avatarDecorations')) || info.metadata?.avatarDecorations === true;
 	}
 
 	@bindThis

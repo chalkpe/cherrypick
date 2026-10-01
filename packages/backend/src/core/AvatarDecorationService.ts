@@ -6,7 +6,7 @@
 import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { IsNull, Not } from 'typeorm';
-import type { AvatarDecorationsRepository, InstancesRepository, UsersRepository, MiAvatarDecoration, MiUser } from '@/models/_.js';
+import type { AvatarDecorationsRepository, InstancesRepository, UsersRepository, MiAvatarDecoration, MiInstance, MiUser } from '@/models/_.js';
 import { IdService } from '@/core/IdService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { DI } from '@/di-symbols.js';
@@ -17,6 +17,9 @@ import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { HttpRequestService } from '@/core/HttpRequestService.js';
 import { appendQuery, query } from '@/misc/prelude/url.js';
 import type { Config } from '@/config.js';
+
+// Software that serves the Misskey API, which avatar decorations are fetched through, without saying so
+const DECORATION_SOFTWARE = ['misskey', 'cherrypick', 'sharkey'];
 
 // TODO:
 // 1. checkDuplicateする => done
@@ -130,6 +133,18 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		);
 	}
 
+	/**
+	 * Whether the instance serves the API that avatar decorations are fetched through.
+	 * Other software, such as Sharlayan Mastodon, serves it as well and advertises that in its NodeInfo.
+	 */
+	@bindThis
+	private getDecorationSupport(instance: MiInstance | null): 'certain' | 'advertised' | 'none' {
+		if (instance == null) return 'none';
+		if (instance.softwareName != null && DECORATION_SOFTWARE.includes(instance.softwareName)) return 'certain';
+		if (instance.supportsAvatarDecorations) return 'advertised';
+		return 'none';
+	}
+
 	@bindThis
 	public async remoteUserUpdate(user: MiUser) {
 		const userHost = user.host ?? '';
@@ -137,15 +152,23 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		const userHostUrl = `https://${user.host}`;
 		const showUserApiUrl = `${userHostUrl}/api/users/show`;
 
-		if (!['misskey', 'cherrypick', 'sharkey'].includes(<string>instance?.softwareName)) return;
+		const support = this.getDecorationSupport(instance);
+		if (support === 'none') return;
 
-		const res = await this.httpRequestService.send(showUserApiUrl, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ 'username': user.username }),
-		});
+		let userData: any;
+		try {
+			const res = await this.httpRequestService.send(showUserApiUrl, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ 'username': user.username }),
+			});
 
-		const userData: any = await res.json();
+			userData = await res.json();
+		} catch (err) {
+			// What other software serves is not the API itself, so its failure must not fail the update of the user
+			if (support === 'advertised') return;
+			throw err;
+		}
 		const userAvatarDecorations = userData.avatarDecorations ?? undefined;
 
 		if (!userAvatarDecorations || userAvatarDecorations.length === 0) {
@@ -277,7 +300,7 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		const instance = await this.instancesRepository.findOneBy({ host: decoration.host });
 		if (!instance) return null;
 
-		if (!['misskey', 'cherrypick', 'sharkey'].includes(<string>instance.softwareName)) {
+		if (this.getDecorationSupport(instance) === 'none') {
 			return null;
 		}
 

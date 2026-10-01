@@ -118,6 +118,12 @@ export class MiInstance {
 	public softwareVersion: string | null;
 
 	@Column('boolean', {
+		default: false,
+		comment: 'Whether the Instance advertises avatar decorations in its NodeInfo.',
+	})
+	public supportsAvatarDecorations: boolean;
+
+	@Column('boolean', {
 		nullable: true,
 	})
 	public openRegistrations: boolean | null;
