@@ -2298,6 +2298,17 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
+     * Delete multiple drive files owned by the requesting user that are not referenced anywhere (the same check as drive/files/unused). Files that are in use, belong to someone else or do not exist are skipped. Returns the IDs that were actually deleted.
+     * 
+     * **Credential required**: *Yes* / **Permission**: *write:drive*
+     */
+    request<E extends 'drive/files/delete-bulk', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
      * Search for a drive file by the given parameters.
      * 
      * **Credential required**: *Yes* / **Permission**: *read:drive*
@@ -2336,6 +2347,17 @@ declare module '../api.js' {
      * **Credential required**: *Yes* / **Permission**: *read:drive*
      */
     request<E extends 'drive/files/show', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * List drive files that are not referenced by any note, draft, chat message, gallery post, page, channel, avatar or banner. Folders are ignored. To paginate, pass the last file of the previous page as untilId, plus its size as untilSize (size sorts) or its name as untilName (name sorts).
+     * 
+     * **Credential required**: *Yes* / **Permission**: *read:drive*
+     */
+    request<E extends 'drive/files/unused', P extends Endpoints[E]['req']>(
       endpoint: E,
       params: P,
       credential?: string | null,

@@ -33,6 +33,7 @@ export class NoteHistory {
 	@Column('timestamp with time zone')
 	public updatedAt: Date;
 
+	@Index()
 	@Column(id())
 	public userId: MiUser['id'];
 

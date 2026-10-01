@@ -24,7 +24,7 @@ Playwright は **起動済みのテストサーバー** に対して走るため
 docker compose -f packages/backend/test/compose.yml up -d
 
 # 2. テスト設定を配置 (未作成なら。例示なので、cpコマンドは環境にあったコマンドに適宜読み替えること)
-cp .github/misskey/test.yml .config/test.yml
+cp .github/cherrypick/test.yml .config/test.yml
 
 # 3. 全体ビルド
 pnpm build

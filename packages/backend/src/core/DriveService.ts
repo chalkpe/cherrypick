@@ -814,7 +814,7 @@ export class DriveService {
 			}
 		}
 
-		this.deletePostProcess(file, isExpired, deleter);
+		await this.deletePostProcess(file, isExpired, deleter);
 	}
 
 	@bindThis

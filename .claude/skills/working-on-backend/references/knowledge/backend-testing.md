@@ -19,9 +19,9 @@ backend のテストスクリプト (`test` / `test:e2e` / `test:fed`) はすべ
 未作成なら以下を 1 回だけ手動コピーする (どちらでも可):
 
 ```bash
-ncp .github/misskey/test.yml .config/test.yml
+ncp .github/cherrypick/test.yml .config/test.yml
 # または
-cp .github/misskey/test.yml .config/test.yml
+cp .github/cherrypick/test.yml .config/test.yml
 ```
 
 補足:
@@ -195,7 +195,7 @@ backend の **テスト** と **開発** では用途別に別の compose ファ
 
 | 用途 | compose ファイル | host ポート (db / redis) |
 | --- | --- | --- |
-| テスト (`test` / `test:e2e` / `test:fed`) | [packages/backend/test/compose.yml](../../../../../packages/backend/test/compose.yml) | `54312` / `56312` ([.github/misskey/test.yml](../../../../../.github/misskey/test.yml) のポート設定と一致) |
+| テスト (`test` / `test:e2e` / `test:fed`) | [packages/backend/test/compose.yml](../../../../../packages/backend/test/compose.yml) | `54312` / `56312` ([.github/cherrypick/test.yml](../../../../../.github/cherrypick/test.yml) のポート設定と一致) |
 | 開発 (`pnpm dev` 等) | `compose.local-db.yml` (リポジトリルート) | `5432` / `6379` |
 
 ```bash

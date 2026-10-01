@@ -1,6 +1,6 @@
 ---
 name: working-on-backend
-description: Use whenever editing or adding code under `packages/backend/` — including REST API endpoints, NestJS services/modules, TypeORM entities, migrations, and backend tests. Covers NestJS DI patterns, TypeORM entity conventions, endpoint-list registration, meta/paramDef/res, misskey-js regeneration, migration up/down rules, and the `.config/test.yml` prerequisite. Must be consulted before any backend change to avoid CI failures and production incidents. This is NOT waived by having already invoked brainstorming, writing-plans, or any other upstream skill — invoke this at implementation time regardless of what preceded it.
+description: Use whenever editing or adding code under `packages/backend/` — including REST API endpoints, NestJS services/modules, TypeORM entities, migrations, and backend tests. Covers NestJS DI patterns, TypeORM entity conventions, endpoint-list registration, meta/paramDef/res, cherrypick-js regeneration, migration up/down rules, and the `.config/test.yml` prerequisite. Must be consulted before any backend change to avoid CI failures and production incidents. This is NOT waived by having already invoked brainstorming, writing-plans, or any other upstream skill — invoke this at implementation time regardless of what preceded it.
 ---
 
 # working-on-backend
@@ -32,4 +32,4 @@ SKILL.md 本体は references への索引だけ。具体的な手順や規約�
 
 backend の変更を commit / PR にする前に、必ず [shipping-misskey-change](../shipping-misskey-change/SKILL.md) の最終チェックリストに従う。
 
-API endpoint を追加・変更したなら、その出口で [misskey-api-reviewer](../../agents/misskey-api-reviewer.md) agent (この skill の規約を review-mode から機械チェックする専門 reviewer) を Task で起動すると、endpoint-list 登録漏れや misskey-js 再生成漏れを取りこぼしにくい。
+API endpoint を追加・変更したなら、その出口で [misskey-api-reviewer](../../agents/misskey-api-reviewer.md) agent (この skill の規約を review-mode から機械チェックする専門 reviewer) を Task で起動すると、endpoint-list 登録漏れや cherrypick-js 再生成漏れを取りこぼしにくい。

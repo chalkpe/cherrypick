@@ -192,10 +192,12 @@ export * as 'drive/files/attached-chat-messages' from './endpoints/drive/files/a
 export * as 'drive/files/check-existence' from './endpoints/drive/files/check-existence.js';
 export * as 'drive/files/create' from './endpoints/drive/files/create.js';
 export * as 'drive/files/delete' from './endpoints/drive/files/delete.js';
+export * as 'drive/files/delete-bulk' from './endpoints/drive/files/delete-bulk.js';
 export * as 'drive/files/find' from './endpoints/drive/files/find.js';
 export * as 'drive/files/find-by-hash' from './endpoints/drive/files/find-by-hash.js';
 export * as 'drive/files/show' from './endpoints/drive/files/show.js';
 export * as 'drive/files/update' from './endpoints/drive/files/update.js';
+export * as 'drive/files/unused' from './endpoints/drive/files/unused.js';
 export * as 'drive/files/move-bulk' from './endpoints/drive/files/move-bulk.js';
 export * as 'drive/files/upload-from-url' from './endpoints/drive/files/upload-from-url.js';
 export * as 'drive/folders' from './endpoints/drive/folders.js';

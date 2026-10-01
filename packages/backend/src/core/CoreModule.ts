@@ -29,6 +29,7 @@ import { DeleteAccountService } from './DeleteAccountService.js';
 import { TruncateAccountService } from './TruncateAccountService.js';
 import { DownloadService } from './DownloadService.js';
 import { DriveService } from './DriveService.js';
+import { DriveFileUsageService } from './DriveFileUsageService.js';
 import { EmailService } from './EmailService.js';
 import { FederatedInstanceService } from './FederatedInstanceService.js';
 import { FetchInstanceMetadataService } from './FetchInstanceMetadataService.js';
@@ -183,6 +184,7 @@ const $DeleteAccountService: Provider = { provide: 'DeleteAccountService', useEx
 const $TruncateAccountService: Provider = { provide: 'TruncateAccountService', useExisting: TruncateAccountService };
 const $DownloadService: Provider = { provide: 'DownloadService', useExisting: DownloadService };
 const $DriveService: Provider = { provide: 'DriveService', useExisting: DriveService };
+const $DriveFileUsageService: Provider = { provide: 'DriveFileUsageService', useExisting: DriveFileUsageService };
 const $EmailService: Provider = { provide: 'EmailService', useExisting: EmailService };
 const $FederatedInstanceService: Provider = { provide: 'FederatedInstanceService', useExisting: FederatedInstanceService };
 const $FetchInstanceMetadataService: Provider = { provide: 'FetchInstanceMetadataService', useExisting: FetchInstanceMetadataService };
@@ -343,6 +345,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		TruncateAccountService,
 		DownloadService,
 		DriveService,
+		DriveFileUsageService,
 		EmailService,
 		FederatedInstanceService,
 		FetchInstanceMetadataService,
@@ -502,6 +505,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$TruncateAccountService,
 		$DownloadService,
 		$DriveService,
+		$DriveFileUsageService,
 		$EmailService,
 		$FederatedInstanceService,
 		$FetchInstanceMetadataService,
@@ -660,6 +664,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		TruncateAccountService,
 		DownloadService,
 		DriveService,
+		DriveFileUsageService,
 		EmailService,
 		FederatedInstanceService,
 		FetchInstanceMetadataService,
@@ -818,6 +823,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$TruncateAccountService,
 		$DownloadService,
 		$DriveService,
+		$DriveFileUsageService,
 		$EmailService,
 		$FederatedInstanceService,
 		$FetchInstanceMetadataService,

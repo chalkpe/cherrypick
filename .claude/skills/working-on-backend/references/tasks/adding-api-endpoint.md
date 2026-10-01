@@ -5,7 +5,7 @@
 ## 最重要事実 (見落とすと CI / 本番が壊れる)
 
 1. **エンドポイントは glob 自動収集されない**。[endpoint-list.ts](../../../../../packages/backend/src/server/api/endpoint-list.ts) への 1 行追加が必須 → [knowledge/endpoint-list.md](../knowledge/endpoint-list.md)
-2. **`meta` / `paramDef` / `res` を変えたら misskey-js 再生成が必須**。`pnpm build-misskey-js-with-types` を忘れると CI の `check-misskey-js-autogen` で必ず落ちる
+2. **`meta` / `paramDef` / `res` を変えたら cherrypick-js 再生成が必須**。`pnpm build-cherrypick-js-with-types` を忘れると CI の `check-cherrypick-js-autogen` で必ず落ちる
 3. **`meta.errors` の各 `id` は UUID v4 で、リポジトリ内で一意**。`crypto.randomUUID()` で生成し、`grep -r "id: '<UUID>'" packages/backend/src/server/api/endpoints/` で衝突確認
 
 ## ワークフロー全体図
@@ -14,7 +14,7 @@
 1. 設計    : エンドポイントの種類を決める (read/write × 認証要否 × 権限)
 2. 実装    : meta / paramDef / クラス本体を書く (SPDX ヘッダー付き)
 3. 配線    : endpoint-list.ts に登録 (★ 忘れると 404)
-4. 検証    : e2e テスト + lint + misskey-js 再生成
+4. 検証    : e2e テスト + lint + cherrypick-js 再生成
 ```
 
 ---
@@ -49,7 +49,7 @@
  */
 ```
 
-**注:** `packages/misskey-js/src/autogen/` 配下にも diff が出るが、**misskey-js は MIT ライセンス** で別管理 (`packages/misskey-js/package.json:license` = MIT) なので SPDX ヘッダーは付けない / 不要。
+**注:** `packages/cherrypick-js/src/autogen/` 配下にも diff が出るが、**cherrypick-js は MIT ライセンス** で別管理 (`packages/cherrypick-js/package.json:license` = MIT) なので SPDX ヘッダーは付けない / 不要。
 
 ### 2.2 最小テンプレート (認証不要 read 系)
 
@@ -104,7 +104,7 @@ import { DI } from '@/di-symbols.js';
 export const meta = {
 	tags: ['notes'],
 	requireCredential: true,         // 認証必須 → kind 必須 (例外: secure: true な内部 API は kind 不要)
-	kind: 'write:notes',             // OAuth scope (一覧は packages/misskey-js/src/consts.ts の `permissions`)
+	kind: 'write:notes',             // OAuth scope (一覧は packages/cherrypick-js/src/consts.ts の `permissions`)
 	prohibitMoved: false,            // 移行済アカウントを拒否するか
 	limit: {
 		duration: 1000 * 60 * 60,    // 1 時間
@@ -176,7 +176,7 @@ async (ps, me, token, file, cleanup, ip, headers) => { ... }
 
 ### 2.6 エラー throw のバランス
 
-**クライアントに返すべき業務エラー** は必ず `meta.errors` に列挙して `throw new ApiError(meta.errors.<key>)` する。これを守らないと misskey-js 側の型に出ず、レスポンスも 500 になる。第 2 引数で追加情報を渡せる:
+**クライアントに返すべき業務エラー** は必ず `meta.errors` に列挙して `throw new ApiError(meta.errors.<key>)` する。これを守らないと cherrypick-js 側の型に出ず、レスポンスも 500 になる。第 2 引数で追加情報を渡せる:
 
 ```ts
 throw new ApiError(meta.errors.invalidParam, { reason: 'too short' });
@@ -241,15 +241,15 @@ pnpm --filter backend typecheck      # tsc --noEmit (backend のみ)
 pnpm --filter backend lint
 ```
 
-### 4.3 misskey-js 再生成 (★必須)
+### 4.3 cherrypick-js 再生成 (★必須)
 
 `meta` / `paramDef` / `res` を変えたら必ず:
 
 ```bash
-pnpm build-misskey-js-with-types
+pnpm build-cherrypick-js-with-types
 ```
 
-PR に `packages/misskey-js/src/autogen/` 配下の差分が含まれていないと CI の `check-misskey-js-autogen` で必ず落ちる (最頻ミス)。詳細手順は [shipping-misskey-change/references/tasks/regenerate-misskey-js.md](../../../shipping-misskey-change/references/tasks/regenerate-misskey-js.md)。
+PR に `packages/cherrypick-js/src/autogen/` 配下の差分が含まれていないと CI の `check-cherrypick-js-autogen` で必ず落ちる (最頻ミス)。詳細手順は [shipping-misskey-change/references/tasks/regenerate-misskey-js.md](../../../shipping-misskey-change/references/tasks/regenerate-misskey-js.md)。
 
 ---
 
@@ -258,7 +258,7 @@ PR に `packages/misskey-js/src/autogen/` 配下の差分が含まれていな�
 詳細な症状 → 原因 → 修正 のフォーマット → **[knowledge/api-meta-paramdef.md](../knowledge/api-meta-paramdef.md) §落とし穴**
 
 - **404 になる** → `endpoint-list.ts` 登録漏れ
-- **CI `check-misskey-js-autogen` で落ちる** → `pnpm build-misskey-js-with-types` 忘れ
+- **CI `check-cherrypick-js-autogen` で落ちる** → `pnpm build-cherrypick-js-with-types` 忘れ
 - **CI `spdx` で落ちる** → SPDX ヘッダー欠落
 - **クライアントが 500 と error 型不在を受け取る** → `meta.errors` 列挙なしに `throw new ApiError(...)` した
 - **`me.id` で TypeError** → `requireCredential: false` で null チェックを忘れた
@@ -281,4 +281,4 @@ PR に `packages/misskey-js/src/autogen/` 配下の差分が含まれていな�
 - [endpoints/notes/global-timeline.ts (policies 動的チェック)](../../../../../packages/backend/src/server/api/endpoints/notes/global-timeline.ts)
 - [test/e2e/endpoints.ts (テスト例)](../../../../../packages/backend/test/e2e/endpoints.ts)
 - [test/utils.ts (api/signup/post 等のヘルパー)](../../../../../packages/backend/test/utils.ts)
-- [scripts/generate_api_json.js (misskey-js 生成元)](../../../../../packages/backend/scripts/generate_api_json.js)
+- [scripts/generate_api_json.js (cherrypick-js 生成元)](../../../../../packages/backend/scripts/generate_api_json.js)

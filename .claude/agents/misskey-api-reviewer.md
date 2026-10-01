@@ -1,6 +1,6 @@
 ---
 name: misskey-api-reviewer
-description: Misskey backend の REST API エンドポイント (packages/backend/src/server/api/endpoints/) 追加・変更を機械レビューする。endpoint-list 登録漏れ・misskey-js 再生成漏れ・meta/paramDef/UUID を検査。backend API を変更した PR レビューで呼ぶ。
+description: Misskey backend の REST API エンドポイント (packages/backend/src/server/api/endpoints/) 追加・変更を機械レビューする。endpoint-list 登録漏れ・cherrypick-js 再生成漏れ・meta/paramDef/UUID を検査。backend API を変更した PR レビューで呼ぶ。
 tools: Read, Grep, Glob, Bash
 ---
 
@@ -29,7 +29,7 @@ BASE=$(git merge-base origin/develop HEAD)
 
 - `packages/backend/src/server/api/endpoint-list.ts`
 - `packages/backend/test/e2e/**` (とくに `endpoints.ts` と `<area>.ts`)
-- `packages/misskey-js/src/autogen/**`
+- `packages/cherrypick-js/src/autogen/**`
 
 差分対象が空なら「レビュー対象の API エンドポイント変更なし」と短く報告して終了。
 
@@ -96,16 +96,16 @@ grep -F "'<category>/<name>'" packages/backend/src/server/api/endpoint-list.ts
 
 **並び順の補足**: ファイル全体は厳密なアルファベット順では並んでおらず、同カテゴリ内 (`admin/queue/*` など) でも追加された経緯どおりの順になっている箇所が多い。**順序逸脱は指摘根拠にしない** (誤検知の元)。「行が存在するか」のみを Critical 観点として扱う。
 
-### 6. `misskey-js` 再生成 (Critical)
+### 6. `cherrypick-js` 再生成 (Critical)
 
-`meta` / `paramDef` / `res` を変更したら、PR / ブランチに `packages/misskey-js/src/autogen/` 配下の差分が含まれているか確認する:
+`meta` / `paramDef` / `res` を変更したら、PR / ブランチに `packages/cherrypick-js/src/autogen/` 配下の差分が含まれているか確認する:
 
 ```bash
 BASE=$(git merge-base origin/develop HEAD)
-git diff --name-only "$BASE"...HEAD -- packages/misskey-js/src/autogen/
+git diff --name-only "$BASE"...HEAD -- packages/cherrypick-js/src/autogen/
 ```
 
-差分ゼロなら `pnpm build-misskey-js-with-types` の実行漏れ。CI の `check-misskey-js-autogen` ワークフローで必ず落ちるため Critical 扱い。
+差分ゼロなら `pnpm build-cherrypick-js-with-types` の実行漏れ。CI の `check-cherrypick-js-autogen` ワークフローで必ず落ちるため Critical 扱い。
 
 ### 7. e2e テスト (Major)
 

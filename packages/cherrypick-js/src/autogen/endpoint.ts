@@ -310,6 +310,8 @@ import type {
 	DriveFilesCreateRequest,
 	DriveFilesCreateResponse,
 	DriveFilesDeleteRequest,
+	DriveFilesDeleteBulkRequest,
+	DriveFilesDeleteBulkResponse,
 	DriveFilesFindRequest,
 	DriveFilesFindResponse,
 	DriveFilesFindByHashRequest,
@@ -317,6 +319,8 @@ import type {
 	DriveFilesMoveBulkRequest,
 	DriveFilesShowRequest,
 	DriveFilesShowResponse,
+	DriveFilesUnusedRequest,
+	DriveFilesUnusedResponse,
 	DriveFilesUpdateRequest,
 	DriveFilesUpdateResponse,
 	DriveFilesUploadFromUrlRequest,
@@ -930,10 +934,12 @@ export type Endpoints = {
 	'drive/files/check-existence': { req: DriveFilesCheckExistenceRequest; res: DriveFilesCheckExistenceResponse };
 	'drive/files/create': { req: DriveFilesCreateRequest; res: DriveFilesCreateResponse };
 	'drive/files/delete': { req: DriveFilesDeleteRequest; res: EmptyResponse };
+	'drive/files/delete-bulk': { req: DriveFilesDeleteBulkRequest; res: DriveFilesDeleteBulkResponse };
 	'drive/files/find': { req: DriveFilesFindRequest; res: DriveFilesFindResponse };
 	'drive/files/find-by-hash': { req: DriveFilesFindByHashRequest; res: DriveFilesFindByHashResponse };
 	'drive/files/move-bulk': { req: DriveFilesMoveBulkRequest; res: EmptyResponse };
 	'drive/files/show': { req: DriveFilesShowRequest; res: DriveFilesShowResponse };
+	'drive/files/unused': { req: DriveFilesUnusedRequest; res: DriveFilesUnusedResponse };
 	'drive/files/update': { req: DriveFilesUpdateRequest; res: DriveFilesUpdateResponse };
 	'drive/files/upload-from-url': { req: DriveFilesUploadFromUrlRequest; res: EmptyResponse };
 	'drive/folders': { req: DriveFoldersRequest; res: DriveFoldersResponse };

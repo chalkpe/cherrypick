@@ -1371,6 +1371,12 @@ type DriveFilesCreateRequest = operations['drive___files___create']['requestBody
 type DriveFilesCreateResponse = operations['drive___files___create']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type DriveFilesDeleteBulkRequest = operations['drive___files___delete-bulk']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type DriveFilesDeleteBulkResponse = operations['drive___files___delete-bulk']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type DriveFilesDeleteRequest = operations['drive___files___delete']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -1399,6 +1405,12 @@ type DriveFilesShowRequest = operations['drive___files___show']['requestBody']['
 
 // @public (undocumented)
 type DriveFilesShowResponse = operations['drive___files___show']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type DriveFilesUnusedRequest = operations['drive___files___unused']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type DriveFilesUnusedResponse = operations['drive___files___unused']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type DriveFilesUpdateRequest = operations['drive___files___update']['requestBody']['content']['application/json'];
@@ -1915,6 +1927,8 @@ declare namespace entities {
         DriveFilesCreateRequest,
         DriveFilesCreateResponse,
         DriveFilesDeleteRequest,
+        DriveFilesDeleteBulkRequest,
+        DriveFilesDeleteBulkResponse,
         DriveFilesFindRequest,
         DriveFilesFindResponse,
         DriveFilesFindByHashRequest,
@@ -1922,6 +1936,8 @@ declare namespace entities {
         DriveFilesMoveBulkRequest,
         DriveFilesShowRequest,
         DriveFilesShowResponse,
+        DriveFilesUnusedRequest,
+        DriveFilesUnusedResponse,
         DriveFilesUpdateRequest,
         DriveFilesUpdateResponse,
         DriveFilesUploadFromUrlRequest,

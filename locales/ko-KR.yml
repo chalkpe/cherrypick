@@ -3335,6 +3335,15 @@ _disabledTimeline:
 _drivecleaner:
   orderBySizeDesc: "크기가 큰 순"
   orderByCreatedAtAsc: "등록일이 오래된 순"
+  unusedOnly: "미사용 파일만 보기"
+  unusedOnlyDescription: "노트, 초안, 채팅, 갤러리, 페이지, 프로필 등 어디에도 첨부되지 않은 파일을 폴더와 관계없이 표시합니다. 본문에 URL로 직접 붙여넣은 파일은 감지하지 못합니다."
+  selectAll: "전체 선택"
+  deselectAll: "선택 해제"
+  deleteSelected: "선택한 파일 삭제"
+  selectedFilesSummary: "{n}개 선택됨 ({size})"
+  deleteSelectedConfirm: "선택한 파일 {n}개({size})를 삭제할까요? 이 작업은 되돌릴 수 없습니다."
+  deleteSelectedFailed: "일부 파일을 삭제하지 못했습니다. 삭제하지 못한 파일은 선택된 상태로 남아 있습니다."
+  deleteSelectedSkipped: "파일 {n}개는 목록을 불러온 뒤에 사용되어 삭제하지 않았습니다."
 _webhookSettings:
   createWebhook: "Webhook 생성"
   modifyWebhook: "Webhook 수정"

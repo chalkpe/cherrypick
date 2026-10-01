@@ -1882,6 +1882,15 @@ export type paths = {
          */
         post: operations['drive___files___delete'];
     };
+    '/drive/files/delete-bulk': {
+        /**
+         * drive/files/delete-bulk
+         * @description Delete multiple drive files owned by the requesting user that are not referenced anywhere (the same check as drive/files/unused). Files that are in use, belong to someone else or do not exist are skipped. Returns the IDs that were actually deleted.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:drive*
+         */
+        post: operations['drive___files___delete-bulk'];
+    };
     '/drive/files/find': {
         /**
          * drive/files/find
@@ -1917,6 +1926,15 @@ export type paths = {
          *     **Credential required**: *Yes* / **Permission**: *read:drive*
          */
         post: operations['drive___files___show'];
+    };
+    '/drive/files/unused': {
+        /**
+         * drive/files/unused
+         * @description List drive files that are not referenced by any note, draft, chat message, gallery post, page, channel, avatar or banner. Folders are ignored. To paginate, pass the last file of the previous page as untilId, plus its size as untilSize (size sorts) or its name as untilName (name sorts).
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:drive*
+         */
+        post: operations['drive___files___unused'];
     };
     '/drive/files/update': {
         /**
@@ -21297,6 +21315,71 @@ export interface operations {
             };
         };
     };
+    'drive___files___delete-bulk': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    fileIds: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': string[];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
     drive___files___find: {
         requestBody: {
             content: {
@@ -21515,6 +21598,78 @@ export interface operations {
                 };
                 content: {
                     'application/json': components['schemas']['DriveFile'];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    drive___files___unused: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @default 10 */
+                    limit?: number;
+                    /** Format: misskey:id */
+                    untilId?: string;
+                    untilSize?: number;
+                    untilName?: string;
+                    /** @enum {string|null} */
+                    sort?: '+createdAt' | '-createdAt' | '+name' | '-name' | '+size' | '-size' | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['DriveFile'][];
                 };
             };
             /** @description Client error */

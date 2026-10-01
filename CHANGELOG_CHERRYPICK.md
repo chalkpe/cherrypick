@@ -14,6 +14,7 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#202691](CHANGE
 - Feat: Phanpy, Moshidon, Ice Cubes 등 Mastodon 클라이언트로 로그인해 사용할 수 있습니다. (TransFem-org/Sharkey 기반 Mastodon 호환 API, OAuth 2.0 · 스트리밍 · Web Push 지원)
 - Fix: Misskey 2026.9.1 병합 과정에서 병합 전 상태로 되돌려졌던 로케일 파일(ko-KR 등)을 복구하여, 누락되었던 번역(예: 노트 검색의 `게시 날짜` 옵션)이 다시 표시됩니다.
 - Fix: 병합 과정에서 누락된 번역(민감한 콘텐츠로 표시된 미디어 열기 옵션, 고양이만 보기, 위젯 이름 등)을 복원했습니다.
+- Feat: 드라이브 클리너에서 노트·초안·채팅·갤러리·페이지·프로필 어디에도 쓰이지 않는 파일만 골라 한 번에 삭제할 수 있습니다.
 
 ### Client
 - Fix: 데스크탑 Friendly UI에서 페이지 상단 헤더가 왼쪽 정렬로 표시되고 뒤로 가기 버튼이 사라지는 문제를 수정했습니다.
