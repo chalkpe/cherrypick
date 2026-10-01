@@ -6,12 +6,13 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { In, LessThan } from 'typeorm';
 import { DI } from '@/di-symbols.js';
-import type { AntennasRepository, RoleAssignmentsRepository, UserIpsRepository } from '@/models/_.js';
+import type { AntennasRepository, RoleAssignmentsRepository, UserIpsRepository, UserPendingsRepository } from '@/models/_.js';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
 import type { Config } from '@/config.js';
 import { ReversiService } from '@/core/ReversiService.js';
+import { SIGNUP_PENDING_RETENTION } from '@/const.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 import type * as Bull from 'bullmq';
 
@@ -32,6 +33,9 @@ export class CleanProcessorService {
 		@Inject(DI.roleAssignmentsRepository)
 		private roleAssignmentsRepository: RoleAssignmentsRepository,
 
+		@Inject(DI.userPendingsRepository)
+		private userPendingsRepository: UserPendingsRepository,
+
 		private queueLoggerService: QueueLoggerService,
 		private reversiService: ReversiService,
 		private idService: IdService,
@@ -43,13 +47,18 @@ export class CleanProcessorService {
 	public async process(): Promise<void> {
 		this.logger.info('Cleaning...');
 
-		this.userIpsRepository.delete({
+		await this.userIpsRepository.delete({
 			createdAt: LessThan(new Date(Date.now() - (1000 * 60 * 60 * 24 * 90))),
+		});
+
+		// 再送信もできなくなった仮登録を削除
+		await this.userPendingsRepository.delete({
+			id: LessThan(this.idService.gen(Date.now() - SIGNUP_PENDING_RETENTION)),
 		});
 
 		// 使われてないアンテナを停止
 		if (this.config.deactivateAntennaThreshold > 0) {
-			this.antennasRepository.update({
+			await this.antennasRepository.update({
 				lastUsedAt: LessThan(new Date(Date.now() - this.config.deactivateAntennaThreshold)),
 			}, {
 				isActive: false,

@@ -9734,7 +9734,7 @@ export interface Locale extends ILocale {
         /**
          * 入力されたメールアドレス({email})宛に確認のメールが送信されました。メールに記載されたリンクにアクセスすると、アカウントの作成が完了します。
          * もしメールが来なかったらスパムメールボックスを確認してください。
-         * メールに記載されているリンクの有効期限は30分です。
+         * メールに記載されているリンクの有効期限は24時間です。
          */
         "emailSent": ParameterizedString<"email">;
         /**
@@ -9745,6 +9745,30 @@ export interface Locale extends ILocale {
          * インスタンスに参加したい理由を入力してください。
          */
         "reasonInfo": string;
+        /**
+         * 確認リンクの有効期限が切れています
+         */
+        "verificationLinkExpired": string;
+        /**
+         * 確認メールを再送信すると、登録時に入力したメールアドレス宛に新しいリンクが届きます。
+         */
+        "verificationLinkExpiredDescription": string;
+        /**
+         * 確認メールを再送信
+         */
+        "resendVerificationEmail": string;
+        /**
+         * 登録時に入力したメールアドレス宛に新しい確認メールを送信しました。メールに記載されているリンクの有効期限は24時間です。
+         */
+        "verificationEmailResent": string;
+        /**
+         * このリンクは既に使用されたか、無効です。アカウントの作成が完了している場合はログインしてください。
+         */
+        "verificationLinkInvalid": string;
+        /**
+         * 確認メールを再送信できません。お手数ですが、もう一度最初から登録してください。
+         */
+        "cannotResendVerificationEmail": string;
     };
     "_accountDelete": {
         /**

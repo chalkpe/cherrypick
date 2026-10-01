@@ -146,6 +146,8 @@ export class ApiServerService {
 
 		fastify.post<{ Body: { code: string; } }>('/signup-pending', (request, reply) => this.signupApiService.signupPending(request, reply));
 
+		fastify.post<{ Body: { code: string; } }>('/signup-pending/resend', (request, reply) => this.signupApiService.resendSignupPending(request, reply));
+
 		fastify.get('/v1/instance/peers', async (request, reply) => {
 			const instances = await this.instancesRepository.find({
 				select: { host: true },
