@@ -23,9 +23,11 @@
      `SPDX: OK` なら追加の目視確認はしない
    - `packages/cherrypick-js` は MIT ライセンスのサブパッケージなので、この AGPL ヘッダーを一律に付けない (サブパッケージ固有の `package.json` / `LICENSE` / 既存ファイルのヘッダーに従う)
 
-2. **`locales/ja-JP.yml` 以外の locale YAML を手動編集しない**
-   - 他言語ファイル (`en-US.yml` など `ja-JP.yml` 以外すべて) は Crowdin の自動配信先。手動編集すると次の同期で上書き喪失する
-   - 根拠: [locales/README.md](locales/README.md) と [crowdin.yml](crowdin.yml) (`ja-JP.yml` → `locales/%locale%.yml` の同期設定)
+2. **locale キーを `locales/ja-JP.yml` だけに追加・変更して終わらせない**
+   - この fork は Crowdin を使わない (upstream の [crowdin.yml](crowdin.yml) は残っているが同期は走らない)。他言語ファイルを自動で埋めるものは無い
+   - キーを追加・変更・削除するときは `ja-JP.yml` (型生成の原本。[packages/i18n/build.ts](packages/i18n/build.ts) が読む) と `ko-KR.yml`、`en-US.yml` の 3 ファイルを **同じ commit で** 揃える
+   - それ以外の locale は必要なときだけ手で直す。欠けたキーは実行時に ja-JP へフォールバックするので必須ではない
+   - 根拠: [locales/README.md](locales/README.md)
 
 3. **マージ済 migration ファイルを編集しない**
    - 対象: `packages/backend/migration/{unixMs}-{name}.js` のうち、既に `develop` / `master` にマージされたもの
@@ -68,7 +70,7 @@
 2. **backend API 変更時**: `pnpm build-cherrypick-js-with-types` を実行し `packages/cherrypick-js/src/autogen/` の差分も commit に含めた
 3. **entity / migration 変更時**: `pnpm --filter backend check-migrations` が pending DDL 0 件で通る / 新規 migration は `up()` と `down()` 両方実装済
 4. **SPDX**: `node scripts/check-spdx.mjs` が `SPDX: OK` を返すことを確認する
-5. **locale safety**: commit 済み・未commit・untracked の変更集合に `locales/ja-JP.yml` 以外の locale YAML が無いことを確認する
+5. **locale safety**: `locales/ja-JP.yml` を変更したなら、同じ変更集合に `ko-KR.yml` と `en-US.yml` も含まれていることを確認する (`node scripts/check-shipping.mjs` が検査する)
 6. **[CHANGELOG](.claude/skills/shipping-misskey-change/references/tasks/changelog-update.md)**: ユーザーが明示しない限り編集しない。
    ユーザー影響がある変更では引き継ぎに候補を 1 行だけ示す
 

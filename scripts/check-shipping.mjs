@@ -185,22 +185,24 @@ function runSpdx(base, repoRoot) {
 }
 
 /**
- * ja-JP.yml 以外の locale YAML 変更がないかを検査する。
+ * ja-JP.yml を変更したときに ko-KR.yml と en-US.yml も揃っているかを検査する。
+ * この fork は Crowdin を使わないので、他言語ファイルを自動で埋めるものは無い。
  *
  * @param {string[]} changedFiles
  * @returns {0 | 1}
  */
 function runLocaleSafety(changedFiles) {
-	const badLocales = changedFiles.filter((file) => (
-		file.startsWith('locales/') &&
-		file.endsWith('.yml') &&
-		file !== 'locales/ja-JP.yml'
-	));
-	if (badLocales.length === 0) {
+	const changed = new Set(changedFiles);
+	if (!changed.has('locales/ja-JP.yml')) {
 		console.log('Locale safety: PASS');
 		return 0;
 	}
-	for (const file of badLocales) console.error(`forbidden locale change: ${file}`);
+	const missing = ['locales/ko-KR.yml', 'locales/en-US.yml'].filter((file) => !changed.has(file));
+	if (missing.length === 0) {
+		console.log('Locale safety: PASS');
+		return 0;
+	}
+	for (const file of missing) console.error(`locales/ja-JP.yml changed but ${file} did not: add or change the same keys there in the same commit`);
 	return 1;
 }
 

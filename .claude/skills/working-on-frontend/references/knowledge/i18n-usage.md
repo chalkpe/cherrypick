@@ -1,12 +1,12 @@
-# i18n 使い分け / Crowdin 安全策 / トラブルシュート
+# i18n 使い分け / locale ファイルの運用 / トラブルシュート
 
-`i18n.ts` / `i18n.tsx` の使い分け、Crowdin との同期メカニズム、頻発する型エラー / 実行時警告の対処を 1 箇所にまとめたページ。
+`i18n.ts` / `i18n.tsx` の使い分け、locale ファイル (ja-JP / ko-KR / en-US) の揃え方、頻発する型エラー / 実行時警告の対処を 1 箇所にまとめたページ。
 
 ## 目次
 
 - [基本: ts と tsx の使い分け](#基本-ts-と-tsx-の使い分け)
 - [実装パターン](#実装パターン)
-- [Crowdin 安全策 (既存キーのリネーム / 復旧)](#crowdin-安全策-既存キーのリネーム--復旧)
+- [locale ファイルの運用 (この fork には Crowdin が無い)](#locale-ファイルの運用-この-fork-には-crowdin-が無い)
 - [トラブルシュート](#トラブルシュート)
 - [制約と補足](#制約と補足)
 
@@ -28,7 +28,7 @@
 
   YAML 側に `{name}` 形式のプレースホルダが含まれているキーは **`i18n.tsx`** からしか呼べない。誤って `i18n.ts.unfollowConfirm` と書くと値がフォーマット前の関数になってそのまま表示される。
 
-- **既存キーの再利用が第一**。新キー追加が必要に見えても、まず `locales/ja-JP.yml` を grep して `deleteAreYouSure({ x })` のような汎用キー (`x` プレースホルダ) が転用可能でないか確認する。新キー追加は [tasks/adding-i18n-key.md](../tasks/adding-i18n-key.md)。他言語ファイルは Crowdin の自動配信先なので絶対に手で触らない
+- **既存キーの再利用が第一**。新キー追加が必要に見えても、まず `locales/ja-JP.yml` を grep して `deleteAreYouSure({ x })` のような汎用キー (`x` プレースホルダ) が転用可能でないか確認する。新キー追加は [tasks/adding-i18n-key.md](../tasks/adding-i18n-key.md) (ja-JP / ko-KR / en-US の 3 ファイルを揃える)
 
 ```vue
 <script lang="ts" setup>
@@ -151,81 +151,33 @@ i18n.tsx.iHaveReadXCarefullyAndAgree({ x: i18n.ts.serverRules })
 {{ name ? i18n.tsx._auth.shareAccess({ name }) : i18n.ts._auth.shareAccessAsk }}
 ```
 
-## Crowdin 安全策 (既存キーのリネーム / 復旧)
+## locale ファイルの運用 (この fork には Crowdin が無い)
 
-ja-JP.yml 以外の locales/*.yml は **Crowdin の自動配信先**。手動編集や source 側の不用意な操作で他言語の翻訳資産が失われる。
+この fork は **Crowdin を使わない**。upstream の [crowdin.yml](../../../../../crowdin.yml) は merge を楽にするために残してあるだけで、同期は走らない。他言語ファイルを自動で埋めるものは無いので、locale は人が揃える。
 
-### 同期メカニズム
+### 3 ファイルを揃える
 
-[crowdin.yml](../../../../../crowdin.yml):
-```yaml
-files:
-  - source: /locales/ja-JP.yml
-    translation: /locales/%locale%.yml
-    update_option: update_as_unapproved
-```
+- `ja-JP.yml` = **型生成の原本**。[packages/i18n/build.ts](../../../../../packages/i18n/build.ts) がこれを読んで `autogen/locale.ts` を作るので、キーは必ずここに無ければならない
+- `ko-KR.yml` / `en-US.yml` = この fork が実際に提供する翻訳。キーの追加・変更・削除は ja-JP と **同じ commit で** 揃える
+- それ以外の locale (`zh-CN.yml` 等) = 必要なときだけ手で直す。欠けたキーは実行時に ja-JP へフォールバックするので必須ではない
 
-- `ja-JP.yml` = **source**。これだけが翻訳元
-- `en-US.yml` / `fr-FR.yml` ほか `ja-JP.yml` 以外の全 locale = **translation**。Crowdin が自動 PR で更新する
-- 翻訳済みキーの **source 文字列が変わると** `update_as_unapproved` 設定により翻訳が "unapproved" 状態に戻る (= レビュー再要求)
-- **キー名自体が変わる** と Crowdin は別キー扱いし、旧キーの翻訳は孤立 → 同期で削除される
+根拠: [locales/README.md](../../../../../locales/README.md)
 
-根拠: [locales/README.md](../../../../../locales/README.md) "DO NOT edit locale files except `ja-JP.yml`."
+### 既存キーをリネームしたい時
 
-### 既存キーをリネームしたい時 (3 段階)
+参照箇所の置換と、ja-JP / ko-KR / en-US のキー名変更を同じ commit で行えばよい。翻訳資産を失う同期は無いので、upstream のような 3 段階分割は不要。残りの locale に旧キーが残っていても未参照になるだけで害は無い。
 
-単純な「旧キー削除 → 新キー追加」を 1 PR で行うと、すべての言語の旧キー翻訳が失われる。以下のように分割する。
-
-#### Step 1: 新キー追加 (PR A)
-
-旧キーを残したまま、新キー (同等の意味の日本語) を ja-JP.yml に追加する。
-
-```yaml
-# 旧キー (まだ残す)
-_settings:
-  theme: "テーマ"
-# 新キー (追加)
-  appearance: "外観"
-```
-
-参照箇所も新キーに移行 (frontend の全 grep + 置換)。
-
-#### Step 2: マージ → Crowdin 翻訳が来るのを待つ
-
-Crowdin の自動 PR で他言語にも `appearance` が追加され、翻訳が入る。`update_option: update_as_unapproved` のため、初回は unapproved 状態。プロジェクト管理者が approve するまで本番には載らない (フォールバックで日本語が出る)。
-
-通常は数日〜数週間。急ぐ場合は Crowdin プロジェクト管理者に依頼。
-
-#### Step 3: 旧キー削除 (PR B)
-
-新キーの翻訳が十分埋まった後、別 PR で旧キー (`theme`) を ja-JP.yml から削除。次の Crowdin 同期で他言語からも消える。
-
-### 単純リネームをやってしまったら
+### 確認コマンド
 
 ```bash
-# git diff で他言語 yml が変更されていないか必ず確認 (出力が空なら OK)
-git diff --name-only develop -- 'locales/*.yml' | grep -v '^locales/ja-JP\.yml$'
+# ja-JP.yml / ko-KR.yml / en-US.yml が揃って出ることを確認
+git diff --name-only develop -- 'locales/*.yml'
+
+# 翻訳文字列のパラメータ ({name} 等) が ja-JP と一致するか
+pnpm --filter i18n build && pnpm --filter i18n verify
 ```
 
-`grep -v 'ja-JP.yml'` を diff 本文に当てる書き方は、ja-JP.yml 単体の変更でも追加行 (`+`) が素通りして必ず非空になるため使わない。**ファイル名にだけ grep を当てる** こと。
-
-- **他言語 yml が変更されていたら即 revert**:
-  ```bash
-  git restore --source=develop -- locales/en-US.yml locales/<lang>.yml
-  ```
-
-- ja-JP.yml だけで旧キー削除 + 新キー追加してしまった場合は、PR を分割するか、上記 3 段階に組み直す。**マージ前なら間に合う**
-
-### ja-JP.yml 以外を触ってしまったら
-
-```bash
-# 最も安全な復旧: develop 側の中身に戻す
-git restore --source=develop -- locales/en-US.yml
-# あるいは特定 path だけステージから外し作業ツリーごと戻す
-git checkout HEAD -- locales/zh-CN.yml
-```
-
-PR 化前なら何度でもやり直せる。**マージしてしまうと Crowdin 側との整合性が崩れて手動回復が必要** になるので、PR レビュー段階で必ず `locales/*.yml` (ja-JP 以外) の diff がゼロであることを確認する。
+`node scripts/check-shipping.mjs` の locale safety は「ja-JP.yml を変えたのに ko-KR.yml / en-US.yml が変わっていない」場合に FAIL する。ja-JP だけ直して ko-KR / en-US を忘れた場合は、同じキーを 2 ファイルにも入れてから commit する。
 
 ## トラブルシュート
 

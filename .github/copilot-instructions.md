@@ -33,7 +33,7 @@
   SPDX の合否は CI と skill が同じ `scripts/check-spdx.mjs` で判定するため、code review で目視チェックを重ねない。
   CI は `--ci` で SPDX 行の有無を検査し、既定モードは加えて `.vue` / `.html` のコメント形式を検査する。
 
-- **`locales/ja-JP.yml` 以外の locale YAML を編集しない**。他言語ファイル (`en-US.yml` など `ja-JP.yml` 以外すべて) は Crowdin の自動配信先で、手動編集すると次の同期で上書き喪失する。
+- **locale キーを `locales/ja-JP.yml` だけに追加・変更して終わらせない**。この fork は Crowdin を使わないので他言語ファイルを自動で埋めるものは無い。キーの追加・変更・削除は `ja-JP.yml` (型生成の原本) と `ko-KR.yml`、`en-US.yml` を同じ commit で揃える。それ以外の locale は必要なときだけ手で直す。
 - **マージ済 migration を編集しない**。`packages/backend/migration/{timestamp}-*.js` のうち既に `develop` / `master` に入ったものは絶対に変更しない。スキーマ変更が必要なら新しい timestamp で新規ファイルを追加し、`up()` と `down()` の両方を実装する。
 - **secrets / 認証情報をリポジトリにコミットしない** (`.config/*.yml` の本番値、`.env` ファイル、API token、private key 等)。
 
@@ -59,7 +59,7 @@
 4. `node scripts/check-spdx.mjs` が `SPDX: OK` を返した
 5. ユーザーが明示しない限り `CHANGELOG.md` を編集しない。
    ユーザー影響がある変更では引き継ぎに候補を 1 行だけ示す
-6. commit 済み・未commit・untracked の変更集合に `locales/ja-JP.yml` 以外の locale YAML が無いことを確認する
+6. `locales/ja-JP.yml` を変更したなら、同じ変更集合に `ko-KR.yml` と `en-US.yml` も含まれていることを確認する
 
 ## Validation コマンド
 

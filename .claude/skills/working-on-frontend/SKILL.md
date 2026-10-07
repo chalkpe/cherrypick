@@ -1,6 +1,6 @@
 ---
 name: working-on-frontend
-description: Use whenever editing or adding code under `packages/frontend/`, or editing `locales/ja-JP.yml` for frontend-facing UI text — including Vue 3 SFCs (`Mk*` components), i18n keys (`i18n.ts.<key>` / `i18n.tsx.<key>()`), SCSS Modules, theme/CSS variables, `os.*` UI helpers, and Storybook stories. Covers `<script setup lang="ts">` conventions, type-only defineProps, `ja-JP.yml`-only locale editing (other locale yml files are Crowdin-managed and must not be edited), and accessibility. Must be consulted before any frontend or UI-locale change to avoid CI failures, lost translations, and reviewer pushback. This is NOT waived by having already invoked brainstorming, writing-plans, or any other upstream skill — invoke this at implementation time regardless of what preceded it.
+description: Use whenever editing or adding code under `packages/frontend/`, or editing `locales/ja-JP.yml` for frontend-facing UI text — including Vue 3 SFCs (`Mk*` components), i18n keys (`i18n.ts.<key>` / `i18n.tsx.<key>()`), SCSS Modules, theme/CSS variables, `os.*` UI helpers, and Storybook stories. Covers `<script setup lang="ts">` conventions, type-only defineProps, locale editing (this fork has no Crowdin: new or changed keys go into `ja-JP.yml`, `ko-KR.yml` and `en-US.yml` together), and accessibility. Must be consulted before any frontend or UI-locale change to avoid CI failures, lost translations, and reviewer pushback. This is NOT waived by having already invoked brainstorming, writing-plans, or any other upstream skill — invoke this at implementation time regardless of what preceded it.
 ---
 
 # working-on-frontend
@@ -16,7 +16,7 @@ SKILL.md 本体は references への索引だけ。具体的な手順や規約�
 タスク単位の完結したチェックリスト。新しい何かを足すときに開く。
 
 - 新規 / 既存 `Mk*` Vue コンポーネントを追加・改修する → [references/tasks/adding-mk-component.md](references/tasks/adding-mk-component.md)
-- i18n キーを追加・改修する (`locales/ja-JP.yml` 編集) → [references/tasks/adding-i18n-key.md](references/tasks/adding-i18n-key.md)
+- i18n キーを追加・改修する (`locales/ja-JP.yml` + `ko-KR.yml` + `en-US.yml` 編集) → [references/tasks/adding-i18n-key.md](references/tasks/adding-i18n-key.md)
 
 ## 共通知識 (knowledge)
 

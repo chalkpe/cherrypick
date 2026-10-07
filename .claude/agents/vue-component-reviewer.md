@@ -27,7 +27,7 @@ BASE=$(git merge-base origin/develop HEAD)
 
 `.ts` を一律で含めると本エージェントの守備範囲外 (composable / store / service 層) まで巻き込んで誤検知が増えるため、対象は `.vue` のみとし、Storybook 併設チェックのために以下を **別リスト** として追加する:
 
-- `locales/*.yml` (とくに `ja-JP.yml` 以外の変更は即 Critical)
+- `locales/*.yml` (`ja-JP.yml` を変えたのに `ko-KR.yml` / `en-US.yml` が揃っていなければ Critical)
 - `packages/frontend/src/components/**/*.stories.impl.ts`
 
 差分対象が空なら「レビュー対象の Vue コンポーネント変更なし」と短く報告して終了。
@@ -53,14 +53,15 @@ BASE=$(git merge-base origin/develop HEAD)
 - 文字列リテラルの直書き禁止 (テンプレート / JS 両方)。
 - 引数なし: `i18n.ts.<path>` (例: `i18n.ts.deleted`)。
 - 引数あり: `i18n.tsx.<path>(...)` (関数呼び出し、例: `i18n.tsx.takeOverConfirm({ name })`)。
-- 新規 i18n キーは `locales/ja-JP.yml` **のみ** に追加。
-- **`locales/ja-JP.yml` 以外の `.yml` 変更があれば即 Critical** (`en-US.yml` 等は Crowdin 自動配信先で、手動編集すると上書き喪失する)。
+- 新規 i18n キーは `locales/ja-JP.yml` (型生成の原本) と `ko-KR.yml`、`en-US.yml` の 3 ファイルに揃えて追加する。この fork は Crowdin を使わないので他言語を自動で埋めるものは無い。
+- **`ja-JP.yml` を変更したのに `ko-KR.yml` / `en-US.yml` が同じ差分に無ければ Critical**。それ以外の locale の変更は任意なので指摘しない。
 
 差分検出:
 
 ```bash
 BASE=$(git merge-base origin/develop HEAD)
-git diff --name-only "$BASE"...HEAD -- 'locales/*.yml' | grep -v 'ja-JP.yml'
+git diff --name-only "$BASE"...HEAD -- 'locales/*.yml'
+# ja-JP.yml が出たら ko-KR.yml と en-US.yml も出ていること
 ```
 
 ### 4. スタイル (Major)

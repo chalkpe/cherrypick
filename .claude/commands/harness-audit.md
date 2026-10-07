@@ -38,7 +38,7 @@ Misskey リポジトリの `.claude/` 構成を 7 カテゴリで採点し、改
 | 3 | Quality Gates | 変更ファイル lint、`/quality-gate`、変更別 test / typecheck、CI gate との整合 |
 | 4 | Memory Persistence | `.claude/skills/*/SKILL.md` と `references/` の同期状態を評価。プロジェクト側 `.claude/memory/` は未採用方針 (auto-memory はユーザーホーム側で自動運用) のため、ここを採点起点にせず既定 5/10 から開始する |
 | 5 | Eval Coverage | `working-on-backend` / `working-on-frontend` の testing リファレンス (backend-testing.md / frontend-testing.md) の網羅、Misskey 固有の e2e/fed/Storybook/Playwright 適用ガイド |
-| 6 | Security Guardrails | SPDX checker、migration 不変性ルール、ja-JP.yml 限定編集ルール、secrets 検出 |
+| 6 | Security Guardrails | SPDX checker、migration 不変性ルール、locale 3 ファイル揃えルール、secrets 検出 |
 | 7 | Cost Efficiency | enabledPlugins の重複・過剰、context-budget の整備、MCP 過剰登録なし |
 
 ## Misskey 固有の確認項目 (採点根拠コマンド)
@@ -50,14 +50,12 @@ Misskey リポジトリの `.claude/` 構成を 7 カテゴリで採点し、改
 node scripts/check-spdx.mjs
 # → exit 0 (`SPDX: OK`) なら満点。追加の目視判定はしない
 
-# 2. [Security Guardrails] ja-JP.yml 以外の locales が直近で手動編集されていないか
-#    --pretty=format: でコミットヘッダ行を抑止し、ファイル名行のみを残してから grep する。
-#    Crowdin の自動同期 commit でも他言語 yml は更新されるため、出力が 0 行になることは少ない。
-#    出力があった場合は、author / commit message を確認し Crowdin 由来か手動編集かを判定する:
-#    git log --since='30 days ago' --pretty=format:'%h %an %s' -- locales/<file>.yml
-git log --since='30 days ago' --pretty=format: --name-only -- 'locales/*.yml' \
-  | grep -v '^$' | grep -v 'ja-JP.yml' | sort -u
-# → 出力が無い、または全て Crowdin 由来 commit なら満点
+# 2. [Security Guardrails] ja-JP.yml を変えた commit が ko-KR.yml / en-US.yml も揃えているか
+#    この fork は Crowdin を使わないので、他言語を自動で埋めるものは無い。
+#    直近の locale 変更 commit ごとに、ja-JP.yml が含まれるなら ko-KR.yml と en-US.yml も含まれることを確認する:
+git log --since='30 days ago' --pretty=format:'--- %h %s' --name-only -- locales/ja-JP.yml locales/ko-KR.yml locales/en-US.yml \
+  | grep -v '^$'
+# → ja-JP.yml だけの commit が無ければ満点
 
 # 3. [Security Guardrails] migration の pending DDL 検査 (TypeORM schema builder)
 pnpm --filter backend check-migrations

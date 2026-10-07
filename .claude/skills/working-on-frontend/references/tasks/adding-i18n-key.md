@@ -1,16 +1,17 @@
 # i18n キーを追加・改修する
 
-UI 文言の追加・変更を行う際の手順。**手動編集して良いのは `locales/ja-JP.yml` のみ**。
+UI 文言の追加・変更を行う際の手順。**キーは `locales/ja-JP.yml`、`ko-KR.yml`、`en-US.yml` の 3 ファイルに揃えて入れる**。
 
-## 大前提 (絶対 NG)
+## 大前提
 
-- **`locales/<lang>.yml` (ja-JP.yml 以外) の編集は禁止**。これらは Crowdin の自動配信先で、手動編集すると次の同期で上書き喪失する ([locales/README.md](../../../../../locales/README.md), [crowdin.yml](../../../../../crowdin.yml))
+- この fork は **Crowdin を使わない** (upstream の `crowdin.yml` は merge を楽にするために残してあるだけ)。他言語ファイルを自動で埋めるものは無いので、キーの追加・変更・削除は `ja-JP.yml` (型生成の原本) と `ko-KR.yml`、`en-US.yml` を **同じ commit で** 揃える ([locales/README.md](../../../../../locales/README.md))
+- それ以外の locale (`zh-CN.yml` 等) は必要なときだけ手で直す。欠けたキーは実行時に ja-JP へフォールバックする
 - 文字列リテラルを SFC に直書きしない (`<span>こんにちは</span>` 等)。必ず `i18n.ts.<key>` を経由する
-- 既存キーの破壊的リネームは Crowdin 翻訳資産を失わせる。**追加 → 移行 → 旧キー削除** の 3 段階に分割する。詳細手順と誤編集の復旧は [knowledge/i18n-usage.md §Crowdin 安全策](../knowledge/i18n-usage.md)
+- 既存キーのリネームは、参照箇所の置換と 3 ファイルのキー名変更を同じ commit で行う。残りの locale に旧キーが残っていても害は無い (未参照になるだけ)。詳細は [knowledge/i18n-usage.md §locale ファイルの運用](../knowledge/i18n-usage.md)
 
-## ステップ 1: ja-JP.yml にキーを追加
+## ステップ 1: ja-JP.yml / ko-KR.yml / en-US.yml にキーを追加
 
-[locales/ja-JP.yml](../../../../../locales/ja-JP.yml) を編集する。YAML の階層構造を維持し、関連するセクションに配置する:
+[locales/ja-JP.yml](../../../../../locales/ja-JP.yml) を編集し、同じキーを同じ位置に `ko-KR.yml` と `en-US.yml` にも追加する。YAML の階層構造を維持し、関連するセクションに配置する:
 
 ```yaml
 # トップレベル単純キー
@@ -82,18 +83,25 @@ pnpm --filter i18n lint
 # frontend で新キー参照箇所の型チェック
 pnpm --filter frontend lint
 
-# 他言語 yml に diff が出ていないことを確認 (出力が空であれば OK)
-git diff --name-only develop -- 'locales/*.yml' | grep -v '^locales/ja-JP\.yml$'
+# ja-JP.yml / ko-KR.yml / en-US.yml の 3 つが揃って出ることを確認
+git diff --name-only develop -- 'locales/*.yml'
 ```
 
-**注意:** `grep -v 'ja-JP.yml'` を **diff 本文** に当てると ja-JP.yml 単体の変更でも `+追加行` が素通りして必ず非空になる。`--name-only` でファイル名だけに絞ってから完全一致で除外するのが正しい。
+`node scripts/check-shipping.mjs` も同じ検査 (ja-JP.yml を変えたのに ko-KR.yml / en-US.yml が無ければ FAIL) を行う。
 
 ## 例: 「ノートを削除しますか？」確認ダイアログを追加する
 
-1. `locales/ja-JP.yml`:
+1. `locales/ja-JP.yml`、`locales/ko-KR.yml`、`locales/en-US.yml` の同じ位置に:
    ```yaml
+   # ja-JP.yml
    _notes:
      deleteConfirm: "このノートを削除しますか？"
+   # ko-KR.yml
+   _notes:
+     deleteConfirm: "이 노트를 삭제하시겠습니까?"
+   # en-US.yml
+   _notes:
+     deleteConfirm: "Delete this note?"
    ```
 2. `pnpm --filter i18n generate` (または `pnpm dev` で watch 中)
 3. SFC:
@@ -116,7 +124,7 @@ git diff --name-only develop -- 'locales/*.yml' | grep -v '^locales/ja-JP\.yml$'
 ## 参照ファイル
 
 - [locales/README.md (★ 編集ポリシー根拠)](../../../../../locales/README.md)
-- [locales/ja-JP.yml](../../../../../locales/ja-JP.yml)
+- [locales/ja-JP.yml](../../../../../locales/ja-JP.yml) / [ko-KR.yml](../../../../../locales/ko-KR.yml) / [en-US.yml](../../../../../locales/en-US.yml)
 - [packages/i18n/build.ts](../../../../../packages/i18n/build.ts)
 - [packages/i18n/src/autogen/locale.ts (生成物)](../../../../../packages/i18n/src/autogen/locale.ts)
 - [packages/frontend/src/i18n.ts](../../../../../packages/frontend/src/i18n.ts)

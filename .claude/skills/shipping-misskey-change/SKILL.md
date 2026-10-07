@@ -32,7 +32,7 @@ script は次を行い、独立した検査を最後まで続けて exit 0 (合�
 
 - commit 済み・未commit・untracked の変更集合を NUL-safe に列挙し、変更ファイルだけへ package root から `eslint --quiet` を実行
 - SPDX 違反時はローカル変更の欠落だけ `check-spdx.mjs --fix` で補い、通常検査を再実行
-- SPDX の結果にかかわらず、`locales/ja-JP.yml` 以外の locale YAML 変更を検査
+- SPDX の結果にかかわらず、`locales/ja-JP.yml` を変更したときに `ko-KR.yml` / `en-US.yml` も変更されているかを検査 (locale safety)
 
 `SPDX: OK` 後は追加確認しない。
 その他の常設方針は AGENTS.md に従う。
