@@ -45,7 +45,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { host } from '@@/js/config.js';
 import * as os from '@/os.js';
@@ -81,13 +81,14 @@ const emit = defineEmits<{
 	(_: 'update:user', value: Misskey.entities.UserDetailed): void
 }>();
 
-const userDetails = props.user as Partial<Misskey.entities.UserDetailed>;
-const isFollowing = ref(userDetails.isFollowing ?? false);
-const hasPendingFollowRequestFromYou = ref(userDetails.hasPendingFollowRequestFromYou ?? false);
+// A computed, not a snapshot, so the template keeps tracking the user when the parent replaces it (e.g. after blocking)
+const userDetails = computed(() => props.user as Partial<Misskey.entities.UserDetailed>);
+const isFollowing = ref(userDetails.value.isFollowing ?? false);
+const hasPendingFollowRequestFromYou = ref(userDetails.value.hasPendingFollowRequestFromYou ?? false);
 const wait = ref(false);
 const connection = useStream().useChannel('main');
 
-if (userDetails.isFollowing == null && $i) {
+if (userDetails.value.isFollowing == null && $i) {
 	misskeyApi('users/show', {
 		userId: props.user.id,
 	})
