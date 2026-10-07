@@ -292,11 +292,15 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		super(meta, paramDef, async (ps, me) => {
 			const draft = await this.noteDraftService.update(me, ps.draftId, {
 				fileIds: ps.fileIds,
-				pollChoices: ps.poll?.choices,
-				pollMultiple: ps.poll?.multiple,
-				// An omitted poll or scheduled deletion keeps the one of the draft, like an omitted event below
-				...(ps.poll !== undefined ? { pollExpiresAt: ps.poll?.expiresAt ? new Date(ps.poll.expiresAt) : null } : {}),
-				pollExpiredAfter: ps.poll?.expiredAfter,
+				// An omitted poll or scheduled deletion keeps the one of the draft, like an omitted event below, and null removes it.
+				// hasPoll is what the draft is packed and posted by, so it moves together with the poll columns, as in notes/drafts/create
+				...(ps.poll !== undefined ? {
+					hasPoll: ps.poll != null,
+					pollChoices: ps.poll?.choices ?? [],
+					pollMultiple: ps.poll?.multiple ?? false,
+					pollExpiresAt: ps.poll?.expiresAt ? new Date(ps.poll.expiresAt) : null,
+					pollExpiredAfter: ps.poll?.expiredAfter ?? null,
+				} : {}),
 				text: ps.text,
 				replyId: ps.replyId,
 				renoteId: ps.renoteId,

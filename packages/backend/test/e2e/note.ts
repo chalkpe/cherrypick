@@ -1014,6 +1014,28 @@ describe('Note', () => {
 			const added = await api('notes/drafts/update', { draftId: draft.id, event: { title: 'again', start } }, alice);
 			assert.strictEqual((added.body.updatedDraft as Draft).event?.title, 'again');
 		});
+
+		test('keeps the poll of a draft when an update leaves it out, removes it with null, and adds one', async () => {
+			type PollDraft = { id: string; poll: { choices: string[]; multiple: boolean } | null };
+			const created = await api('notes/drafts/create', { text: 'vote', poll: { choices: ['a', 'b'] } }, alice);
+			assert.strictEqual(created.status, 200);
+			const draft = created.body.createdDraft as unknown as PollDraft;
+			assert.deepStrictEqual(draft.poll?.choices, ['a', 'b']);
+
+			const kept = await api('notes/drafts/update', { draftId: draft.id, text: 'vote again' }, alice);
+			assert.strictEqual(kept.status, 200);
+			assert.deepStrictEqual((kept.body.updatedDraft as unknown as PollDraft).poll?.choices, ['a', 'b']);
+
+			const removed = await api('notes/drafts/update', { draftId: draft.id, poll: null }, alice);
+			assert.strictEqual(removed.status, 200);
+			assert.strictEqual((removed.body.updatedDraft as unknown as PollDraft).poll, null);
+
+			const added = await api('notes/drafts/update', { draftId: draft.id, poll: { choices: ['c', 'd'], multiple: true } }, alice);
+			assert.strictEqual(added.status, 200);
+			const poll = (added.body.updatedDraft as unknown as PollDraft).poll;
+			assert.deepStrictEqual(poll?.choices, ['c', 'd']);
+			assert.strictEqual(poll?.multiple, true);
+		});
 	});
 
 	describe('notes/translate', () => {
