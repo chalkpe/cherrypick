@@ -268,12 +268,15 @@ export class NoteUpdateService implements OnApplicationShutdown {
 		if (!silent) {
 			if (this.userEntityService.isLocalUser(user)) this.activeUsersChart.write(user);
 
+			// The job is keyed by the note ID (see NoteCreateService), so the one of the previous deleteAt can be replaced,
+			// or dropped when the scheduled deletion was removed
+			await (await this.queueService.scheduledNoteDeleteQueue.getJob(note.id))?.remove();
 			if (note.deleteAt) {
 				const delay = note.deleteAt.getTime() - Date.now();
-				await (await this.queueService.scheduledNoteDeleteQueue.getJob(note.id))?.remove();
 				await this.queueService.scheduledNoteDeleteQueue.add(note.id, {
 					noteId: note.id,
 				}, {
+					jobId: note.id,
 					delay,
 					removeOnComplete: true,
 				});

@@ -999,6 +999,8 @@ export class NoteCreateService implements OnApplicationShutdown {
 			this.queueService.scheduledNoteDeleteQueue.add(note.id, {
 				noteId: note.id,
 			}, {
+				// The note ID as the job ID lets an edit of deleteAt find and replace this job
+				jobId: note.id,
 				delay,
 				removeOnComplete: true,
 			});
