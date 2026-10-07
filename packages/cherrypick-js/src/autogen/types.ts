@@ -1885,7 +1885,7 @@ export type paths = {
     '/drive/files/delete-bulk': {
         /**
          * drive/files/delete-bulk
-         * @description Delete multiple drive files owned by the requesting user that are not referenced anywhere (the same check as drive/files/unused). Files that are in use, belong to someone else or do not exist are skipped. Returns the IDs that were actually deleted.
+         * @description Delete multiple drive files owned by the requesting user that are not referenced anywhere (the same check as drive/files/unused). Files that are in use, belong to someone else or do not exist are skipped. Returns the IDs that were actually deleted and the IDs whose deletion failed; a failure of one file does not stop the others.
          *
          *     **Credential required**: *Yes* / **Permission**: *write:drive*
          */
@@ -21330,7 +21330,10 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    'application/json': string[];
+                    'application/json': {
+                        deletedIds: string[];
+                        failedIds: string[];
+                    };
                 };
             };
             /** @description Client error */

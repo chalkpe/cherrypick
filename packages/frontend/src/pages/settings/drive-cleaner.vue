@@ -195,8 +195,8 @@ async function deleteSelected(): Promise<void> {
 	});
 	if (canceled) return;
 
-	// 100件ずつ delete-bulk を呼ぶ。失敗した塊以降は中断する
-	// サーバーは削除直前に未使用かどうかを確かめ直し、実際に消した ID だけを返す
+	// 100件ずつ delete-bulk を呼ぶ。リクエスト自体が失敗した塊以降は中断する
+	// サーバーは削除直前に未使用かどうかを確かめ直し、実際に消した ID と削除に失敗した ID をファイルごとに返す
 	const deleted: Misskey.entities.DriveFile[] = [];
 	const skipped: Misskey.entities.DriveFile[] = [];
 	let failed = false;
@@ -205,9 +205,16 @@ async function deleteSelected(): Promise<void> {
 		for (let i = 0; i < targets.length; i += BULK_DELETE_CHUNK) {
 			const chunk = targets.slice(i, i + BULK_DELETE_CHUNK);
 			try {
-				const deletedIds = await misskeyApi('drive/files/delete-bulk', { fileIds: chunk.map(f => f.id) });
+				const { deletedIds, failedIds } = await misskeyApi('drive/files/delete-bulk', { fileIds: chunk.map(f => f.id) });
 				for (const f of chunk) {
-					(deletedIds.includes(f.id) ? deleted : skipped).push(f);
+					if (deletedIds.includes(f.id)) {
+						deleted.push(f);
+					} else if (failedIds.includes(f.id)) {
+						// 削除に失敗したファイルは一覧と選択に残し、やり直せるようにする
+						failed = true;
+					} else {
+						skipped.push(f);
+					}
 				}
 			} catch {
 				failed = true;

@@ -290,7 +290,8 @@ describe('Drive bulk delete', () => {
 
 		const res = await api('drive/files/delete-bulk', { fileIds: files.map(f => f.id) }, erin);
 		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
-		assert.deepStrictEqual([...res.body].sort(), files.map(f => f.id).sort());
+		assert.deepStrictEqual([...res.body.deletedIds].sort(), files.map(f => f.id).sort());
+		assert.deepStrictEqual(res.body.failedIds, []);
 
 		// レコード削除まで待ってから返すので、直後に引いても残っていない
 		for (const f of files) {
@@ -304,7 +305,7 @@ describe('Drive bulk delete', () => {
 
 		const res = await api('drive/files/delete-bulk', { fileIds: [mine.id, franks.id, '0000000000000000'] }, erin);
 		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
-		assert.deepStrictEqual(res.body, [mine.id]);
+		assert.deepStrictEqual(res.body, { deletedIds: [mine.id], failedIds: [] });
 
 		assert.strictEqual(await exists(erin, mine.id), false);
 		assert.strictEqual(await exists(frank, franks.id), true);
@@ -317,7 +318,7 @@ describe('Drive bulk delete', () => {
 
 		const res = await api('drive/files/delete-bulk', { fileIds: [attached.id, free.id] }, erin);
 		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
-		assert.deepStrictEqual(res.body, [free.id]);
+		assert.deepStrictEqual(res.body, { deletedIds: [free.id], failedIds: [] });
 
 		assert.strictEqual(await exists(erin, attached.id), true);
 		assert.strictEqual(await exists(erin, free.id), false);
