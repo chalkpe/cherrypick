@@ -74,6 +74,16 @@ const filesPaginator = markRaw(new Paginator('users/notes', {
 		withFiles: true,
 	})),
 }));
+
+defineExpose({
+	reload: () => {
+		// リアクションタブは XReactions 側でページネーションを持っている
+		if (tab.value === 'reactions') return;
+		if (tab.value === 'featured') return featuredPaginator.reload();
+		if (tab.value === 'files' && prefer.s.filesGridLayoutInUserPage) return filesPaginator.reload();
+		return notesPaginator.reload();
+	},
+});
 </script>
 
 <style lang="scss" module>

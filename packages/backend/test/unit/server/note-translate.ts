@@ -11,7 +11,7 @@ describe('Note translation', () => {
 		const send = vi.fn().mockResolvedValue({ json: async () => ({ translatedText: 'translated', detectedLanguage: { language: 'en' } }) });
 		const endpoint = new Translate(
 			{ translatorType, libreTranslateEndPoint: 'https://translate.example', libreTranslateApiKey: null } as never,
-			{ isVisibleForMe: async () => true } as never,
+			{ isVisibleForMe: async () => true, pack: async () => ({ isHidden: false }) } as never,
 			{ getNote: async () => ({ text: null, cw: 'warning' }) } as never,
 			{ send } as never,
 			{ getUserPolicies: async () => ({ canUseTranslator: true }) } as never,

@@ -11,6 +11,7 @@ import { unisonReload } from '@/utility/unison-reload.js';
 import { clear } from '@/utility/idb-proxy.js';
 import { $i } from '@/i.js';
 import { prefer } from '@/preferences.js';
+import { encodePushSubscriptionKey } from '@/utility/encode-push-subscription-key.js';
 
 export async function signout() {
 	if (!$i) return;
@@ -54,11 +55,13 @@ export async function signout() {
 			const registration = await navigator.serviceWorker.ready;
 			const push = await registration.pushManager.getSubscription();
 			if (push) {
+				// Service Workerごと登録解除するので、この購読に紐づく全アカウントの登録を解除する
 				await window.fetch(`${apiUrl}/sw/unregister`, {
 					method: 'POST',
 					body: JSON.stringify({
-						i: $i.token,
 						endpoint: push.endpoint,
+						auth: encodePushSubscriptionKey(push.getKey('auth')),
+						publickey: encodePushSubscriptionKey(push.getKey('p256dh')),
 					}),
 					headers: {
 						'Content-Type': 'application/json',
