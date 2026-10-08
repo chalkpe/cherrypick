@@ -62,7 +62,7 @@ const isBeta = version.includes('-beta') || version.includes('-alpha') || versio
 
 function whatIsNewCherryPick() {
 	// modal.value?.close();
-	window.open(`https://github.com/chalkpe/cherrypick/blob/beta/CHANGELOG_CHERRYPICK.md#${basedMisskeyVersion.replace(/\./g, '')}`, '_blank');
+	window.open(`https://github.com/chalkpe/cherrypick/blob/develop/CHANGELOG_CHERRYPICK.md#${basedMisskeyVersion.replace(/\./g, '')}`, '_blank');
 }
 
 const close = async () => {

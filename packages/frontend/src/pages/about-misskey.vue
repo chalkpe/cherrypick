@@ -544,7 +544,7 @@ const easterEggEngine = ref<{ stop: () => void } | null>(null);
 const containerEl = useTemplateRef('containerEl');
 
 const whatIsNewCherryPick = () => {
-	window.open(`https://github.com/chalkpe/cherrypick/blob/beta/CHANGELOG_CHERRYPICK.md#${basedMisskeyVersion.replace(/\./g, '')}`, '_blank');
+	window.open(`https://github.com/chalkpe/cherrypick/blob/develop/CHANGELOG_CHERRYPICK.md#${basedMisskeyVersion.replace(/\./g, '')}`, '_blank');
 };
 
 const whatIsNewMisskey = () => {
