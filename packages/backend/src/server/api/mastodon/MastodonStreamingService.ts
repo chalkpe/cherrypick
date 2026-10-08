@@ -253,8 +253,11 @@ export class MastodonStreamingService implements OnApplicationShutdown {
  */
 class MastodonStreamBridge {
 	/** The socket the Misskey Connection reads from and writes to */
-	public readonly misskeySocket = Object.assign(new EventEmitter(), {
+	public readonly misskeySocket = Object.defineProperty(Object.assign(new EventEmitter(), {
 		send: (data: string) => this.onMisskeyMessage(data),
+	}), 'readyState', {
+		// Connection ignores messages unless its socket is open, so mirror the client socket
+		get: () => this.ws.readyState,
 	});
 
 	/** Mastodon stream key -> Misskey channel subscriptions */
