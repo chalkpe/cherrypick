@@ -65,7 +65,7 @@ export const packedMetaLiteSchema = {
 		feedbackUrl: {
 			type: 'string',
 			optional: false, nullable: true,
-			default: 'https://github.com/chalkpe/cherrypick/issues/new',
+			default: 'https://github.com/chalkpe/cherrypick/issues/new/choose',
 		},
 		defaultDarkTheme: {
 			type: 'string',

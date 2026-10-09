@@ -448,7 +448,7 @@ export class MiMeta {
 
 	@Column('varchar', {
 		length: 1024,
-		default: 'https://github.com/chalkpe/cherrypick/issues/new',
+		default: 'https://github.com/chalkpe/cherrypick/issues/new/choose',
 		nullable: true,
 	})
 	public feedbackUrl: string | null;

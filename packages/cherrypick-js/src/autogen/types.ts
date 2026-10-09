@@ -5943,7 +5943,7 @@ export type components = {
             tosUrl: string | null;
             /** @default https://github.com/chalkpe/cherrypick */
             repositoryUrl: string | null;
-            /** @default https://github.com/chalkpe/cherrypick/issues/new */
+            /** @default https://github.com/chalkpe/cherrypick/issues/new/choose */
             feedbackUrl: string | null;
             defaultDarkTheme: string | null;
             defaultLightTheme: string | null;
