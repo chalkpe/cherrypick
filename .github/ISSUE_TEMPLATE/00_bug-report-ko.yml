@@ -1,0 +1,88 @@
+name: 🐛 버그 제보 (한국어)
+description: 발견한 버그를 한국어로 제보해주세요
+labels: ["⚠️bug?"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        제보해주셔서 감사합니다!
+        작성하기 전에 같은 문제가 이미 제보되었는지 기존 이슈를 검색해주세요.
+        특정 서버에서만 발생하는 문제라면 해당 서버의 운영자에게 먼저 문의해주세요.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 💡 버그 요약
+      description: 어떤 문제가 발생했는지 간단히 설명해주세요.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: 🥰 기대한 동작
+      description: 정상적으로는 어떻게 동작해야 하나요?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: 🤬 실제 동작
+      description: |
+        실제로 어떻게 동작했는지 설명해주세요. 스크린샷이나 영상을 첨부해도 좋습니다.
+        확인할 수 있다면 브라우저 개발자 도구의 오류나 서버 로그도 첨부해주세요.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: 📝 재현 방법
+      description: 문제를 다시 확인할 수 있도록 순서대로 적어주세요.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: false
+
+  - type: textarea
+    id: frontend-environment
+    attributes:
+      label: 💻 사용 환경
+      description: |
+        문제가 발생한 기기와 브라우저, 서버 정보를 적어주세요.
+        버전은 "최신" 대신 정확한 번호를 적어주세요.
+      value: |
+        * 기기 및 운영체제:
+        * 브라우저 및 버전:
+        * 서버 URL:
+        * CherryPick 버전:
+      render: markdown
+    validations:
+      required: false
+
+  - type: textarea
+    id: backend-environment
+    attributes:
+      label: 🛰 서버 환경 (운영자용)
+      description: 서버 운영자인 경우 작성해주세요. 각 항목의 정확한 버전을 적어주세요.
+      value: |
+        * 설치 방법 또는 호스팅 서비스:
+        * CherryPick 버전:
+        * Node.js 버전:
+        * PostgreSQL 버전:
+        * Redis 버전:
+        * 운영체제 및 아키텍처:
+      render: markdown
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: 직접 수정에 참여하고 싶으신가요?
+      options:
+        - label: 직접 버그를 수정하고 Pull Request를 보내고 싶습니다.
