@@ -119,6 +119,12 @@ export class MiUserProfile {
 	public bridgeHomeVisibility: boolean;
 
 	@Column('varchar', {
+		length: 16,
+		default: 'none',
+	})
+	public noteVisibilityLimit: 'none' | 'home' | 'followers';
+
+	@Column('varchar', {
 		length: 128, nullable: true,
 	})
 	public twoFactorTempSecret: string | null;

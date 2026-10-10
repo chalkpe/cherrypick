@@ -6,37 +6,39 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <MkModal ref="modal" v-slot="{ type }" :zPriority="'high'" :anchorElement="anchorElement" @click="modal?.close()" @closed="emit('closed')" @esc="modal?.close()">
 	<div :class="{ [$style.root]: true, [$style.asDrawer]: type === 'drawer', _popup: !prefer.s.useBlurEffect || !prefer.s.useBlurEffectForModal || !prefer.s.removeModalBgColorForBlur, _popupAcrylic: prefer.s.useBlurEffect && prefer.s.useBlurEffectForModal && prefer.s.removeModalBgColorForBlur }">
-		<div :class="[$style.label, $style.item]">
-			{{ i18n.ts.visibility }}
+		<div :class="$style.header">
+			<div :class="[$style.label, $style.item]">{{ i18n.ts.visibility }}</div>
+			<MkA v-if="noteVisibilityLimit !== 'none'" v-tooltip="i18n.ts._noteVisibilityLimit.label" to="/settings/privacy" :class="$style.settings" :aria-label="i18n.ts._noteVisibilityLimit.label" @click="modal?.close()">
+				<i class="ti ti-settings" aria-hidden="true"></i>
+			</MkA>
 		</div>
-		<button key="public" :disabled="isSilenced || isReplyVisibilitySpecified" class="_button" :class="[$style.item, { [$style.active]: v === 'public' }]" data-index="1" @click="choose('public')">
-			<div :class="$style.icon"><i class="ti ti-world"></i></div>
-			<div :class="$style.body">
-				<span :class="$style.itemTitle">{{ i18n.ts._visibility.public }}</span>
-				<span :class="$style.itemDescription">{{ i18n.ts._visibility.publicDescription }}</span>
-			</div>
-		</button>
-		<button key="home" :disabled="isReplyVisibilitySpecified" class="_button" :class="[$style.item, { [$style.active]: v === 'home' }]" data-index="2" @click="choose('home')">
-			<div :class="$style.icon"><i class="ti ti-home"></i></div>
-			<div :class="$style.body">
-				<span :class="$style.itemTitle">{{ i18n.ts._visibility.home }}</span>
-				<span :class="$style.itemDescription">{{ i18n.ts._visibility.homeDescription }}</span>
-			</div>
-		</button>
-		<button key="followers" :disabled="isReplyVisibilitySpecified" class="_button" :class="[$style.item, { [$style.active]: v === 'followers' }]" data-index="3" @click="choose('followers')">
-			<div :class="$style.icon"><i class="ti ti-lock"></i></div>
-			<div :class="$style.body">
-				<span :class="$style.itemTitle">{{ i18n.ts._visibility.followers }}</span>
-				<span :class="$style.itemDescription">{{ i18n.ts._visibility.followersDescription }}</span>
-			</div>
-		</button>
-		<button key="specified" class="_button" :class="[$style.item, { [$style.active]: v === 'specified' }]" data-index="4" @click="choose('specified')">
-			<div :class="$style.icon"><i class="ti ti-mail"></i></div>
-			<div :class="$style.body">
-				<span :class="$style.itemTitle">{{ i18n.ts._visibility.specified }}</span>
-				<span :class="$style.itemDescription">{{ i18n.ts._visibility.specifiedDescription }}</span>
-			</div>
-		</button>
+		<div
+			v-for="(option, index) in options"
+			:key="option.visibility"
+			v-tooltip="option.lockMessage"
+			:title="option.lockMessage ?? undefined"
+			:tabindex="option.lockMessage ? 0 : undefined"
+			:role="option.lockMessage ? 'group' : undefined"
+			:aria-label="option.lockMessage ? `${i18n.ts._visibility[option.visibility]}. ${option.lockMessage}` : undefined"
+			:class="{ [$style.locked]: option.lockMessage != null }"
+		>
+			<button
+				:disabled="option.lockMessage != null"
+				:aria-disabled="option.lockMessage != null"
+				:aria-description="option.lockMessage ?? undefined"
+				class="_button"
+				:class="[$style.item, { [$style.active]: v === option.visibility }]"
+				:data-index="index + 1"
+				@click="choose(option.visibility)"
+			>
+				<div :class="$style.icon"><i :class="['ti', option.icon]"></i></div>
+				<div :class="$style.body">
+					<span :class="$style.itemTitle">{{ i18n.ts._visibility[option.visibility] }}</span>
+					<span :class="$style.itemDescription">{{ i18n.ts._visibility[`${option.visibility}Description`] }}</span>
+				</div>
+				<i v-if="option.lockMessage" class="ti ti-lock" :class="$style.lockIcon" aria-hidden="true"></i>
+			</button>
+		</div>
 
 		<MkDivider style="margin: 5px 0;"/>
 
@@ -48,8 +50,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { nextTick, useTemplateRef, ref } from 'vue';
+import { computed, nextTick, useTemplateRef, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
+import type { NoteVisibilityLimit } from '@/utility/note-visibility-limit.js';
+import { getNoteVisibilityLockReason } from '@/utility/note-visibility-limit.js';
 import MkModal from '@/components/MkModal.vue';
 import MkSwitch from '@/components/MkSwitch.vue';
 import MkDivider from '@/components/MkDivider.vue';
@@ -61,9 +65,11 @@ const modal = useTemplateRef('modal');
 const props = withDefaults(defineProps<{
 	currentVisibility: typeof Misskey.noteVisibilities[number];
 	isSilenced: boolean;
+	noteVisibilityLimit?: NoteVisibilityLimit;
 	anchorElement?: HTMLElement | null;
 	isReplyVisibilitySpecified?: boolean;
 }>(), {
+	noteVisibilityLimit: 'none',
 });
 
 const emit = defineEmits<{
@@ -75,7 +81,18 @@ const rememberNoteVisibility = prefer.model('rememberNoteVisibility');
 
 const v = ref(props.currentVisibility);
 
+const options = computed(() => ([
+	{ visibility: 'public', icon: 'ti-world' },
+	{ visibility: 'home', icon: 'ti-home' },
+	{ visibility: 'followers', icon: 'ti-lock' },
+	{ visibility: 'specified', icon: 'ti-mail' },
+] as const).map(option => {
+	const reason = getNoteVisibilityLockReason(option.visibility, props.noteVisibilityLimit, props.isSilenced, props.isReplyVisibilitySpecified);
+	return { ...option, lockMessage: reason == null ? null : i18n.ts._noteVisibilityLimit[`${reason}Locked`] };
+}));
+
 function choose(visibility: typeof Misskey.noteVisibilities[number]): void {
+	if (getNoteVisibilityLockReason(visibility, props.noteVisibilityLimit, props.isSilenced, props.isReplyVisibilitySpecified) != null) return;
 	v.value = visibility;
 	emit('changeVisibility', visibility);
 	nextTick(() => {
@@ -117,6 +134,26 @@ function choose(visibility: typeof Misskey.noteVisibilities[number]): void {
 	opacity: 0.7;
 }
 
+.header {
+	display: flex;
+	align-items: center;
+}
+
+.settings {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	width: 32px;
+	height: 32px;
+	margin-right: 8px;
+	border-radius: var(--MI-radius);
+
+	&:hover {
+		background: var(--MI_THEME-buttonHoverBg);
+	}
+}
+
 .item {
 	display: flex;
 	padding: 8px 14px;
@@ -136,6 +173,25 @@ function choose(visibility: typeof Misskey.noteVisibilities[number]): void {
 	&.active {
 		color: var(--MI_THEME-accent);
 	}
+}
+
+.locked {
+	cursor: not-allowed;
+	background: var(--MI_THEME-buttonBg);
+
+	button {
+		opacity: 0.5;
+		pointer-events: none;
+	}
+}
+
+.locked:focus-within {
+	outline: 2px solid var(--MI_THEME-focus);
+}
+
+.lockIcon {
+	align-self: center;
+	margin-left: 12px;
 }
 
 .icon {

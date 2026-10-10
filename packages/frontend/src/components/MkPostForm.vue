@@ -168,6 +168,7 @@ import MkInfo from '@/components/MkInfo.vue';
 import { i18n } from '@/i18n.js';
 import { instance } from '@/instance.js';
 import { ensureSignin, notesCount, incNotesCount } from '@/i.js';
+import { clampNoteVisibility, nextNoteVisibility } from '@/utility/note-visibility-limit.js';
 import { getAccounts, getAccountMenu } from '@/accounts.js';
 import { deepClone } from '@/utility/clone.js';
 import MkRippleEffect from '@/components/MkRippleEffect.vue';
@@ -236,7 +237,7 @@ const showAddMfmFunction = ref(prefer.s.enableQuickAddMfmFunction);
 watch(showAddMfmFunction, () => prefer.commit('enableQuickAddMfmFunction', showAddMfmFunction.value));
 const cw = ref<string | null>(props.initialCw ?? null);
 const localOnly = ref(props.initialLocalOnly ?? (prefer.s.rememberNoteVisibility ? store.s.localOnly : prefer.s.defaultNoteLocalOnly));
-const visibility = ref(props.initialVisibility ?? (prefer.s.rememberNoteVisibility ? store.s.visibility : prefer.s.defaultNoteVisibility));
+const requestedVisibility = ref(props.initialVisibility ?? (prefer.s.rememberNoteVisibility ? store.s.visibility : prefer.s.defaultNoteVisibility));
 const visibleUsers = ref<Misskey.entities.UserDetailed[]>([]);
 if (props.initialVisibleUsers) {
 	props.initialVisibleUsers.forEach(u => pushVisibleUser(u));
@@ -256,6 +257,12 @@ const justEndedComposition = ref(false);
 const renoteTargetNote: ShallowRef<PostFormProps['renote'] | null> = shallowRef(props.renote);
 const replyTargetNote: ShallowRef<PostFormProps['reply'] | null> = shallowRef(props.reply);
 const targetChannel = shallowRef(props.channel);
+const visibility = computed({
+	get: () => targetChannel.value ? 'public' as const : clampNoteVisibility(requestedVisibility.value, $i.noteVisibilityLimit ?? 'none', $i.isSilenced),
+	set: (value: typeof Misskey.noteVisibilities[number]) => {
+		requestedVisibility.value = targetChannel.value ? 'public' : clampNoteVisibility(value, $i.noteVisibilityLimit ?? 'none', $i.isSilenced);
+	},
+});
 const deliveryTargets = ref<DeliveryTargetEditorModelValue | null>(null);
 
 const serverDraftId = ref<string | null>(null);
@@ -429,10 +436,6 @@ if (replyTargetNote.value && replyTargetNote.value.text != null) {
 
 		text.value += `${mention} `;
 	}
-}
-
-if ($i.isSilenced && visibility.value === 'public') {
-	visibility.value = 'home';
 }
 
 if (targetChannel.value) {
@@ -611,6 +614,7 @@ function setVisibility() {
 	const { dispose } = os.popup(defineAsyncComponent(() => import('@/components/MkVisibilityPicker.vue')), {
 		currentVisibility: visibility.value,
 		isSilenced: $i.isSilenced,
+		noteVisibilityLimit: $i.noteVisibilityLimit ?? 'none',
 		anchorElement: visibilityButton.value,
 		...(replyTargetNote.value ? { isReplyVisibilitySpecified: replyTargetNote.value.visibility === 'specified' } : {}),
 	}, {
@@ -842,10 +846,9 @@ function onKeydown(ev: KeyboardEvent) {
 	}
 
 	if (prefer.s.postFormVisibilityHotkey) {
-		if (ev.ctrlKey && ev.shiftKey && (visibility.value === 'specified')) visibility.value = 'public';
-		else if (ev.ctrlKey && ev.shiftKey && (visibility.value === 'public')) visibility.value = 'home';
-		else if (ev.ctrlKey && ev.shiftKey && (visibility.value === 'home')) visibility.value = 'followers';
-		else if (ev.ctrlKey && ev.shiftKey && (visibility.value === 'followers')) visibility.value = 'specified';
+		if (ev.ctrlKey && ev.shiftKey && !targetChannel.value) {
+			visibility.value = nextNoteVisibility(visibility.value, $i.noteVisibilityLimit ?? 'none', $i.isSilenced, replyTargetNote.value?.visibility === 'specified');
+		}
 		if ((ev.ctrlKey || ev.metaKey) && ev.altKey) localOnly.value = !localOnly.value;
 	}
 

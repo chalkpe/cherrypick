@@ -4131,3 +4131,11 @@ _deliveryTargetControl:
   deliveryTargetsInclude: "一部のサーバーにのみ公開"
   deliveryTargetsExclude: "一部のサーバーに非公開"
   hasDeliveryTargets: "配送先が選択されています"
+
+_noteVisibilityLimit:
+  label: "ノートの公開範囲の制限"
+  none: "制限なし"
+  description: "このアカウントで投稿できる公開範囲を自分で制限します。既存のノートには影響しません。"
+  personalLocked: "設定 → プライバシー → ノートの公開範囲の制限で解除できます。"
+  roleLocked: "サーバーのロールのポリシーでロックされています。変更するにはサーバー管理者にお問い合わせください。"
+  replyLocked: "ダイレクトノートへの返信はダイレクトでのみ投稿できます。"

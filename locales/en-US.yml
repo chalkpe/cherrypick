@@ -3994,3 +3994,11 @@ _deliveryTargetControl:
   deliveryTargetsInclude: "Public only to some servers"
   deliveryTargetsExclude: "Not public to some servers"
   hasDeliveryTargets: "Delivery targets are selected"
+
+_noteVisibilityLimit:
+  label: "Note visibility limit"
+  none: "No limit"
+  description: "Set your own limit on note visibility for this account. Existing notes are unaffected."
+  personalLocked: "Unlock in Settings → Privacy → Note visibility limit."
+  roleLocked: "Locked by the server’s role policy. Contact a server administrator to change it."
+  replyLocked: "Replies to direct notes can only use Direct visibility."

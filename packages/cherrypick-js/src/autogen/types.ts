@@ -4521,6 +4521,8 @@ export type components = {
             noCrawle: boolean;
             preventAiLearning: boolean;
             bridgeHomeVisibility: boolean;
+            /** @enum {string} */
+            noteVisibilityLimit: 'none' | 'home' | 'followers';
             isExplorable: boolean;
             isDeleted: boolean;
             /** @enum {string} */
@@ -29817,6 +29819,8 @@ export interface operations {
                     /** @enum {string} */
                     chatScope?: 'everyone' | 'followers' | 'following' | 'mutual' | 'none';
                     bridgeHomeVisibility?: boolean;
+                    /** @enum {string} */
+                    noteVisibilityLimit?: 'none' | 'home' | 'followers';
                     /** Format: misskey:id */
                     pinnedPageId?: string | null;
                     mutedWords?: (string[] | string)[];

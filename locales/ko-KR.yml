@@ -4000,3 +4000,11 @@ _deliveryTargetControl:
   deliveryTargetsInclude: "일부 서버에서만 공개됨"
   deliveryTargetsExclude: "일부 서버에서 비공개됨"
   hasDeliveryTargets: "배포 대상이 선택되어 있어요"
+
+_noteVisibilityLimit:
+  label: "노트 공개 범위 제한"
+  none: "제한 없음"
+  description: "이 계정에서 작성할 수 있는 공개 범위를 스스로 제한합니다. 기존 노트에는 영향을 주지 않습니다."
+  personalLocked: "설정 → 개인정보 보호 → 노트 공개 범위 제한에서 해제할 수 있습니다."
+  roleLocked: "서버 역할 정책으로 잠겨 있습니다. 변경하려면 서버 관리자에게 문의하세요."
+  replyLocked: "다이렉트 노트에 대한 답글은 다이렉트로만 작성할 수 있습니다."
