@@ -71,8 +71,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 					>
 
 					<template v-if="activated">
+						<!-- PSKey uses this legacy PhotoSwipe hook for its native image download dialog. -->
 						<img
 							v-if="content.type === 'image'"
+							class="pswp__img"
 							:class="[$style.content, { [$style.pixelatedZoom]: pixelatedZoom }]"
 							:src="content.url"
 							:alt="content.file?.comment ?? undefined"
@@ -987,6 +989,13 @@ function openMenu(ev: PointerEvent) {
 	}
 
 	menu.push({
+		type: 'a',
+		href: props.content.url,
+		target: '_blank',
+		text: i18n.ts.download,
+		icon: 'ti ti-download',
+		download: props.content.filename ?? '',
+	}, {
 		text: i18n.ts.hide,
 		icon: 'ti ti-eye-off',
 		action: () => {
