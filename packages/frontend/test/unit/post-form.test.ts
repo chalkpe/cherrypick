@@ -9,6 +9,7 @@ import * as Misskey from 'cherrypick-js';
 import { directives } from '@/directives/index.js';
 import { components } from '@/components/index.js';
 import { prefer } from '@/preferences.js';
+import * as os from '@/os.js';
 
 const { fakeMe } = vi.hoisted(() => ({
 	fakeMe: {
@@ -44,7 +45,7 @@ vi.mock('@/instance.js', async (importOriginal) => ({
 
 vi.mock('@/utility/misskey-api.js', async (importOriginal) => ({
 	...(await importOriginal<typeof import('@/utility/misskey-api.js')>()),
-	// このテストではAPI応答を必要としないので、解決も拒否もしないPromiseを返す
+	// API応答が不要な呼び出しは、解決も拒否もしないPromiseを返す
 	misskeyApi: vi.fn(() => new Promise(() => {})),
 }));
 
@@ -54,6 +55,7 @@ vi.mock('@/utility/drive.js', async (importOriginal) => ({
 }));
 
 const { chooseDriveFile } = await import('@/utility/drive.js');
+const { misskeyApi } = await import('@/utility/misskey-api.js');
 const { default: MkPostForm } = await import('@/components/MkPostForm.vue');
 const { default: MkPostFormSimple } = await import('@/components/MkPostFormSimple.vue');
 
@@ -80,9 +82,9 @@ describe.each([
 		user: null,
 	} as unknown as Misskey.entities.DriveFile;
 
-	const renderPostForm = (): RenderResult => {
+	const renderPostForm = (initialCw?: string): RenderResult => {
 		return render(component, {
-			props: { autofocus: false, initialVisibility: 'public', initialLocalOnly: false },
+			props: { autofocus: false, initialVisibility: 'public', initialLocalOnly: false, initialCw },
 			global: {
 				// v-panel はコンパイル済みテーマを前提とするので、テストでは no-op にする
 				directives: { ...directives, panel: {} },
@@ -93,10 +95,67 @@ describe.each([
 
 	afterEach(() => {
 		cleanup();
+		localStorage.clear();
 		fakeMe.noteVisibilityLimit = 'none';
 		fakeMe.isSilenced = false;
 		prefer.s.postFormVisibilityHotkey = false;
+		prefer.s.keepCw = true;
+		vi.mocked(misskeyApi).mockReset();
+		vi.mocked(misskeyApi).mockImplementation(() => new Promise(() => {}));
 		vi.mocked(chooseDriveFile).mockReset();
+		vi.restoreAllMocks();
+	});
+
+	test('explicit reset clears the CW title even when keepCw is enabled', async () => {
+		prefer.s.keepCw = true;
+		const menu = vi.spyOn(os, 'popupMenu').mockResolvedValue();
+		vi.spyOn(os, 'confirm').mockResolvedValue({ canceled: false });
+		const form = renderPostForm('Spoiler warning');
+		const textarea = form.container.querySelector('textarea')!;
+		await fireEvent.click(textarea);
+		await fireEvent.update(textarea, 'Unposted note');
+		await fireEvent.click(form.container.querySelector('.ti-dots')!.closest('button')!);
+		const reset = menu.mock.calls[0][0].find(item => item != null && 'text' in item && item.text === 'Reset');
+		if (reset == null || !('action' in reset)) assert.fail('reset menu action is available');
+		await reset.action(new PointerEvent('click'));
+		await waitFor(() => {
+			assert.strictEqual(textarea.value, '');
+			assert.strictEqual(form.container.querySelector<HTMLInputElement>('input')!.value, '');
+		});
+	});
+
+	test.each([
+		{ keepCw: true, useCw: true, expectedCw: 'Spoiler warning', canPostAgain: true },
+		{ keepCw: false, useCw: true, expectedCw: '', canPostAgain: false },
+		{ keepCw: true, useCw: false, expectedCw: '', canPostAgain: true },
+	])('after posting, CW retention follows keepCw=$keepCw and useCw=$useCw', async ({ keepCw, useCw, expectedCw, canPostAgain }) => {
+		prefer.s.keepCw = keepCw;
+		vi.mocked(misskeyApi).mockImplementation(async (endpoint) => {
+			if (endpoint === 'notes/create') return undefined;
+			return new Promise(() => {});
+		});
+		const form = renderPostForm('Spoiler warning');
+		const textarea = form.container.querySelector('textarea')!;
+		await fireEvent.click(textarea);
+		if (!useCw) await fireEvent.click(form.container.querySelector('.ti-eye-off')!.closest('button')!);
+		await fireEvent.update(textarea, 'First note');
+		await fireEvent.click(form.container.querySelector(submitSelector)!);
+
+		await waitFor(() => {
+			assert.strictEqual(textarea.value, '', 'the posted body is cleared');
+			assert.strictEqual(form.container.querySelector<HTMLInputElement>('input')!.value, expectedCw);
+		});
+		await fireEvent.click(textarea);
+		await fireEvent.update(textarea, 'Second note');
+		assert.strictEqual(form.container.querySelector<HTMLButtonElement>(submitSelector)!.disabled, !canPostAgain,
+			'the next note can be posted without retyping a retained title');
+		if (canPostAgain) {
+			await fireEvent.click(form.container.querySelector(submitSelector)!);
+			await waitFor(() => {
+				assert.strictEqual(textarea.value, '', 'the second note is posted');
+				assert.strictEqual(form.container.querySelector<HTMLInputElement>('input')!.value, expectedCw);
+			});
+		}
 	});
 
 	test.each([

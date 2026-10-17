@@ -804,9 +804,9 @@ function removeVisibleUser(user: Misskey.entities.UserDetailed) {
 	visibleUsers.value = erase(user, visibleUsers.value);
 }
 
-function clear() {
+function clear(keepCw = false) {
 	text.value = '';
-	cw.value = null;
+	if (!keepCw) cw.value = null;
 	files.value = [];
 	poll.value = null;
 	event.value = null;
@@ -1227,7 +1227,7 @@ async function post(ev?: MouseEvent) {
 		if (props.freezeAfterPosted) {
 			posted.value = true;
 		} else {
-			clear();
+			clear(prefer.s.keepCw && useCw.value);
 		}
 
 		if (res && typeof res === 'object' && 'createdNote' in res) {
