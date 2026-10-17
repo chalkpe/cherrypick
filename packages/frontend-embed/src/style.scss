@@ -20,8 +20,8 @@ $monospace-font: "Pretendard JP", Pretendard, "JetBrains Mono", "Fira code", "Fi
 
 	--MI-margin: var(--MI-marginFull);
 
-	--CP-cherry: rgb(255, 188, 220);
-	--CP-pick: rgb(177, 211, 255);
+	--CP-cherry: light-dark(#be1f45, #eab1b7);
+	--CP-pick: light-dark(#6d4131, #f9f0c7);
 	--CP-misskey: rgb(134, 179, 0);
 	--CP-cast: rgb(181, 151, 246);
 	--CP-ella: rgb(150, 198, 234);

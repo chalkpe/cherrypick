@@ -8,6 +8,7 @@ import { cleanup, fireEvent, render, waitFor, type RenderResult } from '@testing
 import * as Misskey from 'cherrypick-js';
 import { directives } from '@/directives/index.js';
 import { components } from '@/components/index.js';
+import { prefer } from '@/preferences.js';
 
 const { fakeMe } = vi.hoisted(() => ({
 	fakeMe: {
@@ -16,6 +17,7 @@ const { fakeMe } = vi.hoisted(() => ({
 		host: null,
 		avatarUrl: 'https://example.com/avatar.png',
 		isSilenced: false,
+		noteVisibilityLimit: 'none' as 'none' | 'home' | 'followers',
 		isAdmin: false,
 		isModerator: false,
 		notesCount: 0,
@@ -91,7 +93,46 @@ describe.each([
 
 	afterEach(() => {
 		cleanup();
+		fakeMe.noteVisibilityLimit = 'none';
+		fakeMe.isSilenced = false;
+		prefer.s.postFormVisibilityHotkey = false;
 		vi.mocked(chooseDriveFile).mockReset();
+	});
+
+	test.each([
+		{ limit: 'home', icon: '.ti-home' },
+		{ limit: 'followers', icon: '.ti-lock' },
+	] as const)('lowers initial public visibility to $limit', async ({ limit, icon }) => {
+		fakeMe.noteVisibilityLimit = limit;
+		const form = renderPostForm();
+		const textarea = form.container.querySelector('textarea')!;
+		await fireEvent.click(textarea);
+		const visibilityButton = form.container.querySelector('.ti-world, .ti-home, .ti-lock')?.closest('button');
+		assert.exists(visibilityButton?.querySelector(icon));
+		assert.notExists(visibilityButton?.querySelector('.ti-world'));
+	});
+
+	test('keeps role restrictions when the personal limit is removed', async () => {
+		fakeMe.isSilenced = true;
+		const form = renderPostForm();
+		await fireEvent.click(form.container.querySelector('textarea')!);
+		const visibilityButton = form.container.querySelector('.ti-home')?.closest('button');
+		assert.exists(visibilityButton);
+		assert.notExists(visibilityButton?.querySelector('.ti-world'));
+	});
+
+	test('hotkey skips public and home under the followers limit', async () => {
+		fakeMe.noteVisibilityLimit = 'followers';
+		prefer.s.postFormVisibilityHotkey = true;
+		const form = renderPostForm();
+		const textarea = form.container.querySelector('textarea')!;
+		await fireEvent.click(textarea);
+		await fireEvent.keyDown(textarea, { key: 'v', ctrlKey: true, shiftKey: true });
+		assert.exists(form.container.querySelector('.ti-mail')?.closest('button'));
+		await fireEvent.keyDown(textarea, { key: 'v', ctrlKey: true, shiftKey: true });
+		assert.exists(form.container.querySelector('.ti-lock')?.closest('button'));
+		assert.notExists(form.container.querySelector('.ti-world'));
+		assert.notExists(form.container.querySelector('.ti-home'));
 	});
 
 	test('attaches a file chosen from the drive', async () => {

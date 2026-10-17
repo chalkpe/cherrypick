@@ -22,7 +22,7 @@ import { installShutdownSignalHandlers } from './shutdown-handler.js';
 const logger = new Logger('core', 'cyan');
 const bootLogger = logger.createSubLogger('boot', 'magenta');
 
-const themeColorCherry = chalk.hex('#ffbcdc');
+const themeColorCherry = chalk.hex('#eab1b7');
 const themeColorPick = chalk.hex('#b1d3ff');
 const themeColorMisskey = chalk.hex('#9ec23f');
 const themeColorWarning = chalk.hex('#ffbb00');

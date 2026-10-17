@@ -64,7 +64,7 @@
 		switchOnFg: '@fgOnAccent',
 		inputBorder: 'rgba(0, 0, 0, 0.1)',
 		inputBorderHover: 'rgba(0, 0, 0, 0.2)',
-		badge: '#ffbcdc',
+		badge: '#eab1b7',
 		patron: '#a3faff',
 		messageBg: '@bg',
 		success: '#86b300',

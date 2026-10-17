@@ -531,6 +531,11 @@ export const packedMeDetailedOnlySchema = {
 			type: 'boolean',
 			nullable: false, optional: false,
 		},
+		noteVisibilityLimit: {
+			type: 'string',
+			enum: ['none', 'home', 'followers'],
+			nullable: false, optional: false,
+		},
 		isExplorable: {
 			type: 'boolean',
 			nullable: false, optional: false,

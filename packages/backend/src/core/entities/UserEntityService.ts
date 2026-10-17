@@ -608,6 +608,7 @@ export class UserEntityService implements OnModuleInit {
 				noCrawle: profile!.noCrawle,
 				preventAiLearning: profile!.preventAiLearning,
 				bridgeHomeVisibility: profile!.bridgeHomeVisibility,
+				noteVisibilityLimit: profile!.noteVisibilityLimit,
 				isExplorable: user.isExplorable,
 				isDeleted: user.isDeleted,
 				twoFactorBackupCodesStock: profile?.twoFactorBackupSecret?.length === 5 ? 'full' : (profile?.twoFactorBackupSecret?.length ?? 0) > 0 ? 'partial' : 'none',

@@ -15456,4 +15456,30 @@ export interface Locale extends ILocale {
          */
         "hasDeliveryTargets": string;
     };
+    "_noteVisibilityLimit": {
+        /**
+         * ノートの公開範囲の制限
+         */
+        "label": string;
+        /**
+         * 制限なし
+         */
+        "none": string;
+        /**
+         * このアカウントで投稿できる公開範囲を自分で制限します。既存のノートには影響しません。
+         */
+        "description": string;
+        /**
+         * 設定 → プライバシー → ノートの公開範囲の制限で解除できます。
+         */
+        "personalLocked": string;
+        /**
+         * サーバーのロールのポリシーでロックされています。変更するにはサーバー管理者にお問い合わせください。
+         */
+        "roleLocked": string;
+        /**
+         * ダイレクトノートへの返信はダイレクトでのみ投稿できます。
+         */
+        "replyLocked": string;
+    };
 }

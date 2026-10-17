@@ -193,6 +193,7 @@ export const paramDef = {
 		followersVisibility: { type: 'string', enum: ['public', 'followers', 'private'] },
 		chatScope: { type: 'string', enum: ['everyone', 'followers', 'following', 'mutual', 'none'] },
 		bridgeHomeVisibility: { type: 'boolean' },
+		noteVisibilityLimit: { type: 'string', enum: ['none', 'home', 'followers'] },
 		pinnedPageId: { type: 'string', format: 'misskey:id', nullable: true },
 		mutedWords: muteWords,
 		hardMutedWords: muteWords,
@@ -372,6 +373,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			}
 			if (typeof ps.autoSensitive === 'boolean') profileUpdates.autoSensitive = ps.autoSensitive;
 			if (typeof ps.bridgeHomeVisibility === 'boolean') profileUpdates.bridgeHomeVisibility = ps.bridgeHomeVisibility;
+			if (ps.noteVisibilityLimit !== undefined) profileUpdates.noteVisibilityLimit = ps.noteVisibilityLimit;
 			if (ps.emailNotificationTypes !== undefined) profileUpdates.emailNotificationTypes = ps.emailNotificationTypes;
 
 			if (ps.avatarId) {

@@ -504,6 +504,15 @@ export class NoteCreateService implements OnApplicationShutdown {
 			}
 		}
 
+		// Voluntary limits only apply to local accounts and normal notes, like the public-note role policy.
+		if (user.host === null && data.channel == null && (data.visibility === 'public' || data.visibility === 'home')) {
+			const profile = await this.cacheService.userProfileCache.fetch(user.id);
+			if (profile.noteVisibilityLimit === 'followers') {
+				data.visibility = 'followers';
+			} else if (profile.noteVisibilityLimit === 'home' && data.visibility === 'public') {
+				data.visibility = 'home';
+			}
+		}
 		const hasProhibitedWords = this.checkProhibitedWordsContain({
 			cw: data.cw,
 			text: data.text,

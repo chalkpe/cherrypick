@@ -427,8 +427,8 @@ const preview_fade = ref('$[fade 🍮] $[fade.speed=1.5s 🍮]');
 const preview_rotate = ref('$[rotate.deg=90 🍮]');
 const preview_position = ref('$[position.x=1 🍮]\n$[position.y=-1 🍮]\n\n$[position.x=3,y=-3 🍮]');
 const preview_scale = ref('$[scale.x=2 🍮]\n$[scale.y=2 🍮]\n\n$[scale.x=2.5,y=2 🍮]');
-const preview_fg = ref('$[fg.color=ffbcdc Cherry]$[fg.color=b1d3ff Pick]');
-const preview_bg = ref('$[bg.color=ffbcdc Cherry]$[bg.color=b1d3ff Pick]');
+const preview_fg = ref('$[fg.color=eab1b7 Cherry]$[fg.color=b1d3ff Pick]');
+const preview_bg = ref('$[bg.color=eab1b7 Cherry]$[bg.color=b1d3ff Pick]');
 const preview_plain = ref('<plain>**bold** @mention #hashtag `code` $[x2 🍮]</plain>');
 const preview_ruby = ref('$[ruby CherryPick Misskey]');
 

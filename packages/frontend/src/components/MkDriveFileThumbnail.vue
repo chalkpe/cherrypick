@@ -92,7 +92,10 @@ const isThumbnailAvailable = computed(() => {
 const playAnimation = ref(true);
 if (prefer.s.showingAnimatedImages === 'interaction') playAnimation.value = false;
 let playAnimationTimer = window.setTimeout(() => playAnimation.value = false, 5000);
-const url = computed(() => (prefer.s.loadRawImages)
+// Video originals cannot be decoded as images; image preferences only apply to images.
+const url = computed(() => is.value === 'video'
+	? props.file.thumbnailUrl
+	: (prefer.s.loadRawImages)
 	? props.file.url
 	: (prefer.s.disableShowingAnimatedImages || prefer.s.dataSaver.media) || (['interaction', 'inactive'].includes(<string>prefer.s.showingAnimatedImages) && !playAnimation.value)
 		? getStaticImageUrl(props.file.url)

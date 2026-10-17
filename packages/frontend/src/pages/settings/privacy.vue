@@ -32,6 +32,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</MkSwitch>
 		</SearchMarker>
 
+		<SearchMarker :keywords="['note', 'visibility', 'limit', 'privacy']">
+			<MkSelect v-model="noteVisibilityLimit" :items="noteVisibilityLimitDef" :disabled="savingNoteVisibilityLimit" @update:modelValue="saveNoteVisibilityLimit">
+				<template #label><SearchLabel>{{ i18n.ts._noteVisibilityLimit.label }}</SearchLabel></template>
+				<template #caption><SearchText>{{ i18n.ts._noteVisibilityLimit.description }}</SearchText></template>
+			</MkSelect>
+		</SearchMarker>
+
 		<SearchMarker :keywords="['following', 'visibility']">
 			<MkSelect v-model="followingVisibility" :items="followingVisibilityDef" @update:modelValue="save()">
 				<template #label><SearchLabel>{{ i18n.ts.followingVisibility }}</SearchLabel></template>
@@ -289,6 +296,32 @@ const publicReactions = ref($i.publicReactions);
 const autoDeleteNotesAfterDays = ref<number | null>($i?.autoDeleteNotesAfterDays ?? null);
 const autoDeleteKeepFavorites = ref($i?.autoDeleteKeepFavorites ?? false);
 const bridgeHomeVisibility = ref($i.bridgeHomeVisibility);
+
+const {
+	model: noteVisibilityLimit,
+	def: noteVisibilityLimitDef,
+} = useMkSelect({
+	items: [
+		{ label: i18n.ts._noteVisibilityLimit.none, value: 'none' },
+		{ label: i18n.ts._visibility.home, value: 'home' },
+		{ label: i18n.ts._visibility.followers, value: 'followers' },
+	],
+	initialValue: $i.noteVisibilityLimit ?? 'none',
+});
+
+const savingNoteVisibilityLimit = ref(false);
+
+async function saveNoteVisibilityLimit() {
+	savingNoteVisibilityLimit.value = true;
+	try {
+		const updated = await os.apiWithDialog('i/update', { noteVisibilityLimit: noteVisibilityLimit.value });
+		$i.noteVisibilityLimit = updated.noteVisibilityLimit;
+	} catch {
+		noteVisibilityLimit.value = $i.noteVisibilityLimit ?? 'none';
+	} finally {
+		savingNoteVisibilityLimit.value = false;
+	}
+}
 
 const {
 	model: followingVisibility,
