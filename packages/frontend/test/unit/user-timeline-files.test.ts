@@ -4,11 +4,12 @@
  */
 
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { cleanup, fireEvent, render } from '@testing-library/vue';
-import { nextTick } from 'vue';
+import { cleanup, fireEvent, render, within } from '@testing-library/vue';
+import { nextTick, ref } from 'vue';
 import type * as Misskey from 'cherrypick-js';
 import { preferState } from '../setup.unit.js';
 import XFiles from '@/pages/user/index.timeline.files.files.vue';
+import XFilesList from '@/pages/user/index.timeline.files.vue';
 
 vi.mock('@/utility/media-proxy.js', () => ({ getStaticImageUrl: (url: string) => `${url}?static` }));
 vi.mock('@/components/MkImgWithBlurhash.vue', () => ({
@@ -119,4 +120,28 @@ test('videos without a thumbnail wait for a click to load the original with data
 	expect(container.querySelector('video')).toBeNull();
 	await fireEvent.click(getByText('Click to show'));
 	expect(container.querySelector('video')?.getAttribute('src')).toBe('https://example.com/video.mp4');
+});
+
+// All notes on a profile share the same author, so tiles must be keyed by note.
+test('tiles keep their revealed state when a note is inserted before them', async () => {
+	preferState.dataSaver = { media: true };
+	const note = (id: string) => ({
+		id, createdAt: '2026-10-17T00:00:00.000Z', user: { id: 'alice' },
+		files: [{ id: `${id}-file`, name: `${id}.png`, type: 'image/png', isSensitive: false, url: `https://example.com/${id}.png`, thumbnailUrl: `https://example.com/${id}.webp` }],
+	}) as Misskey.entities.Note;
+	const items = ref([note('a'), note('b')]);
+	const { getByTitle } = render(XFilesList, {
+		props: { paginator: {} as never },
+		global: { stubs: {
+			MkPagination: { setup: () => ({ items }), template: '<div><slot :items="items" /></div>' },
+			MkA: { template: '<a><slot /></a>' }, MkTime: true,
+		} },
+	});
+	const tile = (name: string) => getByTitle(name).parentElement!.parentElement!;
+	await fireEvent.click(within(tile('a.png')).getByText('Click to show'));
+	expect(within(tile('a.png')).queryByText('Click to show')).toBeNull();
+	items.value = [note('new'), ...items.value];
+	await nextTick();
+	expect(within(tile('a.png')).queryByText('Click to show')).toBeNull();
+	expect(within(tile('new.png')).queryByText('Click to show')).not.toBeNull();
 });
