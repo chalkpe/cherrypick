@@ -2789,6 +2789,16 @@ export type paths = {
          */
         post: operations['i___import-blocking'];
     };
+    '/i/import-clips': {
+        /**
+         * i/import-clips
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the cherrypick mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes*
+         */
+        post: operations['i___import-clips'];
+    };
     '/i/import-following': {
         /**
          * i/import-following
@@ -5844,6 +5854,7 @@ export type components = {
             avatarDecorationLimit: number;
             canImportAntennas: boolean;
             canImportBlocking: boolean;
+            canImportClips: boolean;
             canImportFollowing: boolean;
             canImportMuting: boolean;
             canImportUserLists: boolean;
@@ -28095,6 +28106,78 @@ export interface operations {
         };
     };
     'i___import-blocking': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    fileId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (without any results) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'i___import-clips': {
         requestBody: {
             content: {
                 'application/json': {

@@ -790,6 +790,18 @@ export class DriveService {
 		});
 	}
 
+	/**
+	 * ドライブファイルの内容をテキストとして読み出す。
+	 * 内部ストレージに保存されていればディスクから直接読み、そうでなければ URL からダウンロードする。
+	 */
+	@bindThis
+	public async readFileAsText(file: MiDriveFile): Promise<string> {
+		if (file.storedInternal && file.accessKey != null) {
+			return await fs.promises.readFile(this.internalStorageService.resolvePath(file.accessKey), 'utf8');
+		}
+		return await this.downloadService.downloadTextFile(file.url);
+	}
+
 	@bindThis
 	public async deleteFile(file: MiDriveFile, isExpired = false, deleter?: MiUser) {
 		if (file.storedInternal) {

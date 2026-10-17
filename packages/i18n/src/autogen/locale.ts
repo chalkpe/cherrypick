@@ -9479,6 +9479,10 @@ export interface Locale extends ILocale {
              */
             "canImportBlocking": string;
             /**
+             * クリップのインポートを許可
+             */
+            "canImportClips": string;
+            /**
              * フォローのインポートを許可
              */
             "canImportFollowing": string;

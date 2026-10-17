@@ -308,6 +308,10 @@ export const packedRolePoliciesSchema = {
 			type: 'boolean',
 			optional: false, nullable: false,
 		},
+		canImportClips: {
+			type: 'boolean',
+			optional: false, nullable: false,
+		},
 		canImportFollowing: {
 			type: 'boolean',
 			optional: false, nullable: false,
