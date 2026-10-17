@@ -33,6 +33,18 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:class="$style.thumbnail"
 		:style="{ objectFit: fit }"
 	/>
+	<video
+		v-else-if="isVideoPreviewAvailable"
+		ref="videoEl"
+		:key="file.id"
+		:src="file.url"
+		:title="file.name"
+		:class="$style.thumbnail"
+		:style="{ objectFit: fit }"
+		preload="metadata"
+		muted
+		playsinline
+	></video>
 	<i v-else-if="is === 'image'" class="ti ti-photo" :class="$style.icon"></i>
 	<i v-else-if="is === 'video'" class="ti ti-video" :class="$style.icon"></i>
 	<i v-else-if="is === 'audio' || is === 'midi'" class="ti ti-file-music" :class="$style.icon"></i>
@@ -42,16 +54,17 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<i v-else-if="is === 'archive'" class="ti ti-file-zip" :class="$style.icon"></i>
 	<i v-else class="ti ti-file" :class="$style.icon"></i>
 
-	<i v-if="isThumbnailAvailable && is === 'video'" class="ti ti-video" :class="$style.iconSub"></i>
+	<i v-if="(isThumbnailAvailable || isVideoPreviewAvailable) && is === 'video'" class="ti ti-video" :class="$style.iconSub"></i>
 </div>
 </template>
 
 <script lang="ts" setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, useTemplateRef } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import MkImgWithBlurhash from '@/components/MkImgWithBlurhash.vue';
 import { prefer } from '@/preferences.js';
 import { getStaticImageUrl } from '@/utility/media-proxy.js';
+import { useVideoPreview } from '@/composables/use-video-preview.js';
 
 const props = defineProps<{
 	file: Misskey.entities.DriveFile;
@@ -88,6 +101,13 @@ const isThumbnailAvailable = computed(() => {
 		? (is.value === 'image' || is.value === 'video')
 		: false;
 });
+
+// Uncached remote videos have no thumbnail; show the original's first frame like MkMediaVideo does.
+const isVideoPreviewAvailable = computed(() => {
+	return is.value === 'video' && !props.file.thumbnailUrl && !props.forceBlurhash && !prefer.s.dataSaver.media;
+});
+const videoEl = useTemplateRef<HTMLVideoElement>('videoEl');
+useVideoPreview(videoEl);
 
 const playAnimation = ref(true);
 if (prefer.s.showingAnimatedImages === 'interaction') playAnimation.value = false;

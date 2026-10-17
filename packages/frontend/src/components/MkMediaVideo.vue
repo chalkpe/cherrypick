@@ -30,6 +30,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		/>
 		<video
 			v-else
+			ref="videoEl"
 			:class="$style.video"
 			:alt="video.comment"
 			preload="metadata"
@@ -48,7 +49,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue';
+import { ref, useTemplateRef } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import type { MediaComponentExposes } from '@/types/media-component.js';
 import bytes from '@/filters/bytes.js';
@@ -57,6 +58,7 @@ import { prefer } from '@/preferences.js';
 import * as os from '@/os.js';
 import { getFileMenu } from '@/utility/get-file-menu.js';
 import { shouldHideFileByDefault, canRevealFile } from '@/utility/sensitive-file.js';
+import { useVideoPreview } from '@/composables/use-video-preview.js';
 
 const props = defineProps<{
 	video: Misskey.entities.DriveFile;
@@ -68,6 +70,8 @@ const emit = defineEmits<{
 
 // eslint-disable-next-line vue/no-setup-props-reactivity-loss
 const hide = ref(shouldHideFileByDefault(props.video));
+const videoEl = useTemplateRef<HTMLVideoElement>('videoEl');
+useVideoPreview(videoEl);
 
 async function reveal() {
 	if (!(await canRevealFile(props.video))) {

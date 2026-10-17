@@ -56,18 +56,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<template #suffix>Crowdin</template>
 						</FormLink>
 						-->
-						<FormLink to="https://discord.gg/V8qghB28Aj" external>
-							<template #icon><i class="ti ti-brand-discord"></i></template>
-							{{ i18n.ts._aboutMisskey._cherrypick.community }}
-							<template #suffix>Discord</template>
-						</FormLink>
-						<button :class="$style.main" class="_button" @click="donateCherryPick">
-							<span :class="$style.icon"><i class="ti ti-pig-money"></i></span>
-							<span :class="$style.text">{{ i18n.ts._aboutMisskey._cherrypick.donate }}</span>
-							<span :class="$style.suffix">
-								<i class="ti ti-external-link"></i>
-							</span>
-						</button>
 					</div>
 				</FormSection>
 				<FormSection>
@@ -242,7 +230,6 @@ import { definePage } from '@/page.js';
 import { claimAchievement, claimedAchievements } from '@/utility/achievements.js';
 import { $i } from '@/i.js';
 import { prefer } from '@/preferences.js';
-import { donateCherryPick } from '@/utility/donate-cherrypick.js';
 import { openCommitPage } from '@/utility/fetch-releases.js';
 import { sourceCodeUrl } from '@/utility/source-code-url.js';
 
@@ -796,54 +783,5 @@ definePage(() => ({
 
 .patronName {
 	margin-left: 12px;
-}
-
-.main {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 10px 14px;
-  background: var(--MI_THEME-buttonBg);
-  border-radius: 6px;
-  font-size: 0.9em;
-
-  &:hover {
-    text-decoration: none;
-    background: var(--MI_THEME-buttonHoverBg);
-  }
-
-  &.active {
-    color: var(--MI_THEME-accent);
-    background: var(--MI_THEME-buttonHoverBg);
-  }
-}
-
-.icon {
-  margin-right: 0.75em;
-  flex-shrink: 0;
-  text-align: center;
-	color: color(from var(--MI_THEME-fg) srgb r g b / 0.75);
-
-  &:empty {
-    display: none;
-
-    & + .text {
-      padding-left: 4px;
-    }
-  }
-}
-
-.text {
-  flex-shrink: 1;
-  white-space: normal;
-  padding-right: 12px;
-  text-align: center;
-}
-
-.suffix {
-  margin-left: auto;
-  opacity: 0.7;
-  white-space: nowrap;
 }
 </style>

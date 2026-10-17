@@ -60,6 +60,7 @@ export type DbJobMap = {
 	importBlocking: DbUserImportJobData;
 	importBlockingToDb: DbUserImportToDbJobData;
 	importUserLists: DbUserImportJobData;
+	importClips: DbUserImportJobData;
 	importCustomEmojis: DbUserImportJobData;
 	deleteAccount: DbUserDeleteJobData;
 	truncateAccount: DbUserTruncateJobData;

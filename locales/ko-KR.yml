@@ -1431,7 +1431,6 @@ repositoryUrlOrTarballRequired: "저장소를 공개하지 않는 경우, 대신
 feedback: "피드백"
 feedbackUrl: "피드백 URL"
 support: "문의하기"
-supportThisInstance: "{name} 지원하기"
 impressum: "운영자 정보"
 impressumUrl: "운영자 정보 URL"
 impressumDescription: "독일 등의 일부 나라와 지역에서는 꼭 표시해야 해요(Impressum)."
@@ -2426,6 +2425,7 @@ _role:
     avatarDecorationLimit: "최대로 붙일 수 있는 아바타 장식 개수"
     canImportAntennas: "안테나 가져오기 허용"
     canImportBlocking: "차단 목록 가져오기 허용"
+    canImportClips: "클립 가져오기 허용"
     canImportFollowing: "팔로우 가져오기 허용"
     canImportMuting: "뮤트 목록 가져오기 허용"
     canImportUserLists: "리스트 목록 가져오기 허용"
@@ -2578,9 +2578,7 @@ _aboutMisskey:
     donate: "코코넥트에 기부하기"
   _cherrypick:
     translation: "CherryPick 번역하기"
-    donate: "CherryPick에 기부하기"
     relayServer: "릴레이 서버"
-    community: "커뮤니티"
 _displayOfSensitiveMedia:
   respect: "민감한 콘텐츠로 표시된 미디어 가리기"
   ignore: "민감한 콘텐츠로 표시된 미디어 보이기"

@@ -17,8 +17,8 @@ function abort(message?: string) {
 }
 
 function main() {
-	if (!fs.existsSync('./CHANGELOG-base.md') || !fs.existsSync('./CHANGELOG-head.md')) {
-		abort('CHANGELOG-base.md or CHANGELOG-head.md is missing.');
+	if (!fs.existsSync('./CHANGELOG_CHERRYPICK-base.md') || !fs.existsSync('./CHANGELOG_CHERRYPICK-head.md')) {
+		abort('CHANGELOG_CHERRYPICK-base.md or CHANGELOG_CHERRYPICK-head.md is missing.');
 		return;
 	}
 

@@ -520,6 +520,23 @@ export class QueueService {
 	}
 
 	@bindThis
+	public createImportClipsJob(user: ThinUser, fileId: MiDriveFile['id']) {
+		return this.dbQueue.add('importClips', {
+			user: { id: user.id },
+			fileId: fileId,
+		}, {
+			removeOnComplete: {
+				age: 3600 * 24 * 7, // keep up to 7 days
+				count: 30,
+			},
+			removeOnFail: {
+				age: 3600 * 24 * 7, // keep up to 7 days
+				count: 100,
+			},
+		});
+	}
+
+	@bindThis
 	public createImportCustomEmojisJob(user: ThinUser, fileId: MiDriveFile['id']) {
 		return this.dbQueue.add('importCustomEmojis', {
 			user: { id: user.id },

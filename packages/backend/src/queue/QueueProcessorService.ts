@@ -34,6 +34,7 @@ import { ImportBlockingProcessorService } from './processors/ImportBlockingProce
 import { ImportUserListsProcessorService } from './processors/ImportUserListsProcessorService.js';
 import { ImportCustomEmojisProcessorService } from './processors/ImportCustomEmojisProcessorService.js';
 import { ImportAntennasProcessorService } from './processors/ImportAntennasProcessorService.js';
+import { ImportClipsProcessorService } from './processors/ImportClipsProcessorService.js';
 import { DeleteAccountProcessorService } from './processors/DeleteAccountProcessorService.js';
 import { TruncateAccountProcessorService } from './processors/TruncateAccountProcessorService.js';
 import { ExportFavoritesProcessorService } from './processors/ExportFavoritesProcessorService.js';
@@ -126,6 +127,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 		private importUserListsProcessorService: ImportUserListsProcessorService,
 		private importCustomEmojisProcessorService: ImportCustomEmojisProcessorService,
 		private importAntennasProcessorService: ImportAntennasProcessorService,
+		private importClipsProcessorService: ImportClipsProcessorService,
 		private deleteAccountProcessorService: DeleteAccountProcessorService,
 		private truncateAccountProcessorService: TruncateAccountProcessorService,
 		private deleteFileProcessorService: DeleteFileProcessorService,
@@ -240,6 +242,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 					case 'importUserLists': return this.importUserListsProcessorService.process(job);
 					case 'importCustomEmojis': return this.importCustomEmojisProcessorService.process(job);
 					case 'importAntennas': return this.importAntennasProcessorService.process(job);
+					case 'importClips': return this.importClipsProcessorService.process(job);
 					case 'deleteAccount': return this.deleteAccountProcessorService.process(job);
 					case 'truncateAccount': return this.truncateAccountProcessorService.process(job);
 					case 'reportAbuse': return this.reportAbuseProcessorService.process(job);

@@ -33,8 +33,20 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</div>
 	</div>
 	<MkA v-else :class="[$style.img, { [$style.multipleImg]: files.length > 1 }]" :to="notePage(note)">
+		<video
+			v-if="isVideoPreviewAvailable"
+			ref="videoEl"
+			:key="files[0].id"
+			:src="files[0].url"
+			:title="files[0].name"
+			:class="$style.thumbnail"
+			style="object-fit: cover;"
+			preload="metadata"
+			muted
+			playsinline
+		></video>
 		<MkImgWithBlurhash
-			v-if="isThumbnailAvailable && prefer.s.enableHighQualityImagePlaceholders"
+			v-else-if="isThumbnailAvailable && prefer.s.enableHighQualityImagePlaceholders"
 			:hash="files[0].blurhash"
 			:src="url"
 			:alt="files[0].comment ?? undefined"
@@ -73,7 +85,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import * as os from '@/os.js';
 import bytes from '@/filters/bytes.js';
@@ -84,6 +96,7 @@ import MkA from '@/components/global/MkA.vue';
 import { prefer } from '@/preferences.js';
 import { i18n } from '@/i18n.js';
 import MkRippleEffect from '@/components/MkRippleEffect.vue';
+import { useVideoPreview } from '@/composables/use-video-preview.js';
 
 const props = defineProps<{
 	user: Misskey.entities.User;
@@ -121,10 +134,21 @@ const isThumbnailAvailable = computed(() => {
 		: false;
 });
 
+// Uncached remote videos have no thumbnail; show the original's first frame like MkMediaVideo does.
+// With data saver the tile stays hidden above until the user reveals it.
+const isVideoPreviewAvailable = computed(() => {
+	return is.value === 'video' && !files.value[0].thumbnailUrl;
+});
+const videoEl = useTemplateRef<HTMLVideoElement>('videoEl');
+useVideoPreview(videoEl);
+
 const playAnimation = ref(true);
 if (prefer.s.showingAnimatedImages === 'interaction') playAnimation.value = false;
 let playAnimationTimer = window.setTimeout(() => playAnimation.value = false, 5000);
-const url = computed(() => (prefer.s.loadRawImages)
+// Video originals cannot be decoded as images; image preferences only apply to images.
+const url = computed(() => is.value === 'video'
+	? files.value[0].thumbnailUrl
+	: (prefer.s.loadRawImages)
 	? files.value[0].url
 	: (prefer.s.disableShowingAnimatedImages || prefer.s.dataSaver.media) || (['interaction', 'inactive'].includes(<string>prefer.s.showingAnimatedImages) && !playAnimation.value)
 		? getStaticImageUrl(files.value[0].url)
