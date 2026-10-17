@@ -118,7 +118,20 @@ export async function signupThroughUi(
 // 表示に時間がかかるのでPlaywrightのデフォルトのタイムアウトだと間に合わない
 export async function closeUserSetupDialog(page: Page, timeout = 30_000): Promise<void> {
 	await page.locator('[data-testid="user-setup-dialog"] [data-testid="modal-window-close"]').click({ timeout });
+
+	// CherryPick はウィザードを閉じると unisonReload() でページをリロードする。
+	// 古いドキュメントに印を付けておき、印の無い新しいドキュメントが読み込まれるまで待つ。
+	// 待たずに次の操作を始めると、リロードで要素が消えて "element was detached" になる
+	await page.evaluate(() => {
+		(window as Window & { __closingUserSetupDialog?: boolean }).__closingUserSetupDialog = true;
+	});
 	await page.getByTestId('modal-dialog-ok').click();
+	await page.waitForFunction(
+		() => !(window as Window & { __closingUserSetupDialog?: boolean }).__closingUserSetupDialog,
+		undefined,
+		{ timeout },
+	);
+	await page.locator('button').first().waitFor({ state: 'visible', timeout });
 }
 
 export async function closeUserSetupDialogIfVisible(page: Page): Promise<void> {

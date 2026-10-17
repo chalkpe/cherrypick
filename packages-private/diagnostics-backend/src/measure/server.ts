@@ -96,9 +96,9 @@ export function forkBackendServer(backendDir: string) {
 		env: {
 			...process.env,
 			NODE_ENV: 'production',
-			MK_DISABLE_CLUSTERING: '1',
-			MK_ONLY_SERVER: '1',
-			MK_NO_DAEMONS: '1',
+			CP_DISABLE_CLUSTERING: '1',
+			CP_ONLY_SERVER: '1',
+			CP_NO_DAEMONS: '1',
 		},
 		stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
 		execArgv: ['--expose-gc'],

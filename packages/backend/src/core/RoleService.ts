@@ -68,6 +68,7 @@ export type RolePolicies = {
 	avatarDecorationLimit: number;
 	canImportAntennas: boolean;
 	canImportBlocking: boolean;
+	canImportClips: boolean;
 	canImportFollowing: boolean;
 	canImportMuting: boolean;
 	canImportUserLists: boolean;
@@ -114,6 +115,7 @@ export const DEFAULT_POLICIES: RolePolicies = {
 	avatarDecorationLimit: 1,
 	canImportAntennas: false,
 	canImportBlocking: false,
+	canImportClips: false,
 	canImportFollowing: false,
 	canImportMuting: false,
 	canImportUserLists: false,
@@ -448,6 +450,7 @@ export class RoleService implements OnApplicationShutdown, OnModuleInit {
 			avatarDecorationLimit: calc('avatarDecorationLimit', vs => Math.max(...vs)),
 			canImportAntennas: calc('canImportAntennas', vs => vs.some(v => v === true)),
 			canImportBlocking: calc('canImportBlocking', vs => vs.some(v => v === true)),
+			canImportClips: calc('canImportClips', vs => vs.some(v => v === true)),
 			canImportFollowing: calc('canImportFollowing', vs => vs.some(v => v === true)),
 			canImportMuting: calc('canImportMuting', vs => vs.some(v => v === true)),
 			canImportUserLists: calc('canImportUserLists', vs => vs.some(v => v === true)),

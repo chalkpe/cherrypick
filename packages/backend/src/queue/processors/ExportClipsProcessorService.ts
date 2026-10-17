@@ -8,6 +8,7 @@ import { Writable } from 'node:stream';
 import { Inject, Injectable } from '@nestjs/common';
 import { format as dateFormat } from 'date-fns';
 import { DI } from '@/di-symbols.js';
+import type { Config } from '@/config.js';
 import type { ClipNotesRepository, ClipsRepository, MiClip, MiClipNote, MiUser, PollsRepository, UsersRepository } from '@/models/_.js';
 import type Logger from '@/logger.js';
 import { DriveService } from '@/core/DriveService.js';
@@ -28,6 +29,9 @@ export class ExportClipsProcessorService {
 	private logger: Logger;
 
 	constructor(
+		@Inject(DI.config)
+		private config: Config,
+
 		@Inject(DI.usersRepository)
 		private usersRepository: UsersRepository,
 
@@ -206,7 +210,8 @@ export class ExportClipsProcessorService {
 				visibleUserIds: clip.note.visibleUserIds,
 				localOnly: clip.note.localOnly,
 				reactionAcceptance: clip.note.reactionAcceptance,
-				uri: clip.note.uri,
+				// ローカルノートの uri は null なので、他サーバーでも解決できるよう ActivityPub id を補う
+				uri: clip.note.uri ?? `${this.config.url}/notes/${clip.note.id}`,
 				url: clip.note.url,
 				user: {
 					id: clip.note.user.id,

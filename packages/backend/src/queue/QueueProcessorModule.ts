@@ -40,6 +40,7 @@ import { ImportFollowingProcessorService } from './processors/ImportFollowingPro
 import { ImportMutingProcessorService } from './processors/ImportMutingProcessorService.js';
 import { ImportUserListsProcessorService } from './processors/ImportUserListsProcessorService.js';
 import { ImportAntennasProcessorService } from './processors/ImportAntennasProcessorService.js';
+import { ImportClipsProcessorService } from './processors/ImportClipsProcessorService.js';
 import { ResyncChartsProcessorService } from './processors/ResyncChartsProcessorService.js';
 import { ReportAbuseProcessorService } from './processors/ReportAbuseProcessorService.js';
 import { TickChartsProcessorService } from './processors/TickChartsProcessorService.js';
@@ -77,6 +78,7 @@ import { ScheduledNoteDeleteProcessorService } from './processors/ScheduledNoteD
 		ImportUserListsProcessorService,
 		ImportCustomEmojisProcessorService,
 		ImportAntennasProcessorService,
+		ImportClipsProcessorService,
 		DeleteAccountProcessorService,
 		TruncateAccountProcessorService,
 		DeleteFileProcessorService,

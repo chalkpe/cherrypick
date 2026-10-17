@@ -7,7 +7,7 @@ process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
 import { afterAll, beforeAll, beforeEach, describe, test } from 'vitest';
-import { api, port, post, signup, startJobQueue } from '../utils.js';
+import { api, origin, port, post, signup, startJobQueue } from '../utils.js';
 import type { INestApplicationContext } from '@nestjs/common';
 import type * as misskey from 'cherrypick-js';
 
@@ -114,6 +114,32 @@ describe('export-clips', () => {
 		assert.strictEqual(exported[0].clipNotes[0].note.text, 'baz1');
 		assert.strictEqual(exported[0].clipNotes[1].note.text, 'baz2');
 		assert.deepStrictEqual(exported[0].clipNotes[1].note.poll.choices[0], 'sakura');
+	});
+
+	test('local notes are exported with their ActivityPub uri', async () => {
+		const res = await api('clips/create', {
+			name: 'foo',
+			description: 'bar',
+		}, alice);
+		assert.strictEqual(res.status, 200);
+		const clip = res.body;
+
+		const note = await post(alice, {
+			text: 'baz',
+		});
+
+		const res2 = await api('clips/add-note', {
+			clipId: clip.id,
+			noteId: note.id,
+		}, alice);
+		assert.strictEqual(res2.status, 204);
+
+		const res3 = await api('i/export-clips', {}, alice);
+		assert.strictEqual(res3.status, 204);
+
+		const exported = await pollFirstDriveFile();
+		assert.strictEqual(exported[0].clipNotes.length, 1);
+		assert.strictEqual(exported[0].clipNotes[0].note.uri, `${origin}/notes/${note.id}`);
 	});
 
 	test('multiple clips', async () => {

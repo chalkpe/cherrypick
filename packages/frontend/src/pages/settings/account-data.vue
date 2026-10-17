@@ -39,11 +39,18 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<MkFolder>
 					<template #icon><i class="ti ti-star"></i></template>
 					<template #label><SearchLabel>{{ i18n.ts._exportOrImport.clips }}</SearchLabel></template>
-					<MkFolder :defaultOpen="true">
-						<template #label>{{ i18n.ts.export }}</template>
-						<template #icon><i class="ti ti-download"></i></template>
-						<MkButton primary :class="$style.button" inline @click="exportClips()"><i class="ti ti-download"></i> {{ i18n.ts.export }}</MkButton>
-					</MkFolder>
+					<div class="_gaps_s">
+						<MkFolder :defaultOpen="true">
+							<template #label>{{ i18n.ts.export }}</template>
+							<template #icon><i class="ti ti-download"></i></template>
+							<MkButton primary :class="$style.button" inline @click="exportClips()"><i class="ti ti-download"></i> {{ i18n.ts.export }}</MkButton>
+						</MkFolder>
+						<MkFolder v-if="$i && !$i.movedTo && $i.policies.canImportClips" :defaultOpen="true">
+							<template #label>{{ i18n.ts.import }}</template>
+							<template #icon><i class="ti ti-upload"></i></template>
+							<MkButton primary :class="$style.button" inline @click="importClips($event)"><i class="ti ti-upload"></i> {{ i18n.ts.import }}</MkButton>
+						</MkFolder>
+					</div>
 				</MkFolder>
 			</SearchMarker>
 
@@ -273,6 +280,14 @@ const importAntennas = async (ev: PointerEvent) => {
 		multiple: false,
 	});
 	misskeyApi('i/import-antennas', { fileId: file.id }).then(onImportSuccess).catch(onError);
+};
+
+const importClips = async (ev: PointerEvent) => {
+	const file = await selectFile({
+		anchorElement: ev.currentTarget ?? ev.target,
+		multiple: false,
+	});
+	misskeyApi('i/import-clips', { fileId: file.id }).then(onImportSuccess).catch(onError);
 };
 
 const headerActions = computed(() => []);
