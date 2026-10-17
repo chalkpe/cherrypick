@@ -60,13 +60,13 @@ describe('EmailService', () => {
 		const html = await sentHtml();
 
 		expect(html).toContain('#86b300');
-		expect(html).not.toContain('#ffbcdc');
+		expect(html).not.toContain('#eab1b7');
 	});
 
 	test('falls back to the default accent color without a theme color', async () => {
 		const html = await sentHtml();
 
-		expect(html).toContain('#ffbcdc');
+		expect(html).toContain('#eab1b7');
 	});
 
 	test('ignores a theme color that is not a hex color', async () => {
@@ -75,6 +75,6 @@ describe('EmailService', () => {
 		const html = await sentHtml();
 
 		expect(html).not.toContain('evil.example');
-		expect(html).toContain('#ffbcdc');
+		expect(html).toContain('#eab1b7');
 	});
 });

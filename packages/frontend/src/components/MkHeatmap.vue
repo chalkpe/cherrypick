@@ -106,7 +106,7 @@ async function renderChart() {
 
 	await nextTick();
 
-	const color = store.s.darkMode ? '#ffcfe6' : '#ffbcdc';
+	const color = store.s.darkMode ? '#ffcfe6' : '#eab1b7';
 
 	// 視覚上の分かりやすさのため上から最も大きい3つの値の平均を最大値とする
 	const max = values.slice().sort((a, b) => b - a).slice(0, 3).reduce((a, b) => a + b, 0) / 3;

@@ -65,7 +65,7 @@ export class MiChannel {
 
 	@Column('varchar', {
 		length: 16,
-		default: '#ffbcdc',
+		default: '#eab1b7',
 	})
 	public color: string;
 

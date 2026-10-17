@@ -1892,14 +1892,14 @@ defineExpose({
 	&:not(:disabled):hover {
 		> .submitInner, .submitInnerMenu {
 			// background: linear-gradient(90deg, hsl(from var(--MI_THEME-accent) h s calc(l + 5)), hsl(from var(--MI_THEME-accent) h s calc(l + 5)));
-			background: light-dark(var(--MI_THEME-buttonGradateB), var(--MI_THEME-buttonGradateA))
+			background: hsl(from var(--MI_THEME-accent) h s calc(l + 5));
 		}
 	}
 
 	&:not(:disabled):active {
 		> .submitInner, .submitInnerMenu {
 			// background: linear-gradient(90deg, hsl(from var(--MI_THEME-accent) h s calc(l + 5)), hsl(from var(--MI_THEME-accent) h s calc(l + 5)));
-			background: light-dark(var(--MI_THEME-buttonGradateB), var(--MI_THEME-buttonGradateA))
+			background: hsl(from var(--MI_THEME-accent) h s calc(l + 5));
 		}
 	}
 }

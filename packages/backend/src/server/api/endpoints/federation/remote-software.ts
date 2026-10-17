@@ -138,7 +138,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 function getColor(name: string | null): string | null {
 	switch (name) {
 		case 'cherrypick':
-			return '#ffbcdc';
+			return '#eab1b7';
 		case 'misskey':
 			return '#86b300';
 		case 'mastodon':
@@ -154,7 +154,7 @@ function getColor(name: string | null): string | null {
 		case 'sharkey':
 			return '#2981bf';
 		case 'yojo-art':
-			return '#ffbcdc';
+			return '#eab1b7';
 
 		// hollo, mitra, null
 		default:

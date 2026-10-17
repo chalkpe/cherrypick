@@ -45,7 +45,7 @@ export class EmailService {
 		const iconUrl = `${this.config.url}/static-assets/mi-white.png`;
 		const emailSettingUrl = `${this.config.url}/settings/email`;
 		// CSS に埋め込むため、形式が正しいものだけ使う
-		const accentColor = /^#[0-9a-fA-F]{6}$/.test(this.meta.themeColor ?? '') ? this.meta.themeColor! : '#ffbcdc';
+		const accentColor = /^#[0-9a-fA-F]{6}$/.test(this.meta.themeColor ?? '') ? this.meta.themeColor! : '#eab1b7';
 
 		const enableAuth = this.meta.smtpUser != null && this.meta.smtpUser !== '';
 
