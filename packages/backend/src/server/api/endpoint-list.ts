@@ -289,6 +289,7 @@ export * as 'i/gallery/likes' from './endpoints/i/gallery/likes.js';
 export * as 'i/gallery/posts' from './endpoints/i/gallery/posts.js';
 export * as 'i/import-antennas' from './endpoints/i/import-antennas.js';
 export * as 'i/import-blocking' from './endpoints/i/import-blocking.js';
+export * as 'i/import-clips' from './endpoints/i/import-clips.js';
 export * as 'i/import-following' from './endpoints/i/import-following.js';
 export * as 'i/import-muting' from './endpoints/i/import-muting.js';
 export * as 'i/import-user-lists' from './endpoints/i/import-user-lists.js';

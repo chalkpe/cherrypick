@@ -2421,6 +2421,7 @@ _role:
     avatarDecorationLimit: "Maximum number of avatar decorations"
     canImportAntennas: "Can import antennas"
     canImportBlocking: "Can import blocking"
+    canImportClips: "Can import clips"
     canImportFollowing: "Can import following"
     canImportMuting: "Can import muting"
     canImportUserLists: "Can import lists"

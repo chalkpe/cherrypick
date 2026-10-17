@@ -176,6 +176,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<div>{{ defaultPolicies.canImportBlocking ? i18n.ts.yes : i18n.ts.no }}</div>
 			</div>
 			<div>
+				<div><b>{{ i18n.ts._role.baseRole }}/{{ i18n.ts._role._options.canImportClips }}:</b></div>
+				<div>{{ defaultPolicies.canImportClips ? i18n.ts.yes : i18n.ts.no }}</div>
+			</div>
+			<div>
 				<div><b>{{ i18n.ts._role.baseRole }}/{{ i18n.ts._role._options.canImportUserLists }}:</b></div>
 				<div>{{ defaultPolicies.canImportUserLists ? i18n.ts.yes : i18n.ts.no }}</div>
 			</div>
@@ -322,6 +326,13 @@ const defaultPolicies = computed<Partial<Misskey.entities.RolePolicies>>(() => {
 		canImportBlocking = false;
 	}
 
+	let canImportClips: Misskey.entities.RolePolicies['canImportClips'];
+	if (q_use.value === 'single') {
+		canImportClips = true;
+	} else {
+		canImportClips = false;
+	}
+
 	let canImportUserLists: Misskey.entities.RolePolicies['canImportUserLists'];
 	if (q_use.value === 'single') {
 		canImportUserLists = true;
@@ -345,6 +356,7 @@ const defaultPolicies = computed<Partial<Misskey.entities.RolePolicies>>(() => {
 		canImportFollowing,
 		canImportMuting,
 		canImportBlocking,
+		canImportClips,
 		canImportUserLists,
 		canImportAntennas,
 	};

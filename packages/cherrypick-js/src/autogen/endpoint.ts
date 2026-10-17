@@ -457,6 +457,7 @@ import type {
 	IGalleryPostsResponse,
 	IImportAntennasRequest,
 	IImportBlockingRequest,
+	IImportClipsRequest,
 	IImportFollowingRequest,
 	IImportMutingRequest,
 	IImportUserListsRequest,
@@ -1032,6 +1033,7 @@ export type Endpoints = {
 	'i/gallery/posts': { req: IGalleryPostsRequest; res: IGalleryPostsResponse };
 	'i/import-antennas': { req: IImportAntennasRequest; res: EmptyResponse };
 	'i/import-blocking': { req: IImportBlockingRequest; res: EmptyResponse };
+	'i/import-clips': { req: IImportClipsRequest; res: EmptyResponse };
 	'i/import-following': { req: IImportFollowingRequest; res: EmptyResponse };
 	'i/import-muting': { req: IImportMutingRequest; res: EmptyResponse };
 	'i/import-user-lists': { req: IImportUserListsRequest; res: EmptyResponse };

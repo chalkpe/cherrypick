@@ -232,6 +232,7 @@ export const rolePolicies = [
 	'avatarDecorationLimit',
 	'canImportAntennas',
 	'canImportBlocking',
+	'canImportClips',
 	'canImportFollowing',
 	'canImportMuting',
 	'canImportUserLists',
