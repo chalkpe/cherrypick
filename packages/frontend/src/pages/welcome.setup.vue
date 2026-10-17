@@ -106,14 +106,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<div>{{ i18n.ts._serverSetupWizard.settingsCompleted_description }}</div>
 						<div>{{ i18n.ts._serverSetupWizard.settingsCompleted_description2 }}</div>
 					</div>
-					<div class="_gaps_s" :class="$style.donation">
-						<div><b>{{ i18n.ts._serverSetupWizard.donationRequest }}</b></div>
-						<div>{{ i18n.ts._serverSetupWizard._donationRequest.text1 }}<br>{{ i18n.ts._serverSetupWizard._donationRequest.text2 }}<br>{{ i18n.ts._serverSetupWizard._donationRequest.text3 }}</div>
-						<!--<MkLink target="_blank" url="https://misskey-hub.net/docs/donate/" style="margin: 0 auto;">{{ i18n.ts.learnMore }}</MkLink>-->
-						<button type="button" class="_link _button" style="margin: 0 auto;" @click="donateCherryPick">
-							<i class="ti ti-pig-money"></i> {{ i18n.ts._aboutMisskey._cherrypick.donate }} <i class="ti ti-external-link"></i>
-						</button>
-					</div>
 					<div class="_buttonsCenter">
 						<MkButton gradate large rounded data-testid="next" style="margin: 0 auto;" @click="finish">
 							{{ i18n.ts.start }}
@@ -137,7 +129,6 @@ import { i18n } from '@/i18n.js';
 import { login } from '@/accounts.js';
 import MkLink from '@/components/MkLink.vue';
 import MkServerSetupWizard from '@/components/MkServerSetupWizard.vue';
-import { donateCherryPick } from '@/utility/donate-cherrypick.js';
 
 const username = ref('');
 const password = ref('');
@@ -235,12 +226,5 @@ function finish() {
 	font-size: 70%;
 	font-weight: normal;
 	opacity: 0.7;
-}
-
-.donation {
-	background: var(--MI_THEME-accentedBg);
-	border-radius: 12px;
-	padding: 16px;
-	text-align: center;
 }
 </style>

@@ -1431,7 +1431,6 @@ repositoryUrlOrTarballRequired: "저장소를 공개하지 않는 경우, 대신
 feedback: "피드백"
 feedbackUrl: "피드백 URL"
 support: "문의하기"
-supportThisInstance: "{name} 지원하기"
 impressum: "운영자 정보"
 impressumUrl: "운영자 정보 URL"
 impressumDescription: "독일 등의 일부 나라와 지역에서는 꼭 표시해야 해요(Impressum)."
@@ -2579,9 +2578,7 @@ _aboutMisskey:
     donate: "코코넥트에 기부하기"
   _cherrypick:
     translation: "CherryPick 번역하기"
-    donate: "CherryPick에 기부하기"
     relayServer: "릴레이 서버"
-    community: "커뮤니티"
 _displayOfSensitiveMedia:
   respect: "민감한 콘텐츠로 표시된 미디어 가리기"
   ignore: "민감한 콘텐츠로 표시된 미디어 보이기"

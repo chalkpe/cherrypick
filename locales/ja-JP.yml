@@ -1439,7 +1439,6 @@ repositoryUrlOrTarballRequired: "リポジトリを公開していない場合�
 feedback: "フィードバック"
 feedbackUrl: "フィードバックURL"
 support: "お問い合わせ"
-supportThisInstance: "{name}を支援"
 impressum: "運営者情報"
 impressumUrl: "運営者情報URL"
 impressumDescription: "ドイツなどの一部の国と地域では表示が義務付けられています(Impressum)。"
@@ -2622,9 +2621,7 @@ _aboutMisskey:
     donate: "ココネクトに寄付"
   _cherrypick:
     translation: "CherryPickを翻訳"
-    donate: "CherryPickに寄付"
     relayServer: "リレーサーバー"
-    community: "コミュニティー"
 
 _displayOfSensitiveMedia:
   respect: "センシティブ設定されたメディアを隠す"

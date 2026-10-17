@@ -5781,10 +5781,6 @@ export interface Locale extends ILocale {
      */
     "support": string;
     /**
-     * {name}を支援
-     */
-    "supportThisInstance": ParameterizedString<"name">;
-    /**
      * 運営者情報
      */
     "impressum": string;
@@ -10055,17 +10051,9 @@ export interface Locale extends ILocale {
              */
             "translation": string;
             /**
-             * CherryPickに寄付
-             */
-            "donate": string;
-            /**
              * リレーサーバー
              */
             "relayServer": string;
-            /**
-             * コミュニティー
-             */
-            "community": string;
         };
     };
     "_displayOfSensitiveMedia": {

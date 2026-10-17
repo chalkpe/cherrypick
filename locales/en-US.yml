@@ -1428,7 +1428,6 @@ repositoryUrlOrTarballRequired: "If you have not published a repository, you mus
 feedback: "Feedback"
 feedbackUrl: "Feedback URL"
 support: "Helpdesk"
-supportThisInstance: "Support {name}"
 impressum: "Impressum"
 impressumUrl: "Impressum URL"
 impressumDescription: "In some countries, like germany, the inclusion of operator contact information (an Impressum) is legally required for commercial websites."
@@ -2574,9 +2573,7 @@ _aboutMisskey:
     donate: "Donate to Kokonect"
   _cherrypick:
     translation: "Translate CherryPick"
-    donate: "Donate to CherryPick"
     relayServer: "Relay Server"
-    community: "Community"
 _displayOfSensitiveMedia:
   respect: "Hide media marked as sensitive"
   ignore: "Display media marked as sensitive"

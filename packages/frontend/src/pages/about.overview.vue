@@ -92,14 +92,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<template #icon><i class="ti ti-message"></i></template>
 					<template #default>{{ i18n.ts.feedback }}</template>
 				</FormLink>
-				<button :class="$style.main" class="_button" @click="donateCherryPick">
-					<span :class="$style.icon"><i class="ti ti-pig-money"></i></span>
-					<!-- <span :class="$style.text">{{ i18n.tsx.supportThisInstance({ name: instance.name ?? host }) }}</span> -->
-					<span :class="$style.text">{{ i18n.tsx.supportThisInstance({ name: 'CherryPick' }) }}</span>
-					<span :class="$style.suffix">
-						<i class="ti ti-external-link"></i>
-					</span>
-				</button>
 			</div>
 		</div>
 	</FormSection>
@@ -146,7 +138,6 @@ import MkFolder from '@/components/MkFolder.vue';
 import MkKeyValue from '@/components/MkKeyValue.vue';
 import MkLink from '@/components/MkLink.vue';
 import MkInfo from '@/components/MkInfo.vue';
-import { donateCherryPick } from '@/utility/donate-cherrypick.js';
 import { sourceCodeUrl } from '@/utility/source-code-url.js';
 
 const initStats = () => misskeyApi('stats', {});
@@ -211,54 +202,5 @@ const initStats = () => misskeyApi('stats', {});
 
 .ruleText {
 	padding-top: 6px;
-}
-
-.main {
-	display: flex;
-	align-items: center;
-	width: 100%;
-	box-sizing: border-box;
-	padding: 10px 14px;
-	background: var(--MI_THEME-buttonBg);
-	border-radius: 6px;
-	font-size: 0.9em;
-
-	&:hover {
-		text-decoration: none;
-		background: var(--MI_THEME-buttonHoverBg);
-	}
-
-	&.active {
-		color: var(--MI_THEME-accent);
-		background: var(--MI_THEME-buttonHoverBg);
-	}
-}
-
-.icon {
-	margin-right: 0.75em;
-	flex-shrink: 0;
-	text-align: center;
-	color: color(from var(--MI_THEME-fg) srgb r g b / 0.75);
-
-	&:empty {
-		display: none;
-
-		& + .text {
-			padding-left: 4px;
-		}
-	}
-}
-
-.text {
-	flex-shrink: 1;
-	white-space: normal;
-	padding-right: 12px;
-	text-align: center;
-}
-
-.suffix {
-	margin-left: auto;
-	opacity: 0.7;
-	white-space: nowrap;
 }
 </style>
