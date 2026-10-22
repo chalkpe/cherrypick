@@ -26,6 +26,7 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2026100](CHANG
 - Fix: 초안을 수정할 때 투표를 추가하거나 제거해도 반영되지 않던 문제를 수정했습니다.
 - Fix: 노트를 편집해 바꾼 예약 삭제 시각이 반영되지 않고 원래 시각에 삭제되던 문제를 수정했습니다.
 - Fix: 보안 관련 수정을 적용했습니다. Node.js 최소 동작 버전이 22.23.4 / 24.22.1 / 26.12.1로 올라갔으며, Docker 이미지는 Node.js 26.12.1을 사용합니다.
+- Feat: Misskey 2026.10.0 DB를 CherryPick으로 옮기는 마이그레이션 브리지를 추가했습니다. (`CHERRYPICK_MIGRATION_FROM_MISSKEY=1`)
 
 ---
 
