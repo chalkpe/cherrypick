@@ -55,6 +55,10 @@ services:
         target: /cherrypick/packages/backend/scripts/compile_config.js
         read_only: true
       - type: bind
+        source: ../scripts/bridge_from_misskey.js
+        target: /cherrypick/packages/backend/scripts/bridge_from_misskey.js
+        read_only: true
+      - type: bind
         source: ../../cherrypick-js/built
         target: /cherrypick/packages/cherrypick-js/built
         read_only: true
