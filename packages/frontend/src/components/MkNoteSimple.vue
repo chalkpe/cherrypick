@@ -62,7 +62,7 @@ import { prefer } from '@/preferences.js';
 import MkEvent from '@/components/MkEvent.vue';
 import { mainRouter } from '@/router.js';
 import { useRouter } from '@/router.js';
-import { notePage } from '@/filters/note.js';
+import { notePage } from '@@/js/note.js';
 import { scrollToVisibility } from '@/utility/scroll-to-visibility.js';
 import MkInfo from '@/components/MkInfo.vue';
 

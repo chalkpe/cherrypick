@@ -90,7 +90,7 @@ import * as Misskey from 'cherrypick-js';
 import * as os from '@/os.js';
 import bytes from '@/filters/bytes.js';
 import { getStaticImageUrl } from '@/utility/media-proxy.js';
-import { notePage } from '@/filters/note.js';
+import { notePage } from '@@/js/note.js';
 import MkImgWithBlurhash from '@/components/MkImgWithBlurhash.vue';
 import MkA from '@/components/global/MkA.vue';
 import { prefer } from '@/preferences.js';

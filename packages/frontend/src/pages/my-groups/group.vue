@@ -43,7 +43,7 @@ import { mainRouter } from '@/router.js';
 import { definePage } from '@/page.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
-import { userPage } from '@/filters/user.js';
+import { userPage } from '@@/js/user.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 
 const props = defineProps<{

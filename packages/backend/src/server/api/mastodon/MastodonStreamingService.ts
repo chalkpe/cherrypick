@@ -32,6 +32,7 @@ const MAX_WATCHED_NOTES = 1024;
 
 // Bound the bridge's own maps before forwarding to Connection, which has the same channel limit.
 const MAX_CHANNELS_PER_CONNECTION = 32;
+const MAX_BUFFERED_AMOUNT_PER_CONNECTION = 1024 * 1024 * 8; // 8MiB
 
 /**
  * A Misskey channel opened on behalf of a Mastodon stream
@@ -125,6 +126,8 @@ export class MastodonStreamingService implements OnApplicationShutdown {
 
 		this.#wss = new WebSocket.WebSocketServer({
 			noServer: true,
+			maxPayload: 1024 * 1024, // 1MiB
+			perMessageDeflate: false,
 			// Browser clients pass the access token as the WebSocket subprotocol, which must be echoed back.
 			handleProtocols: (protocols) => protocols.values().next().value ?? false,
 		});
@@ -253,11 +256,17 @@ export class MastodonStreamingService implements OnApplicationShutdown {
  */
 class MastodonStreamBridge {
 	/** The socket the Misskey Connection reads from and writes to */
-	public readonly misskeySocket = Object.defineProperty(Object.assign(new EventEmitter(), {
+	public readonly misskeySocket = Object.defineProperties(Object.assign(new EventEmitter(), {
 		send: (data: string) => this.onMisskeyMessage(data),
-	}), 'readyState', {
-		// Connection ignores messages unless its socket is open, so mirror the client socket
-		get: () => this.ws.readyState,
+		terminate: () => this.ws.terminate(),
+	}), {
+		readyState: {
+			// Connection ignores messages unless its socket is open, so mirror the client socket
+			get: () => this.ws.readyState,
+		},
+		bufferedAmount: {
+			get: () => this.ws.bufferedAmount,
+		},
 	});
 
 	/** Mastodon stream key -> Misskey channel subscriptions */
@@ -339,7 +348,12 @@ class MastodonStreamBridge {
 
 	private sendToClient(data: Record<string, unknown>): void {
 		if (this.ws.readyState !== WebSocket.WebSocket.OPEN) return;
-		this.ws.send(JSON.stringify(data));
+		const message = JSON.stringify(data);
+		if (this.ws.bufferedAmount + Buffer.byteLength(message) > MAX_BUFFERED_AMOUNT_PER_CONNECTION) {
+			this.ws.terminate();
+			return;
+		}
+		this.ws.send(message);
 	}
 
 	private sendEvent(stream: string[], event: string, payload: unknown): void {

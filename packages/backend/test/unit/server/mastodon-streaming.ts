@@ -6,17 +6,26 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, onTestFinished, test } from 'vitest';
 import { MastodonStreamingService } from '@/server/api/mastodon/MastodonStreamingService.js';
+import MainStreamConnection from '@/server/api/stream/Connection.js';
+import type { WebSocket } from 'ws';
 
 async function connect(user: { id: string } | null = null) {
 	const sent: { status?: number }[] = [];
 	const forwarded: { type: string; body: { id: string } }[] = [];
-	const ws = Object.assign(new EventEmitter(), { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) });
+	const ws = Object.assign(new EventEmitter(), {
+		readyState: 1,
+		bufferedAmount: 0,
+		send: (raw: string) => sent.push(JSON.parse(raw)),
+		terminate: () => { ws.readyState = 3; },
+	});
+	let bridgeSocket: WebSocket;
 	const service = new MastodonStreamingService(
 		new EventEmitter() as never, {} as never, {} as never, {} as never, {} as never,
 		{ getLogger: () => ({ error: () => {} }) } as never,
 	);
 	const connection = {
 		listen: async (_events: EventEmitter, socket: EventEmitter) => {
+			bridgeSocket = socket as WebSocket;
 			socket.on('message', raw => forwarded.push(JSON.parse(raw.toString())));
 		},
 		dispose: () => {},
@@ -27,7 +36,7 @@ async function connect(user: { id: string } | null = null) {
 	});
 	await service['onConnection'](ws as never, connection as never, user as never, new URLSearchParams());
 	const send = (message: unknown) => ws.emit('message', Buffer.from(JSON.stringify(message)));
-	return { send, sent, forwarded };
+	return { send, sent, forwarded, ws, bridgeSocket: bridgeSocket! };
 }
 
 describe('Mastodon streaming input limits', () => {
@@ -57,5 +66,32 @@ describe('Mastodon streaming input limits', () => {
 		for (const value of [null, [], 1, true, 'hello']) expect(() => send(value)).not.toThrow();
 		send({ type: 'subscribe', stream: 'public:local' });
 		expect(forwarded).toHaveLength(1);
+	});
+});
+
+describe('Mastodon streaming backpressure', () => {
+	test('disconnects a slow client before sending a Mastodon response', async () => {
+		const { send, sent, ws } = await connect();
+		ws.bufferedAmount = 8 * 1024 * 1024;
+		send({ type: 'subscribe', stream: 'unknown' });
+		expect(ws.readyState).toBe(3);
+		expect(sent).toEqual([]);
+	});
+
+	test.each([
+		{ name: 'a slow client', bufferedAmount: 8 * 1024 * 1024, payload: 'message' },
+		{ name: 'an oversized event', bufferedAmount: 0, payload: 'x'.repeat(8 * 1024 * 1024) },
+	])('disconnects $name through the Misskey connection', async ({ bufferedAmount, payload }) => {
+		const { sent, ws, bridgeSocket } = await connect();
+		const connection = new MainStreamConnection(
+			{} as never, {} as never, {} as never, {} as never, {} as never, {} as never,
+			{ user: null, token: null },
+		);
+		await connection.listen(new EventEmitter(), bridgeSocket);
+		onTestFinished(() => connection.dispose());
+		ws.bufferedAmount = bufferedAmount;
+		connection.sendMessageToWs('test', { text: payload });
+		expect(ws.readyState).toBe(3);
+		expect(sent).toEqual([]);
 	});
 });

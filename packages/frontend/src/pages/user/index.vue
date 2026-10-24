@@ -29,7 +29,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { defineAsyncComponent, computed, watch, ref, onUnmounted } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import * as os from '@/os.js';
-import { acct as getAcct } from '@/filters/user.js';
+import { acct as getAcct } from '@@/js/user.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { definePage } from '@/page.js';
 import { i18n } from '@/i18n.js';

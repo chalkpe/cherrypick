@@ -71,7 +71,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { CodeDiff } from 'v-code-diff';
-import { userPage } from '@/filters/user.js';
+import { userPage } from '@@/js/user.js';
 import { i18n } from '@/i18n.js';
 import MkMediaList from '@/components/MkMediaList.vue';
 import MkCwButton from '@/components/MkCwButton.vue';

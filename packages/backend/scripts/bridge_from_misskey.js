@@ -76,6 +76,14 @@ const BRIDGED_MIGRATIONS = [
 	'ChocoChannelColor1792217918286',
 ];
 
+// Misskey 2026.10.0 이후 추가되었지만 브리지보다 타임스탬프가 오래된 업스트림 마이그레이션.
+// 브리지 DDL에 포함되지 않으므로 실행 기록을 넣지 않고 TypeORM이 직접 실행하도록 남겨 둔다.
+const PENDING_UPSTREAM_MIGRATIONS = [
+	'AutoArchiveAnnouncements1783913268595',
+	'UserProfilePasswordComment1790477603333',
+	'FollowApprovalByAccountAge1791109435844',
+];
+
 // Misskey 2026.10.0 DB에서 check-migrations(스키마 빌더)가 내놓은 DDL을 바탕으로 하고, 기존 행의 값이 필요한 곳만 손봤다
 const BRIDGE_QUERIES = [
 	'DROP INDEX "public"."IDX_20e30aa35180e317e133d75316"',
@@ -228,12 +236,12 @@ async function bridge(queryRunner) {
 		return 1;
 	}
 
-	// 브리지 시점까지의 미실행 마이그레이션이 목록과 정확히 같아야 한다 (포크가 바뀌었는데 브리지를 안 고친 경우를 막는다)
+	// 알려진 업스트림 마이그레이션 외에는 브리지 목록과 정확히 같아야 한다 (알 수 없는 스키마 변경은 거부한다)
 	const bridgeHead = timestampOf(BRIDGED_MIGRATIONS.at(-1));
 	const pending = dataSource.migrations
 		.map(migration => migration.name ?? migration.constructor.name)
 		.filter(name => !executedSet.has(name) && timestampOf(name) <= bridgeHead);
-	const unexpected = pending.filter(name => !BRIDGED_MIGRATIONS.includes(name));
+	const unexpected = pending.filter(name => !BRIDGED_MIGRATIONS.includes(name) && !PENDING_UPSTREAM_MIGRATIONS.includes(name));
 	const missing = BRIDGED_MIGRATIONS.filter(name => !pending.includes(name));
 	if (unexpected.length > 0 || missing.length > 0) {
 		console.error('Pending migrations do not match the bridge. Update scripts/bridge_from_misskey.js.');
