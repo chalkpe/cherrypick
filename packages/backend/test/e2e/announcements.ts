@@ -8,7 +8,7 @@ process.env.NODE_ENV = 'test';
 import * as assert from 'node:assert';
 import { beforeAll, describe, test } from 'vitest';
 import { api, castAsError, signup } from '../utils.js';
-import type * as misskey from 'misskey-js';
+import type * as misskey from 'cherrypick-js';
 
 describe('Announcements', () => {
 	let admin: misskey.entities.SignupResponse;

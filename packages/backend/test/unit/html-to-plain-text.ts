@@ -56,12 +56,13 @@ describe('HTML descriptions as plain text', () => {
 		const clientLoggerService = mockDeep<ClientLoggerService>();
 		htmlTemplateService.getCommonData.mockResolvedValue({
 			config: { url: 'https://example.test' } as Config,
-			version: 'test', langs: [], instanceName: 'Test', instanceUrl: 'https://example.test',
+			version: 'test', basedMisskeyVersion: 'test', langs: [], instanceName: 'Test', instanceUrl: 'https://example.test',
 			icon: null, appleTouchIcon: null, themeColor: null,
-			serverErrorImageUrl: '', infoImageUrl: '', notFoundImageUrl: '',
+			serverErrorImageUrl: '', infoImageUrl: '', notFoundImageUrl: '', youBlockedImageUrl: '',
 			now: 0, federationEnabled: true, frontendViteFiles: null,
 			frontendBootloaderJs: null, frontendBootloaderCss: null,
 			frontendEmbedViteFiles: null, frontendEmbedBootloaderJs: null, frontendEmbedBootloaderCss: null,
+			customSplashText: null,
 		});
 		const service = new ClientServerService(
 			{ url: 'https://example.test', rootDir: process.cwd() } as Config,
