@@ -2366,6 +2366,12 @@ _achievements:
       title: "Double🤯"
       description: "Two of the biggest objects in the bubble game at the same time"
       flavor: "You can fill a lunch box like this 🤯 🤯 a bit."
+_voiceCall:
+  micUnavailable: "Microphone is unavailable. You can still listen."
+  connectionFailed: "Could not connect to the call server."
+  joinedFromAnotherTab: "You joined this call from another tab."
+  removedFromCall: "You were removed from the call."
+  callEnded: "The call has ended."
 _role:
   new: "New role"
   edit: "Edit role"

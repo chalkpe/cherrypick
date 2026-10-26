@@ -9259,6 +9259,28 @@ export interface Locale extends ILocale {
             };
         };
     };
+    "_voiceCall": {
+        /**
+         * マイクを使用できません。聞くことはできます。
+         */
+        "micUnavailable": string;
+        /**
+         * 通話サーバーに接続できませんでした。
+         */
+        "connectionFailed": string;
+        /**
+         * 別のタブで通話に参加しました。
+         */
+        "joinedFromAnotherTab": string;
+        /**
+         * 通話から外されました。
+         */
+        "removedFromCall": string;
+        /**
+         * 通話が終了しました。
+         */
+        "callEnded": string;
+    };
     "_role": {
         /**
          * ロールの作成

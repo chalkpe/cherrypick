@@ -2401,6 +2401,12 @@ _achievements:
       description: "バブルゲームで最も大きいモノを2つ同時に出した"
       flavor: "これくらいの　おべんとばこに　🤯　🤯　ちょっとつめて"
 
+_voiceCall:
+  micUnavailable: "マイクを使用できません。聞くことはできます。"
+  connectionFailed: "通話サーバーに接続できませんでした。"
+  joinedFromAnotherTab: "別のタブで通話に参加しました。"
+  removedFromCall: "通話から外されました。"
+  callEnded: "通話が終了しました。"
 _role:
   new: "ロールの作成"
   edit: "ロールの編集"

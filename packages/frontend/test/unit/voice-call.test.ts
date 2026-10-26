@@ -1,0 +1,288 @@
+/*
+ * SPDX-FileCopyrightText: syuilo and misskey-project
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+
+const lk = vi.hoisted(() => {
+	class Emitter {
+		private handlers = new Map<string, Set<(...args: any[]) => void>>();
+		on(event: string, handler: (...args: any[]) => void) {
+			if (!this.handlers.has(event)) this.handlers.set(event, new Set());
+			this.handlers.get(event)!.add(handler);
+			return this;
+		}
+		off(event: string, handler: (...args: any[]) => void) {
+			this.handlers.get(event)?.delete(handler);
+			return this;
+		}
+		emit(event: string, ...args: any[]) {
+			for (const handler of this.handlers.get(event) ?? []) handler(...args);
+			return true;
+		}
+	}
+
+	const RoomEvent = {
+		Reconnecting: 'reconnecting',
+		Reconnected: 'reconnected',
+		Disconnected: 'disconnected',
+		ParticipantConnected: 'participantConnected',
+		TrackPublished: 'trackPublished',
+		TrackUnpublished: 'trackUnpublished',
+		TrackSubscribed: 'trackSubscribed',
+		TrackUnsubscribed: 'trackUnsubscribed',
+		TrackMuted: 'trackMuted',
+		LocalTrackPublished: 'localTrackPublished',
+		LocalTrackUnpublished: 'localTrackUnpublished',
+		ActiveSpeakersChanged: 'activeSpeakersChanged',
+		AudioPlaybackStatusChanged: 'audioPlaybackChanged',
+	};
+	const DisconnectReason = { UNKNOWN_REASON: 0, CLIENT_INITIATED: 1, DUPLICATE_IDENTITY: 2, SERVER_SHUTDOWN: 3, PARTICIPANT_REMOVED: 4, ROOM_DELETED: 5 };
+	const Track = {
+		Source: { Camera: 'camera', Microphone: 'microphone', ScreenShare: 'screen_share', ScreenShareAudio: 'screen_share_audio', Unknown: 'unknown' },
+		Kind: { Audio: 'audio', Video: 'video', Unknown: 'unknown' },
+	};
+	const preset = (width: number, height: number, fps: number) => ({ resolution: { width, height, frameRate: fps }, encoding: { maxBitrate: width * fps, maxFramerate: fps } });
+	const ScreenSharePresets = {
+		h720fps15: preset(1280, 720, 15),
+		h720fps30: preset(1280, 720, 30),
+		h1080fps15: preset(1920, 1080, 15),
+		h1080fps30: preset(1920, 1080, 30),
+	};
+
+	class FakeRemoteParticipant extends Emitter {
+		trackPublications = new Map<string, any>();
+		setVolume = vi.fn();
+		constructor(public identity: string) {
+			super();
+		}
+	}
+
+	class FakeRoom extends Emitter {
+		static instances: FakeRoom[] = [];
+		static setup: ((room: FakeRoom) => void) | null = null;
+		remoteParticipants = new Map<string, FakeRemoteParticipant>();
+		canPlaybackAudio = true;
+		localParticipant = {
+			identity: 'https://local.test/users/me',
+			setMicrophoneEnabled: vi.fn().mockResolvedValue(undefined),
+			setScreenShareEnabled: vi.fn().mockResolvedValue(undefined),
+		};
+		connect = vi.fn().mockResolvedValue(undefined);
+		disconnect = vi.fn(async () => {
+			this.emit(RoomEvent.Disconnected, DisconnectReason.CLIENT_INITIATED);
+		});
+		startAudio = vi.fn(async () => {
+			this.canPlaybackAudio = true;
+		});
+		switchActiveDevice = vi.fn().mockResolvedValue(true);
+		constructor(public options: unknown) {
+			super();
+			FakeRoom.instances.push(this);
+			FakeRoom.setup?.(this);
+		}
+	}
+
+	return { Emitter, RoomEvent, DisconnectReason, Track, ScreenSharePresets, FakeRoom, FakeRemoteParticipant };
+});
+
+vi.mock('livekit-client', () => ({
+	Room: lk.FakeRoom,
+	RoomEvent: lk.RoomEvent,
+	DisconnectReason: lk.DisconnectReason,
+	Track: lk.Track,
+	ScreenSharePresets: lk.ScreenSharePresets,
+}));
+
+const mocks = vi.hoisted(() => ({
+	misskeyApi: vi.fn(),
+	toast: vi.fn(),
+	alert: vi.fn(),
+	prefer: {
+		s: {} as Record<string, unknown>,
+		commit: vi.fn(),
+	},
+}));
+vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
+vi.mock('@/os.js', () => ({ toast: mocks.toast, alert: mocks.alert }));
+vi.mock('@/preferences.js', () => ({ prefer: mocks.prefer }));
+
+import { i18n } from '@/i18n.js';
+import { joinVoiceCall, leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, voiceCall } from '@/utility/voice-call.js';
+
+const room1 = { id: 'r1', name: 'room 1' } as any;
+const room2 = { id: 'r2', name: 'room 2' } as any;
+const lastRoom = () => lk.FakeRoom.instances[lk.FakeRoom.instances.length - 1];
+
+function remoteParticipant(identity: string) {
+	const participant = new lk.FakeRemoteParticipant(identity);
+	lastRoom().remoteParticipants.set(identity, participant);
+	return participant;
+}
+
+beforeEach(() => {
+	lk.FakeRoom.instances.length = 0;
+	lk.FakeRoom.setup = null;
+	mocks.misskeyApi.mockReset().mockResolvedValue({ url: 'https://local.test/livekit', token: 't' });
+	mocks.toast.mockReset();
+	mocks.alert.mockReset();
+	mocks.prefer.s = {
+		'voiceCall.inputDeviceId': null,
+		'voiceCall.outputDeviceId': null,
+		'voiceCall.echoCancellation': true,
+		'voiceCall.noiseSuppression': true,
+		'voiceCall.autoGainControl': true,
+		'voiceCall.participantVolumes': {},
+		'voiceCall.screenShareQuality': 'sharp',
+		'voiceCall.screenShareAudio': true,
+	};
+	mocks.prefer.commit.mockReset().mockImplementation((key: string, value: unknown) => {
+		mocks.prefer.s[key] = value;
+	});
+});
+
+afterEach(async () => {
+	await leaveVoiceCall();
+});
+
+describe('voice call controller', () => {
+	test('joins a room call with the token from the server and turns the mic on', async () => {
+		await joinVoiceCall(room1);
+
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/join', { roomId: 'r1' });
+		expect(lastRoom().connect).toHaveBeenCalledWith('https://local.test/livekit', 't', { autoSubscribe: false });
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).toHaveBeenCalledWith(true, expect.objectContaining({ echoCancellation: true, noiseSuppression: true, autoGainControl: true }));
+		expect(voiceCall).toMatchObject({ status: 'connected', micEnabled: true, room: room1 });
+	});
+
+	test('stays in the call as a listener when the microphone is unavailable', async () => {
+		lk.FakeRoom.setup = room => room.localParticipant.setMicrophoneEnabled.mockRejectedValue(new DOMException('denied', 'NotAllowedError'));
+		await joinVoiceCall(room1);
+
+		expect(voiceCall).toMatchObject({ status: 'connected', micEnabled: false });
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.micUnavailable);
+	});
+
+	test('returns to idle when the call server cannot be reached', async () => {
+		lk.FakeRoom.setup = room => room.connect.mockRejectedValue(new Error('could not establish signal connection'));
+		await joinVoiceCall(room1);
+
+		expect(voiceCall).toMatchObject({ status: 'idle', room: null });
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.connectionFailed);
+	});
+
+	test('shows an enable-audio prompt when the browser blocks playback', async () => {
+		await joinVoiceCall(room1);
+		lastRoom().canPlaybackAudio = false;
+		lastRoom().emit(lk.RoomEvent.AudioPlaybackStatusChanged, false);
+		expect(voiceCall.audioBlocked).toBe(true);
+
+		await resumeAudio();
+
+		expect(lastRoom().startAudio).toHaveBeenCalled();
+		expect(voiceCall.audioBlocked).toBe(false);
+	});
+
+	test('leaves the previous call before joining another room', async () => {
+		await joinVoiceCall(room1);
+		const first = lastRoom();
+
+		await joinVoiceCall(room2);
+
+		expect(first.disconnect).toHaveBeenCalled();
+		expect(voiceCall.room).toEqual(room2);
+		expect(mocks.toast).not.toHaveBeenCalled();
+	});
+
+	test.each([
+		['DUPLICATE_IDENTITY', 'joinedFromAnotherTab'],
+		['PARTICIPANT_REMOVED', 'removedFromCall'],
+		['ROOM_DELETED', 'callEnded'],
+	] as const)('cleans up and explains a %s disconnect', async (reason, key) => {
+		await joinVoiceCall(room1);
+
+		lastRoom().emit(lk.RoomEvent.Disconnected, lk.DisconnectReason[reason]);
+
+		expect(voiceCall).toMatchObject({ status: 'idle', room: null });
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall[key]);
+	});
+
+	test('does not toast when the user leaves on purpose', async () => {
+		await joinVoiceCall(room1);
+		const room = lastRoom();
+
+		await leaveVoiceCall();
+
+		expect(room.disconnect).toHaveBeenCalled();
+		expect(voiceCall.status).toBe('idle');
+		expect(mocks.toast).not.toHaveBeenCalled();
+	});
+
+	test('deafening silences everyone and the mic, undeafening restores saved volumes', async () => {
+		mocks.prefer.s['voiceCall.participantVolumes'] = { a: 0.5 };
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const b = remoteParticipant('b');
+
+		setDeafened(true);
+		await Promise.resolve();
+
+		expect(a.setVolume).toHaveBeenLastCalledWith(0, lk.Track.Source.ScreenShareAudio);
+		expect(a.setVolume).toHaveBeenCalledWith(0, lk.Track.Source.Microphone);
+		expect(b.setVolume).toHaveBeenCalledWith(0, lk.Track.Source.Microphone);
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(false, expect.anything());
+		expect(voiceCall).toMatchObject({ deafened: true, micEnabled: false });
+
+		setDeafened(false);
+
+		expect(a.setVolume).toHaveBeenCalledWith(0.5, lk.Track.Source.Microphone);
+		expect(b.setVolume).toHaveBeenCalledWith(1, lk.Track.Source.Microphone);
+		expect(voiceCall).toMatchObject({ deafened: false, micEnabled: false });
+	});
+
+	test('subscribes to remote audio as it is published and plays it', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const publication = { source: lk.Track.Source.Microphone, kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() };
+		lastRoom().emit(lk.RoomEvent.TrackPublished, publication, a);
+		expect(publication.setSubscribed).toHaveBeenCalledWith(true);
+
+		const element = document.createElement('audio');
+		const track = { kind: lk.Track.Kind.Audio, attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, publication, a);
+		expect(document.body.contains(element)).toBe(true);
+
+		lastRoom().emit(lk.RoomEvent.TrackUnsubscribed, track, publication, a);
+		expect(document.body.contains(element)).toBe(false);
+	});
+
+	test('tracks who is speaking', async () => {
+		await joinVoiceCall(room1);
+		lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity: 'i1' }]);
+		expect(voiceCall.speakingIdentities).toEqual(['i1']);
+	});
+
+	test('reports reconnecting while the connection recovers', async () => {
+		await joinVoiceCall(room1);
+		lastRoom().emit(lk.RoomEvent.Reconnecting);
+		expect(voiceCall.status).toBe('reconnecting');
+		lastRoom().emit(lk.RoomEvent.Reconnected);
+		expect(voiceCall.status).toBe('connected');
+	});
+
+	test('reflects a mute forced by the room owner', async () => {
+		await joinVoiceCall(room1);
+		lastRoom().emit(lk.RoomEvent.TrackMuted, { source: lk.Track.Source.Microphone }, lastRoom().localParticipant);
+		expect(voiceCall.micEnabled).toBe(false);
+	});
+
+	test('turning the mic back on uses the saved input device', async () => {
+		mocks.prefer.s['voiceCall.inputDeviceId'] = 'mic-2';
+		await joinVoiceCall(room1);
+		await setMicEnabled(false);
+		await setMicEnabled(true);
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(true, expect.objectContaining({ deviceId: 'mic-2' }));
+		expect(voiceCall.micEnabled).toBe(true);
+	});
+});

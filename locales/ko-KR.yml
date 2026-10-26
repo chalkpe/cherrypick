@@ -2371,6 +2371,12 @@ _achievements:
       title: "더블🤯"
       description: "버블게임에서 가장 큰 물건 2개를 동시에 내놓았어요"
       flavor: "이 정도만　도시락통에 🤯🤯 조금만 더"
+_voiceCall:
+  micUnavailable: "마이크를 쓸 수 없습니다. 듣기는 할 수 있습니다."
+  connectionFailed: "통화 서버에 연결하지 못했습니다."
+  joinedFromAnotherTab: "다른 탭에서 통화에 참가했습니다."
+  removedFromCall: "통화에서 내보내졌습니다."
+  callEnded: "통화가 종료되었습니다."
 _role:
   new: "새 역할 생성"
   edit: "역할 편집"

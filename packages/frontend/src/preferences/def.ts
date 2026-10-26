@@ -540,6 +540,31 @@ export const PREF_DEF = definePreferences({
 		default: true,
 	},
 
+	'voiceCall.inputDeviceId': {
+		default: null as string | null,
+	},
+	'voiceCall.outputDeviceId': {
+		default: null as string | null,
+	},
+	'voiceCall.echoCancellation': {
+		default: true,
+	},
+	'voiceCall.noiseSuppression': {
+		default: true,
+	},
+	'voiceCall.autoGainControl': {
+		default: true,
+	},
+	'voiceCall.participantVolumes': {
+		default: {} as Record<string, number>,
+	},
+	'voiceCall.screenShareQuality': {
+		default: 'sharp' as 'sharp' | 'smooth' | 'high',
+	},
+	'voiceCall.screenShareAudio': {
+		default: true,
+	},
+
 	'game.dropAndFusion': {
 		default: {
 			bgmVolume: 0.25,
