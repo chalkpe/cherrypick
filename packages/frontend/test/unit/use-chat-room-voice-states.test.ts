@@ -4,8 +4,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { effectScope, nextTick, ref } from 'vue';
+import { defineComponent, effectScope, h, KeepAlive, nextTick, ref } from 'vue';
 import type { EffectScope } from 'vue';
+import { cleanup, render } from '@testing-library/vue';
 
 const mocks = vi.hoisted(() => {
 	class FakeChannel {
@@ -57,7 +58,16 @@ beforeEach(() => {
 
 afterEach(() => {
 	scope?.stop();
+	cleanup();
+	vi.useRealTimers();
+	// setVisibility で上書きした分を消し、本物 (Document.prototype) の値に戻す
+	delete (document as { visibilityState?: unknown }).visibilityState;
 });
+
+function setVisibility(state: DocumentVisibilityState) {
+	Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+	document.dispatchEvent(new Event('visibilitychange'));
+}
 
 describe('useChatRoomVoiceStates', () => {
 	test('loads voice states for the given rooms', async () => {
@@ -158,5 +168,130 @@ describe('useChatRoomVoiceStates', () => {
 		scope.stop();
 
 		expect(mocks.channel.dispose).toHaveBeenCalled();
+	});
+});
+
+// ホストのサーバーが落ちると通話の終わりは届かず、サーバー側の現況だけが寿命で消える
+describe('useChatRoomVoiceStates reconciling with the server', () => {
+	const statesCalls = () => mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/states');
+
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+	});
+
+	async function advance(ms: number) {
+		await vi.advanceTimersByTimeAsync(ms);
+		await flush();
+	}
+
+	test('drops a silent host\'s call once the server stops reporting it', async () => {
+		mocks.misskeyApi
+			.mockResolvedValueOnce([{ roomId: 'r1', participants: [p] }])
+			.mockResolvedValueOnce([{ roomId: 'r1', participants: [p] }])
+			.mockResolvedValue([]);
+		const states = use(['r1', 'r2']);
+		await flush();
+		expect(states.value.has('r1')).toBe(true);
+
+		// サーバーがまだ通話を返す間は出したまま
+		await advance(30_000);
+		expect(statesCalls()).toHaveLength(2);
+		expect(statesCalls()[1]).toEqual(['chat/rooms/voice/states', { roomIds: ['r1', 'r2'] }]);
+		expect(states.value.has('r1')).toBe(true);
+
+		// サーバー側の現況が寿命で消えたら、次の取り直しで消える
+		await advance(30_000);
+		expect(statesCalls()).toHaveLength(3);
+		expect(states.value.has('r1')).toBe(false);
+
+		// 何も出していなければもう取り直さない
+		await advance(90_000);
+		expect(statesCalls()).toHaveLength(3);
+	});
+
+	test('does not poll when no call is shown', async () => {
+		use(['r1', 'r2']);
+		await flush();
+
+		await advance(90_000);
+		expect(statesCalls()).toHaveLength(1);
+	});
+
+	test('does not poll while the page is hidden, and refreshes once when it is shown again', async () => {
+		setVisibility('hidden');
+		mocks.misskeyApi.mockResolvedValueOnce([{ roomId: 'r1', participants: [p] }]).mockResolvedValue([]);
+		const states = use(['r1']);
+		await flush();
+		expect(states.value.has('r1')).toBe(true);
+
+		await advance(90_000);
+		expect(statesCalls()).toHaveLength(1);
+
+		setVisibility('visible');
+		await flush();
+		expect(statesCalls()).toHaveLength(2);
+		expect(states.value.has('r1')).toBe(false);
+	});
+
+	test('keeps showing the call when a refresh fails', async () => {
+		mocks.misskeyApi.mockResolvedValueOnce([{ roomId: 'r1', participants: [p] }]).mockRejectedValue(new Error('network'));
+		const states = use(['r1']);
+		await flush();
+
+		await advance(30_000);
+		expect(statesCalls()).toHaveLength(2);
+		expect(states.value.has('r1')).toBe(true);
+	});
+
+	test('does not let a refresh overwrite a newer live update', async () => {
+		mocks.misskeyApi.mockResolvedValueOnce([{ roomId: 'r1', participants: [p] }]);
+		const states = use(['r1']);
+		await flush();
+
+		let resolveRefresh: (value: unknown) => void = () => {};
+		mocks.misskeyApi.mockReturnValue(new Promise(resolve => {
+			resolveRefresh = resolve;
+		}));
+		await advance(30_000);
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [] });
+		resolveRefresh([{ roomId: 'r1', participants: [p] }]);
+		await flush();
+
+		expect(states.value.has('r1')).toBe(false);
+	});
+
+	test('stops polling when the owner goes away', async () => {
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [p] }]);
+		use(['r1']);
+		await flush();
+
+		scope.stop();
+		await advance(90_000);
+		expect(statesCalls()).toHaveLength(1);
+	});
+
+	test('does not poll while the page waits in the background, and refreshes once when it comes back', async () => {
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [p] }]);
+		const shown = ref(true);
+		const Page = defineComponent({
+			setup() {
+				useChatRoomVoiceStates(ref(['r1']));
+				return () => null;
+			},
+		});
+		render(defineComponent({
+			setup: () => () => h(KeepAlive, null, [shown.value ? h(Page, { key: 'page' }) : h('div', { key: 'other' })]),
+		}));
+		await flush();
+		expect(statesCalls()).toHaveLength(1);
+
+		shown.value = false;
+		await flush();
+		await advance(90_000);
+		expect(statesCalls()).toHaveLength(1);
+
+		shown.value = true;
+		await flush();
+		expect(statesCalls()).toHaveLength(2);
 	});
 });
