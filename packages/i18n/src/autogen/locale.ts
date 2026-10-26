@@ -9280,6 +9280,132 @@ export interface Locale extends ILocale {
          * 通話が終了しました。
          */
         "callEnded": string;
+        /**
+         * 通話に参加
+         */
+        "join": string;
+        /**
+         * 通話から退出
+         */
+        "leave": string;
+        /**
+         * マイクをオフ
+         */
+        "mute": string;
+        /**
+         * マイクをオン
+         */
+        "unmute": string;
+        /**
+         * スピーカーをオフ
+         */
+        "deafen": string;
+        /**
+         * スピーカーをオン
+         */
+        "undeafen": string;
+        /**
+         * 通話中
+         */
+        "inCall": string;
+        /**
+         * 接続中…
+         */
+        "connecting": string;
+        /**
+         * 再接続中…
+         */
+        "reconnecting": string;
+        /**
+         * タップして音声を再生
+         */
+        "enableAudio": string;
+        /**
+         * ルームに戻る
+         */
+        "backToRoom": string;
+        /**
+         * 通話設定
+         */
+        "settings": string;
+        /**
+         * マイク
+         */
+        "inputDevice": string;
+        /**
+         * スピーカー
+         */
+        "outputDevice": string;
+        /**
+         * エコーキャンセル
+         */
+        "echoCancellation": string;
+        /**
+         * ノイズ抑制
+         */
+        "noiseSuppression": string;
+        /**
+         * 自動音量調整
+         */
+        "autoGainControl": string;
+        /**
+         * 通話中の人はいません
+         */
+        "noOneInCall": string;
+        /**
+         * 画面を共有
+         */
+        "shareScreen": string;
+        /**
+         * 共有を停止
+         */
+        "stopSharing": string;
+        /**
+         * 共有を見る
+         */
+        "watchStream": string;
+        /**
+         * 視聴をやめる
+         */
+        "stopWatching": string;
+        /**
+         * 画面共有中
+         */
+        "sharingScreen": string;
+        /**
+         * 音声も共有
+         */
+        "shareAudio": string;
+        /**
+         * 共有画質
+         */
+        "screenShareQuality": string;
+        /**
+         * 画面共有を開始できませんでした。
+         */
+        "screenShareFailed": string;
+        /**
+         * 全画面
+         */
+        "fullscreen": string;
+        /**
+         * ピクチャーインピクチャー
+         */
+        "pictureInPicture": string;
+        "_quality": {
+            /**
+             * くっきり (1080p 15fps)
+             */
+            "sharp": string;
+            /**
+             * なめらか (720p 30fps)
+             */
+            "smooth": string;
+            /**
+             * 高画質 (1080p 30fps)
+             */
+            "high": string;
+        };
     };
     "_role": {
         /**
