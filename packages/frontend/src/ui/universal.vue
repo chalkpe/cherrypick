@@ -17,6 +17,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<XThemePreviewing v-if="isThemePreviewMode"/>
 				<XAnnouncements v-if="$i"/>
 				<XStatusBars :class="$style.statusbars"/>
+				<!-- モバイルでは通話バーがここ (ページの上) に入る -->
+				<XVoiceCallBarSlot kind="top"/>
 			</div>
 			<StackingRouterView v-if="prefer.s['experimental.stackingRouterView']" :class="$style.content"/>
 			<RouterView v-else :class="$style.content"/>
@@ -44,6 +46,7 @@ import XReloadSuggestion from '@/ui/_common_/ReloadSuggestion.vue';
 import XThemePreviewing from '@/ui/_common_/ThemePreviewing.vue';
 import XTitlebar from '@/ui/_common_/titlebar.vue';
 import XSidebar from '@/ui/_common_/navbar.vue';
+import XVoiceCallBarSlot from '@/ui/_common_/voice-call-bar-slot.vue';
 import { isPreviewMode as isThemePreviewMode } from '@/theme.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';

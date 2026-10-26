@@ -4,7 +4,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="voiceCall.room != null" :class="$style.root" class="_panel _shadow" role="region" :aria-label="i18n.ts._voiceCall.inCall">
+<!-- PC ではチャットの入力欄へ、モバイルでは画面上端へ移す。どちらも無ければその場 (画面下に浮かせる) に出す -->
+<Teleport :to="placement.target" :disabled="placement.target == null">
+<div
+	v-if="voiceCall.room != null"
+	:class="[$style.root, $style[placement.variant], { _panel: floating, _shadow: floating }]"
+	:style="floating ? { zIndex } : undefined"
+	role="region" :aria-label="i18n.ts._voiceCall.inCall"
+>
 	<MkA :to="`/chat/room/${voiceCall.room.id}`" :class="$style.room" :title="i18n.ts._voiceCall.backToRoom">
 		<i class="ti ti-volume" :class="$style.roomIcon"></i>
 		<div :class="$style.roomText">
@@ -62,6 +69,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</button>
 	</div>
 </div>
+</Teleport>
 </template>
 
 <script lang="ts" setup>
@@ -72,8 +80,11 @@ import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
 import { $i } from '@/i.js';
 import { activeAudioDeviceId, canShareScreen, leaveVoiceCall, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
+import { voiceCallBarPlacement as placement } from '@/utility/voice-call-placement.js';
 
 const zIndex = os.claimZIndex('middle');
+
+const floating = computed(() => placement.value.variant === 'floating');
 
 const screenShareAvailable = computed(() => canShareScreen() && $i?.policies.canScreenShare === true);
 
@@ -161,17 +172,42 @@ function openSettings(ev: MouseEvent) {
 
 <style lang="scss" module>
 .root {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+// どこにも収まらないときは画面下中央に浮かせる
+.floating {
 	position: fixed;
-	z-index: v-bind(zIndex);
 	left: 50%;
 	bottom: calc(var(--MI-minBottomSpacing) + var(--MI-margin));
 	transform: translateX(-50%);
-	display: flex;
-	align-items: center;
 	flex-wrap: wrap;
-	gap: 8px;
 	max-width: calc(100% - (var(--MI-margin) * 2));
 	padding: 8px 10px;
+}
+
+// PC: チャットの入力欄の下、絵文字ボタンと送信ボタンの間に 1 行で収める
+.docked {
+	flex: 1;
+	min-width: 0;
+	box-sizing: border-box;
+	height: 38px;
+	padding: 0 4px 0 10px;
+	gap: 6px;
+	overflow: hidden; // 極端に狭くても送信ボタンに重ならないようにする
+	border-radius: 999px;
+	background: var(--MI_THEME-panelHighlight);
+}
+
+// モバイル: 画面上端に全幅で置き、ページの中身を下へ押し下げる
+.top {
+	box-sizing: border-box;
+	width: 100%;
+	padding: 6px 10px;
+	background: var(--MI_THEME-panel);
+	border-bottom: solid 0.5px var(--MI_THEME-divider);
 }
 
 .room {
@@ -181,14 +217,24 @@ function openSettings(ev: MouseEvent) {
 	min-width: 0;
 	color: inherit;
 	text-decoration: none;
+
+	.docked &,
+	.top & {
+		flex: 1;
+	}
 }
 
 .roomIcon {
+	flex-shrink: 0;
 	color: var(--MI_THEME-accent);
 }
 
 .roomText {
 	min-width: 0;
+
+	.docked & {
+		line-height: 1.25;
+	}
 }
 
 .roomName {
@@ -197,21 +243,47 @@ function openSettings(ev: MouseEvent) {
 	white-space: nowrap;
 	font-weight: bold;
 	font-size: 0.9em;
+
+	.docked & {
+		font-size: 0.85em;
+	}
 }
 
 .status {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-size: 0.8em;
 	opacity: 0.7;
+
+	.docked & {
+		font-size: 0.75em;
+	}
 }
 
 .enableAudio {
 	padding: 6px 12px;
 	border-radius: 999px;
 	font-size: 0.85em;
+
+	// 1 行に収める見た目では、狭いときに文言を省略してボタンを押し出さないようにする
+	.docked &,
+	.top & {
+		flex-shrink: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.docked & {
+		padding: 4px 10px;
+	}
 }
 
 .actions {
 	display: flex;
+	flex-shrink: 0;
 	align-items: center;
 	gap: 4px;
 }
@@ -223,6 +295,16 @@ function openSettings(ev: MouseEvent) {
 	height: 34px;
 	border-radius: 100%;
 	background: var(--MI_THEME-buttonBg);
+
+	.docked & {
+		width: 30px;
+		height: 30px;
+	}
+
+	.top & {
+		width: 32px;
+		height: 32px;
+	}
 
 	&:hover {
 		background: var(--MI_THEME-buttonHoverBg);
