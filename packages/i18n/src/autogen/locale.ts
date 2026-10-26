@@ -8291,6 +8291,22 @@ export interface Locale extends ILocale {
          */
         "enableRemoteVoiceCallDescription": string;
         /**
+         * Cloudflare TURN
+         */
+        "voiceCallCloudflareTurn": string;
+        /**
+         * LiveKitがNATやファイアウォールの内側にあるときに使います。このサーバーが通話の参加者（他のサーバーのユーザーを含む）に短時間だけ有効なTURNの資格情報を渡します。TURNを経由した通信はCloudflareのアカウントに課金されます。
+         */
+        "voiceCallCloudflareTurnDescription": string;
+        /**
+         * TURNキーID
+         */
+        "voiceCallCloudflareTurnKeyId": string;
+        /**
+         * APIトークン
+         */
+        "voiceCallCloudflareTurnApiToken": string;
+        /**
          * 非利用者に対するユーザー作成コンテンツの公開範囲
          */
         "userGeneratedContentsVisibilityForVisitor": string;

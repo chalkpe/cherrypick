@@ -155,6 +155,33 @@ describe('voice call controller', () => {
 		expect(voiceCall).toMatchObject({ status: 'connected', micEnabled: true, room: room1 });
 	});
 
+	test('connects through the TURN servers the server hands out', async () => {
+		const iceServers = [
+			{ urls: ['stun:stun.cloudflare.com:3478'] },
+			{ urls: ['turn:turn.cloudflare.com:3478?transport=udp'], username: 'u', credential: 'c' },
+		];
+		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', iceServers });
+
+		await joinVoiceCall(room1);
+
+		expect(lastRoom().connect).toHaveBeenCalledWith('https://local.test/livekit', 't', { autoSubscribe: false, rtcConfig: { iceServers } });
+		expect(voiceCall).toMatchObject({ status: 'connected' });
+	});
+
+	test.each([
+		['null', null],
+		['an empty list', []],
+		['nothing (an older server)', undefined],
+	])('leaves the ICE servers to LiveKit when the server hands out %s', async (_label, iceServers) => {
+		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', iceServers });
+
+		await joinVoiceCall(room1);
+
+		const options = lastRoom().connect.mock.calls[0][2];
+		expect(options).toEqual({ autoSubscribe: false });
+		expect(options).not.toHaveProperty('rtcConfig');
+	});
+
 	test('stays in the call as a listener when the microphone is unavailable', async () => {
 		lk.FakeRoom.setup = room => room.localParticipant.setMicrophoneEnabled.mockRejectedValue(new DOMException('denied', 'NotAllowedError'));
 		await joinVoiceCall(room1);

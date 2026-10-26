@@ -6,7 +6,7 @@
 import { reactive, readonly } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { url } from '@@/js/config.js';
-import type { AudioCaptureOptions, DisconnectReason, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, TrackPublication, VideoPreset } from 'livekit-client';
+import type { AudioCaptureOptions, DisconnectReason, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomConnectOptions, TrackPublication, VideoPreset } from 'livekit-client';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
@@ -57,7 +57,7 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom): Promise<vo
 	state.status = 'connecting';
 	state.room = room;
 
-	let credentials: { url: string; token: string };
+	let credentials: Misskey.entities.ChatRoomsVoiceJoinResponse;
 	let lk: LiveKit;
 	try {
 		[credentials, lk] = await Promise.all([
@@ -74,8 +74,14 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom): Promise<vo
 	current = lkRoom;
 	bindRoomEvents(lk, lkRoom);
 
+	// サーバーが TURN を渡したら、LiveKit が渡す ICE サーバーの代わりにそれを使う (LiveKit が NAT の内側にあってもつながる)
+	const iceServers = credentials.iceServers;
+	const connectOptions: RoomConnectOptions = iceServers != null && iceServers.length > 0
+		? { autoSubscribe: false, rtcConfig: { iceServers } }
+		: { autoSubscribe: false };
+
 	try {
-		await lkRoom.connect(credentials.url, credentials.token, { autoSubscribe: false });
+		await lkRoom.connect(credentials.url, credentials.token, connectOptions);
 	} catch {
 		if (current === lkRoom) {
 			current = null;
