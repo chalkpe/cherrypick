@@ -6,6 +6,7 @@
 import { describe, test, beforeAll, vi } from 'vitest';
 import { rejects, strictEqual } from 'node:assert';
 import * as Misskey from 'cherrypick-js';
+import { Redis } from 'ioredis';
 import { createAccount, type LoginUser, resolveRemoteUser, WAIT_FOR_FEDERATION } from './utils.js';
 
 /**
@@ -13,6 +14,25 @@ import { createAccount, type LoginUser, resolveRemoteUser, WAIT_FOR_FEDERATION }
  * b.test には LiveKit が無いので、b.test の /livekit/* は 404 を返す
  */
 describe('Voice call', () => {
+	/**
+	 * 通話に対応していないと分かったホストは、各サーバーが Redis (redis.test を a.test と b.test で共有) に 1 時間覚えておく
+	 * (`<サーバーのホスト>:chatVoice:unsupportedHost:<相手のホスト>`)。
+	 * 前の実行 (a.test に LiveKit が無かったときなど) の記録が残っていると、トークンを取りに行かずに断ってしまうので、毎回消してから始める
+	 */
+	beforeAll(async () => {
+		const redis = new Redis({ host: 'redis.test', port: 6379 });
+		try {
+			let cursor = '0';
+			do {
+				const [next, keys] = await redis.scan(cursor, 'MATCH', '*:chatVoice:unsupportedHost:*', 'COUNT', 100);
+				if (keys.length > 0) await redis.del(...keys);
+				cursor = next;
+			} while (cursor !== '0');
+		} finally {
+			redis.disconnect();
+		}
+	});
+
 	/** LiveKit のトークン (JWT) の中身を、署名を確かめずに読む */
 	function decodeToken(token: string): { sub?: unknown; video?: { room?: unknown } } {
 		const payload = token.split('.')[1];
@@ -97,7 +117,9 @@ describe('Voice call', () => {
 			room = await createRoomWithRemoteMember(carol, dave, daveInB);
 		});
 
-		test('b.test reports REMOTE_HOST_UNSUPPORTED for a room on a server without LiveKit', async () => {
+		test('a.test reports REMOTE_HOST_UNSUPPORTED for a room hosted on b.test, which has no LiveKit', async () => {
+			// a.test は dave の鍵で署名して b.test の /livekit/federation/token にトークンを求める。
+			// b.test には LiveKit が無いので 404 が返り、a.test はそれを REMOTE_HOST_UNSUPPORTED として dave に返す
 			await rejects(
 				async () => await dave.client.request('chat/rooms/voice/join', { roomId: room.id }),
 				(err: any) => {

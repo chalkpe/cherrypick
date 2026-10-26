@@ -1,5 +1,6 @@
 #!/bin/bash
 mkdir -p certificates
+new_root_ca=
 
 # rootCA
 # 既にあれば作り直さない (作り直したら、それで署名する各ドメインの証明書も作り直す)

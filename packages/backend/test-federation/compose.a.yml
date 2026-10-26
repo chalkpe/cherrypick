@@ -48,6 +48,7 @@ services:
   livekit.a.test:
     image: livekit/livekit-server:v1.13.10
     environment:
+      # テスト専用の鍵。外に出ない内部ネットワークでだけ使う
       LIVEKIT_CONFIG: |
         port: 7880
         keys:
