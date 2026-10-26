@@ -185,6 +185,40 @@ export class ApRequestService {
 	}
 
 	/**
+	 * 署名付きで POST し、2xx の JSON 応答本文を返す。2xx 以外は StatusError を投げる。
+	 * @param user http-signature user
+	 * @param url URL to post
+	 * @param object body
+	 * @param timeout ms
+	 */
+	@bindThis
+	public async signedPostJson(user: { id: MiUser['id'] }, url: string, object: unknown, timeout: number): Promise<unknown> {
+		const body = JSON.stringify(object);
+
+		const keypair = await this.userKeypairService.getUserKeypair(user.id);
+
+		const req = await ApRequestCreator.createSignedPost({
+			key: {
+				privateKeyPem: keypair.privateKey,
+				keyId: `${this.config.url}/users/${user.id}#main-key`,
+			},
+			url,
+			body,
+			additionalHeaders: {
+			},
+		});
+
+		const res = await this.httpRequestService.send(url, {
+			method: req.request.method,
+			headers: req.request.headers,
+			body,
+			timeout,
+		});
+
+		return await res.json();
+	}
+
+	/**
 	 * Get AP object with http-signature
 	 * @param user http-signature user
 	 * @param url URL to fetch
