@@ -109,7 +109,7 @@ describe('XMessage in a group', () => {
 	test('drops the footer before the last bubble and the avatar after the first one', () => {
 		preferState['chat.showSenderName'] = true;
 
-		const head = renderMessage({ groupPosition: { first: true, last: false } });
+		const head = renderMessage({ firstInGroup: true, lastInGroup: false });
 		expect(head.queryByTestId('avatar')).not.toBeNull();
 		expect(head.queryByTestId('name')).not.toBeNull();
 		expect(head.container.querySelector('svg')).not.toBeNull();
@@ -117,7 +117,7 @@ describe('XMessage in a group', () => {
 		expect(head.container.querySelector('.ti-dots-circle-horizontal')).toBeNull();
 		head.unmount();
 
-		const tail = renderMessage({ groupPosition: { first: false, last: true } });
+		const tail = renderMessage({ firstInGroup: false, lastInGroup: true });
 		expect(tail.queryByTestId('avatar')).toBeNull();
 		expect(tail.queryByTestId('name')).toBeNull();
 		expect(tail.container.querySelector('svg')).toBeNull();
@@ -125,8 +125,14 @@ describe('XMessage in a group', () => {
 		expect(tail.container.querySelector('.ti-dots-circle-horizontal')).not.toBeNull();
 	});
 
+	test('shows the avatar and footer when no place in a group is given', () => {
+		const single = renderMessage({});
+		expect(single.queryByTestId('avatar')).not.toBeNull();
+		expect(single.queryByTestId('time')).not.toBeNull();
+	});
+
 	test('keeps the avatar and footer on search results', () => {
-		const result = renderMessage({ groupPosition: { first: false, last: false }, isSearchResult: true });
+		const result = renderMessage({ firstInGroup: false, lastInGroup: false, isSearchResult: true });
 		expect(result.queryByTestId('avatar')).not.toBeNull();
 		expect(result.queryByTestId('time')).not.toBeNull();
 	});

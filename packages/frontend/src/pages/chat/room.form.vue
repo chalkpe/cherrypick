@@ -355,12 +355,12 @@ onBeforeUnmount(() => {
 	}
 }
 
+// 通話バーはこの幅いっぱいを使う。両隣のボタンはアイコンの周りに余白があるので、ここには余白を取らない
 .voiceCall {
 	display: flex;
 	flex: 1;
 	align-items: center;
 	min-width: 0;
-	padding: 0 4px;
 }
 
 .send {

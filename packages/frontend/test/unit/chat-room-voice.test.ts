@@ -274,9 +274,15 @@ describe('room voice panel', () => {
 describe('voice call on the room page', () => {
 	const pageStubs = {
 		...stubs,
+		// 本物の MkPageHeader / CPPageHeader と同じく、アクションは action.text をラベルにしたアイコンのボタンで出し、タブで v-model:tab を切り替える
 		PageWithHeader: {
-			props: ['actions'],
-			template: '<div><div data-testid="header-actions"><button v-for="action in actions" :key="action.icon" :data-icon="action.icon" :aria-label="action.text" @click="action.handler($event)"></button></div><slot /></div>',
+			props: ['actions', 'tabs', 'tab'],
+			emits: ['update:tab'],
+			template: `<div>
+				<div role="tablist"><button v-for="t in tabs" :key="t.key" role="tab" :aria-selected="t.key === tab" @click="$emit('update:tab', t.key)">{{ t.title }}</button></div>
+				<div data-testid="header-actions"><button v-for="action in actions" class="_button" :aria-label="action.text" @click.stop="action.handler"><i :class="action.icon"></i></button></div>
+				<slot />
+			</div>`,
 		},
 		// カードが MkStickyContainer のヘッダーに置かれているか (= スクロールしても上に貼り付くか) を見る
 		MkStickyContainer: { template: '<div><div data-testid="sticky-header"><slot name="header" /></div><slot /></div>' },
@@ -300,7 +306,13 @@ describe('voice call on the room page', () => {
 		await flush();
 	}
 
-	const headerIcons = () => [...screen.getByTestId('header-actions').querySelectorAll('button')].map(el => el.getAttribute('data-icon'));
+	const headerIcons = () => [...screen.getByTestId('header-actions').querySelectorAll('button')].map(el => el.querySelector('i')!.className);
+
+	async function openTab(title: string) {
+		await fireEvent.click(screen.getByRole('tab', { name: title }));
+		await flush();
+	}
+
 	const headerJoin = () => within(screen.getByTestId('header-actions')).queryByLabelText(i18n.ts._voiceCall.join);
 	const stickyCard = () => within(screen.getByTestId('sticky-header'));
 
@@ -342,6 +354,32 @@ describe('voice call on the room page', () => {
 
 		expect(headerIcons()).toEqual(['ti ti-dots']);
 		expect(stickyCard().getByText(i18n.ts._voiceCall.join)).toBeTruthy();
+	});
+
+	test('offers the header join on the other tabs whenever I am not in the call', async () => {
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+		// メッセージのタブでは通話カードから参加できるので、ヘッダーには出さない
+		expect(headerIcons()).toEqual(['ti ti-dots']);
+
+		for (const title of [i18n.ts._chat.members, i18n.ts.search, i18n.ts.info]) {
+			await openTab(title);
+			expect(headerIcons()).toEqual(['ti ti-phone', 'ti ti-dots']);
+		}
+
+		await fireEvent.click(headerJoin()!);
+		await flush();
+		expect(mocks.joinVoiceCall).toHaveBeenCalledWith(room);
+
+		await openTab(i18n.ts._chat.messages);
+		expect(headerIcons()).toEqual(['ti ti-dots']);
+	});
+
+	test('does not offer the header join on the other tabs while I am in the call', async () => {
+		Object.assign(callState, { status: 'connected', room, micEnabled: true });
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+
+		await openTab(i18n.ts._chat.members);
+		expect(headerIcons()).toEqual(['ti ti-dots']);
 	});
 
 	test('does not offer a header join where calls are not available', async () => {
@@ -426,8 +464,9 @@ describe('screen share viewer', () => {
 });
 
 describe('participant chip', () => {
-	// 話している人はチップ全体 (アバターと名前を包む外側) の枠で示す
-	test.each([true, false])('marks the whole chip when speaking is %s', async speaking => {
+	// 話している人はチップ全体 (アバターと名前を包む外側) の枠で示すので、speaking のクラスはチップの一番外側に付く。
+	// 枠そのものは CSS なので、ここでは見られない
+	test.each([true, false])('has the speaking class on the chip root: %s', async speaking => {
 		const { container } = render(XParticipant, { props: { participant: participant(alice), speaking }, global: { stubs } });
 		await flush();
 

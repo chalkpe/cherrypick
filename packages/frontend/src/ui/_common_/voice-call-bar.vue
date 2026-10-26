@@ -12,12 +12,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 	:style="floating ? { zIndex } : undefined"
 	role="region" :aria-label="i18n.ts._voiceCall.inCall"
 >
+	<!-- 通話中のルームの名前は出さず、状態 (通話中・接続中など) だけを出す -->
 	<MkA :to="`/chat/room/${voiceCall.room.id}`" :class="$style.room" :title="i18n.ts._voiceCall.backToRoom">
 		<i class="ti ti-volume" :class="$style.roomIcon"></i>
-		<div :class="$style.roomText">
-			<div :class="$style.roomName">{{ voiceCall.room.name }}</div>
-			<div :class="$style.status" aria-live="polite">{{ statusText }}</div>
-		</div>
+		<span :class="$style.status" aria-live="polite">{{ statusText }}</span>
 	</MkA>
 	<button v-if="voiceCall.audioBlocked" class="_buttonPrimary" :class="$style.enableAudio" @click="resumeAudio()">
 		{{ i18n.ts._voiceCall.enableAudio }}
@@ -193,12 +191,32 @@ function openSettings(ev: MouseEvent) {
 	flex: 1;
 	min-width: 0;
 	box-sizing: border-box;
-	height: 38px;
-	padding: 0 4px 0 10px;
+	height: 34px;
+	padding: 0 3px 0 10px;
 	gap: 6px;
+	// 収まりきらないときは左側からはみ出させる。退出ボタンは右端にあるので最後まで切れない
+	justify-content: flex-end;
 	overflow: hidden; // 極端に狭くても送信ボタンに重ならないようにする
 	border-radius: 999px;
 	background: var(--MI_THEME-panelHighlight);
+}
+
+// 入力欄では差し込み先 (voice-call-bar-slot.vue) の幅に合わせて詰める。狭くなるとまず文言を、次にアイコンを隠してボタンだけにする。
+// ボタンも収まらない幅では入力欄に置かない (voice-call-placement.ts の MIN_DOCKED_SLOT_WIDTH)
+@container (max-width: 259px) {
+	.docked .status {
+		display: none;
+	}
+}
+
+@container (max-width: 199px) {
+	.docked {
+		padding-left: 3px;
+	}
+
+	.docked .room {
+		display: none;
+	}
 }
 
 // モバイル: 画面上端に全幅で置き、ページの中身を下へ押し下げる
@@ -222,6 +240,11 @@ function openSettings(ev: MouseEvent) {
 	.top & {
 		flex: 1;
 	}
+
+	// 狭いときはボタンより先に縮む
+	.docked & {
+		overflow: hidden;
+	}
 }
 
 .roomIcon {
@@ -229,15 +252,8 @@ function openSettings(ev: MouseEvent) {
 	color: var(--MI_THEME-accent);
 }
 
-.roomText {
+.status {
 	min-width: 0;
-
-	.docked & {
-		line-height: 1.25;
-	}
-}
-
-.roomName {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -246,18 +262,6 @@ function openSettings(ev: MouseEvent) {
 
 	.docked & {
 		font-size: 0.85em;
-	}
-}
-
-.status {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	font-size: 0.8em;
-	opacity: 0.7;
-
-	.docked & {
-		font-size: 0.75em;
 	}
 }
 
@@ -296,9 +300,10 @@ function openSettings(ev: MouseEvent) {
 	border-radius: 100%;
 	background: var(--MI_THEME-buttonBg);
 
+	// 幅は voice-call-placement.ts の MIN_DOCKED_SLOT_WIDTH と合わせる
 	.docked & {
-		width: 30px;
-		height: 30px;
+		width: 28px;
+		height: 28px;
 	}
 
 	.top & {

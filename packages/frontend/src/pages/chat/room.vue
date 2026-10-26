@@ -44,12 +44,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 					tag="div" class="_gaps"
 				>
 					<template v-for="(item, i) in displayTimeline" :key="item.id">
-						<XMessage
-							v-if="item.type === 'item'"
-							:message="item.data"
-							:groupPosition="groupPositions[i]"
-							:class="{ [$style.stackedMessage]: groupPositions[i]?.first === false }"
-						/>
+						<!-- TransitionGroup は直下の子コンポーネントを毎回描き直させるので、吹き出しは要素で包む。
+						こうすると新着が来ても、まとまりの位置 (真偽値) が変わった吹き出しだけが描き直される -->
+						<div v-if="item.type === 'item'" :class="{ [$style.stackedMessage]: groupPositions[i]?.first === false }">
+							<XMessage
+								:message="item.data"
+								:firstInGroup="groupPositions[i]?.first ?? true"
+								:lastInGroup="groupPositions[i]?.last ?? true"
+							/>
+						</div>
 						<div v-else-if="item.type === 'date'" :class="$style.dateDivider">
 							<span><i class="ti ti-chevron-up"></i> {{ item.nextText }}</span>
 							<span style="height: 1em; width: 1px; background: var(--MI_THEME-divider);"></span>
@@ -484,9 +487,15 @@ const headerTabs = computed(() => room.value ? [{
 	icon: 'ti ti-search',
 }]);
 
+// ヘッダーの参加ボタン。メッセージのタブでは通話カード (誰かが通話にいるときだけ出る) から参加できるので、カードが無いときだけ出す。
+// ほかのタブにはカードが無いので、自分が通話にいなければいつでも出す
+const showHeaderJoin = computed(() => {
+	if (!voiceCallState.available.value || voiceCallState.inThisCall.value) return false;
+	return tab.value !== 'chat' || !voiceCallState.showCard.value;
+});
+
 const headerActions = computed<PageHeaderItem[]>(() => [
-	// 通話に誰もいないときは通話カードを出さないので、代わりにヘッダーから参加できるようにする
-	...(voiceCallState.available.value && !voiceCallState.showCard.value ? [{
+	...(showHeaderJoin.value ? [{
 		icon: 'ti ti-phone',
 		text: i18n.ts._voiceCall.join,
 		handler: () => {

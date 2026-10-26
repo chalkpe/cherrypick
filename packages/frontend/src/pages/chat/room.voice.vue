@@ -134,6 +134,9 @@ function openMenu(participant: Participant, ev: MouseEvent) {
 	margin-top: -8px;
 	padding: 8px 0 var(--MI-margin);
 	background: var(--MI_THEME-bg);
+	// 貼り付く位置はヘッダーの高さを整数に丸めて決まるので、ヘッダーとの間に 1px 未満の隙間ができることがある。
+	// 上へ 1px 背景色を伸ばして、その隙間からメッセージが見えないようにする
+	box-shadow: 0 -1px 0 var(--MI_THEME-bg);
 }
 
 .card {
@@ -197,5 +200,11 @@ function openMenu(participant: Participant, ev: MouseEvent) {
 
 .screen {
 	margin-top: 10px;
+
+	// カードはメッセージの上に貼り付いたままになるので、共有画面を見ながらでもチャットが読めるよう低めに抑える。
+	// 全画面にしたときは抑えない
+	&:not(:fullscreen) {
+		--voiceCallScreenMaxHeight: 35vh;
+	}
 }
 </style>

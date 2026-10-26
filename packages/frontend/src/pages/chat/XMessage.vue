@@ -62,7 +62,6 @@ import { url } from '@@/js/config.js';
 import { isLink } from '@@/js/is-link.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { NormalizedChatMessage } from './room.vue';
-import type { ChatMessageGroupPosition } from '@/utility/chat-message-grouping.js';
 import { extractUrlFromMfm } from '@/utility/extract-url-from-mfm.js';
 import MkUrlPreview from '@/components/MkUrlPreview.vue';
 import { ensureSignin } from '@/i.js';
@@ -81,17 +80,22 @@ import { getHTMLElementOrNull } from '@/utility/get-dom-node-or-null.js';
 
 const $i = ensureSignin();
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
 	message: NormalizedChatMessage | Misskey.entities.ChatMessage;
 	isSearchResult?: boolean;
-	// 同じ送信者が続けて送ったメッセージのまとまりの中での位置。省略すると単独のメッセージとして表示する
-	groupPosition?: ChatMessageGroupPosition | null;
-}>();
+	// 同じ送信者が続けて送ったメッセージのまとまりの中での位置。省略すると単独のメッセージとして表示する。
+	// 新着のたびに全部の吹き出しを描き直さないよう、オブジェクトではなく真偽値で受け取る
+	firstInGroup?: boolean;
+	lastInGroup?: boolean;
+}>(), {
+	firstInGroup: true,
+	lastInGroup: true,
+});
 
 const isMe = computed(() => props.message.fromUserId === $i.id);
 // 検索結果は前後のメッセージと関係なく並ぶのでまとめない
-const isFirstInGroup = computed(() => props.isSearchResult === true || props.groupPosition == null || props.groupPosition.first);
-const isLastInGroup = computed(() => props.isSearchResult === true || props.groupPosition == null || props.groupPosition.last);
+const isFirstInGroup = computed(() => props.isSearchResult === true || props.firstInGroup);
+const isLastInGroup = computed(() => props.isSearchResult === true || props.lastInGroup);
 const urls = computed(() => props.message.text ? extractUrlFromMfm(mfm.parse(props.message.text)) : []);
 
 provide(DI.mfmEmojiReactCallback, (reaction) => {

@@ -83,7 +83,8 @@ function requestPictureInPicture() {
 .video {
 	display: block;
 	width: 100%;
-	max-height: 70vh;
+	// 置き場所に合わせて高さの上限を変えられるようにする
+	max-height: var(--voiceCallScreenMaxHeight, 70vh);
 	object-fit: contain;
 }
 

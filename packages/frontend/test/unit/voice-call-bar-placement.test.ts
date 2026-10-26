@@ -4,8 +4,29 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/vue';
+import { cleanup, render, screen, within } from '@testing-library/vue';
 import { defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
+
+// 入力欄の差し込み先の幅は ResizeObserver で測るので、テストから幅を決められるものに差し替える
+const resizeObservers = vi.hoisted(() => new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>());
+vi.stubGlobal('ResizeObserver', class {
+	callback: ResizeObserverCallback;
+	targets = new Set<Element>();
+	constructor(callback: ResizeObserverCallback) {
+		this.callback = callback;
+		resizeObservers.add(this);
+	}
+	observe(el: Element) {
+		this.targets.add(el);
+	}
+	unobserve(el: Element) {
+		this.targets.delete(el);
+	}
+	disconnect() {
+		this.targets.clear();
+		resizeObservers.delete(this);
+	}
+});
 
 vi.mock('@/os.js', () => ({ popupMenu: vi.fn(), claimZIndex: () => 1000, alert: vi.fn(), launchUploader: vi.fn() }));
 vi.mock('@/preferences.js', async () => ({
@@ -62,6 +83,15 @@ async function setWidth(width: number) {
 
 const bar = () => screen.getByRole('region', { name: i18n.ts._voiceCall.inCall });
 const variantOf = (el: Element) => [...el.classList].find(name => /docked|top|floating/.test(name));
+// 入力欄の絵文字ボタンと送信ボタンの間にある差し込み先
+const chatFormSlot = (container: Element) => container.querySelector('.ti-mood-happy')!.closest('button')!.nextElementSibling!;
+
+async function resizeElement(el: Element, width: number) {
+	for (const observer of resizeObservers) {
+		if (observer.targets.has(el)) observer.callback([{ target: el, contentRect: { width } } as unknown as ResizeObserverEntry], observer as unknown as ResizeObserver);
+	}
+	await flush();
+}
 
 // 通話バーは common.vue に 1 つだけ置かれ、レイアウトの上端とチャットの入力欄にそれぞれ差し込み先がある
 function renderApp(options: { form?: ReturnType<typeof ref<boolean>> } = {}) {
@@ -152,6 +182,51 @@ describe('voice call bar placement', () => {
 		expect(container.querySelector('footer')!.contains(bar())).toBe(false);
 		expect(variantOf(bar())).toMatch(/top/);
 		expect(screen.getAllByRole('region')).toHaveLength(1);
+	});
+
+	test('shows only the call status and no room name, wherever it is placed', async () => {
+		const { form } = renderApp();
+		await flush();
+		expect(variantOf(bar())).toMatch(/docked/);
+		expect(within(bar()).getByText(i18n.ts._voiceCall.inCall)).toBeTruthy();
+		expect(within(bar()).queryByText(room.name)).toBeNull();
+
+		form.value = false;
+		await flush();
+		expect(variantOf(bar())).toMatch(/floating/);
+		expect(within(bar()).getByText(i18n.ts._voiceCall.inCall)).toBeTruthy();
+		expect(within(bar()).queryByText(room.name)).toBeNull();
+
+		await setWidth(400);
+		expect(variantOf(bar())).toMatch(/top/);
+		expect(within(bar()).getByText(i18n.ts._voiceCall.inCall)).toBeTruthy();
+		expect(within(bar()).queryByText(room.name)).toBeNull();
+	});
+
+	test('floats when the chat form leaves too little room for the buttons', async () => {
+		const { container } = renderApp();
+		await flush();
+		const slot = chatFormSlot(container);
+		expect(slot.contains(bar())).toBe(true);
+
+		await resizeElement(slot, 100);
+		expect(variantOf(bar())).toMatch(/floating/);
+		expect(slot.contains(bar())).toBe(false);
+		expect(screen.getAllByRole('region')).toHaveLength(1);
+
+		await resizeElement(slot, 300);
+		expect(variantOf(bar())).toMatch(/docked/);
+		expect(slot.contains(bar())).toBe(true);
+	});
+
+	test('docks in a 330px deck column, whose form leaves 180px between its buttons', async () => {
+		const { container } = renderApp();
+		await flush();
+		const slot = chatFormSlot(container);
+
+		await resizeElement(slot, 330 - 3 * 50);
+		expect(variantOf(bar())).toMatch(/docked/);
+		expect(slot.contains(bar())).toBe(true);
 	});
 
 	test('moves between the chat form and the top as the window is resized', async () => {
