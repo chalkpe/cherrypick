@@ -30,6 +30,7 @@ import { CustomEmojiService } from '@/core/CustomEmojiService.js';
 import { extractCustomEmojisFromMfm } from '@/misc/extract-custom-emojis-from-mfm.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
+import { LiveKitService } from '@/core/LiveKitService.js';
 import { emojiRegex } from '@/misc/emoji-regex.js';
 
 export class ChatMessageAccessError extends Error {}
@@ -99,6 +100,7 @@ export class ChatService {
 		private userFollowingService: UserFollowingService,
 		private customEmojiService: CustomEmojiService,
 		private moderationLogService: ModerationLogService,
+		private liveKitService: LiveKitService,
 	) {
 	}
 
@@ -695,6 +697,9 @@ export class ChatService {
 
 		await this.chatRoomsRepository.delete(room.id);
 
+		// ルームが消えたら通話も終了する。LiveKit が落ちていても削除自体は成功させる
+		this.liveKitService.deleteRoom(room.id).catch(() => {});
+
 		if (deleter) {
 			const deleterIsModerator = await this.roleService.isModerator(deleter);
 
@@ -1004,6 +1009,9 @@ export class ChatService {
 		const leavingUser = await this.usersRepository.findOneByOrFail({ id: userId });
 
 		await this.chatRoomMembershipsRepository.delete(membership.id);
+
+		// ルームを抜けたら通話からも外す。LiveKit が落ちていても退出自体は成功させる
+		this.liveKitService.removeParticipant(roomId, this.liveKitService.identityOf(leavingUser)).catch(() => {});
 
 		// 未読フラグを消す (「既読にする」というわけでもないのでreadメソッドは使わないでおく)
 		const redisPipeline = this.redisClient.pipeline();

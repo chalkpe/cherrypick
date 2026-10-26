@@ -1302,6 +1302,24 @@ type ChatRoomsUpdateRequest = operations['chat___rooms___update']['requestBody']
 type ChatRoomsUpdateResponse = operations['chat___rooms___update']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type ChatRoomsVoiceJoinRequest = operations['chat___rooms___voice___join']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsVoiceJoinResponse = operations['chat___rooms___voice___join']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsVoiceKickRequest = operations['chat___rooms___voice___kick']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsVoiceMuteRequest = operations['chat___rooms___voice___mute']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsVoiceStatesRequest = operations['chat___rooms___voice___states']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsVoiceStatesResponse = operations['chat___rooms___voice___states']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type ChatRoomVoiceState = components['schemas']['ChatRoomVoiceState'];
 
 // @public (undocumented)
@@ -1918,6 +1936,12 @@ declare namespace entities {
         ChatRoomsShowResponse,
         ChatRoomsUpdateRequest,
         ChatRoomsUpdateResponse,
+        ChatRoomsVoiceJoinRequest,
+        ChatRoomsVoiceJoinResponse,
+        ChatRoomsVoiceKickRequest,
+        ChatRoomsVoiceMuteRequest,
+        ChatRoomsVoiceStatesRequest,
+        ChatRoomsVoiceStatesResponse,
         ClipsAddNoteRequest,
         ClipsCreateRequest,
         ClipsCreateResponse,
