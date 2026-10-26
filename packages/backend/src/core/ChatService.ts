@@ -34,7 +34,7 @@ import { emojiRegex } from '@/misc/emoji-regex.js';
 
 export class ChatMessageAccessError extends Error {}
 
-const MAX_ROOM_MEMBERS = 50;
+export const MAX_ROOM_MEMBERS = 50;
 const MAX_REACTIONS_PER_MESSAGE = 100;
 const isCustomEmojiRegexp = /^:([\w+-]+)(?:@\.)?:$/;
 

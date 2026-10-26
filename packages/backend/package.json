@@ -110,6 +110,7 @@
 		"json5": "2.2.3",
 		"jsonld": "9.0.0",
 		"juice": "12.2.0",
+		"livekit-server-sdk": "2.19.1",
 		"megalodon": "workspace:*",
 		"meilisearch": "0.62.0",
 		"mfc-js": "0.1.0",
