@@ -98,6 +98,7 @@ import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js'
 import { provideMetadataReceiver } from '@/page.js';
 import XVoiceCallBar from '@/ui/_common_/voice-call-bar.vue';
 import XScreen from '@/pages/chat/room.voice.screen.vue';
+import XParticipant from '@/pages/chat/room.voice.participant.vue';
 
 const stubs = {
 	MkAvatar: { props: ['user'], template: '<span class="avatar"></span>' },
@@ -421,6 +422,18 @@ describe('screen share viewer', () => {
 		await flush();
 
 		expect(screen.getByLabelText(i18n.ts._voiceCall.sharingScreen)).toBeTruthy();
+	});
+});
+
+describe('participant chip', () => {
+	// 話している人はチップ全体 (アバターと名前を包む外側) の枠で示す
+	test.each([true, false])('marks the whole chip when speaking is %s', async speaking => {
+		const { container } = render(XParticipant, { props: { participant: participant(alice), speaking }, global: { stubs } });
+		await flush();
+
+		const chip = container.firstElementChild!;
+		expect(chip.textContent).toContain('Alice');
+		expect([...chip.classList].some(name => name.includes('speaking'))).toBe(speaking);
 	});
 });
 

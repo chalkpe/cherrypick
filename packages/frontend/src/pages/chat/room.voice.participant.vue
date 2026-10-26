@@ -50,14 +50,21 @@ const emit = defineEmits<{
 </script>
 
 <style lang="scss" module>
+// 話している人はチップ全体を枠で囲む。話していないときも透明な枠を置いて、切り替わりで大きさが変わらないようにする
 .root {
 	display: flex;
 	align-items: center;
 	gap: 8px;
 	min-width: 0;
-	padding: 4px 8px 4px 4px;
+	padding: 2px 6px 2px 2px; // 枠の 2px 分を差し引いて、以前と同じ大きさに保つ
+	border: 2px solid transparent;
 	border-radius: 999px;
 	background: var(--MI_THEME-panelHighlight);
+	transition: border-color 0.1s;
+
+	&.speaking {
+		border-color: var(--MI_THEME-success);
+	}
 }
 
 .main {
@@ -73,13 +80,6 @@ const emit = defineEmits<{
 	height: 28px;
 	flex-shrink: 0;
 	border-radius: 100%;
-	outline: 2px solid transparent;
-	outline-offset: 1px;
-	transition: outline-color 0.1s;
-}
-
-.speaking .avatar {
-	outline-color: var(--MI_THEME-success);
 }
 
 .name {
