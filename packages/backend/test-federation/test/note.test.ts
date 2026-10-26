@@ -318,18 +318,26 @@ describe('Note', () => {
 				strictEqual(reactions[0].type, '❤');
 			});
 
-			/**
-			 * TODO: this may be unexpected behavior?
-			 *       @see https://github.com/misskey-dev/misskey/issues/12409
-			 */
-			test('Even if nonSensitiveOnly, remote users can react with sensitive emoji, and it is not converted', async () => {
+			test('nonSensitiveOnly converts federated sensitive emoji to like', async () => {
 				const note = (await alice.client.request('notes/create', { text: 'a', reactionAcceptance: 'nonSensitiveOnly' })).createdNote;
 				const noteInB = await resolveRemoteNote('a.test', note.id, bob);
 				const emoji = await addCustomEmoji('b.test', { isSensitive: true });
 				await bob.client.request('notes/reactions/create', { noteId: noteInB.id, reaction: `:${emoji.name}:` });
 
 				const reactions = await waitForReactions(note.id, 1);
+				strictEqual(reactions[0].type, '❤');
+				strictEqual(reactions[0].user.id, bobInA.id);
+			});
+
+			test('nonSensitiveOnly preserves federated non-sensitive emoji', async () => {
+				const note = (await alice.client.request('notes/create', { text: 'a', reactionAcceptance: 'nonSensitiveOnly' })).createdNote;
+				const noteInB = await resolveRemoteNote('a.test', note.id, bob);
+				const emoji = await addCustomEmoji('b.test', { isSensitive: false });
+				await bob.client.request('notes/reactions/create', { noteId: noteInB.id, reaction: `:${emoji.name}:` });
+
+				const reactions = await waitForReactions(note.id, 1);
 				strictEqual(reactions[0].type, `:${emoji.name}@b.test:`);
+				strictEqual(reactions[0].user.id, bobInA.id);
 			});
 		});
 	});
