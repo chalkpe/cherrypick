@@ -197,6 +197,22 @@ describe('room voice panel', () => {
 			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(2);
 		});
 
+		test('ignores a second click while the notice is still open', async () => {
+			mocks.instance.features.remoteVoiceCall = true;
+			let answer!: (value: { canceled: boolean }) => void;
+			mocks.confirm.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+			render(XVoice, { props: { room: mirror }, global: { stubs } });
+			await flush();
+
+			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
+			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
+			answer({ canceled: false });
+			await flush();
+
+			expect(mocks.confirm).toHaveBeenCalledTimes(1);
+			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
+		});
+
 		test('does not join when the notice is cancelled', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
 			mocks.confirm.mockResolvedValue({ canceled: true });

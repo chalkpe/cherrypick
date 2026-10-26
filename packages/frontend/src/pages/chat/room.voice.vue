@@ -96,17 +96,25 @@ const watchedParticipant = computed(() => participants.value.find(participant =>
 const isOwner = computed(() => props.room.ownerId === $i.id);
 
 // 他のサーバーで開かれる通話には相手のサーバーに IP アドレスが見えるので、ホストごとに初回だけ確認する
+let joining = false;
+
 async function join() {
-	const host = props.room.owner.host;
-	if (host != null && !prefer.s['voiceCall.acknowledgedRemoteHosts'].includes(host)) {
-		const { canceled } = await os.confirm({
-			type: 'info',
-			text: i18n.tsx._voiceCall.remoteHostNotice({ host }),
-		});
-		if (canceled) return;
-		prefer.commit('voiceCall.acknowledgedRemoteHosts', [...prefer.s['voiceCall.acknowledgedRemoteHosts'], host]);
+	if (joining) return;
+	joining = true;
+	try {
+		const host = props.room.owner.host;
+		if (host != null && !prefer.s['voiceCall.acknowledgedRemoteHosts'].includes(host)) {
+			const { canceled } = await os.confirm({
+				type: 'info',
+				text: i18n.tsx._voiceCall.remoteHostNotice({ host }),
+			});
+			if (canceled) return;
+			prefer.commit('voiceCall.acknowledgedRemoteHosts', [...prefer.s['voiceCall.acknowledgedRemoteHosts'], host]);
+		}
+		await joinVoiceCall(props.room);
+	} finally {
+		joining = false;
 	}
-	joinVoiceCall(props.room);
 }
 
 type Participant = Misskey.entities.ChatRoomVoiceState['participants'][number];
