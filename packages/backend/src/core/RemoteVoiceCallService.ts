@@ -104,7 +104,7 @@ export class RemoteVoiceCallService {
 		const response = parseTokenResponse(body, `${origin}/livekit`);
 		if (response == null) throw new RemoteVoiceCallError('unreachable');
 
-		// 参加者の解決には他のサーバーへの問い合わせが要ることがあるので、参加を待たせない
+		// 現況は一覧の表示に使うだけなので、保存を待たずに参加させ、失敗しても参加は止めない
 		this.chatVoiceService.storeRemoteSnapshot(room, response.participants, response.updatedAt).catch(() => {
 			// 次の参加時に届く現況で埋まるので握りつぶす
 		});

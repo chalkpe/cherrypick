@@ -5,11 +5,11 @@
 
 import { Inject, Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import * as Redis from 'ioredis';
-import { IsNull } from 'typeorm';
+import { In, IsNull } from 'typeorm';
 import type { WebhookEvent } from 'livekit-server-sdk';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
-import type { ChatRoomMembershipsRepository, ChatRoomsRepository } from '@/models/_.js';
+import type { ChatRoomMembershipsRepository, ChatRoomsRepository, UsersRepository } from '@/models/_.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
@@ -21,7 +21,6 @@ import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
-import { ApPersonService } from '@/core/activitypub/models/ApPersonService.js';
 
 const REFRESH_DELAY_MS = 500;
 
@@ -79,13 +78,15 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		@Inject(DI.chatRoomMembershipsRepository)
 		private chatRoomMembershipsRepository: ChatRoomMembershipsRepository,
 
+		@Inject(DI.usersRepository)
+		private usersRepository: UsersRepository,
+
 		private liveKitService: LiveKitService,
 		private userEntityService: UserEntityService,
 		private globalEventService: GlobalEventService,
 		private roleService: RoleService,
 		private utilityService: UtilityService,
 		private federatedInstanceService: FederatedInstanceService,
-		private apPersonService: ApPersonService,
 	) {
 	}
 
@@ -213,13 +214,12 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 */
 	@bindThis
 	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<void> {
-		const resolved = await Promise.all(participants.slice(0, MAX_ROOM_MEMBERS + 1).map(async p => {
-			const userId = await this.userIdOfIdentity(p.identity);
-			return userId == null ? null : { identity: p.identity, userId, screenSharing: p.screenSharing };
-		}));
+		const capped = participants.slice(0, MAX_ROOM_MEMBERS + 1);
+		const userIds = await this.knownUserIdsOf(capped.map(p => p.identity));
 		const snapshot: VoiceSnapshot = { participants: [], updatedAt };
-		for (const p of resolved) {
-			if (p != null) snapshot.participants.push(p);
+		for (const p of capped) {
+			const userId = userIds.get(p.identity);
+			if (userId != null) snapshot.participants.push({ identity: p.identity, userId, screenSharing: p.screenSharing });
 		}
 
 		// 解決している間に新しい現況が保存されたかもしれないので、書く直前に比べる
@@ -275,22 +275,42 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	/**
-	 * 参加者の identity (LiveKitService.identityOf) をこのサーバーのユーザーの id にする。
-	 * このサーバーのユーザーは URL の id をそのまま使い、それ以外は ActivityPub で解決する。解決できなければ null
+	 * 参加者の identity (LiveKitService.identityOf) を、このサーバーが既に知っているユーザーの id にする。
+	 * identity は他のサーバーから届くので、知らないユーザーを取りに行くことはしない (相手に好きな URL を取得させないため)。
+	 * このサーバーの `${url}/users/<id>` はその id のローカルユーザー、それ以外は uri が一致するリモートユーザー。
+	 * 削除済みのユーザーと、どれにも当たらない identity は含めない
 	 */
-	private async userIdOfIdentity(identity: string): Promise<MiUser['id'] | null> {
+	private async knownUserIdsOf(identities: string[]): Promise<Map<string, MiUser['id']>> {
 		const localPrefix = `${this.config.url}/users/`;
-		if (identity.startsWith(localPrefix)) {
-			const userId = identity.slice(localPrefix.length);
-			return /^[a-zA-Z0-9]+$/.test(userId) ? userId : null;
+		const localIdentityOf = new Map<MiUser['id'], string>();
+		const remoteIdentities: string[] = [];
+		for (const identity of identities) {
+			if (identity.startsWith(localPrefix)) {
+				const userId = identity.slice(localPrefix.length);
+				if (/^[a-zA-Z0-9]+$/.test(userId)) localIdentityOf.set(userId, identity);
+			} else {
+				remoteIdentities.push(identity);
+			}
 		}
 
-		try {
-			const user = await this.apPersonService.resolvePerson(identity);
-			return user.id;
-		} catch {
-			return null;
+		const [localUsers, remoteUsers] = await Promise.all([
+			localIdentityOf.size > 0
+				? this.usersRepository.findBy({ id: In([...localIdentityOf.keys()]), host: IsNull(), isDeleted: false })
+				: [],
+			remoteIdentities.length > 0
+				? this.usersRepository.findBy({ uri: In(remoteIdentities), isDeleted: false })
+				: [],
+		]);
+
+		const result = new Map<string, MiUser['id']>();
+		for (const user of localUsers) {
+			const identity = localIdentityOf.get(user.id);
+			if (identity != null) result.set(identity, user.id);
 		}
+		for (const user of remoteUsers) {
+			if (user.host != null && user.uri != null) result.set(user.uri, user.id);
+		}
+		return result;
 	}
 
 	private async pack(roomId: MiChatRoom['id'], snapshot: VoiceSnapshot, me: { id: MiUser['id'] } | null): Promise<Packed<'ChatRoomVoiceState'>> {

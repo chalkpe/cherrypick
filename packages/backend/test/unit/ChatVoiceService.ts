@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { IsNull } from 'typeorm';
+import { FindOperator, IsNull } from 'typeorm';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 
 function fakeRedis() {
@@ -29,6 +29,27 @@ function fakeRedis() {
 		srem: vi.fn(async (key: string, member: string) => (sets.get(key)?.delete(member) ? 1 : 0)),
 		smembers: vi.fn(async (key: string) => [...(sets.get(key) ?? [])]),
 	};
+}
+
+// このサーバーの DB にいるユーザー
+const KNOWN_USERS = [
+	{ id: 'u1', host: null, uri: null, isDeleted: false },
+	{ id: 'u2', host: null, uri: null, isDeleted: false },
+	{ id: 'deletedLocal', host: null, uri: null, isDeleted: true },
+	{ id: 'x1', host: 'other.test', uri: 'https://other.test/users/x', isDeleted: false },
+	{ id: 'deletedRemote', host: 'other.test', uri: 'https://other.test/users/deleted', isDeleted: true },
+];
+
+/** usersRepository.findBy の where (等値・In・IsNull) を KNOWN_USERS に当てる */
+function matchesWhere(user: Record<string, unknown>, where: Record<string, unknown>): boolean {
+	return Object.entries(where).every(([key, condition]) => {
+		if (condition instanceof FindOperator) {
+			if (condition.type === 'in') return (condition.value as unknown[]).includes(user[key]);
+			if (condition.type === 'isNull') return user[key] == null;
+			throw new Error(`unsupported operator: ${condition.type}`);
+		}
+		return user[key] === condition;
+	});
 }
 
 function createFixture(redis = fakeRedis()) {
@@ -63,26 +84,23 @@ function createFixture(redis = fakeRedis()) {
 	const federatedInstanceService = {
 		fetch: vi.fn(async (host: string) => ({ host, suspensionState: 'none' })),
 	};
-	const apPersonService = {
-		resolvePerson: vi.fn(async (uri: string): Promise<{ id: string; host: string | null; uri: string | null }> => {
-			if (uri === 'https://other.test/users/x') return { id: 'x1', host: 'other.test', uri };
-			throw new Error(`cannot resolve ${uri}`);
-		}),
+	const usersRepository = {
+		findBy: vi.fn(async (where: Record<string, unknown>) => KNOWN_USERS.filter(user => matchesWhere(user, where))),
 	};
 	const service = new ChatVoiceService(
 		{ url: 'https://local.test' } as any,
 		redis as any,
 		chatRoomsRepository as any,
 		chatRoomMembershipsRepository as any,
+		usersRepository as any,
 		liveKitService as any,
 		userEntityService as any,
 		globalEventService as any,
 		roleService as any,
 		utilityService as any,
 		federatedInstanceService as any,
-		apPersonService as any,
 	);
-	return { service, redis, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, userEntityService, globalEventService, roleService, utilityService, federatedInstanceService, apPersonService };
+	return { service, redis, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, userEntityService, globalEventService, roleService, utilityService, federatedInstanceService };
 }
 
 function remoteUser(overrides: Record<string, unknown> = {}) {
@@ -349,8 +367,6 @@ describe('ChatVoiceService', () => {
 				],
 				updatedAt: 2000,
 			});
-			// このサーバーのユーザーは DB の id で分かるので、取りに行かない
-			expect(f.apPersonService.resolvePerson).not.toHaveBeenCalledWith('https://local.test/users/u1');
 
 			const stored = f.redis.store.get('chatVoice:r1');
 			f.globalEventService.publishChatRoomStream.mockClear();
@@ -383,12 +399,53 @@ describe('ChatVoiceService', () => {
 			expect(f.redis.sadd).not.toHaveBeenCalled();
 		});
 
-		test('storeRemoteSnapshot resolves at most as many identities as a room can hold', async () => {
+		test('storeRemoteSnapshot looks up at most as many identities as a room can hold', async () => {
 			const participants = Array.from({ length: 60 }, (_, i) => ({ identity: `https://far.test/users/${i}`, screenSharing: false }));
 
 			await f.service.storeRemoteSnapshot(mirrorRoom(), participants, 2000);
 
-			expect(f.apPersonService.resolvePerson).toHaveBeenCalledTimes(51);
+			const lookedUp = f.usersRepository.findBy.mock.calls.flatMap(([where]) => (where.uri as FindOperator<string[]>).value);
+			expect(lookedUp).toHaveLength(51);
+		});
+
+		test('storeRemoteSnapshot drops identities this server does not know, without fetching them', async () => {
+			const fetchSpy = vi.spyOn(globalThis, 'fetch');
+			try {
+				await f.service.storeRemoteSnapshot(mirrorRoom(), [
+					{ identity: 'https://other.test/users/x', screenSharing: false },
+					{ identity: 'https://evil.test/users/fresh', screenSharing: false },
+				], 2000);
+			} finally {
+				fetchSpy.mockRestore();
+			}
+
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).participants).toEqual([
+				{ identity: 'https://other.test/users/x', userId: 'x1', screenSharing: false },
+			]);
+			expect(fetchSpy).not.toHaveBeenCalled();
+			// 他のサーバーのユーザーは uri の完全一致で探す
+			expect(f.usersRepository.findBy).toHaveBeenCalledWith({ uri: expect.any(FindOperator), isDeleted: false });
+		});
+
+		test('storeRemoteSnapshot drops a local-looking identity that is not a local user of this server', async () => {
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [
+				{ identity: 'https://local.test/users/x1', screenSharing: false },
+				{ identity: 'https://local.test/users/nobody', screenSharing: false },
+				{ identity: 'https://local.test/users/u2', screenSharing: false },
+			], 2000);
+
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).participants).toEqual([
+				{ identity: 'https://local.test/users/u2', userId: 'u2', screenSharing: false },
+			]);
+		});
+
+		test('storeRemoteSnapshot drops deleted users', async () => {
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [
+				{ identity: 'https://local.test/users/deletedLocal', screenSharing: false },
+				{ identity: 'https://other.test/users/deleted', screenSharing: false },
+			], 2000);
+
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).participants).toEqual([]);
 		});
 
 		test('storeRemoteSnapshot ignores local identities that are not plain user ids', async () => {
@@ -398,7 +455,7 @@ describe('ChatVoiceService', () => {
 			], 2000);
 
 			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).participants).toEqual([]);
-			expect(f.apPersonService.resolvePerson).not.toHaveBeenCalled();
+			expect(f.usersRepository.findBy).not.toHaveBeenCalled();
 		});
 	});
 });
