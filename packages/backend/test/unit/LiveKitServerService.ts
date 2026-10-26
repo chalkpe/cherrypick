@@ -430,7 +430,7 @@ describe('LiveKitServerService', () => {
 			expect(chatVoiceService.issueRemoteJoinToken).not.toHaveBeenCalled();
 		});
 
-		test('answers 404 for a room URI on another server', async () => {
+		test('answers 403 for a room URI on another server', async () => {
 			const { app, chatService, chatVoiceService } = await createTokenApp();
 
 			for (const room of [
@@ -443,18 +443,19 @@ describe('LiveKitServerService', () => {
 				'https://local.test/users/r1',
 			]) {
 				const res = await requestToken(app, { room, canScreenShare: false });
-				expect(res.statusCode, room).toBe(404);
+				expect(res.statusCode, room).toBe(403);
+				expect(res.body, room).toBe('');
 			}
 			expect(chatService.findRoomById).not.toHaveBeenCalled();
 			expect(chatVoiceService.issueRemoteJoinToken).not.toHaveBeenCalled();
 		});
 
-		test('answers 404 for a room that does not exist', async () => {
+		test('answers 403 for a room that does not exist', async () => {
 			const { app, chatService, chatVoiceService } = await createTokenApp();
 
 			const res = await requestToken(app, { room: 'https://local.test/chat/rooms/gone', canScreenShare: false });
 
-			expect(res.statusCode).toBe(404);
+			expect(res.statusCode).toBe(403);
 			expect(chatService.findRoomById).toHaveBeenCalledWith('gone');
 			expect(chatVoiceService.issueRemoteJoinToken).not.toHaveBeenCalled();
 		});
@@ -466,6 +467,33 @@ describe('LiveKitServerService', () => {
 			const res = await requestToken(app);
 
 			expect(res.statusCode).toBe(403);
+		});
+
+		test('answers a missing room exactly like a room the caller may not use', async () => {
+			const { app, chatVoiceService } = await createTokenApp();
+			chatVoiceService.issueRemoteJoinToken.mockResolvedValue('forbidden');
+
+			const missing = await requestToken(app, { room: 'https://local.test/chat/rooms/gone', canScreenShare: false });
+			const refused = await requestToken(app, { room: ROOM_URI, canScreenShare: false });
+
+			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledTimes(1);
+			expect(missing.statusCode).toBe(403);
+			expect([missing.statusCode, missing.body, missing.headers['content-type'], missing.headers['content-length']])
+				.toEqual([refused.statusCode, refused.body, refused.headers['content-type'], refused.headers['content-length']]);
+		});
+
+		test('answers 500 with an empty body when something fails inside', async () => {
+			const { app, verifier, chatVoiceService } = await createTokenApp();
+
+			chatVoiceService.issueRemoteJoinToken.mockRejectedValueOnce(new Error('connect ECONNREFUSED 10.0.0.5:7880'));
+			const liveKitDown = await requestToken(app);
+			expect(liveKitDown.statusCode).toBe(500);
+			expect(liveKitDown.body).toBe('');
+
+			verifier.verify.mockRejectedValueOnce(new Error('relation "user_publickey" does not exist'));
+			const databaseDown = await requestToken(app);
+			expect(databaseDown.statusCode).toBe(500);
+			expect(databaseDown.body).toBe('');
 		});
 
 		test('returns the token and participants for a valid request', async () => {

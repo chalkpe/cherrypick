@@ -54,7 +54,7 @@ function createFixture(redis = fakeRedis()) {
 		publishMainStream: vi.fn(),
 	};
 	const roleService = {
-		getUserPolicies: vi.fn(async () => ({ canVoiceCall: true, canScreenShare: true })),
+		getUserPolicies: vi.fn(async () => ({ canVoiceCall: true, canScreenShare: true, chatAvailability: 'available' })),
 	};
 	const utilityService = {
 		isFederationAllowedHost: vi.fn((_host: string) => true),
@@ -261,7 +261,7 @@ describe('ChatVoiceService', () => {
 			];
 			for (const { requested, hostAllows, expected } of cases) {
 				f.liveKitService.createJoinToken.mockClear();
-				f.roleService.getUserPolicies.mockResolvedValueOnce({ canVoiceCall: true, canScreenShare: hostAllows });
+				f.roleService.getUserPolicies.mockResolvedValueOnce({ canVoiceCall: true, canScreenShare: hostAllows, chatAvailability: 'available' });
 
 				await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), requested);
 
@@ -287,11 +287,22 @@ describe('ChatVoiceService', () => {
 		});
 
 		test('refuses a remote user whose role here cannot join voice calls', async () => {
-			f.roleService.getUserPolicies.mockResolvedValueOnce({ canVoiceCall: false, canScreenShare: true });
+			f.roleService.getUserPolicies.mockResolvedValueOnce({ canVoiceCall: false, canScreenShare: true, chatAvailability: 'available' });
 
 			const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false);
 
 			expect(result).toBe('forbidden');
+			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('refuses a remote user who may not write in chats here, as for local members', async () => {
+			for (const chatAvailability of ['readonly', 'unavailable']) {
+				f.roleService.getUserPolicies.mockResolvedValueOnce({ canVoiceCall: true, canScreenShare: true, chatAvailability });
+
+				const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false);
+
+				expect(result, chatAvailability).toBe('forbidden');
+			}
 			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
 		});
 

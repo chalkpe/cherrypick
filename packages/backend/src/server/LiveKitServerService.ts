@@ -84,33 +84,37 @@ export class LiveKitServerService {
 		});
 
 		// 他のサーバーのユーザーが、このサーバーのルームの通話に入るためのトークン。
-		// 要求はそのユーザーの鍵で署名されている
+		// 要求はそのユーザーの鍵で署名されている。
+		// 404 は「このサーバーでは通話が使えない」の意味だけに使う (相手のサーバーはそれを覚えておく)
 		fastify.post('/federation/token', { bodyLimit: FEDERATION_TOKEN_BODY_LIMIT }, async (request, reply) => {
 			if (!this.liveKitService.isEnabled) return reply.code(404).send();
 
-			if (this.config.enableIpRateLimit) {
-				if (await this.rateLimiterService.limit(FEDERATION_TOKEN_IP_LIMIT, getIpHash(request.ip)) != null) return reply.code(429).send();
+			// LiveKit や DB のエラーの内容を他のサーバーに見せない
+			try {
+				if (this.config.enableIpRateLimit) {
+					if (await this.rateLimiterService.limit(FEDERATION_TOKEN_IP_LIMIT, getIpHash(request.ip)) != null) return reply.code(429).send();
+				}
+
+				const rawBody = typeof request.body === 'string' ? request.body : '';
+				const user = await this.apSignedRequestVerifierService.verify({ method: request.method, url: request.url, headers: request.headers }, rawBody);
+				if (user == null) return reply.code(401).send();
+
+				if (await this.rateLimiterService.limit(FEDERATION_TOKEN_USER_LIMIT, user.id) != null) return reply.code(429).send();
+
+				const body = parseTokenRequest(rawBody);
+				if (body == null) return reply.code(400).send();
+
+				// ルームに関わる拒否はすべて同じ 403 にして、ルームがあるかどうかも分からないようにする
+				const roomId = this.localRoomIdOf(body.room);
+				const room = roomId != null ? await this.chatService.findRoomById(roomId) : null;
+				const result = room != null ? await this.chatVoiceService.issueRemoteJoinToken(user, room, body.canScreenShare) : 'forbidden';
+				if (result === 'forbidden') return reply.code(403).send();
+
+				const { url, token, participants, updatedAt } = result;
+				return reply.code(200).send({ url, token, participants, updatedAt });
+			} catch {
+				return reply.code(500).send();
 			}
-
-			const rawBody = typeof request.body === 'string' ? request.body : '';
-			const user = await this.apSignedRequestVerifierService.verify({ method: request.method, url: request.url, headers: request.headers }, rawBody);
-			if (user == null) return reply.code(401).send();
-
-			if (await this.rateLimiterService.limit(FEDERATION_TOKEN_USER_LIMIT, user.id) != null) return reply.code(429).send();
-
-			const body = parseTokenRequest(rawBody);
-			if (body == null) return reply.code(400).send();
-
-			const roomId = this.localRoomIdOf(body.room);
-			if (roomId == null) return reply.code(404).send();
-			const room = await this.chatService.findRoomById(roomId);
-			if (room == null) return reply.code(404).send();
-
-			const result = await this.chatVoiceService.issueRemoteJoinToken(user, room, body.canScreenShare);
-			if (result === 'forbidden') return reply.code(403).send();
-
-			const { url, token, participants, updatedAt } = result;
-			return reply.code(200).send({ url, token, participants, updatedAt });
 		});
 
 		fastify.get('/rtc/*', async (request, reply) => {

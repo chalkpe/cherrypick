@@ -108,8 +108,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const isMember = await this.chatRoomMembershipsRepository.exists({ where: { roomId: room.id, userId: user.id } });
 		if (!isMember) return 'forbidden';
 
+		// トークンは常にマイクを許すので、ローカルの参加と同じくチャットの書き込み権限も求める
 		const policies = await this.roleService.getUserPolicies(user.id);
-		if (!policies.canVoiceCall) return 'forbidden';
+		if (!policies.canVoiceCall || policies.chatAvailability !== 'available') return 'forbidden';
 
 		const { url, token } = await this.issueJoinToken(user, room, canScreenShareRequested && policies.canScreenShare);
 		const { participants, updatedAt } = await this.snapshotOf(room.id);
