@@ -44,6 +44,10 @@ const REMOTE_SNAPSHOT_TTL_SECONDS = 600;
 // 送り直しは読み直し (sweep) のついでに行うので、実際の間隔は最大でこれに SWEEP_INTERVAL_MS を足したものになる
 const FEDERATION_RESEND_INTERVAL_MS = 240_000;
 
+// 参加者が目まぐるしく変わっても (画面共有の切り替えや出入りの繰り返し) 配送が膨らまないよう、
+// 他のサーバーへはルームごとにこの間隔に一度だけ送る。全ワーカーで Redis の鍵を共有して数える
+const FEDERATION_MIN_INTERVAL_MS = 10_000;
+
 // 他のサーバーから届くルームの URI のパス (このサーバーが送る `${url}/chat/rooms/${id}` と同じ形)
 const ROOM_PATH = /^\/chat\/rooms\/([a-zA-Z0-9]+)$/;
 
@@ -79,7 +83,7 @@ export function isRemoteVoiceCallEnabled(meta: Pick<MiMeta, 'enableRemoteVoiceCa
  */
 @Injectable()
 export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
-	private pendingRefreshes = new Map<MiChatRoom['id'], NodeJS.Timeout>();
+	private pendingRefreshes = new Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>();
 	private sweepTimer: NodeJS.Timeout | null = null;
 
 	constructor(
@@ -190,15 +194,24 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		this.scheduleRefresh(roomId);
 	}
 
+	/**
+	 * ルームを少し後に読み直す。ルームごとに一つにまとめ、予定済みのものより早く読み直したいときだけ早める
+	 */
 	@bindThis
-	public scheduleRefresh(roomId: MiChatRoom['id']): void {
-		if (this.pendingRefreshes.has(roomId)) return;
-		this.pendingRefreshes.set(roomId, setTimeout(() => {
+	public scheduleRefresh(roomId: MiChatRoom['id'], delayMs = REFRESH_DELAY_MS): void {
+		const dueAt = Date.now() + delayMs;
+		const pending = this.pendingRefreshes.get(roomId);
+		if (pending != null) {
+			if (pending.dueAt <= dueAt) return;
+			clearTimeout(pending.timer);
+		}
+		const timer = setTimeout(() => {
 			this.pendingRefreshes.delete(roomId);
 			this.refresh(roomId).catch(() => {
 				// 次の webhook か通話参加時に再取得されるので握りつぶす
 			});
-		}, REFRESH_DELAY_MS));
+		}, delayMs);
+		this.pendingRefreshes.set(roomId, { timer, dueAt });
 	}
 
 	@bindThis
@@ -356,7 +369,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	@bindThis
 	public onApplicationShutdown(): void {
-		for (const timer of this.pendingRefreshes.values()) clearTimeout(timer);
+		for (const { timer } of this.pendingRefreshes.values()) clearTimeout(timer);
 		this.pendingRefreshes.clear();
 		if (this.sweepTimer != null) clearInterval(this.sweepTimer);
 		this.sweepTimer = null;
@@ -367,8 +380,10 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	/**
-	 * 参加者の現況を他のサーバーのメンバーに届ける。前に送ったものと同じで、送ってから
-	 * FEDERATION_RESEND_INTERVAL_MS 経っていなければ送らない。通話が終わったこと (空の現況) は必ず送る
+	 * 参加者の現況を他のサーバーのメンバーに届ける。
+	 * - 前に送ったものと同じで、送ってから FEDERATION_RESEND_INTERVAL_MS 経っていなければ送らない
+	 * - 送るのはルームごとに FEDERATION_MIN_INTERVAL_MS に一度まで。送れなかった変化は、間隔が空いたときに読み直して最新の現況を送る
+	 * - 通話が終わったこと (空の現況) は参加者の現況とは別に数えて待たずに送るが、続けて終わったときは最初のものだけを送る
 	 */
 	private async federateChanges(room: MiChatRoom, snapshot: VoiceSnapshot): Promise<void> {
 		const participants = snapshot.participants.map(p => ({ identity: p.identity, screenSharing: p.screenSharing }));
@@ -377,10 +392,19 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			.digest('hex');
 		const key = `chatVoice:federated:${room.id}`;
 
-		if (participants.length > 0) {
-			const raw = await this.redisClient.get(key);
-			const last = raw != null ? JSON.parse(raw) as { hash: string; at: number } : null;
-			if (last != null && last.hash === hash && Date.now() - last.at < FEDERATION_RESEND_INTERVAL_MS) return;
+		const raw = await this.redisClient.get(key);
+		const last = raw != null ? JSON.parse(raw) as { hash: string; at: number } : null;
+		if (participants.length > 0 && last != null && last.hash === hash && Date.now() - last.at < FEDERATION_RESEND_INTERVAL_MS) return;
+
+		const gateKey = participants.length > 0 ? `chatVoice:federateGate:${room.id}` : `chatVoice:federateEmptyGate:${room.id}`;
+		const opened = await this.redisClient.set(gateKey, '1', 'PX', FEDERATION_MIN_INTERVAL_MS, 'NX');
+		if (opened !== 'OK') {
+			// 相手に届いている現況と違うなら、間隔が空いたときに読み直す (読み直しはルームごとに一つにまとまる)
+			if (last?.hash !== hash) {
+				const ttl = await this.redisClient.pttl(gateKey);
+				this.scheduleRefresh(room.id, ttl > 0 ? Math.min(ttl, FEDERATION_MIN_INTERVAL_MS) : REFRESH_DELAY_MS);
+			}
+			return;
 		}
 
 		await this.federateSnapshot(room, participants, snapshot.updatedAt);

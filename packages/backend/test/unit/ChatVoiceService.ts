@@ -11,17 +11,40 @@ import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 function fakeRedis() {
 	const store = new Map<string, string>();
 	const sets = new Map<string, Set<string>>();
+	// EX / PX の寿命は Date.now() で数えるので、偽のタイマーで時間を進めると切れる
+	const expiresAt = new Map<string, number>();
+	const live = (key: string) => {
+		const at = expiresAt.get(key);
+		if (at != null && Date.now() >= at) {
+			store.delete(key);
+			expiresAt.delete(key);
+		}
+		return store.has(key);
+	};
 	return {
 		store,
 		sets,
-		get: vi.fn(async (key: string) => store.get(key) ?? null),
+		get: vi.fn(async (key: string) => (live(key) ? store.get(key)! : null)),
 		set: vi.fn(async (key: string, value: string, ...args: (string | number)[]) => {
-			if (args.includes('NX') && store.has(key)) return null;
+			if (args.includes('NX') && live(key)) return null;
 			store.set(key, value);
+			expiresAt.delete(key);
+			const ex = args.indexOf('EX');
+			if (ex !== -1) expiresAt.set(key, Date.now() + Number(args[ex + 1]) * 1000);
+			const px = args.indexOf('PX');
+			if (px !== -1) expiresAt.set(key, Date.now() + Number(args[px + 1]));
 			return 'OK';
 		}),
-		del: vi.fn(async (key: string) => (store.delete(key) ? 1 : 0)),
-		mget: vi.fn(async (...keys: string[]) => keys.map(key => store.get(key) ?? null)),
+		pttl: vi.fn(async (key: string) => {
+			if (!live(key)) return -2;
+			const at = expiresAt.get(key);
+			return at == null ? -1 : at - Date.now();
+		}),
+		del: vi.fn(async (key: string) => {
+			expiresAt.delete(key);
+			return store.delete(key) ? 1 : 0;
+		}),
+		mget: vi.fn(async (...keys: string[]) => keys.map(key => (live(key) ? store.get(key)! : null))),
 		sadd: vi.fn(async (key: string, member: string) => {
 			if (!sets.has(key)) sets.set(key, new Set());
 			sets.get(key)!.add(member);
@@ -482,12 +505,45 @@ describe('ChatVoiceService', () => {
 		const ROOM_URI = 'https://local.test/chat/rooms/r1';
 		const u1 = { identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: false, micTrackSid: null };
 
-		function withRemoteMembers() {
-			f.chatRoomMembershipsRepository.findBy.mockResolvedValue([{ userId: 'u1' }, { userId: 'rm1' }, { userId: 'rm2' }, { userId: 'rm3' }]);
+		function withRemoteMembers(fixture = f) {
+			fixture.chatRoomMembershipsRepository.findBy.mockResolvedValue([{ userId: 'u1' }, { userId: 'rm1' }, { userId: 'rm2' }, { userId: 'rm3' }]);
 		}
 
-		function deliveredObjects() {
-			return f.queueService.deliver.mock.calls.map(([, activity]) => activity.object);
+		/** 共有 inbox を持たない、別々のサーバーの count 人のメンバー */
+		function withManyRemoteMembers(count: number) {
+			const members = Array.from({ length: count }, (_, i) => ({
+				id: `many${i}`,
+				host: `s${i}.test`,
+				uri: `https://s${i}.test/users/many${i}`,
+				isDeleted: false,
+				inbox: `https://s${i}.test/users/many${i}/inbox`,
+				sharedInbox: null,
+			}));
+			f.chatRoomMembershipsRepository.findBy.mockResolvedValue(members.map(member => ({ userId: member.id })));
+			f.usersRepository.findBy.mockImplementation(async (where: Record<string, unknown>) => [...KNOWN_USERS, ...members].filter(user => matchesWhere(user, where)));
+		}
+
+		function deliveredObjects(fixture = f) {
+			return fixture.queueService.deliver.mock.calls.map(([, activity]) => activity.object);
+		}
+
+		/** inbox ごとの、送った時刻と参加者 */
+		function recordDeliveries() {
+			const sent = new Map<string, { at: number; participants: unknown[] }[]>();
+			f.queueService.deliver.mockImplementation((_user: unknown, activity: { object: { participants: unknown[] } }, to: string) => {
+				if (!sent.has(to)) sent.set(to, []);
+				sent.get(to)!.push({ at: Date.now(), participants: activity.object.participants });
+			});
+			return sent;
+		}
+
+		/** 参加者の現況を変えて webhook を受ける (LiveKit からは 600 ミリ秒ごとに届く) */
+		async function changeEvery600ms(states: (typeof u1)[][], event: string) {
+			for (const participants of states) {
+				f.liveKitService.listParticipants.mockResolvedValue(participants);
+				f.service.handleWebhook({ event, room: { name: 'chatRoom:r1' } } as any);
+				await vi.advanceTimersByTimeAsync(600);
+			}
 		}
 
 		test('delivers one Update per remote server, from the room owner', async () => {
@@ -551,8 +607,9 @@ describe('ChatVoiceService', () => {
 			await f.service.refresh('r1');
 			expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
 
-			// 参加者が変われば、間を置かずに送る
+			// 前に送ってから 10 秒経っていれば、参加者の変化は間を置かずに送る
 			f.queueService.deliver.mockClear();
+			vi.setSystemTime(1_000_000 + 250_000);
 			f.liveKitService.listParticipants.mockResolvedValue([{ ...u1, screenSharing: true }]);
 			await f.service.refresh('r1');
 			expect(deliveredObjects().map(object => object.participants)).toEqual([
@@ -566,15 +623,93 @@ describe('ChatVoiceService', () => {
 			vi.useFakeTimers({ now: 1_000_000 });
 			f.liveKitService.listParticipants.mockResolvedValue([u1]);
 			await f.service.refresh('r1');
+			f.queueService.deliver.mockClear();
 
+			// 参加者を送ったばかりでも、通話の終わりは待たずに送る
+			vi.setSystemTime(1_001_000);
 			f.liveKitService.listParticipants.mockResolvedValue([]);
-			for (let i = 0; i < 2; i++) {
-				f.queueService.deliver.mockClear();
-				vi.setSystemTime(1_000_000 + (i + 1) * 1000);
+			await f.service.refresh('r1');
 
-				await f.service.refresh('r1');
+			expect(deliveredObjects().map(object => object.participants)).toEqual([[], []]);
+		});
 
-				expect(deliveredObjects().map(object => object.participants)).toEqual([[], []]);
+		test('sends only the first of repeated empty snapshots within 10 seconds', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			f.liveKitService.listParticipants.mockResolvedValue([]);
+
+			await f.service.refresh('r1');
+			vi.setSystemTime(1_005_000);
+			await f.service.refresh('r1');
+			expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
+
+			vi.setSystemTime(1_010_000);
+			await f.service.refresh('r1');
+			expect(f.queueService.deliver).toHaveBeenCalledTimes(4);
+		});
+
+		test('federates rapid changes at most once every 10 seconds, ending with the latest state', async () => {
+			withManyRemoteMembers(50);
+			vi.useFakeTimers({ now: 1_000_000 });
+			const sent = recordDeliveries();
+
+			// 60 秒のあいだ、画面共有を 600 ミリ秒ごとに切り替える
+			await changeEvery600ms(Array.from({ length: 100 }, (_, i) => [{ ...u1, screenSharing: i % 2 === 1 }]), 'track_published');
+			await vi.advanceTimersByTimeAsync(20_000);
+
+			expect(sent.size).toBe(50);
+			for (const deliveries of sent.values()) {
+				expect(deliveries.length).toBeLessThanOrEqual(7);
+				expect(deliveries.at(-1)!.participants).toEqual([{ id: 'https://local.test/users/u1', screenSharing: true }]);
+			}
+		});
+
+		test('sends one empty snapshot per 10 seconds while people keep joining and leaving', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			const sent = recordDeliveries();
+
+			await changeEvery600ms(Array.from({ length: 100 }, (_, i) => (i % 2 === 0 ? [u1] : [])), 'participant_left');
+			await vi.advanceTimersByTimeAsync(20_000);
+
+			expect(sent.size).toBe(2);
+			for (const deliveries of sent.values()) {
+				const empties = deliveries.filter(delivery => delivery.participants.length === 0);
+				expect(empties.length).toBeGreaterThan(1);
+				for (let i = 1; i < empties.length; i++) {
+					expect(empties[i].at - empties[i - 1].at).toBeGreaterThanOrEqual(10_000);
+				}
+				// 通話は空で終わったので、最後に送ったものも空
+				expect(deliveries.at(-1)!.participants).toEqual([]);
+			}
+		});
+
+		test('shares the 10 second budget between workers', async () => {
+			const sharedRedis = fakeRedis();
+			const workerA = createFixture(sharedRedis);
+			const workerB = createFixture(sharedRedis);
+			withRemoteMembers(workerA);
+			withRemoteMembers(workerB);
+			vi.useFakeTimers({ now: 1_000_000 });
+
+			try {
+				workerA.liveKitService.listParticipants.mockResolvedValue([u1]);
+				await workerA.service.refresh('r1');
+				workerB.liveKitService.listParticipants.mockResolvedValue([{ ...u1, screenSharing: true }]);
+				await workerB.service.refresh('r1');
+
+				expect(workerA.queueService.deliver).toHaveBeenCalledTimes(2);
+				expect(workerB.queueService.deliver).not.toHaveBeenCalled();
+
+				// 送れなかった変化は、間隔が空いたときに最新の現況を読み直して送る
+				await vi.advanceTimersByTimeAsync(10_000);
+				expect(deliveredObjects(workerB).map(object => object.participants)).toEqual([
+					[{ id: 'https://local.test/users/u1', screenSharing: true }],
+					[{ id: 'https://local.test/users/u1', screenSharing: true }],
+				]);
+			} finally {
+				workerA.service.onApplicationShutdown();
+				workerB.service.onApplicationShutdown();
 			}
 		});
 
