@@ -110,7 +110,7 @@ vi.mock('@/os.js', () => ({ toast: mocks.toast, alert: mocks.alert }));
 vi.mock('@/preferences.js', () => ({ prefer: mocks.prefer }));
 
 import { i18n } from '@/i18n.js';
-import { attachScreenShare, joinVoiceCall, leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import { attachScreenShare, joinVoiceCall, leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, setParticipantVolume, startScreenShare, stopScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
 
 const room1 = { id: 'r1', name: 'room 1' } as any;
 const room2 = { id: 'r2', name: 'room 2' } as any;
@@ -240,6 +240,22 @@ describe('voice call controller', () => {
 		expect(a.setVolume).toHaveBeenCalledWith(0.5, lk.Track.Source.Microphone);
 		expect(b.setVolume).toHaveBeenCalledWith(1, lk.Track.Source.Microphone);
 		expect(voiceCall).toMatchObject({ deafened: false, micEnabled: false });
+	});
+
+	test('keeps participant volume within what an audio element accepts', async () => {
+		mocks.prefer.s['voiceCall.participantVolumes'] = { b: 1.8 };
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const b = remoteParticipant('b');
+
+		setParticipantVolume('a', 1.5);
+		expect(mocks.prefer.s['voiceCall.participantVolumes']).toMatchObject({ a: 1 });
+		expect(a.setVolume).toHaveBeenLastCalledWith(1, lk.Track.Source.ScreenShareAudio);
+
+		setDeafened(true);
+		setDeafened(false);
+		expect(b.setVolume).toHaveBeenCalledWith(1, lk.Track.Source.Microphone);
+		expect(b.setVolume).not.toHaveBeenCalledWith(1.8, expect.anything());
 	});
 
 	test('subscribes to remote audio as it is published and plays it', async () => {

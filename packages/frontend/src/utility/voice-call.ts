@@ -141,7 +141,7 @@ export async function resumeAudio(): Promise<void> {
 }
 
 export function setParticipantVolume(identity: string, volume: number): void {
-	prefer.commit('voiceCall.participantVolumes', { ...prefer.s['voiceCall.participantVolumes'], [identity]: volume });
+	prefer.commit('voiceCall.participantVolumes', { ...prefer.s['voiceCall.participantVolumes'], [identity]: clampVolume(volume) });
 	const participant = current?.remoteParticipants.get(identity);
 	if (participant != null) applyVolume(participant);
 }
@@ -247,9 +247,14 @@ async function enableMicrophone(room: Room): Promise<void> {
 	}
 }
 
+// audio 要素の volume は 0〜1 しか受け付けない (範囲外は IndexSizeError)
+function clampVolume(volume: number): number {
+	return Math.min(1, Math.max(0, volume));
+}
+
 function volumeOf(identity: string): number {
 	if (state.deafened) return 0;
-	return prefer.s['voiceCall.participantVolumes'][identity] ?? 1;
+	return clampVolume(prefer.s['voiceCall.participantVolumes'][identity] ?? 1);
 }
 
 function applyVolume(participant: RemoteParticipant): void {

@@ -8,7 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<MkRange
 		:modelValue="volume"
 		:min="0"
-		:max="2"
+		:max="1"
 		:step="0.05"
 		:textConverter="v => `${Math.round(v * 100)}%`"
 		continuousUpdate
@@ -30,7 +30,7 @@ const props = defineProps<{
 	identity: string;
 }>();
 
-const volume = ref(prefer.s['voiceCall.participantVolumes'][props.identity] ?? 1);
+const volume = ref(Math.min(1, prefer.s['voiceCall.participantVolumes'][props.identity] ?? 1));
 
 function update(value: number) {
 	volume.value = value;
