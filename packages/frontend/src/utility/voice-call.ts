@@ -64,8 +64,8 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom): Promise<vo
 			misskeyApi('chat/rooms/voice/join', { roomId: room.id }),
 			loadLiveKit(),
 		]);
-	} catch {
-		if (attempt === joinAttempt) failToConnect();
+	} catch (err) {
+		if (attempt === joinAttempt) failToConnect(err);
 		return;
 	}
 	if (attempt !== joinAttempt) return;
@@ -381,9 +381,11 @@ function detachAll(room: Room): void {
 	}
 }
 
-function failToConnect(): void {
+function failToConnect(err?: unknown): void {
 	resetState();
-	os.toast(i18n.ts._voiceCall.connectionFailed);
+	// 相手のサーバーが通話に対応していないときだけ、原因が分かる文言にする
+	const code = (err as { code?: unknown } | null | undefined)?.code;
+	os.toast(code === 'REMOTE_HOST_UNSUPPORTED' ? i18n.ts._voiceCall.remoteHostUnsupported : i18n.ts._voiceCall.connectionFailed);
 }
 
 function resetState(): void {

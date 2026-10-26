@@ -564,6 +564,9 @@ export const PREF_DEF = definePreferences({
 	'voiceCall.screenShareAudio': {
 		default: true,
 	},
+	'voiceCall.acknowledgedRemoteHosts': {
+		default: [] as string[],
+	},
 
 	'game.dropAndFusion': {
 		default: {

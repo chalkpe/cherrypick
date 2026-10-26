@@ -37,7 +37,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<i class="ti ti-phone-off"></i>
 				</button>
 			</template>
-			<MkButton v-else primary rounded small @click="joinVoiceCall(room)"><i class="ti ti-phone"></i> {{ i18n.ts._voiceCall.join }}</MkButton>
+			<MkButton v-else primary rounded small @click="join()"><i class="ti ti-phone"></i> {{ i18n.ts._voiceCall.join }}</MkButton>
 		</div>
 	</div>
 	<div v-if="participants.length > 0" :class="$style.participants">
@@ -69,6 +69,7 @@ import { userName } from '@/filters/user.js';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
 import { instance } from '@/instance.js';
+import { prefer } from '@/preferences.js';
 import { ensureSignin } from '@/i.js';
 import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
 import { joinVoiceCall, leaveVoiceCall, localIdentityOf, setDeafened, setMicEnabled, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
@@ -79,8 +80,11 @@ const props = defineProps<{
 
 const $i = ensureSignin();
 
-// 他のサーバーが持つルームの通話はそのサーバーで開くので、連合対応までは出さない
-const available = computed(() => instance.features?.voiceCall === true && $i.policies.canVoiceCall && props.room.owner.host == null);
+// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーで開かれるので、連合通話が許可されているときだけ出す
+const available = computed(() => {
+	const allowed = props.room.owner.host == null ? instance.features?.voiceCall === true : instance.features?.remoteVoiceCall === true;
+	return allowed && $i.policies.canVoiceCall;
+});
 const inThisCall = computed(() => voiceCall.room?.id === props.room.id && voiceCall.status !== 'idle');
 
 // ルーム画面は既に chatRoom チャンネルを開いているので、共有の main チャンネル経由で受け取る
@@ -90,6 +94,20 @@ const participants = computed(() => states.value.get(props.room.id)?.participant
 const myIdentity = localIdentityOf($i.id);
 const watchedParticipant = computed(() => participants.value.find(participant => participant.identity === voiceCall.watchingIdentity) ?? null);
 const isOwner = computed(() => props.room.ownerId === $i.id);
+
+// 他のサーバーで開かれる通話には相手のサーバーに IP アドレスが見えるので、ホストごとに初回だけ確認する
+async function join() {
+	const host = props.room.owner.host;
+	if (host != null && !prefer.s['voiceCall.acknowledgedRemoteHosts'].includes(host)) {
+		const { canceled } = await os.confirm({
+			type: 'info',
+			text: i18n.tsx._voiceCall.remoteHostNotice({ host }),
+		});
+		if (canceled) return;
+		prefer.commit('voiceCall.acknowledgedRemoteHosts', [...prefer.s['voiceCall.acknowledgedRemoteHosts'], host]);
+	}
+	joinVoiceCall(props.room);
+}
 
 type Participant = Misskey.entities.ChatRoomVoiceState['participants'][number];
 

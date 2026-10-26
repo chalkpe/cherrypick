@@ -2371,6 +2371,8 @@ _achievements:
 _voiceCall:
   micUnavailable: "Microphone is unavailable. You can still listen."
   connectionFailed: "Could not connect to the call server."
+  remoteHostNotice: "This call is hosted on {host}. {host} can see your IP address."
+  remoteHostUnsupported: "This room's server does not support calls."
   joinedFromAnotherTab: "You joined this call from another tab."
   removedFromCall: "You were removed from the call."
   callEnded: "The call has ended."

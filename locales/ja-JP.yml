@@ -2406,6 +2406,8 @@ _achievements:
 _voiceCall:
   micUnavailable: "マイクを使用できません。聞くことはできます。"
   connectionFailed: "通話サーバーに接続できませんでした。"
+  remoteHostNotice: "この通話は{host}で開かれます。{host}にはあなたのIPアドレスが見えます。"
+  remoteHostUnsupported: "このルームのサーバーは通話に対応していません。"
   joinedFromAnotherTab: "別のタブで通話に参加しました。"
   removedFromCall: "通話から外されました。"
   callEnded: "通話が終了しました。"

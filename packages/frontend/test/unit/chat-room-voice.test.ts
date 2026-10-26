@@ -27,7 +27,8 @@ const mocks = vi.hoisted(() => {
 		apiWithDialog: vi.fn(),
 		confirm: vi.fn(),
 		popupMenu: vi.fn(),
-		instance: { features: { voiceCall: true } } as { features: { voiceCall: boolean } },
+		instance: { features: { voiceCall: true, remoteVoiceCall: false } } as { features: { voiceCall: boolean; remoteVoiceCall: boolean } },
+		prefer: { s: { 'voiceCall.acknowledgedRemoteHosts': [] as string[] }, commit: vi.fn() },
 		me: { id: 'me', username: 'me', policies: { canVoiceCall: true, canScreenShare: true } },
 		joinVoiceCall: vi.fn(),
 		leaveVoiceCall: vi.fn(),
@@ -44,6 +45,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
 vi.mock('@/stream.js', () => ({ useStream: () => ({ useChannel: () => mocks.channel }) }));
+vi.mock('@/preferences.js', () => ({ prefer: mocks.prefer }));
 vi.mock('@/instance.js', () => ({ instance: mocks.instance }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog, confirm: mocks.confirm, popupMenu: mocks.popupMenu, toast: vi.fn(), claimZIndex: () => 1000 }));
@@ -89,7 +91,7 @@ const stubs = {
 	MkAvatar: { props: ['user'], template: '<span class="avatar"></span>' },
 	MkUserName: { props: ['user'], template: '<span>{{ user.name ?? user.username }}</span>' },
 	MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' },
-	MkButton: { template: '<button @click="$emit(\'click\', $event)"><slot /></button>' },
+	MkButton: { emits: ['click'], template: '<button @click="$emit(\'click\', $event)"><slot /></button>' },
 };
 
 const room = { id: 'r1', name: 'room 1', ownerId: 'owner', owner: { id: 'owner', username: 'owner', host: null } } as any;
@@ -101,6 +103,11 @@ const callState = voiceCall as unknown as Record<string, unknown>;
 beforeEach(() => {
 	mocks.channel = new mocks.FakeChannel();
 	mocks.instance.features.voiceCall = true;
+	mocks.instance.features.remoteVoiceCall = false;
+	mocks.prefer.s['voiceCall.acknowledgedRemoteHosts'] = [];
+	mocks.prefer.commit.mockReset().mockImplementation((key: string, value: unknown) => {
+		mocks.prefer.s[key as 'voiceCall.acknowledgedRemoteHosts'] = value as string[];
+	});
 	mocks.misskeyApi.mockReset().mockResolvedValue([]);
 	for (const fn of [mocks.joinVoiceCall, mocks.leaveVoiceCall, mocks.setMicEnabled, mocks.setDeafened, mocks.resumeAudio, mocks.watchScreenShare, mocks.startScreenShare, mocks.stopScreenShare, mocks.apiWithDialog, mocks.confirm, mocks.popupMenu]) fn.mockReset();
 	Object.assign(callState, { status: 'idle', room: null, micEnabled: false, deafened: false, audioBlocked: false, speakingIdentities: [], screenSharing: false, screenShareIdentities: [], watchingIdentity: null });
@@ -151,13 +158,56 @@ describe('room voice panel', () => {
 		expect(mocks.setMicEnabled).toHaveBeenCalledWith(false);
 	});
 
-	test('does not offer a call in a room owned on another server yet', async () => {
+	describe('room owned on another server', () => {
 		const mirror = { ...room, owner: { id: 'remote-owner', username: 'owner', host: 'remote.test' } };
-		render(XVoice, { props: { room: mirror }, global: { stubs } });
-		await flush();
 
-		expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
-		expect(mocks.misskeyApi).not.toHaveBeenCalled();
+		test('shows the panel for a mirror room when remote calls are allowed', async () => {
+			mocks.instance.features.remoteVoiceCall = true;
+			render(XVoice, { props: { room: mirror }, global: { stubs } });
+			await flush();
+
+			expect(screen.getByText(i18n.ts._voiceCall.join)).toBeTruthy();
+			expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/states', { roomIds: ['r1'] });
+		});
+
+		test('hides the panel for a mirror room when remote calls are not allowed', async () => {
+			render(XVoice, { props: { room: mirror }, global: { stubs } });
+			await flush();
+
+			expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
+			expect(mocks.misskeyApi).not.toHaveBeenCalled();
+		});
+
+		test('asks once before joining a call on another server', async () => {
+			mocks.instance.features.remoteVoiceCall = true;
+			mocks.confirm.mockResolvedValue({ canceled: false });
+			render(XVoice, { props: { room: mirror }, global: { stubs } });
+			await flush();
+
+			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
+			await flush();
+			expect(mocks.confirm).toHaveBeenCalledTimes(1);
+			expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.remoteHostNotice({ host: 'remote.test' }) }));
+			expect(mocks.prefer.commit).toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', ['remote.test']);
+			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
+
+			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
+			await flush();
+			expect(mocks.confirm).toHaveBeenCalledTimes(1);
+			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(2);
+		});
+
+		test('does not join when the notice is cancelled', async () => {
+			mocks.instance.features.remoteVoiceCall = true;
+			mocks.confirm.mockResolvedValue({ canceled: true });
+			render(XVoice, { props: { room: mirror }, global: { stubs } });
+			await flush();
+
+			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
+			await flush();
+			expect(mocks.joinVoiceCall).not.toHaveBeenCalled();
+			expect(mocks.prefer.commit).not.toHaveBeenCalled();
+		});
 	});
 
 	test('renders nothing when voice calls are disabled on this server', async () => {

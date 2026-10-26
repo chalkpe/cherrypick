@@ -9277,6 +9277,14 @@ export interface Locale extends ILocale {
          */
         "connectionFailed": string;
         /**
+         * この通話は{host}で開かれます。{host}にはあなたのIPアドレスが見えます。
+         */
+        "remoteHostNotice": ParameterizedString<"host" | "host">;
+        /**
+         * このルームのサーバーは通話に対応していません。
+         */
+        "remoteHostUnsupported": string;
+        /**
          * 別のタブで通話に参加しました。
          */
         "joinedFromAnotherTab": string;

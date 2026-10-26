@@ -173,6 +173,21 @@ describe('voice call controller', () => {
 		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.connectionFailed);
 	});
 
+	test('explains that the host does not support calls', async () => {
+		mocks.misskeyApi.mockRejectedValue({ code: 'REMOTE_HOST_UNSUPPORTED' });
+		await joinVoiceCall(room1);
+
+		expect(voiceCall).toMatchObject({ status: 'idle', room: null });
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.remoteHostUnsupported);
+	});
+
+	test('reports an unreachable host as a connection failure', async () => {
+		mocks.misskeyApi.mockRejectedValue({ code: 'REMOTE_HOST_UNREACHABLE' });
+		await joinVoiceCall(room1);
+
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.connectionFailed);
+	});
+
 	test('shows an enable-audio prompt when the browser blocks playback', async () => {
 		await joinVoiceCall(room1);
 		lastRoom().canPlaybackAudio = false;
