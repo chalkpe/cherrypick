@@ -20,17 +20,19 @@ import { signout } from '@/signout.js';
 
 type AccountWithToken = Misskey.entities.MeDetailed & { token: string };
 
-export async function getAccounts(): Promise<{
+export function getAccounts({ includeOtherServers = false }: { includeOtherServers?: boolean } = {}): {
 	host: string;
 	id: Misskey.entities.User['id'];
 	username: Misskey.entities.User['username'];
 	user?: Misskey.entities.MeDetailed | null;
 	token: string | null;
-}[]> {
-	const tokens = store.s.accountTokens;
-	const accountInfos = store.s.accountInfos;
-	const accounts = prefer.s.accounts;
-	return accounts.map(([host, user]) => ({
+}[] {
+	const tokens = store.r.accountTokens.value;
+	const accountInfos = store.r.accountInfos.value;
+	const accounts = prefer.r.accounts.value;
+	// Imported profiles may retain identities from other servers, whose IDs and
+	// tokens cannot be used with this server's API. Only account management needs them.
+	return accounts.filter(([accountHost]) => includeOtherServers || accountHost === host).map(([host, user]) => ({
 		host,
 		id: user.id,
 		username: user.username,
@@ -283,8 +285,7 @@ export async function getAccountMenu(opts: {
 
 	const menuItems: MenuItem[] = [];
 
-	// TODO: $iのホストも比較したいけど通常null
-	const accountItems = (await getAccounts().then(accounts => accounts.filter(x => x.id !== me.id))).map(a => createItem(a.host, a.id, a.username, a.user, a.token));
+	const accountItems = getAccounts().filter(x => x.id !== me.id).map(a => createItem(a.host, a.id, a.username, a.user, a.token));
 
 	if (opts.withExtraOperation) {
 		menuItems.push({
