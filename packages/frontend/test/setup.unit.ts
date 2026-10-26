@@ -58,6 +58,11 @@ export const preferState: Record<string, unknown> = {
 	},
 
 	mutingEmojis: [],
+	deidentifyMutedUsers: true,
+	mutedAvatarDecorationUsers: [],
+	showAvatarDecorations: true,
+	showRemoteAvatarDecorations: true,
+	friendlyUiShowAvatarDecorationsInNavBtn: false,
 };
 
 export let preferReactive: Record<string, Ref<unknown>> = {};
