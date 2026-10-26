@@ -4,8 +4,10 @@
  */
 
 import ms from 'ms';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
+import { DI } from '@/di-symbols.js';
+import type { ChatRoomMembershipsRepository } from '@/models/_.js';
 import { ChatService } from '@/core/ChatService.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
@@ -108,16 +110,32 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private liveKitService: LiveKitService,
 		private roleService: RoleService,
 		private remoteVoiceCallService: RemoteVoiceCallService,
+
+		@Inject(DI.chatRoomMembershipsRepository)
+		private chatRoomMembershipsRepository: ChatRoomMembershipsRepository,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			if (!this.liveKitService.isEnabled && !this.remoteVoiceCallService.isEnabled) {
 				throw new ApiError(meta.errors.voiceCallUnavailable);
 			}
 
-			const room = await this.chatService.findRoomById(ps.roomId);
-			const isMember = room != null && await this.chatService.isRoomMember(room, me.id);
+			// ルームと、そのメンバーであることを、渡された roomId で同時に読む。ルームがあるかどうかで読むものを変えず、
+			// どちらかが読めなかったときも、ルームがあるかどうかで答えが変わらないようにする
+			let room: Awaited<ReturnType<ChatService['findRoomById']>>;
+			let hasMembership: boolean;
+			try {
+				[room, hasMembership] = await Promise.all([
+					this.chatService.findRoomById(ps.roomId),
+					this.chatRoomMembershipsRepository.exists({ where: { roomId: ps.roomId, userId: me.id } }),
+				]);
+			} catch (err) {
+				// このサーバーに LiveKit が無ければ、読めなかったときも下と同じく最初に断る
+				if (!this.liveKitService.isEnabled) throw new ApiError(meta.errors.voiceCallUnavailable);
+				throw err;
+			}
+			const isMember = room != null && (room.ownerId === me.id || hasMembership);
 			// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーで開かれるので、このサーバーの LiveKit は使わない
-			const remoteOwner = isMember && room.owner?.host != null ? room.owner as MiRemoteUser : null;
+			const remoteOwner = isMember && room != null && room.owner?.host != null ? room.owner as MiRemoteUser : null;
 
 			// このサーバーに LiveKit が無ければ、入れるのはメンバーであるミラーの通話だけ。それ以外は他のサーバーの通話に対応する前と同じく、
 			// まず断る。メンバーでない人には、ルームがあるかも、ミラーかも分からないようにする

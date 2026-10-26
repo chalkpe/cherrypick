@@ -59,12 +59,21 @@ const REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS = 172_800;
 // 他のサーバーの通話を止めたときにミラーの現況を消すとき、一度に引くルームの数
 const MIRROR_CLEAR_BATCH_SIZE = 1000;
 
-// ミラーの現況を、保存済みのものと、最後に受け入れた時刻のどちらよりも新しい (updatedAt が大きい) ときだけ書く。書いたら 1、書かなければ 0。
+// 他のサーバーの通話を止めるたびに増やす数 (世代)。ミラーの現況を書くスクリプトは、書き始める前に読んだ世代と比べ、変わっていれば書かない。
+// 止めたときは、世代を増やしてからミラーの現況を消すので、どのワーカーの書き込みも、消す前に終わって消されるか、世代が変わって断られる
+const REMOTE_GENERATION_KEY = 'chatVoice:remoteGeneration';
+
+// ミラーの現況を、他のサーバーの通話を止めておらず (世代が読んだときのまま)、保存済みのものと、最後に受け入れた時刻の
+// どちらよりも新しい (updatedAt が大きい) ときだけ書く。書いたら 1、古ければ 0、世代が変わっていれば 2。
 // 書いたら、その時刻を最後に受け入れた時刻として残す (空の現況でも残す)。
 // 比べてから書くまでを一つの操作にして、同時に届いた古い現況が新しい現況を上書きしないようにする。
-// 保存済みのものや時刻が読めなければ、無いものとして扱う。
-// KEYS[1]: 現況の鍵、KEYS[2]: 最後に受け入れた時刻の鍵、ARGV: 現況 (JSON)、その updatedAt、現況の寿命 (秒)、時刻の寿命 (秒)
+// 保存済みのものや時刻が読めなければ、無いものとして扱う。世代の鍵が無ければ '0' とする。
+// KEYS[1]: 現況の鍵、KEYS[2]: 最後に受け入れた時刻の鍵、KEYS[3]: 世代の鍵、
+// ARGV: 現況 (JSON)、その updatedAt、現況の寿命 (秒)、時刻の寿命 (秒)、書き始める前に読んだ世代
 const STORE_IF_NEWER_SCRIPT = `
+if (redis.call('GET', KEYS[3]) or '0') ~= ARGV[5] then
+	return 2
+end
 local updatedAt = tonumber(ARGV[2])
 local lastSeen = tonumber(redis.call('GET', KEYS[2]))
 if lastSeen and lastSeen >= updatedAt then
@@ -130,6 +139,15 @@ type RoomAudience = {
 	/** 他のサーバーのメンバーの inbox (共有 inbox があればそちら) と、それが共有 inbox か。ミラーのルームなら空 */
 	remoteInboxes: Map<string, boolean>;
 };
+
+/**
+ * storeRemoteSnapshot の結果。
+ * - stored: 保存して、このサーバーのメンバーに知らせた
+ * - stale: 保存済みの現況か、最後に受け入れた時刻以前のもの
+ * - ahead: この時計より REMOTE_SNAPSHOT_MAX_AHEAD_MS より先の時刻が付いている
+ * - disabled: 他のサーバーの通話を止めている (保存の途中で止められた場合を含む)
+ */
+export type RemoteSnapshotStoreResult = 'stored' | 'stale' | 'ahead' | 'disabled';
 
 /** 他のサーバーに送った現況の記録 */
 type FederatedRecord = { hash: string; at: number };
@@ -421,8 +439,12 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		// 送り主は他のサーバーのユーザーなので、送り主が持ち主ならそのルームはミラー
 		if (room.ownerId !== actor.id) return 'skip: sender does not own the room';
 
-		const stored = await this.storeRemoteSnapshot(room, participants, updatedAt);
-		return stored ? 'ok: voice state stored' : 'skip: voice state is not newer than the stored one, or is stamped too far ahead';
+		switch (await this.storeRemoteSnapshot(room, participants, updatedAt)) {
+			case 'stored': return 'ok: voice state stored';
+			case 'stale': return 'skip: voice state is not newer than the last one accepted';
+			case 'ahead': return 'skip: voice state is stamped too far ahead';
+			case 'disabled': return 'skip: remote voice calls are disabled';
+		}
 	}
 
 	/**
@@ -430,65 +452,83 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * room は持ち主 (owner) を読み込んだもの。持ち主がこのサーバーのユーザーなら (ミラーでなければ) 例外を投げる。
 	 * updatedAt はホストの時刻。保存済みのもの以前の現況と、この時計より REMOTE_SNAPSHOT_MAX_AHEAD_MS より先の現況は捨てる。
 	 * 保存済みの現況の寿命が切れた後も、最後に受け入れた時刻 (REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS のあいだ覚えておく) 以前の現況は捨てる。
-	 * 参加者は、このサーバーが知っているユーザーのうち、ルームの持ち主と今のメンバーだけを残す。
-	 * 他のサーバーの通話を止めているあいだは保存しない。保存したかどうかを返す。
+	 * 参加者は、このサーバーが知っているユーザーだけを残す。そのうちこのサーバーのユーザーは、ルームのメンバーでなければ外す。
+	 * 他のサーバーのユーザー (持ち主を含む) がメンバーかはこのサーバーでは分からないので、ホストの言うまま残す。
+	 * 他のサーバーの通話を止めているあいだは保存しない。保存の途中で止められたときも、書かず (REMOTE_GENERATION_KEY)、知らせない。
+	 * 結果 (RemoteSnapshotStoreResult) を返す。
 	 * ミラーの通話はこのサーバーの LiveKit には無いので、定期的な読み直し (sweep) の対象には加えない
 	 */
 	@bindThis
-	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<boolean> {
+	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<RemoteSnapshotStoreResult> {
 		// このサーバーのルームの現況は LiveKit から読む。ホストの言う現況で上書きさせない
 		if (room.owner == null || room.owner.host == null) {
 			throw new Error(`Voice call participants sent by another server can only be stored for a room owned there: ${room.id}`);
 		}
 
-		if (updatedAt > Date.now() + REMOTE_SNAPSHOT_MAX_AHEAD_MS) return false;
+		if (updatedAt > Date.now() + REMOTE_SNAPSHOT_MAX_AHEAD_MS) return 'ahead';
+		if (!isRemoteVoiceCallEnabled(this.meta)) return 'disabled';
+		// 書き込みのスクリプトは、ここで読んだ世代と比べる。この後で止められれば書かない
+		const generation = await this.remoteGenerationOf();
 
 		const capped = participants.slice(0, MAX_ROOM_MEMBERS + 1);
-		const userIds = await this.knownUserIdsOf(capped.map(p => p.identity));
-		// ホストは、このサーバーが知っているユーザーなら誰でも参加者として送れるので、ルームにいられる人だけを残す
-		const admitted = await this.ownerAndMemberIdsOf(room, [...new Set(userIds.values())]);
+		const users = await this.knownUsersOf(capped.map(p => p.identity));
+		// ホストは、このサーバーのユーザーなら誰でも参加者として送れる。このサーバーのユーザーかどうかは、送られた identity ではなく
+		// DB のユーザーで決め、メンバーでなければ外す
+		const localMemberIds = await this.memberIdsOf(room, [...new Set([...users.values()].filter(user => user.host == null).map(user => user.id))]);
 		const snapshot: VoiceSnapshot = { participants: [], updatedAt };
 		for (const p of capped) {
-			const userId = userIds.get(p.identity);
-			if (userId != null && admitted.has(userId)) snapshot.participants.push({ identity: p.identity, userId, screenSharing: p.screenSharing });
+			const user = users.get(p.identity);
+			if (user == null) continue;
+			if (user.host == null && !localMemberIds.has(user.id)) continue;
+			snapshot.participants.push({ identity: p.identity, userId: user.id, screenSharing: p.screenSharing });
 		}
 
 		// 他のサーバーの通話を止めた後に、止める前に始まった参加の応答が届いても書かない (止めたときにミラーの現況は消している)
-		if (!isRemoteVoiceCallEnabled(this.meta)) return false;
+		if (!isRemoteVoiceCallEnabled(this.meta)) return 'disabled';
 
 		// 解決している間に新しい現況が保存されたかもしれないので、書くときに比べる (STORE_IF_NEWER_SCRIPT)。
 		// 空になったときも時刻ごと残し、遅れて届いた古い現況で上書きされないようにする (getStates は空のものを返さない)。
-		// 現況の鍵が切れた後に届く古い現況は、最後に受け入れた時刻で捨てる
+		// 現況の鍵が切れた後に届く古い現況は、最後に受け入れた時刻で捨てる。
+		// 読んだ後で (別のワーカーで) 止められて現況が消されていれば、世代が変わっているので書かない
 		const stored = await this.redisClient.eval(
 			STORE_IF_NEWER_SCRIPT,
-			2,
+			3,
 			this.keyOf(room.id),
 			this.lastSeenKeyOf(room.id),
+			REMOTE_GENERATION_KEY,
 			JSON.stringify(snapshot),
 			updatedAt,
 			REMOTE_SNAPSHOT_TTL_SECONDS,
 			REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS,
+			generation,
 		);
-		if (stored !== 1) return false;
-
-		const packed = await this.pack(room.id, snapshot, null);
+		if (stored === 2) return 'disabled';
+		if (stored !== 1) return 'stale';
 
 		// 持ち主は他のサーバーのユーザーなので、このサーバーのメンバーにだけ知らせる (ルームのストリームを使わない理由は refresh と同じ)
-		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id, user: { host: IsNull() } });
+		const [packed, memberships] = await Promise.all([
+			this.pack(room.id, snapshot, null),
+			this.chatRoomMembershipsRepository.findBy({ roomId: room.id, user: { host: IsNull() } }),
+		]);
+
+		// 書いた後、知らせる前に止められていれば知らせない。止めたときの消去で現況は消えている (消す前に書いたものも消される)
+		if (!isRemoteVoiceCallEnabled(this.meta) || await this.remoteGenerationOf() !== generation) return 'disabled';
 		for (const membership of memberships) {
 			this.globalEventService.publishMainStream(membership.userId, 'chatRoomVoiceState', packed);
 		}
-		return true;
+		return 'stored';
 	}
 
 	/**
 	 * ミラーの現況をすべて消す。他のサーバーの通話を止めたときに呼び、寿命 (REMOTE_SNAPSHOT_TTL_SECONDS) まで残さない。
+	 * 先に世代 (REMOTE_GENERATION_KEY) を増やし、止める前に始まった書き込みが、消した後に届いても書けないようにする。
 	 * ミラーは持ち主が他のサーバーのユーザーのルーム。それを id 順に少しずつ引き、現況の鍵を消す (無い鍵を消しても何も起きない)。
 	 * 最後に受け入れた時刻は残し、また通話を使うようにした後に古い現況が届いても書かないようにする。
 	 * 何度消しても同じ結果になるので、複数のワーカーが同時に動いてもよい
 	 */
 	@bindThis
 	public async clearMirrorSnapshots(): Promise<void> {
+		await this.redisClient.incr(REMOTE_GENERATION_KEY);
 		let lastId: MiChatRoom['id'] | null = null;
 		for (;;) {
 			const rooms: Pick<MiChatRoom, 'id'>[] = await this.chatRoomsRepository.find({
@@ -574,6 +614,11 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	private keyOf(roomId: MiChatRoom['id']): string {
 		return `chatVoice:${roomId}`;
+	}
+
+	/** 他のサーバーの通話を止めた回数 (世代)。一度も止めていなければ '0' */
+	private async remoteGenerationOf(): Promise<string> {
+		return (await this.redisClient.get(REMOTE_GENERATION_KEY)) ?? '0';
 	}
 
 	/** ミラーの現況について、最後に受け入れた時刻 (updatedAt) を覚えておく鍵 */
@@ -774,25 +819,22 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	/**
-	 * userIds のうち、ルームの持ち主と、いまルームのメンバーであるユーザー。メンバーかどうかは一度に引く
+	 * userIds のうち、いまルームのメンバーであるユーザー。一度に引き、userIds が空なら引かない
 	 */
-	private async ownerAndMemberIdsOf(room: MiChatRoom, userIds: MiUser['id'][]): Promise<Set<MiUser['id']>> {
-		const others = userIds.filter(userId => userId !== room.ownerId);
-		const memberships = others.length > 0
-			? await this.chatRoomMembershipsRepository.findBy({ roomId: room.id, userId: In(others) })
-			: [];
-		const admitted = new Set(memberships.map(membership => membership.userId));
-		if (userIds.includes(room.ownerId)) admitted.add(room.ownerId);
-		return admitted;
+	private async memberIdsOf(room: MiChatRoom, userIds: MiUser['id'][]): Promise<Set<MiUser['id']>> {
+		if (userIds.length === 0) return new Set();
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id, userId: In(userIds) });
+		return new Set(memberships.map(membership => membership.userId));
 	}
 
 	/**
-	 * 参加者の identity (LiveKitService.identityOf) を、このサーバーが既に知っているユーザーの id にする。
+	 * 参加者の identity (LiveKitService.identityOf) を、このサーバーが既に知っているユーザーにする。
 	 * identity は他のサーバーから届くので、知らないユーザーを取りに行くことはしない (相手に好きな URL を取得させないため)。
 	 * このサーバーの `${url}/users/<id>` はその id のローカルユーザー、それ以外は uri が一致するリモートユーザー。
-	 * 削除済みのユーザーと、どれにも当たらない identity は含めない
+	 * 削除済みのユーザーと、どれにも当たらない identity は含めない。
+	 * 返すユーザーの host は DB の値なので、このサーバーのユーザーかどうかはそれで決められる
 	 */
-	private async knownUserIdsOf(identities: string[]): Promise<Map<string, MiUser['id']>> {
+	private async knownUsersOf(identities: string[]): Promise<Map<string, Pick<MiUser, 'id' | 'host'>>> {
 		const localPrefix = `${this.config.url}/users/`;
 		const localIdentityOf = new Map<MiUser['id'], string>();
 		const remoteIdentities: string[] = [];
@@ -814,13 +856,13 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 				: [],
 		]);
 
-		const result = new Map<string, MiUser['id']>();
+		const result = new Map<string, Pick<MiUser, 'id' | 'host'>>();
 		for (const user of localUsers) {
 			const identity = localIdentityOf.get(user.id);
-			if (identity != null) result.set(identity, user.id);
+			if (identity != null && user.host == null) result.set(identity, { id: user.id, host: null });
 		}
 		for (const user of remoteUsers) {
-			if (user.host != null && user.uri != null) result.set(user.uri, user.id);
+			if (user.host != null && user.uri != null) result.set(user.uri, { id: user.id, host: user.host });
 		}
 		return result;
 	}
@@ -834,7 +876,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			if (user == null) continue;
 			participants.push({ identity: p.identity, user, screenSharing: p.screenSharing });
 		}
-		return { roomId, participants };
+		return { roomId, participants, updatedAt: snapshot.updatedAt };
 	}
 }
 

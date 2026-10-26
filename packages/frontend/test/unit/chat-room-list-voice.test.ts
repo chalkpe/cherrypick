@@ -64,7 +64,7 @@ afterEach(() => {
 describe('room list voice indicator', () => {
 	test('shows up to three people in the call and how many more', () => {
 		const { container } = render(XRoom, {
-			props: { room, voiceState: { roomId: 'r1', participants: ['a', 'b', 'c', 'd'].map(participant) } },
+			props: { room, voiceState: { roomId: 'r1', participants: ['a', 'b', 'c', 'd'].map(participant), updatedAt: 0 } },
 			global: { stubs },
 		});
 

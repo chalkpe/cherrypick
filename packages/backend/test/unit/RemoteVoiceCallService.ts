@@ -55,7 +55,7 @@ function createFixture(metaOverrides: Record<string, unknown> = {}, instances: {
 	};
 	// 持ち主のサーバーを断るかどうかは ChatVoiceService の判定 (isRefusedRemoteHost) をそのまま使う
 	const chatVoiceService = Object.assign(Object.create(ChatVoiceService.prototype), { meta, utilityService, instancesRepository });
-	Object.defineProperty(chatVoiceService, 'storeRemoteSnapshot', { value: vi.fn(async (): Promise<boolean> => true) });
+	Object.defineProperty(chatVoiceService, 'storeRemoteSnapshot', { value: vi.fn(async (): Promise<string> => 'stored') });
 	const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 	const loggerService = { getLogger: () => logger };
 	const service = new RemoteVoiceCallService(

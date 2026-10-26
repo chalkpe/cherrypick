@@ -171,6 +171,85 @@ describe('useChatRoomVoiceStates', () => {
 	});
 });
 
+// サーバーは現況を保存した順に知らせるとは限らない (別々のワーカーが送る)。現況の時刻 (updatedAt) で新しいものを残す
+describe('useChatRoomVoiceStates keeping the newest state of each room', () => {
+	const T = 1_700_000_000_000;
+	const q = { identity: 'https://local.test/users/bob', user: { id: 'bob', username: 'bob' }, screenSharing: true };
+
+	function useRef(initial: string[]) {
+		scope = effectScope();
+		const roomIds = ref(initial);
+		const states = scope.run(() => useChatRoomVoiceStates(roomIds))!;
+		return { roomIds, states };
+	}
+
+	test('keeps a newer live update when an older one arrives late', async () => {
+		const states = use(['r1']);
+		await flush();
+
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [p, q], updatedAt: T + 1 });
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [p], updatedAt: T });
+
+		expect(states.value.get('r1')).toEqual({ roomId: 'r1', participants: [p, q], updatedAt: T + 1 });
+	});
+
+	test('does not bring back an ended call when an older update arrives late', async () => {
+		const states = use(['r1']);
+		await flush();
+
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [p], updatedAt: T });
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [], updatedAt: T + 1 });
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [p], updatedAt: T });
+
+		expect(states.value.has('r1')).toBe(false);
+	});
+
+	test('applies an update with the same time', async () => {
+		const states = use(['r1']);
+		await flush();
+
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [p], updatedAt: T });
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [p, q], updatedAt: T });
+
+		expect(states.value.get('r1')?.participants).toEqual([p, q]);
+	});
+
+	test('keeps a newer live update over an older fetched state', async () => {
+		const { roomIds, states } = useRef(['r1']);
+		await flush();
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [p, q], updatedAt: T + 1 });
+
+		mocks.misskeyApi.mockResolvedValueOnce([{ roomId: 'r1', participants: [p], updatedAt: T }, { roomId: 'r2', participants: [q], updatedAt: T }]);
+		roomIds.value = ['r1', 'r2'];
+		await flush();
+
+		expect(states.value.get('r1')).toEqual({ roomId: 'r1', participants: [p, q], updatedAt: T + 1 });
+		expect(states.value.get('r2')?.participants).toEqual([q]);
+	});
+
+	test('does not bring back an ended call from an older fetched state', async () => {
+		const { roomIds, states } = useRef(['r1']);
+		await flush();
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [], updatedAt: T + 1 });
+
+		mocks.misskeyApi.mockResolvedValueOnce([{ roomId: 'r1', participants: [p], updatedAt: T }]);
+		roomIds.value = ['r1', 'r2'];
+		await flush();
+
+		expect(states.value.has('r1')).toBe(false);
+	});
+
+	test('ignores a live update older than a fetched state', async () => {
+		mocks.misskeyApi.mockResolvedValueOnce([{ roomId: 'r1', participants: [p, q], updatedAt: T + 1 }]);
+		const states = use(['r1']);
+		await flush();
+
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [], updatedAt: T });
+
+		expect(states.value.get('r1')?.participants).toEqual([p, q]);
+	});
+});
+
 // ホストのサーバーが落ちると通話の終わりは届かず、サーバー側の現況だけが寿命で消える
 describe('useChatRoomVoiceStates reconciling with the server', () => {
 	const statesCalls = () => mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/states');

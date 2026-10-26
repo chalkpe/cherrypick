@@ -34,5 +34,11 @@ export const packedChatRoomVoiceStateSchema = {
 				},
 			},
 		},
+		// 現況の時刻 (エポックミリ秒)。このサーバーのルームはこのサーバーの時計、他のサーバーが持つルーム (ミラー) はそのサーバーの時計。
+		// 現況は届く順が前後しうるので、受け取る側はルームごとにこれが新しいものを残す
+		updatedAt: {
+			type: 'number',
+			optional: false, nullable: false,
+		},
 	},
 } as const;

@@ -24,12 +24,19 @@ const liveKit = (isEnabled = true) => ({
 
 const remoteOwner = { id: 'owner', host: 'remote.test', uri: 'https://remote.test/users/owner' };
 
-function joinFixture(overrides: { isEnabled?: boolean; remoteEnabled?: boolean; canVoiceCall?: boolean; canScreenShare?: boolean; isArchived?: boolean; isMember?: boolean; ownerHost?: string | null; noRoom?: boolean } = {}) {
+function joinFixture(overrides: { isEnabled?: boolean; remoteEnabled?: boolean; canVoiceCall?: boolean; canScreenShare?: boolean; isArchived?: boolean; isMember?: boolean; ownerHost?: string | null; noRoom?: boolean; failing?: 'room' | 'membership' } = {}) {
 	const owner = overrides.ownerHost != null ? { ...remoteOwner, host: overrides.ownerHost } : { id: 'owner', host: null, uri: null };
+	const dbError = new Error('db is down');
 	const chatService = {
 		checkChatAvailability: vi.fn().mockResolvedValue(undefined),
-		findRoomById: vi.fn().mockResolvedValue(overrides.noRoom ? null : { id: 'r1', ownerId: 'owner', owner, isArchived: overrides.isArchived ?? false }),
-		isRoomMember: vi.fn().mockResolvedValue(overrides.isMember ?? true),
+		findRoomById: overrides.failing === 'room'
+			? vi.fn().mockRejectedValue(dbError)
+			: vi.fn().mockResolvedValue(overrides.noRoom ? null : { id: 'r1', ownerId: 'owner', owner, isArchived: overrides.isArchived ?? false }),
+		isRoomMember: overrides.failing === 'membership' ? vi.fn().mockRejectedValue(dbError) : vi.fn().mockResolvedValue(overrides.isMember ?? true),
+	};
+	// メンバーであることは、ルームを読むのと別に、渡された roomId で引く
+	const chatRoomMembershipsRepository = {
+		exists: overrides.failing === 'membership' ? vi.fn().mockRejectedValue(dbError) : vi.fn().mockResolvedValue(overrides.isMember ?? true),
 	};
 	const chatVoiceService = { issueJoinToken: vi.fn().mockResolvedValue({ url: 'https://local.test/livekit', token: 't' }) };
 	const roleService = { getUserPolicies: vi.fn().mockResolvedValue({ canVoiceCall: overrides.canVoiceCall ?? true, canScreenShare: overrides.canScreenShare ?? false }) };
@@ -37,8 +44,8 @@ function joinFixture(overrides: { isEnabled?: boolean; remoteEnabled?: boolean; 
 		isEnabled: overrides.remoteEnabled ?? true,
 		requestJoin: vi.fn().mockResolvedValue({ url: 'https://remote.test/livekit', token: 'remote-jwt' }),
 	};
-	const endpoint = new JoinEndpoint(chatService as any, chatVoiceService as any, liveKit(overrides.isEnabled ?? true) as any, roleService as any, remoteVoiceCallService as any);
-	return { endpoint, chatService, chatVoiceService, roleService, remoteVoiceCallService };
+	const endpoint = new JoinEndpoint(chatService as any, chatVoiceService as any, liveKit(overrides.isEnabled ?? true) as any, roleService as any, remoteVoiceCallService as any, chatRoomMembershipsRepository as any);
+	return { endpoint, chatService, chatVoiceService, roleService, remoteVoiceCallService, chatRoomMembershipsRepository };
 }
 
 describe('chat/rooms/voice/join', () => {
@@ -118,6 +125,65 @@ describe('chat/rooms/voice/join', () => {
 
 			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toThrow('ROLE_PERMISSION_DENIED');
 			expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
+		});
+	});
+
+	// ルームとメンバーであることは、ルームがあるかどうかに関わらず同じように読む。
+	// どちらかが読めなかったときも、ルームがあるかどうかで答えが変わらないようにする
+	describe('reading the room and the membership', () => {
+		test('join reads the membership by the room id even for a room that does not exist', async () => {
+			const f = joinFixture({ noRoom: true });
+
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_ROOM' });
+			expect(f.chatRoomMembershipsRepository.exists).toHaveBeenCalledWith({ where: { roomId: 'r1', userId: 'me' } });
+		});
+
+		test('join reads the room and the membership at the same time', async () => {
+			const f = joinFixture();
+			let resolveRoom: (room: unknown) => void = () => {};
+			f.chatService.findRoomById.mockReturnValueOnce(new Promise(resolve => {
+				resolveRoom = resolve;
+			}));
+
+			const joining = f.endpoint.exec({ roomId: 'r1' }, me, null, null);
+			await vi.waitFor(() => expect(f.chatRoomMembershipsRepository.exists).toHaveBeenCalled());
+			resolveRoom({ id: 'r1', ownerId: 'owner', owner: { id: 'owner', host: null, uri: null }, isArchived: false });
+
+			await expect(joining).resolves.toEqual({ url: 'https://local.test/livekit', token: 't' });
+		});
+
+		test('join lets the owner in without a membership row', async () => {
+			const f = joinFixture({ isMember: false });
+			f.chatService.findRoomById.mockResolvedValueOnce({ id: 'r1', ownerId: 'me', owner: { id: 'me', host: null, uri: null }, isArchived: false });
+
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).resolves.toEqual({ url: 'https://local.test/livekit', token: 't' });
+		});
+
+		const rooms = [
+			['a room that does not exist', { noRoom: true }],
+			['a room on this server the user is not a member of', { isMember: false }],
+			['a mirror room the user is not a member of', { ownerHost: 'remote.test', isMember: false }],
+			['a mirror room the user is a member of', { ownerHost: 'remote.test' }],
+		] as const;
+
+		describe.each([
+			['the membership', 'membership'],
+			['the room', 'room'],
+		] as const)('when %s cannot be read', (_label, failing) => {
+			test.each(rooms)('join answers VOICE_CALL_UNAVAILABLE for %s without a LiveKit here', async (_room, overrides) => {
+				const f = joinFixture({ isEnabled: false, remoteEnabled: true, failing, ...overrides });
+
+				await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'VOICE_CALL_UNAVAILABLE' });
+				expect(f.chatService.checkChatAvailability).not.toHaveBeenCalled();
+				expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
+			});
+
+			test.each(rooms)('join fails the same way for %s with a LiveKit here', async (_room, overrides) => {
+				const f = joinFixture({ failing, ...overrides });
+
+				await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toThrow('db is down');
+				expect(f.chatService.checkChatAvailability).not.toHaveBeenCalled();
+			});
 		});
 	});
 

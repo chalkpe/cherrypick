@@ -6261,6 +6261,7 @@ export type components = {
                 user: components['schemas']['UserLite'];
                 screenSharing: boolean;
             }[];
+            updatedAt: number;
         };
         NoteHistory: {
             /**

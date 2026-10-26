@@ -26,6 +26,18 @@ export function useChatRoomVoiceStates(roomIds: Ref<string[]>): Ref<Map<string, 
 	// 取得中に届いたイベントの方が新しいので、取得結果で上書きしないよう覚えておく
 	let liveDuringLoad: Map<string, Misskey.entities.ChatRoomVoiceState> | null = null;
 
+	// ルームごとに、受け取ったうちでいちばん新しい現況の時刻 (updatedAt)。通話が終わった (参加者が空の) 現況の時刻も覚える。
+	// サーバーは現況を保存した順に知らせるとは限らないので、イベントでも取得結果でも、これより古い現況は捨てる
+	const newest = new Map<string, number>();
+
+	/** 受け取ったうちでいちばん新しい現況より古ければ true。そうでなければ、その時刻を覚えて false */
+	function isOutdated(state: Misskey.entities.ChatRoomVoiceState): boolean {
+		const held = newest.get(state.roomId);
+		if (held != null && state.updatedAt < held) return true;
+		newest.set(state.roomId, state.updatedAt);
+		return false;
+	}
+
 	function apply(target: Map<string, Misskey.entities.ChatRoomVoiceState>, state: Misskey.entities.ChatRoomVoiceState) {
 		if (state.participants.length === 0) {
 			target.delete(state.roomId);
@@ -37,6 +49,7 @@ export function useChatRoomVoiceStates(roomIds: Ref<string[]>): Ref<Map<string, 
 	const connection = useStream().useChannel('main');
 	connection.on('chatRoomVoiceState', state => {
 		if (!roomIds.value.includes(state.roomId)) return;
+		if (isOutdated(state)) return;
 		liveDuringLoad?.set(state.roomId, state);
 		const next = new Map(states.value);
 		apply(next, state);
@@ -51,7 +64,16 @@ export function useChatRoomVoiceStates(roomIds: Ref<string[]>): Ref<Map<string, 
 		let next: Map<string, Misskey.entities.ChatRoomVoiceState>;
 		try {
 			const result = await misskeyApi('chat/rooms/voice/states', { roomIds: ids.slice(0, 100) });
-			next = new Map(result.map(state => [state.roomId, state]));
+			next = new Map();
+			for (const state of result) {
+				if (!isOutdated(state)) {
+					next.set(state.roomId, state);
+					continue;
+				}
+				// 取得を始めた後に、より新しい現況が届いている。それを残す (通話が終わっていれば出さない)
+				const held = states.value.get(state.roomId);
+				if (held != null) next.set(state.roomId, held);
+			}
 		} catch {
 			if (keepOnError) {
 				if (liveDuringLoad === live) liveDuringLoad = null;
