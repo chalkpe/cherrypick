@@ -19,6 +19,7 @@ import { bindThis } from '@/decorators.js';
 import type Logger from '@/logger.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { LiveKitService, userIdOfMetadata } from '@/core/LiveKitService.js';
+import type { LiveKitParticipant } from '@/core/LiveKitService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
@@ -33,7 +34,8 @@ import { LoggerService } from '@/core/LoggerService.js';
 const REFRESH_DELAY_MS = 500;
 
 // LiveKit が再起動して room_finished を送らなかった場合でも表示が残らないよう、
-// スナップショットには寿命を付け、通話中のルームは定期的に読み直す
+// スナップショットには寿命を付け、通話中のルームは定期的に読み直す。
+// 読み直すたびに、いまルームに残れない参加者 (メンバーでなくなった、サーバーが断られた) も外す
 const SNAPSHOT_TTL_SECONDS = 120;
 const SWEEP_INTERVAL_MS = 60_000;
 const SWEEP_LOCK_SECONDS = 50;
@@ -72,6 +74,18 @@ type VoiceSnapshot = {
 
 /** 他のサーバーのユーザーを断るかどうかに関わる設定 */
 type FederationPolicy = { blockedHosts?: string[]; federation?: string; federationHosts?: string[] };
+
+/** 通話の参加者。userId はトークンに付けたメタデータの値 (無ければ null) */
+type CallParticipant = { identity: string; userId: MiUser['id'] | null };
+
+/** あるルームの参加者が通話に残れるか (isAdmitted) を確かめるために、ルームごとにまとめて引いたもの */
+type AdmissionContext = {
+	room: MiChatRoom | null;
+	users: Map<MiUser['id'], MiUser>;
+	memberIds: Set<MiUser['id']>;
+	/** ホストごとの isRefusedRemoteHost の結果 */
+	refusedHosts: Map<string, boolean>;
+};
 
 /** 他のサーバーに渡す参加者の現況。userId はこのサーバーの DB の id なので含めない */
 type FederatedVoiceSnapshot = {
@@ -171,61 +185,66 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * 他のサーバーのホストを、このサーバーが断っているか。
 	 * 通話に入れるか (このサーバーのルームに他のサーバーのユーザーを入れるとき、このサーバーのユーザーが他のサーバーのルームに入るとき) と、
 	 * 通話中の参加者を外すかを、すべてこれで決める。
-	 * - 連合が許されていないホスト。ブロックはドメインで指定されるので、ポートを除いた名前でも確かめる
-	 * - inbox (InboxProcessorService) と同じく、ポート・末尾のドット・大文字小文字・Unicode の違いを無視して、ブロックの指定に当たるホスト
-	 * - 停止されたサーバー。停止はそのサーバーの記録のどれかにあれば従う。キャッシュを通さず、いまの記録を見る
+	 * inbox (InboxProcessorService) が他のサーバーからのアクティビティを捨てる条件と揃える。
+	 * - 連合が許されていないホスト。ブロックはドメインで指定されるので、ポートを除いた名前でも確かめる。
+	 *   inbox と同じく、正規化した名前 (ポートと末尾のドットを除いた小文字の punycode) でも確かめる
+	 * - inbox と同じく、ポート・末尾のドット・大文字小文字・Unicode の違いを無視して、ブロックの指定に当たるホスト
+	 * - 停止 (手動・自動を問わない) または隔離 (quarantineLimited) されたサーバー。
+	 *   そのサーバーの記録のどれかにあれば従う。キャッシュを通さず、いまの記録を見る
 	 * ホストとして読めないものも断る
 	 */
 	@bindThis
 	public async isRefusedRemoteHost(host: string): Promise<boolean> {
-		const hostname = normalizeHost(host) != null ? hostnameOf(host) : null;
-		if (hostname == null) return true;
+		const normalized = normalizeHost(host);
+		const hostname = normalized != null ? hostnameOf(host) : null;
+		if (normalized == null || hostname == null) return true;
 
+		if (!this.utilityService.isFederationAllowedHost(normalized)) return true;
 		if (!this.utilityService.isFederationAllowedHost(hostname)) return true;
 		if (!this.utilityService.isFederationAllowedHost(host)) return true;
 		if (isHostInList(this.meta.blockedHosts, host)) return true;
 
 		const instances = await this.instancesRepository.findBy({ host: In(this.instanceHostsOf(host)) });
-		return instances.some(instance => instance.suspensionState !== 'none');
+		return instances.some(instance => instance.suspensionState !== 'none' || instance.quarantineLimited);
 	}
 
 	/**
-	 * 通話中の他のサーバーの参加者のうち、いまこのサーバーが断っているサーバー (isRefusedRemoteHost) のユーザーを外す。
-	 * ブロックや連合の設定が変わったときと、管理画面でサーバーを停止したときに呼ぶ。
-	 * 外すのは何度しても同じ結果になるので、複数のワーカーが同時に動いてもよい。
-	 * 読めないルームや外せない参加者があっても、記録して残りを続ける
+	 * 通話中のすべてのルームで、いま残れない参加者 (isAdmitted) を外す (reconcileRoom)。
+	 * ブロックや連合の設定が変わったときと、管理画面でサーバーを停止したときに、定期的な読み直し (sweep) を待たずに呼ぶ。
+	 * 外すのは何度しても同じ結果になるので、複数のワーカーが同時に動いてもよい
 	 */
 	@bindThis
 	public async removeRefusedRemoteParticipants(): Promise<void> {
 		const roomIds = await this.redisClient.smembers(ACTIVE_ROOMS_KEY);
-		// 同じサーバーの参加者が何人いても、判定は一度だけ
-		const refusedHosts = new Map<string, boolean>();
 		for (const roomId of roomIds) {
-			let identities: string[];
-			try {
-				identities = await this.refusedRemoteIdentitiesIn(roomId, refusedHosts);
-			} catch (err) {
-				this.logger.warn(`Failed to check the participants of the voice call in ${roomId}`, { error: err });
-				continue;
-			}
-			for (const identity of identities) {
-				await this.liveKitService.removeParticipant(roomId, identity).catch(err => {
-					this.logger.warn(`Failed to remove ${identity} from the voice call in ${roomId}`, { error: err });
-				});
-			}
+			await this.reconcileRoom(roomId);
 		}
 	}
 
 	/**
-	 * 通話に入った参加者が、いまもそのルームに入れるかを確かめ、入れなければ外す。
+	 * ルームの通話の参加者を LiveKit から読み、いまそのルームに残れない参加者 (isAdmitted) を外す。
+	 * 読めない・確かめられない・外せないときは記録だけして戻る。定期的な読み直し (sweep) が毎回これを呼ぶので、次の読み直しでやり直される
+	 */
+	@bindThis
+	public async reconcileRoom(roomId: MiChatRoom['id']): Promise<void> {
+		let participants: LiveKitParticipant[];
+		try {
+			participants = await this.liveKitService.listParticipants(roomId);
+		} catch (err) {
+			this.logger.warn(`Failed to list the participants of the voice call in ${roomId}`, { error: err });
+			return;
+		}
+		await this.removeUnadmitted(roomId, participants);
+	}
+
+	/**
+	 * 通話に入った参加者が、いまもそのルームに残れるか (isAdmitted) を確かめ、残れなければ外す。
 	 * トークンは 10 分有効なので、ルームを抜けたりサーバーが断られたりした後でも、同じトークンで入り直せてしまうため。
-	 * トークンに付けたユーザー (メタデータの userId) がルームのメンバー (持ち主を含む) で、
-	 * 他のサーバーのユーザーならそのサーバーを断っていない (isRefusedRemoteHost) ときだけ残す
+	 * 確かめられなければ外さない (DB が一時的に使えないだけで全員を外さないため)。そのときは定期的な読み直し (sweep) が確かめ直す
 	 */
 	@bindThis
 	public async removeUnadmittedParticipant(roomId: MiChatRoom['id'], participant: { identity: string; metadata?: string }): Promise<void> {
-		if (await this.isAdmitted(roomId, userIdOfMetadata(participant.metadata))) return;
-		await this.liveKitService.removeParticipant(roomId, participant.identity);
+		await this.removeUnadmitted(roomId, [{ identity: participant.identity, userId: userIdOfMetadata(participant.metadata) }]);
 	}
 
 	/**
@@ -267,10 +286,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 		const participant = event.participant;
 		if (event.event === 'participant_joined' && participant != null) {
-			this.removeUnadmittedParticipant(roomId, participant).catch(err => {
-				// 確かめられなければ外さない。入り直したときにまた確かめる
-				this.logger.warn(`Failed to check ${participant.identity} who joined the voice call in ${roomId}`, { error: err });
-			});
+			// 確かめられなかったときと外せなかったときは removeUnadmitted が記録し、定期的な読み直し (sweep) がやり直す
+			this.removeUnadmittedParticipant(roomId, participant).catch(() => {});
 		}
 
 		this.scheduleRefresh(roomId);
@@ -427,7 +444,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	/**
-	 * 通話中のルームを LiveKit から読み直す。複数のワーカーが同時に動いても、各ルームを読むのは一つだけ
+	 * 通話中のルームを LiveKit から読み直す。複数のワーカーが同時に動いても、各ルームを読むのは一つだけ。
+	 * 読み直す前に、いま残れない参加者を外す (reconcileRoom)。設定の変更や停止の後で通話中になったルーム、
+	 * 自動で停止されたサーバー、外せなかった参加者も、これで SWEEP_INTERVAL_MS のうちに外れる
 	 */
 	@bindThis
 	public async sweep(): Promise<void> {
@@ -435,6 +454,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		for (const roomId of roomIds) {
 			const locked = await this.redisClient.set(`chatVoice:sweep:${roomId}`, '1', 'EX', SWEEP_LOCK_SECONDS, 'NX');
 			if (locked !== 'OK') continue;
+			await this.reconcileRoom(roomId);
 			await this.refresh(roomId).catch(() => {
 				// LiveKit に届かなければスナップショットの寿命切れに任せる
 			});
@@ -498,44 +518,70 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		return [...new Set([this.utilityService.toPuny(host), ...hostLookupCandidates(host)])];
 	}
 
-	/** ルームの通話の参加者のうち、断っているサーバー (isRefusedRemoteHost) のユーザーの identity。判定の結果は refusedHosts に覚える */
-	private async refusedRemoteIdentitiesIn(roomId: MiChatRoom['id'], refusedHosts: Map<string, boolean>): Promise<string[]> {
-		const participants = await this.liveKitService.listParticipants(roomId);
-		if (participants.length === 0) return [];
+	/**
+	 * 参加者のうち、いまそのルームに残れない (isAdmitted でない) ものを外す。
+	 * ルームとユーザーとメンバーはまとめて引く。確かめられなければ誰も外さず、外せなかった参加者は記録して残りを続ける
+	 */
+	private async removeUnadmitted(roomId: MiChatRoom['id'], participants: CallParticipant[]): Promise<void> {
+		if (participants.length === 0) return;
 
-		const users = await this.usersRepository.findBy({ id: In(participants.map(p => p.userId)) });
-		const hostOf = new Map(users.map(user => [user.id, user.host]));
-
-		const identities: string[] = [];
-		for (const participant of participants) {
-			const host = hostOf.get(participant.userId);
-			if (host == null) continue;
-			let refused = refusedHosts.get(host);
-			if (refused == null) {
-				refused = await this.isRefusedRemoteHost(host);
-				refusedHosts.set(host, refused);
+		const unadmitted: string[] = [];
+		try {
+			const context = await this.admissionContextOf(roomId, participants.flatMap(p => p.userId != null ? [p.userId] : []));
+			for (const participant of participants) {
+				if (!(await this.isAdmitted(participant, context))) unadmitted.push(participant.identity);
 			}
-			if (refused) identities.push(participant.identity);
+		} catch (err) {
+			this.logger.warn(`Failed to check who may stay in the voice call in ${roomId}; nobody was removed`, { error: err });
+			return;
 		}
-		return identities;
+
+		for (const identity of unadmitted) {
+			await this.liveKitService.removeParticipant(roomId, identity).catch(err => {
+				this.logger.warn(`Failed to remove ${identity}, who may not stay, from the voice call in ${roomId}`, { error: err });
+			});
+		}
 	}
 
-	/** トークンに付けたユーザーが、いまもルームの通話に入れるか (removeUnadmittedParticipant) */
-	private async isAdmitted(roomId: MiChatRoom['id'], userId: MiUser['id'] | null): Promise<boolean> {
-		if (userId == null) return false;
-
-		const [room, user] = await Promise.all([
+	private async admissionContextOf(roomId: MiChatRoom['id'], userIds: MiUser['id'][]): Promise<AdmissionContext> {
+		const ids = [...new Set(userIds)];
+		const [room, users, memberships] = await Promise.all([
 			this.chatRoomsRepository.findOneBy({ id: roomId }),
-			this.usersRepository.findOneBy({ id: userId }),
+			ids.length > 0 ? this.usersRepository.findBy({ id: In(ids) }) : [],
+			ids.length > 0 ? this.chatRoomMembershipsRepository.findBy({ roomId, userId: In(ids) }) : [],
 		]);
-		if (room == null || user == null) return false;
+		return {
+			room,
+			users: new Map(users.map(user => [user.id, user])),
+			memberIds: new Set(memberships.map(membership => membership.userId)),
+			refusedHosts: new Map(),
+		};
+	}
 
-		if (room.ownerId !== user.id) {
-			const isMember = await this.chatRoomMembershipsRepository.exists({ where: { roomId, userId: user.id } });
-			if (!isMember) return false;
+	/**
+	 * 参加者が、いまもそのルームの通話に残れるか。入ったとき (participant_joined) と定期的な読み直し (sweep) で確かめる。
+	 * - トークンに付けたユーザー (メタデータの userId) がいて、参加者の identity がそのユーザーのもの (LiveKitService.identityOf)
+	 * - ルームがあり、そのユーザーが持ち主かメンバー
+	 * - 他のサーバーのユーザーなら、そのサーバーを断っていない (isRefusedRemoteHost)
+	 */
+	private async isAdmitted(participant: CallParticipant, context: AdmissionContext): Promise<boolean> {
+		if (participant.userId == null) return false;
+		const user = context.users.get(participant.userId);
+		if (user == null) return false;
+		if (user.host != null && user.uri == null) return false;
+		if (participant.identity !== this.liveKitService.identityOf(user)) return false;
+
+		const room = context.room;
+		if (room == null) return false;
+		if (room.ownerId !== user.id && !context.memberIds.has(user.id)) return false;
+
+		if (user.host == null) return true;
+		let refused = context.refusedHosts.get(user.host);
+		if (refused == null) {
+			refused = await this.isRefusedRemoteHost(user.host);
+			context.refusedHosts.set(user.host, refused);
 		}
-
-		return user.host == null || !(await this.isRefusedRemoteHost(user.host));
+		return !refused;
 	}
 
 	/**

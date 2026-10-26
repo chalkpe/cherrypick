@@ -1018,11 +1018,14 @@ export class ApInboxService {
 			this.logger.info(`[ApInboxService.remove] Deleted membership, affected rows: ${result.affected}, room: ${room.id}, user: ${actor.id}`);
 
 			// このサーバーが持つルームなら、抜けたメンバーを通話からも外す。
-			// 外せなければ inbox のジョブごとやり直す (メンバーの削除も通話から外すのも、何度しても同じ結果になる)。
-			// やり直しではメンバーが既に消えているので、削除した数によらず外す
-			const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
-			if (owner != null && owner.host == null) {
-				await this.liveKitService.removeParticipant(room.id, this.liveKitService.identityOf(actor));
+			// 外せなくてもジョブは失敗させない。メンバーでない参加者は通話の定期的な読み直し (ChatVoiceService.sweep) が外す
+			if ((result.affected ?? 0) > 0) {
+				const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+				if (owner != null && owner.host == null) {
+					await this.liveKitService.removeParticipant(room.id, this.liveKitService.identityOf(actor)).catch(err => {
+						this.logger.warn(`[ApInboxService.remove] Failed to remove ${actor.uri} from the voice call in ${room.id}`, { error: err });
+					});
+				}
 			}
 
 			return 'ok: removed from chat room';

@@ -491,20 +491,22 @@ describe('Chat room federation: Remove', () => {
 		expect(f.liveKitService.removeParticipant).toHaveBeenCalledWith('localroom', dave.uri);
 	});
 
-	test('removes the actor from the call again when a retried Remove finds the membership already gone', async () => {
+	test('makes no LiveKit call when the Remove deleted no membership', async () => {
 		const f = fixture();
 
 		await f.inbox.remove(dave, leave(dave, 'https://other.test/chat/rooms/localroom'));
 
-		expect(f.liveKitService.removeParticipant).toHaveBeenCalledWith('localroom', dave.uri);
+		expect(f.liveKitService.removeParticipant).not.toHaveBeenCalled();
 	});
 
-	test('fails the inbox job when the call cannot be left, so that it is retried', async () => {
+	test('logs a LiveKit error instead of failing the inbox job', async () => {
+		// 外せなかった参加者は、通話の定期的な読み直し (ChatVoiceService.sweep) がメンバーでないとして外す
 		const f = fixture({ memberships: [{ id: 'm1', roomId: 'localroom', userId: dave.id }] });
 		f.liveKitService.removeParticipant.mockRejectedValueOnce(new Error('LiveKit is down'));
 
-		await expect(f.inbox.remove(dave, leave(dave, 'https://other.test/chat/rooms/localroom'))).rejects.toThrow('LiveKit is down');
+		await expect(f.inbox.remove(dave, leave(dave, 'https://other.test/chat/rooms/localroom'))).resolves.toBe('ok: removed from chat room');
 		expect(f.memberships.rows).toEqual([]);
+		expect(f.inbox.logger.warn).toHaveBeenCalled();
 	});
 
 	test('leaves calls alone for a room hosted on another server', async () => {
