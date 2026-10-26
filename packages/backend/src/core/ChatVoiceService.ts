@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common';
+import { Inject, Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import type { WebhookEvent } from 'livekit-server-sdk';
 import { DI } from '@/di-symbols.js';
@@ -18,6 +18,13 @@ import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 
 const REFRESH_DELAY_MS = 500;
+
+// LiveKit が再起動して room_finished を送らなかった場合でも表示が残らないよう、
+// スナップショットには寿命を付け、通話中のルームは定期的に読み直す
+const SNAPSHOT_TTL_SECONDS = 120;
+const SWEEP_INTERVAL_MS = 60_000;
+const SWEEP_LOCK_SECONDS = 50;
+const ACTIVE_ROOMS_KEY = 'chatVoice:active';
 
 // 参加者の出入りや画面共有の開始・終了に関わるイベントだけを扱う
 const REFRESH_EVENTS = new Set([
@@ -39,8 +46,9 @@ type VoiceSnapshot = {
  * チャットルームの通話参加者のスナップショットを Redis に保持し、ストリームへ配信する。
  */
 @Injectable()
-export class ChatVoiceService implements OnApplicationShutdown {
+export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	private pendingRefreshes = new Map<MiChatRoom['id'], NodeJS.Timeout>();
+	private sweepTimer: NodeJS.Timeout | null = null;
 
 	constructor(
 		@Inject(DI.redis)
@@ -116,8 +124,10 @@ export class ChatVoiceService implements OnApplicationShutdown {
 
 		if (snapshot.participants.length === 0) {
 			await this.redisClient.del(this.keyOf(roomId));
+			await this.redisClient.srem(ACTIVE_ROOMS_KEY, roomId);
 		} else {
-			await this.redisClient.set(this.keyOf(roomId), JSON.stringify(snapshot));
+			await this.redisClient.set(this.keyOf(roomId), JSON.stringify(snapshot), 'EX', SNAPSHOT_TTL_SECONDS);
+			await this.redisClient.sadd(ACTIVE_ROOMS_KEY, roomId);
 		}
 
 		const packed = await this.pack(roomId, snapshot, null);
@@ -132,10 +142,35 @@ export class ChatVoiceService implements OnApplicationShutdown {
 		}
 	}
 
+	/**
+	 * 通話中のルームを LiveKit から読み直す。複数のワーカーが同時に動いても、各ルームを読むのは一つだけ
+	 */
+	@bindThis
+	public async sweep(): Promise<void> {
+		const roomIds = await this.redisClient.smembers(ACTIVE_ROOMS_KEY);
+		for (const roomId of roomIds) {
+			const locked = await this.redisClient.set(`chatVoice:sweep:${roomId}`, '1', 'EX', SWEEP_LOCK_SECONDS, 'NX');
+			if (locked !== 'OK') continue;
+			await this.refresh(roomId).catch(() => {
+				// LiveKit に届かなければスナップショットの寿命切れに任せる
+			});
+		}
+	}
+
+	@bindThis
+	public onModuleInit(): void {
+		if (!this.liveKitService.isEnabled) return;
+		this.sweepTimer = setInterval(() => {
+			this.sweep().catch(() => {});
+		}, SWEEP_INTERVAL_MS);
+	}
+
 	@bindThis
 	public onApplicationShutdown(): void {
 		for (const timer of this.pendingRefreshes.values()) clearTimeout(timer);
 		this.pendingRefreshes.clear();
+		if (this.sweepTimer != null) clearInterval(this.sweepTimer);
+		this.sweepTimer = null;
 	}
 
 	private keyOf(roomId: MiChatRoom['id']): string {

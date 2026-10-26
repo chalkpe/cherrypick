@@ -8,20 +8,29 @@ import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 
 function fakeRedis() {
 	const store = new Map<string, string>();
+	const sets = new Map<string, Set<string>>();
 	return {
 		store,
+		sets,
 		get: vi.fn(async (key: string) => store.get(key) ?? null),
-		set: vi.fn(async (key: string, value: string) => {
+		set: vi.fn(async (key: string, value: string, ...args: (string | number)[]) => {
+			if (args.includes('NX') && store.has(key)) return null;
 			store.set(key, value);
 			return 'OK';
 		}),
 		del: vi.fn(async (key: string) => (store.delete(key) ? 1 : 0)),
 		mget: vi.fn(async (...keys: string[]) => keys.map(key => store.get(key) ?? null)),
+		sadd: vi.fn(async (key: string, member: string) => {
+			if (!sets.has(key)) sets.set(key, new Set());
+			sets.get(key)!.add(member);
+			return 1;
+		}),
+		srem: vi.fn(async (key: string, member: string) => (sets.get(key)?.delete(member) ? 1 : 0)),
+		smembers: vi.fn(async (key: string) => [...(sets.get(key) ?? [])]),
 	};
 }
 
-function createFixture() {
-	const redis = fakeRedis();
+function createFixture(redis = fakeRedis()) {
 	const liveKitService = {
 		getPublicUrl: () => 'https://local.test/livekit',
 		identityOf: (user: { id: string; host: string | null; uri: string | null }) => user.host == null ? `https://local.test/users/${user.id}` : user.uri,
@@ -100,6 +109,40 @@ describe('ChatVoiceService', () => {
 		await f.service.refresh('r1');
 
 		expect(f.globalEventService.publishChatRoomStream.mock.calls[0][2].participants.map((p: { identity: string }) => p.identity)).toEqual(['i1']);
+	});
+
+	test('expires snapshots so a lost LiveKit cannot leave phantom calls', async () => {
+		f.liveKitService.listParticipants.mockResolvedValue([{ identity: 'i1', userId: 'u1', screenSharing: false, micTrackSid: null }]);
+
+		await f.service.refresh('r1');
+
+		expect(f.redis.set).toHaveBeenCalledWith('chatVoice:r1', expect.any(String), 'EX', 120);
+	});
+
+	test('tracks rooms with an active call', async () => {
+		f.liveKitService.listParticipants.mockResolvedValue([{ identity: 'i1', userId: 'u1', screenSharing: false, micTrackSid: null }]);
+		await f.service.refresh('r1');
+		expect([...f.redis.sets.get('chatVoice:active') ?? []]).toEqual(['r1']);
+
+		f.liveKitService.listParticipants.mockResolvedValue([]);
+		await f.service.refresh('r1');
+		expect([...f.redis.sets.get('chatVoice:active') ?? []]).toEqual([]);
+	});
+
+	test('re-reads active rooms periodically, one worker per room', async () => {
+		const sharedRedis = fakeRedis();
+		sharedRedis.sets.set('chatVoice:active', new Set(['r1', 'r2']));
+		const workerA = createFixture(sharedRedis);
+		const workerB = createFixture(sharedRedis);
+		const refreshA = vi.spyOn(workerA.service, 'refresh').mockResolvedValue();
+		const refreshB = vi.spyOn(workerB.service, 'refresh').mockResolvedValue();
+
+		await Promise.all([workerA.service.sweep(), workerB.service.sweep()]);
+
+		const refreshed = [...refreshA.mock.calls, ...refreshB.mock.calls].map(call => call[0]).sort();
+		expect(refreshed).toEqual(['r1', 'r2']);
+		workerA.service.onApplicationShutdown();
+		workerB.service.onApplicationShutdown();
 	});
 
 	test('coalesces bursts of webhooks into one refresh per room', async () => {
