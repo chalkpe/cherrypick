@@ -5,8 +5,10 @@
 
 import { Inject, Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import * as Redis from 'ioredis';
+import { IsNull } from 'typeorm';
 import type { WebhookEvent } from 'livekit-server-sdk';
 import { DI } from '@/di-symbols.js';
+import type { Config } from '@/config.js';
 import type { ChatRoomMembershipsRepository, ChatRoomsRepository } from '@/models/_.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
@@ -19,6 +21,7 @@ import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
+import { ApPersonService } from '@/core/activitypub/models/ApPersonService.js';
 
 const REFRESH_DELAY_MS = 500;
 
@@ -28,6 +31,10 @@ const SNAPSHOT_TTL_SECONDS = 120;
 const SWEEP_INTERVAL_MS = 60_000;
 const SWEEP_LOCK_SECONDS = 50;
 const ACTIVE_ROOMS_KEY = 'chatVoice:active';
+
+// 他のサーバーが持つルーム (ミラー) の通話は、このサーバーから読み直せない。
+// メンバーが参加するたびにホストから届く現況を、これだけの間だけ表示する
+const REMOTE_SNAPSHOT_TTL_SECONDS = 600;
 
 // 参加者の出入りや画面共有の開始・終了に関わるイベントだけを扱う
 const REFRESH_EVENTS = new Set([
@@ -60,6 +67,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	private sweepTimer: NodeJS.Timeout | null = null;
 
 	constructor(
+		@Inject(DI.config)
+		private config: Config,
+
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
 
@@ -75,6 +85,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		private roleService: RoleService,
 		private utilityService: UtilityService,
 		private federatedInstanceService: FederatedInstanceService,
+		private apPersonService: ApPersonService,
 	) {
 	}
 
@@ -196,6 +207,39 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	/**
+	 * 他のサーバーが持つルーム (ミラー) について、ホストから届いた参加者の現況を保存し、このサーバーのメンバーに知らせる。
+	 * updatedAt はホストの時刻。保存済みのもの以前の現況は捨てる。
+	 * ミラーの通話はこのサーバーの LiveKit には無いので、定期的な読み直し (sweep) の対象には加えない
+	 */
+	@bindThis
+	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<void> {
+		const resolved = await Promise.all(participants.slice(0, MAX_ROOM_MEMBERS + 1).map(async p => {
+			const userId = await this.userIdOfIdentity(p.identity);
+			return userId == null ? null : { identity: p.identity, userId, screenSharing: p.screenSharing };
+		}));
+		const snapshot: VoiceSnapshot = { participants: [], updatedAt };
+		for (const p of resolved) {
+			if (p != null) snapshot.participants.push(p);
+		}
+
+		// 解決している間に新しい現況が保存されたかもしれないので、書く直前に比べる
+		const stored = await this.redisClient.get(this.keyOf(room.id));
+		if (stored != null && (JSON.parse(stored) as VoiceSnapshot).updatedAt >= updatedAt) return;
+
+		// 空になったときも時刻ごと残し、遅れて届いた古い現況で上書きされないようにする (getStates は空のものを返さない)
+		await this.redisClient.set(this.keyOf(room.id), JSON.stringify(snapshot), 'EX', REMOTE_SNAPSHOT_TTL_SECONDS);
+
+		const packed = await this.pack(room.id, snapshot, null);
+		this.globalEventService.publishChatRoomStream(room.id, 'voiceState', packed);
+
+		// 持ち主は他のサーバーのユーザーなので、このサーバーのメンバーにだけ知らせる
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id, user: { host: IsNull() } });
+		for (const membership of memberships) {
+			this.globalEventService.publishMainStream(membership.userId, 'chatRoomVoiceState', packed);
+		}
+	}
+
+	/**
 	 * 通話中のルームを LiveKit から読み直す。複数のワーカーが同時に動いても、各ルームを読むのは一つだけ
 	 */
 	@bindThis
@@ -228,6 +272,25 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	private keyOf(roomId: MiChatRoom['id']): string {
 		return `chatVoice:${roomId}`;
+	}
+
+	/**
+	 * 参加者の identity (LiveKitService.identityOf) をこのサーバーのユーザーの id にする。
+	 * このサーバーのユーザーは URL の id をそのまま使い、それ以外は ActivityPub で解決する。解決できなければ null
+	 */
+	private async userIdOfIdentity(identity: string): Promise<MiUser['id'] | null> {
+		const localPrefix = `${this.config.url}/users/`;
+		if (identity.startsWith(localPrefix)) {
+			const userId = identity.slice(localPrefix.length);
+			return /^[a-zA-Z0-9]+$/.test(userId) ? userId : null;
+		}
+
+		try {
+			const user = await this.apPersonService.resolvePerson(identity);
+			return user.id;
+		} catch {
+			return null;
+		}
 	}
 
 	private async pack(roomId: MiChatRoom['id'], snapshot: VoiceSnapshot, me: { id: MiUser['id'] } | null): Promise<Packed<'ChatRoomVoiceState'>> {

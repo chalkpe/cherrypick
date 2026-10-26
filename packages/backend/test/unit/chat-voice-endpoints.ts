@@ -10,6 +10,7 @@ import KickEndpoint, { meta as kickMeta } from '@/server/api/endpoints/chat/room
 import MuteEndpoint, { meta as muteMeta } from '@/server/api/endpoints/chat/rooms/voice/mute.js';
 import { ChatService } from '@/core/ChatService.js';
 import { MetaEntityService } from '@/core/entities/MetaEntityService.js';
+import { RemoteVoiceCallError } from '@/core/RemoteVoiceCallService.js';
 
 const me = { id: 'me', host: null, uri: null } as any;
 const liveKit = (isEnabled = true) => ({
@@ -20,16 +21,23 @@ const liveKit = (isEnabled = true) => ({
 	deleteRoom: vi.fn().mockResolvedValue(undefined),
 });
 
-function joinFixture(overrides: { isEnabled?: boolean; canVoiceCall?: boolean; isArchived?: boolean; isMember?: boolean; ownerHost?: string | null } = {}) {
+const remoteOwner = { id: 'owner', host: 'remote.test', uri: 'https://remote.test/users/owner' };
+
+function joinFixture(overrides: { isEnabled?: boolean; remoteEnabled?: boolean; canVoiceCall?: boolean; canScreenShare?: boolean; isArchived?: boolean; isMember?: boolean; ownerHost?: string | null } = {}) {
+	const owner = overrides.ownerHost != null ? { ...remoteOwner, host: overrides.ownerHost } : { id: 'owner', host: null, uri: null };
 	const chatService = {
 		checkChatAvailability: vi.fn().mockResolvedValue(undefined),
-		findRoomById: vi.fn().mockResolvedValue({ id: 'r1', ownerId: 'owner', owner: { id: 'owner', host: overrides.ownerHost ?? null }, isArchived: overrides.isArchived ?? false }),
+		findRoomById: vi.fn().mockResolvedValue({ id: 'r1', ownerId: 'owner', owner, isArchived: overrides.isArchived ?? false }),
 		isRoomMember: vi.fn().mockResolvedValue(overrides.isMember ?? true),
 	};
 	const chatVoiceService = { issueJoinToken: vi.fn().mockResolvedValue({ url: 'https://local.test/livekit', token: 't' }) };
-	const roleService = { getUserPolicies: vi.fn().mockResolvedValue({ canVoiceCall: overrides.canVoiceCall ?? true, canScreenShare: false }) };
-	const endpoint = new JoinEndpoint(chatService as any, chatVoiceService as any, liveKit(overrides.isEnabled ?? true) as any, roleService as any);
-	return { endpoint, chatService, chatVoiceService, roleService };
+	const roleService = { getUserPolicies: vi.fn().mockResolvedValue({ canVoiceCall: overrides.canVoiceCall ?? true, canScreenShare: overrides.canScreenShare ?? false }) };
+	const remoteVoiceCallService = {
+		isEnabled: overrides.remoteEnabled ?? true,
+		requestJoin: vi.fn().mockResolvedValue({ url: 'https://remote.test/livekit', token: 'remote-jwt' }),
+	};
+	const endpoint = new JoinEndpoint(chatService as any, chatVoiceService as any, liveKit(overrides.isEnabled ?? true) as any, roleService as any, remoteVoiceCallService as any);
+	return { endpoint, chatService, chatVoiceService, roleService, remoteVoiceCallService };
 }
 
 describe('chat/rooms/voice/join', () => {
@@ -40,14 +48,15 @@ describe('chat/rooms/voice/join', () => {
 	});
 
 	test.each([
-		['feature disabled', { isEnabled: false }],
+		['feature disabled', { isEnabled: false, remoteEnabled: false }],
+		['feature disabled here, even if calls on other servers are allowed', { isEnabled: false, remoteEnabled: true }],
 		['policy disallows calls', { canVoiceCall: false }],
 		['archived room', { isArchived: true }],
-		['room owned on another server', { ownerHost: 'remote.test' }],
 	])('join refuses when %s', async (_label, overrides) => {
 		const f = joinFixture(overrides);
 		await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'VOICE_CALL_UNAVAILABLE' });
 		expect(f.chatVoiceService.issueJoinToken).not.toHaveBeenCalled();
+		expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
 	});
 
 	test('join requires the right to write in chat, since joining lets the user speak', async () => {
@@ -63,22 +72,94 @@ describe('chat/rooms/voice/join', () => {
 		await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_ROOM' });
 		expect(f.chatVoiceService.issueJoinToken).not.toHaveBeenCalled();
 	});
+
+	describe('rooms owned on another server', () => {
+		test('join sends mirror rooms to the host and reports REMOTE_HOST_UNSUPPORTED', async () => {
+			const f = joinFixture({ ownerHost: 'remote.test', canScreenShare: true });
+
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'remote-jwt' });
+			// 画面共有の希望はこのサーバーのポリシーの値
+			expect(f.remoteVoiceCallService.requestJoin).toHaveBeenCalledWith(me, expect.objectContaining({ id: 'r1' }), expect.objectContaining({ id: 'owner', host: 'remote.test' }), true);
+			expect(f.chatVoiceService.issueJoinToken).not.toHaveBeenCalled();
+
+			f.remoteVoiceCallService.requestJoin.mockRejectedValueOnce(new RemoteVoiceCallError('unsupported'));
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'REMOTE_HOST_UNSUPPORTED' });
+		});
+
+		test.each([
+			['forbidden', 'VOICE_CALL_UNAVAILABLE'],
+			['unreachable', 'REMOTE_HOST_UNREACHABLE'],
+		] as const)('join reports a %s host as %s', async (reason, code) => {
+			const f = joinFixture({ ownerHost: 'remote.test' });
+			f.remoteVoiceCallService.requestJoin.mockRejectedValueOnce(new RemoteVoiceCallError(reason));
+
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code });
+		});
+
+		test('join does not hide unexpected failures of the remote flow', async () => {
+			const f = joinFixture({ ownerHost: 'remote.test' });
+			f.remoteVoiceCallService.requestJoin.mockRejectedValueOnce(new Error('redis down'));
+
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toThrow('redis down');
+		});
+
+		test('join refuses mirror rooms when remote calls are disabled here', async () => {
+			const f = joinFixture({ ownerHost: 'remote.test', remoteEnabled: false });
+
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'VOICE_CALL_UNAVAILABLE' });
+			expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
+			expect(f.chatVoiceService.issueJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('join sends mirror rooms to the host even without a local LiveKit', async () => {
+			const f = joinFixture({ ownerHost: 'remote.test', isEnabled: false });
+
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'remote-jwt' });
+		});
+
+		test.each([
+			['policy disallows calls', { canVoiceCall: false }, 'VOICE_CALL_UNAVAILABLE'],
+			['archived room', { isArchived: true }, 'VOICE_CALL_UNAVAILABLE'],
+			['not a member', { isMember: false }, 'NO_SUCH_ROOM'],
+		] as const)('join keeps the local checks for mirror rooms: %s', async (_label, overrides, code) => {
+			const f = joinFixture({ ownerHost: 'remote.test', ...overrides });
+
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code });
+			expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
+		});
+
+		test('join requires the right to write in chat for mirror rooms too', async () => {
+			const f = joinFixture({ ownerHost: 'remote.test' });
+			f.chatService.checkChatAvailability.mockRejectedValue(new Error('ROLE_PERMISSION_DENIED'));
+
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toThrow();
+			expect(f.chatService.checkChatAvailability).toHaveBeenCalledWith('me', 'write');
+			expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
+		});
+	});
 });
 
-function statesFixture(isEnabled = true) {
+function statesFixture(isEnabled = true, remoteEnabled = false) {
 	const chatRoomsRepository = { findBy: vi.fn().mockResolvedValue([]) };
 	const chatRoomMembershipsRepository = { findBy: vi.fn().mockResolvedValue([{ roomId: 'r1', userId: 'me' }]) };
 	const chatService = { checkChatAvailability: vi.fn().mockResolvedValue(undefined) };
 	const chatVoiceService = { getStates: vi.fn().mockResolvedValue([]) };
-	const endpoint = new StatesEndpoint(chatRoomsRepository as any, chatRoomMembershipsRepository as any, chatService as any, chatVoiceService as any, liveKit(isEnabled) as any);
+	const remoteVoiceCallService = { isEnabled: remoteEnabled };
+	const endpoint = new StatesEndpoint(chatRoomsRepository as any, chatRoomMembershipsRepository as any, chatService as any, chatVoiceService as any, liveKit(isEnabled) as any, remoteVoiceCallService as any);
 	return { endpoint, chatVoiceService };
 }
 
 describe('chat/rooms/voice/states', () => {
 	test('states returns nothing when voice calls are disabled', async () => {
-		const f = statesFixture(false);
+		const f = statesFixture(false, false);
 		await expect(f.endpoint.exec({ roomIds: ['r1'] }, me, null, null)).resolves.toEqual([]);
 		expect(f.chatVoiceService.getStates).not.toHaveBeenCalled();
+	});
+
+	test('states works for mirror rooms even without a local LiveKit', async () => {
+		const f = statesFixture(false, true);
+		await f.endpoint.exec({ roomIds: ['r1', 'r2'] }, me, null, null);
+		expect(f.chatVoiceService.getStates).toHaveBeenCalledWith(me, ['r1']);
 	});
 
 	test('states only asks for rooms the user belongs to', async () => {

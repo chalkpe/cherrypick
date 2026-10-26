@@ -11,6 +11,7 @@ import type { ChatRoomMembershipsRepository, ChatRoomsRepository } from '@/model
 import { ChatService } from '@/core/ChatService.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
+import { RemoteVoiceCallService } from '@/core/RemoteVoiceCallService.js';
 
 export const meta = {
 	tags: ['chat'],
@@ -56,9 +57,11 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private chatService: ChatService,
 		private chatVoiceService: ChatVoiceService,
 		private liveKitService: LiveKitService,
+		private remoteVoiceCallService: RemoteVoiceCallService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
-			if (!this.liveKitService.isEnabled) return [];
+			// 他のサーバーが持つルーム (ミラー) の現況は、このサーバーに LiveKit が無くても保存される
+			if (!this.liveKitService.isEnabled && !this.remoteVoiceCallService.isEnabled) return [];
 
 			await this.chatService.checkChatAvailability(me.id, 'read');
 

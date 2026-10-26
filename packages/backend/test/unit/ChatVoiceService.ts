@@ -4,6 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { IsNull } from 'typeorm';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 
 function fakeRedis() {
@@ -62,7 +63,14 @@ function createFixture(redis = fakeRedis()) {
 	const federatedInstanceService = {
 		fetch: vi.fn(async (host: string) => ({ host, suspensionState: 'none' })),
 	};
+	const apPersonService = {
+		resolvePerson: vi.fn(async (uri: string): Promise<{ id: string; host: string | null; uri: string | null }> => {
+			if (uri === 'https://other.test/users/x') return { id: 'x1', host: 'other.test', uri };
+			throw new Error(`cannot resolve ${uri}`);
+		}),
+	};
 	const service = new ChatVoiceService(
+		{ url: 'https://local.test' } as any,
 		redis as any,
 		chatRoomsRepository as any,
 		chatRoomMembershipsRepository as any,
@@ -72,8 +80,9 @@ function createFixture(redis = fakeRedis()) {
 		roleService as any,
 		utilityService as any,
 		federatedInstanceService as any,
+		apPersonService as any,
 	);
-	return { service, redis, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, userEntityService, globalEventService, roleService, utilityService, federatedInstanceService };
+	return { service, redis, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, userEntityService, globalEventService, roleService, utilityService, federatedInstanceService, apPersonService };
 }
 
 function remoteUser(overrides: Record<string, unknown> = {}) {
@@ -82,6 +91,10 @@ function remoteUser(overrides: Record<string, unknown> = {}) {
 
 function localRoom(overrides: Record<string, unknown> = {}) {
 	return { id: 'r1', ownerId: 'owner', owner: { id: 'owner', host: null }, isArchived: false, ...overrides } as any;
+}
+
+function mirrorRoom() {
+	return { id: 'r1', ownerId: 'remoteOwner', owner: { id: 'remoteOwner', host: 'remote.test', uri: 'https://remote.test/users/remoteOwner' }, isArchived: false } as any;
 }
 
 describe('ChatVoiceService', () => {
@@ -317,6 +330,75 @@ describe('ChatVoiceService', () => {
 			vi.useFakeTimers({ now: 5000 });
 
 			expect(await f.service.snapshotOf('r1')).toEqual({ participants: [], updatedAt: 5000 });
+		});
+	});
+
+	describe('mirror rooms', () => {
+		test('storeRemoteSnapshot resolves identities to local users and ignores older snapshots', async () => {
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [
+				{ identity: 'https://local.test/users/u1', screenSharing: true },
+				{ identity: 'https://other.test/users/x', screenSharing: false },
+				{ identity: 'https://gone.test/users/y', screenSharing: false },
+			], 2000);
+
+			expect(f.redis.set).toHaveBeenCalledWith('chatVoice:r1', expect.any(String), 'EX', 600);
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!)).toEqual({
+				participants: [
+					{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: true },
+					{ identity: 'https://other.test/users/x', userId: 'x1', screenSharing: false },
+				],
+				updatedAt: 2000,
+			});
+			// このサーバーのユーザーは DB の id で分かるので、取りに行かない
+			expect(f.apPersonService.resolvePerson).not.toHaveBeenCalledWith('https://local.test/users/u1');
+
+			const stored = f.redis.store.get('chatVoice:r1');
+			f.globalEventService.publishChatRoomStream.mockClear();
+			for (const updatedAt of [1000, 2000]) {
+				await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://other.test/users/x', screenSharing: true }], updatedAt);
+			}
+			expect(f.redis.store.get('chatVoice:r1')).toBe(stored);
+			expect(f.globalEventService.publishChatRoomStream).not.toHaveBeenCalled();
+
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [], 3000);
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!)).toEqual({ participants: [], updatedAt: 3000 });
+		});
+
+		test('storeRemoteSnapshot announces to the room and its local members, not the remote owner', async () => {
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], 2000);
+
+			expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('r1', 'voiceState', {
+				roomId: 'r1',
+				participants: [{ identity: 'https://local.test/users/u1', user: expect.objectContaining({ id: 'u1' }), screenSharing: false }],
+			});
+			expect(f.chatRoomMembershipsRepository.findBy).toHaveBeenCalledWith({ roomId: 'r1', user: { host: IsNull() } });
+			expect(f.globalEventService.publishMainStream.mock.calls.map(call => call[0])).toEqual(['m1']);
+			expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('m1', 'chatRoomVoiceState', expect.objectContaining({ roomId: 'r1' }));
+		});
+
+		test('storeRemoteSnapshot keeps mirror rooms out of the periodic LiveKit re-read', async () => {
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], 2000);
+
+			expect(f.redis.sets.get('chatVoice:active') ?? new Set()).not.toContain('r1');
+			expect(f.redis.sadd).not.toHaveBeenCalled();
+		});
+
+		test('storeRemoteSnapshot resolves at most as many identities as a room can hold', async () => {
+			const participants = Array.from({ length: 60 }, (_, i) => ({ identity: `https://far.test/users/${i}`, screenSharing: false }));
+
+			await f.service.storeRemoteSnapshot(mirrorRoom(), participants, 2000);
+
+			expect(f.apPersonService.resolvePerson).toHaveBeenCalledTimes(51);
+		});
+
+		test('storeRemoteSnapshot ignores local identities that are not plain user ids', async () => {
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [
+				{ identity: 'https://local.test/users/u1/followers', screenSharing: false },
+				{ identity: 'https://local.test/users/', screenSharing: false },
+			], 2000);
+
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).participants).toEqual([]);
+			expect(f.apPersonService.resolvePerson).not.toHaveBeenCalled();
 		});
 	});
 });

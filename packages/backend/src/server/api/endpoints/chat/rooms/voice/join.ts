@@ -10,6 +10,8 @@ import { ChatService } from '@/core/ChatService.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { RoleService } from '@/core/RoleService.js';
+import { RemoteVoiceCallError, RemoteVoiceCallService } from '@/core/RemoteVoiceCallService.js';
+import type { MiRemoteUser } from '@/models/User.js';
 import { ApiError } from '@/server/api/error.js';
 
 export const meta = {
@@ -50,6 +52,16 @@ export const meta = {
 			code: 'VOICE_CALL_UNAVAILABLE',
 			id: '6467d072-503a-4ed0-b3ed-36c10637d298',
 		},
+		remoteHostUnsupported: {
+			message: 'The server that owns this room does not support voice calls.',
+			code: 'REMOTE_HOST_UNSUPPORTED',
+			id: '72d62e31-06b4-4e99-9303-e2663cdbcbf6',
+		},
+		remoteHostUnreachable: {
+			message: 'Could not get a voice call token from the server that owns this room.',
+			code: 'REMOTE_HOST_UNREACHABLE',
+			id: '5919264c-9150-4eec-9bbb-e31c25973f46',
+		},
 	},
 } as const;
 
@@ -68,9 +80,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private chatVoiceService: ChatVoiceService,
 		private liveKitService: LiveKitService,
 		private roleService: RoleService,
+		private remoteVoiceCallService: RemoteVoiceCallService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
-			if (!this.liveKitService.isEnabled) {
+			if (!this.liveKitService.isEnabled && !this.remoteVoiceCallService.isEnabled) {
 				throw new ApiError(meta.errors.voiceCallUnavailable);
 			}
 
@@ -82,8 +95,13 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.noSuchRoom);
 			}
 
-			// 他のサーバーが持つルームの通話はそのサーバーで開く (連合対応までは参加させない)
-			if (room.isArchived || room.owner?.host != null) {
+			// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーで開かれるので、このサーバーの LiveKit は使わない
+			const remoteOwner = room.owner?.host != null ? room.owner as MiRemoteUser : null;
+			if (remoteOwner != null ? !this.remoteVoiceCallService.isEnabled : !this.liveKitService.isEnabled) {
+				throw new ApiError(meta.errors.voiceCallUnavailable);
+			}
+
+			if (room.isArchived) {
 				throw new ApiError(meta.errors.voiceCallUnavailable);
 			}
 
@@ -92,7 +110,22 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.voiceCallUnavailable);
 			}
 
-			return await this.chatVoiceService.issueJoinToken(me, room, policies.canScreenShare);
+			if (remoteOwner == null) {
+				return await this.chatVoiceService.issueJoinToken(me, room, policies.canScreenShare);
+			}
+
+			try {
+				return await this.remoteVoiceCallService.requestJoin(me, room, remoteOwner, policies.canScreenShare);
+			} catch (err) {
+				if (err instanceof RemoteVoiceCallError) {
+					switch (err.reason) {
+						case 'unsupported': throw new ApiError(meta.errors.remoteHostUnsupported);
+						case 'forbidden': throw new ApiError(meta.errors.voiceCallUnavailable);
+						case 'unreachable': throw new ApiError(meta.errors.remoteHostUnreachable);
+					}
+				}
+				throw err;
+			}
 		});
 	}
 }

@@ -81,6 +81,7 @@ import { ChannelFollowingService } from './ChannelFollowingService.js';
 import { ChatService } from './ChatService.js';
 import { LiveKitService } from './LiveKitService.js';
 import { ChatVoiceService } from './ChatVoiceService.js';
+import { RemoteVoiceCallService } from './RemoteVoiceCallService.js';
 import { RegistryApiService } from './RegistryApiService.js';
 import { ReversiService } from './ReversiService.js';
 import { PageService } from './PageService.js';
@@ -245,6 +246,7 @@ const $ChannelMutingService: Provider = { provide: 'ChannelMutingService', useEx
 const $ChatService: Provider = { provide: 'ChatService', useExisting: ChatService };
 const $LiveKitService: Provider = { provide: 'LiveKitService', useExisting: LiveKitService };
 const $ChatVoiceService: Provider = { provide: 'ChatVoiceService', useExisting: ChatVoiceService };
+const $RemoteVoiceCallService: Provider = { provide: 'RemoteVoiceCallService', useExisting: RemoteVoiceCallService };
 const $RegistryApiService: Provider = { provide: 'RegistryApiService', useExisting: RegistryApiService };
 const $ReversiService: Provider = { provide: 'ReversiService', useExisting: ReversiService };
 const $PageService: Provider = { provide: 'PageService', useExisting: PageService };
@@ -409,6 +411,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChatService,
 		LiveKitService,
 		ChatVoiceService,
+		RemoteVoiceCallService,
 		RegistryApiService,
 		ReversiService,
 		PageService,
@@ -572,6 +575,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ChatService,
 		$LiveKitService,
 		$ChatVoiceService,
+		$RemoteVoiceCallService,
 		$RegistryApiService,
 		$ReversiService,
 		$PageService,
@@ -734,6 +738,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChatService,
 		LiveKitService,
 		ChatVoiceService,
+		RemoteVoiceCallService,
 		RegistryApiService,
 		ReversiService,
 		PageService,
@@ -895,6 +900,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ChatService,
 		$LiveKitService,
 		$ChatVoiceService,
+		$RemoteVoiceCallService,
 		$RegistryApiService,
 		$ReversiService,
 		$PageService,

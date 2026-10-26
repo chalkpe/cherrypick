@@ -235,5 +235,26 @@ describe('ApRequestService.signedPostJson', () => {
 		expect(args.timeout).toBe(10_000);
 		expect(args.headers.signature).toContain('keyId="https://member.test/users/bob#main-key"');
 		expect(args.headers.digest).toBe(ApRequestCreator.createDigest(JSON.stringify(object)));
+		// 指定が無ければ HttpRequestService の既定 (リダイレクトを辿る、上限 10MB) のまま
+		expect(args).toMatchObject({ redirect: undefined, size: undefined });
+	});
+
+	test('signedPostJson passes redirect handling and a response size limit through', async () => {
+		const httpRequestService = {
+			send: vi.fn(async () => new Response('{}', { headers: { 'content-type': 'application/json' } })),
+		};
+		const service = new ApRequestService(
+			{ url: 'https://member.test' } as Config,
+			{ getUserKeypair: vi.fn(async () => ({ userId: 'bob', publicKey, privateKey })) } as any,
+			httpRequestService as any,
+			{ getLogger: () => ({}) } as any,
+			{} as any,
+		);
+
+		await service.signedPostJson({ id: 'bob' }, TOKEN_URL, {}, 10_000, { redirect: 'manual', size: 64 * 1024 });
+
+		const [, args] = httpRequestService.send.mock.calls[0] as unknown as [string, { redirect: string; size: number }];
+		expect(args.redirect).toBe('manual');
+		expect(args.size).toBe(64 * 1024);
 	});
 });

@@ -190,9 +190,10 @@ export class ApRequestService {
 	 * @param url URL to post
 	 * @param object body
 	 * @param timeout ms
+	 * @param options redirect: 'manual' なら 3xx を辿らず StatusError にする。size: 応答本文の上限 (bytes)。省略時は HttpRequestService.send の既定
 	 */
 	@bindThis
-	public async signedPostJson(user: { id: MiUser['id'] }, url: string, object: unknown, timeout: number): Promise<unknown> {
+	public async signedPostJson(user: { id: MiUser['id'] }, url: string, object: unknown, timeout: number, options: { redirect?: 'follow' | 'manual'; size?: number } = {}): Promise<unknown> {
 		const body = JSON.stringify(object);
 
 		const keypair = await this.userKeypairService.getUserKeypair(user.id);
@@ -213,6 +214,8 @@ export class ApRequestService {
 			headers: req.request.headers,
 			body,
 			timeout,
+			redirect: options.redirect,
+			size: options.size,
 		});
 
 		return await res.json();
