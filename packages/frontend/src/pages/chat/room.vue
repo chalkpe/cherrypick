@@ -77,8 +77,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</div>
 				</MkStickyContainer>
 			</div>
-			<!-- 並べているときの入力欄の置き場所。入力欄はページの下端 (footer) からここへ移ってくる -->
-			<div v-show="split" ref="paneFormHostEl" :class="$style.paneFooter"></div>
+			<!-- 並べているときの入力欄の置き場所。入力欄はページの下端 (footer) からここへ移ってくる。
+			v-show は描画のあと (フォーカスを戻す watch より後) に表示を切り替えるので、隠れた所へ focus() してしまう。
+			ブラウザは隠れた要素への focus() を無視するので、表示は style で描画と同時に切り替える -->
+			<div ref="paneFormHostEl" :class="$style.paneFooter" :style="split ? undefined : { display: 'none' }"></div>
 		</div>
 		<XStage v-if="split && room && chatSide === 'left'" :room="room" :call="voiceCallState" :chatSide="chatSide" :class="$style.stage" @swapChatSide="swapChatSide"/>
 	</div>
@@ -96,7 +98,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 
 	<template #footer>
-		<div v-if="tab === 'chat'" v-show="!split" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]">
+		<!-- 表示は v-show ではなく style で切り替える (上の paneFormHostEl と同じ理由) -->
+		<div v-if="tab === 'chat'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]" :style="split ? { display: 'none' } : undefined">
 			<!-- 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (並べているときはメッセージの欄の下へ)。
 			作り直すとフォーカスが外れてページ全体のショートカットが効いてしまい、変換中の文字や送信中の状態も失われる -->
 			<Teleport v-if="paneFormHostEl != null" :to="paneFormHostEl" :disabled="!split">
@@ -521,7 +524,12 @@ window.document.addEventListener('fullscreenchange', onFullscreenChange);
 // 入力欄で変換中 (IME) のあいだも並べ方を変えない。入力欄を移すと変換中の文字が確定されたり消えたりする
 const composing = ref(false);
 
+// 変換を終えないまま入力欄が消えたり裏に回ったりすると compositionend が届かないことがあるので、そこで忘れる
 watch(tab, () => {
+	composing.value = false;
+});
+
+onDeactivated(() => {
 	composing.value = false;
 });
 
@@ -535,7 +543,8 @@ watch([wantsSplit, fullscreen, composing], () => {
 
 const split = computed(() => tab.value === 'chat' && splitLayout.value);
 
-// 入力欄を移すと (要素の付け替えで) フォーカスが外れるので、移す前にフォーカスと選択範囲を覚えておき、移したあとに戻す
+// 入力欄を移すと (要素の付け替えで) フォーカスが外れるので、移す前にフォーカスと選択範囲を覚えておき、移したあとに戻す。
+// 戻すのは描画のあと (flush: 'post')。そのときには入力欄の置き場所の表示も描画で切り替わっている
 const paneFormHostEl = useTemplateRef('paneFormHostEl');
 const formEl = useTemplateRef('formEl');
 let focusToRestore: { el: HTMLElement; selection: [number, number, 'forward' | 'backward' | 'none'] | null } | null = null;

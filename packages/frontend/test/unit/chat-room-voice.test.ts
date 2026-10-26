@@ -667,6 +667,33 @@ describe('voice call on the room page', () => {
 				await flush();
 			};
 
+			// focus() が呼ばれた瞬間に、その要素か祖先が display: none だったかを記録する。
+			// ブラウザは隠れた要素への focus() を無視し、あとで見えるようになってもフォーカスを移さないが、happy-dom は隠れていてもフォーカスできてしまう
+			type FocusCall = { el: HTMLElement; hidden: boolean };
+			let focusCalls: FocusCall[] = [];
+			let focusSpy: { mockRestore: () => void } | null = null;
+
+			const isHiddenWithAncestors = (target: HTMLElement) => {
+				for (let el: HTMLElement | null = target; el != null; el = el.parentElement) {
+					if (window.getComputedStyle(el).display === 'none') return true;
+				}
+				return false;
+			};
+
+			beforeEach(() => {
+				focusCalls = [];
+				const original = HTMLElement.prototype.focus;
+				focusSpy = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (this: HTMLElement, options?: FocusOptions) {
+					focusCalls.push({ el: this, hidden: isHiddenWithAncestors(this) });
+					original.call(this, options);
+				});
+			});
+
+			afterEach(() => {
+				focusSpy?.mockRestore();
+				focusSpy = null;
+			});
+
 			test('renders exactly once in either layout', async () => {
 				await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
 				await setPageWidth(700);
@@ -690,15 +717,20 @@ describe('voice call on the room page', () => {
 				textarea.focus();
 				textarea.setSelectionRange(1, 3);
 
+				focusCalls = [];
+
 				await joins(alice);
 				expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
 				expect(theTextarea()).toBe(textarea);
+				// 移した先がもう見えている状態でフォーカスを戻す
+				expect(focusCalls.splice(0)).toEqual([{ el: textarea, hidden: false }]);
 				expect(window.document.activeElement).toBe(textarea);
 				expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([1, 3]);
 
 				await joins();
 				expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
 				expect(theTextarea()).toBe(textarea);
+				expect(focusCalls.splice(0)).toEqual([{ el: textarea, hidden: false }]);
 				expect(window.document.activeElement).toBe(textarea);
 				expect(textarea.value).toBe('hello');
 			});
@@ -714,12 +746,32 @@ describe('voice call on the room page', () => {
 				// 入力欄を動かすと変換中の文字が確定されたり消えたりするので、変換が終わるまで並べ方を変えない
 				expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
 				expect(pageFooter().contains(textarea)).toBe(true);
+				focusCalls = [];
 
 				await fireEvent.compositionEnd(textarea);
 				await flush();
 				expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
 				expect(theTextarea()).toBe(textarea);
+				expect(focusCalls.splice(0)).toEqual([{ el: textarea, hidden: false }]);
 				expect(window.document.activeElement).toBe(textarea);
+			});
+
+			test('forgets an unfinished composition when the page goes to the background', async () => {
+				const shown = ref(true);
+				await renderRoom(room, [], shown);
+				await setPageWidth(1280);
+				const textarea = theTextarea();
+				textarea.focus();
+				await fireEvent.compositionStart(textarea);
+
+				// 変換を終えないまま (compositionend が届かないまま) ページが裏に回る
+				shown.value = false;
+				await flush();
+				shown.value = true;
+				await flush();
+
+				await joins(alice);
+				expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
 			});
 
 			test('does not send a message twice when the layout switches while it is being sent', async () => {
