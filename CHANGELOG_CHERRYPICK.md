@@ -1,6 +1,24 @@
 # 릴리스 노트
 이 문서는 CherryPick의 변경 사항만 포함합니다.
 
+## 2026.10.1
+**기반 Misskey 버전**: 2026.10.1
+Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2026101](CHANGELOG.md#2026101) 문서를 참고하십시오.
+
+### General
+- Feat: 관리자와 모더레이터가 기존 노트의 본문과 첨부를 유지하면서 공개 범위를 변경할 수 있습니다. 리모트 노트의 변경은 이 서버에 저장된 사본에만 적용됩니다. ([ZerglingGo/misskey@dc47591c](https://github.com/ZerglingGo/misskey/commit/dc47591c13bf82406c466b942bca328157a8862a))
+
+### Client
+- Feat: 유저 메뉴에서 특정 사용자의 아바타 장식만 뮤트할 수 있습니다. 해당 사용자의 노트와 기본 아바타는 계속 표시됩니다. ([ZerglingGo/misskey@796afb2a](https://github.com/ZerglingGo/misskey/commit/796afb2a356a774fbc8fc657ae6706cbc5ca33ed))
+- Feat: 리모트 사용자의 아바타 장식을 일괄 숨기는 설정을 추가했습니다. 로컬 사용자의 아바타 장식은 그대로 표시할 수 있습니다. ([ZerglingGo/misskey@3daf805b](https://github.com/ZerglingGo/misskey/commit/3daf805bf9206dab5edcdafc1f273f211adae270))
+- Feat: 일반 뮤트한 사용자의 이름과 아바타를 비식별화하는 설정을 추가했습니다. 아바타 장식만 뮤트한 사용자는 비식별화하지 않습니다. ([ZerglingGo/misskey@e510a8cf](https://github.com/ZerglingGo/misskey/commit/e510a8cf0eda4c25887b1aa7110df071329bdd42))
+
+### Server
+- Fix: 노트 자동 삭제 시 일반 노트 삭제와 동일한 후처리를 수행하여, 리모트 서버로 삭제가 전파되고 검색 색인과 차트 등에도 반영되도록 개선했습니다. ([ZerglingGo/misskey@799bb2df](https://github.com/ZerglingGo/misskey/commit/799bb2dfeebb7f2c321d53c94e2a9e3d4a610512))
+- Feat: 커스텀 이모지의 민감한 콘텐츠 표시를 지원하는 서버와 주고받으며, 표시 여부만 변경된 경우에도 리모트 이모지에 반영합니다. ([ZerglingGo/misskey@1ed8b116](https://github.com/ZerglingGo/misskey/commit/1ed8b116d8a9d3604e1ea9b9bfa68f9a1682049f))
+
+---
+
 ## 2026.10.0
 **기반 Misskey 버전**: 2026.10.0
 Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2026100](CHANGELOG.md#2026100) 문서를 참고하십시오.
@@ -68,8 +86,7 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#202691](CHANGE
 
 ---
 
-## Unreleased
-**출시일**: Unreleased  
+## 레거시 수정사항
 **기반 Misskey 버전**: 2025.12.2
 Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2025122](CHANGELOG.md#2025122) 문서를 참고하십시오.
 
