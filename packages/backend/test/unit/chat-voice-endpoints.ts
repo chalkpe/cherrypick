@@ -20,10 +20,10 @@ const liveKit = (isEnabled = true) => ({
 	deleteRoom: vi.fn().mockResolvedValue(undefined),
 });
 
-function joinFixture(overrides: { isEnabled?: boolean; canVoiceCall?: boolean; isArchived?: boolean; isMember?: boolean } = {}) {
+function joinFixture(overrides: { isEnabled?: boolean; canVoiceCall?: boolean; isArchived?: boolean; isMember?: boolean; ownerHost?: string | null } = {}) {
 	const chatService = {
 		checkChatAvailability: vi.fn().mockResolvedValue(undefined),
-		findRoomById: vi.fn().mockResolvedValue({ id: 'r1', ownerId: 'owner', isArchived: overrides.isArchived ?? false }),
+		findRoomById: vi.fn().mockResolvedValue({ id: 'r1', ownerId: 'owner', owner: { id: 'owner', host: overrides.ownerHost ?? null }, isArchived: overrides.isArchived ?? false }),
 		isRoomMember: vi.fn().mockResolvedValue(overrides.isMember ?? true),
 	};
 	const chatVoiceService = { issueJoinToken: vi.fn().mockResolvedValue({ url: 'https://local.test/livekit', token: 't' }) };
@@ -43,6 +43,7 @@ describe('chat/rooms/voice/join', () => {
 		['feature disabled', { isEnabled: false }],
 		['policy disallows calls', { canVoiceCall: false }],
 		['archived room', { isArchived: true }],
+		['room owned on another server', { ownerHost: 'remote.test' }],
 	])('join refuses when %s', async (_label, overrides) => {
 		const f = joinFixture(overrides);
 		await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'VOICE_CALL_UNAVAILABLE' });

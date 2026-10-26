@@ -79,7 +79,8 @@ const props = defineProps<{
 
 const $i = ensureSignin();
 
-const available = computed(() => instance.features?.voiceCall === true && $i.policies.canVoiceCall);
+// 他のサーバーが持つルームの通話はそのサーバーで開くので、連合対応までは出さない
+const available = computed(() => instance.features?.voiceCall === true && $i.policies.canVoiceCall && props.room.owner.host == null);
 const inThisCall = computed(() => voiceCall.room?.id === props.room.id && voiceCall.status !== 'idle');
 
 // ルーム画面は既に chatRoom チャンネルを開いているので、共有の main チャンネル経由で受け取る

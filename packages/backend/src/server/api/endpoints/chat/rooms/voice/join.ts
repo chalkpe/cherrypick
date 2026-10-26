@@ -82,7 +82,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.noSuchRoom);
 			}
 
-			if (room.isArchived) {
+			// 他のサーバーが持つルームの通話はそのサーバーで開く (連合対応までは参加させない)
+			if (room.isArchived || room.owner?.host != null) {
 				throw new ApiError(meta.errors.voiceCallUnavailable);
 			}
 

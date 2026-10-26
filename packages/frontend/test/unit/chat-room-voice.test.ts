@@ -92,7 +92,7 @@ const stubs = {
 	MkButton: { template: '<button @click="$emit(\'click\', $event)"><slot /></button>' },
 };
 
-const room = { id: 'r1', name: 'room 1', ownerId: 'owner' } as any;
+const room = { id: 'r1', name: 'room 1', ownerId: 'owner', owner: { id: 'owner', username: 'owner', host: null } } as any;
 const alice = { id: 'alice', username: 'alice', name: 'Alice', host: null };
 const bob = { id: 'bob', username: 'bob', name: 'Bob', host: null };
 const participant = (user: typeof alice, screenSharing = false) => ({ identity: `https://local.test/users/${user.id}`, user, screenSharing }) as any;
@@ -149,6 +149,15 @@ describe('room voice panel', () => {
 		expect(mocks.leaveVoiceCall).toHaveBeenCalled();
 		await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.mute));
 		expect(mocks.setMicEnabled).toHaveBeenCalledWith(false);
+	});
+
+	test('does not offer a call in a room owned on another server yet', async () => {
+		const mirror = { ...room, owner: { id: 'remote-owner', username: 'owner', host: 'remote.test' } };
+		render(XVoice, { props: { room: mirror }, global: { stubs } });
+		await flush();
+
+		expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
+		expect(mocks.misskeyApi).not.toHaveBeenCalled();
 	});
 
 	test('renders nothing when voice calls are disabled on this server', async () => {
