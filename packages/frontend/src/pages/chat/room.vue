@@ -43,8 +43,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 					:moveClass="prefer.s.animation ? $style.transition_x_move : ''"
 					tag="div" class="_gaps"
 				>
-					<template v-for="item in timeline.toReversed()" :key="item.id">
-						<XMessage v-if="item.type === 'item'" :message="item.data"/>
+					<template v-for="(item, i) in displayTimeline" :key="item.id">
+						<XMessage
+							v-if="item.type === 'item'"
+							:message="item.data"
+							:groupPosition="groupPositions[i]"
+							:class="{ [$style.stackedMessage]: groupPositions[i]?.first === false }"
+						/>
 						<div v-else-if="item.type === 'date'" :class="$style.dateDivider">
 							<span><i class="ti ti-chevron-up"></i> {{ item.nextText }}</span>
 							<span style="height: 1em; width: 1px; background: var(--MI_THEME-divider);"></span>
@@ -116,6 +121,7 @@ import { useRouter } from '@/router.js';
 import { useMutationObserver } from '@/composables/use-mutation-observer.js';
 import MkInfo from '@/components/MkInfo.vue';
 import { makeDateSeparatedTimelineComputedRef } from '@/utility/timeline-date-separate.js';
+import { getChatMessageGroupPositions } from '@/utility/chat-message-grouping.js';
 import { acct as getAcct } from '@@/js/user.js';
 import { isFriendly } from '@/utility/is-friendly.js';
 import { deviceKind } from '@/utility/device-kind.js';
@@ -157,6 +163,10 @@ const connection = ref<Misskey.IChannelConnection<Misskey.Channels['chatUser']> 
 const showIndicator = ref(false);
 const timelineEl = useTemplateRef('timelineEl');
 const timeline = makeDateSeparatedTimelineComputedRef(messages);
+// 画面には古い順に並べる
+const displayTimeline = computed(() => timeline.value.toReversed());
+// 同じ送信者が続けて送ったメッセージは吹き出しをまとめて詰めて表示する
+const groupPositions = computed(() => getChatMessageGroupPositions(displayTimeline.value));
 const voiceCallState = useChatRoomVoiceCall(room);
 
 const SCROLL_HEAD_THRESHOLD = 200;
@@ -581,6 +591,11 @@ definePage(computed(() => {
 .fade-enter-from, .fade-leave-to {
 	transition: opacity 0.5s;
 	opacity: 0;
+}
+
+// まとまりの2つ目以降の吹き出しは、前の吹き出しとの間を詰める
+.stackedMessage {
+	margin-top: calc(2px - var(--MI-margin));
 }
 
 .dateDivider {

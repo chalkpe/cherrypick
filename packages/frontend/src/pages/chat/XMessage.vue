@@ -4,11 +4,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div :class="[$style.root, { [$style.isMe]: isMe }]">
-	<MkAvatar v-if="!isMe" :class="[$style.avatar, prefer.s.useStickyIcons ? $style.useSticky : null]" :user="message.fromUser!" :link="!isMe" :preview="false"/>
+<div :class="[$style.root, { [$style.isMe]: isMe, [$style.continued]: !isFirstInGroup }]">
+	<MkAvatar v-if="!isMe && isFirstInGroup" :class="[$style.avatar, prefer.s.useStickyIcons ? $style.useSticky : null]" :user="message.fromUser!" :link="!isMe" :preview="false"/>
+	<!-- まとまりの2つ目以降もアバターの幅だけ空けて、吹き出しの位置を揃える -->
+	<div v-else-if="!isMe" :class="$style.avatarSpace"></div>
 	<div :class="[$style.body, message.file != null ? $style.fullWidth : null]" @contextmenu.stop="onContextmenu">
-		<div :class="$style.header"><MkUserName v-if="!isMe && prefer.s['chat.showSenderName'] && message.fromUser != null" :user="message.fromUser"/></div>
-		<MkFukidashi :class="$style.fukidashi" :tail="isMe ? 'right' : 'left'" :fullWidth="message.file != null" :accented="isMe">
+		<div v-if="isFirstInGroup" :class="$style.header"><MkUserName v-if="!isMe && prefer.s['chat.showSenderName'] && message.fromUser != null" :user="message.fromUser"/></div>
+		<MkFukidashi :class="[$style.fukidashi, { [$style.noTailLeft]: !isFirstInGroup && !isMe }]" :tail="!isFirstInGroup ? 'none' : isMe ? 'right' : 'left'" :fullWidth="message.file != null" :accented="isMe">
 			<Mfm
 				v-if="message.text"
 				ref="text"
@@ -24,7 +26,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkMediaList v-if="message.file" :mediaList="[message.file]" :user="message.fromUser"/>
 		</MkFukidashi>
 		<MkUrlPreview v-for="url in urls" :key="url" :url="url" style="margin: 8px 0;"/>
-		<div :class="$style.footer">
+		<div v-if="isLastInGroup" :class="$style.footer">
 			<button class="_textButton" style="color: currentColor;" @click="showMenu"><i class="ti ti-dots-circle-horizontal"></i></button>
 			<MkTime :class="$style.time" :time="message.createdAt"/>
 			<MkA v-if="isSearchResult && 'toRoom' in message && message.toRoom != null" :to="`/chat/room/${message.toRoomId}`">{{ message.toRoom.name }}</MkA>
@@ -60,6 +62,7 @@ import { url } from '@@/js/config.js';
 import { isLink } from '@@/js/is-link.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { NormalizedChatMessage } from './room.vue';
+import type { ChatMessageGroupPosition } from '@/utility/chat-message-grouping.js';
 import { extractUrlFromMfm } from '@/utility/extract-url-from-mfm.js';
 import MkUrlPreview from '@/components/MkUrlPreview.vue';
 import { ensureSignin } from '@/i.js';
@@ -81,9 +84,14 @@ const $i = ensureSignin();
 const props = defineProps<{
 	message: NormalizedChatMessage | Misskey.entities.ChatMessage;
 	isSearchResult?: boolean;
+	// 同じ送信者が続けて送ったメッセージのまとまりの中での位置。省略すると単独のメッセージとして表示する
+	groupPosition?: ChatMessageGroupPosition | null;
 }>();
 
 const isMe = computed(() => props.message.fromUserId === $i.id);
+// 検索結果は前後のメッセージと関係なく並ぶのでまとめない
+const isFirstInGroup = computed(() => props.isSearchResult === true || props.groupPosition == null || props.groupPosition.first);
+const isLastInGroup = computed(() => props.isSearchResult === true || props.groupPosition == null || props.groupPosition.last);
 const urls = computed(() => props.message.text ? extractUrlFromMfm(mfm.parse(props.message.text)) : []);
 
 provide(DI.mfmEmojiReactCallback, (reaction) => {
@@ -230,6 +238,13 @@ function showMenu(ev: PointerEvent, contextmenu = false) {
 			flex-direction: row-reverse;
 		}
 	}
+
+	// まとまりの2つ目以降は名前の行がないので、前の吹き出しに詰めて並べる
+	&.continued {
+		.body {
+			padding-top: 0;
+		}
+	}
 }
 
 .avatar {
@@ -241,6 +256,12 @@ function showMenu(ev: PointerEvent, contextmenu = false) {
 		position: sticky;
 		top: calc(16px + var(--MI-stickyTop, 0px));
 	}
+}
+
+// .avatar と同じ幅
+.avatarSpace {
+	flex-shrink: 0;
+	width: 50px;
 }
 
 @container (max-width: 450px) {
@@ -255,6 +276,10 @@ function showMenu(ev: PointerEvent, contextmenu = false) {
 	.avatar {
 		width: 42px;
 		height: 42px;
+	}
+
+	.avatarSpace {
+		width: 42px;
 	}
 
 	.fukidashi {
@@ -279,6 +304,11 @@ function showMenu(ev: PointerEvent, contextmenu = false) {
 
 .fukidashi {
 	text-align: left;
+
+	// 尻尾のない吹き出しは尻尾の分の余白が右側にしか付かないので、左寄せのときは左側にも付けて尻尾のある吹き出しと左端を揃える
+	&.noTailLeft {
+		padding-left: calc(var(--fukidashi-radius) * .13);
+	}
 }
 
 .content {
