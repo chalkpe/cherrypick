@@ -9,6 +9,7 @@ import { CoreModule } from '@/core/CoreModule.js';
 import { ApiCallService } from './api/ApiCallService.js';
 import { FileServerService } from './FileServerService.js';
 import { HealthServerService } from './HealthServerService.js';
+import { LiveKitServerService } from './LiveKitServerService.js';
 import { NodeinfoServerService } from './NodeinfoServerService.js';
 import { ServerService } from './ServerService.js';
 import { WellKnownServerService } from './WellKnownServerService.js';
@@ -66,6 +67,7 @@ import { BubbleTimelineChannel } from './api/stream/channels/bubble-timeline.js'
 		HtmlTemplateService,
 		FeedService,
 		HealthServerService,
+		LiveKitServerService,
 		UrlPreviewService,
 		ActivityPubServerService,
 		FileServerService,

@@ -15,6 +15,7 @@ import { UserService } from '@/core/UserService.js';
 import { AuthenticateService, AuthenticationError } from './AuthenticateService.js';
 import MainStreamConnection, { ConnectionRequest } from './stream/Connection.js';
 import { MastodonStreamingService } from './mastodon/MastodonStreamingService.js';
+import { LiveKitServerService } from '@/server/LiveKitServerService.js';
 import type * as http from 'node:http';
 import { ContextIdFactory, ModuleRef } from '@nestjs/core';
 
@@ -33,6 +34,7 @@ export class StreamingApiServerService {
 		private authenticateService: AuthenticateService,
 		private usersService: UserService,
 		private mastodonStreamingService: MastodonStreamingService,
+		private liveKitServerService: LiveKitServerService,
 	) {
 	}
 
@@ -48,6 +50,12 @@ export class StreamingApiServerService {
 			if (request.url == null) {
 				socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
 				socket.destroy();
+				return;
+			}
+
+			// LiveKit signaling is relayed as-is to the LiveKit server
+			if (this.liveKitServerService.handles(request)) {
+				this.liveKitServerService.handleUpgrade(request, socket, head);
 				return;
 			}
 

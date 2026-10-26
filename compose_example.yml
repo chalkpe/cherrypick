@@ -98,6 +98,35 @@ services:
 #    healthcheck:
 #    test: ['CMD-SHELL', './venv/bin/python scripts/healthcheck.py']
 
+# Voice calls and screen sharing in chat rooms (see "voiceCall" in .config/example.yml).
+# - Open 7881/tcp and 7882/udp on your firewall.
+# - Media goes straight to this server's real IP, even behind a proxy such as Cloudflare.
+# - Behind NAT, forward both ports to this server.
+# - Screen sharing uses upload bandwidth roughly equal to the share quality times the number of viewers.
+# Set LIVEKIT_API_SECRET (32+ random characters) in .env and use the same value as voiceCall.livekit.apiSecret.
+#  livekit:
+#    restart: always
+#    image: livekit/livekit-server:v1.13.10
+#    environment:
+#      LIVEKIT_CONFIG: |
+#        port: 7880
+#        rtc:
+#          tcp_port: 7881
+#          udp_port: 7882
+#          use_external_ip: true
+#        keys:
+#          cherrypick: ${LIVEKIT_API_SECRET}
+#        webhook:
+#          api_key: cherrypick
+#          urls:
+#            - http://web:3000/livekit/webhook
+#    ports:
+#      - "7881:7881"
+#      - "7882:7882/udp"
+#    networks:
+#      - internal_network
+#      - external_network
+
 networks:
   internal_network:
     internal: true
