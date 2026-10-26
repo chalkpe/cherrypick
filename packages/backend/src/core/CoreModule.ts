@@ -153,8 +153,8 @@ import { ApLoggerService } from './activitypub/ApLoggerService.js';
 import { ApMfmService } from './activitypub/ApMfmService.js';
 import { ApRendererService } from './activitypub/ApRendererService.js';
 import { ApRequestService } from './activitypub/ApRequestService.js';
-import { ApSignedRequestVerifierService } from './activitypub/ApSignedRequestVerifierService.js';
 import { ApResolverService, Resolver } from './activitypub/ApResolverService.js';
+import { ApSignedRequestVerifierService } from './activitypub/ApSignedRequestVerifierService.js';
 import { JsonLdService } from './activitypub/JsonLdService.js';
 import { RemoteLoggerService } from './RemoteLoggerService.js';
 import { RemoteUserResolveService } from './RemoteUserResolveService.js';
@@ -320,8 +320,8 @@ const $ApLoggerService: Provider = { provide: 'ApLoggerService', useExisting: Ap
 const $ApMfmService: Provider = { provide: 'ApMfmService', useExisting: ApMfmService };
 const $ApRendererService: Provider = { provide: 'ApRendererService', useExisting: ApRendererService };
 const $ApRequestService: Provider = { provide: 'ApRequestService', useExisting: ApRequestService };
-const $ApSignedRequestVerifierService: Provider = { provide: 'ApSignedRequestVerifierService', useExisting: ApSignedRequestVerifierService };
 const $ApResolverService: Provider = { provide: 'ApResolverService', useExisting: ApResolverService };
+const $ApSignedRequestVerifierService: Provider = { provide: 'ApSignedRequestVerifierService', useExisting: ApSignedRequestVerifierService };
 const $JsonLdService: Provider = { provide: 'JsonLdService', useExisting: JsonLdService };
 const $RemoteLoggerService: Provider = { provide: 'RemoteLoggerService', useExisting: RemoteLoggerService };
 const $RemoteUserResolveService: Provider = { provide: 'RemoteUserResolveService', useExisting: RemoteUserResolveService };
@@ -487,9 +487,9 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ApMfmService,
 		ApRendererService,
 		ApRequestService,
-		ApSignedRequestVerifierService,
 		ApResolverService,
 		Resolver,
+		ApSignedRequestVerifierService,
 		JsonLdService,
 		RemoteLoggerService,
 		RemoteUserResolveService,
@@ -651,8 +651,8 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ApMfmService,
 		$ApRendererService,
 		$ApRequestService,
-		$ApSignedRequestVerifierService,
 		$ApResolverService,
+		$ApSignedRequestVerifierService,
 		$JsonLdService,
 		$RemoteLoggerService,
 		$RemoteUserResolveService,
@@ -815,9 +815,9 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ApMfmService,
 		ApRendererService,
 		ApRequestService,
-		ApSignedRequestVerifierService,
 		ApResolverService,
 		Resolver,
+		ApSignedRequestVerifierService,
 		JsonLdService,
 		RemoteLoggerService,
 		RemoteUserResolveService,
@@ -977,8 +977,8 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ApMfmService,
 		$ApRendererService,
 		$ApRequestService,
-		$ApSignedRequestVerifierService,
 		$ApResolverService,
+		$ApSignedRequestVerifierService,
 		$JsonLdService,
 		$RemoteLoggerService,
 		$RemoteUserResolveService,

@@ -12,7 +12,6 @@ import { bindThis } from '@/decorators.js';
 import { getIpHash } from '@/misc/get-ip-hash.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
-import { ChatService } from '@/core/ChatService.js';
 import { ApSignedRequestVerifierService } from '@/core/activitypub/ApSignedRequestVerifierService.js';
 import { RateLimiterService } from '@/server/api/RateLimiterService.js';
 import type { FastifyInstance, FastifyPluginOptions } from 'fastify';
@@ -54,7 +53,6 @@ export class LiveKitServerService {
 
 		private liveKitService: LiveKitService,
 		private chatVoiceService: ChatVoiceService,
-		private chatService: ChatService,
 		private apSignedRequestVerifierService: ApSignedRequestVerifierService,
 		private rateLimiterService: RateLimiterService,
 	) {
@@ -62,6 +60,11 @@ export class LiveKitServerService {
 
 	@bindThis
 	public createServer(fastify: FastifyInstance, options: FastifyPluginOptions, done: (err?: Error) => void) {
+		// 通話が使えないときは、本文を読む前 (大きさや形式を見て 413 / 415 を返す前) に、どの要求にも 404 を返す
+		fastify.addHook('onRequest', async (_request, reply) => {
+			if (!this.liveKitService.isEnabled) return reply.code(404).send();
+		});
+
 		// webhook と他のサーバーからの要求の署名は生の本文に対して検証するので、文字列のまま受け取る
 		fastify.removeAllContentTypeParsers();
 		for (const type of ['application/webhook+json', 'application/json', 'application/activity+json']) {
@@ -69,7 +72,6 @@ export class LiveKitServerService {
 		}
 
 		fastify.post('/webhook', async (request, reply) => {
-			if (!this.liveKitService.isEnabled) return reply.code(404).send();
 			if (typeof request.body !== 'string') return reply.code(400).send();
 
 			let event;
@@ -87,8 +89,6 @@ export class LiveKitServerService {
 		// 要求はそのユーザーの鍵で署名されている。
 		// 404 は「このサーバーでは通話が使えない」の意味だけに使う (相手のサーバーはそれを覚えておく)
 		fastify.post('/federation/token', { bodyLimit: FEDERATION_TOKEN_BODY_LIMIT }, async (request, reply) => {
-			if (!this.liveKitService.isEnabled) return reply.code(404).send();
-
 			// LiveKit や DB のエラーの内容を他のサーバーに見せない
 			try {
 				if (this.config.enableIpRateLimit) {
@@ -106,8 +106,7 @@ export class LiveKitServerService {
 
 				// ルームに関わる拒否はすべて同じ 403 にして、ルームがあるかどうかも分からないようにする
 				const roomId = this.localRoomIdOf(body.room);
-				const room = roomId != null ? await this.chatService.findRoomById(roomId) : null;
-				const result = room != null ? await this.chatVoiceService.issueRemoteJoinToken(user, room, body.canScreenShare) : 'forbidden';
+				const result = roomId != null ? await this.chatVoiceService.issueRemoteJoinToken(user, roomId, body.canScreenShare) : 'forbidden';
 				if (result === 'forbidden') return reply.code(403).send();
 
 				// TURN の資格情報も渡す。相手のユーザーのブラウザも、このサーバーの LiveKit に TURN を経由してつなぐことがある
@@ -119,8 +118,6 @@ export class LiveKitServerService {
 		});
 
 		fastify.get('/rtc/*', async (request, reply) => {
-			if (!this.liveKitService.isEnabled) return reply.code(404).send();
-
 			const target = this.targetOf(request.url);
 			if (target == null) return reply.code(404).send();
 

@@ -97,8 +97,11 @@ function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []) {
 		createJoinToken: vi.fn().mockResolvedValue('jwt'),
 		removeParticipant: vi.fn(async (_roomId: string, _identity: string) => {}),
 	};
+	// 他のサーバーのユーザーがトークンを求めるルーム (owner を読み込んだもの)。r1 だけがある
+	const rooms = new Map<string, ReturnType<typeof localRoom>>([['r1', localRoom()]]);
 	const chatRoomsRepository = {
 		findOneBy: vi.fn(async ({ id }: { id: string }) => ({ id, ownerId: 'owner' })),
+		findOne: vi.fn(async ({ where }: { where: { id: string } }) => rooms.get(where.id) ?? null),
 	};
 	// 通話に残れるかを確かめるときは、ルームのメンバーを userId の In で引く。nonMembers に入れたユーザーはメンバーでない
 	const nonMembers = new Set<string>();
@@ -170,7 +173,7 @@ function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []) {
 		loggerService as any,
 		cloudflareTurnService as any,
 	);
-	return { service, redis, redisForSub, meta, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, instancesRepository, userEntityService, globalEventService, roleService, utilityService, queueService, cloudflareTurnService, logger, nonMembers };
+	return { service, redis, redisForSub, meta, liveKitService, rooms, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, instancesRepository, userEntityService, globalEventService, roleService, utilityService, queueService, cloudflareTurnService, logger, nonMembers };
 }
 
 function remoteUser(overrides: Record<string, unknown> = {}) {
@@ -333,8 +336,9 @@ describe('ChatVoiceService', () => {
 		test('issues a join token to a remote room member and includes the current participants', async () => {
 			f.redis.store.set('chatVoice:r1', JSON.stringify({ participants: [{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: true }], updatedAt: 1234 }));
 
-			const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false);
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false);
 
+			expect(f.chatRoomsRepository.findOne).toHaveBeenCalledWith({ where: { id: 'r1' }, relations: { owner: true } });
 			expect(f.chatRoomMembershipsRepository.exists).toHaveBeenCalledWith({ where: { roomId: 'r1', userId: 'ru1' } });
 			expect(f.liveKitService.ensureRoom).toHaveBeenCalledWith('r1', 51);
 			expect(f.liveKitService.createJoinToken).toHaveBeenCalledWith({ roomId: 'r1', identity: 'https://remote.test/users/ru1', userId: 'ru1', canScreenShare: false });
@@ -351,15 +355,46 @@ describe('ChatVoiceService', () => {
 			const iceServers = [{ urls: ['turns:turn.cloudflare.com:443?transport=tcp'], username: 'u', credential: 'c' }];
 			f.cloudflareTurnService.getIceServers.mockResolvedValue(iceServers);
 
-			const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false);
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false);
 
 			expect(result).toMatchObject({ token: 'jwt', iceServers });
+		});
+
+		test('refuses a room that does not exist', async () => {
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), 'gone', false);
+
+			expect(result).toBe('forbidden');
+			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+		});
+
+		// ルームがあるかどうかで、読んだものと、読めなかったときの結果が変わらないようにする
+		test('reads the room, the membership, the server\'s records and the role policies before deciding', async () => {
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), 'gone', false);
+
+			expect(result).toBe('forbidden');
+			expect(f.chatRoomsRepository.findOne).toHaveBeenCalledWith({ where: { id: 'gone' }, relations: { owner: true } });
+			expect(f.chatRoomMembershipsRepository.exists).toHaveBeenCalledWith({ where: { roomId: 'gone', userId: 'ru1' } });
+			expect(f.instancesRepository.findBy).toHaveBeenCalledTimes(1);
+			expect(f.roleService.getUserPolicies).toHaveBeenCalledWith('ru1');
+		});
+
+		test.each([
+			['the room', (fixture: ReturnType<typeof createFixture>) => fixture.chatRoomsRepository.findOne.mockRejectedValue(new Error('db is down'))],
+			['the membership', (fixture: ReturnType<typeof createFixture>) => fixture.chatRoomMembershipsRepository.exists.mockRejectedValue(new Error('db is down'))],
+			['the server\'s records', (fixture: ReturnType<typeof createFixture>) => fixture.instancesRepository.findBy.mockRejectedValue(new Error('db is down'))],
+			['the role policies', (fixture: ReturnType<typeof createFixture>) => fixture.roleService.getUserPolicies.mockRejectedValue(new Error('db is down'))],
+		])('fails the same way for a missing room and a room it has when %s cannot be read', async (_label, breakLookup) => {
+			breakLookup(f);
+
+			await expect(f.service.issueRemoteJoinToken(remoteUser(), 'r1', false)).rejects.toThrow('db is down');
+			await expect(f.service.issueRemoteJoinToken(remoteUser(), 'gone', false)).rejects.toThrow('db is down');
+			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
 		});
 
 		test('refuses a remote user who is not a member', async () => {
 			f.chatRoomMembershipsRepository.exists.mockResolvedValue(false);
 
-			const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false);
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false);
 
 			expect(result).toBe('forbidden');
 			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
@@ -367,12 +402,12 @@ describe('ChatVoiceService', () => {
 
 		test('refuses a remote user whose server is blocked or suspended', async () => {
 			f.meta.blockedHosts = ['remote.test'];
-			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).toBe('forbidden');
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false)).toBe('forbidden');
 			expect(f.utilityService.isFederationAllowedHost).toHaveBeenCalledWith('remote.test');
 			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
 
 			f = createFixture(undefined, [{ host: 'remote.test', suspensionState: 'manuallySuspended' }]);
-			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).toBe('forbidden');
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false)).toBe('forbidden');
 			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
 		});
 
@@ -385,7 +420,7 @@ describe('ChatVoiceService', () => {
 		])('refuses a remote user on a host with %s whose domain is blocked', async (_label, host, blockedHosts) => {
 			f.meta.blockedHosts = blockedHosts;
 
-			const result = await f.service.issueRemoteJoinToken(remoteUser({ host, uri: `https://${host}/users/ru1` }), localRoom(), false);
+			const result = await f.service.issueRemoteJoinToken(remoteUser({ host, uri: `https://${host}/users/ru1` }), 'r1', false);
 
 			expect(result).toBe('forbidden');
 			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
@@ -401,7 +436,7 @@ describe('ChatVoiceService', () => {
 		])('refuses a remote user on a port whose server is suspended through %s', async (_label, storedHost) => {
 			f = createFixture(undefined, [{ host: storedHost, suspensionState: 'manuallySuspended' }]);
 
-			const result = await f.service.issueRemoteJoinToken(remoteUser({ host: 'evil.example:8443', uri: 'https://evil.example:8443/users/ru1' }), localRoom(), false);
+			const result = await f.service.issueRemoteJoinToken(remoteUser({ host: 'evil.example:8443', uri: 'https://evil.example:8443/users/ru1' }), 'r1', false);
 
 			expect(result).toBe('forbidden');
 			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
@@ -410,14 +445,14 @@ describe('ChatVoiceService', () => {
 		test('refuses a remote user whose server is suspended through the record with a trailing dot', async () => {
 			f = createFixture(undefined, [{ host: 'remote.test.', suspensionState: 'autoSuspendedForNotResponding' }]);
 
-			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).toBe('forbidden');
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false)).toBe('forbidden');
 		});
 
 		test('refuses a dotted host listed only through a dotted entry under specified federation, as the inbox does', async () => {
 			Object.assign(f.meta, { federation: 'specified', federationHosts: ['remote.test', 'evil.example.'] });
-			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).not.toBe('forbidden');
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false)).not.toBe('forbidden');
 
-			const result = await f.service.issueRemoteJoinToken(remoteUser({ host: 'evil.example.', uri: 'https://evil.example./users/ru1' }), localRoom(), false);
+			const result = await f.service.issueRemoteJoinToken(remoteUser({ host: 'evil.example.', uri: 'https://evil.example./users/ru1' }), 'r1', false);
 
 			expect(result).toBe('forbidden');
 		});
@@ -425,23 +460,33 @@ describe('ChatVoiceService', () => {
 		test('refuses a remote user whose server is quarantined', async () => {
 			f = createFixture(undefined, [{ host: 'remote.test', suspensionState: 'none', quarantineLimited: true }]);
 
-			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).toBe('forbidden');
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false)).toBe('forbidden');
 			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('treats a server this server has no record of as not suspended', async () => {
+			// 記録を引いたうえで、一つも無い
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false);
+
+			expect(f.instancesRepository.findBy).toHaveBeenCalledTimes(1);
+			expect(await f.instancesRepository.findBy.mock.results[0].value).toEqual([]);
+			expect(result).not.toBe('forbidden');
+			expect(f.liveKitService.createJoinToken).toHaveBeenCalledTimes(1);
 		});
 
 		test('does not let the record shared by hosts with a port refuse a remote user without one', async () => {
 			f = createFixture(undefined, [{ host: '', suspensionState: 'manuallySuspended' }, { host: 'remote.test', suspensionState: 'none' }]);
 
-			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).not.toBe('forbidden');
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false)).not.toBe('forbidden');
 		});
 
 		test('reads suspensions as they are now, not from a cache', async () => {
 			f = createFixture(undefined, [{ host: 'remote.test', suspensionState: 'none' }]);
-			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).not.toBe('forbidden');
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false)).not.toBe('forbidden');
 
 			f.instancesRepository.rows[0].suspensionState = 'manuallySuspended';
 
-			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).toBe('forbidden');
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false)).toBe('forbidden');
 		});
 
 		test('allows screen sharing only when both servers allow it', async () => {
@@ -454,7 +499,7 @@ describe('ChatVoiceService', () => {
 				f.liveKitService.createJoinToken.mockClear();
 				f.roleService.getUserPolicies.mockResolvedValueOnce({ canVoiceCall: true, canScreenShare: hostAllows, chatAvailability: 'available' });
 
-				await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), requested);
+				await f.service.issueRemoteJoinToken(remoteUser(), 'r1', requested);
 
 				expect(f.liveKitService.createJoinToken).toHaveBeenCalledWith(expect.objectContaining({ canScreenShare: expected }));
 			}
@@ -462,16 +507,16 @@ describe('ChatVoiceService', () => {
 		});
 
 		test('refuses a room this server does not own', async () => {
-			const mirror = localRoom({ ownerId: 'remoteOwner', owner: { id: 'remoteOwner', host: 'other.test' } });
+			f.rooms.set('r1', localRoom({ ownerId: 'remoteOwner', owner: { id: 'remoteOwner', host: 'other.test' } }));
 
-			const result = await f.service.issueRemoteJoinToken(remoteUser(), mirror, false);
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false);
 
 			expect(result).toBe('forbidden');
 			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
 		});
 
 		test('refuses a suspended remote user', async () => {
-			const result = await f.service.issueRemoteJoinToken(remoteUser({ isSuspended: true }), localRoom(), false);
+			const result = await f.service.issueRemoteJoinToken(remoteUser({ isSuspended: true }), 'r1', false);
 
 			expect(result).toBe('forbidden');
 			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
@@ -480,7 +525,7 @@ describe('ChatVoiceService', () => {
 		test('refuses a remote user whose role here cannot join voice calls', async () => {
 			f.roleService.getUserPolicies.mockResolvedValueOnce({ canVoiceCall: false, canScreenShare: true, chatAvailability: 'available' });
 
-			const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false);
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false);
 
 			expect(result).toBe('forbidden');
 			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
@@ -490,7 +535,7 @@ describe('ChatVoiceService', () => {
 			for (const chatAvailability of ['readonly', 'unavailable']) {
 				f.roleService.getUserPolicies.mockResolvedValueOnce({ canVoiceCall: true, canScreenShare: true, chatAvailability });
 
-				const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false);
+				const result = await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false);
 
 				expect(result, chatAvailability).toBe('forbidden');
 			}
@@ -498,7 +543,9 @@ describe('ChatVoiceService', () => {
 		});
 
 		test('refuses an archived room, as for local members', async () => {
-			const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom({ isArchived: true }), false);
+			f.rooms.set('r1', localRoom({ isArchived: true }));
+
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false);
 
 			expect(result).toBe('forbidden');
 			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();

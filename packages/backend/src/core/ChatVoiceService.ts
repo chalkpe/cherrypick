@@ -174,23 +174,29 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	/**
-	 * 他のサーバーのユーザーに、このサーバーが持つルームの通話トークンを発行する。
-	 * room は owner を読み込んだもの (ChatService.findRoomById) を渡す。owner が無ければ断る。
+	 * 他のサーバーのユーザーに、このサーバーが持つルーム (roomId) の通話トークンを発行する。
+	 * ルームが無いときも、使わせないときと同じく 'forbidden' を返す。
 	 * 画面共有は、相手のサーバーが求め (canScreenShareRequested)、こちらのポリシーも許すときだけ認める
 	 */
 	@bindThis
-	public async issueRemoteJoinToken(user: MiRemoteUser, room: MiChatRoom, canScreenShareRequested: boolean): Promise<(JoinCredentials & FederatedVoiceSnapshot) | 'forbidden'> {
+	public async issueRemoteJoinToken(user: MiRemoteUser, roomId: MiChatRoom['id'], canScreenShareRequested: boolean): Promise<(JoinCredentials & FederatedVoiceSnapshot) | 'forbidden'> {
+		// ルームがあるかどうかで読むものを変えない。DB や Redis が使えないとき、あるルームへの要求だけが失敗して
+		// ルームがあると分かってしまわないように、断るかどうかを決める前にすべてを並べて読む
+		const [room, isMember, isRefusedHost, policies] = await Promise.all([
+			this.chatRoomsRepository.findOne({ where: { id: roomId }, relations: { owner: true } }),
+			this.chatRoomMembershipsRepository.exists({ where: { roomId, userId: user.id } }),
+			this.isRefusedRemoteHost(user.host),
+			this.roleService.getUserPolicies(user.id),
+		]);
+
 		// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーで開く。保管済みのルームはローカルと同じく断る
-		if (room.owner == null || room.owner.host != null || room.isArchived) return 'forbidden';
+		if (room == null || room.owner == null || room.owner.host != null || room.isArchived) return 'forbidden';
 
 		if (user.isSuspended) return 'forbidden';
-		if (await this.isRefusedRemoteHost(user.host)) return 'forbidden';
-
-		const isMember = await this.chatRoomMembershipsRepository.exists({ where: { roomId: room.id, userId: user.id } });
+		if (isRefusedHost) return 'forbidden';
 		if (!isMember) return 'forbidden';
 
 		// トークンは常にマイクを許すので、ローカルの参加と同じくチャットの書き込み権限も求める
-		const policies = await this.roleService.getUserPolicies(user.id);
 		if (!policies.canVoiceCall || policies.chatAvailability !== 'available') return 'forbidden';
 
 		const { url, token, iceServers } = await this.issueJoinToken(user, room, canScreenShareRequested && policies.canScreenShare);

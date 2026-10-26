@@ -36,7 +36,6 @@ const CONFIG = { url: 'https://local.test', host: 'local.test', enableIpRateLimi
 function createService(liveKit: LiveKitService, deps: {
 	config?: object;
 	chatVoiceService?: object;
-	chatService?: object;
 	verifier?: object;
 	rateLimiterService?: object;
 } = {}) {
@@ -44,7 +43,6 @@ function createService(liveKit: LiveKitService, deps: {
 		(deps.config ?? CONFIG) as any,
 		liveKit,
 		(deps.chatVoiceService ?? { handleWebhook: vi.fn() }) as any,
-		(deps.chatService ?? { findRoomById: vi.fn() }) as any,
 		(deps.verifier ?? { verify: vi.fn() }) as any,
 		(deps.rateLimiterService ?? { limit: vi.fn(async () => null) }) as any,
 	);
@@ -174,24 +172,21 @@ const RATE_LIMITED = { code: 'RATE_LIMIT_EXCEEDED', info: { remaining: 0 } };
 
 /** 署名の検証と通話サービスを偽物にしたトークン経路 */
 async function createTokenApp(opts: { enabled?: boolean; signer?: object | null; enableIpRateLimit?: boolean; verifier?: object } = {}) {
+	// このサーバーにあるルームは r1 だけ
 	const chatVoiceService = {
 		handleWebhook: vi.fn(),
-		issueRemoteJoinToken: vi.fn(async (): Promise<object | 'forbidden'> => ({
+		issueRemoteJoinToken: vi.fn(async (_user: object, roomId: string, _canScreenShare: boolean): Promise<object | 'forbidden'> => roomId === 'r1' ? {
 			url: 'https://local.test/livekit',
 			token: 'jwt',
 			participants: [{ identity: 'https://local.test/users/u1', screenSharing: true }],
 			updatedAt: 1234,
-		})),
-	};
-	const chatService = {
-		findRoomById: vi.fn(async (id: string) => id === 'r1' ? { id, ownerId: 'owner', owner: { id: 'owner', host: null } } : null),
+		} : 'forbidden'),
 	};
 	const verifier = { verify: vi.fn(async () => opts.signer === undefined ? REMOTE_USER : opts.signer) };
 	const rateLimiterService = { limit: vi.fn(async (_limitation: { key: string }, _actor: string): Promise<object | null> => null) };
 	const service = createService(liveKitService(opts.enabled ?? true), {
 		config: { ...CONFIG, enableIpRateLimit: opts.enableIpRateLimit ?? false },
 		chatVoiceService,
-		chatService,
 		verifier: opts.verifier ?? verifier,
 		rateLimiterService,
 	});
@@ -199,7 +194,7 @@ async function createTokenApp(opts: { enabled?: boolean; signer?: object | null;
 	await app.register(service.createServer, { prefix: '/livekit' });
 	await app.ready();
 	cleanups.push(() => app.close());
-	return { app, chatVoiceService, chatService, verifier, rateLimiterService };
+	return { app, chatVoiceService, verifier, rateLimiterService };
 }
 
 const SIGNED_HEADERS = {
@@ -419,19 +414,18 @@ describe('LiveKitServerService', () => {
 
 	describe('federation token', () => {
 		test('answers 401 to an unsigned token request', async () => {
-			const { app, verifier, chatService, chatVoiceService } = await createTokenApp({ signer: null });
+			const { app, verifier, chatVoiceService } = await createTokenApp({ signer: null });
 			const { signature: _, ...unsigned } = SIGNED_HEADERS;
 
 			const res = await requestToken(app, undefined, unsigned);
 
 			expect(res.statusCode).toBe(401);
 			expect(verifier.verify).toHaveBeenCalled();
-			expect(chatService.findRoomById).not.toHaveBeenCalled();
 			expect(chatVoiceService.issueRemoteJoinToken).not.toHaveBeenCalled();
 		});
 
 		test('answers 403 for a room URI on another server', async () => {
-			const { app, chatService, chatVoiceService } = await createTokenApp();
+			const { app, chatVoiceService } = await createTokenApp();
 
 			for (const room of [
 				'https://other.test/chat/rooms/r1',
@@ -446,18 +440,17 @@ describe('LiveKitServerService', () => {
 				expect(res.statusCode, room).toBe(403);
 				expect(res.body, room).toBe('');
 			}
-			expect(chatService.findRoomById).not.toHaveBeenCalled();
 			expect(chatVoiceService.issueRemoteJoinToken).not.toHaveBeenCalled();
 		});
 
 		test('answers 403 for a room that does not exist', async () => {
-			const { app, chatService, chatVoiceService } = await createTokenApp();
+			const { app, chatVoiceService } = await createTokenApp();
 
 			const res = await requestToken(app, { room: 'https://local.test/chat/rooms/gone', canScreenShare: false });
 
 			expect(res.statusCode).toBe(403);
-			expect(chatService.findRoomById).toHaveBeenCalledWith('gone');
-			expect(chatVoiceService.issueRemoteJoinToken).not.toHaveBeenCalled();
+			// ルームがあるかどうかは、メンバーかどうかなどと一緒に通話サービスが確かめる
+			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledWith(REMOTE_USER, 'gone', false);
 		});
 
 		test('answers 403 when the voice service refuses', async () => {
@@ -471,12 +464,12 @@ describe('LiveKitServerService', () => {
 
 		test('answers a missing room exactly like a room the caller may not use', async () => {
 			const { app, chatVoiceService } = await createTokenApp();
-			chatVoiceService.issueRemoteJoinToken.mockResolvedValue('forbidden');
 
 			const missing = await requestToken(app, { room: 'https://local.test/chat/rooms/gone', canScreenShare: false });
+			chatVoiceService.issueRemoteJoinToken.mockResolvedValue('forbidden');
 			const refused = await requestToken(app, { room: ROOM_URI, canScreenShare: false });
 
-			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledTimes(1);
+			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledTimes(2);
 			expect(missing.statusCode).toBe(403);
 			expect([missing.statusCode, missing.body, missing.headers['content-type'], missing.headers['content-length']])
 				.toEqual([refused.statusCode, refused.body, refused.headers['content-type'], refused.headers['content-length']]);
@@ -497,7 +490,7 @@ describe('LiveKitServerService', () => {
 		});
 
 		test('returns the token and participants for a valid request', async () => {
-			const { app, verifier, chatService, chatVoiceService } = await createTokenApp();
+			const { app, verifier, chatVoiceService } = await createTokenApp();
 			const body = JSON.stringify({ room: ROOM_URI, canScreenShare: true });
 
 			const res = await requestToken(app, body);
@@ -513,8 +506,7 @@ describe('LiveKitServerService', () => {
 				expect.objectContaining({ method: 'POST', url: '/livekit/federation/token', headers: expect.objectContaining({ host: 'local.test', signature: SIGNED_HEADERS.signature }) }),
 				body,
 			);
-			expect(chatService.findRoomById).toHaveBeenCalledWith('r1');
-			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledWith(REMOTE_USER, expect.objectContaining({ id: 'r1' }), true);
+			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledWith(REMOTE_USER, 'r1', true);
 		});
 
 		test('includes this server\'s TURN servers in the token response', async () => {
@@ -554,6 +546,7 @@ describe('LiveKitServerService', () => {
 				CONFIG as any,
 				{ findOneBy: vi.fn(async () => ({ keyId, userId: REMOTE_USER.id, keyPem: publicKey })) } as any,
 				{ findOneBy: vi.fn(async () => ({ ...REMOTE_USER, isDeleted: false })) } as any,
+				{ getLogger: () => ({ debug: vi.fn() }) } as any,
 			);
 			const { app, chatVoiceService } = await createTokenApp({ verifier });
 			const body = JSON.stringify({ room: ROOM_URI, canScreenShare: false });
@@ -563,7 +556,7 @@ describe('LiveKitServerService', () => {
 			const res = await app.inject({ method: 'POST', url: '/livekit/federation/token', headers: { ...signed.request.headers, host: 'local.test' }, payload: body });
 
 			expect(res.statusCode).toBe(200);
-			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledWith(expect.objectContaining({ id: REMOTE_USER.id }), expect.objectContaining({ id: 'r1' }), false);
+			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledWith(expect.objectContaining({ id: REMOTE_USER.id }), 'r1', false);
 		});
 
 		test('answers 404 to token requests when voice calls are disabled', async () => {
@@ -572,6 +565,43 @@ describe('LiveKitServerService', () => {
 			const res = await requestToken(app);
 
 			expect(res.statusCode).toBe(404);
+			expect(verifier.verify).not.toHaveBeenCalled();
+		});
+
+		test('answers 404 when voice calls are disabled before looking at the body\'s size or type', async () => {
+			const { app, verifier } = await createTokenApp({ enabled: false });
+
+			const oversizedToken = await requestToken(app, { room: ROOM_URI, canScreenShare: false, padding: 'x'.repeat(16 * 1024) });
+			const unknownTypeToken = await app.inject({ method: 'POST', url: '/livekit/federation/token', headers: { ...SIGNED_HEADERS, 'content-type': 'application/xml' }, payload: '<x/>' });
+			const oversizedWebhook = await app.inject({ method: 'POST', url: '/livekit/webhook', headers: { 'content-type': 'application/webhook+json' }, payload: 'x'.repeat(1024 * 1024 + 1) });
+			const unknownTypeWebhook = await app.inject({ method: 'POST', url: '/livekit/webhook', headers: { 'content-type': 'text/plain' }, payload: 'x' });
+			const validation = await app.inject({ method: 'GET', url: '/livekit/rtc/v1/validate?access_token=x' });
+
+			expect([oversizedToken, unknownTypeToken, oversizedWebhook, unknownTypeWebhook, validation].map(res => [res.statusCode, res.body])).toEqual([
+				[404, ''], [404, ''], [404, ''], [404, ''], [404, ''],
+			]);
+			expect(verifier.verify).not.toHaveBeenCalled();
+		});
+
+		test('keeps the 404 for disabled voice calls inside /livekit', async () => {
+			const app = Fastify();
+			await app.register(createService(liveKitService(false)).createServer, { prefix: '/livekit' });
+			app.post('/api/ping', async () => ({ ok: true }));
+			await app.ready();
+			cleanups.push(() => app.close());
+
+			const res = await app.inject({ method: 'POST', url: '/api/ping', payload: { x: 1 } });
+
+			expect(res.statusCode).toBe(200);
+			expect(res.json()).toEqual({ ok: true });
+		});
+
+		test('still refuses an unknown body type with 415 while voice calls are enabled', async () => {
+			const { app, verifier } = await createTokenApp();
+
+			const res = await app.inject({ method: 'POST', url: '/livekit/federation/token', headers: { ...SIGNED_HEADERS, 'content-type': 'application/xml' }, payload: '<x/>' });
+
+			expect(res.statusCode).toBe(415);
 			expect(verifier.verify).not.toHaveBeenCalled();
 		});
 
