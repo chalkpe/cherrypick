@@ -114,17 +114,25 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.voiceCallUnavailable);
 			}
 
+			const room = await this.chatService.findRoomById(ps.roomId);
+			const isMember = room != null && await this.chatService.isRoomMember(room, me.id);
+			// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーで開かれるので、このサーバーの LiveKit は使わない
+			const remoteOwner = isMember && room.owner?.host != null ? room.owner as MiRemoteUser : null;
+
+			// このサーバーに LiveKit が無ければ、入れるのはメンバーであるミラーの通話だけ。それ以外は他のサーバーの通話に対応する前と同じく、
+			// まず断る。メンバーでない人には、ルームがあるかも、ミラーかも分からないようにする
+			if (remoteOwner == null && !this.liveKitService.isEnabled) {
+				throw new ApiError(meta.errors.voiceCallUnavailable);
+			}
+
 			// 参加すると話せるので、チャットの書き込み権限を要求する
 			await this.chatService.checkChatAvailability(me.id, 'write');
 
-			const room = await this.chatService.findRoomById(ps.roomId);
-			if (room == null || !(await this.chatService.isRoomMember(room, me.id))) {
+			if (room == null || !isMember) {
 				throw new ApiError(meta.errors.noSuchRoom);
 			}
 
-			// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーで開かれるので、このサーバーの LiveKit は使わない
-			const remoteOwner = room.owner?.host != null ? room.owner as MiRemoteUser : null;
-			if (remoteOwner != null ? !this.remoteVoiceCallService.isEnabled : !this.liveKitService.isEnabled) {
+			if (remoteOwner != null && !this.remoteVoiceCallService.isEnabled) {
 				throw new ApiError(meta.errors.voiceCallUnavailable);
 			}
 

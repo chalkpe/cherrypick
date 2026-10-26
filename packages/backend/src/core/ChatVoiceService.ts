@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 import { Inject, Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import * as Redis from 'ioredis';
-import { In, IsNull } from 'typeorm';
+import { In, IsNull, MoreThan, Not } from 'typeorm';
 import type { WebhookEvent } from 'livekit-server-sdk';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
@@ -46,6 +46,27 @@ const ACTIVE_ROOMS_KEY = 'chatVoice:active';
 // 他のサーバーが持つルーム (ミラー) の通話は、このサーバーから読み直せない。
 // メンバーが参加するたびにホストから届く現況を、これだけの間だけ表示する
 const REMOTE_SNAPSHOT_TTL_SECONDS = 600;
+
+// ホストの時計がこれより先の時刻を付けた現況は捨てる。受け入れると、寿命が切れるまでホストが新しい現況で上書きできなくなる
+const REMOTE_SNAPSHOT_MAX_AHEAD_MS = 300_000;
+
+// 他のサーバーの通話を止めたときにミラーの現況を消すとき、一度に引くルームの数
+const MIRROR_CLEAR_BATCH_SIZE = 1000;
+
+// ミラーの現況を、保存済みのものより新しい (updatedAt が大きい) ときだけ書く。書いたら 1、書かなければ 0。
+// 比べてから書くまでを一つの操作にして、同時に届いた古い現況が新しい現況を上書きしないようにする。
+// 保存済みのものが読めなければ上書きする。KEYS[1]: 鍵、ARGV: 現況 (JSON)、その updatedAt、寿命 (秒)
+const STORE_IF_NEWER_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if current then
+	local ok, stored = pcall(cjson.decode, current)
+	if ok and type(stored) == 'table' and type(stored.updatedAt) == 'number' and stored.updatedAt >= tonumber(ARGV[2]) then
+		return 0
+	end
+end
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+return 1
+`;
 
 // 他のサーバーのメンバーには、参加者が変わったときのほか、変わらなくてもこの間隔で送り直してミラーの寿命を延ばす。
 // 送り直しは読み直し (sweep) のついでに行うので、実際の間隔は最大でこれに SWEEP_INTERVAL_MS を足したものになる
@@ -429,36 +450,49 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const updatedAt = typeof state.updated === 'string' ? Date.parse(state.updated) : NaN;
 		if (!Number.isFinite(updatedAt)) return 'skip: invalid updated';
 
-		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		const room = await this.chatRoomsRepository.findOne({ where: { id: roomId }, relations: { owner: true } });
 		if (room == null) return 'skip: unknown room';
 		// 送り主は他のサーバーのユーザーなので、送り主が持ち主ならそのルームはミラー
 		if (room.ownerId !== actor.id) return 'skip: sender does not own the room';
 
-		await this.storeRemoteSnapshot(room, participants, updatedAt);
-		return 'ok: voice state stored';
+		const stored = await this.storeRemoteSnapshot(room, participants, updatedAt);
+		return stored ? 'ok: voice state stored' : 'skip: voice state is not newer than the stored one, or is stamped too far ahead';
 	}
 
 	/**
 	 * 他のサーバーが持つルーム (ミラー) について、ホストから届いた参加者の現況を保存し、このサーバーのメンバーに知らせる。
-	 * updatedAt はホストの時刻。保存済みのもの以前の現況は捨てる。
+	 * room は持ち主 (owner) を読み込んだもの。持ち主がこのサーバーのユーザーなら (ミラーでなければ) 例外を投げる。
+	 * updatedAt はホストの時刻。保存済みのもの以前の現況と、この時計より REMOTE_SNAPSHOT_MAX_AHEAD_MS より先の現況は捨てる。
+	 * 参加者は、このサーバーが知っているユーザーのうち、ルームの持ち主と今のメンバーだけを残す。
+	 * 他のサーバーの通話を止めているあいだは保存しない。保存したかどうかを返す。
 	 * ミラーの通話はこのサーバーの LiveKit には無いので、定期的な読み直し (sweep) の対象には加えない
 	 */
 	@bindThis
-	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<void> {
+	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<boolean> {
+		// このサーバーのルームの現況は LiveKit から読む。ホストの言う現況で上書きさせない
+		if (room.owner == null || room.owner.host == null) {
+			throw new Error(`Voice call participants sent by another server can only be stored for a room owned there: ${room.id}`);
+		}
+
+		if (updatedAt > Date.now() + REMOTE_SNAPSHOT_MAX_AHEAD_MS) return false;
+
 		const capped = participants.slice(0, MAX_ROOM_MEMBERS + 1);
 		const userIds = await this.knownUserIdsOf(capped.map(p => p.identity));
+		// ホストは、このサーバーが知っているユーザーなら誰でも参加者として送れるので、ルームにいられる人だけを残す
+		const admitted = await this.ownerAndMemberIdsOf(room, [...new Set(userIds.values())]);
 		const snapshot: VoiceSnapshot = { participants: [], updatedAt };
 		for (const p of capped) {
 			const userId = userIds.get(p.identity);
-			if (userId != null) snapshot.participants.push({ identity: p.identity, userId, screenSharing: p.screenSharing });
+			if (userId != null && admitted.has(userId)) snapshot.participants.push({ identity: p.identity, userId, screenSharing: p.screenSharing });
 		}
 
-		// 解決している間に新しい現況が保存されたかもしれないので、書く直前に比べる
-		const stored = await this.redisClient.get(this.keyOf(room.id));
-		if (stored != null && (JSON.parse(stored) as VoiceSnapshot).updatedAt >= updatedAt) return;
+		// 他のサーバーの通話を止めた後に、止める前に始まった参加の応答が届いても書かない (止めたときにミラーの現況は消している)
+		if (!isRemoteVoiceCallEnabled(this.meta)) return false;
 
+		// 解決している間に新しい現況が保存されたかもしれないので、書くときに比べる (STORE_IF_NEWER_SCRIPT)。
 		// 空になったときも時刻ごと残し、遅れて届いた古い現況で上書きされないようにする (getStates は空のものを返さない)
-		await this.redisClient.set(this.keyOf(room.id), JSON.stringify(snapshot), 'EX', REMOTE_SNAPSHOT_TTL_SECONDS);
+		const stored = await this.redisClient.eval(STORE_IF_NEWER_SCRIPT, 1, this.keyOf(room.id), JSON.stringify(snapshot), updatedAt, REMOTE_SNAPSHOT_TTL_SECONDS);
+		if (stored !== 1) return false;
 
 		const packed = await this.pack(room.id, snapshot, null);
 
@@ -466,6 +500,28 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id, user: { host: IsNull() } });
 		for (const membership of memberships) {
 			this.globalEventService.publishMainStream(membership.userId, 'chatRoomVoiceState', packed);
+		}
+		return true;
+	}
+
+	/**
+	 * ミラーの現況をすべて消す。他のサーバーの通話を止めたときに呼び、寿命 (REMOTE_SNAPSHOT_TTL_SECONDS) まで残さない。
+	 * ミラーは持ち主が他のサーバーのユーザーのルーム。それを id 順に少しずつ引き、現況の鍵を消す (無い鍵を消しても何も起きない)。
+	 * 何度消しても同じ結果になるので、複数のワーカーが同時に動いてもよい
+	 */
+	@bindThis
+	public async clearMirrorSnapshots(): Promise<void> {
+		let lastId: MiChatRoom['id'] | null = null;
+		for (;;) {
+			const rooms: Pick<MiChatRoom, 'id'>[] = await this.chatRoomsRepository.find({
+				select: { id: true },
+				where: { owner: { host: Not(IsNull()) }, ...(lastId != null ? { id: MoreThan(lastId) } : {}) },
+				order: { id: 'ASC' },
+				take: MIRROR_CLEAR_BATCH_SIZE,
+			});
+			if (rooms.length > 0) await this.redisClient.del(...rooms.map(room => this.keyOf(room.id)));
+			if (rooms.length < MIRROR_CLEAR_BATCH_SIZE) return;
+			lastId = rooms[rooms.length - 1].id;
 		}
 	}
 
@@ -489,11 +545,12 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	@bindThis
 	public onModuleInit(): void {
+		// 設定の変更は、このサーバーに LiveKit が無くても受け取る (ミラーの現況は LiveKit が無くても保存されるので)
+		this.redisForSub.on('message', this.onMessage);
 		if (!this.liveKitService.isEnabled) return;
 		this.sweepTimer = setInterval(() => {
 			this.sweep().catch(() => {});
 		}, SWEEP_INTERVAL_MS);
-		this.redisForSub.on('message', this.onMessage);
 	}
 
 	@bindThis
@@ -516,9 +573,15 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 					// ブロックや連合の設定が変わったら、通話中の他のサーバーの参加者を確かめ直す。
 					// DI.meta は GlobalModule の購読が先に書き換えているので、新しい設定で判定される。
 					// 外すのは何度しても同じ結果になるので、どのワーカーでも行う
-					if (body.before == null || isFederationPolicyChanged(body.before, body.after)) {
+					if (this.liveKitService.isEnabled && (body.before == null || isFederationPolicyChanged(body.before, body.after))) {
 						this.removeRefusedRemoteParticipants().catch(err => {
 							this.logger.error('Failed to remove voice call participants from refused servers', { error: err });
+						});
+					}
+					// 他のサーバーの通話を止めたら、ミラーの現況を消す。消すのは何度しても同じ結果になるので、どのワーカーでも行う
+					if (!isRemoteVoiceCallEnabled(body.after) && (body.before == null || isRemoteVoiceCallEnabled(body.before))) {
+						this.clearMirrorSnapshots().catch(err => {
+							this.logger.error('Failed to clear the voice call participants of rooms owned on other servers', { error: err });
 						});
 					}
 					break;
@@ -640,6 +703,19 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 		await this.federateSnapshot(room, participants, snapshot.updatedAt);
 		await this.redisClient.set(key, JSON.stringify({ hash, at: Date.now() }), 'EX', FEDERATION_RESEND_INTERVAL_MS / 1000);
+	}
+
+	/**
+	 * userIds のうち、ルームの持ち主と、いまルームのメンバーであるユーザー。メンバーかどうかは一度に引く
+	 */
+	private async ownerAndMemberIdsOf(room: MiChatRoom, userIds: MiUser['id'][]): Promise<Set<MiUser['id']>> {
+		const others = userIds.filter(userId => userId !== room.ownerId);
+		const memberships = others.length > 0
+			? await this.chatRoomMembershipsRepository.findBy({ roomId: room.id, userId: In(others) })
+			: [];
+		const admitted = new Set(memberships.map(membership => membership.userId));
+		if (userIds.includes(room.ownerId)) admitted.add(room.ownerId);
+		return admitted;
 	}
 
 	/**

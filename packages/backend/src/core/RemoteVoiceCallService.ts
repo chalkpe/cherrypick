@@ -10,6 +10,7 @@ import type { MiMeta } from '@/models/Meta.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
 import type { MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import { bindThis } from '@/decorators.js';
+import type Logger from '@/logger.js';
 import { StatusError } from '@/misc/status-error.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { ChatVoiceService, isRemoteVoiceCallEnabled } from '@/core/ChatVoiceService.js';
@@ -17,6 +18,7 @@ import type { JoinCredentials } from '@/core/ChatVoiceService.js';
 import { parseIceServers } from '@/core/CloudflareTurnService.js';
 import type { IceServer } from '@/core/CloudflareTurnService.js';
 import { ApRequestService } from '@/core/activitypub/ApRequestService.js';
+import { LoggerService } from '@/core/LoggerService.js';
 
 const TOKEN_REQUEST_TIMEOUT_MS = 10_000;
 const TOKEN_RESPONSE_SIZE_LIMIT = 64 * 1024;
@@ -51,6 +53,8 @@ type TokenResponse = {
  */
 @Injectable()
 export class RemoteVoiceCallService {
+	private logger: Logger;
+
 	constructor(
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
@@ -60,7 +64,9 @@ export class RemoteVoiceCallService {
 
 		private apRequestService: ApRequestService,
 		private chatVoiceService: ChatVoiceService,
+		private loggerService: LoggerService,
 	) {
+		this.logger = this.loggerService.getLogger('chat-voice');
 	}
 
 	/** このサーバーのユーザーが他のサーバーの通話に入れるか (features.remoteVoiceCall と同じ) */
@@ -108,9 +114,10 @@ export class RemoteVoiceCallService {
 		const response = parseTokenResponse(body, `${origin}/livekit`);
 		if (response == null) throw new RemoteVoiceCallError('unreachable');
 
-		// 現況は一覧の表示に使うだけなので、保存を待たずに参加させ、失敗しても参加は止めない
-		this.chatVoiceService.storeRemoteSnapshot(room, response.participants, response.updatedAt).catch(() => {
-			// 次の参加時に届く現況で埋まるので握りつぶす
+		// 現況は一覧の表示に使うだけなので、保存を待たずに参加させ、失敗しても参加は止めない。
+		// 次の参加やホストから届く現況で埋まるので、記録だけ残す
+		this.chatVoiceService.storeRemoteSnapshot(room, response.participants, response.updatedAt).catch(err => {
+			this.logger.warn(`Failed to store the voice call participants of ${room.id} sent by ${owner.host}`, { error: err });
 		});
 
 		return { url: response.url, token: response.token, iceServers: response.iceServers };

@@ -55,14 +55,17 @@ function createFixture(metaOverrides: Record<string, unknown> = {}, instances: {
 	};
 	// 持ち主のサーバーを断るかどうかは ChatVoiceService の判定 (isRefusedRemoteHost) をそのまま使う
 	const chatVoiceService = Object.assign(Object.create(ChatVoiceService.prototype), { meta, utilityService, instancesRepository });
-	Object.defineProperty(chatVoiceService, 'storeRemoteSnapshot', { value: vi.fn(async () => {}) });
+	Object.defineProperty(chatVoiceService, 'storeRemoteSnapshot', { value: vi.fn(async (): Promise<boolean> => true) });
+	const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+	const loggerService = { getLogger: () => logger };
 	const service = new RemoteVoiceCallService(
 		redis as any,
 		meta as any,
 		apRequestService as any,
 		chatVoiceService,
+		loggerService as any,
 	);
-	return { service, redis, apRequestService, chatVoiceService, utilityService, instancesRepository };
+	return { service, redis, apRequestService, chatVoiceService, utilityService, instancesRepository, logger };
 }
 
 function abortError() {
@@ -127,6 +130,15 @@ describe('RemoteVoiceCallService', () => {
 
 		// 鮮度はホストの時計で比べるので、応答の updatedAt をそのまま渡す
 		expect(f.chatVoiceService.storeRemoteSnapshot).toHaveBeenCalledWith(room, participants, 777);
+	});
+
+	test('lets the user join even when storing the participants fails, and logs the failure', async () => {
+		const f = createFixture();
+		f.chatVoiceService.storeRemoteSnapshot.mockRejectedValueOnce(new Error('redis is down'));
+
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
+		await vi.waitFor(() => expect(f.logger.warn).toHaveBeenCalledTimes(1));
+		expect(f.logger.warn).toHaveBeenCalledWith(expect.stringContaining('r1'), { error: expect.objectContaining({ message: 'redis is down' }) });
 	});
 
 	test('remembers a host without voice support for an hour', async () => {
@@ -234,6 +246,34 @@ describe('RemoteVoiceCallService', () => {
 
 			await expect(f.service.requestJoin(me, room, portOwner(), false)).rejects.toMatchObject({ reason: 'forbidden' });
 			expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+		});
+
+		test('refuses an owner on a host with a trailing dot and a port whose server is suspended through the record without them', async () => {
+			const f = createFixture({}, [{ host: 'evil.example', suspensionState: 'manuallySuspended' }]);
+
+			await expect(f.service.requestJoin(me, room, portOwner({ host: 'evil.example.:8443', uri: 'https://evil.example.:8443/users/owner' }), false)).rejects.toMatchObject({ reason: 'forbidden' });
+			expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+		});
+
+		// 停止の記録の host は punycode で保存される (管理画面も toPuny してから引く)
+		test.each([
+			['without a port', 'xn--vil-ima.example'],
+			['with a port', 'xn--vil-ima.example:8443'],
+		])('refuses an owner on an internationalized domain %s whose server is suspended', async (_label, host) => {
+			const f = createFixture({}, [{ host: 'xn--vil-ima.example', suspensionState: 'manuallySuspended' }]);
+
+			await expect(f.service.requestJoin(me, room, portOwner({ host, uri: `https://${host}/users/owner` }), false)).rejects.toMatchObject({ reason: 'forbidden' });
+			expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+		});
+
+		test('reads every record of the owner\'s server in one query', async () => {
+			const f = createFixture();
+			f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ url: 'https://evil.example:8443/livekit' }));
+
+			await f.service.requestJoin(me, room, portOwner(), false);
+
+			expect(f.instancesRepository.findBy).toHaveBeenCalledTimes(1);
+			expect(f.instancesRepository.findBy.mock.calls[0][0].host.value).toEqual(expect.arrayContaining(['', 'evil.example', 'evil.example.', 'evil.example:8443', 'evil.example.:8443']));
 		});
 
 		test('refuses an owner whose server is suspended through the record with a trailing dot', async () => {

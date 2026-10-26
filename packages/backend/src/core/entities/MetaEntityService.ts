@@ -16,6 +16,7 @@ import type { Config } from '@/config.js';
 import { DI } from '@/di-symbols.js';
 import { DEFAULT_POLICIES } from '@/core/RoleService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
+import { isRemoteVoiceCallEnabled } from '@/core/ChatVoiceService.js';
 
 @Injectable()
 export class MetaEntityService {
@@ -180,7 +181,7 @@ export class MetaEntityService {
 				serviceWorker: instance.enableServiceWorker,
 				miauth: true,
 				voiceCall: this.liveKitService.isEnabled,
-				remoteVoiceCall: instance.enableRemoteVoiceCall && instance.federation !== 'none',
+				remoteVoiceCall: isRemoteVoiceCallEnabled(instance),
 			},
 		};
 

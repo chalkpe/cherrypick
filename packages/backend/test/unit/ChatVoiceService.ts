@@ -4,8 +4,11 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { FindOperator, IsNull } from 'typeorm';
+import { Redis } from 'ioredis';
+import { loadConfig } from '@/config.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
@@ -43,9 +46,21 @@ function fakeRedis() {
 			const at = expiresAt.get(key);
 			return at == null ? -1 : at - Date.now();
 		}),
-		del: vi.fn(async (key: string) => {
-			expiresAt.delete(key);
-			return store.delete(key) ? 1 : 0;
+		del: vi.fn(async (...keys: string[]) => {
+			let deleted = 0;
+			for (const key of keys) {
+				expiresAt.delete(key);
+				if (store.delete(key)) deleted++;
+			}
+			return deleted;
+		}),
+		// ミラーの現況を保存するスクリプト (保存済みのものより新しいときだけ書く) と同じ動きをする。
+		// 本物の Redis と同じく、比べてから書くまでのあいだに他の呼び出しが割り込まない
+		eval: vi.fn(async (_script: string, _numKeys: number, key: string, value: string, updatedAt: number | string, ttlSeconds: number | string) => {
+			if (live(key) && (JSON.parse(store.get(key)!) as { updatedAt: number }).updatedAt >= Number(updatedAt)) return 0;
+			store.set(key, value);
+			expiresAt.set(key, Date.now() + Number(ttlSeconds) * 1000);
+			return 1;
 		}),
 		mget: vi.fn(async (...keys: string[]) => keys.map(key => (live(key) ? store.get(key)! : null))),
 		sadd: vi.fn(async (key: string, member: string) => {
@@ -70,6 +85,8 @@ const KNOWN_USERS = [
 	{ id: 'rm1', host: 'remote.test', uri: 'https://remote.test/users/rm1', isDeleted: false, inbox: 'https://remote.test/users/rm1/inbox', sharedInbox: 'https://remote.test/inbox' },
 	{ id: 'rm2', host: 'remote.test', uri: 'https://remote.test/users/rm2', isDeleted: false, inbox: 'https://remote.test/users/rm2/inbox', sharedInbox: 'https://remote.test/inbox' },
 	{ id: 'rm3', host: 'far.test', uri: 'https://far.test/users/rm3', isDeleted: false, inbox: 'https://far.test/users/rm3/inbox', sharedInbox: null },
+	// ミラーのルーム (mirrorRoom) の持ち主
+	{ id: 'remoteOwner', host: 'remote.test', uri: 'https://remote.test/users/remoteOwner', isDeleted: false },
 ];
 
 /** usersRepository.findBy の where (等値・In・IsNull) を KNOWN_USERS に当てる */
@@ -102,6 +119,17 @@ function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []) {
 	const chatRoomsRepository = {
 		findOneBy: vi.fn(async ({ id }: { id: string }) => ({ id, ownerId: 'owner' })),
 		findOne: vi.fn(async ({ where }: { where: { id: string } }) => rooms.get(where.id) ?? null),
+		// 持ち主が他のサーバーのユーザーのルーム (ミラー) を id 順に引く。where は持ち主の host と、続きを引くときの id だけを当てる
+		find: vi.fn(async ({ where, take }: { where: { id?: FindOperator<string>; owner: { host: FindOperator<unknown> } }; take: number }) => {
+			const ownerHost = where.owner.host;
+			if (ownerHost.type !== 'not' || ownerHost.child?.type !== 'isNull') throw new Error('unsupported condition');
+			if (where.id != null && where.id.type !== 'moreThan') throw new Error('unsupported condition');
+			return [...rooms.values()]
+				.filter(room => room.owner?.host != null && (where.id == null || room.id > (where.id.value as string)))
+				.sort((a, b) => (a.id < b.id ? -1 : 1))
+				.slice(0, take)
+				.map(room => ({ id: room.id }));
+		}),
 	};
 	// 通話に残れるかを確かめるときは、ルームのメンバーを userId の In で引く。nonMembers に入れたユーザーはメンバーでない
 	const nonMembers = new Set<string>();
@@ -642,7 +670,7 @@ describe('ChatVoiceService', () => {
 				{ identity: 'https://gone.test/users/y', screenSharing: false },
 			], 2000);
 
-			expect(f.redis.set).toHaveBeenCalledWith('chatVoice:r1', expect.any(String), 'EX', 600);
+			expect(f.redis.eval).toHaveBeenCalledWith(expect.any(String), 1, 'chatVoice:r1', expect.any(String), 2000, 600);
 			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!)).toEqual({
 				participants: [
 					{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: true },
@@ -738,6 +766,198 @@ describe('ChatVoiceService', () => {
 
 			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).participants).toEqual([]);
 			expect(f.usersRepository.findBy).not.toHaveBeenCalled();
+		});
+
+		// ホストが、このサーバーの知っているメンバーでないユーザーを参加者に見せかけられないようにする
+		test('storeRemoteSnapshot keeps only the room\'s owner and its current members, checked in one query', async () => {
+			f.nonMembers.add('u2');
+			f.nonMembers.add('x1');
+			// 持ち主はメンバーの行を持たない
+			f.nonMembers.add('remoteOwner');
+
+			const stored = await f.service.storeRemoteSnapshot(mirrorRoom(), [
+				{ identity: 'https://remote.test/users/remoteOwner', screenSharing: true },
+				{ identity: 'https://local.test/users/u1', screenSharing: false },
+				{ identity: 'https://local.test/users/u2', screenSharing: false },
+				{ identity: 'https://other.test/users/x', screenSharing: false },
+			], 2000);
+
+			expect(stored).toBe(true);
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).participants).toEqual([
+				{ identity: 'https://remote.test/users/remoteOwner', userId: 'remoteOwner', screenSharing: true },
+				{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: false },
+			]);
+			const membershipChecks = f.chatRoomMembershipsRepository.findBy.mock.calls.filter(([where]) => where?.userId instanceof FindOperator);
+			expect(membershipChecks).toHaveLength(1);
+			expect(membershipChecks[0][0]).toEqual({ roomId: 'r1', userId: expect.any(FindOperator) });
+		});
+
+		test('storeRemoteSnapshot does not look up memberships when nobody is known', async () => {
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://evil.test/users/fresh', screenSharing: false }], 2000);
+
+			expect(f.chatRoomMembershipsRepository.findBy.mock.calls.filter(([where]) => where?.userId instanceof FindOperator)).toHaveLength(0);
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).participants).toEqual([]);
+		});
+
+		// 他のサーバーの言う現況を、このサーバーが持つルームに書かせない
+		test.each([
+			['a room owned on this server', () => localRoom()],
+			['a room whose owner was not loaded', () => ({ id: 'r1', ownerId: 'remoteOwner', isArchived: false }) as any],
+		])('storeRemoteSnapshot refuses %s', async (_label, room) => {
+			await expect(f.service.storeRemoteSnapshot(room(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], 2000)).rejects.toThrow();
+
+			expect(f.redis.store.has('chatVoice:r1')).toBe(false);
+			expect(f.globalEventService.publishMainStream).not.toHaveBeenCalled();
+		});
+
+		// 比べてから書くまでを一つの操作にして、同時に届いた古い現況が新しい現況を上書きしないようにする
+		test.each([
+			['the newer one first', [3000, 2000]],
+			['the older one first', [2000, 3000]],
+		])('storeRemoteSnapshot keeps the newer of two snapshots stored at the same time (%s)', async (_label, times) => {
+			const results = await Promise.all(times.map(updatedAt => f.service.storeRemoteSnapshot(mirrorRoom(), [
+				{ identity: updatedAt === 3000 ? 'https://local.test/users/u1' : 'https://local.test/users/u2', screenSharing: false },
+			], updatedAt)));
+
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!)).toEqual({
+				participants: [{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: false }],
+				updatedAt: 3000,
+			});
+			expect(results).toEqual(times.map(updatedAt => updatedAt === 3000 || times[0] === 2000));
+		});
+
+		test('storeRemoteSnapshot tells whether it stored the snapshot, and only announces what it stored', async () => {
+			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), [], 2000)).toBe(true);
+			f.globalEventService.publishMainStream.mockClear();
+
+			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], 2000)).toBe(false);
+			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], 1000)).toBe(false);
+			expect(f.globalEventService.publishMainStream).not.toHaveBeenCalled();
+		});
+
+		test('storeRemoteSnapshot ignores a snapshot stamped more than five minutes ahead of this server\'s clock', async () => {
+			vi.useFakeTimers({ now: 1_000_000, toFake: ['Date'] });
+
+			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], 1_000_000 + 300_001)).toBe(false);
+			expect(f.redis.store.has('chatVoice:r1')).toBe(false);
+			expect(f.globalEventService.publishMainStream).not.toHaveBeenCalled();
+
+			// ちょうど五分先までは時計のずれとして受け入れる
+			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], 1_000_000 + 300_000)).toBe(true);
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).updatedAt).toBe(1_000_000 + 300_000);
+		});
+
+		// 他のサーバーの通話を止めた後で、止める前に始まった参加の応答が届いても保存しない
+		test.each([
+			['remote calls are turned off', { enableRemoteVoiceCall: false }],
+			['federation is turned off', { federation: 'none' }],
+		])('storeRemoteSnapshot stores nothing once %s', async (_label, changes) => {
+			Object.assign(f.meta, changes);
+
+			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], 2000)).toBe(false);
+			expect(f.redis.store.has('chatVoice:r1')).toBe(false);
+			expect(f.globalEventService.publishMainStream).not.toHaveBeenCalled();
+		});
+	});
+
+	// 他のサーバーの通話を止めたら、ミラーの現況を寿命 (10 分) まで残さず消す
+	describe('clearing mirror snapshots when calls on other servers are turned off', () => {
+		function publishMetaUpdated(changes: Record<string, unknown>, options: { withoutBefore?: boolean } = {}) {
+			const before = { ...f.meta };
+			Object.assign(f.meta, changes);
+			const body = options.withoutBefore ? { after: { ...f.meta } } : { before, after: { ...f.meta } };
+			f.redisForSub.emit('message', 'local.test', JSON.stringify({ channel: 'internal', message: { type: 'metaUpdated', body } }));
+		}
+
+		test('deletes the stored snapshot of every mirror room, and nothing else', async () => {
+			// 一度に引くより多くのミラー
+			for (let i = 0; i < 1200; i++) {
+				const id = `m${String(i).padStart(4, '0')}`;
+				f.rooms.set(id, { ...mirrorRoom(), id });
+				f.redis.store.set(`chatVoice:${id}`, JSON.stringify({ participants: [], updatedAt: 1 }));
+			}
+			f.redis.store.set('chatVoice:r1', JSON.stringify({ participants: [], updatedAt: 1 }));
+			f.redis.store.set('chatVoice:federated:r1', '{}');
+
+			await f.service.clearMirrorSnapshots();
+
+			expect([...f.redis.store.keys()].sort()).toEqual(['chatVoice:federated:r1', 'chatVoice:r1']);
+			expect(f.chatRoomsRepository.find.mock.calls.length).toBeGreaterThan(1);
+			// 何度消しても同じ (ほかのワーカーも同じように消す)
+			await expect(f.service.clearMirrorSnapshots()).resolves.toBeUndefined();
+		});
+
+		test.each([
+			['remote calls are turned off', { enableRemoteVoiceCall: false }],
+			['federation is turned off', { federation: 'none' }],
+		])('clears the mirror snapshots when %s', async (_label, changes) => {
+			const clear = vi.spyOn(f.service, 'clearMirrorSnapshots').mockResolvedValue();
+			f.service.onModuleInit();
+
+			publishMetaUpdated(changes);
+
+			await vi.waitFor(() => expect(clear).toHaveBeenCalledTimes(1));
+		});
+
+		test('clears the mirror snapshots when the previous settings are unknown and remote calls are off', async () => {
+			const clear = vi.spyOn(f.service, 'clearMirrorSnapshots').mockResolvedValue();
+			f.service.onModuleInit();
+
+			publishMetaUpdated({ enableRemoteVoiceCall: false }, { withoutBefore: true });
+
+			await vi.waitFor(() => expect(clear).toHaveBeenCalledTimes(1));
+		});
+
+		test.each([
+			['the server name changes', { name: 'renamed' }],
+			['the block list changes', { blockedHosts: ['remote.test'] }],
+		])('does not clear the mirror snapshots when only %s', async (_label, changes) => {
+			const clear = vi.spyOn(f.service, 'clearMirrorSnapshots').mockResolvedValue();
+			f.service.onModuleInit();
+
+			publishMetaUpdated(changes);
+			// 後から届いた変更でだけ消したことを確かめる
+			publishMetaUpdated({ enableRemoteVoiceCall: false });
+
+			await vi.waitFor(() => expect(clear).toHaveBeenCalled());
+			expect(clear).toHaveBeenCalledTimes(1);
+		});
+
+		test('does not clear anything while remote calls stay off or are turned on', async () => {
+			const clear = vi.spyOn(f.service, 'clearMirrorSnapshots').mockResolvedValue();
+			f.meta.enableRemoteVoiceCall = false;
+			f.service.onModuleInit();
+
+			publishMetaUpdated({ name: 'renamed' });
+			publishMetaUpdated({ enableRemoteVoiceCall: true });
+			publishMetaUpdated({ enableRemoteVoiceCall: false });
+
+			await vi.waitFor(() => expect(clear).toHaveBeenCalled());
+			expect(clear).toHaveBeenCalledTimes(1);
+		});
+
+		// ミラーの現況は、このサーバーに LiveKit が無くても保存される
+		test('clears the mirror snapshots on a server without its own LiveKit', async () => {
+			f.liveKitService.isEnabled = false;
+			const clear = vi.spyOn(f.service, 'clearMirrorSnapshots').mockResolvedValue();
+			const recheck = vi.spyOn(f.service, 'removeRefusedRemoteParticipants').mockResolvedValue();
+			f.service.onModuleInit();
+
+			publishMetaUpdated({ blockedHosts: ['remote.test'] });
+			publishMetaUpdated({ enableRemoteVoiceCall: false });
+
+			await vi.waitFor(() => expect(clear).toHaveBeenCalledTimes(1));
+			// 確かめ直す通話が無いので、参加者の確かめ直しはしない
+			expect(recheck).not.toHaveBeenCalled();
+		});
+
+		test('logs a failed clear', async () => {
+			vi.spyOn(f.service, 'clearMirrorSnapshots').mockRejectedValue(new Error('db is down'));
+			f.service.onModuleInit();
+
+			publishMetaUpdated({ enableRemoteVoiceCall: false });
+
+			await vi.waitFor(() => expect(f.logger.error).toHaveBeenCalled());
 		});
 	});
 
@@ -980,14 +1200,15 @@ describe('ChatVoiceService', () => {
 		}
 
 		beforeEach(() => {
-			f.chatRoomsRepository.findOneBy.mockImplementation(async ({ id }: { id: string }) => (id === 'r1' ? { id: 'r1', ownerId: 'remoteOwner' } : null) as any);
+			f.rooms.set('r1', mirrorRoom());
 		});
 
 		test('accepts a voice state from the owner of the mirror room', async () => {
 			const result = await f.service.receiveRemoteSnapshot(owner, voiceState());
 
 			expect(result).toMatch(/^ok/);
-			expect(f.chatRoomsRepository.findOneBy).toHaveBeenCalledWith({ id: 'r1' });
+			// 保存する前にミラーであることを確かめられるよう、持ち主ごと読む
+			expect(f.chatRoomsRepository.findOne).toHaveBeenCalledWith({ where: { id: 'r1' }, relations: { owner: true } });
 			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!)).toEqual({
 				participants: [{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: true }],
 				updatedAt: 2000,
@@ -1036,7 +1257,7 @@ describe('ChatVoiceService', () => {
 			const result = await f.service.receiveRemoteSnapshot(owner, voiceState({ room: 'https://remote.test/chat/rooms/r9', id: 'https://remote.test/chat/rooms/r9/voice' }));
 
 			expect(result).toMatch(/^skip:/);
-			expect(f.redis.set).not.toHaveBeenCalled();
+			expect(f.redis.eval).not.toHaveBeenCalled();
 		});
 
 		test('ignores a malformed voice state', async () => {
@@ -1079,7 +1300,7 @@ describe('ChatVoiceService', () => {
 
 				expect(await f.service.receiveRemoteSnapshot(owner, voiceState()), JSON.stringify(meta)).toMatch(/^skip:/);
 			}
-			expect(f.redis.set).not.toHaveBeenCalled();
+			expect(f.redis.eval).not.toHaveBeenCalled();
 		});
 
 		test('keeps the newer snapshot when an older one arrives late', async () => {
@@ -1098,8 +1319,19 @@ describe('ChatVoiceService', () => {
 		test('expires a mirror snapshot after ten minutes', async () => {
 			await f.service.receiveRemoteSnapshot(owner, voiceState());
 
-			expect(f.redis.set).toHaveBeenCalledWith('chatVoice:r1', expect.any(String), 'EX', 600);
+			expect(f.redis.eval).toHaveBeenCalledWith(expect.any(String), 1, 'chatVoice:r1', expect.any(String), 2000, 600);
 			expect(f.redis.sadd).not.toHaveBeenCalled();
+		});
+
+		// 先の時刻を付けた現況を受け入れると、寿命が切れるまでホストが新しい現況で上書きできなくなる
+		test('ignores a voice state stamped more than five minutes ahead of this server\'s clock', async () => {
+			vi.useFakeTimers({ now: 1_000_000, toFake: ['Date'] });
+
+			const result = await f.service.receiveRemoteSnapshot(owner, voiceState({ updated: new Date(1_000_000 + 300_001).toISOString() }));
+
+			expect(result).toMatch(/^skip:/);
+			expect(f.redis.store.has('chatVoice:r1')).toBe(false);
+			expect(f.globalEventService.publishMainStream).not.toHaveBeenCalled();
 		});
 	});
 
@@ -1475,5 +1707,72 @@ describe('ChatVoiceService', () => {
 				expect(removed()).toEqual([`r1 ${rm1.uri}`]);
 			});
 		});
+	});
+});
+
+// 保存のスクリプトそのもの (Lua) は本物の Redis で確かめる
+describe('ChatVoiceService storing mirror snapshots in Redis', () => {
+	const prefix = `test-chatVoice-${randomUUID()}:`;
+	let redis: Redis;
+	let raw: Redis;
+	let f: ReturnType<typeof createFixture>;
+
+	beforeAll(() => {
+		const config = loadConfig();
+		redis = new Redis({ ...config.redis, keyPrefix: prefix });
+		raw = new Redis({ ...config.redis, keyPrefix: undefined });
+	});
+
+	beforeEach(async () => {
+		f = createFixture(redis as any);
+		await redis.del('chatVoice:r1');
+	});
+
+	afterEach(() => {
+		f.service.onApplicationShutdown();
+	});
+
+	afterAll(async () => {
+		await redis.del('chatVoice:r1');
+		redis.disconnect();
+		raw.disconnect();
+	});
+
+	const stored = async () => JSON.parse((await redis.get('chatVoice:r1'))!) as { participants: { identity: string }[]; updatedAt: number };
+	const store = (updatedAt: number, identity = 'https://local.test/users/u1') => f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity, screenSharing: false }], updatedAt);
+
+	test('stores a snapshot under the configured prefix for ten minutes', async () => {
+		expect(await store(2000)).toBe(true);
+
+		expect(await stored()).toEqual({ participants: [{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: false }], updatedAt: 2000 });
+		expect(await raw.exists(`${prefix}chatVoice:r1`)).toBe(1);
+		const ttl = await redis.ttl('chatVoice:r1');
+		expect(ttl).toBeGreaterThan(590);
+		expect(ttl).toBeLessThanOrEqual(600);
+	});
+
+	test('stores only a snapshot strictly newer than the stored one', async () => {
+		expect(await store(2000)).toBe(true);
+		expect(await store(2000, 'https://local.test/users/u2')).toBe(false);
+		expect(await store(1999, 'https://local.test/users/u2')).toBe(false);
+		expect((await stored()).participants.map(p => p.identity)).toEqual(['https://local.test/users/u1']);
+
+		expect(await store(2000.5, 'https://local.test/users/u2')).toBe(true);
+		expect(await stored()).toMatchObject({ participants: [{ identity: 'https://local.test/users/u2' }], updatedAt: 2000.5 });
+	});
+
+	test('keeps the newest of many snapshots stored at the same time', async () => {
+		const times = [5, 3, 9, 1, 7, 2, 8, 4, 6].map(n => 1_700_000_000_000 + n);
+
+		await Promise.all(times.map(updatedAt => store(updatedAt)));
+
+		expect((await stored()).updatedAt).toBe(1_700_000_000_009);
+	});
+
+	test('replaces a stored value it cannot read', async () => {
+		await redis.set('chatVoice:r1', 'not json', 'EX', 600);
+
+		expect(await store(2000)).toBe(true);
+		expect((await stored()).updatedAt).toBe(2000);
 	});
 });

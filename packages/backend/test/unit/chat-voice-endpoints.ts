@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
+import { FindOperator } from 'typeorm';
 import JoinEndpoint, { meta as joinMeta } from '@/server/api/endpoints/chat/rooms/voice/join.js';
 import StatesEndpoint from '@/server/api/endpoints/chat/rooms/voice/states.js';
 import KickEndpoint, { meta as kickMeta } from '@/server/api/endpoints/chat/rooms/voice/kick.js';
@@ -23,11 +24,11 @@ const liveKit = (isEnabled = true) => ({
 
 const remoteOwner = { id: 'owner', host: 'remote.test', uri: 'https://remote.test/users/owner' };
 
-function joinFixture(overrides: { isEnabled?: boolean; remoteEnabled?: boolean; canVoiceCall?: boolean; canScreenShare?: boolean; isArchived?: boolean; isMember?: boolean; ownerHost?: string | null } = {}) {
+function joinFixture(overrides: { isEnabled?: boolean; remoteEnabled?: boolean; canVoiceCall?: boolean; canScreenShare?: boolean; isArchived?: boolean; isMember?: boolean; ownerHost?: string | null; noRoom?: boolean } = {}) {
 	const owner = overrides.ownerHost != null ? { ...remoteOwner, host: overrides.ownerHost } : { id: 'owner', host: null, uri: null };
 	const chatService = {
 		checkChatAvailability: vi.fn().mockResolvedValue(undefined),
-		findRoomById: vi.fn().mockResolvedValue({ id: 'r1', ownerId: 'owner', owner, isArchived: overrides.isArchived ?? false }),
+		findRoomById: vi.fn().mockResolvedValue(overrides.noRoom ? null : { id: 'r1', ownerId: 'owner', owner, isArchived: overrides.isArchived ?? false }),
 		isRoomMember: vi.fn().mockResolvedValue(overrides.isMember ?? true),
 	};
 	const chatVoiceService = { issueJoinToken: vi.fn().mockResolvedValue({ url: 'https://local.test/livekit', token: 't' }) };
@@ -91,6 +92,39 @@ describe('chat/rooms/voice/join', () => {
 		const f = joinFixture({ isMember: false });
 		await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_ROOM' });
 		expect(f.chatVoiceService.issueJoinToken).not.toHaveBeenCalled();
+	});
+
+	// このサーバーに LiveKit が無いとき、このサーバーのルームについては連合の前と同じ順で断る。
+	// メンバーでない人には、ルームがあるかも、他のサーバーのルーム (ミラー) かも分からないようにする
+	describe('without a LiveKit on this server, while calls on other servers are allowed', () => {
+		test.each([
+			['a member of a room on this server', { ownerHost: null }],
+			['someone who is not a member of a room on this server', { ownerHost: null, isMember: false }],
+			['a room that does not exist', { noRoom: true }],
+			['someone who is not a member of a mirror room', { ownerHost: 'remote.test', isMember: false }],
+		] as const)('join answers VOICE_CALL_UNAVAILABLE first for %s', async (_label, overrides) => {
+			const f = joinFixture({ isEnabled: false, remoteEnabled: true, ...overrides });
+			f.chatService.checkChatAvailability.mockRejectedValue(new Error('ROLE_PERMISSION_DENIED'));
+
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'VOICE_CALL_UNAVAILABLE' });
+			expect(f.chatService.checkChatAvailability).not.toHaveBeenCalled();
+			expect(f.chatVoiceService.issueJoinToken).not.toHaveBeenCalled();
+			expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
+		});
+
+		test('join still requires the right to write in chat for a member of a mirror room', async () => {
+			const f = joinFixture({ isEnabled: false, remoteEnabled: true, ownerHost: 'remote.test' });
+			f.chatService.checkChatAvailability.mockRejectedValue(new Error('ROLE_PERMISSION_DENIED'));
+
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toThrow('ROLE_PERMISSION_DENIED');
+			expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
+		});
+	});
+
+	test('join hides a room that does not exist', async () => {
+		const f = joinFixture({ noRoom: true });
+
+		await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_ROOM' });
 	});
 
 	describe('rooms owned on another server', () => {
@@ -177,7 +211,20 @@ describe('chat/rooms/voice/join', () => {
 
 function statesFixture(isEnabled = true, remoteEnabled = false) {
 	const chatRoomsRepository = { findBy: vi.fn().mockResolvedValue([]) };
-	const chatRoomMembershipsRepository = { findBy: vi.fn().mockResolvedValue([{ roomId: 'r1', userId: 'me' }]) };
+	// me は r1 (このサーバーのルーム) と m1 (他のサーバーが持つルーム = ミラー) のメンバー。
+	// where にルームの持ち主の条件があれば、それも当てる
+	const memberships = [{ roomId: 'r1', userId: 'me', ownerHost: null }, { roomId: 'm1', userId: 'me', ownerHost: 'remote.test' }];
+	const chatRoomMembershipsRepository = {
+		findBy: vi.fn(async (where: { roomId: FindOperator<string[]>; room?: { owner?: { host?: unknown } } }) => memberships
+			.filter(membership => (where.roomId.value as string[]).includes(membership.roomId))
+			.filter(membership => {
+				const host = where.room?.owner?.host;
+				if (host == null) return true;
+				if (host instanceof FindOperator && host.type === 'isNull') return membership.ownerHost == null;
+				throw new Error('unsupported condition');
+			})
+			.map(({ roomId, userId }) => ({ roomId, userId }))),
+	};
 	const chatService = { checkChatAvailability: vi.fn().mockResolvedValue(undefined) };
 	const chatVoiceService = { getStates: vi.fn().mockResolvedValue([]) };
 	const remoteVoiceCallService = { isEnabled: remoteEnabled };
@@ -194,13 +241,20 @@ describe('chat/rooms/voice/states', () => {
 
 	test('states works for mirror rooms even without a local LiveKit', async () => {
 		const f = statesFixture(false, true);
-		await f.endpoint.exec({ roomIds: ['r1', 'r2'] }, me, null, null);
-		expect(f.chatVoiceService.getStates).toHaveBeenCalledWith(me, ['r1']);
+		await f.endpoint.exec({ roomIds: ['r1', 'm1', 'r2'] }, me, null, null);
+		expect(f.chatVoiceService.getStates).toHaveBeenCalledWith(me, ['r1', 'm1']);
 	});
 
 	test('states only asks for rooms the user belongs to', async () => {
-		const f = statesFixture();
-		await f.endpoint.exec({ roomIds: ['r1', 'r2'] }, me, null, null);
+		const f = statesFixture(true, true);
+		await f.endpoint.exec({ roomIds: ['r1', 'm1', 'r2'] }, me, null, null);
+		expect(f.chatVoiceService.getStates).toHaveBeenCalledWith(me, ['r1', 'm1']);
+	});
+
+	// 他のサーバーの通話に入らないあいだは、ミラーの現況を (寿命が切れる前でも) 見せない
+	test('states leaves out mirror rooms while calls on other servers are disabled', async () => {
+		const f = statesFixture(true, false);
+		await f.endpoint.exec({ roomIds: ['r1', 'm1', 'r2'] }, me, null, null);
 		expect(f.chatVoiceService.getStates).toHaveBeenCalledWith(me, ['r1']);
 	});
 });
