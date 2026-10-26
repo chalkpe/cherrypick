@@ -10878,6 +10878,8 @@ export interface operations {
                         signToActivityPubGet: boolean;
                         allowExternalApRedirect: boolean;
                         enableRemoteVoiceCall: boolean;
+                        voiceCallCloudflareTurnKeyId: string | null;
+                        voiceCallCloudflareTurnApiToken: string | null;
                         enableRemoteNotesCleaning: boolean;
                         remoteNotesCleaningExpiryDaysForEachNotes: number;
                         remoteNotesCleaningMaxProcessingDurationInMinutes: number;
@@ -14448,6 +14450,8 @@ export interface operations {
                     signToActivityPubGet?: boolean;
                     allowExternalApRedirect?: boolean;
                     enableRemoteVoiceCall?: boolean;
+                    voiceCallCloudflareTurnKeyId?: string | null;
+                    voiceCallCloudflareTurnApiToken?: string | null;
                     enableRemoteNotesCleaning?: boolean;
                     remoteNotesCleaningExpiryDaysForEachNotes?: number;
                     remoteNotesCleaningMaxProcessingDurationInMinutes?: number;
@@ -20164,6 +20168,11 @@ export interface operations {
                     'application/json': {
                         url: string;
                         token: string;
+                        iceServers: {
+                            urls: string[];
+                            username?: string;
+                            credential?: string;
+                        }[] | null;
                     };
                 };
             };

@@ -75,7 +75,7 @@ describe('RemoteVoiceCallService', () => {
 
 		const result = await f.service.requestJoin(me, room, owner, true);
 
-		expect(result).toEqual({ url: 'https://remote.test/livekit', token: 'jwt' });
+		expect(result).toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
 		expect(f.apRequestService.signedPostJson).toHaveBeenCalledTimes(1);
 		expect(f.apRequestService.signedPostJson).toHaveBeenCalledWith(
 			me,
@@ -84,6 +84,33 @@ describe('RemoteVoiceCallService', () => {
 			10_000,
 			{ redirect: 'manual', size: 64 * 1024 },
 		);
+	});
+
+	test('passes on the TURN servers the host sent', async () => {
+		const f = createFixture();
+		const iceServers = [
+			{ urls: ['stun:stun.cloudflare.com:3478'] },
+			{ urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turns:turn.cloudflare.com:443?transport=tcp'], username: 'u', credential: 'c' },
+		];
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ iceServers }));
+
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers });
+	});
+
+	test.each([
+		['an older host that sends none', undefined],
+		['null', null],
+		['too many servers', Array.from({ length: 5 }, () => ({ urls: ['stun:stun.example'] }))],
+		['too many urls', [{ urls: Array.from({ length: 9 }, (_, i) => `stun:stun${i}.example`) }]],
+		['a url that is not STUN or TURN', [{ urls: ['https://evil.example/'] }]],
+		['a url that is too long', [{ urls: [`turn:${'a'.repeat(257)}`] }]],
+		['a credential that is too long', [{ urls: ['turn:turn.example'], username: 'u', credential: 'c'.repeat(513) }]],
+		['something that is not a list', 'turn:turn.example'],
+	])('joins without TURN servers when the host sends %s', async (_label, iceServers) => {
+		const f = createFixture();
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ iceServers }));
+
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
 	});
 
 	test('stores the participants the host sent', async () => {
@@ -120,7 +147,7 @@ describe('RemoteVoiceCallService', () => {
 		await expect(f.service.requestJoin(me, room, owner, false)).rejects.toMatchObject({ reason: 'unreachable' });
 		expect(f.redis.set).not.toHaveBeenCalled();
 
-		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt' });
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
 		expect(f.apRequestService.signedPostJson).toHaveBeenCalledTimes(2);
 	});
 
@@ -168,7 +195,7 @@ describe('RemoteVoiceCallService', () => {
 			const f = createFixture();
 			f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ url: 'https://evil.example:8443/livekit' }));
 
-			await expect(f.service.requestJoin(me, room, portOwner(), false)).resolves.toEqual({ url: 'https://evil.example:8443/livekit', token: 'jwt' });
+			await expect(f.service.requestJoin(me, room, portOwner(), false)).resolves.toEqual({ url: 'https://evil.example:8443/livekit', token: 'jwt', iceServers: null });
 			expect(f.apRequestService.signedPostJson).toHaveBeenCalledWith(
 				me,
 				'https://evil.example:8443/livekit/federation/token',
@@ -217,7 +244,7 @@ describe('RemoteVoiceCallService', () => {
 		test('does not let the record shared by hosts with a port refuse an owner without one', async () => {
 			const f = createFixture({}, [{ host: '', suspensionState: 'autoSuspendedForNotResponding' }]);
 
-			await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt' });
+			await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
 		});
 
 		// inbox と同じく、ブロックはポート・末尾のドット・Unicode の違いを無視して当てる
@@ -238,7 +265,7 @@ describe('RemoteVoiceCallService', () => {
 		test('ignores suspension records of other servers', async () => {
 			const f = createFixture({}, [{ host: 'other.test', suspensionState: 'manuallySuspended' }, { host: 'remote.test', suspensionState: 'none' }]);
 
-			await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt' });
+			await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
 		});
 
 		test.each([
@@ -303,7 +330,7 @@ describe('RemoteVoiceCallService', () => {
 		const participants = Array.from({ length: 51 }, (_, i) => ({ identity: `https://remote.test/users/${i}`, screenSharing: false }));
 		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ participants }));
 
-		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt' });
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
 	});
 
 	test.each([

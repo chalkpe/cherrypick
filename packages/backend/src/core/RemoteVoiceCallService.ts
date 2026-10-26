@@ -13,6 +13,9 @@ import { bindThis } from '@/decorators.js';
 import { StatusError } from '@/misc/status-error.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { ChatVoiceService, isRemoteVoiceCallEnabled } from '@/core/ChatVoiceService.js';
+import type { JoinCredentials } from '@/core/ChatVoiceService.js';
+import { parseIceServers } from '@/core/CloudflareTurnService.js';
+import type { IceServer } from '@/core/CloudflareTurnService.js';
 import { ApRequestService } from '@/core/activitypub/ApRequestService.js';
 
 const TOKEN_REQUEST_TIMEOUT_MS = 10_000;
@@ -37,6 +40,7 @@ export class RemoteVoiceCallError extends Error {
 type TokenResponse = {
 	url: string;
 	token: string;
+	iceServers: IceServer[] | null;
 	participants: { identity: string; screenSharing: boolean }[];
 	updatedAt: number;
 };
@@ -69,7 +73,7 @@ export class RemoteVoiceCallService {
 	 * 応答に含まれる参加者の現況はこのサーバーにも保存する
 	 */
 	@bindThis
-	public async requestJoin(me: MiLocalUser, room: MiChatRoom, owner: MiRemoteUser, canScreenShare: boolean): Promise<{ url: string; token: string }> {
+	public async requestJoin(me: MiLocalUser, room: MiChatRoom, owner: MiRemoteUser, canScreenShare: boolean): Promise<JoinCredentials> {
 		// 要求はユーザーの鍵で署名し、マイクの音声もそこへ送るので、送る前に持ち主とそのサーバーを確かめる
 		const ownerUrl = await this.trustedOwnerUrlOf(owner);
 		if (ownerUrl == null) throw new RemoteVoiceCallError('forbidden');
@@ -109,7 +113,7 @@ export class RemoteVoiceCallService {
 			// 次の参加時に届く現況で埋まるので握りつぶす
 		});
 
-		return { url: response.url, token: response.token };
+		return { url: response.url, token: response.token, iceServers: response.iceServers };
 	}
 
 	/**
@@ -137,11 +141,12 @@ export class RemoteVoiceCallService {
 
 /**
  * ホストの応答を確かめる。LiveKit の URL はそのホストの /livekit でなければならない
- * (ほかの場所を指されると、このサーバーのユーザーのブラウザがそこへ接続してしまう)
+ * (ほかの場所を指されると、このサーバーのユーザーのブラウザがそこへ接続してしまう)。
+ * ICE サーバー (ホストの TURN) は無いか確かめられなければ null にして、参加は止めない (古いホストは送らない)
  */
 function parseTokenResponse(body: unknown, expectedUrl: string): TokenResponse | null {
 	if (typeof body !== 'object' || body == null) return null;
-	const { url, token, participants, updatedAt } = body as Record<string, unknown>;
+	const { url, token, iceServers, participants, updatedAt } = body as Record<string, unknown>;
 
 	if (url !== expectedUrl) return null;
 	if (typeof token !== 'string' || token === '') return null;
@@ -156,5 +161,5 @@ function parseTokenResponse(body: unknown, expectedUrl: string): TokenResponse |
 		parsed.push({ identity, screenSharing });
 	}
 
-	return { url: expectedUrl, token, participants: parsed, updatedAt };
+	return { url: expectedUrl, token, iceServers: parseIceServers(iceServers), participants: parsed, updatedAt };
 }

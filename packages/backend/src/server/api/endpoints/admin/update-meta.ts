@@ -249,6 +249,8 @@ export const paramDef = {
 		signToActivityPubGet: { type: 'boolean' },
 		allowExternalApRedirect: { type: 'boolean' },
 		enableRemoteVoiceCall: { type: 'boolean' },
+		voiceCallCloudflareTurnKeyId: { type: 'string', nullable: true, maxLength: 128 },
+		voiceCallCloudflareTurnApiToken: { type: 'string', nullable: true, maxLength: 512 },
 		enableRemoteNotesCleaning: { type: 'boolean' },
 		remoteNotesCleaningExpiryDaysForEachNotes: { type: 'number' },
 		remoteNotesCleaningMaxProcessingDurationInMinutes: { type: 'number' },
@@ -917,6 +919,16 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			if (ps.enableRemoteVoiceCall !== undefined) {
 				set.enableRemoteVoiceCall = ps.enableRemoteVoiceCall;
+			}
+
+			if (ps.voiceCallCloudflareTurnKeyId !== undefined) {
+				const value = (ps.voiceCallCloudflareTurnKeyId ?? '').trim();
+				set.voiceCallCloudflareTurnKeyId = value === '' ? null : value;
+			}
+
+			if (ps.voiceCallCloudflareTurnApiToken !== undefined) {
+				const value = (ps.voiceCallCloudflareTurnApiToken ?? '').trim();
+				set.voiceCallCloudflareTurnApiToken = value === '' ? null : value;
 			}
 
 			if (ps.enableRemoteNotesCleaning !== undefined) {

@@ -866,6 +866,24 @@ export class MiMeta {
 	})
 	public enableRemoteVoiceCall: boolean;
 
+	/**
+	 * 通話の参加者に渡す TURN の資格情報を発行する Cloudflare の TURN キーの ID
+	 */
+	@Column('varchar', {
+		length: 128,
+		nullable: true,
+	})
+	public voiceCallCloudflareTurnKeyId: string | null;
+
+	/**
+	 * Cloudflare の TURN キーの API トークン
+	 */
+	@Column('varchar', {
+		length: 512,
+		nullable: true,
+	})
+	public voiceCallCloudflareTurnApiToken: string | null;
+
 	@Column('boolean', {
 		default: false,
 	})

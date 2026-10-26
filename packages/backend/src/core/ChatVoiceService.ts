@@ -30,6 +30,8 @@ import { QueueService } from '@/core/QueueService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import type { IObject } from '@/core/activitypub/type.js';
 import { LoggerService } from '@/core/LoggerService.js';
+import { CloudflareTurnService } from '@/core/CloudflareTurnService.js';
+import type { IceServer } from '@/core/CloudflareTurnService.js';
 
 const REFRESH_DELAY_MS = 500;
 
@@ -93,6 +95,13 @@ type FederatedVoiceSnapshot = {
 	updatedAt: number;
 };
 
+/** 通話に入るためのもの。iceServers は TURN が設定されていなければ null */
+export type JoinCredentials = {
+	url: string;
+	token: string;
+	iceServers: IceServer[] | null;
+};
+
 /** このサーバーのユーザーが他のサーバーの通話に入れるか (features.remoteVoiceCall と同じ) */
 export function isRemoteVoiceCallEnabled(meta: Pick<MiMeta, 'enableRemoteVoiceCall' | 'federation'>): boolean {
 	return meta.enableRemoteVoiceCall && meta.federation !== 'none';
@@ -140,20 +149,28 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		private apRendererService: ApRendererService,
 		private queueService: QueueService,
 		private loggerService: LoggerService,
+		private cloudflareTurnService: CloudflareTurnService,
 	) {
 		this.logger = this.loggerService.getLogger('chat-voice');
 	}
 
+	/**
+	 * 通話のトークンを発行する。TURN が設定されていれば、その ICE サーバーも渡す (無ければ null)
+	 */
 	@bindThis
-	public async issueJoinToken(user: MiLocalUser | MiRemoteUser, room: MiChatRoom, canScreenShare: boolean): Promise<{ url: string; token: string }> {
-		await this.liveKitService.ensureRoom(room.id, MAX_ROOM_MEMBERS + 1);
-		const token = await this.liveKitService.createJoinToken({
-			roomId: room.id,
-			identity: this.liveKitService.identityOf(user),
-			userId: user.id,
-			canScreenShare,
-		});
-		return { url: this.liveKitService.getPublicUrl(), token };
+	public async issueJoinToken(user: MiLocalUser | MiRemoteUser, room: MiChatRoom, canScreenShare: boolean): Promise<JoinCredentials> {
+		const issueToken = async () => {
+			await this.liveKitService.ensureRoom(room.id, MAX_ROOM_MEMBERS + 1);
+			return await this.liveKitService.createJoinToken({
+				roomId: room.id,
+				identity: this.liveKitService.identityOf(user),
+				userId: user.id,
+				canScreenShare,
+			});
+		};
+		// TURN の資格情報の取得は失敗しても null になるだけなので、トークンの発行と並べて待つ
+		const [token, iceServers] = await Promise.all([issueToken(), this.cloudflareTurnService.getIceServers()]);
+		return { url: this.liveKitService.getPublicUrl(), token, iceServers };
 	}
 
 	/**
@@ -162,7 +179,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * 画面共有は、相手のサーバーが求め (canScreenShareRequested)、こちらのポリシーも許すときだけ認める
 	 */
 	@bindThis
-	public async issueRemoteJoinToken(user: MiRemoteUser, room: MiChatRoom, canScreenShareRequested: boolean): Promise<({ url: string; token: string } & FederatedVoiceSnapshot) | 'forbidden'> {
+	public async issueRemoteJoinToken(user: MiRemoteUser, room: MiChatRoom, canScreenShareRequested: boolean): Promise<(JoinCredentials & FederatedVoiceSnapshot) | 'forbidden'> {
 		// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーで開く。保管済みのルームはローカルと同じく断る
 		if (room.owner == null || room.owner.host != null || room.isArchived) return 'forbidden';
 
@@ -176,9 +193,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const policies = await this.roleService.getUserPolicies(user.id);
 		if (!policies.canVoiceCall || policies.chatAvailability !== 'available') return 'forbidden';
 
-		const { url, token } = await this.issueJoinToken(user, room, canScreenShareRequested && policies.canScreenShare);
+		const { url, token, iceServers } = await this.issueJoinToken(user, room, canScreenShareRequested && policies.canScreenShare);
 		const { participants, updatedAt } = await this.snapshotOf(room.id);
-		return { url, token, participants, updatedAt };
+		return { url, token, iceServers, participants, updatedAt };
 	}
 
 	/**

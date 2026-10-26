@@ -47,6 +47,26 @@ describe('chat/rooms/voice/join', () => {
 		expect(f.chatVoiceService.issueJoinToken).toHaveBeenCalledWith(me, expect.objectContaining({ id: 'r1' }), false);
 	});
 
+	test('join passes on the TURN servers and declares them in its response', async () => {
+		const f = joinFixture();
+		const iceServers = [{ urls: ['turn:turn.cloudflare.com:3478?transport=udp'], username: 'u', credential: 'c' }];
+		f.chatVoiceService.issueJoinToken.mockResolvedValueOnce({ url: 'https://local.test/livekit', token: 't', iceServers });
+
+		await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).resolves.toEqual({ url: 'https://local.test/livekit', token: 't', iceServers });
+		expect(joinMeta.res.properties.iceServers).toMatchObject({
+			type: 'array',
+			optional: false, nullable: true,
+			items: {
+				type: 'object',
+				properties: {
+					urls: { type: 'array', optional: false, nullable: false, items: { type: 'string' } },
+					username: { type: 'string', optional: true, nullable: false },
+					credential: { type: 'string', optional: true, nullable: false },
+				},
+			},
+		});
+	});
+
 	test.each([
 		['feature disabled', { isEnabled: false, remoteEnabled: false }],
 		['feature disabled here, even if calls on other servers are allowed', { isEnabled: false, remoteEnabled: true }],

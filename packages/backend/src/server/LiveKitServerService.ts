@@ -110,8 +110,9 @@ export class LiveKitServerService {
 				const result = room != null ? await this.chatVoiceService.issueRemoteJoinToken(user, room, body.canScreenShare) : 'forbidden';
 				if (result === 'forbidden') return reply.code(403).send();
 
-				const { url, token, participants, updatedAt } = result;
-				return reply.code(200).send({ url, token, participants, updatedAt });
+				// TURN の資格情報も渡す。相手のユーザーのブラウザも、このサーバーの LiveKit に TURN を経由してつなぐことがある
+				const { url, token, iceServers, participants, updatedAt } = result;
+				return reply.code(200).send({ url, token, iceServers, participants, updatedAt });
 			} catch {
 				return reply.code(500).send();
 			}

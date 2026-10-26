@@ -101,7 +101,7 @@ services:
 # Voice calls and screen sharing in chat rooms (see "voiceCall" in .config/example.yml).
 # - Open 7881/tcp and 7882/udp on your firewall.
 # - Media goes straight to this server's real IP, even behind a proxy such as Cloudflare.
-# - Behind NAT, forward both ports to this server.
+# - Behind NAT, either forward both ports to this server or set Cloudflare TURN in the admin settings (keep use_external_ip: true).
 # - Screen sharing uses upload bandwidth roughly equal to the share quality times the number of viewers.
 # Set LIVEKIT_API_SECRET (32+ random characters) in .env and use the same value as voiceCall.livekit.apiSecret.
 #  livekit:

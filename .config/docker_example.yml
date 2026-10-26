@@ -155,6 +155,7 @@ fulltextSearch:
 # container's LIVEKIT_CONFIG (see compose_example.yml).
 # apiSecret must be a random string of at least 32 characters.
 # Open 7881/tcp and 7882/udp on your firewall for media.
+# Behind NAT, either forward 7881/tcp and 7882/udp or set Cloudflare TURN in the admin settings (LiveKit keeps use_external_ip: true).
 
 #voiceCall:
 #  livekit:

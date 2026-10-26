@@ -696,6 +696,14 @@ export const meta = {
 				type: 'boolean',
 				optional: false, nullable: false,
 			},
+			voiceCallCloudflareTurnKeyId: {
+				type: 'string',
+				optional: false, nullable: true,
+			},
+			voiceCallCloudflareTurnApiToken: {
+				type: 'string',
+				optional: false, nullable: true,
+			},
 			enableRemoteNotesCleaning: {
 				type: 'boolean',
 				optional: false, nullable: false,
@@ -958,6 +966,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				signToActivityPubGet: instance.signToActivityPubGet,
 				allowExternalApRedirect: instance.allowExternalApRedirect,
 				enableRemoteVoiceCall: instance.enableRemoteVoiceCall,
+				voiceCallCloudflareTurnKeyId: instance.voiceCallCloudflareTurnKeyId,
+				voiceCallCloudflareTurnApiToken: instance.voiceCallCloudflareTurnApiToken,
 				enableRemoteNotesCleaning: instance.enableRemoteNotesCleaning,
 				remoteNotesCleaningExpiryDaysForEachNotes: instance.remoteNotesCleaningExpiryDaysForEachNotes,
 				remoteNotesCleaningMaxProcessingDurationInMinutes: instance.remoteNotesCleaningMaxProcessingDurationInMinutes,

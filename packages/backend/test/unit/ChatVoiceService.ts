@@ -147,6 +147,10 @@ function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []) {
 	const queueService = {
 		deliver: vi.fn(),
 	};
+	// TURN が設定されていないときと同じ
+	const cloudflareTurnService = {
+		getIceServers: vi.fn(async (): Promise<{ urls: string[]; username?: string; credential?: string }[] | null> => null),
+	};
 	const service = new ChatVoiceService(
 		{ url: 'https://local.test' } as any,
 		redis as any,
@@ -164,8 +168,9 @@ function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []) {
 		apRendererService,
 		queueService as any,
 		loggerService as any,
+		cloudflareTurnService as any,
 	);
-	return { service, redis, redisForSub, meta, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, instancesRepository, userEntityService, globalEventService, roleService, utilityService, queueService, logger, nonMembers };
+	return { service, redis, redisForSub, meta, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, instancesRepository, userEntityService, globalEventService, roleService, utilityService, queueService, cloudflareTurnService, logger, nonMembers };
 }
 
 function remoteUser(overrides: Record<string, unknown> = {}) {
@@ -313,7 +318,16 @@ describe('ChatVoiceService', () => {
 
 		expect(f.liveKitService.ensureRoom).toHaveBeenCalledWith('r1', 51);
 		expect(f.liveKitService.createJoinToken).toHaveBeenCalledWith({ roomId: 'r1', identity: 'https://local.test/users/u1', userId: 'u1', canScreenShare: false });
-		expect(result).toEqual({ url: 'https://local.test/livekit', token: 'jwt' });
+		expect(result).toEqual({ url: 'https://local.test/livekit', token: 'jwt', iceServers: null });
+	});
+
+	test('hands out the TURN servers with the join token when they are configured', async () => {
+		const iceServers = [{ urls: ['turn:turn.cloudflare.com:3478?transport=udp'], username: 'u', credential: 'c' }];
+		f.cloudflareTurnService.getIceServers.mockResolvedValue(iceServers);
+
+		const result = await f.service.issueJoinToken({ id: 'u1', host: null, uri: null } as any, { id: 'r1' } as any, false);
+
+		expect(result).toEqual({ url: 'https://local.test/livekit', token: 'jwt', iceServers });
 	});
 
 	describe('remote members', () => {
@@ -328,9 +342,19 @@ describe('ChatVoiceService', () => {
 			expect(result).toEqual({
 				url: 'https://local.test/livekit',
 				token: 'jwt',
+				iceServers: null,
 				participants: [{ identity: 'https://local.test/users/u1', screenSharing: true }],
 				updatedAt: 1234,
 			});
+		});
+
+		test('hands this server\'s TURN servers to remote members too', async () => {
+			const iceServers = [{ urls: ['turns:turn.cloudflare.com:443?transport=tcp'], username: 'u', credential: 'c' }];
+			f.cloudflareTurnService.getIceServers.mockResolvedValue(iceServers);
+
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false);
+
+			expect(result).toMatchObject({ token: 'jwt', iceServers });
 		});
 
 		test('refuses a remote user who is not a member', async () => {

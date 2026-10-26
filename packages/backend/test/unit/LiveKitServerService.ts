@@ -517,6 +517,32 @@ describe('LiveKitServerService', () => {
 			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledWith(REMOTE_USER, expect.objectContaining({ id: 'r1' }), true);
 		});
 
+		test('includes this server\'s TURN servers in the token response', async () => {
+			const { app, chatVoiceService } = await createTokenApp();
+			const iceServers = [{ urls: ['turn:turn.cloudflare.com:3478?transport=udp'], username: 'u', credential: 'c' }];
+			chatVoiceService.issueRemoteJoinToken.mockResolvedValueOnce({
+				url: 'https://local.test/livekit',
+				token: 'jwt',
+				iceServers,
+				participants: [],
+				updatedAt: 1234,
+			});
+
+			const res = await requestToken(app);
+
+			expect(res.statusCode).toBe(200);
+			expect(res.json()).toEqual({ url: 'https://local.test/livekit', token: 'jwt', iceServers, participants: [], updatedAt: 1234 });
+		});
+
+		test('answers null TURN servers when none are configured', async () => {
+			const { app, chatVoiceService } = await createTokenApp();
+			chatVoiceService.issueRemoteJoinToken.mockResolvedValueOnce({ url: 'https://local.test/livekit', token: 'jwt', iceServers: null, participants: [], updatedAt: 1234 });
+
+			const res = await requestToken(app);
+
+			expect(res.json()).toEqual({ url: 'https://local.test/livekit', token: 'jwt', iceServers: null, participants: [], updatedAt: 1234 });
+		});
+
 		test('accepts a request signed the way member servers sign it', async () => {
 			const { publicKey, privateKey } = generateKeyPairSync('rsa', {
 				modulusLength: 2048,

@@ -38,6 +38,33 @@ export const meta = {
 				type: 'string',
 				optional: false, nullable: false,
 			},
+			// 通話を開くサーバーの TURN (設定されていなければ null)。ブラウザはこれを LiveKit が渡すものの代わりに使う
+			iceServers: {
+				type: 'array',
+				optional: false, nullable: true,
+				items: {
+					type: 'object',
+					optional: false, nullable: false,
+					properties: {
+						urls: {
+							type: 'array',
+							optional: false, nullable: false,
+							items: {
+								type: 'string',
+								optional: false, nullable: false,
+							},
+						},
+						username: {
+							type: 'string',
+							optional: true, nullable: false,
+						},
+						credential: {
+							type: 'string',
+							optional: true, nullable: false,
+						},
+					},
+				},
+			},
 		},
 	},
 
