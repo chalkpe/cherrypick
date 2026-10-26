@@ -4,8 +4,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/vue';
-import { nextTick } from 'vue';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/vue';
+import { defineComponent, h, nextTick } from 'vue';
 
 const mocks = vi.hoisted(() => {
 	class FakeChannel {
@@ -29,7 +29,7 @@ const mocks = vi.hoisted(() => {
 		popupMenu: vi.fn(),
 		instance: { features: { voiceCall: true, remoteVoiceCall: false } } as { features: { voiceCall: boolean; remoteVoiceCall: boolean } },
 		prefer: { s: { 'voiceCall.acknowledgedRemoteHosts': [] as string[] }, commit: vi.fn() },
-		me: { id: 'me', username: 'me', policies: { canVoiceCall: true, canScreenShare: true } },
+		me: { id: 'me', username: 'me', policies: { canVoiceCall: true, canScreenShare: true, chatAvailability: 'available' } },
 		joinVoiceCall: vi.fn(),
 		leaveVoiceCall: vi.fn(),
 		setMicEnabled: vi.fn(),
@@ -50,6 +50,13 @@ vi.mock('@/instance.js', () => ({ instance: mocks.instance }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog, confirm: mocks.confirm, popupMenu: mocks.popupMenu, toast: vi.fn(), claimZIndex: () => 1000 }));
 vi.mock('@/utility/fullscreen.js', () => ({ requestFullscreen: mocks.requestFullscreen }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+// ルーム画面のテストでは通話以外の部分は関係ないので空のコンポーネントに差し替える
+vi.mock('@/pages/chat/XMessage.vue', () => ({ default: { render: () => null } }));
+vi.mock('@/pages/chat/room.form.vue', () => ({ default: { render: () => null } }));
+vi.mock('@/pages/chat/room.search.vue', () => ({ default: { render: () => null } }));
+vi.mock('@/pages/chat/room.members.vue', () => ({ default: { render: () => null } }));
+vi.mock('@/pages/chat/room.info.vue', () => ({ default: { render: () => null } }));
 vi.mock('@/utility/voice-call.js', async () => {
 	const { reactive } = await import('vue');
 	const voiceCall = reactive({
@@ -85,6 +92,9 @@ vi.mock('@/utility/voice-call.js', async () => {
 import { i18n } from '@/i18n.js';
 import { voiceCall } from '@/utility/voice-call.js';
 import XVoice from '@/pages/chat/room.voice.vue';
+import XRoomPage from '@/pages/chat/room.vue';
+import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
+import { provideMetadataReceiver } from '@/page.js';
 import XVoiceCallBar from '@/ui/_common_/voice-call-bar.vue';
 import XScreen from '@/pages/chat/room.voice.screen.vue';
 
@@ -96,6 +106,7 @@ const stubs = {
 };
 
 const room = { id: 'r1', name: 'room 1', ownerId: 'owner', owner: { id: 'owner', username: 'owner', host: null } } as any;
+const mirror = { ...room, owner: { id: 'remote-owner', username: 'owner', host: 'remote.test' } };
 const alice = { id: 'alice', username: 'alice', name: 'Alice', host: null };
 const bob = { id: 'bob', username: 'bob', name: 'Bob', host: null };
 const participant = (user: typeof alice, screenSharing = false) => ({ identity: `https://local.test/users/${user.id}`, user, screenSharing }) as any;
@@ -125,10 +136,21 @@ async function flush() {
 	}
 }
 
+// ページと同じく、カードに渡す通話の状態は外で作る
+function renderCard(target: typeof room = room) {
+	const host = defineComponent({
+		setup() {
+			const call = useChatRoomVoiceCall(() => target);
+			return () => h(XVoice, { room: target, call });
+		},
+	});
+	return render(host, { global: { stubs } });
+}
+
 describe('room voice panel', () => {
 	test('shows who is in the call and a join button', async () => {
 		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
-		render(XVoice, { props: { room }, global: { stubs } });
+		renderCard();
 		await flush();
 
 		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/states', { roomIds: ['r1'] });
@@ -138,7 +160,7 @@ describe('room voice panel', () => {
 	});
 
 	test('updates the participant list from the shared main stream', async () => {
-		render(XVoice, { props: { room }, global: { stubs } });
+		renderCard();
 		await flush();
 
 		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [participant(bob)] });
@@ -149,7 +171,7 @@ describe('room voice panel', () => {
 
 	test('shows in-call controls when this room is the active call', async () => {
 		Object.assign(callState, { status: 'connected', room, micEnabled: true });
-		render(XVoice, { props: { room }, global: { stubs } });
+		renderCard();
 		await flush();
 
 		expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
@@ -160,11 +182,10 @@ describe('room voice panel', () => {
 	});
 
 	describe('room owned on another server', () => {
-		const mirror = { ...room, owner: { id: 'remote-owner', username: 'owner', host: 'remote.test' } };
-
 		test('shows the panel for a mirror room when remote calls are allowed', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
-			render(XVoice, { props: { room: mirror }, global: { stubs } });
+			mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
+			renderCard(mirror);
 			await flush();
 
 			expect(screen.getByText(i18n.ts._voiceCall.join)).toBeTruthy();
@@ -172,7 +193,7 @@ describe('room voice panel', () => {
 		});
 
 		test('hides the panel for a mirror room when remote calls are not allowed', async () => {
-			render(XVoice, { props: { room: mirror }, global: { stubs } });
+			renderCard(mirror);
 			await flush();
 
 			expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
@@ -181,8 +202,9 @@ describe('room voice panel', () => {
 
 		test('asks once before joining a call on another server', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
+			mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
 			mocks.confirm.mockResolvedValue({ canceled: false });
-			render(XVoice, { props: { room: mirror }, global: { stubs } });
+			renderCard(mirror);
 			await flush();
 
 			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
@@ -201,8 +223,9 @@ describe('room voice panel', () => {
 		test('ignores a second click while the notice is still open', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
 			let answer!: (value: { canceled: boolean }) => void;
+			mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
 			mocks.confirm.mockReturnValue(new Promise(resolve => { answer = resolve; }));
-			render(XVoice, { props: { room: mirror }, global: { stubs } });
+			renderCard(mirror);
 			await flush();
 
 			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
@@ -216,8 +239,9 @@ describe('room voice panel', () => {
 
 		test('does not join when the notice is cancelled', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
+			mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
 			mocks.confirm.mockResolvedValue({ canceled: true });
-			render(XVoice, { props: { room: mirror }, global: { stubs } });
+			renderCard(mirror);
 			await flush();
 
 			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
@@ -229,7 +253,7 @@ describe('room voice panel', () => {
 
 	test('renders nothing when voice calls are disabled on this server', async () => {
 		mocks.instance.features.voiceCall = false;
-		render(XVoice, { props: { room }, global: { stubs } });
+		renderCard();
 		await flush();
 
 		expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
@@ -237,11 +261,126 @@ describe('room voice panel', () => {
 	});
 });
 
+describe('voice call on the room page', () => {
+	const pageStubs = {
+		...stubs,
+		PageWithHeader: {
+			props: ['actions'],
+			template: '<div><div data-testid="header-actions"><button v-for="action in actions" :key="action.icon" :data-icon="action.icon" :aria-label="action.text" @click="action.handler($event)"></button></div><slot /></div>',
+		},
+		// カードが MkStickyContainer のヘッダーに置かれているか (= スクロールしても上に貼り付くか) を見る
+		MkStickyContainer: { template: '<div><div data-testid="sticky-header"><slot name="header" /></div><slot /></div>' },
+		MkLoading: { template: '<div></div>' },
+	};
+
+	async function renderRoom(target: typeof room, states: unknown[] | Promise<unknown[]>) {
+		mocks.misskeyApi.mockImplementation((endpoint: string) => {
+			if (endpoint === 'chat/rooms/show') return Promise.resolve(target);
+			if (endpoint === 'chat/rooms/voice/states') return states instanceof Promise ? states : Promise.resolve(states);
+			return Promise.resolve([]);
+		});
+		const host = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(XRoomPage, { roomId: target.id });
+			},
+		});
+		render(host, { global: { stubs: pageStubs } });
+		await flush();
+		await flush();
+	}
+
+	const headerIcons = () => [...screen.getByTestId('header-actions').querySelectorAll('button')].map(el => el.getAttribute('data-icon'));
+	const headerJoin = () => within(screen.getByTestId('header-actions')).queryByLabelText(i18n.ts._voiceCall.join);
+	const stickyCard = () => within(screen.getByTestId('sticky-header'));
+
+	test('hides the card when nobody is in the call', async () => {
+		await renderRoom(room, []);
+
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/states', { roomIds: ['r1'] });
+		expect(screen.getByTestId('sticky-header').textContent?.trim()).toBe('');
+		expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
+	});
+
+	test('shows the card when someone is in the call', async () => {
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+
+		expect(stickyCard().getByText('Alice')).toBeTruthy();
+		expect(stickyCard().getByText(room.name)).toBeTruthy();
+		expect(stickyCard().getByText(i18n.ts._voiceCall.join)).toBeTruthy();
+	});
+
+	test('shows the card while I am in the call even before the participant list arrives', async () => {
+		Object.assign(callState, { status: 'connected', room, micEnabled: true });
+		await renderRoom(room, new Promise(() => {}));
+
+		expect(stickyCard().getByText(i18n.ts._voiceCall.inCall)).toBeTruthy();
+		expect(stickyCard().getByLabelText(i18n.ts._voiceCall.leave)).toBeTruthy();
+		expect(headerJoin()).toBeNull();
+	});
+
+	test('offers a join action in the header only when nobody is in the call', async () => {
+		await renderRoom(room, []);
+
+		expect(headerIcons()).toEqual(['ti ti-phone', 'ti ti-dots']);
+		await fireEvent.click(headerJoin()!);
+		await flush();
+		expect(mocks.joinVoiceCall).toHaveBeenCalledWith(room);
+
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [participant(alice)] });
+		await flush();
+
+		expect(headerIcons()).toEqual(['ti ti-dots']);
+		expect(stickyCard().getByText(i18n.ts._voiceCall.join)).toBeTruthy();
+	});
+
+	test('does not offer a header join where calls are not available', async () => {
+		await renderRoom(mirror, []);
+
+		expect(headerIcons()).toEqual(['ti ti-dots']);
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/states', expect.anything());
+	});
+
+	test('the header join asks once before joining a call on another server', async () => {
+		mocks.instance.features.remoteVoiceCall = true;
+		mocks.confirm.mockResolvedValue({ canceled: false });
+		await renderRoom(mirror, []);
+
+		await fireEvent.click(headerJoin()!);
+		await flush();
+		expect(mocks.confirm).toHaveBeenCalledTimes(1);
+		expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.remoteHostNotice({ host: 'remote.test' }) }));
+		expect(mocks.prefer.commit).toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', ['remote.test']);
+		expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
+		expect(mocks.joinVoiceCall).toHaveBeenCalledWith(mirror);
+
+		await fireEvent.click(headerJoin()!);
+		await flush();
+		expect(mocks.confirm).toHaveBeenCalledTimes(1);
+		expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(2);
+	});
+
+	test('ignores a second header click while the notice is still open', async () => {
+		mocks.instance.features.remoteVoiceCall = true;
+		let answer!: (value: { canceled: boolean }) => void;
+		mocks.confirm.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+		await renderRoom(mirror, []);
+
+		await fireEvent.click(headerJoin()!);
+		await fireEvent.click(headerJoin()!);
+		answer({ canceled: false });
+		await flush();
+
+		expect(mocks.confirm).toHaveBeenCalledTimes(1);
+		expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe('screen share in the room panel', () => {
 	test('offers to watch a participant who is sharing their screen', async () => {
 		Object.assign(callState, { status: 'connected', room });
 		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true)] }]);
-		render(XVoice, { props: { room }, global: { stubs } });
+		renderCard();
 		await flush();
 
 		await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.watchStream));
@@ -250,7 +389,7 @@ describe('screen share in the room panel', () => {
 
 	test('does not offer to watch before joining the call', async () => {
 		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true)] }]);
-		render(XVoice, { props: { room }, global: { stubs } });
+		renderCard();
 		await flush();
 
 		expect(screen.queryByLabelText(i18n.ts._voiceCall.watchStream)).toBeNull();
@@ -285,7 +424,7 @@ describe('participant menu', () => {
 		const ownedRoom = { ...room, ownerId: 'me' };
 		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(bob)] }]);
 		mocks.confirm.mockResolvedValue({ canceled: false });
-		render(XVoice, { props: { room: ownedRoom }, global: { stubs } });
+		renderCard(ownedRoom);
 		await flush();
 
 		await fireEvent.click(screen.getByText('Bob'));
@@ -299,7 +438,7 @@ describe('participant menu', () => {
 	test('lets the room owner mute a participant for everyone', async () => {
 		const ownedRoom = { ...room, ownerId: 'me' };
 		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(bob)] }]);
-		render(XVoice, { props: { room: ownedRoom }, global: { stubs } });
+		renderCard(ownedRoom);
 		await flush();
 
 		await fireEvent.click(screen.getByText('Bob'));
@@ -311,7 +450,7 @@ describe('participant menu', () => {
 	test('does not offer moderation to other members', async () => {
 		Object.assign(callState, { status: 'connected', room });
 		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(bob)] }]);
-		render(XVoice, { props: { room }, global: { stubs } });
+		renderCard();
 		await flush();
 
 		await fireEvent.click(screen.getByText('Bob'));
@@ -323,7 +462,7 @@ describe('participant menu', () => {
 	test('offers a volume control only for others while in the call', async () => {
 		Object.assign(callState, { status: 'connected', room });
 		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me), participant(bob)] }]);
-		render(XVoice, { props: { room }, global: { stubs } });
+		renderCard();
 		await flush();
 
 		await fireEvent.click(screen.getByText('Me'));

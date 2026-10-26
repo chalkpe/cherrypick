@@ -2428,7 +2428,6 @@ _voiceCall:
   echoCancellation: "エコーキャンセル"
   noiseSuppression: "ノイズ抑制"
   autoGainControl: "自動音量調整"
-  noOneInCall: "通話中の人はいません"
   shareScreen: "画面を共有"
   stopSharing: "共有を停止"
   watchStream: "共有を見る"

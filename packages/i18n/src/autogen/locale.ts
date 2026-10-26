@@ -9365,10 +9365,6 @@ export interface Locale extends ILocale {
          */
         "autoGainControl": string;
         /**
-         * 通話中の人はいません
-         */
-        "noOneInCall": string;
-        /**
          * 画面を共有
          */
         "shareScreen": string;

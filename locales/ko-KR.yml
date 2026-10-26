@@ -2398,7 +2398,6 @@ _voiceCall:
   echoCancellation: "에코 제거"
   noiseSuppression: "잡음 억제"
   autoGainControl: "자동 음량 조절"
-  noOneInCall: "통화 중인 사람이 없습니다"
   shareScreen: "화면 공유"
   stopSharing: "공유 중지"
   watchStream: "공유 보기"

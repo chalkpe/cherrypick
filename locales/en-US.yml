@@ -2393,7 +2393,6 @@ _voiceCall:
   echoCancellation: "Echo cancellation"
   noiseSuppression: "Noise suppression"
   autoGainControl: "Automatic gain control"
-  noOneInCall: "No one is in the call"
   shareScreen: "Share screen"
   stopSharing: "Stop sharing"
   watchStream: "Watch"

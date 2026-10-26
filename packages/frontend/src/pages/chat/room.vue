@@ -5,10 +5,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <PageWithHeader v-model:tab="tab" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
-	<div v-if="tab === 'chat'" class="_spacer" style="--MI_SPACER-w: 700px;">
+	<!-- 通話カードはメッセージをスクロールしてもページヘッダーの下に貼り付ける -->
+	<MkStickyContainer v-if="tab === 'chat'" class="_spacer" style="--MI_SPACER-w: 700px;">
+		<template #header>
+			<XVoice v-if="room" :room="room" :call="voiceCallState"/>
+		</template>
 		<div class="_gaps">
-			<XVoice v-if="room" :room="room"/>
-
 			<div v-if="initializing">
 				<MkLoading/>
 			</div>
@@ -58,7 +60,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 			<MkInfo v-if="$i.policies.chatAvailability !== 'available'" warn>{{ $i.policies.chatAvailability === 'readonly' ? i18n.ts._chat.chatIsReadOnlyForThisAccountOrServer : i18n.ts._chat.chatNotAvailableForThisAccountOrServer }}</MkInfo>
 		</div>
-	</div>
+	</MkStickyContainer>
 
 	<div v-else-if="tab === 'search'" class="_spacer" style="--MI_SPACER-w: 700px;">
 		<XSearch :userId="userId" :roomId="roomId"/>
@@ -117,6 +119,7 @@ import { makeDateSeparatedTimelineComputedRef } from '@/utility/timeline-date-se
 import { acct as getAcct } from '@@/js/user.js';
 import { isFriendly } from '@/utility/is-friendly.js';
 import { deviceKind } from '@/utility/device-kind.js';
+import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 
 const MOBILE_THRESHOLD = 500;
 
@@ -154,6 +157,7 @@ const connection = ref<Misskey.IChannelConnection<Misskey.Channels['chatUser']> 
 const showIndicator = ref(false);
 const timelineEl = useTemplateRef('timelineEl');
 const timeline = makeDateSeparatedTimelineComputedRef(messages);
+const voiceCallState = useChatRoomVoiceCall(room);
 
 const SCROLL_HEAD_THRESHOLD = 200;
 
@@ -470,10 +474,20 @@ const headerTabs = computed(() => room.value ? [{
 	icon: 'ti ti-search',
 }]);
 
-const headerActions = computed<PageHeaderItem[]>(() => [{
-	icon: 'ti ti-dots',
-	handler: showMenu,
-}]);
+const headerActions = computed<PageHeaderItem[]>(() => [
+	// 通話に誰もいないときは通話カードを出さないので、代わりにヘッダーから参加できるようにする
+	...(voiceCallState.available.value && !voiceCallState.showCard.value ? [{
+		icon: 'ti ti-phone',
+		text: i18n.ts._voiceCall.join,
+		handler: () => {
+			voiceCallState.join();
+		},
+	}] : []),
+	{
+		icon: 'ti ti-dots',
+		handler: showMenu,
+	},
+]);
 
 definePage(computed(() => {
 	if (initialized.value) {

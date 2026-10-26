@@ -4,56 +4,58 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="available" class="_panel" :class="$style.root">
-	<div :class="$style.header">
-		<i class="ti ti-volume" :class="$style.headerIcon"></i>
-		<span :class="$style.title">{{ inThisCall ? i18n.ts._voiceCall.inCall : participants.length === 0 ? i18n.ts._voiceCall.noOneInCall : room.name }}</span>
-		<div :class="$style.actions">
-			<template v-if="inThisCall">
-				<button
-					class="_button" :class="[$style.action, { [$style.off]: !voiceCall.micEnabled }]"
-					:aria-label="voiceCall.micEnabled ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute"
-					:title="voiceCall.micEnabled ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute"
-					@click="setMicEnabled(!voiceCall.micEnabled)"
-				>
-					<i v-if="voiceCall.micEnabled" class="ti ti-microphone"></i>
-					<i v-else class="ti ti-microphone-off"></i>
-				</button>
-				<button
-					class="_button" :class="[$style.action, { [$style.off]: voiceCall.deafened }]"
-					:aria-label="voiceCall.deafened ? i18n.ts._voiceCall.undeafen : i18n.ts._voiceCall.deafen"
-					:title="voiceCall.deafened ? i18n.ts._voiceCall.undeafen : i18n.ts._voiceCall.deafen"
-					@click="setDeafened(!voiceCall.deafened)"
-				>
-					<i v-if="voiceCall.deafened" class="ti ti-headphones-off"></i>
-					<i v-else class="ti ti-headphones"></i>
-				</button>
-				<button
-					class="_button" :class="[$style.action, $style.leave]"
-					:aria-label="i18n.ts._voiceCall.leave"
-					:title="i18n.ts._voiceCall.leave"
-					@click="leaveVoiceCall()"
-				>
-					<i class="ti ti-phone-off"></i>
-				</button>
-			</template>
-			<MkButton v-else primary rounded small @click="join()"><i class="ti ti-phone"></i> {{ i18n.ts._voiceCall.join }}</MkButton>
+<div v-if="showCard" :class="$style.root">
+	<div class="_panel" :class="$style.card">
+		<div :class="$style.header">
+			<i class="ti ti-volume" :class="$style.headerIcon"></i>
+			<span :class="$style.title">{{ inThisCall ? i18n.ts._voiceCall.inCall : room.name }}</span>
+			<div :class="$style.actions">
+				<template v-if="inThisCall">
+					<button
+						class="_button" :class="[$style.action, { [$style.off]: !voiceCall.micEnabled }]"
+						:aria-label="voiceCall.micEnabled ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute"
+						:title="voiceCall.micEnabled ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute"
+						@click="setMicEnabled(!voiceCall.micEnabled)"
+					>
+						<i v-if="voiceCall.micEnabled" class="ti ti-microphone"></i>
+						<i v-else class="ti ti-microphone-off"></i>
+					</button>
+					<button
+						class="_button" :class="[$style.action, { [$style.off]: voiceCall.deafened }]"
+						:aria-label="voiceCall.deafened ? i18n.ts._voiceCall.undeafen : i18n.ts._voiceCall.deafen"
+						:title="voiceCall.deafened ? i18n.ts._voiceCall.undeafen : i18n.ts._voiceCall.deafen"
+						@click="setDeafened(!voiceCall.deafened)"
+					>
+						<i v-if="voiceCall.deafened" class="ti ti-headphones-off"></i>
+						<i v-else class="ti ti-headphones"></i>
+					</button>
+					<button
+						class="_button" :class="[$style.action, $style.leave]"
+						:aria-label="i18n.ts._voiceCall.leave"
+						:title="i18n.ts._voiceCall.leave"
+						@click="leaveVoiceCall()"
+					>
+						<i class="ti ti-phone-off"></i>
+					</button>
+				</template>
+				<MkButton v-else primary rounded small @click="join()"><i class="ti ti-phone"></i> {{ i18n.ts._voiceCall.join }}</MkButton>
+			</div>
 		</div>
+		<div v-if="participants.length > 0" :class="$style.participants">
+			<XParticipant
+				v-for="participant in participants"
+				:key="participant.identity"
+				:participant="participant"
+				:speaking="inThisCall && voiceCall.speakingIdentities.includes(participant.identity)"
+				:watchable="inThisCall && participant.identity !== myIdentity"
+				:watching="voiceCall.watchingIdentity === participant.identity"
+				:menuable="participant.identity !== myIdentity && (inThisCall || isOwner)"
+				@toggleWatch="watchScreenShare(voiceCall.watchingIdentity === participant.identity ? null : participant.identity)"
+				@openMenu="openMenu(participant, $event)"
+			/>
+		</div>
+		<XScreen v-if="inThisCall && watchedParticipant != null" :key="watchedParticipant.identity" :participant="watchedParticipant" :class="$style.screen"/>
 	</div>
-	<div v-if="participants.length > 0" :class="$style.participants">
-		<XParticipant
-			v-for="participant in participants"
-			:key="participant.identity"
-			:participant="participant"
-			:speaking="inThisCall && voiceCall.speakingIdentities.includes(participant.identity)"
-			:watchable="inThisCall && participant.identity !== myIdentity"
-			:watching="voiceCall.watchingIdentity === participant.identity"
-			:menuable="participant.identity !== myIdentity && (inThisCall || isOwner)"
-			@toggleWatch="watchScreenShare(voiceCall.watchingIdentity === participant.identity ? null : participant.identity)"
-			@openMenu="openMenu(participant, $event)"
-		/>
-	</div>
-	<XScreen v-if="inThisCall && watchedParticipant != null" :key="watchedParticipant.identity" :participant="watchedParticipant" :class="$style.screen"/>
 </div>
 </template>
 
@@ -68,54 +70,22 @@ import * as os from '@/os.js';
 import { userName } from '@/filters/user.js';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
-import { instance } from '@/instance.js';
-import { prefer } from '@/preferences.js';
 import { ensureSignin } from '@/i.js';
-import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
-import { joinVoiceCall, leaveVoiceCall, localIdentityOf, setDeafened, setMicEnabled, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import type { ChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
+import { leaveVoiceCall, localIdentityOf, setDeafened, setMicEnabled, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
 
 const props = defineProps<{
 	room: Misskey.entities.ChatRoom;
+	call: ChatRoomVoiceCall;
 }>();
 
 const $i = ensureSignin();
 
-// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーで開かれるので、連合通話が許可されているときだけ出す
-const available = computed(() => {
-	const allowed = props.room.owner.host == null ? instance.features?.voiceCall === true : instance.features?.remoteVoiceCall === true;
-	return allowed && $i.policies.canVoiceCall;
-});
-const inThisCall = computed(() => voiceCall.room?.id === props.room.id && voiceCall.status !== 'idle');
-
-// ルーム画面は既に chatRoom チャンネルを開いているので、共有の main チャンネル経由で受け取る
-const roomIds = computed(() => available.value ? [props.room.id] : []);
-const states = useChatRoomVoiceStates(roomIds);
-const participants = computed(() => states.value.get(props.room.id)?.participants ?? []);
+// カードを出すかどうかと参加の流れはページヘッダーの参加ボタンと共有するので、ページ側で作ったものを使う
+const { showCard, inThisCall, participants, join } = props.call;
 const myIdentity = localIdentityOf($i.id);
 const watchedParticipant = computed(() => participants.value.find(participant => participant.identity === voiceCall.watchingIdentity) ?? null);
 const isOwner = computed(() => props.room.ownerId === $i.id);
-
-// 他のサーバーで開かれる通話には相手のサーバーに IP アドレスが見えるので、ホストごとに初回だけ確認する
-let joining = false;
-
-async function join() {
-	if (joining) return;
-	joining = true;
-	try {
-		const host = props.room.owner.host;
-		if (host != null && !prefer.s['voiceCall.acknowledgedRemoteHosts'].includes(host)) {
-			const { canceled } = await os.confirm({
-				type: 'info',
-				text: i18n.tsx._voiceCall.remoteHostNotice({ host }),
-			});
-			if (canceled) return;
-			prefer.commit('voiceCall.acknowledgedRemoteHosts', [...prefer.s['voiceCall.acknowledgedRemoteHosts'], host]);
-		}
-		await joinVoiceCall(props.room);
-	} finally {
-		joining = false;
-	}
-}
 
 type Participant = Misskey.entities.ChatRoomVoiceState['participants'][number];
 
@@ -158,7 +128,15 @@ function openMenu(participant: Participant, ev: MouseEvent) {
 </script>
 
 <style lang="scss" module>
+// メッセージをスクロールしてもページヘッダーの下に貼り付くので、後ろのメッセージが透けないよう背景で覆う。
+// 上にも少し余白を取り、貼り付いたときにカードがヘッダーに密着しないようにする (貼り付く前の位置は変えない)
 .root {
+	margin-top: -8px;
+	padding: 8px 0 var(--MI-margin);
+	background: var(--MI_THEME-bg);
+}
+
+.card {
 	padding: 12px 14px;
 }
 
