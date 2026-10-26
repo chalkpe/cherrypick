@@ -33,6 +33,8 @@ services:
         condition: service_healthy
       setup:
         condition: service_completed_successfully
+      livekit.a.test:
+        condition: service_healthy
     networks:
       - internal_network_a
     volumes:
@@ -40,6 +42,22 @@ services:
         source: ./.config/a.test.config.json
         target: /cherrypick/built/._config_.json
         read_only: true
+
+  # a.test の通話 (voiceCall.livekit) が使う LiveKit。setup.sh が a.test.config.json に同じ鍵を書く。
+  # b.test には LiveKit を置かず、通話に対応していないサーバーとして扱う
+  livekit.a.test:
+    image: livekit/livekit-server:v1.13.10
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        keys:
+          cherrypick: test-federation-livekit-secret-0123456789
+    networks:
+      - internal_network_a
+    healthcheck:
+      test: wget -q -O /dev/null http://127.0.0.1:7880/
+      interval: 5s
+      retries: 20
 
   db.a.test:
     extends:
