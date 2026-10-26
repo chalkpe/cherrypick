@@ -50,19 +50,43 @@ async function listen(server: http.Server): Promise<number> {
 	return (server.address() as AddressInfo).port;
 }
 
-/** 偽の LiveKit: WebSocket はエコー、HTTP の validate は 200 を返す */
+/**
+ * 偽の LiveKit: WebSocket はエコー、HTTP の validate は 200 を返す。
+ * access_token で挙動を切り替える (bad: 401, chunked: chunked な 401, hang: 応答しない)。
+ */
 async function fakeLiveKit() {
 	const paths: string[] = [];
+	const headers: http.IncomingHttpHeaders[] = [];
+	const hungClosed: Promise<void>[] = [];
+	const hungSockets: { destroy: () => void }[] = [];
+	cleanups.push(() => {
+		for (const socket of hungSockets) socket.destroy();
+	});
 	const server = http.createServer((req, res) => {
 		paths.push(req.url ?? '');
+		if (req.url?.includes('access_token=hang')) return;
 		res.writeHead(200, { 'content-type': 'text/plain' });
 		res.end('valid');
 	});
 	const wss = new WebSocketServer({ noServer: true });
 	server.on('upgrade', (req, socket, head) => {
 		paths.push(req.url ?? '');
+		headers.push(req.headers);
 		if (req.url?.includes('access_token=bad')) {
 			socket.end('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+			return;
+		}
+		if (req.url?.includes('access_token=chunked')) {
+			socket.end('HTTP/1.1 401 Unauthorized\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n6\r\ndenied\r\n0\r\n\r\n');
+			return;
+		}
+		if (req.url?.includes('access_token=hang')) {
+			// 応答しない LiveKit。相手が切ったことに気付けるよう読み進める
+			hungClosed.push(new Promise(resolve => socket.on('close', () => resolve())));
+			socket.on('end', () => socket.destroy());
+			socket.on('error', () => {});
+			socket.resume();
+			hungSockets.push(socket);
 			return;
 		}
 		wss.handleUpgrade(req, socket, head, ws => ws.on('message', data => ws.send(data.toString())));
@@ -72,7 +96,42 @@ async function fakeLiveKit() {
 		wss.close();
 	});
 	const port = await listen(server);
-	return { paths, url: `http://127.0.0.1:${port}` };
+	return { paths, headers, hungClosed, url: `http://127.0.0.1:${port}` };
+}
+
+/** プロキシ経由で届いてはいけないサーバー */
+async function forbiddenServer() {
+	const hits: string[] = [];
+	const server = http.createServer((req, res) => {
+		hits.push(req.url ?? '');
+		res.end('secret');
+	});
+	server.on('upgrade', (req, socket) => {
+		hits.push(req.url ?? '');
+		socket.end('HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecret');
+	});
+	const port = await listen(server);
+	return { hits, port };
+}
+
+/** 生のアップグレード要求を送り、返ってきた状態コードを返す (WebSocket クライアントは URL を正規化してしまうため) */
+function rawUpgradeStatus(port: number, path: string): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const req = http.request({
+			host: '127.0.0.1', port, path, method: 'GET',
+			headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==' },
+		});
+		req.on('upgrade', (res, socket) => {
+			socket.destroy();
+			resolve(res.statusCode ?? 0);
+		});
+		req.on('response', res => {
+			res.resume();
+			resolve(res.statusCode ?? 0);
+		});
+		req.on('error', reject);
+		req.end();
+	});
 }
 
 async function frontServer(service: LiveKitServerService) {
@@ -173,6 +232,107 @@ describe('LiveKitServerService', () => {
 		const status = await new Promise<number | undefined>(resolve => ws.on('unexpected-response', (_req, res) => resolve(res.statusCode)));
 
 		expect(status).toBe(502);
+	});
+
+	test('refuses upgrade paths that would leave the LiveKit server', async () => {
+		const livekit = await fakeLiveKit();
+		const other = await forbiddenServer();
+		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const port = await frontServer(service);
+
+		for (const path of [`/livekit//127.0.0.1:${other.port}/secret`, `/livekit/\\127.0.0.1:${other.port}/secret`, '/livekit/other/path']) {
+			expect(await rawUpgradeStatus(port, path)).toBe(404);
+		}
+		expect(other.hits).toEqual([]);
+		expect(livekit.paths).toEqual([]);
+	});
+
+	test('does not follow redirects from LiveKit on the validation route', async () => {
+		const other = await forbiddenServer();
+		const redirecting = http.createServer((_req, res) => {
+			res.writeHead(302, { location: `http://127.0.0.1:${other.port}/secret` });
+			res.end();
+		});
+		const redirectingPort = await listen(redirecting);
+		const service = new LiveKitServerService(liveKitService(true, `http://127.0.0.1:${redirectingPort}`), { handleWebhook: vi.fn() } as any);
+		const app = Fastify();
+		await app.register(service.createServer, { prefix: '/livekit' });
+		cleanups.push(() => app.close());
+
+		const res = await app.inject({ method: 'GET', url: '/livekit/rtc/v1/validate?access_token=t' });
+
+		expect(res.body).not.toContain('secret');
+		expect(other.hits).toEqual([]);
+	});
+
+	test('forwards only the headers LiveKit needs', async () => {
+		const livekit = await fakeLiveKit();
+		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const port = await frontServer(service);
+
+		const ws = new WebSocket(`ws://127.0.0.1:${port}/livekit/rtc/v1?access_token=t`, { headers: { cookie: 'token=secret', authorization: 'Bearer lk' } });
+		cleanups.push(() => ws.terminate());
+		await new Promise((resolve, reject) => {
+			ws.on('open', resolve);
+			ws.on('error', reject);
+		});
+
+		expect(livekit.headers[0].cookie).toBeUndefined();
+		expect(livekit.headers[0].authorization).toBe('Bearer lk');
+		expect(livekit.headers[0]['sec-websocket-key']).toBeTruthy();
+	});
+
+	test('passes a chunked refusal through in a form the client can read', async () => {
+		const livekit = await fakeLiveKit();
+		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const port = await frontServer(service);
+
+		const ws = new WebSocket(`ws://127.0.0.1:${port}/livekit/rtc/v1?access_token=chunked`);
+		ws.on('error', () => {});
+		cleanups.push(() => ws.terminate());
+		const [status, body] = await new Promise<[number | undefined, string]>(resolve => ws.on('unexpected-response', (_req, res) => {
+			let text = '';
+			res.on('data', chunk => text += chunk);
+			res.on('end', () => resolve([res.statusCode, text]));
+		}));
+
+		expect(status).toBe(401);
+		expect(body).toBe('denied');
+	});
+
+	test('drops the upstream request when the client gives up first', async () => {
+		const livekit = await fakeLiveKit();
+		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const port = await frontServer(service);
+
+		const ws = new WebSocket(`ws://127.0.0.1:${port}/livekit/rtc/v1?access_token=hang`);
+		ws.on('error', () => {});
+		await vi.waitFor(() => expect(livekit.hungClosed).toHaveLength(1));
+		ws.terminate();
+
+		await expect(Promise.race([livekit.hungClosed[0].then(() => 'closed'), new Promise(resolve => setTimeout(() => resolve('still open'), 1000))])).resolves.toBe('closed');
+	});
+
+	test('answers 504 when LiveKit does not answer an upgrade in time', async () => {
+		const livekit = await fakeLiveKit();
+		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		Object.assign(service, { upstreamTimeoutMs: 200 });
+		const port = await frontServer(service);
+
+		expect(await rawUpgradeStatus(port, '/livekit/rtc/v1?access_token=hang')).toBe(504);
+	});
+
+	test('answers 504 when LiveKit does not answer the validation request in time', async () => {
+		const livekit = await fakeLiveKit();
+		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		Object.assign(service, { upstreamTimeoutMs: 200 });
+		const app = Fastify();
+		await app.register(service.createServer, { prefix: '/livekit' });
+		cleanups.push(() => app.close());
+
+		const res = await app.inject({ method: 'GET', url: '/livekit/rtc/v1/validate?access_token=hang' });
+
+		expect(res.statusCode).toBe(504);
 	});
 
 	test('only claims /livekit/ paths while voice calls are enabled', () => {
