@@ -6,7 +6,7 @@
 import { reactive, readonly } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { url } from '@@/js/config.js';
-import type { AudioCaptureOptions, DisconnectReason, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, TrackPublication } from 'livekit-client';
+import type { AudioCaptureOptions, DisconnectReason, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, TrackPublication, VideoPreset } from 'livekit-client';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
@@ -34,6 +34,10 @@ export const voiceCall = readonly(state);
 let livekit: LiveKit | null = null;
 let current: Room | null = null;
 let joinAttempt = 0;
+
+// 画面共有の映像トラックと、それを映す video 要素 (どちらも identity ごと)
+const screenShareTracks = new Map<string, RemoteTrack>();
+const screenShareElements = new Map<string, HTMLVideoElement>();
 
 async function loadLiveKit(): Promise<LiveKit> {
 	// 通話しない人にライブラリを読ませないよう、参加時に読み込む
@@ -148,6 +152,81 @@ export async function selectAudioDevice(kind: 'audioinput' | 'audiooutput', devi
 	await current.switchActiveDevice(kind, deviceId);
 }
 
+export function canShareScreen(): boolean {
+	return typeof window.navigator.mediaDevices?.getDisplayMedia === 'function';
+}
+
+export async function startScreenShare(): Promise<void> {
+	if (current == null || livekit == null) return;
+	const { preset, contentHint } = screenSharePreset(livekit, prefer.s['voiceCall.screenShareQuality']);
+	try {
+		await current.localParticipant.setScreenShareEnabled(true, {
+			audio: prefer.s['voiceCall.screenShareAudio'],
+			resolution: preset.resolution,
+			contentHint,
+		}, {
+			screenShareEncoding: preset.encoding,
+			screenShareSimulcastLayers: [livekit.ScreenSharePresets.h720fps15],
+		});
+		state.screenSharing = true;
+	} catch (err) {
+		state.screenSharing = false;
+		// 共有する画面の選択をキャンセルしただけなら何も言わない
+		if (err instanceof DOMException && err.name === 'NotAllowedError') return;
+		os.toast(i18n.ts._voiceCall.screenShareFailed);
+	}
+}
+
+export async function stopScreenShare(): Promise<void> {
+	if (current == null) return;
+	await current.localParticipant.setScreenShareEnabled(false);
+	state.screenSharing = false;
+}
+
+export function watchScreenShare(identity: string | null): void {
+	const previous = state.watchingIdentity;
+	state.watchingIdentity = identity;
+	if (current == null) return;
+	if (previous != null && previous !== identity) {
+		screenSharePublicationOf(current, previous)?.setSubscribed(false);
+	}
+	if (identity != null) {
+		screenSharePublicationOf(current, identity)?.setSubscribed(true);
+	}
+}
+
+export function attachScreenShare(identity: string, element: HTMLVideoElement): () => void {
+	screenShareElements.set(identity, element);
+	screenShareTracks.get(identity)?.attach(element);
+	return () => {
+		if (screenShareElements.get(identity) === element) screenShareElements.delete(identity);
+		screenShareTracks.get(identity)?.detach(element);
+	};
+}
+
+function screenSharePreset(lk: LiveKit, quality: 'sharp' | 'smooth' | 'high'): { preset: VideoPreset; contentHint: 'detail' | 'motion' } {
+	switch (quality) {
+		case 'smooth': return { preset: lk.ScreenSharePresets.h720fps30, contentHint: 'motion' };
+		case 'high': return { preset: lk.ScreenSharePresets.h1080fps30, contentHint: 'motion' };
+		default: return { preset: lk.ScreenSharePresets.h1080fps15, contentHint: 'detail' };
+	}
+}
+
+function screenSharePublicationOf(room: Room, identity: string): RemoteTrackPublication | undefined {
+	const participant = room.remoteParticipants.get(identity);
+	if (participant == null || livekit == null) return undefined;
+	for (const publication of participant.trackPublications.values()) {
+		if (publication.source === livekit.Track.Source.ScreenShare) return publication;
+	}
+	return undefined;
+}
+
+function forgetScreenShare(identity: string): void {
+	state.screenShareIdentities = state.screenShareIdentities.filter(x => x !== identity);
+	screenShareTracks.delete(identity);
+	if (state.watchingIdentity === identity) state.watchingIdentity = null;
+}
+
 function captureOptions(): AudioCaptureOptions {
 	return {
 		deviceId: prefer.s['voiceCall.inputDeviceId'] ?? undefined,
@@ -188,6 +267,9 @@ function applySubscription(lk: LiveKit, publication: TrackPublication, participa
 			remote.setSubscribed(true);
 			break;
 		case lk.Track.Source.ScreenShare:
+			if (!state.screenShareIdentities.includes(participant.identity)) {
+				state.screenShareIdentities = [...state.screenShareIdentities, participant.identity];
+			}
 			remote.setSubscribed(participant.identity === state.watchingIdentity);
 			break;
 		default:
@@ -203,15 +285,39 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 		if (isCurrent()) applySubscription(lk, publication, participant);
 	});
 
-	room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _publication: RemoteTrackPublication, participant: RemoteParticipant) => {
-		if (!isCurrent() || track.kind !== Track.Kind.Audio) return;
-		window.document.body.appendChild(track.attach());
-		applyVolume(participant);
+	room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+		if (!isCurrent()) return;
+		if (track.kind === Track.Kind.Audio) {
+			window.document.body.appendChild(track.attach());
+			applyVolume(participant);
+		} else if (publication.source === Track.Source.ScreenShare) {
+			screenShareTracks.set(participant.identity, track);
+			const element = screenShareElements.get(participant.identity);
+			if (element != null) track.attach(element);
+		}
 	});
 
-	room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
-		if (track.kind !== Track.Kind.Audio) return;
-		for (const element of track.detach()) element.remove();
+	room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+		if (track.kind === Track.Kind.Audio) {
+			for (const element of track.detach()) element.remove();
+		} else if (publication.source === Track.Source.ScreenShare) {
+			const element = screenShareElements.get(participant.identity);
+			if (element != null) track.detach(element);
+			screenShareTracks.delete(participant.identity);
+		}
+	});
+
+	room.on(RoomEvent.TrackUnpublished, (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+		if (isCurrent() && publication.source === Track.Source.ScreenShare) forgetScreenShare(participant.identity);
+	});
+
+	room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
+		if (isCurrent()) forgetScreenShare(participant.identity);
+	});
+
+	room.on(RoomEvent.LocalTrackUnpublished, (publication: LocalTrackPublication) => {
+		// ブラウザの「共有を停止」で終わった場合もここに来る
+		if (isCurrent() && publication.source === Track.Source.ScreenShare) state.screenSharing = false;
 	});
 
 	room.on(RoomEvent.TrackMuted, (publication: TrackPublication, participant: Participant) => {
@@ -276,6 +382,7 @@ function failToConnect(): void {
 }
 
 function resetState(): void {
+	screenShareTracks.clear();
 	state.status = 'idle';
 	state.room = null;
 	state.micEnabled = false;

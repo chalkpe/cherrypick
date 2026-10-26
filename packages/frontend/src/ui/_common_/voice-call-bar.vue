@@ -35,6 +35,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<i v-else class="ti ti-headphones"></i>
 		</button>
 		<button
+			v-if="screenShareAvailable"
+			class="_button" :class="[$style.action, { [$style.on]: voiceCall.screenSharing }]"
+			:aria-label="voiceCall.screenSharing ? i18n.ts._voiceCall.stopSharing : i18n.ts._voiceCall.shareScreen"
+			:title="voiceCall.screenSharing ? i18n.ts._voiceCall.stopSharing : i18n.ts._voiceCall.shareScreen"
+			@click="voiceCall.screenSharing ? stopScreenShare() : startScreenShare()"
+		>
+			<i v-if="voiceCall.screenSharing" class="ti ti-screen-share-off"></i>
+			<i v-else class="ti ti-screen-share"></i>
+		</button>
+		<button
 			class="_button" :class="$style.action"
 			:aria-label="i18n.ts._voiceCall.settings"
 			:title="i18n.ts._voiceCall.settings"
@@ -60,9 +70,12 @@ import type { MenuItem } from '@/types/menu.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
-import { leaveVoiceCall, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, voiceCall } from '@/utility/voice-call.js';
+import { $i } from '@/i.js';
+import { canShareScreen, leaveVoiceCall, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
 
 const zIndex = os.claimZIndex('middle');
+
+const screenShareAvailable = computed(() => canShareScreen() && $i?.policies.canScreenShare === true);
 
 const statusText = computed(() => {
 	switch (voiceCall.status) {
@@ -109,6 +122,23 @@ function openSettings(ev: MouseEvent) {
 			icon: 'ti ti-headphones',
 			text: i18n.ts._voiceCall.outputDevice,
 			children: () => deviceItems('audiooutput'),
+		});
+	}
+	if (screenShareAvailable.value) {
+		items.push({ type: 'divider' }, {
+			type: 'radio',
+			icon: 'ti ti-screen-share',
+			text: i18n.ts._voiceCall.screenShareQuality,
+			ref: prefer.model('voiceCall.screenShareQuality'),
+			options: [
+				{ label: i18n.ts._voiceCall._quality.sharp, value: 'sharp' },
+				{ label: i18n.ts._voiceCall._quality.smooth, value: 'smooth' },
+				{ label: i18n.ts._voiceCall._quality.high, value: 'high' },
+			],
+		}, {
+			type: 'switch',
+			text: i18n.ts._voiceCall.shareAudio,
+			ref: prefer.model('voiceCall.screenShareAudio'),
 		});
 	}
 	items.push({ type: 'divider' }, {
@@ -199,6 +229,11 @@ function openSettings(ev: MouseEvent) {
 
 	&.off {
 		color: var(--MI_THEME-error);
+	}
+
+	&.on {
+		color: var(--MI_THEME-fgOnAccent);
+		background: var(--MI_THEME-accent);
 	}
 
 	&.leave {

@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => {
 		startScreenShare: vi.fn(),
 		stopScreenShare: vi.fn(),
 		setParticipantVolume: vi.fn(),
+		requestFullscreen: vi.fn(),
 	};
 });
 
@@ -46,6 +47,7 @@ vi.mock('@/stream.js', () => ({ useStream: () => ({ useChannel: () => mocks.chan
 vi.mock('@/instance.js', () => ({ instance: mocks.instance }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog, confirm: mocks.confirm, popupMenu: mocks.popupMenu, toast: vi.fn(), claimZIndex: () => 1000 }));
+vi.mock('@/utility/fullscreen.js', () => ({ requestFullscreen: mocks.requestFullscreen }));
 vi.mock('@/utility/voice-call.js', async () => {
 	const { reactive } = await import('vue');
 	const voiceCall = reactive({
@@ -81,6 +83,7 @@ import { i18n } from '@/i18n.js';
 import { voiceCall } from '@/utility/voice-call.js';
 import XVoice from '@/pages/chat/room.voice.vue';
 import XVoiceCallBar from '@/ui/_common_/voice-call-bar.vue';
+import XScreen from '@/pages/chat/room.voice.screen.vue';
 
 const stubs = {
 	MkAvatar: { props: ['user'], template: '<span class="avatar"></span>' },
@@ -92,14 +95,14 @@ const stubs = {
 const room = { id: 'r1', name: 'room 1', ownerId: 'owner' } as any;
 const alice = { id: 'alice', username: 'alice', name: 'Alice', host: null };
 const bob = { id: 'bob', username: 'bob', name: 'Bob', host: null };
-const participant = (user: typeof alice, screenSharing = false) => ({ identity: `https://local.test/users/${user.id}`, user, screenSharing });
+const participant = (user: typeof alice, screenSharing = false) => ({ identity: `https://local.test/users/${user.id}`, user, screenSharing }) as any;
 const callState = voiceCall as unknown as Record<string, unknown>;
 
 beforeEach(() => {
 	mocks.channel = new mocks.FakeChannel();
 	mocks.instance.features.voiceCall = true;
 	mocks.misskeyApi.mockReset().mockResolvedValue([]);
-	for (const fn of [mocks.joinVoiceCall, mocks.leaveVoiceCall, mocks.setMicEnabled, mocks.setDeafened, mocks.resumeAudio, mocks.watchScreenShare, mocks.apiWithDialog, mocks.confirm, mocks.popupMenu]) fn.mockReset();
+	for (const fn of [mocks.joinVoiceCall, mocks.leaveVoiceCall, mocks.setMicEnabled, mocks.setDeafened, mocks.resumeAudio, mocks.watchScreenShare, mocks.startScreenShare, mocks.stopScreenShare, mocks.apiWithDialog, mocks.confirm, mocks.popupMenu]) fn.mockReset();
 	Object.assign(callState, { status: 'idle', room: null, micEnabled: false, deafened: false, audioBlocked: false, speakingIdentities: [], screenSharing: false, screenShareIdentities: [], watchingIdentity: null });
 });
 
@@ -158,7 +161,60 @@ describe('room voice panel', () => {
 	});
 });
 
+describe('screen share in the room panel', () => {
+	test('offers to watch a participant who is sharing their screen', async () => {
+		Object.assign(callState, { status: 'connected', room });
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true)] }]);
+		render(XVoice, { props: { room }, global: { stubs } });
+		await flush();
+
+		await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.watchStream));
+		expect(mocks.watchScreenShare).toHaveBeenCalledWith('https://local.test/users/alice');
+	});
+
+	test('does not offer to watch before joining the call', async () => {
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true)] }]);
+		render(XVoice, { props: { room }, global: { stubs } });
+		await flush();
+
+		expect(screen.queryByLabelText(i18n.ts._voiceCall.watchStream)).toBeNull();
+		expect(screen.getByLabelText(i18n.ts._voiceCall.sharingScreen)).toBeTruthy();
+	});
+});
+
+describe('screen share viewer', () => {
+	test('goes fullscreen through the shared helper so iPhone Safari works too', async () => {
+		render(XScreen, { props: { participant: participant(alice, true) }, global: { stubs } });
+		await flush();
+
+		await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.fullscreen));
+
+		expect(mocks.requestFullscreen).toHaveBeenCalledWith(expect.objectContaining({ videoEl: expect.any(HTMLVideoElement), playerEl: expect.any(HTMLElement) }));
+	});
+
+	test('labels the stream as a screen share for screen readers', async () => {
+		render(XScreen, { props: { participant: participant(alice, true) }, global: { stubs } });
+		await flush();
+
+		expect(screen.getByLabelText(i18n.ts._voiceCall.sharingScreen)).toBeTruthy();
+	});
+});
+
 describe('voice call bar', () => {
+	test('starts and stops sharing the screen', async () => {
+		Object.assign(callState, { status: 'connected', room });
+		render(XVoiceCallBar, { global: { stubs } });
+		await flush();
+
+		await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.shareScreen));
+		expect(mocks.startScreenShare).toHaveBeenCalled();
+
+		callState.screenSharing = true;
+		await flush();
+		await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.stopSharing));
+		expect(mocks.stopScreenShare).toHaveBeenCalled();
+	});
+
 	test('offers to enable audio when the browser blocks playback', async () => {
 		Object.assign(callState, { status: 'connected', room, audioBlocked: true });
 		render(XVoiceCallBar, { global: { stubs } });

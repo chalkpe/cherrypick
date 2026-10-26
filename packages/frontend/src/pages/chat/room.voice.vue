@@ -46,8 +46,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 			:key="participant.identity"
 			:participant="participant"
 			:speaking="inThisCall && voiceCall.speakingIdentities.includes(participant.identity)"
+			:watchable="inThisCall && participant.identity !== myIdentity"
+			:watching="voiceCall.watchingIdentity === participant.identity"
+			@toggleWatch="watchScreenShare(voiceCall.watchingIdentity === participant.identity ? null : participant.identity)"
 		/>
 	</div>
+	<XScreen v-if="inThisCall && watchedParticipant != null" :key="watchedParticipant.identity" :participant="watchedParticipant" :class="$style.screen"/>
 </div>
 </template>
 
@@ -55,12 +59,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { computed } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import XParticipant from './room.voice.participant.vue';
+import XScreen from './room.voice.screen.vue';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
 import { instance } from '@/instance.js';
 import { ensureSignin } from '@/i.js';
 import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
-import { joinVoiceCall, leaveVoiceCall, setDeafened, setMicEnabled, voiceCall } from '@/utility/voice-call.js';
+import { joinVoiceCall, leaveVoiceCall, localIdentityOf, setDeafened, setMicEnabled, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
 
 const props = defineProps<{
 	room: Misskey.entities.ChatRoom;
@@ -75,6 +80,8 @@ const inThisCall = computed(() => voiceCall.room?.id === props.room.id && voiceC
 const roomIds = computed(() => available.value ? [props.room.id] : []);
 const states = useChatRoomVoiceStates(roomIds);
 const participants = computed(() => states.value.get(props.room.id)?.participants ?? []);
+const myIdentity = localIdentityOf($i.id);
+const watchedParticipant = computed(() => participants.value.find(participant => participant.identity === voiceCall.watchingIdentity) ?? null);
 </script>
 
 <style lang="scss" module>
@@ -134,6 +141,10 @@ const participants = computed(() => states.value.get(props.room.id)?.participant
 	display: flex;
 	flex-wrap: wrap;
 	gap: 6px;
+	margin-top: 10px;
+}
+
+.screen {
 	margin-top: 10px;
 }
 </style>

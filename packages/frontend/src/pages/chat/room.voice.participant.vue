@@ -7,15 +7,40 @@ SPDX-License-Identifier: AGPL-3.0-only
 <div :class="[$style.root, { [$style.speaking]: speaking }]">
 	<MkAvatar :user="participant.user" :class="$style.avatar"/>
 	<MkUserName :user="participant.user" :class="$style.name"/>
+	<button
+		v-if="participant.screenSharing && watchable"
+		class="_button" :class="[$style.watch, { [$style.watching]: watching }]"
+		:aria-label="watching ? i18n.ts._voiceCall.stopWatching : i18n.ts._voiceCall.watchStream"
+		:title="watching ? i18n.ts._voiceCall.stopWatching : i18n.ts._voiceCall.watchStream"
+		@click="emit('toggleWatch')"
+	>
+		<i v-if="watching" class="ti ti-eye-off"></i>
+		<i v-else class="ti ti-screen-share"></i>
+	</button>
+	<i
+		v-else-if="participant.screenSharing"
+		class="ti ti-screen-share" :class="$style.sharing"
+		role="img" :aria-label="i18n.ts._voiceCall.sharingScreen" :title="i18n.ts._voiceCall.sharingScreen"
+	></i>
 </div>
 </template>
 
 <script lang="ts" setup>
 import * as Misskey from 'cherrypick-js';
+import { i18n } from '@/i18n.js';
 
-defineProps<{
+withDefaults(defineProps<{
 	participant: Misskey.entities.ChatRoomVoiceState['participants'][number];
 	speaking: boolean;
+	watchable?: boolean;
+	watching?: boolean;
+}>(), {
+	watchable: false,
+	watching: false,
+});
+
+const emit = defineEmits<{
+	(ev: 'toggleWatch'): void;
 }>();
 </script>
 
@@ -47,5 +72,27 @@ defineProps<{
 .name {
 	min-width: 0;
 	font-size: 0.9em;
+}
+
+.sharing {
+	color: var(--MI_THEME-accent);
+}
+
+.watch {
+	display: grid;
+	place-items: center;
+	width: 24px;
+	height: 24px;
+	border-radius: 100%;
+	color: var(--MI_THEME-accent);
+
+	&:hover {
+		background: var(--MI_THEME-buttonHoverBg);
+	}
+
+	&.watching {
+		color: var(--MI_THEME-fgOnAccent);
+		background: var(--MI_THEME-accent);
+	}
 }
 </style>

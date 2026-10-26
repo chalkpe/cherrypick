@@ -28,6 +28,7 @@ const lk = vi.hoisted(() => {
 		Reconnected: 'reconnected',
 		Disconnected: 'disconnected',
 		ParticipantConnected: 'participantConnected',
+		ParticipantDisconnected: 'participantDisconnected',
 		TrackPublished: 'trackPublished',
 		TrackUnpublished: 'trackUnpublished',
 		TrackSubscribed: 'trackSubscribed',
@@ -109,7 +110,7 @@ vi.mock('@/os.js', () => ({ toast: mocks.toast, alert: mocks.alert }));
 vi.mock('@/preferences.js', () => ({ prefer: mocks.prefer }));
 
 import { i18n } from '@/i18n.js';
-import { joinVoiceCall, leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, voiceCall } from '@/utility/voice-call.js';
+import { attachScreenShare, joinVoiceCall, leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
 
 const room1 = { id: 'r1', name: 'room 1' } as any;
 const room2 = { id: 'r2', name: 'room 2' } as any;
@@ -284,5 +285,130 @@ describe('voice call controller', () => {
 		await setMicEnabled(true);
 		expect(lastRoom().localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(true, expect.objectContaining({ deviceId: 'mic-2' }));
 		expect(voiceCall.micEnabled).toBe(true);
+	});
+});
+
+function screenSharePublication(participant: InstanceType<typeof lk.FakeRemoteParticipant>) {
+	const publication = { source: lk.Track.Source.ScreenShare, kind: lk.Track.Kind.Video, trackSid: `TR_${participant.identity}`, setSubscribed: vi.fn(), track: null as unknown };
+	participant.trackPublications.set(publication.trackSid, publication);
+	return publication;
+}
+
+describe('screen sharing', () => {
+	test('shares the screen with the preferred quality', async () => {
+		await joinVoiceCall(room1);
+
+		await startScreenShare();
+
+		expect(lastRoom().localParticipant.setScreenShareEnabled).toHaveBeenCalledWith(true,
+			expect.objectContaining({ audio: true, contentHint: 'detail', resolution: lk.ScreenSharePresets.h1080fps15.resolution }),
+			expect.objectContaining({ screenShareEncoding: lk.ScreenSharePresets.h1080fps15.encoding }));
+		expect(voiceCall.screenSharing).toBe(true);
+	});
+
+	test('uses the smooth preset when chosen', async () => {
+		mocks.prefer.s['voiceCall.screenShareQuality'] = 'smooth';
+		mocks.prefer.s['voiceCall.screenShareAudio'] = false;
+		await joinVoiceCall(room1);
+
+		await startScreenShare();
+
+		expect(lastRoom().localParticipant.setScreenShareEnabled).toHaveBeenCalledWith(true,
+			expect.objectContaining({ audio: false, contentHint: 'motion', resolution: lk.ScreenSharePresets.h720fps30.resolution }),
+			expect.objectContaining({ screenShareEncoding: lk.ScreenSharePresets.h720fps30.encoding }));
+	});
+
+	test('stays not sharing without an error when the picker is cancelled', async () => {
+		lk.FakeRoom.setup = room => room.localParticipant.setScreenShareEnabled.mockRejectedValue(new DOMException('cancelled', 'NotAllowedError'));
+		await joinVoiceCall(room1);
+
+		await startScreenShare();
+
+		expect(voiceCall.screenSharing).toBe(false);
+		expect(mocks.alert).not.toHaveBeenCalled();
+		expect(mocks.toast).not.toHaveBeenCalled();
+	});
+
+	test('tells the user when sharing fails for another reason', async () => {
+		lk.FakeRoom.setup = room => room.localParticipant.setScreenShareEnabled.mockRejectedValue(new Error('track publish failed'));
+		await joinVoiceCall(room1);
+
+		await startScreenShare();
+
+		expect(voiceCall.screenSharing).toBe(false);
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.screenShareFailed);
+	});
+
+	test('stopping the share turns it off', async () => {
+		await joinVoiceCall(room1);
+		await startScreenShare();
+
+		await stopScreenShare();
+
+		expect(lastRoom().localParticipant.setScreenShareEnabled).toHaveBeenLastCalledWith(false);
+		expect(voiceCall.screenSharing).toBe(false);
+	});
+
+	test('notices when the browser ends the share', async () => {
+		await joinVoiceCall(room1);
+		await startScreenShare();
+
+		lastRoom().emit(lk.RoomEvent.LocalTrackUnpublished, { source: lk.Track.Source.ScreenShare }, lastRoom().localParticipant);
+
+		expect(voiceCall.screenSharing).toBe(false);
+	});
+
+	test('subscribes only to the screen share being watched', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const b = remoteParticipant('b');
+		const aShare = screenSharePublication(a);
+		const bShare = screenSharePublication(b);
+		lastRoom().emit(lk.RoomEvent.TrackPublished, aShare, a);
+		lastRoom().emit(lk.RoomEvent.TrackPublished, bShare, b);
+
+		expect(aShare.setSubscribed).not.toHaveBeenCalledWith(true);
+		expect(bShare.setSubscribed).not.toHaveBeenCalledWith(true);
+		expect(voiceCall.screenShareIdentities).toEqual(['a', 'b']);
+
+		watchScreenShare('a');
+		expect(aShare.setSubscribed).toHaveBeenLastCalledWith(true);
+		expect(bShare.setSubscribed).not.toHaveBeenCalledWith(true);
+		expect(voiceCall.watchingIdentity).toBe('a');
+
+		watchScreenShare(null);
+		expect(aShare.setSubscribed).toHaveBeenLastCalledWith(false);
+		expect(voiceCall.watchingIdentity).toBeNull();
+	});
+
+	test('stops watching when the sharer stops', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const aShare = screenSharePublication(a);
+		lastRoom().emit(lk.RoomEvent.TrackPublished, aShare, a);
+		watchScreenShare('a');
+
+		a.trackPublications.delete(aShare.trackSid);
+		lastRoom().emit(lk.RoomEvent.TrackUnpublished, aShare, a);
+
+		expect(voiceCall.watchingIdentity).toBeNull();
+		expect(voiceCall.screenShareIdentities).toEqual([]);
+	});
+
+	test('attaches the watched screen share to a video element once it arrives', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const aShare = screenSharePublication(a);
+		lastRoom().emit(lk.RoomEvent.TrackPublished, aShare, a);
+		watchScreenShare('a');
+		const video = document.createElement('video');
+		const detach = attachScreenShare('a', video);
+
+		const track = { kind: lk.Track.Kind.Video, source: lk.Track.Source.ScreenShare, attach: vi.fn(), detach: vi.fn(() => []) };
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, aShare, a);
+		expect(track.attach).toHaveBeenCalledWith(video);
+
+		detach();
+		expect(track.detach).toHaveBeenCalledWith(video);
 	});
 });
