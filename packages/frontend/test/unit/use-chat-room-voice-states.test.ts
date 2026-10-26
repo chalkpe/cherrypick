@@ -103,6 +103,21 @@ describe('useChatRoomVoiceStates', () => {
 		expect(states.value.has('r1')).toBe(false);
 	});
 
+	test('does not reload when the same rooms are passed again', async () => {
+		scope = effectScope();
+		const roomIds = ref(['r1', 'r2']);
+		scope.run(() => useChatRoomVoiceStates(roomIds));
+		await flush();
+
+		roomIds.value = ['r1', 'r2'];
+		await flush();
+		expect(mocks.misskeyApi).toHaveBeenCalledTimes(1);
+
+		roomIds.value = ['r1', 'r3'];
+		await flush();
+		expect(mocks.misskeyApi).toHaveBeenCalledTimes(2);
+	});
+
 	test('does nothing when voice calls are disabled', async () => {
 		mocks.instance.features.voiceCall = false;
 		const states = use(['r1']);

@@ -9406,6 +9406,26 @@ export interface Locale extends ILocale {
              */
             "high": string;
         };
+        /**
+         * 音量
+         */
+        "volume": string;
+        /**
+         * 強制ミュート
+         */
+        "forceMute": string;
+        /**
+         * 通話から外す
+         */
+        "kick": string;
+        /**
+         * {name}さんを通話から外しますか？
+         */
+        "kickConfirm": ParameterizedString<"name">;
+        /**
+         * {n}人が通話中
+         */
+        "inCallCount": ParameterizedString<"n">;
     };
     "_role": {
         /**

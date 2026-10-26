@@ -37,7 +37,13 @@ export function useChatRoomVoiceStates(roomIds: Ref<string[]>): Ref<Map<string, 
 		states.value = next;
 	});
 
+	// 定期的に一覧を取り直す画面では同じ ID の配列が何度も渡されるので、中身が変わったときだけ取得する
+	let loadedKey: string | null = null;
+
 	watch(roomIds, async ids => {
+		const key = ids.join(',');
+		if (key === loadedKey) return;
+		loadedKey = key;
 		if (ids.length === 0) {
 			states.value = new Map();
 			return;

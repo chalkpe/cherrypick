@@ -2404,6 +2404,11 @@ _voiceCall:
     sharp: "Sharp (1080p 15fps)"
     smooth: "Smooth (720p 30fps)"
     high: "High (1080p 30fps)"
+  volume: "Volume"
+  forceMute: "Mute for everyone"
+  kick: "Remove from call"
+  kickConfirm: "Remove {name} from the call?"
+  inCallCount: "{n} in call"
 _role:
   new: "New role"
   edit: "Edit role"

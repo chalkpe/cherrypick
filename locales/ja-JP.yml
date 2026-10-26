@@ -2439,6 +2439,11 @@ _voiceCall:
     sharp: "くっきり (1080p 15fps)"
     smooth: "なめらか (720p 30fps)"
     high: "高画質 (1080p 30fps)"
+  volume: "音量"
+  forceMute: "強制ミュート"
+  kick: "通話から外す"
+  kickConfirm: "{name}さんを通話から外しますか？"
+  inCallCount: "{n}人が通話中"
 _role:
   new: "ロールの作成"
   edit: "ロールの編集"

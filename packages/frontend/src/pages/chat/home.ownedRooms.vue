@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <div class="_gaps">
 	<div v-if="rooms.length > 0" class="_gaps_s">
-		<XRoom v-for="room in rooms" :key="room.id" :room="room"/>
+		<XRoom v-for="room in rooms" :key="room.id" :room="room" :voiceState="voiceStates.get(room.id)"/>
 	</div>
 	<MkResult v-if="!fetching && rooms.length == 0" type="empty" :text="i18n.ts._chat.noRooms"/>
 	<MkLoading v-if="fetching"/>
@@ -14,14 +14,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import XRoom from './XRoom.vue';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
+import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
 
 const fetching = ref(true);
 const rooms = ref<Misskey.entities.ChatRoom[]>([]);
+const voiceStates = useChatRoomVoiceStates(computed(() => rooms.value.map(room => room.id)));
 
 async function fetchRooms() {
 	fetching.value = true;

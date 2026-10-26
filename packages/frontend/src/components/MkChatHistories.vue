@@ -17,6 +17,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<div :class="$style.messageBody">
 			<header v-if="item.message.toRoom" :class="$style.messageHeader">
 				<span :class="$style.messageHeaderName"><i class="ti ti-users"></i> {{ item.message.toRoom.name }}</span>
+				<span
+					v-if="voiceStates.has(item.message.toRoom.id)"
+					:class="$style.messageHeaderVoice"
+					role="img"
+					:aria-label="i18n.tsx._voiceCall.inCallCount({ n: voiceStates.get(item.message.toRoom.id)!.participants.length })"
+					:title="i18n.tsx._voiceCall.inCallCount({ n: voiceStates.get(item.message.toRoom.id)!.participants.length })"
+				><i class="ti ti-volume"></i> {{ voiceStates.get(item.message.toRoom.id)!.participants.length }}</span>
 				<MkTime :time="item.message.createdAt" :class="$style.messageHeaderTime"/>
 			</header>
 			<header v-else :class="$style.messageHeader">
@@ -33,12 +40,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onActivated, onDeactivated, onMounted, ref } from 'vue';
+import { computed, onActivated, onDeactivated, onMounted, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { useInterval } from '@@/js/use-interval.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
+import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
 
 const $i = ensureSignin();
 
@@ -48,6 +56,8 @@ const history = ref<{
 	other: Misskey.entities.ChatMessage['fromUser'] | Misskey.entities.ChatMessage['toUser'] | null;
 	isMe: boolean;
 }[]>([]);
+
+const voiceStates = useChatRoomVoiceStates(computed(() => history.value.flatMap(item => item.message.toRoomId != null ? [item.message.toRoomId] : [])));
 
 const initializing = ref(true);
 const fetching = ref(false);
@@ -174,6 +184,13 @@ onMounted(() => {
 	margin-bottom: 2px;
 	white-space: nowrap;
 	overflow: clip;
+}
+
+.messageHeaderVoice {
+	flex-shrink: 0;
+	margin-left: 6px;
+	font-size: 0.85em;
+	color: var(--MI_THEME-accent);
 }
 
 .messageHeaderName {

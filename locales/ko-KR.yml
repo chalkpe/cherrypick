@@ -2409,6 +2409,11 @@ _voiceCall:
     sharp: "선명하게 (1080p 15fps)"
     smooth: "부드럽게 (720p 30fps)"
     high: "고화질 (1080p 30fps)"
+  volume: "음량"
+  forceMute: "강제 음소거"
+  kick: "통화에서 내보내기"
+  kickConfirm: "{name}님을 통화에서 내보낼까요?"
+  inCallCount: "{n}명 통화 중"
 _role:
   new: "새 역할 생성"
   edit: "역할 편집"
