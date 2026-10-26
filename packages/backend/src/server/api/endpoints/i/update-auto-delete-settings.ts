@@ -13,6 +13,9 @@ export const meta = {
 
 	requireCredential: true,
 
+	// This setting deletes notes in bulk, so restrict it to the native client like i/truncate-account.
+	secure: true,
+
 	kind: 'write:account',
 
 	errors: {
@@ -59,7 +62,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> {
 
 			await this.usersRepository.update(me.id, updates);
 
-			return await this.usersRepository.findOneByOrFail({ id: me.id });
+			// Do not return the raw user entity: it contains the native access token.
 		});
 	}
 }

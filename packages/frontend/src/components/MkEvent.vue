@@ -33,9 +33,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<dd :class="$style.value">{{ eventMetadata.location }}</dd>
 		</template>
 
-		<template v-if="eventMetadata && 'url' in eventMetadata && eventMetadata.url">
+		<template v-if="eventUrl">
 			<dt :class="$style.key">URL</dt>
-			<dd :class="$style.value"><a :href="eventMetadata.url as string">{{ eventMetadata.url }}</a></dd>
+			<dd :class="$style.value"><a :href="eventUrl" target="_blank" rel="noopener noreferrer">{{ eventUrl }}</a></dd>
 		</template>
 
 		<template v-if="eventMetadata && 'organizer' in eventMetadata && eventMetadata.organizer">
@@ -63,9 +63,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<dd :class="$style.value">{{ (eventMetadata.performer as string[]).join(', ') }}</dd>
 		</template>
 
-		<template v-if="eventMetadata && 'offers' in eventMetadata && (eventMetadata.offers as { url?: string })?.url">
+		<template v-if="offersUrl">
 			<dt :class="$style.key">{{ i18n.ts._event.ticketsUrl }}</dt>
-			<dd :class="$style.value"><a :href="(eventMetadata.offers as { url: string }).url">{{ (eventMetadata.offers as { url: string }).url }}</a></dd>
+			<dd :class="$style.value"><a :href="offersUrl" target="_blank" rel="noopener noreferrer">{{ offersUrl }}</a></dd>
 		</template>
 
 		<template v-if="eventMetadata && 'isAccessibleForFree' in eventMetadata && eventMetadata.isAccessibleForFree">
@@ -100,6 +100,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { computed } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { i18n } from '@/i18n.js';
+import { safeHttpUrl } from '@/utility/safe-http-url.js';
 
 const props = defineProps<{
 	note: Misskey.entities.Note | null;
@@ -107,6 +108,14 @@ const props = defineProps<{
 
 const eventMetadata = computed(() => {
 	return props.note?.event?.metadata as Record<string, unknown> | undefined;
+});
+
+const eventUrl = computed(() => safeHttpUrl(eventMetadata.value?.url));
+
+const offersUrl = computed(() => {
+	const offers = eventMetadata.value?.offers;
+	if (offers == null || typeof offers !== 'object') return null;
+	return safeHttpUrl((offers as { url?: unknown }).url);
 });
 </script>
 

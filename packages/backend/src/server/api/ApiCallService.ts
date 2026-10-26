@@ -33,7 +33,8 @@ const accessDenied = {
 	message: 'Access denied.',
 	code: 'ACCESS_DENIED',
 	id: '56f35758-7dd5-468b-8439-5d6fb8ec9b8e',
-};
+	kind: 'permission',
+} as const;
 
 /**
  * multipartのpartを一時ファイルへ書き出す。

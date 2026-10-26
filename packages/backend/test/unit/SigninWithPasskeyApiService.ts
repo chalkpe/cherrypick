@@ -11,6 +11,7 @@ import { FastifyReply, FastifyRequest } from 'fastify';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
 import { HttpHeader } from 'fastify/types/utils.js';
 import { MiUser } from '@/models/User.js';
+import { MiMeta } from '@/models/Meta.js';
 import { MiUserProfile, UserProfilesRepository, UsersRepository } from '@/models/_.js';
 import { IdService } from '@/core/IdService.js';
 import { GlobalModule } from '@/GlobalModule.js';
@@ -65,8 +66,10 @@ describe('SigninWithPasskeyApiService', () => {
 	let usersRepository: UsersRepository;
 	let userProfilesRepository: UserProfilesRepository;
 	let webAuthnService: WebAuthnService;
+	let signinService: SigninService;
 	let idService: IdService;
-	let FakeWebauthnVerify: ()=>Promise<string>;
+	let meta: MiMeta;
+	let FakeWebauthnVerify: () => Promise<string>;
 
 	async function createUser(data: Partial<MiUser> = {}) {
 		const user = await usersRepository
@@ -100,10 +103,14 @@ describe('SigninWithPasskeyApiService', () => {
 		usersRepository = app.get<UsersRepository>(DI.usersRepository);
 		userProfilesRepository = app.get<UserProfilesRepository>(DI.userProfilesRepository);
 		webAuthnService = app.get<WebAuthnService>(WebAuthnService);
+		signinService = app.get<SigninService>(SigninService);
 		idService = app.get<IdService>(IdService);
+		meta = app.get<MiMeta>(DI.meta);
 	});
 
 	beforeEach(async () => {
+		meta.approvalRequiredForSignup = false;
+
 		const uid = idService.gen();
 		FakeWebauthnVerify = async () => {
 			return uid;
@@ -184,6 +191,82 @@ describe('SigninWithPasskeyApiService', () => {
 			const res_body = await passkeyApiService.signin(req, res);
 			expect(res.statusCode).toBe(403);
 			expect((res_body as any).error?.id).toStrictEqual('2d84773e-f7b7-4d0b-8f72-bb69b584c912');
+		});
+
+		it('Should return 403 without signing in When The user is not approved and approval is required', async () => {
+			const req = new DummyFastifyRequest({ context: dummyContext, credential: { dummy: [] } }) as ApiFastifyRequestType;
+			const res = new DummyFastifyReply() as FastifyReply;
+			const userId = await FakeWebauthnVerify();
+			await usersRepository.update({ id: userId }, { approved: false });
+			meta.approvalRequiredForSignup = true;
+			const signinSpy = vi.spyOn(signinService, 'signin');
+
+			const res_body = await passkeyApiService.signin(req, res);
+
+			expect(res.statusCode).toBe(403);
+			expect((res_body as any).error?.id).toStrictEqual('22d05606-fbcf-421a-a2db-b32241faft1b');
+			expect(signinSpy).not.toHaveBeenCalled();
+		});
+
+		it('Should sign in When The user is approved and approval is required', async () => {
+			const req = new DummyFastifyRequest({ context: dummyContext, credential: { dummy: [] } }) as ApiFastifyRequestType;
+			const res = new DummyFastifyReply() as FastifyReply;
+			const userId = await FakeWebauthnVerify();
+			await usersRepository.update({ id: userId }, { approved: true });
+			meta.approvalRequiredForSignup = true;
+			const signinSpy = vi.spyOn(signinService, 'signin');
+
+			const res_body = await passkeyApiService.signin(req, res);
+
+			expect(signinSpy).toHaveBeenCalledOnce();
+			expect((res_body as any).signinResponse).toBeDefined();
+		});
+
+		it('Should sign in When The user is not approved and approval is not required', async () => {
+			const req = new DummyFastifyRequest({ context: dummyContext, credential: { dummy: [] } }) as ApiFastifyRequestType;
+			const res = new DummyFastifyReply() as FastifyReply;
+			const userId = await FakeWebauthnVerify();
+			await usersRepository.update({ id: userId }, { approved: false });
+			meta.approvalRequiredForSignup = false;
+			const signinSpy = vi.spyOn(signinService, 'signin');
+
+			const res_body = await passkeyApiService.signin(req, res);
+
+			expect(signinSpy).toHaveBeenCalledOnce();
+			expect((res_body as any).signinResponse).toBeDefined();
+		});
+
+		it('Should return 403 without signing in When The unapproved user also disabled Passwordless login', async () => {
+			const req = new DummyFastifyRequest({ context: dummyContext, credential: { dummy: [] } }) as ApiFastifyRequestType;
+			const res = new DummyFastifyReply() as FastifyReply;
+			const userId = await FakeWebauthnVerify();
+			await usersRepository.update({ id: userId }, { approved: false });
+			await userProfilesRepository.update({ userId: userId }, { usePasswordLessLogin: false });
+			meta.approvalRequiredForSignup = true;
+			const signinSpy = vi.spyOn(signinService, 'signin');
+
+			const res_body = await passkeyApiService.signin(req, res);
+
+			expect(res.statusCode).toBe(403);
+			expect((res_body as any).error?.id).toStrictEqual('22d05606-fbcf-421a-a2db-b32241faft1b');
+			expect(signinSpy).not.toHaveBeenCalled();
+			expect((await usersRepository.findOneByOrFail({ id: userId })).approved).toBe(false);
+		});
+
+		it('Should return 403 When The approved user not Enabled Passwordless login and approval is required', async () => {
+			const req = new DummyFastifyRequest({ context: dummyContext, credential: { dummy: [] } }) as ApiFastifyRequestType;
+			const res = new DummyFastifyReply() as FastifyReply;
+			const userId = await FakeWebauthnVerify();
+			await usersRepository.update({ id: userId }, { approved: true });
+			await userProfilesRepository.update({ userId: userId }, { usePasswordLessLogin: false });
+			meta.approvalRequiredForSignup = true;
+			const signinSpy = vi.spyOn(signinService, 'signin');
+
+			const res_body = await passkeyApiService.signin(req, res);
+
+			expect(res.statusCode).toBe(403);
+			expect((res_body as any).error?.id).toStrictEqual('2d84773e-f7b7-4d0b-8f72-bb69b584c912');
+			expect(signinSpy).not.toHaveBeenCalled();
 		});
 	});
 });

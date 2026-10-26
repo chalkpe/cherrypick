@@ -13,6 +13,7 @@ import { GetterService } from '@/server/api/GetterService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { MAX_NOTE_TEXT_LENGTH } from '@/const.js';
 import type { DriveFilesRepository, MiDriveFile } from '@/models/_.js';
+import { IdentifiableError } from '@/misc/identifiable-error.js';
 import { ApiError } from '../../error.js';
 
 export const meta = {
@@ -72,6 +73,12 @@ export const meta = {
 			message: 'Cannot specify delete time earlier than now.',
 			code: 'CANNOT_SCHEDULE_DELETE_EARLIER_THAN_NOW',
 			id: '9f04994a-3aa2-11ef-a495-177eea74788f',
+		},
+
+		containsProhibitedWords: {
+			message: 'Cannot post because it contains prohibited words.',
+			code: 'CONTAINS_PROHIBITED_WORDS',
+			id: '208d77b9-93c6-43b7-b669-aef1a23ab627',
 		},
 	},
 } as const;
@@ -251,7 +258,13 @@ export default class extends Endpoint<typeof meta, typeof paramDef> {
 				deleteAt: ps.scheduledDelete?.deleteAt ? new Date(ps.scheduledDelete.deleteAt) : ps.scheduledDelete?.deleteAfter ? new Date(Date.now() + ps.scheduledDelete.deleteAfter) : null,
 			};
 
-			const updatedNote = await this.noteUpdateService.update(me, data, note, false);
+			const updatedNote = await this.noteUpdateService.update(me, data, note, false).catch(err => {
+				// Map content check failures from the editor service to API errors
+				if (err instanceof IdentifiableError && err.id === '689ee33f-f97c-479a-ac49-1b9f8140af99') {
+					throw new ApiError(meta.errors.containsProhibitedWords);
+				}
+				throw err;
+			});
 
 			return {
 				updatedNote: await this.noteEntityService.pack(updatedNote!, me),

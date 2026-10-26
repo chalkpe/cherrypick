@@ -32,11 +32,36 @@ import { isQuote, isRenote } from '@/misc/is-renote.js';
 import * as Acct from '@/misc/acct.js';
 import { FanoutTimelineEndpointService } from '@/core/FanoutTimelineEndpointService.js';
 import { ActivityPubAccessControlService } from '@/core/ActivityPubAccessControlService.js';
+import { ApDbResolverService } from '@/core/activitypub/ApDbResolverService.js';
 import type { FastifyInstance, FastifyRequest, FastifyReply, FastifyPluginOptions, FastifyBodyParser } from 'fastify';
 import type { FindOptionsWhere } from 'typeorm';
 
 const ACTIVITY_JSON = 'application/activity+json; charset=utf-8';
 const LD_JSON = 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"; charset=utf-8';
+
+// @peertube/http-signature prefers an X-Date header over Date when it checks
+// clock skew, so an attacker can replay an old signed request together with a
+// fresh, unsigned X-Date and keep the signature valid. Misskey only ever signs
+// Date, so X-Date is never trusted here and the signed Date is validated
+// explicitly instead of relying on the parser's freshness check alone.
+const SIGNATURE_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+function isSignedDateFresh(request: FastifyRequest): boolean {
+	if (request.headers['x-date'] != null) return false;
+
+	const date = request.headers.date;
+	if (typeof date !== 'string') return false;
+
+	const signedAt = Date.parse(date);
+	if (Number.isNaN(signedAt)) return false;
+
+	return Math.abs(Date.now() - signedAt) <= SIGNATURE_CLOCK_SKEW_MS;
+}
+
+function hasSignedDate(signature: httpSignature.IParsedSignature): boolean {
+	return signature.params.headers.includes('date')
+		&& !signature.params.headers.includes('x-date');
+}
 
 @Injectable()
 export class ActivityPubServerService {
@@ -82,6 +107,7 @@ export class ActivityPubServerService {
 		private queryService: QueryService,
 		private fanoutTimelineEndpointService: FanoutTimelineEndpointService,
 		private activityPubAccessControlService: ActivityPubAccessControlService,
+		private apDbResolverService: ApDbResolverService,
 	) {
 		//this.createServer = this.createServer.bind(this);
 	}
@@ -111,7 +137,7 @@ export class ActivityPubServerService {
 	}
 
 	@bindThis
-	private inbox(request: FastifyRequest, reply: FastifyReply) {
+	private async inbox(request: FastifyRequest, reply: FastifyReply) {
 		if (this.meta.federation === 'none') {
 			reply.code(403);
 			return;
@@ -126,10 +152,33 @@ export class ActivityPubServerService {
 			return;
 		}
 
+		if (!hasSignedDate(signature) || !isSignedDateFresh(request)) {
+			// The signature must cover a fresh Date header; X-Date is never signed by Misskey.
+			reply.code(401);
+			return;
+		}
+
 		if (signature.params.headers.indexOf('host') === -1
 			|| request.headers.host !== this.config.host) {
 			// Host not specified or not match.
 			reply.code(401);
+			return;
+		}
+
+		// 署名鍵のホスト（keyId）でブロック/隔離を判定する。
+		// User-Agent やリクエストヘッダーは攻撃者が制御できるため使わない。
+		const signerHost = this.activityPubAccessControlService.extractHostFromKeyId(signature.keyId);
+		if (signerHost == null) {
+			reply.code(401);
+			return;
+		}
+
+		// ブロック・隔離のみ拒否する（サイレンスは inbox の配送を止めない）。
+		const accessControl = await this.activityPubAccessControlService.checkHostAccess(signerHost, true);
+		if (accessControl) {
+			reply.code(403);
+			reply.header('Content-Type', 'text/plain; charset=utf-8');
+			reply.send(`Access denied: ${accessControl.reason}`);
 			return;
 		}
 
@@ -194,9 +243,53 @@ export class ActivityPubServerService {
 		reply.code(202);
 	}
 
+	/**
+	 * Returns the actor that signed this request with an HTTP Signature, or null.
+	 * Used for participant-only GET endpoints that cannot rely on a local session.
+	 * Only keys that are already known to this instance are accepted, so an
+	 * anonymous request cannot make this instance fetch arbitrary key URLs.
+	 */
 	@bindThis
-	private async applyAccessControl(request: FastifyRequest, reply: FastifyReply, allowLimitedHosts = false): Promise<boolean> {
-		const accessControl = await this.activityPubAccessControlService.checkAccess(request, allowLimitedHosts);
+	private async getSignedRequestActor(request: FastifyRequest): Promise<MiUser | null> {
+		let signature;
+		try {
+			signature = httpSignature.parseRequest(request.raw, { 'headers': ['(request-target)', 'host', 'date'], authorizationHeaderName: 'signature' });
+		} catch (_) {
+			return null;
+		}
+
+		if (!hasSignedDate(signature) || !isSignedDateFresh(request)) {
+			return null;
+		}
+
+		if (signature.params.headers.indexOf('host') === -1
+			|| request.headers.host !== this.config.host) {
+			return null;
+		}
+
+		const authUser = await this.apDbResolverService.getAuthUserFromKeyId(signature.keyId);
+		if (authUser == null) {
+			return null;
+		}
+
+		try {
+			if (!httpSignature.verifySignature(signature, authUser.key.keyPem)) {
+				return null;
+			}
+		} catch (_) {
+			return null;
+		}
+
+		return authUser.user;
+	}
+
+	@bindThis
+	private async applyAccessControl(request: FastifyRequest, reply: FastifyReply, allowLimitedHosts = false, resolvedHost?: string | null): Promise<boolean> {
+		// `resolvedHost === undefined` means "resolve the host from the request".
+		// `null` means "the request could not be attributed to a host".
+		const accessControl = resolvedHost === undefined
+			? await this.activityPubAccessControlService.checkAccess(request, allowLimitedHosts)
+			: await this.activityPubAccessControlService.checkHostAccess(resolvedHost, allowLimitedHosts);
 		if (accessControl) {
 			reply.code(403);
 			reply.header('Content-Type', 'text/plain; charset=utf-8');
@@ -438,7 +531,11 @@ export class ActivityPubServerService {
 
 		const pinnedNotes = (await Promise.all(pinings.map(pining =>
 			this.notesRepository.findOneByOrFail({ id: pining.noteId }))))
-			.filter(note => !note.localOnly && ['public', 'home'].includes(note.visibility));
+			.filter(note => !note.localOnly && ['public', 'home'].includes(note.visibility))
+			// 配信対象が制限されたノートは公開コレクションに含めない。
+			// コレクションは Cache-Control: public でキャッシュされるため、リクエスト元ごとに
+			// 出し分けず、常に除外する（署名済みの直接取得でのみアクセス可能）。
+			.filter(note => note.deliveryTargets == null);
 
 		const renderedNotes = await Promise.all(pinnedNotes.map(note => this.apRendererService.renderNote(note)));
 
@@ -524,6 +621,7 @@ export class ActivityPubServerService {
 				noteFilter: (note) => {
 					if (note.visibility !== 'home' && note.visibility !== 'public') return false;
 					if (note.localOnly) return false;
+					if (note.deliveryTargets != null) return false;
 					return true;
 				},
 				dbFallback: async (untilId, sinceId, limit) => {
@@ -592,6 +690,8 @@ export class ActivityPubServerService {
 					.orWhere('note.visibility = \'home\'');
 			}))
 			.andWhere('note.localOnly = FALSE')
+			// 配信対象が制限されたノートは公開 outbox に含めない。
+			.andWhere('note.deliveryTargets IS NULL')
 			.limit(ps.limit)
 			.getMany();
 	}
@@ -698,7 +798,10 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			if (await this.applyAccessControl(request, reply, true)) {
+			// User-Agent ではなく、検証済み HTTP Signature からリクエスト元ホストを解決する。
+			const remoteHost = await this.activityPubAccessControlService.resolveRemoteHostFromRequest(request);
+
+			if (await this.applyAccessControl(request, reply, true, remoteHost)) {
 				return;
 			}
 
@@ -713,7 +816,7 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			if (!await this.activityPubAccessControlService.checkNoteAccess(note, request)) {
+			if (!this.activityPubAccessControlService.checkNoteAccess(note, remoteHost)) {
 				reply.code(404);
 				return;
 			}
@@ -728,7 +831,8 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			reply.header('Cache-Control', 'public, max-age=180');
+			// 配信対象が制限されたノートを共有キャッシュに載せない。
+			reply.header('Cache-Control', note.deliveryTargets != null ? 'private, no-store' : 'public, max-age=180');
 			this.setResponseType(request, reply);
 			return this.apRendererService.addContext(await this.apRendererService.renderNote(note, false));
 		});
@@ -742,7 +846,10 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			if (await this.applyAccessControl(request, reply, true)) {
+			// User-Agent ではなく、検証済み HTTP Signature からリクエスト元ホストを解決する。
+			const remoteHost = await this.activityPubAccessControlService.resolveRemoteHostFromRequest(request);
+
+			if (await this.applyAccessControl(request, reply, true, remoteHost)) {
 				return;
 			}
 
@@ -758,7 +865,13 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			reply.header('Cache-Control', 'public, max-age=180');
+			if (!this.activityPubAccessControlService.checkNoteAccess(note, remoteHost)) {
+				reply.code(404);
+				return;
+			}
+
+			// 配信対象が制限されたノートを共有キャッシュに載せない。
+			reply.header('Cache-Control', note.deliveryTargets != null ? 'private, no-store' : 'public, max-age=180');
 			this.setResponseType(request, reply);
 			return (this.apRendererService.addContext(await this.packActivity(note)));
 		});
@@ -766,9 +879,22 @@ export class ActivityPubServerService {
 		// chat message
 		fastify.get<{ Params: { id: string; } }>('/chat/messages/:id', { constraints: { apOrHtml: 'ap' } }, async (request, reply) => {
 			vary(reply.raw, 'Accept');
+			reply.header('Cache-Control', 'private, no-store');
 
 			if (this.meta.federation === 'none') {
 				reply.code(403);
+				return;
+			}
+
+			if (await this.applyAccessControl(request, reply, true)) {
+				return;
+			}
+
+			// Direct messages must only be returned to a participant.
+			// The requester is identified by the actor that signed this GET request.
+			const actor = await this.getSignedRequestActor(request);
+			if (actor == null) {
+				reply.code(404);
 				return;
 			}
 
@@ -777,6 +903,11 @@ export class ActivityPubServerService {
 			});
 
 			if (message == null) {
+				reply.code(404);
+				return;
+			}
+
+			if (actor.id !== message.fromUserId && actor.id !== message.toUserId) {
 				reply.code(404);
 				return;
 			}
@@ -805,7 +936,6 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			reply.header('Cache-Control', 'public, max-age=180');
 			this.setResponseType(request, reply);
 			return this.apRendererService.addContext(await this.apRendererService.renderChatMessage(message, fromUser, toUsers));
 		});

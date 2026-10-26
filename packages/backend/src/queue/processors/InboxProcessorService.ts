@@ -28,6 +28,8 @@ import { IdentifiableError } from '@/misc/identifiable-error.js';
 import { CollapsedQueue } from '@/misc/collapsed-queue.js';
 import { MiNote } from '@/models/Note.js';
 import { MiMeta } from '@/models/Meta.js';
+import type { InstancesRepository } from '@/models/_.js';
+import { hostLookupCandidates, isHostInList, normalizeHost } from '@/core/ActivityPubAccessControlService.js';
 import { DI } from '@/di-symbols.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 import type { InboxJobData } from '../types.js';
@@ -45,6 +47,9 @@ export class InboxProcessorService implements OnApplicationShutdown {
 	constructor(
 		@Inject(DI.meta)
 		private meta: MiMeta,
+
+		@Inject(DI.instancesRepository)
+		private instancesRepository: InstancesRepository,
 
 		private utilityService: UtilityService,
 		private apInboxService: ApInboxService,
@@ -75,7 +80,7 @@ export class InboxProcessorService implements OnApplicationShutdown {
 
 		const host = this.utilityService.toPuny(new URL(signature.keyId).hostname);
 
-		if (!this.utilityService.isFederationAllowedHost(host)) {
+		if (!this.utilityService.isFederationAllowedHost(host) || isHostInList(this.meta.blockedHosts, host)) {
 			return `Blocked request: ${host}`;
 		}
 
@@ -206,11 +211,29 @@ export class InboxProcessorService implements OnApplicationShutdown {
 				}
 
 				const ldHost = this.utilityService.extractDbHost(authUser.user.uri);
-				if (!this.utilityService.isFederationAllowedHost(ldHost)) {
+				if (!this.utilityService.isFederationAllowedHost(ldHost) || isHostInList(this.meta.blockedHosts, ldHost)) {
 					throw new Bull.UnrecoverableError(`Blocked request: ${ldHost}`);
 				}
 			} else {
 				throw new Bull.UnrecoverableError(`skip: http-signature verification failed and no LD-Signature. keyId=${signature.keyId}`);
+			}
+		}
+
+		// keyId のホストではなく、認証済み actor のホストで改めて制限を評価する。
+		// 未知の keyId から actor をフォールバック解決した場合、事前チェックは
+		// 攻撃者が選べる keyId のホストしか見ていないため、ここで必ず再確認する。
+		const actorHost = normalizeHost(authUser.user.host);
+		if (actorHost == null || !this.utilityService.isFederationAllowedHost(actorHost) || isHostInList(this.meta.blockedHosts, actorHost)) {
+			throw new Bull.UnrecoverableError(`Blocked request: ${actorHost ?? authUser.user.host}`);
+		}
+
+		// Instance rows may be stored either with a port or as a bare hostname,
+		// possibly with a trailing dot. Check every candidate separately so a
+		// non-quarantined row cannot shadow a quarantined one.
+		for (const candidate of hostLookupCandidates(authUser.user.host)) {
+			const actorInstance = await this.instancesRepository.findOneBy({ host: candidate });
+			if (actorInstance?.quarantineLimited) {
+				throw new Bull.UnrecoverableError(`skip: quarantined instance ${actorHost}`);
 			}
 		}
 

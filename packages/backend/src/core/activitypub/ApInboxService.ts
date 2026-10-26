@@ -4,7 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import { In } from 'typeorm';
+import { DataSource, In } from 'typeorm';
 import * as Redis from 'ioredis';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
@@ -27,7 +27,7 @@ import { UtilityService } from '@/core/UtilityService.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { QueueService } from '@/core/QueueService.js';
-import type { UsersRepository, NotesRepository, FollowingsRepository, AbuseUserReportsRepository, FollowRequestsRepository, MiMeta, ChatMessagesRepository, ChatRoomsRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository } from '@/models/_.js';
+import { MiChatRoomInvitation, MiChatRoomMembership, type UsersRepository, type NotesRepository, type FollowingsRepository, type AbuseUserReportsRepository, type FollowRequestsRepository, type MiMeta, type ChatMessagesRepository, type ChatRoomsRepository, type ChatRoomInvitationsRepository, type ChatRoomMembershipsRepository } from '@/models/_.js';
 import { bindThis } from '@/decorators.js';
 import type { MiRemoteUser } from '@/models/User.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
@@ -80,6 +80,9 @@ export class ApInboxService {
 
 		@Inject(DI.chatRoomMembershipsRepository)
 		private chatRoomMembershipsRepository: ChatRoomMembershipsRepository,
+
+		@Inject(DI.db)
+		private db: DataSource,
 
 		private userEntityService: UserEntityService,
 		private noteEntityService: NoteEntityService,
@@ -306,33 +309,47 @@ export class ApInboxService {
 			return 'skip: room not found';
 		}
 
-		// Delete the invitation
-		const invitation = await this.chatRoomInvitationsRepository.findOneBy({
-			roomId,
-			userId: actor.id,
-		});
-		if (invitation) {
-			await this.chatRoomInvitationsRepository.delete(invitation.id);
-		}
+		// Only an actor we actually invited may join.
+		// The room URI is rendered on the invitee's server, so its host says nothing about the room.
+		// Consuming the invitation and creating the membership must be atomic:
+		// - the conditional delete is the concurrency guard, so a cancelled or
+		//   concurrently consumed invitation cannot add a membership;
+		// - a failed membership insert rolls the delete back, so the invitation
+		//   is not lost and the actor can retry.
+		return await this.db.transaction(async (manager) => {
+			const consumed = await manager.delete(MiChatRoomInvitation, {
+				roomId: room.id,
+				userId: actor.id,
+			});
+			if (consumed.affected !== 1) {
+				return 'skip: invitation not found';
+			}
 
-		// Check if already a member
-		const existingMembership = await this.chatService.isRoomMember(room, actor.id);
-		if (existingMembership) {
-			this.logger.info(`User ${actor.id} is already a member of room ${roomId}`);
+			// The owner is always a member, so there is nothing to insert.
+			if (room.ownerId === actor.id) {
+				return 'ok';
+			}
+
+			const existingMembership = await manager.findOneBy(MiChatRoomMembership, {
+				roomId: room.id,
+				userId: actor.id,
+			});
+			if (existingMembership != null) {
+				this.logger.info(`User ${actor.id} is already a member of room ${roomId}`);
+				return 'ok';
+			}
+
+			const membership = {
+				id: this.idService.gen(),
+				roomId: room.id,
+				userId: actor.id,
+			};
+
+			await manager.insert(MiChatRoomMembership, membership);
+
+			this.logger.info(`Remote user ${actor.id} accepted invitation and joined room ${roomId}`);
 			return 'ok';
-		}
-
-		// Add membership
-		const membership = {
-			id: this.idService.gen(),
-			roomId: room.id,
-			userId: actor.id,
-		};
-
-		await this.chatRoomMembershipsRepository.insertOne(membership);
-
-		this.logger.info(`Remote user ${actor.id} accepted invitation and joined room ${roomId}`);
-		return 'ok';
+		});
 	}
 
 	@bindThis
@@ -1074,6 +1091,10 @@ export class ApInboxService {
 		if (!invitee) return 'skip: target user not found';
 		if (!this.userEntityService.isLocalUser(invitee)) return 'skip: target user is not local';
 
+		// Only the room owner can cancel an invitation
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		if (!room || room.ownerId !== actor.id) return 'skip: only the room owner can cancel an invitation';
+
 		// Find and delete the invitation
 		const invitation = await this.chatRoomInvitationsRepository.findOneBy({
 			roomId: roomId,
@@ -1261,6 +1282,15 @@ export class ApInboxService {
 	}
 
 	@bindThis
+	private isOnActorHost(uri: string, actor: MiRemoteUser): boolean {
+		try {
+			return this.utilityService.punyHost(uri) === this.utilityService.punyHost(actor.uri);
+		} catch {
+			return false;
+		}
+	}
+
+	@bindThis
 	private async invite(actor: MiRemoteUser, activity: IInvite, resolver?: Resolver): Promise<string> {
 		// Parse the room object
 		const roomObject = activity.object;
@@ -1274,6 +1304,9 @@ export class ApInboxService {
 		if (!roomIdMatch) return 'skip: invalid room URI format';
 		const roomId = roomIdMatch[1];
 
+		// Only the room owner sends Invite, and the room lives on the owner's server
+		if (!this.isOnActorHost(roomUri, actor)) return 'skip: room is not on the inviter\'s server';
+
 		// Get the target user (invitee)
 		const targetUri = getApHrefNullable(activity.target);
 		if (!targetUri) return 'skip: invalid activity target';
@@ -1284,35 +1317,27 @@ export class ApInboxService {
 
 		// Check if the room already exists locally
 		let room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		if (room && room.ownerId !== actor.id) return 'skip: inviter is not the room owner';
 
 		// If the room doesn't exist, create a local copy for the remote room
 		if (!room) {
 			const roomName = typeof roomObject.name === 'string' ? roomObject.name : 'Remote Chat Room';
 			const roomDescription = typeof roomObject.summary === 'string' ? roomObject.summary : '';
 
-			// Extract owner from attributedTo field
-			let ownerId = actor.id; // Default to actor if attributedTo is not available
-
+			// The room must be attributed to the inviter, if attributed at all
 			if (roomObject.attributedTo) {
 				// Handle both single value and array
 				const attributedTo = Array.isArray(roomObject.attributedTo)
 					? roomObject.attributedTo[0]
 					: roomObject.attributedTo;
-				const ownerUri = getApHrefNullable(attributedTo);
-
-				if (ownerUri) {
-					const owner = await this.apDbResolverService.getUserFromApId(ownerUri);
-					if (owner) {
-						ownerId = owner.id;
-					}
-				}
+				if (getApHrefNullable(attributedTo) !== actor.uri) return 'skip: room is not attributed to the inviter';
 			}
 
 			room = await this.chatRoomsRepository.insertOne({
 				id: roomId,
 				name: roomName,
 				description: roomDescription,
-				ownerId: ownerId,
+				ownerId: actor.id,
 				isArchived: false,
 			});
 		}

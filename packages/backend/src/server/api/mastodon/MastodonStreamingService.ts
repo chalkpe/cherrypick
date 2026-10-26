@@ -168,6 +168,8 @@ export class MastodonStreamingService implements OnApplicationShutdown {
 	public async handleUpgrade(request: http.IncomingMessage, socket: stream.Duplex, head: Buffer): Promise<void> {
 		const url = new URL(request.url ?? '', 'http://localhost');
 
+		// WebSocket clients cannot set an Authorization header, so streaming keeps accepting the access_token query parameter.
+		// This exception is limited to streaming: the HTTP API only accepts "Authorization: Bearer".
 		const protocol = request.headers['sec-websocket-protocol']?.split(',')[0]?.trim();
 		const token = request.headers.authorization?.startsWith('Bearer ')
 			? request.headers.authorization.slice(7)

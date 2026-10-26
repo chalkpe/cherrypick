@@ -392,7 +392,10 @@ export class ApRendererService {
 					if (inReplyToNote.uri) {
 						inReplyTo = inReplyToNote.uri;
 					} else {
-						if (dive) {
+						// 配信対象が制限されたノートを親として埋め込むと、公開コレクション
+						// (featured など) 経由で内容が漏洩する。dive するのは制限のない
+						// ローカル親だけにし、制限付きの親は URL のみを返す。
+						if (dive && inReplyToNote.deliveryTargets == null) {
 							inReplyTo = await this.renderNote(inReplyToNote, false);
 						} else {
 							inReplyTo = `${this.config.url}/notes/${inReplyToNote.id}`;

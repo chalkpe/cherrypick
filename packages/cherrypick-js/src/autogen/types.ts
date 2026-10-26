@@ -3028,6 +3028,7 @@ export type paths = {
          * i/update-auto-delete-settings
          * @description No description provided.
          *
+         *     **Internal Endpoint**: This endpoint is an API for the cherrypick mainframe and is not intended for use by third parties.
          *     **Credential required**: *Yes* / **Permission**: *write:account*
          */
         post: operations['i___update-auto-delete-settings'];
@@ -4331,7 +4332,7 @@ export type paths = {
          * users/stats
          * @description Show statistics about a user.
          *
-         *     **Credential required**: *No*
+         *     **Credential required**: *Yes* / **Permission**: *read:account*
          */
         post: operations['users___stats'];
     };

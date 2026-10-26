@@ -6,7 +6,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import * as mfm from 'mfc-js';
 import * as Redis from 'ioredis';
-import { Brackets, In } from 'typeorm';
+import { Brackets, DataSource, In } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { QueueService } from '@/core/QueueService.js';
@@ -17,12 +17,13 @@ import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { PushNotificationService } from '@/core/PushNotificationService.js';
 import { bindThis } from '@/decorators.js';
-import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, MiChatMessage, MiChatRoom, MiChatRoomMembership, MiDriveFile, MiUser, MutingsRepository, UsersRepository } from '@/models/_.js';
+import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, MiChatMessage, MiChatRoom, MiDriveFile, MiUser, MutingsRepository, UsersRepository } from '@/models/_.js';
 import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { QueryService } from '@/core/QueryService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { UserFollowingService } from '@/core/UserFollowingService.js';
 import { MiChatRoomInvitation } from '@/models/ChatRoomInvitation.js';
+import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
 import { Packed } from '@/misc/json-schema.js';
 import { sqlLikeEscape } from '@/misc/sql-like-escape.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
@@ -59,6 +60,9 @@ export class ChatService {
 
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
+
+		@Inject(DI.db)
+		private db: DataSource,
 
 		@Inject(DI.usersRepository)
 		private usersRepository: UsersRepository,
@@ -825,20 +829,42 @@ export class ChatService {
 	public async joinToRoom(userId: MiUser['id'], roomId: MiChatRoom['id']) {
 		const invitation = await this.chatRoomInvitationsRepository.findOneByOrFail({ roomId, userId });
 
-		const membershipsCount = await this.chatRoomMembershipsRepository.countBy({ roomId });
-		if (membershipsCount >= MAX_ROOM_MEMBERS) {
-			throw new Error('room is full');
-		}
+		// The invitation is the authorization for joining. Consume it atomically
+		// with the membership insert so that a cancellation cannot race the join
+		// and a failed insert cannot lose the invitation.
+		const membership = await this.db.transaction(async (manager) => {
+			const consumed = await manager.delete(MiChatRoomInvitation, {
+				id: invitation.id,
+				roomId,
+				userId,
+			});
+			if (consumed.affected !== 1) {
+				throw new Error('invitation not found');
+			}
 
-		const membership = {
-			id: this.idService.gen(),
-			roomId: roomId,
-			userId: userId,
-		} satisfies Partial<MiChatRoomMembership>;
+			const existingMembership = await manager.findOneBy(MiChatRoomMembership, { roomId, userId });
+			if (existingMembership != null) {
+				return null;
+			}
 
-		// TODO: transaction
-		await this.chatRoomMembershipsRepository.insertOne(membership);
-		await this.chatRoomInvitationsRepository.delete(invitation.id);
+			const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId });
+			if (membershipsCount >= MAX_ROOM_MEMBERS) {
+				throw new Error('room is full');
+			}
+
+			const newMembership = {
+				id: this.idService.gen(),
+				roomId: roomId,
+				userId: userId,
+			} satisfies Partial<MiChatRoomMembership>;
+
+			await manager.insert(MiChatRoomMembership, newMembership);
+			return newMembership as MiChatRoomMembership;
+		});
+
+		// Already a member (e.g. a duplicate join): the invitation was consumed,
+		// but there is no new member to announce.
+		if (membership == null) return;
 
 		// Federation: Notify about acceptance and new member
 		const room = await this.chatRoomsRepository.findOneByOrFail({ id: roomId });

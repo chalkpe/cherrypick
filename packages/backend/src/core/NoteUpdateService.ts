@@ -11,7 +11,7 @@ import type { IMentionedRemoteUsers } from '@/models/Note.js';
 import { MiNote } from '@/models/Note.js';
 import { MiEvent } from '@/models/Event.js';
 import type { IEvent } from '@/models/Event.js';
-import type { NotesRepository, UsersRepository } from '@/models/_.js';
+import type { NotesRepository, PollVotesRepository, UsersRepository, MiMeta } from '@/models/_.js';
 import type { MiUser, MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import { RelayService } from '@/core/RelayService.js';
 import { DI } from '@/di-symbols.js';
@@ -25,11 +25,14 @@ import { bindThis } from '@/decorators.js';
 import { DB_MAX_NOTE_TEXT_LENGTH } from '@/const.js';
 import { SearchService } from '@/core/SearchService.js';
 import { normalizeTag } from '@/misc/normalize-tag.js';
+import { IdentifiableError } from '@/misc/identifiable-error.js';
 import { MiDriveFile } from '@/models/_.js';
 import { MiPoll, IPoll } from '@/models/Poll.js';
+import { UtilityService } from '@/core/UtilityService.js';
 import { concat } from '@/misc/prelude/array.js';
 import { extractHashtags } from '@/misc/extract-hashtags.js';
 import { extractCustomEmojisFromMfm } from '@/misc/extract-custom-emojis-from-mfm.js';
+import { extractUrlsForKeyWordCheck } from '@/misc/extract-urls-for-keyword-check.js';
 import { FanoutTimelineService } from '@/core/FanoutTimelineService.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
@@ -77,6 +80,14 @@ export class NoteUpdateService implements OnApplicationShutdown {
 		private fanoutTimelineService: FanoutTimelineService,
 		private moderationLogService: ModerationLogService,
 		private noteEntityService: NoteEntityService,
+
+		@Inject(DI.meta)
+		private meta: MiMeta,
+
+		private utilityService: UtilityService,
+
+		@Inject(DI.pollVotesRepository)
+		private pollVotesRepository: PollVotesRepository,
 	) { }
 
 	/** Change only the audience; author editing and its poll/event/history handling stay separate. */
@@ -159,6 +170,28 @@ export class NoteUpdateService implements OnApplicationShutdown {
 			data.text = data.text.trim();
 		} else {
 			data.text = null;
+		}
+
+		// Apply the same content checks as note creation to the edited content
+		const nextCw = data.cw !== undefined ? data.cw : note.cw;
+		const nextText = data.text !== undefined ? data.text : note.text;
+		if (this.utilityService.isKeyWordIncluded(
+			this.utilityService.concatNoteContentsForKeyWordCheck({
+				cw: nextCw,
+				text: nextText,
+				pollChoices: data.poll?.choices,
+				others: [...extractUrlsForKeyWordCheck(nextCw ?? ''), ...extractUrlsForKeyWordCheck(nextText ?? '')],
+			}),
+			this.meta.prohibitedWords,
+		)) {
+			throw new IdentifiableError('689ee33f-f97c-479a-ac49-1b9f8140af99', 'Note contains prohibited words');
+		}
+
+		// Public notes containing sensitive words are downgraded to home, as on creation
+		const sensitiveWordsTarget = nextCw ?? nextText ?? '';
+		if ((data.visibility ?? note.visibility) === 'public' && note.channelId == null
+			&& this.utilityService.isKeyWordIncluded([sensitiveWordsTarget, ...extractUrlsForKeyWordCheck(sensitiveWordsTarget)].join('\n'), this.meta.sensitiveWords)) {
+			data.visibility = 'home';
 		}
 
 		let tags = data.apHashtags;
@@ -261,6 +294,8 @@ export class NoteUpdateService implements OnApplicationShutdown {
 					if (note.hasPoll && values.hasPoll) {
 						const old_poll = await transactionalEntityManager.findOneBy(MiPoll, { noteId: note.id });
 						if (old_poll && (old_poll.choices.toString() !== data.poll!.choices.toString() || old_poll.multiple !== data.poll!.multiple)) {
+							// Drop existing votes: their choice indexes refer to the old choices
+							await transactionalEntityManager.withRepository(this.pollVotesRepository).delete({ noteId: note.id });
 							await transactionalEntityManager.delete(MiPoll, { noteId: note.id });
 							const poll = new MiPoll({
 								noteId: note.id,
@@ -288,6 +323,7 @@ export class NoteUpdateService implements OnApplicationShutdown {
 						await transactionalEntityManager.insert(MiPoll, poll);
 					} else if (note.hasPoll && !values.hasPoll) {
 						// Remove poll
+						await transactionalEntityManager.withRepository(this.pollVotesRepository).delete({ noteId: note.id });
 						await transactionalEntityManager.delete(MiPoll, { noteId: note.id });
 					}
 
@@ -456,6 +492,25 @@ export class NoteUpdateService implements OnApplicationShutdown {
 
 		this.searchService.unindexNote(note);
 		this.searchService.indexNote(note);
+	}
+
+	/**
+	 * Whether `meId` may read the revision history of `note`.
+	 * Mirrors the access rules of notes/show and additionally requires the note itself to be visible,
+	 * because revision payloads contain the raw note content.
+	 */
+	@bindThis
+	public async checkRevisionsAccess(note: MiNote, meId: MiUser['id'] | null): Promise<'ok' | 'restrictedByUser' | 'restrictedByServer' | 'invisible'> {
+		if (meId == null) {
+			const author = await this.usersRepository.findOneByOrFail({ id: note.userId });
+			if (author.requireSigninToViewContents) return 'restrictedByUser';
+			if (this.meta.ugcVisibilityForVisitor === 'none') return 'restrictedByServer';
+			if (this.meta.ugcVisibilityForVisitor === 'local' && note.userHost != null) return 'restrictedByServer';
+		}
+
+		if (!await this.noteEntityService.isVisibleForMe(note, meId)) return 'invisible';
+
+		return 'ok';
 	}
 
 	@bindThis

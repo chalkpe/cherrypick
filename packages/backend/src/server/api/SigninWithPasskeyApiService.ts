@@ -8,6 +8,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { IsNull } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type {
+	MiMeta,
 	SigninsRepository,
 	UserProfilesRepository,
 	UsersRepository,
@@ -32,6 +33,9 @@ export class SigninWithPasskeyApiService {
 	constructor(
 		@Inject(DI.config)
 		private config: Config,
+
+		@Inject(DI.meta)
+		private meta: MiMeta,
 
 		@Inject(DI.usersRepository)
 		private usersRepository: UsersRepository,
@@ -159,6 +163,12 @@ export class SigninWithPasskeyApiService {
 		if (user.isSuspended) {
 			return error(403, {
 				id: 'e03a5f46-d309-4865-9b69-56282d94e1eb',
+			});
+		}
+
+		if (!user.approved && this.meta.approvalRequiredForSignup) {
+			return error(403, {
+				id: '22d05606-fbcf-421a-a2db-b32241faft1b',
 			});
 		}
 

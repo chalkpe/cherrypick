@@ -10,7 +10,7 @@ import { describe, beforeAll, test, expect, vi } from 'vitest';
 // node-fetch only supports it's own Blob yet
 // https://github.com/node-fetch/node-fetch/pull/1664
 import { Blob } from 'node-fetch';
-import { api, castAsError, initTestDb, post, role, signup, simpleGet, uploadFile } from '../utils.js';
+import { api, castAsError, createAppToken, initTestDb, post, role, signup, simpleGet, uploadFile } from '../utils.js';
 import type * as misskey from 'cherrypick-js';
 import { MiUser } from '@/models/_.js';
 
@@ -183,6 +183,107 @@ describe('Endpoints', () => {
 				userId: 'kyoppie',
 			});
 			assert.strictEqual(res.status, 404);
+		});
+	});
+
+	describe('users/stats', () => {
+		test('未認証では取得できない', async () => {
+			const res = await api('users/stats', {
+				userId: bob.id,
+			});
+
+			assert.strictEqual(res.status, 401);
+		});
+
+		test('他人の統計は取得できない', async () => {
+			const res = await api('users/stats', {
+				userId: carol.id,
+			}, bob);
+
+			assert.strictEqual(res.status, 403);
+			assert.strictEqual(castAsError(res.body as any).error.code, 'ACCESS_DENIED');
+		});
+
+		test('自分の統計は取得できる', async () => {
+			const res = await api('users/stats', {
+				userId: bob.id,
+			}, bob);
+
+			assert.strictEqual(res.status, 200);
+			assert.strictEqual(typeof (res.body as unknown as { notesCount: number }).notesCount, 'number');
+			assert.strictEqual(typeof (res.body as unknown as { followersCount: number }).followersCount, 'number');
+		});
+
+		test('モデレーターは他人の統計を取得できる', async () => {
+			const res = await api('users/stats', {
+				userId: bob.id,
+			}, alice);
+
+			assert.strictEqual(res.status, 200);
+			assert.strictEqual(typeof (res.body as unknown as { notesCount: number }).notesCount, 'number');
+			assert.strictEqual(typeof (res.body as unknown as { followersCount: number }).followersCount, 'number');
+		});
+
+		test('他人の統計を拒否したレスポンスにフォロー数が含まれない', async () => {
+			const res = await api('users/stats', {
+				userId: carol.id,
+			}, bob);
+
+			assert.strictEqual(res.status, 403);
+			expect(res.body).not.toHaveProperty('followersCount');
+			expect(res.body).not.toHaveProperty('followingCount');
+			expect(res.body).not.toHaveProperty('localFollowersCount');
+			expect(res.body).not.toHaveProperty('remoteFollowingCount');
+		});
+
+		test('存在しないユーザーの統計は NO_SUCH_USER になる', async () => {
+			const res = await api('users/stats', {
+				userId: '000000000000000000000000',
+			}, bob);
+
+			assert.strictEqual(res.status, 400);
+			assert.strictEqual(castAsError(res.body as any).error.code, 'NO_SUCH_USER');
+		});
+
+		test('root ではないモデレーターも他人の統計を取得できる', async () => {
+			const moderatorRole = await role(alice, { isModerator: true });
+			const assign = await api('admin/roles/assign', {
+				userId: dave.id,
+				roleId: moderatorRole.id,
+			}, alice);
+			assert.strictEqual(assign.status, 204);
+
+			try {
+				const res = await api('users/stats', {
+					userId: bob.id,
+				}, dave);
+
+				assert.strictEqual(res.status, 200);
+				assert.strictEqual(typeof (res.body as unknown as { followersCount: number }).followersCount, 'number');
+			} finally {
+				await api('admin/roles/unassign', { userId: dave.id, roleId: moderatorRole.id }, alice);
+				await api('admin/roles/delete', { roleId: moderatorRole.id }, alice);
+			}
+		});
+
+		test('read:account 権限のないアプリトークンでは自分の統計も取得できない', async () => {
+			const token = await createAppToken(bob, ['read:drive']);
+			const res = await api('users/stats', {
+				userId: bob.id,
+			}, { token });
+
+			assert.strictEqual(res.status, 403);
+			assert.strictEqual(castAsError(res.body as any).error.code, 'PERMISSION_DENIED');
+		});
+
+		test('read:account 権限のあるアプリトークンでは自分の統計を取得できる', async () => {
+			const token = await createAppToken(bob, ['read:account']);
+			const res = await api('users/stats', {
+				userId: bob.id,
+			}, { token });
+
+			assert.strictEqual(res.status, 200);
+			assert.strictEqual(typeof (res.body as unknown as { notesCount: number }).notesCount, 'number');
 		});
 	});
 
@@ -1248,6 +1349,91 @@ describe('Endpoints', () => {
 
 			assert.strictEqual((resAlice.body as unknown as { memo: string }).memo, memoAliceToBob);
 			assert.strictEqual((resCarol.body as unknown as { memo: string }).memo, memoCarolToBob);
+		});
+	});
+
+	describe('i/update-auto-delete-settings', () => {
+		test('アプリトークンでは自動削除設定を変更できない', async () => {
+			const appToken = await createAppToken(alice, ['write:account']);
+
+			const res = await api('i/update-auto-delete-settings', {
+				autoDeleteNotesAfterDays: 30,
+			}, { token: appToken, bearer: true });
+
+			assert.strictEqual(res.status, 403);
+			assert.strictEqual(castAsError(res.body as any).error.code, 'ACCESS_DENIED');
+		});
+
+		test('アプリトークンで呼んでもネイティブトークンが漏れない', async () => {
+			const appToken = await createAppToken(alice, ['write:account']);
+
+			const res = await api('i/update-auto-delete-settings', {
+				autoDeleteKeepFavorites: false,
+			}, { token: appToken, bearer: true });
+
+			assert.ok(!JSON.stringify(res.body ?? null).includes(alice.token), 'response must not contain the native token');
+		});
+
+		test('ネイティブトークンでは変更でき、レスポンスにトークンを含まない', async () => {
+			const res = await api('i/update-auto-delete-settings', {
+				autoDeleteNotesAfterDays: 30,
+				autoDeleteKeepFavorites: true,
+			}, alice);
+
+			assert.strictEqual(res.status, 204);
+			assert.strictEqual(res.body, null);
+
+			const readRes = await api('i/auto-delete-settings', {}, alice);
+
+			assert.strictEqual(readRes.status, 200);
+			assert.deepStrictEqual(readRes.body, {
+				autoDeleteNotesAfterDays: 30,
+				autoDeleteKeepFavorites: true,
+			});
+		});
+
+		test('ボディのiで渡したアプリトークンでも拒否され、設定は変わらない', async () => {
+			const appToken = await createAppToken(alice, ['write:account']);
+			const before = await api('i/auto-delete-settings', {}, alice);
+
+			const res = await api('i/update-auto-delete-settings', {
+				autoDeleteNotesAfterDays: 1,
+				autoDeleteKeepFavorites: !before.body.autoDeleteKeepFavorites,
+			}, { token: appToken });
+
+			assert.strictEqual(res.status, 403);
+			assert.strictEqual(castAsError(res.body as any).error.code, 'ACCESS_DENIED');
+
+			const after = await api('i/auto-delete-settings', {}, alice);
+			assert.deepStrictEqual(after.body, before.body);
+		});
+
+		test('不正な値ではネイティブトークンでもエラーになり、トークンを含まない', async () => {
+			const res = await api('i/update-auto-delete-settings', {
+				autoDeleteNotesAfterDays: 0,
+			}, alice);
+
+			assert.strictEqual(res.status, 400);
+			assert.ok(!JSON.stringify(res.body).includes(alice.token));
+		});
+
+		test('アプリトークンでも自動削除設定の取得は2項目だけを返す', async () => {
+			const appToken = await createAppToken(alice, ['read:account']);
+
+			const res = await api('i/auto-delete-settings', {}, { token: appToken, bearer: true });
+
+			assert.strictEqual(res.status, 200);
+			assert.deepStrictEqual(Object.keys(res.body).sort(), ['autoDeleteKeepFavorites', 'autoDeleteNotesAfterDays']);
+			assert.ok(!JSON.stringify(res.body).includes(alice.token));
+		});
+
+		test('他のsecureエンドポイントもアプリトークンでは403になる', async () => {
+			const appToken = await createAppToken(alice, ['read:account']);
+
+			const res = await api('i/signin-history', {}, { token: appToken, bearer: true });
+
+			assert.strictEqual(res.status, 403);
+			assert.strictEqual(castAsError(res.body as any).error.code, 'ACCESS_DENIED');
 		});
 	});
 });

@@ -115,6 +115,7 @@ describe('Play token authorization', () => {
 					else await service.handleRequest(endpoint as never, request as never, reply as never);
 					expect(endpoint.exec).not.toHaveBeenCalled();
 					expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: secure ? 'ACCESS_DENIED' : 'PERMISSION_DENIED' }) }));
+					if (secure) expect(reply.code).toHaveBeenCalledWith(403);
 				} finally {
 					service.dispose();
 				}

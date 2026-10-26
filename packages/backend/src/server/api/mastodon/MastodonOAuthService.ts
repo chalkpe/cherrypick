@@ -55,13 +55,64 @@ const writePermissions = [
 ];
 const followPermissions = ['read:following', 'write:following', 'read:blocks', 'write:blocks', 'read:mutes', 'write:mutes'];
 
+/**
+ * Maps each Mastodon scope to the least privileged CherryPick permissions its endpoints need.
+ *
+ * Top-level read/write scopes stay as broad as Mastodon defines them, but granular scopes must never be widened
+ * to them. Scopes that have no matching CherryPick permission but whose endpoints are public map to an empty list.
+ */
+const scopePermissions: Record<string, readonly string[]> = {
+	// Top-level scopes, granted only when the client asks for them explicitly
+	read: readPermissions,
+	write: writePermissions,
+	follow: followPermissions,
+
+	// Mastodon's "profile" scope reads the account here; changing it requires write:accounts or write.
+	profile: ['read:account'],
+	// Push subscriptions carry notifications, which is the permission the push endpoints check
+	push: ['read:notifications'],
+
+	'read:account': ['read:account'],
+	'read:accounts': ['read:account'],
+	'read:notifications': ['read:notifications'],
+	'read:statuses': ['read:account'],
+	'read:follows': ['read:following'],
+	'read:blocks': ['read:blocks'],
+	'read:mutes': ['read:mutes'],
+	'read:favourites': ['read:favorites'],
+	'read:bookmarks': ['read:favorites'],
+	'read:drive': ['read:drive'],
+	'read:filters': ['read:account'],
+	'read:lists': ['read:account'],
+	// Search only reaches public content, so it needs no CherryPick permission
+	'read:search': [],
+
+	// Posting, reblogging and deleting use write:notes; reactions and poll votes are status interactions too
+	'write:statuses': ['write:notes', 'write:reactions', 'write:votes'],
+	// Mastodon favourites and bookmarks are Misskey favourites, and the favourite route reacts with ❤
+	'write:favourites': ['write:favorites', 'write:reactions'],
+	'write:bookmarks': ['write:favorites'],
+	'write:follows': ['write:following'],
+	'write:blocks': ['write:blocks'],
+	'write:mutes': ['write:mutes'],
+	'write:media': ['write:drive'],
+	'write:accounts': ['write:account'],
+	'write:account': ['write:account'],
+	'write:notifications': ['write:notifications'],
+	'write:reports': ['write:report-abuse'],
+	'write:filters': ['write:account'],
+	'write:lists': ['write:account'],
+	// Marking a conversation as read only looks up the public note
+	'write:conversations': [],
+};
+
 interface PendingAuthorization {
 	redirectUri: string;
 	scope: string;
 	codeChallenge: string | null;
 }
 
-class MastodonOAuthError extends Error {
+export class MastodonOAuthError extends Error {
 	constructor(
 		public readonly error: string,
 		public readonly description: string,
@@ -85,15 +136,21 @@ export function parseMastodonScopes(scopes: string | string[] | undefined): stri
 
 /**
  * Maps Mastodon scopes to CherryPick permissions.
- * Granular scopes such as read:statuses are widened to their top-level scope, because CherryPick permissions do not line up with them.
+ * Unknown scopes are rejected instead of being ignored, so a client never gets a token with fewer or wider permissions than it asked for.
  */
 export function toCherryPickPermissions(scopes: string[]): string[] {
+	if (scopes.length === 0) {
+		throw new MastodonOAuthError('invalid_scope', 'At least one scope is required');
+	}
+
+	const unknown = scopes.filter(scope => !Object.hasOwn(scopePermissions, scope));
+	if (unknown.length > 0) {
+		throw new MastodonOAuthError('invalid_scope', `Unknown scope: ${unknown.join(' ')}`);
+	}
+
 	const result = new Set<string>();
 	for (const scope of scopes) {
-		if (scope === 'read' || scope.startsWith('read:')) readPermissions.forEach(p => result.add(p));
-		if (scope === 'write' || scope.startsWith('write:')) writePermissions.forEach(p => result.add(p));
-		if (scope === 'follow') followPermissions.forEach(p => result.add(p));
-		if (scope === 'profile') result.add('read:account');
+		for (const permission of scopePermissions[scope]) result.add(permission);
 	}
 	return Array.from(result);
 }

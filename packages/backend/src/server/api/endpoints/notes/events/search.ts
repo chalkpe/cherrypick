@@ -13,6 +13,7 @@ import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import type { Config } from '@/config.js';
 import { DI } from '@/di-symbols.js';
 import { RoleService } from '@/core/RoleService.js';
+import { escapePostgresRegex } from '@/misc/escape-postgres-regex.js';
 import { sqlLikeEscape } from '@/misc/sql-like-escape.js';
 import { ApiError } from '../../../error.js';
 
@@ -138,7 +139,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					if (matches.length < 1) throw new ApiError(meta.errors.invalidParam);
 					query.andWhere(new Brackets((qb) => {
 						// regex match metadata values case insensitive
-						qb.where('event.metadata #>> :key ~* :values', { key: `{${filterKey.join(',')}}`, values: `(${ matches.map(m => m.trim()).filter(m => m.length).join('|') })` });
+						qb.where('event.metadata #>> :key ~* :values', { key: `{${filterKey.join(',')}}`, values: `(${ matches.map(m => escapePostgresRegex(m.trim())).filter(m => m.length).join('|') })` });
 						if (hasNull) {
 							qb.orWhere('NOT (event.metadata ? :key)', { key: filterKey });
 						}

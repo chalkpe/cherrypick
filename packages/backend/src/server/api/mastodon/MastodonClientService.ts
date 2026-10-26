@@ -118,20 +118,13 @@ export function getBaseUrl(request: FastifyRequest): string {
 }
 
 /**
- * Extracts the access token from the Authorization header, or from the access_token parameter as a fallback.
- * Returns null if none were found.
+ * Extracts the access token from an "Authorization: Bearer" header.
+ * The HTTP API never reads the access_token query parameter, so tokens do not leak into access logs or caches.
+ * The streaming API has its own handling below, because browser WebSocket clients cannot set this header.
+ * Returns null if no valid token was found.
  */
 export function getAccessToken(request: FastifyRequest): string | null {
 	const authorization = request.headers.authorization;
-	if (authorization) {
-		const parts = authorization.split(' ');
-		return parts[parts.length - 1] || null;
-	}
-
-	const query = request.query as Record<string, unknown> | undefined;
-	if (typeof query?.access_token === 'string') {
-		return query.access_token;
-	}
-
-	return null;
+	if (authorization == null || !authorization.startsWith('Bearer ')) return null;
+	return authorization.slice('Bearer '.length) || null;
 }

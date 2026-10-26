@@ -9,6 +9,7 @@ import { MiNote } from '@/models/Note.js';
 import { MiPoll } from '@/models/Poll.js';
 import { MiEvent } from '@/models/Event.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
+import { UtilityService } from '@/core/UtilityService.js';
 import { ApNoteService } from '@/core/activitypub/models/ApNoteService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApQuestionService } from '@/core/activitypub/models/ApQuestionService.js';
@@ -112,16 +113,27 @@ function serviceFixture(local = false) {
 		renderUpdate: vi.fn((object, _author) => ({ type: 'Update', to: ['https://www.w3.org/ns/activitystreams#Public'], object })),
 		addContext: vi.fn(value => value),
 	};
+	const usersRepository = { findOneByOrFail: vi.fn().mockResolvedValue(author), find: vi.fn().mockResolvedValue([]) };
+	const notesRepository = { findOneByOrFail: vi.fn(async () => updated), findOneBy: vi.fn(async () => updated) };
+	const noteEntityService = { isVisibleForMe: vi.fn().mockResolvedValue(true) };
+	const meta = {
+		ugcVisibilityForVisitor: 'all' as 'all' | 'local' | 'none',
+		prohibitedWords: [] as string[],
+		sensitiveWords: [] as string[],
+	};
+	const utilityService = new UtilityService({ host: 'local.test' } as any, meta as any);
+	const pollVotesRepository = { delete: vi.fn() };
 	const service = new NoteUpdateService(
 		{ transaction: vi.fn(cb => cb(manager)) } as any,
-		{ findOneByOrFail: vi.fn().mockResolvedValue(author), find: vi.fn().mockResolvedValue([]) } as any,
-		{ findOneByOrFail: vi.fn(async () => updated) } as any,
+		usersRepository as any,
+		notesRepository as any,
 		{ isLocalUser: vi.fn(() => local) } as any,
 		stream as any, {} as any, relay as any, deliver as any, renderer as any,
 		search as any, {} as any, history as any, fanout as any, moderation as any,
-		{ isVisibleForMe: vi.fn().mockResolvedValue(true) } as any,
+		noteEntityService as any,
+		meta as any, utilityService, pollVotesRepository as any,
 	);
-	return { service, note, manager, stream, fanout, search, moderation, history, deliver, relay, renderer };
+	return { service, note, manager, stream, fanout, search, moderation, history, deliver, relay, renderer, usersRepository, notesRepository, noteEntityService, meta, utilityService, pollVotesRepository };
 }
 
 describe('NoteUpdateService visibility', () => {
@@ -203,18 +215,114 @@ describe('NoteUpdateService visibility', () => {
 	});
 });
 
+describe('NoteUpdateService checkRevisionsAccess', () => {
+	test('restricts anonymous viewers when the author requires sign-in', async () => {
+		const f = serviceFixture();
+		f.usersRepository.findOneByOrFail.mockResolvedValue({ requireSigninToViewContents: true });
+		await expect(f.service.checkRevisionsAccess(f.note, null)).resolves.toBe('restrictedByUser');
+		expect(f.noteEntityService.isVisibleForMe).not.toHaveBeenCalled();
+	});
+
+	test('restricts anonymous viewers when the server disallows visitor content', async () => {
+		const f = serviceFixture();
+		f.meta.ugcVisibilityForVisitor = 'none';
+		await expect(f.service.checkRevisionsAccess(f.note, null)).resolves.toBe('restrictedByServer');
+		expect(f.noteEntityService.isVisibleForMe).not.toHaveBeenCalled();
+	});
+
+	test('restricts anonymous viewers when only local content is visible and the note is remote', async () => {
+		const f = serviceFixture();
+		f.meta.ugcVisibilityForVisitor = 'local';
+		f.note.userHost = 'remote.test';
+		await expect(f.service.checkRevisionsAccess(f.note, null)).resolves.toBe('restrictedByServer');
+	});
+
+	test('allows anonymous viewers when only local content is visible and the note is local', async () => {
+		const f = serviceFixture();
+		f.meta.ugcVisibilityForVisitor = 'local';
+		f.note.userHost = null;
+		await expect(f.service.checkRevisionsAccess(f.note, null)).resolves.toBe('ok');
+	});
+
+	test('reports notes that are invisible to the viewer', async () => {
+		const f = serviceFixture();
+		f.noteEntityService.isVisibleForMe.mockResolvedValue(false);
+		await expect(f.service.checkRevisionsAccess(f.note, 'viewer')).resolves.toBe('invisible');
+	});
+
+	test('does not apply visitor restrictions to signed-in viewers', async () => {
+		const f = serviceFixture();
+		f.usersRepository.findOneByOrFail.mockResolvedValue({ requireSigninToViewContents: true });
+		f.meta.ugcVisibilityForVisitor = 'none';
+		await expect(f.service.checkRevisionsAccess(f.note, 'viewer')).resolves.toBe('ok');
+		expect(f.usersRepository.findOneByOrFail).not.toHaveBeenCalled();
+		expect(f.noteEntityService.isVisibleForMe).toHaveBeenCalledWith(f.note, 'viewer');
+	});
+
+	test('lets signed-in viewers read remote notes when only local content is visible to visitors', async () => {
+		const f = serviceFixture();
+		f.meta.ugcVisibilityForVisitor = 'local';
+		f.note.userHost = 'remote.test';
+		await expect(f.service.checkRevisionsAccess(f.note, 'viewer')).resolves.toBe('ok');
+	});
+
+	test('still requires note visibility for anonymous viewers that pass visitor restrictions', async () => {
+		const f = serviceFixture();
+		f.noteEntityService.isVisibleForMe.mockResolvedValue(false);
+		await expect(f.service.checkRevisionsAccess(f.note, null)).resolves.toBe('invisible');
+		expect(f.noteEntityService.isVisibleForMe).toHaveBeenCalledWith(f.note, null);
+	});
+});
+
 describe('notes/history visibility', () => {
-	test('does not fetch or pack history after the viewer loses access', async () => {
-		const getHistory = vi.fn();
-		const packMany = vi.fn();
+	function historyFixture(access: 'ok' | 'restrictedByUser' | 'restrictedByServer' | 'invisible', hidden = false) {
+		const note = new MiNote({
+			id: 'note', userId: 'author', visibility: 'public', text: 'current', cw: null,
+			fileIds: [], visibleUserIds: [], mentionedRemoteUsers: '[]', tags: [], emojis: [],
+		});
+		const packedNote = {
+			id: note.id, userId: note.userId, visibility: 'public', createdAt: new Date().toISOString(),
+			user: { requireSigninToViewContents: false, makeNotesHiddenBefore: null, makeNotesFollowersOnlyBefore: null },
+			visibleUserIds: [], mentions: [], reply: undefined,
+		};
+		const noteEntityService = {
+			pack: vi.fn().mockResolvedValue(packedNote),
+			shouldHideNote: vi.fn().mockResolvedValue(hidden),
+		};
+		const noteUpdateService = { checkRevisionsAccess: vi.fn().mockResolvedValue(access) };
+		const getHistory = vi.fn().mockResolvedValue([{ id: 'history' }]);
+		const packMany = vi.fn().mockResolvedValue([{ id: 'history' }]);
 		const endpoint = new HistoryEndpoint(
 			{ packMany } as any, { getHistory } as any,
-			{ getNote: vi.fn().mockResolvedValue({ id: 'note', visibility: 'followers' }) } as any,
-			{ isVisibleForMe: vi.fn().mockResolvedValue(false) } as any,
+			{ getNote: vi.fn().mockResolvedValue(note) } as any,
+			noteEntityService as any, noteUpdateService as any,
 		);
-		await expect(endpoint.exec({ noteId: 'note' }, null, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_NOTE' });
-		expect(getHistory).not.toHaveBeenCalled();
-		expect(packMany).not.toHaveBeenCalled();
+		return { endpoint, note, getHistory, packMany, noteEntityService, noteUpdateService };
+	}
+
+	test.each([
+		['restrictedByUser', 'CONTENT_RESTRICTED_BY_USER'],
+		['restrictedByServer', 'CONTENT_RESTRICTED_BY_SERVER'],
+		['invisible', 'NO_SUCH_NOTE'],
+	] as const)('maps %s access to %s without reading history', async (access, code) => {
+		const f = historyFixture(access);
+		await expect(f.endpoint.exec({ noteId: 'note' }, null, null, null)).rejects.toMatchObject({ code });
+		expect(f.getHistory).not.toHaveBeenCalled();
+		expect(f.packMany).not.toHaveBeenCalled();
+	});
+
+	test('returns no history for notes hidden by the author time policy', async () => {
+		const f = historyFixture('ok', true);
+		await expect(f.endpoint.exec({ noteId: 'note' }, null, null, null)).resolves.toEqual([]);
+		expect(f.noteEntityService.shouldHideNote).toHaveBeenCalledWith(expect.objectContaining({ id: 'note' }), null);
+		expect(f.getHistory).not.toHaveBeenCalled();
+	});
+
+	test('returns history for accessible notes', async () => {
+		const f = historyFixture('ok');
+		await expect(f.endpoint.exec({ noteId: 'note' }, { id: 'viewer' } as any, null, null)).resolves.toEqual([{ id: 'history' }]);
+		expect(f.noteUpdateService.checkRevisionsAccess).toHaveBeenCalledWith(f.note, 'viewer');
+		expect(f.packMany).toHaveBeenCalled();
 	});
 });
 

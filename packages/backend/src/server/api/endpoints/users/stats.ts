@@ -7,6 +7,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { awaitAll } from '@/misc/prelude/await-all.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { DriveFileEntityService } from '@/core/entities/DriveFileEntityService.js';
+import { RoleService } from '@/core/RoleService.js';
 import { DI } from '@/di-symbols.js';
 import type { UsersRepository, NotesRepository, FollowingsRepository, DriveFilesRepository, NoteReactionsRepository, PageLikesRepository, NoteFavoritesRepository, PollVotesRepository } from '@/models/_.js';
 import { ApiError } from '../../error.js';
@@ -14,7 +15,9 @@ import { ApiError } from '../../error.js';
 export const meta = {
 	tags: ['users'],
 
-	requireCredential: false,
+	requireCredential: true,
+
+	kind: 'read:account',
 
 	description: 'Show statistics about a user.',
 
@@ -23,6 +26,13 @@ export const meta = {
 			message: 'No such user.',
 			code: 'NO_SUCH_USER',
 			id: '9e638e45-3b25-4ef7-8f95-07e8498f1819',
+		},
+
+		accessDenied: {
+			message: 'Access denied.',
+			code: 'ACCESS_DENIED',
+			id: '44321f3f-b84a-45a5-bd99-79591db5a8ac',
+			kind: 'permission',
 		},
 	},
 
@@ -151,11 +161,17 @@ export default class extends Endpoint<typeof meta, typeof paramDef> {
 		private pollVotesRepository: PollVotesRepository,
 
 		private driveFileEntityService: DriveFileEntityService,
+
+		private roleService: RoleService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const user = await this.usersRepository.findOneBy({ id: ps.userId });
 			if (user == null) {
 				throw new ApiError(meta.errors.noSuchUser);
+			}
+
+			if (me.id !== ps.userId && !(await this.roleService.isModerator(me))) {
+				throw new ApiError(meta.errors.accessDenied);
 			}
 
 			const result = await awaitAll({

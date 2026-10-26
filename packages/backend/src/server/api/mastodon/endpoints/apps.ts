@@ -12,6 +12,7 @@ import { AuthenticateService } from '@/server/api/AuthenticateService.js';
 import { getAccessToken } from '@/server/api/mastodon/MastodonClientService.js';
 import {
 	isAllowedRedirectUri,
+	MastodonOAuthError,
 	parseMastodonScopes,
 	parseRedirectUris,
 	toCherryPickPermissions,
@@ -53,13 +54,22 @@ export class ApiAppsMastodon {
 			if (!redirectUris.every(uri => isAllowedRedirectUri(uri))) return reply.code(422).send({ error: 'Validation failed: Redirect URI must be an absolute URI.' });
 
 			const scopes = parseMastodonScopes(body.scopes);
+			let permissions: string[];
+			try {
+				permissions = toCherryPickPermissions(scopes);
+			} catch (err) {
+				if (err instanceof MastodonOAuthError) {
+					return reply.code(400).send({ error: err.error, error_description: err.description });
+				}
+				throw err;
+			}
 
 			const app = await this.appsRepository.insertOne({
 				id: this.idService.gen(),
 				userId: null,
 				name: body.client_name,
 				description: body.website ?? '',
-				permission: toCherryPickPermissions(scopes),
+				permission: permissions,
 				callbackUrl: redirectUris.join('\n'),
 				secret: secureRndstr(32),
 			});

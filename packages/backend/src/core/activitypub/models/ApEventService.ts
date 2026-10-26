@@ -13,6 +13,17 @@ import { ApResolverService } from '../ApResolverService.js';
 import type { Resolver } from '../ApResolverService.js';
 import type { IObject } from '../type.js';
 
+function isAbsoluteHttpUrl(value: unknown): value is string {
+	if (typeof value !== 'string') return false;
+
+	try {
+		const url = new URL(value);
+		return url.protocol === 'http:' || url.protocol === 'https:';
+	} catch {
+		return false;
+	}
+}
+
 @Injectable()
 export class ApEventService {
 	private logger: Logger;
@@ -52,7 +63,7 @@ export class ApEventService {
 				metadata: {
 					'@type': 'Event',
 					name: note.name,
-					url: note.href,
+					...(isAbsoluteHttpUrl(note.href) ? { url: note.href } : {}),
 					startDate: start.toISOString(),
 					endDate: end?.toISOString(),
 					description: note.summary,

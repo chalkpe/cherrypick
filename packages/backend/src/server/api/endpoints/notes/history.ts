@@ -29,6 +29,18 @@ export const meta = {
 			code: 'NO_SUCH_NOTE',
 			id: '596e916b-c4d7-45f2-9d49-ecbbb99ac1c0',
 		},
+
+		contentRestrictedByUser: {
+			message: 'Content restricted by user. Please sign in to view.',
+			code: 'CONTENT_RESTRICTED_BY_USER',
+			id: '644e8a4e-1217-4651-be75-29053a1e77e5',
+		},
+
+		contentRestrictedByServer: {
+			message: 'Content restricted by server settings. Please sign in to view.',
+			code: 'CONTENT_RESTRICTED_BY_SERVER',
+			id: 'faac6575-8b98-4668-8a0e-29e0774e7724',
+		},
 	},
 	res: {
 		type: 'array',
@@ -59,15 +71,27 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private noteHistoryService: NoteHistorySerivce,
 		private getterService: GetterService,
 		private noteEntityService: NoteEntityService,
+		private noteUpdateService: NoteUpdateService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const note = await this.getterService.getNote(ps.noteId).catch(err => {
 				if (err.id === '9725d0ce-ba28-4dde-95a7-2cbb2c15de24') throw new ApiError(meta.errors.noSuchNote);
 				throw err;
 			});
-			if (!await this.noteEntityService.isVisibleForMe(note, me?.id ?? null)) {
-				throw new ApiError(meta.errors.noSuchNote);
+
+			// Apply the same visitor restrictions as notes/show in addition to note visibility
+			switch (await this.noteUpdateService.checkRevisionsAccess(note, me?.id ?? null)) {
+				case 'restrictedByUser': throw new ApiError(meta.errors.contentRestrictedByUser);
+				case 'restrictedByServer': throw new ApiError(meta.errors.contentRestrictedByServer);
+				case 'invisible': throw new ApiError(meta.errors.noSuchNote);
 			}
+
+			// Apply the author's time-based hiding settings (makeNotesHiddenBefore / makeNotesFollowersOnlyBefore)
+			const packedNote = await this.noteEntityService.pack(note, me, { skipHide: true });
+			if (await this.noteEntityService.shouldHideNote(packedNote, me?.id ?? null)) {
+				return [];
+			}
+
 			const note_history = await this.noteHistoryService.getHistory(note.id, ps.limit, ps.sinceId, ps.untilId);
 			if (!note_history) {
 				return [];
