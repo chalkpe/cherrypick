@@ -5,8 +5,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <div :class="[$style.root, { [$style.speaking]: speaking }]">
-	<MkAvatar :user="participant.user" :class="$style.avatar"/>
-	<MkUserName :user="participant.user" :class="$style.name"/>
+	<component :is="menuable ? 'button' : 'div'" :class="[$style.main, { _button: menuable }]" @click="menuable && emit('openMenu', $event)">
+		<MkAvatar :user="participant.user" :class="$style.avatar"/>
+		<MkUserName :user="participant.user" :class="$style.name"/>
+	</component>
 	<button
 		v-if="participant.screenSharing && watchable"
 		class="_button" :class="[$style.watch, { [$style.watching]: watching }]"
@@ -34,13 +36,16 @@ withDefaults(defineProps<{
 	speaking: boolean;
 	watchable?: boolean;
 	watching?: boolean;
+	menuable?: boolean;
 }>(), {
 	watchable: false,
 	watching: false,
+	menuable: false,
 });
 
 const emit = defineEmits<{
 	(ev: 'toggleWatch'): void;
+	(ev: 'openMenu', event: MouseEvent): void;
 }>();
 </script>
 
@@ -53,6 +58,14 @@ const emit = defineEmits<{
 	padding: 4px 8px 4px 4px;
 	border-radius: 999px;
 	background: var(--MI_THEME-panelHighlight);
+}
+
+.main {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	color: inherit;
 }
 
 .avatar {

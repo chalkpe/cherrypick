@@ -48,7 +48,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 			:speaking="inThisCall && voiceCall.speakingIdentities.includes(participant.identity)"
 			:watchable="inThisCall && participant.identity !== myIdentity"
 			:watching="voiceCall.watchingIdentity === participant.identity"
+			:menuable="participant.identity !== myIdentity && (inThisCall || isOwner)"
 			@toggleWatch="watchScreenShare(voiceCall.watchingIdentity === participant.identity ? null : participant.identity)"
+			@openMenu="openMenu(participant, $event)"
 		/>
 	</div>
 	<XScreen v-if="inThisCall && watchedParticipant != null" :key="watchedParticipant.identity" :participant="watchedParticipant" :class="$style.screen"/>
@@ -60,6 +62,10 @@ import { computed } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import XParticipant from './room.voice.participant.vue';
 import XScreen from './room.voice.screen.vue';
+import XVolume from './room.voice.volume.vue';
+import type { MenuItem } from '@/types/menu.js';
+import * as os from '@/os.js';
+import { userName } from '@/filters/user.js';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
 import { instance } from '@/instance.js';
@@ -82,6 +88,46 @@ const states = useChatRoomVoiceStates(roomIds);
 const participants = computed(() => states.value.get(props.room.id)?.participants ?? []);
 const myIdentity = localIdentityOf($i.id);
 const watchedParticipant = computed(() => participants.value.find(participant => participant.identity === voiceCall.watchingIdentity) ?? null);
+const isOwner = computed(() => props.room.ownerId === $i.id);
+
+type Participant = Misskey.entities.ChatRoomVoiceState['participants'][number];
+
+function menuItemsFor(participant: Participant): MenuItem[] {
+	if (participant.identity === myIdentity) return [];
+	const items: MenuItem[] = [];
+	if (inThisCall.value) {
+		items.push({ type: 'component', component: XVolume, props: { identity: participant.identity } });
+	}
+	if (isOwner.value) {
+		if (items.length > 0) items.push({ type: 'divider' });
+		items.push({
+			icon: 'ti ti-microphone-off',
+			text: i18n.ts._voiceCall.forceMute,
+			action: () => {
+				os.apiWithDialog('chat/rooms/voice/mute', { roomId: props.room.id, userId: participant.user.id });
+			},
+		}, {
+			icon: 'ti ti-user-x',
+			text: i18n.ts._voiceCall.kick,
+			danger: true,
+			action: async () => {
+				const { canceled } = await os.confirm({
+					type: 'warning',
+					text: i18n.tsx._voiceCall.kickConfirm({ name: userName(participant.user) }),
+				});
+				if (canceled) return;
+				os.apiWithDialog('chat/rooms/voice/kick', { roomId: props.room.id, userId: participant.user.id });
+			},
+		});
+	}
+	return items;
+}
+
+function openMenu(participant: Participant, ev: MouseEvent) {
+	const items = menuItemsFor(participant);
+	if (items.length === 0) return;
+	os.popupMenu(items, ev.currentTarget ?? ev.target);
+}
 </script>
 
 <style lang="scss" module>

@@ -200,6 +200,64 @@ describe('screen share viewer', () => {
 	});
 });
 
+describe('participant menu', () => {
+	const me = { id: 'me', username: 'me', name: 'Me', host: null };
+	type MenuItemLike = { type?: string; text?: string; action?: () => unknown; props?: Record<string, unknown> };
+	const openedItems = () => mocks.popupMenu.mock.calls[mocks.popupMenu.mock.calls.length - 1][0] as MenuItemLike[];
+
+	test('lets the room owner remove a participant after confirming', async () => {
+		const ownedRoom = { ...room, ownerId: 'me' };
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(bob)] }]);
+		mocks.confirm.mockResolvedValue({ canceled: false });
+		render(XVoice, { props: { room: ownedRoom }, global: { stubs } });
+		await flush();
+
+		await fireEvent.click(screen.getByText('Bob'));
+		const kick = openedItems().find(item => item.text === i18n.ts._voiceCall.kick)!;
+		await kick.action!();
+
+		expect(mocks.confirm).toHaveBeenCalled();
+		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/voice/kick', { roomId: 'r1', userId: 'bob' });
+	});
+
+	test('lets the room owner mute a participant for everyone', async () => {
+		const ownedRoom = { ...room, ownerId: 'me' };
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(bob)] }]);
+		render(XVoice, { props: { room: ownedRoom }, global: { stubs } });
+		await flush();
+
+		await fireEvent.click(screen.getByText('Bob'));
+		await openedItems().find(item => item.text === i18n.ts._voiceCall.forceMute)!.action!();
+
+		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/voice/mute', { roomId: 'r1', userId: 'bob' });
+	});
+
+	test('does not offer moderation to other members', async () => {
+		Object.assign(callState, { status: 'connected', room });
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(bob)] }]);
+		render(XVoice, { props: { room }, global: { stubs } });
+		await flush();
+
+		await fireEvent.click(screen.getByText('Bob'));
+		const texts = openedItems().map(item => item.text);
+		expect(texts).not.toContain(i18n.ts._voiceCall.kick);
+		expect(texts).not.toContain(i18n.ts._voiceCall.forceMute);
+	});
+
+	test('offers a volume control only for others while in the call', async () => {
+		Object.assign(callState, { status: 'connected', room });
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me), participant(bob)] }]);
+		render(XVoice, { props: { room }, global: { stubs } });
+		await flush();
+
+		await fireEvent.click(screen.getByText('Me'));
+		expect(mocks.popupMenu).not.toHaveBeenCalled();
+
+		await fireEvent.click(screen.getByText('Bob'));
+		expect(openedItems().find(item => item.type === 'component')?.props).toEqual({ identity: 'https://local.test/users/bob' });
+	});
+});
+
 describe('voice call bar', () => {
 	test('starts and stops sharing the screen', async () => {
 		Object.assign(callState, { status: 'connected', room });
