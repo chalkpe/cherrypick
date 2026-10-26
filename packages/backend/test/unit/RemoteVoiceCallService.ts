@@ -3,12 +3,14 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { domainToASCII } from 'node:url';
 import { describe, expect, test, vi } from 'vitest';
 import { RemoteVoiceCallError, RemoteVoiceCallService } from '@/core/RemoteVoiceCallService.js';
+import { UtilityService } from '@/core/UtilityService.js';
 import { StatusError } from '@/misc/status-error.js';
 
 const me = { id: 'me', host: null, uri: null } as any;
-const owner = { id: 'owner', host: 'remote.test', uri: 'https://remote.test/users/owner' } as any;
+const owner = { id: 'owner', host: 'remote.test', uri: 'https://remote.test/users/owner', isSuspended: false, isDeleted: false } as any;
 const room = { id: 'r1', ownerId: 'owner', owner, isArchived: false } as any;
 const TOKEN_URL = 'https://remote.test/livekit/federation/token';
 
@@ -34,7 +36,12 @@ function fakeRedis() {
 	};
 }
 
-function createFixture(meta: { enableRemoteVoiceCall: boolean; federation: string } = { enableRemoteVoiceCall: true, federation: 'all' }) {
+function portOwner(overrides: Record<string, unknown> = {}) {
+	return { id: 'owner', host: 'evil.example:8443', uri: 'https://evil.example:8443/users/owner', isSuspended: false, isDeleted: false, ...overrides } as any;
+}
+
+function createFixture(metaOverrides: Record<string, unknown> = {}, instances: { host: string; suspensionState: string }[] = []) {
+	const meta = { enableRemoteVoiceCall: true, federation: 'all', federationHosts: [], blockedHosts: [], ...metaOverrides };
 	const redis = fakeRedis();
 	const apRequestService = {
 		signedPostJson: vi.fn(async (..._args: unknown[]): Promise<unknown> => hostResponse()),
@@ -42,17 +49,22 @@ function createFixture(meta: { enableRemoteVoiceCall: boolean; federation: strin
 	const chatVoiceService = {
 		storeRemoteSnapshot: vi.fn(async () => {}),
 	};
-	const utilityService = {
-		isFederationAllowedHost: vi.fn((_host: string) => true),
+	// 実物を使い、ブロックの判定 (ポート付きのホストを含む) もそのまま確かめる
+	const utilityService = new UtilityService({ host: 'local.test', url: 'https://local.test' } as any, meta as any);
+	vi.spyOn(utilityService, 'isFederationAllowedHost');
+	// FederatedInstanceService.fetch と同じく toPuny (domainToASCII) した host で探す。ポート付きは '' になる
+	const federatedInstanceService = {
+		fetch: vi.fn(async (host: string) => instances.find(instance => instance.host === domainToASCII(host.toLowerCase())) ?? null),
 	};
 	const service = new RemoteVoiceCallService(
 		redis as any,
 		meta as any,
 		apRequestService as any,
 		chatVoiceService as any,
-		utilityService as any,
+		utilityService,
+		federatedInstanceService as any,
 	);
-	return { service, redis, apRequestService, chatVoiceService, utilityService };
+	return { service, redis, apRequestService, chatVoiceService, utilityService, federatedInstanceService };
 }
 
 function abortError() {
@@ -146,12 +158,88 @@ describe('RemoteVoiceCallService', () => {
 	});
 
 	test('refuses a host this server does not federate with, without contacting it', async () => {
-		const f = createFixture();
-		f.utilityService.isFederationAllowedHost.mockReturnValue(false);
+		const f = createFixture({ blockedHosts: ['remote.test'] });
 
 		await expect(f.service.requestJoin(me, room, owner, false)).rejects.toMatchObject({ reason: 'forbidden' });
 		expect(f.utilityService.isFederationAllowedHost).toHaveBeenCalledWith('remote.test');
 		expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+	});
+
+	describe('trust in the owner and its server', () => {
+		test('joins a call on a host with a port when nothing refuses it', async () => {
+			const f = createFixture();
+			f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ url: 'https://evil.example:8443/livekit' }));
+
+			await expect(f.service.requestJoin(me, room, portOwner(), false)).resolves.toEqual({ url: 'https://evil.example:8443/livekit', token: 'jwt' });
+			expect(f.apRequestService.signedPostJson).toHaveBeenCalledWith(
+				me,
+				'https://evil.example:8443/livekit/federation/token',
+				{ room: 'https://evil.example:8443/chat/rooms/r1', canScreenShare: false },
+				10_000,
+				expect.anything(),
+			);
+		});
+
+		test('refuses an owner on a port of a blocked domain without contacting it', async () => {
+			const f = createFixture({ blockedHosts: ['evil.example'] });
+
+			await expect(f.service.requestJoin(me, room, portOwner(), false)).rejects.toMatchObject({ reason: 'forbidden' });
+			expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+		});
+
+		test('refuses an owner whose server is suspended', async () => {
+			const f = createFixture({}, [{ host: 'remote.test', suspensionState: 'manuallySuspended' }]);
+
+			await expect(f.service.requestJoin(me, room, owner, false)).rejects.toMatchObject({ reason: 'forbidden' });
+			expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+		});
+
+		test.each([
+			// 管理画面で evil.example:8443 を停止すると、toPuny で '' になった記録が停止される
+			['the record the codebase keeps for hosts with a port', ''],
+			['the record of the same domain', 'evil.example'],
+		])('refuses an owner on a port whose server is suspended through %s', async (_label, storedHost) => {
+			const f = createFixture({}, [{ host: storedHost, suspensionState: 'manuallySuspended' }]);
+
+			await expect(f.service.requestJoin(me, room, portOwner(), false)).rejects.toMatchObject({ reason: 'forbidden' });
+			expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+		});
+
+		test('ignores suspension records of other servers', async () => {
+			const f = createFixture({}, [{ host: 'other.test', suspensionState: 'manuallySuspended' }, { host: 'remote.test', suspensionState: 'none' }]);
+
+			await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt' });
+		});
+
+		test.each([
+			['suspended', { isSuspended: true }],
+			['deleted', { isDeleted: true }],
+		])('refuses a %s owner', async (_label, overrides) => {
+			const f = createFixture();
+
+			await expect(f.service.requestJoin(me, room, { ...owner, ...overrides }, false)).rejects.toMatchObject({ reason: 'forbidden' });
+			expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+		});
+
+		test.each([
+			['another server', 'https://other.test/users/owner'],
+			['another port', 'https://remote.test:8443/users/owner'],
+		])('refuses an owner whose URI points to %s than its host', async (_label, uri) => {
+			const f = createFixture();
+
+			await expect(f.service.requestJoin(me, room, { ...owner, uri }, false)).rejects.toMatchObject({ reason: 'forbidden' });
+			expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+		});
+
+		test('treats a malformed owner URI as forbidden', async () => {
+			const f = createFixture();
+
+			const joined = f.service.requestJoin(me, room, { ...owner, uri: 'not a url' }, false);
+
+			await expect(joined).rejects.toBeInstanceOf(RemoteVoiceCallError);
+			await expect(joined).rejects.toMatchObject({ reason: 'forbidden' });
+			expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+		});
 	});
 
 	test.each([

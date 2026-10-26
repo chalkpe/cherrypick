@@ -14,6 +14,7 @@ import { StatusError } from '@/misc/status-error.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { UtilityService } from '@/core/UtilityService.js';
+import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
 import { ApRequestService } from '@/core/activitypub/ApRequestService.js';
 
 const TOKEN_REQUEST_TIMEOUT_MS = 10_000;
@@ -58,6 +59,7 @@ export class RemoteVoiceCallService {
 		private apRequestService: ApRequestService,
 		private chatVoiceService: ChatVoiceService,
 		private utilityService: UtilityService,
+		private federatedInstanceService: FederatedInstanceService,
 	) {
 	}
 
@@ -72,12 +74,14 @@ export class RemoteVoiceCallService {
 	 */
 	@bindThis
 	public async requestJoin(me: MiLocalUser, room: MiChatRoom, owner: MiRemoteUser, canScreenShare: boolean): Promise<{ url: string; token: string }> {
-		if (!this.utilityService.isFederationAllowedHost(owner.host)) throw new RemoteVoiceCallError('forbidden');
+		// 要求はユーザーの鍵で署名し、マイクの音声もそこへ送るので、送る前に持ち主とそのサーバーを確かめる
+		const ownerUrl = await this.trustedOwnerUrlOf(owner);
+		if (ownerUrl == null) throw new RemoteVoiceCallError('forbidden');
 
 		const unsupportedKey = `chatVoice:unsupportedHost:${owner.host}`;
 		if (await this.redisClient.exists(unsupportedKey)) throw new RemoteVoiceCallError('unsupported');
 
-		const origin = new URL(owner.uri).origin;
+		const origin = ownerUrl.origin;
 
 		let body: unknown;
 		try {
@@ -110,6 +114,37 @@ export class RemoteVoiceCallService {
 		});
 
 		return { url: response.url, token: response.token };
+	}
+
+	/**
+	 * 通話を頼んでよい持ち主なら、その URI を返す。
+	 * 停止・削除された持ち主、URI のホストが host と違う持ち主、連合していないか停止されたサーバーの持ち主には null
+	 */
+	private async trustedOwnerUrlOf(owner: MiRemoteUser): Promise<URL | null> {
+		if (owner.isSuspended || owner.isDeleted) return null;
+
+		let ownerUrl: URL;
+		try {
+			ownerUrl = new URL(owner.uri);
+		} catch {
+			return null;
+		}
+		// 確かめるホストと要求を送るホストを同じにする
+		if (ownerUrl.host !== owner.host) return null;
+
+		// ブロックはドメインで指定されるので、ポートを除いた名前でも確かめる
+		if (!this.utilityService.isFederationAllowedHost(ownerUrl.hostname)) return null;
+		if (!this.utilityService.isFederationAllowedHost(owner.host)) return null;
+
+		// サーバーの記録は toPuny した host で引かれ、ポート付きのホストは '' の記録にまとめられている
+		// (FederatedInstanceService.fetchOrRegister)。それとは別に、同じドメインの記録も確かめる
+		const hosts = ownerUrl.port === '' ? [owner.host] : [owner.host, ownerUrl.hostname];
+		for (const host of hosts) {
+			const instance = await this.federatedInstanceService.fetch(host);
+			if (instance != null && instance.suspensionState !== 'none') return null;
+		}
+
+		return ownerUrl;
 	}
 }
 
