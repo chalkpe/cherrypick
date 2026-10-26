@@ -692,6 +692,10 @@ export const meta = {
 				type: 'boolean',
 				optional: false, nullable: false,
 			},
+			enableRemoteVoiceCall: {
+				type: 'boolean',
+				optional: false, nullable: false,
+			},
 			enableRemoteNotesCleaning: {
 				type: 'boolean',
 				optional: false, nullable: false,
@@ -953,6 +957,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				proxyRemoteFiles: instance.proxyRemoteFiles,
 				signToActivityPubGet: instance.signToActivityPubGet,
 				allowExternalApRedirect: instance.allowExternalApRedirect,
+				enableRemoteVoiceCall: instance.enableRemoteVoiceCall,
 				enableRemoteNotesCleaning: instance.enableRemoteNotesCleaning,
 				remoteNotesCleaningExpiryDaysForEachNotes: instance.remoteNotesCleaningExpiryDaysForEachNotes,
 				remoteNotesCleaningMaxProcessingDurationInMinutes: instance.remoteNotesCleaningMaxProcessingDurationInMinutes,

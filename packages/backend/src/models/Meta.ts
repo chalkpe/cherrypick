@@ -862,6 +862,11 @@ export class MiMeta {
 	public allowExternalApRedirect: boolean;
 
 	@Column('boolean', {
+		default: true,
+	})
+	public enableRemoteVoiceCall: boolean;
+
+	@Column('boolean', {
 		default: false,
 	})
 	public enableRemoteNotesCleaning: boolean;

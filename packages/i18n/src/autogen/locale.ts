@@ -8283,6 +8283,14 @@ export interface Locale extends ILocale {
          */
         "allowExternalApRedirect_description": string;
         /**
+         * 他のサーバーの通話への参加を許可
+         */
+        "enableRemoteVoiceCall": string;
+        /**
+         * 参加者のIPアドレスは通話をホストするサーバーに見えます。
+         */
+        "enableRemoteVoiceCallDescription": string;
+        /**
          * 非利用者に対するユーザー作成コンテンツの公開範囲
          */
         "userGeneratedContentsVisibilityForVisitor": string;

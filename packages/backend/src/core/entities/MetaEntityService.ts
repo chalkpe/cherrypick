@@ -180,6 +180,7 @@ export class MetaEntityService {
 				serviceWorker: instance.enableServiceWorker,
 				miauth: true,
 				voiceCall: this.liveKitService.isEnabled,
+				remoteVoiceCall: instance.enableRemoteVoiceCall && instance.federation !== 'none',
 			},
 		};
 

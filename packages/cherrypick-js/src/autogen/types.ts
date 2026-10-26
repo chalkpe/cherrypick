@@ -6102,6 +6102,7 @@ export type components = {
                 /** @default true */
                 miauth: boolean;
                 voiceCall: boolean;
+                remoteVoiceCall: boolean;
             };
             proxyAccountName: string | null;
             /** @example false */
@@ -10876,6 +10877,7 @@ export interface operations {
                         proxyRemoteFiles: boolean;
                         signToActivityPubGet: boolean;
                         allowExternalApRedirect: boolean;
+                        enableRemoteVoiceCall: boolean;
                         enableRemoteNotesCleaning: boolean;
                         remoteNotesCleaningExpiryDaysForEachNotes: number;
                         remoteNotesCleaningMaxProcessingDurationInMinutes: number;
@@ -14445,6 +14447,7 @@ export interface operations {
                     proxyRemoteFiles?: boolean;
                     signToActivityPubGet?: boolean;
                     allowExternalApRedirect?: boolean;
+                    enableRemoteVoiceCall?: boolean;
                     enableRemoteNotesCleaning?: boolean;
                     remoteNotesCleaningExpiryDaysForEachNotes?: number;
                     remoteNotesCleaningMaxProcessingDurationInMinutes?: number;

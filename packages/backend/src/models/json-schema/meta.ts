@@ -401,6 +401,10 @@ export const packedMetaDetailedOnlySchema = {
 					type: 'boolean',
 					optional: false, nullable: false,
 				},
+				remoteVoiceCall: {
+					type: 'boolean',
+					optional: false, nullable: false,
+				},
 			},
 		},
 		proxyAccountName: {

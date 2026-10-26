@@ -2084,6 +2084,8 @@ _serverSettings:
   proxyRemoteFiles_description: "When enabled, the server will proxy and serve remote files. This is useful for generating image thumbnails and protecting user privacy."
   allowExternalApRedirect: "Allow redirects for queries via ActivityPub"
   allowExternalApRedirect_description: "If enabled, other servers can query third-party content through this server but this may result in content spoofing."
+  enableRemoteVoiceCall: "Allow joining calls hosted on other servers"
+  enableRemoteVoiceCallDescription: "Participants' IP addresses are visible to the server hosting the call."
   userGeneratedContentsVisibilityForVisitor: "Visibility of user-generated content to guests"
   userGeneratedContentsVisibilityForVisitor_description: "This is useful for preventing problems caused by inappropriate remote content that is not well moderated from being unintentionally published on the Internet via your own server."
   userGeneratedContentsVisibilityForVisitor_description2: "Unconditionally publishing all content on the server to the Internet, including remote content received by the server is risky. This is especially important for guests who are unaware of the distributed nature of the content, as they may mistakenly believe that even remote content is content created by users on the server."

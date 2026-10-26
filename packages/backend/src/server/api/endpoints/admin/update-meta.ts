@@ -248,6 +248,7 @@ export const paramDef = {
 		proxyRemoteFiles: { type: 'boolean' },
 		signToActivityPubGet: { type: 'boolean' },
 		allowExternalApRedirect: { type: 'boolean' },
+		enableRemoteVoiceCall: { type: 'boolean' },
 		enableRemoteNotesCleaning: { type: 'boolean' },
 		remoteNotesCleaningExpiryDaysForEachNotes: { type: 'number' },
 		remoteNotesCleaningMaxProcessingDurationInMinutes: { type: 'number' },
@@ -912,6 +913,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			if (ps.allowExternalApRedirect !== undefined) {
 				set.allowExternalApRedirect = ps.allowExternalApRedirect;
+			}
+
+			if (ps.enableRemoteVoiceCall !== undefined) {
+				set.enableRemoteVoiceCall = ps.enableRemoteVoiceCall;
 			}
 
 			if (ps.enableRemoteNotesCleaning !== undefined) {
