@@ -5,13 +5,16 @@
 
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import Fastify from 'fastify';
 import { WebSocket, WebSocketServer } from 'ws';
 import { AccessToken } from 'livekit-server-sdk';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { LiveKitServerService } from '@/server/LiveKitServerService.js';
+import { getIpHash } from '@/misc/get-ip-hash.js';
+import { ApRequestCreator } from '@/core/activitypub/ApRequestService.js';
+import { ApSignedRequestVerifierService } from '@/core/activitypub/ApSignedRequestVerifierService.js';
 
 const SECRET = 'a'.repeat(32);
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -28,9 +31,28 @@ function liveKitService(enabled = true, internalUrl = 'http://127.0.0.1:1') {
 	return service;
 }
 
+const CONFIG = { url: 'https://local.test', host: 'local.test', enableIpRateLimit: false };
+
+function createService(liveKit: LiveKitService, deps: {
+	config?: object;
+	chatVoiceService?: object;
+	chatService?: object;
+	verifier?: object;
+	rateLimiterService?: object;
+} = {}) {
+	return new LiveKitServerService(
+		(deps.config ?? CONFIG) as any,
+		liveKit,
+		(deps.chatVoiceService ?? { handleWebhook: vi.fn() }) as any,
+		(deps.chatService ?? { findRoomById: vi.fn() }) as any,
+		(deps.verifier ?? { verify: vi.fn() }) as any,
+		(deps.rateLimiterService ?? { limit: vi.fn(async () => null) }) as any,
+	);
+}
+
 async function createApp(enabled = true) {
 	const chatVoiceService = { handleWebhook: vi.fn() };
-	const service = new LiveKitServerService(liveKitService(enabled), chatVoiceService as any);
+	const service = createService(liveKitService(enabled), { chatVoiceService });
 	const app = Fastify();
 	await app.register(service.createServer, { prefix: '/livekit' });
 	await app.ready();
@@ -146,6 +168,56 @@ async function frontServer(service: LiveKitServerService) {
 	return await listen(server);
 }
 
+const REMOTE_USER = { id: 'ru1', host: 'remote.test', uri: 'https://remote.test/users/ru1' };
+const ROOM_URI = 'https://local.test/chat/rooms/r1';
+const RATE_LIMITED = { code: 'RATE_LIMIT_EXCEEDED', info: { remaining: 0 } };
+
+/** 署名の検証と通話サービスを偽物にしたトークン経路 */
+async function createTokenApp(opts: { enabled?: boolean; signer?: object | null; enableIpRateLimit?: boolean; verifier?: object } = {}) {
+	const chatVoiceService = {
+		handleWebhook: vi.fn(),
+		issueRemoteJoinToken: vi.fn(async (): Promise<object | 'forbidden'> => ({
+			url: 'https://local.test/livekit',
+			token: 'jwt',
+			participants: [{ identity: 'https://local.test/users/u1', screenSharing: true }],
+			updatedAt: 1234,
+		})),
+	};
+	const chatService = {
+		findRoomById: vi.fn(async (id: string) => id === 'r1' ? { id, ownerId: 'owner', owner: { id: 'owner', host: null } } : null),
+	};
+	const verifier = { verify: vi.fn(async () => opts.signer === undefined ? REMOTE_USER : opts.signer) };
+	const rateLimiterService = { limit: vi.fn(async (_limitation: { key: string }, _actor: string): Promise<object | null> => null) };
+	const service = createService(liveKitService(opts.enabled ?? true), {
+		config: { ...CONFIG, enableIpRateLimit: opts.enableIpRateLimit ?? false },
+		chatVoiceService,
+		chatService,
+		verifier: opts.verifier ?? verifier,
+		rateLimiterService,
+	});
+	const app = Fastify();
+	await app.register(service.createServer, { prefix: '/livekit' });
+	await app.ready();
+	cleanups.push(() => app.close());
+	return { app, chatVoiceService, chatService, verifier, rateLimiterService };
+}
+
+const SIGNED_HEADERS = {
+	host: 'local.test',
+	date: new Date().toUTCString(),
+	digest: 'SHA-256=x',
+	signature: 'keyId="https://remote.test/users/ru1#main-key",algorithm="rsa-sha256",headers="(request-target) date host digest",signature="x"',
+};
+
+function requestToken(app: Awaited<ReturnType<typeof createTokenApp>>['app'], body: string | object = { room: ROOM_URI, canScreenShare: true }, headers: Record<string, string> = SIGNED_HEADERS) {
+	return app.inject({
+		method: 'POST',
+		url: '/livekit/federation/token',
+		headers: { 'content-type': 'application/activity+json', ...headers },
+		payload: typeof body === 'string' ? body : JSON.stringify(body),
+	});
+}
+
 describe('LiveKitServerService', () => {
 	test('accepts a correctly signed webhook and hands it to the voice service', async () => {
 		const { app, chatVoiceService } = await createApp();
@@ -180,7 +252,7 @@ describe('LiveKitServerService', () => {
 
 	test('proxies the connection validation request to LiveKit', async () => {
 		const livekit = await fakeLiveKit();
-		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const service = createService(liveKitService(true, livekit.url));
 		const app = Fastify();
 		await app.register(service.createServer, { prefix: '/livekit' });
 		cleanups.push(() => app.close());
@@ -194,7 +266,7 @@ describe('LiveKitServerService', () => {
 
 	test('proxies a WebSocket upgrade to LiveKit without the /livekit prefix', async () => {
 		const livekit = await fakeLiveKit();
-		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const service = createService(liveKitService(true, livekit.url));
 		const port = await frontServer(service);
 
 		const ws = new WebSocket(`ws://127.0.0.1:${port}/livekit/rtc/v1?access_token=t`);
@@ -211,7 +283,7 @@ describe('LiveKitServerService', () => {
 
 	test('passes a refused upgrade through with its status', async () => {
 		const livekit = await fakeLiveKit();
-		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const service = createService(liveKitService(true, livekit.url));
 		const port = await frontServer(service);
 
 		const ws = new WebSocket(`ws://127.0.0.1:${port}/livekit/rtc/v1?access_token=bad`);
@@ -223,7 +295,7 @@ describe('LiveKitServerService', () => {
 	});
 
 	test('answers 502 when LiveKit is unreachable during an upgrade', async () => {
-		const service = new LiveKitServerService(liveKitService(true, 'http://127.0.0.1:1'), { handleWebhook: vi.fn() } as any);
+		const service = createService(liveKitService(true, 'http://127.0.0.1:1'));
 		const port = await frontServer(service);
 
 		const ws = new WebSocket(`ws://127.0.0.1:${port}/livekit/rtc/v1?access_token=t`);
@@ -237,7 +309,7 @@ describe('LiveKitServerService', () => {
 	test('refuses upgrade paths that would leave the LiveKit server', async () => {
 		const livekit = await fakeLiveKit();
 		const other = await forbiddenServer();
-		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const service = createService(liveKitService(true, livekit.url));
 		const port = await frontServer(service);
 
 		for (const path of [`/livekit//127.0.0.1:${other.port}/secret`, `/livekit/\\127.0.0.1:${other.port}/secret`, '/livekit/other/path']) {
@@ -254,7 +326,7 @@ describe('LiveKitServerService', () => {
 			res.end();
 		});
 		const redirectingPort = await listen(redirecting);
-		const service = new LiveKitServerService(liveKitService(true, `http://127.0.0.1:${redirectingPort}`), { handleWebhook: vi.fn() } as any);
+		const service = createService(liveKitService(true, `http://127.0.0.1:${redirectingPort}`));
 		const app = Fastify();
 		await app.register(service.createServer, { prefix: '/livekit' });
 		cleanups.push(() => app.close());
@@ -267,7 +339,7 @@ describe('LiveKitServerService', () => {
 
 	test('forwards only the headers LiveKit needs', async () => {
 		const livekit = await fakeLiveKit();
-		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const service = createService(liveKitService(true, livekit.url));
 		const port = await frontServer(service);
 
 		const ws = new WebSocket(`ws://127.0.0.1:${port}/livekit/rtc/v1?access_token=t`, { headers: { cookie: 'token=secret', authorization: 'Bearer lk' } });
@@ -284,7 +356,7 @@ describe('LiveKitServerService', () => {
 
 	test('passes a chunked refusal through in a form the client can read', async () => {
 		const livekit = await fakeLiveKit();
-		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const service = createService(liveKitService(true, livekit.url));
 		const port = await frontServer(service);
 
 		const ws = new WebSocket(`ws://127.0.0.1:${port}/livekit/rtc/v1?access_token=chunked`);
@@ -302,7 +374,7 @@ describe('LiveKitServerService', () => {
 
 	test('drops the upstream request when the client gives up first', async () => {
 		const livekit = await fakeLiveKit();
-		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const service = createService(liveKitService(true, livekit.url));
 		const port = await frontServer(service);
 
 		const ws = new WebSocket(`ws://127.0.0.1:${port}/livekit/rtc/v1?access_token=hang`);
@@ -315,7 +387,7 @@ describe('LiveKitServerService', () => {
 
 	test('answers 504 when LiveKit does not answer an upgrade in time', async () => {
 		const livekit = await fakeLiveKit();
-		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const service = createService(liveKitService(true, livekit.url));
 		Object.assign(service, { upstreamTimeoutMs: 200 });
 		const port = await frontServer(service);
 
@@ -324,7 +396,7 @@ describe('LiveKitServerService', () => {
 
 	test('answers 504 when LiveKit does not answer the validation request in time', async () => {
 		const livekit = await fakeLiveKit();
-		const service = new LiveKitServerService(liveKitService(true, livekit.url), { handleWebhook: vi.fn() } as any);
+		const service = createService(liveKitService(true, livekit.url));
 		Object.assign(service, { upstreamTimeoutMs: 200 });
 		const app = Fastify();
 		await app.register(service.createServer, { prefix: '/livekit' });
@@ -336,12 +408,168 @@ describe('LiveKitServerService', () => {
 	});
 
 	test('only claims /livekit/ paths while voice calls are enabled', () => {
-		const enabled = new LiveKitServerService(liveKitService(true), { handleWebhook: vi.fn() } as any);
-		const disabled = new LiveKitServerService(liveKitService(false), { handleWebhook: vi.fn() } as any);
+		const enabled = createService(liveKitService(true));
+		const disabled = createService(liveKitService(false));
 
 		expect(enabled.handles({ url: '/livekit/rtc/v1' } as http.IncomingMessage)).toBe(true);
 		expect(enabled.handles({ url: '/streaming' } as http.IncomingMessage)).toBe(false);
 		expect(enabled.handles({ url: '/livekitx/rtc' } as http.IncomingMessage)).toBe(false);
 		expect(disabled.handles({ url: '/livekit/rtc/v1' } as http.IncomingMessage)).toBe(false);
+	});
+
+	describe('federation token', () => {
+		test('answers 401 to an unsigned token request', async () => {
+			const { app, verifier, chatService, chatVoiceService } = await createTokenApp({ signer: null });
+			const { signature: _, ...unsigned } = SIGNED_HEADERS;
+
+			const res = await requestToken(app, undefined, unsigned);
+
+			expect(res.statusCode).toBe(401);
+			expect(verifier.verify).toHaveBeenCalled();
+			expect(chatService.findRoomById).not.toHaveBeenCalled();
+			expect(chatVoiceService.issueRemoteJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('answers 404 for a room URI on another server', async () => {
+			const { app, chatService, chatVoiceService } = await createTokenApp();
+
+			for (const room of [
+				'https://other.test/chat/rooms/r1',
+				'https://local.test.other.test/chat/rooms/r1',
+				'http://local.test/chat/rooms/r1',
+				'https://local.test/chat/rooms/r1/voice',
+				'https://local.test/chat/rooms/r1?x=1',
+				'https://local.test/chat/rooms/',
+				'https://local.test/users/r1',
+			]) {
+				const res = await requestToken(app, { room, canScreenShare: false });
+				expect(res.statusCode, room).toBe(404);
+			}
+			expect(chatService.findRoomById).not.toHaveBeenCalled();
+			expect(chatVoiceService.issueRemoteJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('answers 404 for a room that does not exist', async () => {
+			const { app, chatService, chatVoiceService } = await createTokenApp();
+
+			const res = await requestToken(app, { room: 'https://local.test/chat/rooms/gone', canScreenShare: false });
+
+			expect(res.statusCode).toBe(404);
+			expect(chatService.findRoomById).toHaveBeenCalledWith('gone');
+			expect(chatVoiceService.issueRemoteJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('answers 403 when the voice service refuses', async () => {
+			const { app, chatVoiceService } = await createTokenApp();
+			chatVoiceService.issueRemoteJoinToken.mockResolvedValue('forbidden');
+
+			const res = await requestToken(app);
+
+			expect(res.statusCode).toBe(403);
+		});
+
+		test('returns the token and participants for a valid request', async () => {
+			const { app, verifier, chatService, chatVoiceService } = await createTokenApp();
+			const body = JSON.stringify({ room: ROOM_URI, canScreenShare: true });
+
+			const res = await requestToken(app, body);
+
+			expect(res.statusCode).toBe(200);
+			expect(res.json()).toEqual({
+				url: 'https://local.test/livekit',
+				token: 'jwt',
+				participants: [{ identity: 'https://local.test/users/u1', screenSharing: true }],
+				updatedAt: 1234,
+			});
+			expect(verifier.verify).toHaveBeenCalledWith(
+				expect.objectContaining({ method: 'POST', url: '/livekit/federation/token', headers: expect.objectContaining({ host: 'local.test', signature: SIGNED_HEADERS.signature }) }),
+				body,
+			);
+			expect(chatService.findRoomById).toHaveBeenCalledWith('r1');
+			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledWith(REMOTE_USER, expect.objectContaining({ id: 'r1' }), true);
+		});
+
+		test('accepts a request signed the way member servers sign it', async () => {
+			const { publicKey, privateKey } = generateKeyPairSync('rsa', {
+				modulusLength: 2048,
+				publicKeyEncoding: { type: 'spki', format: 'pem' },
+				privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+			});
+			const keyId = 'https://remote.test/users/ru1#main-key';
+			const verifier = new ApSignedRequestVerifierService(
+				CONFIG as any,
+				{ findOneBy: vi.fn(async () => ({ keyId, userId: REMOTE_USER.id, keyPem: publicKey })) } as any,
+				{ findOneBy: vi.fn(async () => ({ ...REMOTE_USER, isDeleted: false })) } as any,
+			);
+			const { app, chatVoiceService } = await createTokenApp({ verifier });
+			const body = JSON.stringify({ room: ROOM_URI, canScreenShare: false });
+			const signed = await ApRequestCreator.createSignedPost({ key: { keyId, privateKeyPem: privateKey }, url: 'https://local.test/livekit/federation/token', body, additionalHeaders: {} });
+
+			// 送る側の HTTP クライアントは Host を URL から付ける (署名後のヘッダーには残らない)
+			const res = await app.inject({ method: 'POST', url: '/livekit/federation/token', headers: { ...signed.request.headers, host: 'local.test' }, payload: body });
+
+			expect(res.statusCode).toBe(200);
+			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledWith(expect.objectContaining({ id: REMOTE_USER.id }), expect.objectContaining({ id: 'r1' }), false);
+		});
+
+		test('answers 404 to token requests when voice calls are disabled', async () => {
+			const { app, verifier } = await createTokenApp({ enabled: false });
+
+			const res = await requestToken(app);
+
+			expect(res.statusCode).toBe(404);
+			expect(verifier.verify).not.toHaveBeenCalled();
+		});
+
+		test('answers 400 to a verified request whose body is not a token request', async () => {
+			const { app, chatVoiceService } = await createTokenApp();
+
+			for (const body of [
+				'not json',
+				'null',
+				'[]',
+				'"text"',
+				JSON.stringify({ room: 1, canScreenShare: false }),
+				JSON.stringify({ room: ROOM_URI, canScreenShare: 'yes' }),
+				JSON.stringify({ room: ROOM_URI }),
+			]) {
+				const res = await requestToken(app, body);
+				expect(res.statusCode, body).toBe(400);
+			}
+			expect(chatVoiceService.issueRemoteJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('refuses token request bodies over 16 KiB before checking them', async () => {
+			const { app, verifier } = await createTokenApp();
+
+			const res = await requestToken(app, { room: ROOM_URI, canScreenShare: false, padding: 'x'.repeat(16 * 1024) });
+
+			expect(res.statusCode).toBe(413);
+			expect(verifier.verify).not.toHaveBeenCalled();
+		});
+
+		test('limits token requests per IP before checking the signature', async () => {
+			const { app, verifier, rateLimiterService } = await createTokenApp({ enableIpRateLimit: true });
+			rateLimiterService.limit.mockImplementation(async limitation => limitation.key === 'voiceFederationTokenIp' ? RATE_LIMITED : null);
+
+			const res = await requestToken(app);
+
+			expect(res.statusCode).toBe(429);
+			expect(rateLimiterService.limit).toHaveBeenCalledWith({ key: 'voiceFederationTokenIp', duration: 60_000, max: 60 }, getIpHash('127.0.0.1'));
+			expect(verifier.verify).not.toHaveBeenCalled();
+		});
+
+		test('limits token requests per remote user after verification', async () => {
+			const { app, verifier, chatVoiceService, rateLimiterService } = await createTokenApp();
+			rateLimiterService.limit.mockImplementation(async limitation => limitation.key === 'voiceFederationToken' ? RATE_LIMITED : null);
+
+			const res = await requestToken(app);
+
+			expect(res.statusCode).toBe(429);
+			expect(verifier.verify).toHaveBeenCalled();
+			// IP での制限が無効なら、制限はユーザー単位の一回だけ
+			expect(rateLimiterService.limit.mock.calls).toEqual([[{ key: 'voiceFederationToken', duration: 60_000, max: 30 }, 'ru1']]);
+			expect(chatVoiceService.issueRemoteJoinToken).not.toHaveBeenCalled();
+		});
 	});
 });

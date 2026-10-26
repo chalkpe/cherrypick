@@ -9,13 +9,16 @@ import type { WebhookEvent } from 'livekit-server-sdk';
 import { DI } from '@/di-symbols.js';
 import type { ChatRoomMembershipsRepository, ChatRoomsRepository } from '@/models/_.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
-import type { MiLocalUser, MiUser } from '@/models/User.js';
+import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { bindThis } from '@/decorators.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
+import { RoleService } from '@/core/RoleService.js';
+import { UtilityService } from '@/core/UtilityService.js';
+import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
 
 const REFRESH_DELAY_MS = 500;
 
@@ -42,6 +45,12 @@ type VoiceSnapshot = {
 	updatedAt: number;
 };
 
+/** 他のサーバーに渡す参加者の現況。userId はこのサーバーの DB の id なので含めない */
+type FederatedVoiceSnapshot = {
+	participants: { identity: string; screenSharing: boolean }[];
+	updatedAt: number;
+};
+
 /**
  * チャットルームの通話参加者のスナップショットを Redis に保持し、ストリームへ配信する。
  */
@@ -63,19 +72,62 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		private liveKitService: LiveKitService,
 		private userEntityService: UserEntityService,
 		private globalEventService: GlobalEventService,
+		private roleService: RoleService,
+		private utilityService: UtilityService,
+		private federatedInstanceService: FederatedInstanceService,
 	) {
 	}
 
 	@bindThis
-	public async issueJoinToken(me: MiLocalUser, room: MiChatRoom, canScreenShare: boolean): Promise<{ url: string; token: string }> {
+	public async issueJoinToken(user: MiLocalUser | MiRemoteUser, room: MiChatRoom, canScreenShare: boolean): Promise<{ url: string; token: string }> {
 		await this.liveKitService.ensureRoom(room.id, MAX_ROOM_MEMBERS + 1);
 		const token = await this.liveKitService.createJoinToken({
 			roomId: room.id,
-			identity: this.liveKitService.identityOf(me),
-			userId: me.id,
+			identity: this.liveKitService.identityOf(user),
+			userId: user.id,
 			canScreenShare,
 		});
 		return { url: this.liveKitService.getPublicUrl(), token };
+	}
+
+	/**
+	 * 他のサーバーのユーザーに、このサーバーが持つルームの通話トークンを発行する。
+	 * room は owner を読み込んだもの (ChatService.findRoomById) を渡す。owner が無ければ断る。
+	 * 画面共有は、相手のサーバーが求め (canScreenShareRequested)、こちらのポリシーも許すときだけ認める
+	 */
+	@bindThis
+	public async issueRemoteJoinToken(user: MiRemoteUser, room: MiChatRoom, canScreenShareRequested: boolean): Promise<({ url: string; token: string } & FederatedVoiceSnapshot) | 'forbidden'> {
+		// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーで開く。保管済みのルームはローカルと同じく断る
+		if (room.owner == null || room.owner.host != null || room.isArchived) return 'forbidden';
+
+		if (user.isSuspended) return 'forbidden';
+		if (!this.utilityService.isFederationAllowedHost(user.host)) return 'forbidden';
+		const instance = await this.federatedInstanceService.fetch(user.host);
+		if (instance != null && instance.suspensionState !== 'none') return 'forbidden';
+
+		const isMember = await this.chatRoomMembershipsRepository.exists({ where: { roomId: room.id, userId: user.id } });
+		if (!isMember) return 'forbidden';
+
+		const policies = await this.roleService.getUserPolicies(user.id);
+		if (!policies.canVoiceCall) return 'forbidden';
+
+		const { url, token } = await this.issueJoinToken(user, room, canScreenShareRequested && policies.canScreenShare);
+		const { participants, updatedAt } = await this.snapshotOf(room.id);
+		return { url, token, participants, updatedAt };
+	}
+
+	/**
+	 * 保存してある参加者の現況。通話が無ければ、今の時刻で空の一覧を返す
+	 */
+	@bindThis
+	public async snapshotOf(roomId: MiChatRoom['id']): Promise<FederatedVoiceSnapshot> {
+		const raw = await this.redisClient.get(this.keyOf(roomId));
+		if (raw == null) return { participants: [], updatedAt: Date.now() };
+		const snapshot = JSON.parse(raw) as VoiceSnapshot;
+		return {
+			participants: snapshot.participants.map(p => ({ identity: p.identity, screenSharing: p.screenSharing })),
+			updatedAt: snapshot.updatedAt,
+		};
 	}
 
 	@bindThis

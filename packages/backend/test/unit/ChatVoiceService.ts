@@ -44,6 +44,7 @@ function createFixture(redis = fakeRedis()) {
 	};
 	const chatRoomMembershipsRepository = {
 		findBy: vi.fn(async () => [{ userId: 'm1' }]),
+		exists: vi.fn(async () => true),
 	};
 	const userEntityService = {
 		packMany: vi.fn(async (ids: string[]) => ids.map(id => ({ id, username: id }))),
@@ -52,6 +53,15 @@ function createFixture(redis = fakeRedis()) {
 		publishChatRoomStream: vi.fn(),
 		publishMainStream: vi.fn(),
 	};
+	const roleService = {
+		getUserPolicies: vi.fn(async () => ({ canVoiceCall: true, canScreenShare: true })),
+	};
+	const utilityService = {
+		isFederationAllowedHost: vi.fn((_host: string) => true),
+	};
+	const federatedInstanceService = {
+		fetch: vi.fn(async (host: string) => ({ host, suspensionState: 'none' })),
+	};
 	const service = new ChatVoiceService(
 		redis as any,
 		chatRoomsRepository as any,
@@ -59,8 +69,19 @@ function createFixture(redis = fakeRedis()) {
 		liveKitService as any,
 		userEntityService as any,
 		globalEventService as any,
+		roleService as any,
+		utilityService as any,
+		federatedInstanceService as any,
 	);
-	return { service, redis, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, userEntityService, globalEventService };
+	return { service, redis, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, userEntityService, globalEventService, roleService, utilityService, federatedInstanceService };
+}
+
+function remoteUser(overrides: Record<string, unknown> = {}) {
+	return { id: 'ru1', host: 'remote.test', uri: 'https://remote.test/users/ru1', isSuspended: false, ...overrides } as any;
+}
+
+function localRoom(overrides: Record<string, unknown> = {}) {
+	return { id: 'r1', ownerId: 'owner', owner: { id: 'owner', host: null }, isArchived: false, ...overrides } as any;
 }
 
 describe('ChatVoiceService', () => {
@@ -192,5 +213,99 @@ describe('ChatVoiceService', () => {
 		expect(f.liveKitService.ensureRoom).toHaveBeenCalledWith('r1', 51);
 		expect(f.liveKitService.createJoinToken).toHaveBeenCalledWith({ roomId: 'r1', identity: 'https://local.test/users/u1', userId: 'u1', canScreenShare: false });
 		expect(result).toEqual({ url: 'https://local.test/livekit', token: 'jwt' });
+	});
+
+	describe('remote members', () => {
+		test('issues a join token to a remote room member and includes the current participants', async () => {
+			f.redis.store.set('chatVoice:r1', JSON.stringify({ participants: [{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: true }], updatedAt: 1234 }));
+
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false);
+
+			expect(f.chatRoomMembershipsRepository.exists).toHaveBeenCalledWith({ where: { roomId: 'r1', userId: 'ru1' } });
+			expect(f.liveKitService.ensureRoom).toHaveBeenCalledWith('r1', 51);
+			expect(f.liveKitService.createJoinToken).toHaveBeenCalledWith({ roomId: 'r1', identity: 'https://remote.test/users/ru1', userId: 'ru1', canScreenShare: false });
+			expect(result).toEqual({
+				url: 'https://local.test/livekit',
+				token: 'jwt',
+				participants: [{ identity: 'https://local.test/users/u1', screenSharing: true }],
+				updatedAt: 1234,
+			});
+		});
+
+		test('refuses a remote user who is not a member', async () => {
+			f.chatRoomMembershipsRepository.exists.mockResolvedValue(false);
+
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false);
+
+			expect(result).toBe('forbidden');
+			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('refuses a remote user whose server is blocked or suspended', async () => {
+			f.utilityService.isFederationAllowedHost.mockReturnValueOnce(false);
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).toBe('forbidden');
+			expect(f.utilityService.isFederationAllowedHost).toHaveBeenCalledWith('remote.test');
+
+			f.federatedInstanceService.fetch.mockResolvedValueOnce({ host: 'remote.test', suspensionState: 'manuallySuspended' });
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).toBe('forbidden');
+			expect(f.federatedInstanceService.fetch).toHaveBeenCalledWith('remote.test');
+
+			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('allows screen sharing only when both servers allow it', async () => {
+			const cases = [
+				{ requested: true, hostAllows: true, expected: true },
+				{ requested: true, hostAllows: false, expected: false },
+				{ requested: false, hostAllows: true, expected: false },
+			];
+			for (const { requested, hostAllows, expected } of cases) {
+				f.liveKitService.createJoinToken.mockClear();
+				f.roleService.getUserPolicies.mockResolvedValueOnce({ canVoiceCall: true, canScreenShare: hostAllows });
+
+				await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), requested);
+
+				expect(f.liveKitService.createJoinToken).toHaveBeenCalledWith(expect.objectContaining({ canScreenShare: expected }));
+			}
+			expect(f.roleService.getUserPolicies).toHaveBeenCalledWith('ru1');
+		});
+
+		test('refuses a room this server does not own', async () => {
+			const mirror = localRoom({ ownerId: 'remoteOwner', owner: { id: 'remoteOwner', host: 'other.test' } });
+
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), mirror, false);
+
+			expect(result).toBe('forbidden');
+			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('refuses a suspended remote user', async () => {
+			const result = await f.service.issueRemoteJoinToken(remoteUser({ isSuspended: true }), localRoom(), false);
+
+			expect(result).toBe('forbidden');
+			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('refuses a remote user whose role here cannot join voice calls', async () => {
+			f.roleService.getUserPolicies.mockResolvedValueOnce({ canVoiceCall: false, canScreenShare: true });
+
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false);
+
+			expect(result).toBe('forbidden');
+			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('refuses an archived room, as for local members', async () => {
+			const result = await f.service.issueRemoteJoinToken(remoteUser(), localRoom({ isArchived: true }), false);
+
+			expect(result).toBe('forbidden');
+			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('reports an empty call stamped with the current time when nothing is stored', async () => {
+			vi.useFakeTimers({ now: 5000 });
+
+			expect(await f.service.snapshotOf('r1')).toEqual({ participants: [], updatedAt: 5000 });
+		});
 	});
 });

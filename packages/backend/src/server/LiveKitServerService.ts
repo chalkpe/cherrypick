@@ -5,13 +5,24 @@
 
 import * as http from 'node:http';
 import type * as stream from 'node:stream';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { DI } from '@/di-symbols.js';
+import type { Config } from '@/config.js';
 import { bindThis } from '@/decorators.js';
+import { getIpHash } from '@/misc/get-ip-hash.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
+import { ChatService } from '@/core/ChatService.js';
+import { ApSignedRequestVerifierService } from '@/core/activitypub/ApSignedRequestVerifierService.js';
+import { RateLimiterService } from '@/server/api/RateLimiterService.js';
 import type { FastifyInstance, FastifyPluginOptions } from 'fastify';
 
 const PREFIX = '/livekit';
+
+// 他のサーバーからのトークン要求。署名を確かめる前に DB を引くので IP ごとにも絞る
+const FEDERATION_TOKEN_IP_LIMIT = { key: 'voiceFederationTokenIp', duration: 60 * 1000, max: 60 };
+const FEDERATION_TOKEN_USER_LIMIT = { key: 'voiceFederationToken', duration: 60 * 1000, max: 30 };
+const FEDERATION_TOKEN_BODY_LIMIT = 16 * 1024;
 
 // LiveKit のシグナリングに必要なヘッダーだけを中継する (Cookie などは渡さない)
 const FORWARDED_UPGRADE_HEADERS = [
@@ -38,16 +49,22 @@ export class LiveKitServerService {
 	public upstreamTimeoutMs = 10_000;
 
 	constructor(
+		@Inject(DI.config)
+		private config: Config,
+
 		private liveKitService: LiveKitService,
 		private chatVoiceService: ChatVoiceService,
+		private chatService: ChatService,
+		private apSignedRequestVerifierService: ApSignedRequestVerifierService,
+		private rateLimiterService: RateLimiterService,
 	) {
 	}
 
 	@bindThis
 	public createServer(fastify: FastifyInstance, options: FastifyPluginOptions, done: (err?: Error) => void) {
-		// webhook の署名は生の本文に対して検証するので、文字列のまま受け取る
+		// webhook と他のサーバーからの要求の署名は生の本文に対して検証するので、文字列のまま受け取る
 		fastify.removeAllContentTypeParsers();
-		for (const type of ['application/webhook+json', 'application/json']) {
+		for (const type of ['application/webhook+json', 'application/json', 'application/activity+json']) {
 			fastify.addContentTypeParser(type, { parseAs: 'string' }, (_request, body, parsed) => parsed(null, body));
 		}
 
@@ -64,6 +81,36 @@ export class LiveKitServerService {
 
 			this.chatVoiceService.handleWebhook(event);
 			return reply.code(204).send();
+		});
+
+		// 他のサーバーのユーザーが、このサーバーのルームの通話に入るためのトークン。
+		// 要求はそのユーザーの鍵で署名されている
+		fastify.post('/federation/token', { bodyLimit: FEDERATION_TOKEN_BODY_LIMIT }, async (request, reply) => {
+			if (!this.liveKitService.isEnabled) return reply.code(404).send();
+
+			if (this.config.enableIpRateLimit) {
+				if (await this.rateLimiterService.limit(FEDERATION_TOKEN_IP_LIMIT, getIpHash(request.ip)) != null) return reply.code(429).send();
+			}
+
+			const rawBody = typeof request.body === 'string' ? request.body : '';
+			const user = await this.apSignedRequestVerifierService.verify({ method: request.method, url: request.url, headers: request.headers }, rawBody);
+			if (user == null) return reply.code(401).send();
+
+			if (await this.rateLimiterService.limit(FEDERATION_TOKEN_USER_LIMIT, user.id) != null) return reply.code(429).send();
+
+			const body = parseTokenRequest(rawBody);
+			if (body == null) return reply.code(400).send();
+
+			const roomId = this.localRoomIdOf(body.room);
+			if (roomId == null) return reply.code(404).send();
+			const room = await this.chatService.findRoomById(roomId);
+			if (room == null) return reply.code(404).send();
+
+			const result = await this.chatVoiceService.issueRemoteJoinToken(user, room, body.canScreenShare);
+			if (result === 'forbidden') return reply.code(403).send();
+
+			const { url, token, participants, updatedAt } = result;
+			return reply.code(200).send({ url, token, participants, updatedAt });
 		});
 
 		fastify.get('/rtc/*', async (request, reply) => {
@@ -174,6 +221,16 @@ export class LiveKitServerService {
 	}
 
 	/**
+	 * このサーバーのルーム URI (`${config.url}/chat/rooms/${id}`) と完全に一致するときだけ id を返す
+	 */
+	private localRoomIdOf(uri: string): string | null {
+		const prefix = `${this.config.url}/chat/rooms/`;
+		if (!uri.startsWith(prefix)) return null;
+		const roomId = uri.slice(prefix.length);
+		return /^[a-zA-Z0-9]+$/.test(roomId) ? roomId : null;
+	}
+
+	/**
 	 * 中継先を LiveKit の /rtc 配下に限る。
 	 * `/livekit//other.host/...` のような経路は URL として別ホストに解決されるので弾く
 	 */
@@ -189,6 +246,19 @@ export class LiveKitServerService {
 		if (target.pathname !== '/rtc' && !target.pathname.startsWith('/rtc/')) return null;
 		return target;
 	}
+}
+
+function parseTokenRequest(rawBody: string): { room: string; canScreenShare: boolean } | null {
+	let body: unknown;
+	try {
+		body = JSON.parse(rawBody);
+	} catch {
+		return null;
+	}
+	if (typeof body !== 'object' || body == null) return null;
+	const { room, canScreenShare } = body as Record<string, unknown>;
+	if (typeof room !== 'string' || typeof canScreenShare !== 'boolean') return null;
+	return { room, canScreenShare };
 }
 
 function stripPrefix(url: string): string {
