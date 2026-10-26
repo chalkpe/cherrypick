@@ -6215,6 +6215,15 @@ export type components = {
             roomId: string;
             room?: components['schemas']['ChatRoom'];
         };
+        ChatRoomVoiceState: {
+            /** Format: id */
+            roomId: string;
+            participants: {
+                identity: string;
+                user: components['schemas']['UserLite'];
+                screenSharing: boolean;
+            }[];
+        };
         NoteHistory: {
             /**
              * Format: id

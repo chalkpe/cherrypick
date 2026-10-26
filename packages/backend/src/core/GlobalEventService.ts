@@ -72,6 +72,7 @@ export interface MainEventTypes {
 	unreadNotification: Packed<'Notification'>;
 	unreadAntenna: MiAntenna;
 	newChatMessage: Packed<'ChatMessage'>;
+	chatRoomVoiceState: Packed<'ChatRoomVoiceState'>;
 	readAllAnnouncements: undefined;
 	myTokenRegenerated: undefined;
 	signin: {
@@ -183,6 +184,7 @@ export interface ChatEventTypes {
 		user?: Packed<'UserLite'>;
 		messageId: MiChatMessage['id'];
 	};
+	voiceState: Packed<'ChatRoomVoiceState'>;
 }
 
 export interface ReversiEventTypes {

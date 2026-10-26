@@ -80,6 +80,7 @@ import { FanoutTimelineService } from './FanoutTimelineService.js';
 import { ChannelFollowingService } from './ChannelFollowingService.js';
 import { ChatService } from './ChatService.js';
 import { LiveKitService } from './LiveKitService.js';
+import { ChatVoiceService } from './ChatVoiceService.js';
 import { RegistryApiService } from './RegistryApiService.js';
 import { ReversiService } from './ReversiService.js';
 import { PageService } from './PageService.js';
@@ -242,6 +243,7 @@ const $ChannelFollowingService: Provider = { provide: 'ChannelFollowingService',
 const $ChannelMutingService: Provider = { provide: 'ChannelMutingService', useExisting: ChannelMutingService };
 const $ChatService: Provider = { provide: 'ChatService', useExisting: ChatService };
 const $LiveKitService: Provider = { provide: 'LiveKitService', useExisting: LiveKitService };
+const $ChatVoiceService: Provider = { provide: 'ChatVoiceService', useExisting: ChatVoiceService };
 const $RegistryApiService: Provider = { provide: 'RegistryApiService', useExisting: RegistryApiService };
 const $ReversiService: Provider = { provide: 'ReversiService', useExisting: ReversiService };
 const $PageService: Provider = { provide: 'PageService', useExisting: PageService };
@@ -404,6 +406,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChannelMutingService,
 		ChatService,
 		LiveKitService,
+		ChatVoiceService,
 		RegistryApiService,
 		ReversiService,
 		PageService,
@@ -565,6 +568,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ChannelMutingService,
 		$ChatService,
 		$LiveKitService,
+		$ChatVoiceService,
 		$RegistryApiService,
 		$ReversiService,
 		$PageService,
@@ -725,6 +729,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChannelMutingService,
 		ChatService,
 		LiveKitService,
+		ChatVoiceService,
 		RegistryApiService,
 		ReversiService,
 		PageService,
@@ -884,6 +889,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ChannelMutingService,
 		$ChatService,
 		$LiveKitService,
+		$ChatVoiceService,
 		$RegistryApiService,
 		$ReversiService,
 		$PageService,
