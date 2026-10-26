@@ -80,6 +80,8 @@ test('saves the Cloudflare TURN key id and API token', async () => {
 	const view = await renderSettings();
 
 	expect(view.getByText(i18n.ts._serverSettings.voiceCallCloudflareTurnDescription)).toBeTruthy();
+	// キーを変えても発行済みの資格情報は最大 24 時間使えるので、すぐ止めるには Cloudflare 側で無効化してもらう
+	expect(view.getByText(i18n.ts._serverSettings.voiceCallCloudflareTurnKeyChangeDescription)).toBeTruthy();
 	const keyId = view.getByLabelText(i18n.ts._serverSettings.voiceCallCloudflareTurnKeyId, { exact: false }) as HTMLInputElement;
 	const apiToken = view.getByLabelText(i18n.ts._serverSettings.voiceCallCloudflareTurnApiToken, { exact: false }) as HTMLInputElement;
 	// API トークンは画面に出さず、ブラウザが保存済みのパスワードを入れないようにする

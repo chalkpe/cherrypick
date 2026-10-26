@@ -2090,6 +2090,7 @@ _serverSettings:
   voiceCallCloudflareTurnDescription: "Use this when LiveKit runs behind NAT or a firewall. This server hands short-lived TURN credentials to call participants, including users from other servers. Traffic relayed through TURN is billed to your Cloudflare account."
   voiceCallCloudflareTurnKeyId: "TURN key ID"
   voiceCallCloudflareTurnApiToken: "API token"
+  voiceCallCloudflareTurnKeyChangeDescription: "Credentials already handed out stay valid for up to 24 hours after you change or remove the key here. To cut them off immediately, revoke or rotate the key in the Cloudflare dashboard."
   userGeneratedContentsVisibilityForVisitor: "Visibility of user-generated content to guests"
   userGeneratedContentsVisibilityForVisitor_description: "This is useful for preventing problems caused by inappropriate remote content that is not well moderated from being unintentionally published on the Internet via your own server."
   userGeneratedContentsVisibilityForVisitor_description2: "Unconditionally publishing all content on the server to the Internet, including remote content received by the server is risky. This is especially important for guests who are unaware of the distributed nature of the content, as they may mistakenly believe that even remote content is content created by users on the server."

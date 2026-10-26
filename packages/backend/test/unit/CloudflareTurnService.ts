@@ -147,6 +147,41 @@ describe('CloudflareTurnService', () => {
 		]);
 	});
 
+	test('skips servers that have TURN URLs but no credentials', async () => {
+		f = createFixture();
+		f.httpRequestService.send.mockResolvedValueOnce(response({
+			iceServers: [
+				{ urls: ['stun:stun.cloudflare.com:3478'] },
+				{ urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'stun:stun2.example:3478'] },
+				{ urls: ['turns:turn.cloudflare.com:443?transport=tcp'], username: 'u' },
+				{ urls: ['turn:turn.cloudflare.com:3478?transport=tcp'], credential: 'c' },
+				{ urls: ['turn:turn.cloudflare.com:3478?transport=udp'], username: '', credential: '' },
+				// 53 番ポートの TURN を除くと STUN だけが残る
+				{ urls: ['turn:turn.cloudflare.com:53?transport=udp', 'stun:stun3.example:3478'] },
+				{ urls: ['turns:turn.cloudflare.com:5349?transport=tcp'], username: 'u', credential: 'c' },
+			],
+		}));
+
+		await expect(f.service.getIceServers()).resolves.toEqual([
+			{ urls: ['stun:stun.cloudflare.com:3478'] },
+			{ urls: ['stun:stun3.example:3478'] },
+			{ urls: ['turns:turn.cloudflare.com:5349?transport=tcp'], username: 'u', credential: 'c' },
+		]);
+	});
+
+	test('drops URLs with characters other than printable ASCII', async () => {
+		f = createFixture();
+		f.httpRequestService.send.mockResolvedValueOnce(response({
+			iceServers: [
+				{ urls: ['stun:stun.example\u0000:3478', 'stun:stun.example\u007f', 'stun:例え.example:3478', 'stun:stun.example:3478'] },
+			],
+		}));
+
+		await expect(f.service.getIceServers()).resolves.toEqual([
+			{ urls: ['stun:stun.example:3478'] },
+		]);
+	});
+
 	test.each([
 		['no ICE servers', { iceServers: [] }],
 		['only port 53', { iceServers: [{ urls: ['stun:stun.cloudflare.com:53'] }] }],
@@ -297,8 +332,29 @@ describe('parseIceServers (ICE servers sent by another server)', () => {
 		['a username that is not a string', [{ urls: ['turn:turn.example'], username: 1, credential: 'c' }]],
 		['a username that is too long', [{ urls: ['turn:turn.example'], username: 'u'.repeat(513), credential: 'c' }]],
 		['a credential that is too long', [{ urls: ['turn:turn.example'], username: 'u', credential: 'c'.repeat(513) }]],
+		// ブラウザは資格情報の無い TURN を受け付けず、接続ごと失敗する
+		['a TURN url without a username', [{ urls: ['turn:turn.example:3478'], credential: 'c' }]],
+		['a TURNS url without a credential', [{ urls: ['turns:turn.example:443?transport=tcp'], username: 'u' }]],
+		['a TURN url without any credentials', [{ urls: ['stun:stun.example:3478', 'turn:turn.example:3478'] }]],
+		['a TURN url with empty credentials', [{ urls: ['turn:turn.example:3478'], username: '', credential: '' }]],
+		// ブラウザは 53 番ポートを拒む
+		['a STUN url on port 53', [{ urls: ['stun:stun.example:53'] }]],
+		['a TURN url on port 53', [{ urls: ['turn:turn.example:53?transport=udp'], username: 'u', credential: 'c' }]],
+		['an IPv6 TURN url on port 53', [{ urls: ['turns:[2001:db8::1]:053'], username: 'u', credential: 'c' }]],
+		['a url with a control character', [{ urls: ['stun:stun.example\u0000:3478'] }]],
+		['a url with DEL', [{ urls: ['stun:stun.example\u007f'] }]],
+		['a url with non-ASCII characters', [{ urls: ['stun:例え.example:3478'] }]],
+		['one invalid server among valid ones', [...valid, { urls: ['turn:turn.example:3478'] }]],
 	])('treats %s as no ICE servers', (_label, value) => {
 		expect(parseIceServers(value)).toBeNull();
+	});
+
+	test('accepts 53 when it is not the port', () => {
+		const servers = [
+			{ urls: ['stun:53.example:3478'] },
+			{ urls: ['turn:[2001:db8::53]?transport=udp', 'turns:turn.example:5353'], username: 'u', credential: 'c' },
+		];
+		expect(parseIceServers(servers)).toEqual(servers);
 	});
 
 	test('accepts the largest allowed values', () => {

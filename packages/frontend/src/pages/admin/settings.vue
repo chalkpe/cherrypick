@@ -384,6 +384,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 									<template #label><SearchLabel>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnApiToken }}</SearchLabel><span v-if="voiceCallTurnForm.modifiedStates.voiceCallCloudflareTurnApiToken" class="_modified">{{ i18n.ts.modified }}</span></template>
 								</MkInput>
 							</SearchMarker>
+
+							<MkInfo warn>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnKeyChangeDescription }}</MkInfo>
 						</div>
 					</MkFolder>
 				</SearchMarker>

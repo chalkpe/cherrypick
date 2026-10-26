@@ -105,6 +105,8 @@ describe('RemoteVoiceCallService', () => {
 		['a url that is not STUN or TURN', [{ urls: ['https://evil.example/'] }]],
 		['a url that is too long', [{ urls: [`turn:${'a'.repeat(257)}`] }]],
 		['a credential that is too long', [{ urls: ['turn:turn.example'], username: 'u', credential: 'c'.repeat(513) }]],
+		['a TURN url without credentials', [{ urls: ['turn:turn.example:3478'] }]],
+		['a url on port 53', [{ urls: ['stun:stun.example:53'] }]],
 		['something that is not a list', 'turn:turn.example'],
 	])('joins without TURN servers when the host sends %s', async (_label, iceServers) => {
 		const f = createFixture();

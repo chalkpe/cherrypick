@@ -8307,6 +8307,10 @@ export interface Locale extends ILocale {
          */
         "voiceCallCloudflareTurnApiToken": string;
         /**
+         * ここでキーを変更・削除しても、発行済みの資格情報は最大24時間有効なままです。すぐに使えなくするには、Cloudflareのダッシュボードでキーを無効化するかローテーションしてください。
+         */
+        "voiceCallCloudflareTurnKeyChangeDescription": string;
+        /**
          * 非利用者に対するユーザー作成コンテンツの公開範囲
          */
         "userGeneratedContentsVisibilityForVisitor": string;

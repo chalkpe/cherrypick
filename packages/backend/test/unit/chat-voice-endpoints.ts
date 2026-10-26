@@ -106,6 +106,22 @@ describe('chat/rooms/voice/join', () => {
 			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'REMOTE_HOST_UNSUPPORTED' });
 		});
 
+		test('join passes on the TURN servers the host sent, as they are', async () => {
+			const f = joinFixture({ ownerHost: 'remote.test' });
+			const result = {
+				url: 'https://remote.test/livekit',
+				token: 'remote-jwt',
+				iceServers: [
+					{ urls: ['stun:stun.cloudflare.com:3478'] },
+					{ urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turns:turn.cloudflare.com:443?transport=tcp'], username: 'u', credential: 'c' },
+				],
+			};
+			f.remoteVoiceCallService.requestJoin.mockResolvedValueOnce(result);
+
+			await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).resolves.toEqual(result);
+			expect(f.chatVoiceService.issueJoinToken).not.toHaveBeenCalled();
+		});
+
 		test.each([
 			['forbidden', 'VOICE_CALL_UNAVAILABLE'],
 			['unreachable', 'REMOTE_HOST_UNREACHABLE'],

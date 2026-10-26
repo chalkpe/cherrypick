@@ -10,6 +10,15 @@ import { QueryService } from '@/core/QueryService.js';
 import { DI } from '@/di-symbols.js';
 import { ModerationLogEntityService } from '@/core/entities/ModerationLogEntityService.js';
 import { sqlLikeEscape } from '@/misc/sql-like-escape.js';
+import { REDACTED_META_KEYS } from '@/misc/redact-server-settings-log.js';
+
+// 伏せるようにする前に残されたサーバー設定の変更履歴から、認証情報を検索で一文字ずつ当てられないよう、検索する範囲から除く。
+// 他の種類のログの before / after は配列や文字列のこともあり、#- がエラーになるので、サーバー設定の変更履歴 (meta か policies) に限る
+const SEARCHABLE_INFO = `CASE WHEN log.type = 'updateServerSettings' THEN ${
+	REDACTED_META_KEYS
+		.flatMap(key => [`'{before,${key}}'::text[]`, `'{after,${key}}'::text[]`])
+		.reduce((expression, path) => `(${expression} #- ${path})`, 'log.info')
+} ELSE log.info END`;
 
 export const meta = {
 	tags: ['admin'],
@@ -95,7 +104,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			if (ps.search != null) {
 				const escapedSearch = sqlLikeEscape(ps.search);
-				query.andWhere('log.info::text ILIKE :search', { search: `%${escapedSearch}%` });
+				query.andWhere(`(${SEARCHABLE_INFO})::text ILIKE :search`, { search: `%${escapedSearch}%` });
 			}
 
 			const logs = await query.limit(ps.limit).getMany();

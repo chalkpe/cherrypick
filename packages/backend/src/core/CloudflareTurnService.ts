@@ -31,7 +31,9 @@ const RESPONSE_SIZE_LIMIT = 64 * 1024;
 const MAX_ICE_SERVERS = 4;
 const MAX_ICE_SERVER_URLS = 8;
 const MAX_ICE_CREDENTIAL_LENGTH = 512;
-const ICE_SERVER_URL = /^(stun|turns?):[^\s]{1,256}$/;
+// 制御文字や ASCII 以外の文字を含む URL はブラウザが受け付けず、接続ごと失敗するので、表示できる ASCII に限る
+const ICE_SERVER_URL = /^(stun|turns?):[\x21-\x7e]{1,256}$/;
+const TURN_URL = /^turns?:/;
 
 // ブラウザは 53 番ポートへの接続を拒むので、Cloudflare が返しても渡さない
 const BLOCKED_PORT = 53;
@@ -185,7 +187,7 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 
 /**
  * Cloudflare の応答 ({ iceServers: [...] } または { iceServers: {...} }) から、ブラウザに渡せるものだけを取り出す。
- * STUN / TURN 以外の URL と 53 番ポートの URL を除き、上限を超える分は捨てる
+ * STUN / TURN 以外の URL と 53 番ポートの URL を除き、資格情報の無い TURN と上限を超える分は捨てる
  */
 function iceServersFromCloudflare(body: unknown): IceServer[] | null {
 	if (typeof body !== 'object' || body == null) return null;
@@ -203,6 +205,8 @@ function iceServersFromCloudflare(body: unknown): IceServer[] | null {
 			.filter((url): url is string => typeof url === 'string' && ICE_SERVER_URL.test(url) && portOf(url) !== BLOCKED_PORT)
 			.slice(0, MAX_ICE_SERVER_URLS);
 		if (usable.length === 0) continue;
+		// ブラウザは資格情報の無い TURN を受け付けず、接続ごと失敗する
+		if (!hasCredentialsFor(usable, username, credential)) continue;
 
 		result.push(iceServerOf(usable, username, credential));
 		if (result.length === MAX_ICE_SERVERS) break;
@@ -213,6 +217,7 @@ function iceServersFromCloudflare(body: unknown): IceServer[] | null {
 
 /**
  * 他のサーバーから届いた ICE サーバーを確かめる。どこかがおかしければ全体を null にする (通話への参加は止めない)。
+ * ブラウザが受け付けないもの (資格情報の無い TURN、53 番ポート、表示できる ASCII 以外の文字) もおかしいものとして扱う。
  * 空の配列も null にする (渡すと LiveKit が渡す ICE サーバーまで使われなくなる)
  */
 export function parseIceServers(value: unknown): IceServer[] | null {
@@ -223,8 +228,9 @@ export function parseIceServers(value: unknown): IceServer[] | null {
 		if (typeof entry !== 'object' || entry == null) return null;
 		const { urls, username, credential } = entry as Record<string, unknown>;
 		if (!Array.isArray(urls) || urls.length === 0 || urls.length > MAX_ICE_SERVER_URLS) return null;
-		if (!urls.every(url => typeof url === 'string' && ICE_SERVER_URL.test(url))) return null;
+		if (!urls.every(url => typeof url === 'string' && ICE_SERVER_URL.test(url) && portOf(url) !== BLOCKED_PORT)) return null;
 		if (!isValidCredential(username) || !isValidCredential(credential)) return null;
+		if (!hasCredentialsFor(urls as string[], username, credential)) return null;
 		result.push(iceServerOf(urls as string[], username, credential));
 	}
 	return result;
@@ -232,6 +238,12 @@ export function parseIceServers(value: unknown): IceServer[] | null {
 
 function isValidCredential(value: unknown): value is string | undefined {
 	return value === undefined || (typeof value === 'string' && value.length <= MAX_ICE_CREDENTIAL_LENGTH);
+}
+
+/** TURN の URL があるなら、ユーザー名と資格情報が両方とも (空でなく) ある */
+function hasCredentialsFor(urls: string[], username: string | undefined, credential: string | undefined): boolean {
+	if (!urls.some(url => TURN_URL.test(url))) return true;
+	return username != null && username !== '' && credential != null && credential !== '';
 }
 
 /** 知っている項目だけを持つ新しいオブジェクトを作る */
