@@ -15,31 +15,41 @@ const KEY_ID = 'https://remote.test/users/alice#main-key';
 const TOKEN_URL = 'https://local.test/livekit/federation/token';
 const BODY = JSON.stringify({ room: 'https://local.test/chat/rooms/room1', canScreenShare: false });
 
-const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
-	modulusLength: 2048,
-	publicKeyEncoding: { type: 'spki', format: 'pem' },
-	privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-});
+function rsaKeyPair() {
+	return crypto.generateKeyPairSync('rsa', {
+		modulusLength: 2048,
+		publicKeyEncoding: { type: 'spki', format: 'pem' },
+		privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+	});
+}
 
-const remoteUser = { id: 'alice', host: 'remote.test', uri: 'https://remote.test/users/alice' } as MiRemoteUser;
+const { publicKey, privateKey } = rsaKeyPair();
+const otherKeyPair = rsaKeyPair();
+
+const remoteUser = { id: 'alice', host: 'remote.test', uri: 'https://remote.test/users/alice', isDeleted: false } as MiRemoteUser;
 
 function createVerifier(known = true) {
-	const apDbResolverService = {
-		getAuthUserFromKeyId: vi.fn(async (keyId: string) => known
-			? { user: remoteUser, key: { keyId, keyPem: publicKey, userId: remoteUser.id } }
-			: null),
+	const keys = new Map<string, { userId: string; keyId: string; keyPem: string }>();
+	if (known) keys.set(KEY_ID, { userId: remoteUser.id, keyId: KEY_ID, keyPem: publicKey });
+	const users = new Map<string, MiRemoteUser>([[remoteUser.id, remoteUser]]);
+	const userPublickeysRepository = {
+		findOneBy: vi.fn(async ({ keyId }: { keyId: string }) => keys.get(keyId) ?? null),
 	};
-	const verifier = new ApSignedRequestVerifierService(config, apDbResolverService as any);
-	return { verifier, apDbResolverService };
+	const usersRepository = {
+		findOneBy: vi.fn(async ({ id }: { id: string }) => users.get(id) ?? null),
+	};
+	const verifier = new ApSignedRequestVerifierService(config, userPublickeysRepository as any, usersRepository as any);
+	return { verifier, keys, users, userPublickeysRepository };
 }
 
 // 送信側と同じ ApRequestCreator で署名し、受信側の Fastify が見る形に直す。
-async function signedRequest(url = TOKEN_URL, body = BODY, additionalHeaders: Record<string, string> = {}) {
+async function signedRequest(options: { url?: string; body?: string; additionalHeaders?: Record<string, string>; keyId?: string; privateKeyPem?: string } = {}) {
+	const url = options.url ?? TOKEN_URL;
 	const signed = await ApRequestCreator.createSignedPost({
-		key: { keyId: KEY_ID, privateKeyPem: privateKey },
+		key: { keyId: options.keyId ?? KEY_ID, privateKeyPem: options.privateKeyPem ?? privateKey },
 		url,
-		body,
-		additionalHeaders,
+		body: options.body ?? BODY,
+		additionalHeaders: options.additionalHeaders ?? {},
 	});
 	const u = new URL(url);
 	return {
@@ -51,12 +61,12 @@ async function signedRequest(url = TOKEN_URL, body = BODY, additionalHeaders: Re
 
 describe('ApSignedRequestVerifierService', () => {
 	test('accepts a request signed by a known remote user', async () => {
-		const { verifier, apDbResolverService } = createVerifier();
+		const { verifier, userPublickeysRepository } = createVerifier();
 
 		const user = await verifier.verify(await signedRequest(), BODY);
 
 		expect(user).toBe(remoteUser);
-		expect(apDbResolverService.getAuthUserFromKeyId).toHaveBeenCalledWith(KEY_ID);
+		expect(userPublickeysRepository.findOneBy).toHaveBeenCalledWith({ keyId: KEY_ID });
 	});
 
 	test('rejects a body that does not match the digest', async () => {
@@ -70,7 +80,7 @@ describe('ApSignedRequestVerifierService', () => {
 	test('rejects a request signed for another host', async () => {
 		const { verifier } = createVerifier();
 
-		const user = await verifier.verify(await signedRequest('https://other.test/livekit/federation/token'), BODY);
+		const user = await verifier.verify(await signedRequest({ url: 'https://other.test/livekit/federation/token' }), BODY);
 
 		expect(user).toBeNull();
 	});
@@ -79,7 +89,7 @@ describe('ApSignedRequestVerifierService', () => {
 		const { verifier } = createVerifier();
 		const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toUTCString();
 
-		const user = await verifier.verify(await signedRequest(TOKEN_URL, BODY, { Date: tenMinutesAgo }), BODY);
+		const user = await verifier.verify(await signedRequest({ additionalHeaders: { Date: tenMinutesAgo } }), BODY);
 
 		expect(user).toBeNull();
 	});
@@ -87,7 +97,7 @@ describe('ApSignedRequestVerifierService', () => {
 	test('rejects an old signed date even when an unsigned fresh x-date is added', async () => {
 		const { verifier } = createVerifier();
 		const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toUTCString();
-		const request = await signedRequest(TOKEN_URL, BODY, { Date: tenMinutesAgo });
+		const request = await signedRequest({ additionalHeaders: { Date: tenMinutesAgo } });
 
 		const user = await verifier.verify({ ...request, headers: { ...request.headers, 'x-date': new Date().toUTCString() } }, BODY);
 
@@ -97,7 +107,45 @@ describe('ApSignedRequestVerifierService', () => {
 	test('rejects a signed date that cannot be parsed', async () => {
 		const { verifier } = createVerifier();
 
-		const user = await verifier.verify(await signedRequest(TOKEN_URL, BODY, { Date: 'not a date' }), BODY);
+		const user = await verifier.verify(await signedRequest({ additionalHeaders: { Date: 'not a date' } }), BODY);
+
+		expect(user).toBeNull();
+	});
+
+	test('rejects a date header that was replaced after signing', async () => {
+		const { verifier } = createVerifier();
+		// 署名した date と差し替えた date はどちらも許容範囲内だが、文字列が違うので署名が合わない
+		const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toUTCString();
+		const request = await signedRequest({ additionalHeaders: { Date: twoMinutesAgo } });
+
+		const user = await verifier.verify({ ...request, headers: { ...request.headers, date: new Date().toUTCString() } }, BODY);
+
+		expect(user).toBeNull();
+	});
+
+	test('rejects a known keyId signed with a different private key', async () => {
+		const { verifier } = createVerifier();
+
+		const user = await verifier.verify(await signedRequest({ privateKeyPem: otherKeyPair.privateKey }), BODY);
+
+		expect(user).toBeNull();
+	});
+
+	test('rejects the old key once the stored key for that keyId has changed', async () => {
+		const { verifier, keys } = createVerifier();
+		expect(await verifier.verify(await signedRequest(), BODY)).toBe(remoteUser);
+
+		keys.set(KEY_ID, { userId: remoteUser.id, keyId: KEY_ID, keyPem: otherKeyPair.publicKey });
+
+		expect(await verifier.verify(await signedRequest(), BODY)).toBeNull();
+		expect(await verifier.verify(await signedRequest({ privateKeyPem: otherKeyPair.privateKey }), BODY)).toBe(remoteUser);
+	});
+
+	test('rejects a key whose owner has been deleted', async () => {
+		const { verifier, users } = createVerifier();
+		users.set(remoteUser.id, { ...remoteUser, isDeleted: true });
+
+		const user = await verifier.verify(await signedRequest(), BODY);
 
 		expect(user).toBeNull();
 	});
@@ -108,6 +156,16 @@ describe('ApSignedRequestVerifierService', () => {
 		const user = await verifier.verify(await signedRequest(), BODY);
 
 		expect(user).toBeNull();
+	});
+
+	test('rejects an overlong keyId without looking it up', async () => {
+		const { verifier, userPublickeysRepository } = createVerifier();
+		const keyId = `https://remote.test/users/${'a'.repeat(512)}#main-key`;
+
+		const user = await verifier.verify(await signedRequest({ keyId }), BODY);
+
+		expect(user).toBeNull();
+		expect(userPublickeysRepository.findOneBy).not.toHaveBeenCalled();
 	});
 
 	test('rejects a signature that does not cover the digest', async () => {
