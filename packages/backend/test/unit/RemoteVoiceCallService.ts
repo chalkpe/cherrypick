@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { domainToASCII } from 'node:url';
 import { describe, expect, test, vi } from 'vitest';
 import { RemoteVoiceCallError, RemoteVoiceCallService } from '@/core/RemoteVoiceCallService.js';
 import { UtilityService } from '@/core/UtilityService.js';
@@ -49,22 +48,22 @@ function createFixture(metaOverrides: Record<string, unknown> = {}, instances: {
 	const chatVoiceService = {
 		storeRemoteSnapshot: vi.fn(async () => {}),
 	};
-	// 実物を使い、ブロックの判定 (ポート付きのホストを含む) もそのまま確かめる
+	// 実物を使い、ブロックの判定 (ポート付きのホストを含む) と記録を引く host の正規化 (toPuny はポート付きのホストに '' を返す) もそのまま確かめる
 	const utilityService = new UtilityService({ host: 'local.test', url: 'https://local.test' } as any, meta as any);
 	vi.spyOn(utilityService, 'isFederationAllowedHost');
-	// FederatedInstanceService.fetch と同じく toPuny (domainToASCII) した host で探す。ポート付きは '' になる
-	const federatedInstanceService = {
-		fetch: vi.fn(async (host: string) => instances.find(instance => instance.host === domainToASCII(host.toLowerCase())) ?? null),
+	// instance.host は保存されたとおりの文字列で引かれる。正規化はサービスの側でする
+	const instancesRepository = {
+		findOneBy: vi.fn(async ({ host }: { host: string }) => instances.find(instance => instance.host === host) ?? null),
 	};
 	const service = new RemoteVoiceCallService(
 		redis as any,
 		meta as any,
+		instancesRepository as any,
 		apRequestService as any,
 		chatVoiceService as any,
 		utilityService,
-		federatedInstanceService as any,
 	);
-	return { service, redis, apRequestService, chatVoiceService, utilityService, federatedInstanceService };
+	return { service, redis, apRequestService, chatVoiceService, utilityService, instancesRepository };
 }
 
 function abortError() {
@@ -195,13 +194,45 @@ describe('RemoteVoiceCallService', () => {
 		});
 
 		test.each([
-			// 管理画面で evil.example:8443 を停止すると、toPuny で '' になった記録が停止される
+			// 管理画面で evil.example:8443 を停止すると、toPuny で '' になった記録が停止される (配送もこの記録で止まる)
 			['the record the codebase keeps for hosts with a port', ''],
 			['the record of the same domain', 'evil.example'],
+			// domainToASCII を使う前は、ポート付きのホストがそのまま記録されていた
+			['the record kept with its port', 'evil.example:8443'],
+			['the record of the same domain with a trailing dot', 'evil.example.'],
+			['the record kept with its port and a trailing dot', 'evil.example.:8443'],
 		])('refuses an owner on a port whose server is suspended through %s', async (_label, storedHost) => {
 			const f = createFixture({}, [{ host: storedHost, suspensionState: 'manuallySuspended' }]);
 
 			await expect(f.service.requestJoin(me, room, portOwner(), false)).rejects.toMatchObject({ reason: 'forbidden' });
+			expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+		});
+
+		test('refuses an owner whose server is suspended through the record with a trailing dot', async () => {
+			const f = createFixture({}, [{ host: 'remote.test.', suspensionState: 'manuallySuspended' }]);
+
+			await expect(f.service.requestJoin(me, room, owner, false)).rejects.toMatchObject({ reason: 'forbidden' });
+			expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+		});
+
+		test('does not let the record shared by hosts with a port refuse an owner without one', async () => {
+			const f = createFixture({}, [{ host: '', suspensionState: 'autoSuspendedForNotResponding' }]);
+
+			await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt' });
+		});
+
+		// inbox と同じく、ブロックはポート・末尾のドット・Unicode の違いを無視して当てる
+		test.each([
+			['a trailing dot', 'evil.example.', ['evil.example']],
+			['a port and a trailing dot', 'evil.example.:8443', ['evil.example']],
+			['a port, blocked by an entry with another port', 'evil.example:8443', ['evil.example:9999']],
+			['no port, blocked by an entry with a port', 'evil.example', ['evil.example:8443']],
+			['a port, blocked by an entry with a trailing dot', 'evil.example:8443', ['evil.example.']],
+			['a port, blocked by a Unicode entry', 'xn--vil-ima.example:8443', ['ëvil.example']],
+		])('refuses an owner on a host with %s whose domain is blocked', async (_label, host, blockedHosts) => {
+			const f = createFixture({ blockedHosts });
+
+			await expect(f.service.requestJoin(me, room, portOwner({ host, uri: `https://${host}/users/owner` }), false)).rejects.toMatchObject({ reason: 'forbidden' });
 			expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
 		});
 

@@ -7,6 +7,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { DI } from '@/di-symbols.js';
 import type { MiMeta } from '@/models/Meta.js';
+import type { InstancesRepository } from '@/models/_.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
 import type { MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import { bindThis } from '@/decorators.js';
@@ -14,7 +15,7 @@ import { StatusError } from '@/misc/status-error.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { ChatVoiceService, isRemoteVoiceCallEnabled } from '@/core/ChatVoiceService.js';
 import { UtilityService } from '@/core/UtilityService.js';
-import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
+import { hostLookupCandidates, isHostInList } from '@/core/ActivityPubAccessControlService.js';
 import { ApRequestService } from '@/core/activitypub/ApRequestService.js';
 
 const TOKEN_REQUEST_TIMEOUT_MS = 10_000;
@@ -56,10 +57,12 @@ export class RemoteVoiceCallService {
 		@Inject(DI.meta)
 		private meta: MiMeta,
 
+		@Inject(DI.instancesRepository)
+		private instancesRepository: InstancesRepository,
+
 		private apRequestService: ApRequestService,
 		private chatVoiceService: ChatVoiceService,
 		private utilityService: UtilityService,
-		private federatedInstanceService: FederatedInstanceService,
 	) {
 	}
 
@@ -135,16 +138,27 @@ export class RemoteVoiceCallService {
 		// ブロックはドメインで指定されるので、ポートを除いた名前でも確かめる
 		if (!this.utilityService.isFederationAllowedHost(ownerUrl.hostname)) return null;
 		if (!this.utilityService.isFederationAllowedHost(owner.host)) return null;
+		// inbox (InboxProcessorService) と同じく、ポート・末尾のドット・大文字小文字・Unicode の違いを無視して、ブロックの指定とも比べる
+		if (isHostInList(this.meta.blockedHosts, owner.host)) return null;
 
-		// サーバーの記録は toPuny した host で引かれ、ポート付きのホストは '' の記録にまとめられている
-		// (FederatedInstanceService.fetchOrRegister)。それとは別に、同じドメインの記録も確かめる
-		const hosts = ownerUrl.port === '' ? [owner.host] : [owner.host, ownerUrl.hostname];
-		for (const host of hosts) {
-			const instance = await this.federatedInstanceService.fetch(host);
+		// 停止はそのサーバーの記録のどれかにあれば従う。キャッシュを通さず、いまの記録を見る
+		for (const host of this.instanceHostsOf(owner.host)) {
+			const instance = await this.instancesRepository.findOneBy({ host });
 			if (instance != null && instance.suspensionState !== 'none') return null;
 		}
 
 		return ownerUrl;
+	}
+
+	/**
+	 * そのサーバーの停止が記録されうる instance.host。
+	 * - toPuny した host: FederatedInstanceService.fetchOrRegister、管理画面での停止、配送の停止の判定 (DeliverProcessorService) が使う記録。
+	 *   domainToASCII はポート付きのホストに '' を返すので、ポート付きのサーバーはすべて '' の記録にまとめられている
+	 * - hostLookupCandidates: 同じドメインの記録、末尾にドットの付いた記録、domainToASCII を使う前にポートごと保存された記録。
+	 *   ActivityPub のアクセス制御と inbox が隔離を確かめるのと同じ候補 (ポートは区別しない)
+	 */
+	private instanceHostsOf(host: string): string[] {
+		return [...new Set([this.utilityService.toPuny(host), ...hostLookupCandidates(host)])];
 	}
 }
 
