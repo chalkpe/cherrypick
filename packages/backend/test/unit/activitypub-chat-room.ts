@@ -5,6 +5,9 @@
 
 import { describe, expect, test, vi } from 'vitest';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
+import { JsonLdService } from '@/core/activitypub/JsonLdService.js';
+import { parseChatRoomVoiceState } from '@/core/activitypub/misc/chat-room-voice-state.js';
 import { UtilityService } from '@/core/UtilityService.js';
 
 type Row = { id: string; [key: string]: unknown };
@@ -472,6 +475,89 @@ describe('Chat room federation: voice call state', () => {
 
 		expect(result).toMatch(/^skip/);
 		expect(f.chatVoiceService.receiveRemoteSnapshot).not.toHaveBeenCalled();
+	});
+
+	// JSON-LD として読む相手にも、ルーム・参加者・画面共有が CherryPick の語彙として伝わる
+	test('the voice state keeps its CherryPick terms through JSON-LD processing', async () => {
+		const renderer = Object.assign(Object.create(ApRendererService.prototype), { config: { url: LOCAL } }) as ApRendererService;
+		const activity = renderer.addContext({
+			type: 'Update',
+			actor: `${LOCAL}/users/${localOwner.id}`,
+			object: renderer.renderChatRoomVoiceState({ id: 'localroom' } as any, [
+				{ identity: `${LOCAL}/users/${alice.id}`, screenSharing: true },
+				{ identity: remoteOwner.uri, screenSharing: false },
+			], Date.parse('2026-10-27T00:00:00.000Z')),
+		});
+		const jsonLd = new JsonLdService({} as any).use();
+		// 文脈はすべて手元にあるので、何も取りに行かない
+		jsonLd.freeze();
+
+		const nquads = await jsonLd.normalize(activity);
+
+		const state = `<${LOCAL}/chat/rooms/localroom/voice>`;
+		expect(nquads).toContain(`${state} <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://kokonect.link/ns#ChatRoomVoiceState> .`);
+		expect(nquads).toContain(`${state} <https://kokonect.link/ns#room> <${LOCAL}/chat/rooms/localroom> .`);
+		expect(nquads).toContain(`${state} <https://kokonect.link/ns#participants> <${LOCAL}/users/${alice.id}> .`);
+		expect(nquads).toContain(`${state} <https://kokonect.link/ns#participants> <${remoteOwner.uri}> .`);
+		expect(nquads).toContain(`<${LOCAL}/users/${alice.id}> <https://kokonect.link/ns#screenSharing> "true"^^<http://www.w3.org/2001/XMLSchema#boolean> .`);
+		expect(nquads).toContain(`<${remoteOwner.uri}> <https://kokonect.link/ns#screenSharing> "false"^^<http://www.w3.org/2001/XMLSchema#boolean> .`);
+	});
+});
+
+describe('Chat room federation: checking voice states', () => {
+	const ROOM = 'https://remote.test/chat/rooms/bobroom';
+	const UPDATED = '2026-10-27T00:00:00.000Z';
+
+	function voiceState(overrides: Record<string, unknown> = {}) {
+		return {
+			id: `${ROOM}/voice`,
+			type: 'ChatRoomVoiceState',
+			room: ROOM,
+			participants: [{ id: invitedRemote.uri, screenSharing: true }],
+			updated: UPDATED,
+			...overrides,
+		} as any;
+	}
+
+	test('reads a voice state that a server sends about its own room', () => {
+		expect(parseChatRoomVoiceState(remoteOwner.uri, voiceState(), 51)).toEqual({
+			ok: true,
+			state: { roomId: 'bobroom', participants: [{ identity: invitedRemote.uri, screenSharing: true }], updatedAt: Date.parse(UPDATED) },
+		});
+	});
+
+	test('reads the voice state this server renders', () => {
+		const renderer = Object.assign(Object.create(ApRendererService.prototype), { config: { url: LOCAL } }) as ApRendererService;
+		const rendered = renderer.renderChatRoomVoiceState({ id: 'localroom' } as any, [{ identity: `${LOCAL}/users/${alice.id}`, screenSharing: false }], Date.parse(UPDATED));
+
+		expect(parseChatRoomVoiceState(`${LOCAL}/users/${localOwner.id}`, rendered, 51)).toEqual({
+			ok: true,
+			state: { roomId: 'localroom', participants: [{ identity: `${LOCAL}/users/${alice.id}`, screenSharing: false }], updatedAt: Date.parse(UPDATED) },
+		});
+	});
+
+	test.each([
+		['a missing id', remoteOwner.uri, { id: undefined }],
+		['a room that is not a string', remoteOwner.uri, { room: { id: ROOM } }],
+		['a sender that is not a URL', 'remote.test', {}],
+		['a room on another server', remoteOwner.uri, { room: 'https://other.test/chat/rooms/bobroom', id: 'https://other.test/chat/rooms/bobroom/voice' }],
+		['a room on another port of the same host', remoteOwner.uri, { room: 'https://remote.test:8443/chat/rooms/bobroom', id: 'https://remote.test:8443/chat/rooms/bobroom/voice' }],
+		['a room over another scheme', remoteOwner.uri, { room: 'http://remote.test/chat/rooms/bobroom', id: 'http://remote.test/chat/rooms/bobroom/voice' }],
+		['an empty query on the room', remoteOwner.uri, { room: `${ROOM}?`, id: `${ROOM}?/voice` }],
+		['an empty fragment on the room', remoteOwner.uri, { room: `${ROOM}#`, id: `${ROOM}#/voice` }],
+		['a query on the room', remoteOwner.uri, { room: `${ROOM}?x=1`, id: `${ROOM}?x=1/voice` }],
+		['userinfo on the room', remoteOwner.uri, { room: 'https://user@remote.test/chat/rooms/bobroom', id: 'https://user@remote.test/chat/rooms/bobroom/voice' }],
+		['a room path of another shape', remoteOwner.uri, { room: `${ROOM}/extra`, id: `${ROOM}/extra/voice` }],
+		['an id that is not the room\'s voice state', remoteOwner.uri, { id: `${ROOM}/other` }],
+		['the voice state of another room', remoteOwner.uri, { id: 'https://remote.test/chat/rooms/other/voice' }],
+		['too many participants', remoteOwner.uri, { participants: [{ id: invitedRemote.uri, screenSharing: false }, { id: dave.uri, screenSharing: false }] }],
+		['a participant without screenSharing', remoteOwner.uri, { participants: [{ id: invitedRemote.uri }] }],
+		['an unreadable time', remoteOwner.uri, { updated: 'yesterday' }],
+	])('refuses %s', (_label, actorUri, overrides) => {
+		const result = parseChatRoomVoiceState(actorUri, voiceState(overrides), 1);
+
+		expect(result.ok).toBe(false);
+		expect(result).toEqual({ ok: false, reason: expect.any(String) });
 	});
 });
 

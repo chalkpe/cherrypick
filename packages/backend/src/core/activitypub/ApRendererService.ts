@@ -34,7 +34,8 @@ import { RoleService } from '@/core/RoleService.js';
 import { JsonLdService } from './JsonLdService.js';
 import { ApMfmService } from './ApMfmService.js';
 import { CONTEXT } from './misc/contexts.js';
-import type { IAccept, IActivity, IAdd, IAnnounce, IApDocument, IApEmoji, IApHashtag, IApImage, IApMention, IBlock, ICreate, IDelete, IFlag, IFollow, IInvite, IKey, ILike, IMove, IObject, IPost, IQuestion, IRead, IReject, IRemove, ITombstone, IUndo, IUpdate } from './type.js';
+import { chatRoomVoiceStateIdOf } from './misc/chat-room-voice-state.js';
+import type { IAccept, IActivity, IAdd, IAnnounce, IApDocument, IApEmoji, IApHashtag, IApImage, IApMention, IBlock, IChatRoomVoiceState, ICreate, IDelete, IFlag, IFollow, IInvite, IKey, ILike, IMove, IObject, IPost, IQuestion, IRead, IReject, IRemove, ITombstone, IUndo, IUpdate } from './type.js';
 
 @Injectable()
 export class ApRendererService {
@@ -845,7 +846,7 @@ export class ApRendererService {
 
 		// Add context for group chat
 		if (roomId) {
-			note['@context'] = `${this.config.url}/chat/rooms/${roomId}`;
+			note['@context'] = this.genLocalChatRoomUri(roomId);
 		}
 
 		if (attachment) {
@@ -867,7 +868,7 @@ export class ApRendererService {
 
 		return {
 			type: 'Group',
-			id: `${this.config.url}/chat/rooms/${room.id}`,
+			id: this.genLocalChatRoomUri(room.id),
 			name: room.name,
 			summary: room.description || undefined,
 			attributedTo: ownerUri || undefined,
@@ -875,19 +876,25 @@ export class ApRendererService {
 	}
 
 	/**
+	 * このサーバーが持つルームの URI
+	 */
+	@bindThis
+	public genLocalChatRoomUri(roomId: MiChatRoom['id']): string {
+		return `${this.config.url}/chat/rooms/${roomId}`;
+	}
+
+	/**
 	 * このサーバーが持つルームの、通話の参加者の現況。participants の id は参加者の identity (LiveKitService.identityOf)
 	 */
 	@bindThis
-	public renderChatRoomVoiceState(room: MiChatRoom, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): IObject {
-		const roomUri = `${this.config.url}/chat/rooms/${room.id}`;
-		// room と participants は IObject に無いので、いったん変数に入れてから返す
-		const state = {
-			id: `${roomUri}/voice`,
+	public renderChatRoomVoiceState(room: Pick<MiChatRoom, 'id'>, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): IChatRoomVoiceState {
+		const roomUri = this.genLocalChatRoomUri(room.id);
+		return {
+			id: chatRoomVoiceStateIdOf(roomUri),
 			type: 'ChatRoomVoiceState',
 			room: roomUri,
 			participants: participants.map(p => ({ id: p.identity, screenSharing: p.screenSharing })),
 			updated: new Date(updatedAt).toISOString(),
 		};
-		return state;
 	}
 }

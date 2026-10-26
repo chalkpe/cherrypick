@@ -28,6 +28,7 @@ import { UtilityService } from '@/core/UtilityService.js';
 import { hostLookupCandidates, isHostInList, normalizeHost } from '@/core/ActivityPubAccessControlService.js';
 import { QueueService } from '@/core/QueueService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
+import { parseChatRoomVoiceState } from '@/core/activitypub/misc/chat-room-voice-state.js';
 import type { IObject } from '@/core/activitypub/type.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import { CloudflareTurnService } from '@/core/CloudflareTurnService.js';
@@ -50,21 +51,34 @@ const REMOTE_SNAPSHOT_TTL_SECONDS = 600;
 // ホストの時計がこれより先の時刻を付けた現況は捨てる。受け入れると、寿命が切れるまでホストが新しい現況で上書きできなくなる
 const REMOTE_SNAPSHOT_MAX_AHEAD_MS = 300_000;
 
+// ミラーの現況について、最後に受け入れた時刻 (updatedAt) を現況の寿命より長く覚えておく。
+// 配送は既定で 12 回まで間隔を延ばしながらやり直す (最後のやり直しまで最大で約 39 時間) ので、通話の終わりを保存した鍵が切れた後に
+// 終わる前の現況が届き、終わった通話が戻ることがある。受け取った側の inbox のやり直し (約 5 時間) を足しても収まるよう、2 日覚えておく
+const REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS = 172_800;
+
 // 他のサーバーの通話を止めたときにミラーの現況を消すとき、一度に引くルームの数
 const MIRROR_CLEAR_BATCH_SIZE = 1000;
 
-// ミラーの現況を、保存済みのものより新しい (updatedAt が大きい) ときだけ書く。書いたら 1、書かなければ 0。
+// ミラーの現況を、保存済みのものと、最後に受け入れた時刻のどちらよりも新しい (updatedAt が大きい) ときだけ書く。書いたら 1、書かなければ 0。
+// 書いたら、その時刻を最後に受け入れた時刻として残す (空の現況でも残す)。
 // 比べてから書くまでを一つの操作にして、同時に届いた古い現況が新しい現況を上書きしないようにする。
-// 保存済みのものが読めなければ上書きする。KEYS[1]: 鍵、ARGV: 現況 (JSON)、その updatedAt、寿命 (秒)
+// 保存済みのものや時刻が読めなければ、無いものとして扱う。
+// KEYS[1]: 現況の鍵、KEYS[2]: 最後に受け入れた時刻の鍵、ARGV: 現況 (JSON)、その updatedAt、現況の寿命 (秒)、時刻の寿命 (秒)
 const STORE_IF_NEWER_SCRIPT = `
+local updatedAt = tonumber(ARGV[2])
+local lastSeen = tonumber(redis.call('GET', KEYS[2]))
+if lastSeen and lastSeen >= updatedAt then
+	return 0
+end
 local current = redis.call('GET', KEYS[1])
 if current then
 	local ok, stored = pcall(cjson.decode, current)
-	if ok and type(stored) == 'table' and type(stored.updatedAt) == 'number' and stored.updatedAt >= tonumber(ARGV[2]) then
+	if ok and type(stored) == 'table' and type(stored.updatedAt) == 'number' and stored.updatedAt >= updatedAt then
 		return 0
 	end
 end
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[4])
 return 1
 `;
 
@@ -75,9 +89,6 @@ const FEDERATION_RESEND_INTERVAL_MS = 240_000;
 // 参加者が目まぐるしく変わっても (画面共有の切り替えや出入りの繰り返し) 配送が膨らまないよう、
 // 他のサーバーへはルームごとにこの間隔に一度だけ送る。全ワーカーで Redis の鍵を共有して数える
 const FEDERATION_MIN_INTERVAL_MS = 10_000;
-
-// 他のサーバーから届くルームの URI のパス (このサーバーが送る `${url}/chat/rooms/${id}` と同じ形)
-const ROOM_PATH = /^\/chat\/rooms\/([a-zA-Z0-9]+)$/;
 
 // 参加者の出入りや画面共有の開始・終了に関わるイベントだけを扱う
 const REFRESH_EVENTS = new Set([
@@ -110,6 +121,19 @@ type AdmissionContext = {
 	refusedHosts: Map<string, boolean>;
 };
 
+/** ルームの持ち主とメンバーのうち、通話の参加者を知らせる相手 (audienceOf) */
+type RoomAudience = {
+	/** このサーバーのユーザーである持ち主とメンバー。main ストリームで知らせる */
+	localUserIds: MiUser['id'][];
+	/** 持ち主がこのサーバーのユーザーならその持ち主 (他のサーバーへ送るときの名義)。ミラーのルームなら null */
+	localOwner: MiUser | null;
+	/** 他のサーバーのメンバーの inbox (共有 inbox があればそちら) と、それが共有 inbox か。ミラーのルームなら空 */
+	remoteInboxes: Map<string, boolean>;
+};
+
+/** 他のサーバーに送った現況の記録 */
+type FederatedRecord = { hash: string; at: number };
+
 /** 他のサーバーに渡す参加者の現況。userId はこのサーバーの DB の id なので含めない */
 type FederatedVoiceSnapshot = {
 	participants: { identity: string; screenSharing: boolean }[];
@@ -133,7 +157,10 @@ export function isRemoteVoiceCallEnabled(meta: Pick<MiMeta, 'enableRemoteVoiceCa
  */
 @Injectable()
 export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
+	/** webhook を受けて予定した読み直し */
 	private pendingRefreshes = new Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>();
+	/** 他のサーバーへ送るのを待たせた現況を、送れるようになったときに送るための読み直し */
+	private pendingFollowUps = new Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>();
 	private sweepTimer: NodeJS.Timeout | null = null;
 	private logger: Logger;
 
@@ -338,23 +365,11 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	/**
-	 * ルームを少し後に読み直す。ルームごとに一つにまとめ、予定済みのものより早く読み直したいときだけ早める
+	 * ルームを少し後に読み直す。ルームごとに一つにまとめる
 	 */
 	@bindThis
-	public scheduleRefresh(roomId: MiChatRoom['id'], delayMs = REFRESH_DELAY_MS): void {
-		const dueAt = Date.now() + delayMs;
-		const pending = this.pendingRefreshes.get(roomId);
-		if (pending != null) {
-			if (pending.dueAt <= dueAt) return;
-			clearTimeout(pending.timer);
-		}
-		const timer = setTimeout(() => {
-			this.pendingRefreshes.delete(roomId);
-			this.refresh(roomId).catch(() => {
-				// 次の webhook か通話参加時に再取得されるので握りつぶす
-			});
-		}, delayMs);
-		this.pendingRefreshes.set(roomId, { timer, dueAt });
+	public scheduleRefresh(roomId: MiChatRoom['id']): void {
+		this.scheduleRefreshIn(this.pendingRefreshes, roomId, REFRESH_DELAY_MS);
 	}
 
 	@bindThis
@@ -379,49 +394,12 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const packed = await this.pack(roomId, snapshot, null);
 		// 通話の参加者はルームの今のメンバーにだけ知らせる。ルームのストリーム (chatRoom) はメンバーでないモデレーターも購読でき、
 		// 抜けたメンバーの購読も続くので使わない。main ストリームを持つのはこのサーバーのユーザーだけ
-		const [memberships, localOwners] = await Promise.all([
-			this.chatRoomMembershipsRepository.findBy({ roomId, user: { host: IsNull() } }),
-			this.usersRepository.findBy({ id: room.ownerId, host: IsNull() }),
-		]);
-		const recipientIds = new Set([...localOwners.map(owner => owner.id), ...memberships.map(m => m.userId)]);
-		for (const userId of recipientIds) {
+		const audience = await this.audienceOf(room);
+		for (const userId of audience.localUserIds) {
 			this.globalEventService.publishMainStream(userId, 'chatRoomVoiceState', packed);
 		}
 
-		await this.federateChanges(room, snapshot);
-	}
-
-	/**
-	 * このサーバーが持つルームの通話の参加者の現況を、他のサーバーのメンバーに届ける。
-	 * 持ち主の名前で Update を作り、メンバーの inbox (共有 inbox があればそちら) ごとに一度だけ送る
-	 */
-	@bindThis
-	public async federateSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<void> {
-		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
-		const users = await this.usersRepository.findBy({ id: In([room.ownerId, ...memberships.map(m => m.userId)]) });
-
-		// 他のサーバーが持つルーム (ミラー) の現況は、そのサーバーが送る
-		const owner = users.find(user => user.id === room.ownerId);
-		if (owner == null || owner.host != null) return;
-
-		const inboxes = new Map<string, boolean>();
-		for (const user of users) {
-			if (user.host == null) continue;
-			const inbox = user.sharedInbox ?? user.inbox;
-			if (inbox != null && !inboxes.has(inbox)) inboxes.set(inbox, user.sharedInbox != null);
-		}
-		if (inboxes.size === 0) return;
-
-		// 通話の参加者はルームのメンバーにだけ知らせるものなので、公開 (Public) 宛てにはしない
-		const activity = this.apRendererService.addContext({
-			type: 'Update',
-			actor: this.userEntityService.genLocalUserUri(owner.id),
-			object: this.apRendererService.renderChatRoomVoiceState(room, participants, updatedAt),
-			published: new Date(updatedAt).toISOString(),
-		});
-		for (const [inbox, isSharedInbox] of inboxes) {
-			this.queueService.deliver(owner, activity, inbox, isSharedInbox);
-		}
+		await this.federateChanges(room, snapshot, audience);
 	}
 
 	/**
@@ -433,22 +411,10 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	public async receiveRemoteSnapshot(actor: MiRemoteUser, object: IObject): Promise<string> {
 		if (!isRemoteVoiceCallEnabled(this.meta)) return 'skip: remote voice calls are disabled';
 
-		const state = object as IObject & { room?: unknown; participants?: unknown };
-		if (typeof state.id !== 'string' || typeof state.room !== 'string') return 'skip: invalid voice state';
-
-		const origin = originOf(actor.uri);
-		if (origin == null || originOf(state.id) !== origin || originOf(state.room) !== origin) {
-			return 'skip: voice state is not on the sender\'s server';
-		}
-
-		const roomId = roomIdOfUri(state.room);
-		if (roomId == null) return 'skip: invalid room URI';
-
-		const participants = parseParticipants(state.participants);
-		if (participants == null) return 'skip: invalid participants';
-
-		const updatedAt = typeof state.updated === 'string' ? Date.parse(state.updated) : NaN;
-		if (!Number.isFinite(updatedAt)) return 'skip: invalid updated';
+		// 形と出所 (送り主と同じサーバーのルームか) を確かめる。ルームに入れる人数より多い参加者は受け付けない
+		const parsed = parseChatRoomVoiceState(actor.uri, object, MAX_ROOM_MEMBERS + 1);
+		if (!parsed.ok) return `skip: ${parsed.reason}`;
+		const { roomId, participants, updatedAt } = parsed.state;
 
 		const room = await this.chatRoomsRepository.findOne({ where: { id: roomId }, relations: { owner: true } });
 		if (room == null) return 'skip: unknown room';
@@ -463,6 +429,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * 他のサーバーが持つルーム (ミラー) について、ホストから届いた参加者の現況を保存し、このサーバーのメンバーに知らせる。
 	 * room は持ち主 (owner) を読み込んだもの。持ち主がこのサーバーのユーザーなら (ミラーでなければ) 例外を投げる。
 	 * updatedAt はホストの時刻。保存済みのもの以前の現況と、この時計より REMOTE_SNAPSHOT_MAX_AHEAD_MS より先の現況は捨てる。
+	 * 保存済みの現況の寿命が切れた後も、最後に受け入れた時刻 (REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS のあいだ覚えておく) 以前の現況は捨てる。
 	 * 参加者は、このサーバーが知っているユーザーのうち、ルームの持ち主と今のメンバーだけを残す。
 	 * 他のサーバーの通話を止めているあいだは保存しない。保存したかどうかを返す。
 	 * ミラーの通話はこのサーバーの LiveKit には無いので、定期的な読み直し (sweep) の対象には加えない
@@ -490,8 +457,18 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		if (!isRemoteVoiceCallEnabled(this.meta)) return false;
 
 		// 解決している間に新しい現況が保存されたかもしれないので、書くときに比べる (STORE_IF_NEWER_SCRIPT)。
-		// 空になったときも時刻ごと残し、遅れて届いた古い現況で上書きされないようにする (getStates は空のものを返さない)
-		const stored = await this.redisClient.eval(STORE_IF_NEWER_SCRIPT, 1, this.keyOf(room.id), JSON.stringify(snapshot), updatedAt, REMOTE_SNAPSHOT_TTL_SECONDS);
+		// 空になったときも時刻ごと残し、遅れて届いた古い現況で上書きされないようにする (getStates は空のものを返さない)。
+		// 現況の鍵が切れた後に届く古い現況は、最後に受け入れた時刻で捨てる
+		const stored = await this.redisClient.eval(
+			STORE_IF_NEWER_SCRIPT,
+			2,
+			this.keyOf(room.id),
+			this.lastSeenKeyOf(room.id),
+			JSON.stringify(snapshot),
+			updatedAt,
+			REMOTE_SNAPSHOT_TTL_SECONDS,
+			REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS,
+		);
 		if (stored !== 1) return false;
 
 		const packed = await this.pack(room.id, snapshot, null);
@@ -507,6 +484,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	/**
 	 * ミラーの現況をすべて消す。他のサーバーの通話を止めたときに呼び、寿命 (REMOTE_SNAPSHOT_TTL_SECONDS) まで残さない。
 	 * ミラーは持ち主が他のサーバーのユーザーのルーム。それを id 順に少しずつ引き、現況の鍵を消す (無い鍵を消しても何も起きない)。
+	 * 最後に受け入れた時刻は残し、また通話を使うようにした後に古い現況が届いても書かないようにする。
 	 * 何度消しても同じ結果になるので、複数のワーカーが同時に動いてもよい
 	 */
 	@bindThis
@@ -555,8 +533,10 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	@bindThis
 	public onApplicationShutdown(): void {
-		for (const { timer } of this.pendingRefreshes.values()) clearTimeout(timer);
-		this.pendingRefreshes.clear();
+		for (const pending of [this.pendingRefreshes, this.pendingFollowUps]) {
+			for (const { timer } of pending.values()) clearTimeout(timer);
+			pending.clear();
+		}
 		if (this.sweepTimer != null) clearInterval(this.sweepTimer);
 		this.sweepTimer = null;
 		this.redisForSub.off('message', this.onMessage);
@@ -594,6 +574,30 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	private keyOf(roomId: MiChatRoom['id']): string {
 		return `chatVoice:${roomId}`;
+	}
+
+	/** ミラーの現況について、最後に受け入れた時刻 (updatedAt) を覚えておく鍵 */
+	private lastSeenKeyOf(roomId: MiChatRoom['id']): string {
+		return `chatVoice:lastSeen:${roomId}`;
+	}
+
+	/**
+	 * ルームを delayMs 後に読み直す。pending ごと・ルームごとに一つにまとめ、予定済みのものより早く読み直したいときだけ早める
+	 */
+	private scheduleRefreshIn(pending: Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>, roomId: MiChatRoom['id'], delayMs: number): void {
+		const dueAt = Date.now() + delayMs;
+		const scheduled = pending.get(roomId);
+		if (scheduled != null) {
+			if (scheduled.dueAt <= dueAt) return;
+			clearTimeout(scheduled.timer);
+		}
+		const timer = setTimeout(() => {
+			pending.delete(roomId);
+			this.refresh(roomId).catch(() => {
+				// 次の webhook か通話参加時に再取得されるので握りつぶす
+			});
+		}, delayMs);
+		pending.set(roomId, { timer, dueAt });
 	}
 
 	/**
@@ -674,35 +678,99 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	/**
-	 * 参加者の現況を他のサーバーのメンバーに届ける。
-	 * - 前に送ったものと同じで、送ってから FEDERATION_RESEND_INTERVAL_MS 経っていなければ送らない
-	 * - 送るのはルームごとに FEDERATION_MIN_INTERVAL_MS に一度まで。送れなかった変化は、間隔が空いたときに読み直して最新の現況を送る
-	 * - 通話が終わったこと (空の現況) は参加者の現況とは別に数えて待たずに送るが、続けて終わったときは最初のものだけを送る
+	 * ルームの持ち主とメンバーを一度に引き、このサーバーで知らせる相手と、他のサーバーの届け先に分ける
 	 */
-	private async federateChanges(room: MiChatRoom, snapshot: VoiceSnapshot): Promise<void> {
+	private async audienceOf(room: MiChatRoom): Promise<RoomAudience> {
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
+		const users = await this.usersRepository.findBy({ id: In([room.ownerId, ...memberships.map(m => m.userId)]) });
+
+		// 他のサーバーが持つルーム (ミラー) の現況は、そのサーバーが送る
+		const owner = users.find(user => user.id === room.ownerId);
+		const localOwner = owner != null && owner.host == null ? owner : null;
+
+		const remoteInboxes = new Map<string, boolean>();
+		if (localOwner != null) {
+			for (const user of users) {
+				if (user.host == null) continue;
+				const inbox = user.sharedInbox ?? user.inbox;
+				if (inbox != null && !remoteInboxes.has(inbox)) remoteInboxes.set(inbox, user.sharedInbox != null);
+			}
+		}
+
+		return {
+			localUserIds: users.filter(user => user.host == null).map(user => user.id),
+			localOwner,
+			remoteInboxes,
+		};
+	}
+
+	/**
+	 * 参加者の現況を他のサーバーのメンバーに届ける。他のサーバーのメンバーがいないルームでは何もしない (間隔の鍵も読み直しも使わない)。
+	 * - 参加者のいる現況は、前に送ったものと同じで、送ってから FEDERATION_RESEND_INTERVAL_MS 経っていなければ送らない
+	 * - 送るのはルームごとに FEDERATION_MIN_INTERVAL_MS に一度まで。送れなかった変化は、間隔が空いたときに読み直して最新の現況を送る
+	 * - 通話が終わったこと (空の現況) は参加者の現況とは別に数えて待たずに送る。送る直前に記録を読み、同じ終わりを送ってあれば送らない
+	 * 送った記録は、すべての届け先への配送を積めたときだけ残す
+	 */
+	private async federateChanges(room: MiChatRoom, snapshot: VoiceSnapshot, audience: RoomAudience): Promise<void> {
+		if (audience.localOwner == null || audience.remoteInboxes.size === 0) return;
+
 		const participants = snapshot.participants.map(p => ({ identity: p.identity, screenSharing: p.screenSharing }));
 		const hash = createHash('sha256')
 			.update(JSON.stringify([...participants].sort((a, b) => a.identity.localeCompare(b.identity))))
 			.digest('hex');
-		const key = `chatVoice:federated:${room.id}`;
+		const ended = participants.length === 0;
 
-		const raw = await this.redisClient.get(key);
-		const last = raw != null ? JSON.parse(raw) as { hash: string; at: number } : null;
-		if (participants.length > 0 && last != null && last.hash === hash && Date.now() - last.at < FEDERATION_RESEND_INTERVAL_MS) return;
+		const last = ended ? null : await this.lastFederatedOf(room.id);
+		if (!ended && isStillFederated(last, hash)) return;
 
-		const gateKey = participants.length > 0 ? `chatVoice:federateGate:${room.id}` : `chatVoice:federateEmptyGate:${room.id}`;
+		const gateKey = ended ? `chatVoice:federateEmptyGate:${room.id}` : `chatVoice:federateGate:${room.id}`;
 		const opened = await this.redisClient.set(gateKey, '1', 'PX', FEDERATION_MIN_INTERVAL_MS, 'NX');
 		if (opened !== 'OK') {
-			// 相手に届いている現況と違うなら、間隔が空いたときに読み直す (読み直しはルームごとに一つにまとまる)
-			if (last?.hash !== hash) {
+			// 相手に届いている現況と違うなら、間隔の鍵が切れた後に読み直して送る (読み直しはルームごとに一つにまとまる)。
+			// 通話の終わりは記録によらず必ず読み直す。記録を読んでから決めるまでに、ほかのワーカーが参加者のいる現況を送るかもしれないため。
+			// 送るかどうかは、読み直したときに読む記録で決める
+			if (ended || last?.hash !== hash) {
 				const ttl = await this.redisClient.pttl(gateKey);
-				this.scheduleRefresh(room.id, ttl > 0 ? Math.min(ttl, FEDERATION_MIN_INTERVAL_MS) : REFRESH_DELAY_MS);
+				// 鍵は寿命の時刻ちょうどにはまだ残っているので、それを過ぎてから読み直す
+				this.scheduleRefreshIn(this.pendingFollowUps, room.id, ttl >= 0 ? Math.min(ttl, FEDERATION_MIN_INTERVAL_MS) + 1 : REFRESH_DELAY_MS);
 			}
 			return;
 		}
 
-		await this.federateSnapshot(room, participants, snapshot.updatedAt);
-		await this.redisClient.set(key, JSON.stringify({ hash, at: Date.now() }), 'EX', FEDERATION_RESEND_INTERVAL_MS / 1000);
+		// 通話の終わりは、送る直前に読んだ記録が同じ終わりなら送らない (相手には届いている)。
+		// 送らないので間隔の鍵も外し、次に参加者が出入りした後の終わりを待たせない
+		if (ended && isStillFederated(await this.lastFederatedOf(room.id), hash)) {
+			await this.redisClient.del(gateKey);
+			return;
+		}
+
+		await this.deliverSnapshot(room, audience, participants, snapshot.updatedAt);
+		await this.redisClient.set(`chatVoice:federated:${room.id}`, JSON.stringify({ hash, at: Date.now() } satisfies FederatedRecord), 'EX', FEDERATION_RESEND_INTERVAL_MS / 1000);
+	}
+
+	/** 他のサーバーに最後に送った現況の記録。FEDERATION_RESEND_INTERVAL_MS で切れる */
+	private async lastFederatedOf(roomId: MiChatRoom['id']): Promise<FederatedRecord | null> {
+		const raw = await this.redisClient.get(`chatVoice:federated:${roomId}`);
+		return raw != null ? JSON.parse(raw) as FederatedRecord : null;
+	}
+
+	/**
+	 * このサーバーが持つルームの通話の参加者の現況を、他のサーバーのメンバーに届ける。
+	 * 持ち主の名前で Update を作り、メンバーの inbox (共有 inbox があればそちら) ごとに一度だけ送る。
+	 * すべての配送を積み終えるまで待ち、どれかを積めなければ例外を投げる
+	 */
+	private async deliverSnapshot(room: MiChatRoom, audience: RoomAudience, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<void> {
+		const owner = audience.localOwner;
+		if (owner == null) return;
+
+		// 通話の参加者はルームのメンバーにだけ知らせるものなので、公開 (Public) 宛てにはしない
+		const activity = this.apRendererService.addContext({
+			type: 'Update',
+			actor: this.userEntityService.genLocalUserUri(owner.id),
+			object: this.apRendererService.renderChatRoomVoiceState(room, participants, updatedAt),
+			published: new Date(updatedAt).toISOString(),
+		});
+		await Promise.all([...audience.remoteInboxes].map(([inbox, isSharedInbox]) => this.queueService.deliver(owner, activity, inbox, isSharedInbox)));
 	}
 
 	/**
@@ -792,36 +860,7 @@ function hostnameOf(host: string): string | null {
 	}
 }
 
-/**
- * URL の出所 (スキーム・ホスト・ポート)。http(s) の URL でなければ null。
- * ホストの比較に UtilityService.extractDbHost を使うと、ポート付きのホストはすべて '' になって区別できない
- */
-function originOf(url: string): string | null {
-	try {
-		const parsed = new URL(url);
-		return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.origin : null;
-	} catch {
-		return null;
-	}
-}
-
-/** `${origin}/chat/rooms/${id}` の形のルーム URI から id を取り出す。クエリ・フラグメント・認証情報の付いたものは受け付けない */
-function roomIdOfUri(uri: string): string | null {
-	const url = new URL(uri);
-	if (url.search !== '' || url.hash !== '' || url.username !== '' || url.password !== '') return null;
-	return ROOM_PATH.exec(url.pathname)?.[1] ?? null;
-}
-
-/** ChatRoomVoiceState の participants を確かめる。形が違うか、ルームに入れる人数より多ければ null */
-function parseParticipants(value: unknown): { identity: string; screenSharing: boolean }[] | null {
-	if (!Array.isArray(value) || value.length > MAX_ROOM_MEMBERS + 1) return null;
-
-	const parsed: { identity: string; screenSharing: boolean }[] = [];
-	for (const participant of value as unknown[]) {
-		if (typeof participant !== 'object' || participant == null) return null;
-		const { id, screenSharing } = participant as Record<string, unknown>;
-		if (typeof id !== 'string' || typeof screenSharing !== 'boolean') return null;
-		parsed.push({ identity: id, screenSharing });
-	}
-	return parsed;
+/** 記録 (last) が、同じ現況 (hash) を FEDERATION_RESEND_INTERVAL_MS のうちに送ったことを示すか */
+function isStillFederated(last: FederatedRecord | null, hash: string): boolean {
+	return last != null && last.hash === hash && Date.now() - last.at < FEDERATION_RESEND_INTERVAL_MS;
 }

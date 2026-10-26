@@ -350,6 +350,18 @@ export interface IInvite extends IActivity {
 	type: 'Invite';
 }
 
+/**
+ * CherryPick: チャットルームの通話の参加者の現況。ルームを持つサーバーが、持ち主の Update として他のサーバーのメンバーに送る。
+ * id はルームの URI に `/voice` を付けたもの。participants の id は参加者の identity (ユーザーの URI)
+ */
+export interface IChatRoomVoiceState extends IObject {
+	type: 'ChatRoomVoiceState';
+	id: string;
+	room: string;
+	participants: { id: string; screenSharing: boolean }[];
+	updated: string;
+}
+
 export const isCreate = (object: IObject): object is ICreate => getApType(object) === 'Create';
 export const isDelete = (object: IObject): object is IDelete => getApType(object) === 'Delete';
 export const isUpdate = (object: IObject): object is IUpdate => getApType(object) === 'Update';
