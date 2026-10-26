@@ -9,25 +9,16 @@ import { nextTick, unref } from 'vue';
 
 const mocks = vi.hoisted(() => ({
 	popupMenu: vi.fn(),
+	setMicEnabled: vi.fn(),
 	inUse: { audioinput: undefined as string | undefined, audiooutput: undefined as string | undefined },
 }));
 
 vi.mock('@/os.js', () => ({ popupMenu: mocks.popupMenu, claimZIndex: () => 1000 }));
-vi.mock('@/preferences.js', async () => {
-	const { reactive } = await import('vue');
-	const s = reactive<Record<string, unknown>>({
-		'voiceCall.inputDeviceId': null,
-		'voiceCall.outputDeviceId': null,
-		'voiceCall.echoCancellation': true,
-		'voiceCall.noiseSuppression': true,
-		'voiceCall.autoGainControl': true,
-	});
-	return { prefer: { s, commit: (key: string, value: unknown) => { s[key] = value; }, model: () => ({ value: true }) } };
-});
+vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer() }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: { policies: { canScreenShare: false } } }));
-vi.mock('@/utility/voice-call.js', async () => {
+vi.mock('@/utility/voice-call.js', async importOriginal => {
+	const actual = await importOriginal<typeof import('@/utility/voice-call.js')>();
 	const { reactive } = await import('vue');
-	const { prefer } = await import('@/preferences.js');
 	const voiceCall = reactive({ status: 'connected', room: { id: 'r1', name: 'room 1' }, micEnabled: true, deafened: false, audioBlocked: false, screenSharing: false });
 	return {
 		voiceCall,
@@ -35,18 +26,23 @@ vi.mock('@/utility/voice-call.js', async () => {
 		leaveVoiceCall: vi.fn(),
 		resumeAudio: vi.fn(),
 		setDeafened: vi.fn(),
-		setMicEnabled: vi.fn(),
+		setMicEnabled: mocks.setMicEnabled,
 		startScreenShare: vi.fn(),
 		stopScreenShare: vi.fn(),
-		activeAudioDeviceId: (kind: 'audioinput' | 'audiooutput') => (prefer.s[kind === 'audioinput' ? 'voiceCall.inputDeviceId' : 'voiceCall.outputDeviceId'] as string | null) ?? mocks.inUse[kind] ?? 'default',
-		selectAudioDevice: async (kind: 'audioinput' | 'audiooutput', deviceId: string) => {
-			prefer.commit(kind === 'audioinput' ? 'voiceCall.inputDeviceId' : 'voiceCall.outputDeviceId', deviceId);
+		// 選択の保存と読み出しは本物を使う。ここでは通話を張らないので、本物が 'default' に落ちたときだけ通話中のデバイスを補う
+		activeAudioDeviceId: (kind: 'audioinput' | 'audiooutput') => {
+			const id = actual.activeAudioDeviceId(kind);
+			return id === 'default' ? mocks.inUse[kind] ?? 'default' : id;
 		},
+		selectAudioDevice: actual.selectAudioDevice,
 	};
 });
 
-import { prefer } from '@/preferences.js';
+import type { FakePrefer } from './fake-prefer.js';
+import { prefer as mockedPrefer } from '@/preferences.js';
 import XVoiceCallBar from '@/ui/_common_/voice-call-bar.vue';
+
+const prefer = mockedPrefer as unknown as FakePrefer;
 
 const devices = [
 	{ kind: 'audioinput', deviceId: 'default', label: 'Default' },
@@ -63,8 +59,17 @@ async function openMicMenu() {
 
 beforeEach(() => {
 	mocks.popupMenu.mockReset();
+	mocks.setMicEnabled.mockReset().mockResolvedValue(undefined);
 	mocks.inUse.audioinput = undefined;
-	prefer.commit('voiceCall.inputDeviceId', null);
+	prefer.reset({
+		'voiceCall.inputDeviceId': null,
+		'voiceCall.outputDeviceId': null,
+		'voiceCall.echoCancellation': true,
+		'voiceCall.noiseSuppression': true,
+		'voiceCall.autoGainControl': true,
+		'voiceCall.screenShareQuality': 'sharp',
+		'voiceCall.screenShareAudio': true,
+	});
 	Object.defineProperty(window.navigator, 'mediaDevices', { configurable: true, value: { enumerateDevices: async () => devices } });
 });
 
@@ -98,5 +103,22 @@ describe('voice call bar device menu', () => {
 		mocks.inUse.audioinput = 'gone';
 		const items = await openMicMenu();
 		expect(items.some(i => unref(i.active))).toBe(false);
+	});
+});
+
+describe('voice call bar audio processing', () => {
+	test.each([
+		'voiceCall.echoCancellation',
+		'voiceCall.noiseSuppression',
+		'voiceCall.autoGainControl',
+	])('turning %s off mid-call reopens the mic so the change applies', async key => {
+		render(XVoiceCallBar, { global: { stubs: { MkA: { template: '<a><slot /></a>' } } } });
+		await nextTick();
+
+		prefer.commit(key, false);
+		await nextTick();
+		await Promise.resolve();
+
+		expect(mocks.setMicEnabled.mock.calls).toEqual([[false], [true]]);
 	});
 });

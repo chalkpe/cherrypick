@@ -28,7 +28,6 @@ const mocks = vi.hoisted(() => {
 		confirm: vi.fn(),
 		popupMenu: vi.fn(),
 		instance: { features: { voiceCall: true, remoteVoiceCall: false } } as { features: { voiceCall: boolean; remoteVoiceCall: boolean } },
-		prefer: { s: { 'voiceCall.acknowledgedRemoteHosts': [] as string[] }, commit: vi.fn() },
 		me: { id: 'me', username: 'me', policies: { canVoiceCall: true, canScreenShare: true, chatAvailability: 'available' } },
 		joinVoiceCall: vi.fn(),
 		leaveVoiceCall: vi.fn(),
@@ -45,7 +44,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
 vi.mock('@/stream.js', () => ({ useStream: () => ({ useChannel: () => mocks.channel }) }));
-vi.mock('@/preferences.js', () => ({ prefer: mocks.prefer }));
+vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer() }));
 vi.mock('@/instance.js', () => ({ instance: mocks.instance }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog, confirm: mocks.confirm, popupMenu: mocks.popupMenu, toast: vi.fn(), claimZIndex: () => 1000 }));
@@ -89,7 +88,9 @@ vi.mock('@/utility/voice-call.js', async () => {
 	};
 });
 
+import type { FakePrefer } from './fake-prefer.js';
 import { i18n } from '@/i18n.js';
+import { prefer as mockedPrefer } from '@/preferences.js';
 import { voiceCall } from '@/utility/voice-call.js';
 import XVoice from '@/pages/chat/room.voice.vue';
 import XRoomPage from '@/pages/chat/room.vue';
@@ -111,14 +112,22 @@ const alice = { id: 'alice', username: 'alice', name: 'Alice', host: null };
 const bob = { id: 'bob', username: 'bob', name: 'Bob', host: null };
 const participant = (user: typeof alice, screenSharing = false) => ({ identity: `https://local.test/users/${user.id}`, user, screenSharing }) as any;
 const callState = voiceCall as unknown as Record<string, unknown>;
+const prefer = mockedPrefer as unknown as FakePrefer;
 
 beforeEach(() => {
 	mocks.channel = new mocks.FakeChannel();
 	mocks.instance.features.voiceCall = true;
 	mocks.instance.features.remoteVoiceCall = false;
-	mocks.prefer.s['voiceCall.acknowledgedRemoteHosts'] = [];
-	mocks.prefer.commit.mockReset().mockImplementation((key: string, value: unknown) => {
-		mocks.prefer.s[key as 'voiceCall.acknowledgedRemoteHosts'] = value as string[];
+	prefer.reset({
+		'voiceCall.acknowledgedRemoteHosts': [],
+		'voiceCall.inputDeviceId': null,
+		'voiceCall.outputDeviceId': null,
+		'voiceCall.echoCancellation': true,
+		'voiceCall.noiseSuppression': true,
+		'voiceCall.autoGainControl': true,
+		'voiceCall.screenShareQuality': 'sharp',
+		'voiceCall.screenShareAudio': true,
+		'voiceCall.participantVolumes': {},
 	});
 	mocks.misskeyApi.mockReset().mockResolvedValue([]);
 	for (const fn of [mocks.joinVoiceCall, mocks.leaveVoiceCall, mocks.setMicEnabled, mocks.setDeafened, mocks.resumeAudio, mocks.watchScreenShare, mocks.startScreenShare, mocks.stopScreenShare, mocks.apiWithDialog, mocks.confirm, mocks.popupMenu]) fn.mockReset();
@@ -211,7 +220,7 @@ describe('room voice panel', () => {
 			await flush();
 			expect(mocks.confirm).toHaveBeenCalledTimes(1);
 			expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.remoteHostNotice({ host: 'remote.test' }) }));
-			expect(mocks.prefer.commit).toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', ['remote.test']);
+			expect(prefer.commit).toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', ['remote.test']);
 			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
 
 			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
@@ -247,7 +256,7 @@ describe('room voice panel', () => {
 			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
 			await flush();
 			expect(mocks.joinVoiceCall).not.toHaveBeenCalled();
-			expect(mocks.prefer.commit).not.toHaveBeenCalled();
+			expect(prefer.commit).not.toHaveBeenCalled();
 		});
 	});
 
@@ -350,7 +359,7 @@ describe('voice call on the room page', () => {
 		await flush();
 		expect(mocks.confirm).toHaveBeenCalledTimes(1);
 		expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.remoteHostNotice({ host: 'remote.test' }) }));
-		expect(mocks.prefer.commit).toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', ['remote.test']);
+		expect(prefer.commit).toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', ['remote.test']);
 		expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
 		expect(mocks.joinVoiceCall).toHaveBeenCalledWith(mirror);
 

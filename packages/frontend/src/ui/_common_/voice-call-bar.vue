@@ -86,10 +86,11 @@ const statusText = computed(() => {
 });
 
 // 音声処理の設定はマイクを入れ直したときに反映されるので、通話中に変えたら入れ直す
+// prefer.s はリアクティブではないので、変更を追える prefer.r を見る
 watch(() => [
-	prefer.s['voiceCall.echoCancellation'],
-	prefer.s['voiceCall.noiseSuppression'],
-	prefer.s['voiceCall.autoGainControl'],
+	prefer.r['voiceCall.echoCancellation'].value,
+	prefer.r['voiceCall.noiseSuppression'].value,
+	prefer.r['voiceCall.autoGainControl'].value,
 ], async () => {
 	if (!voiceCall.micEnabled) return;
 	await setMicEnabled(false);

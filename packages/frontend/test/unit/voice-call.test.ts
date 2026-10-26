@@ -4,6 +4,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { computed, nextTick } from 'vue';
+import type { FakePrefer } from './fake-prefer.js';
 
 const lk = vi.hoisted(() => {
 	class Emitter {
@@ -101,18 +103,16 @@ const mocks = vi.hoisted(() => ({
 	misskeyApi: vi.fn(),
 	toast: vi.fn(),
 	alert: vi.fn(),
-	prefer: {
-		s: {} as Record<string, unknown>,
-		commit: vi.fn(),
-	},
 }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
 vi.mock('@/os.js', () => ({ toast: mocks.toast, alert: mocks.alert }));
-vi.mock('@/preferences.js', () => ({ prefer: mocks.prefer }));
+vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer() }));
 
 import { i18n } from '@/i18n.js';
-import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, setParticipantVolume, startScreenShare, stopScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import { prefer as mockedPrefer } from '@/preferences.js';
+import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, setParticipantVolume, startScreenShare, stopScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
 
+const prefer = mockedPrefer as unknown as FakePrefer;
 const room1 = { id: 'r1', name: 'room 1' } as any;
 const room2 = { id: 'r2', name: 'room 2' } as any;
 const lastRoom = () => lk.FakeRoom.instances[lk.FakeRoom.instances.length - 1];
@@ -129,7 +129,7 @@ beforeEach(() => {
 	mocks.misskeyApi.mockReset().mockResolvedValue({ url: 'https://local.test/livekit', token: 't' });
 	mocks.toast.mockReset();
 	mocks.alert.mockReset();
-	mocks.prefer.s = {
+	prefer.reset({
 		'voiceCall.inputDeviceId': null,
 		'voiceCall.outputDeviceId': null,
 		'voiceCall.echoCancellation': true,
@@ -138,9 +138,6 @@ beforeEach(() => {
 		'voiceCall.participantVolumes': {},
 		'voiceCall.screenShareQuality': 'sharp',
 		'voiceCall.screenShareAudio': true,
-	};
-	mocks.prefer.commit.mockReset().mockImplementation((key: string, value: unknown) => {
-		mocks.prefer.s[key] = value;
 	});
 });
 
@@ -237,7 +234,7 @@ describe('voice call controller', () => {
 	});
 
 	test('deafening silences everyone and the mic, undeafening restores saved volumes', async () => {
-		mocks.prefer.s['voiceCall.participantVolumes'] = { a: 0.5 };
+		prefer.commit('voiceCall.participantVolumes', { a: 0.5 });
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
 		const b = remoteParticipant('b');
@@ -259,13 +256,13 @@ describe('voice call controller', () => {
 	});
 
 	test('keeps participant volume within what an audio element accepts', async () => {
-		mocks.prefer.s['voiceCall.participantVolumes'] = { b: 1.8 };
+		prefer.commit('voiceCall.participantVolumes', { b: 1.8 });
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
 		const b = remoteParticipant('b');
 
 		setParticipantVolume('a', 1.5);
-		expect(mocks.prefer.s['voiceCall.participantVolumes']).toMatchObject({ a: 1 });
+		expect(prefer.s['voiceCall.participantVolumes']).toMatchObject({ a: 1 });
 		expect(a.setVolume).toHaveBeenLastCalledWith(1, lk.Track.Source.ScreenShareAudio);
 
 		setDeafened(true);
@@ -311,7 +308,7 @@ describe('voice call controller', () => {
 	});
 
 	test('turning the mic back on uses the saved input device', async () => {
-		mocks.prefer.s['voiceCall.inputDeviceId'] = 'mic-2';
+		prefer.commit('voiceCall.inputDeviceId', 'mic-2');
 		await joinVoiceCall(room1);
 		await setMicEnabled(false);
 		await setMicEnabled(true);
@@ -322,7 +319,7 @@ describe('voice call controller', () => {
 
 describe('active audio device', () => {
 	test('prefers the saved device', async () => {
-		mocks.prefer.s['voiceCall.outputDeviceId'] = 'spk-2';
+		prefer.commit('voiceCall.outputDeviceId', 'spk-2');
 		await joinVoiceCall(room1);
 		lastRoom().getActiveDevice.mockReturnValue('spk-1');
 		expect(activeAudioDeviceId('audiooutput')).toBe('spk-2');
@@ -333,6 +330,19 @@ describe('active audio device', () => {
 		lastRoom().getActiveDevice.mockImplementation(kind => (kind === 'audioinput' ? 'mic-9' : undefined));
 		expect(activeAudioDeviceId('audioinput')).toBe('mic-9');
 		expect(lastRoom().getActiveDevice).toHaveBeenCalledWith('audioinput');
+	});
+
+	// 設定メニューのチェック位置は computed で読むので、選び直したら追従しなければならない
+	test('follows a newly picked device when read inside a computed', async () => {
+		await joinVoiceCall(room1);
+		lastRoom().getActiveDevice.mockReturnValue('mic-1');
+		const active = computed(() => activeAudioDeviceId('audioinput'));
+		expect(active.value).toBe('mic-1');
+
+		await selectAudioDevice('audioinput', 'mic-2');
+		await nextTick();
+
+		expect(active.value).toBe('mic-2');
 	});
 
 	test('falls back to default outside a call or when the room does not know', async () => {
@@ -361,8 +371,8 @@ describe('screen sharing', () => {
 	});
 
 	test('uses the smooth preset when chosen', async () => {
-		mocks.prefer.s['voiceCall.screenShareQuality'] = 'smooth';
-		mocks.prefer.s['voiceCall.screenShareAudio'] = false;
+		prefer.commit('voiceCall.screenShareQuality', 'smooth');
+		prefer.commit('voiceCall.screenShareAudio', false);
 		await joinVoiceCall(room1);
 
 		await startScreenShare();
