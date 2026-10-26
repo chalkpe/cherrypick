@@ -346,14 +346,18 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			await this.redisClient.sadd(ACTIVE_ROOMS_KEY, roomId);
 		}
 
-		const packed = await this.pack(roomId, snapshot, null);
-		this.globalEventService.publishChatRoomStream(roomId, 'voiceState', packed);
-
 		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
 		if (room == null) return;
-		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId });
-		const memberIds = new Set([room.ownerId, ...memberships.map(m => m.userId)]);
-		for (const userId of memberIds) {
+
+		const packed = await this.pack(roomId, snapshot, null);
+		// 通話の参加者はルームの今のメンバーにだけ知らせる。ルームのストリーム (chatRoom) はメンバーでないモデレーターも購読でき、
+		// 抜けたメンバーの購読も続くので使わない。main ストリームを持つのはこのサーバーのユーザーだけ
+		const [memberships, localOwners] = await Promise.all([
+			this.chatRoomMembershipsRepository.findBy({ roomId, user: { host: IsNull() } }),
+			this.usersRepository.findBy({ id: room.ownerId, host: IsNull() }),
+		]);
+		const recipientIds = new Set([...localOwners.map(owner => owner.id), ...memberships.map(m => m.userId)]);
+		for (const userId of recipientIds) {
 			this.globalEventService.publishMainStream(userId, 'chatRoomVoiceState', packed);
 		}
 
@@ -451,9 +455,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		await this.redisClient.set(this.keyOf(room.id), JSON.stringify(snapshot), 'EX', REMOTE_SNAPSHOT_TTL_SECONDS);
 
 		const packed = await this.pack(room.id, snapshot, null);
-		this.globalEventService.publishChatRoomStream(room.id, 'voiceState', packed);
 
-		// 持ち主は他のサーバーのユーザーなので、このサーバーのメンバーにだけ知らせる
+		// 持ち主は他のサーバーのユーザーなので、このサーバーのメンバーにだけ知らせる (ルームのストリームを使わない理由は refresh と同じ)
 		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id, user: { host: IsNull() } });
 		for (const membership of memberships) {
 			this.globalEventService.publishMainStream(membership.userId, 'chatRoomVoiceState', packed);

@@ -1003,7 +1003,6 @@ export type Channels = {
                 user?: UserLite;
                 messageId: ChatMessageLite['id'];
             }) => void;
-            voiceState: (payload: ChatRoomVoiceState) => void;
         };
         receives: {
             read: {

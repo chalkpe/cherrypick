@@ -184,7 +184,6 @@ export interface ChatEventTypes {
 		user?: Packed<'UserLite'>;
 		messageId: MiChatMessage['id'];
 	};
-	voiceState: Packed<'ChatRoomVoiceState'>;
 }
 
 export interface ReversiEventTypes {

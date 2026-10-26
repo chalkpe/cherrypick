@@ -197,18 +197,17 @@ describe('ChatVoiceService', () => {
 		vi.useRealTimers();
 	});
 
-	test('stores the participant snapshot and announces it to the room and its members', async () => {
+	test('stores the participant snapshot and announces it to the room\'s members', async () => {
 		f.liveKitService.listParticipants.mockResolvedValue([{ identity: 'i1', userId: 'u1', screenSharing: true, micTrackSid: 'TR' }]);
 
 		await f.service.refresh('r1');
 
 		expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).participants).toEqual([{ identity: 'i1', userId: 'u1', screenSharing: true }]);
-		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('r1', 'voiceState', {
+		expect(f.globalEventService.publishMainStream.mock.calls.map(call => call[0]).sort()).toEqual(['m1', 'owner']);
+		expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('owner', 'chatRoomVoiceState', {
 			roomId: 'r1',
 			participants: [{ identity: 'i1', user: expect.objectContaining({ id: 'u1' }), screenSharing: true }],
 		});
-		expect(f.globalEventService.publishMainStream.mock.calls.map(call => call[0]).sort()).toEqual(['m1', 'owner']);
-		expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('owner', 'chatRoomVoiceState', expect.objectContaining({ roomId: 'r1' }));
 	});
 
 	test('clears the snapshot when the call becomes empty', async () => {
@@ -218,7 +217,7 @@ describe('ChatVoiceService', () => {
 		await f.service.refresh('r1');
 
 		expect(f.redis.store.has('chatVoice:r1')).toBe(false);
-		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('r1', 'voiceState', { roomId: 'r1', participants: [] });
+		expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('owner', 'chatRoomVoiceState', { roomId: 'r1', participants: [] });
 	});
 
 	test('leaves out participants whose user no longer exists', async () => {
@@ -230,7 +229,7 @@ describe('ChatVoiceService', () => {
 
 		await f.service.refresh('r1');
 
-		expect(f.globalEventService.publishChatRoomStream.mock.calls[0][2].participants.map((p: { identity: string }) => p.identity)).toEqual(['i1']);
+		expect(f.globalEventService.publishMainStream.mock.calls[0][2].participants.map((p: { identity: string }) => p.identity)).toEqual(['i1']);
 	});
 
 	test('expires snapshots so a lost LiveKit cannot leave phantom calls', async () => {
@@ -512,6 +511,82 @@ describe('ChatVoiceService', () => {
 		});
 	});
 
+	// 通話の参加者はルームの今のメンバーにだけ知らせる。ルームのストリーム (chatRoom) は、メンバーでないモデレーターも購読でき、
+	// 抜けたメンバーの購読も続くので使わない
+	describe('who hears about the participants', () => {
+		/** ルームのメンバーを userIds にする。メンバーの引き方 (このサーバーのユーザーだけ・userId の In) はそのまま当てる */
+		function withMembers(userIds: string[]) {
+			f.chatRoomMembershipsRepository.findBy.mockImplementation(async (where: Record<string, unknown> = {}) => {
+				const localOnly = (where.user as { host?: unknown } | undefined)?.host instanceof FindOperator;
+				const userIdIn = where.userId instanceof FindOperator ? where.userId.value as string[] : null;
+				return userIds
+					.filter(userId => !localOnly || KNOWN_USERS.find(user => user.id === userId)?.host == null)
+					.filter(userId => userIdIn == null || userIdIn.includes(userId))
+					.map(userId => ({ roomId: 'r1', userId }));
+			});
+		}
+
+		const recipients = () => f.globalEventService.publishMainStream.mock.calls.map(call => call[0]).sort();
+
+		test('refresh sends nothing to the chat room stream', async () => {
+			f.liveKitService.listParticipants.mockResolvedValue([{ identity: 'i1', userId: 'u1', screenSharing: true, micTrackSid: null }]);
+			await f.service.refresh('r1');
+			f.liveKitService.listParticipants.mockResolvedValue([]);
+			await f.service.refresh('r1');
+
+			expect(f.globalEventService.publishMainStream).toHaveBeenCalled();
+			expect(f.globalEventService.publishChatRoomStream).not.toHaveBeenCalled();
+		});
+
+		test('storeRemoteSnapshot sends nothing to the chat room stream', async () => {
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: true }], 2000);
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [], 3000);
+
+			expect(f.globalEventService.publishMainStream).toHaveBeenCalled();
+			expect(f.globalEventService.publishChatRoomStream).not.toHaveBeenCalled();
+		});
+
+		test('refresh tells exactly the local members and the local owner', async () => {
+			withMembers(['u1', 'u2', 'rm1']);
+			f.liveKitService.listParticipants.mockResolvedValue([{ identity: 'i1', userId: 'u1', screenSharing: false, micTrackSid: null }]);
+
+			await f.service.refresh('r1');
+
+			expect(recipients()).toEqual(['owner', 'u1', 'u2']);
+		});
+
+		test('refresh does not tell an owner on another server', async () => {
+			withMembers(['u1', 'rm1']);
+			f.chatRoomsRepository.findOneBy.mockResolvedValue({ id: 'r1', ownerId: 'rm3' });
+			f.liveKitService.listParticipants.mockResolvedValue([{ identity: 'i1', userId: 'u1', screenSharing: false, micTrackSid: null }]);
+
+			await f.service.refresh('r1');
+
+			expect(recipients()).toEqual(['u1']);
+		});
+
+		test('refresh stops telling a member who left the room', async () => {
+			withMembers(['u1', 'u2']);
+			f.liveKitService.listParticipants.mockResolvedValue([{ identity: 'i1', userId: 'u1', screenSharing: false, micTrackSid: null }]);
+			await f.service.refresh('r1');
+			expect(recipients()).toEqual(['owner', 'u1', 'u2']);
+
+			withMembers(['u1']);
+			f.globalEventService.publishMainStream.mockClear();
+			await f.service.refresh('r1');
+
+			expect(recipients()).toEqual(['owner', 'u1']);
+		});
+
+		test('storeRemoteSnapshot tells exactly the local members', async () => {
+			withMembers(['u1', 'u2', 'rm1']);
+
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], 2000);
+
+			expect(recipients()).toEqual(['u1', 'u2']);
+		});
+	});
+
 	describe('mirror rooms', () => {
 		test('storeRemoteSnapshot resolves identities to local users and ignores older snapshots', async () => {
 			await f.service.storeRemoteSnapshot(mirrorRoom(), [
@@ -530,27 +605,26 @@ describe('ChatVoiceService', () => {
 			});
 
 			const stored = f.redis.store.get('chatVoice:r1');
-			f.globalEventService.publishChatRoomStream.mockClear();
+			f.globalEventService.publishMainStream.mockClear();
 			for (const updatedAt of [1000, 2000]) {
 				await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://other.test/users/x', screenSharing: true }], updatedAt);
 			}
 			expect(f.redis.store.get('chatVoice:r1')).toBe(stored);
-			expect(f.globalEventService.publishChatRoomStream).not.toHaveBeenCalled();
+			expect(f.globalEventService.publishMainStream).not.toHaveBeenCalled();
 
 			await f.service.storeRemoteSnapshot(mirrorRoom(), [], 3000);
 			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!)).toEqual({ participants: [], updatedAt: 3000 });
 		});
 
-		test('storeRemoteSnapshot announces to the room and its local members, not the remote owner', async () => {
+		test('storeRemoteSnapshot announces to the room\'s local members, not the remote owner', async () => {
 			await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], 2000);
 
-			expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('r1', 'voiceState', {
+			expect(f.chatRoomMembershipsRepository.findBy).toHaveBeenCalledWith({ roomId: 'r1', user: { host: IsNull() } });
+			expect(f.globalEventService.publishMainStream.mock.calls.map(call => call[0])).toEqual(['m1']);
+			expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('m1', 'chatRoomVoiceState', {
 				roomId: 'r1',
 				participants: [{ identity: 'https://local.test/users/u1', user: expect.objectContaining({ id: 'u1' }), screenSharing: false }],
 			});
-			expect(f.chatRoomMembershipsRepository.findBy).toHaveBeenCalledWith({ roomId: 'r1', user: { host: IsNull() } });
-			expect(f.globalEventService.publishMainStream.mock.calls.map(call => call[0])).toEqual(['m1']);
-			expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('m1', 'chatRoomVoiceState', expect.objectContaining({ roomId: 'r1' }));
 		});
 
 		test('storeRemoteSnapshot keeps mirror rooms out of the periodic LiveKit re-read', async () => {
