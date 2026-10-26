@@ -71,7 +71,7 @@ import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
 import { $i } from '@/i.js';
-import { canShareScreen, leaveVoiceCall, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
+import { activeAudioDeviceId, canShareScreen, leaveVoiceCall, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
 
 const zIndex = os.claimZIndex('middle');
 
@@ -98,11 +98,11 @@ watch(() => [
 
 async function deviceItems(kind: 'audioinput' | 'audiooutput'): Promise<MenuItem[]> {
 	const devices = (await window.navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === kind && device.deviceId !== '');
-	const selected = prefer.s[kind === 'audioinput' ? 'voiceCall.inputDeviceId' : 'voiceCall.outputDeviceId'];
 	return devices.map(device => ({
 		type: 'radioOption',
 		text: device.label || device.deviceId,
-		active: device.deviceId === selected,
+		// メニューは選択後も開いたままなので、設定の変更にチェックが追従するよう computed にする
+		active: computed(() => device.deviceId === activeAudioDeviceId(kind)),
 		action: () => {
 			selectAudioDevice(kind, device.deviceId);
 		},

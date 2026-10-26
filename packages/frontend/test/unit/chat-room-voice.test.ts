@@ -77,6 +77,7 @@ vi.mock('@/utility/voice-call.js', async () => {
 		canShareScreen: () => true,
 		attachScreenShare: () => () => {},
 		selectAudioDevice: vi.fn(),
+		activeAudioDeviceId: () => 'default',
 		localIdentityOf: (userId: string) => `https://local.test/users/${userId}`,
 	};
 });

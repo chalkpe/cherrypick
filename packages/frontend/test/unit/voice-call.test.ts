@@ -78,6 +78,7 @@ const lk = vi.hoisted(() => {
 			this.canPlaybackAudio = true;
 		});
 		switchActiveDevice = vi.fn().mockResolvedValue(true);
+		getActiveDevice = vi.fn((_kind: string): string | undefined => undefined);
 		constructor(public options: unknown) {
 			super();
 			FakeRoom.instances.push(this);
@@ -110,7 +111,7 @@ vi.mock('@/os.js', () => ({ toast: mocks.toast, alert: mocks.alert }));
 vi.mock('@/preferences.js', () => ({ prefer: mocks.prefer }));
 
 import { i18n } from '@/i18n.js';
-import { attachScreenShare, joinVoiceCall, leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, setParticipantVolume, startScreenShare, stopScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, setParticipantVolume, startScreenShare, stopScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
 
 const room1 = { id: 'r1', name: 'room 1' } as any;
 const room2 = { id: 'r2', name: 'room 2' } as any;
@@ -316,6 +317,28 @@ describe('voice call controller', () => {
 		await setMicEnabled(true);
 		expect(lastRoom().localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(true, expect.objectContaining({ deviceId: 'mic-2' }));
 		expect(voiceCall.micEnabled).toBe(true);
+	});
+});
+
+describe('active audio device', () => {
+	test('prefers the saved device', async () => {
+		mocks.prefer.s['voiceCall.outputDeviceId'] = 'spk-2';
+		await joinVoiceCall(room1);
+		lastRoom().getActiveDevice.mockReturnValue('spk-1');
+		expect(activeAudioDeviceId('audiooutput')).toBe('spk-2');
+	});
+
+	test('falls back to the device the room is using', async () => {
+		await joinVoiceCall(room1);
+		lastRoom().getActiveDevice.mockImplementation(kind => (kind === 'audioinput' ? 'mic-9' : undefined));
+		expect(activeAudioDeviceId('audioinput')).toBe('mic-9');
+		expect(lastRoom().getActiveDevice).toHaveBeenCalledWith('audioinput');
+	});
+
+	test('falls back to default outside a call or when the room does not know', async () => {
+		expect(activeAudioDeviceId('audioinput')).toBe('default');
+		await joinVoiceCall(room1);
+		expect(activeAudioDeviceId('audiooutput')).toBe('default');
 	});
 });
 

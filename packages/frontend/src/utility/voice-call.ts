@@ -146,6 +146,11 @@ export function setParticipantVolume(identity: string, volume: number): void {
 	if (participant != null) applyVolume(participant);
 }
 
+// メニューのチェック位置に使う。保存済みの選択を優先し、未選択なら通話が実際に使っているデバイスを返す
+export function activeAudioDeviceId(kind: 'audioinput' | 'audiooutput'): string {
+	return prefer.s[kind === 'audioinput' ? 'voiceCall.inputDeviceId' : 'voiceCall.outputDeviceId'] ?? current?.getActiveDevice(kind) ?? 'default';
+}
+
 export async function selectAudioDevice(kind: 'audioinput' | 'audiooutput', deviceId: string): Promise<void> {
 	prefer.commit(kind === 'audioinput' ? 'voiceCall.inputDeviceId' : 'voiceCall.outputDeviceId', deviceId);
 	if (current == null) return;
