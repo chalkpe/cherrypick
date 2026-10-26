@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/vue';
-import { defineComponent, h, nextTick } from 'vue';
+import { defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
 
 const mocks = vi.hoisted(() => {
 	class FakeChannel {
@@ -52,7 +52,10 @@ vi.mock('@/utility/fullscreen.js', () => ({ requestFullscreen: mocks.requestFull
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 // ルーム画面のテストでは通話以外の部分は関係ないので空のコンポーネントに差し替える
 vi.mock('@/pages/chat/XMessage.vue', () => ({ default: { render: () => null } }));
-vi.mock('@/pages/chat/room.form.vue', () => ({ default: { render: () => null } }));
+// 入力欄は並べ方が変わっても作り直さないことを確かめるので本物を使う。ブラウザの入力まわりに触る部品だけ差し替える
+vi.mock('@/utility/autocomplete.js', () => ({ Autocomplete: class { detach() {} } }));
+vi.mock('@/utility/emoji-picker.js', () => ({ emojiPicker: { show: vi.fn() } }));
+vi.mock('@/utility/drive.js', () => ({ selectFile: vi.fn() }));
 vi.mock('@/pages/chat/room.search.vue', () => ({ default: { render: () => null } }));
 vi.mock('@/pages/chat/room.members.vue', () => ({ default: { render: () => null } }));
 vi.mock('@/pages/chat/room.info.vue', () => ({ default: { render: () => null } }));
@@ -97,6 +100,7 @@ import XVoice from '@/pages/chat/room.voice.vue';
 import XRoomPage from '@/pages/chat/room.vue';
 import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { provideMetadataReceiver } from '@/page.js';
+import { updateDeviceKind } from '@/utility/device-kind.js';
 import XVoiceCallBar from '@/ui/_common_/voice-call-bar.vue';
 import XScreen from '@/pages/chat/room.voice.screen.vue';
 import XParticipant from '@/pages/chat/room.voice.participant.vue';
@@ -142,6 +146,8 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	// 入力欄の書きかけはテストをまたいで残さない
+	window.localStorage.clear();
 });
 
 async function flush() {
@@ -266,6 +272,16 @@ describe('room voice panel', () => {
 		});
 	});
 
+	test.each(['connecting', 'reconnecting'] as const)('shows the call status (%s) in the card title for screen readers too', async status => {
+		Object.assign(callState, { status, room });
+		renderCard();
+		await flush();
+
+		const title = screen.getByText(i18n.ts._voiceCall[status]);
+		expect(title.closest('[aria-live="polite"]')).not.toBeNull();
+		expect(screen.queryByText(i18n.ts._voiceCall.inCall)).toBeNull();
+	});
+
 	test('renders nothing when voice calls are disabled on this server', async () => {
 		mocks.instance.features.voiceCall = false;
 		renderCard();
@@ -287,6 +303,7 @@ describe('voice call on the room page', () => {
 				<div role="tablist"><button v-for="t in tabs" :key="t.key" role="tab" :aria-selected="t.key === tab" @click="$emit('update:tab', t.key)">{{ t.title }}</button></div>
 				<div data-testid="header-actions"><button v-for="action in actions" class="_button" :aria-label="action.text" @click.stop="action.handler"><i :class="action.icon"></i></button></div>
 				<slot />
+				<div data-testid="page-footer"><slot name="footer" /></div>
 			</div>`,
 		},
 		// カードが MkStickyContainer のヘッダーに置かれているか (= スクロールしても上に貼り付くか) を見る
@@ -294,7 +311,8 @@ describe('voice call on the room page', () => {
 		MkLoading: { template: '<div></div>' },
 	};
 
-	async function renderRoom(target: typeof room, states: unknown[] | Promise<unknown[]>) {
+	// shown を渡すと、本物と同じく KeepAlive の中に置き、false にすると裏に回す
+	async function renderRoom(target: typeof room, states: unknown[] | Promise<unknown[]>, shown?: ReturnType<typeof ref<boolean>>) {
 		mocks.misskeyApi.mockImplementation((endpoint: string) => {
 			if (endpoint === 'chat/rooms/show') return Promise.resolve(target);
 			if (endpoint === 'chat/rooms/voice/states') return states instanceof Promise ? states : Promise.resolve(states);
@@ -303,7 +321,8 @@ describe('voice call on the room page', () => {
 		const host = defineComponent({
 			setup() {
 				provideMetadataReceiver(() => {});
-				return () => h(XRoomPage, { roomId: target.id });
+				if (shown == null) return () => h(XRoomPage, { roomId: target.id });
+				return () => h(KeepAlive, null, [shown.value ? h(XRoomPage, { roomId: target.id, key: 'room' }) : h('div', { key: 'other' })]);
 			},
 		});
 		render(host, { global: { stubs: pageStubs } });
@@ -377,6 +396,13 @@ describe('voice call on the room page', () => {
 
 		await openTab(i18n.ts._chat.messages);
 		expect(headerIcons()).toEqual(['ti ti-dots']);
+	});
+
+	test('names the header menu action', async () => {
+		await renderRoom(room, []);
+
+		const menu = within(screen.getByTestId('header-actions')).getByLabelText(i18n.ts.menu);
+		expect(menu.querySelector('i')!.className).toBe('ti ti-dots');
 	});
 
 	test('does not offer the header join on the other tabs while I am in the call', async () => {
@@ -499,11 +525,216 @@ describe('voice call on the room page', () => {
 			await renderRoom(ownedRoom, [{ roomId: 'r1', participants: [participant(bob)] }]);
 			await setPageWidth(1280);
 
-			await fireEvent.click(screen.getByLabelText(i18n.ts.menu));
+			// タイルは参加者の名前のついたまとまりなので、中のボタンが誰のものか読み上げで分かる
+			await fireEvent.click(within(screen.getByRole('group', { name: 'Bob' })).getByLabelText(i18n.ts.menu));
 			const items = mocks.popupMenu.mock.calls[mocks.popupMenu.mock.calls.length - 1][0] as { text?: string; action?: () => unknown }[];
 			await items.find(item => item.text === i18n.ts._voiceCall.kick)!.action!();
 
 			expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/voice/kick', { roomId: 'r1', userId: 'bob' });
+		});
+
+		test.each(['connecting', 'reconnecting'] as const)('shows the call status (%s) in the stage title for screen readers too', async status => {
+			Object.assign(callState, { status, room });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await setPageWidth(1280);
+			expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+
+			const title = screen.getByText(i18n.ts._voiceCall[status]);
+			expect(title.closest('[aria-live="polite"]')).not.toBeNull();
+			expect(screen.queryByText(i18n.ts._voiceCall.inCall)).toBeNull();
+		});
+
+		test('opens straight into the two-pane view when coming back to the messages tab', async () => {
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await setPageWidth(1280);
+
+			await openTab(i18n.ts._chat.members);
+			await openTab(i18n.ts._chat.messages);
+
+			// 測り直す前から、前に測った幅で並べる (狭い形を一度出してから切り替えない)
+			expect(screen.getByTestId('sticky-header').textContent?.trim()).toBe('');
+			expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+		});
+
+		test('ignores the size reported while the page waits in the background', async () => {
+			const shown = ref(true);
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }], shown);
+			await setPageWidth(1280);
+
+			shown.value = false;
+			await flush();
+			// KeepAlive で裏に回ったページはどこにも描かれないので、幅 0 と知らされる
+			await setPageWidth(0);
+
+			shown.value = true;
+			await flush();
+			expect(screen.getByTestId('sticky-header').textContent?.trim()).toBe('');
+			expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+		});
+
+		test('never puts the call beside the chat on a phone', async () => {
+			updateDeviceKind('smartphone');
+			try {
+				await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+				await setPageWidth(1280);
+
+				expect(stickyCard().getByText('Alice')).toBeTruthy();
+				expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
+			} finally {
+				updateDeviceKind(null);
+			}
+		});
+
+		describe('while a shared screen is fullscreen', () => {
+			let fullscreenElement: Element | null = null;
+
+			beforeEach(() => {
+				// happy-dom には全画面の API が無いので、全画面になっている要素をテストから決める
+				Object.defineProperty(window.document, 'fullscreenElement', { configurable: true, get: () => fullscreenElement });
+			});
+
+			afterEach(() => {
+				fullscreenElement = null;
+				Reflect.deleteProperty(window.document, 'fullscreenElement');
+			});
+
+			function setFullscreen(el: Element | null) {
+				fullscreenElement = el;
+				window.document.dispatchEvent(new Event('fullscreenchange'));
+			}
+
+			async function nextFrames() {
+				await new Promise<void>(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+				await flush();
+			}
+
+			// 狭いページの通話カードで共有画面を見て、その画面を全画面にする
+			async function enterFullscreenFromCard() {
+				Object.assign(callState, { status: 'connected', room, micEnabled: true, watchingIdentity: 'https://local.test/users/alice' });
+				await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice, true)] }]);
+				await setPageWidth(700);
+				const video = screen.getByTestId('sticky-header').querySelector('video')!;
+				setFullscreen(video.parentElement);
+				await flush();
+				return video;
+			}
+
+			test('keeps the card when going fullscreen widens the page', async () => {
+				const video = await enterFullscreenFromCard();
+				// 全画面にするとページの幅も画面いっぱいに広がる
+				await setPageWidth(1280);
+
+				// カードを外すと全画面の要素も消えて全画面が解けてしまうので、並べ方を変えない
+				expect(video.isConnected).toBe(true);
+				expect(stickyCard().getByLabelText(i18n.ts._voiceCall.fullscreen)).toBeTruthy();
+				expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
+			});
+
+			test('picks the layout from the width again after leaving fullscreen', async () => {
+				await enterFullscreenFromCard();
+				await setPageWidth(1280);
+
+				setFullscreen(null);
+				await nextFrames();
+
+				expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+			});
+
+			test('does not flash the two-pane view while the page shrinks back after fullscreen', async () => {
+				const video = await enterFullscreenFromCard();
+				await setPageWidth(1280);
+
+				// 全画面が解けたことは、ページの幅が戻ったと知らされるより先に届く
+				setFullscreen(null);
+				await flush();
+				await setPageWidth(700);
+				await nextFrames();
+
+				expect(video.isConnected).toBe(true);
+				expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
+			});
+		});
+
+		describe('chat form', () => {
+			const pageFooter = () => screen.getByTestId('page-footer');
+			const theTextarea = () => {
+				const textareas = window.document.querySelectorAll('textarea');
+				expect(textareas).toHaveLength(1);
+				return textareas[0];
+			};
+			const joins = async (...users: (typeof alice)[]) => {
+				mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: users.map(user => participant(user)) });
+				await flush();
+			};
+
+			test('renders exactly once in either layout', async () => {
+				await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+				await setPageWidth(700);
+				expect(pageFooter().contains(theTextarea())).toBe(true);
+
+				// 並べているときは、メッセージの欄の下に置く
+				await setPageWidth(1280);
+				expect(pageFooter().contains(theTextarea())).toBe(false);
+				expect(precedes(chatPane(), theTextarea())).toBe(true);
+				expect(precedes(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft), theTextarea())).toBe(true);
+
+				await setPageWidth(700);
+				expect(pageFooter().contains(theTextarea())).toBe(true);
+			});
+
+			test('stays the same form, keeping its focus, when people join and leave the call', async () => {
+				await renderRoom(room, []);
+				await setPageWidth(1280);
+				const textarea = theTextarea();
+				await fireEvent.update(textarea, 'hello');
+				textarea.focus();
+				textarea.setSelectionRange(1, 3);
+
+				await joins(alice);
+				expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+				expect(theTextarea()).toBe(textarea);
+				expect(window.document.activeElement).toBe(textarea);
+				expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([1, 3]);
+
+				await joins();
+				expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
+				expect(theTextarea()).toBe(textarea);
+				expect(window.document.activeElement).toBe(textarea);
+				expect(textarea.value).toBe('hello');
+			});
+
+			test('waits for the text being composed before switching the layout', async () => {
+				await renderRoom(room, []);
+				await setPageWidth(1280);
+				const textarea = theTextarea();
+				textarea.focus();
+
+				await fireEvent.compositionStart(textarea);
+				await joins(alice);
+				// 入力欄を動かすと変換中の文字が確定されたり消えたりするので、変換が終わるまで並べ方を変えない
+				expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
+				expect(pageFooter().contains(textarea)).toBe(true);
+
+				await fireEvent.compositionEnd(textarea);
+				await flush();
+				expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+				expect(theTextarea()).toBe(textarea);
+				expect(window.document.activeElement).toBe(textarea);
+			});
+
+			test('does not send a message twice when the layout switches while it is being sent', async () => {
+				await renderRoom(room, []);
+				await setPageWidth(1280);
+				const respond = mocks.misskeyApi.getMockImplementation()!;
+				mocks.misskeyApi.mockImplementation((endpoint: string, ...rest: unknown[]) => endpoint === 'chat/messages/create-to-room' ? new Promise(() => {}) : respond(endpoint, ...rest));
+
+				await fireEvent.update(theTextarea(), 'hello');
+				await fireEvent.click(screen.getByTitle(i18n.ts.send));
+				await joins(alice);
+				await fireEvent.click(screen.getByTitle(i18n.ts.send));
+
+				expect(mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/create-to-room')).toHaveLength(1);
+			});
 		});
 
 		test('goes back to the sticky card when the page gets narrow', async () => {

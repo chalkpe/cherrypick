@@ -77,18 +77,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</div>
 				</MkStickyContainer>
 			</div>
-			<div v-if="split" :class="$style.paneFooter">
-				<div class="_gaps">
-					<Transition name="fade">
-						<div v-show="showIndicator" :class="$style.new">
-							<button class="_buttonPrimary" :class="$style.newButton" @click="onIndicatorClick">
-								<i class="fas ti-fw fa-arrow-circle-down" :class="$style.newIcon"></i>{{ i18n.ts._chat.newMessage }}
-							</button>
-						</div>
-					</Transition>
-					<XForm v-if="initialized" :user="user" :room="room" :class="$style.form"/>
-				</div>
-			</div>
+			<!-- 並べているときの入力欄の置き場所。入力欄はページの下端 (footer) からここへ移ってくる -->
+			<div v-show="split" ref="paneFormHostEl" :class="$style.paneFooter"></div>
 		</div>
 		<XStage v-if="split && room && chatSide === 'left'" :room="room" :call="voiceCallState" :chatSide="chatSide" :class="$style.stage" @swapChatSide="swapChatSide"/>
 	</div>
@@ -106,24 +96,28 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 
 	<template #footer>
-		<div v-if="tab === 'chat' && !split" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]">
-			<div class="_gaps">
-				<Transition name="fade">
-					<div v-show="showIndicator" :class="$style.new">
-						<button class="_buttonPrimary" :class="$style.newButton" @click="onIndicatorClick">
-							<i class="fas ti-fw fa-arrow-circle-down" :class="$style.newIcon"></i>{{ i18n.ts._chat.newMessage }}
-						</button>
-					</div>
-				</Transition>
-				<XForm v-if="initialized" :user="user" :room="room" :class="$style.form"/>
-			</div>
+		<div v-if="tab === 'chat'" v-show="!split" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]">
+			<!-- 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (並べているときはメッセージの欄の下へ)。
+			作り直すとフォーカスが外れてページ全体のショートカットが効いてしまい、変換中の文字や送信中の状態も失われる -->
+			<Teleport v-if="paneFormHostEl != null" :to="paneFormHostEl" :disabled="!split">
+				<div ref="formEl" class="_gaps" @compositionstart="composing = true" @compositionend="composing = false" @focusout="composing = false">
+					<Transition name="fade">
+						<div v-show="showIndicator" :class="$style.new">
+							<button class="_buttonPrimary" :class="$style.newButton" @click="onIndicatorClick">
+								<i class="fas ti-fw fa-arrow-circle-down" :class="$style.newIcon"></i>{{ i18n.ts._chat.newMessage }}
+							</button>
+						</div>
+					</Transition>
+					<XForm v-if="initialized" :user="user" :room="room" :class="$style.form"/>
+				</div>
+			</Teleport>
 		</div>
 	</template>
 </PageWithHeader>
 </template>
 
 <script lang="ts" setup>
-import { ref, useTemplateRef, computed, onMounted, onBeforeUnmount, onDeactivated, onActivated, onUnmounted } from 'vue';
+import { ref, useTemplateRef, computed, watch, onMounted, onBeforeUnmount, onDeactivated, onActivated, onUnmounted } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { getScrollContainer } from '@@/js/scroll.js';
 import XMessage from './XMessage.vue';
@@ -422,6 +416,8 @@ onMounted(() => {
 
 onUnmounted(() => {
 	window.removeEventListener('resize', handleResize);
+	window.document.removeEventListener('fullscreenchange', onFullscreenChange);
+	if (fullscreenReleaseFrame != null) window.cancelAnimationFrame(fullscreenReleaseFrame);
 });
 
 onActivated(() => {
@@ -491,8 +487,81 @@ const tab = ref('chat');
 // ウィンドウではなくページ自身の幅で決める (デッキの列やウィジェットでページの幅は変わる)
 const chatTabEl = useTemplateRef('chatTabEl');
 const pageWidth = useElementWidth(chatTabEl);
-// 通話カードを出す場面 (誰かが通話にいるか、自分が参加中) で、ページが広ければ通話カードの代わりにステージを横に並べる
-const split = computed(() => tab.value === 'chat' && voiceCallState.showCard.value && pageWidth.value != null && pageWidth.value >= STAGE_MIN_PAGE_WIDTH);
+// 通話カードを出す場面 (誰かが通話にいるか、自分が参加中) で、ページが広ければ通話カードの代わりにステージを横に並べる。
+// モバイルでは横向きなどで広くても並べない (並べた形は、モバイルの画面下のナビゲーションの分を空けていない)
+const wantsSplit = computed(() => !isMobile.value && voiceCallState.showCard.value && pageWidth.value != null && pageWidth.value >= STAGE_MIN_PAGE_WIDTH);
+
+// 全画面のあいだは並べ方を変えない。通話カードの共有画面を全画面にするとページの幅も広がるので、
+// そのまま並べ方を変えるとカードが外れ、全画面にした要素ごと消えて全画面が解けてしまう
+const fullscreen = ref(window.document.fullscreenElement != null);
+let fullscreenReleaseFrame: number | null = null;
+
+function onFullscreenChange() {
+	if (fullscreenReleaseFrame != null) {
+		window.cancelAnimationFrame(fullscreenReleaseFrame);
+		fullscreenReleaseFrame = null;
+	}
+	if (window.document.fullscreenElement != null) {
+		fullscreen.value = true;
+		return;
+	}
+	// 全画面が解けたことは、ページの幅が戻ったと知らされる (ResizeObserver) より先に届く。
+	// すぐに決め直すと全画面のときの幅で一瞬並べてしまうので、幅が測り直されてから決め直す。
+	// 同じフレームの中では requestAnimationFrame のほうが ResizeObserver より先に呼ばれるので、2 回待って次のフレームにする
+	fullscreenReleaseFrame = window.requestAnimationFrame(() => {
+		fullscreenReleaseFrame = window.requestAnimationFrame(() => {
+			fullscreenReleaseFrame = null;
+			fullscreen.value = false;
+		});
+	});
+}
+
+window.document.addEventListener('fullscreenchange', onFullscreenChange);
+
+// 入力欄で変換中 (IME) のあいだも並べ方を変えない。入力欄を移すと変換中の文字が確定されたり消えたりする
+const composing = ref(false);
+
+watch(tab, () => {
+	composing.value = false;
+});
+
+// 実際の並べ方。全画面や変換中のあいだは前の並べ方のままにして、終わったら今の幅などで決め直す
+const splitLayout = ref(false);
+
+watch([wantsSplit, fullscreen, composing], () => {
+	if (fullscreen.value || composing.value || window.document.fullscreenElement != null) return;
+	splitLayout.value = wantsSplit.value;
+}, { immediate: true, flush: 'sync' });
+
+const split = computed(() => tab.value === 'chat' && splitLayout.value);
+
+// 入力欄を移すと (要素の付け替えで) フォーカスが外れるので、移す前にフォーカスと選択範囲を覚えておき、移したあとに戻す
+const paneFormHostEl = useTemplateRef('paneFormHostEl');
+const formEl = useTemplateRef('formEl');
+let focusToRestore: { el: HTMLElement; selection: [number, number, 'forward' | 'backward' | 'none'] | null } | null = null;
+
+watch(split, () => {
+	const active = window.document.activeElement;
+	if (formEl.value == null || !(active instanceof HTMLElement) || !formEl.value.contains(active)) {
+		focusToRestore = null;
+		return;
+	}
+	focusToRestore = {
+		el: active,
+		selection: active instanceof HTMLTextAreaElement ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null,
+	};
+}, { flush: 'pre' });
+
+watch(split, () => {
+	const target = focusToRestore;
+	focusToRestore = null;
+	if (target == null || !target.el.isConnected || window.document.activeElement === target.el) return;
+	target.el.focus({ preventScroll: true });
+	if (target.selection != null && target.el instanceof HTMLTextAreaElement) {
+		target.el.setSelectionRange(...target.selection);
+	}
+}, { flush: 'post' });
+
 // 設定が変わったらすぐ並びを変えたいので、変更を追える prefer.r を見る
 const chatSide = computed(() => prefer.r['voiceCall.stageChatSide'].value);
 
@@ -543,6 +612,7 @@ const headerActions = computed<PageHeaderItem[]>(() => [
 	}] : []),
 	{
 		icon: 'ti ti-dots',
+		text: i18n.ts.menu,
 		handler: showMenu,
 	},
 ]);

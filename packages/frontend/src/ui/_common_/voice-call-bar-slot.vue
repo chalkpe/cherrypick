@@ -22,13 +22,19 @@ let registration: ReturnType<typeof registerVoiceCallBarSlot> | null = null;
 let observer: ResizeObserver | null = null;
 
 function attach() {
-	if (registration != null || el.value == null) return;
+	// KeepAlive で裏に回ったページの中で作られたとき (読み込みが終わって入力欄が出たときなど) は、
+	// どこにも描かれない所なので登録しない。ページが表に戻ったときに onActivated で登録する
+	if (registration != null || el.value == null || !el.value.isConnected) return;
 	const current = registerVoiceCallBarSlot(props.kind, el.value);
 	registration = current;
 	// 入力欄では、ボタンが収まる幅があるかどうかで通話バーを置くかを決めるので、幅を測って知らせる
 	if (props.kind === 'chatForm' && typeof ResizeObserver !== 'undefined') {
 		observer = new ResizeObserver(entries => {
-			for (const entry of entries) current.setWidth(entry.contentRect.width);
+			for (const entry of entries) {
+				// どこにも描かれていない要素の幅 (0) は見える幅ではないので無視する
+				if (!entry.target.isConnected) continue;
+				current.setWidth(entry.contentRect.width);
+			}
 		});
 		observer.observe(el.value);
 	}

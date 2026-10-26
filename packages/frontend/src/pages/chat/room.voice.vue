@@ -8,7 +8,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<div class="_panel" :class="$style.card">
 		<div :class="$style.header">
 			<i class="ti ti-volume" :class="$style.headerIcon"></i>
-			<span :class="$style.title">{{ inThisCall ? i18n.ts._voiceCall.inCall : room.name }}</span>
+			<!-- 参加中は通話の状態 (通話中・接続中・再接続中) を出し、変わったら読み上げる -->
+			<span :class="$style.title" aria-live="polite">{{ inThisCall ? voiceCallStatusText : room.name }}</span>
 			<div :class="$style.actions">
 				<XControls v-if="inThisCall"/>
 				<MkButton v-else primary rounded small @click="join()"><i class="ti ti-phone"></i> {{ i18n.ts._voiceCall.join }}</MkButton>
@@ -42,6 +43,7 @@ import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
 import type { ChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import { voiceCallStatusText } from '@/utility/voice-call-status.js';
 
 const props = defineProps<{
 	room: Misskey.entities.ChatRoom;

@@ -154,6 +154,39 @@ describe('voice call bar placement', () => {
 		expect(document.body.contains(bar())).toBe(true);
 	});
 
+	test('does not dock into a chat form that appears while its page waits in the background', async () => {
+		const showPage = ref(true);
+		const showForm = ref(false);
+		const page = defineComponent({
+			setup() {
+				return () => h('div', showForm.value ? [h(XForm, { room })] : []);
+			},
+		});
+		const host = defineComponent({
+			setup() {
+				return () => h('div', [
+					h(KeepAlive, null, [showPage.value ? h(page, { key: 'page' }) : h('div', { key: 'other' })]),
+					h(XVoiceCallBar),
+				]);
+			},
+		});
+		render(host, { global: { stubs } });
+		await flush();
+		expect(variantOf(bar())).toMatch(/floating/);
+
+		showPage.value = false;
+		await flush();
+		// 裏に回ったページで入力欄が出ても (読み込みが終わったときなど)、どこにも描かれない所へは差し込まない
+		showForm.value = true;
+		await flush();
+		expect(variantOf(bar())).toMatch(/floating/);
+		expect(window.document.body.contains(bar())).toBe(true);
+
+		showPage.value = true;
+		await flush();
+		expect(variantOf(bar())).toMatch(/docked/);
+	});
+
 	test('renders at the top on mobile, even with a chat form on screen', async () => {
 		await setWidth(400);
 		const { container } = renderApp();

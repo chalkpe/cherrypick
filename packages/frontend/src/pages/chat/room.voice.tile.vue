@@ -5,9 +5,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <!-- 広い画面のステージに並べる参加者のタイル。画面を共有している人のタイルは、押すとその画面を見る (もう一度押すとやめる)。
-キーボードでは中のボタンから同じ操作ができる -->
+キーボードでは中のボタンから同じ操作ができる。タイルは参加者の名前のついたまとまりにして、中のボタンが誰のものか読み上げで分かるようにする -->
 <div
 	:class="[$style.root, { [$style.speaking]: speaking, [$style.watching]: watching, [$style.small]: small, [$style.clickable]: clickable }]"
+	role="group" :aria-label="userName(participant.user)"
 	@click="onClick"
 >
 	<MkAvatar :user="participant.user" :class="$style.avatar"/>
@@ -42,6 +43,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { computed } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { i18n } from '@/i18n.js';
+import { userName } from '@/filters/user.js';
 
 const props = withDefaults(defineProps<{
 	participant: Misskey.entities.ChatRoomVoiceState['participants'][number];

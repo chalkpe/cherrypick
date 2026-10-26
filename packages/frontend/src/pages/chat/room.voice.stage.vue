@@ -8,7 +8,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 <div :class="$style.root">
 	<div :class="$style.header">
 		<i class="ti ti-volume" :class="$style.headerIcon"></i>
-		<span :class="$style.title">{{ inThisCall ? i18n.ts._voiceCall.inCall : room.name }}</span>
+		<!-- 参加中は通話の状態 (通話中・接続中・再接続中) を出し、変わったら読み上げる。
+		並べているときは入力欄の通話バーが狭く、バーの文言は見た目では隠れるので、ここが目に見える唯一の表示になる -->
+		<span :class="$style.title" aria-live="polite">{{ inThisCall ? voiceCallStatusText : room.name }}</span>
 		<XControls v-if="inThisCall"/>
 		<button
 			class="_button" :class="$style.swap"
@@ -51,6 +53,7 @@ import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
 import type { ChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import { voiceCallStatusText } from '@/utility/voice-call-status.js';
 
 const props = defineProps<{
 	room: Misskey.entities.ChatRoom;

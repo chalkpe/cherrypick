@@ -15,7 +15,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<!-- 通話中のルームの名前は出さず、状態 (通話中・接続中など) だけを出す -->
 	<MkA :to="`/chat/room/${voiceCall.room.id}`" :class="$style.room" :title="i18n.ts._voiceCall.backToRoom">
 		<i class="ti ti-volume" :class="$style.roomIcon"></i>
-		<span :class="$style.status" aria-live="polite">{{ statusText }}</span>
+		<span :class="$style.status" aria-live="polite">{{ voiceCallStatusText }}</span>
 	</MkA>
 	<button v-if="voiceCall.audioBlocked" class="_buttonPrimary" :class="$style.enableAudio" @click="resumeAudio()">
 		{{ i18n.ts._voiceCall.enableAudio }}
@@ -79,20 +79,13 @@ import { prefer } from '@/preferences.js';
 import { $i } from '@/i.js';
 import { activeAudioDeviceId, canShareScreen, leaveVoiceCall, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
 import { voiceCallBarPlacement as placement } from '@/utility/voice-call-placement.js';
+import { voiceCallStatusText } from '@/utility/voice-call-status.js';
 
 const zIndex = os.claimZIndex('middle');
 
 const floating = computed(() => placement.value.variant === 'floating');
 
 const screenShareAvailable = computed(() => canShareScreen() && $i?.policies.canScreenShare === true);
-
-const statusText = computed(() => {
-	switch (voiceCall.status) {
-		case 'connecting': return i18n.ts._voiceCall.connecting;
-		case 'reconnecting': return i18n.ts._voiceCall.reconnecting;
-		default: return i18n.ts._voiceCall.inCall;
-	}
-});
 
 // 音声処理の設定はマイクを入れ直したときに反映されるので、通話中に変えたら入れ直す
 // prefer.s はリアクティブではないので、変更を追える prefer.r を見る
@@ -204,8 +197,18 @@ function openSettings(ev: MouseEvent) {
 // 入力欄では差し込み先 (voice-call-bar-slot.vue) の幅に合わせて詰める。狭くなるとまず文言を、次にアイコンを隠してボタンだけにする。
 // ボタンも収まらない幅では入力欄に置かない (voice-call-placement.ts の MIN_DOCKED_SLOT_WIDTH)
 @container (max-width: 259px) {
+	// 文言は見た目だけ隠し、接続中・再接続中に変わったことは読み上げられるようにする (display: none だと読み上げからも消える)
 	.docked .status {
-		display: none;
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		margin: -1px;
+		padding: 0;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		clip-path: inset(50%);
+		white-space: nowrap;
+		border: 0;
 	}
 }
 
