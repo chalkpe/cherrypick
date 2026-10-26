@@ -118,6 +118,9 @@ function fixture(options: {
 	]);
 	let seq = 0;
 	const notificationService = { createNotification: vi.fn() };
+	const chatVoiceService = { receiveRemoteSnapshot: vi.fn(async () => 'ok: voice state stored') };
+	const resolver = { resolve: vi.fn() };
+	const apResolverService = { createResolver: vi.fn(async () => resolver) };
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 		logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 		db,
@@ -136,8 +139,10 @@ function fixture(options: {
 		utilityService: new UtilityService({ host: 'local.test', url: LOCAL } as any, {} as any),
 		idService: { gen: () => `gen${++seq}` },
 		notificationService,
+		chatVoiceService,
+		apResolverService,
 	});
-	return { inbox, rooms, invitations, memberships, notificationService };
+	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, apResolverService, resolver };
 }
 
 function inviteActivity(actor: { uri: string }, roomUri: string, invitee: string, attributedTo: string | undefined = actor.uri) {
@@ -422,5 +427,41 @@ describe('Chat room federation: Undo(Invite)', () => {
 		await f.inbox.undoInvite(remoteOwner, inviteActivity(remoteOwner, 'https://remote.test/chat/rooms/bobroom', `${LOCAL}/users/${alice.id}`));
 
 		expect(f.invitations.rows).toEqual([]);
+	});
+});
+
+describe('Chat room federation: voice call state', () => {
+	const voiceState = {
+		id: 'https://remote.test/chat/rooms/bobroom/voice',
+		type: 'ChatRoomVoiceState',
+		room: 'https://remote.test/chat/rooms/bobroom',
+		participants: [{ id: 'https://remote.test/users/carol', screenSharing: false }],
+		updated: '2026-10-27T00:00:00.000Z',
+	};
+
+	function voiceUpdate(object: unknown) {
+		return { type: 'Update', actor: remoteOwner.uri, object };
+	}
+
+	test('the inbox routes ChatRoomVoiceState updates to the voice service', async () => {
+		const f = fixture();
+
+		const result = await f.inbox.update(remoteOwner, voiceUpdate(voiceState));
+
+		expect(result).toBe('ok: voice state stored');
+		expect(f.chatVoiceService.receiveRemoteSnapshot).toHaveBeenCalledWith(remoteOwner, voiceState);
+		// 中身ごと届いた現況を読むだけで、何も取りに行かない
+		expect(f.apResolverService.createResolver).not.toHaveBeenCalled();
+		expect(f.resolver.resolve).not.toHaveBeenCalled();
+	});
+
+	test('the inbox accepts voice states only when they arrive inline', async () => {
+		const f = fixture();
+		f.resolver.resolve.mockResolvedValue(voiceState);
+
+		const result = await f.inbox.update(remoteOwner, voiceUpdate(voiceState.id));
+
+		expect(result).toMatch(/^skip/);
+		expect(f.chatVoiceService.receiveRemoteSnapshot).not.toHaveBeenCalled();
 	});
 });

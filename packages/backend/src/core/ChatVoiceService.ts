@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { createHash } from 'node:crypto';
 import { Inject, Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { In, IsNull } from 'typeorm';
@@ -11,6 +12,7 @@ import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import type { ChatRoomMembershipsRepository, ChatRoomsRepository, UsersRepository } from '@/models/_.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
+import type { MiMeta } from '@/models/Meta.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { bindThis } from '@/decorators.js';
@@ -21,6 +23,9 @@ import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
+import { QueueService } from '@/core/QueueService.js';
+import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
+import type { IObject } from '@/core/activitypub/type.js';
 
 const REFRESH_DELAY_MS = 500;
 
@@ -34,6 +39,13 @@ const ACTIVE_ROOMS_KEY = 'chatVoice:active';
 // 他のサーバーが持つルーム (ミラー) の通話は、このサーバーから読み直せない。
 // メンバーが参加するたびにホストから届く現況を、これだけの間だけ表示する
 const REMOTE_SNAPSHOT_TTL_SECONDS = 600;
+
+// 他のサーバーのメンバーには、参加者が変わったときのほか、変わらなくてもこの間隔で送り直してミラーの寿命を延ばす。
+// 送り直しは読み直し (sweep) のついでに行うので、実際の間隔は最大でこれに SWEEP_INTERVAL_MS を足したものになる
+const FEDERATION_RESEND_INTERVAL_MS = 240_000;
+
+// 他のサーバーから届くルームの URI のパス (このサーバーが送る `${url}/chat/rooms/${id}` と同じ形)
+const ROOM_PATH = /^\/chat\/rooms\/([a-zA-Z0-9]+)$/;
 
 // 参加者の出入りや画面共有の開始・終了に関わるイベントだけを扱う
 const REFRESH_EVENTS = new Set([
@@ -57,6 +69,11 @@ type FederatedVoiceSnapshot = {
 	updatedAt: number;
 };
 
+/** このサーバーのユーザーが他のサーバーの通話に入れるか (features.remoteVoiceCall と同じ) */
+export function isRemoteVoiceCallEnabled(meta: Pick<MiMeta, 'enableRemoteVoiceCall' | 'federation'>): boolean {
+	return meta.enableRemoteVoiceCall && meta.federation !== 'none';
+}
+
 /**
  * チャットルームの通話参加者のスナップショットを Redis に保持し、ストリームへ配信する。
  */
@@ -71,6 +88,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
+
+		@Inject(DI.meta)
+		private meta: MiMeta,
 
 		@Inject(DI.chatRoomsRepository)
 		private chatRoomsRepository: ChatRoomsRepository,
@@ -87,6 +107,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		private roleService: RoleService,
 		private utilityService: UtilityService,
 		private federatedInstanceService: FederatedInstanceService,
+		private apRendererService: ApRendererService,
+		private queueService: QueueService,
 	) {
 	}
 
@@ -205,6 +227,76 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		for (const userId of memberIds) {
 			this.globalEventService.publishMainStream(userId, 'chatRoomVoiceState', packed);
 		}
+
+		await this.federateChanges(room, snapshot);
+	}
+
+	/**
+	 * このサーバーが持つルームの通話の参加者の現況を、他のサーバーのメンバーに届ける。
+	 * 持ち主の名前で Update を作り、メンバーの inbox (共有 inbox があればそちら) ごとに一度だけ送る
+	 */
+	@bindThis
+	public async federateSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<void> {
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
+		const users = await this.usersRepository.findBy({ id: In([room.ownerId, ...memberships.map(m => m.userId)]) });
+
+		// 他のサーバーが持つルーム (ミラー) の現況は、そのサーバーが送る
+		const owner = users.find(user => user.id === room.ownerId);
+		if (owner == null || owner.host != null) return;
+
+		const inboxes = new Map<string, boolean>();
+		for (const user of users) {
+			if (user.host == null) continue;
+			const inbox = user.sharedInbox ?? user.inbox;
+			if (inbox != null && !inboxes.has(inbox)) inboxes.set(inbox, user.sharedInbox != null);
+		}
+		if (inboxes.size === 0) return;
+
+		// 通話の参加者はルームのメンバーにだけ知らせるものなので、公開 (Public) 宛てにはしない
+		const activity = this.apRendererService.addContext({
+			type: 'Update',
+			actor: this.userEntityService.genLocalUserUri(owner.id),
+			object: this.apRendererService.renderChatRoomVoiceState(room, participants, updatedAt),
+			published: new Date(updatedAt).toISOString(),
+		});
+		for (const [inbox, isSharedInbox] of inboxes) {
+			this.queueService.deliver(owner, activity, inbox, isSharedInbox);
+		}
+	}
+
+	/**
+	 * 他のサーバーが持つルーム (ミラー) の持ち主から届いた、通話の参加者の現況 (ChatRoomVoiceState) を受け取る。
+	 * 現況とルームの URI がどちらも送り主と同じサーバー (スキーム・ホスト・ポート) のもので、
+	 * そのルームがこのサーバーのミラーであり、送り主がその持ち主のときだけ保存する。戻り値は inbox のログ用
+	 */
+	@bindThis
+	public async receiveRemoteSnapshot(actor: MiRemoteUser, object: IObject): Promise<string> {
+		if (!isRemoteVoiceCallEnabled(this.meta)) return 'skip: remote voice calls are disabled';
+
+		const state = object as IObject & { room?: unknown; participants?: unknown };
+		if (typeof state.id !== 'string' || typeof state.room !== 'string') return 'skip: invalid voice state';
+
+		const origin = originOf(actor.uri);
+		if (origin == null || originOf(state.id) !== origin || originOf(state.room) !== origin) {
+			return 'skip: voice state is not on the sender\'s server';
+		}
+
+		const roomId = roomIdOfUri(state.room);
+		if (roomId == null) return 'skip: invalid room URI';
+
+		const participants = parseParticipants(state.participants);
+		if (participants == null) return 'skip: invalid participants';
+
+		const updatedAt = typeof state.updated === 'string' ? Date.parse(state.updated) : NaN;
+		if (!Number.isFinite(updatedAt)) return 'skip: invalid updated';
+
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		if (room == null) return 'skip: unknown room';
+		// 送り主は他のサーバーのユーザーなので、送り主が持ち主ならそのルームはミラー
+		if (room.ownerId !== actor.id) return 'skip: sender does not own the room';
+
+		await this.storeRemoteSnapshot(room, participants, updatedAt);
+		return 'ok: voice state stored';
 	}
 
 	/**
@@ -275,6 +367,27 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	/**
+	 * 参加者の現況を他のサーバーのメンバーに届ける。前に送ったものと同じで、送ってから
+	 * FEDERATION_RESEND_INTERVAL_MS 経っていなければ送らない。通話が終わったこと (空の現況) は必ず送る
+	 */
+	private async federateChanges(room: MiChatRoom, snapshot: VoiceSnapshot): Promise<void> {
+		const participants = snapshot.participants.map(p => ({ identity: p.identity, screenSharing: p.screenSharing }));
+		const hash = createHash('sha256')
+			.update(JSON.stringify([...participants].sort((a, b) => a.identity.localeCompare(b.identity))))
+			.digest('hex');
+		const key = `chatVoice:federated:${room.id}`;
+
+		if (participants.length > 0) {
+			const raw = await this.redisClient.get(key);
+			const last = raw != null ? JSON.parse(raw) as { hash: string; at: number } : null;
+			if (last != null && last.hash === hash && Date.now() - last.at < FEDERATION_RESEND_INTERVAL_MS) return;
+		}
+
+		await this.federateSnapshot(room, participants, snapshot.updatedAt);
+		await this.redisClient.set(key, JSON.stringify({ hash, at: Date.now() }), 'EX', FEDERATION_RESEND_INTERVAL_MS / 1000);
+	}
+
+	/**
 	 * 参加者の identity (LiveKitService.identityOf) を、このサーバーが既に知っているユーザーの id にする。
 	 * identity は他のサーバーから届くので、知らないユーザーを取りに行くことはしない (相手に好きな URL を取得させないため)。
 	 * このサーバーの `${url}/users/<id>` はその id のローカルユーザー、それ以外は uri が一致するリモートユーザー。
@@ -324,4 +437,38 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 		return { roomId, participants };
 	}
+}
+
+/**
+ * URL の出所 (スキーム・ホスト・ポート)。http(s) の URL でなければ null。
+ * ホストの比較に UtilityService.extractDbHost を使うと、ポート付きのホストはすべて '' になって区別できない
+ */
+function originOf(url: string): string | null {
+	try {
+		const parsed = new URL(url);
+		return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.origin : null;
+	} catch {
+		return null;
+	}
+}
+
+/** `${origin}/chat/rooms/${id}` の形のルーム URI から id を取り出す。クエリ・フラグメント・認証情報の付いたものは受け付けない */
+function roomIdOfUri(uri: string): string | null {
+	const url = new URL(uri);
+	if (url.search !== '' || url.hash !== '' || url.username !== '' || url.password !== '') return null;
+	return ROOM_PATH.exec(url.pathname)?.[1] ?? null;
+}
+
+/** ChatRoomVoiceState の participants を確かめる。形が違うか、ルームに入れる人数より多ければ null */
+function parseParticipants(value: unknown): { identity: string; screenSharing: boolean }[] | null {
+	if (!Array.isArray(value) || value.length > MAX_ROOM_MEMBERS + 1) return null;
+
+	const parsed: { identity: string; screenSharing: boolean }[] = [];
+	for (const participant of value as unknown[]) {
+		if (typeof participant !== 'object' || participant == null) return null;
+		const { id, screenSharing } = participant as Record<string, unknown>;
+		if (typeof id !== 'string' || typeof screenSharing !== 'boolean') return null;
+		parsed.push({ identity: id, screenSharing });
+	}
+	return parsed;
 }

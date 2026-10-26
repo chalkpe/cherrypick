@@ -17,6 +17,7 @@ import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NoteCreateService } from '@/core/NoteCreateService.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ChatService } from '@/core/ChatService.js';
+import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { acquireApObjectLock } from '@/misc/distributed-lock.js';
 import { concat, toArray, toSingle, unique } from '@/misc/prelude/array.js';
@@ -99,6 +100,7 @@ export class ApInboxService {
 		private noteDeleteService: NoteDeleteService,
 		private notificationService: NotificationService,
 		private chatService: ChatService,
+		private chatVoiceService: ChatVoiceService,
 		private roleService: RoleService,
 		private apResolverService: ApResolverService,
 		private apDbResolverService: ApDbResolverService,
@@ -1200,6 +1202,11 @@ export class ApInboxService {
 	private async update(actor: MiRemoteUser, activity: IUpdate, resolver?: Resolver): Promise<string> {
 		if (actor.uri !== getApId(activity.actor)) {
 			return 'skip: invalid actor';
+		}
+
+		// 通話の参加者の現況はルームの持ち主から中身ごと届く。URL だけのものは受け付けないので、ここでは何も取りに行かない
+		if (typeof activity.object !== 'string' && getApType(activity.object) === 'ChatRoomVoiceState') {
+			return await this.chatVoiceService.receiveRemoteSnapshot(actor, activity.object);
 		}
 
 		this.logger.debug(`Update: ${getApId(activity.object)}`);

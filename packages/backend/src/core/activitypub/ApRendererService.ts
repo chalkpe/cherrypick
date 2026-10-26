@@ -18,6 +18,7 @@ import type { MiNoteReaction } from '@/models/NoteReaction.js';
 import type { MiEmoji } from '@/models/Emoji.js';
 import type { MiPoll } from '@/models/Poll.js';
 import type { MiPollVote } from '@/models/PollVote.js';
+import type { MiChatRoom } from '@/models/ChatRoom.js';
 import { UserKeypairService } from '@/core/UserKeypairService.js';
 import { MfmService } from '@/core/MfmService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
@@ -871,5 +872,22 @@ export class ApRendererService {
 			summary: room.description || undefined,
 			attributedTo: ownerUri || undefined,
 		};
+	}
+
+	/**
+	 * このサーバーが持つルームの、通話の参加者の現況。participants の id は参加者の identity (LiveKitService.identityOf)
+	 */
+	@bindThis
+	public renderChatRoomVoiceState(room: MiChatRoom, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): IObject {
+		const roomUri = `${this.config.url}/chat/rooms/${room.id}`;
+		// room と participants は IObject に無いので、いったん変数に入れてから返す
+		const state = {
+			id: `${roomUri}/voice`,
+			type: 'ChatRoomVoiceState',
+			room: roomUri,
+			participants: participants.map(p => ({ id: p.identity, screenSharing: p.screenSharing })),
+			updated: new Date(updatedAt).toISOString(),
+		};
+		return state;
 	}
 }

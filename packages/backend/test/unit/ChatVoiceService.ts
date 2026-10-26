@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { FindOperator, IsNull } from 'typeorm';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
+import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 
 function fakeRedis() {
 	const store = new Map<string, string>();
@@ -38,6 +39,11 @@ const KNOWN_USERS = [
 	{ id: 'deletedLocal', host: null, uri: null, isDeleted: true },
 	{ id: 'x1', host: 'other.test', uri: 'https://other.test/users/x', isDeleted: false },
 	{ id: 'deletedRemote', host: 'other.test', uri: 'https://other.test/users/deleted', isDeleted: true },
+	{ id: 'owner', host: null, uri: null, isDeleted: false },
+	// 同じサーバーの二人は共有 inbox を持ち、もう一人のサーバーには共有 inbox が無い
+	{ id: 'rm1', host: 'remote.test', uri: 'https://remote.test/users/rm1', isDeleted: false, inbox: 'https://remote.test/users/rm1/inbox', sharedInbox: 'https://remote.test/inbox' },
+	{ id: 'rm2', host: 'remote.test', uri: 'https://remote.test/users/rm2', isDeleted: false, inbox: 'https://remote.test/users/rm2/inbox', sharedInbox: 'https://remote.test/inbox' },
+	{ id: 'rm3', host: 'far.test', uri: 'https://far.test/users/rm3', isDeleted: false, inbox: 'https://far.test/users/rm3/inbox', sharedInbox: null },
 ];
 
 /** usersRepository.findBy の where (等値・In・IsNull) を KNOWN_USERS に当てる */
@@ -70,6 +76,7 @@ function createFixture(redis = fakeRedis()) {
 	};
 	const userEntityService = {
 		packMany: vi.fn(async (ids: string[]) => ids.map(id => ({ id, username: id }))),
+		genLocalUserUri: (id: string) => `https://local.test/users/${id}`,
 	};
 	const globalEventService = {
 		publishChatRoomStream: vi.fn(),
@@ -87,9 +94,19 @@ function createFixture(redis = fakeRedis()) {
 	const usersRepository = {
 		findBy: vi.fn(async (where: Record<string, unknown>) => KNOWN_USERS.filter(user => matchesWhere(user, where))),
 	};
+	const meta = { enableRemoteVoiceCall: true, federation: 'all' };
+	// 届けるアクティビティの形はそのまま確かめたいので、本物の ApRendererService を使う
+	const apRendererService = Object.assign(Object.create(ApRendererService.prototype), {
+		config: { url: 'https://local.test' },
+		userEntityService: { genLocalUserUri: (id: string) => `https://local.test/users/${id}` },
+	});
+	const queueService = {
+		deliver: vi.fn(),
+	};
 	const service = new ChatVoiceService(
 		{ url: 'https://local.test' } as any,
 		redis as any,
+		meta as any,
 		chatRoomsRepository as any,
 		chatRoomMembershipsRepository as any,
 		usersRepository as any,
@@ -99,8 +116,10 @@ function createFixture(redis = fakeRedis()) {
 		roleService as any,
 		utilityService as any,
 		federatedInstanceService as any,
+		apRendererService,
+		queueService as any,
 	);
-	return { service, redis, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, userEntityService, globalEventService, roleService, utilityService, federatedInstanceService };
+	return { service, redis, meta, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, userEntityService, globalEventService, roleService, utilityService, federatedInstanceService, queueService };
 }
 
 function remoteUser(overrides: Record<string, unknown> = {}) {
@@ -456,6 +475,256 @@ describe('ChatVoiceService', () => {
 
 			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).participants).toEqual([]);
 			expect(f.usersRepository.findBy).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('federating the participants', () => {
+		const ROOM_URI = 'https://local.test/chat/rooms/r1';
+		const u1 = { identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: false, micTrackSid: null };
+
+		function withRemoteMembers() {
+			f.chatRoomMembershipsRepository.findBy.mockResolvedValue([{ userId: 'u1' }, { userId: 'rm1' }, { userId: 'rm2' }, { userId: 'rm3' }]);
+		}
+
+		function deliveredObjects() {
+			return f.queueService.deliver.mock.calls.map(([, activity]) => activity.object);
+		}
+
+		test('delivers one Update per remote server, from the room owner', async () => {
+			withRemoteMembers();
+
+			await f.service.federateSnapshot(localRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: true }], Date.parse('2026-10-27T00:00:00.000Z'));
+
+			expect(f.queueService.deliver.mock.calls.map(([, , to, isSharedInbox]) => [to, isSharedInbox]).sort()).toEqual([
+				['https://far.test/users/rm3/inbox', false],
+				['https://remote.test/inbox', true],
+			]);
+			for (const [user, activity] of f.queueService.deliver.mock.calls) {
+				expect(user).toEqual(expect.objectContaining({ id: 'owner', host: null }));
+				expect(activity).toEqual(expect.objectContaining({
+					'@context': expect.arrayContaining([expect.objectContaining({ ChatRoomVoiceState: 'cherrypick:ChatRoomVoiceState' })]),
+					type: 'Update',
+					actor: 'https://local.test/users/owner',
+					object: {
+						id: `${ROOM_URI}/voice`,
+						type: 'ChatRoomVoiceState',
+						room: ROOM_URI,
+						participants: [{ id: 'https://local.test/users/u1', screenSharing: true }],
+						updated: '2026-10-27T00:00:00.000Z',
+					},
+				}));
+				// 通話の参加者はルームのメンバーにだけ知らせるもので、公開の情報ではない
+				expect(activity.to).toBeUndefined();
+			}
+		});
+
+		test('delivers nothing when every member is local', async () => {
+			f.chatRoomMembershipsRepository.findBy.mockResolvedValue([{ userId: 'u1' }, { userId: 'u2' }]);
+
+			await f.service.federateSnapshot(localRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], 1000);
+
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+		});
+
+		test('delivers nothing for a room owned on another server', async () => {
+			withRemoteMembers();
+
+			await f.service.federateSnapshot(localRoom({ ownerId: 'x1', owner: { id: 'x1', host: 'other.test' } }), [], 1000);
+
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+		});
+
+		test('does not resend an unchanged snapshot within 240 seconds', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+
+			await f.service.refresh('r1');
+			expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
+
+			f.queueService.deliver.mockClear();
+			vi.setSystemTime(1_000_000 + 239_000);
+			await f.service.refresh('r1');
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+
+			vi.setSystemTime(1_000_000 + 240_000);
+			await f.service.refresh('r1');
+			expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
+
+			// 参加者が変われば、間を置かずに送る
+			f.queueService.deliver.mockClear();
+			f.liveKitService.listParticipants.mockResolvedValue([{ ...u1, screenSharing: true }]);
+			await f.service.refresh('r1');
+			expect(deliveredObjects().map(object => object.participants)).toEqual([
+				[{ id: 'https://local.test/users/u1', screenSharing: true }],
+				[{ id: 'https://local.test/users/u1', screenSharing: true }],
+			]);
+		});
+
+		test('always sends the empty snapshot that ends a call', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+			await f.service.refresh('r1');
+
+			f.liveKitService.listParticipants.mockResolvedValue([]);
+			for (let i = 0; i < 2; i++) {
+				f.queueService.deliver.mockClear();
+				vi.setSystemTime(1_000_000 + (i + 1) * 1000);
+
+				await f.service.refresh('r1');
+
+				expect(deliveredObjects().map(object => object.participants)).toEqual([[], []]);
+			}
+		});
+
+		test('sends after notifying this server\'s members', async () => {
+			withRemoteMembers();
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+
+			await f.service.refresh('r1');
+
+			const notifiedAt = Math.max(...f.globalEventService.publishMainStream.mock.invocationCallOrder);
+			expect(Math.min(...f.queueService.deliver.mock.invocationCallOrder)).toBeGreaterThan(notifiedAt);
+		});
+	});
+
+	describe('receiving the participants of a mirror room', () => {
+		const ROOM_URI = 'https://remote.test/chat/rooms/r1';
+		const owner = { id: 'remoteOwner', host: 'remote.test', uri: 'https://remote.test/users/remoteOwner' } as any;
+
+		function voiceState(overrides: Record<string, unknown> = {}) {
+			return {
+				id: `${ROOM_URI}/voice`,
+				type: 'ChatRoomVoiceState',
+				room: ROOM_URI,
+				participants: [{ id: 'https://local.test/users/u1', screenSharing: true }],
+				updated: new Date(2000).toISOString(),
+				...overrides,
+			} as any;
+		}
+
+		beforeEach(() => {
+			f.chatRoomsRepository.findOneBy.mockImplementation(async ({ id }: { id: string }) => (id === 'r1' ? { id: 'r1', ownerId: 'remoteOwner' } : null) as any);
+		});
+
+		test('accepts a voice state from the owner of the mirror room', async () => {
+			const result = await f.service.receiveRemoteSnapshot(owner, voiceState());
+
+			expect(result).toMatch(/^ok/);
+			expect(f.chatRoomsRepository.findOneBy).toHaveBeenCalledWith({ id: 'r1' });
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!)).toEqual({
+				participants: [{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: true }],
+				updatedAt: 2000,
+			});
+			expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('m1', 'chatRoomVoiceState', expect.objectContaining({ roomId: 'r1' }));
+		});
+
+		test('ignores a voice state from someone who does not own the room', async () => {
+			const someoneElse = { id: 'someoneElse', host: 'remote.test', uri: 'https://remote.test/users/someoneElse' } as any;
+
+			const result = await f.service.receiveRemoteSnapshot(someoneElse, voiceState());
+
+			expect(result).toMatch(/^skip:/);
+			expect(f.redis.store.has('chatVoice:r1')).toBe(false);
+		});
+
+		test('ignores a voice state whose room lives on another server', async () => {
+			const cases = [
+				{ actor: owner, state: voiceState({ room: 'https://other.test/chat/rooms/r1', id: 'https://other.test/chat/rooms/r1/voice' }) },
+				{ actor: owner, state: voiceState({ room: 'https://other.test/chat/rooms/r1' }) },
+				{ actor: owner, state: voiceState({ id: 'https://other.test/chat/rooms/r1/voice' }) },
+				{ actor: owner, state: voiceState({ room: 'http://remote.test/chat/rooms/r1', id: 'http://remote.test/chat/rooms/r1/voice' }) },
+				{ actor: owner, state: voiceState({ room: 'https://remote.test:8443/chat/rooms/r1', id: 'https://remote.test:8443/chat/rooms/r1/voice' }) },
+				// ポート付きのホストどうしも、別のサーバーとして扱う
+				{
+					actor: { ...owner, host: 'remote.test:8443', uri: 'https://remote.test:8443/users/remoteOwner' },
+					state: voiceState({ room: 'https://other.test:8443/chat/rooms/r1', id: 'https://other.test:8443/chat/rooms/r1/voice' }),
+				},
+			];
+			for (const { actor, state } of cases) {
+				expect(await f.service.receiveRemoteSnapshot(actor, state), state.room).toMatch(/^skip:/);
+			}
+			expect(f.redis.store.has('chatVoice:r1')).toBe(false);
+		});
+
+		test('accepts a voice state from an owner on a server with a port', async () => {
+			const portOwner = { ...owner, host: 'remote.test:8443', uri: 'https://remote.test:8443/users/remoteOwner' };
+
+			const result = await f.service.receiveRemoteSnapshot(portOwner, voiceState({ room: 'https://remote.test:8443/chat/rooms/r1', id: 'https://remote.test:8443/chat/rooms/r1/voice' }));
+
+			expect(result).toMatch(/^ok/);
+			expect(f.redis.store.has('chatVoice:r1')).toBe(true);
+		});
+
+		test('ignores a voice state for a room this server does not mirror', async () => {
+			const result = await f.service.receiveRemoteSnapshot(owner, voiceState({ room: 'https://remote.test/chat/rooms/r9', id: 'https://remote.test/chat/rooms/r9/voice' }));
+
+			expect(result).toMatch(/^skip:/);
+			expect(f.redis.set).not.toHaveBeenCalled();
+		});
+
+		test('ignores a malformed voice state', async () => {
+			const store = vi.spyOn(f.service, 'storeRemoteSnapshot');
+			const malformed = [
+				{ id: undefined },
+				{ room: undefined },
+				{ room: `${ROOM_URI}?x=1` },
+				{ room: `${ROOM_URI}#x` },
+				{ room: `${ROOM_URI}/extra` },
+				{ room: 'https://remote.test/chat/rooms/' },
+				{ room: 'https://remote.test/chat/rooms/r-1' },
+				{ room: 'not a url' },
+				{ participants: undefined },
+				{ participants: 'https://local.test/users/u1' },
+				{ participants: Array.from({ length: 52 }, (_, i) => ({ id: `https://far.test/users/${i}`, screenSharing: false })) },
+				{ participants: [null] },
+				{ participants: [{ id: 1, screenSharing: false }] },
+				{ participants: [{ id: 'https://local.test/users/u1' }] },
+				{ participants: [{ id: 'https://local.test/users/u1', screenSharing: 'yes' }] },
+				{ updated: undefined },
+				{ updated: 2000 },
+				{ updated: 'yesterday' },
+			];
+			for (const overrides of malformed) {
+				expect(await f.service.receiveRemoteSnapshot(owner, voiceState(overrides)), JSON.stringify(overrides)).toMatch(/^skip:/);
+			}
+			expect(store).not.toHaveBeenCalled();
+		});
+
+		test('accepts as many participants as a room can hold', async () => {
+			const participants = Array.from({ length: 51 }, (_, i) => ({ id: `https://far.test/users/${i}`, screenSharing: false }));
+
+			expect(await f.service.receiveRemoteSnapshot(owner, voiceState({ participants }))).toMatch(/^ok/);
+		});
+
+		test('ignores voice states while this server does not join calls on other servers', async () => {
+			for (const meta of [{ enableRemoteVoiceCall: false, federation: 'all' }, { enableRemoteVoiceCall: true, federation: 'none' }]) {
+				Object.assign(f.meta, meta);
+
+				expect(await f.service.receiveRemoteSnapshot(owner, voiceState()), JSON.stringify(meta)).toMatch(/^skip:/);
+			}
+			expect(f.redis.set).not.toHaveBeenCalled();
+		});
+
+		test('keeps the newer snapshot when an older one arrives late', async () => {
+			await f.service.receiveRemoteSnapshot(owner, voiceState({ updated: new Date(3000).toISOString() }));
+			await f.service.receiveRemoteSnapshot(owner, voiceState({
+				updated: new Date(2000).toISOString(),
+				participants: [{ id: 'https://local.test/users/u2', screenSharing: false }],
+			}));
+
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!)).toEqual({
+				participants: [{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: true }],
+				updatedAt: 3000,
+			});
+		});
+
+		test('expires a mirror snapshot after ten minutes', async () => {
+			await f.service.receiveRemoteSnapshot(owner, voiceState());
+
+			expect(f.redis.set).toHaveBeenCalledWith('chatVoice:r1', expect.any(String), 'EX', 600);
+			expect(f.redis.sadd).not.toHaveBeenCalled();
 		});
 	});
 });

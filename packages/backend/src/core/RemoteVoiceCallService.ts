@@ -12,7 +12,7 @@ import type { MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import { bindThis } from '@/decorators.js';
 import { StatusError } from '@/misc/status-error.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
-import { ChatVoiceService } from '@/core/ChatVoiceService.js';
+import { ChatVoiceService, isRemoteVoiceCallEnabled } from '@/core/ChatVoiceService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
 import { ApRequestService } from '@/core/activitypub/ApRequestService.js';
@@ -65,7 +65,7 @@ export class RemoteVoiceCallService {
 
 	/** このサーバーのユーザーが他のサーバーの通話に入れるか (features.remoteVoiceCall と同じ) */
 	public get isEnabled(): boolean {
-		return this.meta.enableRemoteVoiceCall && this.meta.federation !== 'none';
+		return isRemoteVoiceCallEnabled(this.meta);
 	}
 
 	/**
