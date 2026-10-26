@@ -23,7 +23,7 @@ const mocks = vi.hoisted(() => {
 		FakeChannel,
 		channel: new FakeChannel(),
 		misskeyApi: vi.fn().mockResolvedValue([]),
-		instance: { features: { voiceCall: true } },
+		instance: { features: { voiceCall: true, remoteVoiceCall: false } },
 	};
 });
 
@@ -51,6 +51,7 @@ function use(roomIds: string[]) {
 beforeEach(() => {
 	mocks.channel = new mocks.FakeChannel();
 	mocks.instance.features.voiceCall = true;
+	mocks.instance.features.remoteVoiceCall = false;
 	mocks.misskeyApi.mockReset().mockResolvedValue([]);
 });
 
@@ -118,8 +119,23 @@ describe('useChatRoomVoiceStates', () => {
 		expect(mocks.misskeyApi).toHaveBeenCalledTimes(2);
 	});
 
+	test('loads and follows the states on a server without its own LiveKit that joins calls on other servers', async () => {
+		mocks.instance.features.voiceCall = false;
+		mocks.instance.features.remoteVoiceCall = true;
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [p] }]);
+		const states = use(['r1', 'r2']);
+		await flush();
+
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/states', { roomIds: ['r1', 'r2'] });
+		expect(states.value.get('r1')?.participants).toEqual([p]);
+
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r2', participants: [p] });
+		expect(states.value.has('r2')).toBe(true);
+	});
+
 	test('does nothing when voice calls are disabled', async () => {
 		mocks.instance.features.voiceCall = false;
+		mocks.instance.features.remoteVoiceCall = false;
 		const states = use(['r1']);
 		await flush();
 

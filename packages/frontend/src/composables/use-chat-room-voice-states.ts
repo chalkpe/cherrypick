@@ -15,7 +15,9 @@ import { useStream } from '@/stream.js';
  */
 export function useChatRoomVoiceStates(roomIds: Ref<string[]>): Ref<Map<string, Misskey.entities.ChatRoomVoiceState>> {
 	const states = ref(new Map<string, Misskey.entities.ChatRoomVoiceState>());
-	if (instance.features?.voiceCall !== true) return states;
+	// LiveKit を持たないサーバーでも、他のサーバーが持つルーム (ミラー) の通話の現況は届く。
+	// どのルームの通話を出すかは呼び出し側がルームごとに決める
+	if (instance.features?.voiceCall !== true && instance.features?.remoteVoiceCall !== true) return states;
 
 	// 取得中に届いたイベントの方が新しいので、取得結果で上書きしないよう覚えておく
 	let liveDuringLoad: Map<string, Misskey.entities.ChatRoomVoiceState> | null = null;

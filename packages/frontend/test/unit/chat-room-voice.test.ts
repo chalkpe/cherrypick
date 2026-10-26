@@ -842,6 +842,52 @@ describe('voice call on the room page', () => {
 	});
 });
 
+// LiveKit を持たず、他のサーバーの通話にだけ参加するサーバー
+describe('on a server without its own LiveKit', () => {
+	beforeEach(() => {
+		mocks.instance.features.voiceCall = false;
+		mocks.instance.features.remoteVoiceCall = true;
+	});
+
+	test('shows who is in a mirror room\'s call', async () => {
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
+		renderCard(mirror);
+		await flush();
+
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/states', { roomIds: ['r1'] });
+		expect(screen.getByText('Alice')).toBeTruthy();
+		expect(screen.getByText(i18n.ts._voiceCall.join)).toBeTruthy();
+	});
+
+	test('follows a mirror room\'s call through the main stream', async () => {
+		renderCard(mirror);
+		await flush();
+
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [participant(bob)] });
+		await flush();
+
+		expect(screen.getByText('Bob')).toBeTruthy();
+	});
+
+	test('lets me watch a participant sharing their screen after joining a mirror room\'s call', async () => {
+		Object.assign(callState, { status: 'connected', room: mirror });
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true)] }]);
+		renderCard(mirror);
+		await flush();
+
+		await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.watchStream));
+		expect(mocks.watchScreenShare).toHaveBeenCalledWith('https://local.test/users/alice');
+	});
+
+	test('still hides the card of a room owned here, since this server cannot host its call', async () => {
+		renderCard(room);
+		await flush();
+
+		expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
+		expect(mocks.misskeyApi).not.toHaveBeenCalled();
+	});
+});
+
 describe('screen share in the room panel', () => {
 	test('offers to watch a participant who is sharing their screen', async () => {
 		Object.assign(callState, { status: 'connected', room });
