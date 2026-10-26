@@ -5,70 +5,93 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <PageWithHeader v-model:tab="tab" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
-	<!-- 通話カードはメッセージをスクロールしてもページヘッダーの下に貼り付ける -->
-	<MkStickyContainer v-if="tab === 'chat'" class="_spacer" style="--MI_SPACER-w: 700px;">
-		<template #header>
-			<XVoice v-if="room" :room="room" :call="voiceCallState"/>
-		</template>
-		<div class="_gaps">
-			<div v-if="initializing">
-				<MkLoading/>
-			</div>
+	<!-- 広いページで誰かが通話にいるあいだは、通話 (ステージ) とチャットを左右に並べる。ステージはチャットを置く側の反対に出し、DOM の順も見た目に合わせる。
+	狭いページでは、通話カードをメッセージの上に貼り付ける -->
+	<div v-if="tab === 'chat'" ref="chatTabEl" :class="{ [$style.split]: split, [$style.chatLeft]: split && chatSide === 'left' }">
+		<XStage v-if="split && room && chatSide === 'right'" :room="room" :call="voiceCallState" :chatSide="chatSide" :class="$style.stage" @swapChatSide="swapChatSide"/>
+		<div :class="$style.chatPane">
+			<!-- 並べているときはメッセージの欄だけを自分でスクロールさせる -->
+			<div :class="$style.chatScroller">
+				<!-- 通話カードはメッセージをスクロールしてもページヘッダーの下に貼り付ける -->
+				<MkStickyContainer class="_spacer" style="--MI_SPACER-w: 700px;">
+					<template #header>
+						<XVoice v-if="room && !split" :room="room" :call="voiceCallState"/>
+					</template>
+					<div class="_gaps">
+						<div v-if="initializing">
+							<MkLoading/>
+						</div>
 
-			<div v-else-if="messages.length === 0">
-				<div class="_gaps" style="text-align: center;">
-					<div>{{ i18n.ts._chat.noMessagesYet }}</div>
-					<template v-if="user">
-						<div v-if="user.chatScope === 'followers'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromFollowers }}</div>
-						<div v-else-if="user.chatScope === 'following'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromFollowing }}</div>
-						<div v-else-if="user.chatScope === 'mutual'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromMutualFollowing }}</div>
-						<div v-else-if="user.chatScope === 'none'">{{ i18n.ts._chat.thisUserNotAllowedChatAnyone }}</div>
-					</template>
-					<template v-else-if="room">
-						<div>{{ i18n.ts._chat.inviteUserToChat }}</div>
-					</template>
+						<div v-else-if="messages.length === 0">
+							<div class="_gaps" style="text-align: center;">
+								<div>{{ i18n.ts._chat.noMessagesYet }}</div>
+								<template v-if="user">
+									<div v-if="user.chatScope === 'followers'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromFollowers }}</div>
+									<div v-else-if="user.chatScope === 'following'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromFollowing }}</div>
+									<div v-else-if="user.chatScope === 'mutual'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromMutualFollowing }}</div>
+									<div v-else-if="user.chatScope === 'none'">{{ i18n.ts._chat.thisUserNotAllowedChatAnyone }}</div>
+								</template>
+								<template v-else-if="room">
+									<div>{{ i18n.ts._chat.inviteUserToChat }}</div>
+								</template>
+							</div>
+						</div>
+
+						<div v-else ref="timelineEl" class="_gaps" :class="{ [$style.ownScroller]: split }">
+							<div v-if="canFetchMore">
+								<MkButton :class="$style.more" :wait="moreFetching" primary rounded @click="fetchMore">{{ i18n.ts.loadMore }}</MkButton>
+							</div>
+
+							<TransitionGroup
+								:enterActiveClass="prefer.s.animation ? $style.transition_x_enterActive : ''"
+								:leaveActiveClass="prefer.s.animation ? $style.transition_x_leaveActive : ''"
+								:enterFromClass="prefer.s.animation ? $style.transition_x_enterFrom : ''"
+								:leaveToClass="prefer.s.animation ? $style.transition_x_leaveTo : ''"
+								:moveClass="prefer.s.animation ? $style.transition_x_move : ''"
+								tag="div" class="_gaps"
+							>
+								<template v-for="(item, i) in displayTimeline" :key="item.id">
+									<!-- TransitionGroup は直下の子コンポーネントを毎回描き直させるので、吹き出しは要素で包む。
+									こうすると新着が来ても、まとまりの位置 (真偽値) が変わった吹き出しだけが描き直される -->
+									<div v-if="item.type === 'item'" :class="{ [$style.stackedMessage]: groupPositions[i]?.first === false }">
+										<XMessage
+											:message="item.data"
+											:firstInGroup="groupPositions[i]?.first ?? true"
+											:lastInGroup="groupPositions[i]?.last ?? true"
+										/>
+									</div>
+									<div v-else-if="item.type === 'date'" :class="$style.dateDivider">
+										<span><i class="ti ti-chevron-up"></i> {{ item.nextText }}</span>
+										<span style="height: 1em; width: 1px; background: var(--MI_THEME-divider);"></span>
+										<span>{{ item.prevText }} <i class="ti ti-chevron-down"></i></span>
+									</div>
+								</template>
+							</TransitionGroup>
+						</div>
+
+						<div v-if="user && !user.canChat">
+							<MkInfo warn>{{ i18n.ts._chat.chatNotAvailableInOtherAccount }}</MkInfo>
+						</div>
+
+						<MkInfo v-if="$i.policies.chatAvailability !== 'available'" warn>{{ $i.policies.chatAvailability === 'readonly' ? i18n.ts._chat.chatIsReadOnlyForThisAccountOrServer : i18n.ts._chat.chatNotAvailableForThisAccountOrServer }}</MkInfo>
+					</div>
+				</MkStickyContainer>
+			</div>
+			<div v-if="split" :class="$style.paneFooter">
+				<div class="_gaps">
+					<Transition name="fade">
+						<div v-show="showIndicator" :class="$style.new">
+							<button class="_buttonPrimary" :class="$style.newButton" @click="onIndicatorClick">
+								<i class="fas ti-fw fa-arrow-circle-down" :class="$style.newIcon"></i>{{ i18n.ts._chat.newMessage }}
+							</button>
+						</div>
+					</Transition>
+					<XForm v-if="initialized" :user="user" :room="room" :class="$style.form"/>
 				</div>
 			</div>
-
-			<div v-else ref="timelineEl" class="_gaps">
-				<div v-if="canFetchMore">
-					<MkButton :class="$style.more" :wait="moreFetching" primary rounded @click="fetchMore">{{ i18n.ts.loadMore }}</MkButton>
-				</div>
-
-				<TransitionGroup
-					:enterActiveClass="prefer.s.animation ? $style.transition_x_enterActive : ''"
-					:leaveActiveClass="prefer.s.animation ? $style.transition_x_leaveActive : ''"
-					:enterFromClass="prefer.s.animation ? $style.transition_x_enterFrom : ''"
-					:leaveToClass="prefer.s.animation ? $style.transition_x_leaveTo : ''"
-					:moveClass="prefer.s.animation ? $style.transition_x_move : ''"
-					tag="div" class="_gaps"
-				>
-					<template v-for="(item, i) in displayTimeline" :key="item.id">
-						<!-- TransitionGroup は直下の子コンポーネントを毎回描き直させるので、吹き出しは要素で包む。
-						こうすると新着が来ても、まとまりの位置 (真偽値) が変わった吹き出しだけが描き直される -->
-						<div v-if="item.type === 'item'" :class="{ [$style.stackedMessage]: groupPositions[i]?.first === false }">
-							<XMessage
-								:message="item.data"
-								:firstInGroup="groupPositions[i]?.first ?? true"
-								:lastInGroup="groupPositions[i]?.last ?? true"
-							/>
-						</div>
-						<div v-else-if="item.type === 'date'" :class="$style.dateDivider">
-							<span><i class="ti ti-chevron-up"></i> {{ item.nextText }}</span>
-							<span style="height: 1em; width: 1px; background: var(--MI_THEME-divider);"></span>
-							<span>{{ item.prevText }} <i class="ti ti-chevron-down"></i></span>
-						</div>
-					</template>
-				</TransitionGroup>
-			</div>
-
-			<div v-if="user && !user.canChat">
-				<MkInfo warn>{{ i18n.ts._chat.chatNotAvailableInOtherAccount }}</MkInfo>
-			</div>
-
-			<MkInfo v-if="$i.policies.chatAvailability !== 'available'" warn>{{ $i.policies.chatAvailability === 'readonly' ? i18n.ts._chat.chatIsReadOnlyForThisAccountOrServer : i18n.ts._chat.chatNotAvailableForThisAccountOrServer }}</MkInfo>
 		</div>
-	</MkStickyContainer>
+		<XStage v-if="split && room && chatSide === 'left'" :room="room" :call="voiceCallState" :chatSide="chatSide" :class="$style.stage" @swapChatSide="swapChatSide"/>
+	</div>
 
 	<div v-else-if="tab === 'search'" class="_spacer" style="--MI_SPACER-w: 700px;">
 		<XSearch :userId="userId" :roomId="roomId"/>
@@ -83,7 +106,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 
 	<template #footer>
-		<div v-if="tab === 'chat'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]">
+		<div v-if="tab === 'chat' && !split" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]">
 			<div class="_gaps">
 				<Transition name="fade">
 					<div v-show="showIndicator" :class="$style.new">
@@ -109,6 +132,7 @@ import XSearch from './room.search.vue';
 import XMembers from './room.members.vue';
 import XInfo from './room.info.vue';
 import XVoice from './room.voice.vue';
+import XStage from './room.voice.stage.vue';
 import type { MenuItem } from '@/types/menu.js';
 import type { PageHeaderItem } from '@/types/page-header.js';
 import * as os from '@/os.js';
@@ -129,8 +153,11 @@ import { acct as getAcct } from '@@/js/user.js';
 import { isFriendly } from '@/utility/is-friendly.js';
 import { deviceKind } from '@/utility/device-kind.js';
 import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
+import { useElementWidth } from '@/composables/use-element-width.js';
 
 const MOBILE_THRESHOLD = 500;
+// ページ自身の幅がこれ以上あれば、通話とチャットを左右に並べる
+const STAGE_MIN_PAGE_WIDTH = 960;
 
 const isMobile = ref(deviceKind === 'smartphone' || window.innerWidth <= MOBILE_THRESHOLD);
 const handleResize = () => {
@@ -461,6 +488,18 @@ function showMenu(ev: PointerEvent) {
 
 const tab = ref('chat');
 
+// ウィンドウではなくページ自身の幅で決める (デッキの列やウィジェットでページの幅は変わる)
+const chatTabEl = useTemplateRef('chatTabEl');
+const pageWidth = useElementWidth(chatTabEl);
+// 通話カードを出す場面 (誰かが通話にいるか、自分が参加中) で、ページが広ければ通話カードの代わりにステージを横に並べる
+const split = computed(() => tab.value === 'chat' && voiceCallState.showCard.value && pageWidth.value != null && pageWidth.value >= STAGE_MIN_PAGE_WIDTH);
+// 設定が変わったらすぐ並びを変えたいので、変更を追える prefer.r を見る
+const chatSide = computed(() => prefer.r['voiceCall.stageChatSide'].value);
+
+function swapChatSide() {
+	prefer.commit('voiceCall.stageChatSide', chatSide.value === 'right' ? 'left' : 'right');
+}
+
 const headerTabs = computed(() => room.value ? [{
 	key: 'chat',
 	title: i18n.ts._chat.messages,
@@ -556,6 +595,52 @@ definePage(computed(() => {
 
 .more {
 	margin: 0 auto;
+}
+
+// 左右に並べるときは、ページヘッダーと下端の間 (スクロールしない高さ) にちょうど収める
+.split {
+	display: flex;
+	height: calc(100cqh - var(--MI-stickyTop, 0px) - var(--MI-stickyBottom, 0px));
+
+	.stage {
+		flex: 1 1 0;
+	}
+
+	.chatPane {
+		display: flex;
+		flex: 0 1 400px;
+		flex-direction: column;
+		min-width: 320px;
+		min-height: 0;
+		border-left: solid 0.5px var(--MI_THEME-divider);
+	}
+
+	&.chatLeft .chatPane {
+		border-left: none;
+		border-right: solid 0.5px var(--MI_THEME-divider);
+	}
+
+	// ページと同じく、新しいメッセージが下に来るよう逆向きにスクロールさせる
+	.chatScroller {
+		display: flex;
+		flex: 1;
+		flex-direction: column-reverse;
+		min-height: 0;
+		overflow-y: scroll;
+		overscroll-behavior: contain;
+		container-type: inline-size;
+		background: var(--MI_THEME-bg);
+	}
+}
+
+// メッセージの欄だけがスクロールするので、アイコンはページヘッダーではなく欄の上端を基準に貼り付ける
+.ownScroller {
+	--MI-stickyTop: 0px;
+}
+
+.paneFooter {
+	flex-shrink: 0;
+	padding-top: 8px;
 }
 
 .footer {

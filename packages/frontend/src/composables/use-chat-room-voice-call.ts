@@ -6,19 +6,25 @@
 import { computed, toValue } from 'vue';
 import type { MaybeRefOrGetter } from 'vue';
 import * as Misskey from 'cherrypick-js';
+import type { MenuItem } from '@/types/menu.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
 import { instance } from '@/instance.js';
 import { prefer } from '@/preferences.js';
 import { ensureSignin } from '@/i.js';
+import { userName } from '@/filters/user.js';
 import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
-import { joinVoiceCall, voiceCall } from '@/utility/voice-call.js';
+import { joinVoiceCall, localIdentityOf, voiceCall } from '@/utility/voice-call.js';
+import XVolume from '@/pages/chat/room.voice.volume.vue';
+
+type Participant = Misskey.entities.ChatRoomVoiceState['participants'][number];
 
 /**
- * ルーム画面の通話カードとページヘッダーの参加ボタンが、同じ参加者の情報と参加の流れを使うためのもの。
+ * ルーム画面の通話カード・広い画面のステージ・ページヘッダーの参加ボタンが、同じ参加者の情報と参加の流れを使うためのもの。
  */
 export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.ChatRoom | null>) {
 	const $i = ensureSignin();
+	const myIdentity = localIdentityOf($i.id);
 
 	// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーで開かれるので、連合通話が許可されているときだけ出す
 	const available = computed(() => {
@@ -70,7 +76,48 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		}
 	}
 
-	return { available, inThisCall, participants, showCard, join };
+	const isOwner = computed(() => toValue(room)?.ownerId === $i.id);
+
+	// 参加者ごとのメニュー (自分の手元の音量、ルームの持ち主なら強制ミュートと通話から外す)
+	function participantMenuItems(participant: Participant): MenuItem[] {
+		const target = toValue(room);
+		if (target == null || participant.identity === myIdentity) return [];
+		const items: MenuItem[] = [];
+		if (inThisCall.value) {
+			items.push({ type: 'component', component: XVolume, props: { identity: participant.identity } });
+		}
+		if (isOwner.value) {
+			if (items.length > 0) items.push({ type: 'divider' });
+			items.push({
+				icon: 'ti ti-microphone-off',
+				text: i18n.ts._voiceCall.forceMute,
+				action: () => {
+					os.apiWithDialog('chat/rooms/voice/mute', { roomId: target.id, userId: participant.user.id });
+				},
+			}, {
+				icon: 'ti ti-user-x',
+				text: i18n.ts._voiceCall.kick,
+				danger: true,
+				action: async () => {
+					const { canceled } = await os.confirm({
+						type: 'warning',
+						text: i18n.tsx._voiceCall.kickConfirm({ name: userName(participant.user) }),
+					});
+					if (canceled) return;
+					os.apiWithDialog('chat/rooms/voice/kick', { roomId: target.id, userId: participant.user.id });
+				},
+			});
+		}
+		return items;
+	}
+
+	function openParticipantMenu(participant: Participant, ev: MouseEvent) {
+		const items = participantMenuItems(participant);
+		if (items.length === 0) return;
+		os.popupMenu(items, ev.currentTarget ?? ev.target);
+	}
+
+	return { available, inThisCall, participants, showCard, join, myIdentity, isOwner, openParticipantMenu };
 }
 
 export type ChatRoomVoiceCall = ReturnType<typeof useChatRoomVoiceCall>;

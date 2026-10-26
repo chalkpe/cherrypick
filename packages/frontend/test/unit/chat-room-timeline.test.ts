@@ -38,7 +38,7 @@ vi.mock('@/utility/misskey-api.js', () => ({
 	}),
 }));
 vi.mock('@/stream.js', () => ({ useStream: () => ({ useChannel: () => mocks.channel }) }));
-vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true }) }));
+vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ alert: vi.fn(), confirm: vi.fn(), popupMenu: vi.fn() }));
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn() }) }));

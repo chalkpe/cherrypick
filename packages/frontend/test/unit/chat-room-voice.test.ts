@@ -89,6 +89,7 @@ vi.mock('@/utility/voice-call.js', async () => {
 });
 
 import type { FakePrefer } from './fake-prefer.js';
+import { installFakeResizeObserver, resizeObserved } from './fake-resize-observer.js';
 import { i18n } from '@/i18n.js';
 import { prefer as mockedPrefer } from '@/preferences.js';
 import { voiceCall } from '@/utility/voice-call.js';
@@ -115,6 +116,9 @@ const participant = (user: typeof alice, screenSharing = false) => ({ identity: 
 const callState = voiceCall as unknown as Record<string, unknown>;
 const prefer = mockedPrefer as unknown as FakePrefer;
 
+// ルーム画面は自分の幅を ResizeObserver で測って、通話を横に並べるかを決める
+installFakeResizeObserver();
+
 beforeEach(() => {
 	mocks.channel = new mocks.FakeChannel();
 	mocks.instance.features.voiceCall = true;
@@ -129,6 +133,7 @@ beforeEach(() => {
 		'voiceCall.screenShareQuality': 'sharp',
 		'voiceCall.screenShareAudio': true,
 		'voiceCall.participantVolumes': {},
+		'voiceCall.stageChatSide': 'right',
 	});
 	mocks.misskeyApi.mockReset().mockResolvedValue([]);
 	for (const fn of [mocks.joinVoiceCall, mocks.leaveVoiceCall, mocks.setMicEnabled, mocks.setDeafened, mocks.resumeAudio, mocks.watchScreenShare, mocks.startScreenShare, mocks.stopScreenShare, mocks.apiWithDialog, mocks.confirm, mocks.popupMenu]) fn.mockReset();
@@ -380,6 +385,136 @@ describe('voice call on the room page', () => {
 
 		await openTab(i18n.ts._chat.members);
 		expect(headerIcons()).toEqual(['ti ti-dots']);
+	});
+
+	describe('on a wide page', () => {
+		async function setPageWidth(width: number) {
+			resizeObserved(width);
+			await flush();
+		}
+
+		// a が b より前 (広い画面では左) にあるか
+		const precedes = (a: Element, b: Element) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+		// メッセージの欄 (まだメッセージが無いので、その旨の文言で見分ける)
+		const chatPane = () => screen.getByText(i18n.ts._chat.noMessagesYet);
+
+		test('uses the two-pane call view on a wide page while someone is in the call', async () => {
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await setPageWidth(1280);
+
+			// 通話カードは出さず、ステージに参加者を大きく並べる
+			expect(screen.getByTestId('sticky-header').textContent?.trim()).toBe('');
+			expect(screen.getByText('Alice')).toBeTruthy();
+			expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+			expect(chatPane()).toBeTruthy();
+		});
+
+		test('keeps the sticky card on a narrow page', async () => {
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await setPageWidth(959);
+
+			expect(stickyCard().getByText('Alice')).toBeTruthy();
+			expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
+		});
+
+		test('keeps the single column while nobody is in the call', async () => {
+			await renderRoom(room, []);
+			await setPageWidth(1280);
+
+			expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
+			expect(headerIcons()).toEqual(['ti ti-phone', 'ti ti-dots']);
+
+			mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [participant(alice)] });
+			await flush();
+
+			expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+			expect(headerIcons()).toEqual(['ti ti-dots']);
+		});
+
+		test('puts the chat on the right by default and on the left when preferred', async () => {
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await setPageWidth(1280);
+			expect(precedes(screen.getByText('Alice'), chatPane())).toBe(true);
+
+			await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft));
+			await flush();
+
+			expect(prefer.commit).toHaveBeenCalledWith('voiceCall.stageChatSide', 'left');
+			expect(precedes(chatPane(), screen.getByText('Alice'))).toBe(true);
+			expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatRight)).toBeTruthy();
+		});
+
+		test('opens with the chat on the left when that was chosen before', async () => {
+			prefer.reset({ ...prefer.s, 'voiceCall.stageChatSide': 'left' });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await setPageWidth(1280);
+
+			expect(precedes(chatPane(), screen.getByText('Alice'))).toBe(true);
+		});
+
+		test('shows a join button on the stage when I am not in the call', async () => {
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await setPageWidth(1280);
+			expect(screen.getByTestId('sticky-header').textContent?.trim()).toBe('');
+
+			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
+			await flush();
+			expect(mocks.joinVoiceCall).toHaveBeenCalledWith(room);
+			expect(headerJoin()).toBeNull();
+		});
+
+		test('keeps the call controls on the stage while I am in the call', async () => {
+			Object.assign(callState, { status: 'connected', room, micEnabled: true });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await setPageWidth(1280);
+			expect(screen.getByTestId('sticky-header').textContent?.trim()).toBe('');
+
+			expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
+			await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.mute));
+			expect(mocks.setMicEnabled).toHaveBeenCalledWith(false);
+			await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.leave));
+			expect(mocks.leaveVoiceCall).toHaveBeenCalled();
+		});
+
+		test('clicking a sharer\'s tile watches the stream', async () => {
+			Object.assign(callState, { status: 'connected', room, micEnabled: true });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice, true)] }]);
+			await setPageWidth(1280);
+
+			const tileName = screen.getByText('Alice');
+			await fireEvent.click(tileName);
+			expect(mocks.watchScreenShare).toHaveBeenLastCalledWith('https://local.test/users/alice');
+
+			// 見ている画面はステージに大きく出し、タイルをもう一度押すと見るのをやめる
+			callState.watchingIdentity = 'https://local.test/users/alice';
+			await flush();
+			expect(screen.getByLabelText(i18n.ts._voiceCall.fullscreen)).toBeTruthy();
+			await fireEvent.click(tileName);
+			expect(mocks.watchScreenShare).toHaveBeenLastCalledWith(null);
+		});
+
+		test('lets the room owner open a participant menu from a tile', async () => {
+			const ownedRoom = { ...room, ownerId: 'me' };
+			mocks.confirm.mockResolvedValue({ canceled: false });
+			await renderRoom(ownedRoom, [{ roomId: 'r1', participants: [participant(bob)] }]);
+			await setPageWidth(1280);
+
+			await fireEvent.click(screen.getByLabelText(i18n.ts.menu));
+			const items = mocks.popupMenu.mock.calls[mocks.popupMenu.mock.calls.length - 1][0] as { text?: string; action?: () => unknown }[];
+			await items.find(item => item.text === i18n.ts._voiceCall.kick)!.action!();
+
+			expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/voice/kick', { roomId: 'r1', userId: 'bob' });
+		});
+
+		test('goes back to the sticky card when the page gets narrow', async () => {
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await setPageWidth(1280);
+			expect(screen.getByTestId('sticky-header').textContent?.trim()).toBe('');
+
+			await setPageWidth(700);
+			expect(stickyCard().getByText('Alice')).toBeTruthy();
+			expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
+		});
 	});
 
 	test('does not offer a header join where calls are not available', async () => {

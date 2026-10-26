@@ -9438,6 +9438,14 @@ export interface Locale extends ILocale {
          * {n}人が通話中
          */
         "inCallCount": ParameterizedString<"n">;
+        /**
+         * チャットを左に移動
+         */
+        "moveChatLeft": string;
+        /**
+         * チャットを右に移動
+         */
+        "moveChatRight": string;
     };
     "_role": {
         /**

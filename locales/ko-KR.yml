@@ -2417,6 +2417,8 @@ _voiceCall:
   kick: "통화에서 내보내기"
   kickConfirm: "{name}님을 통화에서 내보낼까요?"
   inCallCount: "{n}명 통화 중"
+  moveChatLeft: "채팅을 왼쪽으로 옮기기"
+  moveChatRight: "채팅을 오른쪽으로 옮기기"
 _role:
   new: "새 역할 생성"
   edit: "역할 편집"

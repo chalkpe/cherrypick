@@ -569,6 +569,11 @@ export const PREF_DEF = definePreferences({
 		accountDependent: true,
 		default: [] as string[],
 	},
+	// 広いルーム画面で通話とチャットを横に並べるとき、チャットを置く側
+	'voiceCall.stageChatSide': {
+		accountDependent: true,
+		default: 'right' as 'right' | 'left',
+	},
 
 	'game.dropAndFusion': {
 		default: {

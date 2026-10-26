@@ -2412,6 +2412,8 @@ _voiceCall:
   kick: "Remove from call"
   kickConfirm: "Remove {name} from the call?"
   inCallCount: "{n} in call"
+  moveChatLeft: "Move chat to the left"
+  moveChatRight: "Move chat to the right"
 _role:
   new: "New role"
   edit: "Edit role"

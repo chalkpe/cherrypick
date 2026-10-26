@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div ref="rootEl" :class="$style.root">
+<div ref="rootEl" :class="[$style.root, { [$style.fill]: fill }]">
 	<video ref="videoEl" :class="$style.video" autoplay playsinline muted></video>
 	<div :class="$style.bar">
 		<span :class="$style.label"><i class="ti ti-screen-share" role="img" :aria-label="i18n.ts._voiceCall.sharingScreen"></i> <MkUserName :user="participant.user"/></span>
@@ -41,9 +41,13 @@ import { i18n } from '@/i18n.js';
 import { requestFullscreen as enterFullscreen } from '@/utility/fullscreen.js';
 import { attachScreenShare, watchScreenShare } from '@/utility/voice-call.js';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
 	participant: Misskey.entities.ChatRoomVoiceState['participants'][number];
-}>();
+	// 与えられた高さいっぱいに映す (広い画面のステージ)。指定しなければ高さの上限までに収める
+	fill?: boolean;
+}>(), {
+	fill: false,
+});
 
 const rootEl = useTemplateRef('rootEl');
 const videoEl = useTemplateRef('videoEl');
@@ -88,7 +92,19 @@ function requestPictureInPicture() {
 	object-fit: contain;
 }
 
+.fill {
+	display: flex;
+	flex-direction: column;
+
+	.video {
+		flex: 1 1 0;
+		min-height: 0;
+		max-height: none;
+	}
+}
+
 .bar {
+	flex-shrink: 0;
 	display: flex;
 	align-items: center;
 	gap: 4px;

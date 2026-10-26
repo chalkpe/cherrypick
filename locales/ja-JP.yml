@@ -2447,6 +2447,8 @@ _voiceCall:
   kick: "通話から外す"
   kickConfirm: "{name}さんを通話から外しますか？"
   inCallCount: "{n}人が通話中"
+  moveChatLeft: "チャットを左に移動"
+  moveChatRight: "チャットを右に移動"
 _role:
   new: "ロールの作成"
   edit: "ロールの編集"

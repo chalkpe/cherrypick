@@ -7,27 +7,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/vue';
 import { defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
 
-// 入力欄の差し込み先の幅は ResizeObserver で測るので、テストから幅を決められるものに差し替える
-const resizeObservers = vi.hoisted(() => new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>());
-vi.stubGlobal('ResizeObserver', class {
-	callback: ResizeObserverCallback;
-	targets = new Set<Element>();
-	constructor(callback: ResizeObserverCallback) {
-		this.callback = callback;
-		resizeObservers.add(this);
-	}
-	observe(el: Element) {
-		this.targets.add(el);
-	}
-	unobserve(el: Element) {
-		this.targets.delete(el);
-	}
-	disconnect() {
-		this.targets.clear();
-		resizeObservers.delete(this);
-	}
-});
-
 vi.mock('@/os.js', () => ({ popupMenu: vi.fn(), claimZIndex: () => 1000, alert: vi.fn(), launchUploader: vi.fn() }));
 vi.mock('@/preferences.js', async () => ({
 	prefer: (await import('./fake-prefer.js')).createFakePrefer({
@@ -60,10 +39,14 @@ vi.mock('@/utility/autocomplete.js', () => ({ Autocomplete: class { detach() {} 
 vi.mock('@/utility/emoji-picker.js', () => ({ emojiPicker: { show: vi.fn() } }));
 vi.mock('@/utility/drive.js', () => ({ selectFile: vi.fn() }));
 
+import { installFakeResizeObserver, resizeObserved } from './fake-resize-observer.js';
 import { i18n } from '@/i18n.js';
 import XVoiceCallBar from '@/ui/_common_/voice-call-bar.vue';
 import XVoiceCallBarSlot from '@/ui/_common_/voice-call-bar-slot.vue';
 import XForm from '@/pages/chat/room.form.vue';
+
+// 入力欄の差し込み先の幅は ResizeObserver で測るので、テストから幅を決められるものに差し替える
+installFakeResizeObserver();
 
 const room = { id: 'r1', name: 'room 1' } as any;
 const stubs = { MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' }, MkLoading: { template: '<span></span>' } };
@@ -87,9 +70,7 @@ const variantOf = (el: Element) => [...el.classList].find(name => /docked|top|fl
 const chatFormSlot = (container: Element) => container.querySelector('.ti-mood-happy')!.closest('button')!.nextElementSibling!;
 
 async function resizeElement(el: Element, width: number) {
-	for (const observer of resizeObservers) {
-		if (observer.targets.has(el)) observer.callback([{ target: el, contentRect: { width } } as unknown as ResizeObserverEntry], observer as unknown as ResizeObserver);
-	}
+	resizeObserved(width, el);
 	await flush();
 }
 
