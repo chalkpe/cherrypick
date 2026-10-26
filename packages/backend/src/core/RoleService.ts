@@ -39,6 +39,8 @@ export type RolePolicies = {
 	btlAvailable: boolean;
 	canPublicNote: boolean;
 	canEditNote: boolean;
+	canVoiceCall: boolean;
+	canScreenShare: boolean;
 	mentionLimit: number;
 	canInvite: boolean;
 	inviteLimit: number;
@@ -86,6 +88,8 @@ export const DEFAULT_POLICIES: RolePolicies = {
 	btlAvailable: true,
 	canPublicNote: true,
 	canEditNote: true,
+	canVoiceCall: true,
+	canScreenShare: true,
 	mentionLimit: 20,
 	canInvite: false,
 	inviteLimit: 0,
@@ -421,6 +425,8 @@ export class RoleService implements OnApplicationShutdown, OnModuleInit {
 			btlAvailable: calc('btlAvailable', vs => vs.some(v => v === true)),
 			canPublicNote: calc('canPublicNote', vs => vs.some(v => v === true)),
 			canEditNote: calc('canEditNote', vs => vs.some(v => v === true)),
+			canVoiceCall: calc('canVoiceCall', vs => vs.some(v => v === true)),
+			canScreenShare: calc('canScreenShare', vs => vs.some(v => v === true)),
 			mentionLimit: calc('mentionLimit', vs => Math.max(...vs)),
 			canInvite: calc('canInvite', vs => vs.some(v => v === true)),
 			inviteLimit: calc('inviteLimit', vs => Math.max(...vs)),

@@ -9430,6 +9430,14 @@ export interface Locale extends ILocale {
              */
             "canEditNote": string;
             /**
+             * 音声通話への参加
+             */
+            "canVoiceCall": string;
+            /**
+             * 画面共有
+             */
+            "canScreenShare": string;
+            /**
              * ノート内の最大メンション数
              */
             "mentionMax": string;

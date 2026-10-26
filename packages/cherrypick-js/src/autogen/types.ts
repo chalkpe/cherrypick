@@ -5864,6 +5864,8 @@ export type components = {
             canImportMuting: boolean;
             canImportUserLists: boolean;
             canEditNote: boolean;
+            canVoiceCall: boolean;
+            canScreenShare: boolean;
             canSetFederationAvatarShape: boolean;
             /** @enum {string} */
             chatAvailability: 'available' | 'readonly' | 'unavailable';

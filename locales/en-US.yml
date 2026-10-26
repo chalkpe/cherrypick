@@ -2410,6 +2410,8 @@ _role:
     btlAvailable: "Can view the bubble timeline"
     canPublicNote: "Can send public notes"
     canEditNote: "Note editing"
+    canVoiceCall: "Join voice calls"
+    canScreenShare: "Screen sharing"
     mentionMax: "Maximum number of mentions in a note"
     canInvite: "Can create instance invite codes"
     inviteLimit: "Invite limit"

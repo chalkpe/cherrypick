@@ -66,6 +66,26 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</template>
 		</XFolder>
 
+		<XFolder v-if="matchQuery([i18n.ts._role._options.canVoiceCall, 'canVoiceCall'])" v-model:policyMeta="policyMetaModel.canVoiceCall" :isBaseRole="isBaseRole" :readonly="readonly">
+			<template #label>{{ i18n.ts._role._options.canVoiceCall }}</template>
+			<template #valueText>{{ valuesModel.canVoiceCall ? i18n.ts.yes : i18n.ts.no }}</template>
+			<template #default="{ disabled }">
+				<MkSwitch v-model="valuesModel.canVoiceCall" :disabled="disabled">
+					<template #label>{{ i18n.ts.enable }}</template>
+				</MkSwitch>
+			</template>
+		</XFolder>
+
+		<XFolder v-if="matchQuery([i18n.ts._role._options.canScreenShare, 'canScreenShare'])" v-model:policyMeta="policyMetaModel.canScreenShare" :isBaseRole="isBaseRole" :readonly="readonly">
+			<template #label>{{ i18n.ts._role._options.canScreenShare }}</template>
+			<template #valueText>{{ valuesModel.canScreenShare ? i18n.ts.yes : i18n.ts.no }}</template>
+			<template #default="{ disabled }">
+				<MkSwitch v-model="valuesModel.canScreenShare" :disabled="disabled">
+					<template #label>{{ i18n.ts.enable }}</template>
+				</MkSwitch>
+			</template>
+		</XFolder>
+
 		<XFolder v-if="matchQuery([i18n.ts._role._options.chatAvailability, 'chatAvailability'])" v-model:policyMeta="policyMetaModel.chatAvailability" :isBaseRole="isBaseRole" :readonly="readonly">
 			<template #label>{{ i18n.ts._role._options.chatAvailability }}</template>
 			<template #valueText>{{ valuesModel.chatAvailability === 'available' ? i18n.ts.yes : valuesModel.chatAvailability === 'readonly' ? i18n.ts.readonly : i18n.ts.no }}</template>

@@ -2415,6 +2415,8 @@ _role:
     btlAvailable: "버블 타임라인 보이기"
     canPublicNote: "공개 노트 허용"
     canEditNote: "노트 편집 허용"
+    canVoiceCall: "음성 통화 참가"
+    canScreenShare: "화면 공유"
     mentionMax: "노트에서 언급할 수 있는 멘션 수"
     canInvite: "서버 초대 코드 발행"
     inviteLimit: "초대 한도"

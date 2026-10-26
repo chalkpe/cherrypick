@@ -2445,6 +2445,8 @@ _role:
     btlAvailable: "バブルタイムラインの閲覧"
     canPublicNote: "パブリック投稿の許可"
     canEditNote: "ノートの編集"
+    canVoiceCall: "音声通話への参加"
+    canScreenShare: "画面共有"
     mentionMax: "ノート内の最大メンション数"
     canInvite: "サーバー招待コードの発行"
     inviteLimit: "招待コードの作成可能数"
