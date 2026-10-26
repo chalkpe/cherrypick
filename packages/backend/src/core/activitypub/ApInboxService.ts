@@ -33,7 +33,7 @@ import type { MiRemoteUser } from '@/models/User.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { AbuseReportService } from '@/core/AbuseReportService.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
-import { getApHrefNullable, getApId, getApIds, getApType, isAccept, isActor, isAdd, isAnnounce, isBlock, isCollection, isCollectionOrOrderedCollection, isCreate, isDelete, isFlag, isFollow, isInvite, isLike, isMove, isPost, isReject, isRemove, isTombstone, isUndo, isUpdate, validActor, validPost } from './type.js';
+import { getApHrefNullable, getApId, getApIds, getApType, getOneApId, isAccept, isActor, isAdd, isAnnounce, isBlock, isCollection, isCollectionOrOrderedCollection, isCreate, isDelete, isFlag, isFollow, isInvite, isLike, isMove, isPost, isReject, isRemove, isTombstone, isUndo, isUpdate, validActor, validPost } from './type.js';
 import { ApNoteService } from './models/ApNoteService.js';
 import { ApLoggerService } from './ApLoggerService.js';
 import { ApDbResolverService } from './ApDbResolverService.js';
@@ -1195,9 +1195,18 @@ export class ApInboxService {
 			await this.apPersonService.updatePerson(actor.uri, resolver, object);
 			return 'ok: Person updated';
 		} else if (getApType(object) === 'Question') {
-			// Questions are notes too: apply verified content/audience changes before poll totals.
-			const result = await this.updateNote(resolver, actor, object, false, activity);
-			if (result !== 'ok') return result;
+			const question = object as IPost;
+			// The note editor replaces omitted fields. Partial tally-only Questions must retain
+			// the existing poll path, which also validates missing attribution against its owner.
+			const hasContent = typeof question.content === 'string' || question.content === null ||
+				typeof question._misskey_content === 'string' ||
+				(question.source?.mediaType === 'text/x.misskeymarkdown' && typeof question.source.content === 'string');
+			if (question.attributedTo != null && question.attachment !== undefined && hasContent &&
+				(question.to !== undefined || question.cc !== undefined)) {
+				const normalizedQuestion = { ...question, attributedTo: getOneApId(question.attributedTo) };
+				const result = await this.updateNote(resolver, actor, normalizedQuestion, false, activity);
+				if (result !== 'ok') return result;
+			}
 			await this.apQuestionService.updateQuestion(object, actor, resolver).catch(err => console.error(err));
 			return 'ok: Question updated';
 		} else if (getApType(object) === 'Note') {
