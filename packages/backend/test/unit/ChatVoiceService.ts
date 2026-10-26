@@ -3,10 +3,13 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { FindOperator, IsNull } from 'typeorm';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
+import { UtilityService } from '@/core/UtilityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
+import UpdateInstanceEndpoint from '@/server/api/endpoints/admin/federation/update-instance.js';
 
 function fakeRedis() {
 	const store = new Map<string, string>();
@@ -81,14 +84,18 @@ function matchesWhere(user: Record<string, unknown>, where: Record<string, unkno
 	});
 }
 
-function createFixture(redis = fakeRedis()) {
+type InstanceRow = { id?: string; host: string; suspensionState: string };
+
+function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []) {
 	const liveKitService = {
+		isEnabled: true,
 		getPublicUrl: () => 'https://local.test/livekit',
 		identityOf: (user: { id: string; host: string | null; uri: string | null }) => user.host == null ? `https://local.test/users/${user.id}` : user.uri,
 		roomIdOf: (name: string) => name.startsWith('chatRoom:') ? name.slice('chatRoom:'.length) : null,
 		listParticipants: vi.fn(),
 		ensureRoom: vi.fn(),
 		createJoinToken: vi.fn().mockResolvedValue('jwt'),
+		removeParticipant: vi.fn(async (_roomId: string, _identity: string) => {}),
 	};
 	const chatRoomsRepository = {
 		findOneBy: vi.fn(async ({ id }: { id: string }) => ({ id, ownerId: 'owner' })),
@@ -108,16 +115,23 @@ function createFixture(redis = fakeRedis()) {
 	const roleService = {
 		getUserPolicies: vi.fn(async () => ({ canVoiceCall: true, canScreenShare: true, chatAvailability: 'available' })),
 	};
-	const utilityService = {
-		isFederationAllowedHost: vi.fn((_host: string) => true),
+	const meta = { enableRemoteVoiceCall: true, federation: 'all', federationHosts: [] as string[], blockedHosts: [] as string[] };
+	// 実物を使い、ブロックの判定 (ポート付きのホストを含む) と記録を引く host の正規化もそのまま確かめる
+	const utilityService = new UtilityService({ host: 'local.test', url: 'https://local.test' } as any, meta as any);
+	vi.spyOn(utilityService, 'isFederationAllowedHost');
+	// instance.host は保存されたとおりの文字列で引かれる。正規化はサービスの側でする
+	const instancesRepository = {
+		rows: instances,
+		findBy: vi.fn(async (where: Record<string, unknown>) => instances.filter(instance => matchesWhere(instance, where))),
 	};
-	const federatedInstanceService = {
-		fetch: vi.fn(async (host: string) => ({ host, suspensionState: 'none' })),
-	};
+	const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+	const loggerService = { getLogger: () => logger };
+	// 内部イベント (metaUpdated など) は Redis の購読から届く
+	const redisForSub = new EventEmitter();
 	const usersRepository = {
 		findBy: vi.fn(async (where: Record<string, unknown>) => KNOWN_USERS.filter(user => matchesWhere(user, where))),
+		findOneBy: vi.fn(async (where: Record<string, unknown>) => KNOWN_USERS.find(user => matchesWhere(user, where)) ?? null),
 	};
-	const meta = { enableRemoteVoiceCall: true, federation: 'all' };
 	// 届けるアクティビティの形はそのまま確かめたいので、本物の ApRendererService を使う
 	const apRendererService = Object.assign(Object.create(ApRendererService.prototype), {
 		config: { url: 'https://local.test' },
@@ -129,20 +143,22 @@ function createFixture(redis = fakeRedis()) {
 	const service = new ChatVoiceService(
 		{ url: 'https://local.test' } as any,
 		redis as any,
+		redisForSub as any,
 		meta as any,
 		chatRoomsRepository as any,
 		chatRoomMembershipsRepository as any,
 		usersRepository as any,
+		instancesRepository as any,
 		liveKitService as any,
 		userEntityService as any,
 		globalEventService as any,
 		roleService as any,
-		utilityService as any,
-		federatedInstanceService as any,
+		utilityService,
 		apRendererService,
 		queueService as any,
+		loggerService as any,
 	);
-	return { service, redis, meta, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, userEntityService, globalEventService, roleService, utilityService, federatedInstanceService, queueService };
+	return { service, redis, redisForSub, meta, liveKitService, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, instancesRepository, userEntityService, globalEventService, roleService, utilityService, queueService, logger };
 }
 
 function remoteUser(overrides: Record<string, unknown> = {}) {
@@ -315,15 +331,66 @@ describe('ChatVoiceService', () => {
 		});
 
 		test('refuses a remote user whose server is blocked or suspended', async () => {
-			f.utilityService.isFederationAllowedHost.mockReturnValueOnce(false);
+			f.meta.blockedHosts = ['remote.test'];
 			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).toBe('forbidden');
 			expect(f.utilityService.isFederationAllowedHost).toHaveBeenCalledWith('remote.test');
-
-			f.federatedInstanceService.fetch.mockResolvedValueOnce({ host: 'remote.test', suspensionState: 'manuallySuspended' });
-			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).toBe('forbidden');
-			expect(f.federatedInstanceService.fetch).toHaveBeenCalledWith('remote.test');
-
 			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+
+			f = createFixture(undefined, [{ host: 'remote.test', suspensionState: 'manuallySuspended' }]);
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).toBe('forbidden');
+			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+		});
+
+		// inbox と同じく、ブロックはポート・末尾のドット・Unicode の違いを無視して当てる
+		test.each([
+			['a port', 'evil.example:8443', ['evil.example']],
+			['a port and a trailing dot', 'evil.example.:8443', ['evil.example']],
+			['a port, blocked by an entry with another port', 'evil.example:8443', ['evil.example:9999']],
+			['a port, blocked by a Unicode entry', 'xn--vil-ima.example:8443', ['ëvil.example']],
+		])('refuses a remote user on a host with %s whose domain is blocked', async (_label, host, blockedHosts) => {
+			f.meta.blockedHosts = blockedHosts;
+
+			const result = await f.service.issueRemoteJoinToken(remoteUser({ host, uri: `https://${host}/users/ru1` }), localRoom(), false);
+
+			expect(result).toBe('forbidden');
+			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+		});
+
+		test.each([
+			// 管理画面で evil.example:8443 を停止すると、toPuny で '' になった記録が停止される (配送もこの記録で止まる)
+			['the record the codebase keeps for hosts with a port', ''],
+			['the record of the same domain', 'evil.example'],
+			['the record kept with its port', 'evil.example:8443'],
+			['the record of the same domain with a trailing dot', 'evil.example.'],
+			['the record kept with its port and a trailing dot', 'evil.example.:8443'],
+		])('refuses a remote user on a port whose server is suspended through %s', async (_label, storedHost) => {
+			f = createFixture(undefined, [{ host: storedHost, suspensionState: 'manuallySuspended' }]);
+
+			const result = await f.service.issueRemoteJoinToken(remoteUser({ host: 'evil.example:8443', uri: 'https://evil.example:8443/users/ru1' }), localRoom(), false);
+
+			expect(result).toBe('forbidden');
+			expect(f.liveKitService.createJoinToken).not.toHaveBeenCalled();
+		});
+
+		test('refuses a remote user whose server is suspended through the record with a trailing dot', async () => {
+			f = createFixture(undefined, [{ host: 'remote.test.', suspensionState: 'autoSuspendedForNotResponding' }]);
+
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).toBe('forbidden');
+		});
+
+		test('does not let the record shared by hosts with a port refuse a remote user without one', async () => {
+			f = createFixture(undefined, [{ host: '', suspensionState: 'manuallySuspended' }, { host: 'remote.test', suspensionState: 'none' }]);
+
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).not.toBe('forbidden');
+		});
+
+		test('reads suspensions as they are now, not from a cache', async () => {
+			f = createFixture(undefined, [{ host: 'remote.test', suspensionState: 'none' }]);
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).not.toBe('forbidden');
+
+			f.instancesRepository.rows[0].suspensionState = 'manuallySuspended';
+
+			expect(await f.service.issueRemoteJoinToken(remoteUser(), localRoom(), false)).toBe('forbidden');
 		});
 
 		test('allows screen sharing only when both servers allow it', async () => {
@@ -860,6 +927,300 @@ describe('ChatVoiceService', () => {
 
 			expect(f.redis.set).toHaveBeenCalledWith('chatVoice:r1', expect.any(String), 'EX', 600);
 			expect(f.redis.sadd).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('keeping calls in line with federation moderation', () => {
+		function participant(user: { id: string; host: string | null; uri: string | null }) {
+			const identity = user.host == null ? `https://local.test/users/${user.id}` : user.uri!;
+			return { identity, userId: user.id, screenSharing: false, micTrackSid: null };
+		}
+
+		const u1 = KNOWN_USERS.find(user => user.id === 'u1')!;
+		const rm1 = KNOWN_USERS.find(user => user.id === 'rm1')!;
+		const rm2 = KNOWN_USERS.find(user => user.id === 'rm2')!;
+		const rm3 = KNOWN_USERS.find(user => user.id === 'rm3')!;
+		const x1 = KNOWN_USERS.find(user => user.id === 'x1')!;
+
+		function startCall(roomId: string, users: { id: string; host: string | null; uri: string | null }[]) {
+			if (!f.redis.sets.has('chatVoice:active')) f.redis.sets.set('chatVoice:active', new Set());
+			f.redis.sets.get('chatVoice:active')!.add(roomId);
+			const previous = f.liveKitService.listParticipants.getMockImplementation();
+			f.liveKitService.listParticipants.mockImplementation(async (id: string) => {
+				if (id === roomId) return users.map(participant);
+				return previous != null ? await previous(id) : [];
+			});
+		}
+
+		/** 管理画面での設定の変更。GlobalModule の購読が先に DI.meta を書き換えるので、届いた時点で meta は after と同じ */
+		function publishMetaUpdated(changes: Record<string, unknown>, options: { withoutBefore?: boolean } = {}) {
+			const before = { ...f.meta };
+			Object.assign(f.meta, changes);
+			const body = options.withoutBefore ? { after: { ...f.meta } } : { before, after: { ...f.meta } };
+			f.redisForSub.emit('message', 'local.test', JSON.stringify({ channel: 'internal', message: { type: 'metaUpdated', body } }));
+		}
+
+		function removed() {
+			return f.liveKitService.removeParticipant.mock.calls.map(([roomId, identity]) => `${roomId} ${identity}`).sort();
+		}
+
+		test('removes participants from a newly blocked server', async () => {
+			startCall('r1', [u1, rm1, rm3]);
+			f.service.onModuleInit();
+
+			publishMetaUpdated({ blockedHosts: ['remote.test'] });
+
+			await vi.waitFor(() => expect(f.liveKitService.removeParticipant).toHaveBeenCalledWith('r1', rm1.uri));
+		});
+
+		test('leaves participants from other servers alone', async () => {
+			startCall('r1', [u1, rm1, rm3]);
+			startCall('r2', [rm2, x1]);
+			f.meta.blockedHosts = ['remote.test'];
+
+			await f.service.removeRefusedRemoteParticipants();
+
+			expect(removed()).toEqual([`r1 ${rm1.uri}`, `r2 ${rm2.uri}`]);
+		});
+
+		test('removes participants when an admin suspends their server', async () => {
+			f = createFixture(undefined, [{ id: 'i1', host: 'remote.test', suspensionState: 'none' }, { id: 'i2', host: 'far.test', suspensionState: 'none' }]);
+			startCall('r1', [u1, rm1, rm3]);
+			const federatedInstanceService = {
+				update: vi.fn(async (id: string, data: { suspensionState?: string }) => {
+					const row = f.instancesRepository.rows.find(instance => instance.id === id)!;
+					if (data.suspensionState != null) row.suspensionState = data.suspensionState;
+				}),
+			};
+			const endpoint = new (UpdateInstanceEndpoint as any)(
+				{ findOneBy: async ({ host }: { host: string }) => f.instancesRepository.rows.find(instance => instance.host === host) ?? null },
+				f.utilityService,
+				federatedInstanceService,
+				{ log: vi.fn() },
+				f.service,
+				{ logger: f.logger },
+			);
+
+			await endpoint.exec({ host: 'remote.test', isSuspended: true }, { id: 'admin' }, null, null);
+
+			await vi.waitFor(() => expect(removed()).toEqual([`r1 ${rm1.uri}`]));
+		});
+
+		test.each([
+			['a subdomain of a blocked domain', 'sub.remote.test', ['remote.test']],
+			['a port on a blocked domain', 'remote.test:8443', ['remote.test']],
+			['a trailing dot', 'remote.test.', ['remote.test']],
+			['a block entry in another case', 'remote.test', ['Remote.TEST']],
+			['a block entry with a port', 'remote.test', ['remote.test:8443']],
+		])('removes a participant on %s', async (_label, host, blockedHosts) => {
+			const p = { id: 'p', host, uri: `https://${host}/users/p` };
+			f.usersRepository.findBy.mockResolvedValue([p, u1, rm3] as any);
+			startCall('r1', [p, u1, rm3]);
+			f.meta.blockedHosts = blockedHosts;
+
+			await f.service.removeRefusedRemoteParticipants();
+
+			expect(removed()).toEqual([`r1 ${p.uri}`]);
+		});
+
+		test('does not take a lookalike domain for a blocked one', async () => {
+			const p = { id: 'p', host: 'notremote.test', uri: 'https://notremote.test/users/p' };
+			f.usersRepository.findBy.mockResolvedValue([p] as any);
+			startCall('r1', [p]);
+			f.meta.blockedHosts = ['remote.test'];
+
+			await f.service.removeRefusedRemoteParticipants();
+
+			expect(removed()).toEqual([]);
+		});
+
+		test('removes every remote participant when federation is turned off', async () => {
+			startCall('r1', [u1, rm1, rm3]);
+			f.service.onModuleInit();
+
+			publishMetaUpdated({ federation: 'none' });
+
+			await vi.waitFor(() => expect(removed()).toEqual([`r1 ${rm3.uri}`, `r1 ${rm1.uri}`]));
+		});
+
+		test('removes participants from servers left off the federation list', async () => {
+			startCall('r1', [u1, rm1, rm3]);
+			f.service.onModuleInit();
+
+			publishMetaUpdated({ federation: 'specified', federationHosts: ['far.test'] });
+
+			await vi.waitFor(() => expect(removed()).toEqual([`r1 ${rm1.uri}`]));
+		});
+
+		test('removes participants from a server suspended through another record of it', async () => {
+			f = createFixture(undefined, [{ host: 'remote.test.', suspensionState: 'manuallySuspended' }]);
+			startCall('r1', [u1, rm1, rm3]);
+
+			await f.service.removeRefusedRemoteParticipants();
+
+			expect(removed()).toEqual([`r1 ${rm1.uri}`]);
+		});
+
+		test('keeps going when one room cannot be read', async () => {
+			startCall('r1', [rm1]);
+			startCall('r2', [rm2]);
+			const list = f.liveKitService.listParticipants.getMockImplementation()!;
+			f.liveKitService.listParticipants.mockImplementation(async (roomId: string) => {
+				if (roomId === 'r1') throw new Error('LiveKit is down');
+				return await list(roomId);
+			});
+			f.meta.blockedHosts = ['remote.test'];
+
+			await f.service.removeRefusedRemoteParticipants();
+
+			expect(removed()).toEqual([`r2 ${rm2.uri}`]);
+			expect(f.logger.warn).toHaveBeenCalled();
+		});
+
+		test('keeps going when one participant cannot be removed', async () => {
+			startCall('r1', [rm1, rm2]);
+			f.liveKitService.removeParticipant.mockRejectedValueOnce(new Error('LiveKit is down'));
+			f.meta.blockedHosts = ['remote.test'];
+
+			await f.service.removeRefusedRemoteParticipants();
+
+			expect(removed()).toEqual([`r1 ${rm1.uri}`, `r1 ${rm2.uri}`]);
+			expect(f.logger.warn).toHaveBeenCalled();
+		});
+
+		test.each([
+			['blockedHosts', { blockedHosts: ['remote.test'] }],
+			['federation', { federation: 'specified' }],
+			['federationHosts', { federationHosts: ['far.test'] }],
+		])('re-checks the calls when %s changes', async (_label, changes) => {
+			const sweep = vi.spyOn(f.service, 'removeRefusedRemoteParticipants').mockResolvedValue();
+			f.service.onModuleInit();
+
+			publishMetaUpdated(changes);
+
+			await vi.waitFor(() => expect(sweep).toHaveBeenCalledTimes(1));
+		});
+
+		test('re-checks the calls when the previous settings are unknown', async () => {
+			const sweep = vi.spyOn(f.service, 'removeRefusedRemoteParticipants').mockResolvedValue();
+			f.service.onModuleInit();
+
+			publishMetaUpdated({}, { withoutBefore: true });
+
+			await vi.waitFor(() => expect(sweep).toHaveBeenCalledTimes(1));
+		});
+
+		test.each([
+			['the server name', { name: 'renamed' }],
+			['remote voice calls', { enableRemoteVoiceCall: false }],
+			['silenced servers', { silencedHosts: ['remote.test'] }],
+			['nothing', {}],
+			['the block list, to an equal list', { blockedHosts: [] }],
+		])('does not re-check the calls when only %s changes', async (_label, changes) => {
+			const sweep = vi.spyOn(f.service, 'removeRefusedRemoteParticipants').mockResolvedValue();
+			f.service.onModuleInit();
+
+			publishMetaUpdated(changes);
+			// 後から届いた変更でだけ読み直したことを確かめる
+			publishMetaUpdated({ blockedHosts: ['remote.test'] });
+
+			await vi.waitFor(() => expect(sweep).toHaveBeenCalled());
+			expect(sweep).toHaveBeenCalledTimes(1);
+		});
+
+		test('stops listening for setting changes on shutdown', async () => {
+			const sweep = vi.spyOn(f.service, 'removeRefusedRemoteParticipants').mockResolvedValue();
+			f.service.onModuleInit();
+			f.service.onApplicationShutdown();
+
+			publishMetaUpdated({ blockedHosts: ['remote.test'] });
+
+			expect(f.redisForSub.listenerCount('message')).toBe(0);
+			expect(sweep).not.toHaveBeenCalled();
+		});
+
+		test('logs a failed sweep started by a setting change', async () => {
+			vi.spyOn(f.service, 'removeRefusedRemoteParticipants').mockRejectedValue(new Error('redis is down'));
+			f.service.onModuleInit();
+
+			publishMetaUpdated({ blockedHosts: ['remote.test'] });
+
+			await vi.waitFor(() => expect(f.logger.error).toHaveBeenCalled());
+		});
+
+		describe('checking who joins', () => {
+			function joined(user: { id: string; host: string | null; uri: string | null }, metadata = JSON.stringify({ userId: user.id })) {
+				return { event: 'participant_joined', room: { name: 'chatRoom:r1' }, participant: { identity: participant(user).identity, metadata } } as any;
+			}
+
+			test('removes a participant who joins from a server this server now refuses', async () => {
+				f.meta.blockedHosts = ['remote.test'];
+
+				f.service.handleWebhook(joined(rm1));
+
+				await vi.waitFor(() => expect(removed()).toEqual([`r1 ${rm1.uri}`]));
+			});
+
+			test('removes a participant from a server on a port of a blocked domain', async () => {
+				const p = { id: 'p', host: 'remote.test:8443', uri: 'https://remote.test:8443/users/p' };
+				f.usersRepository.findOneBy.mockResolvedValue(p as any);
+				f.meta.blockedHosts = ['remote.test'];
+
+				await f.service.removeUnadmittedParticipant('r1', joined(p).participant);
+
+				expect(removed()).toEqual([`r1 ${p.uri}`]);
+			});
+
+			test('removes a participant who is no longer a member of the room', async () => {
+				f.chatRoomMembershipsRepository.exists.mockResolvedValue(false);
+
+				await f.service.removeUnadmittedParticipant('r1', joined(rm1).participant);
+				await f.service.removeUnadmittedParticipant('r1', joined(u1).participant);
+
+				expect(removed()).toEqual(['r1 https://local.test/users/u1', `r1 ${rm1.uri}`]);
+				expect(f.chatRoomMembershipsRepository.exists).toHaveBeenCalledWith({ where: { roomId: 'r1', userId: 'rm1' } });
+			});
+
+			test('removes a participant whose token names no user of this server', async () => {
+				// LiveKit はメタデータの無い参加者に空文字を渡す
+				await f.service.removeUnadmittedParticipant('r1', joined(rm1, '').participant);
+				await f.service.removeUnadmittedParticipant('r1', joined({ id: 'ghost', host: 'remote.test', uri: 'https://remote.test/users/ghost' }).participant);
+
+				expect(removed()).toEqual(['r1 https://remote.test/users/ghost', `r1 ${rm1.uri}`]);
+			});
+
+			test('keeps members who join', async () => {
+				const owner = KNOWN_USERS.find(user => user.id === 'owner')!;
+
+				await f.service.removeUnadmittedParticipant('r1', joined(rm1).participant);
+				await f.service.removeUnadmittedParticipant('r1', joined(u1).participant);
+				// 持ち主はメンバーの記録が無くてもメンバー
+				f.chatRoomMembershipsRepository.exists.mockResolvedValue(false);
+				await f.service.removeUnadmittedParticipant('r1', joined(owner).participant);
+
+				expect(removed()).toEqual([]);
+			});
+
+			test('still re-reads the call after checking who joined', async () => {
+				vi.useFakeTimers();
+				const refresh = vi.spyOn(f.service, 'refresh').mockResolvedValue();
+				f.meta.blockedHosts = ['remote.test'];
+
+				f.service.handleWebhook(joined(rm1));
+				await vi.advanceTimersByTimeAsync(500);
+
+				expect(refresh).toHaveBeenCalledWith('r1');
+				expect(removed()).toEqual([`r1 ${rm1.uri}`]);
+			});
+
+			test('logs a failed check without removing anyone', async () => {
+				f.usersRepository.findOneBy.mockRejectedValue(new Error('db is down'));
+
+				f.service.handleWebhook(joined(rm1));
+
+				await vi.waitFor(() => expect(f.logger.warn).toHaveBeenCalled());
+				expect(removed()).toEqual([]);
+			});
 		});
 	});
 });

@@ -113,7 +113,7 @@ export class LiveKitService {
 
 		const result: LiveKitParticipant[] = [];
 		for (const participant of participants) {
-			const userId = parseUserId(participant.metadata);
+			const userId = userIdOfMetadata(participant.metadata);
 			if (userId == null) continue;
 			result.push({
 				identity: participant.identity,
@@ -175,7 +175,8 @@ function isNotFound(err: unknown): boolean {
 	return err instanceof TwirpError && (err.status === 404 || err.code === 'not_found');
 }
 
-function parseUserId(metadata: string | undefined): string | null {
+/** トークンに付けたメタデータ (createJoinToken) からユーザーの id を取り出す。このサーバーが付けたものでなければ null */
+export function userIdOfMetadata(metadata: string | undefined): string | null {
 	if (!metadata) return null;
 	try {
 		const parsed: unknown = JSON.parse(metadata);

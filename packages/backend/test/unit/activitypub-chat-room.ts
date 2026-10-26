@@ -119,6 +119,11 @@ function fixture(options: {
 	let seq = 0;
 	const notificationService = { createNotification: vi.fn() };
 	const chatVoiceService = { receiveRemoteSnapshot: vi.fn(async () => 'ok: voice state stored') };
+	const usersById = new Map([localOwner, alice, remoteOwner, invitedRemote, dave].map(user => [user.id, user]));
+	const liveKitService = {
+		identityOf: (user: { id: string; host: string | null; uri: string | null }) => user.host == null ? `${LOCAL}/users/${user.id}` : user.uri,
+		removeParticipant: vi.fn(async (_roomId: string, _identity: string) => {}),
+	};
 	const resolver = { resolve: vi.fn() };
 	const apResolverService = { createResolver: vi.fn(async () => resolver) };
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
@@ -127,6 +132,10 @@ function fixture(options: {
 		chatRoomsRepository: rooms,
 		chatRoomInvitationsRepository: invitations,
 		chatRoomMembershipsRepository: memberships,
+		usersRepository: {
+			findOneBy: async ({ id }: { id: string }) => usersById.get(id) ?? null,
+		},
+		liveKitService,
 		chatService: {
 			isRoomMember: async (room: Row, userId: string) => room.ownerId === userId || memberships.rows.some(m => m.roomId === room.id && m.userId === userId),
 		},
@@ -142,7 +151,7 @@ function fixture(options: {
 		chatVoiceService,
 		apResolverService,
 	});
-	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, apResolverService, resolver };
+	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver };
 }
 
 function inviteActivity(actor: { uri: string }, roomUri: string, invitee: string, attributedTo: string | undefined = actor.uri) {
@@ -463,5 +472,47 @@ describe('Chat room federation: voice call state', () => {
 
 		expect(result).toMatch(/^skip/);
 		expect(f.chatVoiceService.receiveRemoteSnapshot).not.toHaveBeenCalled();
+	});
+});
+
+describe('Chat room federation: Remove', () => {
+	const bobroom = { id: 'bobroom', name: 'bob', ownerId: remoteOwner.id, description: '', isArchived: false };
+
+	function leave(actor: { uri: string }, roomUri: string) {
+		return { type: 'Remove', actor: actor.uri, object: actor.uri, target: roomUri };
+	}
+
+	test('a remote member leaving the room is removed from its call', async () => {
+		const f = fixture({ memberships: [{ id: 'm1', roomId: 'localroom', userId: dave.id }] });
+
+		await f.inbox.remove(dave, leave(dave, 'https://other.test/chat/rooms/localroom'));
+
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.liveKitService.removeParticipant).toHaveBeenCalledWith('localroom', dave.uri);
+	});
+
+	test('removes the actor from the call again when a retried Remove finds the membership already gone', async () => {
+		const f = fixture();
+
+		await f.inbox.remove(dave, leave(dave, 'https://other.test/chat/rooms/localroom'));
+
+		expect(f.liveKitService.removeParticipant).toHaveBeenCalledWith('localroom', dave.uri);
+	});
+
+	test('fails the inbox job when the call cannot be left, so that it is retried', async () => {
+		const f = fixture({ memberships: [{ id: 'm1', roomId: 'localroom', userId: dave.id }] });
+		f.liveKitService.removeParticipant.mockRejectedValueOnce(new Error('LiveKit is down'));
+
+		await expect(f.inbox.remove(dave, leave(dave, 'https://other.test/chat/rooms/localroom'))).rejects.toThrow('LiveKit is down');
+		expect(f.memberships.rows).toEqual([]);
+	});
+
+	test('leaves calls alone for a room hosted on another server', async () => {
+		const f = fixture({ rooms: [bobroom], memberships: [{ id: 'm1', roomId: 'bobroom', userId: dave.id }] });
+
+		await f.inbox.remove(dave, leave(dave, 'https://remote.test/chat/rooms/bobroom'));
+
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.liveKitService.removeParticipant).not.toHaveBeenCalled();
 	});
 });

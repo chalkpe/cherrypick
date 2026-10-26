@@ -10,22 +10,25 @@ import { In, IsNull } from 'typeorm';
 import type { WebhookEvent } from 'livekit-server-sdk';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
-import type { ChatRoomMembershipsRepository, ChatRoomsRepository, UsersRepository } from '@/models/_.js';
+import type { ChatRoomMembershipsRepository, ChatRoomsRepository, InstancesRepository, UsersRepository } from '@/models/_.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
 import type { MiMeta } from '@/models/Meta.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { bindThis } from '@/decorators.js';
+import type Logger from '@/logger.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
-import { LiveKitService } from '@/core/LiveKitService.js';
+import { LiveKitService, userIdOfMetadata } from '@/core/LiveKitService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
+import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { UtilityService } from '@/core/UtilityService.js';
-import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
+import { hostLookupCandidates, isHostInList, normalizeHost } from '@/core/ActivityPubAccessControlService.js';
 import { QueueService } from '@/core/QueueService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import type { IObject } from '@/core/activitypub/type.js';
+import { LoggerService } from '@/core/LoggerService.js';
 
 const REFRESH_DELAY_MS = 500;
 
@@ -67,6 +70,9 @@ type VoiceSnapshot = {
 	updatedAt: number;
 };
 
+/** 他のサーバーのユーザーを断るかどうかに関わる設定 */
+type FederationPolicy = { blockedHosts?: string[]; federation?: string; federationHosts?: string[] };
+
 /** 他のサーバーに渡す参加者の現況。userId はこのサーバーの DB の id なので含めない */
 type FederatedVoiceSnapshot = {
 	participants: { identity: string; screenSharing: boolean }[];
@@ -85,6 +91,7 @@ export function isRemoteVoiceCallEnabled(meta: Pick<MiMeta, 'enableRemoteVoiceCa
 export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	private pendingRefreshes = new Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>();
 	private sweepTimer: NodeJS.Timeout | null = null;
+	private logger: Logger;
 
 	constructor(
 		@Inject(DI.config)
@@ -92,6 +99,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
+
+		@Inject(DI.redisForSub)
+		private redisForSub: Redis.Redis,
 
 		@Inject(DI.meta)
 		private meta: MiMeta,
@@ -105,15 +115,19 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		@Inject(DI.usersRepository)
 		private usersRepository: UsersRepository,
 
+		@Inject(DI.instancesRepository)
+		private instancesRepository: InstancesRepository,
+
 		private liveKitService: LiveKitService,
 		private userEntityService: UserEntityService,
 		private globalEventService: GlobalEventService,
 		private roleService: RoleService,
 		private utilityService: UtilityService,
-		private federatedInstanceService: FederatedInstanceService,
 		private apRendererService: ApRendererService,
 		private queueService: QueueService,
+		private loggerService: LoggerService,
 	) {
+		this.logger = this.loggerService.getLogger('chat-voice');
 	}
 
 	@bindThis
@@ -139,9 +153,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		if (room.owner == null || room.owner.host != null || room.isArchived) return 'forbidden';
 
 		if (user.isSuspended) return 'forbidden';
-		if (!this.utilityService.isFederationAllowedHost(user.host)) return 'forbidden';
-		const instance = await this.federatedInstanceService.fetch(user.host);
-		if (instance != null && instance.suspensionState !== 'none') return 'forbidden';
+		if (await this.isRefusedRemoteHost(user.host)) return 'forbidden';
 
 		const isMember = await this.chatRoomMembershipsRepository.exists({ where: { roomId: room.id, userId: user.id } });
 		if (!isMember) return 'forbidden';
@@ -153,6 +165,67 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const { url, token } = await this.issueJoinToken(user, room, canScreenShareRequested && policies.canScreenShare);
 		const { participants, updatedAt } = await this.snapshotOf(room.id);
 		return { url, token, participants, updatedAt };
+	}
+
+	/**
+	 * 他のサーバーのホストを、このサーバーが断っているか。
+	 * 通話に入れるか (このサーバーのルームに他のサーバーのユーザーを入れるとき、このサーバーのユーザーが他のサーバーのルームに入るとき) と、
+	 * 通話中の参加者を外すかを、すべてこれで決める。
+	 * - 連合が許されていないホスト。ブロックはドメインで指定されるので、ポートを除いた名前でも確かめる
+	 * - inbox (InboxProcessorService) と同じく、ポート・末尾のドット・大文字小文字・Unicode の違いを無視して、ブロックの指定に当たるホスト
+	 * - 停止されたサーバー。停止はそのサーバーの記録のどれかにあれば従う。キャッシュを通さず、いまの記録を見る
+	 * ホストとして読めないものも断る
+	 */
+	@bindThis
+	public async isRefusedRemoteHost(host: string): Promise<boolean> {
+		const hostname = normalizeHost(host) != null ? hostnameOf(host) : null;
+		if (hostname == null) return true;
+
+		if (!this.utilityService.isFederationAllowedHost(hostname)) return true;
+		if (!this.utilityService.isFederationAllowedHost(host)) return true;
+		if (isHostInList(this.meta.blockedHosts, host)) return true;
+
+		const instances = await this.instancesRepository.findBy({ host: In(this.instanceHostsOf(host)) });
+		return instances.some(instance => instance.suspensionState !== 'none');
+	}
+
+	/**
+	 * 通話中の他のサーバーの参加者のうち、いまこのサーバーが断っているサーバー (isRefusedRemoteHost) のユーザーを外す。
+	 * ブロックや連合の設定が変わったときと、管理画面でサーバーを停止したときに呼ぶ。
+	 * 外すのは何度しても同じ結果になるので、複数のワーカーが同時に動いてもよい。
+	 * 読めないルームや外せない参加者があっても、記録して残りを続ける
+	 */
+	@bindThis
+	public async removeRefusedRemoteParticipants(): Promise<void> {
+		const roomIds = await this.redisClient.smembers(ACTIVE_ROOMS_KEY);
+		// 同じサーバーの参加者が何人いても、判定は一度だけ
+		const refusedHosts = new Map<string, boolean>();
+		for (const roomId of roomIds) {
+			let identities: string[];
+			try {
+				identities = await this.refusedRemoteIdentitiesIn(roomId, refusedHosts);
+			} catch (err) {
+				this.logger.warn(`Failed to check the participants of the voice call in ${roomId}`, { error: err });
+				continue;
+			}
+			for (const identity of identities) {
+				await this.liveKitService.removeParticipant(roomId, identity).catch(err => {
+					this.logger.warn(`Failed to remove ${identity} from the voice call in ${roomId}`, { error: err });
+				});
+			}
+		}
+	}
+
+	/**
+	 * 通話に入った参加者が、いまもそのルームに入れるかを確かめ、入れなければ外す。
+	 * トークンは 10 分有効なので、ルームを抜けたりサーバーが断られたりした後でも、同じトークンで入り直せてしまうため。
+	 * トークンに付けたユーザー (メタデータの userId) がルームのメンバー (持ち主を含む) で、
+	 * 他のサーバーのユーザーならそのサーバーを断っていない (isRefusedRemoteHost) ときだけ残す
+	 */
+	@bindThis
+	public async removeUnadmittedParticipant(roomId: MiChatRoom['id'], participant: { identity: string; metadata?: string }): Promise<void> {
+		if (await this.isAdmitted(roomId, userIdOfMetadata(participant.metadata))) return;
+		await this.liveKitService.removeParticipant(roomId, participant.identity);
 	}
 
 	/**
@@ -191,6 +264,15 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		if (roomName == null) return;
 		const roomId = this.liveKitService.roomIdOf(roomName);
 		if (roomId == null) return;
+
+		const participant = event.participant;
+		if (event.event === 'participant_joined' && participant != null) {
+			this.removeUnadmittedParticipant(roomId, participant).catch(err => {
+				// 確かめられなければ外さない。入り直したときにまた確かめる
+				this.logger.warn(`Failed to check ${participant.identity} who joined the voice call in ${roomId}`, { error: err });
+			});
+		}
+
 		this.scheduleRefresh(roomId);
 	}
 
@@ -365,6 +447,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		this.sweepTimer = setInterval(() => {
 			this.sweep().catch(() => {});
 		}, SWEEP_INTERVAL_MS);
+		this.redisForSub.on('message', this.onMessage);
 	}
 
 	@bindThis
@@ -373,10 +456,86 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		this.pendingRefreshes.clear();
 		if (this.sweepTimer != null) clearInterval(this.sweepTimer);
 		this.sweepTimer = null;
+		this.redisForSub.off('message', this.onMessage);
+	}
+
+	@bindThis
+	private onMessage(_: string, data: string): void {
+		const obj = JSON.parse(data);
+
+		if (obj.channel === 'internal') {
+			const { type, body } = obj.message as GlobalEvents['internal']['payload'];
+			switch (type) {
+				case 'metaUpdated': {
+					// ブロックや連合の設定が変わったら、通話中の他のサーバーの参加者を確かめ直す。
+					// DI.meta は GlobalModule の購読が先に書き換えているので、新しい設定で判定される。
+					// 外すのは何度しても同じ結果になるので、どのワーカーでも行う
+					if (body.before == null || isFederationPolicyChanged(body.before, body.after)) {
+						this.removeRefusedRemoteParticipants().catch(err => {
+							this.logger.error('Failed to remove voice call participants from refused servers', { error: err });
+						});
+					}
+					break;
+				}
+				default:
+					break;
+			}
+		}
 	}
 
 	private keyOf(roomId: MiChatRoom['id']): string {
 		return `chatVoice:${roomId}`;
+	}
+
+	/**
+	 * そのサーバーの停止が記録されうる instance.host。
+	 * - toPuny した host: FederatedInstanceService.fetchOrRegister、管理画面での停止、配送の停止の判定 (DeliverProcessorService) が使う記録。
+	 *   domainToASCII はポート付きのホストに '' を返すので、ポート付きのサーバーはすべて '' の記録にまとめられている
+	 * - hostLookupCandidates: 同じドメインの記録、末尾にドットの付いた記録、domainToASCII を使う前にポートごと保存された記録。
+	 *   ActivityPub のアクセス制御と inbox が隔離を確かめるのと同じ候補 (ポートは区別しない)
+	 */
+	private instanceHostsOf(host: string): string[] {
+		return [...new Set([this.utilityService.toPuny(host), ...hostLookupCandidates(host)])];
+	}
+
+	/** ルームの通話の参加者のうち、断っているサーバー (isRefusedRemoteHost) のユーザーの identity。判定の結果は refusedHosts に覚える */
+	private async refusedRemoteIdentitiesIn(roomId: MiChatRoom['id'], refusedHosts: Map<string, boolean>): Promise<string[]> {
+		const participants = await this.liveKitService.listParticipants(roomId);
+		if (participants.length === 0) return [];
+
+		const users = await this.usersRepository.findBy({ id: In(participants.map(p => p.userId)) });
+		const hostOf = new Map(users.map(user => [user.id, user.host]));
+
+		const identities: string[] = [];
+		for (const participant of participants) {
+			const host = hostOf.get(participant.userId);
+			if (host == null) continue;
+			let refused = refusedHosts.get(host);
+			if (refused == null) {
+				refused = await this.isRefusedRemoteHost(host);
+				refusedHosts.set(host, refused);
+			}
+			if (refused) identities.push(participant.identity);
+		}
+		return identities;
+	}
+
+	/** トークンに付けたユーザーが、いまもルームの通話に入れるか (removeUnadmittedParticipant) */
+	private async isAdmitted(roomId: MiChatRoom['id'], userId: MiUser['id'] | null): Promise<boolean> {
+		if (userId == null) return false;
+
+		const [room, user] = await Promise.all([
+			this.chatRoomsRepository.findOneBy({ id: roomId }),
+			this.usersRepository.findOneBy({ id: userId }),
+		]);
+		if (room == null || user == null) return false;
+
+		if (room.ownerId !== user.id) {
+			const isMember = await this.chatRoomMembershipsRepository.exists({ where: { roomId, userId: user.id } });
+			if (!isMember) return false;
+		}
+
+		return user.host == null || !(await this.isRefusedRemoteHost(user.host));
 	}
 
 	/**
@@ -460,6 +619,28 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			participants.push({ identity: p.identity, user, screenSharing: p.screenSharing });
 		}
 		return { roomId, participants };
+	}
+}
+
+/** ブロックや連合の設定のうち、他のサーバーのユーザーを断るかどうかに関わるものが変わったか */
+function isFederationPolicyChanged(before: FederationPolicy, after: FederationPolicy): boolean {
+	return before.federation !== after.federation
+		|| !isSameList(before.blockedHosts, after.blockedHosts)
+		|| !isSameList(before.federationHosts, after.federationHosts);
+}
+
+function isSameList(a: string[] | undefined, b: string[] | undefined): boolean {
+	const left = a ?? [];
+	const right = b ?? [];
+	return left.length === right.length && left.every((value, i) => value === right[i]);
+}
+
+/** host (`host` または `host:port`) からポートを除いた名前。読めなければ null */
+function hostnameOf(host: string): string | null {
+	try {
+		return new URL(`https://${host}`).hostname;
+	} catch {
+		return null;
 	}
 }
 

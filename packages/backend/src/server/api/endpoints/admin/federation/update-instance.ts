@@ -10,6 +10,8 @@ import { UtilityService } from '@/core/UtilityService.js';
 import { DI } from '@/di-symbols.js';
 import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
+import { ChatVoiceService } from '@/core/ChatVoiceService.js';
+import { ApiLoggerService } from '@/server/api/ApiLoggerService.js';
 
 export const meta = {
 	tags: ['admin'],
@@ -38,6 +40,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private utilityService: UtilityService,
 		private federatedInstanceService: FederatedInstanceService,
 		private moderationLogService: ModerationLogService,
+		private chatVoiceService: ChatVoiceService,
+		private apiLoggerService: ApiLoggerService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const instance = await this.instancesRepository.findOneBy({ host: this.utilityService.toPuny(ps.host) });
@@ -57,6 +61,13 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				suspensionState,
 				moderationNote: ps.moderationNote,
 			});
+
+			if (suspensionState === 'manuallySuspended') {
+				// 停止したサーバーのユーザーを通話から外す。LiveKit とのやりとりを待たずに応答する
+				this.chatVoiceService.removeRefusedRemoteParticipants().catch(err => {
+					this.apiLoggerService.logger.error('Failed to remove voice call participants from the suspended server', { error: err });
+				});
+			}
 
 			if (ps.isSuspended != null && isSuspendedBefore !== ps.isSuspended) {
 				if (ps.isSuspended) {

@@ -5,6 +5,7 @@
 
 import { describe, expect, test, vi } from 'vitest';
 import { RemoteVoiceCallError, RemoteVoiceCallService } from '@/core/RemoteVoiceCallService.js';
+import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { StatusError } from '@/misc/status-error.js';
 
@@ -45,23 +46,21 @@ function createFixture(metaOverrides: Record<string, unknown> = {}, instances: {
 	const apRequestService = {
 		signedPostJson: vi.fn(async (..._args: unknown[]): Promise<unknown> => hostResponse()),
 	};
-	const chatVoiceService = {
-		storeRemoteSnapshot: vi.fn(async () => {}),
-	};
 	// 実物を使い、ブロックの判定 (ポート付きのホストを含む) と記録を引く host の正規化 (toPuny はポート付きのホストに '' を返す) もそのまま確かめる
 	const utilityService = new UtilityService({ host: 'local.test', url: 'https://local.test' } as any, meta as any);
 	vi.spyOn(utilityService, 'isFederationAllowedHost');
-	// instance.host は保存されたとおりの文字列で引かれる。正規化はサービスの側でする
+	// instance.host は保存されたとおりの文字列で引かれる (where の host は In)。正規化はサービスの側でする
 	const instancesRepository = {
-		findOneBy: vi.fn(async ({ host }: { host: string }) => instances.find(instance => instance.host === host) ?? null),
+		findBy: vi.fn(async ({ host }: { host: { value: string[] } }) => instances.filter(instance => host.value.includes(instance.host))),
 	};
+	// 持ち主のサーバーを断るかどうかは ChatVoiceService の判定 (isRefusedRemoteHost) をそのまま使う
+	const chatVoiceService = Object.assign(Object.create(ChatVoiceService.prototype), { meta, utilityService, instancesRepository });
+	Object.defineProperty(chatVoiceService, 'storeRemoteSnapshot', { value: vi.fn(async () => {}) });
 	const service = new RemoteVoiceCallService(
 		redis as any,
 		meta as any,
-		instancesRepository as any,
 		apRequestService as any,
-		chatVoiceService as any,
-		utilityService,
+		chatVoiceService,
 	);
 	return { service, redis, apRequestService, chatVoiceService, utilityService, instancesRepository };
 }

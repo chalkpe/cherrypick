@@ -18,6 +18,7 @@ import { NoteCreateService } from '@/core/NoteCreateService.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
+import { LiveKitService } from '@/core/LiveKitService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { acquireApObjectLock } from '@/misc/distributed-lock.js';
 import { concat, toArray, toSingle, unique } from '@/misc/prelude/array.js';
@@ -101,6 +102,7 @@ export class ApInboxService {
 		private notificationService: NotificationService,
 		private chatService: ChatService,
 		private chatVoiceService: ChatVoiceService,
+		private liveKitService: LiveKitService,
 		private roleService: RoleService,
 		private apResolverService: ApResolverService,
 		private apDbResolverService: ApDbResolverService,
@@ -1014,6 +1016,15 @@ export class ApInboxService {
 			});
 
 			this.logger.info(`[ApInboxService.remove] Deleted membership, affected rows: ${result.affected}, room: ${room.id}, user: ${actor.id}`);
+
+			// このサーバーが持つルームなら、抜けたメンバーを通話からも外す。
+			// 外せなければ inbox のジョブごとやり直す (メンバーの削除も通話から外すのも、何度しても同じ結果になる)。
+			// やり直しではメンバーが既に消えているので、削除した数によらず外す
+			const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+			if (owner != null && owner.host == null) {
+				await this.liveKitService.removeParticipant(room.id, this.liveKitService.identityOf(actor));
+			}
+
 			return 'ok: removed from chat room';
 		}
 
