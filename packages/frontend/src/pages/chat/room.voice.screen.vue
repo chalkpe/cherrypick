@@ -5,14 +5,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <!-- 見ている共有画面の一つ。いくつも並ぶので、中の操作が誰の画面のものか読み上げで分かるよう、名前のついたまとまりにする。
-置き場所 (root) の中に、映像の縦横比に合わせた枠 (frame) を置き、操作の列はその枠の映像のすぐ下に付ける -->
+置き場所 (root) の中に、映像の縦横比に合わせた枠 (frame) を置き、操作の列はその枠の映像のすぐ下に付ける。
+枠は操作の列より狭くしない (狭い置き場所では映像の方を縮めて上下か左右を空ける) ので、全画面・PiP・✕ は切れない -->
 <div
 	ref="rootEl"
 	:class="[$style.root, { [$style.fill]: fill, [$style.compact]: compact }]"
 	:style="{ '--voiceCallScreenRatio': ratio }"
 	role="group" :aria-label="i18n.tsx._voiceCall.screenShareOf({ name: userName(participant.user) })"
 >
-	<div :class="$style.frame">
+	<div :class="$style.frame" :style="compact ? undefined : { minWidth: `${barMinWidth}px` }">
 		<div :class="$style.view">
 			<video ref="videoEl" :class="$style.video" autoplay playsinline muted @loadedmetadata="updateRatio" @resize="updateRatio"></video>
 			<!-- ステージで並べているときは、画面を押すと大きくする (大きくしている画面を押すと並べた形に戻す)。
@@ -24,10 +25,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 				:aria-label="i18n.ts._voiceCall.focusScreen" :aria-pressed="focused" :title="i18n.ts._voiceCall.focusScreen"
 				@click="toggleFocus"
 			></button>
-			<span v-if="compact" :class="$style.overlay"><MkUserName :user="participant.user"/></span>
+			<!-- 下の帯の小さな形と狭い画面のカードでは、誰の画面かを映像の左上に重ねる (操作の列に並べると名前が一文字ほどに縮む) -->
+			<span v-if="!fill || compact" :class="$style.overlay"><i class="ti ti-screen-share" role="img" :aria-label="i18n.ts._voiceCall.sharingScreen"></i> <MkUserName :user="participant.user"/></span>
 		</div>
-		<div v-if="!compact" :class="$style.bar">
-			<span :class="$style.label"><i class="ti ti-screen-share" role="img" :aria-label="i18n.ts._voiceCall.sharingScreen"></i> <MkUserName :user="participant.user"/></span>
+		<div v-if="!compact" :class="[$style.bar, { [$style.controlsOnly]: !fill }]">
+			<span v-if="fill" :class="$style.label"><i class="ti ti-screen-share" role="img" :aria-label="i18n.ts._voiceCall.sharingScreen"></i> <MkUserName :user="participant.user"/></span>
 			<button
 				type="button" class="_button" :class="$style.control"
 				:aria-label="i18n.ts._voiceCall.fullscreen" :title="i18n.ts._voiceCall.fullscreen"
@@ -88,6 +90,12 @@ const rootEl = useTemplateRef('rootEl');
 const videoEl = useTemplateRef('videoEl');
 const pictureInPictureSupported = window.document.pictureInPictureEnabled === true;
 
+// 操作の列が収まる幅。CSS の .bar (左右の余白 8px、間隔 4px) と .control (32px) に合わせる
+const barMinWidth = (() => {
+	const controls = pictureInPictureSupported ? 3 : 2;
+	return 8 * 2 + controls * 32 + (controls - 1) * 4;
+})();
+
 // 共有されている映像の縦横比。届くまでは画面共有でよくある 16:9 とみなす
 const ratio = ref(16 / 9);
 
@@ -146,7 +154,10 @@ function stopWatching() {
 		const toggle = [...window.document.querySelectorAll<HTMLElement>('[data-voice-call-watch-toggle]')]
 			.find(el => el.dataset.voiceCallWatchToggle === identity);
 		const target = toggle ?? neighbour?.querySelector<HTMLElement>('button') ?? null;
-		target?.focus({ preventScroll: true });
+		if (target == null) return;
+		target.focus({ preventScroll: true });
+		// タイルの帯は横にスクロールするので、帯の外に隠れたタイルにフォーカスが移ることがある。見える位置まで最小限だけ動かす
+		target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 	});
 }
 </script>
@@ -177,9 +188,13 @@ function stopWatching() {
 .view {
 	position: relative;
 	aspect-ratio: var(--voiceCallScreenRatio);
+	// 枠が操作の列の幅まで広げられたときは、映像の方を上限の高さに収めて、上下か左右を空ける
+	max-height: calc(var(--voiceCallScreenMaxHeight, 70vh) - var(--voiceCallScreenBarHeight));
 }
 
 .video {
+	position: absolute;
+	inset: 0;
 	display: block;
 	width: 100%;
 	height: 100%;
@@ -197,6 +212,10 @@ function stopWatching() {
 
 	.frame {
 		width: min(100cqw, calc((100cqh - var(--voiceCallScreenBarHeight)) * var(--voiceCallScreenRatio)));
+	}
+
+	.view {
+		max-height: calc(100cqh - var(--voiceCallScreenBarHeight));
 	}
 }
 
@@ -233,12 +252,12 @@ function stopWatching() {
 	}
 }
 
-// 帯の小さな形で、誰の画面かを映像に重ねて出す。押すのは下のボタンに通す
+// 誰の画面かを映像の左上に重ねて出す。押すのは下のボタンに通す
 .overlay {
 	pointer-events: none;
 	position: absolute;
+	top: 4px;
 	left: 4px;
-	bottom: 4px;
 	max-width: calc(100% - 8px);
 	padding: 2px 6px;
 	overflow: hidden;
@@ -258,6 +277,11 @@ function stopWatching() {
 	height: var(--voiceCallScreenBarHeight);
 	padding: 6px 8px;
 	background: var(--MI_THEME-panel);
+}
+
+// 狭い画面のカードでは名前を映像に重ねるので、操作の列はボタンだけを右に寄せる
+.controlsOnly {
+	justify-content: flex-end;
 }
 
 .label {

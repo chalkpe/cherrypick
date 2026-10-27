@@ -81,15 +81,17 @@ watch(() => props.participants.length >= 2 && props.participants.some(participan
 	}
 }
 
-// 狭い画面のカード: 一覧全体を高さの上限に収める。2 段になる並べ方では、1 つずつの上限をその半分にする
+// 狭い画面のカード: 一覧全体を高さの上限に収める。2 段になる並べ方では、1 つずつの上限をその半分にする。
+// ただし 1 つずつの上限は、操作の列 (44px) と、その幅 (124px) で 16:9 の映像が見える高さ (70px) を下回らせない。
+// 横向きのスマートフォンのように上限がそれより低いときは、映像を潰さずに一覧の中でスクロールさせる
 .capped {
-	--voiceCallScreenMaxHeight: var(--voiceCallScreensMaxHeight, 70vh);
+	--voiceCallScreenMaxHeight: max(114px, var(--voiceCallScreensMaxHeight, 70vh));
 	max-height: var(--voiceCallScreensMaxHeight, 70vh);
 	overflow-y: auto;
 
 	&.layout4,
 	&.layoutMany {
-		--voiceCallScreenMaxHeight: calc((var(--voiceCallScreensMaxHeight, 70vh) - 8px) / 2);
+		--voiceCallScreenMaxHeight: max(114px, calc((var(--voiceCallScreensMaxHeight, 70vh) - 8px) / 2));
 	}
 }
 

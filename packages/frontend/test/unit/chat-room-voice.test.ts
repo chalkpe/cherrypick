@@ -733,16 +733,26 @@ describe('voice call on the room page', () => {
 				expect(hasClass(viewerOf(alice).parentElement!, 'layout2')).toBe(true);
 			});
 
-			test('closing a share from the keyboard moves the focus to the sharer\'s tile', async () => {
+			test('closing a share from the keyboard moves the focus to the sharer\'s tile and scrolls it into view', async () => {
 				await renderStageWatching(2);
 				const close = within(viewerOf(bob)).getByLabelText(i18n.ts._voiceCall.stopWatching);
 				close.focus();
+				// タイルの帯は横にスクロールするので、フォーカスを移したタイルが帯の外に隠れていることがある
+				const scrolled: { el: Element; options: unknown }[] = [];
+				const scrollSpy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(function (this: HTMLElement, options?: boolean | ScrollIntoViewOptions) {
+					scrolled.push({ el: this, options });
+				});
 
-				await fireEvent.click(close);
-				await flush();
+				try {
+					await fireEvent.click(close);
+					await flush();
+				} finally {
+					scrollSpy.mockRestore();
+				}
 
 				expect(mocks.unwatchScreenShare).toHaveBeenCalledWith(identityOf(bob));
 				expect(window.document.activeElement).toBe(watchToggleOf(bob));
+				expect(scrolled).toEqual([{ el: watchToggleOf(bob), options: { block: 'nearest', inline: 'nearest' } }]);
 			});
 		});
 
@@ -1240,6 +1250,47 @@ describe('screen share viewer', () => {
 		const bar = within(viewer).getByLabelText(i18n.ts._voiceCall.fullscreen).parentElement!;
 		expect(bar.parentElement).not.toBe(viewer);
 		expect(bar.parentElement!.contains(video)).toBe(true);
+	});
+
+	// 操作の列 (左右の余白 8px、32px のボタン、ボタンのあいだ 4px) が収まる幅
+	const barMinWidth = (bar: Element) => {
+		const buttons = bar.querySelectorAll('button').length;
+		return 16 + buttons * 32 + Math.max(0, buttons - 1) * 4;
+	};
+	const frameOf = (viewer: HTMLElement) => viewer.querySelector('video')!.parentElement!.parentElement!;
+
+	test.each([true, false])('in the narrow card, shows the name on the video and keeps the bar to the controls (picture-in-picture: %s)', async pictureInPicture => {
+		if (pictureInPicture) Object.defineProperty(window.document, 'pictureInPictureEnabled', { configurable: true, value: true });
+		try {
+			render(XScreen, { props: { participant: participant(alice, true) }, global: { stubs } });
+			await flush();
+		} finally {
+			Reflect.deleteProperty(window.document, 'pictureInPictureEnabled');
+		}
+		const viewer = viewerOf(alice);
+		const bar = within(viewer).getByLabelText(i18n.ts._voiceCall.fullscreen).parentElement!;
+
+		// 狭い画面では、操作の列に名前を並べると一文字ほどに縮んでしまうので、映像の左上に重ねる
+		const name = within(viewer).getByText('Alice');
+		expect(bar.contains(name)).toBe(false);
+		expect(viewer.querySelector('video')!.parentElement!.contains(name)).toBe(true);
+		expect(bar.textContent?.trim()).toBe('');
+		expect(within(viewer).getByLabelText(i18n.ts._voiceCall.sharingScreen)).toBeTruthy();
+
+		// 枠は操作の列より狭くならない (狭いときは映像の方を縮めて上下か左右を空ける) ので、全画面・PiP・✕ が切れない
+		const frame = frameOf(viewer);
+		expect(frame.contains(bar)).toBe(true);
+		expect(parseFloat(frame.style.minWidth)).toBeGreaterThanOrEqual(barMinWidth(bar));
+	});
+
+	test('on the wide stage, keeps the name in the bar', async () => {
+		render(XScreen, { props: { participant: participant(alice, true), fill: true }, global: { stubs } });
+		await flush();
+		const viewer = viewerOf(alice);
+		const bar = within(viewer).getByLabelText(i18n.ts._voiceCall.fullscreen).parentElement!;
+
+		expect(bar.contains(within(viewer).getByText('Alice'))).toBe(true);
+		expect(parseFloat(frameOf(viewer).style.minWidth)).toBeGreaterThanOrEqual(barMinWidth(bar));
 	});
 
 	test('uses plain buttons that never submit a form', async () => {
