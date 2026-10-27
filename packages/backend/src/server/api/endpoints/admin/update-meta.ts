@@ -21,15 +21,21 @@ export const meta = {
 	kind: 'write:admin:meta',
 
 	errors: {
-		cloudflareTurnSettingTooLong: {
-			message: 'The Cloudflare TURN key ID or API token is too long.',
+		cloudflareTurnKeyIdTooLong: {
+			message: 'The Cloudflare TURN key ID is too long.',
 			code: 'INVALID_PARAM',
-			id: '1077f832-0178-438d-a09b-769fe2370abd',
+			id: 'e1ec1437-72be-4731-b170-3cd269b8e538',
+		},
+		cloudflareTurnApiTokenTooLong: {
+			message: 'The Cloudflare TURN API token is too long.',
+			code: 'INVALID_PARAM',
+			id: '31197e6a-2380-4bc6-8bb7-0d16a30244b7',
 		},
 	},
 } as const;
 
-// Cloudflare の TURN キーの ID と API トークンの長さの上限。前後の空白を除いてから確かめる
+// Cloudflare の TURN キーの ID と API トークンの長さの上限。前後の空白を除いてから確かめる (paramDef の maxLength は、
+// 空白を含めた入力の大きさを抑えるだけのもので、これより十分長い)
 const CLOUDFLARE_TURN_KEY_ID_MAX_LENGTH = 128;
 const CLOUDFLARE_TURN_API_TOKEN_MAX_LENGTH = 512;
 
@@ -262,8 +268,10 @@ export const paramDef = {
 		signToActivityPubGet: { type: 'boolean' },
 		allowExternalApRedirect: { type: 'boolean' },
 		enableRemoteVoiceCall: { type: 'boolean' },
-		voiceCallCloudflareTurnKeyId: { type: 'string', nullable: true },
-		voiceCallCloudflareTurnApiToken: { type: 'string', nullable: true },
+		// 本当の上限 (CLOUDFLARE_TURN_KEY_ID_MAX_LENGTH、CLOUDFLARE_TURN_API_TOKEN_MAX_LENGTH) は前後の空白を除いてから確かめる。
+		// ここでは空白を含めた入力の大きさだけを抑える
+		voiceCallCloudflareTurnKeyId: { type: 'string', nullable: true, maxLength: 4096 },
+		voiceCallCloudflareTurnApiToken: { type: 'string', nullable: true, maxLength: 4096 },
 		enableRemoteNotesCleaning: { type: 'boolean' },
 		remoteNotesCleaningExpiryDaysForEachNotes: { type: 'number' },
 		remoteNotesCleaningMaxProcessingDurationInMinutes: { type: 'number' },
@@ -936,13 +944,13 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			if (ps.voiceCallCloudflareTurnKeyId !== undefined) {
 				const value = (ps.voiceCallCloudflareTurnKeyId ?? '').trim();
-				if (value.length > CLOUDFLARE_TURN_KEY_ID_MAX_LENGTH) throw new ApiError(meta.errors.cloudflareTurnSettingTooLong);
+				if (value.length > CLOUDFLARE_TURN_KEY_ID_MAX_LENGTH) throw new ApiError(meta.errors.cloudflareTurnKeyIdTooLong);
 				set.voiceCallCloudflareTurnKeyId = value === '' ? null : value;
 			}
 
 			if (ps.voiceCallCloudflareTurnApiToken !== undefined) {
 				const value = (ps.voiceCallCloudflareTurnApiToken ?? '').trim();
-				if (value.length > CLOUDFLARE_TURN_API_TOKEN_MAX_LENGTH) throw new ApiError(meta.errors.cloudflareTurnSettingTooLong);
+				if (value.length > CLOUDFLARE_TURN_API_TOKEN_MAX_LENGTH) throw new ApiError(meta.errors.cloudflareTurnApiTokenTooLong);
 				set.voiceCallCloudflareTurnApiToken = value === '' ? null : value;
 			}
 

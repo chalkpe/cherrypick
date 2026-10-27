@@ -184,6 +184,26 @@ describe('searching moderation logs', () => {
 		return (query.andWhere as ReturnType<typeof vi.fn>).mock.calls.find(([sql]) => String(sql).includes('ILIKE')) as [string, Record<string, string>];
 	}
 
+	// PostgreSQL の text は NUL を持てず、検索の引数に入るとエラー (500) になる。検索する前に断る
+	test.each([
+		['only NUL', '\u0000'],
+		['NUL among other characters', 'needle\u0000needle'],
+	])('refuses a search with %s before querying', async (_label, search) => {
+		const query: Record<string, any> = {
+			andWhere: vi.fn(() => query),
+			limit: vi.fn(() => query),
+			getMany: vi.fn(async () => []),
+		};
+		const endpoint = new (ShowModerationLogsEndpoint as any)(
+			{ createQueryBuilder: () => query },
+			{ packMany: async () => [] },
+			{ makePaginationQuery: () => query },
+		);
+
+		await expect(endpoint.exec({ search }, { id: 'admin' }, undefined)).rejects.toMatchObject({ code: 'INVALID_PARAM' });
+		expect(query.getMany).not.toHaveBeenCalled();
+	});
+
 	test('does not look into the Cloudflare TURN key of stored server settings', async () => {
 		const [where, parameters] = await searchCondition(API_TOKEN.slice(0, 8));
 		expect(parameters.search).toBe(`%${API_TOKEN.slice(0, 8)}%`);

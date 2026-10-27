@@ -16,7 +16,7 @@ import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { ChatVoiceService, isRemoteVoiceCallEnabled } from '@/core/ChatVoiceService.js';
 import type { JoinCredentials } from '@/core/ChatVoiceService.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
-import { parseIceServers } from '@/core/CloudflareTurnService.js';
+import { CloudflareTurnService, parseIceServers } from '@/core/CloudflareTurnService.js';
 import type { IceServer } from '@/core/CloudflareTurnService.js';
 import { ApRequestService } from '@/core/activitypub/ApRequestService.js';
 import { LoggerService } from '@/core/LoggerService.js';
@@ -66,6 +66,7 @@ export class RemoteVoiceCallService {
 		private apRequestService: ApRequestService,
 		private chatVoiceService: ChatVoiceService,
 		private hostPolicyService: HostPolicyService,
+		private cloudflareTurnService: CloudflareTurnService,
 		private loggerService: LoggerService,
 	) {
 		this.logger = this.loggerService.getLogger('chat-voice');
@@ -78,7 +79,10 @@ export class RemoteVoiceCallService {
 
 	/**
 	 * ルームの持ち主のサーバーに通話のトークンを求める。
-	 * 応答に含まれる参加者の現況はこのサーバーにも保存する
+	 * 応答に含まれる参加者の現況はこのサーバーにも保存する。
+	 * ICE サーバーは必ず一覧で渡す (null にしない)。ブラウザは、一覧を渡されなければ持ち主のサーバーの LiveKit が渡す ICE サーバーを
+	 * そのまま使うが、それはこのサーバーで確かめていない (ユーザーの手元や同じネットワークの機器を指しうる)。
+	 * 持ち主のサーバーが渡した ICE サーバーが使えればそれを、無ければこのサーバーの TURN を、それも無ければ空の一覧を渡す
 	 */
 	@bindThis
 	public async requestJoin(me: MiLocalUser, room: MiChatRoom, owner: MiRemoteUser, canScreenShare: boolean): Promise<JoinCredentials> {
@@ -122,7 +126,9 @@ export class RemoteVoiceCallService {
 			this.logger.warn(`Failed to store the voice call participants of ${room.id} sent by ${owner.host}`, { error: err });
 		});
 
-		return { url: response.url, token: response.token, iceServers: response.iceServers };
+		// このサーバーの TURN は、このサーバーのユーザーの音声を中継するだけなので、他のサーバーの通話に使ってよい
+		const iceServers = response.iceServers ?? await this.cloudflareTurnService.getIceServers() ?? [];
+		return { url: response.url, token: response.token, iceServers };
 	}
 
 	/**

@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { CloudflareTurnService, parseIceServers } from '@/core/CloudflareTurnService.js';
 import { MetaEntityService } from '@/core/entities/MetaEntityService.js';
-import UpdateMetaEndpoint from '@/server/api/endpoints/admin/update-meta.js';
+import UpdateMetaEndpoint, { meta as updateMetaMeta, paramDef as updateMetaParamDef } from '@/server/api/endpoints/admin/update-meta.js';
 import AdminMetaEndpoint, { meta as adminMetaMeta } from '@/server/api/endpoints/admin/meta.js';
 import { StatusError } from '@/misc/status-error.js';
 
@@ -164,21 +164,34 @@ describe('CloudflareTurnService', () => {
 			],
 		}));
 
+		// 使える項目を先に並べ、資格情報の無い TURN と同じ項目にあった STUN は一つの項目にまとめて最後に置く
 		await expect(f.service.getIceServers()).resolves.toEqual([
 			{ urls: ['stun:stun.cloudflare.com:3478'] },
-			{ urls: ['stun:stun2.example:3478'] },
-			{ urls: ['stun:stun4.example:3478'] },
 			{ urls: ['stun:stun3.example:3478'] },
+			{ urls: ['turns:turn.cloudflare.com:5349?transport=tcp'], username: 'u', credential: 'c' },
+			{ urls: ['stun:stun2.example:3478', 'stun:stun4.example:3478'] },
 		]);
 	});
 
-	test('still keeps at most four servers after splitting off the STUN URLs', async () => {
+	test('merges the STUN URLs split off from TURN entries without credentials into one entry of at most eight URLs', async () => {
 		f = createFixture();
 		f.httpRequestService.send.mockResolvedValueOnce(response({
-			iceServers: Array.from({ length: 6 }, (_, i) => ({ urls: [`turn:turn${i}.example:3478`, `stun:stun${i}.example:3478`] })),
+			iceServers: Array.from({ length: 10 }, (_, i) => ({ urls: [`turn:turn${i}.example:3478`, `stun:stun${i % 9}.example:3478`] })),
 		}));
 
-		await expect(f.service.getIceServers()).resolves.toEqual(Array.from({ length: 4 }, (_, i) => ({ urls: [`stun:stun${i}.example:3478`] })));
+		await expect(f.service.getIceServers()).resolves.toEqual([
+			{ urls: Array.from({ length: 8 }, (_, i) => `stun:stun${i}.example:3478`) },
+		]);
+	});
+
+	test('keeps four TURN servers with credentials over the STUN URLs split off from others', async () => {
+		f = createFixture();
+		const withCredentials = Array.from({ length: 4 }, (_, i) => ({ urls: [`turns:turn${i}.example:443?transport=tcp`], username: 'u', credential: 'c' }));
+		f.httpRequestService.send.mockResolvedValueOnce(response({
+			iceServers: [{ urls: ['turn:bare.example:3478', 'stun:stun.example:3478'] }, ...withCredentials],
+		}));
+
+		await expect(f.service.getIceServers()).resolves.toEqual(withCredentials);
 	});
 
 	test('drops URLs with characters other than printable ASCII', async () => {
@@ -401,79 +414,12 @@ describe('parseIceServers (ICE servers sent by another server)', () => {
 		expect(parseIceServers(value)).toBeNull();
 	});
 
-	// ICE サーバーはユーザーのブラウザが接続しに行く。他のサーバーが、ユーザーの手元や同じネットワークの機器に接続させないよう、
-	// ループバック・プライベート・リンクローカル・未指定のアドレスと localhost を断る。読み方が分かれる書き方も断る
+	// URL の確かめ方は test/unit/misc/ice-server-url.ts で確かめる。ここでは、断る URL が一つでもあれば全体を使わないことだけを確かめる
 	test.each([
+		['a loopback address', 'turn:127.0.0.1:3478?transport=tcp'],
 		['localhost', 'stun:localhost:3478'],
-		['upper-case LOCALHOST', 'stun:LOCALHOST'],
-		['localhost with a trailing dot', 'stun:localhost.:3478'],
-		['a name under localhost', 'turn:turn.localhost:3478'],
-		['an IPv4 loopback address', 'turn:127.0.0.1:3478'],
-		['another IPv4 loopback address', 'stun:127.8.9.10'],
-		['an IPv4 private address (10/8)', 'turns:10.1.2.3:443?transport=tcp'],
-		['an IPv4 private address (172.16/12)', 'stun:172.31.255.255'],
-		['an IPv4 private address (192.168/16)', 'stun:192.168.0.1:3478'],
-		['a shared address (100.64/10)', 'stun:100.64.0.1'],
-		['an IPv4 link-local address', 'stun:169.254.169.254'],
-		['the IPv4 unspecified address', 'stun:0.0.0.0:3478'],
-		['an address in 0/8', 'stun:0.1.2.3'],
-		['the IPv4 broadcast address', 'stun:255.255.255.255'],
-		['an IPv4 multicast address', 'stun:224.0.0.1'],
-		['a decimal IPv4 address', 'stun:2130706433:3478'],
-		['a hexadecimal IPv4 address', 'stun:0x7f000001'],
-		['a hexadecimal IPv4 part', 'stun:0x7f.0.0.1'],
-		['an octal IPv4 part', 'stun:0177.0.0.1'],
-		['a leading zero in an IPv4 part', 'stun:010.0.0.1'],
-		['a shortened IPv4 address', 'stun:127.1'],
-		['an IPv4 address with a trailing dot', 'stun:127.0.0.1.'],
-		['a public IPv4 address with a trailing dot', 'stun:8.8.8.8.'],
-		['a name ending in a number', 'stun:stun.example.123'],
-		['the IPv6 loopback address', 'turn:[::1]:3478'],
-		['the IPv6 loopback address written out', 'stun:[0:0:0:0:0:0:0:1]'],
-		['the IPv6 unspecified address', 'stun:[::]'],
-		['an IPv6 link-local address', 'stun:[fe80::1]:3478'],
-		['an IPv6 link-local address with a zone', 'stun:[fe80::1%25eth0]'],
-		['an IPv6 unique local address', 'stun:[fd12:3456::1]'],
-		['an IPv6 site-local address', 'stun:[fec0::1]'],
-		['an IPv6 multicast address', 'stun:[ff02::1]'],
-		['an IPv4-mapped loopback address', 'stun:[::ffff:127.0.0.1]'],
-		['an IPv4-mapped private address in hex', 'turn:[::ffff:a00:1]:3478'],
-		['an IPv4-mapped address in upper case', 'stun:[::FFFF:7F00:1]'],
-		['an IPv4-compatible address', 'stun:[::127.0.0.1]'],
-		['an IPv4-compatible public address', 'stun:[::8.8.8.8]'],
-		['an IPv4-translated address', 'stun:[::ffff:0:808:808]'],
-		['a NAT64 address of a loopback address', 'stun:[64:ff9b::127.0.0.1]'],
-		['an IPv6 address without brackets', 'stun:::1'],
-		['an unclosed bracket', 'stun:[2001:db8::1'],
-		['something after the bracket', 'stun:[2001:db8::1]x:3478'],
-		['a malformed IPv6 address', 'stun:[2001:db8::g]'],
-		['an IPv4 address in brackets', 'stun:[8.8.8.8]'],
-		['no host', 'stun::3478'],
-		['user information', 'turn:user@turn.example:3478'],
-		['percent-encoding', 'stun:%6Cocalhost'],
-		['an underscore', 'stun:stun_1.example'],
-		['an empty label', 'stun:stun..example'],
-		['a port that is not a number', 'stun:stun.example:x'],
-		['a port that is out of range', 'stun:stun.example:65536'],
-		['port 0', 'stun:stun.example:0'],
-		['an empty port', 'stun:stun.example:'],
-	])('treats a url with %s as no ICE servers', (_label, url) => {
-		expect(parseIceServers([{ urls: [url], username: 'u', credential: 'c' }])).toBeNull();
-	});
-
-	test.each([
-		['a name', 'turn:turn.cloudflare.com:3478?transport=udp'],
-		['a name in upper case', 'stun:STUN.Example:3478'],
-		['a name with a trailing dot', 'stun:stun.example.:3478'],
-		['a name that contains localhost', 'stun:localhost.example'],
-		['a name with a numeric first label', 'stun:53.example:3478'],
-		['a public IPv4 address', 'stun:8.8.8.8:3478'],
-		['a public IPv6 address', 'turns:[2606:4700::6810:84e5]:443?transport=tcp'],
-		['an IPv4-mapped public address', 'stun:[::ffff:8.8.8.8]'],
-		['the highest port', 'stun:stun.example:65535'],
-	])('accepts a url with %s', (_label, url) => {
-		const servers = [{ urls: [url], username: 'u', credential: 'c' }];
-		expect(parseIceServers(servers)).toEqual(servers);
+	])('treats a server list with a url pointing at %s as no ICE servers', (_label, url) => {
+		expect(parseIceServers([...valid, { urls: [url], username: 'u', credential: 'c' }])).toBeNull();
 	});
 
 	test('accepts 53 when it is not the port', () => {
@@ -486,7 +432,7 @@ describe('parseIceServers (ICE servers sent by another server)', () => {
 
 	test('accepts the largest allowed values', () => {
 		const largest = Array.from({ length: 4 }, () => ({
-			urls: Array.from({ length: 8 }, () => `turn:${'a'.repeat(256)}`),
+			urls: Array.from({ length: 8 }, () => `turn:${'a'.repeat(252)}.com`),
 			username: 'u'.repeat(512),
 			credential: 'c'.repeat(512),
 		}));
@@ -540,6 +486,25 @@ describe('Cloudflare TURN setting', () => {
 		// 前後の空白を除いても長すぎる
 		await expect(endpoint.exec({ voiceCallCloudflareTurnKeyId: ` ${'k'.repeat(129)} ` }, { id: 'admin' }, undefined)).rejects.toMatchObject({ code: 'INVALID_PARAM' });
 		expect(metaService.update).not.toHaveBeenCalled();
+	});
+
+	// 本当の上限は前後の空白を除いてから確かめる。スキーマには、それより十分長い上限だけを置く
+	test('admin/update-meta caps their raw length in the schema well above the real limit', async () => {
+		const { endpoint, metaService } = updateMetaFixture();
+
+		expect(updateMetaParamDef.properties.voiceCallCloudflareTurnKeyId).toMatchObject({ type: 'string', nullable: true, maxLength: 4096 });
+		expect(updateMetaParamDef.properties.voiceCallCloudflareTurnApiToken).toMatchObject({ type: 'string', nullable: true, maxLength: 4096 });
+		await expect(endpoint.exec({ voiceCallCloudflareTurnKeyId: `${' '.repeat(4096)}k` }, { id: 'admin' }, undefined)).rejects.toMatchObject({ code: 'INVALID_PARAM', id: '3d81ceae-475f-4600-b2a8-2bc116157532' });
+		expect(metaService.update).not.toHaveBeenCalled();
+	});
+
+	test('admin/update-meta tells which of them is too long', async () => {
+		const { endpoint } = updateMetaFixture();
+		const { cloudflareTurnKeyIdTooLong, cloudflareTurnApiTokenTooLong } = updateMetaMeta.errors;
+
+		expect(cloudflareTurnKeyIdTooLong.id).not.toBe(cloudflareTurnApiTokenTooLong.id);
+		await expect(endpoint.exec({ voiceCallCloudflareTurnKeyId: 'k'.repeat(129) }, { id: 'admin' }, undefined)).rejects.toMatchObject({ code: 'INVALID_PARAM', id: cloudflareTurnKeyIdTooLong.id });
+		await expect(endpoint.exec({ voiceCallCloudflareTurnApiToken: 't'.repeat(513) }, { id: 'admin' }, undefined)).rejects.toMatchObject({ code: 'INVALID_PARAM', id: cloudflareTurnApiTokenTooLong.id });
 	});
 
 	test('admin/update-meta measures their length after trimming', async () => {

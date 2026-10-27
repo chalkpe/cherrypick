@@ -87,6 +87,17 @@ describe('chat/rooms/voice/join', () => {
 		expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
 	});
 
+	// 通話に残れるか (ChatVoiceService の isAdmitted) と同じく、削除されたユーザーには発行しない
+	test.each([
+		['a room on this server', null],
+		['a mirror room', 'remote.test'],
+	])('join refuses a deleted user for %s', async (_label, ownerHost) => {
+		const f = joinFixture({ ownerHost });
+		await expect(f.endpoint.exec({ roomId: 'r1' }, { ...me, isDeleted: true }, null, null)).rejects.toMatchObject({ code: 'VOICE_CALL_UNAVAILABLE' });
+		expect(f.chatVoiceService.issueJoinToken).not.toHaveBeenCalled();
+		expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
+	});
+
 	test('join requires the right to write in chat, since joining lets the user speak', async () => {
 		const f = joinFixture();
 		f.chatService.checkChatAvailability.mockRejectedValue(new Error('ROLE_PERMISSION_DENIED'));

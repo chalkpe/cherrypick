@@ -67,4 +67,24 @@ export class HostPolicyService {
 		}
 		return result;
 	}
+
+	/**
+	 * refusedRemoteHostsOf と同じく決めるが、例外を投げない。サーバーの記録を一度に読めなければホストごとに読み直し、
+	 * それでも読めなかったホストは null (決められない) にする。一つのホストが読めなくても、ほかのホストは決める
+	 */
+	@bindThis
+	public async refusedRemoteHostsOrUnknown(hosts: string[]): Promise<Map<string, boolean | null>> {
+		try {
+			return await this.refusedRemoteHostsOf(hosts);
+		} catch {
+			const decided = await Promise.all([...new Set(hosts)].map(async host => {
+				try {
+					return [host, await this.isRefusedRemoteHost(host)] as const;
+				} catch {
+					return [host, null] as const;
+				}
+			}));
+			return new Map(decided);
+		}
+	}
 }

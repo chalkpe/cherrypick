@@ -95,6 +95,25 @@ describe('HostPolicyService', () => {
 		expect(await f.service.isRefusedRemoteHost('evil.example')).toBe(false);
 	});
 
+	// 一度に読めなければホストごとに読み直し、読めたホストだけ決める。一つのホストが読めなくても、ほかのホストは決める
+	test('decides each host it can read when reading them all at once fails', async () => {
+		const f = createFixture({ blockedHosts: ['blocked.test'] }, [{ host: 'suspended.test', suspensionState: 'manuallySuspended' }]);
+		const findBy = f.instancesRepository.findBy.getMockImplementation()!;
+		f.instancesRepository.findBy.mockImplementation(async (where: { host: FindOperator<string[]> }) => {
+			if ((where.host.value as unknown as string[]).some(host => host.startsWith('broken.test'))) throw new Error('db is down');
+			return await findBy(where);
+		});
+
+		const decided = await f.service.refusedRemoteHostsOrUnknown(['suspended.test', 'fine.test', 'broken.test', 'blocked.test']);
+
+		expect(Object.fromEntries(decided)).toEqual({
+			'suspended.test': true,
+			'fine.test': false,
+			'broken.test': null,
+			'blocked.test': true,
+		});
+	});
+
 	test('reads the records as they are now', async () => {
 		const rows: InstanceRow[] = [{ host: 'remote.test', suspensionState: 'none' }];
 		const f = createFixture({}, rows);

@@ -7,6 +7,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { RemoteVoiceCallError, RemoteVoiceCallService } from '@/core/RemoteVoiceCallService.js';
 import type { ChatVoiceService, RemoteSnapshotStoreResult } from '@/core/ChatVoiceService.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
+import type { CloudflareTurnService, IceServer } from '@/core/CloudflareTurnService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import type { ApRequestService } from '@/core/activitypub/ApRequestService.js';
 import type { LoggerService } from '@/core/LoggerService.js';
@@ -65,6 +66,10 @@ function createFixture(metaOverrides: Record<string, unknown> = {}, instances: {
 	const chatVoiceService = {
 		storeRemoteSnapshot: vi.fn(async (..._args: Parameters<ChatVoiceService['storeRemoteSnapshot']>): Promise<RemoteSnapshotStoreResult> => 'stored'),
 	} satisfies Pick<ChatVoiceService, 'storeRemoteSnapshot'>;
+	// このサーバーの TURN (設定されていなければ null)
+	const cloudflareTurnService = {
+		getIceServers: vi.fn(async (): Promise<IceServer[] | null> => null),
+	} satisfies Pick<CloudflareTurnService, 'getIceServers'>;
 	const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 	const loggerService = { getLogger: () => logger } as unknown as LoggerService;
 	const service = new RemoteVoiceCallService(
@@ -73,9 +78,10 @@ function createFixture(metaOverrides: Record<string, unknown> = {}, instances: {
 		apRequestService as unknown as ApRequestService,
 		chatVoiceService as unknown as ChatVoiceService,
 		hostPolicyService,
+		cloudflareTurnService as unknown as CloudflareTurnService,
 		loggerService,
 	);
-	return { service, redis, apRequestService, chatVoiceService, utilityService, instancesRepository, logger };
+	return { service, redis, apRequestService, chatVoiceService, utilityService, instancesRepository, cloudflareTurnService, logger };
 }
 
 function abortError() {
@@ -88,7 +94,7 @@ describe('RemoteVoiceCallService', () => {
 
 		const result = await f.service.requestJoin(me, room, owner, true);
 
-		expect(result).toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
+		expect(result).toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: [] });
 		expect(f.apRequestService.signedPostJson).toHaveBeenCalledTimes(1);
 		expect(f.apRequestService.signedPostJson).toHaveBeenCalledWith(
 			me,
@@ -121,11 +127,34 @@ describe('RemoteVoiceCallService', () => {
 		['a TURN url without credentials', [{ urls: ['turn:turn.example:3478'] }]],
 		['a url on port 53', [{ urls: ['stun:stun.example:53'] }]],
 		['something that is not a list', 'turn:turn.example'],
-	])('joins without TURN servers when the host sends %s', async (_label, iceServers) => {
+	])('joins with an explicitly empty list of ICE servers when the host sends %s and this server has no TURN', async (_label, iceServers) => {
 		const f = createFixture();
 		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ iceServers }));
 
-		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
+		// 空の一覧を渡すと、ブラウザはホストの LiveKit が渡す (確かめていない) ICE サーバーを使わない
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: [] });
+	});
+
+	test.each([
+		['nothing', undefined],
+		['only a url pointing at this machine', [{ urls: ['turn:127.0.0.1:3478'], username: 'u', credential: 'c' }]],
+	])('joins through this server\'s own TURN servers when the host sends %s', async (_label, iceServers) => {
+		const f = createFixture();
+		const ownIceServers = [{ urls: ['turns:turn.cloudflare.com:443?transport=tcp'], username: 'own', credential: 'own' }];
+		f.cloudflareTurnService.getIceServers.mockResolvedValue(ownIceServers);
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ iceServers }));
+
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: ownIceServers });
+	});
+
+	test('uses the TURN servers the host sent rather than this server\'s own', async () => {
+		const f = createFixture();
+		const iceServers = [{ urls: ['turn:turn.remote.test:3478'], username: 'u', credential: 'c' }];
+		f.cloudflareTurnService.getIceServers.mockResolvedValue([{ urls: ['turns:turn.cloudflare.com:443?transport=tcp'], username: 'own', credential: 'own' }]);
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ iceServers }));
+
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toMatchObject({ iceServers });
+		expect(f.cloudflareTurnService.getIceServers).not.toHaveBeenCalled();
 	});
 
 	test('stores the participants the host sent', async () => {
@@ -146,7 +175,7 @@ describe('RemoteVoiceCallService', () => {
 		const f = createFixture();
 		f.chatVoiceService.storeRemoteSnapshot.mockRejectedValueOnce(new Error('redis is down'));
 
-		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: [] });
 		await vi.waitFor(() => expect(f.logger.warn).toHaveBeenCalledTimes(1));
 		expect(f.logger.warn).toHaveBeenCalledWith(expect.stringContaining('r1'), { error: expect.objectContaining({ message: 'redis is down' }) });
 	});
@@ -171,7 +200,7 @@ describe('RemoteVoiceCallService', () => {
 		await expect(f.service.requestJoin(me, room, owner, false)).rejects.toMatchObject({ reason: 'unreachable' });
 		expect(f.redis.set).not.toHaveBeenCalled();
 
-		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: [] });
 		expect(f.apRequestService.signedPostJson).toHaveBeenCalledTimes(2);
 	});
 
@@ -219,7 +248,7 @@ describe('RemoteVoiceCallService', () => {
 			const f = createFixture();
 			f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ url: 'https://evil.example:8443/livekit' }));
 
-			await expect(f.service.requestJoin(me, room, portOwner(), false)).resolves.toEqual({ url: 'https://evil.example:8443/livekit', token: 'jwt', iceServers: null });
+			await expect(f.service.requestJoin(me, room, portOwner(), false)).resolves.toEqual({ url: 'https://evil.example:8443/livekit', token: 'jwt', iceServers: [] });
 			expect(f.apRequestService.signedPostJson).toHaveBeenCalledWith(
 				me,
 				'https://evil.example:8443/livekit/federation/token',
@@ -296,7 +325,7 @@ describe('RemoteVoiceCallService', () => {
 		test('does not let the record shared by hosts with a port refuse an owner without one', async () => {
 			const f = createFixture({}, [{ host: '', suspensionState: 'autoSuspendedForNotResponding' }]);
 
-			await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
+			await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: [] });
 		});
 
 		// inbox と同じく、ブロックはポート・末尾のドット・Unicode の違いを無視して当てる
@@ -317,7 +346,7 @@ describe('RemoteVoiceCallService', () => {
 		test('ignores suspension records of other servers', async () => {
 			const f = createFixture({}, [{ host: 'other.test', suspensionState: 'manuallySuspended' }, { host: 'remote.test', suspensionState: 'none' }]);
 
-			await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
+			await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: [] });
 		});
 
 		test.each([
@@ -382,7 +411,7 @@ describe('RemoteVoiceCallService', () => {
 		const participants = Array.from({ length: 51 }, (_, i) => ({ identity: `https://remote.test/users/${i}`, screenSharing: false }));
 		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ participants }));
 
-		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: null });
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toEqual({ url: 'https://remote.test/livekit', token: 'jwt', iceServers: [] });
 	});
 
 	test.each([

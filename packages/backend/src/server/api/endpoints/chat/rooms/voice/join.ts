@@ -154,7 +154,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.voiceCallUnavailable);
 			}
 
-			if (room.isArchived) {
+			// 通話に残れるか (ChatVoiceService の admissionOf) と同じく、削除されたユーザーには発行しない
+			if (room.isArchived || me.isDeleted) {
 				throw new ApiError(meta.errors.voiceCallUnavailable);
 			}
 
