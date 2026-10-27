@@ -64,6 +64,9 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 		@Inject(DI.redisForSub)
 		private redisForSub: Redis.Redis,
 
+		@Inject(DI.meta)
+		private meta: MiMeta,
+
 		private metaService: MetaService,
 
 		private httpRequestService: HttpRequestService,
@@ -88,6 +91,9 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 	 */
 	@bindThis
 	public async getIceServers(): Promise<IceServer[] | null> {
+		// このワーカーに設定が無ければ、共有設定を読まずに TURN を渡さない。設定の追加が届くまで TURN が無いだけで、
+		// 取り消しや差し替えは、このワーカーに設定があるときに共有設定で確かめる
+		if (this.meta.voiceCallCloudflareTurnKeyId == null || this.meta.voiceCallCloudflareTurnApiToken == null) return null;
 		const generation = this.generation;
 		const settings = await this.currentSettings();
 		if (settings == null) return null;

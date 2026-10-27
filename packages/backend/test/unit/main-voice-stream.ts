@@ -77,6 +77,55 @@ describe('voice state at the main channel boundary', () => {
 		f.channel.dispose();
 	});
 
+	test('an empty mirror frame still requires membership but does not read the authoritative policy', async () => {
+		const f = fixture();
+		f.rooms.set('r1', mirrorRoom());
+		await f.channel.init({});
+		const empty = { ...state, body: { ...state.body, participants: [] } };
+		await f.publish('mainStream:m1', empty);
+		expect(f.send).toHaveBeenCalledWith('channel', { id: 'main', type: 'chatRoomVoiceState', body: empty.body });
+		expect(f.metaService.fetch).not.toHaveBeenCalled();
+		f.send.mockClear();
+		f.chatRoomMembershipsRepository.exists.mockResolvedValue(false);
+		await f.publish('mainStream:m1', empty);
+		expect(f.send).not.toHaveBeenCalled();
+		f.channel.dispose();
+	});
+
+	// 認可しているあいだに新しい現況が保存されて待たされても、古い通知を空にして送らない (新しい現況はまとめて送られる)
+	test.each([false, true])('a superseded mirror frame is dropped rather than blanked while its successor waits in the gate (owner refused: %s)', async refused => {
+		vi.useFakeTimers({ now: TEST_CLOCK });
+		const f = fixture();
+		const room = mirrorRoom();
+		f.rooms.set('r1', room);
+		const frames: { type: string; body: any }[] = [];
+		f.globalEventService.publishMainStream.mockImplementation((_id, type, body) => { frames.push({ type, body }); });
+		await f.channel.init({});
+		const people = [{ identity: 'https://local.test/users/u1', screenSharing: false }];
+		expect(await f.service.storeRemoteSnapshot(room, people, TEST_CLOCK)).toBe('stored');
+		expect(frames).toHaveLength(1);
+		const authorizing = pauseNextCall(f.chatRoomMembershipsRepository.exists);
+		const delivering = f.publish('mainStream:m1', frames[0]);
+		await authorizing.reached;
+		expect(await f.service.storeRemoteSnapshot(room, [...people, { identity: 'https://local.test/users/u2', screenSharing: false }], TEST_CLOCK + 1)).toBe('stored');
+		expect(frames).toHaveLength(1);
+		if (refused) f.metaService.fetch.mockResolvedValue({ ...f.meta, blockedHosts: ['remote.test'] });
+		authorizing.resume();
+		await delivering;
+		if (refused) {
+			// 断った持ち主のルームは、これまでどおり参加者のいない通知にする
+			expect(f.send).toHaveBeenCalledWith('channel', { id: 'main', type: 'chatRoomVoiceState', body: { ...frames[0].body, participants: [] } });
+		} else {
+			expect(f.send).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(10_001);
+			expect(frames).toHaveLength(2);
+			await f.publish('mainStream:m1', frames[1]);
+			expect(f.send).toHaveBeenCalledTimes(1);
+			expect(f.send).toHaveBeenCalledWith('channel', { id: 'main', type: 'chatRoomVoiceState', body: expect.objectContaining({ updatedAt: TEST_CLOCK + 1, participants: [expect.anything(), expect.anything()] }) });
+		}
+		f.channel.dispose();
+	});
+
 	test('an old mirror event cannot restore participants after host-policy cache invalidation', async () => {
 		vi.useFakeTimers({ now: TEST_CLOCK, toFake: ['Date'] });
 		const f = fixture();

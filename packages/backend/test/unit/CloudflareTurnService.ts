@@ -67,7 +67,7 @@ function createFixture(metaOverrides: Record<string, unknown> = {}) {
 	// 内部イベント (metaUpdated) は Redis の購読から届く
 	const redisForSub = new EventEmitter();
 	const metaService = { fetch: vi.fn(async () => ({ ...meta })) };
-	const service = new CloudflareTurnService(redisForSub as any, metaService as any, httpRequestService as any, loggerService as any);
+	const service = new CloudflareTurnService(redisForSub as any, meta as any, metaService as any, httpRequestService as any, loggerService as any);
 	service.onModuleInit();
 	return { service, metaService, meta, httpRequestService, logger, redisForSub };
 }
@@ -94,6 +94,19 @@ describe('CloudflareTurnService', () => {
 		f = createFixture(overrides);
 
 		await expect(f.service.getIceServers()).resolves.toBeNull();
+		expect(f.httpRequestService.send).not.toHaveBeenCalled();
+	});
+
+	// 設定の追加がまだ届いていないワーカーは TURN を渡さないだけなので、共有設定を読まない
+	test.each([
+		['the key id', { voiceCallCloudflareTurnKeyId: null }],
+		['the API token', { voiceCallCloudflareTurnApiToken: null }],
+	])('does not read the authoritative settings while %s is not set on this worker', async (_label, overrides) => {
+		f = createFixture(overrides);
+		f.metaService.fetch.mockResolvedValue({ ...f.meta, voiceCallCloudflareTurnKeyId: KEY_ID, voiceCallCloudflareTurnApiToken: API_TOKEN });
+
+		await expect(f.service.getIceServers()).resolves.toBeNull();
+		expect(f.metaService.fetch).not.toHaveBeenCalled();
 		expect(f.httpRequestService.send).not.toHaveBeenCalled();
 	});
 

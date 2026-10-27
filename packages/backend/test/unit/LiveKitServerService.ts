@@ -321,8 +321,8 @@ describe('LiveKitServerService', () => {
 		const writes: Buffer[] = [];
 		const socket = new Duplex({ read() {}, write(chunk, _encoding, done) { writes.push(Buffer.from(chunk)); done(); } });
 		cleanups.push(() => { socket.destroy(); });
-		service.handleUpgrade({ url: `/livekit/rtc/v1?access_token=${mode === 'refusal' ? 'bad' : mode === 'upgrade' ? 't' : 'hang'}`, headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', 'sec-websocket-version': '13' } } as http.IncomingMessage,
-			socket, Buffer.alloc(mode === 'head' ? 65 * 1024 : mode === 'upgrade' ? 0 : 32 * 1024));
+		service.handleUpgrade({ url: `/livekit/rtc/v1?access_token=${mode === 'refusal' ? 'bad' : 'hang'}`, headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', 'sec-websocket-version': '13' } } as http.IncomingMessage,
+			socket, Buffer.alloc(mode === 'head' ? 65 * 1024 : 32 * 1024));
 		if (mode === 'chunks') {
 			socket.emit('data', Buffer.alloc(16 * 1024));
 			socket.emit('data', Buffer.alloc(17 * 1024));

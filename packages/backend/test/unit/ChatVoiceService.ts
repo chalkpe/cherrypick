@@ -34,11 +34,13 @@ describe('ChatVoiceService', () => {
 		try {
 			await f.service.storeRemoteSnapshot(room, [{ identity: 'https://local.test/users/u1', screenSharing: false }], TEST_CLOCK);
 			authoritative.blockedHosts = ['remote.test'];
+			// 消す前の現況が残っているあいだに、遅れたワーカーの一覧が共有設定で隠すことを確かめる
+			expect(f.redis.store.has('chatVoice:state:r1')).toBe(true);
+			expect(await other.service.getStates({ id: 'm1' }, ['r1'])).toEqual([]);
 			await f.service.clearMirrorSnapshots(true);
 			expect(other.meta.blockedHosts).toEqual([]);
 			expect(await other.service.isRoomVoiceVisible(room)).toBe(false);
 			expect(await other.service.storeRemoteSnapshot(room, [{ identity: 'https://local.test/users/u1', screenSharing: false }], TEST_CLOCK + 1)).toBe('disabled');
-			expect(await other.service.getStates({ id: 'm1' }, ['r1'])).toEqual([]);
 		} finally {
 			other.service.onApplicationShutdown();
 		}
@@ -87,6 +89,59 @@ describe('ChatVoiceService', () => {
 		} finally {
 			other.service.onApplicationShutdown();
 		}
+	});
+
+	test('reads the authoritative policy once for one stored and announced mirror snapshot, and filters participant hosts with it', async () => {
+		const room = mirrorRoom();
+		f.rooms.set('r1', room);
+		// このワーカーの設定にはまだ届いていないブロック
+		f.metaService.fetch.mockImplementation(async () => ({ ...f.meta, blockedHosts: ['other.test'] }));
+		expect(await f.service.storeRemoteSnapshot(room, [
+			{ identity: 'https://local.test/users/u1', screenSharing: false },
+			{ identity: 'https://other.test/users/x', screenSharing: false },
+		], TEST_CLOCK)).toBe('stored');
+		expect(f.globalEventService.publishMainStream).toHaveBeenCalledTimes(1);
+		expect(f.metaService.fetch).toHaveBeenCalledTimes(1);
+		expect(f.metaService.fetch).toHaveBeenCalledWith(true);
+		expect(JSON.parse(f.redis.store.get('chatVoice:state:r1')!).participants.map((p: { userId: string }) => p.userId)).toEqual(['u1']);
+	});
+
+	test('reads the authoritative policy once for one getStates batch, and not at all for rooms owned here', async () => {
+		const participants = [{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: false }];
+		for (const id of ['mr1', 'mr2']) {
+			f.rooms.set(id, { ...mirrorRoom(), id });
+			f.redis.store.set(`chatVoice:state:${id}`, JSON.stringify({ participants, updatedAt: TEST_CLOCK }));
+		}
+		f.redis.store.set('chatVoice:state:r1', JSON.stringify({ participants, updatedAt: TEST_CLOCK }));
+		expect((await f.service.getStates({ id: 'm1' }, ['r1'])).map(state => state.roomId)).toEqual(['r1']);
+		expect(f.metaService.fetch).not.toHaveBeenCalled();
+		expect((await f.service.getStates({ id: 'm1' }, ['r1', 'mr1', 'mr2'])).map(state => state.roomId)).toEqual(['r1', 'mr1', 'mr2']);
+		expect(f.metaService.fetch).toHaveBeenCalledTimes(1);
+	});
+
+	test('reads the authoritative policy once for one batch of a refused-owner clear', async () => {
+		for (const id of ['mr1', 'mr2']) {
+			f.rooms.set(id, { ...mirrorRoom(), id });
+			f.redis.store.set(`chatVoice:state:${id}`, JSON.stringify({ participants: [], updatedAt: TEST_CLOCK }));
+		}
+		f.metaService.fetch.mockImplementation(async () => ({ ...f.meta, blockedHosts: ['remote.test'] }));
+		await f.service.clearMirrorSnapshots(true);
+		expect(f.redis.store.has('chatVoice:state:mr1')).toBe(false);
+		expect(f.redis.store.has('chatVoice:state:mr2')).toBe(false);
+		expect(f.metaService.fetch).toHaveBeenCalledTimes(1);
+	});
+
+	test('schedules no timer that keeps the process alive once shut down', async () => {
+		vi.useFakeTimers({ now: TEST_CLOCK });
+		const room = mirrorRoom();
+		f.rooms.set('r1', room);
+		const people = [{ identity: 'https://local.test/users/u1', screenSharing: false }];
+		await f.service.storeRemoteSnapshot(room, people, TEST_CLOCK);
+		f.service.onApplicationShutdown();
+		// 止めた後に終わった保存は、待たせた通知を予定しない
+		expect(await f.service.storeRemoteSnapshot(room, people, TEST_CLOCK + 1)).toBe('stored');
+		f.service.scheduleRefresh('r1');
+		expect(vi.getTimerCount()).toBe(0);
 	});
 
 	test('keeps a quiet participant under sweep coverage after the first LiveKit read fails', async () => {
@@ -871,6 +926,32 @@ describe('ChatVoiceService', () => {
 			expect(clear).toHaveBeenCalledTimes(1);
 		});
 
+		// 戻したときは新しい消去を始めないので、止めたときの消去を途中でやめない。消したルームには空の状態を知らせる
+		test('a clear started by turning remote calls off finishes and announces every deleted room when they are turned back on midway', async () => {
+			const participants = [{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: false }];
+			for (const id of ['mr1', 'mr2']) {
+				f.rooms.set(id, { ...mirrorRoom(), id });
+				f.redis.store.set(`chatVoice:state:${id}`, JSON.stringify({ participants, updatedAt: TEST_CLOCK }));
+			}
+			const clear = vi.spyOn(f.service, 'clearMirrorSnapshots');
+			f.service.onModuleInit();
+			// 最初のルームを消す (CAS) 直前で止め、そのあいだに戻す
+			const paused = pauseNextCall(f.redis.eval);
+			publishMetaUpdated({ enableRemoteVoiceCall: false });
+			await paused.reached;
+			publishMetaUpdated({ enableRemoteVoiceCall: true });
+			paused.resume();
+			expect(clear).toHaveBeenCalledTimes(1);
+			await clear.mock.results[0].value;
+
+			expect(f.redis.store.has('chatVoice:state:mr1')).toBe(false);
+			expect(f.redis.store.has('chatVoice:state:mr2')).toBe(false);
+			expect(f.globalEventService.publishMainStream.mock.calls.map(call => call[2])).toEqual([
+				{ roomId: 'mr1', participants: [], updatedAt: TEST_CLOCK },
+				{ roomId: 'mr2', participants: [], updatedAt: TEST_CLOCK },
+			]);
+		});
+
 		// ミラーの現況は、このサーバーに LiveKit が無くても保存される
 		test('clears the mirror snapshots on a server without its own LiveKit', async () => {
 			f.liveKitService.isEnabled = false;
@@ -892,11 +973,15 @@ describe('ChatVoiceService', () => {
 			f.redis.store.set('chatVoice:state:m1', JSON.stringify({ participants: [], updatedAt: 1 }));
 
 			await f.service.clearMirrorSnapshots();
+			// 最初の消去の世代の更新と、同じ消去の CAS の順番を比べる
+			expect(f.redis.incr).toHaveBeenCalledTimes(1);
+			expect(f.redis.eval).toHaveBeenCalledTimes(1);
+			expect(f.redis.eval.mock.calls[0][0]).toMatch(/^-- CLEAR_MIRROR_IF_CURRENT/);
+			expect(f.redis.incr.mock.invocationCallOrder[0]).toBeLessThan(f.redis.eval.mock.invocationCallOrder[0]);
+			expect(f.redis.store.has('chatVoice:state:m1')).toBe(false);
 			await f.service.clearMirrorSnapshots();
 
 			expect(f.redis.store.get('chatVoice:remoteGeneration')).toBe('2');
-			expect(f.redis.incr.mock.invocationCallOrder[0]).toBeLessThan(f.redis.eval.mock.invocationCallOrder.at(-1)!);
-			expect(f.redis.store.has('chatVoice:state:m1')).toBe(false);
 		});
 
 		describe('turning remote calls off while a snapshot is being stored', () => {

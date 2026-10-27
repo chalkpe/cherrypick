@@ -69,9 +69,14 @@ export class MainChannel extends Channel {
 						this.chatRoomMembershipsRepository.exists({ where: { roomId, userId: this.user!.id } }),
 					]);
 					if (room == null || (room.ownerId !== this.user!.id && !member)) return;
-					const visible = await this.chatVoiceService.isRoomVoiceVisible(room, data.body.participants.length > 0 ? data.body.updatedAt : undefined);
+					// 空の通知には参加者がいないので、持ち主を許すかは読まない (読んでも送るものは変わらない)
+					if (data.body.participants.length > 0) {
+						const visibility = await this.chatVoiceService.voiceVisibilityOf(room, data.body.updatedAt);
+						// 新しい現況が保存されていれば、その通知 (待たされたものは後でまとめて送られる) が続くので、この通知を空にして送らない
+						if (visibility === 'superseded') return;
+						if (visibility === 'hidden') data = { ...data, body: { ...data.body, participants: [] } };
+					}
 					if (this.disposed || version !== guard.version) return;
-					if (!visible) data = { ...data, body: { ...data.body, participants: [] } };
 				} catch {
 					return;
 				}
