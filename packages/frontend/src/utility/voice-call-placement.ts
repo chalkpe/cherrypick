@@ -31,8 +31,6 @@ function checkMobile(): boolean {
 }
 
 const isMobile = ref(checkMobile());
-// 通話中のルームにカードやステージが出ているあいだは、モバイルで同じ操作を二重に出さない。
-export const voiceCallBarHidden = computed(() => isMobile.value && voiceCallStatusAnnouncedInRoom.value);
 window.addEventListener('resize', () => {
 	isMobile.value = checkMobile();
 });
@@ -99,3 +97,8 @@ export const voiceCallBarPlacement = computed<{ variant: VoiceCallBarVariant; ta
 	}
 	return { variant: 'docked', target: chatForm.el };
 });
+
+// 通話中のルームにカードやステージが出ているあいだは、同じ操作を二重に出さない。
+// モバイルではいつも隠す。PC では入力欄に収まらず浮かせるときだけ隠す (浮かせたバーはルームの入力欄に重なる)。
+// 入力欄に収まるときはそのまま出す
+export const voiceCallBarHidden = computed(() => voiceCallStatusAnnouncedInRoom.value && (isMobile.value || voiceCallBarPlacement.value.variant === 'floating'));

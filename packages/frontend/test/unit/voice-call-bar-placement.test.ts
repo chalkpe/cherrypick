@@ -6,6 +6,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/vue';
 import { defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
+import type { Ref } from 'vue';
 
 vi.mock('@/os.js', () => ({ popupMenu: vi.fn(), claimZIndex: () => 1000, alert: vi.fn(), launchUploader: vi.fn() }));
 vi.mock('@/preferences.js', async () => ({
@@ -41,6 +42,7 @@ vi.mock('@/utility/drive.js', () => ({ selectFile: vi.fn() }));
 
 import { installFakeResizeObserver, resizeObserved } from './fake-resize-observer.js';
 import { voiceCall } from '@/utility/voice-call.js';
+import { useVoiceCallStatusAnnouncer } from '@/utility/voice-call-status.js';
 import { i18n } from '@/i18n.js';
 import XVoiceCallBar from '@/ui/_common_/voice-call-bar.vue';
 import XVoiceCallBarSlot from '@/ui/_common_/voice-call-bar-slot.vue';
@@ -108,7 +110,6 @@ afterEach(async () => {
 });
 
 describe('voice call bar placement', () => {
-
 	test('keeps the bar in the most recently focused of two visible forms', async () => {
 		const later = ref(false);
 		const host = defineComponent({ setup: () => () => h('div', [
@@ -331,6 +332,101 @@ describe('voice call bar placement', () => {
 		expect(within(bar()).getByRole('link', { name: i18n.ts._voiceCall.backToRoom })).toBeTruthy();
 		const audio = within(bar()).getByRole('button', { name: i18n.ts._voiceCall.enableAudio });
 		expect(audio.querySelector('i')).not.toBeNull();
+	});
+
+	describe('beside the call card of the room in the call', () => {
+		// ルーム画面の通話カードやステージの代わり。見えているあいだは、ルームの中で通話の状態と操作を出している
+		const XCallCard = defineComponent({
+			setup() {
+				const el = ref<HTMLElement | null>(null);
+				useVoiceCallStatusAnnouncer(ref(true), el);
+				return () => h('div', { ref: el }, 'call card');
+			},
+		});
+
+		function renderRoom(options: { card: Ref<boolean>; cardVisible?: Ref<boolean> }) {
+			const host = defineComponent({
+				setup() {
+					return () => h('div', [
+						h(XVoiceCallBarSlot, { kind: 'top', 'data-testid': 'top' }),
+						h('main', [
+							h('section', { style: { display: options.cardVisible?.value === false ? 'none' : '' } }, options.card.value ? [h(XCallCard)] : []),
+							h(XForm, { room }),
+						]),
+						h(XVoiceCallBar),
+					]);
+				},
+			});
+			return render(host, { global: { stubs } });
+		}
+
+		const queryBar = () => screen.queryByRole('region', { name: i18n.ts._voiceCall.inCall });
+		const statusLive = () => within(bar()).getByText(i18n.ts._voiceCall.inCall).getAttribute('aria-live');
+
+		// 狭いデッキの列などで入力欄に収まらないとき、浮かせたバーはカードと同じ操作を重ねて出し、入力欄も覆ってしまう
+		test('on PC hides the bar instead of floating it over the room while the card shows the call', async () => {
+			const card = ref(true);
+			const { container } = renderRoom({ card });
+			await flush();
+			const slot = chatFormSlot(container);
+
+			await resizeElement(slot, 100);
+			expect(queryBar()).toBeNull();
+
+			// カードが無くなれば、浮かせたバーで通話の状態を伝える
+			card.value = false;
+			await flush();
+			expect(variantOf(bar())).toMatch(/floating/);
+			expect(statusLive()).toBe('polite');
+
+			card.value = true;
+			await flush();
+			expect(queryBar()).toBeNull();
+		});
+
+		test('on PC keeps the bar docked in a chat form wide enough, even while the card shows the call', async () => {
+			const { container } = renderRoom({ card: ref(true) });
+			await flush();
+			const slot = chatFormSlot(container);
+
+			await resizeElement(slot, 300);
+			expect(variantOf(bar())).toMatch(/docked/);
+			expect(slot.contains(bar())).toBe(true);
+			// 状態はカードが読み上げるので、バーでは二重に読み上げない
+			expect(statusLive()).toBe('off');
+
+			await resizeElement(slot, 100);
+			expect(queryBar()).toBeNull();
+			await resizeElement(slot, 300);
+			expect(variantOf(bar())).toMatch(/docked/);
+		});
+
+		test('on PC floats the bar again when the card is hidden', async () => {
+			const cardVisible = ref(true);
+			const { container } = renderRoom({ card: ref(true), cardVisible });
+			await flush();
+			await resizeElement(chatFormSlot(container), 100);
+			expect(queryBar()).toBeNull();
+
+			cardVisible.value = false;
+			await new Promise(resolve => setTimeout(resolve, 0));
+			await flush();
+			expect(variantOf(bar())).toMatch(/floating/);
+			expect(statusLive()).toBe('polite');
+		});
+
+		test('on mobile still hides the bar while the card shows the call, and shows it at the top otherwise', async () => {
+			await setWidth(400);
+			const card = ref(true);
+			renderRoom({ card });
+			await flush();
+			expect(queryBar()).toBeNull();
+
+			card.value = false;
+			await flush();
+			expect(screen.getByTestId('top').contains(bar())).toBe(true);
+			expect(variantOf(bar())).toMatch(/top/);
+		});
 	});
 
 	test('moves between the chat form and the top as the window is resized', async () => {
