@@ -5,6 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <!-- 参加者のチップ。画面を共有している人のチップは、どこを押してもその画面を見る (もう一度押すとやめる)。見ているチップは枠で示す。
+ボタンの名前 (とツールチップ) は見ているあいだも変えず、見ているかどうかは aria-pressed と枠で伝える。
 音量などのメニューは別の ⋯ ボタンから開く。チップは参加者の名前のついたまとまりにして、中のボタンが誰のものか読み上げで分かるようにする -->
 <div
 	:class="[$style.root, { [$style.speaking]: speaking, [$style.watching]: canWatch && watching }]"
@@ -14,7 +15,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		v-if="canWatch"
 		type="button" class="_button" :class="[$style.main, $style.watch]"
 		:aria-label="i18n.tsx._voiceCall.watchScreenOf({ name: userName(participant.user) })" :aria-pressed="watching"
-		:title="watching ? i18n.ts._voiceCall.stopWatching : i18n.ts._voiceCall.watchStream"
+		:title="i18n.tsx._voiceCall.watchScreenOf({ name: userName(participant.user) })"
+		:data-voice-call-watch-toggle="participant.identity"
 		@click="emit('toggleWatch')"
 	>
 		<MkAvatar :user="participant.user" :class="$style.avatar"/>

@@ -37,7 +37,8 @@ const mocks = vi.hoisted(() => {
 		watchScreenShare: vi.fn(),
 		unwatchScreenShare: vi.fn(),
 		toggleScreenShareWatch: vi.fn(),
-		attachScreenShare: vi.fn((_identity: string, _element: HTMLVideoElement, _options?: { preview?: boolean }) => () => {}),
+		// 返す detach も記録して、外し忘れが無いかを見る
+		attachScreenShare: vi.fn((_identity: string, _element: HTMLVideoElement, _options?: { preview?: boolean }) => vi.fn()),
 		startScreenShare: vi.fn(),
 		stopScreenShare: vi.fn(),
 		setParticipantVolume: vi.fn(),
@@ -109,6 +110,9 @@ import { updateDeviceKind } from '@/utility/device-kind.js';
 import XVoiceCallBar from '@/ui/_common_/voice-call-bar.vue';
 import XScreen from '@/pages/chat/room.voice.screen.vue';
 import XParticipant from '@/pages/chat/room.voice.participant.vue';
+import XPreview from '@/pages/chat/room.voice.preview.vue';
+import XTile from '@/pages/chat/room.voice.tile.vue';
+import XScreens from '@/pages/chat/room.voice.screens.vue';
 
 const stubs = {
 	MkAvatar: { props: ['user'], template: '<span class="avatar"></span>' },
@@ -133,6 +137,19 @@ const queryViewerOf = (user: typeof alice) => screen.queryByRole('group', { name
 const participantGroup = (user: typeof alice) => screen.getByRole('group', { name: user.name });
 const watchToggleOf = (user: typeof alice) => within(participantGroup(user)).getByRole('button', { name: i18n.tsx._voiceCall.watchScreenOf({ name: user.name }) });
 const hasClass = (el: Element, name: string) => [...el.classList].some(c => c.includes(name));
+const focusButtonOf = (user: typeof alice) => within(viewerOf(user)).getByRole('button', { name: i18n.ts._voiceCall.focusScreen });
+
+// happy-dom には全画面とピクチャーインピクチャーの API が無いので、今どの要素がそうなっているかをテストから決める
+let fullscreenElement: Element | null = null;
+let pictureInPictureElement: Element | null = null;
+Object.defineProperty(window.document, 'fullscreenElement', { configurable: true, get: () => fullscreenElement });
+Object.defineProperty(window.document, 'pictureInPictureElement', { configurable: true, get: () => pictureInPictureElement });
+
+function setFullscreen(el: Element | null) {
+	fullscreenElement = el;
+	window.document.dispatchEvent(new Event('fullscreenchange'));
+}
+
 const callState = voiceCall as unknown as Record<string, unknown>;
 const prefer = mockedPrefer as unknown as FakePrefer;
 
@@ -163,6 +180,8 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	fullscreenElement = null;
+	pictureInPictureElement = null;
 	// 入力欄の書きかけはテストをまたいで残さない
 	window.localStorage.clear();
 });
@@ -608,13 +627,13 @@ describe('voice call on the room page', () => {
 				await flush();
 				expect(focusButton(bob).getAttribute('aria-pressed')).toBe('true');
 				expect(hasClass(viewerOf(bob), 'focused')).toBe(true);
-				expect(hasClass(viewerOf(alice).parentElement!, 'strip')).toBe(true);
-				expect(hasClass(viewerOf(carol).parentElement!, 'strip')).toBe(true);
+				expect(hasClass(viewerOf(alice), 'stripItem')).toBe(true);
+				expect(hasClass(viewerOf(carol), 'stripItem')).toBe(true);
 				// 帯の画面を押すと、そちらを大きくする
 				await fireEvent.click(focusButton(alice));
 				await flush();
 				expect(hasClass(viewerOf(alice), 'focused')).toBe(true);
-				expect(hasClass(viewerOf(bob).parentElement!, 'strip')).toBe(true);
+				expect(hasClass(viewerOf(bob), 'stripItem')).toBe(true);
 
 				await fireEvent.click(focusButton(alice));
 				await flush();
@@ -638,6 +657,92 @@ describe('voice call on the room page', () => {
 				await renderStageWatching(1);
 
 				expect(within(viewerOf(alice)).queryByRole('button', { name: i18n.ts._voiceCall.focusScreen })).toBeNull();
+			});
+
+			test('keeps every viewer, its video and the keyboard focus when the focus moves', async () => {
+				await renderStageWatching(3);
+				const viewers = [alice, bob, carol].map(viewerOf);
+				const videos = viewers.map(viewer => viewer.querySelector('video'));
+				const bobFocus = focusButtonOf(bob);
+				bobFocus.focus();
+
+				await fireEvent.click(bobFocus);
+				await flush();
+				expect(window.document.activeElement).toBe(bobFocus);
+				await fireEvent.click(focusButtonOf(carol));
+				await flush();
+				await fireEvent.click(focusButtonOf(carol));
+				await flush();
+
+				// 画面を作り直すと、全画面やピクチャーインピクチャーが解け、映像も一瞬消える
+				expect([alice, bob, carol].map(viewerOf)).toEqual(viewers);
+				expect(viewers.map(viewer => viewer.querySelector('video'))).toEqual(videos);
+				for (const video of videos) expect(video!.isConnected).toBe(true);
+				expect(focusButtonOf(bob)).toBe(bobFocus);
+			});
+
+			test('keeps a share in picture-in-picture playing while another share is focused', async () => {
+				await renderStageWatching(2);
+				const bobVideo = viewerOf(bob).querySelector('video')!;
+				pictureInPictureElement = bobVideo;
+
+				await fireEvent.click(focusButtonOf(alice));
+				await flush();
+
+				expect(viewerOf(bob).querySelector('video')).toBe(bobVideo);
+				expect(bobVideo.isConnected).toBe(true);
+				// 映している要素から外していない
+				const bobAttach = mocks.attachScreenShare.mock.calls.findIndex(([, element]) => element === bobVideo);
+				expect(bobAttach).toBeGreaterThanOrEqual(0);
+				expect(mocks.attachScreenShare.mock.results[bobAttach].value).not.toHaveBeenCalled();
+			});
+
+			test('a click on a fullscreen share neither changes the layout nor leaves fullscreen', async () => {
+				await renderStageWatching(2);
+				const viewer = viewerOf(alice);
+				setFullscreen(viewer);
+				await flush();
+
+				// 全画面のあいだは、画面全体を覆う「大きくする」ボタンを置かない
+				expect(within(viewer).queryByRole('button', { name: i18n.ts._voiceCall.focusScreen })).toBeNull();
+				await fireEvent.click(viewer.querySelector('video')!);
+				await flush();
+
+				expect(viewerOf(alice)).toBe(viewer);
+				expect(viewer.isConnected).toBe(true);
+				expect(hasClass(viewer, 'focused')).toBe(false);
+				expect(hasClass(viewer.parentElement!, 'layout2')).toBe(true);
+
+				setFullscreen(null);
+				await flush();
+				expect(focusButtonOf(alice)).toBeTruthy();
+			});
+
+			test('forgets the focus once fewer than two shares are watched', async () => {
+				await renderStageWatching(2);
+				await fireEvent.click(focusButtonOf(alice));
+				await flush();
+
+				callState.watchingIdentities = [identityOf(alice)];
+				await flush();
+				callState.watchingIdentities = [identityOf(alice), identityOf(bob)];
+				await flush();
+
+				// また 2 つ見始めても、前に大きくしていた画面が勝手に大きくならない
+				expect(hasClass(viewerOf(alice), 'focused')).toBe(false);
+				expect(hasClass(viewerOf(alice).parentElement!, 'layout2')).toBe(true);
+			});
+
+			test('closing a share from the keyboard moves the focus to the sharer\'s tile', async () => {
+				await renderStageWatching(2);
+				const close = within(viewerOf(bob)).getByLabelText(i18n.ts._voiceCall.stopWatching);
+				close.focus();
+
+				await fireEvent.click(close);
+				await flush();
+
+				expect(mocks.unwatchScreenShare).toHaveBeenCalledWith(identityOf(bob));
+				expect(window.document.activeElement).toBe(watchToggleOf(bob));
 			});
 		});
 
@@ -708,23 +813,6 @@ describe('voice call on the room page', () => {
 		});
 
 		describe('while a shared screen is fullscreen', () => {
-			let fullscreenElement: Element | null = null;
-
-			beforeEach(() => {
-				// happy-dom には全画面の API が無いので、全画面になっている要素をテストから決める
-				Object.defineProperty(window.document, 'fullscreenElement', { configurable: true, get: () => fullscreenElement });
-			});
-
-			afterEach(() => {
-				fullscreenElement = null;
-				Reflect.deleteProperty(window.document, 'fullscreenElement');
-			});
-
-			function setFullscreen(el: Element | null) {
-				fullscreenElement = el;
-				window.document.dispatchEvent(new Event('fullscreenchange'));
-			}
-
 			async function nextFrames() {
 				await new Promise<void>(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
 				await flush();
@@ -1106,6 +1194,17 @@ describe('screen share in the room panel', () => {
 			expect(mocks.unwatchScreenShare).toHaveBeenCalledWith(identityOf(bob));
 		});
 
+		test('closing a share from the keyboard moves the focus to the sharer\'s chip', async () => {
+			await renderCardWatching(2);
+			const close = within(viewerOf(alice)).getByLabelText(i18n.ts._voiceCall.stopWatching);
+			close.focus();
+
+			await fireEvent.click(close);
+			await flush();
+
+			expect(window.document.activeElement).toBe(watchToggleOf(alice));
+		});
+
 		test.each([
 			[1, 'layout1'],
 			[2, 'layout2'],
@@ -1125,6 +1224,60 @@ describe('screen share in the room panel', () => {
 });
 
 describe('screen share viewer', () => {
+	test('sizes itself to the shared video and keeps the bar right under it', async () => {
+		render(XScreen, { props: { participant: participant(alice, true), fill: true }, global: { stubs } });
+		await flush();
+		const viewer = viewerOf(alice);
+		const video = viewer.querySelector('video')!;
+		Object.defineProperty(video, 'videoWidth', { configurable: true, value: 1600 });
+		Object.defineProperty(video, 'videoHeight', { configurable: true, value: 1200 });
+
+		await fireEvent(video, new Event('resize'));
+		await flush();
+
+		// 枠を映像の縦横比に合わせるので、背の高い置き場所でも映像と操作の列のあいだが空かない
+		expect(Number(viewer.style.getPropertyValue('--voiceCallScreenRatio'))).toBeCloseTo(4 / 3);
+		const bar = within(viewer).getByLabelText(i18n.ts._voiceCall.fullscreen).parentElement!;
+		expect(bar.parentElement).not.toBe(viewer);
+		expect(bar.parentElement!.contains(video)).toBe(true);
+	});
+
+	test('uses plain buttons that never submit a form', async () => {
+		Object.defineProperty(window.document, 'pictureInPictureEnabled', { configurable: true, value: true });
+		try {
+			render(XScreen, { props: { participant: participant(alice, true), fill: true, focusable: true }, global: { stubs } });
+			await flush();
+		} finally {
+			Reflect.deleteProperty(window.document, 'pictureInPictureEnabled');
+		}
+
+		const buttons = within(viewerOf(alice)).getAllByRole('button');
+		expect(buttons.length).toBe(4);
+		for (const button of buttons) expect(button.getAttribute('type')).toBe('button');
+	});
+
+	test('stops showing the share when it goes away', async () => {
+		const { unmount } = render(XScreen, { props: { participant: participant(alice, true) }, global: { stubs } });
+		await flush();
+		const detach = mocks.attachScreenShare.mock.results[mocks.attachScreenShare.mock.results.length - 1].value as ReturnType<typeof vi.fn>;
+		expect(detach).not.toHaveBeenCalled();
+
+		unmount();
+		expect(detach).toHaveBeenCalledTimes(1);
+	});
+
+	test('closing one of several shares moves the focus to the next one when there is no chip to go back to', async () => {
+		render(XScreens, { props: { participants: [participant(alice, true), participant(bob, true)] }, global: { stubs } });
+		await flush();
+		const close = within(viewerOf(alice)).getByLabelText(i18n.ts._voiceCall.stopWatching);
+		close.focus();
+
+		await fireEvent.click(close);
+		await flush();
+
+		expect(viewerOf(bob).contains(window.document.activeElement)).toBe(true);
+	});
+
 	test('goes fullscreen through the shared helper so iPhone Safari works too', async () => {
 		render(XScreen, { props: { participant: participant(alice, true) }, global: { stubs } });
 		await flush();
@@ -1148,6 +1301,33 @@ describe('screen share viewer', () => {
 
 		expect(mocks.attachScreenShare).toHaveBeenCalledWith(identityOf(alice), expect.any(HTMLVideoElement));
 		expect(mocks.attachScreenShare).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), { preview: true });
+	});
+});
+
+describe('screen share preview', () => {
+	test('stops showing the share when the chip or tile goes away', async () => {
+		const { unmount } = render(XPreview, { props: { identity: identityOf(alice) } });
+		await flush();
+		expect(mocks.attachScreenShare).toHaveBeenLastCalledWith(identityOf(alice), expect.any(HTMLVideoElement), { preview: true });
+		const detach = mocks.attachScreenShare.mock.results[mocks.attachScreenShare.mock.results.length - 1].value as ReturnType<typeof vi.fn>;
+
+		unmount();
+		expect(detach).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe.each([
+	['participant chip', XParticipant],
+	['stage tile', XTile],
+] as const)('%s watch toggle', (_label, component) => {
+	// トグルのボタンは名前を変えず、見ているかどうかは aria-pressed と枠で伝える
+	test.each([false, true])('keeps the same tooltip as the accessible name while watching: %s', async watching => {
+		render(component, { props: { participant: participant(alice, true), speaking: false, watchable: true, watching }, global: { stubs } });
+		await flush();
+
+		const toggle = watchToggleOf(alice);
+		expect(toggle.getAttribute('title')).toBe(toggle.getAttribute('aria-label'));
+		expect(toggle.getAttribute('aria-pressed')).toBe(String(watching));
 	});
 });
 

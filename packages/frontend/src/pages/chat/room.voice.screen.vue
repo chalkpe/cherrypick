@@ -4,54 +4,59 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<!-- 見ている共有画面の一つ。いくつも並ぶので、中の操作が誰の画面のものか読み上げで分かるよう、名前のついたまとまりにする -->
+<!-- 見ている共有画面の一つ。いくつも並ぶので、中の操作が誰の画面のものか読み上げで分かるよう、名前のついたまとまりにする。
+置き場所 (root) の中に、映像の縦横比に合わせた枠 (frame) を置き、操作の列はその枠の映像のすぐ下に付ける -->
 <div
 	ref="rootEl"
 	:class="[$style.root, { [$style.fill]: fill, [$style.compact]: compact }]"
+	:style="{ '--voiceCallScreenRatio': ratio }"
 	role="group" :aria-label="i18n.tsx._voiceCall.screenShareOf({ name: userName(participant.user) })"
 >
-	<div :class="$style.view">
-		<video ref="videoEl" :class="$style.video" autoplay playsinline muted></video>
-		<!-- ステージで並べているときは、画面を押すと大きくする (大きくしている画面を押すと並べた形に戻す)。
-		押せるかどうかが変わっても video 要素を作り直さないよう、映像の上に重ねたボタンにする -->
-		<button
-			v-if="focusable"
-			type="button" class="_button" :class="[$style.focusButton, focused ? $style.zoomOut : $style.zoomIn]"
-			:aria-label="i18n.ts._voiceCall.focusScreen" :aria-pressed="focused" :title="i18n.ts._voiceCall.focusScreen"
-			@click="emit('toggleFocus')"
-		></button>
-		<span v-if="compact" :class="$style.overlay"><MkUserName :user="participant.user"/></span>
-	</div>
-	<div v-if="!compact" :class="$style.bar">
-		<span :class="$style.label"><i class="ti ti-screen-share" role="img" :aria-label="i18n.ts._voiceCall.sharingScreen"></i> <MkUserName :user="participant.user"/></span>
-		<button
-			class="_button" :class="$style.control"
-			:aria-label="i18n.ts._voiceCall.fullscreen" :title="i18n.ts._voiceCall.fullscreen"
-			@click="requestFullscreen"
-		>
-			<i class="ti ti-maximize"></i>
-		</button>
-		<button
-			v-if="pictureInPictureSupported"
-			class="_button" :class="$style.control"
-			:aria-label="i18n.ts._voiceCall.pictureInPicture" :title="i18n.ts._voiceCall.pictureInPicture"
-			@click="requestPictureInPicture"
-		>
-			<i class="ti ti-picture-in-picture"></i>
-		</button>
-		<button
-			class="_button" :class="$style.control"
-			:aria-label="i18n.ts._voiceCall.stopWatching" :title="i18n.ts._voiceCall.stopWatching"
-			@click="unwatchScreenShare(participant.identity)"
-		>
-			<i class="ti ti-x"></i>
-		</button>
+	<div :class="$style.frame">
+		<div :class="$style.view">
+			<video ref="videoEl" :class="$style.video" autoplay playsinline muted @loadedmetadata="updateRatio" @resize="updateRatio"></video>
+			<!-- ステージで並べているときは、画面を押すと大きくする (大きくしている画面を押すと並べた形に戻す)。
+			押せるかどうかが変わっても video 要素を作り直さないよう、映像の上に重ねたボタンにする。
+			全画面のあいだは置かない (押すと並べ方が変わり、全画面が解けてしまう) -->
+			<button
+				v-if="focusable && !fullscreen"
+				type="button" class="_button" :class="[$style.focusButton, focused ? $style.zoomOut : $style.zoomIn]"
+				:aria-label="i18n.ts._voiceCall.focusScreen" :aria-pressed="focused" :title="i18n.ts._voiceCall.focusScreen"
+				@click="toggleFocus"
+			></button>
+			<span v-if="compact" :class="$style.overlay"><MkUserName :user="participant.user"/></span>
+		</div>
+		<div v-if="!compact" :class="$style.bar">
+			<span :class="$style.label"><i class="ti ti-screen-share" role="img" :aria-label="i18n.ts._voiceCall.sharingScreen"></i> <MkUserName :user="participant.user"/></span>
+			<button
+				type="button" class="_button" :class="$style.control"
+				:aria-label="i18n.ts._voiceCall.fullscreen" :title="i18n.ts._voiceCall.fullscreen"
+				@click="requestFullscreen"
+			>
+				<i class="ti ti-maximize"></i>
+			</button>
+			<button
+				v-if="pictureInPictureSupported"
+				type="button" class="_button" :class="$style.control"
+				:aria-label="i18n.ts._voiceCall.pictureInPicture" :title="i18n.ts._voiceCall.pictureInPicture"
+				@click="requestPictureInPicture"
+			>
+				<i class="ti ti-picture-in-picture"></i>
+			</button>
+			<button
+				type="button" class="_button" :class="$style.control"
+				:aria-label="i18n.ts._voiceCall.stopWatching" :title="i18n.ts._voiceCall.stopWatching"
+				@click="stopWatching"
+			>
+				<i class="ti ti-x"></i>
+			</button>
+		</div>
 	</div>
 </div>
 </template>
 
 <script lang="ts" setup>
-import { onBeforeUnmount, useTemplateRef, watch } from 'vue';
+import { nextTick, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { i18n } from '@/i18n.js';
 import { userName } from '@/filters/user.js';
@@ -60,7 +65,7 @@ import { attachScreenShare, unwatchScreenShare } from '@/utility/voice-call.js';
 
 const props = withDefaults(defineProps<{
 	participant: Misskey.entities.ChatRoomVoiceState['participants'][number];
-	// 与えられた高さいっぱいに映す (広い画面のステージ)。指定しなければ高さの上限までに収める
+	// 与えられた広さいっぱいに映す (広い画面のステージ)。指定しなければ高さの上限 (--voiceCallScreenMaxHeight) までに収める
 	fill?: boolean;
 	// 押すと大きくする (ステージで複数の画面を並べているとき)
 	focusable?: boolean;
@@ -83,6 +88,24 @@ const rootEl = useTemplateRef('rootEl');
 const videoEl = useTemplateRef('videoEl');
 const pictureInPictureSupported = window.document.pictureInPictureEnabled === true;
 
+// 共有されている映像の縦横比。届くまでは画面共有でよくある 16:9 とみなす
+const ratio = ref(16 / 9);
+
+function updateRatio() {
+	const video = videoEl.value;
+	if (video == null || video.videoWidth <= 0 || video.videoHeight <= 0) return;
+	ratio.value = video.videoWidth / video.videoHeight;
+}
+
+// この画面が全画面になっているか
+const fullscreen = ref(false);
+
+function onFullscreenChange() {
+	fullscreen.value = rootEl.value != null && window.document.fullscreenElement === rootEl.value;
+}
+
+window.document.addEventListener('fullscreenchange', onFullscreenChange);
+
 let detach: (() => void) | null = null;
 
 watch([() => props.participant.identity, videoEl], ([identity, element]) => {
@@ -91,9 +114,16 @@ watch([() => props.participant.identity, videoEl], ([identity, element]) => {
 }, { immediate: true });
 
 onBeforeUnmount(() => {
+	window.document.removeEventListener('fullscreenchange', onFullscreenChange);
 	detach?.();
 	detach = null;
 });
+
+function toggleFocus() {
+	// 全画面のあいだに届いたクリックでは並べ方を変えない
+	if (rootEl.value != null && window.document.fullscreenElement === rootEl.value) return;
+	emit('toggleFocus');
+}
 
 function requestFullscreen() {
 	if (rootEl.value == null || videoEl.value == null) return;
@@ -104,18 +134,41 @@ function requestFullscreen() {
 function requestPictureInPicture() {
 	videoEl.value?.requestPictureInPicture().catch(() => {});
 }
+
+// 見るのをやめると押したボタンごとこの画面が消え、キーボードのフォーカスがページの先頭に戻ってしまう。
+// その人のチップやタイル (見る・やめるを切り替えるボタン) へ、無ければ隣の画面へフォーカスを移す
+function stopWatching() {
+	const identity = props.participant.identity;
+	const root = rootEl.value;
+	const neighbour = root?.nextElementSibling ?? root?.previousElementSibling ?? null;
+	unwatchScreenShare(identity);
+	nextTick(() => {
+		const toggle = [...window.document.querySelectorAll<HTMLElement>('[data-voice-call-watch-toggle]')]
+			.find(el => el.dataset.voiceCallWatchToggle === identity);
+		const target = toggle ?? neighbour?.querySelector<HTMLElement>('button') ?? null;
+		target?.focus({ preventScroll: true });
+	});
+}
 </script>
 
 <style lang="scss" module>
-// 置き場所が決める高さの上限 (--voiceCallScreenMaxHeight) に、操作の列も含めた全体を収める。
-// 収まらないときは映像の方が縮む (縦横比はそのまま、object-fit: contain)
+// 置き場所。広い画面のステージ・下の帯・全画面では与えられた広さ (コンテナ) に、狭い画面のカードでは横幅と高さの上限に、
+// 映像の縦横比の枠 (frame) を収める。操作の列は枠の中で映像のすぐ下に付くので、背の高い置き場所でも映像と操作の列が離れない
 .root {
+	--voiceCallScreenBarHeight: 44px;
 	position: relative;
 	display: flex;
-	flex-direction: column;
+	justify-content: center;
+	align-self: start;
 	min-width: 0;
 	min-height: 0;
-	max-height: var(--voiceCallScreenMaxHeight, 70vh);
+}
+
+.frame {
+	display: flex;
+	flex-direction: column;
+	// 横幅いっぱい、ただし映像と操作の列の高さが上限を超えない幅まで
+	width: min(100%, calc((var(--voiceCallScreenMaxHeight, 70vh) - var(--voiceCallScreenBarHeight)) * var(--voiceCallScreenRatio)));
 	overflow: clip;
 	border-radius: var(--MI-radius);
 	background: var(--MI_THEME-bg);
@@ -123,30 +176,39 @@ function requestPictureInPicture() {
 
 .view {
 	position: relative;
-	display: flex;
-	flex-direction: column;
-	flex: 0 1 auto;
-	min-height: 0;
-	width: 100%;
+	aspect-ratio: var(--voiceCallScreenRatio);
 }
 
 .video {
 	display: block;
-	flex: 0 1 auto;
 	width: 100%;
-	min-height: 0;
+	height: 100%;
 	object-fit: contain;
 }
 
-// 与えられた高さいっぱいに映す: 広い画面のステージ、大きくした画面の下の帯、全画面
+// 与えられた広さいっぱいに、縦横比を保って置く (広い画面のステージ、大きくした画面の下の帯、全画面)
 .fill,
 .compact,
 .root:fullscreen {
-	max-height: none;
+	container-type: size;
+	display: grid;
+	place-items: center;
+	align-self: stretch;
 
-	.view,
-	.video {
-		flex: 1 1 0;
+	.frame {
+		width: min(100cqw, calc((100cqh - var(--voiceCallScreenBarHeight)) * var(--voiceCallScreenRatio)));
+	}
+}
+
+.compact {
+	--voiceCallScreenBarHeight: 0px;
+}
+
+.root:fullscreen {
+	background: var(--MI_THEME-bg);
+
+	.frame {
+		border-radius: 0;
 	}
 }
 
@@ -162,6 +224,12 @@ function requestPictureInPicture() {
 
 	&.zoomOut {
 		cursor: zoom-out;
+	}
+
+	// 映像の上でも見えるよう、内側に太めの輪を出す
+	&:focus-visible {
+		outline: 3px solid var(--MI_THEME-focus);
+		outline-offset: -3px;
 	}
 }
 
@@ -186,6 +254,8 @@ function requestPictureInPicture() {
 	display: flex;
 	align-items: center;
 	gap: 4px;
+	box-sizing: border-box;
+	height: var(--voiceCallScreenBarHeight);
 	padding: 6px 8px;
 	background: var(--MI_THEME-panel);
 }

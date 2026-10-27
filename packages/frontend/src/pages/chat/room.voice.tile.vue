@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <!-- 広い画面のステージに並べる参加者のタイル。画面を共有している人のタイルは、どこを押してもその画面を見る (もう一度押すとやめる)。
-共有している画面は小さなプレビューで見せ、見ているタイルは枠で示す。音量などのメニューは別の ⋯ ボタンから開く。
+共有している画面は小さなプレビューで見せ、見ているタイルは枠で示す (ボタンの名前とツールチップは変えず、aria-pressed で伝える)。音量などのメニューは別の ⋯ ボタンから開く。
 タイルは参加者の名前のついたまとまりにして、中のボタンが誰のものか読み上げで分かるようにする -->
 <div
 	:class="[$style.root, { [$style.speaking]: speaking, [$style.watching]: canWatch && watching, [$style.small]: small }]"
@@ -15,7 +15,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		v-if="canWatch"
 		type="button" class="_button" :class="[$style.body, $style.watch]"
 		:aria-label="i18n.tsx._voiceCall.watchScreenOf({ name: userName(participant.user) })" :aria-pressed="watching"
-		:title="watching ? i18n.ts._voiceCall.stopWatching : i18n.ts._voiceCall.watchStream"
+		:title="i18n.tsx._voiceCall.watchScreenOf({ name: userName(participant.user) })"
+		:data-voice-call-watch-toggle="participant.identity"
 		@click="emit('toggleWatch')"
 	>
 		<XPreview :identity="participant.identity" :class="$style.preview"/>

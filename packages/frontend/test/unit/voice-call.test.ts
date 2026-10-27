@@ -50,11 +50,11 @@ const lk = vi.hoisted(() => {
 	class VideoPreset {
 		width: number;
 		height: number;
-		encoding: { maxBitrate: number; maxFramerate?: number };
-		constructor(width: number, height: number, maxBitrate: number, maxFramerate?: number) {
+		encoding: { maxBitrate: number; maxFramerate?: number; priority?: string };
+		constructor(width: number, height: number, maxBitrate: number, maxFramerate?: number, priority?: string) {
 			this.width = width;
 			this.height = height;
-			this.encoding = { maxBitrate, maxFramerate };
+			this.encoding = { maxBitrate, maxFramerate, priority };
 		}
 	}
 	const VideoQuality = { LOW: 0, MEDIUM: 1, HIGH: 2 };
@@ -393,13 +393,16 @@ describe('active audio device', () => {
 	});
 });
 
-// 本物の RemoteTrackPublication と同じく、受け取るかどうかの希望 (isDesired) を覚える。autoSubscribe: false なので最初は受け取らない
-function screenSharePublication(participant: InstanceType<typeof lk.FakeRemoteParticipant>) {
+// 本物の RemoteTrackPublication と同じく、受け取るかどうかの希望 (isDesired) を覚える。autoSubscribe: false なので最初は受け取らない。
+// layers は送り手が送っている層の数 (Firefox は画面共有を simulcast しないので 1 つ)
+function screenSharePublication(participant: InstanceType<typeof lk.FakeRemoteParticipant>, layers = 3) {
 	const publication = {
 		source: lk.Track.Source.ScreenShare,
 		kind: lk.Track.Kind.Video,
 		trackSid: `TR_${participant.identity}`,
 		track: null as unknown,
+		simulcasted: layers > 1,
+		trackInfo: { layers: Array.from({ length: layers }, (_, quality) => ({ quality })), codecs: [] },
 		isDesired: false,
 		setSubscribed: vi.fn((subscribed: boolean) => {
 			publication.isDesired = subscribed;
@@ -410,9 +413,9 @@ function screenSharePublication(participant: InstanceType<typeof lk.FakeRemotePa
 	return publication;
 }
 
-function sharing(identity: string) {
+function sharing(identity: string, layers = 3) {
 	const participant = remoteParticipant(identity);
-	const publication = screenSharePublication(participant);
+	const publication = screenSharePublication(participant, layers);
 	lastRoom().emit(lk.RoomEvent.TrackPublished, publication, participant);
 	return { participant, publication };
 }
@@ -492,6 +495,8 @@ describe('screen sharing', () => {
 		const [preview, ...rest] = publishOptions.screenShareSimulcastLayers;
 		expect(preview).toMatchObject({ width: 320, height: 180 });
 		expect(preview.encoding.maxFramerate).toBeLessThanOrEqual(5);
+		// Chromium は一番低い層の priority だけを送信の優先度に使うので、プレビューの層にも付ける
+		expect(preview.encoding.priority).toBe('medium');
 		// 層は低いものから並べる
 		for (const layer of rest) expect(layer.encoding.maxBitrate).toBeGreaterThan(preview.encoding.maxBitrate);
 	});
@@ -585,6 +590,36 @@ describe('screen sharing', () => {
 		// プレビューを閉じれば受け取るのもやめる
 		detach();
 		expect(a.publication.setSubscribed).toHaveBeenLastCalledWith(false);
+	});
+
+	test('does not preview a share sent as a single full-quality layer, but still lets it be watched', async () => {
+		await joinVoiceCall(room1);
+		// Firefox の送り手は simulcast しないので、低い層を頼んでも元の画質のまま届いてしまう
+		const a = sharing('a', 1);
+
+		attachScreenShare('a', document.createElement('video'), { preview: true });
+		expect(a.publication.setSubscribed).not.toHaveBeenCalledWith(true);
+
+		watchScreenShare('a');
+		expect(a.publication.setSubscribed).toHaveBeenLastCalledWith(true);
+		expect(a.publication.setVideoQuality).toHaveBeenLastCalledWith(lk.VideoQuality.HIGH);
+
+		unwatchScreenShare('a');
+		expect(a.publication.setSubscribed).toHaveBeenLastCalledWith(false);
+		expect(a.publication.setVideoQuality).not.toHaveBeenCalledWith(lk.VideoQuality.LOW);
+	});
+
+	test('reads the layers from the per-codec layer list too', async () => {
+		await joinVoiceCall(room1);
+		const participant = remoteParticipant('a');
+		const publication = screenSharePublication(participant, 1);
+		publication.trackInfo = { layers: [], codecs: [{ layers: [{ quality: 0 }, { quality: 2 }] }] } as any;
+		lastRoom().emit(lk.RoomEvent.TrackPublished, publication, participant);
+
+		attachScreenShare('a', document.createElement('video'), { preview: true });
+
+		expect(publication.setSubscribed).toHaveBeenLastCalledWith(true);
+		expect(publication.setVideoQuality).toHaveBeenLastCalledWith(lk.VideoQuality.LOW);
 	});
 
 	test('a previewed share switches to high quality while watched and back to low after', async () => {

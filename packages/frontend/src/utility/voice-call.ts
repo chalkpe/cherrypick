@@ -43,8 +43,9 @@ const screenShareTracks = new Map<string, RemoteTrack>();
 const screenShareViews = new Map<string, Set<ScreenShareView>>();
 
 // 小さなプレビュー用に、共有画面とは別に送る低い層 (320×180、数 fps)。
-// 誰もプレビューを出していないあいだは、dynacast が送るのを止める
-const SCREEN_SHARE_PREVIEW_LAYER = { width: 320, height: 180, maxBitrate: 100_000, maxFramerate: 5 };
+// 誰もプレビューを出していないあいだは、dynacast が送るのを止める。
+// Chromium は一番低い層 (encodings[0]) の priority だけを送信の優先度に使うので、ほかの画面共有の層と同じ medium を付ける
+const SCREEN_SHARE_PREVIEW_LAYER = { width: 320, height: 180, maxBitrate: 100_000, maxFramerate: 5, priority: 'medium' } as const;
 
 async function loadLiveKit(): Promise<LiveKit> {
 	// 通話しない人にライブラリを読ませないよう、参加時に読み込む
@@ -187,7 +188,7 @@ export async function startScreenShare(): Promise<void> {
 			screenShareEncoding: preset.encoding,
 			// 層は低いものから並べる。一番低い層はプレビュー用
 			screenShareSimulcastLayers: [
-				new livekit.VideoPreset(SCREEN_SHARE_PREVIEW_LAYER.width, SCREEN_SHARE_PREVIEW_LAYER.height, SCREEN_SHARE_PREVIEW_LAYER.maxBitrate, SCREEN_SHARE_PREVIEW_LAYER.maxFramerate),
+				new livekit.VideoPreset(SCREEN_SHARE_PREVIEW_LAYER.width, SCREEN_SHARE_PREVIEW_LAYER.height, SCREEN_SHARE_PREVIEW_LAYER.maxBitrate, SCREEN_SHARE_PREVIEW_LAYER.maxFramerate, SCREEN_SHARE_PREVIEW_LAYER.priority),
 				livekit.ScreenSharePresets.h720fps15,
 			],
 		});
@@ -273,14 +274,24 @@ function isScreenSharePreviewed(identity: string): boolean {
 	return false;
 }
 
+// 送り手が低い層も送っているか。Firefox は画面共有を simulcast しないので層が 1 つしかなく、
+// 低い画質を頼んでも元の画質のまま届く
+function hasLowerLayer(publication: RemoteTrackPublication): boolean {
+	const info = publication.trackInfo;
+	const layerCount = Math.max(info?.layers.length ?? 0, ...(info?.codecs ?? []).map(codec => codec.layers.length));
+	if (layerCount > 0) return layerCount >= 2;
+	return publication.simulcasted === true;
+}
+
 // 見ている共有画面は高い画質で、プレビューだけを出している共有画面は低い層だけを受け取り、どちらでもなければ受け取らない。
+// 低い層の無い共有画面はプレビューのためには受け取らない (プレビューは共有のアイコンのままになる)。
 // adaptiveStream も効いているので、映している要素が小さければ、ここで決めた上限よりさらに低い層になる
 function syncScreenShareSubscription(identity: string): void {
 	if (current == null || livekit == null) return;
 	const publication = screenSharePublicationOf(current, identity);
 	if (publication == null) return;
 	const watched = state.watchingIdentities.includes(identity);
-	if (!watched && !isScreenSharePreviewed(identity)) {
+	if (!watched && !(isScreenSharePreviewed(identity) && hasLowerLayer(publication))) {
 		if (publication.isDesired) publication.setSubscribed(false);
 		return;
 	}

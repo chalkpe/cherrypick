@@ -5,34 +5,20 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <!-- 見ている共有画面を並べる。1 つなら大きく、2 つなら横に、3〜4 つなら 2×2 に、それより多ければスクロールできる格子にする。
-広い画面のステージ (fill) では、押した画面を大きくして、ほかの画面は下の帯に並べる -->
-<div v-if="focusedParticipant != null" :class="[$style.root, $style.focusMode]">
-	<XScreen
-		:key="focusedParticipant.identity"
-		:participant="focusedParticipant"
-		fill focusable focused
-		:class="$style.focused"
-		@toggleFocus="focusedIdentity = null"
-	/>
-	<div :class="$style.strip">
-		<XScreen
-			v-for="participant in others"
-			:key="participant.identity"
-			:participant="participant"
-			compact focusable
-			:class="$style.stripItem"
-			@toggleFocus="focusedIdentity = participant.identity"
-		/>
-	</div>
-</div>
-<div v-else :class="[$style.root, $style.grid, $style[layout], fill ? $style.fill : $style.capped]">
+広い画面のステージ (fill) では、押した画面を大きくして、ほかの画面は下の帯に並べる。
+大きくする画面を変えても画面を作り直さない (作り直すと全画面やピクチャーインピクチャーが解け、キーボードのフォーカスも失われる) よう、
+並べ方はクラスだけで切り替える -->
+<div :class="[$style.root, focusedParticipant != null ? $style.focusMode : [$style.grid, $style[layout], fill ? $style.fill : $style.capped]]">
 	<XScreen
 		v-for="participant in participants"
 		:key="participant.identity"
 		:participant="participant"
 		:fill="fill"
 		:focusable="fill && participants.length > 1"
-		@toggleFocus="focusedIdentity = participant.identity"
+		:focused="focusedParticipant?.identity === participant.identity"
+		:compact="focusedParticipant != null && focusedParticipant.identity !== participant.identity"
+		:class="focusedParticipant == null ? null : focusedParticipant.identity === participant.identity ? $style.focused : $style.stripItem"
+		@toggleFocus="toggleFocus(participant.identity)"
 	/>
 </div>
 </template>
@@ -61,18 +47,21 @@ const layout = computed(() => {
 	return 'layoutMany';
 });
 
-// 大きくしている画面はこの並びの中だけのことなので、通話の状態には持たせない。
-// その画面を見るのをやめたら (または残りが 1 つになったら) 並べた形に戻す
+// 大きくしている画面はこの並びの中だけのことなので、通話の状態には持たせない
 const focusedIdentity = ref<string | null>(null);
 const focusedParticipant = computed(() => {
 	if (!props.fill || props.participants.length < 2) return null;
 	return props.participants.find(participant => participant.identity === focusedIdentity.value) ?? null;
 });
-const others = computed(() => props.participants.filter(participant => participant.identity !== focusedIdentity.value));
 
-// 見るのをやめた画面を覚えたままにすると、あとでまた見始めたときに勝手に大きくなるので忘れる
-watch(() => props.participants.some(participant => participant.identity === focusedIdentity.value), present => {
-	if (!present) focusedIdentity.value = null;
+function toggleFocus(identity: string) {
+	focusedIdentity.value = focusedIdentity.value === identity ? null : identity;
+}
+
+// その画面を見るのをやめたとき、または残りが 1 つになったときは忘れる。
+// 覚えたままにすると、あとでまた見始めたときに勝手に大きくなる
+watch(() => props.participants.length >= 2 && props.participants.some(participant => participant.identity === focusedIdentity.value), keep => {
+	if (!keep) focusedIdentity.value = null;
 });
 </script>
 
@@ -121,29 +110,26 @@ watch(() => props.participants.some(participant => participant.identity === focu
 	}
 }
 
+// 大きくした画面を一段目いっぱいに、ほかの画面を二段目に帯として並べる (帯が一段に収まらなければ折り返してスクロールする)
 .focusMode {
+	--voiceCallScreensStripHeight: 96px;
 	display: flex;
-	flex-direction: column;
+	flex-wrap: wrap;
+	align-content: flex-start;
+	justify-content: center;
 	gap: 8px;
+	overflow-y: auto;
 }
 
 .focused {
-	flex: 1 1 0;
-}
-
-.strip {
-	display: flex;
-	flex-shrink: 0;
-	justify-content: center;
-	justify-content: safe center;
-	gap: 8px;
-	height: 96px;
-	overflow-x: auto;
+	order: -1;
+	flex: 0 0 100%;
+	height: calc(100% - var(--voiceCallScreensStripHeight) - 8px);
 }
 
 .stripItem {
-	flex-shrink: 0;
+	flex: 0 0 auto;
 	aspect-ratio: 16 / 9;
-	height: 100%;
+	height: var(--voiceCallScreensStripHeight);
 }
 </style>

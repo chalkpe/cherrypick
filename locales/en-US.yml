@@ -2410,7 +2410,7 @@ _voiceCall:
   pictureInPicture: "Picture-in-picture"
   watchScreenOf: "Watch {name}'s screen"
   screenShareOf: "{name}'s screen"
-  focusScreen: "Focus"
+  focusScreen: "Enlarge"
   _quality:
     sharp: "Sharp (1080p 15fps)"
     smooth: "Smooth (720p 30fps)"
