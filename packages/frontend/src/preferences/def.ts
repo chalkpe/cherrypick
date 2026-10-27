@@ -555,7 +555,11 @@ export const PREF_DEF = definePreferences({
 	'voiceCall.autoGainControl': {
 		default: true,
 	},
+	// 参加者ごとの音量 (identity ごと)。声と共有画面の音声は別々に持つ
 	'voiceCall.participantVolumes': {
+		default: {} as Record<string, number>,
+	},
+	'voiceCall.screenShareVolumes': {
 		default: {} as Record<string, number>,
 	},
 	'voiceCall.screenShareQuality': {

@@ -14,7 +14,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		continuousUpdate
 		@update:modelValue="update"
 	>
-		<template #label><i class="ti ti-volume"></i> {{ i18n.ts._voiceCall.volume }}</template>
+		<template v-if="audio === 'screenShare'" #label><i class="ti ti-screen-share"></i> {{ i18n.ts._voiceCall.screenShareVolume }}</template>
+		<template v-else #label><i class="ti ti-microphone"></i> {{ i18n.ts._voiceCall.voiceVolume }}</template>
 	</MkRange>
 </div>
 </template>
@@ -23,18 +24,19 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { ref } from 'vue';
 import MkRange from '@/components/MkRange.vue';
 import { i18n } from '@/i18n.js';
-import { prefer } from '@/preferences.js';
-import { setParticipantVolume } from '@/utility/voice-call.js';
+import { participantVolume, setParticipantVolume } from '@/utility/voice-call.js';
+import type { ParticipantAudio } from '@/utility/voice-call.js';
 
 const props = defineProps<{
 	identity: string;
+	audio: ParticipantAudio;
 }>();
 
-const volume = ref(Math.min(1, prefer.s['voiceCall.participantVolumes'][props.identity] ?? 1));
+const volume = ref(participantVolume(props.identity, props.audio));
 
 function update(value: number) {
 	volume.value = value;
-	setParticipantVolume(props.identity, value);
+	setParticipantVolume(props.identity, props.audio, value);
 }
 </script>
 

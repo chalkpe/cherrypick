@@ -9459,9 +9459,13 @@ export interface Locale extends ILocale {
             "high": string;
         };
         /**
-         * 音量
+         * 声の音量
          */
-        "volume": string;
+        "voiceVolume": string;
+        /**
+         * 共有画面の音量
+         */
+        "screenShareVolume": string;
         /**
          * 強制ミュート
          */
