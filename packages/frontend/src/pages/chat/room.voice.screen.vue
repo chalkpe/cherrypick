@@ -164,7 +164,8 @@ function stopWatching() {
 
 <style lang="scss" module>
 // 置き場所。広い画面のステージ・下の帯・全画面では与えられた広さ (コンテナ) に、狭い画面のカードでは横幅と高さの上限に、
-// 映像の縦横比の枠 (frame) を収める。操作の列は枠の中で映像のすぐ下に付くので、背の高い置き場所でも映像と操作の列が離れない
+// 映像の縦横比の枠 (frame) を収める。操作の列は枠の中で映像のすぐ下に付くので、背の高い置き場所でも映像と操作の列が離れない。
+// 枠はカードやステージの中の一段下の要素なので、角の丸みは --MI-radius より 4px 小さくする (映像に重ねる名前は枠から 4px 内側で、さらに 4px 小さい)
 .root {
 	--voiceCallScreenBarHeight: 44px;
 	position: relative;
@@ -181,7 +182,7 @@ function stopWatching() {
 	// 横幅いっぱい、ただし映像と操作の列の高さが上限を超えない幅まで
 	width: min(100%, calc((var(--voiceCallScreenMaxHeight, 70vh) - var(--voiceCallScreenBarHeight)) * var(--voiceCallScreenRatio)));
 	overflow: clip;
-	border-radius: var(--MI-radius);
+	border-radius: calc(var(--MI-radius) - 4px);
 	background: var(--MI_THEME-bg);
 }
 
@@ -263,7 +264,7 @@ function stopWatching() {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	border-radius: 4px;
+	border-radius: calc(var(--MI-radius) - 8px);
 	font-size: 0.8em;
 	background: var(--MI_THEME-panel);
 }
@@ -276,7 +277,8 @@ function stopWatching() {
 	box-sizing: border-box;
 	height: var(--voiceCallScreenBarHeight);
 	padding: 6px 8px;
-	background: var(--MI_THEME-panel);
+	// カードの地と同じ色だと枠の下の角が見えず、映像の上だけが丸く見えるので、チップと同じ一段濃い地にして映像とひとまとまりに見せる
+	background: var(--MI_THEME-panelHighlight);
 }
 
 // 狭い画面のカードでは名前を映像に重ねるので、操作の列はボタンだけを右に寄せる

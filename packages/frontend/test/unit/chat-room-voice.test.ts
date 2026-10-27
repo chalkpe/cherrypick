@@ -115,7 +115,8 @@ import XTile from '@/pages/chat/room.voice.tile.vue';
 import XScreens from '@/pages/chat/room.voice.screens.vue';
 
 const stubs = {
-	MkAvatar: { props: ['user'], template: '<span class="avatar"></span>' },
+	// decorations を渡されたかどうかを見られるようにする (渡されなければ MkAvatar はユーザーの装飾をそのまま描く)
+	MkAvatar: { props: ['user', 'decorations'], template: '<span class="avatar" :data-decorations="decorations === undefined ? \'user\' : JSON.stringify(decorations)"></span>' },
 	MkUserName: { props: ['user'], template: '<span>{{ user.name ?? user.username }}</span>' },
 	MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' },
 	MkButton: { emits: ['click'], template: '<button @click="$emit(\'click\', $event)"><slot /></button>' },
@@ -1392,6 +1393,52 @@ describe('participant chip', () => {
 		const chip = container.firstElementChild!;
 		expect(chip.textContent).toContain('Alice');
 		expect([...chip.classList].some(name => name.includes('speaking'))).toBe(speaking);
+	});
+});
+
+describe('participant chip shape', () => {
+	// チップの角の丸みは中のアバターの形に合わせる。MkAvatar と同じ規則でアバターを角丸の四角で描くときだけ、チップに squareAvatar のクラスが付く
+	test.each([
+		[{ squareAvatars: true, setFederationAvatarShape: false }, {}, true],
+		[{ squareAvatars: false, setFederationAvatarShape: false }, {}, false],
+		[{ squareAvatars: true, setFederationAvatarShape: true }, { setFederationAvatarShape: false }, true],
+		[{ squareAvatars: true, setFederationAvatarShape: true }, { setFederationAvatarShape: true, isSquareAvatars: false }, false],
+		[{ squareAvatars: false, setFederationAvatarShape: true }, { setFederationAvatarShape: true, isSquareAvatars: true }, true],
+	])('prefs %o and user %o give a square chip: %s', async (prefs, shape, square) => {
+		prefer.reset({ ...prefer.s, ...prefs });
+		const { container } = render(XParticipant, { props: { participant: participant({ ...alice, ...shape } as typeof alice), speaking: false }, global: { stubs } });
+		await flush();
+
+		expect(hasClass(container.firstElementChild!, 'squareAvatar')).toBe(square);
+	});
+});
+
+describe('avatar decorations in the call', () => {
+	// 装飾はアバターの 2 倍の大きさで描かれるので、小さなチップでははみ出して枠や隣のチップに重なる。チップでは描かない
+	test.each([false, true])('the participant chip draws no decorations (sharing: %s)', async sharing => {
+		const { container } = render(XParticipant, { props: { participant: participant(alice, sharing), speaking: false, watchable: true }, global: { stubs } });
+		await flush();
+
+		const avatars = container.querySelectorAll('.avatar');
+		expect(avatars.length).toBe(1);
+		expect(avatars[0].getAttribute('data-decorations')).toBe('[]');
+	});
+
+	// 広い画面のタイルの大きなアバターには装飾を描く。共有している人のタイルで名前の横に添える小さなアバターには描かない
+	test('the stage tile draws decorations on its large avatar', async () => {
+		const { container } = render(XTile, { props: { participant: participant(alice), speaking: false }, global: { stubs } });
+		await flush();
+
+		expect(container.querySelector('.avatar')!.getAttribute('data-decorations')).toBe('user');
+	});
+
+	test('the stage tile of a sharer draws no decorations on the small avatar beside the name', async () => {
+		const { container } = render(XTile, { props: { participant: participant(alice, true), speaking: false, watchable: true }, global: { stubs } });
+		await flush();
+
+		const avatars = container.querySelectorAll('.avatar');
+		expect(avatars.length).toBe(1);
+		expect(avatars[0].getAttribute('data-decorations')).toBe('[]');
 	});
 });
 

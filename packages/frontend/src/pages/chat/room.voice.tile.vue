@@ -5,7 +5,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <!-- 広い画面のステージに並べる参加者のタイル。画面を共有している人のタイルは、どこを押してもその画面を見る (もう一度押すとやめる)。
-共有している画面は小さなプレビューで見せ、見ているタイルは枠で示す (ボタンの名前とツールチップは変えず、aria-pressed で伝える)。音量などのメニューは別の ⋯ ボタンから開く。
+共有している画面は小さなプレビューで見せ、見ているタイルはプレビューを囲む輪と名前の色で示す (ボタンの名前とツールチップは変えず、aria-pressed で伝える)。
+大きなアバターには装飾を描き、名前の横に添える小さなアバターには描かない (2 倍の大きさで描かれ、名前やプレビューに重なるため)。音量などのメニューは別の ⋯ ボタンから開く。
 タイルは参加者の名前のついたまとまりにして、中のボタンが誰のものか読み上げで分かるようにする -->
 <div
 	:class="[$style.root, { [$style.speaking]: speaking, [$style.watching]: canWatch && watching, [$style.small]: small }]"
@@ -21,7 +22,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	>
 		<XPreview :identity="participant.identity" :class="$style.preview"/>
 		<span :class="$style.who">
-			<MkAvatar :user="participant.user" :class="$style.smallAvatar"/>
+			<MkAvatar :user="participant.user" :decorations="[]" :class="$style.smallAvatar"/>
 			<MkUserName :user="participant.user" :class="$style.name"/>
 		</span>
 	</button>
@@ -77,7 +78,8 @@ const canWatch = computed(() => props.participant.screenSharing && props.watchab
 
 <style lang="scss" module>
 // 話している人はタイル全体を枠で囲む。話していないときも透明な枠を置いて、切り替わりで大きさが変わらないようにする。
-// 見ている共有画面のタイルは、その外側に強調色の輪を重ねる (話している枠と同時に出ても見分けられる)
+// 見ている共有画面は、タイルではなくその画面のプレビューを強調色の輪で囲み、名前も強調色にする (話している枠と線が二重にならない)。
+// 角の丸みは外側が --MI-radius、中身はそこから枠と余白を引いた分にして、同じ中心の角丸に揃える
 .root {
 	position: relative;
 	display: flex;
@@ -93,11 +95,6 @@ const canWatch = computed(() => props.participant.screenSharing && props.watchab
 
 	&.speaking {
 		border-color: var(--MI_THEME-success);
-	}
-
-	&.watching {
-		outline: 3px solid var(--MI_THEME-accent);
-		outline-offset: 2px;
 	}
 
 	&.small {
@@ -136,12 +133,28 @@ const canWatch = computed(() => props.participant.screenSharing && props.watchab
 	}
 }
 
-// タイルの名前の上の残りいっぱいに映す (プレビューの映像ははみ出す分を切って埋める)
+// タイルの名前の上の残りいっぱいに映す (プレビューの映像ははみ出す分を切って埋める)。
+// 丸みはタイルの丸みから枠 (3px) と余白 (6px) を引いた分
 .watch .preview {
 	flex: 1 1 0;
 	width: 100%;
 	min-height: 0;
 	aspect-ratio: auto;
+	border-radius: max(2px, calc(var(--MI-radius) - 9px));
+}
+
+// 輪は映像の内側に、映像の上へ重ねて描く (外に出すとタイルの枠に重なり、outline では上に置いた映像に隠れる)
+.watching .preview::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	border: 3px solid var(--MI_THEME-accent);
+	border-radius: inherit;
+	pointer-events: none;
+}
+
+.watching .name {
+	color: var(--MI_THEME-accent);
 }
 
 .who {
