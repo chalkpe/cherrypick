@@ -182,10 +182,11 @@ export function canShareScreen(): boolean {
 }
 
 export async function startScreenShare(): Promise<void> {
-	if (current == null || livekit == null) return;
+	const room = current;
+	if (room == null || livekit == null) return;
 	const { preset, contentHint } = screenSharePreset(livekit, prefer.s['voiceCall.screenShareQuality']);
 	try {
-		await current.localParticipant.setScreenShareEnabled(true, {
+		await room.localParticipant.setScreenShareEnabled(true, {
 			audio: prefer.s['voiceCall.screenShareAudio'],
 			resolution: preset.resolution,
 			contentHint,
@@ -197,9 +198,10 @@ export async function startScreenShare(): Promise<void> {
 				livekit.ScreenSharePresets.h720fps15,
 			],
 		});
-		state.screenSharing = true;
+		// 待っているあいだに通話を離れていれば何もしない。共有が終わっていれば (ブラウザの「共有を停止」など) 共有中にはしない
+		if (current === room) state.screenSharing = room.localParticipant.isScreenShareEnabled;
 	} catch (err) {
-		state.screenSharing = false;
+		if (current === room) state.screenSharing = false;
 		// 共有する画面の選択をキャンセルしただけなら何も言わない
 		if (err instanceof DOMException && err.name === 'NotAllowedError') return;
 		os.toast(i18n.ts._voiceCall.screenShareFailed);

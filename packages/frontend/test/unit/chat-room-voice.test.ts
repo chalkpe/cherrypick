@@ -783,9 +783,10 @@ describe('voice call on the room page', () => {
 			expect(participantGroup(bob).querySelector('video')).toBeNull();
 		});
 
-		test('shows a live preview of my own share on my tile, which toggles watching it like anyone else\'s', async () => {
+		// 参加者の一覧はサーバーを経て届くので、共有を始めても少し遅れて変わる (他のサーバーのルームでは 10 秒以上)。それを待たずに映す
+		test.each([true, false])('shows a live preview of my own share on my tile, which toggles watching it like anyone else\'s (listed as sharing yet: %s)', async listed => {
 			Object.assign(callState, { status: 'connected', room, micEnabled: true, screenSharing: true });
-			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me, true), participant(alice, true)] }]);
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me, listed), participant(alice, true)] }]);
 			await setPageWidth(1280);
 
 			const preview = participantGroup(me).querySelector('video');
@@ -1407,9 +1408,10 @@ describe('screen share in the room panel', () => {
 	});
 
 	// 共有している本人も、送っている画面を確かめられるようにする (違う窓を映していても気付ける)
-	test('shows a live preview of my own share on my chip, which toggles watching it like anyone else\'s', async () => {
+	// 参加者の一覧はサーバーを経て届くので、共有を始めても少し遅れて変わる (他のサーバーのルームでは 10 秒以上)。それを待たずに映す
+	test.each([true, false])('shows a live preview of my own share on my chip, which toggles watching it like anyone else\'s (listed as sharing yet: %s)', async listed => {
 		Object.assign(callState, { status: 'connected', room, screenSharing: true });
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me, true), participant(alice, true)] }]);
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me, listed), participant(alice, true)] }]);
 		renderCard();
 		await flush();
 
@@ -1444,7 +1446,34 @@ describe('screen share in the room panel', () => {
 		expect(detach).toHaveBeenCalledTimes(1);
 		expect(participantGroup(me).querySelector('video')).toBeNull();
 		expect(within(participantGroup(me)).queryByRole('button', { name: i18n.tsx._voiceCall.watchScreenOf({ name: me.name }) })).toBeNull();
-		expect(within(participantGroup(me)).getByLabelText(i18n.ts._voiceCall.sharingScreen)).toBeTruthy();
+		// 共有のアイコンも、自分の共有ボタンと同じく手元の状態に合わせて消す
+		expect(within(participantGroup(me)).queryByLabelText(i18n.ts._voiceCall.sharingScreen)).toBeNull();
+	});
+
+	// 一覧に自分がまだいない (参加した直後) あいだは、自分のチップを作って足しはしない
+	test('does not make up a chip for me before the list has me', async () => {
+		Object.assign(callState, { status: 'connected', room, screenSharing: true });
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true)] }]);
+		renderCard();
+		await flush();
+
+		expect(screen.queryByRole('group', { name: me.name })).toBeNull();
+		expect(mocks.attachScreenShare).not.toHaveBeenCalledWith(identityOf(me), expect.anything(), expect.anything());
+
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [participant(me, false), participant(alice, true)] });
+		await flush();
+		expect(participantGroup(me).querySelector('video')).not.toBeNull();
+	});
+
+	// 手元の状態は通話中のルームのもの。ほかのルームの一覧には、届いたとおりに出す
+	test('shows my share as listed in a room whose call I am not in', async () => {
+		Object.assign(callState, { status: 'connected', room: { ...room, id: 'other-room' }, screenSharing: true });
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me, false)] }]);
+		renderCard();
+		await flush();
+
+		expect(participantGroup(me).querySelector('video')).toBeNull();
+		expect(within(participantGroup(me)).queryByLabelText(i18n.ts._voiceCall.sharingScreen)).toBeNull();
 	});
 
 	test('does not offer to watch before joining the call', async () => {

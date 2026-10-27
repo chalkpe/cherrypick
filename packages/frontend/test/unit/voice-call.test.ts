@@ -81,8 +81,12 @@ const lk = vi.hoisted(() => {
 		canPlaybackAudio = true;
 		localParticipant = {
 			identity: 'https://local.test/users/me',
+			// 本物と同じく、画面共有の映像を送っているあいだ true になる
+			isScreenShareEnabled: false,
 			setMicrophoneEnabled: vi.fn().mockResolvedValue(undefined),
-			setScreenShareEnabled: vi.fn().mockResolvedValue(undefined),
+			setScreenShareEnabled: vi.fn(async (enabled: boolean, ..._options: unknown[]) => {
+				this.localParticipant.isScreenShareEnabled = enabled;
+			}),
 		};
 		connect = vi.fn().mockResolvedValue(undefined);
 		disconnect = vi.fn(async () => {
@@ -723,22 +727,42 @@ describe('screen sharing', () => {
 	});
 });
 
-// 本物の LocalParticipant と同じく、画面共有を始めると映像と音声のトラックを LocalTrackPublished で、やめると LocalTrackUnpublished で知らせる
-function localScreenShare() {
+// 本物の LocalParticipant と同じく、画面共有を始めると映像と音声のトラックを LocalTrackPublished で、やめると LocalTrackUnpublished で知らせる。
+// 映像を送り始めてから音声を送り始めるまでのあいだに起きることは whilePublishing で差し込む
+function localScreenShare(options: { whilePublishing?: () => unknown } = {}) {
 	const tracks = {
 		video: { kind: lk.Track.Kind.Video, source: lk.Track.Source.ScreenShare, attach: vi.fn(), detach: vi.fn(() => []) },
 		audio: { kind: lk.Track.Kind.Audio, source: lk.Track.Source.ScreenShareAudio, attach: vi.fn(() => document.createElement('audio')), detach: vi.fn(() => []) },
 	};
-	const publications = {
+	type Publication = { source: string; kind: string; trackSid: string; track: typeof tracks.video | typeof tracks.audio };
+	const publications: Record<'video' | 'audio', Publication> = {
 		video: { source: tracks.video.source, kind: tracks.video.kind, trackSid: 'TR_my_screen', track: tracks.video },
 		audio: { source: tracks.audio.source, kind: tracks.audio.kind, trackSid: 'TR_my_screen_audio', track: tracks.audio },
 	};
+
+	// isScreenShareEnabled も本物と同じく、映像の公開が残っているあいだ true にする
+	function publish(publication: Publication) {
+		const room = lastRoom();
+		if (publication === publications.video) room.localParticipant.isScreenShareEnabled = true;
+		room.emit(lk.RoomEvent.LocalTrackPublished, publication, room.localParticipant);
+	}
+
+	function unpublish(publication: Publication) {
+		const room = lastRoom();
+		if (publication === publications.video) room.localParticipant.isScreenShareEnabled = false;
+		room.emit(lk.RoomEvent.LocalTrackUnpublished, publication, room.localParticipant);
+	}
+
 	lk.FakeRoom.setup = room => room.localParticipant.setScreenShareEnabled.mockImplementation(async (enabled: boolean) => {
-		for (const publication of Object.values(publications)) {
-			room.emit(enabled ? lk.RoomEvent.LocalTrackPublished : lk.RoomEvent.LocalTrackUnpublished, publication, room.localParticipant);
+		if (!enabled) {
+			for (const publication of Object.values(publications)) unpublish(publication);
+			return;
 		}
+		publish(publications.video);
+		await options.whilePublishing?.();
+		publish(publications.audio);
 	});
-	return { tracks, publications };
+	return { tracks, publications, publish, unpublish };
 }
 
 describe('my own screen share', () => {
@@ -792,16 +816,17 @@ describe('my own screen share', () => {
 		expect(document.body.querySelectorAll('audio').length).toBe(audioElements);
 	});
 
-	test.each<[string, (publications: ReturnType<typeof localScreenShare>['publications']) => unknown]>([
+	test.each<[string, (share: ReturnType<typeof localScreenShare>) => unknown]>([
 		['the stop button', async () => {
 			await stopScreenShare();
 		}],
 		// ブラウザの「共有を停止」やトラックが終わったときは、映像のトラックだけが外れることもある
-		['the browser ending the share', publications => {
-			lastRoom().emit(lk.RoomEvent.LocalTrackUnpublished, publications.video, lastRoom().localParticipant);
+		['the browser ending the share', ({ publications, unpublish }) => {
+			unpublish(publications.video);
 		}],
 	])('stopping my share by %s takes it out of every preview and viewer and stops watching it', async (_label, stop) => {
-		const { tracks, publications } = localScreenShare();
+		const share = localScreenShare();
+		const { tracks } = share;
 		await joinVoiceCall(room1);
 		sharing('someone');
 		watchScreenShare('someone');
@@ -810,7 +835,7 @@ describe('my own screen share', () => {
 		watchScreenShare(me);
 		const viewer = showMine('viewer');
 
-		await stop(publications);
+		await stop(share);
 
 		expect(tracks.video.detach).toHaveBeenCalledWith(preview);
 		expect(tracks.video.detach).toHaveBeenCalledWith(viewer);
@@ -843,17 +868,47 @@ describe('my own screen share', () => {
 
 	// 接続をやり直すとき、LiveKit は共有中のトラックをいったん外して送り直す
 	test('keeps showing my share when LiveKit publishes it again after reconnecting', async () => {
-		const { tracks, publications } = localScreenShare();
+		const { tracks, publications, publish, unpublish } = localScreenShare();
 		await joinVoiceCall(room1);
 		await startScreenShare();
 		const preview = showMine('preview', { preview: true });
 		tracks.video.attach.mockClear();
 
-		lastRoom().emit(lk.RoomEvent.LocalTrackUnpublished, publications.video, lastRoom().localParticipant);
-		lastRoom().emit(lk.RoomEvent.LocalTrackPublished, publications.video, lastRoom().localParticipant);
+		unpublish(publications.video);
+		publish(publications.video);
 
 		expect(tracks.video.attach).toHaveBeenCalledWith(preview);
 		expect(voiceCall.screenSharing).toBe(true);
+	});
+
+	// 映像を送り始めてから共有の準備が終わるまでのあいだに共有が終わっても、終わったあとで共有中に戻さない
+	test('does not go back to sharing when the share ends while it is still being set up', async () => {
+		// ブラウザの「共有を停止」は、音声を送り始める前の映像も止める
+		const share = localScreenShare({
+			whilePublishing: () => {
+				share.unpublish(share.publications.video);
+			},
+		});
+		await joinVoiceCall(room1);
+		const preview = showMine('preview', { preview: true });
+
+		await startScreenShare();
+
+		expect(voiceCall.screenSharing).toBe(false);
+		expect(share.tracks.video.detach).toHaveBeenCalledWith(preview);
+	});
+
+	test('does not mark a call left while the share was being set up as sharing', async () => {
+		localScreenShare({
+			whilePublishing: async () => {
+				await leaveVoiceCall();
+			},
+		});
+		await joinVoiceCall(room1);
+
+		await startScreenShare();
+
+		expect(voiceCall).toMatchObject({ status: 'idle', screenSharing: false });
 	});
 });
 

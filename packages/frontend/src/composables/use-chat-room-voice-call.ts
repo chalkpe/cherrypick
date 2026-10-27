@@ -39,9 +39,16 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		return available.value && target != null ? [target.id] : [];
 	});
 	const states = useChatRoomVoiceStates(roomIds);
+	// 参加者の一覧はサーバーを経て届くので、画面共有を始めたりやめたりしても少し遅れて変わる (他のサーバーのルームでは 10 秒以上)。
+	// この通話に入っているあいだは、自分の項目の画面共有だけを手元の状態に合わせ、何を共有しているかをすぐ確かめられるようにする
+	// (始めればすぐプレビューを出し、やめればすぐ消す)。一覧にまだ自分がいなければ自分の項目は作らず、届いたときに合わせる
 	const participants = computed(() => {
 		const target = toValue(room);
-		return target == null ? [] : states.value.get(target.id)?.participants ?? [];
+		const listed = target == null ? [] : states.value.get(target.id)?.participants ?? [];
+		if (!inThisCall.value) return listed;
+		return listed.map(participant => participant.identity === myIdentity && participant.screenSharing !== voiceCall.screenSharing
+			? { ...participant, screenSharing: voiceCall.screenSharing }
+			: participant);
 	});
 
 	// 見ている共有画面の持ち主 (見始めた順)。共有画面を受け取れるのはこのルームの通話に入っているときだけ
@@ -51,13 +58,6 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 			.map(identity => participants.value.find(participant => participant.identity === identity))
 			.filter((participant): participant is Participant => participant != null);
 	});
-
-	// 押すと共有画面を見られるチップやタイルにするか。共有画面を受け取れるのはこのルームの通話に入っているときだけ。
-	// 自分の共有画面も、何を送っているか確かめられるよう、ほかの人のものと同じく見られるようにする。
-	// 自分が共有しているかは手元の状態で決める (参加者の一覧はサーバーを経て届くので、共有をやめても少し遅れて変わる)
-	function isWatchable(participant: Participant): boolean {
-		return inThisCall.value && (participant.identity !== myIdentity || voiceCall.screenSharing);
-	}
 
 	// 誰も通話にいないときはカードを出さず、ページヘッダーの参加ボタンだけにする。
 	// 自分が参加した直後は参加者の一覧がまだ届いていないことがあるので、参加中なら一覧を待たずに出す
@@ -127,7 +127,7 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		os.popupMenu(items, ev.currentTarget ?? ev.target);
 	}
 
-	return { available, inThisCall, participants, watchedParticipants, isWatchable, showCard, join, myIdentity, isOwner, openParticipantMenu };
+	return { available, inThisCall, participants, watchedParticipants, showCard, join, myIdentity, isOwner, openParticipantMenu };
 }
 
 export type ChatRoomVoiceCall = ReturnType<typeof useChatRoomVoiceCall>;
