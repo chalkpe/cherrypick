@@ -22,18 +22,18 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<i v-else class="ti ti-layout-sidebar-right"></i>
 		</button>
 	</div>
-	<XScreen v-if="watchedParticipant != null" :key="watchedParticipant.identity" :participant="watchedParticipant" fill :class="$style.screen"/>
-	<div :class="[$style.tiles, { [$style.strip]: watchedParticipant != null }]">
+	<XScreens v-if="watchedParticipants.length > 0" :participants="watchedParticipants" fill :class="$style.screens"/>
+	<div :class="[$style.tiles, { [$style.strip]: watchedParticipants.length > 0 }]">
 		<XTile
 			v-for="participant in participants"
 			:key="participant.identity"
 			:participant="participant"
 			:speaking="inThisCall && voiceCall.speakingIdentities.includes(participant.identity)"
 			:watchable="inThisCall && participant.identity !== myIdentity"
-			:watching="voiceCall.watchingIdentity === participant.identity"
+			:watching="voiceCall.watchingIdentities.includes(participant.identity)"
 			:menuable="participant.identity !== myIdentity && (inThisCall || isOwner)"
-			:small="watchedParticipant != null"
-			@toggleWatch="watchScreenShare(voiceCall.watchingIdentity === participant.identity ? null : participant.identity)"
+			:small="watchedParticipants.length > 0"
+			@toggleWatch="toggleScreenShareWatch(participant.identity)"
 			@openMenu="openParticipantMenu(participant, $event)"
 		/>
 	</div>
@@ -44,15 +44,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import XTile from './room.voice.tile.vue';
-import XScreen from './room.voice.screen.vue';
+import XScreens from './room.voice.screens.vue';
 import XControls from './room.voice.controls.vue';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
 import type { ChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
-import { voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import { toggleScreenShareWatch, voiceCall } from '@/utility/voice-call.js';
 import { voiceCallStatusText } from '@/utility/voice-call-status.js';
 
 const props = defineProps<{
@@ -67,8 +66,7 @@ const emit = defineEmits<{
 }>();
 
 // 参加の流れと参加者のメニューは通話カードやページヘッダーと共有するので、ページ側で作ったものを使う
-const { inThisCall, participants, join, myIdentity, isOwner, openParticipantMenu } = props.call;
-const watchedParticipant = computed(() => inThisCall.value ? participants.value.find(participant => participant.identity === voiceCall.watchingIdentity) ?? null : null);
+const { inThisCall, participants, watchedParticipants, join, myIdentity, isOwner, openParticipantMenu } = props.call;
 </script>
 
 <style lang="scss" module>
@@ -114,8 +112,8 @@ const watchedParticipant = computed(() => inThisCall.value ? participants.value.
 	}
 }
 
-// 見ている共有画面は、タイルの列を除いた高さいっぱいに出す
-.screen {
+// 見ている共有画面は、タイルの列を除いた高さいっぱいに並べる
+.screens {
 	flex: 1;
 	min-height: 0;
 }
@@ -124,6 +122,8 @@ const watchedParticipant = computed(() => inThisCall.value ? participants.value.
 	display: flex;
 	flex: 1;
 	flex-wrap: wrap;
+	// 見ているタイルの外側の輪がスクロールの端で切れないよう、少し余白を取る
+	padding: 6px;
 	// 参加者が多くて溢れたときは上から並べて、上のタイルがスクロールで見えなくならないようにする
 	align-content: center;
 	align-content: safe center;

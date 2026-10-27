@@ -25,7 +25,8 @@ const state = reactive({
 	speakingIdentities: [] as string[],
 	screenSharing: false,
 	screenShareIdentities: [] as string[],
-	watchingIdentity: null as string | null,
+	// 見ている共有画面 (見始めた順)。いくつでも同時に見られる
+	watchingIdentities: [] as string[],
 });
 
 /** 現在の通話の状態。書き換えは下の関数経由で行う */
@@ -35,9 +36,15 @@ let livekit: LiveKit | null = null;
 let current: Room | null = null;
 let joinAttempt = 0;
 
-// 画面共有の映像トラックと、それを映す video 要素 (どちらも identity ごと)
+// 画面共有の映像トラックと、それを映す video 要素 (どちらも identity ごと)。
+// 一つの共有画面を、参加者のチップやタイルの小さなプレビューと、見ている画面の両方に同時に映すことがある
+type ScreenShareView = { element: HTMLVideoElement; preview: boolean };
 const screenShareTracks = new Map<string, RemoteTrack>();
-const screenShareElements = new Map<string, HTMLVideoElement>();
+const screenShareViews = new Map<string, Set<ScreenShareView>>();
+
+// 小さなプレビュー用に、共有画面とは別に送る低い層 (320×180、数 fps)。
+// 誰もプレビューを出していないあいだは、dynacast が送るのを止める
+const SCREEN_SHARE_PREVIEW_LAYER = { width: 320, height: 180, maxBitrate: 100_000, maxFramerate: 5 };
 
 async function loadLiveKit(): Promise<LiveKit> {
 	// 通話しない人にライブラリを読ませないよう、参加時に読み込む
@@ -178,7 +185,11 @@ export async function startScreenShare(): Promise<void> {
 			contentHint,
 		}, {
 			screenShareEncoding: preset.encoding,
-			screenShareSimulcastLayers: [livekit.ScreenSharePresets.h720fps15],
+			// 層は低いものから並べる。一番低い層はプレビュー用
+			screenShareSimulcastLayers: [
+				new livekit.VideoPreset(SCREEN_SHARE_PREVIEW_LAYER.width, SCREEN_SHARE_PREVIEW_LAYER.height, SCREEN_SHARE_PREVIEW_LAYER.maxBitrate, SCREEN_SHARE_PREVIEW_LAYER.maxFramerate),
+				livekit.ScreenSharePresets.h720fps15,
+			],
 		});
 		state.screenSharing = true;
 	} catch (err) {
@@ -195,24 +206,46 @@ export async function stopScreenShare(): Promise<void> {
 	state.screenSharing = false;
 }
 
-export function watchScreenShare(identity: string | null): void {
-	const previous = state.watchingIdentity;
-	state.watchingIdentity = identity;
-	if (current == null) return;
-	if (previous != null && previous !== identity) {
-		screenSharePublicationOf(current, previous)?.setSubscribed(false);
-	}
-	if (identity != null) {
-		screenSharePublicationOf(current, identity)?.setSubscribed(true);
+export function watchScreenShare(identity: string): void {
+	if (state.watchingIdentities.includes(identity)) return;
+	state.watchingIdentities = [...state.watchingIdentities, identity];
+	syncScreenShareSubscription(identity);
+}
+
+export function unwatchScreenShare(identity: string): void {
+	if (!state.watchingIdentities.includes(identity)) return;
+	state.watchingIdentities = state.watchingIdentities.filter(x => x !== identity);
+	syncScreenShareSubscription(identity);
+}
+
+export function toggleScreenShareWatch(identity: string): void {
+	if (state.watchingIdentities.includes(identity)) {
+		unwatchScreenShare(identity);
+	} else {
+		watchScreenShare(identity);
 	}
 }
 
-export function attachScreenShare(identity: string, element: HTMLVideoElement): () => void {
-	screenShareElements.set(identity, element);
+/**
+ * 共有画面を video 要素に映す。返り値の関数で外す。
+ * preview を付けた要素 (チップやタイルの小さなプレビュー) があるあいだは、見ていない共有画面も低い層だけ受け取る
+ */
+export function attachScreenShare(identity: string, element: HTMLVideoElement, options: { preview?: boolean } = {}): () => void {
+	const view: ScreenShareView = { element, preview: options.preview === true };
+	let views = screenShareViews.get(identity);
+	if (views == null) {
+		views = new Set();
+		screenShareViews.set(identity, views);
+	}
+	views.add(view);
 	screenShareTracks.get(identity)?.attach(element);
+	if (view.preview) syncScreenShareSubscription(identity);
 	return () => {
-		if (screenShareElements.get(identity) === element) screenShareElements.delete(identity);
+		const registered = screenShareViews.get(identity);
+		if (registered == null || !registered.delete(view)) return;
+		if (registered.size === 0) screenShareViews.delete(identity);
 		screenShareTracks.get(identity)?.detach(element);
+		if (view.preview) syncScreenShareSubscription(identity);
 	};
 }
 
@@ -233,10 +266,33 @@ function screenSharePublicationOf(room: Room, identity: string): RemoteTrackPubl
 	return undefined;
 }
 
+function isScreenSharePreviewed(identity: string): boolean {
+	for (const view of screenShareViews.get(identity) ?? []) {
+		if (view.preview) return true;
+	}
+	return false;
+}
+
+// 見ている共有画面は高い画質で、プレビューだけを出している共有画面は低い層だけを受け取り、どちらでもなければ受け取らない。
+// adaptiveStream も効いているので、映している要素が小さければ、ここで決めた上限よりさらに低い層になる
+function syncScreenShareSubscription(identity: string): void {
+	if (current == null || livekit == null) return;
+	const publication = screenSharePublicationOf(current, identity);
+	if (publication == null) return;
+	const watched = state.watchingIdentities.includes(identity);
+	if (!watched && !isScreenSharePreviewed(identity)) {
+		if (publication.isDesired) publication.setSubscribed(false);
+		return;
+	}
+	// 画質の指定は受け取る希望を出してからでないと無視される
+	if (!publication.isDesired) publication.setSubscribed(true);
+	publication.setVideoQuality(watched ? livekit.VideoQuality.HIGH : livekit.VideoQuality.LOW);
+}
+
 function forgetScreenShare(identity: string): void {
 	state.screenShareIdentities = state.screenShareIdentities.filter(x => x !== identity);
 	screenShareTracks.delete(identity);
-	if (state.watchingIdentity === identity) state.watchingIdentity = null;
+	state.watchingIdentities = state.watchingIdentities.filter(x => x !== identity);
 }
 
 function captureOptions(): AudioCaptureOptions {
@@ -287,7 +343,7 @@ function applySubscription(lk: LiveKit, publication: TrackPublication, participa
 			if (!state.screenShareIdentities.includes(participant.identity)) {
 				state.screenShareIdentities = [...state.screenShareIdentities, participant.identity];
 			}
-			remote.setSubscribed(participant.identity === state.watchingIdentity);
+			syncScreenShareSubscription(participant.identity);
 			break;
 		default:
 			remote.setSubscribed(false);
@@ -309,8 +365,7 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 			applyVolume(participant);
 		} else if (publication.source === Track.Source.ScreenShare) {
 			screenShareTracks.set(participant.identity, track);
-			const element = screenShareElements.get(participant.identity);
-			if (element != null) track.attach(element);
+			for (const view of screenShareViews.get(participant.identity) ?? []) track.attach(view.element);
 		}
 	});
 
@@ -318,8 +373,7 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 		if (track.kind === Track.Kind.Audio) {
 			for (const element of track.detach()) element.remove();
 		} else if (publication.source === Track.Source.ScreenShare) {
-			const element = screenShareElements.get(participant.identity);
-			if (element != null) track.detach(element);
+			for (const view of screenShareViews.get(participant.identity) ?? []) track.detach(view.element);
 			screenShareTracks.delete(participant.identity);
 		}
 	});
@@ -388,7 +442,11 @@ function detachAll(room: Room): void {
 		for (const publication of participant.trackPublications.values()) {
 			const track = publication.track;
 			if (track == null) continue;
-			for (const element of track.detach()) element.remove();
+			const elements = track.detach();
+			// 音声の要素はここで作ったものなので消す。映像の要素は画面の部品のものなので、外すのは部品に任せる
+			if (track.kind === livekit?.Track.Kind.Audio) {
+				for (const element of elements) element.remove();
+			}
 		}
 	}
 }
@@ -410,5 +468,5 @@ function resetState(): void {
 	state.speakingIdentities = [];
 	state.screenSharing = false;
 	state.screenShareIdentities = [];
-	state.watchingIdentity = null;
+	state.watchingIdentities = [];
 }

@@ -2443,6 +2443,9 @@ _voiceCall:
   screenShareFailed: "画面共有を開始できませんでした。"
   fullscreen: "全画面"
   pictureInPicture: "ピクチャーインピクチャー"
+  watchScreenOf: "{name}さんの共有画面を見る"
+  screenShareOf: "{name}さんの共有画面"
+  focusScreen: "大きく表示"
   _quality:
     sharp: "くっきり (1080p 15fps)"
     smooth: "なめらか (720p 30fps)"

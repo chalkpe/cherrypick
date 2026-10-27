@@ -2413,6 +2413,9 @@ _voiceCall:
   screenShareFailed: "화면 공유를 시작하지 못했어요."
   fullscreen: "전체 화면"
   pictureInPicture: "화면 속 화면"
+  watchScreenOf: "{name}님의 공유 화면 보기"
+  screenShareOf: "{name}님의 공유 화면"
+  focusScreen: "크게 보기"
   _quality:
     sharp: "선명하게 (1080p 15fps)"
     smooth: "부드럽게 (720p 30fps)"

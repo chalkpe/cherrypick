@@ -2408,6 +2408,9 @@ _voiceCall:
   screenShareFailed: "Could not start screen sharing."
   fullscreen: "Fullscreen"
   pictureInPicture: "Picture-in-picture"
+  watchScreenOf: "Watch {name}'s screen"
+  screenShareOf: "{name}'s screen"
+  focusScreen: "Focus"
   _quality:
     sharp: "Sharp (1080p 15fps)"
     smooth: "Smooth (720p 30fps)"

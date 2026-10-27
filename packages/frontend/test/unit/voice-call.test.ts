@@ -46,12 +46,24 @@ const lk = vi.hoisted(() => {
 		Source: { Camera: 'camera', Microphone: 'microphone', ScreenShare: 'screen_share', ScreenShareAudio: 'screen_share_audio', Unknown: 'unknown' },
 		Kind: { Audio: 'audio', Video: 'video', Unknown: 'unknown' },
 	};
-	const preset = (width: number, height: number, fps: number) => ({ resolution: { width, height, frameRate: fps }, encoding: { maxBitrate: width * fps, maxFramerate: fps } });
+	const preset = (width: number, height: number, maxBitrate: number, fps: number) => ({ width, height, resolution: { width, height, frameRate: fps }, encoding: { maxBitrate, maxFramerate: fps } });
+	class VideoPreset {
+		width: number;
+		height: number;
+		encoding: { maxBitrate: number; maxFramerate?: number };
+		constructor(width: number, height: number, maxBitrate: number, maxFramerate?: number) {
+			this.width = width;
+			this.height = height;
+			this.encoding = { maxBitrate, maxFramerate };
+		}
+	}
+	const VideoQuality = { LOW: 0, MEDIUM: 1, HIGH: 2 };
 	const ScreenSharePresets = {
-		h720fps15: preset(1280, 720, 15),
-		h720fps30: preset(1280, 720, 30),
-		h1080fps15: preset(1920, 1080, 15),
-		h1080fps30: preset(1920, 1080, 30),
+		// 値は本物の ScreenSharePresets と同じ
+		h720fps15: preset(1280, 720, 1_500_000, 15),
+		h720fps30: preset(1280, 720, 2_000_000, 30),
+		h1080fps15: preset(1920, 1080, 2_500_000, 15),
+		h1080fps30: preset(1920, 1080, 5_000_000, 30),
 	};
 
 	class FakeRemoteParticipant extends Emitter {
@@ -88,7 +100,7 @@ const lk = vi.hoisted(() => {
 		}
 	}
 
-	return { Emitter, RoomEvent, DisconnectReason, Track, ScreenSharePresets, FakeRoom, FakeRemoteParticipant };
+	return { Emitter, RoomEvent, DisconnectReason, Track, ScreenSharePresets, VideoPreset, VideoQuality, FakeRoom, FakeRemoteParticipant };
 });
 
 vi.mock('livekit-client', () => ({
@@ -97,6 +109,8 @@ vi.mock('livekit-client', () => ({
 	DisconnectReason: lk.DisconnectReason,
 	Track: lk.Track,
 	ScreenSharePresets: lk.ScreenSharePresets,
+	VideoPreset: lk.VideoPreset,
+	VideoQuality: lk.VideoQuality,
 }));
 
 const mocks = vi.hoisted(() => ({
@@ -110,7 +124,7 @@ vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.
 
 import { i18n } from '@/i18n.js';
 import { prefer as mockedPrefer } from '@/preferences.js';
-import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, setParticipantVolume, startScreenShare, stopScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, setParticipantVolume, startScreenShare, stopScreenShare, toggleScreenShareWatch, unwatchScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
 
 const prefer = mockedPrefer as unknown as FakePrefer;
 const room1 = { id: 'r1', name: 'room 1' } as any;
@@ -379,11 +393,31 @@ describe('active audio device', () => {
 	});
 });
 
+// 本物の RemoteTrackPublication と同じく、受け取るかどうかの希望 (isDesired) を覚える。autoSubscribe: false なので最初は受け取らない
 function screenSharePublication(participant: InstanceType<typeof lk.FakeRemoteParticipant>) {
-	const publication = { source: lk.Track.Source.ScreenShare, kind: lk.Track.Kind.Video, trackSid: `TR_${participant.identity}`, setSubscribed: vi.fn(), track: null as unknown };
+	const publication = {
+		source: lk.Track.Source.ScreenShare,
+		kind: lk.Track.Kind.Video,
+		trackSid: `TR_${participant.identity}`,
+		track: null as unknown,
+		isDesired: false,
+		setSubscribed: vi.fn((subscribed: boolean) => {
+			publication.isDesired = subscribed;
+		}),
+		setVideoQuality: vi.fn(),
+	};
 	participant.trackPublications.set(publication.trackSid, publication);
 	return publication;
 }
+
+function sharing(identity: string) {
+	const participant = remoteParticipant(identity);
+	const publication = screenSharePublication(participant);
+	lastRoom().emit(lk.RoomEvent.TrackPublished, publication, participant);
+	return { participant, publication };
+}
+
+const screenShareTrack = () => ({ kind: lk.Track.Kind.Video, source: lk.Track.Source.ScreenShare, attach: vi.fn(), detach: vi.fn(() => []) });
 
 describe('screen sharing', () => {
 	test('shares the screen with the preferred quality', async () => {
@@ -449,57 +483,198 @@ describe('screen sharing', () => {
 		expect(voiceCall.screenSharing).toBe(false);
 	});
 
-	test('subscribes only to the screen share being watched', async () => {
+	test('publishes a small, slow layer for previews below the shared quality', async () => {
 		await joinVoiceCall(room1);
-		const a = remoteParticipant('a');
-		const b = remoteParticipant('b');
-		const aShare = screenSharePublication(a);
-		const bShare = screenSharePublication(b);
-		lastRoom().emit(lk.RoomEvent.TrackPublished, aShare, a);
-		lastRoom().emit(lk.RoomEvent.TrackPublished, bShare, b);
 
-		expect(aShare.setSubscribed).not.toHaveBeenCalledWith(true);
-		expect(bShare.setSubscribed).not.toHaveBeenCalledWith(true);
-		expect(voiceCall.screenShareIdentities).toEqual(['a', 'b']);
+		await startScreenShare();
 
-		watchScreenShare('a');
-		expect(aShare.setSubscribed).toHaveBeenLastCalledWith(true);
-		expect(bShare.setSubscribed).not.toHaveBeenCalledWith(true);
-		expect(voiceCall.watchingIdentity).toBe('a');
-
-		watchScreenShare(null);
-		expect(aShare.setSubscribed).toHaveBeenLastCalledWith(false);
-		expect(voiceCall.watchingIdentity).toBeNull();
+		const publishOptions = lastRoom().localParticipant.setScreenShareEnabled.mock.calls[0][2] as { screenShareSimulcastLayers: InstanceType<typeof lk.VideoPreset>[] };
+		const [preview, ...rest] = publishOptions.screenShareSimulcastLayers;
+		expect(preview).toMatchObject({ width: 320, height: 180 });
+		expect(preview.encoding.maxFramerate).toBeLessThanOrEqual(5);
+		// 層は低いものから並べる
+		for (const layer of rest) expect(layer.encoding.maxBitrate).toBeGreaterThan(preview.encoding.maxBitrate);
 	});
 
-	test('stops watching when the sharer stops', async () => {
+	test('subscribes to nothing until a share is watched', async () => {
 		await joinVoiceCall(room1);
-		const a = remoteParticipant('a');
-		const aShare = screenSharePublication(a);
-		lastRoom().emit(lk.RoomEvent.TrackPublished, aShare, a);
+		const a = sharing('a');
+		const b = sharing('b');
+
+		expect(a.publication.setSubscribed).not.toHaveBeenCalledWith(true);
+		expect(b.publication.setSubscribed).not.toHaveBeenCalledWith(true);
+		expect(voiceCall.screenShareIdentities).toEqual(['a', 'b']);
+		expect(voiceCall.watchingIdentities).toEqual([]);
+	});
+
+	test('watches several screen shares at once, each at high quality', async () => {
+		await joinVoiceCall(room1);
+		const a = sharing('a');
+		const b = sharing('b');
+
+		watchScreenShare('a');
+		watchScreenShare('b');
+
+		expect(voiceCall.watchingIdentities).toEqual(['a', 'b']);
+		for (const { publication } of [a, b]) {
+			expect(publication.setSubscribed).toHaveBeenLastCalledWith(true);
+			expect(publication.setVideoQuality).toHaveBeenLastCalledWith(lk.VideoQuality.HIGH);
+		}
+	});
+
+	test('stops watching only the share that is un-watched', async () => {
+		await joinVoiceCall(room1);
+		const a = sharing('a');
+		const b = sharing('b');
+		watchScreenShare('a');
+		watchScreenShare('b');
+
+		unwatchScreenShare('a');
+
+		expect(voiceCall.watchingIdentities).toEqual(['b']);
+		expect(a.publication.setSubscribed).toHaveBeenLastCalledWith(false);
+		expect(b.publication.setSubscribed).not.toHaveBeenCalledWith(false);
+		expect(b.publication.setVideoQuality).toHaveBeenLastCalledWith(lk.VideoQuality.HIGH);
+	});
+
+	test('toggles watching a share', async () => {
+		await joinVoiceCall(room1);
+		const a = sharing('a');
+
+		toggleScreenShareWatch('a');
+		expect(voiceCall.watchingIdentities).toEqual(['a']);
+		expect(a.publication.setSubscribed).toHaveBeenLastCalledWith(true);
+
+		toggleScreenShareWatch('a');
+		expect(voiceCall.watchingIdentities).toEqual([]);
+		expect(a.publication.setSubscribed).toHaveBeenLastCalledWith(false);
+	});
+
+	test('watching the same share twice keeps it once', async () => {
+		await joinVoiceCall(room1);
+		sharing('a');
+
+		watchScreenShare('a');
 		watchScreenShare('a');
 
-		a.trackPublications.delete(aShare.trackSid);
-		lastRoom().emit(lk.RoomEvent.TrackUnpublished, aShare, a);
+		expect(voiceCall.watchingIdentities).toEqual(['a']);
+	});
 
-		expect(voiceCall.watchingIdentity).toBeNull();
-		expect(voiceCall.screenShareIdentities).toEqual([]);
+	test('subscribes a share watched before it is published once it arrives', async () => {
+		await joinVoiceCall(room1);
+		watchScreenShare('a');
+
+		const a = sharing('a');
+
+		expect(a.publication.setSubscribed).toHaveBeenLastCalledWith(true);
+		expect(a.publication.setVideoQuality).toHaveBeenLastCalledWith(lk.VideoQuality.HIGH);
+	});
+
+	test('previews pull only the low layer of a share nobody watches', async () => {
+		await joinVoiceCall(room1);
+		const a = sharing('a');
+		const b = sharing('b');
+
+		const detach = attachScreenShare('a', document.createElement('video'), { preview: true });
+
+		expect(a.publication.setSubscribed).toHaveBeenLastCalledWith(true);
+		expect(a.publication.setVideoQuality).toHaveBeenLastCalledWith(lk.VideoQuality.LOW);
+		expect(a.publication.setVideoQuality).not.toHaveBeenCalledWith(lk.VideoQuality.HIGH);
+		expect(b.publication.setSubscribed).not.toHaveBeenCalledWith(true);
+
+		// プレビューを閉じれば受け取るのもやめる
+		detach();
+		expect(a.publication.setSubscribed).toHaveBeenLastCalledWith(false);
+	});
+
+	test('a previewed share switches to high quality while watched and back to low after', async () => {
+		await joinVoiceCall(room1);
+		const a = sharing('a');
+		attachScreenShare('a', document.createElement('video'), { preview: true });
+
+		watchScreenShare('a');
+		expect(a.publication.setVideoQuality).toHaveBeenLastCalledWith(lk.VideoQuality.HIGH);
+
+		unwatchScreenShare('a');
+		expect(a.publication.setSubscribed).not.toHaveBeenCalledWith(false);
+		expect(a.publication.setVideoQuality).toHaveBeenLastCalledWith(lk.VideoQuality.LOW);
+	});
+
+	test('a sharer who stops sharing leaves the watched shares', async () => {
+		await joinVoiceCall(room1);
+		const a = sharing('a');
+		sharing('b');
+		watchScreenShare('a');
+		watchScreenShare('b');
+
+		a.participant.trackPublications.delete(a.publication.trackSid);
+		lastRoom().emit(lk.RoomEvent.TrackUnpublished, a.publication, a.participant);
+
+		expect(voiceCall.watchingIdentities).toEqual(['b']);
+		expect(voiceCall.screenShareIdentities).toEqual(['b']);
+	});
+
+	test('a sharer who leaves the call leaves the watched shares', async () => {
+		await joinVoiceCall(room1);
+		const a = sharing('a');
+		watchScreenShare('a');
+
+		lastRoom().emit(lk.RoomEvent.ParticipantDisconnected, a.participant);
+
+		expect(voiceCall.watchingIdentities).toEqual([]);
 	});
 
 	test('attaches the watched screen share to a video element once it arrives', async () => {
 		await joinVoiceCall(room1);
-		const a = remoteParticipant('a');
-		const aShare = screenSharePublication(a);
-		lastRoom().emit(lk.RoomEvent.TrackPublished, aShare, a);
+		const a = sharing('a');
 		watchScreenShare('a');
 		const video = document.createElement('video');
 		const detach = attachScreenShare('a', video);
 
-		const track = { kind: lk.Track.Kind.Video, source: lk.Track.Source.ScreenShare, attach: vi.fn(), detach: vi.fn(() => []) };
-		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, aShare, a);
+		const track = screenShareTrack();
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, a.publication, a.participant);
 		expect(track.attach).toHaveBeenCalledWith(video);
 
 		detach();
 		expect(track.detach).toHaveBeenCalledWith(video);
+	});
+
+	test('shows one share in its preview and its viewer at the same time', async () => {
+		await joinVoiceCall(room1);
+		const a = sharing('a');
+		// 中身の同じ要素は toHaveBeenCalledWith で区別できないので、印を付けておく
+		const preview = Object.assign(document.createElement('video'), { id: 'preview' });
+		const viewer = Object.assign(document.createElement('video'), { id: 'viewer' });
+		attachScreenShare('a', preview, { preview: true });
+		watchScreenShare('a');
+		attachScreenShare('a', viewer);
+
+		const track = screenShareTrack();
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, a.publication, a.participant);
+		expect(track.attach).toHaveBeenCalledWith(preview);
+		expect(track.attach).toHaveBeenCalledWith(viewer);
+
+		lastRoom().emit(lk.RoomEvent.TrackUnsubscribed, track, a.publication, a.participant);
+		expect(track.detach).toHaveBeenCalledWith(preview);
+		expect(track.detach).toHaveBeenCalledWith(viewer);
+	});
+
+	test('leaving the call does not take the share\'s video elements out of the page', async () => {
+		await joinVoiceCall(room1);
+		const a = sharing('a');
+		const container = document.createElement('div');
+		const viewer = document.createElement('video');
+		container.appendChild(viewer);
+		watchScreenShare('a');
+		attachScreenShare('a', viewer);
+		const track = { ...screenShareTrack(), detach: vi.fn(() => [viewer]) };
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, a.publication, a.participant);
+		a.publication.track = track;
+
+		await leaveVoiceCall();
+
+		// video 要素は画面の部品のものなので、外すのは部品に任せる
+		expect(viewer.parentElement).toBe(container);
+		expect(voiceCall.watchingIdentities).toEqual([]);
 	});
 });

@@ -4,35 +4,40 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<!-- 広い画面のステージに並べる参加者のタイル。画面を共有している人のタイルは、押すとその画面を見る (もう一度押すとやめる)。
-キーボードでは中のボタンから同じ操作ができる。タイルは参加者の名前のついたまとまりにして、中のボタンが誰のものか読み上げで分かるようにする -->
+<!-- 広い画面のステージに並べる参加者のタイル。画面を共有している人のタイルは、どこを押してもその画面を見る (もう一度押すとやめる)。
+共有している画面は小さなプレビューで見せ、見ているタイルは枠で示す。音量などのメニューは別の ⋯ ボタンから開く。
+タイルは参加者の名前のついたまとまりにして、中のボタンが誰のものか読み上げで分かるようにする -->
 <div
-	:class="[$style.root, { [$style.speaking]: speaking, [$style.watching]: watching, [$style.small]: small, [$style.clickable]: clickable }]"
+	:class="[$style.root, { [$style.speaking]: speaking, [$style.watching]: canWatch && watching, [$style.small]: small }]"
 	role="group" :aria-label="userName(participant.user)"
-	@click="onClick"
 >
-	<MkAvatar :user="participant.user" :class="$style.avatar"/>
-	<MkUserName :user="participant.user" :class="$style.name"/>
 	<button
-		v-if="participant.screenSharing && watchable"
-		class="_button" :class="[$style.badge, $style.watch]"
-		:aria-label="watching ? i18n.ts._voiceCall.stopWatching : i18n.ts._voiceCall.watchStream"
+		v-if="canWatch"
+		type="button" class="_button" :class="[$style.body, $style.watch]"
+		:aria-label="i18n.tsx._voiceCall.watchScreenOf({ name: userName(participant.user) })" :aria-pressed="watching"
 		:title="watching ? i18n.ts._voiceCall.stopWatching : i18n.ts._voiceCall.watchStream"
-		@click.stop="emit('toggleWatch')"
+		@click="emit('toggleWatch')"
 	>
-		<i v-if="watching" class="ti ti-eye-off"></i>
-		<i v-else class="ti ti-screen-share"></i>
+		<XPreview :identity="participant.identity" :class="$style.preview"/>
+		<span :class="$style.who">
+			<MkAvatar :user="participant.user" :class="$style.smallAvatar"/>
+			<MkUserName :user="participant.user" :class="$style.name"/>
+		</span>
 	</button>
-	<i
-		v-else-if="participant.screenSharing"
-		class="ti ti-screen-share" :class="[$style.badge, $style.sharing]"
-		role="img" :aria-label="i18n.ts._voiceCall.sharingScreen" :title="i18n.ts._voiceCall.sharingScreen"
-	></i>
+	<div v-else :class="$style.body">
+		<MkAvatar :user="participant.user" :class="$style.avatar"/>
+		<MkUserName :user="participant.user" :class="$style.name"/>
+		<i
+			v-if="participant.screenSharing"
+			class="ti ti-screen-share" :class="$style.sharing"
+			role="img" :aria-label="i18n.ts._voiceCall.sharingScreen" :title="i18n.ts._voiceCall.sharingScreen"
+		></i>
+	</div>
 	<button
 		v-if="menuable"
-		class="_button" :class="$style.menu"
+		type="button" class="_button" :class="$style.menu"
 		:aria-label="i18n.ts.menu" :title="i18n.ts.menu"
-		@click.stop="emit('openMenu', $event)"
+		@click="emit('openMenu', $event)"
 	>
 		<i class="ti ti-dots"></i>
 	</button>
@@ -42,6 +47,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script lang="ts" setup>
 import { computed } from 'vue';
 import * as Misskey from 'cherrypick-js';
+import XPreview from './room.voice.preview.vue';
 import { i18n } from '@/i18n.js';
 import { userName } from '@/filters/user.js';
 
@@ -66,31 +72,19 @@ const emit = defineEmits<{
 }>();
 
 const canWatch = computed(() => props.participant.screenSharing && props.watchable);
-const clickable = computed(() => canWatch.value || props.menuable);
-
-function onClick(ev: MouseEvent) {
-	if (canWatch.value) {
-		emit('toggleWatch');
-	} else if (props.menuable) {
-		emit('openMenu', ev);
-	}
-}
 </script>
 
 <style lang="scss" module>
-// 話している人はタイル全体を枠で囲む。話していないときも透明な枠を置いて、切り替わりで大きさが変わらないようにする
+// 話している人はタイル全体を枠で囲む。話していないときも透明な枠を置いて、切り替わりで大きさが変わらないようにする。
+// 見ている共有画面のタイルは、その外側に強調色の輪を重ねる (話している枠と同時に出ても見分けられる)
 .root {
 	position: relative;
 	display: flex;
 	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	gap: 10px;
 	box-sizing: border-box;
 	width: 220px;
 	max-width: 100%;
 	aspect-ratio: 4 / 3;
-	padding: 12px;
 	border: 3px solid transparent;
 	border-radius: var(--MI-radius);
 	background: var(--MI_THEME-panel);
@@ -100,20 +94,62 @@ function onClick(ev: MouseEvent) {
 		border-color: var(--MI_THEME-success);
 	}
 
-	&.clickable {
-		cursor: pointer;
-
-		&:hover {
-			background: var(--MI_THEME-panelHighlight);
-		}
+	&.watching {
+		outline: 3px solid var(--MI_THEME-accent);
+		outline-offset: 2px;
 	}
 
 	&.small {
 		flex-shrink: 0;
 		width: 120px;
+	}
+}
+
+// タイルの中身。共有している人のタイルではタイル全体が押せるボタンになる
+.body {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 10px;
+	box-sizing: border-box;
+	width: 100%;
+	min-height: 0;
+	padding: 12px;
+	border-radius: calc(var(--MI-radius) - 3px);
+	color: inherit;
+
+	.small & {
 		gap: 4px;
 		padding: 6px;
 	}
+}
+
+.watch {
+	gap: 6px;
+	padding: 6px;
+
+	&:hover {
+		background: var(--MI_THEME-panelHighlight);
+	}
+}
+
+// タイルの名前の上の残りいっぱいに映す (プレビューの映像ははみ出す分を切って埋める)
+.watch .preview {
+	flex: 1 1 0;
+	width: 100%;
+	min-height: 0;
+	aspect-ratio: auto;
+}
+
+.who {
+	display: flex;
+	flex-shrink: 0;
+	align-items: center;
+	gap: 6px;
+	max-width: 100%;
+	min-width: 0;
 }
 
 .avatar {
@@ -126,8 +162,20 @@ function onClick(ev: MouseEvent) {
 	}
 }
 
+.smallAvatar {
+	flex-shrink: 0;
+	width: 24px;
+	height: 24px;
+
+	.small & {
+		width: 16px;
+		height: 16px;
+	}
+}
+
 .name {
 	max-width: 100%;
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -138,32 +186,11 @@ function onClick(ev: MouseEvent) {
 	}
 }
 
-.badge {
+.sharing {
 	position: absolute;
 	top: 6px;
 	left: 6px;
-}
-
-.sharing {
 	color: var(--MI_THEME-accent);
-}
-
-.watch {
-	display: grid;
-	place-items: center;
-	width: 28px;
-	height: 28px;
-	border-radius: 100%;
-	color: var(--MI_THEME-accent);
-
-	&:hover {
-		background: var(--MI_THEME-buttonHoverBg);
-	}
-
-	.watching & {
-		color: var(--MI_THEME-fgOnAccent);
-		background: var(--MI_THEME-accent);
-	}
 }
 
 .menu {
@@ -175,9 +202,17 @@ function onClick(ev: MouseEvent) {
 	width: 28px;
 	height: 28px;
 	border-radius: 100%;
+	background: var(--MI_THEME-panel);
 
 	&:hover {
 		background: var(--MI_THEME-buttonHoverBg);
+	}
+
+	.small & {
+		top: 2px;
+		right: 2px;
+		width: 24px;
+		height: 24px;
 	}
 }
 </style>

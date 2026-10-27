@@ -22,27 +22,26 @@ SPDX-License-Identifier: AGPL-3.0-only
 				:participant="participant"
 				:speaking="inThisCall && voiceCall.speakingIdentities.includes(participant.identity)"
 				:watchable="inThisCall && participant.identity !== myIdentity"
-				:watching="voiceCall.watchingIdentity === participant.identity"
+				:watching="voiceCall.watchingIdentities.includes(participant.identity)"
 				:menuable="participant.identity !== myIdentity && (inThisCall || isOwner)"
-				@toggleWatch="watchScreenShare(voiceCall.watchingIdentity === participant.identity ? null : participant.identity)"
+				@toggleWatch="toggleScreenShareWatch(participant.identity)"
 				@openMenu="openParticipantMenu(participant, $event)"
 			/>
 		</div>
-		<XScreen v-if="inThisCall && watchedParticipant != null" :key="watchedParticipant.identity" :participant="watchedParticipant" :class="$style.screen"/>
+		<XScreens v-if="inThisCall && watchedParticipants.length > 0" :participants="watchedParticipants" :class="$style.screens"/>
 	</div>
 </div>
 </template>
 
 <script lang="ts" setup>
-import { computed } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import XParticipant from './room.voice.participant.vue';
-import XScreen from './room.voice.screen.vue';
+import XScreens from './room.voice.screens.vue';
 import XControls from './room.voice.controls.vue';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
 import type { ChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
-import { voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import { toggleScreenShareWatch, voiceCall } from '@/utility/voice-call.js';
 import { voiceCallStatusText } from '@/utility/voice-call-status.js';
 
 const props = defineProps<{
@@ -51,8 +50,7 @@ const props = defineProps<{
 }>();
 
 // カードを出すかどうかと参加の流れ、参加者のメニューはページヘッダーやステージと共有するので、ページ側で作ったものを使う
-const { showCard, inThisCall, participants, join, myIdentity, isOwner, openParticipantMenu } = props.call;
-const watchedParticipant = computed(() => participants.value.find(participant => participant.identity === voiceCall.watchingIdentity) ?? null);
+const { showCard, inThisCall, participants, join, myIdentity, isOwner, openParticipantMenu, watchedParticipants } = props.call;
 </script>
 
 <style lang="scss" module>
@@ -104,13 +102,10 @@ const watchedParticipant = computed(() => participants.value.find(participant =>
 	margin-top: 10px;
 }
 
-.screen {
+.screens {
 	margin-top: 10px;
-
-	// カードはメッセージの上に貼り付いたままになるので、共有画面を見ながらでもチャットが読めるよう低めに抑える。
-	// 全画面にしたときは抑えない
-	&:not(:fullscreen) {
-		--voiceCallScreenMaxHeight: 35vh;
-	}
+	// カードはメッセージの上に貼り付いたままになるので、共有画面を見ながらでもチャットが読めるよう、並べた画面全体を低めに抑える。
+	// 全画面にした画面は抑えない
+	--voiceCallScreensMaxHeight: 35vh;
 }
 </style>

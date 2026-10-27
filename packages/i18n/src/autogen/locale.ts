@@ -9424,6 +9424,18 @@ export interface Locale extends ILocale {
          * ピクチャーインピクチャー
          */
         "pictureInPicture": string;
+        /**
+         * {name}さんの共有画面を見る
+         */
+        "watchScreenOf": ParameterizedString<"name">;
+        /**
+         * {name}さんの共有画面
+         */
+        "screenShareOf": ParameterizedString<"name">;
+        /**
+         * 大きく表示
+         */
+        "focusScreen": string;
         "_quality": {
             /**
              * くっきり (1080p 15fps)

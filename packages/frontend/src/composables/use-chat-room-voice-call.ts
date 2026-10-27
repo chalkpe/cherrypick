@@ -49,6 +49,14 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		return target == null ? [] : states.value.get(target.id)?.participants ?? [];
 	});
 
+	// 見ている共有画面の持ち主 (見始めた順)。共有画面を受け取れるのはこのルームの通話に入っているときだけ
+	const watchedParticipants = computed(() => {
+		if (!inThisCall.value) return [];
+		return voiceCall.watchingIdentities
+			.map(identity => participants.value.find(participant => participant.identity === identity))
+			.filter((participant): participant is Participant => participant != null);
+	});
+
 	// 誰も通話にいないときはカードを出さず、ページヘッダーの参加ボタンだけにする。
 	// 自分が参加した直後は参加者の一覧がまだ届いていないことがあるので、参加中なら一覧を待たずに出す
 	const showCard = computed(() => available.value && (inThisCall.value || participants.value.length > 0));
@@ -117,7 +125,7 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		os.popupMenu(items, ev.currentTarget ?? ev.target);
 	}
 
-	return { available, inThisCall, participants, showCard, join, myIdentity, isOwner, openParticipantMenu };
+	return { available, inThisCall, participants, watchedParticipants, showCard, join, myIdentity, isOwner, openParticipantMenu };
 }
 
 export type ChatRoomVoiceCall = ReturnType<typeof useChatRoomVoiceCall>;
