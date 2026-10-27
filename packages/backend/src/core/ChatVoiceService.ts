@@ -61,6 +61,10 @@ const REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS = 172_800;
 // こうすると、覚えておく間が過ぎた後に届く、それ以前の現況はすべてこれより古い
 const REMOTE_SNAPSHOT_MAX_AGE_MS = REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS * 1000 - REMOTE_SNAPSHOT_MAX_AHEAD_MS;
 
+// 参加者のいる現況は、これより古ければ捨てる。ミラーの現況は REMOTE_SNAPSHOT_TTL_SECONDS で切れるので、それより古い参加者を
+// 表示し直さない (ホストの時計のずれの分だけ延ばす)。通話の終わり (空の現況) は REMOTE_SNAPSHOT_MAX_AGE_MS まで受け入れる
+const REMOTE_ACTIVE_SNAPSHOT_MAX_AGE_MS = REMOTE_SNAPSHOT_TTL_SECONDS * 1000 + REMOTE_SNAPSHOT_MAX_AHEAD_MS;
+
 // 他のサーバーの通話を止めたときにミラーの現況を消すとき、一度に引くルームの数
 const MIRROR_CLEAR_BATCH_SIZE = 1000;
 
@@ -108,6 +112,23 @@ const FEDERATION_MIN_INTERVAL_MS = 10_000;
 // 積むのは普通すぐに終わる。途中で止まったワーカーの鍵は、この寿命で切れる
 const FEDERATION_LOCK_MS = 30_000;
 
+// 順番の鍵が空いていないときに待つ間隔。REFRESH_DELAY_MS から待つたびに倍にし、この長さで止める
+const FEDERATION_LOCK_RETRY_MAX_MS = 4_000;
+
+// 送るかを決めた現況の時刻 (増える一方) を覚えておく長さ。順番の鍵が切れた後も手間取っているワーカーの決定より十分長くする
+const FEDERATION_DECIDED_TTL_SECONDS = 3_600;
+
+// 送るかを決めた現況の時刻 (KEYS[1]) を、ARGV[1] がそれより前でなければ進める。進めたら 1、前なら 0。
+// 読めなければ無いものとして扱う。ARGV: 現況の時刻、寿命 (秒)
+const ADVANCE_FEDERATION_DECIDED_SCRIPT = `
+local decided = tonumber(redis.call('GET', KEYS[1]))
+if decided and decided > tonumber(ARGV[1]) then
+	return 0
+end
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+return 1
+`;
+
 // 送る順番の鍵を、自分が取ったもの (ARGV[1]) のときだけ外す。寿命が切れた後にほかのワーカーが取った鍵は外さない
 const RELEASE_FEDERATION_LOCK_SCRIPT = `
 if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -116,13 +137,19 @@ end
 return 0
 `;
 
-// 他のサーバーに送った記録を、保存済みの記録より古い現況 (updatedAt が小さい) のものでなければ書く。書いたら 1、書かなければ 0。
-// 保存済みの記録が読めないか updatedAt を持たなければ、無いものとして扱う。KEYS[1]: 記録の鍵、ARGV: 記録 (JSON)、その updatedAt、寿命 (秒)
+// 他のサーバーに送った記録を、保存済みの記録より古い現況 (updatedAt が小さい) のものでも、送るかを決めた最新の時刻より前の現況の
+// ものでもなければ書く。書いたら 1、書かなければ 0。保存済みの記録や時刻が読めないか updatedAt を持たなければ、無いものとして扱う。
+// KEYS[1]: 記録の鍵、KEYS[2]: 送るかを決めた現況の時刻の鍵、ARGV: 記録 (JSON)、その updatedAt、寿命 (秒)
 const RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT = `
+local updatedAt = tonumber(ARGV[2])
+local decided = tonumber(redis.call('GET', KEYS[2]))
+if decided and decided > updatedAt then
+	return 0
+end
 local current = redis.call('GET', KEYS[1])
 if current then
 	local ok, stored = pcall(cjson.decode, current)
-	if ok and type(stored) == 'table' and type(stored.updatedAt) == 'number' and stored.updatedAt > tonumber(ARGV[2]) then
+	if ok and type(stored) == 'table' and type(stored.updatedAt) == 'number' and stored.updatedAt > updatedAt then
 		return 0
 	end
 end
@@ -176,7 +203,7 @@ type RoomAudience = {
  * - stored: 保存して、このサーバーのメンバーに知らせた
  * - stale: 保存済みの現況か、最後に受け入れた時刻以前のもの
  * - ahead: この時計より REMOTE_SNAPSHOT_MAX_AHEAD_MS より先の時刻が付いている
- * - old: この時計より REMOTE_SNAPSHOT_MAX_AGE_MS より前の時刻が付いている
+ * - old: この時計より、参加者がいれば REMOTE_ACTIVE_SNAPSHOT_MAX_AGE_MS、空なら REMOTE_SNAPSHOT_MAX_AGE_MS より前の時刻が付いている
  * - disabled: 他のサーバーの通話を止めている (保存の途中で止められた場合を含む)
  */
 export type RemoteSnapshotStoreResult = 'stored' | 'stale' | 'ahead' | 'old' | 'disabled';
@@ -209,8 +236,10 @@ export function isRemoteVoiceCallEnabled(meta: Pick<MiMeta, 'enableRemoteVoiceCa
 export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	/** webhook を受けて予定した読み直し */
 	private pendingRefreshes = new Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>();
-	/** 他のサーバーへ送るのを待たせた現況を、送れるようになったときに送るための読み直し */
+	/** 他のサーバーへ送るのを待たせたルームについて、送れるようになったときに送るかを決め直す予定 (federateRoom) */
 	private pendingFollowUps = new Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>();
+	/** 順番の鍵が空くのを続けて待った回数 (ルームごと)。待つ間隔を延ばすのに使い、鍵を取れたら消す */
+	private federationLockWaits = new Map<MiChatRoom['id'], number>();
 	private sweepTimer: NodeJS.Timeout | null = null;
 	private logger: Logger;
 
@@ -419,7 +448,10 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 */
 	@bindThis
 	public scheduleRefresh(roomId: MiChatRoom['id']): void {
-		this.scheduleRefreshIn(this.pendingRefreshes, roomId, REFRESH_DELAY_MS);
+		this.scheduleIn(this.pendingRefreshes, roomId, REFRESH_DELAY_MS, () => this.refresh(roomId).catch(err => {
+			// 次の webhook か定期的な読み直しか通話参加時に読み直されるので、記録だけする
+			this.logRefreshFailure(roomId, err);
+		}));
 	}
 
 	@bindThis
@@ -449,7 +481,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			this.globalEventService.publishMainStream(userId, 'chatRoomVoiceState', packed);
 		}
 
-		await this.federateChanges(room, snapshot, audience);
+		// 他のサーバーへ送るかは、順番の鍵を取ってから LiveKit を読み直して決める (federateChanges)
+		await this.federateChanges(room, audience);
 	}
 
 	/**
@@ -486,6 +519,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * updatedAt はホストの時刻。保存済みのもの以前の現況と、この時計より REMOTE_SNAPSHOT_MAX_AHEAD_MS より先の現況は捨てる。
 	 * 保存済みの現況の寿命が切れた後も、最後に受け入れた時刻 (REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS のあいだ覚えておく) 以前の現況は捨てる。
 	 * 覚えておく間が過ぎた後にも古い現況を書かないよう、REMOTE_SNAPSHOT_MAX_AGE_MS より古い現況も捨てる。
+	 * 参加者のいる現況は、ミラーでの寿命に時計のずれを足した REMOTE_ACTIVE_SNAPSHOT_MAX_AGE_MS より古ければ捨てる。
 	 * inbox に届いた現況も、参加したときにホストから受け取った現況も、すべてここを通る。
 	 * 参加者は、このサーバーが知っているユーザーだけを残す。そのうちこのサーバーのユーザーは、ルームのメンバーでなければ外す。
 	 * 他のサーバーのユーザー (持ち主を含む) がメンバーかはこのサーバーでは分からないので、ホストの言うまま残す。
@@ -501,7 +535,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 
 		if (updatedAt > Date.now() + REMOTE_SNAPSHOT_MAX_AHEAD_MS) return 'ahead';
-		if (updatedAt < Date.now() - REMOTE_SNAPSHOT_MAX_AGE_MS) return 'old';
+		const maxAge = participants.length > 0 ? REMOTE_ACTIVE_SNAPSHOT_MAX_AGE_MS : REMOTE_SNAPSHOT_MAX_AGE_MS;
+		if (updatedAt < Date.now() - maxAge) return 'old';
 		if (!isRemoteVoiceCallEnabled(this.meta)) return 'disabled';
 		// 書き込みのスクリプトは、ここで読んだ世代と比べる。この後で止められれば書かない
 		const generation = await this.remoteGenerationOf();
@@ -614,6 +649,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			for (const { timer } of pending.values()) clearTimeout(timer);
 			pending.clear();
 		}
+		this.federationLockWaits.clear();
 		if (this.sweepTimer != null) clearInterval(this.sweepTimer);
 		this.sweepTimer = null;
 		this.redisForSub.off('message', this.onMessage);
@@ -664,9 +700,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	/**
-	 * ルームを delayMs 後に読み直す。pending ごと・ルームごとに一つにまとめ、予定済みのものより早く読み直したいときだけ早める
+	 * run を delayMs 後に動かす。pending ごと・ルームごとに一つにまとめ、予定済みのものより早く動かしたいときだけ早める
 	 */
-	private scheduleRefreshIn(pending: Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>, roomId: MiChatRoom['id'], delayMs: number): void {
+	private scheduleIn(pending: Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>, roomId: MiChatRoom['id'], delayMs: number, run: () => Promise<void>): void {
 		const dueAt = Date.now() + delayMs;
 		const scheduled = pending.get(roomId);
 		if (scheduled != null) {
@@ -675,12 +711,19 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 		const timer = setTimeout(() => {
 			pending.delete(roomId);
-			this.refresh(roomId).catch(err => {
-				// 次の webhook か定期的な読み直しか通話参加時に読み直されるので、記録だけする
-				this.logRefreshFailure(roomId, err);
-			});
+			run();
 		}, delayMs);
 		pending.set(roomId, { timer, dueAt });
+	}
+
+	/**
+	 * delayMs 後に、他のサーバーへ送るかを決め直す (federateRoom)。このサーバーのメンバーには知らせ直さない
+	 */
+	private scheduleFollowUp(roomId: MiChatRoom['id'], delayMs: number): void {
+		this.scheduleIn(this.pendingFollowUps, roomId, delayMs, () => this.federateRoom(roomId).catch(err => {
+			// 次の webhook か定期的な読み直しで決め直されるので、記録だけする
+			this.logger.warn(`Failed to send the voice call in ${roomId} to other servers: ${err instanceof Error ? err.message : String(err)}`);
+		}));
 	}
 
 	/** 読み直し (refresh) に失敗したことを、ルームとエラーのメッセージだけで記録する */
@@ -793,78 +836,112 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	/**
+	 * 他のサーバーへ送るのを待たせたルームについて、送るかを決め直す。
+	 * このサーバーのメンバーには、その前の読み直し (refresh) が知らせてあるので知らせ直さない
+	 */
+	private async federateRoom(roomId: MiChatRoom['id']): Promise<void> {
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		if (room == null) return;
+		await this.federateChanges(room, await this.audienceOf(room));
+	}
+
+	/**
 	 * 参加者の現況を他のサーバーのメンバーに届ける。他のサーバーのメンバーがいないルームでは何もしない (間隔の鍵も読み直しも使わない)。
 	 * - 参加者のいる現況は、前に送ったものと同じで、送ってから FEDERATION_RESEND_INTERVAL_MS 経っていなければ送らない
 	 * - 送るのはルームごとに FEDERATION_MIN_INTERVAL_MS に一度まで。送れなかった変化は、間隔が空いたときに読み直して最新の現況を送る
 	 * - 通話が終わったこと (空の現況) は参加者の現況とは別に数えて待たずに送る。送る直前に記録を読み、同じ終わりを送ってあれば送らない
 	 * 送った記録は、すべての届け先への配送を積めたときだけ残す。
-	 * 記録を読んで送るかを決めてから記録を残すまでは、ルームごとに全ワーカーで一つずつ行う (FEDERATION_LOCK_MS)。
-	 * ほかのワーカーが送っている途中に決めると、まだ記録されていない現況を見落とし、通話の終わりを送らずに済ませてしまうため。
-	 * ほかのワーカーが送っている途中なら、少し後に読み直して決め直す
+	 * 送るかを決めてから記録を残すまでは、ルームごとに全ワーカーで一つずつ行う (順番の鍵、FEDERATION_LOCK_MS)。
+	 * 決めるのに使う現況は、鍵を取ってから LiveKit を読み直したもの。鍵を取る前に読んだ現況は、その後でほかのワーカーが決めた現況より古いことがある。
+	 * ほかのワーカーが鍵を持っていれば、間隔を延ばしながら (FEDERATION_LOCK_RETRY_MAX_MS まで) 待って決め直す。
+	 * 鍵の寿命が切れていた (ほかのワーカーと同時に決めたかもしれない) か、記録を書けなかったときは、相手に届いた現況が分からないので、
+	 * 記録を消して決め直す
 	 */
-	private async federateChanges(room: MiChatRoom, snapshot: VoiceSnapshot, audience: RoomAudience): Promise<void> {
+	private async federateChanges(room: MiChatRoom, audience: RoomAudience): Promise<void> {
 		if (audience.localOwner == null || audience.remoteInboxes.size === 0) return;
 
 		const lockKey = `chatVoice:federateLock:${room.id}`;
 		const token = randomUUID();
 		if (await this.redisClient.set(lockKey, token, 'PX', FEDERATION_LOCK_MS, 'NX') !== 'OK') {
-			this.scheduleRefreshIn(this.pendingFollowUps, room.id, REFRESH_DELAY_MS);
+			const waits = this.federationLockWaits.get(room.id) ?? 0;
+			this.federationLockWaits.set(room.id, waits + 1);
+			this.scheduleFollowUp(room.id, Math.min(REFRESH_DELAY_MS * 2 ** waits, FEDERATION_LOCK_RETRY_MAX_MS));
 			return;
 		}
+		this.federationLockWaits.delete(room.id);
+
+		let superseded = false;
 		try {
-			await this.federateChangesInTurn(room, snapshot, audience);
+			superseded = !(await this.federateChangesInTurn(room, audience));
 		} finally {
-			// 外せなくても、鍵は寿命で切れる
-			await this.redisClient.eval(RELEASE_FEDERATION_LOCK_SCRIPT, 1, lockKey, token).catch(() => {});
+			// 鍵を外せなかったときは、寿命が切れていたかもしれないものとして扱う
+			const released = await this.redisClient.eval(RELEASE_FEDERATION_LOCK_SCRIPT, 1, lockKey, token).catch(() => null);
+			if (released !== 1 || superseded) {
+				await this.redisClient.del(`chatVoice:federated:${room.id}`).catch(() => {});
+				this.scheduleFollowUp(room.id, REFRESH_DELAY_MS);
+			}
 		}
 	}
 
-	/** federateChanges のうち、送る順番の鍵を取った後に行うもの */
-	private async federateChangesInTurn(room: MiChatRoom, snapshot: VoiceSnapshot, audience: RoomAudience): Promise<void> {
-		const participants = snapshot.participants.map(p => ({ identity: p.identity, screenSharing: p.screenSharing }));
+	/**
+	 * federateChanges のうち、送る順番の鍵を取った後に行うもの。
+	 * 決めたことが、ほかのワーカーの後の決定に追い越されていた (記録を書けなかった) ときは false を返す
+	 */
+	private async federateChangesInTurn(room: MiChatRoom, audience: RoomAudience): Promise<boolean> {
+		const listed = await this.liveKitService.listParticipants(room.id);
+		const updatedAt = Date.now();
+		const participants = listed.map(p => ({ identity: p.identity, screenSharing: p.screenSharing }));
+
+		// 送るかを決めた現況の時刻は増える一方にし、送らずに済ませるときも進める。それより前の時刻の現況では決めない。
+		// 鍵を持ったまま読み直しているので、前になるのはワーカーの時計がずれているときだけ。少し後に決め直す
+		const decidedKey = `chatVoice:federateDecided:${room.id}`;
+		if (await this.redisClient.eval(ADVANCE_FEDERATION_DECIDED_SCRIPT, 1, decidedKey, updatedAt, FEDERATION_DECIDED_TTL_SECONDS) !== 1) {
+			this.scheduleFollowUp(room.id, REFRESH_DELAY_MS);
+			return true;
+		}
+
 		const hash = createHash('sha256')
 			.update(JSON.stringify([...participants].sort((a, b) => a.identity.localeCompare(b.identity))))
 			.digest('hex');
 		const ended = participants.length === 0;
 
 		const last = ended ? null : await this.lastFederatedOf(room.id);
-		if (!ended && isStillFederated(last, hash)) return;
+		if (!ended && isStillFederated(last, hash)) return true;
 
 		const gateKey = ended ? `chatVoice:federateEmptyGate:${room.id}` : `chatVoice:federateGate:${room.id}`;
 		const opened = await this.redisClient.set(gateKey, '1', 'PX', FEDERATION_MIN_INTERVAL_MS, 'NX');
 		if (opened !== 'OK') {
-			// 相手に届いている現況と違うなら、間隔の鍵が切れた後に読み直して送る (読み直しはルームごとに一つにまとまる)。
-			// 通話の終わりは記録によらず必ず読み直す。記録を読んでから決めるまでに、ほかのワーカーが参加者のいる現況を送るかもしれないため。
-			// 送るかどうかは、読み直したときに読む記録で決める
+			// 相手に届いている現況と違うなら、間隔の鍵が切れた後に決め直す (決め直しはルームごとに一つにまとまる)。
+			// 通話の終わりは記録によらず必ず決め直す。送るかどうかは、決め直したときに読む記録で決める
 			if (ended || last?.hash !== hash) {
 				const ttl = await this.redisClient.pttl(gateKey);
-				// 鍵は寿命の時刻ちょうどにはまだ残っているので、それを過ぎてから読み直す
-				this.scheduleRefreshIn(this.pendingFollowUps, room.id, ttl >= 0 ? Math.min(ttl, FEDERATION_MIN_INTERVAL_MS) + 1 : REFRESH_DELAY_MS);
+				// 鍵は寿命の時刻ちょうどにはまだ残っているので、それを過ぎてから決め直す
+				this.scheduleFollowUp(room.id, ttl >= 0 ? Math.min(ttl, FEDERATION_MIN_INTERVAL_MS) + 1 : REFRESH_DELAY_MS);
 			}
-			return;
+			return true;
 		}
 
 		// 通話の終わりは、送る直前に読んだ記録が同じ終わりなら送らない (相手には届いている)。
 		// 送らないので間隔の鍵も外し、次に参加者が出入りした後の終わりを待たせない
 		if (ended && isStillFederated(await this.lastFederatedOf(room.id), hash)) {
 			await this.redisClient.del(gateKey);
-			return;
+			return true;
 		}
 
 		const recordKey = `chatVoice:federated:${room.id}`;
 		try {
-			await this.deliverSnapshot(room, audience, participants, snapshot.updatedAt);
+			await this.deliverSnapshot(room, audience, participants, updatedAt);
 		} catch (err) {
 			// 一部の届け先には積めたかもしれず、相手に届いている現況が分からない。記録を消して次の現況 (終わりを含む) を必ず送り、
-			// 間隔の鍵が切れた後に読み直して送り直す。記録を消せなくても、記録は FEDERATION_RESEND_INTERVAL_MS で切れる
+			// 間隔の鍵が切れた後に決め直して送り直す。記録を消せなくても、記録は FEDERATION_RESEND_INTERVAL_MS で切れる
 			await this.redisClient.del(recordKey).catch(() => {});
-			this.scheduleRefreshIn(this.pendingFollowUps, room.id, FEDERATION_MIN_INTERVAL_MS + 1);
+			this.scheduleFollowUp(room.id, FEDERATION_MIN_INTERVAL_MS + 1);
 			throw err;
 		}
 
-		// 順番の鍵が寿命で切れて、ほかのワーカーが後の現況を先に記録していれば、それを上書きしない
-		const record: FederatedRecord = { hash, at: Date.now(), updatedAt: snapshot.updatedAt };
-		await this.redisClient.eval(RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT, 1, recordKey, JSON.stringify(record), snapshot.updatedAt, FEDERATION_RESEND_INTERVAL_MS / 1000);
+		// 順番の鍵が寿命で切れて、ほかのワーカーが後の現況で決めたか記録していれば、書かずに決め直す
+		const record: FederatedRecord = { hash, at: Date.now(), updatedAt };
+		return await this.redisClient.eval(RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT, 2, recordKey, decidedKey, JSON.stringify(record), updatedAt, FEDERATION_RESEND_INTERVAL_MS / 1000) === 1;
 	}
 
 	/** 他のサーバーに最後に送った現況の記録。FEDERATION_RESEND_INTERVAL_MS で切れる */

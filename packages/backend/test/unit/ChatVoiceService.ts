@@ -58,12 +58,22 @@ function fakeRedis() {
 		// ミラーの現況を保存するスクリプトと同じ動きをする。他のサーバーの通話を止めた回数 (KEYS[3]) が読んだときのまま (ARGV[5]) で、
 		// 保存済みの現況 (KEYS[1]) と、最後に受け入れた時刻 (KEYS[2]) のどちらよりも新しいときだけ書き、書いたらその時刻も残す。
 		// 本物の Redis と同じく、比べてから書くまでのあいだに他の呼び出しが割り込まない
-		// 他のサーバーに送った記録 (chatVoice:federated:*) は、保存済みの記録の updatedAt より古くないときだけ書く。
+		// 他のサーバーに送った記録 (chatVoice:federated:*) は、保存済みの記録の updatedAt と、送るかを決めた現況の時刻 (KEYS[2]) の
+		// どちらより前でもないときだけ書く。送るかを決めた現況の時刻 (chatVoice:federateDecided:*) は、前に戻さない。
 		// 送る順番の鍵 (chatVoice:federateLock:*) は、自分が取ったもの (ARGV[1]) のときだけ外す
 		eval: vi.fn(async (_script: string, numKeys: number, ...args: (string | number)[]) => {
 			const [key, lastSeenKey, generationKey] = args.slice(0, numKeys) as string[];
+			if (key.startsWith('chatVoice:federateDecided:')) {
+				const [decidedAt, decidedTtlSeconds] = args.slice(numKeys);
+				if (live(key) && Number(store.get(key)) > Number(decidedAt)) return 0;
+				store.set(key, String(decidedAt));
+				expiresAt.set(key, Date.now() + Number(decidedTtlSeconds) * 1000);
+				return 1;
+			}
 			if (key.startsWith('chatVoice:federated:')) {
 				const [record, recordUpdatedAt, recordTtlSeconds] = args.slice(numKeys);
+				const decidedKey = lastSeenKey;
+				if (decidedKey != null && live(decidedKey) && Number(store.get(decidedKey)) > Number(recordUpdatedAt)) return 0;
 				if (live(key)) {
 					const stored = JSON.parse(store.get(key)!) as { updatedAt?: unknown };
 					if (typeof stored.updatedAt === 'number' && stored.updatedAt > Number(recordUpdatedAt)) return 0;
@@ -239,9 +249,9 @@ function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []) {
 	return { service, redis, redisForSub, meta, liveKitService, rooms, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, instancesRepository, userEntityService, globalEventService, roleService, utilityService, queueService, cloudflareTurnService, logger, nonMembers };
 }
 
-// テストの時計。ミラーの現況は 2 日 (から時計のずれの 5 分を引いた分) より古いと捨てるので、テストで使う現況の時刻 (2000 など) をその内に収める。
-// 時計だけを止め、タイマーは本物のまま動かす
-const TEST_CLOCK = 1_000_000;
+// テストの時計。ミラーの現況は古いと捨てる (参加者のいる現況は寿命の 10 分に時計のずれの 5 分を足した分、空の現況は 2 日から 5 分を引いた分) ので、
+// テストで使う現況の時刻 (2000 など) をその内に収める。時計だけを止め、タイマーは本物のまま動かす
+const TEST_CLOCK = 600_000;
 
 function remoteUser(overrides: Record<string, unknown> = {}) {
 	return { id: 'ru1', host: 'remote.test', uri: 'https://remote.test/users/ru1', isSuspended: false, ...overrides } as any;
@@ -958,17 +968,33 @@ describe('ChatVoiceService', () => {
 
 		// 最後に受け入れた時刻を覚えておく 2 日が過ぎた後に、それより前の現況が届いても書かない。
 		// ホストの時計は 5 分まで進んでいてよいので、その分を引いた古さを境にする (inbox と、参加したときの応答のどちらもここを通る)
-		test('storeRemoteSnapshot ignores a snapshot older than two days minus five minutes', async () => {
+		test('storeRemoteSnapshot ignores an empty snapshot older than two days minus five minutes', async () => {
 			const now = 1_000_000_000;
 			const maxAge = 172_800_000 - 300_000;
 			vi.useFakeTimers({ now, toFake: ['Date'] });
 
-			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], now - maxAge - 1)).toBe('old');
+			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), [], now - maxAge - 1)).toBe('old');
 			expect(f.redis.eval).not.toHaveBeenCalled();
 			expect(f.globalEventService.publishMainStream).not.toHaveBeenCalled();
 
-			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: 'https://local.test/users/u1', screenSharing: false }], now - maxAge)).toBe('stored');
+			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), [], now - maxAge)).toBe('stored');
 			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).updatedAt).toBe(now - maxAge);
+		});
+
+		// 参加者のいる現況は、ミラーでの寿命 (10 分) を過ぎていれば表示しないので、それにホストの時計のずれ (5 分) を足した古さを境にする
+		test('storeRemoteSnapshot ignores a snapshot with participants older than ten minutes plus five minutes', async () => {
+			const now = 1_000_000_000;
+			const maxAge = 600_000 + 300_000;
+			vi.useFakeTimers({ now, toFake: ['Date'] });
+			const participants = [{ identity: 'https://local.test/users/u1', screenSharing: false }];
+
+			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), participants, now - maxAge - 1)).toBe('old');
+			expect(f.redis.eval).not.toHaveBeenCalled();
+			expect(f.globalEventService.publishMainStream).not.toHaveBeenCalled();
+
+			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), participants, now - maxAge)).toBe('stored');
+			// 同じ古さでも、空の現況 (通話の終わり) は受け入れる
+			expect(await f.service.storeRemoteSnapshot(mirrorRoom(), [], now - maxAge + 1)).toBe('stored');
 		});
 
 		// 他のサーバーの通話を止めた後で、止める前に始まった参加の応答が届いても保存しない
@@ -1503,6 +1529,154 @@ describe('ChatVoiceService', () => {
 			return { workerA, workerB, sent, holdA, queueA: () => queueA() };
 		}
 
+		// P1: A が LiveKit を読んでから順番の鍵を取るまでのあいだ (ルームやメンバーを読んでいるあいだ) に止まり、その間に通話が終わって
+		// B が終わりを決めた。A は止まる前に読んだ古い現況で送らない (二つのワーカーは同じ LiveKit を読むので、A が読み直しても終わっている)
+		test('does not send participants read before another worker decided on the end of the call', async () => {
+			const { workerA, workerB, sent } = twoWorkers();
+			vi.useFakeTimers({ now: 1_000_000 });
+
+			try {
+				workerA.liveKitService.listParticipants.mockResolvedValue([]);
+				await workerA.service.refresh('r1');
+				await vi.advanceTimersByTimeAsync(30_000);
+
+				workerA.liveKitService.listParticipants.mockResolvedValue([u1]);
+				const paused = pauseNextCall(workerA.chatRoomsRepository.findOneBy);
+				const activeRefresh = workerA.service.refresh('r1');
+				await paused.reached;
+				await vi.advanceTimersByTimeAsync(1_000);
+
+				// 通話が終わった
+				workerA.liveKitService.listParticipants.mockResolvedValue([]);
+				workerB.liveKitService.listParticipants.mockResolvedValue([]);
+				await workerB.service.refresh('r1');
+
+				paused.resume();
+				await activeRefresh;
+				await vi.advanceTimersByTimeAsync(60_000);
+
+				expect(sent.at(-1)).toEqual([]);
+			} finally {
+				workerA.service.onApplicationShutdown();
+				workerB.service.onApplicationShutdown();
+			}
+		});
+
+		// P3: A が積むのに順番の鍵の寿命 (30 秒) より長くかかり、その間に通話が終わって B が終わりを (前に送った終わりの記録で) 送らずに済ませた。
+		// A は積み終えた後に自分の決めたことが古いと分かるので、記録を消して決め直し、終わりを送る
+		test('sends the end of a call when an enqueue outlasts the room lock and another worker skipped the end meanwhile', async () => {
+			const { workerA, workerB, sent, holdA, queueA } = twoWorkers();
+			vi.useFakeTimers({ now: 1_000_000 });
+
+			try {
+				workerA.liveKitService.listParticipants.mockResolvedValue([]);
+				await workerA.service.refresh('r1');
+				await vi.advanceTimersByTimeAsync(30_000);
+
+				holdA();
+				workerA.liveKitService.listParticipants.mockResolvedValue([u1]);
+				const activeSend = workerA.service.refresh('r1');
+				await vi.advanceTimersByTimeAsync(31_000);
+
+				// 通話が終わった
+				workerA.liveKitService.listParticipants.mockResolvedValue([]);
+				workerB.liveKitService.listParticipants.mockResolvedValue([]);
+				await workerB.service.refresh('r1');
+				queueA();
+				await activeSend;
+				await vi.advanceTimersByTimeAsync(60_000);
+
+				expect(sent.at(-1)).toEqual([]);
+			} finally {
+				workerA.service.onApplicationShutdown();
+				workerB.service.onApplicationShutdown();
+			}
+		});
+
+		// 鍵を持ったまま止まったワーカーを待つあいだ、このサーバーのメンバーに知らせ直したり LiveKit を読み直したりしない
+		test('waits for a busy room lock without telling this server\'s members again or re-reading LiveKit', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			await f.redis.set('chatVoice:federateLock:r1', 'crashed worker', 'PX', 30_000, 'NX');
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+
+			await f.service.refresh('r1');
+			const notified = f.globalEventService.publishMainStream.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(29_000);
+
+			expect(notified).toBeGreaterThan(0);
+			expect(f.globalEventService.publishMainStream).toHaveBeenCalledTimes(notified);
+			expect(f.liveKitService.listParticipants).toHaveBeenCalledTimes(1);
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+
+			// 鍵が切れたら、そのとき読んだ現況で決めて送る
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
+			expect(f.globalEventService.publishMainStream).toHaveBeenCalledTimes(notified);
+		});
+
+		test('backs off while the room lock stays busy: 0.5, 1 and 2 seconds, then every 4 seconds', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			await f.redis.set('chatVoice:federateLock:r1', 'crashed worker', 'PX', 30_000, 'NX');
+			const tries: number[] = [];
+			const set = f.redis.set.getMockImplementation()!;
+			f.redis.set.mockImplementation(async (key: string, ...rest: [string, ...(string | number)[]]) => {
+				if (key === 'chatVoice:federateLock:r1') tries.push(Date.now() - 1_000_000);
+				return await set(key, ...rest);
+			});
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+
+			await f.service.refresh('r1');
+			await vi.advanceTimersByTimeAsync(20_000);
+
+			expect(tries).toEqual([0, 500, 1_500, 3_500, 7_500, 11_500, 15_500, 19_500]);
+		});
+
+		// 送るかを決めた現況の時刻は増える一方。送らずに済ませたときも進める
+		test('advances the decided time even when it skips a repeated end of a call', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			f.liveKitService.listParticipants.mockResolvedValue([]);
+			await f.service.refresh('r1');
+			await vi.advanceTimersByTimeAsync(30_000);
+
+			await f.service.refresh('r1');
+
+			expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
+			expect(await f.redis.get('chatVoice:federateDecided:r1')).toBe(String(1_030_000));
+		});
+
+		// 時計の進んだ別のワーカーが後の時刻で決めた後なら、それより前の時刻の現況では決めず、少し後に読み直す
+		test('does not decide on a snapshot older than the last decision, and decides again later', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			await f.redis.set('chatVoice:federateDecided:r1', String(1_002_000), 'EX', 3600);
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+
+			await f.service.refresh('r1');
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
+		});
+
+		// 記録を書けなかった (後の現況の記録や決定があった) ときは、相手に届いた現況が分からないので、記録を消して決め直す
+		test('forgets what it sent and decides again when its record is refused', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			await f.redis.set('chatVoice:federated:r1', JSON.stringify({ hash: 'other', at: 0, updatedAt: 1_060_000 }), 'EX', 240);
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+
+			await f.service.refresh('r1');
+			expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
+			expect(await f.redis.get('chatVoice:federated:r1')).toBeNull();
+
+			// 間隔の鍵が切れた後に決め直して、もう一度送る
+			await vi.advanceTimersByTimeAsync(11_000);
+			expect(f.queueService.deliver).toHaveBeenCalledTimes(4);
+		});
+
 		// 参加者のいる現況を積んでいる途中に、ほかのワーカーが新しい終わりを読んでも、その終わりは後で送る
 		test('sends a newer end of a call that arrives while another worker is still queueing the participants', async () => {
 			const { workerA, workerB, sent, holdA, queueA } = twoWorkers();
@@ -1535,27 +1709,31 @@ describe('ChatVoiceService', () => {
 		});
 
 		// 積むのに手間取ったワーカーの古い現況が、後から送られた新しい現況の記録を上書きしない
-		test('keeps the record of a newer send when an older send finishes later', async () => {
+		// 積むのに手間取ったワーカーの古い現況は、後から決めた現況の記録を上書きしない。古い現況は相手に届いたかもしれないので、
+		// 記録を消して LiveKit から決め直し、最新の現況を送り直す
+		test('does not record an older send that finishes after a newer decision, and sends the newest state again', async () => {
 			const { workerA, workerB, sent, holdA, queueA } = twoWorkers();
 			vi.useFakeTimers({ now: 1_000_000 });
+			const sharing = [{ ...u1, screenSharing: true }];
 
 			try {
 				holdA();
 				workerA.liveKitService.listParticipants.mockResolvedValue([u1]);
 				const oldSend = workerA.service.refresh('r1');
 				await vi.advanceTimersByTimeAsync(31_000);
-				workerB.liveKitService.listParticipants.mockResolvedValue([{ ...u1, screenSharing: true }]);
+
+				// 画面共有が始まった。二つのワーカーは同じ LiveKit を読む
+				workerA.liveKitService.listParticipants.mockResolvedValue(sharing);
+				workerB.liveKitService.listParticipants.mockResolvedValue(sharing);
 				await workerB.service.refresh('r1');
+				const newer = JSON.parse((await workerB.redis.get('chatVoice:federated:r1'))!) as { updatedAt: number };
 				queueA();
 				await oldSend;
 
-				// 相手に届いているのは B の現況なので、A の送った現況に戻れば送り直す
-				await vi.advanceTimersByTimeAsync(11_000);
-				sent.length = 0;
-				workerB.liveKitService.listParticipants.mockResolvedValue([u1]);
-				await workerB.service.refresh('r1');
-
-				expect(sent).toEqual([[{ id: u1.identity, screenSharing: false }], [{ id: u1.identity, screenSharing: false }]]);
+				expect(await workerB.redis.get('chatVoice:federated:r1')).toBeNull();
+				await vi.advanceTimersByTimeAsync(20_000);
+				expect(sent.at(-1)).toEqual([{ id: u1.identity, screenSharing: true }]);
+				expect((JSON.parse((await workerB.redis.get('chatVoice:federated:r1'))!) as { updatedAt: number }).updatedAt).toBeGreaterThan(newer.updatedAt);
 			} finally {
 				workerA.service.onApplicationShutdown();
 				workerB.service.onApplicationShutdown();
@@ -1858,9 +2036,19 @@ describe('ChatVoiceService', () => {
 		});
 
 		// 先の時刻を付けた現況を受け入れると、寿命が切れるまでホストが新しい現況で上書きできなくなる
-		test('ignores a voice state older than two days minus five minutes', async () => {
+		test('ignores an empty voice state older than two days minus five minutes', async () => {
 			const now = 1_000_000_000;
 			const maxAge = 172_800_000 - 300_000;
+			vi.useFakeTimers({ now, toFake: ['Date'] });
+
+			expect(await f.service.receiveRemoteSnapshot(owner, voiceState({ participants: [], updated: new Date(now - maxAge - 1).toISOString() }))).toBe('skip: voice state is too old');
+			expect(f.redis.store.has('chatVoice:r1')).toBe(false);
+			expect(await f.service.receiveRemoteSnapshot(owner, voiceState({ participants: [], updated: new Date(now - maxAge).toISOString() }))).toMatch(/^ok/);
+		});
+
+		test('ignores a voice state with participants older than ten minutes plus five minutes', async () => {
+			const now = 1_000_000_000;
+			const maxAge = 600_000 + 300_000;
 			vi.useFakeTimers({ now, toFake: ['Date'] });
 
 			expect(await f.service.receiveRemoteSnapshot(owner, voiceState({ updated: new Date(now - maxAge - 1).toISOString() }))).toBe('skip: voice state is too old');
@@ -2287,7 +2475,7 @@ describe('ChatVoiceService storing mirror snapshots in Redis', () => {
 	beforeEach(async () => {
 		vi.useFakeTimers({ now: TEST_CLOCK, toFake: ['Date'] });
 		f = createFixture(redis as any);
-		await redis.del('chatVoice:r1', 'chatVoice:lastSeen:r1', 'chatVoice:remoteGeneration', 'chatVoice:federated:r1', 'chatVoice:federateGate:r1', 'chatVoice:federateEmptyGate:r1', 'chatVoice:federateLock:r1');
+		await redis.del('chatVoice:r1', 'chatVoice:lastSeen:r1', 'chatVoice:remoteGeneration', 'chatVoice:federated:r1', 'chatVoice:federateGate:r1', 'chatVoice:federateEmptyGate:r1', 'chatVoice:federateLock:r1', 'chatVoice:federateDecided:r1');
 	});
 
 	afterEach(() => {
@@ -2296,7 +2484,7 @@ describe('ChatVoiceService storing mirror snapshots in Redis', () => {
 	});
 
 	afterAll(async () => {
-		await redis.del('chatVoice:r1', 'chatVoice:lastSeen:r1', 'chatVoice:remoteGeneration', 'chatVoice:federated:r1', 'chatVoice:federateGate:r1', 'chatVoice:federateEmptyGate:r1', 'chatVoice:federateLock:r1');
+		await redis.del('chatVoice:r1', 'chatVoice:lastSeen:r1', 'chatVoice:remoteGeneration', 'chatVoice:federated:r1', 'chatVoice:federateGate:r1', 'chatVoice:federateEmptyGate:r1', 'chatVoice:federateLock:r1', 'chatVoice:federateDecided:r1');
 		redis.disconnect();
 		raw.disconnect();
 	});
@@ -2325,11 +2513,11 @@ describe('ChatVoiceService storing mirror snapshots in Redis', () => {
 	});
 
 	test('keeps the newest of many snapshots stored at the same time', async () => {
-		const times = [5, 3, 9, 1, 7, 2, 8, 4, 6].map(n => 900_000 + n);
+		const times = [5, 3, 9, 1, 7, 2, 8, 4, 6].map(n => 500_000 + n);
 
 		await Promise.all(times.map(updatedAt => store(updatedAt)));
 
-		expect((await stored()).updatedAt).toBe(900_009);
+		expect((await stored()).updatedAt).toBe(500_009);
 	});
 
 	// 他のサーバーへ送るときの、送った記録と送る順番の鍵のスクリプト
@@ -2341,29 +2529,47 @@ describe('ChatVoiceService storing mirror snapshots in Redis', () => {
 			f.chatRoomMembershipsRepository.findBy.mockResolvedValue([{ userId: 'rm1' }]);
 		});
 
-		test('records what it sent, never over the record of a newer send, and gives back its turn', async () => {
+		test('records what it sent and the time it decided on, and gives back its turn', async () => {
 			f.liveKitService.listParticipants.mockResolvedValue([u1]);
 			await f.service.refresh('r1');
 
 			expect(await record()).toMatchObject({ updatedAt: TEST_CLOCK });
+			expect(await redis.get('chatVoice:federateDecided:r1')).toBe(String(TEST_CLOCK));
 			expect(await redis.exists('chatVoice:federateLock:r1')).toBe(0);
-
-			// ほかのワーカーが後の現況を記録していれば、前の現況の記録で上書きしない
-			await redis.set('chatVoice:federated:r1', JSON.stringify({ hash: 'newer', at: 0, updatedAt: TEST_CLOCK + 5_000 }), 'EX', 240);
-			await redis.del('chatVoice:federateGate:r1');
-			vi.setSystemTime(TEST_CLOCK + 1_000);
-			f.liveKitService.listParticipants.mockResolvedValue([{ ...u1, screenSharing: true }]);
-			await f.service.refresh('r1');
-			expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
-			expect(await record()).toMatchObject({ hash: 'newer', updatedAt: TEST_CLOCK + 5_000 });
 
 			// 同じかそれより後の現況なら書く
 			await redis.del('chatVoice:federateGate:r1');
 			vi.setSystemTime(TEST_CLOCK + 5_000);
-			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+			f.liveKitService.listParticipants.mockResolvedValue([{ ...u1, screenSharing: true }]);
 			await f.service.refresh('r1');
 			expect(await record()).toMatchObject({ updatedAt: TEST_CLOCK + 5_000 });
-			expect((await record()).hash).not.toBe('newer');
+			expect(await redis.get('chatVoice:federateDecided:r1')).toBe(String(TEST_CLOCK + 5_000));
+		});
+
+		test('does not decide on a snapshot older than the time decided on', async () => {
+			await redis.set('chatVoice:federateDecided:r1', String(TEST_CLOCK + 5_000), 'EX', 3600);
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+
+			await f.service.refresh('r1');
+
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+			expect(await redis.get('chatVoice:federateDecided:r1')).toBe(String(TEST_CLOCK + 5_000));
+		});
+
+		// ほかのワーカーが、送っている途中に後の現況を記録したか後の時刻で決めたなら、前の現況の記録を書かずに消す
+		test.each([
+			['a newer record', 'chatVoice:federated:r1', JSON.stringify({ hash: 'newer', at: 0, updatedAt: TEST_CLOCK + 5_000 })],
+			['a newer decision', 'chatVoice:federateDecided:r1', String(TEST_CLOCK + 5_000)],
+		])('drops its record when another worker writes %s while it sends', async (_label, key, value) => {
+			f.queueService.deliver.mockImplementation(async () => {
+				await redis.set(key, value, 'EX', 240);
+			});
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+
+			await f.service.refresh('r1');
+
+			expect(f.queueService.deliver).toHaveBeenCalled();
+			expect(await redis.exists('chatVoice:federated:r1')).toBe(0);
 		});
 
 		test('waits for another worker\'s turn, and leaves its turn alone', async () => {
