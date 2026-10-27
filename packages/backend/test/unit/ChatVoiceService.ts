@@ -530,6 +530,37 @@ describe('ChatVoiceService', () => {
 			expect((membershipChecks[0][0]!.userId as FindOperator<string[]>).value).toEqual(['u1', 'u2']);
 		});
 
+		test('storeRemoteSnapshot deduplicates identities while preserving host order and first screen-sharing state', async () => {
+			const identities = ['https://other.test/users/x', 'https://remote.test/users/remoteOwner', 'https://local.test/users/u1'];
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [
+				...identities.map(identity => ({ identity, screenSharing: false })),
+				{ identity: identities[0], screenSharing: true },
+			], 2000);
+
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).participants.map((p: { identity: string; screenSharing: boolean }) => [p.identity, p.screenSharing])).toEqual(identities.map(identity => [identity, false]));
+		});
+
+		test.each([
+			['blocked', { blockedHosts: ['OTHER.test.:8443'] }, []],
+			['not allowed', { federation: 'specified', federationHosts: ['remote.test'] }, []],
+			['suspended', {}, [{ host: 'other.test', suspensionState: 'manuallySuspended' }]],
+			['quarantined', {}, [{ host: 'other.test', suspensionState: 'none', quarantineLimited: true }]],
+		])('storeRemoteSnapshot drops participants on a %s host while preserving remote owner and local membership semantics', async (_label, meta, instances) => {
+			f = createFixture(undefined, instances);
+			Object.assign(f.meta, meta);
+			f.nonMembers.add('u2');
+			f.nonMembers.add('remoteOwner');
+			f.nonMembers.add('x1');
+			await f.service.storeRemoteSnapshot(mirrorRoom(), [
+				{ identity: 'https://other.test/users/x', screenSharing: false },
+				{ identity: 'https://remote.test/users/remoteOwner', screenSharing: true },
+				{ identity: 'https://local.test/users/u1', screenSharing: false },
+				{ identity: 'https://local.test/users/u2', screenSharing: false },
+			], 2000);
+
+			expect(JSON.parse(f.redis.store.get('chatVoice:r1')!).participants.map((p: { userId: string }) => p.userId)).toEqual(['remoteOwner', 'u1']);
+		});
+
 		test('storeRemoteSnapshot does not look up memberships when no user of this server is named', async () => {
 			f.nonMembers.add('x1');
 
@@ -962,6 +993,69 @@ describe('ChatVoiceService', () => {
 			expect(f.redis.store.has('chatVoice:federated:r1')).toBe(true);
 		});
 
+		test('resends at the next normal decision after returning a newer empty join snapshot', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+			await f.service.refresh('r1');
+			const earlier = deliveredObjects().at(-1)!;
+			// 保存した現況の寿命が切れているが、同じ参加者を送った記録はまだある。
+			await f.redis.del('chatVoice:r1');
+			const emptyJoin = await f.service.snapshotOf('r1');
+			expect(emptyJoin.updatedAt).toBeGreaterThan(Date.parse(earlier.updated));
+			expect(emptyJoin.participants).toEqual([]);
+			await vi.advanceTimersByTimeAsync(10_001);
+			await f.service.refresh('r1');
+			expect(f.queueService.deliver).toHaveBeenCalledTimes(4);
+			expect(Date.parse(deliveredObjects().at(-1)!.updated)).toBeGreaterThan(emptyJoin.updatedAt);
+		});
+
+		// 空の join 応答より前に決めた配送が、その後に記録される競合は残る。相手は古い配送を捨て、新しい現況で回復する。
+		test('rejects a delayed pre-join decision at the mirror and recovers with the next changed snapshot', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+			f.queueService.deliver.mockResolvedValue(undefined);
+			const paused = pauseNextCall(f.queueService.deliver);
+			const refreshing = f.service.refresh('r1');
+			await paused.reached;
+			await f.redis.del('chatVoice:r1');
+			const emptyJoin = await f.service.snapshotOf('r1');
+			const remote = createFixture();
+			try {
+				expect(await remote.service.storeRemoteSnapshot(mirrorRoom(), emptyJoin.participants, emptyJoin.updatedAt)).toBe('stored');
+				paused.resume();
+				await refreshing;
+				const oldDecision = deliveredObjects()[0];
+				const oldUpdatedAt = Date.parse(oldDecision.updated);
+				expect(oldUpdatedAt).toBeLessThan(emptyJoin.updatedAt);
+				expect(await remote.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: u1.identity, screenSharing: false }], oldUpdatedAt)).toBe('stale');
+				// この応答の後に書かれた記録は、まだ同じ hash を抑止する。Task 8 の限定的な無効化でここまで閉じたとは扱わない。
+				expect(JSON.parse((await f.redis.get('chatVoice:federated:r1'))!).updatedAt).toBe(oldUpdatedAt);
+				await vi.advanceTimersByTimeAsync(10_001);
+				await f.service.refresh('r1');
+				expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
+				f.liveKitService.listParticipants.mockResolvedValue([{ ...u1, screenSharing: true }]);
+				await f.service.refresh('r1');
+				const changed = deliveredObjects().at(-1)!;
+				expect(Date.parse(changed.updated)).toBeGreaterThan(emptyJoin.updatedAt);
+				expect(await remote.service.storeRemoteSnapshot(mirrorRoom(), [{ identity: u1.identity, screenSharing: true }], Date.parse(changed.updated))).toBe('stored');
+			} finally {
+				paused.resume();
+				remote.service.onApplicationShutdown();
+			}
+		});
+
+		test('keeps the federation record when handing out an existing snapshot', async () => {
+			withRemoteMembers();
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+			await f.service.refresh('r1');
+			const record = await f.redis.get('chatVoice:federated:r1');
+			expect(record).not.toBeNull();
+			await f.service.snapshotOf('r1');
+			expect(await f.redis.get('chatVoice:federated:r1')).toBe(record);
+		});
+
 		test('does not record what could not be queued, and sends it again later', async () => {
 			withRemoteMembers();
 			vi.useFakeTimers({ now: 1_000_000 });
@@ -980,6 +1074,26 @@ describe('ChatVoiceService', () => {
 			await vi.advanceTimersByTimeAsync(10_001);
 			expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
 			expect(f.redis.store.has('chatVoice:federated:r1')).toBe(true);
+		});
+
+		test.each([false, true])('stops delivery-failure followups after 600 seconds even with intermittent LiveKit failures (%s)', async intermittent => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			f.queueService.deliver.mockRejectedValue(new Error('queue is down'));
+			let reads = 0;
+			f.liveKitService.listParticipants.mockImplementation(async () => {
+				reads++;
+				if (intermittent && reads % 3 === 0) throw new Error('LiveKit is down');
+				return [u1];
+			});
+			await expect(f.service.refresh('r1')).rejects.toThrow('queue is down');
+			await vi.advanceTimersByTimeAsync(620_000);
+			const attempts = f.queueService.deliver.mock.calls.length;
+			expect(attempts).toBeGreaterThan(2);
+			expect(vi.getTimerCount()).toBe(0);
+			expect(f.logger.warn).toHaveBeenCalledWith('Gave up sending the voice call in r1 to other servers after failing for 600 seconds');
+			await vi.advanceTimersByTimeAsync(600_000);
+			expect(f.queueService.deliver).toHaveBeenCalledTimes(attempts);
 		});
 
 		// 一部のサーバーにだけ積めたときは、相手に届いている現況が分からない。前に送った終わりの記録で、次の終わりを送らずに済ませない

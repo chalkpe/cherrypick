@@ -20,8 +20,9 @@ function createFixture(metaOverrides: Partial<Pick<MiMeta, 'federation' | 'feder
 	const instancesRepository = {
 		findBy: vi.fn(async ({ host }: { host: FindOperator<string[]> }) => instances.filter(instance => (host.value as unknown as string[]).includes(instance.host))),
 	};
-	const service = new HostPolicyService(meta as MiMeta, instancesRepository as unknown as InstancesRepository, utilityService);
-	return { service, meta, instancesRepository };
+	const logger = { warn: vi.fn() };
+	const service = new HostPolicyService(meta as MiMeta, instancesRepository as unknown as InstancesRepository, utilityService, { getLogger: () => logger } as any);
+	return { service, meta, instancesRepository, logger };
 }
 
 describe('HostPolicyService', () => {
@@ -112,6 +113,18 @@ describe('HostPolicyService', () => {
 			'broken.test': null,
 			'blocked.test': true,
 		});
+	});
+
+	test('logs the original batch and per-host failure causes without adding their contents to messages', async () => {
+		const f = createFixture();
+		const batchError = new Error('batch unavailable');
+		const hostError = new Error('single unavailable');
+		f.instancesRepository.findBy.mockRejectedValueOnce(batchError).mockRejectedValue(hostError);
+		expect(await f.service.refusedRemoteHostsOrUnknown(['broken.test'])).toEqual(new Map([['broken.test', null]]));
+		expect(f.logger.warn.mock.calls).toEqual([
+			['Failed to read the remote host policies together; retrying each host', { error: batchError }],
+			['Failed to read a remote host policy', { error: hostError }],
+		]);
 	});
 
 	test('reads the records as they are now', async () => {

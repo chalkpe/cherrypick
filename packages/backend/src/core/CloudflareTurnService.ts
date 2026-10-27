@@ -227,7 +227,7 @@ function iceServersFromCloudflare(body: unknown): IceServer[] | null {
  * 他のサーバーから届いた ICE サーバーを確かめる。どこかがおかしければ全体を null にする (通話への参加は止めない)。
  * ブラウザが受け付けないもの (資格情報の無い TURN、53 番ポート、表示できる ASCII 以外の文字) もおかしいものとして扱う。
  * ユーザーのブラウザが接続しに行くので、ユーザーの手元や同じネットワークの機器を指す URL (isAllowedRemoteIceUrl) も断る。
- * 空の配列も null にする (渡すと LiveKit が渡す ICE サーバーまで使われなくなる)
+ * 空の配列も null にする (追加の ICE サーバーが無いことを表し、frontend は LiveKit が渡すものを使う)
  */
 export function parseIceServers(value: unknown): IceServer[] | null {
 	if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ICE_SERVERS) return null;

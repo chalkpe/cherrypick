@@ -37,7 +37,11 @@ vi.stubGlobal('localStorage', localStorageMock);
 // 中でlocalStorageを使うので上と順番を変えてはいけない
 const { default: locales } = await import('i18n');
 
-fetchMocker.mockIf(/^\/assets\/locales\/.*\.json$/, async () => {
+// vitest-fetch-mock resolves relative requests before matching; match the same-origin locale asset.
+fetchMocker.mockIf(request => {
+	const url = new URL(request.url);
+	return url.origin === window.location.origin && /^\/assets\/locales\/[^/]+\.json$/.test(url.pathname);
+}, async () => {
 	return {
 		status: 200,
 		body: JSON.stringify(locales['en-US']),
@@ -65,7 +69,7 @@ export const preferState: Record<string, unknown> = {
 	friendlyUiShowAvatarDecorationsInNavBtn: false,
 };
 
-export let preferReactive: Record<string, Ref<unknown>> = {};
+export const preferReactive: Record<string, Ref<unknown>> = {};
 
 for (const key in preferState) {
 	if (preferState[key] !== undefined) {
@@ -75,7 +79,6 @@ for (const key in preferState) {
 
 // XXX: store somehow becomes undefined in vitest?
 vi.mock('@/preferences.js', () => {
-
 	return {
 		prefer: {
 			s: preferState,

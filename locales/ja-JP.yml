@@ -2410,7 +2410,7 @@ _achievements:
       flavor: "これくらいの　おべんとばこに　🤯　🤯　ちょっとつめて"
 
 _voiceCall:
-  micUnavailable: "マイクを使用できません。聞くことはできます。"
+  micUnavailable: "マイクを使用できません。"
   connectionFailed: "通話サーバーに接続できませんでした。"
   remoteHostNotice: "この通話は{host}で開かれます。{host}にはあなたのIPアドレスが見えます。"
   remoteHostUnsupported: "このルームのサーバーは通話に対応していません。"

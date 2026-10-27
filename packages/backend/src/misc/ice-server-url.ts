@@ -19,8 +19,9 @@ export const BLOCKED_ICE_PORT = 53;
 // 同じネットワークに届くブロードキャストとマルチキャスト、使われなくなったサイトローカル、IPv4 に変換される ::ffff:0:0:0/96 も断る
 const LOCAL_IPV4_RANGES = new Set(['unspecified', 'loopback', 'private', 'carrierGradeNat', 'linkLocal', 'broadcast', 'multicast']);
 const LOCAL_IPV6_RANGES = new Set(['unspecified', 'loopback', 'uniqueLocal', 'linkLocal', 'deprecatedSiteLocal', 'multicast', 'rfc6145']);
-// ベンチマーク用のアドレス (RFC 2544)。組織の中で使われていることがあるので断る。ipaddr.js はこれを reserved に含めるが、ほかの reserved (文書用など) は断らない
+// ベンチマーク用のアドレス (RFC 2544 / RFC 5180)。組織の中で使われていることがあるので断る。ipaddr.js はこれを reserved に含めるが、ほかの reserved (文書用など) は断らない
 const BENCHMARKING_IPV4 = ipaddr.IPv4.parseCIDR('198.18.0.0/15');
+const BENCHMARKING_IPV6 = ipaddr.IPv6.parseCIDR('2001:2::/48');
 
 // ネットワークの中で使う NAT64 のプレフィックス (64:ff9b:1::/48) の中でネットワークが選ぶ長さごとの、RFC 6052 の形。
 // IPv4 アドレスのバイトの位置と、0 でなければならないバイト (u と後ろ) の位置
@@ -146,5 +147,5 @@ function isLocalIPv6(address: ipaddr.IPv6): boolean {
 			.some(layout => isLocalIPv4(ipv4At(layout.ipv4)));
 	}
 	if (parts[0] === 0x2002) return isLocalIPv4(ipv4At([2, 3, 4, 5]));
-	return LOCAL_IPV6_RANGES.has(address.range());
+	return LOCAL_IPV6_RANGES.has(address.range()) || address.match(BENCHMARKING_IPV6);
 }

@@ -414,7 +414,6 @@ describe('voice call on the room page', () => {
 	const headerJoin = () => within(screen.getByTestId('header-actions')).queryByLabelText(i18n.ts._voiceCall.join);
 	const stickyCard = () => within(screen.getByTestId('sticky-header'));
 
-
 	test('on mobile hides the common bar only while its own room card is shown', async () => {
 		const originalWidth = window.innerWidth;
 		try {
@@ -446,8 +445,6 @@ describe('voice call on the room page', () => {
 			window.dispatchEvent(new Event('resize'));
 		}
 	});
-
-
 
 	async function renderCallControls(surface: 'card' | 'stage') {
 		Object.assign(callState, { status: 'connected', room, micEnabled: true, audioBlocked: true });
@@ -703,6 +700,9 @@ describe('voice call on the room page', () => {
 			mocks.confirm.mockResolvedValue({ canceled: false });
 			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
 			await flush();
+			expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.remoteHostNotice({ host: 'remote.test' }) }));
+			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
+			expect(mocks.joinVoiceCall).toHaveBeenCalledWith(mirror);
 			expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
 		});
 

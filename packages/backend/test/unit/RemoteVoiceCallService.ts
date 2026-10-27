@@ -60,8 +60,7 @@ function createFixture(metaOverrides: Record<string, unknown> = {}, instances: {
 	const instancesRepository = {
 		findBy: vi.fn(async ({ host }: { host: { value: string[] } }) => instances.filter(instance => host.value.includes(instance.host))),
 	};
-	// 持ち主のサーバーを断るかどうかは、通話に入れるかを決めるほかの場所と同じ判定 (HostPolicyService) を実物で使う
-	const hostPolicyService = new HostPolicyService(meta, instancesRepository as unknown as InstancesRepository, utilityService);
+
 	// 通話のサービスからは、ホストが渡した現況を保存するところだけを使う
 	const chatVoiceService = {
 		storeRemoteSnapshot: vi.fn(async (..._args: Parameters<ChatVoiceService['storeRemoteSnapshot']>): Promise<RemoteSnapshotStoreResult> => 'stored'),
@@ -72,6 +71,8 @@ function createFixture(metaOverrides: Record<string, unknown> = {}, instances: {
 	} satisfies Pick<CloudflareTurnService, 'getIceServers'>;
 	const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 	const loggerService = { getLogger: () => logger } as unknown as LoggerService;
+	// 持ち主のサーバーを断るかどうかは、通話に入れるかを決めるほかの場所と同じ判定 (HostPolicyService) を実物で使う
+	const hostPolicyService = new HostPolicyService(meta, instancesRepository as unknown as InstancesRepository, utilityService, loggerService as any);
 	const service = new RemoteVoiceCallService(
 		redis as unknown as ConstructorParameters<typeof RemoteVoiceCallService>[0],
 		meta,

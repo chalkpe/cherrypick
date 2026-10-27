@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-// ChatVoiceService のうち、通話に残れるか (isAdmitted) を確かめて外すところと、他のサーバーを断るか (HostPolicyService) を使うところのテスト
+// ChatVoiceService のうち、通話に残れるか (admissionOf) を確かめて外すところと、他のサーバーを断るか (HostPolicyService) を使うところのテスト
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { Fixture } from '../misc/chat-voice-fixture.js';
@@ -745,6 +745,22 @@ describe('ChatVoiceService admission', () => {
 				f.nonMembers.add('owner');
 				await f.service.removeUnadmittedParticipant('r1', joined(owner).participant);
 
+				expect(removed()).toEqual([]);
+			});
+
+			test.each([false, true])('successful join admission clears an earlier sweep failure count (second check: %s)', async secondCheck => {
+				const identity = participant(rm1).identity;
+				f.redis.store.set(`chatVoice:unverified:r1:${identity}`, '2');
+				if (secondCheck) {
+					vi.useFakeTimers();
+					f.roleService.getUserPolicies.mockRejectedValueOnce(new Error('db is down'));
+					const checking = f.service.removeUnadmittedParticipant('r1', joined(rm1).participant);
+					await vi.advanceTimersByTimeAsync(2000);
+					await checking;
+				} else {
+					await f.service.removeUnadmittedParticipant('r1', joined(rm1).participant);
+				}
+				expect(f.redis.store.has(`chatVoice:unverified:r1:${identity}`)).toBe(false);
 				expect(removed()).toEqual([]);
 			});
 

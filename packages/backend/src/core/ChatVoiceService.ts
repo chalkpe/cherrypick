@@ -120,8 +120,9 @@ const FEDERATION_LOCK_MS = 30_000;
 const FEDERATION_LOCK_RETRY_MAX_MS = 4_000;
 
 // 他のサーバーへ送るかを決められない (順番の鍵が空かない、鍵を取った後に LiveKit を読めない) まま、最初に決められなかったときから
-// これだけ経ったら、決め直すのをやめる。そのあいだどのワーカーも送れていなければ、他のサーバーのミラーの現況 (寿命 REMOTE_SNAPSHOT_TTL_SECONDS) は
-// もう切れていて、送り直して直すものが残っていない (ほかのワーカーが送れていれば、その現況が届いている)。
+// これだけ経ったら、決め直すのをやめる。配送を積めないときも同じ期限を使う。
+// ミラーの保存後の寿命は REMOTE_SNAPSHOT_TTL_SECONDS だが、参加者のいる現況は最大 REMOTE_ACTIVE_SNAPSHOT_MAX_AGE_MS 前のものまで
+// 受け入れるので、遅れて届いたミラーはこの期限を越えて残りうる。期限は再試行の仕事量を抑えるためのもので、ミラーの消滅を保証しない。
 // LiveKit が戻った後の通話は、webhook と定期的な読み直しで送る
 const FEDERATION_RETRY_LIMIT_MS = REMOTE_SNAPSHOT_TTL_SECONDS * 1000;
 
@@ -332,9 +333,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	/** 他のサーバーへ送るのを待たせたルームについて、送れるようになったときに送るかを決め直す予定 (federateRoom) */
 	private pendingFollowUps = new Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>();
 	/**
-	 * 他のサーバーへ送るかを決められずに続けて待った回数 (waits) と、最初に決められなかった時刻 (since)。ルームごと。
-	 * 順番の鍵が空いていないときと、鍵を取った後に LiveKit を読めなかったときに増やし、待つ間隔を延ばすのと、
-	 * 決め直すのをやめる (FEDERATION_RETRY_LIMIT_MS) のに使う。決められたときと、待つのをやめたとき (ルームが無い・
+	 * 他のサーバーへ送るかを決められず、または配送を積めずに続けて待った回数 (waits) と、最初に失敗した時刻 (since)。ルームごと。
+	 * 順番の鍵が空いていないとき、鍵を取った後に LiveKit を読めなかったとき、配送を積めなかったときに増やし、待つ間隔を延ばすのと、
+	 * 決め直すのをやめる (FEDERATION_RETRY_LIMIT_MS) のに使う。すべての配送を積んで記録できたとき (または同じ現況の記録があるとき) と、待つのをやめたとき (ルームが無い・
 	 * 他のサーバーのメンバーがいない・ルームを読めない・Redis が失敗した・待ちすぎた) に消す
 	 */
 	private federationBackoff = new Map<MiChatRoom['id'], { waits: number; since: number }>();
@@ -489,6 +490,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const raw = await this.redisClient.get(this.keyOf(roomId));
 		if (raw == null) {
 			const updatedAt = await this.allocateStamp(this.localStampKeyOf(roomId), this.decidedKeyOf(roomId), LOCAL_STAMP_TTL_SECONDS);
+			// 新しい空の応答が相手の現況を覆うので、次に送るかを決めるときは、同じ参加者でも送り直す。
+			// すでに進行中の配送・記録までは止めない (この応答より前に決めた配送は相手が古いものとして捨てる)。
+			await this.redisClient.del(`chatVoice:federated:${roomId}`);
 			return { participants: [], updatedAt };
 		}
 		const snapshot = JSON.parse(raw) as VoiceSnapshot;
@@ -630,7 +634,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * 参加者のいる現況は、ミラーでの寿命に時計のずれを足した REMOTE_ACTIVE_SNAPSHOT_MAX_AGE_MS より古ければ捨てる。
 	 * inbox に届いた現況も、参加したときにホストから受け取った現況も、すべてここを通る。
 	 * 参加者は、このサーバーが知っているユーザーだけを残す。そのうちこのサーバーのユーザーは、ルームのメンバーでなければ外す。
-	 * 他のサーバーのユーザー (持ち主を含む) がメンバーかはこのサーバーでは分からないので、ホストの言うまま残す。
+	 * 他のサーバーのユーザー (持ち主を含む) がメンバーかはこのサーバーでは分からないので、そのサーバーを断っていなければ残す。
 	 * 他のサーバーの通話を止めているあいだは保存しない。保存の途中で止められたときも、書かず (REMOTE_GENERATION_KEY)、知らせない。
 	 * 結果 (RemoteSnapshotStoreResult) を返す。
 	 * ミラーの通話はこのサーバーの LiveKit には無いので、定期的な読み直し (sweep) の対象には加えない
@@ -649,16 +653,23 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		// 書き込みのスクリプトは、ここで読んだ世代と比べる。この後で止められれば書かない
 		const generation = await this.remoteGenerationOf();
 
-		const capped = participants.slice(0, MAX_ROOM_MEMBERS + 1);
+		const seen = new Set<string>();
+		const capped = participants.slice(0, MAX_ROOM_MEMBERS + 1).filter(p => {
+			if (seen.has(p.identity)) return false;
+			seen.add(p.identity);
+			return true;
+		});
 		const users = await this.knownUsersOf(capped.map(p => p.identity));
 		// ホストは、このサーバーのユーザーなら誰でも参加者として送れる。このサーバーのユーザーかどうかは、送られた identity ではなく
 		// DB のユーザーで決め、メンバーでなければ外す
 		const localMemberIds = await this.memberIdsOf(room, [...new Set([...users.values()].filter(user => user.host == null).map(user => user.id))]);
+		const refusedHosts = await this.hostPolicyService.refusedRemoteHostsOf([...new Set([...users.values()].flatMap(user => user.host ?? []))]);
 		const snapshot: VoiceSnapshot = { participants: [], updatedAt };
 		for (const p of capped) {
 			const user = users.get(p.identity);
 			if (user == null) continue;
 			if (user.host == null && !localMemberIds.has(user.id)) continue;
+			if (user.host != null && refusedHosts.get(user.host) !== false) continue;
 			snapshot.participants.push({ identity: p.identity, userId: user.id, screenSharing: p.screenSharing });
 		}
 
@@ -889,6 +900,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const decision = named.length > 0 ? await this.admissionsOf(roomId, named, refusedHosts) : { admitted: [], denied: [], unverified: [] };
 		denied.push(...decision.denied);
 		const removed = await this.removeParticipants(roomId, denied);
+		if (check !== 'sweep') await this.forgetUnverified(roomId, [...decision.admitted, ...decision.denied]);
 		if (decision.unverified.length === 0 && check !== 'sweep') return removed;
 
 		let giveUp: string[] = [];
@@ -955,6 +967,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	private async recheckJoined(roomId: MiChatRoom['id'], participants: NamedCallParticipant[]): Promise<string[]> {
 		if (!(await this.wait(JOIN_RECHECK_DELAY_MS))) return [];
 		const decision = await this.admissionsOf(roomId, participants, new Map());
+		await this.forgetUnverified(roomId, [...decision.admitted, ...decision.denied]);
 		if (decision.unverified.length > 0) {
 			this.logger.warn(`Removing ${decision.unverified.map(p => p.identity).join(', ')} from the voice call in ${roomId}, as whether they may stay could not be checked twice`);
 		}
@@ -1156,9 +1169,10 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	/**
 	 * 決められなかったルームを、待つたびに倍にした間隔 (REFRESH_DELAY_MS から FEDERATION_LOCK_RETRY_MAX_MS まで) の後に決め直す。
-	 * 最初に決められなかったときから FEDERATION_RETRY_LIMIT_MS を過ぎていれば、決め直さずに待つのをやめる
+	 * 最初に失敗したときから FEDERATION_RETRY_LIMIT_MS を過ぎていれば、決め直さずに待つのをやめる。
+	 * 配送を積めなかったときは、間隔の鍵が切れるまで待つ (delayMs)。LiveKit を読めただけでは失敗の時刻を消さない
 	 */
-	private retryFederationLater(roomId: MiChatRoom['id']): void {
+	private retryFederationLater(roomId: MiChatRoom['id'], delayMs?: number): void {
 		const now = Date.now();
 		const backoff = this.federationBackoff.get(roomId) ?? { waits: 0, since: now };
 		if (now - backoff.since > FEDERATION_RETRY_LIMIT_MS) {
@@ -1167,7 +1181,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			return;
 		}
 		this.federationBackoff.set(roomId, { waits: backoff.waits + 1, since: backoff.since });
-		this.scheduleFollowUp(roomId, Math.min(REFRESH_DELAY_MS * 2 ** backoff.waits, FEDERATION_LOCK_RETRY_MAX_MS));
+		this.scheduleFollowUp(roomId, delayMs ?? Math.min(REFRESH_DELAY_MS * 2 ** backoff.waits, FEDERATION_LOCK_RETRY_MAX_MS));
 	}
 
 	/**
@@ -1242,7 +1256,6 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			this.retryFederationLater(room.id);
 			throw err;
 		}
-		this.federationBackoff.delete(room.id);
 		const participants = listed.map(p => ({ identity: p.identity, screenSharing: p.screenSharing }));
 
 		const hash = createHash('sha256')
@@ -1251,7 +1264,10 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const ended = participants.length === 0;
 
 		const last = ended ? null : await this.lastFederatedOf(room.id);
-		if (!ended && isStillFederated(last, hash)) return true;
+		if (!ended && isStillFederated(last, hash)) {
+			this.federationBackoff.delete(room.id);
+			return true;
+		}
 
 		const gateKey = ended ? `chatVoice:federateEmptyGate:${room.id}` : `chatVoice:federateGate:${room.id}`;
 		const opened = await this.redisClient.set(gateKey, '1', 'PX', FEDERATION_MIN_INTERVAL_MS, 'NX');
@@ -1269,6 +1285,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		// 通話の終わりは、送る直前に読んだ記録が同じ終わりなら送らない (相手には届いている)。
 		// 送らないので間隔の鍵も外し、次に参加者が出入りした後の終わりを待たせない
 		if (ended && isStillFederated(await this.lastFederatedOf(room.id), hash)) {
+			this.federationBackoff.delete(room.id);
 			await this.redisClient.del(gateKey);
 			return true;
 		}
@@ -1280,13 +1297,15 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			// 一部の届け先には積めたかもしれず、相手に届いている現況が分からない。記録を消して次の現況 (終わりを含む) を必ず送り、
 			// 間隔の鍵が切れた後に決め直して送り直す。記録を消せなくても、記録は FEDERATION_RESEND_INTERVAL_MS で切れる
 			await this.redisClient.del(recordKey).catch(() => {});
-			this.scheduleFollowUp(room.id, FEDERATION_MIN_INTERVAL_MS + 1);
+			this.retryFederationLater(room.id, FEDERATION_MIN_INTERVAL_MS + 1);
 			throw err;
 		}
 
 		// 順番の鍵が寿命で切れて、ほかのワーカーが後の現況で決めたか記録していれば、書かずに決め直す
 		const record: FederatedRecord = { hash, at: Date.now(), updatedAt };
-		return await this.redisClient.eval(RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT, 2, recordKey, decidedKey, JSON.stringify(record), updatedAt, FEDERATION_RESEND_INTERVAL_MS / 1000) === 1;
+		const recorded = await this.redisClient.eval(RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT, 2, recordKey, decidedKey, JSON.stringify(record), updatedAt, FEDERATION_RESEND_INTERVAL_MS / 1000) === 1;
+		if (recorded) this.federationBackoff.delete(room.id);
+		return recorded;
 	}
 
 	/** 他のサーバーに最後に送った現況の記録。FEDERATION_RESEND_INTERVAL_MS で切れる */

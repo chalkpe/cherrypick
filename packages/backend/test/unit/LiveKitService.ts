@@ -63,6 +63,18 @@ describe('LiveKitService', () => {
 		expect(roomService.listParticipants).toHaveBeenCalledWith('chatRoom:r1');
 	});
 
+	test('keeps participant order by joinedAt then identity when LiveKit reorders its list', async () => {
+		const participants = [
+			{ identity: 'z', joinedAt: 1n, metadata: '{"userId":"u1"}', tracks: [] },
+			{ identity: 'b', joinedAt: 2n, metadata: '{"userId":"u2"}', tracks: [] },
+			{ identity: 'a', joinedAt: 2n, metadata: '{"userId":"u3"}', tracks: [] },
+		];
+		roomService.listParticipants.mockResolvedValueOnce(participants).mockResolvedValueOnce([...participants].reverse());
+		for (let i = 0; i < 2; i++) {
+			expect((await service.listParticipants('r1')).map(p => p.identity)).toEqual(['z', 'a', 'b']);
+		}
+	});
+
 	test('skips participants without our metadata', async () => {
 		roomService.listParticipants.mockResolvedValue([
 			{ identity: 'stranger', metadata: '', tracks: [] },

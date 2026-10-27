@@ -97,11 +97,12 @@ describe('ApSignedRequestVerifierService', () => {
 	});
 
 	test('rejects a body that does not match the digest', async () => {
-		const { verifier } = createVerifier();
+		const { verifier, logger } = createVerifier();
 
 		const user = await verifier.verify(await signedRequest(), JSON.stringify({ room: 'https://local.test/chat/rooms/other', canScreenShare: true }));
 
 		expect(user).toBeNull();
+		expect(logger.debug).toHaveBeenLastCalledWith('Rejected a signed request at the "digest" check (key host: remote.test)');
 	});
 
 	test('rejects a request signed for another host', async () => {
@@ -264,7 +265,7 @@ describe('ApSignedRequestVerifierService', () => {
 	});
 
 	test('rejects a digest made with another algorithm', async () => {
-		const { verifier } = createVerifier();
+		const { verifier, logger } = createVerifier();
 		const sha512 = `SHA-512=${crypto.createHash('sha512').update(BODY).digest('base64')}`;
 		// 値は SHA-256 のものだが、名前が違う
 		const mislabeled = `SHA-512=${crypto.createHash('sha256').update(BODY).digest('base64')}`;
@@ -272,11 +273,12 @@ describe('ApSignedRequestVerifierService', () => {
 		for (const digest of [sha512, mislabeled]) {
 			const user = await verifier.verify(await signedRequest({ digest }), BODY);
 			expect(user, digest).toBeNull();
+			expect(logger.debug).toHaveBeenLastCalledWith('Rejected a signed request at the "digest" check (key host: remote.test)');
 		}
 	});
 
 	test('rejects a malformed digest', async () => {
-		const { verifier } = createVerifier();
+		const { verifier, logger } = createVerifier();
 		const sha256 = crypto.createHash('sha256').update(BODY).digest('base64');
 
 		for (const digest of [
@@ -292,6 +294,7 @@ describe('ApSignedRequestVerifierService', () => {
 			// digest も署名に含めるので、署名は正しい
 			const user = await verifier.verify(await signedRequest({ digest }), BODY);
 			expect(user, JSON.stringify(digest)).toBeNull();
+			expect(logger.debug).toHaveBeenLastCalledWith('Rejected a signed request at the "digest" check (key host: remote.test)');
 		}
 	});
 

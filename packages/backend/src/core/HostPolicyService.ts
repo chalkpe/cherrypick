@@ -9,6 +9,8 @@ import { DI } from '@/di-symbols.js';
 import type { InstancesRepository } from '@/models/_.js';
 import type { MiMeta } from '@/models/Meta.js';
 import { bindThis } from '@/decorators.js';
+import type Logger from '@/logger.js';
+import { LoggerService } from '@/core/LoggerService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { hostLookupCandidates, isHostInList, normalizeHost } from '@/core/ActivityPubAccessControlService.js';
 
@@ -25,6 +27,8 @@ import { hostLookupCandidates, isHostInList, normalizeHost } from '@/core/Activi
  */
 @Injectable()
 export class HostPolicyService {
+	private logger: Logger;
+
 	constructor(
 		@Inject(DI.meta)
 		private meta: MiMeta,
@@ -33,7 +37,9 @@ export class HostPolicyService {
 		private instancesRepository: InstancesRepository,
 
 		private utilityService: UtilityService,
+		private loggerService: LoggerService,
 	) {
+		this.logger = this.loggerService.getLogger('host-policy');
 	}
 
 	@bindThis
@@ -76,11 +82,13 @@ export class HostPolicyService {
 	public async refusedRemoteHostsOrUnknown(hosts: string[]): Promise<Map<string, boolean | null>> {
 		try {
 			return await this.refusedRemoteHostsOf(hosts);
-		} catch {
+		} catch (err) {
+			this.logger.warn('Failed to read the remote host policies together; retrying each host', { error: err });
 			const decided = await Promise.all([...new Set(hosts)].map(async host => {
 				try {
 					return [host, await this.isRefusedRemoteHost(host)] as const;
-				} catch {
+				} catch (err) {
+					this.logger.warn('Failed to read a remote host policy', { error: err });
 					return [host, null] as const;
 				}
 			}));

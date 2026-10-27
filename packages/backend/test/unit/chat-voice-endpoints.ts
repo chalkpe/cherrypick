@@ -32,7 +32,6 @@ function joinFixture(overrides: { isEnabled?: boolean; remoteEnabled?: boolean; 
 		findRoomById: overrides.failing === 'room'
 			? vi.fn().mockRejectedValue(dbError)
 			: vi.fn().mockResolvedValue(overrides.noRoom ? null : { id: 'r1', ownerId: 'owner', owner, isArchived: overrides.isArchived ?? false }),
-		isRoomMember: overrides.failing === 'membership' ? vi.fn().mockRejectedValue(dbError) : vi.fn().mockResolvedValue(overrides.isMember ?? true),
 	};
 	// メンバーであることは、ルームを読むのと別に、渡された roomId で引く
 	const chatRoomMembershipsRepository = {
@@ -87,7 +86,7 @@ describe('chat/rooms/voice/join', () => {
 		expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
 	});
 
-	// 通話に残れるか (ChatVoiceService の isAdmitted) と同じく、削除されたユーザーには発行しない
+	// 通話に残れるか (ChatVoiceService の admissionOf) と同じく、削除されたユーザーには発行しない
 	test.each([
 		['a room on this server', null],
 		['a mirror room', 'remote.test'],

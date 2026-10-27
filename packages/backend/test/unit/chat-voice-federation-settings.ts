@@ -20,13 +20,13 @@ import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { ServerStatsService } from '@/daemons/ServerStatsService.js';
 
-// 依存は DI のトークンで渡す (コンストラクタの引数の並びに頼らない)
 const admin = { id: 'admin', host: null } as MiLocalUser;
 
 function metaWith(fields: Partial<MiMeta>): MiMeta {
 	return Object.assign(new MiMeta(), fields);
 }
 
+// 依存は DI のトークンで渡す (コンストラクタの引数の並びに頼らない)
 async function createMetaEntityService(meta: MiMeta) {
 	// pack が引く広告は無い
 	const adsQuery = {

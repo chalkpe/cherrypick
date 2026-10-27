@@ -231,10 +231,11 @@ export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []
 		rows: instances,
 		findBy: vi.fn(async (where: Record<string, unknown>) => instances.filter(instance => matchesWhere(instance, where))),
 	};
-	// 他のサーバーを断るかの判定は実物を使う
-	const hostPolicyService = new HostPolicyService(meta as any, instancesRepository as any, utilityService);
+
 	const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 	const loggerService = { getLogger: () => logger };
+	// 他のサーバーを断るかの判定は実物を使う
+	const hostPolicyService = new HostPolicyService(meta as any, instancesRepository as any, utilityService, loggerService as any);
 	// 内部イベント (metaUpdated など) は Redis の購読から届く
 	const redisForSub = new EventEmitter();
 	const usersRepository = {

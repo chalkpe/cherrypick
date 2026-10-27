@@ -2380,7 +2380,7 @@ _achievements:
       description: "버블게임에서 가장 큰 물건 2개를 동시에 내놓았어요"
       flavor: "이 정도만　도시락통에 🤯🤯 조금만 더"
 _voiceCall:
-  micUnavailable: "마이크를 쓸 수 없어요. 듣기는 할 수 있어요."
+  micUnavailable: "마이크를 쓸 수 없어요."
   connectionFailed: "통화 서버에 연결하지 못했어요."
   remoteHostNotice: "이 통화는 {host}에서 열려요. {host}에서 내 IP 주소를 볼 수 있어요."
   remoteHostUnsupported: "이 방의 서버는 통화를 지원하지 않아요."

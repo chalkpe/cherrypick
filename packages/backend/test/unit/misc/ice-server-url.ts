@@ -83,6 +83,8 @@ describe('isAllowedRemoteIceUrl (ICE server urls sent by another server)', () =>
 
 	// ベンチマーク用のアドレス (198.18.0.0/15) は、組織の中で使われていることがある
 	test.each([
+		['the first IPv6 benchmarking address', 'stun:[2001:2::]'],
+		['the last IPv6 benchmarking address', 'turn:[2001:2:0:ffff:ffff:ffff:ffff:ffff]:3478'],
 		['the first benchmarking address', 'stun:198.18.0.0'],
 		['a benchmarking address', 'turn:198.18.0.1:3478?transport=tcp'],
 		['the last benchmarking address', 'stun:198.19.255.255'],
@@ -92,6 +94,9 @@ describe('isAllowedRemoteIceUrl (ICE server urls sent by another server)', () =>
 	});
 
 	test.each([
+		['the address just before the IPv6 benchmarking block', 'stun:[2001:1:ffff:ffff:ffff:ffff:ffff:ffff]'],
+		['the address just after the IPv6 benchmarking block', 'stun:[2001:2:1::]'],
+		['a documentation address', 'stun:[2001:db8::1]'],
 		['the address just before the benchmarking block', 'stun:198.17.255.255'],
 		['the address just after the benchmarking block', 'stun:198.20.0.0'],
 	])('accepts a url with %s', (_label, url) => {

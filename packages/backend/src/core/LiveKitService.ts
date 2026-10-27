@@ -112,7 +112,8 @@ export class LiveKitService {
 		}
 
 		const result: LiveKitParticipant[] = [];
-		for (const participant of participants) {
+		// LiveKit の一覧順は毎回変わりうる。参加した順に固定し、同じ秒なら identity で揃える。
+		for (const participant of [...participants].sort((a, b) => a.joinedAt < b.joinedAt ? -1 : a.joinedAt > b.joinedAt ? 1 : a.identity.localeCompare(b.identity))) {
 			const userId = userIdOfMetadata(participant.metadata);
 			if (userId == null) continue;
 			result.push({
