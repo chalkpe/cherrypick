@@ -8,13 +8,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onActivated, onBeforeUnmount, onDeactivated, onMounted, useTemplateRef } from 'vue';
+import { onActivated, onBeforeUnmount, onDeactivated, onMounted, useTemplateRef, watch } from 'vue';
 import type { VoiceCallBarSlotKind } from '@/utility/voice-call-placement.js';
 import { registerVoiceCallBarSlot } from '@/utility/voice-call-placement.js';
 
 // 通話バーの差し込み先。通話バー自体は common.vue に 1 つだけあり、ここへ Teleport してくる
 const props = defineProps<{
 	kind: VoiceCallBarSlotKind;
+	focusWithin?: HTMLElement | null;
 }>();
 
 const el = useTemplateRef('el');
@@ -25,7 +26,7 @@ function attach() {
 	// KeepAlive で裏に回ったページの中で作られたとき (読み込みが終わって入力欄が出たときなど) は、
 	// どこにも描かれない所なので登録しない。ページが表に戻ったときに onActivated で登録する
 	if (registration != null || el.value == null || !el.value.isConnected) return;
-	const current = registerVoiceCallBarSlot(props.kind, el.value);
+	const current = registerVoiceCallBarSlot(props.kind, el.value, props.focusWithin ?? el.value);
 	registration = current;
 	// 入力欄では、ボタンが収まる幅があるかどうかで通話バーを置くかを決めるので、幅を測って知らせる
 	if (props.kind === 'chatForm' && typeof ResizeObserver !== 'undefined') {
@@ -46,6 +47,11 @@ function detach() {
 	registration?.unregister();
 	registration = null;
 }
+
+watch(() => props.focusWithin, () => {
+	detach();
+	attach();
+}, { flush: 'post' });
 
 onMounted(attach);
 // KeepAlive で裏に回ったページの中へは出さない

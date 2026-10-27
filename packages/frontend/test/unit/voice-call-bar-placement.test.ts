@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/vue';
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/vue';
 import { defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
 
 vi.mock('@/os.js', () => ({ popupMenu: vi.fn(), claimZIndex: () => 1000, alert: vi.fn(), launchUploader: vi.fn() }));
@@ -47,7 +47,13 @@ import XVoiceCallBarSlot from '@/ui/_common_/voice-call-bar-slot.vue';
 import XForm from '@/pages/chat/room.form.vue';
 
 // 入力欄の差し込み先の幅は ResizeObserver で測るので、テストから幅を決められるものに差し替える
+const resizeObserverDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver');
+const originalWidth = window.innerWidth;
 installFakeResizeObserver();
+afterAll(() => {
+	if (resizeObserverDescriptor) Object.defineProperty(globalThis, 'ResizeObserver', resizeObserverDescriptor);
+	else Reflect.deleteProperty(globalThis, 'ResizeObserver');
+});
 
 const room = { id: 'r1', name: 'room 1' } as any;
 const stubs = { MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' }, MkLoading: { template: '<span></span>' } };
@@ -97,10 +103,82 @@ beforeEach(async () => {
 
 afterEach(async () => {
 	cleanup();
-	await setWidth(1024);
+	await setWidth(originalWidth);
+	window.localStorage.clear();
 });
 
 describe('voice call bar placement', () => {
+
+	test('keeps the bar in the most recently focused of two visible forms', async () => {
+		const later = ref(false);
+		const host = defineComponent({ setup: () => () => h('div', [
+			h('section', { 'data-testid': 'first' }, [h(XForm, { room })]),
+			later.value ? h('section', { 'data-testid': 'second' }, [h(XForm, { room: { ...room, id: 'r2' } })]) : null,
+			h(XVoiceCallBar),
+		]) });
+		render(host, { global: { stubs } });
+		await flush();
+		const first = screen.getByTestId('first');
+		within(first).getByRole('textbox').focus();
+		later.value = true;
+		await flush();
+		expect(first.contains(bar())).toBe(true);
+
+		within(screen.getByTestId('second')).getByRole('textbox').focus();
+		await flush();
+		expect(screen.getByTestId('second').contains(bar())).toBe(true);
+
+		within(first).getByRole('textbox').focus();
+		await flush();
+		expect(first.contains(bar())).toBe(true);
+		await resizeElement(chatFormSlot(first), 100);
+		expect(variantOf(bar())).toMatch(/floating/);
+	});
+
+	test.each(['display', 'visibility', 'hidden', 'inert'])('ignores a last-mounted form hidden by ancestor %s and follows it when shown', async mode => {
+		const hidden = ref(true);
+		const host = defineComponent({ setup: () => () => h('div', [
+			h('section', { 'data-testid': 'first' }, [h(XForm, { room })]),
+			h('section', {
+				'data-testid': 'second',
+				style: mode === 'display' ? { display: hidden.value ? 'none' : '' } : mode === 'visibility' ? { visibility: hidden.value ? 'hidden' : '' } : undefined,
+				[mode]: mode === 'hidden' || mode === 'inert' ? hidden.value : undefined,
+			}, [h(XForm, { room: { ...room, id: 'r2' } })]),
+			h(XVoiceCallBar),
+		]) });
+		render(host, { global: { stubs } });
+		await flush();
+		expect(screen.getByTestId('first').contains(bar())).toBe(true);
+		hidden.value = false;
+		await new Promise(resolve => setTimeout(resolve, 0));
+		await flush();
+		expect(screen.getByTestId('second').contains(bar())).toBe(true);
+		within(screen.getByTestId('second')).getByRole('textbox').focus();
+		hidden.value = true;
+		await new Promise(resolve => setTimeout(resolve, 0));
+		await flush();
+		expect(screen.getByTestId('first').contains(bar())).toBe(true);
+	});
+
+	test.each([{ ctrlKey: true }, { metaKey: true }])('sends only once while the request is pending with %o', async modifier => {
+		const { misskeyApi } = await import('@/utility/misskey-api.js');
+		let finish!: (value: any) => void;
+		vi.mocked(misskeyApi).mockReset().mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+		render(XForm, { props: { room }, global: { stubs } });
+		const input = screen.getByRole('textbox');
+		await fireEvent.update(input, 'hello');
+		await fireEvent.keyDown(input, { key: 'Enter', ...modifier });
+		await fireEvent.keyDown(input, { key: 'Enter', ...modifier });
+		expect(misskeyApi).toHaveBeenCalledTimes(1);
+		finish({});
+		await flush();
+		await fireEvent.update(input, 'next');
+		await fireEvent.keyDown(input, { key: 'Enter', ...modifier });
+		expect(misskeyApi).toHaveBeenCalledTimes(2);
+		finish({});
+		await flush();
+	});
+
 	test('docks into the chat form between the emoji button and the send button on PC', async () => {
 		const { container } = renderApp();
 		await flush();

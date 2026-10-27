@@ -3,15 +3,19 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, describe, expect, test, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/vue';
-import { preferState } from '../setup.unit.js';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { cleanup, fireEvent, render } from '@testing-library/vue';
+import { prefer as mockedPrefer } from '@/preferences.js';
+import type { FakePrefer } from './fake-prefer.js';
+import * as os from '@/os.js';
+import { i18n } from '@/i18n.js';
 import { getChatMessageGroupPositions } from '@/utility/chat-message-grouping.js';
 import XMessage from '@/pages/chat/XMessage.vue';
 import type { NormalizedChatMessage } from '@/pages/chat/room.vue';
 
 const me = vi.hoisted(() => ({ id: 'me', username: 'me', policies: { chatAvailability: 'available' } }));
 
+vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer() }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: me, ensureSignin: () => me }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: vi.fn().mockResolvedValue([]) }));
 vi.mock('@/os.js', () => ({ popupMenu: vi.fn(), contextMenu: vi.fn() }));
@@ -102,19 +106,22 @@ describe('XMessage in a group', () => {
 		return render(XMessage, { props: { message: chatMessage, ...props }, global: { stubs } });
 	}
 
+	beforeEach(() => {
+		(mockedPrefer as unknown as FakePrefer).reset({ 'chat.showSenderName': true });
+		vi.mocked(os.popupMenu).mockClear();
+	});
+
 	afterEach(() => {
 		cleanup();
 	});
 
-	test('drops the footer before the last bubble and the avatar after the first one', () => {
-		preferState['chat.showSenderName'] = true;
-
+	test('hides the footer before the last bubble and drops the avatar after the first one', () => {
 		const head = renderMessage({ firstInGroup: true, lastInGroup: false });
 		expect(head.queryByTestId('avatar')).not.toBeNull();
 		expect(head.queryByTestId('name')).not.toBeNull();
 		expect(head.container.querySelector('svg')).not.toBeNull();
-		expect(head.queryByTestId('time')).toBeNull();
-		expect(head.container.querySelector('.ti-dots-circle-horizontal')).toBeNull();
+		expect(head.getByTestId('time').parentElement!.className).toContain('groupedFooter');
+		expect(head.getByRole('button', { name: i18n.ts.menu })).toBeTruthy();
 		head.unmount();
 
 		const tail = renderMessage({ firstInGroup: false, lastInGroup: true });
@@ -123,6 +130,35 @@ describe('XMessage in a group', () => {
 		expect(tail.container.querySelector('svg')).toBeNull();
 		expect(tail.queryByTestId('time')).not.toBeNull();
 		expect(tail.container.querySelector('.ti-dots-circle-horizontal')).not.toBeNull();
+	});
+
+
+	test.each([
+		{ key: 'Enter' },
+		{ key: 'F10', shiftKey: true },
+		{ key: 'ContextMenu' },
+	])('opens the same message menu from a non-last bubble with $key', async keys => {
+		const result = renderMessage({ firstInGroup: false, lastInGroup: false });
+		const bubble = result.getByText('hello').closest('[tabindex="0"]') as HTMLElement;
+		expect(bubble).not.toBeNull();
+		bubble.focus();
+		expect(document.activeElement).toBe(bubble);
+
+		await fireEvent.keyDown(bubble, keys);
+		expect(os.popupMenu).toHaveBeenCalledTimes(1);
+		const [items, anchor] = vi.mocked(os.popupMenu).mock.calls[0];
+		expect(anchor).toBe(bubble);
+		expect(items).toEqual(expect.arrayContaining([expect.objectContaining({ text: i18n.ts.copyContent })]));
+	});
+
+	test('does not intercept keyboard activation on links inside a bubble', async () => {
+		const result = renderMessage({ firstInGroup: false, lastInGroup: false });
+		const body = result.getByText('hello').parentElement!.parentElement!;
+		const link = document.createElement('a');
+		link.href = '/user/alice';
+		body.appendChild(link);
+		await fireEvent.keyDown(link, { key: 'Enter' });
+		expect(os.popupMenu).not.toHaveBeenCalled();
 	});
 
 	test('shows the avatar and footer when no place in a group is given', () => {

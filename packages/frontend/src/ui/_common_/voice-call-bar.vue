@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <!-- PC ではチャットの入力欄へ、モバイルでは画面上端へ移す。どちらも無ければその場 (画面下に浮かせる) に出す -->
 <Teleport :to="placement.target" :disabled="placement.target == null">
 <div
-	v-if="voiceCall.room != null"
+	v-if="voiceCall.room != null && !voiceCallBarHidden"
 	:class="[$style.root, $style[placement.variant], { _panel: floating, _shadow: floating }]"
 	:style="floating ? { zIndex } : undefined"
 	role="region" :aria-label="i18n.ts._voiceCall.inCall"
@@ -79,7 +79,7 @@ import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
 import { $i } from '@/i.js';
 import { activeAudioDeviceId, canShareScreen, leaveVoiceCall, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
-import { voiceCallBarPlacement as placement } from '@/utility/voice-call-placement.js';
+import { voiceCallBarHidden, voiceCallBarPlacement as placement } from '@/utility/voice-call-placement.js';
 import { voiceCallStatusAnnouncedInRoom, voiceCallStatusText } from '@/utility/voice-call-status.js';
 
 const zIndex = os.claimZIndex('middle');

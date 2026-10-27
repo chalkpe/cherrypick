@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <!-- 広いルーム画面で、チャットの横に通話を大きく出す (狭い画面の通話カードの代わり) -->
-<div :class="$style.root">
+<div ref="rootEl" :class="$style.root">
 	<div :class="$style.header">
 		<i class="ti ti-volume" :class="$style.headerIcon"></i>
 		<!-- 参加中は通話の状態 (通話中・接続中・再接続中) を出し、変わったら読み上げる。
@@ -44,6 +44,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
+import { useTemplateRef } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import XTile from './room.voice.tile.vue';
 import XScreens from './room.voice.screens.vue';
@@ -68,7 +69,8 @@ const emit = defineEmits<{
 // 参加の流れと参加者のメニューは通話カードやページヘッダーと共有するので、ページ側で作ったものを使う
 const { inThisCall, participants, watchedParticipants, join, myIdentity, isOwner, openParticipantMenu } = props.call;
 
-const announcesStatus = useVoiceCallStatusAnnouncer(inThisCall);
+const rootEl = useTemplateRef('rootEl');
+const announcesStatus = useVoiceCallStatusAnnouncer(inThisCall, rootEl);
 </script>
 
 <style lang="scss" module>

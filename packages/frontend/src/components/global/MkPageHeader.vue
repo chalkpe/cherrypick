@@ -45,7 +45,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<XTabs v-if="(!narrow || hideTitle) && !isFriendly().value" :class="[$style.tabs, { [$style.tabs_canBack]: !canBack }]" :tab="tab" :tabs="tabs" :rootEl="el" @update:tab="key => emit('update:tab', key)" @tabClick="onTabClick"/>
 		</template>
 		<div v-if="!thin_ && !narrow && (actions && actions.length > 0) && hideTitle && ['index'].includes(<string>mainRouter.currentRoute.value.name)" :class="[$style.buttons, $style.buttonsRight]"></div>
-		<div v-if="(!thin_ && narrow && !hideTitle) || (actions && actions.length > 0)" :class="[$style.buttons, $style.buttonsRight]">
+		<div v-if="(!thin_ && narrow && !hideTitle) || (actions && actions.length > 0)" :class="[$style.buttons, $style.buttonsRight, { [$style.actionSpace]: hasActions }]">
 			<template v-for="action in actions">
 				<button v-tooltip.noDelay="action.text" class="_button" :class="[$style.button, { [$style.highlighted]: action.highlighted }]" :aria-label="action.text" @click.stop="action.handler" @touchstart="preventDrag"><i :class="action.icon"></i></button>
 			</template>
@@ -132,7 +132,8 @@ const leftSpacing = computed(() => {
 	if (thin_ || props.notification) return null;
 
 	const actions = props.actions;
-	const actionsLength = actions?.length ?? 0;
+	// 通話ボタンの出入り (1↔2 個) で見出しを動かさないよう、2 個分の余白を確保する。
+	const actionsLength = actions?.length ? Math.max(2, actions.length) : 0;
 
 	if (actionsLength > 1 && isFriendly().value) {
 		const widths: string[] = [];
@@ -140,10 +141,6 @@ const leftSpacing = computed(() => {
 		if (actionsLength >= 3) widths.push('width: 42px;');
 		widths.push('width: 34px;');
 		return { class: true, style: 'min-width: initial; margin-right: initial;', children: widths };
-	}
-
-	if (!narrow.value && actionsLength === 1 && isFriendly().value && ['my-notifications', 'chat'].includes(<string>mainRouter.currentRoute.value.name)) {
-		return { class: false, style: '', children: ['width: 50px; margin-right: 8px;'] };
 	}
 
 	if (!narrow.value && actionsLength > 1 && !isFriendly().value && mainRouter.currentRoute.value.name === 'index') {
@@ -325,6 +322,11 @@ onUnmounted(() => {
 	&:empty {
 		width: var(--height);
 	}
+}
+
+.actionSpace {
+	justify-content: flex-end;
+	min-width: calc((var(--height) - 8px) * 2);
 }
 
 .followButton {

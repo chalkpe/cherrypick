@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="showCard" :class="$style.root">
+<div v-if="showCard" ref="rootEl" :class="$style.root">
 	<div class="_panel" :class="$style.card">
 		<div :class="$style.header">
 			<i class="ti ti-volume" :class="$style.headerIcon"></i>
@@ -34,6 +34,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
+import { useTemplateRef } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import XParticipant from './room.voice.participant.vue';
 import XScreens from './room.voice.screens.vue';
@@ -52,7 +53,8 @@ const props = defineProps<{
 // カードを出すかどうかと参加の流れ、参加者のメニューはページヘッダーやステージと共有するので、ページ側で作ったものを使う
 const { showCard, inThisCall, participants, join, myIdentity, isOwner, openParticipantMenu, watchedParticipants } = props.call;
 
-const announcesStatus = useVoiceCallStatusAnnouncer(inThisCall);
+const rootEl = useTemplateRef('rootEl');
+const announcesStatus = useVoiceCallStatusAnnouncer(inThisCall, rootEl);
 </script>
 
 <style lang="scss" module>

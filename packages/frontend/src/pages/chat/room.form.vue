@@ -5,6 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <div
+	ref="rootEl"
 	:class="$style.root"
 	@dragover.stop="onDragover"
 	@drop.stop="onDrop"
@@ -25,7 +26,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<button class="_button" :class="$style.button" @click="chooseFile"><i class="ti ti-photo-plus"></i></button>
 			<button class="_button" :class="$style.button" @click="insertEmoji"><i class="ti ti-mood-happy"></i></button>
 			<!-- 通話中は PC だと通話バーがここに入る -->
-			<XVoiceCallBarSlot kind="chatForm" :class="$style.voiceCall"/>
+			<XVoiceCallBarSlot kind="chatForm" :focusWithin="rootEl" :class="$style.voiceCall"/>
 			<button class="_button" :class="[$style.button, $style.send]" :disabled="!canSend || sending" :title="i18n.ts.send" @click="send">
 				<template v-if="!sending"><i class="ti ti-send"></i></template><template v-if="sending"><MkLoading :em="true"/></template>
 			</button>
@@ -36,7 +37,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onMounted, watch, ref, shallowRef, computed, nextTick, readonly, onBeforeUnmount } from 'vue';
+import { onMounted, watch, ref, shallowRef, computed, nextTick, readonly, onBeforeUnmount, useTemplateRef } from 'vue';
 import * as Misskey from 'cherrypick-js';
 //import insertTextAtCursor from 'insert-text-at-cursor';
 import { formatTimeString } from '@/utility/format-time-string.js';
@@ -56,6 +57,7 @@ const props = defineProps<{
 	room?: Misskey.entities.ChatRoom | null;
 }>();
 
+const rootEl = useTemplateRef('rootEl');
 const textareaEl = shallowRef<HTMLTextAreaElement>();
 const fileEl = shallowRef<HTMLInputElement>();
 
@@ -192,7 +194,7 @@ function onChangeFile() {
 }
 
 function send() {
-	if (!canSend.value) return;
+	if (sending.value || !canSend.value) return;
 
 	sending.value = true;
 

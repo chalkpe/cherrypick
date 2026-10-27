@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/vue';
 import { defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
 
@@ -142,6 +142,9 @@ const hasClass = (el: Element, name: string) => [...el.classList].some(c => c.in
 const focusButtonOf = (user: typeof alice) => within(viewerOf(user)).getByRole('button', { name: i18n.ts._voiceCall.focusScreen });
 
 // happy-dom には全画面とピクチャーインピクチャーの API が無いので、今どの要素がそうなっているかをテストから決める
+const fullscreenDescriptor = Object.getOwnPropertyDescriptor(window.document, 'fullscreenElement');
+const pipDescriptor = Object.getOwnPropertyDescriptor(window.document, 'pictureInPictureElement');
+const resizeObserverDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver');
 let fullscreenElement: Element | null = null;
 let pictureInPictureElement: Element | null = null;
 Object.defineProperty(window.document, 'fullscreenElement', { configurable: true, get: () => fullscreenElement });
@@ -186,6 +189,17 @@ afterEach(() => {
 	pictureInPictureElement = null;
 	// 入力欄の書きかけはテストをまたいで残さない
 	window.localStorage.clear();
+});
+
+afterAll(() => {
+	for (const [target, key, descriptor] of [
+		[window.document, 'fullscreenElement', fullscreenDescriptor],
+		[window.document, 'pictureInPictureElement', pipDescriptor],
+		[globalThis, 'ResizeObserver', resizeObserverDescriptor],
+	] as const) {
+		if (descriptor) Object.defineProperty(target, key, descriptor);
+		else Reflect.deleteProperty(target, key);
+	}
 });
 
 async function flush() {
@@ -368,7 +382,7 @@ describe('voice call on the room page', () => {
 	};
 
 	// shown を渡すと、本物と同じく KeepAlive の中に置き、false にすると裏に回す
-	async function renderRoom(target: typeof room, states: unknown[] | Promise<unknown[]>, shown?: ReturnType<typeof ref<boolean>>) {
+	async function renderRoom(target: typeof room, states: unknown[] | Promise<unknown[]>, shown?: ReturnType<typeof ref<boolean>>, options: { bar?: boolean; visible?: ReturnType<typeof ref<boolean>> } = {}) {
 		mocks.misskeyApi.mockImplementation((endpoint: string) => {
 			if (endpoint === 'chat/rooms/show') return Promise.resolve(target);
 			if (endpoint === 'chat/rooms/voice/states') return states instanceof Promise ? states : Promise.resolve(states);
@@ -377,8 +391,12 @@ describe('voice call on the room page', () => {
 		const host = defineComponent({
 			setup() {
 				provideMetadataReceiver(() => {});
-				if (shown == null) return () => h(XRoomPage, { roomId: target.id });
-				return () => h(KeepAlive, null, [shown.value ? h(XRoomPage, { roomId: target.id, key: 'room' }) : h('div', { key: 'other' })]);
+				return () => h('div', [
+					h('section', { style: { display: options.visible?.value === false ? 'none' : '' } }, [
+						shown == null ? h(XRoomPage, { roomId: target.id }) : h(KeepAlive, null, [shown.value ? h(XRoomPage, { roomId: target.id, key: 'room' }) : h('div', { key: 'other' })]),
+					]),
+					options.bar ? h(XVoiceCallBar) : null,
+				]);
 			},
 		});
 		render(host, { global: { stubs: pageStubs } });
@@ -395,6 +413,64 @@ describe('voice call on the room page', () => {
 
 	const headerJoin = () => within(screen.getByTestId('header-actions')).queryByLabelText(i18n.ts._voiceCall.join);
 	const stickyCard = () => within(screen.getByTestId('sticky-header'));
+
+
+	test('on mobile hides the common bar only while its own room card is shown', async () => {
+		const originalWidth = window.innerWidth;
+		try {
+			window.innerWidth = 400;
+			window.dispatchEvent(new Event('resize'));
+			Object.assign(callState, { status: 'connected', room });
+			const shown = ref(true);
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }], shown, { bar: true });
+			await flush();
+			const commonBar = () => screen.queryByRole('region', { name: i18n.ts._voiceCall.inCall });
+			expect(stickyCard().getByLabelText(i18n.ts._voiceCall.leave)).toBeTruthy();
+			expect(commonBar()).toBeNull();
+
+			await openTab(i18n.ts._chat.members);
+			expect(commonBar()).not.toBeNull();
+			await openTab(i18n.ts._chat.messages);
+			expect(commonBar()).toBeNull();
+			shown.value = false;
+			await flush();
+			expect(commonBar()).not.toBeNull();
+			shown.value = true;
+			await flush();
+			expect(commonBar()).toBeNull();
+			Object.assign(callState, { room: { ...room, id: 'other-room' } });
+			await flush();
+			expect(commonBar()).not.toBeNull();
+		} finally {
+			window.innerWidth = originalWidth;
+			window.dispatchEvent(new Event('resize'));
+		}
+	});
+
+
+	test('on mobile keeps the bar when its mounted room window is CSS-hidden', async () => {
+		const originalWidth = window.innerWidth;
+		try {
+			window.innerWidth = 400;
+			window.dispatchEvent(new Event('resize'));
+			Object.assign(callState, { status: 'connected', room });
+			const visible = ref(false);
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }], undefined, { bar: true, visible });
+			const commonBar = () => screen.queryByRole('region', { name: i18n.ts._voiceCall.inCall });
+			expect(commonBar()).not.toBeNull();
+			visible.value = true;
+			await new Promise(resolve => setTimeout(resolve, 0));
+			await flush();
+			expect(commonBar()).toBeNull();
+			visible.value = false;
+			await new Promise(resolve => setTimeout(resolve, 0));
+			await flush();
+			expect(commonBar()).not.toBeNull();
+		} finally {
+			window.innerWidth = originalWidth;
+			window.dispatchEvent(new Event('resize'));
+		}
+	});
 
 	test('hides the card when nobody is in the call', async () => {
 		await renderRoom(room, []);

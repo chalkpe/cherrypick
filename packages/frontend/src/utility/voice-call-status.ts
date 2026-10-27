@@ -6,6 +6,7 @@
 import { computed, onActivated, onDeactivated, onScopeDispose, ref, shallowRef, watch } from 'vue';
 import type { Ref } from 'vue';
 import { i18n } from '@/i18n.js';
+import { observeElementVisibility } from '@/utility/observe-element-visibility.js';
 import { voiceCall } from '@/utility/voice-call.js';
 
 /**
@@ -24,9 +25,16 @@ export const voiceCallStatusText = computed(() => {
 const roomAnnouncers = shallowRef(new Set<symbol>());
 export const voiceCallStatusAnnouncedInRoom = computed(() => roomAnnouncers.value.size > 0);
 
-export function useVoiceCallStatusAnnouncer(inThisCall: Readonly<Ref<boolean>>) {
+export function useVoiceCallStatusAnnouncer(inThisCall: Readonly<Ref<boolean>>, target: Readonly<Ref<HTMLElement | null>>) {
 	const key = Symbol();
 	const active = ref(true);
+	const visible = ref(false);
+	let visibility: ReturnType<typeof observeElementVisibility> | null = null;
+	watch(target, el => {
+		visibility?.dispose();
+		visibility = el == null ? null : observeElementVisibility(el, value => { visible.value = value; });
+		if (el == null) visible.value = false;
+	}, { immediate: true, flush: 'post' });
 
 	function update(announces: boolean) {
 		const next = new Set(roomAnnouncers.value);
@@ -35,9 +43,15 @@ export function useVoiceCallStatusAnnouncer(inThisCall: Readonly<Ref<boolean>>) 
 		roomAnnouncers.value = next;
 	}
 
-	watch(() => active.value && inThisCall.value, update, { immediate: true, flush: 'sync' });
+	watch(() => active.value && visible.value && inThisCall.value, update, { immediate: true, flush: 'sync' });
 	onDeactivated(() => { active.value = false; });
-	onActivated(() => { active.value = true; });
-	onScopeDispose(() => update(false));
+	onActivated(() => {
+		visibility?.refresh();
+		active.value = true;
+	});
+	onScopeDispose(() => {
+		visibility?.dispose();
+		update(false);
+	});
 	return computed(() => [...roomAnnouncers.value].at(-1) === key);
 }

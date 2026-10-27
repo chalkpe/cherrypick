@@ -7,6 +7,8 @@ import { computed, ref, shallowRef } from 'vue';
 import type { Ref } from 'vue';
 import { $i } from '@/i.js';
 import { canShareScreen, voiceCall } from '@/utility/voice-call.js';
+import { voiceCallStatusAnnouncedInRoom } from '@/utility/voice-call-status.js';
+import { observeElementVisibility } from '@/utility/observe-element-visibility.js';
 import { deviceKind } from '@/utility/device-kind.js';
 
 /**
@@ -29,6 +31,8 @@ function checkMobile(): boolean {
 }
 
 const isMobile = ref(checkMobile());
+// 通話中のルームにカードやステージが出ているあいだは、モバイルで同じ操作を二重に出さない。
+export const voiceCallBarHidden = computed(() => isMobile.value && voiceCallStatusAnnouncedInRoom.value);
 window.addEventListener('resize', () => {
 	isMobile.value = checkMobile();
 });
@@ -38,27 +42,46 @@ type VoiceCallBarSlot = {
 	el: HTMLElement;
 	// 差し込み先の中身の幅。まだ測っていなければ null (収まるものとして扱う)
 	width: Ref<number | null>;
+	visible: Ref<boolean>;
+	focused: Ref<number>;
 };
 
 const slots = shallowRef<VoiceCallBarSlot[]>([]);
+let focusOrder = 0;
 
 /** 差し込み先を登録する。戻り値で幅を知らせたり、登録を外したりする */
-export function registerVoiceCallBarSlot(kind: VoiceCallBarSlotKind, el: HTMLElement): { setWidth: (width: number) => void; unregister: () => void } {
-	const entry: VoiceCallBarSlot = { kind, el, width: ref(null) };
+export function registerVoiceCallBarSlot(kind: VoiceCallBarSlotKind, el: HTMLElement, focusWithin: HTMLElement = el): { setWidth: (width: number) => void; unregister: () => void } {
+	const entry: VoiceCallBarSlot = { kind, el, width: ref(null), visible: ref(false), focused: ref(0) };
+	const visibility = observeElementVisibility(el, value => { entry.visible.value = value; });
+
+	function onFocus() {
+		visibility.refresh();
+		if (entry.visible.value) entry.focused.value = ++focusOrder;
+	}
+
+	focusWithin.addEventListener('focusin', onFocus);
+	if (focusWithin.contains(window.document.activeElement)) onFocus();
 	slots.value = [...slots.value, entry];
 	return {
 		setWidth: (width: number) => {
 			entry.width.value = width;
+			visibility.refresh();
 		},
 		unregister: () => {
+			visibility.dispose();
+			focusWithin.removeEventListener('focusin', onFocus);
 			slots.value = slots.value.filter(x => x !== entry);
 		},
 	};
 }
 
-// 同じ種類が複数あるとき (ページウィンドウでチャットを開いたときなど) は後から出たほうを使う
+// 見えるフォームのうち最後に操作したものを使う。一度も操作していなければ、後から出たものを使う。
 function latestSlot(kind: VoiceCallBarSlotKind): VoiceCallBarSlot | null {
-	return slots.value.findLast(x => x.kind === kind) ?? null;
+	let latest: VoiceCallBarSlot | null = null;
+	for (const slot of slots.value) {
+		if (slot.kind === kind && slot.visible.value && (latest == null || slot.focused.value >= latest.focused.value)) latest = slot;
+	}
+	return latest;
 }
 
 /** 通話バーをどこにどの見た目で出すか。target が null なら画面下に浮かせる */

@@ -14,8 +14,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<div v-else-if="!thin_ && canBack" :class="$style.buttonsLeft">
 		<div v-if="narrow && !hideTitle" :class="$style.button"></div>
 		<div v-else-if="actions && actions.length > 0" :class="$style.button"></div>
-		<div v-if="actions && actions.length > 1 && ['index', 'my-notifications', 'chat'].includes(<string>mainRouter.currentRoute.value.name)" :class="$style.button"></div>
-		<div v-if="actions && actions.length > 2" :class="$style.button"></div>
+		<div v-if="actionSpacingLength > 1 && ['index', 'my-notifications', 'chat'].includes(<string>mainRouter.currentRoute.value.name)" :class="$style.button"></div>
+		<div v-if="actionSpacingLength > 2" :class="$style.button"></div>
 	</div>
 	<div v-if="pageMetadata && pageMetadata.avatar && !thin_ && mainRouter.currentRoute.value.name === 'user' && ($i != null && $i.id != pageMetadata.avatar.id)">
 		<div :class="$style.button"></div>
@@ -49,7 +49,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</div>
 	</template>
 	<div v-if="!thin_ && !narrow && (actions && actions.length > 0) && hideTitle && ['index'].includes(<string>mainRouter.currentRoute.value.name)" :class="[$style.buttons, $style.buttonsRight]"></div>
-	<div v-if="(!thin_ && narrow && !hideTitle) || (actions && actions.length > 0)" :class="[$style.buttons, $style.buttonsRight]">
+	<div v-if="(!thin_ && narrow && !hideTitle) || (actions && actions.length > 0)" :class="[$style.buttons, $style.buttonsRight, { [$style.actionSpace]: hasActions }]">
 		<template v-for="action in actions">
 			<button v-tooltip.noDelay="action.text" class="_button" :class="[$style.button, { [$style.highlighted]: action.highlighted }]" :aria-label="action.text" @click.stop="action.handler" @touchstart="preventDrag"><i :class="action.icon"></i></button>
 		</template>
@@ -125,6 +125,8 @@ const tabRefs: Record<string, HTMLElement | null> = {};
 const tabHighlightEl = useTemplateRef('tabHighlightEl');
 const narrow = ref(false);
 const hasTabs = computed(() => props.tabs.length > 0);
+// 通話ボタンの出入り (1↔2 個) で見出しを動かさないよう、2 個分の余白を確保する。
+const actionSpacingLength = computed(() => props.actions?.length ? Math.max(2, props.actions.length) : 0);
 const hasActions = computed(() => props.actions && props.actions.length > 0);
 const show = computed(() => {
 	return !hideTitle.value || hasTabs.value || hasActions.value;
@@ -308,6 +310,11 @@ onUnmounted(() => {
 	&:empty {
 		width: var(--height);
 	}
+}
+
+.actionSpace {
+	justify-content: flex-end;
+	min-width: calc((var(--height) - 8px) * 2);
 }
 
 .followButton {

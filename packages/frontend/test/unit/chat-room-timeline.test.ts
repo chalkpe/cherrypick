@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/vue';
+import { cleanup, render, waitFor } from '@testing-library/vue';
 import { defineComponent, h, nextTick } from 'vue';
 
 const mocks = vi.hoisted(() => {
@@ -138,6 +138,31 @@ describe('chat bubbles on the room page', () => {
 			{ id: 'm2', first: true, last: false },
 			{ id: 'm3', first: false, last: true },
 		]);
+	});
+
+
+	test('keeps same-sender bubbles separate across the room timeline date divider', async () => {
+		// 日付境界をまたぐが、時間差はまとまりの範囲内に収める。
+		const midnight = new Date(base);
+		midnight.setHours(24, 0, 0, 0);
+		const offset = midnight.getTime() - base;
+		mocks.timeline = [message('m2', 'alice', offset), message('m1', 'alice', offset - MINUTE)];
+		const { container } = await renderRoom();
+		expect(bubbles(container)).toEqual([
+			{ id: 'm1', first: true, last: true },
+			{ id: 'm2', first: true, last: true },
+		]);
+	});
+
+	test('updates group flags when a message between two senders is deleted', async () => {
+		mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'bob', MINUTE), message('m1', 'alice', 0)];
+		const { container } = await renderRoom();
+		mocks.channel.emit('deleted', 'm2');
+		await flush();
+		await waitFor(() => expect(bubbles(container)).toEqual([
+			{ id: 'm1', first: true, last: false },
+			{ id: 'm3', first: false, last: true },
+		]));
 	});
 
 	test('a new message re-renders only the bubbles whose place in a group changed', async () => {
