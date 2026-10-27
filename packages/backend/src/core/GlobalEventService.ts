@@ -187,6 +187,12 @@ export interface ChatEventTypes {
 	};
 }
 
+// ルームの内部制御イベントはクライアントへ転送しない。
+export interface ChatRoomEventTypes extends ChatEventTypes {
+	membershipEnded: { userId: MiUser['id'] };
+	roomDeleted: undefined;
+}
+
 export interface ReversiEventTypes {
 	matched: {
 		game: Packed<'ReversiGameDetailed'>;
@@ -341,7 +347,7 @@ export type GlobalEvents = {
 	};
 	chatRoom: {
 		name: `chatRoomStream:${MiChatRoom['id']}`;
-		payload: EventTypesToEventPayload<ChatEventTypes>;
+		payload: EventTypesToEventPayload<ChatRoomEventTypes>;
 	};
 	reversi: {
 		name: `reversiStream:${MiUser['id']}`;
@@ -457,7 +463,7 @@ export class GlobalEventService {
 	}
 
 	@bindThis
-	public publishChatRoomStream<K extends keyof ChatEventTypes>(toRoomId: MiChatRoom['id'], type: K, value?: ChatEventTypes[K]): void {
+	public publishChatRoomStream<K extends keyof ChatRoomEventTypes>(toRoomId: MiChatRoom['id'], type: K, value?: ChatRoomEventTypes[K]): void {
 		this.publish(`chatRoomStream:${toRoomId}`, type, typeof value === 'undefined' ? null : value);
 	}
 

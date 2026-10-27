@@ -696,6 +696,7 @@ export class ChatService {
 		await redisPipeline.exec();
 
 		await this.chatRoomsRepository.delete(room.id);
+		this.globalEventService.publishChatRoomStream(room.id, 'roomDeleted');
 
 		// ルームが消えたら通話も終了する。LiveKit が落ちていても削除自体は成功させる
 		this.liveKitService.deleteRoom(room.id).catch(() => {});
@@ -1009,6 +1010,7 @@ export class ChatService {
 		const leavingUser = await this.usersRepository.findOneByOrFail({ id: userId });
 
 		await this.chatRoomMembershipsRepository.delete(membership.id);
+		this.globalEventService.publishChatRoomStream(roomId, 'membershipEnded', { userId });
 
 		// ルームを抜けたら通話からも外す。LiveKit が落ちていても退出自体は成功させる
 		this.liveKitService.removeParticipant(roomId, this.liveKitService.identityOf(leavingUser)).catch(() => {});

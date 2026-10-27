@@ -378,6 +378,7 @@ function chatServiceFixture() {
 	const room = { id: 'r1', ownerId: 'owner', owner: { id: 'owner', host: null, uri: null } };
 	const service = Object.assign(Object.create(ChatService.prototype), {
 		liveKitService,
+		globalEventService: { publishChatRoomStream: vi.fn() },
 		chatRoomMembershipsRepository: {
 			findOneByOrFail: vi.fn().mockResolvedValue({ id: 'm1', roomId: 'r1', userId: 'u1' }),
 			findBy: vi.fn().mockResolvedValue([]),
@@ -429,6 +430,46 @@ test('every voice endpoint error has its own UUID', () => {
 		expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 	}
 	expect(new Set(ids).size).toBe(ids.length);
+});
+
+describe('ChatService room control publication', () => {
+	test('leave publishes membershipEnded only after membership deletion succeeds', async () => {
+		const f = chatServiceFixture();
+		const publish = f.service.globalEventService.publishChatRoomStream;
+		f.service.chatRoomMembershipsRepository.delete.mockImplementation(async () => {
+			expect(publish).not.toHaveBeenCalled();
+			return { affected: 1 };
+		});
+		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+		await f.service.leaveRoom('u1', 'r1');
+		log.mockRestore();
+		expect(publish).toHaveBeenCalledExactlyOnceWith('r1', 'membershipEnded', { userId: 'u1' });
+	});
+
+	test('failed membership deletion never publishes a control event', async () => {
+		const f = chatServiceFixture();
+		f.service.chatRoomMembershipsRepository.delete.mockRejectedValue(new Error('db'));
+		await expect(f.service.leaveRoom('u1', 'r1')).rejects.toThrow('db');
+		expect(f.service.globalEventService.publishChatRoomStream).not.toHaveBeenCalled();
+	});
+
+	test('room deletion publishes roomDeleted only after deletion succeeds', async () => {
+		const f = chatServiceFixture();
+		const publish = f.service.globalEventService.publishChatRoomStream;
+		f.service.chatRoomsRepository.delete.mockImplementation(async () => {
+			expect(publish).not.toHaveBeenCalled();
+			return { affected: 1 };
+		});
+		await f.service.deleteRoom(f.room);
+		expect(publish).toHaveBeenCalledExactlyOnceWith('r1', 'roomDeleted');
+	});
+
+	test('failed room deletion never publishes a control event', async () => {
+		const f = chatServiceFixture();
+		f.service.chatRoomsRepository.delete.mockRejectedValue(new Error('db'));
+		await expect(f.service.deleteRoom(f.room)).rejects.toThrow('db');
+		expect(f.service.globalEventService.publishChatRoomStream).not.toHaveBeenCalled();
+	});
 });
 
 describe('ChatService voice cleanup', () => {
