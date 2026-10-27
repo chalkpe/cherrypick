@@ -92,11 +92,12 @@ describe('Voice call', () => {
 		});
 
 		test('a user on b.test who is not a member is refused', async () => {
-			// b.test はこのルームをミラーとして知っているが、eve はメンバーではない
+			// b.test はこのルームをミラーとして知っているが、eve はメンバーではない。
+			// b.test には LiveKit が無いので、メンバーでない人にはルームがあるかもミラーかも見せず、最初に VOICE_CALL_UNAVAILABLE で断る
 			await rejects(
 				async () => await eve.client.request('chat/rooms/voice/join', { roomId: room.id }),
 				(err: any) => {
-					strictEqual(err.code, 'NO_SUCH_ROOM');
+					strictEqual(err.code, 'VOICE_CALL_UNAVAILABLE');
 					return true;
 				},
 			);
