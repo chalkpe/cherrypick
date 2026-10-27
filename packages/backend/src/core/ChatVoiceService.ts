@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Inject, Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { In, IsNull, MoreThan, Not } from 'typeorm';
@@ -56,6 +56,11 @@ const REMOTE_SNAPSHOT_MAX_AHEAD_MS = 300_000;
 // 終わる前の現況が届き、終わった通話が戻ることがある。受け取った側の inbox のやり直し (約 5 時間) を足しても収まるよう、2 日覚えておく
 const REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS = 172_800;
 
+// これより古い時刻の現況は捨てる。最後に受け入れた時刻を覚えておく間が過ぎた後は、それより前の現況を時刻で比べられないため。
+// 覚えておいた最後の時刻は、受け入れたときのこの時計より最大で REMOTE_SNAPSHOT_MAX_AHEAD_MS 先なので、その分を引く。
+// こうすると、覚えておく間が過ぎた後に届く、それ以前の現況はすべてこれより古い
+const REMOTE_SNAPSHOT_MAX_AGE_MS = REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS * 1000 - REMOTE_SNAPSHOT_MAX_AHEAD_MS;
+
 // 他のサーバーの通話を止めたときにミラーの現況を消すとき、一度に引くルームの数
 const MIRROR_CLEAR_BATCH_SIZE = 1000;
 
@@ -98,6 +103,32 @@ const FEDERATION_RESEND_INTERVAL_MS = 240_000;
 // 参加者が目まぐるしく変わっても (画面共有の切り替えや出入りの繰り返し) 配送が膨らまないよう、
 // 他のサーバーへはルームごとにこの間隔に一度だけ送る。全ワーカーで Redis の鍵を共有して数える
 const FEDERATION_MIN_INTERVAL_MS = 10_000;
+
+// 他のサーバーへ送るかを決めてから、配送を積み、送った記録を残すまでは、ルームごとに全ワーカーで一つずつ行う (その順番の鍵の寿命)。
+// 積むのは普通すぐに終わる。途中で止まったワーカーの鍵は、この寿命で切れる
+const FEDERATION_LOCK_MS = 30_000;
+
+// 送る順番の鍵を、自分が取ったもの (ARGV[1]) のときだけ外す。寿命が切れた後にほかのワーカーが取った鍵は外さない
+const RELEASE_FEDERATION_LOCK_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+	return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
+
+// 他のサーバーに送った記録を、保存済みの記録より古い現況 (updatedAt が小さい) のものでなければ書く。書いたら 1、書かなければ 0。
+// 保存済みの記録が読めないか updatedAt を持たなければ、無いものとして扱う。KEYS[1]: 記録の鍵、ARGV: 記録 (JSON)、その updatedAt、寿命 (秒)
+const RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if current then
+	local ok, stored = pcall(cjson.decode, current)
+	if ok and type(stored) == 'table' and type(stored.updatedAt) == 'number' and stored.updatedAt > tonumber(ARGV[2]) then
+		return 0
+	end
+end
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+return 1
+`;
 
 // 参加者の出入りや画面共有の開始・終了に関わるイベントだけを扱う
 const REFRESH_EVENTS = new Set([
@@ -145,12 +176,13 @@ type RoomAudience = {
  * - stored: 保存して、このサーバーのメンバーに知らせた
  * - stale: 保存済みの現況か、最後に受け入れた時刻以前のもの
  * - ahead: この時計より REMOTE_SNAPSHOT_MAX_AHEAD_MS より先の時刻が付いている
+ * - old: この時計より REMOTE_SNAPSHOT_MAX_AGE_MS より前の時刻が付いている
  * - disabled: 他のサーバーの通話を止めている (保存の途中で止められた場合を含む)
  */
-export type RemoteSnapshotStoreResult = 'stored' | 'stale' | 'ahead' | 'disabled';
+export type RemoteSnapshotStoreResult = 'stored' | 'stale' | 'ahead' | 'old' | 'disabled';
 
-/** 他のサーバーに送った現況の記録 */
-type FederatedRecord = { hash: string; at: number };
+/** 他のサーバーに送った現況の記録。at は送った時刻、updatedAt は送った現況の時刻 */
+type FederatedRecord = { hash: string; at: number; updatedAt: number };
 
 /** 他のサーバーに渡す参加者の現況。userId はこのサーバーの DB の id なので含めない */
 type FederatedVoiceSnapshot = {
@@ -443,6 +475,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			case 'stored': return 'ok: voice state stored';
 			case 'stale': return 'skip: voice state is not newer than the last one accepted';
 			case 'ahead': return 'skip: voice state is stamped too far ahead';
+			case 'old': return 'skip: voice state is too old';
 			case 'disabled': return 'skip: remote voice calls are disabled';
 		}
 	}
@@ -452,6 +485,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * room は持ち主 (owner) を読み込んだもの。持ち主がこのサーバーのユーザーなら (ミラーでなければ) 例外を投げる。
 	 * updatedAt はホストの時刻。保存済みのもの以前の現況と、この時計より REMOTE_SNAPSHOT_MAX_AHEAD_MS より先の現況は捨てる。
 	 * 保存済みの現況の寿命が切れた後も、最後に受け入れた時刻 (REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS のあいだ覚えておく) 以前の現況は捨てる。
+	 * 覚えておく間が過ぎた後にも古い現況を書かないよう、REMOTE_SNAPSHOT_MAX_AGE_MS より古い現況も捨てる。
+	 * inbox に届いた現況も、参加したときにホストから受け取った現況も、すべてここを通る。
 	 * 参加者は、このサーバーが知っているユーザーだけを残す。そのうちこのサーバーのユーザーは、ルームのメンバーでなければ外す。
 	 * 他のサーバーのユーザー (持ち主を含む) がメンバーかはこのサーバーでは分からないので、ホストの言うまま残す。
 	 * 他のサーバーの通話を止めているあいだは保存しない。保存の途中で止められたときも、書かず (REMOTE_GENERATION_KEY)、知らせない。
@@ -466,6 +501,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 
 		if (updatedAt > Date.now() + REMOTE_SNAPSHOT_MAX_AHEAD_MS) return 'ahead';
+		if (updatedAt < Date.now() - REMOTE_SNAPSHOT_MAX_AGE_MS) return 'old';
 		if (!isRemoteVoiceCallEnabled(this.meta)) return 'disabled';
 		// 書き込みのスクリプトは、ここで読んだ世代と比べる。この後で止められれば書かない
 		const generation = await this.remoteGenerationOf();
@@ -555,8 +591,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			const locked = await this.redisClient.set(`chatVoice:sweep:${roomId}`, '1', 'EX', SWEEP_LOCK_SECONDS, 'NX');
 			if (locked !== 'OK') continue;
 			await this.reconcileRoom(roomId);
-			await this.refresh(roomId).catch(() => {
+			await this.refresh(roomId).catch(err => {
 				// LiveKit に届かなければスナップショットの寿命切れに任せる
+				this.logRefreshFailure(roomId, err);
 			});
 		}
 	}
@@ -638,11 +675,17 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 		const timer = setTimeout(() => {
 			pending.delete(roomId);
-			this.refresh(roomId).catch(() => {
-				// 次の webhook か通話参加時に再取得されるので握りつぶす
+			this.refresh(roomId).catch(err => {
+				// 次の webhook か定期的な読み直しか通話参加時に読み直されるので、記録だけする
+				this.logRefreshFailure(roomId, err);
 			});
 		}, delayMs);
 		pending.set(roomId, { timer, dueAt });
+	}
+
+	/** 読み直し (refresh) に失敗したことを、ルームとエラーのメッセージだけで記録する */
+	private logRefreshFailure(roomId: MiChatRoom['id'], err: unknown): void {
+		this.logger.warn(`Failed to refresh the voice call in ${roomId}: ${err instanceof Error ? err.message : String(err)}`);
 	}
 
 	/**
@@ -754,11 +797,30 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * - 参加者のいる現況は、前に送ったものと同じで、送ってから FEDERATION_RESEND_INTERVAL_MS 経っていなければ送らない
 	 * - 送るのはルームごとに FEDERATION_MIN_INTERVAL_MS に一度まで。送れなかった変化は、間隔が空いたときに読み直して最新の現況を送る
 	 * - 通話が終わったこと (空の現況) は参加者の現況とは別に数えて待たずに送る。送る直前に記録を読み、同じ終わりを送ってあれば送らない
-	 * 送った記録は、すべての届け先への配送を積めたときだけ残す
+	 * 送った記録は、すべての届け先への配送を積めたときだけ残す。
+	 * 記録を読んで送るかを決めてから記録を残すまでは、ルームごとに全ワーカーで一つずつ行う (FEDERATION_LOCK_MS)。
+	 * ほかのワーカーが送っている途中に決めると、まだ記録されていない現況を見落とし、通話の終わりを送らずに済ませてしまうため。
+	 * ほかのワーカーが送っている途中なら、少し後に読み直して決め直す
 	 */
 	private async federateChanges(room: MiChatRoom, snapshot: VoiceSnapshot, audience: RoomAudience): Promise<void> {
 		if (audience.localOwner == null || audience.remoteInboxes.size === 0) return;
 
+		const lockKey = `chatVoice:federateLock:${room.id}`;
+		const token = randomUUID();
+		if (await this.redisClient.set(lockKey, token, 'PX', FEDERATION_LOCK_MS, 'NX') !== 'OK') {
+			this.scheduleRefreshIn(this.pendingFollowUps, room.id, REFRESH_DELAY_MS);
+			return;
+		}
+		try {
+			await this.federateChangesInTurn(room, snapshot, audience);
+		} finally {
+			// 外せなくても、鍵は寿命で切れる
+			await this.redisClient.eval(RELEASE_FEDERATION_LOCK_SCRIPT, 1, lockKey, token).catch(() => {});
+		}
+	}
+
+	/** federateChanges のうち、送る順番の鍵を取った後に行うもの */
+	private async federateChangesInTurn(room: MiChatRoom, snapshot: VoiceSnapshot, audience: RoomAudience): Promise<void> {
 		const participants = snapshot.participants.map(p => ({ identity: p.identity, screenSharing: p.screenSharing }));
 		const hash = createHash('sha256')
 			.update(JSON.stringify([...participants].sort((a, b) => a.identity.localeCompare(b.identity))))
@@ -789,8 +851,20 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			return;
 		}
 
-		await this.deliverSnapshot(room, audience, participants, snapshot.updatedAt);
-		await this.redisClient.set(`chatVoice:federated:${room.id}`, JSON.stringify({ hash, at: Date.now() } satisfies FederatedRecord), 'EX', FEDERATION_RESEND_INTERVAL_MS / 1000);
+		const recordKey = `chatVoice:federated:${room.id}`;
+		try {
+			await this.deliverSnapshot(room, audience, participants, snapshot.updatedAt);
+		} catch (err) {
+			// 一部の届け先には積めたかもしれず、相手に届いている現況が分からない。記録を消して次の現況 (終わりを含む) を必ず送り、
+			// 間隔の鍵が切れた後に読み直して送り直す。記録を消せなくても、記録は FEDERATION_RESEND_INTERVAL_MS で切れる
+			await this.redisClient.del(recordKey).catch(() => {});
+			this.scheduleRefreshIn(this.pendingFollowUps, room.id, FEDERATION_MIN_INTERVAL_MS + 1);
+			throw err;
+		}
+
+		// 順番の鍵が寿命で切れて、ほかのワーカーが後の現況を先に記録していれば、それを上書きしない
+		const record: FederatedRecord = { hash, at: Date.now(), updatedAt: snapshot.updatedAt };
+		await this.redisClient.eval(RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT, 1, recordKey, JSON.stringify(record), snapshot.updatedAt, FEDERATION_RESEND_INTERVAL_MS / 1000);
 	}
 
 	/** 他のサーバーに最後に送った現況の記録。FEDERATION_RESEND_INTERVAL_MS で切れる */

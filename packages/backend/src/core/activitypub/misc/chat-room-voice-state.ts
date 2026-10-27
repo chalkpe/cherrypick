@@ -5,8 +5,8 @@
 
 import type { IObject } from '../type.js';
 
-// ルームの URI のパス (ルームを持つサーバーが送る `${url}/chat/rooms/${id}` と同じ形)
-const ROOM_PATH = /^\/chat\/rooms\/([a-zA-Z0-9]+)$/;
+// ルームの id (ルームを持つサーバーが送る `${url}/chat/rooms/${id}` の id)
+const ROOM_ID = /^[a-zA-Z0-9]+$/;
 
 /** 他のサーバーから届いた通話の参加者の現況 (ChatRoomVoiceState) のうち、確かめた中身 */
 export type ParsedChatRoomVoiceState = {
@@ -31,7 +31,9 @@ export function chatRoomVoiceStateIdOf(roomUri: string): string {
 /**
  * 他のサーバーのルームの持ち主 (actorUri) から届いた ChatRoomVoiceState の形を確かめる。
  * - id と room が文字列で、どちらも送り主と同じサーバー (スキーム・ホスト・ポート) のもの
- * - room が `${origin}/chat/rooms/${id}` の形 (クエリ・フラグメント・認証情報を含まない) で、id がちょうど `${room}/voice`
+ * - room がちょうど `${origin}/chat/rooms/${id}` (origin は送り主の正規化した origin) で、id がちょうど `${room}/voice`。
+ *   ルームを持つサーバーは正規化した origin (config.url) でそのまま書くので、それ以外の書き方 (認証情報・ドットのセグメント・
+ *   クエリ・フラグメント・省略できるポート・大文字のホストなど) は受け付けない
  * - participants が maxParticipants 人以下で、それぞれ文字列の id と真偽値の screenSharing を持つ
  * - updated が時刻として読める
  * ルームがこのサーバーのミラーで、送り主がその持ち主かどうかは DB を読む側 (ChatVoiceService) が確かめる
@@ -45,7 +47,7 @@ export function parseChatRoomVoiceState(actorUri: string, object: IObject, maxPa
 		return refuse('voice state is not on the sender\'s server');
 	}
 
-	const roomId = roomIdOfUri(state.room);
+	const roomId = roomIdOfUri(state.room, origin);
 	if (roomId == null) return refuse('invalid room URI');
 	if (state.id !== chatRoomVoiceStateIdOf(state.room)) return refuse('voice state id does not belong to the room');
 
@@ -76,19 +78,14 @@ function originOf(url: string): string | null {
 }
 
 /**
- * `${origin}/chat/rooms/${id}` の形のルーム URI から id を取り出す。クエリ・フラグメント・認証情報の付いたものは受け付けない。
- * 空のクエリ (`?`) とフラグメント (`#`) は URL として読むと消えるので、文字列のまま確かめる
+ * ちょうど `${origin}/chat/rooms/${id}` と書かれたルーム URI から id を取り出す。
+ * URL として読むと消えたり正規化されたりする部分 (空のクエリ・フラグメント・認証情報、ドットのセグメントなど) も見落とさないよう、文字列のまま比べる
  */
-function roomIdOfUri(uri: string): string | null {
-	if (uri.includes('?') || uri.includes('#')) return null;
-	let url: URL;
-	try {
-		url = new URL(uri);
-	} catch {
-		return null;
-	}
-	if (url.username !== '' || url.password !== '') return null;
-	return ROOM_PATH.exec(url.pathname)?.[1] ?? null;
+function roomIdOfUri(uri: string, origin: string): string | null {
+	const prefix = `${origin}/chat/rooms/`;
+	if (!uri.startsWith(prefix)) return null;
+	const roomId = uri.slice(prefix.length);
+	return ROOM_ID.test(roomId) ? roomId : null;
 }
 
 /** ChatRoomVoiceState の participants を確かめる。形が違うか、maxParticipants 人より多ければ null */
