@@ -197,6 +197,45 @@ describe('ChatRoomChannel access lifetime', () => {
 		expect(f.subscriber.listenerCount(stream)).toBe(0);
 	});
 
+	test.each(['current-first', 'old-first'] as const)('initialization follows the current allowed moderator check (%s)', async order => {
+		const f = fixture();
+		f.isMember.mockResolvedValue(false);
+		f.isModerator.mockResolvedValue(true);
+		const old = deferred<boolean>();
+		const current = deferred<boolean>();
+		f.permission.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+		let initialized = false;
+		const pending = f.channel.init({ roomId: 'r1' }).then(allowed => {
+			initialized = true;
+			return allowed;
+		});
+		await Promise.resolve();
+		const control = f.publish(left);
+		await Promise.resolve();
+		expect(f.permission).toHaveBeenCalledTimes(2);
+
+		if (order === 'current-first') {
+			current.resolve(true);
+			await control;
+			old.resolve(true);
+		} else {
+			old.resolve(true);
+			// 古い判定が終わっても、最新の判定までは初期化を確定しない。
+			await new Promise<void>(resolve => setImmediate(resolve));
+			expect(initialized).toBe(false);
+			expect(f.send).not.toHaveBeenCalled();
+			expect(f.subscriber.listenerCount(stream)).toBe(1);
+			current.resolve(true);
+		}
+
+		expect(await pending).toBe(true);
+		await control;
+		expect(f.send).not.toHaveBeenCalled();
+		expect(f.subscriber.listenerCount(stream)).toBe(1);
+		await f.publish(event);
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', type: 'deleted', body: 'message-1' });
+	});
+
 	test('disposal during initialization cannot attach a listener later', async () => {
 		const f = fixture();
 		const check = deferred<boolean>();

@@ -46,11 +46,13 @@ export class ChatRoomChannel extends Channel {
 
 		// 初期チェック中の退出・削除も受け取り、古い判定を無効にする。
 		this.subscriber.on(`chatRoomStream:${this.roomId}`, this.onEvent);
-		if (!(await this.checkPermission())) {
-			this.dispose();
-			return false;
+		while (!this.disposed) {
+			const version = this.permissionVersion;
+			const allowed = await this.checkPermission();
+			// 制御イベントで古くなった判定は、最新の判定を待ち直す。
+			if (version === this.permissionVersion) return allowed && !this.disposed;
 		}
-		return true;
+		return false;
 	}
 
 	private checkPermission(): Promise<boolean> {
