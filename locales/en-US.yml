@@ -1683,6 +1683,7 @@ _order:
 _chat:
   messages: "Messages"
   noMessagesYet: "No messages yet"
+  noMessagesInRoom: "No messages yet"
   newMessage: "New message"
   individualChat: "Private Chat"
   individualChat_description: "Have a private chat with another person."

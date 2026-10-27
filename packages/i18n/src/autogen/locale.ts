@@ -6752,6 +6752,10 @@ export interface Locale extends ILocale {
          */
         "noMessagesYet": string;
         /**
+         * まだメッセージはありません
+         */
+        "noMessagesInRoom": string;
+        /**
          * 新しいメッセージ
          */
         "newMessage": string;

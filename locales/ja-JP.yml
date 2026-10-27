@@ -1693,6 +1693,7 @@ _order:
 _chat:
   messages: "メッセージ"
   noMessagesYet: "まだメッセージはありません"
+  noMessagesInRoom: "まだメッセージはありません"
   newMessage: "新しいメッセージ"
   individualChat: "個別"
   individualChat_description: "特定ユーザーと個別にメッセージのやりとりができます。"

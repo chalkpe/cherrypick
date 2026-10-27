@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="history.length > 0" class="_gaps_s">
+<div v-if="history.length > 0 || emptyRooms.length > 0" class="_gaps_s">
 	<MkA
 		v-for="item in history"
 		:key="item.id"
@@ -34,8 +34,30 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div :class="$style.messageBodyText"><span v-if="item.isMe" :class="$style.youSaid">{{ i18n.ts.you }}:</span>{{ item.message.text }}</div>
 		</div>
 	</MkA>
+	<MkA
+		v-for="room in emptyRooms"
+		:key="`empty-${room.id}`"
+		:class="[$style.message, $style.isRead]"
+		class="_panel"
+		:to="`/chat/room/${room.id}`"
+	>
+		<MkAvatar :class="$style.messageAvatar" :user="room.owner" indicator :preview="false"/>
+		<div :class="$style.messageBody">
+			<header :class="$style.messageHeader">
+				<span :class="$style.messageHeaderName"><i class="ti ti-users"></i> {{ room.name }}</span>
+				<span
+					v-if="voiceStates.has(room.id)"
+					:class="$style.messageHeaderVoice"
+					role="img"
+					:aria-label="i18n.tsx._voiceCall.inCallCount({ n: voiceStates.get(room.id)!.participants.length })"
+					:title="i18n.tsx._voiceCall.inCallCount({ n: voiceStates.get(room.id)!.participants.length })"
+				><i class="ti ti-volume"></i> {{ voiceStates.get(room.id)!.participants.length }}</span>
+			</header>
+			<div :class="$style.messageBodyText">{{ i18n.ts._chat.noMessagesInRoom }}</div>
+		</div>
+	</MkA>
 </div>
-<MkResult v-if="!initializing && history.length == 0" type="empty" :text="i18n.ts._chat.noHistory"/>
+<MkResult v-if="!initializing && history.length === 0 && emptyRooms.length === 0" type="empty" :text="i18n.ts._chat.noHistory"/>
 <MkLoading v-if="initializing"/>
 </template>
 
@@ -57,7 +79,13 @@ const history = ref<{
 	isMe: boolean;
 }[]>([]);
 
-const voiceStates = useChatRoomVoiceStates(computed(() => history.value.flatMap(item => item.message.toRoomId != null ? [item.message.toRoomId] : [])));
+// メッセージがまだ無く、履歴に出てこない自分のルーム (所有・参加)
+const emptyRooms = ref<Misskey.entities.ChatRoom[]>([]);
+
+const voiceStates = useChatRoomVoiceStates(computed(() => [
+	...history.value.flatMap(item => item.message.toRoomId != null ? [item.message.toRoomId] : []),
+	...emptyRooms.value.map(room => room.id),
+]));
 
 const initializing = ref(true);
 const fetching = ref(false);
@@ -67,10 +95,28 @@ async function fetchHistory() {
 
 	fetching.value = true;
 
-	const [userMessages, roomMessages] = await Promise.all([
+	const [userMessages, roomMessages, ownedRooms, joiningRooms] = await Promise.all([
 		misskeyApi('chat/history', { room: false }),
 		misskeyApi('chat/history', { room: true }),
+		misskeyApi('chat/rooms/owned', { limit: 100 }),
+		misskeyApi('chat/rooms/joining', { limit: 100 }),
 	]);
+
+	// 履歴に無いルームだけを、所有ルームは部屋の作成日時・参加ルームは参加日時の新しい順に並べる。
+	// 所有かつ参加のルームは一度だけ出す
+	const inHistory = new Set(roomMessages.flatMap(m => m.toRoomId != null ? [m.toRoomId] : []));
+	const candidates = new Map<string, { room: Misskey.entities.ChatRoom; time: number }>();
+	for (const room of ownedRooms) {
+		candidates.set(room.id, { room, time: new Date(room.createdAt).getTime() });
+	}
+	for (const membership of joiningRooms) {
+		if (membership.room == null || candidates.has(membership.room.id)) continue;
+		candidates.set(membership.room.id, { room: membership.room, time: new Date(membership.createdAt ?? membership.room.createdAt).getTime() });
+	}
+	emptyRooms.value = [...candidates.values()]
+		.filter(c => !inHistory.has(c.room.id))
+		.toSorted((a, b) => b.time - a.time)
+		.map(c => c.room);
 
 	history.value = [...userMessages, ...roomMessages]
 		.toSorted((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
