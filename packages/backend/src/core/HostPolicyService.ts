@@ -83,12 +83,12 @@ export class HostPolicyService {
 		try {
 			return await this.refusedRemoteHostsOf(hosts);
 		} catch (err) {
-			this.logger.warn('Failed to read the remote host policies together; retrying each host', { error: err });
+			this.logger.warn({ message: 'Failed to read the remote host policies together; retrying each host', error: err });
 			const decided = await Promise.all([...new Set(hosts)].map(async host => {
 				try {
 					return [host, await this.isRefusedRemoteHost(host)] as const;
 				} catch (err) {
-					this.logger.warn('Failed to read a remote host policy', { error: err });
+					this.logger.warn({ message: 'Failed to read a remote host policy', error: err });
 					return [host, null] as const;
 				}
 			}));

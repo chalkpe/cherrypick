@@ -4,11 +4,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="history.length > 0 || emptyRooms.length > 0" class="_gaps_s">
+<div v-if="history.length > 0 || additionalRooms.length > 0" class="_gaps_s">
 	<MkA
 		v-for="item in history"
 		:key="item.id"
-		:class="[$style.message, { [$style.isMe]: item.isMe, [$style.isRead]: item.message.isRead }]"
+		:class="[$style.message, { [$style.unread]: !item.isMe && !item.message.isRead, [$style.isMe]: item.isMe, [$style.isRead]: item.message.isRead }]"
 		class="_panel"
 		:to="item.message.toRoomId ? `/chat/room/${item.message.toRoomId}` : `/chat/user/${item.other!.id}`"
 	>
@@ -35,8 +35,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</div>
 	</MkA>
 	<MkA
-		v-for="room in emptyRooms"
-		:key="`empty-${room.id}`"
+		v-for="room in additionalRooms"
+		:key="`additional-${room.id}`"
 		:class="$style.message"
 		class="_panel"
 		:to="`/chat/room/${room.id}`"
@@ -53,11 +53,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 					:title="i18n.tsx._voiceCall.inCallCount({ n: voiceStates.get(room.id)!.participants.length })"
 				><i class="ti ti-volume"></i> {{ voiceStates.get(room.id)!.participants.length }}</span>
 			</header>
-			<div :class="$style.messageBodyText">{{ i18n.ts._chat.noMessagesInRoom }}</div>
+			<div :class="$style.messageBodyText">{{ i18n.ts._chat.openRoom }}</div>
 		</div>
 	</MkA>
 </div>
-<MkResult v-if="!initializing && history.length === 0 && emptyRooms.length === 0" type="empty" :text="i18n.ts._chat.noHistory"/>
+<MkResult v-if="!initializing && history.length === 0 && additionalRooms.length === 0" type="empty" :text="i18n.ts._chat.noHistory"/>
 <MkLoading v-if="initializing"/>
 </template>
 
@@ -80,18 +80,18 @@ const history = ref<{
 	isMe: boolean;
 }[]>([]);
 
-// メッセージがまだ無く、履歴に出てこない自分のルーム (所有・参加)
-const emptyRooms = ref<Misskey.entities.ChatRoom[]>([]);
+// 読み込んだ履歴のページに含まれない自分のルーム (所有・参加)。メッセージの有無は分からない
+const additionalRooms = ref<Misskey.entities.ChatRoom[]>([]);
 
 const voiceStates = useChatRoomVoiceStates(computed(() => [
 	...history.value.flatMap(item => isChatRoomVoiceAvailable(item.message.toRoom, $i.policies.canVoiceCall) ? [item.message.toRoomId!] : []),
-	...emptyRooms.value.filter(room => isChatRoomVoiceAvailable(room, $i.policies.canVoiceCall)).map(room => room.id),
+	...additionalRooms.value.filter(room => isChatRoomVoiceAvailable(room, $i.policies.canVoiceCall)).map(room => room.id),
 ]));
 
 const initializing = ref(true);
 const fetching = ref(false);
 
-// 自分のルーム一覧 (所有・参加)。メッセージの無いルームはあまり変わらないので、毎回は取り直さない
+// 自分のルーム一覧 (所有・参加)。所有・参加は毎回は取り直さない
 let ownedRooms: Misskey.entities.ChatRoom[] = [];
 let joiningRooms: Misskey.entities.ChatRoomMembership[] = [];
 
@@ -133,7 +133,7 @@ async function fetchHistory(withRooms = true) {
 			if (membership.room == null || candidates.has(membership.room.id)) continue;
 			candidates.set(membership.room.id, { room: membership.room, time: new Date(membership.createdAt ?? membership.room.createdAt).getTime() });
 		}
-		emptyRooms.value = [...candidates.values()]
+		additionalRooms.value = [...candidates.values()]
 			.filter(c => !inHistory.has(c.room.id))
 			.toSorted((a, b) => b.time - a.time)
 			.map(c => c.room);
@@ -195,7 +195,7 @@ onMounted(() => {
 		opacity: 0.8;
 	}
 
-	&:not(.isMe):not(.isRead) {
+	&.unread {
 		&::before {
 			content: '';
 			position: absolute;

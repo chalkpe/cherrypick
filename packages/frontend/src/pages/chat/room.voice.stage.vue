@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <!-- 広いルーム画面で、チャットの横に通話を大きく出す (狭い画面の通話カードの代わり) -->
-<div ref="rootEl" :class="$style.root">
+<div ref="rootEl" :class="$style.root" :data-voice-call-room="room.id">
 	<div :class="$style.header">
 		<i class="ti ti-volume" :class="$style.headerIcon"></i>
 		<!-- 参加中は通話の状態 (通話中・接続中・再接続中) を出し、変わったら読み上げる。

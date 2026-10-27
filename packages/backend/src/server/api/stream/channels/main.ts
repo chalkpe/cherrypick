@@ -4,6 +4,10 @@
  */
 
 import { Inject, Injectable, Scope } from '@nestjs/common';
+import { DI } from '@/di-symbols.js';
+import type { ChatRoomsRepository, ChatRoomMembershipsRepository } from '@/models/_.js';
+import { ChatVoiceService } from '@/core/ChatVoiceService.js';
+import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import { isInstanceMuted, isUserFromMutedInstance } from '@/misc/is-instance-muted.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { bindThis } from '@/decorators.js';
@@ -18,12 +22,19 @@ export class MainChannel extends Channel {
 	public static shouldShare = true;
 	public static requireCredential = true as const;
 	public static kind = 'read:account';
+	private disposed = false;
+	private voiceRooms = new Map<string, { version: number; listener: (event: GlobalEvents['chatRoom']['payload']) => void }>();
 
 	constructor(
 		@Inject(REQUEST)
 		request: ChannelRequest,
 
 		private noteEntityService: NoteEntityService,
+		@Inject(DI.chatRoomsRepository)
+		private chatRoomsRepository: ChatRoomsRepository,
+		@Inject(DI.chatRoomMembershipsRepository)
+		private chatRoomMembershipsRepository: ChatRoomMembershipsRepository,
+		private chatVoiceService: ChatVoiceService,
 	) {
 		super(request);
 	}
@@ -38,7 +49,34 @@ export class MainChannel extends Channel {
 
 	@bindThis
 	private async onData(data: EventTypesToEventPayload<MainEventTypes>) {
+		if (this.disposed) return;
 		switch (data.type) {
+			case 'chatRoomVoiceState': {
+				const roomId = data.body.roomId;
+				let guard = this.voiceRooms.get(roomId);
+				if (guard == null) {
+					guard = { version: 0, listener: event => {
+						if (event.type === 'roomDeleted' || (event.type === 'membershipEnded' && event.body.userId === this.user!.id)) guard!.version++;
+					} };
+					this.voiceRooms.set(roomId, guard);
+					this.subscriber.on(`chatRoomStream:${roomId}`, guard.listener);
+				}
+				const version = guard.version;
+				try {
+					// モデレーターのタイムライン閲覧権限とは別に、毎回いまの所有・参加を確かめる。
+					const [room, member] = await Promise.all([
+						this.chatRoomsRepository.findOne({ where: { id: roomId }, relations: { owner: true } }),
+						this.chatRoomMembershipsRepository.exists({ where: { roomId, userId: this.user!.id } }),
+					]);
+					if (room == null || (room.ownerId !== this.user!.id && !member)) return;
+					const visible = await this.chatVoiceService.isRoomVoiceVisible(room, data.body.participants.length > 0 ? data.body.updatedAt : undefined);
+					if (this.disposed || version !== guard.version) return;
+					if (!visible) data = { ...data, body: { ...data.body, participants: [] } };
+				} catch {
+					return;
+				}
+				break;
+			}
 			case 'notification': {
 				// Ignore notifications from instances the user has muted
 				if (isUserFromMutedInstance(data.body, this.userMutedInstances)) return;
@@ -71,6 +109,9 @@ export class MainChannel extends Channel {
 
 	@bindThis
 	public dispose() {
+		this.disposed = true;
+		for (const [roomId, guard] of this.voiceRooms) this.subscriber.off(`chatRoomStream:${roomId}`, guard.listener);
+		this.voiceRooms.clear();
 		this.subscriber.off(`mainStream:${this.user?.id}`, this.onData);
 	}
 }

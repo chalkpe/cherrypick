@@ -47,6 +47,18 @@ describe('LiveKitService', () => {
 		expect(JSON.parse(claims.metadata as string)).toEqual({ userId: 'u1' });
 	});
 
+	test.each([
+		[true, [TrackSource.MICROPHONE, TrackSource.SCREEN_SHARE], true],
+		[true, [TrackSource.MICROPHONE, TrackSource.SCREEN_SHARE_AUDIO], true],
+		[true, [], true], [true, [TrackSource.MICROPHONE], false], [false, [], false],
+	] as const)('reads actual LiveKit publish grants (%s / %s)', async (canPublish, sources, expected) => {
+		roomService.listParticipants.mockResolvedValue([{
+			identity: 'i1', metadata: '{"userId":"u1"}', tracks: [], joinedAt: 1n,
+			permission: { canPublish, canPublishSources: sources },
+		}]);
+		expect((await service.listParticipants('r1'))[0].canScreenShare).toBe(expected);
+	});
+
 	test('drops screen share sources when screen sharing is not allowed', async () => {
 		const token = await service.createJoinToken({ roomId: 'r1', identity: 'https://local.test/users/u1', userId: 'u1', canScreenShare: false });
 		const claims = await new TokenVerifier('key', SECRET).verify(token);
@@ -59,7 +71,7 @@ describe('LiveKitService', () => {
 			metadata: '{"userId":"u1"}',
 			tracks: [{ source: TrackSource.MICROPHONE, sid: 'TR_mic' }, { source: TrackSource.SCREEN_SHARE, sid: 'TR_ss' }],
 		}]);
-		await expect(service.listParticipants('r1')).resolves.toEqual([{ identity: 'i1', userId: 'u1', screenSharing: true, micTrackSid: 'TR_mic' }]);
+		await expect(service.listParticipants('r1')).resolves.toEqual([{ identity: 'i1', userId: 'u1', screenSharing: true, canScreenShare: false, micTrackSid: 'TR_mic' }]);
 		expect(roomService.listParticipants).toHaveBeenCalledWith('chatRoom:r1');
 	});
 
@@ -80,7 +92,7 @@ describe('LiveKitService', () => {
 			{ identity: 'stranger', metadata: '', tracks: [] },
 			{ identity: 'i2', metadata: '{"userId":"u2"}', tracks: [] },
 		]);
-		await expect(service.listParticipants('r1')).resolves.toEqual([{ identity: 'i2', userId: 'u2', screenSharing: false, micTrackSid: null }]);
+		await expect(service.listParticipants('r1')).resolves.toEqual([{ identity: 'i2', userId: 'u2', screenSharing: false, canScreenShare: false, micTrackSid: null }]);
 	});
 
 	test('treats a missing room as having no participants', async () => {

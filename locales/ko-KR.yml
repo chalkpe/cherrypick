@@ -1688,6 +1688,7 @@ _order:
 _chat:
   messages: "쪽지"
   noMessagesYet: "아직 아무런 대화도 시작하지 않았어요.\n간단하게 인사로 시작해 보는 것은 어떨까요?"
+  openRoom: "방을 열어 확인해요"
   noMessagesInRoom: "아직 메시지가 없어요"
   newMessage: "새로운 쪽지"
   individualChat: "개인"

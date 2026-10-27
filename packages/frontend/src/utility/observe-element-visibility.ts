@@ -9,12 +9,10 @@ export function observeElementVisibility(el: HTMLElement, onChange: (visible: bo
 
 	function refresh() {
 		observer.disconnect();
-		let visible = el.isConnected;
+		const visible = isElementVisible(el);
 		// ページウィンドウや重ねたルーターは、親の表示状態だけを変えて中身を残すことがある。
 		// Teleport で親が変わる場合も、移動後の親を監視し直す。
 		for (let ancestor: HTMLElement | null = el; ancestor; ancestor = ancestor.parentElement) {
-			const style = window.getComputedStyle(ancestor);
-			if (ancestor.hidden || ancestor.hasAttribute('inert') || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') visible = false;
 			observer.observe(ancestor, { attributes: true, attributeFilter: ['class', 'style', 'hidden', 'inert'], childList: true });
 		}
 		onChange(visible);
@@ -22,4 +20,14 @@ export function observeElementVisibility(el: HTMLElement, onChange: (visible: bo
 
 	refresh();
 	return { refresh, dispose: () => observer.disconnect() };
+}
+
+/** 親に隠された要素や切断済みの要素をフォーカス先にしない。 */
+export function isElementVisible(el: HTMLElement): boolean {
+	if (!el.isConnected) return false;
+	for (let ancestor: HTMLElement | null = el; ancestor; ancestor = ancestor.parentElement) {
+		const style = window.getComputedStyle(ancestor);
+		if (ancestor.hidden || ancestor.hasAttribute('inert') || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+	}
+	return true;
 }

@@ -37,7 +37,7 @@ vi.stubGlobal('localStorage', localStorageMock);
 // 中でlocalStorageを使うので上と順番を変えてはいけない
 const { default: locales } = await import('i18n');
 
-// vitest-fetch-mock resolves relative requests before matching; match the same-origin locale asset.
+// vitest-fetch-mock は相対 URL を解決してから照合するので、同一オリジンの locale アセットに限定する。
 fetchMocker.mockIf(request => {
 	const url = new URL(request.url);
 	return url.origin === window.location.origin && /^\/assets\/locales\/[^/]+\.json$/.test(url.pathname);

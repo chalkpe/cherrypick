@@ -292,9 +292,12 @@ function hasLowerLayer(publication: RemoteTrackPublication): boolean {
 // adaptiveStream も効いているので、映している要素が小さければ、ここで決めた上限よりさらに低い層になる
 function syncScreenShareSubscription(identity: string): void {
 	if (current == null || livekit == null) return;
+	const watched = state.watchingIdentities.includes(identity);
+	for (const publication of current.remoteParticipants.get(identity)?.trackPublications.values() ?? []) {
+		if (publication.source === livekit.Track.Source.ScreenShareAudio) publication.setSubscribed(watched);
+	}
 	const publication = screenSharePublicationOf(current, identity);
 	if (publication == null) return;
-	const watched = state.watchingIdentities.includes(identity);
 	if (!watched && !(isScreenSharePreviewed(identity) && hasLowerLayer(publication))) {
 		if (publication.isDesired) publication.setSubscribed(false);
 		return;
@@ -308,6 +311,7 @@ function forgetScreenShare(identity: string): void {
 	state.screenShareIdentities = state.screenShareIdentities.filter(x => x !== identity);
 	screenShareTracks.delete(identity);
 	state.watchingIdentities = state.watchingIdentities.filter(x => x !== identity);
+	syncScreenShareSubscription(identity);
 }
 
 function captureOptions(): AudioCaptureOptions {
@@ -351,8 +355,10 @@ function applySubscription(lk: LiveKit, publication: TrackPublication, participa
 	const remote = publication as RemoteTrackPublication;
 	switch (publication.source) {
 		case lk.Track.Source.Microphone:
-		case lk.Track.Source.ScreenShareAudio:
 			remote.setSubscribed(true);
+			break;
+		case lk.Track.Source.ScreenShareAudio:
+			remote.setSubscribed(state.watchingIdentities.includes(participant.identity));
 			break;
 		case lk.Track.Source.ScreenShare:
 			if (!state.screenShareIdentities.includes(participant.identity)) {

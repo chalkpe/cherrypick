@@ -96,6 +96,20 @@ describe('CloudflareTurnService', () => {
 		expect(f.httpRequestService.send).not.toHaveBeenCalled();
 	});
 
+	test.each([null, 'rotated-key'])('never returns an old in-flight credential after key change to %s', async key => {
+		f = createFixture();
+		let resolve!: (value: unknown) => void;
+		f.httpRequestService.send.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+		const first = f.service.getIceServers();
+		const shared = f.service.getIceServers();
+		publishMetaUpdated(f, { voiceCallCloudflareTurnKeyId: key });
+		const current = f.service.getIceServers();
+		resolve(response(cloudflareBody('old-user', 'old-credential')));
+		expect(await first).toBeNull();
+		expect(await shared).toBeNull();
+		expect(await current).toEqual(key == null ? null : expectedIceServers());
+	});
+
 	test('asks Cloudflare for credentials that last a day and drops port 53', async () => {
 		f = createFixture();
 

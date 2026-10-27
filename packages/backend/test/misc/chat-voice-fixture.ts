@@ -67,8 +67,13 @@ export function fakeRedis() {
 			if (key.startsWith('chatVoice:federateDecided:') || key.startsWith('chatVoice:localStamp:')) {
 				const [now, stampTtlSeconds] = args.slice(numKeys);
 				let stamp = Number(now);
-				for (const sequenceKey of [key, lastSeenKey]) {
+				for (const sequenceKey of (numKeys === 4 ? [key, lastSeenKey, generationKey] : [key, lastSeenKey])) {
 					if (sequenceKey != null && live(sequenceKey)) stamp = Math.max(stamp, Number(store.get(sequenceKey)) + 1);
+				}
+				if (numKeys === 4) {
+					store.set(generationKey, String(stamp));
+					expiresAt.set(generationKey, Date.now() + Number(stampTtlSeconds) * 1000);
+					store.delete(String(args[3]));
 				}
 				store.set(key, String(stamp));
 				expiresAt.set(key, Date.now() + Number(stampTtlSeconds) * 1000);
@@ -88,6 +93,7 @@ export function fakeRedis() {
 			if (key.startsWith('chatVoice:federated:')) {
 				const [record, recordUpdatedAt, recordTtlSeconds] = args.slice(numKeys);
 				const decidedKey = lastSeenKey;
+				if (generationKey != null && live(generationKey) && Number(store.get(generationKey)) >= Number(recordUpdatedAt)) return 0;
 				if (decidedKey != null && live(decidedKey) && Number(store.get(decidedKey)) > Number(recordUpdatedAt)) return 0;
 				if (live(key)) {
 					const stored = JSON.parse(store.get(key)!) as { updatedAt?: unknown };
@@ -196,7 +202,7 @@ export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []
 				.filter(room => room.owner?.host != null && (where.id == null || room.id > (where.id.value as string)))
 				.sort((a, b) => (a.id < b.id ? -1 : 1))
 				.slice(0, take)
-				.map(room => ({ id: room.id }));
+				.map(room => ({ ...room }));
 		}),
 	};
 	// 通話に残れるかを確かめるときは、ルームのメンバーを userId の In で引く。nonMembers に入れたユーザーはメンバーでない

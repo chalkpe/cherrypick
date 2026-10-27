@@ -60,6 +60,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script lang="ts" setup>
 import { nextTick, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
+import { isElementVisible } from '@/utility/observe-element-visibility.js';
 import { i18n } from '@/i18n.js';
 import { userName } from '@/filters/user.js';
 import { requestFullscreen as enterFullscreen } from '@/utility/fullscreen.js';
@@ -148,13 +149,15 @@ function requestPictureInPicture() {
 function stopWatching() {
 	const identity = props.participant.identity;
 	const root = rootEl.value;
+	const panel = root?.closest<HTMLElement>('[data-voice-call-room]');
+	const roomId = panel?.dataset.voiceCallRoom;
 	const neighbour = root?.nextElementSibling ?? root?.previousElementSibling ?? null;
 	unwatchScreenShare(identity);
 	nextTick(() => {
-		const toggle = [...window.document.querySelectorAll<HTMLElement>('[data-voice-call-watch-toggle]')]
-			.find(el => el.dataset.voiceCallWatchToggle === identity);
+		const candidates = [...(panel?.querySelectorAll<HTMLElement>('[data-voice-call-watch-toggle]') ?? []), ...window.document.querySelectorAll<HTMLElement>('[data-voice-call-watch-toggle]')];
+		const toggle = candidates.find(el => el.dataset.voiceCallWatchToggle === identity && isElementVisible(el) && (roomId == null || el.closest<HTMLElement>('[data-voice-call-room]')?.dataset.voiceCallRoom === roomId));
 		const target = toggle ?? neighbour?.querySelector<HTMLElement>('button') ?? null;
-		if (target == null) return;
+		if (target == null || !isElementVisible(target)) return;
 		target.focus({ preventScroll: true });
 		// タイルの帯は横にスクロールするので、帯の外に隠れたタイルにフォーカスが移ることがある。見える位置まで最小限だけ動かす
 		target.scrollIntoView({ block: 'nearest', inline: 'nearest' });

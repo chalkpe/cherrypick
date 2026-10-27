@@ -722,3 +722,47 @@ describe('screen sharing', () => {
 		expect(voiceCall.watchingIdentities).toEqual([]);
 	});
 });
+
+test('screen audio follows each watched identity while microphones remain independent', async () => {
+	await joinVoiceCall(room1);
+	const people = ['a', 'b'].map(identity => {
+		const participant = remoteParticipant(identity);
+		const audio = { source: lk.Track.Source.ScreenShareAudio, setSubscribed: vi.fn() };
+		const mic = { source: lk.Track.Source.Microphone, setSubscribed: vi.fn() };
+		participant.trackPublications.set('audio', audio);
+		participant.trackPublications.set('mic', mic);
+		lastRoom().emit(lk.RoomEvent.TrackPublished, audio, participant);
+		lastRoom().emit(lk.RoomEvent.TrackPublished, mic, participant);
+		return { participant, audio, mic };
+	});
+	for (const p of people) expect(p.audio.setSubscribed).toHaveBeenLastCalledWith(false);
+	const detach = attachScreenShare('a', document.createElement('video'), { preview: true });
+	expect(people[0].audio.setSubscribed).toHaveBeenLastCalledWith(false);
+	watchScreenShare('a');
+	watchScreenShare('b');
+	for (const p of people) expect(p.audio.setSubscribed).toHaveBeenLastCalledWith(true);
+	unwatchScreenShare('a');
+	expect(people[0].audio.setSubscribed).toHaveBeenLastCalledWith(false);
+	expect(people[1].audio.setSubscribed).toHaveBeenLastCalledWith(true);
+	for (const p of people) expect(p.mic.setSubscribed).toHaveBeenLastCalledWith(true);
+	lastRoom().emit(lk.RoomEvent.TrackPublished, people[0].audio, people[0].participant);
+	expect(people[0].audio.setSubscribed).toHaveBeenLastCalledWith(false);
+	detach();
+});
+
+test('initial screen audio is silent, late audio follows watch, and video removal also stops audio', async () => {
+	const participant = new lk.FakeRemoteParticipant('a');
+	const audio = { source: lk.Track.Source.ScreenShareAudio, setSubscribed: vi.fn() };
+	participant.trackPublications.set('audio', audio);
+	lk.FakeRoom.setup = room => room.remoteParticipants.set('a', participant);
+	await joinVoiceCall(room1);
+	expect(audio.setSubscribed).toHaveBeenLastCalledWith(false);
+	watchScreenShare('a');
+	const late = { source: lk.Track.Source.ScreenShareAudio, setSubscribed: vi.fn() };
+	participant.trackPublications.set('late', late);
+	lastRoom().emit(lk.RoomEvent.TrackPublished, late, participant);
+	expect(late.setSubscribed).toHaveBeenLastCalledWith(true);
+	lastRoom().emit(lk.RoomEvent.TrackUnpublished, { source: lk.Track.Source.ScreenShare }, participant);
+	expect(audio.setSubscribed).toHaveBeenLastCalledWith(false);
+	expect(late.setSubscribed).toHaveBeenLastCalledWith(false);
+});

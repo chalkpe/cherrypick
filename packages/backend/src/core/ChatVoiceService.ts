@@ -150,6 +150,20 @@ redis.call('SET', KEYS[1], string.format('%.0f', stamp), 'EX', ARGV[2])
 return stamp
 `;
 
+// raw-null の参加応答だけが無効化する境界。通常の refresh の時刻とは分け、古い配送の記録で送り直しを抑止させない。
+// KEYS: ローカル時刻、配送時刻、参加応答の境界、配送記録。境界の更新と記録の消去は同じ操作にする。
+const INVALIDATE_JOIN_SNAPSHOT_SCRIPT = `
+local stamp = tonumber(ARGV[1])
+for i = 1, 3 do
+	local last = tonumber(redis.call('GET', KEYS[i]))
+	if last and last + 1 > stamp then stamp = last + 1 end
+end
+redis.call('SET', KEYS[1], string.format('%.0f', stamp), 'EX', ARGV[2])
+redis.call('SET', KEYS[3], string.format('%.0f', stamp), 'EX', ARGV[2])
+redis.call('DEL', KEYS[4])
+return stamp
+`;
+
 // 送る順番の鍵を、自分が取ったもの (ARGV[1]) のときだけ外す。寿命が切れた後にほかのワーカーが取った鍵は外さない
 const RELEASE_FEDERATION_LOCK_SCRIPT = `
 if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -160,9 +174,11 @@ return 0
 
 // 他のサーバーに送った記録を、保存済みの記録より新しい現況 (updatedAt が大きい) のもので、送るかを決めた最新の時刻より前の現況の
 // ものでもなければ書く。書いたら 1、書かなければ 0。保存済みの記録や時刻が読めないか updatedAt を持たなければ、無いものとして扱う。
-// KEYS[1]: 記録の鍵、KEYS[2]: 送るかを決めた現況の時刻の鍵、ARGV: 記録 (JSON)、その updatedAt、寿命 (秒)
+// KEYS[1]: 記録の鍵、KEYS[2]: 配送時刻、KEYS[3]: raw-null 参加応答の境界、ARGV: 記録 (JSON)、その updatedAt、寿命 (秒)
 const RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT = `
 local updatedAt = tonumber(ARGV[2])
+local invalidated = tonumber(redis.call('GET', KEYS[3]))
+if invalidated and invalidated >= updatedAt then return 0 end
 local decided = tonumber(redis.call('GET', KEYS[2]))
 if decided and decided > updatedAt then
 	return 0
@@ -239,10 +255,10 @@ type VoiceSnapshot = {
 type FederationPolicy = { blockedHosts?: string[]; federation?: string; federationHosts?: string[] };
 
 /** 通話の参加者。userId はトークンに付けたメタデータの値 (無ければ null) */
-type CallParticipant = { identity: string; userId: MiUser['id'] | null };
+type CallParticipant = { identity: string; userId: MiUser['id'] | null; canScreenShare?: boolean; screenSharing?: boolean };
 
 /** トークンに付けたユーザーのある参加者 */
-type NamedCallParticipant = { identity: string; userId: MiUser['id'] };
+type NamedCallParticipant = CallParticipant & { userId: MiUser['id'] };
 
 /** 読んだもの。読めなければ ok: false */
 type Read<T> = { ok: true; value: T } | { ok: false; error: unknown };
@@ -339,6 +355,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * 他のサーバーのメンバーがいない・ルームを読めない・Redis が失敗した・待ちすぎた) に消す
 	 */
 	private federationBackoff = new Map<MiChatRoom['id'], { waits: number; since: number }>();
+	private mirrorPolicyVersion = 0;
 	private sweepTimer: NodeJS.Timeout | null = null;
 	/** 入った直後の参加者を確かめ直すまで待っているもの (wait)。止めるときは待つのをやめ、確かめ直さない */
 	private pendingWaits = new Map<NodeJS.Timeout, (completed: boolean) => void>();
@@ -489,10 +506,11 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	public async snapshotOf(roomId: MiChatRoom['id']): Promise<FederatedVoiceSnapshot> {
 		const raw = await this.redisClient.get(this.keyOf(roomId));
 		if (raw == null) {
-			const updatedAt = await this.allocateStamp(this.localStampKeyOf(roomId), this.decidedKeyOf(roomId), LOCAL_STAMP_TTL_SECONDS);
-			// 新しい空の応答が相手の現況を覆うので、次に送るかを決めるときは、同じ参加者でも送り直す。
-			// すでに進行中の配送・記録までは止めない (この応答より前に決めた配送は相手が古いものとして捨てる)。
-			await this.redisClient.del(`chatVoice:federated:${roomId}`);
+			const updatedAt = Number(await this.redisClient.eval(INVALIDATE_JOIN_SNAPSHOT_SCRIPT, 4,
+				this.localStampKeyOf(roomId), this.decidedKeyOf(roomId), `chatVoice:joinInvalidated:${roomId}`,
+				`chatVoice:federated:${roomId}`, Date.now(), LOCAL_STAMP_TTL_SECONDS));
+			// トークンを求めた人が接続しなくても、同じ参加者を予算内で送り直す。
+			this.retryFederationLater(roomId);
 			return { participants: [], updatedAt };
 		}
 		const snapshot = JSON.parse(raw) as VoiceSnapshot;
@@ -500,6 +518,24 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			participants: snapshot.participants.map(p => ({ identity: p.identity, screenSharing: p.screenSharing })),
 			updatedAt: snapshot.updatedAt,
 		};
+	}
+
+	/** ミラーの持ち主を許せるときだけ参加者を見せる。読み取りに失敗したときも閉じる。 */
+	public async isRoomVoiceVisible(room: MiChatRoom, updatedAt?: number): Promise<boolean> {
+		const version = this.mirrorPolicyVersion;
+		try {
+			if (room.owner == null) return false;
+			if (room.owner.host == null) return true;
+			if (room.owner.isSuspended || room.owner.isDeleted || !isRemoteVoiceCallEnabled(this.meta)) return false;
+			if (await this.hostPolicyService.isRefusedRemoteHost(room.owner.host)) return false;
+			if (updatedAt != null) {
+				const raw = await this.redisClient.get(this.keyOf(room.id));
+				if (raw == null || (JSON.parse(raw) as VoiceSnapshot).updatedAt !== updatedAt) return false;
+			}
+			return version === this.mirrorPolicyVersion && isRemoteVoiceCallEnabled(this.meta);
+		} catch {
+			return false;
+		}
 	}
 
 	@bindThis
@@ -512,7 +548,11 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			if (raw == null) continue;
 			const snapshot = JSON.parse(raw) as VoiceSnapshot;
 			if (snapshot.participants.length === 0) continue;
-			states.push(await this.pack(roomIds[i], snapshot, me));
+			const version = this.mirrorPolicyVersion;
+			const room = await this.chatRoomsRepository.findOne({ where: { id: roomIds[i] }, relations: { owner: true } }).catch(() => null);
+			if (room == null || !(await this.isRoomVoiceVisible(room))) continue;
+			const packed = await this.pack(roomIds[i], snapshot, me);
+			if (version === this.mirrorPolicyVersion && await this.isRoomVoiceVisible(room, snapshot.updatedAt)) states.push(packed);
 		}
 		return states;
 	}
@@ -557,6 +597,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		// (新しい) 現況より新しく見えないように。ワーカーの時計がずれていても、参加者が変わった後に読み始めた読み直し (その webhook の
 		// もの) の時刻は、変わる前に読み始めたものより必ず後になる。同じミリ秒に読み始めても同じ時刻にはならない
 		const readAt = await this.allocateStamp(this.localStampKeyOf(roomId), this.decidedKeyOf(roomId), LOCAL_STAMP_TTL_SECONDS);
+		// 最初の読み取りが失敗しても、次の sweep で権限を確かめ直す。
+		await this.redisClient.sadd(ACTIVE_ROOMS_KEY, roomId);
 		const listed = await this.liveKitService.listParticipants(roomId);
 		// 残れない参加者を外すのにも、時刻を決めた後に読んだこの一覧を使い、LiveKit を読み直さない。
 		// 外している間に変わった参加者は、その webhook の読み直し (後に決めた時刻) が保存する
@@ -649,7 +691,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		if (updatedAt > Date.now() + REMOTE_SNAPSHOT_MAX_AHEAD_MS) return 'ahead';
 		const maxAge = participants.length > 0 ? REMOTE_ACTIVE_SNAPSHOT_MAX_AGE_MS : REMOTE_SNAPSHOT_MAX_AGE_MS;
 		if (updatedAt < Date.now() - maxAge) return 'old';
-		if (!isRemoteVoiceCallEnabled(this.meta)) return 'disabled';
+		if (!isRemoteVoiceCallEnabled(this.meta) || !(await this.isRoomVoiceVisible(room))) return 'disabled';
 		// 書き込みのスクリプトは、ここで読んだ世代と比べる。この後で止められれば書かない
 		const generation = await this.remoteGenerationOf();
 
@@ -674,7 +716,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 
 		// 他のサーバーの通話を止めた後に、止める前に始まった参加の応答が届いても書かない (止めたときにミラーの現況は消している)
-		if (!isRemoteVoiceCallEnabled(this.meta)) return 'disabled';
+		if (!isRemoteVoiceCallEnabled(this.meta) || !(await this.isRoomVoiceVisible(room))) return 'disabled';
 
 		// 解決している間に新しい現況が保存されたかもしれないので、書くときに比べる (STORE_IF_NEWER_SCRIPT)。
 		// 空になったときも時刻ごと残し、遅れて届いた古い現況で上書きされないようにする (getStates は空のものを返さない)。
@@ -702,7 +744,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		]);
 
 		// 書いた後、知らせる前に止められていれば知らせない。止めたときの消去で現況は消えている (消す前に書いたものも消される)
-		if (!isRemoteVoiceCallEnabled(this.meta) || await this.remoteGenerationOf() !== generation) return 'disabled';
+		if (!isRemoteVoiceCallEnabled(this.meta) || await this.remoteGenerationOf() !== generation || !(await this.isRoomVoiceVisible(room))) return 'disabled';
 		for (const membership of memberships) {
 			this.globalEventService.publishMainStream(membership.userId, 'chatRoomVoiceState', packed);
 		}
@@ -710,24 +752,32 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	/**
-	 * ミラーの現況をすべて消す。他のサーバーの通話を止めたときに呼び、寿命 (REMOTE_SNAPSHOT_TTL_SECONDS) まで残さない。
+	 * ミラーの現況を消し、空の状態を知らせる。refusedOnly なら持ち主を断ったルームだけを消す。
+	 * 他のサーバーの通話を止めたときにも呼び、寿命 (REMOTE_SNAPSHOT_TTL_SECONDS) まで残さない。
 	 * 先に世代 (REMOTE_GENERATION_KEY) を増やし、止める前に始まった書き込みが、消した後に届いても書けないようにする。
 	 * ミラーは持ち主が他のサーバーのユーザーのルーム。それを id 順に少しずつ引き、現況の鍵を消す (無い鍵を消しても何も起きない)。
 	 * 最後に受け入れた時刻は残し、また通話を使うようにした後に古い現況が届いても書かないようにする。
 	 * 何度消しても同じ結果になるので、複数のワーカーが同時に動いてもよい
 	 */
 	@bindThis
-	public async clearMirrorSnapshots(): Promise<void> {
+	public async clearMirrorSnapshots(refusedOnly = false): Promise<void> {
 		await this.redisClient.incr(REMOTE_GENERATION_KEY);
 		let lastId: MiChatRoom['id'] | null = null;
 		for (;;) {
-			const rooms: Pick<MiChatRoom, 'id'>[] = await this.chatRoomsRepository.find({
-				select: { id: true },
+			const rooms: MiChatRoom[] = await this.chatRoomsRepository.find({
+				relations: { owner: true },
 				where: { owner: { host: Not(IsNull()) }, ...(lastId != null ? { id: MoreThan(lastId) } : {}) },
 				order: { id: 'ASC' },
 				take: MIRROR_CLEAR_BATCH_SIZE,
 			});
-			if (rooms.length > 0) await this.redisClient.del(...rooms.map(room => this.keyOf(room.id)));
+			for (const room of rooms) {
+				if (refusedOnly && await this.isRoomVoiceVisible(room)) continue;
+				const previous = await this.redisClient.get(this.keyOf(room.id));
+				const updatedAt = Math.max(Date.now(), previous == null ? 0 : (JSON.parse(previous) as VoiceSnapshot).updatedAt + 1);
+				await this.redisClient.del(this.keyOf(room.id));
+				const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id, user: { host: IsNull() } });
+				for (const membership of memberships) this.globalEventService.publishMainStream(membership.userId, 'chatRoomVoiceState', { roomId: room.id, participants: [], updatedAt });
+			}
 			if (rooms.length < MIRROR_CLEAR_BATCH_SIZE) return;
 			lastId = rooms[rooms.length - 1].id;
 		}
@@ -789,6 +839,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			const { type, body } = obj.message as GlobalEvents['internal']['payload'];
 			switch (type) {
 				case 'metaUpdated': {
+					this.mirrorPolicyVersion++;
+					if (isRemoteVoiceCallEnabled(body.after) && (body.before == null || isFederationPolicyChanged(body.before, body.after))) this.clearMirrorSnapshots(true).catch(err => this.logger.warn({ message: 'Failed to clear refused mirror voice states', error: err }));
 					// ブロックや連合の設定が変わったら、通話中の他のサーバーの参加者を確かめ直す。
 					// DI.meta は GlobalModule の購読が先に書き換えているので、新しい設定で判定される。
 					// 外すのは何度しても同じ結果になるので、どのワーカーでも行う
@@ -806,6 +858,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 					break;
 				}
 				case 'instanceSuspensionStateUpdated': {
+					this.mirrorPolicyVersion++;
+					this.clearMirrorSnapshots(true).catch(err => this.logger.warn({ message: 'Failed to clear refused mirror voice states', error: err }));
 					// 管理画面でサーバーが停止されたら、そのサーバーのユーザーを通話から外す (停止を解いたときは何もしない)。
 					// 知らせはすべてのワーカーに届くので、ルームごとに一つのワーカーだけが確かめ直す (停止したサーバーごとに鍵を分ける)
 					if (this.liveKitService.isEnabled && body.suspensionState !== 'none') {
@@ -822,7 +876,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	private keyOf(roomId: MiChatRoom['id']): string {
-		return `chatVoice:${roomId}`;
+		return `chatVoice:state:${roomId}`;
 	}
 
 	/** 他のサーバーの通話を止めた回数 (世代)。一度も止めていなければ '0' */
@@ -894,7 +948,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const named: NamedCallParticipant[] = [];
 		for (const participant of participants) {
 			if (participant.userId == null) denied.push(participant.identity);
-			else named.push({ identity: participant.identity, userId: participant.userId });
+			else named.push({ ...participant, userId: participant.userId });
 		}
 
 		const decision = named.length > 0 ? await this.admissionsOf(roomId, named, refusedHosts) : { admitted: [], denied: [], unverified: [] };
@@ -1115,6 +1169,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const policies = context.policies.get(participant.userId);
 		if (policies == null || !policies.ok) unverified = true;
 		else if (!policies.value.canVoiceCall || policies.value.chatAvailability !== 'available') return 'denied';
+		else if (!policies.value.canScreenShare && (participant.canScreenShare || participant.screenSharing)) return 'denied';
 
 		return unverified ? 'unverified' : 'admitted';
 	}
@@ -1292,7 +1347,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 		const recordKey = `chatVoice:federated:${room.id}`;
 		try {
-			await this.deliverSnapshot(room, audience, participants, updatedAt);
+			const currentRoom = await this.chatRoomsRepository.findOneBy({ id: room.id });
+			if (currentRoom == null) return true;
+			await this.deliverSnapshot(currentRoom, await this.audienceOf(currentRoom), participants, updatedAt);
 		} catch (err) {
 			// 一部の届け先には積めたかもしれず、相手に届いている現況が分からない。記録を消して次の現況 (終わりを含む) を必ず送り、
 			// 間隔の鍵が切れた後に決め直して送り直す。記録を消せなくても、記録は FEDERATION_RESEND_INTERVAL_MS で切れる
@@ -1303,7 +1360,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 		// 順番の鍵が寿命で切れて、ほかのワーカーが後の現況で決めたか記録していれば、書かずに決め直す
 		const record: FederatedRecord = { hash, at: Date.now(), updatedAt };
-		const recorded = await this.redisClient.eval(RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT, 2, recordKey, decidedKey, JSON.stringify(record), updatedAt, FEDERATION_RESEND_INTERVAL_MS / 1000) === 1;
+		const recorded = await this.redisClient.eval(RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT, 3, recordKey, decidedKey, `chatVoice:joinInvalidated:${room.id}`, JSON.stringify(record), updatedAt, FEDERATION_RESEND_INTERVAL_MS / 1000) === 1;
 		if (recorded) this.federationBackoff.delete(room.id);
 		return recorded;
 	}

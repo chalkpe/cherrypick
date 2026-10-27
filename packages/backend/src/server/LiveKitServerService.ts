@@ -17,6 +17,7 @@ import { RateLimiterService } from '@/server/api/RateLimiterService.js';
 import type { FastifyInstance, FastifyPluginOptions } from 'fastify';
 
 const PREFIX = '/livekit';
+const MAX_PRE_UPGRADE_BYTES = 64 * 1024;
 
 // 他のサーバーからのトークン要求。署名を確かめる前に DB を引くので IP ごとにも絞る
 const FEDERATION_TOKEN_IP_LIMIT = { key: 'voiceFederationTokenIp', duration: 60 * 1000, max: 60 };
@@ -159,65 +160,87 @@ export class LiveKitServerService {
 			if (value != null) headers[name] = value;
 		}
 
+		// 101 より前のデータは小さく制限し、head も同じ予算に含める。
+		if (head.length > MAX_PRE_UPGRADE_BYTES) {
+			socket.end(statusLine(413, 'Payload Too Large') + 'Connection: close\r\nContent-Length: 0\r\n\r\n', () => socket.destroy());
+			return;
+		}
 		const proxyRequest = http.request(target, { method: 'GET', headers });
-
-		// アップグレード前にブラウザが諦めたら、LiveKit への要求も捨てる。
-		// upgrade で渡されるソケットは止まっているので、読まないと切断 (end) に気付けない。
-		// 101 を返す前にブラウザが送るものは普通ないが、届いたら後で LiveKit に渡す
-		const early: Buffer[] = [];
-		const keep = (chunk: Buffer) => early.push(chunk);
-		const abandon = () => proxyRequest.destroy();
-		socket.on('data', keep);
-		socket.once('end', abandon);
-		socket.once('close', abandon);
+		const early: Buffer[] = head.length > 0 ? [head] : [];
+		let earlyBytes = head.length;
+		let settled = false;
 		const stopWatching = () => {
 			socket.off('data', keep);
 			socket.off('end', abandon);
 			socket.off('close', abandon);
+			socket.off('error', abandon);
 			socket.pause();
+			proxyRequest.setTimeout(0);
 		};
-
-		proxyRequest.setTimeout(this.upstreamTimeoutMs, () => {
-			if (socket.writable) {
-				socket.end(statusLine(504, 'Gateway Timeout') + 'Connection: close\r\nContent-Length: 0\r\n\r\n');
-			}
+		const clear = () => {
+			early.length = 0;
+			earlyBytes = 0;
+		};
+		const abandon = () => {
+			if (settled) return;
+			settled = true;
+			stopWatching();
+			clear();
 			proxyRequest.destroy();
-		});
+			socket.destroy();
+		};
+		const fail = (status: number, message: string) => {
+			if (settled) return;
+			settled = true;
+			stopWatching();
+			clear();
+			if (socket.writable) socket.end(statusLine(status, message) + 'Connection: close\r\nContent-Length: 0\r\n\r\n', () => socket.destroy());
+			else socket.destroy();
+			proxyRequest.destroy();
+		};
+		const keep = (chunk: Buffer) => {
+			earlyBytes += chunk.length;
+			if (earlyBytes > MAX_PRE_UPGRADE_BYTES) fail(413, 'Payload Too Large');
+			else early.push(chunk);
+		};
+		socket.on('data', keep);
+		socket.once('end', abandon);
+		socket.once('close', abandon);
+		socket.once('error', abandon);
+		proxyRequest.setTimeout(this.upstreamTimeoutMs, () => fail(504, 'Gateway Timeout'));
 
 		proxyRequest.on('upgrade', (proxyResponse, proxySocket, proxyHead) => {
+			if (settled) { proxySocket.destroy(); return; }
+			settled = true;
 			stopWatching();
 			proxySocket.setTimeout(0);
 			socket.write(statusLine(101, 'Switching Protocols') + rawHeaders(proxyResponse) + '\r\n');
 			if (proxyHead.length > 0) socket.write(proxyHead);
-			if (head.length > 0) proxySocket.write(head);
 			for (const chunk of early) proxySocket.write(chunk);
-
+			clear();
 			proxySocket.on('error', () => socket.destroy());
 			socket.on('error', () => proxySocket.destroy());
 			proxySocket.on('close', () => socket.destroy());
 			socket.on('close', () => proxySocket.destroy());
-
 			proxySocket.pipe(socket);
 			socket.pipe(proxySocket);
 		});
 
-		// LiveKit がアップグレードを拒否した場合(認証エラーなど)はその応答を返す。
-		// 本文は分割を解いた状態で届くので、接続の終わりで区切る
+		// 拒否応答は本文を中継したら読み側も閉じ、送信し続けるクライアントを残さない。
 		proxyRequest.on('response', proxyResponse => {
+			if (settled) { proxyResponse.destroy(); return; }
+			settled = true;
 			stopWatching();
+			clear();
+			socket.once('finish', () => socket.destroy());
+			socket.once('close', () => proxyResponse.destroy());
+			socket.once('error', () => proxyResponse.destroy());
+			proxyResponse.once('error', () => socket.destroy());
+			proxyResponse.once('aborted', () => socket.destroy());
 			socket.write(statusLine(proxyResponse.statusCode ?? 502, proxyResponse.statusMessage ?? '') + rawHeaders(proxyResponse, DROPPED_RESPONSE_HEADERS) + 'Connection: close\r\n\r\n');
 			proxyResponse.pipe(socket);
 		});
-
-		proxyRequest.on('error', () => {
-			if (socket.writable) {
-				socket.end(statusLine(502, 'Bad Gateway') + 'Connection: close\r\nContent-Length: 0\r\n\r\n');
-			} else {
-				socket.destroy();
-			}
-		});
-
-		socket.on('error', () => proxyRequest.destroy());
+		proxyRequest.on('error', () => fail(502, 'Bad Gateway'));
 
 		proxyRequest.end();
 	}
@@ -237,6 +260,14 @@ export class LiveKitServerService {
 	 * `/livekit//other.host/...` のような経路は URL として別ホストに解決されるので弾く
 	 */
 	private targetOf(url: string): URL | null {
+		const path = stripPrefix(url).split('?')[0];
+		// URL と上流ルーターの正規化の差で RTC 配下を抜けないよう、区切り文字と二重エンコードを断る。
+		if (path.includes('\\') || /%(?:2f|5c|25)/i.test(path)) return null;
+		try {
+			if (decodeURIComponent(path).split('/').some(segment => segment === '.' || segment === '..')) return null;
+		} catch {
+			return null;
+		}
 		const base = new URL(this.liveKitService.getInternalUrl());
 		let target: URL;
 		try {

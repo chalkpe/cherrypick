@@ -4,6 +4,7 @@
  */
 
 import * as http from 'node:http';
+import { Duplex } from 'node:stream';
 import type { AddressInfo } from 'node:net';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { afterEach, describe, expect, test, vi } from 'vitest';
@@ -299,6 +300,39 @@ describe('LiveKitServerService', () => {
 		const status = await new Promise<number | undefined>(resolve => ws.on('unexpected-response', (_req, res) => resolve(res.statusCode)));
 
 		expect(status).toBe(502);
+	});
+
+	test.each([
+		'/livekit/rtc/..%2f..%2ftwirp/livekit.RoomService/ListRooms',
+		'/livekit/rtc/%5cadmin', '/livekit/rtc/../rtc/v1',
+		'/livekit/rtc/%2e%2e/rtc/v1', '/livekit/rtc/%252fadmin',
+		'/livekit/rtc/\\admin',
+	])('rejects ambiguous RTC path before upstream: %s', async path => {
+		const livekit = await fakeLiveKit();
+		const port = await frontServer(createService(liveKitService(true, livekit.url)));
+		expect(await rawUpgradeStatus(port, path)).toBe(404);
+		expect(livekit.paths).toEqual([]);
+	});
+
+	test.each(['head', 'chunks', 'timeout', 'refusal'])('cleans pre-upgrade buffers and closes the client on %s', async mode => {
+		const livekit = await fakeLiveKit();
+		const service = createService(liveKitService(true, livekit.url));
+		service.upstreamTimeoutMs = 20;
+		const writes: Buffer[] = [];
+		const socket = new Duplex({ read() {}, write(chunk, _encoding, done) { writes.push(Buffer.from(chunk)); done(); } });
+		cleanups.push(() => { socket.destroy(); });
+		service.handleUpgrade({ url: `/livekit/rtc/v1?access_token=${mode === 'refusal' ? 'bad' : 'hang'}`, headers: { connection: 'Upgrade', upgrade: 'websocket' } } as http.IncomingMessage,
+			socket, Buffer.alloc(mode === 'head' ? 65 * 1024 : 32 * 1024));
+		if (mode === 'chunks') {
+			socket.emit('data', Buffer.alloc(16 * 1024));
+			socket.emit('data', Buffer.alloc(17 * 1024));
+		}
+		await vi.waitFor(() => expect(socket.destroyed).toBe(true));
+		expect(socket.listenerCount('data')).toBe(0);
+		expect(socket.listenerCount('end')).toBe(0);
+		const count = writes.length;
+		socket.emit('data', Buffer.alloc(1024));
+		expect(writes).toHaveLength(count);
 	});
 
 	test('refuses upgrade paths that would leave the LiveKit server', async () => {

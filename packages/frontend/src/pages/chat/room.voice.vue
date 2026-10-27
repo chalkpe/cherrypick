@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="showCard" ref="rootEl" :class="$style.root">
+<div v-if="showCard" ref="rootEl" :class="$style.root" :data-voice-call-room="room.id">
 	<div class="_panel" :class="$style.card">
 		<div :class="$style.header">
 			<i class="ti ti-volume" :class="$style.headerIcon"></i>

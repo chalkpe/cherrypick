@@ -54,7 +54,7 @@ const roomMessage = (room: any, createdAt: string) => ({
 
 function setup(data: { history?: any[]; owned?: any[]; joining?: any[]; voice?: any[] }) {
 	mocks.misskeyApi.mockImplementation(async (endpoint: string, params?: any) => {
-		if (endpoint === 'chat/history') return params.room ? (data.history ?? []) : [];
+		if (endpoint === 'chat/history') return params.room ? (data.history ?? []).slice(0, params.limit ?? 10) : [];
 		if (endpoint === 'chat/rooms/owned') return data.owned ?? [];
 		if (endpoint === 'chat/rooms/joining') return data.joining ?? [];
 		if (endpoint === 'chat/rooms/voice/states') return data.voice ?? [];
@@ -89,6 +89,22 @@ afterEach(() => {
 });
 
 describe('chat home with rooms without messages', () => {
+	test('keeps an eleventh messaged room truthful when the history page changes', async () => {
+		const rooms = Array.from({ length: 11 }, (_, i) => mkRoom(`r${i}`, new Date(2026, 0, i + 1).toISOString()));
+		const messages = rooms.map(r => roomMessage(r, r.createdAt)).reverse();
+		setup({ owned: rooms, history: messages });
+		const { container } = await mount();
+		expect(container.querySelector('a[href="/chat/room/r0"]')!.textContent).not.toContain(i18n.ts._chat.noMessagesInRoom);
+		expect(container.querySelector('a[href="/chat/room/r1"]')!.className).toMatch(/unread/);
+		expect(container.querySelector('a[href="/chat/room/r0"]')!.className).not.toMatch(/unread|isRead|isMe/);
+		setup({ owned: rooms, history: [roomMessage(rooms[0], '2026-02-01T00:00:00Z'), ...messages.filter(m => m.toRoomId !== 'r0')] });
+		mocks.poll!();
+		await flush();
+		expect(container.querySelector('a[href="/chat/room/r1"]')!.textContent).not.toContain(i18n.ts._chat.noMessagesInRoom);
+		expect(hrefs(container)).toHaveLength(11);
+		expect(calls('chat/rooms/show')).toBe(0);
+	});
+
 	test('shows an owned room and a joined room that have no messages', async () => {
 		const owned = mkRoom('o1', '2026-01-01T00:00:00Z');
 		const joined = mkRoom('j1', '2026-01-02T00:00:00Z');
@@ -96,7 +112,7 @@ describe('chat home with rooms without messages', () => {
 		const { container } = await mount();
 
 		expect(hrefs(container)).toEqual(expect.arrayContaining(['/chat/room/o1', '/chat/room/j1']));
-		expect(screen.getAllByText(i18n.ts._chat.noMessagesInRoom)).toHaveLength(2);
+		expect(screen.getAllByText(i18n.ts._chat.openRoom)).toHaveLength(2);
 	});
 
 	test('does not duplicate a room that has messages, and keeps it first', async () => {
@@ -110,7 +126,7 @@ describe('chat home with rooms without messages', () => {
 		const { container } = await mount();
 
 		expect(hrefs(container)).toEqual(['/chat/room/r1', '/chat/room/r2']);
-		expect(screen.getAllByText(i18n.ts._chat.noMessagesInRoom)).toHaveLength(1);
+		expect(screen.getAllByText(i18n.ts._chat.openRoom)).toHaveLength(1);
 	});
 
 	test('lists a room that is both owned and joined once', async () => {
@@ -185,7 +201,7 @@ describe('chat home with rooms without messages', () => {
 		await flush();
 
 		expect(hrefs(container)).toEqual(['/chat/room/f1']);
-		expect(screen.queryByText(i18n.ts._chat.noMessagesInRoom)).toBeNull();
+		expect(screen.queryByText(i18n.ts._chat.openRoom)).toBeNull();
 	});
 
 	test('still shows history when the room lists fail, and keeps polling', async () => {

@@ -23,6 +23,16 @@ describe('ChatVoiceService admission', () => {
 		vi.useRealTimers();
 	});
 
+	test('revokes an existing screen grant while preserving a voice-only participant', async () => {
+		f.roleService.getUserPolicies.mockResolvedValue({ canVoiceCall: true, canScreenShare: false, chatAvailability: 'available' });
+		f.liveKitService.listParticipants.mockResolvedValue([
+			{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: false, canScreenShare: true, micTrackSid: null },
+			{ identity: 'https://local.test/users/u2', userId: 'u2', screenSharing: false, canScreenShare: false, micTrackSid: null },
+		]);
+		await f.service.reconcileRoom('r1');
+		expect(f.liveKitService.removeParticipant.mock.calls).toEqual([['r1', 'https://local.test/users/u1']]);
+	});
+
 	describe('refusing the server of a remote member when issuing a token', () => {
 		test('refuses a remote user whose server is blocked or suspended', async () => {
 			f.meta.blockedHosts = ['remote.test'];
@@ -512,7 +522,7 @@ describe('ChatVoiceService admission', () => {
 				expect(workers.flatMap(worker => worker.liveKitService.listParticipants.mock.calls.map(([roomId]) => roomId)).sort()).toEqual(['r1', 'r2']);
 				expect(workers.flatMap(worker => worker.liveKitService.removeParticipant.mock.calls.map(([roomId, identity]) => `${roomId} ${identity}`)).sort()).toEqual([`r1 ${rm1.uri}`, `r2 ${rm2.uri}`]);
 				for (const roomId of ['r1', 'r2']) {
-					expect((JSON.parse(sharedRedis.store.get(`chatVoice:${roomId}`)!) as { participants: { identity: string }[] }).participants.map(p => p.identity)).toEqual(['https://local.test/users/u1']);
+					expect((JSON.parse(sharedRedis.store.get(`chatVoice:state:${roomId}`)!) as { participants: { identity: string }[] }).participants.map(p => p.identity)).toEqual(['https://local.test/users/u1']);
 				}
 				for (const worker of workers) worker.service.onApplicationShutdown();
 			});
@@ -636,7 +646,7 @@ describe('ChatVoiceService admission', () => {
 
 				await f.service.sweep();
 
-				const identitiesOf = (roomId: string) => (JSON.parse(f.redis.store.get(`chatVoice:${roomId}`)!) as { participants: { identity: string }[] }).participants.map(p => p.identity);
+				const identitiesOf = (roomId: string) => (JSON.parse(f.redis.store.get(`chatVoice:state:${roomId}`)!) as { participants: { identity: string }[] }).participants.map(p => p.identity);
 				expect(identitiesOf('r1')).toEqual(['https://local.test/users/u1']);
 				expect(identitiesOf('r2')).toEqual([rm2.uri]);
 			});

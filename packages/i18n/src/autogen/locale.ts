@@ -6752,6 +6752,10 @@ export interface Locale extends ILocale {
          */
         "noMessagesYet": string;
         /**
+         * ルームを開く
+         */
+        "openRoom": string;
+        /**
          * まだメッセージはありません
          */
         "noMessagesInRoom": string;
@@ -9293,7 +9297,7 @@ export interface Locale extends ILocale {
     };
     "_voiceCall": {
         /**
-         * マイクを使用できません。聞くことはできます。
+         * マイクを使用できません。
          */
         "micUnavailable": string;
         /**

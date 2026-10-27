@@ -1441,6 +1441,22 @@ describe('screen share in the room panel', () => {
 			expect(mocks.unwatchScreenShare).toHaveBeenCalledWith(identityOf(bob));
 		});
 
+		test('closing skips a hidden mounted copy of the same call toggle', async () => {
+			await renderCardWatching(2);
+			const visible = watchToggleOf(alice);
+			const hidden = document.createElement('div');
+			hidden.style.display = 'none';
+			hidden.append(visible.cloneNode(true));
+			document.body.prepend(hidden);
+			try {
+				await fireEvent.click(within(viewerOf(alice)).getByLabelText(i18n.ts._voiceCall.stopWatching));
+				await flush();
+				expect(document.activeElement).toBe(visible);
+			} finally {
+				hidden.remove();
+			}
+		});
+
 		test('closing a share from the keyboard moves the focus to the sharer\'s chip', async () => {
 			await renderCardWatching(2);
 			const close = within(viewerOf(alice)).getByLabelText(i18n.ts._voiceCall.stopWatching);

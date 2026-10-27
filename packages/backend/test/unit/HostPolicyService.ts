@@ -122,9 +122,11 @@ describe('HostPolicyService', () => {
 		f.instancesRepository.findBy.mockRejectedValueOnce(batchError).mockRejectedValue(hostError);
 		expect(await f.service.refusedRemoteHostsOrUnknown(['broken.test'])).toEqual(new Map([['broken.test', null]]));
 		expect(f.logger.warn.mock.calls).toEqual([
-			['Failed to read the remote host policies together; retrying each host', { error: batchError }],
-			['Failed to read a remote host policy', { error: hostError }],
+			[{ message: 'Failed to read the remote host policies together; retrying each host', error: batchError }],
+			[{ message: 'Failed to read a remote host policy', error: hostError }],
 		]);
+		expect(f.logger.warn.mock.calls[0][0].error).toBe(batchError);
+		expect(f.logger.warn.mock.calls[1][0].error).toBe(hostError);
 	});
 
 	test('reads the records as they are now', async () => {

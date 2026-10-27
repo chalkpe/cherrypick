@@ -17,6 +17,7 @@ export type LiveKitParticipant = {
 	identity: string;
 	userId: MiUser['id'];
 	screenSharing: boolean;
+	canScreenShare?: boolean;
 	micTrackSid: string | null;
 };
 
@@ -120,6 +121,8 @@ export class LiveKitService {
 				identity: participant.identity,
 				userId,
 				screenSharing: participant.tracks.some(track => track.source === TrackSource.SCREEN_SHARE),
+				// 空のソース一覧は LiveKit では全ソース許可を表す。
+				canScreenShare: participant.permission?.canPublish === true && (participant.permission.canPublishSources.length === 0 || participant.permission.canPublishSources.some(source => source === TrackSource.SCREEN_SHARE || source === TrackSource.SCREEN_SHARE_AUDIO)),
 				micTrackSid: participant.tracks.find(track => track.source === TrackSource.MICROPHONE)?.sid ?? null,
 			});
 		}

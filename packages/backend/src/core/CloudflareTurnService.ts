@@ -57,6 +57,7 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 	private cache: CacheEntry | null = null;
 	private pending: PendingRequest | null = null;
 	private logger: Logger;
+	private generation = 0;
 
 	constructor(
 		@Inject(DI.redisForSub)
@@ -82,11 +83,12 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 	}
 
 	/**
-	 * 通話の参加者に渡す ICE サーバー。設定されていないか、取得できなかったときは null (LiveKit が渡すものだけを使う)。
+	 * 通話の参加者に渡す ICE サーバー。設定されていないか、取得できなかったときは null。ローカル通話は LiveKit の一覧を使い、リモート通話は明示的な空配列にする。
 	 * 失敗しても例外は投げない
 	 */
 	@bindThis
 	public async getIceServers(): Promise<IceServer[] | null> {
+		const generation = this.generation;
 		const keyId = this.meta.voiceCallCloudflareTurnKeyId;
 		const apiToken = this.meta.voiceCallCloudflareTurnApiToken;
 		if (keyId == null || apiToken == null) return null;
@@ -98,7 +100,8 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 
 		// 同時に参加した人の分はまとめて一度だけ問い合わせる
 		if (this.pending != null && this.pending.keyId === keyId && this.pending.apiToken === apiToken) {
-			return await this.pending.promise;
+			const result = await this.pending.promise;
+			return generation === this.generation && this.meta.voiceCallCloudflareTurnKeyId === keyId && this.meta.voiceCallCloudflareTurnApiToken === apiToken ? result : null;
 		}
 
 		// 資格情報の寿命は Cloudflare が受け取ったときから数えられるので、使い回す間 (と失敗を覚える間) も問い合わせ始めたときから数える
@@ -106,6 +109,7 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 		const pending: PendingRequest = { keyId, apiToken, promise: this.fetchIceServers(keyId, apiToken) };
 		this.pending = pending;
 		const iceServers = await pending.promise;
+		if (generation !== this.generation || this.meta.voiceCallCloudflareTurnKeyId !== keyId || this.meta.voiceCallCloudflareTurnApiToken !== apiToken) return null;
 
 		// 問い合わせている間に設定が変わったら (clear で pending が消えている)、古い設定の結果は覚えない
 		if (this.pending === pending) {
@@ -154,6 +158,7 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 	}
 
 	private clear(): void {
+		this.generation++;
 		this.cache = null;
 		this.pending = null;
 	}
@@ -227,7 +232,7 @@ function iceServersFromCloudflare(body: unknown): IceServer[] | null {
  * 他のサーバーから届いた ICE サーバーを確かめる。どこかがおかしければ全体を null にする (通話への参加は止めない)。
  * ブラウザが受け付けないもの (資格情報の無い TURN、53 番ポート、表示できる ASCII 以外の文字) もおかしいものとして扱う。
  * ユーザーのブラウザが接続しに行くので、ユーザーの手元や同じネットワークの機器を指す URL (isAllowedRemoteIceUrl) も断る。
- * 空の配列も null にする (追加の ICE サーバーが無いことを表し、frontend は LiveKit が渡すものを使う)
+ * 空の配列も null にする。呼び出し元はローカル TURN、それも無ければ明示的な空配列へフォールバックする (リモート LiveKit の一覧は使わない)
  */
 export function parseIceServers(value: unknown): IceServer[] | null {
 	if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ICE_SERVERS) return null;
