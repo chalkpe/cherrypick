@@ -15,6 +15,14 @@ import { prefer } from '@/preferences.js';
 
 export type VoiceCallStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting';
 
+// 参加者の声と共有画面の音声は、音量を別々に持つ
+const VOLUME_PREFERENCES = {
+	voice: 'voiceCall.participantVolumes',
+	screenShare: 'voiceCall.screenShareVolumes',
+} as const;
+
+export type ParticipantAudio = keyof typeof VOLUME_PREFERENCES;
+
 type LiveKit = typeof import('livekit-client');
 
 const state = reactive({
@@ -159,8 +167,14 @@ export async function resumeAudio(): Promise<void> {
 	state.audioBlocked = !current.canPlaybackAudio;
 }
 
-export function setParticipantVolume(identity: string, volume: number): void {
-	prefer.commit('voiceCall.participantVolumes', { ...prefer.s['voiceCall.participantVolumes'], [identity]: clampVolume(volume) });
+/** 保存してある参加者の音量。スピーカーをオフにしていても、その前の音量を返す */
+export function participantVolume(identity: string, audio: ParticipantAudio): number {
+	return clampVolume(prefer.s[VOLUME_PREFERENCES[audio]][identity] ?? 1);
+}
+
+export function setParticipantVolume(identity: string, audio: ParticipantAudio, volume: number): void {
+	const key = VOLUME_PREFERENCES[audio];
+	prefer.commit(key, { ...prefer.s[key], [identity]: clampVolume(volume) });
 	const participant = current?.remoteParticipants.get(identity);
 	if (participant != null) applyVolume(participant);
 }
@@ -342,16 +356,15 @@ function clampVolume(volume: number): number {
 	return Math.min(1, Math.max(0, volume));
 }
 
-function volumeOf(identity: string): number {
+function volumeOf(identity: string, audio: ParticipantAudio): number {
 	if (state.deafened) return 0;
-	return clampVolume(prefer.s['voiceCall.participantVolumes'][identity] ?? 1);
+	return participantVolume(identity, audio);
 }
 
 function applyVolume(participant: RemoteParticipant): void {
-	const volume = volumeOf(participant.identity);
 	const { Track } = livekit!;
-	participant.setVolume(volume, Track.Source.Microphone);
-	participant.setVolume(volume, Track.Source.ScreenShareAudio);
+	participant.setVolume(volumeOf(participant.identity, 'voice'), Track.Source.Microphone);
+	participant.setVolume(volumeOf(participant.identity, 'screenShare'), Track.Source.ScreenShareAudio);
 }
 
 function applySubscription(lk: LiveKit, publication: TrackPublication, participant: RemoteParticipant): void {

@@ -94,7 +94,11 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		if (target == null || participant.identity === myIdentity) return [];
 		const items: MenuItem[] = [];
 		if (inThisCall.value) {
-			items.push({ type: 'component', component: XVolume, props: { identity: participant.identity } });
+			items.push({ type: 'component', component: XVolume, props: { identity: participant.identity, audio: 'voice' } });
+			// 共有画面の音声は画面を共有しているあいだだけ流れるので、そのあいだだけ声とは別の音量を出す
+			if (participant.screenSharing) {
+				items.push({ type: 'component', component: XVolume, props: { identity: participant.identity, audio: 'screenShare' } });
+			}
 		}
 		if (isOwner.value) {
 			if (items.length > 0) items.push({ type: 'divider' });

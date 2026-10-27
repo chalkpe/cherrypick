@@ -177,6 +177,7 @@ beforeEach(() => {
 		'voiceCall.screenShareQuality': 'sharp',
 		'voiceCall.screenShareAudio': true,
 		'voiceCall.participantVolumes': {},
+		'voiceCall.screenShareVolumes': {},
 		'voiceCall.stageChatSide': 'right',
 	});
 	mocks.misskeyApi.mockReset().mockResolvedValue([]);
@@ -1843,7 +1844,22 @@ describe('participant menu', () => {
 		expect(within(participantGroup(me)).queryByLabelText(i18n.ts.menu)).toBeNull();
 
 		await fireEvent.click(menuButtonOf(bob));
-		expect(openedItems().find(item => item.type === 'component')?.props).toEqual({ identity: 'https://local.test/users/bob' });
+		expect(openedItems().filter(item => item.type === 'component').map(item => item.props)).toEqual([
+			{ identity: 'https://local.test/users/bob', audio: 'voice' },
+		]);
+	});
+
+	test('adds a separate volume for the shared screen audio while the participant shares the screen', async () => {
+		Object.assign(callState, { status: 'connected', room });
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me), participant(bob, true)] }]);
+		renderCard();
+		await flush();
+
+		await fireEvent.click(menuButtonOf(bob));
+		expect(openedItems().filter(item => item.type === 'component').map(item => item.props)).toEqual([
+			{ identity: 'https://local.test/users/bob', audio: 'voice' },
+			{ identity: 'https://local.test/users/bob', audio: 'screenShare' },
+		]);
 	});
 });
 
