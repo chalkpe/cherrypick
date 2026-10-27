@@ -101,7 +101,6 @@ const squareAvatar = computed(() => isSquareAvatar(props.participant.user));
 	&.speaking {
 		border-color: var(--MI_THEME-success);
 	}
-
 }
 
 .main {
@@ -136,7 +135,8 @@ const squareAvatar = computed(() => isSquareAvatar(props.participant.user));
 	color: var(--MI_THEME-accent);
 }
 
-// チップの高さ (アバターと同じ 28px) に収まる小さなプレビュー。映像なので、アバターが円でも角丸の四角 (20%) にする
+// チップの高さ (アバターと同じ 28px) に収まる小さなプレビュー。映像なので、アバターが円でも角丸の四角 (20%) にする。
+// 子 (XPreview) の .root の丸みに必ず勝つよう、クラス 2 つで書く (1 つだと読み込み順で負けることがある)
 .main .preview {
 	flex-shrink: 0;
 	height: var(--voiceChipAvatar);

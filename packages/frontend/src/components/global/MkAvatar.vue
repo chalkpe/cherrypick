@@ -79,6 +79,7 @@ import { prefer } from '@/preferences.js';
 import { instance } from '@/instance.js';
 import { i18n } from '@/i18n.js';
 import { scrollToVisibility } from '@/utility/scroll-to-visibility.js';
+import { isSquareAvatar } from '@/utility/avatar-shape.js';
 
 const { showEl } = scrollToVisibility();
 
@@ -116,7 +117,7 @@ const emit = defineEmits<{
 	(ev: 'click', v: PointerEvent): void;
 }>();
 
-const squareAvatars = ref((!prefer.s.setFederationAvatarShape && prefer.s.squareAvatars) || (prefer.s.setFederationAvatarShape && !props.user.setFederationAvatarShape && prefer.s.squareAvatars) || (prefer.s.setFederationAvatarShape && props.user.setFederationAvatarShape && props.user.isSquareAvatars));
+const squareAvatars = ref(isSquareAvatar(props.user));
 const deidentified = computed(() => prefer.r.deidentifyMutedUsers.value && 'isMuted' in props.user && props.user.isMuted === true);
 const decorationMuted = computed(() => prefer.r.mutedAvatarDecorationUsers.value.includes(props.user.id));
 const remoteDecorationVisible = computed(() => props.user.host == null || prefer.r.showRemoteAvatarDecorations.value);

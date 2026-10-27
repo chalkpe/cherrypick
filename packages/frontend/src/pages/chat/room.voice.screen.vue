@@ -182,7 +182,7 @@ function stopWatching() {
 	// 横幅いっぱい、ただし映像と操作の列の高さが上限を超えない幅まで
 	width: min(100%, calc((var(--voiceCallScreenMaxHeight, 70vh) - var(--voiceCallScreenBarHeight)) * var(--voiceCallScreenRatio)));
 	overflow: clip;
-	border-radius: calc(var(--MI-radius) - 4px);
+	border-radius: max(0px, calc(var(--MI-radius) - 4px));
 	background: var(--MI_THEME-bg);
 }
 
@@ -264,7 +264,7 @@ function stopWatching() {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	border-radius: calc(var(--MI-radius) - 8px);
+	border-radius: max(0px, calc(var(--MI-radius) - 8px));
 	font-size: 0.8em;
 	background: var(--MI_THEME-panel);
 }

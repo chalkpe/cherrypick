@@ -134,7 +134,7 @@ const canWatch = computed(() => props.participant.screenSharing && props.watchab
 }
 
 // タイルの名前の上の残りいっぱいに映す (プレビューの映像ははみ出す分を切って埋める)。
-// 丸みはタイルの丸みから枠 (3px) と余白 (6px) を引いた分
+// 丸みはタイルの丸みから枠 (3px) と余白 (6px) を引いた分。子 (XPreview) の .root の丸みに必ず勝つよう、クラス 2 つで書く
 .watch .preview {
 	flex: 1 1 0;
 	width: 100%;
