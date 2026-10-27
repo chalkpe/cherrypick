@@ -15,6 +15,7 @@ import { StatusError } from '@/misc/status-error.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { ChatVoiceService, isRemoteVoiceCallEnabled } from '@/core/ChatVoiceService.js';
 import type { JoinCredentials } from '@/core/ChatVoiceService.js';
+import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { parseIceServers } from '@/core/CloudflareTurnService.js';
 import type { IceServer } from '@/core/CloudflareTurnService.js';
 import { ApRequestService } from '@/core/activitypub/ApRequestService.js';
@@ -64,6 +65,7 @@ export class RemoteVoiceCallService {
 
 		private apRequestService: ApRequestService,
 		private chatVoiceService: ChatVoiceService,
+		private hostPolicyService: HostPolicyService,
 		private loggerService: LoggerService,
 	) {
 		this.logger = this.loggerService.getLogger('chat-voice');
@@ -140,7 +142,7 @@ export class RemoteVoiceCallService {
 		if (ownerUrl.host !== owner.host) return null;
 
 		// このサーバーのルームの通話に他のサーバーのユーザーを入れるとき、通話中の参加者を外すときと同じ判定で断る
-		if (await this.chatVoiceService.isRefusedRemoteHost(owner.host)) return null;
+		if (await this.hostPolicyService.isRefusedRemoteHost(owner.host)) return null;
 
 		return ownerUrl;
 	}

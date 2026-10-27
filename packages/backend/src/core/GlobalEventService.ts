@@ -22,6 +22,7 @@ import type { MiPage } from '@/models/Page.js';
 import type { MiWebhook } from '@/models/Webhook.js';
 import type { MiSystemWebhook } from '@/models/SystemWebhook.js';
 import type { MiMeta } from '@/models/Meta.js';
+import type { MiInstance } from '@/models/Instance.js';
 import { MiAvatarDecoration, MiChatMessage, MiChatRoom, MiReversiGame, MiRole, MiRoleAssignment } from '@/models/_.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { DI } from '@/di-symbols.js';
@@ -269,6 +270,8 @@ export interface InternalEventTypes {
 	avatarDecorationDeleted: MiAvatarDecoration;
 	avatarDecorationUpdated: MiAvatarDecoration;
 	metaUpdated: { before?: MiMeta; after: MiMeta; };
+	/** 管理画面でサーバーの停止を変えた (admin/federation/update-instance) */
+	instanceSuspensionStateUpdated: { id: MiInstance['id']; host: MiInstance['host']; suspensionState: MiInstance['suspensionState']; };
 	followChannel: { userId: MiUser['id']; channelId: MiChannel['id']; };
 	unfollowChannel: { userId: MiUser['id']; channelId: MiChannel['id']; };
 	muteChannel: { userId: MiUser['id']; channelId: MiChannel['id']; };

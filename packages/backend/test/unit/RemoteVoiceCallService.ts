@@ -5,8 +5,14 @@
 
 import { describe, expect, test, vi } from 'vitest';
 import { RemoteVoiceCallError, RemoteVoiceCallService } from '@/core/RemoteVoiceCallService.js';
-import { ChatVoiceService } from '@/core/ChatVoiceService.js';
+import type { ChatVoiceService, RemoteSnapshotStoreResult } from '@/core/ChatVoiceService.js';
+import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { UtilityService } from '@/core/UtilityService.js';
+import type { ApRequestService } from '@/core/activitypub/ApRequestService.js';
+import type { LoggerService } from '@/core/LoggerService.js';
+import type { InstancesRepository } from '@/models/_.js';
+import type { MiMeta } from '@/models/Meta.js';
+import type { Config } from '@/config.js';
 import { StatusError } from '@/misc/status-error.js';
 
 const me = { id: 'me', host: null, uri: null } as any;
@@ -41,29 +47,33 @@ function portOwner(overrides: Record<string, unknown> = {}) {
 }
 
 function createFixture(metaOverrides: Record<string, unknown> = {}, instances: { host: string; suspensionState: string }[] = []) {
-	const meta = { enableRemoteVoiceCall: true, federation: 'all', federationHosts: [], blockedHosts: [], ...metaOverrides };
+	const meta = { enableRemoteVoiceCall: true, federation: 'all', federationHosts: [], blockedHosts: [], ...metaOverrides } as Pick<MiMeta, 'enableRemoteVoiceCall' | 'federation' | 'federationHosts' | 'blockedHosts'> as MiMeta;
 	const redis = fakeRedis();
 	const apRequestService = {
 		signedPostJson: vi.fn(async (..._args: unknown[]): Promise<unknown> => hostResponse()),
 	};
 	// 実物を使い、ブロックの判定 (ポート付きのホストを含む) と記録を引く host の正規化 (toPuny はポート付きのホストに '' を返す) もそのまま確かめる
-	const utilityService = new UtilityService({ host: 'local.test', url: 'https://local.test' } as any, meta as any);
+	const utilityService = new UtilityService({ host: 'local.test', url: 'https://local.test' } as Config, meta);
 	vi.spyOn(utilityService, 'isFederationAllowedHost');
 	// instance.host は保存されたとおりの文字列で引かれる (where の host は In)。正規化はサービスの側でする
 	const instancesRepository = {
 		findBy: vi.fn(async ({ host }: { host: { value: string[] } }) => instances.filter(instance => host.value.includes(instance.host))),
 	};
-	// 持ち主のサーバーを断るかどうかは ChatVoiceService の判定 (isRefusedRemoteHost) をそのまま使う
-	const chatVoiceService = Object.assign(Object.create(ChatVoiceService.prototype), { meta, utilityService, instancesRepository });
-	Object.defineProperty(chatVoiceService, 'storeRemoteSnapshot', { value: vi.fn(async (): Promise<string> => 'stored') });
+	// 持ち主のサーバーを断るかどうかは、通話に入れるかを決めるほかの場所と同じ判定 (HostPolicyService) を実物で使う
+	const hostPolicyService = new HostPolicyService(meta, instancesRepository as unknown as InstancesRepository, utilityService);
+	// 通話のサービスからは、ホストが渡した現況を保存するところだけを使う
+	const chatVoiceService = {
+		storeRemoteSnapshot: vi.fn(async (..._args: Parameters<ChatVoiceService['storeRemoteSnapshot']>): Promise<RemoteSnapshotStoreResult> => 'stored'),
+	} satisfies Pick<ChatVoiceService, 'storeRemoteSnapshot'>;
 	const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-	const loggerService = { getLogger: () => logger };
+	const loggerService = { getLogger: () => logger } as unknown as LoggerService;
 	const service = new RemoteVoiceCallService(
-		redis as any,
-		meta as any,
-		apRequestService as any,
-		chatVoiceService,
-		loggerService as any,
+		redis as unknown as ConstructorParameters<typeof RemoteVoiceCallService>[0],
+		meta,
+		apRequestService as unknown as ApRequestService,
+		chatVoiceService as unknown as ChatVoiceService,
+		hostPolicyService,
+		loggerService,
 	);
 	return { service, redis, apRequestService, chatVoiceService, utilityService, instancesRepository, logger };
 }

@@ -83,6 +83,7 @@ import { LiveKitService } from './LiveKitService.js';
 import { ChatVoiceService } from './ChatVoiceService.js';
 import { RemoteVoiceCallService } from './RemoteVoiceCallService.js';
 import { CloudflareTurnService } from './CloudflareTurnService.js';
+import { HostPolicyService } from './HostPolicyService.js';
 import { RegistryApiService } from './RegistryApiService.js';
 import { ReversiService } from './ReversiService.js';
 import { PageService } from './PageService.js';
@@ -249,6 +250,7 @@ const $LiveKitService: Provider = { provide: 'LiveKitService', useExisting: Live
 const $ChatVoiceService: Provider = { provide: 'ChatVoiceService', useExisting: ChatVoiceService };
 const $RemoteVoiceCallService: Provider = { provide: 'RemoteVoiceCallService', useExisting: RemoteVoiceCallService };
 const $CloudflareTurnService: Provider = { provide: 'CloudflareTurnService', useExisting: CloudflareTurnService };
+const $HostPolicyService: Provider = { provide: 'HostPolicyService', useExisting: HostPolicyService };
 const $RegistryApiService: Provider = { provide: 'RegistryApiService', useExisting: RegistryApiService };
 const $ReversiService: Provider = { provide: 'ReversiService', useExisting: ReversiService };
 const $PageService: Provider = { provide: 'PageService', useExisting: PageService };
@@ -415,6 +417,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChatVoiceService,
 		RemoteVoiceCallService,
 		CloudflareTurnService,
+		HostPolicyService,
 		RegistryApiService,
 		ReversiService,
 		PageService,
@@ -580,6 +583,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ChatVoiceService,
 		$RemoteVoiceCallService,
 		$CloudflareTurnService,
+		$HostPolicyService,
 		$RegistryApiService,
 		$ReversiService,
 		$PageService,
@@ -744,6 +748,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChatVoiceService,
 		RemoteVoiceCallService,
 		CloudflareTurnService,
+		HostPolicyService,
 		RegistryApiService,
 		ReversiService,
 		PageService,
@@ -907,6 +912,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ChatVoiceService,
 		$RemoteVoiceCallService,
 		$CloudflareTurnService,
+		$HostPolicyService,
 		$RegistryApiService,
 		$ReversiService,
 		$PageService,

@@ -4,6 +4,8 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
+import pg from 'pg';
+import { loadConfig } from '@/config.js';
 import UpdateMetaEndpoint from '@/server/api/endpoints/admin/update-meta.js';
 import ShowModerationLogsEndpoint from '@/server/api/endpoints/admin/show-moderation-logs.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
@@ -164,7 +166,8 @@ describe('moderation logs of server settings keep the Cloudflare TURN key out', 
 });
 
 describe('searching moderation logs', () => {
-	test('does not look into the Cloudflare TURN key of stored server settings', async () => {
+	/** 検索したときに admin/show-moderation-logs が足す条件 (SQL) と、その引数 */
+	async function searchCondition(search: string): Promise<[string, Record<string, string>]> {
 		const query: Record<string, any> = {
 			andWhere: vi.fn((_sql: string, _parameters?: Record<string, string>) => query),
 			limit: vi.fn(() => query),
@@ -176,9 +179,13 @@ describe('searching moderation logs', () => {
 			{ makePaginationQuery: () => query },
 		);
 
-		await endpoint.exec({ search: API_TOKEN.slice(0, 8) }, { id: 'admin' }, undefined);
+		await endpoint.exec({ search }, { id: 'admin' }, undefined);
 
-		const [where, parameters] = (query.andWhere as ReturnType<typeof vi.fn>).mock.calls.find(([sql]) => String(sql).includes('ILIKE')) as [string, Record<string, string>];
+		return (query.andWhere as ReturnType<typeof vi.fn>).mock.calls.find(([sql]) => String(sql).includes('ILIKE')) as [string, Record<string, string>];
+	}
+
+	test('does not look into the Cloudflare TURN key of stored server settings', async () => {
+		const [where, parameters] = await searchCondition(API_TOKEN.slice(0, 8));
 		expect(parameters.search).toBe(`%${API_TOKEN.slice(0, 8)}%`);
 		for (const side of ['before', 'after']) {
 			for (const key of ['voiceCallCloudflareTurnKeyId', 'voiceCallCloudflareTurnApiToken']) {
@@ -186,5 +193,34 @@ describe('searching moderation logs', () => {
 			}
 		}
 		expect(where).not.toMatch(/log\.info::text/);
+	});
+
+	// 条件は本物の PostgreSQL で確かめる。#- はオブジェクトでない値の中を指すとエラーになるので、一つでもそういう記録があると、どの検索も失敗する
+	test('searches stored logs whose info, before or after is not an object, in PostgreSQL', async () => {
+		const [where, parameters] = await searchCondition('needle');
+		const config = loadConfig();
+		const client = new pg.Client({ host: config.db.host, port: config.db.port, user: config.db.user, password: config.db.pass, database: config.db.db });
+		await client.connect();
+		try {
+			const rows: [string, string, unknown][] = [
+				['scalarInfo', 'updateServerSettings', 'needle'],
+				['arrayInfo', 'updateServerSettings', ['needle']],
+				['stringBefore', 'updateServerSettings', { before: 'needle', after: { name: 'server' } }],
+				['arrayBefore', 'updateServerSettings', { before: ['x'], after: { name: 'needle' } }],
+				['arrayAfter', 'updateServerSettings', { before: { voiceCallCloudflareTurnApiToken: 'needle' }, after: ['needle'] }],
+				['nullAfter', 'updateServerSettings', { before: { voiceCallCloudflareTurnKeyId: 'needle' }, after: null }],
+				['secretOnly', 'updateServerSettings', { before: { voiceCallCloudflareTurnApiToken: 'needle' }, after: { voiceCallCloudflareTurnKeyId: 'needle', name: 'server' } }],
+				['otherType', 'suspend', ['needle']],
+			];
+			const values = rows.map((_, i) => `($${i * 3 + 1}::varchar, $${i * 3 + 2}::varchar, $${i * 3 + 3}::jsonb)`).join(', ');
+			const sql = `SELECT log.id FROM (VALUES ${values}) AS log(id, type, info) WHERE ${where.replace(':search', `$${rows.length * 3 + 1}`)} ORDER BY log.id`;
+
+			const result = await client.query(sql, [...rows.flatMap(([id, type, info]) => [id, type, JSON.stringify(info)]), parameters.search]);
+
+			// オブジェクトの before / after の中の認証情報だけを除いて探す
+			expect(result.rows.map(row => row.id)).toEqual(['arrayAfter', 'arrayBefore', 'arrayInfo', 'otherType', 'scalarInfo', 'stringBefore']);
+		} finally {
+			await client.end();
+		}
 	});
 });

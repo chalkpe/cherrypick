@@ -9,6 +9,7 @@ import { DI } from '@/di-symbols.js';
 import type { MiMeta } from '@/models/Meta.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
+import { ApiError } from '@/server/api/error.js';
 import { MetaService } from '@/core/MetaService.js';
 import { ServerStatsService } from '@/daemons/ServerStatsService.js';
 
@@ -18,7 +19,19 @@ export const meta = {
 	requireCredential: true,
 	requireAdmin: true,
 	kind: 'write:admin:meta',
+
+	errors: {
+		cloudflareTurnSettingTooLong: {
+			message: 'The Cloudflare TURN key ID or API token is too long.',
+			code: 'INVALID_PARAM',
+			id: '1077f832-0178-438d-a09b-769fe2370abd',
+		},
+	},
 } as const;
+
+// Cloudflare の TURN キーの ID と API トークンの長さの上限。前後の空白を除いてから確かめる
+const CLOUDFLARE_TURN_KEY_ID_MAX_LENGTH = 128;
+const CLOUDFLARE_TURN_API_TOKEN_MAX_LENGTH = 512;
 
 export const paramDef = {
 	type: 'object',
@@ -249,8 +262,8 @@ export const paramDef = {
 		signToActivityPubGet: { type: 'boolean' },
 		allowExternalApRedirect: { type: 'boolean' },
 		enableRemoteVoiceCall: { type: 'boolean' },
-		voiceCallCloudflareTurnKeyId: { type: 'string', nullable: true, maxLength: 128 },
-		voiceCallCloudflareTurnApiToken: { type: 'string', nullable: true, maxLength: 512 },
+		voiceCallCloudflareTurnKeyId: { type: 'string', nullable: true },
+		voiceCallCloudflareTurnApiToken: { type: 'string', nullable: true },
 		enableRemoteNotesCleaning: { type: 'boolean' },
 		remoteNotesCleaningExpiryDaysForEachNotes: { type: 'number' },
 		remoteNotesCleaningMaxProcessingDurationInMinutes: { type: 'number' },
@@ -923,11 +936,13 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			if (ps.voiceCallCloudflareTurnKeyId !== undefined) {
 				const value = (ps.voiceCallCloudflareTurnKeyId ?? '').trim();
+				if (value.length > CLOUDFLARE_TURN_KEY_ID_MAX_LENGTH) throw new ApiError(meta.errors.cloudflareTurnSettingTooLong);
 				set.voiceCallCloudflareTurnKeyId = value === '' ? null : value;
 			}
 
 			if (ps.voiceCallCloudflareTurnApiToken !== undefined) {
 				const value = (ps.voiceCallCloudflareTurnApiToken ?? '').trim();
+				if (value.length > CLOUDFLARE_TURN_API_TOKEN_MAX_LENGTH) throw new ApiError(meta.errors.cloudflareTurnSettingTooLong);
 				set.voiceCallCloudflareTurnApiToken = value === '' ? null : value;
 			}
 

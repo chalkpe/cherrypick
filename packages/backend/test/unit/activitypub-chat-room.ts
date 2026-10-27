@@ -4,7 +4,9 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
+import { TwirpError } from 'livekit-server-sdk';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { LiveKitService } from '@/core/LiveKitService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { JsonLdService } from '@/core/activitypub/JsonLdService.js';
 import { parseChatRoomVoiceState } from '@/core/activitypub/misc/chat-room-voice-state.js';
@@ -575,7 +577,7 @@ describe('Chat room federation: Remove', () => {
 	test('a remote member leaving the room is removed from its call', async () => {
 		const f = fixture({ memberships: [{ id: 'm1', roomId: 'localroom', userId: dave.id }] });
 
-		await f.inbox.remove(dave, leave(dave, 'https://other.test/chat/rooms/localroom'));
+		await f.inbox.remove(dave, leave(dave, `${LOCAL}/chat/rooms/localroom`));
 
 		expect(f.memberships.rows).toEqual([]);
 		expect(f.liveKitService.removeParticipant).toHaveBeenCalledWith('localroom', dave.uri);
@@ -584,7 +586,7 @@ describe('Chat room federation: Remove', () => {
 	test('makes no LiveKit call when the Remove deleted no membership', async () => {
 		const f = fixture();
 
-		await f.inbox.remove(dave, leave(dave, 'https://other.test/chat/rooms/localroom'));
+		await f.inbox.remove(dave, leave(dave, `${LOCAL}/chat/rooms/localroom`));
 
 		expect(f.liveKitService.removeParticipant).not.toHaveBeenCalled();
 	});
@@ -594,9 +596,34 @@ describe('Chat room federation: Remove', () => {
 		const f = fixture({ memberships: [{ id: 'm1', roomId: 'localroom', userId: dave.id }] });
 		f.liveKitService.removeParticipant.mockRejectedValueOnce(new Error('LiveKit is down'));
 
-		await expect(f.inbox.remove(dave, leave(dave, 'https://other.test/chat/rooms/localroom'))).resolves.toBe('ok: removed from chat room');
+		await expect(f.inbox.remove(dave, leave(dave, `${LOCAL}/chat/rooms/localroom`))).resolves.toBe('ok: removed from chat room');
 		expect(f.memberships.rows).toEqual([]);
 		expect(f.inbox.logger.warn).toHaveBeenCalled();
+	});
+
+	// LiveKitService は 404 (もう通話にいない) だけを成功として扱い、ほかの失敗は投げ直す。
+	// inbox のジョブを失敗させるとやり直しを使い切るまで繰り返すので、記録だけしてジョブは終える
+	test.each([
+		['unavailable', 503],
+		['internal', 500],
+		['permission_denied', 403],
+	])('finishes the inbox job when LiveKit answers %s (%i) to the removal', async (code, status) => {
+		const f = fixture({ memberships: [{ id: 'm1', roomId: 'localroom', userId: dave.id }] });
+		const liveKitService = new LiveKitService({
+			url: LOCAL,
+			voiceCall: { livekit: { internalUrl: 'http://livekit:7880', apiKey: 'key', apiSecret: 'a'.repeat(32) } },
+		} as ConstructorParameters<typeof LiveKitService>[0]);
+		const roomService = { removeParticipant: vi.fn(async () => {
+			throw new TwirpError('TwirpError', 'LiveKit could not remove the participant', status, code);
+		}) };
+		Object.assign(liveKitService, { roomService });
+		Object.assign(f.inbox, { liveKitService });
+
+		await expect(f.inbox.remove(dave, leave(dave, `${LOCAL}/chat/rooms/localroom`))).resolves.toBe('ok: removed from chat room');
+
+		expect(roomService.removeParticipant).toHaveBeenCalledTimes(1);
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.inbox.logger.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to remove'), expect.anything());
 	});
 
 	test('leaves calls alone for a room hosted on another server', async () => {

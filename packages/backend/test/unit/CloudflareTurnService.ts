@@ -147,12 +147,14 @@ describe('CloudflareTurnService', () => {
 		]);
 	});
 
-	test('skips servers that have TURN URLs but no credentials', async () => {
+	test('drops TURN URLs that come without credentials, and keeps the STUN URLs beside them', async () => {
 		f = createFixture();
 		f.httpRequestService.send.mockResolvedValueOnce(response({
 			iceServers: [
 				{ urls: ['stun:stun.cloudflare.com:3478'] },
+				// STUN は資格情報を使わないので、資格情報の無い TURN と同じ項目にあっても残す
 				{ urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'stun:stun2.example:3478'] },
+				{ urls: ['turns:turn.cloudflare.com:443?transport=tcp', 'stun:stun4.example:3478'], username: 'u' },
 				{ urls: ['turns:turn.cloudflare.com:443?transport=tcp'], username: 'u' },
 				{ urls: ['turn:turn.cloudflare.com:3478?transport=tcp'], credential: 'c' },
 				{ urls: ['turn:turn.cloudflare.com:3478?transport=udp'], username: '', credential: '' },
@@ -164,9 +166,19 @@ describe('CloudflareTurnService', () => {
 
 		await expect(f.service.getIceServers()).resolves.toEqual([
 			{ urls: ['stun:stun.cloudflare.com:3478'] },
+			{ urls: ['stun:stun2.example:3478'] },
+			{ urls: ['stun:stun4.example:3478'] },
 			{ urls: ['stun:stun3.example:3478'] },
-			{ urls: ['turns:turn.cloudflare.com:5349?transport=tcp'], username: 'u', credential: 'c' },
 		]);
+	});
+
+	test('still keeps at most four servers after splitting off the STUN URLs', async () => {
+		f = createFixture();
+		f.httpRequestService.send.mockResolvedValueOnce(response({
+			iceServers: Array.from({ length: 6 }, (_, i) => ({ urls: [`turn:turn${i}.example:3478`, `stun:stun${i}.example:3478`] })),
+		}));
+
+		await expect(f.service.getIceServers()).resolves.toEqual(Array.from({ length: 4 }, (_, i) => ({ urls: [`stun:stun${i}.example:3478`] })));
 	});
 
 	test('drops URLs with characters other than printable ASCII', async () => {
@@ -207,6 +219,46 @@ describe('CloudflareTurnService', () => {
 		f.httpRequestService.send.mockResolvedValueOnce(response(cloudflareBody('fresh-user', 'fresh-credential')));
 		vi.advanceTimersByTime(1000);
 		await expect(f.service.getIceServers()).resolves.toEqual(expectedIceServers('fresh-user', 'fresh-credential'));
+		expect(f.httpRequestService.send).toHaveBeenCalledTimes(2);
+	});
+
+	// 資格情報の寿命は Cloudflare が受け取ったときから数えられるので、使い回す間も問い合わせたときから数える
+	test('counts the 12 hours of reuse from when it asked, not from when Cloudflare answered', async () => {
+		vi.useFakeTimers();
+		f = createFixture();
+		f.httpRequestService.send.mockImplementationOnce(async () => {
+			await new Promise(resolve => setTimeout(resolve, 5000));
+			return response(cloudflareBody());
+		});
+
+		const first = f.service.getIceServers();
+		await vi.advanceTimersByTimeAsync(5000);
+		await expect(first).resolves.toEqual(expectedIceServers());
+
+		vi.advanceTimersByTime(12 * HOUR - 5000 - 1);
+		await f.service.getIceServers();
+		expect(f.httpRequestService.send).toHaveBeenCalledTimes(1);
+
+		f.httpRequestService.send.mockResolvedValueOnce(response(cloudflareBody('fresh-user', 'fresh-credential')));
+		vi.advanceTimersByTime(1);
+		await expect(f.service.getIceServers()).resolves.toEqual(expectedIceServers('fresh-user', 'fresh-credential'));
+		expect(f.httpRequestService.send).toHaveBeenCalledTimes(2);
+	});
+
+	test('counts the minute after a failure from when it asked', async () => {
+		vi.useFakeTimers();
+		f = createFixture();
+		f.httpRequestService.send.mockImplementationOnce(async () => {
+			await new Promise(resolve => setTimeout(resolve, 5000));
+			throw Object.assign(new Error('timed out'), { name: 'AbortError' });
+		});
+
+		const first = f.service.getIceServers();
+		await vi.advanceTimersByTimeAsync(5000);
+		await expect(first).resolves.toBeNull();
+
+		vi.advanceTimersByTime(60_000 - 5000);
+		await expect(f.service.getIceServers()).resolves.toEqual(expectedIceServers());
 		expect(f.httpRequestService.send).toHaveBeenCalledTimes(2);
 	});
 
@@ -349,6 +401,81 @@ describe('parseIceServers (ICE servers sent by another server)', () => {
 		expect(parseIceServers(value)).toBeNull();
 	});
 
+	// ICE サーバーはユーザーのブラウザが接続しに行く。他のサーバーが、ユーザーの手元や同じネットワークの機器に接続させないよう、
+	// ループバック・プライベート・リンクローカル・未指定のアドレスと localhost を断る。読み方が分かれる書き方も断る
+	test.each([
+		['localhost', 'stun:localhost:3478'],
+		['upper-case LOCALHOST', 'stun:LOCALHOST'],
+		['localhost with a trailing dot', 'stun:localhost.:3478'],
+		['a name under localhost', 'turn:turn.localhost:3478'],
+		['an IPv4 loopback address', 'turn:127.0.0.1:3478'],
+		['another IPv4 loopback address', 'stun:127.8.9.10'],
+		['an IPv4 private address (10/8)', 'turns:10.1.2.3:443?transport=tcp'],
+		['an IPv4 private address (172.16/12)', 'stun:172.31.255.255'],
+		['an IPv4 private address (192.168/16)', 'stun:192.168.0.1:3478'],
+		['a shared address (100.64/10)', 'stun:100.64.0.1'],
+		['an IPv4 link-local address', 'stun:169.254.169.254'],
+		['the IPv4 unspecified address', 'stun:0.0.0.0:3478'],
+		['an address in 0/8', 'stun:0.1.2.3'],
+		['the IPv4 broadcast address', 'stun:255.255.255.255'],
+		['an IPv4 multicast address', 'stun:224.0.0.1'],
+		['a decimal IPv4 address', 'stun:2130706433:3478'],
+		['a hexadecimal IPv4 address', 'stun:0x7f000001'],
+		['a hexadecimal IPv4 part', 'stun:0x7f.0.0.1'],
+		['an octal IPv4 part', 'stun:0177.0.0.1'],
+		['a leading zero in an IPv4 part', 'stun:010.0.0.1'],
+		['a shortened IPv4 address', 'stun:127.1'],
+		['an IPv4 address with a trailing dot', 'stun:127.0.0.1.'],
+		['a public IPv4 address with a trailing dot', 'stun:8.8.8.8.'],
+		['a name ending in a number', 'stun:stun.example.123'],
+		['the IPv6 loopback address', 'turn:[::1]:3478'],
+		['the IPv6 loopback address written out', 'stun:[0:0:0:0:0:0:0:1]'],
+		['the IPv6 unspecified address', 'stun:[::]'],
+		['an IPv6 link-local address', 'stun:[fe80::1]:3478'],
+		['an IPv6 link-local address with a zone', 'stun:[fe80::1%25eth0]'],
+		['an IPv6 unique local address', 'stun:[fd12:3456::1]'],
+		['an IPv6 site-local address', 'stun:[fec0::1]'],
+		['an IPv6 multicast address', 'stun:[ff02::1]'],
+		['an IPv4-mapped loopback address', 'stun:[::ffff:127.0.0.1]'],
+		['an IPv4-mapped private address in hex', 'turn:[::ffff:a00:1]:3478'],
+		['an IPv4-mapped address in upper case', 'stun:[::FFFF:7F00:1]'],
+		['an IPv4-compatible address', 'stun:[::127.0.0.1]'],
+		['an IPv4-compatible public address', 'stun:[::8.8.8.8]'],
+		['an IPv4-translated address', 'stun:[::ffff:0:808:808]'],
+		['a NAT64 address of a loopback address', 'stun:[64:ff9b::127.0.0.1]'],
+		['an IPv6 address without brackets', 'stun:::1'],
+		['an unclosed bracket', 'stun:[2001:db8::1'],
+		['something after the bracket', 'stun:[2001:db8::1]x:3478'],
+		['a malformed IPv6 address', 'stun:[2001:db8::g]'],
+		['an IPv4 address in brackets', 'stun:[8.8.8.8]'],
+		['no host', 'stun::3478'],
+		['user information', 'turn:user@turn.example:3478'],
+		['percent-encoding', 'stun:%6Cocalhost'],
+		['an underscore', 'stun:stun_1.example'],
+		['an empty label', 'stun:stun..example'],
+		['a port that is not a number', 'stun:stun.example:x'],
+		['a port that is out of range', 'stun:stun.example:65536'],
+		['port 0', 'stun:stun.example:0'],
+		['an empty port', 'stun:stun.example:'],
+	])('treats a url with %s as no ICE servers', (_label, url) => {
+		expect(parseIceServers([{ urls: [url], username: 'u', credential: 'c' }])).toBeNull();
+	});
+
+	test.each([
+		['a name', 'turn:turn.cloudflare.com:3478?transport=udp'],
+		['a name in upper case', 'stun:STUN.Example:3478'],
+		['a name with a trailing dot', 'stun:stun.example.:3478'],
+		['a name that contains localhost', 'stun:localhost.example'],
+		['a name with a numeric first label', 'stun:53.example:3478'],
+		['a public IPv4 address', 'stun:8.8.8.8:3478'],
+		['a public IPv6 address', 'turns:[2606:4700::6810:84e5]:443?transport=tcp'],
+		['an IPv4-mapped public address', 'stun:[::ffff:8.8.8.8]'],
+		['the highest port', 'stun:stun.example:65535'],
+	])('accepts a url with %s', (_label, url) => {
+		const servers = [{ urls: [url], username: 'u', credential: 'c' }];
+		expect(parseIceServers(servers)).toEqual(servers);
+	});
+
 	test('accepts 53 when it is not the port', () => {
 		const servers = [
 			{ urls: ['stun:53.example:3478'] },
@@ -406,10 +533,21 @@ describe('Cloudflare TURN setting', () => {
 	});
 
 	test('admin/update-meta limits their length', async () => {
-		const { endpoint } = updateMetaFixture();
+		const { endpoint, metaService } = updateMetaFixture();
 
 		await expect(endpoint.exec({ voiceCallCloudflareTurnKeyId: 'k'.repeat(129) }, { id: 'admin' }, undefined)).rejects.toMatchObject({ code: 'INVALID_PARAM' });
 		await expect(endpoint.exec({ voiceCallCloudflareTurnApiToken: 't'.repeat(513) }, { id: 'admin' }, undefined)).rejects.toMatchObject({ code: 'INVALID_PARAM' });
+		// 前後の空白を除いても長すぎる
+		await expect(endpoint.exec({ voiceCallCloudflareTurnKeyId: ` ${'k'.repeat(129)} ` }, { id: 'admin' }, undefined)).rejects.toMatchObject({ code: 'INVALID_PARAM' });
+		expect(metaService.update).not.toHaveBeenCalled();
+	});
+
+	test('admin/update-meta measures their length after trimming', async () => {
+		const { endpoint, metaService } = updateMetaFixture();
+
+		await endpoint.exec({ voiceCallCloudflareTurnKeyId: `  ${'k'.repeat(128)}\n`, voiceCallCloudflareTurnApiToken: `\t${'t'.repeat(512)}  ` }, { id: 'admin' }, undefined);
+
+		expect(metaService.update).toHaveBeenCalledWith(expect.objectContaining({ voiceCallCloudflareTurnKeyId: 'k'.repeat(128), voiceCallCloudflareTurnApiToken: 't'.repeat(512) }));
 	});
 
 	test('admin/meta shows them to administrators', async () => {

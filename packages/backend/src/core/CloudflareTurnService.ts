@@ -3,8 +3,10 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { isIPv4 } from 'node:net';
 import { Inject, Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import * as Redis from 'ioredis';
+import ipaddr from 'ipaddr.js';
 import { DI } from '@/di-symbols.js';
 import type { MiMeta } from '@/models/Meta.js';
 import { bindThis } from '@/decorators.js';
@@ -37,6 +39,19 @@ const TURN_URL = /^turns?:/;
 
 // ブラウザは 53 番ポートへの接続を拒むので、Cloudflare が返しても渡さない
 const BLOCKED_PORT = 53;
+
+// 他のサーバーから届いた ICE サーバーでは、ユーザーの手元や同じネットワークの機器を指すアドレスを断る (ipaddr.js の range() の名前)。
+// ループバック・プライベート (RFC 1918、共有アドレス 100.64/10、IPv6 のユニークローカル)・リンクローカル・未指定に加え、
+// 同じネットワークに届くブロードキャストとマルチキャスト、使われなくなったサイトローカル、IPv4 に変換される ::ffff:0:0:0/96 も断る
+const LOCAL_IPV4_RANGES = new Set(['unspecified', 'loopback', 'private', 'carrierGradeNat', 'linkLocal', 'broadcast', 'multicast']);
+const LOCAL_IPV6_RANGES = new Set(['unspecified', 'loopback', 'uniqueLocal', 'linkLocal', 'deprecatedSiteLocal', 'multicast', 'rfc6145']);
+
+// 名前として受け付ける形。小文字の英数字とハイフンのラベルをドットでつないだもの (末尾のドットは許す)
+const HOST_NAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.?$/;
+// 最後のラベルがこの形 (10 進、または 0x で始まる 16 進) の名前は、WHATWG URL などが IPv4 アドレスとして読む
+const NUMERIC_LABEL = /^(?:\d+|0x[0-9a-f]*)$/;
+// 角括弧の中に書けるもの (IPv6 アドレス)。ゾーン (%) などは読み方が分かれるので含めない
+const BRACKETED_IPV6 = /^\[[0-9a-f:.]+\]$/;
 
 type CacheEntry = {
 	keyId: string;
@@ -105,6 +120,8 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 			return await this.pending.promise;
 		}
 
+		// 資格情報の寿命は Cloudflare が受け取ったときから数えられるので、使い回す間 (と失敗を覚える間) も問い合わせ始めたときから数える
+		const requestedAt = Date.now();
 		const pending: PendingRequest = { keyId, apiToken, promise: this.fetchIceServers(keyId, apiToken) };
 		this.pending = pending;
 		const iceServers = await pending.promise;
@@ -116,7 +133,7 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 				keyId,
 				apiToken,
 				iceServers,
-				expiresAt: Date.now() + (iceServers != null ? REUSE_MS : FAILURE_CACHE_MS),
+				expiresAt: requestedAt + (iceServers != null ? REUSE_MS : FAILURE_CACHE_MS),
 			};
 		}
 
@@ -187,7 +204,8 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 
 /**
  * Cloudflare の応答 ({ iceServers: [...] } または { iceServers: {...} }) から、ブラウザに渡せるものだけを取り出す。
- * STUN / TURN 以外の URL と 53 番ポートの URL を除き、資格情報の無い TURN と上限を超える分は捨てる
+ * STUN / TURN 以外の URL と 53 番ポートの URL を除き、資格情報の無い TURN と上限を超える分は捨てる。
+ * 資格情報の無い TURN と同じ項目にある STUN は、資格情報を付けずにそれだけで一つの項目として残す
  */
 function iceServersFromCloudflare(body: unknown): IceServer[] | null {
 	if (typeof body !== 'object' || body == null) return null;
@@ -205,10 +223,14 @@ function iceServersFromCloudflare(body: unknown): IceServer[] | null {
 			.filter((url): url is string => typeof url === 'string' && ICE_SERVER_URL.test(url) && portOf(url) !== BLOCKED_PORT)
 			.slice(0, MAX_ICE_SERVER_URLS);
 		if (usable.length === 0) continue;
-		// ブラウザは資格情報の無い TURN を受け付けず、接続ごと失敗する
-		if (!hasCredentialsFor(usable, username, credential)) continue;
-
-		result.push(iceServerOf(usable, username, credential));
+		if (hasCredentialsFor(usable, username, credential)) {
+			result.push(iceServerOf(usable, username, credential));
+		} else {
+			// ブラウザは資格情報の無い TURN を受け付けず、接続ごと失敗する。STUN は資格情報を使わないので残す
+			const stun = usable.filter(url => !TURN_URL.test(url));
+			if (stun.length === 0) continue;
+			result.push({ urls: stun });
+		}
 		if (result.length === MAX_ICE_SERVERS) break;
 	}
 
@@ -218,6 +240,7 @@ function iceServersFromCloudflare(body: unknown): IceServer[] | null {
 /**
  * 他のサーバーから届いた ICE サーバーを確かめる。どこかがおかしければ全体を null にする (通話への参加は止めない)。
  * ブラウザが受け付けないもの (資格情報の無い TURN、53 番ポート、表示できる ASCII 以外の文字) もおかしいものとして扱う。
+ * ユーザーのブラウザが接続しに行くので、ユーザーの手元や同じネットワークの機器を指す URL (isAllowedRemoteIceUrl) も断る。
  * 空の配列も null にする (渡すと LiveKit が渡す ICE サーバーまで使われなくなる)
  */
 export function parseIceServers(value: unknown): IceServer[] | null {
@@ -228,12 +251,105 @@ export function parseIceServers(value: unknown): IceServer[] | null {
 		if (typeof entry !== 'object' || entry == null) return null;
 		const { urls, username, credential } = entry as Record<string, unknown>;
 		if (!Array.isArray(urls) || urls.length === 0 || urls.length > MAX_ICE_SERVER_URLS) return null;
-		if (!urls.every(url => typeof url === 'string' && ICE_SERVER_URL.test(url) && portOf(url) !== BLOCKED_PORT)) return null;
+		if (!urls.every(isAllowedRemoteIceUrl)) return null;
 		if (!isValidCredential(username) || !isValidCredential(credential)) return null;
 		if (!hasCredentialsFor(urls as string[], username, credential)) return null;
 		result.push(iceServerOf(urls as string[], username, credential));
 	}
 	return result;
+}
+
+/**
+ * 他のサーバーから届いた STUN / TURN の URL として受け付けるか。
+ * ホストとポートを読めて (iceHostAndPortOf)、ポートが 53 番でなく、ホストがユーザーの手元や同じネットワークの機器を指さない
+ * (isLocalIceHost) ものだけを受け付ける
+ */
+function isAllowedRemoteIceUrl(url: unknown): boolean {
+	if (typeof url !== 'string' || !ICE_SERVER_URL.test(url)) return false;
+	const parsed = iceHostAndPortOf(url);
+	return parsed != null && parsed.port !== BLOCKED_PORT && !isLocalIceHost(parsed.host);
+}
+
+/**
+ * `stun:host[:port]` / `turn:host[:port]?transport=udp` / `turn:[IPv6]:port` のホスト (小文字) とポート (書かれていなければ null)。
+ * ポートが 1 から 65535 の 10 進の数でないもの、角括弧の後にポート以外が続くものは読めないものとして null
+ */
+function iceHostAndPortOf(url: string): { host: string; port: number | null } | null {
+	const rest = url.slice(url.indexOf(':') + 1);
+	const query = rest.indexOf('?');
+	const hostPort = (query === -1 ? rest : rest.slice(0, query)).toLowerCase();
+
+	let host: string;
+	let port: string | null;
+	if (hostPort.startsWith('[')) {
+		const close = hostPort.indexOf(']');
+		if (close === -1) return null;
+		host = hostPort.slice(0, close + 1);
+		const after = hostPort.slice(close + 1);
+		if (after !== '' && !after.startsWith(':')) return null;
+		port = after === '' ? null : after.slice(1);
+	} else {
+		const colon = hostPort.indexOf(':');
+		host = colon === -1 ? hostPort : hostPort.slice(0, colon);
+		port = colon === -1 ? null : hostPort.slice(colon + 1);
+	}
+
+	if (port == null) return { host, port: null };
+	if (!/^\d{1,5}$/.test(port)) return null;
+	const portNumber = Number(port);
+	if (portNumber < 1 || portNumber > 65535) return null;
+	return { host, port: portNumber };
+}
+
+/**
+ * ホスト (小文字) が、ユーザーの手元や同じネットワークの機器を指すか。読み方が分かれるものも指すものとして扱う。
+ * - 角括弧の中は IPv6 アドレスだけ。WHATWG URL で正規の形 (16 進) にしてから、そのアドレスで決める (isLocalIPv6)
+ * - 最後のラベルが数の名前は IPv4 アドレスとして読まれうるので、4 つの 10 進の組 (先頭の 0 も末尾のドットもない) のときだけ、
+ *   そのアドレスで決める。2130706433、0x7f000001、127.1、0177.0.0.1 などは断る
+ * - 名前は、localhost とその下の名前を断る
+ */
+function isLocalIceHost(host: string): boolean {
+	if (host.startsWith('[')) {
+		if (!BRACKETED_IPV6.test(host)) return true;
+		let canonical: string;
+		try {
+			canonical = new URL(`http://${host}/`).hostname;
+		} catch {
+			return true;
+		}
+		const literal = canonical.slice(1, -1);
+		if (!canonical.startsWith('[') || !ipaddr.IPv6.isValid(literal)) return true;
+		return isLocalIPv6(ipaddr.IPv6.parse(literal));
+	}
+
+	if (!HOST_NAME.test(host)) return true;
+	const labels = host.replace(/\.$/, '').split('.');
+	const last = labels[labels.length - 1];
+	if (NUMERIC_LABEL.test(last)) {
+		if (!isIPv4(host)) return true;
+		return isLocalIPv4(ipaddr.IPv4.parse(host));
+	}
+	return last === 'localhost';
+}
+
+function isLocalIPv4(address: ipaddr.IPv4): boolean {
+	return LOCAL_IPV4_RANGES.has(address.range());
+}
+
+/**
+ * IPv6 アドレスが、ユーザーの手元や同じネットワークの機器を指すか。
+ * IPv4 を写したアドレス (::ffff:0:0/96) と NAT64 のアドレス (64:ff9b::/96) は、埋め込まれた IPv4 アドレスで決める。
+ * ::/96 (:: と ::1、使われなくなった IPv4 互換アドレス) は断る
+ */
+function isLocalIPv6(address: ipaddr.IPv6): boolean {
+	const parts = address.parts;
+	const embedded = () => new ipaddr.IPv4([parts[6] >> 8, parts[6] & 0xff, parts[7] >> 8, parts[7] & 0xff]);
+	const zeroUntil = (end: number) => parts.slice(0, end).every(part => part === 0);
+
+	if (zeroUntil(5) && parts[5] === 0xffff) return isLocalIPv4(embedded());
+	if (zeroUntil(6)) return true;
+	if (parts[0] === 0x64 && parts[1] === 0xff9b && parts.slice(2, 6).every(part => part === 0)) return isLocalIPv4(embedded());
+	return LOCAL_IPV6_RANGES.has(address.range());
 }
 
 function isValidCredential(value: unknown): value is string | undefined {

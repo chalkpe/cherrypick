@@ -17,8 +17,7 @@ import { SystemAccountService } from '@/core/SystemAccountService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
-import { ChatVoiceService } from '@/core/ChatVoiceService.js';
-import { ApiLoggerService } from '@/server/api/ApiLoggerService.js';
+import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { ServerStatsService } from '@/daemons/ServerStatsService.js';
 
 // 依存は DI のトークンで渡す (コンストラクタの引数の並びに頼らない)
@@ -92,10 +91,10 @@ describe('suspending a server from the admin panel', () => {
 				if (data.suspensionState != null) instance.suspensionState = data.suspensionState;
 			}),
 		};
-		const chatVoiceService = {
-			removeRefusedRemoteParticipants: vi.fn(async () => {}),
+		const globalEventService = {
+			publishInternalEvent: vi.fn((_type: string, _body: unknown) => {}),
 		};
-		const logger = { error: vi.fn(), warn: vi.fn(), info: vi.fn() };
+		// 通話のサービス (ChatVoiceService) は渡さない。停止は内部イベントで知らせ、通話のサービスがそれを聞いて参加者を外す
 		const module = await Test.createTestingModule({
 			providers: [
 				UpdateInstanceEndpoint,
@@ -103,48 +102,48 @@ describe('suspending a server from the admin panel', () => {
 				{ provide: UtilityService, useValue: { toPuny: (host: string) => host } },
 				{ provide: FederatedInstanceService, useValue: federatedInstanceService },
 				{ provide: ModerationLogService, useValue: { log: vi.fn() } },
-				{ provide: ChatVoiceService, useValue: chatVoiceService },
-				{ provide: ApiLoggerService, useValue: { logger } },
+				{ provide: GlobalEventService, useValue: globalEventService },
 			],
 		}).compile();
 		const endpoint = module.get(UpdateInstanceEndpoint);
-		return { endpoint, instance, federatedInstanceService, chatVoiceService, logger };
+		return { endpoint, instance, federatedInstanceService, globalEventService };
 	}
 
-	test('admin/federation/update-instance removes the server\'s call participants after suspending it, without waiting', async () => {
+	test('admin/federation/update-instance tells every worker that the server was suspended, after recording it', async () => {
 		const f = await createFixture();
-		let checked = false;
-		f.chatVoiceService.removeRefusedRemoteParticipants.mockImplementation(async () => {
-			// 停止が記録された後で判定する
-			checked = f.instance.suspensionState === 'manuallySuspended';
-			await new Promise(() => {});
+		let recorded = false;
+		f.globalEventService.publishInternalEvent.mockImplementation(() => {
+			recorded = f.instance.suspensionState === 'manuallySuspended';
 		});
 
 		await f.endpoint.exec({ host: 'remote.test', isSuspended: true }, admin, null, null);
 
-		expect(f.chatVoiceService.removeRefusedRemoteParticipants).toHaveBeenCalledTimes(1);
-		expect(checked).toBe(true);
+		expect(f.globalEventService.publishInternalEvent.mock.calls).toEqual([
+			['instanceSuspensionStateUpdated', { id: 'i1', host: 'remote.test', suspensionState: 'manuallySuspended' }],
+		]);
+		expect(recorded).toBe(true);
 	});
 
-	test('admin/federation/update-instance logs a failure to remove call participants without failing', async () => {
-		const f = await createFixture();
-		f.chatVoiceService.removeRefusedRemoteParticipants.mockRejectedValue(new Error('LiveKit is down'));
+	test('admin/federation/update-instance tells every worker that a suspension was lifted', async () => {
+		const f = await createFixture('manuallySuspended');
 
-		await f.endpoint.exec({ host: 'remote.test', isSuspended: true }, admin, null, null);
+		await f.endpoint.exec({ host: 'remote.test', isSuspended: false }, admin, null, null);
 
-		await vi.waitFor(() => expect(f.logger.error).toHaveBeenCalled());
+		expect(f.globalEventService.publishInternalEvent.mock.calls).toEqual([
+			['instanceSuspensionStateUpdated', { id: 'i1', host: 'remote.test', suspensionState: 'none' }],
+		]);
 	});
 
 	test.each([
-		['unsuspending a server', 'manuallySuspended', { isSuspended: false }],
 		['suspending a server that is already suspended', 'manuallySuspended', { isSuspended: true }],
+		['lifting a suspension that is not there', 'none', { isSuspended: false }],
 		['editing only the moderation note', 'none', { moderationNote: 'note' }],
-	])('admin/federation/update-instance leaves calls alone when %s', async (_label, suspensionState, params) => {
+	])('admin/federation/update-instance tells nobody when %s', async (_label, suspensionState, params) => {
 		const f = await createFixture(suspensionState);
 
 		await f.endpoint.exec({ host: 'remote.test', ...params }, admin, null, null);
 
 		expect(f.federatedInstanceService.update).toHaveBeenCalled();
-		expect(f.chatVoiceService.removeRefusedRemoteParticipants).not.toHaveBeenCalled();
+		expect(f.globalEventService.publishInternalEvent).not.toHaveBeenCalled();
 	});
 });
