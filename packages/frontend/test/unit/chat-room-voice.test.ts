@@ -448,6 +448,66 @@ describe('voice call on the room page', () => {
 	});
 
 
+
+	async function renderCallControls(surface: 'card' | 'stage') {
+		Object.assign(callState, { status: 'connected', room, micEnabled: true, audioBlocked: true });
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }], undefined, { bar: true });
+		resizeObserved(surface === 'stage' ? 1280 : 400);
+		await flush();
+		if (surface === 'card') {
+			expect(screen.queryByRole('region', { name: i18n.ts._voiceCall.inCall })).toBeNull();
+			return screen.getByTestId('sticky-header');
+		}
+		return screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft).parentElement!.parentElement!;
+	}
+
+	test.each(['card', 'stage'] as const)('retains audio recovery in the own-room %s controls', async surface => {
+		const originalWidth = window.innerWidth;
+		try {
+			window.innerWidth = surface === 'card' ? 400 : 1280;
+			window.dispatchEvent(new Event('resize'));
+			const controls = within(await renderCallControls(surface));
+			const recovery = controls.getByRole('button', { name: i18n.ts._voiceCall.enableAudio });
+			expect(recovery.querySelector('.ti-volume')).not.toBeNull();
+			await fireEvent.click(recovery);
+			expect(mocks.resumeAudio).toHaveBeenCalledTimes(1);
+			callState.audioBlocked = false;
+			await flush();
+			expect(controls.queryByRole('button', { name: i18n.ts._voiceCall.enableAudio })).toBeNull();
+		} finally {
+			window.innerWidth = originalWidth;
+			window.dispatchEvent(new Event('resize'));
+		}
+	});
+
+	test.each(['card', 'stage'] as const)('retains settings and supported screen-share actions in the own-room %s controls', async surface => {
+		const originalWidth = window.innerWidth;
+		try {
+			window.innerWidth = surface === 'card' ? 400 : 1280;
+			window.dispatchEvent(new Event('resize'));
+			const controls = within(await renderCallControls(surface));
+			await fireEvent.click(controls.getByRole('button', { name: i18n.ts._voiceCall.settings }));
+			const items = mocks.popupMenu.mock.calls.at(-1)![0] as { text?: string }[];
+			expect(items.map(item => item.text)).toEqual(expect.arrayContaining([
+				i18n.ts._voiceCall.inputDevice,
+				i18n.ts._voiceCall.screenShareQuality,
+				i18n.ts._voiceCall.shareAudio,
+				i18n.ts._voiceCall.echoCancellation,
+				i18n.ts._voiceCall.noiseSuppression,
+				i18n.ts._voiceCall.autoGainControl,
+			]));
+			await fireEvent.click(controls.getByRole('button', { name: i18n.ts._voiceCall.shareScreen }));
+			expect(mocks.startScreenShare).toHaveBeenCalledTimes(1);
+			callState.screenSharing = true;
+			await flush();
+			await fireEvent.click(controls.getByRole('button', { name: i18n.ts._voiceCall.stopSharing }));
+			expect(mocks.stopScreenShare).toHaveBeenCalledTimes(1);
+		} finally {
+			window.innerWidth = originalWidth;
+			window.dispatchEvent(new Event('resize'));
+		}
+	});
+
 	test('on mobile keeps the bar when its mounted room window is CSS-hidden', async () => {
 		const originalWidth = window.innerWidth;
 		try {
