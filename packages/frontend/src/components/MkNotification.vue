@@ -122,9 +122,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div v-else-if="notification.type === 'roleAssigned'" :class="$style.text">
 				{{ notification.role.name }}
 			</div>
-			<div v-else-if="notification.type === 'chatRoomInvitationReceived'" :class="$style.text">
+			<MkA v-else-if="notification.type === 'chatRoomInvitationReceived'" :class="$style.text" :to="`/chat/room/${notification.invitation.room.id}`">
 				{{ notification.invitation.room.name }}
-			</div>
+			</MkA>
 			<MkA v-else-if="notification.type === 'achievementEarned'" :class="$style.text" to="/my/achievements">
 				{{ i18n.ts._achievements._types[`_${notification.achievement}`].title }}
 			</MkA>
