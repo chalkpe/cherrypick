@@ -184,7 +184,6 @@ describe('voice call controller', () => {
 
 	test.each([
 		['null', null],
-		['an empty list', []],
 		['nothing (an older server)', undefined],
 	])('leaves the ICE servers to LiveKit when the server hands out %s', async (_label, iceServers) => {
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', iceServers });
@@ -194,6 +193,16 @@ describe('voice call controller', () => {
 		const options = lastRoom().connect.mock.calls[0][2];
 		expect(options).toEqual({ autoSubscribe: false });
 		expect(options).not.toHaveProperty('rtcConfig');
+	});
+
+	// 他のサーバーの通話では、サーバーが確かめた ICE サーバーが無ければ空の一覧が届く。それをそのまま渡し、
+	// 他のサーバーの LiveKit が渡す (確かめていない) ICE サーバーを LiveKit に使わせない
+	test('passes an empty list of ICE servers through, so that LiveKit does not use the ones its own server sends', async () => {
+		mocks.misskeyApi.mockResolvedValue({ url: 'https://remote.test/livekit', token: 't', iceServers: [] });
+
+		await joinVoiceCall(room1);
+
+		expect(lastRoom().connect).toHaveBeenCalledWith('https://remote.test/livekit', 't', { autoSubscribe: false, rtcConfig: { iceServers: [] } });
 	});
 
 	test('stays in the call as a listener when the microphone is unavailable', async () => {

@@ -82,9 +82,12 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom): Promise<vo
 	current = lkRoom;
 	bindRoomEvents(lk, lkRoom);
 
-	// サーバーが TURN を渡したら、LiveKit が渡す ICE サーバーの代わりにそれを使う (LiveKit が NAT の内側にあってもつながる)
+	// サーバーが ICE サーバーの一覧を渡したら、空でも、LiveKit が渡す ICE サーバーの代わりにそれを使う。
+	// このサーバーの TURN なら LiveKit が NAT の内側にあってもつながる。他のサーバーの通話では、サーバーが確かめたものだけが届き
+	// (使えるものが無ければ空の一覧)、他のサーバーの LiveKit が渡す確かめていない ICE サーバーは使わない。
+	// LiveKit は rtcConfig.iceServers があればそれを、再接続のときも使い続ける
 	const iceServers = credentials.iceServers;
-	const connectOptions: RoomConnectOptions = iceServers != null && iceServers.length > 0
+	const connectOptions: RoomConnectOptions = iceServers != null
 		? { autoSubscribe: false, rtcConfig: { iceServers } }
 		: { autoSubscribe: false };
 
