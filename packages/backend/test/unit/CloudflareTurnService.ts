@@ -66,9 +66,10 @@ function createFixture(metaOverrides: Record<string, unknown> = {}) {
 	const loggerService = { getLogger: () => logger };
 	// 内部イベント (metaUpdated) は Redis の購読から届く
 	const redisForSub = new EventEmitter();
-	const service = new CloudflareTurnService(redisForSub as any, meta as any, httpRequestService as any, loggerService as any);
+	const metaService = { fetch: vi.fn(async () => ({ ...meta })) };
+	const service = new CloudflareTurnService(redisForSub as any, metaService as any, httpRequestService as any, loggerService as any);
 	service.onModuleInit();
-	return { service, meta, httpRequestService, logger, redisForSub };
+	return { service, metaService, meta, httpRequestService, logger, redisForSub };
 }
 
 /** GlobalModule の購読と同じく、先に DI.meta を書き換えてから metaUpdated を流す */
@@ -96,12 +97,81 @@ describe('CloudflareTurnService', () => {
 		expect(f.httpRequestService.send).not.toHaveBeenCalled();
 	});
 
+	test.each([null, 'rotated-key'])('authoritative TURN settings reject a lagging worker cache after %s', async key => {
+		f = createFixture();
+		await f.service.getIceServers();
+		f.metaService.fetch.mockResolvedValue({ ...f.meta, voiceCallCloudflareTurnKeyId: key });
+		f.httpRequestService.send.mockResolvedValue(response(cloudflareBody('current', 'current-credential')));
+		expect(await f.service.getIceServers()).toEqual(key == null ? null : expectedIceServers('current', 'current-credential'));
+		expect(f.meta.voiceCallCloudflareTurnKeyId).toBe(KEY_ID);
+	});
+
+	test('authoritative TURN removal rejects original and shared deferred waiters on a lagging worker', async () => {
+		f = createFixture();
+		let resolve!: (value: unknown) => void;
+		f.httpRequestService.send.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+		const original = f.service.getIceServers();
+		const shared = f.service.getIceServers();
+		await vi.waitFor(() => expect(f.httpRequestService.send).toHaveBeenCalledTimes(1));
+		f.metaService.fetch.mockResolvedValue({ ...f.meta, voiceCallCloudflareTurnKeyId: null });
+		resolve(response(cloudflareBody()));
+		expect(await original).toBeNull();
+		expect(await shared).toBeNull();
+	});
+
+	test.each([null, 'rotated-key'])('a second worker cannot return cached or coalesced credentials after another worker changes the shared key to %s', async key => {
+		f = createFixture();
+		const other = createFixture();
+		const authoritative = { ...f.meta };
+		for (const worker of [f, other]) worker.metaService.fetch.mockImplementation(async () => ({ ...authoritative }));
+		try {
+			await other.service.getIceServers();
+			authoritative.voiceCallCloudflareTurnKeyId = key;
+			publishMetaUpdated(f, { voiceCallCloudflareTurnKeyId: key });
+			expect(other.meta.voiceCallCloudflareTurnKeyId).toBe(KEY_ID);
+			other.httpRequestService.send.mockResolvedValue(response(cloudflareBody('current', 'current-credential')));
+			expect(await other.service.getIceServers()).toEqual(key == null ? null : expectedIceServers('current', 'current-credential'));
+
+			// ローカルイベントを受けないまま、共有設定を戻して問い合わせを停止する。
+			authoritative.voiceCallCloudflareTurnKeyId = 'deferred-key';
+			let resolve!: (value: unknown) => void;
+			other.httpRequestService.send.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+			const original = other.service.getIceServers();
+			const coalesced = other.service.getIceServers();
+			await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+			authoritative.voiceCallCloudflareTurnKeyId = key;
+			publishMetaUpdated(f, { voiceCallCloudflareTurnKeyId: key });
+			resolve(response(cloudflareBody('old-user', 'old-credential')));
+			expect(await original).toBeNull();
+			expect(await coalesced).toBeNull();
+		} finally {
+			other.service.onApplicationShutdown();
+		}
+	});
+
+	test('discards the completed request when the final authoritative read fails', async () => {
+		f = createFixture();
+		f.metaService.fetch.mockResolvedValueOnce({ ...f.meta }).mockRejectedValueOnce(new Error('settings unavailable'));
+		expect(await f.service.getIceServers()).toBeNull();
+		f.httpRequestService.send.mockResolvedValue(response(cloudflareBody('retry', 'retry-credential')));
+		expect(await f.service.getIceServers()).toEqual(expectedIceServers('retry', 'retry-credential'));
+		expect(f.httpRequestService.send).toHaveBeenCalledTimes(2);
+	});
+
+	test('fails closed when authoritative TURN settings cannot be read, including a cached credential', async () => {
+		f = createFixture();
+		await f.service.getIceServers();
+		f.metaService.fetch.mockRejectedValue(new Error('settings unavailable'));
+		expect(await f.service.getIceServers()).toBeNull();
+	});
+
 	test.each([null, 'rotated-key'])('never returns an old in-flight credential after key change to %s', async key => {
 		f = createFixture();
 		let resolve!: (value: unknown) => void;
 		f.httpRequestService.send.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
 		const first = f.service.getIceServers();
 		const shared = f.service.getIceServers();
+		await vi.waitFor(() => expect(f.httpRequestService.send).toHaveBeenCalledTimes(1));
 		publishMetaUpdated(f, { voiceCallCloudflareTurnKeyId: key });
 		const current = f.service.getIceServers();
 		resolve(response(cloudflareBody('old-user', 'old-credential')));

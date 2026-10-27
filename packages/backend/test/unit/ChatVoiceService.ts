@@ -25,6 +25,70 @@ describe('ChatVoiceService', () => {
 		vi.useRealTimers();
 	});
 
+	test('a worker with delayed meta events cannot store or show a host blocked in authoritative settings', async () => {
+		const other = createFixture(f.redis);
+		const room = mirrorRoom();
+		for (const worker of [f, other]) worker.rooms.set('r1', room);
+		const authoritative = { ...f.meta };
+		for (const worker of [f, other]) worker.metaService.fetch.mockImplementation(async () => ({ ...authoritative }));
+		try {
+			await f.service.storeRemoteSnapshot(room, [{ identity: 'https://local.test/users/u1', screenSharing: false }], TEST_CLOCK);
+			authoritative.blockedHosts = ['remote.test'];
+			await f.service.clearMirrorSnapshots(true);
+			expect(other.meta.blockedHosts).toEqual([]);
+			expect(await other.service.isRoomVoiceVisible(room)).toBe(false);
+			expect(await other.service.storeRemoteSnapshot(room, [{ identity: 'https://local.test/users/u1', screenSharing: false }], TEST_CLOCK + 1)).toBe('disabled');
+			expect(await other.service.getStates({ id: 'm1' }, ['r1'])).toEqual([]);
+		} finally {
+			other.service.onApplicationShutdown();
+		}
+	});
+
+	test('captures mirror generation before an authoritative policy read that races a different worker clear', async () => {
+		const room = mirrorRoom();
+		f.rooms.set('r1', room);
+		let resume!: () => void;
+		const paused = new Promise<void>(resolve => { resume = resolve; });
+		f.metaService.fetch.mockImplementationOnce(async () => {
+			const old = { ...f.meta };
+			await paused;
+			return old;
+		});
+		const storing = f.service.storeRemoteSnapshot(room, [], TEST_CLOCK);
+		// 旧実装は共有設定を読まないため、停止点を待たずに失敗を判定できるようにする。
+		for (let i = 0; i < 30; i++) await Promise.resolve();
+		await f.redis.incr('chatVoice:remoteGeneration');
+		resume();
+		expect(await storing).toBe('disabled');
+		expect(f.metaService.fetch).toHaveBeenCalledWith(true);
+	});
+
+	test('coalesces mirror fanout across workers while the first empty after active remains immediate', async () => {
+		vi.useFakeTimers({ now: TEST_CLOCK });
+		const other = createFixture(f.redis);
+		const room = mirrorRoom();
+		for (const worker of [f, other]) worker.rooms.set('r1', room);
+		const people = [{ identity: 'https://local.test/users/u1', screenSharing: false }];
+		const calls = () => [f, other].flatMap(worker => worker.globalEventService.publishMainStream.mock.calls).map(call => call[2]);
+		try {
+			await f.service.storeRemoteSnapshot(room, people, TEST_CLOCK);
+			for (let i = 1; i <= 20; i++) await (i % 2 ? f : other).service.storeRemoteSnapshot(room, people, TEST_CLOCK + i);
+			expect(calls()).toHaveLength(1);
+			await other.service.storeRemoteSnapshot(room, [], TEST_CLOCK + 21);
+			expect(calls()).toHaveLength(2);
+			expect(calls()[1].participants).toEqual([]);
+			await f.service.storeRemoteSnapshot(room, [], TEST_CLOCK + 22);
+			await other.service.storeRemoteSnapshot(room, people, TEST_CLOCK + 23);
+			expect(calls()).toHaveLength(2);
+			await vi.advanceTimersByTimeAsync(10_001);
+			expect(calls()).toHaveLength(3);
+			expect(calls()).toContainEqual(expect.objectContaining({ updatedAt: TEST_CLOCK + 23, participants: [expect.anything()] }));
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			other.service.onApplicationShutdown();
+		}
+	});
+
 	test('keeps a quiet participant under sweep coverage after the first LiveKit read fails', async () => {
 		const participant = { identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: false, micTrackSid: null };
 		f.liveKitService.listParticipants.mockRejectedValueOnce(new Error('transient')).mockResolvedValue([participant]);
@@ -47,6 +111,22 @@ describe('ChatVoiceService', () => {
 		expect(f.globalEventService.publishMainStream.mock.calls.every(call => call[2].participants.length === 0)).toBe(true);
 	});
 
+	test('an unrelated TURN meta event preserves an in-flight mirror read and its publication gate', async () => {
+		const room = mirrorRoom();
+		f.rooms.set('r1', room);
+		f.service.onModuleInit();
+		await f.service.storeRemoteSnapshot(room, [{ identity: 'https://local.test/users/u1', screenSharing: false }], TEST_CLOCK);
+		const published = await f.redis.get('chatVoice:mirrorPublished:r1');
+		const paused = pauseNextCall(f.userEntityService.packMany);
+		const reading = f.service.getStates({ id: 'm1' }, ['r1']);
+		await paused.reached;
+		f.redisForSub.emit('message', 'local', JSON.stringify({ channel: 'internal', message: { type: 'metaUpdated', body: { before: { ...f.meta, voiceCallCloudflareTurnKeyId: 'old' }, after: { ...f.meta, voiceCallCloudflareTurnKeyId: 'new' } } } }));
+		paused.resume();
+		expect(await reading).toEqual([expect.objectContaining({ participants: [expect.anything()], updatedAt: TEST_CLOCK })]);
+		expect(await f.redis.get('chatVoice:mirrorPublished:r1')).toBe(published);
+		expect(await f.redis.get('chatVoice:remoteGeneration')).toBeNull();
+	});
+
 	test('a policy event clears cached mirror state and invalidates late packing across unblock', async () => {
 		const room = mirrorRoom();
 		f.rooms.set('r1', room);
@@ -59,7 +139,7 @@ describe('ChatVoiceService', () => {
 		const before = { ...f.meta };
 		f.meta.blockedHosts = ['remote.test'];
 		f.redisForSub.emit('message', 'local', JSON.stringify({ channel: 'internal', message: { type: 'metaUpdated', body: { before, after: f.meta } } }));
-		await vi.waitFor(() => expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('m1', 'chatRoomVoiceState', { roomId: 'r1', participants: [], updatedAt: TEST_CLOCK + 101 }));
+		await vi.waitFor(() => expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('m1', 'chatRoomVoiceState', { roomId: 'r1', participants: [], updatedAt: TEST_CLOCK + 100 }));
 		f.meta.blockedHosts = [];
 		paused.resume();
 		expect(await reading).toEqual([]);
@@ -815,7 +895,7 @@ describe('ChatVoiceService', () => {
 			await f.service.clearMirrorSnapshots();
 
 			expect(f.redis.store.get('chatVoice:remoteGeneration')).toBe('2');
-			expect(f.redis.incr.mock.invocationCallOrder[0]).toBeLessThan(f.redis.del.mock.invocationCallOrder[0]);
+			expect(f.redis.incr.mock.invocationCallOrder[0]).toBeLessThan(f.redis.eval.mock.invocationCallOrder.at(-1)!);
 			expect(f.redis.store.has('chatVoice:state:m1')).toBe(false);
 		});
 
@@ -2298,7 +2378,7 @@ describe('ChatVoiceService storing mirror snapshots in Redis', () => {
 	beforeEach(async () => {
 		vi.useFakeTimers({ now: TEST_CLOCK, toFake: ['Date'] });
 		f = createFixture(redis as any);
-		await redis.del('chatVoice:state:r1', 'chatVoice:lastSeen:r1', 'chatVoice:remoteGeneration', 'chatVoice:federated:r1', 'chatVoice:federateGate:r1', 'chatVoice:federateEmptyGate:r1', 'chatVoice:federateLock:r1', 'chatVoice:federateDecided:r1', 'chatVoice:localStamp:r1', 'chatVoice:active');
+		await redis.del('chatVoice:mirrorPublished:r1', 'chatVoice:state:r1', 'chatVoice:lastSeen:r1', 'chatVoice:remoteGeneration', 'chatVoice:federated:r1', 'chatVoice:federateGate:r1', 'chatVoice:federateEmptyGate:r1', 'chatVoice:federateLock:r1', 'chatVoice:federateDecided:r1', 'chatVoice:localStamp:r1', 'chatVoice:active');
 	});
 
 	afterEach(() => {
@@ -2307,13 +2387,79 @@ describe('ChatVoiceService storing mirror snapshots in Redis', () => {
 	});
 
 	afterAll(async () => {
-		await redis.del('chatVoice:state:r1', 'chatVoice:lastSeen:r1', 'chatVoice:remoteGeneration', 'chatVoice:federated:r1', 'chatVoice:federateGate:r1', 'chatVoice:federateEmptyGate:r1', 'chatVoice:federateLock:r1', 'chatVoice:federateDecided:r1', 'chatVoice:localStamp:r1', 'chatVoice:active');
+		await redis.del('chatVoice:mirrorPublished:r1', 'chatVoice:state:r1', 'chatVoice:lastSeen:r1', 'chatVoice:remoteGeneration', 'chatVoice:federated:r1', 'chatVoice:federateGate:r1', 'chatVoice:federateEmptyGate:r1', 'chatVoice:federateLock:r1', 'chatVoice:federateDecided:r1', 'chatVoice:localStamp:r1', 'chatVoice:active');
 		redis.disconnect();
 		raw.disconnect();
 	});
 
 	const stored = async () => JSON.parse((await redis.get('chatVoice:state:r1'))!) as { participants: { identity: string }[]; updatedAt: number };
 	const store = (updatedAt: number, identity = 'https://local.test/users/u1') => f.service.storeRemoteSnapshot(mirrorRoom(), [{ identity, screenSharing: false }], updatedAt);
+
+	test('the shared mirror gate preserves active cadence across empty toggles without delaying the first active', async () => {
+		const room = mirrorRoom();
+		f.rooms.set('r1', room);
+		const people = [{ identity: 'https://local.test/users/u1', screenSharing: false }];
+		await f.service.storeRemoteSnapshot(room, [], TEST_CLOCK);
+		await f.service.storeRemoteSnapshot(room, people, TEST_CLOCK + 1);
+		expect(f.globalEventService.publishMainStream).toHaveBeenCalledTimes(2);
+		await f.service.storeRemoteSnapshot(room, [], TEST_CLOCK + 2);
+		await f.service.storeRemoteSnapshot(room, people, TEST_CLOCK + 3);
+		expect(f.globalEventService.publishMainStream).toHaveBeenCalledTimes(3);
+		expect(JSON.parse((await redis.get('chatVoice:mirrorPublished:r1'))!)).toMatchObject({ empty: true, updatedAt: TEST_CLOCK + 2 });
+	});
+
+	test.each([false, true])('policy clear uses host chronology and the first fresh host event recovers (snapshot absent: %s)', async absent => {
+		vi.setSystemTime(1_240_000);
+		const room = mirrorRoom();
+		f.rooms.set('r1', room);
+		const participants = [{ identity: 'https://local.test/users/u1', screenSharing: false }];
+		await f.service.storeRemoteSnapshot(room, participants, 1_000_000);
+		if (absent) await redis.del('chatVoice:state:r1');
+		f.globalEventService.publishMainStream.mockClear();
+		f.meta.blockedHosts = ['remote.test'];
+		await f.service.clearMirrorSnapshots(true);
+		const cleared = f.globalEventService.publishMainStream.mock.calls.at(-1)![2];
+		expect(cleared).toMatchObject({ participants: [], updatedAt: 1_000_000 });
+		f.meta.blockedHosts = [];
+		expect(await f.service.storeRemoteSnapshot(room, participants, 1_010_000)).toBe('stored');
+		const resumed = f.globalEventService.publishMainStream.mock.calls.at(-1)![2];
+		// use-chat-room-voice-states の isOutdated は、保持時刻より小さい場合だけ捨てる。
+		expect(resumed.updatedAt < cleared.updatedAt).toBe(false);
+		expect(resumed.participants).toHaveLength(1);
+	});
+
+	test.each([false, true])('an old clear cannot delete a newer post-unblock snapshot (superseding generation: %s)', async superseded => {
+		const room = mirrorRoom();
+		f.rooms.set('r1', room);
+		const participants = [{ identity: 'https://local.test/users/u1', screenSharing: false }];
+		await f.service.storeRemoteSnapshot(room, participants, TEST_CLOCK);
+		f.meta.blockedHosts = ['remote.test'];
+		let reached!: () => void;
+		let resume!: () => void;
+		const waiting = new Promise<void>(resolve => { reached = resolve; });
+		const paused = new Promise<void>(resolve => { resume = resolve; });
+		vi.spyOn(f.service, 'isRoomVoiceVisible').mockImplementationOnce(async () => {
+			reached();
+			await paused;
+			return false;
+		});
+		const clearing = f.service.clearMirrorSnapshots(true);
+		try {
+			await waiting;
+			f.meta.blockedHosts = [];
+			if (superseded) await f.service.clearMirrorSnapshots(true);
+			expect(await f.service.storeRemoteSnapshot(room, participants, TEST_CLOCK + 10)).toBe('stored');
+			const published = await redis.get('chatVoice:mirrorPublished:r1');
+			f.globalEventService.publishMainStream.mockClear();
+			resume();
+			await clearing;
+			expect(await redis.get('chatVoice:mirrorPublished:r1')).toBe(published);
+			expect(JSON.parse((await redis.get('chatVoice:state:r1'))!)).toMatchObject({ updatedAt: TEST_CLOCK + 10 });
+			expect(f.globalEventService.publishMainStream).not.toHaveBeenCalled();
+		} finally {
+			resume();
+		}
+	});
 
 	test('a second worker raw-null join invalidates an older queued record in real Redis', async () => {
 		const other = createFixture(redis as any);

@@ -43,20 +43,20 @@ export class HostPolicyService {
 	}
 
 	@bindThis
-	public async isRefusedRemoteHost(host: string): Promise<boolean> {
-		return (await this.refusedRemoteHostsOf([host])).get(host) ?? true;
+	public async isRefusedRemoteHost(host: string, policy?: Pick<MiMeta, 'federation' | 'federationHosts' | 'blockedHosts'>): Promise<boolean> {
+		return (await this.refusedRemoteHostsOf([host], policy)).get(host) ?? true;
 	}
 
 	/**
 	 * hosts のそれぞれを断っているか (isRefusedRemoteHost)。サーバーの記録は一度にまとめて引き、設定だけで断るホストの記録は引かない
 	 */
 	@bindThis
-	public async refusedRemoteHostsOf(hosts: string[]): Promise<Map<string, boolean>> {
+	public async refusedRemoteHostsOf(hosts: string[], policy?: Pick<MiMeta, 'federation' | 'federationHosts' | 'blockedHosts'>): Promise<Map<string, boolean>> {
 		const result = new Map<string, boolean>();
 		const pending: { host: string; suspensionHosts: Set<string>; quarantineHosts: Set<string> }[] = [];
 		for (const host of new Set(hosts)) {
 			const normalized = normalizeHost(host);
-			if (normalized == null || !this.utilityService.isFederationAllowedHost(normalized) || isHostInList(this.meta.blockedHosts, host)) {
+			if (normalized == null || !(policy == null ? this.utilityService.isFederationAllowedHost(normalized) : this.utilityService.isFederationAllowedHost(normalized, policy)) || isHostInList((policy ?? this.meta).blockedHosts, host)) {
 				result.set(host, true);
 				continue;
 			}

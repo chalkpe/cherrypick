@@ -132,11 +132,11 @@ export class UtilityService {
 	}
 
 	@bindThis
-	public isFederationAllowedHost(host: string): boolean {
+	public isFederationAllowedHost(host: string, policy: Pick<MiMeta, 'federation' | 'federationHosts' | 'blockedHosts'> = this.meta): boolean {
 		if (this.isSelfHost(host)) return true;
-		if (this.meta.federation === 'none') return false;
-		if (this.meta.federation === 'specified' && !this.meta.federationHosts.some(x => `.${host.toLowerCase()}`.endsWith(`.${x}`))) return false;
-		if (this.isBlockedHost(this.meta.blockedHosts, host)) return false;
+		if (policy.federation === 'none') return false;
+		if (policy.federation === 'specified' && !policy.federationHosts.some(x => `.${host.toLowerCase()}`.endsWith(`.${x}`))) return false;
+		if (this.isBlockedHost(policy.blockedHosts, host)) return false;
 
 		return true;
 	}

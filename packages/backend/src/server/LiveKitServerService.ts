@@ -148,9 +148,13 @@ export class LiveKitServerService {
 
 	@bindThis
 	public handleUpgrade(request: http.IncomingMessage, socket: stream.Duplex, head: Buffer): void {
+		// 拒否応答の書き込みも EPIPE になりうる。バッファの監視とは分け、close までは必ずエラーを受ける。
+		const onSocketError = () => socket.destroy();
+		socket.on('error', onSocketError);
+		socket.once('close', () => socket.off('error', onSocketError));
 		const target = this.targetOf(request.url ?? '/');
 		if (target == null) {
-			socket.end(statusLine(404, 'Not Found') + 'Connection: close\r\nContent-Length: 0\r\n\r\n');
+			socket.end(statusLine(404, 'Not Found') + 'Connection: close\r\nContent-Length: 0\r\n\r\n', () => socket.destroy());
 			return;
 		}
 
@@ -214,14 +218,14 @@ export class LiveKitServerService {
 			settled = true;
 			stopWatching();
 			proxySocket.setTimeout(0);
-			socket.write(statusLine(101, 'Switching Protocols') + rawHeaders(proxyResponse) + '\r\n');
-			if (proxyHead.length > 0) socket.write(proxyHead);
-			for (const chunk of early) proxySocket.write(chunk);
-			clear();
 			proxySocket.on('error', () => socket.destroy());
 			socket.on('error', () => proxySocket.destroy());
 			proxySocket.on('close', () => socket.destroy());
 			socket.on('close', () => proxySocket.destroy());
+			socket.write(statusLine(101, 'Switching Protocols') + rawHeaders(proxyResponse) + '\r\n');
+			if (proxyHead.length > 0) socket.write(proxyHead);
+			for (const chunk of early) proxySocket.write(chunk);
+			clear();
 			proxySocket.pipe(socket);
 			socket.pipe(proxySocket);
 		});

@@ -12,6 +12,7 @@ import type Logger from '@/logger.js';
 import { StatusError } from '@/misc/status-error.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import { HttpRequestService } from '@/core/HttpRequestService.js';
+import { MetaService } from '@/core/MetaService.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import { BLOCKED_ICE_PORT, ICE_SERVER_URL, isAllowedRemoteIceUrl } from '@/misc/ice-server-url.js';
 
@@ -63,8 +64,7 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 		@Inject(DI.redisForSub)
 		private redisForSub: Redis.Redis,
 
-		@Inject(DI.meta)
-		private meta: MiMeta,
+		private metaService: MetaService,
 
 		private httpRequestService: HttpRequestService,
 		private loggerService: LoggerService,
@@ -89,8 +89,10 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 	@bindThis
 	public async getIceServers(): Promise<IceServer[] | null> {
 		const generation = this.generation;
-		const keyId = this.meta.voiceCallCloudflareTurnKeyId;
-		const apiToken = this.meta.voiceCallCloudflareTurnApiToken;
+		const settings = await this.currentSettings();
+		if (settings == null) return null;
+		const keyId = settings.voiceCallCloudflareTurnKeyId;
+		const apiToken = settings.voiceCallCloudflareTurnApiToken;
 		if (keyId == null || apiToken == null) return null;
 
 		const cache = this.cache;
@@ -101,7 +103,8 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 		// 同時に参加した人の分はまとめて一度だけ問い合わせる
 		if (this.pending != null && this.pending.keyId === keyId && this.pending.apiToken === apiToken) {
 			const result = await this.pending.promise;
-			return generation === this.generation && this.meta.voiceCallCloudflareTurnKeyId === keyId && this.meta.voiceCallCloudflareTurnApiToken === apiToken ? result : null;
+			const current = await this.currentSettings();
+			return generation === this.generation && current?.voiceCallCloudflareTurnKeyId === keyId && current.voiceCallCloudflareTurnApiToken === apiToken ? result : null;
 		}
 
 		// 資格情報の寿命は Cloudflare が受け取ったときから数えられるので、使い回す間 (と失敗を覚える間) も問い合わせ始めたときから数える
@@ -109,11 +112,13 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 		const pending: PendingRequest = { keyId, apiToken, promise: this.fetchIceServers(keyId, apiToken) };
 		this.pending = pending;
 		const iceServers = await pending.promise;
-		if (generation !== this.generation || this.meta.voiceCallCloudflareTurnKeyId !== keyId || this.meta.voiceCallCloudflareTurnApiToken !== apiToken) return null;
+		const current = await this.currentSettings();
+		const ownsPending = this.pending === pending;
+		if (ownsPending) this.pending = null;
+		if (generation !== this.generation || current?.voiceCallCloudflareTurnKeyId !== keyId || current.voiceCallCloudflareTurnApiToken !== apiToken) return null;
 
 		// 問い合わせている間に設定が変わったら (clear で pending が消えている)、古い設定の結果は覚えない
-		if (this.pending === pending) {
-			this.pending = null;
+		if (ownsPending) {
 			this.cache = {
 				keyId,
 				apiToken,
@@ -123,6 +128,15 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 		}
 
 		return iceServers;
+	}
+
+	/** metaUpdated がまだ届かないワーカーでも、現在のキーでだけキャッシュ・取得結果を返す。 */
+	private async currentSettings(): Promise<MiMeta | null> {
+		try {
+			return await this.metaService.fetch(true);
+		} catch {
+			return null;
+		}
 	}
 
 	private async fetchIceServers(keyId: string, apiToken: string): Promise<IceServer[] | null> {

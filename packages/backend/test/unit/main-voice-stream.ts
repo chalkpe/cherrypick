@@ -63,6 +63,20 @@ describe('voice state at the main channel boundary', () => {
 		expect(f.subscriber.listenerCount('chatRoomStream:r1')).toBe(0);
 	});
 
+	test('a lagging main worker applies authoritative host refusal and settings-read failure', async () => {
+		const f = fixture();
+		f.rooms.set('r1', mirrorRoom());
+		f.redis.store.set('chatVoice:state:r1', JSON.stringify({ ...state.body }));
+		await f.channel.init({});
+		for (const unavailable of [false, true]) {
+			if (unavailable) f.metaService.fetch.mockRejectedValue(new Error('settings unavailable'));
+			else f.metaService.fetch.mockResolvedValue({ ...f.meta, blockedHosts: ['remote.test'] });
+			await f.publish('mainStream:m1', state);
+			expect(f.send).toHaveBeenLastCalledWith('channel', { id: 'main', type: 'chatRoomVoiceState', body: { ...state.body, participants: [] } });
+		}
+		f.channel.dispose();
+	});
+
 	test('an old mirror event cannot restore participants after host-policy cache invalidation', async () => {
 		vi.useFakeTimers({ now: TEST_CLOCK, toFake: ['Date'] });
 		const f = fixture();

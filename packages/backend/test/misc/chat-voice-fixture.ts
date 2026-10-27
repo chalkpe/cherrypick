@@ -64,6 +64,30 @@ export function fakeRedis() {
 		// 送る順番の鍵 (chatVoice:federateLock:*) は、自分が取ったもの (ARGV[1]) のときだけ外す
 		eval: vi.fn(async (_script: string, numKeys: number, ...args: (string | number)[]) => {
 			const [key, lastSeenKey, generationKey] = args.slice(0, numKeys) as string[];
+			if (_script.startsWith('-- GATE_MIRROR_PUBLICATION')) {
+				const [generation, updatedAt, emptyValue, interval, ttl] = args.slice(numKeys);
+				if ((live(generationKey) ? store.get(generationKey) : '0') !== generation) return -2;
+				if (!live(lastSeenKey) || JSON.parse(store.get(lastSeenKey)!).updatedAt !== Number(updatedAt)) return -3;
+				const last = live(key) ? JSON.parse(store.get(key)!) as { updatedAt: number; empty: boolean; activeAt?: number } : null;
+				if (last != null && last.updatedAt >= Number(updatedAt)) return 0;
+				const empty = emptyValue === '1';
+				if (empty && last?.empty) return 0;
+				if (!empty && last?.activeAt != null && Date.now() - last.activeAt < Number(interval)) return Number(interval) - (Date.now() - last.activeAt);
+				store.set(key, JSON.stringify({ updatedAt: Number(updatedAt), empty, activeAt: empty ? last?.activeAt : Date.now() }));
+				expiresAt.set(key, Date.now() + Number(ttl) * 1000);
+				return -1;
+			}
+			if (_script.startsWith('-- CLEAR_MIRROR_IF_CURRENT')) {
+				const [generation, previous, lastSeen] = args.slice(numKeys);
+				if ((live(generationKey) ? store.get(generationKey) : '0') !== generation) return 0;
+				if ((live(key) ? store.get(key) : '') !== previous) return 0;
+				if ((live(lastSeenKey) ? store.get(lastSeenKey) : '') !== lastSeen) return 0;
+				store.delete(key);
+				expiresAt.delete(key);
+				store.delete(String(args[3]));
+				expiresAt.delete(String(args[3]));
+				return 1;
+			}
 			if (key.startsWith('chatVoice:federateDecided:') || key.startsWith('chatVoice:localStamp:')) {
 				const [now, stampTtlSeconds] = args.slice(numKeys);
 				let stamp = Number(now);
@@ -259,6 +283,7 @@ export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []
 	const cloudflareTurnService = {
 		getIceServers: vi.fn(async (): Promise<{ urls: string[]; username?: string; credential?: string }[] | null> => null),
 	};
+	const metaService = { fetch: vi.fn(async () => ({ ...meta })) };
 	const service = new ChatVoiceService(
 		{ url: 'https://local.test' } as any,
 		redis as any,
@@ -276,8 +301,9 @@ export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []
 		queueService as any,
 		loggerService as any,
 		cloudflareTurnService as any,
+		metaService as any,
 	);
-	return { service, redis, redisForSub, meta, liveKitService, rooms, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, instancesRepository, userEntityService, globalEventService, roleService, utilityService, queueService, cloudflareTurnService, logger, nonMembers };
+	return { service, metaService, redis, redisForSub, meta, liveKitService, rooms, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, instancesRepository, userEntityService, globalEventService, roleService, utilityService, queueService, cloudflareTurnService, logger, nonMembers };
 }
 
 // テストの時計。ミラーの現況は古いと捨てる (参加者のいる現況は寿命の 10 分に時計のずれの 5 分を足した分、空の現況は 2 日から 5 分を引いた分) ので、

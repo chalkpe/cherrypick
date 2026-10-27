@@ -25,6 +25,7 @@ import { GlobalEventService } from '@/core/GlobalEventService.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import { RoleService } from '@/core/RoleService.js';
 import type { RolePolicies } from '@/core/RoleService.js';
+import { MetaService } from '@/core/MetaService.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { QueueService } from '@/core/QueueService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
@@ -104,6 +105,16 @@ redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[4])
 return 1
 `;
 
+// 消去を始めた世代と、そのとき読んだ現況・ホスト時刻が変わっていない場合だけ消す。
+// KEYS: 現況、最後に受け入れた時刻、世代、通知記録。ARGV: 消去の世代、読んだ現況、読んだ時刻 (無ければ空文字)。
+const CLEAR_MIRROR_IF_CURRENT_SCRIPT = `-- CLEAR_MIRROR_IF_CURRENT
+if (redis.call('GET', KEYS[3]) or '0') ~= ARGV[1] then return 0 end
+if (redis.call('GET', KEYS[1]) or '') ~= ARGV[2] then return 0 end
+if (redis.call('GET', KEYS[2]) or '') ~= ARGV[3] then return 0 end
+redis.call('DEL', KEYS[1], KEYS[4])
+return 1
+`;
+
 // 他のサーバーのメンバーには、参加者が変わったときのほか、変わらなくてもこの間隔で送り直してミラーの寿命を延ばす。
 // 送り直しは読み直し (sweep) のついでに行うので、実際の間隔は最大でこれに SWEEP_INTERVAL_MS を足したものになる
 const FEDERATION_RESEND_INTERVAL_MS = 240_000;
@@ -111,6 +122,32 @@ const FEDERATION_RESEND_INTERVAL_MS = 240_000;
 // 参加者が目まぐるしく変わっても (画面共有の切り替えや出入りの繰り返し) 配送が膨らまないよう、
 // 他のサーバーへはルームごとにこの間隔に一度だけ送る。全ワーカーで Redis の鍵を共有して数える
 const FEDERATION_MIN_INTERVAL_MS = 10_000;
+
+// ミラーのメイン通知をルームごと・全ワーカーで制限する。時計は Redis のものを使う。
+// 空の通知は直前に通知した参加者をすぐ消すが、参加者の通知間隔はリセットしない。
+// KEYS: 通知記録、現況、世代。ARGV: 世代、現況の時刻、空なら 1、間隔 ms、記録 TTL 秒。
+// -1: 通知する、-2: 世代変更、-3: 現況変更、0: 通知済み/空の繰り返し、正数: 次の参加者通知までの待ち時間。
+const GATE_MIRROR_PUBLICATION_SCRIPT = `-- GATE_MIRROR_PUBLICATION
+if (redis.call('GET', KEYS[3]) or '0') ~= ARGV[1] then return -2 end
+local raw = redis.call('GET', KEYS[2])
+if not raw then return -3 end
+local snapshot = cjson.decode(raw)
+if snapshot.updatedAt ~= tonumber(ARGV[2]) then return -3 end
+local lastRaw = redis.call('GET', KEYS[1])
+local last = lastRaw and cjson.decode(lastRaw) or nil
+if last and last.updatedAt >= snapshot.updatedAt then return 0 end
+local empty = ARGV[3] == '1'
+if empty and last and last.empty then return 0 end
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+local activeAt = last and last.activeAt or nil
+if not empty and activeAt and now - activeAt < tonumber(ARGV[4]) then
+	return tonumber(ARGV[4]) - (now - activeAt)
+end
+if not empty then activeAt = now end
+redis.call('SET', KEYS[1], cjson.encode({ updatedAt = snapshot.updatedAt, empty = empty, activeAt = activeAt }), 'EX', ARGV[5])
+return -1
+`;
 
 // 他のサーバーへ送るかを決めてから、配送を積み、送った記録を残すまでは、ルームごとに全ワーカーで一つずつ行う (その順番の鍵の寿命)。
 // 積むのは普通すぐに終わる。途中で止まったワーカーの鍵は、この寿命で切れる
@@ -346,6 +383,8 @@ export function isRemoteVoiceCallEnabled(meta: Pick<MiMeta, 'enableRemoteVoiceCa
 export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	/** webhook を受けて予定した読み直し */
 	private pendingRefreshes = new Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>();
+	/** ミラーのメイン通知を待たせたルームごとに、最新の現況を送り直す予定 */
+	private pendingMirrorPublications = new Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>();
 	/** 他のサーバーへ送るのを待たせたルームについて、送れるようになったときに送るかを決め直す予定 (federateRoom) */
 	private pendingFollowUps = new Map<MiChatRoom['id'], { timer: NodeJS.Timeout; dueAt: number }>();
 	/**
@@ -393,6 +432,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		private queueService: QueueService,
 		private loggerService: LoggerService,
 		private cloudflareTurnService: CloudflareTurnService,
+		private metaService: MetaService,
 	) {
 		this.logger = this.loggerService.getLogger('chat-voice');
 	}
@@ -526,13 +566,15 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		try {
 			if (room.owner == null) return false;
 			if (room.owner.host == null) return true;
-			if (room.owner.isSuspended || room.owner.isDeleted || !isRemoteVoiceCallEnabled(this.meta)) return false;
-			if (await this.hostPolicyService.isRefusedRemoteHost(room.owner.host)) return false;
+			const generation = await this.remoteGenerationOf();
+			const policy = await this.metaService.fetch(true);
+			if (room.owner.isSuspended || room.owner.isDeleted || !isRemoteVoiceCallEnabled(policy)) return false;
+			if (await this.hostPolicyService.isRefusedRemoteHost(room.owner.host, policy)) return false;
 			if (updatedAt != null) {
 				const raw = await this.redisClient.get(this.keyOf(room.id));
 				if (raw == null || (JSON.parse(raw) as VoiceSnapshot).updatedAt !== updatedAt) return false;
 			}
-			return version === this.mirrorPolicyVersion && isRemoteVoiceCallEnabled(this.meta);
+			return version === this.mirrorPolicyVersion && await this.remoteGenerationOf() === generation;
 		} catch {
 			return false;
 		}
@@ -691,9 +733,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		if (updatedAt > Date.now() + REMOTE_SNAPSHOT_MAX_AHEAD_MS) return 'ahead';
 		const maxAge = participants.length > 0 ? REMOTE_ACTIVE_SNAPSHOT_MAX_AGE_MS : REMOTE_SNAPSHOT_MAX_AGE_MS;
 		if (updatedAt < Date.now() - maxAge) return 'old';
-		if (!isRemoteVoiceCallEnabled(this.meta) || !(await this.isRoomVoiceVisible(room))) return 'disabled';
-		// 書き込みのスクリプトは、ここで読んだ世代と比べる。この後で止められれば書かない
+		// 共有設定を読む前の世代を保存し、その読み取り中に別ワーカーで取り消された保存を断る。
 		const generation = await this.remoteGenerationOf();
+		if (!(await this.isRoomVoiceVisible(room))) return 'disabled';
 
 		const seen = new Set<string>();
 		const capped = participants.slice(0, MAX_ROOM_MEMBERS + 1).filter(p => {
@@ -716,7 +758,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 
 		// 他のサーバーの通話を止めた後に、止める前に始まった参加の応答が届いても書かない (止めたときにミラーの現況は消している)
-		if (!isRemoteVoiceCallEnabled(this.meta) || !(await this.isRoomVoiceVisible(room))) return 'disabled';
+		if (!(await this.isRoomVoiceVisible(room))) return 'disabled';
 
 		// 解決している間に新しい現況が保存されたかもしれないので、書くときに比べる (STORE_IF_NEWER_SCRIPT)。
 		// 空になったときも時刻ごと残し、遅れて届いた古い現況で上書きされないようにする (getStates は空のものを返さない)。
@@ -737,18 +779,39 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		if (stored === 2) return 'disabled';
 		if (stored !== 1) return 'stale';
 
-		// 持ち主は他のサーバーのユーザーなので、このサーバーのメンバーにだけ知らせる (ルームのストリームを使わない理由は refresh と同じ)
+		return await this.publishMirrorSnapshot(room, snapshot, generation) ? 'stored' : 'disabled';
+	}
+
+	/** 一度に通知する相手は現在のローカルメンバーだけ。通知しなかった参加者の変更は最新の現況にまとめる。 */
+	private async publishMirrorSnapshot(room: MiChatRoom, snapshot: VoiceSnapshot, generation: string): Promise<boolean> {
+		if (!(await this.isRoomVoiceVisible(room))) return false;
+		const gate = Number(await this.redisClient.eval(GATE_MIRROR_PUBLICATION_SCRIPT, 3,
+			`chatVoice:mirrorPublished:${room.id}`, this.keyOf(room.id), REMOTE_GENERATION_KEY,
+			generation, snapshot.updatedAt, snapshot.participants.length === 0 ? '1' : '0', FEDERATION_MIN_INTERVAL_MS, REMOTE_SNAPSHOT_TTL_SECONDS));
+		if (gate === -2) return false;
+		if (gate > 0) {
+			this.scheduleIn(this.pendingMirrorPublications, room.id, gate, () => this.flushMirrorPublication(room.id).catch(err => {
+				this.logger.warn({ message: 'Failed to publish coalesced mirror voice state', error: err });
+			}));
+		}
+		if (gate !== -1) return true;
 		const [packed, memberships] = await Promise.all([
 			this.pack(room.id, snapshot, null),
 			this.chatRoomMembershipsRepository.findBy({ roomId: room.id, user: { host: IsNull() } }),
 		]);
+		if (await this.remoteGenerationOf() !== generation || !(await this.isRoomVoiceVisible(room))) return false;
+		for (const membership of memberships) this.globalEventService.publishMainStream(membership.userId, 'chatRoomVoiceState', packed);
+		return true;
+	}
 
-		// 書いた後、知らせる前に止められていれば知らせない。止めたときの消去で現況は消えている (消す前に書いたものも消される)
-		if (!isRemoteVoiceCallEnabled(this.meta) || await this.remoteGenerationOf() !== generation || !(await this.isRoomVoiceVisible(room))) return 'disabled';
-		for (const membership of memberships) {
-			this.globalEventService.publishMainStream(membership.userId, 'chatRoomVoiceState', packed);
-		}
-		return 'stored';
+	private async flushMirrorPublication(roomId: MiChatRoom['id']): Promise<void> {
+		const generation = await this.remoteGenerationOf();
+		const [room, raw] = await Promise.all([
+			this.chatRoomsRepository.findOne({ where: { id: roomId }, relations: { owner: true } }),
+			this.redisClient.get(this.keyOf(roomId)),
+		]);
+		if (room?.owner?.host == null || raw == null) return;
+		await this.publishMirrorSnapshot(room, JSON.parse(raw) as VoiceSnapshot, generation);
 	}
 
 	/**
@@ -761,7 +824,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 */
 	@bindThis
 	public async clearMirrorSnapshots(refusedOnly = false): Promise<void> {
-		await this.redisClient.incr(REMOTE_GENERATION_KEY);
+		const policyVersion = this.mirrorPolicyVersion;
+		const generation = String(await this.redisClient.incr(REMOTE_GENERATION_KEY));
 		let lastId: MiChatRoom['id'] | null = null;
 		for (;;) {
 			const rooms: MiChatRoom[] = await this.chatRoomsRepository.find({
@@ -771,11 +835,17 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 				take: MIRROR_CLEAR_BATCH_SIZE,
 			});
 			for (const room of rooms) {
+				const [previous, lastSeen] = await this.redisClient.mget(this.keyOf(room.id), this.lastSeenKeyOf(room.id));
 				if (refusedOnly && await this.isRoomVoiceVisible(room)) continue;
-				const previous = await this.redisClient.get(this.keyOf(room.id));
-				const updatedAt = Math.max(Date.now(), previous == null ? 0 : (JSON.parse(previous) as VoiceSnapshot).updatedAt + 1);
-				await this.redisClient.del(this.keyOf(room.id));
+				// ホストの時系列にこのサーバーの時計を混ぜない。同じ時刻の空状態も frontend は適用する。
+				const updatedAt = Math.max(Number(lastSeen ?? 0), previous == null ? 0 : (JSON.parse(previous) as VoiceSnapshot).updatedAt);
 				const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id, user: { host: IsNull() } });
+				if (policyVersion !== this.mirrorPolicyVersion) continue;
+				const cleared = await this.redisClient.eval(CLEAR_MIRROR_IF_CURRENT_SCRIPT, 4,
+					this.keyOf(room.id), this.lastSeenKeyOf(room.id), REMOTE_GENERATION_KEY, `chatVoice:mirrorPublished:${room.id}`,
+					generation, previous ?? '', lastSeen ?? '');
+				if (cleared !== 1 || policyVersion !== this.mirrorPolicyVersion) continue;
+				// 配送先の読み取りは CAS 前に済ませ、消した後の別の現況を遅れて消さない。
 				for (const membership of memberships) this.globalEventService.publishMainStream(membership.userId, 'chatRoomVoiceState', { roomId: room.id, participants: [], updatedAt });
 			}
 			if (rooms.length < MIRROR_CLEAR_BATCH_SIZE) return;
@@ -815,7 +885,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	@bindThis
 	public onApplicationShutdown(): void {
-		for (const pending of [this.pendingRefreshes, this.pendingFollowUps]) {
+		for (const pending of [this.pendingRefreshes, this.pendingFollowUps, this.pendingMirrorPublications]) {
 			for (const { timer } of pending.values()) clearTimeout(timer);
 			pending.clear();
 		}
@@ -839,7 +909,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			const { type, body } = obj.message as GlobalEvents['internal']['payload'];
 			switch (type) {
 				case 'metaUpdated': {
-					this.mirrorPolicyVersion++;
+					if (body.before == null || body.before.enableRemoteVoiceCall !== body.after.enableRemoteVoiceCall || isFederationPolicyChanged(body.before, body.after)) this.mirrorPolicyVersion++;
 					if (isRemoteVoiceCallEnabled(body.after) && (body.before == null || isFederationPolicyChanged(body.before, body.after))) this.clearMirrorSnapshots(true).catch(err => this.logger.warn({ message: 'Failed to clear refused mirror voice states', error: err }));
 					// ブロックや連合の設定が変わったら、通話中の他のサーバーの参加者を確かめ直す。
 					// DI.meta は GlobalModule の購読が先に書き換えているので、新しい設定で判定される。

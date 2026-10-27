@@ -321,8 +321,8 @@ describe('LiveKitServerService', () => {
 		const writes: Buffer[] = [];
 		const socket = new Duplex({ read() {}, write(chunk, _encoding, done) { writes.push(Buffer.from(chunk)); done(); } });
 		cleanups.push(() => { socket.destroy(); });
-		service.handleUpgrade({ url: `/livekit/rtc/v1?access_token=${mode === 'refusal' ? 'bad' : 'hang'}`, headers: { connection: 'Upgrade', upgrade: 'websocket' } } as http.IncomingMessage,
-			socket, Buffer.alloc(mode === 'head' ? 65 * 1024 : 32 * 1024));
+		service.handleUpgrade({ url: `/livekit/rtc/v1?access_token=${mode === 'refusal' ? 'bad' : mode === 'upgrade' ? 't' : 'hang'}`, headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', 'sec-websocket-version': '13' } } as http.IncomingMessage,
+			socket, Buffer.alloc(mode === 'head' ? 65 * 1024 : mode === 'upgrade' ? 0 : 32 * 1024));
 		if (mode === 'chunks') {
 			socket.emit('data', Buffer.alloc(16 * 1024));
 			socket.emit('data', Buffer.alloc(17 * 1024));
@@ -333,6 +333,35 @@ describe('LiveKitServerService', () => {
 		const count = writes.length;
 		socket.emit('data', Buffer.alloc(1024));
 		expect(writes).toHaveLength(count);
+	});
+
+	test.each(['timeout', 'head', 'chunks', 'refusal', 'path', 'upgrade'])('keeps socket error ownership through an EPIPE response write (%s)', async mode => {
+		const livekit = await fakeLiveKit();
+		const service = createService(liveKitService(true, livekit.url));
+		service.upstreamTimeoutMs = 20;
+		const missingHandler: string[] = [];
+		let writes = 0;
+		const socket = new Duplex({
+			read() {},
+			write(_chunk, _encoding, done) {
+				writes++;
+				if (socket.listenerCount('error') === 0) {
+					missingHandler.push(mode);
+					// RED でもテストプロセスを落とさず、実際の Duplex の EPIPE を観測する。
+					socket.once('error', () => {});
+				}
+				done(Object.assign(new Error('simulated peer reset'), { code: 'EPIPE' }));
+			},
+		});
+		cleanups.push(() => { socket.destroy(); });
+		service.handleUpgrade({ url: mode === 'path' ? '/livekit/invalid' : `/livekit/rtc/v1?access_token=${mode === 'refusal' ? 'bad' : mode === 'upgrade' ? 't' : 'hang'}`, headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', 'sec-websocket-version': '13' } } as http.IncomingMessage,
+			socket, Buffer.alloc(mode === 'head' ? 65 * 1024 : mode === 'upgrade' ? 0 : 32 * 1024));
+		if (mode === 'chunks') socket.emit('data', Buffer.alloc(33 * 1024));
+		await vi.waitFor(() => expect(socket.closed).toBe(true));
+		expect(writes).toBeGreaterThan(0);
+		expect(missingHandler).toEqual([]);
+		expect(socket.listenerCount('data')).toBe(0);
+		expect(socket.listenerCount('end')).toBe(0);
 	});
 
 	test('refuses upgrade paths that would leave the LiveKit server', async () => {
