@@ -6,7 +6,7 @@
 import { reactive, readonly } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { url } from '@@/js/config.js';
-import type { AudioCaptureOptions, DisconnectReason, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomConnectOptions, TrackPublication, VideoPreset } from 'livekit-client';
+import type { AudioCaptureOptions, DisconnectReason, LocalParticipant, LocalTrack, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomConnectOptions, TrackPublication, VideoPreset } from 'livekit-client';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { isApiError } from '@/utility/api-error.js';
 import * as os from '@/os.js';
@@ -38,9 +38,10 @@ let current: Room | null = null;
 let joinAttempt = 0;
 
 // 画面共有の映像トラックと、それを映す video 要素 (どちらも identity ごと)。
-// 一つの共有画面を、参加者のチップやタイルの小さなプレビューと、見ている画面の両方に同時に映すことがある
+// 一つの共有画面を、参加者のチップやタイルの小さなプレビューと、見ている画面の両方に同時に映すことがある。
+// 自分の共有画面は受け取るものではないので、送っている手元のトラックをそのまま映す
 type ScreenShareView = { element: HTMLVideoElement; preview: boolean };
-const screenShareTracks = new Map<string, RemoteTrack>();
+const screenShareTracks = new Map<string, RemoteTrack | LocalTrack>();
 const screenShareViews = new Map<string, Set<ScreenShareView>>();
 
 // 小さなプレビュー用に、共有画面とは別に送る低い層 (320×180、数 fps)。
@@ -407,9 +408,23 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 		if (isCurrent()) forgetScreenShare(participant.identity);
 	});
 
-	room.on(RoomEvent.LocalTrackUnpublished, (publication: LocalTrackPublication) => {
+	// 自分の共有画面も、送っているあいだはチップやタイルのプレビューと見ている画面に映し、何を共有しているか確かめられるようにする。
+	// 映すのは映像だけで、共有している音声は手元では鳴らさない (鳴らすと二重に聞こえる)。
+	// 接続をやり直すときは、LiveKit が共有中のトラックをいったん外して送り直すので、ここにもう一度来る
+	room.on(RoomEvent.LocalTrackPublished, (publication: LocalTrackPublication, participant: LocalParticipant) => {
+		const track = publication.track;
+		if (!isCurrent() || publication.source !== Track.Source.ScreenShare || track == null) return;
+		state.screenSharing = true;
+		screenShareTracks.set(participant.identity, track);
+		for (const view of screenShareViews.get(participant.identity) ?? []) track.attach(view.element);
+	});
+
+	room.on(RoomEvent.LocalTrackUnpublished, (publication: LocalTrackPublication, participant: LocalParticipant) => {
 		// ブラウザの「共有を停止」で終わった場合もここに来る
-		if (isCurrent() && publication.source === Track.Source.ScreenShare) state.screenSharing = false;
+		if (!isCurrent() || publication.source !== Track.Source.ScreenShare) return;
+		state.screenSharing = false;
+		detachLocalScreenShare(participant.identity);
+		forgetScreenShare(participant.identity);
 	});
 
 	room.on(RoomEvent.TrackMuted, (publication: TrackPublication, participant: Participant) => {
@@ -458,7 +473,15 @@ function disconnectMessage(lk: LiveKit, reason: DisconnectReason | undefined): s
 	}
 }
 
+// 止めた自分の共有画面を、映している要素から外す (止めたトラックの最後の画のまま残さない)
+function detachLocalScreenShare(identity: string): void {
+	const track = screenShareTracks.get(identity);
+	if (track == null) return;
+	for (const view of screenShareViews.get(identity) ?? []) track.detach(view.element);
+}
+
 function detachAll(room: Room): void {
+	detachLocalScreenShare(room.localParticipant.identity);
 	for (const participant of room.remoteParticipants.values()) {
 		for (const publication of participant.trackPublications.values()) {
 			const track = publication.track;

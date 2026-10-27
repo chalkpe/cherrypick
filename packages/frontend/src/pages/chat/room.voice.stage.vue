@@ -29,7 +29,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			:key="participant.identity"
 			:participant="participant"
 			:speaking="inThisCall && voiceCall.speakingIdentities.includes(participant.identity)"
-			:watchable="inThisCall && participant.identity !== myIdentity"
+			:watchable="isWatchable(participant)"
 			:watching="voiceCall.watchingIdentities.includes(participant.identity)"
 			:menuable="participant.identity !== myIdentity && (inThisCall || isOwner)"
 			:small="watchedParticipants.length > 0"
@@ -67,7 +67,7 @@ const emit = defineEmits<{
 }>();
 
 // 参加の流れと参加者のメニューは通話カードやページヘッダーと共有するので、ページ側で作ったものを使う
-const { inThisCall, participants, watchedParticipants, join, myIdentity, isOwner, openParticipantMenu } = props.call;
+const { inThisCall, participants, watchedParticipants, isWatchable, join, myIdentity, isOwner, openParticipantMenu } = props.call;
 
 const rootEl = useTemplateRef('rootEl');
 const announcesStatus = useVoiceCallStatusAnnouncer(inThisCall, rootEl);

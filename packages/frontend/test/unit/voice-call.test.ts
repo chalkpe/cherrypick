@@ -723,6 +723,140 @@ describe('screen sharing', () => {
 	});
 });
 
+// 本物の LocalParticipant と同じく、画面共有を始めると映像と音声のトラックを LocalTrackPublished で、やめると LocalTrackUnpublished で知らせる
+function localScreenShare() {
+	const tracks = {
+		video: { kind: lk.Track.Kind.Video, source: lk.Track.Source.ScreenShare, attach: vi.fn(), detach: vi.fn(() => []) },
+		audio: { kind: lk.Track.Kind.Audio, source: lk.Track.Source.ScreenShareAudio, attach: vi.fn(() => document.createElement('audio')), detach: vi.fn(() => []) },
+	};
+	const publications = {
+		video: { source: tracks.video.source, kind: tracks.video.kind, trackSid: 'TR_my_screen', track: tracks.video },
+		audio: { source: tracks.audio.source, kind: tracks.audio.kind, trackSid: 'TR_my_screen_audio', track: tracks.audio },
+	};
+	lk.FakeRoom.setup = room => room.localParticipant.setScreenShareEnabled.mockImplementation(async (enabled: boolean) => {
+		for (const publication of Object.values(publications)) {
+			room.emit(enabled ? lk.RoomEvent.LocalTrackPublished : lk.RoomEvent.LocalTrackUnpublished, publication, room.localParticipant);
+		}
+	});
+	return { tracks, publications };
+}
+
+describe('my own screen share', () => {
+	// FakeRoom の localParticipant の identity
+	const me = 'https://local.test/users/me';
+
+	// 映す要素は画面の部品のもの。部品と同じく、テストの終わりに外す (外さないと次のテストにプレビューが残る)
+	const detachers: (() => void)[] = [];
+	afterEach(() => {
+		for (const detach of detachers.splice(0)) detach();
+	});
+
+	// 中身の同じ要素は toHaveBeenCalledWith で区別できないので、印を付けておく
+	function showMine(id: string, options: { preview?: boolean } = {}) {
+		const element = Object.assign(document.createElement('video'), { id });
+		detachers.push(attachScreenShare(me, element, options));
+		return element;
+	}
+
+	test('shows my share in its previews and viewers straight from the local track, subscribing to nothing', async () => {
+		const { tracks } = localScreenShare();
+		await joinVoiceCall(room1);
+		const other = sharing('someone');
+		// 共有を始める前から出ていたプレビューにも映す
+		const preview = showMine('preview', { preview: true });
+
+		await startScreenShare();
+		expect(tracks.video.attach).toHaveBeenCalledWith(preview);
+
+		watchScreenShare(me);
+		const viewer = showMine('viewer');
+		expect(tracks.video.attach).toHaveBeenCalledWith(viewer);
+		expect(voiceCall.watchingIdentities).toEqual([me]);
+		// 自分の共有は受け取るものではないので、ほかの人の共有を受け取るかどうかは変わらない
+		expect(other.publication.setSubscribed).not.toHaveBeenCalled();
+		expect(voiceCall.screenShareIdentities).toEqual(['someone']);
+	});
+
+	test('never plays the audio of my own share back to me', async () => {
+		const { tracks } = localScreenShare();
+		await joinVoiceCall(room1);
+		showMine('preview', { preview: true });
+		const audioElements = document.body.querySelectorAll('audio').length;
+
+		await startScreenShare();
+		watchScreenShare(me);
+		showMine('viewer');
+
+		expect(tracks.video.attach).toHaveBeenCalledTimes(2);
+		expect(tracks.audio.attach).not.toHaveBeenCalled();
+		expect(document.body.querySelectorAll('audio').length).toBe(audioElements);
+	});
+
+	test.each<[string, (publications: ReturnType<typeof localScreenShare>['publications']) => unknown]>([
+		['the stop button', async () => {
+			await stopScreenShare();
+		}],
+		// ブラウザの「共有を停止」やトラックが終わったときは、映像のトラックだけが外れることもある
+		['the browser ending the share', publications => {
+			lastRoom().emit(lk.RoomEvent.LocalTrackUnpublished, publications.video, lastRoom().localParticipant);
+		}],
+	])('stopping my share by %s takes it out of every preview and viewer and stops watching it', async (_label, stop) => {
+		const { tracks, publications } = localScreenShare();
+		await joinVoiceCall(room1);
+		sharing('someone');
+		watchScreenShare('someone');
+		await startScreenShare();
+		const preview = showMine('preview', { preview: true });
+		watchScreenShare(me);
+		const viewer = showMine('viewer');
+
+		await stop(publications);
+
+		expect(tracks.video.detach).toHaveBeenCalledWith(preview);
+		expect(tracks.video.detach).toHaveBeenCalledWith(viewer);
+		expect(voiceCall.watchingIdentities).toEqual(['someone']);
+		expect(voiceCall.screenSharing).toBe(false);
+		// 止めたトラックは覚えていないので、あとから出た要素には映さない
+		const later = showMine('later', { preview: true });
+		expect(tracks.video.attach).not.toHaveBeenCalledWith(later);
+	});
+
+	test.each([
+		['leaving the call', async () => {
+			await leaveVoiceCall();
+		}],
+		['being disconnected', () => {
+			lastRoom().emit(lk.RoomEvent.Disconnected, lk.DisconnectReason.SERVER_SHUTDOWN);
+		}],
+	])('%s while sharing takes my share out of its preview', async (_label, end) => {
+		const { tracks } = localScreenShare();
+		await joinVoiceCall(room1);
+		await startScreenShare();
+		const preview = showMine('preview', { preview: true });
+
+		await end();
+
+		expect(tracks.video.detach).toHaveBeenCalledWith(preview);
+		const later = showMine('later', { preview: true });
+		expect(tracks.video.attach).not.toHaveBeenCalledWith(later);
+	});
+
+	// 接続をやり直すとき、LiveKit は共有中のトラックをいったん外して送り直す
+	test('keeps showing my share when LiveKit publishes it again after reconnecting', async () => {
+		const { tracks, publications } = localScreenShare();
+		await joinVoiceCall(room1);
+		await startScreenShare();
+		const preview = showMine('preview', { preview: true });
+		tracks.video.attach.mockClear();
+
+		lastRoom().emit(lk.RoomEvent.LocalTrackUnpublished, publications.video, lastRoom().localParticipant);
+		lastRoom().emit(lk.RoomEvent.LocalTrackPublished, publications.video, lastRoom().localParticipant);
+
+		expect(tracks.video.attach).toHaveBeenCalledWith(preview);
+		expect(voiceCall.screenSharing).toBe(true);
+	});
+});
+
 test('screen audio follows each watched identity while microphones remain independent', async () => {
 	await joinVoiceCall(room1);
 	const people = ['a', 'b'].map(identity => {

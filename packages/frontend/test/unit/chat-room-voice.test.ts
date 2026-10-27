@@ -130,6 +130,8 @@ const bob = { id: 'bob', username: 'bob', name: 'Bob', host: null };
 const carol = { id: 'carol', username: 'carol', name: 'Carol', host: null };
 const dave = { id: 'dave', username: 'dave', name: 'Dave', host: null };
 const erin = { id: 'erin', username: 'erin', name: 'Erin', host: null };
+// ログインしている自分 (mocks.me と同じ id)
+const me = { id: 'me', username: 'me', name: 'Me', host: null };
 const identityOf = (user: typeof alice) => `https://local.test/users/${user.id}`;
 const participant = (user: typeof alice, screenSharing = false) => ({ identity: identityOf(user), user, screenSharing }) as any;
 // 見ている共有画面は、誰の画面かの名前のついたまとまりになっている
@@ -781,6 +783,29 @@ describe('voice call on the room page', () => {
 			expect(participantGroup(bob).querySelector('video')).toBeNull();
 		});
 
+		test('shows a live preview of my own share on my tile, which toggles watching it like anyone else\'s', async () => {
+			Object.assign(callState, { status: 'connected', room, micEnabled: true, screenSharing: true });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me, true), participant(alice, true)] }]);
+			await setPageWidth(1280);
+
+			const preview = participantGroup(me).querySelector('video');
+			expect(preview).not.toBeNull();
+			expect(mocks.attachScreenShare).toHaveBeenCalledWith(identityOf(me), preview, { preview: true });
+			await fireEvent.click(watchToggleOf(me));
+			expect(mocks.toggleScreenShareWatch).toHaveBeenLastCalledWith(identityOf(me));
+
+			callState.watchingIdentities = [identityOf(me)];
+			await flush();
+			expect(watchToggleOf(me).getAttribute('aria-pressed')).toBe('true');
+			expect(hasClass(participantGroup(me), 'watching')).toBe(true);
+			expect(within(viewerOf(me)).getByLabelText(i18n.ts._voiceCall.fullscreen)).toBeTruthy();
+			expect(within(participantGroup(me)).queryByLabelText(i18n.ts.menu)).toBeNull();
+
+			callState.screenSharing = false;
+			await flush();
+			expect(participantGroup(me).querySelector('video')).toBeNull();
+		});
+
 		test('opens the participant menu from the ⋯ button, not from the tile', async () => {
 			Object.assign(callState, { status: 'connected', room, micEnabled: true });
 			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice, true), participant(bob)] }]);
@@ -1381,6 +1406,47 @@ describe('screen share in the room panel', () => {
 		expect(participantGroup(bob).querySelector('video')).toBeNull();
 	});
 
+	// 共有している本人も、送っている画面を確かめられるようにする (違う窓を映していても気付ける)
+	test('shows a live preview of my own share on my chip, which toggles watching it like anyone else\'s', async () => {
+		Object.assign(callState, { status: 'connected', room, screenSharing: true });
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me, true), participant(alice, true)] }]);
+		renderCard();
+		await flush();
+
+		const preview = participantGroup(me).querySelector('video');
+		expect(preview).not.toBeNull();
+		expect(mocks.attachScreenShare).toHaveBeenCalledWith(identityOf(me), preview, { preview: true });
+		await fireEvent.click(watchToggleOf(me));
+		expect(mocks.toggleScreenShareWatch).toHaveBeenLastCalledWith(identityOf(me));
+		expect(watchToggleOf(me).getAttribute('aria-pressed')).toBe('false');
+
+		callState.watchingIdentities = [identityOf(me)];
+		await flush();
+		expect(watchToggleOf(me).getAttribute('aria-pressed')).toBe('true');
+		expect(hasClass(participantGroup(me), 'watching')).toBe(true);
+		expect(within(viewerOf(me)).getByLabelText(i18n.ts._voiceCall.fullscreen)).toBeTruthy();
+		// 自分のチップには今までどおりメニューを出さない
+		expect(within(participantGroup(me)).queryByLabelText(i18n.ts.menu)).toBeNull();
+	});
+
+	// 参加者の一覧はサーバーを経て届くので、共有をやめてから少し遅れて変わる。それを待たずにプレビューを外す
+	test('takes my preview off my chip as soon as I stop sharing', async () => {
+		Object.assign(callState, { status: 'connected', room, screenSharing: true });
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me, true)] }]);
+		renderCard();
+		await flush();
+		expect(participantGroup(me).querySelector('video')).not.toBeNull();
+		const detach = mocks.attachScreenShare.mock.results.at(-1)!.value as ReturnType<typeof vi.fn>;
+
+		callState.screenSharing = false;
+		await flush();
+
+		expect(detach).toHaveBeenCalledTimes(1);
+		expect(participantGroup(me).querySelector('video')).toBeNull();
+		expect(within(participantGroup(me)).queryByRole('button', { name: i18n.tsx._voiceCall.watchScreenOf({ name: me.name }) })).toBeNull();
+		expect(within(participantGroup(me)).getByLabelText(i18n.ts._voiceCall.sharingScreen)).toBeTruthy();
+	});
+
 	test('does not offer to watch before joining the call', async () => {
 		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true)] }]);
 		renderCard();
@@ -1695,7 +1761,6 @@ describe('avatar decorations in the call', () => {
 });
 
 describe('participant menu', () => {
-	const me = { id: 'me', username: 'me', name: 'Me', host: null };
 	type MenuItemLike = { type?: string; text?: string; action?: () => unknown; props?: Record<string, unknown> };
 	const openedItems = () => mocks.popupMenu.mock.calls[mocks.popupMenu.mock.calls.length - 1][0] as MenuItemLike[];
 	const menuButtonOf = (user: typeof alice) => within(participantGroup(user)).getByLabelText(i18n.ts.menu);

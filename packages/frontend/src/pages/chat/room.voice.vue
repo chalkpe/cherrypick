@@ -21,7 +21,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				:key="participant.identity"
 				:participant="participant"
 				:speaking="inThisCall && voiceCall.speakingIdentities.includes(participant.identity)"
-				:watchable="inThisCall && participant.identity !== myIdentity"
+				:watchable="isWatchable(participant)"
 				:watching="voiceCall.watchingIdentities.includes(participant.identity)"
 				:menuable="participant.identity !== myIdentity && (inThisCall || isOwner)"
 				@toggleWatch="toggleScreenShareWatch(participant.identity)"
@@ -51,7 +51,7 @@ const props = defineProps<{
 }>();
 
 // カードを出すかどうかと参加の流れ、参加者のメニューはページヘッダーやステージと共有するので、ページ側で作ったものを使う
-const { showCard, inThisCall, participants, join, myIdentity, isOwner, openParticipantMenu, watchedParticipants } = props.call;
+const { showCard, inThisCall, participants, join, myIdentity, isOwner, openParticipantMenu, watchedParticipants, isWatchable } = props.call;
 
 const rootEl = useTemplateRef('rootEl');
 const announcesStatus = useVoiceCallStatusAnnouncer(inThisCall, rootEl);
