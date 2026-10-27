@@ -10,6 +10,7 @@ import { directives } from '@/directives/index.js';
 import { components } from '@/components/index.js';
 import { prefer } from '@/preferences.js';
 import * as os from '@/os.js';
+import * as sound from '@/utility/sound.js';
 
 const { fakeMe } = vi.hoisted(() => ({
 	fakeMe: {
@@ -214,5 +215,45 @@ describe.each([
 		const submit = form.container.querySelector<HTMLButtonElement>(submitSelector);
 		assert.exists(submit, 'submit button exists');
 		assert.isFalse(submit!.disabled, 'submit button is enabled after attaching a file');
+	});
+
+	test('editing a note does not send visibility, which notes/update reserves for moderation', async () => {
+		// 編集完了音はテスト環境にサウンド設定が無いので鳴らさない
+		vi.spyOn(sound, 'playMisskeySfx').mockImplementation(() => {});
+		vi.mocked(misskeyApi).mockImplementation(async (endpoint) => {
+			if (endpoint === 'notes/update') return { updatedNote: {} };
+			return new Promise(() => {});
+		});
+		const initialNote = {
+			id: 'note-1',
+			createdAt: '1970-01-01T00:00:00.000Z',
+			userId: 'me',
+			text: 'Original note',
+			cw: null,
+			visibility: 'home',
+			localOnly: false,
+			files: [],
+			reactionAcceptance: null,
+		} as unknown as Misskey.entities.Note;
+		const form = render(component, {
+			props: { autofocus: false, initialVisibility: 'home', initialLocalOnly: false, initialNote, updateMode: true },
+			global: {
+				directives: { ...directives, panel: {} },
+				components,
+			},
+		});
+		const textarea = form.container.querySelector('textarea')!;
+		await fireEvent.click(textarea);
+		await fireEvent.update(textarea, 'Edited note');
+		await fireEvent.click(form.container.querySelector(submitSelector)!);
+
+		await waitFor(() => {
+			const call = vi.mocked(misskeyApi).mock.calls.find(([endpoint]) => endpoint === 'notes/update');
+			assert.exists(call, 'notes/update is called');
+			const params = call![1] as Record<string, unknown>;
+			assert.strictEqual(params.noteId, 'note-1');
+			assert.strictEqual(params.text, 'Edited note');
+			assert.isUndefined(params.visibility, 'visibility is omitted from the request body');
+		});
 	});
 });

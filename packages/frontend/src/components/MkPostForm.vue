@@ -1217,7 +1217,8 @@ async function post(ev?: PointerEvent) {
 		event: event.value,
 		cw: useCw.value ? cw.value ?? '' : null,
 		localOnly: visibility.value === 'specified' ? false : localOnly.value,
-		visibility: visibility.value,
+		// notes/update の visibility はモデレーターによる公開範囲変更専用なので、編集時は送らない
+		visibility: props.updateMode ? undefined : visibility.value,
 		visibleUserIds: visibility.value === 'specified' ? visibleUsers.value.map(u => u.id) : undefined,
 		reactionAcceptance: reactionAcceptance.value,
 		disableRightClick: disableRightClick.value,
