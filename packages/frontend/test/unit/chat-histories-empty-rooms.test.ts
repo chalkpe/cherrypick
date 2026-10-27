@@ -17,8 +17,15 @@ const mocks = vi.hoisted(() => {
 		misskeyApi: vi.fn(),
 		instance: { features: { voiceCall: true, remoteVoiceCall: false } },
 		FakeChannel,
+		poll: null as null | (() => void),
 	};
 });
+
+vi.mock('@@/js/use-interval.js', () => ({
+	useInterval: (fn: () => void) => {
+		mocks.poll = fn;
+	},
+}));
 
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
 vi.mock('@/stream.js', () => ({ useStream: () => ({ useChannel: () => new mocks.FakeChannel() }) }));
@@ -30,7 +37,7 @@ import MkChatHistories from '@/components/MkChatHistories.vue';
 
 const stubs = {
 	MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' },
-	MkAvatar: { props: ['user'], template: '<span class="avatar"></span>' },
+	MkAvatar: { props: ['user'], template: '<span class="avatar" :data-user="user.id"></span>' },
 	MkUserName: { template: '<span></span>' },
 	MkAcct: { template: '<span></span>' },
 	MkTime: { template: '<span></span>' },
@@ -67,6 +74,8 @@ async function mount() {
 	await flush();
 	return result;
 }
+
+const calls = (endpoint: string) => mocks.misskeyApi.mock.calls.filter(c => c[0] === endpoint).length;
 
 const hrefs = (container: Element) => [...container.querySelectorAll('a')].map(a => a.getAttribute('href'));
 
@@ -136,5 +145,97 @@ describe('chat home with rooms without messages', () => {
 		await mount();
 
 		expect(screen.getByLabelText(i18n.tsx._voiceCall.inCallCount({ n: 1 }))).toBeTruthy();
+	});
+
+	test('does not dim a room without messages', async () => {
+		const empty = mkRoom('d1', '2026-01-01T00:00:00Z');
+		const read = { ...roomMessage(mkRoom('d2', '2026-01-01T00:00:00Z'), '2026-01-01T00:00:00Z'), isRead: true };
+		setup({ owned: [empty], history: [read] });
+		const { container } = await mount();
+
+		const [readRow, emptyRow] = [...container.querySelectorAll('a')];
+		expect(readRow.className).toMatch(/isRead/);
+		expect(emptyRow.className).not.toMatch(/isRead/);
+	});
+
+	test('uses the owner as the avatar of a room without messages', async () => {
+		const empty = { ...mkRoom('a1', '2026-01-01T00:00:00Z'), owner: { id: 'the-owner' } };
+		setup({ owned: [empty] });
+		const { container } = await mount();
+
+		expect(container.querySelector('.avatar')!.getAttribute('data-user')).toBe('the-owner');
+	});
+
+	test('skips a membership without a room', async () => {
+		const ok = mkRoom('k1', '2026-01-01T00:00:00Z');
+		setup({ joining: [{ id: 'm0', roomId: 'x', room: null, createdAt: '2026-01-09T00:00:00Z' }, mkMembership(ok, '2026-01-02T00:00:00Z')] });
+		const { container } = await mount();
+
+		expect(hrefs(container)).toEqual(['/chat/room/k1']);
+	});
+
+	test('moves a room to the history section once it gets its first message', async () => {
+		const r = mkRoom('f1', '2026-01-01T00:00:00Z');
+		setup({ owned: [r] });
+		const { container } = await mount();
+		expect(hrefs(container)).toEqual(['/chat/room/f1']);
+
+		setup({ owned: [r], history: [roomMessage(r, '2026-01-02T00:00:00Z')] });
+		mocks.poll!();
+		await flush();
+
+		expect(hrefs(container)).toEqual(['/chat/room/f1']);
+		expect(screen.queryByText(i18n.ts._chat.noMessagesInRoom)).toBeNull();
+	});
+
+	test('still shows history when the room lists fail, and keeps polling', async () => {
+		const r = mkRoom('e1', '2026-01-01T00:00:00Z');
+		mocks.misskeyApi.mockImplementation(async (endpoint: string, params?: any) => {
+			if (endpoint === 'chat/history') return params.room ? [roomMessage(r, '2026-01-01T00:00:00Z')] : [];
+			if (endpoint === 'chat/rooms/voice/states') return [];
+			throw new Error('boom');
+		});
+		const { container } = await mount();
+		expect(hrefs(container)).toEqual(['/chat/room/e1']);
+
+		const before = calls('chat/history');
+		mocks.poll!();
+		await flush();
+		expect(calls('chat/history')).toBeGreaterThan(before);
+	});
+
+	test('recovers on the next poll after chat/history fails once', async () => {
+		const r = mkRoom('h1', '2026-01-01T00:00:00Z');
+		let failed = false;
+		mocks.misskeyApi.mockImplementation(async (endpoint: string, params?: any) => {
+			if (endpoint === 'chat/history') {
+				if (!failed) {
+					failed = true;
+					throw new Error('boom');
+				}
+				return params.room ? [roomMessage(r, '2026-01-01T00:00:00Z')] : [];
+			}
+			return [];
+		});
+		const { container } = await mount();
+		mocks.poll!();
+		await flush();
+
+		expect(hrefs(container)).toEqual(['/chat/room/h1']);
+	});
+
+	test('reloads the room lists only on every sixth poll', async () => {
+		setup({ owned: [mkRoom('p1', '2026-01-01T00:00:00Z')] });
+		await mount();
+		expect([calls('chat/history'), calls('chat/rooms/owned'), calls('chat/rooms/joining')]).toEqual([2, 1, 1]);
+
+		for (let i = 0; i < 6; i++) {
+			mocks.poll!();
+			await flush();
+		}
+
+		expect(calls('chat/history')).toBe(2 + 6 * 2);
+		expect(calls('chat/rooms/owned')).toBe(2);
+		expect(calls('chat/rooms/joining')).toBe(2);
 	});
 });

@@ -37,7 +37,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<MkA
 		v-for="room in emptyRooms"
 		:key="`empty-${room.id}`"
-		:class="[$style.message, $style.isRead]"
+		:class="$style.message"
 		class="_panel"
 		:to="`/chat/room/${room.id}`"
 	>
@@ -90,45 +90,67 @@ const voiceStates = useChatRoomVoiceStates(computed(() => [
 const initializing = ref(true);
 const fetching = ref(false);
 
-async function fetchHistory() {
+// 自分のルーム一覧 (所有・参加)。メッセージの無いルームはあまり変わらないので、毎回は取り直さない
+let ownedRooms: Misskey.entities.ChatRoom[] = [];
+let joiningRooms: Misskey.entities.ChatRoomMembership[] = [];
+
+// マウント・アクティブ化のときと、定期取得の 6 回に 1 回 (約 60 秒) だけルーム一覧を取り直す
+const ROOMS_REFRESH_EVERY = 6;
+let pollsSinceRooms = 0;
+
+async function fetchRooms() {
+	// 失敗しても履歴の表示は止めない。直前に取れた一覧をそのまま使う
+	const [owned, joining] = await Promise.all([
+		misskeyApi('chat/rooms/owned', { limit: 100 }).catch(() => null),
+		misskeyApi('chat/rooms/joining', { limit: 100 }).catch(() => null),
+	]);
+	if (owned != null) ownedRooms = owned;
+	if (joining != null) joiningRooms = joining;
+	pollsSinceRooms = 0;
+}
+
+async function fetchHistory(withRooms = true) {
 	if (fetching.value) return;
 
 	fetching.value = true;
 
-	const [userMessages, roomMessages, ownedRooms, joiningRooms] = await Promise.all([
-		misskeyApi('chat/history', { room: false }),
-		misskeyApi('chat/history', { room: true }),
-		misskeyApi('chat/rooms/owned', { limit: 100 }),
-		misskeyApi('chat/rooms/joining', { limit: 100 }),
-	]);
+	try {
+		const [userMessages, roomMessages] = await Promise.all([
+			misskeyApi('chat/history', { room: false }),
+			misskeyApi('chat/history', { room: true }),
+			withRooms ? fetchRooms() : Promise.resolve(),
+		]);
 
-	// 履歴に無いルームだけを、所有ルームは部屋の作成日時・参加ルームは参加日時の新しい順に並べる。
-	// 所有かつ参加のルームは一度だけ出す
-	const inHistory = new Set(roomMessages.flatMap(m => m.toRoomId != null ? [m.toRoomId] : []));
-	const candidates = new Map<string, { room: Misskey.entities.ChatRoom; time: number }>();
-	for (const room of ownedRooms) {
-		candidates.set(room.id, { room, time: new Date(room.createdAt).getTime() });
+		// 履歴に無いルームだけを、所有ルームは部屋の作成日時・参加ルームは参加日時の新しい順に並べる。
+		// 所有かつ参加のルームは一度だけ出す
+		const inHistory = new Set(roomMessages.flatMap(m => m.toRoomId != null ? [m.toRoomId] : []));
+		const candidates = new Map<string, { room: Misskey.entities.ChatRoom; time: number }>();
+		for (const room of ownedRooms) {
+			candidates.set(room.id, { room, time: new Date(room.createdAt).getTime() });
+		}
+		for (const membership of joiningRooms) {
+			if (membership.room == null || candidates.has(membership.room.id)) continue;
+			candidates.set(membership.room.id, { room: membership.room, time: new Date(membership.createdAt ?? membership.room.createdAt).getTime() });
+		}
+		emptyRooms.value = [...candidates.values()]
+			.filter(c => !inHistory.has(c.room.id))
+			.toSorted((a, b) => b.time - a.time)
+			.map(c => c.room);
+
+		history.value = [...userMessages, ...roomMessages]
+			.toSorted((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+			.map(m => ({
+				id: m.id,
+				message: m,
+				other: (!('room' in m) || m.room == null) ? (m.fromUserId === $i.id ? m.toUser : m.fromUser) : null,
+				isMe: m.fromUserId === $i.id,
+			}));
+
+		initializing.value = false;
+	} finally {
+		// 失敗しても次の定期取得が走るように必ず戻す
+		fetching.value = false;
 	}
-	for (const membership of joiningRooms) {
-		if (membership.room == null || candidates.has(membership.room.id)) continue;
-		candidates.set(membership.room.id, { room: membership.room, time: new Date(membership.createdAt ?? membership.room.createdAt).getTime() });
-	}
-	emptyRooms.value = [...candidates.values()]
-		.filter(c => !inHistory.has(c.room.id))
-		.toSorted((a, b) => b.time - a.time)
-		.map(c => c.room);
-
-	history.value = [...userMessages, ...roomMessages]
-		.toSorted((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-		.map(m => ({
-			id: m.id,
-			message: m,
-			other: (!('room' in m) || m.room == null) ? (m.fromUserId === $i.id ? m.toUser : m.fromUser) : null,
-			isMe: m.fromUserId === $i.id,
-		}));
-
-	fetching.value = false;
-	initializing.value = false;
 }
 
 let isActivated = true;
@@ -144,7 +166,8 @@ onDeactivated(() => {
 useInterval(() => {
 	// TODO: DOM的にバックグラウンドになっていないかどうかも考慮する
 	if (isActivated) {
-		fetchHistory();
+		pollsSinceRooms++;
+		fetchHistory(pollsSinceRooms >= ROOMS_REFRESH_EVERY).catch(() => {});
 	}
 }, 1000 * 10, {
 	immediate: false,
@@ -152,11 +175,11 @@ useInterval(() => {
 });
 
 onActivated(() => {
-	fetchHistory();
+	fetchHistory().catch(() => {});
 });
 
 onMounted(() => {
-	fetchHistory();
+	fetchHistory().catch(() => {});
 });
 </script>
 
