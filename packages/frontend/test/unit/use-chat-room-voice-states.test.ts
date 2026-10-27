@@ -23,13 +23,15 @@ const mocks = vi.hoisted(() => {
 	return {
 		FakeChannel,
 		channel: new FakeChannel(),
+		stream: new FakeChannel(),
+		useChannel: vi.fn(),
 		misskeyApi: vi.fn().mockResolvedValue([]),
 		instance: { features: { voiceCall: true, remoteVoiceCall: false } },
 	};
 });
 
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
-vi.mock('@/stream.js', () => ({ useStream: () => ({ useChannel: () => mocks.channel }) }));
+vi.mock('@/stream.js', () => ({ useStream: () => Object.assign(mocks.stream, { useChannel: mocks.useChannel }) }));
 vi.mock('@/instance.js', () => ({ instance: mocks.instance }));
 
 import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
@@ -51,6 +53,8 @@ function use(roomIds: string[]) {
 
 beforeEach(() => {
 	mocks.channel = new mocks.FakeChannel();
+	mocks.stream = new mocks.FakeChannel();
+	mocks.useChannel.mockReset().mockReturnValue(mocks.channel);
 	mocks.instance.features.voiceCall = true;
 	mocks.instance.features.remoteVoiceCall = false;
 	mocks.misskeyApi.mockReset().mockResolvedValue([]);
@@ -373,4 +377,121 @@ describe('useChatRoomVoiceStates reconciling with the server', () => {
 		await flush();
 		expect(statesCalls()).toHaveLength(2);
 	});
+});
+
+describe('shared room call polling', () => {
+	test('shares the channel and one poll across overlapping consumers, and disposes after the last one', async () => {
+		vi.useFakeTimers();
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [p] }]);
+		const first = use(['r1']);
+		const firstScope = scope;
+		const second = use(['r1']);
+		await flush();
+		expect(mocks.useChannel).toHaveBeenCalledTimes(1);
+		expect(mocks.misskeyApi).toHaveBeenCalledTimes(1);
+		expect(first.value.get('r1')).toEqual(second.value.get('r1'));
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(mocks.misskeyApi).toHaveBeenCalledTimes(2);
+		firstScope.stop();
+		expect(mocks.channel.dispose).not.toHaveBeenCalled();
+		scope.stop();
+		expect(mocks.channel.dispose).toHaveBeenCalledTimes(1);
+	});
+
+	test('limits each consumer to its own rooms while fetching the union in batches', async () => {
+		const first = use(['r1']);
+		const firstScope = scope;
+		const second = use(['r2']);
+		try {
+			await flush();
+			mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [p], updatedAt: 1 });
+			mocks.channel.emit('chatRoomVoiceState', { roomId: 'r2', participants: [p], updatedAt: 1 });
+			expect(first.value.has('r1')).toBe(true);
+			expect(first.value.has('r2')).toBe(false);
+			expect(second.value.has('r1')).toBe(false);
+			expect(second.value.has('r2')).toBe(true);
+			expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/states', { roomIds: ['r1', 'r2'] });
+		} finally { firstScope.stop(); }
+	});
+
+	test('never lets the timer replace a pending room-id change load', async () => {
+		vi.useFakeTimers();
+		mocks.misskeyApi.mockResolvedValueOnce([{ roomId: 'r1', participants: [p], updatedAt: 1 }]);
+		const ids = ref(['r1']);
+		scope = effectScope();
+		const states = scope.run(() => useChatRoomVoiceStates(ids))!;
+		await flush();
+		let resolveLoad!: (value: unknown) => void;
+		mocks.misskeyApi.mockReturnValue(new Promise(resolve => { resolveLoad = resolve; }));
+		ids.value = ['r2'];
+		await flush();
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(mocks.misskeyApi).toHaveBeenCalledTimes(2);
+		resolveLoad([{ roomId: 'r2', participants: [p], updatedAt: 2 }]);
+		await flush();
+		expect([...states.value.keys()]).toEqual(['r2']);
+	});
+
+	test('refetches after stream reconnect even when no call was previously visible', async () => {
+		const states = use(['r1']);
+		await flush();
+		mocks.misskeyApi.mockResolvedValueOnce([{ roomId: 'r1', participants: [p], updatedAt: 1 }]);
+		mocks.stream.emit('_connected_', undefined);
+		await flush();
+		expect(mocks.misskeyApi).toHaveBeenCalledTimes(2);
+		expect(states.value.has('r1')).toBe(true);
+	});
+
+	test('keeps a newer response over an older event captured during that load', async () => {
+		let resolveLoad!: (value: unknown) => void;
+		mocks.misskeyApi.mockReturnValue(new Promise(resolve => { resolveLoad = resolve; }));
+		const states = use(['r1']);
+		await flush();
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [], updatedAt: 1 });
+		resolveLoad([{ roomId: 'r1', participants: [p], updatedAt: 2 }]);
+		await flush();
+		expect(states.value.get('r1')?.updatedAt).toBe(2);
+	});
+});
+
+test('starts with no previous account/store data after the last owner disposes, ignoring its late response', async () => {
+	let resolveOld!: (value: unknown) => void;
+	mocks.misskeyApi.mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve; }));
+	const previous = use(['r1']);
+	await flush();
+	mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [p], updatedAt: 1 });
+	scope.stop();
+	expect(previous.value.size).toBe(0);
+	mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [p], updatedAt: 2 });
+	expect(previous.value.size).toBe(0);
+	mocks.channel = new mocks.FakeChannel();
+	mocks.useChannel.mockReturnValue(mocks.channel);
+	const states = use(['r1']);
+	await flush();
+	resolveOld([{ roomId: 'r1', participants: [p], updatedAt: 2 }]);
+	await flush();
+	expect(states.value.size).toBe(0);
+});
+
+test('fetches every room when the client union exceeds the API batch limit', async () => {
+	const ids = Array.from({ length: 205 }, (_, n) => `r${n}`);
+	mocks.misskeyApi.mockImplementation(async (_endpoint: string, data: { roomIds: string[] }) => data.roomIds.map(roomId => ({ roomId, participants: [p], updatedAt: 1 })));
+	const states = use(ids);
+	await flush();
+	expect(mocks.misskeyApi.mock.calls.map(([, data]) => data.roomIds.length)).toEqual([100, 100, 5]);
+	expect(states.value.size).toBe(205);
+});
+
+test('queues a reconnect refresh behind an in-flight initial load', async () => {
+	let resolveLoad!: (value: unknown) => void;
+	mocks.misskeyApi.mockReturnValueOnce(new Promise(resolve => { resolveLoad = resolve; }));
+	const states = use(['r1']);
+	await flush();
+	mocks.misskeyApi.mockResolvedValueOnce([{ roomId: 'r1', participants: [p], updatedAt: 2 }]);
+	mocks.stream.emit('_connected_', undefined);
+	expect(mocks.misskeyApi).toHaveBeenCalledTimes(1);
+	resolveLoad([]);
+	await flush();
+	expect(mocks.misskeyApi).toHaveBeenCalledTimes(2);
+	expect(states.value.get('r1')?.updatedAt).toBe(2);
 });

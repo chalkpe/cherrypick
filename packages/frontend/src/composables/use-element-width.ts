@@ -12,13 +12,14 @@ import type { Ref } from 'vue';
  * 一度も測っていないあいだは null。要素が外れても (タブを切り替えたときなど) 最後に測った幅を覚えておき、
  * 要素が戻ってきたときは測り直すまでその幅を使う
  */
-export function useElementWidth(target: Readonly<Ref<HTMLElement | null | undefined>>): Readonly<Ref<number | null>> {
+export function useElementWidth(target: Readonly<Ref<HTMLElement | null | undefined>>, onReport?: () => void): Readonly<Ref<number | null>> {
 	const width = ref<number | null>(null);
 	const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(entries => {
 		for (const entry of entries) {
 			// KeepAlive で裏に回った要素はどこにも描かれないので幅 0 と知らされる。それは見える幅ではないので無視する
 			if (!entry.target.isConnected) continue;
 			width.value = entry.contentRect.width;
+			onReport?.();
 		}
 	});
 

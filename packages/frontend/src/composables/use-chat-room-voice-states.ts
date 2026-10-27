@@ -10,152 +10,176 @@ import { instance } from '@/instance.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { useStream } from '@/stream.js';
 
-// ホストのサーバーが落ちると通話の終わりは届かず、サーバー側の現況だけが寿命 (ミラーは 600 秒、このサーバーのルームは 120 秒) で消える。
-// 通話を出している間はこの間隔で取り直し、寿命の切れた通話を寿命 + この時間のうちに消す
+type VoiceState = Misskey.entities.ChatRoomVoiceState;
+type Subscription = { roomIds: Ref<string[]>; active: Ref<boolean> };
 const REFRESH_INTERVAL_MS = 30 * 1000;
+let shared: ReturnType<typeof createVoiceStateStore> | null = null;
 
-/**
- * ルーム一覧に通話中の表示を出すため、指定したルームの通話参加者を取得し、変化を追う。
- */
-export function useChatRoomVoiceStates(roomIds: Ref<string[]>): Ref<Map<string, Misskey.entities.ChatRoomVoiceState>> {
-	const states = ref(new Map<string, Misskey.entities.ChatRoomVoiceState>());
-	// LiveKit を持たないサーバーでも、他のサーバーが持つルーム (ミラー) の通話の現況は届く。
-	// どのルームの通話を出すかは呼び出し側がルームごとに決める
-	if (instance.features?.voiceCall !== true && instance.features?.remoteVoiceCall !== true) return states;
-
-	// 取得中に届いたイベントの方が新しいので、取得結果で上書きしないよう覚えておく
-	let liveDuringLoad: Map<string, Misskey.entities.ChatRoomVoiceState> | null = null;
-
-	// ルームごとに、受け取ったうちでいちばん新しい現況の時刻 (updatedAt)。通話が終わった (参加者が空の) 現況の時刻も覚える。
-	// サーバーは現況を保存した順に知らせるとは限らないので、イベントでも取得結果でも、これより古い現況は捨てる
+// 一覧・履歴・ルーム画面で同じ main 接続と取得処理を使う。最後の利用者が外れたら現況も破棄する。
+function createVoiceStateStore() {
+	const states = ref(new Map<string, VoiceState>());
+	const subscriptions = new Set<Subscription>();
 	const newest = new Map<string, number>();
+	const stream = useStream();
+	const connection = stream.useChannel('main');
+	let ids: string[] = [];
+	let loading: { live: Map<string, VoiceState> } | null = null;
+	let refreshPending = false;
+	let queued = false;
+	let disposed = false;
+	let timer: number | null = null;
 
-	/** 受け取ったうちでいちばん新しい現況より古ければ true。そうでなければ、その時刻を覚えて false */
-	function isOutdated(state: Misskey.entities.ChatRoomVoiceState): boolean {
+	function apply(target: Map<string, VoiceState>, state: VoiceState) {
+		if (state.participants.length === 0) target.delete(state.roomId);
+		else target.set(state.roomId, state);
+	}
+
+	function isOutdated(state: VoiceState) {
 		const held = newest.get(state.roomId);
 		if (held != null && state.updatedAt < held) return true;
 		newest.set(state.roomId, state.updatedAt);
 		return false;
 	}
 
-	function apply(target: Map<string, Misskey.entities.ChatRoomVoiceState>, state: Misskey.entities.ChatRoomVoiceState) {
-		if (state.participants.length === 0) {
-			target.delete(state.roomId);
-		} else {
-			target.set(state.roomId, state);
-		}
-	}
-
-	const connection = useStream().useChannel('main');
 	connection.on('chatRoomVoiceState', state => {
-		if (!roomIds.value.includes(state.roomId)) return;
-		if (isOutdated(state)) return;
-		liveDuringLoad?.set(state.roomId, state);
+		if (disposed || !ids.includes(state.roomId) || isOutdated(state)) return;
+		loading?.live.set(state.roomId, state);
 		const next = new Map(states.value);
 		apply(next, state);
 		states.value = next;
+		updatePolling();
 	});
 
-	// 後から始めた取得があれば、先の取得の結果は捨てる。
-	// 取り直し (refresh) に失敗しただけなら、出している通話は消さない
-	async function load(ids: string[], { keepOnError }: { keepOnError: boolean }) {
-		const live = new Map<string, Misskey.entities.ChatRoomVoiceState>();
-		liveDuringLoad = live;
-		let next: Map<string, Misskey.entities.ChatRoomVoiceState>;
+	function shown() {
+		return window.document.visibilityState === 'visible' && [...subscriptions].some(sub => sub.active.value);
+	}
+
+	async function load(keepOnError: boolean) {
+		const request = { live: new Map<string, VoiceState>() };
+		loading = request;
+		const requestedIds = ids;
+		let next = new Map<string, VoiceState>();
 		try {
-			const result = await misskeyApi('chat/rooms/voice/states', { roomIds: ids.slice(0, 100) });
-			next = new Map();
-			for (const state of result) {
-				if (!isOutdated(state)) {
-					next.set(state.roomId, state);
-					continue;
+			// 一つの API 要求は 100 ルームまで。複数の一覧の和集合も取りこぼさない。
+			const batches: Promise<VoiceState[]>[] = [];
+			for (let offset = 0; offset < requestedIds.length; offset += 100) {
+				batches.push(misskeyApi('chat/rooms/voice/states', { roomIds: requestedIds.slice(offset, offset + 100) }));
+			}
+			const results = (await Promise.all(batches)).flat();
+			if (loading !== request || disposed) return;
+			for (const state of results) {
+				if (!requestedIds.includes(state.roomId)) continue;
+				if (!isOutdated(state)) apply(next, state);
+				else {
+					const held = states.value.get(state.roomId);
+					if (held != null) next.set(state.roomId, held);
 				}
-				// 取得を始めた後に、より新しい現況が届いている。それを残す (通話が終わっていれば出さない)
-				const held = states.value.get(state.roomId);
-				if (held != null) next.set(state.roomId, held);
 			}
 		} catch {
-			if (keepOnError) {
-				if (liveDuringLoad === live) liveDuringLoad = null;
-				return;
-			}
-			next = new Map();
+			if (keepOnError) next = new Map(states.value);
 		}
-		if (liveDuringLoad !== live) return;
-		liveDuringLoad = null;
-		for (const state of live.values()) apply(next, state);
+		if (loading !== request || disposed) return;
+		loading = null;
+		// 取得中のイベントも、応答より古ければ使わない。
+		for (const state of request.live.values()) {
+			if (!isOutdated(state)) apply(next, state);
+		}
 		states.value = next;
+		updatePolling();
+		if (refreshPending) {
+			refreshPending = false;
+			refresh();
+		}
 	}
 
-	// 定期的に一覧を取り直す画面では同じ ID の配列が何度も渡されるので、中身が変わったときだけ取得する
-	let loadedKey: string | null = null;
-
-	watch(roomIds, async ids => {
-		const key = ids.join(',');
-		if (key === loadedKey) return;
-		loadedKey = key;
-		if (ids.length === 0) {
-			liveDuringLoad = null;
-			states.value = new Map();
+	// tick は ID 変更の取得を追い越さない。再接続だけは取得後にもう一度確認する。
+	function refresh(afterLoad = false) {
+		if (ids.length === 0 || !shown()) return;
+		if (loading != null) {
+			refreshPending ||= afterLoad;
 			return;
 		}
-		await load(ids, { keepOnError: false });
-	}, { immediate: true });
-
-	// 同じルームのままでも取り直す (上の ID の比較は通さない)
-	function refresh() {
-		const ids = roomIds.value;
-		if (ids.length === 0) return;
-		load(ids, { keepOnError: true });
+		void load(true);
 	}
 
-	// 画面に出ていない間 (タブが隠れている・KeepAlive で裏に回っている) は取り直さず、戻ってきたときに一度取り直す
-	const visible = ref(window.document.visibilityState === 'visible');
-	const active = ref(true);
-	const shown = computed(() => visible.value && active.value);
+	function updatePolling() {
+		const polling = shown() && states.value.size > 0;
+		if (!polling && timer != null) {
+			window.clearInterval(timer);
+			timer = null;
+		} else if (polling && timer == null) {
+			timer = window.setInterval(() => refresh(), REFRESH_INTERVAL_MS);
+		}
+	}
+
+	function reconcile() {
+		if (queued) return;
+		queued = true;
+		// 同じ描画で増えた利用者をまとめ、一度だけ和集合を取得する。
+		void Promise.resolve().then(() => {
+			queued = false;
+			if (disposed) return;
+			const nextIds = [...new Set([...subscriptions].flatMap(sub => sub.roomIds.value))].sort();
+			if (ids.join(',') !== nextIds.join(',')) {
+				ids = nextIds;
+				loading = null;
+				refreshPending = false;
+				states.value = new Map([...states.value].filter(([id]) => ids.includes(id)));
+				for (const id of newest.keys()) if (!ids.includes(id)) newest.delete(id);
+				if (ids.length > 0) void load(false);
+			}
+			updatePolling();
+		});
+	}
 
 	function onVisibilityChange() {
-		const next = window.document.visibilityState === 'visible';
-		if (next === visible.value) return;
-		visible.value = next;
-		if (shown.value && states.value.size > 0) refresh();
+		updatePolling();
+		if (shown()) refresh(true);
 	}
+
+	function onConnected() { refresh(true); }
 
 	window.document.addEventListener('visibilitychange', onVisibilityChange);
+	stream.on('_connected_', onConnected);
 
-	// KeepAlive の中で初めて表示されたときにも onActivated は呼ばれるので、裏に回った後だけ取り直す
+	return {
+		states,
+		add(sub: Subscription) { subscriptions.add(sub); reconcile(); },
+		changed: reconcile,
+		activated() { updatePolling(); refresh(true); },
+		deactivated: updatePolling,
+		remove(sub: Subscription) {
+			subscriptions.delete(sub);
+			if (subscriptions.size > 0) { reconcile(); return; }
+			disposed = true;
+			loading = null;
+			ids = [];
+			newest.clear();
+			states.value = new Map();
+			if (timer != null) window.clearInterval(timer);
+			window.document.removeEventListener('visibilitychange', onVisibilityChange);
+			stream.off('_connected_', onConnected);
+			connection.dispose();
+			shared = null;
+		},
+	};
+}
+
+/** 指定したルームの現況だけを返す。取得と通知はクライアント内で共有する。 */
+export function useChatRoomVoiceStates(roomIds: Ref<string[]>): Ref<Map<string, VoiceState>> {
+	if (instance.features?.voiceCall !== true && instance.features?.remoteVoiceCall !== true) return ref(new Map());
+	const store = shared ??= createVoiceStateStore();
+	const sub: Subscription = { roomIds, active: ref(true) };
+	store.add(sub);
+	watch(roomIds, store.changed);
 	if (getCurrentInstance() != null) {
-		onDeactivated(() => {
-			active.value = false;
-		});
+		onDeactivated(() => { sub.active.value = false; store.deactivated(); });
 		onActivated(() => {
-			if (active.value) return;
-			active.value = true;
-			if (shown.value && states.value.size > 0) refresh();
+			if (sub.active.value) return;
+			sub.active.value = true;
+			store.activated();
 		});
 	}
-
-	let timer: number | null = null;
-
-	function stopPolling() {
-		if (timer == null) return;
-		window.clearInterval(timer);
-		timer = null;
-	}
-
-	watch(() => shown.value && states.value.size > 0, polling => {
-		if (!polling) {
-			stopPolling();
-		} else if (timer == null) {
-			timer = window.setInterval(refresh, REFRESH_INTERVAL_MS);
-		}
-	}, { immediate: true });
-
-	onScopeDispose(() => {
-		stopPolling();
-		window.document.removeEventListener('visibilitychange', onVisibilityChange);
-		connection.dispose();
-	});
-
-	return states;
+	onScopeDispose(() => store.remove(sub));
+	return computed(() => new Map([...store.states.value].filter(([id]) => roomIds.value.includes(id))));
 }

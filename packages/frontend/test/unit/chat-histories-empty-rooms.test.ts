@@ -28,9 +28,9 @@ vi.mock('@@/js/use-interval.js', () => ({
 }));
 
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
-vi.mock('@/stream.js', () => ({ useStream: () => ({ useChannel: () => new mocks.FakeChannel() }) }));
+vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), useChannel: () => new mocks.FakeChannel() }) }));
 vi.mock('@/instance.js', () => ({ instance: mocks.instance }));
-vi.mock('@/i.js', () => ({ ensureSignin: () => ({ id: 'me' }) }));
+vi.mock('@/i.js', () => ({ ensureSignin: () => ({ id: 'me', policies: { canVoiceCall: true } }) }));
 
 import { i18n } from '@/i18n.js';
 import MkChatHistories from '@/components/MkChatHistories.vue';

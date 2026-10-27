@@ -9,10 +9,10 @@ import * as Misskey from 'cherrypick-js';
 import type { MenuItem } from '@/types/menu.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
-import { instance } from '@/instance.js';
 import { prefer } from '@/preferences.js';
 import { ensureSignin } from '@/i.js';
 import { userName } from '@/filters/user.js';
+import { isChatRoomVoiceAvailable } from '@/utility/chat-room-voice-availability.js';
 import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
 import { joinVoiceCall, localIdentityOf, voiceCall } from '@/utility/voice-call.js';
 import XVolume from '@/pages/chat/room.voice.volume.vue';
@@ -27,12 +27,7 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 	const myIdentity = localIdentityOf($i.id);
 
 	// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーで開かれるので、連合通話が許可されているときだけ出す
-	const available = computed(() => {
-		const target = toValue(room);
-		if (target == null) return false;
-		const allowed = target.owner.host == null ? instance.features?.voiceCall === true : instance.features?.remoteVoiceCall === true;
-		return allowed && $i.policies.canVoiceCall;
-	});
+	const available = computed(() => isChatRoomVoiceAvailable(toValue(room), $i.policies.canVoiceCall));
 	const inThisCall = computed(() => {
 		const target = toValue(room);
 		return target != null && voiceCall.room?.id === target.id && voiceCall.status !== 'idle';

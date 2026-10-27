@@ -24,12 +24,15 @@ const mocks = vi.hoisted(() => {
 		channel: new FakeChannel(),
 		misskeyApi: vi.fn(),
 		instance: { features: { voiceCall: true, remoteVoiceCall: false } },
+		me: { policies: { canVoiceCall: true } },
 	};
 });
 
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
-vi.mock('@/stream.js', () => ({ useStream: () => ({ useChannel: () => mocks.channel }) }));
+vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), useChannel: () => mocks.channel }) }));
 vi.mock('@/instance.js', () => ({ instance: mocks.instance }));
+
+vi.mock('@/i.js', () => ({ ensureSignin: () => mocks.me }));
 
 import { i18n } from '@/i18n.js';
 import XRoom from '@/pages/chat/XRoom.vue';
@@ -52,6 +55,7 @@ async function flush() {
 
 beforeEach(() => {
 	mocks.channel = new mocks.FakeChannel();
+	mocks.me.policies.canVoiceCall = true;
 	mocks.instance.features.voiceCall = true;
 	mocks.instance.features.remoteVoiceCall = false;
 	mocks.misskeyApi.mockReset().mockResolvedValue([]);
@@ -116,5 +120,30 @@ describe('room list on a server without its own LiveKit', () => {
 		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [] });
 		await flush();
 		expect(screen.queryByLabelText(i18n.tsx._voiceCall.inCallCount({ n: 2 }))).toBeNull();
+	});
+});
+
+
+describe('per-room availability in the list', () => {
+	test.each([
+		[false, true, true],
+		[false, true, false],
+		[true, false, true],
+		[true, true, false],
+	])('local enabled %s, remote enabled %s, permitted %s', async (local, remote, permitted) => {
+		mocks.instance.features.voiceCall = local;
+		mocks.instance.features.remoteVoiceCall = remote;
+		mocks.me.policies.canVoiceCall = permitted;
+		const mirror = { ...room, id: 'r2', owner: { ...room.owner, host: 'remote.test' } };
+		mocks.misskeyApi.mockImplementation(async (endpoint: string, data: { roomIds?: string[] }) => {
+			if (endpoint === 'chat/rooms/joining') return [room, mirror].map(r => ({ id: r.id, roomId: r.id, room: r }));
+			if (endpoint === 'chat/rooms/voice/states') return (data.roomIds ?? []).map(id => ({ roomId: id, participants: [participant('a')] }));
+			return [];
+		});
+		render(XJoiningRooms, { global: { stubs: { ...stubs, MkResult: true, MkLoading: true } } });
+		await flush();
+		const expected = permitted ? [local ? 'r1' : null, remote ? 'r2' : null].filter(Boolean) : [];
+		const requested = mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/states').flatMap(([, args]) => args.roomIds);
+		expect(requested).toEqual(expected);
 	});
 });

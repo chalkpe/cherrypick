@@ -43,11 +43,12 @@ const mocks = vi.hoisted(() => {
 		stopScreenShare: vi.fn(),
 		setParticipantVolume: vi.fn(),
 		requestFullscreen: vi.fn(),
+		refreshStickyLayout: vi.fn(),
 	};
 });
 
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
-vi.mock('@/stream.js', () => ({ useStream: () => ({ useChannel: () => mocks.channel }) }));
+vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), useChannel: () => mocks.channel }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer() }));
 vi.mock('@/instance.js', () => ({ instance: mocks.instance }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
@@ -319,6 +320,23 @@ describe('room voice panel', () => {
 		expect(screen.queryByText(i18n.ts._voiceCall.inCall)).toBeNull();
 	});
 
+	test('lets one room heading announce, then hands announcements back to the global bar', async () => {
+		Object.assign(callState, { status: 'reconnecting', room });
+		const first = renderCard();
+		const second = renderCard();
+		render(XVoiceCallBar, { global: { stubs } });
+		await flush();
+		const live = () => [...document.querySelectorAll('[aria-live="polite"]')].filter(el => el.textContent === i18n.ts._voiceCall.reconnecting);
+		expect(live()).toHaveLength(1);
+		second.unmount();
+		await flush();
+		expect(live()).toHaveLength(1);
+		first.unmount();
+		await flush();
+		expect(live()).toHaveLength(1);
+		expect(live()[0].closest('[role="region"]')).not.toBeNull();
+	});
+
 	test('renders nothing when voice calls are disabled on this server', async () => {
 		mocks.instance.features.voiceCall = false;
 		renderCard();
@@ -335,8 +353,9 @@ describe('voice call on the room page', () => {
 		// 本物の MkPageHeader / CPPageHeader と同じく、アクションは action.text をラベルにしたアイコンのボタンで出し、タブで v-model:tab を切り替える
 		PageWithHeader: {
 			props: ['actions', 'tabs', 'tab'],
+			methods: { refreshStickyLayout: mocks.refreshStickyLayout },
 			emits: ['update:tab'],
-			template: `<div>
+			template: `<div style="overflow-y: scroll;">
 				<div role="tablist"><button v-for="t in tabs" :key="t.key" role="tab" :aria-selected="t.key === tab" @click="$emit('update:tab', t.key)">{{ t.title }}</button></div>
 				<div data-testid="header-actions"><button v-for="action in actions" class="_button" :aria-label="action.text" @click.stop="action.handler"><i :class="action.icon"></i></button></div>
 				<slot />
@@ -344,7 +363,7 @@ describe('voice call on the room page', () => {
 			</div>`,
 		},
 		// カードが MkStickyContainer のヘッダーに置かれているか (= スクロールしても上に貼り付くか) を見る
-		MkStickyContainer: { template: '<div><div data-testid="sticky-header"><slot name="header" /></div><slot /></div>' },
+		MkStickyContainer: { methods: { refresh() {} }, template: '<div><div data-testid="sticky-header"><slot name="header" /></div><slot /></div>' },
 		MkLoading: { template: '<div></div>' },
 	};
 
@@ -472,6 +491,21 @@ describe('voice call on the room page', () => {
 			expect(chatPane()).toBeTruthy();
 		});
 
+		test('transfers the reversed scroll offset before the first frame after a split switch', async () => {
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await setPageWidth(700);
+			const chat = chatPane().closest('[class*="chatScroller"]')! as HTMLElement;
+			const outer = screen.getByTestId('header-actions').parentElement!;
+			outer.scrollTop = -120;
+			mocks.refreshStickyLayout.mockClear();
+			await setPageWidth(1280);
+			expect(chat.scrollTop).toBe(-120);
+			expect(mocks.refreshStickyLayout).toHaveBeenCalledTimes(1);
+			chat.scrollTop = -260;
+			await setPageWidth(700);
+			expect(outer.scrollTop).toBe(-260);
+		});
+
 		test('keeps the sticky card on a narrow page', async () => {
 			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
 			await setPageWidth(959);
@@ -503,8 +537,47 @@ describe('voice call on the room page', () => {
 			await flush();
 
 			expect(prefer.commit).toHaveBeenCalledWith('voiceCall.stageChatSide', 'left');
-			expect(precedes(chatPane(), screen.getByText('Alice'))).toBe(true);
+			expect(precedes(screen.getByText('Alice'), chatPane())).toBe(true);
+			expect(hasClass(chatPane().closest('[class*="split"]')!, 'chatLeft')).toBe(true);
 			expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatRight)).toBeTruthy();
+		});
+
+		test('keeps watched videos and PiP attached when swapping the chat side', async () => {
+			Object.assign(callState, { status: 'connected', room, watchingIdentities: [identityOf(alice)] });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice, true)] }]);
+			await setPageWidth(1280);
+			const viewer = viewerOf(alice);
+			const video = viewer.querySelector('video')!;
+			pictureInPictureElement = video;
+			const attaches = mocks.attachScreenShare.mock.calls.length;
+			await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft));
+			await flush();
+			expect(viewerOf(alice)).toBe(viewer);
+			expect(viewerOf(alice).querySelector('video')).toBe(video);
+			expect(video.isConnected).toBe(true);
+			expect(mocks.attachScreenShare.mock.calls).toHaveLength(attaches);
+		});
+
+		test('uses the stage for an available mirror room', async () => {
+			mocks.instance.features.voiceCall = false;
+			mocks.instance.features.remoteVoiceCall = true;
+			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await setPageWidth(1280);
+			expect(stickyCard().queryByText('Alice')).toBeNull();
+			mocks.confirm.mockResolvedValue({ canceled: false });
+			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
+			await flush();
+			expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+		});
+
+		test('announces call status once when the stage and global bar are both mounted', async () => {
+			Object.assign(callState, { status: 'reconnecting', room });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await setPageWidth(1280);
+			render(XVoiceCallBar, { global: { stubs } });
+			await flush();
+			const regions = [...document.querySelectorAll('[aria-live="polite"]')].filter(el => el.textContent === i18n.ts._voiceCall.reconnecting);
+			expect(regions).toHaveLength(1);
 		});
 
 		test('opens with the chat on the left when that was chosen before', async () => {
@@ -512,7 +585,8 @@ describe('voice call on the room page', () => {
 			await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
 			await setPageWidth(1280);
 
-			expect(precedes(chatPane(), screen.getByText('Alice'))).toBe(true);
+			expect(precedes(screen.getByText('Alice'), chatPane())).toBe(true);
+			expect(hasClass(chatPane().closest('[class*="split"]')!, 'chatLeft')).toBe(true);
 		});
 
 		test('shows a join button on the stage when I am not in the call', async () => {
@@ -853,14 +927,40 @@ describe('voice call on the room page', () => {
 				expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
 			});
 
+			test('waits for a resize report after fullscreenchange, even if its width is unchanged', async () => {
+				await enterFullscreenFromCard();
+				await setPageWidth(1280);
+				setFullscreen(null);
+				await flush();
+				expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
+				await setPageWidth(1280);
+				expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+			});
+
 			test('picks the layout from the width again after leaving fullscreen', async () => {
 				await enterFullscreenFromCard();
 				await setPageWidth(1280);
 
 				setFullscreen(null);
+				await setPageWidth(1280);
 				await nextFrames();
 
 				expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+			});
+
+			test('releases the layout lock after a timeout when no observer report arrives', async () => {
+				await enterFullscreenFromCard();
+				await setPageWidth(1280);
+				vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+				try {
+					setFullscreen(null);
+					await vi.advanceTimersByTimeAsync(249);
+					await flush();
+					expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
+					await vi.advanceTimersByTimeAsync(1);
+					await flush();
+					expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+				} finally { vi.useRealTimers(); }
 			});
 
 			test('does not flash the two-pane view while the page shrinks back after fullscreen', async () => {

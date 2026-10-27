@@ -8,6 +8,7 @@ import * as Misskey from 'cherrypick-js';
 import { url } from '@@/js/config.js';
 import type { AudioCaptureOptions, DisconnectReason, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomConnectOptions, TrackPublication, VideoPreset } from 'livekit-client';
 import { misskeyApi } from '@/utility/misskey-api.js';
+import { isApiError } from '@/utility/api-error.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
@@ -468,7 +469,7 @@ function detachAll(room: Room): void {
 function failToConnect(err?: unknown): void {
 	resetState();
 	// 相手のサーバーが通話に対応していないときだけ、原因が分かる文言にする
-	const code = (err as { code?: unknown } | null | undefined)?.code;
+	const code = isApiError(err) ? err.code : undefined;
 	os.toast(code === 'REMOTE_HOST_UNSUPPORTED' ? i18n.ts._voiceCall.remoteHostUnsupported : i18n.ts._voiceCall.connectionFailed);
 }
 

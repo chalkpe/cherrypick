@@ -68,6 +68,7 @@ import { useInterval } from '@@/js/use-interval.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
+import { isChatRoomVoiceAvailable } from '@/utility/chat-room-voice-availability.js';
 import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
 
 const $i = ensureSignin();
@@ -83,8 +84,8 @@ const history = ref<{
 const emptyRooms = ref<Misskey.entities.ChatRoom[]>([]);
 
 const voiceStates = useChatRoomVoiceStates(computed(() => [
-	...history.value.flatMap(item => item.message.toRoomId != null ? [item.message.toRoomId] : []),
-	...emptyRooms.value.map(room => room.id),
+	...history.value.flatMap(item => isChatRoomVoiceAvailable(item.message.toRoom, $i.policies.canVoiceCall) ? [item.message.toRoomId!] : []),
+	...emptyRooms.value.filter(room => isChatRoomVoiceAvailable(room, $i.policies.canVoiceCall)).map(room => room.id),
 ]));
 
 const initializing = ref(true);

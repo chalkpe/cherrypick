@@ -100,6 +100,7 @@ onUnmounted(() => {
 
 defineExpose({
 	rootEl,
+	refresh: calc,
 });
 </script>
 

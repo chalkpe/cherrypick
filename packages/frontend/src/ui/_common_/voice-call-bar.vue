@@ -13,12 +13,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 	role="region" :aria-label="i18n.ts._voiceCall.inCall"
 >
 	<!-- 通話中のルームの名前は出さず、状態 (通話中・接続中など) だけを出す -->
-	<MkA :to="`/chat/room/${voiceCall.room.id}`" :class="$style.room" :title="i18n.ts._voiceCall.backToRoom">
+	<MkA :to="`/chat/room/${voiceCall.room.id}`" :class="$style.room" :aria-label="i18n.ts._voiceCall.backToRoom" :title="i18n.ts._voiceCall.backToRoom">
 		<i class="ti ti-volume" :class="$style.roomIcon"></i>
-		<span :class="$style.status" aria-live="polite">{{ voiceCallStatusText }}</span>
+		<span :class="$style.status" :aria-live="voiceCallStatusAnnouncedInRoom ? 'off' : 'polite'">{{ voiceCallStatusText }}</span>
 	</MkA>
-	<button v-if="voiceCall.audioBlocked" class="_buttonPrimary" :class="$style.enableAudio" @click="resumeAudio()">
-		{{ i18n.ts._voiceCall.enableAudio }}
+	<button v-if="voiceCall.audioBlocked" class="_buttonPrimary" :class="$style.enableAudio" :aria-label="i18n.ts._voiceCall.enableAudio" :title="i18n.ts._voiceCall.enableAudio" @click="resumeAudio">
+		<i class="ti ti-volume"></i>
+		<span :class="$style.enableAudioLabel">{{ i18n.ts._voiceCall.enableAudio }}</span>
 	</button>
 	<div :class="$style.actions">
 		<button
@@ -79,7 +80,7 @@ import { prefer } from '@/preferences.js';
 import { $i } from '@/i.js';
 import { activeAudioDeviceId, canShareScreen, leaveVoiceCall, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
 import { voiceCallBarPlacement as placement } from '@/utility/voice-call-placement.js';
-import { voiceCallStatusText } from '@/utility/voice-call-status.js';
+import { voiceCallStatusAnnouncedInRoom, voiceCallStatusText } from '@/utility/voice-call-status.js';
 
 const zIndex = os.claimZIndex('middle');
 
@@ -185,7 +186,7 @@ function openSettings(ev: MouseEvent) {
 	min-width: 0;
 	box-sizing: border-box;
 	height: 34px;
-	padding: 0 3px 0 10px;
+	padding: 0 3px;
 	gap: 6px;
 	// 収まりきらないときは左側からはみ出させる。退出ボタンは右端にあるので最後まで切れない
 	justify-content: flex-end;
@@ -194,7 +195,7 @@ function openSettings(ev: MouseEvent) {
 	background: var(--MI_THEME-panelHighlight);
 }
 
-// 入力欄では差し込み先 (voice-call-bar-slot.vue) の幅に合わせて詰める。狭くなるとまず文言を、次にアイコンを隠してボタンだけにする。
+// 入力欄では差し込み先の幅に合わせて文言だけを隠す。ルームへ戻るアイコンは残す。
 // ボタンも収まらない幅では入力欄に置かない (voice-call-placement.ts の MIN_DOCKED_SLOT_WIDTH)
 @container (max-width: 259px) {
 	// 文言は見た目だけ隠し、接続中・再接続中に変わったことは読み上げられるようにする (display: none だと読み上げからも消える)
@@ -212,16 +213,6 @@ function openSettings(ev: MouseEvent) {
 	}
 }
 
-@container (max-width: 199px) {
-	.docked {
-		padding-left: 3px;
-	}
-
-	.docked .room {
-		display: none;
-	}
-}
-
 // モバイル: 画面上端に全幅で置き、ページの中身を下へ押し下げる
 .top {
 	box-sizing: border-box;
@@ -235,7 +226,8 @@ function openSettings(ev: MouseEvent) {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	min-width: 0;
+	min-width: 16px;
+	flex-shrink: 0;
 	color: inherit;
 	text-decoration: none;
 
@@ -269,23 +261,37 @@ function openSettings(ev: MouseEvent) {
 }
 
 .enableAudio {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	flex-shrink: 0;
+	min-width: 28px;
+	box-sizing: border-box;
 	padding: 6px 12px;
 	border-radius: 999px;
 	font-size: 0.85em;
 
-	// 1 行に収める見た目では、狭いときに文言を省略してボタンを押し出さないようにする
+	// 音声再生の操作は狭いときも縮めない。入力欄ではアイコンだけにして幅を確保する
 	.docked &,
 	.top & {
-		flex-shrink: 1;
-		min-width: 0;
+		flex-shrink: 0;
+		min-width: 28px;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 
 	.docked & {
-		padding: 4px 10px;
+		width: 28px;
+		height: 28px;
+		padding: 0;
 	}
+}
+
+// 入力欄では音声再生にも操作ボタンと同じ幅を確保し、文言はアクセシブル名に残す。
+.docked .enableAudioLabel {
+	display: none;
 }
 
 .actions {

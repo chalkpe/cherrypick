@@ -4,16 +4,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<PageWithHeader v-model:tab="tab" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
-	<!-- 広いページで誰かが通話にいるあいだは、通話 (ステージ) とチャットを左右に並べる。ステージはチャットを置く側の反対に出し、DOM の順も見た目に合わせる。
+<PageWithHeader ref="pageEl" v-model:tab="tab" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
+	<!-- 広いページで誰かが通話にいるあいだは、通話 (ステージ) とチャットを左右に並べる。ステージは一つだけ作り、チャットを置く側の反対へ CSS の順序で移す。
 	狭いページでは、通話カードをメッセージの上に貼り付ける -->
 	<div v-if="tab === 'chat'" ref="chatTabEl" :class="{ [$style.split]: split, [$style.chatLeft]: split && chatSide === 'left' }">
-		<XStage v-if="split && room && chatSide === 'right'" :room="room" :call="voiceCallState" :chatSide="chatSide" :class="$style.stage" @swapChatSide="swapChatSide"/>
+		<XStage v-if="split && room" :room="room" :call="voiceCallState" :chatSide="chatSide" :class="$style.stage" @swapChatSide="swapChatSide"/>
 		<div :class="$style.chatPane">
 			<!-- 並べているときはメッセージの欄だけを自分でスクロールさせる -->
-			<div :class="$style.chatScroller">
+			<div ref="chatScrollerEl" :class="$style.chatScroller">
 				<!-- 通話カードはメッセージをスクロールしてもページヘッダーの下に貼り付ける -->
-				<MkStickyContainer class="_spacer" style="--MI_SPACER-w: 700px;">
+				<MkStickyContainer ref="chatStickyEl" class="_spacer" style="--MI_SPACER-w: 700px;">
 					<template #header>
 						<XVoice v-if="room && !split" :room="room" :call="voiceCallState"/>
 					</template>
@@ -82,7 +82,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 			ブラウザは隠れた要素への focus() を無視するので、表示は style で描画と同時に切り替える -->
 			<div ref="paneFormHostEl" :class="$style.paneFooter" :style="split ? undefined : { display: 'none' }"></div>
 		</div>
-		<XStage v-if="split && room && chatSide === 'left'" :room="room" :call="voiceCallState" :chatSide="chatSide" :class="$style.stage" @swapChatSide="swapChatSide"/>
 	</div>
 
 	<div v-else-if="tab === 'search'" class="_spacer" style="--MI_SPACER-w: 700px;">
@@ -420,7 +419,7 @@ onMounted(() => {
 onUnmounted(() => {
 	window.removeEventListener('resize', handleResize);
 	window.document.removeEventListener('fullscreenchange', onFullscreenChange);
-	if (fullscreenReleaseFrame != null) window.cancelAnimationFrame(fullscreenReleaseFrame);
+	if (fullscreenReleaseTimer != null) window.clearTimeout(fullscreenReleaseTimer);
 });
 
 onActivated(() => {
@@ -489,7 +488,7 @@ const tab = ref('chat');
 
 // ウィンドウではなくページ自身の幅で決める (デッキの列やウィジェットでページの幅は変わる)
 const chatTabEl = useTemplateRef('chatTabEl');
-const pageWidth = useElementWidth(chatTabEl);
+const pageWidth = useElementWidth(chatTabEl, releaseFullscreen);
 // 通話カードを出す場面 (誰かが通話にいるか、自分が参加中) で、ページが広ければ通話カードの代わりにステージを横に並べる。
 // モバイルでは横向きなどで広くても並べない (並べた形は、モバイルの画面下のナビゲーションの分を空けていない)
 const wantsSplit = computed(() => !isMobile.value && voiceCallState.showCard.value && pageWidth.value != null && pageWidth.value >= STAGE_MIN_PAGE_WIDTH);
@@ -497,26 +496,25 @@ const wantsSplit = computed(() => !isMobile.value && voiceCallState.showCard.val
 // 全画面のあいだは並べ方を変えない。通話カードの共有画面を全画面にするとページの幅も広がるので、
 // そのまま並べ方を変えるとカードが外れ、全画面にした要素ごと消えて全画面が解けてしまう
 const fullscreen = ref(window.document.fullscreenElement != null);
-let fullscreenReleaseFrame: number | null = null;
+let fullscreenReleaseTimer: number | null = null;
+
+function releaseFullscreen() {
+	if (fullscreenReleaseTimer == null || window.document.fullscreenElement != null) return;
+	window.clearTimeout(fullscreenReleaseTimer);
+	fullscreenReleaseTimer = null;
+	fullscreen.value = false;
+}
 
 function onFullscreenChange() {
-	if (fullscreenReleaseFrame != null) {
-		window.cancelAnimationFrame(fullscreenReleaseFrame);
-		fullscreenReleaseFrame = null;
-	}
+	if (fullscreenReleaseTimer != null) window.clearTimeout(fullscreenReleaseTimer);
+	fullscreenReleaseTimer = null;
 	if (window.document.fullscreenElement != null) {
 		fullscreen.value = true;
 		return;
 	}
-	// 全画面が解けたことは、ページの幅が戻ったと知らされる (ResizeObserver) より先に届く。
-	// すぐに決め直すと全画面のときの幅で一瞬並べてしまうので、幅が測り直されてから決め直す。
-	// 同じフレームの中では requestAnimationFrame のほうが ResizeObserver より先に呼ばれるので、2 回待って次のフレームにする
-	fullscreenReleaseFrame = window.requestAnimationFrame(() => {
-		fullscreenReleaseFrame = window.requestAnimationFrame(() => {
-			fullscreenReleaseFrame = null;
-			fullscreen.value = false;
-		});
-	});
+	// 全画面解除の通知後、次の ResizeObserver の報告を受けてから並べ直す。
+	// 幅が変わらず報告が来ないブラウザでも解除されるよう、時間制限を設ける。
+	fullscreenReleaseTimer = window.setTimeout(releaseFullscreen, 250);
 }
 
 window.document.addEventListener('fullscreenchange', onFullscreenChange);
@@ -542,6 +540,27 @@ watch([wantsSplit, fullscreen, composing], () => {
 }, { immediate: true, flush: 'sync' });
 
 const split = computed(() => tab.value === 'chat' && splitLayout.value);
+
+// スクロール先を付け替える前の位置を覚え、描画直後・次のフレームより前に column-reverse の位置を揃える。
+const pageEl = useTemplateRef('pageEl');
+const chatStickyEl = useTemplateRef('chatStickyEl');
+const chatScrollerEl = useTemplateRef('chatScrollerEl');
+let scrollToRestore = 0;
+
+function currentChatScroller(isSplit: boolean) {
+	return isSplit ? chatScrollerEl.value : getScrollContainer(chatScrollerEl.value?.parentElement ?? null);
+}
+
+watch(split, (_next, previous) => {
+	scrollToRestore = currentChatScroller(previous)?.scrollTop ?? 0;
+}, { flush: 'pre' });
+watch(split, next => {
+	// footer とカードの高さも即時に測り直す。通常の ResizeObserver は 100ms 待つため、それだけでは一瞬ずれる。
+	pageEl.value?.refreshStickyLayout();
+	chatStickyEl.value?.refresh();
+	const scroller = currentChatScroller(next);
+	if (scroller != null) scroller.scrollTop = scrollToRestore;
+}, { flush: 'post' });
 
 // 入力欄を移すと (要素の付け替えで) フォーカスが外れるので、移す前にフォーカスと選択範囲を覚えておき、移したあとに戻す。
 // 戻すのは描画のあと (flush: 'post')。そのときには入力欄の置き場所の表示も描画で切り替わっている
@@ -692,6 +711,10 @@ definePage(computed(() => {
 		min-width: 320px;
 		min-height: 0;
 		border-left: solid 0.5px var(--MI_THEME-divider);
+	}
+
+	&.chatLeft .stage {
+		order: 1;
 	}
 
 	&.chatLeft .chatPane {

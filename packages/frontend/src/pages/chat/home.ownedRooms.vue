@@ -19,11 +19,14 @@ import * as Misskey from 'cherrypick-js';
 import XRoom from './XRoom.vue';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
+import { ensureSignin } from '@/i.js';
+import { isChatRoomVoiceAvailable } from '@/utility/chat-room-voice-availability.js';
 import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
 
+const $i = ensureSignin();
 const fetching = ref(true);
 const rooms = ref<Misskey.entities.ChatRoom[]>([]);
-const voiceStates = useChatRoomVoiceStates(computed(() => rooms.value.map(room => room.id)));
+const voiceStates = useChatRoomVoiceStates(computed(() => rooms.value.filter(room => isChatRoomVoiceAvailable(room, $i.policies.canVoiceCall)).map(room => room.id)));
 
 async function fetchRooms() {
 	fetching.value = true;

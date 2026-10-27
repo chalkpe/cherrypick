@@ -265,7 +265,7 @@ export interface Locale extends ILocale {
      * サーバー管理者が{name}を使用できないように設定しました。
      * {name}を使用するには、サーバー管理者にお問い合わせください。
      */
-    "cantUseThisFunctionDescription": ParameterizedString<"name" | "name">;
+    "cantUseThisFunctionDescription": ParameterizedString<"name">;
     /**
      * 有効にすると、再利用できるときに{name}を適用します。
      */
@@ -9303,7 +9303,7 @@ export interface Locale extends ILocale {
         /**
          * この通話は{host}で開かれます。{host}にはあなたのIPアドレスが見えます。
          */
-        "remoteHostNotice": ParameterizedString<"host" | "host">;
+        "remoteHostNotice": ParameterizedString<"host">;
         /**
          * このルームのサーバーは通話に対応していません。
          */

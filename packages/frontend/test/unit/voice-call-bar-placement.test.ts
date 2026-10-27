@@ -40,6 +40,7 @@ vi.mock('@/utility/emoji-picker.js', () => ({ emojiPicker: { show: vi.fn() } }))
 vi.mock('@/utility/drive.js', () => ({ selectFile: vi.fn() }));
 
 import { installFakeResizeObserver, resizeObserved } from './fake-resize-observer.js';
+import { voiceCall } from '@/utility/voice-call.js';
 import { i18n } from '@/i18n.js';
 import XVoiceCallBar from '@/ui/_common_/voice-call-bar.vue';
 import XVoiceCallBarSlot from '@/ui/_common_/voice-call-bar-slot.vue';
@@ -90,6 +91,7 @@ function renderApp(options: { form?: ReturnType<typeof ref<boolean>> } = {}) {
 }
 
 beforeEach(async () => {
+	(voiceCall as unknown as { audioBlocked: boolean }).audioBlocked = false;
 	await setWidth(1024);
 });
 
@@ -241,6 +243,16 @@ describe('voice call bar placement', () => {
 		await resizeElement(slot, 330 - 3 * 50);
 		expect(variantOf(bar())).toMatch(/docked/);
 		expect(slot.contains(bar())).toBe(true);
+	});
+
+	test('keeps a named return link and a dedicated audio icon in a narrow slot', async () => {
+		(voiceCall as unknown as { audioBlocked: boolean }).audioBlocked = true;
+		const { container } = renderApp();
+		await flush();
+		await resizeElement(chatFormSlot(container), 190);
+		expect(within(bar()).getByRole('link', { name: i18n.ts._voiceCall.backToRoom })).toBeTruthy();
+		const audio = within(bar()).getByRole('button', { name: i18n.ts._voiceCall.enableAudio });
+		expect(audio.querySelector('i')).not.toBeNull();
 	});
 
 	test('moves between the chat form and the top as the window is resized', async () => {

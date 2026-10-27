@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { computed } from 'vue';
+import { computed, onActivated, onDeactivated, onScopeDispose, ref, shallowRef, watch } from 'vue';
+import type { Ref } from 'vue';
 import { i18n } from '@/i18n.js';
 import { voiceCall } from '@/utility/voice-call.js';
 
@@ -18,3 +19,25 @@ export const voiceCallStatusText = computed(() => {
 		default: return i18n.ts._voiceCall.inCall;
 	}
 });
+
+// ルーム内の見出しが読み上げるあいだは、共通の通話バーで同じ状態を二重に読み上げない。
+const roomAnnouncers = shallowRef(new Set<symbol>());
+export const voiceCallStatusAnnouncedInRoom = computed(() => roomAnnouncers.value.size > 0);
+
+export function useVoiceCallStatusAnnouncer(inThisCall: Readonly<Ref<boolean>>) {
+	const key = Symbol();
+	const active = ref(true);
+
+	function update(announces: boolean) {
+		const next = new Set(roomAnnouncers.value);
+		if (announces) next.add(key);
+		else next.delete(key);
+		roomAnnouncers.value = next;
+	}
+
+	watch(() => active.value && inThisCall.value, update, { immediate: true, flush: 'sync' });
+	onDeactivated(() => { active.value = false; });
+	onActivated(() => { active.value = true; });
+	onScopeDispose(() => update(false));
+	return computed(() => [...roomAnnouncers.value].at(-1) === key);
+}

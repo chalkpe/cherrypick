@@ -9,10 +9,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<div :class="$style.header">
 			<i class="ti ti-volume" :class="$style.headerIcon"></i>
 			<!-- 参加中は通話の状態 (通話中・接続中・再接続中) を出し、変わったら読み上げる -->
-			<span :class="$style.title" aria-live="polite">{{ inThisCall ? voiceCallStatusText : room.name }}</span>
+			<span :class="$style.title" :aria-live="announcesStatus ? 'polite' : 'off'">{{ inThisCall ? voiceCallStatusText : room.name }}</span>
 			<div :class="$style.actions">
 				<XControls v-if="inThisCall"/>
-				<MkButton v-else primary rounded small @click="join()"><i class="ti ti-phone"></i> {{ i18n.ts._voiceCall.join }}</MkButton>
+				<MkButton v-else primary rounded small @click="join"><i class="ti ti-phone"></i> {{ i18n.ts._voiceCall.join }}</MkButton>
 			</div>
 		</div>
 		<div v-if="participants.length > 0" :class="$style.participants">
@@ -42,7 +42,7 @@ import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
 import type { ChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { toggleScreenShareWatch, voiceCall } from '@/utility/voice-call.js';
-import { voiceCallStatusText } from '@/utility/voice-call-status.js';
+import { useVoiceCallStatusAnnouncer, voiceCallStatusText } from '@/utility/voice-call-status.js';
 
 const props = defineProps<{
 	room: Misskey.entities.ChatRoom;
@@ -51,6 +51,8 @@ const props = defineProps<{
 
 // カードを出すかどうかと参加の流れ、参加者のメニューはページヘッダーやステージと共有するので、ページ側で作ったものを使う
 const { showCard, inThisCall, participants, join, myIdentity, isOwner, openParticipantMenu, watchedParticipants } = props.call;
+
+const announcesStatus = useVoiceCallStatusAnnouncer(inThisCall);
 </script>
 
 <style lang="scss" module>
