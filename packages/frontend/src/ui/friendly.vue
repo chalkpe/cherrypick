@@ -16,6 +16,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<XPreferenceRestore v-if="shouldSuggestRestoreBackup"/>
 				<XAnnouncements v-if="$i"/>
 				<XStatusBars :class="$style.statusbars"/>
+				<!-- モバイルでは通話バーがここ (ページの上) に入る -->
+				<XVoiceCallBarSlot kind="top"/>
 			</div>
 			<StackingRouterView v-if="prefer.s['experimental.stackingRouterView']" :class="$style.content"/>
 			<RouterView v-else :class="$style.content"/>
@@ -68,6 +70,7 @@ import XPreferenceRestore from '@/ui/_common_/PreferenceRestore.vue';
 import XReloadSuggestion from '@/ui/_common_/ReloadSuggestion.vue';
 import XTitlebar from '@/ui/_common_/titlebar.vue';
 import XSidebar from '@/ui/friendly/navbar.vue';
+import XVoiceCallBarSlot from '@/ui/_common_/voice-call-bar-slot.vue';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
 import { $i } from '@/i.js';

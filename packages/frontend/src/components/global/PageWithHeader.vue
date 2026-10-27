@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <div ref="rootEl" :class="reversed ? '_pageScrollableReversed' : '_pageScrollable'">
-	<MkStickyContainer>
+	<MkStickyContainer ref="stickyContainerEl">
 		<template #header>
 			<MkPageHeader v-if="notification" v-model:tab="tab" v-bind="pageHeaderProps" :actions="actions" :tabs="props.tabs ?? []" :displayMyAvatar="displayMyAvatar" :title="i18n.ts.notifications" :icon="'ti ti-bell'" notification/>
 			<CPPageHeader v-else-if="isMobile && prefer.s.mobileHeaderChange && !popup" v-model:tab="tab" v-bind="pageHeaderProps" :actions="actions" :tabs="props.tabs ?? []" :displayMyAvatar="displayMyAvatar" :disableFollowButton="(user && (user.isBlocked || user.isBlocking)) == true"/>
@@ -74,6 +74,12 @@ const pageHeaderPropsWithoutTabs = computed(() => {
 
 const tab = defineModel<string>('tab');
 const rootEl = useTemplateRef('rootEl');
+const stickyContainerEl = useTemplateRef('stickyContainerEl');
+
+// 入力欄の移動など、ページ内の配置を変えた直後にも貼り付き位置を揃える。
+function refreshStickyLayout() {
+	stickyContainerEl.value?.refresh();
+}
 
 useScrollPositionKeeper(rootEl);
 
@@ -95,6 +101,7 @@ onUnmounted(() => {
 
 defineExpose({
 	scrollToTop,
+	refreshStickyLayout,
 });
 </script>
 

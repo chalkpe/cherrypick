@@ -90,6 +90,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <XStreamIndicator/>
 
+<XVoiceCallBar v-if="voiceCall.status !== 'idle'"/>
+
 <div v-if="pendingApiRequestsCount > 0" id="wait">
 	<svg viewBox="0 0 50 50" xmlns="http://www.w3.org/2000/svg">
 		<circle cx="25" cy="25" r="20" fill="none" stroke-width="6px" style="fill: none; stroke-width: 6px;"></circle>
@@ -127,8 +129,10 @@ import XNavbar from '@/ui/_common_/navbar.vue';
 import XNavbarFriendly from '@/ui/friendly/navbar.vue';
 import { haptic } from '@/utility/haptic.js';
 import { isFriendly } from '@/utility/is-friendly.js';
+import { voiceCall } from '@/utility/voice-call.js';
 
 const XStreamIndicator = defineAsyncComponent(() => import('./stream-indicator.vue'));
+const XVoiceCallBar = defineAsyncComponent(() => import('./voice-call-bar.vue'));
 const XWidgets = defineAsyncComponent(() => import('./widgets.vue'));
 
 const drawerMenuShowing = defineModel<boolean>('drawerMenuShowing');

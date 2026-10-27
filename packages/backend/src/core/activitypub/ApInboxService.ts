@@ -17,6 +17,8 @@ import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NoteCreateService } from '@/core/NoteCreateService.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ChatService } from '@/core/ChatService.js';
+import { ChatVoiceService } from '@/core/ChatVoiceService.js';
+import { LiveKitService } from '@/core/LiveKitService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { acquireApObjectLock } from '@/misc/distributed-lock.js';
 import { concat, toArray, toSingle, unique } from '@/misc/prelude/array.js';
@@ -99,6 +101,8 @@ export class ApInboxService {
 		private noteDeleteService: NoteDeleteService,
 		private notificationService: NotificationService,
 		private chatService: ChatService,
+		private chatVoiceService: ChatVoiceService,
+		private liveKitService: LiveKitService,
 		private roleService: RoleService,
 		private apResolverService: ApResolverService,
 		private apDbResolverService: ApDbResolverService,
@@ -1012,6 +1016,18 @@ export class ApInboxService {
 			});
 
 			this.logger.info(`[ApInboxService.remove] Deleted membership, affected rows: ${result.affected}, room: ${room.id}, user: ${actor.id}`);
+
+			// このサーバーが持つルームなら、抜けたメンバーを通話からも外す。
+			// 外せなくてもジョブは失敗させない。メンバーでない参加者は通話の定期的な読み直し (ChatVoiceService.sweep) が外す
+			if ((result.affected ?? 0) > 0) {
+				const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+				if (owner != null && owner.host == null) {
+					await this.liveKitService.removeParticipant(room.id, this.liveKitService.identityOf(actor)).catch(err => {
+						this.logger.warn(`[ApInboxService.remove] Failed to remove ${actor.uri} from the voice call in ${room.id}`, { error: err });
+					});
+				}
+			}
+
 			return 'ok: removed from chat room';
 		}
 
@@ -1200,6 +1216,11 @@ export class ApInboxService {
 	private async update(actor: MiRemoteUser, activity: IUpdate, resolver?: Resolver): Promise<string> {
 		if (actor.uri !== getApId(activity.actor)) {
 			return 'skip: invalid actor';
+		}
+
+		// 通話の参加者の現況はルームの持ち主から中身ごと届く。URL だけのものは受け付けないので、ここでは何も取りに行かない
+		if (typeof activity.object !== 'string' && getApType(activity.object) === 'ChatRoomVoiceState') {
+			return await this.chatVoiceService.receiveRemoteSnapshot(actor, activity.object);
 		}
 
 		this.logger.debug(`Update: ${getApId(activity.object)}`);

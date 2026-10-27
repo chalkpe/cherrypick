@@ -571,6 +571,16 @@ const extension_context_definition = {
 	cherrypick: 'https://kokonect.link/ns#',
 	setFederationAvatarShape: 'cherrypick:setFederationAvatarShape',
 	isSquareAvatars: 'cherrypick:isSquareAvatars',
+	ChatRoomVoiceState: 'cherrypick:ChatRoomVoiceState',
+	room: {
+		'@id': 'cherrypick:room',
+		'@type': '@id',
+	},
+	participants: {
+		'@id': 'cherrypick:participants',
+		'@container': '@set',
+	},
+	screenSharing: 'cherrypick:screenSharing',
 } satisfies Context;
 
 export const CONTEXT: (string | Context)[] = [...context_iris, extension_context_definition];

@@ -4,57 +4,83 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<PageWithHeader v-model:tab="tab" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
-	<div v-if="tab === 'chat'" class="_spacer" style="--MI_SPACER-w: 700px;">
-		<div class="_gaps">
-			<div v-if="initializing">
-				<MkLoading/>
-			</div>
-
-			<div v-else-if="messages.length === 0">
-				<div class="_gaps" style="text-align: center;">
-					<div>{{ i18n.ts._chat.noMessagesYet }}</div>
-					<template v-if="user">
-						<div v-if="user.chatScope === 'followers'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromFollowers }}</div>
-						<div v-else-if="user.chatScope === 'following'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromFollowing }}</div>
-						<div v-else-if="user.chatScope === 'mutual'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromMutualFollowing }}</div>
-						<div v-else-if="user.chatScope === 'none'">{{ i18n.ts._chat.thisUserNotAllowedChatAnyone }}</div>
+<PageWithHeader ref="pageEl" v-model:tab="tab" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
+	<!-- 広いページで誰かが通話にいるあいだは、通話 (ステージ) とチャットを左右に並べる。ステージは一つだけ作り、チャットを置く側の反対へ CSS の順序で移す。
+	狭いページでは、通話カードをメッセージの上に貼り付ける -->
+	<div v-if="tab === 'chat'" ref="chatTabEl" :class="{ [$style.split]: split, [$style.chatLeft]: split && chatSide === 'left' }">
+		<XStage v-if="split && room" :room="room" :call="voiceCallState" :chatSide="chatSide" :class="$style.stage" @swapChatSide="swapChatSide"/>
+		<div :class="$style.chatPane">
+			<!-- 並べているときはメッセージの欄だけを自分でスクロールさせる -->
+			<div ref="chatScrollerEl" :class="$style.chatScroller">
+				<!-- 通話カードはメッセージをスクロールしてもページヘッダーの下に貼り付ける -->
+				<MkStickyContainer ref="chatStickyEl" class="_spacer" style="--MI_SPACER-w: 700px;">
+					<template #header>
+						<XVoice v-if="room && !split" :room="room" :call="voiceCallState"/>
 					</template>
-					<template v-else-if="room">
-						<div>{{ i18n.ts._chat.inviteUserToChat }}</div>
-					</template>
-				</div>
-			</div>
-
-			<div v-else ref="timelineEl" class="_gaps">
-				<div v-if="canFetchMore">
-					<MkButton :class="$style.more" :wait="moreFetching" primary rounded @click="fetchMore">{{ i18n.ts.loadMore }}</MkButton>
-				</div>
-
-				<TransitionGroup
-					:enterActiveClass="prefer.s.animation ? $style.transition_x_enterActive : ''"
-					:leaveActiveClass="prefer.s.animation ? $style.transition_x_leaveActive : ''"
-					:enterFromClass="prefer.s.animation ? $style.transition_x_enterFrom : ''"
-					:leaveToClass="prefer.s.animation ? $style.transition_x_leaveTo : ''"
-					:moveClass="prefer.s.animation ? $style.transition_x_move : ''"
-					tag="div" class="_gaps"
-				>
-					<template v-for="item in timeline.toReversed()" :key="item.id">
-						<XMessage v-if="item.type === 'item'" :message="item.data"/>
-						<div v-else-if="item.type === 'date'" :class="$style.dateDivider">
-							<span><i class="ti ti-chevron-up"></i> {{ item.nextText }}</span>
-							<span style="height: 1em; width: 1px; background: var(--MI_THEME-divider);"></span>
-							<span>{{ item.prevText }} <i class="ti ti-chevron-down"></i></span>
+					<div class="_gaps">
+						<div v-if="initializing">
+							<MkLoading/>
 						</div>
-					</template>
-				</TransitionGroup>
-			</div>
 
-			<div v-if="user && !user.canChat">
-				<MkInfo warn>{{ i18n.ts._chat.chatNotAvailableInOtherAccount }}</MkInfo>
-			</div>
+						<div v-else-if="messages.length === 0">
+							<div class="_gaps" style="text-align: center;">
+								<div>{{ i18n.ts._chat.noMessagesYet }}</div>
+								<template v-if="user">
+									<div v-if="user.chatScope === 'followers'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromFollowers }}</div>
+									<div v-else-if="user.chatScope === 'following'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromFollowing }}</div>
+									<div v-else-if="user.chatScope === 'mutual'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromMutualFollowing }}</div>
+									<div v-else-if="user.chatScope === 'none'">{{ i18n.ts._chat.thisUserNotAllowedChatAnyone }}</div>
+								</template>
+								<template v-else-if="room">
+									<div>{{ i18n.ts._chat.inviteUserToChat }}</div>
+								</template>
+							</div>
+						</div>
 
-			<MkInfo v-if="$i.policies.chatAvailability !== 'available'" warn>{{ $i.policies.chatAvailability === 'readonly' ? i18n.ts._chat.chatIsReadOnlyForThisAccountOrServer : i18n.ts._chat.chatNotAvailableForThisAccountOrServer }}</MkInfo>
+						<div v-else ref="timelineEl" class="_gaps" :class="{ [$style.ownScroller]: split }">
+							<div v-if="canFetchMore">
+								<MkButton :class="$style.more" :wait="moreFetching" primary rounded @click="fetchMore">{{ i18n.ts.loadMore }}</MkButton>
+							</div>
+
+							<TransitionGroup
+								:enterActiveClass="prefer.s.animation ? $style.transition_x_enterActive : ''"
+								:leaveActiveClass="prefer.s.animation ? $style.transition_x_leaveActive : ''"
+								:enterFromClass="prefer.s.animation ? $style.transition_x_enterFrom : ''"
+								:leaveToClass="prefer.s.animation ? $style.transition_x_leaveTo : ''"
+								:moveClass="prefer.s.animation ? $style.transition_x_move : ''"
+								tag="div" class="_gaps"
+							>
+								<template v-for="(item, i) in displayTimeline" :key="item.id">
+									<!-- TransitionGroup は直下の子コンポーネントを毎回描き直させるので、吹き出しは要素で包む。
+									こうすると新着が来ても、まとまりの位置 (真偽値) が変わった吹き出しだけが描き直される -->
+									<div v-if="item.type === 'item'" :class="{ [$style.stackedMessage]: groupPositions[i]?.first === false }">
+										<XMessage
+											:message="item.data"
+											:firstInGroup="groupPositions[i]?.first ?? true"
+											:lastInGroup="groupPositions[i]?.last ?? true"
+										/>
+									</div>
+									<div v-else-if="item.type === 'date'" :class="$style.dateDivider">
+										<span><i class="ti ti-chevron-up"></i> {{ item.nextText }}</span>
+										<span style="height: 1em; width: 1px; background: var(--MI_THEME-divider);"></span>
+										<span>{{ item.prevText }} <i class="ti ti-chevron-down"></i></span>
+									</div>
+								</template>
+							</TransitionGroup>
+						</div>
+
+						<div v-if="user && !user.canChat">
+							<MkInfo warn>{{ i18n.ts._chat.chatNotAvailableInOtherAccount }}</MkInfo>
+						</div>
+
+						<MkInfo v-if="$i.policies.chatAvailability !== 'available'" warn>{{ $i.policies.chatAvailability === 'readonly' ? i18n.ts._chat.chatIsReadOnlyForThisAccountOrServer : i18n.ts._chat.chatNotAvailableForThisAccountOrServer }}</MkInfo>
+					</div>
+				</MkStickyContainer>
+			</div>
+			<!-- 並べているときの入力欄の置き場所。入力欄はページの下端 (footer) からここへ移ってくる。
+			v-show は描画のあと (フォーカスを戻す watch より後) に表示を切り替えるので、隠れた所へ focus() してしまう。
+			ブラウザは隠れた要素への focus() を無視するので、表示は style で描画と同時に切り替える -->
+			<div ref="paneFormHostEl" :class="$style.paneFooter" :style="split ? undefined : { display: 'none' }"></div>
 		</div>
 	</div>
 
@@ -71,24 +97,29 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 
 	<template #footer>
-		<div v-if="tab === 'chat'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]">
-			<div class="_gaps">
-				<Transition name="fade">
-					<div v-show="showIndicator" :class="$style.new">
-						<button class="_buttonPrimary" :class="$style.newButton" @click="onIndicatorClick">
-							<i class="fas ti-fw fa-arrow-circle-down" :class="$style.newIcon"></i>{{ i18n.ts._chat.newMessage }}
-						</button>
-					</div>
-				</Transition>
-				<XForm v-if="initialized" :user="user" :room="room" :class="$style.form"/>
-			</div>
+		<!-- 表示は v-show ではなく style で切り替える (上の paneFormHostEl と同じ理由) -->
+		<div v-if="tab === 'chat'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]" :style="split ? { display: 'none' } : undefined">
+			<!-- 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (並べているときはメッセージの欄の下へ)。
+			作り直すとフォーカスが外れてページ全体のショートカットが効いてしまい、変換中の文字や送信中の状態も失われる -->
+			<Teleport v-if="paneFormHostEl != null" :to="paneFormHostEl" :disabled="!split">
+				<div ref="formEl" class="_gaps" @compositionstart="composing = true" @compositionend="composing = false" @focusout="composing = false">
+					<Transition name="fade">
+						<div v-show="showIndicator" :class="$style.new">
+							<button class="_buttonPrimary" :class="$style.newButton" @click="onIndicatorClick">
+								<i class="fas ti-fw fa-arrow-circle-down" :class="$style.newIcon"></i>{{ i18n.ts._chat.newMessage }}
+							</button>
+						</div>
+					</Transition>
+					<XForm v-if="initialized" :user="user" :room="room" :class="$style.form"/>
+				</div>
+			</Teleport>
 		</div>
 	</template>
 </PageWithHeader>
 </template>
 
 <script lang="ts" setup>
-import { ref, useTemplateRef, computed, onMounted, onBeforeUnmount, onDeactivated, onActivated, onUnmounted } from 'vue';
+import { ref, useTemplateRef, computed, watch, onMounted, onBeforeUnmount, onDeactivated, onActivated, onUnmounted } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { getScrollContainer } from '@@/js/scroll.js';
 import XMessage from './XMessage.vue';
@@ -96,6 +127,8 @@ import XForm from './room.form.vue';
 import XSearch from './room.search.vue';
 import XMembers from './room.members.vue';
 import XInfo from './room.info.vue';
+import XVoice from './room.voice.vue';
+import XStage from './room.voice.stage.vue';
 import type { MenuItem } from '@/types/menu.js';
 import type { PageHeaderItem } from '@/types/page-header.js';
 import * as os from '@/os.js';
@@ -111,11 +144,16 @@ import { useRouter } from '@/router.js';
 import { useMutationObserver } from '@/composables/use-mutation-observer.js';
 import MkInfo from '@/components/MkInfo.vue';
 import { makeDateSeparatedTimelineComputedRef } from '@/utility/timeline-date-separate.js';
+import { getChatMessageGroupPositions } from '@/utility/chat-message-grouping.js';
 import { acct as getAcct } from '@@/js/user.js';
 import { isFriendly } from '@/utility/is-friendly.js';
 import { deviceKind } from '@/utility/device-kind.js';
+import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
+import { useElementWidth } from '@/composables/use-element-width.js';
 
 const MOBILE_THRESHOLD = 500;
+// ページ自身の幅がこれ以上あれば、通話とチャットを左右に並べる
+const STAGE_MIN_PAGE_WIDTH = 960;
 
 const isMobile = ref(deviceKind === 'smartphone' || window.innerWidth <= MOBILE_THRESHOLD);
 const handleResize = () => {
@@ -151,6 +189,11 @@ const connection = ref<Misskey.IChannelConnection<Misskey.Channels['chatUser']> 
 const showIndicator = ref(false);
 const timelineEl = useTemplateRef('timelineEl');
 const timeline = makeDateSeparatedTimelineComputedRef(messages);
+// 画面には古い順に並べる
+const displayTimeline = computed(() => timeline.value.toReversed());
+// 同じ送信者が続けて送ったメッセージは吹き出しをまとめて詰めて表示する
+const groupPositions = computed(() => getChatMessageGroupPositions(displayTimeline.value));
+const voiceCallState = useChatRoomVoiceCall(room);
 
 const SCROLL_HEAD_THRESHOLD = 200;
 
@@ -375,6 +418,8 @@ onMounted(() => {
 
 onUnmounted(() => {
 	window.removeEventListener('resize', handleResize);
+	window.document.removeEventListener('fullscreenchange', onFullscreenChange);
+	if (fullscreenReleaseTimer != null) window.clearTimeout(fullscreenReleaseTimer);
 });
 
 onActivated(() => {
@@ -441,6 +486,117 @@ function showMenu(ev: PointerEvent) {
 
 const tab = ref('chat');
 
+// ウィンドウではなくページ自身の幅で決める (デッキの列やウィジェットでページの幅は変わる)
+const chatTabEl = useTemplateRef('chatTabEl');
+const pageWidth = useElementWidth(chatTabEl, releaseFullscreen);
+// 通話カードを出す場面 (誰かが通話にいるか、自分が参加中) で、ページが広ければ通話カードの代わりにステージを横に並べる。
+// モバイルでは横向きなどで広くても並べない (並べた形は、モバイルの画面下のナビゲーションの分を空けていない)
+const wantsSplit = computed(() => !isMobile.value && voiceCallState.showCard.value && pageWidth.value != null && pageWidth.value >= STAGE_MIN_PAGE_WIDTH);
+
+// 全画面のあいだは並べ方を変えない。通話カードの共有画面を全画面にするとページの幅も広がるので、
+// そのまま並べ方を変えるとカードが外れ、全画面にした要素ごと消えて全画面が解けてしまう
+const fullscreen = ref(window.document.fullscreenElement != null);
+let fullscreenReleaseTimer: number | null = null;
+
+function releaseFullscreen() {
+	if (fullscreenReleaseTimer == null || window.document.fullscreenElement != null) return;
+	window.clearTimeout(fullscreenReleaseTimer);
+	fullscreenReleaseTimer = null;
+	fullscreen.value = false;
+}
+
+function onFullscreenChange() {
+	if (fullscreenReleaseTimer != null) window.clearTimeout(fullscreenReleaseTimer);
+	fullscreenReleaseTimer = null;
+	if (window.document.fullscreenElement != null) {
+		fullscreen.value = true;
+		return;
+	}
+	// 全画面解除の通知後、次の ResizeObserver の報告を受けてから並べ直す。
+	// 幅が変わらず報告が来ないブラウザでも解除されるよう、時間制限を設ける。
+	fullscreenReleaseTimer = window.setTimeout(releaseFullscreen, 250);
+}
+
+window.document.addEventListener('fullscreenchange', onFullscreenChange);
+
+// 入力欄で変換中 (IME) のあいだも並べ方を変えない。入力欄を移すと変換中の文字が確定されたり消えたりする
+const composing = ref(false);
+
+// 変換を終えないまま入力欄が消えたり裏に回ったりすると compositionend が届かないことがあるので、そこで忘れる
+watch(tab, () => {
+	composing.value = false;
+});
+
+onDeactivated(() => {
+	composing.value = false;
+});
+
+// 実際の並べ方。全画面や変換中のあいだは前の並べ方のままにして、終わったら今の幅などで決め直す
+const splitLayout = ref(false);
+
+watch([wantsSplit, fullscreen, composing], () => {
+	if (fullscreen.value || composing.value || window.document.fullscreenElement != null) return;
+	splitLayout.value = wantsSplit.value;
+}, { immediate: true, flush: 'sync' });
+
+const split = computed(() => tab.value === 'chat' && splitLayout.value);
+
+// スクロール先を付け替える前の位置を覚え、描画直後・次のフレームより前に column-reverse の位置を揃える。
+const pageEl = useTemplateRef('pageEl');
+const chatStickyEl = useTemplateRef('chatStickyEl');
+const chatScrollerEl = useTemplateRef('chatScrollerEl');
+let scrollToRestore = 0;
+
+function currentChatScroller(isSplit: boolean) {
+	return isSplit ? chatScrollerEl.value : getScrollContainer(chatScrollerEl.value?.parentElement ?? null);
+}
+
+watch(split, (_next, previous) => {
+	scrollToRestore = currentChatScroller(previous)?.scrollTop ?? 0;
+}, { flush: 'pre' });
+watch(split, next => {
+	// footer とカードの高さも即時に測り直す。通常の ResizeObserver は 100ms 待つため、それだけでは一瞬ずれる。
+	pageEl.value?.refreshStickyLayout();
+	chatStickyEl.value?.refresh();
+	const scroller = currentChatScroller(next);
+	if (scroller != null) scroller.scrollTop = scrollToRestore;
+}, { flush: 'post' });
+
+// 入力欄を移すと (要素の付け替えで) フォーカスが外れるので、移す前にフォーカスと選択範囲を覚えておき、移したあとに戻す。
+// 戻すのは描画のあと (flush: 'post')。そのときには入力欄の置き場所の表示も描画で切り替わっている
+const paneFormHostEl = useTemplateRef('paneFormHostEl');
+const formEl = useTemplateRef('formEl');
+let focusToRestore: { el: HTMLElement; selection: [number, number, 'forward' | 'backward' | 'none'] | null } | null = null;
+
+watch(split, () => {
+	const active = window.document.activeElement;
+	if (formEl.value == null || !(active instanceof HTMLElement) || !formEl.value.contains(active)) {
+		focusToRestore = null;
+		return;
+	}
+	focusToRestore = {
+		el: active,
+		selection: active instanceof HTMLTextAreaElement ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null,
+	};
+}, { flush: 'pre' });
+
+watch(split, () => {
+	const target = focusToRestore;
+	focusToRestore = null;
+	if (target == null || !target.el.isConnected || window.document.activeElement === target.el) return;
+	target.el.focus({ preventScroll: true });
+	if (target.selection != null && target.el instanceof HTMLTextAreaElement) {
+		target.el.setSelectionRange(...target.selection);
+	}
+}, { flush: 'post' });
+
+// 設定が変わったらすぐ並びを変えたいので、変更を追える prefer.r を見る
+const chatSide = computed(() => prefer.r['voiceCall.stageChatSide'].value);
+
+function swapChatSide() {
+	prefer.commit('voiceCall.stageChatSide', chatSide.value === 'right' ? 'left' : 'right');
+}
+
 const headerTabs = computed(() => room.value ? [{
 	key: 'chat',
 	title: i18n.ts._chat.messages,
@@ -467,10 +623,27 @@ const headerTabs = computed(() => room.value ? [{
 	icon: 'ti ti-search',
 }]);
 
-const headerActions = computed<PageHeaderItem[]>(() => [{
-	icon: 'ti ti-dots',
-	handler: showMenu,
-}]);
+// ヘッダーの参加ボタン。メッセージのタブでは通話カード (誰かが通話にいるときだけ出る) から参加できるので、カードが無いときだけ出す。
+// ほかのタブにはカードが無いので、自分が通話にいなければいつでも出す
+const showHeaderJoin = computed(() => {
+	if (!voiceCallState.available.value || voiceCallState.inThisCall.value) return false;
+	return tab.value !== 'chat' || !voiceCallState.showCard.value;
+});
+
+const headerActions = computed<PageHeaderItem[]>(() => [
+	...(showHeaderJoin.value ? [{
+		icon: 'ti ti-phone',
+		text: i18n.ts._voiceCall.join,
+		handler: () => {
+			voiceCallState.join();
+		},
+	}] : []),
+	{
+		icon: 'ti ti-dots',
+		text: i18n.ts.menu,
+		handler: showMenu,
+	},
+]);
 
 definePage(computed(() => {
 	if (initialized.value) {
@@ -522,6 +695,56 @@ definePage(computed(() => {
 	margin: 0 auto;
 }
 
+// 左右に並べるときは、ページヘッダーと下端の間 (スクロールしない高さ) にちょうど収める
+.split {
+	display: flex;
+	height: calc(100cqh - var(--MI-stickyTop, 0px) - var(--MI-stickyBottom, 0px));
+
+	.stage {
+		flex: 1 1 0;
+	}
+
+	.chatPane {
+		display: flex;
+		flex: 0 1 400px;
+		flex-direction: column;
+		min-width: 320px;
+		min-height: 0;
+		border-left: solid 0.5px var(--MI_THEME-divider);
+	}
+
+	&.chatLeft .stage {
+		order: 1;
+	}
+
+	&.chatLeft .chatPane {
+		border-left: none;
+		border-right: solid 0.5px var(--MI_THEME-divider);
+	}
+
+	// ページと同じく、新しいメッセージが下に来るよう逆向きにスクロールさせる
+	.chatScroller {
+		display: flex;
+		flex: 1;
+		flex-direction: column-reverse;
+		min-height: 0;
+		overflow-y: scroll;
+		overscroll-behavior: contain;
+		container-type: inline-size;
+		background: var(--MI_THEME-bg);
+	}
+}
+
+// メッセージの欄だけがスクロールするので、アイコンはページヘッダーではなく欄の上端を基準に貼り付ける
+.ownScroller {
+	--MI-stickyTop: 0px;
+}
+
+.paneFooter {
+	flex-shrink: 0;
+	padding-top: 8px;
+}
+
 .footer {
 	width: 100%;
 	padding-top: 8px;
@@ -564,6 +787,11 @@ definePage(computed(() => {
 .fade-enter-from, .fade-leave-to {
 	transition: opacity 0.5s;
 	opacity: 0;
+}
+
+// まとまりの2つ目以降の吹き出しは、前の吹き出しとの間を詰める
+.stackedMessage {
+	margin-top: calc(2px - var(--MI-margin));
 }
 
 .dateDivider {

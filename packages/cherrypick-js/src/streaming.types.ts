@@ -2,6 +2,7 @@ import {
 	Antenna,
 	ChatMessage,
 	ChatMessageLite,
+	ChatRoomVoiceState,
 	DriveFile,
 	DriveFolder,
 	Note,
@@ -52,6 +53,7 @@ export type Channels = {
 			notificationFlushed: () => void;
 			unreadAntenna: (payload: Antenna) => void;
 			newChatMessage: (payload: ChatMessage) => void;
+			chatRoomVoiceState: (payload: ChatRoomVoiceState) => void;
 			readAllAnnouncements: () => void;
 			myTokenRegenerated: () => void;
 			signin: (payload: Signin) => void;

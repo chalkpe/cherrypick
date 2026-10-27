@@ -4,7 +4,12 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
+import { TwirpError } from 'livekit-server-sdk';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { LiveKitService } from '@/core/LiveKitService.js';
+import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
+import { JsonLdService } from '@/core/activitypub/JsonLdService.js';
+import { parseChatRoomVoiceState } from '@/core/activitypub/misc/chat-room-voice-state.js';
 import { UtilityService } from '@/core/UtilityService.js';
 
 type Row = { id: string; [key: string]: unknown };
@@ -118,12 +123,24 @@ function fixture(options: {
 	]);
 	let seq = 0;
 	const notificationService = { createNotification: vi.fn() };
+	const chatVoiceService = { receiveRemoteSnapshot: vi.fn(async () => 'ok: voice state stored') };
+	const usersById = new Map([localOwner, alice, remoteOwner, invitedRemote, dave].map(user => [user.id, user]));
+	const liveKitService = {
+		identityOf: (user: { id: string; host: string | null; uri: string | null }) => user.host == null ? `${LOCAL}/users/${user.id}` : user.uri,
+		removeParticipant: vi.fn(async (_roomId: string, _identity: string) => {}),
+	};
+	const resolver = { resolve: vi.fn() };
+	const apResolverService = { createResolver: vi.fn(async () => resolver) };
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 		logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 		db,
 		chatRoomsRepository: rooms,
 		chatRoomInvitationsRepository: invitations,
 		chatRoomMembershipsRepository: memberships,
+		usersRepository: {
+			findOneBy: async ({ id }: { id: string }) => usersById.get(id) ?? null,
+		},
+		liveKitService,
 		chatService: {
 			isRoomMember: async (room: Row, userId: string) => room.ownerId === userId || memberships.rows.some(m => m.roomId === room.id && m.userId === userId),
 		},
@@ -136,8 +153,10 @@ function fixture(options: {
 		utilityService: new UtilityService({ host: 'local.test', url: LOCAL } as any, {} as any),
 		idService: { gen: () => `gen${++seq}` },
 		notificationService,
+		chatVoiceService,
+		apResolverService,
 	});
-	return { inbox, rooms, invitations, memberships, notificationService };
+	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver };
 }
 
 function inviteActivity(actor: { uri: string }, roomUri: string, invitee: string, attributedTo: string | undefined = actor.uri) {
@@ -422,5 +441,197 @@ describe('Chat room federation: Undo(Invite)', () => {
 		await f.inbox.undoInvite(remoteOwner, inviteActivity(remoteOwner, 'https://remote.test/chat/rooms/bobroom', `${LOCAL}/users/${alice.id}`));
 
 		expect(f.invitations.rows).toEqual([]);
+	});
+});
+
+describe('Chat room federation: voice call state', () => {
+	const voiceState = {
+		id: 'https://remote.test/chat/rooms/bobroom/voice',
+		type: 'ChatRoomVoiceState',
+		room: 'https://remote.test/chat/rooms/bobroom',
+		participants: [{ id: 'https://remote.test/users/carol', screenSharing: false }],
+		updated: '2026-10-27T00:00:00.000Z',
+	};
+
+	function voiceUpdate(object: unknown) {
+		return { type: 'Update', actor: remoteOwner.uri, object };
+	}
+
+	test('the inbox routes ChatRoomVoiceState updates to the voice service', async () => {
+		const f = fixture();
+
+		const result = await f.inbox.update(remoteOwner, voiceUpdate(voiceState));
+
+		expect(result).toBe('ok: voice state stored');
+		expect(f.chatVoiceService.receiveRemoteSnapshot).toHaveBeenCalledWith(remoteOwner, voiceState);
+		// 中身ごと届いた現況を読むだけで、何も取りに行かない
+		expect(f.apResolverService.createResolver).not.toHaveBeenCalled();
+		expect(f.resolver.resolve).not.toHaveBeenCalled();
+	});
+
+	test('the inbox accepts voice states only when they arrive inline', async () => {
+		const f = fixture();
+		f.resolver.resolve.mockResolvedValue(voiceState);
+
+		const result = await f.inbox.update(remoteOwner, voiceUpdate(voiceState.id));
+
+		expect(result).toMatch(/^skip/);
+		expect(f.chatVoiceService.receiveRemoteSnapshot).not.toHaveBeenCalled();
+	});
+
+	// JSON-LD として読む相手にも、ルーム・参加者・画面共有が CherryPick の語彙として伝わる
+	test('the voice state keeps its CherryPick terms through JSON-LD processing', async () => {
+		const renderer = Object.assign(Object.create(ApRendererService.prototype), { config: { url: LOCAL } }) as ApRendererService;
+		const activity = renderer.addContext({
+			type: 'Update',
+			actor: `${LOCAL}/users/${localOwner.id}`,
+			object: renderer.renderChatRoomVoiceState({ id: 'localroom' } as any, [
+				{ identity: `${LOCAL}/users/${alice.id}`, screenSharing: true },
+				{ identity: remoteOwner.uri, screenSharing: false },
+			], Date.parse('2026-10-27T00:00:00.000Z')),
+		});
+		const jsonLd = new JsonLdService({} as any).use();
+		// 文脈はすべて手元にあるので、何も取りに行かない
+		jsonLd.freeze();
+
+		const nquads = await jsonLd.normalize(activity);
+
+		const state = `<${LOCAL}/chat/rooms/localroom/voice>`;
+		expect(nquads).toContain(`${state} <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://kokonect.link/ns#ChatRoomVoiceState> .`);
+		expect(nquads).toContain(`${state} <https://kokonect.link/ns#room> <${LOCAL}/chat/rooms/localroom> .`);
+		expect(nquads).toContain(`${state} <https://kokonect.link/ns#participants> <${LOCAL}/users/${alice.id}> .`);
+		expect(nquads).toContain(`${state} <https://kokonect.link/ns#participants> <${remoteOwner.uri}> .`);
+		expect(nquads).toContain(`<${LOCAL}/users/${alice.id}> <https://kokonect.link/ns#screenSharing> "true"^^<http://www.w3.org/2001/XMLSchema#boolean> .`);
+		expect(nquads).toContain(`<${remoteOwner.uri}> <https://kokonect.link/ns#screenSharing> "false"^^<http://www.w3.org/2001/XMLSchema#boolean> .`);
+	});
+});
+
+describe('Chat room federation: checking voice states', () => {
+	const ROOM = 'https://remote.test/chat/rooms/bobroom';
+	const UPDATED = '2026-10-27T00:00:00.000Z';
+
+	function voiceState(overrides: Record<string, unknown> = {}) {
+		return {
+			id: `${ROOM}/voice`,
+			type: 'ChatRoomVoiceState',
+			room: ROOM,
+			participants: [{ id: invitedRemote.uri, screenSharing: true }],
+			updated: UPDATED,
+			...overrides,
+		} as any;
+	}
+
+	test('reads a voice state that a server sends about its own room', () => {
+		expect(parseChatRoomVoiceState(remoteOwner.uri, voiceState(), 51)).toEqual({
+			ok: true,
+			state: { roomId: 'bobroom', participants: [{ identity: invitedRemote.uri, screenSharing: true }], updatedAt: Date.parse(UPDATED) },
+		});
+	});
+
+	test('reads the voice state this server renders', () => {
+		const renderer = Object.assign(Object.create(ApRendererService.prototype), { config: { url: LOCAL } }) as ApRendererService;
+		const rendered = renderer.renderChatRoomVoiceState({ id: 'localroom' } as any, [{ identity: `${LOCAL}/users/${alice.id}`, screenSharing: false }], Date.parse(UPDATED));
+
+		expect(parseChatRoomVoiceState(`${LOCAL}/users/${localOwner.id}`, rendered, 51)).toEqual({
+			ok: true,
+			state: { roomId: 'localroom', participants: [{ identity: `${LOCAL}/users/${alice.id}`, screenSharing: false }], updatedAt: Date.parse(UPDATED) },
+		});
+	});
+
+	test.each([
+		['a missing id', remoteOwner.uri, { id: undefined }],
+		['a room that is not a string', remoteOwner.uri, { room: { id: ROOM } }],
+		['a sender that is not a URL', 'remote.test', {}],
+		['a room on another server', remoteOwner.uri, { room: 'https://other.test/chat/rooms/bobroom', id: 'https://other.test/chat/rooms/bobroom/voice' }],
+		['a room on another port of the same host', remoteOwner.uri, { room: 'https://remote.test:8443/chat/rooms/bobroom', id: 'https://remote.test:8443/chat/rooms/bobroom/voice' }],
+		['a room over another scheme', remoteOwner.uri, { room: 'http://remote.test/chat/rooms/bobroom', id: 'http://remote.test/chat/rooms/bobroom/voice' }],
+		['an empty query on the room', remoteOwner.uri, { room: `${ROOM}?`, id: `${ROOM}?/voice` }],
+		['an empty fragment on the room', remoteOwner.uri, { room: `${ROOM}#`, id: `${ROOM}#/voice` }],
+		['a query on the room', remoteOwner.uri, { room: `${ROOM}?x=1`, id: `${ROOM}?x=1/voice` }],
+		['userinfo on the room', remoteOwner.uri, { room: 'https://user@remote.test/chat/rooms/bobroom', id: 'https://user@remote.test/chat/rooms/bobroom/voice' }],
+		['empty userinfo on the room', remoteOwner.uri, { room: 'https://@remote.test/chat/rooms/bobroom', id: 'https://@remote.test/chat/rooms/bobroom/voice' }],
+		['dot segments in the room', remoteOwner.uri, { room: 'https://remote.test/chat/rooms/x/../bobroom', id: 'https://remote.test/chat/rooms/x/../bobroom/voice' }],
+		['the default port written out in the room', remoteOwner.uri, { room: 'https://remote.test:443/chat/rooms/bobroom', id: 'https://remote.test:443/chat/rooms/bobroom/voice' }],
+		['an upper-case host in the room', remoteOwner.uri, { room: 'https://REMOTE.test/chat/rooms/bobroom', id: 'https://REMOTE.test/chat/rooms/bobroom/voice' }],
+		['a room path of another shape', remoteOwner.uri, { room: `${ROOM}/extra`, id: `${ROOM}/extra/voice` }],
+		['an id that is not the room\'s voice state', remoteOwner.uri, { id: `${ROOM}/other` }],
+		['the voice state of another room', remoteOwner.uri, { id: 'https://remote.test/chat/rooms/other/voice' }],
+		['too many participants', remoteOwner.uri, { participants: [{ id: invitedRemote.uri, screenSharing: false }, { id: dave.uri, screenSharing: false }] }],
+		['a participant without screenSharing', remoteOwner.uri, { participants: [{ id: invitedRemote.uri }] }],
+		['an unreadable time', remoteOwner.uri, { updated: 'yesterday' }],
+	])('refuses %s', (_label, actorUri, overrides) => {
+		const result = parseChatRoomVoiceState(actorUri, voiceState(overrides), 1);
+
+		expect(result.ok).toBe(false);
+		expect(result).toEqual({ ok: false, reason: expect.any(String) });
+	});
+});
+
+describe('Chat room federation: Remove', () => {
+	const bobroom = { id: 'bobroom', name: 'bob', ownerId: remoteOwner.id, description: '', isArchived: false };
+
+	function leave(actor: { uri: string }, roomUri: string) {
+		return { type: 'Remove', actor: actor.uri, object: actor.uri, target: roomUri };
+	}
+
+	test('a remote member leaving the room is removed from its call', async () => {
+		const f = fixture({ memberships: [{ id: 'm1', roomId: 'localroom', userId: dave.id }] });
+
+		await f.inbox.remove(dave, leave(dave, `${LOCAL}/chat/rooms/localroom`));
+
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.liveKitService.removeParticipant).toHaveBeenCalledWith('localroom', dave.uri);
+	});
+
+	test('makes no LiveKit call when the Remove deleted no membership', async () => {
+		const f = fixture();
+
+		await f.inbox.remove(dave, leave(dave, `${LOCAL}/chat/rooms/localroom`));
+
+		expect(f.liveKitService.removeParticipant).not.toHaveBeenCalled();
+	});
+
+	test('logs a LiveKit error instead of failing the inbox job', async () => {
+		// 外せなかった参加者は、通話の定期的な読み直し (ChatVoiceService.sweep) がメンバーでないとして外す
+		const f = fixture({ memberships: [{ id: 'm1', roomId: 'localroom', userId: dave.id }] });
+		f.liveKitService.removeParticipant.mockRejectedValueOnce(new Error('LiveKit is down'));
+
+		await expect(f.inbox.remove(dave, leave(dave, `${LOCAL}/chat/rooms/localroom`))).resolves.toBe('ok: removed from chat room');
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.inbox.logger.warn).toHaveBeenCalled();
+	});
+
+	// LiveKitService は 404 (もう通話にいない) だけを成功として扱い、ほかの失敗は投げ直す。
+	// inbox のジョブを失敗させるとやり直しを使い切るまで繰り返すので、記録だけしてジョブは終える
+	test.each([
+		['unavailable', 503],
+		['internal', 500],
+		['permission_denied', 403],
+	])('finishes the inbox job when LiveKit answers %s (%i) to the removal', async (code, status) => {
+		const f = fixture({ memberships: [{ id: 'm1', roomId: 'localroom', userId: dave.id }] });
+		const liveKitService = new LiveKitService({
+			url: LOCAL,
+			voiceCall: { livekit: { internalUrl: 'http://livekit:7880', apiKey: 'key', apiSecret: 'a'.repeat(32) } },
+		} as ConstructorParameters<typeof LiveKitService>[0]);
+		const roomService = { removeParticipant: vi.fn(async () => {
+			throw new TwirpError('TwirpError', 'LiveKit could not remove the participant', status, code);
+		}) };
+		Object.assign(liveKitService, { roomService });
+		Object.assign(f.inbox, { liveKitService });
+
+		await expect(f.inbox.remove(dave, leave(dave, `${LOCAL}/chat/rooms/localroom`))).resolves.toBe('ok: removed from chat room');
+
+		expect(roomService.removeParticipant).toHaveBeenCalledTimes(1);
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.inbox.logger.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to remove'), expect.anything());
+	});
+
+	test('leaves calls alone for a room hosted on another server', async () => {
+		const f = fixture({ rooms: [bobroom], memberships: [{ id: 'm1', roomId: 'bobroom', userId: dave.id }] });
+
+		await f.inbox.remove(dave, leave(dave, 'https://remote.test/chat/rooms/bobroom'));
+
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.liveKitService.removeParticipant).not.toHaveBeenCalled();
 	});
 });

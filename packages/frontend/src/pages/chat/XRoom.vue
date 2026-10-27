@@ -11,14 +11,22 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 	<hr>
 	<div>{{ room.description }}</div>
+	<div v-if="voiceState != null" :class="$style.voice" role="img" :aria-label="i18n.tsx._voiceCall.inCallCount({ n: voiceState.participants.length })" :title="i18n.tsx._voiceCall.inCallCount({ n: voiceState.participants.length })">
+		<i class="ti ti-volume" :class="$style.voiceIcon"></i>
+		<MkAvatar v-for="participant in voiceState.participants.slice(0, 3)" :key="participant.identity" :user="participant.user" :link="false" :class="$style.voiceAvatar"/>
+		<span v-if="voiceState.participants.length > 3" :class="$style.voiceMore">+{{ voiceState.participants.length - 3 }}</span>
+	</div>
 </MkA>
 </template>
 
 <script lang="ts" setup>
 import * as Misskey from 'cherrypick-js';
 
+import { i18n } from '@/i18n.js';
+
 const props = defineProps<{
 	room: Misskey.entities.ChatRoom;
+	voiceState?: Misskey.entities.ChatRoomVoiceState;
 }>();
 
 </script>
@@ -37,5 +45,25 @@ const props = defineProps<{
 	width: 30px;
 	height: 30px;
 	margin-left: auto;
+}
+
+.voice {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.voiceIcon {
+	color: var(--MI_THEME-accent);
+}
+
+.voiceAvatar {
+	width: 22px;
+	height: 22px;
+}
+
+.voiceMore {
+	font-size: 0.85em;
+	opacity: 0.7;
 }
 </style>

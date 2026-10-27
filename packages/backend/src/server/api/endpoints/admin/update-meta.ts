@@ -9,6 +9,7 @@ import { DI } from '@/di-symbols.js';
 import type { MiMeta } from '@/models/Meta.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
+import { ApiError } from '@/server/api/error.js';
 import { MetaService } from '@/core/MetaService.js';
 import { ServerStatsService } from '@/daemons/ServerStatsService.js';
 
@@ -18,7 +19,25 @@ export const meta = {
 	requireCredential: true,
 	requireAdmin: true,
 	kind: 'write:admin:meta',
+
+	errors: {
+		cloudflareTurnKeyIdTooLong: {
+			message: 'The Cloudflare TURN key ID is too long.',
+			code: 'INVALID_PARAM',
+			id: 'e1ec1437-72be-4731-b170-3cd269b8e538',
+		},
+		cloudflareTurnApiTokenTooLong: {
+			message: 'The Cloudflare TURN API token is too long.',
+			code: 'INVALID_PARAM',
+			id: '31197e6a-2380-4bc6-8bb7-0d16a30244b7',
+		},
+	},
 } as const;
+
+// Cloudflare の TURN キーの ID と API トークンの長さの上限。前後の空白を除いてから確かめる (paramDef の maxLength は、
+// 空白を含めた入力の大きさを抑えるだけのもので、これより十分長い)
+const CLOUDFLARE_TURN_KEY_ID_MAX_LENGTH = 128;
+const CLOUDFLARE_TURN_API_TOKEN_MAX_LENGTH = 512;
 
 export const paramDef = {
 	type: 'object',
@@ -248,6 +267,11 @@ export const paramDef = {
 		proxyRemoteFiles: { type: 'boolean' },
 		signToActivityPubGet: { type: 'boolean' },
 		allowExternalApRedirect: { type: 'boolean' },
+		enableRemoteVoiceCall: { type: 'boolean' },
+		// 本当の上限 (CLOUDFLARE_TURN_KEY_ID_MAX_LENGTH、CLOUDFLARE_TURN_API_TOKEN_MAX_LENGTH) は前後の空白を除いてから確かめる。
+		// ここでは空白を含めた入力の大きさだけを抑える
+		voiceCallCloudflareTurnKeyId: { type: 'string', nullable: true, maxLength: 4096 },
+		voiceCallCloudflareTurnApiToken: { type: 'string', nullable: true, maxLength: 4096 },
 		enableRemoteNotesCleaning: { type: 'boolean' },
 		remoteNotesCleaningExpiryDaysForEachNotes: { type: 'number' },
 		remoteNotesCleaningMaxProcessingDurationInMinutes: { type: 'number' },
@@ -912,6 +936,22 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			if (ps.allowExternalApRedirect !== undefined) {
 				set.allowExternalApRedirect = ps.allowExternalApRedirect;
+			}
+
+			if (ps.enableRemoteVoiceCall !== undefined) {
+				set.enableRemoteVoiceCall = ps.enableRemoteVoiceCall;
+			}
+
+			if (ps.voiceCallCloudflareTurnKeyId !== undefined) {
+				const value = (ps.voiceCallCloudflareTurnKeyId ?? '').trim();
+				if (value.length > CLOUDFLARE_TURN_KEY_ID_MAX_LENGTH) throw new ApiError(meta.errors.cloudflareTurnKeyIdTooLong);
+				set.voiceCallCloudflareTurnKeyId = value === '' ? null : value;
+			}
+
+			if (ps.voiceCallCloudflareTurnApiToken !== undefined) {
+				const value = (ps.voiceCallCloudflareTurnApiToken ?? '').trim();
+				if (value.length > CLOUDFLARE_TURN_API_TOKEN_MAX_LENGTH) throw new ApiError(meta.errors.cloudflareTurnApiTokenTooLong);
+				set.voiceCallCloudflareTurnApiToken = value === '' ? null : value;
 			}
 
 			if (ps.enableRemoteNotesCleaning !== undefined) {

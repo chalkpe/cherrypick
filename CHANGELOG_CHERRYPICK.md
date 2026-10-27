@@ -7,6 +7,7 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2026101](CHANG
 
 ### General
 - Feat: 관리자와 모더레이터가 기존 노트의 본문과 첨부를 유지하면서 공개 범위를 변경할 수 있습니다. 리모트 노트의 변경은 이 서버에 저장된 사본에만 적용됩니다. ([ZerglingGo/misskey@dc47591c](https://github.com/ZerglingGo/misskey/commit/dc47591c13bf82406c466b942bca328157a8862a))
+- Feat: 음성 통화 및 화면 공유를 추가했습니다.
 
 ### Client
 - Feat: 유저 메뉴에서 특정 사용자의 아바타 장식만 뮤트할 수 있습니다. 해당 사용자의 노트와 기본 아바타는 계속 표시됩니다. ([ZerglingGo/misskey@796afb2a](https://github.com/ZerglingGo/misskey/commit/796afb2a356a774fbc8fc657ae6706cbc5ca33ed))

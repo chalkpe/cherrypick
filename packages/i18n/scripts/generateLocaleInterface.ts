@@ -17,14 +17,14 @@ interface LocaleRecord {
 	[key: string]: string | LocaleRecord;
 }
 
-function createMemberType(item: string | LocaleRecord): ts.TypeNode {
+export function createMemberType(item: string | LocaleRecord): ts.TypeNode {
 	if (typeof item !== 'string') {
 		return ts.factory.createTypeLiteralNode(createMembers(item));
 	}
-	const parameters = Array.from(
+	const parameters = [...new Set(Array.from(
 		item.matchAll(parameterRegExp),
 		([, parameter]) => parameter,
-	);
+	))];
 	return parameters.length
 		? ts.factory.createTypeReferenceNode(
 			ts.factory.createIdentifier('ParameterizedString'),

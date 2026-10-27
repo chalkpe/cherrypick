@@ -22,6 +22,7 @@ import type { MiPage } from '@/models/Page.js';
 import type { MiWebhook } from '@/models/Webhook.js';
 import type { MiSystemWebhook } from '@/models/SystemWebhook.js';
 import type { MiMeta } from '@/models/Meta.js';
+import type { MiInstance } from '@/models/Instance.js';
 import { MiAvatarDecoration, MiChatMessage, MiChatRoom, MiReversiGame, MiRole, MiRoleAssignment } from '@/models/_.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { DI } from '@/di-symbols.js';
@@ -72,6 +73,7 @@ export interface MainEventTypes {
 	unreadNotification: Packed<'Notification'>;
 	unreadAntenna: MiAntenna;
 	newChatMessage: Packed<'ChatMessage'>;
+	chatRoomVoiceState: Packed<'ChatRoomVoiceState'>;
 	readAllAnnouncements: undefined;
 	myTokenRegenerated: undefined;
 	signin: {
@@ -185,6 +187,12 @@ export interface ChatEventTypes {
 	};
 }
 
+// ルームの内部制御イベントはクライアントへ転送しない。
+export interface ChatRoomEventTypes extends ChatEventTypes {
+	membershipEnded: { userId: MiUser['id'] };
+	roomDeleted: undefined;
+}
+
 export interface ReversiEventTypes {
 	matched: {
 		game: Packed<'ReversiGameDetailed'>;
@@ -268,6 +276,8 @@ export interface InternalEventTypes {
 	avatarDecorationDeleted: MiAvatarDecoration;
 	avatarDecorationUpdated: MiAvatarDecoration;
 	metaUpdated: { before?: MiMeta; after: MiMeta; };
+	/** 管理画面でサーバーの停止を変えた (admin/federation/update-instance) */
+	instanceSuspensionStateUpdated: { id: MiInstance['id']; host: MiInstance['host']; suspensionState: MiInstance['suspensionState']; };
 	followChannel: { userId: MiUser['id']; channelId: MiChannel['id']; };
 	unfollowChannel: { userId: MiUser['id']; channelId: MiChannel['id']; };
 	muteChannel: { userId: MiUser['id']; channelId: MiChannel['id']; };
@@ -337,7 +347,7 @@ export type GlobalEvents = {
 	};
 	chatRoom: {
 		name: `chatRoomStream:${MiChatRoom['id']}`;
-		payload: EventTypesToEventPayload<ChatEventTypes>;
+		payload: EventTypesToEventPayload<ChatRoomEventTypes>;
 	};
 	reversi: {
 		name: `reversiStream:${MiUser['id']}`;
@@ -453,7 +463,7 @@ export class GlobalEventService {
 	}
 
 	@bindThis
-	public publishChatRoomStream<K extends keyof ChatEventTypes>(toRoomId: MiChatRoom['id'], type: K, value?: ChatEventTypes[K]): void {
+	public publishChatRoomStream<K extends keyof ChatRoomEventTypes>(toRoomId: MiChatRoom['id'], type: K, value?: ChatRoomEventTypes[K]): void {
 		this.publish(`chatRoomStream:${toRoomId}`, type, typeof value === 'undefined' ? null : value);
 	}
 

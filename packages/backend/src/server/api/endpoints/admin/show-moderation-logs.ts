@@ -10,6 +10,22 @@ import { QueryService } from '@/core/QueryService.js';
 import { DI } from '@/di-symbols.js';
 import { ModerationLogEntityService } from '@/core/entities/ModerationLogEntityService.js';
 import { sqlLikeEscape } from '@/misc/sql-like-escape.js';
+import { REDACTED_META_KEYS } from '@/misc/redact-server-settings-log.js';
+import { ApiError } from '@/server/api/error.js';
+
+/**
+ * expression (log.info から作った jsonb) から、log.info の side (before か after) がオブジェクトのときだけ、伏せる項目を除く。
+ * #- はオブジェクトでない値 (配列・文字列・null など) の中を指すとエラーになり、そういう記録が一つでもあるとどの検索も失敗するので、
+ * jsonb_typeof で確かめる。log.info がオブジェクトでなければ log.info -> side は NULL になり、何も除かない
+ */
+function withoutRedactedKeys(expression: string, side: 'before' | 'after'): string {
+	const removed = REDACTED_META_KEYS.reduce((result, key) => `(${result} #- '{${side},${key}}'::text[])`, expression);
+	return `CASE WHEN jsonb_typeof(log.info -> '${side}') = 'object' THEN ${removed} ELSE ${expression} END`;
+}
+
+// 伏せるようにする前に残されたサーバー設定の変更履歴から、認証情報を検索で一文字ずつ当てられないよう、検索する範囲から除く。
+// 他の種類のログの before / after は配列や文字列のこともあるので、サーバー設定の変更履歴 (meta か policies) に限る
+const SEARCHABLE_INFO = `CASE WHEN log.type = 'updateServerSettings' THEN ${withoutRedactedKeys(withoutRedactedKeys('log.info', 'before'), 'after')} ELSE log.info END`;
 
 export const meta = {
 	tags: ['admin'],
@@ -17,6 +33,14 @@ export const meta = {
 	requireCredential: true,
 	requireAdmin: true,
 	kind: 'read:admin:show-moderation-log',
+
+	errors: {
+		invalidSearch: {
+			message: 'The search text must not contain NUL characters.',
+			code: 'INVALID_PARAM',
+			id: '90b4d94d-168d-48ab-b8fe-ae8bcea3ba05',
+		},
+	},
 
 	res: {
 		type: 'array',
@@ -94,8 +118,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			}
 
 			if (ps.search != null) {
+				// PostgreSQL の text は NUL を持てず、引数に入るとエラーになるので、問い合わせる前に断る
+				if (ps.search.includes('\u0000')) throw new ApiError(meta.errors.invalidSearch);
 				const escapedSearch = sqlLikeEscape(ps.search);
-				query.andWhere('log.info::text ILIKE :search', { search: `%${escapedSearch}%` });
+				query.andWhere(`(${SEARCHABLE_INFO})::text ILIKE :search`, { search: `%${escapedSearch}%` });
 			}
 
 			const logs = await query.limit(ps.limit).getMany();

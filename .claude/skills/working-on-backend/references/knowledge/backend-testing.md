@@ -28,6 +28,7 @@ cp .github/cherrypick/test.yml .config/test.yml
 
 - ルートの `pnpm start:test` (Playwright 用にテストサーバーを起動するコマンド) を使う経路では実行時に `ncp` で自動コピーされる ([package.json](../../../../../package.json))。それ以外で backend テストを直接走らせる時は上記の手動コピーが必要
 - すでに `.config/test.yml` があれば各テストスクリプトの内部 `compile-config` で十分なので、追加で `pnpm --filter backend compile-config` を叩く必要はない
+- `pnpm build-cherrypick-js-with-types` は既定設定で `built/.config.json` も再生成する。続けて Vitest を直接実行する場合は、backend package root で `NODE_ENV=test pnpm compile-config` を実行してテスト設定へ戻すこと (通常の `pnpm --filter backend test` は内部で戻す)
 - `pnpm start:test` は backend e2e テスト (`pnpm --filter backend test:e2e`) の前提ではない (ポート競合の元になるため使わないこと)
 
 ## テスト種別と実行コマンド

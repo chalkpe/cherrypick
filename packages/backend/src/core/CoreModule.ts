@@ -79,6 +79,11 @@ import { FeaturedService } from './FeaturedService.js';
 import { FanoutTimelineService } from './FanoutTimelineService.js';
 import { ChannelFollowingService } from './ChannelFollowingService.js';
 import { ChatService } from './ChatService.js';
+import { LiveKitService } from './LiveKitService.js';
+import { ChatVoiceService } from './ChatVoiceService.js';
+import { RemoteVoiceCallService } from './RemoteVoiceCallService.js';
+import { CloudflareTurnService } from './CloudflareTurnService.js';
+import { HostPolicyService } from './HostPolicyService.js';
 import { RegistryApiService } from './RegistryApiService.js';
 import { ReversiService } from './ReversiService.js';
 import { PageService } from './PageService.js';
@@ -150,6 +155,7 @@ import { ApMfmService } from './activitypub/ApMfmService.js';
 import { ApRendererService } from './activitypub/ApRendererService.js';
 import { ApRequestService } from './activitypub/ApRequestService.js';
 import { ApResolverService, Resolver } from './activitypub/ApResolverService.js';
+import { ApSignedRequestVerifierService } from './activitypub/ApSignedRequestVerifierService.js';
 import { JsonLdService } from './activitypub/JsonLdService.js';
 import { RemoteLoggerService } from './RemoteLoggerService.js';
 import { RemoteUserResolveService } from './RemoteUserResolveService.js';
@@ -240,6 +246,11 @@ const $FanoutTimelineEndpointService: Provider = { provide: 'FanoutTimelineEndpo
 const $ChannelFollowingService: Provider = { provide: 'ChannelFollowingService', useExisting: ChannelFollowingService };
 const $ChannelMutingService: Provider = { provide: 'ChannelMutingService', useExisting: ChannelMutingService };
 const $ChatService: Provider = { provide: 'ChatService', useExisting: ChatService };
+const $LiveKitService: Provider = { provide: 'LiveKitService', useExisting: LiveKitService };
+const $ChatVoiceService: Provider = { provide: 'ChatVoiceService', useExisting: ChatVoiceService };
+const $RemoteVoiceCallService: Provider = { provide: 'RemoteVoiceCallService', useExisting: RemoteVoiceCallService };
+const $CloudflareTurnService: Provider = { provide: 'CloudflareTurnService', useExisting: CloudflareTurnService };
+const $HostPolicyService: Provider = { provide: 'HostPolicyService', useExisting: HostPolicyService };
 const $RegistryApiService: Provider = { provide: 'RegistryApiService', useExisting: RegistryApiService };
 const $ReversiService: Provider = { provide: 'ReversiService', useExisting: ReversiService };
 const $PageService: Provider = { provide: 'PageService', useExisting: PageService };
@@ -312,6 +323,7 @@ const $ApMfmService: Provider = { provide: 'ApMfmService', useExisting: ApMfmSer
 const $ApRendererService: Provider = { provide: 'ApRendererService', useExisting: ApRendererService };
 const $ApRequestService: Provider = { provide: 'ApRequestService', useExisting: ApRequestService };
 const $ApResolverService: Provider = { provide: 'ApResolverService', useExisting: ApResolverService };
+const $ApSignedRequestVerifierService: Provider = { provide: 'ApSignedRequestVerifierService', useExisting: ApSignedRequestVerifierService };
 const $JsonLdService: Provider = { provide: 'JsonLdService', useExisting: JsonLdService };
 const $RemoteLoggerService: Provider = { provide: 'RemoteLoggerService', useExisting: RemoteLoggerService };
 const $RemoteUserResolveService: Provider = { provide: 'RemoteUserResolveService', useExisting: RemoteUserResolveService };
@@ -401,6 +413,11 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChannelFollowingService,
 		ChannelMutingService,
 		ChatService,
+		LiveKitService,
+		ChatVoiceService,
+		RemoteVoiceCallService,
+		CloudflareTurnService,
+		HostPolicyService,
 		RegistryApiService,
 		ReversiService,
 		PageService,
@@ -475,6 +492,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ApRequestService,
 		ApResolverService,
 		Resolver,
+		ApSignedRequestVerifierService,
 		JsonLdService,
 		RemoteLoggerService,
 		RemoteUserResolveService,
@@ -561,6 +579,11 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ChannelFollowingService,
 		$ChannelMutingService,
 		$ChatService,
+		$LiveKitService,
+		$ChatVoiceService,
+		$RemoteVoiceCallService,
+		$CloudflareTurnService,
+		$HostPolicyService,
 		$RegistryApiService,
 		$ReversiService,
 		$PageService,
@@ -633,6 +656,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ApRendererService,
 		$ApRequestService,
 		$ApResolverService,
+		$ApSignedRequestVerifierService,
 		$JsonLdService,
 		$RemoteLoggerService,
 		$RemoteUserResolveService,
@@ -720,6 +744,11 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChannelFollowingService,
 		ChannelMutingService,
 		ChatService,
+		LiveKitService,
+		ChatVoiceService,
+		RemoteVoiceCallService,
+		CloudflareTurnService,
+		HostPolicyService,
 		RegistryApiService,
 		ReversiService,
 		PageService,
@@ -793,6 +822,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ApRequestService,
 		ApResolverService,
 		Resolver,
+		ApSignedRequestVerifierService,
 		JsonLdService,
 		RemoteLoggerService,
 		RemoteUserResolveService,
@@ -878,6 +908,11 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ChannelFollowingService,
 		$ChannelMutingService,
 		$ChatService,
+		$LiveKitService,
+		$ChatVoiceService,
+		$RemoteVoiceCallService,
+		$CloudflareTurnService,
+		$HostPolicyService,
 		$RegistryApiService,
 		$ReversiService,
 		$PageService,
@@ -949,6 +984,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ApRendererService,
 		$ApRequestService,
 		$ApResolverService,
+		$ApSignedRequestVerifierService,
 		$JsonLdService,
 		$RemoteLoggerService,
 		$RemoteUserResolveService,

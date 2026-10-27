@@ -204,6 +204,8 @@ export const rolePolicies = [
 	'btlAvailable',
 	'canPublicNote',
 	'canEditNote',
+	'canVoiceCall',
+	'canScreenShare',
 	'mentionLimit',
 	'canInvite',
 	'inviteLimit',

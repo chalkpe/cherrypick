@@ -265,7 +265,7 @@ export interface Locale extends ILocale {
      * サーバー管理者が{name}を使用できないように設定しました。
      * {name}を使用するには、サーバー管理者にお問い合わせください。
      */
-    "cantUseThisFunctionDescription": ParameterizedString<"name" | "name">;
+    "cantUseThisFunctionDescription": ParameterizedString<"name">;
     /**
      * 有効にすると、再利用できるときに{name}を適用します。
      */
@@ -6752,6 +6752,14 @@ export interface Locale extends ILocale {
          */
         "noMessagesYet": string;
         /**
+         * ルームを開く
+         */
+        "openRoom": string;
+        /**
+         * まだメッセージはありません
+         */
+        "noMessagesInRoom": string;
+        /**
          * 新しいメッセージ
          */
         "newMessage": string;
@@ -8283,6 +8291,34 @@ export interface Locale extends ILocale {
          */
         "allowExternalApRedirect_description": string;
         /**
+         * 他のサーバーの通話への参加を許可
+         */
+        "enableRemoteVoiceCall": string;
+        /**
+         * 参加者のIPアドレスは通話をホストするサーバーに見えます。
+         */
+        "enableRemoteVoiceCallDescription": string;
+        /**
+         * Cloudflare TURN
+         */
+        "voiceCallCloudflareTurn": string;
+        /**
+         * LiveKitがNATやファイアウォールの内側にあるときに使います。このサーバーが通話の参加者（他のサーバーのユーザーを含む）に短時間だけ有効なTURNの資格情報を渡します。TURNを経由した通信はCloudflareのアカウントに課金されます。
+         */
+        "voiceCallCloudflareTurnDescription": string;
+        /**
+         * TURNキーID
+         */
+        "voiceCallCloudflareTurnKeyId": string;
+        /**
+         * APIトークン
+         */
+        "voiceCallCloudflareTurnApiToken": string;
+        /**
+         * ここでキーを変更・削除しても、発行済みの資格情報は最大24時間有効なままです。すぐに使えなくするには、Cloudflareのダッシュボードでキーを無効化するかローテーションしてください。
+         */
+        "voiceCallCloudflareTurnKeyChangeDescription": string;
+        /**
          * 非利用者に対するユーザー作成コンテンツの公開範囲
          */
         "userGeneratedContentsVisibilityForVisitor": string;
@@ -9259,6 +9295,198 @@ export interface Locale extends ILocale {
             };
         };
     };
+    "_voiceCall": {
+        /**
+         * マイクを使用できません。
+         */
+        "micUnavailable": string;
+        /**
+         * 通話サーバーに接続できませんでした。
+         */
+        "connectionFailed": string;
+        /**
+         * この通話は{host}で開かれます。{host}にはあなたのIPアドレスが見えます。
+         */
+        "remoteHostNotice": ParameterizedString<"host">;
+        /**
+         * このルームのサーバーは通話に対応していません。
+         */
+        "remoteHostUnsupported": string;
+        /**
+         * 別のタブで通話に参加しました。
+         */
+        "joinedFromAnotherTab": string;
+        /**
+         * 通話から外されました。
+         */
+        "removedFromCall": string;
+        /**
+         * 通話が終了しました。
+         */
+        "callEnded": string;
+        /**
+         * 通話に参加
+         */
+        "join": string;
+        /**
+         * 通話から退出
+         */
+        "leave": string;
+        /**
+         * マイクをオフ
+         */
+        "mute": string;
+        /**
+         * マイクをオン
+         */
+        "unmute": string;
+        /**
+         * スピーカーをオフ
+         */
+        "deafen": string;
+        /**
+         * スピーカーをオン
+         */
+        "undeafen": string;
+        /**
+         * 通話中
+         */
+        "inCall": string;
+        /**
+         * 接続中…
+         */
+        "connecting": string;
+        /**
+         * 再接続中…
+         */
+        "reconnecting": string;
+        /**
+         * タップして音声を再生
+         */
+        "enableAudio": string;
+        /**
+         * ルームに戻る
+         */
+        "backToRoom": string;
+        /**
+         * 通話設定
+         */
+        "settings": string;
+        /**
+         * マイク
+         */
+        "inputDevice": string;
+        /**
+         * スピーカー
+         */
+        "outputDevice": string;
+        /**
+         * エコーキャンセル
+         */
+        "echoCancellation": string;
+        /**
+         * ノイズ抑制
+         */
+        "noiseSuppression": string;
+        /**
+         * 自動音量調整
+         */
+        "autoGainControl": string;
+        /**
+         * 画面を共有
+         */
+        "shareScreen": string;
+        /**
+         * 共有を停止
+         */
+        "stopSharing": string;
+        /**
+         * 共有を見る
+         */
+        "watchStream": string;
+        /**
+         * 視聴をやめる
+         */
+        "stopWatching": string;
+        /**
+         * 画面共有中
+         */
+        "sharingScreen": string;
+        /**
+         * 音声も共有
+         */
+        "shareAudio": string;
+        /**
+         * 共有画質
+         */
+        "screenShareQuality": string;
+        /**
+         * 画面共有を開始できませんでした。
+         */
+        "screenShareFailed": string;
+        /**
+         * 全画面
+         */
+        "fullscreen": string;
+        /**
+         * ピクチャーインピクチャー
+         */
+        "pictureInPicture": string;
+        /**
+         * {name}さんの共有画面を見る
+         */
+        "watchScreenOf": ParameterizedString<"name">;
+        /**
+         * {name}さんの共有画面
+         */
+        "screenShareOf": ParameterizedString<"name">;
+        /**
+         * 大きく表示
+         */
+        "focusScreen": string;
+        "_quality": {
+            /**
+             * くっきり (1080p 15fps)
+             */
+            "sharp": string;
+            /**
+             * なめらか (720p 30fps)
+             */
+            "smooth": string;
+            /**
+             * 高画質 (1080p 30fps)
+             */
+            "high": string;
+        };
+        /**
+         * 音量
+         */
+        "volume": string;
+        /**
+         * 強制ミュート
+         */
+        "forceMute": string;
+        /**
+         * 通話から外す
+         */
+        "kick": string;
+        /**
+         * {name}さんを通話から外しますか？
+         */
+        "kickConfirm": ParameterizedString<"name">;
+        /**
+         * {n}人が通話中
+         */
+        "inCallCount": ParameterizedString<"n">;
+        /**
+         * チャットを左に移動
+         */
+        "moveChatLeft": string;
+        /**
+         * チャットを右に移動
+         */
+        "moveChatRight": string;
+    };
     "_role": {
         /**
          * ロールの作成
@@ -9429,6 +9657,14 @@ export interface Locale extends ILocale {
              * ノートの編集
              */
             "canEditNote": string;
+            /**
+             * 音声通話への参加
+             */
+            "canVoiceCall": string;
+            /**
+             * 画面共有
+             */
+            "canScreenShare": string;
             /**
              * ノート内の最大メンション数
              */

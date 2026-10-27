@@ -276,6 +276,23 @@ fulltextSearch:
 #  index: ''
 #  scope: local
 
+#   ┌────────────┐
+#───┘ Voice call └──────────────────────────────────────────────
+
+# Voice calls and screen sharing in chat rooms use LiveKit.
+# Leave this commented out to disable the feature entirely.
+# apiKey and apiSecret must match the keys in your
+# LiveKit server config.
+# apiSecret must be a random string of at least 32 characters.
+# Open 7881/tcp and 7882/udp on your firewall for media.
+# Behind NAT, either forward 7881/tcp and 7882/udp or set Cloudflare TURN in the admin settings (LiveKit keeps use_external_ip: true).
+
+#voiceCall:
+#  livekit:
+#    internalUrl: http://127.0.0.1:7880
+#    apiKey: cherrypick
+#    apiSecret: ''
+
 #   ┌───────────────┐
 #───┘ ID generation └───────────────────────────────────────────
 

@@ -30,11 +30,12 @@ import { CustomEmojiService } from '@/core/CustomEmojiService.js';
 import { extractCustomEmojisFromMfm } from '@/misc/extract-custom-emojis-from-mfm.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
+import { LiveKitService } from '@/core/LiveKitService.js';
 import { emojiRegex } from '@/misc/emoji-regex.js';
 
 export class ChatMessageAccessError extends Error {}
 
-const MAX_ROOM_MEMBERS = 50;
+export const MAX_ROOM_MEMBERS = 50;
 const MAX_REACTIONS_PER_MESSAGE = 100;
 const isCustomEmojiRegexp = /^:([\w+-]+)(?:@\.)?:$/;
 
@@ -99,6 +100,7 @@ export class ChatService {
 		private userFollowingService: UserFollowingService,
 		private customEmojiService: CustomEmojiService,
 		private moderationLogService: ModerationLogService,
+		private liveKitService: LiveKitService,
 	) {
 	}
 
@@ -694,6 +696,10 @@ export class ChatService {
 		await redisPipeline.exec();
 
 		await this.chatRoomsRepository.delete(room.id);
+		this.globalEventService.publishChatRoomStream(room.id, 'roomDeleted');
+
+		// ルームが消えたら通話も終了する。LiveKit が落ちていても削除自体は成功させる
+		this.liveKitService.deleteRoom(room.id).catch(() => {});
 
 		if (deleter) {
 			const deleterIsModerator = await this.roleService.isModerator(deleter);
@@ -897,7 +903,7 @@ export class ChatService {
 
 		// Send Add activity to other remote members (not the owner, as they got Accept)
 		if (remoteMembers.length > 0 && this.userEntityService.isLocalUser(owner)) {
-			const roomUri = `${this.config.url}/chat/rooms/${room.id}`;
+			const roomUri = this.apRendererService.genLocalChatRoomUri(room.id);
 			const joiningUserUri = this.userEntityService.isLocalUser(joiningUser)
 				? this.userEntityService.genLocalUserUri(joiningUser.id)
 				: joiningUser.uri;
@@ -1004,6 +1010,10 @@ export class ChatService {
 		const leavingUser = await this.usersRepository.findOneByOrFail({ id: userId });
 
 		await this.chatRoomMembershipsRepository.delete(membership.id);
+		this.globalEventService.publishChatRoomStream(roomId, 'membershipEnded', { userId });
+
+		// ルームを抜けたら通話からも外す。LiveKit が落ちていても退出自体は成功させる
+		this.liveKitService.removeParticipant(roomId, this.liveKitService.identityOf(leavingUser)).catch(() => {});
 
 		// 未読フラグを消す (「既読にする」というわけでもないのでreadメソッドは使わないでおく)
 		const redisPipeline = this.redisClient.pipeline();
@@ -1035,7 +1045,7 @@ export class ChatService {
 			if (remoteMembers.length > 0 || this.userEntityService.isRemoteUser(owner)) {
 				// Generate the correct room URI based on the owner's server
 				const roomUri = this.userEntityService.isLocalUser(owner)
-					? `${this.config.url}/chat/rooms/${room.id}`
+					? this.apRendererService.genLocalChatRoomUri(room.id)
 					: `${owner.uri?.replace(/\/users\/.*$/, '')}/chat/rooms/${room.id}`;
 
 				console.log('[ChatService.leaveRoom] Generated roomUri:', roomUri);

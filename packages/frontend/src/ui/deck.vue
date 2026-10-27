@@ -18,6 +18,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<XThemePreviewing v-if="isThemePreviewMode"/>
 			<XAnnouncements v-if="$i"/>
 			<XStatusBars/>
+			<!-- モバイルでは通話バーがここ (カラムの上) に入る -->
+			<XVoiceCallBarSlot kind="top"/>
 			<div :class="$style.columnsWrapper">
 				<!-- passive: https://bugs.webkit.org/show_bug.cgi?id=281300 -->
 				<div ref="columnsEl" :class="[$style.columns, { [$style.center]: prefer.r['deck.columnAlign'].value === 'center', [$style.snapScroll]: snapScroll }]" @contextmenu.self.prevent="onContextmenu" @wheel.passive.self="onWheel">
@@ -96,6 +98,7 @@ import XTitlebar from '@/ui/_common_/titlebar.vue';
 import XPreferenceRestore from '@/ui/_common_/PreferenceRestore.vue';
 import XReloadSuggestion from '@/ui/_common_/ReloadSuggestion.vue';
 import XThemePreviewing from '@/ui/_common_/ThemePreviewing.vue';
+import XVoiceCallBarSlot from '@/ui/_common_/voice-call-bar-slot.vue';
 import * as os from '@/os.js';
 import { $i } from '@/i.js';
 import { i18n } from '@/i18n.js';

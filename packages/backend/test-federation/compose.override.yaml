@@ -47,6 +47,8 @@ services:
     networks:
       - internal_network_a
       - internal_network_b
+      # tester が通話のテストの前に Redis の記録を消せるようにする
+      - internal_network
 
   a.test:
     networks:

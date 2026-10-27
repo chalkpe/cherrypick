@@ -316,6 +316,8 @@ export class HttpRequestService {
 			timeout?: number,
 			size?: number,
 			isLocalAddressAllowed?: boolean,
+			/** 'manual' にすると 3xx を辿らずにそのまま返す (throwErrorWhenResponseNotOk なら StatusError になる) */
+			redirect?: 'follow' | 'manual',
 		} = {},
 		extra: HttpRequestSendOptions = {
 			throwErrorWhenResponseNotOk: true,
@@ -342,6 +344,7 @@ export class HttpRequestService {
 			},
 			body: args.body,
 			size: args.size ?? 10 * 1024 * 1024,
+			redirect: args.redirect ?? 'follow',
 			agent: (url) => this.getAgentByUrl(url, false, isLocalAddressAllowed),
 			signal: controller.signal,
 		});

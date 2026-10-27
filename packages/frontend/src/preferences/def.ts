@@ -540,6 +540,41 @@ export const PREF_DEF = definePreferences({
 		default: true,
 	},
 
+	'voiceCall.inputDeviceId': {
+		default: null as string | null,
+	},
+	'voiceCall.outputDeviceId': {
+		default: null as string | null,
+	},
+	'voiceCall.echoCancellation': {
+		default: true,
+	},
+	'voiceCall.noiseSuppression': {
+		default: true,
+	},
+	'voiceCall.autoGainControl': {
+		default: true,
+	},
+	'voiceCall.participantVolumes': {
+		default: {} as Record<string, number>,
+	},
+	'voiceCall.screenShareQuality': {
+		default: 'sharp' as 'sharp' | 'smooth' | 'high',
+	},
+	'voiceCall.screenShareAudio': {
+		default: true,
+	},
+	// IP アドレスを見せることへの同意なので、アカウントごとに持つ
+	'voiceCall.acknowledgedRemoteHosts': {
+		accountDependent: true,
+		default: [] as string[],
+	},
+	// 広いルーム画面で通話とチャットを横に並べるとき、チャットを置く側
+	'voiceCall.stageChatSide': {
+		accountDependent: true,
+		default: 'right' as 'right' | 'left',
+	},
+
 	'game.dropAndFusion': {
 		default: {
 			bgmVolume: 0.25,

@@ -328,6 +328,14 @@ export const packedRolePoliciesSchema = {
 			type: 'boolean',
 			optional: false, nullable: false,
 		},
+		canVoiceCall: {
+			type: 'boolean',
+			optional: false, nullable: false,
+		},
+		canScreenShare: {
+			type: 'boolean',
+			optional: false, nullable: false,
+		},
 		canSetFederationAvatarShape: {
 			type: 'boolean',
 			optional: false, nullable: false,

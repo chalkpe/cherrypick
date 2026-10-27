@@ -15,6 +15,8 @@ import { SystemAccountService } from '@/core/SystemAccountService.js';
 import type { Config } from '@/config.js';
 import { DI } from '@/di-symbols.js';
 import { DEFAULT_POLICIES } from '@/core/RoleService.js';
+import { LiveKitService } from '@/core/LiveKitService.js';
+import { isRemoteVoiceCallEnabled } from '@/core/ChatVoiceService.js';
 
 @Injectable()
 export class MetaEntityService {
@@ -29,6 +31,7 @@ export class MetaEntityService {
 		private adsRepository: AdsRepository,
 
 		private systemAccountService: SystemAccountService,
+		private liveKitService: LiveKitService,
 	) { }
 
 	@bindThis
@@ -177,6 +180,8 @@ export class MetaEntityService {
 				objectStorage: instance.useObjectStorage,
 				serviceWorker: instance.enableServiceWorker,
 				miauth: true,
+				voiceCall: this.liveKitService.isEnabled,
+				remoteVoiceCall: isRemoteVoiceCallEnabled(instance),
 			},
 		};
 

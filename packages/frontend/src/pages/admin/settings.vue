@@ -335,6 +335,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 								</MkSwitch>
 							</SearchMarker>
 
+							<SearchMarker :keywords="['remote', 'voice', 'call']">
+								<MkSwitch v-model="federationForm.state.enableRemoteVoiceCall">
+									<template #label><SearchLabel>{{ i18n.ts._serverSettings.enableRemoteVoiceCall }}</SearchLabel><span v-if="federationForm.modifiedStates.enableRemoteVoiceCall" class="_modified">{{ i18n.ts.modified }}</span></template>
+									<template #caption><SearchText>{{ i18n.ts._serverSettings.enableRemoteVoiceCallDescription }}</SearchText></template>
+								</MkSwitch>
+							</SearchMarker>
+
 							<SearchMarker :keywords="['cache', 'remote', 'files']">
 								<MkSwitch v-model="federationForm.state.cacheRemoteFiles">
 									<template #label><SearchLabel>{{ i18n.ts.cacheRemoteFiles }}</SearchLabel><span v-if="federationForm.modifiedStates.cacheRemoteFiles" class="_modified">{{ i18n.ts.modified }}</span></template>
@@ -350,6 +357,35 @@ SPDX-License-Identifier: AGPL-3.0-only
 									</MkSwitch>
 								</SearchMarker>
 							</template>
+						</div>
+					</MkFolder>
+				</SearchMarker>
+
+				<SearchMarker v-slot="slotProps" :keywords="['voice', 'call', 'turn', 'cloudflare', 'nat']">
+					<MkFolder :defaultOpen="slotProps.isParentOfTarget">
+						<template #icon><SearchIcon><i class="ti ti-router"></i></SearchIcon></template>
+						<template #label><SearchLabel>{{ i18n.ts._serverSettings.voiceCallCloudflareTurn }}</SearchLabel></template>
+						<template v-if="voiceCallTurnForm.modified.value" #footer>
+							<MkFormFooter :form="voiceCallTurnForm"/>
+						</template>
+
+						<div class="_gaps">
+							<MkInfo>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnDescription }}</MkInfo>
+
+							<SearchMarker :keywords="['key', 'id']">
+								<MkInput v-model="voiceCallTurnForm.state.voiceCallCloudflareTurnKeyId" type="text" autocomplete="off">
+									<template #label><SearchLabel>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnKeyId }}</SearchLabel><span v-if="voiceCallTurnForm.modifiedStates.voiceCallCloudflareTurnKeyId" class="_modified">{{ i18n.ts.modified }}</span></template>
+								</MkInput>
+							</SearchMarker>
+
+							<SearchMarker :keywords="['api', 'token']">
+								<MkInput v-model="voiceCallTurnForm.state.voiceCallCloudflareTurnApiToken" type="password" autocomplete="new-password">
+									<template #prefix><i class="ti ti-key"></i></template>
+									<template #label><SearchLabel>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnApiToken }}</SearchLabel><span v-if="voiceCallTurnForm.modifiedStates.voiceCallCloudflareTurnApiToken" class="_modified">{{ i18n.ts.modified }}</span></template>
+								</MkInput>
+							</SearchMarker>
+
+							<MkInfo warn>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnKeyChangeDescription }}</MkInfo>
 						</div>
 					</MkFolder>
 				</SearchMarker>
@@ -532,6 +568,7 @@ const federationForm = useForm({
 	signToActivityPubGet: meta.signToActivityPubGet,
 	proxyRemoteFiles: meta.proxyRemoteFiles,
 	allowExternalApRedirect: meta.allowExternalApRedirect,
+	enableRemoteVoiceCall: meta.enableRemoteVoiceCall,
 	cacheRemoteFiles: meta.cacheRemoteFiles,
 	cacheRemoteSensitiveFiles: meta.cacheRemoteSensitiveFiles,
 }, async (state) => {
@@ -542,8 +579,21 @@ const federationForm = useForm({
 		signToActivityPubGet: state.signToActivityPubGet,
 		proxyRemoteFiles: state.proxyRemoteFiles,
 		allowExternalApRedirect: state.allowExternalApRedirect,
+		enableRemoteVoiceCall: state.enableRemoteVoiceCall,
 		cacheRemoteFiles: state.cacheRemoteFiles,
 		cacheRemoteSensitiveFiles: state.cacheRemoteSensitiveFiles,
+	});
+	fetchInstance(true);
+});
+
+// 空にするとサーバー側で null として保存され、TURN を使わなくなる
+const voiceCallTurnForm = useForm({
+	voiceCallCloudflareTurnKeyId: meta.voiceCallCloudflareTurnKeyId ?? '',
+	voiceCallCloudflareTurnApiToken: meta.voiceCallCloudflareTurnApiToken ?? '',
+}, async (state) => {
+	await os.apiWithDialog('admin/update-meta', {
+		voiceCallCloudflareTurnKeyId: state.voiceCallCloudflareTurnKeyId,
+		voiceCallCloudflareTurnApiToken: state.voiceCallCloudflareTurnApiToken,
 	});
 	fetchInstance(true);
 });

@@ -10,6 +10,7 @@ import { UtilityService } from '@/core/UtilityService.js';
 import { DI } from '@/di-symbols.js';
 import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
+import { GlobalEventService } from '@/core/GlobalEventService.js';
 
 export const meta = {
 	tags: ['admin'],
@@ -38,6 +39,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private utilityService: UtilityService,
 		private federatedInstanceService: FederatedInstanceService,
 		private moderationLogService: ModerationLogService,
+		private globalEventService: GlobalEventService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const instance = await this.instancesRepository.findOneBy({ host: this.utilityService.toPuny(ps.host) });
@@ -57,6 +59,16 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				suspensionState,
 				moderationNote: ps.moderationNote,
 			});
+
+			if (suspensionState != null) {
+				// 停止を記録した後で、すべてのワーカーに知らせる (通話のサービスは、停止されたサーバーのユーザーを通話から外す)。
+				// 知らせを受けた側の処理は待たずに応答する
+				this.globalEventService.publishInternalEvent('instanceSuspensionStateUpdated', {
+					id: instance.id,
+					host: instance.host,
+					suspensionState,
+				});
+			}
 
 			if (ps.isSuspended != null && isSuspendedBefore !== ps.isSuspended) {
 				if (ps.isSuspended) {

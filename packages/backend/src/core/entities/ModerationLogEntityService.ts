@@ -12,6 +12,7 @@ import { MiModerationLog } from '@/models/ModerationLog.js';
 import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
 import type { Packed } from '@/misc/json-schema.js';
+import { redactServerSettingsLog } from '@/misc/redact-server-settings-log.js';
 import { UserEntityService } from './UserEntityService.js';
 
 @Injectable()
@@ -38,7 +39,8 @@ export class ModerationLogEntityService {
 			id: log.id,
 			createdAt: this.idService.parse(log.id).date.toISOString(),
 			type: log.type,
-			info: log.info,
+			// 伏せるようにする前に残されたサーバー設定の変更履歴も、認証情報を伏せて返す
+			info: log.type === 'updateServerSettings' ? redactServerSettingsLog(log.info) : log.info,
 			userId: log.userId,
 			user: hint?.packedUser ?? this.userEntityService.pack(log.user ?? log.userId, null, {
 				schema: 'UserDetailedNotMe',

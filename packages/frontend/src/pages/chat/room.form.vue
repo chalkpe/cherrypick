@@ -5,6 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <div
+	ref="rootEl"
 	:class="$style.root"
 	@dragover.stop="onDragover"
 	@drop.stop="onDrop"
@@ -24,6 +25,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<div :class="$style.buttons">
 			<button class="_button" :class="$style.button" @click="chooseFile"><i class="ti ti-photo-plus"></i></button>
 			<button class="_button" :class="$style.button" @click="insertEmoji"><i class="ti ti-mood-happy"></i></button>
+			<!-- 通話中は PC だと通話バーがここに入る -->
+			<XVoiceCallBarSlot kind="chatForm" :focusWithin="rootEl" :class="$style.voiceCall"/>
 			<button class="_button" :class="[$style.button, $style.send]" :disabled="!canSend || sending" :title="i18n.ts.send" @click="send">
 				<template v-if="!sending"><i class="ti ti-send"></i></template><template v-if="sending"><MkLoading :em="true"/></template>
 			</button>
@@ -34,7 +37,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onMounted, watch, ref, shallowRef, computed, nextTick, readonly, onBeforeUnmount } from 'vue';
+import { onMounted, watch, ref, shallowRef, computed, nextTick, readonly, onBeforeUnmount, useTemplateRef } from 'vue';
 import * as Misskey from 'cherrypick-js';
 //import insertTextAtCursor from 'insert-text-at-cursor';
 import { formatTimeString } from '@/utility/format-time-string.js';
@@ -47,12 +50,14 @@ import { prefer } from '@/preferences.js';
 import { Autocomplete } from '@/utility/autocomplete.js';
 import { emojiPicker } from '@/utility/emoji-picker.js';
 import { checkDragDataType, getDragData } from '@/drag-and-drop.js';
+import XVoiceCallBarSlot from '@/ui/_common_/voice-call-bar-slot.vue';
 
 const props = defineProps<{
 	user?: Misskey.entities.UserDetailed | null;
 	room?: Misskey.entities.ChatRoom | null;
 }>();
 
+const rootEl = useTemplateRef('rootEl');
 const textareaEl = shallowRef<HTMLTextAreaElement>();
 const fileEl = shallowRef<HTMLInputElement>();
 
@@ -189,7 +194,7 @@ function onChangeFile() {
 }
 
 function send() {
-	if (!canSend.value) return;
+	if (sending.value || !canSend.value) return;
 
 	sending.value = true;
 
@@ -343,6 +348,7 @@ onBeforeUnmount(() => {
 }
 
 .button {
+	flex-shrink: 0;
 	height: 50px;
 	aspect-ratio: 1;
 
@@ -350,6 +356,15 @@ onBeforeUnmount(() => {
 		color: var(--MI_THEME-accent);
 	}
 }
+
+// 通話バーはこの幅いっぱいを使う。両隣のボタンはアイコンの周りに余白があるので、ここには余白を取らない
+.voiceCall {
+	display: flex;
+	flex: 1;
+	align-items: center;
+	min-width: 0;
+}
+
 .send {
 	margin-left: auto;
 	color: var(--MI_THEME-accent);

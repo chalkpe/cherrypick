@@ -8,6 +8,7 @@ import { URL } from 'node:url';
 import { promisify } from 'node:util';
 import { Inject, Injectable } from '@nestjs/common';
 import * as htmlParser from 'node-html-parser';
+import type { Response } from 'node-fetch';
 import { RsaKeyPair } from 'slacc';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
@@ -163,6 +164,40 @@ export class ApRequestService {
 	public async signedPost(user: { id: MiUser['id'] }, url: string, object: unknown, digest?: string): Promise<void> {
 		const body = typeof object === 'string' ? object : JSON.stringify(object);
 
+		await this.sendSignedPost(user, url, body, digest, {});
+	}
+
+	/**
+	 * 署名付きで POST し、2xx の JSON 応答本文を返す。2xx 以外は StatusError を投げる。
+	 * @param user http-signature user
+	 * @param url URL to post
+	 * @param object body
+	 * @param timeout ms
+	 * @param options redirect: 'manual' なら 3xx を辿らず StatusError にする。size: 応答本文の上限 (bytes)。省略時は HttpRequestService.send の既定
+	 */
+	@bindThis
+	public async signedPostJson(user: { id: MiUser['id'] }, url: string, object: unknown, timeout: number, options: { redirect?: 'follow' | 'manual'; size?: number } = {}): Promise<unknown> {
+		const res = await this.sendSignedPost(user, url, JSON.stringify(object), undefined, {
+			timeout,
+			redirect: options.redirect,
+			size: options.size,
+		});
+
+		return await res.json();
+	}
+
+	/**
+	 * user の鍵で署名した POST を送る (signedPost と signedPostJson で共通)。
+	 * 署名するヘッダーは (request-target)・date・host・digest (ApRequestCreator.createSignedPost)
+	 */
+	@bindThis
+	private async sendSignedPost(
+		user: { id: MiUser['id'] },
+		url: string,
+		body: string,
+		digest: string | undefined,
+		sendOptions: { timeout?: number; redirect?: 'follow' | 'manual'; size?: number },
+	): Promise<Response> {
 		const keypair = await this.userKeypairService.getUserKeypair(user.id);
 
 		const req = await ApRequestCreator.createSignedPost({
@@ -173,14 +208,14 @@ export class ApRequestService {
 			url,
 			body,
 			digest,
-			additionalHeaders: {
-			},
+			additionalHeaders: {},
 		});
 
-		await this.httpRequestService.send(url, {
+		return await this.httpRequestService.send(url, {
 			method: req.request.method,
 			headers: req.request.headers,
 			body,
+			...sendOptions,
 		});
 	}
 

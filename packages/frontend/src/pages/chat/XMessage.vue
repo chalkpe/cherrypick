@@ -4,11 +4,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div :class="[$style.root, { [$style.isMe]: isMe }]">
-	<MkAvatar v-if="!isMe" :class="[$style.avatar, prefer.s.useStickyIcons ? $style.useSticky : null]" :user="message.fromUser!" :link="!isMe" :preview="false"/>
-	<div :class="[$style.body, message.file != null ? $style.fullWidth : null]" @contextmenu.stop="onContextmenu">
-		<div :class="$style.header"><MkUserName v-if="!isMe && prefer.s['chat.showSenderName'] && message.fromUser != null" :user="message.fromUser"/></div>
-		<MkFukidashi :class="$style.fukidashi" :tail="isMe ? 'right' : 'left'" :fullWidth="message.file != null" :accented="isMe">
+<div :class="[$style.root, { [$style.isMe]: isMe, [$style.continued]: !isFirstInGroup }]">
+	<MkAvatar v-if="!isMe && isFirstInGroup" :class="[$style.avatar, prefer.s.useStickyIcons ? $style.useSticky : null]" :user="message.fromUser!" :link="!isMe" :preview="false"/>
+	<!-- まとまりの2つ目以降もアバターの幅だけ空けて、吹き出しの位置を揃える -->
+	<div v-else-if="!isMe" :class="$style.avatarSpace"></div>
+	<div :class="[$style.body, message.file != null ? $style.fullWidth : null]" tabindex="0" aria-haspopup="menu" @keydown.self="onMenuKeydown" @contextmenu.stop="onContextmenu">
+		<div v-if="isFirstInGroup" :class="$style.header"><MkUserName v-if="!isMe && prefer.s['chat.showSenderName'] && message.fromUser != null" :user="message.fromUser"/></div>
+		<MkFukidashi :class="[$style.fukidashi, { [$style.noTailLeft]: !isFirstInGroup && !isMe }]" :tail="!isFirstInGroup ? 'none' : isMe ? 'right' : 'left'" :fullWidth="message.file != null" :accented="isMe">
 			<Mfm
 				v-if="message.text"
 				ref="text"
@@ -24,8 +26,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkMediaList v-if="message.file" :mediaList="[message.file]" :user="message.fromUser"/>
 		</MkFukidashi>
 		<MkUrlPreview v-for="url in urls" :key="url" :url="url" style="margin: 8px 0;"/>
-		<div :class="$style.footer">
-			<button class="_textButton" style="color: currentColor;" @click="showMenu"><i class="ti ti-dots-circle-horizontal"></i></button>
+		<div :class="[$style.footer, { [$style.groupedFooter]: !isLastInGroup }]">
+			<button class="_textButton" style="color: currentColor;" :aria-label="i18n.ts.menu" @click="showMenu"><i class="ti ti-dots-circle-horizontal"></i></button>
 			<MkTime :class="$style.time" :time="message.createdAt"/>
 			<MkA v-if="isSearchResult && 'toRoom' in message && message.toRoom != null" :to="`/chat/room/${message.toRoomId}`">{{ message.toRoom.name }}</MkA>
 			<MkA v-if="isSearchResult && 'toUser' in message && message.toUser != null && isMe" :to="`/chat/user/${message.toUserId}`">@{{ message.toUser.username }}</MkA>
@@ -78,12 +80,22 @@ import { getHTMLElementOrNull } from '@/utility/get-dom-node-or-null.js';
 
 const $i = ensureSignin();
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
 	message: NormalizedChatMessage | Misskey.entities.ChatMessage;
 	isSearchResult?: boolean;
-}>();
+	// 同じ送信者が続けて送ったメッセージのまとまりの中での位置。省略すると単独のメッセージとして表示する。
+	// 新着のたびに全部の吹き出しを描き直さないよう、オブジェクトではなく真偽値で受け取る
+	firstInGroup?: boolean;
+	lastInGroup?: boolean;
+}>(), {
+	firstInGroup: true,
+	lastInGroup: true,
+});
 
 const isMe = computed(() => props.message.fromUserId === $i.id);
+// 検索結果は前後のメッセージと関係なく並ぶのでまとめない
+const isFirstInGroup = computed(() => props.isSearchResult === true || props.firstInGroup);
+const isLastInGroup = computed(() => props.isSearchResult === true || props.lastInGroup);
 const urls = computed(() => props.message.text ? extractUrlFromMfm(mfm.parse(props.message.text)) : []);
 
 provide(DI.mfmEmojiReactCallback, (reaction) => {
@@ -134,10 +146,21 @@ function onContextmenu(ev: PointerEvent) {
 	if (ev.target && isLink(ev.target as HTMLElement)) return;
 	if (window.getSelection()?.toString() !== '') return;
 
-	showMenu(ev, true);
+	os.contextMenu(getMenu(), ev);
 }
 
-function showMenu(ev: PointerEvent, contextmenu = false) {
+function onMenuKeydown(ev: KeyboardEvent) {
+	if (ev.key !== 'Enter' && ev.key !== 'ContextMenu' && !(ev.key === 'F10' && ev.shiftKey)) return;
+	ev.preventDefault();
+	ev.stopPropagation();
+	showMenu(ev);
+}
+
+function showMenu(ev: PointerEvent | KeyboardEvent) {
+	os.popupMenu(getMenu(), ev.currentTarget ?? ev.target);
+}
+
+function getMenu(): MenuItem[] {
 	const menu: MenuItem[] = [];
 
 	if (!isMe.value && $i.policies.chatAvailability === 'available') {
@@ -195,11 +218,7 @@ function showMenu(ev: PointerEvent, contextmenu = false) {
 		});
 	}
 
-	if (contextmenu) {
-		os.contextMenu(menu, ev);
-	} else {
-		os.popupMenu(menu, ev.currentTarget ?? ev.target);
-	}
+	return menu;
 }
 </script>
 
@@ -230,6 +249,13 @@ function showMenu(ev: PointerEvent, contextmenu = false) {
 			flex-direction: row-reverse;
 		}
 	}
+
+	// まとまりの2つ目以降は名前の行がないので、前の吹き出しに詰めて並べる
+	&.continued {
+		.body {
+			padding-top: 0;
+		}
+	}
 }
 
 .avatar {
@@ -241,6 +267,12 @@ function showMenu(ev: PointerEvent, contextmenu = false) {
 		position: sticky;
 		top: calc(16px + var(--MI-stickyTop, 0px));
 	}
+}
+
+// .avatar と同じ幅
+.avatarSpace {
+	flex-shrink: 0;
+	width: 50px;
 }
 
 @container (max-width: 450px) {
@@ -255,6 +287,10 @@ function showMenu(ev: PointerEvent, contextmenu = false) {
 	.avatar {
 		width: 42px;
 		height: 42px;
+	}
+
+	.avatarSpace {
+		width: 42px;
 	}
 
 	.fukidashi {
@@ -279,6 +315,11 @@ function showMenu(ev: PointerEvent, contextmenu = false) {
 
 .fukidashi {
 	text-align: left;
+
+	// 尻尾のない吹き出しは尻尾の分の余白が右側にしか付かないので、左寄せのときは左側にも付けて尻尾のある吹き出しと左端を揃える
+	&.noTailLeft {
+		padding-left: calc(var(--fukidashi-radius) * .13);
+	}
 }
 
 .content {
@@ -293,6 +334,15 @@ function showMenu(ev: PointerEvent, contextmenu = false) {
 	gap: 0.5em;
 	margin-top: 4px;
 	font-size: 75%;
+}
+
+// まとまりの途中は普段の余白を詰め、キーボードで入ったときはメニューと時刻を出す。
+.groupedFooter {
+	display: none;
+
+	.body:focus-within & {
+		display: flex;
+	}
 }
 
 .time {

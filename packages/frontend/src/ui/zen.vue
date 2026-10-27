@@ -12,6 +12,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 		-->
 		<button v-if="showDeckNav" class="_buttonPrimary" :class="$style.deckNav" @click="goToDeck">{{ i18n.ts.goToDeck }}</button>
 
+		<!-- モバイルでは通話バーがここ (ページの上) に入る -->
+		<XVoiceCallBarSlot kind="top"/>
+
 		<div style="flex: 1; min-height: 0;">
 			<RouterView/>
 		</div>
@@ -25,6 +28,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { computed, provide, ref } from 'vue';
 import { instanceName, ui } from '@@/js/config.js';
 import XCommon from './_common_/common.vue';
+import XVoiceCallBarSlot from '@/ui/_common_/voice-call-bar-slot.vue';
 import type { PageMetadata } from '@/page.js';
 import { provideMetadataReceiver, provideReactiveMetadata } from '@/page.js';
 import { i18n } from '@/i18n.js';

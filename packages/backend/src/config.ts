@@ -74,6 +74,7 @@ type Source = {
 		index: string;
 		scope?: 'local' | 'global' | string[];
 	};
+	voiceCall?: VoiceCallConfig;
 	sentryForBackend?: SentryBackendConfig;
 	sentryForFrontend?: {
 		options: Partial<SentryVue.BrowserOptions> & { dsn: string };
@@ -139,6 +140,14 @@ type Source = {
 	}
 };
 
+export type VoiceCallConfig = {
+	livekit: {
+		internalUrl: string;
+		apiKey: string;
+		apiSecret: string;
+	};
+};
+
 export type Config = {
 	url: string;
 	port: number;
@@ -175,6 +184,7 @@ export type Config = {
 		index: string;
 		scope?: 'local' | 'global' | string[];
 	} | undefined;
+	voiceCall: VoiceCallConfig | undefined;
 	proxy: string | undefined;
 	proxySmtp: string | undefined;
 	proxyBypassHosts: string[] | undefined;
@@ -336,6 +346,7 @@ export function loadConfig(): Config {
 		dbSlaves: config.dbSlaves,
 		fulltextSearch: config.fulltextSearch,
 		meilisearch: config.meilisearch,
+		voiceCall: config.voiceCall,
 		redis,
 		redisForPubsub: config.redisForPubsub ? convertRedisOptions(config.redisForPubsub, host) : redis,
 		redisForJobQueue: config.redisForJobQueue ? convertRedisOptions(config.redisForJobQueue, host) : redis,
