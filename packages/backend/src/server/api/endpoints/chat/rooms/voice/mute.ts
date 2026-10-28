@@ -8,6 +8,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { DI } from '@/di-symbols.js';
 import type { UsersRepository } from '@/models/_.js';
+import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { ApiError } from '@/server/api/error.js';
@@ -66,6 +67,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 		private chatService: ChatService,
 		private liveKitService: LiveKitService,
+		private chatVoiceService: ChatVoiceService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			if (!this.liveKitService.isEnabled) {
@@ -88,6 +90,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			}
 
 			await this.liveKitService.muteMicrophone(room.id, this.liveKitService.identityOf(user));
+			await this.chatVoiceService.refresh(room.id);
 		});
 	}
 }

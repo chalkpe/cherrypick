@@ -720,3 +720,24 @@ describe('LiveKitServerService', () => {
 		});
 	});
 });
+
+describe('federated reported voice status', () => {
+	test('requires a verified user and passes that user to the status service', async () => {
+		const user = { id: 'remote-user' };
+		const verifier = { verify: vi.fn().mockResolvedValue(null) };
+		const chatVoiceService = { reportStatus: vi.fn().mockResolvedValue(true) };
+		const service = createService(liveKitService(), { verifier, chatVoiceService });
+		const app = Fastify();
+		await app.register(service.createServer, { prefix: '/livekit' });
+		cleanups.push(() => app.close());
+		const payload = { room: 'https://local.test/chat/rooms/r1', sessionId: 'PA_1', micMuted: true, deafened: false };
+		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload })).statusCode).toBe(401);
+		expect(chatVoiceService.reportStatus).not.toHaveBeenCalled();
+		verifier.verify.mockResolvedValue(user as never);
+		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload })).statusCode).toBe(200);
+		expect(chatVoiceService.reportStatus).toHaveBeenCalledWith(user, 'r1', 'PA_1', { micMuted: true, deafened: false });
+		chatVoiceService.reportStatus.mockResolvedValue(false);
+		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload })).statusCode).toBe(403);
+		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload: { ...payload, micMuted: 'true' } })).statusCode).toBe(400);
+	});
+});

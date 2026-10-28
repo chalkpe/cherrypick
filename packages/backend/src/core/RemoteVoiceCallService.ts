@@ -10,6 +10,7 @@ import type { MiMeta } from '@/models/Meta.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
 import type { MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import { bindThis } from '@/decorators.js';
+import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
 import { StatusError } from '@/misc/status-error.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
@@ -44,7 +45,7 @@ type TokenResponse = {
 	url: string;
 	token: string;
 	iceServers: IceServer[] | null;
-	participants: { identity: string; screenSharing: boolean }[];
+	participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
 	updatedAt: number;
 };
 
@@ -131,6 +132,16 @@ export class RemoteVoiceCallService {
 		return { url: response.url, token: response.token, iceServers };
 	}
 
+	@bindThis
+	public async reportStatus(me: MiLocalUser, room: MiChatRoom, owner: MiRemoteUser, sessionId: string, status: { micMuted: boolean; deafened: boolean }): Promise<void> {
+		if (!this.isEnabled) throw new RemoteVoiceCallError('forbidden');
+		const ownerUrl = await this.trustedOwnerUrlOf(owner);
+		if (ownerUrl == null) throw new RemoteVoiceCallError('forbidden');
+		await this.apRequestService.signedPostJson(me, `${ownerUrl.origin}/livekit/federation/status`, {
+			room: `${ownerUrl.origin}/chat/rooms/${room.id}`, sessionId, ...status,
+		}, TOKEN_REQUEST_TIMEOUT_MS, { redirect: 'manual', size: TOKEN_RESPONSE_SIZE_LIMIT });
+	}
+
 	/**
 	 * 通話を頼んでよい持ち主なら、その URI を返す。
 	 * 停止・削除された持ち主、URI のホストが host と違う持ち主、連合していないか停止されたサーバーの持ち主には null
@@ -173,7 +184,7 @@ function parseTokenResponse(body: unknown, expectedUrl: string): TokenResponse |
 		if (typeof participant !== 'object' || participant == null) return null;
 		const { identity, screenSharing } = participant as Record<string, unknown>;
 		if (typeof identity !== 'string' || typeof screenSharing !== 'boolean') return null;
-		parsed.push({ identity, screenSharing });
+		parsed.push({ identity, screenSharing, ...reportedVoiceStatus(participant as Record<string, unknown>) });
 	}
 
 	return { url: expectedUrl, token, iceServers: parseIceServers(iceServers), participants: parsed, updatedAt };

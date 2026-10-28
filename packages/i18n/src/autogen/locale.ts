@@ -9301,6 +9301,14 @@ export interface Locale extends ILocale {
     };
     "_voiceCall": {
         /**
+         * マイクミュート中
+         */
+        "micMuted": string;
+        /**
+         * スピーカーミュート中
+         */
+        "deafened": string;
+        /**
          * マイクを使用できません。
          */
         "micUnavailable": string;

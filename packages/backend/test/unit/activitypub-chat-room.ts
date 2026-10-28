@@ -528,6 +528,17 @@ describe('Chat room federation: checking voice states', () => {
 		});
 	});
 
+	test('relays reported mute flags while tolerating older or malformed optional flags', () => {
+		const object = voiceState({ participants: [{ id: invitedRemote.uri, screenSharing: false, micMuted: true, deafened: false }] });
+		expect(parseChatRoomVoiceState(remoteOwner.uri, object, 51)).toMatchObject({
+			ok: true, state: { participants: [{ micMuted: true, deafened: false }] },
+		});
+		const malformed = voiceState({ participants: [{ id: invitedRemote.uri, screenSharing: false, micMuted: 'true' }] });
+		expect(parseChatRoomVoiceState(remoteOwner.uri, malformed, 51)).toMatchObject({
+			ok: true, state: { participants: [{ identity: invitedRemote.uri, screenSharing: false }] },
+		});
+	});
+
 	test('reads the voice state this server renders', () => {
 		const renderer = Object.assign(Object.create(ApRendererService.prototype), { config: { url: LOCAL } }) as ApRendererService;
 		const rendered = renderer.renderChatRoomVoiceState({ id: 'localroom' } as any, [{ identity: `${LOCAL}/users/${alice.id}`, screenSharing: false }], Date.parse(UPDATED));

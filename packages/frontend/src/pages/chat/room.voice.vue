@@ -24,8 +24,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 				:watchable="inThisCall"
 				:watching="voiceCall.watchingIdentities.includes(participant.identity)"
 				:menuable="participant.identity !== myIdentity && (inThisCall || isOwner)"
+				:volumable="participant.identity !== myIdentity && inThisCall"
 				@toggleWatch="toggleScreenShareWatch(participant.identity)"
 				@openMenu="openParticipantMenu(participant, $event)"
+				@openVolume="openParticipantVolume(participant, $event)"
 			/>
 		</div>
 		<XScreens v-if="inThisCall && watchedParticipants.length > 0" :participants="watchedParticipants" :class="$style.screens"/>
@@ -51,7 +53,7 @@ const props = defineProps<{
 }>();
 
 // カードを出すかどうかと参加の流れ、参加者のメニューはページヘッダーやステージと共有するので、ページ側で作ったものを使う
-const { showCard, inThisCall, participants, join, myIdentity, isOwner, openParticipantMenu, watchedParticipants } = props.call;
+const { showCard, inThisCall, participants, join, myIdentity, isOwner, openParticipantVolume, openParticipantMenu, watchedParticipants } = props.call;
 
 const rootEl = useTemplateRef('rootEl');
 const announcesStatus = useVoiceCallStatusAnnouncer(inThisCall, rootEl);

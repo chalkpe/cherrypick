@@ -26,6 +26,7 @@ import { DriveFileEntityService } from '@/core/entities/DriveFileEntityService.j
 import type { MiUserKeypair } from '@/models/UserKeypair.js';
 import type { UsersRepository, UserProfilesRepository, NotesRepository, DriveFilesRepository, PollsRepository, EventsRepository, MiMeta } from '@/models/_.js';
 import { bindThis } from '@/decorators.js';
+import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
 import { IdService } from '@/core/IdService.js';
 import { UtilityService } from '@/core/UtilityService.js';
@@ -923,13 +924,13 @@ export class ApRendererService {
 	 * このサーバーが持つルームの、通話の参加者の現況。participants の id は参加者の identity (LiveKitService.identityOf)
 	 */
 	@bindThis
-	public renderChatRoomVoiceState(room: Pick<MiChatRoom, 'id'>, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): IChatRoomVoiceState {
+	public renderChatRoomVoiceState(room: Pick<MiChatRoom, 'id'>, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[], updatedAt: number): IChatRoomVoiceState {
 		const roomUri = this.genLocalChatRoomUri(room.id);
 		return {
 			id: chatRoomVoiceStateIdOf(roomUri),
 			type: 'ChatRoomVoiceState',
 			room: roomUri,
-			participants: participants.map(p => ({ id: p.identity, screenSharing: p.screenSharing })),
+			participants: participants.map(p => ({ id: p.identity, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) })),
 			updated: new Date(updatedAt).toISOString(),
 		};
 	}

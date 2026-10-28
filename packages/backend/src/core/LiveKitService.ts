@@ -10,6 +10,7 @@ import { DI } from '@/di-symbols.js';
 import type { Config, VoiceCallConfig } from '@/config.js';
 import type { MiUser } from '@/models/User.js';
 import { bindThis } from '@/decorators.js';
+import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 
 const ROOM_NAME_PREFIX = 'chatRoom:';
 
@@ -17,6 +18,8 @@ export type LiveKitParticipant = {
 	identity: string;
 	userId: MiUser['id'];
 	screenSharing: boolean;
+	micMuted?: boolean;
+	deafened?: boolean;
 	canScreenShare?: boolean;
 	micTrackSid: string | null;
 };
@@ -120,6 +123,10 @@ export class LiveKitService {
 			result.push({
 				identity: participant.identity,
 				userId,
+				...reportedVoiceStatus({
+					micMuted: parseReportedBoolean(participant.attributes?.['cherrypick.micMuted']),
+					deafened: parseReportedBoolean(participant.attributes?.['cherrypick.deafened']),
+				}),
 				screenSharing: participant.tracks.some(track => track.source === TrackSource.SCREEN_SHARE),
 				// 空のソース一覧は LiveKit では全ソース許可を表す。
 				canScreenShare: participant.permission?.canPublish === true && (participant.permission.canPublishSources.length === 0 || participant.permission.canPublishSources.some(source => source === TrackSource.SCREEN_SHARE || source === TrackSource.SCREEN_SHARE_AUDIO)),
@@ -127,6 +134,23 @@ export class LiveKitService {
 			});
 		}
 		return result;
+	}
+
+	/** Reported UI settings, scoped to the connected participant session. */
+	@bindThis
+	public async setParticipantStatus(roomId: string, identity: string, sessionId: string, status: { micMuted: boolean; deafened: boolean }): Promise<boolean> {
+		const service = this.requireRoomService();
+		try {
+			const participant = await service.getParticipant(this.roomNameOf(roomId), identity);
+			if (participant.sid !== sessionId) return false;
+			await service.updateParticipant(this.roomNameOf(roomId), identity, {
+				attributes: { 'cherrypick.micMuted': String(status.micMuted), 'cherrypick.deafened': String(status.deafened) },
+			});
+			return true;
+		} catch (err) {
+			if (isNotFound(err)) return false;
+			throw err;
+		}
 	}
 
 	@bindThis
@@ -145,6 +169,7 @@ export class LiveKitService {
 		const participant = (await this.listParticipants(roomId)).find(p => p.identity === identity);
 		if (participant?.micTrackSid == null) return;
 		await this.requireRoomService().mutePublishedTrack(this.roomNameOf(roomId), identity, participant.micTrackSid, true);
+		await this.requireRoomService().updateParticipant(this.roomNameOf(roomId), identity, { attributes: { 'cherrypick.micMuted': 'true' } });
 	}
 
 	@bindThis
@@ -191,4 +216,8 @@ export function userIdOfMetadata(metadata: string | undefined): string | null {
 		// 他のクライアントが付けたメタデータは無視する
 	}
 	return null;
+}
+
+function parseReportedBoolean(value: string | undefined): boolean | undefined {
+	return value === 'true' ? true : value === 'false' ? false : undefined;
 }

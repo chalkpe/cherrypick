@@ -342,7 +342,9 @@ function moderationFixture(Endpoint: typeof KickEndpoint | typeof MuteEndpoint, 
 		findRoomById: vi.fn().mockResolvedValue('room' in overrides ? overrides.room : { id: 'r1', ownerId: overrides.ownerId ?? 'me' }),
 	};
 	const liveKitService = liveKit(overrides.isEnabled ?? true);
-	const endpoint = new Endpoint(usersRepository as any, chatService as any, liveKitService as any);
+	const endpoint = Endpoint === MuteEndpoint
+		? new MuteEndpoint(usersRepository as any, chatService as any, liveKitService as any, { refresh: vi.fn() } as any)
+		: new KickEndpoint(usersRepository as any, chatService as any, liveKitService as any);
 	return { endpoint, liveKitService, chatService };
 }
 

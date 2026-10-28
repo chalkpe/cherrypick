@@ -16,6 +16,7 @@ import type { MiMeta } from '@/models/Meta.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { bindThis } from '@/decorators.js';
+import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { LiveKitService, userIdOfMetadata } from '@/core/LiveKitService.js';
@@ -284,7 +285,7 @@ const REFRESH_EVENTS = new Set([
 ]);
 
 type VoiceSnapshot = {
-	participants: { identity: string; userId: MiUser['id']; screenSharing: boolean }[];
+	participants: { identity: string; userId: MiUser['id']; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
 	updatedAt: number;
 };
 
@@ -371,7 +372,7 @@ type FederatedRecord = { hash: string; at: number; updatedAt: number };
 
 /** 他のサーバーに渡す参加者の現況。userId はこのサーバーの DB の id なので含めない */
 type FederatedVoiceSnapshot = {
-	participants: { identity: string; screenSharing: boolean }[];
+	participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
 	updatedAt: number;
 };
 
@@ -502,6 +503,20 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		return { url, token, iceServers, participants, updatedAt };
 	}
 
+	/** Accept only the authenticated user's own connected session and reported settings. */
+	@bindThis
+	public async reportStatus(user: MiUser, roomId: string, sessionId: string, status: { micMuted: boolean; deafened: boolean }): Promise<boolean> {
+		if (!this.liveKitService.isEnabled) return false;
+		const participant = { identity: this.liveKitService.identityOf(user), userId: user.id };
+		const context = await this.admissionContextOf(roomId, [participant], new Map());
+		if (this.admissionOf(participant, context) !== 'admitted' || !context.room.ok || context.room.value == null) return false;
+		const owner = await this.usersRepository.findOneBy({ id: context.room.value.ownerId });
+		if (owner == null || owner.host != null) return false;
+		if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, status)) return false;
+		await this.refresh(roomId);
+		return true;
+	}
+
 	/**
 	 * 通話中のすべてのルームで、いま残れない参加者 (admissionOf) を外す (reconcileRoom)。
 	 * ブロックや連合の設定が変わったときと、管理画面でサーバーを停止したときに、定期的な読み直し (sweep) を待たずに呼ぶ。
@@ -569,7 +584,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 		const snapshot = JSON.parse(raw) as VoiceSnapshot;
 		return {
-			participants: snapshot.participants.map(p => ({ identity: p.identity, screenSharing: p.screenSharing })),
+			participants: snapshot.participants.map(p => ({ identity: p.identity, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) })),
 			updatedAt: snapshot.updatedAt,
 		};
 	}
@@ -688,7 +703,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const removed = refusedHosts != null ? await this.removeUnadmitted(roomId, listed, refusedHosts, 'sweep') : new Set<string>();
 		const participants = listed.filter(p => !removed.has(p.identity));
 		const snapshot: VoiceSnapshot = {
-			participants: participants.map(p => ({ identity: p.identity, userId: p.userId, screenSharing: p.screenSharing })),
+			participants: participants.map(p => ({ identity: p.identity, userId: p.userId, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) })),
 			updatedAt: readAt,
 		};
 
@@ -765,7 +780,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * ミラーの通話はこのサーバーの LiveKit には無いので、定期的な読み直し (sweep) の対象には加えない
 	 */
 	@bindThis
-	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<RemoteSnapshotStoreResult> {
+	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[], updatedAt: number): Promise<RemoteSnapshotStoreResult> {
 		// このサーバーのルームの現況は LiveKit から読む。ホストの言う現況で上書きさせない
 		if (room.owner == null || room.owner.host == null) {
 			throw new Error(`Voice call participants sent by another server can only be stored for a room owned there: ${room.id}`);
@@ -797,7 +812,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			if (user == null) continue;
 			if (user.host == null && !localMemberIds.has(user.id)) continue;
 			if (user.host != null && refusedHosts.get(user.host) !== false) continue;
-			snapshot.participants.push({ identity: p.identity, userId: user.id, screenSharing: p.screenSharing });
+			snapshot.participants.push({ identity: p.identity, userId: user.id, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) });
 		}
 
 		// 他のサーバーの通話を止めた後に、止める前に始まった参加の応答が届いても書かない (止めたときにミラーの現況は消している)
@@ -1436,7 +1451,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			this.retryFederationLater(room.id);
 			throw err;
 		}
-		const participants = listed.map(p => ({ identity: p.identity, screenSharing: p.screenSharing }));
+		const participants = listed.map(p => ({ identity: p.identity, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) }));
 
 		const hash = createHash('sha256')
 			.update(JSON.stringify([...participants].sort((a, b) => a.identity.localeCompare(b.identity))))
@@ -1501,7 +1516,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * 持ち主の名前で Update を作り、メンバーの inbox (共有 inbox があればそちら) ごとに一度だけ送る。
 	 * すべての配送を積み終えるまで待ち、どれかを積めなければ例外を投げる
 	 */
-	private async deliverSnapshot(room: MiChatRoom, audience: RoomAudience, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<void> {
+	private async deliverSnapshot(room: MiChatRoom, audience: RoomAudience, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[], updatedAt: number): Promise<void> {
 		const owner = audience.localOwner;
 		if (owner == null) return;
 
@@ -1571,7 +1586,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		for (const p of snapshot.participants) {
 			const user = usersById.get(p.userId);
 			if (user == null) continue;
-			participants.push({ identity: p.identity, user, screenSharing: p.screenSharing });
+			participants.push({ identity: p.identity, user, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) });
 		}
 		return { roomId, participants, updatedAt: snapshot.updatedAt };
 	}

@@ -24,17 +24,35 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<span :class="$style.who">
 			<MkAvatar :user="participant.user" :decorations="[]" :class="$style.smallAvatar"/>
 			<MkUserName :user="participant.user" :class="$style.name"/>
+			<span v-if="participant.micMuted || participant.deafened" :class="$style.status">
+				<i v-if="participant.micMuted" class="ti ti-microphone-off" role="img" :aria-label="i18n.ts._voiceCall.micMuted" :title="i18n.ts._voiceCall.micMuted"></i>
+				<i v-if="participant.deafened" class="ti ti-headphones-off" role="img" :aria-label="i18n.ts._voiceCall.deafened" :title="i18n.ts._voiceCall.deafened"></i>
+			</span>
 		</span>
 	</button>
 	<div v-else :class="$style.body">
 		<MkAvatar :user="participant.user" :class="$style.avatar"/>
-		<MkUserName :user="participant.user" :class="$style.name"/>
+		<span :class="$style.who">
+			<MkUserName :user="participant.user" :class="$style.name"/>
+			<span v-if="participant.micMuted || participant.deafened" :class="$style.status">
+				<i v-if="participant.micMuted" class="ti ti-microphone-off" role="img" :aria-label="i18n.ts._voiceCall.micMuted" :title="i18n.ts._voiceCall.micMuted"></i>
+				<i v-if="participant.deafened" class="ti ti-headphones-off" role="img" :aria-label="i18n.ts._voiceCall.deafened" :title="i18n.ts._voiceCall.deafened"></i>
+			</span>
+		</span>
 		<i
 			v-if="participant.screenSharing"
 			class="ti ti-screen-share" :class="$style.sharing"
 			role="img" :aria-label="i18n.ts._voiceCall.sharingScreen" :title="i18n.ts._voiceCall.sharingScreen"
 		></i>
 	</div>
+	<button
+		v-if="volumable"
+		type="button" class="_button" :class="[$style.menu, $style.volume]"
+		:aria-label="i18n.ts.volume" :title="i18n.ts.volume"
+		@click="emit('openVolume', $event)"
+	>
+		<i class="ti ti-volume"></i>
+	</button>
 	<button
 		v-if="menuable"
 		type="button" class="_button" :class="$style.menu"
@@ -59,18 +77,21 @@ const props = withDefaults(defineProps<{
 	watchable?: boolean;
 	watching?: boolean;
 	menuable?: boolean;
+	volumable?: boolean;
 	// 共有画面を大きく出しているあいだは、タイルを小さくして画面の下に一列に並べる
 	small?: boolean;
 }>(), {
 	watchable: false,
 	watching: false,
 	menuable: false,
+	volumable: false,
 	small: false,
 });
 
 const emit = defineEmits<{
 	(ev: 'toggleWatch'): void;
 	(ev: 'openMenu', event: MouseEvent): void;
+	(ev: 'openVolume', event: MouseEvent): void;
 }>();
 
 const canWatch = computed(() => props.participant.screenSharing && props.watchable);
@@ -227,6 +248,21 @@ const canWatch = computed(() => props.participant.screenSharing && props.watchab
 		right: 2px;
 		width: 24px;
 		height: 24px;
+	}
+}
+
+.status {
+	display: flex;
+	flex-shrink: 0;
+	gap: 4px;
+	color: var(--MI_THEME-fg);
+}
+
+.volume {
+	right: 38px;
+
+	.small & {
+		right: 28px;
 	}
 }
 </style>

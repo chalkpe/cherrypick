@@ -33,6 +33,18 @@ SPDX-License-Identifier: AGPL-3.0-only
 			role="img" :aria-label="i18n.ts._voiceCall.sharingScreen" :title="i18n.ts._voiceCall.sharingScreen"
 		></i>
 	</div>
+	<div v-if="participant.micMuted || participant.deafened" :class="$style.status">
+		<i v-if="participant.micMuted" class="ti ti-microphone-off" role="img" :aria-label="i18n.ts._voiceCall.micMuted" :title="i18n.ts._voiceCall.micMuted"></i>
+		<i v-if="participant.deafened" class="ti ti-headphones-off" role="img" :aria-label="i18n.ts._voiceCall.deafened" :title="i18n.ts._voiceCall.deafened"></i>
+	</div>
+	<button
+		v-if="volumable"
+		type="button" class="_button" :class="[$style.menu, $style.volume]"
+		:aria-label="i18n.ts.volume" :title="i18n.ts.volume"
+		@click="emit('openVolume', $event)"
+	>
+		<i class="ti ti-volume"></i>
+	</button>
 	<button
 		v-if="menuable"
 		type="button" class="_button" :class="$style.menu"
@@ -58,15 +70,18 @@ const props = withDefaults(defineProps<{
 	watchable?: boolean;
 	watching?: boolean;
 	menuable?: boolean;
+	volumable?: boolean;
 }>(), {
 	watchable: false,
 	watching: false,
 	menuable: false,
+	volumable: false,
 });
 
 const emit = defineEmits<{
 	(ev: 'toggleWatch'): void;
 	(ev: 'openMenu', event: MouseEvent): void;
+	(ev: 'openVolume', event: MouseEvent): void;
 }>();
 
 const canWatch = computed(() => props.participant.screenSharing && props.watchable);
@@ -171,5 +186,12 @@ const squareAvatar = computed(() => isSquareAvatar(props.participant.user));
 		background: var(--MI_THEME-buttonHoverBg);
 		color: var(--MI_THEME-fg);
 	}
+}
+
+.status {
+	display: flex;
+	gap: 4px;
+	padding: 0 4px;
+	color: var(--MI_THEME-fg);
 }
 </style>

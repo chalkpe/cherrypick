@@ -90,6 +90,22 @@ function abortError() {
 }
 
 describe('RemoteVoiceCallService', () => {
+	test('forwards reported settings using the authenticated user signature', async () => {
+		const f = createFixture();
+		await f.service.reportStatus(me, room, owner, 'PA_1', { micMuted: true, deafened: false });
+		expect(f.apRequestService.signedPostJson).toHaveBeenCalledWith(me, 'https://remote.test/livekit/federation/status', {
+			room: 'https://remote.test/chat/rooms/r1', sessionId: 'PA_1', micMuted: true, deafened: false,
+		}, 10_000, { redirect: 'manual', size: 64 * 1024 });
+	});
+
+	test('preserves optional reported settings in the remote join snapshot', async () => {
+		const f = createFixture();
+		const participants = [{ identity: owner.uri, screenSharing: false, micMuted: true, deafened: false }];
+		f.apRequestService.signedPostJson.mockResolvedValue(hostResponse({ participants }));
+		await f.service.requestJoin(me, room, owner, false);
+		expect(f.chatVoiceService.storeRemoteSnapshot).toHaveBeenCalledWith(room, participants, 1234);
+	});
+
 	test('asks the host for a token with the room URI and screen share wish', async () => {
 		const f = createFixture();
 

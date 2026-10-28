@@ -6,7 +6,7 @@
 import { reactive, readonly } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { url } from '@@/js/config.js';
-import type { AudioCaptureOptions, DisconnectReason, LocalParticipant, LocalTrack, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomConnectOptions, TrackPublication, VideoPreset } from 'livekit-client';
+import type { AudioCaptureOptions, DisconnectReason, LocalAudioTrack, LocalParticipant, LocalTrack, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomConnectOptions, TrackPublication, VideoPreset } from 'livekit-client';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { isApiError } from '@/utility/api-error.js';
 import * as os from '@/os.js';
@@ -44,6 +44,55 @@ export const voiceCall = readonly(state);
 let livekit: LiveKit | null = null;
 let current: Room | null = null;
 let joinAttempt = 0;
+let stopLocalMeter: (() => void) | null = null;
+let statusReports = Promise.resolve();
+
+// Report UI settings, not per-participant playback volume. Keep updates ordered.
+function reportStatus(room: Room): void {
+	const roomId = state.room?.id;
+	if (current !== room || roomId == null || state.status === 'connecting') return;
+	const status = { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened };
+	statusReports = statusReports.then(async () => {
+		if (current === room) await misskeyApi('chat/rooms/voice/status', status);
+	}).catch(() => {
+		// Older hosts may not support reports. Audio controls must still work.
+	});
+}
+
+function setLocalSpeaking(room: Room, speaking: boolean): void {
+	const identity = room.localParticipant.identity;
+	if (state.speakingIdentities.includes(identity) === speaking) return;
+	state.speakingIdentities = speaking
+		? [...state.speakingIdentities, identity]
+		: state.speakingIdentities.filter(id => id !== identity);
+}
+
+function startLocalMeter(room: Room): void {
+	stopLocalMeter?.();
+	if (livekit == null || current !== room || !state.micEnabled) return;
+	const track = room.localParticipant.getTrackPublication(livekit.Track.Source.Microphone)?.track;
+	if (track == null || track.kind !== livekit.Track.Kind.Audio) return;
+	try {
+		const meter = livekit.createAudioAnalyser(track as LocalAudioTrack, { fftSize: 512 });
+		const samples = new Float32Array(meter.analyser.fftSize);
+		let lastLoudAt = -Infinity;
+		const timer = window.setInterval(() => {
+			if (current !== room || !state.micEnabled) return;
+			meter.analyser.getFloatTimeDomainData(samples);
+			const rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
+			if (rms >= 0.02) lastLoudAt = Date.now();
+			setLocalSpeaking(room, Date.now() - lastLoudAt < 150);
+		}, 50);
+		stopLocalMeter = () => {
+			window.clearInterval(timer);
+			void meter.cleanup().catch(() => {});
+			setLocalSpeaking(room, false);
+			stopLocalMeter = null;
+		};
+	} catch {
+		// Audio metering is optional; failure must not stop the microphone.
+	}
+}
 
 // 画面共有の映像トラックと、それを映す video 要素 (どちらも identity ごと)。
 // 一つの共有画面を、参加者のチップやタイルの小さなプレビューと、見ている画面の両方に同時に映すことがある。
@@ -141,12 +190,16 @@ export async function leaveVoiceCall(): Promise<void> {
 }
 
 export async function setMicEnabled(enabled: boolean): Promise<void> {
-	if (current == null) return;
+	const room = current;
+	if (room == null) return;
 	if (enabled) {
-		await enableMicrophone(current);
+		await enableMicrophone(room);
 	} else {
-		await current.localParticipant.setMicrophoneEnabled(false, captureOptions());
+		await room.localParticipant.setMicrophoneEnabled(false, captureOptions());
+		if (current !== room) return;
 		state.micEnabled = false;
+		stopLocalMeter?.();
+		reportStatus(room);
 	}
 }
 
@@ -159,6 +212,7 @@ export function setDeafened(deafened: boolean): void {
 	if (deafened && state.micEnabled) {
 		setMicEnabled(false).catch(() => {});
 	}
+	reportStatus(current);
 }
 
 export async function resumeAudio(): Promise<void> {
@@ -189,6 +243,7 @@ export async function selectAudioDevice(kind: 'audioinput' | 'audiooutput', devi
 	prefer.commit(kind === 'audioinput' ? 'voiceCall.inputDeviceId' : 'voiceCall.outputDeviceId', deviceId);
 	if (current == null) return;
 	await current.switchActiveDevice(kind, deviceId);
+	if (kind === 'audioinput' && current != null) startLocalMeter(current);
 }
 
 export function canShareScreen(): boolean {
@@ -343,10 +398,16 @@ function captureOptions(): AudioCaptureOptions {
 async function enableMicrophone(room: Room): Promise<void> {
 	try {
 		await room.localParticipant.setMicrophoneEnabled(true, captureOptions());
+		if (current !== room) return;
 		state.micEnabled = true;
+		startLocalMeter(room);
+		reportStatus(room);
 	} catch {
 		// マイクが無い・許可されない場合でも、聞くだけの参加者として通話に残る
+		if (current !== room) return;
 		state.micEnabled = false;
+		stopLocalMeter?.();
+		reportStatus(room);
 		os.toast(i18n.ts._voiceCall.micUnavailable);
 	}
 }
@@ -428,7 +489,12 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 	// 接続をやり直すときは、LiveKit が共有中のトラックをいったん外して送り直すので、ここにもう一度来る
 	room.on(RoomEvent.LocalTrackPublished, (publication: LocalTrackPublication, participant: LocalParticipant) => {
 		const track = publication.track;
-		if (!isCurrent() || publication.source !== Track.Source.ScreenShare || track == null) return;
+		if (!isCurrent()) return;
+		if (publication.source === Track.Source.Microphone) {
+			startLocalMeter(room);
+			return;
+		}
+		if (publication.source !== Track.Source.ScreenShare || track == null) return;
 		state.screenSharing = true;
 		screenShareTracks.set(participant.identity, track);
 		for (const view of screenShareViews.get(participant.identity) ?? []) track.attach(view.element);
@@ -447,11 +513,17 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 		// オーナーによる強制ミュート
 		if (participant === room.localParticipant && publication.source === Track.Source.Microphone) {
 			state.micEnabled = false;
+			stopLocalMeter?.();
+			reportStatus(room);
 		}
 	});
 
 	room.on(RoomEvent.ActiveSpeakersChanged, (speakers: Participant[]) => {
-		if (isCurrent()) state.speakingIdentities = speakers.map(speaker => speaker.identity);
+		if (!isCurrent()) return;
+		const localIdentity = room.localParticipant.identity;
+		const localSpeaking = state.speakingIdentities.includes(localIdentity);
+		state.speakingIdentities = speakers.filter(speaker => speaker.identity !== localIdentity).map(speaker => speaker.identity);
+		if (localSpeaking) state.speakingIdentities.push(localIdentity);
 	});
 
 	room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
@@ -463,7 +535,11 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 	});
 
 	room.on(RoomEvent.Reconnected, () => {
-		if (isCurrent()) state.status = 'connected';
+		if (isCurrent()) {
+			state.status = 'connected';
+			reportStatus(room);
+			startLocalMeter(room);
+		}
 	});
 
 	room.on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
@@ -518,6 +594,7 @@ function failToConnect(err?: unknown): void {
 }
 
 function resetState(): void {
+	stopLocalMeter?.();
 	screenShareTracks.clear();
 	state.status = 'idle';
 	state.room = null;

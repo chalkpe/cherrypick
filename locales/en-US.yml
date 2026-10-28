@@ -2377,6 +2377,8 @@ _achievements:
       description: "Two of the biggest objects in the bubble game at the same time"
       flavor: "You can fill a lunch box like this 🤯 🤯 a bit."
 _voiceCall:
+  micMuted: "Microphone muted"
+  deafened: "Deafened"
   micUnavailable: "Microphone is unavailable."
   connectionFailed: "Could not connect to the call server."
   remoteHostNotice: "This call is hosted on {host}. {host} can see your IP address."

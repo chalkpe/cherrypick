@@ -2412,6 +2412,8 @@ _achievements:
       flavor: "これくらいの　おべんとばこに　🤯　🤯　ちょっとつめて"
 
 _voiceCall:
+  micMuted: "マイクミュート中"
+  deafened: "スピーカーミュート中"
   micUnavailable: "マイクを使用できません。"
   connectionFailed: "通話サーバーに接続できませんでした。"
   remoteHostNotice: "この通話は{host}で開かれます。{host}にはあなたのIPアドレスが見えます。"

@@ -82,7 +82,9 @@ const lk = vi.hoisted(() => {
 		localParticipant = {
 			identity: 'https://local.test/users/me',
 			// 本物と同じく、画面共有の映像を送っているあいだ true になる
+			sid: 'PA_local',
 			isScreenShareEnabled: false,
+			getTrackPublication: vi.fn(() => ({ track: { kind: 'audio' } })),
 			setMicrophoneEnabled: vi.fn().mockResolvedValue(undefined),
 			setScreenShareEnabled: vi.fn(async (enabled: boolean, ..._options: unknown[]) => {
 				this.localParticipant.isScreenShareEnabled = enabled;
@@ -104,11 +106,14 @@ const lk = vi.hoisted(() => {
 		}
 	}
 
-	return { Emitter, RoomEvent, DisconnectReason, Track, ScreenSharePresets, VideoPreset, VideoQuality, FakeRoom, FakeRemoteParticipant };
+	const analyser = { analyser: { fftSize: 512, getFloatTimeDomainData: vi.fn((data: Float32Array) => data.fill(0)) }, cleanup: vi.fn().mockResolvedValue(undefined) };
+	const createAudioAnalyser = vi.fn(() => analyser);
+	return { analyser, createAudioAnalyser, Emitter, RoomEvent, DisconnectReason, Track, ScreenSharePresets, VideoPreset, VideoQuality, FakeRoom, FakeRemoteParticipant };
 });
 
 vi.mock('livekit-client', () => ({
 	Room: lk.FakeRoom,
+	createAudioAnalyser: lk.createAudioAnalyser,
 	RoomEvent: lk.RoomEvent,
 	DisconnectReason: lk.DisconnectReason,
 	Track: lk.Track,
@@ -143,6 +148,8 @@ function remoteParticipant(identity: string) {
 
 beforeEach(() => {
 	lk.FakeRoom.instances.length = 0;
+	lk.analyser.analyser.getFloatTimeDomainData.mockImplementation((data: Float32Array) => data.fill(0));
+	lk.analyser.cleanup.mockClear();
 	lk.FakeRoom.setup = null;
 	mocks.misskeyApi.mockReset().mockResolvedValue({ url: 'https://local.test/livekit', token: 't' });
 	mocks.toast.mockReset();
@@ -311,6 +318,44 @@ describe('voice call controller', () => {
 		expect(b.setVolume).toHaveBeenCalledWith(1, lk.Track.Source.Microphone);
 		expect(b.setVolume).toHaveBeenCalledWith(1, lk.Track.Source.ScreenShareAudio);
 		expect(voiceCall).toMatchObject({ deafened: false, micEnabled: false });
+	});
+
+	test('reports mute and deafen settings without sharing personal volume changes', async () => {
+		await joinVoiceCall(room1);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/status', {
+			roomId: 'r1', sessionId: 'PA_local', micMuted: false, deafened: false,
+		});
+		await setMicEnabled(false);
+		setDeafened(true);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(mocks.misskeyApi).toHaveBeenLastCalledWith('chat/rooms/voice/status', expect.objectContaining({ micMuted: true, deafened: true }));
+		mocks.misskeyApi.mockClear();
+		setParticipantVolume('someone', 'voice', 0);
+		expect(mocks.misskeyApi).not.toHaveBeenCalled();
+	});
+
+	test('lights the local speaker from microphone samples and keeps remote server speakers', async () => {
+		vi.useFakeTimers();
+		try {
+			await joinVoiceCall(room1);
+			const identity = lastRoom().localParticipant.identity;
+			lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity }, { identity: 'remote' }]);
+			expect(voiceCall.speakingIdentities).toEqual(['remote']);
+			lk.analyser.analyser.getFloatTimeDomainData.mockImplementation((data: Float32Array) => data.fill(0.1));
+			await vi.advanceTimersByTimeAsync(50);
+			expect(voiceCall.speakingIdentities).toContain(identity);
+			expect(voiceCall.speakingIdentities).toContain('remote');
+			lk.analyser.analyser.getFloatTimeDomainData.mockImplementation((data: Float32Array) => data.fill(0));
+			await vi.advanceTimersByTimeAsync(250);
+			expect(voiceCall.speakingIdentities).toEqual(['remote']);
+			await setMicEnabled(false);
+			expect(lk.analyser.cleanup).toHaveBeenCalled();
+			await leaveVoiceCall();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test('keeps participant volume within what an audio element accepts', async () => {

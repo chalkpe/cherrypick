@@ -1790,6 +1790,26 @@ describe('avatar decorations in the call', () => {
 	});
 });
 
+describe.each([['chip', XParticipant], ['tile', XTile]] as const)('%s status and volume controls', (_name, component) => {
+	test('shows shared mute settings and keeps the volume button separate from the menu', async () => {
+		const { emitted } = render(component, { props: {
+			participant: { ...participant(alice), micMuted: true, deafened: true },
+			speaking: false, menuable: true, volumable: true,
+		}, global: { stubs } });
+		expect(screen.getByLabelText(i18n.ts._voiceCall.micMuted)).toBeTruthy();
+		expect(screen.getByLabelText(i18n.ts._voiceCall.deafened)).toBeTruthy();
+		await fireEvent.click(screen.getByRole('button', { name: i18n.ts.volume }));
+		expect(emitted().openVolume).toHaveLength(1);
+		expect(emitted().openMenu).toBeUndefined();
+	});
+
+	test('does not show mute indicators when older servers supply no settings', () => {
+		render(component, { props: { participant: participant(alice), speaking: false }, global: { stubs } });
+		expect(screen.queryByLabelText(i18n.ts._voiceCall.micMuted)).toBeNull();
+		expect(screen.queryByLabelText(i18n.ts._voiceCall.deafened)).toBeNull();
+	});
+});
+
 describe('participant menu', () => {
 	type MenuItemLike = { type?: string; text?: string; action?: () => unknown; props?: Record<string, unknown> };
 	const openedItems = () => mocks.popupMenu.mock.calls[mocks.popupMenu.mock.calls.length - 1][0] as MenuItemLike[];
@@ -1832,6 +1852,19 @@ describe('participant menu', () => {
 		const texts = openedItems().map(item => item.text);
 		expect(texts).not.toContain(i18n.ts._voiceCall.kick);
 		expect(texts).not.toContain(i18n.ts._voiceCall.forceMute);
+	});
+
+	test('opens both voice and screen audio sliders from the separate volume button even without a screen share', async () => {
+		Object.assign(callState, { status: 'connected', room });
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me), participant(bob)] }]);
+		renderCard();
+		await flush();
+		expect(within(participantGroup(me)).queryByLabelText(i18n.ts.volume)).toBeNull();
+		await fireEvent.click(within(participantGroup(bob)).getByRole('button', { name: i18n.ts.volume }));
+		expect(openedItems().map(item => item.props)).toEqual([
+			{ identity: identityOf(bob), audio: 'voice' },
+			{ identity: identityOf(bob), audio: 'screenShare' },
+		]);
 	});
 
 	test('offers a volume control only for others while in the call', async () => {

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type { IObject } from '../type.js';
 
 // ルームの id (ルームを持つサーバーが送る `${url}/chat/rooms/${id}` の id)
@@ -13,7 +14,7 @@ export type ParsedChatRoomVoiceState = {
 	/** room の URI に含まれるルームの id */
 	roomId: string;
 	/** identity は参加者のユーザーの URI */
-	participants: { identity: string; screenSharing: boolean }[];
+	participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
 	/** ホストの時刻 (ミリ秒) */
 	updatedAt: number;
 };
@@ -89,15 +90,15 @@ function roomIdOfUri(uri: string, origin: string): string | null {
 }
 
 /** ChatRoomVoiceState の participants を確かめる。形が違うか、maxParticipants 人より多ければ null */
-function parseParticipants(value: unknown, maxParticipants: number): { identity: string; screenSharing: boolean }[] | null {
+function parseParticipants(value: unknown, maxParticipants: number): { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[] | null {
 	if (!Array.isArray(value) || value.length > maxParticipants) return null;
 
-	const parsed: { identity: string; screenSharing: boolean }[] = [];
+	const parsed: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[] = [];
 	for (const participant of value as unknown[]) {
 		if (typeof participant !== 'object' || participant == null) return null;
 		const { id, screenSharing } = participant as Record<string, unknown>;
 		if (typeof id !== 'string' || typeof screenSharing !== 'boolean') return null;
-		parsed.push({ identity: id, screenSharing });
+		parsed.push({ identity: id, screenSharing, ...reportedVoiceStatus(participant as Record<string, unknown>) });
 	}
 	return parsed;
 }

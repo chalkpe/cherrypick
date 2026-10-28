@@ -46,8 +46,8 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		const target = toValue(room);
 		const listed = target == null ? [] : states.value.get(target.id)?.participants ?? [];
 		if (!inThisCall.value) return listed;
-		return listed.map(participant => participant.identity === myIdentity && participant.screenSharing !== voiceCall.screenSharing
-			? { ...participant, screenSharing: voiceCall.screenSharing }
+		return listed.map(participant => participant.identity === myIdentity
+			? { ...participant, screenSharing: voiceCall.screenSharing, micMuted: !voiceCall.micEnabled, deafened: voiceCall.deafened }
 			: participant);
 	});
 
@@ -125,13 +125,20 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		return items;
 	}
 
+	function openParticipantVolume(participant: Participant, ev: MouseEvent) {
+		if (!inThisCall.value || participant.identity === myIdentity) return;
+		os.popupMenu((['voice', 'screenShare'] as const).map(audio => ({
+			type: 'component' as const, component: XVolume, props: { identity: participant.identity, audio },
+		})), ev.currentTarget ?? ev.target);
+	}
+
 	function openParticipantMenu(participant: Participant, ev: MouseEvent) {
 		const items = participantMenuItems(participant);
 		if (items.length === 0) return;
 		os.popupMenu(items, ev.currentTarget ?? ev.target);
 	}
 
-	return { available, inThisCall, participants, watchedParticipants, showCard, join, myIdentity, isOwner, openParticipantMenu };
+	return { available, inThisCall, participants, watchedParticipants, showCard, join, myIdentity, isOwner, openParticipantMenu, openParticipantVolume };
 }
 
 export type ChatRoomVoiceCall = ReturnType<typeof useChatRoomVoiceCall>;
