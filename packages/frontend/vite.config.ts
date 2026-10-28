@@ -229,6 +229,14 @@ export function getConfig(): UserConfig {
 				'firefox132',
 				'safari18.2',
 			],
+			// iOS Safari を CSS の対象に含めないと、lightningcss が -webkit-text-size-adjust を
+			// 不要なものとして削り、iOS で横向きにしたときに本文が自動で拡大されてしまう
+			cssTarget: [
+				'chrome130',
+				'firefox132',
+				'safari18.2',
+				'ios18.2',
+			],
 			manifest: 'manifest.json',
 			rolldownOptions: {
 				experimental: {
