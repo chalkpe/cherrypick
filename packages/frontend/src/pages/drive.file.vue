@@ -4,28 +4,21 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<MkStickyContainer>
-	<template #header>
-		<MkPageHeader v-model:tab="tab" :actions="headerActions" :tabs="headerTabs"/>
-	</template>
+<PageWithHeader v-model:tab="tab" :actions="headerActions" :tabs="headerTabs">
+	<div v-if="tab === 'info'" class="_spacer" style="--MI_SPACER-w: 800px;">
+		<XFileInfo :fileId="fileId"/>
+	</div>
 
-	<MkSwiper v-model:tab="tab" :tabs="headerTabs">
-		<div v-if="tab === 'info'" class="_spacer" style="--MI_SPACER-w: 800px;">
-			<XFileInfo :fileId="fileId"/>
-		</div>
-
-		<div v-else-if="tab === 'notes'" class="_spacer" style="--MI_SPACER-w: 800px;">
-			<XNotes :fileId="fileId"/>
-		</div>
-	</MkSwiper>
-</MkStickyContainer>
+	<div v-else-if="tab === 'notes'" class="_spacer" style="--MI_SPACER-w: 800px;">
+		<XNotes :fileId="fileId"/>
+	</div>
+</PageWithHeader>
 </template>
 
 <script lang="ts" setup>
 import { computed, ref, defineAsyncComponent } from 'vue';
 import { i18n } from '@/i18n.js';
 import { definePage } from '@/page.js';
-import MkSwiper from '@/components/MkSwiper.vue';
 
 const props = defineProps<{
 	fileId: string;
