@@ -22,6 +22,7 @@ describe('voice call preference account scopes', () => {
 			'voiceCall.autoGainControl': false,
 			'voiceCall.participantVolumes': false,
 			'voiceCall.screenShareVolumes': false,
+			'voiceCall.screenShareVolumesMigrated': false,
 			'voiceCall.screenShareQuality': false,
 			'voiceCall.screenShareAudio': false,
 		});
