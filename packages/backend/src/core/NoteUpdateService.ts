@@ -436,7 +436,8 @@ export class NoteUpdateService implements OnApplicationShutdown {
 			const recipients = note.visibleUserIds.length === 0 ? [] : await this.usersRepository.find({
 				where: { id: In(note.visibleUserIds) },
 			});
-			object.to = recipients.flatMap(recipient => recipient.host == null
+			const allowedRecipients = recipients.filter(recipient => isHostAllowedByDeliveryTargets(note.deliveryTargets, recipient.host));
+			object.to = allowedRecipients.flatMap(recipient => recipient.host == null
 				? [this.userEntityService.genLocalUserUri(recipient.id)]
 				: recipient.uri ? [recipient.uri] : []);
 			object.cc = [];
@@ -480,7 +481,8 @@ export class NoteUpdateService implements OnApplicationShutdown {
 			const recipients = note.visibleUserIds.length === 0 ? [] : await this.usersRepository.find({
 				where: { id: In(note.visibleUserIds) },
 			});
-			await this.apDeliverManagerService.deliverToUsers(user, content, recipients.filter(recipient => recipient.host != null) as MiRemoteUser[]);
+			const allowedRecipients = recipients.filter(recipient => isHostAllowedByDeliveryTargets(note.deliveryTargets, recipient.host));
+			await this.apDeliverManagerService.deliverToUsers(user, content, allowedRecipients.filter(recipient => recipient.host != null) as MiRemoteUser[]);
 			return;
 		}
 		if (note.deliveryTargets) await this.apDeliverManagerService.deliverToFollowers(user, content, note.deliveryTargets);

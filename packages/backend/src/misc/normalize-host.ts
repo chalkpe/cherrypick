@@ -45,6 +45,8 @@ export function isHostAllowedByDeliveryTargets(
 ): boolean {
 	if (deliveryTargets == null) return true;
 	if (host == null) return true;
+	if (deliveryTargets.mode !== 'include' && deliveryTargets.mode !== 'exclude') return false;
+	if (!Array.isArray(deliveryTargets.hosts)) return false;
 
 	const normalizedHost = normalizeHost(host);
 	if (normalizedHost == null) return false;
@@ -55,28 +57,4 @@ export function isHostAllowedByDeliveryTargets(
 	return deliveryTargets.mode === 'include'
 		? targets.includes(normalizedHost)
 		: !targets.includes(normalizedHost);
-}
-
-/**
- * Like normalizeHost, but keeps a non-default port. Delivery targets are compared
- * against `followings.followerHost`, which may be stored with a port.
- */
-export function normalizeHostForDelivery(host: string | null | undefined): string | null {
-	if (host == null) return null;
-
-	const trimmed = host.trim();
-	if (trimmed.length === 0 || /\s/.test(trimmed)) return null;
-
-	try {
-		const url = new URL(`https://${trimmed}`);
-		if (url.username !== '' || url.password !== '') return null;
-		if (url.pathname !== '/' || url.search !== '' || url.hash !== '') return null;
-		if (url.hostname.length === 0) return null;
-
-		const hostname = domainToASCII(url.hostname.toLowerCase()).replace(/\.$/, '');
-		if (hostname.length === 0) return null;
-		return url.port.length > 0 ? `${hostname}:${url.port}` : hostname;
-	} catch {
-		return null;
-	}
 }

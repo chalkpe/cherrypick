@@ -4,7 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import { IsNull, Not, In } from 'typeorm';
+import { IsNull, Not } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { FollowingsRepository } from '@/models/_.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
@@ -16,7 +16,7 @@ import { ThinUser } from '@/queue/types.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import type Logger from '@/logger.js';
 import { toArray } from '@/misc/prelude/array.js';
-import { normalizeHostForDelivery } from '@/misc/normalize-host.js';
+import { isHostAllowedByDeliveryTargets } from '@/misc/normalize-host.js';
 
 interface IRecipe {
 	type: string;
@@ -148,38 +148,24 @@ class DeliverManager {
 			const recipe = this.recipes.find(r => isSelectiveFollowers(r)) as ISelectiveFollowersRecipe;
 			const deliveryTargets = recipe.deliveryTargets;
 
-			const whereClause: any = {
-				followeeId: this.actor.id,
-				followerHost: Not(IsNull()),
-			};
-
-			if (deliveryTargets) {
-				// Match the canonical form used by followerHost and by the read-side
-				// check, so `EVIL.EXAMPLE.`, an IDN spelling, or a port cannot bypass an
-				// exclude list. Include the portless spelling too because older rows may
-				// have been stored without the port.
-				const hosts = [...new Set(deliveryTargets.hosts.flatMap(host => {
-					const normalized = normalizeHostForDelivery(host);
-					if (normalized == null) return [];
-					const portless = normalized.replace(/:\d+$/, '');
-					return portless === normalized ? [normalized] : [normalized, portless];
-				}))];
-				if (deliveryTargets.mode === 'include') {
-					whereClause.followerHost = In(hosts);
-				} else if (deliveryTargets.mode === 'exclude') {
-					whereClause.followerHost = Not(In(hosts));
-				}
-			}
-
 			const followers = await this.followingsRepository.find({
-				where: whereClause,
+				where: {
+					followeeId: this.actor.id,
+					followerHost: Not(IsNull()),
+				},
 				select: {
+					followerHost: true,
 					followerSharedInbox: true,
 					followerInbox: true,
 				},
 			});
 
 			for (const following of followers) {
+				// Filter in JS so the stored `followerHost` and the delivery targets use
+				// the same normalization as the read-side check. SQL string comparison
+				// misses trailing-dot FQDNs, ports, and IDN spellings.
+				if (deliveryTargets && !isHostAllowedByDeliveryTargets(deliveryTargets, following.followerHost)) continue;
+
 				const inbox = following.followerSharedInbox ?? following.followerInbox;
 				//if (inbox === null) throw new Error('inbox is null');
 				if (inbox === null) {

@@ -215,6 +215,25 @@ describe('NoteUpdateService visibility', () => {
 		expect(f.relay.deliverToRelays).not.toHaveBeenCalled();
 	});
 
+	test('specified edits exclude delivery target hosts from the audience and delivery', async () => {
+		const f = serviceFixture(true);
+		f.note.visibility = 'specified';
+		f.note.visibleUserIds = ['allowed', 'excluded'];
+		f.note.deliveryTargets = { mode: 'exclude', hosts: ['excluded.test'] };
+		const allowed = { id: 'allowed', host: 'allowed.test', uri: 'https://allowed.test/users/allowed' };
+		const excluded = { id: 'excluded', host: 'excluded.test', uri: 'https://excluded.test/users/excluded' };
+		(f.service as any).usersRepository.find.mockResolvedValue([allowed, excluded]);
+
+		const activity = await (f.service as any).renderNoteActivity(f.note, { id: 'author', username: 'author', host: null });
+		expect(activity.to).toEqual(['https://allowed.test/users/allowed']);
+		expect(activity.cc).toEqual([]);
+
+		await (f.service as any).deliverToConcerned({ id: 'author', host: null }, f.note, activity);
+		expect(f.deliver.deliverToUsers).toHaveBeenCalledWith({ id: 'author', host: null }, activity, [allowed]);
+		expect(f.deliver.deliverToFollowers).not.toHaveBeenCalled();
+		expect(f.relay.deliverToRelays).not.toHaveBeenCalled();
+	});
+
 	test('invalidates the previous audience when specified recipient IDs change', async () => {
 		const f = serviceFixture();
 		f.note.visibility = 'specified';
