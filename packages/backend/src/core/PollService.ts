@@ -101,8 +101,10 @@ export class PollService {
 
 		if (this.userEntityService.isLocalUser(user)) {
 			const content = this.apRendererService.addContext(this.apRendererService.renderUpdate(await this.apRendererService.renderNote(note, false), user));
-			this.apDeliverManagerService.deliverToFollowers(user, content);
-			this.relayService.deliverToRelays(user, content);
+			if (note.deliveryTargets) this.apDeliverManagerService.deliverToFollowers(user, content, note.deliveryTargets);
+			else this.apDeliverManagerService.deliverToFollowers(user, content);
+			// A relay rebroadcasts to every follower, so it cannot honor a target list.
+			if (note.deliveryTargets == null) this.relayService.deliverToRelays(user, content);
 		}
 	}
 }

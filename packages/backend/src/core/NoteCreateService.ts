@@ -60,6 +60,7 @@ import { CollapsedQueue } from '@/misc/collapsed-queue.js';
 import { CacheService } from '@/core/CacheService.js';
 import { isQuote, isRenote } from '@/misc/is-renote.js';
 import { extractUrlsForKeyWordCheck } from '@/misc/extract-urls-for-keyword-check.js';
+import { isHostAllowedByDeliveryTargets } from '@/misc/normalize-host.js';
 
 type NotificationType = 'reply' | 'renote' | 'quote' | 'mention';
 
@@ -961,18 +962,18 @@ export class NoteCreateService implements OnApplicationShutdown {
 					const dm = this.apDeliverManagerService.createDeliverManager(user, noteActivity, bridgeHomeVisibility);
 
 					// メンションされたリモートユーザーに配送
-					for (const u of mentionedUsers.filter(u => this.userEntityService.isRemoteUser(u))) {
+					for (const u of mentionedUsers.filter(u => this.userEntityService.isRemoteUser(u) && isHostAllowedByDeliveryTargets(data.deliveryTargets, u.host))) {
 						dm.addDirectRecipe(u as MiRemoteUser);
 					}
 
 					// 投稿がリプライかつ投稿者がローカルユーザーかつリプライ先の投稿の投稿者がリモートユーザーなら配送
-					if (data.reply && data.reply.userHost !== null) {
+					if (data.reply && data.reply.userHost !== null && isHostAllowedByDeliveryTargets(data.deliveryTargets, data.reply.userHost)) {
 						const u = await this.usersRepository.findOneBy({ id: data.reply.userId });
 						if (u && this.userEntityService.isRemoteUser(u)) dm.addDirectRecipe(u);
 					}
 
 					// 投稿がRenoteかつ投稿者がローカルユーザーかつRenote元の投稿の投稿者がリモートユーザーなら配送
-					if (data.renote && data.renote.userHost !== null) {
+					if (data.renote && data.renote.userHost !== null && isHostAllowedByDeliveryTargets(data.deliveryTargets, data.renote.userHost)) {
 						const u = await this.usersRepository.findOneBy({ id: data.renote.userId });
 						if (u && this.userEntityService.isRemoteUser(u)) dm.addDirectRecipe(u);
 					}
@@ -983,7 +984,8 @@ export class NoteCreateService implements OnApplicationShutdown {
 						else dm.addFollowersRecipe();
 					}
 
-					if (['public'].includes(note.visibility)) {
+					// A relay rebroadcasts to every follower, so it cannot honor a target list.
+					if (data.deliveryTargets == null && ['public'].includes(note.visibility)) {
 						this.relayService.deliverToRelays(user, noteActivity);
 					}
 

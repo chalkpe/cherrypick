@@ -245,6 +245,7 @@ describe.each([
 				components,
 			},
 		});
+		assert.notExists(form.container.querySelector('.ti-home')?.closest('button'), 'visibility control is hidden in edit mode');
 		const textarea = form.container.querySelector('textarea')!;
 		await fireEvent.click(textarea);
 		await fireEvent.update(textarea, 'Edited note');

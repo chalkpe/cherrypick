@@ -37,6 +37,38 @@ import { CONTEXT } from './misc/contexts.js';
 import { chatRoomVoiceStateIdOf } from './misc/chat-room-voice-state.js';
 import type { IAccept, IActivity, IAdd, IAnnounce, IApDocument, IApEmoji, IApHashtag, IApImage, IApMention, IBlock, IChatRoomVoiceState, ICreate, IDelete, IFlag, IFollow, IInvite, IKey, ILike, IMove, IObject, IPost, IQuestion, IRead, IReject, IRemove, ITombstone, IUndo, IUpdate } from './type.js';
 
+// Event metadata is user-controlled. Only schema.org Event fields may be copied
+// onto the Note object; anything else could overwrite id, attributedTo, content,
+// to/cc, sensitive, and other security-relevant ActivityPub fields.
+const EVENT_METADATA_KEYS = [
+	'url',
+	'description',
+	'audience',
+	'doorTime',
+	'startDate',
+	'endDate',
+	'eventStatus',
+	'inLanguage',
+	'isAccessibleForFree',
+	'keywords',
+	'location',
+	'offers',
+	'organizer',
+	'performer',
+	'typicalAgeRange',
+] as const;
+
+function sanitizeEventMetadata(metadata: unknown): Record<string, unknown> {
+	if (typeof metadata !== 'object' || metadata == null || Array.isArray(metadata)) return {};
+
+	const source = metadata as Record<string, unknown>;
+	const result: Record<string, unknown> = {};
+	for (const key of EVENT_METADATA_KEYS) {
+		if (Object.hasOwn(source, key)) result[key] = source[key];
+	}
+	return result;
+}
+
 @Injectable()
 export class ApRendererService {
 	constructor(
@@ -494,10 +526,12 @@ export class ApRendererService {
 		if (note.hasEvent) {
 			const event = await this.eventsRepository.findOneBy({ noteId: note.id });
 			asEvent = event ? {
+				...sanitizeEventMetadata(event.metadata),
+				'@type': 'Event',
+				identifier: `${this.config.url}/notes/${note.id}`,
 				name: event.title,
 				startTime: event.start,
 				endTime: event.end,
-				...event.metadata,
 			} as const : {};
 		}
 
@@ -510,6 +544,9 @@ export class ApRendererService {
 		}
 
 		return {
+			// Keep safe event fields (location, description, ...), but canonical Note
+			// fields below must always win over user-supplied metadata.
+			...asEvent,
 			id: `${this.config.url}/notes/${note.id}`,
 			type: 'Note',
 			attributedTo,
@@ -534,7 +571,6 @@ export class ApRendererService {
 			tag,
 			disableRightClick: note.disableRightClick,
 			...asDeleteAt,
-			...asEvent,
 			...asPoll,
 		};
 	}

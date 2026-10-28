@@ -33,6 +33,7 @@ import { concat } from '@/misc/prelude/array.js';
 import { extractHashtags } from '@/misc/extract-hashtags.js';
 import { extractCustomEmojisFromMfm } from '@/misc/extract-custom-emojis-from-mfm.js';
 import { extractUrlsForKeyWordCheck } from '@/misc/extract-urls-for-keyword-check.js';
+import { isHostAllowedByDeliveryTargets } from '@/misc/normalize-host.js';
 import { FanoutTimelineService } from '@/core/FanoutTimelineService.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
@@ -125,9 +126,11 @@ export class NoteUpdateService implements OnApplicationShutdown {
 		if (this.userEntityService.isLocalUser(author) && !note.localOnly) {
 			const activity = await this.renderNoteActivity(new MiNote({ ...note, visibility, updatedAt }), author);
 			if (note.visibility !== 'specified' || visibility !== 'specified') {
-				await this.apDeliverManagerService.deliverToFollowers(author, activity);
+				if (note.deliveryTargets) await this.apDeliverManagerService.deliverToFollowers(author, activity, note.deliveryTargets);
+				else await this.apDeliverManagerService.deliverToFollowers(author, activity);
 			}
-			if (note.visibility === 'public' || note.visibility === 'home' || visibility === 'public') {
+			// A relay rebroadcasts to every follower, so it cannot honor a target list.
+			if (note.deliveryTargets == null && (note.visibility === 'public' || note.visibility === 'home' || visibility === 'public')) {
 				await this.relayService.deliverToRelays(author, activity);
 			}
 			const previousRecipients = await this.getMentionedRemoteUsers(note);
@@ -137,7 +140,7 @@ export class NoteUpdateService implements OnApplicationShutdown {
 			await this.apDeliverManagerService.deliverToUsers(author, activity, [
 				...previousRecipients,
 				...explicitRecipients.filter(recipient => recipient.host != null) as MiRemoteUser[],
-			]);
+			].filter(recipient => isHostAllowedByDeliveryTargets(note.deliveryTargets, recipient.host)));
 		}
 		return updatedNote;
 	}
@@ -293,7 +296,11 @@ export class NoteUpdateService implements OnApplicationShutdown {
 
 					if (note.hasPoll && values.hasPoll) {
 						const old_poll = await transactionalEntityManager.findOneBy(MiPoll, { noteId: note.id });
-						if (old_poll && (old_poll.choices.toString() !== data.poll!.choices.toString() || old_poll.multiple !== data.poll!.multiple)) {
+						const choicesChanged = old_poll != null && (
+							old_poll.choices.length !== data.poll!.choices.length
+							|| old_poll.choices.some((choice, i) => choice !== data.poll!.choices[i])
+						);
+						if (old_poll && (choicesChanged || old_poll.multiple !== data.poll!.multiple)) {
 							// Drop existing votes: their choice indexes refer to the old choices
 							await transactionalEntityManager.withRepository(this.pollVotesRepository).delete({ noteId: note.id });
 							await transactionalEntityManager.delete(MiPoll, { noteId: note.id });
@@ -476,10 +483,13 @@ export class NoteUpdateService implements OnApplicationShutdown {
 			await this.apDeliverManagerService.deliverToUsers(user, content, recipients.filter(recipient => recipient.host != null) as MiRemoteUser[]);
 			return;
 		}
-		await this.apDeliverManagerService.deliverToFollowers(user, content);
-		if (note.visibility === 'public') await this.relayService.deliverToRelays(user, content);
+		if (note.deliveryTargets) await this.apDeliverManagerService.deliverToFollowers(user, content, note.deliveryTargets);
+		else await this.apDeliverManagerService.deliverToFollowers(user, content);
+		// A relay rebroadcasts to every follower, so it cannot honor a target list.
+		if (note.deliveryTargets == null && note.visibility === 'public') await this.relayService.deliverToRelays(user, content);
 		const remoteUsers = await this.getMentionedRemoteUsers(note);
 		for (const remoteUser of remoteUsers) {
+			if (!isHostAllowedByDeliveryTargets(note.deliveryTargets, remoteUser.host)) continue;
 			if (await this.noteEntityService.isVisibleForMe(note, remoteUser.id)) {
 				await this.apDeliverManagerService.deliverToUser(user, content, remoteUser);
 			}

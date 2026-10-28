@@ -9,6 +9,22 @@
  * 外部サービスの認証情報など、知られると悪用されるものはここに足す
  */
 export const REDACTED_META_KEYS = [
+	'ctav3SaKey',
+	'deeplAuthKey',
+	'hcaptchaSecretKey',
+	'libreTranslateApiKey',
+	'mcaptchaSecretKey',
+	'objectStorageAccessKey',
+	'objectStorageSecretKey',
+	'recaptchaSecretKey',
+	'remoteObjectStorageAccessKey',
+	'remoteObjectStorageSecretKey',
+	'sensitiveMediaDetectionApiKey',
+	'smtpPass',
+	'swPrivateKey',
+	'truemailAuthKey',
+	'turnstileSecretKey',
+	'verifymailAuthKey',
 	'voiceCallCloudflareTurnKeyId',
 	'voiceCallCloudflareTurnApiToken',
 ] as const;

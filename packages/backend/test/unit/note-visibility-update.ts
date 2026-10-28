@@ -172,6 +172,18 @@ describe('NoteUpdateService visibility', () => {
 		expect(f.renderer.renderDelete).not.toHaveBeenCalled();
 	});
 
+	test('honors deliveryTargets and skips relays when the audience changes', async () => {
+		const f = serviceFixture(true);
+		f.note.deliveryTargets = { mode: 'exclude', hosts: ['evil.test'] };
+		await f.service.updateVisibility({ id: 'moderator' } as any, f.note, 'home');
+		expect(f.deliver.deliverToFollowers).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ type: 'Update' }),
+			{ mode: 'exclude', hosts: ['evil.test'] },
+		);
+		expect(f.relay.deliverToRelays).not.toHaveBeenCalled();
+	});
+
 	test('updates relay caches even when a formerly public note is now home', async () => {
 		const f = serviceFixture(true);
 		f.note.visibility = 'home';

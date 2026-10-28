@@ -4,6 +4,7 @@
  */
 
 import * as http from 'node:http';
+import * as https from 'node:https';
 import type * as stream from 'node:stream';
 import { Inject, Injectable } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
@@ -169,7 +170,18 @@ export class LiveKitServerService {
 			socket.end(statusLine(413, 'Payload Too Large') + 'Connection: close\r\nContent-Length: 0\r\n\r\n', () => socket.destroy());
 			return;
 		}
-		const proxyRequest = http.request(target, { method: 'GET', headers });
+		let proxyRequest: http.ClientRequest;
+		try {
+			// RoomServiceClient supports an https internalUrl, so the signaling
+			// proxy must use the matching request module instead of throwing
+			// synchronously on an https: target.
+			proxyRequest = target.protocol === 'https:'
+				? https.request(target, { method: 'GET', headers })
+				: http.request(target, { method: 'GET', headers });
+		} catch {
+			socket.end(statusLine(502, 'Bad Gateway') + 'Connection: close\r\nContent-Length: 0\r\n\r\n', () => socket.destroy());
+			return;
+		}
 		const early: Buffer[] = head.length > 0 ? [head] : [];
 		let earlyBytes = head.length;
 		let settled = false;

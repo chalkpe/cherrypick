@@ -10,13 +10,13 @@ import { MiPoll } from '@/models/Poll.js';
 
 const author = { id: 'author', host: null };
 
-function serviceFixture() {
+function serviceFixture(oldChoices: string[] = ['one', 'two']) {
 	const note = new MiNote({
 		id: 'note', userId: 'author', visibility: 'public', text: 'keep this', cw: 'keep cw',
 		fileIds: [], visibleUserIds: [], mentionedRemoteUsers: '[]', tags: [], emojis: [],
 		channelId: null, hasPoll: true, hasEvent: false,
 	});
-	const oldPoll = { noteId: note.id, choices: ['one', 'two'], multiple: false, votes: [1, 0], expiresAt: null };
+	const oldPoll = { noteId: note.id, choices: oldChoices, multiple: false, votes: oldChoices.map(() => 0), expiresAt: null };
 	const voteRepository = { delete: vi.fn().mockResolvedValue({ affected: 1 }) };
 	const manager = {
 		update: vi.fn(),
@@ -48,6 +48,16 @@ describe('NoteUpdateService poll vote cleanup', () => {
 			poll: { choices: ['three', 'four'], multiple: false, expiresAt: null },
 		}, [], []);
 		expect(f.manager.withRepository).toHaveBeenCalledWith(f.pollVotesRepository);
+		expect(f.voteRepository.delete).toHaveBeenCalledWith({ noteId: f.note.id });
+		expect(f.manager.delete).toHaveBeenCalledWith(MiPoll, { noteId: f.note.id });
+	});
+
+	test('clears votes when comma placement changes choice boundaries', async () => {
+		const f = serviceFixture(['a,b', 'c']);
+		await (f.service as any).updateNote(author, f.note, {
+			text: 'keep',
+			poll: { choices: ['a', 'b,c'], multiple: false, expiresAt: null },
+		}, [], []);
 		expect(f.voteRepository.delete).toHaveBeenCalledWith({ noteId: f.note.id });
 		expect(f.manager.delete).toHaveBeenCalledWith(MiPoll, { noteId: f.note.id });
 	});

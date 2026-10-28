@@ -16,6 +16,7 @@ import { ThinUser } from '@/queue/types.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import type Logger from '@/logger.js';
 import { toArray } from '@/misc/prelude/array.js';
+import { normalizeHostForDelivery } from '@/misc/normalize-host.js';
 
 interface IRecipe {
 	type: string;
@@ -153,10 +154,20 @@ class DeliverManager {
 			};
 
 			if (deliveryTargets) {
+				// Match the canonical form used by followerHost and by the read-side
+				// check, so `EVIL.EXAMPLE.`, an IDN spelling, or a port cannot bypass an
+				// exclude list. Include the portless spelling too because older rows may
+				// have been stored without the port.
+				const hosts = [...new Set(deliveryTargets.hosts.flatMap(host => {
+					const normalized = normalizeHostForDelivery(host);
+					if (normalized == null) return [];
+					const portless = normalized.replace(/:\d+$/, '');
+					return portless === normalized ? [normalized] : [normalized, portless];
+				}))];
 				if (deliveryTargets.mode === 'include') {
-					whereClause.followerHost = In(deliveryTargets.hosts);
+					whereClause.followerHost = In(hosts);
 				} else if (deliveryTargets.mode === 'exclude') {
-					whereClause.followerHost = Not(In(deliveryTargets.hosts));
+					whereClause.followerHost = Not(In(hosts));
 				}
 			}
 
@@ -278,7 +289,11 @@ export class ApDeliverManagerService {
 	 * @param activity Activity
 	 */
 	@bindThis
-	public async deliverToFollowers(actor: { id: MiLocalUser['id']; host: null; }, activity: IActivity): Promise<void> {
+	public async deliverToFollowers(
+		actor: { id: MiLocalUser['id']; host: null; },
+		activity: IActivity,
+		deliveryTargets?: { mode: 'include' | 'exclude'; hosts: string[] } | null,
+	): Promise<void> {
 		const manager = new DeliverManager(
 			this.userEntityService,
 			this.followingsRepository,
@@ -287,7 +302,10 @@ export class ApDeliverManagerService {
 			activity,
 			this.logger,
 		);
-		manager.addFollowersRecipe();
+		// Notes restricted by deliveryTargets must use the same filter for updates
+		// and poll changes as for their initial Create.
+		if (deliveryTargets) manager.addSelectiveFollowersRecipe(deliveryTargets);
+		else manager.addFollowersRecipe();
 		await manager.execute();
 	}
 

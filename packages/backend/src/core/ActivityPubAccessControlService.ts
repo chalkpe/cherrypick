@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { URL, domainToASCII } from 'node:url';
+import { URL } from 'node:url';
 import { Inject, Injectable } from '@nestjs/common';
 import httpSignature from '@peertube/http-signature';
 import { DI } from '@/di-symbols.js';
 import type { InstancesRepository, MiMeta } from '@/models/_.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { ApDbResolverService } from '@/core/activitypub/ApDbResolverService.js';
+import { normalizeHost } from '@/misc/normalize-host.js';
 import { bindThis } from '@/decorators.js';
 import type Logger from '@/logger.js';
 import { LoggerService } from '@/core/LoggerService.js';
@@ -72,23 +73,30 @@ export function isHostInList(hosts: string[] | undefined, host: string | null): 
 	});
 }
 
-export function normalizeHost(host: string | null | undefined): string | null {
-	if (host == null) return null;
+export { normalizeHost };
 
-	const trimmed = host.trim();
-	if (trimmed.length === 0 || /\s/.test(trimmed)) return null;
+const SIGNATURE_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
-	try {
-		const url = new URL(`https://${trimmed}`);
-		if (url.username !== '' || url.password !== '') return null;
-		if (url.pathname !== '/' || url.search !== '' || url.hash !== '') return null;
-		if (url.hostname.length === 0) return null;
+/**
+ * The signature must cover a Date header. Misskey never signs X-Date, and
+ * @peertube/http-signature prefers X-Date over Date for its freshness check, so
+ * accepting an unsigned X-Date would let an attacker replay an old signed GET.
+ */
+function hasSignedDate(signature: httpSignature.IParsedSignature): boolean {
+	return signature.params.headers.includes('date')
+		&& !signature.params.headers.includes('x-date');
+}
 
-		const hostname = domainToASCII(url.hostname.toLowerCase()).replace(/\.$/, '');
-		return hostname.length > 0 ? hostname : null;
-	} catch {
-		return null;
-	}
+function isSignedDateFresh(request: FastifyRequest): boolean {
+	if (request.headers['x-date'] != null) return false;
+
+	const date = request.headers.date;
+	if (typeof date !== 'string') return false;
+
+	const signedAt = Date.parse(date);
+	if (Number.isNaN(signedAt)) return false;
+
+	return Math.abs(Date.now() - signedAt) <= SIGNATURE_CLOCK_SKEW_MS;
 }
 
 @Injectable()
@@ -133,6 +141,11 @@ export class ActivityPubAccessControlService {
 			});
 		} catch (err) {
 			this.logger.debug(`Failed to parse HTTP Signature: ${err instanceof Error ? err.message : err}`);
+			return null;
+		}
+
+		if (!hasSignedDate(signature) || !isSignedDateFresh(request)) {
+			this.logger.debug('Rejected a signed request without a fresh signed Date header');
 			return null;
 		}
 

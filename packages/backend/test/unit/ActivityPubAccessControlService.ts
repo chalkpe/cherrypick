@@ -149,6 +149,47 @@ describe('ActivityPubAccessControlService', () => {
 			expect(mockApDbResolverService.getAuthUserFromKeyId).toHaveBeenCalledWith(keyId);
 		});
 
+		test('rejects a replay that supplies a fresh unsigned X-Date', async () => {
+			const keypair = await genRsaKeyPair();
+			const keyId = 'https://allowed.example/users/alice#main-key';
+
+			mockApDbResolverService.getAuthUserFromKeyId.mockResolvedValue({
+				user: { uri: 'https://allowed.example/users/alice', host: 'allowed.example' },
+				key: { keyPem: keypair.publicKey },
+			});
+
+			const signed = await ApRequestCreator.createSignedGet({
+				key: { keyId, privateKeyPem: keypair.privateKey },
+				url: 'https://test.example.com/notes/note1',
+				additionalHeaders: {
+					'Date': new Date(Date.now() - 10 * 60 * 1000).toUTCString(),
+					'X-Date': new Date().toUTCString(),
+				},
+			});
+
+			expect(await service.resolveRemoteHostFromRequest(toRequest(signed, 'test.example.com'))).toBeNull();
+		});
+
+		test('rejects a signed Date older than the clock skew', async () => {
+			const keypair = await genRsaKeyPair();
+			const keyId = 'https://allowed.example/users/alice#main-key';
+
+			mockApDbResolverService.getAuthUserFromKeyId.mockResolvedValue({
+				user: { uri: 'https://allowed.example/users/alice', host: 'allowed.example' },
+				key: { keyPem: keypair.publicKey },
+			});
+
+			const signed = await ApRequestCreator.createSignedGet({
+				key: { keyId, privateKeyPem: keypair.privateKey },
+				url: 'https://test.example.com/notes/note1',
+				additionalHeaders: {
+					'Date': new Date(Date.now() - 10 * 60 * 1000).toUTCString(),
+				},
+			});
+
+			expect(await service.resolveRemoteHostFromRequest(toRequest(signed, 'test.example.com'))).toBeNull();
+		});
+
 		test('returns the raw actor host with port so quarantine rows can match', async () => {
 			const keypair = await genRsaKeyPair();
 			const keyId = 'https://quarantined.example:8443/users/alice#main-key';

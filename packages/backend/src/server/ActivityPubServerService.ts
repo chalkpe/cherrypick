@@ -1069,7 +1069,8 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			if (await this.applyAccessControl(request, reply, true)) {
+			const remoteHost = await this.activityPubAccessControlService.resolveRemoteHostFromRequest(request);
+			if (await this.applyAccessControl(request, reply, true, remoteHost)) {
 				return;
 			}
 
@@ -1087,7 +1088,12 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			reply.header('Cache-Control', 'public, max-age=180');
+			if (!this.activityPubAccessControlService.checkNoteAccess(note, remoteHost)) {
+				reply.code(404);
+				return;
+			}
+
+			reply.header('Cache-Control', note.deliveryTargets != null ? 'private, no-store' : 'public, max-age=180');
 			this.setResponseType(request, reply);
 			return (this.apRendererService.addContext(await this.apRendererService.renderLike(reaction, note)));
 		});

@@ -15,8 +15,15 @@ const KEY_ID = 'turn-key-id-0123456789';
 const API_TOKEN = 'secret-api-token-0123456789';
 const NEW_KEY_ID = 'turn-key-id-abcdefghij';
 const NEW_API_TOKEN = 'secret-api-token-abcdefghij';
+const HCAPTCHA_SECRET = 'hcaptcha-secret-0123456789';
+const NEW_HCAPTCHA_SECRET = 'hcaptcha-secret-abcdefghij';
+const OBJECT_STORAGE_SECRET = 'object-storage-secret-0123456789';
+const NEW_OBJECT_STORAGE_SECRET = 'object-storage-secret-abcdefghij';
 
-const SECRETS = [KEY_ID, API_TOKEN, NEW_KEY_ID, NEW_API_TOKEN];
+const SECRETS = [
+	KEY_ID, API_TOKEN, NEW_KEY_ID, NEW_API_TOKEN,
+	HCAPTCHA_SECRET, NEW_HCAPTCHA_SECRET, OBJECT_STORAGE_SECRET, NEW_OBJECT_STORAGE_SECRET,
+];
 
 function expectNoSecrets(value: unknown) {
 	const json = JSON.stringify(value);
@@ -127,6 +134,29 @@ describe('moderation logs of server settings keep the Cloudflare TURN key out', 
 		expect(turnFields(stored.info.after)).toEqual({ voiceCallCloudflareTurnKeyId: null, voiceCallCloudflareTurnApiToken: null });
 	});
 
+	test('redacts pre-existing secret settings, not only the Cloudflare TURN key', async () => {
+		const f = createFixture({
+			hcaptchaSecretKey: HCAPTCHA_SECRET,
+			objectStorageSecretKey: OBJECT_STORAGE_SECRET,
+		});
+
+		const { stored, packed } = await f.update({
+			hcaptchaSecretKey: NEW_HCAPTCHA_SECRET,
+			objectStorageSecretKey: NEW_OBJECT_STORAGE_SECRET,
+		});
+
+		expectNoSecrets(stored);
+		expectNoSecrets(packed);
+		expect(stored.info.before.hcaptchaSecretKey).toBe('(set)');
+		expect(stored.info.after.hcaptchaSecretKey).toBe('(changed)');
+		expect(stored.info.before.objectStorageSecretKey).toBe('(set)');
+		expect(stored.info.after.objectStorageSecretKey).toBe('(changed)');
+		expect(f.getMeta()).toMatchObject({
+			hcaptchaSecretKey: NEW_HCAPTCHA_SECRET,
+			objectStorageSecretKey: NEW_OBJECT_STORAGE_SECRET,
+		});
+	});
+
 	test('hides the key in logs that were stored before it was redacted', async () => {
 		const f = createFixture();
 		const log = {
@@ -208,7 +238,12 @@ describe('searching moderation logs', () => {
 		const [where, parameters] = await searchCondition(API_TOKEN.slice(0, 8));
 		expect(parameters.search).toBe(`%${API_TOKEN.slice(0, 8)}%`);
 		for (const side of ['before', 'after']) {
-			for (const key of ['voiceCallCloudflareTurnKeyId', 'voiceCallCloudflareTurnApiToken']) {
+			for (const key of [
+				'voiceCallCloudflareTurnKeyId',
+				'voiceCallCloudflareTurnApiToken',
+				'hcaptchaSecretKey',
+				'objectStorageSecretKey',
+			]) {
 				expect(where).toContain(`'{${side},${key}}'`);
 			}
 		}
