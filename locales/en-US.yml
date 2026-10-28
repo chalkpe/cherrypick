@@ -1706,6 +1706,7 @@ _chat:
   ignore: "Ignore"
   leave: "Leave room"
   members: "Members"
+  roomOwner: "Room owner"
   searchMessages: "Search messages"
   home: "Home"
   send: "Send"

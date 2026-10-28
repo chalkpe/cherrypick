@@ -1706,6 +1706,7 @@ _chat:
   noRooms: "그룹이 없어요"
   inviteUser: "사용자 초대"
   sentInvitations: "보낸 초대"
+  roomOwner: "방장"
   join: "참여"
   reject: "거부"
   ignore: "무시"

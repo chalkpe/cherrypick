@@ -1716,6 +1716,7 @@ _chat:
   ignore: "無視"
   leave: "グループから退出"
   members: "メンバー"
+  roomOwner: "ルームオーナー"
   searchMessages: "メッセージを検索"
   home: "ホーム"
   send: "送信"

@@ -6845,6 +6845,10 @@ export interface Locale extends ILocale {
          */
         "members": string;
         /**
+         * ルームオーナー
+         */
+        "roomOwner": string;
+        /**
          * メッセージを検索
          */
         "searchMessages": string;

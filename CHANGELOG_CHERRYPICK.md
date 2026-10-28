@@ -15,6 +15,7 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2026101](CHANG
 - Feat: 일반 뮤트한 사용자의 이름과 아바타를 비식별화하는 설정을 추가했습니다. 아바타 장식만 뮤트한 사용자는 비식별화하지 않습니다. ([ZerglingGo/misskey@e510a8cf](https://github.com/ZerglingGo/misskey/commit/e510a8cf0eda4c25887b1aa7110df071329bdd42))
 - Fix: 로그인 정보가 없는 계정도 계정 관리에서 삭제할 수 있으며, 다른 서버의 계정은 전환 메뉴에 표시하지 않습니다.
 - Enhance: 목소리와 화면 공유의 볼륨을 따로 조절할 수 있습니다.
+- Enhance: 채팅방 멤버 목록에 방장과 멤버 영역의 제목을 추가했습니다.
 
 ### Server
 - Fix: 노트 자동 삭제 시 일반 노트 삭제와 동일한 후처리를 수행하여, 리모트 서버로 삭제가 전파되고 검색 색인과 차트 등에도 반영되도록 개선했습니다. ([ZerglingGo/misskey@799bb2df](https://github.com/ZerglingGo/misskey/commit/799bb2dfeebb7f2c321d53c94e2a9e3d4a610512))

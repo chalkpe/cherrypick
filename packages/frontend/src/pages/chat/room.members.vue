@@ -7,11 +7,17 @@ SPDX-License-Identifier: AGPL-3.0-only
 <div class="_gaps">
 	<MkButton v-if="isOwner" primary rounded style="margin: 0 auto;" @click="emit('inviteUser')"><i class="ti ti-plus"></i> {{ i18n.ts._chat.inviteUser }}</MkButton>
 
+	<div>{{ i18n.ts._chat.roomOwner }}</div>
+
 	<MkA :class="$style.membershipBody" :to="`${userPage(room.owner)}`">
 		<MkUserCardMini :user="room.owner"/>
 	</MkA>
 
-	<hr v-if="memberships.length > 0">
+	<template v-if="memberships.length > 0">
+		<hr>
+
+		<div>{{ i18n.ts._chat.members }}</div>
+	</template>
 
 	<div v-for="membership in memberships" :key="membership.id" :class="$style.membership">
 		<MkA :class="$style.membershipBody" :to="`${userPage(membership.user!)}`">
