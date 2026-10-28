@@ -20,6 +20,7 @@ const stubs = {
 	MkAvatar: { props: ['user'], template: '<span class="avatar"></span>' },
 	MkUserName: { props: ['user'], template: '<span>{{ user.username }}</span>' },
 	MkTime: true,
+	Mfm: { props: ['text'], template: '<span>{{ text }}</span>' },
 };
 
 const owner = { id: 'owner', username: 'owner', host: null };
