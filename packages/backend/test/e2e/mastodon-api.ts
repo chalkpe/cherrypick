@@ -921,7 +921,11 @@ describe('Mastodon API', () => {
 			assert.strictEqual(shown.quote.quoted_status.id, original.id);
 			assert.strictEqual(shown.quote.id, original.id);
 
-			const counted = await get<Status>(`/api/v1/statuses/${original.id}`);
+			// renoteCount is bumped after notes/create has answered, so the quote takes a moment to be counted
+			const counted = await waitFor(async () => {
+				const status = await get<Status>(`/api/v1/statuses/${original.id}`);
+				return status.quotes_count === 1 ? status : null;
+			});
 			assert.deepStrictEqual([counted.reblogs_count, counted.quotes_count], [1, 1]);
 			assert.strictEqual(counted.quote_approval.current_user, 'automatic');
 
