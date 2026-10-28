@@ -513,7 +513,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const owner = await this.usersRepository.findOneBy({ id: context.room.value.ownerId });
 		if (owner == null || owner.host != null) return false;
 		if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, status)) return false;
-		await this.refresh(roomId);
+		this.scheduleRefresh(roomId);
 		return true;
 	}
 

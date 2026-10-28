@@ -125,7 +125,7 @@ export class LiveKitServerService {
 				const rawBody = typeof request.body === 'string' ? request.body : '';
 				const user = await this.apSignedRequestVerifierService.verify({ method: request.method, url: request.url, headers: request.headers }, rawBody);
 				if (user == null) return reply.code(401).send();
-				if (await this.rateLimiterService.limit({ ...FEDERATION_TOKEN_USER_LIMIT, key: 'voiceFederationStatus', max: 120 }, user.id) != null) return reply.code(429).send();
+				if (await this.rateLimiterService.limit({ ...FEDERATION_TOKEN_USER_LIMIT, key: 'voiceFederationStatus', max: 30 }, user.id) != null) return reply.code(429).send();
 				const body: unknown = JSON.parse(rawBody);
 				if (body == null || typeof body !== 'object') return reply.code(400).send();
 				const { room, sessionId, micMuted, deafened } = body as Record<string, unknown>;

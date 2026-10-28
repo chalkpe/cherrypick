@@ -65,21 +65,24 @@ describe('reported voice status', () => {
 		}
 	});
 
-	test('service checks admission before storing reports and notifies room members', async () => {
+	test('service checks admission before storing reports and schedules a coalesced refresh', async () => {
 		const f = createFixture();
 		const me = KNOWN_USERS.find(u => u.id === 'u1')!;
 		const setStatus = vi.fn().mockResolvedValue(true);
 		Object.assign(f.liveKitService, { setParticipantStatus: setStatus });
 		Object.assign(f.usersRepository, { findOneBy: vi.fn().mockResolvedValue(KNOWN_USERS.find(u => u.id === 'owner')) });
+		const scheduleRefresh = vi.spyOn(f.service, 'scheduleRefresh').mockImplementation(() => {});
 		const refresh = vi.spyOn(f.service, 'refresh').mockResolvedValue();
 		try {
 			await expect(f.service.reportStatus(me as any, 'r1', 'PA_1', report)).resolves.toBe(true);
 			expect(setStatus).toHaveBeenCalledWith('r1', 'https://local.test/users/u1', 'PA_1', report);
-			expect(refresh).toHaveBeenCalledWith('r1');
+			expect(scheduleRefresh).toHaveBeenCalledWith('r1');
+			expect(refresh).not.toHaveBeenCalled();
 			setStatus.mockClear();
 			f.nonMembers.add('u1');
 			await expect(f.service.reportStatus(me as any, 'r1', 'PA_1', report)).resolves.toBe(false);
 			expect(setStatus).not.toHaveBeenCalled();
+			expect(scheduleRefresh).toHaveBeenCalledTimes(1);
 		} finally {
 			f.service.onApplicationShutdown();
 		}

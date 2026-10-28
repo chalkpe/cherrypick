@@ -17,7 +17,7 @@ export const meta = {
 	tags: ['chat'],
 	requireCredential: true,
 	kind: 'write:chat',
-	limit: { duration: 60_000, max: 120 },
+	limit: { duration: 60_000, max: 30 },
 	errors: {
 		accessDenied: { message: 'The voice call session is unavailable.', code: 'ACCESS_DENIED', id: '3040789a-82fd-4ac3-a4fd-7d2d623dd547' },
 	},

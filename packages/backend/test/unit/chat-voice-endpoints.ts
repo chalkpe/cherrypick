@@ -9,6 +9,7 @@ import JoinEndpoint, { meta as joinMeta } from '@/server/api/endpoints/chat/room
 import StatesEndpoint from '@/server/api/endpoints/chat/rooms/voice/states.js';
 import KickEndpoint, { meta as kickMeta } from '@/server/api/endpoints/chat/rooms/voice/kick.js';
 import MuteEndpoint, { meta as muteMeta } from '@/server/api/endpoints/chat/rooms/voice/mute.js';
+import { meta as statusMeta } from '@/server/api/endpoints/chat/rooms/voice/status.js';
 import { ChatService } from '@/core/ChatService.js';
 import { MetaEntityService } from '@/core/entities/MetaEntityService.js';
 import { RemoteVoiceCallError } from '@/core/RemoteVoiceCallService.js';
@@ -342,10 +343,11 @@ function moderationFixture(Endpoint: typeof KickEndpoint | typeof MuteEndpoint, 
 		findRoomById: vi.fn().mockResolvedValue('room' in overrides ? overrides.room : { id: 'r1', ownerId: overrides.ownerId ?? 'me' }),
 	};
 	const liveKitService = liveKit(overrides.isEnabled ?? true);
+	const chatVoiceService = { scheduleRefresh: vi.fn(), refresh: vi.fn() };
 	const endpoint = Endpoint === MuteEndpoint
-		? new MuteEndpoint(usersRepository as any, chatService as any, liveKitService as any, { refresh: vi.fn() } as any)
+		? new MuteEndpoint(usersRepository as any, chatService as any, liveKitService as any, chatVoiceService as any)
 		: new KickEndpoint(usersRepository as any, chatService as any, liveKitService as any);
-	return { endpoint, liveKitService, chatService };
+	return { endpoint, liveKitService, chatService, chatVoiceService };
 }
 
 describe('chat/rooms/voice/kick and mute', () => {
@@ -365,6 +367,8 @@ describe('chat/rooms/voice/kick and mute', () => {
 		const f = moderationFixture(MuteEndpoint);
 		await f.endpoint.exec({ roomId: 'r1', userId: 'u2' }, me, null, null);
 		expect(f.liveKitService.muteMicrophone).toHaveBeenCalledWith('r1', 'https://local.test/users/u2');
+		expect(f.chatVoiceService.scheduleRefresh).toHaveBeenCalledWith('r1');
+		expect(f.chatVoiceService.refresh).not.toHaveBeenCalled();
 	});
 
 	test('mute is only for the room owner', async () => {
@@ -372,6 +376,10 @@ describe('chat/rooms/voice/kick and mute', () => {
 		await expect(f.endpoint.exec({ roomId: 'r1', userId: 'u2' }, me, null, null)).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
 		expect(f.liveKitService.muteMicrophone).not.toHaveBeenCalled();
 	});
+});
+
+test('voice status reports use the same per-minute budget as other voice actions', () => {
+	expect(statusMeta.limit).toEqual({ duration: 60_000, max: 30 });
 });
 
 function chatServiceFixture() {

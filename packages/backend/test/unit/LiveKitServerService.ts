@@ -740,4 +740,20 @@ describe('federated reported voice status', () => {
 		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload })).statusCode).toBe(403);
 		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload: { ...payload, micMuted: 'true' } })).statusCode).toBe(400);
 	});
+
+	test('limits status reports per remote user', async () => {
+		const user = { id: 'remote-user' };
+		const verifier = { verify: vi.fn().mockResolvedValue(user) };
+		const chatVoiceService = { reportStatus: vi.fn().mockResolvedValue(true) };
+		const rateLimiterService = { limit: vi.fn(async () => null) };
+		const service = createService(liveKitService(), { verifier, chatVoiceService, rateLimiterService });
+		const app = Fastify();
+		await app.register(service.createServer, { prefix: '/livekit' });
+		cleanups.push(() => app.close());
+
+		const res = await app.inject({ method: 'POST', url: '/livekit/federation/status', payload: { room: 'https://local.test/chat/rooms/r1', sessionId: 'PA_1', micMuted: true, deafened: false } });
+
+		expect(res.statusCode).toBe(200);
+		expect(rateLimiterService.limit).toHaveBeenCalledWith({ key: 'voiceFederationStatus', duration: 60_000, max: 30 }, user.id);
+	});
 });

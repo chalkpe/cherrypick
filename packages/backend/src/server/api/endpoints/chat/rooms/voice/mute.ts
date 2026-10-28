@@ -90,7 +90,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			}
 
 			await this.liveKitService.muteMicrophone(room.id, this.liveKitService.identityOf(user));
-			await this.chatVoiceService.refresh(room.id);
+			this.chatVoiceService.scheduleRefresh(room.id);
 		});
 	}
 }
