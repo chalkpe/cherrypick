@@ -5,7 +5,6 @@
 
 import { assert, test } from 'vitest';
 import { transform } from 'lightningcss';
-import { getConfig } from '../../vite.config.js';
 
 // Vite が esbuild 形式の target ('ios18.2' など) を lightningcss の targets に直すのと同じ変換
 function toLightningcssTargets(targets: string[]): Record<string, number> {
@@ -21,9 +20,12 @@ function toLightningcssTargets(targets: string[]): Record<string, number> {
 
 // iOS Safari は接頭辞付きの -webkit-text-size-adjust しか解釈しない。
 // CSS の target に iOS が無いと lightningcss が不要な接頭辞として削り、iOS で横向きにしたときに本文が自動拡大される。
-test('production CSS keeps -webkit-text-size-adjust for iOS Safari', () => {
-	const config = getConfig();
-	const cssTarget = ([] as string[]).concat(config.build?.cssTarget ?? config.build?.target ?? []);
+test('production CSS keeps -webkit-text-size-adjust for iOS Safari', async () => {
+	// vite.config.ts を静的に import すると、frontend の型検査に lib/ のビルド用プラグインまで含まれてしまうので動的に読む
+	const configPath = '../../vite.config.js';
+	const { getConfig } = await import(configPath) as { getConfig: () => { build?: { target?: string | string[] | false; cssTarget?: string | string[] | false } } };
+	const raw = getConfig().build?.cssTarget ?? getConfig().build?.target;
+	const cssTarget = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : [];
 	const { code } = transform({
 		filename: 'style.css',
 		code: Buffer.from('html { text-size-adjust: 100%; -webkit-text-size-adjust: 100%; }'),
