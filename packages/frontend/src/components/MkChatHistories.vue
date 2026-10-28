@@ -16,7 +16,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkAvatar v-else-if="item.other" :class="$style.messageAvatar" :user="item.other" indicator :preview="false"/>
 		<div :class="$style.messageBody">
 			<header v-if="item.message.toRoom" :class="$style.messageHeader">
-				<span :class="$style.messageHeaderName"><i class="ti ti-users"></i> {{ item.message.toRoom.name }}</span>
+				<span :class="$style.messageHeaderName"><i class="ti ti-users"></i> <Mfm :text="item.message.toRoom.name" :plain="true" :nowrap="true" :author="item.message.toRoom.owner"/></span>
 				<span
 					v-if="voiceStates.has(item.message.toRoom.id)"
 					:class="$style.messageHeaderVoice"
@@ -44,7 +44,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkAvatar :class="$style.messageAvatar" :user="room.owner" indicator :preview="false"/>
 		<div :class="$style.messageBody">
 			<header :class="$style.messageHeader">
-				<span :class="$style.messageHeaderName"><i class="ti ti-users"></i> {{ room.name }}</span>
+				<span :class="$style.messageHeaderName"><i class="ti ti-users"></i> <Mfm :text="room.name" :plain="true" :nowrap="true" :author="room.owner"/></span>
 				<span
 					v-if="voiceStates.has(room.id)"
 					:class="$style.messageHeaderVoice"

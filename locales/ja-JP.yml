@@ -2412,6 +2412,14 @@ _achievements:
       flavor: "これくらいの　おべんとばこに　🤯　🤯　ちょっとつめて"
 
 _voiceCall:
+  showParticipants: "参加者を表示"
+  hideParticipants: "参加者を隠す"
+  openChat: "チャットを開く"
+  closeChat: "チャットを閉じる"
+  otherParticipants: "ほか{n}人"
+  micOn: "マイクオン"
+  micInputDetected: "マイク入力を検出"
+  title: "通話"
   micMuted: "マイクミュート中"
   deafened: "スピーカーミュート中"
   micUnavailable: "マイクを使用できません。"

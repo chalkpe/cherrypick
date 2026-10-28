@@ -5,15 +5,21 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <div class="_gaps">
-	<MkInput v-model="name_" :disabled="!isOwner">
-		<template #label>{{ i18n.ts.name }}</template>
-	</MkInput>
+	<template v-if="isOwner">
+		<MkInput v-model="name_" :mfmAutocomplete="['emoji']">
+			<template #label>{{ i18n.ts.name }}</template>
+			<template #caption>{{ i18n.ts.preview }}: <Mfm :text="name_" :plain="true" :author="room.owner"/></template>
+		</MkInput>
 
-	<MkTextarea v-model="description_" :disabled="!isOwner">
-		<template #label>{{ i18n.ts.description }}</template>
-	</MkTextarea>
-
-	<MkButton v-if="isOwner" primary @click="save">{{ i18n.ts.save }}</MkButton>
+		<MkTextarea v-model="description_" :mfmAutocomplete="['emoji']" mfmPreview>
+			<template #label>{{ i18n.ts.description }}</template>
+		</MkTextarea>
+		<MkButton primary @click="save">{{ i18n.ts.save }}</MkButton>
+	</template>
+	<template v-else>
+		<MkKeyValue><template #key>{{ i18n.ts.name }}</template><template #value><Mfm :text="room.name" :plain="true" :author="room.owner"/></template></MkKeyValue>
+		<MkKeyValue><template #key>{{ i18n.ts.description }}</template><template #value><Mfm :text="room.description" :author="room.owner"/></template></MkKeyValue>
+	</template>
 
 	<hr>
 
@@ -35,6 +41,7 @@ import { ensureSignin } from '@/i.js';
 import MkInput from '@/components/MkInput.vue';
 import MkTextarea from '@/components/MkTextarea.vue';
 import MkSwitch from '@/components/MkSwitch.vue';
+import MkKeyValue from '@/components/MkKeyValue.vue';
 import { useRouter } from '@/router.js';
 
 const router = useRouter();
@@ -51,12 +58,15 @@ const isOwner = computed(() => {
 const name_ = ref(props.room.name);
 const description_ = ref(props.room.description);
 
-function save() {
-	os.apiWithDialog('chat/rooms/update', {
+const emit = defineEmits<{ (ev: 'updated', room: Misskey.entities.ChatRoom): void }>();
+
+async function save() {
+	const updated = await os.apiWithDialog('chat/rooms/update', {
 		roomId: props.room.id,
 		name: name_.value,
 		description: description_.value,
 	});
+	emit('updated', updated);
 }
 
 async function del() {

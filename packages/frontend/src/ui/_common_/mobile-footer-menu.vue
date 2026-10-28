@@ -63,7 +63,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, ref, useTemplateRef, watch } from 'vue';
+import { computed, onBeforeUnmount, useTemplateRef, watch } from 'vue';
 import { $i } from '@/i.js';
 import * as os from '@/os.js';
 import { mainRouter } from '@/router.js';
@@ -88,7 +88,16 @@ const menuIndicated = computed(() => {
 	return false;
 });
 
-const rootElHeight = ref(0);
+function updateFooterHeight() {
+	const height = rootEl.value?.getBoundingClientRect().height ?? 0;
+	window.document.body.style.setProperty('--MI-mobileFooterHeight', `${height}px`);
+}
+
+const footerObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateFooterHeight);
+onBeforeUnmount(() => {
+	footerObserver?.disconnect();
+	window.document.body.style.removeProperty('--MI-mobileFooterHeight');
+});
 
 function clickHomeButton() {
 	haptic();
@@ -125,12 +134,13 @@ function clickPostButton() {
 	os.post();
 }
 
-watch(rootEl, () => {
+watch(rootEl, (el, previous) => {
+	if (previous) footerObserver?.unobserve(previous);
+	if (el) footerObserver?.observe(el);
+	updateFooterHeight();
 	if (rootEl.value) {
-		rootElHeight.value = rootEl.value.offsetHeight;
 		window.document.body.style.setProperty('--MI-minBottomSpacing', 'var(--MI-minBottomSpacingMobile)');
 	} else {
-		rootElHeight.value = 0;
 		window.document.body.style.setProperty('--MI-minBottomSpacing', '0px');
 	}
 }, {

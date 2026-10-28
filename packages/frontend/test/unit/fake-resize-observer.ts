@@ -36,11 +36,11 @@ export function installFakeResizeObserver() {
 }
 
 /** 監視されている要素 (target を渡せばその要素だけ) の中身の幅が width になったと知らせる */
-export function resizeObserved(width: number, target?: Element) {
+export function resizeObserved(width: number, target?: Element, height?: number) {
 	for (const observer of observers) {
 		for (const el of observer.targets) {
 			if (target != null && el !== target) continue;
-			observer.callback([{ target: el, contentRect: { width } } as unknown as ResizeObserverEntry], observer as unknown as ResizeObserver);
+			observer.callback([{ target: el, contentRect: { width, height } } as unknown as ResizeObserverEntry], observer as unknown as ResizeObserver);
 		}
 	}
 }

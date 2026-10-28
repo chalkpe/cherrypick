@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <div v-if="show" ref="el" :class="[$style.root, { [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.scrollToTransparent]: showEl }]">
-	<div :class="[$style.upper, { [$style.slim]: narrow || isFriendly().value, [$style.thin]: thin_, [$style.hideTitle]: hideTitle && isFriendly().value }]">
+	<div :class="[$style.upper, { [$style.slim]: narrow || isFriendly().value, [$style.centerTitle]: centerTitle && (narrow || isFriendly().value), [$style.thin]: thin_, [$style.hideTitle]: hideTitle && isFriendly().value }]">
 		<div v-if="!thin_ && !canBack && !notification" :class="$style.buttonsLeft">
 			<button class="_button" :class="[$style.button, $style.goBack]" @click.stop="goBack" @touchstart="preventDrag"><i class="ti ti-arrow-left"></i></button>
 		</div>
@@ -36,7 +36,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 				<div class="_nowrap" :class="$style.title">
 					<MkUserName v-if="pageMetadata.userName" :user="pageMetadata.userName" :nowrap="true"/>
-					<div v-else-if="pageMetadata.title" class="_nowrap">{{ pageMetadata.title }}</div>
+					<div v-else-if="pageMetadata.title" class="_nowrap"><Mfm v-if="pageMetadata.titleAsMfm" :text="pageMetadata.title" :plain="true" :nowrap="true" :author="pageMetadata.titleMfmAuthor"/><template v-else>{{ pageMetadata.title }}</template></div>
 					<div v-if="pageMetadata.subtitle" :class="$style.subtitle">
 						{{ pageMetadata.subtitle }}
 					</div>
@@ -76,6 +76,7 @@ export type PageHeaderProps = {
 	thin?: boolean;
 	hideTitle?: boolean;
 	canOmitTitle?: boolean;
+	centerTitle?: boolean;
 	displayMyAvatar?: boolean;
 	disableFollowButton?: boolean;
 	notification?: boolean;
@@ -298,6 +299,20 @@ onUnmounted(() => {
 			max-width: 100%;
 		}
 	}
+}
+
+.upper.centerTitle {
+	position: relative;
+
+	.titleContainer {
+		position: absolute;
+		left: 50%;
+		transform: translateX(-50%);
+		margin: 0;
+		max-width: calc(100% - 168px);
+	}
+
+	.buttonsRight { margin-left: auto; }
 }
 
 .lower {

@@ -4,18 +4,21 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<PageWithHeader ref="pageEl" v-model:tab="tab" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
+<PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
 	<!-- 広いページで誰かが通話にいるあいだは、通話 (ステージ) とチャットを左右に並べる。ステージは一つだけ作り、チャットを置く側の反対へ CSS の順序で移す。
-	狭いページでは、通話カードをメッセージの上に貼り付ける -->
-	<div v-if="tab === 'chat'" ref="chatTabEl" :class="{ [$style.split]: split, [$style.chatLeft]: split && chatSide === 'left' }">
-		<XStage v-if="split && room" :room="room" :call="voiceCallState" :chatSide="chatSide" :class="$style.stage" @swapChatSide="swapChatSide"/>
-		<div :class="$style.chatPane">
+	狭いページでは、通話は専用タブで開き、チャットには重ねない -->
+	<div v-if="tab === 'chat' || tab === 'voice'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="{ [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }">
+		<XStage v-if="split && room" :room="room" :call="voiceCallState" :chatSide="chatSide" :class="$style.stage" :chatOpen="chatOpen" @toggleChat="chatOpen = !chatOpen"/>
+		<div v-if="split && voiceInOwnTab && chatOpen" ref="sheetBackdropEl" :class="$style.sheetBackdrop" @click="chatOpen = false"></div>
+		<div v-show="!split || chatOpen" ref="chatPaneEl" :class="$style.chatPane" :role="split && voiceInOwnTab && chatOpen ? 'dialog' : undefined" :aria-modal="split && voiceInOwnTab && chatOpen ? true : undefined" :aria-label="i18n.ts._chat.messages" @dragover="chatFormEl?.onDragover($event)" @drop="chatFormEl?.onDrop($event)" @keydown.esc="split && voiceInOwnTab && (chatOpen = false)">
+			<div v-if="split && voiceInOwnTab" :class="$style.sheetHeading"><strong>{{ i18n.ts._chat.messages }}</strong><button v-tooltip="i18n.ts.close" class="_button" :aria-label="i18n.ts.close" @click="chatOpen = false"><i class="ti ti-x"></i></button></div>
+			<button v-if="split && !voiceInOwnTab" v-tooltip="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight" class="_button" :class="[$style.chatCorner, { [$style.cornerRight]: chatSide === 'left' }]" :aria-label="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight" @click="swapChatSide"><i :class="chatSide === 'right' ? 'ti ti-layout-sidebar' : 'ti ti-layout-sidebar-right'"></i></button>
 			<!-- 並べているときはメッセージの欄だけを自分でスクロールさせる -->
 			<div ref="chatScrollerEl" :class="$style.chatScroller">
 				<!-- 通話カードはメッセージをスクロールしてもページヘッダーの下に貼り付ける -->
 				<MkStickyContainer ref="chatStickyEl" class="_spacer" style="--MI_SPACER-w: 700px;">
 					<template #header>
-						<XVoice v-if="room && !split" :room="room" :call="voiceCallState"/>
+						<XBanner v-if="room && !split" :call="voiceCallState" :class="$style.joinBanner"/>
 					</template>
 					<div class="_gaps">
 						<div v-if="initializing">
@@ -84,7 +87,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</div>
 	</div>
 
-	<div v-else-if="tab === 'search'" class="_spacer" style="--MI_SPACER-w: 700px;">
+	<div v-if="tab === 'search'" class="_spacer" style="--MI_SPACER-w: 700px;">
 		<XSearch :userId="userId" :roomId="roomId"/>
 	</div>
 
@@ -93,12 +96,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 
 	<div v-else-if="tab === 'info'" class="_spacer" style="--MI_SPACER-w: 700px;">
-		<XInfo v-if="room != null" :room="room"/>
+		<XInfo v-if="room != null" :room="room" @updated="room = $event"/>
 	</div>
 
 	<template #footer>
 		<!-- 表示は v-show ではなく style で切り替える (上の paneFormHostEl と同じ理由) -->
-		<div v-if="tab === 'chat'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]" :style="split ? { display: 'none' } : undefined">
+		<div v-if="tab === 'chat' || tab === 'voice'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]" :style="split || tab === 'voice' ? { display: 'none' } : undefined">
 			<!-- 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (並べているときはメッセージの欄の下へ)。
 			作り直すとフォーカスが外れてページ全体のショートカットが効いてしまい、変換中の文字や送信中の状態も失われる -->
 			<Teleport v-if="paneFormHostEl != null" :to="paneFormHostEl" :disabled="!split">
@@ -110,7 +113,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</button>
 						</div>
 					</Transition>
-					<XForm v-if="initialized" :user="user" :room="room" :class="$style.form"/>
+					<XForm v-if="initialized" ref="chatFormEl" :user="user" :room="room" :class="$style.form"/>
 				</div>
 			</Teleport>
 		</div>
@@ -127,7 +130,7 @@ import XForm from './room.form.vue';
 import XSearch from './room.search.vue';
 import XMembers from './room.members.vue';
 import XInfo from './room.info.vue';
-import XVoice from './room.voice.vue';
+import XBanner from './room.voice.banner.vue';
 import XStage from './room.voice.stage.vue';
 import type { MenuItem } from '@/types/menu.js';
 import type { PageHeaderItem } from '@/types/page-header.js';
@@ -150,6 +153,7 @@ import { isFriendly } from '@/utility/is-friendly.js';
 import { deviceKind } from '@/utility/device-kind.js';
 import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { useElementWidth } from '@/composables/use-element-width.js';
+import { focusTrap } from '@/utility/focus-trap.js';
 
 const MOBILE_THRESHOLD = 500;
 // ページ自身の幅がこれ以上あれば、通話とチャットを左右に並べる
@@ -459,7 +463,7 @@ async function leaveRoom() {
 }
 
 function showMenu(ev: PointerEvent) {
-	const menuItems: MenuItem[] = [];
+	const menuItems: MenuItem[] = [{ text: i18n.ts.search, icon: 'ti ti-search', action: () => { tab.value = 'search'; } }];
 
 	if (room.value) {
 		if (room.value.ownerId === $i.id) {
@@ -485,13 +489,19 @@ function showMenu(ev: PointerEvent) {
 }
 
 const tab = ref('chat');
+watch(voiceCallState.available, available => {
+	if (!available && tab.value === 'voice') tab.value = 'chat';
+});
 
 // ウィンドウではなくページ自身の幅で決める (デッキの列やウィジェットでページの幅は変わる)
 const chatTabEl = useTemplateRef('chatTabEl');
 const pageWidth = useElementWidth(chatTabEl, releaseFullscreen);
 // 通話カードを出す場面 (誰かが通話にいるか、自分が参加中) で、ページが広ければ通話カードの代わりにステージを横に並べる。
 // モバイルでは横向きなどで広くても並べない (並べた形は、モバイルの画面下のナビゲーションの分を空けていない)
-const wantsSplit = computed(() => !isMobile.value && voiceCallState.showCard.value && pageWidth.value != null && pageWidth.value >= STAGE_MIN_PAGE_WIDTH);
+const voiceInOwnTab = computed(() => isMobile.value || (pageWidth.value != null && pageWidth.value < STAGE_MIN_PAGE_WIDTH));
+const wantsSplit = computed(() => voiceCallState.inThisCall.value);
+const chatOpen = ref(true);
+watch(voiceCallState.inThisCall, joined => { chatOpen.value = !joined || !voiceInOwnTab.value; }, { immediate: true });
 
 // 全画面のあいだは並べ方を変えない。通話カードの共有画面を全画面にするとページの幅も広がるので、
 // そのまま並べ方を変えるとカードが外れ、全画面にした要素ごと消えて全画面が解けてしまう
@@ -540,6 +550,26 @@ watch([wantsSplit, fullscreen, composing], () => {
 }, { immediate: true, flush: 'sync' });
 
 const split = computed(() => tab.value === 'chat' && splitLayout.value);
+const chatPaneEl = useTemplateRef('chatPaneEl');
+const sheetBackdropEl = useTemplateRef('sheetBackdropEl');
+let sheetTrap: { release: () => void } | null = null;
+let sheetReturnFocus: HTMLElement | null = null;
+watch(() => split.value && voiceInOwnTab.value && chatOpen.value, open => {
+ if (open && chatPaneEl.value) {
+  sheetReturnFocus = window.document.activeElement instanceof HTMLElement ? window.document.activeElement : null;
+  const backdropTrap = sheetBackdropEl.value ? focusTrap(sheetBackdropEl.value, true) : null;
+  const paneTrap = focusTrap(chatPaneEl.value, true);
+  sheetTrap = { release: () => { paneTrap.release(); backdropTrap?.release(); } };
+  chatPaneEl.value.querySelector<HTMLElement>('button')?.focus();
+ } else if (sheetTrap) {
+  sheetTrap.release();
+  sheetTrap = null;
+  if (sheetReturnFocus?.isConnected) sheetReturnFocus.focus({ preventScroll: true });
+  sheetReturnFocus = null;
+ }
+}, { flush: 'post' });
+onBeforeUnmount(() => sheetTrap?.release());
+onDeactivated(() => { sheetTrap?.release(); sheetTrap = null; });
 
 // スクロール先を付け替える前の位置を覚え、描画直後・次のフレームより前に column-reverse の位置を揃える。
 const pageEl = useTemplateRef('pageEl');
@@ -566,6 +596,7 @@ watch(split, next => {
 // 戻すのは描画のあと (flush: 'post')。そのときには入力欄の置き場所の表示も描画で切り替わっている
 const paneFormHostEl = useTemplateRef('paneFormHostEl');
 const formEl = useTemplateRef('formEl');
+const chatFormEl = useTemplateRef('chatFormEl');
 let focusToRestore: { el: HTMLElement; selection: [number, number, 'forward' | 'backward' | 'none'] | null } | null = null;
 
 watch(split, () => {
@@ -606,10 +637,6 @@ const headerTabs = computed(() => room.value ? [{
 	title: i18n.ts._chat.members,
 	icon: 'ti ti-users',
 }, {
-	key: 'search',
-	title: i18n.ts.search,
-	icon: 'ti ti-search',
-}, {
 	key: 'info',
 	title: i18n.ts.info,
 	icon: 'ti ti-info-circle',
@@ -617,25 +644,22 @@ const headerTabs = computed(() => room.value ? [{
 	key: 'chat',
 	title: i18n.ts._chat.messages,
 	icon: 'ti ti-messages',
-}, {
-	key: 'search',
-	title: i18n.ts.search,
-	icon: 'ti ti-search',
 }]);
 
 // ヘッダーの参加ボタン。メッセージのタブでは通話カード (誰かが通話にいるときだけ出る) から参加できるので、カードが無いときだけ出す。
 // ほかのタブにはカードが無いので、自分が通話にいなければいつでも出す
 const showHeaderJoin = computed(() => {
 	if (!voiceCallState.available.value || voiceCallState.inThisCall.value) return false;
-	return tab.value !== 'chat' || !voiceCallState.showCard.value;
+	return tab.value !== 'chat';
 });
 
 const headerActions = computed<PageHeaderItem[]>(() => [
 	...(showHeaderJoin.value ? [{
 		icon: 'ti ti-phone',
 		text: i18n.ts._voiceCall.join,
-		handler: () => {
-			voiceCallState.join();
+		handler: async () => {
+			await voiceCallState.join();
+			tab.value = 'chat';
 		},
 	}] : []),
 	{
@@ -657,6 +681,8 @@ definePage(computed(() => {
 		} else if (room.value) {
 			return {
 				title: room.value.name,
+				titleAsMfm: true,
+				titleMfmAuthor: room.value.owner,
 				subtitle: i18n.tsx._chat.usersCount({ n: memberships.value.length + 1 }),
 				icon: 'ti ti-users',
 			};
@@ -674,6 +700,17 @@ definePage(computed(() => {
 </script>
 
 <style lang="scss" module>
+.joinBanner { margin-bottom: 24px; }
+
+.voiceTab {
+	height: calc(100cqh - var(--MI-stickyTop, 0px) - var(--MI-stickyBottom, 0px) - var(--voiceCallBottomSpacing, 0px));
+	min-height: 320px;
+
+	> div {
+		height: 100%;
+	}
+}
+
 .transition_x_move,
 .transition_x_enterActive,
 .transition_x_leaveActive {
@@ -698,13 +735,14 @@ definePage(computed(() => {
 // 左右に並べるときは、ページヘッダーと下端の間 (スクロールしない高さ) にちょうど収める
 .split {
 	display: flex;
-	height: calc(100cqh - var(--MI-stickyTop, 0px) - var(--MI-stickyBottom, 0px));
+	height: calc(100cqh - var(--MI-stickyTop, 0px) - var(--MI-stickyBottom, 0px) - var(--voiceCallBottomSpacing, 0px));
 
 	.stage {
 		flex: 1 1 0;
 	}
 
 	.chatPane {
+		position: relative;
 		display: flex;
 		flex: 0 1 400px;
 		flex-direction: column;
@@ -807,4 +845,13 @@ definePage(computed(() => {
 	padding: 0.5em 1em;
 	margin: 0 auto;
 }
+.narrowCall { position: relative; }
+.narrowCall .stage { width: 100%; }
+.narrowCall .chatPane { position: fixed; z-index: 1100; inset: auto 0 var(--voiceCallBottomSpacing, 0px); box-sizing: border-box; width: 100%; min-width: 0; height: 72dvh; border: none; border-radius: 20px 20px 0 0; overflow: hidden; background: var(--MI_THEME-bg); }
+.sheetBackdrop { position: fixed; z-index: 1099; inset: 0; background: var(--MI_THEME-modalBg); }
+.sheetHeading { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--MI_THEME-divider); }
+.sheetHeading button { width: 32px; height: 32px; }
+.chatCorner { position: absolute; z-index: 2; top: 12px; left: 12px; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; background: var(--MI_THEME-panelHighlight); }
+.cornerRight { left: auto; right: 12px; }
+.chatCorner:hover { background: var(--MI_THEME-buttonHoverBg); }
 </style>

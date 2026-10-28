@@ -32,7 +32,7 @@ export function useVoiceCallStatusAnnouncer(inThisCall: Readonly<Ref<boolean>>, 
 	let visibility: ReturnType<typeof observeElementVisibility> | null = null;
 	watch(target, el => {
 		visibility?.dispose();
-		visibility = el == null ? null : observeElementVisibility(el, value => { visible.value = value; });
+		visibility = el == null ? null : observeElementVisibility(el, value => { visible.value = value; }, true);
 		if (el == null) visible.value = false;
 	}, { immediate: true, flush: 'post' });
 

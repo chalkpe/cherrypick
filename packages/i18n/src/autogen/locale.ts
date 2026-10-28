@@ -9301,6 +9301,38 @@ export interface Locale extends ILocale {
     };
     "_voiceCall": {
         /**
+         * 参加者を表示
+         */
+        "showParticipants": string;
+        /**
+         * 参加者を隠す
+         */
+        "hideParticipants": string;
+        /**
+         * チャットを開く
+         */
+        "openChat": string;
+        /**
+         * チャットを閉じる
+         */
+        "closeChat": string;
+        /**
+         * ほか{n}人
+         */
+        "otherParticipants": ParameterizedString<"n">;
+        /**
+         * マイクオン
+         */
+        "micOn": string;
+        /**
+         * マイク入力を検出
+         */
+        "micInputDetected": string;
+        /**
+         * 通話
+         */
+        "title": string;
+        /**
          * マイクミュート中
          */
         "micMuted": string;

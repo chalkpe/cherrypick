@@ -172,6 +172,14 @@ afterEach(async () => {
 });
 
 describe('voice call controller', () => {
+	test('joins with the microphone off without acquiring or publishing microphone audio', async () => {
+		await joinVoiceCall(room1, { micEnabled: false });
+
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+		expect(voiceCall).toMatchObject({ status: 'connected', micEnabled: false, deafened: false });
+		await setMicEnabled(true);
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).toHaveBeenCalledWith(true, expect.anything());
+	});
 	test('joins a room call with the token from the server and turns the mic on', async () => {
 		await joinVoiceCall(room1);
 

@@ -13,28 +13,28 @@ SPDX-License-Identifier: AGPL-3.0-only
 	role="region" :aria-label="i18n.ts._voiceCall.inCall"
 >
 	<!-- 通話中のルームの名前は出さず、状態 (通話中・接続中など) だけを出す -->
-	<MkA :to="`/chat/room/${voiceCall.room.id}`" :class="$style.room" :aria-label="i18n.ts._voiceCall.backToRoom" :title="i18n.ts._voiceCall.backToRoom">
-		<i class="ti ti-volume" :class="$style.roomIcon"></i>
+	<MkA v-tooltip="i18n.ts._voiceCall.backToRoom" :to="`/chat/room/${voiceCall.room.id}`" :class="$style.room" :aria-label="i18n.ts._voiceCall.backToRoom">
+		<i v-tooltip="micSpeaking ? i18n.ts._voiceCall.micInputDetected : voiceCall.micEnabled ? i18n.ts._voiceCall.micOn : i18n.ts._voiceCall.micMuted" :class="[voiceCall.micEnabled ? 'ti ti-microphone' : 'ti ti-microphone-off', $style.roomIcon, { [$style.speaking]: micSpeaking, [$style.muted]: !voiceCall.micEnabled }]" role="img" :aria-label="micSpeaking ? i18n.ts._voiceCall.micInputDetected : voiceCall.micEnabled ? i18n.ts._voiceCall.micOn : i18n.ts._voiceCall.micMuted"></i>
 		<span :class="$style.status" :aria-live="voiceCallStatusAnnouncedInRoom ? 'off' : 'polite'">{{ voiceCallStatusText }}</span>
 	</MkA>
-	<button v-if="voiceCall.audioBlocked" class="_buttonPrimary" :class="$style.enableAudio" :aria-label="i18n.ts._voiceCall.enableAudio" :title="i18n.ts._voiceCall.enableAudio" @click="resumeAudio">
+	<button v-if="voiceCall.audioBlocked" v-tooltip="i18n.ts._voiceCall.enableAudio" class="_buttonPrimary" :class="$style.enableAudio" :aria-label="i18n.ts._voiceCall.enableAudio" @click="resumeAudio">
 		<i class="ti ti-volume"></i>
 		<span :class="$style.enableAudioLabel">{{ i18n.ts._voiceCall.enableAudio }}</span>
 	</button>
 	<div :class="$style.actions">
 		<button
-			class="_button" :class="[$style.action, { [$style.off]: !voiceCall.micEnabled }]"
+			v-tooltip="voiceCall.micEnabled ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute" class="_button"
+			:class="[$style.action, { [$style.off]: !voiceCall.micEnabled }]"
 			:aria-label="voiceCall.micEnabled ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute"
-			:title="voiceCall.micEnabled ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute"
 			@click="setMicEnabled(!voiceCall.micEnabled)"
 		>
 			<i v-if="voiceCall.micEnabled" class="ti ti-microphone"></i>
 			<i v-else class="ti ti-microphone-off"></i>
 		</button>
 		<button
-			class="_button" :class="[$style.action, { [$style.off]: voiceCall.deafened }]"
+			v-tooltip="voiceCall.deafened ? i18n.ts._voiceCall.undeafen : i18n.ts._voiceCall.deafen" class="_button"
+			:class="[$style.action, { [$style.off]: voiceCall.deafened }]"
 			:aria-label="voiceCall.deafened ? i18n.ts._voiceCall.undeafen : i18n.ts._voiceCall.deafen"
-			:title="voiceCall.deafened ? i18n.ts._voiceCall.undeafen : i18n.ts._voiceCall.deafen"
 			@click="setDeafened(!voiceCall.deafened)"
 		>
 			<i v-if="voiceCall.deafened" class="ti ti-headphones-off"></i>
@@ -42,26 +42,26 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</button>
 		<button
 			v-if="screenShareAvailable"
-			class="_button" :class="[$style.action, { [$style.on]: voiceCall.screenSharing }]"
+			v-tooltip="voiceCall.screenSharing ? i18n.ts._voiceCall.stopSharing : i18n.ts._voiceCall.shareScreen" class="_button"
+			:class="[$style.action, { [$style.on]: voiceCall.screenSharing }]"
 			:aria-label="voiceCall.screenSharing ? i18n.ts._voiceCall.stopSharing : i18n.ts._voiceCall.shareScreen"
-			:title="voiceCall.screenSharing ? i18n.ts._voiceCall.stopSharing : i18n.ts._voiceCall.shareScreen"
 			@click="voiceCall.screenSharing ? stopScreenShare() : startScreenShare()"
 		>
 			<i v-if="voiceCall.screenSharing" class="ti ti-screen-share-off"></i>
 			<i v-else class="ti ti-screen-share"></i>
 		</button>
 		<button
-			class="_button" :class="$style.action"
+			v-tooltip="i18n.ts._voiceCall.settings" class="_button"
+			:class="$style.action"
 			:aria-label="i18n.ts._voiceCall.settings"
-			:title="i18n.ts._voiceCall.settings"
 			@click="openSettings"
 		>
 			<i class="ti ti-settings"></i>
 		</button>
 		<button
-			class="_button" :class="[$style.action, $style.leave]"
+			v-tooltip="i18n.ts._voiceCall.leave" class="_button"
+			:class="[$style.action, $style.leave]"
 			:aria-label="i18n.ts._voiceCall.leave"
-			:title="i18n.ts._voiceCall.leave"
 			@click="leaveVoiceCall()"
 		>
 			<i class="ti ti-phone-off"></i>
@@ -80,6 +80,8 @@ import { leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, startScreenSha
 import { voiceCallBarHidden, voiceCallBarPlacement as placement } from '@/utility/voice-call-placement.js';
 import { openVoiceCallSettings as openSettings, screenShareAvailable } from '@/utility/voice-call-settings.js';
 import { voiceCallStatusAnnouncedInRoom, voiceCallStatusText } from '@/utility/voice-call-status.js';
+
+const micSpeaking = computed(() => voiceCall.status === 'connected' && voiceCall.micEnabled && voiceCall.localSpeaking);
 
 const zIndex = os.claimZIndex('middle');
 
@@ -180,7 +182,9 @@ watch(() => [
 
 .roomIcon {
 	flex-shrink: 0;
-	color: var(--MI_THEME-accent);
+	color: var(--MI_THEME-fg);
+	&.speaking { color: var(--MI_THEME-success); }
+	&.muted { color: var(--MI_THEME-error); }
 }
 
 .status {

@@ -30,7 +30,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 			<div class="_nowrap" :class="$style.title">
 				<MkUserName v-if="pageMetadata.userName" :user="pageMetadata.userName" :nowrap="true" @click="top"/>
-				<div v-else-if="pageMetadata.title" class="_nowrap" @click="top">{{ pageMetadata.title }}</div>
+				<div v-else-if="pageMetadata.title" class="_nowrap" @click="top"><Mfm v-if="pageMetadata.titleAsMfm" :text="pageMetadata.title" :plain="true" :nowrap="true" :author="pageMetadata.titleMfmAuthor"/><template v-else>{{ pageMetadata.title }}</template></div>
 				<div v-if="!narrow && pageMetadata.subtitle" :class="$style.subtitle" @click="top">
 					{{ pageMetadata.subtitle }}
 				</div>

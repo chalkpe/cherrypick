@@ -8,7 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<div v-if="invitations.length > 0" class="_gaps_s">
 		<MkFolder v-for="invitation in invitations" :key="invitation.id" :defaultOpen="true">
 			<template #icon><i class="ti ti-users-group"></i></template>
-			<template #label>{{ invitation.room.name }}</template>
+			<template #label><Mfm :text="invitation.room.name" :plain="true" :author="invitation.room.owner"/></template>
 			<template #suffix><MkTime :time="invitation.createdAt"/></template>
 			<template #footer>
 				<div class="_buttons">
@@ -23,7 +23,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<div style="flex: 1;" class="_gaps_s">
 					<MkUserName :user="invitation.room.owner"/>
 					<hr>
-					<div>{{ invitation.room.description === '' ? i18n.ts.noDescription : invitation.room.description }}</div>
+					<div><Mfm v-if="invitation.room.description" :text="invitation.room.description" :author="invitation.room.owner"/><template v-else>{{ i18n.ts.noDescription }}</template></div>
 				</div>
 			</div>
 		</MkFolder>

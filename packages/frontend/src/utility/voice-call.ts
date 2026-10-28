@@ -32,6 +32,7 @@ const state = reactive({
 	deafened: false,
 	audioBlocked: false,
 	speakingIdentities: [] as string[],
+	localSpeaking: false,
 	screenSharing: false,
 	screenShareIdentities: [] as string[],
 	// 見ている共有画面 (見始めた順)。いくつでも同時に見られる
@@ -60,6 +61,7 @@ function reportStatus(room: Room): void {
 }
 
 function setLocalSpeaking(room: Room, speaking: boolean): void {
+	state.localSpeaking = speaking;
 	const identity = room.localParticipant.identity;
 	if (state.speakingIdentities.includes(identity) === speaking) return;
 	state.speakingIdentities = speaking
@@ -116,7 +118,7 @@ export function localIdentityOf(userId: string): string {
 	return `${url}/users/${userId}`;
 }
 
-export async function joinVoiceCall(room: Misskey.entities.ChatRoom): Promise<void> {
+export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { micEnabled?: boolean } = {}): Promise<void> {
 	if (current != null) await leaveVoiceCall();
 
 	const attempt = ++joinAttempt;
@@ -175,7 +177,8 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom): Promise<vo
 		lkRoom.switchActiveDevice('audiooutput', outputDeviceId).catch(() => {});
 	}
 
-	await enableMicrophone(lkRoom);
+	if (options.micEnabled !== false) await enableMicrophone(lkRoom);
+	else reportStatus(lkRoom);
 }
 
 export async function leaveVoiceCall(): Promise<void> {
@@ -602,6 +605,7 @@ function resetState(): void {
 	state.deafened = false;
 	state.audioBlocked = false;
 	state.speakingIdentities = [];
+	state.localSpeaking = false;
 	state.screenSharing = false;
 	state.screenShareIdentities = [];
 	state.watchingIdentities = [];

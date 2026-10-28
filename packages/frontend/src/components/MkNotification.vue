@@ -123,7 +123,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				{{ notification.role.name }}
 			</div>
 			<MkA v-else-if="notification.type === 'chatRoomInvitationReceived'" :class="$style.text" :to="`/chat/room/${notification.invitation.room.id}`">
-				{{ notification.invitation.room.name }}
+				<Mfm :text="notification.invitation.room.name" :plain="true" :author="notification.invitation.room.owner"/>
 			</MkA>
 			<MkA v-else-if="notification.type === 'achievementEarned'" :class="$style.text" to="/my/achievements">
 				{{ i18n.ts._achievements._types[`_${notification.achievement}`].title }}

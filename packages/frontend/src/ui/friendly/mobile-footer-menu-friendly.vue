@@ -73,7 +73,16 @@ const widgetsShowing = defineModel<boolean>('widgetsShowing');
 
 const rootEl = useTemplateRef('rootEl');
 
-const rootElHeight = ref(0);
+function updateFooterHeight() {
+	const height = rootEl.value?.getBoundingClientRect().height ?? 0;
+	window.document.body.style.setProperty('--MI-mobileFooterHeight', `${height}px`);
+}
+
+const footerObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateFooterHeight);
+onUnmounted(() => {
+	footerObserver?.disconnect();
+	window.document.body.style.removeProperty('--MI-mobileFooterHeight');
+});
 const isAtBottom = ref(false);
 
 async function openAccountMenu(ev: TouchEvent) {
@@ -135,12 +144,13 @@ function handleIsAtBottom(value: boolean) {
 	isAtBottom.value = value;
 }
 
-watch(rootEl, () => {
+watch(rootEl, (el, previous) => {
+	if (previous) footerObserver?.unobserve(previous);
+	if (el) footerObserver?.observe(el);
+	updateFooterHeight();
 	if (rootEl.value) {
-		rootElHeight.value = rootEl.value.offsetHeight;
 		window.document.body.style.setProperty('--MI-minBottomSpacing', 'var(--MI-minBottomSpacingMobile)');
 	} else {
-		rootElHeight.value = 0;
 		window.document.body.style.setProperty('--MI-minBottomSpacing', '0px');
 	}
 }, {
