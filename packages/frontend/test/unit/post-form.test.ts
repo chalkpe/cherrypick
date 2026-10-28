@@ -5,6 +5,7 @@
 
 import { afterEach, assert, describe, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor, type RenderResult } from '@testing-library/vue';
+import { nextTick } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { directives } from '@/directives/index.js';
 import { components } from '@/components/index.js';
@@ -101,6 +102,8 @@ describe.each([
 		fakeMe.isSilenced = false;
 		prefer.s.postFormVisibilityHotkey = false;
 		prefer.s.keepCw = true;
+		prefer.s.showPreview = false;
+		prefer.s.showProfilePreview = false;
 		vi.mocked(misskeyApi).mockReset();
 		vi.mocked(misskeyApi).mockImplementation(() => new Promise(() => {}));
 		vi.mocked(chooseDriveFile).mockReset();
@@ -255,5 +258,37 @@ describe.each([
 			assert.strictEqual(params.text, 'Edited note');
 			assert.isUndefined(params.visibility, 'visibility is omitted from the request body');
 		});
+	});
+
+	test('keeps the preview avatar while the first syllable is being composed', async () => {
+		prefer.s.showPreview = true;
+		prefer.s.showProfilePreview = true;
+		const form = renderPostForm();
+		const textarea = form.container.querySelector('textarea')!;
+		await fireEvent.click(textarea);
+		// フォーム上部のアカウントアバターではなく、プレビュー内のアバターだけを見る
+		const previewRoot = () => form.container.querySelector<HTMLElement>('[class*="preview"]');
+		const previewAvatar = () => previewRoot()?.querySelector(`img[src="${fakeMe.avatarUrl}"]`) ?? null;
+		// happy-dom の CompositionEvent は data を持たない素の Event なので、ここで補う
+		const composition = async (type: 'compositionstart' | 'compositionupdate' | 'compositionend', data: string) => {
+			const event = new Event(type, { bubbles: true });
+			Object.defineProperty(event, 'data', { value: data });
+			if (type !== 'compositionstart') textarea.value = data;
+			textarea.dispatchEvent(event);
+			await nextTick();
+		};
+
+		// macOS の韓国語 IME は 1 音節目を組み立てる途中で、未確定文字列を一度空にしてから組み直す
+		await composition('compositionstart', '');
+		await composition('compositionupdate', 'ㄱ');
+		const avatar = previewAvatar();
+		assert.exists(avatar, 'the preview appears while composing');
+		await composition('compositionupdate', '');
+		assert.strictEqual(previewRoot()?.style.display, 'none', 'the preview is hidden, not removed, while the body is empty');
+		await composition('compositionend', '');
+		await composition('compositionstart', '');
+		await composition('compositionupdate', '가');
+		assert.notStrictEqual(previewRoot()?.style.display, 'none', 'the preview is shown again once the body has text');
+		assert.strictEqual(previewAvatar(), avatar, 'the avatar element is not recreated');
 	});
 });
