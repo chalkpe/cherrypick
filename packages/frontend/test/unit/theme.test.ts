@@ -186,6 +186,42 @@ describe('ThemeManager', () => {
 	});
 });
 
+describe('ThemeManager view transition', () => {
+	beforeEach(() => {
+		resetDocument();
+	});
+
+	// 更新のコールバックが失敗すると updateCallbackDone が reject する。放置すると unhandledrejection になり、起動中なら boot のエラー画面が出る。
+	// finished も reject するが、後始末 (_themeChanging_ を外して themeChanged を出す) は必ず行う
+	test('トランジションの約束が全部 reject しても themeChanged を発し、_themeChanging_ を外し、unhandledrejection を出さない', async () => {
+		const { themeManager } = await loadThemeModule();
+		const reason = new DOMException('Transition was aborted because of invalid state', 'InvalidStateError');
+		Object.defineProperty(document, 'startViewTransition', {
+			configurable: true,
+			value: vi.fn((update: () => void | Promise<void>) => {
+				// 本物のブラウザと同じく、三つの約束は別々のオブジェクト。どれか一つだけ拾っても残りは unhandled になる
+				const done = Promise.resolve().then(update).then(() => Promise.reject(reason));
+				return { ready: Promise.reject(reason), updateCallbackDone: done.then(() => {}), finished: done.then(() => {}), skipTransition: () => {}, types: new Set<string>() };
+			}),
+		});
+		const changed = vi.fn();
+		themeManager.on('themeChanged', changed);
+		const unhandled = vi.fn();
+		process.on('unhandledRejection', unhandled);
+		try {
+			themeManager.updateTheme(primaryTheme);
+			assert.ok(document.documentElement.classList.contains('_themeChanging_'));
+			await new Promise(resolve => setTimeout(resolve, 10));
+		} finally {
+			process.off('unhandledRejection', unhandled);
+		}
+		assert.strictEqual(changed.mock.calls.length, 1);
+		assert.ok(!document.documentElement.classList.contains('_themeChanging_'));
+		assert.strictEqual(unhandled.mock.calls.length, 0);
+		assert.strictEqual(document.documentElement.dataset.colorScheme, 'light');
+	});
+});
+
 describe('bundled themes', () => {
 	test('all selectable themes compile against their current base', async () => {
 		const { compile, getBuiltinThemes, themeProps } = await import('@@/js/theme.js');
