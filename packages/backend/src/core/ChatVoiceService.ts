@@ -123,6 +123,9 @@ const FEDERATION_RESEND_INTERVAL_MS = 240_000;
 // 参加者が目まぐるしく変わっても (画面共有の切り替えや出入りの繰り返し) 配送が膨らまないよう、
 // 他のサーバーへはルームごとにこの間隔に一度だけ送る。全ワーカーで Redis の鍵を共有して数える
 const FEDERATION_MIN_INTERVAL_MS = 10_000;
+// 参加者のマイク・スピーカーの設定だけが変わった現況は、前に送ってからこの間隔に一度しか送らない (設定はよく切り替わるので、切り替えのたびに送らない)。
+// 参加者の出入りや画面共有の変化は FEDERATION_MIN_INTERVAL_MS のまま
+const FEDERATION_STATUS_INTERVAL_MS = 30_000;
 
 // ミラーのメイン通知をルームごと・全ワーカーで制限する。時計は Redis のものを使う。
 // 空の通知は直前に通知した参加者をすぐ消すが、参加者の通知間隔はリセットしない。
@@ -368,7 +371,8 @@ type RoomAudience = {
 export type RemoteSnapshotStoreResult = 'stored' | 'stale' | 'ahead' | 'old' | 'disabled';
 
 /** 他のサーバーに送った現況の記録。at は送った時刻、updatedAt は送った現況の時刻 */
-type FederatedRecord = { hash: string; at: number; updatedAt: number };
+/** 他のサーバーに最後に送った現況の記録。presenceHash は設定 (micMuted / deafened) を除いた現況の hash (古い記録には無い) */
+type FederatedRecord = { hash: string; presenceHash?: string; at: number; updatedAt: number };
 
 /** 他のサーバーに渡す参加者の現況。userId はこのサーバーの DB の id なので含めない */
 type FederatedVoiceSnapshot = {
@@ -1453,14 +1457,20 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 		const participants = listed.map(p => ({ identity: p.identity, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) }));
 
-		const hash = createHash('sha256')
-			.update(JSON.stringify([...participants].sort((a, b) => a.identity.localeCompare(b.identity))))
-			.digest('hex');
+		const sorted = [...participants].sort((a, b) => a.identity.localeCompare(b.identity));
+		const hash = hashOf(sorted);
+		const presenceHash = hashOf(sorted.map(p => ({ identity: p.identity, screenSharing: p.screenSharing })));
 		const ended = participants.length === 0;
 
 		const last = ended ? null : await this.lastFederatedOf(room.id);
 		if (!ended && isStillFederated(last, hash)) {
 			this.federationBackoff.delete(room.id);
+			return true;
+		}
+		// 変わったのが設定だけなら、前に送ってから FEDERATION_STATUS_INTERVAL_MS 経ってから、そのときの設定を送る (決め直しはルームごとに一つにまとまる)
+		if (!ended && last?.presenceHash === presenceHash && Date.now() - last.at < FEDERATION_STATUS_INTERVAL_MS) {
+			this.federationBackoff.delete(room.id);
+			this.scheduleFollowUp(room.id, last.at + FEDERATION_STATUS_INTERVAL_MS - Date.now() + 1);
 			return true;
 		}
 
@@ -1499,7 +1509,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 
 		// 順番の鍵が寿命で切れて、ほかのワーカーが後の現況で決めたか記録していれば、書かずに決め直す
-		const record: FederatedRecord = { hash, at: Date.now(), updatedAt };
+		const record: FederatedRecord = { hash, presenceHash, at: Date.now(), updatedAt };
 		const recorded = await this.redisClient.eval(RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT, 3, recordKey, decidedKey, `chatVoice:joinInvalidated:${room.id}`, JSON.stringify(record), updatedAt, FEDERATION_RESEND_INTERVAL_MS / 1000) === 1;
 		if (recorded) this.federationBackoff.delete(room.id);
 		return recorded;
@@ -1603,6 +1613,10 @@ function isSameList(a: string[] | undefined, b: string[] | undefined): boolean {
 	const left = a ?? [];
 	const right = b ?? [];
 	return left.length === right.length && left.every((value, i) => value === right[i]);
+}
+
+function hashOf(value: unknown): string {
+	return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
 /** 記録 (last) が、同じ現況 (hash) を FEDERATION_RESEND_INTERVAL_MS のうちに送ったことを示すか */
