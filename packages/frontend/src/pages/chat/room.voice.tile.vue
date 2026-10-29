@@ -5,70 +5,40 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <!-- The person keeps the same portrait and name layout, independently of screen sharing. -->
-<div ref="rootEl" :class="[small ? $style.compact : $style.root, { [$style.speaking]: speaking }]" :role="small ? undefined : 'group'" :aria-label="small ? undefined : userName(participant.user)">
-	<XParticipant
-		v-if="small"
-		:participant="participant"
-		:speaking="speaking"
-		:menuable="menuable"
-		@openMenu="emit('openMenu', $event)"
-	/>
-	<template v-else>
-		<div :class="$style.actions">
-			<button v-if="menuable" v-tooltip="i18n.ts.menu" type="button" class="_button" :class="$style.action" :aria-label="i18n.ts.menu" data-voice-call-action="menu" @click="emit('openMenu', $event)"><i class="ti ti-dots" aria-hidden="true"></i></button>
-		</div>
-		<div :class="$style.body">
-			<div :class="$style.avatarFrame"><MkAvatar :user="participant.user" :link="false" :preview="false" :class="$style.avatar"/></div>
-			<div :class="$style.who">
-				<div v-if="participant.micMuted || participant.deafened" :class="$style.status">
-					<i v-if="participant.micMuted && !participant.deafened" v-tooltip="i18n.ts._voiceCall.micMuted" class="ti ti-microphone-off" role="img" :aria-label="i18n.ts._voiceCall.micMuted"></i>
-					<i v-if="participant.deafened" v-tooltip="i18n.ts._voiceCall.deafened" class="ti ti-headphones-off" role="img" :aria-label="i18n.ts._voiceCall.deafened"></i>
-				</div>
-				<MkUserName :user="participant.user" :class="$style.name"/>
+<div :class="[$style.root, { [$style.speaking]: speaking }]" role="group" :aria-label="userName(participant.user)">
+	<div :class="$style.actions">
+		<button v-if="menuable" v-tooltip="i18n.ts.menu" type="button" class="_button" :class="$style.action" :aria-label="i18n.ts.menu" data-voice-call-action="menu" @click="emit('openMenu', $event)"><i class="ti ti-dots" aria-hidden="true"></i></button>
+	</div>
+	<div :class="$style.body">
+		<div :class="$style.avatarFrame"><MkAvatar :user="participant.user" :link="false" :preview="false" :class="$style.avatar"/></div>
+		<div :class="$style.who">
+			<div v-if="participant.micMuted || participant.deafened" :class="$style.status">
+				<i v-if="participant.micMuted && !participant.deafened" v-tooltip="i18n.ts._voiceCall.micMuted" class="ti ti-microphone-off" role="img" :aria-label="i18n.ts._voiceCall.micMuted"></i>
+				<i v-if="participant.deafened" v-tooltip="i18n.ts._voiceCall.deafened" class="ti ti-headphones-off" role="img" :aria-label="i18n.ts._voiceCall.deafened"></i>
 			</div>
+			<MkUserName :user="participant.user" :class="$style.name"/>
 		</div>
-	</template>
+	</div>
 </div>
 </template>
 
 <script lang="ts" setup>
-import { nextTick, useTemplateRef, watch } from 'vue';
 import type * as Misskey from 'cherrypick-js';
-import XParticipant from './room.voice.participant.vue';
 import { i18n } from '@/i18n.js';
 import { userName } from '@/filters/user.js';
 
-const props = withDefaults(defineProps<{
+withDefaults(defineProps<{
 	participant: Misskey.entities.ChatRoomVoiceState['participants'][number];
 	speaking: boolean;
 	menuable?: boolean;
-	small?: boolean;
-}>(), { menuable: false, small: false });
+}>(), { menuable: false });
 
 const emit = defineEmits<{
 	(ev: 'openMenu', event: MouseEvent): void;
 }>();
-
-const rootEl = useTemplateRef('rootEl');
-watch(() => props.small, async () => {
-	const active = window.document.activeElement;
-	if (!(active instanceof HTMLElement) || !rootEl.value?.contains(active)) return;
-	const action = active.getAttribute('data-voice-call-action');
-	if (action == null) return;
-	await nextTick();
-	// Do not steal focus from a menu or another control opened during this update.
-	if (window.document.activeElement !== window.document.body && window.document.activeElement !== active) return;
-	rootEl.value?.querySelector<HTMLElement>(`[data-voice-call-action="${action}"]`)?.focus({ preventScroll: true });
-});
 </script>
 
 <style lang="scss" module>
-.compact {
-	flex-shrink: 0;
-	width: max-content;
-	max-width: 100%;
-}
-
 .root {
 	--voiceCallAvatarSize: 64px;
 	position: relative;

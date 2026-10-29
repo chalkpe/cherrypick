@@ -110,10 +110,10 @@ import { voiceCall } from '@/utility/voice-call.js';
 import XRoomPage from '@/pages/chat/room.vue';
 import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { provideMetadataReceiver } from '@/page.js';
+import type { PageMetadata } from '@/page.js';
 import { updateDeviceKind } from '@/utility/device-kind.js';
 import XVoiceCallBar from '@/ui/_common_/voice-call-bar.vue';
 import XScreen from '@/pages/chat/room.voice.screen.vue';
-import XParticipant from '@/pages/chat/room.voice.participant.vue';
 import XPreview from '@/pages/chat/room.voice.preview.vue';
 import XTile from '@/pages/chat/room.voice.tile.vue';
 import XShare from '@/pages/chat/room.voice.share.vue';
@@ -278,6 +278,9 @@ const pageStubs = {
 	MkLoading: { template: '<div></div>' },
 };
 
+// ページが definePage で出した題名など
+let pageMetadata: (() => PageMetadata) | null = null;
+
 // shown を渡すと、本物と同じく KeepAlive の中に置き、false にすると裏に回す
 async function renderRoom(target: typeof room, states: unknown[] | Promise<unknown[]>, shown?: ReturnType<typeof ref<boolean>>, options: { bar?: boolean; visible?: ReturnType<typeof ref<boolean>> } = {}) {
 	mocks.misskeyApi.mockImplementation((endpoint: string) => {
@@ -287,7 +290,7 @@ async function renderRoom(target: typeof room, states: unknown[] | Promise<unkno
 	});
 	const host = defineComponent({
 		setup() {
-			provideMetadataReceiver(() => {});
+			provideMetadataReceiver(getter => { pageMetadata = getter; });
 			return () => h('div', [
 				h('section', { style: { display: options.visible?.value === false ? 'none' : '' } }, [
 					shown == null ? h(XRoomPage, { roomId: target.id }) : h(KeepAlive, null, [shown.value ? h(XRoomPage, { roomId: target.id, key: 'room' }) : h('div', { key: 'other' })]),
@@ -356,6 +359,12 @@ describe('voice call on the room page', () => {
 		expect(screen.queryByRole('tab', { name: i18n.ts.search })).toBeNull();
 		await fireEvent.click(within(screen.getByTestId('header-actions')).getByRole('button', { name: i18n.ts.menu }));
 		expect(openedItems().find(item => item.text === i18n.ts.search)).toBeTruthy();
+	});
+	// 部屋の名前の下に人数を出さない。通話のカードの上で「n人が参加中」と読めてしまい、通話の人数と取り違える
+	test('names the room without a member count under the title', async () => {
+		await renderRoom(room, []);
+		expect(pageMetadata!()).toMatchObject({ title: room.name, titleAsMfm: true });
+		expect(pageMetadata!().subtitle).toBeUndefined();
 	});
 	test('shows the stage only after I join and keeps one chat form', async () => {
 		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
@@ -499,6 +508,68 @@ describe('voice call on the room page', () => {
 		} finally { window.innerWidth = originalWidth; window.dispatchEvent(new Event('resize')); }
 	});
 	// シートの背景 (v-if) は閉じると先に DOM から消える。その後の解放で周囲の inert が残ると画面全体が操作不能になる
+	// 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (room.vue の Teleport)。変換中の文字や送信中の状態を失わないため
+	describe('chat form across the layout switch', () => {
+		const theTextarea = () => screen.getByRole('textbox') as HTMLTextAreaElement;
+		const pageFooter = () => screen.getByTestId('page-footer');
+		async function callEnds() { Object.assign(callState, { status: 'idle', room: null }); await flush(); }
+
+		// 向こうの都合で通話が切れても (外された、サーバーが止まった)、変換が終わるまで入力欄を動かさない
+		test('waits for the text being composed before switching the layout back when the call ends', async () => {
+			Object.assign(callState, { status: 'connected', room });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me)] }]);
+			await setPageWidth(1280);
+			const textarea = theTextarea();
+			textarea.focus();
+			await fireEvent.compositionStart(textarea);
+
+			await callEnds();
+			expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+			expect(theTextarea()).toBe(textarea);
+
+			await fireEvent.compositionEnd(textarea);
+			await flush();
+			expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
+			expect(theTextarea()).toBe(textarea);
+			expect(pageFooter().contains(textarea)).toBe(true);
+		});
+
+		// 変換を終えないまま (compositionend が届かないまま) ページが裏に回ったら、その変換は忘れる
+		test('forgets an unfinished composition when the page goes to the background', async () => {
+			const shown = ref(true);
+			Object.assign(callState, { status: 'connected', room });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me)] }], shown);
+			await setPageWidth(1280);
+			const textarea = theTextarea();
+			textarea.focus();
+			await fireEvent.compositionStart(textarea);
+
+			shown.value = false;
+			await flush();
+			shown.value = true;
+			await flush();
+
+			await callEnds();
+			expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
+		});
+
+		test('does not send a message twice when the layout switches while it is being sent', async () => {
+			await renderRoom(room, []);
+			await setPageWidth(1280);
+			const respond = mocks.misskeyApi.getMockImplementation()!;
+			mocks.misskeyApi.mockImplementation((endpoint: string, ...rest: unknown[]) => endpoint === 'chat/messages/create-to-room' ? new Promise(() => {}) : respond(endpoint, ...rest));
+
+			await fireEvent.update(theTextarea(), 'hello');
+			await fireEvent.click(screen.getByTitle(i18n.ts.send));
+			Object.assign(callState, { status: 'connected', room });
+			await flush();
+			expect(screen.getByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeTruthy();
+			await fireEvent.click(screen.getByTitle(i18n.ts.send));
+
+			expect(mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/create-to-room')).toHaveLength(1);
+		});
+	});
+
 	describe('chat sheet focus trap', () => {
 		async function openSheet() {
 			await renderRoom(room, []);
@@ -597,6 +668,34 @@ describe('voice call on the room page', () => {
 			await flush();
 			expect(mocks.joinVoiceCall).not.toHaveBeenCalled();
 			expect(prefer.commit).not.toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', expect.anything());
+		});
+
+		// ヘッダーの参加ボタンは、通話に入れたときだけメッセージのタブへ移す。やめたり失敗したりしたのに読んでいたタブから追い出さない
+		test('stays on the members tab when the header join is cancelled', async () => {
+			mocks.instance.features.remoteVoiceCall = true;
+			mocks.confirm.mockResolvedValue({ canceled: true });
+			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await openTab(i18n.ts._chat.members);
+
+			await fireEvent.click(headerJoin()!);
+			await flush();
+
+			expect(mocks.joinVoiceCall).not.toHaveBeenCalled();
+			expect(screen.getByRole('tab', { name: i18n.ts._chat.members }).getAttribute('aria-selected')).toBe('true');
+		});
+
+		test('moves to the messages tab once the header join has put me in the call', async () => {
+			mocks.instance.features.remoteVoiceCall = true;
+			mocks.confirm.mockResolvedValue({ canceled: false });
+			mocks.joinVoiceCall.mockImplementation(async () => { Object.assign(callState, { status: 'connected', room: mirror }); });
+			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			await openTab(i18n.ts._chat.members);
+
+			await fireEvent.click(headerJoin()!);
+			await flush();
+
+			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
+			expect(screen.getByRole('tab', { name: i18n.ts._chat.messages }).getAttribute('aria-selected')).toBe('true');
 		});
 	});
 
@@ -1265,23 +1364,10 @@ describe.each([
 	});
 });
 
-describe('participant chip', () => {
-	// 話している人はチップ全体 (アバターと名前を包む外側) の枠で示すので、speaking のクラスはチップの一番外側に付く。
-	// 枠そのものは CSS なので、ここでは見られない
-	test.each([true, false])('has the speaking class on the chip root: %s', async speaking => {
-		const { container } = render(XParticipant, { props: { participant: participant(alice), speaking }, global: { directives: { tooltip: {} }, stubs } });
-		await flush();
-
-		const chip = container.firstElementChild!;
-		expect(chip.textContent).toContain('Alice');
-		expect([...chip.classList].some(name => name.includes('speaking'))).toBe(speaking);
-	});
-});
-
-describe.each([['mobile row', XParticipant, {}], ['compact stage row', XTile, { small: true }]] as const)('%s information and actions', (_label, component, extra) => {
+describe('tile information and actions', () => {
 	test('keeps identity and status outside the explicit screen, volume and menu buttons', async () => {
-		const { emitted } = render(component, { props: {
-			...extra, participant: { ...participant(alice, true), micMuted: true, deafened: true },
+		const { emitted } = render(XTile, { props: {
+			participant: { ...participant(alice, true), micMuted: true, deafened: true },
 			speaking: false, menuable: true,
 		}, global: { directives: { tooltip: {} }, stubs } });
 		const group = participantGroup(alice);
@@ -1303,49 +1389,7 @@ describe.each([['mobile row', XParticipant, {}], ['compact stage row', XTile, { 
 	});
 });
 
-describe('participant tile layout changes', () => {
-	test.each(['menu'] as const)('preserves keyboard focus on the %s control in both directions', async control => {
-		const { rerender } = render(XTile, { props: {
-			participant: participant(alice, true), speaking: false, menuable: true, small: false,
-		}, global: { directives: { tooltip: {} }, stubs } });
-		const label = i18n.ts.menu;
-		within(participantGroup(alice)).getByRole('button', { name: label }).focus();
-		for (const small of [true, false]) {
-			await rerender({ small });
-			await flush();
-			expect(document.activeElement).toBe(within(participantGroup(alice)).getByRole('button', { name: label }));
-		}
-	});
-});
-
-describe('participant chip shape', () => {
-	// チップの角の丸みは中のアバターの形に合わせる。MkAvatar と同じ規則でアバターを角丸の四角で描くときだけ、チップに squareAvatar のクラスが付く
-	test.each([
-		[{ squareAvatars: true, setFederationAvatarShape: false }, {}, true],
-		[{ squareAvatars: false, setFederationAvatarShape: false }, {}, false],
-		[{ squareAvatars: true, setFederationAvatarShape: true }, { setFederationAvatarShape: false }, true],
-		[{ squareAvatars: true, setFederationAvatarShape: true }, { setFederationAvatarShape: true, isSquareAvatars: false }, false],
-		[{ squareAvatars: false, setFederationAvatarShape: true }, { setFederationAvatarShape: true, isSquareAvatars: true }, true],
-	])('prefs %o and user %o give a square chip: %s', async (prefs, shape, square) => {
-		prefer.reset({ ...prefer.s, ...prefs });
-		const { container } = render(XParticipant, { props: { participant: participant({ ...alice, ...shape } as typeof alice), speaking: false }, global: { directives: { tooltip: {} }, stubs } });
-		await flush();
-
-		expect(hasClass(container.firstElementChild!, 'squareAvatar')).toBe(square);
-	});
-});
-
 describe('avatar decorations in the call', () => {
-	// 装飾はアバターの 2 倍の大きさで描かれるので、小さなチップでははみ出して枠や隣のチップに重なる。チップでは描かない
-	test.each([false, true])('the compact participant keeps avatar decorations inside its reserved slot (sharing: %s)', async sharing => {
-		const { container } = render(XParticipant, { props: { participant: participant(alice, sharing), speaking: false }, global: { directives: { tooltip: {} }, stubs } });
-		await flush();
-
-		const avatars = container.querySelectorAll('.avatar');
-		expect(avatars.length).toBe(1);
-		expect(avatars[0].getAttribute('data-decorations')).toBe('user');
-	});
-
 	// 広い画面のタイルの大きなアバターには装飾を描く。共有している人のタイルで名前の横に添える小さなアバターには描かない
 	test('the stage tile draws decorations on its large avatar', async () => {
 		const { container } = render(XTile, { props: { participant: participant(alice), speaking: false }, global: { directives: { tooltip: {} }, stubs } });
@@ -1364,9 +1408,9 @@ describe('avatar decorations in the call', () => {
 	});
 });
 
-describe.each([['chip', XParticipant], ['tile', XTile]] as const)('%s status and volume controls', (_name, component) => {
+describe('tile status and volume controls', () => {
 	test('shows shared mute settings and opens only the menu from its button', async () => {
-		const { emitted } = render(component, { props: {
+		const { emitted } = render(XTile, { props: {
 			participant: { ...participant(alice), micMuted: true, deafened: true },
 			speaking: false, menuable: true,
 		}, global: { directives: { tooltip: {} }, stubs } });
@@ -1377,7 +1421,7 @@ describe.each([['chip', XParticipant], ['tile', XTile]] as const)('%s status and
 	});
 
 	test('does not show mute indicators when older servers supply no settings', () => {
-		render(component, { props: { participant: participant(alice), speaking: false }, global: { directives: { tooltip: {} }, stubs } });
+		render(XTile, { props: { participant: participant(alice), speaking: false }, global: { directives: { tooltip: {} }, stubs } });
 		expect(screen.queryByLabelText(i18n.ts._voiceCall.micMuted)).toBeNull();
 		expect(screen.queryByLabelText(i18n.ts._voiceCall.deafened)).toBeNull();
 	});

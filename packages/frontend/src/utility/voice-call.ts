@@ -46,6 +46,8 @@ let livekit: LiveKit | null = null;
 let current: Room | null = null;
 let joinAttempt = 0;
 let stopLocalMeter: (() => void) | null = null;
+let watchedMicrophoneTrack: LocalAudioTrack | null = null;
+let unwatchMicrophoneTrack: (() => void) | null = null;
 let statusReports = Promise.resolve();
 
 // Report UI settings, not per-participant playback volume. Keep updates ordered.
@@ -69,11 +71,32 @@ function setLocalSpeaking(room: Room, speaking: boolean): void {
 		: state.speakingIdentities.filter(id => id !== identity);
 }
 
+// livekit-client は入力装置が抜けたり既定の装置が変わったりすると、マイクのトラックを自分で作り直す (restartTrack)。
+// 測っていた MediaStreamTrack はそのとき終わっているので、終わったら測るのをやめてサーバーの知らせに戻り、作り直されたら新しいトラックで測り直す
+function watchMicrophoneTrack(room: Room, track: LocalAudioTrack): void {
+	// 作り直されても LocalAudioTrack は同じものなので、付け替えるのは別のトラックになったときだけ (restarted の中で付け直すと、その emit にまた呼ばれる)
+	if (livekit == null || watchedMicrophoneTrack === track) return;
+	unwatchMicrophoneTrack?.();
+	const events = livekit.TrackEvent;
+	const onRestarted = () => { if (current === room) startLocalMeter(room); };
+	const onEnded = () => { stopLocalMeter?.(); };
+	track.on(events.Restarted, onRestarted);
+	track.on(events.Ended, onEnded);
+	watchedMicrophoneTrack = track;
+	unwatchMicrophoneTrack = () => {
+		track.off(events.Restarted, onRestarted);
+		track.off(events.Ended, onEnded);
+		watchedMicrophoneTrack = null;
+		unwatchMicrophoneTrack = null;
+	};
+}
+
 function startLocalMeter(room: Room): void {
 	stopLocalMeter?.();
 	if (livekit == null || current !== room || !state.micEnabled) return;
 	const track = room.localParticipant.getTrackPublication(livekit.Track.Source.Microphone)?.track;
 	if (track == null || track.kind !== livekit.Track.Kind.Audio) return;
+	watchMicrophoneTrack(room, track as LocalAudioTrack);
 	try {
 		const meter = livekit.createAudioAnalyser(track as LocalAudioTrack, { fftSize: 512 });
 		const samples = new Float32Array(meter.analyser.fftSize);
@@ -203,6 +226,7 @@ export async function setMicEnabled(enabled: boolean): Promise<void> {
 		if (current !== room) return;
 		state.micEnabled = false;
 		stopLocalMeter?.();
+		unwatchMicrophoneTrack?.();
 		reportStatus(room);
 	}
 }
@@ -280,10 +304,15 @@ export function canShareScreen(): boolean {
 	return typeof window.navigator.mediaDevices?.getDisplayMedia === 'function';
 }
 
+// 共有する画面を選ぶ画面が出れば、人がやめるまでに少なくともこのくらいはかかる。
+// それより早く NotAllowedError が返るのは、選ぶ前にブラウザや OS が拒んだとき (権限が無い、ポリシーで止められているなど)
+const SCREEN_SHARE_PICKER_MIN_MS = 250;
+
 export async function startScreenShare(): Promise<void> {
 	const room = current;
 	if (room == null || livekit == null) return;
 	const { preset, contentHint } = screenSharePreset(livekit, prefer.s['voiceCall.screenShareQuality']);
+	const startedAt = Date.now();
 	try {
 		await room.localParticipant.setScreenShareEnabled(true, {
 			audio: prefer.s['voiceCall.screenShareAudio'],
@@ -301,8 +330,12 @@ export async function startScreenShare(): Promise<void> {
 		if (current === room) state.screenSharing = room.localParticipant.isScreenShareEnabled;
 	} catch (err) {
 		if (current === room) state.screenSharing = false;
-		// 共有する画面の選択をキャンセルしただけなら何も言わない
-		if (err instanceof DOMException && err.name === 'NotAllowedError') return;
+		if (err instanceof DOMException && err.name === 'NotAllowedError') {
+			// 共有する画面の選択をキャンセルしただけなら何も言わない。選ぶ前に拒まれたなら、許可が要ることを知らせる
+			if (Date.now() - startedAt >= SCREEN_SHARE_PICKER_MIN_MS) return;
+			os.toast(i18n.ts._voiceCall.screenSharePermissionDenied);
+			return;
+		}
 		os.toast(i18n.ts._voiceCall.screenShareFailed);
 	}
 }
@@ -629,6 +662,7 @@ function failToConnect(err?: unknown): void {
 
 function resetState(): void {
 	stopLocalMeter?.();
+	unwatchMicrophoneTrack?.();
 	screenShareTracks.clear();
 	state.status = 'idle';
 	state.room = null;

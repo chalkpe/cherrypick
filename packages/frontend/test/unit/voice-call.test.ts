@@ -20,7 +20,8 @@ const lk = vi.hoisted(() => {
 			return this;
 		}
 		emit(event: string, ...args: any[]) {
-			for (const handler of this.handlers.get(event) ?? []) handler(...args);
+			// 本物の EventEmitter と同じく、emit の途中で付け外しされたハンドラはその emit では呼ばない
+			for (const handler of [...this.handlers.get(event) ?? []]) handler(...args);
 			return true;
 		}
 	}
@@ -41,6 +42,7 @@ const lk = vi.hoisted(() => {
 		ActiveSpeakersChanged: 'activeSpeakersChanged',
 		AudioPlaybackStatusChanged: 'audioPlaybackChanged',
 	};
+	const TrackEvent = { Restarted: 'restarted', Ended: 'ended' };
 	const DisconnectReason = { UNKNOWN_REASON: 0, CLIENT_INITIATED: 1, DUPLICATE_IDENTITY: 2, SERVER_SHUTDOWN: 3, PARTICIPANT_REMOVED: 4, ROOM_DELETED: 5 };
 	const Track = {
 		Source: { Camera: 'camera', Microphone: 'microphone', ScreenShare: 'screen_share', ScreenShareAudio: 'screen_share_audio', Unknown: 'unknown' },
@@ -84,7 +86,9 @@ const lk = vi.hoisted(() => {
 			// 本物と同じく、画面共有の映像を送っているあいだ true になる
 			sid: 'PA_local',
 			isScreenShareEnabled: false,
-			getTrackPublication: vi.fn(() => ({ track: { kind: 'audio' } })),
+			// 本物と同じく、マイクのトラックは livekit-client が作り直す (restarted) ことも終わる (ended) こともある
+			microphoneTrack: Object.assign(new Emitter(), { kind: 'audio' }),
+			getTrackPublication: vi.fn(() => ({ track: this.localParticipant.microphoneTrack })),
 			setMicrophoneEnabled: vi.fn().mockResolvedValue(undefined),
 			setScreenShareEnabled: vi.fn(async (enabled: boolean, ..._options: unknown[]) => {
 				this.localParticipant.isScreenShareEnabled = enabled;
@@ -108,13 +112,14 @@ const lk = vi.hoisted(() => {
 
 	const analyser = { analyser: { fftSize: 512, getFloatTimeDomainData: vi.fn((data: Float32Array) => data.fill(0)) }, cleanup: vi.fn().mockResolvedValue(undefined) };
 	const createAudioAnalyser = vi.fn(() => analyser);
-	return { analyser, createAudioAnalyser, Emitter, RoomEvent, DisconnectReason, Track, ScreenSharePresets, VideoPreset, VideoQuality, FakeRoom, FakeRemoteParticipant };
+	return { analyser, createAudioAnalyser, Emitter, RoomEvent, TrackEvent, DisconnectReason, Track, ScreenSharePresets, VideoPreset, VideoQuality, FakeRoom, FakeRemoteParticipant };
 });
 
 vi.mock('livekit-client', () => ({
 	Room: lk.FakeRoom,
 	createAudioAnalyser: lk.createAudioAnalyser,
 	RoomEvent: lk.RoomEvent,
+	TrackEvent: lk.TrackEvent,
 	DisconnectReason: lk.DisconnectReason,
 	Track: lk.Track,
 	ScreenSharePresets: lk.ScreenSharePresets,
@@ -150,6 +155,7 @@ beforeEach(() => {
 	lk.FakeRoom.instances.length = 0;
 	lk.analyser.analyser.getFloatTimeDomainData.mockImplementation((data: Float32Array) => data.fill(0));
 	lk.analyser.cleanup.mockClear();
+	lk.createAudioAnalyser.mockClear();
 	lk.FakeRoom.setup = null;
 	mocks.misskeyApi.mockReset().mockResolvedValue({ url: 'https://local.test/livekit', token: 't' });
 	mocks.toast.mockReset();
@@ -356,6 +362,39 @@ describe('voice call controller', () => {
 		expect(mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status')).toEqual([
 			['chat/rooms/voice/status', { roomId: 'r1', sessionId: 'PA_local', micMuted: true, deafened: true }],
 		]);
+	});
+
+	// livekit-client は入力装置が抜けたり既定の装置が変わったりするとマイクのトラックを自分で作り直す。測る相手もその新しいトラックに付け替える
+	test('re-binds the local meter when livekit restarts the microphone track by itself', async () => {
+		await joinVoiceCall(room1);
+		expect(lk.createAudioAnalyser).toHaveBeenCalledTimes(1);
+
+		lastRoom().localParticipant.microphoneTrack.emit(lk.TrackEvent.Restarted);
+
+		expect(lk.analyser.cleanup).toHaveBeenCalledTimes(1);
+		expect(lk.createAudioAnalyser).toHaveBeenCalledTimes(2);
+	});
+
+	// トラックが終わっているあいだは測れないので、サーバーの知らせに従う。作り直されたらまた手元で測る
+	test('follows the server about my speaking while the microphone track has ended, and meters again once it restarts', async () => {
+		vi.useFakeTimers();
+		try {
+			await joinVoiceCall(room1);
+			const identity = lastRoom().localParticipant.identity;
+			const track = lastRoom().localParticipant.microphoneTrack;
+
+			track.emit(lk.TrackEvent.Ended);
+			lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity }]);
+			expect(voiceCall.localSpeaking).toBe(true);
+
+			track.emit(lk.TrackEvent.Restarted);
+			await vi.advanceTimersByTimeAsync(50);
+			expect(voiceCall.localSpeaking).toBe(false);
+			lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity }]);
+			expect(voiceCall.localSpeaking).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	// 手元でマイクの音を測れない (AudioContext が無いなど) ときは、サーバーの知らせで自分の発話を示す
@@ -592,14 +631,33 @@ describe('screen sharing', () => {
 	});
 
 	test('stays not sharing without an error when the picker is cancelled', async () => {
-		lk.FakeRoom.setup = room => room.localParticipant.setScreenShareEnabled.mockRejectedValue(new DOMException('cancelled', 'NotAllowedError'));
+		vi.useFakeTimers();
+		try {
+			// 共有する画面を選ぶ画面が出てから、人がやめるまでには時間がかかる
+			lk.FakeRoom.setup = room => room.localParticipant.setScreenShareEnabled.mockImplementation(() => new Promise((_, reject) => { setTimeout(() => reject(new DOMException('cancelled', 'NotAllowedError')), 2000); }));
+			await joinVoiceCall(room1);
+
+			const sharing = startScreenShare();
+			await vi.advanceTimersByTimeAsync(2000);
+			await sharing;
+
+			expect(voiceCall.screenSharing).toBe(false);
+			expect(mocks.alert).not.toHaveBeenCalled();
+			expect(mocks.toast).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// 画面を選ぶ前にブラウザや OS が拒んだ (すぐに NotAllowedError が返る) ときは、選択をやめたのとは違うので理由を知らせる
+	test('explains a screen share the browser refuses outright, instead of staying silent as for a cancelled picker', async () => {
+		lk.FakeRoom.setup = room => room.localParticipant.setScreenShareEnabled.mockRejectedValue(new DOMException('Permission denied', 'NotAllowedError'));
 		await joinVoiceCall(room1);
 
 		await startScreenShare();
 
 		expect(voiceCall.screenSharing).toBe(false);
-		expect(mocks.alert).not.toHaveBeenCalled();
-		expect(mocks.toast).not.toHaveBeenCalled();
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.screenSharePermissionDenied);
 	});
 
 	test('tells the user when sharing fails for another reason', async () => {

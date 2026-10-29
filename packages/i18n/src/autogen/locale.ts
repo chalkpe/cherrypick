@@ -6951,10 +6951,6 @@ export interface Locale extends ILocale {
             "none": string;
         };
         /**
-         * {n}人が参加中
-         */
-        "usersCount": ParameterizedString<"n">;
-        /**
          * {x}さんに送信された招待をキャンセルしますか？
          */
         "invitationCancelAreYouSure": ParameterizedString<"x">;
@@ -9468,6 +9464,10 @@ export interface Locale extends ILocale {
          * 画面共有を開始できませんでした。
          */
         "screenShareFailed": string;
+        /**
+         * 画面共有が許可されていません。ブラウザやOSの設定で画面の共有を許可してください。
+         */
+        "screenSharePermissionDenied": string;
         /**
          * 全画面
          */

@@ -117,10 +117,10 @@ withDefaults(defineProps<{
 
 .group { display: contents; }
 .grouped {
- gap: 12px;
+	gap: 12px;
 	.group { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 12px; background: var(--MI_THEME-panel); }
 	.action { width: 32px; height: 32px; border-radius: 8px; background: transparent; font-size: 16px; line-height: 1; }
- .action:hover { background: var(--MI_THEME-buttonHoverBg); }
+	.action:hover { background: var(--MI_THEME-buttonHoverBg); }
 	.action.on,
 	.action.enableAudio { color: var(--MI_THEME-accent); background: var(--MI_THEME-accentedBg); }
 	.leaveGroup { padding: 0; background: transparent; }

@@ -424,8 +424,6 @@ onMounted(() => {
 
 onUnmounted(() => {
 	window.removeEventListener('resize', handleResize);
-	window.document.removeEventListener('fullscreenchange', onFullscreenChange);
-	if (fullscreenReleaseTimer != null) window.clearTimeout(fullscreenReleaseTimer);
 });
 
 onActivated(() => {
@@ -494,7 +492,7 @@ const tab = ref('chat');
 
 // ウィンドウではなくページ自身の幅で決める (デッキの列やウィジェットでページの幅は変わる)
 const chatTabEl = useTemplateRef('chatTabEl');
-const pageWidth = useElementWidth(chatTabEl, releaseFullscreen);
+const pageWidth = useElementWidth(chatTabEl);
 // 通話カードを出す場面 (誰かが通話にいるか、自分が参加中) で、ページが広ければ通話カードの代わりにステージを横に並べる。
 // モバイルでは横向きなどで広くても並べない (並べた形は、モバイルの画面下のナビゲーションの分を空けていない)
 const voiceInOwnTab = computed(() => isMobile.value || (pageWidth.value != null && pageWidth.value < STAGE_MIN_PAGE_WIDTH));
@@ -509,32 +507,6 @@ watch([voiceCallState.inThisCall, voiceInOwnTab, layoutKnown], ([joined, ownTab,
 	chatOpen.value = !joined || !ownTab;
 }, { immediate: true });
 
-// 全画面のあいだは並べ方を変えない。通話カードの共有画面を全画面にするとページの幅も広がるので、
-// そのまま並べ方を変えるとカードが外れ、全画面にした要素ごと消えて全画面が解けてしまう
-const fullscreen = ref(window.document.fullscreenElement != null);
-let fullscreenReleaseTimer: number | null = null;
-
-function releaseFullscreen() {
-	if (fullscreenReleaseTimer == null || window.document.fullscreenElement != null) return;
-	window.clearTimeout(fullscreenReleaseTimer);
-	fullscreenReleaseTimer = null;
-	fullscreen.value = false;
-}
-
-function onFullscreenChange() {
-	if (fullscreenReleaseTimer != null) window.clearTimeout(fullscreenReleaseTimer);
-	fullscreenReleaseTimer = null;
-	if (window.document.fullscreenElement != null) {
-		fullscreen.value = true;
-		return;
-	}
-	// 全画面解除の通知後、次の ResizeObserver の報告を受けてから並べ直す。
-	// 幅が変わらず報告が来ないブラウザでも解除されるよう、時間制限を設ける。
-	fullscreenReleaseTimer = window.setTimeout(releaseFullscreen, 250);
-}
-
-window.document.addEventListener('fullscreenchange', onFullscreenChange);
-
 // 入力欄で変換中 (IME) のあいだも並べ方を変えない。入力欄を移すと変換中の文字が確定されたり消えたりする
 const composing = ref(false);
 
@@ -547,11 +519,11 @@ onDeactivated(() => {
 	composing.value = false;
 });
 
-// 実際の並べ方。全画面や変換中のあいだは前の並べ方のままにして、終わったら今の幅などで決め直す
+// 実際の並べ方。変換中のあいだは前の並べ方のままにして (入力欄を動かすと変換中の文字が確定されたり消えたりする)、終わったら決め直す
 const splitLayout = ref(false);
 
-watch([wantsSplit, fullscreen, composing], () => {
-	if (fullscreen.value || composing.value || window.document.fullscreenElement != null) return;
+watch([wantsSplit, composing], () => {
+	if (composing.value) return;
 	splitLayout.value = wantsSplit.value;
 }, { immediate: true, flush: 'sync' });
 
@@ -561,16 +533,16 @@ const sheetBackdropEl = useTemplateRef('sheetBackdropEl');
 let sheetTrap: { release: () => void } | null = null;
 let sheetReturnFocus: HTMLElement | null = null;
 watch(() => split.value && voiceInOwnTab.value && chatOpen.value, open => {
- if (open && chatPaneEl.value) {
-  sheetReturnFocus = window.document.activeElement instanceof HTMLElement ? window.document.activeElement : null;
-  const backdropTrap = sheetBackdropEl.value ? focusTrap(sheetBackdropEl.value, true) : null;
-  const paneTrap = focusTrap(chatPaneEl.value, true);
-  // 閉じるときは背景 (v-if) が先に DOM から消えている。背景を先に解放して、pane の解放が周囲の inert を全部外せるようにする
-  sheetTrap = { release: () => { backdropTrap?.release(); paneTrap.release(); } };
-  chatPaneEl.value.querySelector<HTMLElement>('button')?.focus();
- } else if (sheetTrap) {
-  releaseSheetTrap();
- }
+	if (open && chatPaneEl.value) {
+		sheetReturnFocus = window.document.activeElement instanceof HTMLElement ? window.document.activeElement : null;
+		const backdropTrap = sheetBackdropEl.value ? focusTrap(sheetBackdropEl.value, true) : null;
+		const paneTrap = focusTrap(chatPaneEl.value, true);
+		// 閉じるときは背景 (v-if) が先に DOM から消えている。背景を先に解放して、pane の解放が周囲の inert を全部外せるようにする
+		sheetTrap = { release: () => { backdropTrap?.release(); paneTrap.release(); } };
+		chatPaneEl.value.querySelector<HTMLElement>('button')?.focus();
+	} else if (sheetTrap) {
+		releaseSheetTrap();
+	}
 }, { flush: 'post' });
 
 function releaseSheetTrap() {
@@ -677,7 +649,8 @@ const headerActions = computed<PageHeaderItem[]>(() => [
 		text: voiceCallState.participants.value.length > 0 ? i18n.ts._voiceCall.join : i18n.ts._voiceCall.start,
 		handler: async () => {
 			await voiceCallState.join();
-			tab.value = 'chat';
+			// 通話に入れたときだけメッセージのタブへ。やめたり失敗したりしたのに読んでいたタブから追い出さない
+			if (voiceCallState.inThisCall.value) tab.value = 'chat';
 		},
 	}] : []),
 	{
@@ -701,7 +674,6 @@ definePage(computed(() => {
 				title: room.value.name,
 				titleAsMfm: true,
 				titleMfmAuthor: room.value.owner,
-				subtitle: i18n.tsx._chat.usersCount({ n: memberships.value.length + 1 }),
 				icon: 'ti ti-users',
 			};
 		} else {

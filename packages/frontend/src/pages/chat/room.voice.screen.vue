@@ -356,8 +356,8 @@ function stopWatching() {
 .frame:focus-within .overlay,
 .controlsVisible .overlay { max-width: calc(100% - 136px); }
 @container (max-width: 260px) {
- .frame:hover .overlay,
- .frame:focus-within .overlay,
- .controlsVisible .overlay { bottom: 48px; max-width: calc(100% - 16px); }
+	.frame:hover .overlay,
+	.frame:focus-within .overlay,
+	.controlsVisible .overlay { bottom: 48px; max-width: calc(100% - 16px); }
 }
 </style>
