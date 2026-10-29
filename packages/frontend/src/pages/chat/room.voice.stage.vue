@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 <template>
 <div ref="rootEl" :class="[$style.root, { [$style.watching]: watchedParticipants.length > 0, [$style.active]: active || menuOpen, [$style.membersHidden]: membersHidden }]" :data-voice-call-room="room.id" @pointermove="showControls" @pointerdown="showControls">
-	<span :class="$style.srOnly" :aria-live="announcesStatus ? 'polite' : 'off'">{{ voiceCallStatusText }}</span>
+	<span :class="showsStatus ? $style.status : $style.srOnly" :aria-live="announcesStatus ? 'polite' : 'off'">{{ voiceCallStatusText }}</span>
 	<div v-if="watchedParticipants.length" ref="screensEl" :class="$style.screensSpace"><XScreens :participants="watchedParticipants" :hideStrip="membersHidden" fill :class="$style.screens" :style="screenStyle"/></div>
 	<div :class="[$style.list, { [$style.collapsed]: watchedParticipants.length > 0 && membersHidden }]" :inert="watchedParticipants.length > 0 && membersHidden" :aria-hidden="watchedParticipants.length > 0 && membersHidden">
 		<!-- TransitionGroup は直下の子コンポーネントを毎回描き直させるので、カードは要素で包む -->
@@ -44,6 +44,7 @@ const rootEl = useTemplateRef('rootEl');
 const screensEl = useTemplateRef('screensEl');
 const announcesStatus = useVoiceCallStatusAnnouncer(inThisCall, rootEl);
 const membersHidden = ref(false), active = ref(true), menuOpen = ref(false), hovering = ref(false);
+const showsStatus = computed(() => inThisCall.value && (voiceCall.status === 'connecting' || voiceCall.status === 'reconnecting'));
 let idleTimer: number | undefined;
 
 function showControls() { active.value = true; window.clearTimeout(idleTimer); idleTimer = window.setTimeout(() => { active.value = false; }, 1800); }
@@ -179,6 +180,7 @@ const screenStyle = computed(() => {
 <style lang="scss" module>
 .root { position: relative; display: flex; flex-direction: column; gap: 8px; box-sizing: border-box; min-width: 0; min-height: 0; height: 100%; padding: 12px; container-type: inline-size; }
 .srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.status { position: absolute; z-index: 5; top: 12px; left: 50%; transform: translateX(-50%); box-sizing: border-box; max-width: calc(100% - 24px); padding: 6px 12px; border: 1px solid var(--MI_THEME-divider); border-radius: 999px; background: var(--MI_THEME-panel); font-size: 0.85em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 .list { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; width: 100%; min-height: 0; flex: 1; transition: grid-template-rows .25s, opacity .2s, transform .25s, margin .25s; }
 .cards { display: flex; flex-wrap: wrap; align-content: center; justify-content: center; gap: 8px; width: 100%; min-height: 0; overflow: clip; }
 .cardMove { transition: transform .25s; }

@@ -621,6 +621,34 @@ describe('voice call on the room page', () => {
 		expect(live()[0].closest('[role="region"]')).not.toBeNull();
 	});
 
+	// シートを開くと focus trap がステージも通話バーも inert にするので、シートの中にも読み上げ用の領域がないと状態の変化が誰にも伝わらない
+	test('announces the call status inside the open chat sheet, since everything behind the sheet is inert', async () => {
+		Object.assign(callState, { status: 'connected', room });
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(me)] }]);
+		await setPageWidth(800);
+		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.openChat }));
+		await flush();
+		const dialog = screen.getByRole('dialog', { name: i18n.ts._chat.messages });
+		callState.status = 'reconnecting';
+		await flush();
+		const live = [...document.querySelectorAll('[aria-live="polite"]')].filter(el => el.textContent === i18n.ts._voiceCall.reconnecting && el.closest('[inert]') == null);
+		expect(live).toHaveLength(1);
+		expect(dialog.contains(live[0])).toBe(true);
+		await fireEvent.click(within(dialog).getByRole('button', { name: i18n.ts.close }));
+		await flush();
+		expect(document.querySelectorAll('[inert]')).toHaveLength(0);
+	});
+
+	// 接続中・再接続中は目で見ても分かるように出す。通話中は読み上げ専用に戻す
+	test('shows the connection state on the stage for everyone, not only for screen readers', async () => {
+		Object.assign(callState, { status: 'reconnecting', room });
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(me)] }]);
+		expect(hasClass(screen.getByText(i18n.ts._voiceCall.reconnecting), 'srOnly')).toBe(false);
+		callState.status = 'connected';
+		await flush();
+		expect(hasClass(screen.getByText(i18n.ts._voiceCall.inCall), 'srOnly')).toBe(true);
+	});
+
 	test('offers no call when voice calls are disabled on this server', async () => {
 		mocks.instance.features.voiceCall = false;
 		await renderRoom(room, []);

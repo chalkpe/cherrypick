@@ -11,7 +11,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<XStage v-if="split && room" :room="room" :call="voiceCallState" :class="$style.stage" :chatOpen="chatOpen" @toggleChat="chatOpen = !chatOpen"/>
 		<div v-if="split && voiceInOwnTab && chatOpen" ref="sheetBackdropEl" :class="$style.sheetBackdrop" @click="chatOpen = false"></div>
 		<div v-show="!split || chatOpen" ref="chatPaneEl" :class="$style.chatPane" :role="split && voiceInOwnTab && chatOpen ? 'dialog' : undefined" :aria-modal="split && voiceInOwnTab && chatOpen ? true : undefined" :aria-label="i18n.ts._chat.messages" @dragover="chatFormEl?.onDragover($event)" @drop="chatFormEl?.onDrop($event)" @keydown.esc="split && voiceInOwnTab && (chatOpen = false)">
-			<div v-if="split && voiceInOwnTab" :class="$style.sheetHeading"><strong>{{ i18n.ts._chat.messages }}</strong><button v-tooltip="i18n.ts.close" class="_button" :aria-label="i18n.ts.close" @click="chatOpen = false"><i class="ti ti-x"></i></button></div>
+			<!-- シートを開くと focus trap が外側 (ステージも通話バーも) を inert にするので、通話の状態はシートの中からも読み上げる -->
+			<div v-if="split && voiceInOwnTab" :class="$style.sheetHeading"><strong>{{ i18n.ts._chat.messages }}</strong><span v-if="chatOpen" :class="$style.srOnly" aria-live="polite">{{ voiceCallStatusText }}</span><button v-tooltip="i18n.ts.close" class="_button" :aria-label="i18n.ts.close" @click="chatOpen = false"><i class="ti ti-x"></i></button></div>
 			<button v-if="split && !voiceInOwnTab" v-tooltip="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight" class="_button" :class="[$style.chatCorner, { [$style.cornerRight]: chatSide === 'left' }]" :aria-label="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight" @click="swapChatSide"><i :class="chatSide === 'right' ? 'ti ti-layout-sidebar' : 'ti ti-layout-sidebar-right'"></i></button>
 			<!-- 並べているときはメッセージの欄だけを自分でスクロールさせる -->
 			<div ref="chatScrollerEl" :class="$style.chatScroller">
@@ -154,6 +155,7 @@ import { deviceKind } from '@/utility/device-kind.js';
 import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { useElementWidth } from '@/composables/use-element-width.js';
 import { focusTrap } from '@/utility/focus-trap.js';
+import { voiceCallStatusText } from '@/utility/voice-call-status.js';
 
 const MOBILE_THRESHOLD = 500;
 // ページ自身の幅がこれ以上あれば、通話とチャットを左右に並べる
@@ -858,6 +860,7 @@ definePage(computed(() => {
 .sheetBackdrop { position: fixed; z-index: 1099; inset: 0; background: var(--MI_THEME-modalBg); }
 .sheetHeading { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--MI_THEME-divider); }
 .sheetHeading button { width: 32px; height: 32px; }
+.srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .chatCorner { position: absolute; z-index: 2; top: 12px; left: 12px; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; background: var(--MI_THEME-panelHighlight); }
 .cornerRight { left: auto; right: 12px; }
 .chatCorner:hover { background: var(--MI_THEME-buttonHoverBg); }
