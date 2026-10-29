@@ -133,7 +133,7 @@ vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.
 
 import { i18n } from '@/i18n.js';
 import { prefer as mockedPrefer } from '@/preferences.js';
-import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, participantVolume, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, setParticipantVolume, startScreenShare, stopScreenShare, toggleScreenShareWatch, unwatchScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, migrateParticipantVolumes, participantVolume, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, setParticipantVolume, startScreenShare, stopScreenShare, toggleScreenShareWatch, unwatchScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
 
 const prefer = mockedPrefer as unknown as FakePrefer;
 const room1 = { id: 'r1', name: 'room 1' } as any;
@@ -162,6 +162,7 @@ beforeEach(() => {
 		'voiceCall.autoGainControl': true,
 		'voiceCall.participantVolumes': {},
 		'voiceCall.screenShareVolumes': {},
+		'voiceCall.screenShareVolumesMigrated': false,
 		'voiceCall.screenShareQuality': 'sharp',
 		'voiceCall.screenShareAudio': true,
 	});
@@ -407,6 +408,24 @@ describe('voice call controller', () => {
 		expect(participantVolume('a', 'voice')).toBe(0.4);
 		expect(participantVolume('a', 'screenShare')).toBe(0.2);
 		expect(participantVolume('unknown', 'screenShare')).toBe(1);
+	});
+
+	test('migrates the legacy voice volume into screen share once', () => {
+		prefer.commit('voiceCall.participantVolumes', { muted: 0, quiet: 0.25 });
+		prefer.commit('voiceCall.screenShareVolumes', {});
+
+		migrateParticipantVolumes();
+
+		expect(prefer.s['voiceCall.screenShareVolumes']).toEqual({ muted: 0, quiet: 0.25 });
+		expect(prefer.s['voiceCall.screenShareVolumesMigrated']).toBe(true);
+		expect(participantVolume('muted', 'screenShare')).toBe(0);
+		expect(participantVolume('quiet', 'screenShare')).toBe(0.25);
+
+		setParticipantVolume('quiet', 'screenShare', 0.4);
+		migrateParticipantVolumes();
+
+		expect(participantVolume('quiet', 'screenShare')).toBe(0.4);
+		expect(prefer.s['voiceCall.participantVolumes']).toEqual({ muted: 0, quiet: 0.25 });
 	});
 
 	test('subscribes to remote audio as it is published and plays it', async () => {

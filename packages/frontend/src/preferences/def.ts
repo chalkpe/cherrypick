@@ -562,6 +562,9 @@ export const PREF_DEF = definePreferences({
 	'voiceCall.screenShareVolumes': {
 		default: {} as Record<string, number>,
 	},
+	'voiceCall.screenShareVolumesMigrated': {
+		default: false,
+	},
 	'voiceCall.screenShareQuality': {
 		default: 'sharp' as 'sharp' | 'smooth' | 'high',
 	},

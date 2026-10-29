@@ -33,4 +33,9 @@ describe('isHostAllowedByDeliveryTargets', () => {
 	test('fails closed when a target entry is invalid', () => {
 		expect(isHostAllowedByDeliveryTargets({ mode: 'exclude' as const, hosts: ['not a host'] }, 'other.example')).toBe(false);
 	});
+
+	test('fails closed for malformed delivery targets', () => {
+		expect(isHostAllowedByDeliveryTargets({ mode: 'exclude', hosts: undefined } as any, 'other.example')).toBe(false);
+		expect(isHostAllowedByDeliveryTargets({ mode: 'unknown', hosts: ['other.example'] } as any, 'allowed.example')).toBe(false);
+	});
 });

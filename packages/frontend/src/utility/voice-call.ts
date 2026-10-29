@@ -119,6 +119,7 @@ export function localIdentityOf(userId: string): string {
 }
 
 export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { micEnabled?: boolean } = {}): Promise<void> {
+	migrateParticipantVolumes();
 	if (current != null) await leaveVoiceCall();
 
 	const attempt = ++joinAttempt;
@@ -227,6 +228,28 @@ export async function resumeAudio(): Promise<void> {
 /** 保存してある参加者の音量。スピーカーをオフにしていても、その前の音量を返す */
 export function participantVolume(identity: string, audio: ParticipantAudio): number {
 	return clampVolume(prefer.s[VOLUME_PREFERENCES[audio]][identity] ?? 1);
+}
+
+/**
+ * 声と画面共有の音量を分ける前の設定を、画面共有側へ一度だけ引き継ぐ。
+ * 移行前にミュート/音量調整した参加者が、画面共有を始めた途端に既定の 1 で
+ * 再生されないようにする。明示的に設定済みの画面共有音量は上書きしない。
+ */
+export function migrateParticipantVolumes(): void {
+	if (prefer.s['voiceCall.screenShareVolumesMigrated']) return;
+
+	const voiceVolumes = prefer.s['voiceCall.participantVolumes'];
+	const screenShareVolumes = { ...prefer.s['voiceCall.screenShareVolumes'] };
+	let changed = false;
+	for (const [identity, volume] of Object.entries(voiceVolumes)) {
+		if (screenShareVolumes[identity] == null) {
+			screenShareVolumes[identity] = volume;
+			changed = true;
+		}
+	}
+
+	if (changed) prefer.commit('voiceCall.screenShareVolumes', screenShareVolumes);
+	prefer.commit('voiceCall.screenShareVolumesMigrated', true);
 }
 
 export function setParticipantVolume(identity: string, audio: ParticipantAudio, volume: number): void {

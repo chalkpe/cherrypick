@@ -36,7 +36,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<span :class="$style.headerRightButtonText">{{ targetChannel.name }}</span>
 					</button>
 				</template>
-				<button v-click-anime v-tooltip="i18n.ts._visibility.disableFederation" class="_button" :class="[$style.headerRightItem, { [$style.danger]: localOnly }]" :disabled="targetChannel != null || visibility === 'specified'" @click="toggleLocalOnly">
+				<button v-if="!props.updateMode" v-click-anime v-tooltip="i18n.ts._visibility.disableFederation" class="_button" :class="[$style.headerRightItem, { [$style.danger]: localOnly }]" :disabled="targetChannel != null || visibility === 'specified'" @click="toggleLocalOnly">
 					<span v-if="!localOnly"><i class="ti ti-rocket"></i></span>
 					<span v-else><i class="ti ti-rocket-off"></i></span>
 				</button>
@@ -61,7 +61,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</Transition>
 	<div v-if="quoteId && showForm" :class="$style.withQuote"><i class="ti ti-quote"></i> {{ i18n.ts.quoteAttached }}<button class="_button" @click="quoteId = null; renoteTargetNote = null;"><i class="ti ti-x"></i></button></div>
 	<MkEventEditor v-if="event && showForm" v-model="event" @destroyed="event = null"/>
-	<div v-if="visibility === 'specified' && showForm" :class="$style.toSpecified">
+	<div v-if="visibility === 'specified' && showForm && !props.updateMode" :class="$style.toSpecified">
 		<span style="margin-right: 8px;">{{ i18n.ts.recipient }}</span>
 		<div :class="$style.visibleUsers">
 			<span v-for="u in visibleUsers" :key="u.id" :class="$style.visibleUser">
@@ -88,7 +88,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</template>
 		</I18n> - <button class="_textButton" @click="cancelScheduleDelete()">{{ i18n.ts.cancel }}</button>
 	</MkInfo>
-	<MkInfo v-if="hasNotSpecifiedMentions && showForm" warn :class="$style.hasNotSpecifiedMentions">{{ i18n.ts.notSpecifiedMentionWarning }} - <button class="_textButton" @click="addMissingMention()">{{ i18n.ts.add }}</button></MkInfo>
+	<MkInfo v-if="hasNotSpecifiedMentions && showForm && !props.updateMode" warn :class="$style.hasNotSpecifiedMentions">{{ i18n.ts.notSpecifiedMentionWarning }} - <button class="_textButton" @click="addMissingMention()">{{ i18n.ts.add }}</button></MkInfo>
 	<div v-show="useCw && showForm" :class="$style.cwOuter">
 		<input ref="cwInputEl" v-model="cw" :class="$style.cw" :placeholder="i18n.ts.annotation" @keydown="onKeydown" @keyup="onKeyup" @compositionend="onCompositionEnd">
 		<div v-if="maxCwTextLength - cwTextLength < 20" :class="['_acrylic', $style.cwTextCount, { [$style.cwTextOver]: cwTextLength > maxCwTextLength }]">{{ maxCwTextLength - cwTextLength }}</div>
@@ -111,7 +111,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 	<MkPollEditor v-if="poll && !props.updateMode && showForm" v-model="poll" @destroyed="poll = null"/>
 	<MkScheduledNoteDelete v-if="scheduledNoteDelete" v-model="scheduledNoteDelete" @destroyed="scheduledNoteDelete = null"/>
-	<MkDeliveryTargetEditor v-if="deliveryTargets" v-model="deliveryTargets" @destroyed="deliveryTargets = null"/>
+	<MkDeliveryTargetEditor v-if="deliveryTargets && !props.updateMode" v-model="deliveryTargets" @destroyed="deliveryTargets = null"/>
 	<MkNotePreview v-if="showPreview && showForm" v-show="textLength > 0" :class="$style.preview" :text="text" :files="files" :poll="poll ?? undefined" :useCw="useCw" :cw="cw" :user="postAccount ?? $i" :showProfile="showProfilePreview"/>
 	<div v-if="showingOptions && showForm" style="padding: 8px 16px;">
 	</div>
@@ -713,13 +713,13 @@ function showOtherSettings() {
 		action: () => {
 			toggleReactionAcceptance();
 		},
-	}, {
+	}, ...(!props.updateMode ? [{
 		icon: 'ti ti-truck-delivery',
 		text: i18n.ts._deliveryTargetControl.deliveryTargetControl,
 		action: () => {
 			toggleDeliveryTargets();
 		},
-	}, { type: 'divider' }, /*{
+	}] : []), { type: 'divider' }, /*{
 		type: 'button',
 		text: i18n.ts._drafts.saveToDraft,
 		icon: 'ti ti-cloud-upload',
@@ -825,7 +825,7 @@ function onKeydown(ev: KeyboardEvent) {
 		if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey) && canPost.value) post();
 	}
 
-	if (prefer.s.postFormVisibilityHotkey) {
+	if (prefer.s.postFormVisibilityHotkey && !props.updateMode) {
 		if (ev.ctrlKey && ev.shiftKey && !targetChannel.value) {
 			visibility.value = nextNoteVisibility(visibility.value, $i.noteVisibilityLimit ?? 'none', $i.isSilenced, replyTargetNote.value?.visibility === 'specified');
 		}
@@ -1169,15 +1169,15 @@ async function post(ev?: MouseEvent) {
 		poll: poll.value,
 		event: event.value,
 		cw: useCw.value ? cw.value ?? '' : null,
-		localOnly: localOnly.value,
+		localOnly: props.updateMode ? undefined : localOnly.value,
 		// notes/update の visibility はモデレーターによる公開範囲変更専用なので、編集時は送らない
 		visibility: props.updateMode ? undefined : visibility.value,
-		visibleUserIds: visibility.value === 'specified' ? visibleUsers.value.map(u => u.id) : undefined,
+		visibleUserIds: props.updateMode ? undefined : (visibility.value === 'specified' ? visibleUsers.value.map(u => u.id) : undefined),
 		reactionAcceptance: reactionAcceptance.value,
 		disableRightClick: disableRightClick.value,
 		noteId: props.updateMode ? props.initialNote?.id : undefined,
 		scheduledDelete: scheduledNoteDelete.value,
-		deliveryTargets: deliveryTargets.value,
+		deliveryTargets: props.updateMode ? undefined : deliveryTargets.value,
 	};
 
 	if (withHashtags.value && hashtags.value && hashtags.value.trim() !== '') {
@@ -1554,10 +1554,10 @@ function cancelSchedule() {
 }
 
 function showTour() {
+	const visibilityElement = visibilityButton.value;
 	if (textareaEl.value == null ||
 		footerEl.value == null ||
 		accountMenuEl.value == null ||
-		visibilityButton.value == null ||
 		otherSettingsButton.value == null ||
 		submitButtonEl.value == null) {
 		return;
@@ -1575,11 +1575,11 @@ function showTour() {
 		element: accountMenuEl.value,
 		title: i18n.ts._postForm._howToUse.account_title,
 		description: i18n.ts._postForm._howToUse.account_description,
-	}, {
-		element: visibilityButton.value,
+	}, ...(visibilityElement != null ? [{
+		element: visibilityElement,
 		title: i18n.ts._postForm._howToUse.visibility_title,
 		description: i18n.ts._postForm._howToUse.visibility_description,
-	}, {
+	}] : []), {
 		element: otherSettingsButton.value,
 		title: i18n.ts._postForm._howToUse.menu_title,
 		description: i18n.ts._postForm._howToUse.menu_description,

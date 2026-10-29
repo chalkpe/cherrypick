@@ -223,6 +223,7 @@ describe.each([
 	test('editing a note does not send visibility, which notes/update reserves for moderation', async () => {
 		// 編集完了音はテスト環境にサウンド設定が無いので鳴らさない
 		vi.spyOn(sound, 'playMisskeySfx').mockImplementation(() => {});
+		const popupMenu = vi.spyOn(os, 'popupMenu').mockResolvedValue();
 		vi.mocked(misskeyApi).mockImplementation(async (endpoint) => {
 			if (endpoint === 'notes/update') return { updatedNote: {} };
 			return new Promise(() => {});
@@ -245,9 +246,15 @@ describe.each([
 				components,
 			},
 		});
-		assert.notExists(form.container.querySelector('.ti-home')?.closest('button'), 'visibility control is hidden in edit mode');
 		const textarea = form.container.querySelector('textarea')!;
 		await fireEvent.click(textarea);
+		await nextTick();
+		assert.notExists(form.container.querySelector('.ti-home')?.closest('button'), 'visibility control is hidden in edit mode');
+		assert.notExists(form.container.querySelector('.ti-rocket')?.closest('button'), 'local-only control is hidden in edit mode');
+		await fireEvent.click(form.container.querySelector('.ti-dots')!.closest('button')!);
+		await nextTick();
+		const menuItems = popupMenu.mock.calls[0][0] as { icon?: string }[];
+		assert.isFalse(menuItems.some(item => item.icon === 'ti ti-truck-delivery'), 'delivery target control is hidden in edit mode');
 		await fireEvent.update(textarea, 'Edited note');
 		await fireEvent.click(form.container.querySelector(submitSelector)!);
 
@@ -258,6 +265,54 @@ describe.each([
 			assert.strictEqual(params.noteId, 'note-1');
 			assert.strictEqual(params.text, 'Edited note');
 			assert.isUndefined(params.visibility, 'visibility is omitted from the request body');
+			assert.isUndefined(params.localOnly, 'localOnly is omitted from the request body');
+			assert.isUndefined(params.deliveryTargets, 'deliveryTargets is omitted from the request body');
+		});
+	});
+
+	test('editing a specified note hides the recipient editor and omits the audience', async () => {
+		vi.spyOn(sound, 'playMisskeySfx').mockImplementation(() => {});
+		vi.mocked(misskeyApi).mockImplementation(async (endpoint) => {
+			if (endpoint === 'notes/update') return { updatedNote: {} };
+			return new Promise(() => {});
+		});
+		const initialNote = {
+			id: 'note-1',
+			createdAt: '1970-01-01T00:00:00.000Z',
+			userId: 'me',
+			text: 'Original note',
+			cw: null,
+			visibility: 'specified',
+			localOnly: false,
+			visibleUserIds: [],
+			files: [],
+			reactionAcceptance: null,
+		} as unknown as Misskey.entities.Note;
+		const form = render(component, {
+			props: { autofocus: false, initialVisibility: 'specified', initialLocalOnly: false, initialNote, updateMode: true },
+			global: {
+				directives: { ...directives, panel: {} },
+				components,
+			},
+		});
+		const textarea = form.container.querySelector('textarea')!;
+		await fireEvent.click(textarea);
+		await nextTick();
+		assert.notExists(form.container.querySelector('[class*="toSpecified"]'), 'recipient editor is hidden in edit mode');
+		await fireEvent.update(textarea, 'Edited note @bob');
+		await nextTick();
+		assert.notExists(form.container.querySelector('[class*="hasNotSpecifiedMentions"]'), 'missing mention warning is hidden in edit mode');
+		await fireEvent.click(form.container.querySelector(submitSelector)!);
+
+		await waitFor(() => {
+			const call = vi.mocked(misskeyApi).mock.calls.find(([endpoint]) => endpoint === 'notes/update');
+			assert.exists(call, 'notes/update is called');
+			const params = call![1] as Record<string, unknown>;
+			assert.strictEqual(params.noteId, 'note-1');
+			assert.strictEqual(params.text, 'Edited note @bob');
+			assert.isUndefined(params.visibleUserIds, 'visibleUserIds is omitted from the request body');
+			assert.isUndefined(params.localOnly, 'localOnly is omitted from the request body');
+			assert.isUndefined(params.deliveryTargets, 'deliveryTargets is omitted from the request body');
 		});
 	});
 
