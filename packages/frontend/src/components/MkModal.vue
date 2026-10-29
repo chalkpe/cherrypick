@@ -4,6 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
+<Teleport :to="fullscreenHost ?? 'body'" :disabled="fullscreenHost == null">
 <Transition
 	:name="transitionName"
 	:enterActiveClass="normalizeClass({
@@ -32,17 +33,18 @@ SPDX-License-Identifier: AGPL-3.0-only
 	})"
 	:duration="transitionDuration" appear @afterLeave="onClosed" @enter="emit('opening')" @afterEnter="onOpened"
 >
-	<div v-show="manualShowing != null ? manualShowing : showing" ref="modalRootEl" v-hotkey.global="keymap" :class="[$style.root, { [$style.drawer]: type === 'drawer', [$style.dialog]: type === 'dialog', [$style.popup]: type === 'popup' }]" :style="{ zIndex, pointerEvents: (manualShowing != null ? manualShowing : showing) ? 'auto' : 'none', '--transformOrigin': transformOrigin }">
+	<div v-show="manualShowing != null ? manualShowing : showing" ref="modalRootEl" v-hotkey.global="keymap" :class="[$style.root, { [$style.fullscreen]: fullscreenHost != null, [$style.drawer]: type === 'drawer', [$style.dialog]: type === 'dialog', [$style.popup]: type === 'popup' }]" :style="{ zIndex, pointerEvents: (manualShowing != null ? manualShowing : showing) ? 'auto' : 'none', '--transformOrigin': transformOrigin }">
 		<div data-testid="bg" :data-test-is-transparent="isEnableBgTransparent" class="_modalBg" :class="[$style.bg, { [$style.bgTransparent]: isEnableBgTransparent, [$style.removeModalBgColorForBlur]: prefer.s.useBlurEffectForModal && prefer.s.removeModalBgColorForBlur }]" :style="{ zIndex }" @click="onBgClick" @mousedown="onBgClick" @contextmenu.prevent.stop="() => {}"></div>
 		<div ref="content" :class="[$style.content, { [$style.fixed]: fixed }]" :style="{ zIndex }" @click.self="onBgClick">
 			<slot :max-height="maxHeight" :type="type"></slot>
 		</div>
 	</div>
 </Transition>
+</Teleport>
 </template>
 
 <script lang="ts" setup>
-import { nextTick, normalizeClass, onMounted, onUnmounted, provide, watch, ref, useTemplateRef, computed } from 'vue';
+import { nextTick, normalizeClass, onMounted, onBeforeUnmount, onUnmounted, provide, watch, ref, useTemplateRef, computed } from 'vue';
 import type { Keymap } from '@/utility/hotkey.js';
 import * as os from '@/os.js';
 import { isTouchUsing } from '@/utility/touch.js';
@@ -96,6 +98,16 @@ const emit = defineEmits<{
 }>();
 
 provide(DI.inModal, true);
+
+// A popup outside the fullscreen subtree is hidden behind the browser's top layer.
+// Keep the host stable while closing so the focus trap releases before teleport removal.
+const fullscreenHost = window.document.fullscreenElement instanceof HTMLElement && props.anchorElement != null && window.document.fullscreenElement.contains(props.anchorElement)
+	? window.document.fullscreenElement
+	: null;
+
+function onFullscreenChange() {
+	if (fullscreenHost != null && window.document.fullscreenElement !== fullscreenHost) close();
+}
 
 const maxHeight = ref<number>();
 const fixed = ref(false);
@@ -317,11 +329,12 @@ const alignObserver = new ResizeObserver((entries, observer) => {
 });
 
 onMounted(() => {
+	if (fullscreenHost != null) window.document.addEventListener('fullscreenchange', onFullscreenChange);
 	watch(() => props.anchorElement, async () => {
 		if (props.anchorElement) {
 			props.anchorElement.style.pointerEvents = 'none';
 		}
-		fixed.value = (type.value === 'drawer') || (getFixedContainer(props.anchorElement) != null);
+		fixed.value = fullscreenHost != null || (type.value === 'drawer') || (getFixedContainer(props.anchorElement) != null);
 
 		await nextTick();
 
@@ -345,6 +358,12 @@ onMounted(() => {
 	nextTick(() => {
 		alignObserver.observe(content.value!);
 	});
+});
+
+onBeforeUnmount(() => {
+	window.document.removeEventListener('fullscreenchange', onFullscreenChange);
+	releaseFocusTrap?.();
+	if (props.anchorElement) props.anchorElement.style.pointerEvents = 'auto';
 });
 
 onUnmounted(() => {
@@ -459,6 +478,12 @@ defineExpose({
 		pointer-events: none;
 		transform: translateY(100%);
 	}
+}
+
+// Keep teleported menus out of the fullscreen player's grid/flex layout.
+.fullscreen {
+	position: fixed;
+	inset: 0;
 }
 
 .root {

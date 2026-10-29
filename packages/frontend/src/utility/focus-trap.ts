@@ -42,7 +42,7 @@ function getHighestZIndexElement(): { el: HTMLElement; zIndex: number; } | null 
 	};
 }
 
-function releaseFocusTrap(el: HTMLElement): void {
+function releaseFocusTrap(el: HTMLElement, parents: Map<HTMLElement, HTMLElement>): void {
 	focusTrapElements.delete(el);
 	if (el.inert === true) {
 		el.inert = false;
@@ -50,8 +50,9 @@ function releaseFocusTrap(el: HTMLElement): void {
 
 	const highestZIndexElement = getHighestZIndexElement();
 
-	if (el.parentElement != null && el !== window.document.body) {
-		el.parentElement.childNodes.forEach((siblingNode) => {
+	const parent = parents.get(el) ?? el.parentElement;
+	if (parent != null && el !== window.document.body) {
+		parent.childNodes.forEach((siblingNode) => {
 			const siblingEl = getHTMLElementOrNull(siblingNode);
 			if (!siblingEl) return;
 			if (
@@ -74,13 +75,22 @@ function releaseFocusTrap(el: HTMLElement): void {
 				siblingEl.inert = false;
 			}
 		});
-		releaseFocusTrap(el.parentElement);
+		releaseFocusTrap(parent, parents);
 	}
 }
 
 export function focusTrap(el: HTMLElement, hasInteractionWithOtherFocusTrappedEls: boolean, parent: true): void;
 export function focusTrap(el: HTMLElement, hasInteractionWithOtherFocusTrappedEls?: boolean, parent?: false): { release: () => void; };
 export function focusTrap(el: HTMLElement, hasInteractionWithOtherFocusTrappedEls = false, parent = false): { release: () => void; } | void {
+	// A fullscreen host may be removed while its teleported menu is still open.
+	// Remember the ancestors so releasing also restores the connected page.
+	const parents = new Map<HTMLElement, HTMLElement>();
+	if (!parent) {
+		for (let ancestor: HTMLElement | null = el; ancestor?.parentElement != null; ancestor = ancestor.parentElement) {
+			parents.set(ancestor, ancestor.parentElement);
+		}
+	}
+
 	const highestZIndexElement = getHighestZIndexElement();
 
 	const highestZIndex = highestZIndexElement == null ? -Infinity : highestZIndexElement.zIndex;
@@ -95,7 +105,7 @@ export function focusTrap(el: HTMLElement, hasInteractionWithOtherFocusTrappedEl
 		}
 		return {
 			release: () => {
-				releaseFocusTrap(el);
+				releaseFocusTrap(el, parents);
 			},
 		};
 	}
@@ -123,7 +133,7 @@ export function focusTrap(el: HTMLElement, hasInteractionWithOtherFocusTrappedEl
 
 		return {
 			release: () => {
-				releaseFocusTrap(el);
+				releaseFocusTrap(el, parents);
 			},
 		};
 	}
