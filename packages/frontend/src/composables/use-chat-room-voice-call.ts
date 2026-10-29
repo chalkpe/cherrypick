@@ -137,6 +137,11 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		return items;
 	}
 
+	/** 参加者を押したときにメニューに出すものがあるか。無いときは、押しても何も起きないボタンを出さない */
+	function hasParticipantMenu(participant: Participant) {
+		return participantMenuItems(participant).length > 0;
+	}
+
 	function openParticipantMenu(participant: Participant, ev: MouseEvent, onWatch?: () => void) {
 		const items = participantMenuItems(participant, onWatch);
 		if (items.length === 0) return;
@@ -147,7 +152,7 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		const { dispose } = os.popup(XRoster, { call: markRaw(call) }, { closed: () => dispose() });
 	}
 
-	const call = { available, inThisCall, participants, watchedParticipants, showCard, join, prejoinMicEnabled, myIdentity, isOwner, openParticipantMenu, openRoster };
+	const call = { available, inThisCall, participants, watchedParticipants, showCard, join, prejoinMicEnabled, myIdentity, isOwner, hasParticipantMenu, openParticipantMenu, openRoster };
 	return call;
 }
 

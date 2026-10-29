@@ -243,6 +243,20 @@ describe('voice call roster', () => {
 		expect(screen.getByText('Bob')).toBeTruthy();
 	});
 
+	// 通話に入っておらず持ち主でもなければ、参加者のメニューに出すものが無い。押しても何も起きないボタンにはしない
+	test('lists participants without buttons for a member who has no menu for them', async () => {
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
+		await rosterFor(room).open();
+		expect(screen.getByText('Alice')).toBeTruthy();
+		expect(screen.queryByRole('button', { name: /Alice/ })).toBeNull();
+	});
+
+	test('lists participants as menu buttons for the room owner', async () => {
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
+		await rosterFor({ ...room, ownerId: 'me' }).open();
+		await fireEvent.click(screen.getByRole('button', { name: /Alice/ }));
+		expect(openedItems().map(item => item.text)).toContain(i18n.ts._voiceCall.kick);
+	});
 });
 
 const pageStubs = {
@@ -307,8 +321,15 @@ describe('voice call on the room page', () => {
 		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
 		expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
 		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.join })).toBeTruthy();
-		expect(stickyCard().getByRole('button', { name: alice.name })).toBeTruthy();
+		// 通話に入っておらず持ち主でもなければ参加者のメニューに出すものが無いので、アバターはボタンにしない
+		expect(stickyCard().queryByRole('button', { name: alice.name })).toBeNull();
+		expect(screen.getByTestId('sticky-header').querySelectorAll('.avatar')).toHaveLength(1);
 		expect(screen.queryByRole('group', { name: alice.name })).toBeNull();
+	});
+	test('makes the banner avatars menu buttons for the room owner', async () => {
+		await renderRoom({ ...room, ownerId: 'me' }, [{ roomId: 'r1', participants: [participant(alice)] }]);
+		await fireEvent.click(stickyCard().getByRole('button', { name: alice.name }));
+		expect(openedItems().map(item => item.text)).toContain(i18n.ts._voiceCall.kick);
 	});
 	// 誰もいない通話は「参加」ではなく「開始」と呼ぶ。既存の通話に入るのか自分が始めるのかを迷わせない
 	test('offers to start, not join, the call while nobody is in it', async () => {
@@ -628,7 +649,6 @@ describe('voice call on the room page', () => {
 		expect(document.querySelectorAll('[inert]')).toHaveLength(0);
 		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.openChat })).toBeTruthy();
 	});
-
 
 		describe('watching several shares', () => {
 			const sharers = [alice, bob, carol, dave, erin];

@@ -5,7 +5,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <div v-if="call.available.value && !call.inThisCall.value" :class="$style.root">
 	<div ref="avatarsEl" :class="$style.avatars">
-		<button v-for="p in visible" :key="p.identity" v-tooltip.mfm="userName(p.user)" type="button" class="_button" :class="$style.person" :aria-label="userName(p.user)" @click="call.openParticipantMenu(p, $event)" @contextmenu.prevent="call.openParticipantMenu(p, $event)"><MkAvatar :user="p.user" :link="false" :class="$style.avatar"/><span v-if="p.micMuted || p.deafened" v-tooltip="p.deafened ? i18n.ts._voiceCall.deafened : i18n.ts._voiceCall.micMuted" :class="$style.dot"></span></button>
+		<!-- メニューに出すものが無い参加者 (通話に入っておらず持ち主でもないとき) は、押しても何も起きないボタンにせず、名前の付いた絵として出す -->
+		<component :is="menuable ? 'button' : 'div'" v-for="{ p, menuable } in visible" :key="p.identity" v-tooltip.mfm="userName(p.user)" :type="menuable ? 'button' : undefined" :class="[$style.person, { _button: menuable }]" :role="menuable ? undefined : 'img'" :aria-label="userName(p.user)" @click="menuable && call.openParticipantMenu(p, $event)" @contextmenu="onContextMenu(p, menuable, $event)"><MkAvatar :user="p.user" :link="false" :class="$style.avatar"/><span v-if="p.micMuted || p.deafened" v-tooltip="p.deafened ? i18n.ts._voiceCall.deafened : i18n.ts._voiceCall.micMuted" :class="$style.dot"></span></component>
 		<button v-if="hidden > 0" type="button" class="_button" :class="$style.more" :aria-label="i18n.ts._chat.members" @click="call.openRoster()">+{{ hidden }}</button>
 	</div>
 	<button v-tooltip="call.prejoinMicEnabled.value ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute" type="button" class="_button" :class="[$style.mic, { [$style.muted]: !call.prejoinMicEnabled.value }]" :aria-label="call.prejoinMicEnabled.value ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute" :aria-pressed="!call.prejoinMicEnabled.value" @click="call.prejoinMicEnabled.value = !call.prejoinMicEnabled.value"><i :class="call.prejoinMicEnabled.value ? 'ti ti-microphone' : 'ti ti-microphone-off'"></i></button>
@@ -25,8 +26,16 @@ const width = useElementWidth(avatarsEl);
 const capacity = computed(() => Math.max(1, Math.floor(((width.value ?? 0) + 8) / 36)));
 // 誰もいない通話は「参加」ではなく「開始」。既存の通話に入るのか新しく始めるのかを迷わせない
 const empty = computed(() => props.call.participants.value.length === 0);
-const visible = computed(() => props.call.participants.value.slice(0, capacity.value >= props.call.participants.value.length ? capacity.value : capacity.value - 1));
+const visible = computed(() => props.call.participants.value
+	.slice(0, capacity.value >= props.call.participants.value.length ? capacity.value : capacity.value - 1)
+	.map(p => ({ p, menuable: props.call.hasParticipantMenu(p) })));
 const hidden = computed(() => props.call.participants.value.length - visible.value.length);
+
+function onContextMenu(p: typeof visible.value[number]['p'], menuable: boolean, ev: MouseEvent) {
+	if (!menuable) return;
+	ev.preventDefault();
+	props.call.openParticipantMenu(p, ev);
+}
 </script>
 <style lang="scss" module>
 .root { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--MI_THEME-panel); border: 1px solid var(--MI_THEME-divider); border-radius: var(--MI-radius); }
