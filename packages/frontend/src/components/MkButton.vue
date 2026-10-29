@@ -107,12 +107,19 @@ function onMousedown(evt: MouseEvent): void {
 	const target = evt.target! as HTMLElement;
 	const rect = target.getBoundingClientRect();
 
+	// 波紋の入れ物がまだ無い (参照が未設定) ことがあり、その場合は波紋だけ省く。クリック自体は @click で別に処理される
+	const ripplesEl = ripples.value;
+	if (ripplesEl == null) {
+		haptic();
+		return;
+	}
+
 	const ripple = window.document.createElement('div');
-	ripple.classList.add(ripples.value!.dataset.childrenClass!);
+	ripple.classList.add(ripplesEl.dataset.childrenClass!);
 	ripple.style.top = (evt.clientY - rect.top - 1).toString() + 'px';
 	ripple.style.left = (evt.clientX - rect.left - 1).toString() + 'px';
 
-	ripples.value!.appendChild(ripple);
+	ripplesEl.appendChild(ripple);
 
 	const circleCenterX = evt.clientX - rect.left;
 	const circleCenterY = evt.clientY - rect.top;
