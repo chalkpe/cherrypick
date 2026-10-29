@@ -344,6 +344,35 @@ describe('voice call controller', () => {
 		expect(mocks.misskeyApi).not.toHaveBeenCalled();
 	});
 
+	// スピーカーを切るときにマイクも切るが、マイクを切り終える前に知らせると「スピーカーだけ切ってマイクは入ったまま」の状態が一瞬伝わり、知らせも二度になる
+	test('deafening with the microphone on reports the settings once, after the microphone is off', async () => {
+		await joinVoiceCall(room1);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		mocks.misskeyApi.mockClear();
+
+		setDeafened(true);
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status')).toEqual([
+			['chat/rooms/voice/status', { roomId: 'r1', sessionId: 'PA_local', micMuted: true, deafened: true }],
+		]);
+	});
+
+	// 手元でマイクの音を測れない (AudioContext が無いなど) ときは、サーバーの知らせで自分の発話を示す
+	test('lights the local speaker from the server when the microphone cannot be metered', async () => {
+		lk.createAudioAnalyser.mockImplementationOnce(() => { throw new Error('no AudioContext'); });
+		await joinVoiceCall(room1);
+		const identity = lastRoom().localParticipant.identity;
+
+		lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity }, { identity: 'remote' }]);
+		expect(voiceCall.speakingIdentities).toEqual(['remote', identity]);
+		expect(voiceCall.localSpeaking).toBe(true);
+
+		lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity: 'remote' }]);
+		expect(voiceCall.speakingIdentities).toEqual(['remote']);
+		expect(voiceCall.localSpeaking).toBe(false);
+	});
+
 	test('lights the local speaker from microphone samples and keeps remote server speakers', async () => {
 		vi.useFakeTimers();
 		try {

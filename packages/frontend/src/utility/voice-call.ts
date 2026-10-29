@@ -210,13 +210,17 @@ export async function setMicEnabled(enabled: boolean): Promise<void> {
 export function setDeafened(deafened: boolean): void {
 	state.deafened = deafened;
 	if (current == null) return;
-	for (const participant of current.remoteParticipants.values()) {
+	const room = current;
+	for (const participant of room.remoteParticipants.values()) {
 		applyVolume(participant);
 	}
 	if (deafened && state.micEnabled) {
-		setMicEnabled(false).catch(() => {});
+		// マイクを切り終えてから一度だけ知らせる (setMicEnabled が知らせる)。切る前に知らせると、スピーカーだけ切ってマイクは入ったままの状態が
+		// 一瞬伝わり、知らせも二度になる。切れなかったときは、そのままの状態 (マイクは入ったまま) を知らせる
+		setMicEnabled(false).catch(() => reportStatus(room));
+		return;
 	}
-	reportStatus(current);
+	reportStatus(room);
 }
 
 export async function resumeAudio(): Promise<void> {
@@ -547,9 +551,13 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 	room.on(RoomEvent.ActiveSpeakersChanged, (speakers: Participant[]) => {
 		if (!isCurrent()) return;
 		const localIdentity = room.localParticipant.identity;
-		const localSpeaking = state.speakingIdentities.includes(localIdentity);
-		state.speakingIdentities = speakers.filter(speaker => speaker.identity !== localIdentity).map(speaker => speaker.identity);
-		if (localSpeaking) state.speakingIdentities.push(localIdentity);
+		const others = speakers.filter(speaker => speaker.identity !== localIdentity).map(speaker => speaker.identity);
+		// 自分の発話は、マイクの音を手元で測れているあいだはその結果 (サーバーの知らせより速い) で示し、
+		// 測れていない (AudioContext が無いなど) ときはサーバーの知らせに従う
+		const metered = stopLocalMeter != null;
+		const localSpeaking = metered ? state.speakingIdentities.includes(localIdentity) : speakers.some(speaker => speaker.identity === localIdentity);
+		state.speakingIdentities = localSpeaking ? [...others, localIdentity] : others;
+		if (!metered) state.localSpeaking = localSpeaking;
 	});
 
 	room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
