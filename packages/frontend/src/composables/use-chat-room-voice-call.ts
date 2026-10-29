@@ -137,13 +137,6 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		return items;
 	}
 
-	function openParticipantVolume(participant: Participant, ev: MouseEvent) {
-		if (!inThisCall.value || participant.identity === myIdentity) return;
-		os.popupMenu((['voice'] as const).map(audio => ({
-			type: 'component' as const, component: XVolume, props: { identity: participant.identity, audio },
-		})), ev.currentTarget ?? ev.target);
-	}
-
 	function openParticipantMenu(participant: Participant, ev: MouseEvent, onWatch?: () => void) {
 		const items = participantMenuItems(participant, onWatch);
 		if (items.length === 0) return;
@@ -154,7 +147,7 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		const { dispose } = os.popup(XRoster, { call: markRaw(call) }, { closed: () => dispose() });
 	}
 
-	const call = { available, inThisCall, participants, watchedParticipants, showCard, join, prejoinMicEnabled, myIdentity, isOwner, openParticipantMenu, openParticipantVolume, openRoster };
+	const call = { available, inThisCall, participants, watchedParticipants, showCard, join, prejoinMicEnabled, myIdentity, isOwner, openParticipantMenu, openRoster };
 	return call;
 }
 

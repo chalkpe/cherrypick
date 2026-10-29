@@ -9329,10 +9329,6 @@ export interface Locale extends ILocale {
          */
         "micInputDetected": string;
         /**
-         * 通話
-         */
-        "title": string;
-        /**
          * マイクミュート中
          */
         "micMuted": string;

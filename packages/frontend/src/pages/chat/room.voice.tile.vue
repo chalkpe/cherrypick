@@ -11,9 +11,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:participant="participant"
 		:speaking="speaking"
 		:menuable="menuable"
-		:volumable="volumable"
 		@openMenu="emit('openMenu', $event)"
-		@openVolume="emit('openVolume', $event)"
 	/>
 	<template v-else>
 		<div :class="$style.actions">
@@ -44,13 +42,11 @@ const props = withDefaults(defineProps<{
 	participant: Misskey.entities.ChatRoomVoiceState['participants'][number];
 	speaking: boolean;
 	menuable?: boolean;
-	volumable?: boolean;
 	small?: boolean;
-}>(), { menuable: false, volumable: false, small: false });
+}>(), { menuable: false, small: false });
 
 const emit = defineEmits<{
 	(ev: 'openMenu', event: MouseEvent): void;
-	(ev: 'openVolume', event: MouseEvent): void;
 }>();
 
 const rootEl = useTemplateRef('rootEl');

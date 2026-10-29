@@ -35,8 +35,8 @@ import { i18n } from '@/i18n.js';
 import type { ChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { toggleScreenShareWatch, voiceCall } from '@/utility/voice-call.js';
 import { useVoiceCallStatusAnnouncer, voiceCallStatusText } from '@/utility/voice-call-status.js';
-const props = withDefaults(defineProps<{ room: Misskey.entities.ChatRoom; call: ChatRoomVoiceCall; chatSide: 'right' | 'left'; standalone?: boolean; chatOpen?: boolean }>(), { standalone: false, chatOpen: true });
-const emit = defineEmits<{ (ev: 'toggleChat'): void; (ev: 'swapChatSide'): void }>();
+const props = withDefaults(defineProps<{ room: Misskey.entities.ChatRoom; call: ChatRoomVoiceCall; chatOpen?: boolean }>(), { chatOpen: true });
+const emit = defineEmits<{ (ev: 'toggleChat'): void }>();
 const { inThisCall, participants, watchedParticipants, isOwner } = props.call;
 const rootEl = useTemplateRef('rootEl');
 const screensEl = useTemplateRef('screensEl');
@@ -113,7 +113,7 @@ const screenStyle = computed(() => {
 		const candidate = Math.max(0, Math.min((width - (columns - 1) * 8) / columns, (height - (rows - 1) * 8) / rows * 16 / 9));
 		if (candidate > best.width) best = { width: candidate, columns };
 	}
-	return { '--voiceCallGridWidth': `${best.width}px`, '--voiceCallGridHeight': `${best.width * 9 / 16}px`, '--voiceCallGridColumns': best.columns };
+	return { '--voiceCallGridWidth': `${best.width}px`, '--voiceCallGridHeight': `${best.width * 9 / 16}px` };
 });
 </script>
 <style lang="scss" module>

@@ -2384,7 +2384,6 @@ _voiceCall:
   otherParticipants: "{n} others"
   micOn: "Microphone on"
   micInputDetected: "Microphone input detected"
-  title: "Call"
   micMuted: "Microphone muted"
   deafened: "Deafened"
   micUnavailable: "Microphone is unavailable."

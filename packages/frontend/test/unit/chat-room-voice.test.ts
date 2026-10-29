@@ -107,7 +107,6 @@ import { installFakeResizeObserver, resizeObserved } from './fake-resize-observe
 import { i18n } from '@/i18n.js';
 import { prefer as mockedPrefer } from '@/preferences.js';
 import { voiceCall } from '@/utility/voice-call.js';
-import XVoice from '@/pages/chat/room.voice.vue';
 import XRoomPage from '@/pages/chat/room.vue';
 import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { provideMetadataReceiver } from '@/page.js';
@@ -221,224 +220,88 @@ async function flush() {
 	}
 }
 
-// ページと同じく、カードに渡す通話の状態は外で作る
-function renderCard(target: typeof room = room) {
-	const host = defineComponent({
-		setup() {
-			const call = useChatRoomVoiceCall(() => target);
-			return () => h(XVoice, { room: target, call });
-		},
-	});
-	return render(host, { global: { directives: { tooltip: {} }, stubs } });
-}
-
-describe('room voice panel', () => {
-	test('keeps roster refs intact through the reactive popup host', async () => {
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice), participant(bob)] }]);
+describe('voice call roster', () => {
+	function rosterFor(target: typeof room) {
 		mocks.popup.mockReturnValue({ dispose: vi.fn() });
 		let call!: ReturnType<typeof useChatRoomVoiceCall>;
-		render(defineComponent({ setup() { call = useChatRoomVoiceCall(() => room); return () => h('div'); } }));
-		await flush();
-		call.openRoster();
-		const props = reactive(mocks.popup.mock.calls.at(-1)![1]);
-		render(XRoster, { props, global: { directives: { tooltip: {} }, stubs: { ...stubs, MkModal: { template: '<div><slot/></div>' } } } });
-		expect(screen.getByRole('button', { name: 'Alice' })).toBeTruthy();
-		expect(screen.getByRole('button', { name: 'Bob' })).toBeTruthy();
-	});
-	test('shows who is in the call and a join button', async () => {
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
-		renderCard();
-		await flush();
+		render(defineComponent({ setup() { call = useChatRoomVoiceCall(() => target); return () => h('div'); } }));
+		return {
+			async open() {
+				await flush();
+				call.openRoster();
+				const props = reactive(mocks.popup.mock.calls.at(-1)![1]);
+				// 本物の MkModal は背景を押したときだけ click を発する (行のクリックは伝わらない)
+				render(XRoster, { props, global: { directives: { tooltip: {} }, stubs: { ...stubs, MkModal: { emits: ['click', 'closed', 'esc'], template: '<div><slot/></div>' } } } });
+			},
+		};
+	}
 
-		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/states', { roomIds: ['r1'] });
-		expect(within(participantGroup(alice)).getByText('Alice')).toBeTruthy();
-		await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
-		expect(mocks.joinVoiceCall).toHaveBeenCalledWith(room, { micEnabled: false });
-	});
-
-	test('updates the participant list from the shared main stream', async () => {
-		renderCard();
-		await flush();
-
-		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [participant(bob)] });
-		await flush();
-
-		expect(within(participantGroup(bob)).getByText('Bob')).toBeTruthy();
+	test('keeps roster refs intact through the reactive popup host', async () => {
+		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice), participant(bob)] }]);
+		await rosterFor(room).open();
+		expect(screen.getByText('Alice')).toBeTruthy();
+		expect(screen.getByText('Bob')).toBeTruthy();
 	});
 
-	test('shows in-call controls when this room is the active call', async () => {
-		Object.assign(callState, { status: 'connected', room, micEnabled: true });
-		renderCard();
-		await flush();
-
-		expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
-		await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.leave));
-		expect(mocks.leaveVoiceCall).toHaveBeenCalled();
-		await fireEvent.click(screen.getByLabelText(i18n.ts._voiceCall.mute));
-		expect(mocks.setMicEnabled).toHaveBeenCalledWith(false);
-	});
-
-	describe('room owned on another server', () => {
-		test('shows the panel for a mirror room when remote calls are allowed', async () => {
-			mocks.instance.features.remoteVoiceCall = true;
-			mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
-			renderCard(mirror);
-			await flush();
-
-			expect(screen.getByText(i18n.ts._voiceCall.join)).toBeTruthy();
-			expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/states', { roomIds: ['r1'] });
-		});
-
-		test('hides the panel for a mirror room when remote calls are not allowed', async () => {
-			renderCard(mirror);
-			await flush();
-
-			expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
-			expect(mocks.misskeyApi).not.toHaveBeenCalled();
-		});
-
-		test('asks once before joining a call on another server', async () => {
-			mocks.instance.features.remoteVoiceCall = true;
-			mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
-			mocks.confirm.mockResolvedValue({ canceled: false });
-			renderCard(mirror);
-			await flush();
-
-			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
-			await flush();
-			expect(mocks.confirm).toHaveBeenCalledTimes(1);
-			expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.remoteHostNotice({ host: 'remote.test' }) }));
-			expect(prefer.commit).toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', ['remote.test']);
-			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
-
-			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
-			await flush();
-			expect(mocks.confirm).toHaveBeenCalledTimes(1);
-			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(2);
-		});
-
-		test('ignores a second click while the notice is still open', async () => {
-			mocks.instance.features.remoteVoiceCall = true;
-			let answer!: (value: { canceled: boolean }) => void;
-			mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
-			mocks.confirm.mockReturnValue(new Promise(resolve => { answer = resolve; }));
-			renderCard(mirror);
-			await flush();
-
-			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
-			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
-			answer({ canceled: false });
-			await flush();
-
-			expect(mocks.confirm).toHaveBeenCalledTimes(1);
-			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
-		});
-
-		test('does not join when the notice is cancelled', async () => {
-			mocks.instance.features.remoteVoiceCall = true;
-			mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
-			mocks.confirm.mockResolvedValue({ canceled: true });
-			renderCard(mirror);
-			await flush();
-
-			await fireEvent.click(screen.getByText(i18n.ts._voiceCall.join));
-			await flush();
-			expect(mocks.joinVoiceCall).not.toHaveBeenCalled();
-			expect(prefer.commit).not.toHaveBeenCalled();
-		});
-	});
-
-	test.each(['connecting', 'reconnecting'] as const)('shows the call status (%s) in the card title for screen readers too', async status => {
-		Object.assign(callState, { status, room });
-		renderCard();
-		await flush();
-
-		const title = screen.getByText(i18n.ts._voiceCall[status]);
-		expect(title.closest('[aria-live="polite"]')).not.toBeNull();
-		expect(screen.queryByText(i18n.ts._voiceCall.inCall)).toBeNull();
-	});
-
-	test('lets one room heading announce, then hands announcements back to the global bar', async () => {
-		Object.assign(callState, { status: 'reconnecting', room });
-		const first = renderCard();
-		const second = renderCard();
-		render(XVoiceCallBar, { global: { directives: { tooltip: {} }, stubs } });
-		await flush();
-		const live = () => [...document.querySelectorAll('[aria-live="polite"]')].filter(el => el.textContent === i18n.ts._voiceCall.reconnecting);
-		expect(live()).toHaveLength(1);
-		second.unmount();
-		await flush();
-		expect(live()).toHaveLength(1);
-		first.unmount();
-		await flush();
-		expect(live()).toHaveLength(1);
-		expect(live()[0].closest('[role="region"]')).not.toBeNull();
-	});
-
-	test('renders nothing when voice calls are disabled on this server', async () => {
-		mocks.instance.features.voiceCall = false;
-		renderCard();
-		await flush();
-
-		expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
-		expect(mocks.misskeyApi).not.toHaveBeenCalled();
-	});
 });
 
-describe('voice call on the room page', () => {
-	const pageStubs = {
-		...stubs,
-		// 本物の MkPageHeader / CPPageHeader と同じく、アクションは action.text をラベルにしたアイコンのボタンで出し、タブで v-model:tab を切り替える
-		PageWithHeader: {
-			props: ['actions', 'tabs', 'tab'],
-			methods: { refreshStickyLayout: mocks.refreshStickyLayout },
-			emits: ['update:tab'],
-			template: `<div style="overflow-y: scroll;">
-				<div role="tablist"><button v-for="t in tabs" :key="t.key" role="tab" :aria-selected="t.key === tab" @click="$emit('update:tab', t.key)">{{ t.title }}</button></div>
-				<div data-testid="header-actions"><button v-for="action in actions" class="_button" :aria-label="action.text" @click.stop="action.handler"><i :class="action.icon"></i></button></div>
-				<slot />
-				<div data-testid="page-footer"><slot name="footer" /></div>
-			</div>`,
+const pageStubs = {
+	...stubs,
+	// 本物の MkPageHeader / CPPageHeader と同じく、アクションは action.text をラベルにしたアイコンのボタンで出し、タブで v-model:tab を切り替える
+	PageWithHeader: {
+		props: ['actions', 'tabs', 'tab'],
+		methods: { refreshStickyLayout: mocks.refreshStickyLayout },
+		emits: ['update:tab'],
+		template: `<div style="overflow-y: scroll;">
+			<div role="tablist"><button v-for="t in tabs" :key="t.key" role="tab" :aria-selected="t.key === tab" @click="$emit('update:tab', t.key)">{{ t.title }}</button></div>
+			<div data-testid="header-actions"><button v-for="action in actions" class="_button" :aria-label="action.text" @click.stop="action.handler"><i :class="action.icon"></i></button></div>
+			<slot />
+			<div data-testid="page-footer"><slot name="footer" /></div>
+		</div>`,
+	},
+	// カードが MkStickyContainer のヘッダーに置かれているか (= スクロールしても上に貼り付くか) を見る
+	MkStickyContainer: { methods: { refresh() {} }, template: '<div><div data-testid="sticky-header"><slot name="header" /></div><slot /></div>' },
+	MkLoading: { template: '<div></div>' },
+};
+
+// shown を渡すと、本物と同じく KeepAlive の中に置き、false にすると裏に回す
+async function renderRoom(target: typeof room, states: unknown[] | Promise<unknown[]>, shown?: ReturnType<typeof ref<boolean>>, options: { bar?: boolean; visible?: ReturnType<typeof ref<boolean>> } = {}) {
+	mocks.misskeyApi.mockImplementation((endpoint: string) => {
+		if (endpoint === 'chat/rooms/show') return Promise.resolve(target);
+		if (endpoint === 'chat/rooms/voice/states') return states instanceof Promise ? states : Promise.resolve(states);
+		return Promise.resolve([]);
+	});
+	const host = defineComponent({
+		setup() {
+			provideMetadataReceiver(() => {});
+			return () => h('div', [
+				h('section', { style: { display: options.visible?.value === false ? 'none' : '' } }, [
+					shown == null ? h(XRoomPage, { roomId: target.id }) : h(KeepAlive, null, [shown.value ? h(XRoomPage, { roomId: target.id, key: 'room' }) : h('div', { key: 'other' })]),
+				]),
+				options.bar ? h(XVoiceCallBar) : null,
+			]);
 		},
-		// カードが MkStickyContainer のヘッダーに置かれているか (= スクロールしても上に貼り付くか) を見る
-		MkStickyContainer: { methods: { refresh() {} }, template: '<div><div data-testid="sticky-header"><slot name="header" /></div><slot /></div>' },
-		MkLoading: { template: '<div></div>' },
-	};
+	});
+	const result = render(host, { global: { directives: { tooltip: {} }, stubs: pageStubs } });
+	await flush();
+	await flush();
+	return result;
+}
 
-	// shown を渡すと、本物と同じく KeepAlive の中に置き、false にすると裏に回す
-	async function renderRoom(target: typeof room, states: unknown[] | Promise<unknown[]>, shown?: ReturnType<typeof ref<boolean>>, options: { bar?: boolean; visible?: ReturnType<typeof ref<boolean>> } = {}) {
-		mocks.misskeyApi.mockImplementation((endpoint: string) => {
-			if (endpoint === 'chat/rooms/show') return Promise.resolve(target);
-			if (endpoint === 'chat/rooms/voice/states') return states instanceof Promise ? states : Promise.resolve(states);
-			return Promise.resolve([]);
-		});
-		const host = defineComponent({
-			setup() {
-				provideMetadataReceiver(() => {});
-				return () => h('div', [
-					h('section', { style: { display: options.visible?.value === false ? 'none' : '' } }, [
-						shown == null ? h(XRoomPage, { roomId: target.id }) : h(KeepAlive, null, [shown.value ? h(XRoomPage, { roomId: target.id, key: 'room' }) : h('div', { key: 'other' })]),
-					]),
-					options.bar ? h(XVoiceCallBar) : null,
-				]);
-			},
-		});
-		render(host, { global: { directives: { tooltip: {} }, stubs: pageStubs } });
-		await flush();
-		await flush();
-	}
+const openedItems = () => mocks.popupMenu.mock.calls.at(-1)![0] as { type?: string; text?: string; action?: () => unknown; props?: any }[];
+const menuButtonOf = (user: typeof alice) => within(participantGroup(user)).getByRole('button', { name: i18n.ts.menu });
+const headerIcons = () => [...screen.getByTestId('header-actions').querySelectorAll('button')].map(el => el.querySelector('i')!.className);
 
-	const openedItems = () => mocks.popupMenu.mock.calls.at(-1)![0] as { type?: string; text?: string; props?: any }[];
-	const menuButtonOf = (user: typeof alice) => within(participantGroup(user)).getByRole('button', { name: i18n.ts.menu });
-	const headerIcons = () => [...screen.getByTestId('header-actions').querySelectorAll('button')].map(el => el.querySelector('i')!.className);
+async function openTab(title: string) {
+	await fireEvent.click(screen.getByRole('tab', { name: title }));
+	await flush();
+}
 
-	async function openTab(title: string) {
-		await fireEvent.click(screen.getByRole('tab', { name: title }));
-		await flush();
-	}
+const headerJoin = () => within(screen.getByTestId('header-actions')).queryByLabelText(i18n.ts._voiceCall.join);
+const stickyCard = () => within(screen.getByTestId('sticky-header'));
+async function setPageWidth(width: number) { resizeObserved(width); await flush(); }
 
-	const headerJoin = () => within(screen.getByTestId('header-actions')).queryByLabelText(i18n.ts._voiceCall.join);
-	const stickyCard = () => within(screen.getByTestId('sticky-header'));
+describe('voice call on the room page', () => {
 
 	test('keeps the full-width chat and a join banner before I join, even with other callers', async () => {
 		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
@@ -468,7 +331,7 @@ describe('voice call on the room page', () => {
 	});
 	test('has one messages tab and puts search in the room menu', async () => {
 		await renderRoom(room, []);
-		expect(screen.queryByRole('tab', { name: i18n.ts._voiceCall.title })).toBeNull();
+		expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual([i18n.ts._chat.messages, i18n.ts._chat.members, i18n.ts.info]);
 		expect(screen.queryByRole('tab', { name: i18n.ts.search })).toBeNull();
 		await fireEvent.click(within(screen.getByTestId('header-actions')).getByRole('button', { name: i18n.ts.menu }));
 		expect(openedItems().find(item => item.text === i18n.ts.search)).toBeTruthy();
@@ -655,17 +518,95 @@ describe('voice call on the room page', () => {
 			expect(document.querySelectorAll('[inert]')).toHaveLength(0);
 		});
 	});
-	test('still asks once before joining a remote room', async () => {
-		mocks.instance.features.remoteVoiceCall = true;
-		mocks.confirm.mockResolvedValue({ canceled: false });
-		await renderRoom(mirror, []);
-		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
-		await flush();
-		expect(mocks.confirm).toHaveBeenCalledTimes(1);
-		expect(mocks.joinVoiceCall).toHaveBeenCalledWith(mirror, { micEnabled: false });
+	describe('room owned on another server', () => {
+		test('shows the call for a mirror room when remote calls are allowed', async () => {
+			mocks.instance.features.remoteVoiceCall = true;
+			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			expect(screen.getByRole('button', { name: i18n.ts._voiceCall.join })).toBeTruthy();
+			expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/states', { roomIds: ['r1'] });
+		});
+
+		test('hides the call for a mirror room when remote calls are not allowed', async () => {
+			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			expect(screen.queryByRole('button', { name: i18n.ts._voiceCall.join })).toBeNull();
+			expect(screen.queryByRole('button', { name: i18n.ts._voiceCall.start })).toBeNull();
+			expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/states', expect.anything());
+		});
+
+		test('asks once before joining a call on another server', async () => {
+			mocks.instance.features.remoteVoiceCall = true;
+			mocks.confirm.mockResolvedValue({ canceled: false });
+			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
+
+			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
+			await flush();
+			expect(mocks.confirm).toHaveBeenCalledTimes(1);
+			expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.remoteHostNotice({ host: 'remote.test' }) }));
+			expect(prefer.commit).toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', ['remote.test']);
+			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
+			expect(mocks.joinVoiceCall).toHaveBeenCalledWith(mirror, { micEnabled: false });
+
+			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
+			await flush();
+			expect(mocks.confirm).toHaveBeenCalledTimes(1);
+			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(2);
+		});
+
+		test('ignores a second click while the notice is still open', async () => {
+			mocks.instance.features.remoteVoiceCall = true;
+			let answer!: (value: { canceled: boolean }) => void;
+			mocks.confirm.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
+
+			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
+			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
+			answer({ canceled: false });
+			await flush();
+
+			expect(mocks.confirm).toHaveBeenCalledTimes(1);
+			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
+		});
+
+		test('does not join when the notice is cancelled', async () => {
+			mocks.instance.features.remoteVoiceCall = true;
+			mocks.confirm.mockResolvedValue({ canceled: true });
+			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
+
+			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
+			await flush();
+			expect(mocks.joinVoiceCall).not.toHaveBeenCalled();
+			expect(prefer.commit).not.toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', expect.anything());
+		});
 	});
 
-	async function setPageWidth(width: number) { resizeObserved(width); await flush(); }
+	test.each(['connecting', 'reconnecting'] as const)('announces the call status (%s) from the stage for screen readers', async status => {
+		Object.assign(callState, { status, room });
+		await renderRoom(room, []);
+		const title = screen.getByText(i18n.ts._voiceCall[status]);
+		expect(title.closest('[aria-live="polite"]')).not.toBeNull();
+	});
+
+	test('lets the stage announce, then hands announcements back to the global bar when the room goes away', async () => {
+		Object.assign(callState, { status: 'reconnecting', room });
+		const page = await renderRoom(room, []);
+		render(XVoiceCallBar, { global: { directives: { tooltip: {} }, stubs } });
+		await flush();
+		const live = () => [...document.querySelectorAll('[aria-live="polite"]')].filter(el => el.textContent === i18n.ts._voiceCall.reconnecting);
+		expect(live()).toHaveLength(1);
+		expect(live()[0].closest('[role="region"]')).toBeNull();
+		page.unmount();
+		await flush();
+		expect(live()).toHaveLength(1);
+		expect(live()[0].closest('[role="region"]')).not.toBeNull();
+	});
+
+	test('offers no call when voice calls are disabled on this server', async () => {
+		mocks.instance.features.voiceCall = false;
+		await renderRoom(room, []);
+		expect(screen.queryByRole('button', { name: i18n.ts._voiceCall.start })).toBeNull();
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/states', expect.anything());
+	});
+
 
 		describe('watching several shares', () => {
 			const sharers = [alice, bob, carol, dave, erin];
@@ -824,111 +765,79 @@ describe('on a server without its own LiveKit', () => {
 	});
 
 	test('shows who is in a mirror room\'s call', async () => {
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice)] }]);
-		renderCard(mirror);
-		await flush();
-
+		await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
 		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/states', { roomIds: ['r1'] });
-		expect(within(participantGroup(alice)).getByText('Alice')).toBeTruthy();
-		expect(screen.getByText(i18n.ts._voiceCall.join)).toBeTruthy();
+		expect(screen.getByTestId('sticky-header').querySelectorAll('.avatar')).toHaveLength(1);
+		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.join })).toBeTruthy();
 	});
 
 	test('follows a mirror room\'s call through the main stream', async () => {
-		renderCard(mirror);
-		await flush();
-
+		await renderRoom(mirror, []);
+		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.start })).toBeTruthy();
 		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [participant(bob)] });
 		await flush();
-
-		expect(within(participantGroup(bob)).getByText('Bob')).toBeTruthy();
+		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.join })).toBeTruthy();
+		expect(screen.getByTestId('sticky-header').querySelectorAll('.avatar')).toHaveLength(1);
 	});
 
 	test('lets me watch a participant sharing their screen after joining a mirror room\'s call', async () => {
 		Object.assign(callState, { status: 'connected', room: mirror });
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true)] }]);
-		renderCard(mirror);
-		await flush();
-
+		await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice, true)] }]);
 		await fireEvent.click(watchToggleOf(alice));
 		expect(mocks.toggleScreenShareWatch).toHaveBeenCalledWith(identityOf(alice));
 	});
 
-	test('still hides the card of a room owned here, since this server cannot host its call', async () => {
-		renderCard(room);
-		await flush();
-
-		expect(screen.queryByText(i18n.ts._voiceCall.join)).toBeNull();
-		expect(mocks.misskeyApi).not.toHaveBeenCalled();
+	test('still offers no call in a room owned here, since this server cannot host its call', async () => {
+		await renderRoom(room, []);
+		expect(screen.queryByRole('button', { name: i18n.ts._voiceCall.start })).toBeNull();
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/states', expect.anything());
 	});
 });
 
-describe('screen share in the room panel', () => {
-	test('keeps participant identity passive and watches only from the screen button', async () => {
+describe('screen share on the stage', () => {
+	test('keeps participant identity passive and watches only from the share card', async () => {
 		Object.assign(callState, { status: 'connected', room });
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true)] }]);
-		renderCard();
-		await flush();
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice, true)] }]);
 
 		await fireEvent.click(within(participantGroup(alice)).getByText('Alice'));
 		expect(mocks.toggleScreenShareWatch).not.toHaveBeenCalled();
 		await fireEvent.click(watchToggleOf(alice));
 		expect(mocks.toggleScreenShareWatch).toHaveBeenLastCalledWith(identityOf(alice));
-		expect(watchToggleOf(alice).getAttribute('aria-pressed')).toBe('false');
-		expect(hasClass(watchToggleOf(alice), 'watching')).toBe(false);
-
-		// 見ているチップは枠で目立たせる (文言は足さない)
-		callState.watchingIdentities = [identityOf(alice)];
-		await flush();
-		expect(watchToggleOf(alice).getAttribute('aria-pressed')).toBe('true');
-		expect(hasClass(watchToggleOf(alice), 'watching')).toBe(true);
-		await fireEvent.click(watchToggleOf(alice));
-		expect(mocks.toggleScreenShareWatch).toHaveBeenCalledTimes(2);
 	});
 
-	test('keeps the live preview in its own button without verbose status text', async () => {
+	test('keeps the live preview in the share card, not on the sharer\'s tile', async () => {
 		Object.assign(callState, { status: 'connected', room });
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true), participant(bob)] }]);
-		renderCard();
-		await flush();
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice, true), participant(bob)] }]);
 
 		const preview = watchToggleOf(alice).querySelector('video');
 		expect(preview).not.toBeNull();
 		expect(mocks.attachScreenShare).toHaveBeenCalledWith(identityOf(alice), preview, { preview: true });
 		expect(within(participantGroup(alice)).getByText('Alice')).toBeTruthy();
-		expect(within(participantGroup(alice)).queryByText(i18n.ts._voiceCall.sharingScreen)).toBeNull();
+		expect(participantGroup(alice).querySelector('video')).toBeNull();
 		expect(participantGroup(bob).querySelector('video')).toBeNull();
 	});
 
 	// 共有している本人も、送っている画面を確かめられるようにする (違う窓を映していても気付ける)
 	// 参加者の一覧はサーバーを経て届くので、共有を始めても少し遅れて変わる (他のサーバーのルームでは 10 秒以上)。それを待たずに映す
-	test.each([true, false])('shows a live preview of my own share on my chip, which toggles watching it like anyone else\'s (listed as sharing yet: %s)', async listed => {
+	test.each([true, false])('shows a live preview of my own share, which toggles watching it like anyone else\'s (listed as sharing yet: %s)', async listed => {
 		Object.assign(callState, { status: 'connected', room, screenSharing: true });
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me, listed), participant(alice, true)] }]);
-		renderCard();
-		await flush();
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(me, listed), participant(alice, true)] }]);
 
 		const preview = watchToggleOf(me).querySelector('video');
 		expect(preview).not.toBeNull();
 		expect(mocks.attachScreenShare).toHaveBeenCalledWith(identityOf(me), preview, { preview: true });
 		await fireEvent.click(watchToggleOf(me));
 		expect(mocks.toggleScreenShareWatch).toHaveBeenLastCalledWith(identityOf(me));
-		expect(watchToggleOf(me).getAttribute('aria-pressed')).toBe('false');
 
 		callState.watchingIdentities = [identityOf(me)];
 		await flush();
-		expect(watchToggleOf(me).getAttribute('aria-pressed')).toBe('true');
-		expect(hasClass(watchToggleOf(me), 'watching')).toBe(true);
 		expect(within(viewerOf(me)).getByLabelText(i18n.ts._voiceCall.fullscreen)).toBeTruthy();
-		// 自分のチップには今までどおりメニューを出さない
-		expect(within(participantGroup(me)).queryByLabelText(i18n.ts.menu)).toBeNull();
 	});
 
 	// 参加者の一覧はサーバーを経て届くので、共有をやめてから少し遅れて変わる。それを待たずにプレビューを外す
-	test('takes my preview off my chip as soon as I stop sharing', async () => {
+	test('takes my preview away as soon as I stop sharing', async () => {
 		Object.assign(callState, { status: 'connected', room, screenSharing: true });
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me, true)] }]);
-		renderCard();
-		await flush();
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(me, true)] }]);
 		expect(watchToggleOf(me).querySelector('video')).not.toBeNull();
 		const detach = mocks.attachScreenShare.mock.results.at(-1)!.value as ReturnType<typeof vi.fn>;
 
@@ -936,18 +845,15 @@ describe('screen share in the room panel', () => {
 		await flush();
 
 		expect(detach).toHaveBeenCalledTimes(1);
-		expect(participantGroup(me).querySelector('video')).toBeNull();
-		expect(within(participantGroup(me)).queryByRole('button', { name: i18n.tsx._voiceCall.watchScreenOf({ name: me.name }) })).toBeNull();
+		expect(screen.queryByRole('button', { name: i18n.tsx._voiceCall.watchScreenOf({ name: me.name }) })).toBeNull();
 		// 共有のアイコンも、自分の共有ボタンと同じく手元の状態に合わせて消す
 		expect(within(participantGroup(me)).queryByLabelText(i18n.ts._voiceCall.sharingScreen)).toBeNull();
 	});
 
-	// 一覧に自分がまだいない (参加した直後) あいだは、自分のチップを作って足しはしない
-	test('does not make up a chip for me before the list has me', async () => {
+	// 一覧に自分がまだいない (参加した直後) あいだは、自分のタイルを作って足しはしない
+	test('does not make up a tile for me before the list has me', async () => {
 		Object.assign(callState, { status: 'connected', room, screenSharing: true });
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true)] }]);
-		renderCard();
-		await flush();
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice, true)] }]);
 
 		expect(screen.queryByRole('group', { name: me.name })).toBeNull();
 		expect(mocks.attachScreenShare).not.toHaveBeenCalledWith(identityOf(me), expect.anything(), expect.anything());
@@ -957,33 +863,19 @@ describe('screen share in the room panel', () => {
 		expect(watchToggleOf(me).querySelector('video')).not.toBeNull();
 	});
 
-	// 手元の状態は通話中のルームのもの。ほかのルームの一覧には、届いたとおりに出す
-	test('shows my share as listed in a room whose call I am not in', async () => {
+	// 手元の状態は通話中のルームのもの。ほかのルームでは届いたとおりに出し、通話に入るまでは共有画面を受け取れないのでプレビューも出さない
+	test('does not offer to watch or preview before joining the call', async () => {
 		Object.assign(callState, { status: 'connected', room: { ...room, id: 'other-room' }, screenSharing: true });
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me, false)] }]);
-		renderCard();
-		await flush();
-
-		expect(participantGroup(me).querySelector('video')).toBeNull();
-		expect(within(participantGroup(me)).queryByLabelText(i18n.ts._voiceCall.sharingScreen)).toBeNull();
-	});
-
-	test('does not offer to watch before joining the call', async () => {
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true)] }]);
-		renderCard();
-		await flush();
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(me, false), participant(alice, true)] }]);
 
 		expect(screen.queryByRole('button', { name: i18n.tsx._voiceCall.watchScreenOf({ name: 'Alice' }) })).toBeNull();
-		expect(screen.getAllByLabelText(i18n.ts._voiceCall.sharingScreen).length).toBeGreaterThan(0);
-		// 通話に入るまでは共有画面を受け取れないので、プレビューも出さない
+		expect(screen.queryByRole('button', { name: i18n.tsx._voiceCall.watchScreenOf({ name: me.name }) })).toBeNull();
 		expect(mocks.attachScreenShare).not.toHaveBeenCalled();
 	});
 
-	test('opens the participant menu from the ⋯ button, not from the chip', async () => {
+	test('opens the participant menu from the ⋯ button, not from the tile', async () => {
 		Object.assign(callState, { status: 'connected', room });
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(alice, true), participant(bob)] }]);
-		renderCard();
-		await flush();
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice, true), participant(bob)] }]);
 
 		await fireEvent.click(within(participantGroup(bob)).getByText('Bob'));
 		await fireEvent.click(within(participantGroup(alice)).getByText('Alice'));
@@ -996,20 +888,21 @@ describe('screen share in the room panel', () => {
 		expect(mocks.popupMenu).toHaveBeenCalledTimes(2);
 	});
 
-	describe('watching several shares', () => {
-		const sharers = [alice, bob, carol, dave, erin];
+	describe('closing a watched share', () => {
+		const sharers = [alice, bob, carol];
 
-		async function renderCardWatching(count: number) {
+		async function renderStageWatching(count: number) {
 			Object.assign(callState, { status: 'connected', room, watchingIdentities: sharers.slice(0, count).map(identityOf) });
-			mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: sharers.map(user => participant(user, true)) }]);
-			renderCard();
-			await flush();
+			// 見るのをやめると、その人の共有カードが並びに戻る
+			mocks.unwatchScreenShare.mockImplementation((identity: string) => { callState.watchingIdentities = (callState.watchingIdentities as string[]).filter(id => id !== identity); });
+			await renderRoom(room, [{ roomId: 'r1', participants: sharers.map(user => participant(user, true)) }]);
+			await setPageWidth(1280);
 		}
 
 		test('shows each watched share with its own name, fullscreen, picture-in-picture and close', async () => {
 			Object.defineProperty(window.document, 'pictureInPictureEnabled', { configurable: true, value: true });
 			try {
-				await renderCardWatching(2);
+				await renderStageWatching(2);
 			} finally {
 				Reflect.deleteProperty(window.document, 'pictureInPictureEnabled');
 			}
@@ -1021,31 +914,13 @@ describe('screen share in the room panel', () => {
 				expect(viewer.getByLabelText(i18n.ts._voiceCall.pictureInPicture)).toBeTruthy();
 			}
 			expect(queryViewerOf(carol)).toBeNull();
-			// 狭いカードでは大きくする操作は出さない
-			expect(within(viewerOf(alice)).queryByRole('button', { name: i18n.ts._voiceCall.focusScreen })).toBeNull();
 
 			await fireEvent.click(within(viewerOf(bob)).getByLabelText(i18n.ts._voiceCall.stopWatching));
 			expect(mocks.unwatchScreenShare).toHaveBeenCalledWith(identityOf(bob));
 		});
 
-		test('closing skips a hidden mounted copy of the same call toggle', async () => {
-			await renderCardWatching(2);
-			const visible = watchToggleOf(alice);
-			const hidden = document.createElement('div');
-			hidden.style.display = 'none';
-			hidden.append(visible.cloneNode(true));
-			document.body.prepend(hidden);
-			try {
-				await fireEvent.click(within(viewerOf(alice)).getByLabelText(i18n.ts._voiceCall.stopWatching));
-				await flush();
-				expect(document.activeElement).toBe(visible);
-			} finally {
-				hidden.remove();
-			}
-		});
-
-		test('closing a share from the keyboard moves the focus to the sharer\'s chip', async () => {
-			await renderCardWatching(2);
+		test('closing a share from the keyboard moves the focus to the sharer\'s card', async () => {
+			await renderStageWatching(2);
 			const close = within(viewerOf(alice)).getByLabelText(i18n.ts._voiceCall.stopWatching);
 			close.focus();
 
@@ -1055,20 +930,20 @@ describe('screen share in the room panel', () => {
 			expect(window.document.activeElement).toBe(watchToggleOf(alice));
 		});
 
-		test.each([
-			[1, 'layout1'],
-			[2, 'layout2'],
-			[3, 'layout4'],
-			[4, 'layout4'],
-			[5, 'layoutMany'],
-		])('lays out %i watched shares as %s', async (count, layout) => {
-			await renderCardWatching(count);
-
-			const grid = viewerOf(alice).parentElement!;
-			expect(hasClass(grid, layout)).toBe(true);
-			// カードは高さの上限を一覧全体にかける
-			expect(hasClass(grid, 'capped')).toBe(true);
-			expect(grid.querySelectorAll('video')).toHaveLength(count);
+		test('closing skips a hidden mounted copy of the same call toggle', async () => {
+			await renderStageWatching(2);
+			const hidden = document.createElement('div');
+			hidden.style.display = 'none';
+			hidden.append(watchToggleOf(carol).cloneNode(true));
+			(hidden.firstElementChild as HTMLElement).dataset.voiceCallWatchToggle = identityOf(alice);
+			document.body.prepend(hidden);
+			try {
+				await fireEvent.click(within(viewerOf(alice)).getByLabelText(i18n.ts._voiceCall.stopWatching));
+				await flush();
+				expect(document.activeElement).toBe(watchToggleOf(alice));
+			} finally {
+				hidden.remove();
+			}
 		});
 	});
 });
@@ -1240,7 +1115,7 @@ describe.each([['mobile row', XParticipant, {}], ['compact stage row', XTile, { 
 	test('keeps identity and status outside the explicit screen, volume and menu buttons', async () => {
 		const { emitted } = render(component, { props: {
 			...extra, participant: { ...participant(alice, true), micMuted: true, deafened: true },
-			speaking: false, volumable: true, menuable: true,
+			speaking: false, menuable: true,
 		}, global: { directives: { tooltip: {} }, stubs } });
 		const group = participantGroup(alice);
 		const buttons = within(group).getAllByRole('button');
@@ -1264,7 +1139,7 @@ describe.each([['mobile row', XParticipant, {}], ['compact stage row', XTile, { 
 describe('participant tile layout changes', () => {
 	test.each(['menu'] as const)('preserves keyboard focus on the %s control in both directions', async control => {
 		const { rerender } = render(XTile, { props: {
-			participant: participant(alice, true), speaking: false, volumable: true, menuable: true, small: false,
+			participant: participant(alice, true), speaking: false, menuable: true, small: false,
 		}, global: { directives: { tooltip: {} }, stubs } });
 		const label = i18n.ts.menu;
 		within(participantGroup(alice)).getByRole('button', { name: label }).focus();
@@ -1323,16 +1198,15 @@ describe('avatar decorations in the call', () => {
 });
 
 describe.each([['chip', XParticipant], ['tile', XTile]] as const)('%s status and volume controls', (_name, component) => {
-	test('shows shared mute settings and keeps the volume button separate from the menu', async () => {
+	test('shows shared mute settings and opens only the menu from its button', async () => {
 		const { emitted } = render(component, { props: {
 			participant: { ...participant(alice), micMuted: true, deafened: true },
-			speaking: false, menuable: true, volumable: true,
+			speaking: false, menuable: true,
 		}, global: { directives: { tooltip: {} }, stubs } });
 		expect(screen.queryByLabelText(i18n.ts._voiceCall.micMuted)).toBeNull();
 		expect(screen.getByLabelText(i18n.ts._voiceCall.deafened)).toBeTruthy();
 		await fireEvent.click(screen.getByRole('button', { name: i18n.ts.menu }));
 		expect(emitted().openMenu).toHaveLength(1);
-		expect(emitted().openVolume).toBeUndefined();
 	});
 
 	test('does not show mute indicators when older servers supply no settings', () => {
@@ -1343,18 +1217,11 @@ describe.each([['chip', XParticipant], ['tile', XTile]] as const)('%s status and
 });
 
 describe('participant menu', () => {
-	type MenuItemLike = { type?: string; text?: string; action?: () => unknown; props?: Record<string, unknown> };
-	const openedItems = () => mocks.popupMenu.mock.calls[mocks.popupMenu.mock.calls.length - 1][0] as MenuItemLike[];
-	const menuButtonOf = (user: typeof alice) => within(participantGroup(user)).getByLabelText(i18n.ts.menu);
-
 	test('lets the room owner remove a participant after confirming', async () => {
-		const ownedRoom = { ...room, ownerId: 'me' };
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(bob)] }]);
 		mocks.confirm.mockResolvedValue({ canceled: false });
-		renderCard(ownedRoom);
-		await flush();
+		await renderRoom({ ...room, ownerId: 'me' }, [{ roomId: 'r1', participants: [participant(bob)] }]);
 
-		await fireEvent.click(menuButtonOf(bob));
+		await fireEvent.click(stickyCard().getByRole('button', { name: bob.name }));
 		const kick = openedItems().find(item => item.text === i18n.ts._voiceCall.kick)!;
 		await kick.action!();
 
@@ -1363,12 +1230,9 @@ describe('participant menu', () => {
 	});
 
 	test('lets the room owner mute a participant for everyone', async () => {
-		const ownedRoom = { ...room, ownerId: 'me' };
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(bob)] }]);
-		renderCard(ownedRoom);
-		await flush();
+		await renderRoom({ ...room, ownerId: 'me' }, [{ roomId: 'r1', participants: [participant(bob)] }]);
 
-		await fireEvent.click(menuButtonOf(bob));
+		await fireEvent.click(stickyCard().getByRole('button', { name: bob.name }));
 		await openedItems().find(item => item.text === i18n.ts._voiceCall.forceMute)!.action!();
 
 		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/voice/mute', { roomId: 'r1', userId: 'bob' });
@@ -1376,9 +1240,7 @@ describe('participant menu', () => {
 
 	test('does not offer moderation to other members', async () => {
 		Object.assign(callState, { status: 'connected', room });
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(bob)] }]);
-		renderCard();
-		await flush();
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(bob)] }]);
 
 		await fireEvent.click(menuButtonOf(bob));
 		const texts = openedItems().map(item => item.text);
@@ -1388,12 +1250,11 @@ describe('participant menu', () => {
 
 	test('offers a volume control only for others while in the call', async () => {
 		Object.assign(callState, { status: 'connected', room });
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me), participant(bob)] }]);
-		renderCard();
-		await flush();
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(me), participant(bob)] }]);
 
-		// 自分のチップにはメニューを出さない
-		expect(within(participantGroup(me)).queryByLabelText(i18n.ts.menu)).toBeNull();
+		// 自分のメニューはマイクとスピーカーの切り替えだけで、音量は出さない
+		await fireEvent.click(menuButtonOf(me));
+		expect(openedItems().filter(item => item.type === 'component')).toEqual([]);
 
 		await fireEvent.click(menuButtonOf(bob));
 		expect(openedItems().filter(item => item.type === 'component').map(item => item.props)).toEqual([
@@ -1403,9 +1264,7 @@ describe('participant menu', () => {
 
 	test('keeps screen audio out of the participant menu while sharing', async () => {
 		Object.assign(callState, { status: 'connected', room });
-		mocks.misskeyApi.mockResolvedValue([{ roomId: 'r1', participants: [participant(me), participant(bob, true)] }]);
-		renderCard();
-		await flush();
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(me), participant(bob, true)] }]);
 
 		await fireEvent.click(menuButtonOf(bob));
 		expect(openedItems().filter(item => item.type === 'component').map(item => item.props)).toEqual([

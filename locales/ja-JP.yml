@@ -2419,7 +2419,6 @@ _voiceCall:
   otherParticipants: "ほか{n}人"
   micOn: "マイクオン"
   micInputDetected: "マイク入力を検出"
-  title: "通話"
   micMuted: "マイクミュート中"
   deafened: "スピーカーミュート中"
   micUnavailable: "マイクを使用できません。"

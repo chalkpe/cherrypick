@@ -5,16 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <!-- Identity and reported settings are passive; all controls share one separate action area. -->
-<component
-	:is="summary ? 'button' : 'div'"
-	:type="summary ? 'button' : undefined"
-	:class="[$style.root, { '_button': summary, [$style.summary]: summary, [$style.squareAvatar]: squareAvatar, [$style.speaking]: speaking }]"
-	:role="summary ? undefined : 'group'" :aria-label="userName(participant.user)"
-	:aria-haspopup="summary && menuable ? 'menu' : undefined"
-	:disabled="summary && !menuable ? true : undefined"
-	@click="summary && menuable && emit('openMenu', $event)"
-	@contextmenu="onContextMenu"
->
+<div :class="[$style.root, { [$style.squareAvatar]: squareAvatar, [$style.speaking]: speaking }]" role="group" :aria-label="userName(participant.user)">
 	<div :class="$style.avatarFrame"><MkAvatar :user="participant.user" :link="false" :preview="false" :class="$style.avatar"/></div>
 	<div :class="$style.identity">
 		<div :class="$style.status">
@@ -24,9 +15,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</div>
 		<MkUserName :user="participant.user" :class="$style.name"/>
 	</div>
-	<div v-if="!summary && menuable" :class="$style.actions">
+	<div v-if="menuable" :class="$style.actions">
 		<button
-			v-if="menuable"
 			v-tooltip="i18n.ts.menu" type="button" class="_button"
 			:class="$style.action" :aria-label="i18n.ts.menu"
 			data-voice-call-action="menu"
@@ -35,7 +25,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<i class="ti ti-dots" aria-hidden="true"></i>
 		</button>
 	</div>
-</component>
+</div>
 </template>
 
 <script lang="ts" setup>
@@ -49,45 +39,18 @@ const props = withDefaults(defineProps<{
 	participant: Misskey.entities.ChatRoomVoiceState['participants'][number];
 	speaking: boolean;
 	menuable?: boolean;
-	volumable?: boolean;
-	summary?: boolean;
 }>(), {
 	menuable: false,
-	volumable: false,
-	summary: false,
 });
 
 const emit = defineEmits<{
 	(ev: 'openMenu', event: MouseEvent): void;
-	(ev: 'openVolume', event: MouseEvent): void;
 }>();
-
-function onContextMenu(event: MouseEvent) {
-	if (!props.summary || !props.menuable) return;
-	event.preventDefault();
-	emit('openMenu', event);
-}
 
 const squareAvatar = computed(() => isSquareAvatar(props.participant.user));
 </script>
 
 <style lang="scss" module>
-.root.summary {
-	display: grid;
-	grid-template-columns: 48px minmax(0, 1fr);
-	gap: 6px;
-	min-height: 54px;
-	padding: 2px 6px;
-	border: 1px solid var(--MI_THEME-divider);
-	border-radius: calc(var(--MI-radius) * 0.75);
-	background: var(--MI_THEME-panelHighlight);
-	text-align: left;
-
-	.avatar { width: 24px; height: 24px; }
-	&:focus-visible { outline: 2px solid var(--MI_THEME-accent); outline-offset: 2px; }
-	&:not(:disabled):hover { background: var(--MI_THEME-buttonHoverBg); }
-}
-
 .root {
 	display: grid;
 	grid-template-columns: 48px minmax(0, 1fr) auto;

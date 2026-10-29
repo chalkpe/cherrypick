@@ -7,8 +7,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 <PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
 	<!-- 広いページで誰かが通話にいるあいだは、通話 (ステージ) とチャットを左右に並べる。ステージは一つだけ作り、チャットを置く側の反対へ CSS の順序で移す。
 	狭いページでは、通話は専用タブで開き、チャットには重ねない -->
-	<div v-if="tab === 'chat' || tab === 'voice'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="{ [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }">
-		<XStage v-if="split && room" :room="room" :call="voiceCallState" :chatSide="chatSide" :class="$style.stage" :chatOpen="chatOpen" @toggleChat="chatOpen = !chatOpen"/>
+	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="{ [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }">
+		<XStage v-if="split && room" :room="room" :call="voiceCallState" :class="$style.stage" :chatOpen="chatOpen" @toggleChat="chatOpen = !chatOpen"/>
 		<div v-if="split && voiceInOwnTab && chatOpen" ref="sheetBackdropEl" :class="$style.sheetBackdrop" @click="chatOpen = false"></div>
 		<div v-show="!split || chatOpen" ref="chatPaneEl" :class="$style.chatPane" :role="split && voiceInOwnTab && chatOpen ? 'dialog' : undefined" :aria-modal="split && voiceInOwnTab && chatOpen ? true : undefined" :aria-label="i18n.ts._chat.messages" @dragover="chatFormEl?.onDragover($event)" @drop="chatFormEl?.onDrop($event)" @keydown.esc="split && voiceInOwnTab && (chatOpen = false)">
 			<div v-if="split && voiceInOwnTab" :class="$style.sheetHeading"><strong>{{ i18n.ts._chat.messages }}</strong><button v-tooltip="i18n.ts.close" class="_button" :aria-label="i18n.ts.close" @click="chatOpen = false"><i class="ti ti-x"></i></button></div>
@@ -101,7 +101,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 	<template #footer>
 		<!-- 表示は v-show ではなく style で切り替える (上の paneFormHostEl と同じ理由) -->
-		<div v-if="tab === 'chat' || tab === 'voice'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]" :style="split || tab === 'voice' ? { display: 'none' } : undefined">
+		<div v-if="tab === 'chat'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]" :style="split ? { display: 'none' } : undefined">
 			<!-- 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (並べているときはメッセージの欄の下へ)。
 			作り直すとフォーカスが外れてページ全体のショートカットが効いてしまい、変換中の文字や送信中の状態も失われる -->
 			<Teleport v-if="paneFormHostEl != null" :to="paneFormHostEl" :disabled="!split">
@@ -489,9 +489,6 @@ function showMenu(ev: PointerEvent) {
 }
 
 const tab = ref('chat');
-watch(voiceCallState.available, available => {
-	if (!available && tab.value === 'voice') tab.value = 'chat';
-});
 
 // ウィンドウではなくページ自身の幅で決める (デッキの列やウィジェットでページの幅は変わる)
 const chatTabEl = useTemplateRef('chatTabEl');
@@ -713,15 +710,6 @@ definePage(computed(() => {
 
 <style lang="scss" module>
 .joinBanner { margin-bottom: 24px; }
-
-.voiceTab {
-	height: calc(100cqh - var(--MI-stickyTop, 0px) - var(--MI-stickyBottom, 0px) - var(--voiceCallBottomSpacing, 0px));
-	min-height: 320px;
-
-	> div {
-		height: 100%;
-	}
-}
 
 .transition_x_move,
 .transition_x_enterActive,

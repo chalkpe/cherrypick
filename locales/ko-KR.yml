@@ -2389,7 +2389,6 @@ _voiceCall:
   otherParticipants: "외 {n}명"
   micOn: "마이크 켜짐"
   micInputDetected: "마이크 입력 감지"
-  title: "통화"
   micMuted: "마이크 꺼짐"
   deafened: "소리 꺼짐"
   micUnavailable: "마이크를 쓸 수 없어요."
