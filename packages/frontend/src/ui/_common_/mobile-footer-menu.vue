@@ -63,7 +63,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, useTemplateRef, watch } from 'vue';
+import { computed, useTemplateRef, watch } from 'vue';
+import { useMobileFooterHeight } from '@/composables/use-mobile-footer-height.js';
 import { $i } from '@/i.js';
 import * as os from '@/os.js';
 import { mainRouter } from '@/router.js';
@@ -79,6 +80,7 @@ const drawerMenuShowing = defineModel<boolean>('drawerMenuShowing');
 const widgetsShowing = defineModel<boolean>('widgetsShowing');
 
 const rootEl = useTemplateRef('rootEl');
+useMobileFooterHeight(rootEl);
 
 const menuIndicated = computed(() => {
 	for (const def in navbarItemDef) {
@@ -86,17 +88,6 @@ const menuIndicated = computed(() => {
 		if (navbarItemDef[def].indicated) return true;
 	}
 	return false;
-});
-
-function updateFooterHeight() {
-	const height = rootEl.value?.getBoundingClientRect().height ?? 0;
-	window.document.body.style.setProperty('--MI-mobileFooterHeight', `${height}px`);
-}
-
-const footerObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateFooterHeight);
-onBeforeUnmount(() => {
-	footerObserver?.disconnect();
-	window.document.body.style.removeProperty('--MI-mobileFooterHeight');
 });
 
 function clickHomeButton() {
@@ -134,10 +125,7 @@ function clickPostButton() {
 	os.post();
 }
 
-watch(rootEl, (el, previous) => {
-	if (previous) footerObserver?.unobserve(previous);
-	if (el) footerObserver?.observe(el);
-	updateFooterHeight();
+watch(rootEl, () => {
 	if (rootEl.value) {
 		window.document.body.style.setProperty('--MI-minBottomSpacing', 'var(--MI-minBottomSpacingMobile)');
 	} else {
