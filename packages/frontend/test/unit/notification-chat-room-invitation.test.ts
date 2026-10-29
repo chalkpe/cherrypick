@@ -7,14 +7,16 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/vue';
 
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: vi.fn(async () => ({})) }));
+vi.mock('@/os.js', () => ({ alert: vi.fn() }));
 const me = vi.hoisted(() => ({ id: 'me', username: 'me', policies: {} }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: me, ensureSignin: () => me }));
 // この通知では使わない部品。読み込むとノートやユーザーのメニューまで連なって読み込まれるので差し替える
 vi.mock('@/components/MkFollowButton.vue', () => ({ default: {} }));
 vi.mock('@/components/MkReactionIcon.vue', () => ({ default: {} }));
 
-import MkNotification from '@/components/MkNotification.vue';
+import { alert } from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
+import MkNotification from '@/components/MkNotification.vue';
 
 const stubs = {
 	MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' },
@@ -23,6 +25,8 @@ const stubs = {
 	MkTime: true,
 	Mfm: { props: ['text'], template: '<span>{{ text }}</span>' },
 };
+
+const flushPromises = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 
 const owner = { id: 'owner', username: 'owner', host: null };
 const api = vi.mocked(misskeyApi);
@@ -50,7 +54,9 @@ function renderNotification(full = false) {
 }
 
 beforeEach(() => {
-	api.mockClear();
+	vi.mocked(alert).mockClear();
+	api.mockReset();
+	api.mockResolvedValue({} as never);
 });
 
 afterEach(cleanup);
@@ -72,6 +78,7 @@ test('joins the room from the notification', async () => {
 
 	await fireEvent.click(screen.getAllByRole('button')[0]);
 
+	await flushPromises();
 	expect(api).toHaveBeenCalledWith('chat/rooms/join', { roomId: 'room1' });
 	expect(screen.queryAllByRole('button')).toHaveLength(0);
 });
@@ -81,6 +88,7 @@ test('rejects the invitation from the notification', async () => {
 
 	await fireEvent.click(screen.getAllByRole('button')[1]);
 
+	await flushPromises();
 	expect(api).toHaveBeenCalledWith('chat/rooms/invitations/reject', { roomId: 'room1' });
 	expect(screen.queryAllByRole('button')).toHaveLength(0);
 });
@@ -88,5 +96,34 @@ test('rejects the invitation from the notification', async () => {
 test('does not offer actions in the compact notification view', () => {
 	renderNotification();
 
+	expect(screen.queryAllByRole('button')).toHaveLength(0);
+});
+
+for (const action of [0, 1]) {
+	test(`keeps invitation actions available after action ${action} fails`, async () => {
+		api.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+		renderNotification(true);
+		await fireEvent.click(screen.getAllByRole('button')[action]);
+		await flushPromises();
+		expect(vi.mocked(alert)).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+		expect(screen.getAllByRole('button')).toHaveLength(2);
+		expect(screen.getAllByRole('button').every(button => !(button as HTMLButtonElement).disabled)).toBe(true);
+		await fireEvent.click(screen.getAllByRole('button')[action]);
+		await flushPromises();
+		expect(api).toHaveBeenCalledTimes(2);
+		expect(screen.queryAllByRole('button')).toHaveLength(0);
+	});
+}
+
+test('disables both actions until the pending request succeeds', async () => {
+	let resolve!: () => void;
+	api.mockImplementationOnce(() => new Promise<void>(done => { resolve = done; }) as never);
+	renderNotification(true);
+	await fireEvent.click(screen.getAllByRole('button')[0]);
+	expect(screen.getAllByRole('button').every(button => (button as HTMLButtonElement).disabled)).toBe(true);
+	await fireEvent.click(screen.getAllByRole('button')[1]);
+	expect(api).toHaveBeenCalledTimes(1);
+	resolve();
+	await flushPromises();
 	expect(screen.queryAllByRole('button')).toHaveLength(0);
 });

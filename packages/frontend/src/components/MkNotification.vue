@@ -127,8 +127,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<Mfm :text="notification.invitation.room.name" :plain="true" :author="notification.invitation.room.owner"/>
 				</MkA>
 				<div v-if="full && !chatRoomInviteDone" :class="$style.followRequestCommands">
-					<MkButton :class="$style.followRequestCommandButton" rounded primary @click="acceptChatRoomInvitation()"><i class="ti ti-check"></i> {{ i18n.ts._chat.join }}</MkButton>
-					<MkButton :class="$style.followRequestCommandButton" rounded danger @click="rejectChatRoomInvitation()"><i class="ti ti-x"></i> {{ i18n.ts._chat.reject }}</MkButton>
+					<MkButton :class="$style.followRequestCommandButton" rounded primary :disabled="chatRoomInvitePending" @click="acceptChatRoomInvitation()"><i class="ti ti-check"></i> {{ i18n.ts._chat.join }}</MkButton>
+					<MkButton :class="$style.followRequestCommandButton" rounded danger :disabled="chatRoomInvitePending" @click="rejectChatRoomInvitation()"><i class="ti ti-x"></i> {{ i18n.ts._chat.reject }}</MkButton>
 				</div>
 			</template>
 			<MkA v-else-if="notification.type === 'achievementEarned'" :class="$style.text" to="/my/achievements">
@@ -204,6 +204,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { ref } from 'vue';
+import { alert } from '@/os.js';
 import * as Misskey from 'cherrypick-js';
 import MkReactionIcon from '@/components/MkReactionIcon.vue';
 import MkFollowButton from '@/components/MkFollowButton.vue';
@@ -246,6 +247,7 @@ const exportEntityName = {
 const followRequestDone = ref(false);
 const groupInviteDone = ref(false);
 const chatRoomInviteDone = ref(false);
+const chatRoomInvitePending = ref(false);
 
 const acceptFollowRequest = () => {
 	if (!('user' in props.notification)) return;
@@ -276,17 +278,21 @@ const rejectGroupInvitation = () => {
 	misskeyApi('users/groups/invitations/reject', { invitationId: props.notification.invitation.id });
 };
 
-const acceptChatRoomInvitation = () => {
-	if (props.notification.type !== 'chatRoomInvitationReceived') return;
-	chatRoomInviteDone.value = true;
-	misskeyApi('chat/rooms/join', { roomId: props.notification.invitation.room.id });
-};
+async function respondToChatRoomInvitation(endpoint: 'chat/rooms/join' | 'chat/rooms/invitations/reject') {
+	if (props.notification.type !== 'chatRoomInvitationReceived' || chatRoomInvitePending.value || chatRoomInviteDone.value) return;
+	chatRoomInvitePending.value = true;
+	try {
+		await misskeyApi(endpoint, { roomId: props.notification.invitation.room.id });
+		chatRoomInviteDone.value = true;
+	} catch {
+		void alert({ type: 'error', text: i18n.ts.somethingHappened });
+	} finally {
+		chatRoomInvitePending.value = false;
+	}
+}
 
-const rejectChatRoomInvitation = () => {
-	if (props.notification.type !== 'chatRoomInvitationReceived') return;
-	chatRoomInviteDone.value = true;
-	misskeyApi('chat/rooms/invitations/reject', { roomId: props.notification.invitation.room.id });
-};
+const acceptChatRoomInvitation = () => respondToChatRoomInvitation('chat/rooms/join');
+const rejectChatRoomInvitation = () => respondToChatRoomInvitation('chat/rooms/invitations/reject');
 </script>
 
 <style lang="scss" module>
