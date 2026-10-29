@@ -49,7 +49,7 @@ import { misskeyApi } from '@/utility/misskey-api.js';
 import { prefer } from '@/preferences.js';
 import { Autocomplete } from '@/utility/autocomplete.js';
 import { emojiPicker } from '@/utility/emoji-picker.js';
-import { getDragData } from '@/drag-and-drop.js';
+import { checkDragDataType, getDragData } from '@/drag-and-drop.js';
 import XVoiceCallBarSlot from '@/ui/_common_/voice-call-bar-slot.vue';
 import XPostFormAttaches from '@/components/MkPostFormAttaches.vue';
 
@@ -120,7 +120,7 @@ function onDragover(ev: DragEvent) {
 	if (!ev.dataTransfer) return;
 
 	const isFile = Array.from(ev.dataTransfer.types).includes('Files') || Array.from(ev.dataTransfer.items).some(item => item.kind === 'file');
-	if (isFile || Array.from(ev.dataTransfer.types).some(type => type.toLowerCase() === 'cherrypick/drivefiles')) {
+	if (isFile || checkDragDataType(ev, ['driveFiles'])) {
 		ev.preventDefault();
 		switch (ev.dataTransfer.effectAllowed) {
 			case 'all':
