@@ -434,7 +434,7 @@ describe.each([
 });
 
 test('every voice endpoint error has its own UUID', () => {
-	const ids = [joinMeta, kickMeta, muteMeta].flatMap(meta => Object.values(meta.errors).map(error => error.id as string));
+	const ids = [joinMeta, kickMeta, muteMeta, statusMeta].flatMap(meta => Object.values(meta.errors).map(error => error.id as string));
 	for (const id of ids) {
 		expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 	}

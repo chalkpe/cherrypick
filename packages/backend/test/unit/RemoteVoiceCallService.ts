@@ -98,6 +98,39 @@ describe('RemoteVoiceCallService', () => {
 		}, 10_000, { redirect: 'manual', size: 64 * 1024 });
 	});
 
+	test('does not report settings to a host remembered as unsupported', async () => {
+		const f = createFixture();
+		f.redis.store.set('chatVoice:unsupportedHost:remote.test', '1');
+
+		await expect(f.service.reportStatus(me, room, owner, 'PA_1', { micMuted: true, deafened: false })).rejects.toMatchObject({ reason: 'unsupported' });
+		expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+	});
+
+	// トークンは出せるが設定の報告は受けられない (古い) ホストがある。その 404 でホストごと「通話が使えない」と覚えると、
+	// 進行中の通話で設定を切り替えただけで、そのホストのすべてのルームに 1 時間入れなくなる
+	test('does not remember a host without a status endpoint (404), since its calls still work', async () => {
+		const f = createFixture();
+		f.apRequestService.signedPostJson.mockRejectedValueOnce(new StatusError('404 Not Found', 404, 'Not Found'));
+
+		await expect(f.service.reportStatus(me, room, owner, 'PA_1', { micMuted: true, deafened: false })).rejects.toMatchObject({ reason: 'unsupported' });
+		expect(f.redis.set).not.toHaveBeenCalled();
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse());
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toMatchObject({ token: 'jwt' });
+	});
+
+	test.each([
+		['a refused report (403)', new StatusError('403 Forbidden', 403, 'Forbidden'), 'forbidden'],
+		['a failed signature check (401)', new StatusError('401 Unauthorized', 401, 'Unauthorized'), 'forbidden'],
+		['a server error', new StatusError('500 Internal Server Error', 500, 'Internal Server Error'), 'unreachable'],
+		['a network error', new Error('getaddrinfo ENOTFOUND remote.test'), 'unreachable'],
+	])('turns %s while reporting settings into a remote voice call error', async (_label, error, reason) => {
+		const f = createFixture();
+		f.apRequestService.signedPostJson.mockRejectedValueOnce(error);
+
+		await expect(f.service.reportStatus(me, room, owner, 'PA_1', { micMuted: true, deafened: false })).rejects.toMatchObject({ reason });
+		expect(f.redis.set).not.toHaveBeenCalled();
+	});
+
 	test('preserves optional reported settings in the remote join snapshot', async () => {
 		const f = createFixture();
 		const participants = [{ identity: owner.uri, screenSharing: false, micMuted: true, deafened: false }];

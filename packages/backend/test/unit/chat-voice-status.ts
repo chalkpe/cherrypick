@@ -5,6 +5,7 @@
 
 import { describe, expect, test, vi } from 'vitest';
 import StatusEndpoint from '@/server/api/endpoints/chat/rooms/voice/status.js';
+import { RemoteVoiceCallError } from '@/core/RemoteVoiceCallService.js';
 import { createFixture, KNOWN_USERS } from '../misc/chat-voice-fixture.js';
 
 const user = { id: 'me', host: null } as any;
@@ -39,6 +40,24 @@ describe('reported voice status', () => {
 		await f.endpoint.exec(report, user, null, null);
 		expect(f.host.reportStatus).toHaveBeenCalledWith(user, expect.anything(), expect.objectContaining({ host: 'remote.test' }), 'PA_1', { micMuted: true, deafened: false });
 		expect(f.local.reportStatus).not.toHaveBeenCalled();
+	});
+
+	// 持ち主のサーバーに届けられない報告は、通話に入るとき (join) と同じく API のエラーにする。
+	// 内部エラー (500) にすると、マイクやスピーカーを切り替えるたびにエラーログが残る
+	test.each([
+		['unsupported', 'REMOTE_HOST_UNSUPPORTED'],
+		['forbidden', 'ACCESS_DENIED'],
+		['unreachable', 'REMOTE_HOST_UNREACHABLE'],
+	] as const)('answers a report the owner cannot take (%s) with %s instead of an internal error', async (reason, code) => {
+		const f = fixture(true, true);
+		f.host.reportStatus.mockRejectedValue(new RemoteVoiceCallError(reason));
+		await expect(f.endpoint.exec(report, user, null, null)).rejects.toMatchObject({ code });
+	});
+
+	test('does not hide unexpected failures of the remote report', async () => {
+		const f = fixture(true, true);
+		f.host.reportStatus.mockRejectedValue(new Error('redis down'));
+		await expect(f.endpoint.exec(report, user, null, null)).rejects.toThrow('redis down');
 	});
 
 	test('rejects a missing or replaced participant session', async () => {
