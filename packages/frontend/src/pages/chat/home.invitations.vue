@@ -14,7 +14,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<div class="_buttons">
 					<MkButton primary @click="join(invitation)"><i class="ti ti-plus"></i> {{ i18n.ts._chat.join }}</MkButton>
 					<MkButton danger @click="reject(invitation)"><i class="ti ti-ban"></i> {{ i18n.ts._chat.reject }}</MkButton>
-					<MkButton @click="ignore(invitation)"><i class="ti ti-x"></i> {{ i18n.ts._chat.ignore }}</MkButton>
 				</div>
 			</template>
 
@@ -72,21 +71,6 @@ async function join(invitation: Misskey.entities.ChatRoomInvitation) {
 
 async function reject(invitation: Misskey.entities.ChatRoomInvitation) {
 	await os.apiWithDialog('chat/rooms/invitations/reject', {
-		roomId: invitation.room.id,
-	});
-
-	invitations.value = invitations.value.filter(i => i.id !== invitation.id);
-}
-
-async function ignore(invitation: Misskey.entities.ChatRoomInvitation) {
-	const { canceled } = await os.confirm({
-		type: 'warning',
-		text: i18n.ts._chat.doYouIgnoreInvitation,
-		caption: i18n.ts._chat.ignoreThisInvitation,
-	});
-	if (canceled) return;
-
-	await os.apiWithDialog('chat/rooms/invitations/ignore', {
 		roomId: invitation.room.id,
 	});
 

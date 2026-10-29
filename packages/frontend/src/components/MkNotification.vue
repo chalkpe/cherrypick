@@ -122,9 +122,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div v-else-if="notification.type === 'roleAssigned'" :class="$style.text">
 				{{ notification.role.name }}
 			</div>
-			<MkA v-else-if="notification.type === 'chatRoomInvitationReceived'" :class="$style.text" :to="`/chat/room/${notification.invitation.room.id}`">
-				<Mfm :text="notification.invitation.room.name" :plain="true" :author="notification.invitation.room.owner"/>
-			</MkA>
+			<template v-else-if="notification.type === 'chatRoomInvitationReceived'">
+				<MkA :class="$style.text" :to="`/chat/room/${notification.invitation.room.id}`">
+					<Mfm :text="notification.invitation.room.name" :plain="true" :author="notification.invitation.room.owner"/>
+				</MkA>
+				<div v-if="full && !chatRoomInviteDone" :class="$style.followRequestCommands">
+					<MkButton :class="$style.followRequestCommandButton" rounded primary @click="acceptChatRoomInvitation()"><i class="ti ti-check"></i> {{ i18n.ts._chat.join }}</MkButton>
+					<MkButton :class="$style.followRequestCommandButton" rounded danger @click="rejectChatRoomInvitation()"><i class="ti ti-x"></i> {{ i18n.ts._chat.reject }}</MkButton>
+				</div>
+			</template>
 			<MkA v-else-if="notification.type === 'achievementEarned'" :class="$style.text" to="/my/achievements">
 				{{ i18n.ts._achievements._types[`_${notification.achievement}`].title }}
 			</MkA>
@@ -239,6 +245,7 @@ const exportEntityName = {
 
 const followRequestDone = ref(false);
 const groupInviteDone = ref(false);
+const chatRoomInviteDone = ref(false);
 
 const acceptFollowRequest = () => {
 	if (!('user' in props.notification)) return;
@@ -267,6 +274,18 @@ const rejectGroupInvitation = () => {
 	if (props.notification.type !== 'groupInvited') return;
 	groupInviteDone.value = true;
 	misskeyApi('users/groups/invitations/reject', { invitationId: props.notification.invitation.id });
+};
+
+const acceptChatRoomInvitation = () => {
+	if (props.notification.type !== 'chatRoomInvitationReceived') return;
+	chatRoomInviteDone.value = true;
+	misskeyApi('chat/rooms/join', { roomId: props.notification.invitation.room.id });
+};
+
+const rejectChatRoomInvitation = () => {
+	if (props.notification.type !== 'chatRoomInvitationReceived') return;
+	chatRoomInviteDone.value = true;
+	misskeyApi('chat/rooms/invitations/reject', { roomId: props.notification.invitation.room.id });
 };
 </script>
 
