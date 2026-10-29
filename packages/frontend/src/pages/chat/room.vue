@@ -559,17 +559,29 @@ watch(() => split.value && voiceInOwnTab.value && chatOpen.value, open => {
   sheetReturnFocus = window.document.activeElement instanceof HTMLElement ? window.document.activeElement : null;
   const backdropTrap = sheetBackdropEl.value ? focusTrap(sheetBackdropEl.value, true) : null;
   const paneTrap = focusTrap(chatPaneEl.value, true);
-  sheetTrap = { release: () => { paneTrap.release(); backdropTrap?.release(); } };
+  // 閉じるときは背景 (v-if) が先に DOM から消えている。背景を先に解放して、pane の解放が周囲の inert を全部外せるようにする
+  sheetTrap = { release: () => { backdropTrap?.release(); paneTrap.release(); } };
   chatPaneEl.value.querySelector<HTMLElement>('button')?.focus();
  } else if (sheetTrap) {
-  sheetTrap.release();
-  sheetTrap = null;
-  if (sheetReturnFocus?.isConnected) sheetReturnFocus.focus({ preventScroll: true });
-  sheetReturnFocus = null;
+  releaseSheetTrap();
  }
 }, { flush: 'post' });
-onBeforeUnmount(() => sheetTrap?.release());
-onDeactivated(() => { sheetTrap?.release(); sheetTrap = null; });
+
+function releaseSheetTrap() {
+	sheetTrap?.release();
+	sheetTrap = null;
+	if (sheetReturnFocus?.isConnected) sheetReturnFocus.focus({ preventScroll: true });
+	sheetReturnFocus = null;
+}
+
+// KeepAlive に退避された後では祖先側の inert を外せないので、画面遷移の前に閉じて解放する
+router.useListener('change', () => {
+	if (sheetTrap == null) return;
+	chatOpen.value = false;
+	releaseSheetTrap();
+});
+onBeforeUnmount(() => releaseSheetTrap());
+onDeactivated(() => releaseSheetTrap());
 
 // スクロール先を付け替える前の位置を覚え、描画直後・次のフレームより前に column-reverse の位置を揃える。
 const pageEl = useTemplateRef('pageEl');

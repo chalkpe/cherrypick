@@ -56,7 +56,9 @@ vi.mock('@/instance.js', () => ({ instance: mocks.instance }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog, confirm: mocks.confirm, popupMenu: mocks.popupMenu, popup: mocks.popup, launchUploader: mocks.launchUploader, toast: vi.fn(), claimZIndex: () => 1000 }));
 vi.mock('@/utility/fullscreen.js', () => ({ requestFullscreen: mocks.requestFullscreen }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+// 画面遷移の前にシートの focus trap を解放することを確かめるため、router の change リスナーを拾っておく
+const routerListeners = vi.hoisted(() => ({ change: [] as ((payload: unknown) => void)[] }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), useListener: (event: string, listener: (payload: unknown) => void) => { if (event === 'change') routerListeners.change.push(listener); } }) }));
 // ルーム画面のテストでは通話以外の部分は関係ないので空のコンポーネントに差し替える
 vi.mock('@/pages/chat/XMessage.vue', () => ({ default: { render: () => null } }));
 // 入力欄は並べ方が変わっても作り直さないことを確かめるので本物を使う。ブラウザの入力まわりに触る部品だけ差し替える
@@ -170,6 +172,7 @@ const prefer = mockedPrefer as unknown as FakePrefer;
 installFakeResizeObserver();
 
 beforeEach(() => {
+	routerListeners.change.length = 0;
 	mocks.channel = new mocks.FakeChannel();
 	mocks.instance.features.voiceCall = true;
 	mocks.instance.features.remoteVoiceCall = false;
@@ -611,6 +614,47 @@ describe('voice call on the room page', () => {
 		await renderRoom(mirror, []);
 		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
 		await flush();
+	// シートの背景 (v-if) は閉じると先に DOM から消える。その後の解放で周囲の inert が残ると画面全体が操作不能になる
+	describe('chat sheet focus trap', () => {
+		async function openSheet() {
+			await renderRoom(room, []);
+			Object.assign(callState, { status: 'connected', room });
+			await flush();
+			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.openChat }));
+			await flush();
+			expect(screen.getByRole('dialog', { name: i18n.ts._chat.messages })).toBeTruthy();
+			expect(document.querySelectorAll('[inert]').length).toBeGreaterThan(0);
+		}
+
+		let originalWidth = window.innerWidth;
+		beforeEach(() => { originalWidth = window.innerWidth; window.innerWidth = 400; window.dispatchEvent(new Event('resize')); });
+		afterEach(() => { window.innerWidth = originalWidth; window.dispatchEvent(new Event('resize')); });
+
+		test('leaves nothing inert after the sheet is closed with its close button', async () => {
+			await openSheet();
+			await fireEvent.click(screen.getByRole('button', { name: i18n.ts.close }));
+			await flush();
+			expect(screen.queryByRole('dialog')).toBeNull();
+			expect(document.querySelectorAll('[inert]')).toHaveLength(0);
+		});
+
+		test('leaves nothing inert after the sheet is closed from its backdrop', async () => {
+			await openSheet();
+			await fireEvent.click(screen.getByRole('dialog').previousElementSibling as HTMLElement);
+			await flush();
+			expect(screen.queryByRole('dialog')).toBeNull();
+			expect(document.querySelectorAll('[inert]')).toHaveLength(0);
+		});
+
+		test('closes the sheet and releases every trap before the router leaves the room', async () => {
+			await openSheet();
+			expect(routerListeners.change.length).toBeGreaterThan(0);
+			for (const listener of routerListeners.change) listener({});
+			await flush();
+			expect(screen.queryByRole('dialog')).toBeNull();
+			expect(document.querySelectorAll('[inert]')).toHaveLength(0);
+		});
+	});
 		expect(mocks.confirm).toHaveBeenCalledTimes(1);
 		expect(mocks.joinVoiceCall).toHaveBeenCalledWith(mirror, { micEnabled: false });
 	});
