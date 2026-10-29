@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="show" ref="el" :class="[$style.root, {[$style.slim]: narrow, [$style.thin]: thin_, [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.scrollToTransparent]: showEl }]">
+<div v-if="show" ref="el" :class="[$style.root, {[$style.slim]: narrow, [$style.centerTitle]: centerTitle && narrow, [$style.thin]: thin_, [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.scrollToTransparent]: showEl }]">
 	<div v-if="!thin_ && !canBack" :class="$style.buttonsLeft">
 		<button class="_button" :class="[$style.button, $style.goBack]" @click.stop="goBack" @touchstart="preventDrag"><i class="ti ti-arrow-left"></i></button>
 	</div>
@@ -81,6 +81,8 @@ export type PageHeaderProps = {
 	actions?: PageHeaderItem[] | null;
 	thin?: boolean;
 	hideTitle?: boolean;
+	/** 狭い画面で見出しを中央に固定する (アクションの数が変わっても見出しが動かない) */
+	centerTitle?: boolean;
 	displayMyAvatar?: boolean;
 	disableFollowButton?: boolean;
 };
@@ -276,6 +278,22 @@ onUnmounted(() => {
 			> *:last-child {
 				margin-right: auto;
 			}
+		}
+	}
+
+	&.centerTitle {
+		position: relative;
+
+		> .titleContainer {
+			position: absolute;
+			left: 50%;
+			transform: translateX(-50%);
+			margin: 0;
+			max-width: calc(100% - 168px);
+		}
+
+		> .buttonsRight {
+			margin-left: auto;
 		}
 	}
 

@@ -14,7 +14,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<template #header>
 		<template v-if="pageMetadata">
 			<i :class="pageMetadata.icon"></i>
-			{{ pageMetadata.title }}
+			<Mfm v-if="pageMetadata.titleAsMfm" :text="pageMetadata.title" :plain="true" :nowrap="true" :author="pageMetadata.titleMfmAuthor"/>
+			<template v-else>{{ pageMetadata.title }}</template>
 		</template>
 	</template>
 
