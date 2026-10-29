@@ -498,7 +498,14 @@ const pageWidth = useElementWidth(chatTabEl, releaseFullscreen);
 const voiceInOwnTab = computed(() => isMobile.value || (pageWidth.value != null && pageWidth.value < STAGE_MIN_PAGE_WIDTH));
 const wantsSplit = computed(() => voiceCallState.inThisCall.value);
 const chatOpen = ref(true);
-watch(voiceCallState.inThisCall, joined => { chatOpen.value = !joined || !voiceInOwnTab.value; }, { immediate: true });
+// 通話に入ったらステージを前に出す (狭いページではチャットを閉じる)。ただしページの幅が分かるまでは決めない。
+// 幅が分かる前に「広い」として開いたままにすると、幅が分かった途端にシートが勝手に開いてフォーカスを奪う。
+// 通話中にページが狭くなったときも同じく、開いたチャットをそのままシートにせず閉じる (広くなれば横に並べて開く)
+const layoutKnown = computed(() => isMobile.value || pageWidth.value != null);
+watch([voiceCallState.inThisCall, voiceInOwnTab, layoutKnown], ([joined, ownTab, known]) => {
+	if (!known) return;
+	chatOpen.value = !joined || !ownTab;
+}, { immediate: true });
 
 // 全画面のあいだは並べ方を変えない。通話カードの共有画面を全画面にするとページの幅も広がるので、
 // そのまま並べ方を変えるとカードが外れ、全画面にした要素ごと消えて全画面が解けてしまう

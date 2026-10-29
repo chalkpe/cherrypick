@@ -607,6 +607,28 @@ describe('voice call on the room page', () => {
 		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/states', expect.anything());
 	});
 
+	// 通話中にルームへ戻ったときなど、ページの幅が分かる前から通話に入っていると、幅が分かった途端にシートが勝手に開いてフォーカスを奪っていた
+	test('does not open the chat sheet by itself when the page turns out narrow after joining', async () => {
+		Object.assign(callState, { status: 'connected', room });
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(me)] }]);
+		await setPageWidth(800);
+		expect(screen.queryByRole('dialog', { name: i18n.ts._chat.messages })).toBeNull();
+		expect(document.querySelectorAll('[inert]')).toHaveLength(0);
+		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.openChat })).toBeTruthy();
+	});
+
+	test('closes the chat beside the stage instead of turning it into an open sheet when the page narrows during a call', async () => {
+		await renderRoom(room, []);
+		await setPageWidth(1280);
+		Object.assign(callState, { status: 'connected', room });
+		await flush();
+		expect(screen.getByRole('textbox')).toBeTruthy();
+		await setPageWidth(800);
+		expect(screen.queryByRole('dialog')).toBeNull();
+		expect(document.querySelectorAll('[inert]')).toHaveLength(0);
+		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.openChat })).toBeTruthy();
+	});
+
 
 		describe('watching several shares', () => {
 			const sharers = [alice, bob, carol, dave, erin];
