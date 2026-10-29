@@ -364,6 +364,132 @@ describe('voice call controller', () => {
 		]);
 	});
 
+	describe('status delivery', () => {
+		beforeEach(() => vi.useFakeTimers());
+		afterEach(async () => {
+			await leaveVoiceCall();
+			vi.useRealTimers();
+		});
+		const reports = () => mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status');
+		async function joinMuted() {
+			await joinVoiceCall(room1, { micEnabled: false });
+			await vi.advanceTimersByTimeAsync(0);
+			mocks.misskeyApi.mockClear();
+		}
+
+		test.each([new TypeError('Failed to fetch'), { code: 'INTERNAL_ERROR' }, { code: 'REMOTE_HOST_UNREACHABLE' }])('delivers the latest settings after a transient failure: %j', async error => {
+			await joinMuted();
+			mocks.misskeyApi.mockRejectedValueOnce(error);
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			setDeafened(false);
+			await vi.advanceTimersByTimeAsync(999);
+			expect(reports()).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(reports()).toHaveLength(2);
+			expect(reports()[1][1]).toMatchObject({ micMuted: true, deafened: false });
+		});
+
+		test('waits out rate limiting before sending the newest settings', async () => {
+			await joinMuted();
+			mocks.misskeyApi.mockRejectedValueOnce({ code: 'RATE_LIMIT_EXCEEDED' });
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(59_999);
+			expect(reports()).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(reports()).toHaveLength(2);
+		});
+
+		test('backs off repeated failures and resumes with the newest settings', async () => {
+			await joinMuted();
+			mocks.misskeyApi.mockRejectedValueOnce(new TypeError('offline')).mockRejectedValueOnce(new TypeError('offline'));
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(reports()).toHaveLength(2);
+			setDeafened(false);
+			await vi.advanceTimersByTimeAsync(1999);
+			expect(reports()).toHaveLength(2);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(reports()).toHaveLength(3);
+			expect(reports()[2][1]).toMatchObject({ deafened: false });
+		});
+
+		test('keeps only the newest update while a report is in flight', async () => {
+			await joinMuted();
+			let finish!: () => void;
+			mocks.misskeyApi.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+			setDeafened(true);
+			setDeafened(false);
+			setDeafened(true);
+			setDeafened(false);
+			expect(reports()).toHaveLength(1);
+			finish();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reports()).toHaveLength(2);
+			expect(reports()[1][1]).toMatchObject({ deafened: false });
+		});
+
+		test('serializes reconnect reports behind an in-flight request in the same session', async () => {
+			await joinMuted();
+			let finish!: () => void;
+			mocks.misskeyApi.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+			setDeafened(true);
+			setDeafened(false);
+			lastRoom().emit(lk.RoomEvent.Reconnected);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reports()).toHaveLength(1);
+			finish();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reports()).toHaveLength(2);
+			expect(reports()[1][1]).toMatchObject({ deafened: false });
+		});
+
+		test('an old in-flight failure cannot schedule a retry in a new call', async () => {
+			await joinMuted();
+			let fail!: (error: unknown) => void;
+			mocks.misskeyApi.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
+			setDeafened(true);
+			await leaveVoiceCall();
+			await joinVoiceCall(room2, { micEnabled: false });
+			fail(new TypeError('offline'));
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(reports().map(([, status]) => status.roomId)).toEqual(['r1', 'r2']);
+		});
+
+		test.each(['ACCESS_DENIED', 'REMOTE_HOST_UNSUPPORTED', 'UNKNOWN_API_ENDPOINT'])('does not retry a permanent API error: %s', async code => {
+			await joinMuted();
+			mocks.misskeyApi.mockRejectedValueOnce({ code });
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(reports()).toHaveLength(1);
+		});
+
+		test('cancels retries when leaving and does not send an old session into the next call', async () => {
+			await joinMuted();
+			mocks.misskeyApi.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			await leaveVoiceCall();
+			await joinVoiceCall(room2, { micEnabled: false });
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(reports().map(([, status]) => status.roomId)).toEqual(['r1', 'r2']);
+		});
+
+		test('coalesces the SDK mute event and the UI mute operation into one report', async () => {
+			await joinVoiceCall(room1);
+			await vi.advanceTimersByTimeAsync(0);
+			mocks.misskeyApi.mockClear();
+			lastRoom().localParticipant.setMicrophoneEnabled.mockImplementationOnce(async () => {
+				lastRoom().emit(lk.RoomEvent.TrackMuted, { source: lk.Track.Source.Microphone }, lastRoom().localParticipant);
+			});
+			await setMicEnabled(false);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reports()).toHaveLength(1);
+			expect(reports()[0][1]).toMatchObject({ micMuted: true, deafened: false });
+		});
+	});
+
 	// livekit-client は入力装置が抜けたり既定の装置が変わったりするとマイクのトラックを自分で作り直す。測る相手もその新しいトラックに付け替える
 	test('re-binds the local meter when livekit restarts the microphone track by itself', async () => {
 		await joinVoiceCall(room1);

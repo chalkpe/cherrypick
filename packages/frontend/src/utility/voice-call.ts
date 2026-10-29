@@ -48,18 +48,68 @@ let joinAttempt = 0;
 let stopLocalMeter: (() => void) | null = null;
 let watchedMicrophoneTrack: LocalAudioTrack | null = null;
 let unwatchMicrophoneTrack: (() => void) | null = null;
-let statusReports = Promise.resolve();
+type VoiceStatusReport = Misskey.Endpoints['chat/rooms/voice/status']['req'];
+type StatusDelivery = {
+	room: Room;
+	latest: VoiceStatusReport;
+	pending: VoiceStatusReport | null;
+	sending: boolean;
+	retryDelay: number;
+	timer: number | null;
+	stopped: boolean;
+};
+let statusDelivery: StatusDelivery | null = null;
 
-// Report UI settings, not per-participant playback volume. Keep updates ordered.
-function reportStatus(room: Room): void {
+function resetStatusDelivery(): void {
+	if (statusDelivery?.timer != null) window.clearTimeout(statusDelivery.timer);
+	statusDelivery = null;
+}
+
+// Keep only the newest settings. A failed report must not leave the server stale for the rest of the call.
+function reportStatus(room: Room, force = false): void {
 	const roomId = state.room?.id;
 	if (current !== room || roomId == null || state.status === 'connecting') return;
 	const status = { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened };
-	statusReports = statusReports.then(async () => {
-		if (current === room) await misskeyApi('chat/rooms/voice/status', status);
-	}).catch(() => {
-		// Older hosts may not support reports. Audio controls must still work.
-	});
+	if (statusDelivery?.room !== room || statusDelivery.latest.sessionId !== status.sessionId) {
+		resetStatusDelivery();
+		statusDelivery = { room, latest: status, pending: status, sending: false, retryDelay: 1000, timer: null, stopped: false };
+	} else {
+		if (!force && statusDelivery.latest.micMuted === status.micMuted && statusDelivery.latest.deafened === status.deafened) return;
+		if (force) statusDelivery.stopped = false;
+		statusDelivery.latest = status;
+		statusDelivery.pending = status;
+	}
+	void deliverStatus(statusDelivery);
+}
+
+async function deliverStatus(delivery: StatusDelivery): Promise<void> {
+	if (statusDelivery !== delivery || current !== delivery.room || delivery.sending || delivery.timer != null || delivery.stopped || delivery.pending == null) return;
+	const status = delivery.pending;
+	delivery.pending = null;
+	delivery.sending = true;
+	try {
+		await misskeyApi('chat/rooms/voice/status', status);
+		delivery.retryDelay = 1000;
+	} catch (err) {
+		if (statusDelivery !== delivery || current !== delivery.room) return;
+		const code = isApiError(err) ? err.code : null;
+		if (code != null && code !== 'RATE_LIMIT_EXCEEDED' && code !== 'INTERNAL_ERROR' && code !== 'REMOTE_HOST_UNREACHABLE') {
+			// Unsupported hosts and permanent API errors must not generate a retry loop.
+			delivery.stopped = true;
+			delivery.pending = null;
+			return;
+		}
+		delivery.pending ??= status;
+		const delay = code === 'RATE_LIMIT_EXCEEDED' ? 60_000 : delivery.retryDelay;
+		delivery.retryDelay = Math.min(delivery.retryDelay * 2, 30_000);
+		delivery.timer = window.setTimeout(() => {
+			delivery.timer = null;
+			void deliverStatus(delivery);
+		}, delay);
+	} finally {
+		delivery.sending = false;
+	}
+	if (statusDelivery === delivery) void deliverStatus(delivery);
 }
 
 function setLocalSpeaking(room: Room, speaking: boolean): void {
@@ -604,7 +654,8 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 	room.on(RoomEvent.Reconnected, () => {
 		if (isCurrent()) {
 			state.status = 'connected';
-			reportStatus(room);
+			// Keep same-session reports serialized, including requests still in flight before reconnecting.
+			reportStatus(room, true);
 			startLocalMeter(room);
 		}
 	});
@@ -661,6 +712,7 @@ function failToConnect(err?: unknown): void {
 }
 
 function resetState(): void {
+	resetStatusDelivery();
 	stopLocalMeter?.();
 	unwatchMicrophoneTrack?.();
 	screenShareTracks.clear();
