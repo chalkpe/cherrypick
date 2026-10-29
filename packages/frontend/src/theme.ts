@@ -115,13 +115,17 @@ class ThemeManager extends EventEmitter<ThemeManagerEvents> {
 		if (window.document.startViewTransition != null && window.document.visibilityState === 'visible') {
 			window.document.documentElement.classList.add('_themeChanging_');
 			try {
-				window.document.startViewTransition(async () => {
-					this.updateAttributes();
-					await nextTick();
-				}).finished.then(() => {
+				const onDone = () => {
 					window.document.documentElement.classList.remove('_themeChanging_');
 					this.emit('themeChanged');
+				};
+				// スキップされたトランジションは finished も reject するので、どちらでも後始末する (unhandledrejection を防ぐ)
+				const transition = window.document.startViewTransition(async () => {
+					this.updateAttributes();
+					await nextTick();
 				});
+				transition.ready.catch(() => {});
+				transition.finished.then(onDone, onDone);
 			} catch (err) {
 				// 様々な理由により startViewTransition は失敗することがある
 				// ref. https://github.com/misskey-dev/misskey/issues/16562

@@ -25,6 +25,7 @@ import MkLoadingPage from '@/pages/_loading_.vue';
 import { DI } from '@/di.js';
 import { randomId } from '@/utility/random-id.js';
 import { deepEqual } from '@/utility/deep-equal.js';
+import { startViewTransition } from '@/utility/view-transition.js';
 
 const props = defineProps<{
 	router?: Router;
@@ -95,9 +96,8 @@ router.useListener('change', ({ resolved }) => {
 		currentRoutePath = resolved.route.path;
 	}
 
-	// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-	if (prefer.s.animation && prefer.s.smoothTransitionAnimations && window.document.startViewTransition) {
-		window.document.startViewTransition(() => new Promise<void>((res) => {
+	if (prefer.s.animation && prefer.s.smoothTransitionAnimations) {
+		startViewTransition(() => new Promise<void>((res) => {
 			_();
 			nextTick(() => {
 				res();

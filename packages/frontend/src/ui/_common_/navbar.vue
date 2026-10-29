@@ -123,6 +123,7 @@ import { $i } from '@/i.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { fetchCherrypickReleases } from '@/utility/fetch-releases.js';
 import { haptic } from '@/utility/haptic.js';
+import { startViewTransition } from '@/utility/view-transition.js';
 
 const router = useRouter();
 
@@ -190,8 +191,8 @@ onUnmounted(() => {
 });
 
 function toggleIconOnly() {
-	if (window.document.startViewTransition && prefer.s.animation) {
-		window.document.startViewTransition(() => {
+	if (prefer.s.animation) {
+		startViewTransition(() => {
 			store.set('menuDisplay', iconOnly.value ? 'sideFull' : 'sideIcon');
 		});
 	} else {
