@@ -668,7 +668,7 @@ const showHeaderJoin = computed(() => {
 const headerActions = computed<PageHeaderItem[]>(() => [
 	...(showHeaderJoin.value ? [{
 		icon: 'ti ti-phone',
-		text: i18n.ts._voiceCall.join,
+		text: voiceCallState.participants.value.length > 0 ? i18n.ts._voiceCall.join : i18n.ts._voiceCall.start,
 		handler: async () => {
 			await voiceCallState.join();
 			tab.value = 'chat';

@@ -9373,6 +9373,10 @@ export interface Locale extends ILocale {
          */
         "join": string;
         /**
+         * 通話を開始
+         */
+        "start": string;
+        /**
          * 通話から退出
          */
         "leave": string;

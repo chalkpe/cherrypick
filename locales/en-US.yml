@@ -2395,6 +2395,7 @@ _voiceCall:
   removedFromCall: "You were removed from the call."
   callEnded: "The call has ended."
   join: "Join call"
+  start: "Start call"
   leave: "Leave call"
   mute: "Mute"
   unmute: "Unmute"

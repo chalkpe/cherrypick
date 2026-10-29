@@ -11,7 +11,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<span :class="$style.title" :aria-live="announcesStatus ? 'polite' : 'off'">{{ inThisCall ? voiceCallStatusText : room.name }}</span>
 			<div :class="$style.actions">
 				<XControls v-if="inThisCall"/>
-				<MkButton v-else primary rounded small @click="join"><i class="ti ti-phone"></i> {{ i18n.ts._voiceCall.join }}</MkButton>
+				<MkButton v-else primary rounded small @click="join"><i class="ti ti-phone"></i> {{ participants.length > 0 ? i18n.ts._voiceCall.join : i18n.ts._voiceCall.start }}</MkButton>
 			</div>
 		</div>
 		<XScreens v-if="!summary && inThisCall && watchedParticipants.length > 0" :participants="watchedParticipants" :class="$style.screens"/>

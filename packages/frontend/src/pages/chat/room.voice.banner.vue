@@ -9,7 +9,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<button v-if="hidden > 0" type="button" class="_button" :class="$style.more" :aria-label="i18n.ts._chat.members" @click="call.openRoster()">+{{ hidden }}</button>
 	</div>
 	<button v-tooltip="call.prejoinMicEnabled.value ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute" type="button" class="_button" :class="[$style.mic, { [$style.muted]: !call.prejoinMicEnabled.value }]" :aria-label="call.prejoinMicEnabled.value ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute" :aria-pressed="!call.prejoinMicEnabled.value" @click="call.prejoinMicEnabled.value = !call.prejoinMicEnabled.value"><i :class="call.prejoinMicEnabled.value ? 'ti ti-microphone' : 'ti ti-microphone-off'"></i></button>
-	<MkButton primary :class="$style.join" @click="call.join()"><i class="ti ti-phone"></i> {{ i18n.ts._voiceCall.join }}</MkButton>
+	<MkButton primary :class="$style.join" @click="call.join()"><i class="ti ti-phone"></i> {{ empty ? i18n.ts._voiceCall.start : i18n.ts._voiceCall.join }}</MkButton>
 </div>
 </template>
 <script lang="ts" setup>
@@ -23,6 +23,8 @@ const props = defineProps<{ call: ChatRoomVoiceCall }>();
 const avatarsEl = useTemplateRef('avatarsEl');
 const width = useElementWidth(avatarsEl);
 const capacity = computed(() => Math.max(1, Math.floor(((width.value ?? 0) + 8) / 36)));
+// 誰もいない通話は「参加」ではなく「開始」。既存の通話に入るのか新しく始めるのかを迷わせない
+const empty = computed(() => props.call.participants.value.length === 0);
 const visible = computed(() => props.call.participants.value.slice(0, capacity.value >= props.call.participants.value.length ? capacity.value : capacity.value - 1));
 const hidden = computed(() => props.call.participants.value.length - visible.value.length);
 </script>

@@ -2430,6 +2430,7 @@ _voiceCall:
   removedFromCall: "通話から外されました。"
   callEnded: "通話が終了しました。"
   join: "通話に参加"
+  start: "通話を開始"
   leave: "通話から退出"
   mute: "マイクをオフ"
   unmute: "マイクをオン"

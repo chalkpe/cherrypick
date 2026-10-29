@@ -447,17 +447,23 @@ describe('voice call on the room page', () => {
 		expect(stickyCard().getByRole('button', { name: alice.name })).toBeTruthy();
 		expect(screen.queryByRole('group', { name: alice.name })).toBeNull();
 	});
-	test('keeps the same join banner without participant avatars when the call is empty', async () => {
+	// 誰もいない通話は「参加」ではなく「開始」と呼ぶ。既存の通話に入るのか自分が始めるのかを迷わせない
+	test('offers to start, not join, the call while nobody is in it', async () => {
 		await renderRoom(room, []);
-		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.join })).toBeTruthy();
+		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.start })).toBeTruthy();
+		expect(screen.queryByRole('button', { name: i18n.ts._voiceCall.join })).toBeNull();
 		expect(stickyCard().queryByRole('button', { name: alice.name })).toBeNull();
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [participant(alice)] });
+		await flush();
+		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.join })).toBeTruthy();
+		expect(screen.queryByRole('button', { name: i18n.ts._voiceCall.start })).toBeNull();
 	});
 	test('joins muted by default and passes the explicit prejoin choice', async () => {
 		await renderRoom(room, []);
-		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
+		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
 		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: false });
 		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.unmute }));
-		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
+		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
 		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: true });
 	});
 	test('has one messages tab and puts search in the room menu', async () => {
@@ -581,7 +587,7 @@ describe('voice call on the room page', () => {
 		await flush();
 		expect(screen.getByRole('textbox')).toBe(textarea);
 		expect(textarea.value).toBe('still here');
-		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.join })).toBeTruthy();
+		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.start })).toBeTruthy();
 	});
 	test('mobile joins into the call and opens chat as a sheet', async () => {
 		const originalWidth = window.innerWidth;
@@ -608,12 +614,6 @@ describe('voice call on the room page', () => {
 			expect(screen.queryByRole('dialog')).toBeNull();
 		} finally { window.innerWidth = originalWidth; window.dispatchEvent(new Event('resize')); }
 	});
-	test('still asks once before joining a remote room', async () => {
-		mocks.instance.features.remoteVoiceCall = true;
-		mocks.confirm.mockResolvedValue({ canceled: false });
-		await renderRoom(mirror, []);
-		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
-		await flush();
 	// シートの背景 (v-if) は閉じると先に DOM から消える。その後の解放で周囲の inert が残ると画面全体が操作不能になる
 	describe('chat sheet focus trap', () => {
 		async function openSheet() {
@@ -655,6 +655,12 @@ describe('voice call on the room page', () => {
 			expect(document.querySelectorAll('[inert]')).toHaveLength(0);
 		});
 	});
+	test('still asks once before joining a remote room', async () => {
+		mocks.instance.features.remoteVoiceCall = true;
+		mocks.confirm.mockResolvedValue({ canceled: false });
+		await renderRoom(mirror, []);
+		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
+		await flush();
 		expect(mocks.confirm).toHaveBeenCalledTimes(1);
 		expect(mocks.joinVoiceCall).toHaveBeenCalledWith(mirror, { micEnabled: false });
 	});
