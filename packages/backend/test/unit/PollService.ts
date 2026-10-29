@@ -33,7 +33,8 @@ function serviceFixture(noteOverrides: Record<string, unknown> = {}) {
 	const apRendererService = {
 		renderNote: vi.fn().mockResolvedValue({ type: 'Note', to: [FOLLOWERS], cc: [] }),
 		renderUpdate: vi.fn((object: unknown) => ({ type: 'Update', to: [PUBLIC], cc: [], object })),
-		addContext: vi.fn((value: unknown) => value),
+		// Deliveries must carry the JSON-LD context that addContext adds; an identity mock would hide its omission.
+		addContext: vi.fn((value: object) => ({ '@context': 'ctx', ...value })),
 	};
 	const deliver = {
 		deliverToFollowers: vi.fn(),
@@ -73,9 +74,11 @@ describe('PollService deliverQuestionUpdate', () => {
 		expect(f.relay.deliverToRelays).not.toHaveBeenCalled();
 		expect(f.deliver.deliverToUsers).toHaveBeenCalledOnce();
 		const [, content, recipients] = f.deliver.deliverToUsers.mock.calls[0];
+		expect(content['@context']).toBe('ctx');
 		expect(content.to).toEqual(['https://allowed.test/users/allowed']);
 		expect(content.cc).toEqual([]);
 		expect(recipients).toEqual([expect.objectContaining({ id: 'allowed' })]);
+		expect(f.apRendererService.addContext).toHaveBeenCalledOnce();
 	});
 
 	test('does not relay a poll update for a followers-only note', async () => {
@@ -86,9 +89,10 @@ describe('PollService deliverQuestionUpdate', () => {
 
 		expect(f.deliver.deliverToFollowers).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ type: 'Update', to: [FOLLOWERS], cc: [] }),
+			expect.objectContaining({ '@context': 'ctx', type: 'Update', to: [FOLLOWERS], cc: [] }),
 		);
 		expect(f.relay.deliverToRelays).not.toHaveBeenCalled();
+		expect(f.apRendererService.addContext).toHaveBeenCalledOnce();
 	});
 
 	test('relays a public poll update and keeps the note audience', async () => {
@@ -99,8 +103,10 @@ describe('PollService deliverQuestionUpdate', () => {
 
 		expect(f.deliver.deliverToFollowers).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ type: 'Update', to: [PUBLIC], cc: [FOLLOWERS] }),
+			expect.objectContaining({ '@context': 'ctx', type: 'Update', to: [PUBLIC], cc: [FOLLOWERS] }),
 		);
 		expect(f.relay.deliverToRelays).toHaveBeenCalledOnce();
+		expect(f.relay.deliverToRelays.mock.calls[0][1]).toEqual(expect.objectContaining({ '@context': 'ctx', type: 'Update', to: [PUBLIC], cc: [FOLLOWERS] }));
+		expect(f.apRendererService.addContext).toHaveBeenCalledOnce();
 	});
 });

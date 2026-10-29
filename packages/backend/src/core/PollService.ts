@@ -117,14 +117,16 @@ export class PollService {
 					? [this.userEntityService.genLocalUserUri(recipient.id)]
 					: recipient.uri ? [recipient.uri] : []);
 				content.cc = [];
-				await this.apDeliverManagerService.deliverToUsers(user, content, allowedRecipients.filter(recipient => recipient.host != null) as MiRemoteUser[]);
+				await this.apDeliverManagerService.deliverToUsers(user, this.apRendererService.addContext(content), allowedRecipients.filter(recipient => recipient.host != null) as MiRemoteUser[]);
 				return;
 			}
 
-			if (note.deliveryTargets) this.apDeliverManagerService.deliverToFollowers(user, content, note.deliveryTargets);
-			else this.apDeliverManagerService.deliverToFollowers(user, content);
+			// Wrap once after the audience is final; every delivery below sends the same activity.
+			const activity = this.apRendererService.addContext(content);
+			if (note.deliveryTargets) this.apDeliverManagerService.deliverToFollowers(user, activity, note.deliveryTargets);
+			else this.apDeliverManagerService.deliverToFollowers(user, activity);
 			// A relay rebroadcasts to every follower, so it cannot honor a target list.
-			if (note.deliveryTargets == null && note.visibility === 'public') this.relayService.deliverToRelays(user, content);
+			if (note.deliveryTargets == null && note.visibility === 'public') this.relayService.deliverToRelays(user, activity);
 		}
 	}
 }
