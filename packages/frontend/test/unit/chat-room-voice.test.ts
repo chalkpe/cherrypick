@@ -313,10 +313,10 @@ async function openTab(title: string) {
 
 const headerJoin = () => within(screen.getByTestId('header-actions')).queryByLabelText(i18n.ts._voiceCall.join);
 const stickyCard = () => within(screen.getByTestId('sticky-header'));
+
 async function setPageWidth(width: number) { resizeObserved(width); await flush(); }
 
 describe('voice call on the room page', () => {
-
 	test('keeps the full-width chat and a join banner before I join, even with other callers', async () => {
 		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
 		expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
@@ -382,7 +382,7 @@ describe('voice call on the room page', () => {
 		resizeObserved(width, stage, 669);
 		await flush();
 		const mine = participantGroup(me);
-		const cards = mine.parentElement!;
+		const cards = mine.parentElement!.parentElement!;
 		expect(parseFloat(cards.style.getPropertyValue('--card-width'))).toBeGreaterThanOrEqual(160);
 		expect(parseFloat(cards.style.getPropertyValue('--card-height'))).toBeGreaterThanOrEqual(160);
 		expect(cards.children.length).toBeLessThanOrEqual(4);
@@ -392,7 +392,7 @@ describe('voice call on the room page', () => {
 		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice, true), participant(bob, true), participant(carol, true), participant(dave, true), participant(erin, true), participant(me)] }]);
 		resizeObserved(width, document.querySelector('[data-voice-call-room]')!, height);
 		await flush();
-		const cards = participantGroup(me).parentElement!;
+		const cards = participantGroup(me).parentElement!.parentElement!;
 		expect(cards.style.getPropertyValue('--card-width')).toBe(cards.style.getPropertyValue('--card-height'));
 	});
 	test('accepts a file dropped on the chat pane outside the composer', async () => {
@@ -797,6 +797,103 @@ describe('voice call on the room page', () => {
 				expect(hasClass(viewerOf(alice).parentElement!, 'layout2')).toBe(true);
 			});
 		});
+});
+
+// 見えているカードは入れ替えない。隠れている人が話し続けたときだけ、いちばん長く黙っている人と席を替える
+describe('stage card order', () => {
+	const others = [alice, bob, carol, dave];
+	// カードは要素で包まれているので、並びの入れ物はその親
+	const cards = () => participantGroup(me).parentElement!.parentElement!;
+	const visibleNames = () => [...cards().querySelectorAll('[role="group"]')].map(el => el.getAttribute('aria-label'));
+
+	// 自分と他 2 人しか載らない狭さのステージに 5 人を出す
+	async function renderCrowdedStage() {
+		Object.assign(callState, { status: 'connected', room, micEnabled: true });
+		await renderRoom(room, [{ roomId: 'r1', participants: [...others.map(user => participant(user)), participant(me)] }]);
+		resizeObserved(390, document.querySelector('[data-voice-call-room]')!, 400);
+		await flush();
+		expect(visibleNames()).toEqual([me.name, alice.name, bob.name]);
+	}
+
+	async function speak(users: (typeof alice)[], ms: number) {
+		callState.speakingIdentities = users.map(identityOf);
+		await flush();
+		await vi.advanceTimersByTimeAsync(ms);
+		await flush();
+	}
+
+	beforeEach(() => { vi.useFakeTimers(); });
+	afterEach(() => { vi.useRealTimers(); });
+
+	test('keeps visible cards where they are when one of them speaks', async () => {
+		await renderCrowdedStage();
+		await speak([bob], 1500);
+		expect(visibleNames()).toEqual([me.name, alice.name, bob.name]);
+	});
+
+	test('brings a hidden speaker in after they keep talking, in place of the visible person silent the longest', async () => {
+		await renderCrowdedStage();
+		await speak([bob], 1500);
+		await speak([], 1500);
+		await speak([carol], 300);
+		expect(visibleNames()).toEqual([me.name, alice.name, bob.name]);
+		await speak([carol], 700);
+		expect(visibleNames()).toEqual([me.name, carol.name, bob.name]);
+	});
+
+	test('ignores a short remark from a hidden participant', async () => {
+		await renderCrowdedStage();
+		await speak([carol], 300);
+		await speak([], 2000);
+		expect(visibleNames()).toEqual([me.name, alice.name, bob.name]);
+	});
+
+	test('does not take the place of a visible participant who is still talking', async () => {
+		await renderCrowdedStage();
+		await speak([alice, bob, carol], 1500);
+		expect(visibleNames()).toEqual([me.name, alice.name, bob.name]);
+		await speak([alice, carol], 0);
+		expect(visibleNames()).toEqual([me.name, alice.name, carol.name]);
+	});
+
+	test('holds the order while a participant menu is open and catches up once it closes', async () => {
+		await renderCrowdedStage();
+		let closeMenu!: () => void;
+		mocks.popupMenu.mockReturnValueOnce(new Promise<void>(resolve => { closeMenu = resolve; }));
+		await fireEvent.click(menuButtonOf(alice));
+		await speak([carol], 1500);
+		expect(visibleNames()).toEqual([me.name, alice.name, bob.name]);
+		closeMenu();
+		await flush();
+		expect(visibleNames()).toEqual([me.name, alice.name, carol.name]);
+	});
+
+	test('holds the order while the pointer rests on a card and catches up once it leaves', async () => {
+		await renderCrowdedStage();
+		await fireEvent.pointerOver(participantGroup(alice));
+		await speak([carol], 1500);
+		expect(visibleNames()).toEqual([me.name, alice.name, bob.name]);
+		await fireEvent.pointerLeave(cards());
+		await flush();
+		expect(visibleNames()).toEqual([me.name, alice.name, carol.name]);
+	});
+
+	// デスクトップではマウスをステージの上に置いたままにしがちなので、カードの隙間に置かれているだけでは止めない
+	test('keeps bringing speakers in while the pointer rests beside the cards', async () => {
+		await renderCrowdedStage();
+		await fireEvent.pointerOver(cards());
+		await speak([carol], 1500);
+		expect(visibleNames()).toEqual([me.name, alice.name, carol.name]);
+	});
+
+	test('keeps the same order rules when the cards animate as a transition group', async () => {
+		prefer.s.animation = true;
+		try {
+			await renderCrowdedStage();
+			await speak([carol], 1500);
+			expect(visibleNames()).toEqual([me.name, alice.name, carol.name]);
+		} finally { prefer.s.animation = false; }
+	});
 });
 
 // LiveKit を持たず、他のサーバーの通話にだけ参加するサーバー

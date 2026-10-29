@@ -7,11 +7,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<span :class="$style.srOnly" :aria-live="announcesStatus ? 'polite' : 'off'">{{ voiceCallStatusText }}</span>
 	<div v-if="watchedParticipants.length" ref="screensEl" :class="$style.screensSpace"><XScreens :participants="watchedParticipants" :hideStrip="membersHidden" fill :class="$style.screens" :style="screenStyle"/></div>
 	<div :class="[$style.list, { [$style.collapsed]: watchedParticipants.length > 0 && membersHidden }]" :inert="watchedParticipants.length > 0 && membersHidden" :aria-hidden="watchedParticipants.length > 0 && membersHidden">
-		<div :class="$style.cards" :style="cardStyle">
-			<XShare v-for="p in shownShares" :key="`share-${p.identity}`" :participant="p" :watchable="inThisCall" :watching="false" :class="$style.card" @toggleWatch="toggleScreenShareWatch(p.identity)"/>
-			<XTile v-for="p in shown" :key="p.identity" :participant="p" :speaking="speaking(p.identity) && !p.micMuted" :menuable="inThisCall || isOwner" :class="$style.card" @openMenu="openMenu(p, $event)" @contextmenu.prevent="openMenu(p, $event)"/>
-			<XGroup v-if="hidden.length || shownShares.length < availableShares.length" :participants="hidden.length ? hidden : participants" :class="$style.card" @open="call.openRoster()"/>
-		</div>
+		<!-- TransitionGroup は直下の子コンポーネントを毎回描き直させるので、カードは要素で包む -->
+		<component :is="prefer.s.animation ? TransitionGroup : 'div'" v-bind="prefer.s.animation ? { tag: 'div', css: false, moveClass: $style.cardMove } : {}" :class="$style.cards" :style="cardStyle" @pointerover="trackHover" @pointerleave="hovering = false">
+			<div v-for="p in shownShares" :key="`share-${p.identity}`" :class="$style.card" data-voice-call-card><XShare :participant="p" :watchable="inThisCall" :watching="false" @toggleWatch="toggleScreenShareWatch(p.identity)"/></div>
+			<div v-for="p in shown" :key="p.identity" :class="$style.card" data-voice-call-card><XTile :participant="p" :speaking="speaking(p.identity) && !p.micMuted" :menuable="inThisCall || isOwner" @openMenu="openMenu(p, $event)" @contextmenu.prevent="openMenu(p, $event)"/></div>
+			<div v-if="hidden.length || shownShares.length < availableShares.length" key="group" :class="$style.card" data-voice-call-card><XGroup :participants="hidden.length ? hidden : participants" @open="call.openRoster()"/></div>
+		</component>
 	</div>
 	<div :class="$style.controls">
 		<XControls v-if="inThisCall" grouped><template #leading>
@@ -23,7 +24,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </div>
 </template>
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, TransitionGroup, useTemplateRef, watch } from 'vue';
 import type * as Misskey from 'cherrypick-js';
 import XTile from './room.voice.tile.vue';
 import XShare from './room.voice.share.vue';
@@ -32,6 +33,7 @@ import XControls from './room.voice.controls.vue';
 import XGroup from './room.voice.group.vue';
 import XBanner from './room.voice.banner.vue';
 import { i18n } from '@/i18n.js';
+import { prefer } from '@/preferences.js';
 import type { ChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { toggleScreenShareWatch, voiceCall } from '@/utility/voice-call.js';
 import { useVoiceCallStatusAnnouncer, voiceCallStatusText } from '@/utility/voice-call-status.js';
@@ -41,12 +43,12 @@ const { inThisCall, participants, watchedParticipants, isOwner } = props.call;
 const rootEl = useTemplateRef('rootEl');
 const screensEl = useTemplateRef('screensEl');
 const announcesStatus = useVoiceCallStatusAnnouncer(inThisCall, rootEl);
-const membersHidden = ref(false), active = ref(true), menuOpen = ref(false);
+const membersHidden = ref(false), active = ref(true), menuOpen = ref(false), hovering = ref(false);
 let idleTimer: number | undefined;
 
 function showControls() { active.value = true; window.clearTimeout(idleTimer); idleTimer = window.setTimeout(() => { active.value = false; }, 1800); }
 
-onBeforeUnmount(() => window.clearTimeout(idleTimer));
+onBeforeUnmount(() => { window.clearTimeout(idleTimer); window.clearTimeout(promoteTimer); });
 
 async function openMenu(p: typeof participants.value[number], ev: MouseEvent) {
 	menuOpen.value = true;
@@ -55,14 +57,6 @@ async function openMenu(p: typeof participants.value[number], ev: MouseEvent) {
 
 function speaking(identity: string) { return inThisCall.value && voiceCall.speakingIdentities.includes(identity); }
 
-const sorted = computed(() => {
-	const others = participants.value.filter(p => p.identity !== props.call.myIdentity);
-	return [
-		...participants.value.filter(p => p.identity === props.call.myIdentity),
-		...others.filter(p => speaking(p.identity) && !p.micMuted),
-		...others.filter(p => !speaking(p.identity) || p.micMuted),
-	];
-});
 const availableShares = computed(() => participants.value.filter(p => p.screenSharing && !voiceCall.watchingIdentities.includes(p.identity)));
 const size = ref({ width: 640, height: 500 }), screensSize = ref({ width: 640, height: 360 });
 const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(entries => {
@@ -98,6 +92,72 @@ const layout = computed(() => {
 	const height = isWatching ? 160 : Math.max(136, Math.min(220, (size.value.height - 72 - (rows - 1) * 8) / rows));
 	return { width, columns, count, height, shareCount };
 });
+// 見えているカードは入れ替えない。隠れている人がこれだけ話し続けたときだけ、見えている人のうちいちばん長く黙っている人と席を替える
+const PROMOTE_AFTER_MS = 800;
+const order = ref<string[]>([]);
+const speakingSince = new Map<string, number>(), lastSpokeAt = new Map<string, number>();
+let promoteTimer: number | undefined;
+const speakingNow = computed(() => new Set(participants.value.filter(p => p.identity !== props.call.myIdentity && speaking(p.identity) && !p.micMuted).map(p => p.identity)));
+// メニューが開いているあいだや、ポインターがカードに乗っているあいだは並びを動かさず、離れてから追いつく。カードの隙間に置かれているだけなら止めない
+const frozen = computed(() => menuOpen.value || hovering.value);
+
+function trackHover(ev: PointerEvent) { hovering.value = ev.target instanceof Element && ev.target.closest('[data-voice-call-card]') != null; }
+
+watch(participants, list => {
+	const ids = list.filter(p => p.identity !== props.call.myIdentity).map(p => p.identity);
+	const kept = order.value.filter(id => ids.includes(id));
+	order.value = [...kept, ...ids.filter(id => !kept.includes(id))];
+	for (const map of [speakingSince, lastSpokeAt]) for (const id of map.keys()) if (!ids.includes(id)) map.delete(id);
+}, { immediate: true });
+
+watch(speakingNow, (now, before) => {
+	const at = Date.now();
+	for (const id of now) {
+		if (!before?.has(id)) speakingSince.set(id, at);
+		lastSpokeAt.set(id, at);
+	}
+	for (const id of before ?? []) {
+		if (now.has(id)) continue;
+		speakingSince.delete(id);
+		lastSpokeAt.set(id, at);
+	}
+	promote();
+}, { immediate: true });
+watch(frozen, value => { if (!value) promote(); });
+watch(() => layout.value.count, () => promote());
+
+function promote() {
+	window.clearTimeout(promoteTimer);
+	if (frozen.value) return;
+	const at = Date.now();
+	const visibleCount = Math.max(0, layout.value.count - (participants.value.some(p => p.identity === props.call.myIdentity) ? 1 : 0));
+	let next = order.value, soonest: number | undefined;
+	const qualified = next.slice(visibleCount).filter(id => speakingSince.has(id)).sort((a, b) => speakingSince.get(a)! - speakingSince.get(b)!);
+	for (const id of qualified) {
+		const since = speakingSince.get(id)!;
+		if (at - since < PROMOTE_AFTER_MS) {
+			soonest = Math.min(soonest ?? Infinity, since + PROMOTE_AFTER_MS);
+			continue;
+		}
+		// 話している人の席は奪わない。黙っている人の中で、いちばん長く黙っている人 (同じなら後ろの人)
+		const silent = next.slice(0, visibleCount).filter(v => !speakingNow.value.has(v));
+		if (silent.length === 0) break;
+		const seat = silent.reduce((a, b) => (lastSpokeAt.get(b) ?? 0) <= (lastSpokeAt.get(a) ?? 0) ? b : a);
+		next = next.map(v => v === seat ? id : v === id ? seat : v);
+	}
+	if (next !== order.value) order.value = next;
+	if (soonest != null) promoteTimer = window.setTimeout(promote, soonest - at + 1);
+}
+
+const sorted = computed(() => {
+	const byIdentity = new Map(participants.value.map(p => [p.identity, p]));
+	const ordered = order.value.map(id => byIdentity.get(id)).filter(p => p != null);
+	return [
+		...participants.value.filter(p => p.identity === props.call.myIdentity),
+		...ordered,
+		...participants.value.filter(p => p.identity !== props.call.myIdentity && !order.value.includes(p.identity)),
+	];
+});
 const shownShares = computed(() => availableShares.value.slice(0, layout.value.shareCount));
 const shown = computed(() => sorted.value.slice(0, layout.value.count));
 const hidden = computed(() => sorted.value.slice(layout.value.count));
@@ -121,9 +181,11 @@ const screenStyle = computed(() => {
 .srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .list { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; width: 100%; min-height: 0; flex: 1; transition: grid-template-rows .25s, opacity .2s, transform .25s, margin .25s; }
 .cards { display: flex; flex-wrap: wrap; align-content: center; justify-content: center; gap: 8px; width: 100%; min-height: 0; overflow: clip; }
-.cards > .card { flex: 0 1 var(--card-width); width: var(--card-width); max-width: var(--card-width); height: var(--card-height); min-height: 0; --voiceCallAvatarSize: inherit; }
-.cards > .card:has(video) { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; overflow: clip; }
-.cards > .card > span:first-child:has(video) { height: 100%; min-height: 0; aspect-ratio: auto; }
+.cardMove { transition: transform .25s; }
+.cards > .card { flex: 0 1 var(--card-width); width: var(--card-width); max-width: var(--card-width); height: var(--card-height); min-height: 0; }
+.cards > .card > * { box-sizing: border-box; width: 100%; max-width: none; height: 100%; --voiceCallAvatarSize: inherit; }
+.cards > .card > :has(video) { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; overflow: clip; }
+.cards > .card > * > span:first-child:has(video) { height: 100%; min-height: 0; aspect-ratio: auto; }
 .cards > .card video { object-fit: contain; }
 .screensSpace { flex: 1; min-height: 0; min-width: 0; box-sizing: border-box; transition: padding-bottom .24s; }
 .watching.membersHidden.active .screensSpace, .watching.membersHidden:has(.controls:focus-within) .screensSpace { padding-bottom: 80px; }
@@ -139,5 +201,5 @@ const screenStyle = computed(() => {
 .membersToggle i:first-child { font-size: 12px; }
 .membersToggle:hover, .chatToggle:hover { background: var(--MI_THEME-buttonHoverBg); }
 @container (max-width: 400px) { .controls > div { gap: 8px; } }
-@media (prefers-reduced-motion: reduce) { .list, .watching .controls, .screensSpace { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .list, .watching .controls, .screensSpace, .cardMove { transition: none; } }
 </style>
