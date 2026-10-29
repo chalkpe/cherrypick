@@ -741,6 +741,24 @@ describe('federated reported voice status', () => {
 		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload: { ...payload, micMuted: 'true' } })).statusCode).toBe(400);
 	});
 
+	// 一台のサーバーがそのユーザー全員の報告を同じ IP から送ってくる。トークン発行と同じ IP の予算では、数人が切り替えるだけで足りなくなる
+	test('limits status reports per IP with room for every user of a server', async () => {
+		const user = { id: 'remote-user' };
+		const verifier = { verify: vi.fn().mockResolvedValue(user) };
+		const chatVoiceService = { reportStatus: vi.fn().mockResolvedValue(true) };
+		const rateLimiterService = { limit: vi.fn(async (limitation: { key: string }) => limitation.key === 'voiceFederationStatusIp' ? RATE_LIMITED : null) };
+		const service = createService(liveKitService(), { config: { ...CONFIG, enableIpRateLimit: true }, verifier, chatVoiceService, rateLimiterService });
+		const app = Fastify();
+		await app.register(service.createServer, { prefix: '/livekit' });
+		cleanups.push(() => app.close());
+
+		const res = await app.inject({ method: 'POST', url: '/livekit/federation/status', payload: { room: 'https://local.test/chat/rooms/r1', sessionId: 'PA_1', micMuted: true, deafened: false } });
+
+		expect(res.statusCode).toBe(429);
+		expect(verifier.verify).not.toHaveBeenCalled();
+		expect(rateLimiterService.limit).toHaveBeenCalledWith({ key: 'voiceFederationStatusIp', duration: 60_000, max: 600 }, getIpHash('127.0.0.1'));
+	});
+
 	test('limits status reports per remote user', async () => {
 		const user = { id: 'remote-user' };
 		const verifier = { verify: vi.fn().mockResolvedValue(user) };
