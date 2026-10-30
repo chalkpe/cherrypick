@@ -102,3 +102,17 @@ test.each([false, true])('closes the actual popup on fullscreen exit (removed ho
 	expect(anchor.inert).toBe(false);
 	expect((menu.container as HTMLElement).inert).toBe(false);
 });
+
+test.each([false, true])('passes fallthrough attributes to the modal root (fullscreen: %s)', async (fullscreen) => {
+	const { anchor } = setup(fullscreen);
+	cleanup();
+	const modal = render(MkModal, {
+		props: { anchorElement: anchor },
+		attrs: { 'data-testid': 'some-dialog' },
+		slots: { default: () => h('input', { type: 'range' }) },
+		global: { directives: { hotkey: {} } },
+	});
+	await nextTick();
+	expect(document.querySelector('[data-testid="some-dialog"] input')).not.toBeNull();
+	modal.unmount();
+});

@@ -33,7 +33,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	})"
 	:duration="transitionDuration" appear @afterLeave="onClosed" @enter="emit('opening')" @afterEnter="onOpened"
 >
-	<div v-show="manualShowing != null ? manualShowing : showing" ref="modalRootEl" v-hotkey.global="keymap" :class="[$style.root, { [$style.fullscreen]: fullscreenHost != null, [$style.drawer]: type === 'drawer', [$style.dialog]: type === 'dialog', [$style.popup]: type === 'popup' }]" :style="{ zIndex, pointerEvents: (manualShowing != null ? manualShowing : showing) ? 'auto' : 'none', '--transformOrigin': transformOrigin }">
+	<div v-show="manualShowing != null ? manualShowing : showing" ref="modalRootEl" v-hotkey.global="keymap" v-bind="$attrs" :class="[$style.root, { [$style.fullscreen]: fullscreenHost != null, [$style.drawer]: type === 'drawer', [$style.dialog]: type === 'dialog', [$style.popup]: type === 'popup' }]" :style="{ zIndex, pointerEvents: (manualShowing != null ? manualShowing : showing) ? 'auto' : 'none', '--transformOrigin': transformOrigin }">
 		<div data-testid="bg" :data-test-is-transparent="isEnableBgTransparent" class="_modalBg" :class="[$style.bg, { [$style.bgTransparent]: isEnableBgTransparent, [$style.removeModalBgColorForBlur]: prefer.s.useBlurEffectForModal && prefer.s.removeModalBgColorForBlur }]" :style="{ zIndex }" @click="onBgClick" @mousedown="onBgClick" @contextmenu.prevent.stop="() => {}"></div>
 		<div ref="content" :class="[$style.content, { [$style.fixed]: fixed }]" :style="{ zIndex }" @click.self="onBgClick">
 			<slot :max-height="maxHeight" :type="type"></slot>
@@ -96,6 +96,11 @@ const emit = defineEmits<{
 	(ev: 'close'): void; // TODO: (refactor) closing に改名する
 	(ev: 'closed'): void;
 }>();
+
+// The root Teleport cannot inherit attrs, so pass them (e.g. data-testid from MkModalWindow) to the modal root.
+defineOptions({
+	inheritAttrs: false,
+});
 
 provide(DI.inModal, true);
 
