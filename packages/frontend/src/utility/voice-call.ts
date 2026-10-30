@@ -101,17 +101,20 @@ async function deliverStatus(delivery: StatusDelivery): Promise<void> {
 		const code = isApiError(err) ? err.code : null;
 		if (code != null && code !== 'RATE_LIMIT_EXCEEDED' && code !== 'INTERNAL_ERROR' && code !== 'REMOTE_HOST_UNREACHABLE') {
 			// Unsupported hosts and permanent API errors must not generate a retry loop.
-			delivery.stopped = true;
-			delivery.pending = null;
-			return;
+			// 送り直さないのは失敗した設定だけ。送っているあいだに変わった新しい設定は、下でもう一度だけ送ってみる
+			if (delivery.pending == null) {
+				delivery.stopped = true;
+				return;
+			}
+		} else {
+			delivery.pending ??= status;
+			const delay = code === 'RATE_LIMIT_EXCEEDED' ? 60_000 : delivery.retryDelay;
+			delivery.retryDelay = Math.min(delivery.retryDelay * 2, 30_000);
+			delivery.timer = window.setTimeout(() => {
+				delivery.timer = null;
+				void deliverStatus(delivery);
+			}, delay);
 		}
-		delivery.pending ??= status;
-		const delay = code === 'RATE_LIMIT_EXCEEDED' ? 60_000 : delivery.retryDelay;
-		delivery.retryDelay = Math.min(delivery.retryDelay * 2, 30_000);
-		delivery.timer = window.setTimeout(() => {
-			delivery.timer = null;
-			void deliverStatus(delivery);
-		}, delay);
 	} finally {
 		delivery.sending = false;
 	}

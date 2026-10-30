@@ -551,6 +551,21 @@ describe('voice call controller', () => {
 			expect(reports()).toHaveLength(3);
 		});
 
+		test('still sends settings changed while a report was in flight when that report fails permanently', async () => {
+			await joinMuted();
+			let fail!: (error: unknown) => void;
+			mocks.misskeyApi.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
+			setDeafened(true);
+			setDeafened(false);
+			expect(reports()).toHaveLength(1);
+			fail({ code: 'ACCESS_DENIED' });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reports()).toHaveLength(2);
+			expect(reports()[1][1]).toMatchObject({ deafened: false });
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(reports()).toHaveLength(2);
+		});
+
 		test('cancels retries when leaving and does not send an old session into the next call', async () => {
 			await joinMuted();
 			mocks.misskeyApi.mockRejectedValueOnce(new TypeError('Failed to fetch'));
