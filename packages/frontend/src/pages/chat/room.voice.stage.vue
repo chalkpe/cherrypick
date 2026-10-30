@@ -11,12 +11,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<component :is="prefer.s.animation ? TransitionGroup : 'div'" v-bind="prefer.s.animation ? { tag: 'div', css: false, moveClass: $style.cardMove } : {}" :class="$style.cards" :style="cardStyle" @pointerover="trackHover" @pointerleave="hovering = false">
 			<div v-for="p in shownShares" :key="`share-${p.identity}`" :class="$style.card" data-voice-call-card><XShare :participant="p" :watchable="inThisCall" :watching="false" @toggleWatch="toggleScreenShareWatch(p.identity)"/></div>
 			<div v-for="p in shown" :key="p.identity" :class="$style.card" data-voice-call-card><XTile :participant="p" :speaking="speaking(p.identity) && !p.micMuted" :menuable="inThisCall || isOwner" @openMenu="openMenu(p, $event)" @contextmenu.prevent="openMenu(p, $event)"/></div>
-			<div v-if="hidden.length || shownShares.length < availableShares.length" key="group" :class="$style.card" data-voice-call-card><XGroup :participants="hidden.length ? hidden : participants" @open="call.openRoster()"/></div>
+			<div v-if="hidden.length || shownShares.length < availableShares.length" key="group" :class="$style.card" data-voice-call-card><XGroup :participants="grouped" @open="call.openRoster()"/></div>
 		</component>
 	</div>
 	<div :class="$style.controls">
 		<XControls v-if="inThisCall" grouped><template #leading>
-			<button v-if="watchedParticipants.length" v-tooltip="membersHidden ? i18n.ts._voiceCall.showParticipants : i18n.ts._voiceCall.hideParticipants" type="button" class="_button" :class="$style.membersToggle" :aria-label="membersHidden ? i18n.ts._voiceCall.showParticipants : i18n.ts._voiceCall.hideParticipants" :aria-pressed="membersHidden" @click="membersHidden = !membersHidden"><i :class="membersHidden ? 'ti ti-chevron-up' : 'ti ti-chevron-down'"></i><i class="ti ti-users"></i></button>
+			<button v-if="watchedParticipants.length" v-tooltip="membersHidden ? i18n.ts._voiceCall.showParticipants : i18n.ts._voiceCall.hideParticipants" type="button" class="_button" :class="$style.membersToggle" :aria-label="membersHidden ? i18n.ts._voiceCall.showParticipants : i18n.ts._voiceCall.hideParticipants" @click="membersHidden = !membersHidden"><i :class="membersHidden ? 'ti ti-chevron-up' : 'ti ti-chevron-down'"></i><i class="ti ti-users"></i></button>
 			<button v-tooltip="chatOpen ? i18n.ts._voiceCall.closeChat : i18n.ts._voiceCall.openChat" type="button" class="_button" :class="$style.chatToggle" :aria-label="chatOpen ? i18n.ts._voiceCall.closeChat : i18n.ts._voiceCall.openChat" @click="emit('toggleChat')"><i class="ti ti-messages"></i></button>
 		</template></XControls>
 		<XBanner v-else :call="call"/>
@@ -76,7 +76,8 @@ watch([rootEl, screensEl], ([root, screens], [previousRoot, previousScreens]) =>
 }, { flush: 'post' });
 onBeforeUnmount(() => observer?.disconnect());
 const layout = computed(() => {
-	const width = Math.max(160, size.value.width - 24), isWatching = watchedParticipants.value.length > 0;
+	// contentRect の幅はパディングを除いた、カードを並べられる幅
+	const width = Math.max(160, size.value.width), isWatching = watchedParticipants.value.length > 0;
 	const columns = isWatching ? Math.max(1, Math.floor((width + 8) / 168)) : width < 600 ? Math.max(1, Math.floor((width + 8) / 168)) : Math.max(2, Math.floor((width + 8) / 180));
 	let rows = isWatching ? (width < 600 && size.value.height >= 600 ? 2 : 1) : Math.max(1, Math.min(3, Math.floor((size.value.height - 72 + 8) / 144)));
 	let slots = columns * rows;
@@ -162,6 +163,11 @@ const sorted = computed(() => {
 const shownShares = computed(() => availableShares.value.slice(0, layout.value.shareCount));
 const shown = computed(() => sorted.value.slice(0, layout.value.count));
 const hidden = computed(() => sorted.value.slice(layout.value.count));
+// まとめのカードには、カードを持たない人と、入りきらなかった共有画面の持ち主を出す
+const grouped = computed(() => {
+	const ids = new Set(hidden.value.map(p => p.identity));
+	return [...hidden.value, ...availableShares.value.slice(layout.value.shareCount).filter(p => !ids.has(p.identity))];
+});
 const cardStyle = computed(() => {
 	const side = Math.min(220, layout.value.height, (layout.value.width - (layout.value.columns - 1) * 8) / layout.value.columns);
 	return { '--card-width': `${side}px`, '--card-height': `${side}px`, '--voiceCallAvatarSize': side < 125 ? '32px' : size.value.width < 600 ? '48px' : '64px' };

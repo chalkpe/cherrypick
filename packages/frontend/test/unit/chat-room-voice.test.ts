@@ -1361,14 +1361,15 @@ describe.each([
 	['shared screen card', XShare],
 ] as const)('%s watch toggle', (_label, component) => {
 	// トグルのボタンは名前を変えず、見ているかどうかは aria-pressed と枠で伝える
-	test.each([false, true])('keeps the same tooltip as the accessible name while watching: %s', async watching => {
-		render(component, { props: { participant: participant(alice, true), watchable: true, watching }, global: { directives: { tooltip: { mounted: (el, binding) => { el.dataset.tooltip = binding.value; el.dataset.tooltipMfm = String(binding.modifiers.mfm); } } }, stubs } });
+	// 名前は MFM にせず文字のまま出す。ツールチップは名前の装飾やほかのサーバーの絵文字を解決できない
+	test.each([false, true])('keeps the same plain tooltip as the accessible name while watching: %s', async watching => {
+		render(component, { props: { participant: participant(alice, true), watchable: true, watching }, global: { directives: { tooltip: { mounted: (el, binding) => { el.dataset.tooltip = binding.value; el.dataset.tooltipMfm = String(binding.modifiers.mfm === true); } } }, stubs } });
 		await flush();
 
 		const toggle = watchToggleOf(alice);
 		expect(toggle.getAttribute('title')).toBeNull();
 		expect(toggle.dataset.tooltip).toBe(toggle.getAttribute('aria-label'));
-		expect(toggle.dataset.tooltipMfm).toBe('true');
+		expect(toggle.dataset.tooltipMfm).toBe('false');
 		expect(toggle.getAttribute('aria-pressed')).toBe(String(watching));
 	});
 });

@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <component
 	:is="watchable ? 'button' : 'div'"
-	v-tooltip.mfm="label"
+	v-tooltip="label"
 	:type="watchable ? 'button' : undefined"
 	:class="[$style.root, { '_button': watchable, [$style.compact]: compact, [$style.watching]: watching }]"
 	:role="watchable ? undefined : 'img'"

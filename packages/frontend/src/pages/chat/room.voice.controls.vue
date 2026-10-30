@@ -124,7 +124,7 @@ withDefaults(defineProps<{
 	.action.on,
 	.action.enableAudio { color: var(--MI_THEME-accent); background: var(--MI_THEME-accentedBg); }
 	.leaveGroup { padding: 0; background: transparent; }
-	.leave { width: 52px; height: 40px; border-radius: 12px; background: var(--MI_THEME-error); color: #fff; }
-	.leave:hover { background: color-mix(in srgb, var(--MI_THEME-error) 90%, #fff); }
+	.leave { width: 52px; height: 40px; border-radius: 12px; background: var(--MI_THEME-error); color: var(--MI_THEME-fgOnAccent); }
+	.leave:hover { background: color-mix(in srgb, var(--MI_THEME-error) 90%, var(--MI_THEME-fgOnAccent)); }
 }
 </style>

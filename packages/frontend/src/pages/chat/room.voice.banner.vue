@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <div v-if="call.available.value && !call.inThisCall.value" :class="$style.root">
 	<div ref="avatarsEl" :class="$style.avatars">
 		<!-- メニューに出すものが無い参加者 (通話に入っておらず持ち主でもないとき) は、押しても何も起きないボタンにせず、名前の付いた絵として出す -->
-		<component :is="menuable ? 'button' : 'div'" v-for="{ p, menuable } in visible" :key="p.identity" v-tooltip.mfm="labelOf(p)" :type="menuable ? 'button' : undefined" :class="[$style.person, { _button: menuable }]" :role="menuable ? undefined : 'img'" :aria-label="labelOf(p)" @click="menuable && call.openParticipantMenu(p, $event)" @contextmenu="onContextMenu(p, menuable, $event)"><MkAvatar :user="p.user" :link="false" :class="$style.avatar"/><span v-if="p.micMuted || p.deafened" :class="$style.dot" aria-hidden="true"></span></component>
+		<component :is="menuable ? 'button' : 'div'" v-for="{ p, menuable } in visible" :key="p.identity" v-tooltip="labelOf(p)" :type="menuable ? 'button' : undefined" :class="[$style.person, { _button: menuable }]" :role="menuable ? undefined : 'img'" :aria-label="labelOf(p)" @click="menuable && call.openParticipantMenu(p, $event)" @contextmenu="onContextMenu(p, menuable, $event)"><MkAvatar :user="p.user" :link="false" :decorations="[]" :class="$style.avatar"/><span v-if="p.micMuted || p.deafened" :class="$style.dot" aria-hidden="true"></span></component>
 		<button v-if="hidden > 0" type="button" class="_button" :class="$style.more" :aria-label="`${i18n.ts._chat.members}: ${i18n.tsx._voiceCall.otherParticipants({ n: hidden })}`" @click="call.openRoster()">+{{ hidden }}</button>
 	</div>
 	<button v-tooltip="call.prejoinMicEnabled.value ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute" type="button" class="_button" :class="[$style.mic, { [$style.muted]: !call.prejoinMicEnabled.value }]" :aria-label="call.prejoinMicEnabled.value ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute" @click="call.prejoinMicEnabled.value = !call.prejoinMicEnabled.value"><i :class="call.prejoinMicEnabled.value ? 'ti ti-microphone' : 'ti ti-microphone-off'"></i></button>
@@ -49,7 +49,7 @@ function onContextMenu(p: typeof visible.value[number]['p'], menuable: boolean, 
 .avatars { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: 44px; overflow: clip; }
 .person { position: relative; display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; }
 .avatar { width: 28px; height: 28px; }
-.dot { position: absolute; z-index: 2; bottom: 0; left: 0; width: 20%; height: 20%; border-radius: 120%; background: #888; box-shadow: 0 0 0 3px var(--MI_THEME-panel); }
+.dot { position: absolute; z-index: 2; bottom: 0; left: 0; width: 20%; height: 20%; border-radius: 120%; background: color-mix(in srgb, var(--MI_THEME-fg) 50%, transparent); box-shadow: 0 0 0 3px var(--MI_THEME-panel); }
 .more { flex: 0 0 28px; height: 28px; border-radius: 50%; background: var(--MI_THEME-buttonBg); font-size: 11px; }
 .mic { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 50%; background: var(--MI_THEME-buttonBg); font-size: 18px; }
 .mic.muted { color: var(--MI_THEME-error); }
