@@ -122,8 +122,8 @@ describe('startViewTransition', () => {
 			expect(unhandled).not.toHaveBeenCalled();
 		});
 
-		// 更新のコールバックが throw すると updateCallbackDone が reject する。それも握りつぶし、後始末は必ず行う
-		test('swallows a rejected update callback and still runs once', async () => {
+		// 更新のコールバックが throw すると updateCallbackDone が reject する。unhandledrejection にはせずに記録し、後始末は必ず行う
+		test('logs a rejected update callback instead of leaving it unhandled, and still runs once', async () => {
 			const reason = new Error('update failed');
 			doc.startViewTransition = vi.fn((update: () => void | Promise<void>) => {
 				// 本物のブラウザと同じく、三つの約束は別々のオブジェクト
@@ -133,12 +133,15 @@ describe('startViewTransition', () => {
 			setVisibility('visible');
 			const onDone = vi.fn();
 			const unhandled = vi.fn();
+			const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 			process.on('unhandledRejection', unhandled);
 			try {
 				startViewTransition(() => {}, { onDone });
 				await settle();
+				expect(error).toHaveBeenCalledWith(reason);
 			} finally {
 				process.off('unhandledRejection', unhandled);
+				error.mockRestore();
 			}
 			expect(onDone).toHaveBeenCalledTimes(1);
 			expect(unhandled).not.toHaveBeenCalled();
@@ -164,19 +167,32 @@ describe('startViewTransition', () => {
 			expect(onDone).toHaveBeenCalledTimes(1);
 		});
 
-		test('runs even when the fallback update rejects, without an unhandled rejection', async () => {
+		test('runs even when the fallback update rejects, logging it without an unhandled rejection', async () => {
 			doc.startViewTransition = undefined;
 			const onDone = vi.fn();
 			const unhandled = vi.fn();
+			const reason = new Error('update failed');
+			const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 			process.on('unhandledRejection', unhandled);
 			try {
-				startViewTransition(() => Promise.reject(new Error('update failed')), { onDone });
+				startViewTransition(() => Promise.reject(reason), { onDone });
 				await settle();
+				expect(error).toHaveBeenCalledWith(reason);
 			} finally {
 				process.off('unhandledRejection', unhandled);
+				error.mockRestore();
 			}
 			expect(onDone).toHaveBeenCalledTimes(1);
 			expect(unhandled).not.toHaveBeenCalled();
+		});
+
+		// 非表示のタブでの更新が throw しても、後始末 (テーマの _themeChanging_ を外すなど) は済ませてから投げる
+		test('runs before rethrowing a synchronous failure of the plain update', () => {
+			doc.startViewTransition = vi.fn(fakeTransition);
+			setVisibility('hidden');
+			const onDone = vi.fn();
+			expect(() => startViewTransition(() => { throw new Error('update failed'); }, { onDone })).toThrow('update failed');
+			expect(onDone).toHaveBeenCalledTimes(1);
 		});
 
 		test('runs after the plain update when starting the transition throws', () => {

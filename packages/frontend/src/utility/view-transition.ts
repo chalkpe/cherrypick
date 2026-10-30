@@ -23,9 +23,19 @@ export function startViewTransition(update: (transitioning: boolean) => void | P
 		options.onDone?.();
 	};
 	const updateWithoutTransition = () => {
-		const result = update(false);
+		let result: void | Promise<void>;
+		try {
+			result = update(false);
+		} catch (err) {
+			// トランジションの中で失敗したときと同じく、後片付け (onDone) はしてから投げ直す
+			done();
+			throw err;
+		}
 		if (result instanceof Promise) {
-			result.then(done, done);
+			result.then(done, (err: unknown) => {
+				console.error(err);
+				done();
+			});
 		} else {
 			done();
 		}
@@ -49,6 +59,10 @@ export function startViewTransition(update: (transitioning: boolean) => void | P
 	}
 
 	transition.ready.catch(ignore);
-	transition.updateCallbackDone.catch(ignore);
+	// スキップされたトランジションの reject (InvalidStateError / AbortError) は握りつぶすが、更新そのものの失敗は見えるように残す
+	transition.updateCallbackDone.catch((err: unknown) => {
+		if (err instanceof DOMException && (err.name === 'InvalidStateError' || err.name === 'AbortError')) return;
+		console.error(err);
+	});
 	transition.finished.then(done, done);
 }
