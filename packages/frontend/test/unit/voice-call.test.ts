@@ -87,7 +87,7 @@ const lk = vi.hoisted(() => {
 			sid: 'PA_local',
 			isScreenShareEnabled: false,
 			// 本物と同じく、マイクのトラックは livekit-client が作り直す (restarted) ことも終わる (ended) こともある
-			microphoneTrack: Object.assign(new Emitter(), { kind: 'audio' }),
+			microphoneTrack: Object.assign(new Emitter(), { kind: 'audio', mediaStreamTrack: {} }),
 			getTrackPublication: vi.fn(() => ({ track: this.localParticipant.microphoneTrack })),
 			setMicrophoneEnabled: vi.fn().mockResolvedValue(undefined),
 			setScreenShareEnabled: vi.fn(async (enabled: boolean, ..._options: unknown[]) => {
@@ -110,7 +110,7 @@ const lk = vi.hoisted(() => {
 		}
 	}
 
-	const analyser = { analyser: { fftSize: 512, getFloatTimeDomainData: vi.fn((data: Float32Array) => data.fill(0)) }, cleanup: vi.fn().mockResolvedValue(undefined) };
+	const analyser = { analyser: { fftSize: 512, context: { state: 'running' as AudioContextState }, getFloatTimeDomainData: vi.fn((data: Float32Array) => data.fill(0)) }, cleanup: vi.fn().mockResolvedValue(undefined) };
 	const createAudioAnalyser = vi.fn(() => analyser);
 	return { analyser, createAudioAnalyser, Emitter, RoomEvent, TrackEvent, DisconnectReason, Track, ScreenSharePresets, VideoPreset, VideoQuality, FakeRoom, FakeRemoteParticipant };
 });
@@ -154,6 +154,7 @@ function remoteParticipant(identity: string) {
 beforeEach(() => {
 	lk.FakeRoom.instances.length = 0;
 	lk.analyser.analyser.getFloatTimeDomainData.mockImplementation((data: Float32Array) => data.fill(0));
+	lk.analyser.analyser.context.state = 'running';
 	lk.analyser.cleanup.mockClear();
 	lk.createAudioAnalyser.mockClear();
 	lk.FakeRoom.setup = null;
@@ -371,6 +372,7 @@ describe('voice call controller', () => {
 			vi.useRealTimers();
 		});
 		const reports = () => mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status');
+
 		async function joinMuted() {
 			await joinVoiceCall(room1, { micEnabled: false });
 			await vi.advanceTimersByTimeAsync(0);
@@ -465,6 +467,21 @@ describe('voice call controller', () => {
 			expect(reports()).toHaveLength(1);
 		});
 
+		// セッションを確かめる一時的な失敗も ACCESS_DENIED になる。一度の失敗で、その後の切り替えまで送らなくなってはいけない
+		test('tries once more when the settings change after a permanent API error', async () => {
+			await joinMuted();
+			mocks.misskeyApi.mockRejectedValueOnce({ code: 'ACCESS_DENIED' }).mockRejectedValueOnce({ code: 'ACCESS_DENIED' });
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			setDeafened(false);
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(reports()).toHaveLength(2);
+			expect(reports()[1][1]).toMatchObject({ deafened: false });
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reports()).toHaveLength(3);
+		});
+
 		test('cancels retries when leaving and does not send an old session into the next call', async () => {
 			await joinMuted();
 			mocks.misskeyApi.mockRejectedValueOnce(new TypeError('Failed to fetch'));
@@ -536,6 +553,31 @@ describe('voice call controller', () => {
 		lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity: 'remote' }]);
 		expect(voiceCall.speakingIdentities).toEqual(['remote']);
 		expect(voiceCall.localSpeaking).toBe(false);
+	});
+
+	// 自動再生の制限で AudioContext が止まっていると無音しか返らない。そのあいだはサーバーの知らせに従う
+	test('lights the local speaker from the server while the meter audio context is suspended', async () => {
+		vi.useFakeTimers();
+		try {
+			lk.analyser.analyser.context.state = 'suspended';
+			await joinVoiceCall(room1);
+			const identity = lastRoom().localParticipant.identity;
+			lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity }]);
+			await vi.advanceTimersByTimeAsync(200);
+			expect(voiceCall.localSpeaking).toBe(true);
+			expect(voiceCall.speakingIdentities).toEqual([identity]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// 途中で失敗した createAudioAnalyser は AudioContext を閉じないので、同じトラックを切り替えのたびに測り直さない
+	test('does not retry metering a microphone track that could not be metered', async () => {
+		lk.createAudioAnalyser.mockImplementationOnce(() => { throw new Error('createMediaStreamSource failed'); });
+		await joinVoiceCall(room1);
+		await setMicEnabled(false);
+		await setMicEnabled(true);
+		expect(lk.createAudioAnalyser).toHaveBeenCalledTimes(1);
 	});
 
 	test('lights the local speaker from microphone samples and keeps remote server speakers', async () => {

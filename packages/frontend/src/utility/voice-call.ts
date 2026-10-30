@@ -46,6 +46,10 @@ let livekit: LiveKit | null = null;
 let current: Room | null = null;
 let joinAttempt = 0;
 let stopLocalMeter: (() => void) | null = null;
+let localMeterContext: BaseAudioContext | null = null;
+// 測れなかったトラックは測り直さない。createAudioAnalyser は途中で失敗すると作った AudioContext を閉じずに投げるので、
+// 切り替えのたびに測り直すと閉じられない AudioContext が溜まっていく。作り直されたトラックは別のものなので、また測ってみる
+const unmeterableTracks = new WeakSet<MediaStreamTrack>();
 let watchedMicrophoneTrack: LocalAudioTrack | null = null;
 let unwatchMicrophoneTrack: (() => void) | null = null;
 type VoiceStatusReport = Misskey.Endpoints['chat/rooms/voice/status']['req'];
@@ -75,7 +79,9 @@ function reportStatus(room: Room, force = false): void {
 		statusDelivery = { room, latest: status, pending: status, sending: false, retryDelay: 1000, timer: null, stopped: false };
 	} else {
 		if (!force && statusDelivery.latest.micMuted === status.micMuted && statusDelivery.latest.deafened === status.deafened) return;
-		if (force) statusDelivery.stopped = false;
+		// 止めたのは失敗した報告の再送だけ。設定が変わったら、新しい設定はもう一度だけ送ってみる
+		// (セッションを確かめる一時的な失敗も ACCESS_DENIED になるので、一度の失敗で通話の残りずっと黙らない)
+		statusDelivery.stopped = false;
 		statusDelivery.latest = status;
 		statusDelivery.pending = status;
 	}
@@ -147,25 +153,30 @@ function startLocalMeter(room: Room): void {
 	const track = room.localParticipant.getTrackPublication(livekit.Track.Source.Microphone)?.track;
 	if (track == null || track.kind !== livekit.Track.Kind.Audio) return;
 	watchMicrophoneTrack(room, track as LocalAudioTrack);
+	if (unmeterableTracks.has(track.mediaStreamTrack)) return;
 	try {
 		const meter = livekit.createAudioAnalyser(track as LocalAudioTrack, { fftSize: 512 });
+		const context = meter.analyser.context;
 		const samples = new Float32Array(meter.analyser.fftSize);
 		let lastLoudAt = -Infinity;
 		const timer = window.setInterval(() => {
-			if (current !== room || !state.micEnabled) return;
+			if (current !== room || !state.micEnabled || context.state === 'suspended') return;
 			meter.analyser.getFloatTimeDomainData(samples);
 			const rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
 			if (rms >= 0.02) lastLoudAt = Date.now();
 			setLocalSpeaking(room, Date.now() - lastLoudAt < 150);
 		}, 50);
+		localMeterContext = context;
 		stopLocalMeter = () => {
 			window.clearInterval(timer);
 			void meter.cleanup().catch(() => {});
 			setLocalSpeaking(room, false);
 			stopLocalMeter = null;
+			localMeterContext = null;
 		};
 	} catch {
 		// Audio metering is optional; failure must not stop the microphone.
+		unmeterableTracks.add(track.mediaStreamTrack);
 	}
 }
 
@@ -636,8 +647,8 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 		const localIdentity = room.localParticipant.identity;
 		const others = speakers.filter(speaker => speaker.identity !== localIdentity).map(speaker => speaker.identity);
 		// 自分の発話は、マイクの音を手元で測れているあいだはその結果 (サーバーの知らせより速い) で示し、
-		// 測れていない (AudioContext が無いなど) ときはサーバーの知らせに従う
-		const metered = stopLocalMeter != null;
+		// 測れていない (AudioContext が無い、自動再生の制限で止まっていて無音しか返らないなど) ときはサーバーの知らせに従う
+		const metered = stopLocalMeter != null && localMeterContext?.state !== 'suspended';
 		const localSpeaking = metered ? state.speakingIdentities.includes(localIdentity) : speakers.some(speaker => speaker.identity === localIdentity);
 		state.speakingIdentities = localSpeaking ? [...others, localIdentity] : others;
 		if (!metered) state.localSpeaking = localSpeaking;
