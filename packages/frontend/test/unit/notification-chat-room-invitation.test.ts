@@ -110,7 +110,30 @@ for (const action of [0, 1]) {
 		expect(screen.getAllByRole('button').every(button => !(button as HTMLButtonElement).disabled)).toBe(true);
 		await fireEvent.click(screen.getAllByRole('button')[action]);
 		await flushPromises();
-		expect(api).toHaveBeenCalledTimes(2);
+		expect(api.mock.calls.filter(([endpoint]) => endpoint !== 'chat/rooms/show')).toHaveLength(2);
+		expect(screen.queryAllByRole('button')).toHaveLength(0);
+	});
+
+	// 招待一覧や別の端末で応じた (または取り消された) 招待は、押し直しても同じく失敗するのでボタンを下げる
+	test(`drops invitation actions without an error when action ${action} finds the invitation already gone`, async () => {
+		api.mockImplementation(((endpoint: string) => endpoint === 'chat/rooms/show'
+			? Promise.resolve({ id: 'room1', invitationExists: false })
+			: Promise.reject({ code: 'INTERNAL_ERROR' })) as never);
+		renderNotification(true);
+		await fireEvent.click(screen.getAllByRole('button')[action]);
+		await flushPromises();
+		expect(api).toHaveBeenCalledWith('chat/rooms/show', { roomId: 'room1' });
+		expect(vi.mocked(alert)).not.toHaveBeenCalled();
+		expect(screen.queryAllByRole('button')).toHaveLength(0);
+	});
+
+	// 断った・取り消された招待のルームは、メンバーでなければ見えない
+	test(`drops invitation actions when action ${action} fails and the room is no longer visible`, async () => {
+		api.mockImplementation(((endpoint: string) => Promise.reject({ code: endpoint === 'chat/rooms/show' ? 'NO_SUCH_ROOM' : 'INTERNAL_ERROR' })) as never);
+		renderNotification(true);
+		await fireEvent.click(screen.getAllByRole('button')[action]);
+		await flushPromises();
+		expect(vi.mocked(alert)).not.toHaveBeenCalled();
 		expect(screen.queryAllByRole('button')).toHaveLength(0);
 	});
 }

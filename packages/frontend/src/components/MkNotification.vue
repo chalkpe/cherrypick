@@ -214,6 +214,7 @@ import { notePage } from '@@/js/note.js';
 import { userPage } from '@@/js/user.js';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
+import { isApiError } from '@/utility/api-error.js';
 import { ensureSignin } from '@/i.js';
 import { prefer } from '@/preferences.js';
 
@@ -285,9 +286,24 @@ async function respondToChatRoomInvitation(endpoint: 'chat/rooms/join' | 'chat/r
 		await misskeyApi(endpoint, { roomId: props.notification.invitation.room.id });
 		chatRoomInviteDone.value = true;
 	} catch {
-		void alert({ type: 'error', text: i18n.ts.somethingHappened });
+		// 招待がもう無い (招待一覧や別の端末で応じた・取り消された) なら、何度押しても同じく失敗するのでボタンを下げる
+		if (await isChatRoomInvitationGone(props.notification.invitation.room.id)) {
+			chatRoomInviteDone.value = true;
+		} else {
+			void alert({ type: 'error', text: i18n.ts.somethingHappened });
+		}
 	} finally {
 		chatRoomInvitePending.value = false;
+	}
+}
+
+async function isChatRoomInvitationGone(roomId: string): Promise<boolean> {
+	try {
+		const room = await misskeyApi('chat/rooms/show', { roomId });
+		return room.invitationExists === false;
+	} catch (err) {
+		// 断った・取り消された招待のルームは、メンバーでなければ見えない (NO_SUCH_ROOM)
+		return isApiError(err) && err.code === 'NO_SUCH_ROOM';
 	}
 }
 
