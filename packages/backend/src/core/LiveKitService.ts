@@ -120,17 +120,19 @@ export class LiveKitService {
 		for (const participant of [...participants].sort((a, b) => a.joinedAt < b.joinedAt ? -1 : a.joinedAt > b.joinedAt ? 1 : a.identity.localeCompare(b.identity))) {
 			const userId = userIdOfMetadata(participant.metadata);
 			if (userId == null) continue;
+			const micTrack = participant.tracks.find(track => track.source === TrackSource.MICROPHONE);
 			result.push({
 				identity: participant.identity,
 				userId,
 				...reportedVoiceStatus({
-					micMuted: parseReportedBoolean(participant.attributes?.['cherrypick.micMuted']),
+					// 届いているマイクの音は、本人の「切った」という申告より優先する (話しているのに切ったと見せて、誰が話しているか隠させない)
+					micMuted: micTrack?.muted === false ? false : parseReportedBoolean(participant.attributes?.['cherrypick.micMuted']),
 					deafened: parseReportedBoolean(participant.attributes?.['cherrypick.deafened']),
 				}),
 				screenSharing: participant.tracks.some(track => track.source === TrackSource.SCREEN_SHARE),
 				// 空のソース一覧は LiveKit では全ソース許可を表す。
 				canScreenShare: participant.permission?.canPublish === true && (participant.permission.canPublishSources.length === 0 || participant.permission.canPublishSources.some(source => source === TrackSource.SCREEN_SHARE || source === TrackSource.SCREEN_SHARE_AUDIO)),
-				micTrackSid: participant.tracks.find(track => track.source === TrackSource.MICROPHONE)?.sid ?? null,
+				micTrackSid: micTrack?.sid ?? null,
 			});
 		}
 		return result;

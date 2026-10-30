@@ -977,6 +977,15 @@ describe('stage card order', () => {
 		expect(visibleNames()).toEqual([me.name, carol.name, bob.name]);
 	});
 
+	test('brings in a hidden speaker whose audio arrives even while they are reported as muted', async () => {
+		Object.assign(callState, { status: 'connected', room, micEnabled: true });
+		await renderRoom(room, [{ roomId: 'r1', participants: [...others.map(user => user === carol ? { ...participant(user), micMuted: true } : participant(user)), participant(me)] }]);
+		resizeObserved(390, document.querySelector('[data-voice-call-room]')!, 400);
+		await flush();
+		await speak([carol], 1500);
+		expect(visibleNames()).toContain(carol.name);
+	});
+
 	test('ignores a short remark from a hidden participant', async () => {
 		await renderCrowdedStage();
 		await speak([carol], 300);

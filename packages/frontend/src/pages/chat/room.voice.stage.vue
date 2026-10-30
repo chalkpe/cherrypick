@@ -10,7 +10,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<!-- TransitionGroup は直下の子コンポーネントを毎回描き直させるので、カードは要素で包む -->
 		<component :is="prefer.s.animation ? TransitionGroup : 'div'" v-bind="prefer.s.animation ? { tag: 'div', css: false, moveClass: $style.cardMove } : {}" :class="$style.cards" :style="cardStyle" @pointerover="trackHover" @pointerleave="hovering = false">
 			<div v-for="p in shownShares" :key="`share-${p.identity}`" :class="$style.card" data-voice-call-card><XShare :participant="p" :watchable="inThisCall" :watching="false" @toggleWatch="toggleScreenShareWatch(p.identity)"/></div>
-			<div v-for="p in shown" :key="p.identity" :class="$style.card" data-voice-call-card><XTile :participant="p" :speaking="speaking(p.identity) && !p.micMuted" :menuable="inThisCall || isOwner" @openMenu="openMenu(p, $event)" @contextmenu.prevent="openMenu(p, $event)"/></div>
+			<div v-for="p in shown" :key="p.identity" :class="$style.card" data-voice-call-card><XTile :participant="p" :speaking="speaking(p.identity)" :menuable="inThisCall || isOwner" @openMenu="openMenu(p, $event)" @contextmenu.prevent="openMenu(p, $event)"/></div>
 			<div v-if="hidden.length || shownShares.length < availableShares.length" key="group" :class="$style.card" data-voice-call-card><XGroup :participants="grouped" @open="call.openRoster()"/></div>
 		</component>
 	</div>
@@ -56,6 +56,7 @@ async function openMenu(p: typeof participants.value[number], ev: MouseEvent) {
 	try { await props.call.openParticipantMenu(p, ev); } finally { menuOpen.value = false; }
 }
 
+// 話しているかは実際に届く音で決める。マイクを切ったという申告 (micMuted) は遅れて届くことも偽ることもできるので、それで消さない
 function speaking(identity: string) { return inThisCall.value && voiceCall.speakingIdentities.includes(identity); }
 
 const availableShares = computed(() => participants.value.filter(p => p.screenSharing && !voiceCall.watchingIdentities.includes(p.identity)));
@@ -85,7 +86,7 @@ const layout = computed(() => {
 		rows = Math.min(Math.max(1, Math.floor((size.value.height - 72 + 8) / 144)), Math.ceil((availableShares.value.length + 2) / columns));
 		slots = rows * columns;
 	}
-	const hasOtherSpeaker = participants.value.some(p => p.identity !== props.call.myIdentity && speaking(p.identity) && !p.micMuted);
+	const hasOtherSpeaker = participants.value.some(p => p.identity !== props.call.myIdentity && speaking(p.identity));
 	const peopleToKeep = Math.min(participants.value.length, hasOtherSpeaker ? 2 : 1);
 	const shareCount = Math.min(availableShares.value.length, Math.max(0, slots - peopleToKeep - 1));
 	const peopleSlots = Math.max(1, slots - shareCount);
@@ -99,7 +100,7 @@ const PROMOTE_AFTER_MS = 800;
 const order = ref<string[]>([]);
 const speakingSince = new Map<string, number>(), lastSpokeAt = new Map<string, number>();
 let promoteTimer: number | undefined;
-const speakingNow = computed(() => new Set(participants.value.filter(p => p.identity !== props.call.myIdentity && speaking(p.identity) && !p.micMuted).map(p => p.identity)));
+const speakingNow = computed(() => new Set(participants.value.filter(p => p.identity !== props.call.myIdentity && speaking(p.identity)).map(p => p.identity)));
 // メニューが開いているあいだや、ポインターがカードに乗っているあいだは並びを動かさず、離れてから追いつく。カードの隙間に置かれているだけなら止めない
 const frozen = computed(() => menuOpen.value || hovering.value);
 

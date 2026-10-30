@@ -86,6 +86,16 @@ describe('LiveKitService', () => {
 		expect((await service.listParticipants('r1'))[0]).toMatchObject({ micMuted: false, deafened: true });
 	});
 
+	test('does not let a reported mute hide a microphone that is still sending', async () => {
+		roomService.listParticipants.mockResolvedValue([
+			{ identity: 'live', metadata: '{"userId":"u1"}', attributes: { 'cherrypick.micMuted': 'true' }, tracks: [{ sid: 'TR_1', source: TrackSource.MICROPHONE, muted: false }] },
+			{ identity: 'muted', metadata: '{"userId":"u2"}', attributes: { 'cherrypick.micMuted': 'true' }, tracks: [{ sid: 'TR_2', source: TrackSource.MICROPHONE, muted: true }] },
+		]);
+		const [live, muted] = await service.listParticipants('r1');
+		expect(live).toMatchObject({ identity: 'live', micMuted: false });
+		expect(muted).toMatchObject({ identity: 'muted', micMuted: true });
+	});
+
 	test('writes only reported settings for the authenticated participant session', async () => {
 		roomService.getParticipant.mockResolvedValue({ identity: 'i1', sid: 'PA_1' });
 		await expect(service.setParticipantStatus('r1', 'i1', 'PA_1', { micMuted: true, deafened: false })).resolves.toBe(true);
