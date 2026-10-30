@@ -14,6 +14,7 @@ vi.mock('@/preferences.js', async () => ({
 		'voiceCall.echoCancellation': true,
 		'voiceCall.noiseSuppression': true,
 		'voiceCall.autoGainControl': true,
+		'voiceCall.micEnabled': true,
 		'chat.sendOnEnter': false,
 	}),
 }));

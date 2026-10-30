@@ -10,6 +10,7 @@ import { nextTick, unref } from 'vue';
 const mocks = vi.hoisted(() => ({
 	popupMenu: vi.fn(),
 	setMicEnabled: vi.fn(),
+	restartMicrophone: vi.fn(),
 	inUse: { audioinput: undefined as string | undefined, audiooutput: undefined as string | undefined },
 }));
 
@@ -27,6 +28,7 @@ vi.mock('@/utility/voice-call.js', async importOriginal => {
 		resumeAudio: vi.fn(),
 		setDeafened: vi.fn(),
 		setMicEnabled: mocks.setMicEnabled,
+		restartMicrophone: mocks.restartMicrophone,
 		startScreenShare: vi.fn(),
 		stopScreenShare: vi.fn(),
 		// 選択の保存と読み出しは本物を使う。ここでは通話を張らないので、本物が 'default' に落ちたときだけ通話中のデバイスを補う
@@ -62,6 +64,7 @@ async function openMicMenu() {
 beforeEach(() => {
 	mocks.popupMenu.mockReset();
 	mocks.setMicEnabled.mockReset().mockResolvedValue(undefined);
+	mocks.restartMicrophone.mockReset().mockResolvedValue(undefined);
 	mocks.inUse.audioinput = undefined;
 	prefer.reset({
 		'voiceCall.inputDeviceId': null,
@@ -69,6 +72,7 @@ beforeEach(() => {
 		'voiceCall.echoCancellation': true,
 		'voiceCall.noiseSuppression': true,
 		'voiceCall.autoGainControl': true,
+		'voiceCall.micEnabled': true,
 		'voiceCall.screenShareQuality': 'sharp',
 		'voiceCall.screenShareAudio': true,
 	});
@@ -121,7 +125,9 @@ describe('voice call bar audio processing', () => {
 		await nextTick();
 		await Promise.resolve();
 
-		expect(mocks.setMicEnabled.mock.calls).toEqual([[false], [true]]);
+		// 入れ直しは自分で選んだマイクの入/切 (次の参加でも使う) を書き換えない
+		expect(mocks.restartMicrophone).toHaveBeenCalledTimes(1);
+		expect(mocks.setMicEnabled).not.toHaveBeenCalled();
 	});
 });
 

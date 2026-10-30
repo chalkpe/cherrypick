@@ -167,6 +167,7 @@ beforeEach(() => {
 		'voiceCall.echoCancellation': true,
 		'voiceCall.noiseSuppression': true,
 		'voiceCall.autoGainControl': true,
+		'voiceCall.micEnabled': true,
 		'voiceCall.participantVolumes': {},
 		'voiceCall.screenShareVolumes': {},
 		'voiceCall.screenShareVolumesMigrated': false,
@@ -334,6 +335,74 @@ describe('voice call controller', () => {
 		expect(b.setVolume).toHaveBeenCalledWith(1, lk.Track.Source.Microphone);
 		expect(b.setVolume).toHaveBeenCalledWith(1, lk.Track.Source.ScreenShareAudio);
 		expect(voiceCall).toMatchObject({ deafened: false, micEnabled: false });
+	});
+
+	// スピーカーを切ったままマイクだけ入れると、聞こえないまま話すことになる
+	test('turning the mic on while deafened also turns the speakers back on', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 0.5 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		setDeafened(true);
+		await Promise.resolve();
+		expect(voiceCall).toMatchObject({ deafened: true, micEnabled: false });
+		a.setVolume.mockClear();
+
+		await setMicEnabled(true);
+
+		expect(voiceCall).toMatchObject({ deafened: false, micEnabled: true });
+		expect(a.setVolume).toHaveBeenCalledWith(0.5, lk.Track.Source.Microphone);
+		expect(a.setVolume).not.toHaveBeenCalledWith(0, expect.anything());
+	});
+
+	test('deafening while the mic waits for permission leaves the mic off once it is granted', async () => {
+		let grant!: () => void;
+		lk.FakeRoom.setup = room => room.localParticipant.setMicrophoneEnabled.mockImplementationOnce(() => new Promise<void>(resolve => { grant = resolve; }));
+		const joined = joinVoiceCall(room1);
+		await vi.waitFor(() => expect(grant).toBeTypeOf('function'));
+
+		setDeafened(true);
+		grant();
+		await joined;
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(false, expect.anything());
+		expect(voiceCall).toMatchObject({ deafened: true, micEnabled: false });
+		expect(mocks.misskeyApi).toHaveBeenLastCalledWith('chat/rooms/voice/status', expect.objectContaining({ micMuted: true, deafened: true }));
+	});
+
+	test('deafening while connecting joins without turning the mic on', async () => {
+		let connected!: () => void;
+		lk.FakeRoom.setup = room => room.connect.mockImplementationOnce(() => new Promise<void>(resolve => { connected = resolve; }));
+		const joined = joinVoiceCall(room1);
+		await vi.waitFor(() => expect(connected).toBeTypeOf('function'));
+
+		setDeafened(true);
+		connected();
+		await joined;
+
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+		expect(voiceCall).toMatchObject({ status: 'connected', deafened: true, micEnabled: false });
+	});
+
+	// 自分で選んだマイクの入/切だけを次の参加に引き継ぐ。スピーカーを切ったときに一緒に切れたマイクは、選んだものではない
+	test('remembers only the mic choices I make for the next call', async () => {
+		await joinVoiceCall(room1);
+		await setMicEnabled(false);
+		expect(prefer.commit).toHaveBeenLastCalledWith('voiceCall.micEnabled', false);
+		await setMicEnabled(true);
+		expect(prefer.commit).toHaveBeenLastCalledWith('voiceCall.micEnabled', true);
+
+		prefer.commit.mockClear();
+		setDeafened(true);
+		await Promise.resolve();
+		setDeafened(false);
+		expect(prefer.commit).not.toHaveBeenCalledWith('voiceCall.micEnabled', expect.anything());
+
+		await leaveVoiceCall();
+		prefer.commit('voiceCall.micEnabled', false);
+		await joinVoiceCall(room1);
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+		expect(voiceCall).toMatchObject({ status: 'connected', micEnabled: false });
 	});
 
 	test('reports mute and deafen settings without sharing personal volume changes', async () => {

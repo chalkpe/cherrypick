@@ -20,6 +20,7 @@ describe('voice call preference account scopes', () => {
 			'voiceCall.echoCancellation': false,
 			'voiceCall.noiseSuppression': false,
 			'voiceCall.autoGainControl': false,
+			'voiceCall.micEnabled': false,
 			'voiceCall.participantVolumes': false,
 			'voiceCall.screenShareVolumes': false,
 			'voiceCall.screenShareVolumesMigrated': false,

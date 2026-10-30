@@ -76,7 +76,7 @@ import { computed, watch } from 'vue';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
-import { leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
+import { leaveVoiceCall, restartMicrophone, resumeAudio, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
 import { voiceCallBarHidden, voiceCallBarPlacement as placement } from '@/utility/voice-call-placement.js';
 import { openVoiceCallSettings as openSettings, screenShareAvailable } from '@/utility/voice-call-settings.js';
 import { voiceCallStatusAnnouncedInRoom, voiceCallStatusText } from '@/utility/voice-call-status.js';
@@ -94,9 +94,7 @@ watch(() => [
 	prefer.r['voiceCall.noiseSuppression'].value,
 	prefer.r['voiceCall.autoGainControl'].value,
 ], async () => {
-	if (!voiceCall.micEnabled) return;
-	await setMicEnabled(false);
-	await setMicEnabled(true);
+	await restartMicrophone();
 });
 </script>
 

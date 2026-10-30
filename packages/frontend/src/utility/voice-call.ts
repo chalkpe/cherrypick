@@ -262,7 +262,8 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 		lkRoom.switchActiveDevice('audiooutput', outputDeviceId).catch(() => {});
 	}
 
-	if (options.micEnabled !== false) await enableMicrophone(lkRoom);
+	// つながるまでのあいだにスピーカーを切っていたら、マイクは入れない (スピーカーを切っているあいだはマイクも切っておく)
+	if ((options.micEnabled ?? prefer.s['voiceCall.micEnabled']) && !state.deafened) await enableMicrophone(lkRoom);
 	else reportStatus(lkRoom);
 }
 
@@ -277,35 +278,50 @@ export async function leaveVoiceCall(): Promise<void> {
 	resetState();
 }
 
+/** 自分でマイクを切り替える。選んだ入/切は、次に通話に入るときにも使う */
 export async function setMicEnabled(enabled: boolean): Promise<void> {
 	const room = current;
 	if (room == null) return;
+	prefer.commit('voiceCall.micEnabled', enabled);
 	if (enabled) {
+		// スピーカーを切ったままマイクだけを入れると、聞こえないまま話すことになる。マイクを入れるときはスピーカーも戻す
+		if (state.deafened) {
+			state.deafened = false;
+			applyVolumes(room);
+		}
 		await enableMicrophone(room);
 	} else {
-		await room.localParticipant.setMicrophoneEnabled(false, captureOptions());
-		if (current !== room) return;
-		state.micEnabled = false;
-		stopLocalMeter?.();
-		unwatchMicrophoneTrack?.();
-		reportStatus(room);
+		await disableMicrophone(room);
 	}
 }
 
+/** 音声処理の設定を反映するために、マイクを入れ直す。自分で選んだ入/切は変えない */
+export async function restartMicrophone(): Promise<void> {
+	const room = current;
+	if (room == null || !state.micEnabled) return;
+	await disableMicrophone(room);
+	if (current === room && !state.deafened) await enableMicrophone(room);
+}
+
+/** スピーカーを切るとマイクも切る。スピーカーを戻してもマイクは切ったまま (自分で入れ直す) */
 export function setDeafened(deafened: boolean): void {
 	state.deafened = deafened;
 	if (current == null) return;
 	const room = current;
-	for (const participant of room.remoteParticipants.values()) {
-		applyVolume(participant);
-	}
+	applyVolumes(room);
 	if (deafened && state.micEnabled) {
-		// マイクを切り終えてから一度だけ知らせる (setMicEnabled が知らせる)。切る前に知らせると、スピーカーだけ切ってマイクは入ったままの状態が
+		// マイクを切り終えてから一度だけ知らせる (disableMicrophone が知らせる)。切る前に知らせると、スピーカーだけ切ってマイクは入ったままの状態が
 		// 一瞬伝わり、知らせも二度になる。切れなかったときは、そのままの状態 (マイクは入ったまま) を知らせる
-		setMicEnabled(false).catch(() => reportStatus(room));
+		disableMicrophone(room).catch(() => reportStatus(room));
 		return;
 	}
 	reportStatus(room);
+}
+
+function applyVolumes(room: Room): void {
+	for (const participant of room.remoteParticipants.values()) {
+		applyVolume(participant);
+	}
 }
 
 export async function resumeAudio(): Promise<void> {
@@ -524,6 +540,11 @@ async function enableMicrophone(room: Room): Promise<void> {
 		await room.localParticipant.setMicrophoneEnabled(true, captureOptions());
 		if (current !== room) return;
 		state.micEnabled = true;
+		// 許可を待つあいだなどにスピーカーが切られていたら、入ったマイクをすぐ切る (スピーカーを切っているあいだはマイクを入れない)
+		if (state.deafened) {
+			await disableMicrophone(room).catch(() => reportStatus(room));
+			return;
+		}
 		startLocalMeter(room);
 		reportStatus(room);
 	} catch {
@@ -534,6 +555,15 @@ async function enableMicrophone(room: Room): Promise<void> {
 		reportStatus(room);
 		os.toast(i18n.ts._voiceCall.micUnavailable);
 	}
+}
+
+async function disableMicrophone(room: Room): Promise<void> {
+	await room.localParticipant.setMicrophoneEnabled(false, captureOptions());
+	if (current !== room) return;
+	state.micEnabled = false;
+	stopLocalMeter?.();
+	unwatchMicrophoneTrack?.();
+	reportStatus(room);
 }
 
 // audio 要素の volume は 0〜1 しか受け付けない (範囲外は IndexSizeError)

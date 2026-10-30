@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { computed, markRaw, ref, toValue } from 'vue';
+import { computed, markRaw, toValue } from 'vue';
 import type { MaybeRefOrGetter } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import type { MenuItem } from '@/types/menu.js';
@@ -66,11 +66,11 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 
 	// 他のサーバーで開かれる通話には相手のサーバーに IP アドレスが見えるので、ホストごとに初回だけ確認する
 	let joining = false;
-	const prejoinMic = ref(false);
 
+	// 参加前に選ぶマイクの入/切。最後に自分で選んだもの (通話中の切り替えも含む) を覚えておき、次の参加でも使う
 	const prejoinMicEnabled = computed({
-		get: () => prejoinMic.value,
-		set: value => { prejoinMic.value = value; },
+		get: () => prefer.r['voiceCall.micEnabled'].value,
+		set: value => prefer.commit('voiceCall.micEnabled', value),
 	});
 
 	async function join() {

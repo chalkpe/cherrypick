@@ -182,6 +182,7 @@ beforeEach(() => {
 		'voiceCall.echoCancellation': true,
 		'voiceCall.noiseSuppression': true,
 		'voiceCall.autoGainControl': true,
+		'voiceCall.micEnabled': true,
 		'voiceCall.screenShareQuality': 'sharp',
 		'voiceCall.screenShareAudio': true,
 		'voiceCall.participantVolumes': {},
@@ -345,13 +346,21 @@ describe('voice call on the room page', () => {
 		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.join })).toBeTruthy();
 		expect(screen.queryByRole('button', { name: i18n.ts._voiceCall.start })).toBeNull();
 	});
-	test('joins muted by default and passes the explicit prejoin choice', async () => {
+	test('joins with the mic on by default and remembers the prejoin choice for the next call', async () => {
 		await renderRoom(room, []);
 		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
-		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: false });
-		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.unmute }));
-		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
 		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: true });
+		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.mute }));
+		expect(prefer.commit).toHaveBeenLastCalledWith('voiceCall.micEnabled', false);
+		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
+		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: false });
+	});
+	test('starts the banner with the mic choice remembered from the last call', async () => {
+		prefer.reset({ ...prefer.s, 'voiceCall.micEnabled': false });
+		await renderRoom(room, []);
+		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.unmute })).toBeTruthy();
+		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
+		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: false });
 	});
 	test('has one messages tab and puts search in the room menu', async () => {
 		await renderRoom(room, []);
@@ -636,7 +645,7 @@ describe('voice call on the room page', () => {
 			expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.remoteHostNotice({ host: 'remote.test' }) }));
 			expect(prefer.commit).toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', ['remote.test']);
 			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
-			expect(mocks.joinVoiceCall).toHaveBeenCalledWith(mirror, { micEnabled: false });
+			expect(mocks.joinVoiceCall).toHaveBeenCalledWith(mirror, { micEnabled: true });
 
 			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
 			await flush();
