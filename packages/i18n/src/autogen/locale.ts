@@ -9325,11 +9325,11 @@ export interface Locale extends ILocale {
          */
         "micInputDetected": string;
         /**
-         * マイクミュート中
+         * マイクオフ
          */
         "micMuted": string;
         /**
-         * スピーカーミュート中
+         * スピーカーオフ
          */
         "deafened": string;
         /**

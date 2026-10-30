@@ -9,7 +9,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<!-- メニューに出すものが無い参加者 (通話に入っておらず持ち主でもないとき) は、押しても何も起きないボタンにせず、ただの行として出す -->
 		<component :is="menuable ? 'button' : 'div'" v-for="{ p, menuable } in rows" :key="p.identity" :type="menuable ? 'button' : undefined" :class="[$style.person, { _button: menuable, [$style.menuable]: menuable }]" @click="menuable && call.openParticipantMenu(p, $event)" @contextmenu="onContextMenu(p, menuable, $event)">
 			<MkAvatar :user="p.user" :link="false" :class="$style.avatar"/>
-			<span :class="$style.status"><i v-if="p.deafened" class="ti ti-headphones-off" :aria-label="i18n.ts._voiceCall.deafened"></i><i v-else-if="p.micMuted" class="ti ti-microphone-off" :aria-label="i18n.ts._voiceCall.micMuted"></i></span>
+			<span :class="$style.status"><i v-if="p.deafened" class="ti ti-headphones-off" role="img" :aria-label="i18n.ts._voiceCall.deafened"></i><i v-else-if="p.micMuted" class="ti ti-microphone-off" role="img" :aria-label="i18n.ts._voiceCall.micMuted"></i></span>
 			<MkUserName :user="p.user" :class="$style.name"/><i v-if="menuable" class="ti ti-dots"></i>
 		</component>
 	</section>

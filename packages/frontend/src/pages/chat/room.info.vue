@@ -18,7 +18,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</template>
 	<template v-else>
 		<MkKeyValue><template #key>{{ i18n.ts.name }}</template><template #value><Mfm :text="room.name" :plain="true" :author="room.owner"/></template></MkKeyValue>
-		<MkKeyValue><template #key>{{ i18n.ts.description }}</template><template #value><Mfm :text="room.description" :author="room.owner"/></template></MkKeyValue>
+		<MkKeyValue><template #key>{{ i18n.ts.description }}</template><template #value><Mfm v-if="room.description" :text="room.description" :author="room.owner"/><template v-else>{{ i18n.ts.noDescription }}</template></template></MkKeyValue>
 	</template>
 
 	<hr>

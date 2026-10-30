@@ -6,10 +6,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 <div v-if="call.available.value && !call.inThisCall.value" :class="$style.root">
 	<div ref="avatarsEl" :class="$style.avatars">
 		<!-- メニューに出すものが無い参加者 (通話に入っておらず持ち主でもないとき) は、押しても何も起きないボタンにせず、名前の付いた絵として出す -->
-		<component :is="menuable ? 'button' : 'div'" v-for="{ p, menuable } in visible" :key="p.identity" v-tooltip.mfm="userName(p.user)" :type="menuable ? 'button' : undefined" :class="[$style.person, { _button: menuable }]" :role="menuable ? undefined : 'img'" :aria-label="userName(p.user)" @click="menuable && call.openParticipantMenu(p, $event)" @contextmenu="onContextMenu(p, menuable, $event)"><MkAvatar :user="p.user" :link="false" :class="$style.avatar"/><span v-if="p.micMuted || p.deafened" v-tooltip="p.deafened ? i18n.ts._voiceCall.deafened : i18n.ts._voiceCall.micMuted" :class="$style.dot"></span></component>
-		<button v-if="hidden > 0" type="button" class="_button" :class="$style.more" :aria-label="i18n.ts._chat.members" @click="call.openRoster()">+{{ hidden }}</button>
+		<component :is="menuable ? 'button' : 'div'" v-for="{ p, menuable } in visible" :key="p.identity" v-tooltip.mfm="labelOf(p)" :type="menuable ? 'button' : undefined" :class="[$style.person, { _button: menuable }]" :role="menuable ? undefined : 'img'" :aria-label="labelOf(p)" @click="menuable && call.openParticipantMenu(p, $event)" @contextmenu="onContextMenu(p, menuable, $event)"><MkAvatar :user="p.user" :link="false" :class="$style.avatar"/><span v-if="p.micMuted || p.deafened" :class="$style.dot" aria-hidden="true"></span></component>
+		<button v-if="hidden > 0" type="button" class="_button" :class="$style.more" :aria-label="`${i18n.ts._chat.members}: ${i18n.tsx._voiceCall.otherParticipants({ n: hidden })}`" @click="call.openRoster()">+{{ hidden }}</button>
 	</div>
-	<button v-tooltip="call.prejoinMicEnabled.value ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute" type="button" class="_button" :class="[$style.mic, { [$style.muted]: !call.prejoinMicEnabled.value }]" :aria-label="call.prejoinMicEnabled.value ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute" :aria-pressed="!call.prejoinMicEnabled.value" @click="call.prejoinMicEnabled.value = !call.prejoinMicEnabled.value"><i :class="call.prejoinMicEnabled.value ? 'ti ti-microphone' : 'ti ti-microphone-off'"></i></button>
+	<button v-tooltip="call.prejoinMicEnabled.value ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute" type="button" class="_button" :class="[$style.mic, { [$style.muted]: !call.prejoinMicEnabled.value }]" :aria-label="call.prejoinMicEnabled.value ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute" @click="call.prejoinMicEnabled.value = !call.prejoinMicEnabled.value"><i :class="call.prejoinMicEnabled.value ? 'ti ti-microphone' : 'ti ti-microphone-off'"></i></button>
 	<MkButton primary :class="$style.join" @click="call.join()"><i class="ti ti-phone"></i> {{ empty ? i18n.ts._voiceCall.start : i18n.ts._voiceCall.join }}</MkButton>
 </div>
 </template>
@@ -30,6 +30,12 @@ const visible = computed(() => props.call.participants.value
 	.slice(0, capacity.value >= props.call.participants.value.length ? capacity.value : capacity.value - 1)
 	.map(p => ({ p, menuable: props.call.hasParticipantMenu(p) })));
 const hidden = computed(() => props.call.participants.value.length - visible.value.length);
+
+// 小さな点だけでは分からないので、マイク・スピーカーの状態は名前に添えて伝える
+function labelOf(p: typeof visible.value[number]['p']): string {
+	const status = p.deafened ? i18n.ts._voiceCall.deafened : p.micMuted ? i18n.ts._voiceCall.micMuted : null;
+	return status == null ? userName(p.user) : `${userName(p.user)} (${status})`;
+}
 
 function onContextMenu(p: typeof visible.value[number]['p'], menuable: boolean, ev: MouseEvent) {
 	if (!menuable) return;

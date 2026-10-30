@@ -10,7 +10,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkAvatar :user="room.owner" :link="false" :class="$style.headerAvatar"/>
 	</div>
 	<hr>
-	<div><Mfm :text="room.description" :author="room.owner"/></div>
+	<!-- カード全体がリンクなので、説明の中に URL やメンションのリンクを入れ子にしない -->
+	<div><Mfm :text="room.description" :plain="true" :author="room.owner"/></div>
 	<div v-if="voiceState != null" :class="$style.voice" role="img" :aria-label="i18n.tsx._voiceCall.inCallCount({ n: voiceState.participants.length })" :title="i18n.tsx._voiceCall.inCallCount({ n: voiceState.participants.length })">
 		<i class="ti ti-volume" :class="$style.voiceIcon"></i>
 		<MkAvatar v-for="participant in voiceState.participants.slice(0, 3)" :key="participant.identity" :user="participant.user" :link="false" :class="$style.voiceAvatar"/>
