@@ -1709,6 +1709,7 @@ _chat:
   roomOwner: "방장"
   join: "참여"
   reject: "거부"
+  ignore: "무시"
   leave: "그룹 나가기"
   members: "멤버"
   searchMessages: "쪽지 검색"
