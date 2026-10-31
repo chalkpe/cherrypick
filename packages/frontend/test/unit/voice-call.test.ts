@@ -354,6 +354,38 @@ describe('voice call controller', () => {
 		expect(a.setVolume).not.toHaveBeenCalledWith(0, expect.anything());
 	});
 
+	// マイクを入れられなかったら、聞こえるようにだけなって話せない状態にはしない (スピーカーは切ったまま)
+	test('keeps the speakers off when the mic cannot be turned on while deafened', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		setDeafened(true);
+		await Promise.resolve();
+		a.setVolume.mockClear();
+		lastRoom().localParticipant.setMicrophoneEnabled.mockRejectedValueOnce(new Error('NotAllowedError'));
+
+		await setMicEnabled(true);
+
+		expect(voiceCall).toMatchObject({ deafened: true, micEnabled: false });
+		expect(a.setVolume).not.toHaveBeenCalledWith(1, lk.Track.Source.Microphone);
+	});
+
+	// 許可を待つあいだにスピーカーを切り替えたら、その選択を優先する (マイクが入ってもスピーカーを勝手に戻さない)
+	test('does not undeafen when the speakers were toggled while the mic waited for permission', async () => {
+		await joinVoiceCall(room1);
+		setDeafened(true);
+		await Promise.resolve();
+		let grant!: () => void;
+		lastRoom().localParticipant.setMicrophoneEnabled.mockImplementationOnce(() => new Promise<void>(resolve => { grant = resolve; }));
+		const enabling = setMicEnabled(true);
+		setDeafened(false);
+		setDeafened(true);
+		grant();
+		await enabling;
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(voiceCall).toMatchObject({ deafened: true, micEnabled: false });
+	});
+
 	test('deafening while the mic waits for permission leaves the mic off once it is granted', async () => {
 		let grant!: () => void;
 		lk.FakeRoom.setup = room => room.localParticipant.setMicrophoneEnabled.mockImplementationOnce(() => new Promise<void>(resolve => { grant = resolve; }));

@@ -46,7 +46,7 @@ vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // 通話や入力欄は吹き出しのまとまりと関係ないので空にする
 vi.mock('@/composables/use-chat-room-voice-call.js', async () => {
 	const { computed } = await import('vue');
-	return { useChatRoomVoiceCall: () => ({ available: computed(() => false), inThisCall: computed(() => false), participants: computed(() => []), showCard: computed(() => false), join: vi.fn() }) };
+	return { useChatRoomVoiceCall: () => ({ available: computed(() => false), inThisCall: computed(() => false), participants: computed(() => []), join: vi.fn() }) };
 });
 vi.mock('@/pages/chat/room.form.vue', () => ({ default: { render: () => null } }));
 vi.mock('@/pages/chat/room.search.vue', () => ({ default: { render: () => null } }));

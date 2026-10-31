@@ -138,6 +138,9 @@ describe('voice call bar microphone activity', () => {
 			Object.assign(voiceCall, { status: 'connected', micEnabled: true, localSpeaking: false });
 			render(XVoiceCallBar, { global: { stubs: { MkA: { template: '<a><slot /></a>' } } } });
 			expect(screen.getByRole('img', { name: i18n.ts._voiceCall.micOn })).toBeTruthy();
+			// リンクの名前は行き先のまま、マイクの状態は説明として読まれる
+			const link = screen.getByRole('img', { name: i18n.ts._voiceCall.micOn }).closest('a')!;
+			expect(link.getAttribute('aria-describedby')!.split(' ')).toContain(screen.getByRole('img', { name: i18n.ts._voiceCall.micOn }).id);
 			Object.assign(voiceCall, { localSpeaking: true });
 			await nextTick();
 			expect(screen.getByRole('img', { name: i18n.ts._voiceCall.micInputDetected })).toBeTruthy();

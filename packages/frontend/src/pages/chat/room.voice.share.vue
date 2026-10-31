@@ -10,7 +10,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	:type="watchable ? 'button' : undefined"
 	:class="[$style.root, { '_button': watchable, [$style.compact]: compact, [$style.watching]: watching }]"
 	:role="watchable ? undefined : 'img'"
-	:aria-label="watchable ? label : i18n.ts._voiceCall.sharingScreen"
+	:aria-label="label"
 	:aria-pressed="watchable ? watching : undefined"
 	:data-voice-call-watch-toggle="watchable ? participant.identity : undefined"
 	@click="watchable && emit('toggleWatch')"
@@ -29,7 +29,7 @@ import { computed } from 'vue';
 import type * as Misskey from 'cherrypick-js';
 import XPreview from './room.voice.preview.vue';
 import { i18n } from '@/i18n.js';
-import { userName } from '@/filters/user.js';
+import { userNameForLabel } from '@/filters/user.js';
 
 const props = withDefaults(defineProps<{
 	participant: Misskey.entities.ChatRoomVoiceState['participants'][number];
@@ -39,7 +39,10 @@ const props = withDefaults(defineProps<{
 }>(), { watchable: false, watching: false, compact: false });
 
 const emit = defineEmits<{ (ev: 'toggleWatch'): void }>();
-const label = computed(() => i18n.tsx._voiceCall.watchScreenOf({ name: userName(props.participant.user) }));
+// 見られない (通話に入っていない) ときは押しても何も起きないので、「見る」とは言わずに誰の共有画面かだけを伝える
+const label = computed(() => props.watchable
+	? i18n.tsx._voiceCall.watchScreenOf({ name: userNameForLabel(props.participant.user) })
+	: i18n.tsx._voiceCall.screenShareOf({ name: userNameForLabel(props.participant.user) }));
 </script>
 
 <style lang="scss" module>

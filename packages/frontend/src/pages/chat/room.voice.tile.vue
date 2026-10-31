@@ -5,9 +5,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <!-- The person keeps the same portrait and name layout, independently of screen sharing. -->
-<div :class="[$style.root, { [$style.speaking]: speaking }]" role="group" :aria-label="userName(participant.user)">
+<div :class="[$style.root, { [$style.speaking]: speaking }]" role="group" :aria-label="userNameForLabel(participant.user)">
 	<div :class="$style.actions">
-		<button v-if="menuable" v-tooltip="i18n.ts.menu" type="button" class="_button" :class="$style.action" :aria-label="i18n.ts.menu" data-voice-call-action="menu" @click="emit('openMenu', $event)"><i class="ti ti-dots" aria-hidden="true"></i></button>
+		<button v-if="menuable" v-tooltip="i18n.ts.menu" type="button" class="_button" :class="$style.action" :aria-label="i18n.ts.menu" aria-haspopup="menu" data-voice-call-action="menu" @click="emit('openMenu', $event)"><i class="ti ti-dots" aria-hidden="true"></i></button>
 	</div>
 	<div :class="$style.body">
 		<div :class="$style.avatarFrame"><MkAvatar :user="participant.user" :link="false" :preview="false" :class="$style.avatar"/></div>
@@ -25,7 +25,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script lang="ts" setup>
 import type * as Misskey from 'cherrypick-js';
 import { i18n } from '@/i18n.js';
-import { userName } from '@/filters/user.js';
+import { userNameForLabel } from '@/filters/user.js';
 
 withDefaults(defineProps<{
 	participant: Misskey.entities.ChatRoomVoiceState['participants'][number];
@@ -74,8 +74,13 @@ const emit = defineEmits<{
 	background: var(--MI_THEME-buttonBg);
 	color: var(--MI_THEME-fg);
 
-	&:hover { background: var(--MI_THEME-buttonHoverBg); }
-	&:focus-visible { outline: 2px solid var(--MI_THEME-accent); outline-offset: 2px; }
+	&:hover {
+		background: var(--MI_THEME-buttonHoverBg);
+	}
+	&:focus-visible {
+		outline: 2px solid var(--MI_THEME-accent);
+		outline-offset: 2px;
+	}
 }
 
 .body {

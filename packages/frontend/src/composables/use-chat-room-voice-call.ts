@@ -60,10 +60,6 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 			.filter((participant): participant is Participant => participant != null);
 	});
 
-	// 誰も通話にいないときはカードを出さず、ページヘッダーの参加ボタンだけにする。
-	// 自分が参加した直後は参加者の一覧がまだ届いていないことがあるので、参加中なら一覧を待たずに出す
-	const showCard = computed(() => available.value && (inThisCall.value || participants.value.length > 0));
-
 	// 他のサーバーで開かれる通話には相手のサーバーに IP アドレスが見えるので、ホストごとに初回だけ確認する
 	let joining = false;
 
@@ -152,7 +148,7 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		const { dispose } = os.popup(XRoster, { call: markRaw(call) }, { closed: () => dispose() });
 	}
 
-	const call = { available, inThisCall, participants, watchedParticipants, showCard, join, prejoinMicEnabled, myIdentity, isOwner, hasParticipantMenu, openParticipantMenu, openRoster };
+	const call = { available, inThisCall, participants, watchedParticipants, join, prejoinMicEnabled, myIdentity, isOwner, hasParticipantMenu, openParticipantMenu, openRoster };
 	return call;
 }
 

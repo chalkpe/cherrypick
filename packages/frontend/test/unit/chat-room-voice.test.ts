@@ -119,6 +119,7 @@ import XTile from '@/pages/chat/room.voice.tile.vue';
 import XShare from '@/pages/chat/room.voice.share.vue';
 import XRoster from '@/pages/chat/room.voice.roster.vue';
 import XScreens from '@/pages/chat/room.voice.screens.vue';
+import { focusTrap } from '@/utility/focus-trap.js';
 
 const stubs = {
 	MkDraggable: { props: ['modelValue'], template: '<div><slot v-for="item in modelValue" :item="item"/></div>' },
@@ -350,15 +351,18 @@ describe('voice call on the room page', () => {
 		await renderRoom(room, []);
 		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
 		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: true });
-		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.mute }));
+		const micToggle = screen.getByRole('button', { name: i18n.ts._voiceCall.micMuted });
+		expect(micToggle.getAttribute('aria-pressed')).toBe('false');
+		await fireEvent.click(micToggle);
 		expect(prefer.commit).toHaveBeenLastCalledWith('voiceCall.micEnabled', false);
+		expect(micToggle.getAttribute('aria-pressed')).toBe('true');
 		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
 		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: false });
 	});
 	test('starts the banner with the mic choice remembered from the last call', async () => {
 		prefer.reset({ ...prefer.s, 'voiceCall.micEnabled': false });
 		await renderRoom(room, []);
-		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.unmute })).toBeTruthy();
+		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.micMuted, pressed: true })).toBeTruthy();
 		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
 		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: false });
 	});
@@ -368,6 +372,15 @@ describe('voice call on the room page', () => {
 		expect(screen.queryByRole('tab', { name: i18n.ts.search })).toBeNull();
 		await fireEvent.click(within(screen.getByTestId('header-actions')).getByRole('button', { name: i18n.ts.menu }));
 		expect(openedItems().find(item => item.text === i18n.ts.search)).toBeTruthy();
+	});
+	test('shows the search tab while search is open from the menu', async () => {
+		await renderRoom(room, []);
+		await fireEvent.click(within(screen.getByTestId('header-actions')).getByRole('button', { name: i18n.ts.menu }));
+		(openedItems().find(item => item.text === i18n.ts.search) as { action: () => void }).action();
+		await flush();
+		expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual([i18n.ts._chat.messages, i18n.ts._chat.members, i18n.ts.info, i18n.ts.search]);
+		await fireEvent.click(screen.getByRole('tab', { name: i18n.ts._chat.messages }));
+		expect(screen.queryByRole('tab', { name: i18n.ts.search })).toBeNull();
 	});
 	// 部屋の名前の下に人数を出さない。通話のカードの上で「n人が参加中」と読めてしまい、通話の人数と取り違える
 	test('names the room without a member count under the title', async () => {
@@ -521,6 +534,7 @@ describe('voice call on the room page', () => {
 	describe('chat form across the layout switch', () => {
 		const theTextarea = () => screen.getByRole('textbox') as HTMLTextAreaElement;
 		const pageFooter = () => screen.getByTestId('page-footer');
+
 		async function callEnds() { Object.assign(callState, { status: 'idle', room: null }); await flush(); }
 
 		// 向こうの都合で通話が切れても (外された、サーバーが止まった)、変換が終わるまで入力欄を動かさない
@@ -617,6 +631,61 @@ describe('voice call on the room page', () => {
 			await flush();
 			expect(screen.queryByRole('dialog')).toBeNull();
 			expect(document.querySelectorAll('[inert]')).toHaveLength(0);
+		});
+
+		// シートが暗くするのはステージの上だけなので、inert にするのもステージだけ。ページの外 (ナビゲーションなど) は使えるまま
+		test('makes only the stage inert, not the rest of the app', async () => {
+			const nav = document.body.appendChild(document.createElement('nav'));
+			try {
+				await openSheet();
+				expect(nav.inert).toBe(false);
+				expect(document.querySelector<HTMLElement>('[data-voice-call-room]')!.closest('[inert]')).not.toBeNull();
+				expect(screen.getByRole('dialog').hasAttribute('aria-modal')).toBe(false);
+			} finally { nav.remove(); }
+		});
+
+		test('closes with Esc, but not while text is being composed', async () => {
+			await openSheet();
+			const textarea = screen.getByRole('textbox');
+			await fireEvent.keyDown(textarea, { key: 'Escape', isComposing: true });
+			await fireEvent.keyDown(textarea, { key: 'Escape', keyCode: 229 });
+			expect(screen.getByRole('dialog')).toBeTruthy();
+			await fireEvent.keyDown(textarea, { key: 'Escape' });
+			await flush();
+			expect(screen.queryByRole('dialog')).toBeNull();
+			expect(document.querySelectorAll('[inert]')).toHaveLength(0);
+		});
+
+		// 通話から外されるなどしてシートが閉じたとき、絵文字ピッカーのようなポップアップがまだ開いていても、閉じたあとに何も inert で残らない
+		test('leaves nothing inert when the call ends under a popup opened from the sheet', async () => {
+			await openSheet();
+			const popup = document.body.appendChild(document.createElement('div'));
+			popup.style.position = 'fixed';
+			popup.style.zIndex = '2000000';
+			const popupTrap = focusTrap(popup);
+			Object.assign(callState, { status: 'idle', room: null });
+			await flush();
+			expect(screen.queryByRole('dialog')).toBeNull();
+			popupTrap.release();
+			popup.remove();
+			expect(document.querySelectorAll('[inert]')).toHaveLength(0);
+			expect(screen.getByRole('textbox').closest('[inert]')).toBeNull();
+		});
+
+		test('comes back with the sheet closed after the page was kept in the background', async () => {
+			const shown = ref(true);
+			await renderRoom(room, [], shown);
+			Object.assign(callState, { status: 'connected', room });
+			await flush();
+			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.openChat }));
+			await flush();
+			shown.value = false;
+			await flush();
+			expect(document.querySelectorAll('[inert]')).toHaveLength(0);
+			shown.value = true;
+			await flush();
+			expect(screen.queryByRole('dialog')).toBeNull();
+			expect(screen.getByRole('button', { name: i18n.ts._voiceCall.openChat }).getAttribute('aria-expanded')).toBe('false');
 		});
 	});
 	describe('room owned on another server', () => {
@@ -1345,6 +1414,37 @@ describe('screen share viewer', () => {
 		expect(viewerOf(alice)).toBeTruthy();
 	});
 
+	// 自分の共有画面の音は自分には流さないので、音量のボタンは出さない
+	test('has no volume button on my own share', async () => {
+		render(XScreen, { props: { participant: participant(me, true) }, global: { directives: { tooltip: {} }, stubs } });
+		await flush();
+		expect(screen.queryByLabelText(i18n.ts._voiceCall.screenShareVolume)).toBeNull();
+		expect(screen.getByLabelText(i18n.ts._voiceCall.fullscreen)).toBeTruthy();
+	});
+
+	// 触って操作するとき、ボタンが隠れている画面への一押しはボタンを出すだけ。大きくするのはボタンが出ているときの一押し
+	test('a tap on a touch screen first reveals the controls without zooming', async () => {
+		const { emitted } = render(XScreen, { props: { participant: participant(alice, true), fill: true, focusable: true }, global: { directives: { tooltip: {} }, stubs } });
+		await flush();
+		const zoom = screen.getByLabelText(i18n.ts._voiceCall.focusScreen);
+		const root = viewerOf(alice);
+		const tap = async () => {
+			await fireEvent.pointerDown(zoom, { pointerType: 'touch' });
+			await fireEvent.click(zoom);
+		};
+
+		await tap();
+		expect(emitted().toggleFocus).toBeUndefined();
+		expect(root.className).toMatch(/controlsVisible/);
+
+		await tap();
+		expect(emitted().toggleFocus).toHaveLength(1);
+
+		await fireEvent.pointerDown(zoom, { pointerType: 'mouse' });
+		await fireEvent.click(zoom);
+		expect(emitted().toggleFocus).toHaveLength(2);
+	});
+
 	test('shows the watched share at full quality, not as a preview', async () => {
 		render(XScreen, { props: { participant: participant(alice, true) }, global: { directives: { tooltip: {} }, stubs } });
 		await flush();
@@ -1380,6 +1480,23 @@ describe.each([
 		expect(toggle.dataset.tooltip).toBe(toggle.getAttribute('aria-label'));
 		expect(toggle.dataset.tooltipMfm).toBe('false');
 		expect(toggle.getAttribute('aria-pressed')).toBe(String(watching));
+	});
+
+	// 通話に入っていなくて見られないときは、「見る」とは言わずに誰の共有画面かを伝える
+	test('names the owner without offering to watch when it cannot be watched', async () => {
+		render(component, { props: { participant: participant(alice, true), watchable: false }, global: { directives: { tooltip: { mounted: (el, binding) => { el.dataset.tooltip = binding.value; } } }, stubs } });
+		await flush();
+
+		const card = screen.getByRole('img', { name: i18n.tsx._voiceCall.screenShareOf({ name: alice.name }) });
+		expect(card.dataset.tooltip).toBe(card.getAttribute('aria-label'));
+		expect(screen.queryByRole('button')).toBeNull();
+	});
+
+	test('leaves custom emoji shortcodes out of the spoken name', async () => {
+		render(component, { props: { participant: { ...participant(alice, true), user: { ...alice, name: ':blobcat:\u200bAlice :party@remote.test:' } }, watchable: true }, global: { directives: { tooltip: {} }, stubs } });
+		await flush();
+
+		expect(screen.getByRole('button', { name: i18n.tsx._voiceCall.watchScreenOf({ name: 'Alice' }) })).toBeTruthy();
 	});
 });
 

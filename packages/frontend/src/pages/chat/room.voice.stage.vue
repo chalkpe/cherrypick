@@ -3,28 +3,68 @@ SPDX-FileCopyrightText: syuilo and misskey-project
 SPDX-License-Identifier: AGPL-3.0-only
 -->
 <template>
-<div ref="rootEl" :class="[$style.root, { [$style.watching]: watchedParticipants.length > 0, [$style.active]: active || menuOpen, [$style.membersHidden]: membersHidden }]" :data-voice-call-room="room.id" @pointermove="showControls" @pointerdown="showControls">
-	<span :class="showsStatus ? $style.status : $style.srOnly" :aria-live="announcesStatus ? 'polite' : 'off'">{{ voiceCallStatusText }}</span>
-	<div v-if="watchedParticipants.length" ref="screensEl" :class="$style.screensSpace"><XScreens :participants="watchedParticipants" :hideStrip="membersHidden" fill :class="$style.screens" :style="screenStyle"/></div>
-	<div :class="[$style.list, { [$style.collapsed]: watchedParticipants.length > 0 && membersHidden }]" :inert="watchedParticipants.length > 0 && membersHidden" :aria-hidden="watchedParticipants.length > 0 && membersHidden">
+<div
+	ref="rootEl"
+	:class="[$style.root, { [$style.watching]: watchedParticipants.length > 0, [$style.active]: active || menuOpen, [$style.membersHidden]: membersHidden }]"
+	:data-voice-call-room="room.id"
+	@pointermove="showControls"
+	@pointerdown="showControls"
+>
+	<span :class="showsStatus ? $style.status : '_srOnly'" :aria-live="announcesStatus ? 'polite' : 'off'">{{ voiceCallStatusText }}</span>
+	<div v-if="watchedParticipants.length" ref="screensEl" :class="$style.screensSpace">
+		<XScreens :participants="watchedParticipants" :hideStrip="membersHidden" fill :class="$style.screens" :style="screenStyle"/>
+	</div>
+	<div
+		:class="[$style.list, { [$style.collapsed]: watchedParticipants.length > 0 && membersHidden }]"
+		:inert="watchedParticipants.length > 0 && membersHidden"
+		:aria-hidden="watchedParticipants.length > 0 && membersHidden"
+	>
 		<!-- TransitionGroup は直下の子コンポーネントを毎回描き直させるので、カードは要素で包む -->
-		<component :is="prefer.s.animation ? TransitionGroup : 'div'" v-bind="prefer.s.animation ? { tag: 'div', css: false, moveClass: $style.cardMove } : {}" :class="$style.cards" :style="cardStyle" @pointerover="trackHover" @pointerleave="hovering = false">
-			<div v-for="p in shownShares" :key="`share-${p.identity}`" :class="$style.card" data-voice-call-card><XShare :participant="p" :watchable="inThisCall" :watching="false" @toggleWatch="toggleScreenShareWatch(p.identity)"/></div>
-			<div v-for="p in shown" :key="p.identity" :class="$style.card" data-voice-call-card><XTile :participant="p" :speaking="speaking(p.identity)" :menuable="inThisCall || isOwner" @openMenu="openMenu(p, $event)" @contextmenu.prevent="openMenu(p, $event)"/></div>
-			<div v-if="hidden.length || shownShares.length < availableShares.length" key="group" :class="$style.card" data-voice-call-card><XGroup :participants="grouped" @open="call.openRoster()"/></div>
+		<component
+			:is="prefer.s.animation ? TransitionGroup : 'div'"
+			v-bind="prefer.s.animation ? { tag: 'div', css: false, moveClass: $style.cardMove } : {}"
+			:class="$style.cards"
+			:style="cardStyle"
+			@pointerover="trackHover"
+			@pointerleave="hovering = false"
+		>
+			<div v-for="p in shownShares" :key="`share-${p.identity}`" :class="$style.card" data-voice-call-card>
+				<XShare :participant="p" :watchable="inThisCall" :watching="false" @toggleWatch="toggleScreenShareWatch(p.identity)"/>
+			</div>
+			<div v-for="p in shown" :key="p.identity" :class="$style.card" data-voice-call-card>
+				<XTile :participant="p" :speaking="speaking(p.identity)" :menuable="inThisCall || isOwner" @openMenu="openMenu(p, $event)" @contextmenu.prevent="openMenu(p, $event)"/>
+			</div>
+			<div v-if="hidden.length || shownShares.length < availableShares.length" key="group" :class="$style.card" data-voice-call-card>
+				<XGroup :participants="grouped" @open="call.openRoster()"/>
+			</div>
 		</component>
 	</div>
 	<div :class="$style.controls">
 		<XControls v-if="inThisCall" grouped><template #leading>
-			<button v-if="watchedParticipants.length" v-tooltip="membersHidden ? i18n.ts._voiceCall.showParticipants : i18n.ts._voiceCall.hideParticipants" type="button" class="_button" :class="$style.membersToggle" :aria-label="membersHidden ? i18n.ts._voiceCall.showParticipants : i18n.ts._voiceCall.hideParticipants" @click="membersHidden = !membersHidden"><i :class="membersHidden ? 'ti ti-chevron-up' : 'ti ti-chevron-down'"></i><i class="ti ti-users"></i></button>
-			<button v-tooltip="chatOpen ? i18n.ts._voiceCall.closeChat : i18n.ts._voiceCall.openChat" type="button" class="_button" :class="$style.chatToggle" :aria-label="chatOpen ? i18n.ts._voiceCall.closeChat : i18n.ts._voiceCall.openChat" @click="emit('toggleChat')"><i class="ti ti-messages"></i></button>
+			<button
+				v-if="watchedParticipants.length"
+				v-tooltip="membersHidden ? i18n.ts._voiceCall.showParticipants : i18n.ts._voiceCall.hideParticipants"
+				type="button" class="_button" :class="$style.membersToggle"
+				:aria-label="membersHidden ? i18n.ts._voiceCall.showParticipants : i18n.ts._voiceCall.hideParticipants" :aria-expanded="!membersHidden"
+				@click="membersHidden = !membersHidden"
+			>
+				<i :class="membersHidden ? 'ti ti-chevron-up' : 'ti ti-chevron-down'" aria-hidden="true"></i><i class="ti ti-users" aria-hidden="true"></i>
+			</button>
+			<button
+				v-tooltip="chatOpen ? i18n.ts._voiceCall.closeChat : i18n.ts._voiceCall.openChat"
+				type="button" class="_button" :class="$style.chatToggle"
+				:aria-label="chatOpen ? i18n.ts._voiceCall.closeChat : i18n.ts._voiceCall.openChat" :aria-expanded="chatOpen"
+				@click="emit('toggleChat')"
+			>
+				<i class="ti ti-messages" aria-hidden="true"></i>
+			</button>
 		</template></XControls>
 		<XBanner v-else :call="call"/>
 	</div>
 </div>
 </template>
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, ref, TransitionGroup, useTemplateRef, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, TransitionGroup, useTemplateRef, watch } from 'vue';
 import type * as Misskey from 'cherrypick-js';
 import XTile from './room.voice.tile.vue';
 import XShare from './room.voice.share.vue';
@@ -48,6 +88,9 @@ const showsStatus = computed(() => inThisCall.value && (voiceCall.status === 'co
 let idleTimer: number | undefined;
 
 function showControls() { active.value = true; window.clearTimeout(idleTimer); idleTimer = window.setTimeout(() => { active.value = false; }, 1800); }
+
+// 最初は操作を出しておき、ポインターが動かなくても少しすれば隠す
+onMounted(showControls);
 
 onBeforeUnmount(() => { window.clearTimeout(idleTimer); window.clearTimeout(promoteTimer); });
 
@@ -185,30 +228,186 @@ const screenStyle = computed(() => {
 });
 </script>
 <style lang="scss" module>
-.root { position: relative; display: flex; flex-direction: column; gap: 8px; box-sizing: border-box; min-width: 0; min-height: 0; height: 100%; padding: 12px; container-type: inline-size; }
-.srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.status { position: absolute; z-index: 5; top: 12px; left: 50%; transform: translateX(-50%); box-sizing: border-box; max-width: calc(100% - 24px); padding: 6px 12px; border: 1px solid var(--MI_THEME-divider); border-radius: 999px; background: var(--MI_THEME-panel); font-size: 0.85em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
-.list { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; width: 100%; min-height: 0; flex: 1; transition: grid-template-rows .25s, opacity .2s, transform .25s, margin .25s; }
-.cards { display: flex; flex-wrap: wrap; align-content: center; justify-content: center; gap: 8px; width: 100%; min-height: 0; overflow: clip; }
-.cardMove { transition: transform .25s; }
-.cards > .card { flex: 0 1 var(--card-width); width: var(--card-width); max-width: var(--card-width); height: var(--card-height); min-height: 0; }
-.cards > .card > * { box-sizing: border-box; width: 100%; max-width: none; height: 100%; --voiceCallAvatarSize: inherit; }
-.cards > .card > :has(video) { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; overflow: clip; }
-.cards > .card > * > span:first-child:has(video) { height: 100%; min-height: 0; aspect-ratio: auto; }
-.cards > .card video { object-fit: contain; }
-.screensSpace { flex: 1; min-height: 0; min-width: 0; box-sizing: border-box; transition: padding-bottom .24s; }
-.watching.membersHidden.active .screensSpace, .watching.membersHidden:has(.controls:focus-within) .screensSpace { padding-bottom: 80px; }
-.screens { width: 100%; height: 100%; }
-.watching .list { flex: 0 0 auto; margin-bottom: 56px; }
-.list.collapsed { grid-template-rows: 0fr; opacity: 0; transform: translateY(12px); margin-bottom: 0; pointer-events: none; }
-.controls { display: flex; flex-shrink: 0; justify-content: center; }
-.watching .controls { position: absolute; z-index: 4; left: 50%; bottom: 12px; max-width: calc(100% - 16px); transform: translate(-50%, 12px); opacity: 0; pointer-events: none; transition: opacity .2s, transform .24s; }
-.active .controls, .controls:focus-within { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
-.root:not(.watching) .controls { transform: none; }
-.membersToggle, .chatToggle { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border-radius: 8px; font-size: 16px; }
-.membersToggle { width: 44px; gap: 3px; }
-.membersToggle i:first-child { font-size: 12px; }
-.membersToggle:hover, .chatToggle:hover { background: var(--MI_THEME-buttonHoverBg); }
-@container (max-width: 400px) { .controls > div { gap: 8px; } }
-@media (prefers-reduced-motion: reduce) { .list, .watching .controls, .screensSpace, .cardMove { transition: none; } }
+.root {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	box-sizing: border-box;
+	min-width: 0;
+	min-height: 0;
+	height: 100%;
+	padding: 12px;
+	container-type: inline-size;
+}
+
+.status {
+	position: absolute;
+	z-index: 5;
+	top: 12px;
+	left: 50%;
+	transform: translateX(-50%);
+	box-sizing: border-box;
+	max-width: calc(100% - 24px);
+	padding: 6px 12px;
+	border: 1px solid var(--MI_THEME-divider);
+	border-radius: 999px;
+	background: var(--MI_THEME-panel);
+	font-size: 0.85em;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	pointer-events: none;
+}
+
+.list {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	grid-template-rows: 1fr;
+	width: 100%;
+	min-height: 0;
+	flex: 1;
+	transition: grid-template-rows .25s, opacity .2s, transform .25s, margin .25s;
+}
+
+.cards {
+	display: flex;
+	flex-wrap: wrap;
+	align-content: center;
+	justify-content: center;
+	gap: 8px;
+	width: 100%;
+	min-height: 0;
+	overflow: clip;
+}
+
+.cardMove {
+	transition: transform .25s;
+}
+
+.cards > .card {
+	flex: 0 1 var(--card-width);
+	width: var(--card-width);
+	max-width: var(--card-width);
+	height: var(--card-height);
+	min-height: 0;
+}
+
+.cards > .card > * {
+	box-sizing: border-box;
+	width: 100%;
+	max-width: none;
+	height: 100%;
+	--voiceCallAvatarSize: inherit;
+}
+
+.cards > .card > :has(video) {
+	grid-template-columns: minmax(0, 1fr);
+	grid-template-rows: minmax(0, 1fr) auto;
+	overflow: clip;
+}
+
+.cards > .card > * > span:first-child:has(video) {
+	height: 100%;
+	min-height: 0;
+	aspect-ratio: auto;
+}
+
+.cards > .card video {
+	object-fit: contain;
+}
+
+.screensSpace {
+	flex: 1;
+	min-height: 0;
+	min-width: 0;
+	box-sizing: border-box;
+	transition: padding-bottom .24s;
+}
+
+.watching.membersHidden.active .screensSpace, .watching.membersHidden:has(.controls:focus-within) .screensSpace {
+	padding-bottom: 80px;
+}
+
+.screens {
+	width: 100%;
+	height: 100%;
+}
+
+.watching .list {
+	flex: 0 0 auto;
+	margin-bottom: 56px;
+}
+
+.list.collapsed {
+	grid-template-rows: 0fr;
+	opacity: 0;
+	transform: translateY(12px);
+	margin-bottom: 0;
+	pointer-events: none;
+}
+
+.controls {
+	display: flex;
+	flex-shrink: 0;
+	justify-content: center;
+}
+
+.watching .controls {
+	position: absolute;
+	z-index: 4;
+	left: 50%;
+	bottom: 12px;
+	max-width: calc(100% - 16px);
+	transform: translate(-50%, 12px);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity .2s, transform .24s;
+}
+
+.active .controls, .controls:focus-within {
+	opacity: 1;
+	pointer-events: auto;
+	transform: translate(-50%, 0);
+}
+
+.root:not(.watching) .controls {
+	transform: none;
+}
+
+.membersToggle, .chatToggle {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 32px;
+	height: 32px;
+	padding: 0;
+	border-radius: 8px;
+	font-size: 16px;
+}
+
+.membersToggle {
+	width: 44px;
+	gap: 3px;
+}
+
+.membersToggle i:first-child {
+	font-size: 12px;
+}
+
+.membersToggle:hover, .chatToggle:hover {
+	background: var(--MI_THEME-buttonHoverBg);
+}
+
+@container (max-width: 400px) {
+	.controls > div {
+		gap: 8px;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.list, .watching .controls, .screensSpace, .cardMove {
+		transition: none;
+	}
+}
 </style>

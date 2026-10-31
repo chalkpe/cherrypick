@@ -5,19 +5,41 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
-	<!-- 広いページで誰かが通話にいるあいだは、通話 (ステージ) とチャットを左右に並べる。ステージは一つだけ作り、チャットを置く側の反対へ CSS の順序で移す。
-	狭いページでは、通話は専用タブで開き、チャットには重ねない -->
+	<!-- 自分が通話に入っているあいだは、通話 (ステージ) を出す。広いページではステージとチャットを左右に並べ、ステージは一つだけ作ってチャットを置く側の反対へ CSS の順序で移す。
+	狭いページではステージをいっぱいに広げ、チャットはその上に下から重ねるシートとして開く -->
 	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="{ [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }">
 		<XStage v-if="split && room" :room="room" :call="voiceCallState" :class="$style.stage" :chatOpen="chatOpen" @toggleChat="chatOpen = !chatOpen"/>
 		<div v-if="split && voiceInOwnTab && chatOpen" ref="sheetBackdropEl" :class="$style.sheetBackdrop" @click="chatOpen = false"></div>
 		<!-- シートを開いたらすぐ中へフォーカスを移すので、v-show (フォーカスを移す watch より後に表示を切り替える) ではなく style で隠す -->
-		<div ref="chatPaneEl" :class="$style.chatPane" :style="!split || chatOpen ? undefined : { display: 'none' }" :role="split && voiceInOwnTab && chatOpen ? 'dialog' : undefined" :aria-modal="split && voiceInOwnTab && chatOpen ? true : undefined" :aria-label="i18n.ts._chat.messages" @dragover="chatFormEl?.onDragover($event)" @drop="chatFormEl?.onDrop($event)" @keydown.esc="split && voiceInOwnTab && (chatOpen = false)">
-			<!-- シートを開くと focus trap が外側 (ステージも通話バーも) を inert にするので、通話の状態はシートの中からも読み上げる -->
-			<div v-if="split && voiceInOwnTab" :class="$style.sheetHeading"><strong>{{ i18n.ts._chat.messages }}</strong><span v-if="chatOpen" :class="$style.srOnly" aria-live="polite">{{ voiceCallStatusText }}</span><button v-tooltip="i18n.ts.close" class="_button" :aria-label="i18n.ts.close" @click="chatOpen = false"><i class="ti ti-x"></i></button></div>
-			<button v-if="split && !voiceInOwnTab" v-tooltip="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight" class="_button" :class="[$style.chatCorner, { [$style.cornerRight]: chatSide === 'left' }]" :aria-label="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight" @click="swapChatSide"><i :class="chatSide === 'right' ? 'ti ti-layout-sidebar' : 'ti ti-layout-sidebar-right'"></i></button>
+		<!-- シートはステージの上に重ねるだけなので、ステージ (と暗くした背景) の外、ページのヘッダーや画面下のナビゲーションは使えるままにする (aria-modal にはしない) -->
+		<div
+			ref="chatPaneEl"
+			:class="$style.chatPane"
+			:style="!split || chatOpen ? undefined : { display: 'none' }"
+			:role="split && voiceInOwnTab && chatOpen ? 'dialog' : undefined"
+			:aria-label="i18n.ts._chat.messages"
+			@dragover="chatFormEl?.onDragover($event)"
+			@drop="chatFormEl?.onDrop($event)"
+			@keydown.esc="onSheetEsc"
+		>
+			<!-- シートを開くと focus trap がステージを inert にするので、通話の状態はシートの中からも読み上げる -->
+			<div v-if="split && voiceInOwnTab" :class="$style.sheetHeading">
+				<strong>{{ i18n.ts._chat.messages }}</strong>
+				<span v-if="chatOpen" class="_srOnly" aria-live="polite">{{ voiceCallStatusText }}</span>
+				<button v-tooltip="i18n.ts.close" class="_button" :aria-label="i18n.ts.close" @click="chatOpen = false"><i class="ti ti-x" aria-hidden="true"></i></button>
+			</div>
+			<button
+				v-if="split && !voiceInOwnTab"
+				v-tooltip="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight"
+				class="_button" :class="[$style.chatCorner, { [$style.cornerRight]: chatSide === 'left' }]"
+				:aria-label="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight"
+				@click="swapChatSide"
+			>
+				<i :class="chatSide === 'right' ? 'ti ti-layout-sidebar' : 'ti ti-layout-sidebar-right'" aria-hidden="true"></i>
+			</button>
 			<!-- 並べているときはメッセージの欄だけを自分でスクロールさせる -->
 			<div ref="chatScrollerEl" :class="$style.chatScroller">
-				<!-- 通話カードはメッセージをスクロールしてもページヘッダーの下に貼り付ける -->
+				<!-- 通話の参加バナーはメッセージをスクロールしてもページヘッダーの下に貼り付ける -->
 				<MkStickyContainer ref="chatStickyEl" class="_spacer" style="--MI_SPACER-w: 700px;">
 					<template #header>
 						<XBanner v-if="room && !split" :call="voiceCallState" :class="$style.joinBanner"/>
@@ -156,6 +178,7 @@ import { deviceKind } from '@/utility/device-kind.js';
 import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { useElementWidth } from '@/composables/use-element-width.js';
 import { focusTrap } from '@/utility/focus-trap.js';
+import { isTouchUsing } from '@/utility/touch.js';
 import { voiceCallStatusText } from '@/utility/voice-call-status.js';
 
 const MOBILE_THRESHOLD = 500;
@@ -494,7 +517,7 @@ const tab = ref('chat');
 // ウィンドウではなくページ自身の幅で決める (デッキの列やウィジェットでページの幅は変わる)
 const chatTabEl = useTemplateRef('chatTabEl');
 const pageWidth = useElementWidth(chatTabEl);
-// 通話カードを出す場面 (誰かが通話にいるか、自分が参加中) で、ページが広ければ通話カードの代わりにステージを横に並べる。
+// 通話に入っているときにステージをどう出すか。狭いページではステージだけを出してチャットはシートにし、広いページでは左右に並べる。
 // モバイルでは横向きなどで広くても並べない (並べた形は、モバイルの画面下のナビゲーションの分を空けていない)
 const voiceInOwnTab = computed(() => isMobile.value || (pageWidth.value != null && pageWidth.value < STAGE_MIN_PAGE_WIDTH));
 const wantsSplit = computed(() => voiceCallState.inThisCall.value);
@@ -536,11 +559,14 @@ let sheetReturnFocus: HTMLElement | null = null;
 watch(() => split.value && voiceInOwnTab.value && chatOpen.value, open => {
 	if (open && chatPaneEl.value) {
 		sheetReturnFocus = window.document.activeElement instanceof HTMLElement ? window.document.activeElement : null;
-		const backdropTrap = sheetBackdropEl.value ? focusTrap(sheetBackdropEl.value, true) : null;
-		const paneTrap = focusTrap(chatPaneEl.value, true);
-		// 閉じるときは背景 (v-if) が先に DOM から消えている。背景を先に解放して、pane の解放が周囲の inert を全部外せるようにする
+		// inert にするのはこのページの中 (ステージ) だけ。暗くするのもステージの上だけなので、見えているヘッダーやナビゲーションは使える
+		const boundary = chatTabEl.value;
+		const backdropTrap = sheetBackdropEl.value ? focusTrap(sheetBackdropEl.value, true, boundary) : null;
+		const paneTrap = focusTrap(chatPaneEl.value, true, boundary);
 		sheetTrap = { release: () => { backdropTrap?.release(); paneTrap.release(); } };
-		chatPaneEl.value.querySelector<HTMLElement>('button')?.focus();
+		// キーボードではすぐ書けるよう入力欄へ。触って操作する端末では、開いただけでソフトウェアキーボードが出ないよう閉じるボタンへ
+		const textarea = isTouchUsing ? null : chatPaneEl.value.querySelector<HTMLElement>('textarea');
+		(textarea ?? chatPaneEl.value.querySelector<HTMLElement>('button'))?.focus();
 	} else if (sheetTrap) {
 		releaseSheetTrap();
 	}
@@ -553,14 +579,24 @@ function releaseSheetTrap() {
 	sheetReturnFocus = null;
 }
 
-// KeepAlive に退避された後では祖先側の inert を外せないので、画面遷移の前に閉じて解放する
+// 画面を移るときはシートを閉じて解放する (戻ってきたときに開いたままにしない)
 router.useListener('change', () => {
 	if (sheetTrap == null) return;
 	chatOpen.value = false;
 	releaseSheetTrap();
 });
 onBeforeUnmount(() => releaseSheetTrap());
-onDeactivated(() => releaseSheetTrap());
+onDeactivated(() => {
+	// 戻ってきたときに、focus trap の無いシートが開いたままにならないよう閉じておく
+	if (sheetTrap != null) chatOpen.value = false;
+	releaseSheetTrap();
+});
+
+// 変換中の Esc は変換の取り消しなので、シートは閉じない
+function onSheetEsc(ev: KeyboardEvent) {
+	if (ev.isComposing || ev.keyCode === 229) return;
+	if (split.value && voiceInOwnTab.value) chatOpen.value = false;
+}
 
 // スクロール先を付け替える前の位置を覚え、描画直後・次のフレームより前に column-reverse の位置を揃える。
 const pageEl = useTemplateRef('pageEl');
@@ -619,6 +655,13 @@ function swapChatSide() {
 	prefer.commit('voiceCall.stageChatSide', chatSide.value === 'right' ? 'left' : 'right');
 }
 
+// 検索はメニューから開く。開いているあいだだけタブにも出し、いまどこにいるかを分かるようにする
+const searchTab = computed(() => tab.value === 'search' ? [{
+	key: 'search',
+	title: i18n.ts.search,
+	icon: 'ti ti-search',
+}] : []);
+
 const headerTabs = computed(() => room.value ? [{
 	key: 'chat',
 	title: i18n.ts._chat.messages,
@@ -631,14 +674,14 @@ const headerTabs = computed(() => room.value ? [{
 	key: 'info',
 	title: i18n.ts.info,
 	icon: 'ti ti-info-circle',
-}] : [{
+}, ...searchTab.value] : [{
 	key: 'chat',
 	title: i18n.ts._chat.messages,
 	icon: 'ti ti-messages',
-}]);
+}, ...searchTab.value]);
 
-// ヘッダーの参加ボタン。メッセージのタブでは通話カード (誰かが通話にいるときだけ出る) から参加できるので、カードが無いときだけ出す。
-// ほかのタブにはカードが無いので、自分が通話にいなければいつでも出す
+// ヘッダーの参加ボタン。メッセージのタブでは参加バナーから参加できるので出さない。
+// ほかのタブにはバナーが無いので、自分が通話にいなければいつでも出す
 const showHeaderJoin = computed(() => {
 	if (!voiceCallState.available.value || voiceCallState.inThisCall.value) return false;
 	return tab.value !== 'chat';
@@ -691,18 +734,22 @@ definePage(computed(() => {
 </script>
 
 <style lang="scss" module>
-.joinBanner { margin-bottom: 24px; }
+.joinBanner {
+	margin-bottom: 24px;
+}
 
 .transition_x_move,
 .transition_x_enterActive,
 .transition_x_leaveActive {
 	transition: opacity 0.2s cubic-bezier(0,.5,.5,1), transform 0.2s cubic-bezier(0,.5,.5,1) !important;
 }
+
 .transition_x_enterFrom,
 .transition_x_leaveTo {
 	opacity: 0;
 	transform: translateY(80px);
 }
+
 .transition_x_leaveActive {
 	position: absolute;
 }
@@ -827,14 +874,74 @@ definePage(computed(() => {
 	padding: 0.5em 1em;
 	margin: 0 auto;
 }
-.narrowCall { position: relative; }
-.narrowCall .stage { width: 100%; }
-.narrowCall .chatPane { position: fixed; z-index: 1100; inset: auto 0 var(--voiceCallBottomSpacing, 0px); box-sizing: border-box; width: 100%; min-width: 0; height: 72dvh; border: none; border-radius: 20px 20px 0 0; overflow: hidden; background: var(--MI_THEME-bg); }
-.sheetBackdrop { position: fixed; z-index: 1099; inset: 0; background: var(--MI_THEME-modalBg); }
-.sheetHeading { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--MI_THEME-divider); }
-.sheetHeading button { width: 32px; height: 32px; }
-.srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.chatCorner { position: absolute; z-index: 2; top: 12px; left: 12px; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 8px; background: var(--MI_THEME-panelHighlight); }
-.cornerRight { left: auto; right: 12px; }
-.chatCorner:hover { background: var(--MI_THEME-buttonHoverBg); }
+
+.narrowCall {
+	position: relative;
+
+	.stage {
+		width: 100%;
+	}
+
+	.chatPane {
+		position: fixed;
+		z-index: 1100;
+		inset: auto 0 var(--voiceCallBottomSpacing, 0px);
+		box-sizing: border-box;
+		width: 100%;
+		min-width: 0;
+		height: 72dvh;
+		border: none;
+		border-radius: calc(var(--MI-radius) + 8px) calc(var(--MI-radius) + 8px) 0 0;
+		overflow: hidden;
+		background: var(--MI_THEME-bg);
+	}
+}
+
+// 暗くするのはステージの上だけ (inert にするのもステージだけ)
+.sheetBackdrop {
+	position: absolute;
+	z-index: 1099;
+	inset: 0;
+	background: var(--MI_THEME-modalBg);
+}
+
+.sheetHeading {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--MI_THEME-divider);
+
+	button {
+		width: 32px;
+		height: 32px;
+	}
+}
+
+.chatCorner {
+	position: absolute;
+	z-index: 2;
+	top: 12px;
+	left: 12px;
+	display: grid;
+	place-items: center;
+	width: 34px;
+	height: 34px;
+	border-radius: 8px;
+	background: var(--MI_THEME-panelHighlight);
+
+	&:hover {
+		background: var(--MI_THEME-buttonHoverBg);
+	}
+
+	&.cornerRight {
+		left: auto;
+		right: 12px;
+	}
+}
+
+// チャットを左右に移すボタンが一番上 (古い) のメッセージに重ならないよう、そのぶん空ける
+.split:not(.narrowCall) .chatScroller {
+	padding-top: calc(12px + 34px + 4px);
+}
 </style>

@@ -204,8 +204,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { ref } from 'vue';
-import { alert } from '@/os.js';
 import * as Misskey from 'cherrypick-js';
+import * as os from '@/os.js';
 import MkReactionIcon from '@/components/MkReactionIcon.vue';
 import MkFollowButton from '@/components/MkFollowButton.vue';
 import MkButton from '@/components/MkButton.vue';
@@ -290,7 +290,7 @@ async function respondToChatRoomInvitation(endpoint: 'chat/rooms/join' | 'chat/r
 		if (await isChatRoomInvitationGone(props.notification.invitation.room.id)) {
 			chatRoomInviteDone.value = true;
 		} else {
-			void alert({ type: 'error', text: i18n.ts.somethingHappened });
+			void os.alert({ type: 'error', text: i18n.ts.somethingHappened });
 		}
 	} finally {
 		chatRoomInvitePending.value = false;

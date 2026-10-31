@@ -5,13 +5,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <!-- 見ている共有画面の一つ。いくつも並ぶので、中の操作が誰の画面のものか読み上げで分かるよう、名前のついたまとまりにする。
-置き場所 (root) の中に、映像の縦横比に合わせた枠 (frame) を置き、操作の列はその枠の映像のすぐ下に付ける。
-枠は操作の列より狭くしない (狭い置き場所では映像の方を縮めて上下か左右を空ける) ので、全画面・PiP・✕ は切れない -->
+置き場所 (root) の中に、映像の縦横比に合わせた枠 (frame) を置き、操作のボタンはその映像に重ねる (✕ は右上、音量・PiP・全画面は右下)。
+枠はボタンの並びより狭くしない (狭い置き場所では映像の方を縮めて上下か左右を空ける) ので、ボタンは切れない -->
 <div
 	ref="rootEl"
 	:class="[$style.root, { [$style.fill]: fill, [$style.compact]: compact, [$style.controlsVisible]: controlsVisible || volumeMenuOpen }]"
 	:style="{ '--voiceCallScreenRatio': ratio }"
-	role="group" :aria-label="i18n.tsx._voiceCall.screenShareOf({ name: userName(participant.user) })"
+	role="group" :aria-label="i18n.tsx._voiceCall.screenShareOf({ name: userNameForLabel(participant.user) })"
 	@pointerdown="onPointerDown"
 >
 	<div :class="$style.frame" :style="compact ? undefined : { minWidth: `${barMinWidth}px` }">
@@ -26,12 +26,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 				:class="[$style.focusButton, focused ? $style.zoomOut : $style.zoomIn]" :aria-label="i18n.ts._voiceCall.focusScreen" :aria-pressed="focused"
 				@click="toggleFocus"
 			></button>
-			<!-- 下の帯の小さな形と狭い画面のカードでは、誰の画面かを映像の左上に重ねる (操作の列に並べると名前が一文字ほどに縮む) -->
+			<!-- 誰の画面かは映像の左下に重ねる -->
 			<span :class="$style.overlay"><i class="ti ti-screen-share" role="img" :aria-label="i18n.ts._voiceCall.sharingScreen"></i> <MkUserName :user="participant.user"/></span>
 		</div>
 		<div v-if="!compact" :class="$style.bar">
 			<div :class="$style.playback">
-			<button v-tooltip="i18n.ts._voiceCall.screenShareVolume" type="button" class="_button" :class="$style.control" :aria-label="i18n.ts._voiceCall.screenShareVolume" @click="openVolume"><i class="ti ti-volume"></i></button>
+			<button v-if="!isMine" v-tooltip="i18n.ts._voiceCall.screenShareVolume" type="button" class="_button" :class="$style.control" :aria-label="i18n.ts._voiceCall.screenShareVolume" @click="openVolume"><i class="ti ti-volume"></i></button>
 			<button
 				v-if="pictureInPictureSupported"
 				v-tooltip="i18n.ts._voiceCall.pictureInPicture" type="button" class="_button"
@@ -61,15 +61,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { nextTick, onBeforeUnmount, ref, useCssModule, useTemplateRef, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, useCssModule, useTemplateRef, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { isElementVisible } from '@/utility/observe-element-visibility.js';
 import * as os from '@/os.js';
 import XVolume from './room.voice.volume.vue';
 import { i18n } from '@/i18n.js';
-import { userName } from '@/filters/user.js';
+import { userNameForLabel } from '@/filters/user.js';
 import { requestFullscreen as enterFullscreen } from '@/utility/fullscreen.js';
-import { attachScreenShare, unwatchScreenShare } from '@/utility/voice-call.js';
+import { attachScreenShare, localIdentityOf, unwatchScreenShare } from '@/utility/voice-call.js';
+import { $i } from '@/i.js';
 
 const props = withDefaults(defineProps<{
 	participant: Misskey.entities.ChatRoomVoiceState['participants'][number];
@@ -97,8 +98,32 @@ const controlsVisible = ref(false);
 const volumeMenuOpen = ref(false);
 const styles = useCssModule();
 
+// 自分の共有画面の音は自分には流さないので、音量のボタンは出さない
+const isMine = computed(() => $i != null && props.participant.identity === localIdentityOf($i.id));
+
+// 触って操作するときは、ボタンが隠れている画面を押してもボタンを出すだけにする (同じ一押しで大きくしたりしない)。
+// ボタンはしばらく触らなければまた隠す。大きくできない画面では、ボタンが出ているときに押すと隠す
+const CONTROLS_HIDE_DELAY_MS = 3000;
+let hideControlsTimer: number | undefined;
+let revealingTap = false;
+
+function showControlsForAWhile() {
+	controlsVisible.value = true;
+	window.clearTimeout(hideControlsTimer);
+	hideControlsTimer = window.setTimeout(() => { controlsVisible.value = false; }, CONTROLS_HIDE_DELAY_MS);
+}
+
 function onPointerDown(ev: PointerEvent) {
-	if (ev.pointerType === 'touch' && !(ev.target as HTMLElement).closest('button')?.classList.contains(styles.control)) controlsVisible.value = !controlsVisible.value;
+	revealingTap = false;
+	if (ev.pointerType !== 'touch') return;
+	const onControl = (ev.target as HTMLElement).closest('button')?.classList.contains(styles.control) === true;
+	if (!onControl && controlsVisible.value && !(props.focusable && !fullscreen.value)) {
+		window.clearTimeout(hideControlsTimer);
+		controlsVisible.value = false;
+		return;
+	}
+	revealingTap = !onControl && !controlsVisible.value;
+	showControlsForAWhile();
 }
 
 async function openVolume(ev: MouseEvent) {
@@ -145,12 +170,18 @@ watch([() => props.participant.identity, videoEl], ([identity, element]) => {
 }, { immediate: true });
 
 onBeforeUnmount(() => {
+	window.clearTimeout(hideControlsTimer);
 	window.document.removeEventListener('fullscreenchange', onFullscreenChange);
 	detach?.();
 	detach = null;
 });
 
 function toggleFocus() {
+	// ボタンを出すだけの一押しでは大きくしない
+	if (revealingTap) {
+		revealingTap = false;
+		return;
+	}
 	// 全画面のあいだに届いたクリックでは並べ方を変えない
 	if (rootEl.value != null && window.document.fullscreenElement === rootEl.value) return;
 	emit('toggleFocus');
@@ -307,22 +338,7 @@ function stopWatching() {
 	box-sizing: border-box;
 	height: auto;
 	padding: 0;
-	// カードの地と同じ色だと枠の下の角が見えず、映像の上だけが丸く見えるので、チップと同じ一段濃い地にして映像とひとまとまりに見せる
 	background: transparent;
-}
-
-// 狭い画面のカードでは名前を映像に重ねるので、操作の列はボタンだけを右に寄せる
-.controlsOnly {
-	justify-content: flex-end;
-}
-
-.label {
-	flex: 1;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	font-size: 0.9em;
 }
 
 .control {
@@ -339,25 +355,65 @@ function stopWatching() {
 	}
 }
 
-.frame:hover .control,
-.frame:focus-within .control,
-.controlsVisible .control {
-	opacity: 1;
+.playback {
+	position: absolute;
+	right: 0;
+	bottom: 0;
+	display: flex;
+	gap: 4px;
+
+	.control {
+		opacity: 0;
+		pointer-events: none;
+	}
+}
+
+.close {
+	position: absolute;
+	top: 0;
+	right: 0;
 	pointer-events: auto;
 }
 
-.playback { position: absolute; right: 0; bottom: 0; display: flex; gap: 4px; }
-.playback .control { opacity: 0; pointer-events: none; }
-.close { position: absolute; right: 0; top: 0; pointer-events: auto; }
-.frame:hover .playback .control,
-.frame:focus-within .playback .control,
-.controlsVisible .playback .control { opacity: 1; pointer-events: auto; }
-.frame:hover .overlay,
-.frame:focus-within .overlay,
-.controlsVisible .overlay { max-width: calc(100% - 136px); }
+.frame:focus-within,
+.controlsVisible {
+	.playback .control {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.overlay {
+		max-width: calc(100% - 136px);
+	}
+}
+
+// 触って操作する画面では、触ったあとも :hover が残ってボタンが隠れなくなるので、ポインターを乗せられるときだけ使う
+@media (hover: hover) {
+	.frame:hover {
+		.playback .control {
+			opacity: 1;
+			pointer-events: auto;
+		}
+
+		.overlay {
+			max-width: calc(100% - 136px);
+		}
+	}
+}
+
+// 狭い画面では右下のボタンと重ならないよう、名前をボタンの上へ上げる
 @container (max-width: 260px) {
-	.frame:hover .overlay,
 	.frame:focus-within .overlay,
-	.controlsVisible .overlay { bottom: 48px; max-width: calc(100% - 16px); }
+	.controlsVisible .overlay {
+		bottom: 48px;
+		max-width: calc(100% - 16px);
+	}
+
+	@media (hover: hover) {
+		.frame:hover .overlay {
+			bottom: 48px;
+			max-width: calc(100% - 16px);
+		}
+	}
 }
 </style>

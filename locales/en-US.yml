@@ -1703,7 +1703,6 @@ _chat:
   sentInvitations: "Sent Invites"
   join: "Join"
   reject: "Reject"
-  ignore: "Ignore"
   leave: "Leave room"
   members: "Members"
   roomOwner: "Room owner"
@@ -1734,8 +1733,6 @@ _chat:
     mutual: "Mutual followers only"
     none: "Nobody"
   invitationCancelAreYouSure: "Are you sure you want to cancel the invitation sent to {x}?"
-  ignoreThisInvitation: "If you ignore this invitation, you can only be invited if the room administrator cancels the invitation and invites it again, or if you delete the room and recreate it."
-  doYouIgnoreInvitation: "Do you ignore the invitation?"
 _emojiPalette:
   palettes: "Palette"
   enableSyncBetweenDevicesForPalettes: "Enable palette sync between devices"

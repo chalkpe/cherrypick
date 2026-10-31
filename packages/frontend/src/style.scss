@@ -360,6 +360,16 @@ rt {
 	text-overflow: ellipsis;
 }
 
+// 画面には出さず、読み上げにだけ伝える
+._srOnly {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
 ._modalBg {
 	position: fixed;
 	top: 0;

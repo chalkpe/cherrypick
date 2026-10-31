@@ -115,16 +115,56 @@ withDefaults(defineProps<{
 	}
 }
 
-.group { display: contents; }
+.group {
+	display: contents;
+}
+
 .grouped {
 	gap: 12px;
-	.group { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 12px; background: var(--MI_THEME-panel); }
-	.action { width: 32px; height: 32px; border-radius: 8px; background: transparent; font-size: 16px; line-height: 1; }
-	.action:hover { background: var(--MI_THEME-buttonHoverBg); }
-	.action.on,
-	.action.enableAudio { color: var(--MI_THEME-accent); background: var(--MI_THEME-accentedBg); }
-	.leaveGroup { padding: 0; background: transparent; }
-	.leave { width: 52px; height: 40px; border-radius: 12px; background: var(--MI_THEME-error); color: var(--MI_THEME-fgOnAccent); }
-	.leave:hover { background: color-mix(in srgb, var(--MI_THEME-error) 90%, var(--MI_THEME-fgOnAccent)); }
+
+	.group {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 4px 6px;
+		border-radius: var(--MI-radius);
+		background: var(--MI_THEME-panel);
+	}
+
+	.action {
+		width: 32px;
+		height: 32px;
+		border-radius: 8px;
+		background: transparent;
+		font-size: 16px;
+		line-height: 1;
+
+		&:hover {
+			background: var(--MI_THEME-buttonHoverBg);
+		}
+
+		&.on,
+		&.enableAudio {
+			color: var(--MI_THEME-accent);
+			background: var(--MI_THEME-accentedBg);
+		}
+	}
+
+	.leaveGroup {
+		padding: 0;
+		background: transparent;
+	}
+
+	.leave {
+		width: 52px;
+		height: 40px;
+		border-radius: var(--MI-radius);
+		background: var(--MI_THEME-error);
+		color: var(--MI_THEME-fgOnAccent);
+
+		&:hover {
+			background: color-mix(in srgb, var(--MI_THEME-error) 90%, var(--MI_THEME-fgOnAccent));
+		}
+	}
 }
 </style>

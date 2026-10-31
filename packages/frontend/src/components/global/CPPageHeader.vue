@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="show" ref="el" :class="[$style.root, {[$style.slim]: narrow, [$style.centerTitle]: centerTitle && narrow, [$style.thin]: thin_, [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.scrollToTransparent]: showEl }]">
+<div v-if="show" ref="el" :class="[$style.root, {[$style.slim]: narrow, [$style.centerTitle]: centerTitle && narrow, [$style.thin]: thin_, [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.scrollToTransparent]: showEl }]" :style="centerTitle ? { '--centerTitleSideButtons': Math.max(2, actions?.length ?? 0) } : undefined">
 	<div v-if="!thin_ && !canBack" :class="$style.buttonsLeft">
 		<button class="_button" :class="[$style.button, $style.goBack]" @click.stop="goBack" @touchstart="preventDrag"><i class="ti ti-arrow-left"></i></button>
 	</div>
@@ -289,7 +289,8 @@ onUnmounted(() => {
 			left: 50%;
 			transform: translateX(-50%);
 			margin: 0;
-			max-width: calc(100% - 168px);
+			// 両側のボタンのうち多い方の数 (少なくとも戻るボタンとアバターの 2 つ) だけ、左右とも空ける
+			max-width: calc(100% - (var(--height) - 8px) * var(--centerTitleSideButtons, 2) * 2);
 		}
 
 		> .buttonsRight {

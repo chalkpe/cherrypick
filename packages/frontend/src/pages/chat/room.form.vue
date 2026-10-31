@@ -104,6 +104,10 @@ async function onPaste(ev: ClipboardEvent) {
 	const files = Array.from(ev.clipboardData.items).filter(item => item.kind === 'file').map(item => item.getAsFile()).filter((item): item is File => item != null);
 	if (files.length === 0) files.push(...Array.from(ev.clipboardData.files));
 	if (files.length === 0) return;
+	// Office の表のように、文字と一緒にその見た目の画像も入れるアプリがある。文字があれば文字を貼る。
+	// ブラウザで画像をコピーしたときに一緒に入る URL だけのときは、画像を添付する
+	const pastedText = ev.clipboardData.getData('text/plain').trim();
+	if (pastedText !== '' && !/^\S+:\/\/\S+$/.test(pastedText)) return;
 	ev.preventDefault();
 	if (files.length === 1) {
 		const pastedFile = files[0];

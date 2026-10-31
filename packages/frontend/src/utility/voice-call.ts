@@ -63,6 +63,8 @@ type StatusDelivery = {
 	stopped: boolean;
 };
 let statusDelivery: StatusDelivery | null = null;
+// スピーカーを切り替えた回数。マイクを入れるのを待つあいだに切り替えられたかを見分ける
+let deafenRevision = 0;
 
 function resetStatusDelivery(): void {
 	if (statusDelivery?.timer != null) window.clearTimeout(statusDelivery.timer);
@@ -287,12 +289,9 @@ export async function setMicEnabled(enabled: boolean): Promise<void> {
 	if (room == null) return;
 	prefer.commit('voiceCall.micEnabled', enabled);
 	if (enabled) {
-		// スピーカーを切ったままマイクだけを入れると、聞こえないまま話すことになる。マイクを入れるときはスピーカーも戻す
-		if (state.deafened) {
-			state.deafened = false;
-			applyVolumes(room);
-		}
-		await enableMicrophone(room);
+		// スピーカーを切ったままマイクだけを入れると、聞こえないまま話すことになる。マイクが入ったらスピーカーも戻す。
+		// マイクを入れられなかったときは、スピーカーは切ったままにする
+		await enableMicrophone(room, state.deafened ? deafenRevision : null);
 	} else {
 		await disableMicrophone(room);
 	}
@@ -308,6 +307,7 @@ export async function restartMicrophone(): Promise<void> {
 
 /** スピーカーを切るとマイクも切る。スピーカーを戻してもマイクは切ったまま (自分で入れ直す) */
 export function setDeafened(deafened: boolean): void {
+	deafenRevision++;
 	state.deafened = deafened;
 	if (current == null) return;
 	const room = current;
@@ -538,11 +538,17 @@ function captureOptions(): AudioCaptureOptions {
 	};
 }
 
-async function enableMicrophone(room: Room): Promise<void> {
+// undeafenAt: マイクが入ったらスピーカーも戻すとき、そう決めたときの deafenRevision
+async function enableMicrophone(room: Room, undeafenAt: number | null = null): Promise<void> {
 	try {
 		await room.localParticipant.setMicrophoneEnabled(true, captureOptions());
 		if (current !== room) return;
 		state.micEnabled = true;
+		// 待っているあいだにスピーカーを切り替えていなければ、マイクと一緒にスピーカーも戻す
+		if (undeafenAt != null && undeafenAt === deafenRevision && state.deafened) {
+			state.deafened = false;
+			applyVolumes(room);
+		}
 		// 許可を待つあいだなどにスピーカーが切られていたら、入ったマイクをすぐ切る (スピーカーを切っているあいだはマイクを入れない)
 		if (state.deafened) {
 			await disableMicrophone(room).catch(() => reportStatus(room));

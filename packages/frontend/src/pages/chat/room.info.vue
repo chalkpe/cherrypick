@@ -61,11 +61,13 @@ const description_ = ref(props.room.description);
 const emit = defineEmits<{ (ev: 'updated', room: Misskey.entities.ChatRoom): void }>();
 
 async function save() {
+	// 失敗したときは apiWithDialog がダイアログで知らせるので、ここでは何もしない
 	const updated = await os.apiWithDialog('chat/rooms/update', {
 		roomId: props.room.id,
 		name: name_.value,
 		description: description_.value,
-	});
+	}).catch(() => null);
+	if (updated == null) return;
 	emit('updated', updated);
 }
 

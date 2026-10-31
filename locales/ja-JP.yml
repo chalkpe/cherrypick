@@ -1713,7 +1713,6 @@ _chat:
   sentInvitations: "送信した招待"
   join: "参加"
   reject: "拒否"
-  ignore: "無視"
   leave: "グループから退出"
   members: "メンバー"
   roomOwner: "ルームオーナー"
@@ -1744,8 +1743,6 @@ _chat:
     mutual: "相互フォローのユーザーのみ"
     none: "誰も許可しない"
   invitationCancelAreYouSure: "{x}さんに送信された招待をキャンセルしますか？"
-  ignoreThisInvitation: "この招待を無視すると、グループの管理者が招待を取り消して再度招待したり、グループを削除して再作成した場合にのみ招待されることができます。"
-  doYouIgnoreInvitation: "招待を無視しますか？"
 
 _emojiPalette:
   palettes: "パレット"

@@ -126,7 +126,9 @@ watch(() => props.participants.length >= 2 && props.participants.some(participan
 		height: var(--voiceCallGridHeight, 100%);
 	}
 
-	&.layout1 > [role="group"] { flex-basis: var(--voiceCallGridWidth, 100%); }
+	&.layout1 > [role="group"] {
+		flex-basis: var(--voiceCallGridWidth, 100%);
+	}
 }
 
 // 大きくした画面を一段目いっぱいに、ほかの画面を二段目に帯として並べる (帯が一段に収まらなければ折り返してスクロールする)
@@ -141,8 +143,12 @@ watch(() => props.participants.length >= 2 && props.participants.some(participan
 }
 
 .focusMode.hideStrip {
-	.stripItem { display: none; }
-	.focused { height: 100%; }
+	.stripItem {
+		display: none;
+	}
+	.focused {
+		height: 100%;
+	}
 }
 
 .focused {

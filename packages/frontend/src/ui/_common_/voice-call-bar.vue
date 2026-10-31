@@ -13,9 +13,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 	role="region" :aria-label="i18n.ts._voiceCall.inCall"
 >
 	<!-- 通話中のルームの名前は出さず、状態 (通話中・接続中など) だけを出す -->
-	<MkA v-tooltip="i18n.ts._voiceCall.backToRoom" :to="`/chat/room/${voiceCall.room.id}`" :class="$style.room" :aria-label="i18n.ts._voiceCall.backToRoom">
-		<i v-tooltip="micSpeaking ? i18n.ts._voiceCall.micInputDetected : voiceCall.micEnabled ? i18n.ts._voiceCall.micOn : i18n.ts._voiceCall.micMuted" :class="[voiceCall.micEnabled ? 'ti ti-microphone' : 'ti ti-microphone-off', $style.roomIcon, { [$style.speaking]: micSpeaking, [$style.muted]: !voiceCall.micEnabled }]" role="img" :aria-label="micSpeaking ? i18n.ts._voiceCall.micInputDetected : voiceCall.micEnabled ? i18n.ts._voiceCall.micOn : i18n.ts._voiceCall.micMuted"></i>
-		<span :class="$style.status" :aria-live="voiceCallStatusAnnouncedInRoom ? 'off' : 'polite'">{{ voiceCallStatusText }}</span>
+	<!-- リンクの名前は行き先だけにし、マイクと通話の状態は説明 (aria-describedby) として読ませる。
+	アイコンにツールチップを重ねるとリンクのツールチップと二重に出るので、マイクの状態はリンクのツールチップに添える -->
+	<MkA v-tooltip="`${i18n.ts._voiceCall.backToRoom} (${micLabel})`" :to="`/chat/room/${voiceCall.room.id}`" :class="$style.room" :aria-label="i18n.ts._voiceCall.backToRoom" :aria-describedby="`${micLabelId} ${statusId}`">
+		<i :id="micLabelId" :class="[voiceCall.micEnabled ? 'ti ti-microphone' : 'ti ti-microphone-off', $style.roomIcon, { [$style.speaking]: micSpeaking, [$style.muted]: !voiceCall.micEnabled }]" role="img" :aria-label="micLabel"></i>
+		<span :id="statusId" :class="$style.status" :aria-live="voiceCallStatusAnnouncedInRoom ? 'off' : 'polite'">{{ voiceCallStatusText }}</span>
 	</MkA>
 	<button v-if="voiceCall.audioBlocked" v-tooltip="i18n.ts._voiceCall.enableAudio" class="_buttonPrimary" :class="$style.enableAudio" :aria-label="i18n.ts._voiceCall.enableAudio" @click="resumeAudio">
 		<i class="ti ti-volume"></i>
@@ -72,7 +74,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, watch } from 'vue';
+import { computed, useId, watch } from 'vue';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
@@ -82,6 +84,9 @@ import { openVoiceCallSettings as openSettings, screenShareAvailable } from '@/u
 import { voiceCallStatusAnnouncedInRoom, voiceCallStatusText } from '@/utility/voice-call-status.js';
 
 const micSpeaking = computed(() => voiceCall.status === 'connected' && voiceCall.micEnabled && voiceCall.localSpeaking);
+const micLabel = computed(() => micSpeaking.value ? i18n.ts._voiceCall.micInputDetected : voiceCall.micEnabled ? i18n.ts._voiceCall.micOn : i18n.ts._voiceCall.micMuted);
+const micLabelId = useId();
+const statusId = useId();
 
 const zIndex = os.claimZIndex('middle');
 
@@ -181,8 +186,12 @@ watch(() => [
 .roomIcon {
 	flex-shrink: 0;
 	color: var(--MI_THEME-fg);
-	&.speaking { color: var(--MI_THEME-success); }
-	&.muted { color: var(--MI_THEME-error); }
+	&.speaking {
+		color: var(--MI_THEME-success);
+	}
+	&.muted {
+		color: var(--MI_THEME-error);
+	}
 }
 
 .status {

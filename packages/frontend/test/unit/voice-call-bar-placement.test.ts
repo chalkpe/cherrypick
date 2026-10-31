@@ -138,16 +138,30 @@ describe('chat attachments', () => {
 		expect(misskeyApi).toHaveBeenCalledWith('chat/messages/create-to-room', expect.objectContaining({ fileId: 'f1' }));
 	});
 
+	function clipboardData(items: unknown[], files: File[], text = '') {
+		return { items, files, getData: (type: string) => type === 'text/plain' ? text : '' };
+	}
+
 	test('accepts a clipboard image alongside text and HTML representations', async () => {
 		render(XForm, { props: { room }, global: { stubs } });
 		const image = new File(['image'], 'clipboard.png', { type: 'image/png' });
-		const event = transferEvent('paste', 'clipboardData', { items: [{ kind: 'string' }, { kind: 'file', getAsFile: () => image }], files: [] });
+		const event = transferEvent('paste', 'clipboardData', clipboardData([{ kind: 'string' }, { kind: 'string' }, { kind: 'file', getAsFile: () => image }], [], 'https://example.com/clipboard.png'));
 		await fireEvent(screen.getByRole('textbox'), event);
 		await flush();
 		expect(event.defaultPrevented).toBe(true);
 		expect(os.launchUploader).toHaveBeenCalledTimes(1);
 		expect(vi.mocked(os.launchUploader).mock.calls[0][0][0].type).toBe('image/png');
 		expect(screen.getByRole('img', { name: 'image.png' })).toBeTruthy();
+	});
+
+	test('pastes the text when an app puts a picture of the text beside it', async () => {
+		render(XForm, { props: { room }, global: { stubs } });
+		const image = new File(['image'], 'cells.png', { type: 'image/png' });
+		const event = transferEvent('paste', 'clipboardData', clipboardData([{ kind: 'string' }, { kind: 'string' }, { kind: 'file', getAsFile: () => image }], [], 'A1\tB1\nA2\tB2'));
+		await fireEvent(screen.getByRole('textbox'), event);
+		await flush();
+		expect(event.defaultPrevented).toBe(false);
+		expect(os.launchUploader).not.toHaveBeenCalled();
 	});
 
 	test('shows a single-file preview with the note attachment editing menu', async () => {
@@ -191,7 +205,7 @@ describe('chat attachments', () => {
 	test('keeps ordinary text paste native and handles an empty drag item list', async () => {
 		render(XForm, { props: { room }, global: { stubs } });
 		const input = screen.getByRole('textbox');
-		const paste = transferEvent('paste', 'clipboardData', { items: [{ kind: 'string' }], files: [] });
+		const paste = transferEvent('paste', 'clipboardData', clipboardData([{ kind: 'string' }], [], 'hello'));
 		await fireEvent(input, paste);
 		expect(paste.defaultPrevented).toBe(false);
 		const drag = transferEvent('dragover', 'dataTransfer', { types: ['Files'], items: [], effectAllowed: 'all' });
@@ -205,7 +219,7 @@ describe('chat attachments', () => {
 		const input = screen.getByRole('textbox');
 		await fireEvent.update(input, 'draft');
 		const image = new File(['image'], 'a.png', { type: 'image/png' });
-		const multi = transferEvent('paste', 'clipboardData', { items: [], files: [image, image] });
+		const multi = transferEvent('paste', 'clipboardData', clipboardData([], [image, image]));
 		await fireEvent(input, multi);
 		expect(os.alert).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.ts.onlyOneFileCanBeAttached }));
 		expect(os.launchUploader).not.toHaveBeenCalled();
