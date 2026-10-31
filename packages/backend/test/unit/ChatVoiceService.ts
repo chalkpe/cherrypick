@@ -1369,6 +1369,57 @@ describe('ChatVoiceService', () => {
 			]);
 		});
 
+		// マイク・スピーカーの設定はよく切り替わる。設定だけの変化は、参加者の出入りや画面共有の変化と違い、送ってから 30 秒に一度にまとめる
+		test('sends a change of reported settings alone at most once in 30 seconds, as the latest settings', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+
+			await f.service.refresh('r1');
+			expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
+			f.queueService.deliver.mockClear();
+
+			// 間隔の鍵 (10 秒) が切れた後でも、設定だけの変化は待たせる
+			await vi.advanceTimersByTimeAsync(11_000);
+			f.liveKitService.listParticipants.mockResolvedValue([{ ...u1, micMuted: true, deafened: false }]);
+			await f.service.refresh('r1');
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+
+			await vi.advanceTimersByTimeAsync(9_000);
+			f.liveKitService.listParticipants.mockResolvedValue([{ ...u1, micMuted: true, deafened: true }]);
+			await f.service.refresh('r1');
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+
+			// 送ってから 30 秒経つと、その時点の設定を一度だけ送る
+			await vi.advanceTimersByTimeAsync(10_001);
+			expect(deliveredObjects().map(object => object.participants)).toEqual([
+				[{ id: 'https://local.test/users/u1', screenSharing: false, micMuted: true, deafened: true }],
+				[{ id: 'https://local.test/users/u1', screenSharing: false, micMuted: true, deafened: true }],
+			]);
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		test('still sends a participant change right away while a change of settings alone is waiting', async () => {
+			withRemoteMembers();
+			vi.useFakeTimers({ now: 1_000_000 });
+			f.liveKitService.listParticipants.mockResolvedValue([u1]);
+			await f.service.refresh('r1');
+			f.queueService.deliver.mockClear();
+
+			await vi.advanceTimersByTimeAsync(11_000);
+			f.liveKitService.listParticipants.mockResolvedValue([{ ...u1, micMuted: true, deafened: false }]);
+			await f.service.refresh('r1');
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+
+			await vi.advanceTimersByTimeAsync(1_000);
+			f.liveKitService.listParticipants.mockResolvedValue([{ ...u1, micMuted: true, deafened: false, screenSharing: true }]);
+			await f.service.refresh('r1');
+			expect(deliveredObjects().map(object => object.participants)).toEqual([
+				[{ id: 'https://local.test/users/u1', screenSharing: true, micMuted: true, deafened: false }],
+				[{ id: 'https://local.test/users/u1', screenSharing: true, micMuted: true, deafened: false }],
+			]);
+		});
+
 		test('always sends the empty snapshot that ends a call', async () => {
 			withRemoteMembers();
 			vi.useFakeTimers({ now: 1_000_000 });

@@ -16,6 +16,7 @@ import type { MiMeta } from '@/models/Meta.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { bindThis } from '@/decorators.js';
+import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { LiveKitService, userIdOfMetadata } from '@/core/LiveKitService.js';
@@ -122,6 +123,9 @@ const FEDERATION_RESEND_INTERVAL_MS = 240_000;
 // 参加者が目まぐるしく変わっても (画面共有の切り替えや出入りの繰り返し) 配送が膨らまないよう、
 // 他のサーバーへはルームごとにこの間隔に一度だけ送る。全ワーカーで Redis の鍵を共有して数える
 const FEDERATION_MIN_INTERVAL_MS = 10_000;
+// 参加者のマイク・スピーカーの設定だけが変わった現況は、前に送ってからこの間隔に一度しか送らない (設定はよく切り替わるので、切り替えのたびに送らない)。
+// 参加者の出入りや画面共有の変化は FEDERATION_MIN_INTERVAL_MS のまま
+const FEDERATION_STATUS_INTERVAL_MS = 30_000;
 
 // ミラーのメイン通知をルームごと・全ワーカーで制限する。時計は Redis のものを使う。
 // 空の通知は直前に通知した参加者をすぐ消すが、参加者の通知間隔はリセットしない。
@@ -284,7 +288,7 @@ const REFRESH_EVENTS = new Set([
 ]);
 
 type VoiceSnapshot = {
-	participants: { identity: string; userId: MiUser['id']; screenSharing: boolean }[];
+	participants: { identity: string; userId: MiUser['id']; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
 	updatedAt: number;
 };
 
@@ -367,11 +371,12 @@ type RoomAudience = {
 export type RemoteSnapshotStoreResult = 'stored' | 'stale' | 'ahead' | 'old' | 'disabled';
 
 /** 他のサーバーに送った現況の記録。at は送った時刻、updatedAt は送った現況の時刻 */
-type FederatedRecord = { hash: string; at: number; updatedAt: number };
+/** 他のサーバーに最後に送った現況の記録。presenceHash は設定 (micMuted / deafened) を除いた現況の hash (古い記録には無い) */
+type FederatedRecord = { hash: string; presenceHash?: string; at: number; updatedAt: number };
 
 /** 他のサーバーに渡す参加者の現況。userId はこのサーバーの DB の id なので含めない */
 type FederatedVoiceSnapshot = {
-	participants: { identity: string; screenSharing: boolean }[];
+	participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
 	updatedAt: number;
 };
 
@@ -502,6 +507,26 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		return { url, token, iceServers, participants, updatedAt };
 	}
 
+	/** Accept only the authenticated user's own connected session and reported settings. */
+	@bindThis
+	public async reportStatus(user: MiUser, roomId: string, sessionId: string, status: { micMuted: boolean; deafened: boolean }): Promise<boolean> {
+		if (!this.liveKitService.isEnabled) return false;
+		const participant = { identity: this.liveKitService.identityOf(user), userId: user.id };
+		const context = await this.admissionContextOf(roomId, [participant], new Map());
+		const admission = this.admissionOf(participant, context);
+		// 読めなかったものがあれば、断ると決まっていても false (断った) ではなく内部エラーにする。断ったと答えるとクライアントは送り直さず、
+		// 一時的な DB や Redis の失敗で設定が古いまま残るため。issueRemoteJoinToken と同じく、読めないときにルームがあるかで答えも変えない
+		if (admission === 'unverified' || context.errors.length > 0 || !context.room.ok) {
+			throw new AggregateError(context.errors, `Failed to read what decides who may report the voice call settings in ${roomId}`);
+		}
+		if (admission === 'denied' || context.room.value == null) return false;
+		const owner = await this.usersRepository.findOneBy({ id: context.room.value.ownerId });
+		if (owner == null || owner.host != null) return false;
+		if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, status)) return false;
+		this.scheduleRefresh(roomId);
+		return true;
+	}
+
 	/**
 	 * 通話中のすべてのルームで、いま残れない参加者 (admissionOf) を外す (reconcileRoom)。
 	 * ブロックや連合の設定が変わったときと、管理画面でサーバーを停止したときに、定期的な読み直し (sweep) を待たずに呼ぶ。
@@ -569,7 +594,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 		const snapshot = JSON.parse(raw) as VoiceSnapshot;
 		return {
-			participants: snapshot.participants.map(p => ({ identity: p.identity, screenSharing: p.screenSharing })),
+			participants: snapshot.participants.map(p => ({ identity: p.identity, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) })),
 			updatedAt: snapshot.updatedAt,
 		};
 	}
@@ -688,7 +713,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const removed = refusedHosts != null ? await this.removeUnadmitted(roomId, listed, refusedHosts, 'sweep') : new Set<string>();
 		const participants = listed.filter(p => !removed.has(p.identity));
 		const snapshot: VoiceSnapshot = {
-			participants: participants.map(p => ({ identity: p.identity, userId: p.userId, screenSharing: p.screenSharing })),
+			participants: participants.map(p => ({ identity: p.identity, userId: p.userId, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) })),
 			updatedAt: readAt,
 		};
 
@@ -765,7 +790,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * ミラーの通話はこのサーバーの LiveKit には無いので、定期的な読み直し (sweep) の対象には加えない
 	 */
 	@bindThis
-	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<RemoteSnapshotStoreResult> {
+	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[], updatedAt: number): Promise<RemoteSnapshotStoreResult> {
 		// このサーバーのルームの現況は LiveKit から読む。ホストの言う現況で上書きさせない
 		if (room.owner == null || room.owner.host == null) {
 			throw new Error(`Voice call participants sent by another server can only be stored for a room owned there: ${room.id}`);
@@ -797,7 +822,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			if (user == null) continue;
 			if (user.host == null && !localMemberIds.has(user.id)) continue;
 			if (user.host != null && refusedHosts.get(user.host) !== false) continue;
-			snapshot.participants.push({ identity: p.identity, userId: user.id, screenSharing: p.screenSharing });
+			snapshot.participants.push({ identity: p.identity, userId: user.id, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) });
 		}
 
 		// 他のサーバーの通話を止めた後に、止める前に始まった参加の応答が届いても書かない (止めたときにミラーの現況は消している)
@@ -1436,16 +1461,22 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			this.retryFederationLater(room.id);
 			throw err;
 		}
-		const participants = listed.map(p => ({ identity: p.identity, screenSharing: p.screenSharing }));
+		const participants = listed.map(p => ({ identity: p.identity, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) }));
 
-		const hash = createHash('sha256')
-			.update(JSON.stringify([...participants].sort((a, b) => a.identity.localeCompare(b.identity))))
-			.digest('hex');
+		const sorted = [...participants].sort((a, b) => a.identity.localeCompare(b.identity));
+		const hash = hashOf(sorted);
+		const presenceHash = hashOf(sorted.map(p => ({ identity: p.identity, screenSharing: p.screenSharing })));
 		const ended = participants.length === 0;
 
 		const last = ended ? null : await this.lastFederatedOf(room.id);
 		if (!ended && isStillFederated(last, hash)) {
 			this.federationBackoff.delete(room.id);
+			return true;
+		}
+		// 変わったのが設定だけなら、前に送ってから FEDERATION_STATUS_INTERVAL_MS 経ってから、そのときの設定を送る (決め直しはルームごとに一つにまとまる)
+		if (!ended && last?.presenceHash === presenceHash && Date.now() - last.at < FEDERATION_STATUS_INTERVAL_MS) {
+			this.federationBackoff.delete(room.id);
+			this.scheduleFollowUp(room.id, last.at + FEDERATION_STATUS_INTERVAL_MS - Date.now() + 1);
 			return true;
 		}
 
@@ -1484,7 +1515,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 
 		// 順番の鍵が寿命で切れて、ほかのワーカーが後の現況で決めたか記録していれば、書かずに決め直す
-		const record: FederatedRecord = { hash, at: Date.now(), updatedAt };
+		const record: FederatedRecord = { hash, presenceHash, at: Date.now(), updatedAt };
 		const recorded = await this.redisClient.eval(RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT, 3, recordKey, decidedKey, `chatVoice:joinInvalidated:${room.id}`, JSON.stringify(record), updatedAt, FEDERATION_RESEND_INTERVAL_MS / 1000) === 1;
 		if (recorded) this.federationBackoff.delete(room.id);
 		return recorded;
@@ -1501,7 +1532,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * 持ち主の名前で Update を作り、メンバーの inbox (共有 inbox があればそちら) ごとに一度だけ送る。
 	 * すべての配送を積み終えるまで待ち、どれかを積めなければ例外を投げる
 	 */
-	private async deliverSnapshot(room: MiChatRoom, audience: RoomAudience, participants: { identity: string; screenSharing: boolean }[], updatedAt: number): Promise<void> {
+	private async deliverSnapshot(room: MiChatRoom, audience: RoomAudience, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[], updatedAt: number): Promise<void> {
 		const owner = audience.localOwner;
 		if (owner == null) return;
 
@@ -1571,7 +1602,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		for (const p of snapshot.participants) {
 			const user = usersById.get(p.userId);
 			if (user == null) continue;
-			participants.push({ identity: p.identity, user, screenSharing: p.screenSharing });
+			participants.push({ identity: p.identity, user, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) });
 		}
 		return { roomId, participants, updatedAt: snapshot.updatedAt };
 	}
@@ -1588,6 +1619,10 @@ function isSameList(a: string[] | undefined, b: string[] | undefined): boolean {
 	const left = a ?? [];
 	const right = b ?? [];
 	return left.length === right.length && left.every((value, i) => value === right[i]);
+}
+
+function hashOf(value: unknown): string {
+	return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
 /** 記録 (last) が、同じ現況 (hash) を FEDERATION_RESEND_INTERVAL_MS のうちに送ったことを示すか */

@@ -8,13 +8,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<div v-if="invitations.length > 0" class="_gaps_s">
 		<MkFolder v-for="invitation in invitations" :key="invitation.id" :defaultOpen="true">
 			<template #icon><i class="ti ti-users-group"></i></template>
-			<template #label>{{ invitation.room.name }}</template>
+			<template #label><Mfm :text="invitation.room.name" :plain="true" :author="invitation.room.owner"/></template>
 			<template #suffix><MkTime :time="invitation.createdAt"/></template>
 			<template #footer>
 				<div class="_buttons">
 					<MkButton primary @click="join(invitation)"><i class="ti ti-plus"></i> {{ i18n.ts._chat.join }}</MkButton>
 					<MkButton danger @click="reject(invitation)"><i class="ti ti-ban"></i> {{ i18n.ts._chat.reject }}</MkButton>
-					<MkButton @click="ignore(invitation)"><i class="ti ti-x"></i> {{ i18n.ts._chat.ignore }}</MkButton>
 				</div>
 			</template>
 
@@ -23,7 +22,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<div style="flex: 1;" class="_gaps_s">
 					<MkUserName :user="invitation.room.owner"/>
 					<hr>
-					<div>{{ invitation.room.description === '' ? i18n.ts.noDescription : invitation.room.description }}</div>
+					<div><Mfm v-if="invitation.room.description" :text="invitation.room.description" :author="invitation.room.owner"/><template v-else>{{ i18n.ts.noDescription }}</template></div>
 				</div>
 			</div>
 		</MkFolder>
@@ -72,21 +71,6 @@ async function join(invitation: Misskey.entities.ChatRoomInvitation) {
 
 async function reject(invitation: Misskey.entities.ChatRoomInvitation) {
 	await os.apiWithDialog('chat/rooms/invitations/reject', {
-		roomId: invitation.room.id,
-	});
-
-	invitations.value = invitations.value.filter(i => i.id !== invitation.id);
-}
-
-async function ignore(invitation: Misskey.entities.ChatRoomInvitation) {
-	const { canceled } = await os.confirm({
-		type: 'warning',
-		text: i18n.ts._chat.doYouIgnoreInvitation,
-		caption: i18n.ts._chat.ignoreThisInvitation,
-	});
-	if (canceled) return;
-
-	await os.apiWithDialog('chat/rooms/invitations/ignore', {
 		roomId: invitation.room.id,
 	});
 

@@ -6,7 +6,7 @@
 import { reactive, readonly } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { url } from '@@/js/config.js';
-import type { AudioCaptureOptions, DisconnectReason, LocalParticipant, LocalTrack, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomConnectOptions, TrackPublication, VideoPreset } from 'livekit-client';
+import type { AudioCaptureOptions, DisconnectReason, LocalAudioTrack, LocalParticipant, LocalTrack, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomConnectOptions, TrackPublication, VideoPreset } from 'livekit-client';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { isApiError } from '@/utility/api-error.js';
 import * as os from '@/os.js';
@@ -32,6 +32,7 @@ const state = reactive({
 	deafened: false,
 	audioBlocked: false,
 	speakingIdentities: [] as string[],
+	localSpeaking: false,
 	screenSharing: false,
 	screenShareIdentities: [] as string[],
 	// 見ている共有画面 (見始めた順)。いくつでも同時に見られる
@@ -44,6 +45,145 @@ export const voiceCall = readonly(state);
 let livekit: LiveKit | null = null;
 let current: Room | null = null;
 let joinAttempt = 0;
+let stopLocalMeter: (() => void) | null = null;
+let localMeterContext: BaseAudioContext | null = null;
+// 測れなかったトラックは測り直さない。createAudioAnalyser は途中で失敗すると作った AudioContext を閉じずに投げるので、
+// 切り替えのたびに測り直すと閉じられない AudioContext が溜まっていく。作り直されたトラックは別のものなので、また測ってみる
+const unmeterableTracks = new WeakSet<MediaStreamTrack>();
+let watchedMicrophoneTrack: LocalAudioTrack | null = null;
+let unwatchMicrophoneTrack: (() => void) | null = null;
+type VoiceStatusReport = Misskey.Endpoints['chat/rooms/voice/status']['req'];
+type StatusDelivery = {
+	room: Room;
+	latest: VoiceStatusReport;
+	pending: VoiceStatusReport | null;
+	sending: boolean;
+	retryDelay: number;
+	timer: number | null;
+	stopped: boolean;
+};
+let statusDelivery: StatusDelivery | null = null;
+// スピーカーを切り替えた回数。マイクを入れるのを待つあいだに切り替えられたかを見分ける
+let deafenRevision = 0;
+
+function resetStatusDelivery(): void {
+	if (statusDelivery?.timer != null) window.clearTimeout(statusDelivery.timer);
+	statusDelivery = null;
+}
+
+// Keep only the newest settings. A failed report must not leave the server stale for the rest of the call.
+function reportStatus(room: Room, force = false): void {
+	const roomId = state.room?.id;
+	if (current !== room || roomId == null || state.status === 'connecting') return;
+	const status = { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened };
+	if (statusDelivery?.room !== room || statusDelivery.latest.sessionId !== status.sessionId) {
+		resetStatusDelivery();
+		statusDelivery = { room, latest: status, pending: status, sending: false, retryDelay: 1000, timer: null, stopped: false };
+	} else {
+		if (!force && statusDelivery.latest.micMuted === status.micMuted && statusDelivery.latest.deafened === status.deafened) return;
+		// 止めたのは失敗した報告の再送だけ。設定が変わったら、新しい設定はもう一度だけ送ってみる
+		// (セッションを確かめる一時的な失敗も ACCESS_DENIED になるので、一度の失敗で通話の残りずっと黙らない)
+		statusDelivery.stopped = false;
+		statusDelivery.latest = status;
+		statusDelivery.pending = status;
+	}
+	void deliverStatus(statusDelivery);
+}
+
+async function deliverStatus(delivery: StatusDelivery): Promise<void> {
+	if (statusDelivery !== delivery || current !== delivery.room || delivery.sending || delivery.timer != null || delivery.stopped || delivery.pending == null) return;
+	const status = delivery.pending;
+	delivery.pending = null;
+	delivery.sending = true;
+	try {
+		await misskeyApi('chat/rooms/voice/status', status);
+		delivery.retryDelay = 1000;
+	} catch (err) {
+		if (statusDelivery !== delivery || current !== delivery.room) return;
+		const code = isApiError(err) ? err.code : null;
+		if (code != null && code !== 'RATE_LIMIT_EXCEEDED' && code !== 'INTERNAL_ERROR' && code !== 'REMOTE_HOST_UNREACHABLE') {
+			// Unsupported hosts and permanent API errors must not generate a retry loop.
+			// 送り直さないのは失敗した設定だけ。送っているあいだに変わった新しい設定は、下でもう一度だけ送ってみる
+			if (delivery.pending == null) {
+				delivery.stopped = true;
+				return;
+			}
+		} else {
+			delivery.pending ??= status;
+			const delay = code === 'RATE_LIMIT_EXCEEDED' ? 60_000 : delivery.retryDelay;
+			delivery.retryDelay = Math.min(delivery.retryDelay * 2, 30_000);
+			delivery.timer = window.setTimeout(() => {
+				delivery.timer = null;
+				void deliverStatus(delivery);
+			}, delay);
+		}
+	} finally {
+		delivery.sending = false;
+	}
+	if (statusDelivery === delivery) void deliverStatus(delivery);
+}
+
+function setLocalSpeaking(room: Room, speaking: boolean): void {
+	state.localSpeaking = speaking;
+	const identity = room.localParticipant.identity;
+	if (state.speakingIdentities.includes(identity) === speaking) return;
+	state.speakingIdentities = speaking
+		? [...state.speakingIdentities, identity]
+		: state.speakingIdentities.filter(id => id !== identity);
+}
+
+// livekit-client は入力装置が抜けたり既定の装置が変わったりすると、マイクのトラックを自分で作り直す (restartTrack)。
+// 測っていた MediaStreamTrack はそのとき終わっているので、終わったら測るのをやめてサーバーの知らせに戻り、作り直されたら新しいトラックで測り直す
+function watchMicrophoneTrack(room: Room, track: LocalAudioTrack): void {
+	// 作り直されても LocalAudioTrack は同じものなので、付け替えるのは別のトラックになったときだけ (restarted の中で付け直すと、その emit にまた呼ばれる)
+	if (livekit == null || watchedMicrophoneTrack === track) return;
+	unwatchMicrophoneTrack?.();
+	const events = livekit.TrackEvent;
+	const onRestarted = () => { if (current === room) startLocalMeter(room); };
+	const onEnded = () => { stopLocalMeter?.(); };
+	track.on(events.Restarted, onRestarted);
+	track.on(events.Ended, onEnded);
+	watchedMicrophoneTrack = track;
+	unwatchMicrophoneTrack = () => {
+		track.off(events.Restarted, onRestarted);
+		track.off(events.Ended, onEnded);
+		watchedMicrophoneTrack = null;
+		unwatchMicrophoneTrack = null;
+	};
+}
+
+function startLocalMeter(room: Room): void {
+	stopLocalMeter?.();
+	if (livekit == null || current !== room || !state.micEnabled) return;
+	const track = room.localParticipant.getTrackPublication(livekit.Track.Source.Microphone)?.track;
+	if (track == null || track.kind !== livekit.Track.Kind.Audio) return;
+	watchMicrophoneTrack(room, track as LocalAudioTrack);
+	if (unmeterableTracks.has(track.mediaStreamTrack)) return;
+	try {
+		const meter = livekit.createAudioAnalyser(track as LocalAudioTrack, { fftSize: 512 });
+		const context = meter.analyser.context;
+		const samples = new Float32Array(meter.analyser.fftSize);
+		let lastLoudAt = -Infinity;
+		const timer = window.setInterval(() => {
+			if (current !== room || !state.micEnabled || context.state === 'suspended') return;
+			meter.analyser.getFloatTimeDomainData(samples);
+			const rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
+			if (rms >= 0.02) lastLoudAt = Date.now();
+			setLocalSpeaking(room, Date.now() - lastLoudAt < 150);
+		}, 50);
+		localMeterContext = context;
+		stopLocalMeter = () => {
+			window.clearInterval(timer);
+			void meter.cleanup().catch(() => {});
+			setLocalSpeaking(room, false);
+			stopLocalMeter = null;
+			localMeterContext = null;
+		};
+	} catch {
+		// Audio metering is optional; failure must not stop the microphone.
+		unmeterableTracks.add(track.mediaStreamTrack);
+	}
+}
 
 // 画面共有の映像トラックと、それを映す video 要素 (どちらも identity ごと)。
 // 一つの共有画面を、参加者のチップやタイルの小さなプレビューと、見ている画面の両方に同時に映すことがある。
@@ -67,11 +207,25 @@ export function localIdentityOf(userId: string): string {
 	return `${url}/users/${userId}`;
 }
 
-export async function joinVoiceCall(room: Misskey.entities.ChatRoom): Promise<void> {
-	migrateParticipantVolumes();
-	if (current != null) await leaveVoiceCall();
+async function disconnectCurrentRoom(): Promise<void> {
+	const room = current;
+	current = null;
+	if (room != null) {
+		await room.disconnect();
+		detachAll(room);
+	}
+}
 
+export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { micEnabled?: boolean } = {}): Promise<void> {
+	migrateParticipantVolumes();
+	// 前の通話の切断を待つあいだに別の参加が始まったら、この参加は捨てる。
+	// leaveVoiceCall は joinAttempt を進めるので、ここでは切断だけを行う
 	const attempt = ++joinAttempt;
+	if (current != null) {
+		await disconnectCurrentRoom();
+		if (attempt !== joinAttempt) return;
+	}
+
 	resetState();
 	state.status = 'connecting';
 	state.room = room;
@@ -127,38 +281,59 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom): Promise<vo
 		lkRoom.switchActiveDevice('audiooutput', outputDeviceId).catch(() => {});
 	}
 
-	await enableMicrophone(lkRoom);
+	// つながるまでのあいだにスピーカーを切っていたら、マイクは入れない (スピーカーを切っているあいだはマイクも切っておく)
+	if ((options.micEnabled ?? prefer.s['voiceCall.micEnabled']) && !state.deafened) await enableMicrophone(lkRoom);
+	else reportStatus(lkRoom);
 }
 
 export async function leaveVoiceCall(): Promise<void> {
-	joinAttempt++;
-	const room = current;
-	current = null;
-	if (room != null) {
-		await room.disconnect();
-		detachAll(room);
-	}
-	resetState();
+	const attempt = ++joinAttempt;
+	await disconnectCurrentRoom();
+	// 切れるのを待つあいだに次の通話に入り始めていたら、その通話の表示を消さない
+	if (attempt === joinAttempt) resetState();
 }
 
+/** 自分でマイクを切り替える。選んだ入/切は、次に通話に入るときにも使う */
 export async function setMicEnabled(enabled: boolean): Promise<void> {
-	if (current == null) return;
+	const room = current;
+	if (room == null) return;
+	prefer.commit('voiceCall.micEnabled', enabled);
 	if (enabled) {
-		await enableMicrophone(current);
+		// スピーカーを切ったままマイクだけを入れると、聞こえないまま話すことになる。マイクが入ったらスピーカーも戻す。
+		// マイクを入れられなかったときは、スピーカーは切ったままにする
+		await enableMicrophone(room, state.deafened ? deafenRevision : null);
 	} else {
-		await current.localParticipant.setMicrophoneEnabled(false, captureOptions());
-		state.micEnabled = false;
+		await disableMicrophone(room);
 	}
 }
 
+/** 音声処理の設定を反映するために、マイクを入れ直す。自分で選んだ入/切は変えない */
+export async function restartMicrophone(): Promise<void> {
+	const room = current;
+	if (room == null || !state.micEnabled) return;
+	await disableMicrophone(room);
+	if (current === room && !state.deafened) await enableMicrophone(room);
+}
+
+/** スピーカーを切るとマイクも切る。スピーカーを戻してもマイクは切ったまま (自分で入れ直す) */
 export function setDeafened(deafened: boolean): void {
+	deafenRevision++;
 	state.deafened = deafened;
 	if (current == null) return;
-	for (const participant of current.remoteParticipants.values()) {
-		applyVolume(participant);
-	}
+	const room = current;
+	applyVolumes(room);
 	if (deafened && state.micEnabled) {
-		setMicEnabled(false).catch(() => {});
+		// マイクを切り終えてから一度だけ知らせる (disableMicrophone が知らせる)。切る前に知らせると、スピーカーだけ切ってマイクは入ったままの状態が
+		// 一瞬伝わり、知らせも二度になる。切れなかったときは、そのままの状態 (マイクは入ったまま) を知らせる
+		disableMicrophone(room).catch(() => reportStatus(room));
+		return;
+	}
+	reportStatus(room);
+}
+
+function applyVolumes(room: Room): void {
+	for (const participant of room.remoteParticipants.values()) {
+		applyVolume(participant);
 	}
 }
 
@@ -212,16 +387,22 @@ export async function selectAudioDevice(kind: 'audioinput' | 'audiooutput', devi
 	prefer.commit(kind === 'audioinput' ? 'voiceCall.inputDeviceId' : 'voiceCall.outputDeviceId', deviceId);
 	if (current == null) return;
 	await current.switchActiveDevice(kind, deviceId);
+	if (kind === 'audioinput' && current != null) startLocalMeter(current);
 }
 
 export function canShareScreen(): boolean {
 	return typeof window.navigator.mediaDevices?.getDisplayMedia === 'function';
 }
 
+// 共有する画面を選ぶ画面が出れば、人がやめるまでに少なくともこのくらいはかかる。
+// それより早く NotAllowedError が返るのは、選ぶ前にブラウザや OS が拒んだとき (権限が無い、ポリシーで止められているなど)
+const SCREEN_SHARE_PICKER_MIN_MS = 250;
+
 export async function startScreenShare(): Promise<void> {
 	const room = current;
 	if (room == null || livekit == null) return;
 	const { preset, contentHint } = screenSharePreset(livekit, prefer.s['voiceCall.screenShareQuality']);
+	const startedAt = Date.now();
 	try {
 		await room.localParticipant.setScreenShareEnabled(true, {
 			audio: prefer.s['voiceCall.screenShareAudio'],
@@ -239,8 +420,12 @@ export async function startScreenShare(): Promise<void> {
 		if (current === room) state.screenSharing = room.localParticipant.isScreenShareEnabled;
 	} catch (err) {
 		if (current === room) state.screenSharing = false;
-		// 共有する画面の選択をキャンセルしただけなら何も言わない
-		if (err instanceof DOMException && err.name === 'NotAllowedError') return;
+		if (err instanceof DOMException && err.name === 'NotAllowedError') {
+			// 共有する画面の選択をキャンセルしただけなら何も言わない。選ぶ前に拒まれたなら、許可が要ることを知らせる
+			if (Date.now() - startedAt >= SCREEN_SHARE_PICKER_MIN_MS) return;
+			os.toast(i18n.ts._voiceCall.screenSharePermissionDenied);
+			return;
+		}
 		os.toast(i18n.ts._voiceCall.screenShareFailed);
 	}
 }
@@ -363,15 +548,41 @@ function captureOptions(): AudioCaptureOptions {
 	};
 }
 
-async function enableMicrophone(room: Room): Promise<void> {
+// undeafenAt: マイクが入ったらスピーカーも戻すとき、そう決めたときの deafenRevision
+async function enableMicrophone(room: Room, undeafenAt: number | null = null): Promise<void> {
 	try {
 		await room.localParticipant.setMicrophoneEnabled(true, captureOptions());
+		if (current !== room) return;
 		state.micEnabled = true;
+		// 待っているあいだにスピーカーを切り替えていなければ、マイクと一緒にスピーカーも戻す
+		if (undeafenAt != null && undeafenAt === deafenRevision && state.deafened) {
+			state.deafened = false;
+			applyVolumes(room);
+		}
+		// 許可を待つあいだなどにスピーカーが切られていたら、入ったマイクをすぐ切る (スピーカーを切っているあいだはマイクを入れない)
+		if (state.deafened) {
+			await disableMicrophone(room).catch(() => reportStatus(room));
+			return;
+		}
+		startLocalMeter(room);
+		reportStatus(room);
 	} catch {
 		// マイクが無い・許可されない場合でも、聞くだけの参加者として通話に残る
+		if (current !== room) return;
 		state.micEnabled = false;
+		stopLocalMeter?.();
+		reportStatus(room);
 		os.toast(i18n.ts._voiceCall.micUnavailable);
 	}
+}
+
+async function disableMicrophone(room: Room): Promise<void> {
+	await room.localParticipant.setMicrophoneEnabled(false, captureOptions());
+	if (current !== room) return;
+	state.micEnabled = false;
+	stopLocalMeter?.();
+	unwatchMicrophoneTrack?.();
+	reportStatus(room);
 }
 
 // audio 要素の volume は 0〜1 しか受け付けない (範囲外は IndexSizeError)
@@ -451,7 +662,12 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 	// 接続をやり直すときは、LiveKit が共有中のトラックをいったん外して送り直すので、ここにもう一度来る
 	room.on(RoomEvent.LocalTrackPublished, (publication: LocalTrackPublication, participant: LocalParticipant) => {
 		const track = publication.track;
-		if (!isCurrent() || publication.source !== Track.Source.ScreenShare || track == null) return;
+		if (!isCurrent()) return;
+		if (publication.source === Track.Source.Microphone) {
+			startLocalMeter(room);
+			return;
+		}
+		if (publication.source !== Track.Source.ScreenShare || track == null) return;
 		state.screenSharing = true;
 		screenShareTracks.set(participant.identity, track);
 		for (const view of screenShareViews.get(participant.identity) ?? []) track.attach(view.element);
@@ -470,11 +686,21 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 		// オーナーによる強制ミュート
 		if (participant === room.localParticipant && publication.source === Track.Source.Microphone) {
 			state.micEnabled = false;
+			stopLocalMeter?.();
+			reportStatus(room);
 		}
 	});
 
 	room.on(RoomEvent.ActiveSpeakersChanged, (speakers: Participant[]) => {
-		if (isCurrent()) state.speakingIdentities = speakers.map(speaker => speaker.identity);
+		if (!isCurrent()) return;
+		const localIdentity = room.localParticipant.identity;
+		const others = speakers.filter(speaker => speaker.identity !== localIdentity).map(speaker => speaker.identity);
+		// 自分の発話は、マイクの音を手元で測れているあいだはその結果 (サーバーの知らせより速い) で示し、
+		// 測れていない (AudioContext が無い、自動再生の制限で止まっていて無音しか返らないなど) ときはサーバーの知らせに従う
+		const metered = stopLocalMeter != null && localMeterContext?.state !== 'suspended';
+		const localSpeaking = metered ? state.speakingIdentities.includes(localIdentity) : speakers.some(speaker => speaker.identity === localIdentity);
+		state.speakingIdentities = localSpeaking ? [...others, localIdentity] : others;
+		if (!metered) state.localSpeaking = localSpeaking;
 	});
 
 	room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
@@ -486,7 +712,12 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 	});
 
 	room.on(RoomEvent.Reconnected, () => {
-		if (isCurrent()) state.status = 'connected';
+		if (isCurrent()) {
+			state.status = 'connected';
+			// Keep same-session reports serialized, including requests still in flight before reconnecting.
+			reportStatus(room, true);
+			startLocalMeter(room);
+		}
 	});
 
 	room.on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
@@ -541,6 +772,9 @@ function failToConnect(err?: unknown): void {
 }
 
 function resetState(): void {
+	resetStatusDelivery();
+	stopLocalMeter?.();
+	unwatchMicrophoneTrack?.();
 	screenShareTracks.clear();
 	state.status = 'idle';
 	state.room = null;
@@ -548,6 +782,7 @@ function resetState(): void {
 	state.deafened = false;
 	state.audioBlocked = false;
 	state.speakingIdentities = [];
+	state.localSpeaking = false;
 	state.screenSharing = false;
 	state.screenShareIdentities = [];
 	state.watchingIdentities = [];

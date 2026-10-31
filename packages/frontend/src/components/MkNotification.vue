@@ -122,9 +122,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div v-else-if="notification.type === 'roleAssigned'" :class="$style.text">
 				{{ notification.role.name }}
 			</div>
-			<MkA v-else-if="notification.type === 'chatRoomInvitationReceived'" :class="$style.text" :to="`/chat/room/${notification.invitation.room.id}`">
-				{{ notification.invitation.room.name }}
-			</MkA>
+			<template v-else-if="notification.type === 'chatRoomInvitationReceived'">
+				<MkA :class="$style.text" :to="`/chat/room/${notification.invitation.room.id}`">
+					<Mfm :text="notification.invitation.room.name" :plain="true" :author="notification.invitation.room.owner"/>
+				</MkA>
+				<div v-if="full && !chatRoomInviteDone" :class="$style.followRequestCommands">
+					<MkButton :class="$style.followRequestCommandButton" rounded primary :disabled="chatRoomInvitePending" @click="acceptChatRoomInvitation()"><i class="ti ti-check"></i> {{ i18n.ts._chat.join }}</MkButton>
+					<MkButton :class="$style.followRequestCommandButton" rounded danger :disabled="chatRoomInvitePending" @click="rejectChatRoomInvitation()"><i class="ti ti-x"></i> {{ i18n.ts._chat.reject }}</MkButton>
+				</div>
+			</template>
 			<MkA v-else-if="notification.type === 'achievementEarned'" :class="$style.text" to="/my/achievements">
 				{{ i18n.ts._achievements._types[`_${notification.achievement}`].title }}
 			</MkA>
@@ -199,6 +205,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script lang="ts" setup>
 import { ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
+import * as os from '@/os.js';
 import MkReactionIcon from '@/components/MkReactionIcon.vue';
 import MkFollowButton from '@/components/MkFollowButton.vue';
 import MkButton from '@/components/MkButton.vue';
@@ -207,6 +214,7 @@ import { notePage } from '@@/js/note.js';
 import { userPage } from '@@/js/user.js';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
+import { isApiError } from '@/utility/api-error.js';
 import { ensureSignin } from '@/i.js';
 import { prefer } from '@/preferences.js';
 
@@ -239,6 +247,8 @@ const exportEntityName = {
 
 const followRequestDone = ref(false);
 const groupInviteDone = ref(false);
+const chatRoomInviteDone = ref(false);
+const chatRoomInvitePending = ref(false);
 
 const acceptFollowRequest = () => {
 	if (!('user' in props.notification)) return;
@@ -268,6 +278,37 @@ const rejectGroupInvitation = () => {
 	groupInviteDone.value = true;
 	misskeyApi('users/groups/invitations/reject', { invitationId: props.notification.invitation.id });
 };
+
+async function respondToChatRoomInvitation(endpoint: 'chat/rooms/join' | 'chat/rooms/invitations/reject') {
+	if (props.notification.type !== 'chatRoomInvitationReceived' || chatRoomInvitePending.value || chatRoomInviteDone.value) return;
+	chatRoomInvitePending.value = true;
+	try {
+		await misskeyApi(endpoint, { roomId: props.notification.invitation.room.id });
+		chatRoomInviteDone.value = true;
+	} catch {
+		// 招待がもう無い (招待一覧や別の端末で応じた・取り消された) なら、何度押しても同じく失敗するのでボタンを下げる
+		if (await isChatRoomInvitationGone(props.notification.invitation.room.id)) {
+			chatRoomInviteDone.value = true;
+		} else {
+			void os.alert({ type: 'error', text: i18n.ts.somethingHappened });
+		}
+	} finally {
+		chatRoomInvitePending.value = false;
+	}
+}
+
+async function isChatRoomInvitationGone(roomId: string): Promise<boolean> {
+	try {
+		const room = await misskeyApi('chat/rooms/show', { roomId });
+		return room.invitationExists === false;
+	} catch (err) {
+		// 断った・取り消された招待のルームは、メンバーでなければ見えない (NO_SUCH_ROOM)
+		return isApiError(err) && err.code === 'NO_SUCH_ROOM';
+	}
+}
+
+const acceptChatRoomInvitation = () => respondToChatRoomInvitation('chat/rooms/join');
+const rejectChatRoomInvitation = () => respondToChatRoomInvitation('chat/rooms/invitations/reject');
 </script>
 
 <style lang="scss" module>

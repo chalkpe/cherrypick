@@ -720,3 +720,61 @@ describe('LiveKitServerService', () => {
 		});
 	});
 });
+
+describe('federated reported voice status', () => {
+	test('requires a verified user and passes that user to the status service', async () => {
+		const user = { id: 'remote-user' };
+		const verifier = { verify: vi.fn().mockResolvedValue(null) };
+		const chatVoiceService = { reportStatus: vi.fn().mockResolvedValue(true) };
+		const service = createService(liveKitService(), { verifier, chatVoiceService });
+		const app = Fastify();
+		await app.register(service.createServer, { prefix: '/livekit' });
+		cleanups.push(() => app.close());
+		const payload = { room: 'https://local.test/chat/rooms/r1', sessionId: 'PA_1', micMuted: true, deafened: false };
+		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload })).statusCode).toBe(401);
+		expect(chatVoiceService.reportStatus).not.toHaveBeenCalled();
+		verifier.verify.mockResolvedValue(user as never);
+		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload })).statusCode).toBe(200);
+		expect(chatVoiceService.reportStatus).toHaveBeenCalledWith(user, 'r1', 'PA_1', { micMuted: true, deafened: false });
+		chatVoiceService.reportStatus.mockResolvedValue(false);
+		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload })).statusCode).toBe(403);
+		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload: { ...payload, micMuted: 'true' } })).statusCode).toBe(400);
+		// 断ると決められなかった (読めなかった) 報告は 403 にしない。送り主のサーバーは 500 を届けられなかった (送り直せる) ものとして扱う
+		chatVoiceService.reportStatus.mockRejectedValue(new Error('database down'));
+		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload })).statusCode).toBe(500);
+	});
+
+	// 一台のサーバーがそのユーザー全員の報告を同じ IP から送ってくる。トークン発行と同じ IP の予算では、数人が切り替えるだけで足りなくなる
+	test('limits status reports per IP with room for every user of a server', async () => {
+		const user = { id: 'remote-user' };
+		const verifier = { verify: vi.fn().mockResolvedValue(user) };
+		const chatVoiceService = { reportStatus: vi.fn().mockResolvedValue(true) };
+		const rateLimiterService = { limit: vi.fn(async (limitation: { key: string }) => limitation.key === 'voiceFederationStatusIp' ? RATE_LIMITED : null) };
+		const service = createService(liveKitService(), { config: { ...CONFIG, enableIpRateLimit: true }, verifier, chatVoiceService, rateLimiterService });
+		const app = Fastify();
+		await app.register(service.createServer, { prefix: '/livekit' });
+		cleanups.push(() => app.close());
+
+		const res = await app.inject({ method: 'POST', url: '/livekit/federation/status', payload: { room: 'https://local.test/chat/rooms/r1', sessionId: 'PA_1', micMuted: true, deafened: false } });
+
+		expect(res.statusCode).toBe(429);
+		expect(verifier.verify).not.toHaveBeenCalled();
+		expect(rateLimiterService.limit).toHaveBeenCalledWith({ key: 'voiceFederationStatusIp', duration: 60_000, max: 600 }, getIpHash('127.0.0.1'));
+	});
+
+	test('limits status reports per remote user', async () => {
+		const user = { id: 'remote-user' };
+		const verifier = { verify: vi.fn().mockResolvedValue(user) };
+		const chatVoiceService = { reportStatus: vi.fn().mockResolvedValue(true) };
+		const rateLimiterService = { limit: vi.fn(async () => null) };
+		const service = createService(liveKitService(), { verifier, chatVoiceService, rateLimiterService });
+		const app = Fastify();
+		await app.register(service.createServer, { prefix: '/livekit' });
+		cleanups.push(() => app.close());
+
+		const res = await app.inject({ method: 'POST', url: '/livekit/federation/status', payload: { room: 'https://local.test/chat/rooms/r1', sessionId: 'PA_1', micMuted: true, deafened: false } });
+
+		expect(res.statusCode).toBe(200);
+		expect(rateLimiterService.limit).toHaveBeenCalledWith({ key: 'voiceFederationStatus', duration: 60_000, max: 30 }, user.id);
+	});
+});

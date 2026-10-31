@@ -93,6 +93,9 @@ function touchMove(event: TouchEvent) {
 
 	if (swipeAborted) return;
 
+	// 表示中の画面がタブに無い (メニューから開いた画面など) ときは、隣のタブが決まらないのでスワイプさせない
+	if (currentTabIndex.value === -1) return;
+
 	if (hasSomethingToDoWithXSwipe(event.target as HTMLElement)) return;
 
 	let distanceX = event.touches[0].screenX - startScreenX;

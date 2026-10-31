@@ -27,6 +27,8 @@ export const packedChatRoomVoiceStateSchema = {
 						optional: false, nullable: false,
 						ref: 'UserLite',
 					},
+					micMuted: { type: 'boolean', optional: true, nullable: false },
+					deafened: { type: 'boolean', optional: true, nullable: false },
 					screenSharing: {
 						type: 'boolean',
 						optional: false, nullable: false,

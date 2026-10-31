@@ -10,6 +10,7 @@ import { DI } from '@/di-symbols.js';
 import type { Config, VoiceCallConfig } from '@/config.js';
 import type { MiUser } from '@/models/User.js';
 import { bindThis } from '@/decorators.js';
+import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 
 const ROOM_NAME_PREFIX = 'chatRoom:';
 
@@ -17,6 +18,8 @@ export type LiveKitParticipant = {
 	identity: string;
 	userId: MiUser['id'];
 	screenSharing: boolean;
+	micMuted?: boolean;
+	deafened?: boolean;
 	canScreenShare?: boolean;
 	micTrackSid: string | null;
 };
@@ -117,16 +120,46 @@ export class LiveKitService {
 		for (const participant of [...participants].sort((a, b) => a.joinedAt < b.joinedAt ? -1 : a.joinedAt > b.joinedAt ? 1 : a.identity.localeCompare(b.identity))) {
 			const userId = userIdOfMetadata(participant.metadata);
 			if (userId == null) continue;
+			const micTrack = participant.tracks.find(track => track.source === TrackSource.MICROPHONE);
 			result.push({
 				identity: participant.identity,
 				userId,
+				...reportedVoiceStatus({
+					// 届いているマイクの音は、本人の「切った」という申告より優先する (話しているのに切ったと見せて、誰が話しているか隠させない)
+					micMuted: micTrack?.muted === false ? false : parseReportedBoolean(participant.attributes?.['cherrypick.micMuted']),
+					deafened: parseReportedBoolean(participant.attributes?.['cherrypick.deafened']),
+				}),
 				screenSharing: participant.tracks.some(track => track.source === TrackSource.SCREEN_SHARE),
 				// 空のソース一覧は LiveKit では全ソース許可を表す。
 				canScreenShare: participant.permission?.canPublish === true && (participant.permission.canPublishSources.length === 0 || participant.permission.canPublishSources.some(source => source === TrackSource.SCREEN_SHARE || source === TrackSource.SCREEN_SHARE_AUDIO)),
-				micTrackSid: participant.tracks.find(track => track.source === TrackSource.MICROPHONE)?.sid ?? null,
+				micTrackSid: micTrack?.sid ?? null,
 			});
 		}
 		return result;
+	}
+
+	/** Reported UI settings, scoped to the connected participant session. */
+	@bindThis
+	public async setParticipantStatus(roomId: string, identity: string, sessionId: string, status: { micMuted: boolean; deafened: boolean }): Promise<boolean> {
+		const service = this.requireRoomService();
+		const roomName = this.roomNameOf(roomId);
+		try {
+			const participant = await service.getParticipant(roomName, identity);
+			if (participant.sid !== sessionId) return false;
+			// LiveKit はセッションを指定して書けない (identity で書く) ので、書いた後に返るセッションでも確かめる。
+			// 確かめてから書くまでに同じユーザーが入り直していれば、古いセッションの設定を新しいセッションに書いてしまっているので、
+			// 書いた設定を消して (空の値は LiveKit で属性の削除) 報告の無い状態に戻し、受け付けたことにしない。
+			// 消すまでのあいだに新しいセッションが報告した設定も消えうるが、どちらも二つの呼び出しのあいだだけのことで、次の報告で直る
+			const updated = await service.updateParticipant(roomName, identity, {
+				attributes: { 'cherrypick.micMuted': String(status.micMuted), 'cherrypick.deafened': String(status.deafened) },
+			});
+			if (updated.sid === sessionId) return true;
+			await service.updateParticipant(roomName, identity, { attributes: { 'cherrypick.micMuted': '', 'cherrypick.deafened': '' } });
+			return false;
+		} catch (err) {
+			if (isNotFound(err)) return false;
+			throw err;
+		}
 	}
 
 	@bindThis
@@ -144,7 +177,14 @@ export class LiveKitService {
 	public async muteMicrophone(roomId: string, identity: string): Promise<void> {
 		const participant = (await this.listParticipants(roomId)).find(p => p.identity === identity);
 		if (participant?.micTrackSid == null) return;
-		await this.requireRoomService().mutePublishedTrack(this.roomNameOf(roomId), identity, participant.micTrackSid, true);
+		try {
+			await this.requireRoomService().mutePublishedTrack(this.roomNameOf(roomId), identity, participant.micTrackSid, true);
+			await this.requireRoomService().updateParticipant(this.roomNameOf(roomId), identity, { attributes: { 'cherrypick.micMuted': 'true' } });
+		} catch (err) {
+			// 一覧を読んだ後に抜けた (トラックや参加者がもう無い) なら、切るものは残っていない
+			if (isNotFound(err)) return;
+			throw err;
+		}
 	}
 
 	@bindThis
@@ -191,4 +231,8 @@ export function userIdOfMetadata(metadata: string | undefined): string | null {
 		// 他のクライアントが付けたメタデータは無視する
 	}
 	return null;
+}
+
+function parseReportedBoolean(value: string | undefined): boolean | undefined {
+	return value === 'true' ? true : value === 'false' ? false : undefined;
 }

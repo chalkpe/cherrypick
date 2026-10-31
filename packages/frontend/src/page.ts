@@ -10,6 +10,8 @@ import type { MaybeRefOrGetter, Ref } from 'vue';
 
 export type PageMetadata = {
 	title: string;
+	titleAsMfm?: boolean;
+	titleMfmAuthor?: Misskey.entities.User;
 	subtitle?: string;
 	icon?: string | null;
 	avatar?: Misskey.entities.User | null;

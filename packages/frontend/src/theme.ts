@@ -14,6 +14,7 @@ import { getBuiltinThemes, parseThemeCode, themeProps, compile } from '@@/js/the
 import type { Theme, CompiledTheme } from '@@/js/theme.js';
 import { deepClone } from '@/utility/clone.js';
 import { miLocalStorage } from '@/local-storage.js';
+import { startViewTransition } from '@/utility/view-transition.js';
 import { $i } from '@/i.js';
 import { i18n } from '@/i18n.js';
 import * as os from '@/os.js';
@@ -112,31 +113,18 @@ class ThemeManager extends EventEmitter<ThemeManagerEvents> {
 
 		// visibilityStateがhiddenな状態でstartViewTransitionするとブラウザによってはエラーになる
 		// 通常hiddenな時に呼ばれることはないが、iOSのPWAだとアプリ切り替え時に(何故か)hiddenな状態で(何故か)一瞬デバイスのダークモード判定が変わりapplyThemeが呼ばれる場合がある
-		if (window.document.startViewTransition != null && window.document.visibilityState === 'visible') {
-			window.document.documentElement.classList.add('_themeChanging_');
-			try {
-				window.document.startViewTransition(async () => {
-					this.updateAttributes();
-					await nextTick();
-				}).finished.then(() => {
-					window.document.documentElement.classList.remove('_themeChanging_');
-					this.emit('themeChanged');
-				});
-			} catch (err) {
-				// 様々な理由により startViewTransition は失敗することがある
-				// ref. https://github.com/misskey-dev/misskey/issues/16562
-
-				// FIXME: viewTransitonエラーはtry~catch貫通してそうな気配がする
-				console.error(err);
-
-				window.document.documentElement.classList.remove('_themeChanging_');
-				this.updateAttributes();
-				this.emit('themeChanged');
-			}
-		} else {
+		// (非表示のときやトランジションが使えないときに更新だけ行うのは startViewTransition が受け持つ)
+		window.document.documentElement.classList.add('_themeChanging_');
+		startViewTransition((transitioning) => {
 			this.updateAttributes();
-			this.emit('themeChanged');
-		}
+			// トランジションの中では描画の確定まで待ってから新しい画面を撮らせる。トランジションが無ければその場で themeChanged が出る
+			return transitioning ? nextTick() : undefined;
+		}, {
+			onDone: () => {
+				window.document.documentElement.classList.remove('_themeChanging_');
+				this.emit('themeChanged');
+			},
+		});
 
 		if (!this.isPreviewMode) {
 			this.emit('requestUpdateThemeCache', this.currentTheme, this.currentCompiledTheme);

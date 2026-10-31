@@ -62,6 +62,7 @@ function click() {
 }
 
 function onModalClose() {
+	manualShowing.value = false;
 	emit('closing');
 }
 

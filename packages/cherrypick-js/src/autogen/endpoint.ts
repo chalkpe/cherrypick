@@ -288,6 +288,7 @@ import type {
 	ChatRoomsVoiceMuteRequest,
 	ChatRoomsVoiceStatesRequest,
 	ChatRoomsVoiceStatesResponse,
+	ChatRoomsVoiceStatusRequest,
 	ClipsAddNoteRequest,
 	ClipsCreateRequest,
 	ClipsCreateResponse,
@@ -928,6 +929,7 @@ export type Endpoints = {
 	'chat/rooms/voice/kick': { req: ChatRoomsVoiceKickRequest; res: EmptyResponse };
 	'chat/rooms/voice/mute': { req: ChatRoomsVoiceMuteRequest; res: EmptyResponse };
 	'chat/rooms/voice/states': { req: ChatRoomsVoiceStatesRequest; res: ChatRoomsVoiceStatesResponse };
+	'chat/rooms/voice/status': { req: ChatRoomsVoiceStatusRequest; res: EmptyResponse };
 	'clips/add-note': { req: ClipsAddNoteRequest; res: EmptyResponse };
 	'clips/create': { req: ClipsCreateRequest; res: ClipsCreateResponse };
 	'clips/delete': { req: ClipsDeleteRequest; res: EmptyResponse };

@@ -10,6 +10,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	@dragover.stop="onDragover"
 	@drop.stop="onDrop"
 >
+	<XPostFormAttaches v-if="file" v-model="attachments" :max="1" @detach="file = null" @changeSensitive="(changed, isSensitive) => updateAttachment(changed, { isSensitive })" @changeName="(changed, name) => updateAttachment(changed, { name })"/>
 	<textarea
 		ref="textareaEl"
 		v-model="text"
@@ -21,7 +22,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 		@paste="onPaste"
 	></textarea>
 	<footer :class="$style.footer">
-		<div v-if="file" :class="$style.file" @click="file = null">{{ file.name }}</div>
 		<div :class="$style.buttons">
 			<button class="_button" :class="$style.button" @click="chooseFile"><i class="ti ti-photo-plus"></i></button>
 			<button class="_button" :class="$style.button" @click="insertEmoji"><i class="ti ti-mood-happy"></i></button>
@@ -51,6 +51,7 @@ import { Autocomplete } from '@/utility/autocomplete.js';
 import { emojiPicker } from '@/utility/emoji-picker.js';
 import { checkDragDataType, getDragData } from '@/drag-and-drop.js';
 import XVoiceCallBarSlot from '@/ui/_common_/voice-call-bar-slot.vue';
+import XPostFormAttaches from '@/components/MkPostFormAttaches.vue';
 
 const props = defineProps<{
 	user?: Misskey.entities.UserDetailed | null;
@@ -63,6 +64,10 @@ const fileEl = shallowRef<HTMLInputElement>();
 
 const text = ref<string>('');
 const file = ref<Misskey.entities.DriveFile | null>(null);
+const attachments = computed({
+	get: () => file.value ? [file.value] : [],
+	set: (files: Misskey.entities.DriveFile[]) => { file.value = files[0] ?? null; },
+});
 const sending = ref(false);
 const textareaReadOnly = ref(false);
 let autocompleteInstance: Autocomplete | null = null;
@@ -73,42 +78,54 @@ function getDraftKey() {
 	return props.user ? 'user:' + props.user.id : 'room:' + props.room?.id;
 }
 
-watch([text, file], saveDraft);
+watch([text, file], saveDraft, { deep: true });
+
+function updateAttachment(changed: Misskey.entities.DriveFile, updates: Partial<Pick<Misskey.entities.DriveFile, 'name' | 'isSensitive'>>) {
+	if (file.value?.id !== changed.id) return;
+	file.value = { ...file.value, ...updates };
+}
+
+async function uploadFiles(files: File[]) {
+	if (files.length === 0) return;
+	if (files.length > 1) {
+		os.alert({ type: 'error', text: i18n.ts.onlyOneFileCanBeAttached });
+		return;
+	}
+	try {
+		const uploaded = await os.launchUploader(files, { multiple: false });
+		if (uploaded[0]) file.value = uploaded[0];
+	} catch {
+		// Closing the uploader leaves the existing draft attachment intact.
+	}
+}
 
 async function onPaste(ev: ClipboardEvent) {
 	if (!ev.clipboardData) return;
-
-	const pastedFileName = 'yyyy-MM-dd HH-mm-ss [{{number}}]';
-
-	const clipboardData = ev.clipboardData;
-	const items = clipboardData.items;
-
-	if (items.length === 1) {
-		if (items[0].kind === 'file') {
-			const pastedFile = items[0].getAsFile();
-			if (!pastedFile) return;
-			const lio = pastedFile.name.lastIndexOf('.');
-			const ext = lio >= 0 ? pastedFile.name.slice(lio) : '';
-			const formattedName = formatTimeString(new Date(pastedFile.lastModified), pastedFileName).replace(/{{number}}/g, '1') + ext;
-			const renamedFile = new File([pastedFile], formattedName, { type: pastedFile.type });
-			os.launchUploader([renamedFile], { multiple: false }).then(driveFiles => {
-				file.value = driveFiles[0];
-			});
-		}
+	const files = Array.from(ev.clipboardData.items).filter(item => item.kind === 'file').map(item => item.getAsFile()).filter((item): item is File => item != null);
+	if (files.length === 0) files.push(...Array.from(ev.clipboardData.files));
+	if (files.length === 0) return;
+	// Office の表のように、文字と一緒にその見た目の画像も入れるアプリがある。文字があれば文字を貼る。
+	// ブラウザで画像をコピーしたときに一緒に入る URL だけのときや、Finder などでファイルをコピーしたときに一緒に入るファイル名だけのときは、ファイルを添付する
+	const pastedText = ev.clipboardData.getData('text/plain').trim();
+	const fileNames = new Set(files.map(file => file.name));
+	const isOnlyFileNames = pastedText.split(/\r\n|\r|\n/).map(line => line.trim()).filter(line => line !== '').every(line => fileNames.has(line));
+	if (pastedText !== '' && !/^\S+:\/\/\S+$/.test(pastedText) && !isOnlyFileNames) return;
+	ev.preventDefault();
+	if (files.length === 1) {
+		const pastedFile = files[0];
+		const lio = pastedFile.name.lastIndexOf('.');
+		const ext = lio >= 0 ? pastedFile.name.slice(lio) : '';
+		const formattedName = formatTimeString(new Date(pastedFile.lastModified), 'yyyy-MM-dd HH-mm-ss [1]') + ext;
+		await uploadFiles([new File([pastedFile], formattedName, { type: pastedFile.type })]);
 	} else {
-		if (items[0].kind === 'file') {
-			os.alert({
-				type: 'error',
-				text: i18n.ts.onlyOneFileCanBeAttached,
-			});
-		}
+		await uploadFiles(files);
 	}
 }
 
 function onDragover(ev: DragEvent) {
 	if (!ev.dataTransfer) return;
 
-	const isFile = ev.dataTransfer.items[0].kind === 'file';
+	const isFile = Array.from(ev.dataTransfer.types).includes('Files') || Array.from(ev.dataTransfer.items).some(item => item.kind === 'file');
 	if (isFile || checkDragDataType(ev, ['driveFiles'])) {
 		ev.preventDefault();
 		switch (ev.dataTransfer.effectAllowed) {
@@ -130,33 +147,21 @@ function onDragover(ev: DragEvent) {
 	}
 }
 
-function onDrop(ev: DragEvent): void {
+async function onDrop(ev: DragEvent) {
 	if (!ev.dataTransfer) return;
-
-	// ファイルだったら
-	if (ev.dataTransfer.files.length === 1) {
+	if (ev.dataTransfer.files.length > 0) {
 		ev.preventDefault();
-		os.launchUploader([Array.from(ev.dataTransfer.files)[0]], { multiple: false });
-		return;
-	} else if (ev.dataTransfer.files.length > 1) {
-		ev.preventDefault();
-		os.alert({
-			type: 'error',
-			text: i18n.ts.onlyOneFileCanBeAttached,
-		});
+		await uploadFiles(Array.from(ev.dataTransfer.files));
 		return;
 	}
-
-	//#region ドライブのファイル
-	{
-		const droppedData = getDragData(ev, 'driveFiles');
-		if (droppedData != null) {
-			file.value = droppedData[0];
-			ev.preventDefault();
-		}
-	}
-	//#endregion
+	const droppedData = getDragData(ev, 'driveFiles');
+	if (droppedData == null) return;
+	ev.preventDefault();
+	if (droppedData.length === 1) file.value = droppedData[0];
+	else if (droppedData.length > 1) os.alert({ type: 'error', text: i18n.ts.onlyOneFileCanBeAttached });
 }
+
+defineExpose({ onDragover, onDrop });
 
 function onKeydown(ev: KeyboardEvent) {
 	if (ev.isComposing || ev.key === 'Process' || ev.keyCode === 229) return;
@@ -184,13 +189,7 @@ function chooseFile(ev: PointerEvent) {
 }
 
 function onChangeFile() {
-	if (fileEl.value == null || fileEl.value.files == null) return;
-
-	if (fileEl.value.files[0]) {
-		os.launchUploader(Array.from(fileEl.value.files), { multiple: false }).then(driveFiles => {
-			file.value = driveFiles[0];
-		});
-	}
+	if (fileEl.value?.files) void uploadFiles(Array.from(fileEl.value.files));
 }
 
 function send() {
@@ -336,11 +335,6 @@ onBeforeUnmount(() => {
 	position: sticky;
 	bottom: 0;
 	background: var(--MI_THEME-panel);
-}
-
-.file {
-	padding: 8px;
-	cursor: pointer;
 }
 
 .buttons {

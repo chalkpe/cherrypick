@@ -245,10 +245,6 @@ async function composeNotification(data: PushNotificationDataMap[keyof PushNotif
 								action: 'reject',
 								title: i18n.ts.reject,
 							},
-							{
-								action: 'ignore',
-								title: i18n.ts._chat.ignore,
-							},
 						],
 					}];
 

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { computed, toValue } from 'vue';
+import { computed, markRaw, toValue } from 'vue';
 import type { MaybeRefOrGetter } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import type { MenuItem } from '@/types/menu.js';
@@ -14,8 +14,9 @@ import { ensureSignin } from '@/i.js';
 import { userName } from '@/filters/user.js';
 import { isChatRoomVoiceAvailable } from '@/utility/chat-room-voice-availability.js';
 import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
-import { joinVoiceCall, localIdentityOf, voiceCall } from '@/utility/voice-call.js';
+import { joinVoiceCall, localIdentityOf, setDeafened, setMicEnabled, toggleScreenShareWatch, voiceCall } from '@/utility/voice-call.js';
 import XVolume from '@/pages/chat/room.voice.volume.vue';
+import XRoster from '@/pages/chat/room.voice.roster.vue';
 
 type Participant = Misskey.entities.ChatRoomVoiceState['participants'][number];
 
@@ -46,8 +47,8 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		const target = toValue(room);
 		const listed = target == null ? [] : states.value.get(target.id)?.participants ?? [];
 		if (!inThisCall.value) return listed;
-		return listed.map(participant => participant.identity === myIdentity && participant.screenSharing !== voiceCall.screenSharing
-			? { ...participant, screenSharing: voiceCall.screenSharing }
+		return listed.map(participant => participant.identity === myIdentity
+			? { ...participant, screenSharing: voiceCall.screenSharing, micMuted: !voiceCall.micEnabled, deafened: voiceCall.deafened }
 			: participant);
 	});
 
@@ -59,12 +60,14 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 			.filter((participant): participant is Participant => participant != null);
 	});
 
-	// 誰も通話にいないときはカードを出さず、ページヘッダーの参加ボタンだけにする。
-	// 自分が参加した直後は参加者の一覧がまだ届いていないことがあるので、参加中なら一覧を待たずに出す
-	const showCard = computed(() => available.value && (inThisCall.value || participants.value.length > 0));
-
 	// 他のサーバーで開かれる通話には相手のサーバーに IP アドレスが見えるので、ホストごとに初回だけ確認する
 	let joining = false;
+
+	// 参加前に選ぶマイクの入/切。最後に自分で選んだもの (通話中の切り替えも含む) を覚えておき、次の参加でも使う
+	const prejoinMicEnabled = computed({
+		get: () => prefer.r['voiceCall.micEnabled'].value,
+		set: value => prefer.commit('voiceCall.micEnabled', value),
+	});
 
 	async function join() {
 		const target = toValue(room);
@@ -80,7 +83,7 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 				if (canceled) return;
 				prefer.commit('voiceCall.acknowledgedRemoteHosts', [...prefer.s['voiceCall.acknowledgedRemoteHosts'], host]);
 			}
-			await joinVoiceCall(target);
+			await joinVoiceCall(target, { micEnabled: prejoinMicEnabled.value });
 		} finally {
 			joining = false;
 		}
@@ -89,22 +92,27 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 	const isOwner = computed(() => toValue(room)?.ownerId === $i.id);
 
 	// 参加者ごとのメニュー (自分の手元の音量、ルームの持ち主なら強制ミュートと通話から外す)
-	function participantMenuItems(participant: Participant): MenuItem[] {
+	function participantMenuItems(participant: Participant, onWatch?: () => void): MenuItem[] {
 		const target = toValue(room);
-		if (target == null || participant.identity === myIdentity) return [];
+		if (target == null) return [];
 		const items: MenuItem[] = [];
+		if (inThisCall.value && participant.screenSharing) {
+			items.push({ icon: 'ti ti-screen-share', text: voiceCall.watchingIdentities.includes(participant.identity) ? i18n.ts._voiceCall.stopWatching : i18n.ts._voiceCall.watchStream, action: () => { const wasWatching = voiceCall.watchingIdentities.includes(participant.identity); toggleScreenShareWatch(participant.identity); if (!wasWatching) onWatch?.(); } });
+		}
+		if (participant.identity === myIdentity) {
+			if (inThisCall.value) items.push({ icon: 'ti ti-microphone', text: voiceCall.micEnabled ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute, action: () => { void setMicEnabled(!voiceCall.micEnabled); } }, { icon: 'ti ti-headphones', text: voiceCall.deafened ? i18n.ts._voiceCall.undeafen : i18n.ts._voiceCall.deafen, action: () => setDeafened(!voiceCall.deafened) });
+			return items;
+		}
 		if (inThisCall.value) {
+			if (items.length > 0) items.push({ type: 'divider' });
 			items.push({ type: 'component', component: XVolume, props: { identity: participant.identity, audio: 'voice' } });
-			// 共有画面の音声は画面を共有しているあいだだけ流れるので、そのあいだだけ声とは別の音量を出す
-			if (participant.screenSharing) {
-				items.push({ type: 'component', component: XVolume, props: { identity: participant.identity, audio: 'screenShare' } });
-			}
 		}
 		if (isOwner.value) {
 			if (items.length > 0) items.push({ type: 'divider' });
 			items.push({
 				icon: 'ti ti-microphone-off',
 				text: i18n.ts._voiceCall.forceMute,
+				danger: true,
 				action: () => {
 					os.apiWithDialog('chat/rooms/voice/mute', { roomId: target.id, userId: participant.user.id });
 				},
@@ -125,13 +133,23 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		return items;
 	}
 
-	function openParticipantMenu(participant: Participant, ev: MouseEvent) {
-		const items = participantMenuItems(participant);
-		if (items.length === 0) return;
-		os.popupMenu(items, ev.currentTarget ?? ev.target);
+	/** 参加者を押したときにメニューに出すものがあるか。無いときは、押しても何も起きないボタンを出さない */
+	function hasParticipantMenu(participant: Participant) {
+		return participantMenuItems(participant).length > 0;
 	}
 
-	return { available, inThisCall, participants, watchedParticipants, showCard, join, myIdentity, isOwner, openParticipantMenu };
+	function openParticipantMenu(participant: Participant, ev: MouseEvent, onWatch?: () => void) {
+		const items = participantMenuItems(participant, onWatch);
+		if (items.length === 0) return;
+		return os.popupMenu(items, ev.currentTarget ?? ev.target);
+	}
+
+	function openRoster() {
+		const { dispose } = os.popup(XRoster, { call: markRaw(call) }, { closed: () => dispose() });
+	}
+
+	const call = { available, inThisCall, participants, watchedParticipants, join, prejoinMicEnabled, myIdentity, isOwner, hasParticipantMenu, openParticipantMenu, openRoster };
+	return call;
 }
 
 export type ChatRoomVoiceCall = ReturnType<typeof useChatRoomVoiceCall>;

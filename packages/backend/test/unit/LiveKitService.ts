@@ -16,6 +16,8 @@ function createService() {
 	} as any);
 	const roomService = {
 		listParticipants: vi.fn(),
+		getParticipant: vi.fn(),
+		updateParticipant: vi.fn(),
 		createRoom: vi.fn(),
 		removeParticipant: vi.fn(),
 		mutePublishedTrack: vi.fn(),
@@ -73,6 +75,73 @@ describe('LiveKitService', () => {
 		}]);
 		await expect(service.listParticipants('r1')).resolves.toEqual([{ identity: 'i1', userId: 'u1', screenSharing: true, canScreenShare: false, micTrackSid: 'TR_mic' }]);
 		expect(roomService.listParticipants).toHaveBeenCalledWith('chatRoom:r1');
+	});
+
+	test('reads reported settings without deriving mute from media tracks', async () => {
+		roomService.listParticipants.mockResolvedValue([{
+			identity: 'i1', metadata: '{"userId":"u1"}',
+			attributes: { 'cherrypick.micMuted': 'false', 'cherrypick.deafened': 'true' },
+			tracks: [],
+		}]);
+		expect((await service.listParticipants('r1'))[0]).toMatchObject({ micMuted: false, deafened: true });
+	});
+
+	test('does not let a reported mute hide a microphone that is still sending', async () => {
+		roomService.listParticipants.mockResolvedValue([
+			{ identity: 'live', metadata: '{"userId":"u1"}', attributes: { 'cherrypick.micMuted': 'true' }, tracks: [{ sid: 'TR_1', source: TrackSource.MICROPHONE, muted: false }] },
+			{ identity: 'muted', metadata: '{"userId":"u2"}', attributes: { 'cherrypick.micMuted': 'true' }, tracks: [{ sid: 'TR_2', source: TrackSource.MICROPHONE, muted: true }] },
+		]);
+		const [live, muted] = await service.listParticipants('r1');
+		expect(live).toMatchObject({ identity: 'live', micMuted: false });
+		expect(muted).toMatchObject({ identity: 'muted', micMuted: true });
+	});
+
+	test('writes only reported settings for the authenticated participant session', async () => {
+		roomService.getParticipant.mockResolvedValue({ identity: 'i1', sid: 'PA_1' });
+		roomService.updateParticipant.mockResolvedValue({ identity: 'i1', sid: 'PA_1' });
+		await expect(service.setParticipantStatus('r1', 'i1', 'PA_1', { micMuted: true, deafened: false })).resolves.toBe(true);
+		expect(roomService.updateParticipant).toHaveBeenCalledWith('chatRoom:r1', 'i1', {
+			attributes: { 'cherrypick.micMuted': 'true', 'cherrypick.deafened': 'false' },
+		});
+		roomService.updateParticipant.mockClear();
+		await expect(service.setParticipantStatus('r1', 'i1', 'PA_old', { micMuted: false, deafened: false })).resolves.toBe(false);
+		expect(roomService.updateParticipant).not.toHaveBeenCalled();
+	});
+
+	test('does not accept or leave behind settings written to a session that replaced the reporting one', async () => {
+		// 確かめた後、書くまでのあいだに同じユーザーが入り直した
+		roomService.getParticipant.mockResolvedValue({ identity: 'i1', sid: 'PA_old' });
+		roomService.updateParticipant.mockResolvedValue({ identity: 'i1', sid: 'PA_new' });
+		await expect(service.setParticipantStatus('r1', 'i1', 'PA_old', { micMuted: true, deafened: true })).resolves.toBe(false);
+		expect(roomService.updateParticipant).toHaveBeenLastCalledWith('chatRoom:r1', 'i1', {
+			attributes: { 'cherrypick.micMuted': '', 'cherrypick.deafened': '' },
+		});
+	});
+
+	test('treats a participant that left before the report as a stale session', async () => {
+		roomService.getParticipant.mockRejectedValue(new TwirpError('TwirpError', 'participant not found', 404, 'not_found'));
+		await expect(service.setParticipantStatus('r1', 'i1', 'PA_1', { micMuted: true, deafened: false })).resolves.toBe(false);
+		roomService.getParticipant.mockResolvedValue({ identity: 'i1', sid: 'PA_1' });
+		roomService.updateParticipant.mockRejectedValue(new TwirpError('TwirpError', 'participant not found', 404, 'not_found'));
+		await expect(service.setParticipantStatus('r1', 'i1', 'PA_1', { micMuted: true, deafened: false })).resolves.toBe(false);
+		roomService.updateParticipant.mockRejectedValue(new Error('livekit down'));
+		await expect(service.setParticipantStatus('r1', 'i1', 'PA_1', { micMuted: true, deafened: false })).rejects.toThrow('livekit down');
+	});
+
+	test('mutes a microphone and marks it muted', async () => {
+		roomService.listParticipants.mockResolvedValue([{ identity: 'i1', metadata: '{"userId":"u1"}', tracks: [{ sid: 'TR_mic', source: TrackSource.MICROPHONE, muted: false }] }]);
+		await service.muteMicrophone('r1', 'i1');
+		expect(roomService.mutePublishedTrack).toHaveBeenCalledWith('chatRoom:r1', 'i1', 'TR_mic', true);
+		expect(roomService.updateParticipant).toHaveBeenCalledWith('chatRoom:r1', 'i1', { attributes: { 'cherrypick.micMuted': 'true' } });
+	});
+
+	test.each(['mutePublishedTrack', 'updateParticipant'] as const)('treats a participant that left while being muted (%s not found) as done', async (call) => {
+		roomService.listParticipants.mockResolvedValue([{ identity: 'i1', metadata: '{"userId":"u1"}', tracks: [{ sid: 'TR_mic', source: TrackSource.MICROPHONE, muted: false }] }]);
+		roomService[call].mockRejectedValue(new TwirpError('TwirpError', 'participant not found', 404, 'not_found'));
+		await expect(service.muteMicrophone('r1', 'i1')).resolves.toBeUndefined();
+		if (call === 'mutePublishedTrack') expect(roomService.updateParticipant).not.toHaveBeenCalled();
+		roomService[call].mockRejectedValue(new Error('livekit down'));
+		await expect(service.muteMicrophone('r1', 'i1')).rejects.toThrow('livekit down');
 	});
 
 	test('keeps participant order by joinedAt then identity when LiveKit reorders its list', async () => {

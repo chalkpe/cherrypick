@@ -4,12 +4,12 @@
  */
 
 /** 親の表示切り替えや Teleport の移動も含め、要素が操作できる表示状態かを追う。 */
-export function observeElementVisibility(el: HTMLElement, onChange: (visible: boolean) => void): { refresh: () => void; dispose: () => void } {
+export function observeElementVisibility(el: HTMLElement, onChange: (visible: boolean) => void, ignoreInert = false): { refresh: () => void; dispose: () => void } {
 	const observer = new MutationObserver(refresh);
 
 	function refresh() {
 		observer.disconnect();
-		const visible = isElementVisible(el);
+		const visible = isElementVisible(el, ignoreInert);
 		// ページウィンドウや重ねたルーターは、親の表示状態だけを変えて中身を残すことがある。
 		// Teleport で親が変わる場合も、移動後の親を監視し直す。
 		for (let ancestor: HTMLElement | null = el; ancestor; ancestor = ancestor.parentElement) {
@@ -23,11 +23,11 @@ export function observeElementVisibility(el: HTMLElement, onChange: (visible: bo
 }
 
 /** 親に隠された要素や切断済みの要素をフォーカス先にしない。 */
-export function isElementVisible(el: HTMLElement): boolean {
+export function isElementVisible(el: HTMLElement, ignoreInert = false): boolean {
 	if (!el.isConnected) return false;
 	for (let ancestor: HTMLElement | null = el; ancestor; ancestor = ancestor.parentElement) {
 		const style = window.getComputedStyle(ancestor);
-		if (ancestor.hidden || ancestor.hasAttribute('inert') || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+		if (ancestor.hidden || (!ignoreInert && ancestor.hasAttribute('inert')) || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
 	}
 	return true;
 }

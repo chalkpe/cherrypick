@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div v-if="show" ref="el" :class="[$style.root, {[$style.slim]: narrow, [$style.thin]: thin_, [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.scrollToTransparent]: showEl }]">
+<div v-if="show" ref="el" :class="[$style.root, {[$style.slim]: narrow, [$style.centerTitle]: centerTitle && narrow, [$style.thin]: thin_, [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.scrollToTransparent]: showEl }]" :style="centerTitle ? { '--centerTitleSideButtons': Math.max(2, actions?.length ?? 0) } : undefined">
 	<div v-if="!thin_ && !canBack" :class="$style.buttonsLeft">
 		<button class="_button" :class="[$style.button, $style.goBack]" @click.stop="goBack" @touchstart="preventDrag"><i class="ti ti-arrow-left"></i></button>
 	</div>
@@ -30,7 +30,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 			<div class="_nowrap" :class="$style.title">
 				<MkUserName v-if="pageMetadata.userName" :user="pageMetadata.userName" :nowrap="true" @click="top"/>
-				<div v-else-if="pageMetadata.title" class="_nowrap" @click="top">{{ pageMetadata.title }}</div>
+				<div v-else-if="pageMetadata.title" class="_nowrap" @click="top"><Mfm v-if="pageMetadata.titleAsMfm" :text="pageMetadata.title" :plain="true" :nowrap="true" :author="pageMetadata.titleMfmAuthor"/><template v-else>{{ pageMetadata.title }}</template></div>
 				<div v-if="!narrow && pageMetadata.subtitle" :class="$style.subtitle" @click="top">
 					{{ pageMetadata.subtitle }}
 				</div>
@@ -81,6 +81,8 @@ export type PageHeaderProps = {
 	actions?: PageHeaderItem[] | null;
 	thin?: boolean;
 	hideTitle?: boolean;
+	/** 狭い画面で見出しを中央に固定する (アクションの数が変わっても見出しが動かない) */
+	centerTitle?: boolean;
 	displayMyAvatar?: boolean;
 	disableFollowButton?: boolean;
 };
@@ -276,6 +278,23 @@ onUnmounted(() => {
 			> *:last-child {
 				margin-right: auto;
 			}
+		}
+	}
+
+	&.centerTitle {
+		position: relative;
+
+		> .titleContainer {
+			position: absolute;
+			left: 50%;
+			transform: translateX(-50%);
+			margin: 0;
+			// 両側のボタンのうち多い方の数 (少なくとも戻るボタンとアバターの 2 つ) だけ、左右とも空ける
+			max-width: calc(100% - (var(--height) - 8px) * var(--centerTitleSideButtons, 2) * 2);
+		}
+
+		> .buttonsRight {
+			margin-left: auto;
 		}
 	}
 

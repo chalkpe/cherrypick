@@ -8,7 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 広い画面のステージ (fill) では、押した画面を大きくして、ほかの画面は下の帯に並べる。
 大きくする画面を変えても画面を作り直さない (作り直すと全画面やピクチャーインピクチャーが解け、キーボードのフォーカスも失われる) よう、
 並べ方はクラスだけで切り替える -->
-<div :class="[$style.root, focusedParticipant != null ? $style.focusMode : [$style.grid, $style[layout], fill ? $style.fill : $style.capped]]">
+<div :class="[$style.root, focusedParticipant != null ? [$style.focusMode, { [$style.hideStrip]: hideStrip }] : [$style.grid, $style[layout], fill ? $style.fill : $style.capped]]">
 	<XScreen
 		v-for="participant in participants"
 		:key="participant.identity"
@@ -35,6 +35,7 @@ const props = withDefaults(defineProps<{
 	participants: Participant[];
 	// 与えられた高さいっぱいに並べる (広い画面のステージ)。指定しなければ、一覧全体を高さの上限 (--voiceCallScreensMaxHeight) までに収める
 	fill?: boolean;
+	hideStrip?: boolean;
 }>(), {
 	fill: false,
 });
@@ -112,6 +113,24 @@ watch(() => props.participants.length >= 2 && props.participants.some(participan
 	}
 }
 
+.grid.fill {
+	display: flex;
+	flex-wrap: wrap;
+	align-content: center;
+	justify-content: center;
+	gap: 8px;
+	overflow: clip;
+
+	> [role="group"] {
+		flex: 0 1 var(--voiceCallGridWidth, calc(50% - 4px));
+		height: var(--voiceCallGridHeight, 100%);
+	}
+
+	&.layout1 > [role="group"] {
+		flex-basis: var(--voiceCallGridWidth, 100%);
+	}
+}
+
 // 大きくした画面を一段目いっぱいに、ほかの画面を二段目に帯として並べる (帯が一段に収まらなければ折り返してスクロールする)
 .focusMode {
 	--voiceCallScreensStripHeight: 96px;
@@ -121,6 +140,15 @@ watch(() => props.participants.length >= 2 && props.participants.some(participan
 	justify-content: center;
 	gap: 8px;
 	overflow-y: auto;
+}
+
+.focusMode.hideStrip {
+	.stripItem {
+		display: none;
+	}
+	.focused {
+		height: 100%;
+	}
 }
 
 .focused {

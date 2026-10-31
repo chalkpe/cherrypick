@@ -6833,10 +6833,6 @@ export interface Locale extends ILocale {
          */
         "reject": string;
         /**
-         * 無視
-         */
-        "ignore": string;
-        /**
          * グループから退出
          */
         "leave": string;
@@ -6951,21 +6947,9 @@ export interface Locale extends ILocale {
             "none": string;
         };
         /**
-         * {n}人が参加中
-         */
-        "usersCount": ParameterizedString<"n">;
-        /**
          * {x}さんに送信された招待をキャンセルしますか？
          */
         "invitationCancelAreYouSure": ParameterizedString<"x">;
-        /**
-         * この招待を無視すると、グループの管理者が招待を取り消して再度招待したり、グループを削除して再作成した場合にのみ招待されることができます。
-         */
-        "ignoreThisInvitation": string;
-        /**
-         * 招待を無視しますか？
-         */
-        "doYouIgnoreInvitation": string;
     };
     "_emojiPalette": {
         /**
@@ -9301,6 +9285,42 @@ export interface Locale extends ILocale {
     };
     "_voiceCall": {
         /**
+         * 参加者を表示
+         */
+        "showParticipants": string;
+        /**
+         * 参加者を隠す
+         */
+        "hideParticipants": string;
+        /**
+         * チャットを開く
+         */
+        "openChat": string;
+        /**
+         * チャットを閉じる
+         */
+        "closeChat": string;
+        /**
+         * ほか{n}人
+         */
+        "otherParticipants": ParameterizedString<"n">;
+        /**
+         * マイクオン
+         */
+        "micOn": string;
+        /**
+         * マイク入力を検出
+         */
+        "micInputDetected": string;
+        /**
+         * マイクオフ
+         */
+        "micMuted": string;
+        /**
+         * スピーカーオフ
+         */
+        "deafened": string;
+        /**
          * マイクを使用できません。
          */
         "micUnavailable": string;
@@ -9332,6 +9352,10 @@ export interface Locale extends ILocale {
          * 通話に参加
          */
         "join": string;
+        /**
+         * 通話を開始
+         */
+        "start": string;
         /**
          * 通話から退出
          */
@@ -9428,6 +9452,10 @@ export interface Locale extends ILocale {
          * 画面共有を開始できませんでした。
          */
         "screenShareFailed": string;
+        /**
+         * 画面共有が許可されていません。ブラウザやOSの設定で画面の共有を許可してください。
+         */
+        "screenSharePermissionDenied": string;
         /**
          * 全画面
          */

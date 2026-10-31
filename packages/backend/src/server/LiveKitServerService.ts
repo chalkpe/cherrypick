@@ -23,6 +23,9 @@ const MAX_PRE_UPGRADE_BYTES = 64 * 1024;
 // 他のサーバーからのトークン要求。署名を確かめる前に DB を引くので IP ごとにも絞る
 const FEDERATION_TOKEN_IP_LIMIT = { key: 'voiceFederationTokenIp', duration: 60 * 1000, max: 60 };
 const FEDERATION_TOKEN_USER_LIMIT = { key: 'voiceFederationToken', duration: 60 * 1000, max: 30 };
+// 設定の報告は、一台のサーバーがそのユーザー全員の分を同じ IP から送ってくる。ユーザーごとの予算 (FEDERATION_STATUS_USER_LIMIT) の何人分も入るようにする
+const FEDERATION_STATUS_IP_LIMIT = { key: 'voiceFederationStatusIp', duration: 60 * 1000, max: 600 };
+const FEDERATION_STATUS_USER_LIMIT = { key: 'voiceFederationStatus', duration: 60 * 1000, max: 30 };
 const FEDERATION_TOKEN_BODY_LIMIT = 16 * 1024;
 
 // LiveKit のシグナリングに必要なヘッダーだけを中継する (Cookie などは渡さない)
@@ -116,6 +119,25 @@ export class LiveKitServerService {
 				return reply.code(200).send({ url, token, iceServers, participants, updatedAt });
 			} catch {
 				return reply.code(500).send();
+			}
+		});
+
+		fastify.post('/federation/status', { bodyLimit: FEDERATION_TOKEN_BODY_LIMIT }, async (request, reply) => {
+			try {
+				if (this.config.enableIpRateLimit && await this.rateLimiterService.limit(FEDERATION_STATUS_IP_LIMIT, getIpHash(request.ip)) != null) return reply.code(429).send();
+				const rawBody = typeof request.body === 'string' ? request.body : '';
+				const user = await this.apSignedRequestVerifierService.verify({ method: request.method, url: request.url, headers: request.headers }, rawBody);
+				if (user == null) return reply.code(401).send();
+				if (await this.rateLimiterService.limit(FEDERATION_STATUS_USER_LIMIT, user.id) != null) return reply.code(429).send();
+				const body: unknown = JSON.parse(rawBody);
+				if (body == null || typeof body !== 'object') return reply.code(400).send();
+				const { room, sessionId, micMuted, deafened } = body as Record<string, unknown>;
+				if (typeof room !== 'string' || typeof sessionId !== 'string' || sessionId.length > 128 || typeof micMuted !== 'boolean' || typeof deafened !== 'boolean') return reply.code(400).send();
+				const roomId = this.localRoomIdOf(room);
+				if (roomId == null || !await this.chatVoiceService.reportStatus(user, roomId, sessionId, { micMuted, deafened })) return reply.code(403).send();
+				return reply.code(200).send({});
+			} catch (err) {
+				return reply.code(err instanceof SyntaxError ? 400 : 500).send();
 			}
 		});
 

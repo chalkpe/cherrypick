@@ -10,6 +10,7 @@ import { nextTick, unref } from 'vue';
 const mocks = vi.hoisted(() => ({
 	popupMenu: vi.fn(),
 	setMicEnabled: vi.fn(),
+	restartMicrophone: vi.fn(),
 	inUse: { audioinput: undefined as string | undefined, audiooutput: undefined as string | undefined },
 }));
 
@@ -27,6 +28,7 @@ vi.mock('@/utility/voice-call.js', async importOriginal => {
 		resumeAudio: vi.fn(),
 		setDeafened: vi.fn(),
 		setMicEnabled: mocks.setMicEnabled,
+		restartMicrophone: mocks.restartMicrophone,
 		startScreenShare: vi.fn(),
 		stopScreenShare: vi.fn(),
 		// 選択の保存と読み出しは本物を使う。ここでは通話を張らないので、本物が 'default' に落ちたときだけ通話中のデバイスを補う
@@ -41,6 +43,8 @@ vi.mock('@/utility/voice-call.js', async importOriginal => {
 import type { FakePrefer } from './fake-prefer.js';
 import { prefer as mockedPrefer } from '@/preferences.js';
 import XVoiceCallBar from '@/ui/_common_/voice-call-bar.vue';
+import { voiceCall } from '@/utility/voice-call.js';
+import { i18n } from '@/i18n.js';
 
 const prefer = mockedPrefer as unknown as FakePrefer;
 
@@ -60,6 +64,7 @@ async function openMicMenu() {
 beforeEach(() => {
 	mocks.popupMenu.mockReset();
 	mocks.setMicEnabled.mockReset().mockResolvedValue(undefined);
+	mocks.restartMicrophone.mockReset().mockResolvedValue(undefined);
 	mocks.inUse.audioinput = undefined;
 	prefer.reset({
 		'voiceCall.inputDeviceId': null,
@@ -67,6 +72,7 @@ beforeEach(() => {
 		'voiceCall.echoCancellation': true,
 		'voiceCall.noiseSuppression': true,
 		'voiceCall.autoGainControl': true,
+		'voiceCall.micEnabled': true,
 		'voiceCall.screenShareQuality': 'sharp',
 		'voiceCall.screenShareAudio': true,
 	});
@@ -119,6 +125,33 @@ describe('voice call bar audio processing', () => {
 		await nextTick();
 		await Promise.resolve();
 
-		expect(mocks.setMicEnabled.mock.calls).toEqual([[false], [true]]);
+		// 入れ直しは自分で選んだマイクの入/切 (次の参加でも使う) を書き換えない
+		expect(mocks.restartMicrophone).toHaveBeenCalledTimes(1);
+		expect(mocks.setMicEnabled).not.toHaveBeenCalled();
+	});
+});
+
+describe('voice call bar microphone activity', () => {
+	test('shows local microphone input outside the room and clears it when muted or reconnecting', async () => {
+		const original = { status: voiceCall.status, micEnabled: voiceCall.micEnabled, localSpeaking: voiceCall.localSpeaking };
+		try {
+			Object.assign(voiceCall, { status: 'connected', micEnabled: true, localSpeaking: false });
+			render(XVoiceCallBar, { global: { stubs: { MkA: { template: '<a><slot /></a>' } } } });
+			expect(screen.getByRole('img', { name: i18n.ts._voiceCall.micOn })).toBeTruthy();
+			// リンクの名前は行き先のまま、マイクの状態は説明として読まれる
+			const link = screen.getByRole('img', { name: i18n.ts._voiceCall.micOn }).closest('a')!;
+			expect(link.getAttribute('aria-describedby')!.split(' ')).toContain(screen.getByRole('img', { name: i18n.ts._voiceCall.micOn }).id);
+			Object.assign(voiceCall, { localSpeaking: true });
+			await nextTick();
+			expect(screen.getByRole('img', { name: i18n.ts._voiceCall.micInputDetected })).toBeTruthy();
+			Object.assign(voiceCall, { status: 'reconnecting' });
+			await nextTick();
+			expect(screen.queryByRole('img', { name: i18n.ts._voiceCall.micInputDetected })).toBeNull();
+			Object.assign(voiceCall, { status: 'connected', micEnabled: false });
+			await nextTick();
+			expect(screen.getByRole('img', { name: i18n.ts._voiceCall.micMuted })).toBeTruthy();
+		} finally {
+			Object.assign(voiceCall, original);
+		}
 	});
 });

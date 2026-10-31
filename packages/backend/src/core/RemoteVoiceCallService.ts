@@ -10,6 +10,7 @@ import type { MiMeta } from '@/models/Meta.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
 import type { MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import { bindThis } from '@/decorators.js';
+import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
 import { StatusError } from '@/misc/status-error.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
@@ -44,7 +45,7 @@ type TokenResponse = {
 	url: string;
 	token: string;
 	iceServers: IceServer[] | null;
-	participants: { identity: string; screenSharing: boolean }[];
+	participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
 	updatedAt: number;
 };
 
@@ -90,8 +91,7 @@ export class RemoteVoiceCallService {
 		const ownerUrl = await this.trustedOwnerUrlOf(owner);
 		if (ownerUrl == null) throw new RemoteVoiceCallError('forbidden');
 
-		const unsupportedKey = `chatVoice:unsupportedHost:${owner.host}`;
-		if (await this.redisClient.exists(unsupportedKey)) throw new RemoteVoiceCallError('unsupported');
+		await this.assertHostSupported(owner.host);
 
 		const origin = ownerUrl.origin;
 
@@ -106,15 +106,7 @@ export class RemoteVoiceCallService {
 				{ redirect: 'manual', size: TOKEN_RESPONSE_SIZE_LIMIT },
 			);
 		} catch (err) {
-			if (err instanceof StatusError) {
-				// 404 は「通話が使えない」の意味にだけ使われる
-				if (err.statusCode === 404) {
-					await this.redisClient.set(unsupportedKey, '1', 'EX', UNSUPPORTED_HOST_TTL_SECONDS);
-					throw new RemoteVoiceCallError('unsupported');
-				}
-				if (err.statusCode === 401 || err.statusCode === 403) throw new RemoteVoiceCallError('forbidden');
-			}
-			throw new RemoteVoiceCallError('unreachable');
+			throw await this.errorOf(err, owner.host, true);
 		}
 
 		const response = parseTokenResponse(body, `${origin}/livekit`);
@@ -129,6 +121,48 @@ export class RemoteVoiceCallService {
 		// このサーバーの TURN は、このサーバーのユーザーの音声を中継するだけなので、他のサーバーの通話に使ってよい
 		const iceServers = response.iceServers ?? await this.cloudflareTurnService.getIceServers() ?? [];
 		return { url: response.url, token: response.token, iceServers };
+	}
+
+	/**
+	 * マイク・スピーカーの設定を、ルームの持ち主のサーバーに知らせる。
+	 * 失敗は requestJoin と同じ RemoteVoiceCallError にする (呼び出し側が API のエラーにできるように)。
+	 * 通話に対応していないと分かっているホストには、requestJoin と同じく問い合わせない。
+	 * ただし、ここで受けた 404 ではホストを「通話が使えない」と覚えない。トークンは出せるが設定の報告は受けられない (古い) ホストがあり、
+	 * その通話は進行中なので、覚えるとそのホストのすべてのルームに入れなくなってしまう
+	 */
+	@bindThis
+	public async reportStatus(me: MiLocalUser, room: MiChatRoom, owner: MiRemoteUser, sessionId: string, status: { micMuted: boolean; deafened: boolean }): Promise<void> {
+		if (!this.isEnabled) throw new RemoteVoiceCallError('forbidden');
+		const ownerUrl = await this.trustedOwnerUrlOf(owner);
+		if (ownerUrl == null) throw new RemoteVoiceCallError('forbidden');
+		await this.assertHostSupported(owner.host);
+		try {
+			await this.apRequestService.signedPostJson(me, `${ownerUrl.origin}/livekit/federation/status`, {
+				room: `${ownerUrl.origin}/chat/rooms/${room.id}`, sessionId, ...status,
+			}, TOKEN_REQUEST_TIMEOUT_MS, { redirect: 'manual', size: TOKEN_RESPONSE_SIZE_LIMIT });
+		} catch (err) {
+			throw await this.errorOf(err, owner.host, false);
+		}
+	}
+
+	/** 通話に対応していないと分かっている (UNSUPPORTED_HOST_TTL_SECONDS のあいだ覚えている) ホストには問い合わせない */
+	private async assertHostSupported(host: string): Promise<void> {
+		if (await this.redisClient.exists(unsupportedHostKeyOf(host))) throw new RemoteVoiceCallError('unsupported');
+	}
+
+	/**
+	 * ホストへの要求の失敗を RemoteVoiceCallError にする。
+	 * 404 は「対応していない」の意味にだけ使われる。rememberUnsupported なら (トークンの要求への 404 は通話そのものが使えないので)、そのホストをしばらく覚えておく
+	 */
+	private async errorOf(err: unknown, host: string, rememberUnsupported: boolean): Promise<RemoteVoiceCallError> {
+		if (err instanceof StatusError) {
+			if (err.statusCode === 404) {
+				if (rememberUnsupported) await this.redisClient.set(unsupportedHostKeyOf(host), '1', 'EX', UNSUPPORTED_HOST_TTL_SECONDS);
+				return new RemoteVoiceCallError('unsupported');
+			}
+			if (err.statusCode === 401 || err.statusCode === 403) return new RemoteVoiceCallError('forbidden');
+		}
+		return new RemoteVoiceCallError('unreachable');
 	}
 
 	/**
@@ -154,6 +188,10 @@ export class RemoteVoiceCallService {
 	}
 }
 
+function unsupportedHostKeyOf(host: string): string {
+	return `chatVoice:unsupportedHost:${host}`;
+}
+
 /**
  * ホストの応答を確かめる。LiveKit の URL はそのホストの /livekit でなければならない
  * (ほかの場所を指されると、このサーバーのユーザーのブラウザがそこへ接続してしまう)。
@@ -173,7 +211,7 @@ function parseTokenResponse(body: unknown, expectedUrl: string): TokenResponse |
 		if (typeof participant !== 'object' || participant == null) return null;
 		const { identity, screenSharing } = participant as Record<string, unknown>;
 		if (typeof identity !== 'string' || typeof screenSharing !== 'boolean') return null;
-		parsed.push({ identity, screenSharing });
+		parsed.push({ identity, screenSharing, ...reportedVoiceStatus(participant as Record<string, unknown>) });
 	}
 
 	return { url: expectedUrl, token, iceServers: parseIceServers(iceServers), participants: parsed, updatedAt };

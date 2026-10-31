@@ -1319,6 +1319,9 @@ type ChatRoomsVoiceStatesRequest = operations['chat___rooms___voice___states']['
 type ChatRoomsVoiceStatesResponse = operations['chat___rooms___voice___states']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type ChatRoomsVoiceStatusRequest = operations['chat___rooms___voice___status']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
 type ChatRoomVoiceState = components['schemas']['ChatRoomVoiceState'];
 
 // @public (undocumented)
@@ -1941,6 +1944,7 @@ declare namespace entities {
         ChatRoomsVoiceMuteRequest,
         ChatRoomsVoiceStatesRequest,
         ChatRoomsVoiceStatesResponse,
+        ChatRoomsVoiceStatusRequest,
         ClipsAddNoteRequest,
         ClipsCreateRequest,
         ClipsCreateResponse,

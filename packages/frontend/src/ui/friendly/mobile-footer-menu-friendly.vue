@@ -55,6 +55,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue';
+import { useMobileFooterHeight } from '@/composables/use-mobile-footer-height.js';
 import { $i } from '@/i.js';
 import { mainRouter } from '@/router.js';
 import { prefer } from '@/preferences.js';
@@ -72,8 +73,8 @@ const longTouchNavHome = ref(false);
 const widgetsShowing = defineModel<boolean>('widgetsShowing');
 
 const rootEl = useTemplateRef('rootEl');
+useMobileFooterHeight(rootEl);
 
-const rootElHeight = ref(0);
 const isAtBottom = ref(false);
 
 async function openAccountMenu(ev: TouchEvent) {
@@ -137,10 +138,8 @@ function handleIsAtBottom(value: boolean) {
 
 watch(rootEl, () => {
 	if (rootEl.value) {
-		rootElHeight.value = rootEl.value.offsetHeight;
 		window.document.body.style.setProperty('--MI-minBottomSpacing', 'var(--MI-minBottomSpacingMobile)');
 	} else {
-		rootElHeight.value = 0;
 		window.document.body.style.setProperty('--MI-minBottomSpacing', '0px');
 	}
 }, {

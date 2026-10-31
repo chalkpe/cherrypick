@@ -99,7 +99,8 @@ export class NotePiningService {
 			throw new IdentifiableError('b302d4cf-c050-400a-bbb3-be208681f40c', 'No such note.');
 		}
 
-		this.userNotePiningsRepository.delete({
+		// 消し終えてから戻る。待たずに戻ると、i/unpin が返す自分の情報にまだ消えていないピン止めが載ることがある
+		await this.userNotePiningsRepository.delete({
 			userId: user.id,
 			noteId: note.id,
 		});

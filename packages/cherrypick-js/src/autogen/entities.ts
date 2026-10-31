@@ -291,6 +291,7 @@ export type ChatRoomsVoiceKickRequest = operations['chat___rooms___voice___kick'
 export type ChatRoomsVoiceMuteRequest = operations['chat___rooms___voice___mute']['requestBody']['content']['application/json'];
 export type ChatRoomsVoiceStatesRequest = operations['chat___rooms___voice___states']['requestBody']['content']['application/json'];
 export type ChatRoomsVoiceStatesResponse = operations['chat___rooms___voice___states']['responses']['200']['content']['application/json'];
+export type ChatRoomsVoiceStatusRequest = operations['chat___rooms___voice___status']['requestBody']['content']['application/json'];
 export type ClipsAddNoteRequest = operations['clips___add-note']['requestBody']['content']['application/json'];
 export type ClipsCreateRequest = operations['clips___create']['requestBody']['content']['application/json'];
 export type ClipsCreateResponse = operations['clips___create']['responses']['200']['content']['application/json'];

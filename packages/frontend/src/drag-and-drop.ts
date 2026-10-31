@@ -62,8 +62,7 @@ export function checkDragDataType(
 ): boolean {
 	if (event.dataTransfer == null) return false;
 
-	const dataType = event.dataTransfer.types[0];
-	if (dataType == null || dataType === '') return false;
-
-	return types.some((type) => `cherrypick/${type}`.toLowerCase() === dataType.toLowerCase());
+	// ブラウザは一度のドラッグに複数の形式を載せる (text/plain など) ので、先頭だけでなく全部を見る
+	const wanted = types.map((type) => `cherrypick/${type}`.toLowerCase());
+	return Array.from(event.dataTransfer.types).some((dataType) => wanted.includes(dataType.toLowerCase()));
 }

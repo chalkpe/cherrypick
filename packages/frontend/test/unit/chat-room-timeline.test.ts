@@ -41,14 +41,13 @@ vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), u
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ alert: vi.fn(), confirm: vi.fn(), popupMenu: vi.fn() }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), useListener: vi.fn() }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // 通話や入力欄は吹き出しのまとまりと関係ないので空にする
 vi.mock('@/composables/use-chat-room-voice-call.js', async () => {
 	const { computed } = await import('vue');
-	return { useChatRoomVoiceCall: () => ({ available: computed(() => false), inThisCall: computed(() => false), participants: computed(() => []), showCard: computed(() => false), join: vi.fn() }) };
+	return { useChatRoomVoiceCall: () => ({ available: computed(() => false), inThisCall: computed(() => false), participants: computed(() => []), join: vi.fn() }) };
 });
-vi.mock('@/pages/chat/room.voice.vue', () => ({ default: { render: () => null } }));
 vi.mock('@/pages/chat/room.form.vue', () => ({ default: { render: () => null } }));
 vi.mock('@/pages/chat/room.search.vue', () => ({ default: { render: () => null } }));
 vi.mock('@/pages/chat/room.members.vue', () => ({ default: { render: () => null } }));
@@ -139,7 +138,6 @@ describe('chat bubbles on the room page', () => {
 			{ id: 'm3', first: false, last: true },
 		]);
 	});
-
 
 	test('keeps same-sender bubbles separate across the room timeline date divider', async () => {
 		// 日付境界をまたぐが、時間差はまとまりの範囲内に収める。

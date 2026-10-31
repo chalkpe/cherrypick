@@ -482,6 +482,7 @@ export * as 'chat/rooms/members' from './endpoints/chat/rooms/members.js';
 export * as 'chat/rooms/voice/join' from './endpoints/chat/rooms/voice/join.js';
 export * as 'chat/rooms/voice/states' from './endpoints/chat/rooms/voice/states.js';
 export * as 'chat/rooms/voice/kick' from './endpoints/chat/rooms/voice/kick.js';
+export * as 'chat/rooms/voice/status' from './endpoints/chat/rooms/voice/status.js';
 export * as 'chat/rooms/voice/mute' from './endpoints/chat/rooms/voice/mute.js';
 export * as 'chat/rooms/invitations/create' from './endpoints/chat/rooms/invitations/create.js';
 export * as 'chat/rooms/invitations/cancel' from './endpoints/chat/rooms/invitations/cancel.js';

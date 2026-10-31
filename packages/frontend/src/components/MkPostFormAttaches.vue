@@ -31,10 +31,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</MkDraggable>
 	<p
 		:class="[$style.remain, {
-			[$style.exceeded]: props.modelValue.length > 16,
+			[$style.exceeded]: props.modelValue.length > props.max,
 		}]"
 	>
-		{{ props.modelValue.length }}/16
+		{{ props.modelValue.length }}/{{ props.max }}
 	</p>
 </div>
 </template>
@@ -55,10 +55,11 @@ import { globalEvents } from '@/events.js';
 import type { Content } from '@/components/MkLightbox.item.vue';
 import { isPreviewable, getType } from '@/utility/lightbox.js';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
 	modelValue: Misskey.entities.DriveFile[];
 	detachMediaFn?: (id: string) => void;
-}>();
+	max?: number;
+}>(), { max: 16 });
 
 const mock = inject(DI.mock, false);
 

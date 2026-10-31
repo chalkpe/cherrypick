@@ -20,7 +20,8 @@ const lk = vi.hoisted(() => {
 			return this;
 		}
 		emit(event: string, ...args: any[]) {
-			for (const handler of this.handlers.get(event) ?? []) handler(...args);
+			// 本物の EventEmitter と同じく、emit の途中で付け外しされたハンドラはその emit では呼ばない
+			for (const handler of [...this.handlers.get(event) ?? []]) handler(...args);
 			return true;
 		}
 	}
@@ -41,6 +42,7 @@ const lk = vi.hoisted(() => {
 		ActiveSpeakersChanged: 'activeSpeakersChanged',
 		AudioPlaybackStatusChanged: 'audioPlaybackChanged',
 	};
+	const TrackEvent = { Restarted: 'restarted', Ended: 'ended' };
 	const DisconnectReason = { UNKNOWN_REASON: 0, CLIENT_INITIATED: 1, DUPLICATE_IDENTITY: 2, SERVER_SHUTDOWN: 3, PARTICIPANT_REMOVED: 4, ROOM_DELETED: 5 };
 	const Track = {
 		Source: { Camera: 'camera', Microphone: 'microphone', ScreenShare: 'screen_share', ScreenShareAudio: 'screen_share_audio', Unknown: 'unknown' },
@@ -82,7 +84,11 @@ const lk = vi.hoisted(() => {
 		localParticipant = {
 			identity: 'https://local.test/users/me',
 			// 本物と同じく、画面共有の映像を送っているあいだ true になる
+			sid: 'PA_local',
 			isScreenShareEnabled: false,
+			// 本物と同じく、マイクのトラックは livekit-client が作り直す (restarted) ことも終わる (ended) こともある
+			microphoneTrack: Object.assign(new Emitter(), { kind: 'audio', mediaStreamTrack: {} }),
+			getTrackPublication: vi.fn(() => ({ track: this.localParticipant.microphoneTrack })),
 			setMicrophoneEnabled: vi.fn().mockResolvedValue(undefined),
 			setScreenShareEnabled: vi.fn(async (enabled: boolean, ..._options: unknown[]) => {
 				this.localParticipant.isScreenShareEnabled = enabled;
@@ -104,12 +110,16 @@ const lk = vi.hoisted(() => {
 		}
 	}
 
-	return { Emitter, RoomEvent, DisconnectReason, Track, ScreenSharePresets, VideoPreset, VideoQuality, FakeRoom, FakeRemoteParticipant };
+	const analyser = { analyser: { fftSize: 512, context: { state: 'running' as AudioContextState }, getFloatTimeDomainData: vi.fn((data: Float32Array) => data.fill(0)) }, cleanup: vi.fn().mockResolvedValue(undefined) };
+	const createAudioAnalyser = vi.fn(() => analyser);
+	return { analyser, createAudioAnalyser, Emitter, RoomEvent, TrackEvent, DisconnectReason, Track, ScreenSharePresets, VideoPreset, VideoQuality, FakeRoom, FakeRemoteParticipant };
 });
 
 vi.mock('livekit-client', () => ({
 	Room: lk.FakeRoom,
+	createAudioAnalyser: lk.createAudioAnalyser,
 	RoomEvent: lk.RoomEvent,
+	TrackEvent: lk.TrackEvent,
 	DisconnectReason: lk.DisconnectReason,
 	Track: lk.Track,
 	ScreenSharePresets: lk.ScreenSharePresets,
@@ -133,6 +143,7 @@ import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, 
 const prefer = mockedPrefer as unknown as FakePrefer;
 const room1 = { id: 'r1', name: 'room 1' } as any;
 const room2 = { id: 'r2', name: 'room 2' } as any;
+const room3 = { id: 'r3', name: 'room 3' } as any;
 const lastRoom = () => lk.FakeRoom.instances[lk.FakeRoom.instances.length - 1];
 
 function remoteParticipant(identity: string) {
@@ -143,6 +154,10 @@ function remoteParticipant(identity: string) {
 
 beforeEach(() => {
 	lk.FakeRoom.instances.length = 0;
+	lk.analyser.analyser.getFloatTimeDomainData.mockImplementation((data: Float32Array) => data.fill(0));
+	lk.analyser.analyser.context.state = 'running';
+	lk.analyser.cleanup.mockClear();
+	lk.createAudioAnalyser.mockClear();
 	lk.FakeRoom.setup = null;
 	mocks.misskeyApi.mockReset().mockResolvedValue({ url: 'https://local.test/livekit', token: 't' });
 	mocks.toast.mockReset();
@@ -153,6 +168,7 @@ beforeEach(() => {
 		'voiceCall.echoCancellation': true,
 		'voiceCall.noiseSuppression': true,
 		'voiceCall.autoGainControl': true,
+		'voiceCall.micEnabled': true,
 		'voiceCall.participantVolumes': {},
 		'voiceCall.screenShareVolumes': {},
 		'voiceCall.screenShareVolumesMigrated': false,
@@ -166,6 +182,14 @@ afterEach(async () => {
 });
 
 describe('voice call controller', () => {
+	test('joins with the microphone off without acquiring or publishing microphone audio', async () => {
+		await joinVoiceCall(room1, { micEnabled: false });
+
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+		expect(voiceCall).toMatchObject({ status: 'connected', micEnabled: false, deafened: false });
+		await setMicEnabled(true);
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).toHaveBeenCalledWith(true, expect.anything());
+	});
 	test('joins a room call with the token from the server and turns the mic on', async () => {
 		await joinVoiceCall(room1);
 
@@ -265,6 +289,44 @@ describe('voice call controller', () => {
 		expect(mocks.toast).not.toHaveBeenCalled();
 	});
 
+	test('joining another room while the previous call is still disconnecting keeps the new call', async () => {
+		await joinVoiceCall(room1);
+		const first = lastRoom();
+		let finishDisconnect!: () => void;
+		first.disconnect.mockImplementationOnce(() => new Promise<void>(resolve => {
+			finishDisconnect = resolve;
+		}));
+
+		const leaving = leaveVoiceCall();
+		await joinVoiceCall(room2);
+		finishDisconnect();
+		await leaving;
+
+		expect(voiceCall).toMatchObject({ status: 'connected', room: room2, micEnabled: true });
+	});
+
+	test('starting another join while the previous join is still disconnecting keeps the latest call', async () => {
+		await joinVoiceCall(room1);
+		const first = lastRoom();
+		let finishDisconnect!: () => void;
+		first.disconnect.mockImplementationOnce(() => new Promise<void>(resolve => {
+			finishDisconnect = resolve;
+		}));
+
+		// room2 への参加は room1 の切断待ち。そのあいだに room3 へ参加する
+		const joiningRoom2 = joinVoiceCall(room2);
+		await joinVoiceCall(room3);
+		const latest = lastRoom();
+		finishDisconnect();
+		await joiningRoom2;
+
+		expect(voiceCall).toMatchObject({ status: 'connected', room: room3, micEnabled: true });
+		// 古い参加が後から再開して room3 を追い出さないこと (room2 の Room も作られない)
+		expect(lk.FakeRoom.instances).toHaveLength(2);
+		expect(lk.FakeRoom.instances[1]).toBe(latest);
+		expect(latest.disconnect).not.toHaveBeenCalled();
+	});
+
 	test.each([
 		['DUPLICATE_IDENTITY', 'joinedFromAnotherTab'],
 		['PARTICIPANT_REMOVED', 'removedFromCall'],
@@ -312,6 +374,388 @@ describe('voice call controller', () => {
 		expect(b.setVolume).toHaveBeenCalledWith(1, lk.Track.Source.Microphone);
 		expect(b.setVolume).toHaveBeenCalledWith(1, lk.Track.Source.ScreenShareAudio);
 		expect(voiceCall).toMatchObject({ deafened: false, micEnabled: false });
+	});
+
+	// スピーカーを切ったままマイクだけ入れると、聞こえないまま話すことになる
+	test('turning the mic on while deafened also turns the speakers back on', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 0.5 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		setDeafened(true);
+		await Promise.resolve();
+		expect(voiceCall).toMatchObject({ deafened: true, micEnabled: false });
+		a.setVolume.mockClear();
+
+		await setMicEnabled(true);
+
+		expect(voiceCall).toMatchObject({ deafened: false, micEnabled: true });
+		expect(a.setVolume).toHaveBeenCalledWith(0.5, lk.Track.Source.Microphone);
+		expect(a.setVolume).not.toHaveBeenCalledWith(0, expect.anything());
+	});
+
+	// マイクを入れられなかったら、聞こえるようにだけなって話せない状態にはしない (スピーカーは切ったまま)
+	test('keeps the speakers off when the mic cannot be turned on while deafened', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		setDeafened(true);
+		await Promise.resolve();
+		a.setVolume.mockClear();
+		lastRoom().localParticipant.setMicrophoneEnabled.mockRejectedValueOnce(new Error('NotAllowedError'));
+
+		await setMicEnabled(true);
+
+		expect(voiceCall).toMatchObject({ deafened: true, micEnabled: false });
+		expect(a.setVolume).not.toHaveBeenCalledWith(1, lk.Track.Source.Microphone);
+	});
+
+	// 許可を待つあいだにスピーカーを切り替えたら、その選択を優先する (マイクが入ってもスピーカーを勝手に戻さない)
+	test('does not undeafen when the speakers were toggled while the mic waited for permission', async () => {
+		await joinVoiceCall(room1);
+		setDeafened(true);
+		await Promise.resolve();
+		let grant!: () => void;
+		lastRoom().localParticipant.setMicrophoneEnabled.mockImplementationOnce(() => new Promise<void>(resolve => { grant = resolve; }));
+		const enabling = setMicEnabled(true);
+		setDeafened(false);
+		setDeafened(true);
+		grant();
+		await enabling;
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(voiceCall).toMatchObject({ deafened: true, micEnabled: false });
+	});
+
+	test('deafening while the mic waits for permission leaves the mic off once it is granted', async () => {
+		let grant!: () => void;
+		lk.FakeRoom.setup = room => room.localParticipant.setMicrophoneEnabled.mockImplementationOnce(() => new Promise<void>(resolve => { grant = resolve; }));
+		const joined = joinVoiceCall(room1);
+		await vi.waitFor(() => expect(grant).toBeTypeOf('function'));
+
+		setDeafened(true);
+		grant();
+		await joined;
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(false, expect.anything());
+		expect(voiceCall).toMatchObject({ deafened: true, micEnabled: false });
+		expect(mocks.misskeyApi).toHaveBeenLastCalledWith('chat/rooms/voice/status', expect.objectContaining({ micMuted: true, deafened: true }));
+	});
+
+	test('deafening while connecting joins without turning the mic on', async () => {
+		let connected!: () => void;
+		lk.FakeRoom.setup = room => room.connect.mockImplementationOnce(() => new Promise<void>(resolve => { connected = resolve; }));
+		const joined = joinVoiceCall(room1);
+		await vi.waitFor(() => expect(connected).toBeTypeOf('function'));
+
+		setDeafened(true);
+		connected();
+		await joined;
+
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+		expect(voiceCall).toMatchObject({ status: 'connected', deafened: true, micEnabled: false });
+	});
+
+	// 自分で選んだマイクの入/切だけを次の参加に引き継ぐ。スピーカーを切ったときに一緒に切れたマイクは、選んだものではない
+	test('remembers only the mic choices I make for the next call', async () => {
+		await joinVoiceCall(room1);
+		await setMicEnabled(false);
+		expect(prefer.commit).toHaveBeenLastCalledWith('voiceCall.micEnabled', false);
+		await setMicEnabled(true);
+		expect(prefer.commit).toHaveBeenLastCalledWith('voiceCall.micEnabled', true);
+
+		prefer.commit.mockClear();
+		setDeafened(true);
+		await Promise.resolve();
+		setDeafened(false);
+		expect(prefer.commit).not.toHaveBeenCalledWith('voiceCall.micEnabled', expect.anything());
+
+		await leaveVoiceCall();
+		prefer.commit('voiceCall.micEnabled', false);
+		await joinVoiceCall(room1);
+		expect(lastRoom().localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+		expect(voiceCall).toMatchObject({ status: 'connected', micEnabled: false });
+	});
+
+	test('reports mute and deafen settings without sharing personal volume changes', async () => {
+		await joinVoiceCall(room1);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/status', {
+			roomId: 'r1', sessionId: 'PA_local', micMuted: false, deafened: false,
+		});
+		await setMicEnabled(false);
+		setDeafened(true);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(mocks.misskeyApi).toHaveBeenLastCalledWith('chat/rooms/voice/status', expect.objectContaining({ micMuted: true, deafened: true }));
+		mocks.misskeyApi.mockClear();
+		setParticipantVolume('someone', 'voice', 0);
+		expect(mocks.misskeyApi).not.toHaveBeenCalled();
+	});
+
+	// スピーカーを切るときにマイクも切るが、マイクを切り終える前に知らせると「スピーカーだけ切ってマイクは入ったまま」の状態が一瞬伝わり、知らせも二度になる
+	test('deafening with the microphone on reports the settings once, after the microphone is off', async () => {
+		await joinVoiceCall(room1);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		mocks.misskeyApi.mockClear();
+
+		setDeafened(true);
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status')).toEqual([
+			['chat/rooms/voice/status', { roomId: 'r1', sessionId: 'PA_local', micMuted: true, deafened: true }],
+		]);
+	});
+
+	describe('status delivery', () => {
+		beforeEach(() => vi.useFakeTimers());
+		afterEach(async () => {
+			await leaveVoiceCall();
+			vi.useRealTimers();
+		});
+		const reports = () => mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status');
+
+		async function joinMuted() {
+			await joinVoiceCall(room1, { micEnabled: false });
+			await vi.advanceTimersByTimeAsync(0);
+			mocks.misskeyApi.mockClear();
+		}
+
+		test.each([new TypeError('Failed to fetch'), { code: 'INTERNAL_ERROR' }, { code: 'REMOTE_HOST_UNREACHABLE' }])('delivers the latest settings after a transient failure: %j', async error => {
+			await joinMuted();
+			mocks.misskeyApi.mockRejectedValueOnce(error);
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			setDeafened(false);
+			await vi.advanceTimersByTimeAsync(999);
+			expect(reports()).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(reports()).toHaveLength(2);
+			expect(reports()[1][1]).toMatchObject({ micMuted: true, deafened: false });
+		});
+
+		test('waits out rate limiting before sending the newest settings', async () => {
+			await joinMuted();
+			mocks.misskeyApi.mockRejectedValueOnce({ code: 'RATE_LIMIT_EXCEEDED' });
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(59_999);
+			expect(reports()).toHaveLength(1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(reports()).toHaveLength(2);
+		});
+
+		test('backs off repeated failures and resumes with the newest settings', async () => {
+			await joinMuted();
+			mocks.misskeyApi.mockRejectedValueOnce(new TypeError('offline')).mockRejectedValueOnce(new TypeError('offline'));
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(reports()).toHaveLength(2);
+			setDeafened(false);
+			await vi.advanceTimersByTimeAsync(1999);
+			expect(reports()).toHaveLength(2);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(reports()).toHaveLength(3);
+			expect(reports()[2][1]).toMatchObject({ deafened: false });
+		});
+
+		test('keeps only the newest update while a report is in flight', async () => {
+			await joinMuted();
+			let finish!: () => void;
+			mocks.misskeyApi.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+			setDeafened(true);
+			setDeafened(false);
+			setDeafened(true);
+			setDeafened(false);
+			expect(reports()).toHaveLength(1);
+			finish();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reports()).toHaveLength(2);
+			expect(reports()[1][1]).toMatchObject({ deafened: false });
+		});
+
+		test('serializes reconnect reports behind an in-flight request in the same session', async () => {
+			await joinMuted();
+			let finish!: () => void;
+			mocks.misskeyApi.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+			setDeafened(true);
+			setDeafened(false);
+			lastRoom().emit(lk.RoomEvent.Reconnected);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reports()).toHaveLength(1);
+			finish();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reports()).toHaveLength(2);
+			expect(reports()[1][1]).toMatchObject({ deafened: false });
+		});
+
+		test('an old in-flight failure cannot schedule a retry in a new call', async () => {
+			await joinMuted();
+			let fail!: (error: unknown) => void;
+			mocks.misskeyApi.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
+			setDeafened(true);
+			await leaveVoiceCall();
+			await joinVoiceCall(room2, { micEnabled: false });
+			fail(new TypeError('offline'));
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(reports().map(([, status]) => status.roomId)).toEqual(['r1', 'r2']);
+		});
+
+		test.each(['ACCESS_DENIED', 'REMOTE_HOST_UNSUPPORTED', 'UNKNOWN_API_ENDPOINT'])('does not retry a permanent API error: %s', async code => {
+			await joinMuted();
+			mocks.misskeyApi.mockRejectedValueOnce({ code });
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(reports()).toHaveLength(1);
+		});
+
+		// セッションを確かめる一時的な失敗も ACCESS_DENIED になる。一度の失敗で、その後の切り替えまで送らなくなってはいけない
+		test('tries once more when the settings change after a permanent API error', async () => {
+			await joinMuted();
+			mocks.misskeyApi.mockRejectedValueOnce({ code: 'ACCESS_DENIED' }).mockRejectedValueOnce({ code: 'ACCESS_DENIED' });
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			setDeafened(false);
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(reports()).toHaveLength(2);
+			expect(reports()[1][1]).toMatchObject({ deafened: false });
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reports()).toHaveLength(3);
+		});
+
+		test('still sends settings changed while a report was in flight when that report fails permanently', async () => {
+			await joinMuted();
+			let fail!: (error: unknown) => void;
+			mocks.misskeyApi.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
+			setDeafened(true);
+			setDeafened(false);
+			expect(reports()).toHaveLength(1);
+			fail({ code: 'ACCESS_DENIED' });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reports()).toHaveLength(2);
+			expect(reports()[1][1]).toMatchObject({ deafened: false });
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(reports()).toHaveLength(2);
+		});
+
+		test('cancels retries when leaving and does not send an old session into the next call', async () => {
+			await joinMuted();
+			mocks.misskeyApi.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			await leaveVoiceCall();
+			await joinVoiceCall(room2, { micEnabled: false });
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(reports().map(([, status]) => status.roomId)).toEqual(['r1', 'r2']);
+		});
+
+		test('coalesces the SDK mute event and the UI mute operation into one report', async () => {
+			await joinVoiceCall(room1);
+			await vi.advanceTimersByTimeAsync(0);
+			mocks.misskeyApi.mockClear();
+			lastRoom().localParticipant.setMicrophoneEnabled.mockImplementationOnce(async () => {
+				lastRoom().emit(lk.RoomEvent.TrackMuted, { source: lk.Track.Source.Microphone }, lastRoom().localParticipant);
+			});
+			await setMicEnabled(false);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(reports()).toHaveLength(1);
+			expect(reports()[0][1]).toMatchObject({ micMuted: true, deafened: false });
+		});
+	});
+
+	// livekit-client は入力装置が抜けたり既定の装置が変わったりするとマイクのトラックを自分で作り直す。測る相手もその新しいトラックに付け替える
+	test('re-binds the local meter when livekit restarts the microphone track by itself', async () => {
+		await joinVoiceCall(room1);
+		expect(lk.createAudioAnalyser).toHaveBeenCalledTimes(1);
+
+		lastRoom().localParticipant.microphoneTrack.emit(lk.TrackEvent.Restarted);
+
+		expect(lk.analyser.cleanup).toHaveBeenCalledTimes(1);
+		expect(lk.createAudioAnalyser).toHaveBeenCalledTimes(2);
+	});
+
+	// トラックが終わっているあいだは測れないので、サーバーの知らせに従う。作り直されたらまた手元で測る
+	test('follows the server about my speaking while the microphone track has ended, and meters again once it restarts', async () => {
+		vi.useFakeTimers();
+		try {
+			await joinVoiceCall(room1);
+			const identity = lastRoom().localParticipant.identity;
+			const track = lastRoom().localParticipant.microphoneTrack;
+
+			track.emit(lk.TrackEvent.Ended);
+			lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity }]);
+			expect(voiceCall.localSpeaking).toBe(true);
+
+			track.emit(lk.TrackEvent.Restarted);
+			await vi.advanceTimersByTimeAsync(50);
+			expect(voiceCall.localSpeaking).toBe(false);
+			lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity }]);
+			expect(voiceCall.localSpeaking).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// 手元でマイクの音を測れない (AudioContext が無いなど) ときは、サーバーの知らせで自分の発話を示す
+	test('lights the local speaker from the server when the microphone cannot be metered', async () => {
+		lk.createAudioAnalyser.mockImplementationOnce(() => { throw new Error('no AudioContext'); });
+		await joinVoiceCall(room1);
+		const identity = lastRoom().localParticipant.identity;
+
+		lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity }, { identity: 'remote' }]);
+		expect(voiceCall.speakingIdentities).toEqual(['remote', identity]);
+		expect(voiceCall.localSpeaking).toBe(true);
+
+		lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity: 'remote' }]);
+		expect(voiceCall.speakingIdentities).toEqual(['remote']);
+		expect(voiceCall.localSpeaking).toBe(false);
+	});
+
+	// 自動再生の制限で AudioContext が止まっていると無音しか返らない。そのあいだはサーバーの知らせに従う
+	test('lights the local speaker from the server while the meter audio context is suspended', async () => {
+		vi.useFakeTimers();
+		try {
+			lk.analyser.analyser.context.state = 'suspended';
+			await joinVoiceCall(room1);
+			const identity = lastRoom().localParticipant.identity;
+			lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity }]);
+			await vi.advanceTimersByTimeAsync(200);
+			expect(voiceCall.localSpeaking).toBe(true);
+			expect(voiceCall.speakingIdentities).toEqual([identity]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// 途中で失敗した createAudioAnalyser は AudioContext を閉じないので、同じトラックを切り替えのたびに測り直さない
+	test('does not retry metering a microphone track that could not be metered', async () => {
+		lk.createAudioAnalyser.mockImplementationOnce(() => { throw new Error('createMediaStreamSource failed'); });
+		await joinVoiceCall(room1);
+		await setMicEnabled(false);
+		await setMicEnabled(true);
+		expect(lk.createAudioAnalyser).toHaveBeenCalledTimes(1);
+	});
+
+	test('lights the local speaker from microphone samples and keeps remote server speakers', async () => {
+		vi.useFakeTimers();
+		try {
+			await joinVoiceCall(room1);
+			const identity = lastRoom().localParticipant.identity;
+			lastRoom().emit(lk.RoomEvent.ActiveSpeakersChanged, [{ identity }, { identity: 'remote' }]);
+			expect(voiceCall.speakingIdentities).toEqual(['remote']);
+			lk.analyser.analyser.getFloatTimeDomainData.mockImplementation((data: Float32Array) => data.fill(0.1));
+			await vi.advanceTimersByTimeAsync(50);
+			expect(voiceCall.speakingIdentities).toContain(identity);
+			expect(voiceCall.speakingIdentities).toContain('remote');
+			lk.analyser.analyser.getFloatTimeDomainData.mockImplementation((data: Float32Array) => data.fill(0));
+			await vi.advanceTimersByTimeAsync(250);
+			expect(voiceCall.speakingIdentities).toEqual(['remote']);
+			await setMicEnabled(false);
+			expect(lk.analyser.cleanup).toHaveBeenCalled();
+			await leaveVoiceCall();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test('keeps participant volume within what an audio element accepts', async () => {
@@ -510,14 +954,33 @@ describe('screen sharing', () => {
 	});
 
 	test('stays not sharing without an error when the picker is cancelled', async () => {
-		lk.FakeRoom.setup = room => room.localParticipant.setScreenShareEnabled.mockRejectedValue(new DOMException('cancelled', 'NotAllowedError'));
+		vi.useFakeTimers();
+		try {
+			// 共有する画面を選ぶ画面が出てから、人がやめるまでには時間がかかる
+			lk.FakeRoom.setup = room => room.localParticipant.setScreenShareEnabled.mockImplementation(() => new Promise((_, reject) => { setTimeout(() => reject(new DOMException('cancelled', 'NotAllowedError')), 2000); }));
+			await joinVoiceCall(room1);
+
+			const sharing = startScreenShare();
+			await vi.advanceTimersByTimeAsync(2000);
+			await sharing;
+
+			expect(voiceCall.screenSharing).toBe(false);
+			expect(mocks.alert).not.toHaveBeenCalled();
+			expect(mocks.toast).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// 画面を選ぶ前にブラウザや OS が拒んだ (すぐに NotAllowedError が返る) ときは、選択をやめたのとは違うので理由を知らせる
+	test('explains a screen share the browser refuses outright, instead of staying silent as for a cancelled picker', async () => {
+		lk.FakeRoom.setup = room => room.localParticipant.setScreenShareEnabled.mockRejectedValue(new DOMException('Permission denied', 'NotAllowedError'));
 		await joinVoiceCall(room1);
 
 		await startScreenShare();
 
 		expect(voiceCall.screenSharing).toBe(false);
-		expect(mocks.alert).not.toHaveBeenCalled();
-		expect(mocks.toast).not.toHaveBeenCalled();
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.screenSharePermissionDenied);
 	});
 
 	test('tells the user when sharing fails for another reason', async () => {

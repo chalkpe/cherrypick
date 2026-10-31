@@ -8,12 +8,13 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/vue
 import { defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
 import type { Ref } from 'vue';
 
-vi.mock('@/os.js', () => ({ popupMenu: vi.fn(), claimZIndex: () => 1000, alert: vi.fn(), launchUploader: vi.fn() }));
+vi.mock('@/os.js', () => ({ popupMenu: vi.fn(), claimZIndex: () => 1000, alert: vi.fn(), launchUploader: vi.fn(), inputText: vi.fn() }));
 vi.mock('@/preferences.js', async () => ({
 	prefer: (await import('./fake-prefer.js')).createFakePrefer({
 		'voiceCall.echoCancellation': true,
 		'voiceCall.noiseSuppression': true,
 		'voiceCall.autoGainControl': true,
+		'voiceCall.micEnabled': true,
 		'chat.sendOnEnter': false,
 	}),
 }));
@@ -44,6 +45,7 @@ import { installFakeResizeObserver, resizeObserved } from './fake-resize-observe
 import { voiceCall } from '@/utility/voice-call.js';
 import { useVoiceCallStatusAnnouncer } from '@/utility/voice-call-status.js';
 import { i18n } from '@/i18n.js';
+import * as os from '@/os.js';
 import XVoiceCallBar from '@/ui/_common_/voice-call-bar.vue';
 import XVoiceCallBarSlot from '@/ui/_common_/voice-call-bar-slot.vue';
 import XForm from '@/pages/chat/room.form.vue';
@@ -58,7 +60,7 @@ afterAll(() => {
 });
 
 const room = { id: 'r1', name: 'room 1' } as any;
-const stubs = { MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' }, MkLoading: { template: '<span></span>' } };
+const stubs = { MkDraggable: { props: ['modelValue'], template: '<div><slot v-for="item in modelValue" :item="item"/></div>' }, MkDriveFileThumbnail: { props: ['file'], template: '<img :alt="file.name" />' }, MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' }, MkLoading: { template: '<span></span>' } };
 
 async function flush() {
 	for (let i = 0; i < 5; i++) {
@@ -107,6 +109,135 @@ afterEach(async () => {
 	cleanup();
 	await setWidth(originalWidth);
 	window.localStorage.clear();
+});
+
+describe('chat attachments', () => {
+	beforeEach(() => {
+		vi.mocked(os.launchUploader).mockReset().mockResolvedValue([{ id: 'f1', name: 'image.png', type: 'image/png', properties: { width: 160, height: 160 }, url: '/image.png', isSensitive: false }] as any);
+		vi.mocked(os.alert).mockReset();
+	});
+
+	function transferEvent(type: string, property: string, value: unknown) {
+		const event = new Event(type, { bubbles: true, cancelable: true });
+		Object.defineProperty(event, property, { value });
+		return event;
+	}
+
+	test('attaches the uploaded drop result and sends its file id', async () => {
+		const { misskeyApi } = await import('@/utility/misskey-api.js');
+		vi.mocked(misskeyApi).mockReset().mockResolvedValue({} as any);
+		render(XForm, { props: { room }, global: { stubs } });
+		const image = new File(['image'], 'drop.png', { type: 'image/png' });
+		const event = transferEvent('drop', 'dataTransfer', { files: [image] });
+		await fireEvent(screen.getByRole('textbox'), event);
+		await flush();
+		expect(event.defaultPrevented).toBe(true);
+		expect(os.launchUploader).toHaveBeenCalledWith([image], { multiple: false });
+		expect(screen.getByRole('img', { name: 'image.png' })).toBeTruthy();
+		await fireEvent.click(screen.getByTitle(i18n.ts.send));
+		expect(misskeyApi).toHaveBeenCalledWith('chat/messages/create-to-room', expect.objectContaining({ fileId: 'f1' }));
+	});
+
+	function clipboardData(items: unknown[], files: File[], text = '') {
+		return { items, files, getData: (type: string) => type === 'text/plain' ? text : '' };
+	}
+
+	test('accepts a clipboard image alongside text and HTML representations', async () => {
+		render(XForm, { props: { room }, global: { stubs } });
+		const image = new File(['image'], 'clipboard.png', { type: 'image/png' });
+		const event = transferEvent('paste', 'clipboardData', clipboardData([{ kind: 'string' }, { kind: 'string' }, { kind: 'file', getAsFile: () => image }], [], 'https://example.com/clipboard.png'));
+		await fireEvent(screen.getByRole('textbox'), event);
+		await flush();
+		expect(event.defaultPrevented).toBe(true);
+		expect(os.launchUploader).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(os.launchUploader).mock.calls[0][0][0].type).toBe('image/png');
+		expect(screen.getByRole('img', { name: 'image.png' })).toBeTruthy();
+	});
+
+	test('pastes the text when an app puts a picture of the text beside it', async () => {
+		render(XForm, { props: { room }, global: { stubs } });
+		const image = new File(['image'], 'cells.png', { type: 'image/png' });
+		const event = transferEvent('paste', 'clipboardData', clipboardData([{ kind: 'string' }, { kind: 'string' }, { kind: 'file', getAsFile: () => image }], [], 'A1\tB1\nA2\tB2'));
+		await fireEvent(screen.getByRole('textbox'), event);
+		await flush();
+		expect(event.defaultPrevented).toBe(false);
+		expect(os.launchUploader).not.toHaveBeenCalled();
+	});
+
+	test('attaches a file copied from a file manager that also puts its name in the text', async () => {
+		render(XForm, { props: { room }, global: { stubs } });
+		const photo = new File(['image'], 'photo.png', { type: 'image/png' });
+		const event = transferEvent('paste', 'clipboardData', clipboardData([{ kind: 'string' }, { kind: 'file', getAsFile: () => photo }], [], 'photo.png'));
+		await fireEvent(screen.getByRole('textbox'), event);
+		await flush();
+		expect(event.defaultPrevented).toBe(true);
+		expect(os.launchUploader).toHaveBeenCalledTimes(1);
+	});
+
+	test('shows a single-file preview with the note attachment editing menu', async () => {
+		const { misskeyApi } = await import('@/utility/misskey-api.js');
+		vi.mocked(misskeyApi).mockReset().mockResolvedValue({} as any);
+		vi.mocked(os.popupMenu).mockReset().mockResolvedValue(undefined);
+		vi.mocked(os.inputText).mockResolvedValueOnce({ canceled: false, result: 'renamed.png' });
+		render(XForm, { props: { room }, global: { stubs } });
+		await fireEvent(screen.getByRole('textbox'), transferEvent('drop', 'dataTransfer', { files: [new File(['image'], 'a.png', { type: 'image/png' })] }));
+		await flush();
+		expect(screen.getByText('1/1')).toBeTruthy();
+		expect(screen.getByRole('img', { name: 'image.png' }).compareDocumentPosition(screen.getByRole('textbox')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		await fireEvent.click(screen.getByRole('img', { name: 'image.png' }).closest('[role="button"]')!);
+		const items = vi.mocked(os.popupMenu).mock.calls[0][0] as any[];
+		expect(items.map(item => item.text)).toEqual(expect.arrayContaining([i18n.ts.renameFile, i18n.ts.describeFile, i18n.ts.preview, i18n.ts.attachCancel]));
+		await items.find(item => item.text === i18n.ts.renameFile).action();
+		await flush();
+		expect(screen.getByRole('img', { name: 'renamed.png' })).toBeTruthy();
+	});
+
+	test('ignores an old rename response after its attachment is removed', async () => {
+		const { misskeyApi } = await import('@/utility/misskey-api.js');
+		let finish!: (value: any) => void;
+		vi.mocked(misskeyApi).mockReset().mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+		vi.mocked(os.popupMenu).mockReset().mockResolvedValue(undefined);
+		vi.mocked(os.inputText).mockResolvedValueOnce({ canceled: false, result: 'old-name.png' });
+		render(XForm, { props: { room }, global: { stubs } });
+		await fireEvent(screen.getByRole('textbox'), transferEvent('drop', 'dataTransfer', { files: [new File(['image'], 'a.png', { type: 'image/png' })] }));
+		await flush();
+		await fireEvent.click(screen.getByRole('img', { name: 'image.png' }).closest('[role="button"]')!);
+		const items = vi.mocked(os.popupMenu).mock.calls[0][0] as any[];
+		items.find(item => item.text === i18n.ts.renameFile).action();
+		await flush();
+		items.find(item => item.text === i18n.ts.attachCancel).action();
+		await flush();
+		finish({});
+		await flush();
+		expect(screen.queryByRole('img')).toBeNull();
+	});
+
+	test('keeps ordinary text paste native and handles an empty drag item list', async () => {
+		render(XForm, { props: { room }, global: { stubs } });
+		const input = screen.getByRole('textbox');
+		const paste = transferEvent('paste', 'clipboardData', clipboardData([{ kind: 'string' }], [], 'hello'));
+		await fireEvent(input, paste);
+		expect(paste.defaultPrevented).toBe(false);
+		const drag = transferEvent('dragover', 'dataTransfer', { types: ['Files'], items: [], effectAllowed: 'all' });
+		await fireEvent(input, drag);
+		expect(drag.defaultPrevented).toBe(true);
+		expect(os.launchUploader).not.toHaveBeenCalled();
+	});
+
+	test('rejects multiple clipboard files and leaves the draft intact when upload is cancelled', async () => {
+		render(XForm, { props: { room }, global: { stubs } });
+		const input = screen.getByRole('textbox');
+		await fireEvent.update(input, 'draft');
+		const image = new File(['image'], 'a.png', { type: 'image/png' });
+		const multi = transferEvent('paste', 'clipboardData', clipboardData([], [image, image]));
+		await fireEvent(input, multi);
+		expect(os.alert).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.ts.onlyOneFileCanBeAttached }));
+		expect(os.launchUploader).not.toHaveBeenCalled();
+		vi.mocked(os.launchUploader).mockRejectedValueOnce(undefined);
+		await fireEvent(input, transferEvent('drop', 'dataTransfer', { files: [image] }));
+		await flush();
+		expect((input as HTMLTextAreaElement).value).toBe('draft');
+	});
 });
 
 describe('voice call bar placement', () => {
@@ -384,21 +515,17 @@ describe('voice call bar placement', () => {
 			expect(queryBar()).toBeNull();
 		});
 
-		test('on PC keeps the bar docked in a chat form wide enough, even while the card shows the call', async () => {
+		test('keeps the common bar hidden while stage controls are present, including under a menu', async () => {
 			const { container } = renderRoom({ card: ref(true) });
 			await flush();
-			const slot = chatFormSlot(container);
-
-			await resizeElement(slot, 300);
-			expect(variantOf(bar())).toMatch(/docked/);
-			expect(slot.contains(bar())).toBe(true);
-			// 状態はカードが読み上げるので、バーでは二重に読み上げない
-			expect(statusLive()).toBe('off');
-
-			await resizeElement(slot, 100);
+			await resizeElement(chatFormSlot(container), 300);
 			expect(queryBar()).toBeNull();
-			await resizeElement(slot, 300);
-			expect(variantOf(bar())).toMatch(/docked/);
+			const main = container.querySelector('main')!;
+			main.inert = true;
+			await new Promise(resolve => setTimeout(resolve, 0));
+			await flush();
+			expect(container.querySelector('[role="region"]')).toBeNull();
+			main.inert = false;
 		});
 
 		test('on PC floats the bar again when the card is hidden', async () => {
