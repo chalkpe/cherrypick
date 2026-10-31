@@ -288,6 +288,22 @@ describe('voice call controller', () => {
 		expect(mocks.toast).not.toHaveBeenCalled();
 	});
 
+	test('joining another room while the previous call is still disconnecting keeps the new call', async () => {
+		await joinVoiceCall(room1);
+		const first = lastRoom();
+		let finishDisconnect!: () => void;
+		first.disconnect.mockImplementationOnce(() => new Promise<void>(resolve => {
+			finishDisconnect = resolve;
+		}));
+
+		const leaving = leaveVoiceCall();
+		await joinVoiceCall(room2);
+		finishDisconnect();
+		await leaving;
+
+		expect(voiceCall).toMatchObject({ status: 'connected', room: room2, micEnabled: true });
+	});
+
 	test.each([
 		['DUPLICATE_IDENTITY', 'joinedFromAnotherTab'],
 		['PARTICIPANT_REMOVED', 'removedFromCall'],

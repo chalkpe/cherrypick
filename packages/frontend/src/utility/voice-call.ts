@@ -273,14 +273,15 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 }
 
 export async function leaveVoiceCall(): Promise<void> {
-	joinAttempt++;
+	const attempt = ++joinAttempt;
 	const room = current;
 	current = null;
 	if (room != null) {
 		await room.disconnect();
 		detachAll(room);
 	}
-	resetState();
+	// 切れるのを待つあいだに次の通話に入り始めていたら、その通話の表示を消さない
+	if (attempt === joinAttempt) resetState();
 }
 
 /** 自分でマイクを切り替える。選んだ入/切は、次に通話に入るときにも使う */
