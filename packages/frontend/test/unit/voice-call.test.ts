@@ -143,6 +143,7 @@ import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, 
 const prefer = mockedPrefer as unknown as FakePrefer;
 const room1 = { id: 'r1', name: 'room 1' } as any;
 const room2 = { id: 'r2', name: 'room 2' } as any;
+const room3 = { id: 'r3', name: 'room 3' } as any;
 const lastRoom = () => lk.FakeRoom.instances[lk.FakeRoom.instances.length - 1];
 
 function remoteParticipant(identity: string) {
@@ -302,6 +303,28 @@ describe('voice call controller', () => {
 		await leaving;
 
 		expect(voiceCall).toMatchObject({ status: 'connected', room: room2, micEnabled: true });
+	});
+
+	test('starting another join while the previous join is still disconnecting keeps the latest call', async () => {
+		await joinVoiceCall(room1);
+		const first = lastRoom();
+		let finishDisconnect!: () => void;
+		first.disconnect.mockImplementationOnce(() => new Promise<void>(resolve => {
+			finishDisconnect = resolve;
+		}));
+
+		// room2 への参加は room1 の切断待ち。そのあいだに room3 へ参加する
+		const joiningRoom2 = joinVoiceCall(room2);
+		await joinVoiceCall(room3);
+		const latest = lastRoom();
+		finishDisconnect();
+		await joiningRoom2;
+
+		expect(voiceCall).toMatchObject({ status: 'connected', room: room3, micEnabled: true });
+		// 古い参加が後から再開して room3 を追い出さないこと (room2 の Room も作られない)
+		expect(lk.FakeRoom.instances).toHaveLength(2);
+		expect(lk.FakeRoom.instances[1]).toBe(latest);
+		expect(latest.disconnect).not.toHaveBeenCalled();
 	});
 
 	test.each([

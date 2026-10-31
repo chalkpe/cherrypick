@@ -207,11 +207,25 @@ export function localIdentityOf(userId: string): string {
 	return `${url}/users/${userId}`;
 }
 
+async function disconnectCurrentRoom(): Promise<void> {
+	const room = current;
+	current = null;
+	if (room != null) {
+		await room.disconnect();
+		detachAll(room);
+	}
+}
+
 export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { micEnabled?: boolean } = {}): Promise<void> {
 	migrateParticipantVolumes();
-	if (current != null) await leaveVoiceCall();
-
+	// 前の通話の切断を待つあいだに別の参加が始まったら、この参加は捨てる。
+	// leaveVoiceCall は joinAttempt を進めるので、ここでは切断だけを行う
 	const attempt = ++joinAttempt;
+	if (current != null) {
+		await disconnectCurrentRoom();
+		if (attempt !== joinAttempt) return;
+	}
+
 	resetState();
 	state.status = 'connecting';
 	state.room = room;
@@ -274,12 +288,7 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 
 export async function leaveVoiceCall(): Promise<void> {
 	const attempt = ++joinAttempt;
-	const room = current;
-	current = null;
-	if (room != null) {
-		await room.disconnect();
-		detachAll(room);
-	}
+	await disconnectCurrentRoom();
 	// 切れるのを待つあいだに次の通話に入り始めていたら、その通話の表示を消さない
 	if (attempt === joinAttempt) resetState();
 }
