@@ -1703,7 +1703,6 @@ _chat:
   sentInvitations: "Sent Invites"
   join: "Join"
   reject: "Reject"
-  ignore: "Ignore"
   leave: "Leave room"
   members: "Members"
   roomOwner: "Room owner"

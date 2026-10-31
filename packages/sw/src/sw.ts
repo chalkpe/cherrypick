@@ -182,13 +182,6 @@ globalThis.addEventListener('notificationclick', (ev: ServiceWorkerGlobalScopeEv
 								break;
 						}
 						break;
-					case 'ignore':
-						switch (data.body.type) {
-							case 'chatRoomInvitationReceived':
-								await swos.api('chat/rooms/invitations/ignore', loginId, { roomId: data.body.invitation.roomId });
-								break;
-						}
-						break;
 					case 'showFollowRequests':
 						client = await swos.openClient('push', '/my/follow-requests', loginId);
 						break;

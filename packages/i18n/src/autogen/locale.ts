@@ -6833,10 +6833,6 @@ export interface Locale extends ILocale {
          */
         "reject": string;
         /**
-         * 無視
-         */
-        "ignore": string;
-        /**
          * グループから退出
          */
         "leave": string;
