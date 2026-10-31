@@ -164,6 +164,16 @@ describe('chat attachments', () => {
 		expect(os.launchUploader).not.toHaveBeenCalled();
 	});
 
+	test('attaches a file copied from a file manager that also puts its name in the text', async () => {
+		render(XForm, { props: { room }, global: { stubs } });
+		const photo = new File(['image'], 'photo.png', { type: 'image/png' });
+		const event = transferEvent('paste', 'clipboardData', clipboardData([{ kind: 'string' }, { kind: 'file', getAsFile: () => photo }], [], 'photo.png'));
+		await fireEvent(screen.getByRole('textbox'), event);
+		await flush();
+		expect(event.defaultPrevented).toBe(true);
+		expect(os.launchUploader).toHaveBeenCalledTimes(1);
+	});
+
 	test('shows a single-file preview with the note attachment editing menu', async () => {
 		const { misskeyApi } = await import('@/utility/misskey-api.js');
 		vi.mocked(misskeyApi).mockReset().mockResolvedValue({} as any);

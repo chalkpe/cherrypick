@@ -105,9 +105,11 @@ async function onPaste(ev: ClipboardEvent) {
 	if (files.length === 0) files.push(...Array.from(ev.clipboardData.files));
 	if (files.length === 0) return;
 	// Office の表のように、文字と一緒にその見た目の画像も入れるアプリがある。文字があれば文字を貼る。
-	// ブラウザで画像をコピーしたときに一緒に入る URL だけのときは、画像を添付する
+	// ブラウザで画像をコピーしたときに一緒に入る URL だけのときや、Finder などでファイルをコピーしたときに一緒に入るファイル名だけのときは、ファイルを添付する
 	const pastedText = ev.clipboardData.getData('text/plain').trim();
-	if (pastedText !== '' && !/^\S+:\/\/\S+$/.test(pastedText)) return;
+	const fileNames = new Set(files.map(file => file.name));
+	const isOnlyFileNames = pastedText.split(/\r\n|\r|\n/).map(line => line.trim()).filter(line => line !== '').every(line => fileNames.has(line));
+	if (pastedText !== '' && !/^\S+:\/\/\S+$/.test(pastedText) && !isOnlyFileNames) return;
 	ev.preventDefault();
 	if (files.length === 1) {
 		const pastedFile = files[0];
