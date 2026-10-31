@@ -66,6 +66,13 @@ describe('reported voice status', () => {
 		await expect(f.endpoint.exec(report, user, null, null)).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
 	});
 
+	// 断ると決められなかった (読めなかった) 報告を ACCESS_DENIED にすると、クライアントは送り直さず設定が古いまま残る
+	test('does not turn an unexpected failure of the local report into ACCESS_DENIED', async () => {
+		const f = fixture();
+		f.local.reportStatus.mockRejectedValue(new Error('database down'));
+		await expect(f.endpoint.exec(report, user, null, null)).rejects.toThrow('database down');
+	});
+
 	test('exposes reported settings to room members who are not in the call', async () => {
 		const f = createFixture();
 		f.liveKitService.listParticipants.mockResolvedValue([{
@@ -105,5 +112,80 @@ describe('reported voice status', () => {
 		} finally {
 			f.service.onApplicationShutdown();
 		}
+	});
+
+	describe('service', () => {
+		function serviceFixture() {
+			const f = createFixture();
+			const me = KNOWN_USERS.find(u => u.id === 'u1')!;
+			const setStatus = vi.fn().mockResolvedValue(true);
+			Object.assign(f.liveKitService, { setParticipantStatus: setStatus });
+			const findOwner = vi.fn().mockResolvedValue(KNOWN_USERS.find(u => u.id === 'owner'));
+			Object.assign(f.usersRepository, { findOneBy: findOwner });
+			const scheduleRefresh = vi.spyOn(f.service, 'scheduleRefresh').mockImplementation(() => {});
+			return { ...f, me, setStatus, findOwner, scheduleRefresh };
+		}
+
+		test('rejects a report for an archived room', async () => {
+			const f = serviceFixture();
+			f.chatRoomsRepository.findOneBy.mockResolvedValueOnce({ id: 'r1', ownerId: 'owner', isArchived: true } as any);
+			try {
+				await expect(f.service.reportStatus(f.me as any, 'r1', 'PA_1', report)).resolves.toBe(false);
+				expect(f.setStatus).not.toHaveBeenCalled();
+			} finally {
+				f.service.onApplicationShutdown();
+			}
+		});
+
+		// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーの LiveKit にあるので、このサーバーでは受け付けない
+		test('rejects a report for a room owned by another server', async () => {
+			const f = serviceFixture();
+			f.findOwner.mockResolvedValue(KNOWN_USERS.find(u => u.id === 'remoteOwner'));
+			try {
+				await expect(f.service.reportStatus(f.me as any, 'r1', 'PA_1', report)).resolves.toBe(false);
+				expect(f.setStatus).not.toHaveBeenCalled();
+			} finally {
+				f.service.onApplicationShutdown();
+			}
+		});
+
+		test('rejects a report from a session that is no longer connected without refreshing', async () => {
+			const f = serviceFixture();
+			f.setStatus.mockResolvedValue(false);
+			try {
+				await expect(f.service.reportStatus(f.me as any, 'r1', 'PA_old', report)).resolves.toBe(false);
+				expect(f.scheduleRefresh).not.toHaveBeenCalled();
+			} finally {
+				f.service.onApplicationShutdown();
+			}
+		});
+
+		// 断った (false) と答えるとクライアントは送り直さないので、一時的に読めなかっただけなら内部エラーにして送り直させる
+		test.each([
+			['the room', (f: ReturnType<typeof serviceFixture>) => f.chatRoomsRepository.findOneBy.mockRejectedValueOnce(new Error('database down'))],
+			['the role policies', (f: ReturnType<typeof serviceFixture>) => f.roleService.getUserPolicies.mockRejectedValueOnce(new Error('redis down'))],
+			['the memberships', (f: ReturnType<typeof serviceFixture>) => f.chatRoomMembershipsRepository.findBy.mockRejectedValueOnce(new Error('database down'))],
+		] as const)('fails instead of rejecting when %s cannot be read', async (_label, breakRead) => {
+			const f = serviceFixture();
+			breakRead(f);
+			try {
+				await expect(f.service.reportStatus(f.me as any, 'r1', 'PA_1', report)).rejects.toBeInstanceOf(AggregateError);
+				expect(f.setStatus).not.toHaveBeenCalled();
+			} finally {
+				f.service.onApplicationShutdown();
+			}
+		});
+
+		// 読めたものだけで断れても、読めないものがあるときは同じく内部エラーにする (読めないときにルームがあるかで答えを変えない)
+		test('fails instead of rejecting a nonmember while something else cannot be read', async () => {
+			const f = serviceFixture();
+			f.nonMembers.add('u1');
+			f.roleService.getUserPolicies.mockRejectedValueOnce(new Error('redis down'));
+			try {
+				await expect(f.service.reportStatus(f.me as any, 'r1', 'PA_1', report)).rejects.toBeInstanceOf(AggregateError);
+			} finally {
+				f.service.onApplicationShutdown();
+			}
+		});
 	});
 });

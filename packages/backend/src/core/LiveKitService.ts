@@ -142,13 +142,20 @@ export class LiveKitService {
 	@bindThis
 	public async setParticipantStatus(roomId: string, identity: string, sessionId: string, status: { micMuted: boolean; deafened: boolean }): Promise<boolean> {
 		const service = this.requireRoomService();
+		const roomName = this.roomNameOf(roomId);
 		try {
-			const participant = await service.getParticipant(this.roomNameOf(roomId), identity);
+			const participant = await service.getParticipant(roomName, identity);
 			if (participant.sid !== sessionId) return false;
-			await service.updateParticipant(this.roomNameOf(roomId), identity, {
+			// LiveKit はセッションを指定して書けない (identity で書く) ので、書いた後に返るセッションでも確かめる。
+			// 確かめてから書くまでに同じユーザーが入り直していれば、古いセッションの設定を新しいセッションに書いてしまっているので、
+			// 書いた設定を消して (空の値は LiveKit で属性の削除) 報告の無い状態に戻し、受け付けたことにしない。
+			// 消すまでのあいだに新しいセッションが報告した設定も消えうるが、どちらも二つの呼び出しのあいだだけのことで、次の報告で直る
+			const updated = await service.updateParticipant(roomName, identity, {
 				attributes: { 'cherrypick.micMuted': String(status.micMuted), 'cherrypick.deafened': String(status.deafened) },
 			});
-			return true;
+			if (updated.sid === sessionId) return true;
+			await service.updateParticipant(roomName, identity, { attributes: { 'cherrypick.micMuted': '', 'cherrypick.deafened': '' } });
+			return false;
 		} catch (err) {
 			if (isNotFound(err)) return false;
 			throw err;
@@ -170,8 +177,14 @@ export class LiveKitService {
 	public async muteMicrophone(roomId: string, identity: string): Promise<void> {
 		const participant = (await this.listParticipants(roomId)).find(p => p.identity === identity);
 		if (participant?.micTrackSid == null) return;
-		await this.requireRoomService().mutePublishedTrack(this.roomNameOf(roomId), identity, participant.micTrackSid, true);
-		await this.requireRoomService().updateParticipant(this.roomNameOf(roomId), identity, { attributes: { 'cherrypick.micMuted': 'true' } });
+		try {
+			await this.requireRoomService().mutePublishedTrack(this.roomNameOf(roomId), identity, participant.micTrackSid, true);
+			await this.requireRoomService().updateParticipant(this.roomNameOf(roomId), identity, { attributes: { 'cherrypick.micMuted': 'true' } });
+		} catch (err) {
+			// 一覧を読んだ後に抜けた (トラックや参加者がもう無い) なら、切るものは残っていない
+			if (isNotFound(err)) return;
+			throw err;
+		}
 	}
 
 	@bindThis

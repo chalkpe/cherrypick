@@ -739,6 +739,9 @@ describe('federated reported voice status', () => {
 		chatVoiceService.reportStatus.mockResolvedValue(false);
 		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload })).statusCode).toBe(403);
 		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload: { ...payload, micMuted: 'true' } })).statusCode).toBe(400);
+		// 断ると決められなかった (読めなかった) 報告は 403 にしない。送り主のサーバーは 500 を届けられなかった (送り直せる) ものとして扱う
+		chatVoiceService.reportStatus.mockRejectedValue(new Error('database down'));
+		expect((await app.inject({ method: 'POST', url: '/livekit/federation/status', payload })).statusCode).toBe(500);
 	});
 
 	// 一台のサーバーがそのユーザー全員の報告を同じ IP から送ってくる。トークン発行と同じ IP の予算では、数人が切り替えるだけで足りなくなる
