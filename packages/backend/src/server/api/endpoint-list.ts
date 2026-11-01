@@ -463,6 +463,7 @@ export * as 'verify-email' from './endpoints/verify-email.js';
 export * as 'chat/messages/create-to-user' from './endpoints/chat/messages/create-to-user.js';
 export * as 'chat/messages/create-to-room' from './endpoints/chat/messages/create-to-room.js';
 export * as 'chat/messages/delete' from './endpoints/chat/messages/delete.js';
+export * as 'chat/messages/update' from './endpoints/chat/messages/update.js';
 export * as 'chat/messages/show' from './endpoints/chat/messages/show.js';
 export * as 'chat/messages/react' from './endpoints/chat/messages/react.js';
 export * as 'chat/messages/unreact' from './endpoints/chat/messages/unreact.js';

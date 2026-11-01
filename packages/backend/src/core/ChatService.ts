@@ -438,6 +438,32 @@ export class ChatService {
 	}
 
 	@bindThis
+	public async updateMessage(userId: MiUser['id'], messageId: MiChatMessage['id'], text: string): Promise<MiChatMessage> {
+		const message = await this.chatMessagesRepository.findOneBy({ id: messageId });
+		if (message == null) throw new ChatMessageAccessError('no such message');
+		if (message.fromUserId !== userId) throw new ChatMessageAccessError('cannot edit');
+		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
+
+		const trimmed = text.trim();
+		if (trimmed.length < 1 || trimmed.length > 2000) throw new ChatMessageAccessError('invalid text');
+
+		const editedAt = new Date();
+		await this.chatMessagesRepository.update(message.id, { text: trimmed, editedAt });
+		message.text = trimmed;
+		message.editedAt = editedAt;
+
+		const payload = { messageId: message.id, text: trimmed, editedAt: editedAt.toISOString() };
+		if (message.toUserId) {
+			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId, 'updated', payload);
+			this.globalEventService.publishChatUserStream(message.toUserId, message.fromUserId, 'updated', payload);
+		} else if (message.toRoomId) {
+			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', payload);
+		}
+
+		return message;
+	}
+
+	@bindThis
 	public async deleteMessage(message: MiChatMessage) {
 		await this.chatMessagesRepository.delete(message.id);
 
