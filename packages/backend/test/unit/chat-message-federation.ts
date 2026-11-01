@@ -5,6 +5,7 @@
 
 import { describe, expect, test, vi } from 'vitest';
 import { ChatService } from '@/core/ChatService.js';
+import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import {
 	buildChatDelete,
@@ -122,11 +123,11 @@ describe('ChatService chat federation delivery', () => {
 
 		const directMessage = {
 			id: 'm1', fromUserId: 'alice', toUserId: 'bob', toRoomId: null,
-			text: 'old', editedAt: null, deletedAt: null, reactions: [], emojis: [],
+			text: 'old', editedAt: null, deletedAt: null, reactions: [] as string[], emojis: [],
 		};
 		const roomMessage = {
 			id: 'm2', fromUserId: 'bob', toUserId: null, toRoomId: 'r1',
-			text: 'room', editedAt: null, deletedAt: null, reactions: [], emojis: [],
+			text: 'room', editedAt: null, deletedAt: null, reactions: [] as string[], emojis: [],
 		};
 		const roomDeleteMessage = { ...roomMessage, id: 'm3', fromUserId: 'alice' };
 		const room = { id: 'r1', ownerId: 'alice' };
@@ -223,5 +224,150 @@ describe('ChatService chat federation delivery', () => {
 		expect(f.queueService.deliver).toHaveBeenCalledTimes(4);
 		expect(f.queueService.deliver).toHaveBeenCalledWith(f.alice, expect.objectContaining({ type: 'EmojiReact' }), f.bob.inbox, false);
 		expect(f.queueService.deliver).toHaveBeenCalledWith(f.alice, expect.objectContaining({ type: 'Undo' }), f.carol.inbox, false);
+	});
+
+	test('updateRemoteMessage updates the author message', async () => {
+		const f = createService();
+
+		await f.service.updateRemoteMessage(f.bob as never, f.roomMessage as never, 'changed', new Date('2026-11-02T00:02:00.000Z'));
+
+		expect(f.roomMessage.text).toBe('changed');
+		expect(f.roomMessage.editedAt).toEqual(new Date('2026-11-02T00:02:00.000Z'));
+	});
+
+	test('updateRemoteMessage rejects a non-author', async () => {
+		const f = createService();
+
+		await expect(f.service.updateRemoteMessage(f.alice as never, f.roomMessage as never, 'changed', new Date()))
+			.rejects.toThrow('cannot edit');
+	});
+
+	test('deleteRemoteMessage soft-deletes an author message', async () => {
+		const f = createService();
+
+		await f.service.deleteRemoteMessage(f.bob as never, f.roomMessage as never);
+
+		expect(f.roomMessage.deletedAt).toBeInstanceOf(Date);
+		expect(f.roomMessage.text).toBeNull();
+	});
+
+	test('reactRemote adds a member reaction once', async () => {
+		const f = createService();
+
+		await f.service.reactRemote(f.alice as never, f.roomMessage as never, '👍');
+		await f.service.reactRemote(f.alice as never, f.roomMessage as never, '👍');
+
+		expect(f.roomMessage.reactions).toEqual(['alice/👍']);
+	});
+
+	test('unreactRemote removes a member reaction', async () => {
+		const f = createService();
+		f.roomMessage.reactions = ['alice/👍'];
+
+		await f.service.unreactRemote(f.alice as never, f.roomMessage as never, '👍');
+
+		expect(f.roomMessage.reactions).toEqual([]);
+	});
+});
+
+describe('ApInboxService chat activity routing', () => {
+	function createInbox() {
+		const actor = { id: 'remote-user', uri: 'https://remote.test/users/remote-user', host: 'remote.test' };
+		const message = { id: 'm1', uri: 'https://remote.test/chat/messages/m1', fromUserId: 'remote-user', reactions: [] as string[] };
+		const chatService = {
+			findMessageByUri: vi.fn().mockResolvedValue(message),
+			updateRemoteMessage: vi.fn().mockResolvedValue(message),
+			deleteRemoteMessage: vi.fn().mockResolvedValue(message),
+			reactRemote: vi.fn().mockResolvedValue(undefined),
+			unreactRemote: vi.fn().mockResolvedValue(undefined),
+			createMessageToUser: vi.fn(),
+			createMessageToRoom: vi.fn(),
+			isRoomMember: vi.fn(),
+		};
+		const redisClient = { exists: vi.fn().mockResolvedValue(0), setex: vi.fn().mockResolvedValue('OK') };
+		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
+			chatService,
+			redisClient,
+			apNoteService: { fetchNote: vi.fn().mockResolvedValue(null) },
+			apResolverService: { createResolver: vi.fn(() => ({ resolve: async (x: unknown) => x })) },
+			utilityService: { extractDbHost: () => 'remote.test' },
+			apMfmService: { htmlToMfm: (html: string) => html },
+			logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
+			apPersonService: { resolvePerson: vi.fn() },
+			apImageService: { resolveImage: vi.fn() },
+			chatMessagesRepository: { findOneBy: vi.fn().mockResolvedValue(null) },
+		}) as ApInboxService;
+
+		return { inbox, actor, message, chatService, redisClient };
+	}
+
+	test('routes a chat Note Update to updateRemoteMessage', async () => {
+		const f = createInbox();
+		const note = {
+			id: f.message.uri,
+			type: 'Note',
+			attributedTo: f.actor.uri,
+			_misskey_talk: true,
+			_misskey_content: 'edited',
+		};
+
+		await (f.inbox as never as { update: (...args: unknown[]) => Promise<string> }).update(f.actor, { type: 'Update', actor: f.actor.uri, object: note });
+
+		expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', expect.any(Date));
+	});
+
+	test('routes ChatMessage Delete to deleteRemoteMessage', async () => {
+		const f = createInbox();
+
+		await (f.inbox as never as { delete: (...args: unknown[]) => Promise<string> }).delete(f.actor, {
+			type: 'Delete',
+			actor: f.actor.uri,
+			object: { id: f.message.uri, type: 'Tombstone', formerType: 'Note' },
+		});
+
+		expect(f.chatService.deleteRemoteMessage).toHaveBeenCalledWith(f.actor, f.message);
+	});
+
+	test('stores a tombstone when Delete arrives before Create', async () => {
+		const f = createInbox();
+		f.chatService.findMessageByUri.mockResolvedValue(null);
+
+		await (f.inbox as never as { delete: (...args: unknown[]) => Promise<string> }).delete(f.actor, {
+			type: 'Delete',
+			actor: f.actor.uri,
+			object: { id: 'https://remote.test/chat/messages/missing', type: 'Tombstone', formerType: 'Note' },
+		});
+
+		expect(f.redisClient.setex).toHaveBeenCalledWith(
+			'chat_delete_upon_arrival:https://remote.test/chat/messages/missing',
+			6 * 60 * 60,
+			'1',
+		);
+	});
+
+	test('routes EmojiReact to reactRemote', async () => {
+		const f = createInbox();
+
+		await (f.inbox as never as { like: (...args: unknown[]) => Promise<string> }).like(f.actor, {
+			type: 'EmojiReact',
+			actor: f.actor.uri,
+			object: f.message.uri,
+			content: '👍',
+		});
+
+		expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍');
+	});
+
+	test('routes Undo EmojiReact to unreactRemote', async () => {
+		const f = createInbox();
+		const react = { type: 'EmojiReact', actor: f.actor.uri, object: f.message.uri, content: '👍' };
+
+		await (f.inbox as never as { undo: (...args: unknown[]) => Promise<string> }).undo(f.actor, {
+			type: 'Undo',
+			actor: f.actor.uri,
+			object: react,
+		});
+
+		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍');
 	});
 });

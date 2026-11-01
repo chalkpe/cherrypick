@@ -1343,6 +1343,148 @@ export class ChatService {
 		await this.deliverToRemoteUsers(actor, participants, this.apRendererService.renderChatReactionUndo(message, actor, toUsers, reaction));
 	}
 
+	@bindThis
+	public async findMessageByUri(uri: string): Promise<MiChatMessage | null> {
+		return this.chatMessagesRepository.findOneBy({ uri });
+	}
+
+	@bindThis
+	public async updateRemoteMessage(actor: MiUser, message: MiChatMessage, text: string, editedAt: Date): Promise<MiChatMessage> {
+		if (message.fromUserId !== actor.id) throw new ChatMessageAccessError('cannot edit');
+		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
+
+		const trimmed = text.trim();
+		if (trimmed.length < 1 || trimmed.length > 2000) throw new ChatMessageAccessError('invalid text');
+
+		await this.chatMessagesRepository.update(message.id, { text: trimmed, editedAt });
+		message.text = trimmed;
+		message.editedAt = editedAt;
+
+		const payload = { messageId: message.id, text: trimmed, editedAt: editedAt.toISOString() };
+		if (message.toUserId) {
+			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId, 'updated', payload);
+			this.globalEventService.publishChatUserStream(message.toUserId, message.fromUserId, 'updated', payload);
+		} else if (message.toRoomId) {
+			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', payload);
+		}
+
+		return message;
+	}
+
+	@bindThis
+	public async deleteRemoteMessage(actor: MiUser, message: MiChatMessage): Promise<MiChatMessage> {
+		if (message.fromUserId !== actor.id) throw new ChatMessageAccessError('cannot delete');
+
+		const deletedAt = new Date();
+		await this.chatMessagesRepository.update(message.id, {
+			text: null,
+			fileId: null,
+			reactions: [],
+			deletedAt,
+		});
+		message.text = null;
+		message.fileId = null;
+		message.reactions = [];
+		message.deletedAt = deletedAt;
+
+		if (message.toUserId) {
+			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId, 'deleted', message.id);
+			this.globalEventService.publishChatUserStream(message.toUserId, message.fromUserId, 'deleted', message.id);
+		} else if (message.toRoomId) {
+			this.globalEventService.publishChatRoomStream(message.toRoomId, 'deleted', message.id);
+		}
+
+		return message;
+	}
+
+	@bindThis
+	public async reactRemote(actor: MiUser, message: MiChatMessage, reaction_: string): Promise<void> {
+		const reaction = this.normalizeRemoteReaction(reaction_);
+
+		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
+		if (message.fromUserId === actor.id) throw new ChatMessageAccessError('cannot react to own message');
+
+		const room = message.toRoomId ? await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }) : null;
+
+		if (room) {
+			if (!(await this.isRoomMember(room, actor.id))) throw new ChatMessageAccessError('cannot react to others message');
+		} else if (message.fromUserId !== actor.id && message.toUserId !== actor.id) {
+			throw new ChatMessageAccessError('cannot react to others message');
+		}
+
+		const pair = `${actor.id}/${reaction}`;
+		if (message.reactions.includes(pair)) return;
+		if (message.reactions.length >= MAX_REACTIONS_PER_MESSAGE) throw new Error('too many reactions');
+
+		await this.chatMessagesRepository.createQueryBuilder().update()
+			.set({ reactions: () => `array_append("reactions", :pair)` })
+			.where('id = :id', { id: message.id })
+			.setParameter('pair', pair)
+			.execute();
+		message.reactions.push(pair);
+
+		if (room) {
+			this.globalEventService.publishChatRoomStream(room.id, 'react', {
+				messageId: message.id,
+				user: await this.userEntityService.pack(actor.id),
+				reaction,
+			});
+		} else {
+			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId!, 'react', {
+				messageId: message.id,
+				reaction,
+			});
+			this.globalEventService.publishChatUserStream(message.toUserId!, message.fromUserId, 'react', {
+				messageId: message.id,
+				reaction,
+			});
+		}
+	}
+
+	@bindThis
+	public async unreactRemote(actor: MiUser, message: MiChatMessage, reaction_: string): Promise<void> {
+		const reaction = this.normalizeRemoteReaction(reaction_);
+
+		const room = message.toRoomId ? await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }) : null;
+
+		if (room) {
+			if (!(await this.isRoomMember(room, actor.id))) throw new ChatMessageAccessError('cannot unreact to others message');
+		} else if (message.fromUserId !== actor.id && message.toUserId !== actor.id) {
+			throw new ChatMessageAccessError('cannot unreact to others message');
+		}
+
+		const pair = `${actor.id}/${reaction}`;
+		await this.chatMessagesRepository.createQueryBuilder().update()
+			.set({ reactions: () => `array_remove("reactions", :pair)` })
+			.where('id = :id', { id: message.id })
+			.setParameter('pair', pair)
+			.execute();
+		message.reactions = message.reactions.filter(value => value !== pair);
+
+		if (room) {
+			this.globalEventService.publishChatRoomStream(room.id, 'unreact', {
+				messageId: message.id,
+				user: await this.userEntityService.pack(actor.id),
+				reaction,
+			});
+		} else {
+			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId!, 'unreact', {
+				messageId: message.id,
+				reaction,
+			});
+			this.globalEventService.publishChatUserStream(message.toUserId!, message.fromUserId, 'unreact', {
+				messageId: message.id,
+				reaction,
+			});
+		}
+	}
+
+	private normalizeRemoteReaction(reaction: string): string {
+		const custom = reaction.match(isCustomEmojiRegexp);
+		if (custom != null) return `:${custom[1]}:`;
+		return normalizeEmojiString(reaction);
+	}
+
 	private async participantsForMessage(message: MiChatMessage): Promise<MiUser[]> {
 		if (message.toUserId) {
 			return this.usersRepository.findBy({ id: In([message.fromUserId, message.toUserId]) });

@@ -16,7 +16,7 @@ import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NoteCreateService } from '@/core/NoteCreateService.js';
 import { NotificationService } from '@/core/NotificationService.js';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { RoleService } from '@/core/RoleService.js';
@@ -227,6 +227,14 @@ export class ApInboxService {
 	@bindThis
 	private async like(actor: MiRemoteUser, activity: ILike): Promise<string> {
 		const targetUri = getApId(activity.object);
+		const chatMessage = await this.chatService.findMessageByUri(targetUri);
+
+		if (chatMessage != null) {
+			const reaction = activity._misskey_reaction ?? activity.content ?? activity.name;
+			if (reaction == null || reaction === '') return 'skip: empty reaction';
+			await this.chatService.reactRemote(actor, chatMessage, reaction);
+			return 'ok';
+		}
 
 		const note = await this.apNoteService.fetchNote(targetUri);
 		if (!note) return `skip: target note not found ${targetUri}`;
@@ -608,12 +616,26 @@ export class ApInboxService {
 		}
 	}
 
+	private chatMessageText(object: IPost): string | null {
+		if (object.source?.mediaType === 'text/x.misskeymarkdown' && typeof object.source.content === 'string') {
+			return object.source.content;
+		}
+		if (typeof object._misskey_content === 'string') {
+			return object._misskey_content;
+		}
+		if (typeof object.content === 'string') {
+			return this.apMfmService.htmlToMfm(object.content, object.tag);
+		}
+		return null;
+	}
+
 	@bindThis
 	private async createChatMessage(resolver: Resolver, actor: MiRemoteUser, object: IPost, activity: ICreate): Promise<string> {
 		this.logger.info('Receiving chat message from remote');
 
 		if (typeof object !== 'object') return 'skip: object is not an object';
 		if (!object.id) return 'skip: object has no id';
+		if (await this.redisClient.exists(`chat_delete_upon_arrival:${object.id}`)) return 'skip: deleted';
 
 		// Check if this message already exists (by URI)
 		// Note: Cannot use fetchNote because chat messages are not in the notes table
@@ -640,14 +662,7 @@ export class ApInboxService {
 		if (recipients.length === 0) return 'skip: no valid recipients';
 
 		// Extract message content
-		let text: string | null = null;
-		if (object.source?.mediaType === 'text/x.misskeymarkdown' && typeof object.source.content === 'string') {
-			text = object.source.content;
-		} else if (typeof object._misskey_content !== 'undefined') {
-			text = object._misskey_content;
-		} else if (typeof object.content === 'string') {
-			text = this.apMfmService.htmlToMfm(object.content, object.tag);
-		}
+		const text = this.chatMessageText(object);
 		const uri = object.id;
 
 		// Handle file attachments
@@ -780,6 +795,22 @@ export class ApInboxService {
 		}
 
 		const uri = getApId(activity.object);
+
+		const chatMessage = await this.chatService.findMessageByUri(uri);
+		if (chatMessage != null) {
+			try {
+				await this.chatService.deleteRemoteMessage(actor, chatMessage);
+				return 'ok: chat message deleted';
+			} catch (err) {
+				if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+				throw err;
+			}
+		}
+
+		if (uri.includes('/chat/messages/')) {
+			await this.redisClient.setex(`chat_delete_upon_arrival:${uri}`, 6 * 60 * 60, '1');
+			return 'ok: chat message tombstone stored';
+		}
 
 		// type不明でもactorとobjectが同じならばそれはPersonに違いない
 		if (!formerType && actor.uri === uri) {
@@ -1055,6 +1086,20 @@ export class ApInboxService {
 		// don't queue because the sender may attempt again when timeout
 		if (isFollow(object)) return await this.undoFollow(actor, object);
 		if (isBlock(object)) return await this.undoBlock(actor, object);
+		if (isLike(object) && getApType(object) === 'EmojiReact') {
+			const chatMessage = await this.chatService.findMessageByUri(getApId(object.object));
+			if (chatMessage != null) {
+				const reaction = object._misskey_reaction ?? object.content ?? object.name;
+				if (reaction == null || reaction === '') return 'skip: empty reaction';
+				try {
+					await this.chatService.unreactRemote(actor, chatMessage, reaction);
+					return 'ok';
+				} catch (err) {
+					if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+					throw err;
+				}
+			}
+		}
 		if (isLike(object)) return await this.undoLike(actor, object);
 		if (isAnnounce(object)) return await this.undoAnnounce(actor, object);
 		if (isAccept(object)) return await this.undoAccept(actor, object);
@@ -1232,6 +1277,32 @@ export class ApInboxService {
 			this.logger.error(`Resolution failed: ${e}`);
 			throw e;
 		});
+
+		if (getApType(object) === 'Note' && (object as IPost)._misskey_talk === true) {
+			const note = object as IPost;
+			if (note.attributedTo == null || actor.uri !== getOneApId(note.attributedTo)) return 'skip: actor.uri !== note.attributedTo';
+			if (typeof note.id !== 'string') return 'skip: chat message has no id';
+			if (this.utilityService.extractDbHost(actor.uri) !== this.utilityService.extractDbHost(note.id)) return 'skip: host in actor.uri !== note.id';
+
+			const message = await this.chatService.findMessageByUri(note.id);
+			if (message == null) {
+				return await this.createChatMessage(resolver, actor, note, activity as unknown as ICreate);
+			}
+
+			const text = this.chatMessageText(note);
+			if (text == null) return 'skip: chat message has no content';
+
+			const parsed = typeof note.updated === 'string' ? new Date(note.updated) : new Date();
+			const editedAt = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+
+			try {
+				await this.chatService.updateRemoteMessage(actor, message, text, editedAt);
+				return 'ok: chat message updated';
+			} catch (err) {
+				if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+				throw err;
+			}
+		}
 
 		if (isActor(object)) {
 			await this.apPersonService.updatePerson(actor.uri, resolver, object);
