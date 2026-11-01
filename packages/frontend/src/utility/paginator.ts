@@ -254,6 +254,9 @@ export class Paginator<
 			if (i === 3) item._shouldInsertAd_ = true;
 		}
 
+		// ロード中のストリーミング分は、応答で読み込み範囲が確定してから差し込む
+		const streamedItems = this.shouldInsertByIdOrder() ? this.items.value : [];
+		if (streamedItems.length > 0) this.items.value = [];
 		this.pushItems(apiRes);
 
 		if (this.canFetchDetection === 'limit') {
@@ -268,6 +271,11 @@ export class Paginator<
 			} else {
 				(this.initialDirection === 'older' ? this.canFetchOlder : this.canFetchNewer).value = true;
 			}
+		}
+
+		if (streamedItems.length > 0) {
+			this.insertItemsByIdOrder(streamedItems);
+			if (this.useShallowRef) triggerRef(this.items);
 		}
 
 		this.error.value = false;
@@ -406,7 +414,7 @@ export class Paginator<
 	public prepend(item: T): void {
 		if (this.items.value.some(x => x.id === item.id)) return;
 		if (this.shouldInsertByIdOrder()) {
-			this.insertItemsByIdOrder([item]);
+			this.insertItemsByIdOrder([item], this.fetching.value);
 		} else {
 			this.items.value.unshift(item);
 		}
@@ -418,17 +426,17 @@ export class Paginator<
 		return this.insertByIdOrder && this.order.value === 'newest';
 	}
 
-	private insertItemsByIdOrder(newItems: T[]): void {
+	private insertItemsByIdOrder(newItems: T[], keepOlder = false): void {
 		// 古いものから順に差し込むと、新しいものほど前に来る
 		for (const item of newItems.toSorted((a, b) => a.id < b.id ? -1 : 1)) {
 			if (this.items.value.some(x => x.id === item.id)) continue;
 			const index = this.items.value.findIndex(x => x.id < item.id);
 			if (index !== -1) {
 				this.items.value.splice(index, 0, item);
-			} else if (this.items.value.length === 0 || !this.canFetchOlder.value) {
+			} else if (keepOlder || this.items.value.length === 0 || !this.canFetchOlder.value) {
 				this.items.value.push(item);
 			}
-			// 読み込み済みの最古より古く、まだ遡れるものは過去方向の読み込みで取得されるので差し込まない
+			// ロード中は範囲が未確定なので保持し、それ以外で最古より古く、まだ遡れるものは過去方向の読み込みに任せる
 		}
 	}
 
@@ -443,7 +451,7 @@ export class Paginator<
 	public releaseQueue(): void {
 		if (this.aheadQueue.length === 0) return; // これやらないと余計なre-renderが走る
 		if (this.shouldInsertByIdOrder()) {
-			this.insertItemsByIdOrder(this.aheadQueue);
+			this.insertItemsByIdOrder(this.aheadQueue, this.fetching.value);
 			this.trim(true);
 			if (this.useShallowRef) triggerRef(this.items);
 		} else {
