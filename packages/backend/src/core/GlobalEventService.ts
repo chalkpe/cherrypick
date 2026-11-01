@@ -174,6 +174,11 @@ export interface AdminEventTypes {
 
 export interface ChatEventTypes {
 	message: Packed<'ChatMessageLite'>;
+	updated: {
+		messageId: MiChatMessage['id'];
+		text: string;
+		editedAt: string;
+	};
 	deleted: Packed<'ChatMessageLite'>['id'];
 	react: {
 		reaction: string;

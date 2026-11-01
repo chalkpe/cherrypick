@@ -36,6 +36,15 @@ import { JsonLdService } from './JsonLdService.js';
 import { ApMfmService } from './ApMfmService.js';
 import { CONTEXT } from './misc/contexts.js';
 import { chatRoomVoiceStateIdOf } from './misc/chat-room-voice-state.js';
+import {
+	buildChatDelete,
+	buildChatNote,
+	buildChatReaction,
+	buildChatReactionUndo,
+	buildChatRoomDelete,
+	buildChatRoomUpdate,
+	buildChatUpdate,
+} from './misc/chat-payloads.js';
 import type { IAccept, IActivity, IAdd, IAnnounce, IApDocument, IApEmoji, IApHashtag, IApImage, IApMention, IBlock, IChatRoomVoiceState, ICreate, IDelete, IFlag, IFollow, IInvite, IKey, ILike, IMove, IObject, IPost, IQuestion, IRead, IReject, IRemove, ITombstone, IUndo, IUpdate } from './type.js';
 
 // Event metadata is user-controlled. Only schema.org Event fields may be copied
@@ -849,15 +858,6 @@ export class ApRendererService {
 	 */
 	@bindThis
 	public async renderChatMessage(message: any, fromUser: MiUser, toUsers: MiUser[], roomId?: string): Promise<IPost> {
-		const attributedTo = this.userEntityService.genLocalUserUri(fromUser.id);
-
-		// Render recipients
-		const to: string[] = toUsers.map(user =>
-			this.userEntityService.isRemoteUser(user)
-				? user.uri!
-				: this.userEntityService.genLocalUserUri(user.id),
-		);
-
 		// Get file if attached
 		let attachment: IApDocument | undefined;
 		if (message.fileId) {
@@ -871,30 +871,60 @@ export class ApRendererService {
 		const emojis = message.emojis && message.emojis.length > 0 ? await this.getEmojis(message.emojis) : [];
 		const apemojis = emojis.filter(emoji => !emoji.localOnly).map(emoji => this.renderEmoji(emoji));
 
-		const note: IPost = {
-			id: message.uri ?? `${this.config.url}/chat/messages/${message.id}`,
-			type: 'Note',
-			attributedTo,
-			content: message.text ?? '',
-			to,
+		return buildChatNote(message, fromUser, toUsers, roomId, {
+			baseUrl: this.config.url,
 			published: this.idService.parse(message.id).date.toISOString(),
-			_misskey_talk: true, // Legacy Misskey chat
-		};
+			attachment,
+			tag: apemojis,
+		});
+	}
 
-		// Add context for group chat
-		if (roomId) {
-			note['@context'] = this.genLocalChatRoomUri(roomId);
-		}
+	@bindThis
+	public renderChatUpdate(message: any, fromUser: MiUser, toUsers: MiUser[], roomId?: string): IUpdate {
+		return buildChatUpdate(message, fromUser, toUsers, roomId, {
+			baseUrl: this.config.url,
+			published: new Date().toISOString(),
+		});
+	}
 
-		if (attachment) {
-			note.attachment = [attachment];
-		}
+	@bindThis
+	public renderChatDelete(message: any, fromUser: MiUser, toUsers: MiUser[]): IDelete {
+		return buildChatDelete(message, fromUser, toUsers, {
+			baseUrl: this.config.url,
+			published: new Date().toISOString(),
+		});
+	}
 
-		if (apemojis.length > 0) {
-			note.tag = apemojis;
-		}
+	@bindThis
+	public renderChatReaction(message: any, actor: MiUser, toUsers: MiUser[], reaction: string): ILike {
+		return buildChatReaction(message, actor, toUsers, reaction, {
+			baseUrl: this.config.url,
+			published: new Date().toISOString(),
+		});
+	}
 
-		return note;
+	@bindThis
+	public renderChatReactionUndo(message: any, actor: MiUser, toUsers: MiUser[], reaction: string): IUndo {
+		return buildChatReactionUndo(message, actor, toUsers, reaction, {
+			baseUrl: this.config.url,
+			published: new Date().toISOString(),
+		});
+	}
+
+	@bindThis
+	public renderChatRoomUpdate(room: MiChatRoom, owner: MiUser, toUsers: MiUser[]): IUpdate {
+		return buildChatRoomUpdate(room, owner, toUsers, {
+			baseUrl: this.config.url,
+			published: new Date().toISOString(),
+		});
+	}
+
+	@bindThis
+	public renderChatRoomDelete(room: Pick<MiChatRoom, 'id'>, owner: MiUser, toUsers: MiUser[]): IDelete {
+		return buildChatRoomDelete(room, owner, toUsers, {
+			baseUrl: this.config.url,
+			published: new Date().toISOString(),
+		});
 	}
 
 	@bindThis
