@@ -399,7 +399,7 @@ export class Paginator<
 
 	public pushItems(oldItems: T[]): void {
 		if (oldItems.length === 0) return; // これやらないと余計なre-renderが走る
-		this.items.value.push(...oldItems);
+		this.items.value.push(...oldItems.filter(x => !this.items.value.some(y => y.id === x.id))); // 再読み込み中にストリーミングで届いたものが応答にも含まれることがあるため
 		if (this.useShallowRef) triggerRef(this.items);
 	}
 

@@ -177,3 +177,54 @@ test.describe('Streaming timeline with delayed notes', () => {
 		expect(texts.some(text => text.includes('too old remote note'))).toBe(false);
 	});
 });
+
+test.describe('Streaming timeline while reloading', () => {
+	test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+
+	let alice: RegisteredUser;
+	let newestNoteId: string;
+
+	test.beforeAll(async () => {
+		await resetState();
+		await registerUser('admin', 'pass', true);
+		alice = await registerUser('alice', 'alice1234');
+		await skipUserSetupDialog(alice);
+		for (let i = 1; i <= 20; i++) {
+			newestNoteId = (await api(BASE_URL, 'notes/create', { i: alice.token, text: `seed note ${i}` })).createdNote.id;
+		}
+	});
+
+	let streaming: Awaited<ReturnType<typeof routeStreaming>>;
+
+	test.beforeEach(async ({ page }) => {
+		streaming = await routeStreaming(page);
+		await openHomeTimeline(page, 'alice', 'alice1234');
+	});
+
+	// 再読み込みの応答を待つ間にストリーミングで届いたノートが、応答にも含まれていると二重に表示されていた
+	test('does not duplicate a note streamed while reloading', async ({ page }) => {
+		let releaseResponse!: () => void;
+		const responseGate = new Promise<void>(resolve => releaseResponse = resolve);
+		await page.route('**/api/notes/timeline', async route => {
+			await responseGate;
+			await route.continue();
+		});
+
+		// 引っ張って更新したときと同じ reloadTimeline が呼ばれる
+		const reloadRequest = page.waitForRequest('**/api/notes/timeline');
+		await page.getByRole('button', { name: 'Refresh' }).click();
+		await reloadRequest;
+
+		await streaming.sendNote(await api(BASE_URL, 'notes/show', { i: alice.token, noteId: newestNoteId }));
+		// 読み込み中は一覧が描画されないので、ストリーミングのノートが処理されるのを少し待つ
+		await page.waitForTimeout(500);
+
+		const reloadResponse = page.waitForResponse('**/api/notes/timeline');
+		releaseResponse();
+		await reloadResponse;
+
+		await expect(page.locator('[data-scroll-anchor]')).not.toHaveCount(1);
+		const texts = await timelineTexts(page);
+		expect(texts.filter(text => text.includes('seed note 20'))).toHaveLength(1);
+	});
+});
