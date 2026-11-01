@@ -460,29 +460,41 @@ export class ChatService {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', payload);
 		}
 
+		const fromUser = await this.usersRepository.findOneByOrFail({ id: message.fromUserId });
+		const participants = await this.participantsForMessage(message);
+		const toUsers = participants.filter(user => user.id !== fromUser.id);
+		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatUpdate(message, fromUser, toUsers, message.toRoomId ?? undefined));
+
 		return message;
 	}
 
 	@bindThis
 	public async deleteMessage(message: MiChatMessage) {
-		await this.chatMessagesRepository.delete(message.id);
+		const deletedAt = new Date();
+		await this.chatMessagesRepository.update(message.id, {
+			text: null,
+			fileId: null,
+			reactions: [],
+			deletedAt,
+		});
+		message.text = null;
+		message.fileId = null;
+		message.reactions = [];
+		message.deletedAt = deletedAt;
+
+		const fromUser = await this.usersRepository.findOneByOrFail({ id: message.fromUserId });
+		const participants = await this.participantsForMessage(message);
+		const toUser = message.toUserId ? participants.find(user => user.id === message.toUserId) : null;
 
 		if (message.toUserId) {
-			const [fromUser, toUser] = await Promise.all([
-				this.usersRepository.findOneByOrFail({ id: message.fromUserId }),
-				this.usersRepository.findOneByOrFail({ id: message.toUserId }),
-			]);
-
 			if (this.userEntityService.isLocalUser(fromUser)) this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId, 'deleted', message.id);
-			if (this.userEntityService.isLocalUser(toUser)) this.globalEventService.publishChatUserStream(message.toUserId, message.fromUserId, 'deleted', message.id);
-
-			if (this.userEntityService.isLocalUser(fromUser) && this.userEntityService.isRemoteUser(toUser)) {
-				//const activity = this.apRendererService.addContext(this.apRendererService.renderDelete(this.apRendererService.renderTombstone(`${this.config.url}/notes/${message.id}`), fromUser));
-				//this.queueService.deliver(fromUser, activity, toUser.inbox);
-			}
+			if (toUser && this.userEntityService.isLocalUser(toUser)) this.globalEventService.publishChatUserStream(message.toUserId, message.fromUserId, 'deleted', message.id);
 		} else if (message.toRoomId) {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'deleted', message.id);
 		}
+
+		const toUsers = participants.filter(user => user.id !== fromUser.id);
+		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers));
 	}
 
 	@bindThis
@@ -1265,6 +1277,11 @@ export class ChatService {
 				reaction,
 			});
 		}
+
+		const actor = await this.usersRepository.findOneByOrFail({ id: userId });
+		const participants = await this.participantsForMessage(message);
+		const toUsers = participants.filter(user => user.id !== actor.id);
+		await this.deliverToRemoteUsers(actor, participants, this.apRendererService.renderChatReaction(message, actor, toUsers, reaction));
 	}
 
 	@bindThis
@@ -1318,6 +1335,41 @@ export class ChatService {
 				messageId: message.id,
 				reaction,
 			});
+		}
+
+		const actor = await this.usersRepository.findOneByOrFail({ id: userId });
+		const participants = await this.participantsForMessage(message);
+		const toUsers = participants.filter(user => user.id !== actor.id);
+		await this.deliverToRemoteUsers(actor, participants, this.apRendererService.renderChatReactionUndo(message, actor, toUsers, reaction));
+	}
+
+	private async participantsForMessage(message: MiChatMessage): Promise<MiUser[]> {
+		if (message.toUserId) {
+			return this.usersRepository.findBy({ id: In([message.fromUserId, message.toUserId]) });
+		}
+
+		if (message.toRoomId) {
+			const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
+			if (room == null) return [];
+
+			const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
+			const ids = Array.from(new Set([room.ownerId, ...memberships.map(membership => membership.userId)]));
+			return this.usersRepository.findBy({ id: In(ids) });
+		}
+
+		return [];
+	}
+
+	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any): Promise<void> {
+		const delivered = new Set<string>();
+
+		for (const user of users) {
+			if (user.id === actor.id) continue;
+			if (!this.userEntityService.isRemoteUser(user)) continue;
+			if (user.inbox == null || delivered.has(user.inbox)) continue;
+
+			delivered.add(user.inbox);
+			this.queueService.deliver(actor, this.apRendererService.addContext(activity), user.inbox, false);
 		}
 	}
 

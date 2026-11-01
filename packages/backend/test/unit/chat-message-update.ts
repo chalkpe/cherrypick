@@ -28,10 +28,25 @@ function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 	};
 	const publishChatUserStream = vi.fn();
 	const publishChatRoomStream = vi.fn();
+	const users = new Map([
+		['u1', { id: 'u1', host: null, uri: null, inbox: null }],
+		['u2', { id: 'u2', host: null, uri: null, inbox: null }],
+	]);
 
 	const service = Object.assign(Object.create(ChatService.prototype), {
 		chatMessagesRepository,
+		chatRoomsRepository: { findOneBy: vi.fn() },
+		chatRoomMembershipsRepository: { findBy: vi.fn() },
+		usersRepository: {
+			findOneByOrFail: vi.fn(async ({ id }: { id: string }) => users.get(id)),
+			findBy: vi.fn(async ({ id }: { id: { value: string[] } }) => id.value.map(value => users.get(value)).filter(Boolean)),
+		},
 		globalEventService: { publishChatUserStream, publishChatRoomStream },
+		queueService: { deliver: vi.fn() },
+		apRendererService: {
+			renderChatUpdate: vi.fn().mockReturnValue({ type: 'Update' }),
+			addContext: vi.fn((activity: unknown) => activity),
+		},
 		userEntityService: {
 			isLocalUser: () => true,
 			isRemoteUser: () => false,

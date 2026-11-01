@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
+import { ChatService } from '@/core/ChatService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import {
 	buildChatDelete,
@@ -109,5 +110,118 @@ describe('ApRendererService chat wrappers', () => {
 		const activity = renderer.renderChatDelete(message, alice as never, [bob as never]);
 
 		expect(activity.object).toMatchObject({ type: 'Tombstone', formerType: 'Note' });
+	});
+});
+
+describe('ChatService chat federation delivery', () => {
+	function createService() {
+		const alice = { id: 'alice', host: null, uri: null, inbox: null };
+		const bob = { id: 'bob', host: 'remote.test', uri: 'https://remote.test/users/bob', inbox: 'https://remote.test/users/bob/inbox' };
+		const carol = { id: 'carol', host: 'other.test', uri: 'https://other.test/users/carol', inbox: 'https://other.test/users/carol/inbox' };
+		const users = new Map([alice, bob, carol].map(user => [user.id, user]));
+
+		const directMessage = {
+			id: 'm1', fromUserId: 'alice', toUserId: 'bob', toRoomId: null,
+			text: 'old', editedAt: null, deletedAt: null, reactions: [], emojis: [],
+		};
+		const roomMessage = {
+			id: 'm2', fromUserId: 'bob', toUserId: null, toRoomId: 'r1',
+			text: 'room', editedAt: null, deletedAt: null, reactions: [], emojis: [],
+		};
+		const roomDeleteMessage = { ...roomMessage, id: 'm3', fromUserId: 'alice' };
+		const room = { id: 'r1', ownerId: 'alice' };
+		const messages = new Map([directMessage, roomMessage, roomDeleteMessage].map(message => [message.id, message]));
+
+		const queryBuilder = {
+			update: vi.fn().mockReturnThis(),
+			set: vi.fn().mockReturnThis(),
+			where: vi.fn().mockReturnThis(),
+			setParameter: vi.fn().mockReturnThis(),
+			execute: vi.fn().mockResolvedValue({}),
+		};
+
+		const queueService = { deliver: vi.fn() };
+		const apRendererService = {
+			renderChatUpdate: vi.fn().mockReturnValue({ type: 'Update' }),
+			renderChatDelete: vi.fn().mockReturnValue({ type: 'Delete' }),
+			renderChatReaction: vi.fn().mockReturnValue({ type: 'EmojiReact' }),
+			renderChatReactionUndo: vi.fn().mockReturnValue({ type: 'Undo' }),
+			addContext: vi.fn((activity: unknown) => activity),
+		};
+
+		const service = Object.assign(Object.create(ChatService.prototype), {
+			config: { url: 'https://local.test' },
+			chatMessagesRepository: {
+				findOneBy: vi.fn(async ({ id }: { id: string }) => messages.get(id) ?? null),
+				update: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+					const target = messages.get(id);
+					if (target) Object.assign(target, patch);
+					return { affected: target ? 1 : 0 };
+				}),
+				createQueryBuilder: vi.fn(() => queryBuilder),
+			},
+			chatRoomsRepository: {
+				findOneBy: vi.fn(async ({ id }: { id: string }) => id === room.id ? room : null),
+				findOneByOrFail: vi.fn(async ({ id }: { id: string }) => id === room.id ? room : Promise.reject(new Error('room not found'))),
+			},
+			chatRoomMembershipsRepository: {
+				findBy: vi.fn(async () => [{ roomId: 'r1', userId: 'bob' }, { roomId: 'r1', userId: 'carol' }]),
+				findOneBy: vi.fn(async ({ roomId, userId }: { roomId: string; userId: string }) =>
+					roomId === 'r1' && (userId === 'bob' || userId === 'carol') ? { roomId, userId } : null),
+			},
+			usersRepository: {
+				findOneByOrFail: vi.fn(async ({ id }: { id: string }) => users.get(id)),
+				findBy: vi.fn(async ({ id }: { id: { value: string[] } }) => (id.value ?? []).map(value => users.get(value)).filter(Boolean)),
+			},
+			userEntityService: {
+				isLocalUser: (user: { host: string | null }) => user.host == null,
+				isRemoteUser: (user: { host: string | null }) => user.host != null,
+				pack: vi.fn(async (id: string) => users.get(id)),
+			},
+			globalEventService: {
+				publishChatUserStream: vi.fn(),
+				publishChatRoomStream: vi.fn(),
+			},
+			apRendererService,
+			queueService,
+			customEmojiService: { localEmojisCache: { fetch: vi.fn().mockResolvedValue(new Map()) } },
+		}) as ChatService;
+
+		return { service, alice, bob, carol, directMessage, roomMessage, roomDeleteMessage, queueService, apRendererService };
+	}
+
+	test('delivers Update to the remote 1:1 counterpart', async () => {
+		const f = createService();
+
+		await f.service.updateMessage('alice', 'm1', 'edited');
+
+		expect(f.queueService.deliver).toHaveBeenCalledWith(
+			f.alice,
+			expect.objectContaining({ type: 'Update' }),
+			f.bob.inbox,
+			false,
+		);
+	});
+
+	test('soft-deletes and delivers Delete to every remote room member', async () => {
+		const f = createService();
+
+		await f.service.deleteMessage(f.roomDeleteMessage as never);
+
+		expect(f.roomDeleteMessage.deletedAt).toBeInstanceOf(Date);
+		expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
+		expect(f.queueService.deliver).toHaveBeenCalledWith(f.alice, expect.objectContaining({ type: 'Delete' }), f.bob.inbox, false);
+		expect(f.queueService.deliver).toHaveBeenCalledWith(f.alice, expect.objectContaining({ type: 'Delete' }), f.carol.inbox, false);
+	});
+
+	test('delivers EmojiReact and Undo to every remote room member', async () => {
+		const f = createService();
+
+		await f.service.react('m2', 'alice', '👍');
+		await f.service.unreact('m2', 'alice', '👍');
+
+		expect(f.queueService.deliver).toHaveBeenCalledTimes(4);
+		expect(f.queueService.deliver).toHaveBeenCalledWith(f.alice, expect.objectContaining({ type: 'EmojiReact' }), f.bob.inbox, false);
+		expect(f.queueService.deliver).toHaveBeenCalledWith(f.alice, expect.objectContaining({ type: 'Undo' }), f.carol.inbox, false);
 	});
 });
