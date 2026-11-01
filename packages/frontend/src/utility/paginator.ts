@@ -108,6 +108,7 @@ export class Paginator<
 	private canFetchDetection: 'safe' | 'limit' | null = null;
 	private aheadQueue: T[] = [];
 	private useShallowRef: SRef;
+	private insertByIdOrder: boolean;
 
 	// 配列内の要素をどのような順序で並べるか
 	// newest: 新しいものが先頭 (default)
@@ -145,11 +146,18 @@ export class Paginator<
 
 		useShallowRef?: SRef;
 
+		/**
+		 * prepend / releaseQueue で加える要素を、先頭ではなく id 順の位置に差し込む (order が newest のときのみ)。
+		 * リモートから遅れて届いたノートのように、表示中の先頭より古い id の要素がストリーミングで流れてくる場合向け
+		 */
+		insertByIdOrder?: boolean;
+
 		canSearch?: boolean;
 		searchParamName?: keyof E['req'];
 	}) {
 		this.endpoint = endpoint;
 		this.useShallowRef = (props.useShallowRef ?? false) as SRef;
+		this.insertByIdOrder = props.insertByIdOrder ?? false;
 		if (this.useShallowRef) {
 			this.items = shallowRef<T[]>([]);
 		} else {
@@ -397,9 +405,31 @@ export class Paginator<
 
 	public prepend(item: T): void {
 		if (this.items.value.some(x => x.id === item.id)) return;
-		this.items.value.unshift(item);
+		if (this.shouldInsertByIdOrder()) {
+			this.insertItemsByIdOrder([item]);
+		} else {
+			this.items.value.unshift(item);
+		}
 		this.trim(false);
 		if (this.useShallowRef) triggerRef(this.items);
+	}
+
+	private shouldInsertByIdOrder(): boolean {
+		return this.insertByIdOrder && this.order.value === 'newest';
+	}
+
+	private insertItemsByIdOrder(newItems: T[]): void {
+		// 古いものから順に差し込むと、新しいものほど前に来る
+		for (const item of newItems.toSorted((a, b) => a.id < b.id ? -1 : 1)) {
+			if (this.items.value.some(x => x.id === item.id)) continue;
+			const index = this.items.value.findIndex(x => x.id < item.id);
+			if (index !== -1) {
+				this.items.value.splice(index, 0, item);
+			} else if (this.items.value.length === 0 || !this.canFetchOlder.value) {
+				this.items.value.push(item);
+			}
+			// 読み込み済みの最古より古く、まだ遡れるものは過去方向の読み込みで取得されるので差し込まない
+		}
 	}
 
 	public enqueue(item: T): void {
@@ -412,7 +442,13 @@ export class Paginator<
 
 	public releaseQueue(): void {
 		if (this.aheadQueue.length === 0) return; // これやらないと余計なre-renderが走る
-		this.unshiftItems(this.aheadQueue);
+		if (this.shouldInsertByIdOrder()) {
+			this.insertItemsByIdOrder(this.aheadQueue);
+			this.trim(true);
+			if (this.useShallowRef) triggerRef(this.items);
+		} else {
+			this.unshiftItems(this.aheadQueue);
+		}
 		this.aheadQueue = [];
 		this.queuedAheadItemsCount.value = 0;
 	}

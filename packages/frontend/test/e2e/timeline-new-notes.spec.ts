@@ -14,7 +14,7 @@ import {
 	signIn,
 } from './utils.js';
 import type { RegisteredUser } from './utils.js';
-import type { Page } from 'playwright';
+import type { Page, WebSocketRoute } from 'playwright';
 
 const NEW_NOTES_INDICATOR = /There are \d+ new notes/;
 
@@ -31,6 +31,36 @@ async function scrollTimelineTo(page: Page, top: number): Promise<void> {
 // 初回ログイン時のセットアップダイアログはアカウントに保存された状態で出るかどうかが決まるので、最初から済ませておく
 async function skipUserSetupDialog(user: RegisteredUser): Promise<void> {
 	await api(BASE_URL, 'i/registry/set', { i: user.token, scope: ['client', 'base'], key: 'accountSetupWizard', value: -1 });
+}
+
+async function timelineTexts(page: Page): Promise<string[]> {
+	// 画面外のノートは content-visibility で描画が省略され innerText が空になるので textContent を使う
+	return await page.locator('[data-scroll-anchor]').evaluateAll(els => els.map(el => el.textContent ?? ''));
+}
+
+/**
+ * ストリーミングを中継し、ホームタイムラインのチャンネルへ任意のノートを流し込めるようにする
+ */
+async function routeStreaming(page: Page) {
+	let socket: WebSocketRoute | null = null;
+	let homeTimelineChannelId: string | null = null;
+
+	await page.routeWebSocket(/\/streaming/, ws => {
+		const server = ws.connectToServer();
+		socket = ws;
+		ws.onMessage(message => {
+			const { type, body } = JSON.parse(message.toString());
+			if (type === 'connect' && body.channel === 'homeTimeline') homeTimelineChannelId = body.id;
+			server.send(message);
+		});
+	});
+
+	return {
+		async sendNote(note: unknown) {
+			await expect.poll(() => socket != null && homeTimelineChannelId != null).toBe(true);
+			socket!.send(JSON.stringify({ type: 'channel', body: { id: homeTimelineChannelId, type: 'note', body: note } }));
+		},
+	};
 }
 
 test.describe('Streaming timeline', () => {
@@ -70,5 +100,79 @@ test.describe('Streaming timeline', () => {
 
 		await expect(page.locator('[data-scroll-anchor]').first()).toContainText('arrived while scrolled');
 		await expect(page.getByText(NEW_NOTES_INDICATOR)).toBeHidden();
+	});
+});
+
+// リモートから遅れて届いたノートは、ID (投稿日時) が表示中の先頭より古いままストリーミングで流れてくる
+test.describe('Streaming timeline with delayed notes', () => {
+	test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+
+	let alice: RegisteredUser;
+	let bob: RegisteredUser;
+	let delayedNoteId: string;
+	let tooOldNoteId: string;
+
+	test.beforeAll(async () => {
+		await resetState();
+		await registerUser('admin', 'pass', true);
+		alice = await registerUser('alice', 'alice1234');
+		await skipUserSetupDialog(alice);
+		bob = await registerUser('bob', 'bob12345');
+		tooOldNoteId = (await api(BASE_URL, 'notes/create', { i: bob.token, text: 'too old remote note' })).createdNote.id;
+		for (let i = 1; i <= 10; i++) {
+			await api(BASE_URL, 'notes/create', { i: alice.token, text: `seed note ${i}` });
+		}
+		delayedNoteId = (await api(BASE_URL, 'notes/create', { i: bob.token, text: 'delayed remote note' })).createdNote.id;
+		for (let i = 11; i <= 20; i++) {
+			await api(BASE_URL, 'notes/create', { i: alice.token, text: `seed note ${i}` });
+		}
+	});
+
+	let streaming: Awaited<ReturnType<typeof routeStreaming>>;
+
+	test.beforeEach(async ({ page }) => {
+		streaming = await routeStreaming(page);
+		await signIn(page, 'alice', 'alice1234');
+		await page.getByText('seed note 20').waitFor();
+		await page.getByRole('button', { name: 'Got it!' }).click();
+	});
+
+	async function expectDelayedNoteInPlace(page: Page) {
+		await expect.poll(async () => {
+			const texts = await timelineTexts(page);
+			const index = texts.findIndex(text => text.includes('delayed remote note'));
+			return [texts[0]?.includes('seed note 20'), texts[index - 1]?.includes('seed note 11'), texts[index + 1]?.includes('seed note 10')];
+		}).toEqual([true, true, true]);
+	}
+
+	test('inserts a delayed note at its position instead of the top', async ({ page }) => {
+		await streaming.sendNote(await api(BASE_URL, 'notes/show', { i: alice.token, noteId: delayedNoteId }));
+
+		await expectDelayedNoteInPlace(page);
+	});
+
+	test('inserts a queued delayed note at its position when scrolled back to the top', async ({ page }) => {
+		await scrollTimelineTo(page, 300);
+		await page.waitForTimeout(500);
+
+		await streaming.sendNote(await api(BASE_URL, 'notes/show', { i: alice.token, noteId: delayedNoteId }));
+		await expect(page.getByText(NEW_NOTES_INDICATOR)).toBeVisible();
+
+		await scrollTimelineTo(page, 0);
+
+		await expect(page.getByText(NEW_NOTES_INDICATOR)).toBeHidden();
+		await expectDelayedNoteInPlace(page);
+	});
+
+	// 読み込み済みの最古より古いノートは、過去方向の読み込みで取得されるので差し込まない
+	test('ignores a delayed note older than the loaded notes', async ({ page }) => {
+		await streaming.sendNote(await api(BASE_URL, 'notes/show', { i: alice.token, noteId: tooOldNoteId }));
+		// 後から送ったノートが反映されていれば、先に送ったノートも処理済み
+		await streaming.sendNote(await api(BASE_URL, 'notes/show', { i: alice.token, noteId: delayedNoteId }));
+		await expectDelayedNoteInPlace(page);
+
+		const texts = await timelineTexts(page);
+		expect(texts[0]).toContain('seed note 20');
+		expect(texts.some(text => text.includes('too old remote note'))).toBe(false);
 	});
 });
