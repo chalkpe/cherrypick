@@ -271,7 +271,8 @@ function isTop() {
 	if (scrollContainer == null) return true;
 	if (rootEl.value == null) return true;
 	const scrollTop = scrollContainer.scrollTop;
-	const tlTop = rootEl.value.offsetTop - scrollContainer.offsetTop;
+	// .new2 の負の margin-top が rootEl の外へ相殺されて offsetTop が負になることがあるので、0 未満にはしない
+	const tlTop = Math.max(0, rootEl.value.offsetTop - scrollContainer.offsetTop);
 	return scrollTop <= tlTop;
 }
 
