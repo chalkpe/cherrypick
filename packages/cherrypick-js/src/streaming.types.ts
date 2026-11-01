@@ -279,6 +279,11 @@ export type Channels = {
 		};
 		events: {
 			message: (payload: ChatMessageLite) => void;
+			updated: (payload: {
+				messageId: ChatMessageLite['id'];
+				text: string;
+				editedAt: string;
+			}) => void;
 			deleted: (payload: ChatMessageLite['id']) => void;
 			react: (payload: {
 				reaction: string;
@@ -303,6 +308,11 @@ export type Channels = {
 		};
 		events: {
 			message: (payload: ChatMessageLite) => void;
+			updated: (payload: {
+				messageId: ChatMessageLite['id'];
+				text: string;
+				editedAt: string;
+			}) => void;
 			deleted: (payload: ChatMessageLite['id']) => void;
 			react: (payload: {
 				reaction: string;

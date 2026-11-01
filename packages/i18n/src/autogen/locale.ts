@@ -6947,6 +6947,10 @@ export interface Locale extends ILocale {
             "none": string;
         };
         /**
+         * 削除されたメッセージ
+         */
+        "deletedMessage": string;
+        /**
          * {x}さんに送信された招待をキャンセルしますか？
          */
         "invitationCancelAreYouSure": ParameterizedString<"x">;

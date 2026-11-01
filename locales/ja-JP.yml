@@ -1742,6 +1742,7 @@ _chat:
     following: "自分がフォローしているユーザーのみ"
     mutual: "相互フォローのユーザーのみ"
     none: "誰も許可しない"
+  deletedMessage: "削除されたメッセージ"
   invitationCancelAreYouSure: "{x}さんに送信された招待をキャンセルしますか？"
 
 _emojiPalette:

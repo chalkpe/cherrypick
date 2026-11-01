@@ -27,7 +27,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<button class="_button" :class="$style.button" @click="insertEmoji"><i class="ti ti-mood-happy"></i></button>
 			<!-- 通話中は PC だと通話バーがここに入る -->
 			<XVoiceCallBarSlot kind="chatForm" :focusWithin="rootEl" :class="$style.voiceCall"/>
-			<button class="_button" :class="[$style.button, $style.send]" :disabled="!canSend || sending" :title="i18n.ts.send" @click="send">
+			<button v-if="editingMessage" class="_button" :class="$style.button" :title="i18n.ts.cancel" @click="emit('cancelEdit')"><i class="ti ti-x"></i></button>
+			<button class="_button" :class="[$style.button, $style.send]" :disabled="!canSend || sending" :title="editingMessage ? i18n.ts.save : i18n.ts.send" @click="send">
 				<template v-if="!sending"><i class="ti ti-send"></i></template><template v-if="sending"><MkLoading :em="true"/></template>
 			</button>
 		</div>
@@ -56,6 +57,12 @@ import XPostFormAttaches from '@/components/MkPostFormAttaches.vue';
 const props = defineProps<{
 	user?: Misskey.entities.UserDetailed | null;
 	room?: Misskey.entities.ChatRoom | null;
+	editingMessage?: { id: string; text?: string | null } | null;
+}>();
+
+const emit = defineEmits<{
+	(ev: 'edited'): void;
+	(ev: 'cancelEdit'): void;
 }>();
 
 const rootEl = useTemplateRef('rootEl');
@@ -73,6 +80,13 @@ const textareaReadOnly = ref(false);
 let autocompleteInstance: Autocomplete | null = null;
 
 const canSend = computed(() => (text.value != null && text.value !== '') || file.value != null);
+
+watch(() => props.editingMessage, (message) => {
+	if (message == null) return;
+	text.value = message.text ?? '';
+	file.value = null;
+	void nextTick(() => textareaEl.value?.focus());
+}, { immediate: true });
 
 function getDraftKey() {
 	return props.user ? 'user:' + props.user.id : 'room:' + props.room?.id;
@@ -196,6 +210,21 @@ function send() {
 	if (sending.value || !canSend.value) return;
 
 	sending.value = true;
+
+	if (props.editingMessage) {
+		misskeyApi('chat/messages/update', {
+			messageId: props.editingMessage.id,
+			text: text.value,
+		}).then(() => {
+			clear();
+			emit('edited');
+		}).catch(err => {
+			console.error(err);
+		}).then(() => {
+			sending.value = false;
+		});
+		return;
+	}
 
 	if (props.user) {
 		misskeyApi('chat/messages/create-to-user', {

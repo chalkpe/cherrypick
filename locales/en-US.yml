@@ -1732,6 +1732,7 @@ _chat:
     following: "Only users you are following"
     mutual: "Mutual followers only"
     none: "Nobody"
+  deletedMessage: "Deleted message"
   invitationCancelAreYouSure: "Are you sure you want to cancel the invitation sent to {x}?"
 _emojiPalette:
   palettes: "Palette"

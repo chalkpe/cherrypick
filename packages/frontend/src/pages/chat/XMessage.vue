@@ -11,28 +11,33 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<div :class="[$style.body, message.file != null ? $style.fullWidth : null]" tabindex="0" aria-haspopup="menu" @keydown.self="onMenuKeydown" @contextmenu.stop="onContextmenu">
 		<div v-if="isFirstInGroup" :class="$style.header"><MkUserName v-if="!isMe && prefer.s['chat.showSenderName'] && message.fromUser != null" :user="message.fromUser"/></div>
 		<MkFukidashi :class="[$style.fukidashi, { [$style.noTailLeft]: !isFirstInGroup && !isMe }]" :tail="!isFirstInGroup ? 'none' : isMe ? 'right' : 'left'" :fullWidth="message.file != null" :accented="isMe">
-			<Mfm
-				v-if="message.text"
-				ref="text"
-				class="_selectable"
-				:text="message.text"
-				:author="message.fromUser"
-				:i="$i"
-				:nyaize="'respect'"
-				:emojiUrls="message.emojis"
-				:enableEmojiMenu="true"
-				:enableEmojiMenuReaction="true"
-			/>
-			<MkMediaList v-if="message.file" :mediaList="[message.file]" :user="message.fromUser"/>
+			<span v-if="deletedAt" :class="$style.deletedMessage">{{ i18n.ts._chat.deletedMessage }}</span>
+			<template v-else>
+				<Mfm
+					v-if="message.text"
+					ref="text"
+					class="_selectable"
+					:text="message.text"
+					:author="message.fromUser"
+					:i="$i"
+					:nyaize="'respect'"
+					:emojiUrls="message.emojis"
+					:enableEmojiMenu="true"
+					:enableEmojiMenuReaction="true"
+				/>
+				<MkMediaList v-if="message.file" :mediaList="[message.file]" :user="message.fromUser"/>
+			</template>
 		</MkFukidashi>
 		<MkUrlPreview v-for="url in urls" :key="url" :url="url" style="margin: 8px 0;"/>
 		<div :class="[$style.footer, { [$style.groupedFooter]: !isLastInGroup }]">
 			<button class="_textButton" style="color: currentColor;" :aria-label="i18n.ts.menu" @click="showMenu"><i class="ti ti-dots-circle-horizontal"></i></button>
 			<MkTime :class="$style.time" :time="message.createdAt"/>
+			<span v-if="editedAt && !deletedAt" :class="$style.edited">{{ i18n.ts.edited }}</span>
 			<MkA v-if="isSearchResult && 'toRoom' in message && message.toRoom != null" :to="`/chat/room/${message.toRoomId}`">{{ message.toRoom.name }}</MkA>
 			<MkA v-if="isSearchResult && 'toUser' in message && message.toUser != null && isMe" :to="`/chat/user/${message.toUserId}`">@{{ message.toUser.username }}</MkA>
 		</div>
 		<TransitionGroup
+			v-if="!deletedAt"
 			:enterActiveClass="prefer.s.animation ? $style.transition_reaction_enterActive : ''"
 			:leaveActiveClass="prefer.s.animation ? $style.transition_reaction_leaveActive : ''"
 			:enterFromClass="prefer.s.animation ? $style.transition_reaction_enterFrom : ''"
@@ -92,7 +97,13 @@ const props = withDefaults(defineProps<{
 	lastInGroup: true,
 });
 
+const emit = defineEmits<{
+	(ev: 'edit', message: NormalizedChatMessage | Misskey.entities.ChatMessage): void;
+}>();
+
 const isMe = computed(() => props.message.fromUserId === $i.id);
+const editedAt = computed(() => (props.message as NormalizedChatMessage).editedAt ?? null);
+const deletedAt = computed(() => (props.message as NormalizedChatMessage).deletedAt ?? null);
 // 検索結果は前後のメッセージと関係なく並ぶのでまとめない
 const isFirstInGroup = computed(() => props.isSearchResult === true || props.firstInGroup);
 const isLastInGroup = computed(() => props.isSearchResult === true || props.lastInGroup);
@@ -189,7 +200,15 @@ function getMenu(): MenuItem[] {
 		type: 'divider',
 	});
 
-	if (isMe.value && $i.policies.chatAvailability === 'available') {
+	if (isMe.value && !deletedAt.value && $i.policies.chatAvailability === 'available') {
+		menu.push({
+			text: i18n.ts.edit,
+			icon: 'ti ti-pencil',
+			action: () => {
+				emit('edit', props.message);
+			},
+		});
+
 		menu.push({
 			text: i18n.ts.delete,
 			icon: 'ti ti-trash',
@@ -347,6 +366,15 @@ function getMenu(): MenuItem[] {
 
 .time {
 	opacity: 0.5;
+}
+
+.edited {
+	opacity: 0.5;
+}
+
+.deletedMessage {
+	opacity: 0.6;
+	font-style: italic;
 }
 
 .reactions {

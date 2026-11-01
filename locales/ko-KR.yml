@@ -1737,6 +1737,7 @@ _chat:
     following: "내가 팔로우한 사용자만"
     mutual: "서로 팔로우한 사용자만"
     none: "아무도 쪽지를 보낼 수 없음"
+  deletedMessage: "삭제된 메시지"
   invitationCancelAreYouSure: "{x}님에게 보낸 초대를 취소할까요?"
 _emojiPalette:
   palettes: "팔레트"

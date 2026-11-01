@@ -85,6 +85,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 											:message="item.data"
 											:firstInGroup="groupPositions[i]?.first ?? true"
 											:lastInGroup="groupPositions[i]?.last ?? true"
+											@edit="onEditMessage"
 										/>
 									</div>
 									<div v-else-if="item.type === 'date'" :class="$style.dateDivider">
@@ -137,7 +138,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</button>
 						</div>
 					</Transition>
-					<XForm v-if="initialized" ref="chatFormEl" :user="user" :room="room" :class="$style.form"/>
+					<XForm v-if="initialized" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit"/>
 				</div>
 			</Teleport>
 		</div>
@@ -202,6 +203,8 @@ const props = defineProps<{
 
 export type NormalizedChatMessage = Omit<Misskey.entities.ChatMessageLite, 'fromUser' | 'reactions'> & {
 	fromUser: Misskey.entities.UserLite;
+	editedAt?: string | null;
+	deletedAt?: string | null;
 	reactions: (Misskey.entities.ChatMessageLite['reactions'][number] & {
 		user: Misskey.entities.UserLite;
 	})[];
@@ -211,6 +214,20 @@ const initializing = ref(false);
 const initialized = ref(false);
 const moreFetching = ref(false);
 const messages = ref<NormalizedChatMessage[]>([]);
+const editingMessage = ref<NormalizedChatMessage | null>(null);
+
+function onEditMessage(message: NormalizedChatMessage) {
+	editingMessage.value = message;
+}
+
+function onEdited() {
+	editingMessage.value = null;
+}
+
+function onCancelEdit() {
+	editingMessage.value = null;
+}
+
 const canFetchMore = ref(false);
 const user = ref<Misskey.entities.UserDetailed | null>(null);
 const room = ref<Misskey.entities.ChatRoom | null>(null);
@@ -283,6 +300,7 @@ async function initialize() {
 		connection.value.on('deleted', onDeleted);
 		connection.value.on('react', onReact);
 		connection.value.on('unreact', onUnreact);
+		connection.value.on('updated', onUpdated);
 	} else if (props.roomId) {
 		const [rResult, mResult] = await Promise.allSettled([
 			misskeyApi('chat/rooms/show', { roomId: props.roomId }),
@@ -339,6 +357,7 @@ async function initialize() {
 		connection.value.on('deleted', onDeleted);
 		connection.value.on('react', onReact);
 		connection.value.on('unreact', onUnreact);
+		connection.value.on('updated', onUpdated);
 	}
 
 	window.document.addEventListener('visibilitychange', onVisibilitychange);
@@ -426,6 +445,14 @@ function onUnreact(ctx: Parameters<Misskey.Channels['chatUser']['events']['unrea
 		if (index !== -1) {
 			message.reactions.splice(index, 1);
 		}
+	}
+}
+
+function onUpdated(ctx: { messageId: string; text: string; editedAt: string }) {
+	const message = messages.value.find(m => m.id === ctx.messageId);
+	if (message) {
+		message.text = ctx.text;
+		message.editedAt = ctx.editedAt;
 	}
 }
 
