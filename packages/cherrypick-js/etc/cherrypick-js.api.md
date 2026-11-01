@@ -968,6 +968,11 @@ export type Channels = {
         };
         events: {
             message: (payload: ChatMessageLite) => void;
+            updated: (payload: {
+                messageId: ChatMessageLite['id'];
+                text: string;
+                editedAt: string;
+            }) => void;
             deleted: (payload: ChatMessageLite['id']) => void;
             react: (payload: {
                 reaction: string;
@@ -992,6 +997,11 @@ export type Channels = {
         };
         events: {
             message: (payload: ChatMessageLite) => void;
+            updated: (payload: {
+                messageId: ChatMessageLite['id'];
+                text: string;
+                editedAt: string;
+            }) => void;
             deleted: (payload: ChatMessageLite['id']) => void;
             react: (payload: {
                 reaction: string;
@@ -1209,6 +1219,12 @@ type ChatMessagesShowResponse = operations['chat___messages___show']['responses'
 
 // @public (undocumented)
 type ChatMessagesUnreactRequest = operations['chat___messages___unreact']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatMessagesUpdateRequest = operations['chat___messages___update']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatMessagesUpdateResponse = operations['chat___messages___update']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type ChatMessagesUserTimelineRequest = operations['chat___messages___user-timeline']['requestBody']['content']['application/json'];
@@ -1911,6 +1927,8 @@ declare namespace entities {
         ChatMessagesShowRequest,
         ChatMessagesShowResponse,
         ChatMessagesUnreactRequest,
+        ChatMessagesUpdateRequest,
+        ChatMessagesUpdateResponse,
         ChatMessagesUserTimelineRequest,
         ChatMessagesUserTimelineResponse,
         ChatRoomsCreateRequest,

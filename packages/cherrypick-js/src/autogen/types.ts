@@ -1558,6 +1558,15 @@ export type paths = {
          */
         post: operations['chat___messages___unreact'];
     };
+    '/chat/messages/update': {
+        /**
+         * chat/messages/update
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:chat*
+         */
+        post: operations['chat___messages___update'];
+    };
     '/chat/messages/user-timeline': {
         /**
          * chat/messages/user-timeline
@@ -6170,6 +6179,10 @@ export type components = {
             id: string;
             /** Format: date-time */
             createdAt: string;
+            /** Format: date-time */
+            editedAt?: string | null;
+            /** Format: date-time */
+            deletedAt?: string | null;
             fromUserId: string;
             fromUser: components['schemas']['UserLite'];
             toUserId?: string | null;
@@ -6190,6 +6203,10 @@ export type components = {
             id: string;
             /** Format: date-time */
             createdAt: string;
+            /** Format: date-time */
+            editedAt?: string | null;
+            /** Format: date-time */
+            deletedAt?: string | null;
             fromUserId: string;
             fromUser?: components['schemas']['UserLite'];
             toUserId?: string | null;
@@ -6207,6 +6224,10 @@ export type components = {
             id: string;
             /** Format: date-time */
             createdAt: string;
+            /** Format: date-time */
+            editedAt?: string | null;
+            /** Format: date-time */
+            deletedAt?: string | null;
             fromUserId: string;
             toUserId: string;
             text?: string | null;
@@ -6221,6 +6242,10 @@ export type components = {
             id: string;
             /** Format: date-time */
             createdAt: string;
+            /** Format: date-time */
+            editedAt?: string | null;
+            /** Format: date-time */
+            deletedAt?: string | null;
             fromUserId: string;
             fromUser: components['schemas']['UserLite'];
             toRoomId: string;
@@ -18891,6 +18916,73 @@ export interface operations {
             204: {
                 headers: {
                     [name: string]: unknown;
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    chat___messages___update: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    messageId: string;
+                    text: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['ChatMessage'];
                 };
             };
             /** @description Client error */
