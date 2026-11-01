@@ -29,6 +29,11 @@ function fakeRepository(rows: Row[] = [], hooks: { beforeDelete?: () => void | P
 			rows.push(row);
 			return row;
 		},
+		update: async (id: string, patch: Record<string, unknown>) => {
+			const row = rows.find(row => row.id === id);
+			if (row) Object.assign(row, patch);
+			return { affected: row ? 1 : 0 };
+		},
 		delete: async (where: string | Record<string, unknown>) => {
 			await hooks.beforeDelete?.();
 			const before = rows.length;
@@ -136,20 +141,34 @@ function fixture(options: {
 		db,
 		chatRoomsRepository: rooms,
 		chatRoomInvitationsRepository: invitations,
-		chatRoomMembershipsRepository: memberships,
+		chatRoomMembershipsRepository: {
+			...memberships,
+			findBy: async (where: Record<string, unknown>) => memberships.rows.filter(row => matches(row, where)),
+		},
 		usersRepository: {
 			findOneBy: async ({ id }: { id: string }) => usersById.get(id) ?? null,
+			findBy: async () => [...usersById.values()],
 		},
 		liveKitService,
 		chatService: {
 			isRoomMember: async (room: Row, userId: string) => room.ownerId === userId || memberships.rows.some(m => m.roomId === room.id && m.userId === userId),
+			findMessageByUri: async () => null,
+			deleteRemoteMessage: vi.fn(),
 		},
 		apDbResolverService: {
 			getUserFromApId: async (uri: string) => usersByUri.get(uri) ?? null,
 		},
 		userEntityService: {
 			isLocalUser: (user: { host: string | null }) => user.host == null,
+			isRemoteUser: (user: { host: string | null }) => user.host != null,
+			genLocalUserUri: (id: string) => `${LOCAL}/users/${id}`,
 		},
+		apRendererService: {
+			genLocalChatRoomUri: (id: string) => `${LOCAL}/chat/rooms/${id}`,
+			renderAdd: vi.fn((_owner: unknown, _target: string, object: string) => ({ type: 'Add', object })),
+			addContext: vi.fn((activity: unknown) => activity),
+		},
+		queueService: { deliver: vi.fn() },
 		utilityService: new UtilityService({ host: 'local.test', url: LOCAL } as any, {} as any),
 		idService: { gen: () => `gen${++seq}` },
 		notificationService,
@@ -644,5 +663,54 @@ describe('Chat room federation: Remove', () => {
 
 		expect(f.memberships.rows).toEqual([]);
 		expect(f.liveKitService.removeParticipant).not.toHaveBeenCalled();
+	});
+});
+
+describe('Chat room federation: Add/Update/Delete', () => {
+	const ownerActor = { ...localOwner, uri: `${LOCAL}/users/${localOwner.id}` };
+	const roomUri = `${LOCAL}/chat/rooms/localroom`;
+
+	test('Add inserts a member idempotently', async () => {
+		const f = fixture();
+
+		await f.inbox.add(ownerActor, { type: 'Add', actor: ownerActor.uri, target: roomUri, object: invitedRemote.uri });
+		await f.inbox.add(ownerActor, { type: 'Add', actor: ownerActor.uri, target: roomUri, object: invitedRemote.uri });
+
+		expect(f.memberships.rows).toEqual([expect.objectContaining({ roomId: 'localroom', userId: invitedRemote.id })]);
+	});
+
+	test('Add is rejected for a non-owner', async () => {
+		const f = fixture();
+
+		const result = await f.inbox.add(remoteOwner, { type: 'Add', actor: remoteOwner.uri, target: roomUri, object: invitedRemote.uri });
+
+		expect(result).toContain('skip');
+		expect(f.memberships.rows).toEqual([]);
+	});
+
+	test('Update changes the mirror room name and description', async () => {
+		const f = fixture();
+		f.resolver.resolve.mockImplementation(async (value: unknown) => value);
+
+		await f.inbox.update(ownerActor, {
+			type: 'Update',
+			actor: ownerActor.uri,
+			object: { id: roomUri, type: 'Group', name: 'new name', summary: 'new description', attributedTo: ownerActor.uri },
+		});
+
+		expect(f.rooms.rows[0]).toMatchObject({ name: 'new name', description: 'new description' });
+	});
+
+	test('Delete removes the mirror room for the owner', async () => {
+		const f = fixture();
+
+		const result = await f.inbox.delete(ownerActor, {
+			type: 'Delete',
+			actor: ownerActor.uri,
+			object: { id: roomUri, type: 'Tombstone', formerType: 'Group' },
+		});
+
+		expect(result).toBe('ok: chat room deleted');
+		expect(f.rooms.rows).toEqual([]);
 	});
 });

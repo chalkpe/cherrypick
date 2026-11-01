@@ -29,6 +29,7 @@ export type ChatPayloadOptions = {
 	baseUrl: string;
 	published?: string;
 	updated?: string;
+	roomUri?: string;
 	attachment?: IApDocument;
 	tag?: IObject[];
 };
@@ -73,7 +74,9 @@ export function buildChatNote(
 		_misskey_talk: true,
 	};
 
-	if (roomId) {
+	if (options.roomUri) {
+		note['@context'] = options.roomUri;
+	} else if (roomId) {
 		note['@context'] = chatRoomUri({ id: roomId }, options.baseUrl);
 	}
 

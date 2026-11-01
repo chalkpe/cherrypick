@@ -719,6 +719,13 @@ export class ChatService {
 
 	@bindThis
 	public async deleteRoom(room: MiChatRoom, deleter?: MiUser) {
+		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+		if (owner != null && (deleter == null || deleter.id === room.ownerId)) {
+			const participants = await this.participantsForRoom(room);
+			const toUsers = participants.filter(user => user.id !== owner.id);
+			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomDelete(room, owner, toUsers));
+		}
+
 		const memberships = (await this.chatRoomMembershipsRepository.findBy({ roomId: room.id })).map(m => ({
 			userId: m.userId,
 		})).concat({ // ownerはmembershipレコードを作らないため
@@ -1132,14 +1139,24 @@ export class ChatService {
 		name?: string;
 		description?: string;
 	}): Promise<MiChatRoom> {
-		return this.chatRoomsRepository.createQueryBuilder().update()
+		const updated = await this.chatRoomsRepository.createQueryBuilder().update()
 			.set(params)
 			.where('id = :id', { id: room.id })
 			.returning('*')
 			.execute()
 			.then((response) => {
-				return response.raw[0];
+				return response.raw[0] as MiChatRoom;
 			});
+
+		const merged = { ...room, ...updated };
+		const owner = await this.usersRepository.findOneBy({ id: merged.ownerId });
+		if (owner != null) {
+			const participants = await this.participantsForRoom(merged);
+			const toUsers = participants.filter(user => user.id !== owner.id);
+			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomUpdate(merged, owner, toUsers));
+		}
+
+		return merged;
 	}
 
 	@bindThis
@@ -1483,6 +1500,12 @@ export class ChatService {
 		const custom = reaction.match(isCustomEmojiRegexp);
 		if (custom != null) return `:${custom[1]}:`;
 		return normalizeEmojiString(reaction);
+	}
+
+	private async participantsForRoom(room: MiChatRoom): Promise<MiUser[]> {
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
+		const ids = Array.from(new Set([room.ownerId, ...memberships.map(membership => membership.userId)]));
+		return this.usersRepository.findBy({ id: In(ids) });
 	}
 
 	private async participantsForMessage(message: MiChatMessage): Promise<MiUser[]> {

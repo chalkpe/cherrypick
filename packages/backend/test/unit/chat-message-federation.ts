@@ -61,6 +61,15 @@ describe('chat federation payloads', () => {
 		expect(note['@context']).toBe(`${BASE}/chat/rooms/r1`);
 	});
 
+	test('group note can use a mirror room URI from the owner host', () => {
+		const note = buildChatNote(message, alice, [bob], 'r1', {
+			...options,
+			roomUri: 'https://remote.test/chat/rooms/r1',
+		});
+
+		expect(note['@context']).toBe('https://remote.test/chat/rooms/r1');
+	});
+
 	test('update carries the same object id and updated timestamp', () => {
 		const update = buildChatUpdate(message, alice, [bob], undefined, options);
 

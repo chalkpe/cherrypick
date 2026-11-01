@@ -28,10 +28,11 @@ import { StatusError } from '@/misc/status-error.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
+import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { QueueService } from '@/core/QueueService.js';
 import { MiChatRoomInvitation, MiChatRoomMembership, type UsersRepository, type NotesRepository, type FollowingsRepository, type AbuseUserReportsRepository, type FollowRequestsRepository, type MiMeta, type ChatMessagesRepository, type ChatRoomsRepository, type ChatRoomInvitationsRepository, type ChatRoomMembershipsRepository } from '@/models/_.js';
 import { bindThis } from '@/decorators.js';
-import type { MiRemoteUser } from '@/models/User.js';
+import type { MiRemoteUser, MiUser } from '@/models/User.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { AbuseReportService } from '@/core/AbuseReportService.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
@@ -104,6 +105,7 @@ export class ApInboxService {
 		private chatVoiceService: ChatVoiceService,
 		private liveKitService: LiveKitService,
 		private roleService: RoleService,
+		private apRendererService: ApRendererService,
 		private apResolverService: ApResolverService,
 		private apDbResolverService: ApDbResolverService,
 		private apLoggerService: ApLoggerService,
@@ -328,7 +330,7 @@ export class ApInboxService {
 		//   concurrently consumed invitation cannot add a membership;
 		// - a failed membership insert rolls the delete back, so the invitation
 		//   is not lost and the actor can retry.
-		return await this.db.transaction(async (manager) => {
+		const result = await this.db.transaction(async (manager) => {
 			const consumed = await manager.delete(MiChatRoomInvitation, {
 				roomId: room.id,
 				userId: actor.id,
@@ -362,6 +364,38 @@ export class ApInboxService {
 			this.logger.info(`Remote user ${actor.id} accepted invitation and joined room ${roomId}`);
 			return 'ok';
 		});
+
+		if (result !== 'ok') return result;
+
+		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+		if (owner == null) return result;
+
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
+		const memberIds = Array.from(new Set([owner.id, ...memberships.map(membership => membership.userId)]));
+		const members = await this.usersRepository.findBy({ id: In(memberIds) });
+		const roomActivityUri = this.apRendererService.genLocalChatRoomUri(room.id);
+		const uriOf = (user: MiUser) => this.userEntityService.isLocalUser(user) ? this.userEntityService.genLocalUserUri(user.id) : user.uri!;
+
+		for (const member of members) {
+			if (member.id === actor.id) continue;
+			const activity = this.apRendererService.addContext({
+				...this.apRendererService.renderAdd(owner as never, roomActivityUri, uriOf(member)),
+				published: new Date().toISOString(),
+			});
+			if (actor.inbox != null) this.queueService.deliver(owner, activity, actor.inbox, false);
+		}
+
+		for (const member of members) {
+			if (member.id === actor.id || member.id === owner.id) continue;
+			if (!this.userEntityService.isRemoteUser(member) || member.inbox == null) continue;
+			const activity = this.apRendererService.addContext({
+				...this.apRendererService.renderAdd(owner as never, roomActivityUri, uriOf(actor)),
+				published: new Date().toISOString(),
+			});
+			this.queueService.deliver(owner, activity, member.inbox, false);
+		}
+
+		return result;
 	}
 
 	@bindThis
@@ -372,6 +406,29 @@ export class ApInboxService {
 
 		if (activity.target == null) {
 			return 'target is null';
+		}
+
+		const targetUri = getApId(activity.target);
+		const roomIdMatch = targetUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
+		if (roomIdMatch) {
+			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
+			if (room == null) return 'room not found';
+			if (room.ownerId !== actor.id) return 'skip: only the room owner can add a member';
+
+			const userId = getApId(activity.object);
+			const user = await this.apDbResolverService.getUserFromApId(userId);
+			if (user == null) return 'skip: user not found';
+
+			const existing = await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId: user.id });
+			if (existing == null) {
+				await this.chatRoomMembershipsRepository.insertOne({
+					id: this.idService.gen(),
+					roomId: room.id,
+					userId: user.id,
+				});
+			}
+
+			return 'ok: chat room member added';
 		}
 
 		if (activity.target === actor.featured) {
@@ -820,6 +877,16 @@ export class ApInboxService {
 		// それでもなかったらおそらくNote
 		if (!formerType) {
 			formerType = 'Note';
+		}
+
+		if (formerType === 'Group' && uri.includes('/chat/rooms/')) {
+			const roomIdMatch = uri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
+			if (!roomIdMatch) return 'skip: invalid room URI';
+			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
+			if (room == null) return 'skip: room not found';
+			if (room.ownerId !== actor.id) return 'skip: only the room owner can delete it';
+			await this.chatRoomsRepository.delete(room.id);
+			return 'ok: chat room deleted';
 		}
 
 		if (validPost.includes(formerType)) {
@@ -1302,6 +1369,21 @@ export class ApInboxService {
 				if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
 				throw err;
 			}
+		}
+
+		if (getApType(object) === 'Group') {
+			const roomUri = getApId(object);
+			const roomIdMatch = roomUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
+			if (!roomIdMatch) return 'skip: invalid room URI';
+			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
+			if (room == null) return 'skip: room not found';
+			if (room.ownerId !== actor.id) return 'skip: only the room owner can update it';
+
+			await this.chatRoomsRepository.update(room.id, {
+				name: typeof object.name === 'string' ? object.name : room.name,
+				description: typeof object.summary === 'string' ? object.summary : room.description,
+			});
+			return 'ok: chat room updated';
 		}
 
 		if (isActor(object)) {

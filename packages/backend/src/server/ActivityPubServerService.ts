@@ -13,7 +13,7 @@ import accepts from 'accepts';
 import vary from 'vary';
 import secureJson from 'secure-json-parse';
 import { DI } from '@/di-symbols.js';
-import type { FollowingsRepository, NotesRepository, EmojisRepository, NoteReactionsRepository, UserProfilesRepository, UserNotePiningsRepository, UsersRepository, FollowRequestsRepository, MiMeta, ChatMessagesRepository } from '@/models/_.js';
+import type { FollowingsRepository, NotesRepository, EmojisRepository, NoteReactionsRepository, UserProfilesRepository, UserNotePiningsRepository, UsersRepository, FollowRequestsRepository, MiMeta, ChatMessagesRepository, ChatRoomsRepository, ChatRoomMembershipsRepository, ChatRoomInvitationsRepository } from '@/models/_.js';
 import * as url from '@/misc/prelude/url.js';
 import type { Config } from '@/config.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
@@ -98,6 +98,15 @@ export class ActivityPubServerService {
 
 		@Inject(DI.chatMessagesRepository)
 		private chatMessagesRepository: ChatMessagesRepository,
+
+		@Inject(DI.chatRoomsRepository)
+		private chatRoomsRepository: ChatRoomsRepository,
+
+		@Inject(DI.chatRoomMembershipsRepository)
+		private chatRoomMembershipsRepository: ChatRoomMembershipsRepository,
+
+		@Inject(DI.chatRoomInvitationsRepository)
+		private chatRoomInvitationsRepository: ChatRoomInvitationsRepository,
 
 		private utilityService: UtilityService,
 		private userEntityService: UserEntityService,
@@ -907,9 +916,10 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			if (actor.id !== message.fromUserId && actor.id !== message.toUserId) {
-				reply.code(404);
-				return;
+			if (message.deletedAt != null) {
+				this.setResponseType(request, reply);
+				const uri = message.uri ?? `${this.config.url}/chat/messages/${message.id}`;
+				return this.apRendererService.addContext({ ...this.apRendererService.renderTombstone(uri), formerType: 'Note' });
 			}
 
 			// Get fromUser
@@ -921,14 +931,45 @@ export class ActivityPubServerService {
 
 			// Get toUser(s)
 			let toUsers: MiUser[] = [];
+			let roomId: string | undefined;
+			let roomUri: string | undefined;
 			if (message.toUserId) {
 				// 1:1 chat
+				if (actor.id !== message.fromUserId && actor.id !== message.toUserId) {
+					reply.code(404);
+					return;
+				}
 				const toUser = await this.usersRepository.findOneBy({ id: message.toUserId });
 				if (toUser) toUsers = [toUser];
 			} else if (message.toRoomId) {
-				// Group chat - not yet fully implemented for ActivityPub
-				reply.code(404);
-				return;
+				const room = await this.chatRoomsRepository.findOne({
+					where: { id: message.toRoomId },
+					relations: { owner: true },
+				});
+				if (room == null) {
+					reply.code(404);
+					return;
+				}
+
+				const isOwner = room.ownerId === actor.id;
+				const membership = isOwner ? null : await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId: actor.id });
+				if (!isOwner && membership == null) {
+					reply.code(404);
+					return;
+				}
+
+				const owner = room.owner ?? await this.usersRepository.findOneBy({ id: room.ownerId });
+				if (owner == null) {
+					reply.code(404);
+					return;
+				}
+
+				const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
+				const memberIds = Array.from(new Set([room.ownerId, ...memberships.map(membership => membership.userId)]));
+				const members = await this.usersRepository.findBy({ id: In(memberIds) });
+				toUsers = members.filter(member => member.id !== fromUser.id);
+				roomId = room.id;
+				roomUri = owner.host == null ? this.apRendererService.genLocalChatRoomUri(room.id) : `${owner.uri!.replace(/\/users\/.*$/, '')}/chat/rooms/${room.id}`;
 			}
 
 			if (toUsers.length === 0) {
@@ -937,7 +978,59 @@ export class ActivityPubServerService {
 			}
 
 			this.setResponseType(request, reply);
-			return this.apRendererService.addContext(await this.apRendererService.renderChatMessage(message, fromUser, toUsers));
+			return this.apRendererService.addContext(await this.apRendererService.renderChatMessage(message, fromUser, toUsers, roomId, roomUri));
+		});
+
+		// chat room
+		fastify.get<{ Params: { id: string; } }>('/chat/rooms/:id', { constraints: { apOrHtml: 'ap' } }, async (request, reply) => {
+			vary(reply.raw, 'Accept');
+			reply.header('Cache-Control', 'private, no-store');
+
+			if (this.meta.federation === 'none') {
+				reply.code(403);
+				return;
+			}
+
+			if (await this.applyAccessControl(request, reply, true)) {
+				return;
+			}
+
+			const actor = await this.getSignedRequestActor(request);
+			if (actor == null) {
+				reply.code(404);
+				return;
+			}
+
+			const room = await this.chatRoomsRepository.findOne({
+				where: { id: request.params.id },
+				relations: { owner: true },
+			});
+			if (room == null) {
+				reply.code(404);
+				return;
+			}
+
+			const isOwner = room.ownerId === actor.id;
+			const membership = isOwner ? null : await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId: actor.id });
+			if (!isOwner && membership == null) {
+				const invitation = await this.chatRoomInvitationsRepository.findOneBy({ roomId: room.id, userId: actor.id });
+				if (invitation == null) {
+					reply.code(404);
+					return;
+				}
+			}
+
+			const owner = room.owner ?? await this.usersRepository.findOneBy({ id: room.ownerId });
+			if (owner == null) {
+				reply.code(404);
+				return;
+			}
+
+			const group = this.apRendererService.renderChatRoom(room, owner);
+			group.id = owner.host == null ? this.apRendererService.genLocalChatRoomUri(room.id) : `${owner.uri!.replace(/\/users\/.*$/, '')}/chat/rooms/${room.id}`;
+
+			this.setResponseType(request, reply);
+			return this.apRendererService.addContext(group);
 		});
 
 		// outbox

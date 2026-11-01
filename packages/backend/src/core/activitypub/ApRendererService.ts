@@ -858,7 +858,7 @@ export class ApRendererService {
 	 * Compatible with legacy Misskey chat federation
 	 */
 	@bindThis
-	public async renderChatMessage(message: any, fromUser: MiUser, toUsers: MiUser[], roomId?: string): Promise<IPost> {
+	public async renderChatMessage(message: any, fromUser: MiUser, toUsers: MiUser[], roomId?: string, roomUri?: string): Promise<IPost> {
 		// Get file if attached
 		let attachment: IApDocument | undefined;
 		if (message.fileId) {
@@ -875,6 +875,7 @@ export class ApRendererService {
 		return buildChatNote(message, fromUser, toUsers, roomId, {
 			baseUrl: this.config.url,
 			published: this.idService.parse(message.id).date.toISOString(),
+			roomUri,
 			attachment,
 			tag: apemojis,
 		});

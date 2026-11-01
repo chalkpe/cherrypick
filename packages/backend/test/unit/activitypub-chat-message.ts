@@ -58,7 +58,13 @@ const roomMessage = {
 	toRoomId: 'room1',
 };
 
-const messages = new Map([message, roomMessage].map(m => [m.id, m]));
+const deletedMessage = {
+	...message,
+	id: 'message3',
+	deletedAt: new Date('2026-11-02T00:00:00Z'),
+};
+
+const messages = new Map([message, roomMessage, deletedMessage].map(m => [m.id, m]));
 
 function createService(overrides: Record<string, unknown> = {}) {
 	const users = new Map([alice, carol, bob].map(user => [user.id, user]));
@@ -78,6 +84,21 @@ function createService(overrides: Record<string, unknown> = {}) {
 		},
 		usersRepository: {
 			findOneBy: async (where: { id: string }) => users.get(where.id) ?? null,
+			findBy: async () => [alice, carol],
+		},
+		chatRoomsRepository: {
+			findOne: async (options: { where: { id: string } }) => options.where.id === 'room1'
+				? { id: 'room1', ownerId: alice.id, owner: alice, name: 'room', description: '' }
+				: null,
+		},
+		chatRoomMembershipsRepository: {
+			findOneBy: async (where: { roomId: string; userId: string }) => where.roomId === 'room1' && where.userId === carol.id
+				? { roomId: 'room1', userId: carol.id }
+				: null,
+			findBy: async () => [{ roomId: 'room1', userId: carol.id }],
+		},
+		chatRoomInvitationsRepository: {
+			findOneBy: async () => null,
 		},
 		activityPubAccessControlService: {
 			checkAccess: async () => null,
@@ -90,6 +111,9 @@ function createService(overrides: Record<string, unknown> = {}) {
 		apRendererService: {
 			addContext: (object: unknown) => object,
 			renderChatMessage: async () => ({ id: `${LOCAL}/chat/messages/${message.id}`, type: 'Note', content: 'secret' }),
+			renderChatRoom: () => ({ id: `${LOCAL}/chat/rooms/room1`, type: 'Group', name: 'room' }),
+			renderTombstone: (id: string) => ({ id, type: 'Tombstone' }),
+			genLocalChatRoomUri: (id: string) => `${LOCAL}/chat/rooms/${id}`,
 		},
 		queueService: {
 			inbox: () => {},
@@ -98,8 +122,8 @@ function createService(overrides: Record<string, unknown> = {}) {
 	}) as ActivityPubServerService;
 }
 
-async function signedHeaders(user: TestUser, options: { date?: string } = {}): Promise<Record<string, string>> {
-	const url = `${LOCAL}/chat/messages/${message.id}`;
+async function signedHeaders(user: TestUser, options: { date?: string; url?: string } = {}): Promise<Record<string, string>> {
+	const url = options.url ?? `${LOCAL}/chat/messages/${message.id}`;
 	const signed = await ApRequestCreator.createSignedGet({
 		key: { keyId: user.keyId, privateKeyPem: user.privateKeyPem },
 		url,
@@ -255,10 +279,36 @@ describe('ActivityPub chat message fetch authorization: edge cases', () => {
 		expect(response.statusCode).toBe(404);
 	});
 
-	test('does not return a group room message even to a signed actor', async () => {
-		const response = await fetchMessage(handSignedHeaders(carol, { signedPath: `/chat/messages/${roomMessage.id}` }), roomMessage.id);
+	test('returns a group room message to a member and hides it from a non-member', async () => {
+		const member = await fetchMessage(await signedHeaders(carol, { url: `${LOCAL}/chat/messages/${roomMessage.id}` }), roomMessage.id);
+		const nonMember = await fetchMessage(await signedHeaders(bob, { url: `${LOCAL}/chat/messages/${roomMessage.id}` }), roomMessage.id);
 
-		expect(response.statusCode).toBe(404);
+		expect(member.statusCode).toBe(200);
+		expect(nonMember.statusCode).toBe(404);
+	});
+
+	test('returns a Tombstone for a deleted message', async () => {
+		const response = await fetchMessage(await signedHeaders(carol, { url: `${LOCAL}/chat/messages/${deletedMessage.id}` }), deletedMessage.id);
+
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toMatchObject({ type: 'Tombstone', formerType: 'Note' });
+	});
+
+	test('serves a room Group to a member and hides it from a non-member', async () => {
+		const member = await app.inject({
+			method: 'GET',
+			url: '/chat/rooms/room1',
+			headers: await signedHeaders(carol, { url: `${LOCAL}/chat/rooms/room1` }),
+		});
+		const nonMember = await app.inject({
+			method: 'GET',
+			url: '/chat/rooms/room1',
+			headers: await signedHeaders(bob, { url: `${LOCAL}/chat/rooms/room1` }),
+		});
+
+		expect(member.statusCode).toBe(200);
+		expect(member.json()).toMatchObject({ type: 'Group' });
+		expect(nonMember.statusCode).toBe(404);
 	});
 
 	test.each<[string, () => Record<string, string>, string]>([
