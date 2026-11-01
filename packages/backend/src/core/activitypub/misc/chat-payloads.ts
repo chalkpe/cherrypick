@@ -33,6 +33,14 @@ export type ChatPayloadOptions = {
 	tag?: IObject[];
 };
 
+export type ChatScope = 'everyone' | 'followers' | 'following' | 'mutual' | 'none';
+
+const CHAT_SCOPES: readonly ChatScope[] = ['everyone', 'followers', 'following', 'mutual', 'none'];
+
+export function normalizeChatScope(value: unknown): ChatScope {
+	return CHAT_SCOPES.includes(value as ChatScope) ? value as ChatScope : 'mutual';
+}
+
 export function chatActorUri(actor: ChatActor, baseUrl: string): string {
 	return actor.host == null ? `${baseUrl}/users/${actor.id}` : actor.uri!;
 }

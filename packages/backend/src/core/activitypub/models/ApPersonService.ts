@@ -16,6 +16,7 @@ import { truncate } from '@/misc/truncate.js';
 import type { CacheService } from '@/core/CacheService.js';
 import { normalizeTag } from '@/misc/normalize-tag.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
+import { normalizeChatScope } from '@/core/activitypub/misc/chat-payloads.js';
 import type Logger from '@/logger.js';
 import type { MiNote } from '@/models/Note.js';
 import type { IdService } from '@/core/IdService.js';
@@ -473,6 +474,7 @@ export class ApPersonService implements OnModuleInit {
 					setFederationAvatarShape: person.setFederationAvatarShape,
 					isSquareAvatars: person.isSquareAvatars,
 					canChat: (person as any)._misskey_canChat ?? true,
+					chatScope: normalizeChatScope((person as any)._misskey_chatScope),
 				})) as MiRemoteUser;
 
 				let _description: string | null = null;
@@ -724,6 +726,7 @@ export class ApPersonService implements OnModuleInit {
 			setFederationAvatarShape: person.setFederationAvatarShape,
 			isSquareAvatars: person.isSquareAvatars,
 			canChat: (person as any)._misskey_canChat ?? true,
+			chatScope: normalizeChatScope((person as any)._misskey_chatScope),
 			...(await this.resolveAvatarAndBanner(exist, person.icon, person.image).catch(() => ({}))),
 		} as Partial<MiRemoteUser> & Pick<MiRemoteUser, 'isBot' | 'isCat' | 'isLocked' | 'movedToUri' | 'alsoKnownAs' | 'isExplorable'>;
 

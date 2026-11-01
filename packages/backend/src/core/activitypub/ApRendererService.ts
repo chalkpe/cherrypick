@@ -654,6 +654,7 @@ export class ApRendererService {
 			_misskey_makeNotesFollowersOnlyBefore: user.makeNotesFollowersOnlyBefore,
 			_misskey_makeNotesHiddenBefore: user.makeNotesHiddenBefore,
 			_misskey_canChat: policies.chatAvailability !== 'unavailable',
+			_misskey_chatScope: user.chatScope,
 			icon: avatar ? this.renderImage(avatar) : isSystem ? this.renderSystemAvatar(user) : this.renderIdenticon(user),
 			image: banner ? this.renderImage(banner) : isSystem ? this.renderSystemBanner() : null,
 			tag,

@@ -15,6 +15,7 @@ import {
 	buildChatRoomDelete,
 	buildChatRoomUpdate,
 	buildChatUpdate,
+	normalizeChatScope,
 } from '@/core/activitypub/misc/chat-payloads.js';
 
 const BASE = 'https://local.test';
@@ -28,6 +29,20 @@ const message = {
 };
 
 const options = { baseUrl: BASE, published: '2026-11-02T00:00:00.000Z' };
+
+describe('chat scope normalization', () => {
+	test.each([
+		['everyone', 'everyone'],
+		['followers', 'followers'],
+		['following', 'following'],
+		['mutual', 'mutual'],
+		['none', 'none'],
+		['bogus', 'mutual'],
+		[undefined, 'mutual'],
+	] as const)('normalizes %s to %s', (input, expected) => {
+		expect(normalizeChatScope(input)).toBe(expected);
+	});
+});
 
 describe('chat federation payloads', () => {
 	test('canonical note escapes HTML and keeps raw misskey content', () => {
