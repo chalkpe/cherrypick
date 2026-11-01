@@ -107,6 +107,7 @@ export class Paginator<
 	private searchParamName: keyof E['req'] | 'search';
 	private canFetchDetection: 'safe' | 'limit' | null = null;
 	private aheadQueue: T[] = [];
+	private pendingOlderItems: T[] = [];
 	private useShallowRef: SRef;
 	private insertByIdOrder: boolean;
 
@@ -214,6 +215,7 @@ export class Paginator<
 	public async init(): Promise<void> {
 		this.items.value = [];
 		this.aheadQueue = [];
+		this.pendingOlderItems = [];
 		this.queuedAheadItemsCount.value = 0;
 		this.fetching.value = true;
 
@@ -336,6 +338,14 @@ export class Paginator<
 				this.canFetchOlder.value = true;
 			}
 		}
+
+		// 応答に含まれなかった遅着ノートも確定した読み込み範囲に差し込み、失敗時は次の成功まで保持する
+		if (this.pendingOlderItems.length > 0) {
+			const pendingItems = this.pendingOlderItems;
+			this.pendingOlderItems = [];
+			this.insertItemsByIdOrder(pendingItems);
+			if (this.useShallowRef) triggerRef(this.items);
+		}
 	}
 
 	public async fetchNewer(options: {
@@ -435,6 +445,9 @@ export class Paginator<
 				this.items.value.splice(index, 0, item);
 			} else if (keepOlder || this.items.value.length === 0 || !this.canFetchOlder.value) {
 				this.items.value.push(item);
+			} else if (this.fetchingOlder.value) {
+				// 取得中のページがこのノートを含むとは限らず、応答前に末尾へ追加するとページングの基準もずれるため別に保持する
+				this.pendingOlderItems.push(item);
 			}
 			// ロード中は範囲が未確定なので保持し、それ以外で最古より古く、まだ遡れるものは過去方向の読み込みに任せる
 		}
@@ -463,6 +476,7 @@ export class Paginator<
 
 	public removeItem(id: string): void {
 		// TODO: queueからも消す
+		this.pendingOlderItems = this.pendingOlderItems.filter(item => item.id !== id);
 
 		const index = this.items.value.findIndex(x => x.id === id);
 		if (index !== -1) {
