@@ -60,6 +60,16 @@ export class MiChatMessage {
 	})
 	public uri: string | null;
 
+	@Column('timestamp with time zone', {
+		nullable: true,
+	})
+	public editedAt: Date | null;
+
+	@Column('timestamp with time zone', {
+		nullable: true,
+	})
+	public deletedAt: Date | null;
+
 	@Column({
 		...id(),
 		array: true, default: '{}',

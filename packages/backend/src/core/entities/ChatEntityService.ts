@@ -58,16 +58,19 @@ export class ChatEntityService {
 		const packedRooms = options?._hint_?.packedRooms;
 
 		const message = typeof src === 'object' ? src : await this.chatMessagesRepository.findOneByOrFail({ id: src });
+		const deleted = message.deletedAt != null;
 
 		// userは削除されている可能性があるのでnull許容
 		const reactions: { user: Packed<'UserLite'> | null; reaction: string; }[] = [];
 
-		for (const record of message.reactions) {
-			const [userId, reaction] = record.split('/');
-			reactions.push({
-				user: packedUsers?.get(userId) ?? (await this.userEntityService.pack(userId).catch(() => null)),
-				reaction,
-			});
+		if (!deleted) {
+			for (const record of message.reactions) {
+				const [userId, reaction] = record.split('/');
+				reactions.push({
+					user: packedUsers?.get(userId) ?? (await this.userEntityService.pack(userId).catch(() => null)),
+					reaction,
+				});
+			}
 		}
 
 		// Get fromUser host for emoji URL resolution
@@ -75,23 +78,25 @@ export class ChatEntityService {
 		const fromUserHost = fromUser?.host ?? null;
 
 		// Populate emoji URLs - only for remote users, like notes do
-		const emojis = fromUserHost != null
+		const emojis = !deleted && fromUserHost != null
 			? await this.customEmojiService.populateEmojis(message.emojis, fromUserHost)
 			: undefined;
 
 		return {
 			id: message.id,
 			createdAt: this.idService.parse(message.id).date.toISOString(),
-			text: message.text,
+			editedAt: message.editedAt?.toISOString() ?? null,
+			deletedAt: message.deletedAt?.toISOString() ?? null,
+			text: deleted ? null : message.text,
 			fromUserId: message.fromUserId,
 			fromUser: packedUsers?.get(message.fromUserId) ?? (await this.userEntityService.pack(message.fromUser ?? message.fromUserId, me)),
 			toUserId: message.toUserId,
 			toUser: message.toUserId ? (packedUsers?.get(message.toUserId) ?? (await this.userEntityService.pack(message.toUser ?? message.toUserId, me))) : undefined,
 			toRoomId: message.toRoomId,
 			toRoom: message.toRoomId ? (packedRooms?.get(message.toRoomId) ?? (await this.packRoom(message.toRoom ?? message.toRoomId, me))) : undefined,
-			fileId: message.fileId,
-			file: message.fileId ? (packedFiles?.get(message.fileId) ?? (await this.driveFileEntityService.pack(message.file ?? message.fileId))) : null,
-			reactions: reactions.filter((r): r is { user: Packed<'UserLite'>; reaction: string; } => r.user != null),
+			fileId: deleted ? null : message.fileId,
+			file: !deleted && message.fileId ? (packedFiles?.get(message.fileId) ?? (await this.driveFileEntityService.pack(message.file ?? message.fileId))) : null,
+			reactions: deleted ? [] : reactions.filter((r): r is { user: Packed<'UserLite'>; reaction: string; } => r.user != null),
 			emojis: emojis,
 		};
 	}
@@ -149,14 +154,17 @@ export class ChatEntityService {
 		const packedFiles = options?._hint_?.packedFiles;
 
 		const message = typeof src === 'object' ? src : await this.chatMessagesRepository.findOneByOrFail({ id: src });
+		const deleted = message.deletedAt != null;
 
 		const reactions: { reaction: string; }[] = [];
 
-		for (const record of message.reactions) {
-			const [, reaction] = record.split('/');
-			reactions.push({
-				reaction,
-			});
+		if (!deleted) {
+			for (const record of message.reactions) {
+				const [, reaction] = record.split('/');
+				reactions.push({
+					reaction,
+				});
+			}
 		}
 
 		// Get fromUser host for emoji URL resolution
@@ -164,18 +172,20 @@ export class ChatEntityService {
 		const fromUserHost = fromUser?.host ?? null;
 
 		// Populate emoji URLs - only for remote users, like notes do
-		const emojis = fromUserHost != null
+		const emojis = !deleted && fromUserHost != null
 			? await this.customEmojiService.populateEmojis(message.emojis, fromUserHost)
 			: undefined;
 
 		return {
 			id: message.id,
 			createdAt: this.idService.parse(message.id).date.toISOString(),
-			text: message.text,
+			editedAt: message.editedAt?.toISOString() ?? null,
+			deletedAt: message.deletedAt?.toISOString() ?? null,
+			text: deleted ? null : message.text,
 			fromUserId: message.fromUserId,
 			toUserId: message.toUserId!,
-			fileId: message.fileId,
-			file: message.fileId ? (packedFiles?.get(message.fileId) ?? (await this.driveFileEntityService.pack(message.file ?? message.fileId))) : null,
+			fileId: deleted ? null : message.fileId,
+			file: !deleted && message.fileId ? (packedFiles?.get(message.fileId) ?? (await this.driveFileEntityService.pack(message.file ?? message.fileId))) : null,
 			reactions,
 			emojis: emojis,
 		};
@@ -209,16 +219,19 @@ export class ChatEntityService {
 		const packedUsers = options?._hint_?.packedUsers;
 
 		const message = typeof src === 'object' ? src : await this.chatMessagesRepository.findOneByOrFail({ id: src });
+		const deleted = message.deletedAt != null;
 
 		// userは削除されている可能性があるのでnull許容
 		const reactions: { user: Packed<'UserLite'> | null; reaction: string; }[] = [];
 
-		for (const record of message.reactions) {
-			const [userId, reaction] = record.split('/');
-			reactions.push({
-				user: packedUsers?.get(userId) ?? (await this.userEntityService.pack(userId).catch(() => null)),
-				reaction,
-			});
+		if (!deleted) {
+			for (const record of message.reactions) {
+				const [userId, reaction] = record.split('/');
+				reactions.push({
+					user: packedUsers?.get(userId) ?? (await this.userEntityService.pack(userId).catch(() => null)),
+					reaction,
+				});
+			}
 		}
 
 		// Get fromUser host for emoji URL resolution
@@ -226,20 +239,22 @@ export class ChatEntityService {
 		const fromUserHost = fromUser?.host ?? null;
 
 		// Populate emoji URLs - only for remote users, like notes do
-		const emojis = fromUserHost != null
+		const emojis = !deleted && fromUserHost != null
 			? await this.customEmojiService.populateEmojis(message.emojis, fromUserHost)
 			: undefined;
 
 		return {
 			id: message.id,
 			createdAt: this.idService.parse(message.id).date.toISOString(),
-			text: message.text,
+			editedAt: message.editedAt?.toISOString() ?? null,
+			deletedAt: message.deletedAt?.toISOString() ?? null,
+			text: deleted ? null : message.text,
 			fromUserId: message.fromUserId,
 			fromUser: packedUsers?.get(message.fromUserId) ?? (await this.userEntityService.pack(message.fromUser ?? message.fromUserId)),
 			toRoomId: message.toRoomId!,
-			fileId: message.fileId,
-			file: message.fileId ? (packedFiles?.get(message.fileId) ?? (await this.driveFileEntityService.pack(message.file ?? message.fileId))) : null,
-			reactions: reactions.filter((r): r is { user: Packed<'UserLite'>; reaction: string; } => r.user != null),
+			fileId: deleted ? null : message.fileId,
+			file: !deleted && message.fileId ? (packedFiles?.get(message.fileId) ?? (await this.driveFileEntityService.pack(message.file ?? message.fileId))) : null,
+			reactions: deleted ? [] : reactions.filter((r): r is { user: Packed<'UserLite'>; reaction: string; } => r.user != null),
 			emojis: emojis,
 		};
 	}

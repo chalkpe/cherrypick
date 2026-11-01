@@ -15,6 +15,16 @@ export const packedChatMessageSchema = {
 			format: 'date-time',
 			optional: false, nullable: false,
 		},
+		editedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
+		},
+		deletedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
+		},
 		fromUserId: {
 			type: 'string',
 			optional: false, nullable: false,
@@ -97,6 +107,16 @@ export const packedChatMessageLiteSchema = {
 			format: 'date-time',
 			optional: false, nullable: false,
 		},
+		editedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
+		},
+		deletedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
+		},
 		fromUserId: {
 			type: 'string',
 			optional: false, nullable: false,
@@ -165,6 +185,16 @@ export const packedChatMessageLiteFor1on1Schema = {
 			format: 'date-time',
 			optional: false, nullable: false,
 		},
+		editedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
+		},
+		deletedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
+		},
 		fromUserId: {
 			type: 'string',
 			optional: false, nullable: false,
@@ -218,6 +248,16 @@ export const packedChatMessageLiteForRoomSchema = {
 			type: 'string',
 			format: 'date-time',
 			optional: false, nullable: false,
+		},
+		editedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
+		},
+		deletedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
 		},
 		fromUserId: {
 			type: 'string',
