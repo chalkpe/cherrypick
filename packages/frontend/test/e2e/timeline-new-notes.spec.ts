@@ -33,6 +33,14 @@ async function skipUserSetupDialog(user: RegisteredUser): Promise<void> {
 	await api(BASE_URL, 'i/registry/set', { i: user.token, scope: ['client', 'base'], key: 'accountSetupWizard', value: -1 });
 }
 
+// ログイン前の画面にも公開ノートが出るので、ホームタイムラインにだけ出るヒントで遷移後を待つ。
+// ヒントが出ているとタイムラインの位置が下がって再現しない場合があるので、閉じておく
+async function openHomeTimeline(page: Page, user: string, password: string): Promise<void> {
+	await signIn(page, user, password);
+	await page.getByRole('button', { name: 'Got it!' }).click();
+	await page.getByText('seed note 20').waitFor();
+}
+
 async function timelineTexts(page: Page): Promise<string[]> {
 	// 画面外のノートは content-visibility で描画が省略され innerText が空になるので textContent を使う
 	return await page.locator('[data-scroll-anchor]').evaluateAll(els => els.map(el => el.textContent ?? ''));
@@ -79,17 +87,12 @@ test.describe('Streaming timeline', () => {
 	});
 
 	test.beforeEach(async ({ page }) => {
-		await signIn(page, 'alice', 'alice1234');
+		await openHomeTimeline(page, 'alice', 'alice1234');
 	});
 
 	// 新着ノートの通知が出ると .new2 の負の margin-top がタイムラインの外へ相殺され、
 	// 先頭に戻っても isTop() が偽のままになりキューが解放されなかった
 	test('releases queued notes when scrolled back to the top', async ({ page }) => {
-		await page.getByText('seed note 20').waitFor();
-
-		// タイムラインの上にヒントが出ているとタイムラインの位置が下がって再現しないので閉じておく
-		await page.getByRole('button', { name: 'Got it!' }).click();
-
 		await scrollTimelineTo(page, 300);
 		await page.waitForTimeout(500);
 
@@ -132,9 +135,7 @@ test.describe('Streaming timeline with delayed notes', () => {
 
 	test.beforeEach(async ({ page }) => {
 		streaming = await routeStreaming(page);
-		await signIn(page, 'alice', 'alice1234');
-		await page.getByText('seed note 20').waitFor();
-		await page.getByRole('button', { name: 'Got it!' }).click();
+		await openHomeTimeline(page, 'alice', 'alice1234');
 	});
 
 	async function expectDelayedNoteInPlace(page: Page) {
