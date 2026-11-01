@@ -27,7 +27,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<button class="_button" :class="$style.button" @click="insertEmoji"><i class="ti ti-mood-happy"></i></button>
 			<!-- 通話中は PC だと通話バーがここに入る -->
 			<XVoiceCallBarSlot kind="chatForm" :focusWithin="rootEl" :class="$style.voiceCall"/>
-			<button v-if="editingMessage" class="_button" :class="$style.button" :title="i18n.ts.cancel" @click="emit('cancelEdit')"><i class="ti ti-x"></i></button>
+			<button v-if="editingMessage" class="_button" :class="$style.button" :title="i18n.ts.cancel" :aria-label="i18n.ts.cancel" @click="emit('cancelEdit')"><i class="ti ti-x"></i></button>
 			<button class="_button" :class="[$style.button, $style.send]" :disabled="!canSend || sending" :title="editingMessage ? i18n.ts.save : i18n.ts.send" @click="send">
 				<template v-if="!sending"><i class="ti ti-send"></i></template><template v-if="sending"><MkLoading :em="true"/></template>
 			</button>
