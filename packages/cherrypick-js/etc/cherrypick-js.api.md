@@ -1015,6 +1015,18 @@ export type Channels = {
                 user?: UserLite;
                 messageId: ChatMessageLite['id'];
             }) => void;
+            roomUpdated: (payload: {
+                roomId: string;
+                name: string;
+                description: string;
+            }) => void;
+            membershipStarted: (payload: {
+                userId: string;
+            }) => void;
+            membershipEnded: (payload: {
+                userId: string;
+            }) => void;
+            roomDeleted: () => void;
         };
         receives: {
             read: {
