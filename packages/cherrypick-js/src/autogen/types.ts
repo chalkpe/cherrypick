@@ -6197,7 +6197,9 @@ export type components = {
                 reaction: string;
                 user: components['schemas']['UserLite'];
             }[];
-            emojis?: Record<string, never>;
+            emojis?: {
+                [key: string]: string;
+            };
         };
         ChatMessageLite: {
             id: string;
@@ -6218,7 +6220,9 @@ export type components = {
                 reaction: string;
                 user?: components['schemas']['UserLite'] | null;
             }[];
-            emojis?: Record<string, never>;
+            emojis?: {
+                [key: string]: string;
+            };
         };
         ChatMessageLiteFor1on1: {
             id: string;
@@ -6236,7 +6240,9 @@ export type components = {
             reactions: {
                 reaction: string;
             }[];
-            emojis?: Record<string, never>;
+            emojis?: {
+                [key: string]: string;
+            };
         };
         ChatMessageLiteForRoom: {
             id: string;
@@ -6256,7 +6262,9 @@ export type components = {
                 reaction: string;
                 user: components['schemas']['UserLite'];
             }[];
-            emojis?: Record<string, never>;
+            emojis?: {
+                [key: string]: string;
+            };
         };
         ChatRoom: {
             id: string;

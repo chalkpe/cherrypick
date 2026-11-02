@@ -416,8 +416,11 @@ export class ApInboxService {
 			if (room.ownerId !== actor.id) return 'skip: only the room owner can add a member';
 
 			const userId = getApId(activity.object);
-			const user = await this.apDbResolverService.getUserFromApId(userId);
+			const user = await this.apDbResolverService.getUserFromApId(userId) ?? await this.apPersonService.resolvePerson(userId, resolver);
 			if (user == null) return 'skip: user not found';
+			// Only a local invitation acceptance may grant membership to a local user.
+			if (this.userEntityService.isLocalUser(user)) return 'skip: local membership is managed locally';
+			if (user.id === room.ownerId) return 'skip: owner is already a member';
 
 			const existing = await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId: user.id });
 			if (existing == null) {
@@ -687,16 +690,13 @@ export class ApInboxService {
 	}
 
 	@bindThis
-	private async createChatMessage(resolver: Resolver, actor: MiRemoteUser, object: IPost, activity: ICreate): Promise<string> {
-		this.logger.info('Receiving chat message from remote');
-
+	private async createChatMessage(resolver: Resolver, actor: MiRemoteUser, object: IPost, activity: ICreate | IUpdate): Promise<string> {
 		if (typeof object !== 'object') return 'skip: object is not an object';
-		if (!object.id) return 'skip: object has no id';
-		if (await this.redisClient.exists(`chat_delete_upon_arrival:${object.id}`)) return 'skip: deleted';
+		if (typeof object.id !== 'string') return 'skip: object has no id';
+		if (object.attributedTo == null || getOneApId(object.attributedTo) !== actor.uri) return 'skip: actor.uri !== object.attributedTo';
+		if (!this.isOnActorHost(object.id, actor)) return 'skip: host in actor.uri !== object.id';
 
-		// Check if this message already exists (by URI)
-		// Note: Cannot use fetchNote because chat messages are not in the notes table
-		// For now, let ChatService handle duplicates
+		if (await this.redisClient.get(`chat_delete_upon_arrival:${object.id}:${encodeURIComponent(actor.uri)}`) === actor.uri) return 'skip: deleted';
 		this.logger.info(`Processing chat message: ${object.id}`);
 
 		// Get recipients from the 'to' field
@@ -721,6 +721,8 @@ export class ApInboxService {
 		// Extract message content
 		const text = this.chatMessageText(object);
 		const uri = object.id;
+		const updated = typeof object.updated === 'string' ? new Date(object.updated) : null;
+		const editedAt = updated != null && !Number.isNaN(updated.getTime()) ? updated : null;
 
 		// Handle file attachments
 		let file = null;
@@ -741,41 +743,49 @@ export class ApInboxService {
 		});
 
 		const apEmojis = emojis.map(emoji => emoji.name);
+		const contextUri = object['@context'];
+		const isGroup = typeof contextUri === 'string' && /\/chat\/rooms\/[a-zA-Z0-9]+$/.test(contextUri);
 
+		// The room context, not the recipient count, decides whether this is a group message.
+		if (!isGroup && recipients.length !== 1) return 'skip: no room context';
+		if (!isGroup) {
+			const recipient = recipients[0];
+			const recipientCanChat = this.userEntityService.isLocalUser(recipient)
+				? (await this.roleService.getUserPolicies(recipient.id)).chatAvailability !== 'unavailable'
+				: recipient.canChat ?? true;
+			if (!recipientCanChat) {
+				// Note creation can also fetch attachments and must not hold the chat insertion lock.
+				this.logger.info(`Recipient ${recipient.username} cannot use chat, converting to DM`);
+				await this.apNoteService.createNote(object, actor, resolver, true);
+				return 'ok';
+			}
+		}
+
+		// Recipient resolution and attachment downloads can outlast the lock lease.
+		// Take a fresh lock only after network preparation, then recheck persistence state.
+		const unlock = await acquireApObjectLock(this.redisClient, object.id);
 		try {
-			const contextUri = object['@context'];
-			const isGroup = typeof contextUri === 'string' && /\/chat\/rooms\/[a-zA-Z0-9]+$/.test(contextUri);
+			if (await this.redisClient.get(`chat_delete_upon_arrival:${object.id}:${encodeURIComponent(actor.uri)}`) === actor.uri) return 'skip: deleted';
+			const existing = await this.chatMessagesRepository.findOneBy({ uri: object.id });
+			if (existing != null) {
+				if (getApType(activity) === 'Update') {
+					if (text == null) return 'skip: chat message has no content';
+					await this.chatService.updateRemoteMessage(actor, existing, text, editedAt ?? new Date(), apEmojis);
+					return 'ok: chat message updated';
+				}
+				return 'skip: chat message exists';
+			}
 
-			// The room context, not the recipient count, decides whether this is a group message.
-			if (!isGroup && recipients.length !== 1) return 'skip: no room context';
 			if (!isGroup) {
 				// 1:1 chat
 				const recipient = recipients[0];
-
-				// Check if recipient can use chat
-				let recipientCanChat = true;
-				if (this.userEntityService.isLocalUser(recipient)) {
-					// For local users, check their role policies
-					const policies = await this.roleService.getUserPolicies(recipient.id);
-					recipientCanChat = policies.chatAvailability !== 'unavailable';
-				} else {
-					// For remote users, check the canChat field from their server
-					recipientCanChat = recipient.canChat ?? true;
-				}
-
-				if (!recipientCanChat) {
-					// If recipient cannot use chat, convert to DM
-					this.logger.info(`Recipient ${recipient.username} cannot use chat, converting to DM`);
-					await this.apNoteService.createNote(object, actor, resolver, true);
-				} else {
-					// Normal chat message
-					await this.chatService.createMessageToUser(actor, recipient, {
-						text,
-						file,
-						uri,
-						emojis: apEmojis,
-					});
-				}
+				await this.chatService.createMessageToUser(actor, recipient, {
+					text,
+					file,
+					uri,
+					emojis: apEmojis,
+					editedAt,
+				});
 			} else {
 				// Group chat
 				const roomIdMatch = contextUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
@@ -817,6 +827,7 @@ export class ApInboxService {
 					file,
 					uri,
 					emojis: apEmojis,
+					editedAt,
 				});
 			}
 
@@ -824,6 +835,8 @@ export class ApInboxService {
 		} catch (err) {
 			this.logger.error(`Failed to create chat message: ${err}`);
 			throw err;
+		} finally {
+			await unlock();
 		}
 	}
 
@@ -850,20 +863,27 @@ export class ApInboxService {
 
 		const uri = getApId(activity.object);
 
-		const chatMessage = await this.chatService.findMessageByUri(uri);
-		if (chatMessage != null) {
-			try {
-				await this.chatService.deleteRemoteMessage(actor, chatMessage);
-				return 'ok: chat message deleted';
-			} catch (err) {
-				if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
-				throw err;
+		const isChatUri = uri.includes('/chat/messages/');
+		const unlock = isChatUri ? await acquireApObjectLock(this.redisClient, uri) : null;
+		try {
+			const chatMessage = await this.chatService.findMessageByUri(uri);
+			if (chatMessage != null) {
+				try {
+					await this.chatService.deleteRemoteMessage(actor, chatMessage);
+					return 'ok: chat message deleted';
+				} catch (err) {
+					if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+					throw err;
+				}
 			}
-		}
 
-		if (uri.includes('/chat/messages/')) {
-			await this.redisClient.setex(`chat_delete_upon_arrival:${uri}`, 6 * 60 * 60, '1');
-			return 'ok: chat message tombstone stored';
+			if (isChatUri) {
+				if (!this.isOnActorHost(uri, actor)) return 'skip: message is not on the actor\'s server';
+				await this.redisClient.setex(`chat_delete_upon_arrival:${uri}:${encodeURIComponent(actor.uri)}`, 6 * 60 * 60, actor.uri);
+				return 'ok: chat message tombstone stored';
+			}
+		} finally {
+			if (unlock != null) await unlock();
 		}
 
 		// type不明でもactorとobjectが同じならばそれはPersonに違いない
@@ -1348,19 +1368,20 @@ export class ApInboxService {
 			if (typeof note.id !== 'string') return 'skip: chat message has no id';
 			if (this.utilityService.extractDbHost(actor.uri) !== this.utilityService.extractDbHost(note.id)) return 'skip: host in actor.uri !== note.id';
 
-			const message = await this.chatService.findMessageByUri(note.id);
-			if (message == null) {
-				return await this.createChatMessage(resolver, actor, note, activity as unknown as ICreate);
-			}
-
-			const text = this.chatMessageText(note);
-			if (text == null) return 'skip: chat message has no content';
-
-			const parsed = typeof note.updated === 'string' ? new Date(note.updated) : new Date();
-			const editedAt = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
-
 			try {
-				await this.chatService.updateRemoteMessage(actor, message, text, editedAt);
+				const message = await this.chatService.findMessageByUri(note.id);
+				if (message == null) {
+					return await this.createChatMessage(resolver, actor, note, activity);
+				}
+
+				const text = this.chatMessageText(note);
+				if (text == null) return 'skip: chat message has no content';
+
+				const parsed = typeof note.updated === 'string' ? new Date(note.updated) : new Date();
+				const editedAt = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+				const emojis = await this.apNoteService.extractEmojis(note.tag ?? [], actor.host);
+
+				await this.chatService.updateRemoteMessage(actor, message, text, editedAt, emojis.map(emoji => emoji.name));
 				return 'ok: chat message updated';
 			} catch (err) {
 				if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
@@ -1368,7 +1389,7 @@ export class ApInboxService {
 			}
 		}
 
-		if (getApType(object) === 'Group') {
+		if (getApType(object) === 'Group' && /\/chat\/rooms\/[a-zA-Z0-9]+$/.test(getApId(object))) {
 			const roomUri = getApId(object);
 			const roomIdMatch = roomUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
 			if (!roomIdMatch) return 'skip: invalid room URI';

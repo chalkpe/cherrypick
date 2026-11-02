@@ -96,6 +96,24 @@ describe('chat federation payloads', () => {
 		expect(undo.object).toMatchObject({ id: react.id, type: 'EmojiReact' });
 	});
 
+	test('reactions to remote messages have reactor-owned activity IDs', () => {
+		const remoteMessage = { ...message, uri: 'https://remote.test/chat/messages/m1' };
+		const reaction = buildChatReaction(remoteMessage, alice, [bob], '👍', options);
+		const undo = buildChatReactionUndo(remoteMessage, alice, [bob], '👍', options);
+
+		for (const activity of [reaction, undo]) {
+			expect(new URL(activity.id!).origin).toBe(BASE);
+		}
+		expect(reaction.object).toBe(remoteMessage.uri);
+		expect(undo.object).toMatchObject({ id: reaction.id });
+		expect(buildChatReaction({ ...remoteMessage, uri: 'https://other.test/chat/messages/m1' }, alice, [bob], '👍', options).id).not.toBe(reaction.id);
+	});
+
+	test('clearing a room description sends an explicit empty summary', () => {
+		const activity = buildChatRoomUpdate({ id: 'r1', name: 'Room', description: '' }, alice, [bob], options);
+		expect(JSON.parse(JSON.stringify(activity)).object.summary).toBe('');
+	});
+
 	test('room update and delete carry Group/Tombstone objects', () => {
 		const room = { id: 'r1', name: 'Room', description: 'desc' };
 		const update = buildChatRoomUpdate(room, alice, [bob], options);
@@ -145,6 +163,27 @@ describe('ApRendererService chat wrappers', () => {
 
 		expect(activity.object).toMatchObject({ type: 'Tombstone', formerType: 'Note' });
 	});
+
+	test('message updates preserve the attachment, emoji tags and original publication time', async () => {
+		const renderer = createRenderer();
+		Object.assign(renderer, {
+			driveFilesRepository: { findOneBy: vi.fn().mockResolvedValue({ id: 'f1' }) },
+			customEmojiService: { localEmojisCache: { fetch: vi.fn().mockResolvedValue(new Map([
+				['wave', { name: 'wave', localOnly: false, publicUrl: 'https://local.test/wave.png' }],
+				['private', { name: 'private', localOnly: true }],
+			])) } },
+			driveFileEntityService: { getPublicUrl: () => 'https://local.test/file.png' },
+		});
+
+		const activity = await renderer.renderChatUpdate({ ...message, fileId: 'f1', emojis: ['wave', 'private'] }, alice as never, [bob as never]);
+		expect(activity.object).toMatchObject({
+			id: message.uri,
+			published: '2026-11-02T00:00:00.000Z',
+			updated: message.editedAt.toISOString(),
+			attachment: [{ type: 'Document', url: 'https://local.test/file.png' }],
+			tag: [{ type: 'Emoji', name: ':wave:' }],
+		});
+	});
 });
 
 describe('ChatService chat federation delivery', () => {
@@ -187,7 +226,8 @@ describe('ChatService chat federation delivery', () => {
 			config: { url: 'https://local.test' },
 			chatMessagesRepository: {
 				findOneBy: vi.fn(async ({ id }: { id: string }) => messages.get(id) ?? null),
-				update: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+				update: vi.fn(async (where: string | { id: string }[], patch: Record<string, unknown>) => {
+					const id = typeof where === 'string' ? where : where[0].id;
 					const target = messages.get(id);
 					if (target) Object.assign(target, patch);
 					return { affected: target ? 1 : 0 };
@@ -218,7 +258,10 @@ describe('ChatService chat federation delivery', () => {
 			},
 			apRendererService,
 			queueService,
-			customEmojiService: { localEmojisCache: { fetch: vi.fn().mockResolvedValue(new Map()) } },
+			customEmojiService: {
+				localEmojisCache: { fetch: vi.fn().mockResolvedValue(new Map()) },
+				populateEmojis: vi.fn().mockResolvedValue({}),
+			},
 		}) as ChatService;
 
 		return { service, alice, bob, carol, directMessage, roomMessage, roomDeleteMessage, queueService, apRendererService };
@@ -324,7 +367,13 @@ describe('ApInboxService chat activity routing', () => {
 			isRoomMember: vi.fn(),
 		};
 		const localUser = { id: 'local-user', uri: 'https://local.test/users/local', host: null };
-		const redisClient = { exists: vi.fn().mockResolvedValue(0), setex: vi.fn().mockResolvedValue('OK') };
+		const locks = new Map<string, string>();
+		const redisClient = {
+			get: vi.fn(async (key: string) => locks.get(key) ?? null),
+			set: vi.fn(async (key: string, value: string) => { locks.set(key, value); return 'OK'; }),
+			del: vi.fn(async (key: string) => Number(locks.delete(key))),
+			setex: vi.fn().mockResolvedValue('OK'),
+		};
 		const chatRoomsRepository = { findOneBy: vi.fn().mockResolvedValue({ id: 'r1', uri: 'https://remote.test/chat/rooms/r1' }) };
 		const apPersonService = { resolvePerson: vi.fn(async (uri: string) => uri === localUser.uri ? localUser : null) };
 		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
@@ -332,7 +381,7 @@ describe('ApInboxService chat activity routing', () => {
 			redisClient,
 			apNoteService: { fetchNote: vi.fn().mockResolvedValue(null), extractEmojis: vi.fn().mockResolvedValue([]) },
 			apResolverService: { createResolver: vi.fn(() => ({ resolve: async (x: unknown) => x })) },
-			utilityService: { extractDbHost: () => 'remote.test' },
+			utilityService: { extractDbHost: (uri: string) => new URL(uri).host, punyHost: (uri: string) => new URL(uri).host },
 			apMfmService: { htmlToMfm: (html: string) => html },
 			logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
 			apPersonService,
@@ -382,7 +431,7 @@ describe('ApInboxService chat activity routing', () => {
 
 		await (f.inbox as never as { update: (...args: unknown[]) => Promise<string> }).update(f.actor, { type: 'Update', actor: f.actor.uri, object: note });
 
-		expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', expect.any(Date));
+		expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', expect.any(Date), []);
 	});
 
 	test('routes ChatMessage Delete to deleteRemoteMessage', async () => {
@@ -408,9 +457,9 @@ describe('ApInboxService chat activity routing', () => {
 		});
 
 		expect(f.redisClient.setex).toHaveBeenCalledWith(
-			'chat_delete_upon_arrival:https://remote.test/chat/messages/missing',
+			`chat_delete_upon_arrival:https://remote.test/chat/messages/missing:${encodeURIComponent(f.actor.uri)}`,
 			6 * 60 * 60,
-			'1',
+			f.actor.uri,
 		);
 	});
 

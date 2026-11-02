@@ -6,7 +6,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import * as mfm from 'mfc-js';
 import * as Redis from 'ioredis';
-import { Brackets, DataSource, In } from 'typeorm';
+import { Brackets, DataSource, In, IsNull, LessThan } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { QueueService } from '@/core/QueueService.js';
@@ -144,6 +144,7 @@ export class ChatService {
 		file?: MiDriveFile | null;
 		uri?: string | null;
 		emojis?: string[];
+		editedAt?: Date | null;
 	}): Promise<Packed<'ChatMessageLiteFor1on1'>> {
 		if (fromUser.id === toUser.id) {
 			throw new Error('yourself');
@@ -212,6 +213,7 @@ export class ChatService {
 			fileId: params.file ? params.file.id : null,
 			reads: [],
 			uri: params.uri ?? `${this.config.url.replace(/\/$/, '')}/chat/messages/${id}`,
+			editedAt: params.editedAt ?? null,
 			emojis,
 		} satisfies Partial<MiChatMessage>;
 
@@ -280,6 +282,7 @@ export class ChatService {
 		file?: MiDriveFile | null;
 		uri?: string | null;
 		emojis?: string[];
+		editedAt?: Date | null;
 	}): Promise<Packed<'ChatMessageLiteForRoom'>> {
 		const memberships = (await this.chatRoomMembershipsRepository.findBy({ roomId: toRoom.id })).map(m => ({
 			userId: m.userId,
@@ -313,6 +316,7 @@ export class ChatService {
 			fileId: params.file ? params.file.id : null,
 			reads: [],
 			uri: params.uri ?? `${this.config.url.replace(/\/$/, '')}/chat/messages/${id}`,
+			editedAt: params.editedAt ?? null,
 			emojis,
 		} satisfies Partial<MiChatMessage>;
 
@@ -450,9 +454,11 @@ export class ChatService {
 		if (trimmed.length < 1 || trimmed.length > 2000) throw new ChatMessageAccessError('invalid text');
 
 		const editedAt = new Date();
-		await this.chatMessagesRepository.update(message.id, { text: trimmed, editedAt });
+		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));
+		await this.chatMessagesRepository.update(message.id, { text: trimmed, editedAt, emojis });
 		message.text = trimmed;
 		message.editedAt = editedAt;
+		message.emojis = emojis;
 
 		const payload = { messageId: message.id, text: trimmed, editedAt: editedAt.toISOString() };
 		if (message.toUserId) {
@@ -465,7 +471,7 @@ export class ChatService {
 		const fromUser = await this.usersRepository.findOneByOrFail({ id: message.fromUserId });
 		const participants = await this.participantsForMessage(message);
 		const toUsers = participants.filter(user => user.id !== fromUser.id);
-		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatUpdate(message, fromUser, toUsers, message.toRoomId ?? undefined, await this.roomUriForMessage(message)));
+		await this.deliverToRemoteUsers(fromUser, participants, await this.apRendererService.renderChatUpdate(message, fromUser, toUsers, message.toRoomId ?? undefined, await this.roomUriForMessage(message)));
 
 		return message;
 	}
@@ -1374,18 +1380,30 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async updateRemoteMessage(actor: MiUser, message: MiChatMessage, text: string, editedAt: Date): Promise<MiChatMessage> {
+	public async updateRemoteMessage(actor: MiUser, message: MiChatMessage, text: string, editedAt: Date, emojis: string[] = []): Promise<MiChatMessage> {
 		if (message.fromUserId !== actor.id) throw new ChatMessageAccessError('cannot edit');
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
+		if (message.editedAt != null && message.editedAt >= editedAt) return message;
 
 		const trimmed = text.trim();
 		if (trimmed.length < 1 || trimmed.length > 2000) throw new ChatMessageAccessError('invalid text');
 
-		await this.chatMessagesRepository.update(message.id, { text: trimmed, editedAt });
+		// Keep this conditional in SQL as multiple inbox workers may read the same revision.
+		const result = await this.chatMessagesRepository.update([
+			{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), editedAt: IsNull() },
+			{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), editedAt: LessThan(editedAt) },
+		], { text: trimmed, editedAt, emojis });
+		if (result.affected === 0) return message;
 		message.text = trimmed;
 		message.editedAt = editedAt;
+		message.emojis = emojis;
 
-		const payload = { messageId: message.id, text: trimmed, editedAt: editedAt.toISOString() };
+		const payload = {
+			messageId: message.id,
+			text: trimmed,
+			editedAt: editedAt.toISOString(),
+			emojis: actor.host == null ? {} : await this.customEmojiService.populateEmojis(emojis, actor.host),
+		};
 		if (message.toUserId) {
 			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId, 'updated', payload);
 			this.globalEventService.publishChatUserStream(message.toUserId, message.fromUserId, 'updated', payload);

@@ -5,6 +5,7 @@
 
 import { describe, expect, test, vi } from 'vitest';
 import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
+import type { MiChatMessage, MiUser } from '@/models/_.js';
 
 function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 	const message = {
@@ -13,10 +14,10 @@ function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 		toUserId: 'u2',
 		toRoomId: null,
 		text: 'old',
-		editedAt: null,
+		editedAt: null as Date | null,
 		deletedAt: overrides.deletedAt ?? null,
 		reactions: [],
-		emojis: [],
+		emojis: [] as string[],
 	};
 
 	const chatMessagesRepository = {
@@ -50,6 +51,9 @@ function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 		userEntityService: {
 			isLocalUser: () => true,
 			isRemoteUser: () => false,
+		},
+		customEmojiService: {
+			populateEmojis: vi.fn(async (names: string[]) => Object.fromEntries(names.map(name => [name, `https://remote.test/${name}.png`]))),
 		},
 	}) as ChatService;
 
@@ -85,5 +89,32 @@ describe('ChatService.updateMessage', () => {
 
 		await expect(f.service.updateMessage('u1', 'm1', '   ')).rejects.toThrow('invalid text');
 		await expect(f.service.updateMessage('u1', 'm1', 'x'.repeat(2001))).rejects.toThrow('invalid text');
+	});
+
+	test('refreshes custom emoji names when editing the text', async () => {
+		const f = createFixture();
+		f.message.emojis = ['removed'];
+		await f.service.updateMessage('u1', 'm1', 'hello :wave:');
+		expect(f.message.emojis).toEqual(['wave']);
+	});
+
+	test('ignores remote edits older than or equal to the stored revision', async () => {
+		const f = createFixture();
+		f.message.text = 'latest';
+		f.message.editedAt = new Date('2026-11-02T12:02:00Z');
+		for (const time of ['2026-11-02T12:01:00Z', '2026-11-02T12:02:00Z']) {
+			await f.service.updateRemoteMessage({ id: 'u1', host: 'remote.test' } as MiUser, f.message as unknown as MiChatMessage, 'old', new Date(time));
+		}
+		expect(f.message.text).toBe('latest');
+		expect(f.message.editedAt.toISOString()).toBe('2026-11-02T12:02:00.000Z');
+		expect(f.publishChatUserStream).not.toHaveBeenCalled();
+	});
+
+	test('remote edits replace emoji metadata in storage and streams', async () => {
+		const f = createFixture();
+		f.message.emojis = ['removed'];
+		await f.service.updateRemoteMessage({ id: 'u1', host: 'remote.test' } as MiUser, f.message as unknown as MiChatMessage, ':wave:', new Date('2026-11-02T12:02:00Z'), ['wave']);
+		expect(f.message.emojis).toEqual(['wave']);
+		expect(f.publishChatUserStream).toHaveBeenCalledWith('u1', 'u2', 'updated', expect.objectContaining({ emojis: { wave: 'https://remote.test/wave.png' } }));
 	});
 });

@@ -83,6 +83,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 									<div v-if="item.type === 'item'" :class="{ [$style.stackedMessage]: groupPositions[i]?.first === false }">
 										<XMessage
 											:message="item.data"
+											:canEdit="true"
 											:firstInGroup="groupPositions[i]?.first ?? true"
 											:lastInGroup="groupPositions[i]?.last ?? true"
 											@edit="onEditMessage"
@@ -448,11 +449,13 @@ function onUnreact(ctx: Parameters<Misskey.Channels['chatUser']['events']['unrea
 	}
 }
 
-function onUpdated(ctx: { messageId: string; text: string; editedAt: string }) {
+function onUpdated(ctx: Parameters<Misskey.Channels['chatUser']['events']['updated']>[0]) {
 	const message = messages.value.find(m => m.id === ctx.messageId);
 	if (message) {
+		if (message.editedAt && Date.parse(ctx.editedAt) <= Date.parse(message.editedAt)) return;
 		message.text = ctx.text;
 		message.editedAt = ctx.editedAt;
+		if (ctx.emojis != null) message.emojis = ctx.emojis;
 	}
 }
 

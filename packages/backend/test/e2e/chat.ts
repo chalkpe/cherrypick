@@ -7,7 +7,10 @@ process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
 import { afterAll, beforeAll, describe, test } from 'vitest';
-import { api, failedApiCall, signup } from '../utils.js';
+import { ChatService } from '@/core/ChatService.js';
+import { MiChatMessage } from '@/models/ChatMessage.js';
+import type { MiUser } from '@/models/User.js';
+import { api, failedApiCall, initTestDb, signup } from '../utils.js';
 import type * as misskey from 'cherrypick-js';
 
 describe('chat/messages/update', () => {
@@ -83,5 +86,37 @@ describe('chat/messages/update', () => {
 			code: 'NO_SUCH_MESSAGE',
 			id: '31846552-b85d-4908-808f-64bf91000151',
 		});
+	});
+
+	test('keeps the latest stored revision when inbox workers hold stale snapshots', async () => {
+		const created = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'original' }, alice);
+		assert.strictEqual(created.status, 200);
+		const db = await initTestDb(true);
+		try {
+			const messages = db.getRepository(MiChatMessage);
+			const snapshot = await messages.findOneByOrFail({ id: created.body.id });
+			const events: unknown[] = [];
+			const service = Object.assign(Object.create(ChatService.prototype), {
+				chatMessagesRepository: messages,
+				customEmojiService: { populateEmojis: async () => ({}) },
+				globalEventService: { publishChatUserStream: (...args: unknown[]) => events.push(args) },
+			}) as ChatService;
+			const actor = { id: alice.id, host: 'remote.test' } as MiUser;
+			await service.updateRemoteMessage(actor, { ...snapshot }, 'latest', new Date('2026-11-02T12:02:00Z'), ['wave']);
+			await service.updateRemoteMessage(actor, { ...snapshot }, 'older', new Date('2026-11-02T12:01:00Z'), ['old']);
+			await service.updateRemoteMessage(actor, { ...snapshot }, 'duplicate', new Date('2026-11-02T12:02:00Z'), []);
+			const stored = await messages.findOneByOrFail({ id: snapshot.id });
+			assert.strictEqual(stored.text, 'latest');
+			assert.deepStrictEqual(stored.emojis, ['wave']);
+			assert.strictEqual(stored.editedAt?.toISOString(), '2026-11-02T12:02:00.000Z');
+			assert.strictEqual(events.length, 2);
+
+			await messages.update(snapshot.id, { deletedAt: new Date(), text: null, emojis: [] });
+			await service.updateRemoteMessage(actor, { ...snapshot }, 'resurrected', new Date('2026-11-02T12:03:00Z'), ['wave']);
+			assert.strictEqual((await messages.findOneByOrFail({ id: snapshot.id })).text, null);
+			assert.strictEqual(events.length, 2);
+		} finally {
+			await db.destroy();
+		}
 	});
 });

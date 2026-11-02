@@ -44,6 +44,7 @@ import {
 	buildChatRoomDelete,
 	buildChatRoomUpdate,
 	buildChatUpdate,
+	type ChatPayloadOptions,
 } from './misc/chat-payloads.js';
 import type { IAccept, IActivity, IAdd, IAnnounce, IApDocument, IApEmoji, IApHashtag, IApImage, IApMention, IBlock, IChatRoomVoiceState, ICreate, IDelete, IFlag, IFollow, IInvite, IKey, ILike, IMove, IObject, IPost, IQuestion, IRead, IReject, IRemove, ITombstone, IUndo, IUpdate } from './type.js';
 
@@ -859,6 +860,10 @@ export class ApRendererService {
 	 */
 	@bindThis
 	public async renderChatMessage(message: any, fromUser: MiUser, toUsers: MiUser[], roomId?: string, roomUri?: string): Promise<IPost> {
+		return buildChatNote(message, fromUser, toUsers, roomId, await this.chatPayloadOptions(message, roomUri));
+	}
+
+	private async chatPayloadOptions(message: any, roomUri?: string): Promise<ChatPayloadOptions> {
 		// Get file if attached
 		let attachment: IApDocument | undefined;
 		if (message.fileId) {
@@ -872,22 +877,18 @@ export class ApRendererService {
 		const emojis = message.emojis && message.emojis.length > 0 ? await this.getEmojis(message.emojis) : [];
 		const apemojis = emojis.filter(emoji => !emoji.localOnly).map(emoji => this.renderEmoji(emoji));
 
-		return buildChatNote(message, fromUser, toUsers, roomId, {
+		return {
 			baseUrl: this.config.url,
 			published: this.idService.parse(message.id).date.toISOString(),
 			roomUri,
 			attachment,
 			tag: apemojis,
-		});
+		};
 	}
 
 	@bindThis
-	public renderChatUpdate(message: any, fromUser: MiUser, toUsers: MiUser[], roomId?: string, roomUri?: string): IUpdate {
-		return buildChatUpdate(message, fromUser, toUsers, roomId, {
-			baseUrl: this.config.url,
-			roomUri,
-			published: new Date().toISOString(),
-		});
+	public async renderChatUpdate(message: any, fromUser: MiUser, toUsers: MiUser[], roomId?: string, roomUri?: string): Promise<IUpdate> {
+		return buildChatUpdate(message, fromUser, toUsers, roomId, await this.chatPayloadOptions(message, roomUri));
 	}
 
 	@bindThis

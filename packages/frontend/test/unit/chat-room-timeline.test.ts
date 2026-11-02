@@ -33,7 +33,8 @@ const mocks = vi.hoisted(() => {
 vi.mock('@/utility/misskey-api.js', () => ({
 	misskeyApi: vi.fn(async (endpoint: string) => {
 		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: 'owner', owner: { id: 'owner', username: 'owner', host: null } };
-		if (endpoint === 'chat/messages/room-timeline') return mocks.timeline;
+		if (endpoint === 'users/show') return { id: 'alice', username: 'alice', host: null };
+		if (endpoint === 'chat/messages/room-timeline' || endpoint === 'chat/messages/user-timeline') return mocks.timeline;
 		return [];
 	}),
 }));
@@ -61,12 +62,13 @@ vi.mock('@/pages/chat/XMessage.vue', async () => {
 				message: { type: Object, required: true },
 				firstInGroup: { type: Boolean, default: true },
 				lastInGroup: { type: Boolean, default: true },
+				canEdit: { type: Boolean, default: false },
 			},
 			setup(props) {
 				return () => {
 					const id = (props.message as { id: string }).id;
 					mocks.renders.set(id, (mocks.renders.get(id) ?? 0) + 1);
-					return hh('div', { 'data-testid': 'bubble', 'data-id': id, 'data-first': String(props.firstInGroup), 'data-last': String(props.lastInGroup) });
+					return hh('div', { 'data-testid': 'bubble', 'data-id': id, 'data-first': String(props.firstInGroup), 'data-last': String(props.lastInGroup), 'data-text': props.message.text, 'data-emojis': JSON.stringify(props.message.emojis), 'data-can-edit': String(props.canEdit) });
 				};
 			},
 		}),
@@ -86,6 +88,7 @@ const stubs = {
 	PageWithHeader: { template: '<div style="overflow-y: scroll;"><slot /><slot name="footer" /></div>' },
 	MkStickyContainer: { template: '<div><slot name="header" /><slot /></div>' },
 	MkLoading: { template: '<div></div>' },
+	MkAvatar: true,
 	// 本物の TransitionGroup で動かす (吹き出しに transition を付けるので、再描画の起き方が変わる)
 	'transition-group': false,
 	TransitionGroup: false,
@@ -98,14 +101,14 @@ async function flush() {
 	}
 }
 
-async function renderRoom() {
+async function renderRoom(target: 'room' | 'user' = 'room') {
 	const host = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
-			return () => h(XRoomPage, { roomId: 'r1' });
+			return () => h(XRoomPage, target === 'room' ? { roomId: 'r1' } : { userId: 'alice' });
 		},
 	});
-	const result = render(host, { global: { stubs } });
+	const result = render(host, { global: { stubs, directives: { tooltip: {} } } });
 	await flush();
 	await flush();
 	return result;
@@ -129,6 +132,33 @@ afterEach(() => {
 });
 
 describe('chat bubbles on the room page', () => {
+	test('enables editing for the conversation bubbles that have an edit handler', async () => {
+		const { container } = await renderRoom();
+		expect([...container.querySelectorAll('[data-testid="bubble"]')].every(el => el.getAttribute('data-can-edit') === 'true')).toBe(true);
+	});
+
+	test.each(['room', 'user'] as const)('refreshes emoji metadata on %s message updates and preserves it for older servers', async target => {
+		mocks.timeline = [message('m1', 'alice', 0)];
+		const { container } = await renderRoom(target);
+		mocks.channel.emit('updated', { messageId: 'm1', text: ':new:', editedAt: '2026-11-01T00:00:00.000Z', emojis: { new: 'https://remote.test/new.png' } });
+		await flush();
+		const bubble = () => container.querySelector('[data-id="m1"]')!;
+		expect(bubble().getAttribute('data-text')).toBe(':new:');
+		expect(bubble().getAttribute('data-emojis')).toBe('{"new":"https://remote.test/new.png"}');
+		mocks.channel.emit('updated', { messageId: 'm1', text: 'More :new:', editedAt: '2026-11-01T00:00:01.000Z' });
+		await flush();
+		expect(bubble().getAttribute('data-text')).toBe('More :new:');
+		expect(bubble().getAttribute('data-emojis')).toBe('{"new":"https://remote.test/new.png"}');
+	});
+
+	test.each(['2026-11-01T00:00:00.000Z', '2026-11-01T00:00:01.000Z'])('does not overwrite a newer edit with a replay from %s', async editedAt => {
+		mocks.timeline = [{ ...message('m1', 'alice', 0), text: 'Newest edit', editedAt: '2026-11-01T00:00:01.000Z' }];
+		const { container } = await renderRoom();
+		mocks.channel.emit('updated', { messageId: 'm1', text: 'Older edit', editedAt });
+		await flush();
+		expect(container.querySelector('[data-id="m1"]')!.getAttribute('data-text')).toBe('Newest edit');
+	});
+
 	test('passes the place in a group to each bubble as first/last flags', async () => {
 		const { container } = await renderRoom();
 

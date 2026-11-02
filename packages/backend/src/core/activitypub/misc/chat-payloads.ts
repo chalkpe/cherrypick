@@ -143,7 +143,7 @@ export function buildChatReaction(
 ): ILike {
 	const messageUri = chatMessageUri(message, options.baseUrl);
 	return {
-		id: `${messageUri}#reaction/${actor.id}/${encodeURIComponent(reaction)}`,
+		id: `${chatActorUri(actor, options.baseUrl)}/chat-reactions/${encodeURIComponent(messageUri)}/${encodeURIComponent(reaction)}`,
 		type: 'EmojiReact',
 		actor: chatActorUri(actor, options.baseUrl),
 		object: messageUri,
@@ -188,7 +188,7 @@ export function buildChatRoomUpdate(
 			id: roomUri,
 			type: 'Group',
 			name: room.name,
-			summary: room.description || undefined,
+			summary: room.description ?? '',
 			attributedTo: chatActorUri(owner, options.baseUrl),
 		},
 		published: options.published ?? new Date().toISOString(),

@@ -10,7 +10,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	@dragover.stop="onDragover"
 	@drop.stop="onDrop"
 >
-	<XPostFormAttaches v-if="file" v-model="attachments" :max="1" @detach="file = null" @changeSensitive="(changed, isSensitive) => updateAttachment(changed, { isSensitive })" @changeName="(changed, name) => updateAttachment(changed, { name })"/>
+	<XPostFormAttaches v-if="file && !editingMessage" v-model="attachments" :max="1" @detach="file = null" @changeSensitive="(changed, isSensitive) => updateAttachment(changed, { isSensitive })" @changeName="(changed, name) => updateAttachment(changed, { name })"/>
 	<textarea
 		ref="textareaEl"
 		v-model="text"
@@ -23,7 +23,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	></textarea>
 	<footer :class="$style.footer">
 		<div :class="$style.buttons">
-			<button class="_button" :class="$style.button" @click="chooseFile"><i class="ti ti-photo-plus"></i></button>
+			<button v-if="!editingMessage" class="_button" :class="$style.button" @click="chooseFile"><i class="ti ti-photo-plus"></i></button>
 			<button class="_button" :class="$style.button" @click="insertEmoji"><i class="ti ti-mood-happy"></i></button>
 			<!-- 通話中は PC だと通話バーがここに入る -->
 			<XVoiceCallBarSlot kind="chatForm" :focusWithin="rootEl" :class="$style.voiceCall"/>
@@ -33,7 +33,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</button>
 		</div>
 	</footer>
-	<input ref="fileEl" style="display: none;" type="file" @change="onChangeFile"/>
+	<input ref="fileEl" style="display: none;" type="file" :disabled="!!editingMessage" @change="onChangeFile"/>
 </div>
 </template>
 
@@ -69,7 +69,15 @@ const rootEl = useTemplateRef('rootEl');
 const textareaEl = shallowRef<HTMLTextAreaElement>();
 const fileEl = shallowRef<HTMLInputElement>();
 
-const text = ref<string>('');
+const draftText = ref('');
+const editText = ref('');
+const text = computed({
+	get: () => props.editingMessage ? editText.value : draftText.value,
+	set: value => {
+		if (props.editingMessage) editText.value = value;
+		else draftText.value = value;
+	},
+});
 const file = ref<Misskey.entities.DriveFile | null>(null);
 const attachments = computed({
 	get: () => file.value ? [file.value] : [],
@@ -78,21 +86,22 @@ const attachments = computed({
 const sending = ref(false);
 const textareaReadOnly = ref(false);
 let autocompleteInstance: Autocomplete | null = null;
+let editSession = 0;
 
-const canSend = computed(() => (text.value != null && text.value !== '') || file.value != null);
+const canSend = computed(() => props.editingMessage ? text.value.trim() !== '' : text.value !== '' || file.value != null);
 
 watch(() => props.editingMessage, (message) => {
+	editSession++;
+	editText.value = message?.text ?? '';
 	if (message == null) return;
-	text.value = message.text ?? '';
-	file.value = null;
 	void nextTick(() => textareaEl.value?.focus());
-}, { immediate: true });
+}, { immediate: true, flush: 'sync' });
 
 function getDraftKey() {
 	return props.user ? 'user:' + props.user.id : 'room:' + props.room?.id;
 }
 
-watch([text, file], saveDraft, { deep: true });
+watch([draftText, file], saveDraft, { deep: true });
 
 function updateAttachment(changed: Misskey.entities.DriveFile, updates: Partial<Pick<Misskey.entities.DriveFile, 'name' | 'isSensitive'>>) {
 	if (file.value?.id !== changed.id) return;
@@ -100,14 +109,15 @@ function updateAttachment(changed: Misskey.entities.DriveFile, updates: Partial<
 }
 
 async function uploadFiles(files: File[]) {
-	if (files.length === 0) return;
+	if (props.editingMessage || files.length === 0) return;
+	const session = editSession;
 	if (files.length > 1) {
 		os.alert({ type: 'error', text: i18n.ts.onlyOneFileCanBeAttached });
 		return;
 	}
 	try {
 		const uploaded = await os.launchUploader(files, { multiple: false });
-		if (uploaded[0]) file.value = uploaded[0];
+		if (!props.editingMessage && session === editSession && uploaded[0]) file.value = uploaded[0];
 	} catch {
 		// Closing the uploader leaves the existing draft attachment intact.
 	}
@@ -125,6 +135,7 @@ async function onPaste(ev: ClipboardEvent) {
 	const isOnlyFileNames = pastedText.split(/\r\n|\r|\n/).map(line => line.trim()).filter(line => line !== '').every(line => fileNames.has(line));
 	if (pastedText !== '' && !/^\S+:\/\/\S+$/.test(pastedText) && !isOnlyFileNames) return;
 	ev.preventDefault();
+	if (props.editingMessage) return;
 	if (files.length === 1) {
 		const pastedFile = files[0];
 		const lio = pastedFile.name.lastIndexOf('.');
@@ -138,6 +149,11 @@ async function onPaste(ev: ClipboardEvent) {
 
 function onDragover(ev: DragEvent) {
 	if (!ev.dataTransfer) return;
+	if (props.editingMessage) {
+		ev.preventDefault();
+		ev.dataTransfer.dropEffect = 'none';
+		return;
+	}
 
 	const isFile = Array.from(ev.dataTransfer.types).includes('Files') || Array.from(ev.dataTransfer.items).some(item => item.kind === 'file');
 	if (isFile || checkDragDataType(ev, ['driveFiles'])) {
@@ -163,6 +179,10 @@ function onDragover(ev: DragEvent) {
 
 async function onDrop(ev: DragEvent) {
 	if (!ev.dataTransfer) return;
+	if (props.editingMessage) {
+		ev.preventDefault();
+		return;
+	}
 	if (ev.dataTransfer.files.length > 0) {
 		ev.preventDefault();
 		await uploadFiles(Array.from(ev.dataTransfer.files));
@@ -193,12 +213,14 @@ function onKeydown(ev: KeyboardEvent) {
 }
 
 function chooseFile(ev: PointerEvent) {
+	if (props.editingMessage) return;
+	const session = editSession;
 	selectFile({
 		anchorElement: ev.currentTarget ?? ev.target,
 		multiple: false,
 		label: i18n.ts.selectFile,
 	}).then(selectedFile => {
-		file.value = selectedFile;
+		if (!props.editingMessage && session === editSession) file.value = selectedFile;
 	});
 }
 
@@ -212,12 +234,12 @@ function send() {
 	sending.value = true;
 
 	if (props.editingMessage) {
+		const session = editSession;
 		misskeyApi('chat/messages/update', {
 			messageId: props.editingMessage.id,
 			text: text.value,
 		}).then(() => {
-			clear();
-			emit('edited');
+			if (session === editSession) emit('edited');
 		}).catch(err => {
 			console.error(err);
 		}).then(() => {
@@ -254,7 +276,7 @@ function send() {
 }
 
 function clear() {
-	text.value = '';
+	draftText.value = '';
 	file.value = null;
 	deleteDraft();
 }
@@ -265,7 +287,7 @@ function saveDraft() {
 	drafts[getDraftKey()] = {
 		updatedAt: new Date(),
 		data: {
-			text: text.value,
+			text: draftText.value,
 			file: file.value,
 		},
 	};
@@ -318,12 +340,13 @@ onMounted(() => {
 	// 書きかけの投稿を復元
 	const draft = JSON.parse(miLocalStorage.getItem('chatMessageDrafts') || '{}')[getDraftKey()];
 	if (draft) {
-		text.value = draft.data.text;
+		draftText.value = draft.data.text;
 		file.value = draft.data.file;
 	}
 });
 
 onBeforeUnmount(() => {
+	editSession++;
 	if (autocompleteInstance) {
 		autocompleteInstance.detach();
 		autocompleteInstance = null;

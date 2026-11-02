@@ -178,6 +178,7 @@ export interface ChatEventTypes {
 		messageId: MiChatMessage['id'];
 		text: string;
 		editedAt: string;
+		emojis?: Record<string, string>;
 	};
 	deleted: Packed<'ChatMessageLite'>['id'];
 	react: {

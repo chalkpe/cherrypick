@@ -972,6 +972,7 @@ export type Channels = {
                 messageId: ChatMessageLite['id'];
                 text: string;
                 editedAt: string;
+                emojis?: Record<string, string>;
             }) => void;
             deleted: (payload: ChatMessageLite['id']) => void;
             react: (payload: {
@@ -1001,6 +1002,7 @@ export type Channels = {
                 messageId: ChatMessageLite['id'];
                 text: string;
                 editedAt: string;
+                emojis?: Record<string, string>;
             }) => void;
             deleted: (payload: ChatMessageLite['id']) => void;
             react: (payload: {

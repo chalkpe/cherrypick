@@ -88,6 +88,7 @@ const $i = ensureSignin();
 const props = withDefaults(defineProps<{
 	message: NormalizedChatMessage | Misskey.entities.ChatMessage;
 	isSearchResult?: boolean;
+	canEdit?: boolean;
 	// 同じ送信者が続けて送ったメッセージのまとまりの中での位置。省略すると単独のメッセージとして表示する。
 	// 新着のたびに全部の吹き出しを描き直さないよう、オブジェクトではなく真偽値で受け取る
 	firstInGroup?: boolean;
@@ -95,6 +96,7 @@ const props = withDefaults(defineProps<{
 }>(), {
 	firstInGroup: true,
 	lastInGroup: true,
+	canEdit: false,
 });
 
 const emit = defineEmits<{
@@ -201,13 +203,15 @@ function getMenu(): MenuItem[] {
 	});
 
 	if (isMe.value && !deletedAt.value && $i.policies.chatAvailability === 'available') {
-		menu.push({
-			text: i18n.ts.edit,
-			icon: 'ti ti-pencil',
-			action: () => {
-				emit('edit', props.message);
-			},
-		});
+		if (props.canEdit) {
+			menu.push({
+				text: i18n.ts.edit,
+				icon: 'ti ti-pencil',
+				action: () => {
+					emit('edit', props.message);
+				},
+			});
+		}
 
 		menu.push({
 			text: i18n.ts.delete,
