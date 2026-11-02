@@ -98,6 +98,14 @@ describe('ChatService.updateMessage', () => {
 		expect(f.message.emojis).toEqual(['wave']);
 	});
 
+	test('local edits refresh emoji metadata in storage and streams', async () => {
+		const f = createFixture();
+		f.message.emojis = ['removed'];
+		await f.service.updateMessage('u1', 'm1', ':wave:');
+		expect(f.message.emojis).toEqual(['wave']);
+		expect(f.publishChatUserStream).toHaveBeenCalledWith('u1', 'u2', 'updated', expect.objectContaining({ emojis: { wave: 'https://remote.test/wave.png' } }));
+	});
+
 	test('ignores remote edits older than or equal to the stored revision', async () => {
 		const f = createFixture();
 		f.message.text = 'latest';

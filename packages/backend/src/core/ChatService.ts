@@ -460,7 +460,12 @@ export class ChatService {
 		message.editedAt = editedAt;
 		message.emojis = emojis;
 
-		const payload = { messageId: message.id, text: trimmed, editedAt: editedAt.toISOString() };
+		const payload = {
+			messageId: message.id,
+			text: trimmed,
+			editedAt: editedAt.toISOString(),
+			emojis: await this.customEmojiService.populateEmojis(emojis, null),
+		};
 		if (message.toUserId) {
 			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId, 'updated', payload);
 			this.globalEventService.publishChatUserStream(message.toUserId, message.fromUserId, 'updated', payload);
