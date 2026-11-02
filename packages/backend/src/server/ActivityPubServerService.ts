@@ -971,12 +971,13 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			this.setResponseType(request, reply);
 			if (message.deletedAt != null) {
+				this.setResponseType(request, reply);
 				const uri = message.uri ?? `${this.config.url}/chat/messages/${message.id}`;
 				return this.apRendererService.addContext({ ...this.apRendererService.renderTombstone(uri), formerType: 'Note' });
 			}
 
+			this.setResponseType(request, reply);
 			return this.apRendererService.addContext(await this.apRendererService.renderChatMessage(message, fromUser, toUsers, roomId, roomUri));
 		});
 

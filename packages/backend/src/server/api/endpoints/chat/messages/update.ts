@@ -6,7 +6,7 @@
 import { Injectable } from '@nestjs/common';
 import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
-import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatMessageInvalidTextError, ChatService } from '@/core/ChatService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { ApiError } from '@/server/api/error.js';
 
@@ -36,6 +36,11 @@ export const meta = {
 			code: 'NO_SUCH_MESSAGE',
 			id: '31846552-b85d-4908-808f-64bf91000151',
 		},
+		invalidText: {
+			message: 'Invalid text.',
+			code: 'INVALID_TEXT',
+			id: 'f6f8f5d4-1f37-4d3f-9e3b-4e1b4f8a2c71',
+		},
 	},
 } as const;
 
@@ -61,6 +66,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				const updated = await this.chatService.updateMessage(me.id, ps.messageId, ps.text);
 				return this.chatEntityService.packMessageDetailed(updated, me);
 			} catch (e) {
+				if (e instanceof ChatMessageInvalidTextError) throw new ApiError(meta.errors.invalidText);
 				if (e instanceof ChatMessageAccessError) throw new ApiError(meta.errors.noSuchMessage);
 				throw e;
 			}

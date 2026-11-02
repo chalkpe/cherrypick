@@ -195,6 +195,12 @@ export interface ChatEventTypes {
 
 // ルームの内部制御イベントはクライアントへ転送しない。
 export interface ChatRoomEventTypes extends ChatEventTypes {
+	roomUpdated: {
+		roomId: MiChatRoom['id'];
+		name: string;
+		description: string;
+	};
+	membershipStarted: { userId: MiUser['id'] };
 	membershipEnded: { userId: MiUser['id'] };
 	roomDeleted: undefined;
 }

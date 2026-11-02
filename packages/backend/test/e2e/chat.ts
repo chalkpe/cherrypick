@@ -65,8 +65,8 @@ describe('chat/messages/update', () => {
 			user: alice,
 		}, {
 			status: 400,
-			code: 'NO_SUCH_MESSAGE',
-			id: '31846552-b85d-4908-808f-64bf91000151',
+			code: 'INVALID_TEXT',
+			id: 'f6f8f5d4-1f37-4d3f-9e3b-4e1b4f8a2c71',
 		});
 	});
 

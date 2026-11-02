@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import * as mfm from 'mfc-js';
 import * as Redis from 'ioredis';
@@ -34,9 +35,13 @@ import { LiveKitService } from '@/core/LiveKitService.js';
 import { emojiRegex } from '@/misc/emoji-regex.js';
 
 export class ChatMessageAccessError extends Error {}
+export class ChatMessageInvalidTextError extends ChatMessageAccessError {}
 
 export const MAX_ROOM_MEMBERS = 50;
 const MAX_REACTIONS_PER_MESSAGE = 100;
+const PENDING_CHAT_REACTION_TTL = 6 * 60 * 60;
+const MAX_PENDING_CHAT_REACTIONS = 100;
+const CHAT_REACTION_ACTIVITY_ID_TTL = 30 * 24 * 60 * 60;
 const isCustomEmojiRegexp = /^:([\w+-]+)(?:@\.)?:$/;
 
 // TODO: ReactionServiceのやつと共通化
@@ -368,7 +373,7 @@ export class ChatService {
 			if (remoteMembers.length > 0) {
 				const fullFromUser = await this.usersRepository.findOneByOrFail({ id: fromUser.id });
 				const allMembersForRendering = allMembers.filter(m => m != null) as MiUser[];
-				const chatMessageObject = await this.apRendererService.renderChatMessage(inserted, fullFromUser, allMembersForRendering, toRoom.id, toRoom.uri ?? undefined);
+				const chatMessageObject = await this.apRendererService.renderChatMessage(inserted, fullFromUser, allMembersForRendering, toRoom.id, await this.roomUriForRoom(toRoom));
 				const activity = {
 					type: 'Create',
 					actor: this.userEntityService.genLocalUserUri(fullFromUser.id),
@@ -452,7 +457,7 @@ export class ChatService {
 		await this.assertCanStillEdit(message);
 
 		const trimmed = text.trim();
-		if (trimmed.length < 1 || trimmed.length > 2000) throw new ChatMessageAccessError('invalid text');
+		if (trimmed.length < 1 || trimmed.length > 2000) throw new ChatMessageInvalidTextError('invalid text');
 
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));
@@ -735,11 +740,11 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async deleteRoom(room: MiChatRoom, deleter?: MiUser) {
+	public async deleteRoom(room: MiChatRoom, deleter?: MiUser, options?: { federate?: boolean }) {
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
 		// A remote owner's server is the authority for its room, so only rooms owned here are announced.
 		// The announcement is signed by the owner even when a moderator deletes the room.
-		if (owner != null && this.userEntityService.isLocalUser(owner)) {
+		if (options?.federate !== false && owner != null && this.userEntityService.isLocalUser(owner)) {
 			const participants = await this.participantsForRoom(room);
 			const toUsers = participants.filter(user => user.id !== owner.id);
 			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomDelete(room, owner, toUsers));
@@ -939,6 +944,7 @@ export class ChatService {
 		// Federation: Notify about acceptance and new member
 		const room = await this.chatRoomsRepository.findOneByOrFail({ id: roomId });
 		const joiningUser = await this.usersRepository.findOneByOrFail({ id: userId });
+		this.globalEventService.publishChatRoomStream(roomId, 'membershipStarted', { userId });
 		const owner = await this.usersRepository.findOneByOrFail({ id: room.ownerId });
 
 		// Send Accept activity to the inviter (room owner) if they are remote
@@ -1173,7 +1179,7 @@ export class ChatService {
 	public async updateRoom(room: MiChatRoom, params: {
 		name?: string;
 		description?: string;
-	}): Promise<MiChatRoom> {
+	}, options?: { federate?: boolean }): Promise<MiChatRoom> {
 		const updated = await this.chatRoomsRepository.createQueryBuilder().update()
 			.set(params)
 			.where('id = :id', { id: room.id })
@@ -1184,8 +1190,14 @@ export class ChatService {
 			});
 
 		const merged = { ...room, ...updated };
+		this.globalEventService.publishChatRoomStream(merged.id, 'roomUpdated', {
+			roomId: merged.id,
+			name: merged.name,
+			description: merged.description,
+		});
+
 		const owner = await this.usersRepository.findOneBy({ id: merged.ownerId });
-		if (owner != null) {
+		if (options?.federate !== false && owner != null && owner.host == null) {
 			const participants = await this.participantsForRoom(merged);
 			const toUsers = participants.filter(user => user.id !== owner.id);
 			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomUpdate(merged, owner, toUsers));
@@ -1308,7 +1320,7 @@ export class ChatService {
 
 		const result = await this.chatMessagesRepository.createQueryBuilder().update()
 			.set({
-				reactions: () => `array_append("reactions", :pair)`,
+				reactions: () => 'array_append("reactions", :pair)',
 			})
 			.where('id = :id', { id: message.id })
 			.andWhere('"deletedAt" IS NULL')
@@ -1336,7 +1348,10 @@ export class ChatService {
 		const actor = await this.usersRepository.findOneByOrFail({ id: userId });
 		const participants = await this.participantsForMessage(message);
 		const toUsers = participants.filter(user => user.id !== actor.id);
-		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReaction(message, actor, toUsers, reaction));
+		const messageUri = this.messageUriOf(message);
+		const activityId = `${this.userEntityService.genLocalUserUri(actor.id)}/chat-reactions/${randomUUID()}`;
+		await this.redisClient.setex(this.chatReactionActivityIdKey(actor.id, messageUri, reaction), CHAT_REACTION_ACTIVITY_ID_TTL, activityId);
+		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReaction(message, actor, toUsers, reaction, activityId));
 	}
 
 	@bindThis
@@ -1368,7 +1383,7 @@ export class ChatService {
 
 		const result = await this.chatMessagesRepository.createQueryBuilder().update()
 			.set({
-				reactions: () => `array_remove("reactions", :pair)`,
+				reactions: () => 'array_remove("reactions", :pair)',
 			})
 			.where('id = :id', { id: message.id })
 			.andWhere('"deletedAt" IS NULL')
@@ -1378,19 +1393,22 @@ export class ChatService {
 
 		// TODO: 実際に削除が行われたときのみイベントを発行する
 
+		const packedUser = await this.userEntityService.pack(userId);
 		if (room) {
 			this.globalEventService.publishChatRoomStream(room.id, 'unreact', {
 				messageId: message.id,
-				user: await this.userEntityService.pack(userId),
+				user: packedUser,
 				reaction,
 			});
 		} else {
 			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId!, 'unreact', {
 				messageId: message.id,
+				user: packedUser,
 				reaction,
 			});
 			this.globalEventService.publishChatUserStream(message.toUserId!, message.fromUserId, 'unreact', {
 				messageId: message.id,
+				user: packedUser,
 				reaction,
 			});
 		}
@@ -1398,7 +1416,11 @@ export class ChatService {
 		const actor = await this.usersRepository.findOneByOrFail({ id: userId });
 		const participants = await this.participantsForMessage(message);
 		const toUsers = participants.filter(user => user.id !== actor.id);
-		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReactionUndo(message, actor, toUsers, reaction));
+		const messageUri = this.messageUriOf(message);
+		const activityIdKey = this.chatReactionActivityIdKey(actor.id, messageUri, reaction);
+		const activityId = await this.redisClient.get(activityIdKey) ?? undefined;
+		await this.redisClient.del(activityIdKey);
+		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReactionUndo(message, actor, toUsers, reaction, activityId));
 	}
 
 	@bindThis
@@ -1495,7 +1517,7 @@ export class ChatService {
 		if (message.reactions.length >= MAX_REACTIONS_PER_MESSAGE) throw new ChatMessageAccessError('too many reactions');
 
 		const result = await this.chatMessagesRepository.createQueryBuilder().update()
-			.set({ reactions: () => `array_append("reactions", :pair)` })
+			.set({ reactions: () => 'array_append("reactions", :pair)' })
 			.where('id = :id', { id: message.id })
 			.andWhere('"deletedAt" IS NULL')
 			.andWhere('NOT (:pair = ANY("reactions"))')
@@ -1539,27 +1561,68 @@ export class ChatService {
 
 		const pair = `${actor.id}/${reaction}`;
 		await this.chatMessagesRepository.createQueryBuilder().update()
-			.set({ reactions: () => `array_remove("reactions", :pair)` })
+			.set({ reactions: () => 'array_remove("reactions", :pair)' })
 			.where('id = :id', { id: message.id })
 			.setParameter('pair', pair)
 			.execute();
 		message.reactions = message.reactions.filter(value => value !== pair);
 
+		const packedUser = await this.userEntityService.pack(actor.id);
 		if (room) {
 			this.globalEventService.publishChatRoomStream(room.id, 'unreact', {
 				messageId: message.id,
-				user: await this.userEntityService.pack(actor.id),
+				user: packedUser,
 				reaction,
 			});
 		} else {
 			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId!, 'unreact', {
 				messageId: message.id,
+				user: packedUser,
 				reaction,
 			});
 			this.globalEventService.publishChatUserStream(message.toUserId!, message.fromUserId, 'unreact', {
 				messageId: message.id,
+				user: packedUser,
 				reaction,
 			});
+		}
+	}
+
+	@bindThis
+	public async storePendingChatReaction(actorId: MiUser['id'], messageUri: string, reaction: string, undo: boolean): Promise<void> {
+		const key = `chat_pending_reactions:${messageUri}`;
+		const count = await this.redisClient.scard(key);
+		if (count >= MAX_PENDING_CHAT_REACTIONS) return;
+		await this.redisClient.sadd(key, JSON.stringify({ actorId, reaction, undo }));
+		await this.redisClient.expire(key, PENDING_CHAT_REACTION_TTL);
+	}
+
+	@bindThis
+	public async applyPendingChatReactions(message: MiChatMessage): Promise<void> {
+		if (message.uri == null) return;
+
+		const key = `chat_pending_reactions:${message.uri}`;
+		const entries = await this.redisClient.smembers(key);
+		if (entries.length === 0) return;
+		await this.redisClient.del(key);
+
+		for (const entry of entries) {
+			try {
+				const parsed = JSON.parse(entry) as { actorId?: unknown; reaction?: unknown; undo?: unknown };
+				if (typeof parsed.actorId !== 'string' || typeof parsed.reaction !== 'string' || typeof parsed.undo !== 'boolean') continue;
+				const actor = await this.usersRepository.findOneBy({ id: parsed.actorId });
+				if (actor == null || actor.host == null) continue;
+
+				if (parsed.undo) {
+					await this.unreactRemote(actor, message, parsed.reaction);
+				} else {
+					await this.reactRemote(actor, message, parsed.reaction);
+				}
+			} catch (err) {
+				if (err instanceof ChatMessageAccessError) continue;
+				// A malformed deferred reaction must not prevent the message from being stored.
+				continue;
+			}
 		}
 	}
 
@@ -1567,9 +1630,9 @@ export class ChatService {
 	 * A custom emoji name only means something on the server that sent it, so it is stored
 	 * with the actor's host rather than resolving to a local emoji that happens to share the name.
 	 */
-	private normalizeRemoteReaction(reaction: string, host: MiUser['host']): string {
+	private normalizeRemoteReaction(reaction: string, actorHost: MiUser['host']): string {
 		const custom = reaction.match(isCustomEmojiRegexp);
-		if (custom != null) return host == null ? `:${custom[1]}:` : `:${custom[1]}@${host}:`;
+		if (custom != null) return actorHost == null ? `:${custom[1]}:` : `:${custom[1]}@${actorHost}:`;
 		try {
 			return normalizeEmojiString(reaction);
 		} catch {
@@ -1587,6 +1650,14 @@ export class ChatService {
 		}
 	}
 
+	private messageUriOf(message: MiChatMessage): string {
+		return message.uri ?? `${this.config.url.replace(/\/$/, '')}/chat/messages/${message.id}`;
+	}
+
+	private chatReactionActivityIdKey(actorId: MiUser['id'], messageUri: string, reaction: string): string {
+		return `chat_reaction_activity_id:${messageUri}:${actorId}:${encodeURIComponent(reaction)}`;
+	}
+
 	private async participantsForRoom(room: MiChatRoom): Promise<MiUser[]> {
 		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
 		const ids = Array.from(new Set([room.ownerId, ...memberships.map(membership => membership.userId)]));
@@ -1596,7 +1667,14 @@ export class ChatService {
 	private async roomUriForMessage(message: MiChatMessage): Promise<string | undefined> {
 		if (message.toRoomId == null) return undefined;
 		const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
-		return room?.uri ?? undefined;
+		return room != null ? await this.roomUriForRoom(room) : undefined;
+	}
+
+	private async roomUriForRoom(room: MiChatRoom): Promise<string | undefined> {
+		if (room.uri != null) return room.uri;
+		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+		const base = owner?.host != null ? owner.uri?.replace(/\/users\/.*$/, '') : null;
+		return base != null ? `${base}/chat/rooms/${room.id}` : undefined;
 	}
 
 	private async participantsForMessage(message: MiChatMessage): Promise<MiUser[]> {

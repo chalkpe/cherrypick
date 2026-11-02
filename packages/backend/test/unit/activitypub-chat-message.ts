@@ -301,11 +301,22 @@ describe('ActivityPub chat message fetch authorization: edge cases', () => {
 		expect(nonMember.statusCode).toBe(404);
 	});
 
-	test('returns a Tombstone for a deleted message', async () => {
-		const response = await fetchMessage(await signedHeaders(carol, { url: `${LOCAL}/chat/messages/${deletedMessage.id}` }), deletedMessage.id);
+	test('returns a Tombstone for a deleted message only to a participant', async () => {
+		const participant = await fetchMessage(await signedHeaders(carol, { url: `${LOCAL}/chat/messages/${deletedMessage.id}` }), deletedMessage.id);
+		const unrelated = await fetchMessage(await signedHeaders(bob, { url: `${LOCAL}/chat/messages/${deletedMessage.id}` }), deletedMessage.id);
 
-		expect(response.statusCode).toBe(200);
-		expect(response.json()).toMatchObject({ type: 'Tombstone', formerType: 'Note' });
+		expect(participant.statusCode).toBe(200);
+		expect(participant.json()).toMatchObject({ type: 'Tombstone', formerType: 'Note' });
+		expect(unrelated.statusCode).toBe(404);
+	});
+
+	test('returns a Tombstone for a deleted room message only to a member', async () => {
+		const member = await fetchMessage(await signedHeaders(carol, { url: `${LOCAL}/chat/messages/${deletedRoomMessage.id}` }), deletedRoomMessage.id);
+		const nonMember = await fetchMessage(await signedHeaders(bob, { url: `${LOCAL}/chat/messages/${deletedRoomMessage.id}` }), deletedRoomMessage.id);
+
+		expect(member.statusCode).toBe(200);
+		expect(member.json()).toMatchObject({ type: 'Tombstone', formerType: 'Note' });
+		expect(nonMember.statusCode).toBe(404);
 	});
 
 	test.each([deletedMessage, deletedRoomMessage])('hides deleted message $id from an unrelated signed actor', async (deleted) => {

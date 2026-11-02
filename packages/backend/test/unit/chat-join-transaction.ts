@@ -146,6 +146,9 @@ function createFixture(options: FixtureOptions = {}) {
 			renderAdd: vi.fn(() => ({})),
 			addContext: vi.fn((activity: unknown) => activity),
 		},
+		globalEventService: {
+			publishChatRoomStream: vi.fn(),
+		},
 		queueService: { deliver },
 	}) as ChatService;
 

@@ -39,6 +39,10 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		del: async (key: string) => locks.delete(key),
 		exists: async (key: string) => Number(tombstones.has(key)),
 		setex: async (key: string, _ttl: number, value: string) => { tombstones.set(key, value); },
+		scard: async () => 0,
+		sadd: async () => 1,
+		expire: async () => 1,
+		smembers: async () => [],
 		pipeline: () => pipeline,
 	};
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
@@ -72,16 +76,18 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		idService: { gen: () => `message${++sequence}` },
 		chatEntityService: { packMessageLiteFor1on1: async (message: unknown) => message },
 		customEmojiService: { populateEmojis: async () => ({}) },
-		globalEventService: { publishChatUserStream: () => {} },
+		globalEventService: { publishChatUserStream: () => {}, publishChatRoomStream: () => {} },
 		redisClient,
 	});
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 		chatService,
 		chatMessagesRepository: chatService.chatMessagesRepository,
+		globalEventService: { publishChatUserStream: () => {}, publishChatRoomStream: () => {} },
 		redisClient,
 		chatRoomsRepository: { findOneBy: async () => ({ id: 'room1', ownerId: owner.id }) },
 		chatRoomMembershipsRepository: {
 			findOneBy: async ({ userId }: { userId: string }) => memberships.find(member => member.userId === userId) ?? null,
+			findBy: async ({ roomId }: { roomId: string }) => memberships.filter(member => member.roomId === roomId),
 			insertOne: async (membership: typeof memberships[number]) => { memberships.push(membership); return membership; },
 		},
 		apDbResolverService: { getUserFromApId: async (uri: string) => users.get(uri) ?? null },

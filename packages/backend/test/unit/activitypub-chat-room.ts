@@ -42,6 +42,7 @@ function fakeRepository(rows: Row[] = [], hooks: { beforeDelete?: () => void | P
 			rows.splice(0, rows.length, ...keep);
 			return { affected: before - rows.length };
 		},
+		countBy: async (where: Record<string, unknown>) => rows.filter(row => matches(row, where)).length,
 	};
 }
 
@@ -49,6 +50,7 @@ type FakeManager = {
 	delete: (entity: unknown, where: Record<string, unknown>) => Promise<{ affected: number }>;
 	findOneBy: (entity: unknown, where: Record<string, unknown>) => Promise<Row | null>;
 	insert: (entity: unknown, row: Row) => Promise<Row>;
+	countBy: (entity: unknown, where: Record<string, unknown>) => Promise<number>;
 };
 
 /**
@@ -69,6 +71,7 @@ function fakeDataSource(tables: Map<string, ReturnType<typeof fakeRepository>>) 
 		delete: (entity, where) => tableFor(entity).delete(where),
 		findOneBy: (entity, where) => tableFor(entity).findOneBy(where),
 		insert: (entity, row) => tableFor(entity).insertOne(row),
+		countBy: (entity, where) => tableFor(entity).countBy(where),
 	};
 
 	return {
@@ -140,9 +143,24 @@ function fixture(options: {
 	const globalEventService = { publishChatRoomStream: vi.fn() };
 	const resolver = { resolve: vi.fn() };
 	const apResolverService = { createResolver: vi.fn(async () => resolver) };
+	const pendingRoomActivities = new Map<string, Set<string>>();
+	const redisClient = {
+		scard: vi.fn(async (key: string) => pendingRoomActivities.get(key)?.size ?? 0),
+		sadd: vi.fn(async (key: string, value: string) => {
+			const set = pendingRoomActivities.get(key) ?? new Set<string>();
+			set.add(value);
+			pendingRoomActivities.set(key, set);
+			return 1;
+		}),
+		expire: vi.fn().mockResolvedValue(1),
+		smembers: vi.fn(async (key: string) => [...(pendingRoomActivities.get(key) ?? [])]),
+		del: vi.fn(async (key: string) => Number(pendingRoomActivities.delete(key))),
+	};
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 		logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 		db,
+		redisClient,
+		globalEventService,
 		chatRoomsRepository: rooms,
 		chatRoomInvitationsRepository: invitations,
 		chatRoomMembershipsRepository: {
@@ -158,9 +176,19 @@ function fixture(options: {
 			isRoomMember: async (room: Row, userId: string) => room.ownerId === userId || memberships.rows.some(m => m.roomId === room.id && m.userId === userId),
 			findMessageByUri: async () => null,
 			deleteRemoteMessage: vi.fn(),
+			updateRoom: vi.fn(async (room: Row, patch: Record<string, unknown>) => {
+				Object.assign(room, patch);
+				return room;
+			}),
+			deleteRoom: vi.fn(async (room: Row) => {
+				await rooms.delete(room.id);
+			}),
 		},
 		apDbResolverService: {
 			getUserFromApId: async (uri: string) => usersByUri.get(uri) ?? null,
+		},
+		apPersonService: {
+			resolvePerson: async (uri: string) => usersByUri.get(uri) ?? null,
 		},
 		userEntityService: {
 			isLocalUser: (user: { host: string | null }) => user.host == null,
@@ -758,6 +786,83 @@ describe('Chat room federation: Remove', () => {
 	});
 });
 
+describe('Chat room federation: deferred room activities', () => {
+	const remoteRoomUri = 'https://remote.test/chat/rooms/remoteroom';
+
+	test('truncates oversized mirror room metadata from an Invite', async () => {
+		const f = fixture();
+
+		await f.inbox.invite(remoteOwner, {
+			type: 'Invite',
+			actor: remoteOwner.uri,
+			object: {
+				id: 'https://remote.test/chat/rooms/oversized',
+				type: 'Group',
+				name: 'x'.repeat(300),
+				summary: 'y'.repeat(2000),
+				attributedTo: remoteOwner.uri,
+			},
+			target: `${LOCAL}/users/${alice.id}`,
+		});
+
+		const room = f.rooms.rows.find(room => room.id === 'oversized');
+		expect(room?.name).toHaveLength(256);
+		expect(room?.description).toHaveLength(1024);
+	});
+
+	test('applies a pending Update after Invite creates the mirror room', async () => {
+		const f = fixture();
+		f.resolver.resolve.mockImplementation(async (value: unknown) => value);
+
+		await f.inbox.update(remoteOwner, {
+			type: 'Update',
+			actor: remoteOwner.uri,
+			object: { id: remoteRoomUri, type: 'Group', name: 'renamed', summary: 'description', attributedTo: remoteOwner.uri },
+		});
+		await f.inbox.invite(remoteOwner, {
+			type: 'Invite',
+			actor: remoteOwner.uri,
+			object: { id: remoteRoomUri, type: 'Group', name: 'original', attributedTo: remoteOwner.uri },
+			target: `${LOCAL}/users/${alice.id}`,
+		});
+
+		expect(f.rooms.rows.find(room => room.id === 'remoteroom')).toMatchObject({ name: 'renamed', description: 'description' });
+	});
+
+	test('applies a pending Add after Invite creates the mirror room', async () => {
+		const f = fixture();
+
+		await f.inbox.add(remoteOwner, { type: 'Add', actor: remoteOwner.uri, target: remoteRoomUri, object: invitedRemote.uri });
+		await f.inbox.invite(remoteOwner, {
+			type: 'Invite',
+			actor: remoteOwner.uri,
+			object: { id: remoteRoomUri, type: 'Group', name: 'original', attributedTo: remoteOwner.uri },
+			target: `${LOCAL}/users/${alice.id}`,
+		});
+
+		expect(f.memberships.rows).toEqual([expect.objectContaining({ roomId: 'remoteroom', userId: invitedRemote.id })]);
+	});
+
+	test('applies a pending Delete after Invite creates the mirror room', async () => {
+		const f = fixture();
+
+		await f.inbox.delete(remoteOwner, {
+			type: 'Delete',
+			actor: remoteOwner.uri,
+			object: { id: remoteRoomUri, type: 'Tombstone', formerType: 'Group' },
+		});
+		await f.inbox.invite(remoteOwner, {
+			type: 'Invite',
+			actor: remoteOwner.uri,
+			object: { id: remoteRoomUri, type: 'Group', name: 'original', attributedTo: remoteOwner.uri },
+			target: `${LOCAL}/users/${alice.id}`,
+		});
+
+		expect(f.rooms.rows.find(room => room.id === 'remoteroom')).toBeUndefined();
+		expect(f.invitations.rows).toEqual([]);
+	});
+});
+
 describe('Chat room federation: Add/Update/Delete', () => {
 	const ownerActor = { ...localOwner, uri: `${LOCAL}/users/${localOwner.id}` };
 	const roomUri = `${LOCAL}/chat/rooms/localroom`;
@@ -769,6 +874,7 @@ describe('Chat room federation: Add/Update/Delete', () => {
 		await f.inbox.add(ownerActor, { type: 'Add', actor: ownerActor.uri, target: roomUri, object: invitedRemote.uri });
 
 		expect(f.memberships.rows).toEqual([expect.objectContaining({ roomId: 'localroom', userId: invitedRemote.id })]);
+		expect(f.inbox.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('localroom', 'membershipStarted', { userId: invitedRemote.id });
 	});
 
 	test('Add is rejected for a non-owner', async () => {
@@ -778,6 +884,19 @@ describe('Chat room federation: Add/Update/Delete', () => {
 
 		expect(result).toContain('skip');
 		expect(f.memberships.rows).toEqual([]);
+	});
+
+	test('Add does not exceed the room member limit', async () => {
+		const bobroom = { id: 'bobroom', name: 'bob', ownerId: remoteOwner.id, description: '', isArchived: false };
+		const f = fixture({
+			rooms: [bobroom],
+			memberships: Array.from({ length: 50 }, (_, i) => ({ id: `m${i}`, roomId: 'bobroom', userId: dave.id })),
+		});
+
+		const result = await f.inbox.add(remoteOwner, { type: 'Add', actor: remoteOwner.uri, target: 'https://remote.test/chat/rooms/bobroom', object: invitedRemote.uri });
+
+		expect(result).toContain('full');
+		expect(f.memberships.rows).toHaveLength(50);
 	});
 
 	test('Update changes the mirror room name and description', async () => {

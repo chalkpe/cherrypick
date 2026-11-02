@@ -21,6 +21,7 @@ export interface IObject {
 	updated?: string;
 	cc?: ApObject;
 	to?: ApObject;
+	context?: ApObject;
 	attributedTo?: ApObject;
 	attachment?: any[];
 	inReplyTo?: any;
@@ -134,6 +135,7 @@ export interface IPost extends IObject {
 	_misskey_quote?: string;
 	_misskey_content?: string;
 	_misskey_talk?: boolean;
+	_misskey_chatRoom?: string;
 	quoteUrl?: string;
 	disableRightClick?: boolean;
 	deleteAt?: string;

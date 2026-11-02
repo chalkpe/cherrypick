@@ -901,13 +901,19 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public async renderChatReaction(message: any, actor: MiUser, toUsers: MiUser[], reaction: string): Promise<ILike> {
-		return buildChatReaction(message, actor, toUsers, reaction, await this.chatReactionPayloadOptions(reaction));
+	public async renderChatReaction(message: any, actor: MiUser, toUsers: MiUser[], reaction: string, activityId?: string): Promise<ILike> {
+		return buildChatReaction(message, actor, toUsers, reaction, {
+			...await this.chatReactionPayloadOptions(reaction),
+			activityId,
+		});
 	}
 
 	@bindThis
-	public async renderChatReactionUndo(message: any, actor: MiUser, toUsers: MiUser[], reaction: string): Promise<IUndo> {
-		return buildChatReactionUndo(message, actor, toUsers, reaction, await this.chatReactionPayloadOptions(reaction));
+	public async renderChatReactionUndo(message: any, actor: MiUser, toUsers: MiUser[], reaction: string, activityId?: string): Promise<IUndo> {
+		return buildChatReactionUndo(message, actor, toUsers, reaction, {
+			...await this.chatReactionPayloadOptions(reaction),
+			activityId,
+		});
 	}
 
 	private async chatReactionPayloadOptions(reaction: string): Promise<ChatPayloadOptions> {
@@ -922,7 +928,7 @@ export class ApRendererService {
 
 	@bindThis
 	public renderChatRoomUpdate(room: MiChatRoom, owner: MiUser, toUsers: MiUser[]): IUpdate {
-		return buildChatRoomUpdate(room, owner, toUsers, {
+		return buildChatRoomUpdate(this.chatRoomForRender(room, owner), owner, toUsers, {
 			baseUrl: this.config.url,
 			published: new Date().toISOString(),
 		});
@@ -930,7 +936,7 @@ export class ApRendererService {
 
 	@bindThis
 	public renderChatRoomDelete(room: Pick<MiChatRoom, 'id'>, owner: MiUser, toUsers: MiUser[]): IDelete {
-		return buildChatRoomDelete(room, owner, toUsers, {
+		return buildChatRoomDelete(this.chatRoomForRender(room, owner), owner, toUsers, {
 			baseUrl: this.config.url,
 			published: new Date().toISOString(),
 		});
@@ -944,11 +950,23 @@ export class ApRendererService {
 
 		return {
 			type: 'Group',
-			id: room.uri ?? this.genLocalChatRoomUri(room.id),
+			id: this.chatRoomUriForRender(room, owner),
 			name: room.name,
 			summary: room.description || undefined,
 			attributedTo: ownerUri || undefined,
 		};
+	}
+
+	private chatRoomForRender<T extends Pick<MiChatRoom, 'id'> & { uri?: string | null; }>(room: T, owner: MiUser): T {
+		const uri = this.chatRoomUriForRender(room, owner);
+		return uri === room.uri ? room : { ...room, uri };
+	}
+
+	private chatRoomUriForRender(room: Pick<MiChatRoom, 'id'> & { uri?: string | null; }, owner: MiUser): string {
+		if (room.uri != null) return room.uri;
+		if (this.userEntityService.isLocalUser(owner)) return this.genLocalChatRoomUri(room.id);
+		const base = owner.uri?.replace(/\/users\/.*$/, '');
+		return base != null ? `${base}/chat/rooms/${room.id}` : this.genLocalChatRoomUri(room.id);
 	}
 
 	/**

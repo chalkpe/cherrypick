@@ -33,6 +33,7 @@ export type ChatPayloadOptions = {
 	roomUri?: string;
 	attachment?: IApDocument;
 	tag?: IObject[];
+	activityId?: string;
 };
 
 export type ChatScope = 'everyone' | 'followers' | 'following' | 'mutual' | 'none';
@@ -72,13 +73,14 @@ export function buildChatNote(
 		source: { content: text, mediaType: 'text/x.misskeymarkdown' },
 		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
 		published: options.published ?? new Date().toISOString(),
+		updated: message.editedAt?.toISOString(),
 		_misskey_talk: true,
 	};
 
-	if (options.roomUri) {
-		note['@context'] = options.roomUri;
-	} else if (roomId) {
-		note['@context'] = chatRoomUri({ id: roomId }, options.baseUrl);
+	const roomUri = options.roomUri ?? (roomId ? chatRoomUri({ id: roomId }, options.baseUrl) : null);
+	if (roomUri != null) {
+		note.context = roomUri;
+		note._misskey_chatRoom = roomUri;
 	}
 
 	if (options.attachment) {
@@ -142,17 +144,25 @@ export function buildChatReaction(
 	options: ChatPayloadOptions,
 ): ILike {
 	const messageUri = chatMessageUri(message, options.baseUrl);
+	const qualifiedReaction = qualifyChatReaction(reaction, actor, options.baseUrl);
 	return {
-		id: `${chatActorUri(actor, options.baseUrl)}/chat-reactions/${encodeURIComponent(messageUri)}/${encodeURIComponent(reaction)}`,
+		id: options.activityId ?? `${chatActorUri(actor, options.baseUrl)}/chat-reactions/${encodeURIComponent(messageUri)}/${encodeURIComponent(qualifiedReaction)}`,
 		type: 'EmojiReact',
 		actor: chatActorUri(actor, options.baseUrl),
 		object: messageUri,
-		content: reaction,
-		_misskey_reaction: reaction,
+		content: qualifiedReaction,
+		_misskey_reaction: qualifiedReaction,
 		...(options.tag?.length ? { tag: options.tag } : {}),
 		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
 		published: options.published ?? new Date().toISOString(),
 	};
+}
+
+function qualifyChatReaction(reaction: string, actor: ChatActor, baseUrl: string): string {
+	const custom = reaction.match(/^:([\w+-]+)(?:@([\w.-]+))?:$/);
+	if (custom == null) return reaction;
+	const host = custom[2] == null || custom[2] === '.' ? (actor.host ?? new URL(baseUrl).host) : custom[2];
+	return `:${custom[1]}@${host}:`;
 }
 
 export function buildChatReactionUndo(
