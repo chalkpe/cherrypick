@@ -30,7 +30,7 @@ import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { QueueService } from '@/core/QueueService.js';
-import { MiChatRoomInvitation, MiChatRoomMembership, type UsersRepository, type NotesRepository, type FollowingsRepository, type AbuseUserReportsRepository, type FollowRequestsRepository, type MiMeta, type ChatMessagesRepository, type ChatRoomsRepository, type ChatRoomInvitationsRepository, type ChatRoomMembershipsRepository } from '@/models/_.js';
+import { MiChatRoomInvitation, MiChatRoomMembership, type UsersRepository, type NotesRepository, type FollowingsRepository, type AbuseUserReportsRepository, type FollowRequestsRepository, type MiChatRoom, type MiMeta, type ChatMessagesRepository, type ChatRoomsRepository, type ChatRoomInvitationsRepository, type ChatRoomMembershipsRepository } from '@/models/_.js';
 import { bindThis } from '@/decorators.js';
 import type { MiRemoteUser, MiUser } from '@/models/User.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
@@ -1147,22 +1147,30 @@ export class ApInboxService {
 				return 'room not found';
 			}
 
-			// Delete the membership
-			const result = await this.chatRoomMembershipsRepository.delete({
-				roomId: room.id,
-				userId: actor.id,
-			});
+			// Anyone may leave a room, but only the owner may remove someone else.
+			let member: MiUser = actor;
+			const memberUri = getApId(activity.object);
+			if (memberUri !== actor.uri) {
+				if (room.ownerId !== actor.id) return 'skip: only the room owner can remove another member';
+				const user = await this.apDbResolverService.getUserFromApId(memberUri);
+				if (user == null) return 'skip: user not found';
+				member = user;
+			}
 
-			this.logger.info(`[ApInboxService.remove] Deleted membership, affected rows: ${result.affected}, room: ${room.id}, user: ${actor.id}`);
+			const removed = await this.chatService.removeRoomMember(room, member);
+
+			this.logger.info(`[ApInboxService.remove] Removed: ${removed}, room: ${room.id}, user: ${member.id}`);
 
 			// このサーバーが持つルームなら、抜けたメンバーを通話からも外す。
 			// 外せなくてもジョブは失敗させない。メンバーでない参加者は通話の定期的な読み直し (ChatVoiceService.sweep) が外す
-			if ((result.affected ?? 0) > 0) {
+			if (removed) {
 				const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
 				if (owner != null && owner.host == null) {
-					await this.liveKitService.removeParticipant(room.id, this.liveKitService.identityOf(actor)).catch(err => {
-						this.logger.warn(`[ApInboxService.remove] Failed to remove ${actor.uri} from the voice call in ${room.id}`, { error: err });
+					await this.liveKitService.removeParticipant(room.id, this.liveKitService.identityOf(member)).catch(err => {
+						this.logger.warn(`[ApInboxService.remove] Failed to remove ${member.uri} from the voice call in ${room.id}`, { error: err });
 					});
+
+					await this.relayChatRoomLeave(room, owner, actor);
 				}
 			}
 
@@ -1170,6 +1178,25 @@ export class ApInboxService {
 		}
 
 		return `unknown target: ${activity.target}`;
+	}
+
+	/** Members on other servers learn the roster from the owner, as they did when this member joined. */
+	private async relayChatRoomLeave(room: MiChatRoom, owner: MiUser, leaver: MiRemoteUser): Promise<void> {
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
+		const members = await this.usersRepository.findBy({ id: In(memberships.map(membership => membership.userId)) });
+		const inboxes = new Set<string>();
+		for (const member of members) {
+			if (member.id !== leaver.id && this.userEntityService.isRemoteUser(member) && member.inbox != null) inboxes.add(member.inbox);
+		}
+		if (inboxes.size === 0) return;
+
+		const activity = this.apRendererService.addContext({
+			...this.apRendererService.renderRemove(owner, this.apRendererService.genLocalChatRoomUri(room.id), leaver.uri),
+			published: new Date().toISOString(),
+		});
+		for (const inbox of inboxes) {
+			this.queueService.deliver(owner, activity, inbox, false);
+		}
 	}
 
 	@bindThis

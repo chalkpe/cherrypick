@@ -1147,6 +1147,22 @@ export class ChatService {
 		}
 	}
 
+	/** Applies a membership end that another server announced, so nothing is federated back. */
+	@bindThis
+	public async removeRoomMember(room: MiChatRoom, member: MiUser): Promise<boolean> {
+		const result = await this.chatRoomMembershipsRepository.delete({ roomId: room.id, userId: member.id });
+		if ((result.affected ?? 0) === 0) return false;
+
+		this.globalEventService.publishChatRoomStream(room.id, 'membershipEnded', { userId: member.id });
+
+		const redisPipeline = this.redisClient.pipeline();
+		redisPipeline.del(`newRoomChatMessageExists:${member.id}:${room.id}`);
+		redisPipeline.srem(`newChatMessagesExists:${member.id}`, `room:${room.id}`);
+		await redisPipeline.exec();
+
+		return true;
+	}
+
 	@bindThis
 	public async muteRoom(userId: MiUser['id'], roomId: MiChatRoom['id'], mute: boolean) {
 		const membership = await this.chatRoomMembershipsRepository.findOneByOrFail({ roomId, userId });

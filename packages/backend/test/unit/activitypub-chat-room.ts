@@ -93,8 +93,8 @@ function fakeDataSource(tables: Map<string, ReturnType<typeof fakeRepository>>) 
 const localOwner = { id: 'localOwner', host: null, uri: null };
 const alice = { id: 'alice', host: null, uri: null };
 const remoteOwner = { id: 'bob', host: 'remote.test', uri: 'https://remote.test/users/bob' };
-const invitedRemote = { id: 'carol', host: 'remote.test', uri: 'https://remote.test/users/carol' };
-const dave = { id: 'dave', host: 'other.test', uri: 'https://other.test/users/dave' };
+const invitedRemote = { id: 'carol', host: 'remote.test', uri: 'https://remote.test/users/carol', inbox: 'https://remote.test/users/carol/inbox' };
+const dave = { id: 'dave', host: 'other.test', uri: 'https://other.test/users/dave', inbox: 'https://other.test/users/dave/inbox' };
 
 function fixture(options: {
 	invitations?: Row[];
@@ -170,6 +170,7 @@ function fixture(options: {
 		apRendererService: {
 			genLocalChatRoomUri: (id: string) => `${LOCAL}/chat/rooms/${id}`,
 			renderAdd: vi.fn((_owner: unknown, _target: string, object: string) => ({ type: 'Add', object })),
+			renderRemove: vi.fn((owner: { id: string }, target: string, object: string) => ({ type: 'Remove', actor: `${LOCAL}/users/${owner.id}`, target, object })),
 			renderChatRoomDelete: vi.fn(() => ({ type: 'Delete' })),
 			addContext: vi.fn((activity: unknown) => activity),
 		},
@@ -192,6 +193,7 @@ function fixture(options: {
 		liveKitService,
 	});
 	inbox.chatService.deleteRoom = chatService.deleteRoom;
+	inbox.chatService.removeRoomMember = chatService.removeRoomMember;
 	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, pipeline, globalEventService };
 }
 
@@ -611,6 +613,79 @@ describe('Chat room federation: checking voice states', () => {
 
 		expect(result.ok).toBe(false);
 		expect(result).toEqual({ ok: false, reason: expect.any(String) });
+	});
+});
+
+describe('Chat room federation: Remove by the room owner', () => {
+	const mirrorRoom = { id: 'bobroom', name: 'mirror', ownerId: remoteOwner.id, description: '', isArchived: false };
+	const mirrorUri = 'https://remote.test/chat/rooms/bobroom';
+	const kick = (actor: { uri: string }, member: string, target = mirrorUri) => ({ type: 'Remove', actor: actor.uri, object: member, target });
+
+	test('removes the named member, not the owner, from a mirror room', async () => {
+		const f = fixture({
+			rooms: [mirrorRoom],
+			memberships: [{ id: 'm1', roomId: 'bobroom', userId: dave.id }, { id: 'm2', roomId: 'bobroom', userId: invitedRemote.id }],
+		});
+
+		await expect(f.inbox.remove(remoteOwner, kick(remoteOwner, dave.uri))).resolves.toBe('ok: removed from chat room');
+
+		expect(f.memberships.rows.map(row => row.userId)).toEqual([invitedRemote.id]);
+	});
+
+	test('ends a removed local member\'s subscription and unread state', async () => {
+		const f = fixture({ rooms: [mirrorRoom], memberships: [{ id: 'm1', roomId: 'bobroom', userId: alice.id }] });
+
+		await f.inbox.remove(remoteOwner, kick(remoteOwner, `${LOCAL}/users/${alice.id}`));
+
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('bobroom', 'membershipEnded', { userId: alice.id });
+		expect(f.pipeline.srem).toHaveBeenCalledWith(`newChatMessagesExists:${alice.id}`, 'room:bobroom');
+	});
+
+	test('a member cannot remove someone else', async () => {
+		const f = fixture({
+			rooms: [mirrorRoom],
+			memberships: [{ id: 'm1', roomId: 'bobroom', userId: dave.id }, { id: 'm2', roomId: 'bobroom', userId: invitedRemote.id }],
+		});
+
+		const result = await f.inbox.remove(dave, kick(dave, invitedRemote.uri));
+
+		expect(result).toContain('skip');
+		expect(f.memberships.rows).toHaveLength(2);
+	});
+
+	test('an unknown user is skipped without touching the memberships', async () => {
+		const f = fixture({ rooms: [mirrorRoom], memberships: [{ id: 'm1', roomId: 'bobroom', userId: dave.id }] });
+
+		const result = await f.inbox.remove(remoteOwner, kick(remoteOwner, 'https://remote.test/users/nobody'));
+
+		expect(result).toContain('skip');
+		expect(f.memberships.rows).toHaveLength(1);
+	});
+
+	test('a remote member leaving a local room is relayed by the owner to the remaining remote members', async () => {
+		const f = fixture({ memberships: [
+			{ id: 'm1', roomId: 'localroom', userId: dave.id },
+			{ id: 'm2', roomId: 'localroom', userId: invitedRemote.id },
+			{ id: 'm3', roomId: 'localroom', userId: alice.id },
+		] });
+
+		await f.inbox.remove(dave, { type: 'Remove', actor: dave.uri, object: dave.uri, target: `${LOCAL}/chat/rooms/localroom` });
+
+		expect(f.inbox.queueService.deliver).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ id: localOwner.id }),
+			expect.objectContaining({ type: 'Remove', actor: `${LOCAL}/users/${localOwner.id}`, object: dave.uri, target: `${LOCAL}/chat/rooms/localroom` }),
+			invitedRemote.inbox,
+			false,
+		);
+	});
+
+	test('a remote member leaving a mirror room is not relayed from here', async () => {
+		const f = fixture({ rooms: [mirrorRoom], memberships: [{ id: 'm1', roomId: 'bobroom', userId: dave.id }, { id: 'm2', roomId: 'bobroom', userId: invitedRemote.id }] });
+
+		await f.inbox.remove(dave, { type: 'Remove', actor: dave.uri, object: dave.uri, target: mirrorUri });
+
+		expect(f.inbox.queueService.deliver).not.toHaveBeenCalled();
 	});
 });
 
