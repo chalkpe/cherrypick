@@ -64,7 +64,21 @@ const deletedMessage = {
 	deletedAt: new Date('2026-11-02T00:00:00Z'),
 };
 
-const messages = new Map([message, roomMessage, deletedMessage].map(m => [m.id, m]));
+const deletedRoomMessage = {
+	...roomMessage,
+	id: 'message4',
+	deletedAt: deletedMessage.deletedAt,
+};
+
+const deletedRemoteMessage = {
+	...deletedMessage,
+	id: 'message5',
+	fromUserId: carol.id,
+	toUserId: alice.id,
+	uri: 'https://remote.test/chat/messages/remote-message',
+};
+
+const messages = new Map([message, roomMessage, deletedMessage, deletedRoomMessage, deletedRemoteMessage].map(m => [m.id, m]));
 
 function createService(overrides: Record<string, unknown> = {}) {
 	const users = new Map([alice, carol, bob].map(user => [user.id, user]));
@@ -292,6 +306,28 @@ describe('ActivityPub chat message fetch authorization: edge cases', () => {
 
 		expect(response.statusCode).toBe(200);
 		expect(response.json()).toMatchObject({ type: 'Tombstone', formerType: 'Note' });
+	});
+
+	test.each([deletedMessage, deletedRoomMessage])('hides deleted message $id from an unrelated signed actor', async (deleted) => {
+		const response = await fetchMessage(await signedHeaders(bob, { url: `${LOCAL}/chat/messages/${deleted.id}` }), deleted.id);
+
+		expect(response.statusCode).toBe(404);
+		expect(response.body).not.toContain('Tombstone');
+		expect(response.headers['cache-control']).toBe('private, no-store');
+	});
+
+	test('returns a deleted room message Tombstone to a room member', async () => {
+		const response = await fetchMessage(await signedHeaders(carol, { url: `${LOCAL}/chat/messages/${deletedRoomMessage.id}` }), deletedRoomMessage.id);
+
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toMatchObject({ type: 'Tombstone', formerType: 'Note' });
+	});
+
+	test('does not serve a deleted remote message from a local object URL', async () => {
+		const response = await fetchMessage(await signedHeaders(carol, { url: `${LOCAL}/chat/messages/${deletedRemoteMessage.id}` }), deletedRemoteMessage.id);
+
+		expect(response.statusCode).toBe(404);
+		expect(response.body).not.toContain(deletedRemoteMessage.uri);
 	});
 
 	test('serves a room Group to a member and hides it from a non-member', async () => {

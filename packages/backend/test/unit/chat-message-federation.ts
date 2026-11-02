@@ -209,6 +209,7 @@ describe('ChatService chat federation delivery', () => {
 			update: vi.fn().mockReturnThis(),
 			set: vi.fn().mockReturnThis(),
 			where: vi.fn().mockReturnThis(),
+			andWhere: vi.fn().mockReturnThis(),
 			setParameter: vi.fn().mockReturnThis(),
 			execute: vi.fn().mockResolvedValue({}),
 		};
@@ -226,8 +227,8 @@ describe('ChatService chat federation delivery', () => {
 			config: { url: 'https://local.test' },
 			chatMessagesRepository: {
 				findOneBy: vi.fn(async ({ id }: { id: string }) => messages.get(id) ?? null),
-				update: vi.fn(async (where: string | { id: string }[], patch: Record<string, unknown>) => {
-					const id = typeof where === 'string' ? where : where[0].id;
+				update: vi.fn(async (where: string | { id: string } | { id: string }[], patch: Record<string, unknown>) => {
+					const id = typeof where === 'string' ? where : Array.isArray(where) ? where[0].id : where.id;
 					const target = messages.get(id);
 					if (target) Object.assign(target, patch);
 					return { affected: target ? 1 : 0 };
@@ -300,6 +301,14 @@ describe('ChatService chat federation delivery', () => {
 		expect(f.queueService.deliver).toHaveBeenCalledTimes(4);
 		expect(f.queueService.deliver).toHaveBeenCalledWith(f.alice, expect.objectContaining({ type: 'EmojiReact' }), f.bob.inbox, false);
 		expect(f.queueService.deliver).toHaveBeenCalledWith(f.alice, expect.objectContaining({ type: 'Undo' }), f.carol.inbox, false);
+	});
+
+	test.each(['react', 'unreact'] as const)('%s rejects a deleted message without publishing or federating a reaction', async method => {
+		const f = createService();
+		Object.assign(f.roomMessage, { deletedAt: new Date(), text: null });
+
+		await expect(f.service[method]('m2', 'alice', '👍')).rejects.toThrow('deleted');
+		expect(f.queueService.deliver).not.toHaveBeenCalled();
 	});
 
 	test('updateRemoteMessage updates the author message', async () => {
@@ -487,5 +496,73 @@ describe('ApInboxService chat activity routing', () => {
 		});
 
 		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍');
+	});
+});
+
+describe('chat custom emoji federation', () => {
+	function createRenderer(localOnly = false) {
+		return Object.assign(Object.create(ApRendererService.prototype), {
+			config: { url: BASE },
+			customEmojiService: { localEmojisCache: { fetch: async () => new Map([
+				['wave', { name: 'wave', localOnly, publicUrl: 'https://local.test/wave.png', originalUrl: 'https://local.test/wave.png' }],
+			]) } },
+		}) as ApRendererService;
+	}
+
+	test.each([':wave:', ':wave@.:'])('attaches the public emoji image to %s reactions and Undo', async reaction => {
+		const renderer = createRenderer();
+		const activity = await renderer.renderChatReaction(message, alice as never, [bob as never], reaction);
+		const undo = await renderer.renderChatReactionUndo(message, alice as never, [bob as never], reaction);
+		const tag = [{ type: 'Emoji', name: ':wave:', icon: { type: 'Image', url: 'https://local.test/wave.png' } }];
+
+		expect(activity).toMatchObject({ tag });
+		expect(undo.object).toMatchObject({ id: activity.id, tag });
+	});
+
+	test('does not federate local-only emoji images', async () => {
+		const renderer = createRenderer(true);
+		const activity = await renderer.renderChatReaction(message, alice as never, [bob as never], ':wave:');
+		const undo = await renderer.renderChatReactionUndo(message, alice as never, [bob as never], ':wave:');
+
+		expect(activity.tag).toBeUndefined();
+		expect(undo.object).not.toHaveProperty('tag');
+	});
+
+	test('imports the reaction emoji before storing its qualified name and removes it on Undo', async () => {
+		const chatMessage = {
+			id: 'm1', fromUserId: 'alice', toUserId: 'bob', toRoomId: null,
+			deletedAt: null, reactions: [] as string[],
+		};
+		const queryBuilder = {
+			update: vi.fn().mockReturnThis(), set: vi.fn().mockReturnThis(), where: vi.fn().mockReturnThis(),
+			andWhere: vi.fn().mockReturnThis(),
+			setParameter: vi.fn().mockReturnThis(), execute: vi.fn().mockResolvedValue({ affected: 1 }),
+		};
+		const publishChatUserStream = vi.fn();
+		const chatService = Object.assign(Object.create(ChatService.prototype), {
+			chatMessagesRepository: { findOneBy: async () => chatMessage, createQueryBuilder: () => queryBuilder },
+			globalEventService: { publishChatUserStream },
+		}) as ChatService;
+		const extractEmojis = vi.fn(async () => []);
+		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
+			chatService,
+			apNoteService: { extractEmojis },
+			apResolverService: { createResolver: async () => ({ resolve: async (object: unknown) => object }) },
+			logger: { info: vi.fn() },
+		}) as ApInboxService;
+		const activity = {
+			type: 'EmojiReact', actor: bob.uri, object: message.uri, content: ':wave:',
+			tag: [{ type: 'Emoji', name: ':wave:', icon: { type: 'Image', url: 'https://remote.test/wave.png' } }],
+		};
+
+		await inbox.performOneActivity(bob as never, activity);
+		expect(extractEmojis).toHaveBeenCalledWith(activity.tag, 'remote.test');
+		expect(chatMessage.reactions).toEqual(['bob/:wave@remote.test:']);
+		expect(publishChatUserStream).toHaveBeenCalledWith('alice', 'bob', 'react', { messageId: 'm1', reaction: ':wave@remote.test:' });
+
+		const undo = { type: 'Undo', actor: bob.uri, object: activity };
+		await inbox.performOneActivity(bob as never, undo);
+		expect(chatMessage.reactions).toEqual([]);
+		expect(queryBuilder.setParameter).toHaveBeenLastCalledWith('pair', 'bob/:wave@remote.test:');
 	});
 });

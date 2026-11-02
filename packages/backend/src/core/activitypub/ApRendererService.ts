@@ -901,19 +901,23 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public renderChatReaction(message: any, actor: MiUser, toUsers: MiUser[], reaction: string): ILike {
-		return buildChatReaction(message, actor, toUsers, reaction, {
-			baseUrl: this.config.url,
-			published: new Date().toISOString(),
-		});
+	public async renderChatReaction(message: any, actor: MiUser, toUsers: MiUser[], reaction: string): Promise<ILike> {
+		return buildChatReaction(message, actor, toUsers, reaction, await this.chatReactionPayloadOptions(reaction));
 	}
 
 	@bindThis
-	public renderChatReactionUndo(message: any, actor: MiUser, toUsers: MiUser[], reaction: string): IUndo {
-		return buildChatReactionUndo(message, actor, toUsers, reaction, {
+	public async renderChatReactionUndo(message: any, actor: MiUser, toUsers: MiUser[], reaction: string): Promise<IUndo> {
+		return buildChatReactionUndo(message, actor, toUsers, reaction, await this.chatReactionPayloadOptions(reaction));
+	}
+
+	private async chatReactionPayloadOptions(reaction: string): Promise<ChatPayloadOptions> {
+		const custom = reaction.match(/^:([\w+-]+)(?:@\.)?:$/);
+		const emoji = custom ? (await this.customEmojiService.localEmojisCache.fetch()).get(custom[1]) : null;
+		return {
 			baseUrl: this.config.url,
 			published: new Date().toISOString(),
-		});
+			tag: emoji && !emoji.localOnly ? [this.renderEmoji(emoji)] : undefined,
+		};
 	}
 
 	@bindThis

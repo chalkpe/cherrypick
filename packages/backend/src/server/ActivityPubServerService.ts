@@ -916,12 +916,6 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			if (message.deletedAt != null) {
-				this.setResponseType(request, reply);
-				const uri = message.uri ?? `${this.config.url}/chat/messages/${message.id}`;
-				return this.apRendererService.addContext({ ...this.apRendererService.renderTombstone(uri), formerType: 'Note' });
-			}
-
 			// Get fromUser
 			const fromUser = await this.usersRepository.findOneBy({ id: message.fromUserId });
 			if (fromUser == null || fromUser.host !== null) {
@@ -978,6 +972,11 @@ export class ActivityPubServerService {
 			}
 
 			this.setResponseType(request, reply);
+			if (message.deletedAt != null) {
+				const uri = message.uri ?? `${this.config.url}/chat/messages/${message.id}`;
+				return this.apRendererService.addContext({ ...this.apRendererService.renderTombstone(uri), formerType: 'Note' });
+			}
+
 			return this.apRendererService.addContext(await this.apRendererService.renderChatMessage(message, fromUser, toUsers, roomId, roomUri));
 		});
 

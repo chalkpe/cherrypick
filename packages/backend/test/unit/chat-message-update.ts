@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
+import { IsNull } from 'typeorm';
 import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
 import type { MiChatMessage, MiUser } from '@/models/_.js';
 
@@ -68,7 +69,7 @@ describe('ChatService.updateMessage', () => {
 
 		expect(updated.text).toBe('edited');
 		expect(updated.editedAt).toBeInstanceOf(Date);
-		expect(f.chatMessagesRepository.update).toHaveBeenCalledWith('m1', expect.objectContaining({ text: 'edited' }));
+		expect(f.chatMessagesRepository.update).toHaveBeenCalledWith({ id: 'm1', deletedAt: IsNull() }, expect.objectContaining({ text: 'edited' }));
 	});
 
 	test('rejects editing another user message', async () => {
@@ -82,6 +83,14 @@ describe('ChatService.updateMessage', () => {
 		const f = createFixture({ deletedAt: new Date() });
 
 		await expect(f.service.updateMessage('u1', 'm1', 'x')).rejects.toThrow('deleted');
+	});
+
+	test('does not publish an edit when deletion wins the database update', async () => {
+		const f = createFixture();
+		f.chatMessagesRepository.update.mockResolvedValueOnce({ affected: 0 });
+
+		await expect(f.service.updateMessage('u1', 'm1', 'late edit')).rejects.toBeInstanceOf(ChatMessageAccessError);
+		expect(f.publishChatUserStream).not.toHaveBeenCalled();
 	});
 
 	test('rejects empty text and text over 2000 characters', async () => {

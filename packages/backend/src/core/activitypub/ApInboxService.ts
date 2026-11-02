@@ -234,6 +234,7 @@ export class ApInboxService {
 		if (chatMessage != null) {
 			const reaction = activity._misskey_reaction ?? activity.content ?? activity.name;
 			if (reaction == null || reaction === '') return 'skip: empty reaction';
+			await this.apNoteService.extractEmojis(activity.tag ?? [], actor.host).catch(() => null);
 			await this.chatService.reactRemote(actor, chatMessage, reaction);
 			return 'ok';
 		}
@@ -755,8 +756,21 @@ export class ApInboxService {
 				: recipient.canChat ?? true;
 			if (!recipientCanChat) {
 				// Note creation can also fetch attachments and must not hold the chat insertion lock.
+				const tombstoneKey = `chat_delete_upon_arrival:${object.id}:${encodeURIComponent(actor.uri)}`;
+				if (await this.redisClient.get(tombstoneKey) === actor.uri) return 'skip: deleted';
 				this.logger.info(`Recipient ${recipient.username} cannot use chat, converting to DM`);
 				await this.apNoteService.createNote(object, actor, resolver, true);
+
+				// Serialize with a Delete that may have seen no Note before its insertion.
+				// Release this lock before deleteNote takes the same lock for its author check.
+				const unlock = await acquireApObjectLock(this.redisClient, object.id);
+				let deleted: boolean;
+				try {
+					deleted = await this.redisClient.get(tombstoneKey) === actor.uri;
+				} finally {
+					await unlock();
+				}
+				if (deleted) return await this.deleteNote(actor, object.id);
 				return 'ok';
 			}
 		}
@@ -877,7 +891,9 @@ export class ApInboxService {
 				}
 			}
 
-			if (isChatUri) {
+			// A chat-disabled recipient stores the object as a private Note instead.
+			// Let that object use the normal Note deletion and author checks below.
+			if (isChatUri && await this.apNoteService.fetchNote(uri) == null) {
 				if (!this.isOnActorHost(uri, actor)) return 'skip: message is not on the actor\'s server';
 				await this.redisClient.setex(`chat_delete_upon_arrival:${uri}:${encodeURIComponent(actor.uri)}`, 6 * 60 * 60, actor.uri);
 				return 'ok: chat message tombstone stored';
@@ -902,7 +918,7 @@ export class ApInboxService {
 			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
 			if (room == null) return 'skip: room not found';
 			if (room.ownerId !== actor.id) return 'skip: only the room owner can delete it';
-			await this.chatRoomsRepository.delete(room.id);
+			await this.chatService.deleteRoom(room);
 			return 'ok: chat room deleted';
 		}
 
@@ -1371,6 +1387,9 @@ export class ApInboxService {
 			try {
 				const message = await this.chatService.findMessageByUri(note.id);
 				if (message == null) {
+					if (await this.apNoteService.fetchNote(note.id) != null) {
+						return await this.updateNote(resolver, actor, { ...note, attributedTo: getOneApId(note.attributedTo) }, false, activity);
+					}
 					return await this.createChatMessage(resolver, actor, note, activity);
 				}
 

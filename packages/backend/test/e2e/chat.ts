@@ -7,7 +7,7 @@ process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
 import { afterAll, beforeAll, describe, test } from 'vitest';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
 import type { MiUser } from '@/models/User.js';
 import { api, failedApiCall, initTestDb, signup } from '../utils.js';
@@ -115,6 +115,86 @@ describe('chat/messages/update', () => {
 			await service.updateRemoteMessage(actor, { ...snapshot }, 'resurrected', new Date('2026-11-02T12:03:00Z'), ['wave']);
 			assert.strictEqual((await messages.findOneByOrFail({ id: snapshot.id })).text, null);
 			assert.strictEqual(events.length, 2);
+		} finally {
+			await db.destroy();
+		}
+	});
+
+	test('a local edit cannot restore text after a concurrent deletion', async () => {
+		const created = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'original' }, alice);
+		assert.strictEqual(created.status, 200);
+		const db = await initTestDb(true);
+		try {
+			const messages = db.getRepository(MiChatMessage);
+			const events: unknown[] = [];
+			const service = Object.assign(Object.create(ChatService.prototype), {
+				chatMessagesRepository: {
+					findOneBy: async () => {
+						const snapshot = await messages.findOneByOrFail({ id: created.body.id });
+						await messages.update(snapshot.id, { text: null, deletedAt: new Date() });
+						return snapshot;
+					},
+					update: messages.update.bind(messages),
+				},
+				customEmojiService: { populateEmojis: async () => ({}) },
+				globalEventService: { publishChatUserStream: (...args: unknown[]) => events.push(args) },
+			}) as ChatService;
+			await assert.rejects(service.updateMessage(alice.id, created.body.id, 'late edit'), ChatMessageAccessError);
+			assert.strictEqual((await messages.findOneByOrFail({ id: created.body.id })).text, null);
+			assert.deepStrictEqual(events, []);
+		} finally {
+			await db.destroy();
+		}
+	});
+
+	test('duplicate remote reactions and stale reactions after deletion do not change stored state twice', async () => {
+		const created = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'original' }, alice);
+		assert.strictEqual(created.status, 200);
+		const db = await initTestDb(true);
+		try {
+			const messages = db.getRepository(MiChatMessage);
+			const snapshot = await messages.findOneByOrFail({ id: created.body.id });
+			const events: unknown[] = [];
+			const service = Object.assign(Object.create(ChatService.prototype), {
+				chatMessagesRepository: messages,
+				globalEventService: { publishChatUserStream: (...args: unknown[]) => events.push(args) },
+			}) as ChatService;
+			const actor = { id: bob.id, host: 'remote.test' } as MiUser;
+			await Promise.all([0, 1].map(() => service.reactRemote(actor, { ...snapshot, reactions: [] }, '👍')));
+			assert.deepStrictEqual((await messages.findOneByOrFail({ id: snapshot.id })).reactions, [`${bob.id}/👍`]);
+			assert.strictEqual(events.length, 2);
+
+			await messages.update(snapshot.id, { text: null, reactions: [], deletedAt: new Date() });
+			await service.reactRemote(actor, { ...snapshot, reactions: [] }, '👍');
+			assert.deepStrictEqual((await messages.findOneByOrFail({ id: snapshot.id })).reactions, []);
+			assert.strictEqual(events.length, 2);
+		} finally {
+			await db.destroy();
+		}
+	});
+
+	test.each(['react', 'unreact'] as const)('local %s does not change or publish a message deleted after lookup', async method => {
+		const created = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'original' }, alice);
+		assert.strictEqual(created.status, 200);
+		const db = await initTestDb(true);
+		try {
+			const messages = db.getRepository(MiChatMessage);
+			const events: unknown[] = [];
+			const service = Object.assign(Object.create(ChatService.prototype), {
+				chatMessagesRepository: {
+					findOneBy: async () => {
+						const snapshot = await messages.findOneByOrFail({ id: created.body.id });
+						await messages.update(snapshot.id, { text: null, reactions: [], deletedAt: new Date() });
+						return snapshot;
+					},
+					createQueryBuilder: messages.createQueryBuilder.bind(messages),
+				},
+				globalEventService: { publishChatUserStream: (...args: unknown[]) => events.push(args) },
+			}) as ChatService;
+			const error = await service[method](created.body.id, bob.id, '👍').then(() => null, error => error);
+			assert.deepStrictEqual((await messages.findOneByOrFail({ id: created.body.id })).reactions, []);
+			assert.deepStrictEqual(events, []);
+			assert.strictEqual(error, null);
 		} finally {
 			await db.destroy();
 		}

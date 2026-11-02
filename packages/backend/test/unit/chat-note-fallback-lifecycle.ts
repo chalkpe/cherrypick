@@ -1,0 +1,164 @@
+/*
+ * SPDX-FileCopyrightText: syuilo and misskey-project
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+import { describe, expect, test } from 'vitest';
+import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { UtilityService } from '@/core/UtilityService.js';
+import { getApId } from '@/core/activitypub/type.js';
+import type { IPost } from '@/core/activitypub/type.js';
+
+const actor = { id: 'author', host: 'remote.test', uri: 'https://remote.test/users/author' };
+const otherActor = { id: 'other', host: 'remote.test', uri: 'https://remote.test/users/other' };
+const recipient = { id: 'recipient', host: null, uri: null };
+const messageUri = 'https://remote.test/chat/messages/message1';
+const object: IPost = {
+	id: messageUri,
+	type: 'Note',
+	attributedTo: actor.uri,
+	_misskey_talk: true,
+	_misskey_content: 'original',
+	to: ['https://local.test/users/recipient'],
+};
+
+function fixture(options: { beforeNoteInsert?: () => Promise<void>; resolveImage?: () => Promise<null> } = {}) {
+	type StoredNote = { id: string; uri: string; userId: string; text: string };
+	const notes = new Map<string, StoredNote>();
+	const chatTexts: string[] = [];
+	const locks = new Map<string, string>();
+	const tombstones = new Map<string, string>();
+	const policy = { chatAvailability: 'unavailable' };
+	let creationAttempts = 0;
+	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
+		chatService: {
+			findMessageByUri: async () => null,
+			createMessageToUser: async (_actor: unknown, _recipient: unknown, params: { text: string }) => { chatTexts.push(params.text); },
+		},
+		chatMessagesRepository: { findOneBy: async () => null },
+		redisClient: {
+			get: async (key: string) => locks.get(key) ?? tombstones.get(key) ?? null,
+			set: async (key: string, value: string) => {
+				if (locks.has(key)) return null;
+				locks.set(key, value);
+				return 'OK';
+			},
+			del: async (key: string) => Number(locks.delete(key)),
+			setex: async (key: string, _ttl: number, value: string) => { tombstones.set(key, value); },
+		},
+		notesRepository: { findOneBy: async ({ uri }: { uri: string }) => notes.get(uri) ?? null },
+		apDbResolverService: { getNoteFromApId: async (uri: string) => notes.get(uri) ?? null },
+		apNoteService: {
+			fetchNote: async (value: string | IPost) => notes.get(getApId(value)) ?? null,
+			extractEmojis: async () => [],
+			createNote: async (note: IPost) => {
+				creationAttempts++;
+				await options.beforeNoteInsert?.();
+				if (!notes.has(note.id!)) {
+					notes.set(note.id!, { id: 'note1', uri: note.id!, userId: actor.id, text: note._misskey_content! });
+				}
+				return notes.get(note.id!);
+			},
+			updateNote: async (note: IPost, target: StoredNote) => {
+				target.text = note._misskey_content!;
+				return target;
+			},
+		},
+		noteDeleteService: { delete: async (_actor: unknown, note: StoredNote) => { notes.delete(note.uri); } },
+		apImageService: { resolveImage: options.resolveImage ?? (async () => null) },
+		apPersonService: { resolvePerson: async () => recipient },
+		apResolverService: { createResolver: async () => ({ resolve: async (value: unknown) => value }) },
+		roleService: { getUserPolicies: async () => policy },
+		userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null },
+		utilityService: new UtilityService({ host: 'local.test', url: 'https://local.test' } as never, {} as never),
+		logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} },
+	});
+	return { inbox, notes, chatTexts, tombstones, policy, creationAttempts: () => creationAttempts };
+}
+
+describe('chat messages converted to private notes', () => {
+	test.each(['unavailable', 'available'])('updates the existing note when current chat availability is %s', async (availability) => {
+		const f = fixture();
+		await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });
+		f.policy.chatAvailability = availability;
+
+		await f.inbox.update(actor, {
+			type: 'Update', actor: actor.uri,
+			object: { ...object, attributedTo: [actor.uri], _misskey_content: 'edited' },
+		});
+
+		expect([...f.notes.values()]).toEqual([{ id: 'note1', uri: messageUri, userId: actor.id, text: 'edited' }]);
+		expect(f.creationAttempts()).toBe(1);
+		expect(f.chatTexts).toEqual([]);
+	});
+
+	test('deletes the existing note instead of storing a chat tombstone', async () => {
+		const f = fixture();
+		await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });
+
+		await f.inbox.delete(actor, {
+			type: 'Delete', actor: actor.uri,
+			object: { id: messageUri, type: 'Tombstone', formerType: 'Note' },
+		});
+
+		expect(f.notes.size).toBe(0);
+		expect(f.tombstones.size).toBe(0);
+	});
+
+	test('keeps note deletion restricted to the original author', async () => {
+		const f = fixture();
+		await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });
+
+		await f.inbox.delete(otherActor, { type: 'Delete', actor: otherActor.uri, object: messageUri });
+
+		expect(f.notes.get(messageUri)?.text).toBe('original');
+		expect(f.tombstones.size).toBe(0);
+	});
+
+	test('rejects updates whose attribution does not match the authenticated actor', async () => {
+		const f = fixture();
+		await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });
+
+		await f.inbox.update(otherActor, {
+			type: 'Update', actor: otherActor.uri, object: { ...object, _misskey_content: 'forged' },
+		});
+
+		expect(f.notes.get(messageUri)?.text).toBe('original');
+		expect(f.creationAttempts()).toBe(1);
+	});
+
+	test('does not convert a message deleted while its attachment is downloading', async () => {
+		const downloading = Promise.withResolvers<void>();
+		const finishDownload = Promise.withResolvers<null>();
+		const f = fixture({ resolveImage: async () => {
+			downloading.resolve();
+			return await finishDownload.promise;
+		} });
+		const creating = f.inbox.createChatMessage({}, actor, {
+			...object, attachment: [{ type: 'Document', url: 'https://remote.test/slow.png' }],
+		}, { type: 'Create', actor: actor.uri });
+		await downloading.promise;
+		await f.inbox.delete(actor, { type: 'Delete', actor: actor.uri, object: messageUri });
+		finishDownload.resolve(null);
+		await creating;
+
+		expect(f.notes.size).toBe(0);
+		expect(f.creationAttempts()).toBe(0);
+	});
+
+	test('removes the converted note when Delete arrives during note creation', async () => {
+		const inserting = Promise.withResolvers<void>();
+		const finishInsertion = Promise.withResolvers<void>();
+		const f = fixture({ beforeNoteInsert: async () => {
+			inserting.resolve();
+			await finishInsertion.promise;
+		} });
+		const creating = f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });
+		await inserting.promise;
+		await f.inbox.delete(actor, { type: 'Delete', actor: actor.uri, object: messageUri });
+		finishInsertion.resolve();
+		await creating;
+
+		expect(f.notes.size).toBe(0);
+	});
+});

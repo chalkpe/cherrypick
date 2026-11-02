@@ -455,7 +455,8 @@ export class ChatService {
 
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));
-		await this.chatMessagesRepository.update(message.id, { text: trimmed, editedAt, emojis });
+		const result = await this.chatMessagesRepository.update({ id: message.id, deletedAt: IsNull() }, { text: trimmed, editedAt, emojis });
+		if (result.affected === 0) throw new ChatMessageAccessError('deleted');
 		message.text = trimmed;
 		message.editedAt = editedAt;
 		message.emojis = emojis;
@@ -733,7 +734,7 @@ export class ChatService {
 	@bindThis
 	public async deleteRoom(room: MiChatRoom, deleter?: MiUser) {
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
-		if (owner != null && (deleter == null || deleter.id === room.ownerId)) {
+		if (owner != null && this.userEntityService.isLocalUser(owner) && (deleter == null || deleter.id === room.ownerId)) {
 			const participants = await this.participantsForRoom(room);
 			const toUsers = participants.filter(user => user.id !== owner.id);
 			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomDelete(room, owner, toUsers));
@@ -1262,6 +1263,7 @@ export class ChatService {
 
 		const message = await this.chatMessagesRepository.findOneBy({ id: messageId });
 		if (message == null) throw new ChatMessageAccessError('no such message');
+		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 
 		if (message.fromUserId === userId) {
 			throw new ChatMessageAccessError('cannot react to own message');
@@ -1283,13 +1285,15 @@ export class ChatService {
 			throw new Error('too many reactions');
 		}
 
-		await this.chatMessagesRepository.createQueryBuilder().update()
+		const result = await this.chatMessagesRepository.createQueryBuilder().update()
 			.set({
 				reactions: () => `array_append("reactions", :pair)`,
 			})
 			.where('id = :id', { id: message.id })
+			.andWhere('"deletedAt" IS NULL')
 			.setParameter('pair', `${userId}/${reaction}`)
 			.execute();
+		if (result.affected === 0) return;
 
 		if (room) {
 			this.globalEventService.publishChatRoomStream(room.id, 'react', {
@@ -1311,7 +1315,7 @@ export class ChatService {
 		const actor = await this.usersRepository.findOneByOrFail({ id: userId });
 		const participants = await this.participantsForMessage(message);
 		const toUsers = participants.filter(user => user.id !== actor.id);
-		await this.deliverToRemoteUsers(actor, participants, this.apRendererService.renderChatReaction(message, actor, toUsers, reaction));
+		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReaction(message, actor, toUsers, reaction));
 	}
 
 	@bindThis
@@ -1329,6 +1333,7 @@ export class ChatService {
 
 		const message = await this.chatMessagesRepository.findOneBy({ id: messageId });
 		if (message == null) throw new ChatMessageAccessError('no such message');
+		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 
 		const room = message.toRoomId ? await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }) : null;
 
@@ -1340,13 +1345,15 @@ export class ChatService {
 			throw new ChatMessageAccessError('cannot unreact to others message');
 		}
 
-		await this.chatMessagesRepository.createQueryBuilder().update()
+		const result = await this.chatMessagesRepository.createQueryBuilder().update()
 			.set({
 				reactions: () => `array_remove("reactions", :pair)`,
 			})
 			.where('id = :id', { id: message.id })
+			.andWhere('"deletedAt" IS NULL')
 			.setParameter('pair', `${userId}/${reaction}`)
 			.execute();
+		if (result.affected === 0) return;
 
 		// TODO: 実際に削除が行われたときのみイベントを発行する
 
@@ -1370,7 +1377,7 @@ export class ChatService {
 		const actor = await this.usersRepository.findOneByOrFail({ id: userId });
 		const participants = await this.participantsForMessage(message);
 		const toUsers = participants.filter(user => user.id !== actor.id);
-		await this.deliverToRemoteUsers(actor, participants, this.apRendererService.renderChatReactionUndo(message, actor, toUsers, reaction));
+		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReactionUndo(message, actor, toUsers, reaction));
 	}
 
 	@bindThis
@@ -1447,7 +1454,7 @@ export class ChatService {
 
 	@bindThis
 	public async reactRemote(actor: MiUser, message: MiChatMessage, reaction_: string): Promise<void> {
-		const reaction = this.normalizeRemoteReaction(reaction_);
+		const reaction = this.normalizeRemoteReaction(reaction_, actor.host);
 
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 		if (message.fromUserId === actor.id) throw new ChatMessageAccessError('cannot react to own message');
@@ -1464,11 +1471,15 @@ export class ChatService {
 		if (message.reactions.includes(pair)) return;
 		if (message.reactions.length >= MAX_REACTIONS_PER_MESSAGE) throw new Error('too many reactions');
 
-		await this.chatMessagesRepository.createQueryBuilder().update()
+		const result = await this.chatMessagesRepository.createQueryBuilder().update()
 			.set({ reactions: () => `array_append("reactions", :pair)` })
 			.where('id = :id', { id: message.id })
+			.andWhere('"deletedAt" IS NULL')
+			.andWhere('NOT (:pair = ANY("reactions"))')
+			.andWhere('cardinality("reactions") < :limit', { limit: MAX_REACTIONS_PER_MESSAGE })
 			.setParameter('pair', pair)
 			.execute();
+		if (result.affected === 0) return;
 		message.reactions.push(pair);
 
 		if (room) {
@@ -1491,7 +1502,7 @@ export class ChatService {
 
 	@bindThis
 	public async unreactRemote(actor: MiUser, message: MiChatMessage, reaction_: string): Promise<void> {
-		const reaction = this.normalizeRemoteReaction(reaction_);
+		const reaction = this.normalizeRemoteReaction(reaction_, actor.host);
 
 		const room = message.toRoomId ? await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }) : null;
 
@@ -1527,9 +1538,9 @@ export class ChatService {
 		}
 	}
 
-	private normalizeRemoteReaction(reaction: string): string {
+	private normalizeRemoteReaction(reaction: string, host: MiUser['host']): string {
 		const custom = reaction.match(isCustomEmojiRegexp);
-		if (custom != null) return `:${custom[1]}:`;
+		if (custom != null) return host == null ? `:${custom[1]}:` : `:${custom[1]}@${host}:`;
 		return normalizeEmojiString(reaction);
 	}
 

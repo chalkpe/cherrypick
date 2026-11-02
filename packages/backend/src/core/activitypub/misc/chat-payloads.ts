@@ -149,6 +149,7 @@ export function buildChatReaction(
 		object: messageUri,
 		content: reaction,
 		_misskey_reaction: reaction,
+		...(options.tag?.length ? { tag: options.tag } : {}),
 		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
 		published: options.published ?? new Date().toISOString(),
 	};

@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/vue';
-import { defineComponent, h, nextTick, ref } from 'vue';
+import { defineComponent, h, inject, nextTick, ref } from 'vue';
 import type * as Misskey from 'cherrypick-js';
 import type { MenuItem } from '@/types/menu.js';
 
@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
 	selectFile: vi.fn(),
 	upload: vi.fn(),
 	popupMenu: vi.fn(),
+	reactionPicker: vi.fn(),
 	me: { id: 'me', username: 'me', policies: { chatAvailability: 'available' } },
 }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
@@ -21,12 +22,13 @@ vi.mock('@/utility/drive.js', () => ({ selectFile: mocks.selectFile }));
 vi.mock('@/os.js', () => ({ launchUploader: mocks.upload, popupMenu: mocks.popupMenu, alert: vi.fn() }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/utility/emoji-picker.js', () => ({ emojiPicker: { show: vi.fn() } }));
-vi.mock('@/utility/reaction-picker.js', () => ({ reactionPicker: { show: vi.fn() } }));
+vi.mock('@/utility/reaction-picker.js', () => ({ reactionPicker: { show: mocks.reactionPicker } }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 
 import XForm from '@/pages/chat/room.form.vue';
 import XMessage from '@/pages/chat/XMessage.vue';
 import { i18n } from '@/i18n.js';
+import { DI } from '@/di.js';
 
 const driveFile = {
 	id: 'draft-file', createdAt: '2026-11-01T00:00:00.000Z', name: 'draft.png', type: 'image/png',
@@ -226,4 +228,64 @@ test.each([false, true])('only offers Edit with an explicit editing capability (
 	} else {
 		expect(edit).toBeUndefined();
 	}
+});
+
+test.each([null, '2026-11-01T00:01:00.000Z'])('only offers reactions on a live message (deletedAt: %s)', async deletedAt => {
+	render(XMessage, {
+		props: { message: { ...message, fromUserId: user.id, fromUser: user, deletedAt } },
+		global: { stubs },
+	});
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.menu }));
+	const items = mocks.popupMenu.mock.calls[0][0] as MenuItem[];
+	const reaction = items.find(item => item != null && 'text' in item && item.text === i18n.ts.reaction);
+	expect(reaction != null).toBe(deletedAt == null);
+});
+
+test.each([
+	{ source: 'menu', removed: false },
+	{ source: 'picker', removed: false },
+	{ source: 'menu', removed: true },
+	{ source: 'picker', removed: true },
+])('ignores an open reaction $source after deletion (unmounted: $removed)', async ({ source, removed }) => {
+	const liveMessage = { ...message, fromUserId: user.id, fromUser: user };
+	const result = render(XMessage, { props: { message: liveMessage }, global: { stubs } });
+	const button = screen.getByRole('button', { name: i18n.ts.menu });
+	await fireEvent.click(button);
+	const items = mocks.popupMenu.mock.calls[0][0] as MenuItem[];
+	const reaction = items.find(item => item != null && 'text' in item && item.text === i18n.ts.reaction);
+	if (!reaction || !('action' in reaction)) throw new Error('Expected the reaction menu action');
+	const event = new PointerEvent('click');
+	Object.defineProperty(event, 'currentTarget', { value: button });
+	if (source === 'picker') await reaction.action(event);
+	if (removed) result.unmount();
+	else await result.rerender({ message: { ...liveMessage, deletedAt: '2026-11-01T00:01:00.000Z' } });
+	if (source === 'menu') {
+		await reaction.action(event);
+		expect(mocks.reactionPicker).not.toHaveBeenCalled();
+	} else {
+		await mocks.reactionPicker.mock.calls[0][2]('❤');
+	}
+	expect(mocks.api).not.toHaveBeenCalled();
+});
+
+test.each([false, true])('ignores an MFM emoji reaction callback after deletion (unmounted: %s)', async removed => {
+	let react!: (emoji: string) => void;
+	const mfmStub = defineComponent({
+		setup() {
+			react = inject(DI.mfmEmojiReactCallback)!;
+			return () => h('span');
+		},
+	});
+	const liveMessage = { ...message, fromUserId: user.id, fromUser: user };
+	const result = render(XMessage, {
+		props: { message: liveMessage },
+		global: { stubs: { ...stubs, Mfm: mfmStub } },
+	});
+	react('❤');
+	expect(mocks.api).toHaveBeenCalledWith('chat/messages/react', { messageId: 'm1', reaction: '❤' });
+	mocks.api.mockClear();
+	if (removed) result.unmount();
+	else await result.rerender({ message: { ...liveMessage, deletedAt: '2026-11-01T00:01:00.000Z' } });
+	react('❤');
+	expect(mocks.api).not.toHaveBeenCalled();
 });

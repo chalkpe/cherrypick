@@ -60,7 +60,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, defineAsyncComponent, provide } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, provide, ref } from 'vue';
 import * as mfm from 'mfc-js';
 import * as Misskey from 'cherrypick-js';
 import { url } from '@@/js/config.js';
@@ -106,13 +106,16 @@ const emit = defineEmits<{
 const isMe = computed(() => props.message.fromUserId === $i.id);
 const editedAt = computed(() => (props.message as NormalizedChatMessage).editedAt ?? null);
 const deletedAt = computed(() => (props.message as NormalizedChatMessage).deletedAt ?? null);
+const unmounted = ref(false);
+const canReact = computed(() => !unmounted.value && !deletedAt.value && $i.policies.chatAvailability === 'available');
+onBeforeUnmount(() => { unmounted.value = true; });
 // 検索結果は前後のメッセージと関係なく並ぶのでまとめない
 const isFirstInGroup = computed(() => props.isSearchResult === true || props.firstInGroup);
 const isLastInGroup = computed(() => props.isSearchResult === true || props.lastInGroup);
 const urls = computed(() => props.message.text ? extractUrlFromMfm(mfm.parse(props.message.text)) : []);
 
 provide(DI.mfmEmojiReactCallback, (reaction) => {
-	if ($i.policies.chatAvailability !== 'available') return;
+	if (!canReact.value) return;
 
 	sound.playMisskeySfx('reaction');
 	misskeyApi('chat/messages/react', {
@@ -122,12 +125,13 @@ provide(DI.mfmEmojiReactCallback, (reaction) => {
 });
 
 function react(ev: PointerEvent) {
-	if ($i.policies.chatAvailability !== 'available') return;
+	if (!canReact.value) return;
 
 	const targetEl = getHTMLElementOrNull(ev.currentTarget ?? ev.target);
 	if (!targetEl) return;
 
 	reactionPicker.show(targetEl, null, async (reaction) => {
+		if (!canReact.value) return;
 		sound.playMisskeySfx('reaction');
 		misskeyApi('chat/messages/react', {
 			messageId: props.message.id,
@@ -137,7 +141,7 @@ function react(ev: PointerEvent) {
 }
 
 function onReactionClick(record: Misskey.entities.ChatMessage['reactions'][0]) {
-	if ($i.policies.chatAvailability !== 'available') return;
+	if (!canReact.value) return;
 
 	if (record.user.id === $i.id) {
 		misskeyApi('chat/messages/unreact', {
@@ -176,7 +180,7 @@ function showMenu(ev: PointerEvent | KeyboardEvent) {
 function getMenu(): MenuItem[] {
 	const menu: MenuItem[] = [];
 
-	if (!isMe.value && $i.policies.chatAvailability === 'available') {
+	if (!isMe.value && canReact.value) {
 		menu.push({
 			text: i18n.ts.reaction,
 			icon: 'ti ti-mood-plus',

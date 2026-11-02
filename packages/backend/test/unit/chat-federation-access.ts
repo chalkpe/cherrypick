@@ -93,7 +93,7 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 			updatePerson: async (uri: string, _resolver: unknown, object: { name: string }) => { profiles.set(uri, object.name); },
 		},
 		apResolverService: { createResolver: async () => ({ resolve: async (object: unknown) => object }) },
-		apNoteService: { extractEmojis: async () => [{ name: 'newemoji' }] },
+		apNoteService: { fetchNote: async () => null, extractEmojis: async () => [{ name: 'newemoji' }] },
 		apImageService: { resolveImage: options.resolveImage ?? (async () => null) },
 		roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 		userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null },

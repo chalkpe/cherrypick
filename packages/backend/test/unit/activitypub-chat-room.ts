@@ -6,6 +6,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import { TwirpError } from 'livekit-server-sdk';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { ChatService } from '@/core/ChatService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { JsonLdService } from '@/core/activitypub/JsonLdService.js';
@@ -133,7 +134,10 @@ function fixture(options: {
 	const liveKitService = {
 		identityOf: (user: { id: string; host: string | null; uri: string | null }) => user.host == null ? `${LOCAL}/users/${user.id}` : user.uri,
 		removeParticipant: vi.fn(async (_roomId: string, _identity: string) => {}),
+		deleteRoom: vi.fn(async (_roomId: string) => {}),
 	};
+	const pipeline = { del: vi.fn(), srem: vi.fn(), exec: vi.fn().mockResolvedValue([]) };
+	const globalEventService = { publishChatRoomStream: vi.fn() };
 	const resolver = { resolve: vi.fn() };
 	const apResolverService = { createResolver: vi.fn(async () => resolver) };
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
@@ -166,6 +170,7 @@ function fixture(options: {
 		apRendererService: {
 			genLocalChatRoomUri: (id: string) => `${LOCAL}/chat/rooms/${id}`,
 			renderAdd: vi.fn((_owner: unknown, _target: string, object: string) => ({ type: 'Add', object })),
+			renderChatRoomDelete: vi.fn(() => ({ type: 'Delete' })),
 			addContext: vi.fn((activity: unknown) => activity),
 		},
 		queueService: { deliver: vi.fn() },
@@ -175,7 +180,19 @@ function fixture(options: {
 		chatVoiceService,
 		apResolverService,
 	});
-	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver };
+	const chatService = Object.assign(Object.create(ChatService.prototype), {
+		chatRoomsRepository: rooms,
+		chatRoomMembershipsRepository: inbox.chatRoomMembershipsRepository,
+		usersRepository: inbox.usersRepository,
+		userEntityService: inbox.userEntityService,
+		apRendererService: inbox.apRendererService,
+		queueService: inbox.queueService,
+		redisClient: { pipeline: () => pipeline },
+		globalEventService,
+		liveKitService,
+	});
+	inbox.chatService.deleteRoom = chatService.deleteRoom;
+	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, pipeline, globalEventService };
 }
 
 function inviteActivity(actor: { uri: string }, roomUri: string, invitee: string, attributedTo: string | undefined = actor.uri) {
@@ -712,5 +729,21 @@ describe('Chat room federation: Add/Update/Delete', () => {
 
 		expect(result).toBe('ok: chat room deleted');
 		expect(f.rooms.rows).toEqual([]);
+	});
+
+	test('remote room deletion clears unread state, notifies clients and ends the call without forwarding', async () => {
+		const f = fixture({ rooms: [{ id: 'bobroom', ownerId: remoteOwner.id }], memberships: [{ id: 'm1', roomId: 'bobroom', userId: alice.id }] });
+		await f.inbox.delete(remoteOwner, {
+			type: 'Delete', actor: remoteOwner.uri,
+			object: { id: 'https://remote.test/chat/rooms/bobroom', type: 'Tombstone', formerType: 'Group' },
+		});
+
+		expect(f.rooms.rows.some(room => room.id === 'bobroom')).toBe(false);
+		expect(f.pipeline.del).toHaveBeenCalledWith('newRoomChatMessageExists:alice:bobroom');
+		expect(f.pipeline.srem).toHaveBeenCalledWith('newChatMessagesExists:alice', 'room:bobroom');
+		expect(f.pipeline.exec).toHaveBeenCalledOnce();
+		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('bobroom', 'roomDeleted');
+		expect(f.liveKitService.deleteRoom).toHaveBeenCalledWith('bobroom');
+		expect(f.inbox.queueService.deliver).not.toHaveBeenCalled();
 	});
 });
