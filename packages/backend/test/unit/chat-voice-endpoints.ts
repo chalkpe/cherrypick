@@ -398,9 +398,15 @@ function chatServiceFixture() {
 			delete: vi.fn().mockResolvedValue({ affected: 1 }),
 		},
 		usersRepository: {
+			findOneBy: vi.fn().mockResolvedValue({ id: 'owner', host: null, uri: null }),
 			findOneByOrFail: vi.fn().mockResolvedValue({ id: 'u1', host: null, uri: null }),
 			findBy: vi.fn().mockResolvedValue([]),
 		},
+		apRendererService: {
+			renderChatRoomDelete: vi.fn().mockReturnValue({ type: 'Delete' }),
+			addContext: vi.fn((activity: unknown) => activity),
+		},
+		queueService: { deliver: vi.fn() },
 		redisClient: { pipeline: () => ({ del: vi.fn(), srem: vi.fn(), exec: vi.fn().mockResolvedValue([]) }) },
 		userEntityService: {
 			isLocalUser: (user: { host: string | null }) => user.host == null,
