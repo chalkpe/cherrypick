@@ -180,7 +180,7 @@ function showMenu(ev: PointerEvent | KeyboardEvent) {
 function getMenu(): MenuItem[] {
 	const menu: MenuItem[] = [];
 
-	if (!isMe.value && canReact.value) {
+if (!isMe.value && canReact.value) {
 		menu.push({
 			text: i18n.ts.reaction,
 			icon: 'ti ti-mood-plus',

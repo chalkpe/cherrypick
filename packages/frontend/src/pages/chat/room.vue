@@ -118,7 +118,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 
 	<div v-else-if="tab === 'members'" class="_spacer" style="--MI_SPACER-w: 700px;">
-		<XMembers v-if="room != null" :room="room" @inviteUser="inviteUser"/>
+		<XMembers v-if="room != null" :key="membershipVersion" :room="room" @inviteUser="inviteUser"/>
 	</div>
 
 	<div v-else-if="tab === 'info'" class="_spacer" style="--MI_SPACER-w: 700px;">
@@ -233,6 +233,7 @@ const canFetchMore = ref(false);
 const user = ref<Misskey.entities.UserDetailed | null>(null);
 const room = ref<Misskey.entities.ChatRoom | null>(null);
 const memberships = ref<Misskey.entities.ChatRoomMembership[]>([]);
+const membershipVersion = ref(0);
 const connection = ref<Misskey.IChannelConnection<Misskey.Channels['chatUser']> | Misskey.IChannelConnection<Misskey.Channels['chatRoom']> | null>(null);
 const showIndicator = ref(false);
 const timelineEl = useTemplateRef('timelineEl');
@@ -359,6 +360,10 @@ async function initialize() {
 		connection.value.on('react', onReact);
 		connection.value.on('unreact', onUnreact);
 		connection.value.on('updated', onUpdated);
+		connection.value.on('roomUpdated', onRoomUpdated);
+		connection.value.on('membershipStarted', onMembershipChanged);
+		connection.value.on('membershipEnded', onMembershipChanged);
+		connection.value.on('roomDeleted', onRoomDeleted);
 	}
 
 	window.document.addEventListener('visibilitychange', onVisibilitychange);
@@ -451,7 +456,8 @@ function onReact(ctx: Parameters<Misskey.Channels['chatUser']['events']['react']
 function onUnreact(ctx: Parameters<Misskey.Channels['chatUser']['events']['unreact']>[0] | Parameters<Misskey.Channels['chatRoom']['events']['unreact']>[0]) {
 	const message = messages.value.find(m => m.id === ctx.messageId);
 	if (message) {
-		const index = message.reactions.findIndex(r => r.reaction === ctx.reaction && r.user.id === ctx.user!.id);
+		const userId = ctx.user?.id ?? (message.fromUserId === $i.id ? user.value?.id : $i.id);
+		const index = message.reactions.findIndex(r => r.reaction === ctx.reaction && r.user.id === userId);
 		if (index !== -1) {
 			message.reactions.splice(index, 1);
 		}
@@ -466,6 +472,24 @@ function onUpdated(ctx: Parameters<Misskey.Channels['chatUser']['events']['updat
 		message.editedAt = ctx.editedAt;
 		if (ctx.emojis != null) message.emojis = ctx.emojis;
 	}
+}
+
+function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['roomUpdated']>[0]) {
+	if (room.value == null || room.value.id !== ctx.roomId) return;
+	room.value = {
+		...room.value,
+		name: ctx.name,
+		description: ctx.description,
+	};
+}
+
+function onMembershipChanged() {
+	membershipVersion.value++;
+}
+
+function onRoomDeleted() {
+	os.alert({ type: 'info', text: i18n.ts._chat.roomDeleted });
+	router.push('/chat');
 }
 
 function onIndicatorClick() {

@@ -213,6 +213,23 @@ test('a draft attachment does not enable saving an empty text-only edit', async 
 	expect(screen.getByTitle(i18n.ts.save).hasAttribute('disabled')).toBe(true);
 });
 
+test('does not offer reactions for a deleted message', async () => {
+	const deletedMessage = {
+		...message,
+		fromUserId: 'bob',
+		fromUser: { id: 'bob', username: 'bob' },
+		deletedAt: '2026-11-02T00:00:00.000Z',
+	} as unknown as Misskey.entities.ChatMessage;
+
+	render(XMessage, {
+		props: { message: deletedMessage },
+		global: { stubs },
+	});
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.menu }));
+	const items = mocks.popupMenu.mock.calls[0][0] as MenuItem[];
+	expect(items.find(item => item != null && 'text' in item && item.text === i18n.ts.reaction)).toBeUndefined();
+});
+
 test.each([false, true])('only offers Edit with an explicit editing capability (%s)', async canEdit => {
 	const result = render(XMessage, {
 		props: { message, ...(canEdit ? { canEdit: true } : {}) },

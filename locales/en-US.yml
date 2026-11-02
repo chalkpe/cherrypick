@@ -1733,6 +1733,7 @@ _chat:
     mutual: "Mutual followers only"
     none: "Nobody"
   deletedMessage: "Deleted message"
+  roomDeleted: "The room was deleted"
   invitationCancelAreYouSure: "Are you sure you want to cancel the invitation sent to {x}?"
 _emojiPalette:
   palettes: "Palette"
