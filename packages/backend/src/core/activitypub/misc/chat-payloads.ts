@@ -23,6 +23,7 @@ type ChatRoom = {
 	id: string;
 	name: string;
 	description?: string | null;
+	uri?: string | null;
 };
 
 export type ChatPayloadOptions = {
@@ -50,8 +51,8 @@ export function chatMessageUri(message: ChatMessage, baseUrl: string): string {
 	return message.uri ?? `${baseUrl}/chat/messages/${message.id}`;
 }
 
-export function chatRoomUri(room: Pick<ChatRoom, 'id'>, baseUrl: string): string {
-	return `${baseUrl}/chat/rooms/${room.id}`;
+export function chatRoomUri(room: Pick<ChatRoom, 'id'> & { uri?: string | null }, baseUrl: string): string {
+	return room.uri ?? `${baseUrl}/chat/rooms/${room.id}`;
 }
 
 export function buildChatNote(
@@ -195,7 +196,7 @@ export function buildChatRoomUpdate(
 }
 
 export function buildChatRoomDelete(
-	room: Pick<ChatRoom, 'id'>,
+	room: Pick<ChatRoom, 'id'> & { uri?: string | null },
 	owner: ChatActor,
 	toUsers: ChatActor[],
 	options: ChatPayloadOptions,

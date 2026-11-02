@@ -882,17 +882,19 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public renderChatUpdate(message: any, fromUser: MiUser, toUsers: MiUser[], roomId?: string): IUpdate {
+	public renderChatUpdate(message: any, fromUser: MiUser, toUsers: MiUser[], roomId?: string, roomUri?: string): IUpdate {
 		return buildChatUpdate(message, fromUser, toUsers, roomId, {
 			baseUrl: this.config.url,
+			roomUri,
 			published: new Date().toISOString(),
 		});
 	}
 
 	@bindThis
-	public renderChatDelete(message: any, fromUser: MiUser, toUsers: MiUser[]): IDelete {
+	public renderChatDelete(message: any, fromUser: MiUser, toUsers: MiUser[], roomUri?: string): IDelete {
 		return buildChatDelete(message, fromUser, toUsers, {
 			baseUrl: this.config.url,
+			roomUri,
 			published: new Date().toISOString(),
 		});
 	}
@@ -937,7 +939,7 @@ export class ApRendererService {
 
 		return {
 			type: 'Group',
-			id: this.genLocalChatRoomUri(room.id),
+			id: room.uri ?? this.genLocalChatRoomUri(room.id),
 			name: room.name,
 			summary: room.description || undefined,
 			attributedTo: ownerUri || undefined,

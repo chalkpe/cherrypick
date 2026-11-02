@@ -203,14 +203,15 @@ export class ChatService {
 			emojis = extractCustomEmojisFromMfm(tokens);
 		}
 
+		const id = this.idService.gen();
 		const message = {
-			id: this.idService.gen(),
+			id,
 			fromUserId: fromUser.id,
 			toUserId: toUser.id,
 			text: params.text ? params.text.trim() : null,
 			fileId: params.file ? params.file.id : null,
 			reads: [],
-			uri: params.uri ?? null,
+			uri: params.uri ?? `${this.config.url.replace(/\/$/, '')}/chat/messages/${id}`,
 			emojis,
 		} satisfies Partial<MiChatMessage>;
 
@@ -303,14 +304,15 @@ export class ChatService {
 			emojis = extractCustomEmojisFromMfm(tokens);
 		}
 
+		const id = this.idService.gen();
 		const message = {
-			id: this.idService.gen(),
+			id,
 			fromUserId: fromUser.id,
 			toRoomId: toRoom.id,
 			text: params.text ? params.text.trim() : null,
 			fileId: params.file ? params.file.id : null,
 			reads: [],
-			uri: params.uri ?? null,
+			uri: params.uri ?? `${this.config.url.replace(/\/$/, '')}/chat/messages/${id}`,
 			emojis,
 		} satisfies Partial<MiChatMessage>;
 
@@ -362,7 +364,7 @@ export class ChatService {
 			if (remoteMembers.length > 0) {
 				const fullFromUser = await this.usersRepository.findOneByOrFail({ id: fromUser.id });
 				const allMembersForRendering = allMembers.filter(m => m != null) as MiUser[];
-				const chatMessageObject = await this.apRendererService.renderChatMessage(inserted, fullFromUser, allMembersForRendering, toRoom.id);
+				const chatMessageObject = await this.apRendererService.renderChatMessage(inserted, fullFromUser, allMembersForRendering, toRoom.id, toRoom.uri ?? undefined);
 				const activity = {
 					type: 'Create',
 					actor: this.userEntityService.genLocalUserUri(fullFromUser.id),
@@ -463,7 +465,7 @@ export class ChatService {
 		const fromUser = await this.usersRepository.findOneByOrFail({ id: message.fromUserId });
 		const participants = await this.participantsForMessage(message);
 		const toUsers = participants.filter(user => user.id !== fromUser.id);
-		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatUpdate(message, fromUser, toUsers, message.toRoomId ?? undefined));
+		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatUpdate(message, fromUser, toUsers, message.toRoomId ?? undefined, await this.roomUriForMessage(message)));
 
 		return message;
 	}
@@ -494,7 +496,7 @@ export class ChatService {
 		}
 
 		const toUsers = participants.filter(user => user.id !== fromUser.id);
-		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers));
+		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers, await this.roomUriForMessage(message)));
 	}
 
 	@bindThis
@@ -1362,7 +1364,13 @@ export class ChatService {
 
 	@bindThis
 	public async findMessageByUri(uri: string): Promise<MiChatMessage | null> {
-		return this.chatMessagesRepository.findOneBy({ uri });
+		const message = await this.chatMessagesRepository.findOneBy({ uri });
+		if (message != null) return message;
+
+		const prefix = `${this.config.url.replace(/\/$/, '')}/chat/messages/`;
+		if (!uri.startsWith(prefix)) return null;
+
+		return this.chatMessagesRepository.findOneBy({ id: uri.slice(prefix.length) });
 	}
 
 	@bindThis
@@ -1506,6 +1514,12 @@ export class ChatService {
 		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
 		const ids = Array.from(new Set([room.ownerId, ...memberships.map(membership => membership.userId)]));
 		return this.usersRepository.findBy({ id: In(ids) });
+	}
+
+	private async roomUriForMessage(message: MiChatMessage): Promise<string | undefined> {
+		if (message.toRoomId == null) return undefined;
+		const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
+		return room?.uri ?? undefined;
 	}
 
 	private async participantsForMessage(message: MiChatMessage): Promise<MiUser[]> {

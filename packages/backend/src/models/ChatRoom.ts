@@ -34,6 +34,11 @@ export class MiChatRoom {
 	})
 	public description: string;
 
+	@Column('varchar', {
+		length: 512, nullable: true,
+	})
+	public uri: string | null;
+
 	@Column('boolean', {
 		default: false,
 	})

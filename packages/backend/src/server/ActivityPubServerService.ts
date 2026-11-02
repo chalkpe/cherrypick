@@ -969,7 +969,7 @@ export class ActivityPubServerService {
 				const members = await this.usersRepository.findBy({ id: In(memberIds) });
 				toUsers = members.filter(member => member.id !== fromUser.id);
 				roomId = room.id;
-				roomUri = owner.host == null ? this.apRendererService.genLocalChatRoomUri(room.id) : `${owner.uri!.replace(/\/users\/.*$/, '')}/chat/rooms/${room.id}`;
+				roomUri = room.uri ?? (owner.host == null ? this.apRendererService.genLocalChatRoomUri(room.id) : `${owner.uri!.replace(/\/users\/.*$/, '')}/chat/rooms/${room.id}`);
 			}
 
 			if (toUsers.length === 0) {
@@ -1027,7 +1027,6 @@ export class ActivityPubServerService {
 			}
 
 			const group = this.apRendererService.renderChatRoom(room, owner);
-			group.id = owner.host == null ? this.apRendererService.genLocalChatRoomUri(room.id) : `${owner.uri!.replace(/\/users\/.*$/, '')}/chat/rooms/${room.id}`;
 
 			this.setResponseType(request, reply);
 			return this.apRendererService.addContext(group);

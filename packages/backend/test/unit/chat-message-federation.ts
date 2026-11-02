@@ -104,6 +104,15 @@ describe('chat federation payloads', () => {
 		expect(update.object).toMatchObject({ type: 'Group', name: 'Room', summary: 'desc' });
 		expect(remove.object).toMatchObject({ type: 'Tombstone', formerType: 'Group' });
 	});
+
+	test('mirror room activities keep the remote room URI', () => {
+		const room = { id: 'r1', name: 'Room', description: 'desc', uri: 'https://remote.test/chat/rooms/r1' };
+		const update = buildChatRoomUpdate(room, alice, [bob], options);
+		const remove = buildChatRoomDelete(room, alice, [bob], options);
+
+		expect(update.object.id).toBe('https://remote.test/chat/rooms/r1');
+		expect(remove.object.id).toBe('https://remote.test/chat/rooms/r1');
+	});
 });
 
 describe('ApRendererService chat wrappers', () => {
@@ -284,6 +293,12 @@ describe('ChatService chat federation delivery', () => {
 		expect(f.roomMessage.reactions).toEqual(['alice/👍']);
 	});
 
+	test('findMessageByUri resolves a local message without a stored URI', async () => {
+		const f = createService();
+
+		await expect(f.service.findMessageByUri('https://local.test/chat/messages/m1')).resolves.toBe(f.directMessage);
+	});
+
 	test('unreactRemote removes a member reaction', async () => {
 		const f = createService();
 		f.roomMessage.reactions = ['alice/👍'];
@@ -308,22 +323,52 @@ describe('ApInboxService chat activity routing', () => {
 			createMessageToRoom: vi.fn(),
 			isRoomMember: vi.fn(),
 		};
+		const localUser = { id: 'local-user', uri: 'https://local.test/users/local', host: null };
 		const redisClient = { exists: vi.fn().mockResolvedValue(0), setex: vi.fn().mockResolvedValue('OK') };
+		const chatRoomsRepository = { findOneBy: vi.fn().mockResolvedValue({ id: 'r1', uri: 'https://remote.test/chat/rooms/r1' }) };
+		const apPersonService = { resolvePerson: vi.fn(async (uri: string) => uri === localUser.uri ? localUser : null) };
 		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 			chatService,
 			redisClient,
-			apNoteService: { fetchNote: vi.fn().mockResolvedValue(null) },
+			apNoteService: { fetchNote: vi.fn().mockResolvedValue(null), extractEmojis: vi.fn().mockResolvedValue([]) },
 			apResolverService: { createResolver: vi.fn(() => ({ resolve: async (x: unknown) => x })) },
 			utilityService: { extractDbHost: () => 'remote.test' },
 			apMfmService: { htmlToMfm: (html: string) => html },
 			logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
-			apPersonService: { resolvePerson: vi.fn() },
+			apPersonService,
 			apImageService: { resolveImage: vi.fn() },
+			roleService: { getUserPolicies: vi.fn().mockResolvedValue({ chatAvailability: 'available' }) },
+			userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null },
+			chatRoomsRepository,
 			chatMessagesRepository: { findOneBy: vi.fn().mockResolvedValue(null) },
 		}) as ApInboxService;
 
-		return { inbox, actor, message, chatService, redisClient };
+		return { inbox, actor, message, chatService, redisClient, chatRoomsRepository, localUser };
 	}
+
+	test('treats a room-context message with one local recipient as a group message', async () => {
+		const f = createInbox();
+		f.chatService.isRoomMember.mockResolvedValue(true);
+		const object = {
+			id: 'https://remote.test/chat/messages/group-1',
+			type: 'Note',
+			attributedTo: f.actor.uri,
+			_misskey_talk: true,
+			_misskey_content: 'group hello',
+			to: [f.localUser.uri],
+			'@context': 'https://remote.test/chat/rooms/r1',
+		};
+
+		await (f.inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage(
+			{ resolve: async (x: unknown) => x },
+			f.actor,
+			object,
+			{ type: 'Create' },
+		);
+
+		expect(f.chatService.createMessageToRoom).toHaveBeenCalledWith(f.actor, expect.objectContaining({ id: 'r1' }), expect.objectContaining({ text: 'group hello' }));
+		expect(f.chatService.createMessageToUser).not.toHaveBeenCalled();
+	});
 
 	test('routes a chat Note Update to updateRemoteMessage', async () => {
 		const f = createInbox();

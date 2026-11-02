@@ -743,8 +743,12 @@ export class ApInboxService {
 		const apEmojis = emojis.map(emoji => emoji.name);
 
 		try {
-			// Determine if this is a 1:1 chat or group chat
-			if (recipients.length === 1) {
+			const contextUri = object['@context'];
+			const isGroup = typeof contextUri === 'string' && /\/chat\/rooms\/[a-zA-Z0-9]+$/.test(contextUri);
+
+			// The room context, not the recipient count, decides whether this is a group message.
+			if (!isGroup && recipients.length !== 1) return 'skip: no room context';
+			if (!isGroup) {
 				// 1:1 chat
 				const recipient = recipients[0];
 
@@ -774,13 +778,6 @@ export class ApInboxService {
 				}
 			} else {
 				// Group chat
-				// Extract room ID from context
-				const contextUri = object['@context'];
-				if (!contextUri || typeof contextUri !== 'string') {
-					this.logger.warn('Group chat message missing context');
-					return 'skip: group chat message missing context';
-				}
-
 				const roomIdMatch = contextUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
 				if (!roomIdMatch) {
 					this.logger.warn(`Invalid context URI format: ${contextUri}`);
@@ -1513,7 +1510,11 @@ export class ApInboxService {
 				description: roomDescription,
 				ownerId: actor.id,
 				isArchived: false,
+				uri: roomUri,
 			});
+		} else if (room.uri == null) {
+			await this.chatRoomsRepository.update(room.id, { uri: roomUri });
+			room.uri = roomUri;
 		}
 
 		// Check if invitation already exists
