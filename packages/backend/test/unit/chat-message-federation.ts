@@ -110,8 +110,8 @@ describe('chat federation payloads', () => {
 		const update = buildChatRoomUpdate(room, alice, [bob], options);
 		const remove = buildChatRoomDelete(room, alice, [bob], options);
 
-		expect(update.object.id).toBe('https://remote.test/chat/rooms/r1');
-		expect(remove.object.id).toBe('https://remote.test/chat/rooms/r1');
+		expect(update.object).toMatchObject({ id: 'https://remote.test/chat/rooms/r1' });
+		expect(remove.object).toMatchObject({ id: 'https://remote.test/chat/rooms/r1' });
 	});
 });
 
