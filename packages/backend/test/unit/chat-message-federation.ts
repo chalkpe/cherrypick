@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
@@ -272,6 +272,7 @@ describe('ChatService chat federation delivery', () => {
 			exec: vi.fn().mockResolvedValue([]),
 		};
 		const pendingReactions = new Map<string, string[]>();
+		const pendingReactionCounts = new Map<string, number>();
 		const reactionActivityIds = new Map<string, string>();
 		const redisClient = {
 			pipeline: vi.fn(() => redisPipeline),
@@ -290,7 +291,18 @@ describe('ChatService chat federation delivery', () => {
 						commands.push(() => pendingReactions.set(key, (pendingReactions.get(key) ?? []).slice(start, stop + 1)));
 						return transaction;
 					},
-					expire: () => transaction,
+					expire: () => {
+						commands.push(() => 1);
+						return transaction;
+					},
+					incr: (key: string) => {
+						commands.push(() => {
+							const count = (pendingReactionCounts.get(key) ?? 0) + 1;
+							pendingReactionCounts.set(key, count);
+							return count;
+						});
+						return transaction;
+					},
 					lrange: (key: string) => {
 						commands.push(() => [...(pendingReactions.get(key) ?? [])]);
 						return transaction;
@@ -369,7 +381,7 @@ describe('ChatService chat federation delivery', () => {
 			userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
 		}) as ChatService;
 
-		return { service, alice, bob, carol, directMessage, roomMessage, roomDeleteMessage, room, queueService, apRendererService, globalEventService };
+		return { service, alice, bob, carol, directMessage, roomMessage, roomDeleteMessage, room, queueService, apRendererService, globalEventService, redisClient };
 	}
 
 	test('delivers Update to the remote 1:1 counterpart', async () => {
@@ -562,6 +574,51 @@ describe('ChatService chat federation delivery', () => {
 		expect(f.roomMessage.reactions).toEqual(['carol/:wave@other.test:']);
 	});
 
+	test('accepts the qualified custom emoji form that CherryPick sends, and its Undo', async () => {
+		const f = createService();
+		const sent = buildChatReaction(f.roomMessage as never, f.carol as never, [], ':wave:', options).content!;
+		expect(sent).toBe(':wave@other.test:');
+
+		await f.service.reactRemote(f.carol as never, f.roomMessage as never, sent);
+		expect(f.roomMessage.reactions).toEqual(['carol/:wave@other.test:']);
+
+		await f.service.unreactRemote(f.carol as never, f.roomMessage as never, sent);
+		expect(f.roomMessage.reactions).toEqual([]);
+	});
+
+	test('does not defer a reaction string that cannot be a reaction', async () => {
+		const f = createService();
+
+		expect(await f.service.storePendingChatReaction('carol', 'https://remote.test/chat/messages/m2', `:${'x'.repeat(300)}:`, false)).toBe(false);
+	});
+
+	test('caps deferred reactions per actor across message URIs', async () => {
+		const f = createService();
+		const results = [];
+		for (let i = 0; i < 1001; i++) {
+			results.push(await f.service.storePendingChatReaction('carol', `https://remote.test/chat/messages/m${i}`, '👍', false));
+		}
+
+		expect(results.slice(0, 1000).every(stored => stored)).toBe(true);
+		expect(results[1000]).toBe(false);
+		expect(await f.service.storePendingChatReaction('bob', 'https://remote.test/chat/messages/m0', '👍', false)).toBe(true);
+	});
+
+	test('does not track or render a reaction when every participant is local', async () => {
+		const f = createService();
+		const participants = vi.spyOn(f.service as never as { participantsForMessage: () => Promise<unknown[]> }, 'participantsForMessage')
+			.mockResolvedValue([{ id: 'alice', host: null }, { id: 'erin', host: null }]);
+		Object.assign(f.directMessage, { fromUserId: 'erin', toUserId: 'alice' });
+
+		await f.service.react(f.directMessage.id, 'alice', '👍');
+		await f.service.unreact(f.directMessage.id, 'alice', '👍');
+
+		expect(participants).toHaveBeenCalledTimes(2);
+		expect(f.redisClient.setex).not.toHaveBeenCalled();
+		expect(f.apRendererService.renderChatReaction).not.toHaveBeenCalled();
+		expect(f.apRendererService.renderChatReactionUndo).not.toHaveBeenCalled();
+	});
+
 	test('local reactions and unreactions reject a deleted message', async () => {
 		const f = createService();
 		f.roomMessage.deletedAt = new Date();
@@ -752,7 +809,7 @@ describe('ApInboxService chat activity routing', () => {
 			deleteRemoteMessage: vi.fn().mockResolvedValue(message),
 			reactRemote: vi.fn().mockResolvedValue(undefined),
 			unreactRemote: vi.fn().mockResolvedValue(undefined),
-			storePendingChatReaction: vi.fn().mockResolvedValue(undefined),
+			storePendingChatReaction: vi.fn().mockResolvedValue(true),
 			applyPendingChatReactions: vi.fn().mockResolvedValue(undefined),
 			createMessageToUser: vi.fn(),
 			createMessageToRoom: vi.fn(),
@@ -1062,6 +1119,138 @@ describe('ApInboxService chat activity routing', () => {
 
 		expect(result).toContain('pending');
 		expect(f.chatService.storePendingChatReaction).toHaveBeenCalledWith(f.actor.id, f.message.uri, '👍', true);
+	});
+
+	test('rechecks under the object lock so a reaction cannot miss a message stored after the first lookup', async () => {
+		const f = createInbox();
+		f.chatService.findMessageByUri.mockResolvedValueOnce(null).mockResolvedValue(f.message);
+
+		const result = await (f.inbox as never as { like: (...args: unknown[]) => Promise<string> }).like(f.actor, {
+			type: 'EmojiReact', actor: f.actor.uri, object: f.message.uri, content: '👍',
+		});
+
+		expect(result).toBe('ok');
+		expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍');
+		expect(f.chatService.storePendingChatReaction).not.toHaveBeenCalled();
+	});
+
+	test('rechecks under the object lock so an unreact cannot miss a message stored after the first lookup', async () => {
+		const f = createInbox();
+		f.chatService.findMessageByUri.mockResolvedValueOnce(null).mockResolvedValue(f.message);
+
+		const result = await (f.inbox as never as { undo: (...args: unknown[]) => Promise<string> }).undo(f.actor, {
+			type: 'Undo', actor: f.actor.uri,
+			object: { type: 'EmojiReact', actor: f.actor.uri, object: f.message.uri, content: '👍' },
+		});
+
+		expect(result).toBe('ok');
+		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍');
+		expect(f.chatService.storePendingChatReaction).not.toHaveBeenCalled();
+	});
+
+	test('reports a deferred reaction that was refused', async () => {
+		const f = createInbox();
+		f.chatService.findMessageByUri.mockResolvedValue(null);
+		f.chatService.storePendingChatReaction.mockResolvedValue(false);
+
+		const result = await (f.inbox as never as { like: (...args: unknown[]) => Promise<string> }).like(f.actor, {
+			type: 'EmojiReact', actor: f.actor.uri, object: f.message.uri, content: '👍',
+		});
+
+		expect(result).toMatch(/^skip:/);
+	});
+
+	describe('creating a chat message', () => {
+		const object = (f: ReturnType<typeof createInbox>) => ({
+			id: 'https://remote.test/chat/messages/new', type: 'Note', attributedTo: f.actor.uri,
+			content: 'hello', to: [f.localUser.uri], _misskey_talk: true,
+		});
+		const create = (f: ReturnType<typeof createInbox>) => (f.inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage(
+			{}, f.actor, object(f), { type: 'Create', actor: f.actor.uri },
+		);
+
+		test('skips a duplicate Create before resolving recipients', async () => {
+			const f = createInbox();
+			(f.inbox as never as { chatMessagesRepository: { findOneBy: ReturnType<typeof vi.fn> } }).chatMessagesRepository.findOneBy.mockResolvedValue(f.message);
+
+			expect(await create(f)).toBe('skip: chat message exists');
+			expect((f.inbox as never as { apPersonService: { resolvePerson: ReturnType<typeof vi.fn> } }).apPersonService.resolvePerson).not.toHaveBeenCalled();
+		});
+
+		test('does not retry a final refusal from the recipient', async () => {
+			const f = createInbox();
+			f.chatService.createMessageToUser.mockRejectedValue(new ChatMessageAccessError('blocked'));
+
+			expect(await create(f)).toBe('skip: blocked');
+		});
+
+		test('retries a membership refusal, as the roster update may still be on its way', async () => {
+			const f = createInbox();
+			f.chatService.createMessageToUser.mockRejectedValue(new Error('you are not a member of the room'));
+
+			await expect(create(f)).rejects.toThrow('you are not a member of the room');
+		});
+	});
+});
+
+describe('unread chat notification', () => {
+	afterEach(() => vi.useRealTimers());
+
+	function createNotifyingService(current: () => Record<string, unknown> | null) {
+		const publishMainStream = vi.fn();
+		const pushNotification = vi.fn();
+		const packMessageDetailed = vi.fn(async (message: unknown) => message);
+		const pipeline = { set: () => pipeline, sadd: () => pipeline, exec: async () => [] };
+		const service = Object.assign(Object.create(ChatService.prototype), {
+			config: { url: 'https://local.test' },
+			chatApprovalsRepository: {
+				createQueryBuilder: () => ({
+					where() { return this; }, orWhere() { return this; }, take() { return this; },
+					getMany: async () => [{ userId: 'alice' }, { userId: 'bob' }],
+				}),
+			},
+			chatMessagesRepository: {
+				insertOne: async (message: unknown) => message,
+				findOneBy: async () => current(),
+			},
+			roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
+			userBlockingService: { checkBlocked: async () => false },
+			idService: { gen: () => 'm1' },
+			chatEntityService: { packMessageLiteFor1on1: async (message: unknown) => message, packMessageDetailed },
+			userEntityService: {
+				isLocalUser: (user: { host: string | null }) => user.host == null,
+				isRemoteUser: (user: { host: string | null }) => user.host != null,
+			},
+			globalEventService: { publishChatUserStream: vi.fn(), publishMainStream },
+			pushNotificationService: { pushNotification },
+			redisClient: { pipeline: () => pipeline, get: async () => 'm1' },
+		});
+		const send = () => service.createMessageToUser(
+			{ id: 'bob', host: 'remote.test' }, { id: 'alice', host: null, chatScope: 'everyone' }, { text: 'secret', uri: 'https://remote.test/chat/messages/m1' },
+		);
+		return { send, publishMainStream, pushNotification, packMessageDetailed };
+	}
+
+	test('does not push the text of a message deleted before the notification fires', async () => {
+		vi.useFakeTimers();
+		const f = createNotifyingService(() => ({ id: 'm1', text: null, deletedAt: new Date() }));
+
+		await f.send();
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(f.publishMainStream).not.toHaveBeenCalled();
+		expect(f.pushNotification).not.toHaveBeenCalled();
+	});
+
+	test('pushes the latest revision of a message edited before the notification fires', async () => {
+		vi.useFakeTimers();
+		const edited = { id: 'm1', text: 'edited', deletedAt: null };
+		const f = createNotifyingService(() => edited);
+
+		await f.send();
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(f.pushNotification).toHaveBeenCalledWith('alice', 'newChatMessage', edited);
 	});
 });
 

@@ -31,7 +31,7 @@ import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { QueueService } from '@/core/QueueService.js';
-import { MiChatRoomInvitation, MiChatRoomMembership, type UsersRepository, type NotesRepository, type FollowingsRepository, type AbuseUserReportsRepository, type FollowRequestsRepository, type MiChatRoom, type MiMeta, type ChatMessagesRepository, type ChatRoomsRepository, type ChatRoomInvitationsRepository, type ChatRoomMembershipsRepository } from '@/models/_.js';
+import { MiChatRoomInvitation, MiChatRoomMembership, type UsersRepository, type NotesRepository, type FollowingsRepository, type AbuseUserReportsRepository, type FollowRequestsRepository, type MiChatMessage, type MiChatRoom, type MiMeta, type ChatMessagesRepository, type ChatRoomsRepository, type ChatRoomInvitationsRepository, type ChatRoomMembershipsRepository } from '@/models/_.js';
 import { bindThis } from '@/decorators.js';
 import type { MiRemoteUser, MiUser } from '@/models/User.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
@@ -52,7 +52,9 @@ import type { IAccept, IAdd, IAnnounce, IBlock, ICreate, IDelete, IFlag, IFollow
 
 const PENDING_ROOM_ACTIVITY_TTL = 6 * 60 * 60;
 const MAX_PENDING_ROOM_ACTIVITIES = 100;
+const MAX_PENDING_ROOMS_PER_ACTOR = 100;
 const DEFERRED_CHAT_DELETE_TTL = 6 * 60 * 60;
+const ROOM_FULL = 'skip: room is full';
 const MAX_DEFERRED_CHAT_DELETES_PER_ACTOR = 1000;
 
 @Injectable()
@@ -243,17 +245,7 @@ export class ApInboxService {
 			const reaction = activity._misskey_reaction ?? activity.content ?? activity.name;
 			if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
 			await this.apNoteService.extractEmojis(activity.tag ?? [], actor.host).catch(() => null);
-			if (chatMessage != null) {
-				try {
-					await this.chatService.reactRemote(actor, chatMessage, reaction);
-					return 'ok';
-				} catch (err) {
-					if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
-					throw err;
-				}
-			}
-			await this.chatService.storePendingChatReaction(actor.id, targetUri, reaction, false);
-			return 'ok: pending chat reaction';
+			return await this.applyChatReaction(actor, targetUri, chatMessage, reaction, false);
 		}
 
 		if (!note) return `skip: target note not found ${targetUri}`;
@@ -269,6 +261,39 @@ export class ApInboxService {
 			} else {
 				throw err;
 			}
+		}
+	}
+
+	/**
+	 * A reaction can overtake its message. createChatMessage inserts the message and drains the
+	 * deferred reactions under this lock, so the final lookup and the deferral must hold it too.
+	 */
+	private async applyChatReaction(actor: MiRemoteUser, targetUri: string, known: MiChatMessage | null, reaction: string, undo: boolean): Promise<string> {
+		const apply = async (message: MiChatMessage): Promise<string> => {
+			try {
+				if (undo) {
+					await this.chatService.unreactRemote(actor, message, reaction);
+				} else {
+					await this.chatService.reactRemote(actor, message, reaction);
+				}
+				return 'ok';
+			} catch (err) {
+				if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+				throw err;
+			}
+		};
+		if (known != null) return await apply(known);
+
+		const unlock = await acquireApObjectLock(this.redisClient, targetUri);
+		try {
+			const message = await this.chatService.findMessageByUri(targetUri);
+			if (message != null) return await apply(message);
+
+			const stored = await this.chatService.storePendingChatReaction(actor.id, targetUri, reaction, undo);
+			if (!stored) return 'skip: chat reaction was not deferred';
+			return undo ? 'ok: pending chat Unreact' : 'ok: pending chat reaction';
+		} finally {
+			await unlock();
 		}
 	}
 
@@ -371,7 +396,9 @@ export class ApInboxService {
 			}
 
 			const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId: room.id });
-			if (membershipsCount >= MAX_ROOM_MEMBERS) return 'skip: room is full';
+			// Commit the delete: the invitee's server consumed its copy before sending Accept,
+			// so the invitation can never be accepted again and would only block a new one.
+			if (membershipsCount >= MAX_ROOM_MEMBERS) return ROOM_FULL;
 
 			const membership = {
 				id: this.idService.gen(),
@@ -385,6 +412,10 @@ export class ApInboxService {
 			return 'ok';
 		});
 
+		if (result === ROOM_FULL) {
+			await this.revokeRemoteJoin(room, actor);
+			return result;
+		}
 		if (result !== 'ok') return result;
 
 		this.globalEventService.publishChatRoomStream(room.id, 'membershipStarted', { userId: actor.id });
@@ -420,6 +451,18 @@ export class ApInboxService {
 		return result;
 	}
 
+	/** The invitee's server added its membership before sending Accept, so it has to be told to drop it. */
+	private async revokeRemoteJoin(room: MiChatRoom, invitee: MiRemoteUser): Promise<void> {
+		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+		if (owner == null || owner.host != null || invitee.inbox == null) return;
+
+		const activity = this.apRendererService.addContext({
+			...this.apRendererService.renderRemove(owner, this.apRendererService.genLocalChatRoomUri(room.id), invitee.uri),
+			published: new Date().toISOString(),
+		});
+		this.queueService.deliver(owner, activity, invitee.inbox, false);
+	}
+
 	@bindThis
 	private async add(actor: MiRemoteUser, activity: IAdd, resolver?: Resolver): Promise<string | void> {
 		if (actor.uri !== getApId(activity.actor)) {
@@ -435,8 +478,7 @@ export class ApInboxService {
 		if (roomIdMatch) {
 			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
 			if (room == null) {
-				await this.storePendingRoomActivity(actor, activity);
-				return 'ok: room not found, activity deferred';
+				return await this.storePendingRoomActivity(actor, activity) ? 'ok: room not found, activity deferred' : 'skip: room not found';
 			}
 			if (room.ownerId !== actor.id) return 'skip: only the room owner can add a member';
 
@@ -752,6 +794,9 @@ export class ApInboxService {
 		if (!this.isOnActorHost(object.id, actor)) return 'skip: host in actor.uri !== object.id';
 
 		if (await this.redisClient.get(`chat_delete_upon_arrival:${object.id}:${encodeURIComponent(actor.uri)}`) === actor.uri) return 'skip: deleted';
+		// A room message reaches us once per member inbox, so avoid repeating the network work below.
+		// This is only a shortcut: the check under the lock remains the one that decides.
+		if (await this.chatMessagesRepository.findOneBy({ uri: object.id }) != null && getApType(activity) !== 'Update') return 'skip: chat message exists';
 		this.logger.info(`Processing chat message: ${object.id}`);
 
 		// Get recipients from the 'to' field
@@ -814,7 +859,12 @@ export class ApInboxService {
 				const tombstoneKey = `chat_delete_upon_arrival:${object.id}:${encodeURIComponent(actor.uri)}`;
 				if (await this.redisClient.get(tombstoneKey) === actor.uri) return 'skip: deleted';
 				this.logger.info(`Recipient ${recipient.username} cannot use chat, converting to DM`);
-				await this.apNoteService.createNote(object, actor, resolver, true);
+				try {
+					await this.apNoteService.createNote(object, actor, resolver, true);
+				} catch (err) {
+					if (err instanceof StatusError && !err.isRetryable) return `skip ${err.statusCode}`;
+					throw err;
+				}
 
 				// Serialize with a Delete that may have seen no Note before its insertion.
 				// Release this lock before deleteNote takes the same lock for its author check.
@@ -908,6 +958,9 @@ export class ApInboxService {
 			}
 			return 'ok';
 		} catch (err) {
+			// The recipient refused for good. A room membership error stays retryable on purpose,
+			// because a new member's message can overtake the Accept or Add that makes them a member.
+			if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
 			this.logger.error(`Failed to create chat message: ${err}`);
 			throw err;
 		} finally {
@@ -984,8 +1037,7 @@ export class ApInboxService {
 			if (!roomIdMatch) return 'skip: invalid room URI';
 			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
 			if (room == null) {
-				await this.storePendingRoomActivity(actor, activity);
-				return 'skip: room not found, activity deferred';
+				return await this.storePendingRoomActivity(actor, activity) ? 'skip: room not found, activity deferred' : 'skip: room not found';
 			}
 			if (room.ownerId !== actor.id) return 'skip: only the room owner can delete it';
 			await this.chatService.deleteRoom(room, undefined, { federate: false });
@@ -1300,17 +1352,7 @@ export class ApInboxService {
 			if (isChatMessage && (chatMessage != null || await this.apNoteService.fetchNote(targetUri) == null)) {
 				const reaction = object._misskey_reaction ?? object.content ?? object.name;
 				if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
-				if (chatMessage == null) {
-					await this.chatService.storePendingChatReaction(actor.id, targetUri, reaction, true);
-					return 'ok: pending chat Unreact';
-				}
-				try {
-					await this.chatService.unreactRemote(actor, chatMessage, reaction);
-					return 'ok';
-				} catch (err) {
-					if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
-					throw err;
-				}
+				return await this.applyChatReaction(actor, targetUri, chatMessage, reaction, true);
 			}
 		}
 		if (isLike(object)) return await this.undoLike(actor, object);
@@ -1527,8 +1569,7 @@ export class ApInboxService {
 			if (!roomIdMatch) return 'skip: invalid room URI';
 			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
 			if (room == null) {
-				await this.storePendingRoomActivity(actor, activity);
-				return 'skip: room not found, activity deferred';
+				return await this.storePendingRoomActivity(actor, activity) ? 'skip: room not found, activity deferred' : 'skip: room not found';
 			}
 			if (room.ownerId !== actor.id) return 'skip: only the room owner can update it';
 
@@ -1640,15 +1681,25 @@ export class ApInboxService {
 		return true;
 	}
 
-	private async storePendingRoomActivity(actor: MiRemoteUser, activity: IAdd | IUpdate | IDelete): Promise<void> {
+	private async storePendingRoomActivity(actor: MiRemoteUser, activity: IAdd | IUpdate | IDelete): Promise<boolean> {
 		const roomUri = this.chatRoomUriFromActivity(activity);
-		if (roomUri == null) return;
+		if (roomUri == null) return false;
+
+		// Only the owner sends these, and the room lives on the owner's server.
+		// Without this another server could fill the room's slots before the owner's activities arrive.
+		if (!this.isOnActorHost(roomUri, actor)) return false;
+
+		const indexKey = `chat_pending_room_activities_index:${actor.id}`;
+		if (await this.redisClient.scard(indexKey) >= MAX_PENDING_ROOMS_PER_ACTOR) return false;
 
 		const key = `chat_pending_room_activities:${roomUri}`;
 		const count = await this.redisClient.scard(key);
-		if (count >= MAX_PENDING_ROOM_ACTIVITIES) return;
+		if (count >= MAX_PENDING_ROOM_ACTIVITIES) return false;
+		await this.redisClient.sadd(indexKey, roomUri);
+		await this.redisClient.expire(indexKey, PENDING_ROOM_ACTIVITY_TTL);
 		await this.redisClient.sadd(key, JSON.stringify({ actorId: actor.id, activity }));
 		await this.redisClient.expire(key, PENDING_ROOM_ACTIVITY_TTL);
+		return true;
 	}
 
 	private async applyPendingRoomActivities(roomUri: string): Promise<boolean> {

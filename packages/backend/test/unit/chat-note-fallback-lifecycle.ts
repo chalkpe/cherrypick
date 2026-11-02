@@ -6,6 +6,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { UtilityService } from '@/core/UtilityService.js';
+import { StatusError } from '@/misc/status-error.js';
 import { getApId } from '@/core/activitypub/type.js';
 import type { IPost } from '@/core/activitypub/type.js';
 
@@ -33,7 +34,7 @@ function fixture(options: { beforeNoteInsert?: () => Promise<void>; resolveImage
 		create: vi.fn(async () => {}),
 		delete: vi.fn(async () => {}),
 	};
-	const storePendingChatReaction = vi.fn(async () => {});
+	const storePendingChatReaction = vi.fn(async () => true);
 	let creationAttempts = 0;
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 		chatService: {
@@ -205,6 +206,18 @@ describe('chat messages converted to private notes', () => {
 
 		expect(f.notes.size).toBe(0);
 		expect(f.creationAttempts()).toBe(0);
+	});
+
+	test('does not retry a note conversion that failed permanently', async () => {
+		const f = fixture({ beforeNoteInsert: async () => { throw new StatusError('gone', 410); } });
+
+		expect(await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri })).toBe('skip 410');
+	});
+
+	test('retries a note conversion that failed temporarily', async () => {
+		const f = fixture({ beforeNoteInsert: async () => { throw new StatusError('unavailable', 503); } });
+
+		await expect(f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri })).rejects.toThrow('unavailable');
 	});
 
 	test('removes the converted note when Delete arrives during note creation', async () => {

@@ -41,8 +41,11 @@ export const MAX_ROOM_MEMBERS = 50;
 const MAX_REACTIONS_PER_MESSAGE = 100;
 const PENDING_CHAT_REACTION_TTL = 6 * 60 * 60;
 const MAX_PENDING_CHAT_REACTIONS = 100;
+const MAX_PENDING_CHAT_REACTIONS_PER_ACTOR = 1000;
+const MAX_PENDING_CHAT_REACTION_LENGTH = 256;
 const CHAT_REACTION_ACTIVITY_ID_TTL = 30 * 24 * 60 * 60;
 const isCustomEmojiRegexp = /^:([\w+-]+)(?:@\.)?:$/;
+const hostQualifiedCustomEmojiRegexp = /^:([\w+-]+)@(.+):$/;
 
 // TODO: ReactionServiceのやつと共通化
 function normalizeEmojiString(x: string) {
@@ -152,7 +155,7 @@ export class ChatService {
 		editedAt?: Date | null;
 	}): Promise<Packed<'ChatMessageLiteFor1on1'>> {
 		if (fromUser.id === toUser.id) {
-			throw new Error('yourself');
+			throw new ChatMessageAccessError('yourself');
 		}
 
 		const approvals = await this.chatApprovalsRepository.createQueryBuilder('approval')
@@ -172,32 +175,32 @@ export class ChatService {
 
 		if (!otherApprovedMe) {
 			if (toUser.chatScope === 'none') {
-				throw new Error('recipient is cannot chat (none)');
+				throw new ChatMessageAccessError('recipient is cannot chat (none)');
 			} else if (toUser.chatScope === 'followers') {
 				const isFollower = await this.userFollowingService.isFollowing(fromUser.id, toUser.id);
 				if (!isFollower) {
-					throw new Error('recipient is cannot chat (followers)');
+					throw new ChatMessageAccessError('recipient is cannot chat (followers)');
 				}
 			} else if (toUser.chatScope === 'following') {
 				const isFollowing = await this.userFollowingService.isFollowing(toUser.id, fromUser.id);
 				if (!isFollowing) {
-					throw new Error('recipient is cannot chat (following)');
+					throw new ChatMessageAccessError('recipient is cannot chat (following)');
 				}
 			} else if (toUser.chatScope === 'mutual') {
 				const isMutual = await this.userFollowingService.isMutual(fromUser.id, toUser.id);
 				if (!isMutual) {
-					throw new Error('recipient is cannot chat (mutual)');
+					throw new ChatMessageAccessError('recipient is cannot chat (mutual)');
 				}
 			}
 		}
 
 		if (!(await this.getChatAvailability(toUser.id)).write) {
-			throw new Error('recipient is cannot chat (policy)');
+			throw new ChatMessageAccessError('recipient is cannot chat (policy)');
 		}
 
 		const blocked = await this.userBlockingService.checkBlocked(toUser.id, fromUser.id);
 		if (blocked) {
-			throw new Error('blocked');
+			throw new ChatMessageAccessError('blocked');
 		}
 
 		// Extract emojis from text if not provided
@@ -259,7 +262,11 @@ export class ChatService {
 
 				if (marker == null) return; // 既読
 
-				const packedMessageForTo = await this.chatEntityService.packMessageDetailed(inserted, toUser);
+				// Delete and Update can arrive within this delay. Never notify with text the sender already withdrew.
+				const latest = await this.chatMessagesRepository.findOneBy({ id: inserted.id });
+				if (latest == null || latest.deletedAt != null) return;
+
+				const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest, toUser);
 				this.globalEventService.publishMainStream(toUser.id, 'newChatMessage', packedMessageForTo);
 				this.pushNotificationService.pushNotification(toUser.id, 'newChatMessage', packedMessageForTo);
 			}, 3000);
@@ -351,7 +358,11 @@ export class ChatService {
 
 			if (markers.every(marker => marker[1] == null)) return;
 
-			const packedMessageForTo = await this.chatEntityService.packMessageDetailed(inserted);
+			// Delete and Update can arrive within this delay. Never notify with text the sender already withdrew.
+			const latest = await this.chatMessagesRepository.findOneBy({ id: inserted.id });
+			if (latest == null || latest.deletedAt != null) return;
+
+			const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest);
 
 			for (let i = 0; i < membershipsOtherThanMe.length; i++) {
 				const marker = markers[i][1];
@@ -1347,6 +1358,7 @@ export class ChatService {
 
 		const actor = await this.usersRepository.findOneByOrFail({ id: userId });
 		const participants = await this.participantsForMessage(message);
+		if (!participants.some(user => this.userEntityService.isRemoteUser(user))) return;
 		const toUsers = participants.filter(user => user.id !== actor.id);
 		const messageUri = this.messageUriOf(message);
 		const activityId = `${this.userEntityService.genLocalUserUri(actor.id)}/chat-reactions/${randomUUID()}`;
@@ -1415,6 +1427,7 @@ export class ChatService {
 
 		const actor = await this.usersRepository.findOneByOrFail({ id: userId });
 		const participants = await this.participantsForMessage(message);
+		if (!participants.some(user => this.userEntityService.isRemoteUser(user))) return;
 		const toUsers = participants.filter(user => user.id !== actor.id);
 		const messageUri = this.messageUriOf(message);
 		const activityIdKey = this.chatReactionActivityIdKey(actor.id, messageUri, reaction);
@@ -1589,7 +1602,15 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async storePendingChatReaction(actorId: MiUser['id'], messageUri: string, reaction: string, undo: boolean): Promise<void> {
+	public async storePendingChatReaction(actorId: MiUser['id'], messageUri: string, reaction: string, undo: boolean): Promise<boolean> {
+		if (reaction.length > MAX_PENDING_CHAT_REACTION_LENGTH) return false;
+
+		// Any actor can name any URI here, so bound what one actor can keep in Redis until the TTL.
+		const countKey = `chat_pending_reaction_count:${actorId}`;
+		const counted = await this.redisClient.multi().incr(countKey).expire(countKey, PENDING_CHAT_REACTION_TTL).exec();
+		const count = counted?.[0]?.[1];
+		if (typeof count !== 'number' || count > MAX_PENDING_CHAT_REACTIONS_PER_ACTOR) return false;
+
 		const key = `chat_pending_reaction_events:${messageUri}`;
 		// A set loses both arrival order and repeated react/undo transitions.
 		await this.redisClient.multi()
@@ -1597,6 +1618,7 @@ export class ChatService {
 			.ltrim(key, 0, MAX_PENDING_CHAT_REACTIONS - 1)
 			.expire(key, PENDING_CHAT_REACTION_TTL)
 			.exec();
+		return true;
 	}
 
 	@bindThis
@@ -1637,6 +1659,9 @@ export class ChatService {
 	private normalizeRemoteReaction(reaction: string, actorHost: MiUser['host']): string {
 		const custom = reaction.match(isCustomEmojiRegexp);
 		if (custom != null) return actorHost == null ? `:${custom[1]}:` : `:${custom[1]}@${actorHost}:`;
+		// CherryPick qualifies the emoji with the sender's own host when it federates a reaction.
+		const qualified = reaction.match(hostQualifiedCustomEmojiRegexp);
+		if (qualified != null && actorHost != null && qualified[2].toLowerCase() === actorHost.toLowerCase()) return `:${qualified[1]}@${actorHost}:`;
 		try {
 			return normalizeEmojiString(reaction);
 		} catch {

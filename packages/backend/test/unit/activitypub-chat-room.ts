@@ -222,7 +222,7 @@ function fixture(options: {
 	});
 	inbox.chatService.deleteRoom = chatService.deleteRoom;
 	inbox.chatService.removeRoomMember = chatService.removeRoomMember;
-	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, pipeline, globalEventService };
+	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, pipeline, globalEventService, redisClient };
 }
 
 function inviteActivity(actor: { uri: string }, roomUri: string, invitee: string, attributedTo: string | undefined = actor.uri) {
@@ -284,6 +284,27 @@ describe('Chat room federation: Accept(Invite)', () => {
 
 		expect(f.memberships.rows).toEqual([]);
 		expect(f.invitations.rows).toEqual([expect.objectContaining({ id: 'inv' })]);
+	});
+
+	test('tells the invitee to leave when the room filled up before their Accept arrived', async () => {
+		const f = fixture({
+			invitations: [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }],
+			memberships: Array.from({ length: 50 }, (_, i) => ({ id: `m${i}`, roomId: 'localroom', userId: `user${i}` })),
+		});
+		const accepted = inviteActivity({ uri: remoteOwner.uri }, 'https://remote.test/chat/rooms/localroom', invitedRemote.uri);
+
+		const result = await f.inbox.acceptInvite(invitedRemote, accepted);
+
+		expect(result).toBe('skip: room is full');
+		expect(f.memberships.rows).toHaveLength(50);
+		// The invitee's server consumed its copy, so keeping ours would only block a new invitation.
+		expect(f.invitations.rows).toEqual([]);
+		expect(f.inbox.queueService.deliver).toHaveBeenCalledExactlyOnceWith(
+			localOwner,
+			expect.objectContaining({ type: 'Remove', target: `${LOCAL}/chat/rooms/localroom`, object: invitedRemote.uri }),
+			invitedRemote.inbox,
+			false,
+		);
 	});
 
 	test('accepts two concurrent requests exactly once', async () => {
@@ -808,6 +829,29 @@ describe('Chat room federation: deferred room activities', () => {
 		const room = f.rooms.rows.find(room => room.id === 'oversized');
 		expect(room?.name).toHaveLength(256);
 		expect(room?.description).toHaveLength(1024);
+	});
+
+	test.each([
+		['Add', (inbox: ReturnType<typeof fixture>['inbox']) => inbox.add(dave, { type: 'Add', actor: dave.uri, target: remoteRoomUri, object: dave.uri })],
+		['Update', (inbox: ReturnType<typeof fixture>['inbox']) => inbox.update(dave, { type: 'Update', actor: dave.uri, object: { id: remoteRoomUri, type: 'Group', name: 'forged', attributedTo: dave.uri } })],
+		['Delete', (inbox: ReturnType<typeof fixture>['inbox']) => inbox.delete(dave, { type: 'Delete', actor: dave.uri, object: { id: remoteRoomUri, type: 'Tombstone', formerType: 'Group' } })],
+	])('does not let another server occupy deferred %s slots of a room', async (_type, send) => {
+		const f = fixture();
+		f.resolver.resolve.mockImplementation(async (value: unknown) => value);
+
+		expect(await send(f.inbox)).toMatch(/^skip:/);
+
+		expect(f.redisClient.sadd).not.toHaveBeenCalled();
+	});
+
+	test('caps the rooms an actor can defer activities for', async () => {
+		const f = fixture();
+		f.redisClient.scard.mockImplementation(async (key: string) => key.startsWith('chat_pending_room_activities_index:') ? 100 : 0);
+
+		const result = await f.inbox.add(remoteOwner, { type: 'Add', actor: remoteOwner.uri, target: remoteRoomUri, object: invitedRemote.uri });
+
+		expect(result).toMatch(/^skip:/);
+		expect(f.redisClient.sadd).not.toHaveBeenCalled();
 	});
 
 	test('applies a pending Update after Invite creates the mirror room', async () => {
