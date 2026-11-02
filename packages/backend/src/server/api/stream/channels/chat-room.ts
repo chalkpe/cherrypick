@@ -88,14 +88,20 @@ export class ChatRoomChannel extends Channel {
 	@bindThis
 	private async onEvent(data: GlobalEvents['chatRoom']['payload']) {
 		if (this.disposed) return;
-		if (data.type === 'membershipEnded' || data.type === 'roomDeleted') {
-			if (data.type === 'roomDeleted' || data.body.userId === this.user!.id) {
-				// 判定待ちのイベントも即座に無効化し、モデレーターの閲覧権限は再判定する。
-				this.permissionVersion++;
-				this.lastPermissionCheck = -Infinity;
-				await this.checkPermission();
-			}
+		if (data.type === 'roomDeleted') {
+			// 削除後は権限を再照会できないため、許可済みの購読へ終了通知だけを送る。
+			const wasAllowed = this.lastPermissionCheck !== -Infinity;
+			this.permissionVersion++;
+			this.dispose();
+			if (wasAllowed) this.send(data.type, data.body);
 			return;
+		}
+		if (data.type === 'membershipEnded' && data.body.userId === this.user!.id) {
+			const wasAllowed = this.lastPermissionCheck !== -Infinity;
+			// 判定待ちのイベントも即座に無効化し、モデレーターの閲覧権限は再判定する。
+			this.permissionVersion++;
+			this.lastPermissionCheck = -Infinity;
+			if (!(await this.checkPermission()) || !wasAllowed) return;
 		}
 
 		const version = this.permissionVersion;

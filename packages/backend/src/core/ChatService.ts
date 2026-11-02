@@ -1590,21 +1590,25 @@ export class ChatService {
 
 	@bindThis
 	public async storePendingChatReaction(actorId: MiUser['id'], messageUri: string, reaction: string, undo: boolean): Promise<void> {
-		const key = `chat_pending_reactions:${messageUri}`;
-		const count = await this.redisClient.scard(key);
-		if (count >= MAX_PENDING_CHAT_REACTIONS) return;
-		await this.redisClient.sadd(key, JSON.stringify({ actorId, reaction, undo }));
-		await this.redisClient.expire(key, PENDING_CHAT_REACTION_TTL);
+		const key = `chat_pending_reaction_events:${messageUri}`;
+		// A set loses both arrival order and repeated react/undo transitions.
+		await this.redisClient.multi()
+			.rpush(key, JSON.stringify({ actorId, reaction, undo }))
+			.ltrim(key, 0, MAX_PENDING_CHAT_REACTIONS - 1)
+			.expire(key, PENDING_CHAT_REACTION_TTL)
+			.exec();
 	}
 
 	@bindThis
 	public async applyPendingChatReactions(message: MiChatMessage): Promise<void> {
 		if (message.uri == null) return;
 
-		const key = `chat_pending_reactions:${message.uri}`;
-		const entries = await this.redisClient.smembers(key);
-		if (entries.length === 0) return;
-		await this.redisClient.del(key);
+		const key = `chat_pending_reaction_events:${message.uri}`;
+		// Drain atomically so an append between reading and deleting cannot be lost.
+		const results = await this.redisClient.multi().lrange(key, 0, -1).del(key).exec();
+		if (results == null) return;
+		if (results[0][0] != null) throw results[0][0];
+		const entries = results[0][1] as string[];
 
 		for (const entry of entries) {
 			try {

@@ -112,7 +112,7 @@ onBeforeUnmount(() => { unmounted.value = true; });
 // 検索結果は前後のメッセージと関係なく並ぶのでまとめない
 const isFirstInGroup = computed(() => props.isSearchResult === true || props.firstInGroup);
 const isLastInGroup = computed(() => props.isSearchResult === true || props.lastInGroup);
-const urls = computed(() => props.message.text ? extractUrlFromMfm(mfm.parse(props.message.text)) : []);
+const urls = computed(() => !deletedAt.value && props.message.text ? extractUrlFromMfm(mfm.parse(props.message.text)) : []);
 
 provide(DI.mfmEmojiReactCallback, (reaction) => {
 	if (!canReact.value) return;

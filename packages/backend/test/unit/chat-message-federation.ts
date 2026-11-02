@@ -271,19 +271,38 @@ describe('ChatService chat federation delivery', () => {
 			srem: vi.fn().mockReturnThis(),
 			exec: vi.fn().mockResolvedValue([]),
 		};
-		const pendingReactions = new Map<string, Set<string>>();
+		const pendingReactions = new Map<string, string[]>();
 		const reactionActivityIds = new Map<string, string>();
 		const redisClient = {
 			pipeline: vi.fn(() => redisPipeline),
-			scard: vi.fn(async (key: string) => pendingReactions.get(key)?.size ?? 0),
-			sadd: vi.fn(async (key: string, value: string) => {
-				const set = pendingReactions.get(key) ?? new Set<string>();
-				set.add(value);
-				pendingReactions.set(key, set);
-				return 1;
-			}),
-			expire: vi.fn().mockResolvedValue(1),
-			smembers: vi.fn(async (key: string) => [...(pendingReactions.get(key) ?? [])]),
+			multi: () => {
+				const commands: (() => unknown)[] = [];
+				const transaction = {
+					rpush: (key: string, value: string) => {
+						commands.push(() => {
+							const events = pendingReactions.get(key) ?? [];
+							pendingReactions.set(key, events);
+							return events.push(value);
+						});
+						return transaction;
+					},
+					ltrim: (key: string, start: number, stop: number) => {
+						commands.push(() => pendingReactions.set(key, (pendingReactions.get(key) ?? []).slice(start, stop + 1)));
+						return transaction;
+					},
+					expire: () => transaction,
+					lrange: (key: string) => {
+						commands.push(() => [...(pendingReactions.get(key) ?? [])]);
+						return transaction;
+					},
+					del: (key: string) => {
+						commands.push(() => pendingReactions.delete(key));
+						return transaction;
+					},
+					exec: async () => commands.map(command => [null, command()]),
+				};
+				return transaction;
+			},
 			get: vi.fn(async (key: string) => reactionActivityIds.get(key) ?? null),
 			setex: vi.fn(async (key: string, _ttl: number, value: string) => {
 				reactionActivityIds.set(key, value);
@@ -517,6 +536,22 @@ describe('ChatService chat federation delivery', () => {
 		await f.service.applyPendingChatReactions(f.roomMessage as never);
 
 		expect(unreactRemote).toHaveBeenCalledWith(f.bob, f.roomMessage, '👍');
+	});
+
+	test.each([
+		{ events: [false, true], expected: [] },
+		{ events: [false, true, false], expected: ['carol/👍'] },
+		{ events: [true, false, true], expected: [] },
+	])('preserves deferred reaction order for $events', async ({ events, expected }) => {
+		const f = createService();
+		f.roomMessage.uri = 'https://remote.test/chat/messages/m2';
+
+		for (const undo of events) {
+			await f.service.storePendingChatReaction('carol', f.roomMessage.uri, '👍', undo);
+		}
+		await f.service.applyPendingChatReactions(f.roomMessage as never);
+
+		expect(f.roomMessage.reactions).toEqual(expected);
 	});
 
 	test('reactRemote qualifies an unqualified custom emoji with the actor host', async () => {

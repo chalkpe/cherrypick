@@ -192,6 +192,23 @@ describe('chat bubbles on the room page', () => {
 		expect(bubbles(container).map(bubble => bubble.id)).toEqual(['m1', 'm2', 'm3']);
 	});
 
+	test.each(['room', 'user'] as const)('a delayed edit cannot restore deleted %s message content', async target => {
+		mocks.timeline = [message('m1', 'alice', 0)];
+		const { container } = await renderRoom(target);
+		mocks.channel.emit('deleted', 'm1');
+		mocks.channel.emit('updated', {
+			messageId: 'm1',
+			text: 'https://remote.test/deleted-content :wave:',
+			editedAt: '2026-11-01T00:00:01.000Z',
+			emojis: { wave: 'https://remote.test/wave.png' },
+		});
+		await flush();
+		const bubble = container.querySelector('[data-id="m1"]')!;
+		expect(bubble.getAttribute('data-deleted')).toBe('true');
+		expect(bubble.hasAttribute('data-text')).toBe(false);
+		expect(bubble.getAttribute('data-emojis')).toBe('{}');
+	});
+
 	test('a new message re-renders only the bubbles whose place in a group changed', async () => {
 		const { container } = await renderRoom();
 		const before = new Map(mocks.renders);

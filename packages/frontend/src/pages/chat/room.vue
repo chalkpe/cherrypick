@@ -466,7 +466,7 @@ function onUnreact(ctx: Parameters<Misskey.Channels['chatUser']['events']['unrea
 
 function onUpdated(ctx: Parameters<Misskey.Channels['chatUser']['events']['updated']>[0]) {
 	const message = messages.value.find(m => m.id === ctx.messageId);
-	if (message) {
+	if (message && !message.deletedAt) {
 		if (message.editedAt && Date.parse(ctx.editedAt) <= Date.parse(message.editedAt)) return;
 		message.text = ctx.text;
 		message.editedAt = ctx.editedAt;

@@ -237,8 +237,9 @@ export class ApInboxService {
 		const targetUri = getApId(activity.object);
 		const isChatMessage = this.isChatMessageUri(targetUri);
 		const chatMessage = isChatMessage ? await this.chatService.findMessageByUri(targetUri) : null;
+		const note = chatMessage == null ? await this.apNoteService.fetchNote(targetUri) : null;
 
-		if (isChatMessage) {
+		if (isChatMessage && note == null) {
 			const reaction = activity._misskey_reaction ?? activity.content ?? activity.name;
 			if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
 			await this.apNoteService.extractEmojis(activity.tag ?? [], actor.host).catch(() => null);
@@ -255,7 +256,6 @@ export class ApInboxService {
 			return 'ok: pending chat reaction';
 		}
 
-		const note = await this.apNoteService.fetchNote(targetUri);
 		if (!note) return `skip: target note not found ${targetUri}`;
 
 		await this.apNoteService.extractEmojis(activity.tag ?? [], actor.host).catch(() => null);
@@ -1297,13 +1297,13 @@ export class ApInboxService {
 			const targetUri = getApId(object.object);
 			const isChatMessage = this.isChatMessageUri(targetUri);
 			const chatMessage = isChatMessage ? await this.chatService.findMessageByUri(targetUri) : null;
-			const reaction = object._misskey_reaction ?? object.content ?? object.name;
-			if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
-			if (isChatMessage && chatMessage == null) {
-				await this.chatService.storePendingChatReaction(actor.id, targetUri, reaction, true);
-				return 'ok: pending chat Unreact';
-			}
-			if (chatMessage != null) {
+			if (isChatMessage && (chatMessage != null || await this.apNoteService.fetchNote(targetUri) == null)) {
+				const reaction = object._misskey_reaction ?? object.content ?? object.name;
+				if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
+				if (chatMessage == null) {
+					await this.chatService.storePendingChatReaction(actor.id, targetUri, reaction, true);
+					return 'ok: pending chat Unreact';
+				}
 				try {
 					await this.chatService.unreactRemote(actor, chatMessage, reaction);
 					return 'ok';

@@ -60,7 +60,7 @@ describe('ChatRoomChannel access lifetime', () => {
 		expect(f.permission).toHaveBeenCalledTimes(2);
 	});
 
-	test.each([false, true])('a deleted room stops the subscriber (moderator: %s)', async moderator => {
+	test.each([false, true])('a deleted room notifies its subscriber once before disconnecting (moderator: %s)', async moderator => {
 		const f = fixture();
 		f.isMember.mockResolvedValue(!moderator);
 		f.isModerator.mockResolvedValue(moderator);
@@ -68,20 +68,20 @@ describe('ChatRoomChannel access lifetime', () => {
 		f.rooms.findOneBy.mockResolvedValue(null);
 		await f.publish(deleted);
 		await f.publish(event);
-		expect(f.send).not.toHaveBeenCalled();
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', type: 'roomDeleted', body: null });
 		expect(f.subscriber.listenerCount(stream)).toBe(0);
 	});
 
-	test('a non-member moderator retains access after leaving and control events stay internal', async () => {
+	test('a non-member moderator retains access and receives membership changes after leaving', async () => {
 		const f = fixture();
 		f.isMember.mockResolvedValue(false);
 		f.isModerator.mockResolvedValue(true);
 		await f.channel.init({ roomId: 'r1' });
 		await f.publish(left);
 		expect(f.permission).toHaveBeenCalledTimes(2);
-		expect(f.send).not.toHaveBeenCalled();
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', type: 'membershipEnded', body: { userId: 'member' } });
 		await f.publish(event);
-		expect(f.send).toHaveBeenCalledTimes(1);
+		expect(f.send).toHaveBeenCalledTimes(2);
 		expect(f.subscriber.listenerCount(stream)).toBe(1);
 	});
 
@@ -89,10 +89,22 @@ describe('ChatRoomChannel access lifetime', () => {
 		const f = fixture();
 		await f.channel.init({ roomId: 'r1' });
 		await f.publish({ type: 'membershipEnded', body: { userId: 'other' } });
-		expect(f.send).not.toHaveBeenCalled();
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', type: 'membershipEnded', body: { userId: 'other' } });
 		await f.publish(event);
-		expect(f.send).toHaveBeenCalledTimes(1);
+		expect(f.send).toHaveBeenCalledTimes(2);
 		expect(f.permission).toHaveBeenCalledTimes(1);
+	});
+
+	test('membership changes are not sent after an expired permission check denies access', async () => {
+		vi.useFakeTimers({ now: 1_000_000, toFake: ['Date'] });
+		const f = fixture();
+		await f.channel.init({ roomId: 'r1' });
+		vi.setSystemTime(1_060_000);
+		f.permission.mockResolvedValue(false);
+		await f.publish({ type: 'membershipEnded', body: { userId: 'other' } });
+		expect(f.permission).toHaveBeenCalledTimes(2);
+		expect(f.send).not.toHaveBeenCalled();
+		expect(f.subscriber.listenerCount(stream)).toBe(0);
 	});
 
 	test('unsignalled loss of access is checked at 60 seconds with no lookup per event inside the window', async () => {
@@ -141,6 +153,39 @@ describe('ChatRoomChannel access lifetime', () => {
 		await f.publish(control);
 		old.resolve(true);
 		await pending;
+		await f.publish(event);
+		if (control.type === 'roomDeleted') {
+			expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', type: 'roomDeleted', body: null });
+		} else {
+			expect(f.send).not.toHaveBeenCalled();
+		}
+		expect(f.subscriber.listenerCount(stream)).toBe(0);
+	});
+
+	test('room deletion during initialization neither grants access nor sends a notification', async () => {
+		const f = fixture();
+		const check = deferred<boolean>();
+		f.permission.mockReturnValue(check.promise);
+		const pending = f.channel.init({ roomId: 'r1' });
+		await Promise.resolve();
+		f.rooms.findOneBy.mockResolvedValue(null);
+		await f.publish(deleted);
+		check.resolve(true);
+		expect(await pending).toBe(false);
+		expect(f.send).not.toHaveBeenCalled();
+		expect(f.subscriber.listenerCount(stream)).toBe(0);
+	});
+
+	test('room deletion while a leave recheck is pending sends no later events', async () => {
+		const f = fixture();
+		await f.channel.init({ roomId: 'r1' });
+		const check = deferred<boolean>();
+		f.permission.mockReturnValue(check.promise);
+		const leaving = f.publish(left);
+		f.rooms.findOneBy.mockResolvedValue(null);
+		await f.publish(deleted);
+		check.resolve(false);
+		await leaving;
 		await f.publish(event);
 		expect(f.send).not.toHaveBeenCalled();
 		expect(f.subscriber.listenerCount(stream)).toBe(0);

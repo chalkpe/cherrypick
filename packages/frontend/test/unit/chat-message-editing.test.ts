@@ -230,6 +230,25 @@ test('does not offer reactions for a deleted message', async () => {
 	expect(items.find(item => item != null && 'text' in item && item.text === i18n.ts.reaction)).toBeUndefined();
 });
 
+test('hides URL previews on a deleted message even if stale text is present', async () => {
+	const text = 'https://remote.test/deleted-content';
+	const liveMessage = { ...message, text };
+	const result = render(XMessage, {
+		props: { message: liveMessage },
+		global: {
+			stubs: {
+				...stubs,
+				MkFukidashi: { template: '<div><slot/></div>' },
+				MkUrlPreview: { props: ['url'], template: '<a :href="url">{{ url }}</a>' },
+			},
+		},
+	});
+	expect(screen.getByRole('link', { name: text })).toBeTruthy();
+	await result.rerender({ message: { ...liveMessage, deletedAt: '2026-11-02T00:00:00.000Z' } });
+	expect(screen.getByText(i18n.ts._chat.deletedMessage)).toBeTruthy();
+	expect(screen.queryByRole('link', { name: text })).toBeNull();
+});
+
 test.each([false, true])('only offers Edit with an explicit editing capability (%s)', async canEdit => {
 	const result = render(XMessage, {
 		props: { message, ...(canEdit ? { canEdit: true } : {}) },

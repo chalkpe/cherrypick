@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { getApId } from '@/core/activitypub/type.js';
@@ -29,12 +29,19 @@ function fixture(options: { beforeNoteInsert?: () => Promise<void>; resolveImage
 	const locks = new Map<string, string>();
 	const tombstones = new Map<string, string>();
 	const policy = { chatAvailability: 'unavailable' };
+	const reactionService = {
+		create: vi.fn(async () => {}),
+		delete: vi.fn(async () => {}),
+	};
+	const storePendingChatReaction = vi.fn(async () => {});
 	let creationAttempts = 0;
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 		chatService: {
 			findMessageByUri: async () => null,
 			createMessageToUser: async (_actor: unknown, _recipient: unknown, params: { text: string }) => { chatTexts.push(params.text); },
+			storePendingChatReaction,
 		},
+		reactionService,
 		chatMessagesRepository: { findOneBy: async () => null },
 		redisClient: {
 			get: async (key: string) => locks.get(key) ?? tombstones.get(key) ?? null,
@@ -77,10 +84,60 @@ function fixture(options: { beforeNoteInsert?: () => Promise<void>; resolveImage
 		utilityService: new UtilityService({ host: 'local.test', url: 'https://local.test' } as never, {} as never),
 		logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} },
 	});
-	return { inbox, notes, chatTexts, tombstones, policy, creationAttempts: () => creationAttempts };
+	return { inbox, notes, chatTexts, tombstones, policy, reactionService, storePendingChatReaction, creationAttempts: () => creationAttempts };
 }
 
+describe('ordinary note likes', () => {
+	test('undoes a plain Like without emoji reaction fields', async () => {
+		const f = fixture();
+		const note = { id: 'ordinary-note', uri: 'https://remote.test/notes/ordinary-note', userId: actor.id, text: 'ordinary note' };
+		f.notes.set(note.uri, note);
+
+		const result = await f.inbox.performOneActivity(otherActor, {
+			type: 'Undo', actor: otherActor.uri,
+			object: { type: 'Like', actor: otherActor.uri, object: note.uri },
+		});
+
+		expect(result).toBe('ok');
+		expect(f.reactionService.delete).toHaveBeenCalledWith(otherActor, note);
+		expect(f.storePendingChatReaction).not.toHaveBeenCalled();
+	});
+});
+
 describe('chat messages converted to private notes', () => {
+	test.each([
+		{ type: 'Like', reaction: undefined },
+		{ type: 'EmojiReact', reaction: '👍' },
+	])('applies $type to the existing note instead of deferring a chat reaction', async ({ type, reaction }) => {
+		const f = fixture();
+		await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });
+
+		const result = await f.inbox.performOneActivity(otherActor, {
+			type, actor: otherActor.uri, object: messageUri, content: reaction,
+		});
+
+		expect(result).toBe('ok');
+		expect(f.reactionService.create).toHaveBeenCalledWith(otherActor, f.notes.get(messageUri), reaction);
+		expect(f.storePendingChatReaction).not.toHaveBeenCalled();
+	});
+
+	test.each([
+		{ type: 'Like', reaction: undefined },
+		{ type: 'EmojiReact', reaction: '👍' },
+	])('undoes $type on the existing note instead of deferring a chat reaction', async ({ type, reaction }) => {
+		const f = fixture();
+		await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });
+
+		const result = await f.inbox.performOneActivity(otherActor, {
+			type: 'Undo', actor: otherActor.uri,
+			object: { type, actor: otherActor.uri, object: messageUri, content: reaction },
+		});
+
+		expect(result).toBe('ok');
+		expect(f.reactionService.delete).toHaveBeenCalledWith(otherActor, f.notes.get(messageUri));
+		expect(f.storePendingChatReaction).not.toHaveBeenCalled();
+	});
+
 	test.each(['unavailable', 'available'])('updates the existing note when current chat availability is %s', async (availability) => {
 		const f = fixture();
 		await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });
