@@ -749,8 +749,10 @@ export class ApInboxService {
 		});
 
 		const apEmojis = emojis.map(emoji => emoji.name);
-		const contextUri = object['@context'];
-		const isGroup = typeof contextUri === 'string' && /\/chat\/rooms\/[a-zA-Z0-9]+$/.test(contextUri);
+		// The room URI is the whole @context on an embedded Note, or one element of a flat array on a fetched one.
+		const contexts: unknown[] = Array.isArray(object['@context']) ? object['@context'] : [object['@context']];
+		const contextUri = contexts.find((context): context is string => typeof context === 'string' && /\/chat\/rooms\/[a-zA-Z0-9]+$/.test(context));
+		const isGroup = contextUri != null;
 
 		// The room context, not the recipient count, decides whether this is a group message.
 		if (!isGroup && recipients.length !== 1) return 'skip: no room context';

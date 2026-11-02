@@ -552,6 +552,47 @@ describe('ApInboxService chat activity routing', () => {
 		return { inbox, actor, message, chatService, redisClient, chatRoomsRepository, localUser };
 	}
 
+	describe('room context in a flat @context array', () => {
+		const note = (context: unknown, actorUri: string, to: string) => ({
+			id: 'https://remote.test/chat/messages/array-context',
+			type: 'Note',
+			attributedTo: actorUri,
+			content: 'hello',
+			to: [to],
+			_misskey_talk: true,
+			'@context': context,
+		});
+
+		test('a room URI among the context elements makes it a group message, not a DM', async () => {
+			const f = createInbox();
+			f.chatService.isRoomMember.mockResolvedValue(true);
+
+			await (f.inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage(
+				{ resolve: async (x: unknown) => x },
+				f.actor,
+				note(['https://www.w3.org/ns/activitystreams', { sensitive: 'as:sensitive' }, 'https://remote.test/chat/rooms/r1'], f.actor.uri, f.localUser.uri),
+				{ type: 'Create' },
+			);
+
+			expect(f.chatService.createMessageToRoom).toHaveBeenCalledOnce();
+			expect(f.chatService.createMessageToUser).not.toHaveBeenCalled();
+		});
+
+		test('a context array without a room URI stays a direct message', async () => {
+			const f = createInbox();
+
+			await (f.inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage(
+				{ resolve: async (x: unknown) => x },
+				f.actor,
+				note(['https://www.w3.org/ns/activitystreams', { sensitive: 'as:sensitive' }], f.actor.uri, f.localUser.uri),
+				{ type: 'Create' },
+			);
+
+			expect(f.chatService.createMessageToUser).toHaveBeenCalledOnce();
+			expect(f.chatService.createMessageToRoom).not.toHaveBeenCalled();
+		});
+	});
+
 	test('treats a room-context message with one local recipient as a group message', async () => {
 		const f = createInbox();
 		f.chatService.isRoomMember.mockResolvedValue(true);
