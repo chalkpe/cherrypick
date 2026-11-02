@@ -718,6 +718,20 @@ describe('Chat room federation: Add/Update/Delete', () => {
 		expect(f.rooms.rows[0]).toMatchObject({ name: 'new name', description: 'new description' });
 	});
 
+	test('Update clips a mirror room name and description to the column sizes', async () => {
+		const f = fixture();
+		f.resolver.resolve.mockImplementation(async (value: unknown) => value);
+
+		await f.inbox.update(ownerActor, {
+			type: 'Update',
+			actor: ownerActor.uri,
+			object: { id: roomUri, type: 'Group', name: 'n'.repeat(300), summary: 's'.repeat(3000), attributedTo: ownerActor.uri },
+		});
+
+		expect(f.rooms.rows[0].name).toHaveLength(256);
+		expect(f.rooms.rows[0].description).toHaveLength(2048);
+	});
+
 	test('Delete removes the mirror room for the owner', async () => {
 		const f = fixture();
 

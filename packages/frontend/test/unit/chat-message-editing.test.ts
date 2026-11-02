@@ -289,3 +289,43 @@ test.each([false, true])('ignores an MFM emoji reaction callback after deletion 
 	react('❤');
 	expect(mocks.api).not.toHaveBeenCalled();
 });
+
+describe('XMessage on messages it cannot act on', () => {
+	function renderMessage(overrides: Record<string, unknown>) {
+		return render(XMessage, {
+			props: { message: { ...message, fromUserId: 'bob', fromUser: { id: 'bob', username: 'bob' }, ...overrides } as Misskey.entities.ChatMessage },
+			global: { stubs: { ...stubs, MkReactionIcon: true, MkFukidashi: { template: '<div><slot/></div>' }, MkMediaList: true, MkUrlPreview: true } },
+		});
+	}
+
+	async function openMenu(): Promise<MenuItem[]> {
+		await fireEvent.click(screen.getByRole('button', { name: i18n.ts.menu }));
+		return mocks.popupMenu.mock.calls[0][0] as MenuItem[];
+	}
+
+	test('a deleted message offers neither a reaction nor a text copy', async () => {
+		renderMessage({ text: null, deletedAt: '2026-11-02T00:00:00.000Z' });
+
+		const items = (await openMenu()).filter(item => item !== undefined && 'text' in item).map(item => (item as { text: string }).text);
+
+		expect(items).not.toContain(i18n.ts.reaction);
+		expect(items).not.toContain(i18n.ts.copyContent);
+	});
+
+	test('a live message from someone else still offers both', async () => {
+		renderMessage({});
+
+		const items = (await openMenu()).filter(item => item !== undefined && 'text' in item).map(item => (item as { text: string }).text);
+
+		expect(items).toContain(i18n.ts.reaction);
+		expect(items).toContain(i18n.ts.copyContent);
+	});
+
+	test('clicking a remote custom emoji reaction does not send a reaction the server would reject', async () => {
+		const { container } = renderMessage({ reactions: [{ user: { id: 'carol', username: 'carol', host: 'other.test' }, reaction: ':blob@other.test:' }] });
+
+		await fireEvent.click(container.querySelector('[class*="reaction"]')!);
+
+		expect(mocks.api).not.toHaveBeenCalledWith('chat/messages/react', expect.anything());
+	});
+});

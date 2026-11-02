@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import {
@@ -263,6 +263,7 @@ describe('ChatService chat federation delivery', () => {
 				localEmojisCache: { fetch: vi.fn().mockResolvedValue(new Map()) },
 				populateEmojis: vi.fn().mockResolvedValue({}),
 			},
+			userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
 		}) as ChatService;
 
 		return { service, alice, bob, carol, directMessage, roomMessage, roomDeleteMessage, queueService, apRendererService };
@@ -358,6 +359,153 @@ describe('ChatService chat federation delivery', () => {
 		await f.service.unreactRemote(f.alice as never, f.roomMessage as never, '👍');
 
 		expect(f.roomMessage.reactions).toEqual([]);
+	});
+
+	describe('tombstones', () => {
+		test('unreactRemote rejects a deleted message', async () => {
+			const f = createService();
+			Object.assign(f.roomMessage, { deletedAt: new Date() });
+
+			await expect(f.service.unreactRemote(f.alice as never, f.roomMessage as never, '👍')).rejects.toBeInstanceOf(ChatMessageAccessError);
+		});
+
+		test('a repeated remote Delete keeps the first deletion time and does not publish again', async () => {
+			const f = createService();
+			await f.service.deleteRemoteMessage(f.bob as never, f.roomMessage as never);
+			const firstDeletedAt = f.roomMessage.deletedAt;
+			const publish = (f.service as never as { globalEventService: { publishChatRoomStream: ReturnType<typeof vi.fn> } }).globalEventService.publishChatRoomStream;
+			publish.mockClear();
+
+			await f.service.deleteRemoteMessage(f.bob as never, f.roomMessage as never);
+
+			expect(f.roomMessage.deletedAt).toBe(firstDeletedAt);
+			expect(publish).not.toHaveBeenCalled();
+		});
+
+		test('findMyMessageById does not return a tombstone, so the delete endpoint cannot redeliver', async () => {
+			const f = createService();
+			const findOneBy = (f.service as never as { chatMessagesRepository: { findOneBy: ReturnType<typeof vi.fn> } }).chatMessagesRepository.findOneBy;
+
+			await f.service.findMyMessageById('alice', 'm1');
+
+			expect(findOneBy).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', fromUserId: 'alice', deletedAt: expect.objectContaining({ _type: 'isNull' }) }));
+		});
+	});
+
+	describe('editing authority', () => {
+		test('a former room member cannot edit their old message', async () => {
+			const f = createService();
+			Object.assign(f.roomMessage, { fromUserId: 'dave' });
+
+			await expect(f.service.updateMessage('dave', 'm2', 'changed')).rejects.toThrow('cannot edit');
+
+			expect(f.roomMessage.text).toBe('room');
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+		});
+
+		test('a former remote room member cannot edit their old message', async () => {
+			const f = createService();
+			const dave = { id: 'dave', host: 'other.test', uri: 'https://other.test/users/dave', inbox: 'https://other.test/users/dave/inbox' };
+			Object.assign(f.roomMessage, { fromUserId: 'dave' });
+
+			await expect(f.service.updateRemoteMessage(dave as never, f.roomMessage as never, 'changed', new Date())).rejects.toThrow('cannot edit');
+
+			expect(f.roomMessage.text).toBe('room');
+		});
+
+		test('a user blocked by the recipient cannot edit a direct message', async () => {
+			const f = createService();
+			const blocking = (f.service as never as { userBlockingService: { checkBlocked: ReturnType<typeof vi.fn> } }).userBlockingService;
+			blocking.checkBlocked.mockResolvedValue(true);
+
+			await expect(f.service.updateMessage('alice', 'm1', 'changed')).rejects.toThrow('cannot edit');
+
+			expect(blocking.checkBlocked).toHaveBeenCalledWith('bob', 'alice');
+			expect(f.directMessage.text).toBe('old');
+		});
+
+		test('a remote user blocked by the recipient cannot edit a direct message', async () => {
+			const f = createService();
+			const blocking = (f.service as never as { userBlockingService: { checkBlocked: ReturnType<typeof vi.fn> } }).userBlockingService;
+			blocking.checkBlocked.mockResolvedValue(true);
+			Object.assign(f.directMessage, { fromUserId: 'bob', toUserId: 'alice' });
+
+			await expect(f.service.updateRemoteMessage(f.bob as never, f.directMessage as never, 'changed', new Date())).rejects.toThrow('cannot edit');
+
+			expect(blocking.checkBlocked).toHaveBeenCalledWith('alice', 'bob');
+		});
+	});
+
+	describe('remote reactions', () => {
+		test('undoing a custom emoji removes the host-qualified reaction even if the emoji is gone', async () => {
+			const f = createService();
+			f.roomMessage.reactions = ['carol/:gone@other.test:'];
+
+			await f.service.unreactRemote(f.carol as never, f.roomMessage as never, ':gone:');
+
+			expect(f.roomMessage.reactions).toEqual([]);
+		});
+
+		test.each([':blob@elsewhere.test:', 'not an emoji'])('rejects %s as a non-retriable access error', async (reaction) => {
+			const f = createService();
+
+			await expect(f.service.reactRemote(f.carol as never, f.roomMessage as never, reaction)).rejects.toBeInstanceOf(ChatMessageAccessError);
+			await expect(f.service.unreactRemote(f.carol as never, f.roomMessage as never, reaction)).rejects.toBeInstanceOf(ChatMessageAccessError);
+		});
+
+		test('the per-message reaction limit is a non-retriable access error', async () => {
+			const f = createService();
+			f.roomMessage.reactions = Array.from({ length: 100 }, (_, i) => `u${i}/👍`);
+
+			await expect(f.service.reactRemote(f.carol as never, f.roomMessage as never, '👍')).rejects.toBeInstanceOf(ChatMessageAccessError);
+		});
+	});
+
+	describe('room deletion', () => {
+		function createRoomService(owner: { id: string; host: string | null; uri: string | null; inbox: string | null }) {
+			const f = createService();
+			const room = { id: 'r1', ownerId: owner.id, name: 'room' };
+			const users = new Map([owner, f.bob, f.carol].map(user => [user.id, user]));
+			const pipeline = { del: vi.fn().mockReturnThis(), srem: vi.fn().mockReturnThis(), exec: vi.fn().mockResolvedValue([]) };
+			Object.assign(f.service, {
+				redisClient: { pipeline: () => pipeline },
+				liveKitService: { deleteRoom: vi.fn().mockResolvedValue(undefined) },
+				roleService: { isModerator: vi.fn().mockResolvedValue(true) },
+				moderationLogService: { log: vi.fn() },
+			});
+			const s = f.service as never as {
+				chatRoomsRepository: { delete: ReturnType<typeof vi.fn> };
+				usersRepository: { findOneBy: ReturnType<typeof vi.fn>; findBy: ReturnType<typeof vi.fn> };
+				apRendererService: { renderChatRoomDelete: ReturnType<typeof vi.fn> };
+			};
+			s.chatRoomsRepository.delete = vi.fn().mockResolvedValue({ affected: 1 });
+			s.usersRepository.findOneBy = vi.fn(async ({ id }: { id: string }) => users.get(id) ?? null);
+			s.usersRepository.findBy = vi.fn(async () => [...users.values()]);
+			s.apRendererService.renderChatRoomDelete = vi.fn().mockReturnValue({ type: 'Delete' });
+			return { ...f, room, owner };
+		}
+
+		test('a moderator deleting a local room still tells the remote members', async () => {
+			const owner = { id: 'alice', host: null, uri: null, inbox: null };
+			const f = createRoomService(owner);
+			const moderator = { id: 'moderator', host: null };
+
+			await f.service.deleteRoom(f.room as never, moderator as never);
+
+			expect(f.queueService.deliver).toHaveBeenCalledWith(owner, expect.objectContaining({ type: 'Delete' }), f.bob.inbox, false);
+			expect(f.queueService.deliver).toHaveBeenCalledWith(owner, expect.objectContaining({ type: 'Delete' }), f.carol.inbox, false);
+		});
+
+		test('deleting a mirror of a remote room delivers nothing but still cleans up', async () => {
+			const owner = { id: 'bob', host: 'remote.test', uri: 'https://remote.test/users/bob', inbox: 'https://remote.test/users/bob/inbox' };
+			const f = createRoomService(owner);
+
+			await f.service.deleteRoom(f.room as never);
+
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+			expect((f.service as never as { chatRoomsRepository: { delete: ReturnType<typeof vi.fn> } }).chatRoomsRepository.delete).toHaveBeenCalledWith('r1');
+			expect((f.service as never as { liveKitService: { deleteRoom: ReturnType<typeof vi.fn> } }).liveKitService.deleteRoom).toHaveBeenCalledWith('r1');
+		});
 	});
 });
 
@@ -496,6 +644,47 @@ describe('ApInboxService chat activity routing', () => {
 		});
 
 		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍');
+	});
+
+	test.each(['Like', 'EmojiReaction'])('routes Undo %s of a chat reaction to unreactRemote', async (type) => {
+		const f = createInbox();
+		const react = { type, actor: f.actor.uri, object: f.message.uri, _misskey_reaction: '👍' };
+
+		await (f.inbox as never as { undo: (...args: unknown[]) => Promise<string> }).undo(f.actor, {
+			type: 'Undo',
+			actor: f.actor.uri,
+			object: react,
+		});
+
+		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍');
+	});
+
+	test('skips a reaction rejected by the chat service instead of retrying the job', async () => {
+		const f = createInbox();
+		f.chatService.reactRemote.mockRejectedValue(new ChatMessageAccessError('deleted'));
+
+		const result = await (f.inbox as never as { like: (...args: unknown[]) => Promise<string> }).like(f.actor, {
+			type: 'EmojiReact',
+			actor: f.actor.uri,
+			object: f.message.uri,
+			content: '👍',
+		});
+
+		expect(result).toBe('skip: deleted');
+	});
+
+	test('a reaction with a non-string value is skipped', async () => {
+		const f = createInbox();
+
+		const result = await (f.inbox as never as { like: (...args: unknown[]) => Promise<string> }).like(f.actor, {
+			type: 'EmojiReact',
+			actor: f.actor.uri,
+			object: f.message.uri,
+			content: { unexpected: true },
+		});
+
+		expect(result).toBe('skip: empty reaction');
+		expect(f.chatService.reactRemote).not.toHaveBeenCalled();
 	});
 });
 

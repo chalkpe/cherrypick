@@ -233,10 +233,15 @@ export class ApInboxService {
 
 		if (chatMessage != null) {
 			const reaction = activity._misskey_reaction ?? activity.content ?? activity.name;
-			if (reaction == null || reaction === '') return 'skip: empty reaction';
+			if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
 			await this.apNoteService.extractEmojis(activity.tag ?? [], actor.host).catch(() => null);
-			await this.chatService.reactRemote(actor, chatMessage, reaction);
-			return 'ok';
+			try {
+				await this.chatService.reactRemote(actor, chatMessage, reaction);
+				return 'ok';
+			} catch (err) {
+				if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+				throw err;
+			}
 		}
 
 		const note = await this.apNoteService.fetchNote(targetUri);
@@ -1186,11 +1191,11 @@ export class ApInboxService {
 		// don't queue because the sender may attempt again when timeout
 		if (isFollow(object)) return await this.undoFollow(actor, object);
 		if (isBlock(object)) return await this.undoBlock(actor, object);
-		if (isLike(object) && getApType(object) === 'EmojiReact') {
+		if (isLike(object)) {
 			const chatMessage = await this.chatService.findMessageByUri(getApId(object.object));
 			if (chatMessage != null) {
 				const reaction = object._misskey_reaction ?? object.content ?? object.name;
-				if (reaction == null || reaction === '') return 'skip: empty reaction';
+				if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
 				try {
 					await this.chatService.unreactRemote(actor, chatMessage, reaction);
 					return 'ok';
@@ -1417,8 +1422,8 @@ export class ApInboxService {
 			if (room.ownerId !== actor.id) return 'skip: only the room owner can update it';
 
 			await this.chatRoomsRepository.update(room.id, {
-				name: typeof object.name === 'string' ? object.name : room.name,
-				description: typeof object.summary === 'string' ? object.summary : room.description,
+				name: typeof object.name === 'string' ? object.name.slice(0, 256) : room.name,
+				description: typeof object.summary === 'string' ? object.summary.slice(0, 2048) : room.description,
 			});
 			return 'ok: chat room updated';
 		}

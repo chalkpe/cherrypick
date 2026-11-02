@@ -88,6 +88,79 @@ describe('chat/messages/update', () => {
 		});
 	});
 
+	test('a deleted message cannot be deleted again or reacted to', async () => {
+		const created = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'hello' }, alice);
+		assert.strictEqual(created.status, 200, JSON.stringify(created.body));
+		const deleted = await api('chat/messages/delete', { messageId: created.body.id }, alice);
+		assert.strictEqual(deleted.status, 204, JSON.stringify(deleted.body));
+
+		await failedApiCall({
+			endpoint: 'chat/messages/delete',
+			parameters: { messageId: created.body.id },
+			user: alice,
+		}, {
+			status: 400,
+			code: 'NO_SUCH_MESSAGE',
+			id: '36b67f0e-66a6-414b-83df-992a55294f17',
+		});
+
+		await failedApiCall({
+			endpoint: 'chat/messages/react',
+			parameters: { messageId: created.body.id, reaction: '👍' },
+			user: bob,
+		}, {
+			status: 400,
+			code: 'NO_SUCH_MESSAGE',
+			id: '9b5839b9-0ba0-4351-8c35-37082093d200',
+		});
+	});
+
+	test('the conversation list falls back to the latest message that is not deleted', async () => {
+		const carol = await signup({ username: 'carol' });
+		await api('i/update', { chatScope: 'everyone' }, carol);
+		const kept = await api('chat/messages/create-to-user', { toUserId: carol.id, text: 'kept' }, alice);
+		const removed = await api('chat/messages/create-to-user', { toUserId: carol.id, text: 'removed' }, alice);
+		assert.strictEqual(removed.status, 200, JSON.stringify(removed.body));
+		const deleted = await api('chat/messages/delete', { messageId: removed.body.id }, alice);
+		assert.strictEqual(deleted.status, 204, JSON.stringify(deleted.body));
+
+		const history = await api('chat/history', { room: false, limit: 100 }, carol);
+
+		assert.strictEqual(history.status, 200, JSON.stringify(history.body));
+		assert.deepStrictEqual(history.body.map(message => message.id), [kept.body.id]);
+	});
+
+	test('a user who left a room cannot edit their old message, and the room list skips deleted messages', async () => {
+		const room = await api('chat/rooms/create', { name: 'room' }, alice);
+		assert.strictEqual(room.status, 200, JSON.stringify(room.body));
+		const invited = await api('chat/rooms/invitations/create', { roomId: room.body.id, userId: bob.id }, alice);
+		assert.strictEqual(invited.status, 200, JSON.stringify(invited.body));
+		const joined = await api('chat/rooms/join', { roomId: room.body.id }, bob);
+		assert.strictEqual(joined.status, 204, JSON.stringify(joined.body));
+		const kept = await api('chat/messages/create-to-room', { toRoomId: room.body.id, text: 'kept' }, bob);
+		const removed = await api('chat/messages/create-to-room', { toRoomId: room.body.id, text: 'removed' }, alice);
+		assert.strictEqual(removed.status, 200, JSON.stringify(removed.body));
+		const deleted = await api('chat/messages/delete', { messageId: removed.body.id }, alice);
+		assert.strictEqual(deleted.status, 204, JSON.stringify(deleted.body));
+
+		const history = await api('chat/history', { room: true, limit: 100 }, alice);
+		assert.strictEqual(history.status, 200, JSON.stringify(history.body));
+		assert.strictEqual(history.body.find(message => message.toRoomId === room.body.id)?.id, kept.body.id);
+
+		const left = await api('chat/rooms/leave', { roomId: room.body.id }, bob);
+		assert.strictEqual(left.status, 204, JSON.stringify(left.body));
+
+		await failedApiCall({
+			endpoint: 'chat/messages/update',
+			parameters: { messageId: kept.body.id, text: 'edited after leaving' },
+			user: bob,
+		}, {
+			status: 400,
+			code: 'NO_SUCH_MESSAGE',
+			id: '31846552-b85d-4908-808f-64bf91000151',
+		});
+	});
+
 	test('keeps the latest stored revision when inbox workers hold stale snapshots', async () => {
 		const created = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'original' }, alice);
 		assert.strictEqual(created.status, 200);
@@ -99,6 +172,7 @@ describe('chat/messages/update', () => {
 			const service = Object.assign(Object.create(ChatService.prototype), {
 				chatMessagesRepository: messages,
 				customEmojiService: { populateEmojis: async () => ({}) },
+				userBlockingService: { checkBlocked: async () => false },
 				globalEventService: { publishChatUserStream: (...args: unknown[]) => events.push(args) },
 			}) as ChatService;
 			const actor = { id: alice.id, host: 'remote.test' } as MiUser;
@@ -137,6 +211,7 @@ describe('chat/messages/update', () => {
 					update: messages.update.bind(messages),
 				},
 				customEmojiService: { populateEmojis: async () => ({}) },
+				userBlockingService: { checkBlocked: async () => false },
 				globalEventService: { publishChatUserStream: (...args: unknown[]) => events.push(args) },
 			}) as ChatService;
 			await assert.rejects(service.updateMessage(alice.id, created.body.id, 'late edit'), ChatMessageAccessError);

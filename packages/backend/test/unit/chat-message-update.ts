@@ -53,6 +53,7 @@ function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 			isLocalUser: () => true,
 			isRemoteUser: () => false,
 		},
+		userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
 		customEmojiService: {
 			populateEmojis: vi.fn(async (names: string[]) => Object.fromEntries(names.map(name => [name, `https://remote.test/${name}.png`]))),
 		},

@@ -68,7 +68,7 @@ vi.mock('@/pages/chat/XMessage.vue', async () => {
 				return () => {
 					const id = (props.message as { id: string }).id;
 					mocks.renders.set(id, (mocks.renders.get(id) ?? 0) + 1);
-					return hh('div', { 'data-testid': 'bubble', 'data-id': id, 'data-first': String(props.firstInGroup), 'data-last': String(props.lastInGroup), 'data-text': props.message.text, 'data-emojis': JSON.stringify(props.message.emojis), 'data-can-edit': String(props.canEdit) });
+					return hh('div', { 'data-testid': 'bubble', 'data-id': id, 'data-first': String(props.firstInGroup), 'data-last': String(props.lastInGroup), 'data-text': props.message.text, 'data-deleted': String(props.message.deletedAt != null), 'data-emojis': JSON.stringify(props.message.emojis), 'data-can-edit': String(props.canEdit) });
 				};
 			},
 		}),
@@ -182,15 +182,14 @@ describe('chat bubbles on the room page', () => {
 		]);
 	});
 
-	test('updates group flags when a message between two senders is deleted', async () => {
+	test('a live deletion leaves the same placeholder as reloading the timeline', async () => {
 		mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'bob', MINUTE), message('m1', 'alice', 0)];
 		const { container } = await renderRoom();
 		mocks.channel.emit('deleted', 'm2');
 		await flush();
-		await waitFor(() => expect(bubbles(container)).toEqual([
-			{ id: 'm1', first: true, last: false },
-			{ id: 'm3', first: false, last: true },
-		]));
+		await waitFor(() => expect(container.querySelector('[data-id="m2"]')?.getAttribute('data-deleted')).toBe('true'));
+		expect(container.querySelector('[data-id="m2"]')?.hasAttribute('data-text')).toBe(false);
+		expect(bubbles(container).map(bubble => bubble.id)).toEqual(['m1', 'm2', 'm3']);
 	});
 
 	test('a new message re-renders only the bubbles whose place in a group changed', async () => {

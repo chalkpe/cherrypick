@@ -416,9 +416,18 @@ function onMessage(message: Misskey.entities.ChatMessageLite) {
 }
 
 function onDeleted(id: string) {
-	const index = messages.value.findIndex(m => m.id === id);
-	if (index !== -1) {
-		messages.value.splice(index, 1);
+	// リロード後と同じく、削除済みの吹き出しとして残す
+	const message = messages.value.find(m => m.id === id);
+	if (message) {
+		message.deletedAt = new Date().toISOString();
+		message.text = null;
+		message.fileId = null;
+		message.file = null;
+		message.reactions = [];
+		message.emojis = {};
+	}
+	if (editingMessage.value?.id === id) {
+		editingMessage.value = null;
 	}
 }
 

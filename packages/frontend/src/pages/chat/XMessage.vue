@@ -148,7 +148,7 @@ function onReactionClick(record: Misskey.entities.ChatMessage['reactions'][0]) {
 			messageId: props.message.id,
 			reaction: record.reaction,
 		});
-	} else {
+	} else if (!/@[\w.-]/.test(record.reaction)) { // 他サーバーのカスタム絵文字はこのサーバーからはリアクションできない
 		if (!props.message.reactions.some(r => r.user.id === $i.id && r.reaction === record.reaction)) {
 			sound.playMisskeySfx('reaction');
 			misskeyApi('chat/messages/react', {
@@ -194,17 +194,19 @@ function getMenu(): MenuItem[] {
 		});
 	}
 
-	menu.push({
-		text: i18n.ts.copyContent,
-		icon: 'ti ti-copy',
-		action: () => {
-			copyToClipboard(props.message.text ?? '', 'content');
-		},
-	});
+	if (!deletedAt.value) {
+		menu.push({
+			text: i18n.ts.copyContent,
+			icon: 'ti ti-copy',
+			action: () => {
+				copyToClipboard(props.message.text ?? '', 'content');
+			},
+		});
 
-	menu.push({
-		type: 'divider',
-	});
+		menu.push({
+			type: 'divider',
+		});
+	}
 
 	if (isMe.value && !deletedAt.value && $i.policies.chatAvailability === 'available') {
 		if (props.canEdit) {

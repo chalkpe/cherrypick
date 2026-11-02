@@ -426,7 +426,7 @@ export class ChatService {
 
 	@bindThis
 	public findMyMessageById(userId: MiUser['id'], messageId: MiChatMessage['id']) {
-		return this.chatMessagesRepository.findOneBy({ id: messageId, fromUserId: userId });
+		return this.chatMessagesRepository.findOneBy({ id: messageId, fromUserId: userId, deletedAt: IsNull() });
 	}
 
 	@bindThis
@@ -449,6 +449,7 @@ export class ChatService {
 		if (message == null) throw new ChatMessageAccessError('no such message');
 		if (message.fromUserId !== userId) throw new ChatMessageAccessError('cannot edit');
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
+		await this.assertCanStillEdit(message);
 
 		const trimmed = text.trim();
 		if (trimmed.length < 1 || trimmed.length > 2000) throw new ChatMessageAccessError('invalid text');
@@ -566,6 +567,7 @@ export class ChatService {
 						.orWhere('message.toUserId = :meId', { meId: meId });
 				}))
 				.andWhere('message.toRoomId IS NULL')
+				.andWhere('message.deletedAt IS NULL')
 				.andWhere(`message.fromUserId NOT IN (${ mutingQuery.getQuery() })`)
 				.andWhere(`message.toUserId NOT IN (${ mutingQuery.getQuery() })`);
 
@@ -613,7 +615,8 @@ export class ChatService {
 
 			const query = this.chatMessagesRepository.createQueryBuilder('message')
 				.orderBy('message.id', 'DESC')
-				.where('message.toRoomId IN (:...roomIds)', { roomIds });
+				.where('message.toRoomId IN (:...roomIds)', { roomIds })
+				.andWhere('message.deletedAt IS NULL');
 
 			if (found.length > 0) {
 				query.andWhere('message.toRoomId NOT IN (:...found)', { found: found });
@@ -734,7 +737,9 @@ export class ChatService {
 	@bindThis
 	public async deleteRoom(room: MiChatRoom, deleter?: MiUser) {
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
-		if (owner != null && this.userEntityService.isLocalUser(owner) && (deleter == null || deleter.id === room.ownerId)) {
+		// A remote owner's server is the authority for its room, so only rooms owned here are announced.
+		// The announcement is signed by the owner even when a moderator deletes the room.
+		if (owner != null && this.userEntityService.isLocalUser(owner)) {
 			const participants = await this.participantsForRoom(room);
 			const toUsers = participants.filter(user => user.id !== owner.id);
 			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomDelete(room, owner, toUsers));
@@ -999,7 +1004,7 @@ export class ChatService {
 		const invitee = await this.usersRepository.findOneByOrFail({ id: userId });
 
 		if (this.userEntityService.isLocalUser(invitee) && this.userEntityService.isRemoteUser(inviter)) {
-			const roomUri = inviter.uri?.replace(/\/users\/.*$/, `/chat/rooms/${room.id}`) ?? `${this.config.url}/chat/rooms/${room.id}`;
+			const roomUri = room.uri ?? inviter.uri?.replace(/\/users\/.*$/, `/chat/rooms/${room.id}`) ?? `${this.config.url}/chat/rooms/${room.id}`;
 
 			// Create a simplified invite object reference for the Reject activity
 			const inviteObject = {
@@ -1105,7 +1110,7 @@ export class ChatService {
 				// Generate the correct room URI based on the owner's server
 				const roomUri = this.userEntityService.isLocalUser(owner)
 					? this.apRendererService.genLocalChatRoomUri(room.id)
-					: `${owner.uri?.replace(/\/users\/.*$/, '')}/chat/rooms/${room.id}`;
+					: room.uri ?? `${owner.uri?.replace(/\/users\/.*$/, '')}/chat/rooms/${room.id}`;
 
 				console.log('[ChatService.leaveRoom] Generated roomUri:', roomUri);
 
@@ -1396,6 +1401,7 @@ export class ChatService {
 		if (message.fromUserId !== actor.id) throw new ChatMessageAccessError('cannot edit');
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 		if (message.editedAt != null && message.editedAt >= editedAt) return message;
+		await this.assertCanStillEdit(message);
 
 		const trimmed = text.trim();
 		if (trimmed.length < 1 || trimmed.length > 2000) throw new ChatMessageAccessError('invalid text');
@@ -1429,6 +1435,7 @@ export class ChatService {
 	@bindThis
 	public async deleteRemoteMessage(actor: MiUser, message: MiChatMessage): Promise<MiChatMessage> {
 		if (message.fromUserId !== actor.id) throw new ChatMessageAccessError('cannot delete');
+		if (message.deletedAt != null) return message;
 
 		const deletedAt = new Date();
 		await this.chatMessagesRepository.update(message.id, {
@@ -1469,7 +1476,7 @@ export class ChatService {
 
 		const pair = `${actor.id}/${reaction}`;
 		if (message.reactions.includes(pair)) return;
-		if (message.reactions.length >= MAX_REACTIONS_PER_MESSAGE) throw new Error('too many reactions');
+		if (message.reactions.length >= MAX_REACTIONS_PER_MESSAGE) throw new ChatMessageAccessError('too many reactions');
 
 		const result = await this.chatMessagesRepository.createQueryBuilder().update()
 			.set({ reactions: () => `array_append("reactions", :pair)` })
@@ -1503,6 +1510,8 @@ export class ChatService {
 	@bindThis
 	public async unreactRemote(actor: MiUser, message: MiChatMessage, reaction_: string): Promise<void> {
 		const reaction = this.normalizeRemoteReaction(reaction_, actor.host);
+
+		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 
 		const room = message.toRoomId ? await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }) : null;
 
@@ -1538,10 +1547,28 @@ export class ChatService {
 		}
 	}
 
+	/**
+	 * A custom emoji name only means something on the server that sent it, so it is stored
+	 * with the actor's host rather than resolving to a local emoji that happens to share the name.
+	 */
 	private normalizeRemoteReaction(reaction: string, host: MiUser['host']): string {
 		const custom = reaction.match(isCustomEmojiRegexp);
 		if (custom != null) return host == null ? `:${custom[1]}:` : `:${custom[1]}@${host}:`;
-		return normalizeEmojiString(reaction);
+		try {
+			return normalizeEmojiString(reaction);
+		} catch {
+			throw new ChatMessageAccessError('invalid emoji');
+		}
+	}
+
+	/** Creating a message checks these too; an edit must not be a way around them. */
+	private async assertCanStillEdit(message: MiChatMessage): Promise<void> {
+		if (message.toRoomId != null) {
+			const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
+			if (room == null || !(await this.isRoomMember(room, message.fromUserId))) throw new ChatMessageAccessError('cannot edit');
+		} else if (message.toUserId != null && await this.userBlockingService.checkBlocked(message.toUserId, message.fromUserId)) {
+			throw new ChatMessageAccessError('cannot edit');
+		}
 	}
 
 	private async participantsForRoom(room: MiChatRoom): Promise<MiUser[]> {
