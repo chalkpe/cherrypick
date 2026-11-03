@@ -320,6 +320,7 @@ describe('ChatService chat federation delivery', () => {
 				return transaction;
 			},
 			get: vi.fn(async (key: string) => reactionActivityIds.get(key) ?? null),
+			expire: vi.fn().mockResolvedValue(1),
 			setex: vi.fn(async (key: string, _ttl: number, value: string) => {
 				reactionActivityIds.set(key, value);
 				return 'OK';
@@ -470,6 +471,47 @@ describe('ChatService chat federation delivery', () => {
 			'unreact',
 			expect.objectContaining({ user: expect.objectContaining({ id: 'bob' }) }),
 		);
+	});
+
+	test.each([
+		{ events: ['undo1', 'react1'], expected: [] },
+		{ events: ['react1', 'undo1', 'react1'], expected: [] },
+		{ events: ['react2', 'react1', 'undo1'], expected: ['bob/👍'] },
+		{ events: ['undo1', 'react2', 'react1'], expected: ['bob/👍'] },
+	])('keeps reaction identity across reordered $events', async ({ events, expected }) => {
+		const f = createService();
+		for (const event of events) {
+			const method = event.startsWith('undo') ? 'unreactRemote' : 'reactRemote';
+			await f.service[method](f.bob as never, f.directMessage as never, '👍', `https://remote.test/reactions/${event.at(-1)}`);
+		}
+		expect(f.directMessage.reactions).toEqual(expected);
+	});
+
+	test('preserves reaction cancellation when the events arrive before the message', async () => {
+		const f = createService();
+		f.directMessage.uri = 'https://local.test/chat/messages/m1';
+		const activityId = 'https://remote.test/reactions/1';
+		await f.service.storePendingChatReaction(f.bob.id, f.directMessage.uri, '👍', true, activityId);
+		await f.service.storePendingChatReaction(f.bob.id, f.directMessage.uri, '👍', false, activityId);
+
+		await f.service.applyPendingChatReactions(f.directMessage as never);
+
+		expect(f.directMessage.reactions).toEqual([]);
+	});
+
+	test('bounds remembered reaction IDs per actor', async () => {
+		const f = createService();
+		for (let i = 0; i < 1000; i++) {
+			await f.service.unreactRemote(f.bob as never, f.directMessage as never, '👍', `https://remote.test/reactions/${i}`);
+		}
+		await expect(f.service.reactRemote(f.bob as never, f.directMessage as never, '👍', 'https://remote.test/reactions/overflow')).rejects.toThrow('too many reaction activities');
+		expect(f.directMessage.reactions).toEqual([]);
+	});
+
+	test.each([0, {}, '', 'x'.repeat(2049)])('rejects malformed reaction IDs (%j)', async (activityId) => {
+		const f = createService();
+		await expect(f.service.reactRemote(f.bob as never, f.directMessage as never, '👍', activityId as never)).rejects.toThrow('invalid reaction id');
+		expect(await f.service.storePendingChatReaction(f.bob.id, 'https://local.test/chat/messages/m1', '👍', false, activityId as never)).toBe(false);
 	});
 
 	test('room updates publish a stream event and federate to remote members', async () => {
@@ -699,7 +741,7 @@ describe('ChatService chat federation delivery', () => {
 		await f.service.storePendingChatReaction('bob', f.roomMessage.uri, '👍', false);
 		await f.service.applyPendingChatReactions(f.roomMessage as never);
 
-		expect(reactRemote).toHaveBeenCalledWith(f.bob, f.roomMessage, '👍');
+		expect(reactRemote).toHaveBeenCalledWith(f.bob, f.roomMessage, '👍', undefined);
 	});
 
 	test('applies a deferred unreaction once the message exists', async () => {
@@ -710,7 +752,7 @@ describe('ChatService chat federation delivery', () => {
 		await f.service.storePendingChatReaction('bob', f.roomMessage.uri, '👍', true);
 		await f.service.applyPendingChatReactions(f.roomMessage as never);
 
-		expect(unreactRemote).toHaveBeenCalledWith(f.bob, f.roomMessage, '👍');
+		expect(unreactRemote).toHaveBeenCalledWith(f.bob, f.roomMessage, '👍', undefined);
 	});
 
 	test.each([
@@ -1099,6 +1141,60 @@ describe('ApInboxService chat activity routing', () => {
 		expect(f.chatService.createMessageToRoom).toHaveBeenCalledWith(f.actor, expect.objectContaining({ id: 'r1' }), expect.objectContaining({ text: 'group hello' }));
 	});
 
+	test.each(['missing room', 'pending invitation'])('retries a group Create while waiting for %s', async (state) => {
+		const f = createInbox();
+		const rooms = { findOneBy: vi.fn().mockResolvedValue(state === 'missing room' ? null : { id: 'r1' }) };
+		Object.assign(f.inbox, {
+			chatRoomsRepository: rooms,
+			chatRoomInvitationsRepository: { findOneBy: vi.fn().mockResolvedValue({ id: 'invite1' }) },
+		});
+		f.chatService.isRoomMember.mockResolvedValue(false);
+		const object = {
+			id: 'https://remote.test/chat/messages/early', type: 'Note', attributedTo: f.actor.uri,
+			_misskey_talk: true, _misskey_content: 'hello', to: [f.localUser.uri], context: 'https://remote.test/chat/rooms/r1',
+		};
+		const create = () => (f.inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage({}, f.actor, object, { type: 'Create' });
+
+		await expect(create()).rejects.toThrow(/not ready/);
+		expect(f.chatService.createMessageToRoom).not.toHaveBeenCalled();
+		rooms.findOneBy.mockResolvedValue({ id: 'r1' });
+		f.chatService.isRoomMember.mockResolvedValue(true);
+		await create();
+		expect(f.chatService.createMessageToRoom).toHaveBeenCalledOnce();
+	});
+
+	test.each(['like', 'undo'])('preserves the reaction ID and reloads its message under the lock for %s', async (method) => {
+		const f = createInbox();
+		const current = { ...f.message, reactions: ['someone/👍'] };
+		f.chatService.findMessageByUri.mockResolvedValueOnce(f.message).mockResolvedValue(current);
+		const reaction = { id: 'https://remote.test/reactions/1', type: 'EmojiReact', actor: f.actor.uri, object: f.message.uri, content: '👍' };
+		const activity = method === 'like' ? reaction : { type: 'Undo', actor: f.actor.uri, object: reaction };
+
+		await (f.inbox as never as Record<string, (...args: unknown[]) => Promise<string>>)[method](f.actor, activity);
+
+		expect(f.redisClient.set).toHaveBeenCalled();
+		expect(f.chatService[method === 'like' ? 'reactRemote' : 'unreactRemote']).toHaveBeenCalledWith(f.actor, current, '👍', reaction.id);
+	});
+
+	test.each(['x', '🦈'])('accepts a remote message with 4096 characters (%s)', async (character) => {
+		const f = createInbox();
+		const text = character.repeat(4096);
+		const object = {
+			id: 'https://remote.test/chat/messages/long-valid',
+			type: 'Note',
+			attributedTo: f.actor.uri,
+			_misskey_talk: true,
+			_misskey_content: text,
+			to: [f.localUser.uri],
+		};
+
+		await (f.inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage(
+			{ resolve: async (x: unknown) => x }, f.actor, object, { type: 'Create' },
+		);
+
+		expect(f.chatService.createMessageToUser).toHaveBeenCalledWith(f.actor, f.localUser, expect.objectContaining({ text }));
+	});
+
 	test('rejects an oversized chat message before inserting it', async () => {
 		const f = createInbox();
 		const object = {
@@ -1106,7 +1202,7 @@ describe('ApInboxService chat activity routing', () => {
 			type: 'Note',
 			attributedTo: f.actor.uri,
 			_misskey_talk: true,
-			_misskey_content: 'x'.repeat(2001),
+			_misskey_content: 'x'.repeat(4097),
 			to: [f.localUser.uri],
 		};
 
@@ -1185,7 +1281,7 @@ describe('ApInboxService chat activity routing', () => {
 			content: '👍',
 		});
 
-		expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍');
+		expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined);
 	});
 
 	test('does not query chat messages for ordinary note reactions', async () => {
@@ -1211,7 +1307,7 @@ describe('ApInboxService chat activity routing', () => {
 			object: react,
 		});
 
-		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍');
+		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined);
 	});
 
 	test.each(['Like', 'EmojiReaction'])('routes Undo %s of a chat reaction to unreactRemote', async (type) => {
@@ -1224,7 +1320,7 @@ describe('ApInboxService chat activity routing', () => {
 			object: react,
 		});
 
-		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍');
+		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined);
 	});
 
 	test('skips a reaction rejected by the chat service instead of retrying the job', async () => {
@@ -1267,7 +1363,7 @@ describe('ApInboxService chat activity routing', () => {
 		});
 
 		expect(result).toContain('pending');
-		expect(f.chatService.storePendingChatReaction).toHaveBeenCalledWith(f.actor.id, f.message.uri, '👍', false);
+		expect(f.chatService.storePendingChatReaction).toHaveBeenCalledWith(f.actor.id, f.message.uri, '👍', false, undefined);
 	});
 
 	test('defers a chat unreact that arrives before its message', async () => {
@@ -1281,7 +1377,7 @@ describe('ApInboxService chat activity routing', () => {
 		});
 
 		expect(result).toContain('pending');
-		expect(f.chatService.storePendingChatReaction).toHaveBeenCalledWith(f.actor.id, f.message.uri, '👍', true);
+		expect(f.chatService.storePendingChatReaction).toHaveBeenCalledWith(f.actor.id, f.message.uri, '👍', true, undefined);
 	});
 
 	test('rechecks under the object lock so a reaction cannot miss a message stored after the first lookup', async () => {
@@ -1293,7 +1389,7 @@ describe('ApInboxService chat activity routing', () => {
 		});
 
 		expect(result).toBe('ok');
-		expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍');
+		expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined);
 		expect(f.chatService.storePendingChatReaction).not.toHaveBeenCalled();
 	});
 
@@ -1307,7 +1403,7 @@ describe('ApInboxService chat activity routing', () => {
 		});
 
 		expect(result).toBe('ok');
-		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍');
+		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined);
 		expect(f.chatService.storePendingChatReaction).not.toHaveBeenCalled();
 	});
 

@@ -144,7 +144,13 @@ function fixture(options: {
 	const resolver = { resolve: vi.fn() };
 	const apResolverService = { createResolver: vi.fn(async () => resolver) };
 	const pendingRoomActivities = new Map<string, Set<string>>();
+	const roomTombstones = new Map<string, string>();
 	const redisClient = {
+		get: vi.fn(async (key: string) => roomTombstones.get(key) ?? null),
+		setex: vi.fn(async (key: string, _ttl: number, value: string) => {
+			roomTombstones.set(key, value);
+			return 'OK';
+		}),
 		scard: vi.fn(async (key: string) => pendingRoomActivities.get(key)?.size ?? 0),
 		sadd: vi.fn(async (key: string, value: string) => {
 			const set = pendingRoomActivities.get(key) ?? new Set<string>();
@@ -847,6 +853,23 @@ describe('Chat room federation: Remove', () => {
 
 describe('Chat room federation: deferred room activities', () => {
 	const remoteRoomUri = 'https://remote.test/chat/rooms/remoteroom';
+
+	test.each([false, true])('does not resurrect a deleted room when Invite is retried (known room: %s)', async (knownRoom) => {
+		const f = fixture({ rooms: knownRoom ? [{ id: 'remoteroom', ownerId: remoteOwner.id, uri: remoteRoomUri }] : [] });
+		const invitation = inviteActivity(remoteOwner, remoteRoomUri, `${LOCAL}/users/${alice.id}`);
+
+		await f.inbox.delete(remoteOwner, {
+			type: 'Delete',
+			actor: remoteOwner.uri,
+			object: { id: remoteRoomUri, type: 'Tombstone', formerType: 'Group' },
+		});
+		await f.inbox.invite(remoteOwner, invitation);
+		await f.inbox.invite(remoteOwner, invitation);
+
+		expect(f.rooms.rows.find(room => room.id === 'remoteroom')).toBeUndefined();
+		expect(f.invitations.rows).toEqual([]);
+		expect(f.notificationService.createNotification).not.toHaveBeenCalled();
+	});
 
 	test('truncates oversized mirror room metadata from an Invite', async () => {
 		const f = fixture();

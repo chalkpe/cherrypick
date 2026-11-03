@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import * as mfm from 'mfc-js';
 import * as Redis from 'ioredis';
@@ -39,12 +39,15 @@ export class ChatMessageInvalidTextError extends ChatMessageAccessError {}
 export class ChatRoomArchivedError extends Error {}
 
 export const MAX_ROOM_MEMBERS = 50;
+// Remote peers may allow longer messages than our composer, up to the text column's limit.
+export const MAX_REMOTE_MESSAGE_TEXT_LENGTH = 4096;
 const MAX_REACTIONS_PER_MESSAGE = 100;
 const PENDING_CHAT_REACTION_TTL = 6 * 60 * 60;
 const MAX_PENDING_CHAT_REACTIONS = 100;
 const MAX_PENDING_CHAT_REACTIONS_PER_ACTOR = 1000;
 const MAX_PENDING_CHAT_REACTION_LENGTH = 256;
 const CHAT_REACTION_ACTIVITY_ID_TTL = 30 * 24 * 60 * 60;
+const MAX_REMOTE_REACTION_ACTIVITY_ID_LENGTH = 2048;
 const isCustomEmojiRegexp = /^:([\w+-]+)(?:@\.)?:$/;
 
 // TODO: ReactionServiceのやつと共通化
@@ -1484,7 +1487,7 @@ export class ChatService {
 		}
 
 		const trimmed = text.trim();
-		if (trimmed.length < 1 || trimmed.length > 2000) throw new ChatMessageAccessError('invalid text');
+		if ((trimmed.length === 0 && message.fileId == null) || Array.from(trimmed).length > MAX_REMOTE_MESSAGE_TEXT_LENGTH) throw new ChatMessageAccessError('invalid text');
 
 		// Keep this conditional in SQL as multiple inbox workers may read the same revision.
 		const result = await this.chatMessagesRepository.update([
@@ -1540,7 +1543,7 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async reactRemote(actor: MiUser, message: MiChatMessage, reaction_: string): Promise<void> {
+	public async reactRemote(actor: MiUser, message: MiChatMessage, reaction_: string, activityId?: string): Promise<void> {
 		const reaction = this.normalizeRemoteReaction(reaction_, actor.host);
 
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
@@ -1556,8 +1559,9 @@ export class ChatService {
 		}
 
 		const pair = `${actor.id}/${reaction}`;
+		if (!message.reactions.includes(pair) && message.reactions.length >= MAX_REACTIONS_PER_MESSAGE) throw new ChatMessageAccessError('too many reactions');
+		if (!await this.recordRemoteReactionActivity(actor, message, reaction, activityId, false)) return;
 		if (message.reactions.includes(pair)) return;
-		if (message.reactions.length >= MAX_REACTIONS_PER_MESSAGE) throw new ChatMessageAccessError('too many reactions');
 
 		const result = await this.chatMessagesRepository.createQueryBuilder().update()
 			.set({ reactions: () => 'array_append("reactions", :pair)' })
@@ -1589,7 +1593,7 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async unreactRemote(actor: MiUser, message: MiChatMessage, reaction_: string): Promise<void> {
+	public async unreactRemote(actor: MiUser, message: MiChatMessage, reaction_: string, activityId?: string): Promise<void> {
 		const reaction = this.normalizeRemoteReaction(reaction_, actor.host);
 
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
@@ -1603,6 +1607,7 @@ export class ChatService {
 			throw new ChatMessageAccessError('cannot unreact to others message');
 		}
 
+		if (!await this.recordRemoteReactionActivity(actor, message, reaction, activityId, true)) return;
 		const pair = `${actor.id}/${reaction}`;
 		await this.chatMessagesRepository.createQueryBuilder().update()
 			.set({ reactions: () => 'array_remove("reactions", :pair)' })
@@ -1632,9 +1637,37 @@ export class ChatService {
 		}
 	}
 
+	/** Called under the inbox message lock, including when draining deferred reactions. */
+	private async recordRemoteReactionActivity(actor: MiUser, message: MiChatMessage, reaction: string, activityId: string | undefined, undo: boolean): Promise<boolean> {
+		// Older peers sent reactions without IDs; keep their pair-based behavior.
+		if (activityId == null) return true;
+		if (typeof activityId !== 'string' || activityId.length === 0 || activityId.length > MAX_REMOTE_REACTION_ACTIVITY_ID_LENGTH) throw new ChatMessageAccessError('invalid reaction id');
+		const key = `chat_remote_reaction_activities:${message.id}:${actor.id}:${reaction}`;
+		const stored = await this.redisClient.get(key);
+		const states: Record<string, boolean> = stored == null ? {} : JSON.parse(stored);
+		const id = createHash('sha256').update(activityId).digest('hex');
+		if (!undo && states[id] === false) return false;
+
+		const countKey = `chat_remote_reaction_activity_count:${actor.id}`;
+		if (!(id in states)) {
+			// Authenticated participants may still send arbitrarily many IDs. Bound the cache per actor.
+			if (Object.keys(states).length >= MAX_PENDING_CHAT_REACTIONS_PER_ACTOR) throw new ChatMessageAccessError('too many reaction activities');
+			const counted = await this.redisClient.multi().incr(countKey).expire(countKey, PENDING_CHAT_REACTION_TTL).exec();
+			const count = counted?.[0]?.[1];
+			if (typeof count !== 'number' || count > MAX_PENDING_CHAT_REACTIONS_PER_ACTOR) throw new ChatMessageAccessError('too many reaction activities');
+		}
+
+		states[id] = !undo;
+		await this.redisClient.expire(countKey, PENDING_CHAT_REACTION_TTL);
+		await this.redisClient.setex(key, PENDING_CHAT_REACTION_TTL, JSON.stringify(states));
+		// An older Undo removes only its own addition, preserving a newer re-add even out of order.
+		return !undo || !Object.values(states).some(active => active);
+	}
+
 	@bindThis
-	public async storePendingChatReaction(actorId: MiUser['id'], messageUri: string, reaction: string, undo: boolean): Promise<boolean> {
+	public async storePendingChatReaction(actorId: MiUser['id'], messageUri: string, reaction: string, undo: boolean, activityId?: string): Promise<boolean> {
 		if (reaction.length > MAX_PENDING_CHAT_REACTION_LENGTH) return false;
+		if (activityId != null && (typeof activityId !== 'string' || activityId.length === 0 || activityId.length > MAX_REMOTE_REACTION_ACTIVITY_ID_LENGTH)) return false;
 
 		// Any actor can name any URI here, so bound what one actor can keep in Redis until the TTL.
 		const countKey = `chat_pending_reaction_count:${actorId}`;
@@ -1645,7 +1678,7 @@ export class ChatService {
 		const key = `chat_pending_reaction_events:${messageUri}`;
 		// A set loses both arrival order and repeated react/undo transitions.
 		await this.redisClient.multi()
-			.rpush(key, JSON.stringify({ actorId, reaction, undo }))
+			.rpush(key, JSON.stringify({ actorId, reaction, undo, activityId }))
 			.ltrim(key, 0, MAX_PENDING_CHAT_REACTIONS - 1)
 			.expire(key, PENDING_CHAT_REACTION_TTL)
 			.exec();
@@ -1665,15 +1698,16 @@ export class ChatService {
 
 		for (const entry of entries) {
 			try {
-				const parsed = JSON.parse(entry) as { actorId?: unknown; reaction?: unknown; undo?: unknown };
+				const parsed = JSON.parse(entry) as { actorId?: unknown; reaction?: unknown; undo?: unknown; activityId?: unknown };
 				if (typeof parsed.actorId !== 'string' || typeof parsed.reaction !== 'string' || typeof parsed.undo !== 'boolean') continue;
+				if (parsed.activityId != null && typeof parsed.activityId !== 'string') continue;
 				const actor = await this.usersRepository.findOneBy({ id: parsed.actorId });
 				if (actor == null || actor.host == null) continue;
 
 				if (parsed.undo) {
-					await this.unreactRemote(actor, message, parsed.reaction);
+					await this.unreactRemote(actor, message, parsed.reaction, parsed.activityId as string | undefined);
 				} else {
-					await this.reactRemote(actor, message, parsed.reaction);
+					await this.reactRemote(actor, message, parsed.reaction, parsed.activityId as string | undefined);
 				}
 			} catch (err) {
 				if (err instanceof ChatMessageAccessError) continue;

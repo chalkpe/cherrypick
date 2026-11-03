@@ -16,7 +16,7 @@ import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NoteCreateService } from '@/core/NoteCreateService.js';
 import { NotificationService } from '@/core/NotificationService.js';
-import { ChatMessageAccessError, ChatService, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatService, MAX_REMOTE_MESSAGE_TEXT_LENGTH, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { truncate } from '@/misc/truncate.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
@@ -246,7 +246,7 @@ export class ApInboxService {
 			const reaction = activity._misskey_reaction ?? activity.content ?? activity.name;
 			if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
 			await this.apNoteService.extractEmojis(activity.tag ?? [], actor.host).catch(() => null);
-			return await this.applyChatReaction(actor, targetUri, chatMessage, reaction, false);
+			return await this.applyChatReaction(actor, targetUri, chatMessage, reaction, false, activity.id);
 		}
 
 		if (!note) return `skip: target note not found ${targetUri}`;
@@ -269,13 +269,13 @@ export class ApInboxService {
 	 * A reaction can overtake its message. createChatMessage inserts the message and drains the
 	 * deferred reactions under this lock, so the final lookup and the deferral must hold it too.
 	 */
-	private async applyChatReaction(actor: MiRemoteUser, targetUri: string, known: MiChatMessage | null, reaction: string, undo: boolean): Promise<string> {
+	private async applyChatReaction(actor: MiRemoteUser, targetUri: string, known: MiChatMessage | null, reaction: string, undo: boolean, activityId?: string): Promise<string> {
 		const apply = async (message: MiChatMessage): Promise<string> => {
 			try {
 				if (undo) {
-					await this.chatService.unreactRemote(actor, message, reaction);
+					await this.chatService.unreactRemote(actor, message, reaction, activityId);
 				} else {
-					await this.chatService.reactRemote(actor, message, reaction);
+					await this.chatService.reactRemote(actor, message, reaction, activityId);
 				}
 				return 'ok';
 			} catch (err) {
@@ -283,14 +283,14 @@ export class ApInboxService {
 				throw err;
 			}
 		};
-		if (known != null) return await apply(known);
+		if (known != null && activityId == null) return await apply(known);
 
 		const unlock = await acquireApObjectLock(this.redisClient, targetUri);
 		try {
 			const message = await this.chatService.findMessageByUri(targetUri);
 			if (message != null) return await apply(message);
 
-			const stored = await this.chatService.storePendingChatReaction(actor.id, targetUri, reaction, undo);
+			const stored = await this.chatService.storePendingChatReaction(actor.id, targetUri, reaction, undo, activityId);
 			if (!stored) return 'skip: chat reaction was not deferred';
 			return undo ? 'ok: pending chat Unreact' : 'ok: pending chat reaction';
 		} finally {
@@ -823,7 +823,7 @@ export class ApInboxService {
 
 		// Extract message content
 		const text = this.chatMessageText(object);
-		if (text != null && text.trim().length > 2000) return 'skip: chat message is too long';
+		if (text != null && Array.from(text.trim()).length > MAX_REMOTE_MESSAGE_TEXT_LENGTH) return 'skip: chat message is too long';
 		const uri = object.id;
 		const updated = typeof object.updated === 'string' ? new Date(object.updated) : null;
 		const editedAt = updated != null && !Number.isNaN(updated.getTime()) ? updated : null;
@@ -921,8 +921,8 @@ export class ApInboxService {
 				// Check if the room exists locally
 				const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
 				if (!room) {
-					this.logger.warn(`Room not found: ${roomId}`);
-					return 'skip: room not found';
+					// The Invite can still be in flight; use the inbox queue's bounded retries.
+					throw new Error('chat room is not ready');
 				}
 
 				// Check if at least one recipient is a local user who is a member of the room
@@ -939,6 +939,11 @@ export class ApInboxService {
 				}
 
 				if (!hasLocalMember) {
+					for (const recipient of recipients) {
+						if (this.userEntityService.isLocalUser(recipient) && await this.chatRoomInvitationsRepository.findOneBy({ roomId: room.id, userId: recipient.id })) {
+							throw new Error('chat room membership is not ready');
+						}
+					}
 					this.logger.warn('No local members found in the room');
 					return 'skip: no local members in room';
 				}
@@ -1043,6 +1048,9 @@ export class ApInboxService {
 				return await this.storePendingRoomActivity(actor, activity) ? 'skip: room not found, activity deferred' : 'skip: room not found';
 			}
 			if (room.ownerId !== actor.id) return 'skip: only the room owner can delete it';
+			// Keep the deletion after consuming pending activities: a delayed/retried Invite
+			// must not recreate this mirror room or notify the invitee again.
+			await this.redisClient.setex(`chat_room_deleted:${uri}:${actor.id}`, PENDING_ROOM_ACTIVITY_TTL, '1');
 			await this.chatService.deleteRoom(room, undefined, { federate: false });
 			return 'ok: chat room deleted';
 		}
@@ -1355,7 +1363,7 @@ export class ApInboxService {
 			if (isChatMessage && (chatMessage != null || await this.apNoteService.fetchNote(targetUri) == null)) {
 				const reaction = object._misskey_reaction ?? object.content ?? object.name;
 				if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
-				return await this.applyChatReaction(actor, targetUri, chatMessage, reaction, true);
+				return await this.applyChatReaction(actor, targetUri, chatMessage, reaction, true, object.id);
 			}
 		}
 		if (isLike(object)) return await this.undoLike(actor, object);
@@ -1768,6 +1776,7 @@ export class ApInboxService {
 
 		// Only the room owner sends Invite, and the room lives on the owner's server
 		if (!this.isOnActorHost(roomUri, actor)) return 'skip: room is not on the inviter\'s server';
+		if (await this.redisClient.get(`chat_room_deleted:${roomUri}:${actor.id}`) != null) return 'skip: room was deleted';
 
 		// Get the target user (invitee)
 		const targetUri = getApHrefNullable(activity.target);

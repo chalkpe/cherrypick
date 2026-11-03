@@ -14,6 +14,7 @@ function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 		fromUserId: 'u1',
 		toUserId: 'u2',
 		toRoomId: null,
+		fileId: null as string | null,
 		text: 'old',
 		editedAt: null as Date | null,
 		deletedAt: overrides.deletedAt ?? null,
@@ -134,5 +135,39 @@ describe('ChatService.updateMessage', () => {
 		await f.service.updateRemoteMessage({ id: 'u1', host: 'remote.test' } as MiUser, f.message as unknown as MiChatMessage, ':wave:', new Date('2026-11-02T12:02:00Z'), ['wave']);
 		expect(f.message.emojis).toEqual(['wave']);
 		expect(f.publishChatUserStream).toHaveBeenCalledWith('u1', 'u2', 'updated', expect.objectContaining({ emojis: { wave: 'https://remote.test/wave.png' } }));
+	});
+
+	test.each(['x', '🦈'])('accepts a remote edit at the 4096-character storage limit (%s)', async (character) => {
+		const f = createFixture();
+		const text = character.repeat(4096);
+
+		await f.service.updateRemoteMessage({ id: 'u1', host: 'remote.test' } as MiUser, f.message as unknown as MiChatMessage, text, new Date());
+
+		expect(f.message.text).toBe(text);
+	});
+
+	test('rejects remote edits beyond the storage limit', async () => {
+		const f = createFixture();
+
+		await expect(f.service.updateRemoteMessage({ id: 'u1', host: 'remote.test' } as MiUser, f.message as unknown as MiChatMessage, 'x'.repeat(4097), new Date())).rejects.toThrow('invalid text');
+		expect(f.message.text).toBe('old');
+	});
+
+	test('lets a remote author clear an attachment caption', async () => {
+		const f = createFixture();
+		f.message.fileId = 'file1';
+
+		await f.service.updateRemoteMessage({ id: 'u1', host: 'remote.test' } as MiUser, f.message as unknown as MiChatMessage, '', new Date());
+
+		expect(f.message.text).toBe('');
+		expect(f.message.fileId).toBe('file1');
+		expect(f.publishChatUserStream).toHaveBeenCalledWith('u1', 'u2', 'updated', expect.objectContaining({ text: '' }));
+	});
+
+	test('rejects an empty remote edit when the message has no attachment', async () => {
+		const f = createFixture();
+
+		await expect(f.service.updateRemoteMessage({ id: 'u1', host: 'remote.test' } as MiUser, f.message as unknown as MiChatMessage, ' ', new Date())).rejects.toThrow('invalid text');
+		expect(f.message.text).toBe('old');
 	});
 });
