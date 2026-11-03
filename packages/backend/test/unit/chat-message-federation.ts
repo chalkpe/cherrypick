@@ -4,7 +4,7 @@
  */
 
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatService, ChatRoomArchivedError } from '@/core/ChatService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import {
@@ -480,6 +480,78 @@ describe('ChatService chat federation delivery', () => {
 
 		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('r1', 'roomUpdated', expect.objectContaining({ name: 'remote rename' }));
 		expect(f.queueService.deliver).not.toHaveBeenCalled();
+	});
+
+	test('room updates publish the archived state', async () => {
+		const f = createService();
+
+		await f.service.updateRoom(f.room as never, { isArchived: true }, { federate: false });
+
+		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('r1', 'roomUpdated', expect.objectContaining({ roomId: 'r1', isArchived: true }));
+	});
+
+	describe('archived rooms are read-only for local users', () => {
+		function archived() {
+			const f = createService();
+			Object.assign(f.room, { isArchived: true });
+			return f;
+		}
+
+		test('a local user cannot send a message', async () => {
+			const f = archived();
+
+			await expect(f.service.createMessageToRoom(f.alice, f.room as never, { text: 'hello' })).rejects.toBeInstanceOf(ChatRoomArchivedError);
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+		});
+
+		test('a message relayed from a remote member is not refused as archived', async () => {
+			const f = archived();
+
+			const result = await f.service.createMessageToRoom(f.bob, f.room as never, { text: 'late' }).catch((err: unknown) => err);
+
+			expect(result).not.toBeInstanceOf(ChatRoomArchivedError);
+		});
+
+		test('a local user cannot edit a message', async () => {
+			const f = archived();
+
+			await expect(f.service.updateMessage('alice', 'm3', 'edited')).rejects.toBeInstanceOf(ChatRoomArchivedError);
+			expect(f.roomDeleteMessage.text).toBe('room');
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+		});
+
+		test('a local user cannot delete a message', async () => {
+			const f = archived();
+
+			await expect(f.service.deleteMessage(f.roomDeleteMessage as never)).rejects.toBeInstanceOf(ChatRoomArchivedError);
+			expect(f.roomDeleteMessage.deletedAt).toBeNull();
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+		});
+
+		test.each(['react', 'unreact'] as const)('a local user cannot %s to a message', async (method) => {
+			const f = archived();
+
+			await expect(f.service[method]('m2', 'alice', '👍')).rejects.toBeInstanceOf(ChatRoomArchivedError);
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+		});
+
+		test('a local user cannot join, and keeps the invitation', async () => {
+			const f = archived();
+			const invitations = {
+				findOneByOrFail: vi.fn(async () => ({ id: 'inv', roomId: 'r1', userId: 'alice' })),
+				delete: vi.fn(),
+			};
+			Object.assign(f.service, { chatRoomInvitationsRepository: invitations });
+
+			await expect(f.service.joinToRoom('alice', 'r1')).rejects.toBeInstanceOf(ChatRoomArchivedError);
+			expect(invitations.delete).not.toHaveBeenCalled();
+		});
+
+		test('direct messages are unaffected', async () => {
+			const f = archived();
+
+			await expect(f.service.updateMessage('alice', 'm1', 'edited')).resolves.toMatchObject({ text: 'edited' });
+		});
 	});
 
 	test('moderators deleting another user room still federate the room deletion', async () => {

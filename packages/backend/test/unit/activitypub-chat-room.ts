@@ -567,6 +567,26 @@ describe('Chat room federation: voice call state', () => {
 	});
 
 	// JSON-LD として読む相手にも、ルーム・参加者・画面共有が CherryPick の語彙として伝わる
+	test('the archived state survives JSON-LD compaction of a forwarded activity', async () => {
+		// 相手のサーバーが送ってくる文脈のまま処理する
+		const activity = {
+			'@context': [
+				'https://www.w3.org/ns/activitystreams',
+				{ misskey: 'https://misskey-hub.net/ns#', _misskey_chatArchived: 'misskey:_misskey_chatArchived' },
+			],
+			id: 'https://remote.test/chat/rooms/bobroom#update',
+			type: 'Update',
+			actor: remoteOwner.uri,
+			object: { id: 'https://remote.test/chat/rooms/bobroom', type: 'Group', name: 'room', _misskey_chatArchived: true },
+		};
+		const jsonLd = new JsonLdService({} as any).use();
+		jsonLd.freeze();
+
+		const compacted = await jsonLd.compact(activity) as { object: Record<string, unknown> };
+
+		expect(compacted.object._misskey_chatArchived).toBe(true);
+	});
+
 	test('the voice state keeps its CherryPick terms through JSON-LD processing', async () => {
 		const renderer = Object.assign(Object.create(ApRendererService.prototype), { config: { url: LOCAL } }) as ApRendererService;
 		const activity = renderer.addContext({
@@ -954,6 +974,48 @@ describe('Chat room federation: Add/Update/Delete', () => {
 		});
 
 		expect(f.rooms.rows[0]).toMatchObject({ name: 'new name', description: 'new description' });
+	});
+
+	test.each([true, false])('Update applies the archived state %s from the room owner', async (archived) => {
+		const f = fixture();
+		f.resolver.resolve.mockImplementation(async (value: unknown) => value);
+		f.rooms.rows[0].isArchived = !archived;
+
+		await f.inbox.update(ownerActor, {
+			type: 'Update',
+			actor: ownerActor.uri,
+			object: { id: roomUri, type: 'Group', name: 'new name', attributedTo: ownerActor.uri, _misskey_chatArchived: archived },
+		});
+
+		expect(f.rooms.rows[0]).toMatchObject({ name: 'new name', isArchived: archived });
+	});
+
+	test.each([[undefined], ['true'], [null]])('Update keeps the archived state when the field is %s', async (value) => {
+		const f = fixture();
+		f.resolver.resolve.mockImplementation(async (resolved: unknown) => resolved);
+		f.rooms.rows[0].isArchived = true;
+
+		await f.inbox.update(ownerActor, {
+			type: 'Update',
+			actor: ownerActor.uri,
+			object: { id: roomUri, type: 'Group', name: 'new name', attributedTo: ownerActor.uri, _misskey_chatArchived: value },
+		});
+
+		expect(f.rooms.rows[0]).toMatchObject({ name: 'new name', isArchived: true });
+	});
+
+	test('Update ignores the archived state from anyone but the room owner', async () => {
+		const f = fixture();
+		f.resolver.resolve.mockImplementation(async (value: unknown) => value);
+		const stranger = { id: 'stranger', host: 'remote.test', uri: 'https://remote.test/users/stranger', inbox: 'https://remote.test/users/stranger/inbox' };
+
+		await f.inbox.update(stranger, {
+			type: 'Update',
+			actor: stranger.uri,
+			object: { id: roomUri, type: 'Group', name: 'hijacked', attributedTo: stranger.uri, _misskey_chatArchived: true },
+		});
+
+		expect(f.rooms.rows[0].isArchived).toBeFalsy();
 	});
 
 	test('Update clips a mirror room name and description to the column sizes', async () => {

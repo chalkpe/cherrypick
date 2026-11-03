@@ -102,6 +102,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<MkInfo warn>{{ i18n.ts._chat.chatNotAvailableInOtherAccount }}</MkInfo>
 						</div>
 
+						<MkInfo v-if="room?.isArchived" warn>{{ i18n.ts._chat.thisRoomIsArchived }}</MkInfo>
+
 						<MkInfo v-if="$i.policies.chatAvailability !== 'available'" warn>{{ $i.policies.chatAvailability === 'readonly' ? i18n.ts._chat.chatIsReadOnlyForThisAccountOrServer : i18n.ts._chat.chatNotAvailableForThisAccountOrServer }}</MkInfo>
 					</div>
 				</MkStickyContainer>
@@ -139,7 +141,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</button>
 						</div>
 					</Transition>
-					<XForm v-if="initialized" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit"/>
+					<XForm v-if="initialized && !room?.isArchived" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit"/>
 				</div>
 			</Teleport>
 		</div>
@@ -480,6 +482,7 @@ function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['r
 		...room.value,
 		name: ctx.name,
 		description: ctx.description,
+		isArchived: ctx.isArchived,
 	};
 }
 

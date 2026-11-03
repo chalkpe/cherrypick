@@ -6877,6 +6877,10 @@ export interface Locale extends ILocale {
          */
         "chatIsReadOnlyForThisAccountOrServer": string;
         /**
+         * このグループはアーカイブされているため、新たに書き込むことはできません。
+         */
+        "thisRoomIsArchived": string;
+        /**
          * 相手のアカウントでダイレクトメッセージが使えない状態になっています。ダイレクトメッセージを送るとユーザー指定ノートで送信され、相手がユーザー指定ノートに返信すればここで見ることができます。
          */
         "chatNotAvailableInOtherAccount": string;

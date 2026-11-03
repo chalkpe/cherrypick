@@ -36,6 +36,7 @@ import { emojiRegex } from '@/misc/emoji-regex.js';
 
 export class ChatMessageAccessError extends Error {}
 export class ChatMessageInvalidTextError extends ChatMessageAccessError {}
+export class ChatRoomArchivedError extends Error {}
 
 export const MAX_ROOM_MEMBERS = 50;
 const MAX_REACTIONS_PER_MESSAGE = 100;
@@ -307,6 +308,11 @@ export class ChatService {
 			throw new Error('you are not a member of the room');
 		}
 
+		// 相手のサーバーから届いたものは、アーカイブの通知と前後しても受け取る
+		if (fromUser.host == null && toRoom.isArchived) {
+			throw new ChatRoomArchivedError('room is archived');
+		}
+
 		const membershipsOtherThanMe = memberships.filter(member => member.userId !== fromUser.id);
 
 		// Extract emojis from text if not provided
@@ -465,6 +471,7 @@ export class ChatService {
 		if (message.fromUserId !== userId) throw new ChatMessageAccessError('cannot edit');
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 		await this.assertCanStillEdit(message);
+		await this.assertMessageRoomNotArchived(message);
 
 		const trimmed = text.trim();
 		if (trimmed.length < 1 || trimmed.length > 2000) throw new ChatMessageInvalidTextError('invalid text');
@@ -500,6 +507,8 @@ export class ChatService {
 
 	@bindThis
 	public async deleteMessage(message: MiChatMessage) {
+		await this.assertMessageRoomNotArchived(message);
+
 		const deletedAt = new Date();
 		await this.chatMessagesRepository.update(message.id, {
 			text: null,
@@ -914,6 +923,9 @@ export class ChatService {
 	public async joinToRoom(userId: MiUser['id'], roomId: MiChatRoom['id']) {
 		const invitation = await this.chatRoomInvitationsRepository.findOneByOrFail({ roomId, userId });
 
+		const room = await this.chatRoomsRepository.findOneByOrFail({ id: roomId });
+		if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
+
 		// The invitation is the authorization for joining. Consume it atomically
 		// with the membership insert so that a cancellation cannot race the join
 		// and a failed insert cannot lose the invitation.
@@ -952,7 +964,6 @@ export class ChatService {
 		if (membership == null) return;
 
 		// Federation: Notify about acceptance and new member
-		const room = await this.chatRoomsRepository.findOneByOrFail({ id: roomId });
 		const joiningUser = await this.usersRepository.findOneByOrFail({ id: userId });
 		this.globalEventService.publishChatRoomStream(roomId, 'membershipStarted', { userId });
 		const owner = await this.usersRepository.findOneByOrFail({ id: room.ownerId });
@@ -1189,6 +1200,7 @@ export class ChatService {
 	public async updateRoom(room: MiChatRoom, params: {
 		name?: string;
 		description?: string;
+		isArchived?: boolean;
 	}, options?: { federate?: boolean }): Promise<MiChatRoom> {
 		const updated = await this.chatRoomsRepository.createQueryBuilder().update()
 			.set(params)
@@ -1204,6 +1216,7 @@ export class ChatService {
 			roomId: merged.id,
 			name: merged.name,
 			description: merged.description,
+			isArchived: merged.isArchived,
 		});
 
 		const owner = await this.usersRepository.findOneBy({ id: merged.ownerId });
@@ -1322,6 +1335,7 @@ export class ChatService {
 			if (!(await this.isRoomMember(room, userId))) {
 				throw new ChatMessageAccessError('cannot react to others message');
 			}
+			if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
 		}
 
 		if (message.reactions.length >= MAX_REACTIONS_PER_MESSAGE) {
@@ -1388,6 +1402,7 @@ export class ChatService {
 			if (!(await this.isRoomMember(room, userId))) {
 				throw new ChatMessageAccessError('cannot unreact to others message');
 			}
+			if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
 		} else if (message.fromUserId !== userId && message.toUserId !== userId) {
 			throw new ChatMessageAccessError('cannot unreact to others message');
 		}
@@ -1663,6 +1678,12 @@ export class ChatService {
 		} catch {
 			throw new ChatMessageAccessError('invalid emoji');
 		}
+	}
+
+	private async assertMessageRoomNotArchived(message: MiChatMessage): Promise<void> {
+		if (message.toRoomId == null) return;
+		const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
+		if (room?.isArchived) throw new ChatRoomArchivedError('room is archived');
 	}
 
 	/** Creating a message checks these too; an edit must not be a way around them. */

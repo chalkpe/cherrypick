@@ -310,6 +310,7 @@ export class ChatEntityService {
 			owner: options?._hint_?.packedOwners.get(room.ownerId) ?? (await this.userEntityService.pack(room.owner ?? room.ownerId, me)),
 			isMuted: membership != null ? membership.isMuted : false,
 			invitationExists: invitation != null,
+			isArchived: room.isArchived,
 		};
 	}
 

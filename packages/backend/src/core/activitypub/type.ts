@@ -13,6 +13,7 @@ export interface IObject {
 	name?: string | null;
 	summary?: string;
 	_misskey_summary?: string;
+	_misskey_chatArchived?: boolean;
 	_misskey_followedMessage?: string | null;
 	_misskey_requireSigninToViewContents?: boolean;
 	_misskey_makeNotesFollowersOnlyBefore?: number | null;

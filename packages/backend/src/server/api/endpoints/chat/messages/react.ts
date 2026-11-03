@@ -5,7 +5,7 @@
 
 import { Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
-import { ChatService, ChatMessageAccessError } from '@/core/ChatService.js';
+import { ChatService, ChatMessageAccessError, ChatRoomArchivedError } from '@/core/ChatService.js';
 import { ApiError } from '@/server/api/error.js';
 
 export const meta = {
@@ -20,6 +20,11 @@ export const meta = {
 			message: 'No such message.',
 			code: 'NO_SUCH_MESSAGE',
 			id: '9b5839b9-0ba0-4351-8c35-37082093d200',
+		},
+		roomIsArchived: {
+			message: 'This room is archived.',
+			code: 'ROOM_IS_ARCHIVED',
+			id: '3d8c5e91-0f47-4a2b-86d3-c94e1b7a5f08',
 		},
 	},
 } as const;
@@ -46,6 +51,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				await this.chatService.react(ps.messageId, me.id, ps.reaction);
 			} catch (e) {
 				if (e instanceof ChatMessageAccessError) throw new ApiError(meta.errors.noSuchMessage);
+				if (e instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);
 				throw e;
 			}
 		});

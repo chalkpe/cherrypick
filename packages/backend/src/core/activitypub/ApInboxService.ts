@@ -1576,6 +1576,7 @@ export class ApInboxService {
 			await this.chatService.updateRoom(room, {
 				name: typeof object.name === 'string' ? truncate(object.name, 256) : room.name,
 				description: typeof object.summary === 'string' ? truncate(object.summary, 2048) : room.description,
+				isArchived: typeof object._misskey_chatArchived === 'boolean' ? object._misskey_chatArchived : room.isArchived,
 			}, { federate: false });
 			return 'ok: chat room updated';
 		}

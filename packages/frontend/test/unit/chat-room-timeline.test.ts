@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
 		channel: new FakeChannel(),
 		me: { id: 'me', username: 'me', policies: { chatAvailability: 'available', canVoiceCall: false } },
 		timeline: [] as unknown[],
+		roomIsArchived: false,
 		// 吹き出しごとの描画回数
 		renders: new Map<string, number>(),
 	};
@@ -32,7 +33,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@/utility/misskey-api.js', () => ({
 	misskeyApi: vi.fn(async (endpoint: string) => {
-		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: 'owner', owner: { id: 'owner', username: 'owner', host: null } };
+		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: 'owner', owner: { id: 'owner', username: 'owner', host: null }, isArchived: mocks.roomIsArchived };
 		if (endpoint === 'users/show') return { id: 'alice', username: 'alice', host: null };
 		if (endpoint === 'chat/messages/room-timeline' || endpoint === 'chat/messages/user-timeline') return mocks.timeline;
 		return [];
@@ -49,7 +50,10 @@ vi.mock('@/composables/use-chat-room-voice-call.js', async () => {
 	const { computed } = await import('vue');
 	return { useChatRoomVoiceCall: () => ({ available: computed(() => false), inThisCall: computed(() => false), participants: computed(() => []), join: vi.fn() }) };
 });
-vi.mock('@/pages/chat/room.form.vue', () => ({ default: { render: () => null } }));
+vi.mock('@/pages/chat/room.form.vue', async () => {
+	const { h: hh } = await import('vue');
+	return { default: { render: () => hh('div', { 'data-testid': 'form' }) } };
+});
 vi.mock('@/pages/chat/room.search.vue', () => ({ default: { render: () => null } }));
 vi.mock('@/pages/chat/room.members.vue', () => ({ default: { render: () => null } }));
 vi.mock('@/pages/chat/room.info.vue', () => ({ default: { render: () => null } }));
@@ -77,6 +81,7 @@ vi.mock('@/pages/chat/XMessage.vue', async () => {
 
 import { provideMetadataReceiver } from '@/page.js';
 import XRoomPage from '@/pages/chat/room.vue';
+import { i18n } from '@/i18n.js';
 
 const MINUTE = 60 * 1000;
 const base = Date.parse('2026-10-27T12:00:00.000Z');
@@ -123,12 +128,39 @@ const bubbles = (container: Element) => [...container.querySelectorAll('[data-te
 beforeEach(() => {
 	mocks.channel = new mocks.FakeChannel();
 	mocks.renders.clear();
+	mocks.roomIsArchived = false;
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
 });
 
 afterEach(() => {
 	cleanup();
+});
+
+describe('archived rooms on the room page', () => {
+	const form = (container: Element) => container.querySelector('[data-testid="form"]');
+
+	test('shows the message form in an active room', async () => {
+		const { container } = await renderRoom();
+		expect(form(container)).not.toBeNull();
+	});
+
+	test('replaces the message form with a notice in an archived room', async () => {
+		mocks.roomIsArchived = true;
+		const { container } = await renderRoom();
+		expect(form(container)).toBeNull();
+		expect(container.textContent).toContain(i18n.ts._chat.thisRoomIsArchived);
+	});
+
+	test('follows the archived state from the room stream', async () => {
+		const { container } = await renderRoom();
+		mocks.channel.emit('roomUpdated', { roomId: 'r1', name: 'room 1', description: '', isArchived: true });
+		await flush();
+		expect(form(container)).toBeNull();
+		mocks.channel.emit('roomUpdated', { roomId: 'r1', name: 'room 1', description: '', isArchived: false });
+		await flush();
+		expect(form(container)).not.toBeNull();
+	});
 });
 
 describe('chat bubbles on the room page', () => {

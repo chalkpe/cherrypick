@@ -6,7 +6,7 @@
 import { Injectable } from '@nestjs/common';
 import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
-import { ChatMessageAccessError, ChatMessageInvalidTextError, ChatService } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatMessageInvalidTextError, ChatRoomArchivedError, ChatService } from '@/core/ChatService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { ApiError } from '@/server/api/error.js';
 
@@ -41,6 +41,11 @@ export const meta = {
 			code: 'INVALID_TEXT',
 			id: 'f6f8f5d4-1f37-4d3f-9e3b-4e1b4f8a2c71',
 		},
+		roomIsArchived: {
+			message: 'This room is archived.',
+			code: 'ROOM_IS_ARCHIVED',
+			id: 'a1c94d37-2e58-4b06-8f1d-6d0b9e47c352',
+		},
 	},
 } as const;
 
@@ -68,6 +73,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			} catch (e) {
 				if (e instanceof ChatMessageInvalidTextError) throw new ApiError(meta.errors.invalidText);
 				if (e instanceof ChatMessageAccessError) throw new ApiError(meta.errors.noSuchMessage);
+				if (e instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);
 				throw e;
 			}
 		});

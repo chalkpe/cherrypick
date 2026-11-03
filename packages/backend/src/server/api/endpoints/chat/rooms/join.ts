@@ -6,7 +6,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { DI } from '@/di-symbols.js';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatRoomArchivedError, ChatService } from '@/core/ChatService.js';
 import { ApiError } from '@/server/api/error.js';
 
 export const meta = {
@@ -21,6 +21,11 @@ export const meta = {
 			message: 'No such room.',
 			code: 'NO_SUCH_ROOM',
 			id: '84416476-5ce8-4a2c-b568-9569f1b10733',
+		},
+		roomIsArchived: {
+			message: 'This room is archived.',
+			code: 'ROOM_IS_ARCHIVED',
+			id: 'c60a4f18-d3b2-4e75-9c06-7a1e58d3f2b9',
 		},
 	},
 } as const;
@@ -41,7 +46,12 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		super(meta, paramDef, async (ps, me) => {
 			await this.chatService.checkChatAvailability(me.id, 'write');
 
-			await this.chatService.joinToRoom(me.id, ps.roomId);
+			try {
+				await this.chatService.joinToRoom(me.id, ps.roomId);
+			} catch (e) {
+				if (e instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);
+				throw e;
+			}
 		});
 	}
 }

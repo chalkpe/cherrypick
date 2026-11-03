@@ -9,7 +9,7 @@ import { Endpoint } from '@/server/api/endpoint-base.js';
 import { GetterService } from '@/server/api/GetterService.js';
 import { DI } from '@/di-symbols.js';
 import { ApiError } from '@/server/api/error.js';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatRoomArchivedError, ChatService } from '@/core/ChatService.js';
 import type { DriveFilesRepository, MiUser } from '@/models/_.js';
 
 export const meta = {
@@ -49,6 +49,12 @@ export const meta = {
 			message: 'Content required. You need to set text or fileId.',
 			code: 'CONTENT_REQUIRED',
 			id: '340517b7-6d04-42c0-bac1-37ee804e3594',
+		},
+
+		roomIsArchived: {
+			message: 'This room is archived.',
+			code: 'ROOM_IS_ARCHIVED',
+			id: '5b6e1f2a-7c0d-4e39-9a41-2f8d3c6b7e10',
 		},
 	},
 } as const;
@@ -97,10 +103,15 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.contentRequired);
 			}
 
-			return await this.chatService.createMessageToRoom(me, room, {
-				text: ps.text,
-				file: file,
-			});
+			try {
+				return await this.chatService.createMessageToRoom(me, room, {
+					text: ps.text,
+					file: file,
+				});
+			} catch (e) {
+				if (e instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);
+				throw e;
+			}
 		});
 	}
 }

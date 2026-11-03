@@ -1019,6 +1019,7 @@ export type Channels = {
                 roomId: string;
                 name: string;
                 description: string;
+                isArchived: boolean;
             }) => void;
             membershipStarted: (payload: {
                 userId: string;

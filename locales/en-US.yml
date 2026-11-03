@@ -1714,6 +1714,7 @@ _chat:
   deleteRoom: "Delete room"
   chatNotAvailableForThisAccountOrServer: "Chat is not enabled on this server or for this account."
   chatIsReadOnlyForThisAccountOrServer: "Chat is read-only on this server or this account. You cannot write new messages or create/join chat rooms."
+  thisRoomIsArchived: "This room has been archived, so no new messages can be sent."
   chatNotAvailableInOtherAccount: "The chat function is disabled for the other user. If you send a message, it will be sent in a direct note, and if the other party replies to the direct note, you can see it here."
   cannotChatWithTheUser: "Cannot start a chat with this user"
   cannotChatWithTheUser_description: "Chat is either unavailable or the other party has not enabled chat."

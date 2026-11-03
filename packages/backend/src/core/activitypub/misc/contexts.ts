@@ -566,6 +566,7 @@ const extension_context_definition = {
 	'_misskey_talk': 'misskey:_misskey_talk',
 	'_misskey_chatRoom': 'misskey:_misskey_chatRoom',
 	'_misskey_chatScope': 'misskey:_misskey_chatScope',
+	'_misskey_chatArchived': 'misskey:_misskey_chatArchived',
 	'isCat': 'misskey:isCat',
 	// vcard
 	vcard: 'http://www.w3.org/2006/vcard/ns#',
