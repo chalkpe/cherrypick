@@ -33,7 +33,8 @@ import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { QueueService } from '@/core/QueueService.js';
 import { MiChatRoomInvitation, MiChatRoomMembership, type UsersRepository, type NotesRepository, type FollowingsRepository, type AbuseUserReportsRepository, type FollowRequestsRepository, type MiChatMessage, type MiChatRoom, type MiMeta, type ChatMessagesRepository, type ChatRoomsRepository, type ChatRoomInvitationsRepository, type ChatRoomMembershipsRepository } from '@/models/_.js';
 import { bindThis } from '@/decorators.js';
-import type { MiRemoteUser, MiUser } from '@/models/User.js';
+import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
+import type { MiNote } from '@/models/Note.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { AbuseReportService } from '@/core/AbuseReportService.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
@@ -52,6 +53,7 @@ import type { IAccept, IAdd, IAnnounce, IBlock, ICreate, IDelete, IFlag, IFollow
 
 const PENDING_ROOM_ACTIVITY_TTL = 6 * 60 * 60;
 const MAX_PENDING_ROOM_ACTIVITIES = 100;
+const MAX_PENDING_ROOM_ACTIVITY_ATTEMPTS = 3;
 const MAX_PENDING_ROOMS_PER_ACTOR = 100;
 const DEFERRED_CHAT_DELETE_TTL = 6 * 60 * 60;
 const ROOM_FULL = 'skip: room is full';
@@ -238,9 +240,7 @@ export class ApInboxService {
 	@bindThis
 	private async like(actor: MiRemoteUser, activity: ILike): Promise<string> {
 		const targetUri = getApId(activity.object);
-		const isChatMessage = this.isChatMessageUri(targetUri);
-		const chatMessage = isChatMessage ? await this.chatService.findMessageByUri(targetUri) : null;
-		const note = chatMessage == null ? await this.apNoteService.fetchNote(targetUri) : null;
+		const { isChatMessage, chatMessage, note } = await this.findReactionTarget(targetUri);
 
 		if (isChatMessage && note == null) {
 			const reaction = activity._misskey_reaction ?? activity.content ?? activity.name;
@@ -263,6 +263,23 @@ export class ApInboxService {
 				throw err;
 			}
 		}
+	}
+
+	/**
+	 * A reply from another server is stored as a chat message under that server's own URI.
+	 * Reactions to notes are frequent, so chat messages are looked up only when no note matches.
+	 */
+	private async findReactionTarget(uri: string): Promise<{ isChatMessage: boolean; chatMessage: MiChatMessage | null; note: MiNote | null; }> {
+		if (this.isChatMessageUri(uri)) {
+			const chatMessage = await this.chatService.findMessageByUri(uri);
+			return { isChatMessage: true, chatMessage, note: chatMessage == null ? await this.apNoteService.fetchNote(uri) : null };
+		}
+
+		const note = await this.apNoteService.fetchNote(uri);
+		if (note != null) return { isChatMessage: false, chatMessage: null, note };
+
+		const chatMessage = await this.chatService.findMessageByUri(uri);
+		return { isChatMessage: chatMessage != null, chatMessage, note: null };
 	}
 
 	/**
@@ -531,6 +548,9 @@ export class ApInboxService {
 		const targetUri = getApId(activity.object);
 		if (targetUri.startsWith('bear:')) return 'skip: bearcaps url not supported.';
 
+		const chatRoomUri = this.chatRoomUriOf(activity as unknown as IPost);
+		if (chatRoomUri != null) return await this.relayedChatMessage(actor, activity, targetUri, chatRoomUri, resolver);
+
 		const target = await resolver.resolve(activity.object).catch(e => {
 			this.logger.error(`Resolution failed: ${e}`);
 			throw e;
@@ -539,6 +559,51 @@ export class ApInboxService {
 		if (isPost(target)) return await this.announceNote(actor, activity, target);
 
 		return `skip: unknown object type ${getApType(target)}`;
+	}
+
+	/**
+	 * The room owner points at a message it received from another member. Only the owner may do this,
+	 * and the message itself comes from its author's server, so the owner cannot put words in a member's mouth.
+	 */
+	private async relayedChatMessage(actor: MiRemoteUser, activity: IAnnounce, messageUri: string, roomUri: string, resolver: Resolver): Promise<string> {
+		if (!this.isOnActorHost(roomUri, actor)) return 'skip: room is not on the relaying server';
+		if (!this.utilityService.isFederationAllowedUri(messageUri)) return 'skip: blocked host';
+
+		const roomId = roomUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/)?.[1];
+		const room = roomId != null ? await this.chatRoomsRepository.findOneBy({ id: roomId }) : null;
+		if (room == null) return 'skip: room not found';
+		if (room.ownerId !== actor.id) return 'skip: only the room owner can relay';
+		if (await this.chatService.findMessageByUri(messageUri) != null) return 'skip: chat message exists';
+
+		const member = await this.localRoomMemberFrom(room, getApIds(activity.to), resolver);
+		if (member == null) return 'skip: no local members in room';
+		resolver.signAs(member);
+
+		let object: IObject;
+		try {
+			object = await resolver.resolve(messageUri);
+		} catch (err) {
+			// The author's server serves it to members only and may not have heard that ours joined yet.
+			throw new Error(`relayed chat message is not available yet: ${messageUri}: ${err}`);
+		}
+
+		const note = object as IPost;
+		if (getApType(note) !== 'Note' || note._misskey_talk !== true || note.id !== messageUri) return 'skip: relayed object is not a chat message';
+		if (this.chatRoomUriOf(note) !== roomUri) return 'skip: relayed message is from another room';
+		if (note.attributedTo == null) return 'skip: relayed message has no author';
+
+		const author = await this.apPersonService.resolvePerson(getOneApId(note.attributedTo), resolver);
+		if (!this.userEntityService.isRemoteUser(author) || author.isSuspended) return 'skip: invalid relayed message author';
+
+		return await this.createChatMessage(resolver, author as MiRemoteUser, note, activity);
+	}
+
+	private async localRoomMemberFrom(room: MiChatRoom, uris: string[], resolver: Resolver): Promise<MiLocalUser | null> {
+		for (const uri of uris) {
+			const user = await this.apPersonService.resolvePerson(uri, resolver).catch(() => null);
+			if (user != null && this.userEntityService.isLocalUser(user) && await this.chatService.isRoomMember(room, user.id)) return user;
+		}
+		return null;
 	}
 
 	@bindThis
@@ -790,7 +855,7 @@ export class ApInboxService {
 	}
 
 	@bindThis
-	private async createChatMessage(resolver: Resolver, actor: MiRemoteUser, object: IPost, activity: ICreate | IUpdate): Promise<string> {
+	private async createChatMessage(resolver: Resolver, actor: MiRemoteUser, object: IPost, activity: ICreate | IUpdate | IAnnounce): Promise<string> {
 		if (typeof object !== 'object') return 'skip: object is not an object';
 		if (typeof object.id !== 'string') return 'skip: object has no id';
 		if (object.attributedTo == null || getOneApId(object.attributedTo) !== actor.uri) return 'skip: actor.uri !== object.attributedTo';
@@ -803,7 +868,10 @@ export class ApInboxService {
 		this.logger.info(`Processing chat message: ${object.id}`);
 
 		// Get recipients from the 'to' field
-		const toUris = getApIds(object.to);
+		// The sender may not have known our members yet. A relay from the owner addresses them itself.
+		const toUris = getApType(activity) === 'Announce'
+			? Array.from(new Set([...getApIds(object.to), ...getApIds(activity.to)]))
+			: getApIds(object.to);
 		if (!toUris || toUris.length === 0) return 'skip: no recipients';
 
 		// Resolve recipient users
@@ -948,6 +1016,10 @@ export class ApInboxService {
 					return 'skip: no local members in room';
 				}
 
+				// A new member's message can overtake the Accept or Add that makes them a member.
+				// The inbox queue's bounded retries also end what a removed member keeps sending.
+				if (!await this.chatService.isRoomMember(room, actor.id)) throw new Error('chat room membership is not ready');
+
 				// Create the message to the room
 				await this.chatService.createMessageToRoom(actor, room, {
 					text,
@@ -966,8 +1038,7 @@ export class ApInboxService {
 			}
 			return 'ok';
 		} catch (err) {
-			// The recipient refused for good. A room membership error stays retryable on purpose,
-			// because a new member's message can overtake the Accept or Add that makes them a member.
+			// The recipient refused for good.
 			if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
 			this.logger.error(`Failed to create chat message: ${err}`);
 			throw err;
@@ -1005,7 +1076,7 @@ export class ApInboxService {
 			return 'skip: invalid Delete object';
 		}
 
-		const isChatUri = this.isChatMessageUri(uri);
+		const isChatUri = await this.chatService.findMessageByUri(uri) != null || this.isChatMessageUri(uri);
 		const unlock = isChatUri ? await acquireApObjectLock(this.redisClient, uri) : null;
 		try {
 			const chatMessage = isChatUri ? await this.chatService.findMessageByUri(uri) : null;
@@ -1358,9 +1429,8 @@ export class ApInboxService {
 		if (isBlock(object)) return await this.undoBlock(actor, object);
 		if (isLike(object)) {
 			const targetUri = getApId(object.object);
-			const isChatMessage = this.isChatMessageUri(targetUri);
-			const chatMessage = isChatMessage ? await this.chatService.findMessageByUri(targetUri) : null;
-			if (isChatMessage && (chatMessage != null || await this.apNoteService.fetchNote(targetUri) == null)) {
+			const { isChatMessage, chatMessage, note } = await this.findReactionTarget(targetUri);
+			if (isChatMessage && (chatMessage != null || note == null)) {
 				const reaction = object._misskey_reaction ?? object.content ?? object.name;
 				if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
 				return await this.applyChatReaction(actor, targetUri, chatMessage, reaction, true, object.id);
@@ -1544,7 +1614,8 @@ export class ApInboxService {
 			throw e;
 		});
 
-		if (getApType(object) === 'Note' && (object as IPost)._misskey_talk === true) {
+		// A reply from another server is stored as a chat message, but that server does not know it is one.
+		if (getApType(object) === 'Note' && ((object as IPost)._misskey_talk === true || (typeof object.id === 'string' && await this.chatService.findMessageByUri(object.id) != null))) {
 			const note = object as IPost;
 			if (note.attributedTo == null || actor.uri !== getOneApId(note.attributedTo)) return 'skip: actor.uri !== note.attributedTo';
 			if (typeof note.id !== 'string') return 'skip: chat message has no id';
@@ -1588,7 +1659,7 @@ export class ApInboxService {
 				name: typeof object.name === 'string' ? truncate(object.name, 256) : room.name,
 				description: typeof object.summary === 'string' ? truncate(object.summary, 2048) : room.description,
 				isArchived: typeof object._misskey_chatArchived === 'boolean' ? object._misskey_chatArchived : room.isArchived,
-			}, { federate: false });
+			}, { federate: false, remoteUpdatedAt: this.chatRoomUpdatedAt(object) });
 			return 'ok: chat room updated';
 		}
 
@@ -1670,6 +1741,15 @@ export class ApInboxService {
 		}
 	}
 
+	/**
+	 * Delivery retries can reorder a room's updates. An owner that does not state the time is applied in arrival order.
+	 */
+	private chatRoomUpdatedAt(room: IObject): Date | undefined {
+		if (typeof room.updated !== 'string') return undefined;
+		const updatedAt = new Date(room.updated);
+		return Number.isNaN(updatedAt.getTime()) ? undefined : updatedAt;
+	}
+
 	private isChatMessageUri(uri: string): boolean {
 		return uri.includes('/chat/messages/');
 	}
@@ -1704,28 +1784,37 @@ export class ApInboxService {
 		const indexKey = `chat_pending_room_activities_index:${actor.id}`;
 		if (await this.redisClient.scard(indexKey) >= MAX_PENDING_ROOMS_PER_ACTOR) return false;
 
-		const key = `chat_pending_room_activities:${roomUri}`;
-		const count = await this.redisClient.scard(key);
+		const key = this.pendingRoomActivitiesKey(roomUri);
+		const count = await this.redisClient.llen(key);
 		if (count >= MAX_PENDING_ROOM_ACTIVITIES) return false;
 		await this.redisClient.sadd(indexKey, roomUri);
 		await this.redisClient.expire(indexKey, PENDING_ROOM_ACTIVITY_TTL);
-		await this.redisClient.sadd(key, JSON.stringify({ actorId: actor.id, activity }));
-		await this.redisClient.expire(key, PENDING_ROOM_ACTIVITY_TTL);
+		await this.redisClient.multi()
+			.rpush(key, JSON.stringify({ actorId: actor.id, activity, attempts: 0 }))
+			.expire(key, PENDING_ROOM_ACTIVITY_TTL)
+			.exec();
 		return true;
 	}
 
-	private async applyPendingRoomActivities(roomUri: string): Promise<boolean> {
-		const key = `chat_pending_room_activities:${roomUri}`;
-		const entries = await this.redisClient.smembers(key);
-		if (entries.length === 0) return false;
-		await this.redisClient.del(key);
+	private pendingRoomActivitiesKey(roomUri: string): string {
+		return `chat_pending_room_activity_events:${roomUri}`;
+	}
 
-		const pending: { actorId: string; activity: IAdd | IUpdate | IDelete; }[] = [];
+	private async applyPendingRoomActivities(roomUri: string): Promise<boolean> {
+		const key = this.pendingRoomActivitiesKey(roomUri);
+		// Drain atomically so an append between reading and deleting cannot be lost.
+		const results = await this.redisClient.multi().lrange(key, 0, -1).del(key).exec();
+		if (results == null) return false;
+		if (results[0][0] != null) throw results[0][0];
+		const entries = results[0][1] as string[];
+		if (entries.length === 0) return false;
+
+		const pending: { actorId: string; activity: IAdd | IUpdate | IDelete; attempts: number; }[] = [];
 		for (const entry of entries) {
 			try {
-				const parsed = JSON.parse(entry) as { actorId?: unknown; activity?: unknown };
+				const parsed = JSON.parse(entry) as { actorId?: unknown; activity?: unknown; attempts?: unknown };
 				if (typeof parsed.actorId !== 'string' || parsed.activity == null || typeof parsed.activity !== 'object') continue;
-				pending.push({ actorId: parsed.actorId, activity: parsed.activity as IAdd | IUpdate | IDelete });
+				pending.push({ actorId: parsed.actorId, activity: parsed.activity as IAdd | IUpdate | IDelete, attempts: typeof parsed.attempts === 'number' ? parsed.attempts : 0 });
 			} catch {
 				// Ignore malformed deferred activities.
 			}
@@ -1735,6 +1824,7 @@ export class ApInboxService {
 		pending.sort((a, b) => Number(getApType(a.activity) === 'Delete') - Number(getApType(b.activity) === 'Delete'));
 
 		let deleted = false;
+		const failed: typeof pending = [];
 		for (const entry of pending) {
 			const actor = await this.usersRepository.findOneBy({ id: entry.actorId });
 			if (actor == null || actor.host == null || actor.uri == null) continue;
@@ -1753,8 +1843,18 @@ export class ApInboxService {
 				}
 			} catch (err) {
 				this.logger.warn(`Failed to apply deferred chat room activity: ${err}`);
+				if (entry.attempts + 1 < MAX_PENDING_ROOM_ACTIVITY_ATTEMPTS) failed.push({ ...entry, attempts: entry.attempts + 1 });
 			}
 			if (deleted) break;
+		}
+
+		// Retrying the Invite replays these. The attempt limit stops one bad activity from losing the invitation.
+		if (!deleted && failed.length > 0) {
+			await this.redisClient.multi()
+				.rpush(key, ...failed.map(entry => JSON.stringify(entry)))
+				.expire(key, PENDING_ROOM_ACTIVITY_TTL)
+				.exec();
+			throw new Error('failed to apply deferred chat room activities');
 		}
 
 		return deleted;
@@ -1811,6 +1911,7 @@ export class ApInboxService {
 				ownerId: actor.id,
 				isArchived: roomObject._misskey_chatArchived === true,
 				uri: roomUri,
+				lastRemoteUpdatedAt: this.chatRoomUpdatedAt(roomObject) ?? null,
 			});
 		} else if (room.uri == null) {
 			await this.chatRoomsRepository.update(room.id, { uri: roomUri });

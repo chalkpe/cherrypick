@@ -334,6 +334,7 @@ export interface ILike extends IActivity {
 
 export interface IAnnounce extends IActivity {
 	type: 'Announce';
+	_misskey_chatRoom?: string;
 }
 
 export interface IBlock extends IActivity {

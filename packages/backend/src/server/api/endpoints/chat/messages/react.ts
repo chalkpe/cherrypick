@@ -4,6 +4,7 @@
  */
 
 import { Injectable } from '@nestjs/common';
+import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { ChatService, ChatMessageAccessError, ChatRoomArchivedError } from '@/core/ChatService.js';
 import { ApiError } from '@/server/api/error.js';
@@ -14,6 +15,11 @@ export const meta = {
 	requireCredential: true,
 
 	kind: 'write:chat',
+
+	limit: {
+		duration: ms('1hour'),
+		max: 500,
+	},
 
 	errors: {
 		noSuchMessage: {

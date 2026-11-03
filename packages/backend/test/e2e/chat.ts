@@ -213,6 +213,9 @@ describe('chat/messages/update', () => {
 			id: 'fcdb0f92-bda6-47f9-bd05-343e0e020932',
 		});
 
+		const beforeArchive = await api('chat/messages/create-to-room', { toRoomId: room.body.id, text: 'before archive' }, alice);
+		assert.strictEqual(beforeArchive.status, 200, JSON.stringify(beforeArchive.body));
+
 		const archived = await api('chat/rooms/update', { roomId: room.body.id, isArchived: true }, alice);
 		assert.strictEqual(archived.status, 200, JSON.stringify(archived.body));
 		assert.strictEqual(archived.body.isArchived, true);
@@ -229,6 +232,14 @@ describe('chat/messages/update', () => {
 			code: 'ROOM_IS_ARCHIVED',
 			id: '5b6e1f2a-7c0d-4e39-9a41-2f8d3c6b7e10',
 		});
+		for (const [endpoint, parameters, user, id] of [
+			['chat/messages/update', { messageId: beforeArchive.body.id, text: 'refused' }, alice, 'a1c94d37-2e58-4b06-8f1d-6d0b9e47c352'],
+			['chat/messages/delete', { messageId: beforeArchive.body.id }, alice, 'e7f2083b-96a4-4d1c-b5e7-31c8a0d2f694'],
+			['chat/messages/react', { messageId: beforeArchive.body.id, reaction: '👍' }, bob, '3d8c5e91-0f47-4a2b-86d3-c94e1b7a5f08'],
+			['chat/messages/unreact', { messageId: beforeArchive.body.id, reaction: '👍' }, bob, '92b7e6c4-5a13-4f80-a7d9-08f3e2c1b6d5'],
+		] as const) {
+			await failedApiCall({ endpoint, parameters, user }, { status: 400, code: 'ROOM_IS_ARCHIVED', id });
+		}
 		await failedApiCall({
 			endpoint: 'chat/rooms/update',
 			parameters: { roomId: room.body.id, name: 'renamed' },

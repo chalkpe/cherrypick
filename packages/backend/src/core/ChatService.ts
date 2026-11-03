@@ -407,9 +407,27 @@ export class ChatService {
 					this.queueService.deliver(fullFromUser, contextedActivity, remoteMember.inbox, false);
 				}
 			}
+		} else {
+			await this.relayRoomMessage(inserted, fromUser, toRoom, memberships.map(member => member.userId));
 		}
 
 		return packedMessage;
+	}
+
+	/**
+	 * A sender's server only knows the members it has heard about so far, so a message can miss someone
+	 * who joined just before. The owner's server knows them all and points them at the message.
+	 */
+	private async relayRoomMessage(message: MiChatMessage, fromUser: Pick<MiUser, 'id' | 'host'>, room: MiChatRoom, memberIds: MiUser['id'][]): Promise<void> {
+		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+		if (owner == null || !this.userEntityService.isLocalUser(owner)) return;
+
+		const members = await this.usersRepository.findBy({ id: In(memberIds) });
+		const others = members.filter(member => this.userEntityService.isRemoteUser(member) && member.host !== fromUser.host);
+		if (others.length === 0) return;
+
+		const toUsers = members.filter(member => member.id !== owner.id && member.id !== fromUser.id);
+		await this.deliverToRemoteUsers(owner, others, this.apRendererService.renderChatRoomRelay(message, room, owner, toUsers));
 	}
 
 	@bindThis
@@ -478,7 +496,7 @@ export class ChatService {
 		await this.assertMessageRoomNotArchived(message);
 
 		const trimmed = text.trim();
-		if ((trimmed.length === 0 && message.fileId == null) || trimmed.length > 2000) throw new ChatMessageInvalidTextError('invalid text');
+		if ((trimmed.length === 0 && message.fileId == null) || Array.from(trimmed).length > 2000) throw new ChatMessageInvalidTextError('invalid text');
 
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));
@@ -768,7 +786,7 @@ export class ChatService {
 		// A remote owner's server is the authority for its room, so only rooms owned here are announced.
 		// The announcement is signed by the owner even when a moderator deletes the room.
 		if (options?.federate !== false && owner != null && this.userEntityService.isLocalUser(owner)) {
-			const participants = await this.participantsForRoom(room);
+			const participants = await this.participantsAndInviteesForRoom(room);
 			const toUsers = participants.filter(user => user.id !== owner.id);
 			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomDelete(room, owner, toUsers));
 		}
@@ -1229,16 +1247,23 @@ export class ChatService {
 		name?: string;
 		description?: string;
 		isArchived?: boolean;
-	}, options?: { federate?: boolean }): Promise<MiChatRoom> {
+	}, options?: { federate?: boolean; remoteUpdatedAt?: Date }): Promise<MiChatRoom> {
 		const wasArchived = room.isArchived;
-		const updated = await this.chatRoomsRepository.createQueryBuilder().update()
-			.set(params)
-			.where('id = :id', { id: room.id })
+		const remoteUpdatedAt = options?.remoteUpdatedAt;
+		const query = this.chatRoomsRepository.createQueryBuilder().update()
+			.set(remoteUpdatedAt != null ? { ...params, lastRemoteUpdatedAt: remoteUpdatedAt } : params)
+			.where('id = :id', { id: room.id });
+		// Keep this conditional in SQL as multiple inbox workers may read the same revision.
+		if (remoteUpdatedAt != null) {
+			query.andWhere('("lastRemoteUpdatedAt" IS NULL OR "lastRemoteUpdatedAt" <= :remoteUpdatedAt)', { remoteUpdatedAt });
+		}
+		const updated = await query
 			.returning('*')
 			.execute()
 			.then((response) => {
-				return response.raw[0] as MiChatRoom;
+				return response.raw[0] as MiChatRoom | undefined;
 			});
+		if (updated == null) return room;
 
 		const merged = { ...room, ...updated };
 		this.globalEventService.publishChatRoomStream(merged.id, 'roomUpdated', {
@@ -1254,10 +1279,7 @@ export class ChatService {
 			this.liveKitService.deleteRoom(merged.id).catch(() => {});
 		}
 		if (options?.federate !== false && owner != null && owner.host == null) {
-			// 招待中の相手のサーバーにもミラーがあるので、受諾する前に状態を知らせる
-			const invitations = await this.chatRoomInvitationsRepository.findBy({ roomId: merged.id });
-			const invitees = invitations.length > 0 ? await this.usersRepository.findBy({ id: In(invitations.map(invitation => invitation.userId)) }) : [];
-			const participants = [...await this.participantsForRoom(merged), ...invitees];
+			const participants = await this.participantsAndInviteesForRoom(merged);
 			const toUsers = participants.filter(user => user.id !== owner.id);
 			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomUpdate(merged, owner, toUsers));
 		}
@@ -1374,17 +1396,22 @@ export class ChatService {
 			if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
 		}
 
+		const pair = `${userId}/${reaction}`;
+		if (message.reactions.includes(pair)) return;
+
 		if (message.reactions.length >= MAX_REACTIONS_PER_MESSAGE) {
 			throw new Error('too many reactions');
 		}
 
+		// Undo names one Like, so a second Like for the same reaction could never be withdrawn remotely.
 		const result = await this.chatMessagesRepository.createQueryBuilder().update()
 			.set({
 				reactions: () => 'array_append("reactions", :pair)',
 			})
 			.where('id = :id', { id: message.id })
 			.andWhere('"deletedAt" IS NULL')
-			.setParameter('pair', `${userId}/${reaction}`)
+			.andWhere('NOT (:pair = ANY("reactions"))')
+			.setParameter('pair', pair)
 			.execute();
 		if (result.affected === 0) return;
 
@@ -1449,11 +1476,10 @@ export class ChatService {
 			})
 			.where('id = :id', { id: message.id })
 			.andWhere('"deletedAt" IS NULL')
+			.andWhere(':pair = ANY("reactions")')
 			.setParameter('pair', `${userId}/${reaction}`)
 			.execute();
 		if (result.affected === 0) return;
-
-		// TODO: 実際に削除が行われたときのみイベントを発行する
 
 		const packedUser = await this.userEntityService.pack(userId);
 		if (room) {
@@ -1674,13 +1700,13 @@ export class ChatService {
 		if (!(id in states)) {
 			// Authenticated participants may still send arbitrarily many IDs. Bound the cache per actor.
 			if (Object.keys(states).length >= MAX_PENDING_CHAT_REACTIONS_PER_ACTOR) throw new ChatMessageAccessError('too many reaction activities');
-			const counted = await this.redisClient.multi().incr(countKey).expire(countKey, PENDING_CHAT_REACTION_TTL).exec();
+			// NX keeps this a fixed window: extending it on every call would lock out a busy actor for good.
+			const counted = await this.redisClient.multi().incr(countKey).expire(countKey, PENDING_CHAT_REACTION_TTL, 'NX').exec();
 			const count = counted?.[0]?.[1];
 			if (typeof count !== 'number' || count > MAX_PENDING_CHAT_REACTIONS_PER_ACTOR) throw new ChatMessageAccessError('too many reaction activities');
 		}
 
 		states[id] = !undo;
-		await this.redisClient.expire(countKey, PENDING_CHAT_REACTION_TTL);
 		await this.redisClient.setex(key, PENDING_CHAT_REACTION_TTL, JSON.stringify(states));
 		// An older Undo removes only its own addition, preserving a newer re-add even out of order.
 		return !undo || !Object.values(states).some(active => active);
@@ -1693,7 +1719,7 @@ export class ChatService {
 
 		// Any actor can name any URI here, so bound what one actor can keep in Redis until the TTL.
 		const countKey = `chat_pending_reaction_count:${actorId}`;
-		const counted = await this.redisClient.multi().incr(countKey).expire(countKey, PENDING_CHAT_REACTION_TTL).exec();
+		const counted = await this.redisClient.multi().incr(countKey).expire(countKey, PENDING_CHAT_REACTION_TTL, 'NX').exec();
 		const count = counted?.[0]?.[1];
 		if (typeof count !== 'number' || count > MAX_PENDING_CHAT_REACTIONS_PER_ACTOR) return false;
 
@@ -1791,6 +1817,13 @@ export class ChatService {
 		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
 		const ids = Array.from(new Set([room.ownerId, ...memberships.map(membership => membership.userId)]));
 		return this.usersRepository.findBy({ id: In(ids) });
+	}
+
+	// 招待中の相手のサーバーにもミラーがあるので、受諾する前の変更も知らせる
+	private async participantsAndInviteesForRoom(room: MiChatRoom): Promise<MiUser[]> {
+		const invitations = await this.chatRoomInvitationsRepository.findBy({ roomId: room.id });
+		const invitees = invitations.length > 0 ? await this.usersRepository.findBy({ id: In(invitations.map(invitation => invitation.userId)) }) : [];
+		return [...await this.participantsForRoom(room), ...invitees];
 	}
 
 	private async roomUriForMessage(message: MiChatMessage): Promise<string | undefined> {

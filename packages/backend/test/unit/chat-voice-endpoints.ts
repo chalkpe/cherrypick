@@ -388,6 +388,7 @@ function chatServiceFixture() {
 	const service = Object.assign(Object.create(ChatService.prototype), {
 		liveKitService,
 		globalEventService: { publishChatRoomStream: vi.fn() },
+		chatRoomInvitationsRepository: { findBy: vi.fn(async () => []) },
 		chatRoomMembershipsRepository: {
 			findOneByOrFail: vi.fn().mockResolvedValue({ id: 'm1', roomId: 'r1', userId: 'u1' }),
 			findBy: vi.fn().mockResolvedValue([]),

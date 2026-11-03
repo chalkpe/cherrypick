@@ -143,7 +143,8 @@ function fixture(options: {
 	const globalEventService = { publishChatRoomStream: vi.fn() };
 	const resolver = { resolve: vi.fn() };
 	const apResolverService = { createResolver: vi.fn(async () => resolver) };
-	const pendingRoomActivities = new Map<string, Set<string>>();
+	const pendingRoomIndex = new Map<string, Set<string>>();
+	const pendingRoomActivities = new Map<string, string[]>();
 	const roomTombstones = new Map<string, string>();
 	const redisClient = {
 		get: vi.fn(async (key: string) => roomTombstones.get(key) ?? null),
@@ -151,16 +152,43 @@ function fixture(options: {
 			roomTombstones.set(key, value);
 			return 'OK';
 		}),
-		scard: vi.fn(async (key: string) => pendingRoomActivities.get(key)?.size ?? 0),
+		scard: vi.fn(async (key: string) => pendingRoomIndex.get(key)?.size ?? 0),
 		sadd: vi.fn(async (key: string, value: string) => {
-			const set = pendingRoomActivities.get(key) ?? new Set<string>();
+			const set = pendingRoomIndex.get(key) ?? new Set<string>();
 			set.add(value);
-			pendingRoomActivities.set(key, set);
+			pendingRoomIndex.set(key, set);
 			return 1;
 		}),
 		expire: vi.fn().mockResolvedValue(1),
-		smembers: vi.fn(async (key: string) => [...(pendingRoomActivities.get(key) ?? [])]),
+		llen: vi.fn(async (key: string) => pendingRoomActivities.get(key)?.length ?? 0),
 		del: vi.fn(async (key: string) => Number(pendingRoomActivities.delete(key))),
+		multi: () => {
+			const commands: (() => unknown)[] = [];
+			const transaction = {
+				rpush: (key: string, ...values: string[]) => {
+					commands.push(() => {
+						const list = pendingRoomActivities.get(key) ?? [];
+						pendingRoomActivities.set(key, list);
+						return list.push(...values);
+					});
+					return transaction;
+				},
+				expire: () => {
+					commands.push(() => 1);
+					return transaction;
+				},
+				lrange: (key: string) => {
+					commands.push(() => [...(pendingRoomActivities.get(key) ?? [])]);
+					return transaction;
+				},
+				del: (key: string) => {
+					commands.push(() => Number(pendingRoomActivities.delete(key)));
+					return transaction;
+				},
+				exec: async () => commands.map(command => [null, command()]),
+			};
+			return transaction;
+		},
 	};
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 		logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
@@ -218,6 +246,7 @@ function fixture(options: {
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
 		chatRoomsRepository: rooms,
 		chatRoomMembershipsRepository: inbox.chatRoomMembershipsRepository,
+		chatRoomInvitationsRepository: { findBy: async (where: Record<string, unknown>) => invitations.rows.filter(row => matches(row, where)) },
 		usersRepository: inbox.usersRepository,
 		userEntityService: inbox.userEntityService,
 		apRendererService: inbox.apRendererService,
@@ -871,6 +900,19 @@ describe('Chat room federation: deferred room activities', () => {
 		expect(f.notificationService.createNotification).not.toHaveBeenCalled();
 	});
 
+	test('a mirror room created by an Invite remembers when its state was current', async () => {
+		const f = fixture();
+
+		await f.inbox.invite(remoteOwner, {
+			type: 'Invite',
+			actor: remoteOwner.uri,
+			object: { id: remoteRoomUri, type: 'Group', name: 'room', attributedTo: remoteOwner.uri, updated: '2026-11-03T00:00:00.000Z' },
+			target: `${LOCAL}/users/${alice.id}`,
+		});
+
+		expect(f.rooms.rows.find(room => room.id === 'remoteroom')).toMatchObject({ lastRemoteUpdatedAt: new Date('2026-11-03T00:00:00.000Z') });
+	});
+
 	test('truncates oversized mirror room metadata from an Invite', async () => {
 		const f = fixture();
 
@@ -932,6 +974,53 @@ describe('Chat room federation: deferred room activities', () => {
 		});
 
 		expect(f.rooms.rows.find(room => room.id === 'remoteroom')).toMatchObject({ name: 'renamed', description: 'description' });
+	});
+
+	describe('replay', () => {
+		const update = (name: string) => ({
+			type: 'Update',
+			actor: remoteOwner.uri,
+			object: { id: remoteRoomUri, type: 'Group', name, attributedTo: remoteOwner.uri },
+		});
+		const invitation = () => inviteActivity(remoteOwner, remoteRoomUri, `${LOCAL}/users/${alice.id}`);
+
+		test('replays Updates that overtook the Invite in their arrival order', async () => {
+			const f = fixture();
+			f.resolver.resolve.mockImplementation(async (value: unknown) => value);
+			for (const name of ['first', 'second', 'third']) await f.inbox.update(remoteOwner, update(name));
+
+			await f.inbox.invite(remoteOwner, invitation());
+
+			expect(f.inbox.chatService.updateRoom.mock.calls.map((call: unknown[]) => (call[1] as { name: string }).name)).toEqual(['first', 'second', 'third']);
+		});
+
+		test('keeps an activity that failed transiently and retries it with the Invite', async () => {
+			const f = fixture();
+			f.resolver.resolve.mockImplementation(async (value: unknown) => value);
+			await f.inbox.update(remoteOwner, update('renamed'));
+			f.inbox.chatService.updateRoom.mockRejectedValueOnce(new Error('database restarting'));
+
+			await expect(f.inbox.invite(remoteOwner, invitation())).rejects.toThrow('deferred');
+			expect(f.invitations.rows).toEqual([]);
+			await f.inbox.invite(remoteOwner, invitation());
+
+			expect(f.rooms.rows.find(room => room.id === 'remoteroom')).toMatchObject({ name: 'renamed' });
+			expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: 'remoteroom', userId: alice.id })]);
+		});
+
+		test('gives up on an activity that keeps failing, so it cannot block the invitation', async () => {
+			const f = fixture();
+			f.resolver.resolve.mockImplementation(async (value: unknown) => value);
+			await f.inbox.update(remoteOwner, update('renamed'));
+			f.inbox.chatService.updateRoom.mockRejectedValue(new Error('always fails'));
+
+			await expect(f.inbox.invite(remoteOwner, invitation())).rejects.toThrow('deferred');
+			await expect(f.inbox.invite(remoteOwner, invitation())).rejects.toThrow('deferred');
+			await f.inbox.invite(remoteOwner, invitation());
+
+			expect(f.inbox.chatService.updateRoom).toHaveBeenCalledTimes(3);
+			expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: 'remoteroom', userId: alice.id })]);
+		});
 	});
 
 	test('applies a pending Add after Invite creates the mirror room', async () => {
@@ -1015,6 +1104,32 @@ describe('Chat room federation: Add/Update/Delete', () => {
 		});
 
 		expect(f.rooms.rows[0]).toMatchObject({ name: 'new name', description: 'new description' });
+	});
+
+	test('Update passes the time the owner stated to the room update', async () => {
+		const f = fixture();
+		f.resolver.resolve.mockImplementation(async (value: unknown) => value);
+
+		await f.inbox.update(ownerActor, {
+			type: 'Update',
+			actor: ownerActor.uri,
+			object: { id: roomUri, type: 'Group', name: 'new name', attributedTo: ownerActor.uri, updated: '2026-11-03T00:00:00.000Z' },
+		});
+
+		expect(f.inbox.chatService.updateRoom).toHaveBeenCalledWith(f.rooms.rows[0], expect.anything(), { federate: false, remoteUpdatedAt: new Date('2026-11-03T00:00:00.000Z') });
+	});
+
+	test.each([undefined, 'not a date'])('Update with the unusable time %s falls back to arrival order', async (updated) => {
+		const f = fixture();
+		f.resolver.resolve.mockImplementation(async (value: unknown) => value);
+
+		await f.inbox.update(ownerActor, {
+			type: 'Update',
+			actor: ownerActor.uri,
+			object: { id: roomUri, type: 'Group', name: 'new name', attributedTo: ownerActor.uri, updated },
+		});
+
+		expect(f.inbox.chatService.updateRoom).toHaveBeenCalledWith(f.rooms.rows[0], expect.anything(), { federate: false, remoteUpdatedAt: undefined });
 	});
 
 	test.each([true, false])('Update applies the archived state %s from the room owner', async (archived) => {

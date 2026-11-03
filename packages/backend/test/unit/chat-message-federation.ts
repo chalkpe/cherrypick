@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatMessageAccessError, ChatService, ChatRoomArchivedError } from '@/core/ChatService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
+import { StatusError } from '@/misc/status-error.js';
 import {
 	buildChatDelete,
 	buildChatNote,
@@ -982,6 +983,23 @@ describe('ChatService chat federation delivery', () => {
 			expect(f.queueService.deliver).toHaveBeenCalledWith(owner, expect.objectContaining({ type: 'Delete' }), f.carol.inbox, false);
 		});
 
+		test('a room deletion also reaches a remote user who has not accepted yet', async () => {
+			const owner = { id: 'alice', host: null, uri: null, inbox: null };
+			const f = createRoomService(owner);
+			const dave = { id: 'dave', host: 'pending.test', uri: 'https://pending.test/users/dave', inbox: 'https://pending.test/users/dave/inbox' };
+			const s = f.service as never as {
+				chatRoomInvitationsRepository: { findBy: ReturnType<typeof vi.fn> };
+				usersRepository: { findBy: ReturnType<typeof vi.fn> };
+			};
+			s.chatRoomInvitationsRepository.findBy = vi.fn(async () => [{ roomId: 'r1', userId: 'dave' }]);
+			s.usersRepository.findBy = vi.fn(async ({ id }: { id: { value: string[] } }) => [owner, f.bob, f.carol, dave].filter(user => id.value.includes(user.id)));
+
+			await f.service.deleteRoom(f.room as never);
+
+			expect(f.queueService.deliver).toHaveBeenCalledWith(owner, expect.objectContaining({ type: 'Delete' }), dave.inbox, false);
+			expect(f.apRendererService.renderChatRoomDelete).toHaveBeenCalledWith(f.room, owner, expect.arrayContaining([dave]));
+		});
+
 		test('deleting a mirror of a remote room delivers nothing but still cleans up', async () => {
 			const owner = { id: 'bob', host: 'remote.test', uri: 'https://remote.test/users/bob', inbox: 'https://remote.test/users/bob/inbox' };
 			const f = createRoomService(owner);
@@ -1001,6 +1019,96 @@ describe('ChatService chat federation delivery', () => {
 		await f.service.unreactRemote(f.carol as never, f.roomMessage as never, ':wave:');
 
 		expect(f.roomMessage.reactions).toEqual([]);
+	});
+
+	describe('relaying a remote member message', () => {
+		afterEach(() => vi.useRealTimers());
+
+		function createRelayService(ownerId: string) {
+			vi.useFakeTimers();
+			const f = createService();
+			const dave = { id: 'dave', host: 'remote.test', uri: 'https://remote.test/users/dave', inbox: 'https://remote.test/users/dave/inbox' };
+			const erin = { id: 'erin', host: 'third.test', uri: 'https://third.test/users/erin', inbox: 'https://third.test/users/erin/inbox' };
+			const users = new Map([f.alice, f.bob, f.carol, dave, erin].map(user => [user.id, user]));
+			const pipeline = { set: vi.fn().mockReturnThis(), sadd: vi.fn().mockReturnThis(), get: vi.fn().mockReturnThis(), exec: vi.fn().mockResolvedValue([]) };
+			const renderChatRoomRelay = vi.fn((_message: unknown, owner: unknown, toUsers: unknown) => ({ type: 'Announce', owner, toUsers }));
+			Object.assign((f.service as never as { apRendererService: object }).apRendererService, {
+				renderChatRoomRelay,
+				renderChatMessage: vi.fn(async () => ({ type: 'Note' })),
+			});
+			Object.assign((f.service as never as { redisClient: object }).redisClient, { pipeline: () => pipeline });
+			Object.assign((f.service as never as { chatMessagesRepository: object }).chatMessagesRepository, {
+				insertOne: vi.fn(async (message: object) => message),
+			});
+			Object.assign((f.service as never as { chatRoomMembershipsRepository: object }).chatRoomMembershipsRepository, {
+				findBy: vi.fn(async () => ['alice', 'bob', 'carol', 'dave', 'erin'].filter(id => id !== ownerId).map(userId => ({ roomId: 'r1', userId, isMuted: false }))),
+			});
+			Object.assign((f.service as never as { usersRepository: object }).usersRepository, {
+				findOneBy: vi.fn(async ({ id }: { id: string }) => users.get(id) ?? null),
+				findOneByOrFail: vi.fn(async ({ id }: { id: string }) => users.get(id)),
+				findBy: vi.fn(async ({ id }: { id: { value: string[] } }) => id.value.map(value => users.get(value)).filter(Boolean)),
+			});
+			Object.assign(f.service, {
+				idService: { gen: () => 'new-message', parse: () => ({ date: new Date(0) }) },
+				chatEntityService: { packMessageLiteForRoom: vi.fn(async (message: object) => message) },
+			});
+			const room = { id: 'r1', ownerId, isArchived: false, uri: null };
+			return { ...f, room, dave, erin, renderChatRoomRelay };
+		}
+
+		const params = { text: 'hello', uri: 'https://remote.test/chat/messages/from-bob', emojis: [] };
+
+		test('the owner server relays it to the members on other servers', async () => {
+			const f = createRelayService('alice');
+
+			await f.service.createMessageToRoom(f.bob as never, f.room as never, params);
+
+			expect(f.renderChatRoomRelay).toHaveBeenCalledOnce();
+			const inboxes = f.queueService.deliver.mock.calls.map(call => call[2]);
+			expect(inboxes.sort()).toEqual([f.carol.inbox, f.erin.inbox].sort());
+			for (const call of f.queueService.deliver.mock.calls) {
+				expect(call[0]).toBe(f.alice);
+				expect(call[1]).toMatchObject({ type: 'Announce' });
+			}
+		});
+
+		test('the relay does not return to any member on the sender server', async () => {
+			const f = createRelayService('alice');
+
+			await f.service.createMessageToRoom(f.bob as never, f.room as never, params);
+
+			expect(f.queueService.deliver.mock.calls.map(call => call[2])).not.toContain(f.dave.inbox);
+			expect(f.queueService.deliver.mock.calls.map(call => call[2])).not.toContain(f.bob.inbox);
+		});
+
+		test('a mirror of a remote room does not relay', async () => {
+			const f = createRelayService('carol');
+
+			await f.service.createMessageToRoom(f.bob as never, f.room as never, params);
+
+			expect(f.renderChatRoomRelay).not.toHaveBeenCalled();
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+		});
+
+		test('a local sender still delivers its own Create instead of a relay', async () => {
+			const f = createRelayService('alice');
+
+			await f.service.createMessageToRoom({ ...f.alice, username: 'alice' } as never, f.room as never, { text: 'hello' });
+
+			expect(f.renderChatRoomRelay).not.toHaveBeenCalled();
+			expect(f.queueService.deliver.mock.calls.every(call => (call[1] as { type: string }).type === 'Create')).toBe(true);
+		});
+	});
+
+	test('a room owner sending an update states when the state was current', () => {
+		const update = buildChatRoomUpdate(
+			{ id: 'r1', name: 'room' },
+			alice,
+			[bob],
+			{ baseUrl: BASE, updated: '2026-11-03T00:00:00.000Z' },
+		);
+
+		expect((update.object as { updated?: string }).updated).toBe('2026-11-03T00:00:00.000Z');
 	});
 });
 
@@ -1030,7 +1138,17 @@ describe('ApInboxService chat activity routing', () => {
 			scard: vi.fn().mockResolvedValue(0),
 			sadd: vi.fn().mockResolvedValue(1),
 			expire: vi.fn().mockResolvedValue(1),
-			smembers: vi.fn().mockResolvedValue([]),
+			llen: vi.fn().mockResolvedValue(0),
+			multi: () => {
+				const transaction = {
+					rpush: () => transaction,
+					expire: () => transaction,
+					lrange: () => transaction,
+					del: () => transaction,
+					exec: async () => [[null, []], [null, 0]],
+				};
+				return transaction;
+			},
 		};
 		const chatRoomsRepository = { findOneBy: vi.fn().mockResolvedValue({ id: 'r1', uri: 'https://remote.test/chat/rooms/r1' }) };
 		const apPersonService = { resolvePerson: vi.fn(async (uri: string) => uri === localUser.uri ? localUser : null) };
@@ -1039,13 +1157,13 @@ describe('ApInboxService chat activity routing', () => {
 			redisClient,
 			apNoteService: { fetchNote: vi.fn().mockResolvedValue(null), extractEmojis: vi.fn().mockResolvedValue([]) },
 			apResolverService: { createResolver: vi.fn(() => ({ resolve: async (x: unknown) => x })) },
-			utilityService: { extractDbHost: (uri: string) => new URL(uri).host, punyHost: (uri: string) => new URL(uri).host },
+			utilityService: { extractDbHost: (uri: string) => new URL(uri).host, punyHost: (uri: string) => new URL(uri).host, isFederationAllowedUri: () => true },
 			apMfmService: { htmlToMfm: (html: string) => html },
 			logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
 			apPersonService,
 			apImageService: { resolveImage: vi.fn() },
 			roleService: { getUserPolicies: vi.fn().mockResolvedValue({ chatAvailability: 'available' }) },
-			userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null },
+			userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null, isRemoteUser: (user: { host: string | null }) => user.host != null },
 			chatRoomsRepository,
 			chatMessagesRepository: { findOneBy: vi.fn().mockResolvedValue(null) },
 		}) as ApInboxService;
@@ -1286,6 +1404,10 @@ describe('ApInboxService chat activity routing', () => {
 
 	test('does not query chat messages for ordinary note reactions', async () => {
 		const f = createInbox();
+		Object.assign(f.inbox, {
+			apNoteService: { fetchNote: vi.fn().mockResolvedValue({ id: 'n1' }), extractEmojis: vi.fn().mockResolvedValue([]) },
+			reactionService: { create: vi.fn().mockResolvedValue(undefined) },
+		});
 
 		await (f.inbox as never as { like: (...args: unknown[]) => Promise<string> }).like(f.actor, {
 			type: 'Like',
@@ -1448,6 +1570,167 @@ describe('ApInboxService chat activity routing', () => {
 			f.chatService.createMessageToUser.mockRejectedValue(new Error('you are not a member of the room'));
 
 			await expect(create(f)).rejects.toThrow('you are not a member of the room');
+		});
+
+		test('retries a room message that overtakes the sender joining the room', async () => {
+			const f = createInbox();
+			f.chatService.isRoomMember.mockImplementation(async (_room: unknown, userId: string) => userId === f.localUser.id);
+			// The service refuses a non-member with the same error class it uses for final refusals.
+			f.chatService.createMessageToRoom.mockRejectedValue(new ChatMessageAccessError('you are not a member of the room'));
+
+			await expect((f.inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage(
+				{},
+				f.actor,
+				{ ...object(f), context: 'https://remote.test/chat/rooms/r1' },
+				{ type: 'Create', actor: f.actor.uri },
+			)).rejects.toThrow('membership is not ready');
+			expect(f.chatService.createMessageToRoom).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('a chat message stored under a foreign URI', () => {
+		const foreignUri = 'https://remote.test/users/remote-user/statuses/1';
+		const foreignInbox = (f: ReturnType<typeof createInbox>) => f.inbox as never as Record<string, (...args: unknown[]) => Promise<string>>;
+
+		test('Delete removes the chat message instead of looking for a note', async () => {
+			const f = createInbox();
+
+			const result = await foreignInbox(f).delete(f.actor, { type: 'Delete', actor: f.actor.uri, object: foreignUri });
+
+			expect(result).toBe('ok: chat message deleted');
+			expect(f.chatService.deleteRemoteMessage).toHaveBeenCalledWith(f.actor, f.message);
+		});
+
+		test('Update without the talk flag edits the chat message', async () => {
+			const f = createInbox();
+
+			const result = await foreignInbox(f).update(f.actor, {
+				type: 'Update',
+				actor: f.actor.uri,
+				object: { id: foreignUri, type: 'Note', attributedTo: f.actor.uri, content: 'edited', updated: '2026-11-03T00:00:00.000Z' },
+			});
+
+			expect(result).toBe('ok: chat message updated');
+			expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', new Date('2026-11-03T00:00:00.000Z'), []);
+		});
+
+		test('Like reacts to the chat message', async () => {
+			const f = createInbox();
+
+			await foreignInbox(f).like(f.actor, { type: 'Like', actor: f.actor.uri, object: foreignUri, content: '👍', id: 'https://remote.test/likes/1' });
+
+			expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', 'https://remote.test/likes/1');
+		});
+
+		test('Undo(Like) removes the reaction from the chat message', async () => {
+			const f = createInbox();
+
+			await foreignInbox(f).undo(f.actor, {
+				type: 'Undo',
+				actor: f.actor.uri,
+				object: { type: 'Like', actor: f.actor.uri, object: foreignUri, content: '👍', id: 'https://remote.test/likes/1' },
+			});
+
+			expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', 'https://remote.test/likes/1');
+		});
+	});
+
+	describe('a relayed room message', () => {
+		const roomUri = 'https://remote.test/chat/rooms/r1';
+		const noteUri = 'https://other.test/chat/messages/from-carol';
+		const author = { id: 'carol', uri: 'https://other.test/users/carol', host: 'other.test' };
+
+		function createRelay() {
+			const f = createInbox();
+			const note = {
+				'@context': 'https://www.w3.org/ns/activitystreams',
+				id: noteUri,
+				type: 'Note',
+				attributedTo: author.uri,
+				content: 'relayed',
+				to: [f.actor.uri],
+				_misskey_talk: true,
+				_misskey_chatRoom: roomUri,
+			};
+			const resolver = { resolve: vi.fn(async () => note), signAs: vi.fn() };
+			const room = { id: 'r1', ownerId: f.actor.id, uri: roomUri };
+			f.chatRoomsRepository.findOneBy.mockResolvedValue(room);
+			f.chatService.isRoomMember.mockResolvedValue(true);
+			f.chatService.findMessageByUri.mockResolvedValue(null);
+			(f.inbox as never as { apPersonService: { resolvePerson: ReturnType<typeof vi.fn> } }).apPersonService.resolvePerson.mockImplementation(async (uri: string) => {
+				if (uri === f.localUser.uri) return f.localUser;
+				if (uri === author.uri) return author;
+				if (uri === f.actor.uri) return f.actor;
+				return null;
+			});
+			const announce = {
+				id: `${roomUri}#relay/1`,
+				type: 'Announce',
+				actor: f.actor.uri,
+				object: noteUri,
+				to: [f.localUser.uri],
+				context: roomUri,
+				_misskey_chatRoom: roomUri,
+			};
+			const send = (activity: object = announce) => (f.inbox as never as { announce: (...args: unknown[]) => Promise<string> }).announce(f.actor, activity, resolver);
+			return { ...f, note, resolver, room, announce, send };
+		}
+
+		test('fetches the original as a local member and stores it from its author', async () => {
+			const f = createRelay();
+
+			await f.send();
+
+			expect(f.resolver.signAs).toHaveBeenCalledWith(f.localUser);
+			expect(f.resolver.resolve).toHaveBeenCalledWith(noteUri);
+			expect(f.chatService.createMessageToRoom).toHaveBeenCalledWith(author, f.room, expect.objectContaining({ text: 'relayed', uri: noteUri }));
+		});
+
+		test('only the room owner can relay', async () => {
+			const f = createRelay();
+			f.chatRoomsRepository.findOneBy.mockResolvedValue({ ...f.room, ownerId: 'someone-else' });
+
+			expect(await f.send()).toMatch(/^skip:/);
+			expect(f.resolver.resolve).not.toHaveBeenCalled();
+		});
+
+		test('does not fetch a message that is already stored', async () => {
+			const f = createRelay();
+			f.chatService.findMessageByUri.mockResolvedValue(f.message);
+
+			expect(await f.send()).toMatch(/^skip:/);
+			expect(f.resolver.resolve).not.toHaveBeenCalled();
+		});
+
+		test('skips when no addressed local user is a member', async () => {
+			const f = createRelay();
+			f.chatService.isRoomMember.mockResolvedValue(false);
+
+			expect(await f.send()).toMatch(/^skip:/);
+			expect(f.resolver.resolve).not.toHaveBeenCalled();
+		});
+
+		test('retries while the sender server still refuses to serve the message', async () => {
+			const f = createRelay();
+			f.resolver.resolve.mockRejectedValue(new StatusError('Not Found', 404));
+
+			await expect(f.send()).rejects.toThrow('not available yet');
+		});
+
+		test('does not accept a message from a different room', async () => {
+			const f = createRelay();
+			f.resolver.resolve.mockResolvedValue({ ...f.note, _misskey_chatRoom: 'https://remote.test/chat/rooms/other' });
+
+			expect(await f.send()).toMatch(/^skip:/);
+			expect(f.chatService.createMessageToRoom).not.toHaveBeenCalled();
+		});
+
+		test('an Announce without a room context is still an ordinary boost', async () => {
+			const f = createRelay();
+			f.resolver.resolve.mockResolvedValue({ type: 'Unknown' } as never);
+
+			expect(await f.send({ id: 'https://remote.test/announces/1', type: 'Announce', actor: f.actor.uri, object: noteUri })).toBe('skip: unknown object type Unknown');
+			expect(f.resolver.signAs).not.toHaveBeenCalled();
 		});
 	});
 });

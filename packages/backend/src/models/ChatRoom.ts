@@ -43,4 +43,12 @@ export class MiChatRoom {
 		default: false,
 	})
 	public isArchived: boolean;
+
+	/**
+	 * リモートのルーム所有者が最後に知らせた、状態の時刻。遅れて届いた古い状態で巻き戻らないようにする
+	 */
+	@Column('timestamp with time zone', {
+		nullable: true,
+	})
+	public lastRemoteUpdatedAt: Date | null;
 }

@@ -4,7 +4,7 @@
  */
 
 import { escapeHtml } from '@/misc/escape-html.js';
-import type { IApDocument, IDelete, ILike, IObject, IPost, ITombstone, IUndo, IUpdate } from '../type.js';
+import type { IAnnounce, IApDocument, IDelete, ILike, IObject, IPost, ITombstone, IUndo, IUpdate } from '../type.js';
 
 type ChatActor = {
 	id: string;
@@ -192,8 +192,9 @@ export function buildChatRoomUpdate(
 	options: ChatPayloadOptions,
 ): IUpdate {
 	const roomUri = chatRoomUri(room, options.baseUrl);
+	const updated = options.updated ?? new Date().toISOString();
 	return {
-		id: `${roomUri}#update/${encodeURIComponent(options.updated ?? new Date().toISOString())}`,
+		id: `${roomUri}#update/${encodeURIComponent(updated)}`,
 		type: 'Update',
 		actor: chatActorUri(owner, options.baseUrl),
 		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
@@ -204,7 +205,33 @@ export function buildChatRoomUpdate(
 			summary: room.description ?? '',
 			attributedTo: chatActorUri(owner, options.baseUrl),
 			_misskey_chatArchived: room.isArchived,
+			updated,
 		},
+		published: options.published ?? new Date().toISOString(),
+	};
+}
+
+/**
+ * The owner's server is the only one that knows every member, so it passes on what a remote member sent.
+ * This names the message instead of carrying it: the owner must not be able to speak for its author.
+ */
+export function buildChatRoomRelay(
+	message: Pick<ChatMessage, 'id' | 'uri'>,
+	room: Pick<ChatRoom, 'id'> & { uri?: string | null },
+	owner: ChatActor,
+	toUsers: ChatActor[],
+	options: ChatPayloadOptions,
+): IAnnounce {
+	const roomUri = chatRoomUri(room, options.baseUrl);
+	const messageUri = chatMessageUri(message, options.baseUrl);
+	return {
+		id: `${roomUri}#relay/${encodeURIComponent(messageUri)}`,
+		type: 'Announce',
+		actor: chatActorUri(owner, options.baseUrl),
+		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
+		object: messageUri,
+		context: roomUri,
+		_misskey_chatRoom: roomUri,
 		published: options.published ?? new Date().toISOString(),
 	};
 }

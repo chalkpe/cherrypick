@@ -18,6 +18,7 @@ import type { MiNoteReaction } from '@/models/NoteReaction.js';
 import type { MiEmoji } from '@/models/Emoji.js';
 import type { MiPoll } from '@/models/Poll.js';
 import type { MiPollVote } from '@/models/PollVote.js';
+import type { MiChatMessage } from '@/models/ChatMessage.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
 import { UserKeypairService } from '@/core/UserKeypairService.js';
 import { MfmService } from '@/core/MfmService.js';
@@ -42,6 +43,7 @@ import {
 	buildChatReaction,
 	buildChatReactionUndo,
 	buildChatRoomDelete,
+	buildChatRoomRelay,
 	buildChatRoomUpdate,
 	buildChatUpdate,
 	type ChatPayloadOptions,
@@ -928,7 +930,17 @@ export class ApRendererService {
 
 	@bindThis
 	public renderChatRoomUpdate(room: MiChatRoom, owner: MiUser, toUsers: MiUser[]): IUpdate {
+		const now = new Date().toISOString();
 		return buildChatRoomUpdate(this.chatRoomForRender(room, owner), owner, toUsers, {
+			baseUrl: this.config.url,
+			published: now,
+			updated: now,
+		});
+	}
+
+	@bindThis
+	public renderChatRoomRelay(message: Pick<MiChatMessage, 'id' | 'uri'>, room: Pick<MiChatRoom, 'id' | 'uri'>, owner: MiUser, toUsers: MiUser[]): IAnnounce {
+		return buildChatRoomRelay(message, this.chatRoomForRender(room, owner), owner, toUsers, {
 			baseUrl: this.config.url,
 			published: new Date().toISOString(),
 		});
@@ -955,6 +967,7 @@ export class ApRendererService {
 			summary: room.description || undefined,
 			attributedTo: ownerUri || undefined,
 			_misskey_chatArchived: room.isArchived,
+			updated: new Date().toISOString(),
 		};
 	}
 

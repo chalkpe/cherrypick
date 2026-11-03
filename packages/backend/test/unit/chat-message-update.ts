@@ -129,6 +129,13 @@ describe('ChatService.updateMessage', () => {
 		await expect(f.service.updateMessage('u1', 'm1', 'x'.repeat(2001))).rejects.toThrow('invalid text');
 	});
 
+	test('counts text like the API schema, so a sendable emoji message stays editable', async () => {
+		const f = createFixture();
+
+		await expect(f.service.updateMessage('u1', 'm1', '👍'.repeat(2000))).resolves.toMatchObject({ text: '👍'.repeat(2000) });
+		await expect(f.service.updateMessage('u1', 'm1', '👍'.repeat(2001))).rejects.toThrow('invalid text');
+	});
+
 	test('refreshes custom emoji names when editing the text', async () => {
 		const f = createFixture();
 		f.message.emojis = ['removed'];
