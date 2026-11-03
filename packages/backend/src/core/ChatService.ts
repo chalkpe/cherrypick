@@ -45,7 +45,6 @@ const MAX_PENDING_CHAT_REACTIONS_PER_ACTOR = 1000;
 const MAX_PENDING_CHAT_REACTION_LENGTH = 256;
 const CHAT_REACTION_ACTIVITY_ID_TTL = 30 * 24 * 60 * 60;
 const isCustomEmojiRegexp = /^:([\w+-]+)(?:@\.)?:$/;
-const hostQualifiedCustomEmojiRegexp = /^:([\w+-]+)@(.+):$/;
 
 // TODO: ReactionServiceのやつと共通化
 function normalizeEmojiString(x: string) {
@@ -1659,9 +1658,6 @@ export class ChatService {
 	private normalizeRemoteReaction(reaction: string, actorHost: MiUser['host']): string {
 		const custom = reaction.match(isCustomEmojiRegexp);
 		if (custom != null) return actorHost == null ? `:${custom[1]}:` : `:${custom[1]}@${actorHost}:`;
-		// CherryPick qualifies the emoji with the sender's own host when it federates a reaction.
-		const qualified = reaction.match(hostQualifiedCustomEmojiRegexp);
-		if (qualified != null && actorHost != null && qualified[2].toLowerCase() === actorHost.toLowerCase()) return `:${qualified[1]}@${actorHost}:`;
 		try {
 			return normalizeEmojiString(reaction);
 		} catch {

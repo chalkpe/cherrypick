@@ -100,15 +100,13 @@ describe('chat federation payloads', () => {
 		expect(undo.object).toMatchObject({ id: react.id, type: 'EmojiReact' });
 	});
 
-	test('custom emoji reactions are qualified with the reactor host', () => {
-		const localReaction = buildChatReaction(message, alice, [bob], ':wave:', options);
-		const remoteReaction = buildChatReaction(message, bob, [alice], ':wave:', options);
-		const undo = buildChatReactionUndo(message, bob, [alice], ':wave:', options);
+	test.each([':wave:', ':wave@.:'])('federates the custom emoji reaction %s as an unqualified name', (reaction) => {
+		const react = buildChatReaction(message, alice, [bob], reaction, options);
+		const undo = buildChatReactionUndo(message, alice, [bob], reaction, options);
 
-		expect(localReaction.content).toBe(':wave@local.test:');
-		expect(localReaction._misskey_reaction).toBe(':wave@local.test:');
-		expect(remoteReaction.content).toBe(':wave@remote.test:');
-		expect(undo.object).toMatchObject({ content: ':wave@remote.test:' });
+		expect(react.content).toBe(':wave:');
+		expect(react._misskey_reaction).toBe(':wave:');
+		expect(undo.object).toMatchObject({ content: ':wave:', _misskey_reaction: ':wave:' });
 	});
 
 	test('reactions to remote messages have reactor-owned activity IDs', () => {
@@ -574,10 +572,10 @@ describe('ChatService chat federation delivery', () => {
 		expect(f.roomMessage.reactions).toEqual(['carol/:wave@other.test:']);
 	});
 
-	test('accepts the qualified custom emoji form that CherryPick sends, and its Undo', async () => {
+	test('scopes the custom emoji name that CherryPick federates to the actor host, and removes it on Undo', async () => {
 		const f = createService();
 		const sent = buildChatReaction(f.roomMessage as never, f.carol as never, [], ':wave:', options).content!;
-		expect(sent).toBe(':wave@other.test:');
+		expect(sent).toBe(':wave:');
 
 		await f.service.reactRemote(f.carol as never, f.roomMessage as never, sent);
 		expect(f.roomMessage.reactions).toEqual(['carol/:wave@other.test:']);

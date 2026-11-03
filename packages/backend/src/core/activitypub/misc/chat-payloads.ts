@@ -144,25 +144,26 @@ export function buildChatReaction(
 	options: ChatPayloadOptions,
 ): ILike {
 	const messageUri = chatMessageUri(message, options.baseUrl);
-	const qualifiedReaction = qualifyChatReaction(reaction, actor, options.baseUrl);
+	const federatedReaction = toFederatedChatReaction(reaction);
 	return {
-		id: options.activityId ?? `${chatActorUri(actor, options.baseUrl)}/chat-reactions/${encodeURIComponent(messageUri)}/${encodeURIComponent(qualifiedReaction)}`,
+		id: options.activityId ?? `${chatActorUri(actor, options.baseUrl)}/chat-reactions/${encodeURIComponent(messageUri)}/${encodeURIComponent(federatedReaction)}`,
 		type: 'EmojiReact',
 		actor: chatActorUri(actor, options.baseUrl),
 		object: messageUri,
-		content: qualifiedReaction,
-		_misskey_reaction: qualifiedReaction,
+		content: federatedReaction,
+		_misskey_reaction: federatedReaction,
 		...(options.tag?.length ? { tag: options.tag } : {}),
 		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
 		published: options.published ?? new Date().toISOString(),
 	};
 }
 
-function qualifyChatReaction(reaction: string, actor: ChatActor, baseUrl: string): string {
-	const custom = reaction.match(/^:([\w+-]+)(?:@([\w.-]+))?:$/);
-	if (custom == null) return reaction;
-	const host = custom[2] == null || custom[2] === '.' ? (actor.host ?? new URL(baseUrl).host) : custom[2];
-	return `:${custom[1]}@${host}:`;
+/**
+ * Custom emoji travel as `:name:` plus an Emoji tag, the same as note reactions in renderLike.
+ * Receivers scope the name to the actor's host themselves, and Mastodon rejects `:name@host:`.
+ */
+function toFederatedChatReaction(reaction: string): string {
+	return reaction.replace(/^:([\w+-]+)@\.:$/, ':$1:');
 }
 
 export function buildChatReactionUndo(
