@@ -6967,6 +6967,18 @@ export interface Locale extends ILocale {
          */
         "roomDeleted": string;
         /**
+         * ルームから外す
+         */
+        "kickMember": string;
+        /**
+         * {name}さんをルームから外しますか？
+         */
+        "kickMemberConfirm": ParameterizedString<"name">;
+        /**
+         * このルームから退出しました。再参加するには招待が必要です。
+         */
+        "removedFromRoom": string;
+        /**
          * {x}さんに送信された招待をキャンセルしますか？
          */
         "invitationCancelAreYouSure": ParameterizedString<"x">;

@@ -277,6 +277,7 @@ export type ChatRoomsInvitationsRejectRequest = operations['chat___rooms___invit
 export type ChatRoomsJoinRequest = operations['chat___rooms___join']['requestBody']['content']['application/json'];
 export type ChatRoomsJoiningRequest = operations['chat___rooms___joining']['requestBody']['content']['application/json'];
 export type ChatRoomsJoiningResponse = operations['chat___rooms___joining']['responses']['200']['content']['application/json'];
+export type ChatRoomsKickRequest = operations['chat___rooms___kick']['requestBody']['content']['application/json'];
 export type ChatRoomsLeaveRequest = operations['chat___rooms___leave']['requestBody']['content']['application/json'];
 export type ChatRoomsMembersRequest = operations['chat___rooms___members']['requestBody']['content']['application/json'];
 export type ChatRoomsMembersResponse = operations['chat___rooms___members']['responses']['200']['content']['application/json'];

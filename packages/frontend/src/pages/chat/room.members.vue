@@ -23,6 +23,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkA :class="$style.membershipBody" :to="`${userPage(membership.user!)}`">
 			<MkUserCardMini :user="membership.user!"/>
 		</MkA>
+		<MkButton v-if="isOwner && membership.userId !== $i.id" danger :disabled="removingMemberId != null" @click="kickMember(membership)">
+			<i class="ti ti-user-minus" aria-hidden="true"></i> {{ i18n.ts._chat.kickMember }}
+		</MkButton>
 	</div>
 
 	<template v-if="isOwner">
@@ -69,6 +72,25 @@ const isOwner = computed(() => {
 
 const memberships = ref<Misskey.entities.ChatRoomMembership[]>([]);
 const invitations = ref<Misskey.entities.ChatRoomInvitation[]>([]);
+const removingMemberId = ref<string | null>(null);
+
+async function kickMember(membership: Misskey.entities.ChatRoomMembership) {
+	if (!isOwner.value || membership.userId === $i.id || removingMemberId.value != null) return;
+	removingMemberId.value = membership.userId;
+	try {
+		const { canceled } = await os.confirm({
+			type: 'warning',
+			text: i18n.tsx._chat.kickMemberConfirm({ name: membership.user?.name || membership.user?.username || membership.userId }),
+		});
+		if (canceled) return;
+		await os.apiWithDialog('chat/rooms/kick', { roomId: props.room.id, userId: membership.userId });
+		memberships.value = memberships.value.filter(member => member.id !== membership.id);
+	} catch {
+		// apiWithDialog already displays the request error; keep the member visible.
+	} finally {
+		removingMemberId.value = null;
+	}
+}
 
 async function cancelInvitation(invitation: Misskey.entities.ChatRoomInvitation) {
 	const { canceled } = await os.confirm({
@@ -103,6 +125,7 @@ onMounted(async () => {
 <style lang="scss" module>
 .membership {
 	display: flex;
+	align-items: center;
 }
 
 .membershipBody {

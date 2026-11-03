@@ -46,7 +46,7 @@ function fixture() {
 }
 
 describe('ChatRoomChannel access lifetime', () => {
-	test('a member who leaves immediately stops receiving room events and unsubscribes', async () => {
+	test('a removed member receives one termination notice, then no room events', async () => {
 		const f = fixture();
 		expect(await f.channel.init({ roomId: 'r1' })).toBe(true);
 		await f.publish(event);
@@ -55,7 +55,7 @@ describe('ChatRoomChannel access lifetime', () => {
 		f.isMember.mockResolvedValue(false);
 		await f.publish(left);
 		await f.publish(event);
-		expect(f.send).not.toHaveBeenCalled();
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', ...left });
 		expect(f.subscriber.listenerCount(stream)).toBe(0);
 		expect(f.permission).toHaveBeenCalledTimes(2);
 	});
@@ -154,11 +154,7 @@ describe('ChatRoomChannel access lifetime', () => {
 		old.resolve(true);
 		await pending;
 		await f.publish(event);
-		if (control.type === 'roomDeleted') {
-			expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', type: 'roomDeleted', body: null });
-		} else {
-			expect(f.send).not.toHaveBeenCalled();
-		}
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', ...control });
 		expect(f.subscriber.listenerCount(stream)).toBe(0);
 	});
 
@@ -187,7 +183,7 @@ describe('ChatRoomChannel access lifetime', () => {
 		check.resolve(false);
 		await leaving;
 		await f.publish(event);
-		expect(f.send).not.toHaveBeenCalled();
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', ...left });
 		expect(f.subscriber.listenerCount(stream)).toBe(0);
 	});
 
@@ -198,7 +194,7 @@ describe('ChatRoomChannel access lifetime', () => {
 		f.permission.mockResolvedValue(false);
 		await f.publish(left);
 		await pending;
-		expect(f.send).not.toHaveBeenCalled();
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', ...left });
 	});
 
 	test('events wait for the leave recheck before forwarding, even inside the old cache window', async () => {
@@ -208,10 +204,10 @@ describe('ChatRoomChannel access lifetime', () => {
 		f.permission.mockReturnValue(check.promise);
 		const control = f.publish(left);
 		const pending = f.publish(event);
-		expect(f.send).not.toHaveBeenCalled();
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', ...left });
 		check.resolve(false);
 		await Promise.all([control, pending]);
-		expect(f.send).not.toHaveBeenCalled();
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', ...left });
 	});
 
 	test('disposal prevents forwarding after a pending check resolves', async () => {

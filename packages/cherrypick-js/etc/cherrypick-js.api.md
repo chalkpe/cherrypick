@@ -1302,6 +1302,9 @@ type ChatRoomsJoiningResponse = operations['chat___rooms___joining']['responses'
 type ChatRoomsJoinRequest = operations['chat___rooms___join']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
+type ChatRoomsKickRequest = operations['chat___rooms___kick']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
 type ChatRoomsLeaveRequest = operations['chat___rooms___leave']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -1961,6 +1964,7 @@ declare namespace entities {
         ChatRoomsJoinRequest,
         ChatRoomsJoiningRequest,
         ChatRoomsJoiningResponse,
+        ChatRoomsKickRequest,
         ChatRoomsLeaveRequest,
         ChatRoomsMembersRequest,
         ChatRoomsMembersResponse,

@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/vue';
-import { defineComponent, h, nextTick } from 'vue';
+import { defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
 
 const mocks = vi.hoisted(() => {
 	class FakeChannel {
@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => {
 		me: { id: 'me', username: 'me', policies: { chatAvailability: 'available', canVoiceCall: false } },
 		timeline: [] as unknown[],
 		roomIsArchived: false,
+		routerPush: vi.fn(),
 		// 吹き出しごとの描画回数
 		renders: new Map<string, number>(),
 	};
@@ -43,7 +44,7 @@ vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), u
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ alert: vi.fn(), confirm: vi.fn(), popupMenu: vi.fn() }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), useListener: vi.fn() }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, useListener: vi.fn() }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // 通話や入力欄は吹き出しのまとまりと関係ないので空にする
 vi.mock('@/composables/use-chat-room-voice-call.js', async () => {
@@ -129,6 +130,7 @@ beforeEach(() => {
 	mocks.channel = new mocks.FakeChannel();
 	mocks.renders.clear();
 	mocks.roomIsArchived = false;
+	mocks.routerPush.mockReset();
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
 });
@@ -161,6 +163,46 @@ describe('archived rooms on the room page', () => {
 		await flush();
 		expect(form(container)).not.toBeNull();
 	});
+});
+
+test('a removed member immediately loses the composer and returns to the chat list', async () => {
+	const { container } = await renderRoom();
+	mocks.channel.emit('membershipEnded', { userId: 'me' });
+	await flush();
+	expect(container.querySelector('[data-testid="form"]')).toBeNull();
+	expect(mocks.routerPush).toHaveBeenCalledWith('/chat');
+});
+
+test('another member leaving does not close my room', async () => {
+	const { container } = await renderRoom();
+	mocks.channel.emit('membershipEnded', { userId: 'someone-else' });
+	await flush();
+	expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
+	expect(mocks.routerPush).not.toHaveBeenCalled();
+});
+
+test('rejoining a kicked room reinitializes its cached page and subscribes again', async () => {
+	const visible = ref(true);
+	const page = defineComponent({
+		setup() {
+			provideMetadataReceiver(() => {});
+			return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+		},
+	});
+	const result = render(page, { global: { stubs } });
+	await flush();
+	await flush();
+	mocks.channel.emit('membershipEnded', { userId: 'me' });
+	await flush();
+	expect(result.container.querySelector('[data-testid="form"]')).toBeNull();
+	visible.value = false;
+	await flush();
+	mocks.channel = new mocks.FakeChannel();
+	visible.value = true;
+	await flush();
+	await flush();
+	expect(result.container.querySelector('[data-testid="form"]')).not.toBeNull();
+	expect(mocks.channel.handlers.has('message')).toBe(true);
 });
 
 describe('chat bubbles on the room page', () => {

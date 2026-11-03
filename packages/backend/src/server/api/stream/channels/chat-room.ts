@@ -101,7 +101,11 @@ export class ChatRoomChannel extends Channel {
 			// 判定待ちのイベントも即座に無効化し、モデレーターの閲覧権限は再判定する。
 			this.permissionVersion++;
 			this.lastPermissionCheck = -Infinity;
-			if (!(await this.checkPermission()) || !wasAllowed) return;
+			// Membership is already gone: send only the termination notice to an
+			// authorized subscriber before rechecking access to any further content.
+			if (wasAllowed) this.send(data.type, data.body);
+			await this.checkPermission();
+			return;
 		}
 
 		const version = this.permissionVersion;

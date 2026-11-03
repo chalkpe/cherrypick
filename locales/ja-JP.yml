@@ -1747,6 +1747,9 @@ _chat:
     none: "誰も許可しない"
   deletedMessage: "削除されたメッセージ"
   roomDeleted: "ルームが削除されました"
+  kickMember: "ルームから外す"
+  kickMemberConfirm: "{name}さんをルームから外しますか？"
+  removedFromRoom: "このルームから退出しました。再参加するには招待が必要です。"
   invitationCancelAreYouSure: "{x}さんに送信された招待をキャンセルしますか？"
 
 _emojiPalette:

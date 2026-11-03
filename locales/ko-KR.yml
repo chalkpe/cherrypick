@@ -1742,6 +1742,9 @@ _chat:
     none: "아무도 쪽지를 보낼 수 없음"
   deletedMessage: "삭제된 메시지"
   roomDeleted: "방이 삭제되었습니다"
+  kickMember: "그룹에서 내보내기"
+  kickMemberConfirm: "{name}님을 그룹에서 내보낼까요?"
+  removedFromRoom: "이 그룹에서 나갔어요. 다시 참여하려면 초대가 필요해요."
   invitationCancelAreYouSure: "{x}님에게 보낸 초대를 취소할까요?"
 _emojiPalette:
   palettes: "팔레트"

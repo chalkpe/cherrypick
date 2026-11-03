@@ -148,7 +148,11 @@ export class UserSearchService {
 
 		const inactiveUserQuery = this.generateUserQueryBuilder(params)
 			.andWhere(`user.id NOT IN (${followingUserQuery.getQuery()})`)
-			.andWhere('user.updatedAt <= :activeThreshold', { activeThreshold });
+			.andWhere(new Brackets(qb => {
+				qb
+					.where('user.updatedAt IS NULL')
+					.orWhere('user.updatedAt <= :activeThreshold', { activeThreshold });
+			}));
 		inactiveUserQuery.setParameters(followingUserQuery.getParameters());
 
 		return [activeFollowingUsersQuery, inactiveFollowingUsersQuery, activeUserQuery, inactiveUserQuery];

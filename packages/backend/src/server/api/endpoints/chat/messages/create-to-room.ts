@@ -9,7 +9,7 @@ import { Endpoint } from '@/server/api/endpoint-base.js';
 import { GetterService } from '@/server/api/GetterService.js';
 import { DI } from '@/di-symbols.js';
 import { ApiError } from '@/server/api/error.js';
-import { ChatRoomArchivedError, ChatService } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatRoomArchivedError, ChatService } from '@/core/ChatService.js';
 import type { DriveFilesRepository, MiUser } from '@/models/_.js';
 
 export const meta = {
@@ -110,6 +110,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				});
 			} catch (e) {
 				if (e instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);
+				if (e instanceof ChatMessageAccessError) throw new ApiError(meta.errors.noSuchRoom);
 				throw e;
 			}
 		});

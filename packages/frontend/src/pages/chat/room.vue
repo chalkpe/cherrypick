@@ -142,7 +142,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</button>
 						</div>
 					</Transition>
-					<XForm v-if="initialized && !room?.isArchived" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit"/>
+					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit"/>
 				</div>
 			</Teleport>
 		</div>
@@ -237,6 +237,7 @@ const user = ref<Misskey.entities.UserDetailed | null>(null);
 const room = ref<Misskey.entities.ChatRoom | null>(null);
 const memberships = ref<Misskey.entities.ChatRoomMembership[]>([]);
 const membershipVersion = ref(0);
+const membershipEnded = ref(false);
 const connection = ref<Misskey.IChannelConnection<Misskey.Channels['chatUser']> | Misskey.IChannelConnection<Misskey.Channels['chatRoom']> | null>(null);
 const showIndicator = ref(false);
 const timelineEl = useTemplateRef('timelineEl');
@@ -365,13 +366,14 @@ async function initialize() {
 		connection.value.on('updated', onUpdated);
 		connection.value.on('roomUpdated', onRoomUpdated);
 		connection.value.on('membershipStarted', onMembershipChanged);
-		connection.value.on('membershipEnded', onMembershipChanged);
+		connection.value.on('membershipEnded', onMembershipEnded);
 		connection.value.on('roomDeleted', onRoomDeleted);
 	}
 
 	window.document.addEventListener('visibilitychange', onVisibilitychange);
 
 	initialized.value = true;
+	membershipEnded.value = false;
 	initializing.value = false;
 }
 
@@ -489,6 +491,25 @@ function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['r
 
 function onMembershipChanged() {
 	membershipVersion.value++;
+}
+
+function onMembershipEnded(ctx: Parameters<Misskey.Channels['chatRoom']['events']['membershipEnded']>[0]) {
+	if (ctx.userId !== $i.id) {
+		onMembershipChanged();
+		return;
+	}
+	membershipEnded.value = true;
+	initialized.value = false;
+	messages.value = [];
+	editingMessage.value = null;
+	room.value = null;
+	canFetchMore.value = false;
+	connection.value?.dispose();
+	connection.value = null;
+	if (isActivated) {
+		os.alert({ type: 'info', text: i18n.ts._chat.removedFromRoom });
+		router.push('/chat');
+	}
 }
 
 function onRoomDeleted() {

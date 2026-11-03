@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, test } from 'vitest';
 import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
 import type { MiUser } from '@/models/User.js';
-import { api, failedApiCall, initTestDb, signup } from '../utils.js';
+import { api, createAppToken, failedApiCall, initTestDb, signup } from '../utils.js';
 import type * as misskey from 'cherrypick-js';
 
 describe('chat/messages/update', () => {
@@ -38,6 +38,35 @@ describe('chat/messages/update', () => {
 		assert.strictEqual(updated.status, 200, JSON.stringify(updated.body));
 		assert.strictEqual(updated.body.text, 'edited');
 		assert.ok(updated.body.editedAt != null);
+	});
+
+	test('only an authorized owner can kick, revoke access, and reinvite a member', async () => {
+		const created = await api('chat/rooms/create', { name: 'kick lifecycle' }, alice);
+		assert.strictEqual(created.status, 200);
+		const roomId = created.body.id;
+		assert.strictEqual((await api('chat/rooms/invitations/create', { roomId, userId: bob.id }, alice)).status, 200);
+		assert.strictEqual((await api('chat/rooms/join', { roomId }, bob)).status, 204);
+		const message = await api('chat/messages/create-to-room', { toRoomId: roomId, text: 'preserved' }, bob);
+		assert.strictEqual(message.status, 200);
+		const params = { roomId, userId: bob.id };
+		assert.strictEqual((await api('chat/rooms/kick', params)).status, 401);
+		const readToken = await createAppToken(alice, ['read:chat']);
+		assert.strictEqual((await api('chat/rooms/kick', params, { token: readToken })).status, 403);
+		const invalid = await api('chat/rooms/kick', { roomId } as any, alice);
+		assert.strictEqual(invalid.status, 400);
+		assert.strictEqual((await api('chat/rooms/kick', params, bob)).status, 400);
+		assert.strictEqual((await api('chat/rooms/kick', { roomId, userId: alice.id }, alice)).status, 400);
+		assert.strictEqual((await api('chat/rooms/kick', params, alice)).status, 204);
+		assert.strictEqual((await api('chat/rooms/show', { roomId }, bob)).status, 400);
+		assert.strictEqual((await api('chat/messages/room-timeline', { roomId }, bob)).status, 400);
+		assert.strictEqual((await api('chat/messages/create-to-room', { toRoomId: roomId, text: 'denied' }, bob)).status, 400);
+		const history = await api('chat/messages/room-timeline', { roomId }, alice);
+		assert.ok(history.body.some(item => item.id === message.body.id && item.text === 'preserved'));
+		assert.strictEqual((await api('chat/rooms/invitations/create', params, alice)).status, 200);
+		assert.strictEqual((await api('chat/rooms/join', { roomId }, bob)).status, 204);
+		assert.strictEqual((await api('chat/messages/create-to-room', { toRoomId: roomId, text: 'back' }, bob)).status, 200);
+		assert.strictEqual((await api('chat/rooms/update', { roomId, isArchived: true }, alice)).status, 200);
+		assert.strictEqual((await api('chat/rooms/kick', params, alice)).status, 204);
 	});
 
 	test('does not reveal a message owned by another user', async () => {

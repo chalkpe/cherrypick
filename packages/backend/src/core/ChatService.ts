@@ -308,7 +308,7 @@ export class ChatService {
 		});
 
 		if (!memberships.some(member => member.userId === fromUser.id)) {
-			throw new Error('you are not a member of the room');
+			throw new ChatMessageAccessError('you are not a member of the room');
 		}
 
 		if (fromUser.host == null) {
@@ -1178,6 +1178,28 @@ export class ChatService {
 				console.log('[ChatService.leaveRoom] No remote members or owner, skipping federation');
 			}
 		}
+	}
+
+	/** Only the local owner can remove another member and announce it to all peers. */
+	@bindThis
+	public async kickRoomMember(owner: MiUser, room: MiChatRoom, userId: MiUser['id']): Promise<boolean> {
+		if (owner.host != null || room.ownerId !== owner.id || userId === owner.id) return false;
+
+		// Keep the target in the delivery list so their server also revokes access.
+		const participants = await this.participantsForRoom(room);
+		const member = participants.find(user => user.id === userId);
+		if (member == null || !await this.removeRoomMember(room, member)) return false;
+
+		await this.liveKitService.removeParticipant(room.id, this.liveKitService.identityOf(member)).catch(() => {});
+		const memberUri = member.host == null ? this.userEntityService.genLocalUserUri(member.id) : member.uri;
+		if (memberUri != null) {
+			await this.deliverToRemoteUsers(owner, participants, {
+				...this.apRendererService.renderRemove(owner, this.apRendererService.genLocalChatRoomUri(room.id), memberUri),
+				id: `${this.config.url}/activities/${this.idService.gen()}`,
+				published: new Date().toISOString(),
+			});
+		}
+		return true;
 	}
 
 	/** Applies a membership end that another server announced, so nothing is federated back. */

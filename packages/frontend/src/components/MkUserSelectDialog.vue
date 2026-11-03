@@ -15,31 +15,32 @@ SPDX-License-Identifier: AGPL-3.0-only
 >
 	<template #header>{{ i18n.ts.selectUser }}</template>
 	<div>
-		<div :class="$style.form">
-			<MkInput v-if="computedLocalOnly" v-model="username" :autofocus="true" @update:modelValue="search">
+		<div :class="$style.form" class="_gaps">
+			<MkInput v-if="computedLocalOnly" v-model="username" :autofocus="true">
 				<template #label>{{ i18n.ts.username }}</template>
 				<template #prefix>@</template>
 			</MkInput>
 			<FormSplit v-else :minWidth="170">
-				<MkInput v-model="username" :autofocus="true" @update:modelValue="search">
+				<MkInput v-model="username" :autofocus="true">
 					<template #label>{{ i18n.ts.username }}</template>
 					<template #prefix>@</template>
 				</MkInput>
-				<MkInput v-model="host" :datalist="[hostname]" @update:modelValue="search">
+				<MkInput v-model="host" :datalist="[hostname]">
 					<template #label>{{ i18n.ts.host }}</template>
 					<template #prefix>@</template>
 				</MkInput>
 			</FormSplit>
+			<MkButton v-if="!computedLocalOnly" :disabled="!canLookup" :wait="lookingUp" @click="lookup">{{ i18n.ts.lookup }}</MkButton>
 		</div>
 		<div v-if="username != '' || host != ''" :class="[$style.result, { [$style.hit]: users.length > 0 }]">
 			<div v-if="users.length > 0" :class="$style.users">
-				<div v-for="user in users" :key="user.id" class="_button" :class="[$style.user, { [$style.selected]: selected && selected.id === user.id }]" @click="selected = user" @dblclick="ok()">
-					<MkAvatar :user="user" :class="$style.avatar" indicator/>
+				<button v-for="user in users" :key="user.id" type="button" class="_button" :class="[$style.user, { [$style.selected]: selected && selected.id === user.id }]" :aria-pressed="selected?.id === user.id" @click="selected = user" @dblclick="ok()">
+					<MkAvatar :user="user" :class="$style.avatar" indicator :link="false"/>
 					<div :class="$style.userBody">
 						<MkUserName :user="user" :class="$style.userName"/>
 						<MkAcct :user="user" :class="$style.userAcct"/>
 					</div>
-				</div>
+				</button>
 			</div>
 			<div v-else :class="$style.empty">
 				<span>{{ i18n.ts.noUsers }}</span>
@@ -47,13 +48,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</div>
 		<div v-if="username == '' && host == ''" :class="$style.recent">
 			<div :class="$style.users">
-				<div v-for="user in recentUsers" :key="user.id" class="_button" :class="[$style.user, { [$style.selected]: selected && selected.id === user.id }]" @click="selected = user" @dblclick="ok()">
-					<MkAvatar :user="user" :class="$style.avatar" indicator/>
+				<button v-for="user in recentUsers.filter(canSelectUser)" :key="user.id" type="button" class="_button" :class="[$style.user, { [$style.selected]: selected && selected.id === user.id }]" :aria-pressed="selected?.id === user.id" @click="selected = user" @dblclick="ok()">
+					<MkAvatar :user="user" :class="$style.avatar" indicator :link="false"/>
 					<div :class="$style.userBody">
 						<MkUserName :user="user" :class="$style.userName"/>
 						<MkAcct :user="user" :class="$style.userAcct"/>
 					</div>
-				</div>
+				</button>
 			</div>
 		</div>
 	</div>
@@ -61,10 +62,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onMounted, ref, computed, useTemplateRef } from 'vue';
+import { onBeforeUnmount, onMounted, ref, computed, useTemplateRef, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { host as currentHost, hostname } from '@@/js/config.js';
 import MkInput from '@/components/MkInput.vue';
+import MkButton from '@/components/MkButton.vue';
 import FormSplit from '@/components/form/split.vue';
 import MkModalWindow from '@/components/MkModalWindow.vue';
 import { misskeyApi } from '@/utility/misskey-api.js';
@@ -95,42 +97,80 @@ const users = ref<Misskey.entities.UserLite[]>([]);
 const recentUsers = ref<Misskey.entities.UserDetailed[]>([]);
 const selected = ref<Misskey.entities.UserLite | null>(null);
 const dialogEl = useTemplateRef('dialogEl');
+const lookingUp = ref(false);
+let requestId = 0;
+
+const searchQuery = computed(() => {
+	const acct = Misskey.acct.parse(username.value.trim());
+	const accountHost = acct.host?.toLowerCase();
+	if (computedLocalOnly.value && accountHost && accountHost !== hostname && accountHost !== currentHost) return null;
+	return {
+		username: acct.username,
+		host: computedLocalOnly.value ? '.' : accountHost ?? host.value.trim().toLowerCase(),
+	};
+});
+const canLookup = computed(() => !computedLocalOnly.value && !!searchQuery.value?.username && !!searchQuery.value.host && searchQuery.value.host !== '.');
+
+function canSelectUser(user: Misskey.entities.UserLite) {
+	return (!computedLocalOnly.value || user.host == null) && (props.includeSelf || user.id !== $i?.id);
+}
 
 function search() {
-	if (username.value === '' && host.value === '') {
-		users.value = [];
-		return;
-	}
+	const currentRequestId = ++requestId;
+	selected.value = null;
+	users.value = [];
+	lookingUp.value = false;
+	const query = searchQuery.value;
+	if (query == null || (username.value.trim() === '' && host.value.trim() === '')) return;
+
 	misskeyApi('users/search-by-username-and-host', {
-		username: username.value,
-		host: computedLocalOnly.value ? '.' : host.value,
+		...query,
 		limit: 10,
 		detail: false,
 	}).then(_users => {
-		users.value = _users.filter((u) => {
-			if (props.includeSelf) {
-				return true;
-			} else {
-				return u.id !== $i?.id;
-			}
-		});
+		if (currentRequestId === requestId) users.value = _users.filter(canSelectUser);
+	}).catch(() => {
+		if (currentRequestId === requestId) users.value = [];
 	});
 }
 
+async function lookup() {
+	const query = searchQuery.value;
+	if (!canLookup.value || lookingUp.value || query == null) return;
+	const currentRequestId = ++requestId;
+	selected.value = null;
+	users.value = [];
+	lookingUp.value = true;
+	try {
+		const user = await misskeyApi('users/show', query);
+		if (currentRequestId === requestId) users.value = [user].filter(canSelectUser);
+	} catch {
+		if (currentRequestId === requestId) users.value = [];
+	} finally {
+		if (currentRequestId === requestId) lookingUp.value = false;
+	}
+}
+
+watch([username, host, computedLocalOnly, () => props.includeSelf], search, { flush: 'sync' });
+onBeforeUnmount(() => { requestId++; });
+
 async function ok() {
 	if (selected.value == null) return;
+	const selectedId = selected.value.id;
+	const currentRequestId = requestId;
 
 	const user = await misskeyApi('users/show', {
-		userId: selected.value.id,
+		userId: selectedId,
 	});
+	if (currentRequestId !== requestId || selected.value?.id !== selectedId) return;
 	emit('ok', user);
 
 	dialogEl.value?.close();
 
 	// 最近使ったユーザー更新
 	let recents = store.s.recentlyUsedUsers;
-	recents = recents.filter(x => x !== selected.value?.id);
-	recents.unshift(selected.value.id);
+	recents = recents.filter(x => x !== selectedId);
+	recents.unshift(selectedId);
 	store.set('recentlyUsedUsers', recents.splice(0, 16));
 }
 
@@ -143,22 +183,7 @@ onMounted(() => {
 	misskeyApi('users/show', {
 		userIds: store.s.recentlyUsedUsers,
 	}).then(foundUsers => {
-		let _users = foundUsers;
-		_users = _users.filter((u) => {
-			if (computedLocalOnly.value) {
-				return u.host == null;
-			} else {
-				return true;
-			}
-		});
-		_users = _users.filter((u) => {
-			if (props.includeSelf) {
-				return true;
-			} else {
-				return u.id !== $i?.id;
-			}
-		});
-		recentUsers.value = _users;
+		recentUsers.value = foundUsers;
 	});
 });
 </script>
@@ -193,6 +218,8 @@ onMounted(() => {
 .user {
 	display: flex;
 	align-items: center;
+	width: 100%;
+	text-align: left;
 	padding: 8px var(--root-margin);
 	font-size: 14px;
 

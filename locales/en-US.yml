@@ -1737,6 +1737,9 @@ _chat:
     none: "Nobody"
   deletedMessage: "Deleted message"
   roomDeleted: "The room was deleted"
+  kickMember: "Remove from group"
+  kickMemberConfirm: "Remove {name} from the group?"
+  removedFromRoom: "You have left this group. An invitation is required to rejoin."
   invitationCancelAreYouSure: "Are you sure you want to cancel the invitation sent to {x}?"
 _emojiPalette:
   palettes: "Palette"
