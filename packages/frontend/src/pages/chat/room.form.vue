@@ -230,6 +230,12 @@ function onChangeFile() {
 	if (fileEl.value?.files) void uploadFiles(Array.from(fileEl.value.files));
 }
 
+function showSendError(err: Error) {
+	console.error(err);
+	// フォームが無くなったのはルームが閉じたときで、その理由は別に知らせている
+	if (!formClosed) os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: err.message });
+}
+
 function send() {
 	if (sending.value || !canSend.value) return;
 
@@ -243,8 +249,7 @@ function send() {
 		}).then(() => {
 			if (session === editSession) emit('edited');
 		}).catch(err => {
-			console.error(err);
-			os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: err.message });
+			showSendError(err);
 		}).then(() => {
 			sending.value = false;
 		});
@@ -259,7 +264,7 @@ function send() {
 		}).then(message => {
 			clear();
 		}).catch(err => {
-			console.error(err);
+			showSendError(err);
 		}).then(() => {
 			sending.value = false;
 		});
@@ -271,7 +276,7 @@ function send() {
 		}).then(message => {
 			clear();
 		}).catch(err => {
-			console.error(err);
+			showSendError(err);
 		}).then(() => {
 			sending.value = false;
 		});
@@ -348,7 +353,9 @@ onMounted(() => {
 	}
 });
 
+let formClosed = false;
 onBeforeUnmount(() => {
+	formClosed = true;
 	editSession++;
 	if (autocompleteInstance) {
 		autocompleteInstance.detach();

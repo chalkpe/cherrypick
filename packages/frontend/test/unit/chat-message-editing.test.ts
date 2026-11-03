@@ -54,8 +54,9 @@ const stubs = {
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
-	const promise = new Promise<T>(r => { resolve = r; });
-	return { promise, resolve };
+	let reject!: (reason: unknown) => void;
+	const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+	return { promise, resolve, reject };
 }
 
 function renderForm(target: 'user' | 'room' = 'room', initialEdit: typeof message | null = null) {
@@ -172,6 +173,33 @@ test('a failed save tells the user and keeps the edit open', async () => {
 	await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: 'This room is archived.' }));
 	expect(form.editing.value).toEqual(message);
 	expect(form.textarea.value).toBe('Edited');
+});
+
+test.each(['user', 'room'] as const)('a failed %s message send tells the user and keeps the text', async target => {
+	mocks.api.mockRejectedValueOnce(new Error('Rate limit exceeded.'));
+	const form = renderForm(target);
+	await fireEvent.update(form.textarea, 'Unsent');
+	await fireEvent.click(screen.getByTitle(i18n.ts.send));
+
+	await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: 'Rate limit exceeded.' }));
+	expect(form.textarea.value).toBe('Unsent');
+});
+
+test('a save that fails after the form closed adds no second dialog', async () => {
+	const pending = deferred<object>();
+	mocks.api.mockReturnValueOnce(pending.promise);
+	const form = renderForm();
+	form.editing.value = message;
+	await nextTick();
+	await fireEvent.update(form.textarea, 'Edited');
+	await fireEvent.click(screen.getByTitle(i18n.ts.save));
+	form.unmount();
+
+	pending.reject(new Error('No such message.'));
+	await nextTick();
+	await nextTick();
+
+	expect(os.alert).not.toHaveBeenCalled();
 });
 
 test('an in-flight save does not clear a restored compose draft', async () => {
@@ -419,10 +447,19 @@ describe('XMessage on messages it cannot act on', () => {
 		expect(items).toContain(i18n.ts.reportAbuse);
 	});
 
+	test('a refused reaction change is shown instead of being lost in the console', async () => {
+		mocks.api.mockRejectedValueOnce(new Error('Rate limit exceeded.'));
+		const { container } = renderMessage({ reactions: [{ user: { id: 'me', username: 'me' }, reaction: '👍' }] });
+
+		await fireEvent.click(container.querySelector('[class*="reactions"] > *')!);
+
+		await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: 'Rate limit exceeded.' }));
+	});
+
 	test('clicking a remote custom emoji reaction does not send a reaction the server would reject', async () => {
 		const { container } = renderMessage({ reactions: [{ user: { id: 'carol', username: 'carol', host: 'other.test' }, reaction: ':blob@other.test:' }] });
 
-		await fireEvent.click(container.querySelector('[class*="reaction"]')!);
+		await fireEvent.click(container.querySelector('[class*="reactions"] > *')!);
 
 		expect(mocks.api).not.toHaveBeenCalledWith('chat/messages/react', expect.anything());
 	});

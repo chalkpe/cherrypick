@@ -122,11 +122,17 @@ provide(DI.mfmEmojiReactCallback, (reaction) => {
 	if (!canReact.value) return;
 
 	sound.playMisskeySfx('reaction');
-	misskeyApi('chat/messages/react', {
+	sendReaction('chat/messages/react', reaction);
+});
+
+function sendReaction(endpoint: 'chat/messages/react' | 'chat/messages/unreact', reaction: string) {
+	misskeyApi(endpoint, {
 		messageId: props.message.id,
 		reaction: reaction,
+	}).catch(err => {
+		os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: err.message });
 	});
-});
+}
 
 function react(ev: PointerEvent) {
 	if (!canReact.value) return;
@@ -137,10 +143,7 @@ function react(ev: PointerEvent) {
 	reactionPicker.show(targetEl, null, async (reaction) => {
 		if (!canReact.value) return;
 		sound.playMisskeySfx('reaction');
-		misskeyApi('chat/messages/react', {
-			messageId: props.message.id,
-			reaction: reaction,
-		});
+		sendReaction('chat/messages/react', reaction);
 	});
 }
 
@@ -148,17 +151,11 @@ function onReactionClick(record: Misskey.entities.ChatMessage['reactions'][0]) {
 	if (!canReact.value) return;
 
 	if (record.user.id === $i.id) {
-		misskeyApi('chat/messages/unreact', {
-			messageId: props.message.id,
-			reaction: record.reaction,
-		});
+		sendReaction('chat/messages/unreact', record.reaction);
 	} else if (!/@[\w.-]/.test(record.reaction)) { // 他サーバーのカスタム絵文字はこのサーバーからはリアクションできない
 		if (!props.message.reactions.some(r => r.user.id === $i.id && r.reaction === record.reaction)) {
 			sound.playMisskeySfx('reaction');
-			misskeyApi('chat/messages/react', {
-				messageId: props.message.id,
-				reaction: record.reaction,
-			});
+			sendReaction('chat/messages/react', record.reaction);
 		}
 	}
 }

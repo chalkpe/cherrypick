@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => {
 		me: { id: 'me', username: 'me', policies: { chatAvailability: 'available', canVoiceCall: false } },
 		timeline: [] as unknown[],
 		roomIsArchived: false,
+		roomShowFails: false,
 		routerPush: vi.fn(),
 		alert: vi.fn(),
 		editMessage: { value: null as (() => void) | null },
@@ -36,6 +37,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@/utility/misskey-api.js', () => ({
 	misskeyApi: vi.fn(async (endpoint: string) => {
+		if (endpoint === 'chat/rooms/show' && mocks.roomShowFails) throw new Error('No such room.');
 		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: 'owner', owner: { id: 'owner', username: 'owner', host: null }, isArchived: mocks.roomIsArchived };
 		if (endpoint === 'users/show') return { id: 'alice', username: 'alice', host: null };
 		if (endpoint === 'chat/messages/room-timeline' || endpoint === 'chat/messages/user-timeline') return mocks.timeline;
@@ -61,7 +63,18 @@ vi.mock('@/pages/chat/room.search.vue', () => ({ default: { render: () => null }
 vi.mock('@/pages/chat/room.members.vue', () => ({ default: { render: () => null } }));
 vi.mock('@/pages/chat/room.info.vue', async () => {
 	const { h: hh } = await import('vue');
-	return { default: { emits: ['deleting'], render(this: { $emit: (event: string, value: boolean) => void }) { return hh('button', { 'data-testid': 'info-delete', onClick: () => this.$emit('deleting', true) }); } } };
+	return {
+		default: {
+			props: ['room'],
+			emits: ['deleting', 'updated'],
+			render(this: { room: object; $emit: (event: string, value: unknown) => void }) {
+				return hh('div', [
+					hh('button', { 'data-testid': 'info-delete', onClick: () => this.$emit('deleting', true) }),
+					hh('button', { 'data-testid': 'info-archive', onClick: () => this.$emit('updated', { ...this.room, isArchived: true }) }),
+				]);
+			},
+		},
+	};
 });
 // 吹き出しは、受け取ったまとまりの位置を書き出し、描画した回数を数えるだけのものにする
 vi.mock('@/pages/chat/XMessage.vue', async () => {
@@ -138,6 +151,7 @@ beforeEach(() => {
 	mocks.channel = new mocks.FakeChannel();
 	mocks.renders.clear();
 	mocks.roomIsArchived = false;
+	mocks.roomShowFails = false;
 	mocks.routerPush.mockReset();
 	mocks.alert.mockReset();
 	// API は新しい順に返す
@@ -221,6 +235,13 @@ describe('a deleted room', () => {
 		expect(alert).not.toHaveBeenCalled();
 		expect(mocks.routerPush).not.toHaveBeenCalled();
 		expect(dispose).toHaveBeenCalled();
+
+		// 戻ってきたときに初めて知らせる
+		visible.value = true;
+		await flush();
+		expect(alert).toHaveBeenCalledWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+		expect(alert).toHaveBeenCalledTimes(1);
+		expect(mocks.routerPush).toHaveBeenCalledWith('/chat');
 	});
 
 	test('does not announce the deletion to the member who is deleting it', async () => {
@@ -245,6 +266,33 @@ describe('a deleted room', () => {
 	});
 });
 
+test('returning to a cached room after being removed explains why instead of showing an error', async () => {
+	const visible = ref(true);
+	const page = defineComponent({
+		setup() {
+			provideMetadataReceiver(() => {});
+			return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+		},
+	});
+	render(page, { global: { stubs, directives: { tooltip: {} } } });
+	await flush();
+	await flush();
+	visible.value = false;
+	await flush();
+	mocks.channel.emit('membershipEnded', { userId: 'me' });
+	await flush();
+	expect(alert).not.toHaveBeenCalled();
+
+	mocks.roomShowFails = true;
+	visible.value = true;
+	await flush();
+	await flush();
+
+	expect(alert).toHaveBeenCalledWith({ type: 'info', text: i18n.ts._chat.removedFromRoom });
+	expect(alert).toHaveBeenCalledTimes(1);
+	expect(mocks.routerPush).toHaveBeenCalledWith('/chat');
+});
+
 test('archiving a room ends an edit in progress, so unarchiving does not reopen it', async () => {
 	mocks.timeline = [message('m3', 'me', 2 * MINUTE)];
 	const { container } = await renderRoom();
@@ -255,6 +303,32 @@ test('archiving a room ends an edit in progress, so unarchiving does not reopen 
 	mocks.channel.emit('roomUpdated', { roomId: 'r1', name: 'room 1', description: '', isArchived: true });
 	await flush();
 	mocks.channel.emit('roomUpdated', { roomId: 'r1', name: 'room 1', description: '', isArchived: false });
+	await flush();
+
+	expect(container.querySelector('[data-testid="form"]')?.getAttribute('data-editing')).toBe('');
+});
+
+test('archiving from the info tab also ends an edit in progress', async () => {
+	mocks.timeline = [message('m3', 'me', 2 * MINUTE)];
+	const tabbedStubs = { ...stubs, PageWithHeader: { props: ['tab'], emits: ['update:tab'], template: '<div style="overflow-y: scroll;"><button data-testid="open-info" @click="$emit(\'update:tab\', \'info\')"/><button data-testid="open-chat" @click="$emit(\'update:tab\', \'chat\')"/><slot /><slot name="footer" /></div>' } };
+	const host = defineComponent({
+		setup() {
+			provideMetadataReceiver(() => {});
+			return () => h(XRoomPage, { roomId: 'r1' });
+		},
+	});
+	const { container } = render(host, { global: { stubs: tabbedStubs, directives: { tooltip: {} } } });
+	await flush();
+	await flush();
+	mocks.editMessage.value?.();
+	await flush();
+	await fireEvent.click(container.querySelector('[data-testid="open-info"]')!);
+	await flush();
+	await fireEvent.click(container.querySelector('[data-testid="info-archive"]')!);
+	await flush();
+	mocks.channel.emit('roomUpdated', { roomId: 'r1', name: 'room 1', description: '', isArchived: false });
+	await flush();
+	await fireEvent.click(container.querySelector('[data-testid="open-chat"]')!);
 	await flush();
 
 	expect(container.querySelector('[data-testid="form"]')?.getAttribute('data-editing')).toBe('');

@@ -239,6 +239,7 @@ const memberships = ref<Misskey.entities.ChatRoomMembership[]>([]);
 const membershipVersion = ref(0);
 const membershipEnded = ref(false);
 const deletingOwnRoom = ref(false);
+let roomDeletedWhileInactive = false;
 const connection = ref<Misskey.IChannelConnection<Misskey.Channels['chatUser']> | Misskey.IChannelConnection<Misskey.Channels['chatRoom']> | null>(null);
 const showIndicator = ref(false);
 const timelineEl = useTemplateRef('timelineEl');
@@ -286,6 +287,7 @@ async function initialize() {
 
 	initializing.value = true;
 	initialized.value = false;
+	deletingOwnRoom.value = false;
 
 	if (props.userId) {
 		const [u, m] = await Promise.all([
@@ -315,10 +317,15 @@ async function initialize() {
 		]);
 
 		if (rResult.status === 'rejected') {
-			os.alert({
-				type: 'error',
-				text: i18n.ts.somethingHappened,
-			});
+			if (membershipEnded.value) {
+				// 別のページを見ているあいだに外された
+				notifyRoomClosed(i18n.ts._chat.removedFromRoom);
+			} else {
+				os.alert({
+					type: 'error',
+					text: i18n.ts.somethingHappened,
+				});
+			}
 			initializing.value = false;
 			return;
 		}
@@ -488,9 +495,12 @@ function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['r
 		description: ctx.description,
 		isArchived: ctx.isArchived,
 	};
-	// 入力欄がなくなるので編集も終わる。解除したときに編集へ戻ると、入力中の内容が原文に戻ってしまう
-	if (ctx.isArchived) editingMessage.value = null;
 }
+
+// 入力欄がなくなるので編集も終わる。解除したときに編集へ戻ると、入力中の内容が原文に戻ってしまう
+watch(() => room.value?.isArchived, isArchived => {
+	if (isArchived) editingMessage.value = null;
+});
 
 function onMembershipChanged() {
 	membershipVersion.value++;
@@ -502,19 +512,23 @@ function onMembershipEnded(ctx: Parameters<Misskey.Channels['chatRoom']['events'
 		return;
 	}
 	closeRoom();
-	if (isActivated) {
-		os.alert({ type: 'info', text: i18n.ts._chat.removedFromRoom });
-		router.push('/chat');
-	}
+	if (isActivated) notifyRoomClosed(i18n.ts._chat.removedFromRoom);
 }
 
 function onRoomDeleted() {
 	closeRoom();
 	// 自分で削除したときは、削除の結果として room.info.vue が移動する
-	if (isActivated && !deletingOwnRoom.value) {
-		os.alert({ type: 'info', text: i18n.ts._chat.roomDeleted });
-		router.push('/chat');
+	if (deletingOwnRoom.value) return;
+	if (isActivated) {
+		notifyRoomClosed(i18n.ts._chat.roomDeleted);
+	} else {
+		roomDeletedWhileInactive = true;
 	}
+}
+
+function notifyRoomClosed(text: string) {
+	os.alert({ type: 'info', text });
+	router.push('/chat');
 }
 
 function closeRoom() {
@@ -550,6 +564,11 @@ onUnmounted(() => {
 });
 
 onActivated(() => {
+	if (roomDeletedWhileInactive) {
+		roomDeletedWhileInactive = false;
+		notifyRoomClosed(i18n.ts._chat.roomDeleted);
+		return;
+	}
 	if (!initialized.value) {
 		initialize();
 	}

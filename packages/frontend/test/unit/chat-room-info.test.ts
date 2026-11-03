@@ -7,10 +7,10 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/vue';
 import { nextTick } from 'vue';
 
-const mocks = vi.hoisted(() => ({ apiWithDialog: vi.fn(), confirm: vi.fn(), me: { id: 'me', isAdmin: false, isModerator: false } }));
+const mocks = vi.hoisted(() => ({ apiWithDialog: vi.fn(), confirm: vi.fn(), push: vi.fn(), me: { id: 'me', isAdmin: false, isModerator: false } }));
 vi.mock('@/i.js', () => ({ ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog, confirm: mocks.confirm }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.push }) }));
 
 import XInfo from '@/pages/chat/room.info.vue';
 import XRoom from '@/pages/chat/XRoom.vue';
@@ -28,7 +28,7 @@ const stubs = {
 	Mfm: { props: ['text', 'plain'], template: '<span data-testid="mfm" :data-plain="plain">{{ text }}</span>' },
 };
 
-afterEach(() => { cleanup(); mocks.apiWithDialog.mockReset(); mocks.confirm.mockReset(); });
+afterEach(() => { cleanup(); mocks.apiWithDialog.mockReset(); mocks.confirm.mockReset(); mocks.push.mockReset(); });
 
 test('the owner archives the room after confirming, and the saved room propagates', async () => {
 	const updated = { ...room, isArchived: true };
@@ -55,6 +55,29 @@ test('a failed deletion lets later deletions be announced again', async () => {
 	const result = render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.deleteRoom }));
 	await waitFor(() => expect(result.emitted().deleting).toEqual([[true], [false]]));
+});
+
+test('leaves the page when the deletion fails after the room has already closed', async () => {
+	let fail!: (reason: unknown) => void;
+	mocks.confirm.mockResolvedValueOnce({ canceled: false });
+	mocks.apiWithDialog.mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
+	const result = render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.deleteRoom }));
+	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalled());
+	result.unmount();
+
+	fail(new Error('No such room.'));
+
+	await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/chat'));
+});
+
+test('stays on the page when the deletion fails while the room is still open', async () => {
+	mocks.confirm.mockResolvedValueOnce({ canceled: false });
+	mocks.apiWithDialog.mockRejectedValueOnce(new Error('failed'));
+	const result = render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.deleteRoom }));
+	await waitFor(() => expect(result.emitted().deleting).toEqual([[true], [false]]));
+	expect(mocks.push).not.toHaveBeenCalled();
 });
 
 test('canceling the confirmation does not archive', async () => {

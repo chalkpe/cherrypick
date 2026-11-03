@@ -34,7 +34,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
@@ -94,6 +94,11 @@ async function setArchived(isArchived: boolean) {
 	emit('updated', updated);
 }
 
+let roomClosed = false;
+onBeforeUnmount(() => {
+	roomClosed = true;
+});
+
 async function del() {
 	const { canceled } = await os.confirm({
 		type: 'warning',
@@ -107,9 +112,9 @@ async function del() {
 			roomId: props.room.id,
 		});
 	} catch {
-		// apiWithDialog がエラーを表示済み
+		// apiWithDialog がエラーを表示済み。削除の通知を先に受けていれば、戻るルームはもう無い
 		emit('deleting', false);
-		return;
+		if (!roomClosed) return;
 	}
 	router.push('/chat');
 }
