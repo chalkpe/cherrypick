@@ -47,6 +47,7 @@ import {
 	buildChatRoomUpdate,
 	buildChatUpdate,
 	type ChatPayloadOptions,
+	chatRoomUriForOwner,
 } from './misc/chat-payloads.js';
 import type { IAccept, IActivity, IAdd, IAnnounce, IApDocument, IApEmoji, IApHashtag, IApImage, IApMention, IBlock, IChatRoomVoiceState, ICreate, IDelete, IFlag, IFollow, IInvite, IKey, ILike, IMove, IObject, IPost, IQuestion, IRead, IReject, IRemove, ITombstone, IUndo, IUpdate } from './type.js';
 
@@ -977,10 +978,7 @@ export class ApRendererService {
 	}
 
 	private chatRoomUriForRender(room: Pick<MiChatRoom, 'id'> & { uri?: string | null; }, owner: MiUser): string {
-		if (room.uri != null) return room.uri;
-		if (this.userEntityService.isLocalUser(owner)) return this.genLocalChatRoomUri(room.id);
-		const base = owner.uri?.replace(/\/users\/.*$/, '');
-		return base != null ? `${base}/chat/rooms/${room.id}` : this.genLocalChatRoomUri(room.id);
+		return chatRoomUriForOwner(room, owner, this.config.url);
 	}
 
 	/**

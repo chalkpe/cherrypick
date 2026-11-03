@@ -8,10 +8,12 @@ import { Test } from '@nestjs/testing';
 import type * as Redis from 'ioredis';
 import type { TestingModule } from '@nestjs/testing';
 import type { ChatMessagesRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, MiUser, UsersRepository } from '@/models/_.js';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatService, ChatTooManyReactionsError } from '@/core/ChatService.js';
+import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { DI } from '@/di-symbols.js';
 import { GlobalModule } from '@/GlobalModule.js';
 import { IdService } from '@/core/IdService.js';
+import { ChatMessageUriUnique1793708299161 } from '../../migration/1793708299161-chat-message-uri-unique.js';
 
 // These cases depend on what PostgreSQL and Redis do with the query, so they use the real ones.
 describe('chat federation storage', () => {
@@ -141,6 +143,63 @@ describe('chat federation storage', () => {
 			await service.unreact(messageId, alice.id, '👍');
 
 			expect(renderChatReactionUndo.mock.calls[0].at(-1 as never)).toBe(likeId);
+		});
+	});
+
+	describe('message URIs', () => {
+		const uriIndex = 'IDX_f10847101444176c7fc3748b5f';
+
+		function insertMessage(uri: string | null, manager = chatMessagesRepository.manager) {
+			const id = idService.gen();
+			return manager.insert('chat_message', { id, fromUserId: bob.id, toUserId: alice.id, text: id, uri }).then(() => id);
+		}
+
+		test('two rows cannot claim the same URI', async () => {
+			const uri = `https://remote.test/chat/messages/${idService.gen()}`;
+			await insertMessage(uri);
+
+			const error = await insertMessage(uri).then(() => null, err => err);
+
+			expect(isDuplicateKeyValueError(error)).toBe(true);
+		});
+
+		test('rows without a URI are not treated as duplicates', async () => {
+			await insertMessage(null);
+			await expect(insertMessage(null)).resolves.toEqual(expect.any(String));
+		});
+
+		test('the migration keeps the oldest row, clears the URI of later copies and makes the index unique', async () => {
+			const queryRunner = chatMessagesRepository.manager.connection.createQueryRunner();
+			await queryRunner.startTransaction();
+			try {
+				const migration = new ChatMessageUriUnique1793708299161();
+				await migration.down(queryRunner);
+				const uri = `https://remote.test/chat/messages/${idService.gen()}`;
+				const first = await insertMessage(uri, queryRunner.manager);
+				const second = await insertMessage(uri, queryRunner.manager);
+				const unrelated = await insertMessage(`${uri}-other`, queryRunner.manager);
+
+				await migration.up(queryRunner);
+
+				const rows = await queryRunner.query('SELECT "id", "uri" FROM "chat_message" WHERE "id" = ANY($1)', [[first, second, unrelated]]) as { id: string; uri: string | null }[];
+				expect(new Map(rows.map(row => [row.id, row.uri]))).toEqual(new Map([[first, uri], [second, null], [unrelated, `${uri}-other`]]));
+				const [index] = await queryRunner.query('SELECT "indexdef" FROM "pg_indexes" WHERE "indexname" = $1', [uriIndex]) as { indexdef: string }[];
+				expect(index.indexdef).toMatch(/^CREATE UNIQUE INDEX/);
+			} finally {
+				await queryRunner.rollbackTransaction();
+				await queryRunner.release();
+			}
+		});
+	});
+
+	describe('reaction limit', () => {
+		test('a local reaction past the limit is refused and not stored', async () => {
+			const id = idService.gen();
+			const full = Array.from({ length: 100 }, (_, i) => `user${i}/👍`);
+			await chatMessagesRepository.insert({ id, fromUserId: bob.id, toUserId: alice.id, text: 'full', reactions: full });
+
+			await expect(createService().react(id, alice.id, '👍')).rejects.toBeInstanceOf(ChatTooManyReactionsError);
+			expect((await chatMessagesRepository.findOneByOrFail({ id })).reactions).toEqual(full);
 		});
 	});
 

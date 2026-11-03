@@ -341,6 +341,7 @@ function moderationFixture(Endpoint: typeof KickEndpoint | typeof MuteEndpoint, 
 	const chatService = {
 		checkChatAvailability: vi.fn().mockResolvedValue(undefined),
 		findRoomById: vi.fn().mockResolvedValue('room' in overrides ? overrides.room : { id: 'r1', ownerId: overrides.ownerId ?? 'me' }),
+		isRoomMember: vi.fn().mockResolvedValue(true),
 	};
 	const liveKitService = liveKit(overrides.isEnabled ?? true);
 	const chatVoiceService = { scheduleRefresh: vi.fn(), refresh: vi.fn() };
@@ -361,6 +362,15 @@ describe('chat/rooms/voice/kick and mute', () => {
 		const f = moderationFixture(KickEndpoint, { ownerId: 'someone-else' });
 		await expect(f.endpoint.exec({ roomId: 'r1', userId: 'u2' }, me, null, null)).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
 		expect(f.liveKitService.removeParticipant).not.toHaveBeenCalled();
+	});
+
+	test.each([
+		['kick', KickEndpoint],
+		['mute', MuteEndpoint],
+	] as const)('%s does not tell an outsider that the room exists', async (_name, Endpoint) => {
+		const f = moderationFixture(Endpoint, { ownerId: 'someone-else' });
+		f.chatService.isRoomMember.mockResolvedValue(false);
+		await expect(f.endpoint.exec({ roomId: 'r1', userId: 'u2' }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_ROOM' });
 	});
 
 	test('mute mutes the microphone of the target user', async () => {
@@ -390,7 +400,7 @@ function chatServiceFixture() {
 		globalEventService: { publishChatRoomStream: vi.fn() },
 		chatRoomInvitationsRepository: { findBy: vi.fn(async () => []) },
 		chatRoomMembershipsRepository: {
-			findOneByOrFail: vi.fn().mockResolvedValue({ id: 'm1', roomId: 'r1', userId: 'u1' }),
+			findOneBy: vi.fn().mockResolvedValue({ id: 'm1', roomId: 'r1', userId: 'u1' }),
 			findBy: vi.fn().mockResolvedValue([]),
 			delete: vi.fn().mockResolvedValue({ affected: 1 }),
 		},
@@ -458,6 +468,8 @@ describe('ChatService room control publication', () => {
 		});
 		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 		await f.service.leaveRoom('u1', 'r1');
+		// The Remove activity must not end up in the server log.
+		expect(log).not.toHaveBeenCalled();
 		log.mockRestore();
 		expect(publish).toHaveBeenCalledExactlyOnceWith('r1', 'membershipEnded', { userId: 'u1' });
 	});

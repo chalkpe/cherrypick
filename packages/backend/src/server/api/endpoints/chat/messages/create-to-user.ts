@@ -9,7 +9,7 @@ import { Endpoint } from '@/server/api/endpoint-base.js';
 import { GetterService } from '@/server/api/GetterService.js';
 import { DI } from '@/di-symbols.js';
 import { ApiError } from '@/server/api/error.js';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatMessageBlockedError, ChatService } from '@/core/ChatService.js';
 import type { DriveFilesRepository, MiUser } from '@/models/_.js';
 
 export const meta = {
@@ -61,6 +61,12 @@ export const meta = {
 			message: 'You cannot send a message because you have been blocked by this user.',
 			code: 'YOU_HAVE_BEEN_BLOCKED',
 			id: 'c15a5199-7422-4968-941a-2a462c478f7d',
+		},
+
+		cannotChatWithUser: {
+			message: 'This user does not accept your messages.',
+			code: 'CANNOT_CHAT_WITH_USER',
+			id: 'fcaaed42-3f5a-4246-a08d-18736819e76b',
 		},
 	},
 } as const;
@@ -114,10 +120,16 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw err;
 			});
 
-			return await this.chatService.createMessageToUser(me, toUser, {
-				text: ps.text,
-				file: file,
-			});
+			try {
+				return await this.chatService.createMessageToUser(me, toUser, {
+					text: ps.text,
+					file: file,
+				});
+			} catch (e) {
+				if (e instanceof ChatMessageBlockedError) throw new ApiError(meta.errors.youHaveBeenBlocked);
+				if (e instanceof ChatMessageAccessError) throw new ApiError(meta.errors.cannotChatWithUser);
+				throw e;
+			}
 		});
 	}
 }

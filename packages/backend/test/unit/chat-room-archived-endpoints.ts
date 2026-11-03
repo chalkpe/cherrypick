@@ -20,6 +20,7 @@ function chatService(method: string) {
 	return {
 		checkChatAvailability: vi.fn().mockResolvedValue(undefined),
 		findRoomById: vi.fn().mockResolvedValue({ id: 'r1' }),
+		isRoomMember: vi.fn().mockResolvedValue(true),
 		findMyMessageById: vi.fn().mockResolvedValue({ id: 'm1' }),
 		[method]: vi.fn().mockRejectedValue(new ChatRoomArchivedError('archived')),
 	} as any;

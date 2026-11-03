@@ -55,7 +55,7 @@ export class MiChatMessage {
 	})
 	public text: string | null;
 
-	@Index()
+	@Index({ unique: true })
 	@Column('varchar', {
 		length: 512, nullable: true,
 	})

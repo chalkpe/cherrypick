@@ -49,12 +49,24 @@ export function chatActorUri(actor: ChatActor, baseUrl: string): string {
 	return actor.host == null ? `${baseUrl}/users/${actor.id}` : actor.uri!;
 }
 
-export function chatMessageUri(message: ChatMessage, baseUrl: string): string {
+export function chatMessageUri(message: Pick<ChatMessage, 'id'> & { uri?: string | null }, baseUrl: string): string {
 	return message.uri ?? `${baseUrl}/chat/messages/${message.id}`;
+}
+
+/** The ID of a message stored here, read from the URI this server gave it. */
+export function localChatMessageIdFromUri(uri: string, baseUrl: string): string | null {
+	const prefix = `${baseUrl}/chat/messages/`;
+	return uri.startsWith(prefix) ? uri.slice(prefix.length) : null;
 }
 
 export function chatRoomUri(room: Pick<ChatRoom, 'id'> & { uri?: string | null }, baseUrl: string): string {
 	return room.uri ?? `${baseUrl}/chat/rooms/${room.id}`;
+}
+
+/** A room lives on its owner's server, which matters for mirrors stored before they had a URI. */
+export function chatRoomUriForOwner(room: Pick<ChatRoom, 'id'> & { uri?: string | null }, owner: Pick<ChatActor, 'host' | 'uri'> | null, baseUrl: string): string {
+	const ownerBase = owner?.host != null ? owner.uri?.replace(/\/users\/.*$/, '') : null;
+	return chatRoomUri(room, ownerBase ?? baseUrl);
 }
 
 export function buildChatNote(

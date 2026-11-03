@@ -33,10 +33,24 @@ import { NotificationService } from '@/core/NotificationService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { emojiRegex } from '@/misc/emoji-regex.js';
+import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
+import { chatMessageUri, chatRoomUriForOwner, localChatMessageIdFromUri } from '@/core/activitypub/misc/chat-payloads.js';
+import { ApiError } from '@/server/api/error.js';
 
 export class ChatMessageAccessError extends Error {}
 export class ChatMessageInvalidTextError extends ChatMessageAccessError {}
+export class ChatMessageBlockedError extends ChatMessageAccessError {}
 export class ChatRoomArchivedError extends Error {}
+/** The invitation or membership a request relies on is missing. Callers must not reveal whether the room exists. */
+export class ChatRoomAccessError extends Error {}
+export class ChatRoomFullError extends Error {}
+export class ChatRoomInvitationRefusedError extends Error {
+	constructor(public reason: 'yourself' | 'noSuchUser' | 'alreadyMember' | 'alreadyInvited' | 'blocked' | 'blocking') {
+		super(reason);
+	}
+}
+export class ChatReactionInvalidError extends Error {}
+export class ChatTooManyReactionsError extends Error {}
 
 export const MAX_ROOM_MEMBERS = 50;
 // Remote peers may allow longer messages than our composer, up to the text column's limit.
@@ -60,7 +74,7 @@ function normalizeEmojiString(x: string) {
 		// 異体字セレクタ除去
 		return unicode.match('\u200d') ? unicode : unicode.replace(/\ufe0f/g, '');
 	} else {
-		throw new Error('invalid emoji');
+		throw new ChatReactionInvalidError('invalid emoji');
 	}
 }
 
@@ -145,7 +159,12 @@ export class ChatService {
 	public async checkChatAvailability(userId: MiUser['id'], permission: 'read' | 'write') {
 		const policy = await this.getChatAvailability(userId);
 		if (policy[permission] === false) {
-			throw new Error('ROLE_PERMISSION_DENIED');
+			throw new ApiError({
+				message: 'Your role does not allow this chat action.',
+				code: 'ROLE_PERMISSION_DENIED',
+				kind: 'permission',
+				id: '4768787a-dc92-45ad-ac96-6491d4a0d0a8',
+			});
 		}
 	}
 
@@ -203,7 +222,7 @@ export class ChatService {
 
 		const blocked = await this.userBlockingService.checkBlocked(toUser.id, fromUser.id);
 		if (blocked) {
-			throw new ChatMessageAccessError('blocked');
+			throw new ChatMessageBlockedError('blocked');
 		}
 
 		// Extract emojis from text if not provided
@@ -223,7 +242,7 @@ export class ChatService {
 			text: params.text ? params.text.trim() : null,
 			fileId: params.file ? params.file.id : null,
 			reads: [],
-			uri: params.uri ?? `${this.config.url.replace(/\/$/, '')}/chat/messages/${id}`,
+			uri: chatMessageUri({ id, uri: params.uri }, this.config.url),
 			editedAt: params.editedAt ?? null,
 			emojis,
 		} satisfies Partial<MiChatMessage>;
@@ -336,7 +355,7 @@ export class ChatService {
 			text: params.text ? params.text.trim() : null,
 			fileId: params.file ? params.file.id : null,
 			reads: [],
-			uri: params.uri ?? `${this.config.url.replace(/\/$/, '')}/chat/messages/${id}`,
+			uri: chatMessageUri({ id, uri: params.uri }, this.config.url),
 			editedAt: params.editedAt ?? null,
 			emojis,
 		} satisfies Partial<MiChatMessage>;
@@ -846,25 +865,29 @@ export class ChatService {
 	@bindThis
 	public async createRoomInvitation(inviterId: MiUser['id'], roomId: MiChatRoom['id'], inviteeId: MiUser['id']) {
 		if (inviterId === inviteeId) {
-			throw new Error('yourself');
+			throw new ChatRoomInvitationRefusedError('yourself');
 		}
 
-		const room = await this.chatRoomsRepository.findOneByOrFail({ id: roomId, ownerId: inviterId });
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId, ownerId: inviterId });
+		if (room == null) throw new ChatRoomAccessError('no such room');
 
 		if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
 
+		const invitee = await this.usersRepository.findOneBy({ id: inviteeId });
+		if (invitee == null) throw new ChatRoomInvitationRefusedError('noSuchUser');
+
 		if (await this.isRoomMember(room, inviteeId)) {
-			throw new Error('already member');
+			throw new ChatRoomInvitationRefusedError('alreadyMember');
 		}
 
 		const existingInvitation = await this.chatRoomInvitationsRepository.findOneBy({ roomId, userId: inviteeId });
 		if (existingInvitation) {
-			throw new Error('already invited');
+			throw new ChatRoomInvitationRefusedError('alreadyInvited');
 		}
 
 		const membershipsCount = await this.chatRoomMembershipsRepository.countBy({ roomId });
 		if (membershipsCount >= MAX_ROOM_MEMBERS) {
-			throw new Error('room is full');
+			throw new ChatRoomFullError('room is full');
 		}
 
 		const [blocked, blocking] = await Promise.all([
@@ -872,10 +895,10 @@ export class ChatService {
 			this.userBlockingService.checkBlocked(inviterId, inviteeId),
 		]);
 		if (blocked) {
-			throw new Error('blocked');
+			throw new ChatRoomInvitationRefusedError('blocked');
 		}
 		if (blocking) {
-			throw new Error('blocking');
+			throw new ChatRoomInvitationRefusedError('blocking');
 		}
 
 		const invitation = {
@@ -884,11 +907,13 @@ export class ChatService {
 			userId: inviteeId,
 		} satisfies Partial<MiChatRoomInvitation>;
 
-		const created = await this.chatRoomInvitationsRepository.insertOne(invitation);
+		const created = await this.chatRoomInvitationsRepository.insertOne(invitation).catch(err => {
+			// A second request can pass the check above while the first one is still inserting.
+			if (isDuplicateKeyValueError(err)) throw new ChatRoomInvitationRefusedError('alreadyInvited');
+			throw err;
+		});
 
-		// Get inviter and invitee users
 		const inviter = await this.usersRepository.findOneByOrFail({ id: inviterId });
-		const invitee = await this.usersRepository.findOneByOrFail({ id: inviteeId });
 
 		// Send local notification if invitee is local
 		if (this.userEntityService.isLocalUser(invitee)) {
@@ -945,9 +970,11 @@ export class ChatService {
 
 	@bindThis
 	public async joinToRoom(userId: MiUser['id'], roomId: MiChatRoom['id']) {
-		const invitation = await this.chatRoomInvitationsRepository.findOneByOrFail({ roomId, userId });
+		const invitation = await this.chatRoomInvitationsRepository.findOneBy({ roomId, userId });
+		if (invitation == null) throw new ChatRoomAccessError('invitation not found');
 
-		const room = await this.chatRoomsRepository.findOneByOrFail({ id: roomId });
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		if (room == null) throw new ChatRoomAccessError('no such room');
 		if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
 
 		// The invitation is the authorization for joining. Consume it atomically
@@ -960,7 +987,7 @@ export class ChatService {
 				userId,
 			});
 			if (consumed.affected !== 1) {
-				throw new Error('invitation not found');
+				throw new ChatRoomAccessError('invitation not found');
 			}
 
 			const existingMembership = await manager.findOneBy(MiChatRoomMembership, { roomId, userId });
@@ -970,7 +997,7 @@ export class ChatService {
 
 			const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId });
 			if (membershipsCount >= MAX_ROOM_MEMBERS) {
-				throw new Error('room is full');
+				throw new ChatRoomFullError('room is full');
 			}
 
 			const newMembership = {
@@ -1038,14 +1065,17 @@ export class ChatService {
 
 	@bindThis
 	public async ignoreRoomInvitation(userId: MiUser['id'], roomId: MiChatRoom['id']) {
-		const invitation = await this.chatRoomInvitationsRepository.findOneByOrFail({ roomId, userId });
+		const invitation = await this.chatRoomInvitationsRepository.findOneBy({ roomId, userId });
+		if (invitation == null) throw new ChatRoomAccessError('invitation not found');
 		await this.chatRoomInvitationsRepository.update(invitation.id, { ignored: true });
 	}
 
 	@bindThis
 	public async rejectRoomInvitation(userId: MiUser['id'], roomId: MiChatRoom['id']) {
-		const invitation = await this.chatRoomInvitationsRepository.findOneByOrFail({ roomId, userId });
-		const room = await this.chatRoomsRepository.findOneByOrFail({ id: roomId });
+		const invitation = await this.chatRoomInvitationsRepository.findOneBy({ roomId, userId });
+		if (invitation == null) throw new ChatRoomAccessError('invitation not found');
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		if (room == null) throw new ChatRoomAccessError('no such room');
 
 		// Delete the invitation
 		await this.chatRoomInvitationsRepository.delete({ id: invitation.id });
@@ -1055,7 +1085,7 @@ export class ChatService {
 		const invitee = await this.usersRepository.findOneByOrFail({ id: userId });
 
 		if (this.userEntityService.isLocalUser(invitee) && this.userEntityService.isRemoteUser(inviter)) {
-			const roomUri = room.uri ?? inviter.uri?.replace(/\/users\/.*$/, `/chat/rooms/${room.id}`) ?? `${this.config.url}/chat/rooms/${room.id}`;
+			const roomUri = chatRoomUriForOwner(room, inviter, this.config.url);
 
 			// Create a simplified invite object reference for the Reject activity
 			const inviteObject = {
@@ -1078,12 +1108,11 @@ export class ChatService {
 		const invitation = await this.chatRoomInvitationsRepository.findOneBy({ id: invitationId });
 		if (!invitation) return false;
 
-		const room = await this.chatRoomsRepository.findOneByOrFail({ id: invitation.roomId });
+		const room = await this.chatRoomsRepository.findOneBy({ id: invitation.roomId });
+		if (room == null) return false;
 
-		// Check if the inviter is the room owner
-		if (room.ownerId !== inviterId) {
-			throw new Error('not owner');
-		}
+		// Someone else's invitation is reported as missing rather than revealed.
+		if (room.ownerId !== inviterId) return false;
 
 		// Get inviter and invitee users
 		const inviter = await this.usersRepository.findOneByOrFail({ id: inviterId });
@@ -1120,7 +1149,8 @@ export class ChatService {
 
 	@bindThis
 	public async leaveRoom(userId: MiUser['id'], roomId: MiChatRoom['id']) {
-		const membership = await this.chatRoomMembershipsRepository.findOneByOrFail({ roomId, userId });
+		const membership = await this.chatRoomMembershipsRepository.findOneBy({ roomId, userId });
+		if (membership == null) throw new ChatRoomAccessError('not a member');
 		const room = await this.chatRoomsRepository.findOne({ where: { id: roomId }, relations: { owner: true } });
 		const leavingUser = await this.usersRepository.findOneByOrFail({ id: userId });
 
@@ -1138,17 +1168,9 @@ export class ChatService {
 
 		// Federation: Send Remove activity when local user leaves
 		if (room && this.userEntityService.isLocalUser(leavingUser)) {
-			// Load owner if not already loaded
 			const owner = room.owner ?? await this.usersRepository.findOneByOrFail({ id: room.ownerId });
 
-			if (!owner) {
-				console.log('[ChatService.leaveRoom] Owner not found for room:', room.id);
-				return;
-			}
-
-			console.log('[ChatService.leaveRoom] Processing federation for room:', room.id, 'owner:', owner.id, 'isRemote:', this.userEntityService.isRemoteUser(owner));
-
-			// Get all members including owner
+			// The owner is one of these, so a remote owner hears about it too.
 			const allMemberIds = (await this.chatRoomMembershipsRepository.findBy({ roomId: room.id }))
 				.map(m => m.userId)
 				.concat(room.ownerId);
@@ -1156,20 +1178,11 @@ export class ChatService {
 			const allMembers = await this.usersRepository.findBy({ id: In(allMemberIds) });
 			const remoteMembers = allMembers.filter(u => this.userEntityService.isRemoteUser(u));
 
-			// Send Remove activity to remote members and owner
-			if (remoteMembers.length > 0 || this.userEntityService.isRemoteUser(owner)) {
-				// Generate the correct room URI based on the owner's server
-				const roomUri = this.userEntityService.isLocalUser(owner)
-					? this.apRendererService.genLocalChatRoomUri(room.id)
-					: room.uri ?? `${owner.uri?.replace(/\/users\/.*$/, '')}/chat/rooms/${room.id}`;
-
-				console.log('[ChatService.leaveRoom] Generated roomUri:', roomUri);
-
-				const leavingUserUri = this.userEntityService.genLocalUserUri(leavingUser.id) ?? '';
+			if (remoteMembers.length > 0) {
 				const removeActivity = this.apRendererService.renderRemove(
 					leavingUser,
-					roomUri,
-					leavingUserUri,
+					chatRoomUriForOwner(room, owner, this.config.url),
+					this.userEntityService.genLocalUserUri(leavingUser.id),
 				);
 
 				// Add id and @context to the activity
@@ -1179,21 +1192,9 @@ export class ChatService {
 					id: activityId,
 				});
 
-				console.log('[ChatService.leaveRoom] Remove activity:', JSON.stringify(contextedActivity, null, 2));
-
-				// Send to all remote members
 				for (const remoteMember of remoteMembers) {
-					console.log('[ChatService.leaveRoom] Sending Remove to remote member:', remoteMember.id, remoteMember.inbox);
 					this.queueService.deliver(leavingUser, contextedActivity, remoteMember.inbox, false);
 				}
-
-				// Send to room owner if remote
-				if (this.userEntityService.isRemoteUser(owner) && !remoteMembers.some(m => m.id === owner.id)) {
-					console.log('[ChatService.leaveRoom] Sending Remove to room owner:', owner.id, owner.inbox);
-					this.queueService.deliver(leavingUser, contextedActivity, owner.inbox, false);
-				}
-			} else {
-				console.log('[ChatService.leaveRoom] No remote members or owner, skipping federation');
 			}
 		}
 	}
@@ -1238,7 +1239,8 @@ export class ChatService {
 
 	@bindThis
 	public async muteRoom(userId: MiUser['id'], roomId: MiChatRoom['id'], mute: boolean) {
-		const membership = await this.chatRoomMembershipsRepository.findOneByOrFail({ roomId, userId });
+		const membership = await this.chatRoomMembershipsRepository.findOneBy({ roomId, userId });
+		if (membership == null) throw new ChatRoomAccessError('not a member');
 		await this.chatRoomMembershipsRepository.update(membership.id, { isMuted: mute });
 	}
 
@@ -1250,6 +1252,8 @@ export class ChatService {
 	}, options?: { federate?: boolean; remoteUpdatedAt?: Date }): Promise<MiChatRoom> {
 		const wasArchived = room.isArchived;
 		const remoteUpdatedAt = options?.remoteUpdatedAt;
+		// TypeORM refuses an UPDATE that has nothing to set.
+		if (remoteUpdatedAt == null && Object.values(params).every(value => value === undefined)) return room;
 		const query = this.chatRoomsRepository.createQueryBuilder().update()
 			.set(remoteUpdatedAt != null ? { ...params, lastRemoteUpdatedAt: remoteUpdatedAt } : params)
 			.where('id = :id', { id: room.id });
@@ -1369,7 +1373,7 @@ export class ChatService {
 			const emoji = (await this.customEmojiService.localEmojisCache.fetch()).get(name);
 
 			if (emoji == null) {
-				throw new Error('no such emoji');
+				throw new ChatReactionInvalidError('no such emoji');
 			} else {
 				reaction = `:${name}:`;
 			}
@@ -1387,7 +1391,9 @@ export class ChatService {
 			throw new ChatMessageAccessError('cannot react to others message');
 		}
 
-		const room = message.toRoomId ? await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }) : null;
+		const room = message.toRoomId ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
+		// The room and its messages are being deleted at this moment.
+		if (message.toRoomId != null && room == null) throw new ChatMessageAccessError('no such message');
 
 		if (room) {
 			if (!(await this.isRoomMember(room, userId))) {
@@ -1400,7 +1406,7 @@ export class ChatService {
 		if (message.reactions.includes(pair)) return;
 
 		if (message.reactions.length >= MAX_REACTIONS_PER_MESSAGE) {
-			throw new Error('too many reactions');
+			throw new ChatTooManyReactionsError('too many reactions');
 		}
 
 		// Undo names one Like, so a second Like for the same reaction could never be withdrawn remotely.
@@ -1436,7 +1442,7 @@ export class ChatService {
 		const participants = await this.participantsForMessage(message);
 		if (!participants.some(user => this.userEntityService.isRemoteUser(user))) return;
 		const toUsers = participants.filter(user => user.id !== actor.id);
-		const messageUri = this.messageUriOf(message);
+		const messageUri = chatMessageUri(message, this.config.url);
 		const activityId = `${this.userEntityService.genLocalUserUri(actor.id)}/chat-reactions/${randomUUID()}`;
 		await this.redisClient.setex(this.chatReactionActivityIdKey(actor.id, messageUri, reaction), CHAT_REACTION_ACTIVITY_ID_TTL, activityId);
 		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReaction(message, actor, toUsers, reaction, activityId));
@@ -1459,7 +1465,9 @@ export class ChatService {
 		if (message == null) throw new ChatMessageAccessError('no such message');
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 
-		const room = message.toRoomId ? await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }) : null;
+		const room = message.toRoomId ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
+		// The room and its messages are being deleted at this moment.
+		if (message.toRoomId != null && room == null) throw new ChatMessageAccessError('no such message');
 
 		if (room) {
 			if (!(await this.isRoomMember(room, userId))) {
@@ -1505,7 +1513,7 @@ export class ChatService {
 		const participants = await this.participantsForMessage(message);
 		if (!participants.some(user => this.userEntityService.isRemoteUser(user))) return;
 		const toUsers = participants.filter(user => user.id !== actor.id);
-		const messageUri = this.messageUriOf(message);
+		const messageUri = chatMessageUri(message, this.config.url);
 		const activityIdKey = this.chatReactionActivityIdKey(actor.id, messageUri, reaction);
 		const activityId = await this.redisClient.get(activityIdKey) ?? undefined;
 		await this.redisClient.del(activityIdKey);
@@ -1517,10 +1525,8 @@ export class ChatService {
 		const message = await this.chatMessagesRepository.findOneBy({ uri });
 		if (message != null) return message;
 
-		const prefix = `${this.config.url.replace(/\/$/, '')}/chat/messages/`;
-		if (!uri.startsWith(prefix)) return null;
-
-		return this.chatMessagesRepository.findOneBy({ id: uri.slice(prefix.length) });
+		const id = localChatMessageIdFromUri(uri, this.config.url);
+		return id != null ? this.chatMessagesRepository.findOneBy({ id }) : null;
 	}
 
 	@bindThis
@@ -1602,7 +1608,7 @@ export class ChatService {
 		if (room) {
 			if (!(await this.isRoomMember(room, actor.id))) throw new ChatMessageAccessError('cannot react to others message');
 			await this.assertRemoteWriteAllowed(room);
-		} else if (message.fromUserId !== actor.id && message.toUserId !== actor.id) {
+		} else if (message.toUserId !== actor.id) {
 			throw new ChatMessageAccessError('cannot react to others message');
 		}
 
@@ -1757,8 +1763,7 @@ export class ChatService {
 				} else {
 					await this.reactRemote(actor, message, parsed.reaction, parsed.activityId as string | undefined);
 				}
-			} catch (err) {
-				if (err instanceof ChatMessageAccessError) continue;
+			} catch {
 				// A malformed deferred reaction must not prevent the message from being stored.
 				continue;
 			}
@@ -1805,10 +1810,6 @@ export class ChatService {
 		}
 	}
 
-	private messageUriOf(message: MiChatMessage): string {
-		return message.uri ?? `${this.config.url.replace(/\/$/, '')}/chat/messages/${message.id}`;
-	}
-
 	private chatReactionActivityIdKey(actorId: MiUser['id'], messageUri: string, reaction: string): string {
 		return `chat_reaction_activity_id:${messageUri}:${actorId}:${encodeURIComponent(reaction)}`;
 	}
@@ -1832,11 +1833,9 @@ export class ChatService {
 		return room != null ? await this.roomUriForRoom(room) : undefined;
 	}
 
-	private async roomUriForRoom(room: MiChatRoom): Promise<string | undefined> {
+	private async roomUriForRoom(room: MiChatRoom): Promise<string> {
 		if (room.uri != null) return room.uri;
-		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
-		const base = owner?.host != null ? owner.uri?.replace(/\/users\/.*$/, '') : null;
-		return base != null ? `${base}/chat/rooms/${room.id}` : undefined;
+		return chatRoomUriForOwner(room, await this.usersRepository.findOneBy({ id: room.ownerId }), this.config.url);
 	}
 
 	private async participantsForMessage(message: MiChatMessage): Promise<MiUser[]> {

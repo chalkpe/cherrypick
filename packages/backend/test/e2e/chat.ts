@@ -391,4 +391,105 @@ describe('chat/messages/update', () => {
 			await db.destroy();
 		}
 	});
+
+	// These used to reach clients as 500 INTERNAL_ERROR, which also filled the server log.
+	describe('refused requests', () => {
+		const assertRefused = (res: { status: number; body: any }, code: string) => {
+			assert.strictEqual(res.status, 400, JSON.stringify(res.body));
+			assert.strictEqual(res.body.error.code, code);
+		};
+		const createRoom = async (owner: misskey.entities.SignupResponse) => {
+			const room = await api('chat/rooms/create', { name: 'refusals' }, owner);
+			assert.strictEqual(room.status, 200);
+			return room.body.id as string;
+		};
+
+		test('updating a room with no fields returns it unchanged', async () => {
+			const roomId = await createRoom(alice);
+
+			const updated = await api('chat/rooms/update', { roomId }, alice);
+
+			assert.strictEqual(updated.status, 200, JSON.stringify(updated.body));
+			assert.strictEqual(updated.body.name, 'refusals');
+		});
+
+		test('joining, ignoring and rejecting need an invitation', async () => {
+			const roomId = await createRoom(alice);
+
+			assertRefused(await api('chat/rooms/join', { roomId }, bob), 'NO_SUCH_ROOM');
+			assertRefused(await api('chat/rooms/invitations/ignore', { roomId }, bob), 'NO_SUCH_ROOM');
+			assertRefused(await api('chat/rooms/invitations/reject', { roomId }, bob), 'NO_SUCH_ROOM');
+		});
+
+		test('leaving and muting need a membership, which the owner does not have', async () => {
+			const roomId = await createRoom(alice);
+
+			assertRefused(await api('chat/rooms/leave', { roomId }, bob), 'NO_SUCH_ROOM');
+			assertRefused(await api('chat/rooms/mute', { roomId, mute: true }, bob), 'NO_SUCH_ROOM');
+			assertRefused(await api('chat/rooms/leave', { roomId }, alice), 'NO_SUCH_ROOM');
+			assertRefused(await api('chat/rooms/mute', { roomId, mute: true }, alice), 'NO_SUCH_ROOM');
+		});
+
+		test('only the owner can cancel an invitation', async () => {
+			const roomId = await createRoom(alice);
+			const carol = await signup();
+			const invitation = await api('chat/rooms/invitations/create', { roomId, userId: carol.id }, alice);
+			assert.strictEqual(invitation.status, 200);
+
+			assertRefused(await api('chat/rooms/invitations/cancel', { invitationId: invitation.body.id }, bob), 'NO_SUCH_INVITATION');
+			assert.strictEqual((await api('chat/rooms/invitations/cancel', { invitationId: invitation.body.id }, alice)).status, 204);
+		});
+
+		test('an invitation is refused for each reason it cannot be sent', async () => {
+			const roomId = await createRoom(alice);
+			const carol = await signup();
+			const dave = await signup();
+			const erin = await signup();
+			assert.strictEqual((await api('chat/rooms/invitations/create', { roomId, userId: bob.id }, alice)).status, 200);
+			assert.strictEqual((await api('chat/rooms/join', { roomId }, bob)).status, 204);
+			assert.strictEqual((await api('chat/rooms/invitations/create', { roomId, userId: carol.id }, alice)).status, 200);
+			assert.strictEqual((await api('blocking/create', { userId: alice.id }, dave)).status, 200);
+			assert.strictEqual((await api('blocking/create', { userId: erin.id }, alice)).status, 200);
+
+			try {
+				assertRefused(await api('chat/rooms/invitations/create', { roomId, userId: alice.id }, alice), 'CANNOT_INVITE_YOURSELF');
+				assertRefused(await api('chat/rooms/invitations/create', { roomId, userId: bob.id }, alice), 'ALREADY_MEMBER');
+				assertRefused(await api('chat/rooms/invitations/create', { roomId, userId: carol.id }, alice), 'ALREADY_INVITED');
+				assertRefused(await api('chat/rooms/invitations/create', { roomId, userId: dave.id }, alice), 'YOU_HAVE_BEEN_BLOCKED');
+				assertRefused(await api('chat/rooms/invitations/create', { roomId, userId: erin.id }, alice), 'YOU_ARE_BLOCKING');
+				assertRefused(await api('chat/rooms/invitations/create', { roomId, userId: 'xxxxxxxxxx' }, alice), 'NO_SUCH_USER');
+			} finally {
+				await api('blocking/delete', { userId: erin.id }, alice);
+			}
+		});
+
+		test('a reaction that is not an emoji, or an unknown custom emoji, is refused', async () => {
+			const created = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'react to me' }, alice);
+			assert.strictEqual(created.status, 200);
+			const messageId = created.body.id;
+
+			assertRefused(await api('chat/messages/react', { messageId, reaction: 'not an emoji' }, bob), 'INVALID_REACTION');
+			assertRefused(await api('chat/messages/react', { messageId, reaction: ':no_such_emoji:' }, bob), 'INVALID_REACTION');
+			assertRefused(await api('chat/messages/unreact', { messageId, reaction: 'not an emoji' }, bob), 'INVALID_REACTION');
+		});
+
+		test('sending to a room gives an outsider the same answer whether or not it exists', async () => {
+			const roomId = await createRoom(alice);
+			const params = { toRoomId: roomId } as any;
+
+			assertRefused(await api('chat/messages/create-to-room', params, bob), 'NO_SUCH_ROOM');
+			assertRefused(await api('chat/messages/create-to-room', { ...params, fileId: 'xxxxxxxxxx' }, bob), 'NO_SUCH_ROOM');
+		});
+
+		test('a recipient who does not accept the message refuses it', async () => {
+			const closed = await signup();
+			assert.strictEqual((await api('i/update', { chatScope: 'none' }, closed)).status, 200);
+			const blocker = await signup();
+			assert.strictEqual((await api('i/update', { chatScope: 'everyone' }, blocker)).status, 200);
+			assert.strictEqual((await api('blocking/create', { userId: alice.id }, blocker)).status, 200);
+
+			assertRefused(await api('chat/messages/create-to-user', { toUserId: closed.id, text: 'hello' }, alice), 'CANNOT_CHAT_WITH_USER');
+			assertRefused(await api('chat/messages/create-to-user', { toUserId: blocker.id, text: 'hello' }, alice), 'YOU_HAVE_BEEN_BLOCKED');
+		});
+	});
 });

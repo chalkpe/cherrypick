@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatRoomFullError, ChatService, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 
 const invitation = {
 	id: 'invitation1',
@@ -91,9 +91,9 @@ function createFixture(options: FixtureOptions = {}) {
 	};
 
 	const chatRoomInvitationsRepository = {
-		findOneByOrFail: vi.fn(async () => {
+		findOneBy: vi.fn(async () => {
 			const current = state.invitations.get(invitation.id);
-			if (current == null) throw new Error('invitation not found');
+			if (current == null) return null;
 
 			reads++;
 			if (bothRead != null && reads === 2) releaseReads();
@@ -132,7 +132,7 @@ function createFixture(options: FixtureOptions = {}) {
 		chatRoomInvitationsRepository,
 		chatRoomMembershipsRepository,
 		chatRoomsRepository: {
-			findOneByOrFail: vi.fn(async () => room),
+			findOneBy: vi.fn(async () => room),
 		},
 		usersRepository,
 		userEntityService: {
@@ -173,6 +173,16 @@ describe('ChatService.joinToRoom invitation consumption', () => {
 
 		expect(f.state.memberships).toEqual([]);
 		expect(f.manager.insert).not.toHaveBeenCalled();
+	});
+
+	test('a full room refuses the join and keeps the invitation', async () => {
+		const f = createFixture();
+		f.state.memberships = Array.from({ length: MAX_ROOM_MEMBERS }, (_, i) => ({ id: `m${i}`, roomId: 'room1', userId: `other${i}` }));
+
+		await expect(f.service.joinToRoom('user1', 'room1')).rejects.toBeInstanceOf(ChatRoomFullError);
+
+		expect(f.state.invitations.size).toBe(1);
+		expect(f.state.memberships).toHaveLength(MAX_ROOM_MEMBERS);
 	});
 
 	test('restores the invitation when the membership insert fails', async () => {

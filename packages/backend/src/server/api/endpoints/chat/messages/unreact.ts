@@ -6,7 +6,7 @@
 import { Injectable } from '@nestjs/common';
 import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
-import { ChatService, ChatMessageAccessError, ChatRoomArchivedError } from '@/core/ChatService.js';
+import { ChatService, ChatMessageAccessError, ChatReactionInvalidError, ChatRoomArchivedError } from '@/core/ChatService.js';
 import { ApiError } from '@/server/api/error.js';
 
 export const meta = {
@@ -31,6 +31,11 @@ export const meta = {
 			message: 'This room is archived.',
 			code: 'ROOM_IS_ARCHIVED',
 			id: '92b7e6c4-5a13-4f80-a7d9-08f3e2c1b6d5',
+		},
+		invalidReaction: {
+			message: 'That reaction is not an emoji.',
+			code: 'INVALID_REACTION',
+			id: '1de6e9fc-362d-40ed-a79f-861247e2f43c',
 		},
 	},
 } as const;
@@ -58,6 +63,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			} catch (e) {
 				if (e instanceof ChatMessageAccessError) throw new ApiError(meta.errors.noSuchMessage);
 				if (e instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);
+				if (e instanceof ChatReactionInvalidError) throw new ApiError(meta.errors.invalidReaction);
 				throw e;
 			}
 		});

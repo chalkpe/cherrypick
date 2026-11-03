@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { QueryFailedError } from 'typeorm';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatMessageAccessError, ChatService, ChatRoomArchivedError } from '@/core/ChatService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
@@ -674,7 +675,7 @@ describe('ChatService chat federation delivery', () => {
 		test('a local user cannot join, and keeps the invitation', async () => {
 			const f = archived();
 			const invitations = {
-				findOneByOrFail: vi.fn(async () => ({ id: 'inv', roomId: 'r1', userId: 'alice' })),
+				findOneBy: vi.fn(async () => ({ id: 'inv', roomId: 'r1', userId: 'alice' })),
 				delete: vi.fn(),
 			};
 			Object.assign(f.service, { chatRoomInvitationsRepository: invitations });
@@ -1549,6 +1550,14 @@ describe('ApInboxService chat activity routing', () => {
 		const create = (f: ReturnType<typeof createInbox>) => (f.inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage(
 			{}, f.actor, object(f), { type: 'Create', actor: f.actor.uri },
 		);
+
+		test('a Create that loses the insert race to the unique URI is a duplicate, not a retry', async () => {
+			const f = createInbox();
+			const duplicate = new QueryFailedError('INSERT', [], Object.assign(new Error('duplicate key'), { code: '23505' }));
+			f.chatService.createMessageToUser.mockRejectedValue(duplicate);
+
+			expect(await create(f)).toBe('skip: chat message exists');
+		});
 
 		test('skips a duplicate Create before resolving recipients', async () => {
 			const f = createInbox();

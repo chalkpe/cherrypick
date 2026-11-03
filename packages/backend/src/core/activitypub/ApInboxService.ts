@@ -17,6 +17,7 @@ import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NoteCreateService } from '@/core/NoteCreateService.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ChatMessageAccessError, ChatService, MAX_REMOTE_MESSAGE_TEXT_LENGTH, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
+import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { truncate } from '@/misc/truncate.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
@@ -1040,6 +1041,8 @@ export class ApInboxService {
 		} catch (err) {
 			// The recipient refused for good.
 			if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+			// The attachment or recipient work above can outlast the lock, so another worker may have got there first.
+			if (isDuplicateKeyValueError(err)) return 'skip: chat message exists';
 			this.logger.error(`Failed to create chat message: ${err}`);
 			throw err;
 		} finally {

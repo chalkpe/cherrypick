@@ -17,6 +17,7 @@ import type { FollowingsRepository, NotesRepository, EmojisRepository, NoteReact
 import * as url from '@/misc/prelude/url.js';
 import type { Config } from '@/config.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
+import { chatMessageUri, chatRoomUriForOwner } from '@/core/activitypub/misc/chat-payloads.js';
 import { QueueService } from '@/core/QueueService.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import { UserKeypairService } from '@/core/UserKeypairService.js';
@@ -963,7 +964,7 @@ export class ActivityPubServerService {
 				const members = await this.usersRepository.findBy({ id: In(memberIds) });
 				toUsers = members.filter(member => member.id !== fromUser.id);
 				roomId = room.id;
-				roomUri = room.uri ?? (owner.host == null ? this.apRendererService.genLocalChatRoomUri(room.id) : `${owner.uri!.replace(/\/users\/.*$/, '')}/chat/rooms/${room.id}`);
+				roomUri = chatRoomUriForOwner(room, owner, this.config.url);
 			}
 
 			if (toUsers.length === 0) {
@@ -973,8 +974,7 @@ export class ActivityPubServerService {
 
 			if (message.deletedAt != null) {
 				this.setResponseType(request, reply);
-				const uri = message.uri ?? `${this.config.url}/chat/messages/${message.id}`;
-				return this.apRendererService.addContext({ ...this.apRendererService.renderTombstone(uri), formerType: 'Note' });
+				return this.apRendererService.addContext({ ...this.apRendererService.renderTombstone(chatMessageUri(message, this.config.url)), formerType: 'Note' });
 			}
 
 			this.setResponseType(request, reply);
