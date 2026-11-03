@@ -244,6 +244,7 @@ function send() {
 			if (session === editSession) emit('edited');
 		}).catch(err => {
 			console.error(err);
+			os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: err.message });
 		}).then(() => {
 			sending.value = false;
 		});

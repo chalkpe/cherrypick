@@ -125,7 +125,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 
 	<div v-else-if="tab === 'info'" class="_spacer" style="--MI_SPACER-w: 700px;">
-		<XInfo v-if="room != null" :room="room" @updated="room = $event"/>
+		<XInfo v-if="room != null" :room="room" @updated="room = $event" @deleting="deletingOwnRoom = $event"/>
 	</div>
 
 	<template #footer>
@@ -238,6 +238,7 @@ const room = ref<Misskey.entities.ChatRoom | null>(null);
 const memberships = ref<Misskey.entities.ChatRoomMembership[]>([]);
 const membershipVersion = ref(0);
 const membershipEnded = ref(false);
+const deletingOwnRoom = ref(false);
 const connection = ref<Misskey.IChannelConnection<Misskey.Channels['chatUser']> | Misskey.IChannelConnection<Misskey.Channels['chatRoom']> | null>(null);
 const showIndicator = ref(false);
 const timelineEl = useTemplateRef('timelineEl');
@@ -487,6 +488,8 @@ function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['r
 		description: ctx.description,
 		isArchived: ctx.isArchived,
 	};
+	// 入力欄がなくなるので編集も終わる。解除したときに編集へ戻ると、入力中の内容が原文に戻ってしまう
+	if (ctx.isArchived) editingMessage.value = null;
 }
 
 function onMembershipChanged() {
@@ -498,6 +501,23 @@ function onMembershipEnded(ctx: Parameters<Misskey.Channels['chatRoom']['events'
 		onMembershipChanged();
 		return;
 	}
+	closeRoom();
+	if (isActivated) {
+		os.alert({ type: 'info', text: i18n.ts._chat.removedFromRoom });
+		router.push('/chat');
+	}
+}
+
+function onRoomDeleted() {
+	closeRoom();
+	// 自分で削除したときは、削除の結果として room.info.vue が移動する
+	if (isActivated && !deletingOwnRoom.value) {
+		os.alert({ type: 'info', text: i18n.ts._chat.roomDeleted });
+		router.push('/chat');
+	}
+}
+
+function closeRoom() {
 	membershipEnded.value = true;
 	initialized.value = false;
 	messages.value = [];
@@ -506,15 +526,6 @@ function onMembershipEnded(ctx: Parameters<Misskey.Channels['chatRoom']['events'
 	canFetchMore.value = false;
 	connection.value?.dispose();
 	connection.value = null;
-	if (isActivated) {
-		os.alert({ type: 'info', text: i18n.ts._chat.removedFromRoom });
-		router.push('/chat');
-	}
-}
-
-function onRoomDeleted() {
-	os.alert({ type: 'info', text: i18n.ts._chat.roomDeleted });
-	router.push('/chat');
 }
 
 function onIndicatorClick() {

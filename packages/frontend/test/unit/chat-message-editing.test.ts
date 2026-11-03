@@ -28,6 +28,7 @@ vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 import XForm from '@/pages/chat/room.form.vue';
 import XMessage from '@/pages/chat/XMessage.vue';
 import { i18n } from '@/i18n.js';
+import * as os from '@/os.js';
 import { DI } from '@/di.js';
 
 const driveFile = {
@@ -158,6 +159,19 @@ describe.each(['user', 'room'] as const)('%s message editing', target => {
 		expect(storedDraft(target)).toEqual({ text: 'Unsent draft', file: driveFile });
 		expect(mocks.api).toHaveBeenCalledWith('chat/messages/update', { messageId: 'm1', text: 'Changed message' });
 	});
+});
+
+test('a failed save tells the user and keeps the edit open', async () => {
+	mocks.api.mockRejectedValueOnce(new Error('This room is archived.'));
+	const form = renderForm();
+	form.editing.value = message;
+	await nextTick();
+	await fireEvent.update(form.textarea, 'Edited');
+	await fireEvent.click(screen.getByTitle(i18n.ts.save));
+
+	await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: 'This room is archived.' }));
+	expect(form.editing.value).toEqual(message);
+	expect(form.textarea.value).toBe('Edited');
 });
 
 test('an in-flight save does not clear a restored compose draft', async () => {

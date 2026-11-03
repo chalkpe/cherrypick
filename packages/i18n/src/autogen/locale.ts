@@ -6963,19 +6963,19 @@ export interface Locale extends ILocale {
          */
         "deletedMessage": string;
         /**
-         * ルームが削除されました
+         * グループが削除されました
          */
         "roomDeleted": string;
         /**
-         * ルームから外す
+         * グループから外す
          */
         "kickMember": string;
         /**
-         * {name}さんをルームから外しますか？
+         * {name}さんをグループから外しますか？
          */
         "kickMemberConfirm": ParameterizedString<"name">;
         /**
-         * このルームから退出しました。再参加するには招待が必要です。
+         * このグループから退出しました。再参加するには招待が必要です。
          */
         "removedFromRoom": string;
         /**

@@ -60,7 +60,10 @@ const isOwner = computed(() => {
 const name_ = ref(props.room.name);
 const description_ = ref(props.room.description);
 
-const emit = defineEmits<{ (ev: 'updated', room: Misskey.entities.ChatRoom): void }>();
+const emit = defineEmits<{
+	(ev: 'updated', room: Misskey.entities.ChatRoom): void;
+	(ev: 'deleting', deleting: boolean): void;
+}>();
 
 async function save() {
 	// 失敗したときは apiWithDialog がダイアログで知らせるので、ここでは何もしない
@@ -98,9 +101,16 @@ async function del() {
 	});
 	if (canceled) return;
 
-	await os.apiWithDialog('chat/rooms/delete', {
-		roomId: props.room.id,
-	});
+	emit('deleting', true);
+	try {
+		await os.apiWithDialog('chat/rooms/delete', {
+			roomId: props.room.id,
+		});
+	} catch {
+		// apiWithDialog がエラーを表示済み
+		emit('deleting', false);
+		return;
+	}
 	router.push('/chat');
 }
 

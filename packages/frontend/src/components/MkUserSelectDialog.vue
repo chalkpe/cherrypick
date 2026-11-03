@@ -36,10 +36,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div v-if="users.length > 0" :class="$style.users">
 				<button v-for="user in users" :key="user.id" type="button" class="_button" :class="[$style.user, { [$style.selected]: selected && selected.id === user.id }]" :aria-pressed="selected?.id === user.id" @click="selected = user" @dblclick="ok()">
 					<MkAvatar :user="user" :class="$style.avatar" indicator :link="false"/>
-					<div :class="$style.userBody">
+					<span :class="$style.userBody">
 						<MkUserName :user="user" :class="$style.userName"/>
 						<MkAcct :user="user" :class="$style.userAcct"/>
-					</div>
+					</span>
 				</button>
 			</div>
 			<div v-else :class="$style.empty">
@@ -50,10 +50,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div :class="$style.users">
 				<button v-for="user in recentUsers.filter(canSelectUser)" :key="user.id" type="button" class="_button" :class="[$style.user, { [$style.selected]: selected && selected.id === user.id }]" :aria-pressed="selected?.id === user.id" @click="selected = user" @dblclick="ok()">
 					<MkAvatar :user="user" :class="$style.avatar" indicator :link="false"/>
-					<div :class="$style.userBody">
+					<span :class="$style.userBody">
 						<MkUserName :user="user" :class="$style.userName"/>
 						<MkAcct :user="user" :class="$style.userAcct"/>
-					</div>
+					</span>
 				</button>
 			</div>
 		</div>

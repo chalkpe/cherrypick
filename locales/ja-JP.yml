@@ -1746,10 +1746,10 @@ _chat:
     mutual: "相互フォローのユーザーのみ"
     none: "誰も許可しない"
   deletedMessage: "削除されたメッセージ"
-  roomDeleted: "ルームが削除されました"
-  kickMember: "ルームから外す"
-  kickMemberConfirm: "{name}さんをルームから外しますか？"
-  removedFromRoom: "このルームから退出しました。再参加するには招待が必要です。"
+  roomDeleted: "グループが削除されました"
+  kickMember: "グループから外す"
+  kickMemberConfirm: "{name}さんをグループから外しますか？"
+  removedFromRoom: "このグループから退出しました。再参加するには招待が必要です。"
   invitationCancelAreYouSure: "{x}さんに送信された招待をキャンセルしますか？"
 
 _emojiPalette:

@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/vue';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
 import { defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
 
 const mocks = vi.hoisted(() => {
@@ -27,6 +27,8 @@ const mocks = vi.hoisted(() => {
 		timeline: [] as unknown[],
 		roomIsArchived: false,
 		routerPush: vi.fn(),
+		alert: vi.fn(),
+		editMessage: { value: null as (() => void) | null },
 		// 吹き出しごとの描画回数
 		renders: new Map<string, number>(),
 	};
@@ -43,7 +45,7 @@ vi.mock('@/utility/misskey-api.js', () => ({
 vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), useChannel: () => mocks.channel }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
-vi.mock('@/os.js', () => ({ alert: vi.fn(), confirm: vi.fn(), popupMenu: vi.fn() }));
+vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: vi.fn(), popupMenu: vi.fn() }));
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, useListener: vi.fn() }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // 通話や入力欄は吹き出しのまとまりと関係ないので空にする
@@ -53,11 +55,14 @@ vi.mock('@/composables/use-chat-room-voice-call.js', async () => {
 });
 vi.mock('@/pages/chat/room.form.vue', async () => {
 	const { h: hh } = await import('vue');
-	return { default: { render: () => hh('div', { 'data-testid': 'form' }) } };
+	return { default: { props: ['editingMessage'], render(this: { editingMessage: { id: string } | null }) { return hh('div', { 'data-testid': 'form', 'data-editing': this.editingMessage?.id ?? '' }); } } };
 });
 vi.mock('@/pages/chat/room.search.vue', () => ({ default: { render: () => null } }));
 vi.mock('@/pages/chat/room.members.vue', () => ({ default: { render: () => null } }));
-vi.mock('@/pages/chat/room.info.vue', () => ({ default: { render: () => null } }));
+vi.mock('@/pages/chat/room.info.vue', async () => {
+	const { h: hh } = await import('vue');
+	return { default: { emits: ['deleting'], render(this: { $emit: (event: string, value: boolean) => void }) { return hh('button', { 'data-testid': 'info-delete', onClick: () => this.$emit('deleting', true) }); } } };
+});
 // 吹き出しは、受け取ったまとまりの位置を書き出し、描画した回数を数えるだけのものにする
 vi.mock('@/pages/chat/XMessage.vue', async () => {
 	const { defineComponent: define, h: hh } = await import('vue');
@@ -69,7 +74,9 @@ vi.mock('@/pages/chat/XMessage.vue', async () => {
 				lastInGroup: { type: Boolean, default: true },
 				canEdit: { type: Boolean, default: false },
 			},
-			setup(props) {
+			emits: ['edit'],
+			setup(props, { emit }) {
+				mocks.editMessage.value = () => emit('edit', props.message);
 				return () => {
 					const id = (props.message as { id: string }).id;
 					mocks.renders.set(id, (mocks.renders.get(id) ?? 0) + 1);
@@ -84,6 +91,7 @@ import { provideMetadataReceiver } from '@/page.js';
 import XRoomPage from '@/pages/chat/room.vue';
 import { i18n } from '@/i18n.js';
 
+const alert = mocks.alert;
 const MINUTE = 60 * 1000;
 const base = Date.parse('2026-10-27T12:00:00.000Z');
 const userOf = (id: string) => ({ id, username: id, name: id, host: null });
@@ -131,6 +139,7 @@ beforeEach(() => {
 	mocks.renders.clear();
 	mocks.roomIsArchived = false;
 	mocks.routerPush.mockReset();
+	mocks.alert.mockReset();
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
 });
@@ -179,6 +188,76 @@ test('another member leaving does not close my room', async () => {
 	await flush();
 	expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
 	expect(mocks.routerPush).not.toHaveBeenCalled();
+});
+
+describe('a deleted room', () => {
+	test('tells the member viewing it and returns to the chat list', async () => {
+		const { container } = await renderRoom();
+		mocks.channel.emit('roomDeleted', undefined);
+		await flush();
+		expect(alert).toHaveBeenCalledWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+		expect(mocks.routerPush).toHaveBeenCalledWith('/chat');
+		expect(container.querySelector('[data-testid="form"]')).toBeNull();
+	});
+
+	test('does not pull a member away from another page while it is cached', async () => {
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+			},
+		});
+		const dispose = vi.spyOn(mocks.channel, 'dispose');
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		visible.value = false;
+		await flush();
+
+		mocks.channel.emit('roomDeleted', undefined);
+		await flush();
+
+		expect(alert).not.toHaveBeenCalled();
+		expect(mocks.routerPush).not.toHaveBeenCalled();
+		expect(dispose).toHaveBeenCalled();
+	});
+
+	test('does not announce the deletion to the member who is deleting it', async () => {
+		const tabbedStubs = { ...stubs, PageWithHeader: { props: ['tab'], emits: ['update:tab'], template: '<div style="overflow-y: scroll;"><button data-testid="open-info" @click="$emit(\'update:tab\', \'info\')"/><slot /><slot name="footer" /></div>' } };
+		const host = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(XRoomPage, { roomId: 'r1' });
+			},
+		});
+		const { container } = render(host, { global: { stubs: tabbedStubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		await fireEvent.click(container.querySelector('[data-testid="open-info"]')!);
+		await flush();
+		await fireEvent.click(container.querySelector('[data-testid="info-delete"]')!);
+
+		mocks.channel.emit('roomDeleted', undefined);
+		await flush();
+
+		expect(alert).not.toHaveBeenCalled();
+	});
+});
+
+test('archiving a room ends an edit in progress, so unarchiving does not reopen it', async () => {
+	mocks.timeline = [message('m3', 'me', 2 * MINUTE)];
+	const { container } = await renderRoom();
+	mocks.editMessage.value?.();
+	await flush();
+	expect(container.querySelector('[data-testid="form"]')?.getAttribute('data-editing')).toBe('m3');
+
+	mocks.channel.emit('roomUpdated', { roomId: 'r1', name: 'room 1', description: '', isArchived: true });
+	await flush();
+	mocks.channel.emit('roomUpdated', { roomId: 'r1', name: 'room 1', description: '', isArchived: false });
+	await flush();
+
+	expect(container.querySelector('[data-testid="form"]')?.getAttribute('data-editing')).toBe('');
 });
 
 test('rejoining a kicked room reinitializes its cached page and subscribes again', async () => {

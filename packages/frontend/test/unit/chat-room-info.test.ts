@@ -40,6 +40,23 @@ test('the owner archives the room after confirming, and the saved room propagate
 	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/update', { roomId: 'r1', isArchived: true });
 });
 
+test('tells the room page while its own deletion is in progress', async () => {
+	mocks.confirm.mockResolvedValueOnce({ canceled: false });
+	mocks.apiWithDialog.mockResolvedValueOnce(undefined);
+	const result = render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.deleteRoom }));
+	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/delete', { roomId: 'r1' }));
+	expect(result.emitted().deleting).toEqual([[true]]);
+});
+
+test('a failed deletion lets later deletions be announced again', async () => {
+	mocks.confirm.mockResolvedValueOnce({ canceled: false });
+	mocks.apiWithDialog.mockRejectedValueOnce(new Error('failed'));
+	const result = render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.deleteRoom }));
+	await waitFor(() => expect(result.emitted().deleting).toEqual([[true], [false]]));
+});
+
 test('canceling the confirmation does not archive', async () => {
 	mocks.confirm.mockResolvedValueOnce({ canceled: true });
 	render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
