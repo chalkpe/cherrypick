@@ -135,6 +135,31 @@ describe('UserSearchService', () => {
 	});
 
 	describe('searchByUsernameAndHost', () => {
+		test.each([undefined, '.'])('excludes an unfollowed local user with no activity (host: %s)', async (host) => {
+			expect(alice.updatedAt).toBeNull();
+
+			const result = await service.searchByUsernameAndHost(
+				{ username: 'alice', host },
+				{ limit: 10 },
+				root,
+			);
+
+			expect(result).toEqual([]);
+		});
+
+		test('keeps a followed local user with no activity searchable', async () => {
+			await createFollowings(root, [alice]);
+			expect(alice.updatedAt).toBeNull();
+
+			const result = await service.searchByUsernameAndHost(
+				{ username: 'alice', host: '.' },
+				{ limit: 10 },
+				root,
+			);
+
+			expect(result).toEqual([alice.id]);
+		});
+
 		test('finds a newly discovered remote user without following them', async () => {
 			expect(alyson.updatedAt).toBeNull();
 

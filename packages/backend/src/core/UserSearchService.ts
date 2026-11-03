@@ -150,7 +150,7 @@ export class UserSearchService {
 			.andWhere(`user.id NOT IN (${followingUserQuery.getQuery()})`)
 			.andWhere(new Brackets(qb => {
 				qb
-					.where('user.updatedAt IS NULL')
+					.where('user.host IS NOT NULL AND user.updatedAt IS NULL')
 					.orWhere('user.updatedAt <= :activeThreshold', { activeThreshold });
 			}));
 		inactiveUserQuery.setParameters(followingUserQuery.getParameters());
