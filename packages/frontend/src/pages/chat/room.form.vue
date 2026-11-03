@@ -57,7 +57,7 @@ import XPostFormAttaches from '@/components/MkPostFormAttaches.vue';
 const props = defineProps<{
 	user?: Misskey.entities.UserDetailed | null;
 	room?: Misskey.entities.ChatRoom | null;
-	editingMessage?: { id: string; text?: string | null } | null;
+	editingMessage?: { id: string; text?: string | null; fileId?: string | null } | null;
 }>();
 
 const emit = defineEmits<{
@@ -88,7 +88,9 @@ const textareaReadOnly = ref(false);
 let autocompleteInstance: Autocomplete | null = null;
 let editSession = 0;
 
-const canSend = computed(() => props.editingMessage ? text.value.trim() !== '' : text.value !== '' || file.value != null);
+const canSend = computed(() => props.editingMessage
+	? text.value.trim() !== '' || props.editingMessage.fileId != null
+	: text.value !== '' || file.value != null);
 
 watch(() => props.editingMessage, (message) => {
 	editSession++;

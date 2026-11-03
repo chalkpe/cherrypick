@@ -478,7 +478,7 @@ export class ChatService {
 		await this.assertMessageRoomNotArchived(message);
 
 		const trimmed = text.trim();
-		if (trimmed.length < 1 || trimmed.length > 2000) throw new ChatMessageInvalidTextError('invalid text');
+		if ((trimmed.length === 0 && message.fileId == null) || trimmed.length > 2000) throw new ChatMessageInvalidTextError('invalid text');
 
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));

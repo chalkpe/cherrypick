@@ -53,7 +53,7 @@ export const paramDef = {
 	type: 'object',
 	properties: {
 		messageId: { type: 'string', format: 'misskey:id' },
-		text: { type: 'string', minLength: 1, maxLength: 2000 },
+		text: { type: 'string', maxLength: 2000 },
 	},
 	required: ['messageId', 'text'],
 } as const;

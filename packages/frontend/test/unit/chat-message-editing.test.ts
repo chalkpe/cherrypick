@@ -105,6 +105,26 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe.each(['user', 'room'] as const)('%s message editing', target => {
+	test('clears an existing attachment caption without replacing the file', async () => {
+		const form = renderForm(target, { ...message, fileId: driveFile.id, file: driveFile });
+		await fireEvent.update(form.textarea, '');
+		expect(screen.getByTitle(i18n.ts.save).hasAttribute('disabled')).toBe(false);
+		await fireEvent.click(screen.getByTitle(i18n.ts.save));
+		await waitFor(() => expect(form.editing.value).toBeNull());
+		expect(mocks.api).toHaveBeenCalledWith('chat/messages/update', { messageId: message.id, text: '' });
+	});
+
+	test('a compose draft attachment does not allow an empty edit of a text-only message', async () => {
+		const form = renderForm(target);
+		await composeDraft(form.textarea);
+		form.editing.value = message;
+		await nextTick();
+		await fireEvent.update(form.textarea, '');
+		expect(screen.getByTitle(i18n.ts.save).hasAttribute('disabled')).toBe(true);
+		await fireEvent.keyDown(form.textarea, { key: 'Enter', ctrlKey: true });
+		expect(mocks.api).not.toHaveBeenCalledWith('chat/messages/update', expect.anything());
+	});
+
 	test('keeps the persisted compose draft separate from edit text', async () => {
 		const form = renderForm(target);
 		await composeDraft(form.textarea);

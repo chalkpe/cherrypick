@@ -6,7 +6,10 @@
 import { describe, expect, test, vi } from 'vitest';
 import { IsNull } from 'typeorm';
 import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
+import UpdateEndpoint from '@/server/api/endpoints/chat/messages/update.js';
+import type { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import type { MiChatMessage, MiUser } from '@/models/_.js';
+import type { MiLocalUser } from '@/models/User.js';
 
 function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 	const message = {
@@ -64,6 +67,30 @@ function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 }
 
 describe('ChatService.updateMessage', () => {
+	test.each(['', '   '])('clears an attachment caption through the local API (%j)', async text => {
+		const f = createFixture();
+		f.message.fileId = 'file1';
+		const service = { checkChatAvailability: vi.fn(), updateMessage: f.service.updateMessage } as unknown as ChatService;
+		const entityService = { packMessageDetailed: vi.fn(async value => value) } as unknown as ChatEntityService;
+		const endpoint = new UpdateEndpoint(service, entityService);
+
+		await endpoint.exec({ messageId: 'm1', text }, { id: 'u1' } as MiLocalUser, null, null);
+
+		expect(f.message.text).toBe('');
+		expect(f.message.fileId).toBe('file1');
+		expect(f.publishChatUserStream).toHaveBeenCalledWith('u1', 'u2', 'updated', expect.objectContaining({ text: '' }));
+	});
+
+	test('the local API rejects an empty edit of a text-only message', async () => {
+		const f = createFixture();
+		const service = { checkChatAvailability: vi.fn(), updateMessage: f.service.updateMessage } as unknown as ChatService;
+		const entityService = { packMessageDetailed: vi.fn() } as unknown as ChatEntityService;
+		const endpoint = new UpdateEndpoint(service, entityService);
+
+		await expect(endpoint.exec({ messageId: 'm1', text: '' }, { id: 'u1' } as MiLocalUser, null, null)).rejects.toMatchObject({ code: 'INVALID_TEXT' });
+		expect(f.chatMessagesRepository.update).not.toHaveBeenCalled();
+	});
+
 	test('updates own message and sets editedAt', async () => {
 		const f = createFixture();
 
