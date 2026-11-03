@@ -17,14 +17,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:class="$style.textarea"
 		class="_acrylic"
 		:placeholder="i18n.ts.inputMessageHere"
+		:aria-label="i18n.ts.inputMessageHere"
 		:readonly="textareaReadOnly"
 		@keydown="onKeydown"
 		@paste="onPaste"
 	></textarea>
 	<footer :class="$style.footer">
 		<div :class="$style.buttons">
-			<button v-if="!editingMessage" class="_button" :class="$style.button" :aria-label="i18n.ts.selectFile" @click="chooseFile"><i class="ti ti-photo-plus"></i></button>
-			<button class="_button" :class="$style.button" @click="insertEmoji"><i class="ti ti-mood-happy"></i></button>
+			<button v-if="!editingMessage" class="_button" :class="$style.button" :title="i18n.ts.selectFile" :aria-label="i18n.ts.selectFile" @click="chooseFile"><i class="ti ti-photo-plus"></i></button>
+			<button class="_button" :class="$style.button" :title="i18n.ts.emoji" :aria-label="i18n.ts.emoji" @click="insertEmoji"><i class="ti ti-mood-happy"></i></button>
 			<!-- 通話中は PC だと通話バーがここに入る -->
 			<XVoiceCallBarSlot kind="chatForm" :focusWithin="rootEl" :class="$style.voiceCall"/>
 			<button v-if="editingMessage" class="_button" :class="$style.button" :title="i18n.ts.cancel" :aria-label="i18n.ts.cancel" @click="emit('cancelEdit')"><i class="ti ti-x"></i></button>
@@ -335,7 +336,7 @@ async function insertEmoji(ev: MouseEvent) {
 		},
 		() => {
 			textareaReadOnly.value = false;
-			nextTick(() => focus());
+			nextTick(() => textareaEl.value?.focus());
 		},
 	);
 }

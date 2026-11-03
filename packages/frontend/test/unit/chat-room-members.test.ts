@@ -64,3 +64,10 @@ test('only the owner sees a kick action, including in an archived room', async (
 	await result.rerender({ room: { ...room, isArchived: true } });
 	expect(screen.getByRole('button', { name: i18n.ts._chat.kickMember })).toBeTruthy();
 });
+
+test('the button that cancels an invitation says whose invitation it cancels', async () => {
+	mocks.api.mockImplementation(async endpoint => endpoint === 'chat/rooms/invitations/outbox' ? [{ id: 'invitation', user: { id: 'invitee', username: 'invitee' } }] : []);
+	render(Members, { props: { room }, global: { stubs } });
+	await fireEvent.click(await screen.findByRole('button', { name: i18n.tsx._chat.cancelInvitationTo({ x: 'invitee' }) }));
+	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/cancel', { invitationId: 'invitation' });
+});

@@ -1693,7 +1693,7 @@ _order:
 _chat:
   messages: "メッセージ"
   noMessagesYet: "まだメッセージはありません"
-  openRoom: "ルームを開く"
+  openRoom: "グループを開く"
   noMessagesInRoom: "まだメッセージはありません"
   newMessage: "新しいメッセージ"
   individualChat: "個別"
@@ -1715,7 +1715,7 @@ _chat:
   reject: "拒否"
   leave: "グループから退出"
   members: "メンバー"
-  roomOwner: "ルームオーナー"
+  roomOwner: "グループオーナー"
   searchMessages: "メッセージを検索"
   home: "ホーム"
   send: "送信"
@@ -1751,6 +1751,7 @@ _chat:
   kickMemberConfirm: "{name}さんをグループから外しますか？"
   removedFromRoom: "このグループから退出しました。再参加するには招待が必要です。"
   invitationCancelAreYouSure: "{x}さんに送信された招待をキャンセルしますか？"
+  cancelInvitationTo: "{x}さんへの招待をキャンセル"
 
 _emojiPalette:
   palettes: "パレット"
@@ -2428,7 +2429,7 @@ _voiceCall:
   micUnavailable: "マイクを使用できません。"
   connectionFailed: "通話サーバーに接続できませんでした。"
   remoteHostNotice: "この通話は{host}で開かれます。{host}にはあなたのIPアドレスが見えます。"
-  remoteHostUnsupported: "このルームのサーバーは通話に対応していません。"
+  remoteHostUnsupported: "このグループのサーバーは通話に対応していません。"
   joinedFromAnotherTab: "別のタブで通話に参加しました。"
   removedFromCall: "通話から外されました。"
   callEnded: "通話が終了しました。"
@@ -2443,7 +2444,7 @@ _voiceCall:
   connecting: "接続中…"
   reconnecting: "再接続中…"
   enableAudio: "タップして音声を再生"
-  backToRoom: "ルームに戻る"
+  backToRoom: "グループに戻る"
   settings: "通話設定"
   inputDevice: "マイク"
   outputDevice: "スピーカー"

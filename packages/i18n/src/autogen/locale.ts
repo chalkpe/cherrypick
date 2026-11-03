@@ -6752,7 +6752,7 @@ export interface Locale extends ILocale {
          */
         "noMessagesYet": string;
         /**
-         * ルームを開く
+         * グループを開く
          */
         "openRoom": string;
         /**
@@ -6841,7 +6841,7 @@ export interface Locale extends ILocale {
          */
         "members": string;
         /**
-         * ルームオーナー
+         * グループオーナー
          */
         "roomOwner": string;
         /**
@@ -6982,6 +6982,10 @@ export interface Locale extends ILocale {
          * {x}さんに送信された招待をキャンセルしますか？
          */
         "invitationCancelAreYouSure": ParameterizedString<"x">;
+        /**
+         * {x}さんへの招待をキャンセル
+         */
+        "cancelInvitationTo": ParameterizedString<"x">;
     };
     "_emojiPalette": {
         /**
@@ -9365,7 +9369,7 @@ export interface Locale extends ILocale {
          */
         "remoteHostNotice": ParameterizedString<"host">;
         /**
-         * このルームのサーバーは通話に対応していません。
+         * このグループのサーバーは通話に対応していません。
          */
         "remoteHostUnsupported": string;
         /**
@@ -9425,7 +9429,7 @@ export interface Locale extends ILocale {
          */
         "enableAudio": string;
         /**
-         * ルームに戻る
+         * グループに戻る
          */
         "backToRoom": string;
         /**

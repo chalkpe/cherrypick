@@ -29,6 +29,9 @@ const mocks = vi.hoisted(() => {
 		roomShowFails: false,
 		routerPush: vi.fn(),
 		alert: vi.fn(),
+		confirm: vi.fn(),
+		popupMenu: vi.fn(),
+		apiWithDialog: vi.fn(),
 		editMessage: { value: null as (() => void) | null },
 		// 吹き出しごとの描画回数
 		renders: new Map<string, number>(),
@@ -47,7 +50,7 @@ vi.mock('@/utility/misskey-api.js', () => ({
 vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), useChannel: () => mocks.channel }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
-vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: vi.fn(), popupMenu: vi.fn() }));
+vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog }));
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, useListener: vi.fn() }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // 通話や入力欄は吹き出しのまとまりと関係ないので空にする
@@ -112,7 +115,7 @@ const message = (id: string, fromUserId: string, after: number) => ({ id, fromUs
 
 const stubs = {
 	// 本物と同じく、ページの中身はスクロールする箱に入る (新着時の追従がその箱を探す)
-	PageWithHeader: { template: '<div style="overflow-y: scroll;"><slot /><slot name="footer" /></div>' },
+	PageWithHeader: { props: ['actions'], template: '<div style="overflow-y: scroll;"><button v-for="action in actions" :data-icon="action.icon" @click="action.handler($event)"></button><slot /><slot name="footer" /></div>' },
 	MkStickyContainer: { template: '<div><slot name="header" /><slot /></div>' },
 	MkLoading: { template: '<div></div>' },
 	MkAvatar: true,
@@ -154,6 +157,9 @@ beforeEach(() => {
 	mocks.roomShowFails = false;
 	mocks.routerPush.mockReset();
 	mocks.alert.mockReset();
+	mocks.confirm.mockReset().mockResolvedValue({ canceled: false });
+	mocks.popupMenu.mockReset();
+	mocks.apiWithDialog.mockReset().mockResolvedValue(undefined);
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
 });
@@ -194,6 +200,49 @@ test('a removed member immediately loses the composer and returns to the chat li
 	await flush();
 	expect(container.querySelector('[data-testid="form"]')).toBeNull();
 	expect(mocks.routerPush).toHaveBeenCalledWith('/chat');
+});
+
+describe('leaving a room from the menu', () => {
+	async function chooseLeave(container: Element) {
+		await fireEvent.click(container.querySelector('[data-icon="ti ti-dots"]')!);
+		const items = mocks.popupMenu.mock.lastCall![0] as { text: string; action: () => void }[];
+		items.find(item => item.text === i18n.ts._chat.leave)!.action();
+		await flush();
+	}
+
+	test('stays on the room when the request fails', async () => {
+		mocks.apiWithDialog.mockRejectedValue(new Error('rate limit'));
+		const { container } = await renderRoom();
+
+		await chooseLeave(container);
+
+		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/leave', { roomId: 'r1' });
+		expect(mocks.routerPush).not.toHaveBeenCalled();
+		expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
+	});
+
+	test('returns to the chat list when it succeeds', async () => {
+		const { container } = await renderRoom();
+
+		await chooseLeave(container);
+
+		expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('my own leave arriving over the stream is not reported as being removed', async () => {
+		let finish!: () => void;
+		mocks.apiWithDialog.mockReturnValue(new Promise<void>(resolve => { finish = resolve; }));
+		const { container } = await renderRoom();
+
+		await chooseLeave(container);
+		mocks.channel.emit('membershipEnded', { userId: 'me' });
+		await flush();
+		finish();
+		await flush();
+
+		expect(mocks.alert).not.toHaveBeenCalled();
+		expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
 });
 
 test('another member leaving does not close my room', async () => {

@@ -239,6 +239,7 @@ const memberships = ref<Misskey.entities.ChatRoomMembership[]>([]);
 const membershipVersion = ref(0);
 const membershipEnded = ref(false);
 const deletingOwnRoom = ref(false);
+const leavingRoom = ref(false);
 let roomDeletedWhileInactive = false;
 const connection = ref<Misskey.IChannelConnection<Misskey.Channels['chatUser']> | Misskey.IChannelConnection<Misskey.Channels['chatRoom']> | null>(null);
 const showIndicator = ref(false);
@@ -288,6 +289,7 @@ async function initialize() {
 	initializing.value = true;
 	initialized.value = false;
 	deletingOwnRoom.value = false;
+	leavingRoom.value = false;
 
 	if (props.userId) {
 		const [u, m] = await Promise.all([
@@ -512,6 +514,8 @@ function onMembershipEnded(ctx: Parameters<Misskey.Channels['chatRoom']['events'
 		return;
 	}
 	closeRoom();
+	// 自分で退出したときは、退出の結果として leaveRoom が移動する
+	if (leavingRoom.value) return;
 	if (isActivated) notifyRoomClosed(i18n.ts._chat.removedFromRoom);
 }
 
@@ -598,9 +602,16 @@ async function leaveRoom() {
 	});
 	if (canceled) return;
 
-	misskeyApi('chat/rooms/leave', {
-		roomId: room.value.id,
-	});
+	leavingRoom.value = true;
+	try {
+		await os.apiWithDialog('chat/rooms/leave', {
+			roomId: room.value.id,
+		});
+	} catch {
+		// The dialog already explained the failure, and the member is still in the room.
+		leavingRoom.value = false;
+		return;
+	}
 	router.push('/chat');
 }
 

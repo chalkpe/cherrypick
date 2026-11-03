@@ -1741,6 +1741,7 @@ _chat:
   kickMemberConfirm: "Remove {name} from the room?"
   removedFromRoom: "You have left this room. An invitation is required to rejoin."
   invitationCancelAreYouSure: "Are you sure you want to cancel the invitation sent to {x}?"
+  cancelInvitationTo: "Cancel the invitation sent to {x}"
 _emojiPalette:
   palettes: "Palette"
   enableSyncBetweenDevicesForPalettes: "Enable palette sync between devices"

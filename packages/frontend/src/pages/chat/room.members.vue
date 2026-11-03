@@ -37,7 +37,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkA :class="$style.invitationBody" :to="`${userPage(invitation.user)}`">
 				<MkUserCardMini :user="invitation.user"/>
 			</MkA>
-			<button :class="$style.cancelButton" @click="cancelInvitation(invitation)">
+			<button :class="$style.cancelButton" :title="i18n.tsx._chat.cancelInvitationTo({ x: invitation.user.name || invitation.user.username })" :aria-label="i18n.tsx._chat.cancelInvitationTo({ x: invitation.user.name || invitation.user.username })" @click="cancelInvitation(invitation)">
 				<i class="ti ti-x"></i>
 			</button>
 		</div>

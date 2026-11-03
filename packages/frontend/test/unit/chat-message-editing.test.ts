@@ -26,6 +26,7 @@ vi.mock('@/utility/reaction-picker.js', () => ({ reactionPicker: { show: mocks.r
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 
 import XForm from '@/pages/chat/room.form.vue';
+import { emojiPicker } from '@/utility/emoji-picker.js';
 import XMessage from '@/pages/chat/XMessage.vue';
 import { i18n } from '@/i18n.js';
 import * as os from '@/os.js';
@@ -105,6 +106,24 @@ beforeEach(() => {
 	mocks.upload.mockResolvedValue([driveFile]);
 });
 afterEach(cleanup);
+
+test('the message box and the emoji button have accessible names', () => {
+	const form = renderForm();
+	expect(form.textarea.getAttribute('aria-label')).toBe(i18n.ts.inputMessageHere);
+	expect(screen.getByRole('button', { name: i18n.ts.emoji })).toBeTruthy();
+	expect(screen.getByRole('button', { name: i18n.ts.selectFile }).getAttribute('title')).toBe(i18n.ts.selectFile);
+});
+
+test('closing the emoji picker returns focus to the message box', async () => {
+	const form = renderForm();
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.emoji }));
+	const [, , onClosed] = vi.mocked(emojiPicker.show).mock.lastCall as unknown as [unknown, unknown, () => void];
+
+	onClosed();
+	await nextTick();
+
+	expect(document.activeElement).toBe(form.textarea);
+});
 
 describe.each(['user', 'room'] as const)('%s message editing', target => {
 	test('clears an existing attachment caption without replacing the file', async () => {
