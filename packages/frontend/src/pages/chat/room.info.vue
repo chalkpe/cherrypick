@@ -6,15 +6,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <div class="_gaps">
 	<template v-if="isOwner">
-		<MkInput v-model="name_" :mfmAutocomplete="['emoji']">
+		<MkInput v-model="name_" :mfmAutocomplete="['emoji']" :disabled="room.isArchived">
 			<template #label>{{ i18n.ts.name }}</template>
 			<template #caption>{{ i18n.ts.preview }}: <Mfm :text="name_" :plain="true" :author="room.owner"/></template>
 		</MkInput>
 
-		<MkTextarea v-model="description_" :mfmAutocomplete="['emoji']" mfmPreview>
+		<MkTextarea v-model="description_" :mfmAutocomplete="['emoji']" mfmPreview :disabled="room.isArchived">
 			<template #label>{{ i18n.ts.description }}</template>
 		</MkTextarea>
-		<MkButton primary @click="save">{{ i18n.ts.save }}</MkButton>
+		<MkButton v-if="!room.isArchived" primary @click="save">{{ i18n.ts.save }}</MkButton>
 	</template>
 	<template v-else>
 		<MkKeyValue><template #key>{{ i18n.ts.name }}</template><template #value><Mfm :text="room.name" :plain="true" :author="room.owner"/></template></MkKeyValue>
@@ -22,6 +22,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</template>
 
 	<hr>
+
+	<MkButton v-if="isOwner" @click="setArchived(!room.isArchived)"><i :class="room.isArchived ? 'ti ti-archive-off' : 'ti ti-archive'"></i> {{ room.isArchived ? i18n.ts.unarchive : i18n.ts.archive }}</MkButton>
 
 	<MkButton v-if="isOwner || ($i.isAdmin || $i.isModerator)" danger @click="del">{{ i18n.ts._chat.deleteRoom }}</MkButton>
 
@@ -66,6 +68,24 @@ async function save() {
 		roomId: props.room.id,
 		name: name_.value,
 		description: description_.value,
+	}).catch(() => null);
+	if (updated == null) return;
+	emit('updated', updated);
+}
+
+async function setArchived(isArchived: boolean) {
+	if (isArchived) {
+		const { canceled } = await os.confirm({
+			type: 'warning',
+			title: i18n.tsx._chat.archiveRoomConfirmTitle({ name: props.room.name }),
+			text: i18n.ts._chat.archiveRoomConfirmDescription,
+		});
+		if (canceled) return;
+	}
+
+	const updated = await os.apiWithDialog('chat/rooms/update', {
+		roomId: props.room.id,
+		isArchived,
 	}).catch(() => null);
 	if (updated == null) return;
 	emit('updated', updated);

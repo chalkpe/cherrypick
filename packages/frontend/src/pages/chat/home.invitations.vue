@@ -12,7 +12,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<template #suffix><MkTime :time="invitation.createdAt"/></template>
 			<template #footer>
 				<div class="_buttons">
-					<MkButton primary @click="join(invitation)"><i class="ti ti-plus"></i> {{ i18n.ts._chat.join }}</MkButton>
+					<MkButton v-if="!invitation.room.isArchived" primary @click="join(invitation)"><i class="ti ti-plus"></i> {{ i18n.ts._chat.join }}</MkButton>
 					<MkButton danger @click="reject(invitation)"><i class="ti ti-ban"></i> {{ i18n.ts._chat.reject }}</MkButton>
 				</div>
 			</template>

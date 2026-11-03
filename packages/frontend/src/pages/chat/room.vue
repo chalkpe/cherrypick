@@ -58,7 +58,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 									<div v-else-if="user.chatScope === 'mutual'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromMutualFollowing }}</div>
 									<div v-else-if="user.chatScope === 'none'">{{ i18n.ts._chat.thisUserNotAllowedChatAnyone }}</div>
 								</template>
-								<template v-else-if="room">
+								<template v-else-if="room && !room.isArchived">
 									<div>{{ i18n.ts._chat.inviteUserToChat }}</div>
 								</template>
 							</div>
@@ -84,6 +84,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 										<XMessage
 											:message="item.data"
 											:canEdit="true"
+											:roomArchived="room?.isArchived === true"
 											:firstInGroup="groupPositions[i]?.first ?? true"
 											:lastInGroup="groupPositions[i]?.last ?? true"
 											@edit="onEditMessage"
@@ -557,13 +558,15 @@ function showMenu(ev: PointerEvent) {
 
 	if (room.value) {
 		if (room.value.ownerId === $i.id) {
-			menuItems.push({
-				text: i18n.ts._chat.inviteUser,
-				icon: 'ti ti-user-plus',
-				action: () => {
-					inviteUser();
-				},
-			});
+			if (!room.value.isArchived) {
+				menuItems.push({
+					text: i18n.ts._chat.inviteUser,
+					icon: 'ti ti-user-plus',
+					action: () => {
+						inviteUser();
+					},
+				});
+			}
 		} else {
 			menuItems.push({
 				text: i18n.ts._chat.leave,

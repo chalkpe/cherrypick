@@ -136,6 +136,12 @@ describe('chat federation payloads', () => {
 		expect(remove.object).toMatchObject({ type: 'Tombstone', formerType: 'Group' });
 	});
 
+	test.each([true, false])('room update sends the archived state %s, including when false', (isArchived) => {
+		const activity = buildChatRoomUpdate({ id: 'r1', name: 'Room', isArchived }, alice, [bob], options);
+
+		expect(JSON.parse(JSON.stringify(activity)).object._misskey_chatArchived).toBe(isArchived);
+	});
+
 	test('mirror room activities keep the remote room URI', () => {
 		const room = { id: 'r1', name: 'Room', description: 'desc', uri: 'https://remote.test/chat/rooms/r1' };
 		const update = buildChatRoomUpdate(room, alice, [bob], options);
@@ -348,6 +354,9 @@ describe('ChatService chat federation delivery', () => {
 				findOneBy: vi.fn(async ({ roomId, userId }: { roomId: string; userId: string }) =>
 					roomId === 'r1' && (userId === 'bob' || userId === 'carol') ? { roomId, userId } : null),
 			},
+			chatRoomInvitationsRepository: {
+				findBy: vi.fn(async () => []),
+			},
 			usersRepository: {
 				findOneBy: vi.fn(async ({ id }: { id: string }) => users.get(id) ?? null),
 				findOneByOrFail: vi.fn(async ({ id }: { id: string }) => users.get(id)),
@@ -490,6 +499,98 @@ describe('ChatService chat federation delivery', () => {
 		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('r1', 'roomUpdated', expect.objectContaining({ roomId: 'r1', isArchived: true }));
 	});
 
+	describe('the owner archiving a room', () => {
+		test('federates the state to members and pending invitees and ends the call', async () => {
+			const f = createService();
+			const dave = { id: 'dave', host: 'invited.test', uri: 'https://invited.test/users/dave', inbox: 'https://invited.test/users/dave/inbox' };
+			Object.assign(f.service, {
+				chatRoomInvitationsRepository: { findBy: vi.fn(async () => [{ roomId: 'r1', userId: 'dave' }]) },
+			});
+			const service = f.service as never as { usersRepository: { findBy: ReturnType<typeof vi.fn> }; liveKitService: { deleteRoom: ReturnType<typeof vi.fn> } };
+			const members = [f.alice, f.bob, f.carol];
+			service.usersRepository.findBy.mockImplementation(async ({ id }: { id: { value: string[] } }) => id.value.includes('dave') ? [dave] : members);
+
+			await f.service.updateRoom(f.room as never, { isArchived: true });
+
+			const inboxes = f.queueService.deliver.mock.calls.map(call => call[2]);
+			expect(inboxes.sort()).toEqual([f.carol.inbox, dave.inbox, f.bob.inbox].sort());
+			expect(service.liveKitService.deleteRoom).toHaveBeenCalledWith('r1');
+		});
+
+		test('unarchiving does not touch the call', async () => {
+			const f = createService();
+			Object.assign(f.room, { isArchived: true });
+
+			await f.service.updateRoom(f.room as never, { isArchived: false });
+
+			expect((f.service as never as { liveKitService: { deleteRoom: ReturnType<typeof vi.fn> } }).liveKitService.deleteRoom).not.toHaveBeenCalled();
+		});
+
+		test('an inbound update to a mirror leaves the call of the owner server alone', async () => {
+			const f = createService();
+			Object.assign(f.room, { ownerId: 'bob' });
+
+			await f.service.updateRoom(f.room as never, { isArchived: true }, { federate: false });
+
+			expect((f.service as never as { liveKitService: { deleteRoom: ReturnType<typeof vi.fn> } }).liveKitService.deleteRoom).not.toHaveBeenCalled();
+		});
+
+		test('refuses new invitations', async () => {
+			const f = createService();
+			Object.assign(f.room, { isArchived: true });
+
+			await expect(f.service.createRoomInvitation('alice', 'r1', 'carol')).rejects.toBeInstanceOf(ChatRoomArchivedError);
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('remote activity in an archived room', () => {
+		function archivedBy(ownerId: 'alice' | 'bob') {
+			const f = createService();
+			Object.assign(f.room, { isArchived: true, ownerId });
+			return f;
+		}
+
+		test('a room this server owns refuses a message for good, so the inbox does not retry it', async () => {
+			const f = archivedBy('alice');
+
+			await expect(f.service.createMessageToRoom(f.bob, f.room as never, { text: 'late', uri: 'https://remote.test/m' })).rejects.toBeInstanceOf(ChatMessageAccessError);
+			expect(f.queueService.deliver).not.toHaveBeenCalled();
+		});
+
+		test('a room this server owns refuses an edit', async () => {
+			const f = archivedBy('alice');
+
+			await expect(f.service.updateRemoteMessage(f.bob as never, f.roomMessage as never, 'changed', new Date('2026-11-02T00:02:00.000Z'))).rejects.toBeInstanceOf(ChatMessageAccessError);
+			expect(f.roomMessage.text).toBe('room');
+		});
+
+		test.each(['reactRemote', 'unreactRemote'] as const)('a room this server owns refuses %s', async (method) => {
+			const f = archivedBy('alice');
+
+			await expect(f.service[method](f.carol as never, f.roomMessage as never, '👍')).rejects.toBeInstanceOf(ChatMessageAccessError);
+		});
+
+		test('a mirror still accepts what crossed the archive notification', async () => {
+			const f = archivedBy('bob');
+
+			await f.service.updateRemoteMessage(f.bob as never, f.roomMessage as never, 'changed', new Date('2026-11-02T00:02:00.000Z'));
+			const sent = await f.service.createMessageToRoom(f.carol, f.room as never, { text: 'late', uri: 'https://other.test/m' }).catch((err: unknown) => err);
+
+			expect(f.roomMessage.text).toBe('changed');
+			expect(sent).not.toBeInstanceOf(ChatMessageAccessError);
+			expect(sent).not.toBeInstanceOf(ChatRoomArchivedError);
+		});
+
+		test('a member can still delete their message, like on Mastodon', async () => {
+			const f = archivedBy('alice');
+
+			await f.service.deleteRemoteMessage(f.bob as never, f.roomMessage as never);
+
+			expect(f.roomMessage.deletedAt).not.toBeNull();
+		});
+	});
+
 	describe('archived rooms are read-only for local users', () => {
 		function archived() {
 			const f = createService();
@@ -502,14 +603,6 @@ describe('ChatService chat federation delivery', () => {
 
 			await expect(f.service.createMessageToRoom(f.alice, f.room as never, { text: 'hello' })).rejects.toBeInstanceOf(ChatRoomArchivedError);
 			expect(f.queueService.deliver).not.toHaveBeenCalled();
-		});
-
-		test('a message relayed from a remote member is not refused as archived', async () => {
-			const f = archived();
-
-			const result = await f.service.createMessageToRoom(f.bob, f.room as never, { text: 'late' }).catch((err: unknown) => err);
-
-			expect(result).not.toBeInstanceOf(ChatRoomArchivedError);
 		});
 
 		test('a local user cannot edit a message', async () => {

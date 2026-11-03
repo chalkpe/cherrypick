@@ -24,6 +24,7 @@ type ChatRoom = {
 	name: string;
 	description?: string | null;
 	uri?: string | null;
+	isArchived?: boolean;
 };
 
 export type ChatPayloadOptions = {
@@ -202,6 +203,7 @@ export function buildChatRoomUpdate(
 			name: room.name,
 			summary: room.description ?? '',
 			attributedTo: chatActorUri(owner, options.baseUrl),
+			_misskey_chatArchived: room.isArchived,
 		},
 		published: options.published ?? new Date().toISOString(),
 	};

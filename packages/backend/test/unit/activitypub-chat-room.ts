@@ -307,6 +307,24 @@ describe('Chat room federation: Accept(Invite)', () => {
 		);
 	});
 
+	test('tells the invitee to leave when the room was archived before their Accept arrived', async () => {
+		const f = fixture({ invitations: [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }] });
+		f.rooms.rows[0].isArchived = true;
+		const accepted = inviteActivity({ uri: remoteOwner.uri }, 'https://remote.test/chat/rooms/localroom', invitedRemote.uri);
+
+		const result = await f.inbox.acceptInvite(invitedRemote, accepted);
+
+		expect(result).toBe('skip: room is archived');
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.invitations.rows).toEqual([]);
+		expect(f.inbox.queueService.deliver).toHaveBeenCalledExactlyOnceWith(
+			localOwner,
+			expect.objectContaining({ type: 'Remove', target: `${LOCAL}/chat/rooms/localroom`, object: invitedRemote.uri }),
+			invitedRemote.inbox,
+			false,
+		);
+	});
+
 	test('accepts two concurrent requests exactly once', async () => {
 		const f = fixture({ invitations: [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }] });
 		const accepted = inviteActivity({ uri: remoteOwner.uri }, 'https://remote.test/chat/rooms/localroom', invitedRemote.uri);

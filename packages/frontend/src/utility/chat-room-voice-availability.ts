@@ -8,6 +8,6 @@ import { instance } from '@/instance.js';
 
 /** ルーム画面と一覧で、ローカル・連合通話とアカウントの利用可否を同じ規則で判定する。 */
 export function isChatRoomVoiceAvailable(room: entities.ChatRoom | null | undefined, canVoiceCall: boolean): boolean {
-	if (room == null || !canVoiceCall) return false;
+	if (room == null || !canVoiceCall || room.isArchived) return false;
 	return room.owner.host == null ? instance.features?.voiceCall === true : instance.features?.remoteVoiceCall === true;
 }

@@ -161,6 +161,83 @@ describe('chat/messages/update', () => {
 		});
 	});
 
+	test('the owner can archive a room, which makes it read-only until it is unarchived', async () => {
+		const carol = await signup({ username: 'archive_invitee' });
+		await api('i/update', { chatScope: 'everyone' }, carol);
+		const room = await api('chat/rooms/create', { name: 'archived room' }, alice);
+		assert.strictEqual(room.status, 200, JSON.stringify(room.body));
+		assert.strictEqual(room.body.isArchived, false);
+		for (const user of [bob, carol]) {
+			const invited = await api('chat/rooms/invitations/create', { roomId: room.body.id, userId: user.id }, alice);
+			assert.strictEqual(invited.status, 200, JSON.stringify(invited.body));
+		}
+		const joined = await api('chat/rooms/join', { roomId: room.body.id }, bob);
+		assert.strictEqual(joined.status, 204, JSON.stringify(joined.body));
+
+		await failedApiCall({
+			endpoint: 'chat/rooms/update',
+			parameters: { roomId: room.body.id, isArchived: true },
+			user: bob,
+		}, {
+			status: 400,
+			code: 'NO_SUCH_ROOM',
+			id: 'fcdb0f92-bda6-47f9-bd05-343e0e020932',
+		});
+
+		const archived = await api('chat/rooms/update', { roomId: room.body.id, isArchived: true }, alice);
+		assert.strictEqual(archived.status, 200, JSON.stringify(archived.body));
+		assert.strictEqual(archived.body.isArchived, true);
+		assert.strictEqual(archived.body.name, 'archived room');
+		const seenByMember = await api('chat/rooms/show', { roomId: room.body.id }, bob);
+		assert.strictEqual(seenByMember.body.isArchived, true);
+
+		await failedApiCall({
+			endpoint: 'chat/messages/create-to-room',
+			parameters: { toRoomId: room.body.id, text: 'refused' },
+			user: bob,
+		}, {
+			status: 400,
+			code: 'ROOM_IS_ARCHIVED',
+			id: '5b6e1f2a-7c0d-4e39-9a41-2f8d3c6b7e10',
+		});
+		await failedApiCall({
+			endpoint: 'chat/rooms/update',
+			parameters: { roomId: room.body.id, name: 'renamed' },
+			user: alice,
+		}, {
+			status: 400,
+			code: 'ROOM_IS_ARCHIVED',
+			id: '8655493b-6d45-4466-95ec-c8c38ddae472',
+		});
+		await failedApiCall({
+			endpoint: 'chat/rooms/invitations/create',
+			parameters: { roomId: room.body.id, userId: (await signup({ username: 'archive_late' })).id },
+			user: alice,
+		}, {
+			status: 400,
+			code: 'ROOM_IS_ARCHIVED',
+			id: 'b41cd32a-8b2a-4662-ae54-bc5cbb057afa',
+		});
+		await failedApiCall({
+			endpoint: 'chat/rooms/join',
+			parameters: { roomId: room.body.id },
+			user: carol,
+		}, {
+			status: 400,
+			code: 'ROOM_IS_ARCHIVED',
+			id: 'c60a4f18-d3b2-4e75-9c06-7a1e58d3f2b9',
+		});
+
+		const unarchived = await api('chat/rooms/update', { roomId: room.body.id, isArchived: false, name: 'open again' }, alice);
+		assert.strictEqual(unarchived.status, 200, JSON.stringify(unarchived.body));
+		assert.strictEqual(unarchived.body.isArchived, false);
+		assert.strictEqual(unarchived.body.name, 'open again');
+		const sent = await api('chat/messages/create-to-room', { toRoomId: room.body.id, text: 'accepted' }, bob);
+		assert.strictEqual(sent.status, 200, JSON.stringify(sent.body));
+		const carolJoined = await api('chat/rooms/join', { roomId: room.body.id }, carol);
+		assert.strictEqual(carolJoined.status, 204, JSON.stringify(carolJoined.body));
+	});
+
 	test('keeps the latest stored revision when inbox workers hold stale snapshots', async () => {
 		const created = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'original' }, alice);
 		assert.strictEqual(created.status, 200);

@@ -308,9 +308,10 @@ export class ChatService {
 			throw new Error('you are not a member of the room');
 		}
 
-		// 相手のサーバーから届いたものは、アーカイブの通知と前後しても受け取る
-		if (fromUser.host == null && toRoom.isArchived) {
-			throw new ChatRoomArchivedError('room is archived');
+		if (fromUser.host == null) {
+			if (toRoom.isArchived) throw new ChatRoomArchivedError('room is archived');
+		} else {
+			await this.assertRemoteWriteAllowed(toRoom);
 		}
 
 		const membershipsOtherThanMe = memberships.filter(member => member.userId !== fromUser.id);
@@ -829,6 +830,8 @@ export class ChatService {
 
 		const room = await this.chatRoomsRepository.findOneByOrFail({ id: roomId, ownerId: inviterId });
 
+		if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
+
 		if (await this.isRoomMember(room, inviteeId)) {
 			throw new Error('already member');
 		}
@@ -1202,6 +1205,7 @@ export class ChatService {
 		description?: string;
 		isArchived?: boolean;
 	}, options?: { federate?: boolean }): Promise<MiChatRoom> {
+		const wasArchived = room.isArchived;
 		const updated = await this.chatRoomsRepository.createQueryBuilder().update()
 			.set(params)
 			.where('id = :id', { id: room.id })
@@ -1220,8 +1224,15 @@ export class ChatService {
 		});
 
 		const owner = await this.usersRepository.findOneBy({ id: merged.ownerId });
+		if (owner != null && owner.host == null && merged.isArchived && !wasArchived) {
+			// 残っている参加者は定期的な読み直しでも外れるが、それを待たずに通話を閉じる
+			this.liveKitService.deleteRoom(merged.id).catch(() => {});
+		}
 		if (options?.federate !== false && owner != null && owner.host == null) {
-			const participants = await this.participantsForRoom(merged);
+			// 招待中の相手のサーバーにもミラーがあるので、受諾する前に状態を知らせる
+			const invitations = await this.chatRoomInvitationsRepository.findBy({ roomId: merged.id });
+			const invitees = invitations.length > 0 ? await this.usersRepository.findBy({ id: In(invitations.map(invitation => invitation.userId)) }) : [];
+			const participants = [...await this.participantsForRoom(merged), ...invitees];
 			const toUsers = participants.filter(user => user.id !== owner.id);
 			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomUpdate(merged, owner, toUsers));
 		}
@@ -1467,6 +1478,10 @@ export class ChatService {
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 		if (message.editedAt != null && message.editedAt >= editedAt) return message;
 		await this.assertCanStillEdit(message);
+		if (message.toRoomId != null) {
+			const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
+			if (room != null) await this.assertRemoteWriteAllowed(room);
+		}
 
 		const trimmed = text.trim();
 		if (trimmed.length < 1 || trimmed.length > 2000) throw new ChatMessageAccessError('invalid text');
@@ -1535,6 +1550,7 @@ export class ChatService {
 
 		if (room) {
 			if (!(await this.isRoomMember(room, actor.id))) throw new ChatMessageAccessError('cannot react to others message');
+			await this.assertRemoteWriteAllowed(room);
 		} else if (message.fromUserId !== actor.id && message.toUserId !== actor.id) {
 			throw new ChatMessageAccessError('cannot react to others message');
 		}
@@ -1582,6 +1598,7 @@ export class ChatService {
 
 		if (room) {
 			if (!(await this.isRoomMember(room, actor.id))) throw new ChatMessageAccessError('cannot unreact to others message');
+			await this.assertRemoteWriteAllowed(room);
 		} else if (message.fromUserId !== actor.id && message.toUserId !== actor.id) {
 			throw new ChatMessageAccessError('cannot unreact to others message');
 		}
@@ -1678,6 +1695,16 @@ export class ChatService {
 		} catch {
 			throw new ChatMessageAccessError('invalid emoji');
 		}
+	}
+
+	/**
+	 * アーカイブを決めるのはルームを持つサーバーなので、ここが持つルームでは相手のサーバーからの書き込みも断る。
+	 * ミラーでは、アーカイブの通知と前後して届いたものを受け取る。
+	 */
+	private async assertRemoteWriteAllowed(room: MiChatRoom): Promise<void> {
+		if (!room.isArchived) return;
+		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+		if (owner?.host == null) throw new ChatMessageAccessError('room is archived');
 	}
 
 	private async assertMessageRoomNotArchived(message: MiChatMessage): Promise<void> {

@@ -55,6 +55,7 @@ const MAX_PENDING_ROOM_ACTIVITIES = 100;
 const MAX_PENDING_ROOMS_PER_ACTOR = 100;
 const DEFERRED_CHAT_DELETE_TTL = 6 * 60 * 60;
 const ROOM_FULL = 'skip: room is full';
+const ROOM_ARCHIVED = 'skip: room is archived';
 const MAX_DEFERRED_CHAT_DELETES_PER_ACTOR = 1000;
 
 @Injectable()
@@ -395,9 +396,11 @@ export class ApInboxService {
 				return 'ok';
 			}
 
-			const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId: room.id });
 			// Commit the delete: the invitee's server consumed its copy before sending Accept,
 			// so the invitation can never be accepted again and would only block a new one.
+			if (room.isArchived) return ROOM_ARCHIVED;
+
+			const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId: room.id });
 			if (membershipsCount >= MAX_ROOM_MEMBERS) return ROOM_FULL;
 
 			const membership = {
@@ -412,7 +415,7 @@ export class ApInboxService {
 			return 'ok';
 		});
 
-		if (result === ROOM_FULL) {
+		if (result === ROOM_FULL || result === ROOM_ARCHIVED) {
 			await this.revokeRemoteJoin(room, actor);
 			return result;
 		}
@@ -1797,7 +1800,7 @@ export class ApInboxService {
 				name: roomName,
 				description: roomDescription,
 				ownerId: actor.id,
-				isArchived: false,
+				isArchived: roomObject._misskey_chatArchived === true,
 				uri: roomUri,
 			});
 		} else if (room.uri == null) {

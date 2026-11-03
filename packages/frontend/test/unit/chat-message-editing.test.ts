@@ -357,6 +357,34 @@ describe('XMessage on messages it cannot act on', () => {
 		expect(items).toContain(i18n.ts.copyContent);
 	});
 
+	test.each([
+		['the room page', { roomArchived: true }, {}],
+		['a search result', {}, { toRoomId: 'r1', toRoom: { id: 'r1', name: 'room', isArchived: true } }],
+	])('a message in an archived room offers no writes on %s, but can be copied and reported', async (_where, props, overrides) => {
+		render(XMessage, {
+			props: { canEdit: true, ...props, message: { ...message, fromUserId: 'me', ...overrides } as Misskey.entities.ChatMessage },
+			global: { stubs: { ...stubs, MkReactionIcon: true, MkFukidashi: { template: '<div><slot/></div>' }, MkMediaList: true, MkUrlPreview: true } },
+		});
+
+		const mine = (await openMenu()).filter(item => item !== undefined && 'text' in item).map(item => (item as { text: string }).text);
+
+		expect(mine).not.toContain(i18n.ts.edit);
+		expect(mine).not.toContain(i18n.ts.delete);
+		expect(mine).toContain(i18n.ts.copyContent);
+	});
+
+	test('a message from someone else in an archived room offers no reaction', async () => {
+		render(XMessage, {
+			props: { roomArchived: true, message: { ...message, fromUserId: 'bob', fromUser: { id: 'bob', username: 'bob' } } as Misskey.entities.ChatMessage },
+			global: { stubs: { ...stubs, MkReactionIcon: true, MkFukidashi: { template: '<div><slot/></div>' }, MkMediaList: true, MkUrlPreview: true } },
+		});
+
+		const items = (await openMenu()).filter(item => item !== undefined && 'text' in item).map(item => (item as { text: string }).text);
+
+		expect(items).not.toContain(i18n.ts.reaction);
+		expect(items).toContain(i18n.ts.reportAbuse);
+	});
+
 	test('clicking a remote custom emoji reaction does not send a reaction the server would reject', async () => {
 		const { container } = renderMessage({ reactions: [{ user: { id: 'carol', username: 'carol', host: 'other.test' }, reaction: ':blob@other.test:' }] });
 

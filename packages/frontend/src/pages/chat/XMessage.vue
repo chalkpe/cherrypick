@@ -89,6 +89,8 @@ const props = withDefaults(defineProps<{
 	message: NormalizedChatMessage | Misskey.entities.ChatMessage;
 	isSearchResult?: boolean;
 	canEdit?: boolean;
+	// ルームの画面のメッセージには toRoom が付かないので、アーカイブの状態はルームから受け取る
+	roomArchived?: boolean;
 	// 同じ送信者が続けて送ったメッセージのまとまりの中での位置。省略すると単独のメッセージとして表示する。
 	// 新着のたびに全部の吹き出しを描き直さないよう、オブジェクトではなく真偽値で受け取る
 	firstInGroup?: boolean;
@@ -97,6 +99,7 @@ const props = withDefaults(defineProps<{
 	firstInGroup: true,
 	lastInGroup: true,
 	canEdit: false,
+	roomArchived: false,
 });
 
 const emit = defineEmits<{
@@ -107,7 +110,8 @@ const isMe = computed(() => props.message.fromUserId === $i.id);
 const editedAt = computed(() => (props.message as NormalizedChatMessage).editedAt ?? null);
 const deletedAt = computed(() => (props.message as NormalizedChatMessage).deletedAt ?? null);
 const unmounted = ref(false);
-const canReact = computed(() => !unmounted.value && !deletedAt.value && $i.policies.chatAvailability === 'available');
+const isReadOnly = computed(() => props.roomArchived || ('toRoom' in props.message && props.message.toRoom?.isArchived === true));
+const canReact = computed(() => !unmounted.value && !deletedAt.value && !isReadOnly.value && $i.policies.chatAvailability === 'available');
 onBeforeUnmount(() => { unmounted.value = true; });
 // 検索結果は前後のメッセージと関係なく並ぶのでまとめない
 const isFirstInGroup = computed(() => props.isSearchResult === true || props.firstInGroup);
@@ -208,7 +212,7 @@ if (!isMe.value && canReact.value) {
 		});
 	}
 
-	if (isMe.value && !deletedAt.value && $i.policies.chatAvailability === 'available') {
+	if (isMe.value && !deletedAt.value && !isReadOnly.value && $i.policies.chatAvailability === 'available') {
 		if (props.canEdit) {
 			menu.push({
 				text: i18n.ts.edit,

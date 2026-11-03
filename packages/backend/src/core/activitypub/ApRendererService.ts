@@ -954,6 +954,7 @@ export class ApRendererService {
 			name: room.name,
 			summary: room.description || undefined,
 			attributedTo: ownerUri || undefined,
+			_misskey_chatArchived: room.isArchived,
 		};
 	}
 

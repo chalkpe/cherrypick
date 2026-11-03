@@ -6881,6 +6881,14 @@ export interface Locale extends ILocale {
          */
         "thisRoomIsArchived": string;
         /**
+         * {name}をアーカイブしますか？
+         */
+        "archiveRoomConfirmTitle": ParameterizedString<"name">;
+        /**
+         * アーカイブすると、メンバー全員がメッセージの送信・編集・削除やリアクションをできなくなり、通話も終了します。これまでのメッセージは読むことができ、後からアーカイブを解除できます。
+         */
+        "archiveRoomConfirmDescription": string;
+        /**
          * 相手のアカウントでダイレクトメッセージが使えない状態になっています。ダイレクトメッセージを送るとユーザー指定ノートで送信され、相手がユーザー指定ノートに返信すればここで見ることができます。
          */
         "chatNotAvailableInOtherAccount": string;

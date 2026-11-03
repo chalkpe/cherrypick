@@ -20211,6 +20211,7 @@ export interface operations {
                     roomId: string;
                     name?: string;
                     description?: string;
+                    isArchived?: boolean;
                 };
             };
         };
@@ -20253,6 +20254,15 @@ export interface operations {
             };
             /** @description I'm Ai */
             418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
