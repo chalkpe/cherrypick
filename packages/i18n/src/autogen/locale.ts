@@ -9654,6 +9654,48 @@ export interface Locale extends ILocale {
          * オンにすると、管理者に加えてモデレーターもこのロールへユーザーをアサイン/アサイン解除できるようになります。オフにすると管理者のみが行えます。
          */
         "descriptionOfCanEditMembersByModerator": string;
+        "_tierFix": {
+            /**
+             * 重複するロールがあります
+             */
+            "overlapTitle": string;
+            /**
+             * 今の条件では複数のロールが同時に付与されます。重複しないように次のとおり条件を修正しますか？
+             */
+            "overlapText": string;
+            /**
+             * 条件を修正
+             */
+            "fixConditions": string;
+            /**
+             * そのまま保存
+             */
+            "saveAsIs": string;
+            /**
+             * {min}以上
+             */
+            "rangeFrom": ParameterizedString<"min">;
+            /**
+             * {min}〜{max}
+             */
+            "range": ParameterizedString<"min" | "max">;
+            /**
+             * 権限が下がります
+             */
+            "loweredTitle": string;
+            /**
+             * より難しい条件なのに、既存のロールより権限が下がります。下がる部分だけコピーしますか？
+             */
+            "loweredText": string;
+            /**
+             * 下がる部分だけコピー
+             */
+            "copyLowered": string;
+            /**
+             * コピーしない
+             */
+            "doNotCopy": string;
+        };
         /**
          * 優先度
          */
