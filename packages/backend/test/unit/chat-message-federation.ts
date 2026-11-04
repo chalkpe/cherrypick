@@ -1855,6 +1855,7 @@ describe('ApInboxService chat activity routing', () => {
 			f.chatRoomsRepository.findOneBy.mockResolvedValue(room);
 			f.chatService.isRoomMember.mockResolvedValue(true);
 			f.chatService.findMessageByUri.mockResolvedValue(null);
+			Object.assign(f.inbox, { hostPolicyService: { isRefusedRemoteHost: vi.fn().mockResolvedValue(false) } });
 			(f.inbox as never as { apPersonService: { resolvePerson: ReturnType<typeof vi.fn> } }).apPersonService.resolvePerson.mockImplementation(async (uri: string) => {
 				if (uri === f.localUser.uri) return f.localUser;
 				if (uri === author.uri) return author;
@@ -1874,6 +1875,20 @@ describe('ApInboxService chat activity routing', () => {
 			const send = (activity: object = announce) => (f.inbox as never as { announce: (...args: unknown[]) => Promise<string> }).announce(f.actor, activity, inboundResolver);
 			return { ...f, note, resolver, inboundResolver, room, announce, send };
 		}
+
+		test.each([
+			['quarantined or suspended here', true],
+		])('does not take in, or ask for, a message from a server %s', async (_name, refused) => {
+			const f = createRelay();
+			const { isRefusedRemoteHost } = (f.inbox as never as { hostPolicyService: { isRefusedRemoteHost: ReturnType<typeof vi.fn> } }).hostPolicyService;
+			isRefusedRemoteHost.mockResolvedValue(refused);
+
+			await expect(f.send()).resolves.toBe('skip: refused host');
+
+			expect(isRefusedRemoteHost).toHaveBeenCalledWith('other.test');
+			expect(f.resolver.resolve).not.toHaveBeenCalled();
+			expect(f.chatService.createMessageToRoom).not.toHaveBeenCalled();
+		});
 
 		test('fetches the original as a local member and stores it from its author', async () => {
 			const f = createRelay();

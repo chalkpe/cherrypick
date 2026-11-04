@@ -8,6 +8,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import * as mfm from 'mfc-js';
 import * as Redis from 'ioredis';
 import { Brackets, DataSource, In, IsNull, LessThan } from 'typeorm';
+import type { SelectQueryBuilder } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { QueueService } from '@/core/QueueService.js';
@@ -32,6 +33,7 @@ import { extractCustomEmojisFromMfm } from '@/misc/extract-custom-emojis-from-mf
 import { NotificationService } from '@/core/NotificationService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
+import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { emojiRegex } from '@/misc/emoji-regex.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { chatMessageUri, chatRoomUriForOwner, localChatMessageIdFromUri } from '@/core/activitypub/misc/chat-payloads.js';
@@ -40,12 +42,13 @@ import { ApiError } from '@/server/api/error.js';
 export class ChatMessageAccessError extends Error {}
 export class ChatMessageInvalidTextError extends ChatMessageAccessError {}
 export class ChatMessageBlockedError extends ChatMessageAccessError {}
+export class ChatMessageRecipientSuspendedError extends ChatMessageAccessError {}
 export class ChatRoomArchivedError extends Error {}
 /** The invitation or membership a request relies on is missing. Callers must not reveal whether the room exists. */
 export class ChatRoomAccessError extends Error {}
 export class ChatRoomFullError extends Error {}
 export class ChatRoomInvitationRefusedError extends Error {
-	constructor(public reason: 'yourself' | 'noSuchUser' | 'alreadyMember' | 'alreadyInvited' | 'blocked' | 'blocking') {
+	constructor(public reason: 'yourself' | 'noSuchUser' | 'suspended' | 'alreadyMember' | 'alreadyInvited' | 'blocked' | 'blocking') {
 		super(reason);
 	}
 }
@@ -56,8 +59,7 @@ export const MAX_ROOM_MEMBERS = 50;
 export const MAX_CHAT_MESSAGE_FILES = 4;
 // Other servers can let their users attach more than this one does. Up to the limit of a note, such a message stays whole.
 export const MAX_REMOTE_CHAT_MESSAGE_FILES = 16;
-// Remote peers may allow longer messages than our composer, up to the text column's limit.
-export const MAX_REMOTE_MESSAGE_TEXT_LENGTH = 4096;
+export const MAX_CHAT_MESSAGE_TEXT_LENGTH = 4096;
 const MAX_REACTIONS_PER_MESSAGE = 100;
 const PENDING_CHAT_REACTION_TTL = 6 * 60 * 60;
 const MAX_PENDING_CHAT_REACTIONS = 100;
@@ -134,6 +136,7 @@ export class ChatService {
 		private customEmojiService: CustomEmojiService,
 		private moderationLogService: ModerationLogService,
 		private liveKitService: LiveKitService,
+		private hostPolicyService: HostPolicyService,
 	) {
 	}
 
@@ -193,6 +196,10 @@ export class ChatService {
 	public async assertCanSendToUser(fromUser: { id: MiUser['id']; host: MiUser['host']; }, toUser: MiUser): Promise<{ iApprovedOther: boolean }> {
 		if (fromUser.id === toUser.id) {
 			throw new ChatMessageAccessError('yourself');
+		}
+
+		if (toUser.isSuspended) {
+			throw new ChatMessageRecipientSuspendedError('recipient is suspended');
 		}
 
 		const approvals = await this.chatApprovalsRepository.createQueryBuilder('approval')
@@ -323,7 +330,7 @@ export class ChatService {
 		}
 
 		// Federation: Send to remote user if applicable
-		if (this.userEntityService.isLocalUser(fromUser) && this.userEntityService.isRemoteUser(toUser) && !toUser.isSuspended) {
+		if (this.userEntityService.isLocalUser(fromUser) && this.userEntityService.isRemoteUser(toUser)) {
 			const fullFromUser = await this.usersRepository.findOneByOrFail({ id: fromUser.id });
 			const chatMessageObject = await this.apRendererService.renderChatMessage(inserted, fullFromUser, [toUser]);
 			const activity = {
@@ -512,6 +519,44 @@ export class ChatService {
 		return this.chatMessagesRepository.findOneBy({ id: messageId });
 	}
 
+	/** Like a note, a message goes out of sight while its author is suspended and comes back when that ends. */
+	private excludeSuspendedAuthors(query: SelectQueryBuilder<MiChatMessage>): void {
+		query.andWhere('NOT EXISTS (SELECT 1 FROM "user" "author" WHERE "author"."id" = "message"."fromUserId" AND "author"."isSuspended")');
+	}
+
+	@bindThis
+	public isFromSuspendedUser(message: Pick<MiChatMessage, 'fromUserId'>): Promise<boolean> {
+		return this.usersRepository.existsBy({ id: message.fromUserId, isSuspended: true });
+	}
+
+	/**
+	 * The unread marks of a direct message from this account lead to something no longer shown, so they go.
+	 * A remote account also leaves the rooms owned here for good: lifting the suspension does not bring it back.
+	 */
+	@bindThis
+	public async handleUserSuspended(user: MiUser): Promise<void> {
+		const readers = await this.chatMessagesRepository.createQueryBuilder('message')
+			.select('DISTINCT message.toUserId', 'toUserId')
+			.where('message.fromUserId = :userId', { userId: user.id })
+			.andWhere('message.toUserId IS NOT NULL')
+			.getRawMany<{ toUserId: MiUser['id'] }>();
+		const redisPipeline = this.redisClient.pipeline();
+		for (const { toUserId } of readers) {
+			redisPipeline.del(`newUserChatMessageExists:${toUserId}:${user.id}`);
+			redisPipeline.srem(`newChatMessagesExists:${toUserId}`, `user:${user.id}`);
+		}
+		await redisPipeline.exec();
+
+		if (!this.userEntityService.isRemoteUser(user)) return;
+
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ userId: user.id });
+		if (memberships.length === 0) return;
+		const rooms = await this.chatRoomsRepository.find({ where: { id: In(memberships.map(membership => membership.roomId)) }, relations: { owner: true } });
+		await Promise.allSettled(rooms.map(async room => {
+			if (room.owner != null && this.userEntityService.isLocalUser(room.owner)) await this.kickRoomMember(room.owner, room, user.id);
+		}));
+	}
+
 	@bindThis
 	public findMyMessageById(userId: MiUser['id'], messageId: MiChatMessage['id']) {
 		return this.chatMessagesRepository.findOneBy({ id: messageId, fromUserId: userId, deletedAt: IsNull() });
@@ -541,7 +586,7 @@ export class ChatService {
 		await this.assertMessageRoomNotArchived(message);
 
 		const trimmed = text.trim();
-		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > 2000) throw new ChatMessageInvalidTextError('invalid text');
+		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > MAX_CHAT_MESSAGE_TEXT_LENGTH) throw new ChatMessageInvalidTextError('invalid text');
 
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));
@@ -621,6 +666,7 @@ export class ChatService {
 			}))
 			.setParameter('meId', meId)
 			.setParameter('otherId', otherId);
+		this.excludeSuspendedAuthors(query);
 
 		const messages = await query.take(limit).getMany();
 
@@ -632,6 +678,7 @@ export class ChatService {
 		const query = this.queryService.makePaginationQuery(this.chatMessagesRepository.createQueryBuilder('message'), sinceId, untilId)
 			.andWhere('message.toRoomId = :roomId', { roomId })
 			.leftJoinAndSelect('message.fromUser', 'fromUser');
+		this.excludeSuspendedAuthors(query);
 
 		const messages = await query.take(limit).getMany();
 
@@ -660,6 +707,7 @@ export class ChatService {
 				.andWhere('message.deletedAt IS NULL')
 				.andWhere(`message.fromUserId NOT IN (${ mutingQuery.getQuery() })`)
 				.andWhere(`message.toUserId NOT IN (${ mutingQuery.getQuery() })`);
+			this.excludeSuspendedAuthors(query);
 
 			if (found.length > 0) {
 				query.andWhere('message.fromUserId NOT IN (:...found)', { found: found });
@@ -707,6 +755,7 @@ export class ChatService {
 				.orderBy('message.id', 'DESC')
 				.where('message.toRoomId IN (:...roomIds)', { roomIds })
 				.andWhere('message.deletedAt IS NULL');
+			this.excludeSuspendedAuthors(query);
 
 			if (found.length > 0) {
 				query.andWhere('message.toRoomId NOT IN (:...found)', { found: found });
@@ -900,6 +949,7 @@ export class ChatService {
 
 		const invitee = await this.usersRepository.findOneBy({ id: inviteeId });
 		if (invitee == null) throw new ChatRoomInvitationRefusedError('noSuchUser');
+		if (invitee.isSuspended) throw new ChatRoomInvitationRefusedError('suspended');
 
 		if (await this.isRoomMember(room, inviteeId)) {
 			throw new ChatRoomInvitationRefusedError('alreadyMember');
@@ -948,7 +998,7 @@ export class ChatService {
 		}
 
 		// Federation: Send Invite activity to remote user if applicable
-		if (this.userEntityService.isLocalUser(inviter) && this.userEntityService.isRemoteUser(invitee) && !invitee.isSuspended) {
+		if (this.userEntityService.isLocalUser(inviter) && this.userEntityService.isRemoteUser(invitee)) {
 			const roomObject = this.apRendererService.renderChatRoom(room, inviter);
 			const inviteeUri = invitee.uri;
 			const inviteActivity = this.apRendererService.renderInvite(roomObject, inviteeUri, inviter);
@@ -1001,6 +1051,12 @@ export class ChatService {
 		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
 		if (room == null) throw new ChatRoomAccessError('no such room');
 		if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
+
+		// The owner would never hear of this join, and only this server would hold the member.
+		const roomOwner = await this.usersRepository.findOneBy({ id: room.ownerId });
+		if (roomOwner?.host != null && (roomOwner.isSuspended || await this.hostPolicyService.isRefusedRemoteHost(roomOwner.host))) {
+			throw new ChatRoomAccessError('no such room');
+		}
 
 		// The invitation is the authorization for joining. Consume it atomically
 		// with the membership insert so that a cancellation cannot race the join
@@ -1073,7 +1129,7 @@ export class ChatService {
 				...acceptActivity,
 				published: this.idService.parse(membership.id).date.toISOString(),
 			};
-			if (!owner.isSuspended) this.queueService.deliver(joiningUser, this.apRendererService.addContext(activity), owner.inbox, false);
+			this.queueService.deliver(joiningUser, this.apRendererService.addContext(activity), owner.inbox, false);
 		}
 
 		// Send Add activity to other remote members (not the owner, as they got Accept)
@@ -1381,6 +1437,7 @@ export class ChatService {
 		}
 
 		q.andWhere('LOWER(message.text) LIKE :q', { q: `%${ sqlLikeEscape(query.toLowerCase()) }%` });
+		this.excludeSuspendedAuthors(q);
 
 		q.leftJoinAndSelect('message.fromUser', 'fromUser');
 		q.leftJoinAndSelect('message.toUser', 'toUser');
@@ -1432,6 +1489,8 @@ export class ChatService {
 				throw new ChatMessageAccessError('cannot react to others message');
 			}
 			if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
+		} else if (await this.userBlockingService.checkBlocked(message.fromUserId, userId)) {
+			throw new ChatMessageAccessError('blocked');
 		}
 
 		const pair = `${userId}/${reaction}`;
@@ -1573,7 +1632,7 @@ export class ChatService {
 		}
 
 		const trimmed = text.trim();
-		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > MAX_REMOTE_MESSAGE_TEXT_LENGTH) throw new ChatMessageAccessError('invalid text');
+		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > MAX_CHAT_MESSAGE_TEXT_LENGTH) throw new ChatMessageAccessError('invalid text');
 
 		// Keep this conditional in SQL as multiple inbox workers may read the same revision.
 		const result = await this.chatMessagesRepository.update([
@@ -1798,7 +1857,7 @@ export class ChatService {
 				if (typeof parsed.actorId !== 'string' || typeof parsed.reaction !== 'string' || typeof parsed.undo !== 'boolean') continue;
 				if (parsed.activityId != null && typeof parsed.activityId !== 'string') continue;
 				const actor = await this.usersRepository.findOneBy({ id: parsed.actorId });
-				if (actor == null || actor.host == null) continue;
+				if (actor == null || actor.host == null || actor.isSuspended) continue;
 
 				if (parsed.undo) {
 					await this.unreactRemote(actor, message, parsed.reaction, parsed.activityId as string | undefined);

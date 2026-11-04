@@ -6,7 +6,9 @@
 import { describe, expect, test, vi } from 'vitest';
 import { IsNull } from 'typeorm';
 import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
-import UpdateEndpoint from '@/server/api/endpoints/chat/messages/update.js';
+import UpdateEndpoint, { paramDef as updateParams } from '@/server/api/endpoints/chat/messages/update.js';
+import { paramDef as createToRoomParams } from '@/server/api/endpoints/chat/messages/create-to-room.js';
+import { paramDef as createToUserParams } from '@/server/api/endpoints/chat/messages/create-to-user.js';
 import type { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import type { MiChatMessage, MiUser } from '@/models/_.js';
 import type { MiLocalUser } from '@/models/User.js';
@@ -67,6 +69,14 @@ function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 	return { service, message, chatMessagesRepository, publishChatUserStream, publishChatRoomStream };
 }
 
+test.each([
+	['chat/messages/create-to-user', createToUserParams],
+	['chat/messages/create-to-room', createToRoomParams],
+	['chat/messages/update', updateParams],
+])('%s takes the length both servers agree on', (_name, params) => {
+	expect(params.properties.text.maxLength).toBe(4096);
+});
+
 describe('ChatService.updateMessage', () => {
 	test.each(['', '   '])('clears an attachment caption through the local API (%j)', async text => {
 		const f = createFixture();
@@ -123,18 +133,18 @@ describe('ChatService.updateMessage', () => {
 		expect(f.publishChatUserStream).not.toHaveBeenCalled();
 	});
 
-	test('rejects empty text and text over 2000 characters', async () => {
+	test('rejects empty text and text past the limit, counted by code points', async () => {
 		const f = createFixture();
 
 		await expect(f.service.updateMessage('u1', 'm1', '   ')).rejects.toThrow('invalid text');
-		await expect(f.service.updateMessage('u1', 'm1', 'x'.repeat(2001))).rejects.toThrow('invalid text');
+		await expect(f.service.updateMessage('u1', 'm1', 'x'.repeat(4097))).rejects.toThrow('invalid text');
 	});
 
 	test('counts text like the API schema, so a sendable emoji message stays editable', async () => {
 		const f = createFixture();
 
-		await expect(f.service.updateMessage('u1', 'm1', '👍'.repeat(2000))).resolves.toMatchObject({ text: '👍'.repeat(2000) });
-		await expect(f.service.updateMessage('u1', 'm1', '👍'.repeat(2001))).rejects.toThrow('invalid text');
+		await expect(f.service.updateMessage('u1', 'm1', '👍'.repeat(4096))).resolves.toMatchObject({ text: '👍'.repeat(4096) });
+		await expect(f.service.updateMessage('u1', 'm1', '👍'.repeat(4097))).rejects.toThrow('invalid text');
 	});
 
 	test('refreshes custom emoji names when editing the text', async () => {

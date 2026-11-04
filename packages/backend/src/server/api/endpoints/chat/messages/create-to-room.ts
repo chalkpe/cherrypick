@@ -8,7 +8,7 @@ import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { GetterService } from '@/server/api/GetterService.js';
 import { ApiError } from '@/server/api/error.js';
-import { ChatMessageAccessError, ChatRoomArchivedError, ChatService, MAX_CHAT_MESSAGE_FILES } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatRoomArchivedError, ChatService, MAX_CHAT_MESSAGE_FILES, MAX_CHAT_MESSAGE_TEXT_LENGTH } from '@/core/ChatService.js';
 
 export const meta = {
 	tags: ['chat'],
@@ -66,7 +66,7 @@ export const meta = {
 export const paramDef = {
 	type: 'object',
 	properties: {
-		text: { type: 'string', nullable: true, maxLength: 2000 },
+		text: { type: 'string', nullable: true, maxLength: MAX_CHAT_MESSAGE_TEXT_LENGTH },
 		fileId: { type: 'string', format: 'misskey:id' },
 		fileIds: {
 			type: 'array',

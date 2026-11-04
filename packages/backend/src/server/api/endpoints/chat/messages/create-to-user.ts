@@ -8,7 +8,7 @@ import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { GetterService } from '@/server/api/GetterService.js';
 import { ApiError } from '@/server/api/error.js';
-import { ChatMessageAccessError, ChatMessageBlockedError, ChatService, MAX_CHAT_MESSAGE_FILES } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatMessageBlockedError, ChatMessageRecipientSuspendedError, ChatService, MAX_CHAT_MESSAGE_FILES, MAX_CHAT_MESSAGE_TEXT_LENGTH } from '@/core/ChatService.js';
 
 export const meta = {
 	tags: ['chat'],
@@ -67,6 +67,12 @@ export const meta = {
 			id: 'c15a5199-7422-4968-941a-2a462c478f7d',
 		},
 
+		recipientIsSuspended: {
+			message: 'You cannot send a message because this user is suspended.',
+			code: 'RECIPIENT_IS_SUSPENDED',
+			id: 'b9febcb3-1b46-4b4a-b8ce-8d695d3bd474',
+		},
+
 		cannotChatWithUser: {
 			message: 'This user does not accept your messages.',
 			code: 'CANNOT_CHAT_WITH_USER',
@@ -78,7 +84,7 @@ export const meta = {
 export const paramDef = {
 	type: 'object',
 	properties: {
-		text: { type: 'string', nullable: true, maxLength: 2000 },
+		text: { type: 'string', nullable: true, maxLength: MAX_CHAT_MESSAGE_TEXT_LENGTH },
 		fileId: { type: 'string', format: 'misskey:id' },
 		fileIds: {
 			type: 'array',
@@ -134,6 +140,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				});
 			} catch (e) {
 				if (e instanceof ChatMessageBlockedError) throw new ApiError(meta.errors.youHaveBeenBlocked);
+				if (e instanceof ChatMessageRecipientSuspendedError) throw new ApiError(meta.errors.recipientIsSuspended);
 				if (e instanceof ChatMessageAccessError) throw new ApiError(meta.errors.cannotChatWithUser);
 				throw e;
 			}

@@ -35,6 +35,7 @@ describe('chat federation storage', () => {
 
 	function createService() {
 		return Object.assign(Object.create(ChatService.prototype), {
+			userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
 			config: { url: 'https://local.test' },
 			usersRepository,
 			chatMessagesRepository,

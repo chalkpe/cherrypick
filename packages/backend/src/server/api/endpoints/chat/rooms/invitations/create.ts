@@ -57,6 +57,11 @@ export const meta = {
 			code: 'NO_SUCH_USER',
 			id: '167a1ccf-d9ab-415e-941d-d08f28b2ca07',
 		},
+		suspended: {
+			message: 'You cannot invite this user because they are suspended.',
+			code: 'USER_IS_SUSPENDED',
+			id: 'c2789971-48e2-41ac-b4f4-1304696987f7',
+		},
 		alreadyMember: {
 			message: 'That user is already a member of this room.',
 			code: 'ALREADY_MEMBER',

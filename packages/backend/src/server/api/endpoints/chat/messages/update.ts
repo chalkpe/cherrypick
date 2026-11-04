@@ -6,7 +6,7 @@
 import { Injectable } from '@nestjs/common';
 import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
-import { ChatMessageAccessError, ChatMessageInvalidTextError, ChatRoomArchivedError, ChatService } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatMessageInvalidTextError, ChatRoomArchivedError, ChatService, MAX_CHAT_MESSAGE_TEXT_LENGTH } from '@/core/ChatService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { ApiError } from '@/server/api/error.js';
 
@@ -53,7 +53,7 @@ export const paramDef = {
 	type: 'object',
 	properties: {
 		messageId: { type: 'string', format: 'misskey:id' },
-		text: { type: 'string', maxLength: 2000 },
+		text: { type: 'string', maxLength: MAX_CHAT_MESSAGE_TEXT_LENGTH },
 	},
 	required: ['messageId', 'text'],
 } as const;

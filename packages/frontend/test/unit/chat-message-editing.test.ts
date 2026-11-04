@@ -408,6 +408,51 @@ test.each([false, true])('ignores an MFM emoji reaction callback after deletion 
 	expect(mocks.api).not.toHaveBeenCalled();
 });
 
+describe('the length of a message', () => {
+	test.each([
+		['a new message', () => renderForm(), () => i18n.ts.send],
+		['an edit', () => renderForm('room', message), () => i18n.ts.save],
+	])('%s can be as long as the servers take and no longer', async (_name, render, title) => {
+		const form = render();
+
+		await fireEvent.update(form.textarea, 'x'.repeat(4096));
+		expect(screen.getByTitle(title()).hasAttribute('disabled')).toBe(false);
+
+		await fireEvent.update(form.textarea, 'x'.repeat(4097));
+		expect(screen.getByTitle(title()).hasAttribute('disabled')).toBe(true);
+	});
+
+	test('is counted by characters, as the servers count it', async () => {
+		const form = renderForm();
+
+		await fireEvent.update(form.textarea, '🦈'.repeat(4096));
+
+		expect(screen.getByTitle(i18n.ts.send).hasAttribute('disabled')).toBe(false);
+	});
+
+	test('sending by keyboard stops at the limit too', async () => {
+		const form = renderForm();
+
+		await fireEvent.update(form.textarea, 'x'.repeat(4097));
+		await fireEvent.keyDown(form.textarea, { key: 'Enter', ctrlKey: true });
+
+		expect(mocks.api).not.toHaveBeenCalled();
+	});
+
+	test('shows how much is left only near the limit', async () => {
+		const form = renderForm();
+
+		await fireEvent.update(form.textarea, 'x'.repeat(3996));
+		expect(form.container.querySelector('[class*="remaining"]')).toBeNull();
+
+		await fireEvent.update(form.textarea, 'x'.repeat(3997));
+		expect(form.container.querySelector('[class*="remaining"]')?.textContent).toBe('99');
+
+		await fireEvent.update(form.textarea, 'x'.repeat(4098));
+		expect(form.container.querySelector('[class*="remaining"]')?.textContent).toBe('-2');
+	});
+});
+
 describe('attaching several files', () => {
 	const [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map(id => ({ ...driveFile, id, name: `${id}.png` })) as Misskey.entities.DriveFile[];
 	const pick = async (form: ReturnType<typeof renderForm>, ...picked: Misskey.entities.DriveFile[]) => {

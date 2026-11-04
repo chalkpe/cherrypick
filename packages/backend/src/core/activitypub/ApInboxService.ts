@@ -16,7 +16,8 @@ import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NoteCreateService } from '@/core/NoteCreateService.js';
 import { NotificationService } from '@/core/NotificationService.js';
-import { ChatMessageAccessError, ChatService, MAX_REMOTE_CHAT_MESSAGE_FILES, MAX_REMOTE_MESSAGE_TEXT_LENGTH, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatService, MAX_CHAT_MESSAGE_TEXT_LENGTH, MAX_REMOTE_CHAT_MESSAGE_FILES, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
+import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { truncate } from '@/misc/truncate.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
@@ -103,6 +104,7 @@ export class ApInboxService {
 		private userEntityService: UserEntityService,
 		private noteEntityService: NoteEntityService,
 		private utilityService: UtilityService,
+		private hostPolicyService: HostPolicyService,
 		private idService: IdService,
 		private abuseReportService: AbuseReportService,
 		private userFollowingService: UserFollowingService,
@@ -570,7 +572,8 @@ export class ApInboxService {
 	 */
 	private async relayedChatMessage(actor: MiRemoteUser, activity: IAnnounce, messageUri: string, roomUri: string, resolver: Resolver): Promise<string> {
 		if (!this.isOnActorHost(roomUri, actor)) return 'skip: room is not on the relaying server';
-		if (!this.utilityService.isFederationAllowedUri(messageUri)) return 'skip: blocked host';
+		// The inbox turns away what a refused server sends. A relay must not let that in through the owner, or sign a request to it as a member.
+		if (await this.hostPolicyService.isRefusedRemoteHost(this.utilityService.extractDbHost(messageUri))) return 'skip: refused host';
 
 		const roomId = roomUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/)?.[1];
 		const room = roomId != null ? await this.chatRoomsRepository.findOneBy({ id: roomId }) : null;
@@ -964,7 +967,7 @@ export class ApInboxService {
 
 		// Extract message content
 		const text = this.chatMessageText(object);
-		if (text != null && Array.from(text.trim()).length > MAX_REMOTE_MESSAGE_TEXT_LENGTH) return 'skip: chat message is too long';
+		if (text != null && Array.from(text.trim()).length > MAX_CHAT_MESSAGE_TEXT_LENGTH) return 'skip: chat message is too long';
 		const uri = object.id;
 		const editedAt = this.parseRemoteDate(object.updated);
 
