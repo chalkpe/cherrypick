@@ -556,7 +556,8 @@ export class ChatService {
 
 	/**
 	 * The unread marks of a direct message from this account lead to something no longer shown, so they go.
-	 * A remote account also leaves the rooms owned here for good: lifting the suspension does not bring it back.
+	 * A remote account also leaves the rooms owned here and loses its invitations to them, for good:
+	 * lifting the suspension does not bring either back.
 	 */
 	@bindThis
 	public async handleUserSuspended(user: MiUser): Promise<void> {
@@ -574,12 +575,24 @@ export class ChatService {
 
 		if (!this.userEntityService.isRemoteUser(user)) return;
 
-		const memberships = await this.chatRoomMembershipsRepository.findBy({ userId: user.id });
-		if (memberships.length === 0) return;
-		const rooms = await this.chatRoomsRepository.find({ where: { id: In(memberships.map(membership => membership.roomId)) }, relations: { owner: true } });
-		await Promise.allSettled(rooms.map(async room => {
-			if (room.owner != null && this.userEntityService.isLocalUser(room.owner)) await this.kickRoomMember(room.owner, room, user.id);
-		}));
+		const [memberships, invitations] = await Promise.all([
+			this.chatRoomMembershipsRepository.findBy({ userId: user.id }),
+			this.chatRoomInvitationsRepository.findBy({ userId: user.id }),
+		]);
+		if (memberships.length === 0 && invitations.length === 0) return;
+
+		const rooms = await this.chatRoomsRepository.find({ where: { id: In([...memberships, ...invitations].map(record => record.roomId)) }, relations: { owner: true } });
+		const roomOwnedHere = (roomId: MiChatRoom['id']) => rooms.find(room => room.id === roomId && room.owner != null && this.userEntityService.isLocalUser(room.owner));
+		await Promise.allSettled([
+			...memberships.map(async membership => {
+				const room = roomOwnedHere(membership.roomId);
+				if (room?.owner != null) await this.kickRoomMember(room.owner, room, user.id);
+			}),
+			...invitations.map(async invitation => {
+				const room = roomOwnedHere(invitation.roomId);
+				if (room != null) await this.cancelRoomInvitation(room.ownerId, invitation.id);
+			}),
+		]);
 	}
 
 	@bindThis

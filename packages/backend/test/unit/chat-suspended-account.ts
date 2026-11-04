@@ -177,6 +177,7 @@ describe('suspending a remote account', () => {
 					: [{ roomId: where.roomId, userId: target.id }, { roomId: where.roomId, userId: other.id }]),
 				delete: vi.fn(async (where: { roomId: string }) => { removed.push(where.roomId); return { affected: 1 }; }),
 			},
+			chatRoomInvitationsRepository: { findBy: vi.fn().mockResolvedValue([]) },
 			chatRoomsRepository: { find: vi.fn().mockResolvedValue(rooms) },
 			chatMessagesRepository: { createQueryBuilder: () => ({ select() { return this; }, where() { return this; }, andWhere() { return this; }, getRawMany: async () => [{ toUserId: 'reader' }] }) },
 			usersRepository: { findBy: vi.fn().mockResolvedValue([owner, target, other]) },
