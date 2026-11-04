@@ -118,7 +118,7 @@ function createFixture(options: FixtureOptions = {}) {
 			if (id === owner.id) return owner;
 			throw new Error('user not found');
 		}),
-		findBy: vi.fn(async () => [owner]),
+		findBy: vi.fn(async (): Promise<{ id: string; host: string | null; uri: string | null; inbox: string | null }[]> => [owner]),
 	};
 
 	const deliver = vi.fn();
