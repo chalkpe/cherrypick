@@ -346,7 +346,14 @@ async function initialize() {
 				router.push('/chat');
 				return;
 			} else {
-				await os.apiWithDialog('chat/rooms/join', { roomId: r.id });
+				try {
+					await os.apiWithDialog('chat/rooms/join', { roomId: r.id });
+				} catch {
+					// The dialog already explained the refusal, and this page has nothing to show a non-member.
+					initializing.value = false;
+					router.push('/chat');
+					return;
+				}
 				initializing.value = false;
 				initialize();
 				return;

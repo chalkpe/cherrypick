@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => {
 		roomIsArchived: false,
 		roomOwnerId: 'owner',
 		roomShowFails: false,
+		roomInvitationExists: false,
 		routerPush: vi.fn(),
 		alert: vi.fn(),
 		confirm: vi.fn(),
@@ -44,7 +45,7 @@ const mocks = vi.hoisted(() => {
 vi.mock('@/utility/misskey-api.js', () => ({
 	misskeyApi: vi.fn(async (endpoint: string) => {
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowFails) throw new Error('No such room.');
-		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: mocks.roomOwnerId, owner: { id: mocks.roomOwnerId, username: 'owner', host: null }, isArchived: mocks.roomIsArchived };
+		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: mocks.roomOwnerId, owner: { id: mocks.roomOwnerId, username: 'owner', host: null }, isArchived: mocks.roomIsArchived, invitationExists: mocks.roomInvitationExists };
 		if (endpoint === 'users/show') return { id: 'alice', username: 'alice', host: null };
 		if (endpoint === 'chat/messages/room-timeline' || endpoint === 'chat/messages/user-timeline') return mocks.timeline;
 		return [];
@@ -171,6 +172,7 @@ beforeEach(() => {
 	mocks.roomIsArchived = false;
 	mocks.roomOwnerId = 'owner';
 	mocks.roomShowFails = false;
+	mocks.roomInvitationExists = false;
 	mocks.routerPush.mockReset();
 	mocks.alert.mockReset();
 	mocks.confirm.mockReset().mockResolvedValue({ canceled: false });
@@ -261,6 +263,17 @@ describe('leaving a room from the menu', () => {
 		expect(mocks.alert).not.toHaveBeenCalled();
 		expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
 	});
+});
+
+test('a refused invitation returns to the chat list instead of loading forever', async () => {
+	mocks.roomInvitationExists = true;
+	mocks.apiWithDialog.mockRejectedValue(new Error('This room is archived.'));
+
+	const { container } = await renderRoom();
+
+	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/join', { roomId: 'r1' });
+	expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
+	expect(container.querySelector('[data-testid="form"]')).toBeNull();
 });
 
 test('another member leaving does not close my room', async () => {

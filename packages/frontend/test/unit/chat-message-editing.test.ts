@@ -14,12 +14,13 @@ const mocks = vi.hoisted(() => ({
 	selectFile: vi.fn(),
 	upload: vi.fn(),
 	popupMenu: vi.fn(),
+	confirm: vi.fn(),
 	reactionPicker: vi.fn(),
 	me: { id: 'me', username: 'me', policies: { chatAvailability: 'available' } },
 }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
 vi.mock('@/utility/drive.js', () => ({ selectFile: mocks.selectFile }));
-vi.mock('@/os.js', () => ({ launchUploader: mocks.upload, popupMenu: mocks.popupMenu, alert: vi.fn() }));
+vi.mock('@/os.js', () => ({ launchUploader: mocks.upload, popupMenu: mocks.popupMenu, confirm: mocks.confirm, alert: vi.fn() }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/utility/emoji-picker.js', () => ({ emojiPicker: { show: vi.fn() } }));
 vi.mock('@/utility/reaction-picker.js', () => ({ reactionPicker: { show: mocks.reactionPicker } }));
@@ -472,6 +473,18 @@ describe('XMessage on messages it cannot act on', () => {
 
 		await fireEvent.click(container.querySelector('[class*="reactions"] > *')!);
 
+		await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: 'Rate limit exceeded.' }));
+	});
+
+	test('a refused delete is shown instead of being lost in the console', async () => {
+		mocks.confirm.mockResolvedValue({ canceled: false });
+		mocks.api.mockRejectedValueOnce(new Error('Rate limit exceeded.'));
+		renderMessage({ fromUserId: 'me', fromUser: mocks.me });
+
+		const deleteItem = (await openMenu()).find(item => item !== undefined && 'text' in item && item.text === i18n.ts.delete) as unknown as { action: () => Promise<void> };
+		await deleteItem.action();
+
+		expect(mocks.api).toHaveBeenCalledWith('chat/messages/delete', { messageId: 'm1' });
 		await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: 'Rate limit exceeded.' }));
 	});
 

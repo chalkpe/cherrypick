@@ -233,6 +233,8 @@ function getMenu(): MenuItem[] {
 
 				misskeyApi('chat/messages/delete', {
 					messageId: props.message.id,
+				}).catch(err => {
+					os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: err.message });
 				});
 			},
 		});
