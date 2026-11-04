@@ -33,7 +33,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onMounted, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
@@ -41,21 +40,11 @@ import { misskeyApi } from '@/utility/misskey-api.js';
 import { useRouter } from '@/router.js';
 import MkFolder from '@/components/MkFolder.vue';
 import * as os from '@/os.js';
+import { useChatRoomList } from '@/composables/use-chat-room-list.js';
 
 const router = useRouter();
 
-const fetching = ref(true);
-const invitations = ref<Misskey.entities.ChatRoomInvitation[]>([]);
-
-async function fetchInvitations() {
-	fetching.value = true;
-
-	const res = await misskeyApi('chat/rooms/invitations/inbox');
-
-	invitations.value = res;
-
-	fetching.value = false;
-}
+const { items: invitations, fetching } = useChatRoomList<Misskey.entities.ChatRoomInvitation>(() => misskeyApi('chat/rooms/invitations/inbox'));
 
 async function join(invitation: Misskey.entities.ChatRoomInvitation) {
 	await os.apiWithDialog('chat/rooms/join', {
@@ -76,10 +65,6 @@ async function reject(invitation: Misskey.entities.ChatRoomInvitation) {
 
 	invitations.value = invitations.value.filter(i => i.id !== invitation.id);
 }
-
-onMounted(() => {
-	fetchInvitations();
-});
 </script>
 
 <style lang="scss" module>

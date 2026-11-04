@@ -320,7 +320,9 @@ async function initialize() {
 		]);
 
 		if (rResult.status === 'rejected') {
-			if (membershipEnded.value) {
+			if ((rResult.reason as Misskey.api.APIError | null | undefined)?.code === 'ROOM_DELETED') {
+				notifyRoomClosed(i18n.ts._chat.roomDeleted);
+			} else if (membershipEnded.value) {
 				// 別のページを見ているあいだに外された
 				notifyRoomClosed(i18n.ts._chat.removedFromRoom);
 			} else {
@@ -592,12 +594,13 @@ async function catchUp() {
 		]);
 	} catch (err) {
 		// 一時的な失敗なら、次の機会まで今の表示のままにする
-		if ((err as Misskey.api.APIError).code !== 'NO_SUCH_ROOM') {
+		const code = (err as Misskey.api.APIError | null | undefined)?.code;
+		if (code !== 'NO_SUCH_ROOM' && code !== 'ROOM_DELETED') {
 			eventsMayBeMissing = true;
 			return;
 		}
 		if (!initialized.value || leavingRoom.value || deletingOwnRoom.value) return;
-		// 外されたか、削除された。また招待されているかどうかも含めて initialize が確かめて案内する
+		// 外されたか、削除された。どちらなのかと、また招待されているかどうかは initialize が確かめて案内する
 		closeRoom();
 		if (isActivated) initialize();
 		return;

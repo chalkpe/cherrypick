@@ -400,6 +400,37 @@ describe('after the stream reconnects', () => {
 		expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
 	});
 
+	test('says so when the room was deleted while the stream was down', async () => {
+		const { container } = await renderRoom();
+		mocks.roomShowError = Object.assign(new Error('This room was deleted.'), { code: 'ROOM_DELETED' });
+
+		await reconnect();
+
+		expect(form(container)).toBeNull();
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+		expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('says so when the timeline answers first that the room is gone and the room was deleted', async () => {
+		const { container } = await renderRoom();
+		mocks.timelineError = Object.assign(new Error('No such room.'), { code: 'NO_SUCH_ROOM' });
+		mocks.roomShowError = Object.assign(new Error('This room was deleted.'), { code: 'ROOM_DELETED' });
+
+		await reconnect();
+
+		expect(form(container)).toBeNull();
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+	});
+
+	test('says so when a deleted room is opened again', async () => {
+		mocks.roomShowError = Object.assign(new Error('This room was deleted.'), { code: 'ROOM_DELETED' });
+
+		await renderRoom();
+
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+		expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
 	test('offers the invitation of someone removed and invited again in the meantime', async () => {
 		const { container } = await renderRoom();
 		mocks.roomInvitationExists = true;
