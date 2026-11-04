@@ -56,7 +56,7 @@ export const meta = {
 		},
 
 		contentRequired: {
-			message: 'Content required. You need to set text or fileId.',
+			message: 'Content required. You need to set text or fileIds.',
 			code: 'CONTENT_REQUIRED',
 			id: '25587321-b0e6-449c-9239-f8925092942c',
 		},

@@ -451,6 +451,19 @@ describe('the length of a message', () => {
 		await fireEvent.update(form.textarea, 'x'.repeat(4098));
 		expect(form.container.querySelector('[class*="remaining"]')?.textContent).toBe('-2');
 	});
+
+	test('tells a screen reader why the message cannot be sent', async () => {
+		const form = renderForm();
+
+		await fireEvent.update(form.textarea, 'x'.repeat(4096));
+		expect(form.textarea.getAttribute('aria-invalid')).toBe('false');
+
+		await fireEvent.update(form.textarea, 'x'.repeat(4097));
+		const remaining = form.container.querySelector('[class*="remaining"]')!;
+		expect(form.textarea.getAttribute('aria-invalid')).toBe('true');
+		expect(form.textarea.getAttribute('aria-describedby')).toBe(remaining.id);
+		expect(remaining.getAttribute('aria-label')).toBe(i18n.tsx.remainingN({ n: -1 }));
+	});
 });
 
 describe('attaching several files', () => {

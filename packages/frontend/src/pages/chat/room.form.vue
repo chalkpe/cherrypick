@@ -18,6 +18,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		class="_acrylic"
 		:placeholder="i18n.ts.inputMessageHere"
 		:aria-label="i18n.ts.inputMessageHere"
+		:aria-invalid="remainingLength < 0"
+		:aria-describedby="remainingLength < 100 ? remainingLengthId : undefined"
 		:readonly="textareaReadOnly"
 		@keydown="onKeydown"
 		@paste="onPaste"
@@ -29,7 +31,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<!-- 通話中は PC だと通話バーがここに入る -->
 			<XVoiceCallBarSlot kind="chatForm" :focusWithin="rootEl" :class="$style.voiceCall"/>
 			<button v-if="editingMessage" class="_button" :class="$style.button" :title="i18n.ts.cancel" :aria-label="i18n.ts.cancel" @click="emit('cancelEdit')"><i class="ti ti-x"></i></button>
-			<span v-if="remainingLength < 100" :class="[$style.remaining, { [$style.overLimit]: remainingLength < 0 }]">{{ remainingLength }}</span>
+			<span v-if="remainingLength < 100" :id="remainingLengthId" :class="[$style.remaining, { [$style.overLimit]: remainingLength < 0 }]" :aria-label="i18n.tsx.remainingN({ n: remainingLength })">{{ remainingLength }}</span>
 			<button class="_button" :class="[$style.button, $style.send]" :disabled="!canSend || sending" :title="editingMessage ? i18n.ts.save : i18n.ts.send" :aria-label="editingMessage ? i18n.ts.save : i18n.ts.send" @click="send">
 				<template v-if="!sending"><i class="ti ti-send"></i></template><template v-if="sending"><MkLoading :em="true"/></template>
 			</button>
@@ -40,7 +42,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onMounted, watch, ref, shallowRef, computed, nextTick, readonly, onBeforeUnmount, useTemplateRef } from 'vue';
+import { onMounted, watch, ref, shallowRef, computed, nextTick, readonly, onBeforeUnmount, useId, useTemplateRef } from 'vue';
 import * as Misskey from 'cherrypick-js';
 //import insertTextAtCursor from 'insert-text-at-cursor';
 import { formatTimeString } from '@/utility/format-time-string.js';
@@ -92,6 +94,7 @@ let autocompleteInstance: Autocomplete | null = null;
 let editSession = 0;
 
 const remainingLength = computed(() => MAX_TEXT_LENGTH - Array.from(text.value).length);
+const remainingLengthId = useId();
 const canSend = computed(() => remainingLength.value >= 0 && (props.editingMessage
 	? text.value.trim() !== '' || (props.editingMessage.fileIds?.length ?? 0) > 0
 	: text.value !== '' || files.value.length > 0));
@@ -425,8 +428,12 @@ onBeforeUnmount(() => {
 	height: 50px;
 	aspect-ratio: 1;
 
-	&:hover {
+	&:not(:disabled):hover {
 		color: var(--MI_THEME-accent);
+	}
+
+	&:disabled {
+		opacity: 0.5;
 	}
 }
 
@@ -450,13 +457,13 @@ onBeforeUnmount(() => {
 	font-size: 0.9em;
 	opacity: 0.7;
 
+	&.overLimit {
+		color: var(--MI_THEME-error);
+		opacity: 1;
+	}
+
 	& + .send {
 		margin-left: 0;
 	}
-}
-
-.overLimit {
-	color: var(--MI_THEME-error);
-	opacity: 1;
 }
 </style>

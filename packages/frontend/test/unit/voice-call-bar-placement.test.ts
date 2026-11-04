@@ -132,10 +132,10 @@ describe('chat attachments', () => {
 		await fireEvent(screen.getByRole('textbox'), event);
 		await flush();
 		expect(event.defaultPrevented).toBe(true);
-		expect(os.launchUploader).toHaveBeenCalledWith([image], { multiple: false });
+		expect(os.launchUploader).toHaveBeenCalledWith([image], { multiple: true });
 		expect(screen.getByRole('img', { name: 'image.png' })).toBeTruthy();
 		await fireEvent.click(screen.getByTitle(i18n.ts.send));
-		expect(misskeyApi).toHaveBeenCalledWith('chat/messages/create-to-room', expect.objectContaining({ fileId: 'f1' }));
+		expect(misskeyApi).toHaveBeenCalledWith('chat/messages/create-to-room', expect.objectContaining({ fileIds: ['f1'] }));
 	});
 
 	function clipboardData(items: unknown[], files: File[], text = '') {
@@ -182,7 +182,7 @@ describe('chat attachments', () => {
 		render(XForm, { props: { room }, global: { stubs } });
 		await fireEvent(screen.getByRole('textbox'), transferEvent('drop', 'dataTransfer', { files: [new File(['image'], 'a.png', { type: 'image/png' })] }));
 		await flush();
-		expect(screen.getByText('1/1')).toBeTruthy();
+		expect(screen.getByText('1/4')).toBeTruthy();
 		expect(screen.getByRole('img', { name: 'image.png' }).compareDocumentPosition(screen.getByRole('textbox')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 		await fireEvent.click(screen.getByRole('img', { name: 'image.png' }).closest('[role="button"]')!);
 		const items = vi.mocked(os.popupMenu).mock.calls[0][0] as any[];
@@ -224,14 +224,22 @@ describe('chat attachments', () => {
 		expect(os.launchUploader).not.toHaveBeenCalled();
 	});
 
-	test('rejects multiple clipboard files and leaves the draft intact when upload is cancelled', async () => {
+	test('uploads several clipboard files together', async () => {
+		render(XForm, { props: { room }, global: { stubs } });
+		const image = new File(['image'], 'a.png', { type: 'image/png' });
+		await fireEvent(screen.getByRole('textbox'), transferEvent('paste', 'clipboardData', clipboardData([], [image, image])));
+		await flush();
+		expect(os.launchUploader).toHaveBeenCalledWith([image, image], { multiple: true });
+	});
+
+	test('refuses more clipboard files than a message can have and leaves the draft intact when upload is cancelled', async () => {
 		render(XForm, { props: { room }, global: { stubs } });
 		const input = screen.getByRole('textbox');
 		await fireEvent.update(input, 'draft');
 		const image = new File(['image'], 'a.png', { type: 'image/png' });
-		const multi = transferEvent('paste', 'clipboardData', clipboardData([], [image, image]));
+		const multi = transferEvent('paste', 'clipboardData', clipboardData([], [image, image, image, image, image]));
 		await fireEvent(input, multi);
-		expect(os.alert).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.ts.onlyOneFileCanBeAttached }));
+		expect(os.alert).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._chat.tooManyFiles({ max: 4 }) }));
 		expect(os.launchUploader).not.toHaveBeenCalled();
 		vi.mocked(os.launchUploader).mockRejectedValueOnce(undefined);
 		await fireEvent(input, transferEvent('drop', 'dataTransfer', { files: [image] }));
