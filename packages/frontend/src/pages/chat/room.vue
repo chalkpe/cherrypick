@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
+<PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle backFallback="/chat" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
 	<!-- 自分が通話に入っているあいだは、通話 (ステージ) を出す。広いページではステージとチャットを左右に並べ、ステージは一つだけ作ってチャットを置く側の反対へ CSS の順序で移す。
 	狭いページではステージをいっぱいに広げ、チャットはその上に下から重ねるシートとして開く -->
 	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="{ [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }">
@@ -60,6 +60,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 								</template>
 								<template v-else-if="room && !room.isArchived">
 									<div>{{ i18n.ts._chat.inviteUserToChat }}</div>
+									<MkButton v-if="room.ownerId === $i.id && $i.policies.chatAvailability === 'available'" primary rounded style="margin: 0 auto;" @click="inviteUser"><i class="ti ti-plus"></i> {{ i18n.ts._chat.inviteUser }}</MkButton>
 								</template>
 							</div>
 						</div>
@@ -587,10 +588,17 @@ async function inviteUser() {
 	if (room.value == null) return;
 
 	const invitee = await os.selectUser({ includeSelf: false, localOnly: false });
-	os.apiWithDialog('chat/rooms/invitations/create', {
-		roomId: room.value.id,
-		userId: invitee.id,
-	});
+	try {
+		await os.apiWithDialog('chat/rooms/invitations/create', {
+			roomId: room.value.id,
+			userId: invitee.id,
+		});
+	} catch {
+		// The dialog already explained the failure, and no invitation was sent.
+		return;
+	}
+	// 送った招待の一覧はメンバータブを開いたときにしか読み込まない
+	onMembershipChanged();
 }
 
 async function leaveRoom() {
@@ -976,6 +984,11 @@ definePage(computed(() => {
 	margin: 0 auto;
 	width: 100%;
 	max-width: 700px;
+
+	// この幅からナビゲーションの縁に開閉ボタン (幅 20px、navbar.vue) が出て、端まで広がった入力欄に重なる
+	@media (min-width: 1280px) {
+		width: calc(100% - 40px);
+	}
 }
 
 .fade-enter-active, .fade-leave-active {

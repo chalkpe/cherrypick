@@ -26,12 +26,15 @@ const mocks = vi.hoisted(() => {
 		me: { id: 'me', username: 'me', policies: { chatAvailability: 'available', canVoiceCall: false } },
 		timeline: [] as unknown[],
 		roomIsArchived: false,
+		roomOwnerId: 'owner',
 		roomShowFails: false,
 		routerPush: vi.fn(),
 		alert: vi.fn(),
 		confirm: vi.fn(),
 		popupMenu: vi.fn(),
 		apiWithDialog: vi.fn(),
+		selectUser: vi.fn(),
+		membersMounts: { value: 0 },
 		editMessage: { value: null as (() => void) | null },
 		// 吹き出しごとの描画回数
 		renders: new Map<string, number>(),
@@ -41,7 +44,7 @@ const mocks = vi.hoisted(() => {
 vi.mock('@/utility/misskey-api.js', () => ({
 	misskeyApi: vi.fn(async (endpoint: string) => {
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowFails) throw new Error('No such room.');
-		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: 'owner', owner: { id: 'owner', username: 'owner', host: null }, isArchived: mocks.roomIsArchived };
+		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: mocks.roomOwnerId, owner: { id: mocks.roomOwnerId, username: 'owner', host: null }, isArchived: mocks.roomIsArchived };
 		if (endpoint === 'users/show') return { id: 'alice', username: 'alice', host: null };
 		if (endpoint === 'chat/messages/room-timeline' || endpoint === 'chat/messages/user-timeline') return mocks.timeline;
 		return [];
@@ -50,7 +53,7 @@ vi.mock('@/utility/misskey-api.js', () => ({
 vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), useChannel: () => mocks.channel }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
-vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog }));
+vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog, selectUser: mocks.selectUser }));
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, useListener: vi.fn() }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // 通話や入力欄は吹き出しのまとまりと関係ないので空にする
@@ -63,7 +66,19 @@ vi.mock('@/pages/chat/room.form.vue', async () => {
 	return { default: { props: ['editingMessage'], render(this: { editingMessage: { id: string } | null }) { return hh('div', { 'data-testid': 'form', 'data-editing': this.editingMessage?.id ?? '' }); } } };
 });
 vi.mock('@/pages/chat/room.search.vue', () => ({ default: { render: () => null } }));
-vi.mock('@/pages/chat/room.members.vue', () => ({ default: { render: () => null } }));
+// 一覧は読み込むときにしか取得しないので、読み込み直された回数を数える
+vi.mock('@/pages/chat/room.members.vue', async () => {
+	const { h: hh, onMounted } = await import('vue');
+	return {
+		default: {
+			emits: ['inviteUser'],
+			setup(_: unknown, { emit }: { emit: (event: 'inviteUser') => void }) {
+				onMounted(() => { mocks.membersMounts.value++; });
+				return () => hh('button', { 'data-testid': 'members-invite', onClick: () => emit('inviteUser') });
+			},
+		},
+	};
+});
 vi.mock('@/pages/chat/room.info.vue', async () => {
 	const { h: hh } = await import('vue');
 	return {
@@ -154,12 +169,15 @@ beforeEach(() => {
 	mocks.channel = new mocks.FakeChannel();
 	mocks.renders.clear();
 	mocks.roomIsArchived = false;
+	mocks.roomOwnerId = 'owner';
 	mocks.roomShowFails = false;
 	mocks.routerPush.mockReset();
 	mocks.alert.mockReset();
 	mocks.confirm.mockReset().mockResolvedValue({ canceled: false });
 	mocks.popupMenu.mockReset();
 	mocks.apiWithDialog.mockReset().mockResolvedValue(undefined);
+	mocks.selectUser.mockReset().mockResolvedValue({ id: 'invitee' });
+	mocks.membersMounts.value = 0;
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
 });
@@ -381,6 +399,104 @@ test('archiving from the info tab also ends an edit in progress', async () => {
 	await flush();
 
 	expect(container.querySelector('[data-testid="form"]')?.getAttribute('data-editing')).toBe('');
+});
+
+describe('inviting from an empty conversation', () => {
+	const inviteButton = (container: Element) => [...container.querySelectorAll('button')].find(button => button.textContent?.includes(i18n.ts._chat.inviteUser));
+
+	beforeEach(() => {
+		mocks.timeline = [];
+	});
+
+	test('the owner can invite right where the hint is', async () => {
+		mocks.roomOwnerId = 'me';
+		const { container } = await renderRoom();
+
+		await fireEvent.click(inviteButton(container)!);
+		await flush();
+
+		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' });
+	});
+
+	test('a member who cannot invite only sees the hint', async () => {
+		const { container } = await renderRoom();
+
+		expect(container.textContent).toContain(i18n.ts._chat.inviteUserToChat);
+		expect(inviteButton(container)).toBeUndefined();
+	});
+
+	test('an owner whose chat is read-only is not offered a button that would fail', async () => {
+		mocks.roomOwnerId = 'me';
+		mocks.me.policies.chatAvailability = 'readonly';
+		try {
+			const { container } = await renderRoom();
+
+			expect(inviteButton(container)).toBeUndefined();
+		} finally {
+			mocks.me.policies.chatAvailability = 'available';
+		}
+	});
+
+	test('the owner cannot invite into an archived room', async () => {
+		mocks.roomOwnerId = 'me';
+		mocks.roomIsArchived = true;
+		const { container } = await renderRoom();
+
+		expect(inviteButton(container)).toBeUndefined();
+	});
+});
+
+describe('inviting from the members tab', () => {
+	async function openMembersTab() {
+		const tabbedStubs = { ...stubs, PageWithHeader: { props: ['tab'], emits: ['update:tab'], template: '<div style="overflow-y: scroll;"><button data-testid="open-members" @click="$emit(\'update:tab\', \'members\')"/><slot /><slot name="footer" /></div>' } };
+		const host = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(XRoomPage, { roomId: 'r1' });
+			},
+		});
+		const { container } = render(host, { global: { stubs: tabbedStubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		await fireEvent.click(container.querySelector('[data-testid="open-members"]')!);
+		await flush();
+		expect(mocks.membersMounts.value).toBe(1);
+		return container;
+	}
+
+	test('reloads the tab once the invitation exists, so it appears under sent invitations', async () => {
+		const container = await openMembersTab();
+
+		await fireEvent.click(container.querySelector('[data-testid="members-invite"]')!);
+		await flush();
+
+		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' });
+		expect(mocks.membersMounts.value).toBe(2);
+	});
+
+	test('leaves the tab alone when the invitation fails', async () => {
+		mocks.apiWithDialog.mockRejectedValue(new Error('request failed'));
+		const container = await openMembersTab();
+
+		await fireEvent.click(container.querySelector('[data-testid="members-invite"]')!);
+		await flush();
+
+		expect(mocks.membersMounts.value).toBe(1);
+	});
+});
+
+test.each(['room', 'user'] as const)('the back button of a %s chat falls back to the chat list', async (target) => {
+	const fallbackStubs = { ...stubs, PageWithHeader: { props: ['backFallback'], template: '<div style="overflow-y: scroll;" data-testid="page" :data-back-fallback="backFallback"><slot /><slot name="footer" /></div>' } };
+	const host = defineComponent({
+		setup() {
+			provideMetadataReceiver(() => {});
+			return () => h(XRoomPage, target === 'room' ? { roomId: 'r1' } : { userId: 'alice' });
+		},
+	});
+	const { container } = render(host, { global: { stubs: fallbackStubs, directives: { tooltip: {} } } });
+	await flush();
+
+	expect(container.querySelector('[data-testid="page"]')?.getAttribute('data-back-fallback')).toBe('/chat');
 });
 
 test('rejoining a kicked room reinitializes its cached page and subscribes again', async () => {

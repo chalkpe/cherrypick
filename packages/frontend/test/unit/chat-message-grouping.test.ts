@@ -9,6 +9,7 @@ import { prefer as mockedPrefer } from '@/preferences.js';
 import type { FakePrefer } from './fake-prefer.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
+import { misskeyApi } from '@/utility/misskey-api.js';
 import { getChatMessageGroupPositions } from '@/utility/chat-message-grouping.js';
 import XMessage from '@/pages/chat/XMessage.vue';
 import type { NormalizedChatMessage } from '@/pages/chat/room.vue';
@@ -18,7 +19,7 @@ const me = vi.hoisted(() => ({ id: 'me', username: 'me', policies: { chatAvailab
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer() }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: me, ensureSignin: () => me }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: vi.fn().mockResolvedValue([]) }));
-vi.mock('@/os.js', () => ({ popupMenu: vi.fn(), contextMenu: vi.fn() }));
+vi.mock('@/os.js', () => ({ popupMenu: vi.fn(), contextMenu: vi.fn(), confirm: vi.fn() }));
 vi.mock('@/utility/reaction-picker.js', () => ({ reactionPicker: { show: vi.fn() } }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 
@@ -149,6 +150,39 @@ describe('XMessage in a group', () => {
 		const [items, anchor] = vi.mocked(os.popupMenu).mock.calls[0];
 		expect(anchor).toBe(bubble);
 		expect(items).toEqual(expect.arrayContaining([expect.objectContaining({ text: i18n.ts.copyContent })]));
+	});
+
+	describe('deleting my own message', () => {
+		const deleteRequests = () => vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/delete');
+
+		async function chooseDelete() {
+			vi.mocked(misskeyApi).mockClear();
+			vi.mocked(os.popupMenu).mockClear();
+			const mine = { id: 'm', createdAt: new Date(base).toISOString(), fromUserId: me.id, fromUser: { ...alice, id: me.id }, text: 'hello', reactions: [] };
+			const result = renderMessage({ message: mine });
+			const bubble = result.getByText('hello').closest('[tabindex="0"]') as HTMLElement;
+			await fireEvent.keyDown(bubble, { key: 'Enter' });
+			const [items] = vi.mocked(os.popupMenu).mock.calls[0];
+			const item = items.find(entry => entry != null && 'text' in entry && entry.text === i18n.ts.delete) as unknown as { action: () => Promise<void> | void };
+			await item.action();
+		}
+
+		test('asks first, and sends the request once confirmed', async () => {
+			vi.mocked(os.confirm).mockResolvedValue({ canceled: false } as never);
+
+			await chooseDelete();
+
+			expect(os.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.ts.deleteConfirm });
+			expect(deleteRequests()).toEqual([['chat/messages/delete', { messageId: 'm' }]]);
+		});
+
+		test('keeps the message when the dialog is canceled', async () => {
+			vi.mocked(os.confirm).mockResolvedValue({ canceled: true } as never);
+
+			await chooseDelete();
+
+			expect(deleteRequests()).toEqual([]);
+		});
 	});
 
 	test('does not intercept keyboard activation on links inside a bubble', async () => {

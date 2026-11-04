@@ -10,6 +10,7 @@ import { Nirax } from '@/lib/nirax.js';
 import { ROUTE_DEF } from '@/router.definition.js';
 import { analytics } from '@/analytics.js';
 import { DI } from '@/di.js';
+import { pushAppHistory, replaceAppHistory } from '@/utility/app-history.js';
 
 export type Router = Nirax<typeof ROUTE_DEF>;
 
@@ -24,11 +25,11 @@ window.addEventListener('popstate', (event) => {
 });
 
 mainRouter.addListener('push', ctx => {
-	window.history.pushState({ }, '', ctx.fullPath);
+	pushAppHistory(ctx.fullPath);
 });
 
 mainRouter.addListener('replace', ctx => {
-	window.history.replaceState({ }, '', ctx.fullPath);
+	replaceAppHistory(ctx.fullPath);
 });
 
 mainRouter.addListener('forceReplace', ctx => {

@@ -224,7 +224,13 @@ function getMenu(): MenuItem[] {
 			text: i18n.ts.delete,
 			icon: 'ti ti-trash',
 			danger: true,
-			action: () => {
+			action: async () => {
+				const { canceled } = await os.confirm({
+					type: 'warning',
+					text: i18n.ts.deleteConfirm,
+				});
+				if (canceled) return;
+
 				misskeyApi('chat/messages/delete', {
 					messageId: props.message.id,
 				});
