@@ -1618,6 +1618,8 @@ export class ChatService {
 			await this.assertRemoteWriteAllowed(room);
 		} else if (message.toUserId !== actor.id) {
 			throw new ChatMessageAccessError('cannot react to others message');
+		} else if (await this.userBlockingService.checkBlocked(message.fromUserId, actor.id)) {
+			throw new ChatMessageAccessError('blocked');
 		}
 
 		const pair = `${actor.id}/${reaction}`;

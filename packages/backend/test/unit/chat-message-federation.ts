@@ -983,6 +983,18 @@ describe('ChatService chat federation delivery', () => {
 
 			await expect(f.service.reactRemote(f.carol as never, f.roomMessage as never, '👍')).rejects.toBeInstanceOf(ChatMessageAccessError);
 		});
+
+		test('a remote user blocked by the author cannot react to a direct message', async () => {
+			const f = createService();
+			const blocking = (f.service as never as { userBlockingService: { checkBlocked: ReturnType<typeof vi.fn> } }).userBlockingService;
+			blocking.checkBlocked.mockResolvedValue(true);
+
+			await expect(f.service.reactRemote(f.bob as never, f.directMessage as never, '👍')).rejects.toBeInstanceOf(ChatMessageAccessError);
+
+			expect(blocking.checkBlocked).toHaveBeenCalledWith('alice', 'bob');
+			expect(f.directMessage.reactions).toEqual([]);
+			expect(f.globalEventService.publishChatUserStream).not.toHaveBeenCalled();
+		});
 	});
 
 	describe('room deletion', () => {
@@ -1690,6 +1702,15 @@ describe('ApInboxService chat activity routing', () => {
 			expect(await create(f)).toBe('skip: blocked');
 		});
 
+		test('does not store a direct message addressed to a user of another server', async () => {
+			const f = createInbox();
+			const elsewhere = { id: 'elsewhere', uri: 'https://other.test/users/elsewhere', host: 'other.test' };
+			(f.inbox as never as { apPersonService: { resolvePerson: ReturnType<typeof vi.fn> } }).apPersonService.resolvePerson.mockResolvedValue(elsewhere);
+
+			expect(await create(f)).toBe('skip: recipient is not a local user');
+			expect(f.chatService.createMessageToUser).not.toHaveBeenCalled();
+		});
+
 		test('retries a membership refusal, as the roster update may still be on its way', async () => {
 			const f = createInbox();
 			f.chatService.createMessageToUser.mockRejectedValue(new Error('you are not a member of the room'));
@@ -1965,6 +1986,7 @@ describe('chat custom emoji federation', () => {
 			chatMessagesRepository: { findOneBy: async () => chatMessage, createQueryBuilder: () => queryBuilder },
 			globalEventService: { publishChatUserStream },
 			userEntityService: { pack: async (id: string) => ({ id }) },
+			userBlockingService: { checkBlocked: async () => false },
 		}) as ChatService;
 		const extractEmojis = vi.fn(async () => []);
 		const inbox = Object.assign(Object.create(ApInboxService.prototype), {

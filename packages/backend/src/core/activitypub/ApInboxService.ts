@@ -924,9 +924,9 @@ export class ApInboxService {
 		if (!isGroup && recipients.length !== 1) return 'skip: no room context';
 		if (!isGroup) {
 			const recipient = recipients[0];
-			const recipientCanChat = this.userEntityService.isLocalUser(recipient)
-				? (await this.roleService.getUserPolicies(recipient.id)).chatAvailability !== 'unavailable'
-				: recipient.canChat ?? true;
+			// A conversation between two users of other servers has nobody here to read it.
+			if (!this.userEntityService.isLocalUser(recipient)) return 'skip: recipient is not a local user';
+			const recipientCanChat = (await this.roleService.getUserPolicies(recipient.id)).chatAvailability !== 'unavailable';
 			if (!recipientCanChat) {
 				// Note creation can also fetch attachments and must not hold the chat insertion lock.
 				const tombstoneKey = `chat_delete_upon_arrival:${object.id}:${encodeURIComponent(actor.uri)}`;
