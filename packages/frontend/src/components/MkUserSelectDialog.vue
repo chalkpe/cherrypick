@@ -109,6 +109,16 @@ const searchQuery = computed(() => {
 		host: computedLocalOnly.value ? '.' : accountHost ?? host.value.trim().toLowerCase(),
 	};
 });
+// 「@sora@example.com」を貼り付けたら、ユーザー名とホストの欄に分ける。
+// 打っている途中で分けると続きの文字がユーザー名の欄に入ってしまうので、一度に入ったときだけ分ける (打った場合も searchQuery が同じように読む)
+watch(username, (value, previous) => {
+	if (computedLocalOnly.value || value.length - previous.length < 2) return;
+	const acct = Misskey.acct.parse(value.trim());
+	if (!acct.host) return;
+	host.value = acct.host.toLowerCase();
+	username.value = acct.username;
+}, { flush: 'sync' });
+
 const canLookup = computed(() => !computedLocalOnly.value && !!searchQuery.value?.username && !!searchQuery.value.host && searchQuery.value.host !== '.');
 
 function canSelectUser(user: Misskey.entities.UserLite) {

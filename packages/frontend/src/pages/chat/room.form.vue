@@ -11,6 +11,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	@drop.stop="onDrop"
 >
 	<XPostFormAttaches v-if="files.length > 0 && !editingMessage" v-model="files" :max="MAX_FILES" @detach="detachFile" @changeSensitive="(changed, isSensitive) => updateAttachment(changed, { isSensitive })" @changeName="(changed, name) => updateAttachment(changed, { name })"/>
+	<div v-if="editingMessage" :class="$style.editing"><i class="ti ti-pencil" aria-hidden="true"></i> {{ i18n.ts._chat.editingMessage }}</div>
 	<textarea
 		ref="textareaEl"
 		v-model="text"
@@ -391,6 +392,12 @@ onBeforeUnmount(() => {
 	border-bottom: none;
 	border-radius: 14px 14px 0 0;
 	overflow: clip;
+}
+
+.editing {
+	padding: 8px 16px 0;
+	font-size: 85%;
+	color: var(--MI_THEME-accent);
 }
 
 .textarea {

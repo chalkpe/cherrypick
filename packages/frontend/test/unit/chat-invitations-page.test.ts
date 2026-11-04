@@ -65,5 +65,5 @@ test.each(['join', 'reject'] as const)('tells the notification lists when the in
 	await new Promise(resolve => setTimeout(resolve, 0));
 	globalEvents.off('chatRoomInvitationHandled', handled);
 
-	expect(handled).toHaveBeenCalledExactlyOnceWith('room1');
+	expect(handled).toHaveBeenCalledExactlyOnceWith('room1', action === 'join' ? 'joined' : 'rejected');
 });

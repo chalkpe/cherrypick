@@ -126,7 +126,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<MkA :class="$style.text" :to="`/chat/room/${notification.invitation.room.id}`">
 					<Mfm :text="notification.invitation.room.name" :plain="true" :author="notification.invitation.room.owner"/>
 				</MkA>
-				<div v-if="full && !chatRoomInviteDone" :class="$style.followRequestCommands">
+				<div v-if="full && chatRoomInviteResult != null" :class="$style.text">{{ chatRoomInviteResultText }}</div>
+				<div v-else-if="full" :class="$style.followRequestCommands">
 					<MkButton :class="$style.followRequestCommandButton" rounded primary :disabled="chatRoomInvitePending" @click="acceptChatRoomInvitation()"><i class="ti ti-check"></i> {{ i18n.ts._chat.join }}</MkButton>
 					<MkButton :class="$style.followRequestCommandButton" rounded danger :disabled="chatRoomInvitePending" @click="rejectChatRoomInvitation()"><i class="ti ti-x"></i> {{ i18n.ts._chat.reject }}</MkButton>
 				</div>
@@ -203,7 +204,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onBeforeUnmount, ref } from 'vue';
+import { computed, onBeforeUnmount, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import * as os from '@/os.js';
 import MkReactionIcon from '@/components/MkReactionIcon.vue';
@@ -248,7 +249,14 @@ const exportEntityName = {
 
 const followRequestDone = ref(false);
 const groupInviteDone = ref(false);
-const chatRoomInviteDone = ref(false);
+const chatRoomInviteResult = ref<'joined' | 'rejected' | 'gone' | null>(null);
+const chatRoomInviteResultText = computed(() => {
+	switch (chatRoomInviteResult.value) {
+		case 'joined': return i18n.ts._chat.invitationJoined;
+		case 'rejected': return i18n.ts._chat.invitationRejected;
+		default: return i18n.ts._chat.invitationGone;
+	}
+});
 const chatRoomInvitePending = ref(false);
 
 const acceptFollowRequest = () => {
@@ -281,17 +289,18 @@ const rejectGroupInvitation = () => {
 };
 
 async function respondToChatRoomInvitation(endpoint: 'chat/rooms/join' | 'chat/rooms/invitations/reject') {
-	if (props.notification.type !== 'chatRoomInvitationReceived' || chatRoomInvitePending.value || chatRoomInviteDone.value) return;
+	if (props.notification.type !== 'chatRoomInvitationReceived' || chatRoomInvitePending.value || chatRoomInviteResult.value != null) return;
 	chatRoomInvitePending.value = true;
 	try {
 		await misskeyApi(endpoint, { roomId: props.notification.invitation.room.id });
-		chatRoomInviteDone.value = true;
-		globalEvents.emit('chatRoomInvitationHandled', props.notification.invitation.room.id);
+		const result = endpoint === 'chat/rooms/join' ? 'joined' : 'rejected';
+		chatRoomInviteResult.value = result;
+		globalEvents.emit('chatRoomInvitationHandled', props.notification.invitation.room.id, result);
 	} catch {
 		// 招待がもう無い (招待一覧や別の端末で応じた・取り消された) なら、何度押しても同じく失敗するのでボタンを下げる
 		if (await isChatRoomInvitationGone(props.notification.invitation.room.id)) {
-			chatRoomInviteDone.value = true;
-			globalEvents.emit('chatRoomInvitationHandled', props.notification.invitation.room.id);
+			chatRoomInviteResult.value = 'gone';
+			globalEvents.emit('chatRoomInvitationHandled', props.notification.invitation.room.id, 'gone');
 		} else {
 			void os.alert({ type: 'error', text: i18n.ts.somethingHappened });
 		}
@@ -311,8 +320,8 @@ async function isChatRoomInvitationGone(roomId: string): Promise<boolean> {
 }
 
 // 同じ招待の通知は別の一覧にも出ているので、どこかで応じたら他の一覧のボタンも下げる
-function onChatRoomInvitationHandled(roomId: string) {
-	if (props.notification.type === 'chatRoomInvitationReceived' && props.notification.invitation.room.id === roomId) chatRoomInviteDone.value = true;
+function onChatRoomInvitationHandled(roomId: string, result: 'joined' | 'rejected' | 'gone') {
+	if (props.notification.type === 'chatRoomInvitationReceived' && props.notification.invitation.room.id === roomId) chatRoomInviteResult.value = result;
 }
 
 if (props.notification.type === 'chatRoomInvitationReceived') {

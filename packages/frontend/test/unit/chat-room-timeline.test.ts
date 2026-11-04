@@ -383,9 +383,33 @@ test('a refused invitation returns to the chat list instead of loading forever',
 
 	const { container } = await renderRoom();
 
-	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/join', { roomId: 'r1' }, null, expect.anything());
+	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/join', { roomId: 'r1' }, undefined, expect.anything());
 	expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
 	expect(container.querySelector('[data-testid="form"]')).toBeNull();
+});
+
+test('the owner finds the way to the room info, where deleting is, in the menu', async () => {
+	mocks.roomOwnerId = 'me';
+	const { container } = await renderRoom();
+
+	const menu = [...container.querySelectorAll('button')].find(button => button.getAttribute('data-icon') === 'ti ti-dots')!;
+	await fireEvent.click(menu);
+	const items = mocks.popupMenu.mock.calls[0][0] as { text: string; action: () => void }[];
+	items.find(item => item.text === i18n.ts._chat.roomInfoAndDelete)!.action();
+	await flush();
+
+	expect(container.querySelector('[data-testid="info-delete"]')).not.toBeNull();
+});
+
+test('a member who does not own the room is not offered it', async () => {
+	mocks.roomOwnerId = 'owner';
+	const { container } = await renderRoom();
+
+	const menu = [...container.querySelectorAll('button')].find(button => button.getAttribute('data-icon') === 'ti ti-dots')!;
+	await fireEvent.click(menu);
+	const items = mocks.popupMenu.mock.calls[0][0] as { text: string }[];
+
+	expect(items.map(item => item.text)).not.toContain(i18n.ts._chat.roomInfoAndDelete);
 });
 
 describe('after the stream reconnects', () => {
@@ -832,7 +856,7 @@ describe('inviting from an empty conversation', () => {
 		await fireEvent.click(inviteButton(container)!);
 		await flush();
 
-		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' }, null, expect.anything());
+		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' }, undefined, expect.anything());
 	});
 
 	test('a member who cannot invite only sees the hint', async () => {
@@ -887,7 +911,7 @@ describe('inviting from the members tab', () => {
 		await fireEvent.click(container.querySelector('[data-testid="members-invite"]')!);
 		await flush();
 
-		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' }, null, expect.anything());
+		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' }, undefined, expect.anything());
 		expect(mocks.membersMounts.value).toBe(2);
 	});
 

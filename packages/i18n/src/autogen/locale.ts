@@ -7019,6 +7019,26 @@ export interface Locale extends ILocale {
          */
         "roomIsFull": string;
         /**
+         * 参加しました
+         */
+        "invitationJoined": string;
+        /**
+         * 拒否しました
+         */
+        "invitationRejected": string;
+        /**
+         * この招待はすでに処理されたか、取り消されました。
+         */
+        "invitationGone": string;
+        /**
+         * グループの情報と削除
+         */
+        "roomInfoAndDelete": string;
+        /**
+         * メッセージを編集中
+         */
+        "editingMessage": string;
+        /**
          * このグループから退出しました。再参加するには招待が必要です。
          */
         "removedFromRoom": string;

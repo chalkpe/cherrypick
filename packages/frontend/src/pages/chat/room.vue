@@ -367,8 +367,8 @@ async function initialize() {
 				return;
 			} else {
 				try {
-					await os.apiWithDialog('chat/rooms/join', { roomId: r.id }, null, chatJoinErrors);
-					globalEvents.emit('chatRoomInvitationHandled', r.id);
+					await os.apiWithDialog('chat/rooms/join', { roomId: r.id }, undefined, chatJoinErrors);
+					globalEvents.emit('chatRoomInvitationHandled', r.id, 'joined');
 				} catch {
 					// The dialog already explained the refusal, and this page has nothing to show a non-member.
 					initializing.value = false;
@@ -684,7 +684,7 @@ async function inviteUser() {
 		await os.apiWithDialog('chat/rooms/invitations/create', {
 			roomId: room.value.id,
 			userId: invitee.id,
-		}, null, chatInviteErrors);
+		}, undefined, chatInviteErrors);
 	} catch {
 		// The dialog already explained the failure, and no invitation was sent.
 		return;
@@ -729,6 +729,14 @@ function showMenu(ev: PointerEvent) {
 					},
 				});
 			}
+			// 削除は情報タブにある。メニューから探す人のために、そこへの道を置く
+			menuItems.push({
+				text: i18n.ts._chat.roomInfoAndDelete,
+				icon: 'ti ti-info-circle',
+				action: () => {
+					tab.value = 'info';
+				},
+			});
 		} else {
 			menuItems.push({
 				text: i18n.ts._chat.leave,

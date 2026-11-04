@@ -51,8 +51,8 @@ const { items: invitations, fetching } = useChatRoomList<Misskey.entities.ChatRo
 async function join(invitation: Misskey.entities.ChatRoomInvitation) {
 	await os.apiWithDialog('chat/rooms/join', {
 		roomId: invitation.room.id,
-	}, null, chatJoinErrors);
-	globalEvents.emit('chatRoomInvitationHandled', invitation.room.id);
+	}, undefined, chatJoinErrors);
+	globalEvents.emit('chatRoomInvitationHandled', invitation.room.id, 'joined');
 
 	router.push('/chat/room/:roomId', {
 		params: {
@@ -65,7 +65,7 @@ async function reject(invitation: Misskey.entities.ChatRoomInvitation) {
 	await os.apiWithDialog('chat/rooms/invitations/reject', {
 		roomId: invitation.room.id,
 	});
-	globalEvents.emit('chatRoomInvitationHandled', invitation.room.id);
+	globalEvents.emit('chatRoomInvitationHandled', invitation.room.id, 'rejected');
 
 	invitations.value = invitations.value.filter(i => i.id !== invitation.id);
 }

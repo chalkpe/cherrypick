@@ -238,3 +238,35 @@ describe('a user on this server who has not written a note yet', () => {
 		expect(mocks.api).not.toHaveBeenCalledWith('users/show', expect.objectContaining({ username: 'haru' }));
 	});
 });
+
+describe('pasting a full address into the username field', () => {
+	const usernameField = () => screen.getByLabelText(i18n.ts.username) as HTMLInputElement;
+	const hostField = () => screen.getByLabelText(i18n.ts.host) as HTMLInputElement;
+
+	test.each(['@sora@remote.example', 'sora@remote.example', ' sora@REMOTE.example '])('splits %s into the two fields', async (pasted) => {
+		renderDialog();
+
+		await fireEvent.update(usernameField(), pasted);
+
+		await waitFor(() => expect(usernameField().value).toBe('sora'));
+		expect(hostField().value).toBe('remote.example');
+		expect(mocks.api).toHaveBeenLastCalledWith('users/search-by-username-and-host', { username: 'sora', host: 'remote.example', limit: 10, detail: false });
+	});
+
+	test('leaves what is being typed in place, so that the next letters do not land in the wrong field', async () => {
+		renderDialog();
+
+		for (const typed of ['s', 'so', 'so@', 'so@r', 'so@re']) await fireEvent.update(usernameField(), typed);
+
+		expect(usernameField().value).toBe('so@re');
+		expect(hostField().value).toBe('');
+	});
+
+	test('has no host field to fill when only this server can be searched', async () => {
+		renderDialog({ localOnly: true });
+
+		await fireEvent.update(usernameField(), 'sora@remote.example');
+
+		expect(usernameField().value).toBe('sora@remote.example');
+	});
+});

@@ -18,6 +18,7 @@ import { alert } from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import MkNotification from '@/components/MkNotification.vue';
 import { globalEvents } from '@/events.js';
+import { i18n } from '@/i18n.js';
 
 const stubs = {
 	MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' },
@@ -98,16 +99,20 @@ test('drops the actions when the same invitation is answered in another list', a
 	renderNotification(true);
 	expect(screen.queryAllByRole('button')).toHaveLength(2);
 
-	globalEvents.emit('chatRoomInvitationHandled', 'another room');
+	globalEvents.emit('chatRoomInvitationHandled', 'another room', 'joined');
 	await flushPromises();
 	expect(screen.queryAllByRole('button')).toHaveLength(2);
 
-	globalEvents.emit('chatRoomInvitationHandled', 'room1');
+	globalEvents.emit('chatRoomInvitationHandled', 'room1', 'rejected');
 	await flushPromises();
 	expect(screen.queryAllByRole('button')).toHaveLength(0);
+	expect(screen.getByText(i18n.ts._chat.invitationRejected)).toBeTruthy();
 });
 
-test.each([0, 1])('tells the other lists when action %i answers the invitation', async (action) => {
+test.each([
+	[0, 'joined', 'invitationJoined'],
+	[1, 'rejected', 'invitationRejected'],
+] as const)('says what action %i chose, and tells the other lists', async (action, result, label) => {
 	const handled = vi.fn();
 	globalEvents.on('chatRoomInvitationHandled', handled);
 	renderNotification(true);
@@ -116,7 +121,8 @@ test.each([0, 1])('tells the other lists when action %i answers the invitation',
 	await flushPromises();
 	globalEvents.off('chatRoomInvitationHandled', handled);
 
-	expect(handled).toHaveBeenCalledExactlyOnceWith('room1');
+	expect(handled).toHaveBeenCalledExactlyOnceWith('room1', result);
+	expect(screen.getByText(i18n.ts._chat[label])).toBeTruthy();
 });
 
 test('does not offer actions in the compact notification view', () => {

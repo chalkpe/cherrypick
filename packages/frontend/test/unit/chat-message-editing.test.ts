@@ -195,6 +195,19 @@ test('a failed save tells the user and keeps the edit open', async () => {
 	expect(form.textarea.value).toBe('Edited');
 });
 
+test('says that a message is being edited only while it is', async () => {
+	const form = renderForm();
+	expect(screen.queryByText(i18n.ts._chat.editingMessage)).toBeNull();
+
+	form.editing.value = message;
+	await nextTick();
+	expect(screen.getByText(i18n.ts._chat.editingMessage)).toBeTruthy();
+
+	form.editing.value = null;
+	await nextTick();
+	expect(screen.queryByText(i18n.ts._chat.editingMessage)).toBeNull();
+});
+
 test.each(['user', 'room'] as const)('a failed %s message send tells the user and keeps the text', async target => {
 	mocks.api.mockRejectedValueOnce(new Error('Rate limit exceeded.'));
 	const form = renderForm(target);
