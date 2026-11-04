@@ -29,6 +29,15 @@ export class UploadAbortedError extends Error {
 	}
 }
 
+// プロキシのエラーページなど、JSON ではない応答もありうる。例外のままだと onload が途中で終わり、アップロード中のまま止まってしまう
+function parseUploadResponse(response: string) {
+	try {
+		return JSON.parse(response);
+	} catch {
+		return null;
+	}
+}
+
 export function uploadFile(file: File | Blob, options: {
 	name?: string;
 	folderId?: string | null;
@@ -73,6 +82,12 @@ export function uploadFile(file: File | Blob, options: {
 			reject(new UploadAbortedError());
 		}, { once: true });
 
+		const alertUnreachable = () => os.alert({
+			type: 'error',
+			title: i18n.ts.failedToUpload,
+			text: i18n.ts.cannotUploadBecauseNetworkError,
+		});
+
 		xhr.open('POST', apiUrl + '/drive/files/create', true);
 		xhr.onload = ((ev: ProgressEvent<XMLHttpRequest>) => {
 			if (xhr.status !== 200 || ev.target == null || ev.target.response == null) {
@@ -83,8 +98,10 @@ export function uploadFile(file: File | Blob, options: {
 						text: i18n.ts.cannotUploadBecauseExceedsFileSizeLimit,
 					});
 				} else if (ev.target?.response) {
-					const res = JSON.parse(ev.target.response);
-					if (res.error?.id === 'bec5bd69-fba3-43c9-b4fb-2894b66ad5d2') {
+					const res = parseUploadResponse(ev.target.response);
+					if (res?.error == null) {
+						alertUnreachable();
+					} else if (res.error?.id === 'bec5bd69-fba3-43c9-b4fb-2894b66ad5d2') {
 						os.alert({
 							type: 'error',
 							title: i18n.ts.failedToUpload,
@@ -121,18 +138,20 @@ export function uploadFile(file: File | Blob, options: {
 				return;
 			}
 
-			const driveFile = JSON.parse(ev.target.response);
+			const driveFile = parseUploadResponse(ev.target.response);
+			if (driveFile == null) {
+				alertUnreachable();
+				reject();
+				return;
+			}
+
 			globalEvents.emit('driveFileCreated', driveFile);
 			resolve(driveFile);
 		}) as (ev: ProgressEvent<EventTarget>) => void;
 
 		// サーバーに届かなかったときは onload が呼ばれない。ここで終わらせないと、アップロード中のまま止まってしまう
 		xhr.onerror = () => {
-			os.alert({
-				type: 'error',
-				title: i18n.ts.failedToUpload,
-				text: i18n.ts.cannotUploadBecauseNetworkError,
-			});
+			alertUnreachable();
 			reject();
 		};
 

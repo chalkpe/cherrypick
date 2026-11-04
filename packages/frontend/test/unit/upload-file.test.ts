@@ -87,4 +87,40 @@ describe('uploadFile', () => {
 			text: i18n.ts.cannotUploadBecauseExceedsFileSizeLimit,
 		});
 	});
+
+	test('still explains an error the server describes', async () => {
+		const { filePromise } = uploadFile(file);
+		const xhr = FakeXhr.last;
+		xhr.status = 400;
+		xhr.response = JSON.stringify({ error: { id: 'd08dbc37-a6a9-463a-8c47-96c32ab5f064' } });
+
+		xhr.onload?.({ target: xhr });
+
+		expect(await outcome(filePromise)).toBe('rejected');
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({
+			type: 'error',
+			title: i18n.ts.failedToUpload,
+			text: i18n.ts.cannotUploadBecauseNoFreeSpace,
+		});
+	});
+
+	test.each([
+		['a proxy error page', 502, '<html><body>Bad Gateway</body></html>'],
+		['a page in place of the new file', 200, '<html><body>Sign in</body></html>'],
+		['an empty JSON value', 502, 'null'],
+		['JSON that does not describe an error', 502, '{"message":"Bad Gateway"}'],
+	])('fails instead of staying in progress on %s', async (_name, status, response) => {
+		const { filePromise } = uploadFile(file);
+		const xhr = FakeXhr.last;
+		xhr.status = status;
+		xhr.response = response;
+
+		xhr.onload?.({ target: xhr });
+
+		expect(await outcome(filePromise)).toBe('rejected');
+		expect(mocks.alert).toHaveBeenCalledOnce();
+		expect(mocks.alert.mock.calls[0][0]).toMatchObject({ type: 'error', title: i18n.ts.failedToUpload });
+		expect(mocks.alert.mock.calls[0][0].text).not.toContain('undefined');
+		expect(mocks.alert.mock.calls[0][0].text).not.toContain('<html>');
+	});
 });
