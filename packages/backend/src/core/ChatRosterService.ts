@@ -60,14 +60,22 @@ export class ChatRosterService {
 		return await this.claim(roomId, userId, published, '<=');
 	}
 
-	/** A member the owner's roster has dropped leaves only if a change was recorded and the roster is newer than it. */
+	/**
+	 * A member the owner's roster has dropped leaves only if the roster is newer than their last change. Every way of
+	 * becoming a member records one, so a membership without a record is from before this was kept and older than any roster.
+	 */
 	@bindThis
 	public async claimRosterRemove(roomId: MiChatRoom['id'], userId: MiUser['id'], rosterAt: Date): Promise<boolean> {
-		const [rows] = await this.chatRoomRosterStatesRepository.query(
-			'UPDATE "chat_room_roster_state" SET "lastRosterAt" = $3 WHERE "roomId" = $1 AND "userId" = $2 AND "lastRosterAt" < $3 RETURNING "roomId"',
-			[roomId, userId, rosterAt],
+		return await this.claim(roomId, userId, rosterAt, '<');
+	}
+
+	/** For a new membership that has no time of its own to compare. A record already here says more than this does. */
+	@bindThis
+	public async recordIfMissing(roomId: MiChatRoom['id'], userId: MiUser['id'], at: Date): Promise<void> {
+		await this.chatRoomRosterStatesRepository.query(
+			'INSERT INTO "chat_room_roster_state" ("roomId", "userId", "lastRosterAt") VALUES ($1, $2, $3) ON CONFLICT ("roomId", "userId") DO NOTHING',
+			[roomId, userId, at],
 		);
-		return rows.length > 0;
 	}
 
 	/** Moves the record up to this time. Changes older than it are out of date from now on. */

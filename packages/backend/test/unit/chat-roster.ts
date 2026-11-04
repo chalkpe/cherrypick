@@ -51,15 +51,11 @@ function fakeStates(initial: [string, Date][] = []) {
 				const id = key(params);
 				const at = params[2];
 				const current = rows.get(id);
-				if (sql.startsWith('UPDATE')) {
-					if (current == null || !(current < at)) return [[], 0];
-					rows.set(id, at);
-					return [[{ roomId: params[0] }], 1];
-				}
 				if (current == null) {
 					rows.set(id, at);
 					return [{ lastRosterAt: at }];
 				}
+				if (sql.includes('DO NOTHING')) return [];
 				if (sql.includes('GREATEST')) {
 					if (current < at) rows.set(id, at);
 					return [{ lastRosterAt: rows.get(id) }];
@@ -186,7 +182,23 @@ describe('the order of membership changes', () => {
 		expect(await service.claimRosterRemove('room', 'bob', T2)).toBe(false);
 		expect(await service.claimRosterRemove('room', 'bob', T3)).toBe(true);
 		expect(states.rows.get('room/bob')).toEqual(T3);
-		expect(await service.claimRosterRemove('room', 'carol', T3)).toBe(false);
+	});
+
+	test('a membership with no record counts as older than the roster', async () => {
+		const { service, states } = rosterService();
+
+		expect(await service.claimRosterRemove('room', 'carol', T3)).toBe(true);
+		expect(states.rows.get('room/carol')).toEqual(T3);
+	});
+
+	test('recording a new membership does not replace what is known', async () => {
+		const { service, states } = rosterService({ states: [['room/bob', T1]] });
+
+		await service.recordIfMissing('room', 'bob', T3);
+		await service.recordIfMissing('room', 'carol', T3);
+
+		expect(states.rows.get('room/bob')).toEqual(T1);
+		expect(states.rows.get('room/carol')).toEqual(T3);
 	});
 });
 
@@ -423,12 +435,12 @@ describe('applying the roster the owner publishes', () => {
 		expect(removeRoomMember).not.toHaveBeenCalled();
 	});
 
-	test('keeps a dropped member with no recorded change', async () => {
+	test('removes a dropped member with no recorded change: their membership is older than the record', async () => {
 		const { run, removeRoomMember } = setup({ members: [{ id: 'm1', userId: 'alice' }, { id: 'm2', userId: 'bob' }] });
 
 		await run();
 
-		expect(removeRoomMember).not.toHaveBeenCalled();
+		expect(removeRoomMember).toHaveBeenCalledWith(expect.anything(), bob);
 	});
 
 	test('keeps a local member who joined after the list was read, whose Accept is still on its way', async () => {
