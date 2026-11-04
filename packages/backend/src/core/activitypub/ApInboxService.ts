@@ -899,8 +899,7 @@ export class ApInboxService {
 		const text = this.chatMessageText(object);
 		if (text != null && Array.from(text.trim()).length > MAX_REMOTE_MESSAGE_TEXT_LENGTH) return 'skip: chat message is too long';
 		const uri = object.id;
-		const updated = typeof object.updated === 'string' ? new Date(object.updated) : null;
-		const editedAt = updated != null && !Number.isNaN(updated.getTime()) ? updated : null;
+		const editedAt = this.parseRemoteDate(object.updated);
 
 		// Handle file attachments
 		let file = null;
@@ -1649,8 +1648,7 @@ export class ApInboxService {
 				const text = this.chatMessageText(note);
 				if (text == null) return 'skip: chat message has no content';
 
-				const parsed = typeof note.updated === 'string' ? new Date(note.updated) : new Date();
-				const editedAt = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+				const editedAt = this.parseRemoteDate(note.updated) ?? new Date();
 				const emojis = await this.apNoteService.extractEmojis(note.tag ?? [], actor.host);
 
 				await this.chatService.updateRemoteMessage(actor, message, text, editedAt, emojis.map(emoji => emoji.name));
@@ -1757,9 +1755,19 @@ export class ApInboxService {
 	 * Delivery retries can reorder a room's updates. An owner that does not state the time is applied in arrival order.
 	 */
 	private chatRoomUpdatedAt(room: IObject): Date | undefined {
-		if (typeof room.updated !== 'string') return undefined;
-		const updatedAt = new Date(room.updated);
-		return Number.isNaN(updatedAt.getTime()) ? undefined : updatedAt;
+		return this.parseRemoteDate(room.updated) ?? undefined;
+	}
+
+	/**
+	 * JavaScript accepts years PostgreSQL refuses, and that refusal would only use up the inbox queue's retries.
+	 * Dates outside the years 0 to 9999 count as not stated.
+	 */
+	private parseRemoteDate(value: unknown): Date | null {
+		if (typeof value !== 'string') return null;
+		const date = new Date(value);
+		if (Number.isNaN(date.getTime())) return null;
+		const year = date.getUTCFullYear();
+		return year >= 0 && year <= 9999 ? date : null;
 	}
 
 	private applyRemoteRoomState(room: MiChatRoom, object: IObject): Promise<MiChatRoom> {

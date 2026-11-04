@@ -1480,6 +1480,37 @@ describe('ApInboxService chat activity routing', () => {
 		expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', expect.any(Date), []);
 	});
 
+	test('an edit dated outside what the database can hold counts as edited now', async () => {
+		const f = createInbox();
+		const note = {
+			id: f.message.uri,
+			type: 'Note',
+			attributedTo: f.actor.uri,
+			_misskey_talk: true,
+			_misskey_content: 'edited',
+			updated: '-004713-01-01T00:00:00.000Z',
+		};
+
+		await (f.inbox as never as { update: (...args: unknown[]) => Promise<string> }).update(f.actor, { type: 'Update', actor: f.actor.uri, object: note });
+
+		const editedAt = f.chatService.updateRemoteMessage.mock.calls[0][3] as Date;
+		expect(editedAt.getUTCFullYear()).toBeGreaterThan(2000);
+	});
+
+	test.each([
+		['-000001-12-31T00:00:00.000Z', false],
+		['0000-01-01T00:00:00.000Z', true],
+		['9999-12-31T00:00:00.000Z', true],
+		['+010000-01-01T00:00:00.000Z', false],
+		['not a date', false],
+	])('reads the room date %s as usable: %s', (updated, usable) => {
+		const f = createInbox();
+
+		const parsed = (f.inbox as never as { chatRoomUpdatedAt: (room: unknown) => Date | undefined }).chatRoomUpdatedAt({ updated });
+
+		expect(parsed != null).toBe(usable);
+	});
+
 	test('routes ChatMessage Delete to deleteRemoteMessage', async () => {
 		const f = createInbox();
 
@@ -1710,6 +1741,23 @@ describe('ApInboxService chat activity routing', () => {
 
 			expect(await create(f)).toBe('skip: recipient is not a local user');
 			expect(f.chatService.createMessageToUser).not.toHaveBeenCalled();
+		});
+
+		test.each([
+			['-004713-01-01T00:00:00.000Z', null],
+			['+010000-01-01T00:00:00.000Z', null],
+			['2026-11-03T00:00:00.000Z', new Date('2026-11-03T00:00:00.000Z')],
+		])('stores a message dated %s with the edit date %s', async (updated, editedAt) => {
+			const f = createInbox();
+
+			await (f.inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage(
+				{},
+				f.actor,
+				{ ...object(f), updated },
+				{ type: 'Create', actor: f.actor.uri },
+			);
+
+			expect(f.chatService.createMessageToUser).toHaveBeenCalledWith(f.actor, f.localUser, expect.objectContaining({ editedAt }));
 		});
 
 		test('retries a membership refusal, as the roster update may still be on its way', async () => {
