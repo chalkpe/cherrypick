@@ -109,6 +109,7 @@ function createFixture(options: FixtureOptions = {}) {
 
 	const chatRoomMembershipsRepository = {
 		findBy: vi.fn(async () => state.memberships),
+		delete: vi.fn(async () => ({ affected: 1 })),
 	};
 
 	const usersRepository = {
@@ -136,8 +137,8 @@ function createFixture(options: FixtureOptions = {}) {
 		},
 		usersRepository,
 		userEntityService: {
-			isLocalUser: (user: { id: string }) => user.id === joiningUser.id,
-			isRemoteUser: (user: { id: string }) => user.id === owner.id,
+			isLocalUser: (user: { host: string | null }) => user.host == null,
+			isRemoteUser: (user: { host: string | null }) => user.host != null,
 			genLocalUserUri: (id: string) => `https://local.test/users/${id}`,
 		},
 		apRendererService: {
@@ -152,7 +153,7 @@ function createFixture(options: FixtureOptions = {}) {
 		queueService: { deliver },
 	}) as ChatService;
 
-	return { service, state, manager, deliver };
+	return { service, state, manager, deliver, usersRepository, chatRoomMembershipsRepository };
 }
 
 describe('ChatService.joinToRoom invitation consumption', () => {
@@ -164,6 +165,33 @@ describe('ChatService.joinToRoom invitation consumption', () => {
 		expect(f.state.invitations.size).toBe(0);
 		expect(f.state.memberships).toEqual([{ id: 'membership1', roomId: 'room1', userId: 'user1' }]);
 		expect(f.deliver).toHaveBeenCalled();
+	});
+
+	describe('the roster a mirror kept from before', () => {
+		const leftMember = { id: 'left1', host: 'other.test', uri: 'https://other.test/users/left1', inbox: 'https://other.test/inbox' };
+
+		test('is dropped before the Accept when nobody here took part, so a removed member stops receiving messages', async () => {
+			const f = createFixture();
+			f.state.memberships = [{ id: 'old1', roomId: 'room1', userId: leftMember.id }];
+			f.usersRepository.findBy.mockResolvedValue([owner, leftMember]);
+
+			await f.service.joinToRoom('user1', 'room1');
+
+			const [where] = f.chatRoomMembershipsRepository.delete.mock.calls[0] as unknown as [{ roomId: string; userId: { value: string[] } }];
+			expect(where.roomId).toBe('room1');
+			expect(where.userId.value).toEqual([leftMember.id]);
+			expect(f.chatRoomMembershipsRepository.delete.mock.invocationCallOrder[0]).toBeLessThan(f.deliver.mock.invocationCallOrder[0]);
+		});
+
+		test('is kept while someone here is a member, because the owner has kept this server up to date', async () => {
+			const f = createFixture();
+			f.state.memberships = [{ id: 'old1', roomId: 'room1', userId: leftMember.id }, { id: 'old2', roomId: 'room1', userId: 'neighbor' }];
+			f.usersRepository.findBy.mockResolvedValue([owner, leftMember, { id: 'neighbor', host: null, uri: null, inbox: null }]);
+
+			await f.service.joinToRoom('user1', 'room1');
+
+			expect(f.chatRoomMembershipsRepository.delete).not.toHaveBeenCalled();
+		});
 	});
 
 	test('does not join when the invitation was cancelled before consumption', async () => {

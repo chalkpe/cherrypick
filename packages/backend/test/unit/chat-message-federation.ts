@@ -193,6 +193,13 @@ describe('ApRendererService chat wrappers', () => {
 		expect(room.id).toBe('https://remote.test/chat/rooms/r1');
 	});
 
+	test('a room object always names its description, so that an Invite can clear the one on a mirror', () => {
+		const renderer = createRenderer();
+
+		expect(renderer.renderChatRoom({ id: 'r1', name: 'Room', description: '' }, bob as never).summary).toBe('');
+		expect(renderer.renderChatRoom({ id: 'r1', name: 'Room', description: null }, bob as never).summary).toBe('');
+	});
+
 	test('message updates preserve the attachment, emoji tags and original publication time', async () => {
 		const renderer = createRenderer();
 		Object.assign(renderer, {
@@ -416,6 +423,17 @@ describe('ChatService chat federation delivery', () => {
 		expect(f.queueService.deliver).toHaveBeenCalledTimes(2);
 		expect(f.queueService.deliver).toHaveBeenCalledWith(f.alice, expect.objectContaining({ type: 'Delete' }), f.bob.inbox, false);
 		expect(f.queueService.deliver).toHaveBeenCalledWith(f.alice, expect.objectContaining({ type: 'Delete' }), f.carol.inbox, false);
+	});
+
+	test('a server with several members gets one copy at its shared inbox', async () => {
+		const f = createService();
+		Object.assign(f.bob, { sharedInbox: 'https://remote.test/inbox' });
+		Object.assign(f.carol, { sharedInbox: 'https://remote.test/inbox' });
+
+		await f.service.deleteMessage(f.roomDeleteMessage as never);
+
+		expect(f.queueService.deliver).toHaveBeenCalledOnce();
+		expect(f.queueService.deliver).toHaveBeenCalledWith(f.alice, expect.objectContaining({ type: 'Delete' }), 'https://remote.test/inbox', true);
 	});
 
 	test('delivers EmojiReact and Undo to every remote room member', async () => {
@@ -840,6 +858,24 @@ describe('ChatService chat federation delivery', () => {
 		await expect(f.service.findMessageByUri('https://local.test/chat/messages/m1')).resolves.toBe(f.directMessage);
 	});
 
+	test.each(['reactRemote', 'unreactRemote'] as const)('%s refuses instead of failing the job when the room is being deleted', async (method) => {
+		const f = createService();
+		f.roomMessage.toRoomId = 'gone';
+
+		await expect(f.service[method](f.alice as never, f.roomMessage as never, '👍')).rejects.toBeInstanceOf(ChatMessageAccessError);
+	});
+
+	test('unreactRemote announces nothing when another copy of the Undo already removed the reaction', async () => {
+		const f = createService();
+		f.roomMessage.reactions = [];
+		const repository = (f.service as never as { chatMessagesRepository: { createQueryBuilder: () => { execute: ReturnType<typeof vi.fn> } } }).chatMessagesRepository;
+		repository.createQueryBuilder().execute.mockResolvedValueOnce({ affected: 0 });
+
+		await f.service.unreactRemote(f.carol as never, f.roomMessage as never, '👍');
+
+		expect(f.globalEventService.publishChatRoomStream).not.toHaveBeenCalled();
+	});
+
 	test('unreactRemote removes a member reaction', async () => {
 		const f = createService();
 		f.roomMessage.reactions = ['alice/👍'];
@@ -1099,6 +1135,17 @@ describe('ChatService chat federation delivery', () => {
 			expect(f.renderChatRoomRelay).not.toHaveBeenCalled();
 			expect(f.queueService.deliver.mock.calls.every(call => (call[1] as { type: string }).type === 'Create')).toBe(true);
 		});
+
+		test('the Create also names the room in the @context of its Note, the only place earlier servers read it', async () => {
+			const f = createRelayService('alice');
+
+			await f.service.createMessageToRoom({ ...f.alice, username: 'alice' } as never, f.room as never, { text: 'hello' });
+
+			expect(f.queueService.deliver).toHaveBeenCalled();
+			for (const call of f.queueService.deliver.mock.calls) {
+				expect((call[1] as { object: Record<string, unknown> }).object['@context']).toEqual(expect.stringMatching(/\/chat\/rooms\/r1$/));
+			}
+		});
 	});
 
 	test('a room owner sending an update states when the state was current', () => {
@@ -1171,6 +1218,75 @@ describe('ApInboxService chat activity routing', () => {
 
 		return { inbox, actor, message, chatService, redisClient, chatRoomsRepository, localUser };
 	}
+
+	describe('a message with nothing to show', () => {
+		const note = (actorUri: string, to: string, overrides: Record<string, unknown>) => ({
+			id: 'https://remote.test/chat/messages/empty',
+			type: 'Note',
+			attributedTo: actorUri,
+			to: [to],
+			_misskey_talk: true,
+			...overrides,
+		});
+		const create = (f: ReturnType<typeof createInbox>, object: unknown, type = 'Create') => (f.inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage(
+			{ resolve: async (x: unknown) => x },
+			f.actor,
+			object,
+			{ type },
+		);
+
+		test('is not stored as an empty bubble', async () => {
+			const f = createInbox();
+
+			await expect(create(f, note(f.actor.uri, f.localUser.uri, { content: '  ' }))).resolves.toBe('skip: chat message has no content');
+
+			expect(f.chatService.createMessageToUser).not.toHaveBeenCalled();
+		});
+
+		test('is retried when only its attachment failed to download', async () => {
+			const f = createInbox();
+			(f.inbox as never as { apImageService: { resolveImage: ReturnType<typeof vi.fn> } }).apImageService.resolveImage.mockRejectedValue(new Error('timeout'));
+
+			await expect(create(f, note(f.actor.uri, f.localUser.uri, { content: '', attachment: [{ type: 'Document', url: 'https://remote.test/file.png' }] }))).rejects.toThrow('attachment');
+
+			expect(f.chatService.createMessageToUser).not.toHaveBeenCalled();
+		});
+
+		test('keeps its text when the attachment beside it failed to download', async () => {
+			const f = createInbox();
+			(f.inbox as never as { apImageService: { resolveImage: ReturnType<typeof vi.fn> } }).apImageService.resolveImage.mockRejectedValue(new Error('timeout'));
+
+			await create(f, note(f.actor.uri, f.localUser.uri, { content: 'hello', attachment: [{ type: 'Document', url: 'https://remote.test/file.png' }] }));
+
+			expect(f.chatService.createMessageToUser).toHaveBeenCalledOnce();
+		});
+
+		test.each([
+			['the Update names no attachment', {}],
+			['the attachment in the Update failed to download', { attachment: [{ type: 'Document', url: 'https://remote.test/file.png' }] }],
+		])('an edit can still clear the text of a stored message with a file when %s', async (_name, overrides) => {
+			const f = createInbox();
+			const stored = { ...f.message, fileId: 'file1' };
+			const { chatMessagesRepository, apImageService } = f.inbox as never as {
+				chatMessagesRepository: { findOneBy: ReturnType<typeof vi.fn> };
+				apImageService: { resolveImage: ReturnType<typeof vi.fn> };
+			};
+			chatMessagesRepository.findOneBy.mockResolvedValue(stored);
+			apImageService.resolveImage.mockRejectedValue(new Error('timeout'));
+
+			await expect(create(f, note(f.actor.uri, f.localUser.uri, { content: '', ...overrides }), 'Update')).resolves.toBe('ok: chat message updated');
+
+			expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, stored, '', expect.any(Date), []);
+		});
+	});
+
+	test('Delete of an actor does not look for a chat message', async () => {
+		const f = createInbox();
+
+		await (f.inbox as never as { delete: (...args: unknown[]) => Promise<string> }).delete(f.actor, { type: 'Delete', actor: f.actor.uri, object: f.actor.uri }).catch(() => undefined);
+
+		expect(f.chatService.findMessageByUri).not.toHaveBeenCalled();
+	});
 
 	describe('room context in a flat @context array', () => {
 		const note = (context: unknown, actorUri: string, to: string) => ({

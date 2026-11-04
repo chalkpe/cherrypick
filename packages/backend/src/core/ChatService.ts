@@ -412,19 +412,17 @@ export class ChatService {
 			if (remoteMembers.length > 0) {
 				const fullFromUser = await this.usersRepository.findOneByOrFail({ id: fromUser.id });
 				const allMembersForRendering = allMembers.filter(m => m != null) as MiUser[];
-				const chatMessageObject = await this.apRendererService.renderChatMessage(inserted, fullFromUser, allMembersForRendering, toRoom.id, await this.roomUriForRoom(toRoom));
+				const roomUri = await this.roomUriForRoom(toRoom);
+				const chatMessageObject = await this.apRendererService.renderChatMessage(inserted, fullFromUser, allMembersForRendering, toRoom.id, roomUri);
 				const activity = {
 					type: 'Create',
 					actor: this.userEntityService.genLocalUserUri(fullFromUser.id),
-					object: chatMessageObject,
+					// Servers from before `context` and `_misskey_chatRoom` read the room only from here, and drop the message without it.
+					// Only this embedded Note carries it: on a fetched Note, it would replace the real @context in addContext.
+					object: { ...chatMessageObject, '@context': roomUri },
 					published: this.idService.parse(inserted.id).date.toISOString(),
 				};
-				const contextedActivity = this.apRendererService.addContext(activity);
-
-				// Send to each remote member
-				for (const remoteMember of remoteMembers) {
-					this.queueService.deliver(fullFromUser, contextedActivity, remoteMember.inbox, false);
-				}
+				await this.deliverToRemoteUsers(fullFromUser, remoteMembers, activity);
 			}
 		} else {
 			await this.relayRoomMessage(inserted, fromUser, toRoom, memberships.map(member => member.userId));
@@ -574,7 +572,7 @@ export class ChatService {
 		}
 
 		const toUsers = participants.filter(user => user.id !== fromUser.id);
-		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers, await this.roomUriForMessage(message)));
+		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers));
 	}
 
 	@bindThis
@@ -1019,8 +1017,22 @@ export class ChatService {
 		this.globalEventService.publishChatRoomStream(roomId, 'membershipStarted', { userId });
 		const owner = await this.usersRepository.findOneByOrFail({ id: room.ownerId });
 
+		// Get all members (including owner, excluding the joining user)
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId });
+		const memberUserIds = [room.ownerId, ...memberships.map(m => m.userId)].filter(id => id !== userId);
+		const memberUsers = await this.usersRepository.findBy({ id: In(memberUserIds) });
+		const remoteMembers = memberUsers.filter(m => this.userEntityService.isRemoteUser(m));
+
 		// Send Accept activity to the inviter (room owner) if they are remote
 		if (this.userEntityService.isLocalUser(joiningUser) && this.userEntityService.isRemoteUser(owner)) {
+			// The owner reports roster changes only to servers with a member, so a roster kept from before
+			// can name people who have since left, and they would keep receiving messages from here.
+			// The owner answers this Accept with the current roster.
+			if (!memberUsers.some(m => this.userEntityService.isLocalUser(m))) {
+				const staleMemberIds = remoteMembers.filter(m => m.id !== owner.id).map(m => m.id);
+				if (staleMemberIds.length > 0) await this.chatRoomMembershipsRepository.delete({ roomId, userId: In(staleMemberIds) });
+			}
+
 			const roomObject = this.apRendererService.renderChatRoom(room, owner);
 			// Create a simplified invite object reference for the Accept activity
 			const inviteObject = {
@@ -1036,12 +1048,6 @@ export class ChatService {
 			};
 			this.queueService.deliver(joiningUser, this.apRendererService.addContext(activity), owner.inbox, false);
 		}
-
-		// Get all members (including owner, excluding the joining user)
-		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId });
-		const memberUserIds = [room.ownerId, ...memberships.map(m => m.userId)].filter(id => id !== userId);
-		const memberUsers = await this.usersRepository.findBy({ id: In(memberUserIds) });
-		const remoteMembers = memberUsers.filter(m => this.userEntityService.isRemoteUser(m));
 
 		// Send Add activity to other remote members (not the owner, as they got Accept)
 		if (remoteMembers.length > 0 && this.userEntityService.isLocalUser(owner)) {
@@ -1603,7 +1609,9 @@ export class ChatService {
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 		if (message.fromUserId === actor.id) throw new ChatMessageAccessError('cannot react to own message');
 
-		const room = message.toRoomId ? await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }) : null;
+		const room = message.toRoomId ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
+		// The room and its messages are being deleted at this moment.
+		if (message.toRoomId != null && room == null) throw new ChatMessageAccessError('no such message');
 
 		if (room) {
 			if (!(await this.isRoomMember(room, actor.id))) throw new ChatMessageAccessError('cannot react to others message');
@@ -1652,7 +1660,9 @@ export class ChatService {
 
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 
-		const room = message.toRoomId ? await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }) : null;
+		const room = message.toRoomId ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
+		// The room and its messages are being deleted at this moment.
+		if (message.toRoomId != null && room == null) throw new ChatMessageAccessError('no such message');
 
 		if (room) {
 			if (!(await this.isRoomMember(room, actor.id))) throw new ChatMessageAccessError('cannot unreact to others message');
@@ -1663,12 +1673,16 @@ export class ChatService {
 
 		if (!await this.recordRemoteReactionActivity(actor, message, reaction, activityId, true)) return;
 		const pair = `${actor.id}/${reaction}`;
-		await this.chatMessagesRepository.createQueryBuilder().update()
+		const result = await this.chatMessagesRepository.createQueryBuilder().update()
 			.set({ reactions: () => 'array_remove("reactions", :pair)' })
 			.where('id = :id', { id: message.id })
+			.andWhere('"deletedAt" IS NULL')
+			.andWhere(':pair = ANY("reactions")')
 			.setParameter('pair', pair)
 			.execute();
 		message.reactions = message.reactions.filter(value => value !== pair);
+		// The same Undo can reach this server once per member here, and only the first one changes anything.
+		if (result.affected === 0) return;
 
 		const packedUser = await this.userEntityService.pack(actor.id);
 		if (room) {
@@ -1845,26 +1859,26 @@ export class ChatService {
 
 		if (message.toRoomId) {
 			const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
-			if (room == null) return [];
-
-			const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
-			const ids = Array.from(new Set([room.ownerId, ...memberships.map(membership => membership.userId)]));
-			return this.usersRepository.findBy({ id: In(ids) });
+			return room != null ? await this.participantsForRoom(room) : [];
 		}
 
 		return [];
 	}
 
 	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any): Promise<void> {
+		const contextedActivity = this.apRendererService.addContext(activity);
 		const delivered = new Set<string>();
 
 		for (const user of users) {
 			if (user.id === actor.id) continue;
 			if (!this.userEntityService.isRemoteUser(user)) continue;
-			if (user.inbox == null || delivered.has(user.inbox)) continue;
 
-			delivered.add(user.inbox);
-			this.queueService.deliver(actor, this.apRendererService.addContext(activity), user.inbox, false);
+			// Every recipient is named in the activity, so a server needs it only once however many members it has.
+			const inbox = user.sharedInbox ?? user.inbox;
+			if (inbox == null || delivered.has(inbox)) continue;
+
+			delivered.add(inbox);
+			this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null);
 		}
 	}
 

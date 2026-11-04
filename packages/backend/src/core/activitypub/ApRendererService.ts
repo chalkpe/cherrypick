@@ -895,10 +895,9 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public renderChatDelete(message: any, fromUser: MiUser, toUsers: MiUser[], roomUri?: string): IDelete {
+	public renderChatDelete(message: any, fromUser: MiUser, toUsers: MiUser[]): IDelete {
 		return buildChatDelete(message, fromUser, toUsers, {
 			baseUrl: this.config.url,
-			roomUri,
 			published: new Date().toISOString(),
 		});
 	}
@@ -965,7 +964,8 @@ export class ApRendererService {
 			type: 'Group',
 			id: this.chatRoomUriForRender(room, owner),
 			name: room.name,
-			summary: room.description || undefined,
+			// Always present, so that a mirror can tell a cleared description from one that was left out.
+			summary: room.description ?? '',
 			attributedTo: ownerUri || undefined,
 			_misskey_chatArchived: room.isArchived,
 			updated: new Date().toISOString(),

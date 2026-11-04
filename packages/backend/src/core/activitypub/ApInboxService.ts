@@ -451,7 +451,8 @@ export class ApInboxService {
 		const uriOf = (user: MiUser) => this.userEntityService.isLocalUser(user) ? this.userEntityService.genLocalUserUri(user.id) : user.uri!;
 
 		for (const member of members) {
-			if (member.id === actor.id) continue;
+			// A room's owner is known from the room itself, so only the other members need announcing.
+			if (member.id === actor.id || member.id === owner.id) continue;
 			const activity = this.apRendererService.addContext({
 				...this.apRendererService.renderAdd(owner as never, roomActivityUri, uriOf(member)),
 				published: new Date().toISOString(),
@@ -863,7 +864,7 @@ export class ApInboxService {
 		if (!this.isOnActorHost(object.id, actor)) return 'skip: host in actor.uri !== object.id';
 
 		if (await this.redisClient.get(`chat_delete_upon_arrival:${object.id}:${encodeURIComponent(actor.uri)}`) === actor.uri) return 'skip: deleted';
-		// A room message reaches us once per member inbox, so avoid repeating the network work below.
+		// A room message can reach us once per member inbox, so avoid repeating the network work below.
 		// This is only a shortcut: the check under the lock remains the one that decides.
 		if (await this.chatMessagesRepository.findOneBy({ uri: object.id }) != null && getApType(activity) !== 'Update') return 'skip: chat message exists';
 		this.logger.info(`Processing chat message: ${object.id}`);
@@ -965,6 +966,13 @@ export class ApInboxService {
 					return 'ok: chat message updated';
 				}
 				return 'skip: chat message exists';
+			}
+
+			// Only a new message can be empty this way: an edit may clear the text of a stored message that keeps its file.
+			if ((text == null || text.trim() === '') && file == null) {
+				// A failed download would otherwise leave an empty bubble for good. Let the inbox queue's bounded retries try again.
+				if (Array.isArray(object.attachment) && object.attachment.length > 0) throw new Error('chat message attachment is not available');
+				return 'skip: chat message has no content';
 			}
 
 			if (!isGroup) {
@@ -1079,7 +1087,8 @@ export class ApInboxService {
 			return 'skip: invalid Delete object';
 		}
 
-		const isChatUri = await this.chatService.findMessageByUri(uri) != null || this.isChatMessageUri(uri);
+		// Servers announce deleted accounts to everyone they know, so spare that flood the query.
+		const isChatUri = uri !== actor.uri && (this.isChatMessageUri(uri) || await this.chatService.findMessageByUri(uri) != null);
 		const unlock = isChatUri ? await acquireApObjectLock(this.redisClient, uri) : null;
 		try {
 			const chatMessage = isChatUri ? await this.chatService.findMessageByUri(uri) : null;
@@ -1438,8 +1447,8 @@ export class ApInboxService {
 				if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
 				return await this.applyChatReaction(actor, targetUri, chatMessage, reaction, true, object.id);
 			}
+			return await this.undoLike(actor, object);
 		}
-		if (isLike(object)) return await this.undoLike(actor, object);
 		if (isAnnounce(object)) return await this.undoAnnounce(actor, object);
 		if (isAccept(object)) return await this.undoAccept(actor, object);
 		if (isInvite(object)) return await this.undoInvite(actor, object);
@@ -1658,11 +1667,7 @@ export class ApInboxService {
 			}
 			if (room.ownerId !== actor.id) return 'skip: only the room owner can update it';
 
-			await this.chatService.updateRoom(room, {
-				name: typeof object.name === 'string' ? truncate(object.name, 256) : room.name,
-				description: typeof object.summary === 'string' ? truncate(object.summary, 2048) : room.description,
-				isArchived: typeof object._misskey_chatArchived === 'boolean' ? object._misskey_chatArchived : room.isArchived,
-			}, { federate: false, remoteUpdatedAt: this.chatRoomUpdatedAt(object) });
+			await this.applyRemoteRoomState(room, object);
 			return 'ok: chat room updated';
 		}
 
@@ -1753,6 +1758,14 @@ export class ApInboxService {
 		return Number.isNaN(updatedAt.getTime()) ? undefined : updatedAt;
 	}
 
+	private applyRemoteRoomState(room: MiChatRoom, object: IObject): Promise<MiChatRoom> {
+		return this.chatService.updateRoom(room, {
+			name: typeof object.name === 'string' ? truncate(object.name, 256) : room.name,
+			description: typeof object.summary === 'string' ? truncate(object.summary, 2048) : room.description,
+			isArchived: typeof object._misskey_chatArchived === 'boolean' ? object._misskey_chatArchived : room.isArchived,
+		}, { federate: false, remoteUpdatedAt: this.chatRoomUpdatedAt(object) });
+	}
+
 	private isChatMessageUri(uri: string): boolean {
 		return uri.includes('/chat/messages/');
 	}
@@ -1771,7 +1784,8 @@ export class ApInboxService {
 		const count = await this.redisClient.scard(indexKey);
 		if (count >= MAX_DEFERRED_CHAT_DELETES_PER_ACTOR) return false;
 		await this.redisClient.sadd(indexKey, uri);
-		await this.redisClient.expire(indexKey, DEFERRED_CHAT_DELETE_TTL);
+		// NX keeps this a fixed window: extended on every call, the set of an actor that stays active never empties until it reaches the cap.
+		await this.redisClient.expire(indexKey, DEFERRED_CHAT_DELETE_TTL, 'NX');
 		await this.redisClient.setex(`chat_delete_upon_arrival:${uri}:${encodeURIComponent(actor.uri)}`, DEFERRED_CHAT_DELETE_TTL, actor.uri);
 		return true;
 	}
@@ -1791,7 +1805,8 @@ export class ApInboxService {
 		const count = await this.redisClient.llen(key);
 		if (count >= MAX_PENDING_ROOM_ACTIVITIES) return false;
 		await this.redisClient.sadd(indexKey, roomUri);
-		await this.redisClient.expire(indexKey, PENDING_ROOM_ACTIVITY_TTL);
+		// NX keeps this a fixed window: extended on every call, the set of an actor that stays active never empties until it reaches the cap.
+		await this.redisClient.expire(indexKey, PENDING_ROOM_ACTIVITY_TTL, 'NX');
 		await this.redisClient.multi()
 			.rpush(key, JSON.stringify({ actorId: actor.id, activity, attempts: 0 }))
 			.expire(key, PENDING_ROOM_ACTIVITY_TTL)
@@ -1888,6 +1903,8 @@ export class ApInboxService {
 		const invitee = await this.apDbResolverService.getUserFromApId(targetUri);
 		if (!invitee) return 'skip: target user not found';
 		if (!this.userEntityService.isLocalUser(invitee)) return 'skip: target user is not local';
+		// A local inviter is refused the same way in ChatService.createRoomInvitation.
+		if (await this.userBlockingService.checkBlocked(invitee.id, actor.id)) return 'skip: the invitee has blocked the inviter';
 
 		// Check if the room already exists locally
 		let room = await this.chatRoomsRepository.findOneBy({ id: roomId });
@@ -1916,9 +1933,18 @@ export class ApInboxService {
 				uri: roomUri,
 				lastRemoteUpdatedAt: this.chatRoomUpdatedAt(roomObject) ?? null,
 			});
-		} else if (room.uri == null) {
-			await this.chatRoomsRepository.update(room.id, { uri: roomUri });
-			room.uri = roomUri;
+		} else {
+			if (room.uri == null) {
+				await this.chatRoomsRepository.update(room.id, { uri: roomUri });
+				room.uri = roomUri;
+			}
+			// The owner tells a server about changes only while someone there takes part or is invited, so a mirror
+			// can be out of date by now. Left archived, it would refuse the invitation this activity brings.
+			const mirror = room;
+			room = await this.applyRemoteRoomState(mirror, roomObject).catch(err => {
+				this.logger.warn(`Failed to refresh chat room ${mirror.id} from an Invite: ${err}`);
+				return mirror;
+			});
 		}
 
 		const deletedByPendingActivity = await this.applyPendingRoomActivities(roomUri);

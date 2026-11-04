@@ -193,7 +193,7 @@ export interface ChatEventTypes {
 	};
 }
 
-// ルームの内部制御イベントはクライアントへ転送しない。
+// ルームの状態の変化。画面を閉じたり更新したりできるようクライアントへも転送する。
 export interface ChatRoomEventTypes extends ChatEventTypes {
 	roomUpdated: {
 		roomId: MiChatRoom['id'];

@@ -242,6 +242,7 @@ function fixture(options: {
 		notificationService,
 		chatVoiceService,
 		apResolverService,
+		userBlockingService: { checkBlocked: vi.fn(async (_blockerId: string, _blockeeId: string) => false) },
 	});
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
 		chatRoomsRepository: rooms,
@@ -486,6 +487,31 @@ describe('Chat room federation: Invite', () => {
 		expect(f.rooms.rows).toContainEqual(expect.objectContaining({ id: 'newroom', ownerId: remoteOwner.id }));
 		expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: 'newroom', userId: alice.id })]);
 		expect(f.notificationService.createNotification).toHaveBeenCalledOnce();
+	});
+
+	test('an Invite brings an out-of-date mirror up to date, so it can be accepted', async () => {
+		const f = fixture({ rooms: [{ id: 'bobroom', name: 'old', ownerId: remoteOwner.id, description: 'old', isArchived: true }] });
+
+		await f.inbox.invite(remoteOwner, {
+			type: 'Invite',
+			actor: remoteOwner.uri,
+			object: { id: 'https://remote.test/chat/rooms/bobroom', type: 'Group', name: 'new', summary: 'new', attributedTo: remoteOwner.uri, _misskey_chatArchived: false },
+			target: `${LOCAL}/users/${alice.id}`,
+		});
+
+		expect(f.rooms.rows.find(room => room.id === 'bobroom')).toMatchObject({ name: 'new', description: 'new', isArchived: false });
+		expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: 'bobroom', userId: alice.id })]);
+	});
+
+	test('an Invite from someone the invitee has blocked creates nothing', async () => {
+		const f = fixture();
+		f.inbox.userBlockingService.checkBlocked.mockImplementation(async (blockerId: string, blockeeId: string) => blockerId === alice.id && blockeeId === remoteOwner.id);
+
+		await expect(f.inbox.invite(remoteOwner, inviteActivity(remoteOwner, 'https://remote.test/chat/rooms/newroom', `${LOCAL}/users/${alice.id}`))).resolves.toMatch(/^skip:/);
+
+		expect(f.rooms.rows.find(room => room.id === 'newroom')).toBeUndefined();
+		expect(f.invitations.rows).toEqual([]);
+		expect(f.notificationService.createNotification).not.toHaveBeenCalled();
 	});
 
 	test('invites into an existing mirror room when the inviter owns it', async () => {
@@ -947,6 +973,14 @@ describe('Chat room federation: deferred room activities', () => {
 		expect(f.redisClient.sadd).not.toHaveBeenCalled();
 	});
 
+	test('the cap on deferred rooms is a fixed window that a busy actor cannot keep extending', async () => {
+		const f = fixture();
+
+		await f.inbox.add(remoteOwner, { type: 'Add', actor: remoteOwner.uri, target: remoteRoomUri, object: invitedRemote.uri });
+
+		expect(f.redisClient.expire).toHaveBeenCalledWith(`chat_pending_room_activities_index:${remoteOwner.id}`, expect.any(Number), 'NX');
+	});
+
 	test('caps the rooms an actor can defer activities for', async () => {
 		const f = fixture();
 		f.redisClient.scard.mockImplementation(async (key: string) => key.startsWith('chat_pending_room_activities_index:') ? 100 : 0);
@@ -1018,7 +1052,7 @@ describe('Chat room federation: deferred room activities', () => {
 			await expect(f.inbox.invite(remoteOwner, invitation())).rejects.toThrow('deferred');
 			await f.inbox.invite(remoteOwner, invitation());
 
-			expect(f.inbox.chatService.updateRoom).toHaveBeenCalledTimes(3);
+			expect(f.inbox.chatService.updateRoom.mock.calls.filter((call: unknown[]) => (call[1] as { name: string }).name === 'renamed')).toHaveLength(3);
 			expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: 'remoteroom', userId: alice.id })]);
 		});
 	});
