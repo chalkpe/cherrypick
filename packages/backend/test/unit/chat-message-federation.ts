@@ -172,7 +172,7 @@ describe('ApRendererService chat wrappers', () => {
 
 	test('renderChatMessage uses the canonical note body', async () => {
 		const renderer = createRenderer();
-		const note = await renderer.renderChatMessage({ ...message, fileId: null, emojis: [] }, alice as never, [bob as never]);
+		const note = await renderer.renderChatMessage({ ...message, fileIds: [], emojis: [] }, alice as never, [bob as never]);
 
 		expect(note.content).toBe('&lt;b&gt;hi&lt;/b&gt;');
 		expect(note._misskey_content).toBe('<b>hi</b>');
@@ -204,7 +204,7 @@ describe('ApRendererService chat wrappers', () => {
 	test('message updates preserve the attachment, emoji tags and original publication time', async () => {
 		const renderer = createRenderer();
 		Object.assign(renderer, {
-			driveFilesRepository: { findOneBy: vi.fn().mockResolvedValue({ id: 'f1' }) },
+			driveFilesRepository: { findBy: vi.fn().mockResolvedValue([{ id: 'f1' }]) },
 			customEmojiService: { localEmojisCache: { fetch: vi.fn().mockResolvedValue(new Map([
 				['wave', { name: 'wave', localOnly: false, publicUrl: 'https://local.test/wave.png' }],
 				['private', { name: 'private', localOnly: true }],
@@ -212,7 +212,7 @@ describe('ApRendererService chat wrappers', () => {
 			driveFileEntityService: { getPublicUrl: () => 'https://local.test/file.png' },
 		});
 
-		const activity = await renderer.renderChatUpdate({ ...message, fileId: 'f1', emojis: ['wave', 'private'] }, alice as never, [bob as never]);
+		const activity = await renderer.renderChatUpdate({ ...message, fileIds: ['f1'], emojis: ['wave', 'private'] }, alice as never, [bob as never]);
 		expect(activity.object).toMatchObject({
 			id: message.uri,
 			published: '2026-11-02T00:00:00.000Z',
@@ -1185,6 +1185,8 @@ describe('ApInboxService chat activity routing', () => {
 			unreactRemote: vi.fn().mockResolvedValue(undefined),
 			storePendingChatReaction: vi.fn().mockResolvedValue(true),
 			applyPendingChatReactions: vi.fn().mockResolvedValue(undefined),
+			assertCanSendToUser: vi.fn().mockResolvedValue({ iApprovedOther: false }),
+			assertRemoteWriteAllowed: vi.fn().mockResolvedValue(undefined),
 			createMessageToUser: vi.fn(),
 			createMessageToRoom: vi.fn(),
 			isRoomMember: vi.fn(),
@@ -1222,7 +1224,7 @@ describe('ApInboxService chat activity routing', () => {
 			apMfmService: { htmlToMfm: (html: string) => html },
 			logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
 			apPersonService,
-			apImageService: { resolveImage: vi.fn() },
+			apImageService: { resolveImage: vi.fn(), findStoredImage: vi.fn().mockResolvedValue(null) },
 			roleService: { getUserPolicies: vi.fn().mockResolvedValue({ chatAvailability: 'available' }) },
 			userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null, isRemoteUser: (user: { host: string | null }) => user.host != null },
 			chatRoomsRepository,
@@ -1279,7 +1281,7 @@ describe('ApInboxService chat activity routing', () => {
 			['the attachment in the Update failed to download', { attachment: [{ type: 'Document', url: 'https://remote.test/file.png' }] }],
 		])('an edit can still clear the text of a stored message with a file when %s', async (_name, overrides) => {
 			const f = createInbox();
-			const stored = { ...f.message, fileId: 'file1' };
+			const stored = { ...f.message, fileIds: ['file1'] };
 			const { chatMessagesRepository, apImageService } = f.inbox as never as {
 				chatMessagesRepository: { findOneBy: ReturnType<typeof vi.fn> };
 				apImageService: { resolveImage: ReturnType<typeof vi.fn> };

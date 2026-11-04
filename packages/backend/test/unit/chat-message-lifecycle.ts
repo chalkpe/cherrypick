@@ -29,7 +29,7 @@ describe('chat message lifecycle packing', () => {
 			editedAt: new Date('2026-11-02T00:00:00Z'),
 			deletedAt: new Date('2026-11-02T00:01:00Z'),
 			reactions: ['u1/👍'],
-			fileId: 'f1',
+			fileIds: ['f1'],
 			fromUserId: 'u1',
 			fromUser: { id: 'u1', host: null },
 			toUserId: null,
@@ -41,6 +41,7 @@ describe('chat message lifecycle packing', () => {
 		expect(message.deletedAt).toBe('2026-11-02T00:01:00.000Z');
 		expect(message.text).toBeNull();
 		expect(message.file).toBeNull();
+		expect(message.files).toEqual([]);
 		expect(message.reactions).toEqual([]);
 	});
 });

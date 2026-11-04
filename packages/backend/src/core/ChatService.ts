@@ -18,7 +18,7 @@ import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { PushNotificationService } from '@/core/PushNotificationService.js';
 import { bindThis } from '@/decorators.js';
-import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, MiChatMessage, MiChatRoom, MiDriveFile, MiUser, MutingsRepository, UsersRepository } from '@/models/_.js';
+import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, DriveFilesRepository, MiChatMessage, MiChatRoom, MiDriveFile, MiUser, MutingsRepository, UsersRepository } from '@/models/_.js';
 import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { QueryService } from '@/core/QueryService.js';
 import { RoleService } from '@/core/RoleService.js';
@@ -53,6 +53,9 @@ export class ChatReactionInvalidError extends Error {}
 export class ChatTooManyReactionsError extends Error {}
 
 export const MAX_ROOM_MEMBERS = 50;
+export const MAX_CHAT_MESSAGE_FILES = 4;
+// Other servers can let their users attach more than this one does. Up to the limit of a note, such a message stays whole.
+export const MAX_REMOTE_CHAT_MESSAGE_FILES = 16;
 // Remote peers may allow longer messages than our composer, up to the text column's limit.
 export const MAX_REMOTE_MESSAGE_TEXT_LENGTH = 4096;
 const MAX_REACTIONS_PER_MESSAGE = 100;
@@ -113,6 +116,9 @@ export class ChatService {
 		@Inject(DI.mutingsRepository)
 		private mutingsRepository: MutingsRepository,
 
+		@Inject(DI.driveFilesRepository)
+		private driveFilesRepository: DriveFilesRepository,
+
 		private userEntityService: UserEntityService,
 		private chatEntityService: ChatEntityService,
 		private idService: IdService,
@@ -170,14 +176,21 @@ export class ChatService {
 		}
 	}
 
+	/** The files a user names for a new message in the order named, or null if one of them is not theirs. */
 	@bindThis
-	public async createMessageToUser(fromUser: { id: MiUser['id']; host: MiUser['host']; }, toUser: MiUser, params: {
-		text?: string | null;
-		file?: MiDriveFile | null;
-		uri?: string | null;
-		emojis?: string[];
-		editedAt?: Date | null;
-	}): Promise<Packed<'ChatMessageLiteFor1on1'>> {
+	public async findOwnFilesForMessage(userId: MiUser['id'], fileIds: MiDriveFile['id'][]): Promise<MiDriveFile[] | null> {
+		if (fileIds.length === 0) return [];
+		const files = await this.driveFilesRepository.findBy({ id: In(fileIds), userId });
+		const ordered = fileIds.map(id => files.find(file => file.id === id)).filter(file => file != null);
+		return ordered.length === fileIds.length ? ordered : null;
+	}
+
+	/**
+	 * Whether this user takes messages from the sender. A remote sender's message also has to pass this
+	 * before its attachments are downloaded. Tells the caller if the sender has approved the recipient yet.
+	 */
+	@bindThis
+	public async assertCanSendToUser(fromUser: { id: MiUser['id']; host: MiUser['host']; }, toUser: MiUser): Promise<{ iApprovedOther: boolean }> {
 		if (fromUser.id === toUser.id) {
 			throw new ChatMessageAccessError('yourself');
 		}
@@ -227,6 +240,19 @@ export class ChatService {
 			throw new ChatMessageBlockedError('blocked');
 		}
 
+		return { iApprovedOther };
+	}
+
+	@bindThis
+	public async createMessageToUser(fromUser: { id: MiUser['id']; host: MiUser['host']; }, toUser: MiUser, params: {
+		text?: string | null;
+		files?: MiDriveFile[];
+		uri?: string | null;
+		emojis?: string[];
+		editedAt?: Date | null;
+	}): Promise<Packed<'ChatMessageLiteFor1on1'>> {
+		const { iApprovedOther } = await this.assertCanSendToUser(fromUser, toUser);
+
 		// Extract emojis from text if not provided
 		// Store only emoji names (like notes do), not name@host format
 		let emojis = params.emojis ?? [];
@@ -242,7 +268,7 @@ export class ChatService {
 			fromUserId: fromUser.id,
 			toUserId: toUser.id,
 			text: params.text ? params.text.trim() : null,
-			fileId: params.file ? params.file.id : null,
+			fileIds: params.files?.map(file => file.id) ?? [],
 			reads: [],
 			uri: chatMessageUri({ id, uri: params.uri }, this.config.url),
 			editedAt: params.editedAt ?? null,
@@ -315,7 +341,7 @@ export class ChatService {
 	@bindThis
 	public async createMessageToRoom(fromUser: { id: MiUser['id']; host: MiUser['host']; }, toRoom: MiChatRoom, params: {
 		text?: string | null;
-		file?: MiDriveFile | null;
+		files?: MiDriveFile[];
 		uri?: string | null;
 		emojis?: string[];
 		editedAt?: Date | null;
@@ -355,7 +381,7 @@ export class ChatService {
 			fromUserId: fromUser.id,
 			toRoomId: toRoom.id,
 			text: params.text ? params.text.trim() : null,
-			fileId: params.file ? params.file.id : null,
+			fileIds: params.files?.map(file => file.id) ?? [],
 			reads: [],
 			uri: chatMessageUri({ id, uri: params.uri }, this.config.url),
 			editedAt: params.editedAt ?? null,
@@ -515,7 +541,7 @@ export class ChatService {
 		await this.assertMessageRoomNotArchived(message);
 
 		const trimmed = text.trim();
-		if ((trimmed.length === 0 && message.fileId == null) || Array.from(trimmed).length > 2000) throw new ChatMessageInvalidTextError('invalid text');
+		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > 2000) throw new ChatMessageInvalidTextError('invalid text');
 
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));
@@ -553,12 +579,12 @@ export class ChatService {
 		const deletedAt = new Date();
 		await this.chatMessagesRepository.update(message.id, {
 			text: null,
-			fileId: null,
+			fileIds: [],
 			reactions: [],
 			deletedAt,
 		});
 		message.text = null;
-		message.fileId = null;
+		message.fileIds = [];
 		message.reactions = [];
 		message.deletedAt = deletedAt;
 
@@ -605,7 +631,6 @@ export class ChatService {
 	public async roomTimeline(roomId: MiChatRoom['id'], limit: number, sinceId?: MiChatMessage['id'] | null, untilId?: MiChatMessage['id'] | null) {
 		const query = this.queryService.makePaginationQuery(this.chatMessagesRepository.createQueryBuilder('message'), sinceId, untilId)
 			.andWhere('message.toRoomId = :roomId', { roomId })
-			.leftJoinAndSelect('message.file', 'file')
 			.leftJoinAndSelect('message.fromUser', 'fromUser');
 
 		const messages = await query.take(limit).getMany();
@@ -1357,7 +1382,6 @@ export class ChatService {
 
 		q.andWhere('LOWER(message.text) LIKE :q', { q: `%${ sqlLikeEscape(query.toLowerCase()) }%` });
 
-		q.leftJoinAndSelect('message.file', 'file');
 		q.leftJoinAndSelect('message.fromUser', 'fromUser');
 		q.leftJoinAndSelect('message.toUser', 'toUser');
 		q.leftJoinAndSelect('message.toRoom', 'toRoom');
@@ -1549,7 +1573,7 @@ export class ChatService {
 		}
 
 		const trimmed = text.trim();
-		if ((trimmed.length === 0 && message.fileId == null) || Array.from(trimmed).length > MAX_REMOTE_MESSAGE_TEXT_LENGTH) throw new ChatMessageAccessError('invalid text');
+		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > MAX_REMOTE_MESSAGE_TEXT_LENGTH) throw new ChatMessageAccessError('invalid text');
 
 		// Keep this conditional in SQL as multiple inbox workers may read the same revision.
 		const result = await this.chatMessagesRepository.update([
@@ -1585,12 +1609,12 @@ export class ChatService {
 		const deletedAt = new Date();
 		await this.chatMessagesRepository.update(message.id, {
 			text: null,
-			fileId: null,
+			fileIds: [],
 			reactions: [],
 			deletedAt,
 		});
 		message.text = null;
-		message.fileId = null;
+		message.fileIds = [];
 		message.reactions = [];
 		message.deletedAt = deletedAt;
 
@@ -1806,10 +1830,16 @@ export class ChatService {
 	 * アーカイブを決めるのはルームを持つサーバーなので、ここが持つルームでは相手のサーバーからの書き込みも断る。
 	 * ミラーでは、アーカイブの通知と前後して届いたものを受け取る。
 	 */
-	private async assertRemoteWriteAllowed(room: MiChatRoom): Promise<void> {
+	@bindThis
+	public async assertRemoteWriteAllowed(room: MiChatRoom): Promise<void> {
 		if (!room.isArchived) return;
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
 		if (owner?.host == null) throw new ChatMessageAccessError('room is archived');
+	}
+
+	/** Nothing refers to a file by a foreign key, so one can be gone by now. A message without text and files would have nothing to show. */
+	private async hasFile(message: MiChatMessage): Promise<boolean> {
+		return message.fileIds.length > 0 && await this.driveFilesRepository.countBy({ id: In(message.fileIds) }) > 0;
 	}
 
 	private async assertMessageRoomNotArchived(message: MiChatMessage): Promise<void> {

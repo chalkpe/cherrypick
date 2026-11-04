@@ -189,23 +189,16 @@ describe('chat messages converted to private notes', () => {
 		expect(f.creationAttempts()).toBe(1);
 	});
 
-	test('does not convert a message deleted while its attachment is downloading', async () => {
-		const downloading = Promise.withResolvers<void>();
-		const finishDownload = Promise.withResolvers<null>();
-		const f = fixture({ resolveImage: async () => {
-			downloading.resolve();
-			return await finishDownload.promise;
-		} });
-		const creating = f.inbox.createChatMessage({}, actor, {
-			...object, attachment: [{ type: 'Document', url: 'https://remote.test/slow.png' }],
-		}, { type: 'Create', actor: actor.uri });
-		await downloading.promise;
-		await f.inbox.delete(actor, { type: 'Delete', actor: actor.uri, object: messageUri });
-		finishDownload.resolve(null);
-		await creating;
+	test('leaves the attachments of a converted message to the note, which downloads them itself', async () => {
+		const resolveImage = vi.fn(async () => null);
+		const f = fixture({ resolveImage });
 
-		expect(f.notes.size).toBe(0);
-		expect(f.creationAttempts()).toBe(0);
+		await f.inbox.createChatMessage({}, actor, {
+			...object, attachment: [{ type: 'Document', url: 'https://remote.test/file.png' }],
+		}, { type: 'Create', actor: actor.uri });
+
+		expect(resolveImage).not.toHaveBeenCalled();
+		expect(f.notes.size).toBe(1);
 	});
 
 	test('does not retry a note conversion that failed permanently', async () => {

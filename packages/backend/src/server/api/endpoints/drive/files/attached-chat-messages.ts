@@ -83,7 +83,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			}
 
 			const query = this.queryService.makePaginationQuery(this.chatMessagesRepository.createQueryBuilder('message'), ps.sinceId, ps.untilId, ps.sinceDate, ps.untilDate);
-			query.andWhere('message.fileId = :fileId', { fileId: file.id });
+			query.andWhere(':file <@ message.fileIds', { file: [file.id] });
 
 			const messages = await query.limit(ps.limit).getMany();
 

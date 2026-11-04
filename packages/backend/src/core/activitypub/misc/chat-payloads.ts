@@ -32,7 +32,7 @@ export type ChatPayloadOptions = {
 	published?: string;
 	updated?: string;
 	roomUri?: string;
-	attachment?: IApDocument;
+	attachment?: IApDocument[];
 	tag?: IObject[];
 	activityId?: string;
 };
@@ -96,8 +96,8 @@ export function buildChatNote(
 		note._misskey_chatRoom = roomUri;
 	}
 
-	if (options.attachment) {
-		note.attachment = [options.attachment];
+	if (options.attachment != null && options.attachment.length > 0) {
+		note.attachment = options.attachment;
 	}
 
 	if (options.tag && options.tag.length > 0) {

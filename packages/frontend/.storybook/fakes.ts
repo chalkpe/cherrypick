@@ -55,6 +55,8 @@ export function chatMessage(room = false, id = 'somechatmessageid', text = 'Hell
 		fromUser,
 		text,
 		isRead: false,
+		fileIds: [],
+		files: [],
 		reactions: [],
 		...room ? {
 			toRoomId: toRoom.id,

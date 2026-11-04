@@ -16,7 +16,7 @@ import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NoteCreateService } from '@/core/NoteCreateService.js';
 import { NotificationService } from '@/core/NotificationService.js';
-import { ChatMessageAccessError, ChatService, MAX_REMOTE_MESSAGE_TEXT_LENGTH, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatService, MAX_REMOTE_CHAT_MESSAGE_FILES, MAX_REMOTE_MESSAGE_TEXT_LENGTH, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { truncate } from '@/misc/truncate.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
@@ -36,6 +36,7 @@ import { MiChatRoomInvitation, MiChatRoomMembership, type UsersRepository, type 
 import { bindThis } from '@/decorators.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { MiNote } from '@/models/Note.js';
+import type { MiDriveFile } from '@/models/DriveFile.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { AbuseReportService } from '@/core/AbuseReportService.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
@@ -860,6 +861,71 @@ export class ApInboxService {
 		return null;
 	}
 
+	/** The room of a new message, or why it is skipped. Throws what the inbox queue's bounded retries can still resolve. */
+	private async chatRoomForMessage(contextUri: string, recipients: MiUser[], actor: MiRemoteUser): Promise<MiChatRoom | string> {
+		const roomId = contextUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/)?.[1];
+		if (roomId == null) {
+			this.logger.warn(`Invalid context URI format: ${contextUri}`);
+			return 'skip: invalid context URI format';
+		}
+
+		// Check if the room exists locally
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		if (!room) {
+			// The Invite can still be in flight; use the inbox queue's bounded retries.
+			throw new Error('chat room is not ready');
+		}
+
+		// Check if at least one recipient is a local user who is a member of the room
+		let hasLocalMember = false;
+		for (const recipient of recipients) {
+			if (this.userEntityService.isLocalUser(recipient)) {
+				// Check if this local user is a member of the room
+				const isMember = await this.chatService.isRoomMember(room, recipient.id);
+				if (isMember) {
+					hasLocalMember = true;
+					break;
+				}
+			}
+		}
+
+		if (!hasLocalMember) {
+			for (const recipient of recipients) {
+				if (this.userEntityService.isLocalUser(recipient) && await this.chatRoomInvitationsRepository.findOneBy({ roomId: room.id, userId: recipient.id })) {
+					throw new Error('chat room membership is not ready');
+				}
+			}
+			this.logger.warn('No local members found in the room');
+			return 'skip: no local members in room';
+		}
+
+		// A new member's message can overtake the Accept or Add that makes them a member.
+		// The inbox queue's bounded retries also end what a removed member keeps sending.
+		if (!await this.chatService.isRoomMember(room, actor.id)) throw new Error('chat room membership is not ready');
+
+		return room;
+	}
+
+	/**
+	 * The files of a new message, in the order of the Note. What this actor already stored is not downloaded
+	 * again, so that a retry only fetches what failed. `failed` tells a failed download from something that is not a file.
+	 */
+	private async resolveChatAttachments(actor: MiRemoteUser, object: IPost): Promise<{ files: MiDriveFile[]; failed: boolean }> {
+		const files = new Map<MiDriveFile['id'], MiDriveFile>();
+		let failed = false;
+		for (const attach of toArray(object.attachment).slice(0, MAX_REMOTE_CHAT_MESSAGE_FILES)) {
+			try {
+				if (typeof attach === 'object') attach.sensitive ??= object.sensitive;
+				const file = await this.apImageService.findStoredImage(actor, attach) ?? await this.apImageService.resolveImage(actor, attach);
+				if (file != null) files.set(file.id, file);
+			} catch (err) {
+				this.logger.warn(`Failed to resolve attachment: ${err}`);
+				failed = true;
+			}
+		}
+		return { files: [...files.values()], failed };
+	}
+
 	@bindThis
 	private async createChatMessage(resolver: Resolver, actor: MiRemoteUser, object: IPost, activity: ICreate | IUpdate | IAnnounce): Promise<string> {
 		if (typeof object !== 'object') return 'skip: object is not an object';
@@ -870,7 +936,8 @@ export class ApInboxService {
 		if (await this.redisClient.get(`chat_delete_upon_arrival:${object.id}:${encodeURIComponent(actor.uri)}`) === actor.uri) return 'skip: deleted';
 		// A room message can reach us once per member inbox, so avoid repeating the network work below.
 		// This is only a shortcut: the check under the lock remains the one that decides.
-		if (await this.chatMessagesRepository.findOneBy({ uri: object.id }) != null && getApType(activity) !== 'Update') return 'skip: chat message exists';
+		const stored = await this.chatMessagesRepository.findOneBy({ uri: object.id });
+		if (stored != null && getApType(activity) !== 'Update') return 'skip: chat message exists';
 		this.logger.info(`Processing chat message: ${object.id}`);
 
 		// Get recipients from the 'to' field
@@ -881,7 +948,7 @@ export class ApInboxService {
 		if (!toUris || toUris.length === 0) return 'skip: no recipients';
 
 		// Resolve recipient users
-		const recipients = [];
+		const recipients: MiUser[] = [];
 		for (const uri of toUris) {
 			try {
 				const user = await this.apPersonService.resolvePerson(uri, resolver);
@@ -901,25 +968,6 @@ export class ApInboxService {
 		const uri = object.id;
 		const editedAt = this.parseRemoteDate(object.updated);
 
-		// Handle file attachments
-		let file = null;
-		if (object.attachment && Array.isArray(object.attachment) && object.attachment.length > 0) {
-			try {
-				const attach = object.attachment[0]; // Take first attachment for now
-				attach.sensitive ??= object.sensitive;
-				file = await this.apImageService.resolveImage(actor, attach);
-			} catch (e) {
-				this.logger.warn(`Failed to resolve attachment: ${e}`);
-			}
-		}
-
-		// Extract emojis
-		const emojis = await this.apNoteService.extractEmojis(object.tag ?? [], actor.host).catch(e => {
-			this.logger.info(`extractEmojis: ${e}`);
-			return [];
-		});
-
-		const apEmojis = emojis.map(emoji => emoji.name);
 		const contextUri = this.chatRoomUriOf(object);
 		const isGroup = contextUri != null;
 
@@ -956,6 +1004,33 @@ export class ApInboxService {
 			}
 		}
 
+		// What follows costs downloads, so a message that would be refused stops here. The lock below decides again.
+		if (stored == null) {
+			try {
+				if (isGroup) {
+					const room = await this.chatRoomForMessage(contextUri, recipients, actor);
+					if (typeof room === 'string') return room;
+					await this.chatService.assertRemoteWriteAllowed(room);
+				} else {
+					await this.chatService.assertCanSendToUser(actor, recipients[0]);
+				}
+			} catch (err) {
+				if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+				throw err;
+			}
+		}
+
+		// An edit does not change the files of a stored message.
+		const { files, failed } = stored == null ? await this.resolveChatAttachments(actor, object) : { files: [], failed: false };
+
+		// Extract emojis
+		const emojis = await this.apNoteService.extractEmojis(object.tag ?? [], actor.host).catch(e => {
+			this.logger.info(`extractEmojis: ${e}`);
+			return [];
+		});
+
+		const apEmojis = emojis.map(emoji => emoji.name);
+
 		// Recipient resolution and attachment downloads can outlast the lock lease.
 		// Take a fresh lock only after network preparation, then recheck persistence state.
 		const unlock = await acquireApObjectLock(this.redisClient, object.id);
@@ -972,9 +1047,9 @@ export class ApInboxService {
 			}
 
 			// Only a new message can be empty this way: an edit may clear the text of a stored message that keeps its file.
-			if ((text == null || text.trim() === '') && file == null) {
+			if ((text == null || text.trim() === '') && files.length === 0) {
 				// A failed download would otherwise leave an empty bubble for good. Let the inbox queue's bounded retries try again.
-				if (Array.isArray(object.attachment) && object.attachment.length > 0) throw new Error('chat message attachment is not available');
+				if (failed) throw new Error('chat message attachment is not available');
 				return 'skip: chat message has no content';
 			}
 
@@ -983,59 +1058,20 @@ export class ApInboxService {
 				const recipient = recipients[0];
 				await this.chatService.createMessageToUser(actor, recipient, {
 					text,
-					file,
+					files,
 					uri,
 					emojis: apEmojis,
 					editedAt,
 				});
 			} else {
 				// Group chat
-				const roomIdMatch = contextUri!.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
-				if (!roomIdMatch) {
-					this.logger.warn(`Invalid context URI format: ${contextUri}`);
-					return 'skip: invalid context URI format';
-				}
-
-				const roomId = roomIdMatch[1];
-
-				// Check if the room exists locally
-				const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
-				if (!room) {
-					// The Invite can still be in flight; use the inbox queue's bounded retries.
-					throw new Error('chat room is not ready');
-				}
-
-				// Check if at least one recipient is a local user who is a member of the room
-				let hasLocalMember = false;
-				for (const recipient of recipients) {
-					if (this.userEntityService.isLocalUser(recipient)) {
-						// Check if this local user is a member of the room
-						const isMember = await this.chatService.isRoomMember(room, recipient.id);
-						if (isMember) {
-							hasLocalMember = true;
-							break;
-						}
-					}
-				}
-
-				if (!hasLocalMember) {
-					for (const recipient of recipients) {
-						if (this.userEntityService.isLocalUser(recipient) && await this.chatRoomInvitationsRepository.findOneBy({ roomId: room.id, userId: recipient.id })) {
-							throw new Error('chat room membership is not ready');
-						}
-					}
-					this.logger.warn('No local members found in the room');
-					return 'skip: no local members in room';
-				}
-
-				// A new member's message can overtake the Accept or Add that makes them a member.
-				// The inbox queue's bounded retries also end what a removed member keeps sending.
-				if (!await this.chatService.isRoomMember(room, actor.id)) throw new Error('chat room membership is not ready');
+				const room = await this.chatRoomForMessage(contextUri!, recipients, actor);
+				if (typeof room === 'string') return room;
 
 				// Create the message to the room
 				await this.chatService.createMessageToRoom(actor, room, {
 					text,
-					file,
+					files,
 					uri,
 					emojis: apEmojis,
 					editedAt,

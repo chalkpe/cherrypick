@@ -1692,6 +1692,7 @@ _order:
 
 _chat:
   messages: "メッセージ"
+  tooManyFiles: "メッセージに添付できるファイルは{max}個までです"
   noMessagesYet: "まだメッセージはありません"
   openRoom: "グループを開く"
   noMessagesInRoom: "まだメッセージはありません"

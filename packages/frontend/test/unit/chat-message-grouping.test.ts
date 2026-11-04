@@ -103,7 +103,7 @@ describe('XMessage in a group', () => {
 	};
 
 	function renderMessage(props: Record<string, unknown>) {
-		const chatMessage = { id: 'm', createdAt: new Date(base).toISOString(), fromUserId: alice.id, fromUser: alice, text: 'hello', reactions: [] } as unknown as NormalizedChatMessage;
+		const chatMessage = { id: 'm', createdAt: new Date(base).toISOString(), fromUserId: alice.id, fromUser: alice, text: 'hello', reactions: [], fileIds: [], files: [] } as unknown as NormalizedChatMessage;
 		return render(XMessage, { props: { message: chatMessage, ...props }, global: { stubs } });
 	}
 
@@ -133,7 +133,6 @@ describe('XMessage in a group', () => {
 		expect(tail.container.querySelector('.ti-dots-circle-horizontal')).not.toBeNull();
 	});
 
-
 	test.each([
 		{ key: 'Enter' },
 		{ key: 'F10', shiftKey: true },
@@ -158,7 +157,7 @@ describe('XMessage in a group', () => {
 		async function chooseDelete() {
 			vi.mocked(misskeyApi).mockClear();
 			vi.mocked(os.popupMenu).mockClear();
-			const mine = { id: 'm', createdAt: new Date(base).toISOString(), fromUserId: me.id, fromUser: { ...alice, id: me.id }, text: 'hello', reactions: [] };
+			const mine = { id: 'm', createdAt: new Date(base).toISOString(), fromUserId: me.id, fromUser: { ...alice, id: me.id }, text: 'hello', reactions: [], fileIds: [], files: [] };
 			const result = renderMessage({ message: mine });
 			const bubble = result.getByText('hello').closest('[tabindex="0"]') as HTMLElement;
 			await fireEvent.keyDown(bubble, { key: 'Enter' });

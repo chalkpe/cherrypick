@@ -436,7 +436,7 @@ describe('voice call on the room page', () => {
 		await fireEvent(pane, event);
 		await flush();
 		expect(event.defaultPrevented).toBe(true);
-		expect(mocks.launchUploader).toHaveBeenCalledWith([image], { multiple: false });
+		expect(mocks.launchUploader).toHaveBeenCalledWith([image], { multiple: true });
 		expect(screen.getByRole('img', { name: 'pane.png' })).toBeTruthy();
 	});
 	test('toggles the desktop chat panel without changing its icon or losing the draft', async () => {

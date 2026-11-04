@@ -46,7 +46,7 @@ const message = {
 	fromUserId: alice.id,
 	toUserId: carol.id,
 	toRoomId: null,
-	fileId: null,
+	fileIds: [],
 	uri: null,
 	emojis: [],
 };

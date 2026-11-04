@@ -100,7 +100,7 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		},
 		apResolverService: { createResolver: async () => ({ resolve: async (object: unknown) => object }) },
 		apNoteService: { fetchNote: async () => null, extractEmojis: async () => [{ name: 'newemoji' }] },
-		apImageService: { resolveImage: options.resolveImage ?? (async () => null) },
+		apImageService: { resolveImage: options.resolveImage ?? (async () => null), findStoredImage: async () => null },
 		roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 		userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null },
 		utilityService: new UtilityService({ host: 'local.test', url: 'https://local.test' } as never, {} as never),

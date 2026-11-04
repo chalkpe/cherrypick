@@ -39,7 +39,7 @@ const driveFile = {
 	properties: {}, url: 'https://local.test/draft.png', thumbnailUrl: null, comment: null,
 	folderId: null, folder: null, userId: 'me', user: null,
 } as unknown as Misskey.entities.DriveFile;
-const message = { id: 'm1', fromUserId: 'me', fromUser: mocks.me, text: 'Original message', createdAt: '2026-11-01T00:00:00.000Z', reactions: [] } as unknown as Misskey.entities.ChatMessage;
+const message = { id: 'm1', fromUserId: 'me', fromUser: mocks.me, text: 'Original message', createdAt: '2026-11-01T00:00:00.000Z', reactions: [], fileIds: [], files: [] } as unknown as Misskey.entities.ChatMessage;
 const user = { id: 'bob', username: 'bob' } as Misskey.entities.UserDetailed;
 const room = { id: 'room1', name: 'Room' } as Misskey.entities.ChatRoom;
 const stubs = {
@@ -81,7 +81,7 @@ function storedDraft(target: 'user' | 'room' = 'room') {
 
 async function composeDraft(textarea: HTMLTextAreaElement) {
 	await fireEvent.update(textarea, 'Unsent draft');
-	mocks.selectFile.mockResolvedValueOnce(driveFile);
+	mocks.selectFile.mockResolvedValueOnce([driveFile]);
 	await fireEvent.click(document.querySelector('.ti-photo-plus')!.closest('button')!);
 	await waitFor(() => expect(screen.getByAltText('draft.png')).toBeTruthy());
 }
@@ -103,7 +103,7 @@ beforeEach(() => {
 	localStorage.clear();
 	vi.resetAllMocks();
 	mocks.api.mockResolvedValue({});
-	mocks.selectFile.mockResolvedValue(driveFile);
+	mocks.selectFile.mockResolvedValue([driveFile]);
 	mocks.upload.mockResolvedValue([driveFile]);
 });
 afterEach(cleanup);
@@ -128,7 +128,7 @@ test('closing the emoji picker returns focus to the message box', async () => {
 
 describe.each(['user', 'room'] as const)('%s message editing', target => {
 	test('clears an existing attachment caption without replacing the file', async () => {
-		const form = renderForm(target, { ...message, fileId: driveFile.id, file: driveFile });
+		const form = renderForm(target, { ...message, fileIds: [driveFile.id], files: [driveFile] });
 		await fireEvent.update(form.textarea, '');
 		expect(screen.getByTitle(i18n.ts.save).hasAttribute('disabled')).toBe(false);
 		await fireEvent.click(screen.getByTitle(i18n.ts.save));
@@ -153,7 +153,7 @@ describe.each(['user', 'room'] as const)('%s message editing', target => {
 		form.editing.value = message;
 		await nextTick();
 		await fireEvent.update(form.textarea, 'Changed message');
-		expect(storedDraft(target)).toEqual({ text: 'Unsent draft', file: driveFile });
+		expect(storedDraft(target)).toEqual({ text: 'Unsent draft', files: [driveFile] });
 	});
 
 	test('cancel restores the unsent text and attachment', async () => {
@@ -177,7 +177,7 @@ describe.each(['user', 'room'] as const)('%s message editing', target => {
 		await waitFor(() => expect(form.editing.value).toBeNull());
 		expect(form.textarea.value).toBe('Unsent draft');
 		expect(screen.getByAltText('draft.png')).toBeTruthy();
-		expect(storedDraft(target)).toEqual({ text: 'Unsent draft', file: driveFile });
+		expect(storedDraft(target)).toEqual({ text: 'Unsent draft', files: [driveFile] });
 		expect(mocks.api).toHaveBeenCalledWith('chat/messages/update', { messageId: 'm1', text: 'Changed message' });
 	});
 });
@@ -264,12 +264,12 @@ test('edit mode blocks the picker, clipboard images, dropped uploads and Drive d
 	expect(mocks.selectFile).not.toHaveBeenCalled();
 	expect(mocks.upload).not.toHaveBeenCalled();
 	expect(form.container.querySelector('[data-id="draft-file"]')).toBeNull();
-	expect(storedDraft()?.file ?? null).toBeNull();
+	expect(storedDraft()?.files ?? []).toEqual([]);
 });
 
 test.each(['picker', 'upload'] as const)('ignores a pending %s result after entering and leaving edit mode', async source => {
 	const form = renderForm();
-	const picked = deferred<Misskey.entities.DriveFile>();
+	const picked = deferred<Misskey.entities.DriveFile[]>();
 	const uploaded = deferred<Misskey.entities.DriveFile[]>();
 	mocks.selectFile.mockReturnValueOnce(picked.promise);
 	mocks.upload.mockReturnValueOnce(uploaded.promise);
@@ -278,12 +278,12 @@ test.each(['picker', 'upload'] as const)('ignores a pending %s result after ente
 	form.editing.value = message;
 	await nextTick();
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.cancel }));
-	picked.resolve(driveFile);
+	picked.resolve([driveFile]);
 	uploaded.resolve([driveFile]);
 	await new Promise(resolve => setTimeout(resolve, 0));
 	await nextTick();
 	expect(form.container.querySelector('[data-id="draft-file"]')).toBeNull();
-	expect(storedDraft()?.file ?? null).toBeNull();
+	expect(storedDraft()?.files ?? []).toEqual([]);
 });
 
 test('a draft attachment does not enable saving an empty text-only edit', async () => {
@@ -406,6 +406,194 @@ test.each([false, true])('ignores an MFM emoji reaction callback after deletion 
 	else await result.rerender({ message: { ...liveMessage, deletedAt: '2026-11-01T00:01:00.000Z' } });
 	react('❤');
 	expect(mocks.api).not.toHaveBeenCalled();
+});
+
+describe('attaching several files', () => {
+	const [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map(id => ({ ...driveFile, id, name: `${id}.png` })) as Misskey.entities.DriveFile[];
+	const pick = async (form: ReturnType<typeof renderForm>, ...picked: Misskey.entities.DriveFile[]) => {
+		mocks.selectFile.mockResolvedValueOnce(picked);
+		await fireEvent.click(form.container.querySelector('.ti-photo-plus')!.closest('button')!);
+		await nextTick();
+		await nextTick();
+	};
+
+	test.each([
+		['user', 'chat/messages/create-to-user'],
+		['room', 'chat/messages/create-to-room'],
+	] as const)('a message to a %s sends them all in order', async (target, endpoint) => {
+		const form = renderForm(target);
+
+		await pick(form, c, a, d, b);
+		await fireEvent.click(screen.getByTitle(i18n.ts.send));
+
+		expect(mocks.api).toHaveBeenCalledWith(endpoint, expect.objectContaining({ fileIds: ['c', 'a', 'd', 'b'] }));
+	});
+
+	test('the picker asks for several files', async () => {
+		const form = renderForm();
+
+		await pick(form, a);
+
+		expect(mocks.selectFile).toHaveBeenCalledWith(expect.objectContaining({ multiple: true }));
+	});
+
+	test('a later pick adds to the attachments instead of replacing them', async () => {
+		const form = renderForm();
+
+		await pick(form, a);
+		await pick(form, b);
+
+		expect(screen.getByAltText('a.png')).toBeTruthy();
+		expect(screen.getByAltText('b.png')).toBeTruthy();
+		expect(storedDraft().files.map((file: { id: string }) => file.id)).toEqual(['a', 'b']);
+	});
+
+	test('picking an attached file again does not attach it twice', async () => {
+		const form = renderForm();
+
+		await pick(form, a);
+		await pick(form, a, b);
+
+		expect(storedDraft().files.map((file: { id: string }) => file.id)).toEqual(['a', 'b']);
+	});
+
+	test('picking past the limit keeps four and says so', async () => {
+		const form = renderForm();
+
+		await pick(form, a, b, c, d, e);
+
+		expect(storedDraft().files.map((file: { id: string }) => file.id)).toEqual(['a', 'b', 'c', 'd']);
+		expect(os.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.tsx._chat.tooManyFiles({ max: 4 }) });
+	});
+
+	test('the picker is disabled once four are attached', async () => {
+		const form = renderForm();
+		const picker = form.container.querySelector('.ti-photo-plus')!.closest('button')!;
+
+		await pick(form, a, b, c);
+		expect(picker.hasAttribute('disabled')).toBe(false);
+		await pick(form, d);
+
+		expect(picker.hasAttribute('disabled')).toBe(true);
+	});
+
+	test('an upload that would go past the limit does not start', async () => {
+		const form = renderForm();
+		await pick(form, a, b, c, d);
+
+		await dropImage(form.container);
+
+		expect(mocks.upload).not.toHaveBeenCalled();
+		expect(os.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.tsx._chat.tooManyFiles({ max: 4 }) });
+	});
+
+	test('several dropped files upload together', async () => {
+		const form = renderForm();
+		mocks.upload.mockResolvedValueOnce([a, b]);
+
+		await fireEvent.drop(form.container.firstElementChild!, {
+			dataTransfer: { files: [new File(['1'], 'a.png', { type: 'image/png' }), new File(['2'], 'b.png', { type: 'image/png' })] },
+		});
+		await waitFor(() => expect(screen.getByAltText('b.png')).toBeTruthy());
+
+		expect(mocks.upload).toHaveBeenCalledWith(expect.any(Array), { multiple: true });
+		expect(storedDraft().files.map((file: { id: string }) => file.id)).toEqual(['a', 'b']);
+	});
+
+	test('dropping several files from the drive attaches them all', async () => {
+		const form = renderForm();
+
+		await fireEvent.drop(form.container.firstElementChild!, {
+			dataTransfer: { files: [], getData: () => JSON.stringify([a, b]) },
+		});
+		await nextTick();
+
+		expect(storedDraft().files.map((file: { id: string }) => file.id)).toEqual(['a', 'b']);
+	});
+
+	test('removing one keeps the others', async () => {
+		mocks.popupMenu.mockResolvedValue(undefined);
+		const form = renderForm();
+		await pick(form, a, b);
+
+		await fireEvent.click(screen.getByAltText('a.png').closest('[role="button"]')!);
+		const items = mocks.popupMenu.mock.lastCall![0] as MenuItem[];
+		const detach = items.find(item => item != null && 'text' in item && item.text === i18n.ts.attachCancel) as unknown as { action: () => void };
+		detach.action();
+		await nextTick();
+
+		expect(screen.queryByAltText('a.png')).toBeNull();
+		expect(screen.getByAltText('b.png')).toBeTruthy();
+		expect(storedDraft().files.map((file: { id: string }) => file.id)).toEqual(['b']);
+	});
+
+	test('sending clears them all', async () => {
+		const form = renderForm();
+		await pick(form, a, b);
+
+		await fireEvent.click(screen.getByTitle(i18n.ts.send));
+		await waitFor(() => expect(screen.queryByAltText('a.png')).toBeNull());
+
+		expect(storedDraft()?.files ?? []).toEqual([]);
+	});
+
+	test('a draft keeps them all across a reload', async () => {
+		const first = renderForm();
+		await pick(first, a, b);
+		first.unmount();
+
+		renderForm();
+		await nextTick();
+
+		expect(screen.getByAltText('a.png')).toBeTruthy();
+		expect(screen.getByAltText('b.png')).toBeTruthy();
+	});
+
+	test('a draft saved when there could be only one file is still restored', async () => {
+		localStorage.setItem('chatMessageDrafts', JSON.stringify({ 'room:room1': { updatedAt: new Date(), data: { text: 'old draft', file: a } } }));
+
+		const form = renderForm();
+		await nextTick();
+
+		expect(form.textarea.value).toBe('old draft');
+		expect(screen.getByAltText('a.png')).toBeTruthy();
+	});
+
+	test('a draft without a file restores no attachment', async () => {
+		localStorage.setItem('chatMessageDrafts', JSON.stringify({ 'room:room1': { updatedAt: new Date(), data: { text: 'old draft', file: null } } }));
+
+		renderForm();
+		await nextTick();
+
+		await fireEvent.click(screen.getByTitle(i18n.ts.send));
+		expect(mocks.api).toHaveBeenCalledWith('chat/messages/create-to-room', { toRoomId: 'room1', text: 'old draft', fileIds: undefined });
+	});
+
+	describe('in a message', () => {
+		const gallery = { props: ['mediaList'], template: '<ul><li v-for="media in mediaList" :key="media.id">{{ media.name }}</li></ul>' };
+		const renderFiles = (overrides: object) => render(XMessage, {
+			props: { message: { ...message, ...overrides } as Misskey.entities.ChatMessage },
+			global: { stubs: { ...stubs, MkFukidashi: { template: '<div><slot/></div>' }, MkUrlPreview: true, MkMediaList: gallery } },
+		});
+
+		test('the gallery of notes shows them all in order', () => {
+			renderFiles({ fileIds: ['b', 'a', 'd', 'c'], files: [b, a, d, c], fileId: 'b', file: b });
+
+			expect(screen.getAllByRole('listitem').map(item => item.textContent)).toEqual(['b.png', 'a.png', 'd.png', 'c.png']);
+		});
+
+		test('a message without files has no gallery', () => {
+			renderFiles({});
+
+			expect(screen.queryByRole('list')).toBeNull();
+		});
+
+		test('a deleted message has no gallery even if it still names files', () => {
+			renderFiles({ fileIds: ['a'], files: [a], deletedAt: '2026-11-02T00:00:00.000Z' });
+
+			expect(screen.queryByRole('list')).toBeNull();
+		});
+	});
 });
 
 describe('XMessage on messages it cannot act on', () => {

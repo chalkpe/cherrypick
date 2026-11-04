@@ -1687,6 +1687,7 @@ _order:
   oldest: "오래된 순"
 _chat:
   messages: "쪽지"
+  tooManyFiles: "쪽지에는 파일을 {max}개까지 첨부할 수 있어요!"
   noMessagesYet: "아직 아무런 대화도 시작하지 않았어요.\n간단하게 인사로 시작해 보는 것은 어떨까요?"
   openRoom: "그룹을 열어 확인해요"
   noMessagesInRoom: "아직 메시지가 없어요"

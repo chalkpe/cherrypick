@@ -1682,6 +1682,7 @@ _order:
   oldest: "Oldest First"
 _chat:
   messages: "Messages"
+  tooManyFiles: "You can attach up to {max} files to a message"
   noMessagesYet: "No messages yet"
   openRoom: "Open room"
   noMessagesInRoom: "No messages yet"

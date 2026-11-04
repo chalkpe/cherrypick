@@ -21,6 +21,7 @@ function chatService(method: string) {
 		checkChatAvailability: vi.fn().mockResolvedValue(undefined),
 		findRoomById: vi.fn().mockResolvedValue({ id: 'r1' }),
 		isRoomMember: vi.fn().mockResolvedValue(true),
+		findOwnFilesForMessage: vi.fn().mockResolvedValue([]),
 		findMyMessageById: vi.fn().mockResolvedValue({ id: 'm1' }),
 		[method]: vi.fn().mockRejectedValue(new ChatRoomArchivedError('archived')),
 	} as any;
@@ -32,7 +33,7 @@ function ownedRoomService(method: string) {
 
 describe('chat endpoints report an archived room', () => {
 	test.each([
-		['chat/messages/create-to-room', () => new (CreateToRoomEndpoint as any)({}, {}, chatService('createMessageToRoom')), { toRoomId: 'r1', text: 'hello' }],
+		['chat/messages/create-to-room', () => new (CreateToRoomEndpoint as any)({}, chatService('createMessageToRoom')), { toRoomId: 'r1', text: 'hello' }],
 		['chat/messages/update', () => new (UpdateEndpoint as any)(chatService('updateMessage'), {}), { messageId: 'm1', text: 'edited' }],
 		['chat/messages/delete', () => new (DeleteEndpoint as any)(chatService('deleteMessage')), { messageId: 'm1' }],
 		['chat/messages/react', () => new (ReactEndpoint as any)(chatService('react')), { messageId: 'm1', reaction: '👍' }],

@@ -3,14 +3,12 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { GetterService } from '@/server/api/GetterService.js';
-import { DI } from '@/di-symbols.js';
 import { ApiError } from '@/server/api/error.js';
-import { ChatMessageAccessError, ChatMessageBlockedError, ChatService } from '@/core/ChatService.js';
-import type { DriveFilesRepository, MiUser } from '@/models/_.js';
+import { ChatMessageAccessError, ChatMessageBlockedError, ChatService, MAX_CHAT_MESSAGE_FILES } from '@/core/ChatService.js';
 
 export const meta = {
 	tags: ['chat'],
@@ -51,6 +49,12 @@ export const meta = {
 			id: '4372b8e2-185d-4146-8749-2f68864a3e5f',
 		},
 
+		tooManyFiles: {
+			message: 'A message can have up to 4 files.',
+			code: 'TOO_MANY_FILES',
+			id: 'e577e5c3-5cae-4251-ba3c-d3a8f8e25c5f',
+		},
+
 		contentRequired: {
 			message: 'Content required. You need to set text or fileId.',
 			code: 'CONTENT_REQUIRED',
@@ -76,6 +80,13 @@ export const paramDef = {
 	properties: {
 		text: { type: 'string', nullable: true, maxLength: 2000 },
 		fileId: { type: 'string', format: 'misskey:id' },
+		fileIds: {
+			type: 'array',
+			uniqueItems: true,
+			minItems: 1,
+			maxItems: MAX_CHAT_MESSAGE_FILES,
+			items: { type: 'string', format: 'misskey:id' },
+		},
 		toUserId: { type: 'string', format: 'misskey:id' },
 	},
 	required: ['toUserId'],
@@ -84,29 +95,25 @@ export const paramDef = {
 @Injectable()
 export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-disable-line import/no-default-export
 	constructor(
-		@Inject(DI.driveFilesRepository)
-		private driveFilesRepository: DriveFilesRepository,
-
 		private getterService: GetterService,
 		private chatService: ChatService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			await this.chatService.checkChatAvailability(me.id, 'write');
 
-			let file = null;
-			if (ps.fileId != null) {
-				file = await this.driveFilesRepository.findOneBy({
-					id: ps.fileId,
-					userId: me.id,
-				});
+			// fileId is what clients from before there could be several still send.
+			const fileIds = Array.from(new Set([...(ps.fileId != null ? [ps.fileId] : []), ...(ps.fileIds ?? [])]));
+			if (fileIds.length > MAX_CHAT_MESSAGE_FILES) {
+				throw new ApiError(meta.errors.tooManyFiles);
+			}
 
-				if (file == null) {
-					throw new ApiError(meta.errors.noSuchFile);
-				}
+			const files = await this.chatService.findOwnFilesForMessage(me.id, fileIds);
+			if (files == null) {
+				throw new ApiError(meta.errors.noSuchFile);
 			}
 
 			// テキストが無いかつ添付ファイルも無かったらエラー
-			if (ps.text == null && file == null) {
+			if (ps.text == null && files.length === 0) {
 				throw new ApiError(meta.errors.contentRequired);
 			}
 
@@ -123,7 +130,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			try {
 				return await this.chatService.createMessageToUser(me, toUser, {
 					text: ps.text,
-					file: file,
+					files,
 				});
 			} catch (e) {
 				if (e instanceof ChatMessageBlockedError) throw new ApiError(meta.errors.youHaveBeenBlocked);

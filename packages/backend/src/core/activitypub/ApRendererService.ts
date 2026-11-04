@@ -867,14 +867,10 @@ export class ApRendererService {
 	}
 
 	private async chatPayloadOptions(message: any, roomUri?: string): Promise<ChatPayloadOptions> {
-		// Get file if attached
-		let attachment: IApDocument | undefined;
-		if (message.fileId) {
-			const file = await this.driveFilesRepository.findOneBy({ id: message.fileId });
-			if (file) {
-				attachment = this.renderDocument(file);
-			}
-		}
+		// Files are not referred to by a foreign key, so one can be gone by now. The database returns them in no particular order.
+		const fileIds: MiDriveFile['id'][] = message.fileIds ?? [];
+		const files = fileIds.length > 0 ? await this.driveFilesRepository.findBy({ id: In(fileIds) }) : [];
+		const attachment = fileIds.map(id => files.find(file => file.id === id)).filter(file => file != null).map(file => this.renderDocument(file));
 
 		// Get emojis
 		const emojis = message.emojis && message.emojis.length > 0 ? await this.getEmojis(message.emojis) : [];

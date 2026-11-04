@@ -6748,6 +6748,10 @@ export interface Locale extends ILocale {
          */
         "messages": string;
         /**
+         * メッセージに添付できるファイルは{max}個までです
+         */
+        "tooManyFiles": ParameterizedString<"max">;
+        /**
          * まだメッセージはありません
          */
         "noMessagesYet": string;

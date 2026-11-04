@@ -17,7 +17,7 @@ function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 		fromUserId: 'u1',
 		toUserId: 'u2',
 		toRoomId: null,
-		fileId: null as string | null,
+		fileIds: [] as string[],
 		text: 'old',
 		editedAt: null as Date | null,
 		deletedAt: overrides.deletedAt ?? null,
@@ -43,6 +43,7 @@ function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 		chatMessagesRepository,
 		chatRoomsRepository: { findOneBy: vi.fn() },
 		chatRoomMembershipsRepository: { findBy: vi.fn() },
+		driveFilesRepository: { countBy: vi.fn(async ({ id }: { id: { value: string[] } }) => id.value.length) },
 		usersRepository: {
 			findOneByOrFail: vi.fn(async ({ id }: { id: string }) => users.get(id)),
 			findBy: vi.fn(async ({ id }: { id: { value: string[] } }) => id.value.map(value => users.get(value)).filter(Boolean)),
@@ -69,7 +70,7 @@ function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 describe('ChatService.updateMessage', () => {
 	test.each(['', '   '])('clears an attachment caption through the local API (%j)', async text => {
 		const f = createFixture();
-		f.message.fileId = 'file1';
+		f.message.fileIds = ['file1'];
 		const service = { checkChatAvailability: vi.fn(), updateMessage: f.service.updateMessage } as unknown as ChatService;
 		const entityService = { packMessageDetailed: vi.fn(async value => value) } as unknown as ChatEntityService;
 		const endpoint = new UpdateEndpoint(service, entityService);
@@ -77,7 +78,7 @@ describe('ChatService.updateMessage', () => {
 		await endpoint.exec({ messageId: 'm1', text }, { id: 'u1' } as MiLocalUser, null, null);
 
 		expect(f.message.text).toBe('');
-		expect(f.message.fileId).toBe('file1');
+		expect(f.message.fileIds).toEqual(['file1']);
 		expect(f.publishChatUserStream).toHaveBeenCalledWith('u1', 'u2', 'updated', expect.objectContaining({ text: '' }));
 	});
 
@@ -189,12 +190,12 @@ describe('ChatService.updateMessage', () => {
 
 	test('lets a remote author clear an attachment caption', async () => {
 		const f = createFixture();
-		f.message.fileId = 'file1';
+		f.message.fileIds = ['file1'];
 
 		await f.service.updateRemoteMessage({ id: 'u1', host: 'remote.test' } as MiUser, f.message as unknown as MiChatMessage, '', new Date());
 
 		expect(f.message.text).toBe('');
-		expect(f.message.fileId).toBe('file1');
+		expect(f.message.fileIds).toEqual(['file1']);
 		expect(f.publishChatUserStream).toHaveBeenCalledWith('u1', 'u2', 'updated', expect.objectContaining({ text: '' }));
 	});
 

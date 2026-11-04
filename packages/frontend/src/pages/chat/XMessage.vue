@@ -8,9 +8,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<MkAvatar v-if="!isMe && isFirstInGroup" :class="[$style.avatar, prefer.s.useStickyIcons ? $style.useSticky : null]" :user="message.fromUser!" :link="!isMe" :preview="false"/>
 	<!-- まとまりの2つ目以降もアバターの幅だけ空けて、吹き出しの位置を揃える -->
 	<div v-else-if="!isMe" :class="$style.avatarSpace"></div>
-	<div :class="[$style.body, message.file != null ? $style.fullWidth : null]" tabindex="0" aria-haspopup="menu" @keydown.self="onMenuKeydown" @contextmenu.stop="onContextmenu">
+	<div :class="[$style.body, hasFiles ? $style.fullWidth : null]" tabindex="0" aria-haspopup="menu" @keydown.self="onMenuKeydown" @contextmenu.stop="onContextmenu">
 		<div v-if="isFirstInGroup" :class="$style.header"><MkUserName v-if="!isMe && prefer.s['chat.showSenderName'] && message.fromUser != null" :user="message.fromUser"/></div>
-		<MkFukidashi :class="[$style.fukidashi, { [$style.noTailLeft]: !isFirstInGroup && !isMe }]" :tail="!isFirstInGroup ? 'none' : isMe ? 'right' : 'left'" :fullWidth="message.file != null" :accented="isMe">
+		<MkFukidashi :class="[$style.fukidashi, { [$style.noTailLeft]: !isFirstInGroup && !isMe }]" :tail="!isFirstInGroup ? 'none' : isMe ? 'right' : 'left'" :fullWidth="hasFiles" :accented="isMe">
 			<span v-if="deletedAt" :class="$style.deletedMessage">{{ i18n.ts._chat.deletedMessage }}</span>
 			<template v-else>
 				<Mfm
@@ -25,7 +25,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					:enableEmojiMenu="true"
 					:enableEmojiMenuReaction="true"
 				/>
-				<MkMediaList v-if="message.file" :mediaList="[message.file]" :user="message.fromUser"/>
+				<MkMediaList v-if="hasFiles" :mediaList="message.files" :user="message.fromUser"/>
 			</template>
 		</MkFukidashi>
 		<MkUrlPreview v-for="url in urls" :key="url" :url="url" style="margin: 8px 0;"/>
@@ -109,6 +109,7 @@ const emit = defineEmits<{
 const isMe = computed(() => props.message.fromUserId === $i.id);
 const editedAt = computed(() => (props.message as NormalizedChatMessage).editedAt ?? null);
 const deletedAt = computed(() => (props.message as NormalizedChatMessage).deletedAt ?? null);
+const hasFiles = computed(() => deletedAt.value == null && props.message.files.length > 0);
 const unmounted = ref(false);
 const isReadOnly = computed(() => props.roomArchived || ('toRoom' in props.message && props.message.toRoom?.isArchived === true));
 const canReact = computed(() => !unmounted.value && !deletedAt.value && !isReadOnly.value && $i.policies.chatAvailability === 'available');

@@ -6201,6 +6201,8 @@ export type components = {
             text?: string | null;
             fileId?: string | null;
             file?: components['schemas']['DriveFile'] | null;
+            fileIds: string[];
+            files: components['schemas']['DriveFile'][];
             isRead?: boolean;
             reactions: {
                 reaction: string;
@@ -6225,6 +6227,8 @@ export type components = {
             text?: string | null;
             fileId?: string | null;
             file?: components['schemas']['DriveFile'] | null;
+            fileIds: string[];
+            files: components['schemas']['DriveFile'][];
             reactions: {
                 reaction: string;
                 user?: components['schemas']['UserLite'] | null;
@@ -6246,6 +6250,8 @@ export type components = {
             text?: string | null;
             fileId?: string | null;
             file?: components['schemas']['DriveFile'] | null;
+            fileIds: string[];
+            files: components['schemas']['DriveFile'][];
             reactions: {
                 reaction: string;
             }[];
@@ -6267,6 +6273,8 @@ export type components = {
             text?: string | null;
             fileId?: string | null;
             file?: components['schemas']['DriveFile'] | null;
+            fileIds: string[];
+            files: components['schemas']['DriveFile'][];
             reactions: {
                 reaction: string;
                 user: components['schemas']['UserLite'];
@@ -18432,6 +18440,7 @@ export interface operations {
                     text?: string | null;
                     /** Format: misskey:id */
                     fileId?: string;
+                    fileIds?: string[];
                     /** Format: misskey:id */
                     toRoomId: string;
                 };
@@ -18510,6 +18519,7 @@ export interface operations {
                     text?: string | null;
                     /** Format: misskey:id */
                     fileId?: string;
+                    fileIds?: string[];
                     /** Format: misskey:id */
                     toUserId: string;
                 };
