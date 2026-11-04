@@ -198,7 +198,7 @@ describe('a moderator removing this server\'s copy of another server\'s room', (
 
 		await f.inbox.invite(bob, invite);
 
-		expect(await f.rooms.findOneBy({ id: 'mirror' })).not.toBeNull();
+		expect(await f.rooms.findOneBy({ uri: MIRROR_URI })).not.toBeNull();
 		expect(f.invitations.rows).toHaveLength(1);
 		expect(await f.chatRosterService.isRoomGone(MIRROR_URI)).toBe(false);
 	});

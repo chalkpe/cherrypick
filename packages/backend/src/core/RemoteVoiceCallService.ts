@@ -20,6 +20,7 @@ import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { CloudflareTurnService, parseIceServers } from '@/core/CloudflareTurnService.js';
 import type { IceServer } from '@/core/CloudflareTurnService.js';
 import { ApRequestService } from '@/core/activitypub/ApRequestService.js';
+import { chatRoomUri } from '@/core/activitypub/misc/chat-payloads.js';
 import { LoggerService } from '@/core/LoggerService.js';
 
 const TOKEN_REQUEST_TIMEOUT_MS = 10_000;
@@ -101,7 +102,7 @@ export class RemoteVoiceCallService {
 			body = await this.apRequestService.signedPostJson(
 				me,
 				`${origin}/livekit/federation/token`,
-				{ room: `${origin}/chat/rooms/${room.id}`, canScreenShare },
+				{ room: chatRoomUri(room, origin), canScreenShare },
 				TOKEN_REQUEST_TIMEOUT_MS,
 				{ redirect: 'manual', size: TOKEN_RESPONSE_SIZE_LIMIT },
 			);
@@ -138,7 +139,7 @@ export class RemoteVoiceCallService {
 		await this.assertHostSupported(owner.host);
 		try {
 			await this.apRequestService.signedPostJson(me, `${ownerUrl.origin}/livekit/federation/status`, {
-				room: `${ownerUrl.origin}/chat/rooms/${room.id}`, sessionId, ...status,
+				room: chatRoomUri(room, ownerUrl.origin), sessionId, ...status,
 			}, TOKEN_REQUEST_TIMEOUT_MS, { redirect: 'manual', size: TOKEN_RESPONSE_SIZE_LIMIT });
 		} catch (err) {
 			throw await this.errorOf(err, owner.host, false);

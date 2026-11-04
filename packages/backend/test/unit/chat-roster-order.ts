@@ -321,7 +321,7 @@ describe('a cancelled invitation', () => {
 			await f.inbox.undo(bob, undoInvite(at(2)), f.resolver);
 			await f.inbox.invite(bob, invite(at(3)));
 
-			expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: 'mirror', userId: alice.id })]);
+			expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: (await f.rooms.findOneBy({ uri: MIRROR_URI }))?.id, userId: alice.id })]);
 		});
 
 		test('without a time goes by arrival: the Invite that follows still counts', async () => {

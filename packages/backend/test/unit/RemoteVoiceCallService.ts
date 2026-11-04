@@ -90,6 +90,19 @@ function abortError() {
 }
 
 describe('RemoteVoiceCallService', () => {
+	test('names a mirror room by the URI its owner wrote, since the two servers call it differently', async () => {
+		const f = createFixture();
+		const mirror = { ...room, id: 'hereId', uri: 'https://remote.test/chat/rooms/34' };
+
+		await f.service.requestJoin(me, mirror, owner, true);
+		await f.service.reportStatus(me, mirror, owner, 'PA_1', { micMuted: true, deafened: false });
+
+		expect(f.apRequestService.signedPostJson).toHaveBeenCalledWith(me, TOKEN_URL, { room: 'https://remote.test/chat/rooms/34', canScreenShare: true }, 10_000, { redirect: 'manual', size: 64 * 1024 });
+		expect(f.apRequestService.signedPostJson).toHaveBeenCalledWith(me, 'https://remote.test/livekit/federation/status', {
+			room: 'https://remote.test/chat/rooms/34', sessionId: 'PA_1', micMuted: true, deafened: false,
+		}, 10_000, { redirect: 'manual', size: 64 * 1024 });
+	});
+
 	test('forwards reported settings using the authenticated user signature', async () => {
 		const f = createFixture();
 		await f.service.reportStatus(me, room, owner, 'PA_1', { micMuted: true, deafened: false });

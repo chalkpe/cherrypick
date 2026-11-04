@@ -484,7 +484,7 @@ describe('Chat room federation: Invite', () => {
 	});
 
 	test('ignores an invitation to a known room owned by another user', async () => {
-		const f = fixture({ rooms: [{ id: 'bobroom', name: 'bob', ownerId: remoteOwner.id, description: '', isArchived: false }] });
+		const f = fixture({ rooms: [{ id: 'bobroom', uri: 'https://other.test/chat/rooms/bobroom', name: 'bob', ownerId: remoteOwner.id, description: '', isArchived: false }] });
 
 		await f.inbox.invite(dave, inviteActivity(dave, 'https://other.test/chat/rooms/bobroom', `${LOCAL}/users/${alice.id}`));
 
@@ -505,8 +505,10 @@ describe('Chat room federation: Invite', () => {
 
 		await f.inbox.invite(remoteOwner, inviteActivity(remoteOwner, 'https://remote.test/chat/rooms/newroom', `${LOCAL}/users/${alice.id}`));
 
-		expect(f.rooms.rows).toContainEqual(expect.objectContaining({ id: 'newroom', ownerId: remoteOwner.id }));
-		expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: 'newroom', userId: alice.id })]);
+		const mirror = f.rooms.rows.find(room => room.uri === 'https://remote.test/chat/rooms/newroom');
+		expect(mirror).toMatchObject({ ownerId: remoteOwner.id });
+		expect(mirror?.id).not.toBe('newroom');
+		expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: mirror?.id, userId: alice.id })]);
 		expect(f.notificationService.createNotification).toHaveBeenCalledOnce();
 	});
 
@@ -583,7 +585,7 @@ describe('Chat room federation: Invite edge cases', () => {
 			object: { type: 'Group', id: 'https://other.test/chat/rooms/newroom', name: 'room' },
 		});
 
-		expect(f.rooms.rows).toContainEqual(expect.objectContaining({ id: 'newroom', ownerId: dave.id }));
+		expect(f.rooms.rows).toContainEqual(expect.objectContaining({ uri: 'https://other.test/chat/rooms/newroom', ownerId: dave.id }));
 	});
 
 	test('does not invite a remote user', async () => {
@@ -731,7 +733,7 @@ describe('Chat room federation: checking voice states', () => {
 	test('reads a voice state that a server sends about its own room', () => {
 		expect(parseChatRoomVoiceState(remoteOwner.uri, voiceState(), 51)).toEqual({
 			ok: true,
-			state: { roomId: 'bobroom', participants: [{ identity: invitedRemote.uri, screenSharing: true }], updatedAt: Date.parse(UPDATED) },
+			state: { roomUri: 'https://remote.test/chat/rooms/bobroom', roomId: 'bobroom', participants: [{ identity: invitedRemote.uri, screenSharing: true }], updatedAt: Date.parse(UPDATED) },
 		});
 	});
 
@@ -752,7 +754,7 @@ describe('Chat room federation: checking voice states', () => {
 
 		expect(parseChatRoomVoiceState(`${LOCAL}/users/${localOwner.id}`, rendered, 51)).toEqual({
 			ok: true,
-			state: { roomId: 'localroom', participants: [{ identity: `${LOCAL}/users/${alice.id}`, screenSharing: false }], updatedAt: Date.parse(UPDATED) },
+			state: { roomUri: `${LOCAL}/chat/rooms/localroom`, roomId: 'localroom', participants: [{ identity: `${LOCAL}/users/${alice.id}`, screenSharing: false }], updatedAt: Date.parse(UPDATED) },
 		});
 	});
 
@@ -942,7 +944,7 @@ describe('Chat room federation: deferred room activities', () => {
 		await f.inbox.invite(remoteOwner, invitation);
 		await f.inbox.invite(remoteOwner, invitation);
 
-		expect(f.rooms.rows.find(room => room.id === 'remoteroom')).toBeUndefined();
+		expect(f.rooms.rows.find(room => room.uri === remoteRoomUri)).toBeUndefined();
 		expect(f.invitations.rows).toEqual([]);
 		expect(f.notificationService.createNotification).not.toHaveBeenCalled();
 	});
@@ -957,7 +959,7 @@ describe('Chat room federation: deferred room activities', () => {
 			target: `${LOCAL}/users/${alice.id}`,
 		});
 
-		expect(f.rooms.rows.find(room => room.id === 'remoteroom')).toMatchObject({ lastRemoteUpdatedAt: new Date('2026-11-03T00:00:00.000Z') });
+		expect(f.rooms.rows.find(room => room.uri === remoteRoomUri)).toMatchObject({ lastRemoteUpdatedAt: new Date('2026-11-03T00:00:00.000Z') });
 	});
 
 	test('truncates oversized mirror room metadata from an Invite', async () => {
@@ -976,7 +978,7 @@ describe('Chat room federation: deferred room activities', () => {
 			target: `${LOCAL}/users/${alice.id}`,
 		});
 
-		const room = f.rooms.rows.find(room => room.id === 'oversized');
+		const room = f.rooms.rows.find(room => room.uri === 'https://remote.test/chat/rooms/oversized');
 		expect(room?.name).toHaveLength(256);
 		expect(room?.description).toHaveLength(1024);
 	});
@@ -1028,7 +1030,7 @@ describe('Chat room federation: deferred room activities', () => {
 			target: `${LOCAL}/users/${alice.id}`,
 		});
 
-		expect(f.rooms.rows.find(room => room.id === 'remoteroom')).toMatchObject({ name: 'renamed', description: 'description' });
+		expect(f.rooms.rows.find(room => room.uri === remoteRoomUri)).toMatchObject({ name: 'renamed', description: 'description' });
 	});
 
 	describe('replay', () => {
@@ -1059,8 +1061,9 @@ describe('Chat room federation: deferred room activities', () => {
 			expect(f.invitations.rows).toEqual([]);
 			await f.inbox.invite(remoteOwner, invitation());
 
-			expect(f.rooms.rows.find(room => room.id === 'remoteroom')).toMatchObject({ name: 'renamed' });
-			expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: 'remoteroom', userId: alice.id })]);
+			const mirror = f.rooms.rows.find(room => room.uri === remoteRoomUri);
+			expect(mirror).toMatchObject({ name: 'renamed' });
+			expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: mirror?.id, userId: alice.id })]);
 		});
 
 		test('gives up on an activity that keeps failing, so it cannot block the invitation', async () => {
@@ -1074,7 +1077,7 @@ describe('Chat room federation: deferred room activities', () => {
 			await f.inbox.invite(remoteOwner, invitation());
 
 			expect(f.inbox.chatService.updateRoom.mock.calls.filter((call: unknown[]) => (call[1] as { name: string }).name === 'renamed')).toHaveLength(3);
-			expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: 'remoteroom', userId: alice.id })]);
+			expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: f.rooms.rows.find(room => room.uri === remoteRoomUri)?.id, userId: alice.id })]);
 		});
 	});
 
@@ -1089,7 +1092,7 @@ describe('Chat room federation: deferred room activities', () => {
 			target: `${LOCAL}/users/${alice.id}`,
 		});
 
-		expect(f.memberships.rows).toEqual([expect.objectContaining({ roomId: 'remoteroom', userId: invitedRemote.id })]);
+		expect(f.memberships.rows).toEqual([expect.objectContaining({ roomId: f.rooms.rows.find(room => room.uri === remoteRoomUri)?.id, userId: invitedRemote.id })]);
 	});
 
 	test('applies a pending Delete after Invite creates the mirror room', async () => {
@@ -1107,7 +1110,7 @@ describe('Chat room federation: deferred room activities', () => {
 			target: `${LOCAL}/users/${alice.id}`,
 		});
 
-		expect(f.rooms.rows.find(room => room.id === 'remoteroom')).toBeUndefined();
+		expect(f.rooms.rows.find(room => room.uri === remoteRoomUri)).toBeUndefined();
 		expect(f.invitations.rows).toEqual([]);
 	});
 });

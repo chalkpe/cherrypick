@@ -63,6 +63,7 @@ const MAX_PENDING_ROOMS_PER_ACTOR = 100;
 const DEFERRED_CHAT_DELETE_TTL = 6 * 60 * 60;
 const ROOM_FULL = 'skip: room is full';
 const ROOM_ARCHIVED = 'skip: room is archived';
+const CHAT_ROOM_URI = /\/chat\/rooms\/([a-zA-Z0-9]+)$/;
 const MAX_DEFERRED_CHAT_DELETES_PER_ACTOR = 1000;
 
 @Injectable()
@@ -386,15 +387,12 @@ export class ApInboxService {
 		const roomUri = getApId(roomObject);
 		if (!roomUri) return 'skip: invalid room object';
 
-		// Extract room ID from URI
-		const roomIdMatch = roomUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
-		if (!roomIdMatch) return 'skip: invalid room URI format';
-		const roomId = roomIdMatch[1];
+		if (!CHAT_ROOM_URI.test(roomUri)) return 'skip: invalid room URI format';
 
 		// Find the room
-		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		const room = await this.chatRoomByUri(roomUri);
 		if (!room) {
-			this.logger.warn(`Room not found: ${roomId}`);
+			this.logger.warn(`Room not found: ${roomUri}`);
 			return 'skip: room not found';
 		}
 
@@ -435,7 +433,7 @@ export class ApInboxService {
 				userId: actor.id,
 			});
 			if (existingMembership != null) {
-				this.logger.info(`User ${actor.id} is already a member of room ${roomId}`);
+				this.logger.info(`User ${actor.id} is already a member of room ${room.id}`);
 				return 'ok';
 			}
 
@@ -454,7 +452,7 @@ export class ApInboxService {
 
 			await manager.insert(MiChatRoomMembership, membership);
 
-			this.logger.info(`Remote user ${actor.id} accepted invitation and joined room ${roomId}`);
+			this.logger.info(`Remote user ${actor.id} accepted invitation and joined room ${room.id}`);
 			return 'ok';
 		});
 
@@ -533,9 +531,8 @@ export class ApInboxService {
 		}
 
 		const targetUri = getApId(activity.target);
-		const roomIdMatch = targetUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
-		if (roomIdMatch) {
-			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
+		if (CHAT_ROOM_URI.test(targetUri)) {
+			const room = await this.chatRoomByUri(targetUri);
 			if (room == null) {
 				if (await this.chatRosterService.isRoomGone(targetUri)) return 'skip: room was deleted';
 				return await this.storePendingRoomActivity(actor, activity) ? 'ok: room not found, activity deferred' : 'skip: room not found';
@@ -621,8 +618,7 @@ export class ApInboxService {
 		// The inbox turns away what a refused server sends. A relay must not let that in through the owner, or sign a request to it as a member.
 		if (await this.hostPolicyService.isRefusedRemoteHost(this.utilityService.extractDbHost(messageUri))) return 'skip: refused host';
 
-		const roomId = roomUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/)?.[1];
-		const room = roomId != null ? await this.chatRoomsRepository.findOneBy({ id: roomId }) : null;
+		const room = await this.chatRoomByUri(roomUri);
 		if (room == null) return 'skip: room not found';
 		if (room.ownerId !== actor.id) return 'skip: only the room owner can relay';
 
@@ -704,8 +700,7 @@ export class ApInboxService {
 		if (typeof activity.id !== 'string') return 'skip: relayed activity has no id';
 		if (!this.isOnActorHost(roomUri, actor)) return 'skip: room is not on the relaying server';
 
-		const roomId = roomUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/)?.[1];
-		const room = roomId != null ? await this.chatRoomsRepository.findOneBy({ id: roomId }) : null;
+		const room = await this.chatRoomByUri(roomUri);
 		if (room == null) return 'skip: room not found';
 		if (room.ownerId !== actor.id) return 'skip: only the room owner can relay';
 
@@ -1031,7 +1026,7 @@ export class ApInboxService {
 
 	private chatRoomUriFromValue(value: unknown): string | null {
 		if (typeof value === 'string') {
-			return /\/chat\/rooms\/[a-zA-Z0-9]+$/.test(value) ? value : null;
+			return CHAT_ROOM_URI.test(value) ? value : null;
 		}
 		if (Array.isArray(value)) {
 			for (const item of value) {
@@ -1042,21 +1037,54 @@ export class ApInboxService {
 		}
 		if (value != null && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string') {
 			const id = (value as { id: string }).id;
-			return /\/chat\/rooms\/[a-zA-Z0-9]+$/.test(id) ? id : null;
+			return CHAT_ROOM_URI.test(id) ? id : null;
 		}
 		return null;
 	}
 
+	/**
+	 * The row of a room named by its URI. A room number means something only on the server that gave it, so two servers can give the same one.
+	 * A row with no URI is found by the number: a mirror from before URIs were kept, as long as the URI is on its owner's server,
+	 * or a room owned here, which older servers write with their own host, so that the host says nothing about it.
+	 */
+	private async chatRoomByUri(uri: string): Promise<MiChatRoom | null> {
+		const number = uri.match(CHAT_ROOM_URI)?.[1];
+		if (number == null) return null;
+
+		const mirror = await this.chatRoomsRepository.findOneBy({ uri });
+		if (mirror != null) return mirror;
+
+		const room = await this.chatRoomsRepository.findOneBy({ id: number });
+		if (room == null || room.uri != null) return null;
+		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+		if (owner == null) return null;
+		return owner.host == null || this.isOnActorHost(uri, owner as MiRemoteUser) ? room : null;
+	}
+
+	/**
+	 * Servers from before room URIs write a room in a message with their own host and the owner's number for it, whoever owns it.
+	 * Only someone in the room can mean it, and with several such rooms there is no telling which one they mean.
+	 */
+	private async chatRoomNamedByOlderMember(uri: string, actor: MiRemoteUser): Promise<MiChatRoom | null> {
+		const number = uri.match(CHAT_ROOM_URI)?.[1];
+		if (number == null || !this.isOnActorHost(uri, actor)) return null;
+
+		const rooms = await this.chatRoomsRepository.createQueryBuilder('room')
+			.innerJoin(MiChatRoomMembership, 'membership', 'membership.roomId = room.id AND membership.userId = :userId', { userId: actor.id })
+			.where('room.id = :number OR room.uri LIKE :uri', { number, uri: `%/chat/rooms/${number}` })
+			.getMany();
+		return rooms.length === 1 ? rooms[0] : null;
+	}
+
 	/** The room of a new message, or why it is skipped. Throws what the inbox queue's bounded retries can still resolve. */
 	private async chatRoomForMessage(contextUri: string, recipients: MiUser[], actor: MiRemoteUser): Promise<MiChatRoom | string> {
-		const roomId = contextUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/)?.[1];
-		if (roomId == null) {
+		if (!CHAT_ROOM_URI.test(contextUri)) {
 			this.logger.warn(`Invalid context URI format: ${contextUri}`);
 			return 'skip: invalid context URI format';
 		}
 
 		// Check if the room exists locally
-		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		const room = await this.chatRoomByUri(contextUri) ?? await this.chatRoomNamedByOlderMember(contextUri, actor);
 		if (!room) {
 			if (await this.chatRosterService.isRoomGone(contextUri)) return 'skip: room was deleted';
 			// The Invite can still be in flight; use the inbox queue's bounded retries.
@@ -1374,9 +1402,8 @@ export class ApInboxService {
 		}
 
 		if (formerType === 'Group' && uri.includes('/chat/rooms/')) {
-			const roomIdMatch = uri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
-			if (!roomIdMatch) return 'skip: invalid room URI';
-			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
+			if (!CHAT_ROOM_URI.test(uri)) return 'skip: invalid room URI';
+			const room = await this.chatRoomByUri(uri);
 			if (room == null) {
 				if (await this.chatRosterService.isRoomGone(uri)) return 'skip: room was deleted';
 				return await this.storePendingRoomActivity(actor, activity) ? 'skip: room not found, activity deferred' : 'skip: room not found';
@@ -1543,10 +1570,14 @@ export class ApInboxService {
 
 		this.logger.info(`[rejectInvite] Room URI: ${roomUri}`);
 
-		// Extract room ID from URI
-		const roomIdMatch = roomUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
-		if (!roomIdMatch) return 'skip: invalid room URI format';
-		const roomId = roomIdMatch[1];
+		if (!CHAT_ROOM_URI.test(roomUri)) return 'skip: invalid room URI format';
+
+		const room = await this.chatRoomByUri(roomUri);
+		if (room == null) {
+			this.logger.warn(`[rejectInvite] Room not found: ${roomUri}`);
+			return 'skip: invitation not found';
+		}
+		const roomId = room.id;
 
 		// Older than what the same server said last. The invitation is by this server's clock, so it cannot be compared with that.
 		const published = this.parseRemoteDate(activity.published);
@@ -1605,14 +1636,12 @@ export class ApInboxService {
 		const targetUri = getApId(activity.target);
 		this.logger.info(`[ApInboxService.remove] Processing Remove activity, target: ${targetUri}`);
 
-		const roomIdMatch = targetUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
-		if (roomIdMatch) {
-			const roomId = roomIdMatch[1];
-			this.logger.info(`[ApInboxService.remove] Matched room ID: ${roomId}, actor: ${actor.uri}`);
+		if (CHAT_ROOM_URI.test(targetUri)) {
+			this.logger.info(`[ApInboxService.remove] Matched room: ${targetUri}, actor: ${actor.uri}`);
 
-			const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+			const room = await this.chatRoomByUri(targetUri);
 			if (!room) {
-				this.logger.warn(`[ApInboxService.remove] Room not found: ${roomId}`);
+				this.logger.warn(`[ApInboxService.remove] Room not found: ${targetUri}`);
 				return 'room not found';
 			}
 
@@ -1759,10 +1788,7 @@ export class ApInboxService {
 		const roomUri = getApId(roomObject);
 		if (!roomUri) return 'skip: invalid room object';
 
-		// Extract room ID from URI
-		const roomIdMatch = roomUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
-		if (!roomIdMatch) return 'skip: invalid room URI format';
-		const roomId = roomIdMatch[1];
+		if (!CHAT_ROOM_URI.test(roomUri)) return 'skip: invalid room URI format';
 
 		// Get the target user (invitee)
 		const targetUri = getApHrefNullable(activity.target);
@@ -1773,13 +1799,14 @@ export class ApInboxService {
 		if (!this.userEntityService.isLocalUser(invitee)) return 'skip: target user is not local';
 
 		// Only the room owner can cancel an invitation
-		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		const room = await this.chatRoomByUri(roomUri);
 		if (room == null && undo != null) {
 			// This overtook its Invite. Kept with the room's other early activities, so that the Invite cannot offer what was cancelled.
 			if (await this.chatRosterService.isRoomGone(roomUri)) return 'skip: room was deleted';
 			return await this.storePendingRoomActivity(actor, undo) ? 'ok: room not found, activity deferred' : 'skip: room not found';
 		}
 		if (!room || room.ownerId !== actor.id) return 'skip: only the room owner can cancel an invitation';
+		const roomId = room.id;
 
 		// A cancellation of an earlier invitation, still on its way, says nothing about the one that came after it.
 		const last = await this.chatRosterService.lastRosterAt(roomId, invitee.id);
@@ -1955,11 +1982,9 @@ export class ApInboxService {
 			}
 		}
 
-		if (getApType(object) === 'Group' && /\/chat\/rooms\/[a-zA-Z0-9]+$/.test(getApId(object))) {
+		if (getApType(object) === 'Group' && CHAT_ROOM_URI.test(getApId(object))) {
 			const roomUri = getApId(object);
-			const roomIdMatch = roomUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
-			if (!roomIdMatch) return 'skip: invalid room URI';
-			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
+			const room = await this.chatRoomByUri(roomUri);
 			if (room == null) {
 				if (await this.chatRosterService.isRoomGone(roomUri)) return 'skip: room was deleted';
 				return await this.storePendingRoomActivity(actor, activity) ? 'skip: room not found, activity deferred' : 'skip: room not found';
@@ -2196,10 +2221,8 @@ export class ApInboxService {
 		const roomUri = getApId(roomObject);
 		if (!roomUri) return 'skip: invalid room object';
 
-		// Extract room ID from URI (format: https://example.com/chat/rooms/{roomId})
-		const roomIdMatch = roomUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/);
-		if (!roomIdMatch) return 'skip: invalid room URI format';
-		const roomId = roomIdMatch[1];
+		// format: https://example.com/chat/rooms/{number}
+		if (!CHAT_ROOM_URI.test(roomUri)) return 'skip: invalid room URI format';
 
 		// Only the room owner sends Invite, and the room lives on the owner's server
 		if (!this.isOnActorHost(roomUri, actor)) return 'skip: room is not on the inviter\'s server';
@@ -2216,7 +2239,7 @@ export class ApInboxService {
 		if (await this.userBlockingService.checkBlocked(invitee.id, actor.id)) return 'skip: the invitee has blocked the inviter';
 
 		// Check if the room already exists locally
-		let room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		let room = await this.chatRoomByUri(roomUri);
 		if (room && room.ownerId !== actor.id) return 'skip: inviter is not the room owner';
 
 		// If the room doesn't exist, create a local copy for the remote room
@@ -2234,7 +2257,7 @@ export class ApInboxService {
 			}
 
 			room = await this.chatRoomsRepository.insertOne({
-				id: roomId,
+				id: this.idService.gen(),
 				name: roomName,
 				description: roomDescription,
 				ownerId: actor.id,

@@ -34,6 +34,7 @@ export class MiChatRoom {
 	})
 	public description: string;
 
+	@Index({ unique: true })
 	@Column('varchar', {
 		length: 512, nullable: true,
 	})

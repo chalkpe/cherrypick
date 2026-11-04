@@ -303,18 +303,27 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 	];
 	const rooms = {
 		...fakeRepository(roomRows),
-		// The one statement updateRoom runs.
+		// The statement updateRoom runs, and the one looking for a room named by a member on an older server.
 		createQueryBuilder: () => {
 			let patch: Record<string, unknown> = {};
 			let id: string | undefined;
+			let number: string | undefined;
+			let memberId: string | undefined;
 			const builder = {
+				innerJoin: (_entity: unknown, _alias: string, _condition: string, parameters: { userId: string }) => {
+					memberId = parameters.userId;
+					return builder;
+				},
+				getMany: async () => roomRows.filter(row => (row.id === number || (row.uri as string | null)?.endsWith(`/chat/rooms/${number}`)) &&
+					memberships.rows.some(membership => membership.roomId === row.id && membership.userId === memberId)),
 				update: () => builder,
 				set: (values: Record<string, unknown>) => {
 					patch = values;
 					return builder;
 				},
-				where: (_sql: string, parameters: { id: string }) => {
+				where: (_sql: string, parameters: { id?: string; number?: string }) => {
 					id = parameters.id;
+					number = parameters.number;
 					return builder;
 				},
 				andWhere: () => builder,

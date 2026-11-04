@@ -301,7 +301,8 @@ describe('receiving the attachments of a remote message', () => {
 		};
 		const chatRosterService = chatRosterOver(forgetfulRedis());
 		const apImageService = { resolveImage: vi.fn(async (_actor: unknown, attach: { name: string }) => ({ id: attach.name })), findStoredImage: vi.fn().mockResolvedValue(null) };
-		const chatRoomsRepository = { findOneBy: vi.fn().mockResolvedValue(room) };
+		const noRooms = { innerJoin: () => noRooms, where: () => noRooms, getMany: async () => [] };
+		const chatRoomsRepository = { findOneBy: vi.fn().mockResolvedValue(room), createQueryBuilder: () => noRooms };
 		const chatMessagesRepository = { findOneBy: vi.fn().mockResolvedValue(null) };
 		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 			chatService,

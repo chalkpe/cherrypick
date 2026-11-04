@@ -1400,7 +1400,8 @@ describe('ApInboxService chat activity routing', () => {
 
 	test.each(['missing room', 'pending invitation'])('retries a group Create while waiting for %s', async (state) => {
 		const f = createInbox();
-		const rooms = { findOneBy: vi.fn().mockResolvedValue(state === 'missing room' ? null : { id: 'r1' }) };
+		const noRooms = { innerJoin: () => noRooms, where: () => noRooms, getMany: async () => [] };
+		const rooms = { findOneBy: vi.fn().mockResolvedValue(state === 'missing room' ? null : { id: 'r1' }), createQueryBuilder: () => noRooms };
 		Object.assign(f.inbox, {
 			chatRoomsRepository: rooms,
 			chatRoomInvitationsRepository: { findOneBy: vi.fn().mockResolvedValue({ id: 'invite1' }) },
