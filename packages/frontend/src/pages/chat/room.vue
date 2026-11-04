@@ -66,7 +66,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						</div>
 
 						<div v-else ref="timelineEl" class="_gaps" :class="{ [$style.ownScroller]: split }">
-							<div v-if="canFetchMore">
+							<div v-if="canFetchMore" :class="$style.moreRow">
 								<MkButton :class="$style.more" :wait="moreFetching" primary rounded @click="fetchMore">{{ i18n.ts.loadMore }}</MkButton>
 							</div>
 
@@ -162,9 +162,11 @@ import XMembers from './room.members.vue';
 import XInfo from './room.info.vue';
 import XBanner from './room.voice.banner.vue';
 import XStage from './room.voice.stage.vue';
+import { chatInviteErrors, chatJoinErrors } from './chat-errors.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { PageHeaderItem } from '@/types/page-header.js';
 import * as os from '@/os.js';
+import { globalEvents } from '@/events.js';
 import { useStream } from '@/stream.js';
 import * as sound from '@/utility/sound.js';
 import { i18n } from '@/i18n.js';
@@ -365,7 +367,8 @@ async function initialize() {
 				return;
 			} else {
 				try {
-					await os.apiWithDialog('chat/rooms/join', { roomId: r.id });
+					await os.apiWithDialog('chat/rooms/join', { roomId: r.id }, null, chatJoinErrors);
+					globalEvents.emit('chatRoomInvitationHandled', r.id);
 				} catch {
 					// The dialog already explained the refusal, and this page has nothing to show a non-member.
 					initializing.value = false;
@@ -681,7 +684,7 @@ async function inviteUser() {
 		await os.apiWithDialog('chat/rooms/invitations/create', {
 			roomId: room.value.id,
 			userId: invitee.id,
-		});
+		}, null, chatInviteErrors);
 	} catch {
 		// The dialog already explained the failure, and no invitation was sent.
 		return;
@@ -695,7 +698,7 @@ async function leaveRoom() {
 
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.ts.areYouSure,
+		text: i18n.tsx._chat.leaveRoomConfirm({ name: room.value.name }),
 	});
 	if (canceled) return;
 
@@ -983,6 +986,11 @@ definePage(computed(() => {
 }
 
 .root {
+}
+
+// ボタンは新しく読み込んだメッセージの上に残る。ブラウザのスクロールアンカーがボタンを基準にすると、読んでいた位置から読み込んだ先頭まで飛んでしまう
+.moreRow {
+	overflow-anchor: none;
 }
 
 .more {

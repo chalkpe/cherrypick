@@ -127,11 +127,27 @@ function search() {
 		...query,
 		limit: 10,
 		detail: false,
-	}).then(_users => {
-		if (currentRequestId === requestId) users.value = _users.filter(canSelectUser);
+	}).then(async _users => {
+		if (currentRequestId !== requestId) return;
+		users.value = _users.filter(canSelectUser);
+		await addExactLocalUser(query, currentRequestId);
 	}).catch(() => {
 		if (currentRequestId === requestId) users.value = [];
 	});
+}
+
+// 検索は、まだノートを書いていないこのサーバーのユーザーを返さない。ユーザー名を最後まで入れたらその人を選べるようにする
+async function addExactLocalUser(query: { username: string; host: string; }, currentRequestId: number) {
+	const isThisServer = query.host === '' || query.host === '.' || query.host === hostname || query.host === currentHost;
+	const name = query.username.toLowerCase();
+	if (!isThisServer || name === '' || users.value.some(user => user.host == null && user.username.toLowerCase() === name)) return;
+
+	try {
+		const user = await misskeyApi('users/show', { username: query.username, host: null });
+		if (currentRequestId === requestId) users.value = [user, ...users.value].filter(canSelectUser);
+	} catch {
+		// そのユーザー名の人はいない
+	}
 }
 
 async function lookup() {

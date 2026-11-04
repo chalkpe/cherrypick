@@ -190,7 +190,7 @@ test('a failed save tells the user and keeps the edit open', async () => {
 	await fireEvent.update(form.textarea, 'Edited');
 	await fireEvent.click(screen.getByTitle(i18n.ts.save));
 
-	await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: 'This room is archived.' }));
+	await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: i18n.ts._chat.actionFailed }));
 	expect(form.editing.value).toEqual(message);
 	expect(form.textarea.value).toBe('Edited');
 });
@@ -201,7 +201,7 @@ test.each(['user', 'room'] as const)('a failed %s message send tells the user an
 	await fireEvent.update(form.textarea, 'Unsent');
 	await fireEvent.click(screen.getByTitle(i18n.ts.send));
 
-	await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: 'Rate limit exceeded.' }));
+	await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: i18n.ts._chat.actionFailed }));
 	expect(form.textarea.value).toBe('Unsent');
 });
 
@@ -719,7 +719,26 @@ describe('XMessage on messages it cannot act on', () => {
 
 		await fireEvent.click(container.querySelector('[class*="reactions"] > *')!);
 
-		await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: 'Rate limit exceeded.' }));
+		await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: i18n.ts._chat.actionFailed }));
+	});
+
+	test('a message that is gone is explained in the language of the screen, not the English of the API', async () => {
+		mocks.api.mockRejectedValueOnce(Object.assign(new Error('No such message.'), { code: 'NO_SUCH_MESSAGE' }));
+		const { container } = renderMessage({ reactions: [{ user: { id: 'me', username: 'me' }, reaction: '👍' }] });
+
+		await fireEvent.click(container.querySelector('[class*="reactions"] > *')!);
+
+		await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: i18n.ts._chat.messageUnavailable }));
+	});
+
+	test('pressing a reaction on my own message asks nothing of the server, which would refuse it', async () => {
+		const { container } = renderMessage({ fromUserId: 'me', fromUser: mocks.me, reactions: [{ user: { id: 'bob', username: 'bob' }, reaction: '👍' }] });
+
+		await fireEvent.click(container.querySelector('[class*="reactions"] > *')!);
+		await nextTick();
+
+		expect(mocks.api).not.toHaveBeenCalledWith('chat/messages/react', expect.anything());
+		expect(os.alert).not.toHaveBeenCalled();
 	});
 
 	test('a refused delete is shown instead of being lost in the console', async () => {
@@ -731,7 +750,7 @@ describe('XMessage on messages it cannot act on', () => {
 		await deleteItem.action();
 
 		expect(mocks.api).toHaveBeenCalledWith('chat/messages/delete', { messageId: 'm1' });
-		await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: 'Rate limit exceeded.' }));
+		await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: i18n.ts._chat.actionFailed }));
 	});
 
 	test('clicking a remote custom emoji reaction does not send a reaction the server would reject', async () => {

@@ -349,6 +349,7 @@ describe('leaving a room from the menu', () => {
 
 		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/leave', { roomId: 'r1' });
 		expect(mocks.routerPush).not.toHaveBeenCalled();
+		expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.tsx._chat.leaveRoomConfirm({ name: 'room 1' }) });
 		expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
 	});
 
@@ -382,7 +383,7 @@ test('a refused invitation returns to the chat list instead of loading forever',
 
 	const { container } = await renderRoom();
 
-	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/join', { roomId: 'r1' });
+	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/join', { roomId: 'r1' }, null, expect.anything());
 	expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
 	expect(container.querySelector('[data-testid="form"]')).toBeNull();
 });
@@ -831,7 +832,7 @@ describe('inviting from an empty conversation', () => {
 		await fireEvent.click(inviteButton(container)!);
 		await flush();
 
-		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' });
+		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' }, null, expect.anything());
 	});
 
 	test('a member who cannot invite only sees the hint', async () => {
@@ -886,7 +887,7 @@ describe('inviting from the members tab', () => {
 		await fireEvent.click(container.querySelector('[data-testid="members-invite"]')!);
 		await flush();
 
-		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' });
+		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' }, null, expect.anything());
 		expect(mocks.membersMounts.value).toBe(2);
 	});
 

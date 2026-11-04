@@ -203,7 +203,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue';
+import { onBeforeUnmount, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import * as os from '@/os.js';
 import MkReactionIcon from '@/components/MkReactionIcon.vue';
@@ -215,6 +215,7 @@ import { userPage } from '@@/js/user.js';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { isApiError } from '@/utility/api-error.js';
+import { globalEvents } from '@/events.js';
 import { ensureSignin } from '@/i.js';
 import { prefer } from '@/preferences.js';
 
@@ -285,10 +286,12 @@ async function respondToChatRoomInvitation(endpoint: 'chat/rooms/join' | 'chat/r
 	try {
 		await misskeyApi(endpoint, { roomId: props.notification.invitation.room.id });
 		chatRoomInviteDone.value = true;
+		globalEvents.emit('chatRoomInvitationHandled', props.notification.invitation.room.id);
 	} catch {
 		// 招待がもう無い (招待一覧や別の端末で応じた・取り消された) なら、何度押しても同じく失敗するのでボタンを下げる
 		if (await isChatRoomInvitationGone(props.notification.invitation.room.id)) {
 			chatRoomInviteDone.value = true;
+			globalEvents.emit('chatRoomInvitationHandled', props.notification.invitation.room.id);
 		} else {
 			void os.alert({ type: 'error', text: i18n.ts.somethingHappened });
 		}
@@ -305,6 +308,18 @@ async function isChatRoomInvitationGone(roomId: string): Promise<boolean> {
 		// 断った・取り消された招待のルームは、メンバーでなければ見えない (NO_SUCH_ROOM)
 		return isApiError(err) && err.code === 'NO_SUCH_ROOM';
 	}
+}
+
+// 同じ招待の通知は別の一覧にも出ているので、どこかで応じたら他の一覧のボタンも下げる
+function onChatRoomInvitationHandled(roomId: string) {
+	if (props.notification.type === 'chatRoomInvitationReceived' && props.notification.invitation.room.id === roomId) chatRoomInviteDone.value = true;
+}
+
+if (props.notification.type === 'chatRoomInvitationReceived') {
+	globalEvents.on('chatRoomInvitationHandled', onChatRoomInvitationHandled);
+	onBeforeUnmount(() => {
+		globalEvents.off('chatRoomInvitationHandled', onChatRoomInvitationHandled);
+	});
 }
 
 const acceptChatRoomInvitation = () => respondToChatRoomInvitation('chat/rooms/join');

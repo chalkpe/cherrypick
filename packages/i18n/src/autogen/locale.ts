@@ -6979,9 +6979,45 @@ export interface Locale extends ILocale {
          */
         "kickMember": string;
         /**
-         * {name}さんをグループから外しますか？
+         * {name}さんを「{room}」から外しますか？このグループのメッセージは見られなくなり、戻るには再度招待が必要です。
          */
-        "kickMemberConfirm": ParameterizedString<"name">;
+        "kickMemberConfirm": ParameterizedString<"name" | "room">;
+        /**
+         * 「{name}」から退出しますか？このグループのメッセージは見られなくなり、戻るには再度招待が必要です。
+         */
+        "leaveRoomConfirm": ParameterizedString<"name">;
+        /**
+         * 「{name}」を削除しますか？すべてのメンバーからグループとメッセージが消え、元に戻せません。
+         */
+        "deleteRoomConfirm": ParameterizedString<"name">;
+        /**
+         * このメッセージが見つかりません。すでに削除された可能性があります。
+         */
+        "messageUnavailable": string;
+        /**
+         * 処理できませんでした。しばらくしてからもう一度お試しください。
+         */
+        "actionFailed": string;
+        /**
+         * このユーザーにはメッセージを送れません。
+         */
+        "cannotChatWithUser": string;
+        /**
+         * このユーザーは招待できません。
+         */
+        "cannotInviteUser": string;
+        /**
+         * このユーザーはすでにこのグループのメンバーです。
+         */
+        "alreadyMember": string;
+        /**
+         * このユーザーはすでに招待済みです。
+         */
+        "alreadyInvited": string;
+        /**
+         * このグループは満員です。
+         */
+        "roomIsFull": string;
         /**
          * このグループから退出しました。再参加するには招待が必要です。
          */

@@ -102,7 +102,7 @@ onBeforeUnmount(() => {
 async function del() {
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.deleteAreYouSure({ x: name_.value }),
+		text: i18n.tsx._chat.deleteRoomConfirm({ name: props.room.name }),
 	});
 	if (canceled) return;
 

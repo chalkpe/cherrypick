@@ -45,6 +45,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { onMounted, watch, ref, shallowRef, computed, nextTick, readonly, onBeforeUnmount, useId, useTemplateRef } from 'vue';
 import * as Misskey from 'cherrypick-js';
 //import insertTextAtCursor from 'insert-text-at-cursor';
+import { chatErrorText } from './chat-errors.js';
 import { formatTimeString } from '@/utility/format-time-string.js';
 import { selectFile } from '@/utility/drive.js';
 import * as os from '@/os.js';
@@ -252,7 +253,7 @@ function onChangeFile() {
 function showSendError(err: Error) {
 	console.error(err);
 	// フォームが無くなったのはルームが閉じたときで、その理由は別に知らせている
-	if (!formClosed) os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: err.message });
+	if (!formClosed) os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: chatErrorText(err) });
 }
 
 function send() {

@@ -23,14 +23,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 					:nyaize="'respect'"
 					:emojiUrls="message.emojis"
 					:enableEmojiMenu="true"
-					:enableEmojiMenuReaction="true"
+					:enableEmojiMenuReaction="canReact"
 				/>
 				<MkMediaList v-if="hasFiles" :mediaList="message.files" :user="message.fromUser"/>
 			</template>
 		</MkFukidashi>
 		<MkUrlPreview v-for="url in urls" :key="url" :url="url" style="margin: 8px 0;"/>
 		<div :class="[$style.footer, { [$style.groupedFooter]: !isLastInGroup }]">
-			<button class="_textButton" style="color: currentColor;" :aria-label="i18n.ts.menu" @click="showMenu"><i class="ti ti-dots-circle-horizontal"></i></button>
+			<button class="_textButton" :class="$style.menuButton" style="color: currentColor;" :aria-label="i18n.ts.menu" @click="showMenu"><i class="ti ti-dots-circle-horizontal"></i></button>
 			<MkTime :class="$style.time" :time="message.createdAt"/>
 			<span v-if="editedAt && !deletedAt" :class="$style.edited">{{ i18n.ts.edited }}</span>
 			<MkA v-if="isSearchResult && 'toRoom' in message && message.toRoom != null" :to="`/chat/room/${message.toRoomId}`">{{ message.toRoom.name }}</MkA>
@@ -67,6 +67,7 @@ import { url } from '@@/js/config.js';
 import { isLink } from '@@/js/is-link.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { NormalizedChatMessage } from './room.vue';
+import { chatErrorText } from './chat-errors.js';
 import { extractUrlFromMfm } from '@/utility/extract-url-from-mfm.js';
 import MkUrlPreview from '@/components/MkUrlPreview.vue';
 import { ensureSignin } from '@/i.js';
@@ -112,7 +113,8 @@ const deletedAt = computed(() => (props.message as NormalizedChatMessage).delete
 const hasFiles = computed(() => deletedAt.value == null && props.message.files.length > 0);
 const unmounted = ref(false);
 const isReadOnly = computed(() => props.roomArchived || ('toRoom' in props.message && props.message.toRoom?.isArchived === true));
-const canReact = computed(() => !unmounted.value && !deletedAt.value && !isReadOnly.value && $i.policies.chatAvailability === 'available');
+// 自分のメッセージにはリアクションできない。サーバーは NO_SUCH_MESSAGE で断る
+const canReact = computed(() => !isMe.value && !unmounted.value && !deletedAt.value && !isReadOnly.value && $i.policies.chatAvailability === 'available');
 onBeforeUnmount(() => { unmounted.value = true; });
 // 検索結果は前後のメッセージと関係なく並ぶのでまとめない
 const isFirstInGroup = computed(() => props.isSearchResult === true || props.firstInGroup);
@@ -131,7 +133,7 @@ function sendReaction(endpoint: 'chat/messages/react' | 'chat/messages/unreact',
 		messageId: props.message.id,
 		reaction: reaction,
 	}).catch(err => {
-		os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: err.message });
+		os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: chatErrorText(err) });
 	});
 }
 
@@ -235,7 +237,7 @@ function getMenu(): MenuItem[] {
 				misskeyApi('chat/messages/delete', {
 					messageId: props.message.id,
 				}).catch(err => {
-					os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: err.message });
+					os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: chatErrorText(err) });
 				});
 			},
 		});
@@ -381,6 +383,17 @@ function getMenu(): MenuItem[] {
 
 	.body:focus-within & {
 		display: flex;
+	}
+}
+
+.menuButton {
+	position: relative;
+
+	// アイコンは小さいままで、押せる範囲だけを広げる
+	&::before {
+		content: '';
+		position: absolute;
+		inset: -8px -10px;
 	}
 }
 

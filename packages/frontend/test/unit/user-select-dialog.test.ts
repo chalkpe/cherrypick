@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/vue';
 import { nextTick } from 'vue';
 
@@ -169,4 +169,72 @@ test.each(['localOnly', 'federationNone'])('does not resolve a remote account wi
 	expect(screen.queryByRole('button', { name: i18n.ts.lookup })).toBeNull();
 	expect(mocks.api).not.toHaveBeenCalledWith('users/show', expect.objectContaining({ username: 'alice' }));
 	expect(mocks.api).not.toHaveBeenCalledWith('users/search-by-username-and-host', expect.objectContaining({ host: 'remote.example' }));
+});
+
+describe('a user on this server who has not written a note yet', () => {
+	const haru = { id: 'haru', username: 'haru', host: null, name: 'Haru' };
+	const remoteHaru = { id: 'remote-haru', username: 'haru', host: 'remote.example', name: 'Remote Haru' };
+
+	function answer(searched: unknown[], found: unknown) {
+		mocks.api.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'users/search-by-username-and-host') return searched;
+			if (endpoint === 'users/show' && 'username' in params) {
+				if (found == null) throw new Error('No such user.');
+				return found;
+			}
+			return [];
+		});
+	}
+
+	const type = (text: string) => fireEvent.update(screen.getByLabelText(i18n.ts.username), text);
+
+	test('is found by the full username, though the search leaves them out', async () => {
+		answer([], haru);
+		renderDialog();
+
+		await type('haru');
+
+		expect(await screen.findByText('Haru')).toBeTruthy();
+		expect(mocks.api).toHaveBeenCalledWith('users/show', { username: 'haru', host: null });
+	});
+
+	test('comes before a user of the same name elsewhere', async () => {
+		answer([remoteHaru], haru);
+		const { container } = renderDialog();
+
+		await type('haru');
+
+		await screen.findByText('Haru');
+		expect(container.textContent!.indexOf('Haru')).toBeLessThan(container.textContent!.indexOf('Remote Haru'));
+	});
+
+	test('is not asked for again when the search already found them', async () => {
+		answer([haru], haru);
+		renderDialog();
+
+		await type('HARU');
+
+		await screen.findByText('Haru');
+		expect(mocks.api).not.toHaveBeenCalledWith('users/show', expect.objectContaining({ username: 'HARU' }));
+	});
+
+	test('still reads as nobody when no such user exists', async () => {
+		answer([], null);
+		renderDialog();
+
+		await type('nobody');
+
+		await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('users/show', { username: 'nobody', host: null }));
+		expect(await screen.findByText(i18n.ts.noUsers)).toBeTruthy();
+	});
+
+	test('is not looked for when another server was named', async () => {
+		answer([], haru);
+		renderDialog();
+
+		await type('haru@remote.example');
+
+		await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('users/search-by-username-and-host', expect.objectContaining({ host: 'remote.example' })));
+		expect(mocks.api).not.toHaveBeenCalledWith('users/show', expect.objectContaining({ username: 'haru' }));
+	});
 });

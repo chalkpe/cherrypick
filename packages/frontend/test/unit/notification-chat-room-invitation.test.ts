@@ -17,6 +17,7 @@ vi.mock('@/components/MkReactionIcon.vue', () => ({ default: {} }));
 import { alert } from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import MkNotification from '@/components/MkNotification.vue';
+import { globalEvents } from '@/events.js';
 
 const stubs = {
 	MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' },
@@ -91,6 +92,31 @@ test('rejects the invitation from the notification', async () => {
 	await flushPromises();
 	expect(api).toHaveBeenCalledWith('chat/rooms/invitations/reject', { roomId: 'room1' });
 	expect(screen.queryAllByRole('button')).toHaveLength(0);
+});
+
+test('drops the actions when the same invitation is answered in another list', async () => {
+	renderNotification(true);
+	expect(screen.queryAllByRole('button')).toHaveLength(2);
+
+	globalEvents.emit('chatRoomInvitationHandled', 'another room');
+	await flushPromises();
+	expect(screen.queryAllByRole('button')).toHaveLength(2);
+
+	globalEvents.emit('chatRoomInvitationHandled', 'room1');
+	await flushPromises();
+	expect(screen.queryAllByRole('button')).toHaveLength(0);
+});
+
+test.each([0, 1])('tells the other lists when action %i answers the invitation', async (action) => {
+	const handled = vi.fn();
+	globalEvents.on('chatRoomInvitationHandled', handled);
+	renderNotification(true);
+
+	await fireEvent.click(screen.getAllByRole('button')[action]);
+	await flushPromises();
+	globalEvents.off('chatRoomInvitationHandled', handled);
+
+	expect(handled).toHaveBeenCalledExactlyOnceWith('room1');
 });
 
 test('does not offer actions in the compact notification view', () => {

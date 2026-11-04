@@ -80,7 +80,7 @@ async function kickMember(membership: Misskey.entities.ChatRoomMembership) {
 	try {
 		const { canceled } = await os.confirm({
 			type: 'warning',
-			text: i18n.tsx._chat.kickMemberConfirm({ name: membership.user?.name || membership.user?.username || membership.userId }),
+			text: i18n.tsx._chat.kickMemberConfirm({ name: membership.user?.name || membership.user?.username || membership.userId, room: props.room.name }),
 		});
 		if (canceled) return;
 		await os.apiWithDialog('chat/rooms/kick', { roomId: props.room.id, userId: membership.userId });
