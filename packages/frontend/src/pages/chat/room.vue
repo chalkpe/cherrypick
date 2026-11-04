@@ -307,7 +307,7 @@ async function initialize() {
 	if (props.userId) {
 		const [u, m] = await Promise.all([
 			misskeyApi('users/show', { userId: props.userId }),
-			misskeyApi('chat/messages/user-timeline', { userId: props.userId, limit: LIMIT }),
+			misskeyApi('chat/messages/user-timeline', { userId: props.userId, limit: LIMIT, includeDeleted: true }),
 		]);
 
 		user.value = u;
@@ -328,7 +328,7 @@ async function initialize() {
 	} else if (props.roomId) {
 		const [rResult, mResult] = await Promise.allSettled([
 			misskeyApi('chat/rooms/show', { roomId: props.roomId }),
-			misskeyApi('chat/messages/room-timeline', { roomId: props.roomId, limit: LIMIT }),
+			misskeyApi('chat/messages/room-timeline', { roomId: props.roomId, limit: LIMIT, includeDeleted: true }),
 		]);
 
 		if (rResult.status === 'rejected') {
@@ -432,10 +432,12 @@ async function fetchMore() {
 		userId: user.value!.id,
 		limit: LIMIT,
 		untilId: messages.value[messages.value.length - 1].id,
+		includeDeleted: true,
 	}) : await misskeyApi('chat/messages/room-timeline', {
 		roomId: room.value!.id,
 		limit: LIMIT,
 		untilId: messages.value[messages.value.length - 1].id,
+		includeDeleted: true,
 	});
 
 	messages.value.push(...newMessages.map(x => normalizeMessage(x)));
@@ -610,8 +612,8 @@ async function catchUp() {
 		[r, m] = await Promise.all([
 			props.roomId ? misskeyApi('chat/rooms/show', { roomId: props.roomId }) : null,
 			props.roomId
-				? misskeyApi('chat/messages/room-timeline', { roomId: props.roomId, limit: LIMIT })
-				: misskeyApi('chat/messages/user-timeline', { userId: props.userId!, limit: LIMIT }),
+				? misskeyApi('chat/messages/room-timeline', { roomId: props.roomId, limit: LIMIT, includeDeleted: true })
+				: misskeyApi('chat/messages/user-timeline', { userId: props.userId!, limit: LIMIT, includeDeleted: true }),
 		]);
 	} catch (err) {
 		// 一時的な失敗なら、次の機会まで今の表示のままにする

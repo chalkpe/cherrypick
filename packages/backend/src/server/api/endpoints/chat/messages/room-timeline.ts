@@ -46,6 +46,11 @@ export const paramDef = {
 		sinceDate: { type: 'integer' },
 		untilDate: { type: 'integer' },
 		roomId: { type: 'string', format: 'misskey:id' },
+		includeDeleted: {
+			type: 'boolean',
+			default: false,
+			description: 'Whether to include a marker with `deletedAt` set for each deleted message, in the place of that message.',
+		},
 	},
 	required: ['roomId'],
 } as const;
@@ -72,7 +77,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.noSuchRoom);
 			}
 
-			const messages = await this.chatService.roomTimeline(room.id, ps.limit, sinceId, untilId);
+			const messages = await this.chatService.roomTimeline(room.id, ps.limit, sinceId, untilId, ps.includeDeleted);
 
 			this.chatService.readRoomChatMessage(me.id, room.id);
 

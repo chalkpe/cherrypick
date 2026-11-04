@@ -5,6 +5,7 @@
 
 import { describe, expect, test, vi } from 'vitest';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
+import { ChatService } from '@/core/ChatService.js';
 
 function createService() {
 	return new ChatEntityService(
@@ -43,5 +44,38 @@ describe('chat message lifecycle packing', () => {
 		expect(message.file).toBeNull();
 		expect(message.files).toEqual([]);
 		expect(message.reactions).toEqual([]);
+	});
+});
+
+describe('deleted messages in a timeline', () => {
+	const hidden = 'message.deletedAt IS NULL';
+
+	function createChatService() {
+		const conditions: string[] = [];
+		const builder = {
+			andWhere(condition: unknown) { if (typeof condition === 'string') conditions.push(condition); return this; },
+			take() { return this; },
+			setParameter() { return this; },
+			leftJoinAndSelect() { return this; },
+			getMany: async () => [],
+		};
+		const service = Object.assign(Object.create(ChatService.prototype), {
+			queryService: { makePaginationQuery: () => builder },
+			chatMessagesRepository: { createQueryBuilder: () => builder },
+		}) as ChatService;
+		return { service, conditions };
+	}
+
+	test.each([
+		['a conversation', (service: ChatService, includeDeleted?: boolean) => service.userTimeline('me', 'other', 10, null, null, includeDeleted)],
+		['a room', (service: ChatService, includeDeleted?: boolean) => service.roomTimeline('r1', 10, null, null, includeDeleted)],
+	])('are left out of %s for clients that do not know the marker, unless asked for', async (_name, run) => {
+		const plain = createChatService();
+		await run(plain.service);
+		expect(plain.conditions).toContain(hidden);
+
+		const asked = createChatService();
+		await run(asked.service, true);
+		expect(asked.conditions).not.toContain(hidden);
 	});
 });

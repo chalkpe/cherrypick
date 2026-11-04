@@ -159,6 +159,32 @@ describe('chat/messages/update', () => {
 		assert.deepStrictEqual(history.body.map(message => message.id), [kept.body.id]);
 	});
 
+	test('a timeline shows a deleted message only to a client that asks for the marker', async () => {
+		const dana = await signup({ username: 'dana' });
+		await api('i/update', { chatScope: 'everyone' }, dana);
+		const kept = await api('chat/messages/create-to-user', { toUserId: dana.id, text: 'kept' }, alice);
+		const removed = await api('chat/messages/create-to-user', { toUserId: dana.id, text: 'removed' }, alice);
+		assert.strictEqual((await api('chat/messages/delete', { messageId: removed.body.id }, alice)).status, 204);
+
+		const plain = await api('chat/messages/user-timeline', { userId: alice.id }, dana);
+		assert.deepStrictEqual(plain.body.map(message => message.id), [kept.body.id]);
+
+		const marked = await api('chat/messages/user-timeline', { userId: alice.id, includeDeleted: true }, dana);
+		assert.deepStrictEqual(marked.body.map(message => message.id), [removed.body.id, kept.body.id]);
+		assert.strictEqual(marked.body[0].text, null);
+		assert.notStrictEqual(marked.body[0].deletedAt, null);
+
+		const room = await api('chat/rooms/create', { name: 'markers' }, alice);
+		const roomKept = await api('chat/messages/create-to-room', { toRoomId: room.body.id, text: 'kept' }, alice);
+		const roomRemoved = await api('chat/messages/create-to-room', { toRoomId: room.body.id, text: 'removed' }, alice);
+		assert.strictEqual((await api('chat/messages/delete', { messageId: roomRemoved.body.id }, alice)).status, 204);
+
+		const plainRoom = await api('chat/messages/room-timeline', { roomId: room.body.id }, alice);
+		assert.deepStrictEqual(plainRoom.body.map(message => message.id), [roomKept.body.id]);
+		const markedRoom = await api('chat/messages/room-timeline', { roomId: room.body.id, includeDeleted: true }, alice);
+		assert.deepStrictEqual(markedRoom.body.map(message => message.id), [roomRemoved.body.id, roomKept.body.id]);
+	});
+
 	test('a user who left a room cannot edit their old message, and the room list skips deleted messages', async () => {
 		const room = await api('chat/rooms/create', { name: 'room' }, alice);
 		assert.strictEqual(room.status, 200, JSON.stringify(room.body));

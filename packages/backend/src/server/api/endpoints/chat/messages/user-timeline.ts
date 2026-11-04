@@ -47,6 +47,11 @@ export const paramDef = {
 		sinceDate: { type: 'integer' },
 		untilDate: { type: 'integer' },
 		userId: { type: 'string', format: 'misskey:id' },
+		includeDeleted: {
+			type: 'boolean',
+			default: false,
+			description: 'Whether to include a marker with `deletedAt` set for each deleted message, in the place of that message.',
+		},
 	},
 	required: ['userId'],
 } as const;
@@ -70,7 +75,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw err;
 			});
 
-			const messages = await this.chatService.userTimeline(me.id, other.id, ps.limit, sinceId, untilId);
+			const messages = await this.chatService.userTimeline(me.id, other.id, ps.limit, sinceId, untilId, ps.includeDeleted);
 
 			this.chatService.readUserChatMessage(me.id, other.id);
 

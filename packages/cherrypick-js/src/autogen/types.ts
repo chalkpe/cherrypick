@@ -18750,6 +18750,11 @@ export interface operations {
                     untilDate?: number;
                     /** Format: misskey:id */
                     roomId: string;
+                    /**
+                     * @description Whether to include a marker with `deletedAt` set for each deleted message, in the place of that message.
+                     * @default false
+                     */
+                    includeDeleted?: boolean;
                 };
             };
         };
@@ -19119,6 +19124,11 @@ export interface operations {
                     untilDate?: number;
                     /** Format: misskey:id */
                     userId: string;
+                    /**
+                     * @description Whether to include a marker with `deletedAt` set for each deleted message, in the place of that message.
+                     * @default false
+                     */
+                    includeDeleted?: boolean;
                 };
             };
         };

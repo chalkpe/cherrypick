@@ -257,6 +257,19 @@ describe('following the newest message', () => {
 		expect(scrollTo).not.toHaveBeenCalled();
 	});
 
+	test.each(['room', 'user'] as const)('asks for the marker of a deleted message, in a %s and in what loads later', async (target) => {
+		const endpoint = target === 'room' ? 'chat/messages/room-timeline' : 'chat/messages/user-timeline';
+		const { container } = await renderRoom(target);
+		mocks.timeline = [message('m80', 'alice', 0)];
+
+		await fireEvent.click(moreButton(container));
+		await flush();
+
+		const requests = vi.mocked(misskeyApi).mock.calls.filter(([called]) => called === endpoint).map(([, params]) => params);
+		expect(requests.length).toBeGreaterThanOrEqual(2);
+		expect(requests.every(params => (params as { includeDeleted?: boolean }).includeDeleted === true)).toBe(true);
+	});
+
 	test('stays in place when earlier messages load', async () => {
 		const { container } = await renderRoom();
 		const scrollTo = positionScroller(container, -167);

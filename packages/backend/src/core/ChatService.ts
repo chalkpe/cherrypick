@@ -687,7 +687,7 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async userTimeline(meId: MiUser['id'], otherId: MiUser['id'], limit: number, sinceId?: MiChatMessage['id'] | null, untilId?: MiChatMessage['id'] | null) {
+	public async userTimeline(meId: MiUser['id'], otherId: MiUser['id'], limit: number, sinceId?: MiChatMessage['id'] | null, untilId?: MiChatMessage['id'] | null, includeDeleted = false) {
 		const query = this.queryService.makePaginationQuery(this.chatMessagesRepository.createQueryBuilder('message'), sinceId, untilId)
 			.andWhere(new Brackets(qb => {
 				qb
@@ -705,6 +705,7 @@ export class ChatService {
 			.setParameter('meId', meId)
 			.setParameter('otherId', otherId);
 		this.excludeSuspendedAuthors(query);
+		if (!includeDeleted) query.andWhere('message.deletedAt IS NULL');
 
 		const messages = await query.take(limit).getMany();
 
@@ -712,11 +713,12 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async roomTimeline(roomId: MiChatRoom['id'], limit: number, sinceId?: MiChatMessage['id'] | null, untilId?: MiChatMessage['id'] | null) {
+	public async roomTimeline(roomId: MiChatRoom['id'], limit: number, sinceId?: MiChatMessage['id'] | null, untilId?: MiChatMessage['id'] | null, includeDeleted = false) {
 		const query = this.queryService.makePaginationQuery(this.chatMessagesRepository.createQueryBuilder('message'), sinceId, untilId)
 			.andWhere('message.toRoomId = :roomId', { roomId })
 			.leftJoinAndSelect('message.fromUser', 'fromUser');
 		this.excludeSuspendedAuthors(query);
+		if (!includeDeleted) query.andWhere('message.deletedAt IS NULL');
 
 		const messages = await query.take(limit).getMany();
 
