@@ -1203,6 +1203,7 @@ cannotUploadBecauseInappropriate: "不適切な内容を含む可能性がある
 cannotUploadBecauseNoFreeSpace: "ドライブの空き容量が無いためアップロードできません。"
 cannotUploadBecauseExceedsFileSizeLimit: "ファイルサイズの制限を超えているためアップロードできません。"
 cannotUploadBecauseUnallowedFileType: "許可されていないファイル種別のためアップロードできません。"
+cannotUploadBecauseNetworkError: "サーバーに接続できないためアップロードできません。ネットワークの状態を確認してから、もう一度お試しください。"
 beta: "ベータ"
 enableAutoSensitive: "自動センシティブ判定"
 enableAutoSensitiveDescription: "利用可能な場合は、機械学習を利用して自動でメディアにセンシティブフラグを設定します。この機能をオフにしても、サーバーによっては自動で設定されることがあります。"
@@ -1751,6 +1752,7 @@ _chat:
   kickMember: "グループから外す"
   kickMemberConfirm: "{name}さんをグループから外しますか？"
   removedFromRoom: "このグループから退出しました。再参加するには招待が必要です。"
+  roomUnavailable: "このグループを開けません。削除されたか、参加していないグループです。"
   invitationCancelAreYouSure: "{x}さんに送信された招待をキャンセルしますか？"
   cancelInvitationTo: "{x}さんへの招待をキャンセル"
 

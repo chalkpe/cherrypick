@@ -1192,6 +1192,7 @@ cannotUploadBecauseInappropriate: "This file could not be uploaded because parts
 cannotUploadBecauseNoFreeSpace: "Upload failed due to lack of Drive capacity."
 cannotUploadBecauseExceedsFileSizeLimit: "This file cannot be uploaded as it exceeds the file size limit."
 cannotUploadBecauseUnallowedFileType: "Unable to upload due to unauthorized file type."
+cannotUploadBecauseNetworkError: "Unable to upload because the server could not be reached. Check your connection and try again."
 beta: "Beta"
 enableAutoSensitive: "Automatic marking as sensitive"
 enableAutoSensitiveDescription: "Allows automatic detection and marking of sensitive media through Machine Learning where possible. Even if this option is disabled, it may be enabled instance-wide."
@@ -1741,6 +1742,7 @@ _chat:
   kickMember: "Remove from room"
   kickMemberConfirm: "Remove {name} from the room?"
   removedFromRoom: "You have left this room. An invitation is required to rejoin."
+  roomUnavailable: "This room cannot be opened. It was deleted, or you are not a member."
   invitationCancelAreYouSure: "Are you sure you want to cancel the invitation sent to {x}?"
   cancelInvitationTo: "Cancel the invitation sent to {x}"
 _emojiPalette:

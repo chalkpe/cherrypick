@@ -30,10 +30,12 @@ const mocks = vi.hoisted(() => {
 		roomShowFails: false,
 		roomInvitationExists: false,
 		roomShowError: null as Error | null,
+		roomShowGate: null as Promise<void> | null,
 		timelineError: null as Error | null,
 		streamOn: vi.fn(),
 		streamOff: vi.fn(),
 		routerPush: vi.fn(),
+		routerReplace: vi.fn(),
 		alert: vi.fn(),
 		confirm: vi.fn(),
 		popupMenu: vi.fn(),
@@ -48,6 +50,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@/utility/misskey-api.js', () => ({
 	misskeyApi: vi.fn(async (endpoint: string) => {
+		if (endpoint === 'chat/rooms/show' && mocks.roomShowGate != null) await mocks.roomShowGate;
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowFails) throw new Error('No such room.');
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowError != null) throw mocks.roomShowError;
 		if (endpoint === 'chat/messages/room-timeline' && mocks.timelineError != null) throw mocks.timelineError;
@@ -61,7 +64,7 @@ vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: moc
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog, selectUser: mocks.selectUser }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, useListener: vi.fn() }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace, useListener: vi.fn() }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // 通話や入力欄は吹き出しのまとまりと関係ないので空にする
 vi.mock('@/composables/use-chat-room-voice-call.js', async () => {
@@ -181,10 +184,12 @@ beforeEach(() => {
 	mocks.roomShowFails = false;
 	mocks.roomInvitationExists = false;
 	mocks.roomShowError = null;
+	mocks.roomShowGate = null;
 	mocks.timelineError = null;
 	mocks.streamOn.mockReset();
 	mocks.streamOff.mockReset();
 	mocks.routerPush.mockReset();
+	mocks.routerReplace.mockReset();
 	mocks.alert.mockReset();
 	mocks.confirm.mockReset().mockResolvedValue({ canceled: false });
 	mocks.popupMenu.mockReset();
@@ -197,6 +202,88 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+});
+
+describe('following the newest message', () => {
+	const FULL_PAGE = 20;
+
+	// column-reverse: scrollTop is 0 at the newest message and negative above it.
+	function positionScroller(container: Element, scrollTop: number) {
+		const scroller = container.querySelector<HTMLElement>('[style*="overflow-y"]')!;
+		Object.defineProperty(scroller, 'scrollTop', { value: scrollTop, configurable: true });
+		const scrollTo = vi.fn();
+		scroller.scrollTo = scrollTo as typeof scroller.scrollTo;
+		return scrollTo;
+	}
+
+	const moreButton = (container: Element) => [...container.querySelectorAll('button')].find(button => button.textContent.includes(i18n.ts.loadMore))!;
+
+	beforeEach(() => {
+		mocks.timeline = Array.from({ length: FULL_PAGE }, (_, i) => message(`m${100 - i}`, 'alice', (FULL_PAGE - i) * MINUTE));
+	});
+
+	test('follows a new message near the newest one', async () => {
+		const { container } = await renderRoom();
+		const scrollTo = positionScroller(container, -100);
+
+		mocks.channel.emit('message', message('m101', 'alice', 100 * MINUTE));
+		await flush();
+		await flush();
+
+		expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'instant' });
+	});
+
+	test('leaves someone reading far above alone', async () => {
+		const { container } = await renderRoom();
+		const scrollTo = positionScroller(container, -1000);
+
+		mocks.channel.emit('message', message('m101', 'alice', 100 * MINUTE));
+		await flush();
+		await flush();
+
+		expect(scrollTo).not.toHaveBeenCalled();
+	});
+
+	// The press draws a ripple inside the button. Scrolling for it moved the button away before the release, so no click happened.
+	test('does not move a button while it is being pressed', async () => {
+		const { container } = await renderRoom();
+		const scrollTo = positionScroller(container, -167);
+
+		await fireEvent.mouseDown(moreButton(container));
+		await flush();
+		await flush();
+
+		expect(container.querySelector('[class*="ripple"] > *')).not.toBeNull();
+		expect(scrollTo).not.toHaveBeenCalled();
+	});
+
+	test('stays in place when earlier messages load', async () => {
+		const { container } = await renderRoom();
+		const scrollTo = positionScroller(container, -167);
+		mocks.timeline = [message('m80', 'alice', 0)];
+
+		await fireEvent.click(moreButton(container));
+		await flush();
+		await flush();
+
+		expect(container.querySelector('[data-id="m80"]')).not.toBeNull();
+		expect(scrollTo).not.toHaveBeenCalled();
+	});
+
+	test('still follows the first new message after earlier ones loaded', async () => {
+		const { container } = await renderRoom();
+		const scrollTo = positionScroller(container, -100);
+		mocks.timeline = [message('m80', 'alice', 0)];
+		await fireEvent.click(moreButton(container));
+		await flush();
+		await flush();
+
+		mocks.channel.emit('message', message('m101', 'alice', 100 * MINUTE));
+		await flush();
+		await flush();
+
+		expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'instant' });
+	});
 });
 
 describe('archived rooms on the room page', () => {
@@ -230,7 +317,7 @@ test('a removed member immediately loses the composer and returns to the chat li
 	mocks.channel.emit('membershipEnded', { userId: 'me' });
 	await flush();
 	expect(container.querySelector('[data-testid="form"]')).toBeNull();
-	expect(mocks.routerPush).toHaveBeenCalledWith('/chat');
+	expect(mocks.routerReplace).toHaveBeenCalledWith('/chat');
 });
 
 describe('leaving a room from the menu', () => {
@@ -397,7 +484,7 @@ describe('after the stream reconnects', () => {
 
 		expect(form(container)).toBeNull();
 		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.removedFromRoom });
-		expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
 	});
 
 	test('says so when the room was deleted while the stream was down', async () => {
@@ -408,7 +495,7 @@ describe('after the stream reconnects', () => {
 
 		expect(form(container)).toBeNull();
 		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
-		expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
 	});
 
 	test('says so when the timeline answers first that the room is gone and the room was deleted', async () => {
@@ -428,7 +515,25 @@ describe('after the stream reconnects', () => {
 		await renderRoom();
 
 		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
-		expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('explains a room that cannot be opened, which may be gone or may just not be theirs', async () => {
+		mocks.roomShowError = Object.assign(new Error('No such room.'), { code: 'NO_SUCH_ROOM' });
+
+		await renderRoom();
+
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomUnavailable });
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('keeps reporting a failure to ask as an error', async () => {
+		mocks.roomShowError = new Error('Failed to fetch');
+
+		await renderRoom();
+
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'error', text: i18n.ts.somethingHappened });
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
 	});
 
 	test('offers the invitation of someone removed and invited again in the meantime', async () => {
@@ -534,7 +639,7 @@ test('another member leaving does not close my room', async () => {
 	mocks.channel.emit('membershipEnded', { userId: 'someone-else' });
 	await flush();
 	expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
-	expect(mocks.routerPush).not.toHaveBeenCalled();
+	expect(mocks.routerReplace).not.toHaveBeenCalled();
 });
 
 describe('a deleted room', () => {
@@ -543,7 +648,7 @@ describe('a deleted room', () => {
 		mocks.channel.emit('roomDeleted', undefined);
 		await flush();
 		expect(alert).toHaveBeenCalledWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
-		expect(mocks.routerPush).toHaveBeenCalledWith('/chat');
+		expect(mocks.routerReplace).toHaveBeenCalledWith('/chat');
 		expect(container.querySelector('[data-testid="form"]')).toBeNull();
 	});
 
@@ -566,7 +671,7 @@ describe('a deleted room', () => {
 		await flush();
 
 		expect(alert).not.toHaveBeenCalled();
-		expect(mocks.routerPush).not.toHaveBeenCalled();
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
 		expect(dispose).toHaveBeenCalled();
 
 		// 戻ってきたときに初めて知らせる
@@ -574,7 +679,7 @@ describe('a deleted room', () => {
 		await flush();
 		expect(alert).toHaveBeenCalledWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
 		expect(alert).toHaveBeenCalledTimes(1);
-		expect(mocks.routerPush).toHaveBeenCalledWith('/chat');
+		expect(mocks.routerReplace).toHaveBeenCalledWith('/chat');
 	});
 
 	test('does not announce the deletion to the member who is deleting it', async () => {
@@ -623,7 +728,39 @@ test('returning to a cached room after being removed explains why instead of sho
 
 	expect(alert).toHaveBeenCalledWith({ type: 'info', text: i18n.ts._chat.removedFromRoom });
 	expect(alert).toHaveBeenCalledTimes(1);
-	expect(mocks.routerPush).toHaveBeenCalledWith('/chat');
+	expect(mocks.routerReplace).toHaveBeenCalledWith('/chat');
+});
+
+test('someone who moved on before the room answered is told when they return, not pulled away', async () => {
+	let answer!: () => void;
+	mocks.roomShowGate = new Promise<void>(resolve => { answer = resolve; });
+	mocks.roomShowError = Object.assign(new Error('No such room.'), { code: 'NO_SUCH_ROOM' });
+	const visible = ref(true);
+	const page = defineComponent({
+		setup() {
+			provideMetadataReceiver(() => {});
+			return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+		},
+	});
+	render(page, { global: { stubs, directives: { tooltip: {} } } });
+	await flush();
+	visible.value = false;
+	await flush();
+
+	answer();
+	await flush();
+	await flush();
+
+	expect(alert).not.toHaveBeenCalled();
+	expect(mocks.routerReplace).not.toHaveBeenCalled();
+
+	mocks.roomShowGate = null;
+	visible.value = true;
+	await flush();
+	await flush();
+
+	expect(alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomUnavailable });
+	expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
 });
 
 test('archiving a room ends an edit in progress, so unarchiving does not reopen it', async () => {

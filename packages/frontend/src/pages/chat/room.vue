@@ -256,11 +256,23 @@ const SCROLL_HEAD_THRESHOLD = 200;
 
 // column-reverseなので本来はスクロール位置の最下部への追従は不要なはずだが、おそらくブラウザのバグにより、最下部にスクロールした状態でも追従されない場合がある(スクロール位置が少数になることがあるのが関わっていそう)
 // そのため補助としてMutationObserverを使って追従を行う
+// 追従するのは最新のメッセージが変わったときだけ。ボタンを押したときの波紋や古いメッセージの読み込みでも DOM は変わるが、
+// そこで動かすと押している途中のボタンが逃げてしまい、押せなくなる
+let followedMessageId: NormalizedChatMessage['id'] | undefined;
+
+watch(timelineEl, () => {
+	followedMessageId = messages.value[0]?.id;
+});
+
 useMutationObserver(timelineEl, {
 	subtree: true,
 	childList: true,
 	attributes: false,
 }, () => {
+	const newestMessageId = messages.value[0]?.id;
+	if (newestMessageId === followedMessageId) return;
+	followedMessageId = newestMessageId;
+
 	const scrollContainer = getScrollContainer(timelineEl.value)!;
 	// column-reverseなのでscrollTopは負になる
 	if (-scrollContainer.scrollTop < SCROLL_HEAD_THRESHOLD) {
@@ -320,11 +332,15 @@ async function initialize() {
 		]);
 
 		if (rResult.status === 'rejected') {
-			if ((rResult.reason as Misskey.api.APIError | null | undefined)?.code === 'ROOM_DELETED') {
+			const code = (rResult.reason as Misskey.api.APIError | null | undefined)?.code;
+			if (code === 'ROOM_DELETED') {
 				notifyRoomClosed(i18n.ts._chat.roomDeleted);
 			} else if (membershipEnded.value) {
 				// 別のページを見ているあいだに外された
 				notifyRoomClosed(i18n.ts._chat.removedFromRoom);
+			} else if (code === 'NO_SUCH_ROOM') {
+				// 外されたあとの削除はこのサーバーに届かないことがあり、削除されたのか外されただけなのかは分からない
+				notifyRoomClosed(i18n.ts._chat.roomUnavailable);
 			} else {
 				os.alert({
 					type: 'error',
@@ -543,8 +559,11 @@ function onRoomDeleted() {
 }
 
 function notifyRoomClosed(text: string) {
+	// 別のページへ移ったあとで分かったときは、戻ってきたときに確かめ直して知らせる
+	if (!isActivated) return;
 	os.alert({ type: 'info', text });
-	router.push('/chat');
+	// 履歴に残すと、戻るたびにこの案内へ連れ戻されてしまう
+	router.replace('/chat');
 }
 
 function closeRoom() {

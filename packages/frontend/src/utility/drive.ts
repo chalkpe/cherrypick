@@ -126,6 +126,16 @@ export function uploadFile(file: File | Blob, options: {
 			resolve(driveFile);
 		}) as (ev: ProgressEvent<EventTarget>) => void;
 
+		// サーバーに届かなかったときは onload が呼ばれない。ここで終わらせないと、アップロード中のまま止まってしまう
+		xhr.onerror = () => {
+			os.alert({
+				type: 'error',
+				title: i18n.ts.failedToUpload,
+				text: i18n.ts.cannotUploadBecauseNetworkError,
+			});
+			reject();
+		};
+
 		if (options.onProgress) {
 			xhr.upload.onprogress = ev => {
 				if (ev.lengthComputable && options.onProgress != null) {

@@ -399,6 +399,8 @@ onBeforeUnmount(() => {
 	min-width: 100%;
 	max-width: 100%;
 	min-height: 80px;
+	// 長く書いても、読んでいるメッセージとボタンが見えるようにする
+	max-height: min(40vh, 240px);
 	margin: 0;
 	padding: 16px 16px 0 16px;
 	resize: none;

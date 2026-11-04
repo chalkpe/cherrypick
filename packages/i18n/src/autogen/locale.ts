@@ -4837,6 +4837,10 @@ export interface Locale extends ILocale {
      */
     "cannotUploadBecauseUnallowedFileType": string;
     /**
+     * サーバーに接続できないためアップロードできません。ネットワークの状態を確認してから、もう一度お試しください。
+     */
+    "cannotUploadBecauseNetworkError": string;
+    /**
      * ベータ
      */
     "beta": string;
@@ -6982,6 +6986,10 @@ export interface Locale extends ILocale {
          * このグループから退出しました。再参加するには招待が必要です。
          */
         "removedFromRoom": string;
+        /**
+         * このグループを開けません。削除されたか、参加していないグループです。
+         */
+        "roomUnavailable": string;
         /**
          * {x}さんに送信された招待をキャンセルしますか？
          */

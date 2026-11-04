@@ -1195,6 +1195,7 @@ cannotUploadBecauseInappropriate: "이 파일은 부적절한 내용을 포함�
 cannotUploadBecauseNoFreeSpace: "드라이브에 용량이 부족해서 업로드할 수 없었어요.."
 cannotUploadBecauseExceedsFileSizeLimit: "파일 크기가 너무 크기 때문에 업로드할 수 없어요!"
 cannotUploadBecauseUnallowedFileType: "이 파일은 허용되지 않은 유형의 파일이므로 업로드할 수 없어요."
+cannotUploadBecauseNetworkError: "서버에 연결하지 못해 업로드할 수 없어요. 네트워크 상태를 확인하고 다시 시도해 주세요."
 beta: "베타"
 enableAutoSensitive: "자동으로 민감한 미디어 탐지"
 enableAutoSensitiveDescription: "사용 가능한 경우, 기계학습을 통해 자동으로 미디어에 NSFW를 설정할 거예요. 이 기능을 해제하더라도, 서버 정책에 따라 자동으로 설정될 수 있어요."
@@ -1746,6 +1747,7 @@ _chat:
   kickMember: "그룹에서 내보내기"
   kickMemberConfirm: "{name}님을 그룹에서 내보낼까요?"
   removedFromRoom: "이 그룹에서 나갔어요. 다시 참여하려면 초대가 필요해요."
+  roomUnavailable: "이 그룹을 열 수 없어요. 삭제되었거나 참여 중인 그룹이 아니에요."
   invitationCancelAreYouSure: "{x}님에게 보낸 초대를 취소할까요?"
   cancelInvitationTo: "{x}님에게 보낸 초대 취소"
 _emojiPalette:
