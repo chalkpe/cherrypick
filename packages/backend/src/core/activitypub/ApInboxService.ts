@@ -398,6 +398,11 @@ export class ApInboxService {
 			return 'skip: room not found';
 		}
 
+		if (activity.published != null) {
+			const pending = await this.chatRoomInvitationsRepository.findOneBy({ roomId: room.id, userId: actor.id });
+			if (pending != null && this.answersEarlierInvitation(activity, pending)) return 'skip: this answers an earlier invitation';
+		}
+
 		// A leave that overtook this Accept, by the clock of the same server. The invitation is used up either way.
 		const lastStated = published != null ? await this.chatRosterService.lastMemberAt(room.id, actor.id) : null;
 		const alreadyLeft = published != null && lastStated != null && published <= lastStated;
@@ -494,6 +499,15 @@ export class ApInboxService {
 		}
 
 		return result;
+	}
+
+	/**
+	 * The invitee's server repeats the time on the Invite it answers, which this server stated itself. Older than the one pending
+	 * means the owner cancelled that invitation and sent a new one. A server that does not repeat it is taken at its word.
+	 */
+	private answersEarlierInvitation(answered: IObject, pending: MiChatRoomInvitation): boolean {
+		const invitedAt = this.parseRemoteDate(answered.published);
+		return invitedAt != null && invitedAt < this.idService.parse(pending.id).date;
 	}
 
 	/** The invitee's server added its membership before sending Accept, so it has to be told to drop it. */
@@ -1557,6 +1571,8 @@ export class ApInboxService {
 			return 'skip: invitation not found';
 		}
 
+		if (this.answersEarlierInvitation(inviteObject as IObject, invitation)) return 'skip: this answers an earlier invitation';
+
 		this.logger.info(`[rejectInvite] Found invitation: ${invitation.id}, deleting...`);
 
 		// Delete the invitation
@@ -2250,6 +2266,10 @@ export class ApInboxService {
 			userId: invitee.id,
 		});
 		if (existingInvitation) {
+			// The owner cancelled and invited again, and this overtook the cancellation. What gets answered from now on is this one.
+			if (published != null && (existingInvitation.invitePublishedAt == null || existingInvitation.invitePublishedAt < published)) {
+				await this.chatRoomInvitationsRepository.update(existingInvitation.id, { invitePublishedAt: published });
+			}
 			return 'skip: invitation already exists';
 		}
 
@@ -2258,6 +2278,7 @@ export class ApInboxService {
 			id: this.idService.gen(),
 			roomId: room.id,
 			userId: invitee.id,
+			invitePublishedAt: published,
 		};
 
 		await this.chatRoomInvitationsRepository.insertOne(invitation);

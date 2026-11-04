@@ -691,3 +691,140 @@ describe('servers whose clocks disagree', () => {
 		});
 	});
 });
+
+describe('an answer repeats the time of the invitation it answers', () => {
+	const answer = (type: 'Accept' | 'Reject', invitedAt: string | undefined) => ({
+		type,
+		actor: carol.uri,
+		object: {
+			type: 'Invite',
+			actor: `${LOCAL}/users/${alice.id}`,
+			object: type === 'Accept' ? { id: LOCAL_ROOM_URI, type: 'Group' } : LOCAL_ROOM_URI,
+			target: carol.uri,
+			published: invitedAt,
+		},
+		published: at(50),
+	});
+	const send = (f: ReturnType<typeof chatRosterFixture>, type: 'Accept' | 'Reject', invitedAt: string | undefined) =>
+		type === 'Accept' ? f.inbox.accept(carol, answer(type, invitedAt), f.resolver) : f.inbox.reject(carol, answer(type, invitedAt), f.resolver);
+	const sentInvite = (f: ReturnType<typeof chatRosterFixture>) => f.delivered().findLast(({ activity }) => activity.type === 'Invite')?.activity.published as string;
+
+	describe.each(['Accept', 'Reject'] as const)('%s, in a room owned here', (type) => {
+		test('of an earlier invitation, arriving after it was cancelled and sent again, leaves the new one alone', async () => {
+			const f = chatRosterFixture();
+			await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
+			await f.chatService.cancelRoomInvitation(alice.id, f.invitations.rows[0].id);
+			await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
+			const earlier = new Date(Date.parse(sentInvite(f)) - 5000).toISOString();
+
+			const result = await send(f, type, earlier);
+
+			expect(result).toMatch(/^skip:/);
+			expect(f.invitations.rows).toHaveLength(1);
+			expect(membersOf(f, 'localroom')).toEqual([]);
+		});
+
+		test('of the invitation pending now takes effect', async () => {
+			const f = chatRosterFixture();
+			await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
+
+			await send(f, type, sentInvite(f));
+
+			expect(f.invitations.rows).toEqual([]);
+			expect(membersOf(f, 'localroom')).toEqual(type === 'Accept' ? [carol.id] : []);
+		});
+
+		test('from a server that does not repeat the time is taken as before', async () => {
+			const f = chatRosterFixture();
+			await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
+
+			await send(f, type, undefined);
+
+			expect(f.invitations.rows).toEqual([]);
+			expect(membersOf(f, 'localroom')).toEqual(type === 'Accept' ? [carol.id] : []);
+		});
+
+		test('repeating something that is not a time is taken as not repeating one', async () => {
+			const f = chatRosterFixture();
+			await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
+
+			await send(f, type, 'yesterday-ish');
+
+			expect(f.invitations.rows).toEqual([]);
+		});
+
+		test('of no invitation at all reveals nothing', async () => {
+			const f = chatRosterFixture();
+
+			expect(await send(f, type, at(1))).toMatch(/^skip:/);
+			expect(f.delivered()).toEqual([]);
+			expect(membersOf(f, 'localroom')).toEqual([]);
+		});
+	});
+
+	describe('from this server, answering another server\'s room', () => {
+		const answered = (f: ReturnType<typeof chatRosterFixture>, type: string) => f.delivered().find(({ activity }) => activity.type === type)?.activity.object;
+
+		test('Accept repeats the time as it was received', async () => {
+			const f = chatRosterFixture();
+			await f.inbox.invite(bob, invite(at(2)));
+
+			await f.chatService.joinToRoom(alice.id, 'mirror');
+
+			expect(answered(f, 'Accept').published).toBe(at(2));
+		});
+
+		test('Accept repeats it with a membership a lost Remove left behind', async () => {
+			const f = chatRosterFixture({ memberships: [['mirror', alice.id]] });
+			await f.inbox.invite(bob, invite(at(2)));
+
+			await f.chatService.joinToRoom(alice.id, 'mirror');
+
+			expect(answered(f, 'Accept').published).toBe(at(2));
+		});
+
+		test('Reject repeats the time as it was received', async () => {
+			const f = chatRosterFixture();
+			await f.inbox.invite(bob, invite(at(2)));
+
+			await f.chatService.rejectRoomInvitation(alice.id, 'mirror');
+
+			expect(answered(f, 'Reject').published).toBe(at(2));
+		});
+
+		test('Reject repeats it when a moderator removes this server\'s copy', async () => {
+			const f = chatRosterFixture();
+			await f.inbox.invite(bob, invite(at(2)));
+
+			await f.chatService.deleteRoom(await f.rooms.findOneBy({ id: 'mirror' }) as never, { id: 'moderator', host: null } as never);
+
+			expect(answered(f, 'Reject').published).toBe(at(2));
+		});
+
+		test.each([
+			['does not state a time', undefined],
+			['states one far ahead', FAR_AHEAD],
+		])('nothing is repeated when the Invite %s', async (_label, published) => {
+			const f = chatRosterFixture();
+			await f.inbox.invite(bob, invite(published));
+
+			await f.chatService.joinToRoom(alice.id, 'mirror');
+
+			expect(answered(f, 'Accept')).not.toHaveProperty('published');
+		});
+
+		test('the newer of two Invites is the one answered, whichever came first', async () => {
+			const f = chatRosterFixture();
+			await f.inbox.invite(bob, invite(at(2)));
+			await f.inbox.invite(bob, invite(at(3)));
+			await f.chatService.joinToRoom(alice.id, 'mirror');
+			expect(answered(f, 'Accept').published).toBe(at(3));
+
+			const later = chatRosterFixture();
+			await later.inbox.invite(bob, invite(at(3)));
+			await later.inbox.invite(bob, invite(at(2)));
+			await later.chatService.joinToRoom(alice.id, 'mirror');
+			expect(answered(later, 'Accept').published).toBe(at(3));
+		});
+	});
+});

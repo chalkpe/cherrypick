@@ -350,9 +350,14 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 		genLocalUserUri: (id: string) => `${LOCAL}/users/${id}`,
 		pack: async (id: string) => users.get(id),
 	};
+	const idDates = new Map<string, Date>();
 	const idService = {
 		gen: generatedIds,
-		parse: () => ({ date: new Date(Date.now() - 60_000) }),
+		// An ID stands for the moment it was made, so it reads the same every time.
+		parse: (id: string) => {
+			if (!idDates.has(id)) idDates.set(id, new Date(Date.now() - 60_000));
+			return { date: idDates.get(id)! };
+		},
 	};
 	const config = { url: LOCAL, host: 'local.test' };
 	const utilityService = new UtilityService(config as never, { federation: 'all', blockedHosts: [], silencedHosts: [], sensitiveMediaHosts: [] } as never);

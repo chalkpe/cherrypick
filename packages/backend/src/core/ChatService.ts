@@ -975,8 +975,10 @@ export class ChatService {
 				published: new Date().toISOString(),
 			});
 		}
+		const invitations = invitees.length > 0 ? await this.chatRoomInvitationsRepository.findBy({ roomId: room.id }) : [];
 		for (const invitee of invitees) {
-			if (this.userEntityService.isLocalUser(invitee)) this.deliverInvitationReject(room, owner, invitee);
+			const invitation = invitations.find(candidate => candidate.userId === invitee.id);
+			if (invitation != null && this.userEntityService.isLocalUser(invitee)) this.deliverInvitationReject(room, owner, invitee, invitation);
 		}
 		await this.chatRosterService.markRoomClosedHere(roomUri);
 	}
@@ -1190,6 +1192,7 @@ export class ChatService {
 				actor: owner.uri,
 				object: roomObject,
 				target: this.userEntityService.genLocalUserUri(joiningUser.id),
+				...this.invitationAnswered(invitation),
 			};
 			const acceptActivity = this.apRendererService.renderAccept(inviteObject, joiningUser);
 			const activity = {
@@ -1244,11 +1247,16 @@ export class ChatService {
 		const invitee = await this.usersRepository.findOneByOrFail({ id: userId });
 
 		if (this.userEntityService.isLocalUser(invitee) && this.userEntityService.isRemoteUser(inviter)) {
-			this.deliverInvitationReject(room, inviter, invitee);
+			this.deliverInvitationReject(room, inviter, invitee, invitation);
 		}
 	}
 
-	private deliverInvitationReject(room: MiChatRoom, inviter: MiRemoteUser, invitee: MiLocalUser): void {
+	/** The time on the Invite, as the owner stated it. An answer to an invitation since cancelled and sent again can then be told from one to the new invitation. */
+	private invitationAnswered(invitation: Pick<MiChatRoomInvitation, 'invitePublishedAt'>): { published?: string } {
+		return invitation.invitePublishedAt != null ? { published: invitation.invitePublishedAt.toISOString() } : {};
+	}
+
+	private deliverInvitationReject(room: MiChatRoom, inviter: MiRemoteUser, invitee: MiLocalUser, invitation: Pick<MiChatRoomInvitation, 'invitePublishedAt'>): void {
 		const roomUri = chatRoomUriForOwner(room, inviter, this.config.url);
 
 		// Create a simplified invite object reference for the Reject activity
@@ -1257,6 +1265,7 @@ export class ChatService {
 			actor: inviter.uri,
 			object: roomUri,
 			target: this.userEntityService.genLocalUserUri(invitee.id),
+			...this.invitationAnswered(invitation),
 		};
 		const rejectActivity = this.apRendererService.renderReject(inviteObject, invitee);
 		const activity = {
