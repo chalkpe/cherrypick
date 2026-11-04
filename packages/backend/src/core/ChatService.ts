@@ -62,6 +62,8 @@ const MAX_PENDING_CHAT_REACTIONS_PER_ACTOR = 1000;
 const MAX_PENDING_CHAT_REACTION_LENGTH = 256;
 const CHAT_REACTION_ACTIVITY_ID_TTL = 30 * 24 * 60 * 60;
 const MAX_REMOTE_REACTION_ACTIVITY_ID_LENGTH = 2048;
+// An account suspended here gets nothing new, but still hears what was taken back.
+const ACTIVITIES_FOR_SUSPENDED_ACCOUNTS = new Set(['Delete', 'Remove', 'Undo']);
 const isCustomEmojiRegexp = /^:([\w+-]+)(?:@\.)?:$/;
 
 // TODO: ReactionServiceのやつと共通化
@@ -295,7 +297,7 @@ export class ChatService {
 		}
 
 		// Federation: Send to remote user if applicable
-		if (this.userEntityService.isLocalUser(fromUser) && this.userEntityService.isRemoteUser(toUser)) {
+		if (this.userEntityService.isLocalUser(fromUser) && this.userEntityService.isRemoteUser(toUser) && !toUser.isSuspended) {
 			const fullFromUser = await this.usersRepository.findOneByOrFail({ id: fromUser.id });
 			const chatMessageObject = await this.apRendererService.renderChatMessage(inserted, fullFromUser, [toUser]);
 			const activity = {
@@ -921,7 +923,7 @@ export class ChatService {
 		}
 
 		// Federation: Send Invite activity to remote user if applicable
-		if (this.userEntityService.isLocalUser(inviter) && this.userEntityService.isRemoteUser(invitee)) {
+		if (this.userEntityService.isLocalUser(inviter) && this.userEntityService.isRemoteUser(invitee) && !invitee.isSuspended) {
 			const roomObject = this.apRendererService.renderChatRoom(room, inviter);
 			const inviteeUri = invitee.uri;
 			const inviteActivity = this.apRendererService.renderInvite(roomObject, inviteeUri, inviter);
@@ -1046,7 +1048,7 @@ export class ChatService {
 				...acceptActivity,
 				published: this.idService.parse(membership.id).date.toISOString(),
 			};
-			this.queueService.deliver(joiningUser, this.apRendererService.addContext(activity), owner.inbox, false);
+			if (!owner.isSuspended) this.queueService.deliver(joiningUser, this.apRendererService.addContext(activity), owner.inbox, false);
 		}
 
 		// Send Add activity to other remote members (not the owner, as they got Accept)
@@ -1064,7 +1066,7 @@ export class ChatService {
 			const contextedActivity = this.apRendererService.addContext(activity);
 
 			for (const remoteMember of remoteMembers) {
-				this.queueService.deliver(owner, contextedActivity, remoteMember.inbox, false);
+				if (!remoteMember.isSuspended) this.queueService.deliver(owner, contextedActivity, remoteMember.inbox, false);
 			}
 		}
 	}
@@ -1874,6 +1876,7 @@ export class ChatService {
 		for (const user of users) {
 			if (user.id === actor.id) continue;
 			if (!this.userEntityService.isRemoteUser(user)) continue;
+			if (user.isSuspended && !ACTIVITIES_FOR_SUSPENDED_ACCOUNTS.has(activity.type)) continue;
 
 			// Every recipient is named in the activity, so a server needs it only once however many members it has.
 			const inbox = user.sharedInbox ?? user.inbox;

@@ -145,6 +145,7 @@ function createFixture(options: FixtureOptions = {}) {
 			renderChatRoom: vi.fn(() => ({})),
 			renderAccept: vi.fn(() => ({})),
 			renderAdd: vi.fn(() => ({})),
+			genLocalChatRoomUri: (id: string) => `https://local.test/chat/rooms/${id}`,
 			addContext: vi.fn((activity: unknown) => activity),
 		},
 		globalEventService: {
@@ -165,6 +166,29 @@ describe('ChatService.joinToRoom invitation consumption', () => {
 		expect(f.state.invitations.size).toBe(0);
 		expect(f.state.memberships).toEqual([{ id: 'membership1', roomId: 'room1', userId: 'user1' }]);
 		expect(f.deliver).toHaveBeenCalled();
+	});
+
+	test('does not send the Accept to an owner suspended on this server', async () => {
+		const f = createFixture();
+		f.usersRepository.findOneByOrFail.mockImplementation(async ({ id }: { id: string }) => id === owner.id ? { ...owner, isSuspended: true } : joiningUser as never);
+
+		await f.service.joinToRoom('user1', 'room1');
+
+		expect(f.state.memberships).toEqual([{ id: 'membership1', roomId: 'room1', userId: 'user1' }]);
+		expect(f.deliver).not.toHaveBeenCalled();
+	});
+
+	test('announces the new member to everyone but a member suspended on this server', async () => {
+		const f = createFixture();
+		const localOwner = { ...owner, host: null };
+		const member = { id: 'member1', host: 'active.test', uri: 'https://active.test/users/member1', inbox: 'https://active.test/inbox' };
+		const suspendedMember = { id: 'member2', host: 'suspended.test', uri: 'https://suspended.test/users/member2', inbox: 'https://suspended.test/inbox', isSuspended: true };
+		f.usersRepository.findOneByOrFail.mockImplementation(async ({ id }: { id: string }) => id === owner.id ? localOwner as never : joiningUser as never);
+		f.usersRepository.findBy.mockResolvedValue([localOwner, member, suspendedMember]);
+
+		await f.service.joinToRoom('user1', 'room1');
+
+		expect(f.deliver.mock.calls.map(call => call[2])).toEqual([member.inbox]);
 	});
 
 	describe('the roster a mirror kept from before', () => {

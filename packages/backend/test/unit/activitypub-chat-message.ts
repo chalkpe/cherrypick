@@ -234,6 +234,24 @@ describe('ActivityPub chat message fetch authorization', () => {
 	});
 });
 
+describe('ActivityPub chat fetch by an account suspended on this server', () => {
+	test.each([
+		['a message', `/chat/messages/${message.id}`],
+		['a room', '/chat/rooms/room1'],
+	])('does not serve %s to a suspended participant', async (_name, path) => {
+		const app = await startApp({
+			apDbResolverService: {
+				getAuthUserFromKeyId: async () => ({ user: { ...carol, isSuspended: true }, key: { keyPem: carol.publicKeyPem } }),
+			},
+		});
+
+		const response = await app.inject({ method: 'GET', url: path, headers: await signedHeaders(carol, { url: `${LOCAL}${path}` }) });
+
+		expect(response.statusCode).toBe(404);
+		await app.close();
+	});
+});
+
 describe('ActivityPub chat message fetch authorization: edge cases', () => {
 	let app: FastifyInstance;
 

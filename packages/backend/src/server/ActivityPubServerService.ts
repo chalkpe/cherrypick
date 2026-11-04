@@ -290,7 +290,8 @@ export class ActivityPubServerService {
 			return null;
 		}
 
-		return authUser.user;
+		// Membership survives a suspension, so a suspended account has to be turned away here.
+		return authUser.user.isSuspended ? null : authUser.user;
 	}
 
 	@bindThis

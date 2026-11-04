@@ -462,7 +462,7 @@ export class ApInboxService {
 
 		for (const member of members) {
 			if (member.id === actor.id || member.id === owner.id) continue;
-			if (!this.userEntityService.isRemoteUser(member) || member.inbox == null) continue;
+			if (!this.userEntityService.isRemoteUser(member) || member.isSuspended || member.inbox == null) continue;
 			const activity = this.apRendererService.addContext({
 				...this.apRendererService.renderAdd(owner as never, roomActivityUri, uriOf(actor)),
 				published: new Date().toISOString(),

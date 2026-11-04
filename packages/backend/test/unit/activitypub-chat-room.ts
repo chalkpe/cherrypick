@@ -291,6 +291,22 @@ describe('Chat room federation: Accept(Invite)', () => {
 		expect(f.invitations.rows).toEqual([]);
 	});
 
+	test('announces the new member to everyone but a member suspended on this server', async () => {
+		const member = { id: 'erin', host: 'third.test', uri: 'https://third.test/users/erin', inbox: 'https://third.test/users/erin/inbox' };
+		const f = fixture({
+			invitations: [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }],
+			memberships: [{ id: 'm1', roomId: 'localroom', userId: member.id }, { id: 'm2', roomId: 'localroom', userId: dave.id }],
+		});
+		f.inbox.usersRepository.findBy = async () => [localOwner, invitedRemote, member, { ...dave, isSuspended: true }];
+		const accepted = inviteActivity({ uri: remoteOwner.uri }, 'https://remote.test/chat/rooms/localroom', invitedRemote.uri);
+
+		await f.inbox.acceptInvite(invitedRemote, accepted);
+
+		const inboxes = f.inbox.queueService.deliver.mock.calls.map((call: unknown[]) => call[2]);
+		expect(inboxes).toContain(member.inbox);
+		expect(inboxes).not.toContain(dave.inbox);
+	});
+
 	test('does not add a membership when the invitation is cancelled before it is consumed', async () => {
 		const f = fixture({
 			invitations: [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }],
