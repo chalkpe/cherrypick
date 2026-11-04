@@ -89,6 +89,19 @@ describe('the order of Add and Remove in a room', () => {
 		expect(f.states.rows.get(`mirror/${carol.id}`)?.toISOString()).toBe(at(2));
 	});
 
+	test('a Remove from the owner naming an account not known here fetches it and remembers the change', async () => {
+		const unknown = { id: 'grace', host: 'other.test', uri: 'https://other.test/users/grace' };
+		const f = chatRosterFixture();
+		f.inbox.apPersonService.resolvePerson = async () => unknown;
+
+		await f.inbox.remove(bob, remove(unknown, at(2)));
+		expect(f.states.rows.get(`mirror/${unknown.id}`)?.toISOString()).toBe(at(2));
+
+		await f.inbox.add(bob, add(unknown, at(1)));
+
+		expect(membersOf(f, 'mirror')).toEqual([]);
+	});
+
 	test('a member\'s own Remove older than the time they rejoined does not remove them from a room owned here', async () => {
 		const f = chatRosterFixture({ memberships: [['localroom', carol.id]], states: [['localroom', carol.id, at(2)]] });
 
@@ -352,6 +365,19 @@ describe('a message or an edit from someone not known to be in the room', () => 
 		const result = await f.inbox.createChatMessage(f.resolver, erin, note({ _misskey_chatRoom: LOCAL_ROOM_URI }), { type: 'Create' });
 
 		expect(result).toMatch(/^skip:/);
+		expect(f.queueService.createChatRoomRosterSyncJob).not.toHaveBeenCalled();
+	});
+
+	test('an edit in a room owned here from someone neither invited nor in it is dropped without retrying', async () => {
+		const uri = 'https://third.test/chat/messages/n1';
+		const f = chatRosterFixture({
+			messages: [{ id: 'n1', uri, fromUserId: erin.id, toRoomId: 'localroom', toUserId: null, text: 'hello', reactions: [], deletedAt: null, editedAt: null, fileIds: [], emojis: [] }],
+		});
+
+		const result = await f.inbox.update(erin, { type: 'Update', actor: erin.uri, object: note({ _misskey_chatRoom: LOCAL_ROOM_URI, updated: at(2) }) }, f.resolver);
+
+		expect(result).toMatch(/^skip:/);
+		expect(f.messages.rows[0].text).toBe('hello');
 		expect(f.queueService.createChatRoomRosterSyncJob).not.toHaveBeenCalled();
 	});
 

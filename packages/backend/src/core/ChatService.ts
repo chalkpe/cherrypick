@@ -1745,13 +1745,14 @@ export class ChatService {
 		return message;
 	}
 
-	/**
-	 * @param options.activity What arrived, for the owner's server to pass on.
-	 * @param options.byRoomOwner The caller has made sure the actor owns the room this message is in.
-	 */
+	/** @param options.activity What arrived, for the owner's server to pass on. */
 	@bindThis
-	public async deleteRemoteMessage(actor: MiUser, message: MiChatMessage, options?: { activity?: IObject; byRoomOwner?: boolean }): Promise<MiChatMessage> {
-		if (message.fromUserId !== actor.id && options?.byRoomOwner !== true) throw new ChatMessageAccessError('cannot delete');
+	public async deleteRemoteMessage(actor: MiUser, message: MiChatMessage, options?: { activity?: IObject }): Promise<MiChatMessage> {
+		if (message.fromUserId !== actor.id) {
+			// The room's owner moderates it, including what someone else wrote.
+			const room = message.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
+			if (room?.ownerId !== actor.id) throw new ChatMessageAccessError('cannot delete');
+		}
 		if (message.deletedAt != null) return message;
 
 		const deletedAt = new Date();
@@ -1835,12 +1836,9 @@ export class ChatService {
 		await this.relayRoomActivity(message, actor, options?.activity);
 	}
 
-	/**
-	 * @param options.activity What arrived, for the owner's server to pass on.
-	 * @param options.allowFormerMember The room owner vouches for it: someone who has left can still take a reaction back.
-	 */
+	/** @param options.activity What arrived, for the owner's server to pass on. */
 	@bindThis
-	public async unreactRemote(actor: MiUser, message: MiChatMessage, reaction_: string, activityId?: string, options?: { activity?: IObject; allowFormerMember?: boolean }): Promise<void> {
+	public async unreactRemote(actor: MiUser, message: MiChatMessage, reaction_: string, activityId?: string, options?: { activity?: IObject }): Promise<void> {
 		const reaction = this.normalizeRemoteReaction(reaction_, actor.host);
 
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
@@ -1850,7 +1848,7 @@ export class ChatService {
 		if (message.toRoomId != null && room == null) throw new ChatMessageAccessError('no such message');
 
 		if (room) {
-			if (options?.allowFormerMember !== true && !(await this.isRoomMember(room, actor.id))) throw new ChatMessageAccessError('cannot unreact to others message');
+			// Someone who has left can still take their reaction back, and this only ever removes their own.
 			await this.assertRemoteWriteAllowed(room);
 		} else if (message.fromUserId !== actor.id && message.toUserId !== actor.id) {
 			throw new ChatMessageAccessError('cannot unreact to others message');
@@ -1968,7 +1966,7 @@ export class ChatService {
 
 				const activity = parsed.activity != null && typeof parsed.activity === 'object' ? parsed.activity as IObject : undefined;
 				if (parsed.undo) {
-					await this.unreactRemote(actor, message, parsed.reaction, parsed.activityId as string | undefined, { activity, allowFormerMember: parsed.roomId != null });
+					await this.unreactRemote(actor, message, parsed.reaction, parsed.activityId as string | undefined, { activity });
 				} else {
 					await this.reactRemote(actor, message, parsed.reaction, parsed.activityId as string | undefined, { activity });
 				}

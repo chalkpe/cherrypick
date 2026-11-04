@@ -297,12 +297,13 @@ export class ApInboxService {
 		const { activity, relayedInRoom } = options;
 		const apply = async (message: MiChatMessage): Promise<string> => {
 			try {
-				if (relayedInRoom == null && message.toRoomId != null) {
+				// Someone who has left can still take a reaction back, but not add one.
+				if (!undo && relayedInRoom == null && message.toRoomId != null) {
 					const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
 					if (room != null) await this.assertKnownInRoom(room, actor);
 				}
 				if (undo) {
-					await this.chatService.unreactRemote(actor, message, reaction, activityId, { activity, allowFormerMember: relayedInRoom != null });
+					await this.chatService.unreactRemote(actor, message, reaction, activityId, { activity });
 				} else {
 					await this.chatService.reactRemote(actor, message, reaction, activityId, { activity });
 				}
@@ -720,9 +721,7 @@ export class ApInboxService {
 			// Its author's own Delete settles a message that is still on its way here.
 			if (message == null) return 'skip: message not found';
 			if (message.toRoomId !== room.id) return 'skip: message is from another room';
-			const byRoomOwner = doer.id === room.ownerId;
-			if (message.fromUserId !== doer.id && !byRoomOwner) return 'skip: only the author or the room owner can delete a message';
-			await this.chatService.deleteRemoteMessage(doer, message, { byRoomOwner });
+			await this.chatService.deleteRemoteMessage(doer, message);
 			return 'ok: chat message deleted';
 		} catch (err) {
 			if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
@@ -750,7 +749,6 @@ export class ApInboxService {
 		const message = await this.chatService.findMessageByUri(messageUri);
 		if (message != null && message.toRoomId !== room.id) return 'skip: message is from another room';
 
-		// Someone who has left can still take a reaction back, but not add one.
 		if (!undo) {
 			await this.assertKnownInRoom(room, doer);
 			await this.fetchReactionEmoji(reactionActivity, reaction, doer);

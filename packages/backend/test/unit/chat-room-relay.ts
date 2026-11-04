@@ -489,6 +489,57 @@ describe('receiving what the owner passed on', () => {
 	});
 });
 
+describe('what comes straight from a member\'s server', () => {
+	const uri = carolMessageUri;
+	const reaction = { id: `${erin.uri}/chat-reactions/1`, type: 'EmojiReact', actor: erin.uri, object: uri, content: '👍' };
+	const undo = { id: `${reaction.id}/undo`, type: 'Undo', actor: erin.uri, object: reaction };
+
+	test('someone who has left can take their reaction back', async () => {
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id]], messages: [storedMessage({ reactions: [`${erin.id}/👍`] })] });
+
+		await f.inbox.undo(erin, undo, f.resolver);
+
+		expect(f.messages.rows[0].reactions).toEqual([]);
+		expect(f.queueService.createChatRoomRosterSyncJob).not.toHaveBeenCalled();
+	});
+
+	test('taking back a reaction does not touch anyone else\'s', async () => {
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id]], messages: [storedMessage({ reactions: [`${carol.id}/👍`] })] });
+
+		await f.inbox.undo(erin, undo, f.resolver);
+
+		expect(f.messages.rows[0].reactions).toEqual([`${carol.id}/👍`]);
+	});
+
+	test('the room owner can delete someone else\'s message', async () => {
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id], ['mirror', carol.id]], messages: [storedMessage()] });
+
+		const result = await f.inbox.delete(bob, { type: 'Delete', actor: bob.uri, object: { id: uri, type: 'Tombstone', formerType: 'Note' } });
+
+		expect(result).toBe('ok: chat message deleted');
+		expect(f.messages.rows[0].deletedAt).not.toBeNull();
+	});
+
+	test('anyone else cannot', async () => {
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id], ['mirror', carol.id], ['mirror', erin.id]], messages: [storedMessage()] });
+
+		const result = await f.inbox.delete(erin, { type: 'Delete', actor: erin.uri, object: { id: uri, type: 'Tombstone', formerType: 'Note' } });
+
+		expect(result).toMatch(/^skip:/);
+		expect(f.messages.rows[0].deletedAt).toBeNull();
+	});
+
+	test('the owner of a room cannot delete a message outside it', async () => {
+		const direct = storedMessage({ toRoomId: null, toUserId: alice.id });
+		const f = chatRosterFixture({ messages: [direct] });
+
+		const result = await f.inbox.delete(bob, { type: 'Delete', actor: bob.uri, object: { id: uri, type: 'Tombstone', formerType: 'Note' } });
+
+		expect(result).toMatch(/^skip:/);
+		expect(f.messages.rows[0].deletedAt).toBeNull();
+	});
+});
+
 describe('a server that is not told about Announce with an activity inside', () => {
 	test('a plain boost of a note goes on working as before', async () => {
 		const f = chatRosterFixture();
