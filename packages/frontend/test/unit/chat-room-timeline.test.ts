@@ -29,6 +29,10 @@ const mocks = vi.hoisted(() => {
 		roomOwnerId: 'owner',
 		roomShowFails: false,
 		roomInvitationExists: false,
+		roomShowError: null as Error | null,
+		timelineError: null as Error | null,
+		streamOn: vi.fn(),
+		streamOff: vi.fn(),
 		routerPush: vi.fn(),
 		alert: vi.fn(),
 		confirm: vi.fn(),
@@ -45,13 +49,15 @@ const mocks = vi.hoisted(() => {
 vi.mock('@/utility/misskey-api.js', () => ({
 	misskeyApi: vi.fn(async (endpoint: string) => {
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowFails) throw new Error('No such room.');
+		if (endpoint === 'chat/rooms/show' && mocks.roomShowError != null) throw mocks.roomShowError;
+		if (endpoint === 'chat/messages/room-timeline' && mocks.timelineError != null) throw mocks.timelineError;
 		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: mocks.roomOwnerId, owner: { id: mocks.roomOwnerId, username: 'owner', host: null }, isArchived: mocks.roomIsArchived, invitationExists: mocks.roomInvitationExists };
 		if (endpoint === 'users/show') return { id: 'alice', username: 'alice', host: null };
 		if (endpoint === 'chat/messages/room-timeline' || endpoint === 'chat/messages/user-timeline') return mocks.timeline;
 		return [];
 	}),
 }));
-vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), useChannel: () => mocks.channel }) }));
+vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: mocks.streamOff, useChannel: () => mocks.channel }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog, selectUser: mocks.selectUser }));
@@ -122,6 +128,7 @@ vi.mock('@/pages/chat/XMessage.vue', async () => {
 import { provideMetadataReceiver } from '@/page.js';
 import XRoomPage from '@/pages/chat/room.vue';
 import { i18n } from '@/i18n.js';
+import { misskeyApi } from '@/utility/misskey-api.js';
 
 const alert = mocks.alert;
 const MINUTE = 60 * 1000;
@@ -173,6 +180,10 @@ beforeEach(() => {
 	mocks.roomOwnerId = 'owner';
 	mocks.roomShowFails = false;
 	mocks.roomInvitationExists = false;
+	mocks.roomShowError = null;
+	mocks.timelineError = null;
+	mocks.streamOn.mockReset();
+	mocks.streamOff.mockReset();
 	mocks.routerPush.mockReset();
 	mocks.alert.mockReset();
 	mocks.confirm.mockReset().mockResolvedValue({ canceled: false });
@@ -274,6 +285,217 @@ test('a refused invitation returns to the chat list instead of loading forever',
 	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/join', { roomId: 'r1' });
 	expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
 	expect(container.querySelector('[data-testid="form"]')).toBeNull();
+});
+
+describe('after the stream reconnects', () => {
+	const form = (container: Element) => container.querySelector('[data-testid="form"]');
+	const ids = (container: Element) => bubbles(container).map(bubble => bubble.id);
+	// 新しい順で、同じ接頭辞の中では番号の大きいものが新しい
+	const pageOf = (prefix: string, count: number, after = 0) => Array.from({ length: count }, (_, i) => message(`${prefix}${String(count - i).padStart(2, '0')}`, 'alice', after + (count - i) * MINUTE));
+
+	async function reconnect() {
+		emitConnected();
+		await flush();
+		await flush();
+	}
+
+	function emitConnected() {
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+	}
+
+	test('shows what changed while it was disconnected', async () => {
+		const { container } = await renderRoom();
+		mocks.timeline = [
+			message('m4', 'alice', 3 * MINUTE),
+			{ ...message('m3', 'alice', 2 * MINUTE), text: 'edited', editedAt: new Date(base + 2 * MINUTE).toISOString() },
+			{ ...message('m2', 'alice', MINUTE), text: null, deletedAt: new Date(base + 2 * MINUTE).toISOString() },
+			message('m1', 'bob', 0),
+		];
+
+		await reconnect();
+
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3', 'm4']);
+		expect(container.querySelector('[data-id="m3"]')!.getAttribute('data-text')).toBe('edited');
+		expect(container.querySelector('[data-id="m2"]')!.getAttribute('data-deleted')).toBe('true');
+	});
+
+	test('does the same in a direct conversation', async () => {
+		const { container } = await renderRoom('user');
+		mocks.timeline = [message('m4', 'alice', 3 * MINUTE), ...mocks.timeline];
+
+		await reconnect();
+
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3', 'm4']);
+	});
+
+	test('keeps older messages that the latest page connects to', async () => {
+		mocks.timeline = pageOf('a', 20);
+		const { container } = await renderRoom();
+		mocks.timeline = [message('b01', 'alice', 100 * MINUTE), ...pageOf('a', 20).slice(0, 19)];
+
+		await reconnect();
+
+		expect(ids(container)).toHaveLength(21);
+		expect(ids(container)[0]).toBe('a01');
+		expect(ids(container)[20]).toBe('b01');
+	});
+
+	test('leaves no hole when more was missed than one page holds', async () => {
+		mocks.timeline = pageOf('a', 3);
+		const { container } = await renderRoom();
+		expect(container.textContent).not.toContain(i18n.ts.loadMore);
+		mocks.timeline = pageOf('b', 20, 1000 * MINUTE);
+
+		await reconnect();
+
+		// 捨てた吹き出しは退場のトランジションが終わるまで DOM に残る
+		await waitFor(() => expect(ids(container)).toEqual(pageOf('b', 20, 1000 * MINUTE).map(m => m.id).toReversed()));
+		expect(container.textContent).toContain(i18n.ts.loadMore);
+	});
+
+	test('keeps a message that arrives while catching up', async () => {
+		const { container } = await renderRoom();
+
+		emitConnected();
+		mocks.channel.emit('message', message('m9', 'alice', 9 * MINUTE));
+		await flush();
+		await flush();
+
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3', 'm9']);
+	});
+
+	test('ends an edit of a message deleted in the meantime', async () => {
+		mocks.timeline = [message('m1', 'me', 0)];
+		const { container } = await renderRoom();
+		mocks.editMessage.value!();
+		await flush();
+		expect(form(container)!.getAttribute('data-editing')).toBe('m1');
+		mocks.timeline = [{ ...message('m1', 'me', 0), text: null, deletedAt: new Date(base + MINUTE).toISOString() }];
+
+		await reconnect();
+
+		expect(form(container)!.getAttribute('data-editing')).toBe('');
+	});
+
+	test('follows a room change made in the meantime', async () => {
+		const { container } = await renderRoom();
+		mocks.roomIsArchived = true;
+
+		await reconnect();
+
+		expect(form(container)).toBeNull();
+		expect(container.textContent).toContain(i18n.ts._chat.thisRoomIsArchived);
+	});
+
+	test('closes a room that is gone by now', async () => {
+		const { container } = await renderRoom();
+		mocks.roomShowError = Object.assign(new Error('No such room.'), { code: 'NO_SUCH_ROOM' });
+
+		await reconnect();
+
+		expect(form(container)).toBeNull();
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.removedFromRoom });
+		expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('offers the invitation of someone removed and invited again in the meantime', async () => {
+		const { container } = await renderRoom();
+		mocks.roomInvitationExists = true;
+		mocks.timelineError = Object.assign(new Error('No such room.'), { code: 'NO_SUCH_ROOM' });
+		mocks.confirm.mockResolvedValue({ canceled: true });
+
+		await reconnect();
+
+		expect(mocks.confirm).toHaveBeenCalledOnce();
+		expect(form(container)).toBeNull();
+		expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('stays as it is when the requests fail for another reason', async () => {
+		const { container } = await renderRoom();
+		mocks.roomShowError = new Error('Failed to fetch');
+
+		await reconnect();
+
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3']);
+		expect(form(container)).not.toBeNull();
+		expect(mocks.alert).not.toHaveBeenCalled();
+
+		// 次の機会に取り直す
+		mocks.roomShowError = null;
+		mocks.timeline = [message('m4', 'alice', 3 * MINUTE), ...mocks.timeline];
+		window.document.dispatchEvent(new Event('visibilitychange'));
+		await flush();
+		await flush();
+
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3', 'm4']);
+	});
+
+	// タイムラインを取得すると既読になる
+	test('waits for a hidden tab to be looked at', async () => {
+		const { container } = await renderRoom();
+		mocks.timeline = [message('m4', 'alice', 3 * MINUTE), ...mocks.timeline];
+		const hidden = vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
+
+		try {
+			await reconnect();
+			expect(ids(container)).toEqual(['m1', 'm2', 'm3']);
+
+			hidden.mockReturnValue(false);
+			window.document.dispatchEvent(new Event('visibilitychange'));
+			await flush();
+			await flush();
+
+			expect(ids(container)).toEqual(['m1', 'm2', 'm3', 'm4']);
+		} finally {
+			hidden.mockRestore();
+		}
+	});
+
+	test('waits for a cached page to be opened again, and only fetches if the stream reconnected', async () => {
+		const timelineFetches = () => vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline').length;
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+			},
+		});
+		const { container } = render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		const fetchesBefore = timelineFetches();
+
+		visible.value = false;
+		await flush();
+		visible.value = true;
+		await flush();
+		await flush();
+		expect(timelineFetches()).toBe(fetchesBefore);
+
+		visible.value = false;
+		await flush();
+		mocks.timeline = [message('m4', 'alice', 3 * MINUTE), ...mocks.timeline];
+		await reconnect();
+		expect(timelineFetches()).toBe(fetchesBefore);
+
+		visible.value = true;
+		await flush();
+		await flush();
+		expect(timelineFetches()).toBe(fetchesBefore + 1);
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3', 'm4']);
+	});
+
+	test('stops listening when the page goes away', async () => {
+		const { unmount } = await renderRoom();
+		const listener = mocks.streamOn.mock.calls.find(([event]) => event === '_connected_')![1];
+
+		unmount();
+
+		expect(mocks.streamOff).toHaveBeenCalledWith('_connected_', listener);
+	});
 });
 
 test('another member leaving does not close my room', async () => {
@@ -484,6 +706,18 @@ describe('inviting from the members tab', () => {
 		await flush();
 
 		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' });
+		expect(mocks.membersMounts.value).toBe(2);
+	});
+
+	test('reloads the tab when the stream reconnects, as a change may have been missed', async () => {
+		await openMembersTab();
+
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		await flush();
+
 		expect(mocks.membersMounts.value).toBe(2);
 	});
 

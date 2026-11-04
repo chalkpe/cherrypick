@@ -564,11 +564,64 @@ function notifyNewMessage() {
 
 function onVisibilitychange() {
 	if (window.document.hidden) return;
-	// TODO
+	catchUp();
+}
+
+let eventsMayBeMissing = false;
+
+function onStreamConnected() {
+	eventsMayBeMissing = true;
+	catchUp();
+}
+
+// ストリームが切れているあいだのイベントは再接続しても届かないので、読み直して埋める
+async function catchUp() {
+	// タイムラインを取得すると既読になるので、見ていないあいだは見に戻るまで待つ
+	if (!eventsMayBeMissing || !initialized.value || !isActivated || window.document.hidden) return;
+	eventsMayBeMissing = false;
+
+	const LIMIT = 20;
+	let r: Misskey.entities.ChatRoomsShowResponse | null;
+	let m: (Misskey.entities.ChatMessageLite | Misskey.entities.ChatMessage)[];
+	try {
+		[r, m] = await Promise.all([
+			props.roomId ? misskeyApi('chat/rooms/show', { roomId: props.roomId }) : null,
+			props.roomId
+				? misskeyApi('chat/messages/room-timeline', { roomId: props.roomId, limit: LIMIT })
+				: misskeyApi('chat/messages/user-timeline', { userId: props.userId!, limit: LIMIT }),
+		]);
+	} catch (err) {
+		// 一時的な失敗なら、次の機会まで今の表示のままにする
+		if ((err as Misskey.api.APIError).code !== 'NO_SUCH_ROOM') {
+			eventsMayBeMissing = true;
+			return;
+		}
+		if (!initialized.value || leavingRoom.value || deletingOwnRoom.value) return;
+		// 外されたか、削除された。また招待されているかどうかも含めて initialize が確かめて案内する
+		closeRoom();
+		if (isActivated) initialize();
+		return;
+	}
+	if (!initialized.value) return;
+
+	const latest = m.map(x => normalizeMessage(x));
+	const latestIds = new Set(latest.map(x => x.id));
+	// 最新のページが手元のものとつながらないなら、あいだが抜ける。古い方は捨てて読み直してもらう
+	const hasGap = latest.length === LIMIT && !messages.value.some(x => x.id === latest[LIMIT - 1].id);
+	const kept = messages.value.filter(x => !latestIds.has(x.id) && (!hasGap || x.id > latest[0].id));
+	messages.value = [...kept, ...latest].toSorted((a, b) => a.id < b.id ? 1 : -1);
+	if (hasGap) canFetchMore.value = true;
+	if (messages.value.find(x => x.id === editingMessage.value?.id)?.deletedAt != null) editingMessage.value = null;
+
+	if (r != null) {
+		room.value = r;
+		onMembershipChanged();
+	}
 }
 
 onMounted(() => {
 	initialize();
+	useStream().on('_connected_', onStreamConnected);
 });
 
 onUnmounted(() => {
@@ -583,11 +636,14 @@ onActivated(() => {
 	}
 	if (!initialized.value) {
 		initialize();
+	} else {
+		catchUp();
 	}
 });
 
 onBeforeUnmount(() => {
 	connection.value?.dispose();
+	useStream().off('_connected_', onStreamConnected);
 	window.document.removeEventListener('visibilitychange', onVisibilitychange);
 });
 
