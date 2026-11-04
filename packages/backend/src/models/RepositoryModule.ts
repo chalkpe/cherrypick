@@ -87,6 +87,7 @@ import {
 	MiChatMessage,
 	MiChatRoom,
 	MiChatRoomMembership,
+	MiChatRoomRosterState,
 	MiChatRoomInvitation,
 	MiChatApproval,
 } from './_.js';
@@ -550,6 +551,12 @@ const $chatRoomMembershipsRepository: Provider = {
 	inject: [DI.db],
 };
 
+const $chatRoomRosterStatesRepository: Provider = {
+	provide: DI.chatRoomRosterStatesRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiChatRoomRosterState).extend(miRepository as MiRepository<MiChatRoomRosterState>),
+	inject: [DI.db],
+};
+
 const $chatRoomInvitationsRepository: Provider = {
 	provide: DI.chatRoomInvitationsRepository,
 	useFactory: (db: DataSource) => db.getRepository(MiChatRoomInvitation).extend(miRepository as MiRepository<MiChatRoomInvitation>),
@@ -665,6 +672,7 @@ const $noteHistoryRepository: Provider = {
 		$chatMessagesRepository,
 		$chatRoomsRepository,
 		$chatRoomMembershipsRepository,
+		$chatRoomRosterStatesRepository,
 		$chatRoomInvitationsRepository,
 		$chatApprovalsRepository,
 		$bubbleGameRecordsRepository,
@@ -749,6 +757,7 @@ const $noteHistoryRepository: Provider = {
 		$chatMessagesRepository,
 		$chatRoomsRepository,
 		$chatRoomMembershipsRepository,
+		$chatRoomRosterStatesRepository,
 		$chatRoomInvitationsRepository,
 		$chatApprovalsRepository,
 		$bubbleGameRecordsRepository,

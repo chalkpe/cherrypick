@@ -13,11 +13,12 @@ import accepts from 'accepts';
 import vary from 'vary';
 import secureJson from 'secure-json-parse';
 import { DI } from '@/di-symbols.js';
-import type { FollowingsRepository, NotesRepository, EmojisRepository, NoteReactionsRepository, UserProfilesRepository, UserNotePiningsRepository, UsersRepository, FollowRequestsRepository, MiMeta, ChatMessagesRepository, ChatRoomsRepository, ChatRoomMembershipsRepository, ChatRoomInvitationsRepository } from '@/models/_.js';
+import type { FollowingsRepository, NotesRepository, EmojisRepository, NoteReactionsRepository, UserProfilesRepository, UserNotePiningsRepository, UsersRepository, FollowRequestsRepository, MiMeta, ChatMessagesRepository, ChatRoomsRepository, ChatRoomMembershipsRepository, ChatRoomInvitationsRepository, MiChatRoom } from '@/models/_.js';
 import * as url from '@/misc/prelude/url.js';
 import type { Config } from '@/config.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
-import { chatMessageUri, chatRoomUriForOwner } from '@/core/activitypub/misc/chat-payloads.js';
+import { chatActorUri, chatMessageUri, chatRoomUriForOwner } from '@/core/activitypub/misc/chat-payloads.js';
+import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { QueueService } from '@/core/QueueService.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import { UserKeypairService } from '@/core/UserKeypairService.js';
@@ -28,7 +29,7 @@ import { QueryService } from '@/core/QueryService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { bindThis } from '@/decorators.js';
-import { IActivity } from '@/core/activitypub/type.js';
+import type { IActivity, IObject } from '@/core/activitypub/type.js';
 import { isQuote, isRenote } from '@/misc/is-renote.js';
 import * as Acct from '@/misc/acct.js';
 import { FanoutTimelineEndpointService } from '@/core/FanoutTimelineEndpointService.js';
@@ -118,8 +119,23 @@ export class ActivityPubServerService {
 		private fanoutTimelineEndpointService: FanoutTimelineEndpointService,
 		private activityPubAccessControlService: ActivityPubAccessControlService,
 		private apDbResolverService: ApDbResolverService,
+		private chatRosterService: ChatRosterService,
 	) {
 		//this.createServer = this.createServer.bind(this);
+	}
+
+	/**
+	 * The time is taken first. A change while the list is being read then has a later time than the list,
+	 * so a server comparing the two keeps that change rather than taking the list for newer than it is.
+	 */
+	private async chatRoomRoster(room: MiChatRoom): Promise<Pick<IObject, '_misskey_chatRoomMembers' | '_misskey_chatRoomRosterAt'>> {
+		const rosterAt = new Date().toISOString();
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
+		const members = await this.usersRepository.findBy({ id: In([room.ownerId, ...memberships.map(membership => membership.userId)]) });
+		return {
+			_misskey_chatRoomMembers: members.map(member => chatActorUri(member, this.config.url)),
+			_misskey_chatRoomRosterAt: rosterAt,
+		};
 	}
 
 	@bindThis
@@ -950,6 +966,8 @@ export class ActivityPubServerService {
 				const isOwner = room.ownerId === actor.id;
 				const membership = isOwner ? null : await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId: actor.id });
 				if (!isOwner && membership == null) {
+					// The owner's server may have heard of this member before this one did. Their retry will get the message once it has too.
+					if (room.owner?.host != null) await this.chatRosterService.requestSync(room, actor.id);
 					reply.code(404);
 					return;
 				}
@@ -1028,9 +1046,11 @@ export class ActivityPubServerService {
 			}
 
 			const group = this.apRendererService.renderChatRoom(room, owner);
+			// Someone who is only invited learns who is in the room by joining it.
+			const roster = owner.host == null && (isOwner || membership != null) ? await this.chatRoomRoster(room) : null;
 
 			this.setResponseType(request, reply);
-			return this.apRendererService.addContext(group);
+			return this.apRendererService.addContext({ ...group, ...roster });
 		});
 
 		// outbox

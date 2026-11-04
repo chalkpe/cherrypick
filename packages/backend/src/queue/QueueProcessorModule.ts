@@ -23,6 +23,7 @@ import { CheckModeratorsActivityProcessorService } from './processors/CheckModer
 import { CleanRemoteNotesProcessorService } from './processors/CleanRemoteNotesProcessorService.js';
 import { CleanRemoteFilesProcessorService } from './processors/CleanRemoteFilesProcessorService.js';
 import { AutoDeleteNotesProcessorService } from './processors/AutoDeleteNotesProcessorService.js';
+import { ChatRoomRosterSyncProcessorService } from './processors/ChatRoomRosterSyncProcessorService.js';
 import { DeleteAccountProcessorService } from './processors/DeleteAccountProcessorService.js';
 import { TruncateAccountProcessorService } from './processors/TruncateAccountProcessorService.js';
 import { DeleteDriveFilesProcessorService } from './processors/DeleteDriveFilesProcessorService.js';
@@ -81,6 +82,7 @@ import { ScheduledNoteDeleteProcessorService } from './processors/ScheduledNoteD
 		ImportCustomEmojisProcessorService,
 		ImportAntennasProcessorService,
 		ImportClipsProcessorService,
+		ChatRoomRosterSyncProcessorService,
 		DeleteAccountProcessorService,
 		TruncateAccountProcessorService,
 		DeleteFileProcessorService,
