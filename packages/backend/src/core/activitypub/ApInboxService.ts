@@ -1723,7 +1723,7 @@ export class ApInboxService {
 		}
 		if (isAnnounce(object)) return await this.undoAnnounce(actor, object);
 		if (isAccept(object)) return await this.undoAccept(actor, object);
-		if (isInvite(object)) return await this.undoInvite(actor, object, this.parseRemoteDate(activity.published));
+		if (isInvite(object)) return await this.undoInvite(actor, object, this.parseRemoteDate(activity.published), activity);
 
 		return `skip: unknown object type ${getApType(object)}`;
 	}
@@ -1751,7 +1751,7 @@ export class ApInboxService {
 	}
 
 	@bindThis
-	private async undoInvite(actor: MiRemoteUser, activity: IInvite, published: Date | null = null): Promise<string> {
+	private async undoInvite(actor: MiRemoteUser, activity: IInvite, published: Date | null = null, undo?: IUndo): Promise<string> {
 		// Parse the room object from the Invite activity
 		const roomObject = activity.object;
 		if (typeof roomObject === 'string') return 'skip: object must be a full object, not a URI';
@@ -1774,6 +1774,11 @@ export class ApInboxService {
 
 		// Only the room owner can cancel an invitation
 		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		if (room == null && undo != null) {
+			// This overtook its Invite. Kept with the room's other early activities, so that the Invite cannot offer what was cancelled.
+			if (await this.chatRosterService.isRoomGone(roomUri)) return 'skip: room was deleted';
+			return await this.storePendingRoomActivity(actor, undo) ? 'ok: room not found, activity deferred' : 'skip: room not found';
+		}
 		if (!room || room.ownerId !== actor.id) return 'skip: only the room owner can cancel an invitation';
 
 		// A cancellation of an earlier invitation, still on its way, says nothing about the one that came after it.
@@ -2070,9 +2075,10 @@ export class ApInboxService {
 		return uri.includes('/chat/messages/');
 	}
 
-	private chatRoomUriFromActivity(activity: IAdd | IUpdate | IDelete): string | null {
+	private chatRoomUriFromActivity(activity: IAdd | IUpdate | IDelete | IUndo): string | null {
 		try {
-			const value = getApType(activity) === 'Add' ? activity.target : activity.object;
+			const type = getApType(activity);
+			const value = type === 'Add' ? activity.target : type === 'Undo' ? (activity.object as IActivity).object : activity.object;
 			return this.chatRoomUriFromValue(value);
 		} catch {
 			return null;
@@ -2090,7 +2096,7 @@ export class ApInboxService {
 		return true;
 	}
 
-	private async storePendingRoomActivity(actor: MiRemoteUser, activity: IAdd | IUpdate | IDelete): Promise<boolean> {
+	private async storePendingRoomActivity(actor: MiRemoteUser, activity: IAdd | IUpdate | IDelete | IUndo): Promise<boolean> {
 		const roomUri = this.chatRoomUriFromActivity(activity);
 		if (roomUri == null) return false;
 
@@ -2127,12 +2133,12 @@ export class ApInboxService {
 		const entries = results[0][1] as string[];
 		if (entries.length === 0) return false;
 
-		const pending: { actorId: string; activity: IAdd | IUpdate | IDelete; attempts: number; }[] = [];
+		const pending: { actorId: string; activity: IAdd | IUpdate | IDelete | IUndo; attempts: number; }[] = [];
 		for (const entry of entries) {
 			try {
 				const parsed = JSON.parse(entry) as { actorId?: unknown; activity?: unknown; attempts?: unknown };
 				if (typeof parsed.actorId !== 'string' || parsed.activity == null || typeof parsed.activity !== 'object') continue;
-				pending.push({ actorId: parsed.actorId, activity: parsed.activity as IAdd | IUpdate | IDelete, attempts: typeof parsed.attempts === 'number' ? parsed.attempts : 0 });
+				pending.push({ actorId: parsed.actorId, activity: parsed.activity as IAdd | IUpdate | IDelete | IUndo, attempts: typeof parsed.attempts === 'number' ? parsed.attempts : 0 });
 			} catch {
 				// Ignore malformed deferred activities.
 			}
@@ -2154,6 +2160,9 @@ export class ApInboxService {
 						break;
 					case 'Update':
 						await this.update(remoteActor, entry.activity as IUpdate);
+						break;
+					case 'Undo':
+						await this.undo(remoteActor, entry.activity as IUndo);
 						break;
 					case 'Delete':
 						deleted = await this.delete(remoteActor, entry.activity as IDelete) === 'ok: chat room deleted';

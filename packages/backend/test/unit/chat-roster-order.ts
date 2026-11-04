@@ -279,6 +279,78 @@ describe('a cancelled invitation', () => {
 		expect(f.invitations.rows).toEqual([]);
 	});
 
+	test('stays cancelled when an older copy of the Invite arrives late: the copy of the room and its record stay', async () => {
+		const f = chatRosterFixture();
+		await f.inbox.invite(bob, invite(at(1)));
+		await f.inbox.undo(bob, undoInvite(at(2)), f.resolver);
+		expect(f.invitations.rows).toEqual([]);
+		expect(await f.rooms.findOneBy({ id: 'mirror' })).not.toBeNull();
+
+		await f.inbox.invite(bob, invite(at(1)));
+
+		expect(f.invitations.rows).toEqual([]);
+	});
+
+	describe('that overtook its Invite, with no copy of the room here yet', () => {
+		const noCopy = async (options: Parameters<typeof chatRosterFixture>[0] = {}) => {
+			const f = chatRosterFixture(options);
+			await f.rooms.delete('mirror');
+			return f;
+		};
+
+		test('keeps the Invite from offering what was cancelled', async () => {
+			const f = await noCopy();
+
+			await f.inbox.undo(bob, undoInvite(at(2)), f.resolver);
+			await f.inbox.invite(bob, invite(at(1)));
+
+			expect(f.invitations.rows).toEqual([]);
+		});
+
+		test('remembers for no longer than the room\'s other early activities', async () => {
+			const f = await noCopy();
+
+			await f.inbox.undo(bob, undoInvite(at(2)), f.resolver);
+
+			expect([...f.redisClient.lists.keys()]).toEqual([`chat_pending_room_activity_events:${MIRROR_URI}`]);
+		});
+
+		test('leaves a newer invitation standing', async () => {
+			const f = await noCopy();
+
+			await f.inbox.undo(bob, undoInvite(at(2)), f.resolver);
+			await f.inbox.invite(bob, invite(at(3)));
+
+			expect(f.invitations.rows).toEqual([expect.objectContaining({ roomId: 'mirror', userId: alice.id })]);
+		});
+
+		test('without a time goes by arrival: the Invite that follows still counts', async () => {
+			const f = await noCopy();
+
+			await f.inbox.undo(bob, undoInvite(), f.resolver);
+			await f.inbox.invite(bob, invite(at(1)));
+
+			expect(f.invitations.rows).toHaveLength(1);
+		});
+
+		test('from a server the room is not on is not kept', async () => {
+			const f = await noCopy();
+
+			const result = await f.inbox.undo(carol, { ...undoInvite(at(2)), actor: carol.uri, object: { ...invite(), actor: carol.uri } }, f.resolver);
+
+			expect(result).toMatch(/^skip:/);
+			expect(f.redisClient.lists.size).toBe(0);
+		});
+
+		test('of a room since deleted is not kept', async () => {
+			const f = await noCopy();
+			await f.chatRosterService.markRoomDeletedByOwner(MIRROR_URI);
+
+			expect(await f.inbox.undo(bob, undoInvite(at(2)), f.resolver)).toBe('skip: room was deleted');
+			expect(f.redisClient.lists.size).toBe(0);
+		});
+	});
+
 	test('from someone other than the owner changes nothing', async () => {
 		const f = chatRosterFixture({ memberships: [['mirror', alice.id]] });
 
