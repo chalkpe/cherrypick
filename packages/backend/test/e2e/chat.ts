@@ -350,6 +350,7 @@ describe('chat/messages/update', () => {
 			const service = Object.assign(Object.create(ChatService.prototype), {
 				chatMessagesRepository: messages,
 				globalEventService: { publishChatUserStream: (...args: unknown[]) => events.push(args) },
+				userBlockingService: { checkBlocked: async () => false },
 			}) as ChatService;
 			const actor = { id: bob.id, host: 'remote.test' } as MiUser;
 			await Promise.all([0, 1].map(() => service.reactRemote(actor, { ...snapshot, reactions: [] }, '👍')));
@@ -382,6 +383,7 @@ describe('chat/messages/update', () => {
 					createQueryBuilder: messages.createQueryBuilder.bind(messages),
 				},
 				globalEventService: { publishChatUserStream: (...args: unknown[]) => events.push(args) },
+				userBlockingService: { checkBlocked: async () => false },
 			}) as ChatService;
 			const error = await service[method](created.body.id, bob.id, '👍').then(() => null, error => error);
 			assert.deepStrictEqual((await messages.findOneByOrFail({ id: created.body.id })).reactions, []);
