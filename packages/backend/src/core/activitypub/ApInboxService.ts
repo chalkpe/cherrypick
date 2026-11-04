@@ -579,11 +579,15 @@ export class ApInboxService {
 
 		const member = await this.localRoomMemberFrom(room, getApIds(activity.to), resolver);
 		if (member == null) return 'skip: no local members in room';
-		resolver.signAs(member);
+
+		// Only this request speaks for the member. The resolver of the activity also fetches the next item of a
+		// collection and the actors the message names, and createNote takes what it fetched as publicly readable.
+		const memberResolver = await this.apResolverService.createResolver();
+		memberResolver.signAs(member);
 
 		let object: IObject;
 		try {
-			object = await resolver.resolve(messageUri);
+			object = await memberResolver.resolve(messageUri);
 		} catch (err) {
 			// The author's server serves it to members only and may not have heard that ours joined yet.
 			throw new Error(`relayed chat message is not available yet: ${messageUri}: ${err}`);

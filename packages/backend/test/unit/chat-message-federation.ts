@@ -8,6 +8,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatMessageAccessError, ChatService, ChatRoomArchivedError } from '@/core/ChatService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
+import { Resolver } from '@/core/activitypub/ApResolverService.js';
 import { StatusError } from '@/misc/status-error.js';
 import {
 	buildChatDelete,
@@ -1799,6 +1800,7 @@ describe('ApInboxService chat activity routing', () => {
 				_misskey_chatRoom: roomUri,
 			};
 			const resolver = { resolve: vi.fn(async () => note), signAs: vi.fn() };
+			(f.inbox as never as { apResolverService: { createResolver: ReturnType<typeof vi.fn> } }).apResolverService.createResolver.mockResolvedValue(resolver);
 			const room = { id: 'r1', ownerId: f.actor.id, uri: roomUri };
 			f.chatRoomsRepository.findOneBy.mockResolvedValue(room);
 			f.chatService.isRoomMember.mockResolvedValue(true);
@@ -1818,8 +1820,9 @@ describe('ApInboxService chat activity routing', () => {
 				context: roomUri,
 				_misskey_chatRoom: roomUri,
 			};
-			const send = (activity: object = announce) => (f.inbox as never as { announce: (...args: unknown[]) => Promise<string> }).announce(f.actor, activity, resolver);
-			return { ...f, note, resolver, room, announce, send };
+			const inboundResolver = { resolve: vi.fn(async (value: unknown) => value) };
+			const send = (activity: object = announce) => (f.inbox as never as { announce: (...args: unknown[]) => Promise<string> }).announce(f.actor, activity, inboundResolver);
+			return { ...f, note, resolver, inboundResolver, room, announce, send };
 		}
 
 		test('fetches the original as a local member and stores it from its author', async () => {
@@ -1830,6 +1833,77 @@ describe('ApInboxService chat activity routing', () => {
 			expect(f.resolver.signAs).toHaveBeenCalledWith(f.localUser);
 			expect(f.resolver.resolve).toHaveBeenCalledWith(noteUri);
 			expect(f.chatService.createMessageToRoom).toHaveBeenCalledWith(author, f.room, expect.objectContaining({ text: 'relayed', uri: noteUri }));
+		});
+
+		/** Real resolvers over a recording network, to see which requests carry the key of the member. */
+		function useRealResolvers(f: ReturnType<typeof createRelay>) {
+			const serve = (uri: string) => uri === noteUri ? f.note : { '@context': 'https://www.w3.org/ns/activitystreams', id: uri, type: 'Note' };
+			const signedGet = vi.fn(async (uri: string, _user: unknown) => serve(uri));
+			const getActivityJson = vi.fn(async (uri: string) => serve(uri));
+			const createResolver = async () => new Resolver(
+				{} as never,
+				{ signToActivityPubGet: false } as never,
+				{} as never,
+				{} as never,
+				{} as never,
+				{} as never,
+				{} as never,
+				{ extractDbHost: (uri: string) => new URL(uri).host, isSelfHost: () => false, isFederationAllowedHost: () => true } as never,
+				{} as never,
+				{ signedGet } as never,
+				{ getActivityJson } as never,
+				{} as never,
+				{} as never,
+				{ getLogger: () => ({}) } as never,
+			);
+			(f.inbox as never as { apResolverService: { createResolver: unknown } }).apResolverService.createResolver = createResolver;
+			Object.assign(f.actor, { lastFetchedAt: new Date() });
+			return { signedGet, getActivityJson };
+		}
+
+		test('does not lend the key of the member to the next item of a collection', async () => {
+			const f = createRelay();
+			const { signedGet, getActivityJson } = useRealResolvers(f);
+			const featured = `${f.actor.uri}/featured`;
+			const followersOnlyNote = 'https://third.test/notes/followers-only';
+			Object.assign(f.actor, { featured });
+			Object.assign((f.inbox as never as { apNoteService: object }).apNoteService, {
+				resolveNote: async (uri: string, options: { resolver: Resolver }) => {
+					await options.resolver.resolve(uri);
+					return { id: 'pinned' };
+				},
+			});
+			Object.assign(f.inbox, { notePiningService: { addPinned: vi.fn() } });
+
+			await f.inbox.performActivity(f.actor as never, {
+				type: 'Collection',
+				items: [
+					f.announce,
+					{ id: `${f.actor.uri}/add/1`, type: 'Add', actor: f.actor.uri, target: featured, object: followersOnlyNote },
+				],
+			} as never);
+
+			expect(signedGet.mock.calls.map(([uri, user]) => [uri, user])).toEqual([[noteUri, f.localUser]]);
+			expect(getActivityJson.mock.calls.map(([uri]) => uri)).toEqual([followersOnlyNote]);
+		});
+
+		test('does not lend the key of the member to the actors the message names', async () => {
+			const f = createRelay();
+			const { signedGet, getActivityJson } = useRealResolvers(f);
+			const namedActor = 'https://third.test/users/named';
+			f.note.to.push(namedActor);
+			const { resolvePerson } = (f.inbox as never as { apPersonService: { resolvePerson: ReturnType<typeof vi.fn> } }).apPersonService;
+			const known = resolvePerson.getMockImplementation() as (uri: string) => Promise<unknown>;
+			resolvePerson.mockImplementation(async (uri: string, resolver: Resolver) => {
+				if (uri === namedActor) await resolver.resolve(uri);
+				return known(uri);
+			});
+
+			await f.inbox.performActivity(f.actor as never, f.announce as never);
+
+			expect(signedGet.mock.calls.map(([uri, user]) => [uri, user])).toEqual([[noteUri, f.localUser]]);
+			expect(getActivityJson.mock.calls.map(([uri]) => uri)).toEqual([namedActor]);
+			expect(f.chatService.createMessageToRoom).toHaveBeenCalledWith(author, f.room, expect.objectContaining({ uri: noteUri }));
 		});
 
 		test('only the room owner can relay', async () => {
@@ -1873,7 +1947,7 @@ describe('ApInboxService chat activity routing', () => {
 
 		test('an Announce without a room context is still an ordinary boost', async () => {
 			const f = createRelay();
-			f.resolver.resolve.mockResolvedValue({ type: 'Unknown' } as never);
+			f.inboundResolver.resolve.mockResolvedValue({ type: 'Unknown' });
 
 			expect(await f.send({ id: 'https://remote.test/announces/1', type: 'Announce', actor: f.actor.uri, object: noteUri })).toBe('skip: unknown object type Unknown');
 			expect(f.resolver.signAs).not.toHaveBeenCalled();
