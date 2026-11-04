@@ -934,9 +934,9 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			// Get fromUser
+			// Get fromUser. A message is out of sight here while its author is suspended, and comes back when that ends.
 			const fromUser = await this.usersRepository.findOneBy({ id: message.fromUserId });
-			if (fromUser == null || fromUser.host !== null) {
+			if (fromUser == null || fromUser.host !== null || fromUser.isSuspended) {
 				reply.code(404);
 				return;
 			}
