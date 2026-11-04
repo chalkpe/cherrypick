@@ -119,6 +119,37 @@ test('안내창에 바뀔 값을 보여주고, 역할 이름은 MFM으로 해석
 	expect(loweredText).toContain('20480MB');
 });
 
+test('요청 빈도 제한은 부동소수점 오차 없이 백분율로 보여준다', async () => {
+	answer('fix', 'skip');
+	const withFactor = (name: string, lower: number, value: number): RoleTierRole => ({
+		...tierRole(name, lower),
+		policies: { rateLimitFactor: { useDefault: false, priority: 0, value } },
+	});
+
+	// 2.3 * 100은 229.99999999999997이다.
+	await confirmRoleTierFix(withFactor('높음', 50000, 2.3), [withFactor('낮음', 30000, 1)], { rateLimitFactor: 1 });
+
+	expect(mocks.actions.mock.calls[1][0].text).toContain('230%');
+});
+
+test.each([
+	['inviteLimit', 5],
+	['inviteExpirationTime', 60],
+])('0이 무제한인 %s는 복사할 값을 0이 아니라 무제한으로 보여준다', async (key, value) => {
+	answer('fix', 'skip');
+	const withPolicy = (name: string, lower: number, policyValue: number): RoleTierRole => ({
+		...tierRole(name, lower),
+		policies: { [key]: { useDefault: false, priority: 0, value: policyValue } },
+	});
+
+	await confirmRoleTierFix(withPolicy('높음', 50000, value), [withPolicy('낮음', 30000, 0)], { [key]: 1 });
+
+	const text: string = mocks.actions.mock.calls[1][0].text;
+	expect(i18n.ts._role._tierFix.unlimited).toBeTruthy();
+	expect(text).toContain(`→ ${i18n.ts._role._tierFix.unlimited}`);
+	expect(text).not.toContain('→ 0');
+});
+
 test.each<[number, () => string]>([
 	[31536000, () => `365${i18n.ts._time.day}`],
 	[7200, () => `2${i18n.ts._time.hour}`],
@@ -136,10 +167,13 @@ test.each<[number, () => string]>([
 	expect(mocks.actions.mock.calls[0][0].text).toContain(expected());
 });
 
-test('역할 이름에 닫는 plain 태그가 있어도 뒷부분을 MFM으로 해석하지 않는다', async () => {
+test.each([
+	['x</plain> $[spin boom] @admin'],
+	['x</pl</plain>ain> $[spin boom] @admin'],
+])('역할 이름에 닫는 plain 태그가 있어도 뒷부분을 MFM으로 해석하지 않는다: %s', async (name) => {
 	answer('saveAsIs');
 
-	await confirmRoleTierFix(tierRole('높음', 50000), [tierRole('x</plain> $[spin boom] @admin', 30000)], base);
+	await confirmRoleTierFix(tierRole('높음', 50000), [tierRole(name, 30000)], base);
 
 	const nodes = mfm.parse(mocks.actions.mock.calls[0][0].text);
 	expect(mfm.extract(nodes, node => node.type === 'mention' || node.type === 'fn')).toEqual([]);

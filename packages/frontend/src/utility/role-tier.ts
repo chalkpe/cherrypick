@@ -81,7 +81,7 @@ const TIER_METRICS = [
 /** 값이 크거나 켜져 있을수록 사용자에게 더 엄격한 권한 */
 const HIGHER_IS_STRICTER = new Set(['rateLimitFactor', 'inviteLimitCycle', 'alwaysMarkNsfw']);
 /** 0이 무제한을 뜻하는 권한 */
-const ZERO_IS_UNLIMITED = new Set(['inviteLimit', 'inviteExpirationTime']);
+export const ZERO_IS_UNLIMITED = new Set(['inviteLimit', 'inviteExpirationTime']);
 const CHAT_AVAILABILITY_RANK: Record<string, number | undefined> = { unavailable: 0, readonly: 1, available: 2 };
 
 function canonicalTerm(term: RoleTierFormula): string {
@@ -205,34 +205,45 @@ function isLowerPolicy(key: string, value: unknown, reference: unknown): boolean
 export function findLoweredRolePolicies(groups: RoleTierGroup[], basePolicies: Record<string, unknown>): LoweredRolePolicy[] {
 	const found = new Map<string, LoweredRolePolicy>();
 
-	for (const group of groups) {
-		for (const key of Object.keys(basePolicies)) {
-			let floor: { useDefault: boolean; priority: number; value: unknown; lower: number } | null = null;
+	// 한 역할이 여러 항목의 등급에 속하면 뒤 그룹에서 올린 값이 앞 그룹의 비교 결과를 바꾸므로,
+	// 더 올릴 값이 없을 때까지 반복한다. 값은 올라가기만 하고 후보도 정해져 있어 반드시 끝난다.
+	let changed = true;
+	while (changed) {
+		changed = false;
 
-			for (const { role, lower } of group.members) {
-				const meta = role.policies[key];
-				// 서버처럼 항목이 없으면 기본값으로, useDefault가 없으면 지정된 값으로 읽는다.
-				const useDefault = meta == null || meta.useDefault === true;
-				const current = { useDefault, priority: meta?.priority ?? 0, value: useDefault ? basePolicies[key] : meta.value };
+		for (const group of groups) {
+			for (const key of Object.keys(basePolicies)) {
+				let floor: { useDefault: boolean; priority: number; value: unknown; lower: number } | null = null;
 
-				if (floor == null || !isLowerPolicy(key, current.value, floor.value) || (floor.lower < lower && current.priority > floor.priority)) {
-					floor = { ...current, lower };
-					continue;
+				for (const { role, lower } of group.members) {
+					const id = `${role.id}:${key}`;
+					// 이미 복사하기로 한 값이 있으면 그 값을 기준으로 비교한다.
+					const pending = found.get(id);
+					const meta = pending?.copied ?? role.policies[key];
+					// 서버처럼 항목이 없으면 기본값으로, useDefault가 없으면 지정된 값으로 읽는다.
+					const useDefault = meta == null || meta.useDefault === true;
+					const current = { useDefault, priority: meta?.priority ?? 0, value: useDefault ? basePolicies[key] : meta.value };
+
+					if (floor == null || !isLowerPolicy(key, current.value, floor.value) || (floor.lower < lower && current.priority > floor.priority)) {
+						floor = { ...current, lower };
+						continue;
+					}
+					if (floor.lower === lower) continue;
+
+					const merged: boolean = Array.isArray(current.value) && Array.isArray(floor.value);
+					const to: unknown = merged
+						? [...current.value as string[], ...missingFileTypes(current.value as string[], floor.value as string[])]
+						: floor.value;
+					found.set(id, {
+						role,
+						key,
+						from: pending?.from ?? current.value,
+						to,
+						copied: { useDefault: !merged && floor.useDefault, priority: floor.priority, value: to },
+					});
+					changed = true;
+					floor = { ...floor, value: to };
 				}
-				if (floor.lower === lower) continue;
-
-				const merged: boolean = Array.isArray(current.value) && Array.isArray(floor.value);
-				const to: unknown = merged
-					? [...current.value as string[], ...missingFileTypes(current.value as string[], floor.value as string[])]
-					: floor.value;
-				found.set(`${role.id}:${key}`, {
-					role,
-					key,
-					from: current.value,
-					to,
-					copied: { useDefault: !merged && floor.useDefault, priority: floor.priority, value: to },
-				});
-				floor = { ...floor, value: to };
 			}
 		}
 	}

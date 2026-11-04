@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
 	misskeyApi: vi.fn(),
 	push: vi.fn(),
 	editedRole: null as Record<string, unknown> | null,
+	edit: null as ((patch: Record<string, unknown>) => void) | null,
 }));
 
 vi.mock('@/os.js', () => ({ actions: mocks.actions, apiWithDialog: mocks.apiWithDialog }));
@@ -28,6 +29,7 @@ vi.mock('@/pages/admin/roles.editor.vue', () => ({
 		props: { modelValue: { type: Object, required: true } },
 		emits: ['update:modelValue'],
 		setup(props, { emit }) {
+			mocks.edit = (patch) => emit('update:modelValue', { ...props.modelValue, ...patch });
 			onMounted(() => {
 				if (mocks.editedRole) emit('update:modelValue', { ...props.modelValue, ...mocks.editedRole });
 			});
@@ -163,6 +165,26 @@ test('저장에 실패한 뒤에는 다시 저장할 수 있다', async () => {
 	await flush();
 
 	expect(mocks.apiWithDialog).toHaveBeenCalledTimes(2);
+});
+
+test('역할 목록을 불러오는 동안 고친 내용도 저장한다', async () => {
+	let resolveList: (roles: unknown[]) => void = () => {};
+	mocks.misskeyApi.mockImplementation((endpoint: string) => (endpoint === 'admin/roles/show'
+		? Promise.resolve(structuredClone(high))
+		: new Promise(resolve => { resolveList = resolve; })));
+	const editedPolicies = { clipLimit: { useDefault: false, priority: 0, value: 5 } };
+
+	const saveButton = await mountPage('high');
+	await fireEvent.click(saveButton);
+	await flush();
+	mocks.edit?.({ policies: editedPolicies });
+	await flush();
+	resolveList([]);
+	await flush();
+
+	expect(mocks.apiWithDialog.mock.calls).toEqual([
+		['admin/roles/update', expect.objectContaining({ roleId: 'high', policies: editedPolicies })],
+	]);
 });
 
 test('안내창을 닫으면 아무것도 저장하지 않고 편집 화면에 남는다', async () => {

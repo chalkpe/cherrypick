@@ -103,9 +103,10 @@ async function save() {
 async function saveRole() {
 	if (data.value === null) return;
 
-	const current: RoleTierRole = { ...data.value, id: role.value?.id ?? null };
 	// 안내는 저장을 돕는 부가 기능이므로, 목록을 불러오지 못해도 저장은 막지 않는다.
 	const roles = await misskeyApi('admin/roles/list').catch(() => []);
+	// 목록을 불러오는 동안에는 편집할 수 있으므로, 불러온 뒤의 내용으로 저장한다.
+	const current: RoleTierRole = { ...data.value, id: role.value?.id ?? null };
 	const others = roles.filter(r => r.id !== current.id);
 	const fix = await confirmRoleTierFix(current, others, instance.policies);
 	if (fix === null) return;

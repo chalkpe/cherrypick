@@ -2512,6 +2512,7 @@ _role:
     loweredText: "より難しい条件なのに、既存のロールより権限が下がります。下がる部分だけコピーしますか？"
     copyLowered: "下がる部分だけコピー"
     doNotCopy: "コピーしない"
+    unlimited: "無制限"
   priority: "優先度"
   _priority:
     low: "低"

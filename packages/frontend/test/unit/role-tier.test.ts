@@ -252,6 +252,40 @@ describe('findLoweredRolePolicies', () => {
 		)).toEqual([['높음', 'clipLimit', 10, 200]]);
 	});
 
+	const term = (type: string, value: number) => ({ id: `${type}-${value}`, type, value });
+	const multiTierRole = (name: string, notes: number, followers: number, policies: Policies = {}): RoleTierRole => ({
+		...tierRole(name, 0, null, policies),
+		condFormula: {
+			id: `${name}-and`,
+			type: 'and',
+			values: [term('notesMoreThanOrEq', notes), term('followersMoreThanOrEq', followers)],
+		},
+	});
+
+	test.each([
+		['먼저 비교한 항목의 값이 더 높아도', 100, 50],
+		['나중에 비교한 항목의 값이 더 높아도', 50, 100],
+	])('한 역할이 두 항목의 등급에 함께 속하면 %s 가장 높은 값으로 복사한다', (_, notesPeerValue, followersPeerValue) => {
+		expect(lowered(
+			{ clipLimit: 10 },
+			multiTierRole('높음', 1000, 1000),
+			multiTierRole('노트 낮음', 10, 1000, { clipLimit: policy(notesPeerValue) }),
+			multiTierRole('팔로워 낮음', 1000, 10, { clipLimit: policy(followersPeerValue) }),
+		)).toEqual([['높음', 'clipLimit', 10, 100]]);
+	});
+
+	test('다른 항목의 등급에서 올린 값이 앞서 비교한 상위 역할보다 높아지면 그 역할도 올린다', () => {
+		expect(lowered(
+			{ clipLimit: 1 },
+			multiTierRole('중간', 100, 100, { clipLimit: policy(10) }),
+			multiTierRole('노트 높음', 1000, 100, { clipLimit: policy(50) }),
+			multiTierRole('팔로워 낮음', 100, 10, { clipLimit: policy(100) }),
+		)).toEqual([
+			['중간', 'clipLimit', 10, 100],
+			['노트 높음', 'clipLimit', 50, 100],
+		]);
+	});
+
 	test('상위 역할의 권한이 같거나 높으면 찾지 않는다', () => {
 		expect(lowered(
 			{ clipLimit: 10 },

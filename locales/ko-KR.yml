@@ -2482,6 +2482,7 @@ _role:
     loweredText: "더 어려운 조건인데 기존 역할보다 권한이 낮아져요. 기존 역할보다 낮아지는 부분만 복사할까요?"
     copyLowered: "낮아지는 부분만 복사"
     doNotCopy: "복사 안 함"
+    unlimited: "무제한"
   priority: "우선순위"
   _priority:
     low: "낮음"

@@ -9695,6 +9695,10 @@ export interface Locale extends ILocale {
              * コピーしない
              */
             "doNotCopy": string;
+            /**
+             * 無制限
+             */
+            "unlimited": string;
         };
         /**
          * 優先度

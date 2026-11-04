@@ -2477,6 +2477,7 @@ _role:
     loweredText: "A role with a harder condition would have lower permissions than an existing role. Copy only the lowered parts?"
     copyLowered: "Copy only lowered parts"
     doNotCopy: "Don't copy"
+    unlimited: "Unlimited"
   priority: "Priority"
   _priority:
     low: "Low"
