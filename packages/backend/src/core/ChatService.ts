@@ -1055,10 +1055,6 @@ export class ChatService {
 
 		const inviter = await this.usersRepository.findOneByOrFail({ id: inviterId });
 
-		// A Remove from before this invitation, still on its way, must not end what comes of it.
-		const invitedAt = this.idService.parse(invitation.id).date;
-		await this.chatRosterService.advance(room.id, inviteeId, invitedAt);
-
 		// Send local notification if invitee is local
 		if (this.userEntityService.isLocalUser(invitee)) {
 			this.notificationService.createNotification(inviteeId, 'chatRoomInvitationReceived', {
@@ -1074,7 +1070,7 @@ export class ChatService {
 			const inviteActivity = this.apRendererService.renderInvite(roomObject, inviteeUri, inviter);
 			const activity = {
 				...inviteActivity,
-				published: invitedAt.toISOString(),
+				published: this.idService.parse(invitation.id).date.toISOString(),
 			};
 			this.queueService.deliver(inviter, this.apRendererService.addContext(activity), invitee.inbox, false);
 		}
@@ -1161,7 +1157,7 @@ export class ChatService {
 			return created as MiChatRoomMembership;
 		});
 
-		await this.chatRosterService.recordAccepted(roomId, userId, this.idService.parse(invitation.id).date, new Date());
+		await this.chatRosterService.recordAccepted(roomId, userId, new Date());
 		this.notifyRoomListChanged([userId]);
 
 		// Federation: Notify about acceptance and new member

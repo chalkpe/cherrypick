@@ -15,10 +15,15 @@ import type { ChatRoomRosterStatesRepository, MiChatRoom, MiUser } from '@/model
 const ROSTER_SYNC_INTERVAL = 60;
 // Longer than the longest an activity can spend being retried, so nothing outlives the record of its room.
 const DELETED_ROOM_TTL = 31 * 24 * 60 * 60;
+// A record that says nothing about the owner's clock: older than anything the owner can state.
+const NO_OWNER_TIME = new Date(0);
 
 /**
  * Keeps a room's membership changes in order. Another server's changes can arrive in any order, and only the room
  * owner's server knows the whole membership, so this also remembers which rooms are gone and asks for the membership again.
+ *
+ * Servers' clocks do not agree, so a time is only ever compared with another time from the same server:
+ * lastRosterAt holds what the room's owner stated, and lastMemberAt what the member's own server stated.
  */
 @Injectable()
 export class ChatRosterService {
@@ -69,26 +74,61 @@ export class ChatRosterService {
 		return await this.claim(roomId, userId, rosterAt, '<');
 	}
 
-	/** For a new membership that has no time of its own to compare. A record already here says more than this does. */
+	/** For a new membership from an owner that states no time. A record already here says more than this does. */
 	@bindThis
-	public async recordIfMissing(roomId: MiChatRoom['id'], userId: MiUser['id'], at: Date): Promise<void> {
+	public async recordIfMissing(roomId: MiChatRoom['id'], userId: MiUser['id']): Promise<void> {
 		await this.chatRoomRosterStatesRepository.query(
 			'INSERT INTO "chat_room_roster_state" ("roomId", "userId", "lastRosterAt") VALUES ($1, $2, $3) ON CONFLICT ("roomId", "userId") DO NOTHING',
-			[roomId, userId, at],
+			[roomId, userId, NO_OWNER_TIME],
 		);
 	}
 
 	/**
-	 * Someone here accepted an invitation. This is not a change by the owner, so the time of the invitation stays
+	 * Someone here accepted an invitation. This is not a change by the owner, so what the owner stated last stays
 	 * what a cancellation is compared with: one that crossed this acceptance still has to apply.
 	 */
 	@bindThis
-	public async recordAccepted(roomId: MiChatRoom['id'], userId: MiUser['id'], invitedAt: Date, acceptedAt: Date): Promise<void> {
+	public async recordAccepted(roomId: MiChatRoom['id'], userId: MiUser['id'], acceptedAt: Date): Promise<void> {
 		await this.chatRoomRosterStatesRepository.query(
 			`INSERT INTO "chat_room_roster_state" ("roomId", "userId", "lastRosterAt", "acceptedAt") VALUES ($1, $2, $3, $4)
 			ON CONFLICT ("roomId", "userId") DO UPDATE SET "acceptedAt" = EXCLUDED."acceptedAt"`,
-			[roomId, userId, invitedAt, acceptedAt],
+			[roomId, userId, NO_OWNER_TIME, acceptedAt],
 		);
+	}
+
+	/** In a room owned here: a member's server accepted, stating the time by its own clock if it states one at all. */
+	@bindThis
+	public async recordMemberAccept(roomId: MiChatRoom['id'], userId: MiUser['id'], published: Date | null): Promise<void> {
+		await this.chatRoomRosterStatesRepository.query(
+			`INSERT INTO "chat_room_roster_state" ("roomId", "userId", "lastRosterAt", "lastMemberAt") VALUES ($1, $2, $3, $4)
+			ON CONFLICT ("roomId", "userId") DO UPDATE SET
+				"lastRosterAt" = GREATEST("chat_room_roster_state"."lastRosterAt", EXCLUDED."lastRosterAt"),
+				"lastMemberAt" = GREATEST("chat_room_roster_state"."lastMemberAt", EXCLUDED."lastMemberAt")`,
+			[roomId, userId, new Date(), published],
+		);
+	}
+
+	/**
+	 * In a room owned here: whether a member's own Remove may apply, recording it if so. It goes against what the same
+	 * server said last, so that a Remove from before an acceptance changes nothing however far its clock is from this one.
+	 */
+	@bindThis
+	public async claimOwnRemove(roomId: MiChatRoom['id'], userId: MiUser['id'], published: Date | null): Promise<boolean> {
+		if (published == null) return true;
+		const rows = await this.chatRoomRosterStatesRepository.query(
+			`INSERT INTO "chat_room_roster_state" ("roomId", "userId", "lastRosterAt", "lastMemberAt") VALUES ($1, $2, $3, $4)
+			ON CONFLICT ("roomId", "userId") DO UPDATE SET "lastMemberAt" = EXCLUDED."lastMemberAt"
+			WHERE "chat_room_roster_state"."lastMemberAt" IS NULL OR "chat_room_roster_state"."lastMemberAt" <= EXCLUDED."lastMemberAt"
+			RETURNING "lastMemberAt"`,
+			[roomId, userId, NO_OWNER_TIME, published],
+		);
+		return rows.length > 0;
+	}
+
+	@bindThis
+	public async lastMemberAt(roomId: MiChatRoom['id'], userId: MiUser['id']): Promise<Date | null> {
+		const state = await this.chatRoomRosterStatesRepository.findOneBy({ roomId, userId });
+		return state?.lastMemberAt ?? null;
 	}
 
 	/** Their own acceptance is what lets an Add from the owner make someone here a member, until they leave or are removed. */

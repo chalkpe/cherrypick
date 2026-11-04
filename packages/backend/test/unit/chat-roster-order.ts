@@ -102,14 +102,6 @@ describe('the order of Add and Remove in a room', () => {
 		expect(membersOf(f, 'mirror')).toEqual([]);
 	});
 
-	test('a member\'s own Remove older than the time they rejoined does not remove them from a room owned here', async () => {
-		const f = chatRosterFixture({ memberships: [['localroom', carol.id]], states: [['localroom', carol.id, at(2)]] });
-
-		await f.inbox.remove(carol, remove(carol, at(1), carol, LOCAL_ROOM_URI));
-
-		expect(membersOf(f, 'localroom')).toEqual([carol.id]);
-	});
-
 	test('someone who is not in a room owned here leaves no record by saying they left', async () => {
 		const f = chatRosterFixture();
 
@@ -157,18 +149,31 @@ describe('a Reject among the changes', () => {
 		published,
 	});
 
-	test('older than the invitation now pending does not consume it', async () => {
-		const f = chatRosterFixture({ invitations: [['localroom', carol.id]], states: [['localroom', carol.id, at(2)]] });
+	test('older than what the same server said last does not consume the invitation now pending', async () => {
+		const f = chatRosterFixture({ invitations: [['localroom', carol.id]] });
+		f.states.memberAt.set(`localroom/${carol.id}`, new Date(at(2)));
+		f.states.rows.set(`localroom/${carol.id}`, new Date(0));
 
 		await f.inbox.reject(carol, reject(at(1)), f.resolver);
 
 		expect(f.invitations.rows).toHaveLength(1);
 	});
 
-	test.each([[at(3)], [undefined]])('newer than it, or without a time, consumes it (%s)', async (published) => {
-		const f = chatRosterFixture({ invitations: [['localroom', carol.id]], states: [['localroom', carol.id, at(2)]] });
+	test.each([[at(3)], [undefined]])('newer than that, or without a time, consumes it (%s)', async (published) => {
+		const f = chatRosterFixture({ invitations: [['localroom', carol.id]] });
+		f.states.memberAt.set(`localroom/${carol.id}`, new Date(at(2)));
+		f.states.rows.set(`localroom/${carol.id}`, new Date(0));
 
 		await f.inbox.reject(carol, reject(published), f.resolver);
+
+		expect(f.invitations.rows).toEqual([]);
+	});
+
+	test('is not compared with the time of the invitation, which is by another clock', async () => {
+		const f = chatRosterFixture();
+		await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
+
+		await f.inbox.reject(carol, reject(at(0)), f.resolver);
 
 		expect(f.invitations.rows).toEqual([]);
 	});
@@ -308,14 +313,12 @@ describe('what this server sends states its time in milliseconds', () => {
 		expect(f.delivered().find(({ activity }) => activity.type === 'Undo')?.activity.published).toMatch(MILLISECOND_ISO_8601);
 	});
 
-	test('Invite, and it counts as the last change for the invitee', async () => {
+	test('Invite', async () => {
 		const f = chatRosterFixture();
 
 		await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
 
-		const delivered = f.delivered().find(({ activity }) => activity.type === 'Invite');
-		expect(delivered?.activity.published).toMatch(MILLISECOND_ISO_8601);
-		expect(f.states.rows.get(`localroom/${carol.id}`)?.toISOString()).toBe(delivered?.activity.published);
+		expect(f.delivered().find(({ activity }) => activity.type === 'Invite')?.activity.published).toMatch(MILLISECOND_ISO_8601);
 	});
 
 	test('Reject when refusing an invitation', async () => {
@@ -569,5 +572,122 @@ describe('every way of becoming a member leaves a record', () => {
 			'core/activitypub/ApInboxService.ts',
 			'queue/processors/ChatRoomRosterSyncProcessorService.ts',
 		]);
+	});
+});
+
+describe('servers whose clocks disagree', () => {
+	const NOW = Date.now();
+	const accepted = (published: string) => ({
+		type: 'Accept',
+		actor: carol.uri,
+		object: { type: 'Invite', actor: `${LOCAL}/users/${alice.id}`, object: { id: LOCAL_ROOM_URI, type: 'Group' }, target: carol.uri },
+		published,
+	});
+	const ownRemove = (published: string) => remove(carol, published, carol, LOCAL_ROOM_URI);
+	const room = (f: ReturnType<typeof chatRosterFixture>) => f.rooms.findOneBy({ id: 'localroom' }) as never;
+
+	// The member's clock reads this far from the owner's. Ahead stays within what counts as a date at all.
+	describe.each([
+		['an hour behind', -60 * 60 * 1000],
+		['four minutes ahead', 4 * 60 * 1000],
+	])('in a room owned here, with a member\'s server %s', (_label, skew) => {
+		const memberClock = (seconds: number) => new Date(NOW + skew + seconds * 1000).toISOString();
+
+		test('leaving right after accepting counts', async () => {
+			const f = chatRosterFixture();
+			await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
+			await f.inbox.accept(carol, accepted(memberClock(0)), f.resolver);
+			expect(membersOf(f, 'localroom')).toEqual([carol.id]);
+
+			await f.inbox.remove(carol, ownRemove(memberClock(1)));
+
+			expect(membersOf(f, 'localroom')).toEqual([]);
+		});
+
+		test('leaving right after being invited again and accepting counts', async () => {
+			const f = chatRosterFixture();
+			await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
+			await f.inbox.accept(carol, accepted(memberClock(-20)), f.resolver);
+			await f.chatService.kickRoomMember(alice as never, await room(f), carol.id);
+			await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
+			await f.inbox.accept(carol, accepted(memberClock(0)), f.resolver);
+
+			await f.inbox.remove(carol, ownRemove(memberClock(1)));
+
+			expect(membersOf(f, 'localroom')).toEqual([]);
+		});
+
+		test('a leave from before the new membership, arriving late, does not end it', async () => {
+			const f = chatRosterFixture();
+			await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
+			await f.inbox.accept(carol, accepted(memberClock(-20)), f.resolver);
+			await f.chatService.kickRoomMember(alice as never, await room(f), carol.id);
+			await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
+			await f.inbox.accept(carol, accepted(memberClock(0)), f.resolver);
+
+			await f.inbox.remove(carol, ownRemove(memberClock(-10)));
+
+			expect(membersOf(f, 'localroom')).toEqual([carol.id]);
+		});
+
+		test('a leave that overtook its Accept keeps them out', async () => {
+			const f = chatRosterFixture();
+			await f.chatService.createRoomInvitation(alice.id, 'localroom', carol.id);
+
+			await f.inbox.remove(carol, ownRemove(memberClock(1)));
+			await f.inbox.accept(carol, accepted(memberClock(0)), f.resolver);
+
+			expect(membersOf(f, 'localroom')).toEqual([]);
+			expect(f.invitations.rows).toEqual([]);
+		});
+	});
+
+	describe('in another server\'s room', () => {
+		const ownerClock = (seconds: number) => new Date(NOW - 60 * 60 * 1000 + seconds * 1000).toISOString();
+		const aliceHere = { uri: `${LOCAL}/users/${alice.id}` };
+
+		test('a cancellation crossing an acceptance applies though the owner\'s clock reads earlier than ours', async () => {
+			const f = chatRosterFixture();
+			await f.inbox.invite(bob, invite(ownerClock(0)));
+			await f.chatService.joinToRoom(alice.id, 'mirror');
+
+			await f.inbox.undo(bob, undoInvite(ownerClock(1)), f.resolver);
+
+			expect(membersOf(f, 'mirror')).toEqual([]);
+		});
+
+		test('a Remove from the owner after an acceptance applies though the owner\'s clock reads earlier than ours', async () => {
+			const f = chatRosterFixture();
+			await f.inbox.invite(bob, invite(ownerClock(0)));
+			await f.chatService.joinToRoom(alice.id, 'mirror');
+
+			await f.inbox.remove(bob, remove(aliceHere, ownerClock(1)));
+
+			expect(membersOf(f, 'mirror')).toEqual([]);
+		});
+
+		test('a late Remove from the owner, older than the invitation since accepted, changes nothing', async () => {
+			const f = chatRosterFixture();
+			await f.inbox.invite(bob, invite(ownerClock(0)));
+			await f.chatService.joinToRoom(alice.id, 'mirror');
+
+			await f.inbox.remove(bob, remove(aliceHere, ownerClock(-1)));
+
+			expect(membersOf(f, 'mirror')).toEqual([alice.id]);
+		});
+
+		test('a member leaving goes by arrival: their clock cannot be placed among the owner\'s', async () => {
+			const behind = chatRosterFixture({ memberships: [['mirror', carol.id]], states: [['mirror', carol.id, ownerClock(10)]] });
+			await behind.inbox.remove(carol, remove(carol, ownerClock(-100), carol));
+			expect(membersOf(behind, 'mirror')).toEqual([]);
+			expect(behind.states.rows.get(`mirror/${carol.id}`)?.toISOString()).toBe(ownerClock(10));
+
+			const ahead = chatRosterFixture({ memberships: [['mirror', carol.id]], states: [['mirror', carol.id, ownerClock(0)]] });
+			await ahead.inbox.remove(carol, remove(carol, new Date(NOW + 4 * 60 * 1000).toISOString(), carol));
+			expect(membersOf(ahead, 'mirror')).toEqual([]);
+
+			await ahead.inbox.add(bob, add(carol, ownerClock(10)));
+			expect(membersOf(ahead, 'mirror')).toEqual([carol.id]);
+		});
 	});
 });

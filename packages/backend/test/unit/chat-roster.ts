@@ -40,23 +40,37 @@ describe('parseRemoteChatDate', () => {
 function fakeStates(initial: [string, Date][] = []) {
 	const rows = new Map(initial);
 	const accepted = new Map<string, Date>();
+	const memberAt = new Map<string, Date>();
 	const key = (params: unknown[]) => `${params[0]}/${params[1]}`;
 	return {
 		rows,
 		accepted,
+		memberAt,
 		repository: {
 			findOneBy: async ({ roomId, userId }: { roomId: string; userId: string }) => {
 				const at = rows.get(`${roomId}/${userId}`);
-				return at == null ? null : { roomId, userId, lastRosterAt: at, acceptedAt: accepted.get(`${roomId}/${userId}`) ?? null };
+				return at == null ? null : { roomId, userId, lastRosterAt: at, acceptedAt: accepted.get(`${roomId}/${userId}`) ?? null, lastMemberAt: memberAt.get(`${roomId}/${userId}`) ?? null };
 			},
 			update: async ({ roomId, userId }: { roomId: string; userId: string }) => {
 				accepted.delete(`${roomId}/${userId}`);
 				return { affected: 1 };
 			},
-			query: async (sql: string, params: [string, string, Date, Date?]) => {
+			query: async (sql: string, params: [string, string, Date, (Date | null)?]) => {
 				const id = key(params);
 				const at = params[2];
 				const current = rows.get(id);
+				if (sql.includes('"lastMemberAt"')) {
+					const stated = memberAt.get(id);
+					if (sql.includes('IS NULL')) {
+						if (stated != null && !(stated <= params[3]!)) return [];
+						if (current == null) rows.set(id, at);
+						memberAt.set(id, params[3]!);
+						return [{ lastMemberAt: params[3] }];
+					}
+					if (current == null || current < at) rows.set(id, at);
+					if (params[3] != null && (stated == null || stated < params[3])) memberAt.set(id, params[3]);
+					return [];
+				}
 				if (sql.includes('"acceptedAt"')) {
 					if (current == null) rows.set(id, at);
 					accepted.set(id, params[3]!);
@@ -202,29 +216,61 @@ describe('the order of membership changes', () => {
 		expect(states.rows.get('room/carol')).toEqual(T3);
 	});
 
-	test('accepting keeps the time of the invitation, and is forgotten on request', async () => {
+	test('accepting here says nothing about the owner\'s clock, and is forgotten on request', async () => {
 		const { service, states } = rosterService({ states: [['room/bob', T1]] });
 
-		await service.recordAccepted('room', 'bob', T2, T3);
+		await service.recordAccepted('room', 'bob', T3);
 		expect(states.rows.get('room/bob')).toEqual(T1);
 		expect(await service.acceptedAt('room', 'bob')).toEqual(T3);
 
-		await service.recordAccepted('room', 'carol', T2, T3);
-		expect(states.rows.get('room/carol')).toEqual(T2);
+		await service.recordAccepted('room', 'carol', T3);
+		expect(states.rows.get('room/carol')).toEqual(new Date(0));
 
 		await service.forgetAccepted('room', 'bob');
 		expect(await service.acceptedAt('room', 'bob')).toBeNull();
 		expect(await service.acceptedAt('room', 'nobody')).toBeNull();
 	});
 
-	test('recording a new membership does not replace what is known', async () => {
+	test('recording a new membership does not replace what is known, and is older than anything the owner can say', async () => {
 		const { service, states } = rosterService({ states: [['room/bob', T1]] });
 
-		await service.recordIfMissing('room', 'bob', T3);
-		await service.recordIfMissing('room', 'carol', T3);
+		await service.recordIfMissing('room', 'bob');
+		await service.recordIfMissing('room', 'carol');
 
 		expect(states.rows.get('room/bob')).toEqual(T1);
-		expect(states.rows.get('room/carol')).toEqual(T3);
+		expect(states.rows.get('room/carol')).toEqual(new Date(0));
+		expect(await service.claimAdd('room', 'carol', T1)).toBe(true);
+	});
+
+	describe('what a member\'s own server says, by that server\'s clock', () => {
+		test('its Remove counts unless it is older than what that server said last', async () => {
+			const { service, states } = rosterService();
+
+			await service.recordMemberAccept('room', 'bob', T2);
+			expect(await service.lastMemberAt('room', 'bob')).toEqual(T2);
+			expect(await service.claimOwnRemove('room', 'bob', T1)).toBe(false);
+			expect(await service.claimOwnRemove('room', 'bob', T2)).toBe(true);
+			expect(await service.claimOwnRemove('room', 'bob', T3)).toBe(true);
+			expect(await service.lastMemberAt('room', 'bob')).toEqual(T3);
+			expect(states.rows.get('room/bob')?.getTime()).not.toBe(T3.getTime());
+		});
+
+		test('is not compared with what this server\'s clock has recorded', async () => {
+			const { service } = rosterService({ states: [['room/bob', T3]] });
+
+			expect(await service.claimOwnRemove('room', 'bob', T1)).toBe(true);
+		});
+
+		test('an Accept moves nothing back, and a server that states no time is taken in arrival order', async () => {
+			const { service } = rosterService();
+
+			await service.recordMemberAccept('room', 'bob', T2);
+			await service.recordMemberAccept('room', 'bob', T1);
+			await service.recordMemberAccept('room', 'bob', null);
+			expect(await service.lastMemberAt('room', 'bob')).toEqual(T2);
+			expect(await service.claimOwnRemove('room', 'bob', null)).toBe(true);
+			expect(await service.lastMemberAt('room', 'bob')).toEqual(T2);
+		});
 	});
 });
 

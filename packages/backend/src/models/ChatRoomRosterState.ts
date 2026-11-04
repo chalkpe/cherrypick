@@ -34,10 +34,18 @@ export class MiChatRoomRosterState {
 	public user: MiUser | null;
 
 	/**
-	 * 最後に適用した変更の時刻
+	 * 最後に適用した変更の、ルームの持ち主のサーバーの時計での時刻。サーバーの時計は揃っていないので、持ち主の時刻どうしだけを比べる
 	 */
 	@Column('timestamp with time zone')
 	public lastRosterAt: Date;
+
+	/**
+	 * このメンバーのサーバーが最後に述べた受諾・退出の、そのサーバーの時計での時刻。同じサーバーの時刻どうしだけを比べる
+	 */
+	@Column('timestamp with time zone', {
+		nullable: true,
+	})
+	public lastMemberAt: Date | null;
 
 	/**
 	 * このサーバーのユーザーが招待を受諾した時刻。退出するか外されると消える。

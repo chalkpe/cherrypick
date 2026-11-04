@@ -70,12 +70,15 @@ function fakeRepository(rows: Row[] = []) {
 function fakeStates(initial: [string, string, string][]) {
 	const rows = new Map(initial.map(([roomId, userId, at]) => [`${roomId}/${userId}`, new Date(at)]));
 	const acceptedAt = new Map<string, Date>();
+	const memberAt = new Map<string, Date>();
 	return {
 		rows,
 		acceptedAt,
+		memberAt,
 		findOneBy: async ({ roomId, userId }: { roomId: string; userId: string }) => {
-			const lastRosterAt = rows.get(`${roomId}/${userId}`);
-			return lastRosterAt == null ? null : { roomId, userId, lastRosterAt, acceptedAt: acceptedAt.get(`${roomId}/${userId}`) ?? null };
+			const key = `${roomId}/${userId}`;
+			const lastRosterAt = rows.get(key);
+			return lastRosterAt == null ? null : { roomId, userId, lastRosterAt, acceptedAt: acceptedAt.get(key) ?? null, lastMemberAt: memberAt.get(key) ?? null };
 		},
 		update: async ({ roomId, userId }: { roomId: string; userId: string }) => {
 			acceptedAt.delete(`${roomId}/${userId}`);
@@ -84,6 +87,18 @@ function fakeStates(initial: [string, string, string][]) {
 		query: async (sql: string, [roomId, userId, at, accepted]: [string, string, Date, Date | undefined]) => {
 			const key = `${roomId}/${userId}`;
 			const current = rows.get(key);
+			if (sql.includes('"lastMemberAt"')) {
+				const stated = memberAt.get(key);
+				if (sql.includes('IS NULL')) {
+					if (stated != null && !(stated <= accepted!)) return [];
+					if (current == null) rows.set(key, at);
+					memberAt.set(key, accepted!);
+					return [{ lastMemberAt: accepted }];
+				}
+				if (current == null || current < at) rows.set(key, at);
+				if (accepted != null && (stated == null || stated < accepted)) memberAt.set(key, accepted);
+				return [];
+			}
 			if (sql.includes('"acceptedAt"')) {
 				if (current == null) rows.set(key, at);
 				acceptedAt.set(key, accepted!);

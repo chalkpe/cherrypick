@@ -398,6 +398,10 @@ export class ApInboxService {
 			return 'skip: room not found';
 		}
 
+		// A leave that overtook this Accept, by the clock of the same server. The invitation is used up either way.
+		const lastStated = published != null ? await this.chatRosterService.lastMemberAt(room.id, actor.id) : null;
+		const alreadyLeft = published != null && lastStated != null && published <= lastStated;
+
 		// Only an actor we actually invited may join.
 		// The room URI is rendered on the invitee's server, so its host says nothing about the room.
 		// Consuming the invitation and creating the membership must be atomic:
@@ -413,6 +417,8 @@ export class ApInboxService {
 			if (consumed.affected !== 1) {
 				return 'skip: invitation not found';
 			}
+
+			if (alreadyLeft) return 'skip: the member has left since';
 
 			// The owner is always a member, so there is nothing to insert.
 			if (room.ownerId === actor.id) {
@@ -454,7 +460,7 @@ export class ApInboxService {
 		if (result !== 'ok') return result;
 
 		// A Remove from before this acceptance, still on its way, must not end the membership.
-		if (actor.id !== room.ownerId) await this.chatRosterService.advance(room.id, actor.id, published ?? new Date());
+		if (actor.id !== room.ownerId) await this.chatRosterService.recordMemberAccept(room.id, actor.id, published);
 
 		this.globalEventService.publishChatRoomStream(room.id, 'membershipStarted', { userId: actor.id });
 
@@ -535,7 +541,7 @@ export class ApInboxService {
 
 			const published = this.parseRemoteDate(activity.published);
 			if (!await this.chatRosterService.claimAdd(room.id, user.id, published)) return 'skip: a newer change to this member was applied';
-			if (published == null) await this.chatRosterService.recordIfMissing(room.id, user.id, new Date());
+			if (published == null) await this.chatRosterService.recordIfMissing(room.id, user.id);
 
 			const existing = await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId: user.id });
 			if (existing == null) {
@@ -1528,10 +1534,10 @@ export class ApInboxService {
 		if (!roomIdMatch) return 'skip: invalid room URI format';
 		const roomId = roomIdMatch[1];
 
-		// A refusal of an earlier invitation, still on its way, says nothing about the one pending now.
+		// Older than what the same server said last. The invitation is by this server's clock, so it cannot be compared with that.
 		const published = this.parseRemoteDate(activity.published);
 		if (published != null) {
-			const last = await this.chatRosterService.lastRosterAt(roomId, actor.id);
+			const last = await this.chatRosterService.lastMemberAt(roomId, actor.id);
 			if (last != null && published < last) return 'skip: a newer change to this member was applied';
 		}
 
@@ -1613,11 +1619,17 @@ export class ApInboxService {
 			if (member.id === room.ownerId) return 'skip: owner cannot be removed';
 
 			const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
-			// A room owned here knows its members, so someone who is not one has nothing to place in order.
-			if (owner?.host == null && !await this.chatService.isRoomMember(room, member.id)) return 'ok: removed from chat room';
-
-			if (!await this.chatRosterService.claimRemove(room.id, member.id, this.parseRemoteDate(activity.published))) return 'skip: a newer change to this member was applied';
-			if (this.userEntityService.isLocalUser(member)) await this.chatRosterService.forgetAccepted(room.id, member.id);
+			const published = this.parseRemoteDate(activity.published);
+			if (owner?.host == null) {
+				// Everyone but the owner removes only themselves from a room owned here. Someone neither in it nor invited has nothing to place in order.
+				const known = await this.chatService.isRoomMember(room, member.id) || await this.chatRoomInvitationsRepository.findOneBy({ roomId: room.id, userId: member.id }) != null;
+				if (!known) return 'ok: removed from chat room';
+				if (!await this.chatRosterService.claimOwnRemove(room.id, member.id, published)) return 'skip: a newer change to this member was applied';
+			} else if (room.ownerId === actor.id) {
+				if (!await this.chatRosterService.claimRemove(room.id, member.id, published)) return 'skip: a newer change to this member was applied';
+				if (this.userEntityService.isLocalUser(member)) await this.chatRosterService.forgetAccepted(room.id, member.id);
+			}
+			// A member leaving another server's room goes by arrival: their clock cannot be placed among the owner's. The owner passes it on with a time of its own.
 
 			const removed = await this.chatService.removeRoomMember(room, member);
 
