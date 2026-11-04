@@ -10,6 +10,7 @@ import { UserSuspendService } from '@/core/UserSuspendService.js';
 import CreateToUserEndpoint from '@/server/api/endpoints/chat/messages/create-to-user.js';
 import ShowEndpoint from '@/server/api/endpoints/chat/messages/show.js';
 import InvitationCreateEndpoint from '@/server/api/endpoints/chat/rooms/invitations/create.js';
+import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
 
 const alice = { id: 'alice', host: null, uri: null, inbox: null, sharedInbox: null, isSuspended: false };
 
@@ -54,7 +55,8 @@ function createService(invitee?: { id: string }) {
 		chatRoomInvitationsRepository: { findOneBy: async () => null, insertOne: insertInvitation },
 		roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 		userBlockingService: { checkBlocked: async () => false },
-		globalEventService: { publishChatUserStream: vi.fn() },
+		globalEventService: { publishChatUserStream: vi.fn(), publishMainStream: vi.fn() },
+		chatRosterService: chatRosterOver(forgetfulRedis()),
 	}) as ChatService;
 	return { service, insertOne, insertInvitation, inboxes: () => deliver.mock.calls.map(call => call[2]) };
 }

@@ -128,6 +128,14 @@ export function buildChatUpdate(
 	};
 }
 
+/**
+ * Lets a server that never got the message tell that its room is gone, rather than retrying for it.
+ * A receiver goes no further on these: the sender could name any room.
+ */
+function chatRoomFields(options: ChatPayloadOptions): Pick<IObject, 'context' | '_misskey_chatRoom'> {
+	return options.roomUri != null ? { context: options.roomUri, _misskey_chatRoom: options.roomUri } : {};
+}
+
 export function buildChatDelete(
 	message: ChatMessage,
 	fromUser: ChatActor,
@@ -140,6 +148,7 @@ export function buildChatDelete(
 		type: 'Delete',
 		actor: chatActorUri(fromUser, options.baseUrl),
 		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
+		...chatRoomFields(options),
 		object: {
 			id: messageUri,
 			type: 'Tombstone',
@@ -167,6 +176,7 @@ export function buildChatReaction(
 		_misskey_reaction: federatedReaction,
 		...(options.tag?.length ? { tag: options.tag } : {}),
 		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
+		...chatRoomFields(options),
 		published: options.published ?? new Date().toISOString(),
 	};
 }
@@ -192,15 +202,16 @@ export function buildChatReactionUndo(
 		type: 'Undo',
 		actor: chatActorUri(actor, options.baseUrl),
 		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
+		...chatRoomFields(options),
 		object: react,
 		published: options.published ?? new Date().toISOString(),
 	};
 }
 
+/** Names nobody: someone only invited gets this too, and must not learn from it who is in the room. */
 export function buildChatRoomUpdate(
 	room: ChatRoom,
 	owner: ChatActor,
-	toUsers: ChatActor[],
 	options: ChatPayloadOptions,
 ): IUpdate {
 	const roomUri = chatRoomUri(room, options.baseUrl);
@@ -209,7 +220,6 @@ export function buildChatRoomUpdate(
 		id: `${roomUri}#update/${encodeURIComponent(updated)}`,
 		type: 'Update',
 		actor: chatActorUri(owner, options.baseUrl),
-		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
 		object: {
 			id: roomUri,
 			type: 'Group',
@@ -226,6 +236,7 @@ export function buildChatRoomUpdate(
 /**
  * The owner's server is the only one that knows every member, so it passes on what a remote member sent.
  * This names the message instead of carrying it: the owner must not be able to speak for its author.
+ * An edit gets an ID of its own, with the time it was made, because the message has been relayed before.
  */
 export function buildChatRoomRelay(
 	message: Pick<ChatMessage, 'id' | 'uri'>,
@@ -233,11 +244,12 @@ export function buildChatRoomRelay(
 	owner: ChatActor,
 	toUsers: ChatActor[],
 	options: ChatPayloadOptions,
+	editedAt?: Date,
 ): IAnnounce {
 	const roomUri = chatRoomUri(room, options.baseUrl);
 	const messageUri = chatMessageUri(message, options.baseUrl);
 	return {
-		id: `${roomUri}#relay/${encodeURIComponent(messageUri)}`,
+		id: `${roomUri}#relay/${encodeURIComponent(messageUri)}${editedAt != null ? `/${editedAt.getTime()}` : ''}`,
 		type: 'Announce',
 		actor: chatActorUri(owner, options.baseUrl),
 		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
@@ -248,10 +260,35 @@ export function buildChatRoomRelay(
 	};
 }
 
-export function buildChatRoomDelete(
+/**
+ * A deletion or a reaction has no object of its own to fetch from its author's server, so the activity itself travels.
+ * The receiver checks it against the room, and its signature would not survive the trip anyway.
+ */
+export function buildChatRoomActivityRelay(
+	activity: IObject & { id: string },
 	room: Pick<ChatRoom, 'id'> & { uri?: string | null },
 	owner: ChatActor,
 	toUsers: ChatActor[],
+	options: ChatPayloadOptions,
+): IAnnounce {
+	const roomUri = chatRoomUri(room, options.baseUrl);
+	const { '@context': _context, signature: _signature, ...original } = activity as IObject & { id: string; signature?: unknown };
+	return {
+		id: `${roomUri}#relay/${encodeURIComponent(activity.id)}`,
+		type: 'Announce',
+		actor: chatActorUri(owner, options.baseUrl),
+		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
+		object: original,
+		context: roomUri,
+		_misskey_chatRoom: roomUri,
+		published: options.published ?? new Date().toISOString(),
+	};
+}
+
+/** Names nobody, for the same reason as buildChatRoomUpdate. */
+export function buildChatRoomDelete(
+	room: Pick<ChatRoom, 'id'> & { uri?: string | null },
+	owner: ChatActor,
 	options: ChatPayloadOptions,
 ): IDelete {
 	const roomUri = chatRoomUri(room, options.baseUrl);
@@ -259,7 +296,6 @@ export function buildChatRoomDelete(
 		id: `${roomUri}#delete`,
 		type: 'Delete',
 		actor: chatActorUri(owner, options.baseUrl),
-		to: toUsers.map(user => chatActorUri(user, options.baseUrl)),
 		object: {
 			id: roomUri,
 			type: 'Tombstone',

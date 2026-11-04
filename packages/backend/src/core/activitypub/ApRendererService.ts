@@ -42,6 +42,7 @@ import {
 	buildChatNote,
 	buildChatReaction,
 	buildChatReactionUndo,
+	buildChatRoomActivityRelay,
 	buildChatRoomDelete,
 	buildChatRoomRelay,
 	buildChatRoomUpdate,
@@ -891,26 +892,29 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public renderChatDelete(message: any, fromUser: MiUser, toUsers: MiUser[]): IDelete {
+	public renderChatDelete(message: any, fromUser: MiUser, toUsers: MiUser[], roomUri?: string): IDelete {
 		return buildChatDelete(message, fromUser, toUsers, {
 			baseUrl: this.config.url,
+			roomUri,
 			published: new Date().toISOString(),
 		});
 	}
 
 	@bindThis
-	public async renderChatReaction(message: any, actor: MiUser, toUsers: MiUser[], reaction: string, activityId?: string): Promise<ILike> {
+	public async renderChatReaction(message: any, actor: MiUser, toUsers: MiUser[], reaction: string, activityId?: string, roomUri?: string): Promise<ILike> {
 		return buildChatReaction(message, actor, toUsers, reaction, {
 			...await this.chatReactionPayloadOptions(reaction),
 			activityId,
+			roomUri,
 		});
 	}
 
 	@bindThis
-	public async renderChatReactionUndo(message: any, actor: MiUser, toUsers: MiUser[], reaction: string, activityId?: string): Promise<IUndo> {
+	public async renderChatReactionUndo(message: any, actor: MiUser, toUsers: MiUser[], reaction: string, activityId?: string, roomUri?: string): Promise<IUndo> {
 		return buildChatReactionUndo(message, actor, toUsers, reaction, {
 			...await this.chatReactionPayloadOptions(reaction),
 			activityId,
+			roomUri,
 		});
 	}
 
@@ -925,9 +929,9 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public renderChatRoomUpdate(room: MiChatRoom, owner: MiUser, toUsers: MiUser[]): IUpdate {
+	public renderChatRoomUpdate(room: MiChatRoom, owner: MiUser): IUpdate {
 		const now = new Date().toISOString();
-		return buildChatRoomUpdate(this.chatRoomForRender(room, owner), owner, toUsers, {
+		return buildChatRoomUpdate(this.chatRoomForRender(room, owner), owner, {
 			baseUrl: this.config.url,
 			published: now,
 			updated: now,
@@ -935,16 +939,24 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public renderChatRoomRelay(message: Pick<MiChatMessage, 'id' | 'uri'>, room: Pick<MiChatRoom, 'id' | 'uri'>, owner: MiUser, toUsers: MiUser[]): IAnnounce {
+	public renderChatRoomRelay(message: Pick<MiChatMessage, 'id' | 'uri'>, room: Pick<MiChatRoom, 'id' | 'uri'>, owner: MiUser, toUsers: MiUser[], editedAt?: Date): IAnnounce {
 		return buildChatRoomRelay(message, this.chatRoomForRender(room, owner), owner, toUsers, {
+			baseUrl: this.config.url,
+			published: new Date().toISOString(),
+		}, editedAt);
+	}
+
+	@bindThis
+	public renderChatRoomActivityRelay(activity: IObject & { id: string }, room: Pick<MiChatRoom, 'id' | 'uri'>, owner: MiUser, toUsers: MiUser[]): IAnnounce {
+		return buildChatRoomActivityRelay(activity, this.chatRoomForRender(room, owner), owner, toUsers, {
 			baseUrl: this.config.url,
 			published: new Date().toISOString(),
 		});
 	}
 
 	@bindThis
-	public renderChatRoomDelete(room: Pick<MiChatRoom, 'id'>, owner: MiUser, toUsers: MiUser[]): IDelete {
-		return buildChatRoomDelete(this.chatRoomForRender(room, owner), owner, toUsers, {
+	public renderChatRoomDelete(room: Pick<MiChatRoom, 'id'>, owner: MiUser): IDelete {
+		return buildChatRoomDelete(this.chatRoomForRender(room, owner), owner, {
 			baseUrl: this.config.url,
 			published: new Date().toISOString(),
 		});

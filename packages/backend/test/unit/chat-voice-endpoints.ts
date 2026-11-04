@@ -13,6 +13,7 @@ import { meta as statusMeta } from '@/server/api/endpoints/chat/rooms/voice/stat
 import { ChatService } from '@/core/ChatService.js';
 import { MetaEntityService } from '@/core/entities/MetaEntityService.js';
 import { RemoteVoiceCallError } from '@/core/RemoteVoiceCallService.js';
+import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
 
 const me = { id: 'me', host: null, uri: null } as any;
 const liveKit = (isEnabled = true) => ({
@@ -397,7 +398,8 @@ function chatServiceFixture() {
 	const room = { id: 'r1', ownerId: 'owner', owner: { id: 'owner', host: null, uri: null } };
 	const service = Object.assign(Object.create(ChatService.prototype), {
 		liveKitService,
-		globalEventService: { publishChatRoomStream: vi.fn() },
+		globalEventService: { publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() },
+		chatRosterService: chatRosterOver(forgetfulRedis()),
 		chatRoomInvitationsRepository: { findBy: vi.fn(async () => []) },
 		chatRoomMembershipsRepository: {
 			findOneBy: vi.fn().mockResolvedValue({ id: 'm1', roomId: 'r1', userId: 'u1' }),

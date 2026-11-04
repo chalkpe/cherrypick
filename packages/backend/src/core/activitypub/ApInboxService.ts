@@ -17,6 +17,7 @@ import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NoteCreateService } from '@/core/NoteCreateService.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ChatMessageAccessError, ChatService, MAX_CHAT_MESSAGE_TEXT_LENGTH, MAX_REMOTE_CHAT_MESSAGE_FILES, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
+import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { truncate } from '@/misc/truncate.js';
@@ -41,7 +42,8 @@ import type { MiDriveFile } from '@/models/DriveFile.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { AbuseReportService } from '@/core/AbuseReportService.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
-import { getApHrefNullable, getApId, getApIds, getApType, getOneApId, isAccept, isActor, isAdd, isAnnounce, isBlock, isCollection, isCollectionOrOrderedCollection, isCreate, isDelete, isFlag, isFollow, isInvite, isLike, isMove, isPost, isReject, isRemove, isTombstone, isUndo, isUpdate, validActor, validPost } from './type.js';
+import { parseRemoteChatDate } from './misc/chat-remote-date.js';
+import { getApHrefNullable, getApId, getApIds, getApType, getOneApId, isAccept, isActor, isAdd, isAnnounce, isBlock, isCollection, isCollectionOrOrderedCollection, isCreate, isDelete, isEmoji, isFlag, isFollow, isInvite, isLike, isMove, isPost, isReject, isRemove, isTombstone, isUndo, isUpdate, validActor, validPost } from './type.js';
 import { ApNoteService } from './models/ApNoteService.js';
 import { ApLoggerService } from './ApLoggerService.js';
 import { ApDbResolverService } from './ApDbResolverService.js';
@@ -52,7 +54,7 @@ import { ApQuestionService } from './models/ApQuestionService.js';
 import { ApImageService } from './models/ApImageService.js';
 import { ApMfmService } from './ApMfmService.js';
 import type { Resolver } from './ApResolverService.js';
-import type { IAccept, IAdd, IAnnounce, IBlock, ICreate, IDelete, IFlag, IFollow, IInvite, ILike, IObject, IRead, IReject, IRemove, IUndo, IUpdate, IMove, IPost } from './type.js';
+import type { IAccept, IActivity, IAdd, IAnnounce, IBlock, ICreate, IDelete, IFlag, IFollow, IInvite, ILike, IObject, IRead, IReject, IRemove, IUndo, IUpdate, IMove, IPost } from './type.js';
 
 const PENDING_ROOM_ACTIVITY_TTL = 6 * 60 * 60;
 const MAX_PENDING_ROOM_ACTIVITIES = 100;
@@ -117,6 +119,7 @@ export class ApInboxService {
 		private noteDeleteService: NoteDeleteService,
 		private notificationService: NotificationService,
 		private chatService: ChatService,
+		private chatRosterService: ChatRosterService,
 		private chatVoiceService: ChatVoiceService,
 		private liveKitService: LiveKitService,
 		private roleService: RoleService,
@@ -250,7 +253,7 @@ export class ApInboxService {
 			const reaction = activity._misskey_reaction ?? activity.content ?? activity.name;
 			if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
 			await this.apNoteService.extractEmojis(activity.tag ?? [], actor.host).catch(() => null);
-			return await this.applyChatReaction(actor, targetUri, chatMessage, reaction, false, activity.id);
+			return await this.applyChatReaction(actor, targetUri, chatMessage, reaction, false, activity.id, { activity });
 		}
 
 		if (!note) return `skip: target note not found ${targetUri}`;
@@ -290,13 +293,18 @@ export class ApInboxService {
 	 * A reaction can overtake its message. createChatMessage inserts the message and drains the
 	 * deferred reactions under this lock, so the final lookup and the deferral must hold it too.
 	 */
-	private async applyChatReaction(actor: MiRemoteUser, targetUri: string, known: MiChatMessage | null, reaction: string, undo: boolean, activityId?: string): Promise<string> {
+	private async applyChatReaction(actor: MiRemoteUser, targetUri: string, known: MiChatMessage | null, reaction: string, undo: boolean, activityId: string | undefined, options: { activity?: IObject; relayedInRoom?: MiChatRoom['id'] }): Promise<string> {
+		const { activity, relayedInRoom } = options;
 		const apply = async (message: MiChatMessage): Promise<string> => {
 			try {
+				if (relayedInRoom == null && message.toRoomId != null) {
+					const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
+					if (room != null) await this.assertKnownInRoom(room, actor);
+				}
 				if (undo) {
-					await this.chatService.unreactRemote(actor, message, reaction, activityId);
+					await this.chatService.unreactRemote(actor, message, reaction, activityId, { activity, allowFormerMember: relayedInRoom != null });
 				} else {
-					await this.chatService.reactRemote(actor, message, reaction, activityId);
+					await this.chatService.reactRemote(actor, message, reaction, activityId, { activity });
 				}
 				return 'ok';
 			} catch (err) {
@@ -311,7 +319,9 @@ export class ApInboxService {
 			const message = await this.chatService.findMessageByUri(targetUri);
 			if (message != null) return await apply(message);
 
-			const stored = await this.chatService.storePendingChatReaction(actor.id, targetUri, reaction, undo, activityId);
+			if (await this.namesRoomThatIsGone(activity)) return 'skip: room was deleted';
+
+			const stored = await this.chatService.storePendingChatReaction(actor.id, targetUri, reaction, undo, activityId, { roomId: relayedInRoom, activity });
 			if (!stored) return 'skip: chat reaction was not deferred';
 			return undo ? 'ok: pending chat Unreact' : 'ok: pending chat reaction';
 		} finally {
@@ -334,7 +344,7 @@ export class ApInboxService {
 		});
 
 		if (isFollow(object)) return await this.acceptFollow(actor, object);
-		if (isInvite(object)) return await this.acceptInvite(actor, object);
+		if (isInvite(object)) return await this.acceptInvite(actor, object, this.parseRemoteDate(activity.published));
 
 		return `skip: Unknown Accept type: ${getApType(object)}`;
 	}
@@ -364,7 +374,7 @@ export class ApInboxService {
 	}
 
 	@bindThis
-	private async acceptInvite(actor: MiRemoteUser, activity: IInvite): Promise<string> {
+	private async acceptInvite(actor: MiRemoteUser, activity: IInvite, published: Date | null = null): Promise<string> {
 		// actor is the one who accepted the invitation (invitee)
 		// activity.target should be the actor who accepted
 		// activity.object should be the room
@@ -442,6 +452,9 @@ export class ApInboxService {
 		}
 		if (result !== 'ok') return result;
 
+		// A Remove from before this acceptance, still on its way, must not end the membership.
+		if (actor.id !== room.ownerId) await this.chatRosterService.advance(room.id, actor.id, published ?? new Date());
+
 		this.globalEventService.publishChatRoomStream(room.id, 'membershipStarted', { userId: actor.id });
 
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
@@ -503,6 +516,7 @@ export class ApInboxService {
 		if (roomIdMatch) {
 			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
 			if (room == null) {
+				if (await this.chatRosterService.isRoomGone(targetUri)) return 'skip: room was deleted';
 				return await this.storePendingRoomActivity(actor, activity) ? 'ok: room not found, activity deferred' : 'skip: room not found';
 			}
 			if (room.ownerId !== actor.id) return 'skip: only the room owner can add a member';
@@ -513,9 +527,14 @@ export class ApInboxService {
 			const userId = getApId(activity.object);
 			const user = await this.apDbResolverService.getUserFromApId(userId) ?? await this.apPersonService.resolvePerson(userId, resolver);
 			if (user == null) return 'skip: user not found';
-			// Only a local invitation acceptance may grant membership to a local user.
-			if (this.userEntityService.isLocalUser(user)) return 'skip: local membership is managed locally';
+			// Only a local invitation acceptance may grant membership to a local user. This brings back one the roster took away before the owner heard of it.
+			const isLocal = this.userEntityService.isLocalUser(user);
+			if (isLocal && await this.chatRosterService.acceptedAt(room.id, user.id) == null) return 'skip: local membership is managed locally';
 			if (user.id === room.ownerId) return 'skip: owner is already a member';
+
+			const published = this.parseRemoteDate(activity.published);
+			if (!await this.chatRosterService.claimAdd(room.id, user.id, published)) return 'skip: a newer change to this member was applied';
+			if (published == null) await this.chatRosterService.recordIfMissing(room.id, user.id, new Date());
 
 			const existing = await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId: user.id });
 			if (existing == null) {
@@ -525,6 +544,7 @@ export class ApInboxService {
 					userId: user.id,
 				});
 				this.globalEventService.publishChatRoomStream(room.id, 'membershipStarted', { userId: user.id });
+				if (isLocal) this.chatService.notifyRoomListChanged([user.id]);
 			}
 
 			return 'ok: chat room member added';
@@ -550,10 +570,15 @@ export class ApInboxService {
 		resolver ??= await this.apResolverService.createResolver();
 
 		if (!activity.object) return 'skip: activity has no object property';
+
+		const chatRoomUri = this.chatRoomUriOf(activity as unknown as IPost);
+		if (chatRoomUri != null && typeof activity.object !== 'string' && getApType(activity.object) !== 'Note') {
+			return await this.relayedChatActivity(actor, activity.object as IObject, chatRoomUri, resolver);
+		}
+
 		const targetUri = getApId(activity.object);
 		if (targetUri.startsWith('bear:')) return 'skip: bearcaps url not supported.';
 
-		const chatRoomUri = this.chatRoomUriOf(activity as unknown as IPost);
 		if (chatRoomUri != null) return await this.relayedChatMessage(actor, activity, targetUri, chatRoomUri, resolver);
 
 		const target = await resolver.resolve(activity.object).catch(e => {
@@ -579,7 +604,19 @@ export class ApInboxService {
 		const room = roomId != null ? await this.chatRoomsRepository.findOneBy({ id: roomId }) : null;
 		if (room == null) return 'skip: room not found';
 		if (room.ownerId !== actor.id) return 'skip: only the room owner can relay';
-		if (await this.chatService.findMessageByUri(messageUri) != null) return 'skip: chat message exists';
+
+		// The ID of the relay of an edit has one more part after the message. A plain relay of a message already here has nothing to add.
+		const existing = await this.chatService.findMessageByUri(messageUri);
+		if (existing != null && !/#relay\/[^/]*\//.test(getApId(activity))) return 'skip: chat message exists';
+		if (this.utilityService.isUriLocal(messageUri)) return 'skip: the message is from this server';
+
+		// The request below is signed as a member, so it only goes to a server with someone in the room on it.
+		// The owner may have heard of that someone before this server did.
+		const messageHost = this.utilityService.extractDbHost(messageUri);
+		if (!await this.isRoomMemberHost(room, messageHost)) {
+			await this.chatRosterService.requestSync(room, messageHost);
+			throw new Error(`relayed chat message is from a server with no known member: ${messageUri}`);
+		}
 
 		const member = await this.localRoomMemberFrom(room, getApIds(activity.to), resolver);
 		if (member == null) return 'skip: no local members in room';
@@ -605,7 +642,135 @@ export class ApInboxService {
 		const author = await this.apPersonService.resolvePerson(getOneApId(note.attributedTo), resolver);
 		if (!this.userEntityService.isRemoteUser(author) || author.isSuspended) return 'skip: invalid relayed message author';
 
+		if (existing != null) return await this.applyRelayedEdit(room, author as MiRemoteUser, existing, note);
+
 		return await this.createChatMessage(resolver, author as MiRemoteUser, note, activity);
+	}
+
+	private async applyRelayedEdit(room: MiChatRoom, author: MiRemoteUser, message: MiChatMessage, note: IPost): Promise<string> {
+		const text = this.chatMessageText(note);
+		const editedAt = this.parseRemoteDate(note.updated);
+		if (text == null || editedAt == null) return 'skip: relayed edit has nothing to apply';
+		// The owner would not pass this on unless the author were still a member, so this server is the one behind.
+		await this.assertKnownInRoom(room, author);
+
+		const emojis = await this.apNoteService.extractEmojis(note.tag ?? [], author.host).catch(() => []);
+		const unlock = await acquireApObjectLock(this.redisClient, message.uri ?? getApId(note));
+		try {
+			await this.chatService.updateRemoteMessage(author, message, text, editedAt, emojis.map(emoji => emoji.name));
+			return 'ok: chat message updated';
+		} catch (err) {
+			if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+			throw err;
+		} finally {
+			await unlock();
+		}
+	}
+
+	private async isRoomMemberHost(room: MiChatRoom, host: string): Promise<boolean> {
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
+		const members = await this.usersRepository.findBy({ id: In([room.ownerId, ...memberships.map(membership => membership.userId)]) });
+		return members.some(member => member.host === host);
+	}
+
+	/**
+	 * What a member did that has no object of its own to fetch from their server. Only the owner vouches
+	 * for it, so it counts only within the owner's room, and never for someone on this server.
+	 */
+	private async relayedChatActivity(actor: MiRemoteUser, activity: IObject, roomUri: string, resolver: Resolver): Promise<string> {
+		const type = getApType(activity);
+		if (type !== 'Delete' && type !== 'Undo' && type !== 'Like' && type !== 'EmojiReact') return `skip: ${type} is not relayed`;
+		if (typeof activity.id !== 'string') return 'skip: relayed activity has no id';
+		if (!this.isOnActorHost(roomUri, actor)) return 'skip: room is not on the relaying server';
+
+		const roomId = roomUri.match(/\/chat\/rooms\/([a-zA-Z0-9]+)$/)?.[1];
+		const room = roomId != null ? await this.chatRoomsRepository.findOneBy({ id: roomId }) : null;
+		if (room == null) return 'skip: room not found';
+		if (room.ownerId !== actor.id) return 'skip: only the room owner can relay';
+
+		let doerUri: string;
+		let doerHost: string;
+		try {
+			doerUri = getApId((activity as IActivity).actor);
+			doerHost = this.utilityService.extractDbHost(doerUri);
+		} catch {
+			return 'skip: relayed activity has no actor';
+		}
+		if (this.utilityService.isUriLocal(doerUri)) return 'skip: nobody else speaks for someone on this server';
+		if (await this.hostPolicyService.isRefusedRemoteHost(doerHost)) return 'skip: refused host';
+
+		const doer = await this.apDbResolverService.getUserFromApId(doerUri) ?? await this.apPersonService.resolvePerson(doerUri, resolver);
+		if (doer == null || !this.userEntityService.isRemoteUser(doer) || doer.isSuspended) return 'skip: invalid relayed actor';
+
+		if (type === 'Delete') return await this.relayedChatDelete(room, doer as MiRemoteUser, activity as IDelete);
+		return await this.relayedChatReaction(room, doer as MiRemoteUser, doerUri, activity, type === 'Undo');
+	}
+
+	private async relayedChatDelete(room: MiChatRoom, doer: MiRemoteUser, activity: IDelete): Promise<string> {
+		let messageUri: string;
+		try {
+			messageUri = getApId(activity.object);
+		} catch {
+			return 'skip: invalid Delete object';
+		}
+
+		const unlock = await acquireApObjectLock(this.redisClient, messageUri);
+		try {
+			const message = await this.chatService.findMessageByUri(messageUri);
+			// Its author's own Delete settles a message that is still on its way here.
+			if (message == null) return 'skip: message not found';
+			if (message.toRoomId !== room.id) return 'skip: message is from another room';
+			const byRoomOwner = doer.id === room.ownerId;
+			if (message.fromUserId !== doer.id && !byRoomOwner) return 'skip: only the author or the room owner can delete a message';
+			await this.chatService.deleteRemoteMessage(doer, message, { byRoomOwner });
+			return 'ok: chat message deleted';
+		} catch (err) {
+			if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+			throw err;
+		} finally {
+			await unlock();
+		}
+	}
+
+	private async relayedChatReaction(room: MiChatRoom, doer: MiRemoteUser, doerUri: string, activity: IObject, undo: boolean): Promise<string> {
+		const like = undo ? (activity as IUndo).object : activity;
+		if (typeof like !== 'object' || !isLike(like as IObject)) return 'skip: relayed activity has no reaction in it';
+		const reactionActivity = like as ILike;
+
+		let messageUri: string;
+		try {
+			if (getApId(reactionActivity.actor) !== doerUri) return 'skip: relayed Undo is of someone else\'s reaction';
+			messageUri = getApId(reactionActivity.object);
+		} catch {
+			return 'skip: invalid relayed reaction';
+		}
+		const reaction = reactionActivity._misskey_reaction ?? reactionActivity.content ?? reactionActivity.name;
+		if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
+
+		const message = await this.chatService.findMessageByUri(messageUri);
+		if (message != null && message.toRoomId !== room.id) return 'skip: message is from another room';
+
+		// Someone who has left can still take a reaction back, but not add one.
+		if (!undo) {
+			await this.assertKnownInRoom(room, doer);
+			await this.fetchReactionEmoji(reactionActivity, reaction, doer);
+		}
+		return await this.applyChatReaction(doer, messageUri, message, reaction, undo, reactionActivity.id, { relayedInRoom: room.id });
+	}
+
+	/** The owner could pass on any image under this name, so only the reacting account's own server is asked what it looks like. */
+	private async fetchReactionEmoji(like: ILike, reaction: string, doer: MiRemoteUser): Promise<void> {
+		const tag = toArray(like.tag).find(candidate => typeof candidate === 'object' && getApType(candidate) === 'Emoji' && candidate.name === reaction);
+		if (typeof tag?.id !== 'string') return;
+		try {
+			if (this.utilityService.extractDbHost(tag.id) !== doer.host) return;
+			const resolver = await this.apResolverService.createResolver();
+			const emoji = await resolver.resolve(tag.id);
+			if (emoji.id === tag.id && isEmoji(emoji)) await this.apNoteService.extractEmojis(emoji, doer.host);
+		} catch (err) {
+			// The reaction still counts. It shows as text until the emoji arrives some other way.
+			this.logger.warn(`Failed to fetch the emoji of a relayed reaction: ${err}`);
+		}
 	}
 
 	private async localRoomMemberFrom(room: MiChatRoom, uris: string[], resolver: Resolver): Promise<MiLocalUser | null> {
@@ -875,6 +1040,7 @@ export class ApInboxService {
 		// Check if the room exists locally
 		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
 		if (!room) {
+			if (await this.chatRosterService.isRoomGone(contextUri)) return 'skip: room was deleted';
 			// The Invite can still be in flight; use the inbox queue's bounded retries.
 			throw new Error('chat room is not ready');
 		}
@@ -904,9 +1070,32 @@ export class ApInboxService {
 
 		// A new member's message can overtake the Accept or Add that makes them a member.
 		// The inbox queue's bounded retries also end what a removed member keeps sending.
-		if (!await this.chatService.isRoomMember(room, actor.id)) throw new Error('chat room membership is not ready');
+		await this.assertKnownInRoom(room, actor);
+		if (!await this.chatService.isRoomMember(room, actor.id)) {
+			// In a room owned here, this server decides. Only someone invited can still become a member.
+			if (await this.chatRoomInvitationsRepository.findOneBy({ roomId: room.id, userId: actor.id }) == null) return 'skip: not a member of the room';
+			throw new Error('chat room membership is not ready');
+		}
 
 		return room;
+	}
+
+	/**
+	 * In another server's room, its owner may know a member this server has not heard of yet. The caller's
+	 * activity is worth retrying once this server has read the roster. A room owned here knows its members, so this lets the caller decide.
+	 */
+	private async assertKnownInRoom(room: MiChatRoom, actor: MiUser): Promise<void> {
+		if (await this.chatService.isRoomMember(room, actor.id)) return;
+		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+		if (owner?.host == null) return;
+		await this.chatRosterService.requestSync(room, actor.id);
+		throw new Error('chat room membership is not ready');
+	}
+
+	/** Only for telling that a room is gone. Anyone can name any room here, so this says nothing about what the sender may do in it. */
+	private async namesRoomThatIsGone(activity: IObject | undefined): Promise<boolean> {
+		const roomUri = activity != null ? this.chatRoomUriOf(activity as IPost) : null;
+		return roomUri != null && await this.chatRosterService.isRoomGone(roomUri);
 	}
 
 	/**
@@ -1136,7 +1325,7 @@ export class ApInboxService {
 			const chatMessage = isChatUri ? await this.chatService.findMessageByUri(uri) : null;
 			if (chatMessage != null) {
 				try {
-					await this.chatService.deleteRemoteMessage(actor, chatMessage);
+					await this.chatService.deleteRemoteMessage(actor, chatMessage, { activity });
 					return 'ok: chat message deleted';
 				} catch (err) {
 					if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
@@ -1148,6 +1337,7 @@ export class ApInboxService {
 			// Let that object use the normal Note deletion and author checks below.
 			if (isChatUri && await this.apNoteService.fetchNote(uri) == null) {
 				if (!this.isOnActorHost(uri, actor)) return 'skip: message is not on the actor\'s server';
+				if (await this.namesRoomThatIsGone(activity)) return 'skip: room was deleted';
 				const stored = await this.storeDeferredChatDelete(actor, uri);
 				return stored ? 'ok: chat message tombstone stored' : 'skip: too many deferred chat deletes';
 			}
@@ -1170,12 +1360,13 @@ export class ApInboxService {
 			if (!roomIdMatch) return 'skip: invalid room URI';
 			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
 			if (room == null) {
+				if (await this.chatRosterService.isRoomGone(uri)) return 'skip: room was deleted';
 				return await this.storePendingRoomActivity(actor, activity) ? 'skip: room not found, activity deferred' : 'skip: room not found';
 			}
 			if (room.ownerId !== actor.id) return 'skip: only the room owner can delete it';
 			// Keep the deletion after consuming pending activities: a delayed/retried Invite
 			// must not recreate this mirror room or notify the invitee again.
-			await this.redisClient.setex(`chat_room_deleted:${uri}:${actor.id}`, PENDING_ROOM_ACTIVITY_TTL, '1');
+			await this.chatRosterService.markRoomDeletedByOwner(uri);
 			await this.chatService.deleteRoom(room, undefined, { federate: false });
 			return 'ok: chat room deleted';
 		}
@@ -1339,6 +1530,13 @@ export class ApInboxService {
 		if (!roomIdMatch) return 'skip: invalid room URI format';
 		const roomId = roomIdMatch[1];
 
+		// A refusal of an earlier invitation, still on its way, says nothing about the one pending now.
+		const published = this.parseRemoteDate(activity.published);
+		if (published != null) {
+			const last = await this.chatRosterService.lastRosterAt(roomId, actor.id);
+			if (last != null && published < last) return 'skip: a newer change to this member was applied';
+		}
+
 		this.logger.info(`[rejectInvite] Searching for invitation - roomId: ${roomId}, userId: ${actor.id}`);
 
 		// Find the invitation and delete it
@@ -1416,6 +1614,13 @@ export class ApInboxService {
 
 			if (member.id === room.ownerId) return 'skip: owner cannot be removed';
 
+			const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+			// A room owned here knows its members, so someone who is not one has nothing to place in order.
+			if (owner?.host == null && !await this.chatService.isRoomMember(room, member.id)) return 'ok: removed from chat room';
+
+			if (!await this.chatRosterService.claimRemove(room.id, member.id, this.parseRemoteDate(activity.published))) return 'skip: a newer change to this member was applied';
+			if (this.userEntityService.isLocalUser(member)) await this.chatRosterService.forgetAccepted(room.id, member.id);
+
 			const removed = await this.chatService.removeRoomMember(room, member);
 
 			this.logger.info(`[ApInboxService.remove] Removed: ${removed}, room: ${room.id}, user: ${member.id}`);
@@ -1423,7 +1628,6 @@ export class ApInboxService {
 			// このサーバーが持つルームなら、抜けたメンバーを通話からも外す。
 			// 外せなくてもジョブは失敗させない。メンバーでない参加者は通話の定期的な読み直し (ChatVoiceService.sweep) が外す
 			if (removed) {
-				const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
 				if (owner != null && owner.host == null) {
 					await this.liveKitService.removeParticipant(room.id, this.liveKitService.identityOf(member)).catch(err => {
 						this.logger.warn(`[ApInboxService.remove] Failed to remove ${member.uri} from the voice call in ${room.id}`, { error: err });
@@ -1487,13 +1691,13 @@ export class ApInboxService {
 			if (isChatMessage && (chatMessage != null || note == null)) {
 				const reaction = object._misskey_reaction ?? object.content ?? object.name;
 				if (typeof reaction !== 'string' || reaction === '') return 'skip: empty reaction';
-				return await this.applyChatReaction(actor, targetUri, chatMessage, reaction, true, object.id);
+				return await this.applyChatReaction(actor, targetUri, chatMessage, reaction, true, object.id, { activity });
 			}
 			return await this.undoLike(actor, object);
 		}
 		if (isAnnounce(object)) return await this.undoAnnounce(actor, object);
 		if (isAccept(object)) return await this.undoAccept(actor, object);
-		if (isInvite(object)) return await this.undoInvite(actor, object);
+		if (isInvite(object)) return await this.undoInvite(actor, object, this.parseRemoteDate(activity.published));
 
 		return `skip: unknown object type ${getApType(object)}`;
 	}
@@ -1521,7 +1725,7 @@ export class ApInboxService {
 	}
 
 	@bindThis
-	private async undoInvite(actor: MiRemoteUser, activity: IInvite): Promise<string> {
+	private async undoInvite(actor: MiRemoteUser, activity: IInvite, published: Date | null = null): Promise<string> {
 		// Parse the room object from the Invite activity
 		const roomObject = activity.object;
 		if (typeof roomObject === 'string') return 'skip: object must be a full object, not a URI';
@@ -1546,21 +1750,40 @@ export class ApInboxService {
 		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
 		if (!room || room.ownerId !== actor.id) return 'skip: only the room owner can cancel an invitation';
 
+		// A cancellation of an earlier invitation, still on its way, says nothing about the one that came after it.
+		const last = await this.chatRosterService.lastRosterAt(roomId, invitee.id);
+		if (published != null && last != null && published < last) return 'skip: a newer change to this member was applied';
+
 		// Find and delete the invitation
 		const invitation = await this.chatRoomInvitationsRepository.findOneBy({
 			roomId: roomId,
 			userId: invitee.id,
 		});
 
-		if (!invitation) {
+		if (invitation) {
+			await this.chatRoomInvitationsRepository.delete(invitation.id);
+			if (published != null) await this.chatRosterService.advance(roomId, invitee.id, published);
+			this.chatService.notifyRoomListChanged([invitee.id]);
+
+			this.logger.info(`Cancelled invitation: room=${roomId}, user=${invitee.id}`);
+			return 'ok: invitation cancelled';
+		}
+
+		// Without a time, this cannot be told from a late one that came before the invitation since accepted.
+		if (published == null || (last != null && published <= last)) {
 			this.logger.warn(`Invitation not found: room=${roomId}, user=${invitee.id}`);
 			return 'skip: invitation not found';
 		}
 
-		await this.chatRoomInvitationsRepository.delete(invitation.id);
+		await this.chatRosterService.advance(roomId, invitee.id, published);
 
-		this.logger.info(`Cancelled invitation: room=${roomId}, user=${invitee.id}`);
-		return 'ok: invitation cancelled';
+		// It crossed the acceptance: the invitation was already gone there, so the owner will never count this member.
+		await this.chatRosterService.forgetAccepted(roomId, invitee.id);
+		if (await this.chatService.removeRoomMember(room, invitee)) {
+			this.logger.info(`Took back a membership whose invitation was cancelled: room=${roomId}, user=${invitee.id}`);
+			return 'ok: membership taken back';
+		}
+		return 'skip: invitation not found';
 	}
 
 	@bindThis
@@ -1690,6 +1913,9 @@ export class ApInboxService {
 				const editedAt = this.parseRemoteDate(note.updated) ?? new Date();
 				const emojis = await this.apNoteService.extractEmojis(note.tag ?? [], actor.host);
 
+				const messageRoom = message.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
+				if (messageRoom != null) await this.assertKnownInRoom(messageRoom, actor);
+
 				await this.chatService.updateRemoteMessage(actor, message, text, editedAt, emojis.map(emoji => emoji.name));
 				return 'ok: chat message updated';
 			} catch (err) {
@@ -1704,6 +1930,7 @@ export class ApInboxService {
 			if (!roomIdMatch) return 'skip: invalid room URI';
 			const room = await this.chatRoomsRepository.findOneBy({ id: roomIdMatch[1] });
 			if (room == null) {
+				if (await this.chatRosterService.isRoomGone(roomUri)) return 'skip: room was deleted';
 				return await this.storePendingRoomActivity(actor, activity) ? 'skip: room not found, activity deferred' : 'skip: room not found';
 			}
 			if (room.ownerId !== actor.id) return 'skip: only the room owner can update it';
@@ -1802,11 +2029,7 @@ export class ApInboxService {
 	 * Dates outside the years 0 to 9999 count as not stated.
 	 */
 	private parseRemoteDate(value: unknown): Date | null {
-		if (typeof value !== 'string') return null;
-		const date = new Date(value);
-		if (Number.isNaN(date.getTime())) return null;
-		const year = date.getUTCFullYear();
-		return year >= 0 && year <= 9999 ? date : null;
+		return parseRemoteChatDate(value);
 	}
 
 	private applyRemoteRoomState(room: MiChatRoom, object: IObject): Promise<MiChatRoom> {
@@ -1945,7 +2168,7 @@ export class ApInboxService {
 
 		// Only the room owner sends Invite, and the room lives on the owner's server
 		if (!this.isOnActorHost(roomUri, actor)) return 'skip: room is not on the inviter\'s server';
-		if (await this.redisClient.get(`chat_room_deleted:${roomUri}:${actor.id}`) != null) return 'skip: room was deleted';
+		if (await this.chatRosterService.isRoomDeletedByOwner(roomUri)) return 'skip: room was deleted';
 
 		// Get the target user (invitee)
 		const targetUri = getApHrefNullable(activity.target);
@@ -1998,8 +2221,18 @@ export class ApInboxService {
 			});
 		}
 
+		await this.chatRosterService.forgetRoomClosedHere(roomUri);
+
 		const deletedByPendingActivity = await this.applyPendingRoomActivities(roomUri);
 		if (deletedByPendingActivity) return 'ok: pending room deletion applied';
+
+		// Older than a change already applied: its cancellation overtook it, and it would only offer a room the owner will not let this user into.
+		const published = this.parseRemoteDate(activity.published);
+		if (published != null) {
+			const last = await this.chatRosterService.lastRosterAt(room.id, invitee.id);
+			if (last != null && published < last) return 'skip: a newer change to this member was applied';
+			await this.chatRosterService.advance(room.id, invitee.id, published);
+		}
 
 		// Check if invitation already exists
 		const existingInvitation = await this.chatRoomInvitationsRepository.findOneBy({
@@ -2023,6 +2256,7 @@ export class ApInboxService {
 		this.notificationService.createNotification(invitee.id, 'chatRoomInvitationReceived', {
 			invitationId: invitation.id,
 		}, actor.id);
+		this.chatService.notifyRoomListChanged([invitee.id]);
 
 		this.logger.info(`Created chat room invitation for local user ${invitee.id} to remote room ${room.id}`);
 		return 'ok';

@@ -10,6 +10,7 @@ import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { Resolver } from '@/core/activitypub/ApResolverService.js';
 import { StatusError } from '@/misc/status-error.js';
+import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
 import {
 	buildChatDelete,
 	buildChatNote,
@@ -126,29 +127,29 @@ describe('chat federation payloads', () => {
 	});
 
 	test('clearing a room description sends an explicit empty summary', () => {
-		const activity = buildChatRoomUpdate({ id: 'r1', name: 'Room', description: '' }, alice, [bob], options);
+		const activity = buildChatRoomUpdate({ id: 'r1', name: 'Room', description: '' }, alice, options);
 		expect(JSON.parse(JSON.stringify(activity)).object.summary).toBe('');
 	});
 
 	test('room update and delete carry Group/Tombstone objects', () => {
 		const room = { id: 'r1', name: 'Room', description: 'desc' };
-		const update = buildChatRoomUpdate(room, alice, [bob], options);
-		const remove = buildChatRoomDelete(room, alice, [bob], options);
+		const update = buildChatRoomUpdate(room, alice, options);
+		const remove = buildChatRoomDelete(room, alice, options);
 
 		expect(update.object).toMatchObject({ type: 'Group', name: 'Room', summary: 'desc' });
 		expect(remove.object).toMatchObject({ type: 'Tombstone', formerType: 'Group' });
 	});
 
 	test.each([true, false])('room update sends the archived state %s, including when false', (isArchived) => {
-		const activity = buildChatRoomUpdate({ id: 'r1', name: 'Room', isArchived }, alice, [bob], options);
+		const activity = buildChatRoomUpdate({ id: 'r1', name: 'Room', isArchived }, alice, options);
 
 		expect(JSON.parse(JSON.stringify(activity)).object._misskey_chatArchived).toBe(isArchived);
 	});
 
 	test('mirror room activities keep the remote room URI', () => {
 		const room = { id: 'r1', name: 'Room', description: 'desc', uri: 'https://remote.test/chat/rooms/r1' };
-		const update = buildChatRoomUpdate(room, alice, [bob], options);
-		const remove = buildChatRoomDelete(room, alice, [bob], options);
+		const update = buildChatRoomUpdate(room, alice, options);
+		const remove = buildChatRoomDelete(room, alice, options);
 
 		expect(update.object).toMatchObject({ id: 'https://remote.test/chat/rooms/r1' });
 		expect(remove.object).toMatchObject({ id: 'https://remote.test/chat/rooms/r1' });
@@ -274,11 +275,14 @@ describe('ChatService chat federation delivery', () => {
 			renderChatReactionUndo: vi.fn().mockReturnValue({ type: 'Undo' }),
 			renderChatRoomUpdate: vi.fn().mockReturnValue({ type: 'Update' }),
 			renderChatRoomDelete: vi.fn().mockReturnValue({ type: 'Delete' }),
+			renderChatRoomRelay: vi.fn().mockReturnValue({ type: 'Announce' }),
+			renderChatRoomActivityRelay: vi.fn().mockReturnValue({ type: 'Announce' }),
 			addContext: vi.fn((activity: unknown) => activity),
 		};
 		const globalEventService = {
 			publishChatUserStream: vi.fn(),
 			publishChatRoomStream: vi.fn(),
+			publishMainStream: vi.fn(),
 		};
 		const redisPipeline = {
 			del: vi.fn().mockReturnThis(),
@@ -390,6 +394,7 @@ describe('ChatService chat federation delivery', () => {
 				log: vi.fn(),
 			},
 			redisClient,
+			chatRosterService: chatRosterOver({ ...redisClient, pipeline: () => forgetfulRedis().pipeline() }),
 			apRendererService,
 			queueService,
 			customEmojiService: {
@@ -762,7 +767,7 @@ describe('ChatService chat federation delivery', () => {
 		await f.service.storePendingChatReaction('bob', f.roomMessage.uri, '👍', false);
 		await f.service.applyPendingChatReactions(f.roomMessage as never);
 
-		expect(reactRemote).toHaveBeenCalledWith(f.bob, f.roomMessage, '👍', undefined);
+		expect(reactRemote).toHaveBeenCalledWith(f.bob, f.roomMessage, '👍', undefined, expect.anything());
 	});
 
 	test('applies a deferred unreaction once the message exists', async () => {
@@ -773,7 +778,7 @@ describe('ChatService chat federation delivery', () => {
 		await f.service.storePendingChatReaction('bob', f.roomMessage.uri, '👍', true);
 		await f.service.applyPendingChatReactions(f.roomMessage as never);
 
-		expect(unreactRemote).toHaveBeenCalledWith(f.bob, f.roomMessage, '👍', undefined);
+		expect(unreactRemote).toHaveBeenCalledWith(f.bob, f.roomMessage, '👍', undefined, expect.anything());
 	});
 
 	test.each([
@@ -1047,7 +1052,7 @@ describe('ChatService chat federation delivery', () => {
 			await f.service.deleteRoom(f.room as never);
 
 			expect(f.queueService.deliver).toHaveBeenCalledWith(owner, expect.objectContaining({ type: 'Delete' }), dave.inbox, false);
-			expect(f.apRendererService.renderChatRoomDelete).toHaveBeenCalledWith(f.room, owner, expect.arrayContaining([dave]));
+			expect(f.apRendererService.renderChatRoomDelete).toHaveBeenCalledWith(f.room, owner);
 		});
 
 		test('deleting a mirror of a remote room delivers nothing but still cleans up', async () => {
@@ -1165,7 +1170,6 @@ describe('ChatService chat federation delivery', () => {
 		const update = buildChatRoomUpdate(
 			{ id: 'r1', name: 'room' },
 			alice,
-			[bob],
 			{ baseUrl: BASE, updated: '2026-11-03T00:00:00.000Z' },
 		);
 
@@ -1217,12 +1221,15 @@ describe('ApInboxService chat activity routing', () => {
 		const apPersonService = { resolvePerson: vi.fn(async (uri: string) => uri === localUser.uri ? localUser : null) };
 		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 			chatService,
+			chatRosterService: chatRosterOver(forgetfulRedis()),
 			redisClient,
 			apNoteService: { fetchNote: vi.fn().mockResolvedValue(null), extractEmojis: vi.fn().mockResolvedValue([]) },
 			apResolverService: { createResolver: vi.fn(() => ({ resolve: async (x: unknown) => x })) },
-			utilityService: { extractDbHost: (uri: string) => new URL(uri).host, punyHost: (uri: string) => new URL(uri).host, isFederationAllowedUri: () => true },
+			utilityService: { extractDbHost: (uri: string) => new URL(uri).host, punyHost: (uri: string) => new URL(uri).host, isFederationAllowedUri: () => true, isUriLocal: (uri: string) => new URL(uri).host === 'local.test' },
 			apMfmService: { htmlToMfm: (html: string) => html },
 			logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
+			usersRepository: { findOneBy: vi.fn().mockResolvedValue(actor), findBy: vi.fn().mockResolvedValue([actor]) },
+			chatRoomMembershipsRepository: { findBy: vi.fn().mockResolvedValue([]) },
 			apPersonService,
 			apImageService: { resolveImage: vi.fn(), findStoredImage: vi.fn().mockResolvedValue(null) },
 			roleService: { getUserPolicies: vi.fn().mockResolvedValue({ chatAvailability: 'available' }) },
@@ -1423,7 +1430,7 @@ describe('ApInboxService chat activity routing', () => {
 		await (f.inbox as never as Record<string, (...args: unknown[]) => Promise<string>>)[method](f.actor, activity);
 
 		expect(f.redisClient.set).toHaveBeenCalled();
-		expect(f.chatService[method === 'like' ? 'reactRemote' : 'unreactRemote']).toHaveBeenCalledWith(f.actor, current, '👍', reaction.id);
+		expect(f.chatService[method === 'like' ? 'reactRemote' : 'unreactRemote']).toHaveBeenCalledWith(f.actor, current, '👍', reaction.id, expect.anything());
 	});
 
 	test.each(['x', '🦈'])('accepts a remote message with 4096 characters (%s)', async (character) => {
@@ -1502,7 +1509,8 @@ describe('ApInboxService chat activity routing', () => {
 	test.each([
 		['-000001-12-31T00:00:00.000Z', false],
 		['0000-01-01T00:00:00.000Z', true],
-		['9999-12-31T00:00:00.000Z', true],
+		['2026-01-01T00:00:00.000Z', true],
+		['9999-12-31T00:00:00.000Z', false],
 		['+010000-01-01T00:00:00.000Z', false],
 		['not a date', false],
 	])('reads the room date %s as usable: %s', (updated, usable) => {
@@ -1522,7 +1530,7 @@ describe('ApInboxService chat activity routing', () => {
 			object: { id: f.message.uri, type: 'Tombstone', formerType: 'Note' },
 		});
 
-		expect(f.chatService.deleteRemoteMessage).toHaveBeenCalledWith(f.actor, f.message);
+		expect(f.chatService.deleteRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, expect.anything());
 	});
 
 	test.each([{}, null])('ignores a malformed Delete object instead of failing the inbox job (%s)', async object => {
@@ -1562,7 +1570,7 @@ describe('ApInboxService chat activity routing', () => {
 			content: '👍',
 		});
 
-		expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined);
+		expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined, expect.anything());
 	});
 
 	test('does not query chat messages for ordinary note reactions', async () => {
@@ -1592,7 +1600,7 @@ describe('ApInboxService chat activity routing', () => {
 			object: react,
 		});
 
-		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined);
+		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined, expect.anything());
 	});
 
 	test.each(['Like', 'EmojiReaction'])('routes Undo %s of a chat reaction to unreactRemote', async (type) => {
@@ -1605,7 +1613,7 @@ describe('ApInboxService chat activity routing', () => {
 			object: react,
 		});
 
-		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined);
+		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined, expect.anything());
 	});
 
 	test('skips a reaction rejected by the chat service instead of retrying the job', async () => {
@@ -1648,7 +1656,7 @@ describe('ApInboxService chat activity routing', () => {
 		});
 
 		expect(result).toContain('pending');
-		expect(f.chatService.storePendingChatReaction).toHaveBeenCalledWith(f.actor.id, f.message.uri, '👍', false, undefined);
+		expect(f.chatService.storePendingChatReaction).toHaveBeenCalledWith(f.actor.id, f.message.uri, '👍', false, undefined, expect.anything());
 	});
 
 	test('defers a chat unreact that arrives before its message', async () => {
@@ -1662,7 +1670,7 @@ describe('ApInboxService chat activity routing', () => {
 		});
 
 		expect(result).toContain('pending');
-		expect(f.chatService.storePendingChatReaction).toHaveBeenCalledWith(f.actor.id, f.message.uri, '👍', true, undefined);
+		expect(f.chatService.storePendingChatReaction).toHaveBeenCalledWith(f.actor.id, f.message.uri, '👍', true, undefined, expect.anything());
 	});
 
 	test('rechecks under the object lock so a reaction cannot miss a message stored after the first lookup', async () => {
@@ -1674,7 +1682,7 @@ describe('ApInboxService chat activity routing', () => {
 		});
 
 		expect(result).toBe('ok');
-		expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined);
+		expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined, expect.anything());
 		expect(f.chatService.storePendingChatReaction).not.toHaveBeenCalled();
 	});
 
@@ -1688,7 +1696,7 @@ describe('ApInboxService chat activity routing', () => {
 		});
 
 		expect(result).toBe('ok');
-		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined);
+		expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', undefined, expect.anything());
 		expect(f.chatService.storePendingChatReaction).not.toHaveBeenCalled();
 	});
 
@@ -1795,7 +1803,7 @@ describe('ApInboxService chat activity routing', () => {
 			const result = await foreignInbox(f).delete(f.actor, { type: 'Delete', actor: f.actor.uri, object: foreignUri });
 
 			expect(result).toBe('ok: chat message deleted');
-			expect(f.chatService.deleteRemoteMessage).toHaveBeenCalledWith(f.actor, f.message);
+			expect(f.chatService.deleteRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, expect.anything());
 		});
 
 		test('Update without the talk flag edits the chat message', async () => {
@@ -1816,7 +1824,7 @@ describe('ApInboxService chat activity routing', () => {
 
 			await foreignInbox(f).like(f.actor, { type: 'Like', actor: f.actor.uri, object: foreignUri, content: '👍', id: 'https://remote.test/likes/1' });
 
-			expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', 'https://remote.test/likes/1');
+			expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', 'https://remote.test/likes/1', expect.anything());
 		});
 
 		test('Undo(Like) removes the reaction from the chat message', async () => {
@@ -1828,7 +1836,7 @@ describe('ApInboxService chat activity routing', () => {
 				object: { type: 'Like', actor: f.actor.uri, object: foreignUri, content: '👍', id: 'https://remote.test/likes/1' },
 			});
 
-			expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', 'https://remote.test/likes/1');
+			expect(f.chatService.unreactRemote).toHaveBeenCalledWith(f.actor, f.message, '👍', 'https://remote.test/likes/1', expect.anything());
 		});
 	});
 
@@ -1856,6 +1864,7 @@ describe('ApInboxService chat activity routing', () => {
 			f.chatService.isRoomMember.mockResolvedValue(true);
 			f.chatService.findMessageByUri.mockResolvedValue(null);
 			Object.assign(f.inbox, { hostPolicyService: { isRefusedRemoteHost: vi.fn().mockResolvedValue(false) } });
+			(f.inbox as never as { usersRepository: { findBy: ReturnType<typeof vi.fn> } }).usersRepository.findBy.mockResolvedValue([f.actor, author]);
 			(f.inbox as never as { apPersonService: { resolvePerson: ReturnType<typeof vi.fn> } }).apPersonService.resolvePerson.mockImplementation(async (uri: string) => {
 				if (uri === f.localUser.uri) return f.localUser;
 				if (uri === author.uri) return author;

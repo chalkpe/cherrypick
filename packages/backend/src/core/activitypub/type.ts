@@ -14,6 +14,7 @@ export interface IObject {
 	summary?: string;
 	_misskey_summary?: string;
 	_misskey_chatArchived?: boolean;
+	_misskey_chatRoom?: string;
 	_misskey_chatRoomMembers?: string[];
 	_misskey_chatRoomRosterAt?: string;
 	_misskey_followedMessage?: string | null;
@@ -138,7 +139,6 @@ export interface IPost extends IObject {
 	_misskey_quote?: string;
 	_misskey_content?: string;
 	_misskey_talk?: boolean;
-	_misskey_chatRoom?: string;
 	quoteUrl?: string;
 	disableRightClick?: boolean;
 	deleteAt?: string;
@@ -336,7 +336,6 @@ export interface ILike extends IActivity {
 
 export interface IAnnounce extends IActivity {
 	type: 'Announce';
-	_misskey_chatRoom?: string;
 }
 
 export interface IBlock extends IActivity {

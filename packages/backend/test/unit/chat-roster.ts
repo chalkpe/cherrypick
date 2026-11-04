@@ -39,18 +39,29 @@ describe('parseRemoteChatDate', () => {
 /** The statements are checked against PostgreSQL separately. This follows what they ask for. */
 function fakeStates(initial: [string, Date][] = []) {
 	const rows = new Map(initial);
+	const accepted = new Map<string, Date>();
 	const key = (params: unknown[]) => `${params[0]}/${params[1]}`;
 	return {
 		rows,
+		accepted,
 		repository: {
 			findOneBy: async ({ roomId, userId }: { roomId: string; userId: string }) => {
 				const at = rows.get(`${roomId}/${userId}`);
-				return at == null ? null : { roomId, userId, lastRosterAt: at };
+				return at == null ? null : { roomId, userId, lastRosterAt: at, acceptedAt: accepted.get(`${roomId}/${userId}`) ?? null };
 			},
-			query: async (sql: string, params: [string, string, Date]) => {
+			update: async ({ roomId, userId }: { roomId: string; userId: string }) => {
+				accepted.delete(`${roomId}/${userId}`);
+				return { affected: 1 };
+			},
+			query: async (sql: string, params: [string, string, Date, Date?]) => {
 				const id = key(params);
 				const at = params[2];
 				const current = rows.get(id);
+				if (sql.includes('"acceptedAt"')) {
+					if (current == null) rows.set(id, at);
+					accepted.set(id, params[3]!);
+					return [];
+				}
 				if (current == null) {
 					rows.set(id, at);
 					return [{ lastRosterAt: at }];
@@ -189,6 +200,21 @@ describe('the order of membership changes', () => {
 
 		expect(await service.claimRosterRemove('room', 'carol', T3)).toBe(true);
 		expect(states.rows.get('room/carol')).toEqual(T3);
+	});
+
+	test('accepting keeps the time of the invitation, and is forgotten on request', async () => {
+		const { service, states } = rosterService({ states: [['room/bob', T1]] });
+
+		await service.recordAccepted('room', 'bob', T2, T3);
+		expect(states.rows.get('room/bob')).toEqual(T1);
+		expect(await service.acceptedAt('room', 'bob')).toEqual(T3);
+
+		await service.recordAccepted('room', 'carol', T2, T3);
+		expect(states.rows.get('room/carol')).toEqual(T2);
+
+		await service.forgetAccepted('room', 'bob');
+		expect(await service.acceptedAt('room', 'bob')).toBeNull();
+		expect(await service.acceptedAt('room', 'nobody')).toBeNull();
 	});
 
 	test('recording a new membership does not replace what is known', async () => {
@@ -454,15 +480,53 @@ describe('applying the roster the owner publishes', () => {
 		expect(removeRoomMember).not.toHaveBeenCalled();
 	});
 
-	test('removes a local member the owner no longer counts when they joined before the list', async () => {
+	test('keeps a local member who joined under five minutes ago, even before the list was read', async () => {
 		const { run, removeRoomMember } = setup({
-			members: [{ id: 'm1', userId: 'alice' }, { id: 'm2', userId: 'dave', createdAt: new Date(ROSTER_AT.getTime() - 1) }],
+			members: [{ id: 'm1', userId: 'alice' }, { id: 'm2', userId: 'dave', createdAt: new Date(Date.now() - 4 * 60 * 1000) }],
+			states: [['room1/dave', T1]],
+		});
+
+		await run();
+
+		expect(removeRoomMember).not.toHaveBeenCalled();
+	});
+
+	test('removes a local member who joined over five minutes ago and whom the owner no longer counts', async () => {
+		const { run, removeRoomMember, states } = setup({
+			members: [{ id: 'm1', userId: 'alice' }, { id: 'm2', userId: 'dave', createdAt: new Date(Date.now() - 6 * 60 * 1000) }],
 			states: [['room1/dave', T1]],
 		});
 
 		await run();
 
 		expect(removeRoomMember).toHaveBeenCalledWith(expect.anything(), dave);
+		expect(states.rows.get('room1/dave')).toEqual(ROSTER_AT);
+	});
+
+	test('goes by the acceptance when the membership itself is older: an old one a lost Remove left behind, accepted anew', async () => {
+		const { run, removeRoomMember, states } = setup({
+			members: [{ id: 'm1', userId: 'alice' }, { id: 'm2', userId: 'dave', createdAt: new Date(Date.now() - 60 * 60 * 1000) }],
+			states: [['room1/dave', T1]],
+		});
+		states.accepted.set('room1/dave', new Date());
+
+		await run();
+
+		expect(removeRoomMember).not.toHaveBeenCalled();
+	});
+
+	test('leaves the acceptance in place when removing a local member, so that an Add from the owner can bring them back', async () => {
+		const { run, removeRoomMember, states } = setup({
+			members: [{ id: 'm1', userId: 'alice' }, { id: 'm2', userId: 'dave' }],
+			states: [['room1/dave', T1]],
+		});
+		const acceptedLongAgo = new Date(Date.now() - 6 * 60 * 1000);
+		states.accepted.set('room1/dave', acceptedLongAgo);
+
+		await run();
+
+		expect(removeRoomMember).toHaveBeenCalledWith(expect.anything(), dave);
+		expect(states.accepted.get('room1/dave')).toEqual(acceptedLongAgo);
 	});
 
 	test('never adds a local user: only their own acceptance makes them a member', async () => {

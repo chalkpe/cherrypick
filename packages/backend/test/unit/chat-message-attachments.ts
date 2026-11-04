@@ -14,6 +14,7 @@ import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { DriveFileUsageService } from '@/core/DriveFileUsageService.js';
 import CreateToRoomEndpoint, { paramDef as createToRoomParams } from '@/server/api/endpoints/chat/messages/create-to-room.js';
 import CreateToUserEndpoint, { paramDef as createToUserParams } from '@/server/api/endpoints/chat/messages/create-to-user.js';
+import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
 
 const me = { id: 'me' } as MiLocalUser;
 const document = (name: string) => ({ type: 'Document', url: `https://remote.test/${name}.png`, name });
@@ -298,14 +299,17 @@ describe('receiving the attachments of a remote message', () => {
 			updateRemoteMessage: vi.fn(),
 			isRoomMember: vi.fn().mockResolvedValue(true),
 		};
+		const chatRosterService = chatRosterOver(forgetfulRedis());
 		const apImageService = { resolveImage: vi.fn(async (_actor: unknown, attach: { name: string }) => ({ id: attach.name })), findStoredImage: vi.fn().mockResolvedValue(null) };
 		const chatRoomsRepository = { findOneBy: vi.fn().mockResolvedValue(room) };
 		const chatMessagesRepository = { findOneBy: vi.fn().mockResolvedValue(null) };
 		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 			chatService,
+			chatRosterService,
 			apImageService,
 			chatRoomsRepository,
 			chatMessagesRepository,
+			usersRepository: { findOneBy: vi.fn().mockResolvedValue(actor) },
 			chatRoomInvitationsRepository: { findOneBy: vi.fn().mockResolvedValue(null) },
 			redisClient: {
 				get: vi.fn(async (key: string) => locks.get(key) ?? null),

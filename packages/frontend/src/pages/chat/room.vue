@@ -453,6 +453,8 @@ function onDeleted(id: string) {
 		message.text = null;
 		message.fileId = null;
 		message.file = null;
+		message.fileIds = [];
+		message.files = [];
 		message.reactions = [];
 		message.emojis = {};
 	}

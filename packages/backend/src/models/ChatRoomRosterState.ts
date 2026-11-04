@@ -38,4 +38,13 @@ export class MiChatRoomRosterState {
 	 */
 	@Column('timestamp with time zone')
 	public lastRosterAt: Date;
+
+	/**
+	 * このサーバーのユーザーが招待を受諾した時刻。退出するか外されると消える。
+	 * ルームの持ち主に届く前に名簿で外されても、これがあれば持ち主からの Add で戻せる
+	 */
+	@Column('timestamp with time zone', {
+		nullable: true,
+	})
+	public acceptedAt: Date | null;
 }

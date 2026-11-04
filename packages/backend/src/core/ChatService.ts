@@ -12,6 +12,8 @@ import type { SelectQueryBuilder } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { QueueService } from '@/core/QueueService.js';
+import { ChatRosterService } from '@/core/ChatRosterService.js';
+import type { IObject } from '@/core/activitypub/type.js';
 import { IdService } from '@/core/IdService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
@@ -20,6 +22,7 @@ import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { PushNotificationService } from '@/core/PushNotificationService.js';
 import { bindThis } from '@/decorators.js';
 import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, DriveFilesRepository, MiChatMessage, MiChatRoom, MiDriveFile, MiUser, MutingsRepository, UsersRepository } from '@/models/_.js';
+import type { MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { QueryService } from '@/core/QueryService.js';
 import { RoleService } from '@/core/RoleService.js';
@@ -65,6 +68,7 @@ const PENDING_CHAT_REACTION_TTL = 6 * 60 * 60;
 const MAX_PENDING_CHAT_REACTIONS = 100;
 const MAX_PENDING_CHAT_REACTIONS_PER_ACTOR = 1000;
 const MAX_PENDING_CHAT_REACTION_LENGTH = 256;
+const MAX_PENDING_CHAT_ACTIVITY_LENGTH = 8192;
 const CHAT_REACTION_ACTIVITY_ID_TTL = 30 * 24 * 60 * 60;
 const MAX_REMOTE_REACTION_ACTIVITY_ID_LENGTH = 2048;
 // An account suspended here gets nothing new, but still hears what was taken back.
@@ -137,6 +141,7 @@ export class ChatService {
 		private moderationLogService: ModerationLogService,
 		private liveKitService: LiveKitService,
 		private hostPolicyService: HostPolicyService,
+		private chatRosterService: ChatRosterService,
 	) {
 	}
 
@@ -460,7 +465,7 @@ export class ChatService {
 				await this.deliverToRemoteUsers(fullFromUser, remoteMembers, activity);
 			}
 		} else {
-			await this.relayRoomMessage(inserted, fromUser, toRoom, memberships.map(member => member.userId));
+			await this.relayToOtherServers(toRoom, fromUser, (owner, toUsers) => this.apRendererService.renderChatRoomRelay(inserted, toRoom, owner, toUsers));
 		}
 
 		return packedMessage;
@@ -470,16 +475,36 @@ export class ChatService {
 	 * A sender's server only knows the members it has heard about so far, so a message can miss someone
 	 * who joined just before. The owner's server knows them all and points them at the message.
 	 */
-	private async relayRoomMessage(message: MiChatMessage, fromUser: Pick<MiUser, 'id' | 'host'>, room: MiChatRoom, memberIds: MiUser['id'][]): Promise<void> {
+	private async relayToOtherServers(room: MiChatRoom, fromUser: Pick<MiUser, 'id' | 'host'>, render: (owner: MiUser, toUsers: MiUser[]) => IObject): Promise<void> {
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
 		if (owner == null || !this.userEntityService.isLocalUser(owner)) return;
 
-		const members = await this.usersRepository.findBy({ id: In(memberIds) });
+		const members = await this.participantsForRoom(room);
 		const others = members.filter(member => this.userEntityService.isRemoteUser(member) && member.host !== fromUser.host);
 		if (others.length === 0) return;
 
 		const toUsers = members.filter(member => member.id !== owner.id && member.id !== fromUser.id);
-		await this.deliverToRemoteUsers(owner, others, this.apRendererService.renderChatRoomRelay(message, room, owner, toUsers));
+		await this.deliverToRemoteUsers(owner, others, render(owner, toUsers));
+	}
+
+	/** Only what changed something here gets this far, so a copy of an activity is not passed on again. An activity without an ID could not be told from its copies. */
+	private async relayRoomActivity(message: MiChatMessage, fromUser: Pick<MiUser, 'id' | 'host'>, activity: IObject | undefined): Promise<void> {
+		if (activity == null || typeof activity.id !== 'string' || message.toRoomId == null) return;
+		const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
+		if (room == null) return;
+		await this.relayToOtherServers(room, fromUser, (owner, toUsers) => this.apRendererService.renderChatRoomActivityRelay(activity as IObject & { id: string }, room, owner, toUsers));
+	}
+
+	/** The invitation, joined room and owned room lists stay on screen until told to read again. */
+	@bindThis
+	public notifyRoomListChanged(localUserIds: MiUser['id'][]): void {
+		for (const userId of localUserIds) {
+			this.globalEventService.publishMainStream(userId, 'chatRoomListChanged');
+		}
+	}
+
+	private localUserIds(users: MiUser[]): MiUser['id'][] {
+		return users.filter(user => this.userEntityService.isLocalUser(user)).map(user => user.id);
 	}
 
 	@bindThis
@@ -645,7 +670,7 @@ export class ChatService {
 		}
 
 		const toUsers = participants.filter(user => user.id !== fromUser.id);
-		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers));
+		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers, await this.roomUriForMessage(message)));
 	}
 
 	@bindThis
@@ -835,6 +860,8 @@ export class ChatService {
 
 		const created = await this.chatRoomsRepository.insertOne(room);
 
+		this.notifyRoomListChanged([owner.id]);
+
 		return created;
 	}
 
@@ -876,12 +903,16 @@ export class ChatService {
 	@bindThis
 	public async deleteRoom(room: MiChatRoom, deleter?: MiUser, options?: { federate?: boolean }) {
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
-		// A remote owner's server is the authority for its room, so only rooms owned here are announced.
-		// The announcement is signed by the owner even when a moderator deletes the room.
-		if (options?.federate !== false && owner != null && this.userEntityService.isLocalUser(owner)) {
-			const participants = await this.participantsAndInviteesForRoom(room);
-			const toUsers = participants.filter(user => user.id !== owner.id);
-			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomDelete(room, owner, toUsers));
+		const participants = await this.participantsForRoom(room);
+		const invitees = await this.inviteesForRoom(room);
+		if (options?.federate !== false && owner != null) {
+			if (this.userEntityService.isLocalUser(owner)) {
+				// A remote owner's server is the authority for its room, so only rooms owned here are announced.
+				// The announcement is signed by the owner even when a moderator deletes the room.
+				await this.deliverToRemoteUsers(owner, [...participants, ...invitees], this.apRendererService.renderChatRoomDelete(room, owner));
+			} else if (this.userEntityService.isRemoteUser(owner)) {
+				await this.leaveRoomRemovedHere(room, owner, participants, invitees);
+			}
 		}
 
 		const memberships = (await this.chatRoomMembershipsRepository.findBy({ roomId: room.id })).map(m => ({
@@ -898,8 +929,12 @@ export class ChatService {
 		}
 		await redisPipeline.exec();
 
+		const peopleHere = this.localUserIds([...participants, ...invitees]);
+		await this.chatRosterService.markRoomDeletedFor(peopleHere, room.id);
+
 		await this.chatRoomsRepository.delete(room.id);
 		this.globalEventService.publishChatRoomStream(room.id, 'roomDeleted');
+		this.notifyRoomListChanged(peopleHere);
 
 		// ルームが消えたら通話も終了する。LiveKit が落ちていても削除自体は成功させる
 		this.liveKitService.deleteRoom(room.id).catch(() => {});
@@ -914,6 +949,23 @@ export class ChatService {
 				});
 			}
 		}
+	}
+
+	/** A moderator removed this server's copy. The room goes on on its owner's server, which has to stop counting the people here. */
+	private async leaveRoomRemovedHere(room: MiChatRoom, owner: MiRemoteUser, participants: MiUser[], invitees: MiUser[]): Promise<void> {
+		const roomUri = await this.roomUriForRoom(room);
+		for (const member of participants) {
+			if (!this.userEntityService.isLocalUser(member)) continue;
+			await this.deliverToRemoteUsers(member, participants, {
+				...this.apRendererService.renderRemove(member, roomUri, this.userEntityService.genLocalUserUri(member.id)),
+				id: `${this.config.url}/activities/${this.idService.gen()}`,
+				published: new Date().toISOString(),
+			});
+		}
+		for (const invitee of invitees) {
+			if (this.userEntityService.isLocalUser(invitee)) this.deliverInvitationReject(room, owner, invitee);
+		}
+		await this.chatRosterService.markRoomClosedHere(roomUri);
 	}
 
 	@bindThis
@@ -990,11 +1042,16 @@ export class ChatService {
 
 		const inviter = await this.usersRepository.findOneByOrFail({ id: inviterId });
 
+		// A Remove from before this invitation, still on its way, must not end what comes of it.
+		const invitedAt = this.idService.parse(invitation.id).date;
+		await this.chatRosterService.advance(room.id, inviteeId, invitedAt);
+
 		// Send local notification if invitee is local
 		if (this.userEntityService.isLocalUser(invitee)) {
 			this.notificationService.createNotification(inviteeId, 'chatRoomInvitationReceived', {
 				invitationId: invitation.id,
 			}, inviterId);
+			this.notifyRoomListChanged([inviteeId]);
 		}
 
 		// Federation: Send Invite activity to remote user if applicable
@@ -1004,7 +1061,7 @@ export class ChatService {
 			const inviteActivity = this.apRendererService.renderInvite(roomObject, inviteeUri, inviter);
 			const activity = {
 				...inviteActivity,
-				published: this.idService.parse(invitation.id).date.toISOString(),
+				published: invitedAt.toISOString(),
 			};
 			this.queueService.deliver(inviter, this.apRendererService.addContext(activity), invitee.inbox, false);
 		}
@@ -1061,7 +1118,7 @@ export class ChatService {
 		// The invitation is the authorization for joining. Consume it atomically
 		// with the membership insert so that a cancellation cannot race the join
 		// and a failed insert cannot lose the invitation.
-		const membership = await this.db.transaction(async (manager) => {
+		const newMembership = await this.db.transaction(async (manager) => {
 			const consumed = await manager.delete(MiChatRoomInvitation, {
 				id: invitation.id,
 				roomId,
@@ -1081,24 +1138,25 @@ export class ChatService {
 				throw new ChatRoomFullError('room is full');
 			}
 
-			const newMembership = {
+			const created = {
 				id: this.idService.gen(),
 				roomId: roomId,
 				userId: userId,
 			} satisfies Partial<MiChatRoomMembership>;
 
-			await manager.insert(MiChatRoomMembership, newMembership);
-			return newMembership as MiChatRoomMembership;
+			await manager.insert(MiChatRoomMembership, created);
+			return created as MiChatRoomMembership;
 		});
 
-		// Already a member (e.g. a duplicate join): the invitation was consumed,
-		// but there is no new member to announce.
-		if (membership == null) return;
+		await this.chatRosterService.recordAccepted(roomId, userId, this.idService.parse(invitation.id).date, new Date());
+		this.notifyRoomListChanged([userId]);
 
 		// Federation: Notify about acceptance and new member
 		const joiningUser = await this.usersRepository.findOneByOrFail({ id: userId });
-		this.globalEventService.publishChatRoomStream(roomId, 'membershipStarted', { userId });
+		// Without a new membership (e.g. a duplicate join, or one a lost Remove left behind) there is no new member to announce.
+		if (newMembership != null) this.globalEventService.publishChatRoomStream(roomId, 'membershipStarted', { userId });
 		const owner = await this.usersRepository.findOneByOrFail({ id: room.ownerId });
+		const joinedAt = newMembership != null ? this.idService.parse(newMembership.id).date : new Date();
 
 		// Get all members (including owner, excluding the joining user)
 		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId });
@@ -1127,13 +1185,14 @@ export class ChatService {
 			const acceptActivity = this.apRendererService.renderAccept(inviteObject, joiningUser);
 			const activity = {
 				...acceptActivity,
-				published: this.idService.parse(membership.id).date.toISOString(),
+				published: joinedAt.toISOString(),
 			};
+			// Even with a membership here already: the owner invited this user because it does not count them, and would otherwise never hear back.
 			this.queueService.deliver(joiningUser, this.apRendererService.addContext(activity), owner.inbox, false);
 		}
 
 		// Send Add activity to other remote members (not the owner, as they got Accept)
-		if (remoteMembers.length > 0 && this.userEntityService.isLocalUser(owner)) {
+		if (newMembership != null && remoteMembers.length > 0 && this.userEntityService.isLocalUser(owner)) {
 			const roomUri = this.apRendererService.genLocalChatRoomUri(room.id);
 			const joiningUserUri = this.userEntityService.isLocalUser(joiningUser)
 				? this.userEntityService.genLocalUserUri(joiningUser.id)
@@ -1142,7 +1201,7 @@ export class ChatService {
 			const addActivity = this.apRendererService.renderAdd(owner, roomUri, joiningUserUri ?? '');
 			const activity = {
 				...addActivity,
-				published: this.idService.parse(membership.id).date.toISOString(),
+				published: joinedAt.toISOString(),
 			};
 			const contextedActivity = this.apRendererService.addContext(activity);
 
@@ -1157,6 +1216,7 @@ export class ChatService {
 		const invitation = await this.chatRoomInvitationsRepository.findOneBy({ roomId, userId });
 		if (invitation == null) throw new ChatRoomAccessError('invitation not found');
 		await this.chatRoomInvitationsRepository.update(invitation.id, { ignored: true });
+		this.notifyRoomListChanged([userId]);
 	}
 
 	@bindThis
@@ -1168,28 +1228,33 @@ export class ChatService {
 
 		// Delete the invitation
 		await this.chatRoomInvitationsRepository.delete({ id: invitation.id });
+		this.notifyRoomListChanged([userId]);
 
 		// Federation: Send Reject activity to the inviter if applicable
 		const inviter = await this.usersRepository.findOneByOrFail({ id: room.ownerId });
 		const invitee = await this.usersRepository.findOneByOrFail({ id: userId });
 
 		if (this.userEntityService.isLocalUser(invitee) && this.userEntityService.isRemoteUser(inviter)) {
-			const roomUri = chatRoomUriForOwner(room, inviter, this.config.url);
-
-			// Create a simplified invite object reference for the Reject activity
-			const inviteObject = {
-				type: 'Invite',
-				actor: inviter.uri,
-				object: roomUri,
-				target: this.userEntityService.genLocalUserUri(invitee.id),
-			};
-			const rejectActivity = this.apRendererService.renderReject(inviteObject, invitee);
-			const activity = {
-				...rejectActivity,
-				published: new Date().toISOString(),
-			};
-			this.queueService.deliver(invitee, this.apRendererService.addContext(activity), inviter.inbox, false);
+			this.deliverInvitationReject(room, inviter, invitee);
 		}
+	}
+
+	private deliverInvitationReject(room: MiChatRoom, inviter: MiRemoteUser, invitee: MiLocalUser): void {
+		const roomUri = chatRoomUriForOwner(room, inviter, this.config.url);
+
+		// Create a simplified invite object reference for the Reject activity
+		const inviteObject = {
+			type: 'Invite',
+			actor: inviter.uri,
+			object: roomUri,
+			target: this.userEntityService.genLocalUserUri(invitee.id),
+		};
+		const rejectActivity = this.apRendererService.renderReject(inviteObject, invitee);
+		const activity = {
+			...rejectActivity,
+			published: new Date().toISOString(),
+		};
+		this.queueService.deliver(invitee, this.apRendererService.addContext(activity), inviter.inbox, false);
 	}
 
 	@bindThis
@@ -1209,6 +1274,7 @@ export class ChatService {
 
 		// Delete the invitation
 		await this.chatRoomInvitationsRepository.delete({ id: invitation.id });
+		this.notifyRoomListChanged(this.localUserIds([invitee]));
 
 		// Federation: Send Undo(Invite) activity to remote invitee
 		if (this.userEntityService.isLocalUser(inviter) && this.userEntityService.isRemoteUser(invitee)) {
@@ -1228,6 +1294,7 @@ export class ChatService {
 			const contextedActivity = this.apRendererService.addContext({
 				...undoActivity,
 				id: activityId,
+				published: new Date().toISOString(),
 			});
 
 			this.queueService.deliver(inviter, contextedActivity, invitee.inbox, false);
@@ -1244,7 +1311,9 @@ export class ChatService {
 		const leavingUser = await this.usersRepository.findOneByOrFail({ id: userId });
 
 		await this.chatRoomMembershipsRepository.delete(membership.id);
+		await this.chatRosterService.forgetAccepted(roomId, userId);
 		this.globalEventService.publishChatRoomStream(roomId, 'membershipEnded', { userId });
+		this.notifyRoomListChanged(this.localUserIds([leavingUser]));
 
 		// ルームを抜けたら通話からも外す。LiveKit が落ちていても退出自体は成功させる
 		this.liveKitService.removeParticipant(roomId, this.liveKitService.identityOf(leavingUser)).catch(() => {});
@@ -1279,6 +1348,7 @@ export class ChatService {
 				const contextedActivity = this.apRendererService.addContext({
 					...removeActivity,
 					id: activityId,
+					published: new Date().toISOString(),
 				});
 
 				for (const remoteMember of remoteMembers) {
@@ -1322,6 +1392,8 @@ export class ChatService {
 		redisPipeline.del(`newRoomChatMessageExists:${member.id}:${room.id}`);
 		redisPipeline.srem(`newChatMessagesExists:${member.id}`, `room:${room.id}`);
 		await redisPipeline.exec();
+
+		this.notifyRoomListChanged(this.localUserIds([member]));
 
 		return true;
 	}
@@ -1371,10 +1443,10 @@ export class ChatService {
 			// 残っている参加者は定期的な読み直しでも外れるが、それを待たずに通話を閉じる
 			this.liveKitService.deleteRoom(merged.id).catch(() => {});
 		}
+		const participants = [...await this.participantsForRoom(merged), ...await this.inviteesForRoom(merged)];
+		this.notifyRoomListChanged(this.localUserIds(participants));
 		if (options?.federate !== false && owner != null && owner.host == null) {
-			const participants = await this.participantsAndInviteesForRoom(merged);
-			const toUsers = participants.filter(user => user.id !== owner.id);
-			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomUpdate(merged, owner, toUsers));
+			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomUpdate(merged, owner));
 		}
 
 		return merged;
@@ -1536,7 +1608,7 @@ export class ChatService {
 		const messageUri = chatMessageUri(message, this.config.url);
 		const activityId = `${this.userEntityService.genLocalUserUri(actor.id)}/chat-reactions/${randomUUID()}`;
 		await this.redisClient.setex(this.chatReactionActivityIdKey(actor.id, messageUri, reaction), CHAT_REACTION_ACTIVITY_ID_TTL, activityId);
-		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReaction(message, actor, toUsers, reaction, activityId));
+		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReaction(message, actor, toUsers, reaction, activityId, await this.roomUriForMessage(message)));
 	}
 
 	@bindThis
@@ -1608,7 +1680,7 @@ export class ChatService {
 		const activityIdKey = this.chatReactionActivityIdKey(actor.id, messageUri, reaction);
 		const activityId = await this.redisClient.get(activityIdKey) ?? undefined;
 		await this.redisClient.del(activityIdKey);
-		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReactionUndo(message, actor, toUsers, reaction, activityId));
+		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReactionUndo(message, actor, toUsers, reaction, activityId, await this.roomUriForMessage(message)));
 	}
 
 	@bindThis
@@ -1626,10 +1698,8 @@ export class ChatService {
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 		if (message.editedAt != null && message.editedAt >= editedAt) return message;
 		await this.assertCanStillEdit(message);
-		if (message.toRoomId != null) {
-			const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
-			if (room != null) await this.assertRemoteWriteAllowed(room);
-		}
+		const room = message.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
+		if (room != null) await this.assertRemoteWriteAllowed(room);
 
 		const trimmed = text.trim();
 		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > MAX_CHAT_MESSAGE_TEXT_LENGTH) throw new ChatMessageAccessError('invalid text');
@@ -1657,12 +1727,18 @@ export class ChatService {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', payload);
 		}
 
+		if (room != null) await this.relayToOtherServers(room, actor, (owner, toUsers) => this.apRendererService.renderChatRoomRelay(message, room, owner, toUsers, editedAt));
+
 		return message;
 	}
 
+	/**
+	 * @param options.activity What arrived, for the owner's server to pass on.
+	 * @param options.byRoomOwner The caller has made sure the actor owns the room this message is in.
+	 */
 	@bindThis
-	public async deleteRemoteMessage(actor: MiUser, message: MiChatMessage): Promise<MiChatMessage> {
-		if (message.fromUserId !== actor.id) throw new ChatMessageAccessError('cannot delete');
+	public async deleteRemoteMessage(actor: MiUser, message: MiChatMessage, options?: { activity?: IObject; byRoomOwner?: boolean }): Promise<MiChatMessage> {
+		if (message.fromUserId !== actor.id && options?.byRoomOwner !== true) throw new ChatMessageAccessError('cannot delete');
 		if (message.deletedAt != null) return message;
 
 		const deletedAt = new Date();
@@ -1684,11 +1760,14 @@ export class ChatService {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'deleted', message.id);
 		}
 
+		await this.relayRoomActivity(message, actor, options?.activity);
+
 		return message;
 	}
 
+	/** @param options.activity What arrived, for the owner's server to pass on. */
 	@bindThis
-	public async reactRemote(actor: MiUser, message: MiChatMessage, reaction_: string, activityId?: string): Promise<void> {
+	public async reactRemote(actor: MiUser, message: MiChatMessage, reaction_: string, activityId?: string, options?: { activity?: IObject }): Promise<void> {
 		const reaction = this.normalizeRemoteReaction(reaction_, actor.host);
 
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
@@ -1739,10 +1818,16 @@ export class ChatService {
 				reaction,
 			});
 		}
+
+		await this.relayRoomActivity(message, actor, options?.activity);
 	}
 
+	/**
+	 * @param options.activity What arrived, for the owner's server to pass on.
+	 * @param options.allowFormerMember The room owner vouches for it: someone who has left can still take a reaction back.
+	 */
 	@bindThis
-	public async unreactRemote(actor: MiUser, message: MiChatMessage, reaction_: string, activityId?: string): Promise<void> {
+	public async unreactRemote(actor: MiUser, message: MiChatMessage, reaction_: string, activityId?: string, options?: { activity?: IObject; allowFormerMember?: boolean }): Promise<void> {
 		const reaction = this.normalizeRemoteReaction(reaction_, actor.host);
 
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
@@ -1752,7 +1837,7 @@ export class ChatService {
 		if (message.toRoomId != null && room == null) throw new ChatMessageAccessError('no such message');
 
 		if (room) {
-			if (!(await this.isRoomMember(room, actor.id))) throw new ChatMessageAccessError('cannot unreact to others message');
+			if (options?.allowFormerMember !== true && !(await this.isRoomMember(room, actor.id))) throw new ChatMessageAccessError('cannot unreact to others message');
 			await this.assertRemoteWriteAllowed(room);
 		} else if (message.fromUserId !== actor.id && message.toUserId !== actor.id) {
 			throw new ChatMessageAccessError('cannot unreact to others message');
@@ -1790,6 +1875,8 @@ export class ChatService {
 				reaction,
 			});
 		}
+
+		await this.relayRoomActivity(message, actor, options?.activity);
 	}
 
 	/** Called under the inbox message lock, including when draining deferred reactions. */
@@ -1819,8 +1906,12 @@ export class ChatService {
 		return !undo || !Object.values(states).some(active => active);
 	}
 
+	/**
+	 * @param options.roomId The room owner passed this on, which is only good for a message of that room.
+	 * @param options.activity What arrived, for the owner's server to pass on. Left out when it is unreasonably long.
+	 */
 	@bindThis
-	public async storePendingChatReaction(actorId: MiUser['id'], messageUri: string, reaction: string, undo: boolean, activityId?: string): Promise<boolean> {
+	public async storePendingChatReaction(actorId: MiUser['id'], messageUri: string, reaction: string, undo: boolean, activityId?: string, options?: { roomId?: MiChatRoom['id']; activity?: IObject }): Promise<boolean> {
 		if (reaction.length > MAX_PENDING_CHAT_REACTION_LENGTH) return false;
 		if (activityId != null && (typeof activityId !== 'string' || activityId.length === 0 || activityId.length > MAX_REMOTE_REACTION_ACTIVITY_ID_LENGTH)) return false;
 
@@ -1830,10 +1921,12 @@ export class ChatService {
 		const count = counted?.[0]?.[1];
 		if (typeof count !== 'number' || count > MAX_PENDING_CHAT_REACTIONS_PER_ACTOR) return false;
 
+		const activity = options?.activity != null && JSON.stringify(options.activity).length <= MAX_PENDING_CHAT_ACTIVITY_LENGTH ? options.activity : undefined;
+
 		const key = `chat_pending_reaction_events:${messageUri}`;
 		// A set loses both arrival order and repeated react/undo transitions.
 		await this.redisClient.multi()
-			.rpush(key, JSON.stringify({ actorId, reaction, undo, activityId }))
+			.rpush(key, JSON.stringify({ actorId, reaction, undo, activityId, roomId: options?.roomId, activity }))
 			.ltrim(key, 0, MAX_PENDING_CHAT_REACTIONS - 1)
 			.expire(key, PENDING_CHAT_REACTION_TTL)
 			.exec();
@@ -1853,16 +1946,18 @@ export class ChatService {
 
 		for (const entry of entries) {
 			try {
-				const parsed = JSON.parse(entry) as { actorId?: unknown; reaction?: unknown; undo?: unknown; activityId?: unknown };
+				const parsed = JSON.parse(entry) as { actorId?: unknown; reaction?: unknown; undo?: unknown; activityId?: unknown; roomId?: unknown; activity?: unknown };
 				if (typeof parsed.actorId !== 'string' || typeof parsed.reaction !== 'string' || typeof parsed.undo !== 'boolean') continue;
 				if (parsed.activityId != null && typeof parsed.activityId !== 'string') continue;
+				if (parsed.roomId != null && parsed.roomId !== message.toRoomId) continue;
 				const actor = await this.usersRepository.findOneBy({ id: parsed.actorId });
 				if (actor == null || actor.host == null || actor.isSuspended) continue;
 
+				const activity = parsed.activity != null && typeof parsed.activity === 'object' ? parsed.activity as IObject : undefined;
 				if (parsed.undo) {
-					await this.unreactRemote(actor, message, parsed.reaction, parsed.activityId as string | undefined);
+					await this.unreactRemote(actor, message, parsed.reaction, parsed.activityId as string | undefined, { activity, allowFormerMember: parsed.roomId != null });
 				} else {
-					await this.reactRemote(actor, message, parsed.reaction, parsed.activityId as string | undefined);
+					await this.reactRemote(actor, message, parsed.reaction, parsed.activityId as string | undefined, { activity });
 				}
 			} catch {
 				// A malformed deferred reaction must not prevent the message from being stored.
@@ -1928,10 +2023,9 @@ export class ChatService {
 	}
 
 	// 招待中の相手のサーバーにもミラーがあるので、受諾する前の変更も知らせる
-	private async participantsAndInviteesForRoom(room: MiChatRoom): Promise<MiUser[]> {
+	private async inviteesForRoom(room: MiChatRoom): Promise<MiUser[]> {
 		const invitations = await this.chatRoomInvitationsRepository.findBy({ roomId: room.id });
-		const invitees = invitations.length > 0 ? await this.usersRepository.findBy({ id: In(invitations.map(invitation => invitation.userId)) }) : [];
-		return [...await this.participantsForRoom(room), ...invitees];
+		return invitations.length > 0 ? await this.usersRepository.findBy({ id: In(invitations.map(invitation => invitation.userId)) }) : [];
 	}
 
 	private async roomUriForMessage(message: MiChatMessage): Promise<string | undefined> {

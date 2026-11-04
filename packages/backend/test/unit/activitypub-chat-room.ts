@@ -12,6 +12,7 @@ import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { JsonLdService } from '@/core/activitypub/JsonLdService.js';
 import { parseChatRoomVoiceState } from '@/core/activitypub/misc/chat-room-voice-state.js';
 import { UtilityService } from '@/core/UtilityService.js';
+import { chatRosterOver } from '../misc/chat-roster-stub.js';
 
 type Row = { id: string; [key: string]: unknown };
 
@@ -140,7 +141,7 @@ function fixture(options: {
 		deleteRoom: vi.fn(async (_roomId: string) => {}),
 	};
 	const pipeline = { del: vi.fn(), srem: vi.fn(), exec: vi.fn().mockResolvedValue([]) };
-	const globalEventService = { publishChatRoomStream: vi.fn() };
+	const globalEventService = { publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() };
 	const resolver = { resolve: vi.fn() };
 	const apResolverService = { createResolver: vi.fn(async () => resolver) };
 	const pendingRoomIndex = new Map<string, Set<string>>();
@@ -190,10 +191,12 @@ function fixture(options: {
 			return transaction;
 		},
 	};
+	const chatRosterService = chatRosterOver(redisClient);
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 		logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 		db,
 		redisClient,
+		chatRosterService,
 		globalEventService,
 		chatRoomsRepository: rooms,
 		chatRoomInvitationsRepository: invitations,
@@ -209,6 +212,7 @@ function fixture(options: {
 		chatService: {
 			isRoomMember: async (room: Row, userId: string) => room.ownerId === userId || memberships.rows.some(m => m.roomId === room.id && m.userId === userId),
 			findMessageByUri: async () => null,
+			notifyRoomListChanged: vi.fn(),
 			deleteRemoteMessage: vi.fn(),
 			updateRoom: vi.fn(async (room: Row, patch: Record<string, unknown>) => {
 				Object.assign(room, patch);
@@ -253,6 +257,7 @@ function fixture(options: {
 		apRendererService: inbox.apRendererService,
 		queueService: inbox.queueService,
 		redisClient: { pipeline: () => pipeline },
+		chatRosterService: chatRosterOver({ ...redisClient, pipeline: () => ({ setex: vi.fn(), exec: vi.fn().mockResolvedValue([]) }) }),
 		globalEventService,
 		liveKitService,
 	});

@@ -33,6 +33,7 @@ import type { ChatRoomRosterSyncJobData } from '../types.js';
 
 // A room whose owner does not recognize this many of the members here has bigger problems than one more request.
 const MAX_SIGNERS = 3;
+const ACCEPT_TRAVEL_TIME = 5 * 60 * 1000;
 
 /**
  * A server only learns a remote room's members one activity at a time, and an activity can be lost.
@@ -139,8 +140,7 @@ export class ChatRoomRosterSyncProcessorService {
 				continue;
 			}
 
-			// Someone here who accepted after the owner read the list: their Accept is still on its way.
-			if (this.userEntityService.isLocalUser(user) && this.idService.parse(membership.id).date >= roster.at) continue;
+			if (this.userEntityService.isLocalUser(user) && await this.acceptMayBeOnItsWay(room, membership, roster.at)) continue;
 
 			if (await this.chatRosterService.claimRosterRemove(room.id, user.id, roster.at)) {
 				await this.chatService.removeRoomMember(room, user);
@@ -148,6 +148,11 @@ export class ChatRoomRosterSyncProcessorService {
 		}
 
 		return present;
+	}
+
+	private async acceptMayBeOnItsWay(room: MiChatRoom, membership: MiChatRoomMembership, rosterAt: Date): Promise<boolean> {
+		const acceptedAt = await this.chatRosterService.acceptedAt(room.id, membership.userId) ?? this.idService.parse(membership.id).date;
+		return acceptedAt >= rosterAt || Date.now() - acceptedAt.getTime() < ACCEPT_TRAVEL_TIME;
 	}
 
 	private async addListed(room: MiChatRoom, ownerUri: string, roster: { uris: Set<string>; at: Date }, present: Set<string>): Promise<void> {

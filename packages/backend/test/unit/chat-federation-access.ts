@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { UtilityService } from '@/core/UtilityService.js';
+import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
 
 const owner = { id: 'owner', host: 'owner.test', uri: 'https://owner.test/users/owner' };
 const otherActor = { id: 'other', host: 'owner.test', uri: 'https://owner.test/users/other' };
@@ -76,7 +77,7 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		idService: { gen: () => `message${++sequence}` },
 		chatEntityService: { packMessageLiteFor1on1: async (message: unknown) => message },
 		customEmojiService: { populateEmojis: async () => ({}) },
-		globalEventService: { publishChatUserStream: () => {}, publishChatRoomStream: () => {} },
+		globalEventService: { publishChatUserStream: () => {}, publishChatRoomStream: () => {}, publishMainStream: () => {} },
 		redisClient,
 	});
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
@@ -84,6 +85,7 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		chatMessagesRepository: chatService.chatMessagesRepository,
 		globalEventService: { publishChatUserStream: () => {}, publishChatRoomStream: () => {} },
 		redisClient,
+		chatRosterService: chatRosterOver(redisClient),
 		chatRoomsRepository: { findOneBy: async () => ({ id: 'room1', ownerId: owner.id }) },
 		chatRoomMembershipsRepository: {
 			findOneBy: async ({ userId }: { userId: string }) => memberships.find(member => member.userId === userId) ?? null,

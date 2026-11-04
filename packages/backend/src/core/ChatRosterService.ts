@@ -78,6 +78,31 @@ export class ChatRosterService {
 		);
 	}
 
+	/**
+	 * Someone here accepted an invitation. This is not a change by the owner, so the time of the invitation stays
+	 * what a cancellation is compared with: one that crossed this acceptance still has to apply.
+	 */
+	@bindThis
+	public async recordAccepted(roomId: MiChatRoom['id'], userId: MiUser['id'], invitedAt: Date, acceptedAt: Date): Promise<void> {
+		await this.chatRoomRosterStatesRepository.query(
+			`INSERT INTO "chat_room_roster_state" ("roomId", "userId", "lastRosterAt", "acceptedAt") VALUES ($1, $2, $3, $4)
+			ON CONFLICT ("roomId", "userId") DO UPDATE SET "acceptedAt" = EXCLUDED."acceptedAt"`,
+			[roomId, userId, invitedAt, acceptedAt],
+		);
+	}
+
+	/** Their own acceptance is what lets an Add from the owner make someone here a member, until they leave or are removed. */
+	@bindThis
+	public async acceptedAt(roomId: MiChatRoom['id'], userId: MiUser['id']): Promise<Date | null> {
+		const state = await this.chatRoomRosterStatesRepository.findOneBy({ roomId, userId });
+		return state?.acceptedAt ?? null;
+	}
+
+	@bindThis
+	public async forgetAccepted(roomId: MiChatRoom['id'], userId: MiUser['id']): Promise<void> {
+		await this.chatRoomRosterStatesRepository.update({ roomId, userId }, { acceptedAt: null });
+	}
+
 	/** Moves the record up to this time. Changes older than it are out of date from now on. */
 	@bindThis
 	public async advance(roomId: MiChatRoom['id'], userId: MiUser['id'], at: Date): Promise<void> {

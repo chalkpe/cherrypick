@@ -18,7 +18,7 @@ function fixture() {
 	const pipeline = { del: vi.fn(), srem: vi.fn(), exec: vi.fn().mockResolvedValue([]) };
 	const queueService = { deliver: vi.fn() };
 	const liveKitService = { identityOf: (user: typeof member) => user.uri, removeParticipant: vi.fn().mockResolvedValue(undefined) };
-	const globalEventService = { publishChatRoomStream: vi.fn() };
+	const globalEventService = { publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() };
 	const service = Object.assign(Object.create(ChatService.prototype), {
 		config: { url: 'https://local.test' },
 		idService: { gen: () => 'remove1' },
@@ -29,6 +29,7 @@ function fixture() {
 		usersRepository: { findBy: async ({ id }: { id: { value: string[] } }) => users.filter(user => id.value.includes(user.id)) },
 		userEntityService: {
 			isRemoteUser: (user: typeof owner | typeof member) => user.host != null,
+			isLocalUser: (user: typeof owner | typeof member) => user.host == null,
 			genLocalUserUri: (id: string) => `https://local.test/users/${id}`,
 		},
 		apRendererService: {

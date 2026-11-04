@@ -5,6 +5,7 @@
 
 import { describe, expect, test, vi } from 'vitest';
 import { ChatRoomFullError, ChatService, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
+import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
 
 const invitation = {
 	id: 'invitation1',
@@ -152,7 +153,9 @@ function createFixture(options: FixtureOptions = {}) {
 		},
 		globalEventService: {
 			publishChatRoomStream: vi.fn(),
+			publishMainStream: vi.fn(),
 		},
+		chatRosterService: chatRosterOver(forgetfulRedis()),
 		queueService: { deliver },
 	}) as ChatService;
 
@@ -252,13 +255,25 @@ describe('ChatService.joinToRoom invitation consumption', () => {
 		expect(f.state.memberships).toEqual([{ id: 'membership1', roomId: 'room1', userId: 'user1' }]);
 	});
 
-	test('consumes the invitation without duplicating an existing membership', async () => {
+	test('consumes the invitation without duplicating an existing membership, and still tells the remote owner', async () => {
 		const f = createFixture({ existingMembership: true });
 
 		await f.service.joinToRoom('user1', 'room1');
 
 		expect(f.state.invitations.size).toBe(0);
 		expect(f.state.memberships).toEqual([{ id: 'existing1', roomId: 'room1', userId: 'user1' }]);
+		expect(f.deliver).toHaveBeenCalledOnce();
+		expect(f.deliver.mock.calls[0][2]).toBe(owner.inbox);
+	});
+
+	test('announces nothing for an existing membership in a room owned here', async () => {
+		const f = createFixture({ existingMembership: true });
+		const localOwner = { ...owner, host: null };
+		f.usersRepository.findOneByOrFail.mockImplementation(async ({ id }: { id: string }) => id === owner.id ? localOwner as never : joiningUser as never);
+		f.usersRepository.findBy.mockResolvedValue([localOwner, { id: 'member1', host: 'active.test', uri: 'https://active.test/users/member1', inbox: 'https://active.test/inbox' }]);
+
+		await f.service.joinToRoom('user1', 'room1');
+
 		expect(f.deliver).not.toHaveBeenCalled();
 	});
 });
