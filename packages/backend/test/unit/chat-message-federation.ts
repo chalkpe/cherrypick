@@ -1981,6 +1981,30 @@ describe('ApInboxService chat activity routing', () => {
 			expect(f.chatService.createMessageToRoom).toHaveBeenCalledWith(author, f.room, expect.objectContaining({ uri: noteUri }));
 		});
 
+		test('a relayed message waits for an attachment that cannot be fetched right now, until the last attempt', async () => {
+			const f = createRelay();
+			useRealResolvers(f);
+			Object.assign(f.note, { attachment: [{ type: 'Document', url: 'https://third.test/a.png', name: 'a' }] });
+			(f.inbox as never as { apImageService: { resolveImage: ReturnType<typeof vi.fn> } }).apImageService.resolveImage.mockRejectedValue(new StatusError('429 Too Many Requests', 429));
+
+			await expect(f.inbox.performActivity(f.actor as never, f.announce as never)).rejects.toThrow('temporarily');
+			expect(f.chatService.createMessageToRoom).not.toHaveBeenCalled();
+
+			await f.inbox.performActivity(f.actor as never, f.announce as never, undefined, { isLastAttempt: true });
+			expect(f.chatService.createMessageToRoom).toHaveBeenCalledWith(author, f.room, expect.objectContaining({ uri: noteUri, files: [] }));
+		});
+
+		test('a message in a collection, which is not retried, keeps what arrived', async () => {
+			const f = createRelay();
+			useRealResolvers(f);
+			Object.assign(f.note, { attachment: [{ type: 'Document', url: 'https://third.test/a.png', name: 'a' }] });
+			(f.inbox as never as { apImageService: { resolveImage: ReturnType<typeof vi.fn> } }).apImageService.resolveImage.mockRejectedValue(new StatusError('429 Too Many Requests', 429));
+
+			await f.inbox.performActivity(f.actor as never, { type: 'Collection', items: [f.announce] } as never);
+
+			expect(f.chatService.createMessageToRoom).toHaveBeenCalledWith(author, f.room, expect.objectContaining({ uri: noteUri, files: [] }));
+		});
+
 		test('only the room owner can relay', async () => {
 			const f = createRelay();
 			f.chatRoomsRepository.findOneBy.mockResolvedValue({ ...f.room, ownerId: 'someone-else' });

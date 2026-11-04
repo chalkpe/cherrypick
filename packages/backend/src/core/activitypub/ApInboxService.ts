@@ -20,6 +20,7 @@ import { ChatMessageAccessError, ChatService, MAX_CHAT_MESSAGE_TEXT_LENGTH, MAX_
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
+import { isTemporaryFetchFailure } from '@/misc/is-temporary-fetch-failure.js';
 import { truncate } from '@/misc/truncate.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
@@ -65,6 +66,9 @@ const ROOM_FULL = 'skip: room is full';
 const ROOM_ARCHIVED = 'skip: room is archived';
 const CHAT_ROOM_URI = /\/chat\/rooms\/([a-zA-Z0-9]+)$/;
 const MAX_DEFERRED_CHAT_DELETES_PER_ACTOR = 1000;
+
+/** Whether the inbox queue will try this activity again if it fails now. */
+export type ActivityAttempt = { isLastAttempt?: boolean };
 
 @Injectable()
 export class ApInboxService {
@@ -140,7 +144,7 @@ export class ApInboxService {
 	}
 
 	@bindThis
-	public async performActivity(actor: MiRemoteUser, activity: IObject, resolver?: Resolver): Promise<string | void> {
+	public async performActivity(actor: MiRemoteUser, activity: IObject, resolver?: Resolver, options?: ActivityAttempt): Promise<string | void> {
 		let result = undefined as string | void;
 		if (isCollectionOrOrderedCollection(activity)) {
 			const results = [] as [string, string | void][];
@@ -159,7 +163,8 @@ export class ApInboxService {
 					continue;
 				}
 				try {
-					results.push([getApId(item), await this.performOneActivity(actor, act, resolver)]);
+					// 下で例外を握りつぶすので、この中の失敗はジョブの再試行につながらない。待たずに受け取った分だけ保存する
+					results.push([getApId(item), await this.performOneActivity(actor, act, resolver, { isLastAttempt: true })]);
 				} catch (err) {
 					if (err instanceof Error || typeof err === 'string') {
 						this.logger.error(err);
@@ -174,7 +179,7 @@ export class ApInboxService {
 				result = results.map(([id, reason]) => `${id}: ${reason}`).join('\n');
 			}
 		} else {
-			result = await this.performOneActivity(actor, activity, resolver);
+			result = await this.performOneActivity(actor, activity, resolver, options);
 		}
 
 		// ついでにリモートユーザーの情報が古かったら更新しておく
@@ -190,15 +195,15 @@ export class ApInboxService {
 	}
 
 	@bindThis
-	public async performOneActivity(actor: MiRemoteUser, activity: IObject, resolver?: Resolver): Promise<string | void> {
+	public async performOneActivity(actor: MiRemoteUser, activity: IObject, resolver?: Resolver, options?: ActivityAttempt): Promise<string | void> {
 		if (actor.isSuspended) return;
 
 		if (isCreate(activity)) {
-			return await this.create(actor, activity, resolver);
+			return await this.create(actor, activity, resolver, options);
 		} else if (isDelete(activity)) {
 			return await this.delete(actor, activity);
 		} else if (isUpdate(activity)) {
-			return await this.update(actor, activity, resolver);
+			return await this.update(actor, activity, resolver, options);
 		} else if (isFollow(activity)) {
 			return await this.follow(actor, activity);
 		} else if (isAccept(activity)) {
@@ -210,7 +215,7 @@ export class ApInboxService {
 		} else if (isRemove(activity)) {
 			return await this.remove(actor, activity, resolver);
 		} else if (isAnnounce(activity)) {
-			return await this.announce(actor, activity, resolver);
+			return await this.announce(actor, activity, resolver, options);
 		} else if (isLike(activity)) {
 			return await this.like(actor, activity);
 		} else if (isUndo(activity)) {
@@ -579,7 +584,7 @@ export class ApInboxService {
 	}
 
 	@bindThis
-	private async announce(actor: MiRemoteUser, activity: IAnnounce, resolver?: Resolver): Promise<string | void> {
+	private async announce(actor: MiRemoteUser, activity: IAnnounce, resolver?: Resolver, options?: ActivityAttempt): Promise<string | void> {
 		const uri = getApId(activity);
 
 		this.logger.info(`Announce: ${uri}`);
@@ -597,7 +602,7 @@ export class ApInboxService {
 		const targetUri = getApId(activity.object);
 		if (targetUri.startsWith('bear:')) return 'skip: bearcaps url not supported.';
 
-		if (chatRoomUri != null) return await this.relayedChatMessage(actor, activity, targetUri, chatRoomUri, resolver);
+		if (chatRoomUri != null) return await this.relayedChatMessage(actor, activity, targetUri, chatRoomUri, resolver, options);
 
 		const target = await resolver.resolve(activity.object).catch(e => {
 			this.logger.error(`Resolution failed: ${e}`);
@@ -613,7 +618,7 @@ export class ApInboxService {
 	 * The room owner points at a message it received from another member. Only the owner may do this,
 	 * and the message itself comes from its author's server, so the owner cannot put words in a member's mouth.
 	 */
-	private async relayedChatMessage(actor: MiRemoteUser, activity: IAnnounce, messageUri: string, roomUri: string, resolver: Resolver): Promise<string> {
+	private async relayedChatMessage(actor: MiRemoteUser, activity: IAnnounce, messageUri: string, roomUri: string, resolver: Resolver, options?: ActivityAttempt): Promise<string> {
 		if (!this.isOnActorHost(roomUri, actor)) return 'skip: room is not on the relaying server';
 		// The inbox turns away what a refused server sends. A relay must not let that in through the owner, or sign a request to it as a member.
 		if (await this.hostPolicyService.isRefusedRemoteHost(this.utilityService.extractDbHost(messageUri))) return 'skip: refused host';
@@ -661,7 +666,7 @@ export class ApInboxService {
 
 		if (existing != null) return await this.applyRelayedEdit(room, author as MiRemoteUser, existing, note);
 
-		return await this.createChatMessage(resolver, author as MiRemoteUser, note, activity);
+		return await this.createChatMessage(resolver, author as MiRemoteUser, note, activity, options);
 	}
 
 	private async applyRelayedEdit(room: MiChatRoom, author: MiRemoteUser, message: MiChatMessage, note: IPost): Promise<string> {
@@ -891,7 +896,7 @@ export class ApInboxService {
 	}
 
 	@bindThis
-	private async create(actor: MiRemoteUser, activity: ICreate, resolver?: Resolver): Promise<string | void> {
+	private async create(actor: MiRemoteUser, activity: ICreate, resolver?: Resolver, options?: ActivityAttempt): Promise<string | void> {
 		const uri = getApId(activity);
 
 		this.logger.info(`Create: ${uri}`);
@@ -927,7 +932,7 @@ export class ApInboxService {
 		if (isPost(object)) {
 			// Check if this is a chat message (legacy Misskey format)
 			if (typeof object === 'object' && '_misskey_talk' in object && object._misskey_talk === true) {
-				await this.createChatMessage(resolver, actor, object, activity);
+				await this.createChatMessage(resolver, actor, object, activity, options);
 			} else {
 				// Check if this is a reply to a chat message
 				// If so, treat it as a chat message even without `_misskey_talk` flag
@@ -956,7 +961,7 @@ export class ApInboxService {
 				}
 
 				if (isReplyToChatMessage) {
-					await this.createChatMessage(resolver, actor, object, activity);
+					await this.createChatMessage(resolver, actor, object, activity, options);
 				} else {
 					await this.createNote(resolver, actor, object, false, activity);
 				}
@@ -1146,11 +1151,13 @@ export class ApInboxService {
 
 	/**
 	 * The files of a new message, in the order of the Note. What this actor already stored is not downloaded
-	 * again, so that a retry only fetches what failed. `failed` tells a failed download from something that is not a file.
+	 * again, so that a retry only fetches what failed. `failed` tells a failed download from something that is not a file,
+	 * and `temporarilyFailed` tells one that may work later, such as a 429 or a broken connection, from one that never will.
 	 */
-	private async resolveChatAttachments(actor: MiRemoteUser, object: IPost): Promise<{ files: MiDriveFile[]; failed: boolean }> {
+	private async resolveChatAttachments(actor: MiRemoteUser, object: IPost): Promise<{ files: MiDriveFile[]; failed: boolean; temporarilyFailed: boolean }> {
 		const files = new Map<MiDriveFile['id'], MiDriveFile>();
 		let failed = false;
+		let temporarilyFailed = false;
 		for (const attach of toArray(object.attachment).slice(0, MAX_REMOTE_CHAT_MESSAGE_FILES)) {
 			try {
 				if (typeof attach === 'object') attach.sensitive ??= object.sensitive;
@@ -1159,13 +1166,14 @@ export class ApInboxService {
 			} catch (err) {
 				this.logger.warn(`Failed to resolve attachment: ${err}`);
 				failed = true;
+				if (isTemporaryFetchFailure(err)) temporarilyFailed = true;
 			}
 		}
-		return { files: [...files.values()], failed };
+		return { files: [...files.values()], failed, temporarilyFailed };
 	}
 
 	@bindThis
-	private async createChatMessage(resolver: Resolver, actor: MiRemoteUser, object: IPost, activity: ICreate | IUpdate | IAnnounce): Promise<string> {
+	private async createChatMessage(resolver: Resolver, actor: MiRemoteUser, object: IPost, activity: ICreate | IUpdate | IAnnounce, options?: ActivityAttempt): Promise<string> {
 		if (typeof object !== 'object') return 'skip: object is not an object';
 		if (typeof object.id !== 'string') return 'skip: object has no id';
 		if (object.attributedTo == null || getOneApId(object.attributedTo) !== actor.uri) return 'skip: actor.uri !== object.attributedTo';
@@ -1259,7 +1267,7 @@ export class ApInboxService {
 		}
 
 		// An edit does not change the files of a stored message.
-		const { files, failed } = stored == null ? await this.resolveChatAttachments(actor, object) : { files: [], failed: false };
+		const { files, failed, temporarilyFailed } = stored == null ? await this.resolveChatAttachments(actor, object) : { files: [], failed: false, temporarilyFailed: false };
 
 		// Extract emojis
 		const emojis = await this.apNoteService.extractEmojis(object.tag ?? [], actor.host).catch(e => {
@@ -1283,6 +1291,10 @@ export class ApInboxService {
 				}
 				return 'skip: chat message exists';
 			}
+
+			// Saving now would lose the file for good, as a stored message does not fetch its files again. What did
+			// arrive stays in the drive, so a retry only fetches the rest. When the retries run out, keep what arrived.
+			if (temporarilyFailed && !options?.isLastAttempt) throw new Error('chat message attachment is temporarily unavailable');
 
 			// Only a new message can be empty this way: an edit may clear the text of a stored message that keeps its file.
 			if ((text == null || text.trim() === '') && files.length === 0) {
@@ -1929,7 +1941,7 @@ export class ApInboxService {
 	}
 
 	@bindThis
-	private async update(actor: MiRemoteUser, activity: IUpdate, resolver?: Resolver): Promise<string> {
+	private async update(actor: MiRemoteUser, activity: IUpdate, resolver?: Resolver, options?: ActivityAttempt): Promise<string> {
 		if (actor.uri !== getApId(activity.actor)) {
 			return 'skip: invalid actor';
 		}
@@ -1962,7 +1974,7 @@ export class ApInboxService {
 					if (await this.apNoteService.fetchNote(note.id) != null) {
 						return await this.updateNote(resolver, actor, { ...note, attributedTo: getOneApId(note.attributedTo) }, false, activity);
 					}
-					return await this.createChatMessage(resolver, actor, note, activity);
+					return await this.createChatMessage(resolver, actor, note, activity, options);
 				}
 
 				const text = this.chatMessageText(note);

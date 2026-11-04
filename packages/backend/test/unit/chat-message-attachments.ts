@@ -4,6 +4,8 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
+import { StatusError } from '@/misc/status-error.js';
+import { isLastInboxAttempt } from '@/queue/processors/InboxProcessorService.js';
 import type { MiLocalUser } from '@/models/User.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApImageService } from '@/core/activitypub/models/ApImageService.js';
@@ -328,7 +330,7 @@ describe('receiving the attachments of a remote message', () => {
 		const note = (overrides: object = {}) => ({
 			id: 'https://remote.test/chat/messages/m1', type: 'Note', attributedTo: actor.uri, to: [localUser.uri], content: 'hello', _misskey_talk: true, ...overrides,
 		});
-		const receive = (object: object, type = 'Create') => (inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage({ resolve: async (x: unknown) => x }, actor, object, { type });
+		const receive = (object: object, type = 'Create', options?: { isLastAttempt?: boolean }) => (inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage({ resolve: async (x: unknown) => x }, actor, object, { type }, options);
 		return { actor, localUser, room, chatService, apImageService, chatRoomsRepository, chatMessagesRepository, note, receive };
 	}
 
@@ -400,6 +402,92 @@ describe('receiving the attachments of a remote message', () => {
 
 		expect(f.apImageService.resolveImage.mock.calls.map(call => (call[1] as { name: string }).name)).toEqual(['b']);
 		expect(storedIds(f.chatService.createMessageToUser)).toEqual(['a', 'b']);
+	});
+
+	describe('an attachment that cannot be fetched right now', () => {
+		const failOn = (f: ReturnType<typeof createInbox>, name: string, err: unknown) => {
+			f.apImageService.resolveImage.mockImplementation(async (_actor: unknown, attach: { name: string }) => {
+				if (attach.name === name) throw err;
+				return { id: attach.name } as never;
+			});
+		};
+
+		test.each([
+			['a 429', new StatusError('429 Too Many Requests', 429)],
+			['a 503', new StatusError('503 Service Unavailable', 503)],
+			['a broken connection', Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })],
+		])('%s keeps the message back for a retry, though it has text', async (_name, err) => {
+			const f = createInbox();
+			failOn(f, 'a', err);
+
+			await expect(f.receive(f.note({ attachment: [document('a')] }))).rejects.toThrow('temporarily');
+
+			expect(f.chatService.createMessageToUser).not.toHaveBeenCalled();
+		});
+
+		test('a later attempt that succeeds keeps every file', async () => {
+			const f = createInbox();
+			const attachment = [document('a'), document('b')];
+			failOn(f, 'b', new StatusError('429 Too Many Requests', 429));
+			await expect(f.receive(f.note({ attachment }))).rejects.toThrow('temporarily');
+
+			f.apImageService.findStoredImage.mockImplementation(async (_actor: unknown, attach: { name: string }) => attach.name === 'a' ? { id: 'a' } as never : null);
+			f.apImageService.resolveImage.mockClear();
+			f.apImageService.resolveImage.mockImplementation(async (_actor: unknown, attach: { name: string }) => ({ id: attach.name }) as never);
+			await f.receive(f.note({ attachment }));
+
+			expect(f.apImageService.resolveImage.mock.calls.map(call => (call[1] as { name: string }).name)).toEqual(['b']);
+			expect(storedIds(f.chatService.createMessageToUser)).toEqual(['a', 'b']);
+		});
+
+		test('the last attempt keeps what did arrive, and the text', async () => {
+			const f = createInbox();
+			failOn(f, 'b', new StatusError('429 Too Many Requests', 429));
+
+			await f.receive(f.note({ attachment: [document('a'), document('b')] }), 'Create', { isLastAttempt: true });
+
+			expect(storedIds(f.chatService.createMessageToUser)).toEqual(['a']);
+			expect(f.chatService.createMessageToUser.mock.calls[0][2]).toMatchObject({ text: 'hello' });
+		});
+
+		test('the last attempt of a message that is only that file has nothing to keep', async () => {
+			const f = createInbox();
+			failOn(f, 'a', new StatusError('429 Too Many Requests', 429));
+
+			await expect(f.receive(f.note({ content: '', attachment: [document('a')] }), 'Create', { isLastAttempt: true })).rejects.toThrow('not available');
+
+			expect(f.chatService.createMessageToUser).not.toHaveBeenCalled();
+		});
+
+		test('another delivery of the message that got there first ends the wait', async () => {
+			const f = createInbox();
+			failOn(f, 'a', new StatusError('429 Too Many Requests', 429));
+			f.chatMessagesRepository.findOneBy.mockResolvedValueOnce(null).mockResolvedValue({ id: 'stored' });
+
+			await expect(f.receive(f.note({ attachment: [document('a')] }))).resolves.toBe('skip: chat message exists');
+		});
+
+		test.each([
+			['a 404', new StatusError('404 Not Found', 404)],
+			['a 410', new StatusError('410 Gone', 410)],
+			['something that will not change', new Error('Max file size exceeded.')],
+		])('%s is not waited for: the message is kept with the text', async (_name, err) => {
+			const f = createInbox();
+			failOn(f, 'a', err);
+
+			await expect(f.receive(f.note({ attachment: [document('a'), document('b')] }))).resolves.toBe('ok');
+
+			expect(storedIds(f.chatService.createMessageToUser)).toEqual(['b']);
+		});
+
+		test('one that may work later is still waited for when another will never work', async () => {
+			const f = createInbox();
+			f.apImageService.resolveImage.mockImplementation(async (_actor: unknown, attach: { name: string }) => {
+				throw attach.name === 'a' ? new StatusError('404 Not Found', 404) : new StatusError('503 Service Unavailable', 503);
+			});
+
+			await expect(f.receive(f.note({ attachment: [document('a'), document('b')] }))).rejects.toThrow('temporarily');
+		});
 	});
 
 	test('skips an attachment that cannot be stored instead of retrying', async () => {
@@ -553,5 +641,17 @@ describe('clearing the text of a message', () => {
 		const f = createService(0);
 
 		await expect(f.service.updateRemoteMessage({ id: 'u1', host: 'remote.test' } as never, f.message as never, '', new Date())).rejects.toThrow('invalid text');
+	});
+});
+
+describe('the last attempt of an inbox job', () => {
+	test.each([
+		[0, 8, false],
+		[6, 8, false],
+		[7, 8, true],
+		[0, 1, true],
+		[0, undefined, true],
+	])('after %i attempts of %s: %s', (attemptsMade, attempts, expected) => {
+		expect(isLastInboxAttempt({ attemptsMade, opts: { attempts } })).toBe(expected);
 	});
 });
