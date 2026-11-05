@@ -2471,6 +2471,18 @@ _role:
   preserveAssignmentOnMoveAccount_description: "이 설정을 켜면, 이 역할이 부여된 계정이 이전될 때 마이그레이션 대상 계정에도 이 역할이 승계돼요."
   canEditMembersByModerator: "모더레이터의 역할 편집 허용"
   descriptionOfCanEditMembersByModerator: "이 옵션을 켜면 모더레이터도 이 역할에 사용자를 할당하거나 삭제할 수 있어요. 꺼져 있으면 관리자만 사용자를 할당할 수 있어요."
+  _tierFix:
+    overlapTitle: "겹치는 역할이 있어요"
+    overlapText: "지금 조건으로는 여러 역할이 동시에 부여되는데, 겹치지 않도록 아래처럼 조건을 고쳐드릴까요?"
+    fixConditions: "조건 고치기"
+    saveAsIs: "그대로 저장"
+    rangeFrom: "{min} 이상"
+    range: "{min}~{max}"
+    loweredTitle: "권한이 낮아져요"
+    loweredText: "더 어려운 조건인데 기존 역할보다 권한이 낮아져요. 기존 역할보다 낮아지는 부분만 복사할까요?"
+    copyLowered: "낮아지는 부분만 복사"
+    doNotCopy: "복사 안 함"
+    unlimited: "무제한"
   priority: "우선순위"
   _priority:
     low: "낮음"

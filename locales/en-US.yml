@@ -2466,6 +2466,18 @@ _role:
   preserveAssignmentOnMoveAccount_description: "When turned on, this role will be carried over to the destination account when an account with this role is migrated."
   canEditMembersByModerator: "Allow moderators to edit the list of members for this role"
   descriptionOfCanEditMembersByModerator: "When turned on, moderators as well as administrators will be able to assign and unassign users to this role. When turned off, only administrators will be able to assign users."
+  _tierFix:
+    overlapTitle: "Some roles overlap"
+    overlapText: "With the current conditions, several roles are assigned at the same time. Change the conditions as shown below so they don't overlap?"
+    fixConditions: "Fix conditions"
+    saveAsIs: "Save as is"
+    rangeFrom: "{min} or more"
+    range: "{min}–{max}"
+    loweredTitle: "Permissions would be lowered"
+    loweredText: "A role with a harder condition would have lower permissions than an existing role. Copy only the lowered parts?"
+    copyLowered: "Copy only lowered parts"
+    doNotCopy: "Don't copy"
+    unlimited: "Unlimited"
   priority: "Priority"
   _priority:
     low: "Low"
