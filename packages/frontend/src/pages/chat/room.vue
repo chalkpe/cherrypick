@@ -143,15 +143,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<!-- 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (並べているときはメッセージの欄の下へ)。
 			作り直すとフォーカスが外れてページ全体のショートカットが効いてしまい、変換中の文字や送信中の状態も失われる -->
 			<Teleport v-if="paneFormHostEl != null" :to="paneFormHostEl" :disabled="!split">
-				<div ref="formEl" class="_gaps" @compositionstart="composing = true" @compositionend="composing = false" @focusout="composing = false">
+				<div ref="formEl" class="_gaps" :class="$style.formArea" @compositionstart="composing = true" @compositionend="composing = false" @focusout="composing = false">
 					<Transition name="fade">
 						<div v-show="showIndicator" :class="$style.new">
 							<button class="_buttonPrimary" :class="$style.newButton" @click="onIndicatorClick">
-								<i class="fas ti-fw fa-arrow-circle-down" :class="$style.newIcon"></i>{{ i18n.ts._chat.newMessage }}
+								<i class="ti ti-circle-arrow-down" :class="$style.newIcon" aria-hidden="true"></i>{{ i18n.ts._chat.newMessage }}
 							</button>
 						</div>
 					</Transition>
-					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit"/>
+					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @sent="onSent"/>
 				</div>
 			</Teleport>
 		</div>
@@ -160,7 +160,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { ref, useTemplateRef, computed, watch, onMounted, onBeforeUnmount, onDeactivated, onActivated, onUnmounted } from 'vue';
+import { ref, useTemplateRef, computed, watch, nextTick, onMounted, onBeforeUnmount, onDeactivated, onActivated, onUnmounted } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { getScrollContainer } from '@@/js/scroll.js';
 import XMessage from './XMessage.vue';
@@ -185,7 +185,6 @@ import { definePage } from '@/page.js';
 import { prefer } from '@/preferences.js';
 import MkButton from '@/components/MkButton.vue';
 import { useRouter } from '@/router.js';
-import { useMutationObserver } from '@/composables/use-mutation-observer.js';
 import MkInfo from '@/components/MkInfo.vue';
 import { makeDateSeparatedTimelineComputedRef } from '@/utility/timeline-date-separate.js';
 import { getChatMessageGroupPositions } from '@/utility/chat-message-grouping.js';
@@ -265,34 +264,84 @@ const groupPositions = computed(() => getChatMessageGroupPositions(displayTimeli
 const voiceCallState = useChatRoomVoiceCall(room);
 
 const SCROLL_HEAD_THRESHOLD = 200;
+// スクロール位置は小数になることがあるので、このくらいの差は最下部とみなす
+const SCROLL_BOTTOM_TOLERANCE = 2;
+
+// 追従するのは最新のメッセージが変わったときだけ。編集やリアクション、古いメッセージの読み込みでは動かさない。
+// ボタンを押している途中に動かすと、ボタンが逃げて押せなくなる
+const newestMessageId = computed(() => messages.value[0]?.id);
+let wasNearNewest = true;
+
+// 描画のあとに測ると、読んでいた場所を保つためにブラウザが新着の高さの分だけ動かしたあとの位置になり、
+// 新着が高いと最下部の近くにいても遠くにいたことになってしまう。column-reverseなのでscrollTopは負になる
+watch(newestMessageId, () => {
+	const scrollContainer = getScrollContainer(timelineEl.value);
+	wasNearNewest = scrollContainer == null || -scrollContainer.scrollTop < SCROLL_HEAD_THRESHOLD;
+}, { flush: 'pre' });
 
 // column-reverseなので本来はスクロール位置の最下部への追従は不要なはずだが、おそらくブラウザのバグにより、最下部にスクロールした状態でも追従されない場合がある(スクロール位置が少数になることがあるのが関わっていそう)
-// そのため補助としてMutationObserverを使って追従を行う
-// 追従するのは最新のメッセージが変わったときだけ。ボタンを押したときの波紋や古いメッセージの読み込みでも DOM は変わるが、
-// そこで動かすと押している途中のボタンが逃げてしまい、押せなくなる
-let followedMessageId: NormalizedChatMessage['id'] | undefined;
+// そのため補助として描画のあとに追従を行う
+watch(newestMessageId, (_newest, previous) => {
+	// KeepAlive で裏に回っているあいだや、ほかのタブを見ているあいだは、スクロールする箱がない
+	const scrollContainer = getScrollContainer(timelineEl.value);
+	if (scrollContainer == null) return;
 
-watch(timelineEl, () => {
-	followedMessageId = messages.value[0]?.id;
-});
-
-useMutationObserver(timelineEl, {
-	subtree: true,
-	childList: true,
-	attributes: false,
-}, () => {
-	const newestMessageId = messages.value[0]?.id;
-	if (newestMessageId === followedMessageId) return;
-	followedMessageId = newestMessageId;
-
-	const scrollContainer = getScrollContainer(timelineEl.value)!;
-	// column-reverseなのでscrollTopは負になる
-	if (-scrollContainer.scrollTop < SCROLL_HEAD_THRESHOLD) {
+	if (wasNearNewest) {
 		scrollContainer.scrollTo({
 			top: 0,
 			behavior: 'instant',
 		});
+	} else if (previous != null && hasMessageFromOthersSince(previous)) {
+		notifyNewMessage();
 	}
+}, { flush: 'post' });
+
+// 自分がほかの端末から送ったものは知らせなくていい
+function hasMessageFromOthersSince(id: NormalizedChatMessage['id']) {
+	for (const message of messages.value) {
+		if (message.id === id) return false;
+		if (message.fromUserId !== $i.id) return true;
+	}
+	return false;
+}
+
+// この窓から送ったものだけ、読み返している途中でも最新へ移る。チャンネルから届くメッセージでは、自分の別の端末から送ったものと区別できないので、
+// 送信の返事で知る。返事とメッセージのどちらが先に届くかは決まっていない
+const sentMessageId = ref<NormalizedChatMessage['id'] | null>(null);
+const sentMessageArrived = computed(() => sentMessageId.value != null && messages.value.some(m => m.id === sentMessageId.value));
+
+function onSent(id: NormalizedChatMessage['id']) {
+	sentMessageId.value = id;
+}
+
+watch(sentMessageArrived, arrived => {
+	if (!arrived) return;
+	sentMessageId.value = null;
+	goToNewest();
+}, { flush: 'post' });
+
+function goToNewest() {
+	showIndicator.value = false;
+	getScrollContainer(timelineEl.value)?.scrollTo({
+		top: 0,
+		behavior: 'instant',
+	});
+}
+
+// スクロールする箱は並べ方で変わるので、箱ごとに付け替えずにまとめて受ける (scroll は上へ伝わらないがキャプチャでは受けられる)
+function onScrollWhileNotified(ev: Event) {
+	if (!showIndicator.value) return;
+	const scrollContainer = getScrollContainer(timelineEl.value);
+	if (scrollContainer != null && ev.target === scrollContainer && -scrollContainer.scrollTop < SCROLL_BOTTOM_TOLERANCE) {
+		showIndicator.value = false;
+	}
+}
+
+window.addEventListener('scroll', onScrollWhileNotified, { capture: true, passive: true });
+
+// タブを移ったり閉じたりしたら案内も終わる
+watch(timelineEl, el => {
+	if (el == null) showIndicator.value = false;
 });
 
 function normalizeMessage(message: Misskey.entities.ChatMessageLite | Misskey.entities.ChatMessage): NormalizedChatMessage {
@@ -433,6 +482,7 @@ onActivated(() => {
 
 onDeactivated(() => {
 	isActivated = false;
+	showIndicator.value = false;
 });
 
 async function fetchMore() {
@@ -452,10 +502,18 @@ async function fetchMore() {
 		includeDeleted: true,
 	});
 
+	// 読み込んだ分とのつなぎ目の吹き出しは、まとまりの途中になって低くなることがある。ブラウザがそれを基準に位置を保つと、その下の読んでいた場所が詰まった分だけずれる。
+	// column-reverseのscrollTopは下端からの距離で、つなぎ目より下は変わらないので、同じ値に戻せば読んでいた場所は動かない
+	const scrollContainer = getScrollContainer(timelineEl.value);
+	const scrollTop = scrollContainer?.scrollTop;
+
 	messages.value.push(...newMessages.map(x => normalizeMessage(x)));
 
 	canFetchMore.value = newMessages.length === LIMIT;
 	moreFetching.value = false;
+
+	await nextTick();
+	if (scrollContainer != null && scrollTop != null) scrollContainer.scrollTop = scrollTop;
 }
 
 function onMessage(message: Misskey.entities.ChatMessageLite) {
@@ -473,10 +531,6 @@ function onMessage(message: Misskey.entities.ChatMessageLite) {
 		connection.value?.send('read', {
 			id: message.id,
 		});
-	}
-
-	if (message.fromUserId !== $i.id) {
-		//notifyNewMessage();
 	}
 }
 
@@ -618,8 +672,11 @@ function closeRoom() {
 	connection.value = null;
 }
 
-function onIndicatorClick() {
-	showIndicator.value = false;
+function onIndicatorClick(ev: MouseEvent) {
+	goToNewest();
+	// キーボードで押すと、押したボタンが消えてフォーカスの行き先がなくなるので入力欄へ。
+	// マウスや指で押したときは、ソフトウェアキーボードを出さないよう動かさない
+	if (ev.detail === 0) formEl.value?.querySelector('textarea')?.focus({ preventScroll: true });
 }
 
 function notifyNewMessage() {
@@ -718,6 +775,7 @@ onMounted(() => {
 
 onUnmounted(() => {
 	window.removeEventListener('resize', handleResize);
+	window.removeEventListener('scroll', onScrollWhileNotified, { capture: true });
 });
 
 onActivated(() => {
@@ -1138,10 +1196,20 @@ definePage(computed(() => {
 	}
 }
 
+.formArea {
+	position: relative;
+}
+
+// 入力欄の上に浮かべる。場所を取ると、出たり消えたりするたびに読んでいる場所が動いてしまう
 .new {
+	position: absolute;
+	bottom: 100%;
+	left: 0;
 	width: 100%;
 	padding-bottom: 8px;
 	text-align: center;
+	// 押せるのはボタンだけ。横の空いたところの下にあるメッセージは押せるままにする
+	pointer-events: none;
 }
 
 .newButton {
@@ -1151,6 +1219,12 @@ definePage(computed(() => {
 	line-height: 32px;
 	font-size: 12px;
 	border-radius: 16px;
+	pointer-events: auto;
+
+	// 既定のままだとアクセント色の上にアクセント色で内側に描かれて見えない
+	&:focus-visible {
+		outline-offset: 2px;
+	}
 }
 
 .newIcon {

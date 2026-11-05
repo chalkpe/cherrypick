@@ -78,6 +78,7 @@ const props = defineProps<{
 const emit = defineEmits<{
 	(ev: 'edited'): void;
 	(ev: 'cancelEdit'): void;
+	(ev: 'sent', messageId: string): void;
 }>();
 
 const rootEl = useTemplateRef('rootEl');
@@ -323,6 +324,7 @@ function send() {
 			fileIds: files.value.length > 0 ? files.value.map(file => file.id) : undefined,
 		}).then(message => {
 			clear();
+			emit('sent', message.id);
 		}).catch(err => {
 			showSendError(err);
 		}).then(() => {
@@ -335,6 +337,7 @@ function send() {
 			fileIds: files.value.length > 0 ? files.value.map(file => file.id) : undefined,
 		}).then(message => {
 			clear();
+			emit('sent', message.id);
 		}).catch(err => {
 			showSendError(err);
 		}).then(() => {

@@ -62,7 +62,7 @@ function deferred<T>() {
 	return { promise, resolve, reject };
 }
 
-function renderForm(target: 'user' | 'room' = 'room', initialEdit: typeof message | null = null) {
+function renderForm(target: 'user' | 'room' = 'room', initialEdit: typeof message | null = null, onSent?: (id: string) => void) {
 	const editing = ref(initialEdit);
 	const host = defineComponent({
 		setup: () => () => h(XForm, {
@@ -70,6 +70,7 @@ function renderForm(target: 'user' | 'room' = 'room', initialEdit: typeof messag
 			editingMessage: editing.value,
 			onEdited: () => { editing.value = null; },
 			onCancelEdit: () => { editing.value = null; },
+			onSent,
 		}),
 	});
 	const result = render(host, { global: { stubs } });
@@ -180,6 +181,49 @@ describe.each(['user', 'room'] as const)('%s message editing', target => {
 		expect(screen.getByAltText('draft.png')).toBeTruthy();
 		expect(storedDraft(target)).toEqual({ text: 'Unsent draft', files: [driveFile] });
 		expect(mocks.api).toHaveBeenCalledWith('chat/messages/update', { messageId: 'm1', text: 'Changed message' });
+	});
+});
+
+// The room goes to the newest message for what this window sent. The channel says only who wrote it, which could be another device.
+describe('telling the page what was sent from here', () => {
+	test.each(['user', 'room'] as const)('names a new message to a %s once the server has it', async (target) => {
+		const sent = deferred<{ id: string }>();
+		mocks.api.mockReturnValueOnce(sent.promise);
+		const onSent = vi.fn();
+		const form = renderForm(target, null, onSent);
+		await fireEvent.update(form.textarea, 'Hello');
+
+		await fireEvent.click(screen.getByTitle(i18n.ts.send));
+		expect(onSent).not.toHaveBeenCalled();
+
+		sent.resolve({ id: 'sent-1' });
+		await waitFor(() => expect(onSent).toHaveBeenCalledExactlyOnceWith('sent-1'));
+	});
+
+	test('does not for a saved edit, which is not new', async () => {
+		const onSent = vi.fn();
+		const form = renderForm('room', message, onSent);
+		await fireEvent.update(form.textarea, 'Changed message');
+
+		await fireEvent.click(screen.getByTitle(i18n.ts.save));
+
+		await waitFor(() => expect(form.editing.value).toBeNull());
+		expect(onSent).not.toHaveBeenCalled();
+	});
+
+	test('does not when sending fails', async () => {
+		mocks.api.mockRejectedValueOnce(new Error('refused'));
+		const onSent = vi.fn();
+		const form = renderForm('room', null, onSent);
+		await fireEvent.update(form.textarea, 'Hello');
+
+		await fireEvent.click(screen.getByTitle(i18n.ts.send));
+
+		await waitFor(() => expect(mocks.api).toHaveBeenCalled());
+		await nextTick();
+		await nextTick();
+		expect(onSent).not.toHaveBeenCalled();
+		expect(form.textarea.value).toBe('Hello');
 	});
 });
 

@@ -14,7 +14,7 @@ import {
 	signIn,
 } from './utils.js';
 import type { RegisteredUser } from './utils.js';
-import type { Page } from 'playwright';
+import type { Locator, Page, WebSocketRoute } from 'playwright';
 
 test.describe('Chat', () => {
 	let alice: RegisteredUser;
@@ -765,24 +765,12 @@ test.describe('Chat', () => {
 				messages: window.getComputedStyle(window.document.querySelector('._pageScrollableReversed') ?? window.document.body).overflowAnchor,
 			}));
 
-			async function roomWithMessages(page: Page): Promise<{ id: string; say: (text: string) => Promise<unknown>; first: string }> {
-				const room = await api(BASE_URL, 'chat/rooms/create', { i: bob.token, name: `long talk ${Date.now()}` }) as { id: string };
-				await api(BASE_URL, 'chat/rooms/invitations/create', { i: bob.token, roomId: room.id, userId: alice.id });
-				await api(BASE_URL, 'chat/rooms/join', { i: alice.token, roomId: room.id });
-				const say = (text: string) => api(BASE_URL, 'chat/messages/create-to-room', { i: bob.token, toRoomId: room.id, text });
-				for (let i = 1; i <= 25; i++) await say(`line ${i} of ${room.id}`);
-				await page.goto(`${BASE_URL}/chat/room/${room.id}`);
-				const first = `line 25 of ${room.id}`;
-				await expect(page.getByText(first, { exact: true })).toBeVisible();
-				return { id: room.id, say, first };
-			}
-
 			const scrollMessagesTo = (page: Page, top: number) => page.evaluate(value => {
 				window.document.querySelector('._pageScrollableReversed')?.scrollTo({ top: value, behavior: 'instant' });
 			}, top);
 
 			test('turns off scroll anchoring for the page only while the conversation is on screen', async ({ page }) => {
-				const room = await roomWithMessages(page);
+				const room = await roomToReadFarAbove(page);
 
 				// メッセージの欄では切らない。切ると、読み返しているあいだに届いた分だけ読んでいた場所がずれる
 				expect(await overflowAnchors(page)).toEqual({ html: 'none', body: 'none', messages: 'auto' });
@@ -793,23 +781,235 @@ test.describe('Chat', () => {
 			});
 
 			test('keeps the place of someone reading further up when a message comes, and follows at the bottom', async ({ page }) => {
-				const room = await roomWithMessages(page);
-				await scrollMessagesTo(page, -300);
-				const reading = page.getByText(`line 15 of ${room.id}`, { exact: true });
-				await reading.scrollIntoViewIfNeeded();
-				const before = (await reading.boundingBox())!.y;
+				const room = await roomToReadFarAbove(page);
+				const moved = await readFarAbove(page, room.reading);
 
 				const whileReading = `while reading ${room.id}`;
-				await room.say(whileReading);
+				await room.sayAs(bob, whileReading);
 				await page.getByText(whileReading, { exact: true }).waitFor({ state: 'attached' });
-				await page.evaluate(() => new Promise(resolve => window.setTimeout(resolve, 300)));
-				expect(Math.abs((await reading.boundingBox())!.y - before)).toBeLessThan(2);
+				await settle(page);
+				expect(await moved()).toBeLessThan(2);
 
 				await scrollMessagesTo(page, 0);
 				const atTheBottom = `at the bottom ${room.id}`;
-				await room.say(atTheBottom);
+				await room.sayAs(bob, atTheBottom);
 				await expect(page.getByText(atTheBottom, { exact: true })).toBeInViewport();
 				expect(await page.evaluate(() => Math.abs(window.document.querySelector('._pageScrollableReversed')?.scrollTop ?? 99))).toBeLessThan(3);
+			});
+
+			// 最新から十分に離れて読めるよう、1 通を高くする。開いたときに読み込むのは新しい 20 件
+			async function roomToReadFarAbove(page: Page) {
+				const room = await api(BASE_URL, 'chat/rooms/create', { i: bob.token, name: `far above ${Date.now()}` }) as { id: string };
+				await api(BASE_URL, 'chat/rooms/invitations/create', { i: bob.token, roomId: room.id, userId: alice.id });
+				await api(BASE_URL, 'chat/rooms/join', { i: alice.token, roomId: room.id });
+				const sayAs = (user: RegisteredUser, text: string) => api(BASE_URL, 'chat/messages/create-to-room', { i: user.token, toRoomId: room.id, text }) as Promise<{ id: string }>;
+				let newest = '';
+				for (let i = 1; i <= 25; i++) newest = (await sayAs(bob, `line ${i} of ${room.id}\n.\n.\n.\n.`)).id;
+				await page.goto(`${BASE_URL}/chat/room/${room.id}`);
+				await expect(page.getByText(`line 25 of ${room.id}`)).toBeVisible();
+				return { id: room.id, sayAs, newest, reading: page.getByText(`line 9 of ${room.id}`) };
+			}
+
+			const distanceFromNewest = (page: Page) => page.evaluate(() => -(window.document.querySelector('._pageScrollableReversed')?.scrollTop ?? 0));
+			const newMessageNotice = (page: Page) => page.getByRole('button', { name: 'New message', exact: true });
+			const settle = (page: Page) => page.evaluate(() => new Promise(resolve => window.setTimeout(resolve, 300)));
+
+			/** @returns 読んでいた場所が今どれだけ動いたかを測る関数 */
+			async function readFarAbove(page: Page, reading: Locator): Promise<() => Promise<number>> {
+				await scrollMessagesTo(page, -100000);
+				await expect(reading).toBeInViewport();
+				expect(await distanceFromNewest(page)).toBeGreaterThan(400);
+				const before = (await reading.boundingBox())!.y;
+				return async () => Math.abs((await reading.boundingBox())!.y - before);
+			}
+
+			test('sending from far above goes to the newest message', async ({ page }) => {
+				const room = await roomToReadFarAbove(page);
+				await readFarAbove(page, room.reading);
+
+				const text = `sent from here ${room.id}`;
+				await page.getByPlaceholder('Enter message here').fill(text);
+				const answered = page.waitForResponse(response => response.url().endsWith('/api/chat/messages/create-to-room'));
+				await page.locator('button:has(i.ti-send)').click();
+				expect((await answered).status()).toBe(200);
+
+				await expect(page.getByText(text, { exact: true })).toBeInViewport();
+				await expect.poll(() => distanceFromNewest(page)).toBeLessThan(3);
+				await expect(newMessageNotice(page)).toBeHidden();
+			});
+
+			test('sending a picture from far above goes to the newest message', async ({ page }) => {
+				const room = await roomToReadFarAbove(page);
+				await readFarAbove(page, room.reading);
+
+				await page.getByRole('button', { name: 'Select a file' }).click();
+				const chooser = page.waitForEvent('filechooser');
+				await page.getByText('Upload', { exact: true }).click();
+				await (await chooser).setFiles({ name: 'one.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64') });
+				await page.locator('button:has(i.ti-upload):visible').click();
+				// アップロードが終わるとウィンドウが閉じて、添付が入力欄に入る
+				await expect(page.getByText('Upload 1 files', { exact: true })).toHaveCount(0);
+
+				const text = `picture from here ${room.id}`;
+				await page.getByPlaceholder('Enter message here').fill(text);
+				await page.locator('button:has(i.ti-send)').click();
+
+				await expect(page.getByText(text, { exact: true })).toBeInViewport();
+				await expect.poll(() => distanceFromNewest(page)).toBeLessThan(3);
+			});
+
+			test('a message of mine from another device leaves the place alone, and says nothing', async ({ page }) => {
+				const room = await roomToReadFarAbove(page);
+				const moved = await readFarAbove(page, room.reading);
+
+				const text = `from my other device ${room.id}`;
+				await room.sayAs(alice, text);
+				await page.getByText(text, { exact: true }).waitFor({ state: 'attached' });
+				await settle(page);
+
+				expect(await moved()).toBeLessThan(2);
+				await expect(newMessageNotice(page)).toBeHidden();
+			});
+
+			test('an edit, a reaction, a deletion and loading earlier messages leave the place alone, and say nothing', async ({ page }) => {
+				const room = await roomToReadFarAbove(page);
+				const moved = await readFarAbove(page, room.reading);
+
+				const edited = `edited ${room.id}`;
+				await api(BASE_URL, 'chat/messages/update', { i: bob.token, messageId: room.newest, text: edited });
+				await page.getByText(edited, { exact: true }).waitFor({ state: 'attached' });
+				await api(BASE_URL, 'chat/messages/react', { i: alice.token, messageId: room.newest, reaction: '👍' });
+				await settle(page);
+				await api(BASE_URL, 'chat/messages/delete', { i: bob.token, messageId: room.newest });
+				await expect(page.getByText(edited, { exact: true })).toHaveCount(0);
+				await settle(page);
+				expect(await moved()).toBeLessThan(2);
+				await expect(newMessageNotice(page)).toBeHidden();
+
+				await page.getByLabel('Messages').getByRole('button', { name: 'Load more', exact: true }).click();
+				await page.getByText(`line 1 of ${room.id}`).waitFor({ state: 'attached' });
+				await expect.poll(moved).toBeLessThan(4);
+				await expect(newMessageNotice(page)).toBeHidden();
+			});
+
+			test('near the newest message, follows even a tall message and says nothing', async ({ page }) => {
+				const room = await roomToReadFarAbove(page);
+				await scrollMessagesTo(page, -100);
+				await settle(page);
+
+				const text = `tall message ${room.id}`;
+				await room.sayAs(bob, `${text}\n${'.\n'.repeat(30)}.`);
+				await page.getByText(text).waitFor({ state: 'attached' });
+
+				await expect.poll(() => distanceFromNewest(page)).toBeLessThan(3);
+				await expect(newMessageNotice(page)).toBeHidden();
+			});
+
+			test('a message from someone else far above brings the notice, which goes to it when pressed', async ({ page }) => {
+				const room = await roomToReadFarAbove(page);
+				const moved = await readFarAbove(page, room.reading);
+
+				const text = `while far above ${room.id}`;
+				await room.sayAs(bob, text);
+				const notice = newMessageNotice(page);
+				await expect(notice).toBeVisible();
+				await settle(page);
+				expect(await moved()).toBeLessThan(2);
+				await expect(page.getByText(text, { exact: true })).not.toBeInViewport();
+
+				// 入力欄に重ならず、押せるのは案内のボタンだけ (その横のメッセージは押せるまま)
+				const box = (await notice.boundingBox())!;
+				const input = (await page.getByPlaceholder('Enter message here').boundingBox())!;
+				expect(box.y + box.height).toBeLessThanOrEqual(input.y);
+				expect(await notice.evaluate(button => {
+					const r = button.getBoundingClientRect();
+					const beside = window.document.elementFromPoint(r.left - 8, r.top + r.height / 2);
+					return beside != null && button.parentElement!.contains(beside);
+				})).toBe(false);
+
+				await notice.click();
+
+				await expect(notice).toBeHidden();
+				await expect(page.getByText(text, { exact: true })).toBeInViewport();
+				await expect.poll(() => distanceFromNewest(page)).toBeLessThan(3);
+			});
+
+			test('the notice can be used from the keyboard, and leaves the focus in the message box', async ({ page }) => {
+				const room = await roomToReadFarAbove(page);
+				await readFarAbove(page, room.reading);
+				await room.sayAs(bob, `for the keyboard ${room.id}`);
+				const notice = newMessageNotice(page);
+				await expect(notice).toBeVisible();
+
+				const input = page.getByPlaceholder('Enter message here');
+				await input.focus();
+				await page.keyboard.press('Shift+Tab');
+				await expect(notice).toBeFocused();
+				await page.keyboard.press('Enter');
+
+				await expect(notice).toBeHidden();
+				await expect.poll(() => distanceFromNewest(page)).toBeLessThan(3);
+				await expect(input).toBeFocused();
+			});
+
+			test('the notice goes away on reaching the newest message by scrolling, and not on the way', async ({ page }) => {
+				const room = await roomToReadFarAbove(page);
+				await readFarAbove(page, room.reading);
+				await room.sayAs(bob, `to scroll to ${room.id}`);
+				const notice = newMessageNotice(page);
+				await expect(notice).toBeVisible();
+
+				await scrollMessagesTo(page, -100);
+				await settle(page);
+				await expect(notice).toBeVisible();
+
+				await scrollMessagesTo(page, 0);
+				await expect(notice).toBeHidden();
+			});
+
+			test('reading again after a reconnect keeps the place, and tells of what came meanwhile', async ({ page }) => {
+				let socket: WebSocketRoute | undefined;
+				await page.routeWebSocket(/\/streaming/, ws => {
+					socket = ws;
+					const server = ws.connectToServer();
+					ws.onMessage(message => server.send(message));
+					server.onMessage(message => ws.send(message));
+				});
+				const room = await roomToReadFarAbove(page);
+				const moved = await readFarAbove(page, room.reading);
+
+				await socket!.close();
+				const text = `while disconnected ${room.id}`;
+				await room.sayAs(bob, text);
+
+				await expect(newMessageNotice(page)).toBeVisible({ timeout: 30_000 });
+				await page.getByText(text, { exact: true }).waitFor({ state: 'attached' });
+				await settle(page);
+				expect(await moved()).toBeLessThan(2);
+			});
+
+			test('the notice stays behind on going to another room, and is gone on coming back', async ({ page }) => {
+				const other = await api(BASE_URL, 'chat/rooms/create', { i: bob.token, name: `another room ${Date.now()}` }) as { id: string };
+				await api(BASE_URL, 'chat/rooms/invitations/create', { i: bob.token, roomId: other.id, userId: alice.id });
+				await api(BASE_URL, 'chat/rooms/join', { i: alice.token, roomId: other.id });
+				await api(BASE_URL, 'chat/messages/create-to-room', { i: bob.token, toRoomId: other.id, text: `in another room ${other.id}` });
+				const room = await roomToReadFarAbove(page);
+				await readFarAbove(page, room.reading);
+				await room.sayAs(bob, `before leaving ${room.id}`);
+				const notice = newMessageNotice(page);
+				await expect(notice).toBeVisible();
+
+				// 読み込み直すと作り直されるので、画面の中から移る
+				await page.locator('button:has(i.ti-arrow-left)').first().click();
+				await page.locator(`a[href$="/chat/room/${other.id}"]`).first().click();
+				await expect(page.getByText(`in another room ${other.id}`, { exact: true })).toBeVisible();
+				await expect(notice).toBeHidden();
+
+				await page.goBack();
+				await page.goBack();
+				await expect(room.reading).toBeAttached();
+				await settle(page);
+				await expect(notice).toBeHidden();
 			});
 		});
 	}

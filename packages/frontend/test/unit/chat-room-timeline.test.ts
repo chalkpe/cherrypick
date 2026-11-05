@@ -47,6 +47,7 @@ const mocks = vi.hoisted(() => {
 		success: vi.fn(),
 		membersMounts: { value: 0 },
 		editMessage: { value: null as (() => void) | null },
+		sendFromForm: { value: null as ((id: string) => void) | null },
 		// 吹き出しごとの描画回数
 		renders: new Map<string, number>(),
 	};
@@ -80,7 +81,16 @@ vi.mock('@/composables/use-chat-room-voice-call.js', async () => {
 });
 vi.mock('@/pages/chat/room.form.vue', async () => {
 	const { h: hh } = await import('vue');
-	return { default: { props: ['editingMessage'], render(this: { editingMessage: { id: string } | null }) { return hh('div', { 'data-testid': 'form', 'data-editing': this.editingMessage?.id ?? '' }); } } };
+	return {
+		default: {
+			props: ['editingMessage'],
+			emits: ['sent'],
+			setup(_: unknown, { emit }: { emit: (event: 'sent', id: string) => void }) {
+				mocks.sendFromForm.value = id => emit('sent', id);
+			},
+			render(this: { editingMessage: { id: string } | null }) { return hh('div', { 'data-testid': 'form', 'data-editing': this.editingMessage?.id ?? '' }); },
+		},
+	};
 });
 vi.mock('@/pages/chat/room.search.vue', () => ({ default: { render: () => null } }));
 // 一覧は読み込むときにしか取得しないので、読み込み直された回数を数える
@@ -151,7 +161,7 @@ const message = (id: string, fromUserId: string, after: number) => ({ id, fromUs
 
 const stubs = {
 	// 本物と同じく、ページの中身はスクロールする箱に入る (新着時の追従がその箱を探す)
-	PageWithHeader: { props: ['actions'], template: '<div style="overflow-y: scroll;"><button v-for="action in actions" :data-icon="action.icon" @click="action.handler($event)"></button><slot /><slot name="footer" /></div>' },
+	PageWithHeader: { props: ['actions', 'tab'], emits: ['update:tab'], template: '<div style="overflow-y: scroll;"><button v-for="action in actions" :data-icon="action.icon" @click="action.handler($event)"></button><button v-if="tab !== \'chat\'" data-testid="back-to-chat" @click="$emit(\'update:tab\', \'chat\')"></button><slot /><slot name="footer" /></div>' },
 	MkStickyContainer: { template: '<div><slot name="header" /><slot /></div>' },
 	MkLoading: { template: '<div></div>' },
 	MkAvatar: true,
@@ -223,16 +233,36 @@ describe('following the newest message', () => {
 	// column-reverse: scrollTop is 0 at the newest message and negative above it.
 	function positionScroller(container: Element, scrollTop: number) {
 		const scroller = container.querySelector<HTMLElement>('[style*="overflow-y"]')!;
-		Object.defineProperty(scroller, 'scrollTop', { value: scrollTop, configurable: true });
+		Object.defineProperty(scroller, 'scrollTop', { value: scrollTop, configurable: true, writable: true });
 		const scrollTo = vi.fn();
 		scroller.scrollTo = scrollTo as typeof scroller.scrollTo;
 		return scrollTo;
 	}
 
 	const moreButton = (container: Element) => [...container.querySelectorAll('button')].find(button => button.textContent.includes(i18n.ts.loadMore))!;
+	const notice = (container: Element) => [...container.querySelectorAll('button')].find(button => button.textContent.includes(i18n.ts._chat.newMessage));
+	const noticeShown = (container: Element) => {
+		const shown = notice(container);
+		return shown != null && shown.closest<HTMLElement>('[style*="display: none"]') == null;
+	};
+
+	async function arrive(newMessage: ReturnType<typeof message>) {
+		mocks.channel.emit('message', newMessage);
+		await flush();
+		await flush();
+	}
+
+	async function readAgainAfterReconnect() {
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		await flush();
+	}
 
 	beforeEach(() => {
-		mocks.timeline = Array.from({ length: FULL_PAGE }, (_, i) => message(`m${100 - i}`, 'alice', (FULL_PAGE - i) * MINUTE));
+		// Reading again sorts by id as text, as real ids sort.
+		mocks.timeline = Array.from({ length: FULL_PAGE }, (_, i) => message(`m${String(100 - i).padStart(3, '0')}`, 'alice', (FULL_PAGE - i) * MINUTE));
 	});
 
 	test('follows a new message near the newest one', async () => {
@@ -296,6 +326,25 @@ describe('following the newest message', () => {
 		expect(scrollTo).not.toHaveBeenCalled();
 	});
 
+	// The joint gets lower as it joins a group, and a browser that keeps its place by that bubble moves everything below it.
+	test('puts back what the browser moved when earlier messages load', async () => {
+		const { container } = await renderRoom();
+		const scroller = container.querySelector<HTMLElement>('[style*="overflow-y"]')!;
+		const written: number[] = [];
+		Object.defineProperty(scroller, 'scrollTop', {
+			get: () => container.querySelector('[data-id="m80"]') != null ? -2377 : -2396,
+			set: (value: number) => { written.push(value); },
+			configurable: true,
+		});
+		mocks.timeline = [message('m80', 'alice', 0)];
+
+		await fireEvent.click(moreButton(container));
+		await flush();
+		await flush();
+
+		expect(written).toEqual([-2396]);
+	});
+
 	test('still follows the first new message after earlier ones loaded', async () => {
 		const { container } = await renderRoom();
 		const scrollTo = positionScroller(container, -100);
@@ -309,6 +358,247 @@ describe('following the newest message', () => {
 		await flush();
 
 		expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'instant' });
+	});
+
+	// The browser keeps the place by moving scrollTop as soon as the new message is laid out, so it has to be read before that.
+	test('follows a tall new message from near the newest one, though the browser has moved the position by then', async () => {
+		const { container } = await renderRoom();
+		const scroller = container.querySelector<HTMLElement>('[style*="overflow-y"]')!;
+		Object.defineProperty(scroller, 'scrollTop', { get: () => container.querySelector('[data-id="m101"]') != null ? -646 : -100, configurable: true });
+		const scrollTo = vi.fn();
+		scroller.scrollTo = scrollTo as typeof scroller.scrollTo;
+
+		await arrive(message('m101', 'alice', 100 * MINUTE));
+
+		expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'instant' });
+		expect(noticeShown(container)).toBe(false);
+	});
+
+	describe('a message sent from this window', () => {
+		test('goes to the newest message from far above, when the answer to the send comes first', async () => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -1000);
+
+			mocks.sendFromForm.value!('m101');
+			await flush();
+			// It is not on the screen yet, so there is nothing to go to.
+			expect(scrollTo).not.toHaveBeenCalled();
+
+			await arrive(message('m101', 'me', 100 * MINUTE));
+
+			expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'instant' });
+		});
+
+		test('goes to the newest message from far above, when the message comes first', async () => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -1000);
+
+			await arrive(message('m101', 'me', 100 * MINUTE));
+			// Until the answer comes, it could have been sent from anywhere.
+			expect(scrollTo).not.toHaveBeenCalled();
+
+			mocks.sendFromForm.value!('m101');
+			await flush();
+
+			expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'instant' });
+		});
+
+		test('still goes there when someone else got in between, and that notice goes too', async () => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -1000);
+
+			mocks.sendFromForm.value!('m101');
+			await arrive(message('m102', 'alice', 101 * MINUTE));
+			expect(scrollTo).not.toHaveBeenCalled();
+			expect(noticeShown(container)).toBe(true);
+
+			await arrive(message('m101', 'me', 100 * MINUTE));
+
+			expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'instant' });
+			expect(noticeShown(container)).toBe(false);
+		});
+
+		test('goes there when only reading again brings it', async () => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -1000);
+
+			mocks.sendFromForm.value!('m101');
+			await flush();
+			mocks.timeline = [message('m101', 'me', 100 * MINUTE), ...mocks.timeline];
+			await readAgainAfterReconnect();
+
+			expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'instant' });
+		});
+
+		test('goes there only once, so that reading on afterwards stays possible', async () => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -1000);
+			mocks.sendFromForm.value!('m101');
+			await arrive(message('m101', 'me', 100 * MINUTE));
+			scrollTo.mockClear();
+
+			await readAgainAfterReconnect();
+			mocks.channel.emit('react', { messageId: 'm101', reaction: '👍', user: userOf('alice') });
+			await flush();
+
+			expect(scrollTo).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('leaves someone reading far above where they are', () => {
+		test('when a message of mine comes from another device or tab, and says nothing of it', async () => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -1000);
+
+			await arrive(message('m101', 'me', 100 * MINUTE));
+
+			expect(scrollTo).not.toHaveBeenCalled();
+			expect(noticeShown(container)).toBe(false);
+		});
+
+		test.each([
+			['an edit', 'updated', { messageId: 'm100', text: 'changed', editedAt: new Date(base + 200 * MINUTE).toISOString() }],
+			['a reaction', 'react', { messageId: 'm100', reaction: '👍', user: userOf('alice') }],
+			['a reaction taken back', 'unreact', { messageId: 'm100', reaction: '👍', user: userOf('alice') }],
+			['a deletion', 'deleted', 'm100'],
+		] as const)('when %s comes for the newest message, and says nothing of it', async (_what, event, payload) => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -1000);
+
+			mocks.channel.emit(event, payload);
+			await flush();
+			await flush();
+
+			expect(scrollTo).not.toHaveBeenCalled();
+			expect(noticeShown(container)).toBe(false);
+		});
+
+		test('when reading again after a reconnect brings nothing new, and says nothing of it', async () => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -1000);
+
+			await readAgainAfterReconnect();
+
+			expect(scrollTo).not.toHaveBeenCalled();
+			expect(noticeShown(container)).toBe(false);
+		});
+	});
+
+	describe('the notice of a new message', () => {
+		test('says so when someone else writes while reading far above, without moving', async () => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -1000);
+			expect(noticeShown(container)).toBe(false);
+
+			await arrive(message('m101', 'alice', 100 * MINUTE));
+
+			expect(noticeShown(container)).toBe(true);
+			expect(scrollTo).not.toHaveBeenCalled();
+		});
+
+		test('says nothing near the newest message, which it follows instead', async () => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -199);
+
+			await arrive(message('m101', 'alice', 100 * MINUTE));
+
+			expect(noticeShown(container)).toBe(false);
+			expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'instant' });
+		});
+
+		test('says so when reading again brings a message from someone else', async () => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -1000);
+			mocks.timeline = [message('m101', 'alice', 100 * MINUTE), ...mocks.timeline];
+
+			await readAgainAfterReconnect();
+
+			expect(noticeShown(container)).toBe(true);
+			expect(scrollTo).not.toHaveBeenCalled();
+		});
+
+		test('says nothing when reading again brings only what I wrote elsewhere', async () => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -1000);
+			mocks.timeline = [message('m101', 'me', 100 * MINUTE), ...mocks.timeline];
+
+			await readAgainAfterReconnect();
+
+			expect(noticeShown(container)).toBe(false);
+			expect(scrollTo).not.toHaveBeenCalled();
+		});
+
+		test('goes to the newest message and away when pressed', async () => {
+			const { container } = await renderRoom();
+			const scrollTo = positionScroller(container, -1000);
+			await arrive(message('m101', 'alice', 100 * MINUTE));
+
+			await fireEvent.click(notice(container)!);
+			await flush();
+
+			expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'instant' });
+			expect(noticeShown(container)).toBe(false);
+		});
+
+		test('goes away on reaching the newest message, and not on the way there', async () => {
+			const { container } = await renderRoom();
+			const scroller = container.querySelector<HTMLElement>('[style*="overflow-y"]')!;
+			positionScroller(container, -1000);
+			await arrive(message('m101', 'alice', 100 * MINUTE));
+
+			Object.defineProperty(scroller, 'scrollTop', { value: -150, configurable: true });
+			scroller.dispatchEvent(new Event('scroll'));
+			await flush();
+			expect(noticeShown(container)).toBe(true);
+
+			// The position can stop a fraction short of zero.
+			Object.defineProperty(scroller, 'scrollTop', { value: -0.5, configurable: true });
+			scroller.dispatchEvent(new Event('scroll'));
+			await flush();
+			expect(noticeShown(container)).toBe(false);
+		});
+
+		test('starts over after looking at another tab of the room', async () => {
+			const { container } = await renderRoom();
+			positionScroller(container, -1000);
+			await arrive(message('m101', 'alice', 100 * MINUTE));
+			expect(noticeShown(container)).toBe(true);
+
+			await fireEvent.click(container.querySelector('[data-icon="ti ti-dots"]')!);
+			(mocks.popupMenu.mock.calls[0][0] as { text: string; action: () => void }[]).find(item => item.text === i18n.ts.search)!.action();
+			await flush();
+			await fireEvent.click(container.querySelector('[data-testid="back-to-chat"]')!);
+			await flush();
+
+			expect(noticeShown(container)).toBe(false);
+		});
+
+		test('starts over after going to another page and back, and a message that comes meanwhile breaks nothing', async () => {
+			const visible = ref(true);
+			const host = defineComponent({
+				setup() {
+					provideMetadataReceiver(() => {});
+					return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+				},
+			});
+			const { container } = render(host, { global: { stubs, directives: { tooltip: {} } } });
+			await flush();
+			await flush();
+			positionScroller(container, -1000);
+			await arrive(message('m101', 'alice', 100 * MINUTE));
+			expect(noticeShown(container)).toBe(true);
+
+			visible.value = false;
+			await flush();
+			await arrive(message('m102', 'alice', 101 * MINUTE));
+
+			visible.value = true;
+			await flush();
+			await flush();
+
+			expect(container.querySelector('[data-id="m102"]')).not.toBeNull();
+			expect(noticeShown(container)).toBe(false);
+		});
 	});
 });
 
