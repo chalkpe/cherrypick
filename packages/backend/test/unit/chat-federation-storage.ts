@@ -7,7 +7,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import { Test } from '@nestjs/testing';
 import type * as Redis from 'ioredis';
 import type { TestingModule } from '@nestjs/testing';
-import type { ChatMessagesRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, MiUser, UsersRepository } from '@/models/_.js';
+import type { ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomRosterStatesRepository, ChatRoomsRepository, MiChatRoom, MiUser, UsersRepository } from '@/models/_.js';
+import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatService, ChatTooManyReactionsError } from '@/core/ChatService.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { DI } from '@/di-symbols.js';
@@ -23,6 +25,8 @@ describe('chat federation storage', () => {
 	let chatMessagesRepository: ChatMessagesRepository;
 	let chatRoomsRepository: ChatRoomsRepository;
 	let chatRoomMembershipsRepository: ChatRoomMembershipsRepository;
+	let chatRoomInvitationsRepository: ChatRoomInvitationsRepository;
+	let chatRoomRosterStatesRepository: ChatRoomRosterStatesRepository;
 	let redisClient: Redis.Redis;
 	let alice: MiUser;
 	let bob: MiUser;
@@ -44,7 +48,7 @@ describe('chat federation storage', () => {
 			chatRoomInvitationsRepository: { findBy: async () => [] },
 			redisClient,
 			queueService: { deliver },
-			globalEventService: { publishChatUserStream, publishChatRoomStream },
+			globalEventService: { publishChatUserStream, publishChatRoomStream, publishMainStream: vi.fn() },
 			liveKitService: { deleteRoom: vi.fn(async () => {}) },
 			customEmojiService: { localEmojisCache: { fetch: async () => new Map() } },
 			userEntityService: {
@@ -81,6 +85,8 @@ describe('chat federation storage', () => {
 		chatMessagesRepository = app.get(DI.chatMessagesRepository);
 		chatRoomsRepository = app.get(DI.chatRoomsRepository);
 		chatRoomMembershipsRepository = app.get(DI.chatRoomMembershipsRepository);
+		chatRoomInvitationsRepository = app.get(DI.chatRoomInvitationsRepository);
+		chatRoomRosterStatesRepository = app.get(DI.chatRoomRosterStatesRepository);
 		redisClient = app.get(DI.redis);
 	});
 
@@ -244,6 +250,114 @@ describe('chat federation storage', () => {
 			await service.updateRoom(room, { name: 'unversioned' }, { federate: false });
 
 			expect(await chatRoomsRepository.findOneByOrFail({ id: room.id })).toMatchObject({ name: 'unversioned', lastRemoteUpdatedAt: newer });
+		});
+	});
+
+	describe('invitations to a room this server has not seen', () => {
+		let carol: MiUser;
+		const createNotification = vi.fn();
+
+		function createInbox() {
+			const usersByUri = new Map<string, MiUser>([
+				[`https://local.test/users/${alice.id}`, alice],
+				[`https://local.test/users/${carol.id}`, carol],
+			]);
+			const inbox = Object.assign(Object.create(ApInboxService.prototype), {
+				utilityService: { punyHost: (url: string) => new URL(url).host },
+				chatRosterService: Object.assign(Object.create(ChatRosterService.prototype), { redisClient, chatRoomRosterStatesRepository }),
+				apDbResolverService: { getUserFromApId: async (uri: string) => usersByUri.get(uri) ?? null },
+				userEntityService: { isLocalUser: (user: MiUser) => user.host == null },
+				userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
+				chatRoomsRepository,
+				chatRoomInvitationsRepository,
+				idService,
+				redisClient,
+				chatService: createService(),
+				notificationService: { createNotification },
+				logger: { info: vi.fn(), warn: vi.fn() },
+			});
+			return inbox as never as {
+				chatRoomByUri: (uri: string) => Promise<MiChatRoom | null>;
+				invite: (actor: MiUser, activity: unknown) => Promise<string>;
+			};
+		}
+
+		// Inbox workers run side by side, so all of them can have read that there is no such room before any of them creates it.
+		function readingTogether(inbox: ReturnType<typeof createInbox>, count: number) {
+			const read = inbox.chatRoomByUri.bind(inbox);
+			let reads = 0;
+			let release!: () => void;
+			const together = new Promise<void>(resolve => { release = resolve; });
+			inbox.chatRoomByUri = async uri => {
+				const room = await read(uri);
+				if (++reads === count) release();
+				await together;
+				return room;
+			};
+		}
+
+		function invite(actor: MiUser, roomUri: string, invitee: MiUser) {
+			return {
+				type: 'Invite',
+				actor: actor.uri,
+				object: { id: roomUri, type: 'Group', name: 'a new room', attributedTo: actor.uri },
+				target: `https://local.test/users/${invitee.id}`,
+			};
+		}
+
+		function newRoomUri() {
+			return `https://remote.test/chat/rooms/${idService.gen()}`;
+		}
+
+		beforeEach(async () => {
+			carol = await createUser({});
+		});
+
+		afterEach(async () => {
+			await usersRepository.delete(carol.id);
+		});
+
+		test('two arriving together both get through, and the room is created once', async () => {
+			const roomUri = newRoomUri();
+			const inbox = createInbox();
+			readingTogether(inbox, 2);
+
+			const results = await Promise.allSettled([
+				inbox.invite(bob, invite(bob, roomUri, alice)),
+				inbox.invite(bob, invite(bob, roomUri, carol)),
+			]);
+
+			expect(results.map(result => result.status === 'fulfilled' ? result.value : String(result.reason))).toEqual(['ok', 'ok']);
+			const rooms = await chatRoomsRepository.findBy({ uri: roomUri });
+			expect(rooms).toHaveLength(1);
+			expect(rooms[0]).toMatchObject({ ownerId: bob.id, name: 'a new room' });
+			const invitations = await chatRoomInvitationsRepository.findBy({ roomId: rooms[0].id });
+			expect(invitations.map(invitation => invitation.userId).toSorted()).toEqual([alice.id, carol.id].toSorted());
+			expect(createNotification).toHaveBeenCalledTimes(2);
+		});
+
+		test('someone else on that server cannot invite by racing the owner', async () => {
+			const roomUri = newRoomUri();
+			const dave = await createUser({ host: 'remote.test', uri: `https://remote.test/users/${idService.gen()}`, inbox: 'https://remote.test/inbox' });
+			const inbox = createInbox();
+			readingTogether(inbox, 2);
+
+			const results = await Promise.all([
+				inbox.invite(bob, invite(bob, roomUri, alice)),
+				inbox.invite(dave, invite(dave, roomUri, carol)),
+			]);
+
+			expect(results.toSorted()).toEqual(['ok', 'skip: inviter is not the room owner']);
+			const [room] = await chatRoomsRepository.findBy({ uri: roomUri });
+			expect(await chatRoomInvitationsRepository.countBy({ roomId: room.id })).toBe(1);
+			await usersRepository.delete(dave.id);
+		});
+
+		test('any other failure to create the room is left for the queue to retry', async () => {
+			const roomUri = newRoomUri();
+			const nobody = { ...bob, id: idService.gen() };
+
+			await expect(createInbox().invite(nobody, invite(nobody, roomUri, alice))).rejects.toThrow('foreign key');
 		});
 	});
 

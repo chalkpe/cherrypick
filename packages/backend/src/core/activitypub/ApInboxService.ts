@@ -2255,7 +2255,7 @@ export class ApInboxService {
 
 		// Check if the room already exists locally
 		let room = await this.chatRoomByUri(roomUri);
-		if (room && room.ownerId !== actor.id) return 'skip: inviter is not the room owner';
+		let created = false;
 
 		// If the room doesn't exist, create a local copy for the remote room
 		if (!room) {
@@ -2271,16 +2271,28 @@ export class ApInboxService {
 				if (getApHrefNullable(attributedTo) !== actor.uri) return 'skip: room is not attributed to the inviter';
 			}
 
-			room = await this.chatRoomsRepository.insertOne({
-				id: this.idService.gen(),
-				name: roomName,
-				description: roomDescription,
-				ownerId: actor.id,
-				isArchived: roomObject._misskey_chatArchived === true,
-				uri: roomUri,
-				lastRemoteUpdatedAt: this.chatRoomUpdatedAt(roomObject) ?? null,
-			});
-		} else {
+			try {
+				room = await this.chatRoomsRepository.insertOne({
+					id: this.idService.gen(),
+					name: roomName,
+					description: roomDescription,
+					ownerId: actor.id,
+					isArchived: roomObject._misskey_chatArchived === true,
+					uri: roomUri,
+					lastRemoteUpdatedAt: this.chatRoomUpdatedAt(roomObject) ?? null,
+				});
+				created = true;
+			} catch (err) {
+				if (!isDuplicateKeyValueError(err)) throw err;
+				// Inbox workers run side by side, so another invitation to this new room can get here first. From here on it is a room that exists.
+				room = await this.chatRoomByUri(roomUri);
+				if (!room) throw err;
+			}
+		}
+
+		if (room.ownerId !== actor.id) return 'skip: inviter is not the room owner';
+
+		if (!created) {
 			if (room.uri == null) {
 				await this.chatRoomsRepository.update(room.id, { uri: roomUri });
 				room.uri = roomUri;
