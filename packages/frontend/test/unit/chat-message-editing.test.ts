@@ -909,3 +909,96 @@ describe('the focus of the message box when pressing send', () => {
 		expect(window.document.activeElement).toBe(sendButton());
 	});
 });
+
+// スマートフォンのキーボードは打った文字をほとんど常に変換中のままにするので、変換中の文字も入力欄の値として扱う
+describe('letters still in composition', () => {
+	const sendButton = (name = i18n.ts.send) => screen.getByRole('button', { name }) as HTMLButtonElement;
+
+	async function compose(textarea: HTMLTextAreaElement, value: string) {
+		await fireEvent.compositionStart(textarea);
+		textarea.value = value;
+		await fireEvent.input(textarea);
+	}
+
+	test('count as text: the button turns on and the draft has them', async () => {
+		const { textarea } = renderForm();
+
+		await compose(textarea, 'Dk');
+
+		expect(sendButton().getAttribute('aria-disabled')).toBe('false');
+		expect(storedDraft()?.text).toBe('Dk');
+	});
+
+	test('count toward the length', async () => {
+		const { textarea } = renderForm();
+
+		await compose(textarea, 'a'.repeat(4097));
+
+		expect(sendButton().getAttribute('aria-disabled')).toBe('true');
+		expect(screen.getByText('-1')).toBeTruthy();
+	});
+
+	test('go out with one press, and the composition ends without the focus leaving', async () => {
+		const { textarea } = renderForm();
+		mocks.api.mockResolvedValueOnce({});
+		textarea.focus();
+		await compose(textarea, 'Dk');
+		const blur = vi.spyOn(textarea, 'blur');
+
+		await fireEvent.click(sendButton());
+
+		expect(mocks.api).toHaveBeenCalledWith('chat/messages/create-to-room', expect.objectContaining({ text: 'Dk' }));
+		expect(mocks.api).toHaveBeenCalledTimes(1);
+		expect(blur).toHaveBeenCalledTimes(1);
+		await waitFor(() => expect(textarea.value).toBe(''));
+		expect(window.document.activeElement).toBe(textarea);
+	});
+
+	test('are saved with an edit', async () => {
+		const { textarea } = renderForm('room', message);
+		mocks.api.mockResolvedValueOnce(undefined);
+		textarea.focus();
+		await compose(textarea, 'edited text');
+
+		await fireEvent.click(sendButton(i18n.ts.save));
+
+		expect(mocks.api).toHaveBeenCalledWith('chat/messages/update', expect.objectContaining({ text: 'edited text' }));
+	});
+
+	test('with no composition going on, sending does not touch the focus', async () => {
+		const { textarea } = renderForm();
+		mocks.api.mockResolvedValueOnce({});
+		textarea.focus();
+		await fireEvent.update(textarea, 'typed');
+		const blur = vi.spyOn(textarea, 'blur');
+
+		await fireEvent.click(sendButton());
+
+		expect(mocks.api).toHaveBeenCalledTimes(1);
+		expect(blur).not.toHaveBeenCalled();
+	});
+
+	test('after the composition ended, sending does not touch the focus either', async () => {
+		const { textarea } = renderForm();
+		mocks.api.mockResolvedValueOnce({});
+		textarea.focus();
+		await compose(textarea, '안녕');
+		await fireEvent.compositionEnd(textarea);
+		const blur = vi.spyOn(textarea, 'blur');
+
+		await fireEvent.click(sendButton());
+
+		expect(mocks.api).toHaveBeenCalledWith('chat/messages/create-to-room', expect.objectContaining({ text: '안녕' }));
+		expect(blur).not.toHaveBeenCalled();
+	});
+
+	test('Enter while composing commits them and sends nothing', async () => {
+		const { textarea } = renderForm();
+		textarea.focus();
+		await compose(textarea, '안녕');
+
+		await fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
+
+		expect(mocks.api).not.toHaveBeenCalled();
+	});
+});

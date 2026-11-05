@@ -14,7 +14,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<div v-if="editingMessage" :class="$style.editing"><i class="ti ti-pencil" aria-hidden="true"></i> {{ i18n.ts._chat.editingMessage }}</div>
 	<textarea
 		ref="textareaEl"
-		v-model="text"
+		:value="text"
 		:class="$style.textarea"
 		class="_acrylic"
 		:placeholder="i18n.ts.inputMessageHere"
@@ -22,6 +22,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:aria-invalid="remainingLength < 0"
 		:aria-describedby="remainingLength < 100 ? remainingLengthId : undefined"
 		:readonly="textareaReadOnly"
+		@input="onTextInput"
+		@compositionstart="onCompositionStart"
+		@compositionend="onCompositionEnd"
 		@keydown="onKeydown"
 		@paste="onPaste"
 	></textarea>
@@ -108,6 +111,31 @@ watch(() => props.editingMessage, (message) => {
 	if (message == null) return;
 	void nextTick(() => textareaEl.value?.focus());
 }, { immediate: true, flush: 'sync' });
+
+// v-model は変換中の文字を渡さない。スマートフォンのキーボードは打った文字をほとんど常に変換中のままにするので、
+// それでは文字があるのに送れない。入力欄の値をそのまま使う
+function onTextInput(ev: Event) {
+	text.value = (ev.target as HTMLTextAreaElement).value;
+}
+
+let composingText = false;
+
+function onCompositionStart() {
+	composingText = true;
+}
+
+function onCompositionEnd(ev: CompositionEvent) {
+	composingText = false;
+	onTextInput(ev);
+}
+
+// キーボードは変換中の文字を自分でも覚えている。入力欄を空にするだけだと、次の文字を打ったときに送ったはずの文字が戻ってくる。
+// フォーカスを外せば変換が確定してキーボードもやり直す。同じ処理の中で戻すので、キーボードは閉じない
+function finishComposition() {
+	if (!composingText) return;
+	textareaEl.value?.blur();
+	textareaEl.value?.focus({ preventScroll: true });
+}
 
 function getDraftKey() {
 	return props.user ? 'user:' + props.user.id : 'room:' + props.room?.id;
@@ -266,6 +294,10 @@ function keepTextareaFocus(ev: MouseEvent) {
 
 function send() {
 	if (sending.value || !canSend.value) return;
+
+	finishComposition();
+	// 確定で文字が変わることがある
+	if (!canSend.value) return;
 
 	sending.value = true;
 

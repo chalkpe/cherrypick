@@ -372,6 +372,69 @@ test.describe('Chat', () => {
 		});
 	});
 
+	// スマートフォンのキーボードは打った文字をほとんど常に変換中のままにする。insertText では変換が起きないので、変換を直接作る
+	for (const [where, options] of [
+		['on a laptop', { viewport: { width: 1280, height: 720 } }],
+		['on an Android phone', {
+			viewport: { width: 412, height: 915 },
+			isMobile: true,
+			hasTouch: true,
+			userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+		}],
+	] as const) {
+		test.describe(`letters still in composition ${where}`, () => {
+			test.use(options);
+
+			test('go out with one press of send, once, and the box starts anew', async ({ page, context }) => {
+				const room = await api(BASE_URL, 'chat/rooms/create', { i: alice.token, name: `composing ${Date.now()}` }) as { id: string };
+				await page.goto(`${BASE_URL}/chat/room/${room.id}`);
+				const input = page.getByPlaceholder('Enter message here');
+				const send = page.locator('button:has(i.ti-send)');
+				await input.click();
+				const cdp = await context.newCDPSession(page);
+				const compose = (text: string) => cdp.send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length });
+				const pressSend = async () => {
+					const box = await send.boundingBox();
+					if (box == null) throw new Error('the button has no box');
+					const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];
+					if (where === 'on a laptop') await page.mouse.click(x, y);
+					else await page.touchscreen.tap(x, y);
+				};
+				const sentTexts = async () => (await api(BASE_URL, 'chat/messages/room-timeline', { i: alice.token, roomId: room.id }) as { text: string }[]).map(message => message.text);
+
+				const word = `Dk${where.length}`;
+				await compose('D');
+				await compose(word);
+				await expect(input).toHaveValue(word);
+				await expect(send).toHaveAttribute('aria-disabled', 'false');
+
+				await pressSend();
+
+				await expect(page.getByText(word, { exact: true })).toBeVisible();
+				await expect(input).toHaveValue('');
+				await expect(input).toBeFocused();
+				expect(await sentTexts()).toEqual([word]);
+
+				// 変換が終わっているので、次の文字は前の文字につながらない
+				await compose('s');
+				await expect(input).toHaveValue('s');
+				await compose('');
+				await expect(input).toHaveValue('');
+
+				// 韓国語は最後の音節が変換中のまま残る
+				await cdp.send('Input.insertText', { text: '안녕' });
+				await compose('ㅎ');
+				await compose('하');
+				await expect(input).toHaveValue('안녕하');
+				await pressSend();
+
+				await expect(page.getByText('안녕하', { exact: true })).toBeVisible();
+				await expect(input).toHaveValue('');
+				expect(await sentTexts()).toEqual(['안녕하', word]);
+			});
+		});
+	}
+
 	// 画面キーボードは試験で出せないので、スクロールアンカーの効き方と、読んでいる場所が動かないことを確かめる
 	for (const [where, options] of [
 		['on a laptop', { viewport: { width: 1280, height: 720 } }],
