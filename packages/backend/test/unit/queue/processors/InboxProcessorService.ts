@@ -26,7 +26,7 @@ import { genRsaKeyPair } from '@/misc/gen-key-pair.js';
 
 type KeyPair = Awaited<ReturnType<typeof genRsaKeyPair>>;
 
-async function createJob(keypair: KeyPair, keyId: string, actorUri: string, activityId: string) {
+async function createJob(keypair: KeyPair, keyId: string, actorUri: string, activityId: string, attemptsMade = 0) {
 	const activity = {
 		id: activityId,
 		type: 'Create',
@@ -56,6 +56,8 @@ async function createJob(keypair: KeyPair, keyId: string, actorUri: string, acti
 
 	return {
 		data: { activity, signature },
+		attemptsMade,
+		opts: { attempts: 8 },
 	} as never;
 }
 
@@ -359,5 +361,24 @@ describe('InboxProcessorService authenticated actor checks', () => {
 		await expect(f.service.process(job)).resolves.toBe('ok');
 		expect(f.apDbResolverService.getAuthUserFromKeyId).toHaveBeenCalledWith(keyId);
 		expect(f.performActivity).toHaveBeenCalledTimes(1);
+	});
+
+	test.each([
+		[0, false],
+		[6, false],
+		[7, true],
+	])('after %i of 8 attempts, tells the activity whether this is the last: %s', async (attemptsMade, isLastAttempt) => {
+		const f = await setupFixture();
+		const keypair = await genRsaKeyPair();
+		const actorUri = 'https://allowed.example/users/alice';
+		const job = await createJob(keypair, `${actorUri}#main-key`, actorUri, 'https://allowed.example/activities/1', attemptsMade);
+
+		f.apDbResolverService.getAuthUserFromApId.mockResolvedValue({
+			user: { uri: actorUri, host: 'allowed.example' },
+			key: { keyPem: keypair.publicKey },
+		});
+
+		await expect(f.service.process(job)).resolves.toBe('ok');
+		expect(f.performActivity).toHaveBeenCalledWith(expect.anything(), expect.anything(), undefined, { isLastAttempt });
 	});
 });
