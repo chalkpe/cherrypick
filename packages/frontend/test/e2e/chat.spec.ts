@@ -430,6 +430,18 @@ test.describe('Chat', () => {
 		const row = (page: Page, username: string) => page.locator('button', { hasText: `@${username}` });
 		const picked = (page: Page) => page.getByRole('listitem').filter({ has: page.getByRole('button', { name: /^Remove .* from selection$/ }) });
 
+		// 窓は動きながら開くので、止まってから読む
+		async function settledTop(page: Page, username: string) {
+			let last: number | undefined;
+			await expect.poll(async () => {
+				const top = (await row(page, username).boundingBox())?.y;
+				const settled = top != null && top === last;
+				last = top;
+				return settled;
+			}).toBe(true);
+			return last;
+		}
+
 		async function outbox(roomId: string) {
 			const sent = await api(BASE_URL, 'chat/rooms/invitations/outbox', { i: alice.token, roomId }) as { userId: string }[];
 			return sent.map(invitation => invitation.userId).toSorted();
@@ -458,6 +470,21 @@ test.describe('Chat', () => {
 				await page.getByRole('button', { name: 'View members' }).click();
 				await expect(page.getByText('@bob').first()).toBeVisible();
 				await expect(page.getByText('@carol').first()).toBeVisible();
+			});
+
+			// 一覧が動くと、続けて押した先が今選んだ人になって、選択が外れてしまう
+			test('the rows stay in place when someone is picked or dropped', async ({ page }) => {
+				await openInviteWindow(page, 'rows in place');
+				await search(page, 'bob');
+				const before = await settledTop(page, 'bob');
+
+				await row(page, 'bob').click();
+				await expect(picked(page)).toHaveCount(1);
+				expect(await settledTop(page, 'bob')).toBe(before);
+
+				await page.getByRole('button', { name: /^Remove .* from selection$/ }).click();
+				await expect(picked(page)).toHaveCount(0);
+				expect(await settledTop(page, 'bob')).toBe(before);
 			});
 
 			test('someone can be dropped again before the invitations go out', async ({ page }) => {
@@ -572,14 +599,28 @@ test.describe('Chat', () => {
 
 					const overflow = await page.evaluate(() => window.document.documentElement.scrollWidth - window.innerWidth);
 					expect(overflow).toBeLessThanOrEqual(0);
+					// 今選んだ人は、送らなくても全部見えている
+					await expect(page.getByRole('button', { name: /^Remove .* from selection$/ }).nth(1)).toBeInViewport({ ratio: 1 });
+					// 一列に収まらない人は横に送って見る。送れば、どの人も窓の中に収まる
 					for (const person of await picked(page).all()) {
+						await person.scrollIntoViewIfNeeded();
 						const box = await person.boundingBox();
 						if (box == null) throw new Error('the person has no box');
 						expect(box.x).toBeGreaterThanOrEqual(0);
 						expect(box.x + box.width).toBeLessThanOrEqual(width);
 					}
-					await expect(page.getByRole('button', { name: /^Remove .* from selection$/ }).nth(1)).toBeInViewport();
 					await api(BASE_URL, 'i/update', { i: carol.token, name: null });
+				});
+
+				test('the rows stay in place when someone is picked', async ({ page }) => {
+					await openInviteWindow(page, 'rows in place');
+					await search(page, 'bob');
+					const before = await settledTop(page, 'bob');
+
+					await row(page, 'bob').tap();
+					await expect(picked(page)).toHaveCount(1);
+
+					expect(await settledTop(page, 'bob')).toBe(before);
 				});
 			});
 		}
