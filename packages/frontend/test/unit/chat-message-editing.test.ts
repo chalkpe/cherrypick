@@ -131,7 +131,7 @@ describe.each(['user', 'room'] as const)('%s message editing', target => {
 	test('clears an existing attachment caption without replacing the file', async () => {
 		const form = renderForm(target, { ...message, fileIds: [driveFile.id], files: [driveFile] });
 		await fireEvent.update(form.textarea, '');
-		expect(screen.getByTitle(i18n.ts.save).hasAttribute('disabled')).toBe(false);
+		expect(screen.getByTitle(i18n.ts.save).getAttribute('aria-disabled') === 'true').toBe(false);
 		await fireEvent.click(screen.getByTitle(i18n.ts.save));
 		await waitFor(() => expect(form.editing.value).toBeNull());
 		expect(mocks.api).toHaveBeenCalledWith('chat/messages/update', { messageId: message.id, text: '' });
@@ -143,7 +143,7 @@ describe.each(['user', 'room'] as const)('%s message editing', target => {
 		form.editing.value = message;
 		await nextTick();
 		await fireEvent.update(form.textarea, '');
-		expect(screen.getByTitle(i18n.ts.save).hasAttribute('disabled')).toBe(true);
+		expect(screen.getByTitle(i18n.ts.save).getAttribute('aria-disabled') === 'true').toBe(true);
 		await fireEvent.keyDown(form.textarea, { key: 'Enter', ctrlKey: true });
 		expect(mocks.api).not.toHaveBeenCalledWith('chat/messages/update', expect.anything());
 	});
@@ -247,7 +247,7 @@ test('an in-flight save does not clear a restored compose draft', async () => {
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.cancel }));
 	await fireEvent.update(form.textarea, 'Continued draft');
 	pending.resolve({});
-	await waitFor(() => expect(screen.getByTitle(i18n.ts.send).hasAttribute('disabled')).toBe(false));
+	await waitFor(() => expect(screen.getByTitle(i18n.ts.send).getAttribute('aria-disabled') === 'true').toBe(false));
 	expect(form.textarea.value).toBe('Continued draft');
 	expect(screen.getByAltText('draft.png')).toBeTruthy();
 });
@@ -260,7 +260,7 @@ test('an earlier save does not end a different edit session', async () => {
 	form.editing.value = { ...message, id: 'm2', text: 'Second message' };
 	await nextTick();
 	pending.resolve({});
-	await waitFor(() => expect(screen.getByTitle(i18n.ts.save).hasAttribute('disabled')).toBe(false));
+	await waitFor(() => expect(screen.getByTitle(i18n.ts.save).getAttribute('aria-disabled') === 'true').toBe(false));
 	expect(form.editing.value?.id).toBe('m2');
 	expect(form.textarea.value).toBe('Second message');
 });
@@ -306,7 +306,7 @@ test('a draft attachment does not enable saving an empty text-only edit', async 
 	form.editing.value = message;
 	await nextTick();
 	await fireEvent.update(form.textarea, '   ');
-	expect(screen.getByTitle(i18n.ts.save).hasAttribute('disabled')).toBe(true);
+	expect(screen.getByTitle(i18n.ts.save).getAttribute('aria-disabled') === 'true').toBe(true);
 });
 
 test('does not offer reactions for a deleted message', async () => {
@@ -430,10 +430,10 @@ describe('the length of a message', () => {
 		const form = render();
 
 		await fireEvent.update(form.textarea, 'x'.repeat(4096));
-		expect(screen.getByTitle(title()).hasAttribute('disabled')).toBe(false);
+		expect(screen.getByTitle(title()).getAttribute('aria-disabled') === 'true').toBe(false);
 
 		await fireEvent.update(form.textarea, 'x'.repeat(4097));
-		expect(screen.getByTitle(title()).hasAttribute('disabled')).toBe(true);
+		expect(screen.getByTitle(title()).getAttribute('aria-disabled') === 'true').toBe(true);
 	});
 
 	test('is counted by characters, as the servers count it', async () => {
@@ -441,7 +441,7 @@ describe('the length of a message', () => {
 
 		await fireEvent.update(form.textarea, '🦈'.repeat(4096));
 
-		expect(screen.getByTitle(i18n.ts.send).hasAttribute('disabled')).toBe(false);
+		expect(screen.getByTitle(i18n.ts.send).getAttribute('aria-disabled') === 'true').toBe(false);
 	});
 
 	test('sending by keyboard stops at the limit too', async () => {
@@ -829,5 +829,83 @@ describe('pressing and holding a message', () => {
 		contextmenu(container, 'mouse');
 
 		expect(mocks.contextMenu).toHaveBeenCalledTimes(1);
+	});
+});
+
+// ソフトウェアキーボードは入力欄のフォーカスについてくる。押したボタンにフォーカスが移ると閉じてしまう
+describe('the focus of the message box when pressing send', () => {
+	const sendButton = (name = i18n.ts.send) => screen.getByRole('button', { name }) as HTMLButtonElement;
+	// 既定の動作を止めれば、ブラウザはフォーカスを動かさない
+	const pressKeepsFocus = (button: HTMLElement) => {
+		const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+		button.dispatchEvent(press);
+		return press.defaultPrevented;
+	};
+
+	test('stays in the box when it was there', async () => {
+		const { textarea } = renderForm();
+		await fireEvent.update(textarea, 'hello');
+		textarea.focus();
+
+		expect(pressKeepsFocus(sendButton())).toBe(true);
+	});
+
+	test('is not pulled to the box when it was elsewhere, so no keyboard comes up', async () => {
+		const { textarea } = renderForm();
+		await fireEvent.update(textarea, 'hello');
+		textarea.blur();
+
+		expect(pressKeepsFocus(sendButton())).toBe(false);
+		await fireEvent.click(sendButton());
+		expect(window.document.activeElement).not.toBe(textarea);
+	});
+
+	test('stays in the box when there is nothing to send, and pressing does nothing', async () => {
+		const { textarea } = renderForm();
+		textarea.focus();
+
+		expect(sendButton().getAttribute('aria-disabled')).toBe('true');
+		expect(sendButton().disabled).toBe(false);
+		expect(pressKeepsFocus(sendButton())).toBe(true);
+		await fireEvent.click(sendButton());
+		expect(mocks.api).not.toHaveBeenCalled();
+	});
+
+	test('stays in the box while a message is on its way, and a second press sends nothing', async () => {
+		const { textarea } = renderForm();
+		const pending = deferred<unknown>();
+		mocks.api.mockReturnValueOnce(pending.promise);
+		await fireEvent.update(textarea, 'hello');
+		textarea.focus();
+
+		await fireEvent.click(sendButton());
+		expect(sendButton().disabled).toBe(false);
+		expect(pressKeepsFocus(sendButton())).toBe(true);
+		await fireEvent.click(sendButton());
+		expect(mocks.api).toHaveBeenCalledTimes(1);
+		pending.resolve({});
+		await waitFor(() => expect(textarea.value).toBe(''));
+		expect(window.document.activeElement).toBe(textarea);
+	});
+
+	test('stays in the box when saving an edit', async () => {
+		const { textarea } = renderForm('room', message);
+		mocks.api.mockResolvedValueOnce(undefined);
+		textarea.focus();
+
+		expect(pressKeepsFocus(sendButton(i18n.ts.save))).toBe(true);
+	});
+
+	test('a button reached with the keyboard stays where it is and still sends', async () => {
+		const { textarea } = renderForm();
+		mocks.api.mockResolvedValueOnce({});
+		await fireEvent.update(textarea, 'hello');
+		sendButton().focus();
+
+		await fireEvent.click(sendButton());
+
+		expect(mocks.api).toHaveBeenCalledTimes(1);
+		await waitFor(() => expect(textarea.value).toBe(''));
+		expect(window.document.activeElement).toBe(sendButton());
 	});
 });

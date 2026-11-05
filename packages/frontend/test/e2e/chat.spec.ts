@@ -44,6 +44,21 @@ test.describe('Chat', () => {
 	test.describe('on a laptop', () => {
 		test.use({ viewport: { width: 1280, height: 720 } });
 
+		test('the send button works from the keyboard and keeps the focus it was given', async ({ page }) => {
+			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
+			const input = page.getByPlaceholder('Enter message here');
+			const send = page.locator('button:has(i.ti-send)');
+			const text = `sent from the keyboard ${Date.now()}`;
+			await input.fill(text);
+			await send.focus();
+
+			await page.keyboard.press('Enter');
+
+			await expect(page.getByText(text, { exact: true })).toBeVisible();
+			await expect(send).toBeFocused();
+			await expect(input).toHaveValue('');
+		});
+
 		test('a mouse still selects by dragging, and a right click keeps the menu of the browser on a selection', async ({ page }) => {
 			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
 			const message = page.getByText('message 60', { exact: true });
@@ -423,6 +438,37 @@ test.describe('Chat', () => {
 
 			await expect(page.getByText('Copy contents', { exact: true })).toBeVisible();
 			expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('');
+		});
+
+		// ソフトウェアキーボードは入力欄のフォーカスについてくるので、フォーカスで確かめる
+		test('sending with a finger keeps the focus in the message box, and does not bring it there', async ({ page }) => {
+			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
+			const input = page.getByPlaceholder('Enter message here');
+			await input.tap();
+			await expect(input).toBeFocused();
+			const send = page.locator('button:has(i.ti-send)');
+			const tapSend = async () => {
+				const box = await send.boundingBox();
+				if (box == null) throw new Error('the button has no box');
+				await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+			};
+
+			const text = `sent with a finger ${Date.now()}`;
+			await page.keyboard.insertText(text);
+			await tapSend();
+			await expect(page.getByText(text, { exact: true })).toBeVisible();
+			await expect(input).toBeFocused();
+
+			// 押せないときも外れない
+			await tapSend();
+			await expect(input).toBeFocused();
+
+			const another = `sent with nothing focused ${Date.now()}`;
+			await page.keyboard.insertText(another);
+			await input.blur();
+			await tapSend();
+			await expect(page.getByText(another, { exact: true })).toBeVisible();
+			await expect(input).not.toBeFocused();
 		});
 
 		test('the text of a message does not offer itself for selection to a finger', async ({ page }) => {

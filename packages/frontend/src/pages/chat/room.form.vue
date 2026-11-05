@@ -33,7 +33,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<XVoiceCallBarSlot kind="chatForm" :focusWithin="rootEl" :class="$style.voiceCall"/>
 			<button v-if="editingMessage" class="_button" :class="$style.button" :title="i18n.ts.cancel" :aria-label="i18n.ts.cancel" @click="emit('cancelEdit')"><i class="ti ti-x"></i></button>
 			<span v-if="remainingLength < 100" :id="remainingLengthId" :class="[$style.remaining, { [$style.overLimit]: remainingLength < 0 }]" :aria-label="i18n.tsx.remainingN({ n: remainingLength })">{{ remainingLength }}</span>
-			<button class="_button" :class="[$style.button, $style.send]" :disabled="!canSend || sending" :title="editingMessage ? i18n.ts.save : i18n.ts.send" :aria-label="editingMessage ? i18n.ts.save : i18n.ts.send" @click="send">
+			<!-- disabled にすると、押せない間はフォーカスを持てず、押しただけで入力欄のフォーカスも外れる (send が押せない間は何もしない) -->
+			<button class="_button" :class="[$style.button, $style.send]" :aria-disabled="!canSend || sending" :title="editingMessage ? i18n.ts.save : i18n.ts.send" :aria-label="editingMessage ? i18n.ts.save : i18n.ts.send" @mousedown="keepTextareaFocus" @click="send">
 				<template v-if="!sending"><i class="ti ti-send"></i></template><template v-if="sending"><MkLoading :em="true"/></template>
 			</button>
 		</div>
@@ -257,6 +258,12 @@ function showSendError(err: Error) {
 	if (!formClosed) os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: chatErrorText(err) });
 }
 
+// 押しただけで入力欄からフォーカスが移ると、ソフトウェアキーボードが閉じて続けて書けなくなる。
+// 入力欄にフォーカスが無ければ何もしない (キーボードを新しく出さない)
+function keepTextareaFocus(ev: MouseEvent) {
+	if (window.document.activeElement === textareaEl.value) ev.preventDefault();
+}
+
 function send() {
 	if (sending.value || !canSend.value) return;
 
@@ -438,12 +445,14 @@ onBeforeUnmount(() => {
 	height: 50px;
 	aspect-ratio: 1;
 
-	&:not(:disabled):hover {
+	&:not(:disabled, [aria-disabled="true"]):hover {
 		color: var(--MI_THEME-accent);
 	}
 
-	&:disabled {
+	&:disabled,
+	&[aria-disabled="true"] {
 		opacity: 0.5;
+		cursor: default;
 	}
 }
 
