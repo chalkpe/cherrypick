@@ -47,7 +47,8 @@ export const apiWithDialog = (<E extends keyof Misskey.Endpoints>(
 	const promise = misskeyApi(endpoint, data, token);
 	promiseDialog(promise, null, async (err) => {
 		let title: string | undefined;
-		let text = err.message + '\n' + err.id;
+		// 通信に失敗したときなど、code も id も無いエラーも来る
+		let text = err.id != null ? err.message + '\n' + err.id : err.message;
 		if (err.code === 'INTERNAL_ERROR') {
 			title = i18n.ts.internalServerError;
 			text = i18n.ts.internalServerErrorDescription;
@@ -78,15 +79,16 @@ export const apiWithDialog = (<E extends keyof Misskey.Endpoints>(
 		} else if (err.code === 'ROLE_PERMISSION_DENIED') {
 			title = i18n.ts.permissionDeniedError;
 			text = i18n.ts.permissionDeniedErrorDescription;
-		} else if (err.code.startsWith('TOO_MANY')) {
+		} else if (err.code?.startsWith('TOO_MANY')) {
 			title = i18n.ts.youCannotCreateAnymore;
 			text = `${i18n.ts.error}: ${err.id}`;
 		} else if (err.message.startsWith('Unexpected token')) {
 			title = i18n.ts.gotInvalidResponseError;
 			text = i18n.ts.gotInvalidResponseErrorDescription;
-		} else if (customErrors && customErrors[err.id] != null) {
-			title = customErrors[err.id].title;
-			text = customErrors[err.id].text;
+		} else if (customErrors && (customErrors[err.id] ?? customErrors.default) != null) {
+			const customError = customErrors[err.id] ?? customErrors.default;
+			title = customError.title;
+			text = customError.text;
 		}
 		alert({
 			type: 'error',

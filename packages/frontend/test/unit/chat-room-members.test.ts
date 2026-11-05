@@ -16,6 +16,7 @@ vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import Members from '@/pages/chat/room.members.vue';
 import { i18n } from '@/i18n.js';
+import { chatCancelInvitationErrors, chatKickErrors } from '@/pages/chat/chat-errors.js';
 
 const room = { id: 'room', ownerId: 'owner', owner: { id: 'owner', username: 'owner' }, isArchived: false } as any;
 const membership = { id: 'membership', userId: 'member', user: { id: 'member', name: 'Member', username: 'member', host: 'remote.test' } };
@@ -37,7 +38,7 @@ test('the owner confirms the named member and removes that row after success', a
 	render(Members, { props: { room }, global: { stubs } });
 	await fireEvent.click(await screen.findByRole('button', { name: i18n.ts._chat.kickMember }));
 	expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.tsx._chat.kickMemberConfirm({ name: 'Member', room: room.name }) });
-	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/kick', { roomId: 'room', userId: 'member' }));
+	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/kick', { roomId: 'room', userId: 'member' }, undefined, chatKickErrors));
 	await waitFor(() => expect(screen.queryByText('member')).toBeNull());
 });
 
@@ -69,5 +70,5 @@ test('the button that cancels an invitation says whose invitation it cancels', a
 	mocks.api.mockImplementation(async endpoint => endpoint === 'chat/rooms/invitations/outbox' ? [{ id: 'invitation', user: { id: 'invitee', username: 'invitee' } }] : []);
 	render(Members, { props: { room }, global: { stubs } });
 	await fireEvent.click(await screen.findByRole('button', { name: i18n.tsx._chat.cancelInvitationTo({ x: 'invitee' }) }));
-	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/cancel', { invitationId: 'invitation' });
+	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/cancel', { invitationId: 'invitation' }, undefined, chatCancelInvitationErrors);
 });

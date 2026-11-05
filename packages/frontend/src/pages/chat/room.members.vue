@@ -55,6 +55,7 @@ import MkUserCardMini from '@/components/MkUserCardMini.vue';
 import { userPage } from '@@/js/user.js';
 import { ensureSignin } from '@/i.js';
 import * as os from '@/os.js';
+import { chatCancelInvitationErrors, chatKickErrors } from './chat-errors.js';
 
 const $i = ensureSignin();
 
@@ -83,7 +84,7 @@ async function kickMember(membership: Misskey.entities.ChatRoomMembership) {
 			text: i18n.tsx._chat.kickMemberConfirm({ name: membership.user?.name || membership.user?.username || membership.userId, room: props.room.name }),
 		});
 		if (canceled) return;
-		await os.apiWithDialog('chat/rooms/kick', { roomId: props.room.id, userId: membership.userId });
+		await os.apiWithDialog('chat/rooms/kick', { roomId: props.room.id, userId: membership.userId }, undefined, chatKickErrors);
 		memberships.value = memberships.value.filter(member => member.id !== membership.id);
 	} catch {
 		// apiWithDialog already displays the request error; keep the member visible.
@@ -99,9 +100,15 @@ async function cancelInvitation(invitation: Misskey.entities.ChatRoomInvitation)
 	});
 	if (canceled) return;
 
-	await os.apiWithDialog('chat/rooms/invitations/cancel', {
-		invitationId: invitation.id,
-	});
+	try {
+		await os.apiWithDialog('chat/rooms/invitations/cancel', {
+			invitationId: invitation.id,
+		}, undefined, chatCancelInvitationErrors);
+	} catch {
+		// apiWithDialog already displays the request error. The list was out of date, so read it again.
+		invitations.value = await misskeyApi('chat/rooms/invitations/outbox', { roomId: props.room.id, limit: 50 }).catch(() => invitations.value);
+		return;
+	}
 
 	// Remove from local state
 	invitations.value = invitations.value.filter(i => i.id !== invitation.id);

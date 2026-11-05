@@ -27,14 +27,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 	<MkButton v-if="isOwner || ($i.isAdmin || $i.isModerator)" danger @click="del">{{ i18n.ts._chat.deleteRoom }}</MkButton>
 
-	<MkSwitch v-if="!isOwner" v-model="isMuted">
+	<MkSwitch v-if="!isOwner" :modelValue="isMuted" @update:modelValue="setMuted">
 		<template #label>{{ i18n.ts._chat.muteThisRoom }}</template>
 	</MkSwitch>
 </div>
 </template>
 
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
@@ -45,6 +45,7 @@ import MkTextarea from '@/components/MkTextarea.vue';
 import MkSwitch from '@/components/MkSwitch.vue';
 import MkKeyValue from '@/components/MkKeyValue.vue';
 import { useRouter } from '@/router.js';
+import { chatMuteErrors, chatRoomDeleteErrors, chatRoomUpdateErrors } from './chat-errors.js';
 
 const router = useRouter();
 const $i = ensureSignin();
@@ -71,7 +72,7 @@ async function save() {
 		roomId: props.room.id,
 		name: name_.value,
 		description: description_.value,
-	}).catch(() => null);
+	}, undefined, chatRoomUpdateErrors).catch(() => null);
 	if (updated == null) return;
 	emit('updated', updated);
 }
@@ -89,7 +90,7 @@ async function setArchived(isArchived: boolean) {
 	const updated = await os.apiWithDialog('chat/rooms/update', {
 		roomId: props.room.id,
 		isArchived,
-	}).catch(() => null);
+	}, undefined, chatRoomUpdateErrors).catch(() => null);
 	if (updated == null) return;
 	emit('updated', updated);
 }
@@ -110,7 +111,7 @@ async function del() {
 	try {
 		await os.apiWithDialog('chat/rooms/delete', {
 			roomId: props.room.id,
-		});
+		}, undefined, chatRoomDeleteErrors);
 	} catch {
 		// apiWithDialog がエラーを表示済み。削除の通知を先に受けていれば、戻るルームはもう無い
 		emit('deleting', false);
@@ -121,12 +122,18 @@ async function del() {
 
 const isMuted = ref(props.room.isMuted ?? false);
 
-watch(isMuted, async () => {
-	await os.apiWithDialog('chat/rooms/mute', {
-		roomId: props.room.id,
-		mute: isMuted.value,
-	});
-});
+async function setMuted(mute: boolean) {
+	isMuted.value = mute;
+	try {
+		await os.apiWithDialog('chat/rooms/mute', {
+			roomId: props.room.id,
+			mute,
+		}, undefined, chatMuteErrors);
+	} catch {
+		// apiWithDialog がエラーを表示済み。変わっていないのだから、スイッチも戻す
+		isMuted.value = !mute;
+	}
+}
 </script>
 
 <style lang="scss" module>

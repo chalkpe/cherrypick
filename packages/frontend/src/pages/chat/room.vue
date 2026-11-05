@@ -58,9 +58,17 @@ SPDX-License-Identifier: AGPL-3.0-only
 									<div v-else-if="user.chatScope === 'mutual'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromMutualFollowing }}</div>
 									<div v-else-if="user.chatScope === 'none'">{{ i18n.ts._chat.thisUserNotAllowedChatAnyone }}</div>
 								</template>
-								<template v-else-if="room && !room.isArchived">
-									<div>{{ i18n.ts._chat.inviteUserToChat }}</div>
-									<MkButton v-if="room.ownerId === $i.id && $i.policies.chatAvailability === 'available'" primary rounded style="margin: 0 auto;" @click="inviteUser"><i class="ti ti-plus"></i> {{ i18n.ts._chat.inviteUser }}</MkButton>
+								<!-- 招待できるのは主だけなので、ほかの人には招待を勧めない -->
+								<template v-else-if="room && !room.isArchived && room.ownerId === $i.id && $i.policies.chatAvailability === 'available'">
+									<div aria-live="polite" class="_gaps">
+										<div v-if="joinedMemberCount > 0">{{ i18n.tsx._chat.roomMembersJoined({ n: joinedMemberCount }) }}</div>
+										<div v-if="sentInvitationCount > 0">{{ i18n.tsx._chat.roomInvitationsWaiting({ n: sentInvitationCount }) }}</div>
+										<div v-if="joinedMemberCount === 0 && sentInvitationCount === 0">{{ i18n.ts._chat.inviteUserToChat }}</div>
+									</div>
+									<div :class="$style.emptyActions">
+										<MkButton v-if="joinedMemberCount > 0 || sentInvitationCount > 0" rounded @click="tab = 'members'"><i class="ti ti-users"></i> {{ i18n.ts._chat.viewMembers }}</MkButton>
+										<MkButton primary rounded @click="inviteUser"><i class="ti ti-plus"></i> {{ i18n.ts._chat.inviteUser }}</MkButton>
+									</div>
 								</template>
 							</div>
 						</div>
@@ -162,7 +170,7 @@ import XMembers from './room.members.vue';
 import XInfo from './room.info.vue';
 import XBanner from './room.voice.banner.vue';
 import XStage from './room.voice.stage.vue';
-import { chatInviteErrors, chatJoinErrors } from './chat-errors.js';
+import { chatInviteErrors, chatJoinErrors, chatLeaveErrors } from './chat-errors.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { PageHeaderItem } from '@/types/page-header.js';
 import * as os from '@/os.js';
@@ -238,7 +246,8 @@ function onCancelEdit() {
 const canFetchMore = ref(false);
 const user = ref<Misskey.entities.UserDetailed | null>(null);
 const room = ref<Misskey.entities.ChatRoom | null>(null);
-const memberships = ref<Misskey.entities.ChatRoomMembership[]>([]);
+const joinedMemberCount = ref(0);
+const sentInvitationCount = ref(0);
 const membershipVersion = ref(0);
 const membershipEnded = ref(false);
 const deletingOwnRoom = ref(false);
@@ -322,6 +331,7 @@ async function initialize() {
 		connection.value = useStream().useChannel('chatUser', {
 			otherId: user.value.id,
 		});
+		connection.value.on('_subscribed_', readAgain);
 		connection.value.on('message', onMessage);
 		connection.value.on('deleted', onDeleted);
 		connection.value.on('react', onReact);
@@ -386,10 +396,7 @@ async function initialize() {
 		room.value = r;
 		messages.value = m.map(x => normalizeMessage(x));
 
-		memberships.value = await misskeyApi('chat/rooms/members', {
-			roomId: room.value.id,
-			limit: 50,
-		});
+		await refreshRoomPeople();
 
 		if (messages.value.length === LIMIT) {
 			canFetchMore.value = true;
@@ -398,6 +405,7 @@ async function initialize() {
 		connection.value = useStream().useChannel('chatRoom', {
 			roomId: room.value.id,
 		});
+		connection.value.on('_subscribed_', readAgain);
 		connection.value.on('message', onMessage);
 		connection.value.on('deleted', onDeleted);
 		connection.value.on('react', onReact);
@@ -450,9 +458,14 @@ async function fetchMore() {
 }
 
 function onMessage(message: Misskey.entities.ChatMessageLite) {
+	// 読み直しのほうが先に届けていることがある
+	if (messages.value.some(m => m.id === message.id)) return;
+
 	sound.playMisskeySfx('chatMessage');
 
-	messages.value.unshift(normalizeMessage(message));
+	// 読み直しで手元にもっと新しいものが入っていても、順番を崩さない
+	const index = messages.value.findIndex(m => m.id < message.id);
+	messages.value.splice(index === -1 ? messages.value.length : index, 0, normalizeMessage(message));
 
 	// TODO: DOM的にバックグラウンドになっていないかどうかも考慮する
 	if (message.fromUserId !== $i.id && !window.document.hidden && isActivated) {
@@ -467,6 +480,7 @@ function onMessage(message: Misskey.entities.ChatMessageLite) {
 }
 
 function onDeleted(id: string) {
+	noteChangeDuringRead();
 	// リロード後と同じく、削除済みの吹き出しとして残す
 	const message = messages.value.find(m => m.id === id);
 	if (message) {
@@ -485,23 +499,19 @@ function onDeleted(id: string) {
 }
 
 function onReact(ctx: Parameters<Misskey.Channels['chatUser']['events']['react']>[0] | Parameters<Misskey.Channels['chatRoom']['events']['react']>[0]) {
+	noteChangeDuringRead();
 	const message = messages.value.find(m => m.id === ctx.messageId);
 	if (message) {
-		if (room.value == null) { // 1on1の時はuserは省略される
-			message.reactions.push({
-				reaction: ctx.reaction,
-				user: message.fromUserId === $i.id ? user.value! : $i,
-			});
-		} else {
-			message.reactions.push({
-				reaction: ctx.reaction,
-				user: ctx.user!,
-			});
-		}
+		// 1on1の時はuserは省略される
+		const reactor = room.value == null ? (message.fromUserId === $i.id ? user.value! : $i) : ctx.user!;
+		// 読み直しのほうが先に届けていることがある
+		if (message.reactions.some(r => r.reaction === ctx.reaction && r.user.id === reactor.id)) return;
+		message.reactions.push({ reaction: ctx.reaction, user: reactor });
 	}
 }
 
 function onUnreact(ctx: Parameters<Misskey.Channels['chatUser']['events']['unreact']>[0] | Parameters<Misskey.Channels['chatRoom']['events']['unreact']>[0]) {
+	noteChangeDuringRead();
 	const message = messages.value.find(m => m.id === ctx.messageId);
 	if (message) {
 		const userId = ctx.user?.id ?? (message.fromUserId === $i.id ? user.value?.id : $i.id);
@@ -513,6 +523,7 @@ function onUnreact(ctx: Parameters<Misskey.Channels['chatUser']['events']['unrea
 }
 
 function onUpdated(ctx: Parameters<Misskey.Channels['chatUser']['events']['updated']>[0]) {
+	noteChangeDuringRead();
 	const message = messages.value.find(m => m.id === ctx.messageId);
 	if (message && !message.deletedAt) {
 		if (message.editedAt && Date.parse(ctx.editedAt) <= Date.parse(message.editedAt)) return;
@@ -523,6 +534,7 @@ function onUpdated(ctx: Parameters<Misskey.Channels['chatUser']['events']['updat
 }
 
 function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['roomUpdated']>[0]) {
+	noteChangeDuringRead();
 	if (room.value == null || room.value.id !== ctx.roomId) return;
 	room.value = {
 		...room.value,
@@ -539,6 +551,29 @@ watch(() => room.value?.isArchived, isArchived => {
 
 function onMembershipChanged() {
 	membershipVersion.value++;
+	refreshRoomPeople();
+}
+
+let latestRoomPeopleRequest = 0;
+
+// まだ誰も話していないルームで、招待したあとどうなっているかを主に見せる。送った招待は主にしか読めない
+async function refreshRoomPeople() {
+	const target = room.value;
+	if (target == null || target.ownerId !== $i.id || messages.value.length > 0) return;
+
+	const request = ++latestRoomPeopleRequest;
+	try {
+		const [members, invitations] = await Promise.all([
+			misskeyApi('chat/rooms/members', { roomId: target.id, limit: 50 }),
+			misskeyApi('chat/rooms/invitations/outbox', { roomId: target.id, limit: 50 }),
+		]);
+		// 遅れて返ってきた古い人数で、新しい人数を置き換えない
+		if (request !== latestRoomPeopleRequest) return;
+		joinedMemberCount.value = members.filter(member => member.userId !== target.ownerId).length;
+		sentInvitationCount.value = invitations.length;
+	} catch {
+		// 次に知らされたときに読み直せるので、今の表示のままにする
+	}
 }
 
 function onMembershipEnded(ctx: Parameters<Misskey.Channels['chatRoom']['events']['membershipEnded']>[0]) {
@@ -596,18 +631,37 @@ function onVisibilitychange() {
 }
 
 let eventsMayBeMissing = false;
+let readingAgain = false;
 
-function onStreamConnected() {
+// チャンネルの購読が済むまでに起きたことは、あとから流れてこない。開いた直後も、ストリームがつながり直したあとも読み直して埋める
+function readAgain() {
 	eventsMayBeMissing = true;
 	catchUp();
 }
 
-// ストリームが切れているあいだのイベントは再接続しても届かないので、読み直して埋める
+// 読み直しの結果は、問い合わせた時点のもの。そのあいだに届いた変更を上書きするかもしれないので、もう一度読む
+function noteChangeDuringRead() {
+	if (readingAgain) eventsMayBeMissing = true;
+}
+
 async function catchUp() {
 	// タイムラインを取得すると既読になるので、見ていないあいだは見に戻るまで待つ
-	if (!eventsMayBeMissing || !initialized.value || !isActivated || window.document.hidden) return;
+	if (readingAgain || !eventsMayBeMissing || !initialized.value || !isActivated || window.document.hidden) return;
 	eventsMayBeMissing = false;
 
+	readingAgain = true;
+	let finished = false;
+	try {
+		finished = await readLatest();
+	} finally {
+		readingAgain = false;
+	}
+	// 読んでいるあいだに、また読み直す理由ができた
+	if (finished) catchUp();
+}
+
+/** @returns 一時的な失敗で読めなかったときは false */
+async function readLatest(): Promise<boolean> {
 	const LIMIT = 20;
 	let r: Misskey.entities.ChatRoomsShowResponse | null;
 	let m: (Misskey.entities.ChatMessageLite | Misskey.entities.ChatMessage)[];
@@ -623,15 +677,15 @@ async function catchUp() {
 		const code = (err as Misskey.api.APIError | null | undefined)?.code;
 		if (code !== 'NO_SUCH_ROOM' && code !== 'ROOM_DELETED') {
 			eventsMayBeMissing = true;
-			return;
+			return false;
 		}
-		if (!initialized.value || leavingRoom.value || deletingOwnRoom.value) return;
+		if (!initialized.value || leavingRoom.value || deletingOwnRoom.value) return true;
 		// 外されたか、削除された。どちらなのかと、また招待されているかどうかは initialize が確かめて案内する
 		closeRoom();
 		if (isActivated) initialize();
-		return;
+		return true;
 	}
-	if (!initialized.value) return;
+	if (!initialized.value) return true;
 
 	const latest = m.map(x => normalizeMessage(x));
 	const latestIds = new Set(latest.map(x => x.id));
@@ -646,11 +700,19 @@ async function catchUp() {
 		room.value = r;
 		onMembershipChanged();
 	}
+	return true;
 }
+
+// 断られた招待のように、ルームのチャンネルには流れない変更もある
+let listChannel: Misskey.IChannelConnection<Misskey.Channels['main']> | null = null;
 
 onMounted(() => {
 	initialize();
-	useStream().on('_connected_', onStreamConnected);
+	useStream().on('_connected_', readAgain);
+	if (props.roomId) {
+		listChannel = useStream().useChannel('main');
+		listChannel.on('chatRoomListChanged', refreshRoomPeople);
+	}
 });
 
 onUnmounted(() => {
@@ -672,7 +734,8 @@ onActivated(() => {
 
 onBeforeUnmount(() => {
 	connection.value?.dispose();
-	useStream().off('_connected_', onStreamConnected);
+	listChannel?.dispose();
+	useStream().off('_connected_', readAgain);
 	window.document.removeEventListener('visibilitychange', onVisibilitychange);
 });
 
@@ -706,7 +769,7 @@ async function leaveRoom() {
 	try {
 		await os.apiWithDialog('chat/rooms/leave', {
 			roomId: room.value.id,
-		});
+		}, undefined, chatLeaveErrors);
 	} catch {
 		// The dialog already explained the failure, and the member is still in the room.
 		leavingRoom.value = false;
@@ -776,6 +839,8 @@ const composing = ref(false);
 // 変換を終えないまま入力欄が消えたり裏に回ったりすると compositionend が届かないことがあるので、そこで忘れる
 watch(tab, () => {
 	composing.value = false;
+	// メンバータブで招待を取り消したかもしれない
+	if (tab.value === 'chat') refreshRoomPeople();
 });
 
 onDeactivated(() => {
@@ -1003,6 +1068,13 @@ definePage(computed(() => {
 
 .more {
 	margin: 0 auto;
+}
+
+.emptyActions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: 8px;
 }
 
 // 左右に並べるときは、ページヘッダーと下端の間 (スクロールしない高さ) にちょうど収める

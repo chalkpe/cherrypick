@@ -14,13 +14,14 @@ const mocks = vi.hoisted(() => ({
 	selectFile: vi.fn(),
 	upload: vi.fn(),
 	popupMenu: vi.fn(),
+	contextMenu: vi.fn(),
 	confirm: vi.fn(),
 	reactionPicker: vi.fn(),
 	me: { id: 'me', username: 'me', policies: { chatAvailability: 'available' } },
 }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
 vi.mock('@/utility/drive.js', () => ({ selectFile: mocks.selectFile }));
-vi.mock('@/os.js', () => ({ launchUploader: mocks.upload, popupMenu: mocks.popupMenu, confirm: mocks.confirm, alert: vi.fn() }));
+vi.mock('@/os.js', () => ({ launchUploader: mocks.upload, popupMenu: mocks.popupMenu, contextMenu: mocks.contextMenu, confirm: mocks.confirm, alert: vi.fn() }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/utility/emoji-picker.js', () => ({ emojiPicker: { show: vi.fn() } }));
 vi.mock('@/utility/reaction-picker.js', () => ({ reactionPicker: { show: mocks.reactionPicker } }));
@@ -772,5 +773,61 @@ describe('XMessage on messages it cannot act on', () => {
 		await fireEvent.click(container.querySelector('[class*="reactions"] > *')!);
 
 		expect(mocks.api).not.toHaveBeenCalledWith('chat/messages/react', expect.anything());
+	});
+});
+
+describe('pressing and holding a message', () => {
+	const received = { ...message, fromUserId: 'bob', fromUser: { id: 'bob', username: 'bob' } } as unknown as Misskey.entities.ChatMessage;
+
+	function contextmenu(container: Element, pointerType: string) {
+		const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+		Object.defineProperty(event, 'pointerType', { value: pointerType });
+		container.querySelector('[aria-haspopup="menu"]')!.dispatchEvent(event);
+		return event;
+	}
+
+	function selectAWord(container: Element) {
+		const range = window.document.createRange();
+		range.selectNodeContents(container.querySelector('[aria-haspopup="menu"]')!);
+		window.getSelection()!.removeAllRanges();
+		window.getSelection()!.addRange(range);
+		vi.spyOn(window.getSelection()!, 'toString').mockReturnValue('word');
+	}
+
+	beforeEach(() => {
+		mocks.contextMenu.mockReset();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		window.getSelection()?.removeAllRanges();
+	});
+
+	test('a finger opens the menu and leaves nothing selected, though the browser selected a word first', () => {
+		const { container } = render(XMessage, { props: { message: received }, global: { stubs } });
+		selectAWord(container);
+		const removeAllRanges = vi.spyOn(window.getSelection()!, 'removeAllRanges');
+
+		contextmenu(container, 'touch');
+
+		expect(removeAllRanges).toHaveBeenCalled();
+		expect(mocks.contextMenu).toHaveBeenCalledTimes(1);
+	});
+
+	test('a mouse over a selection still gets the menu of the browser, to copy what was selected', () => {
+		const { container } = render(XMessage, { props: { message: received }, global: { stubs } });
+		selectAWord(container);
+
+		contextmenu(container, 'mouse');
+
+		expect(mocks.contextMenu).not.toHaveBeenCalled();
+	});
+
+	test('a mouse with nothing selected opens the menu as before', () => {
+		const { container } = render(XMessage, { props: { message: received }, global: { stubs } });
+
+		contextmenu(container, 'mouse');
+
+		expect(mocks.contextMenu).toHaveBeenCalledTimes(1);
 	});
 });

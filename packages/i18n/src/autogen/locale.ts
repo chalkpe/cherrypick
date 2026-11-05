@@ -7035,6 +7035,22 @@ export interface Locale extends ILocale {
          */
         "roomInfoAndDelete": string;
         /**
+         * {n}人が参加しています。
+         */
+        "roomMembersJoined": ParameterizedString<"n">;
+        /**
+         * {n}人を招待しました。承認するとこのグループに参加します。状況はメンバータブで確認できます。
+         */
+        "roomInvitationsWaiting": ParameterizedString<"n">;
+        /**
+         * メンバーを見る
+         */
+        "viewMembers": string;
+        /**
+         * このメンバーはすでにグループにいません。
+         */
+        "memberAlreadyGone": string;
+        /**
          * メッセージを編集中
          */
         "editingMessage": string;

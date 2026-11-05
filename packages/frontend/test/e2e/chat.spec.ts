@@ -75,15 +75,13 @@ test.describe('Chat', () => {
 
 		async function expectAliceAndBobTalk(page: Page, roomId: string): Promise<void> {
 			await page.waitForURL(`${BASE_URL}/chat/room/${roomId}`);
-			// 完了の表示が閉じてルームのチャンネルがつながるまでは、送っても画面に届かない。届くようになるまで人が言い直すのと同じように送り直す
-			let attempt = 0;
-			let text = '';
-			await expect(async () => {
-				text = `hello from alice in ${roomId} (${++attempt})`;
-				await page.getByPlaceholder('Enter message here').fill(text);
-				await page.getByPlaceholder('Enter message here').press('Enter');
-				await expect(page.getByText(text, { exact: true })).toBeVisible({ timeout: 2000 });
-			}).toPass({ timeout: 30_000 });
+			const text = `hello from alice in ${roomId}`;
+			const input = page.getByPlaceholder('Enter message here');
+			// 完了の表示が閉じるのを待つ。閉じるまでは入力欄を押せない
+			await input.click();
+			await input.fill(text);
+			await input.press('Enter');
+			await expect(page.getByText(text, { exact: true })).toBeVisible();
 
 			const seen = await api(BASE_URL, 'chat/messages/room-timeline', { i: bob.token, roomId }) as { text: string }[];
 			expect(seen.map(message => message.text)).toContain(text);
@@ -144,6 +142,240 @@ test.describe('Chat', () => {
 
 			await api(BASE_URL, 'chat/rooms/join', { i: bob.token, roomId: room.id });
 			await expectAliceAndBobTalk(page, room.id);
+		});
+	});
+
+	test.describe('an empty room', () => {
+		test.use({ viewport: { width: 1280, height: 720 } });
+
+		const INVITE_PROMPT = 'Invite users to start chatting';
+
+		async function inviteBobFromTheRoom(page: Page): Promise<string> {
+			const room = await api(BASE_URL, 'chat/rooms/create', { i: alice.token, name: `empty room ${Date.now()}` }) as { id: string };
+			await page.goto(`${BASE_URL}/chat/room/${room.id}`);
+			await expect(page.getByText(INVITE_PROMPT, { exact: true })).toBeVisible();
+
+			await page.getByRole('button', { name: 'Invite Users' }).click();
+			await page.getByText('Username', { exact: true }).waitFor();
+			await page.keyboard.type('bob');
+			await page.locator('button', { hasText: '@bob' }).click();
+			await page.getByRole('button', { name: 'Done' }).click();
+			return room.id;
+		}
+
+		test('tells its owner who was invited, and follows the answer as it comes', async ({ page }) => {
+			const roomId = await inviteBobFromTheRoom(page);
+
+			const waiting = page.getByText(/^Invited 1\./);
+			await expect(waiting).toBeVisible();
+			await expect(page.getByText(INVITE_PROMPT, { exact: true })).toHaveCount(0);
+			await expect(page.getByRole('button', { name: 'Invite Users' })).toBeVisible();
+
+			await api(BASE_URL, 'chat/rooms/join', { i: bob.token, roomId });
+
+			const joined = page.getByText(/^1 joined/);
+			await expect(joined).toBeVisible();
+			await expect(waiting).toHaveCount(0);
+			await expect(page.getByText(INVITE_PROMPT, { exact: true })).toHaveCount(0);
+
+			await page.reload();
+			await expect(joined).toBeVisible();
+			await expect(waiting).toHaveCount(0);
+
+			await page.getByRole('button', { name: 'View members' }).click();
+			await expect(page.getByText('@bob').first()).toBeVisible();
+		});
+
+		test('says so again after opening it anew, and asks again once the invitation is turned down', async ({ page }) => {
+			const roomId = await inviteBobFromTheRoom(page);
+			const waiting = page.getByText(/^Invited 1\./);
+			await expect(waiting).toBeVisible();
+
+			await page.reload();
+			await expect(waiting).toBeVisible();
+
+			await api(BASE_URL, 'chat/rooms/invitations/reject', { i: bob.token, roomId });
+
+			await expect(page.getByText(INVITE_PROMPT, { exact: true })).toBeVisible();
+			await expect(waiting).toHaveCount(0);
+		});
+
+		test('does not ask a member to invite anyone', async ({ page }) => {
+			const room = await api(BASE_URL, 'chat/rooms/create', { i: bob.token, name: `room of bob ${Date.now()}` }) as { id: string };
+			await api(BASE_URL, 'chat/rooms/invitations/create', { i: bob.token, roomId: room.id, userId: alice.id });
+			await api(BASE_URL, 'chat/rooms/join', { i: alice.token, roomId: room.id });
+
+			await page.goto(`${BASE_URL}/chat/room/${room.id}`);
+
+			await expect(page.getByText('No messages yet', { exact: true })).toBeVisible();
+			await expect(page.getByText(INVITE_PROMPT, { exact: true })).toHaveCount(0);
+			await expect(page.getByRole('button', { name: 'Invite Users' })).toHaveCount(0);
+		});
+	});
+
+	test.describe('a conversation that has just opened', () => {
+		test.use({ viewport: { width: 1280, height: 720 } });
+
+		type Frame = { type: string; body?: { id?: string; channel?: string; type?: string } };
+
+		async function conversationWithBob(kind: 'room' | 'user'): Promise<{ path: string; send: (text: string) => Promise<unknown> }> {
+			if (kind === 'user') {
+				return {
+					path: `/chat/user/${bob.id}`,
+					send: text => api(BASE_URL, 'chat/messages/create-to-user', { i: bob.token, toUserId: alice.id, text }),
+				};
+			}
+			const room = await api(BASE_URL, 'chat/rooms/create', { i: bob.token, name: `talk with bob ${Date.now()}` }) as { id: string };
+			await api(BASE_URL, 'chat/rooms/invitations/create', { i: bob.token, roomId: room.id, userId: alice.id });
+			await api(BASE_URL, 'chat/rooms/join', { i: alice.token, roomId: room.id });
+			return {
+				path: `/chat/room/${room.id}`,
+				send: text => api(BASE_URL, 'chat/messages/create-to-room', { i: bob.token, toRoomId: room.id, text }),
+			};
+		}
+
+		// 開いている画面の中から移る。ページを読み込み直すとストリームがつながるのを待つことになり、この隙間が隠れる
+		async function openFromTheList(page: Page, path: string): Promise<void> {
+			await page.goto(`${BASE_URL}/chat`);
+			await page.locator(`a[href$="${path}"]`).first().click();
+		}
+
+		for (const kind of ['room', 'user'] as const) {
+			test(`${kind}: shows what arrives before its channel is connected, once and in order`, async ({ page }) => {
+				const conversation = await conversationWithBob(kind);
+				const opening = `opening ${kind} ${Date.now()}`;
+				await conversation.send(opening);
+
+				// サーバーがチャンネルを購読する前に届く順番を確実に作る。サーバーは本物で、遅らせるのは接続の要求だけ
+				let release = () => {};
+				const held = new Promise<void>(resolve => { release = resolve; });
+				await page.routeWebSocket(/\/streaming/, ws => {
+					const server = ws.connectToServer();
+					ws.onMessage(async message => {
+						const frame = JSON.parse(String(message)) as Frame;
+						if (frame.type === 'connect' && frame.body?.channel?.startsWith('chat')) await held;
+						server.send(message);
+					});
+					server.onMessage(message => ws.send(message));
+				});
+
+				await openFromTheList(page, conversation.path);
+				await expect(page.getByText(opening, { exact: true })).toBeVisible();
+
+				const during = `while connecting ${kind} ${Date.now()}`;
+				await conversation.send(during);
+				release();
+				await expect(page.getByText(during, { exact: true })).toHaveCount(1);
+
+				const after = `after connecting ${kind} ${Date.now()}`;
+				await conversation.send(after);
+				await expect(page.getByText(after, { exact: true })).toHaveCount(1);
+				await expect(page.getByText(during, { exact: true })).toHaveCount(1);
+
+				const tops = await Promise.all([opening, during, after].map(async text => (await page.getByText(text, { exact: true }).boundingBox())?.y ?? 0));
+				expect(tops).toEqual(tops.toSorted((a, b) => a - b));
+			});
+		}
+
+		test('does not repeat a message that both the read and the channel bring', async ({ page }) => {
+			const conversation = await conversationWithBob('room');
+			const opening = `opening both ${Date.now()}`;
+			await conversation.send(opening);
+
+			// チャンネルがつながったという知らせと新しいメッセージの両方を止める。先に読み直させてから、同じメッセージをチャンネルからも届ける
+			let channelId: string | undefined;
+			let releaseConnected = () => {};
+			const connectedHeld = new Promise<void>(resolve => { releaseConnected = resolve; });
+			let connectedArrived = () => {};
+			const connectedSeen = new Promise<void>(resolve => { connectedArrived = resolve; });
+			let messageArrived = (_frame: string) => {};
+			const messageSeen = new Promise<string>(resolve => { messageArrived = resolve; });
+			let forwardToPage = (_frame: string) => {};
+			await page.routeWebSocket(/\/streaming/, ws => {
+				const server = ws.connectToServer();
+				forwardToPage = frame => ws.send(frame);
+				ws.onMessage(message => {
+					const frame = JSON.parse(String(message)) as Frame;
+					if (frame.type === 'connect' && frame.body?.channel === 'chatRoom') channelId = frame.body.id;
+					server.send(message);
+				});
+				server.onMessage(async message => {
+					const frame = JSON.parse(String(message)) as Frame;
+					if (frame.type === 'connected' && frame.body?.id === channelId) {
+						connectedArrived();
+						await connectedHeld;
+					} else if (frame.type === 'channel' && frame.body?.id === channelId && frame.body?.type === 'message') {
+						messageArrived(String(message));
+						return;
+					}
+					ws.send(message);
+				});
+			});
+
+			await openFromTheList(page, conversation.path);
+			await expect(page.getByText(opening, { exact: true })).toBeVisible();
+			await connectedSeen;
+
+			const both = `both ways ${Date.now()}`;
+			await conversation.send(both);
+			const frame = await messageSeen;
+
+			const read = page.waitForResponse(response => response.url().endsWith('/api/chat/messages/room-timeline'));
+			releaseConnected();
+			await read;
+			await expect(page.getByText(both, { exact: true })).toHaveCount(1);
+
+			forwardToPage(frame);
+			await page.evaluate(() => new Promise(resolve => window.setTimeout(resolve, 200)));
+			await expect(page.getByText(both, { exact: true })).toHaveCount(1);
+		});
+	});
+
+	test.describe('a failure from the server', () => {
+		test.use({ viewport: { width: 1280, height: 720 } });
+
+		test('is told in the language of the screen, not the English of the server', async ({ page }) => {
+			const room = await api(BASE_URL, 'chat/rooms/create', { i: bob.token, name: `room leaving ${Date.now()}` }) as { id: string };
+			await api(BASE_URL, 'chat/rooms/invitations/create', { i: bob.token, roomId: room.id, userId: alice.id });
+			await api(BASE_URL, 'chat/rooms/join', { i: alice.token, roomId: room.id });
+
+			// ストリームを止めて、外されたことを画面が知らないままにする。古いタブと同じ状態で、エラーは本物のサーバーが返す
+			await page.routeWebSocket(/\/streaming/, () => {});
+			await page.goto(`${BASE_URL}/chat/room/${room.id}`);
+			await expect(page.getByText('No messages yet', { exact: true })).toBeVisible();
+			await api(BASE_URL, 'chat/rooms/kick', { i: bob.token, roomId: room.id, userId: alice.id });
+
+			await page.locator('button:has(i.ti-dots)').last().click();
+			await page.getByText('Leave room', { exact: true }).click();
+			const left = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/leave'));
+			await page.getByTestId('modal-dialog-ok').click();
+			expect((await left).status()).toBe(400);
+
+			await expect(page.getByText('This room cannot be opened. It was deleted, or you are not a member.')).toBeVisible();
+			await expect(page.getByText('No such room.')).toHaveCount(0);
+		});
+	});
+
+	test.describe('on an Android phone', () => {
+		test.use({
+			viewport: { width: 412, height: 915 },
+			isMobile: true,
+			hasTouch: true,
+			userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+		});
+
+		test('a long press on a message opens its menu and selects nothing', async ({ page, context }) => {
+			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
+			const message = page.getByText('message 60', { exact: true });
+			await expect(message).toBeVisible();
+			const box = await message.boundingBox();
+			if (box == null) throw new Error('the message has no box');
+
+			const cdp = await context.newCDPSession(page);
+			await cdp.send('Input.synthesizeTapGesture', { x: box.x + 16, y: box.y + box.height / 2, duration: 800, gestureSourceType: 'touch' });
+
+			await expect(page.getByText('Copy contents', { exact: true })).toBeVisible();
+			expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('');
 		});
 	});
 

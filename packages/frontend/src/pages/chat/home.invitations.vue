@@ -42,16 +42,22 @@ import MkFolder from '@/components/MkFolder.vue';
 import * as os from '@/os.js';
 import { useChatRoomList } from '@/composables/use-chat-room-list.js';
 import { globalEvents } from '@/events.js';
-import { chatJoinErrors } from './chat-errors.js';
+import { chatJoinErrors, chatRejectErrors } from './chat-errors.js';
 
 const router = useRouter();
 
 const { items: invitations, fetching } = useChatRoomList<Misskey.entities.ChatRoomInvitation>(() => misskeyApi('chat/rooms/invitations/inbox'));
 
 async function join(invitation: Misskey.entities.ChatRoomInvitation) {
-	await os.apiWithDialog('chat/rooms/join', {
-		roomId: invitation.room.id,
-	}, undefined, chatJoinErrors);
+	try {
+		await os.apiWithDialog('chat/rooms/join', {
+			roomId: invitation.room.id,
+		}, undefined, chatJoinErrors);
+	} catch (err) {
+		// apiWithDialog がエラーを表示済み
+		forgetIfGone(invitation, err);
+		return;
+	}
 	globalEvents.emit('chatRoomInvitationHandled', invitation.room.id, 'joined');
 
 	router.push('/chat/room/:roomId', {
@@ -62,11 +68,24 @@ async function join(invitation: Misskey.entities.ChatRoomInvitation) {
 }
 
 async function reject(invitation: Misskey.entities.ChatRoomInvitation) {
-	await os.apiWithDialog('chat/rooms/invitations/reject', {
-		roomId: invitation.room.id,
-	});
+	try {
+		await os.apiWithDialog('chat/rooms/invitations/reject', {
+			roomId: invitation.room.id,
+		}, undefined, chatRejectErrors);
+	} catch (err) {
+		// apiWithDialog がエラーを表示済み
+		forgetIfGone(invitation, err);
+		return;
+	}
 	globalEvents.emit('chatRoomInvitationHandled', invitation.room.id, 'rejected');
 
+	invitations.value = invitations.value.filter(i => i.id !== invitation.id);
+}
+
+// 招待がもう無ければ、何度押しても同じく失敗するので一覧から下げる。ほかの失敗なら、もう一度押せるように残す
+function forgetIfGone(invitation: Misskey.entities.ChatRoomInvitation, err: unknown) {
+	if ((err as Misskey.api.APIError | null | undefined)?.code !== 'NO_SUCH_ROOM') return;
+	globalEvents.emit('chatRoomInvitationHandled', invitation.room.id, 'gone');
 	invitations.value = invitations.value.filter(i => i.id !== invitation.id);
 }
 </script>

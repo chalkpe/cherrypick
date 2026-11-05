@@ -24,8 +24,14 @@ export function chatErrorText(err: unknown): string {
 	}
 }
 
+// どのエラーにも当たらないときや通信に失敗したときも、英語をそのまま出さない
+const fallback: ApiWithDialogCustomErrors = {
+	default: { text: i18n.ts._chat.actionFailed },
+};
+
 // 招待に応じたときに返るエラー。os.apiWithDialog はエラー ID で文言を差し替える
 export const chatJoinErrors: ApiWithDialogCustomErrors = {
+	...fallback,
 	'84416476-5ce8-4a2c-b568-9569f1b10733': { text: i18n.ts._chat.roomUnavailable },
 	'c60a4f18-d3b2-4e75-9c06-7a1e58d3f2b9': { text: i18n.ts._chat.thisRoomIsArchived },
 	'56d5a1da-4d30-4f7d-a931-f62e746533f9': { text: i18n.ts._chat.roomIsFull },
@@ -33,6 +39,7 @@ export const chatJoinErrors: ApiWithDialogCustomErrors = {
 
 // 招待を送ったときに返るエラー
 export const chatInviteErrors: ApiWithDialogCustomErrors = {
+	...fallback,
 	'916f9507-49ba-4e90-b57f-1fd4deaa47a5': { text: i18n.ts._chat.roomUnavailable },
 	'b41cd32a-8b2a-4662-ae54-bc5cbb057afa': { text: i18n.ts._chat.thisRoomIsArchived },
 	'579fc80c-985c-45d1-b7f2-8022083dfa40': { text: i18n.ts._chat.roomIsFull },
@@ -43,4 +50,41 @@ export const chatInviteErrors: ApiWithDialogCustomErrors = {
 	'20ec0050-1c71-4cd9-b246-67772af61bbf': { text: i18n.ts._chat.alreadyInvited },
 	'a3fc0535-5d74-4106-8b78-3f6ee467baca': { text: i18n.ts._chat.cannotInviteUser },
 	'9f802721-ad05-411c-806a-e9367ab1facf': { text: i18n.ts._chat.cannotInviteUser },
+};
+
+export const chatLeaveErrors: ApiWithDialogCustomErrors = {
+	...fallback,
+	'cb7f3179-50e8-4389-8c30-dbe2650a67c9': { text: i18n.ts._chat.roomUnavailable },
+};
+
+export const chatKickErrors: ApiWithDialogCustomErrors = {
+	...fallback,
+	'932260a0-ccf0-4caf-87be-3e9cccd12c2f': { text: i18n.ts._chat.roomUnavailable },
+	'b4c87e54-c36a-40f4-99c7-b72032c48482': { text: i18n.ts._chat.memberAlreadyGone },
+};
+
+export const chatRoomUpdateErrors: ApiWithDialogCustomErrors = {
+	...fallback,
+	'fcdb0f92-bda6-47f9-bd05-343e0e020932': { text: i18n.ts._chat.roomUnavailable },
+	'8655493b-6d45-4466-95ec-c8c38ddae472': { text: i18n.ts._chat.thisRoomIsArchived },
+};
+
+export const chatRoomDeleteErrors: ApiWithDialogCustomErrors = {
+	...fallback,
+	'd4e3753d-97bf-4a19-ab8e-21080fbc0f4b': { text: i18n.ts._chat.roomUnavailable },
+};
+
+export const chatMuteErrors: ApiWithDialogCustomErrors = {
+	...fallback,
+	'c2cde4eb-8d0f-42f1-8f2f-c4d6bfc8e5df': { text: i18n.ts._chat.roomUnavailable },
+};
+
+export const chatCancelInvitationErrors: ApiWithDialogCustomErrors = {
+	...fallback,
+	'8c8f38f0-3b7e-4f5e-9c6d-2e3f4a5b6c7d': { text: i18n.ts._chat.invitationGone },
+};
+
+export const chatRejectErrors: ApiWithDialogCustomErrors = {
+	...fallback,
+	'5130557e-5a11-4cfb-9cc5-fe60cda5de0d': { text: i18n.ts._chat.invitationGone },
 };

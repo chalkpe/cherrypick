@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from 'vitest';
 import { buildChatRoomDelete, buildChatRoomUpdate } from '@/core/activitypub/misc/chat-payloads.js';
-import { alice, bob, carol, chatRosterFixture, dave, erin, LOCAL, membersOf, MIRROR_URI } from '../misc/chat-roster-fixture.js';
+import { alice, bob, carol, chatRosterFixture, dave, erin, LOCAL, LOCAL_ROOM_URI, membersOf, MIRROR_URI } from '../misc/chat-roster-fixture.js';
 
 const BASE = Date.now() - 60 * 60 * 1000;
 const at = (seconds: number) => new Date(BASE + seconds * 1000).toISOString();
@@ -346,7 +346,6 @@ describe('telling someone their room lists changed', () => {
 
 	test.each<[string, (f: ReturnType<typeof chatRosterFixture>) => Promise<unknown>]>([
 		['joining', f => f.chatService.joinToRoom(dave.id, 'localroom')],
-		['refusing', f => f.chatService.rejectRoomInvitation(dave.id, 'localroom')],
 		['ignoring', f => f.chatService.ignoreRoomInvitation(dave.id, 'localroom')],
 	])('%s an invitation, for their other windows', async (_label, act) => {
 		const f = chatRosterFixture({ invitations: [['localroom', dave.id]] });
@@ -354,6 +353,35 @@ describe('telling someone their room lists changed', () => {
 		await act(f);
 
 		expect(changed(f)).toEqual([dave.id]);
+	});
+
+	test('refusing an invitation, for their other windows and for the owner waiting on the answer', async () => {
+		const f = chatRosterFixture({ invitations: [['localroom', dave.id]] });
+
+		await f.chatService.rejectRoomInvitation(dave.id, 'localroom');
+
+		expect(changed(f)).toEqual([dave.id, alice.id]);
+	});
+
+	test('refusing an invitation to a room of another server tells nobody there', async () => {
+		const f = chatRosterFixture({ invitations: [['mirror', alice.id]] });
+
+		await f.chatService.rejectRoomInvitation(alice.id, 'mirror');
+
+		expect(changed(f)).toEqual([alice.id]);
+	});
+
+	test('a refusal arriving from another server, for the owner waiting on the answer', async () => {
+		const f = chatRosterFixture({ invitations: [['localroom', carol.id]] });
+
+		await f.inbox.reject(carol, {
+			type: 'Reject',
+			actor: carol.uri,
+			object: { type: 'Invite', actor: `${LOCAL}/users/${alice.id}`, object: LOCAL_ROOM_URI, target: carol.uri },
+		} as never, f.resolver);
+
+		expect(f.invitations.rows).toEqual([]);
+		expect(changed(f)).toEqual([alice.id]);
 	});
 
 	test('leaving a room', async () => {

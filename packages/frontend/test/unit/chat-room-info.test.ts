@@ -13,6 +13,7 @@ vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog, confirm: mocks.c
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.push }) }));
 
 import XInfo from '@/pages/chat/room.info.vue';
+import { chatRoomDeleteErrors, chatRoomUpdateErrors } from '@/pages/chat/chat-errors.js';
 import XRoom from '@/pages/chat/XRoom.vue';
 import { i18n } from '@/i18n.js';
 
@@ -37,7 +38,7 @@ test('the owner archives the room after confirming, and the saved room propagate
 	const result = render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.archive }));
 	await waitFor(() => expect(result.emitted().updated).toEqual([[updated]]));
-	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/update', { roomId: 'r1', isArchived: true });
+	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/update', { roomId: 'r1', isArchived: true }, undefined, chatRoomUpdateErrors);
 });
 
 test('tells the room page while its own deletion is in progress', async () => {
@@ -45,7 +46,7 @@ test('tells the room page while its own deletion is in progress', async () => {
 	mocks.apiWithDialog.mockResolvedValueOnce(undefined);
 	const result = render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.deleteRoom }));
-	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/delete', { roomId: 'r1' }));
+	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/delete', { roomId: 'r1' }, undefined, chatRoomDeleteErrors));
 	expect(result.emitted().deleting).toEqual([[true]]);
 });
 
@@ -94,7 +95,7 @@ test('an archived room offers unarchiving without a confirmation, and no saving'
 	render(XInfo, { props: { room: { ...room, isArchived: true } }, global: { stubs } });
 	expect(screen.queryByRole('button', { name: i18n.ts.save })).toBeNull();
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.unarchive }));
-	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/update', { roomId: 'r1', isArchived: false }));
+	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/update', { roomId: 'r1', isArchived: false }, undefined, chatRoomUpdateErrors));
 	expect(mocks.confirm).not.toHaveBeenCalled();
 });
 
@@ -116,7 +117,7 @@ test('enables emoji completion for both editable fields and propagates the saved
 	await fireEvent.update(textarea, updated.description);
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.save }));
 	await nextTick();
-	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/update', { roomId: 'r1', name: updated.name, description: updated.description });
+	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/update', { roomId: 'r1', name: updated.name, description: updated.description }, undefined, chatRoomUpdateErrors);
 	expect(result.emitted().updated).toEqual([[updated]]);
 });
 

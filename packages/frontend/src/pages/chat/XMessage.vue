@@ -165,7 +165,9 @@ function onReactionClick(record: Misskey.entities.ChatMessage['reactions'][0]) {
 
 function onContextmenu(ev: PointerEvent) {
 	if (ev.target && isLink(ev.target as HTMLElement)) return;
-	if (window.getSelection()?.toString() !== '') return;
+	// 指で長押しすると言葉が選ばれてからここへ来る。コピーはメニューにあるので、選択を残さずメニューを開く
+	if (ev.pointerType === 'touch') window.getSelection()?.removeAllRanges();
+	else if (window.getSelection()?.toString() !== '') return;
 
 	os.contextMenu(getMenu(), ev);
 }
@@ -346,6 +348,17 @@ function getMenu(): MenuItem[] {
 
 	&.fullWidth {
 		width: 100%;
+	}
+}
+
+// 指で長押しするとメニューが開き、コピーもそこにあるので、言葉まで選ばれないようにする。
+// iOS の Safari は長押しで contextmenu を出さない (メニューが開かない) ので、これまでどおり選べるままにする
+@media (hover: none) and (pointer: coarse) {
+	@supports not (-webkit-touch-callout: none) {
+		.body :global(._selectable) {
+			user-select: none;
+			-webkit-user-select: none;
+		}
 	}
 }
 

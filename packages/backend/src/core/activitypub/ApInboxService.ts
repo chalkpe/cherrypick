@@ -1624,6 +1624,9 @@ export class ApInboxService {
 		this.logger.info(`[rejectInvite] Delete result: ${JSON.stringify(deleteResult)}`);
 		this.logger.info(`[rejectInvite] Successfully deleted invitation ${invitation.id} from user ${actor.id} for room ${roomId}`);
 
+		// The owner's room says who is still invited, and no room event tells them the answer was no.
+		this.chatService.notifyRoomListChanged([room.ownerId]);
+
 		return 'ok';
 	}
 

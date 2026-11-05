@@ -25,12 +25,15 @@ const mocks = vi.hoisted(() => {
 		channel: new FakeChannel(),
 		me: { id: 'me', username: 'me', policies: { chatAvailability: 'available', canVoiceCall: false } },
 		timeline: [] as unknown[],
+		roomMembers: [] as unknown[],
+		sentInvitations: [] as unknown[],
 		roomIsArchived: false,
 		roomOwnerId: 'owner',
 		roomShowFails: false,
 		roomInvitationExists: false,
 		roomShowError: null as Error | null,
 		roomShowGate: null as Promise<void> | null,
+		timelineGate: null as Promise<void> | null,
 		timelineError: null as Error | null,
 		streamOn: vi.fn(),
 		streamOff: vi.fn(),
@@ -50,6 +53,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@/utility/misskey-api.js', () => ({
 	misskeyApi: vi.fn(async (endpoint: string) => {
+		if (endpoint.endsWith('-timeline') && mocks.timelineGate != null) await mocks.timelineGate;
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowGate != null) await mocks.roomShowGate;
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowFails) throw new Error('No such room.');
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowError != null) throw mocks.roomShowError;
@@ -57,6 +61,8 @@ vi.mock('@/utility/misskey-api.js', () => ({
 		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: mocks.roomOwnerId, owner: { id: mocks.roomOwnerId, username: 'owner', host: null }, isArchived: mocks.roomIsArchived, invitationExists: mocks.roomInvitationExists };
 		if (endpoint === 'users/show') return { id: 'alice', username: 'alice', host: null };
 		if (endpoint === 'chat/messages/room-timeline' || endpoint === 'chat/messages/user-timeline') return mocks.timeline;
+		if (endpoint === 'chat/rooms/members') return mocks.roomMembers;
+		if (endpoint === 'chat/rooms/invitations/outbox') return mocks.sentInvitations;
 		return [];
 	}),
 }));
@@ -121,7 +127,7 @@ vi.mock('@/pages/chat/XMessage.vue', async () => {
 				return () => {
 					const id = (props.message as { id: string }).id;
 					mocks.renders.set(id, (mocks.renders.get(id) ?? 0) + 1);
-					return hh('div', { 'data-testid': 'bubble', 'data-id': id, 'data-first': String(props.firstInGroup), 'data-last': String(props.lastInGroup), 'data-text': props.message.text, 'data-deleted': String(props.message.deletedAt != null), 'data-emojis': JSON.stringify(props.message.emojis), 'data-can-edit': String(props.canEdit) });
+					return hh('div', { 'data-testid': 'bubble', 'data-id': id, 'data-first': String(props.firstInGroup), 'data-last': String(props.lastInGroup), 'data-text': props.message.text, 'data-reactions': JSON.stringify(props.message.reactions.map((r: { reaction: string; user: { id: string } }) => `${r.reaction}/${r.user.id}`)), 'data-deleted': String(props.message.deletedAt != null), 'data-emojis': JSON.stringify(props.message.emojis), 'data-can-edit': String(props.canEdit) });
 				};
 			},
 		}),
@@ -132,6 +138,9 @@ import { provideMetadataReceiver } from '@/page.js';
 import XRoomPage from '@/pages/chat/room.vue';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
+import { chatLeaveErrors } from '@/pages/chat/chat-errors.js';
+
+const apiMock = vi.mocked(misskeyApi).getMockImplementation()!;
 
 const alert = mocks.alert;
 const MINUTE = 60 * 1000;
@@ -185,7 +194,10 @@ beforeEach(() => {
 	mocks.roomInvitationExists = false;
 	mocks.roomShowError = null;
 	mocks.roomShowGate = null;
+	mocks.timelineGate = null;
 	mocks.timelineError = null;
+	mocks.roomMembers = [];
+	mocks.sentInvitations = [];
 	mocks.streamOn.mockReset();
 	mocks.streamOff.mockReset();
 	mocks.routerPush.mockReset();
@@ -347,7 +359,7 @@ describe('leaving a room from the menu', () => {
 
 		await chooseLeave(container);
 
-		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/leave', { roomId: 'r1' });
+		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/leave', { roomId: 'r1' }, undefined, chatLeaveErrors);
 		expect(mocks.routerPush).not.toHaveBeenCalled();
 		expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.tsx._chat.leaveRoomConfirm({ name: 'room 1' }) });
 		expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
@@ -859,11 +871,137 @@ describe('inviting from an empty conversation', () => {
 		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' }, undefined, expect.anything());
 	});
 
-	test('a member who cannot invite only sees the hint', async () => {
+	test('a member who cannot invite is not asked to', async () => {
 		const { container } = await renderRoom();
 
-		expect(container.textContent).toContain(i18n.ts._chat.inviteUserToChat);
+		expect(container.textContent).toContain(i18n.ts._chat.noMessagesYet);
+		expect(container.textContent).not.toContain(i18n.ts._chat.inviteUserToChat);
 		expect(inviteButton(container)).toBeUndefined();
+		expect(vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/invitations/outbox')).toEqual([]);
+	});
+
+	describe('what the owner is told once someone is invited', () => {
+		const waiting = (n: number) => i18n.tsx._chat.roomInvitationsWaiting({ n });
+		const joined = (n: number) => i18n.tsx._chat.roomMembersJoined({ n });
+		const viewMembers = (container: Element) => [...container.querySelectorAll('button')].find(button => button.textContent?.includes(i18n.ts._chat.viewMembers));
+		const invitation = { id: 'i1', userId: 'invitee' };
+		const member = { id: 'ms1', userId: 'invitee' };
+
+		beforeEach(() => {
+			mocks.roomOwnerId = 'me';
+			mocks.roomMembers = [];
+			mocks.sentInvitations = [];
+		});
+
+		test('nobody invited yet: asks, and has nothing to show in the members tab', async () => {
+			const { container } = await renderRoom();
+
+			expect(container.textContent).toContain(i18n.ts._chat.inviteUserToChat);
+			expect(viewMembers(container)).toBeUndefined();
+		});
+
+		test('right after inviting: stops asking, says who answers what, and keeps the way to invite more', async () => {
+			const { container } = await renderRoom();
+			mocks.sentInvitations = [invitation];
+
+			await fireEvent.click(inviteButton(container)!);
+			await flush();
+			await flush();
+
+			expect(container.textContent).not.toContain(i18n.ts._chat.inviteUserToChat);
+			expect(container.textContent).toContain(waiting(1));
+			expect(inviteButton(container)).toBeDefined();
+		});
+
+		test('opening the room again says the same', async () => {
+			mocks.sentInvitations = [invitation];
+
+			const { container } = await renderRoom();
+
+			expect(container.textContent).toContain(waiting(1));
+			expect(container.textContent).not.toContain(i18n.ts._chat.inviteUserToChat);
+		});
+
+		test('an acceptance shows up while looking at it', async () => {
+			mocks.sentInvitations = [invitation];
+			const { container } = await renderRoom();
+			mocks.sentInvitations = [];
+			mocks.roomMembers = [member];
+
+			mocks.channel.emit('membershipStarted', { userId: 'invitee' });
+			await flush();
+			await flush();
+
+			expect(container.textContent).toContain(joined(1));
+			expect(container.textContent).not.toContain(waiting(1));
+			expect(container.textContent).not.toContain(i18n.ts._chat.inviteUserToChat);
+		});
+
+		test('a refusal shows up while looking at it, though no room event carries it', async () => {
+			mocks.sentInvitations = [invitation];
+			const { container } = await renderRoom();
+			mocks.sentInvitations = [];
+
+			mocks.channel.emit('chatRoomListChanged', undefined);
+			await flush();
+			await flush();
+
+			expect(container.textContent).toContain(i18n.ts._chat.inviteUserToChat);
+			expect(container.textContent).not.toContain(waiting(1));
+		});
+
+		test('someone leaving shows up while looking at it', async () => {
+			mocks.roomMembers = [member];
+			const { container } = await renderRoom();
+			mocks.roomMembers = [];
+
+			mocks.channel.emit('membershipEnded', { userId: 'invitee' });
+			await flush();
+			await flush();
+
+			expect(container.textContent).toContain(i18n.ts._chat.inviteUserToChat);
+			expect(container.textContent).not.toContain(joined(1));
+		});
+
+		test('the way to the members tab opens it', async () => {
+			mocks.sentInvitations = [invitation];
+			const { container } = await renderRoom();
+
+			await fireEvent.click(viewMembers(container)!);
+			await flush();
+			expect(mocks.membersMounts.value).toBeGreaterThan(0);
+		});
+
+		test('an answer that comes late does not replace a newer one', async () => {
+			mocks.sentInvitations = [invitation];
+			const { container } = await renderRoom();
+			let releaseOld = () => {};
+			const old = new Promise<unknown[]>(resolve => { releaseOld = () => resolve([invitation]); });
+			vi.mocked(misskeyApi).mockImplementationOnce(async () => []).mockImplementationOnce(async () => await old);
+			mocks.channel.emit('membershipStarted', { userId: 'a' });
+			mocks.sentInvitations = [];
+			mocks.channel.emit('membershipStarted', { userId: 'b' });
+			await flush();
+			await flush();
+
+			releaseOld();
+			await flush();
+			await flush();
+
+			expect(container.textContent).not.toContain(waiting(1));
+		});
+
+		test('a failed read keeps what is on screen', async () => {
+			mocks.sentInvitations = [invitation];
+			const { container } = await renderRoom();
+			vi.mocked(misskeyApi).mockImplementationOnce(async () => { throw new Error('offline'); });
+
+			mocks.channel.emit('membershipStarted', { userId: 'a' });
+			await flush();
+			await flush();
+
+			expect(container.textContent).toContain(waiting(1));
+		});
 	});
 
 	test('an owner whose chat is read-only is not offered a button that would fail', async () => {
@@ -1068,5 +1206,125 @@ describe('chat bubbles on the room page', () => {
 		expect(mocks.renders.get('m2')).toBe(before.get('m2'));
 		expect(mocks.renders.get('m3')).toBe(before.get('m3')! + 1);
 		expect(mocks.renders.get('m4')).toBe(1);
+	});
+});
+
+describe.each(['room', 'user'] as const)('a %s conversation that has just opened', target => {
+	const ids = (container: Element) => bubbles(container).map(bubble => bubble.id);
+	const reads = () => vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === `chat/messages/${target}-timeline`).length;
+	const newer = (id: string, after: number) => message(id, 'alice', after * MINUTE);
+	const newest = () => [newer('m5', 4), newer('m4', 3), message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
+
+	async function subscribed() {
+		mocks.channel.emit('_subscribed_', undefined);
+		await flush();
+		await flush();
+	}
+
+	beforeEach(() => {
+		vi.mocked(misskeyApi).mockClear();
+	});
+
+	test('reads again once the channel is connected, and shows what came in between', async () => {
+		const { container } = await renderRoom(target);
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3']);
+		mocks.timeline = newest();
+
+		await subscribed();
+
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3', 'm4', 'm5']);
+	});
+
+	test('a message that both the read and the channel bring shows once', async () => {
+		const { container } = await renderRoom(target);
+		mocks.timeline = newest();
+		await subscribed();
+
+		mocks.channel.emit('message', newer('m5', 4));
+		await flush();
+
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3', 'm4', 'm5']);
+	});
+
+	test('a message the channel brings after a newer one from the read goes where it belongs', async () => {
+		const { container } = await renderRoom(target);
+		mocks.timeline = [newer('m5', 4), message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
+		await subscribed();
+
+		mocks.channel.emit('message', newer('m4', 3));
+		await flush();
+
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3', 'm4', 'm5']);
+	});
+
+	test('a reaction that both bring counts once', async () => {
+		const { container } = await renderRoom(target);
+		const reactor = target === 'room' ? userOf('bob') : mocks.me;
+		mocks.timeline = [{ ...message('m3', 'alice', 2 * MINUTE), reactions: [{ reaction: '👍', user: reactor }] }, message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
+		await subscribed();
+
+		mocks.channel.emit('react', { messageId: 'm3', reaction: '👍', user: target === 'room' ? userOf('bob') : undefined });
+		await flush();
+
+		expect(container.querySelector('[data-id="m3"]')!.getAttribute('data-reactions')).toBe(JSON.stringify([`👍/${reactor.id}`]));
+	});
+
+	test('a read that is on its way is not joined by another, and one more follows if it was asked for', async () => {
+		await renderRoom(target);
+		const before = reads();
+		let release = () => {};
+		mocks.timelineGate = new Promise<void>(resolve => { release = resolve; });
+
+		mocks.channel.emit('_subscribed_', undefined);
+		await flush();
+		mocks.channel.emit('_subscribed_', undefined);
+		await flush();
+		expect(reads()).toBe(before + 1);
+
+		mocks.timelineGate = null;
+		release();
+		await flush();
+		await flush();
+		await flush();
+
+		expect(reads()).toBe(before + 2);
+	});
+
+	test('a change that crosses the read on its way is read again, so the older answer does not stay', async () => {
+		const { container } = await renderRoom(target);
+		const before = reads();
+		let release = () => {};
+		mocks.timelineGate = new Promise<void>(resolve => { release = resolve; });
+		mocks.channel.emit('_subscribed_', undefined);
+		await flush();
+
+		mocks.channel.emit('deleted', 'm3');
+		await flush();
+		mocks.timelineGate = null;
+		const answer = mocks.timeline;
+		mocks.timeline = [{ ...message('m3', 'alice', 2 * MINUTE), text: null, deletedAt: new Date(base).toISOString() }, ...(answer as unknown[]).slice(1)];
+		release();
+		await flush();
+		await flush();
+		await flush();
+
+		expect(reads()).toBe(before + 2);
+		expect(container.querySelector('[data-id="m3"]')!.getAttribute('data-deleted')).toBe('true');
+	});
+
+	test('a read that fails waits for the next chance instead of repeating at once', async () => {
+		await renderRoom(target);
+		const before = reads();
+		vi.mocked(misskeyApi).mockImplementation(async (endpoint: string) => {
+			if (endpoint === `chat/messages/${target}-timeline`) throw new Error('offline');
+			return endpoint === 'chat/rooms/show' ? { id: 'r1', name: 'room 1', ownerId: 'owner', owner: userOf('owner') } : [];
+		});
+		try {
+			await subscribed();
+			await flush();
+			expect(reads()).toBe(before + 1);
+		} finally {
+			vi.mocked(misskeyApi).mockImplementation(apiMock);
+		}
 	});
 });

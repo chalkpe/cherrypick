@@ -1248,6 +1248,9 @@ export class ChatService {
 		const inviter = await this.usersRepository.findOneByOrFail({ id: room.ownerId });
 		const invitee = await this.usersRepository.findOneByOrFail({ id: userId });
 
+		// The owner's room says who is still invited, and no room event tells them the answer was no.
+		if (this.userEntityService.isLocalUser(inviter)) this.notifyRoomListChanged([inviter.id]);
+
 		if (this.userEntityService.isLocalUser(invitee) && this.userEntityService.isRemoteUser(inviter)) {
 			this.deliverInvitationReject(room, inviter, invitee, invitation);
 		}
