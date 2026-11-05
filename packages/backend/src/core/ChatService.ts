@@ -287,16 +287,21 @@ export class ChatService {
 			emojis,
 		} satisfies Partial<MiChatMessage>;
 
-		const inserted = await this.chatMessagesRepository.insertOne(message);
-
-		// 相手を許可しておく
+		// 相手を許可しておく。メッセージより先に入れるので、失敗すればメッセージも残らず、そのまま送り直せる
 		if (!iApprovedOther) {
-			this.chatApprovalsRepository.insertOne({
-				id: this.idService.gen(),
-				userId: fromUser.id,
-				otherId: toUser.id,
-			});
+			try {
+				await this.chatApprovalsRepository.insertOne({
+					id: this.idService.gen(),
+					userId: fromUser.id,
+					otherId: toUser.id,
+				});
+			} catch (err) {
+				// 同じ相手への最初のメッセージが重なると、どちらも未許可と見てここへ来る。許可は入っているので続ける
+				if (!isDuplicateKeyValueError(err)) throw err;
+			}
 		}
+
+		const inserted = await this.chatMessagesRepository.insertOne(message);
 
 		const packedMessage = await this.chatEntityService.packMessageLiteFor1on1(inserted);
 
