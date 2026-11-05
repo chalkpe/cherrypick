@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => {
 	const state = {
 		me: { id: 'me', username: 'me', token: 'my-token', policies: { chatAvailability: 'available', canVoiceCall: false } },
 		room: { id: 'r1', name: 'room 1', description: '', ownerId: 'owner', owner: { id: 'owner', username: 'owner', host: null }, isArchived: false, invitationExists: false },
-		selectUser: vi.fn(),
+		selectUsers: vi.fn(),
 		confirm: vi.fn(),
 		bodies: [] as { endpoint: string; body: Record<string, unknown> }[],
 	};
@@ -41,7 +41,7 @@ vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.f
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: false, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // apiWithDialog は本物のまま。利用者の答えを待つものだけを差し替える
-vi.mock('@/os.js', async importOriginal => ({ ...await importOriginal<typeof import('@/os.js')>(), confirm: mocks.confirm, selectUser: mocks.selectUser }));
+vi.mock('@/os.js', async importOriginal => ({ ...await importOriginal<typeof import('@/os.js')>(), confirm: mocks.confirm, selectUsers: mocks.selectUsers }));
 vi.mock('@/composables/use-chat-room-voice-call.js', async () => {
 	const { computed } = await import('vue');
 	return { useChatRoomVoiceCall: () => ({ available: computed(() => false), inThisCall: computed(() => false), participants: computed(() => []), join: vi.fn(), leave: vi.fn() }) };
@@ -88,7 +88,7 @@ beforeEach(() => {
 	mocks.room.ownerId = 'owner';
 	mocks.room.invitationExists = false;
 	mocks.confirm.mockReset().mockResolvedValue({ canceled: false });
-	mocks.selectUser.mockReset().mockResolvedValue({ id: 'invitee' });
+	mocks.selectUsers.mockReset().mockResolvedValue([{ id: 'invitee' }, { id: 'remote-invitee' }]);
 });
 
 afterEach(cleanup);
@@ -112,14 +112,31 @@ describe('what leaves for the server carries my credential', () => {
 		expect(requestsTo('chat/rooms/join')[0].body).toEqual({ roomId: 'r1', i: 'my-token' });
 	});
 
-	test('inviting someone to my room', async () => {
+	test('inviting several people to my room', async () => {
 		mocks.room.ownerId = 'me';
 
 		renderRoom();
 
 		await fireEvent.click(await screen.findByRole('button', { name: i18n.ts._chat.inviteUser }));
 
-		await waitFor(() => expect(requestsTo('chat/rooms/invitations/create')).toHaveLength(1));
-		expect(requestsTo('chat/rooms/invitations/create')[0].body).toEqual({ roomId: 'r1', userId: 'invitee', i: 'my-token' });
+		await waitFor(() => expect(requestsTo('chat/rooms/invitations/create')).toHaveLength(2));
+		expect(requestsTo('chat/rooms/invitations/create').map(request => request.body)).toEqual([
+			{ roomId: 'r1', userId: 'invitee', i: 'my-token' },
+			{ roomId: 'r1', userId: 'remote-invitee', i: 'my-token' },
+		]);
+	});
+
+	test('reading who is already in my room, to keep them from being picked', async () => {
+		mocks.room.ownerId = 'me';
+
+		renderRoom();
+
+		await fireEvent.click(await screen.findByRole('button', { name: i18n.ts._chat.inviteUser }));
+
+		await waitFor(() => expect(requestsTo('chat/rooms/invitations/create')).toHaveLength(2));
+		for (const endpoint of ['chat/rooms/members', 'chat/rooms/invitations/outbox']) {
+			expect(requestsTo(endpoint).length).toBeGreaterThan(0);
+			expect(requestsTo(endpoint).every(request => request.body.i === 'my-token')).toBe(true);
+		}
 	});
 });

@@ -52,6 +52,14 @@ export const chatInviteErrors: ApiWithDialogCustomErrors = {
 	'9f802721-ad05-411c-806a-e9367ab1facf': { text: i18n.ts._chat.cannotInviteUser },
 };
 
+// 招待が断られた理由を、相手ごとに読める文にする
+export function chatInviteErrorText(err: unknown): string {
+	const { id, code } = (err ?? {}) as { id?: string; code?: string };
+	if (code === 'RATE_LIMIT_EXCEEDED') return i18n.ts.cannotPerformTemporaryDescription;
+	if (code === 'ROLE_PERMISSION_DENIED') return i18n.ts.permissionDeniedErrorDescription;
+	return (id != null ? chatInviteErrors[id]?.text : null) ?? i18n.ts._chat.actionFailed;
+}
+
 export const chatLeaveErrors: ApiWithDialogCustomErrors = {
 	...fallback,
 	'cb7f3179-50e8-4389-8c30-dbe2650a67c9': { text: i18n.ts._chat.roomUnavailable },

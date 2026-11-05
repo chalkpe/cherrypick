@@ -404,6 +404,186 @@ test.describe('Chat', () => {
 		}
 	});
 
+	test.describe('inviting several people', () => {
+		let carol: RegisteredUser;
+
+		test.beforeAll(async () => {
+			carol = await registerUser('carol', 'carol1234');
+			await api(BASE_URL, 'i/registry/set', { i: carol.token, scope: ['client', 'base'], key: 'accountSetupWizard', value: -1 });
+			await api(BASE_URL, 'i/update', { i: carol.token, chatScope: 'everyone' });
+		});
+
+		async function openInviteWindow(page: Page, name: string): Promise<string> {
+			const room = await api(BASE_URL, 'chat/rooms/create', { i: alice.token, name: `${name} ${Date.now()}` }) as { id: string };
+			await page.goto(`${BASE_URL}/chat/room/${room.id}`);
+			await page.getByRole('button', { name: 'Invite Users' }).click();
+			await page.getByText('Username', { exact: true }).waitFor();
+			return room.id;
+		}
+
+		async function search(page: Page, username: string) {
+			await page.getByText('Username', { exact: true }).click();
+			await page.keyboard.press('ControlOrMeta+A');
+			await page.keyboard.type(username);
+		}
+
+		const row = (page: Page, username: string) => page.locator('button', { hasText: `@${username}` });
+		const picked = (page: Page) => page.getByRole('listitem').filter({ has: page.getByRole('button', { name: /^Remove .* from selection$/ }) });
+
+		async function outbox(roomId: string) {
+			const sent = await api(BASE_URL, 'chat/rooms/invitations/outbox', { i: alice.token, roomId }) as { userId: string }[];
+			return sent.map(invitation => invitation.userId).toSorted();
+		}
+
+		test.describe('on a laptop', () => {
+			test.use({ viewport: { width: 1280, height: 720 } });
+
+			test('keeps who was picked while searching for the next, and invites them all', async ({ page }) => {
+				const roomId = await openInviteWindow(page, 'two friends');
+
+				await search(page, 'bob');
+				await row(page, 'bob').click();
+				await search(page, 'carol');
+				await row(page, 'carol').click();
+
+				await expect(picked(page)).toHaveCount(2);
+				await expect(picked(page).filter({ hasText: '@bob' })).toBeVisible();
+				await expect(picked(page).filter({ hasText: '@carol' })).toBeVisible();
+
+				await page.getByRole('button', { name: 'Done' }).click();
+
+				await expect.poll(() => outbox(roomId)).toEqual([bob.id, carol.id].toSorted());
+				// 空のルームの案内も、開いたままのメンバータブも読み直さなくても合っている
+				await expect(page.getByText(/^Invited 2\./)).toBeVisible();
+				await page.getByRole('button', { name: 'View members' }).click();
+				await expect(page.getByText('@bob').first()).toBeVisible();
+				await expect(page.getByText('@carol').first()).toBeVisible();
+			});
+
+			test('someone can be dropped again before the invitations go out', async ({ page }) => {
+				const roomId = await openInviteWindow(page, 'changed my mind');
+
+				await search(page, 'bob');
+				await row(page, 'bob').click();
+				await search(page, 'carol');
+				await row(page, 'carol').click();
+				await page.getByRole('button', { name: /^Remove .* from selection$/ }).first().click();
+				await expect(picked(page)).toHaveCount(1);
+
+				await page.getByRole('button', { name: 'Done' }).click();
+
+				await expect.poll(() => outbox(roomId)).toEqual([carol.id]);
+			});
+
+			test('does not offer someone who is already invited or already a member, and says why', async ({ page }) => {
+				const room = await api(BASE_URL, 'chat/rooms/create', { i: alice.token, name: `already ${Date.now()}` }) as { id: string };
+				await api(BASE_URL, 'chat/rooms/invitations/create', { i: alice.token, roomId: room.id, userId: bob.id });
+				await api(BASE_URL, 'chat/rooms/invitations/create', { i: alice.token, roomId: room.id, userId: carol.id });
+				await api(BASE_URL, 'chat/rooms/join', { i: carol.token, roomId: room.id });
+				await page.goto(`${BASE_URL}/chat/room/${room.id}`);
+				await page.getByRole('button', { name: 'Invite Users' }).click();
+				await page.getByText('Username', { exact: true }).waitFor();
+
+				await search(page, 'bob');
+				await expect(row(page, 'bob')).toContainText('already been invited');
+				// aria-disabled の行は Playwright が押せるようになるまで待ち続ける。利用者は押せるので、そのまま押す
+				await row(page, 'bob').click({ force: true });
+				await search(page, 'carol');
+				await expect(row(page, 'carol')).toContainText('already a member');
+				await row(page, 'carol').click({ force: true });
+
+				await expect(picked(page)).toHaveCount(0);
+				await expect(page.getByRole('button', { name: 'Done' })).toBeDisabled();
+			});
+
+			test('when one invitation fails, says who and why, and keeps the other', async ({ page }) => {
+				const roomId = await openInviteWindow(page, 'one fails');
+
+				await search(page, 'bob');
+				await row(page, 'bob').click();
+				await search(page, 'carol');
+				await row(page, 'carol').click();
+				// 窓を開いたあとで招待されたので、窓では止められない
+				await api(BASE_URL, 'chat/rooms/invitations/create', { i: alice.token, roomId, userId: bob.id });
+				await page.getByRole('button', { name: 'Done' }).click();
+
+				await expect(page.getByText('Could not invite 1')).toBeVisible();
+				await expect(page.getByText(/Invited 1\..*@bob.*already been invited/)).toBeVisible();
+				await expect.poll(() => outbox(roomId)).toEqual([bob.id, carol.id].toSorted());
+			});
+
+			test('at the limit of invitations, says so in the language of the screen and stops asking', async ({ page }) => {
+				const roomId = await openInviteWindow(page, 'limit');
+				let asked = 0;
+				await page.route('**/api/chat/rooms/invitations/create', route => {
+					asked++;
+					return route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Rate limit exceeded. Please try again later.', code: 'RATE_LIMIT_EXCEEDED', id: 'd5826d14-3982-4d2e-8011-b9e9f02499ef' } }) });
+				});
+
+				await search(page, 'bob');
+				await row(page, 'bob').click();
+				await search(page, 'carol');
+				await row(page, 'carol').click();
+				await page.getByRole('button', { name: 'Done' }).click();
+
+				await expect(page.getByText('Could not invite 2')).toBeVisible();
+				await expect(page.getByText(/exceeding the execution limit/)).toBeVisible();
+				await expect(page.getByText('Rate limit exceeded')).toHaveCount(0);
+				expect(asked).toBe(1);
+				await expect.poll(() => outbox(roomId)).toEqual([]);
+			});
+		});
+
+		for (const width of [412, 360]) {
+			test.describe(`at a width of ${width}`, () => {
+				test.use({ viewport: { width, height: 800 }, isMobile: true, hasTouch: true });
+
+				test('people with long names stay inside the window, and the page does not scroll sideways', async ({ page }) => {
+					await api(BASE_URL, 'i/update', { i: carol.token, name: 'c'.repeat(50) });
+					await openInviteWindow(page, 'long names');
+
+					await search(page, 'bob');
+					await row(page, 'bob').tap();
+					await search(page, 'carol');
+					await row(page, 'carol').tap();
+					await expect(picked(page)).toHaveCount(2);
+
+					const overflow = await page.evaluate(() => window.document.documentElement.scrollWidth - window.innerWidth);
+					expect(overflow).toBeLessThanOrEqual(0);
+					for (const person of await picked(page).all()) {
+						const box = await person.boundingBox();
+						if (box == null) throw new Error('the person has no box');
+						expect(box.x).toBeGreaterThanOrEqual(0);
+						expect(box.x + box.width).toBeLessThanOrEqual(width);
+					}
+					await expect(page.getByRole('button', { name: /^Remove .* from selection$/ }).nth(1)).toBeInViewport();
+					await api(BASE_URL, 'i/update', { i: carol.token, name: null });
+				});
+			});
+		}
+	});
+
+	test.describe('the window of files to upload', () => {
+		test.use({ viewport: { width: 1280, height: 720 } });
+
+		test('counts a file added from inside the window in its title', async ({ page }) => {
+			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
+			const png = { name: 'one.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64') };
+
+			await page.getByRole('button', { name: 'Select a file' }).click();
+			const first = page.waitForEvent('filechooser');
+			await page.getByText('Upload', { exact: true }).click();
+			await (await first).setFiles(png);
+			await expect(page.getByText('Upload 1 files', { exact: true })).toBeVisible();
+
+			const second = page.waitForEvent('filechooser');
+			await page.locator('button:has(.ti-plus):visible').last().click();
+			await (await second).setFiles({ ...png, name: 'two.png' });
+
+			await expect(page.getByText('Upload 2 files', { exact: true })).toBeVisible();
+		});
+	});
+
 	test.describe('the person picked for an invitation', () => {
 		test.use({ viewport: { width: 1280, height: 720 } });
 

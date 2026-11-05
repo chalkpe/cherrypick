@@ -43,7 +43,8 @@ const mocks = vi.hoisted(() => {
 		confirm: vi.fn(),
 		popupMenu: vi.fn(),
 		apiWithDialog: vi.fn(),
-		selectUser: vi.fn(),
+		selectUsers: vi.fn(),
+		success: vi.fn(),
 		membersMounts: { value: 0 },
 		editMessage: { value: null as (() => void) | null },
 		// 吹き出しごとの描画回数
@@ -69,7 +70,7 @@ vi.mock('@/utility/misskey-api.js', () => ({
 vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: mocks.streamOff, useChannel: () => mocks.channel }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
-vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog, selectUser: mocks.selectUser }));
+vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog, selectUsers: mocks.selectUsers, success: mocks.success, promiseDialog: (promise: Promise<unknown>) => promise }));
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace, useListener: vi.fn() }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // 通話や入力欄は吹き出しのまとまりと関係ないので空にする
@@ -206,7 +207,7 @@ beforeEach(() => {
 	mocks.confirm.mockReset().mockResolvedValue({ canceled: false });
 	mocks.popupMenu.mockReset();
 	mocks.apiWithDialog.mockReset().mockResolvedValue(undefined);
-	mocks.selectUser.mockReset().mockResolvedValue({ id: 'invitee' });
+	mocks.selectUsers.mockReset().mockResolvedValue([{ id: 'invitee', username: 'invitee', host: null, name: null }]);
 	mocks.membersMounts.value = 0;
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
@@ -868,7 +869,7 @@ describe('inviting from an empty conversation', () => {
 		await fireEvent.click(inviteButton(container)!);
 		await flush();
 
-		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' }, undefined, expect.anything());
+		expect(misskeyApi).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' });
 	});
 
 	test('a member who cannot invite is not asked to', async () => {
@@ -1049,7 +1050,7 @@ describe('inviting from the members tab', () => {
 		await fireEvent.click(container.querySelector('[data-testid="members-invite"]')!);
 		await flush();
 
-		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' }, undefined, expect.anything());
+		expect(misskeyApi).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' });
 		expect(mocks.membersMounts.value).toBe(2);
 	});
 
@@ -1066,13 +1067,23 @@ describe('inviting from the members tab', () => {
 	});
 
 	test('leaves the tab alone when the invitation fails', async () => {
-		mocks.apiWithDialog.mockRejectedValue(new Error('request failed'));
-		const container = await openMembersTab();
+		const answering = vi.mocked(misskeyApi).getMockImplementation()!;
+		vi.mocked(misskeyApi).mockImplementation(async (endpoint: string, ...rest: unknown[]) => {
+			if (endpoint === 'chat/rooms/invitations/create') throw new Error('request failed');
+			return (answering as (...args: unknown[]) => unknown)(endpoint, ...rest);
+		});
+		try {
+			const container = await openMembersTab();
 
-		await fireEvent.click(container.querySelector('[data-testid="members-invite"]')!);
-		await flush();
+			await fireEvent.click(container.querySelector('[data-testid="members-invite"]')!);
+			await flush();
 
-		expect(mocks.membersMounts.value).toBe(1);
+			expect(misskeyApi).toHaveBeenCalledWith('chat/rooms/invitations/create', { roomId: 'r1', userId: 'invitee' });
+			expect(mocks.alert).toHaveBeenCalled();
+			expect(mocks.membersMounts.value).toBe(1);
+		} finally {
+			vi.mocked(misskeyApi).mockImplementation(answering);
+		}
 	});
 });
 

@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <MkModalWindow
 	ref="dialogEl"
 	:withOkButton="true"
-	:okButtonDisabled="selected == null"
+	:okButtonDisabled="multiple ? pickedUsers.length === 0 : selected == null"
 	@click="cancel()"
 	@close="cancel()"
 	@ok="ok()"
@@ -32,29 +32,43 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</FormSplit>
 			<MkButton v-if="!computedLocalOnly" :disabled="!canLookup" :wait="lookingUp" @click="lookup">{{ i18n.ts.lookup }}</MkButton>
 		</div>
-		<div v-if="username != '' || host != ''" :class="[$style.result, { [$style.hit]: users.length > 0 }]">
-			<div v-if="users.length > 0" :class="$style.users">
-				<button v-for="user in users" :key="user.id" type="button" class="_button" :class="[$style.user, { [$style.selected]: selected && selected.id === user.id }]" :aria-pressed="selected?.id === user.id" @click="selected = user" @dblclick="ok()">
-					<MkAvatar :user="user" :class="$style.avatar" indicator :link="false"/>
-					<span :class="$style.userBody">
-						<MkUserName :user="user" :class="$style.userName"/>
-						<MkAcct :user="user" :class="$style.userAcct"/>
+		<div v-if="multiple" :class="$style.picked">
+			<div :class="$style.pickedLabel" aria-live="polite">{{ pickedUsers.length > 0 ? i18n.tsx.selectedUsersCount({ n: pickedUsers.length }) : i18n.ts.canSelectMultipleUsers }}</div>
+			<ul v-if="pickedUsers.length > 0" :class="$style.pickedUsers">
+				<li v-for="user in pickedUsers" :key="user.id" :class="$style.pickedUser">
+					<MkAvatar :user="user" :class="$style.pickedAvatar" :link="false"/>
+					<span :class="$style.pickedBody">
+						<MkUserName :user="user" :class="$style.pickedName"/>
+						<MkAcct :user="user" :class="$style.pickedAcct"/>
 					</span>
-				</button>
-			</div>
-			<div v-else :class="$style.empty">
-				<span>{{ i18n.ts.noUsers }}</span>
-			</div>
+					<button type="button" class="_button" :class="$style.unpick" :aria-label="i18n.tsx.removeFromSelection({ x: user.name || user.username })" @click="unpick(user)"><i class="ti ti-x"></i></button>
+				</li>
+			</ul>
 		</div>
-		<div v-if="username == '' && host == ''" :class="$style.recent">
-			<div :class="$style.users">
-				<button v-for="user in recentUsers.filter(canSelectUser)" :key="user.id" type="button" class="_button" :class="[$style.user, { [$style.selected]: selected && selected.id === user.id }]" :aria-pressed="selected?.id === user.id" @click="selected = user" @dblclick="ok()">
+		<div :class="$style.result">
+			<div v-if="listedUsers.length > 0" :class="$style.users">
+				<button
+					v-for="user in listedUsers"
+					:key="user.id"
+					type="button"
+					class="_button"
+					:class="[$style.user, { [$style.selected]: isSelected(user), [$style.unavailable]: unavailableReasons[user.id] != null }]"
+					:aria-pressed="isSelected(user)"
+					:aria-disabled="unavailableReasons[user.id] != null ? true : undefined"
+					@click="onClickUser(user)"
+					@dblclick="onDblclickUser()"
+				>
 					<MkAvatar :user="user" :class="$style.avatar" indicator :link="false"/>
 					<span :class="$style.userBody">
 						<MkUserName :user="user" :class="$style.userName"/>
 						<MkAcct :user="user" :class="$style.userAcct"/>
+						<span v-if="unavailableReasons[user.id] != null" :class="$style.userNote">{{ unavailableReasons[user.id] }}</span>
 					</span>
+					<i v-if="multiple && isSelected(user)" class="ti ti-check" :class="$style.userCheck" aria-hidden="true"></i>
 				</button>
+			</div>
+			<div v-else-if="searching" :class="$style.empty">
+				<span>{{ i18n.ts.noUsers }}</span>
 			</div>
 		</div>
 	</div>
@@ -77,6 +91,7 @@ import { instance } from '@/instance.js';
 
 const emit = defineEmits<{
 	(ev: 'ok', selected: Misskey.entities.UserDetailed): void;
+	(ev: 'okMultiple', selected: Misskey.entities.UserLite[]): void;
 	(ev: 'cancel'): void;
 	(ev: 'closed'): void;
 }>();
@@ -84,9 +99,15 @@ const emit = defineEmits<{
 const props = withDefaults(defineProps<{
 	includeSelf?: boolean;
 	localOnly?: boolean;
+	// 検索し直しても選んだ人を残し、何人でも選べるようにする
+	multiple?: boolean;
+	// 選べない人の ID とその理由。窓を待たせないよう、開いたあとで届いてよい
+	unavailableUsers?: Promise<Record<string, string>>;
 }>(), {
 	includeSelf: false,
 	localOnly: false,
+	multiple: false,
+	unavailableUsers: undefined,
 });
 
 const computedLocalOnly = computed(() => props.localOnly || instance.federation === 'none');
@@ -96,6 +117,8 @@ const host = ref('');
 const users = ref<Misskey.entities.UserLite[]>([]);
 const recentUsers = ref<Misskey.entities.UserDetailed[]>([]);
 const selected = ref<Misskey.entities.UserLite | null>(null);
+const pickedUsers = ref<Misskey.entities.UserLite[]>([]);
+const unavailableReasons = ref<Record<string, string>>({});
 const dialogEl = useTemplateRef('dialogEl');
 const lookingUp = ref(false);
 let requestId = 0;
@@ -123,6 +146,32 @@ const canLookup = computed(() => !computedLocalOnly.value && !!searchQuery.value
 
 function canSelectUser(user: Misskey.entities.UserLite) {
 	return (!computedLocalOnly.value || user.host == null) && (props.includeSelf || user.id !== $i?.id);
+}
+
+const searching = computed(() => username.value !== '' || host.value !== '');
+const listedUsers = computed(() => searching.value ? users.value : recentUsers.value.filter(canSelectUser));
+
+function isSelected(user: Misskey.entities.UserLite) {
+	return props.multiple ? pickedUsers.value.some(picked => picked.id === user.id) : selected.value?.id === user.id;
+}
+
+function unpick(user: Misskey.entities.UserLite) {
+	pickedUsers.value = pickedUsers.value.filter(picked => picked.id !== user.id);
+}
+
+function onClickUser(user: Misskey.entities.UserLite) {
+	if (unavailableReasons.value[user.id] != null) return;
+	if (!props.multiple) {
+		selected.value = user;
+	} else if (isSelected(user)) {
+		unpick(user);
+	} else {
+		pickedUsers.value = [...pickedUsers.value, user];
+	}
+}
+
+function onDblclickUser() {
+	if (!props.multiple) ok();
 }
 
 function search() {
@@ -180,7 +229,21 @@ async function lookup() {
 watch([username, host, computedLocalOnly, () => props.includeSelf], search, { flush: 'sync' });
 onBeforeUnmount(() => { requestId++; });
 
+// 最近使ったユーザー更新。先に渡した人ほど新しい
+function rememberRecentUsers(userIds: string[]) {
+	const recents = [...userIds, ...store.s.recentlyUsedUsers.filter(id => !userIds.includes(id))];
+	store.set('recentlyUsedUsers', recents.slice(0, 16));
+}
+
 async function ok() {
+	if (props.multiple) {
+		if (pickedUsers.value.length === 0) return;
+		emit('okMultiple', [...pickedUsers.value]);
+		dialogEl.value?.close();
+		rememberRecentUsers(pickedUsers.value.map(user => user.id).toReversed());
+		return;
+	}
+
 	if (selected.value == null) return;
 	const selectedId = selected.value.id;
 	const currentRequestId = requestId;
@@ -193,11 +256,7 @@ async function ok() {
 
 	dialogEl.value?.close();
 
-	// 最近使ったユーザー更新
-	let recents = store.s.recentlyUsedUsers;
-	recents = recents.filter(x => x !== selectedId);
-	recents.unshift(selectedId);
-	store.set('recentlyUsedUsers', recents.splice(0, 16));
+	rememberRecentUsers([selectedId]);
 }
 
 function cancel() {
@@ -211,6 +270,12 @@ onMounted(() => {
 	}).then(foundUsers => {
 		recentUsers.value = foundUsers;
 	});
+
+	// 読めなければ誰でも選べるままにする。選べない人はサーバーが断る
+	props.unavailableUsers?.then(reasons => {
+		unavailableReasons.value = reasons;
+		pickedUsers.value = pickedUsers.value.filter(user => reasons[user.id] == null);
+	}).catch(() => {});
 });
 </script>
 
@@ -219,19 +284,89 @@ onMounted(() => {
 	padding: calc(var(--root-margin) / 2) var(--root-margin);
 }
 
-.result,
-.recent {
+.result {
 	display: flex;
 	flex-direction: column;
 	overflow: auto;
 	height: 100%;
+}
 
-	&.result.hit {
-		padding: 0;
-	}
+// 結果を送っても、選んだ人が見えているようにする。多すぎるときはここだけを送る
+.picked {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	padding: 0 var(--root-margin) 8px;
+	background: var(--MI_THEME-bg);
+}
 
-	&.recent {
-		padding: 0;
+.pickedLabel {
+	font-size: 0.85em;
+	opacity: 0.8;
+}
+
+.pickedUsers {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	max-height: 112px;
+	overflow-y: auto;
+	margin: 6px 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.pickedUser {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	box-sizing: border-box;
+	max-width: 100%;
+	min-width: 0;
+	padding: 2px 2px 2px 6px;
+	border-radius: 12px;
+	background: var(--MI_THEME-buttonBg);
+	font-size: 0.85em;
+}
+
+.pickedAvatar {
+	flex-shrink: 0;
+	width: 28px;
+	height: 28px;
+}
+
+.pickedBody {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	line-height: 1.3;
+}
+
+.pickedName,
+.pickedAcct {
+	display: block;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.pickedName {
+	font-weight: bold;
+}
+
+.pickedAcct {
+	font-size: 0.9em;
+	opacity: 0.8;
+}
+
+.unpick {
+	flex-shrink: 0;
+	width: 32px;
+	height: 32px;
+	border-radius: 100%;
+
+	&:hover {
+		background: var(--MI_THEME-buttonHoverBg);
 	}
 }
 
@@ -270,8 +405,34 @@ onMounted(() => {
 }
 
 .userBody {
+	flex: 1;
 	padding: 0 8px;
 	min-width: 0;
+}
+
+.userCheck {
+	flex-shrink: 0;
+	padding-left: 8px;
+}
+
+.userNote {
+	display: block;
+	font-size: 0.85em;
+}
+
+// 理由は読めるように、人の方だけを薄くする
+.unavailable {
+	cursor: default;
+
+	&:hover {
+		background: none;
+	}
+
+	.avatar,
+	.userName,
+	.userAcct {
+		opacity: 0.5;
+	}
 }
 
 .avatar {

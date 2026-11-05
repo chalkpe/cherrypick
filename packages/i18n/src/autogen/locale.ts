@@ -1520,6 +1520,18 @@ export interface Locale extends ILocale {
      */
     "selectUser": string;
     /**
+     * 選択中: {n}人
+     */
+    "selectedUsersCount": ParameterizedString<"n">;
+    /**
+     * 複数選択できます。検索し直しても選んだ人は残ります。
+     */
+    "canSelectMultipleUsers": string;
+    /**
+     * {x}さんを選択から外す
+     */
+    "removeFromSelection": ParameterizedString<"x">;
+    /**
      * 宛先
      */
     "recipient": string;
@@ -7034,6 +7046,14 @@ export interface Locale extends ILocale {
          * 招待した人:
          */
         "invitedBy": string;
+        /**
+         * {n}人を招待できませんでした
+         */
+        "inviteFailedUsers": ParameterizedString<"n">;
+        /**
+         * {n}人は招待しました。
+         */
+        "inviteSentUsers": ParameterizedString<"n">;
         /**
          * グループの情報と削除
          */

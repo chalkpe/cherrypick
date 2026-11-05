@@ -170,7 +170,8 @@ import XMembers from './room.members.vue';
 import XInfo from './room.info.vue';
 import XBanner from './room.voice.banner.vue';
 import XStage from './room.voice.stage.vue';
-import { chatInviteErrors, chatJoinErrors, chatLeaveErrors } from './chat-errors.js';
+import { chatJoinErrors, chatLeaveErrors } from './chat-errors.js';
+import { getUninvitableUsers, inviteUsersToRoom } from './chat-invite.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { PageHeaderItem } from '@/types/page-header.js';
 import * as os from '@/os.js';
@@ -740,20 +741,13 @@ onBeforeUnmount(() => {
 });
 
 async function inviteUser() {
-	if (room.value == null) return;
+	const target = room.value;
+	if (target == null) return;
 
-	const invitee = await os.selectUser({ includeSelf: false, localOnly: false });
-	try {
-		await os.apiWithDialog('chat/rooms/invitations/create', {
-			roomId: room.value.id,
-			userId: invitee.id,
-		}, undefined, chatInviteErrors);
-	} catch {
-		// The dialog already explained the failure, and no invitation was sent.
-		return;
-	}
+	const invitees = await os.selectUsers({ includeSelf: false, localOnly: false, unavailableUsers: getUninvitableUsers(target.id) });
+	const sent = await inviteUsersToRoom(target.id, invitees);
 	// 送った招待の一覧はメンバータブを開いたときにしか読み込まない
-	onMembershipChanged();
+	if (sent > 0) onMembershipChanged();
 }
 
 async function leaveRoom() {

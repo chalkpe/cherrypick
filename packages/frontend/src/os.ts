@@ -579,6 +579,23 @@ export async function selectUser(opts: { includeSelf?: boolean; localOnly?: bool
 	});
 }
 
+// 検索し直しても選んだ人が残る。選んだ人の詳しい情報までは読まないので UserLite を返す
+export async function selectUsers(opts: { includeSelf?: boolean; localOnly?: boolean; unavailableUsers?: Promise<Record<string, string>>; } = {}): Promise<Misskey.entities.UserLite[]> {
+	return new Promise(resolve => {
+		const { dispose } = popup(defineAsyncComponent(() => import('@/components/MkUserSelectDialog.vue')), {
+			includeSelf: opts.includeSelf,
+			localOnly: opts.localOnly,
+			multiple: true,
+			unavailableUsers: opts.unavailableUsers,
+		}, {
+			okMultiple: users => {
+				resolve(users);
+			},
+			closed: () => dispose(),
+		});
+	});
+}
+
 export async function selectRole(params: ComponentProps<typeof MkRoleSelectDialog_TypeReferenceOnly>): Promise<
 	{ canceled: true; result: undefined; } |
 	{ canceled: false; result: Misskey.entities.Role[] }

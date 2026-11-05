@@ -44,7 +44,7 @@ const stubs = {
 	MkAcct: { props: ['user'], template: '<span>@{{ user.username }}@{{ user.host }}</span>' },
 };
 
-function renderDialog(props: { includeSelf?: boolean; localOnly?: boolean } = {}) {
+function renderDialog(props: { includeSelf?: boolean; localOnly?: boolean; multiple?: boolean; unavailableUsers?: Promise<Record<string, string>> } = {}) {
 	return render(MkUserSelectDialog, { props, global: { stubs } });
 }
 
@@ -268,5 +268,143 @@ describe('pasting a full address into the username field', () => {
 		await fireEvent.update(usernameField(), 'sora@remote.example');
 
 		expect(usernameField().value).toBe('sora@remote.example');
+	});
+});
+
+describe('choosing several people', () => {
+	const localBob = { id: 'local-bob', username: 'bob', host: null, name: 'Local Bob' };
+	const confirmButton = () => screen.getByRole('button', { name: 'Confirm' });
+	const usernameField = () => screen.getByLabelText(i18n.ts.username);
+	// 行だけが押された状態を持つ。選んだ人の欄の「外す」ボタンと取り違えない
+	const row = (name: RegExp, pressed: boolean) => screen.findByRole('button', { name, pressed });
+
+	beforeEach(() => {
+		mocks.api.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'users/search-by-username-and-host') return params.username === 'alice' ? [remoteUser] : params.username === 'bob' ? [localBob] : [];
+			if (endpoint === 'users/show' && 'username' in params) throw new Error('No such user');
+			if (endpoint === 'users/show' && 'userId' in params) return localBob;
+			return [];
+		});
+	});
+
+	test('keeps who was picked on one server while searching another, and hands them all over', async () => {
+		const dialog = renderDialog({ multiple: true });
+		expect(confirmButton().hasAttribute('disabled')).toBe(true);
+
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+		await fireEvent.click(await row(/Remote Alice/, false));
+		expect(confirmButton().hasAttribute('disabled')).toBe(false);
+
+		await fireEvent.update(usernameField(), 'bob');
+		await fireEvent.update(screen.getByLabelText(i18n.ts.host), '');
+		await fireEvent.click(await row(/Local Bob/, false));
+		expect(screen.getByText(i18n.tsx.selectedUsersCount({ n: 2 }))).toBeTruthy();
+
+		await fireEvent.click(confirmButton());
+
+		expect(dialog.emitted().okMultiple).toEqual([[[remoteUser, localBob]]]);
+		expect(dialog.emitted().ok).toBeUndefined();
+		expect(mocks.store.set).toHaveBeenCalledWith('recentlyUsedUsers', ['local-bob', 'remote']);
+	});
+
+	test('shows who was picked even once the search finds someone else, and lets them go from there', async () => {
+		renderDialog({ multiple: true });
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+		await fireEvent.click(await row(/Remote Alice/, false));
+
+		await fireEvent.update(usernameField(), 'bob');
+		await row(/Local Bob/, false);
+		expect(screen.getByRole('listitem').textContent).toContain('Remote Alice');
+		expect(screen.getByRole('listitem').textContent).toContain('@alice@remote.example');
+
+		await fireEvent.click(screen.getByRole('button', { name: i18n.tsx.removeFromSelection({ x: 'Remote Alice' }) }));
+
+		expect(screen.queryByRole('listitem')).toBeNull();
+		expect(confirmButton().hasAttribute('disabled')).toBe(true);
+	});
+
+	test('lets go of a person pressed a second time, in the row as well', async () => {
+		renderDialog({ multiple: true });
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+
+		await fireEvent.click(await row(/Remote Alice/, false));
+		await fireEvent.click(await row(/Remote Alice/, true));
+
+		await row(/Remote Alice/, false);
+		expect(screen.queryByRole('listitem')).toBeNull();
+	});
+
+	test('does not take a double click for done, as the single choice does', async () => {
+		const dialog = renderDialog({ multiple: true });
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+		const person = await row(/Remote Alice/, false);
+
+		await fireEvent.click(person);
+		await fireEvent.dblClick(person);
+
+		expect(dialog.emitted().okMultiple).toBeUndefined();
+	});
+
+	test('does not ask the server about each person again, since their id is all that is needed', async () => {
+		renderDialog({ multiple: true });
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+		await fireEvent.click(await row(/Remote Alice/, false));
+		mocks.api.mockClear();
+
+		await fireEvent.click(confirmButton());
+
+		expect(mocks.api).not.toHaveBeenCalled();
+	});
+
+	test('says why someone cannot be picked, and does not pick them', async () => {
+		const dialog = renderDialog({ multiple: true, unavailableUsers: Promise.resolve({ remote: 'already here' }) });
+		await nextTick();
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+
+		const person = await screen.findByRole('button', { name: /Remote Alice/ });
+		await waitFor(() => expect(person.getAttribute('aria-disabled')).toBe('true'));
+		expect(person.textContent).toContain('already here');
+		await fireEvent.click(person);
+
+		expect(screen.queryByRole('listitem')).toBeNull();
+		expect(confirmButton().hasAttribute('disabled')).toBe(true);
+		expect(dialog.emitted().okMultiple).toBeUndefined();
+	});
+
+	test('lets go of someone picked before the answer about them arrived', async () => {
+		const answer = deferred<Record<string, string>>();
+		renderDialog({ multiple: true, unavailableUsers: answer.promise });
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+		await fireEvent.click(await row(/Remote Alice/, false));
+		expect(screen.queryByRole('listitem')).not.toBeNull();
+
+		answer.resolve({ remote: 'already here' });
+
+		await waitFor(() => expect(screen.queryByRole('listitem')).toBeNull());
+		expect(confirmButton().hasAttribute('disabled')).toBe(true);
+	});
+
+	test('still lets people be picked when that answer never comes', async () => {
+		renderDialog({ multiple: true, unavailableUsers: Promise.reject(new Error('offline')) });
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+
+		await fireEvent.click(await row(/Remote Alice/, false));
+
+		expect(confirmButton().hasAttribute('disabled')).toBe(false);
+	});
+
+	test('does not change the single choice of every other screen', async () => {
+		const dialog = renderDialog();
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+		expect(screen.queryByText(i18n.ts.canSelectMultipleUsers)).toBeNull();
+
+		await fireEvent.click(await screen.findByRole('button', { name: /Remote Alice/ }));
+		expect(screen.queryByRole('listitem')).toBeNull();
+		await fireEvent.update(usernameField(), 'bob');
+		await fireEvent.click(await screen.findByRole('button', { name: /Local Bob/ }));
+		await fireEvent.click(confirmButton());
+
+		await waitFor(() => expect(dialog.emitted().ok).toHaveLength(1));
+		expect(dialog.emitted().okMultiple).toBeUndefined();
 	});
 });
