@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle backFallback="/chat" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
 	<!-- 自分が通話に入っているあいだは、通話 (ステージ) を出す。広いページではステージとチャットを左右に並べ、ステージは一つだけ作ってチャットを置く側の反対へ CSS の順序で移す。
 	狭いページではステージをいっぱいに広げ、チャットはその上に下から重ねるシートとして開く -->
-	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="{ [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }">
+	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="[$style.chatTab, { [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }]">
 		<XStage v-if="split && room" :room="room" :call="voiceCallState" :class="$style.stage" :chatOpen="chatOpen" @toggleChat="chatOpen = !chatOpen"/>
 		<div v-if="split && voiceInOwnTab && chatOpen" ref="sheetBackdropEl" :class="$style.sheetBackdrop" @click="chatOpen = false"></div>
 		<!-- シートを開いたらすぐ中へフォーカスを移すので、v-show (フォーカスを移す watch より後に表示を切り替える) ではなく style で隠す -->
@@ -1038,6 +1038,13 @@ definePage(computed(() => {
 </script>
 
 <style lang="scss" module>
+// スマートフォンの画面キーボードが出ているとき、ページ全体のスクロールアンカーがメッセージの増えた分だけ見える範囲を動かし、入力欄をキーボードの裏へ押しやる。
+// 止めるのはページ全体の分だけで、メッセージの欄では止めない。止めると、読み返しているあいだに届いた分だけ読んでいた場所がずれる
+:global(html):has(.chatTab),
+:global(body):has(.chatTab) {
+	overflow-anchor: none;
+}
+
 .joinBanner {
 	margin-bottom: 24px;
 }

@@ -372,6 +372,74 @@ test.describe('Chat', () => {
 		});
 	});
 
+	// 画面キーボードは試験で出せないので、スクロールアンカーの効き方と、読んでいる場所が動かないことを確かめる
+	for (const [where, options] of [
+		['on a laptop', { viewport: { width: 1280, height: 720 } }],
+		['on an Android phone', {
+			viewport: { width: 412, height: 915 },
+			isMobile: true,
+			hasTouch: true,
+			userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+		}],
+	] as const) {
+		test.describe(`reading a room ${where}`, () => {
+			test.use(options);
+
+			const overflowAnchors = (page: Page) => page.evaluate(() => ({
+				html: window.getComputedStyle(window.document.documentElement).overflowAnchor,
+				body: window.getComputedStyle(window.document.body).overflowAnchor,
+				messages: window.getComputedStyle(window.document.querySelector('._pageScrollableReversed') ?? window.document.body).overflowAnchor,
+			}));
+
+			async function roomWithMessages(page: Page): Promise<{ id: string; say: (text: string) => Promise<unknown>; first: string }> {
+				const room = await api(BASE_URL, 'chat/rooms/create', { i: bob.token, name: `long talk ${Date.now()}` }) as { id: string };
+				await api(BASE_URL, 'chat/rooms/invitations/create', { i: bob.token, roomId: room.id, userId: alice.id });
+				await api(BASE_URL, 'chat/rooms/join', { i: alice.token, roomId: room.id });
+				const say = (text: string) => api(BASE_URL, 'chat/messages/create-to-room', { i: bob.token, toRoomId: room.id, text });
+				for (let i = 1; i <= 25; i++) await say(`line ${i} of ${room.id}`);
+				await page.goto(`${BASE_URL}/chat/room/${room.id}`);
+				const first = `line 25 of ${room.id}`;
+				await expect(page.getByText(first, { exact: true })).toBeVisible();
+				return { id: room.id, say, first };
+			}
+
+			const scrollMessagesTo = (page: Page, top: number) => page.evaluate(value => {
+				window.document.querySelector('._pageScrollableReversed')?.scrollTo({ top: value, behavior: 'instant' });
+			}, top);
+
+			test('turns off scroll anchoring for the page only while the conversation is on screen', async ({ page }) => {
+				const room = await roomWithMessages(page);
+
+				// メッセージの欄では切らない。切ると、読み返しているあいだに届いた分だけ読んでいた場所がずれる
+				expect(await overflowAnchors(page)).toEqual({ html: 'none', body: 'none', messages: 'auto' });
+
+				await page.goto(`${BASE_URL}/chat`);
+				await page.locator(`a[href$="/chat/room/${room.id}"]`).first().waitFor();
+				expect(await overflowAnchors(page)).toMatchObject({ html: 'auto', body: 'auto' });
+			});
+
+			test('keeps the place of someone reading further up when a message comes, and follows at the bottom', async ({ page }) => {
+				const room = await roomWithMessages(page);
+				await scrollMessagesTo(page, -300);
+				const reading = page.getByText(`line 15 of ${room.id}`, { exact: true });
+				await reading.scrollIntoViewIfNeeded();
+				const before = (await reading.boundingBox())!.y;
+
+				const whileReading = `while reading ${room.id}`;
+				await room.say(whileReading);
+				await page.getByText(whileReading, { exact: true }).waitFor({ state: 'attached' });
+				await page.evaluate(() => new Promise(resolve => window.setTimeout(resolve, 300)));
+				expect(Math.abs((await reading.boundingBox())!.y - before)).toBeLessThan(2);
+
+				await scrollMessagesTo(page, 0);
+				const atTheBottom = `at the bottom ${room.id}`;
+				await room.say(atTheBottom);
+				await expect(page.getByText(atTheBottom, { exact: true })).toBeInViewport();
+				expect(await page.evaluate(() => Math.abs(window.document.querySelector('._pageScrollableReversed')?.scrollTop ?? 99))).toBeLessThan(3);
+			});
+		});
+	}
+
 	test.describe('a failure from the server', () => {
 		test.use({ viewport: { width: 1280, height: 720 } });
 
