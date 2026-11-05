@@ -372,7 +372,8 @@ test.describe('Chat', () => {
 			if (box == null) throw new Error('the message has no box');
 
 			const cdp = await context.newCDPSession(page);
-			await cdp.send('Input.synthesizeTapGesture', { x: box.x + 16, y: box.y + box.height / 2, duration: 800, gestureSourceType: 'touch' });
+			// 長押しと見なされるまでの時間は OS で違う。CI の Linux でも確実に超える長さで押す
+			await cdp.send('Input.synthesizeTapGesture', { x: box.x + 16, y: box.y + box.height / 2, duration: 1500, gestureSourceType: 'touch' });
 
 			await expect(page.getByText('Copy contents', { exact: true })).toBeVisible();
 			expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('');
