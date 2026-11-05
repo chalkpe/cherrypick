@@ -3,8 +3,11 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { computed, ref, watch } from 'vue';
+import { ref, watch } from 'vue';
 import { prefer } from '@/preferences.js';
+
+/** common.vue가 이 값을 보고 눈 레이어를 그린다. 메인 앱에서 watchSnowEffect()를 부를 때만 켜질 수 있다 */
+export const snowEffectShowing = ref(false);
 
 export function watchSnowEffect(): () => void {
 	// popout()이 연 창
@@ -17,33 +20,17 @@ export function watchSnowEffect(): () => void {
 	};
 	deviceMotion.addEventListener('change', onDeviceMotionChange);
 
-	const shouldSnow = computed(() => prefer.r.enableSnowEffect.value && prefer.r.animation.value && !deviceReducesMotion.value);
-
-	let stopSnow: (() => void) | null = null;
-	let disposed = false;
-
-	const stopWatching = watch(shouldSnow, async (snow) => {
-		if (!snow) {
-			stopSnow?.();
-			stopSnow = null;
-			return;
-		}
-		if (stopSnow != null) return;
-
-		try {
-			const { startSnow } = await import('@/utility/snow-effect.js');
-			// 불러오는 사이에 상태가 바뀌었을 수 있다
-			if (shouldSnow.value && stopSnow == null && !disposed) stopSnow = startSnow();
-		} catch (err) {
-			console.error('Failed to start the snow effect:', err);
-		}
-	}, { immediate: true });
+	const stopWatching = watch(
+		() => prefer.r.enableSnowEffect.value && prefer.r.animation.value && !deviceReducesMotion.value,
+		(snow) => {
+			snowEffectShowing.value = snow;
+		},
+		{ immediate: true },
+	);
 
 	return () => {
-		disposed = true;
 		stopWatching();
 		deviceMotion.removeEventListener('change', onDeviceMotionChange);
-		stopSnow?.();
-		stopSnow = null;
+		snowEffectShowing.value = false;
 	};
 }

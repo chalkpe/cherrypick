@@ -58,6 +58,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 </Transition>
 
+<XSnowEffect v-if="snowEffectShowing"/>
+
 <component
 	:is="popup.component"
 	v-for="popup in popups"
@@ -115,6 +117,7 @@ import { isSafeMode } from '@@/js/config.js';
 import { swInject } from './sw-inject.js';
 import XNotification from './notification.vue';
 import { popups } from '@/os.js';
+import { snowEffectShowing } from '@/utility/snow-effect-watcher.js';
 import { unisonReload } from '@/utility/unison-reload.js';
 import { miLocalStorage } from '@/local-storage.js';
 import { pendingApiRequestsCount } from '@/utility/misskey-api.js';
@@ -134,6 +137,7 @@ import { voiceCall } from '@/utility/voice-call.js';
 const XStreamIndicator = defineAsyncComponent(() => import('./stream-indicator.vue'));
 const XVoiceCallBar = defineAsyncComponent(() => import('./voice-call-bar.vue'));
 const XWidgets = defineAsyncComponent(() => import('./widgets.vue'));
+const XSnowEffect = defineAsyncComponent(() => import('./snow-effect.vue'));
 
 const drawerMenuShowing = defineModel<boolean>('drawerMenuShowing');
 const widgetsShowing = defineModel<boolean>('widgetsShowing');

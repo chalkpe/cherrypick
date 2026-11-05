@@ -7,9 +7,6 @@ export const MAX_SNOWFLAKES = 200;
 
 const VIEWPORT_WIDTH_PER_SNOWFLAKE = 8;
 
-// claimZIndex의 최솟값(500000) 바로 아래. 화면과 드로어는 덮고 팝업은 덮지 않는다
-const LAYER_Z_INDEX = 499999;
-
 const MIN_SIZE_PX = 1;
 const MAX_SIZE_PX = 10;
 const MIN_OPACITY = 0.1;
@@ -80,19 +77,7 @@ function createSnowflake(): Snowflake {
 	return { element, animation };
 }
 
-export function startSnow(): () => void {
-	const layer = window.document.createElement('div');
-	layer.dataset.snowEffect = '';
-	layer.setAttribute('aria-hidden', 'true');
-	layer.style.cssText = [
-		'position: fixed',
-		'inset: 0',
-		`z-index: ${LAYER_Z_INDEX}`,
-		'overflow: hidden',
-		'contain: strict',
-		'pointer-events: none',
-	].join(';');
-
+export function fillWithSnow(layer: HTMLElement): () => void {
 	const snowflakes: Snowflake[] = [];
 
 	function matchViewportWidth() {
@@ -127,13 +112,15 @@ export function startSnow(): () => void {
 	}
 
 	matchViewportWidth();
-	window.document.body.append(layer);
 	window.addEventListener('resize', onResize, { passive: true });
 
 	return () => {
 		window.removeEventListener('resize', onResize);
 		if (resizeTimer != null) window.clearTimeout(resizeTimer);
-		for (const { animation } of snowflakes) animation.cancel();
-		layer.remove();
+		for (const { animation, element } of snowflakes) {
+			animation.cancel();
+			element.remove();
+		}
+		snowflakes.length = 0;
 	};
 }
