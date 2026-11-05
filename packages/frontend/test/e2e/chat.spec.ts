@@ -372,6 +372,73 @@ test.describe('Chat', () => {
 		});
 	});
 
+	test.describe('who invited', () => {
+		for (const [where, viewport] of [['beside the other columns', { width: 1366, height: 768 }], ['on a narrow phone', { width: 360, height: 740 }]] as const) {
+			test.describe(where, () => {
+				test.use({ viewport });
+
+				test('a notification names them, and a long name stays inside it', async ({ page }) => {
+					const longName = 'AVeryLongNameWithoutAnySpaceInItThatGoesOnAndOnAnd';
+					await api(BASE_URL, 'i/update', { i: bob.token, name: longName });
+					try {
+						const room = await api(BASE_URL, 'chat/rooms/create', { i: bob.token, name: `named inviter ${Date.now()}` }) as { id: string };
+						await api(BASE_URL, 'chat/rooms/invitations/create', { i: bob.token, roomId: room.id, userId: alice.id });
+						await page.goto(`${BASE_URL}/my/notifications`);
+
+						const line = page.getByText('Invited by').first();
+						await expect(line).toContainText(longName);
+						await expect(line).toContainText('@bob');
+
+						const fits = await line.evaluate(element => {
+							const box = element.getBoundingClientRect();
+							const card = element.parentElement!.getBoundingClientRect();
+							return box.right <= card.right + 1 && window.document.documentElement.scrollWidth <= window.innerWidth + 1;
+						});
+						expect(fits).toBe(true);
+					} finally {
+						await api(BASE_URL, 'i/update', { i: bob.token, name: null });
+					}
+				});
+			});
+		}
+	});
+
+	test.describe('the person picked for an invitation', () => {
+		test.use({ viewport: { width: 1280, height: 720 } });
+
+		for (const colorScheme of ['light', 'dark'] as const) {
+			test(`can be read on the accent color in the ${colorScheme} theme`, async ({ page }) => {
+				await page.emulateMedia({ colorScheme });
+				const room = await api(BASE_URL, 'chat/rooms/create', { i: alice.token, name: `picking ${colorScheme} ${Date.now()}` }) as { id: string };
+				await page.goto(`${BASE_URL}/chat/room/${room.id}`);
+				await page.getByRole('button', { name: 'Invite Users' }).click();
+				await page.getByText('Username', { exact: true }).waitFor();
+				await page.keyboard.type('bob');
+				const row = page.locator('button', { hasText: '@bob' });
+				await row.click();
+
+				const shown = await row.evaluate(element => {
+					const probe = window.document.createElement('i');
+					probe.style.color = 'var(--MI_THEME-fgOnAccent)';
+					window.document.body.append(probe);
+					const fgOnAccent = window.getComputedStyle(probe).color;
+					probe.remove();
+					const opacityOf = (from: Element) => {
+						let opacity = 1;
+						for (let e: Element | null = from; e != null && e !== element; e = e.parentElement) opacity *= Number(window.getComputedStyle(e).opacity);
+						return opacity;
+					};
+					const account = [...element.querySelectorAll('span')].filter(span => span.children.length === 0 && span.textContent?.startsWith('@'));
+					return { color: window.getComputedStyle(element).color, fgOnAccent, opacities: account.map(opacityOf) };
+				});
+
+				expect(shown.color).toBe(shown.fgOnAccent);
+				expect(shown.opacities.length).toBeGreaterThan(0);
+				expect(shown.opacities.every(opacity => opacity === 1)).toBe(true);
+			});
+		}
+	});
+
 	// スマートフォンのキーボードは打った文字をほとんど常に変換中のままにする。insertText では変換が起きないので、変換を直接作る
 	for (const [where, options] of [
 		['on a laptop', { viewport: { width: 1280, height: 720 } }],

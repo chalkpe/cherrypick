@@ -7031,6 +7031,10 @@ export interface Locale extends ILocale {
          */
         "invitationGone": string;
         /**
+         * 招待した人:
+         */
+        "invitedBy": string;
+        /**
          * グループの情報と削除
          */
         "roomInfoAndDelete": string;

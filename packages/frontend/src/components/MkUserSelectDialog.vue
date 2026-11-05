@@ -253,9 +253,19 @@ onMounted(() => {
 		background: light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.05));
 	}
 
+	// 強調色の上の文字色はテーマが決める。明るい強調色のテーマでは白だと読めない
 	&.selected {
 		background: var(--MI_THEME-accent);
-		color: #fff;
+		color: var(--MI_THEME-fgOnAccent);
+
+		// 普段のアカウント名は薄くしてあるが、強調色の上では読めなくなる。MkAcct はホストを style で更に薄くしている
+		.userAcct {
+			opacity: 1;
+		}
+
+		.userAcct :global(span) {
+			opacity: 1 !important;
+		}
 	}
 }
 

@@ -1763,6 +1763,7 @@ _chat:
   invitationJoined: "参加しました"
   invitationRejected: "拒否しました"
   invitationGone: "この招待はすでに処理されたか、取り消されました。"
+  invitedBy: "招待した人:"
   roomInfoAndDelete: "グループの情報と削除"
   roomMembersJoined: "{n}人が参加しています。"
   roomInvitationsWaiting: "{n}人を招待しました。承認するとこのグループに参加します。状況はメンバータブで確認できます。"

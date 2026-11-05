@@ -126,6 +126,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<MkA :class="$style.text" :to="`/chat/room/${notification.invitation.room.id}`">
 					<Mfm :text="notification.invitation.room.name" :plain="true" :author="notification.invitation.room.owner"/>
 				</MkA>
+				<!-- 招待できるのはルームの主だけ。表示名が無ければ、アカウント名だけで足りる -->
+				<MkA v-user-preview="notification.invitation.room.owner.id" :class="$style.chatRoomInviter" :to="userPage(notification.invitation.room.owner)">
+					{{ i18n.ts._chat.invitedBy }} <MkUserName v-if="notification.invitation.room.owner.name" :user="notification.invitation.room.owner"/> <MkAcct :user="notification.invitation.room.owner"/>
+				</MkA>
 				<div v-if="full && chatRoomInviteResult != null" :class="$style.text">{{ chatRoomInviteResultText }}</div>
 				<div v-else-if="full" :class="$style.followRequestCommands">
 					<MkButton :class="$style.followRequestCommandButton" rounded primary :disabled="chatRoomInvitePending" @click="acceptChatRoomInvitation()"><i class="ti ti-check"></i> {{ i18n.ts._chat.join }}</MkButton>
@@ -534,6 +538,15 @@ const rejectChatRoomInvitation = () => respondToChatRoomInvitation('chat/rooms/i
 	display: flex;
 	width: 100%;
 	overflow: clip;
+	opacity: 0.7;
+}
+
+// 長い表示名や他のサーバーの長いアドレスは一行に収めて省略する
+.chatRoomInviter {
+	display: block;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
 	opacity: 0.7;
 }
 

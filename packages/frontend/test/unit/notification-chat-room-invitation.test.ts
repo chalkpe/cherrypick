@@ -23,7 +23,8 @@ import { i18n } from '@/i18n.js';
 const stubs = {
 	MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' },
 	MkAvatar: { props: ['user'], template: '<span class="avatar"></span>' },
-	MkUserName: { props: ['user'], template: '<span>{{ user.username }}</span>' },
+	MkUserName: { props: ['user'], template: '<span>{{ user.name ?? user.username }}</span>' },
+	MkAcct: { props: ['user'], template: '<span>@{{ user.username }}{{ user.host ? `@${user.host}` : "" }}</span>' },
 	MkTime: true,
 	Mfm: { props: ['text'], template: '<span>{{ text }}</span>' },
 };
@@ -48,11 +49,15 @@ const notification = {
 	},
 } as any;
 
-function renderNotification(full = false) {
+function renderNotification(full = false, shown = notification) {
 	return render(MkNotification, {
-		props: { notification, full },
-		global: { stubs },
+		props: { notification: shown, full },
+		global: { stubs, directives: { userPreview: {} } },
 	});
+}
+
+function withOwner(person: Record<string, unknown>) {
+	return { ...notification, invitation: { ...notification.invitation, room: { ...notification.invitation.room, owner: person } } };
 }
 
 beforeEach(() => {
@@ -181,4 +186,38 @@ test('disables both actions until the pending request succeeds', async () => {
 	resolve();
 	await flushPromises();
 	expect(screen.queryAllByRole('button')).toHaveLength(0);
+});
+
+test.each([[false], [true]])('says who invited, with or without the buttons (full: %s)', full => {
+	const { container } = renderNotification(full, withOwner({ id: 'o2', username: 'sora', name: 'Sora Kim', host: 'far.example' }));
+
+	expect(container.textContent).toContain(i18n.ts._chat.invitedBy);
+	expect(container.textContent).toContain('Sora Kim');
+	expect(container.textContent).toContain('@sora@far.example');
+});
+
+test('someone without a display name is not named twice', () => {
+	const { container } = renderNotification(false, withOwner({ id: 'o3', username: 'sora', name: null, host: 'far.example' }));
+
+	expect(container.textContent).toContain('@sora@far.example');
+	expect(container.textContent?.match(/sora/g)).toHaveLength(1);
+});
+
+test('the name leads to who invited, and the room name still leads to the room', () => {
+	const { container } = renderNotification(false, withOwner({ id: 'o2', username: 'sora', name: 'Sora Kim', host: 'far.example' }));
+
+	const links = [...container.querySelectorAll('a')].map(a => a.getAttribute('href'));
+	expect(links).toContain('/chat/room/room1');
+	expect(links.some(href => href?.includes('@sora@far.example'))).toBe(true);
+});
+
+test('still says who invited after answering', async () => {
+	api.mockResolvedValue({} as never);
+	const { container } = renderNotification(true, withOwner({ id: 'o2', username: 'sora', name: 'Sora Kim', host: 'far.example' }));
+
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.join }));
+	await flushPromises();
+
+	expect(container.textContent).toContain(i18n.ts._chat.invitationJoined);
+	expect(container.textContent).toContain('Sora Kim');
 });

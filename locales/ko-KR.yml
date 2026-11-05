@@ -1758,6 +1758,7 @@ _chat:
   invitationJoined: "참여함"
   invitationRejected: "거부함"
   invitationGone: "이미 처리되었거나 취소된 초대예요."
+  invitedBy: "초대한 사람:"
   roomInfoAndDelete: "그룹 정보와 삭제"
   roomMembersJoined: "{n}명이 참여하고 있어요."
   roomInvitationsWaiting: "{n}명을 초대했어요. 수락하면 이 그룹에 들어와요. 상태는 멤버 탭에서 볼 수 있어요."

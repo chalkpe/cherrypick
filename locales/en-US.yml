@@ -1753,6 +1753,7 @@ _chat:
   invitationJoined: "Joined"
   invitationRejected: "Rejected"
   invitationGone: "This invitation was already answered or withdrawn."
+  invitedBy: "Invited by"
   roomInfoAndDelete: "Room info and deletion"
   roomMembersJoined: "{n} joined so far."
   roomInvitationsWaiting: "Invited {n}. They will join this room once they accept. You can check on them in the Members tab."
