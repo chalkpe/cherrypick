@@ -47,8 +47,12 @@ export const apiWithDialog = (<E extends keyof Misskey.Endpoints>(
 	const promise = misskeyApi(endpoint, data, token);
 	promiseDialog(promise, null, async (err) => {
 		let title: string | undefined;
-		// 通信に失敗したときなど、code も id も無いエラーも来る
-		let text = err.id != null ? err.message + '\n' + err.id : err.message;
+		let text = err.message + '\n' + err.id;
+		// 通信に失敗したときなど、サーバーの答えではないエラーには ID が無い。ブラウザの英語をそのまま出さない
+		if (err.id == null) {
+			title = i18n.ts.somethingHappened;
+			text = i18n.ts.tryAgain;
+		}
 		if (err.code === 'INTERNAL_ERROR') {
 			title = i18n.ts.internalServerError;
 			text = i18n.ts.internalServerErrorDescription;
