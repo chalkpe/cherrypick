@@ -371,7 +371,8 @@ onMounted(() => {
 	align-items: center;
 	gap: 6px;
 	box-sizing: border-box;
-	max-width: 100%;
+	// 住所が長い人だけを選んでも隣の人が少し覗くようにして、横に送れることが分かるようにする
+	max-width: min(220px, 80%);
 	min-width: 0;
 	padding: 2px 2px 2px 6px;
 	border-radius: 12px;
