@@ -87,6 +87,9 @@ async function openAccountMenu(ev: TouchEvent) {
 					includeCurrentAccount: true,
 				});
 
+				// 切り替え先のアカウントが無いときはメニューを出さない
+				if (menuItems.length < 2) return;
+
 				haptic();
 				os.popupMenu(menuItems, ev.currentTarget ?? ev.target);
 			}
