@@ -48,11 +48,6 @@ export const apiWithDialog = (<E extends keyof Misskey.Endpoints>(
 	promiseDialog(promise, null, async (err) => {
 		let title: string | undefined;
 		let text = err.message + '\n' + err.id;
-		// 通信に失敗したときなど、サーバーの答えではないエラーには ID が無い。ブラウザの英語をそのまま出さない
-		if (err.id == null) {
-			title = i18n.ts.somethingHappened;
-			text = i18n.ts.tryAgain;
-		}
 		if (err.code === 'INTERNAL_ERROR') {
 			title = i18n.ts.internalServerError;
 			text = i18n.ts.internalServerErrorDescription;
@@ -93,6 +88,10 @@ export const apiWithDialog = (<E extends keyof Misskey.Endpoints>(
 			const customError = customErrors[err.id] ?? customErrors.default;
 			title = customError.title;
 			text = customError.text;
+		} else if (err.id == null) {
+			// 通信に失敗したときなど、サーバーの答えではないエラーには ID が無い。
+			// customErrors.default で言葉を用意した画面以外では、ブラウザの英語を出さず、これまでどおり何も開かない
+			return;
 		}
 		alert({
 			type: 'error',
@@ -350,6 +349,7 @@ export function inputText(props: {
 	default: string;
 	minLength?: number;
 	maxLength?: number;
+	hideMinLengthUntilInput?: boolean;
 }): Promise<MkDialogReturnType<string>>;
 // min lengthが指定されてたら result は null になり得ないことを保証する overload function
 export function inputText(props: {
@@ -361,6 +361,7 @@ export function inputText(props: {
 	default?: string;
 	minLength: number;
 	maxLength?: number;
+	hideMinLengthUntilInput?: boolean;
 }): Promise<MkDialogReturnType<string>>;
 export function inputText(props: {
 	type?: 'text' | 'email' | 'password' | 'url';
@@ -371,6 +372,7 @@ export function inputText(props: {
 	default?: string | null;
 	minLength?: number;
 	maxLength?: number;
+	hideMinLengthUntilInput?: boolean;
 }): Promise<MkDialogReturnType<string | null>>;
 export function inputText(props: {
 	type?: 'text' | 'email' | 'password' | 'url';
@@ -381,6 +383,7 @@ export function inputText(props: {
 	default?: string | null;
 	minLength?: number;
 	maxLength?: number;
+	hideMinLengthUntilInput?: boolean;
 }): Promise<MkDialogReturnType<string | null>> {
 	return new Promise(resolve => {
 		const { dispose } = popup(MkDialog, {
@@ -393,6 +396,7 @@ export function inputText(props: {
 				default: props.default ?? null,
 				minLength: props.minLength,
 				maxLength: props.maxLength,
+				hideMinLengthUntilInput: props.hideMinLengthUntilInput,
 			},
 		}, {
 			done: result => {

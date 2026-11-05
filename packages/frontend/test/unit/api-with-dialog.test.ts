@@ -48,20 +48,28 @@ afterEach(() => {
 });
 
 describe('an error that is not an answer from the server', () => {
-	const notAnAnswer: [string, () => Promise<Response>, string][] = [
-		['the network is gone', async () => { throw new TypeError('Failed to fetch'); }, 'Failed to fetch'],
-		['the body of a failed response is empty', async () => new Response('', { status: 502 }), 'JSON'],
+	const notAnAnswer: [string, () => Promise<Response>][] = [
+		['the network is gone', async () => { throw new TypeError('Failed to fetch'); }],
+		['the body of a failed response is empty', async () => new Response('', { status: 502 })],
 	];
 
-	test.each(notAnAnswer)('%s: says it in the language of the screen, not the English of the browser', async (_label, respond, english) => {
+	// develop は err.code.startsWith で止まり、窓を開かなかった。チャットの外の画面はそのまま
+	test.each(notAnAnswer)('%s: a screen without words for it opens no window, and the caller still hears of it', async (_label, respond) => {
 		mocks.respond = respond;
 
-		const dialog = await failedRequest();
+		await expect(os.apiWithDialog('i/update', { name: 'a' })).rejects.toBeDefined();
+		await new Promise(resolve => setTimeout(resolve, 0));
 
-		expect(dialog.title).toBe(i18n.ts.somethingHappened);
-		expect(dialog.text).toBe(i18n.ts.tryAgain);
-		expect(`${dialog.title} ${dialog.text}`).not.toContain(english);
-		expect(`${dialog.title} ${dialog.text}`).not.toContain('undefined');
+		expect(shownDialog()).toBeUndefined();
+	});
+
+	test('a screen with words only for answers of the server opens no window either', async () => {
+		mocks.respond = async () => { throw new TypeError('Failed to fetch'); };
+
+		await expect(os.apiWithDialog('i/update', { name: 'a' }, undefined, { [refusal.id]: { text: 'in our own words' } })).rejects.toBeDefined();
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		expect(shownDialog()).toBeUndefined();
 	});
 
 	test('a screen with words of its own for any failure uses them', async () => {

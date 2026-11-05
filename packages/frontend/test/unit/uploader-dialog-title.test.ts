@@ -89,3 +89,13 @@ test('counts down when a file leaves the list', async () => {
 
 	expect(title()).toBe(i18n.tsx.uploadNFiles({ n: 1 }));
 });
+
+test('does not say zero while the window closes after the last file left', async () => {
+	renderDialog([file('a.png')]);
+	await nextTick();
+
+	mocks.items.value.value.splice(0, 1);
+	await nextTick();
+
+	expect(title()).toBe(i18n.tsx.uploadNFiles({ n: 1 }));
+});

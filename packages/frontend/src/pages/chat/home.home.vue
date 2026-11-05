@@ -109,6 +109,7 @@ async function createRoom() {
 	const { canceled, result } = await os.inputText({
 		title: i18n.ts.name,
 		minLength: 1,
+		hideMinLengthUntilInput: true,
 	});
 	if (canceled) return;
 
