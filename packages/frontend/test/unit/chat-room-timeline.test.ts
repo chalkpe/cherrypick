@@ -150,6 +150,7 @@ import XRoomPage from '@/pages/chat/room.vue';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { chatLeaveErrors } from '@/pages/chat/chat-errors.js';
+import { installFakeResizeObserver, resizeObserved } from './fake-resize-observer.js';
 
 const apiMock = vi.mocked(misskeyApi).getMockImplementation()!;
 
@@ -481,6 +482,430 @@ describe('following the newest message', () => {
 
 			expect(scrollTo).not.toHaveBeenCalled();
 			expect(noticeShown(container)).toBe(false);
+		});
+	});
+
+	// Safari has no scroll anchoring: a message arriving below the reader keeps scrollTop and pushes the place up by its height.
+	describe('in a browser without scroll anchoring', () => {
+		const ITEM_HEIGHT = 100;
+		const VIEW_BOTTOM = 800;
+		// Longer than a scroll takes to count as over
+		const AFTER_SCROLLING = 170;
+		const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+		let heights: Map<string, number>;
+		let restoreLayout: (() => void) | null = null;
+
+		// happy-dom lays nothing out, so this computes what column-reverse does: the content hangs from the bottom edge of the
+		// scroller, scrollTop is the distance from there, and nothing moves scrollTop unless someone writes it.
+		function layOut(container: Element, options: { roundsScrollTop?: boolean } = {}) {
+			const scroller = container.querySelector<HTMLElement>('[style*="overflow-y"]')!;
+			const written: number[] = [];
+			let top = 0;
+			let below = 0;
+			let edgeMoved = 0;
+			let shortened = 0;
+			// A browser tells about a scroll later, in the next frame
+			const tell = () => { setTimeout(() => { scroller.dispatchEvent(new Event('scroll')); }, 0); };
+			Object.defineProperty(scroller, 'scrollTop', {
+				get: () => top,
+				set: (value: number) => {
+					written.push(value);
+					top = options.roundsScrollTop ? Math.round(value) : value;
+					tell();
+				},
+				configurable: true,
+			});
+			scroller.scrollTo = ((to: ScrollToOptions) => { top = to.top!; tell(); }) as typeof scroller.scrollTo;
+
+			const heightOf = (item: Element) => heights.get(item.querySelector('[data-testid="bubble"]')?.getAttribute('data-id') ?? '') ?? ITEM_HEIGHT;
+			const spy = vi.spyOn(window.Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+				const box = (from: number, to: number) => ({ top: from, bottom: to, left: 0, right: 0, x: 0, y: from, width: 0, height: to - from, toJSON: () => ({}) }) as DOMRect;
+				if (this === scroller) return box(0, VIEW_BOTTOM + edgeMoved);
+				if (this.firstElementChild?.getAttribute('data-testid') !== 'bubble') return box(0, 0);
+				let bottom = VIEW_BOTTOM - top - below - shortened;
+				for (let next = this.nextElementSibling; next != null; next = next.nextElementSibling) bottom -= heightOf(next);
+				const sliding = Number((this as HTMLElement).style.transform.match(/, ([\d.-]+)\)$/)?.[1] ?? 0);
+				return box(bottom - heightOf(this) + sliding, bottom + sliding);
+			});
+			restoreLayout = () => spy.mockRestore();
+
+			return {
+				scroller,
+				written,
+				scrollTop: () => top,
+				growBelow: (height: number) => { below += height; },
+				moveBottomEdge: (height: number) => { edgeMoved += height; },
+				shortenFromBelow: (height: number) => { shortened += height; edgeMoved -= height; },
+				topOf: (id: string) => container.querySelector(`[data-id="${id}"]`)!.parentElement!.getBoundingClientRect().top,
+				// Scrolling by hand, without writing scrollTop
+				async scrollBy(distance: number) {
+					top += distance;
+					scroller.dispatchEvent(new Event('scroll'));
+					await flush();
+				},
+				async readAt(scrollTop: number) {
+					top = scrollTop;
+					scroller.dispatchEvent(new Event('scroll'));
+					await wait(AFTER_SCROLLING);
+				},
+			};
+		}
+
+		const CONTENT_RESIZED = 1000;
+
+		beforeEach(() => {
+			heights = new Map();
+			installFakeResizeObserver();
+			vi.stubGlobal('CSS', { supports: (property: string) => property !== 'overflow-anchor', escape: (text: string) => text });
+		});
+
+		afterEach(() => {
+			restoreLayout?.();
+			restoreLayout = null;
+			vi.unstubAllGlobals();
+		});
+
+		test.each([
+			['from someone else', 'alice'],
+			['of mine from another device', 'me'],
+		])('keeps the place when a message comes %s', async (_what, fromUserId) => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
+
+			heights.set('m101', 160);
+			await arrive(message('m101', fromUserId, 100 * MINUTE));
+
+			expect(layout.topOf('m090')).toBe(place);
+			expect(layout.scrollTop()).toBe(-1160);
+		});
+
+		test('keeps the place when reading again after a reconnect brings what was missed', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
+
+			mocks.timeline = [message('m102', 'alice', 102 * MINUTE), message('m101', 'alice', 101 * MINUTE), ...mocks.timeline as ReturnType<typeof message>[]].slice(0, FULL_PAGE);
+			await readAgainAfterReconnect();
+
+			expect(layout.topOf('m090')).toBe(place);
+		});
+
+		// An edit, a reaction, a deletion or a picture that loads late only changes a height, which the observer tells about
+		test.each([
+			['grows', 260],
+			['shrinks', 40],
+		])('keeps the place when a message below it %s', async (_what, height) => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
+
+			heights.set('m100', height);
+			resizeObserved(CONTENT_RESIZED);
+			await flush();
+
+			expect(layout.topOf('m090')).toBe(place);
+		});
+
+		// The message box is stuck to the bottom of the same scroller and grows with what is typed in it
+		test('keeps the place when something else inside the scroller grows below it, and does not jump at the next message', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
+			const content = container.querySelector('[class*="chatTab"]')!;
+
+			layout.growBelow(60);
+			resizeObserved(CONTENT_RESIZED, content);
+			await flush();
+			expect(layout.topOf('m090')).toBe(place);
+
+			await arrive(message('m101', 'alice', 101 * MINUTE));
+			expect(layout.topOf('m090')).toBe(place);
+		});
+
+		// On a phone the bottom edge of the scroller and the message box move together when the box takes the focus, and nothing on screen moves
+		test('writes nothing when the scroller changes but the place stays where it is on screen', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+			const finger = container.querySelector('[data-id="m090"]')!;
+
+			await fireEvent.touchStart(finger);
+			layout.moveBottomEdge(56);
+			await fireEvent.touchEnd(finger, { touches: [] });
+			resizeObserved(CONTENT_RESIZED, layout.scroller);
+			await flush();
+
+			expect(layout.written).toEqual([]);
+		});
+
+		test('keeps the place when the scroller itself gets shorter and takes the content up with its bottom edge', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
+
+			layout.shortenFromBelow(60);
+			resizeObserved(CONTENT_RESIZED, layout.scroller);
+			await flush();
+
+			expect(layout.topOf('m090')).toBe(place);
+		});
+
+		test('does not drift over many messages when the browser rounds scrollTop', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container, { roundsScrollTop: true });
+			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
+
+			for (let i = 1; i <= 6; i++) {
+				heights.set(`m1${String(i).padStart(2, '0')}`, 41.3);
+				await arrive(message(`m1${String(i).padStart(2, '0')}`, 'alice', (100 + i) * MINUTE));
+				// The scroll event of the write comes in between
+				await wait(5);
+			}
+
+			expect(Math.abs(layout.topOf('m090') - place)).toBeLessThanOrEqual(0.5);
+		});
+
+		test('keeps up with messages that come right after each other', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
+
+			await arrive(message('m101', 'alice', 101 * MINUTE));
+			await wait(5);
+			await arrive(message('m102', 'alice', 102 * MINUTE));
+
+			expect(layout.topOf('m090')).toBe(place);
+		});
+
+		test('follows near the newest message as before, writing nothing of its own', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-100);
+
+			await arrive(message('m101', 'alice', 101 * MINUTE));
+
+			expect(layout.scrollTop()).toBe(0);
+			expect(layout.written).toEqual([]);
+		});
+
+		test('leaves a change alone near the newest message', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-100);
+
+			heights.set('m100', 260);
+			resizeObserved(CONTENT_RESIZED);
+			await flush();
+
+			expect(layout.written).toEqual([]);
+		});
+
+		test.each([
+			['the answer to the send', true],
+			['the message', false],
+		])('goes to the newest message after sending from here, when %s comes first', async (_first, answerFirst) => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+
+			if (answerFirst) mocks.sendFromForm.value!('m101');
+			await arrive(message('m101', 'me', 101 * MINUTE));
+			if (!answerFirst) mocks.sendFromForm.value!('m101');
+			await flush();
+			await flush();
+			await wait(AFTER_SCROLLING);
+
+			expect(layout.scrollTop()).toBe(0);
+		});
+
+		test('goes to the newest message when the notice is pressed, and follows from there', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+			await arrive(message('m101', 'alice', 101 * MINUTE));
+
+			await fireEvent.click(notice(container)!);
+			await wait(AFTER_SCROLLING);
+			await arrive(message('m102', 'alice', 102 * MINUTE));
+
+			expect(layout.scrollTop()).toBe(0);
+		});
+
+		// Writing scrollTop under a finger or during momentum stops the scroll on iOS
+		test('writes nothing while a finger is on the screen, and puts the place back when it lifts', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
+			const finger = container.querySelector('[data-id="m090"]')!;
+
+			await fireEvent.touchStart(finger);
+			await arrive(message('m101', 'alice', 101 * MINUTE));
+			heights.set('m100', 260);
+			resizeObserved(CONTENT_RESIZED);
+			await flush();
+			expect(layout.written).toEqual([]);
+
+			await fireEvent.touchEnd(finger, { touches: [] });
+			expect(layout.topOf('m090')).toBe(place);
+		});
+
+		test('writes nothing while the page keeps scrolling after the finger left, nor when it stops', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+
+			await layout.scrollBy(-30);
+			await arrive(message('m101', 'alice', 101 * MINUTE));
+			await layout.scrollBy(-30);
+			heights.set('m100', 260);
+			resizeObserved(CONTENT_RESIZED);
+			await flush();
+			await layout.scrollBy(-30);
+			await wait(AFTER_SCROLLING);
+
+			// A jump at the moment it stops would be worse than the one that already happened
+			expect(layout.written).toEqual([]);
+		});
+
+		test('keeps the place it stopped at once scrolling is over', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+			await layout.scrollBy(-40);
+			await wait(AFTER_SCROLLING);
+			const place = layout.topOf('m090');
+
+			await arrive(message('m101', 'alice', 101 * MINUTE));
+
+			expect(layout.topOf('m090')).toBe(place);
+		});
+
+		// When the content gets shorter under someone at the very top, the browser pulls scrollTop in by itself and tells about it like about any scroll
+		test('does not take that for scrolling when the browser pulls scrollTop in and the place stays on screen', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
+
+			heights.set('m100', 40);
+			await layout.scrollBy(60);
+			expect(layout.topOf('m090')).toBe(place);
+			await arrive(message('m101', 'alice', 101 * MINUTE));
+
+			expect(layout.topOf('m090')).toBe(place);
+		});
+
+		// The joint gets lower as it joins a group. The place is below it and does not move, so nothing should correct for it
+		test('writes nothing when earlier messages load, then or afterwards', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1200);
+			const below = layout.topOf('m090');
+			mocks.timeline = [message('m80', 'alice', 0)];
+			heights.set('m081', 60);
+
+			await fireEvent.click(moreButton(container));
+			await flush();
+			await flush();
+			resizeObserved(CONTENT_RESIZED);
+			await flush();
+
+			expect(container.querySelector('[data-id="m80"]')).not.toBeNull();
+			expect(layout.written).toEqual([]);
+			expect(layout.topOf('m090')).toBe(below);
+		});
+
+		// The button goes before the earlier messages come in. TransitionGroup measures in between, and the browser pulls in a reader at the very top.
+		test('puts back what the browser moved when the last earlier messages load', async () => {
+			const { container } = await renderRoom();
+			const scroller = container.querySelector<HTMLElement>('[style*="overflow-y"]')!;
+			const written: number[] = [];
+			let top = -1200;
+			let pulledIn = false;
+			Object.defineProperty(scroller, 'scrollTop', {
+				get: () => {
+					if (!pulledIn && container.querySelector('[data-id="m80"]') != null) {
+						pulledIn = true;
+						top = -1158;
+					}
+					return top;
+				},
+				set: (value: number) => { written.push(value); top = value; },
+				configurable: true,
+			});
+			mocks.timeline = [message('m80', 'alice', 0)];
+
+			await fireEvent.click(moreButton(container));
+			await flush();
+			await flush();
+
+			expect(written).toEqual([-1200]);
+		});
+
+		// TransitionGroup slides a moved bubble from where it was with a transform that ends at nothing
+		test('is not fooled by a bubble still sliding into place', async () => {
+			vi.stubGlobal('DOMMatrixReadOnly', class { m42: number; constructor(transform: string) { this.m42 = Number(transform.match(/, ([\d.-]+)\)$/)![1]); } });
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			const topmost = container.querySelector('[data-id="m082"]')!.parentElement!;
+			topmost.style.transform = 'matrix(1, 0, 0, 1, 0, 42)';
+			await layout.readAt(-1000);
+
+			topmost.style.transform = 'matrix(1, 0, 0, 1, 0, 10)';
+			resizeObserved(CONTENT_RESIZED);
+			await flush();
+			topmost.style.transform = '';
+			resizeObserved(CONTENT_RESIZED);
+			await flush();
+
+			expect(layout.written).toEqual([]);
+		});
+
+		test('does not get in the way of a browser that has scroll anchoring', async () => {
+			vi.stubGlobal('CSS', { supports: () => true, escape: (text: string) => text });
+			const { container } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+
+			await arrive(message('m101', 'alice', 101 * MINUTE));
+			heights.set('m100', 260);
+			resizeObserved(CONTENT_RESIZED);
+			await flush();
+			await fireEvent.touchStart(container.querySelector('[data-id="m090"]')!);
+			await fireEvent.touchEnd(container.querySelector('[data-id="m090"]')!, { touches: [] });
+			await wait(AFTER_SCROLLING);
+
+			expect(layout.written).toEqual([]);
+			expect(layout.scrollTop()).toBe(-1000);
+		});
+
+		test('stops listening when the page goes away', async () => {
+			const added = vi.spyOn(window, 'addEventListener');
+			const removed = vi.spyOn(window, 'removeEventListener');
+			const { container, unmount } = await renderRoom();
+			const layout = layOut(container);
+			await layout.readAt(-1000);
+
+			unmount();
+			await wait(AFTER_SCROLLING);
+
+			const count = (spy: typeof added, type: string) => spy.mock.calls.filter(([called]) => called === type).length;
+			for (const type of ['scroll', 'touchstart', 'touchend', 'touchcancel']) {
+				expect(count(added, type), type).toBeGreaterThan(0);
+				expect(count(removed, type), type).toBe(count(added, type));
+			}
+			added.mockRestore();
+			removed.mockRestore();
 		});
 	});
 

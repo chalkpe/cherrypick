@@ -747,17 +747,38 @@ test.describe('Chat', () => {
 	}
 
 	// 画面キーボードは試験で出せないので、スクロールアンカーの効き方と、読んでいる場所が動かないことを確かめる
-	for (const [where, options] of [
-		['on a laptop', { viewport: { width: 1280, height: 720 } }],
+	for (const [where, options, scrollAnchoring] of [
+		['on a laptop', { viewport: { width: 1280, height: 720 } }, true],
 		['on an Android phone', {
 			viewport: { width: 412, height: 915 },
 			isMobile: true,
 			hasTouch: true,
 			userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
-		}],
+		}, true],
+		// Safari にはスクロールアンカーがない。CI に WebKit がないので、Chromium のスクロールアンカーを切って同じ状況を作る
+		['on an iPhone, without scroll anchoring', {
+			viewport: { width: 390, height: 664 },
+			isMobile: true,
+			hasTouch: true,
+			userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+		}, false],
 	] as const) {
 		test.describe(`reading a room ${where}`, () => {
 			test.use(options);
+
+			if (!scrollAnchoring) {
+				test.beforeEach(async ({ page }) => {
+					await page.addInitScript(() => {
+						const supports = CSS.supports.bind(CSS) as (...args: string[]) => boolean;
+						CSS.supports = ((...args: string[]) => args[0] === 'overflow-anchor' ? false : supports(...args)) as typeof CSS.supports;
+						window.addEventListener('DOMContentLoaded', () => {
+							const style = window.document.createElement('style');
+							style.textContent = '* { overflow-anchor: none !important; }';
+							window.document.head.append(style);
+						});
+					});
+				});
+			}
 
 			const overflowAnchors = (page: Page) => page.evaluate(() => ({
 				html: window.getComputedStyle(window.document.documentElement).overflowAnchor,
@@ -769,7 +790,7 @@ test.describe('Chat', () => {
 				window.document.querySelector('._pageScrollableReversed')?.scrollTo({ top: value, behavior: 'instant' });
 			}, top);
 
-			test('turns off scroll anchoring for the page only while the conversation is on screen', async ({ page }) => {
+			if (scrollAnchoring) test('turns off scroll anchoring for the page only while the conversation is on screen', async ({ page }) => {
 				const room = await roomToReadFarAbove(page);
 
 				// メッセージの欄では切らない。切ると、読み返しているあいだに届いた分だけ読んでいた場所がずれる
@@ -819,8 +840,41 @@ test.describe('Chat', () => {
 				await scrollMessagesTo(page, -100000);
 				await expect(reading).toBeInViewport();
 				expect(await distanceFromNewest(page)).toBeGreaterThan(400);
+				// スクロールしている途中ではなく、止まって読んでいるところ
+				await settle(page);
 				const before = (await reading.boundingBox())!.y;
 				return async () => Math.abs((await reading.boundingBox())!.y - before);
+			}
+
+			/** @returns 描画された各フレームの中で読んでいた場所が最も動いた量を返す関数。ResizeObserver は描画の直前に呼ばれるので、そのあとで測る */
+			async function watchEveryFrame(reading: Locator): Promise<() => Promise<number>> {
+				const handle = await reading.evaluateHandle(el => {
+					const start = el.getBoundingClientRect().top;
+					const state = { worst: 0, stop: false };
+					const channel = new MessageChannel();
+					// 測るまでのあいだに届いた変更は、まだ描画の機会を迎えていないので数えない
+					let changed = false;
+					const observer = new MutationObserver(() => { changed = true; });
+					observer.observe(window.document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+					channel.port1.onmessage = () => {
+						if (!changed) state.worst = Math.max(state.worst, Math.abs(el.getBoundingClientRect().top - start));
+					};
+					const frame = () => {
+						if (state.stop) {
+							observer.disconnect();
+							return;
+						}
+						changed = false;
+						channel.port2.postMessage(null);
+						window.requestAnimationFrame(frame);
+					};
+					window.requestAnimationFrame(frame);
+					return state;
+				});
+				return () => handle.evaluate(state => {
+					state.stop = true;
+					return state.worst;
+				});
 			}
 
 			test('sending from far above goes to the newest message', async ({ page }) => {
@@ -891,6 +945,24 @@ test.describe('Chat', () => {
 				await page.getByText(`line 1 of ${room.id}`).waitFor({ state: 'attached' });
 				await expect.poll(moved).toBeLessThan(4);
 				await expect(newMessageNotice(page)).toBeHidden();
+			});
+
+			test('a message and a change to it stay out of the place in every frame, not only in the end', async ({ page }) => {
+				const room = await roomToReadFarAbove(page);
+				await readFarAbove(page, room.reading);
+				const worstMove = await watchEveryFrame(room.reading);
+
+				const text = `watched ${room.id}`;
+				const { id } = await room.sayAs(bob, `${text}\n.\n.\n.`);
+				await page.getByText(text).waitFor({ state: 'attached' });
+				await settle(page);
+				await api(BASE_URL, 'chat/messages/react', { i: alice.token, messageId: id, reaction: '👍' });
+				await settle(page);
+				await api(BASE_URL, 'chat/messages/delete', { i: bob.token, messageId: id });
+				await expect(page.getByText(text)).toHaveCount(0);
+				await settle(page);
+
+				expect(await worstMove()).toBeLessThan(2);
 			});
 
 			test('near the newest message, follows even a tall message and says nothing', async ({ page }) => {

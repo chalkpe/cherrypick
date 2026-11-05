@@ -79,6 +79,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</div>
 
 							<TransitionGroup
+								ref="timelineItemsEl"
 								:enterActiveClass="prefer.s.animation ? $style.transition_x_enterActive : ''"
 								:leaveActiveClass="prefer.s.animation ? $style.transition_x_leaveActive : ''"
 								:enterFromClass="prefer.s.animation ? $style.transition_x_enterFrom : ''"
@@ -192,6 +193,7 @@ import { acct as getAcct } from '@@/js/user.js';
 import { isFriendly } from '@/utility/is-friendly.js';
 import { deviceKind } from '@/utility/device-kind.js';
 import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
+import { useChatReadingPlace } from '@/composables/use-chat-reading-place.js';
 import { useElementWidth } from '@/composables/use-element-width.js';
 import { focusTrap } from '@/utility/focus-trap.js';
 import { isTouchUsing } from '@/utility/touch.js';
@@ -256,6 +258,7 @@ let roomDeletedWhileInactive = false;
 const connection = ref<Misskey.IChannelConnection<Misskey.Channels['chatUser']> | Misskey.IChannelConnection<Misskey.Channels['chatRoom']> | null>(null);
 const showIndicator = ref(false);
 const timelineEl = useTemplateRef('timelineEl');
+const timelineItemsEl = useTemplateRef('timelineItemsEl');
 const timeline = makeDateSeparatedTimelineComputedRef(messages);
 // 画面には古い順に並べる
 const displayTimeline = computed(() => timeline.value.toReversed());
@@ -266,6 +269,18 @@ const voiceCallState = useChatRoomVoiceCall(room);
 const SCROLL_HEAD_THRESHOLD = 200;
 // スクロール位置は小数になることがあるので、このくらいの差は最下部とみなす
 const SCROLL_BOTTOM_TOLERANCE = 2;
+
+const readingPlace = useChatReadingPlace({
+	timeline: timelineEl,
+	items: () => Array.from<Element>(timelineItemsEl.value?.$el.children ?? []),
+	nearNewest: SCROLL_HEAD_THRESHOLD,
+});
+
+// TransitionGroup は描き直す前後で吹き出しの位置を比べ、動いた分をなめらかに動かす。先に場所を戻さないと、戻した分までもう一度動いて見える。
+// post の watch は変更の時点で積まれるので、描き直しで積まれる TransitionGroup の updated より先に走る
+watch([displayTimeline, groupPositions], () => {
+	readingPlace.keep();
+}, { flush: 'post' });
 
 // 追従するのは最新のメッセージが変わったときだけ。編集やリアクション、古いメッセージの読み込みでは動かさない。
 // ボタンを押している途中に動かすと、ボタンが逃げて押せなくなる
@@ -502,10 +517,7 @@ async function fetchMore() {
 		includeDeleted: true,
 	});
 
-	// 読み込んだ分とのつなぎ目の吹き出しは、まとまりの途中になって低くなることがある。ブラウザがそれを基準に位置を保つと、その下の読んでいた場所が詰まった分だけずれる。
-	// column-reverseのscrollTopは下端からの距離で、つなぎ目より下は変わらないので、同じ値に戻せば読んでいた場所は動かない
-	const scrollContainer = getScrollContainer(timelineEl.value);
-	const scrollTop = scrollContainer?.scrollTop;
+	const earlierLoaded = readingPlace.whileLoadingEarlier();
 
 	messages.value.push(...newMessages.map(x => normalizeMessage(x)));
 
@@ -513,7 +525,7 @@ async function fetchMore() {
 	moreFetching.value = false;
 
 	await nextTick();
-	if (scrollContainer != null && scrollTop != null) scrollContainer.scrollTop = scrollTop;
+	earlierLoaded();
 }
 
 function onMessage(message: Misskey.entities.ChatMessageLite) {
