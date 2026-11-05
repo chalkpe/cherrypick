@@ -159,8 +159,9 @@ onMounted(async () => {
 	height: 28px;
 	border: none;
 	border-radius: 100%;
-	background: var(--MI_THEME-error);
-	color: var(--MI_THEME-fgOnAccent);
+	// fgOnAccent はアクセント色の上の色なので、テーマによっては赤の上で読めない
+	background: var(--MI_THEME-buttonBg);
+	color: var(--MI_THEME-error);
 	margin: auto 8px auto auto;
 	cursor: pointer;
 	transition: opacity 0.2s;

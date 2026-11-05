@@ -167,6 +167,21 @@ test.describe('Chat', () => {
 			await expectAliceAndBobTalk(page, room.id);
 		});
 
+		test('to an archived room can only be rejected from the notification, as in the list of invitations', async ({ page }) => {
+			const room = await roomInvitingAlice();
+			await api(BASE_URL, 'chat/rooms/update', { i: bob.token, roomId: room.id, isArchived: true });
+
+			await page.goto(`${BASE_URL}/my/notifications`);
+
+			// ほかの試験の招待の通知も並んでいる
+			const notification = page.locator(`a[href$="/chat/room/${room.id}"]`).first().locator('xpath=ancestor::div[.//button][1]');
+			const reject = notification.getByRole('button', { name: 'Reject' });
+			await expect(reject).toBeVisible();
+			await expect(notification.getByRole('button', { name: 'Join' })).toHaveCount(0);
+			await reject.click();
+			await expect(notification.getByText('Rejected', { exact: true })).toBeVisible();
+		});
+
 		test('can be sent to a friend by picking them, and the friend who accepts can talk', async ({ page }) => {
 			const room = await api(BASE_URL, 'chat/rooms/create', { i: alice.token, name: 'room of alice' }) as { id: string };
 			await page.goto(`${BASE_URL}/chat/room/${room.id}`);
@@ -1086,6 +1101,44 @@ test.describe('Chat', () => {
 			});
 		});
 	}
+
+	test.describe('in the dark theme', () => {
+		test.use({ viewport: { width: 1280, height: 720 }, colorScheme: 'dark' });
+
+		// 操作できる図形に求められる 3:1 (WCAG 1.4.11)。背景は半透明のことがあるので、不透明なところまで重ねて測る
+		const contrastOf = (locator: Locator) => locator.evaluate(el => {
+			const channels = (color: string) => color.match(/[\d.]+/g)!.map(Number);
+			const over = (top: number[], below: number[]) => {
+				const alpha = top[3] ?? 1;
+				return [0, 1, 2].map(i => top[i] * alpha + below[i] * (1 - alpha));
+			};
+			const layers: number[][] = [];
+			for (let at: Element | null = el; at != null; at = at.parentElement) layers.push(channels(window.getComputedStyle(at).backgroundColor));
+			const background = layers.reduceRight((below, top) => over(top, below), [255, 255, 255]);
+			const foreground = over(channels(window.getComputedStyle(el).color), background);
+			const luminance = (rgb: number[]) => {
+				const [r, g, b] = rgb.map(v => {
+					const c = v / 255;
+					return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+				});
+				return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+			};
+			const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+			return (lighter + 0.05) / (darker + 0.05);
+		});
+
+		test('the button to cancel an invitation can be told from what it is on', async ({ page }) => {
+			const room = await api(BASE_URL, 'chat/rooms/create', { i: alice.token, name: `dark room ${Date.now()}` }) as { id: string };
+			await api(BASE_URL, 'chat/rooms/invitations/create', { i: alice.token, roomId: room.id, userId: bob.id });
+			await page.goto(`${BASE_URL}/chat/room/${room.id}`);
+			await page.locator('button:has(i.ti-users)', { hasText: 'Members' }).first().click();
+
+			const cancel = page.getByRole('button', { name: /Cancel the invitation sent to/ });
+			await expect(cancel).toBeVisible();
+
+			expect(await contrastOf(cancel)).toBeGreaterThanOrEqual(3);
+		});
+	});
 
 	test.describe('a failure from the server', () => {
 		test.use({ viewport: { width: 1280, height: 720 } });
