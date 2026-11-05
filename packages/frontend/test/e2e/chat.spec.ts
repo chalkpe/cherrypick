@@ -846,7 +846,8 @@ test.describe('Chat', () => {
 				const chooser = page.waitForEvent('filechooser');
 				await page.getByText('Upload', { exact: true }).click();
 				await (await chooser).setFiles({ name: 'one.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64') });
-				await page.locator('button:has(i.ti-upload):visible').click();
+				// 閉じる途中のメニューにも同じ名前の項目がある (あちらの役割は menuitem)
+				await page.getByRole('button', { name: 'Upload' }).click();
 				// アップロードが終わるとウィンドウが閉じて、添付が入力欄に入る
 				await expect(page.getByText('Upload 1 files', { exact: true })).toHaveCount(0);
 
