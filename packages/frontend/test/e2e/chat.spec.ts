@@ -512,6 +512,28 @@ test.describe('Chat', () => {
 				await expect.poll(() => outbox(roomId)).toEqual([bob.id, carol.id].toSorted());
 			});
 
+			test('while the search is on its way, keeps the last results and does not say nobody', async ({ page }) => {
+				await openInviteWindow(page, 'slow search');
+				let release = () => {};
+				const held = new Promise<void>(resolve => { release = resolve; });
+
+				await search(page, 'bob');
+				await row(page, 'bob').click();
+				await page.route('**/api/users/search-by-username-and-host', async route => {
+					await held;
+					await route.fallback();
+				});
+
+				await search(page, 'nobodyhere');
+
+				await expect(row(page, 'bob')).toBeVisible();
+				await expect(page.getByText('No users', { exact: false })).toHaveCount(0);
+
+				release();
+				await expect(row(page, 'bob')).toHaveCount(0);
+				await expect(page.getByText(/No users|not found/i).first()).toBeVisible();
+			});
+
 			test('at the limit of invitations, says so in the language of the screen and stops asking', async ({ page }) => {
 				const roomId = await openInviteWindow(page, 'limit');
 				let asked = 0;

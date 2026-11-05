@@ -408,3 +408,110 @@ describe('choosing several people', () => {
 		expect(dialog.emitted().okMultiple).toBeUndefined();
 	});
 });
+
+describe('while an answer is on its way', () => {
+	const bob = { id: 'bob', username: 'bob', host: 'remote.example', name: 'Remote Bob' };
+	const usernameField = () => screen.getByLabelText(i18n.ts.username);
+	const noUsers = () => screen.queryByText(i18n.ts.noUsers);
+
+	function answerSearchWith(pending: ReturnType<typeof deferred<unknown[]>>) {
+		mocks.api.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'users/search-by-username-and-host') return params.username === 'alice' ? [remoteUser] : pending.promise;
+			if (endpoint === 'users/show' && 'username' in params) throw new Error('No such user');
+			return [];
+		});
+	}
+
+	test('does not say nobody before the first answer comes, and says so once it does', async () => {
+		const pending = deferred<unknown[]>();
+		answerSearchWith(pending);
+		renderDialog();
+
+		await fireEvent.update(usernameField(), 'nobody@remote.example');
+		expect(noUsers()).toBeNull();
+
+		pending.resolve([]);
+		expect(await screen.findByText(i18n.ts.noUsers)).toBeTruthy();
+	});
+
+	test('keeps the last results until the next answer comes, none of them selected', async () => {
+		const pending = deferred<unknown[]>();
+		answerSearchWith(pending);
+		renderDialog();
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+		await fireEvent.click(await screen.findByRole('button', { name: /Remote Alice/ }));
+
+		await fireEvent.update(usernameField(), 'bob@remote.example');
+
+		const stale = screen.getByRole('button', { name: /Remote Alice/ });
+		expect(stale.getAttribute('aria-pressed')).toBe('false');
+		expect(screen.getByRole('button', { name: 'Confirm' }).hasAttribute('disabled')).toBe(true);
+		expect(noUsers()).toBeNull();
+
+		pending.resolve([bob]);
+		await screen.findByRole('button', { name: /Remote Bob/ });
+		expect(screen.queryByRole('button', { name: /Remote Alice/ })).toBeNull();
+	});
+
+	test('someone pressed in the last results does not stay chosen once they are gone from the answer', async () => {
+		const pending = deferred<unknown[]>();
+		answerSearchWith(pending);
+		renderDialog();
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+		const person = await screen.findByRole('button', { name: /Remote Alice/ });
+		await fireEvent.update(usernameField(), 'bob@remote.example');
+
+		await fireEvent.click(person);
+		expect(screen.getByRole('button', { name: 'Confirm' }).hasAttribute('disabled')).toBe(false);
+		pending.resolve([bob]);
+		await screen.findByRole('button', { name: /Remote Bob/ });
+
+		expect(screen.getByRole('button', { name: 'Confirm' }).hasAttribute('disabled')).toBe(true);
+	});
+
+	test('an empty answer replaces the last results', async () => {
+		const pending = deferred<unknown[]>();
+		answerSearchWith(pending);
+		renderDialog();
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+		await screen.findByRole('button', { name: /Remote Alice/ });
+
+		await fireEvent.update(usernameField(), 'bob@remote.example');
+		pending.resolve([]);
+
+		expect(await screen.findByText(i18n.ts.noUsers)).toBeTruthy();
+		expect(screen.queryByRole('button', { name: /Remote Alice/ })).toBeNull();
+	});
+
+	test('a failed search says nobody, rather than waiting for ever', async () => {
+		mocks.api.mockImplementation(async endpoint => {
+			if (endpoint === 'users/search-by-username-and-host') throw new Error('offline');
+			return [];
+		});
+		renderDialog();
+
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+
+		expect(await screen.findByText(i18n.ts.noUsers)).toBeTruthy();
+	});
+
+	test('keeps the last results while the lookup is on its way, too', async () => {
+		const lookup = deferred<typeof remoteUser>();
+		mocks.api.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'users/search-by-username-and-host') return [otherUser];
+			return 'userIds' in params ? [] : lookup.promise;
+		});
+		renderDialog();
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+		await screen.findByRole('button', { name: /Remote Bob/ });
+
+		await fireEvent.click(screen.getByRole('button', { name: i18n.ts.lookup }));
+
+		expect(screen.queryByRole('button', { name: /Remote Bob/ })).not.toBeNull();
+		expect(noUsers()).toBeNull();
+
+		lookup.resolve(remoteUser);
+		await screen.findByRole('button', { name: /Remote Alice/ });
+		expect(screen.queryByRole('button', { name: /Remote Bob/ })).toBeNull();
+	});
+});

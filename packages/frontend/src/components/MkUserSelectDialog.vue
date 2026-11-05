@@ -67,7 +67,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<i v-if="multiple && isSelected(user)" class="ti ti-check" :class="$style.userCheck" aria-hidden="true"></i>
 				</button>
 			</div>
-			<div v-else-if="searching" :class="$style.empty">
+			<div v-else-if="searching && !waitingForUsers" :class="$style.empty">
 				<span>{{ i18n.ts.noUsers }}</span>
 			</div>
 		</div>
@@ -121,6 +121,8 @@ const pickedUsers = ref<Misskey.entities.UserLite[]>([]);
 const unavailableReasons = ref<Record<string, string>>({});
 const dialogEl = useTemplateRef('dialogEl');
 const lookingUp = ref(false);
+// 答えが来るまでは前の結果を出したままにし、まだ分からないうちは「誰もいない」と言わない
+const waitingForUsers = ref(false);
 let requestId = 0;
 
 const searchQuery = computed(() => {
@@ -177,22 +179,35 @@ function onDblclickUser() {
 function search() {
 	const currentRequestId = ++requestId;
 	selected.value = null;
-	users.value = [];
 	lookingUp.value = false;
 	const query = searchQuery.value;
-	if (query == null || (username.value.trim() === '' && host.value.trim() === '')) return;
+	if (query == null || (username.value.trim() === '' && host.value.trim() === '')) {
+		users.value = [];
+		waitingForUsers.value = false;
+		return;
+	}
 
+	waitingForUsers.value = true;
 	misskeyApi('users/search-by-username-and-host', {
 		...query,
 		limit: 10,
 		detail: false,
 	}).then(async _users => {
 		if (currentRequestId !== requestId) return;
-		users.value = _users.filter(canSelectUser);
+		showUsers(_users.filter(canSelectUser));
 		await addExactLocalUser(query, currentRequestId);
+		if (currentRequestId === requestId) waitingForUsers.value = false;
 	}).catch(() => {
-		if (currentRequestId === requestId) users.value = [];
+		if (currentRequestId !== requestId) return;
+		showUsers([]);
+		waitingForUsers.value = false;
 	});
+}
+
+// 答えを待つあいだに前の結果の人を押していたら、新しい結果にいないその人を選んだままにしない
+function showUsers(found: Misskey.entities.UserLite[]) {
+	users.value = found;
+	if (selected.value != null && !found.some(user => user.id === selected.value?.id)) selected.value = null;
 }
 
 // 検索は、まだノートを書いていないこのサーバーのユーザーを返さない。ユーザー名を最後まで入れたらその人を選べるようにする
@@ -203,7 +218,7 @@ async function addExactLocalUser(query: { username: string; host: string; }, cur
 
 	try {
 		const user = await misskeyApi('users/show', { username: query.username, host: null });
-		if (currentRequestId === requestId) users.value = [user, ...users.value].filter(canSelectUser);
+		if (currentRequestId === requestId) showUsers([user, ...users.value].filter(canSelectUser));
 	} catch {
 		// そのユーザー名の人はいない
 	}
@@ -214,15 +229,18 @@ async function lookup() {
 	if (!canLookup.value || lookingUp.value || query == null) return;
 	const currentRequestId = ++requestId;
 	selected.value = null;
-	users.value = [];
 	lookingUp.value = true;
+	waitingForUsers.value = true;
 	try {
 		const user = await misskeyApi('users/show', query);
-		if (currentRequestId === requestId) users.value = [user].filter(canSelectUser);
+		if (currentRequestId === requestId) showUsers([user].filter(canSelectUser));
 	} catch {
-		if (currentRequestId === requestId) users.value = [];
+		if (currentRequestId === requestId) showUsers([]);
 	} finally {
-		if (currentRequestId === requestId) lookingUp.value = false;
+		if (currentRequestId === requestId) {
+			lookingUp.value = false;
+			waitingForUsers.value = false;
+		}
 	}
 }
 
@@ -309,7 +327,8 @@ onMounted(() => {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 6px;
-	max-height: 112px;
+	// 画面に余裕があれば広く見せ、キーボードが出ていても結果の場所は残す
+	max-height: max(112px, 30cqh);
 	overflow-y: auto;
 	margin: 6px 0 0;
 	padding: 0;
