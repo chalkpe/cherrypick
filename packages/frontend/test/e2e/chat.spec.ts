@@ -44,6 +44,31 @@ test.describe('Chat', () => {
 	test.describe('on a laptop', () => {
 		test.use({ viewport: { width: 1280, height: 720 } });
 
+		test('a mouse still selects by dragging, and a right click keeps the menu of the browser on a selection', async ({ page }) => {
+			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
+			const message = page.getByText('message 60', { exact: true });
+			await expect(message).toBeVisible();
+			const box = await message.boundingBox();
+			if (box == null) throw new Error('the message has no box');
+			const y = box.y + box.height / 2;
+			const menu = page.getByText('Copy contents', { exact: true });
+
+			await page.mouse.move(box.x + 1, y);
+			await page.mouse.down();
+			await page.mouse.move(box.x + box.width - 1, y, { steps: 8 });
+			await page.mouse.up();
+			expect(await page.evaluate(() => window.getSelection()?.toString())).toContain('message');
+
+			await page.mouse.click(box.x + box.width / 2, y, { button: 'right' });
+			await page.evaluate(() => new Promise(resolve => window.setTimeout(resolve, 300)));
+			await expect(menu).toHaveCount(0);
+			expect(await page.evaluate(() => window.getSelection()?.toString())).toContain('message');
+
+			await page.evaluate(() => window.getSelection()?.removeAllRanges());
+			await page.mouse.click(box.x + box.width / 2, y, { button: 'right' });
+			await expect(menu).toBeVisible();
+		});
+
 		test('keeps the place when earlier messages load', async ({ page }) => {
 			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
 			// 最初に読み込まれるのは新しい 20 件で、続きの 30 件はボタンで読み込む
@@ -364,7 +389,10 @@ test.describe('Chat', () => {
 			userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
 		});
 
+		// Linux の Chromium は合成した長押しから contextmenu を出さないので、実際の指の操作はそれ以外の環境でだけ確かめる
 		test('a long press on a message opens its menu and selects nothing', async ({ page, context }) => {
+			test.skip(process.platform === 'linux', 'Chromium on Linux does not turn a synthesized long press into a contextmenu');
+
 			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
 			const message = page.getByText('message 60', { exact: true });
 			await expect(message).toBeVisible();
@@ -372,11 +400,37 @@ test.describe('Chat', () => {
 			if (box == null) throw new Error('the message has no box');
 
 			const cdp = await context.newCDPSession(page);
-			// 長押しと見なされるまでの時間は OS で違う。CI の Linux でも確実に超える長さで押す
-			await cdp.send('Input.synthesizeTapGesture', { x: box.x + 16, y: box.y + box.height / 2, duration: 1500, gestureSourceType: 'touch' });
+			await cdp.send('Input.synthesizeTapGesture', { x: box.x + 16, y: box.y + box.height / 2, duration: 800, gestureSourceType: 'touch' });
 
 			await expect(page.getByText('Copy contents', { exact: true })).toBeVisible();
 			expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('');
+		});
+
+		// Android の Chrome は、長押しで言葉を選んでから contextmenu を出す (実機で測った順番)
+		test('the contextmenu Android Chrome sends after selecting a word opens the menu and leaves nothing selected', async ({ page }) => {
+			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
+			const message = page.getByText('message 60', { exact: true });
+			await expect(message).toBeVisible();
+
+			await message.evaluate(element => {
+				const range = window.document.createRange();
+				range.selectNodeContents(element);
+				window.getSelection()!.removeAllRanges();
+				window.getSelection()!.addRange(range);
+				const box = element.getBoundingClientRect();
+				element.dispatchEvent(new PointerEvent('contextmenu', { bubbles: true, cancelable: true, pointerType: 'touch', clientX: box.x + 16, clientY: box.y + 8 }));
+			});
+
+			await expect(page.getByText('Copy contents', { exact: true })).toBeVisible();
+			expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('');
+		});
+
+		test('the text of a message does not offer itself for selection to a finger', async ({ page }) => {
+			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
+			const message = page.getByText('message 60', { exact: true });
+			await expect(message).toBeVisible();
+
+			expect(await message.evaluate(element => window.getComputedStyle(element).userSelect)).toBe('none');
 		});
 	});
 
