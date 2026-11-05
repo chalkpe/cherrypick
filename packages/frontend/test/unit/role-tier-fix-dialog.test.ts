@@ -121,13 +121,14 @@ test('안내창에 바뀔 값을 보여주고, 역할 이름은 MFM으로 해석
 
 test('요청 빈도 제한은 부동소수점 오차 없이 백분율로 보여준다', async () => {
 	answer('fix', 'skip');
-	const withFactor = (name: string, lower: number, value: number): RoleTierRole => ({
+	const withFactor = (name: string, lower: number, value: number, priority: number): RoleTierRole => ({
 		...tierRole(name, lower),
-		policies: { rateLimitFactor: { useDefault: false, priority: 0, value } },
+		policies: { rateLimitFactor: { useDefault: false, priority, value } },
 	});
 
+	// 우선순위가 같으면 서버가 더 엄격한 값을 쓰므로, 아래 등급의 우선순위를 높여야 안내가 뜬다.
 	// 2.3 * 100은 229.99999999999997이다.
-	await confirmRoleTierFix(withFactor('높음', 50000, 2.3), [withFactor('낮음', 30000, 1)], { rateLimitFactor: 1 });
+	await confirmRoleTierFix(withFactor('높음', 50000, 2.3, 0), [withFactor('낮음', 30000, 1, 1)], { rateLimitFactor: 1 });
 
 	expect(mocks.actions.mock.calls[1][0].text).toContain('230%');
 });

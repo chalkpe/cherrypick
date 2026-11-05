@@ -202,6 +202,7 @@ function missingFileTypes(types: string[], reference: string[]): string[] {
 
 type RoleTierPolicyState = {
 	useDefault: boolean;
+	priority: number;
 	value: unknown;
 };
 
@@ -220,6 +221,8 @@ function policyRank(key: string, { useDefault, value }: RoleTierPolicyState): nu
 
 function isLowerPolicy(key: string, state: RoleTierPolicyState, reference: RoleTierPolicyState): boolean {
 	if (state.value === reference.value) return false;
+	// 우선순위가 같으면 서버가 이미 더 엄격한 값을 쓰므로, 아래 등급이 빠져도 더 엄격해지지 않는다.
+	if (HIGHER_IS_STRICTER.has(key) && state.priority >= reference.priority) return false;
 	if (Array.isArray(state.value) && Array.isArray(reference.value)) return missingFileTypes(state.value, reference.value).length > 0;
 
 	const rank = policyRank(key, state);

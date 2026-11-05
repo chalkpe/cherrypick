@@ -335,12 +335,12 @@ describe('findLoweredRolePolicies', () => {
 	});
 
 	test.each<[string, string, unknown, unknown, boolean]>([
-		['값이 클수록 엄격한 요청 빈도 제한: 낮아짐', 'rateLimitFactor', 0.5, 1, true],
-		['값이 클수록 엄격한 요청 빈도 제한: 높아짐', 'rateLimitFactor', 2, 1, false],
-		['값이 클수록 엄격한 초대 발급 간격: 낮아짐', 'inviteLimitCycle', 60, 1440, true],
-		['값이 클수록 엄격한 초대 발급 간격: 높아짐', 'inviteLimitCycle', 1440, 60, false],
-		['켜질수록 제약인 NSFW 강제: 낮아짐', 'alwaysMarkNsfw', false, true, true],
-		['켜질수록 제약인 NSFW 강제: 높아짐', 'alwaysMarkNsfw', true, false, false],
+		['요청 빈도 제한: 위 등급이 더 엄격함', 'rateLimitFactor', 0.5, 1, false],
+		['요청 빈도 제한: 위 등급이 더 느슨함', 'rateLimitFactor', 2, 1, false],
+		['초대 발급 간격: 위 등급이 더 엄격함', 'inviteLimitCycle', 60, 1440, false],
+		['초대 발급 간격: 위 등급이 더 느슨함', 'inviteLimitCycle', 1440, 60, false],
+		['NSFW 강제: 위 등급이 더 엄격함', 'alwaysMarkNsfw', false, true, false],
+		['NSFW 강제: 위 등급이 더 느슨함', 'alwaysMarkNsfw', true, false, false],
 		['0이 무제한인 초대 한도: 낮아짐', 'inviteLimit', 0, 5, true],
 		['0이 무제한인 초대 한도: 높아짐', 'inviteLimit', 5, 0, false],
 		['0이 무기한인 초대 만료: 낮아짐', 'inviteExpirationTime', 0, 60, true],
@@ -361,6 +361,28 @@ describe('findLoweredRolePolicies', () => {
 			tierRole('낮음', 30000, null, { [key]: policy(lowerValue) }),
 		);
 		expect(result.length > 0).toBe(expected);
+	});
+
+	describe.each<[string, unknown, unknown]>([
+		['rateLimitFactor', 0.5, 1],
+		['inviteLimitCycle', 60, 1440],
+		['alwaysMarkNsfw', false, true],
+	])('서버가 가장 엄격한 값을 쓰는 %s', (key, looser, stricter) => {
+		test('아래 등급의 우선순위가 더 높으면 상한을 넣을 때 더 엄격해지므로 찾는다', () => {
+			expect(lowered(
+				{ [key]: stricter },
+				tierRole('높음', 50000),
+				tierRole('낮음', 30000, null, { [key]: policy(looser, 1) }),
+			)).toEqual([['높음', key, stricter, looser]]);
+		});
+
+		test('아래 등급이 더 엄격해도 위 등급을 낮아진 것으로 보지 않는다', () => {
+			expect(lowered(
+				{ [key]: looser },
+				tierRole('높음', 50000),
+				tierRole('낮음', 30000, null, { [key]: policy(stricter, 1) }),
+			)).toEqual([]);
+		});
 	});
 
 	describe.each(['inviteLimit', 'inviteExpirationTime'])('기본값이 0인 %s', (key) => {
