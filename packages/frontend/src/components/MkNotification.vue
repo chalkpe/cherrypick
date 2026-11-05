@@ -132,7 +132,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				</MkA>
 				<div v-if="full && chatRoomInviteResult != null" :class="$style.text">{{ chatRoomInviteResultText }}</div>
 				<div v-else-if="full" :class="$style.followRequestCommands">
-					<MkButton :class="$style.followRequestCommandButton" rounded primary :disabled="chatRoomInvitePending" @click="acceptChatRoomInvitation()"><i class="ti ti-check"></i> {{ i18n.ts._chat.join }}</MkButton>
+					<MkButton v-if="!notification.invitation.room.isArchived" :class="$style.followRequestCommandButton" rounded primary :disabled="chatRoomInvitePending" @click="acceptChatRoomInvitation()"><i class="ti ti-check"></i> {{ i18n.ts._chat.join }}</MkButton>
 					<MkButton :class="$style.followRequestCommandButton" rounded danger :disabled="chatRoomInvitePending" @click="rejectChatRoomInvitation()"><i class="ti ti-x"></i> {{ i18n.ts._chat.reject }}</MkButton>
 				</div>
 			</template>
@@ -220,6 +220,7 @@ import { userPage } from '@@/js/user.js';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { isApiError } from '@/utility/api-error.js';
+import { chatJoinErrors } from '@/pages/chat/chat-errors.js';
 import { globalEvents } from '@/events.js';
 import { ensureSignin } from '@/i.js';
 import { prefer } from '@/preferences.js';
@@ -300,13 +301,16 @@ async function respondToChatRoomInvitation(endpoint: 'chat/rooms/join' | 'chat/r
 		const result = endpoint === 'chat/rooms/join' ? 'joined' : 'rejected';
 		chatRoomInviteResult.value = result;
 		globalEvents.emit('chatRoomInvitationHandled', props.notification.invitation.room.id, result);
-	} catch {
+	} catch (err) {
 		// 招待がもう無い (招待一覧や別の端末で応じた・取り消された) なら、何度押しても同じく失敗するのでボタンを下げる
 		if (await isChatRoomInvitationGone(props.notification.invitation.room.id)) {
 			chatRoomInviteResult.value = 'gone';
 			globalEvents.emit('chatRoomInvitationHandled', props.notification.invitation.room.id, 'gone');
 		} else {
-			void os.alert({ type: 'error', text: i18n.ts.somethingHappened });
+			// 通知が届いたあとでアーカイブされたときなど、理由の分かる失敗はその理由を伝える
+			const errorId = (err as { id?: unknown } | null | undefined)?.id;
+			const reason = typeof errorId === 'string' ? chatJoinErrors[errorId]?.text : undefined;
+			void os.alert({ type: 'error', text: reason ?? i18n.ts.somethingHappened });
 		}
 	} finally {
 		chatRoomInvitePending.value = false;

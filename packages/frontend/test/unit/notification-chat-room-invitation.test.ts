@@ -175,6 +175,39 @@ for (const action of [0, 1]) {
 	});
 }
 
+// 招待の一覧と同じく、アーカイブされたルームには入れないので断ることだけできる
+test('does not offer joining an archived room, only rejecting', () => {
+	renderNotification(true, { ...notification, invitation: { ...notification.invitation, room: { ...notification.invitation.room, isArchived: true } } });
+
+	expect(screen.queryByRole('button', { name: i18n.ts._chat.join })).toBeNull();
+	expect(screen.getByRole('button', { name: i18n.ts._chat.reject })).toBeTruthy();
+});
+
+// 通知が届いたあとでアーカイブされると、通知の中のルームはまだアーカイブされていない
+test('says why when the room was archived after the notification came', async () => {
+	api.mockImplementation(((endpoint: string) => endpoint === 'chat/rooms/show'
+		? Promise.resolve({ id: 'room1', invitationExists: true })
+		: Promise.reject({ code: 'ROOM_IS_ARCHIVED', id: 'c60a4f18-d3b2-4e75-9c06-7a1e58d3f2b9' })) as never);
+	renderNotification(true);
+
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.join }));
+	await flushPromises();
+
+	expect(vi.mocked(alert)).toHaveBeenCalledExactlyOnceWith({ type: 'error', text: i18n.ts._chat.thisRoomIsArchived });
+});
+
+test('still reports another failure the way it did', async () => {
+	api.mockImplementation(((endpoint: string) => endpoint === 'chat/rooms/show'
+		? Promise.resolve({ id: 'room1', invitationExists: true })
+		: Promise.reject({ code: 'INTERNAL_ERROR', id: 'something-else' })) as never);
+	renderNotification(true);
+
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.join }));
+	await flushPromises();
+
+	expect(vi.mocked(alert)).toHaveBeenCalledExactlyOnceWith({ type: 'error', text: i18n.ts.somethingHappened });
+});
+
 test('disables both actions until the pending request succeeds', async () => {
 	let resolve!: () => void;
 	api.mockImplementationOnce(() => new Promise<void>(done => { resolve = done; }) as never);
