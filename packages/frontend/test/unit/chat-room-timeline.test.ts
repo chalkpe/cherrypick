@@ -485,8 +485,9 @@ describe('following the newest message', () => {
 		});
 	});
 
-	// Safari has no scroll anchoring: a message arriving below the reader keeps scrollTop and pushes the place up by its height.
-	describe('in a browser without scroll anchoring', () => {
+	// Safari up to 18 has no scroll anchoring: a message arriving below the reader keeps scrollTop and pushes the place up by its height.
+	// Chromium and Safari 27 have it, but leave some things alone that get shorter below the reader.
+	describe('keeping the place of someone reading far above', () => {
 		const ITEM_HEIGHT = 100;
 		const VIEW_BOTTOM = 800;
 		// Longer than a scroll takes to count as over
@@ -498,7 +499,9 @@ describe('following the newest message', () => {
 
 		// happy-dom lays nothing out, so this computes what column-reverse does: the content hangs from the bottom edge of the
 		// scroller, scrollTop is the distance from there, and nothing moves scrollTop unless someone writes it.
-		function layOut(container: Element, options: { roundsScrollTop?: boolean } = {}) {
+		// With anchoring, the browser keeps the topmost message it shows in place whenever the layout is read, as Chromium and Safari 27 do.
+		// 'growth-only' leaves something that got shorter alone, and a number makes up for only that part of it.
+		function layOut(container: Element, options: { roundsScrollTop?: boolean; anchoring?: 'full' | 'growth-only' | number } = {}) {
 			const scroller = container.querySelector<HTMLElement>('[style*="overflow-y"]')!;
 			const written: number[] = [];
 			let top = 0;
@@ -508,23 +511,51 @@ describe('following the newest message', () => {
 			// A browser tells about a scroll later, in the next frame
 			const tell = () => { setTimeout(() => { scroller.dispatchEvent(new Event('scroll')); }, 0); };
 			Object.defineProperty(scroller, 'scrollTop', {
-				get: () => top,
+				get: () => {
+					layOutAgain();
+					return top;
+				},
 				set: (value: number) => {
 					written.push(value);
 					top = options.roundsScrollTop ? Math.round(value) : value;
+					anchorAgain();
 					tell();
 				},
 				configurable: true,
 			});
-			scroller.scrollTo = ((to: ScrollToOptions) => { top = to.top!; tell(); }) as typeof scroller.scrollTo;
+			scroller.scrollTo = ((to: ScrollToOptions) => { top = to.top!; anchorAgain(); tell(); }) as typeof scroller.scrollTo;
 
 			const heightOf = (item: Element) => heights.get(item.querySelector('[data-testid="bubble"]')?.getAttribute('data-id') ?? '') ?? ITEM_HEIGHT;
+			const isItem = (el: Element) => el.firstElementChild?.getAttribute('data-testid') === 'bubble';
+			const bottomOf = (item: Element) => {
+				let bottom = VIEW_BOTTOM - top - below - shortened;
+				for (let next = item.nextElementSibling; next != null; next = next.nextElementSibling) bottom -= heightOf(next);
+				return bottom;
+			};
+			const topmostShown = () => [...container.querySelector('[data-testid="bubble"]')?.parentElement?.parentElement?.children ?? []].find(item => isItem(item) && bottomOf(item) > 0) ?? null;
+			let anchored: { item: Element; top: number } | null = null;
+			const anchorAgain = () => {
+				const item = topmostShown();
+				anchored = item == null ? null : { item, top: bottomOf(item) - heightOf(item) };
+			};
+			const layOutAgain = () => {
+				if (options.anchoring == null) return;
+				if (anchored != null && anchored.item.isConnected && top !== 0) {
+					const shift = bottomOf(anchored.item) - heightOf(anchored.item) - anchored.top;
+					const share = shift <= 0 || options.anchoring === 'full' ? 1 : options.anchoring === 'growth-only' ? 0 : options.anchoring;
+					if (Math.abs(shift * share) > 0.001) {
+						top += shift * share;
+						tell();
+					}
+				}
+				anchorAgain();
+			};
 			const spy = vi.spyOn(window.Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
 				const box = (from: number, to: number) => ({ top: from, bottom: to, left: 0, right: 0, x: 0, y: from, width: 0, height: to - from, toJSON: () => ({}) }) as DOMRect;
+				layOutAgain();
 				if (this === scroller) return box(0, VIEW_BOTTOM + edgeMoved);
-				if (this.firstElementChild?.getAttribute('data-testid') !== 'bubble') return box(0, 0);
-				let bottom = VIEW_BOTTOM - top - below - shortened;
-				for (let next = this.nextElementSibling; next != null; next = next.nextElementSibling) bottom -= heightOf(next);
+				if (!isItem(this)) return box(0, 0);
+				const bottom = bottomOf(this);
 				const sliding = Number((this as HTMLElement).style.transform.match(/, ([\d.-]+)\)$/)?.[1] ?? 0);
 				return box(bottom - heightOf(this) + sliding, bottom + sliding);
 			});
@@ -539,13 +570,20 @@ describe('following the newest message', () => {
 				shortenFromBelow: (height: number) => { shortened += height; edgeMoved -= height; },
 				topOf: (id: string) => container.querySelector(`[data-id="${id}"]`)!.parentElement!.getBoundingClientRect().top,
 				// Scrolling by hand, without writing scrollTop
+				// A scroll that the browser has not told about yet
+				jumpTo(scrollTop: number) {
+					top = scrollTop;
+					anchorAgain();
+				},
 				async scrollBy(distance: number) {
 					top += distance;
+					anchorAgain();
 					scroller.dispatchEvent(new Event('scroll'));
 					await flush();
 				},
 				async readAt(scrollTop: number) {
 					top = scrollTop;
+					anchorAgain();
 					scroller.dispatchEvent(new Event('scroll'));
 					await wait(AFTER_SCROLLING);
 				},
@@ -557,7 +595,6 @@ describe('following the newest message', () => {
 		beforeEach(() => {
 			heights = new Map();
 			installFakeResizeObserver();
-			vi.stubGlobal('CSS', { supports: (property: string) => property !== 'overflow-anchor', escape: (text: string) => text });
 		});
 
 		afterEach(() => {
@@ -684,6 +721,21 @@ describe('following the newest message', () => {
 			await arrive(message('m102', 'alice', 102 * MINUTE));
 
 			expect(layout.topOf('m090')).toBe(place);
+		});
+
+		// The scroll is told in the next frame, and a message can come before that
+		test.each([
+			['without', undefined],
+			['with', 'full'],
+		] as const)('follows a message that comes right after going to the newest message, %s scroll anchoring', async (_with, anchoring) => {
+			const { container } = await renderRoom();
+			const layout = layOut(container, { anchoring });
+			await layout.readAt(-1000);
+
+			layout.jumpTo(0);
+			await arrive(message('m101', 'alice', 101 * MINUTE));
+
+			expect(layout.scrollTop()).toBe(0);
 		});
 
 		test('follows near the newest message as before, writing nothing of its own', async () => {
@@ -871,22 +923,99 @@ describe('following the newest message', () => {
 			expect(layout.written).toEqual([]);
 		});
 
-		test('does not get in the way of a browser that has scroll anchoring', async () => {
-			vi.stubGlobal('CSS', { supports: () => true, escape: (text: string) => text });
+		// Chromium and Safari 27 keep the place themselves when something below grows. Doing it again would move it twice
+		test('writes nothing when the browser keeps the place itself', async () => {
 			const { container } = await renderRoom();
-			const layout = layOut(container);
+			const layout = layOut(container, { anchoring: 'full' });
 			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
 
+			heights.set('m101', 160);
 			await arrive(message('m101', 'alice', 101 * MINUTE));
 			heights.set('m100', 260);
 			resizeObserved(CONTENT_RESIZED);
 			await flush();
-			await fireEvent.touchStart(container.querySelector('[data-id="m090"]')!);
-			await fireEvent.touchEnd(container.querySelector('[data-id="m090"]')!, { touches: [] });
+			heights.set('m100', 40);
+			resizeObserved(CONTENT_RESIZED);
+			await flush();
+			await wait(5);
+
+			expect(layout.topOf('m090')).toBe(place);
+			expect(layout.written).toEqual([]);
+		});
+
+		// They leave alone a reaction taken back or an edit that shortens a message, or make up for only part of it
+		test.each([
+			['leaves it alone', 'growth-only'],
+			['makes up for only part of it', 0.16],
+		] as const)('keeps the place when something below gets shorter and the browser %s', async (_what, anchoring) => {
+			const { container } = await renderRoom();
+			const layout = layOut(container, { anchoring });
+			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
+
+			heights.set('m100', 40);
+			resizeObserved(CONTENT_RESIZED);
+			await flush();
+			await wait(5);
+
+			expect(layout.topOf('m090')).toBe(place);
+		});
+
+		// The browser keeps the place when the layout is read, and tells about it like about a scroll, before the observer is called
+		test('does not take the scroll of the browser keeping the place for the reader scrolling', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container, { anchoring: 0.16 });
+			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
+
+			heights.set('m100', 40);
+			layout.topOf('m095');
+			await wait(5);
+			resizeObserved(CONTENT_RESIZED);
+			await flush();
+
+			expect(layout.topOf('m090')).toBe(place);
+		});
+
+		test('keeps the place when something below gets shorter and a message comes right after', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container, { anchoring: 'growth-only' });
+			await layout.readAt(-1000);
+			const place = layout.topOf('m090');
+
+			heights.set('m100', 40);
+			resizeObserved(CONTENT_RESIZED);
+			await arrive(message('m101', 'alice', 101 * MINUTE));
+			await wait(5);
+
+			expect(layout.topOf('m090')).toBe(place);
+		});
+
+		test('follows near the newest message in such a browser too, writing nothing of its own', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container, { anchoring: 'growth-only' });
+			await layout.readAt(-100);
+
+			heights.set('m100', 40);
+			resizeObserved(CONTENT_RESIZED);
+			await flush();
+			await arrive(message('m101', 'alice', 101 * MINUTE));
+
+			expect(layout.scrollTop()).toBe(0);
+			expect(layout.written).toEqual([]);
+		});
+
+		test('goes to the newest message after sending from here in such a browser too', async () => {
+			const { container } = await renderRoom();
+			const layout = layOut(container, { anchoring: 'growth-only' });
+			await layout.readAt(-1000);
+
+			mocks.sendFromForm.value!('m101');
+			await arrive(message('m101', 'me', 101 * MINUTE));
 			await wait(AFTER_SCROLLING);
 
-			expect(layout.written).toEqual([]);
-			expect(layout.scrollTop()).toBe(-1000);
+			expect(layout.scrollTop()).toBe(0);
 		});
 
 		test('stops listening when the page goes away', async () => {

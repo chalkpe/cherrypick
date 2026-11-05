@@ -28,9 +28,12 @@ type ReadingPlace = {
 };
 
 /**
- * スクロールアンカーのないブラウザ (Safari) で、読み返している場所を保つ。
+ * 読み返している場所を保つ。
  * column-reverse の scrollTop は下端からの距離なので、下の吹き出しが増えたり高くなったりしても値が変わらず、読んでいる場所だけが押し上げられる。
- * スクロールアンカーのあるブラウザでは何もしない (両方が直すと 2 倍動く)。
+ * スクロールアンカーのないブラウザ (Safari 18 まで) はそのまま動く。あるブラウザ (Chromium、Safari 27) も、下が縮んだときには直さないことがある
+ * (リアクションを外したときや、編集で短くなったとき)。
+ * そこでどのブラウザでも、読んでいる吹き出しの画面での位置を測り、ずれた分だけを直す。位置を読むとレイアウトが確定し、ブラウザのスクロールアンカーは
+ * そこで済むので、ブラウザが直した分を重ねて動かすことはない。ずれが 1px 未満なら書かない。
  *
  * 指が触れているあいだと慣性で動いているあいだは scrollTop を書かない。iOS では書くとスクロールが止まり、指の動きとも食い違う。
  * その間に起きたずれも、止まったときには直さない (止まった瞬間にもう一度跳ぶほうが読みにくい)。止まったところを新しい読んでいる場所にする。
@@ -44,26 +47,14 @@ export function useChatReadingPlace(options: {
 }): {
 	/** 配置が変わったかもしれないときに呼ぶ */
 	keep: () => void;
+	/** 最新へ移したときなど、読んでいる場所が変わるとこちらが分かっているときに呼ぶ */
+	forget: () => void;
 	/**
 	 * 古いメッセージを読み込むあいだ呼ぶ。返した関数は読み込みの描画のあとに呼ぶ。
 	 * 読み込んだ分とのつなぎ目の吹き出しは、まとまりの途中になって低くなることがある。その下の読んでいた場所は動かないので、つなぎ目を基準に保ってはいけない
 	 */
 	whileLoadingEarlier: () => () => void;
 } {
-	if (typeof CSS !== 'undefined' && CSS.supports('overflow-anchor', 'none')) {
-		return {
-			keep: () => {},
-			// ブラウザのスクロールアンカーがつなぎ目を基準にして動かす分を戻す。つなぎ目より下は下端からの距離が変わらないので、同じ scrollTop に戻せば動かない
-			whileLoadingEarlier() {
-				const scroller = getScrollContainer(options.timeline.value ?? null);
-				const scrollTop = scroller?.scrollTop;
-				return () => {
-					if (scroller != null && scrollTop != null) scroller.scrollTop = scrollTop;
-				};
-			},
-		};
-	}
-
 	let place: ReadingPlace | null = null;
 	let settleTimer: number | null = null;
 	let paused = false;
@@ -107,32 +98,48 @@ export function useChatReadingPlace(options: {
 			return;
 		}
 		const scroller = getScrollContainer(options.timeline.value ?? null);
-		if (
-			scroller !== place.scroller
-			|| !place.anchor.isConnected
-			|| Math.abs(scroller.scrollTop - place.scrollTop) >= SAME_POSITION_PX
-			|| -place.scrollTop < options.nearNewest
-		) {
+		if (scroller !== place.scroller || !place.anchor.isConnected) {
 			remember();
 			return;
 		}
-		// 上へ押し上げられた分だけ、scrollTop を負の方向 (column-reverse での上) へ動かす
-		const moved = place.anchorTop - topOnScreen(place.anchor);
-		if (Math.abs(moved) < SAME_POSITION_PX) return;
-		// anchorTop はそのまま残す。測り直すと scrollTop の丸めの誤差が通数の分だけたまる
-		scroller.scrollTop = place.scrollTop - moved;
+		// 先に位置を読む。ここでレイアウトが確定し、ブラウザのスクロールアンカーが動かした分も scrollTop に入る
+		const anchorTop = topOnScreen(place.anchor);
+		const scrollTop = scroller.scrollTop;
+		// 最新の近くにいた、または今いるなら保たない。最新へスクロールした直後は、それが知らされる (scroll) より先に新着が届くことがある
+		if (-place.scrollTop < options.nearNewest || -scrollTop < options.nearNewest) {
+			remember();
+			return;
+		}
+		// 上へ押し上げられたら正。column-reverse で scrollTop が増える (下へスクロールする) と、同じだけ上へ動く
+		const moved = place.anchorTop - anchorTop;
+		const scrolled = scrollTop - place.scrollTop;
+		if (Math.abs(moved) < SAME_POSITION_PX) {
+			// 何も動いていないか、ブラウザが直した。直した結果をそのまま受け入れる (測り直さないと、ブラウザの丸めの分だけいずれ書くことになる)
+			if (Math.abs(scrolled) >= SAME_POSITION_PX) place = { ...place, anchorTop, scrollTop };
+			return;
+		}
+		// スクロールした分だけ動いたなら、配置は変わっていない。誰かが別の場所へ移した
+		if (Math.abs(moved - scrolled) < SAME_POSITION_PX) {
+			remember();
+			return;
+		}
+		// place.anchorTop はそのまま残す。測り直すと scrollTop の丸めの誤差が通数の分だけたまる
+		scroller.scrollTop = scrollTop - moved;
 		place.scrollTop = scroller.scrollTop;
 	}
 
 	function onScroll(ev: Event) {
 		const scroller = getScrollContainer(options.timeline.value ?? null);
 		if (scroller == null || ev.target !== scroller) return;
-		if (place?.scroller === scroller) {
+		if (place?.scroller === scroller && place.anchor.isConnected && !isTouching()) {
+			const scrolled = scroller.scrollTop - place.scrollTop;
 			// 自分で戻したときの scroll
-			if (Math.abs(scroller.scrollTop - place.scrollTop) < SAME_POSITION_PX) return;
-			// 一番上にいる人の下で中身が縮むと、ブラウザが scrollTop を詰めて同じように知らせてくる。読んでいる場所が画面で動いていないならスクロールではない
-			if (Math.abs(topOnScreen(place.anchor) - place.anchorTop) < SAME_POSITION_PX) {
-				place.scrollTop = scroller.scrollTop;
+			if (Math.abs(scrolled) < SAME_POSITION_PX) return;
+			// ブラウザのスクロールアンカーや、一番上にいる人の下で中身が縮んだときにブラウザが詰めた scrollTop も、同じように知らせてくる。
+			// 読んでいる場所がスクロールした分だけ動いたのでなければ、人のスクロールではなく配置が変わった
+			const moved = place.anchorTop - topOnScreen(place.anchor);
+			if (Math.abs(moved - scrolled) >= SAME_POSITION_PX) {
+				keep();
 				return;
 			}
 		}
@@ -177,13 +184,18 @@ export function useChatReadingPlace(options: {
 
 	return {
 		keep,
+		forget() {
+			place = null;
+		},
 		whileLoadingEarlier() {
 			paused = true;
 			const scroller = getScrollContainer(options.timeline.value ?? null);
 			const scrollTop = scroller?.scrollTop;
 			return () => {
-				// 「もっと見る」が先に消えて読み込んだ分がまだ入っていないところを TransitionGroup が測ると、一番上にいた人の scrollTop がブラウザに詰められる。
-				// 詰められたときだけ戻す。慣性で動いている途中に書くとスクロールが止まるので、同じ値は書かない
+				// つなぎ目より下は下端からの距離が変わらないので、同じ scrollTop に戻せば動かない。動かすのは二つ:
+				// ブラウザのスクロールアンカーがつなぎ目を基準にした分と、「もっと見る」が先に消えて読み込んだ分がまだ入っていないところを
+				// TransitionGroup が測ったときに一番上にいた人の scrollTop をブラウザが詰めた分。
+				// 動いたときだけ戻す。慣性で動いている途中に書くとスクロールが止まるので、同じ値は書かない
 				if (scroller != null && scrollTop != null && scroller.scrollTop !== scrollTop) scroller.scrollTop = scrollTop;
 				paused = false;
 				if (settleTimer == null) remember();

@@ -277,7 +277,8 @@ const readingPlace = useChatReadingPlace({
 });
 
 // TransitionGroup は描き直す前後で吹き出しの位置を比べ、動いた分をなめらかに動かす。先に場所を戻さないと、戻した分までもう一度動いて見える。
-// post の watch は変更の時点で積まれるので、描き直しで積まれる TransitionGroup の updated より先に走る
+// post の watch は変更の時点で積まれるので、描き直しで積まれる TransitionGroup の updated より先に走る。
+// ブラウザのスクロールアンカーは、ここで位置を読んだ時点で済んでいるので、残ったずれだけを直す
 watch([displayTimeline, groupPositions], () => {
 	readingPlace.keep();
 }, { flush: 'post' });
@@ -337,6 +338,7 @@ watch(sentMessageArrived, arrived => {
 
 function goToNewest() {
 	showIndicator.value = false;
+	readingPlace.forget();
 	getScrollContainer(timelineEl.value)?.scrollTo({
 		top: 0,
 		behavior: 'instant',

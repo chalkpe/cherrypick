@@ -770,7 +770,7 @@ test.describe('Chat', () => {
 			hasTouch: true,
 			userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
 		}, true],
-		// Safari にはスクロールアンカーがない。CI に WebKit がないので、Chromium のスクロールアンカーを切って同じ状況を作る
+		// Safari 18 まではスクロールアンカーがない。CI に WebKit がないので、Chromium のスクロールアンカーを切って同じ状況を作る
 		['on an iPhone, without scroll anchoring', {
 			viewport: { width: 390, height: 664 },
 			isMobile: true,
@@ -784,8 +784,6 @@ test.describe('Chat', () => {
 			if (!scrollAnchoring) {
 				test.beforeEach(async ({ page }) => {
 					await page.addInitScript(() => {
-						const supports = CSS.supports.bind(CSS) as (...args: string[]) => boolean;
-						CSS.supports = ((...args: string[]) => args[0] === 'overflow-anchor' ? false : supports(...args)) as typeof CSS.supports;
 						window.addEventListener('DOMContentLoaded', () => {
 							const style = window.document.createElement('style');
 							style.textContent = '* { overflow-anchor: none !important; }';
@@ -892,6 +890,31 @@ test.describe('Chat', () => {
 				});
 			}
 
+			/**
+			 * 一番上ではないところで読む。一番上にいると、下が縮んだ分はスクロールの端に吸われて、読んでいた場所は動かない
+			 * @returns 読んでいた場所が今どれだけ動いたかを測る関数
+			 */
+			async function readInTheMiddle(page: Page, roomId: string): Promise<() => Promise<number>> {
+				await scrollMessagesTo(page, -100000);
+				await settle(page);
+				await page.evaluate(() => {
+					const scroller = window.document.querySelector('._pageScrollableReversed')!;
+					scroller.scrollTo({ top: scroller.scrollTop + 400, behavior: 'instant' });
+				});
+				await settle(page);
+				expect(await distanceFromNewest(page)).toBeGreaterThan(400);
+				const height = page.viewportSize()!.height;
+				// 開いたときに読み込むのは新しい 20 件
+				for (let i = 6; i <= 25; i++) {
+					const line = page.getByText(`line ${i} of ${roomId}`);
+					const box = await line.boundingBox();
+					if (box != null && box.y > 100 && box.y < height - 300) {
+						return async () => Math.abs((await line.boundingBox())!.y - box.y);
+					}
+				}
+				throw new Error('no line on screen to read');
+			}
+
 			test('sending from far above goes to the newest message', async ({ page }) => {
 				const room = await roomToReadFarAbove(page);
 				await readFarAbove(page, room.reading);
@@ -978,6 +1001,55 @@ test.describe('Chat', () => {
 				await settle(page);
 
 				expect(await worstMove()).toBeLessThan(2);
+			});
+
+			// Chromium と Safari 27 のスクロールアンカーは、下が縮んだときには直さないことがある
+			test('something below getting shorter leaves the place alone, a reaction taken back or an edit', async ({ page }) => {
+				const room = await roomToReadFarAbove(page);
+				const moved = await readInTheMiddle(page, room.id);
+
+				await api(BASE_URL, 'chat/messages/react', { i: alice.token, messageId: room.newest, reaction: '👍' });
+				await settle(page);
+				await api(BASE_URL, 'chat/messages/unreact', { i: alice.token, messageId: room.newest, reaction: '👍' });
+				await settle(page);
+				expect(await moved()).toBeLessThan(2);
+
+				const short = `short now ${room.id}`;
+				await api(BASE_URL, 'chat/messages/update', { i: bob.token, messageId: room.newest, text: short });
+				await page.getByText(short, { exact: true }).waitFor({ state: 'attached' });
+				await settle(page);
+				expect(await moved()).toBeLessThan(2);
+			});
+
+			// ブラウザがもう直したものを、もう一度動かさない
+			if (scrollAnchoring) test('leaves a message and a reaction to the browser, which keeps the place itself', async ({ page }) => {
+				await page.addInitScript(() => {
+					const scrollTop = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')!;
+					const counted = window as unknown as { scrollTopWrites: number };
+					counted.scrollTopWrites = 0;
+					Object.defineProperty(Element.prototype, 'scrollTop', {
+						get: scrollTop.get,
+						set(value: number) {
+							counted.scrollTopWrites++;
+							scrollTop.set!.call(this, value);
+						},
+						configurable: true,
+					});
+				});
+				const room = await roomToReadFarAbove(page);
+				const moved = await readInTheMiddle(page, room.id);
+				const writes = () => page.evaluate(() => (window as unknown as { scrollTopWrites: number }).scrollTopWrites);
+				const before = await writes();
+
+				const text = `left to the browser ${room.id}`;
+				await room.sayAs(bob, text);
+				await page.getByText(text, { exact: true }).waitFor({ state: 'attached' });
+				await settle(page);
+				await api(BASE_URL, 'chat/messages/react', { i: alice.token, messageId: room.newest, reaction: '👍' });
+				await settle(page);
+
+				expect(await moved()).toBeLessThan(2);
+				expect(await writes()).toBe(before);
 			});
 
 			test('near the newest message, follows even a tall message and says nothing', async ({ page }) => {
