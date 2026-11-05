@@ -33,17 +33,20 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkButton v-if="!computedLocalOnly" :disabled="!canLookup" :wait="lookingUp" @click="lookup">{{ i18n.ts.lookup }}</MkButton>
 		</div>
 		<div v-if="multiple" :class="$style.picked">
-			<div :class="$style.pickedLabel" aria-live="polite">{{ pickedUsers.length > 0 ? i18n.tsx.selectedUsersCount({ n: pickedUsers.length }) : i18n.ts.canSelectMultipleUsers }}</div>
-			<ul v-if="pickedUsers.length > 0" :class="$style.pickedUsers">
-				<li v-for="user in pickedUsers" :key="user.id" :class="$style.pickedUser">
-					<MkAvatar :user="user" :class="$style.pickedAvatar" :link="false"/>
-					<span :class="$style.pickedBody">
-						<MkUserName :user="user" :class="$style.pickedName"/>
-						<MkAcct :user="user" :class="$style.pickedAcct"/>
-					</span>
-					<button type="button" class="_button" :class="$style.unpick" :aria-label="i18n.tsx.removeFromSelection({ x: user.name || user.username })" @click="unpick(user)"><i class="ti ti-x"></i></button>
-				</li>
-			</ul>
+			<div :class="$style.pickedLabel" aria-live="polite">{{ i18n.tsx.selectedUsersCount({ n: pickedUsers.length }) }}</div>
+			<div :class="$style.pickedArea">
+				<ul v-if="pickedUsers.length > 0" ref="pickedUsersEl" :class="$style.pickedUsers" @wheel="onPickedUsersWheel">
+					<li v-for="user in pickedUsers" :key="user.id" :class="$style.pickedUser">
+						<MkAvatar :user="user" :class="$style.pickedAvatar" :link="false"/>
+						<span :class="$style.pickedBody">
+							<MkUserName :user="user" :class="$style.pickedName"/>
+							<MkAcct :user="user" :class="$style.pickedAcct"/>
+						</span>
+						<button type="button" class="_button" :class="$style.unpick" :aria-label="i18n.tsx.removeFromSelection({ x: user.name || user.username })" @click="unpick(user)"><i class="ti ti-x"></i></button>
+					</li>
+				</ul>
+				<div v-else :class="$style.pickedHint">{{ i18n.ts.canSelectMultipleUsers }}</div>
+			</div>
 		</div>
 		<div :class="$style.result">
 			<div v-if="listedUsers.length > 0" :class="$style.users">
@@ -64,7 +67,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<MkAcct :user="user" :class="$style.userAcct"/>
 						<span v-if="unavailableReasons[user.id] != null" :class="$style.userNote">{{ unavailableReasons[user.id] }}</span>
 					</span>
-					<i v-if="multiple && isSelected(user)" class="ti ti-check" :class="$style.userCheck" aria-hidden="true"></i>
+					<i v-if="multiple" class="ti ti-check" :class="[$style.userCheck, { [$style.userCheckHidden]: !isSelected(user) }]" aria-hidden="true"></i>
 				</button>
 			</div>
 			<div v-else-if="searching && !waitingForUsers" :class="$style.empty">
@@ -76,7 +79,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onBeforeUnmount, onMounted, ref, computed, useTemplateRef, watch } from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, ref, computed, useTemplateRef, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { host as currentHost, hostname } from '@@/js/config.js';
 import MkInput from '@/components/MkInput.vue';
@@ -120,6 +123,7 @@ const selected = ref<Misskey.entities.UserLite | null>(null);
 const pickedUsers = ref<Misskey.entities.UserLite[]>([]);
 const unavailableReasons = ref<Record<string, string>>({});
 const dialogEl = useTemplateRef('dialogEl');
+const pickedUsersEl = useTemplateRef('pickedUsersEl');
 const lookingUp = ref(false);
 // 答えが来るまでは前の結果を出したままにし、まだ分からないうちは「誰もいない」と言わない
 const waitingForUsers = ref(false);
@@ -169,7 +173,19 @@ function onClickUser(user: Misskey.entities.UserLite) {
 		unpick(user);
 	} else {
 		pickedUsers.value = [...pickedUsers.value, user];
+		// 一列に収まらない分は横に隠れるので、今選んだ人が見えるようにする
+		nextTick(() => {
+			if (pickedUsersEl.value != null) pickedUsersEl.value.scrollLeft = pickedUsersEl.value.scrollWidth;
+		});
 	}
+}
+
+// 横に隠れた人にも、縦のホイールで届くようにする
+function onPickedUsersWheel(ev: WheelEvent) {
+	const el = ev.currentTarget as HTMLElement;
+	if (ev.deltaX !== 0 || el.scrollWidth <= el.clientWidth) return;
+	ev.preventDefault();
+	el.scrollBy({ left: ev.deltaY, behavior: 'instant' });
 }
 
 function onDblclickUser() {
@@ -309,12 +325,12 @@ onMounted(() => {
 	height: 100%;
 }
 
-// 結果を送っても、選んだ人が見えているようにする。多すぎるときはここだけを送る
+// 結果を送っても、選んだ人が見えているようにする
 .picked {
 	position: sticky;
 	top: 0;
 	z-index: 1;
-	padding: 0 var(--root-margin) 8px;
+	padding: 0 var(--root-margin);
 	background: var(--MI_THEME-bg);
 }
 
@@ -323,20 +339,35 @@ onMounted(() => {
 	opacity: 0.8;
 }
 
+// 選んだ人が増えても減っても下の一覧が動かないよう、誰もいないうちから一列分の高さを取っておく。
+// 一覧が動くと、続けて押した指が今選んだ人に当たって選択が外れてしまう
+.pickedArea {
+	// 一列の高さと、横スクロールバーの分
+	height: calc(max(32px, 2.1em) + 4px + 12px);
+	margin-top: 6px;
+}
+
+.pickedHint {
+	height: 100%;
+	overflow-y: auto;
+	font-size: 0.85em;
+	opacity: 0.8;
+}
+
 .pickedUsers {
 	display: flex;
-	flex-wrap: wrap;
+	align-items: flex-start;
 	gap: 6px;
-	// 画面に余裕があれば広く見せ、キーボードが出ていても結果の場所は残す
-	max-height: max(112px, 30cqh);
-	overflow-y: auto;
-	margin: 6px 0 0;
+	height: 100%;
+	overflow: auto hidden;
+	margin: 0;
 	padding: 0;
 	list-style: none;
 }
 
 .pickedUser {
 	display: flex;
+	flex-shrink: 0;
 	align-items: center;
 	gap: 6px;
 	box-sizing: border-box;
@@ -432,6 +463,11 @@ onMounted(() => {
 .userCheck {
 	flex-shrink: 0;
 	padding-left: 8px;
+}
+
+// 選んだときに文字の幅が変わると、折り返しが増えて下の行が動いてしまう
+.userCheckHidden {
+	visibility: hidden;
 }
 
 .userNote {

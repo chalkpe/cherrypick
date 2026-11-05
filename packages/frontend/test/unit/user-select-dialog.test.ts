@@ -393,6 +393,25 @@ describe('choosing several people', () => {
 		expect(confirmButton().hasAttribute('disabled')).toBe(false);
 	});
 
+	// 実際の高さは jsdom では測れないので、ここで見るのは高さを保つための作り。動かないこと自体は実際のブラウザで確かめた
+	test('keeps the place of the picked people from the start, so that the rows below stay put', async () => {
+		renderDialog({ multiple: true });
+		await fireEvent.update(usernameField(), 'alice@remote.example');
+		const row = await screen.findByRole('button', { name: /Remote Alice/ });
+
+		expect(screen.getByText(i18n.tsx.selectedUsersCount({ n: 0 }))).toBeTruthy();
+		const hint = screen.getByText(i18n.ts.canSelectMultipleUsers);
+		const area = hint.parentElement;
+		expect(row.querySelector('.ti-check')).not.toBeNull();
+
+		await fireEvent.click(row);
+
+		expect(screen.getByText(i18n.tsx.selectedUsersCount({ n: 1 }))).toBeTruthy();
+		expect(screen.queryByText(i18n.ts.canSelectMultipleUsers)).toBeNull();
+		expect(screen.getByRole('list').parentElement).toBe(area);
+		expect(row.querySelector('.ti-check')).not.toBeNull();
+	});
+
 	test('does not change the single choice of every other screen', async () => {
 		const dialog = renderDialog();
 		await fireEvent.update(usernameField(), 'alice@remote.example');
@@ -400,6 +419,7 @@ describe('choosing several people', () => {
 
 		await fireEvent.click(await screen.findByRole('button', { name: /Remote Alice/ }));
 		expect(screen.queryByRole('listitem')).toBeNull();
+		expect(screen.getByRole('button', { name: /Remote Alice/ }).querySelector('.ti-check')).toBeNull();
 		await fireEvent.update(usernameField(), 'bob');
 		await fireEvent.click(await screen.findByRole('button', { name: /Local Bob/ }));
 		await fireEvent.click(confirmButton());
