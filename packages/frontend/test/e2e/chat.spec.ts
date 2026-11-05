@@ -74,7 +74,8 @@ test.describe('Chat', () => {
 			// 最初に読み込まれるのは新しい 20 件で、続きの 30 件はボタンで読み込む
 			const oldestLoaded = page.getByText('message 41', { exact: true });
 			await oldestLoaded.waitFor();
-			const more = page.getByRole('button', { name: 'Load more', exact: true });
+			// 横の通知ウィジェットにも、読み込みの途中で同じ名前のボタンが出ることがある
+			const more = page.getByLabel('Messages').getByRole('button', { name: 'Load more', exact: true });
 			await more.scrollIntoViewIfNeeded();
 			const before = (await oldestLoaded.boundingBox())!.y;
 
