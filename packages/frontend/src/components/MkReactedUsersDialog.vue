@@ -18,7 +18,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<template v-else>
 				<div :class="$style.tabs">
 					<button v-for="reaction in reactions" :key="reaction" :class="[$style.tab, { [$style.tabActive]: tab === reaction }]" class="_button" @click="tab = reaction">
-						<MkReactionIcon :reaction="reaction"/>
+						<MkReactionIcon style="pointer-events: none;" :reaction="reaction"/>
 						<span style="margin-left: 4px;">{{ note.reactions[reaction] }}</span>
 					</button>
 				</div>
