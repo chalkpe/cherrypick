@@ -50,7 +50,7 @@ export function uploadFile(file: File | Blob, options: {
 	const { signal } = abortController;
 
 	const filePromise = new Promise<Misskey.entities.DriveFile>((resolve, reject) => {
-		if ($i == null) return reject();
+		if ($i == null) return reject(new Error('Failed to upload: not signed in'));
 
 		// こっち側で検出するMIME typeとサーバーで検出するMIME typeは異なる場合があるため、こっち側ではやらないことにする
 		// https://github.com/misskey-dev/misskey/issues/16091
@@ -75,7 +75,7 @@ export function uploadFile(file: File | Blob, options: {
 				title: i18n.ts.failedToUpload,
 				text: i18n.ts.cannotUploadBecauseExceedsFileSizeLimit,
 			});
-			return reject();
+			return reject(new Error('Failed to upload: the file is too large'));
 		}
 
 		signal.addEventListener('abort', () => {
@@ -134,14 +134,14 @@ export function uploadFile(file: File | Blob, options: {
 					});
 				}
 
-				reject();
+				reject(new Error(`Failed to upload: the server answered ${xhr.status}`));
 				return;
 			}
 
 			const driveFile = parseUploadResponse(ev.target.response);
 			if (driveFile == null) {
 				alertUnreachable();
-				reject();
+				reject(new Error('Failed to upload: the answer of the server is not JSON'));
 				return;
 			}
 
@@ -152,7 +152,7 @@ export function uploadFile(file: File | Blob, options: {
 		// サーバーに届かなかったときは onload が呼ばれない。ここで終わらせないと、アップロード中のまま止まってしまう
 		xhr.onerror = () => {
 			alertUnreachable();
-			reject();
+			reject(new Error('Failed to upload: the request did not reach the server'));
 		};
 
 		if (options.onProgress) {

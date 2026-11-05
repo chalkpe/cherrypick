@@ -64,6 +64,26 @@ describe('uploadFile', () => {
 		});
 	});
 
+	// 呼び出し側の誰も受け取らないと unhandledrejection になる。理由が空だと、何が起きたのかコンソールにも残らない
+	test.each([
+		['the request never reaches the server', (xhr: FakeXhr) => { xhr.onerror?.({}); }],
+		['the server refuses', (xhr: FakeXhr) => { xhr.status = 500; xhr.onload?.({ target: xhr }); }],
+		['the answer is not JSON', (xhr: FakeXhr) => { xhr.status = 200; xhr.response = '<html>'; xhr.onload?.({ target: xhr }); }],
+	])('fails with a reason when %s', async (_what, fail) => {
+		const { filePromise } = uploadFile(file);
+
+		fail(FakeXhr.last);
+
+		await expect(filePromise).rejects.toBeInstanceOf(Error);
+		await expect(filePromise).rejects.toThrow(/./);
+	});
+
+	test('fails with a reason when the file is too large', async () => {
+		const { filePromise } = uploadFile(new File([new Uint8Array(11 * 1024 * 1024)], 'large.bin'));
+
+		await expect(filePromise).rejects.toBeInstanceOf(Error);
+	});
+
 	test('stays quiet when the user aborts', async () => {
 		const { filePromise, abort } = uploadFile(file);
 
