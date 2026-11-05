@@ -75,12 +75,18 @@ if (props.id) {
 	};
 }
 
-async function saveFixedRoles(others: Misskey.entities.Role[], fix: RoleTierFix) {
-	const changed = new Set<RoleTierRole>([...fix.caps, ...fix.lowered].map(item => item.role));
+function fixedFieldsOf(target: RoleTierRole, fix: RoleTierFix): Pick<RoleLike, 'condFormula' | 'policies'> {
+	return applyRoleTierFix(target, fix);
+}
+
+async function saveFixedRoles(id: string, current: RoleTierRole, others: Misskey.entities.Role[], fix: RoleTierFix) {
 	try {
-		for (const other of others.filter(r => changed.has(r))) {
-			const fixed: Pick<RoleLike, 'condFormula' | 'policies'> = applyRoleTierFix(other, fix);
-			await os.apiWithDialog('admin/roles/update', { roleId: other.id, ...fixed });
+		// 권한을 모두 복사한 뒤에 조건을 좁혀, 중간에 실패해도 상위 등급 사용자가 권한을 먼저 잃지 않게 한다.
+		for (const other of others.filter(r => fix.lowered.some(item => item.role === r))) {
+			await os.apiWithDialog('admin/roles/update', { roleId: other.id, policies: fixedFieldsOf(other, fix).policies });
+		}
+		for (const target of [current, ...others].filter(r => fix.caps.some(cap => cap.role === r))) {
+			await os.apiWithDialog('admin/roles/update', { roleId: target.id ?? id, condFormula: fixedFieldsOf(target, fix).condFormula });
 		}
 	} catch {
 		// 오류는 안내창으로 이미 표시했고, 역할을 다시 저장하면 남은 수정을 다시 제안한다.
@@ -111,7 +117,8 @@ async function saveRole() {
 	const fix = await confirmRoleTierFix(current, others, instance.policies);
 	if (fix === null) return;
 
-	const fixed: RoleLike = { ...data.value, ...applyRoleTierFix(current, fix) };
+	// 저장 중인 역할의 조건은 다른 역할의 권한을 복사한 뒤에 saveFixedRoles에서 좁힌다.
+	const fixed: RoleLike = { ...data.value, policies: fixedFieldsOf(current, fix).policies };
 	rolesCache.delete();
 	let id: string;
 	try {
@@ -132,7 +139,7 @@ async function saveRole() {
 		return;
 	}
 
-	await saveFixedRoles(others, fix);
+	await saveFixedRoles(id, current, others, fix);
 	router.push('/admin/roles/:id', {
 		params: {
 			id,

@@ -75,6 +75,18 @@ describe('planRoleTierCaps', () => {
 		]);
 	});
 
+	test('위 등급이 구간 끝까지 이어지지 않으면 그 위 사용자가 역할을 잃으므로 상한을 넣지 않는다', () => {
+		expect(capsOf(tierRole('구간', 100, 199), [tierRole('넓음', 0)])).toEqual([]);
+		expect(capsOf(tierRole('구간', 100, 199), [tierRole('넓음', 0, 500)])).toEqual([]);
+		expect(capsOf(tierRole('구간', 100, 199), [tierRole('넓음', 0), tierRole('최상', 300)])).toEqual([]);
+	});
+
+	test('위 등급이 빈틈없이 이어지면 구간 역할이 끼어 있어도 상한을 넣는다', () => {
+		expect(capsOf(tierRole('구간', 100, 199), [tierRole('넓음', 0), tierRole('최상', 200)])).toEqual([['넓음', 0, null, 99]]);
+		expect(capsOf(tierRole('구간', 100, 199), [tierRole('넓음', 0, 300), tierRole('최상', 200, 300)])).toEqual([['넓음', 0, 300, 99]]);
+		expect(capsOf(tierRole('구간', 100, 199), [tierRole('넓음', 0, 150)])).toEqual([['넓음', 0, 150, 99]]);
+	});
+
 	test('나머지 조건이 같으면 순서와 id가 달라도 같은 등급으로 본다', () => {
 		const low: RoleTierRole = {
 			...tierRole('낮음', 5000),
@@ -90,6 +102,8 @@ describe('planRoleTierCaps', () => {
 	test.each<[string, Partial<RoleTierRole>]>([
 		['비공개 역할', { isPublic: false }],
 		['수동 역할', { target: 'manual' }],
+		['모더레이터 역할', { isModerator: true }],
+		['관리자 역할', { isAdministrator: true }],
 		['다른 항목 조건', { condFormula: { id: 'x', type: 'followersMoreThanOrEq', value: 5000 } }],
 		['나머지 조건이 다른 역할', { condFormula: { id: 'x', type: 'and', values: [{ id: 'y', type: 'isLocal' }, { id: 'z', type: 'notesMoreThanOrEq', value: 5000 }] } }],
 		['OR 조건', { condFormula: { id: 'x', type: 'or', values: [{ id: 'y', type: 'notesMoreThanOrEq', value: 5000 }] } }],
@@ -139,6 +153,11 @@ describe('가입 기간 등급', () => {
 			['1년', YEAR, null, 2 * YEAR],
 			['2년', 2 * YEAR, null, 3 * YEAR],
 		]);
+	});
+
+	test('다음 등급 기준값과 맞닿은 구간은 빈틈없이 이어진 것으로 본다', () => {
+		expect(capsOf(ageRole('구간', YEAR, 2 * YEAR), [ageRole('넓음', 0), ageRole('최상', 2 * YEAR)])).toEqual([['넓음', 0, null, YEAR]]);
+		expect(capsOf(ageRole('구간', YEAR, 2 * YEAR), [ageRole('넓음', 0), ageRole('최상', 3 * YEAR)])).toEqual([]);
 	});
 
 	test('상한이 다음 등급 기준값과 같으면 겹치지 않는 것으로 본다', () => {
@@ -342,6 +361,32 @@ describe('findLoweredRolePolicies', () => {
 			tierRole('낮음', 30000, null, { [key]: policy(lowerValue) }),
 		);
 		expect(result.length > 0).toBe(expected);
+	});
+
+	describe.each(['inviteLimit', 'inviteExpirationTime'])('기본값이 0인 %s', (key) => {
+		test('아래 등급이 기본값을 따르면 위 등급에 0을 복사하지 않는다', () => {
+			expect(lowered(
+				{ [key]: 0 },
+				tierRole('높음', 50000, null, { [key]: policy(5) }),
+				tierRole('낮음', 30000),
+			)).toEqual([]);
+		});
+
+		test('위 등급이 기본값을 따르면 아래 등급의 값을 복사해 제한이 사라지지 않게 한다', () => {
+			expect(lowered(
+				{ [key]: 0 },
+				tierRole('높음', 50000),
+				tierRole('낮음', 30000, null, { [key]: policy(5) }),
+			)).toEqual([['높음', key, 0, 5]]);
+		});
+
+		test('직접 지정한 0과 기본값 0은 같은 값이므로 복사하지 않는다', () => {
+			expect(lowered(
+				{ [key]: 0 },
+				tierRole('높음', 50000),
+				tierRole('낮음', 30000, null, { [key]: policy(0) }),
+			)).toEqual([]);
+		});
 	});
 
 	test('상위 역할이 더 높은 우선순위로 지정한 값은 의도로 보고 건드리지 않는다', () => {

@@ -124,9 +124,60 @@ test('조건과 권한을 고치면 저장 중인 역할을 먼저 저장하고 
 			condFormula: high.condFormula,
 			policies: { driveCapacityMb: { useDefault: false, priority: 0, value: 20480 } },
 		})],
-		['admin/roles/update', { roleId: 'low', condFormula: cappedLowFormula, policies: low.policies }],
+		['admin/roles/update', { roleId: 'low', condFormula: cappedLowFormula }],
 	]);
 	expect(mocks.push).toHaveBeenCalledWith('/admin/roles/:id', { params: { id: 'high' } });
+});
+
+function showLowRole() {
+	mocks.misskeyApi.mockImplementation((endpoint: string) => {
+		if (endpoint === 'admin/roles/show') return Promise.resolve(structuredClone(low));
+		return Promise.resolve([structuredClone(high), structuredClone(low)]);
+	});
+}
+
+const copiedHighPolicies = { driveCapacityMb: { useDefault: false, priority: 0, value: 20480 } };
+
+test('권한을 모두 복사한 뒤에 저장 중인 역할의 조건을 좁힌다', async () => {
+	showLowRole();
+	answer('fix', 'copy');
+
+	await pressSave('low');
+
+	expect(mocks.apiWithDialog.mock.calls).toEqual([
+		['admin/roles/update', expect.objectContaining({ roleId: 'low', condFormula: low.condFormula })],
+		['admin/roles/update', { roleId: 'high', policies: copiedHighPolicies }],
+		['admin/roles/update', { roleId: 'low', condFormula: cappedLowFormula }],
+	]);
+});
+
+test('권한 복사에 실패하면 조건을 좁히지 않아 상위 등급 사용자가 권한을 잃지 않는다', async () => {
+	showLowRole();
+	answer('fix', 'copy');
+	mocks.apiWithDialog
+		.mockResolvedValueOnce({})
+		.mockRejectedValueOnce(new Error('failed'));
+
+	await pressSave('low');
+
+	expect(mocks.apiWithDialog.mock.calls).toEqual([
+		['admin/roles/update', expect.objectContaining({ roleId: 'low', condFormula: low.condFormula })],
+		['admin/roles/update', { roleId: 'high', policies: copiedHighPolicies }],
+	]);
+	expect(mocks.push).toHaveBeenCalledWith('/admin/roles/:id', { params: { id: 'low' } });
+});
+
+test('새 역할의 조건을 좁힐 때는 만들어진 역할 id로 저장한다', async () => {
+	mocks.editedRole = { name: '낮음', target: 'conditional', isPublic: true, condFormula: low.condFormula, policies: {} };
+	mocks.misskeyApi.mockImplementation(() => Promise.resolve([structuredClone(high)]));
+	answer('fix');
+
+	await pressSave();
+
+	expect(mocks.apiWithDialog.mock.calls).toEqual([
+		['admin/roles/create', expect.objectContaining({ name: '낮음', condFormula: low.condFormula })],
+		['admin/roles/update', { roleId: 'created', condFormula: cappedLowFormula }],
+	]);
 });
 
 test('새 역할을 만들 때도 다른 역할의 조건을 함께 고친다', async () => {
@@ -138,7 +189,7 @@ test('새 역할을 만들 때도 다른 역할의 조건을 함께 고친다', 
 
 	expect(mocks.apiWithDialog.mock.calls).toEqual([
 		['admin/roles/create', expect.objectContaining({ name: '높음', condFormula: high.condFormula, policies: {} })],
-		['admin/roles/update', { roleId: 'low', condFormula: cappedLowFormula, policies: low.policies }],
+		['admin/roles/update', { roleId: 'low', condFormula: cappedLowFormula }],
 	]);
 	expect(mocks.push).toHaveBeenCalledWith('/admin/roles/:id', { params: { id: 'created' } });
 });

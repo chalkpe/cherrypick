@@ -25,6 +25,8 @@ export type RoleTierRole = {
 	name: string;
 	target: 'manual' | 'conditional';
 	isPublic: boolean;
+	isAdministrator?: boolean;
+	isModerator?: boolean;
 	condFormula: RoleTierFormula;
 	policies: Record<string, RoleTierPolicyMeta | undefined>;
 };
@@ -96,6 +98,8 @@ function canonicalTerm(term: RoleTierFormula): string {
 
 function toTierMember(role: RoleTierRole, metric: RoleTierMetric): RoleTierMember | null {
 	if (role.target !== 'conditional' || !role.isPublic) return null;
+	// 관리 권한은 policies에 없어 낮아지는 권한으로 안내할 수 없으므로, 상한을 넣어 말없이 잃지 않게 한다.
+	if (role.isAdministrator || role.isModerator) return null;
 
 	const terms = role.condFormula.type === 'and' ? role.condFormula.values ?? [] : [role.condFormula];
 	const lowers = terms.filter(term => term.type === metric.lowerType);
@@ -135,13 +139,29 @@ export function findRoleTierGroups(current: RoleTierRole, others: RoleTierRole[]
 	return groups;
 }
 
+/**
+ * 위 등급들이 member의 구간 끝까지 빈틈없이 이어지는지 본다.
+ * 이어지지 않는데 상한을 넣으면 위 등급 바깥의 사용자가 역할을 모두 잃는다.
+ */
+function isCoveredByUpperTiers(member: RoleTierMember, upperTiers: RoleTierMember[], gap: number): boolean {
+	let reach = upperTiers[0].lower - gap;
+	for (const { lower, upper } of upperTiers) {
+		if (lower - gap > reach) return false;
+		if (upper == null) return true;
+		reach = Math.max(reach, upper);
+		if (member.upper != null && reach >= member.upper) return true;
+	}
+	return false;
+}
+
 export function planRoleTierCaps(groups: RoleTierGroup[]): RoleTierCap[] {
 	return groups.flatMap(group => group.members.flatMap((member): RoleTierCap[] => {
-		const next = group.members.find(other => other.lower > member.lower);
-		if (next == null) return [];
+		const upperTiers = group.members.filter(other => other.lower > member.lower);
+		if (upperTiers.length === 0) return [];
 
-		const upper = next.lower - group.metric.gap;
+		const upper = upperTiers[0].lower - group.metric.gap;
 		if (member.upper != null && member.upper <= upper) return [];
+		if (!isCoveredByUpperTiers(member, upperTiers, group.metric.gap)) return [];
 
 		return [{
 			role: member.role,
@@ -180,20 +200,29 @@ function missingFileTypes(types: string[], reference: string[]): string[] {
 		.filter(target => target !== '' && !types.some(type => covers(type.trim(), target)));
 }
 
-function policyRank(key: string, value: unknown): number | null {
+type RoleTierPolicyState = {
+	useDefault: boolean;
+	value: unknown;
+};
+
+function policyRank(key: string, { useDefault, value }: RoleTierPolicyState): number | null {
 	let rank: number | null = null;
 	if (typeof value === 'boolean') rank = value ? 1 : 0;
-	else if (typeof value === 'number') rank = value === 0 && ZERO_IS_UNLIMITED.has(key) ? Infinity : value;
+	// 서버는 겹친 역할의 값을 Math.max로 합치므로, 기본값으로 물려받은 0은 무제한이 아니라 가장 낮은 값처럼 동작한다.
+	// 무제한으로 보는 것은 관리자가 0을 직접 지정한 경우뿐이다.
+	else if (value === 0 && ZERO_IS_UNLIMITED.has(key)) rank = useDefault ? -Infinity : Infinity;
+	else if (typeof value === 'number') rank = value;
 	else if (key === 'chatAvailability') rank = CHAT_AVAILABILITY_RANK[String(value)] ?? null;
 
 	if (rank == null) return null;
 	return HIGHER_IS_STRICTER.has(key) ? -rank : rank;
 }
 
-function isLowerPolicy(key: string, value: unknown, reference: unknown): boolean {
-	if (Array.isArray(value) && Array.isArray(reference)) return missingFileTypes(value, reference).length > 0;
+function isLowerPolicy(key: string, state: RoleTierPolicyState, reference: RoleTierPolicyState): boolean {
+	if (state.value === reference.value) return false;
+	if (Array.isArray(state.value) && Array.isArray(reference.value)) return missingFileTypes(state.value, reference.value).length > 0;
 
-	const rank = policyRank(key, value);
+	const rank = policyRank(key, state);
 	const referenceRank = policyRank(key, reference);
 	return rank != null && referenceRank != null && rank < referenceRank;
 }
@@ -224,7 +253,7 @@ export function findLoweredRolePolicies(groups: RoleTierGroup[], basePolicies: R
 					const useDefault = meta == null || meta.useDefault === true;
 					const current = { useDefault, priority: meta?.priority ?? 0, value: useDefault ? basePolicies[key] : meta.value };
 
-					if (floor == null || !isLowerPolicy(key, current.value, floor.value) || (floor.lower < lower && current.priority > floor.priority)) {
+					if (floor == null || !isLowerPolicy(key, current, floor) || (floor.lower < lower && current.priority > floor.priority)) {
 						floor = { ...current, lower };
 						continue;
 					}
