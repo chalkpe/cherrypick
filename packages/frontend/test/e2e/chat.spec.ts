@@ -44,21 +44,6 @@ test.describe('Chat', () => {
 	test.describe('on a laptop', () => {
 		test.use({ viewport: { width: 1280, height: 720 } });
 
-		test('the send button works from the keyboard and keeps the focus it was given', async ({ page }) => {
-			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
-			const input = page.getByPlaceholder('Enter message here');
-			const send = page.locator('button:has(i.ti-send)');
-			const text = `sent from the keyboard ${Date.now()}`;
-			await input.fill(text);
-			await send.focus();
-
-			await page.keyboard.press('Enter');
-
-			await expect(page.getByText(text, { exact: true })).toBeVisible();
-			await expect(send).toBeFocused();
-			await expect(input).toHaveValue('');
-		});
-
 		test('a mouse still selects by dragging, and a right click keeps the menu of the browser on a selection', async ({ page }) => {
 			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
 			const message = page.getByText('message 60', { exact: true });
@@ -97,6 +82,22 @@ test.describe('Chat', () => {
 			await page.getByText('message 11', { exact: true }).waitFor({ state: 'attached' });
 
 			await expect.poll(async () => Math.abs((await oldestLoaded.boundingBox())!.y - before)).toBeLessThan(4);
+		});
+
+		// 新しいメッセージを増やすので、最初に読み込まれる範囲を数える上のテストより後に置く
+		test('the send button works from the keyboard and keeps the focus it was given', async ({ page }) => {
+			await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
+			const input = page.getByPlaceholder('Enter message here');
+			const send = page.locator('button:has(i.ti-send)');
+			const text = `sent from the keyboard ${Date.now()}`;
+			await input.fill(text);
+			await send.focus();
+
+			await page.keyboard.press('Enter');
+
+			await expect(page.getByText(text, { exact: true })).toBeVisible();
+			await expect(send).toBeFocused();
+			await expect(input).toHaveValue('');
 		});
 	});
 
