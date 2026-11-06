@@ -12,13 +12,12 @@ import { prefer } from '@/preferences.js';
 
 const mocks = vi.hoisted(() => ({
 	api: vi.fn().mockResolvedValue([]),
-	apiGet: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('@/os.js', () => ({}));
 vi.mock('@/instance.js', () => ({ instance: {} }));
 vi.mock('@/custom-emojis.js', () => ({ customEmojis: { value: [] }, customEmojisMap: new Map() }));
-vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api, misskeyApiGet: mocks.apiGet }));
+vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
 vi.mock('@/i.js', () => ({ $i: { id: 'viewer', policies: {} }, iAmModerator: false }));
 vi.mock('@/preferences.js', async () => {
 	const { PreferencesManager } = await import('@/preferences/manager.js');
@@ -37,7 +36,6 @@ const unicodeReaction = '👍';
 beforeEach(async () => {
 	await prefer.cloudReady;
 	mocks.api.mockReset();
-	mocks.apiGet.mockReset().mockResolvedValue([]);
 });
 afterEach(cleanup);
 
@@ -47,7 +45,7 @@ test.each([
 	['unicode emoji', unicodeReaction, customReaction, `img[alt="${unicodeReaction}"]`],
 ])('%s reaction chip lets taps on the emoji through to the chip', async (_, reaction, initialReaction, emojiSelector) => {
 	// 最初のチップは開いた時点で選択済みなので、確認するチップを 2 番目に置く
-	mocks.api.mockResolvedValue({ id: 'note', reactions: { [initialReaction]: 1, [reaction]: 1 } });
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'notes/show' ? { id: 'note', reactions: { [initialReaction]: 1, [reaction]: 1 } } : []);
 
 	const { container } = render(MkReactedUsersDialog, {
 		props: { noteId: 'note' },
@@ -69,6 +67,6 @@ test.each([
 	await fireEvent.click(emoji.closest('button')!);
 
 	await waitFor(() => {
-		expect(mocks.apiGet).toHaveBeenCalledWith('notes/reactions', expect.objectContaining({ noteId: 'note', type: reaction }));
+		expect(mocks.api).toHaveBeenCalledWith('notes/reactions', expect.objectContaining({ noteId: 'note', type: reaction }));
 	});
 });
