@@ -1046,3 +1046,83 @@ describe('letters still in composition', () => {
 		expect(mocks.api).not.toHaveBeenCalled();
 	});
 });
+
+// iOS 27 の Safari は「haru: …」のように「語:」で始まる文字をコピーすると、同じものを URL (text/uri-list) としても入れ、
+// 普通に貼ると `haru:%20…` のほうが入る
+describe('pasting text that the clipboard also holds as a URL', () => {
+	function clipboard(plain: string, uri?: string) {
+		const types = uri == null ? ['text/plain'] : ['text/plain', 'text/uri-list'];
+		return {
+			types,
+			items: types.map(() => ({ kind: 'string' })),
+			files: [],
+			getData: (type: string) => type === 'text/plain' ? plain : type === 'text/uri-list' ? uri ?? '' : '',
+		};
+	}
+
+	async function paste(textarea: HTMLTextAreaElement, data: ReturnType<typeof clipboard>) {
+		const event = new Event('paste', { bubbles: true, cancelable: true });
+		Object.defineProperty(event, 'clipboardData', { value: data });
+		await fireEvent(textarea, event);
+		return event;
+	}
+
+	test.each([
+		['haru: 확인했어요 — 안녕', 'haru:%20%ED%99%95%EC%9D%B8%ED%96%88%EC%96%B4%EC%9A%94%20%E2%80%94%20%EC%95%88%EB%85%95'],
+		['Note: hello world', 'note:%20hello%20world'],
+		['https://example.com/a b', 'https://example.com/a%20b'],
+	])('puts "%s" at the caret as written', async (plain, uri) => {
+		const form = renderForm();
+		await fireEvent.update(form.textarea, '[]');
+		form.textarea.setSelectionRange(1, 1);
+
+		const event = await paste(form.textarea, clipboard(plain, uri));
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(form.textarea.value).toBe(`[${plain}]`);
+		await waitFor(() => expect(storedDraft()?.text).toBe(`[${plain}]`));
+	});
+
+	test('does the same while editing a message', async () => {
+		const form = renderForm('room', message);
+		form.textarea.setSelectionRange(form.textarea.value.length, form.textarea.value.length);
+
+		const event = await paste(form.textarea, clipboard('Note: hello world', 'note:%20hello%20world'));
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(form.textarea.value).toBe('Original messageNote: hello world');
+		await fireEvent.click(screen.getByTitle(i18n.ts.save));
+		expect(mocks.api).toHaveBeenCalledWith('chat/messages/update', { messageId: message.id, text: 'Original messageNote: hello world' });
+	});
+
+	test('lets the browser insert the text so that undo and the input event keep working', async () => {
+		const execCommand = vi.fn(() => true);
+		Object.defineProperty(window.document, 'execCommand', { value: execCommand, configurable: true });
+		try {
+			const form = renderForm();
+
+			const event = await paste(form.textarea, clipboard('Note: hello world', 'note:%20hello%20world'));
+
+			expect(event.defaultPrevented).toBe(true);
+			expect(execCommand).toHaveBeenCalledWith('insertText', false, 'Note: hello world');
+			// 入れるのはブラウザ (ここでは何もしない偽物) で、こちらでは入れない
+			expect(form.textarea.value).toBe('');
+		} finally {
+			Reflect.deleteProperty(window.document, 'execCommand');
+		}
+	});
+
+	test.each([
+		['a copied link', 'https://example.com/', 'https://example.com/'],
+		['text alone', 'Note: hello world', undefined],
+		['a URL that is not the text', 'Example page', 'https://example.com/'],
+		['a URL that cannot be decoded', 'haru: 100%', 'haru:%20100%'],
+	])('leaves %s to the browser', async (_, plain, uri) => {
+		const form = renderForm();
+
+		const event = await paste(form.textarea, clipboard(plain, uri));
+
+		expect(event.defaultPrevented).toBe(false);
+		expect(form.textarea.value).toBe('');
+	});
+});

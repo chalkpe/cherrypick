@@ -179,11 +179,44 @@ async function uploadFiles(uploading: File[]) {
 	}
 }
 
+// URL の形を戻すと文字と同じになるか。URL ではスキームが小文字になって入る
+function isUrlFormOf(uri: string, plain: string) {
+	let decoded: string;
+	try {
+		decoded = decodeURIComponent(uri);
+	} catch {
+		return false;
+	}
+	const scheme = plain.indexOf(':') + 1;
+	return decoded.slice(0, scheme).toLowerCase() === plain.slice(0, scheme).toLowerCase() && decoded.slice(scheme) === plain.slice(scheme);
+}
+
+// iOS 27 の Safari は「haru: こんにちは」のように「語:」で始まる文字をコピーすると、同じものを URL (text/uri-list) としても入れ、
+// 普通に貼ると `haru:%20...` のほうが入る。URL の形を戻すと文字と同じになるときだけ、文字のほうを入れる。
+// リンクをコピーしたときのように両方が同じときや、どちらか一方しか無いときはブラウザに任せる
+function pasteTextInsteadOfUrlForm(ev: ClipboardEvent, clipboard: DataTransfer) {
+	const uri = clipboard.getData('text/uri-list');
+	const plain = clipboard.getData('text/plain');
+	if (uri === '' || plain === '' || uri === plain) return;
+	if (!clipboard.types.includes('text/plain') || !clipboard.types.includes('text/uri-list')) return;
+	if (!isUrlFormOf(uri, plain)) return;
+	const textarea = textareaEl.value;
+	if (textarea == null || textarea.readOnly) return;
+	ev.preventDefault();
+	// ブラウザに入れてもらえば、実行取り消しも入力の知らせ (input と変換の扱い) も普通に貼ったときと同じになる
+	if (typeof window.document.execCommand === 'function' && window.document.execCommand('insertText', false, plain)) return;
+	textarea.setRangeText(plain, textarea.selectionStart, textarea.selectionEnd, 'end');
+	textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: plain }));
+}
+
 async function onPaste(ev: ClipboardEvent) {
 	if (!ev.clipboardData) return;
 	const pasted = Array.from(ev.clipboardData.items).filter(item => item.kind === 'file').map(item => item.getAsFile()).filter((item): item is File => item != null);
 	if (pasted.length === 0) pasted.push(...Array.from(ev.clipboardData.files));
-	if (pasted.length === 0) return;
+	if (pasted.length === 0) {
+		pasteTextInsteadOfUrlForm(ev, ev.clipboardData);
+		return;
+	}
 	// Office の表のように、文字と一緒にその見た目の画像も入れるアプリがある。文字があれば文字を貼る。
 	// ブラウザで画像をコピーしたときに一緒に入る URL だけのときや、Finder などでファイルをコピーしたときに一緒に入るファイル名だけのときは、ファイルを添付する
 	const pastedText = ev.clipboardData.getData('text/plain').trim();
