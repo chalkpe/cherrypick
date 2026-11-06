@@ -4120,3 +4120,5 @@ deidentifyMutedUsers: "뮤트한 유저 비식별화"
 changeVisibility: "공개 범위 변경"
 
 changeVisibilityConfirm: "이 노트의 공개 범위를 변경하시겠습니까?"
+
+snowEffect: "눈 내리기"
