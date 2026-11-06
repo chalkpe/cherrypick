@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, assert, describe, test, vi } from 'vitest';
+import { afterEach, assert, beforeEach, describe, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor, type RenderResult } from '@testing-library/vue';
 import { nextTick } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { directives } from '@/directives/index.js';
 import { components } from '@/components/index.js';
 import { prefer } from '@/preferences.js';
+import { store } from '@/store.js';
 import * as os from '@/os.js';
 import * as sound from '@/utility/sound.js';
 
@@ -346,5 +347,135 @@ describe.each([
 		await composition('compositionupdate', '가');
 		assert.notStrictEqual(previewRoot()?.style.display, 'none', 'the preview is shown again once the body has text');
 		assert.strictEqual(previewAvatar(), avatar, 'the avatar element is not recreated');
+	});
+
+	// iOS 27 Safari は「単語:」で始まる文字列をコピーすると、text/plain の原文に加えてパーセントエンコードした
+	// text/uri-list も登録し、既定の貼り付けでそちらを入れる (iPhone SE 2 / iOS 27.2 の実機で確認した値)
+	describe('pasting text that iOS also registered as an encoded URL', () => {
+		const iosPastes = [
+			{ plain: 'haru: 확인했어요 — 안녕', uriList: 'haru:%20%ED%99%95%EC%9D%B8%ED%96%88%EC%96%B4%EC%9A%94%20%E2%80%94%20%EC%95%88%EB%85%95' },
+			{ plain: 'Note: hello world', uriList: 'note:%20hello%20world' },
+			{ plain: 'https://example.com/a b', uriList: 'https://example.com/a%20b' },
+		];
+		const fields = [
+			{ field: 'CW', selector: '[class*="cwOuter"] input' },
+			{ field: 'hashtags', selector: 'input[list="hashtags"]' },
+		];
+
+		// happy-dom には document.execCommand が無い。ブラウザと同じく insertText を最初に試すことだけ確かめ、
+		// 挿入そのものは insert-text-at-cursor の代替経路 (setRangeText + input イベント) に任せる
+		const execCommand = vi.fn((_commandId: string, _showUi?: boolean, _value?: string) => false);
+		beforeEach(() => {
+			execCommand.mockClear();
+			document.execCommand = execCommand;
+		});
+		afterEach(async () => {
+			Reflect.deleteProperty(document, 'execCommand');
+			// ハッシュタグ欄は store に保存されて次のフォームへ引き継がれる
+			await store.set('postFormHashtags', '');
+		});
+
+		const paste = async (el: HTMLElement, data: Record<string, string>, files: File[] = []) => {
+			const clipboardData = new DataTransfer();
+			for (const file of files) clipboardData.items.add(file);
+			for (const [type, value] of Object.entries(data)) clipboardData.setData(type, value);
+			const event = new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true });
+			el.dispatchEvent(event);
+			await nextTick();
+			return event;
+		};
+
+		test.each(iosPastes)('inserts the original text into the body at the caret: $plain', async ({ plain, uriList }) => {
+			vi.mocked(misskeyApi).mockImplementation(async (endpoint) => {
+				if (endpoint === 'notes/create') return undefined;
+				return new Promise(() => {});
+			});
+			const form = renderPostForm();
+			const textarea = form.container.querySelector('textarea')!;
+			await fireEvent.click(textarea);
+			await fireEvent.update(textarea, 'ab');
+			textarea.setSelectionRange(1, 1);
+
+			const event = await paste(textarea, { 'text/plain': plain, 'text/uri-list': uriList });
+
+			assert.isTrue(event.defaultPrevented, 'the encoded URL is not pasted');
+			assert.deepStrictEqual(execCommand.mock.calls, [['insertText', false, plain]], 'insertText is tried first so the paste can be undone');
+			assert.strictEqual(textarea.value, `a${plain}b`);
+			await fireEvent.click(form.container.querySelector(submitSelector)!);
+			await waitFor(() => {
+				const call = vi.mocked(misskeyApi).mock.calls.find(([endpoint]) => endpoint === 'notes/create');
+				assert.exists(call, 'notes/create is called');
+				assert.strictEqual((call![1] as Record<string, unknown>).text, `a${plain}b`, 'the form model follows the inserted text');
+			});
+		});
+
+		test.each(fields)('inserts the original text into the $field input', async ({ selector }) => {
+			const { plain, uriList } = iosPastes[0];
+			const form = renderPostForm();
+			await fireEvent.click(form.container.querySelector('textarea')!);
+			const input = form.container.querySelector<HTMLInputElement>(selector)!;
+
+			const event = await paste(input, { 'text/plain': plain, 'text/uri-list': uriList });
+
+			assert.isTrue(event.defaultPrevented, 'the encoded URL is not pasted');
+			assert.deepStrictEqual(execCommand.mock.calls, [['insertText', false, plain]]);
+			assert.strictEqual(input.value, plain);
+		});
+
+		test.each<{ title: string; data: Record<string, string> }>([
+			{ title: 'a copied link', data: { 'text/plain': 'https://example.com/a', 'text/uri-list': 'https://example.com/a' } },
+			{ title: 'text only', data: { 'text/plain': 'Note: hello world' } },
+			{ title: 'a URL only', data: { 'text/uri-list': 'note:%20hello%20world' } },
+			{ title: 'a URL that is not the encoded text', data: { 'text/plain': 'see https://example.com', 'text/uri-list': 'https://example.com' } },
+			{ title: 'a URL that cannot be decoded', data: { 'text/plain': 'note: 100%', 'text/uri-list': 'note:%20100%' } },
+		])('leaves the browser paste alone for $title', async ({ data }) => {
+			const form = renderPostForm();
+			const textarea = form.container.querySelector('textarea')!;
+			await fireEvent.click(textarea);
+			for (const el of [textarea, ...fields.map(({ selector }) => form.container.querySelector<HTMLInputElement>(selector)!)]) {
+				const event = await paste(el, data);
+				assert.isFalse(event.defaultPrevented);
+				assert.strictEqual(el.value, '');
+			}
+			assert.strictEqual(execCommand.mock.calls.length, 0);
+		});
+
+		test('does not write into a read-only body', async () => {
+			const { plain, uriList } = iosPastes[0];
+			const form = renderPostForm();
+			const textarea = form.container.querySelector('textarea')!;
+			await fireEvent.click(textarea);
+			// メンションの挿入中などはフォーカストラップ回避のために本文を一時的に読み取り専用にする
+			textarea.readOnly = true;
+
+			const event = await paste(textarea, { 'text/plain': plain, 'text/uri-list': uriList });
+
+			assert.isFalse(event.defaultPrevented);
+			assert.strictEqual(textarea.value, '');
+			assert.strictEqual(execCommand.mock.calls.length, 0);
+		});
+
+		test('pasting a file does not insert the text that came with it', async () => {
+			const { plain, uriList } = iosPastes[0];
+			const form = renderPostForm();
+			const textarea = form.container.querySelector('textarea')!;
+			await fireEvent.click(textarea);
+			const file = () => new File(['%PDF-'], 'document.pdf', { type: 'application/pdf' });
+
+			const bodyEvent = await paste(textarea, { 'text/plain': plain, 'text/uri-list': uriList }, [file()]);
+			assert.isTrue(bodyEvent.defaultPrevented, 'the body attaches the file instead');
+			assert.strictEqual(textarea.value, '');
+			await waitFor(() => {
+				assert.exists(form.container.querySelector('[class*="itemThumbnail"]'), 'the file is queued for upload');
+			});
+
+			for (const { selector } of fields) {
+				const input = form.container.querySelector<HTMLInputElement>(selector)!;
+				const event = await paste(input, { 'text/plain': plain, 'text/uri-list': uriList }, [file()]);
+				assert.isFalse(event.defaultPrevented, 'single-line inputs keep the browser paste for files');
+				assert.strictEqual(input.value, '');
+			}
+			assert.strictEqual(execCommand.mock.calls.length, 0);
+		});
 	});
 });
