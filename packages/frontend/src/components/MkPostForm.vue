@@ -86,8 +86,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</I18n> - <button class="_textButton" @click="cancelScheduleDelete()">{{ i18n.ts.cancel }}</button>
 	</MkInfo>
 	<MkInfo v-if="hasNotSpecifiedMentions && !props.updateMode" warn :class="$style.hasNotSpecifiedMentions">{{ i18n.ts.notSpecifiedMentionWarning }} - <button class="_textButton" @click="addMissingMention()">{{ i18n.ts.add }}</button></MkInfo>
+	<!-- 아래 CW·본문·해시태그 입력란의 name="search": iOS 27 Safari가 placeholder·주변 텍스트의 '시', '주' 같은 글자를 주소록 필드로 오인해 연락처 자동 완성을 띄우고 키보드 추천을 가리는 것을 막는다. Safari는 이름이 search인 필드를 자동 완성 대상에서 제외한다 (autocomplete="off"만으로는 효과 없음). input의 autocomplete="off"는 Chrome·Firefox가 같은 이름으로 저장된 입력 기록을 제안하지 않게 한다 -->
 	<div v-show="useCw" :class="$style.cwOuter">
-		<input ref="cwInputEl" v-model="cw" :class="$style.cw" :placeholder="i18n.ts.annotation" @keydown="onKeydown" @keyup="onKeyup" @compositionend="onCompositionEnd">
+		<input ref="cwInputEl" v-model="cw" name="search" autocomplete="off" :class="$style.cw" :placeholder="i18n.ts.annotation" @keydown="onKeydown" @keyup="onKeyup" @compositionend="onCompositionEnd">
 		<div v-if="maxCwTextLength - cwTextLength < 20" :class="['_acrylic', $style.cwTextCount, { [$style.cwTextOver]: cwTextLength > maxCwTextLength }]">{{ maxCwTextLength - cwTextLength }}</div>
 		<button class="_button" :class="$style.cwSwapButton" @click="swapCwText">
 			<i class="ti ti-switch-vertical"></i>
@@ -95,10 +96,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 	<div :class="[$style.textOuter, { [$style.withCw]: useCw }]">
 		<div v-if="targetChannel" :class="$style.colorBar" :style="{ background: targetChannel.color }"></div>
-		<textarea ref="textareaEl" v-model="text" :class="[$style.text]" :disabled="posting || posted" :readonly="textAreaReadOnly" :placeholder="placeholder" data-testid="post-form-text" @keydown="onKeydown" @keyup="onKeyup" @paste="onPaste" @compositionupdate="onCompositionUpdate" @compositionend="onCompositionEnd"></textarea>
+		<textarea ref="textareaEl" v-model="text" name="search" :class="[$style.text]" :disabled="posting || posted" :readonly="textAreaReadOnly" :placeholder="placeholder" data-testid="post-form-text" @keydown="onKeydown" @keyup="onKeyup" @paste="onPaste" @compositionupdate="onCompositionUpdate" @compositionend="onCompositionEnd"></textarea>
 		<div v-if="maxTextLength - textLength < 100" :class="['_acrylic', $style.textCount, { [$style.textOver]: textLength > maxTextLength }]">{{ maxTextLength - textLength }}</div>
 	</div>
-	<input v-show="withHashtags" ref="hashtagsInputEl" v-model="hashtags" :class="$style.hashtags" :placeholder="i18n.ts.hashtags" list="hashtags">
+	<input v-show="withHashtags" ref="hashtagsInputEl" v-model="hashtags" name="search" autocomplete="off" :class="$style.hashtags" :placeholder="i18n.ts.hashtags" list="hashtags">
 	<XPostFormAttaches v-model="files" @detach="detachFile" @changeSensitive="updateFileSensitive" @changeName="updateFileName"/>
 	<div v-if="uploader.items.value.length > 0" style="padding: 12px;">
 		<MkTip k="postFormUploader" style="margin-bottom: 10px;">
