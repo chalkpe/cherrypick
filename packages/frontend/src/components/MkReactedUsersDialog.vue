@@ -42,7 +42,7 @@ import MkReactionIcon from '@/components/MkReactionIcon.vue';
 import MkUserCardMini from '@/components/MkUserCardMini.vue';
 import { userPage } from '@@/js/user.js';
 import { i18n } from '@/i18n.js';
-import { misskeyApi, misskeyApiGet } from '@/utility/misskey-api.js';
+import { misskeyApi } from '@/utility/misskey-api.js';
 
 const emit = defineEmits<{
 	(ev: 'closed'): void,
@@ -59,14 +59,17 @@ const tab = ref<string>();
 const reactions = ref<string[]>();
 const users = ref();
 
-watch(tab, async () => {
-	const res = await misskeyApiGet('notes/reactions', {
+watch(tab, async (_, __, onCleanup) => {
+	let active = true;
+	onCleanup(() => { active = false; });
+	users.value = [];
+	const res = await misskeyApi('notes/reactions', {
 		noteId: props.noteId,
 		type: tab.value,
 		limit: 30,
 	});
 
-	users.value = res.map(x => x.user);
+	if (active) users.value = res.map(x => x.user);
 });
 
 onMounted(() => {
