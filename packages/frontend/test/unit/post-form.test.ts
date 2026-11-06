@@ -349,7 +349,7 @@ describe.each([
 		assert.strictEqual(previewAvatar(), avatar, 'the avatar element is not recreated');
 	});
 
-	// iOS 27 Safari は「単語:」で始まる文字列をコピーすると、text/plain の原文に加えてパーセントエンコードした
+	// iOS の Safari (iOS 18・27 で確認) は「単語:」で始まる文字列をコピーすると、text/plain の原文に加えてパーセントエンコードした
 	// text/uri-list も登録し、既定の貼り付けでそちらを入れる (iPhone SE 2 / iOS 27.2 の実機で確認した値)
 	describe('pasting text that iOS also registered as an encoded URL', () => {
 		const iosPastes = [
