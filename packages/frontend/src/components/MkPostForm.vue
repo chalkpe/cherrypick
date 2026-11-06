@@ -86,7 +86,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</I18n> - <button class="_textButton" @click="cancelScheduleDelete()">{{ i18n.ts.cancel }}</button>
 	</MkInfo>
 	<MkInfo v-if="hasNotSpecifiedMentions && !props.updateMode" warn :class="$style.hasNotSpecifiedMentions">{{ i18n.ts.notSpecifiedMentionWarning }} - <button class="_textButton" @click="addMissingMention()">{{ i18n.ts.add }}</button></MkInfo>
-	<!-- 아래 CW·본문·해시태그 입력란의 name="search": iOS 27 Safari가 placeholder·주변 텍스트의 '시', '주' 같은 글자를 주소록 필드로 오인해 연락처 자동 완성을 띄우고 키보드 추천을 가리는 것을 막는다. Safari는 이름이 search인 필드를 자동 완성 대상에서 제외한다 (autocomplete="off"만으로는 효과 없음). input의 autocomplete="off"는 Chrome·Firefox가 같은 이름으로 저장된 입력 기록을 제안하지 않게 한다 -->
+	<!-- 아래 CW·본문·해시태그 입력란의 name="search": iOS 27 Safari가 placeholder·주변 텍스트를 주소록 필드로 오인해 연락처 자동 완성을 띄우고 키보드 추천을 가리는 현상을 노트 작성 화면에서 억제한다 (autocomplete="off"만으로는 효과 없음). input의 autocomplete="off"는 Chrome·Firefox가 같은 이름으로 저장된 입력 기록을 제안하지 않도록 설정한다 -->
 	<div v-show="useCw" :class="$style.cwOuter">
 		<input ref="cwInputEl" v-model="cw" name="search" autocomplete="off" :class="$style.cw" :placeholder="i18n.ts.annotation" @keydown="onKeydown" @keyup="onKeyup" @compositionend="onCompositionEnd">
 		<div v-if="maxCwTextLength - cwTextLength < 20" :class="['_acrylic', $style.cwTextCount, { [$style.cwTextOver]: cwTextLength > maxCwTextLength }]">{{ maxCwTextLength - cwTextLength }}</div>
