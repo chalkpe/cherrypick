@@ -34,20 +34,27 @@ test.describe('Snow effect', () => {
 		const user = await registerUser('alice', 'alice1234', true);
 		await api(BASE_URL, 'i/registry/set', { i: user.token, scope: ['client', 'base'], key: 'accountSetupWizard', value: -1 });
 		await signIn(page, 'alice', 'alice1234');
-		await page.waitForFunction(() => window.localStorage.getItem('account') != null);
+		// 로그인 뒤 다시 불러오기가 끝나야 다음 이동이 끊기지 않는다. 알림 링크는 로그인한 화면에만 있다
+		await page.locator('a[href="/my/notifications"]').first().waitFor();
 	});
 
 	test('turns on and off from the settings without a reload, and stays on after one', async ({ page }) => {
 		const markPage = () => page.evaluate(() => { window.document.documentElement.dataset.notReloaded = ''; });
 		const isSamePage = () => page.evaluate(() => window.document.documentElement.dataset.notReloaded != null);
-		const infiniteAnimationCount = () => page.evaluate(() => window.document.getAnimations()
-			.filter(animation => animation.effect?.getComputedTiming().iterations === Infinity)
-			.filter(animation => animation.playState === 'running')
+		// 알림 표시처럼 눈과 무관하게 도는 애니메이션은 세지 않도록, 눈 레이어 안의 애니메이션만 붙잡아 둔다.
+		// 요소가 지워지면 document.getAnimations()에서 빠지므로 붙잡아 둔 객체의 상태를 본다
+		const holdSnowAnimations = () => page.evaluate(() => {
+			const animations = window.document.getAnimations()
+				.filter(animation => (animation.effect as KeyframeEffect | null)?.target?.closest('[data-snow-effect]') != null);
+			(window as unknown as { snowAnimations: Animation[] }).snowAnimations = animations;
+			return animations.length;
+		});
+		const unstoppedSnowAnimationCount = () => page.evaluate(() => (window as unknown as { snowAnimations: Animation[] }).snowAnimations
+			.filter(animation => animation.playState !== 'idle')
 			.length);
 
 		await openSettings(page);
 		await expect(page.locator(LAYER)).toHaveCount(0);
-		const infiniteAnimationsBefore = await infiniteAnimationCount();
 
 		await markPage();
 		await page.getByText(LABEL, { exact: true }).click();
@@ -57,12 +64,14 @@ test.describe('Snow effect', () => {
 
 		await page.reload();
 		await expect(page.locator(LAYER)).toHaveCount(1);
+		await expect.poll(() => page.locator(`${LAYER} > div`).count()).toBeGreaterThan(0);
+		expect(await holdSnowAnimations()).toBeGreaterThan(0);
 
 		await page.getByText('Appearance', { exact: true }).click();
 		await markPage();
 		await page.getByText(LABEL, { exact: true }).click();
 		await expect(page.locator(LAYER)).toHaveCount(0);
-		expect(await infiniteAnimationCount()).toBe(infiniteAnimationsBefore);
+		expect(await unstoppedSnowAnimationCount()).toBe(0);
 		expect(await isSamePage()).toBe(true);
 	});
 
