@@ -242,6 +242,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</MkPreferenceContainer>
 						</SearchMarker>
 
+						<SearchMarker :keywords="['snow', 'effect', 'show']">
+							<MkPreferenceContainer k="enableSnowEffect">
+								<MkSwitch v-model="enableSnowEffect">
+									<template #label><SearchLabel>{{ i18n.ts.snowEffect }}</SearchLabel></template>
+								</MkSwitch>
+							</MkPreferenceContainer>
+						</SearchMarker>
+
 						<SearchMarker :keywords="['show', 'unread', 'notification', 'count']">
 							<MkPreferenceContainer k="showUnreadNotificationsCount">
 								<MkSwitch v-model="showUnreadNotificationsCount">
@@ -1517,6 +1525,7 @@ const reactionsDisplaySize = prefer.model('reactionsDisplaySize');
 const limitWidthOfReaction = prefer.model('limitWidthOfReaction');
 const squareAvatars = prefer.model('squareAvatars');
 const enableSeasonalScreenEffect = prefer.model('enableSeasonalScreenEffect');
+const enableSnowEffect = prefer.model('enableSnowEffect');
 const showAvatarDecorations = prefer.model('showAvatarDecorations');
 const showRemoteAvatarDecorations = prefer.model('showRemoteAvatarDecorations');
 const nsfw = prefer.model('nsfw');

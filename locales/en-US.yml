@@ -4150,3 +4150,5 @@ deidentifyMutedUsers: "De-identify muted users"
 changeVisibility: "Change visibility"
 
 changeVisibilityConfirm: "Change the visibility of this note?"
+
+snowEffect: "Let it snow"

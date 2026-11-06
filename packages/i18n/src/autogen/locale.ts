@@ -16051,4 +16051,8 @@ export interface Locale extends ILocale {
      * このノートの公開範囲を変更しますか？
      */
     "changeVisibilityConfirm": string;
+    /**
+     * 雪を降らせる
+     */
+    "snowEffect": string;
 }

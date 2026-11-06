@@ -4288,3 +4288,5 @@ deidentifyMutedUsers: "ミュートしたユーザーを匿名化"
 changeVisibility: "公開範囲を変更"
 
 changeVisibilityConfirm: "このノートの公開範囲を変更しますか？"
+
+snowEffect: "雪を降らせる"

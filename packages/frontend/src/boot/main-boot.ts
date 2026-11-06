@@ -32,6 +32,7 @@ import { isBirthday } from '@/utility/is-birthday.js';
 import { userName } from '@/filters/user.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import * as os from '@/os.js';
+import { watchSnowEffect } from '@/utility/snow-effect-watcher.js';
 
 export async function mainBoot() {
 	const { isClientUpdated, isClientMigrated, lastVersion } = await common(async () => {
@@ -117,6 +118,8 @@ export async function mainBoot() {
 		// console.error(error);
 		console.error('Failed to initialise the seasonal screen effect canvas context:', error);
 	}
+
+	watchSnowEffect();
 
 	if ($i) {
 		store.loaded.then(async () => {
