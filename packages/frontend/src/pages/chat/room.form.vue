@@ -12,8 +12,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 >
 	<XPostFormAttaches v-if="files.length > 0 && !editingMessage" v-model="files" :max="MAX_FILES" @detach="detachFile" @changeSensitive="(changed, isSensitive) => updateAttachment(changed, { isSensitive })" @changeName="(changed, name) => updateAttachment(changed, { name })"/>
 	<div v-if="editingMessage" :class="$style.editing"><i class="ti ti-pencil" aria-hidden="true"></i> {{ i18n.ts._chat.editingMessage }}</div>
+	<!-- iOS 27 の Safari は案内文 (「…입력해 주세요」の「주」) から住所の欄と見なし、キーボードの上に連絡先の自動入力を出す。autocomplete="off" では止まらないので name で普通の入力欄と知らせる -->
 	<textarea
 		ref="textareaEl"
+		name="search"
 		:value="text"
 		:class="$style.textarea"
 		class="_acrylic"
