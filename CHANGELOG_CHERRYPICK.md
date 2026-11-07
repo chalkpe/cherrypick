@@ -13,6 +13,7 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2026101](CHANG
 
 ### Client
 - Fix: iOS 27 Safari에서 노트 작성란에 연락처 자동 완성이 떠서 키보드 추천을 가리던 문제를 수정했습니다.
+- Fix: iOS Safari에서 '단어:'로 시작하는 글을 노트 작성란에 붙여넣으면 URL 인코딩된 글자가 들어가던 문제를 수정했습니다.
 - Feat: 유저 메뉴에서 특정 사용자의 아바타 장식만 뮤트할 수 있습니다. 해당 사용자의 노트와 기본 아바타는 계속 표시됩니다. ([ZerglingGo/misskey@796afb2a](https://github.com/ZerglingGo/misskey/commit/796afb2a356a774fbc8fc657ae6706cbc5ca33ed))
 - Feat: 리모트 사용자의 아바타 장식을 일괄 숨기는 설정을 추가했습니다. 로컬 사용자의 아바타 장식은 그대로 표시할 수 있습니다. ([ZerglingGo/misskey@3daf805b](https://github.com/ZerglingGo/misskey/commit/3daf805bf9206dab5edcdafc1f273f211adae270))
 - Feat: 일반 뮤트한 사용자의 이름과 아바타를 비식별화하는 설정을 추가했습니다. 아바타 장식만 뮤트한 사용자는 비식별화하지 않습니다. ([ZerglingGo/misskey@e510a8cf](https://github.com/ZerglingGo/misskey/commit/e510a8cf0eda4c25887b1aa7110df071329bdd42))
