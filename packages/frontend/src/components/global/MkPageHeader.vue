@@ -82,6 +82,8 @@ export type PageHeaderProps = {
 	notification?: boolean;
 	title?: string;
 	icon?: string;
+	/** 戻るとアプリの外へ出てしまうときの、戻るボタンの移動先 */
+	backFallback?: string;
 };
 </script>
 
@@ -101,6 +103,7 @@ import { isFriendly } from '@/utility/is-friendly.js';
 import { scrollToVisibility } from '@/utility/scroll-to-visibility.js';
 import MkFollowButton from '@/components/MkFollowButton.vue';
 import { haptic } from '@/utility/haptic.js';
+import { canGoBackInApp } from '@/utility/app-history.js';
 
 const { showEl } = scrollToVisibility();
 
@@ -200,6 +203,11 @@ function onTabClick(): void {
 
 function goBack() {
 	haptic();
+
+	if (props.backFallback != null && !canGoBackInApp()) {
+		mainRouter.pushByPath(props.backFallback);
+		return;
+	}
 
 	window.history.back();
 }

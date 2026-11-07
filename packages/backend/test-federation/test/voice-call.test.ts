@@ -41,35 +41,40 @@ describe('Voice call', () => {
 
 	/**
 	 * owner のサーバーにルームを作り、他のサーバーの invitee を招待して、invitee のサーバーで参加させる。
-	 * 参加 (Accept) が owner のサーバーに届き、invitee がメンバーになるまで待つ
+	 * 参加 (Accept) が owner のサーバーに届き、invitee がメンバーになるまで待つ。
+	 * ルームの id はサーバーごとに違うので、owner のサーバーのルームと、invitee のサーバーのミラーの id を返す
 	 */
 	async function createRoomWithRemoteMember(
 		owner: LoginUser,
 		invitee: LoginUser,
 		inviteeInOwnerHost: Misskey.entities.UserDetailedNotMe,
-	): Promise<Misskey.entities.ChatRoom> {
-		const room = await owner.client.request('chat/rooms/create', { name: 'Voice call' });
+	): Promise<{ room: Misskey.entities.ChatRoom; mirrorId: string }> {
+		const name = `Voice call ${crypto.randomUUID()}`;
+		const room = await owner.client.request('chat/rooms/create', { name });
 		await owner.client.request('chat/rooms/invitations/create', { roomId: room.id, userId: inviteeInOwnerHost.id });
 
-		// Invite が届くと、invitee のサーバーに同じ id のルーム (ミラー) ができる
-		await vi.waitFor(async () => {
+		// Invite が届くと、invitee のサーバーにルーム (ミラー) ができる
+		const mirrorId = await vi.waitFor(async () => {
 			const invitations = await invitee.client.request('chat/rooms/invitations/inbox', {});
-			strictEqual(invitations.some(invitation => invitation.roomId === room.id), true);
+			const invitation = invitations.find(invitation => invitation.room.name === name);
+			if (invitation == null) throw new Error('the invitation has not arrived yet');
+			return invitation.roomId;
 		}, WAIT_FOR_FEDERATION);
 
-		await invitee.client.request('chat/rooms/join', { roomId: room.id });
+		await invitee.client.request('chat/rooms/join', { roomId: mirrorId });
 
 		await vi.waitFor(async () => {
 			const members = await owner.client.request('chat/rooms/members', { roomId: room.id });
 			strictEqual(members.some(member => member.userId === inviteeInOwnerHost.id), true);
 		}, WAIT_FOR_FEDERATION);
 
-		return room;
+		return { room, mirrorId };
 	}
 
 	describe('in a room hosted on a.test', () => {
 		let alice: LoginUser, bob: LoginUser, eve: LoginUser;
 		let room: Misskey.entities.ChatRoom;
+		let mirrorId: string;
 
 		beforeAll(async () => {
 			[alice, bob, eve] = await Promise.all([
@@ -79,11 +84,11 @@ describe('Voice call', () => {
 			]);
 
 			const bobInA = await resolveRemoteUser('b.test', bob.id, alice);
-			room = await createRoomWithRemoteMember(alice, bob, bobInA);
+			({ room, mirrorId } = await createRoomWithRemoteMember(alice, bob, bobInA));
 		});
 
 		test('a member on b.test gets a token for a room hosted on a.test', async () => {
-			const res = await bob.client.request('chat/rooms/voice/join', { roomId: room.id });
+			const res = await bob.client.request('chat/rooms/voice/join', { roomId: mirrorId });
 
 			strictEqual(res.url, 'https://a.test/livekit');
 			const payload = decodeToken(res.token);
@@ -95,7 +100,7 @@ describe('Voice call', () => {
 			// b.test はこのルームをミラーとして知っているが、eve はメンバーではない。
 			// b.test には LiveKit が無いので、メンバーでない人にはルームがあるかもミラーかも見せず、最初に VOICE_CALL_UNAVAILABLE で断る
 			await rejects(
-				async () => await eve.client.request('chat/rooms/voice/join', { roomId: room.id }),
+				async () => await eve.client.request('chat/rooms/voice/join', { roomId: mirrorId }),
 				(err: any) => {
 					strictEqual(err.code, 'VOICE_CALL_UNAVAILABLE');
 					return true;
@@ -106,7 +111,7 @@ describe('Voice call', () => {
 
 	describe('in a room hosted on b.test', () => {
 		let carol: LoginUser, dave: LoginUser;
-		let room: Misskey.entities.ChatRoom;
+		let mirrorId: string;
 
 		beforeAll(async () => {
 			[carol, dave] = await Promise.all([
@@ -115,14 +120,14 @@ describe('Voice call', () => {
 			]);
 
 			const daveInB = await resolveRemoteUser('a.test', dave.id, carol);
-			room = await createRoomWithRemoteMember(carol, dave, daveInB);
+			({ mirrorId } = await createRoomWithRemoteMember(carol, dave, daveInB));
 		});
 
 		test('a.test reports REMOTE_HOST_UNSUPPORTED for a room hosted on b.test, which has no LiveKit', async () => {
 			// a.test は dave の鍵で署名して b.test の /livekit/federation/token にトークンを求める。
 			// b.test には LiveKit が無いので 404 が返り、a.test はそれを REMOTE_HOST_UNSUPPORTED として dave に返す
 			await rejects(
-				async () => await dave.client.request('chat/rooms/voice/join', { roomId: room.id }),
+				async () => await dave.client.request('chat/rooms/voice/join', { roomId: mirrorId }),
 				(err: any) => {
 					strictEqual(err.code, 'REMOTE_HOST_UNSUPPORTED');
 					return true;

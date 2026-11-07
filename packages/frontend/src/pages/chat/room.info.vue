@@ -6,15 +6,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <div class="_gaps">
 	<template v-if="isOwner">
-		<MkInput v-model="name_" :mfmAutocomplete="['emoji']">
+		<MkInput v-model="name_" :mfmAutocomplete="['emoji']" :disabled="room.isArchived">
 			<template #label>{{ i18n.ts.name }}</template>
 			<template #caption>{{ i18n.ts.preview }}: <Mfm :text="name_" :plain="true" :author="room.owner"/></template>
 		</MkInput>
 
-		<MkTextarea v-model="description_" :mfmAutocomplete="['emoji']" mfmPreview>
+		<MkTextarea v-model="description_" :mfmAutocomplete="['emoji']" mfmPreview :disabled="room.isArchived">
 			<template #label>{{ i18n.ts.description }}</template>
 		</MkTextarea>
-		<MkButton primary @click="save">{{ i18n.ts.save }}</MkButton>
+		<MkButton v-if="!room.isArchived" primary @click="save">{{ i18n.ts.save }}</MkButton>
 	</template>
 	<template v-else>
 		<MkKeyValue><template #key>{{ i18n.ts.name }}</template><template #value><Mfm :text="room.name" :plain="true" :author="room.owner"/></template></MkKeyValue>
@@ -23,16 +23,18 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 	<hr>
 
+	<MkButton v-if="isOwner" @click="setArchived(!room.isArchived)"><i :class="room.isArchived ? 'ti ti-archive-off' : 'ti ti-archive'"></i> {{ room.isArchived ? i18n.ts.unarchive : i18n.ts.archive }}</MkButton>
+
 	<MkButton v-if="isOwner || ($i.isAdmin || $i.isModerator)" danger @click="del">{{ i18n.ts._chat.deleteRoom }}</MkButton>
 
-	<MkSwitch v-if="!isOwner" v-model="isMuted">
+	<MkSwitch v-if="!isOwner" :modelValue="isMuted" @update:modelValue="setMuted">
 		<template #label>{{ i18n.ts._chat.muteThisRoom }}</template>
 	</MkSwitch>
 </div>
 </template>
 
 <script lang="ts" setup>
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
@@ -43,6 +45,7 @@ import MkTextarea from '@/components/MkTextarea.vue';
 import MkSwitch from '@/components/MkSwitch.vue';
 import MkKeyValue from '@/components/MkKeyValue.vue';
 import { useRouter } from '@/router.js';
+import { chatMuteErrors, chatRoomDeleteErrors, chatRoomUpdateErrors } from './chat-errors.js';
 
 const router = useRouter();
 const $i = ensureSignin();
@@ -58,7 +61,10 @@ const isOwner = computed(() => {
 const name_ = ref(props.room.name);
 const description_ = ref(props.room.description);
 
-const emit = defineEmits<{ (ev: 'updated', room: Misskey.entities.ChatRoom): void }>();
+const emit = defineEmits<{
+	(ev: 'updated', room: Misskey.entities.ChatRoom): void;
+	(ev: 'deleting', deleting: boolean): void;
+}>();
 
 async function save() {
 	// 失敗したときは apiWithDialog がダイアログで知らせるので、ここでは何もしない
@@ -66,32 +72,68 @@ async function save() {
 		roomId: props.room.id,
 		name: name_.value,
 		description: description_.value,
-	}).catch(() => null);
+	}, undefined, chatRoomUpdateErrors).catch(() => null);
 	if (updated == null) return;
 	emit('updated', updated);
 }
 
+async function setArchived(isArchived: boolean) {
+	if (isArchived) {
+		const { canceled } = await os.confirm({
+			type: 'warning',
+			title: i18n.tsx._chat.archiveRoomConfirmTitle({ name: props.room.name }),
+			text: i18n.ts._chat.archiveRoomConfirmDescription,
+		});
+		if (canceled) return;
+	}
+
+	const updated = await os.apiWithDialog('chat/rooms/update', {
+		roomId: props.room.id,
+		isArchived,
+	}, undefined, chatRoomUpdateErrors).catch(() => null);
+	if (updated == null) return;
+	emit('updated', updated);
+}
+
+let roomClosed = false;
+onBeforeUnmount(() => {
+	roomClosed = true;
+});
+
 async function del() {
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.deleteAreYouSure({ x: name_.value }),
+		text: i18n.tsx._chat.deleteRoomConfirm({ name: props.room.name }),
 	});
 	if (canceled) return;
 
-	await os.apiWithDialog('chat/rooms/delete', {
-		roomId: props.room.id,
-	});
+	emit('deleting', true);
+	try {
+		await os.apiWithDialog('chat/rooms/delete', {
+			roomId: props.room.id,
+		}, undefined, chatRoomDeleteErrors);
+	} catch {
+		// apiWithDialog がエラーを表示済み。削除の通知を先に受けていれば、戻るルームはもう無い
+		emit('deleting', false);
+		if (!roomClosed) return;
+	}
 	router.push('/chat');
 }
 
 const isMuted = ref(props.room.isMuted ?? false);
 
-watch(isMuted, async () => {
-	await os.apiWithDialog('chat/rooms/mute', {
-		roomId: props.room.id,
-		mute: isMuted.value,
-	});
-});
+async function setMuted(mute: boolean) {
+	isMuted.value = mute;
+	try {
+		await os.apiWithDialog('chat/rooms/mute', {
+			roomId: props.room.id,
+			mute,
+		}, undefined, chatMuteErrors);
+	} catch {
+		// apiWithDialog がエラーを表示済み。変わっていないのだから、スイッチも戻す
+		isMuted.value = !mute;
+	}
+}
 </script>
 
 <style lang="scss" module>

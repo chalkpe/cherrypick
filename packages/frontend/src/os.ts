@@ -78,15 +78,20 @@ export const apiWithDialog = (<E extends keyof Misskey.Endpoints>(
 		} else if (err.code === 'ROLE_PERMISSION_DENIED') {
 			title = i18n.ts.permissionDeniedError;
 			text = i18n.ts.permissionDeniedErrorDescription;
-		} else if (err.code.startsWith('TOO_MANY')) {
+		} else if (err.code?.startsWith('TOO_MANY')) {
 			title = i18n.ts.youCannotCreateAnymore;
 			text = `${i18n.ts.error}: ${err.id}`;
 		} else if (err.message.startsWith('Unexpected token')) {
 			title = i18n.ts.gotInvalidResponseError;
 			text = i18n.ts.gotInvalidResponseErrorDescription;
-		} else if (customErrors && customErrors[err.id] != null) {
-			title = customErrors[err.id].title;
-			text = customErrors[err.id].text;
+		} else if (customErrors && (customErrors[err.id] ?? customErrors.default) != null) {
+			const customError = customErrors[err.id] ?? customErrors.default;
+			title = customError.title;
+			text = customError.text;
+		} else if (err.id == null) {
+			// 通信に失敗したときなど、サーバーの答えではないエラーには ID が無い。
+			// customErrors.default で言葉を用意した画面以外では、ブラウザの英語を出さず、これまでどおり何も開かない
+			return;
 		}
 		alert({
 			type: 'error',
@@ -344,6 +349,7 @@ export function inputText(props: {
 	default: string;
 	minLength?: number;
 	maxLength?: number;
+	hideMinLengthUntilInput?: boolean;
 }): Promise<MkDialogReturnType<string>>;
 // min lengthが指定されてたら result は null になり得ないことを保証する overload function
 export function inputText(props: {
@@ -355,6 +361,7 @@ export function inputText(props: {
 	default?: string;
 	minLength: number;
 	maxLength?: number;
+	hideMinLengthUntilInput?: boolean;
 }): Promise<MkDialogReturnType<string>>;
 export function inputText(props: {
 	type?: 'text' | 'email' | 'password' | 'url';
@@ -365,6 +372,7 @@ export function inputText(props: {
 	default?: string | null;
 	minLength?: number;
 	maxLength?: number;
+	hideMinLengthUntilInput?: boolean;
 }): Promise<MkDialogReturnType<string | null>>;
 export function inputText(props: {
 	type?: 'text' | 'email' | 'password' | 'url';
@@ -375,6 +383,7 @@ export function inputText(props: {
 	default?: string | null;
 	minLength?: number;
 	maxLength?: number;
+	hideMinLengthUntilInput?: boolean;
 }): Promise<MkDialogReturnType<string | null>> {
 	return new Promise(resolve => {
 		const { dispose } = popup(MkDialog, {
@@ -387,6 +396,7 @@ export function inputText(props: {
 				default: props.default ?? null,
 				minLength: props.minLength,
 				maxLength: props.maxLength,
+				hideMinLengthUntilInput: props.hideMinLengthUntilInput,
 			},
 		}, {
 			done: result => {
@@ -567,6 +577,23 @@ export async function selectUser(opts: { includeSelf?: boolean; localOnly?: bool
 		}, {
 			ok: user => {
 				resolve(user);
+			},
+			closed: () => dispose(),
+		});
+	});
+}
+
+// 検索し直しても選んだ人が残る。選んだ人の詳しい情報までは読まないので UserLite を返す
+export async function selectUsers(opts: { includeSelf?: boolean; localOnly?: boolean; unavailableUsers?: Promise<Record<string, string>>; } = {}): Promise<Misskey.entities.UserLite[]> {
+	return new Promise(resolve => {
+		const { dispose } = popup(defineAsyncComponent(() => import('@/components/MkUserSelectDialog.vue')), {
+			includeSelf: opts.includeSelf,
+			localOnly: opts.localOnly,
+			multiple: true,
+			unavailableUsers: opts.unavailableUsers,
+		}, {
+			okMultiple: users => {
+				resolve(users);
 			},
 			closed: () => dispose(),
 		});

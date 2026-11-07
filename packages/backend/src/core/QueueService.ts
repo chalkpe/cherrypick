@@ -10,6 +10,7 @@ import type { IActivity } from '@/core/activitypub/type.js';
 import type { MiDriveFile } from '@/models/DriveFile.js';
 import type { MiAbuseUserReport } from '@/models/AbuseUserReport.js';
 import type { MiAnnouncement } from '@/models/Announcement.js';
+import type { MiChatRoom } from '@/models/ChatRoom.js';
 import type { MiWebhook, WebhookEventTypes } from '@/models/Webhook.js';
 import type { MiSystemWebhook, SystemWebhookEventType } from '@/models/SystemWebhook.js';
 import type { Config } from '@/config.js';
@@ -618,6 +619,25 @@ export class QueueService {
 		}, {
 			removeOnComplete: {
 				age: 3600 * 24 * 7, // keep up to 7 days
+				count: 30,
+			},
+			removeOnFail: {
+				age: 3600 * 24 * 7, // keep up to 7 days
+				count: 100,
+			},
+		});
+	}
+
+	@bindThis
+	public createChatRoomRosterSyncJob(roomId: MiChatRoom['id']) {
+		return this.dbQueue.add('chatRoomRosterSync', { roomId }, {
+			attempts: 3,
+			backoff: {
+				type: 'exponential',
+				delay: 30 * 1000,
+			},
+			removeOnComplete: {
+				age: 3600 * 24, // keep up to 1 day
 				count: 30,
 			},
 			removeOnFail: {

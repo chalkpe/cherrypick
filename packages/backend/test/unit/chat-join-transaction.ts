@@ -4,7 +4,8 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatRoomFullError, ChatService, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
+import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
 
 const invitation = {
 	id: 'invitation1',
@@ -91,9 +92,9 @@ function createFixture(options: FixtureOptions = {}) {
 	};
 
 	const chatRoomInvitationsRepository = {
-		findOneByOrFail: vi.fn(async () => {
+		findOneBy: vi.fn(async () => {
 			const current = state.invitations.get(invitation.id);
-			if (current == null) throw new Error('invitation not found');
+			if (current == null) return null;
 
 			reads++;
 			if (bothRead != null && reads === 2) releaseReads();
@@ -109,15 +110,17 @@ function createFixture(options: FixtureOptions = {}) {
 
 	const chatRoomMembershipsRepository = {
 		findBy: vi.fn(async () => state.memberships),
+		delete: vi.fn(async () => ({ affected: 1 })),
 	};
 
 	const usersRepository = {
+		findOneBy: vi.fn(async ({ id }: { id: string }) => id === owner.id ? owner : joiningUser),
 		findOneByOrFail: vi.fn(async ({ id }: { id: string }) => {
 			if (id === joiningUser.id) return joiningUser;
 			if (id === owner.id) return owner;
 			throw new Error('user not found');
 		}),
-		findBy: vi.fn(async () => [owner]),
+		findBy: vi.fn(async (): Promise<{ id: string; host: string | null; uri: string | null; inbox: string | null }[]> => [owner]),
 	};
 
 	const deliver = vi.fn();
@@ -125,6 +128,7 @@ function createFixture(options: FixtureOptions = {}) {
 	const service = Object.assign(Object.create(ChatService.prototype), {
 		config: { url: 'https://local.test' },
 		db,
+		hostPolicyService: { isRefusedRemoteHost: vi.fn().mockResolvedValue(false) },
 		idService: {
 			gen: () => 'membership1',
 			parse: () => ({ date: new Date('2026-01-01T00:00:00.000Z') }),
@@ -132,24 +136,30 @@ function createFixture(options: FixtureOptions = {}) {
 		chatRoomInvitationsRepository,
 		chatRoomMembershipsRepository,
 		chatRoomsRepository: {
-			findOneByOrFail: vi.fn(async () => room),
+			findOneBy: vi.fn(async () => room),
 		},
 		usersRepository,
 		userEntityService: {
-			isLocalUser: (user: { id: string }) => user.id === joiningUser.id,
-			isRemoteUser: (user: { id: string }) => user.id === owner.id,
+			isLocalUser: (user: { host: string | null }) => user.host == null,
+			isRemoteUser: (user: { host: string | null }) => user.host != null,
 			genLocalUserUri: (id: string) => `https://local.test/users/${id}`,
 		},
 		apRendererService: {
 			renderChatRoom: vi.fn(() => ({})),
 			renderAccept: vi.fn(() => ({})),
 			renderAdd: vi.fn(() => ({})),
+			genLocalChatRoomUri: (id: string) => `https://local.test/chat/rooms/${id}`,
 			addContext: vi.fn((activity: unknown) => activity),
 		},
+		globalEventService: {
+			publishChatRoomStream: vi.fn(),
+			publishMainStream: vi.fn(),
+		},
+		chatRosterService: chatRosterOver(forgetfulRedis()),
 		queueService: { deliver },
 	}) as ChatService;
 
-	return { service, state, manager, deliver };
+	return { service, state, manager, deliver, usersRepository, chatRoomMembershipsRepository };
 }
 
 describe('ChatService.joinToRoom invitation consumption', () => {
@@ -163,6 +173,46 @@ describe('ChatService.joinToRoom invitation consumption', () => {
 		expect(f.deliver).toHaveBeenCalled();
 	});
 
+	test('announces the new member to everyone but a member suspended on this server', async () => {
+		const f = createFixture();
+		const localOwner = { ...owner, host: null };
+		const member = { id: 'member1', host: 'active.test', uri: 'https://active.test/users/member1', inbox: 'https://active.test/inbox' };
+		const suspendedMember = { id: 'member2', host: 'suspended.test', uri: 'https://suspended.test/users/member2', inbox: 'https://suspended.test/inbox', isSuspended: true };
+		f.usersRepository.findOneByOrFail.mockImplementation(async ({ id }: { id: string }) => id === owner.id ? localOwner as never : joiningUser as never);
+		f.usersRepository.findBy.mockResolvedValue([localOwner, member, suspendedMember]);
+
+		await f.service.joinToRoom('user1', 'room1');
+
+		expect(f.deliver.mock.calls.map(call => call[2])).toEqual([member.inbox]);
+	});
+
+	describe('the roster a mirror kept from before', () => {
+		const leftMember = { id: 'left1', host: 'other.test', uri: 'https://other.test/users/left1', inbox: 'https://other.test/inbox' };
+
+		test('is dropped before the Accept when nobody here took part, so a removed member stops receiving messages', async () => {
+			const f = createFixture();
+			f.state.memberships = [{ id: 'old1', roomId: 'room1', userId: leftMember.id }];
+			f.usersRepository.findBy.mockResolvedValue([owner, leftMember]);
+
+			await f.service.joinToRoom('user1', 'room1');
+
+			const [where] = f.chatRoomMembershipsRepository.delete.mock.calls[0] as unknown as [{ roomId: string; userId: { value: string[] } }];
+			expect(where.roomId).toBe('room1');
+			expect(where.userId.value).toEqual([leftMember.id]);
+			expect(f.chatRoomMembershipsRepository.delete.mock.invocationCallOrder[0]).toBeLessThan(f.deliver.mock.invocationCallOrder[0]);
+		});
+
+		test('is kept while someone here is a member, because the owner has kept this server up to date', async () => {
+			const f = createFixture();
+			f.state.memberships = [{ id: 'old1', roomId: 'room1', userId: leftMember.id }, { id: 'old2', roomId: 'room1', userId: 'neighbor' }];
+			f.usersRepository.findBy.mockResolvedValue([owner, leftMember, { id: 'neighbor', host: null, uri: null, inbox: null }]);
+
+			await f.service.joinToRoom('user1', 'room1');
+
+			expect(f.chatRoomMembershipsRepository.delete).not.toHaveBeenCalled();
+		});
+	});
+
 	test('does not join when the invitation was cancelled before consumption', async () => {
 		const f = createFixture({ cancelBeforeDelete: true });
 
@@ -170,6 +220,16 @@ describe('ChatService.joinToRoom invitation consumption', () => {
 
 		expect(f.state.memberships).toEqual([]);
 		expect(f.manager.insert).not.toHaveBeenCalled();
+	});
+
+	test('a full room refuses the join and keeps the invitation', async () => {
+		const f = createFixture();
+		f.state.memberships = Array.from({ length: MAX_ROOM_MEMBERS }, (_, i) => ({ id: `m${i}`, roomId: 'room1', userId: `other${i}` }));
+
+		await expect(f.service.joinToRoom('user1', 'room1')).rejects.toBeInstanceOf(ChatRoomFullError);
+
+		expect(f.state.invitations.size).toBe(1);
+		expect(f.state.memberships).toHaveLength(MAX_ROOM_MEMBERS);
 	});
 
 	test('restores the invitation when the membership insert fails', async () => {
@@ -195,13 +255,25 @@ describe('ChatService.joinToRoom invitation consumption', () => {
 		expect(f.state.memberships).toEqual([{ id: 'membership1', roomId: 'room1', userId: 'user1' }]);
 	});
 
-	test('consumes the invitation without duplicating an existing membership', async () => {
+	test('consumes the invitation without duplicating an existing membership, and still tells the remote owner', async () => {
 		const f = createFixture({ existingMembership: true });
 
 		await f.service.joinToRoom('user1', 'room1');
 
 		expect(f.state.invitations.size).toBe(0);
 		expect(f.state.memberships).toEqual([{ id: 'existing1', roomId: 'room1', userId: 'user1' }]);
+		expect(f.deliver).toHaveBeenCalledOnce();
+		expect(f.deliver.mock.calls[0][2]).toBe(owner.inbox);
+	});
+
+	test('announces nothing for an existing membership in a room owned here', async () => {
+		const f = createFixture({ existingMembership: true });
+		const localOwner = { ...owner, host: null };
+		f.usersRepository.findOneByOrFail.mockImplementation(async ({ id }: { id: string }) => id === owner.id ? localOwner as never : joiningUser as never);
+		f.usersRepository.findBy.mockResolvedValue([localOwner, { id: 'member1', host: 'active.test', uri: 'https://active.test/users/member1', inbox: 'https://active.test/inbox' }]);
+
+		await f.service.joinToRoom('user1', 'room1');
+
 		expect(f.deliver).not.toHaveBeenCalled();
 	});
 });

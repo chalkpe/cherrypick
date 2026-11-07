@@ -78,6 +78,9 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (room == null) {
 				throw new ApiError(meta.errors.noSuchRoom);
 			}
+			if (!await this.chatService.isRoomMember(room, me.id)) {
+				throw new ApiError(meta.errors.noSuchRoom);
+			}
 			if (room.ownerId !== me.id) {
 				throw new ApiError(meta.errors.accessDenied);
 			}

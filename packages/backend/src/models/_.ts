@@ -30,6 +30,7 @@ import { MiChatMessage } from '@/models/ChatMessage.js';
 import { MiChatRoom } from '@/models/ChatRoom.js';
 import { MiChatRoomInvitation } from '@/models/ChatRoomInvitation.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
+import { MiChatRoomRosterState } from '@/models/ChatRoomRosterState.js';
 import { MiClip } from '@/models/Clip.js';
 import { MiClipFavorite } from '@/models/ClipFavorite.js';
 import { MiClipNote } from '@/models/ClipNote.js';
@@ -180,6 +181,7 @@ export {
 	MiChatMessage,
 	MiChatRoom,
 	MiChatRoomMembership,
+	MiChatRoomRosterState,
 	MiChatRoomInvitation,
 	MiChatApproval,
 	MiBubbleGameRecord,
@@ -265,6 +267,7 @@ export type UserMemoRepository = Repository<MiUserMemo> & MiRepository<MiUserMem
 export type ChatMessagesRepository = Repository<MiChatMessage> & MiRepository<MiChatMessage>;
 export type ChatRoomsRepository = Repository<MiChatRoom> & MiRepository<MiChatRoom>;
 export type ChatRoomMembershipsRepository = Repository<MiChatRoomMembership> & MiRepository<MiChatRoomMembership>;
+export type ChatRoomRosterStatesRepository = Repository<MiChatRoomRosterState> & MiRepository<MiChatRoomRosterState>;
 export type ChatRoomInvitationsRepository = Repository<MiChatRoomInvitation> & MiRepository<MiChatRoomInvitation>;
 export type ChatApprovalsRepository = Repository<MiChatApproval> & MiRepository<MiChatApproval>;
 export type BubbleGameRecordsRepository = Repository<MiBubbleGameRecord> & MiRepository<MiBubbleGameRecord>;

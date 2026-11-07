@@ -4,6 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
+import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { DI } from '@/di-symbols.js';
 import { ChatService } from '@/core/ChatService.js';
@@ -15,6 +16,11 @@ export const meta = {
 	requireCredential: true,
 
 	kind: 'write:chat',
+
+	limit: {
+		duration: ms('1minute'),
+		max: 30,
+	},
 
 	errors: {
 	},

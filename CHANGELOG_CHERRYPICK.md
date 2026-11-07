@@ -8,6 +8,8 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2026101](CHANG
 ### General
 - Feat: 관리자와 모더레이터가 기존 노트의 본문과 첨부를 유지하면서 공개 범위를 변경할 수 있습니다. 리모트 노트의 변경은 이 서버에 저장된 사본에만 적용됩니다. ([ZerglingGo/misskey@dc47591c](https://github.com/ZerglingGo/misskey/commit/dc47591c13bf82406c466b942bca328157a8862a))
 - Feat: 음성 통화 및 화면 공유를 추가했습니다.
+- Feat: 쪽지를 ActivityPub으로 연합합니다. 1:1과 그룹 쪽지를 다른 CherryPick 서버, 같은 규약을 쓰는 Mastodon 서버와 주고받습니다. 이전 버전 서버와의 통신은 일부 제한됩니다.
+- Enhance: 쪽지 하나에 파일을 4개까지 첨부할 수 있고, 최대 길이를 4096자로 늘렸습니다.
 
 ### Client
 - Fix: iOS 27 Safari에서 노트 작성란에 연락처 자동 완성이 떠서 키보드 추천을 가리던 문제를 수정했습니다.
@@ -16,7 +18,8 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2026101](CHANG
 - Feat: 리모트 사용자의 아바타 장식을 일괄 숨기는 설정을 추가했습니다. 로컬 사용자의 아바타 장식은 그대로 표시할 수 있습니다. ([ZerglingGo/misskey@3daf805b](https://github.com/ZerglingGo/misskey/commit/3daf805bf9206dab5edcdafc1f273f211adae270))
 - Feat: 일반 뮤트한 사용자의 이름과 아바타를 비식별화하는 설정을 추가했습니다. 아바타 장식만 뮤트한 사용자는 비식별화하지 않습니다. ([ZerglingGo/misskey@e510a8cf](https://github.com/ZerglingGo/misskey/commit/e510a8cf0eda4c25887b1aa7110df071329bdd42))
 - Fix: 로그인 정보가 없는 계정도 계정 관리에서 삭제할 수 있으며, 다른 서버의 계정은 전환 메뉴에 표시하지 않습니다.
-- Enhance: 음성 통화·화면 공유·쪽지의 사용성을 개선했습니다. 통화 화면과 참가자 카드, 마이크·소리 끄기 상태 및 발화 표시를 개선하고, 목소리·화면 공유 볼륨 개별 조절, 입장 전 마이크 선택, PC·모바일 채팅 패널을 추가했습니다. 채팅방 멤버 목록에 방장·멤버 제목을 표시하고, 쪽지 이미지 드롭·붙여넣기 첨부를 수정했으며, 첨부 미리보기·수정 메뉴와 그룹 이름·설명의 커스텀 이모지 자동완성·표시를 지원합니다.
+- Enhance: 음성 통화·화면 공유와 쪽지 첨부의 사용성을 개선했습니다. 목소리와 화면 공유 볼륨을 따로 조절하고, 입장 전에 마이크를 고를 수 있습니다.
+- Feat: 그룹 주인이 멤버를 내보낼 수 있습니다.
 - Enhance: 조건부 역할을 저장할 때 겹치는 등급 역할의 조건과 낮아지는 권한을 함께 정리할 수 있도록 안내
 - Fix: 노트 상세 화면의 리액션 칩을 눌러도 리액션한 사용자 목록이 잘 열리지 않던 문제를 수정했습니다.
 - Fix: 전환할 다른 계정이 없으면 모바일 하단 바의 홈 버튼을 길게 눌러도 계정 메뉴를 표시하지 않습니다.
@@ -24,6 +27,7 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2026101](CHANG
 ### Server
 - Fix: 노트 자동 삭제 시 일반 노트 삭제와 동일한 후처리를 수행하여, 리모트 서버로 삭제가 전파되고 검색 색인과 차트 등에도 반영되도록 개선했습니다. ([ZerglingGo/misskey@799bb2df](https://github.com/ZerglingGo/misskey/commit/799bb2dfeebb7f2c321d53c94e2a9e3d4a610512))
 - Feat: 커스텀 이모지의 민감한 콘텐츠 표시를 지원하는 서버와 주고받으며, 표시 여부만 변경된 경우에도 리모트 이모지에 반영합니다. ([ZerglingGo/misskey@1ed8b116](https://github.com/ZerglingGo/misskey/commit/1ed8b116d8a9d3604e1ea9b9bfa68f9a1682049f))
+- Note: 쪽지 첨부가 `fileIds` 배열로 바뀌어 기존 데이터를 마이그레이션합니다. API의 `fileId`와 `file`은 첫 번째 첨부로 계속 제공합니다.
 
 ---
 

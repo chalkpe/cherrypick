@@ -436,7 +436,7 @@ describe('voice call on the room page', () => {
 		await fireEvent(pane, event);
 		await flush();
 		expect(event.defaultPrevented).toBe(true);
-		expect(mocks.launchUploader).toHaveBeenCalledWith([image], { multiple: false });
+		expect(mocks.launchUploader).toHaveBeenCalledWith([image], { multiple: true });
 		expect(screen.getByRole('img', { name: 'pane.png' })).toBeTruthy();
 	});
 	test('toggles the desktop chat panel without changing its icon or losing the draft', async () => {
@@ -689,6 +689,12 @@ describe('voice call on the room page', () => {
 		});
 	});
 	describe('room owned on another server', () => {
+		test('hides the call for an archived room', async () => {
+			mocks.instance.features.remoteVoiceCall = true;
+			await renderRoom({ ...mirror, isArchived: true }, [{ roomId: 'r1', participants: [participant(alice)] }]);
+			expect(screen.queryByRole('button', { name: i18n.ts._voiceCall.join })).toBeNull();
+		});
+
 		test('shows the call for a mirror room when remote calls are allowed', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
 			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);

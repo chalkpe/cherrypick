@@ -72,6 +72,14 @@ export class Resolver {
 		this.logger = this.loggerService.getLogger('ap-resolve');
 	}
 
+	/**
+	 * A chat message is served only to its participants, who are identified by the key that signs the request.
+	 */
+	@bindThis
+	public signAs(user: MiLocalUser): void {
+		this.user = user;
+	}
+
 	@bindThis
 	public getHistory(): string[] {
 		return Array.from(this.history);

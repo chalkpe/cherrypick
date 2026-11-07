@@ -65,6 +65,11 @@ export type DbJobMap = {
 	importCustomEmojis: DbUserImportJobData;
 	deleteAccount: DbUserDeleteJobData;
 	truncateAccount: DbUserTruncateJobData;
+	chatRoomRosterSync: ChatRoomRosterSyncJobData;
+};
+
+export type ChatRoomRosterSyncJobData = {
+	roomId: string;
 };
 
 export type DbJobDataWithUser = {

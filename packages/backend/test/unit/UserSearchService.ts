@@ -135,6 +135,69 @@ describe('UserSearchService', () => {
 	});
 
 	describe('searchByUsernameAndHost', () => {
+		test.each([undefined, '.'])('excludes an unfollowed local user with no activity (host: %s)', async (host) => {
+			expect(alice.updatedAt).toBeNull();
+
+			const result = await service.searchByUsernameAndHost(
+				{ username: 'alice', host },
+				{ limit: 10 },
+				root,
+			);
+
+			expect(result).toEqual([]);
+		});
+
+		test('keeps a followed local user with no activity searchable', async () => {
+			await createFollowings(root, [alice]);
+			expect(alice.updatedAt).toBeNull();
+
+			const result = await service.searchByUsernameAndHost(
+				{ username: 'alice', host: '.' },
+				{ limit: 10 },
+				root,
+			);
+
+			expect(result).toEqual([alice.id]);
+		});
+
+		test('finds a newly discovered remote user without following them', async () => {
+			expect(alyson.updatedAt).toBeNull();
+
+			const result = await service.searchByUsernameAndHost(
+				{ username: 'ALYSON', host: 'EXAMPLE.COM' },
+				{ limit: 10 },
+				root,
+			);
+
+			expect(result).toEqual([alyson.id]);
+		});
+
+		test('keeps following and activity priority with a low limit and newly discovered remote users', async () => {
+			const aaron = await createUser({ username: 'Aaron', usernameLower: 'aaron', host: 'example.com' });
+			await createFollowings(root, [alyssa, bobbie]);
+			await setActive([alyssa, bobby]);
+
+			const result = await service.searchByUsernameAndHost(
+				{ host: 'example.com' },
+				{ limit: 4 },
+				root,
+			);
+
+			expect(result).toEqual([alyssa, bobbie, bobby, aaron].map(x => x.id));
+		});
+
+		test('excludes suspended remote users whose update time is null', async () => {
+			await setSuspended([alyson]);
+
+			const result = await service.searchByUsernameAndHost(
+				{ username: 'al', host: 'example.com' },
+				{ limit: 10 },
+				root,
+			);
+
+			expect(result).toEqual([alyssa.id]);
+		});
+
 		test('フォロー中のアクティブユーザのうち、"al"から始まる人が全員ヒットする', async () => {
 			await createFollowings(root, [alice, alyce, alycia, alysha, alyson, alyssa, bob, bobbi, bobbie, bobby]);
 			await setActive([alice, alyce, alyssa, bob, bobbi, bobbie, bobby]);

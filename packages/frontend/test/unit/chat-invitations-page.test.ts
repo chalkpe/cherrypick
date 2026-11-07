@@ -4,7 +4,7 @@
  */
 
 import { afterEach, expect, test, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/vue';
+import { cleanup, fireEvent, render, screen } from '@testing-library/vue';
 
 const invitation = vi.hoisted(() => ({
 	id: 'i1',
@@ -31,6 +31,8 @@ vi.mock('@/os.js', () => ({
 }));
 
 import XInvitations from '@/pages/chat/home.invitations.vue';
+import { globalEvents } from '@/events.js';
+import { i18n } from '@/i18n.js';
 
 const stubs = {
 	MkFolder: { template: '<div><slot name="icon"/><slot name="label"/><slot name="suffix"/><slot name="footer"/><slot/></div>' },
@@ -51,4 +53,17 @@ test('offers only join and reject actions for an invitation', async () => {
 	await screen.findByText('room 1');
 
 	expect(screen.getAllByRole('button')).toHaveLength(2);
+});
+
+test.each(['join', 'reject'] as const)('tells the notification lists when the invitation is answered here (%s)', async (action) => {
+	const handled = vi.fn();
+	globalEvents.on('chatRoomInvitationHandled', handled);
+	render(XInvitations, { global: { stubs } });
+	await screen.findByText('room 1');
+
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat[action] }));
+	await new Promise(resolve => setTimeout(resolve, 0));
+	globalEvents.off('chatRoomInvitationHandled', handled);
+
+	expect(handled).toHaveBeenCalledExactlyOnceWith('room1', action === 'join' ? 'joined' : 'rejected');
 });

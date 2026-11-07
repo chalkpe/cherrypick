@@ -14,11 +14,12 @@ class FakeResizeObserver {
 
 	constructor(callback: ResizeObserverCallback) {
 		this.callback = callback;
-		observers.add(this);
 	}
 
+	// 本物と同じく、disconnect したあとでも observe し直せる
 	observe(el: Element) {
 		this.targets.add(el);
+		observers.add(this);
 	}
 
 	unobserve(el: Element) {

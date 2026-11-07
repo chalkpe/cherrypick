@@ -19,6 +19,7 @@ import { bindThis } from '@/decorators.js';
 import { generateNativeUserToken } from '@/misc/token.js';
 import { IdService } from '@/core/IdService.js';
 import { genRsaKeyPair } from '@/misc/gen-key-pair.js';
+import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import type { OnApplicationShutdown } from '@nestjs/common';
 
 export const SYSTEM_ACCOUNT_TYPES = ['actor', 'relay', 'proxy'] as const;
@@ -170,6 +171,17 @@ export class SystemAccountService implements OnApplicationShutdown {
 				userId: account.id,
 				type: type,
 			});
+		}).catch(async err => {
+			if (!isDuplicateKeyValueError(err)) throw err;
+
+			// Every process can reach this at once on first use, for example on metaUpdated.
+			// The constraint made us wait for the winner's commit, so its account can be read now.
+			const winner = await this.systemAccountsRepository.findOne({
+				where: { type: type },
+				relations: { user: true },
+			});
+			if (winner == null) throw err;
+			account = winner.user!;
 		});
 
 		return account as MiLocalUser;

@@ -96,4 +96,15 @@ export class ApImageService {
 		// リモートサーバーからフェッチしてきて登録
 		return await this.createImage(actor, value);
 	}
+
+	/**
+	 * What this actor has already stored under the URL of an attachment, to reuse instead of downloading it again.
+	 * A download would make the file sensitive when the attachment now says so, so that case is left to resolveImage.
+	 */
+	@bindThis
+	public async findStoredImage(actor: Pick<MiRemoteUser, 'id'>, value: string | IObject): Promise<MiDriveFile | null> {
+		if (typeof value !== 'object' || typeof value.url !== 'string') return null;
+		const file = await this.driveFilesRepository.findOneBy({ userId: actor.id, uri: value.url });
+		return file != null && (file.isSensitive || !value.sensitive) ? file : null;
+	}
 }

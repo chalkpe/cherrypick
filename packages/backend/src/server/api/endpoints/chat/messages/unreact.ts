@@ -4,8 +4,9 @@
  */
 
 import { Injectable } from '@nestjs/common';
+import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
-import { ChatService, ChatMessageAccessError } from '@/core/ChatService.js';
+import { ChatService, ChatMessageAccessError, ChatReactionInvalidError, ChatRoomArchivedError } from '@/core/ChatService.js';
 import { ApiError } from '@/server/api/error.js';
 
 export const meta = {
@@ -15,11 +16,26 @@ export const meta = {
 
 	kind: 'write:chat',
 
+	limit: {
+		duration: ms('1hour'),
+		max: 500,
+	},
+
 	errors: {
 		noSuchMessage: {
 			message: 'No such message.',
 			code: 'NO_SUCH_MESSAGE',
 			id: 'c39ea42f-e3ca-428a-ad57-390e0a711595',
+		},
+		roomIsArchived: {
+			message: 'This room is archived.',
+			code: 'ROOM_IS_ARCHIVED',
+			id: '92b7e6c4-5a13-4f80-a7d9-08f3e2c1b6d5',
+		},
+		invalidReaction: {
+			message: 'That reaction is not an emoji.',
+			code: 'INVALID_REACTION',
+			id: '1de6e9fc-362d-40ed-a79f-861247e2f43c',
 		},
 	},
 } as const;
@@ -46,6 +62,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				await this.chatService.unreact(ps.messageId, me.id, ps.reaction);
 			} catch (e) {
 				if (e instanceof ChatMessageAccessError) throw new ApiError(meta.errors.noSuchMessage);
+				if (e instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);
+				if (e instanceof ChatReactionInvalidError) throw new ApiError(meta.errors.invalidReaction);
 				throw e;
 			}
 		});

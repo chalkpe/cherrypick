@@ -1520,6 +1520,18 @@ export interface Locale extends ILocale {
      */
     "selectUser": string;
     /**
+     * 選択中: {n}人
+     */
+    "selectedUsersCount": ParameterizedString<"n">;
+    /**
+     * 複数選択できます。検索し直しても選んだ人は残ります。
+     */
+    "canSelectMultipleUsers": string;
+    /**
+     * {x}さんを選択から外す
+     */
+    "removeFromSelection": ParameterizedString<"x">;
+    /**
      * 宛先
      */
     "recipient": string;
@@ -4837,6 +4849,10 @@ export interface Locale extends ILocale {
      */
     "cannotUploadBecauseUnallowedFileType": string;
     /**
+     * サーバーに接続できないためアップロードできません。ネットワークの状態を確認してから、もう一度お試しください。
+     */
+    "cannotUploadBecauseNetworkError": string;
+    /**
      * ベータ
      */
     "beta": string;
@@ -6748,11 +6764,15 @@ export interface Locale extends ILocale {
          */
         "messages": string;
         /**
+         * メッセージに添付できるファイルは{max}個までです
+         */
+        "tooManyFiles": ParameterizedString<"max">;
+        /**
          * まだメッセージはありません
          */
         "noMessagesYet": string;
         /**
-         * ルームを開く
+         * グループを開く
          */
         "openRoom": string;
         /**
@@ -6841,7 +6861,7 @@ export interface Locale extends ILocale {
          */
         "members": string;
         /**
-         * ルームオーナー
+         * グループオーナー
          */
         "roomOwner": string;
         /**
@@ -6876,6 +6896,18 @@ export interface Locale extends ILocale {
          * このサーバー、またはこのアカウントでダイレクトメッセージは読み取り専用となっています。新たに書き込んだり、グループを作成・参加したりすることはできません。
          */
         "chatIsReadOnlyForThisAccountOrServer": string;
+        /**
+         * このグループはアーカイブされているため、新たに書き込むことはできません。
+         */
+        "thisRoomIsArchived": string;
+        /**
+         * {name}をアーカイブしますか？
+         */
+        "archiveRoomConfirmTitle": ParameterizedString<"name">;
+        /**
+         * アーカイブすると、メンバー全員がメッセージの送信・編集・削除やリアクションをできなくなり、通話も終了します。これまでのメッセージは読むことができ、後からアーカイブを解除できます。
+         */
+        "archiveRoomConfirmDescription": string;
         /**
          * 相手のアカウントでダイレクトメッセージが使えない状態になっています。ダイレクトメッセージを送るとユーザー指定ノートで送信され、相手がユーザー指定ノートに返信すればここで見ることができます。
          */
@@ -6947,9 +6979,121 @@ export interface Locale extends ILocale {
             "none": string;
         };
         /**
+         * 削除されたメッセージ
+         */
+        "deletedMessage": string;
+        /**
+         * グループが削除されました
+         */
+        "roomDeleted": string;
+        /**
+         * グループから外す
+         */
+        "kickMember": string;
+        /**
+         * {name}さんを「{room}」から外しますか？このグループのメッセージは見られなくなり、戻るには再度招待が必要です。
+         */
+        "kickMemberConfirm": ParameterizedString<"name" | "room">;
+        /**
+         * 「{name}」から退出しますか？このグループのメッセージは見られなくなり、戻るには再度招待が必要です。
+         */
+        "leaveRoomConfirm": ParameterizedString<"name">;
+        /**
+         * 「{name}」を削除しますか？すべてのメンバーからグループとメッセージが消え、元に戻せません。
+         */
+        "deleteRoomConfirm": ParameterizedString<"name">;
+        /**
+         * このメッセージが見つかりません。すでに削除された可能性があります。
+         */
+        "messageUnavailable": string;
+        /**
+         * 処理できませんでした。しばらくしてからもう一度お試しください。
+         */
+        "actionFailed": string;
+        /**
+         * このユーザーにはメッセージを送れません。
+         */
+        "cannotChatWithUser": string;
+        /**
+         * このユーザーは招待できません。
+         */
+        "cannotInviteUser": string;
+        /**
+         * このユーザーはすでにこのグループのメンバーです。
+         */
+        "alreadyMember": string;
+        /**
+         * このユーザーはすでに招待済みです。
+         */
+        "alreadyInvited": string;
+        /**
+         * このグループは満員です。
+         */
+        "roomIsFull": string;
+        /**
+         * 参加しました
+         */
+        "invitationJoined": string;
+        /**
+         * 拒否しました
+         */
+        "invitationRejected": string;
+        /**
+         * この招待はすでに処理されたか、取り消されました。
+         */
+        "invitationGone": string;
+        /**
+         * 招待した人:
+         */
+        "invitedBy": string;
+        /**
+         * {n}人を招待できませんでした
+         */
+        "inviteFailedUsers": ParameterizedString<"n">;
+        /**
+         * {n}人は招待しました。
+         */
+        "inviteSentUsers": ParameterizedString<"n">;
+        /**
+         * グループの情報と削除
+         */
+        "roomInfoAndDelete": string;
+        /**
+         * {n}人が参加しています。
+         */
+        "roomMembersJoined": ParameterizedString<"n">;
+        /**
+         * {n}人を招待しました。承認するとこのグループに参加します。状況はメンバータブで確認できます。
+         */
+        "roomInvitationsWaiting": ParameterizedString<"n">;
+        /**
+         * メンバーを見る
+         */
+        "viewMembers": string;
+        /**
+         * このメンバーはすでにグループにいません。
+         */
+        "memberAlreadyGone": string;
+        /**
+         * メッセージを編集中
+         */
+        "editingMessage": string;
+        /**
+         * このグループから退出しました。再参加するには招待が必要です。
+         */
+        "removedFromRoom": string;
+        /**
+         * このグループを開けません。削除されたか、参加していないグループです。
+         */
+        "roomUnavailable": string;
+        /**
          * {x}さんに送信された招待をキャンセルしますか？
          */
         "invitationCancelAreYouSure": ParameterizedString<"x">;
+        /**
+         * {x}さんへの招待をキャンセル
+         */
+        "cancelInvitationTo": ParameterizedString<"x">;
     };
     "_emojiPalette": {
         /**
@@ -9333,7 +9477,7 @@ export interface Locale extends ILocale {
          */
         "remoteHostNotice": ParameterizedString<"host">;
         /**
-         * このルームのサーバーは通話に対応していません。
+         * このグループのサーバーは通話に対応していません。
          */
         "remoteHostUnsupported": string;
         /**
@@ -9393,7 +9537,7 @@ export interface Locale extends ILocale {
          */
         "enableAudio": string;
         /**
-         * ルームに戻る
+         * グループに戻る
          */
         "backToRoom": string;
         /**

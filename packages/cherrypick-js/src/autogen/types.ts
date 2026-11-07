@@ -1558,6 +1558,15 @@ export type paths = {
          */
         post: operations['chat___messages___unreact'];
     };
+    '/chat/messages/update': {
+        /**
+         * chat/messages/update
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:chat*
+         */
+        post: operations['chat___messages___update'];
+    };
     '/chat/messages/user-timeline': {
         /**
          * chat/messages/user-timeline
@@ -1665,6 +1674,15 @@ export type paths = {
          *     **Credential required**: *Yes* / **Permission**: *read:chat*
          */
         post: operations['chat___rooms___joining'];
+    };
+    '/chat/rooms/kick': {
+        /**
+         * chat/rooms/kick
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:chat*
+         */
+        post: operations['chat___rooms___kick'];
     };
     '/chat/rooms/leave': {
         /**
@@ -6170,6 +6188,10 @@ export type components = {
             id: string;
             /** Format: date-time */
             createdAt: string;
+            /** Format: date-time */
+            editedAt?: string | null;
+            /** Format: date-time */
+            deletedAt?: string | null;
             fromUserId: string;
             fromUser: components['schemas']['UserLite'];
             toUserId?: string | null;
@@ -6179,17 +6201,25 @@ export type components = {
             text?: string | null;
             fileId?: string | null;
             file?: components['schemas']['DriveFile'] | null;
+            fileIds: string[];
+            files: components['schemas']['DriveFile'][];
             isRead?: boolean;
             reactions: {
                 reaction: string;
                 user: components['schemas']['UserLite'];
             }[];
-            emojis?: Record<string, never>;
+            emojis?: {
+                [key: string]: string;
+            };
         };
         ChatMessageLite: {
             id: string;
             /** Format: date-time */
             createdAt: string;
+            /** Format: date-time */
+            editedAt?: string | null;
+            /** Format: date-time */
+            deletedAt?: string | null;
             fromUserId: string;
             fromUser?: components['schemas']['UserLite'];
             toUserId?: string | null;
@@ -6197,41 +6227,61 @@ export type components = {
             text?: string | null;
             fileId?: string | null;
             file?: components['schemas']['DriveFile'] | null;
+            fileIds: string[];
+            files: components['schemas']['DriveFile'][];
             reactions: {
                 reaction: string;
                 user?: components['schemas']['UserLite'] | null;
             }[];
-            emojis?: Record<string, never>;
+            emojis?: {
+                [key: string]: string;
+            };
         };
         ChatMessageLiteFor1on1: {
             id: string;
             /** Format: date-time */
             createdAt: string;
+            /** Format: date-time */
+            editedAt?: string | null;
+            /** Format: date-time */
+            deletedAt?: string | null;
             fromUserId: string;
             toUserId: string;
             text?: string | null;
             fileId?: string | null;
             file?: components['schemas']['DriveFile'] | null;
+            fileIds: string[];
+            files: components['schemas']['DriveFile'][];
             reactions: {
                 reaction: string;
             }[];
-            emojis?: Record<string, never>;
+            emojis?: {
+                [key: string]: string;
+            };
         };
         ChatMessageLiteForRoom: {
             id: string;
             /** Format: date-time */
             createdAt: string;
+            /** Format: date-time */
+            editedAt?: string | null;
+            /** Format: date-time */
+            deletedAt?: string | null;
             fromUserId: string;
             fromUser: components['schemas']['UserLite'];
             toRoomId: string;
             text?: string | null;
             fileId?: string | null;
             file?: components['schemas']['DriveFile'] | null;
+            fileIds: string[];
+            files: components['schemas']['DriveFile'][];
             reactions: {
                 reaction: string;
                 user: components['schemas']['UserLite'];
             }[];
-            emojis?: Record<string, never>;
+            emojis?: {
+                [key: string]: string;
+            };
         };
         ChatRoom: {
             id: string;
@@ -6243,6 +6293,7 @@ export type components = {
             description: string;
             isMuted?: boolean;
             invitationExists?: boolean;
+            isArchived: boolean;
         };
         ChatRoomInvitation: {
             id: string;
@@ -18389,6 +18440,7 @@ export interface operations {
                     text?: string | null;
                     /** Format: misskey:id */
                     fileId?: string;
+                    fileIds?: string[];
                     /** Format: misskey:id */
                     toRoomId: string;
                 };
@@ -18467,6 +18519,7 @@ export interface operations {
                     text?: string | null;
                     /** Format: misskey:id */
                     fileId?: string;
+                    fileIds?: string[];
                     /** Format: misskey:id */
                     toUserId: string;
                 };
@@ -18590,6 +18643,15 @@ export interface operations {
                     'application/json': components['schemas']['Error'];
                 };
             };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
             /** @description Internal server error */
             500: {
                 headers: {
@@ -18654,6 +18716,15 @@ export interface operations {
                     'application/json': components['schemas']['Error'];
                 };
             };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
             /** @description Internal server error */
             500: {
                 headers: {
@@ -18679,6 +18750,11 @@ export interface operations {
                     untilDate?: number;
                     /** Format: misskey:id */
                     roomId: string;
+                    /**
+                     * @description Whether to include a marker with `deletedAt` set for each deleted message, in the place of that message.
+                     * @default false
+                     */
+                    includeDeleted?: boolean;
                 };
             };
         };
@@ -18792,6 +18868,15 @@ export interface operations {
             };
             /** @description I'm Ai */
             418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -18929,6 +19014,91 @@ export interface operations {
                     'application/json': components['schemas']['Error'];
                 };
             };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    chat___messages___update: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    messageId: string;
+                    text: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['ChatMessage'];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
             /** @description Internal server error */
             500: {
                 headers: {
@@ -18954,6 +19124,11 @@ export interface operations {
                     untilDate?: number;
                     /** Format: misskey:id */
                     userId: string;
+                    /**
+                     * @description Whether to include a marker with `deletedAt` set for each deleted message, in the place of that message.
+                     * @default false
+                     */
+                    includeDeleted?: boolean;
                 };
             };
         };
@@ -19051,6 +19226,15 @@ export interface operations {
             };
             /** @description I'm Ai */
             418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -19196,6 +19380,15 @@ export interface operations {
                     'application/json': components['schemas']['Error'];
                 };
             };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
             /** @description Internal server error */
             500: {
                 headers: {
@@ -19252,6 +19445,15 @@ export interface operations {
             };
             /** @description I'm Ai */
             418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -19392,6 +19594,15 @@ export interface operations {
             };
             /** @description I'm Ai */
             418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -19608,6 +19819,15 @@ export interface operations {
                     'application/json': components['schemas']['Error'];
                 };
             };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
             /** @description Internal server error */
             500: {
                 headers: {
@@ -19664,6 +19884,15 @@ export interface operations {
             };
             /** @description I'm Ai */
             418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -19754,6 +19983,80 @@ export interface operations {
             };
         };
     };
+    chat___rooms___kick: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    roomId: string;
+                    /** Format: misskey:id */
+                    userId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (without any results) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
     chat___rooms___leave: {
         requestBody: {
             content: {
@@ -19799,6 +20102,15 @@ export interface operations {
             };
             /** @description I'm Ai */
             418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -19937,6 +20249,15 @@ export interface operations {
             };
             /** @description I'm Ai */
             418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -20101,6 +20422,7 @@ export interface operations {
                     roomId: string;
                     name?: string;
                     description?: string;
+                    isArchived?: boolean;
                 };
             };
         };
@@ -20143,6 +20465,15 @@ export interface operations {
             };
             /** @description I'm Ai */
             418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

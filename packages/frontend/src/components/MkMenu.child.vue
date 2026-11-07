@@ -53,6 +53,10 @@ function setPosition() {
 	let top = (parentRect.top - rootRect.top) - 8;
 	if (rootRect.left + left + myRect.width >= (window.innerWidth - SCROLLBAR_THICKNESS)) {
 		left = -myRect.width;
+		// 親メニューが画面の幅いっぱいだと左にも置けず、画面の外に出て見えなくなる。そのときは親に重ねて画面の中に置く
+		if (rootRect.left + left < 0) {
+			left = Math.max(-rootRect.left, window.innerWidth - SCROLLBAR_THICKNESS - rootRect.left - myRect.width);
+		}
 	}
 	if (rootRect.top + top + myRect.height >= (window.innerHeight - SCROLLBAR_THICKNESS)) {
 		top = top - ((rootRect.top + top + myRect.height) - (window.innerHeight - SCROLLBAR_THICKNESS));
