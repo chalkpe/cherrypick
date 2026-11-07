@@ -88,7 +88,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<MkInfo v-if="hasNotSpecifiedMentions && !props.updateMode" warn :class="$style.hasNotSpecifiedMentions">{{ i18n.ts.notSpecifiedMentionWarning }} - <button class="_textButton" @click="addMissingMention()">{{ i18n.ts.add }}</button></MkInfo>
 	<!-- 아래 CW·본문·해시태그 입력란의 name="search": iOS 27 Safari가 placeholder·주변 텍스트를 주소록 필드로 오인해 연락처 자동 완성을 띄우고 키보드 추천을 가리는 현상을 노트 작성 화면에서 억제한다 (autocomplete="off"만으로는 효과 없음). input의 autocomplete="off"는 Chrome·Firefox가 같은 이름으로 저장된 입력 기록을 제안하지 않도록 설정한다 -->
 	<div v-show="useCw" :class="$style.cwOuter">
-		<input ref="cwInputEl" v-model="cw" name="search" autocomplete="off" :class="$style.cw" :placeholder="i18n.ts.annotation" @keydown="onKeydown" @keyup="onKeyup" @compositionend="onCompositionEnd">
+		<input ref="cwInputEl" v-model="cw" name="search" autocomplete="off" :class="$style.cw" :placeholder="i18n.ts.annotation" @keydown="onKeydown" @keyup="onKeyup" @paste="pastePlainTextInsteadOfUriList" @compositionend="onCompositionEnd">
 		<div v-if="maxCwTextLength - cwTextLength < 20" :class="['_acrylic', $style.cwTextCount, { [$style.cwTextOver]: cwTextLength > maxCwTextLength }]">{{ maxCwTextLength - cwTextLength }}</div>
 		<button class="_button" :class="$style.cwSwapButton" @click="swapCwText">
 			<i class="ti ti-switch-vertical"></i>
@@ -99,7 +99,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<textarea ref="textareaEl" v-model="text" name="search" :class="[$style.text]" :disabled="posting || posted" :readonly="textAreaReadOnly" :placeholder="placeholder" data-testid="post-form-text" @keydown="onKeydown" @keyup="onKeyup" @paste="onPaste" @compositionupdate="onCompositionUpdate" @compositionend="onCompositionEnd"></textarea>
 		<div v-if="maxTextLength - textLength < 100" :class="['_acrylic', $style.textCount, { [$style.textOver]: textLength > maxTextLength }]">{{ maxTextLength - textLength }}</div>
 	</div>
-	<input v-show="withHashtags" ref="hashtagsInputEl" v-model="hashtags" name="search" autocomplete="off" :class="$style.hashtags" :placeholder="i18n.ts.hashtags" list="hashtags">
+	<input v-show="withHashtags" ref="hashtagsInputEl" v-model="hashtags" name="search" autocomplete="off" :class="$style.hashtags" :placeholder="i18n.ts.hashtags" list="hashtags" @paste="pastePlainTextInsteadOfUriList">
 	<XPostFormAttaches v-model="files" @detach="detachFile" @changeSensitive="updateFileSensitive" @changeName="updateFileName"/>
 	<div v-if="uploader.items.value.length > 0" style="padding: 12px;">
 		<MkTip k="postFormUploader" style="margin-bottom: 10px;">
@@ -160,6 +160,7 @@ import MkScheduledNoteDelete from '@/components/MkScheduledNoteDelete.vue';
 import MkNoteSimple from '@/components/MkNoteSimple.vue';
 import { extractMentions } from '@/utility/extract-mentions.js';
 import { formatTimeString } from '@/utility/format-time-string.js';
+import { pastePlainTextInsteadOfUriList } from '@/utility/paste-plain-text.js';
 import { Autocomplete } from '@/utility/autocomplete.js';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
@@ -897,8 +898,12 @@ async function onPaste(ev: ClipboardEvent) {
 	}
 
 	const paste = ev.clipboardData.getData('text');
+	const isNoteUrl = !renoteTargetNote.value && !quoteId.value && paste.startsWith(url + '/notes/');
 
-	if (!renoteTargetNote.value && !quoteId.value && paste.startsWith(url + '/notes/')) {
+	// 引用・ファイル化の確認はどちらも原文 (paste) を自前で入れるので、それ以外の貼り付けで iOS がエンコードした URL を入れないようにする
+	if (!isNoteUrl && paste.length <= 1000 && pastePlainTextInsteadOfUriList(ev)) return;
+
+	if (isNoteUrl) {
 		ev.preventDefault();
 
 		const { canceled } = await os.confirm({
