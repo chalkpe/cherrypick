@@ -759,9 +759,11 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		// 形と出所 (送り主と同じサーバーのルームか) を確かめる。ルームに入れる人数より多い参加者は受け付けない
 		const parsed = parseChatRoomVoiceState(actor.uri, object, MAX_ROOM_MEMBERS + 1);
 		if (!parsed.ok) return `skip: ${parsed.reason}`;
-		const { roomId, participants, updatedAt } = parsed.state;
+		const { roomUri, roomId, participants, updatedAt } = parsed.state;
 
-		const room = await this.chatRoomsRepository.findOne({ where: { id: roomId }, relations: { owner: true } });
+		// ルームの番号はそのサーバーの中でしか一意でないので URI で探す。URI を持たないのは、id が番号のままの古いミラー
+		const room = await this.chatRoomsRepository.findOne({ where: { uri: roomUri }, relations: { owner: true } })
+			?? await this.chatRoomsRepository.findOne({ where: { id: roomId, uri: IsNull() }, relations: { owner: true } });
 		if (room == null) return 'skip: unknown room';
 		// 送り主は他のサーバーのユーザーなので、送り主が持ち主ならそのルームはミラー
 		if (room.ownerId !== actor.id) return 'skip: sender does not own the room';

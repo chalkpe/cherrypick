@@ -15,6 +15,7 @@ import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { bindThis } from '@/decorators.js';
 import { RelationshipJobData } from '@/queue/types.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
+import { ChatService } from '@/core/ChatService.js';
 
 @Injectable()
 export class UserSuspendService {
@@ -33,6 +34,7 @@ export class UserSuspendService {
 		private globalEventService: GlobalEventService,
 		private apRendererService: ApRendererService,
 		private moderationLogService: ModerationLogService,
+		private chatService: ChatService,
 	) {
 	}
 
@@ -51,6 +53,7 @@ export class UserSuspendService {
 		(async () => {
 			await this.postSuspend(user).catch(_ => {});
 			await this.unFollowAll(user).catch(_ => {});
+			await this.chatService.handleUserSuspended(user).catch(_ => {});
 		})();
 	}
 

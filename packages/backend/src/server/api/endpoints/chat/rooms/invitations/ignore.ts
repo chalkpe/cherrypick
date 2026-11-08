@@ -4,9 +4,10 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
+import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { DI } from '@/di-symbols.js';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatRoomAccessError, ChatService } from '@/core/ChatService.js';
 import { ApiError } from '@/server/api/error.js';
 
 export const meta = {
@@ -15,6 +16,11 @@ export const meta = {
 	requireCredential: true,
 
 	kind: 'write:chat',
+
+	limit: {
+		duration: ms('1hour'),
+		max: 100,
+	},
 
 	errors: {
 		noSuchRoom: {
@@ -41,7 +47,12 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		super(meta, paramDef, async (ps, me) => {
 			await this.chatService.checkChatAvailability(me.id, 'write');
 
-			await this.chatService.ignoreRoomInvitation(me.id, ps.roomId);
+			try {
+				await this.chatService.ignoreRoomInvitation(me.id, ps.roomId);
+			} catch (e) {
+				if (e instanceof ChatRoomAccessError) throw new ApiError(meta.errors.noSuchRoom);
+				throw e;
+			}
 		});
 	}
 }

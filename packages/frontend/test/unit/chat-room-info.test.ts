@@ -4,15 +4,16 @@
  */
 
 import { afterEach, expect, test, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/vue';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/vue';
 import { nextTick } from 'vue';
 
-const mocks = vi.hoisted(() => ({ apiWithDialog: vi.fn(), me: { id: 'me', isAdmin: false, isModerator: false } }));
+const mocks = vi.hoisted(() => ({ apiWithDialog: vi.fn(), confirm: vi.fn(), push: vi.fn(), me: { id: 'me', isAdmin: false, isModerator: false } }));
 vi.mock('@/i.js', () => ({ ensureSignin: () => mocks.me }));
-vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog, confirm: mocks.confirm }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.push }) }));
 
 import XInfo from '@/pages/chat/room.info.vue';
+import { chatRoomDeleteErrors, chatRoomUpdateErrors } from '@/pages/chat/chat-errors.js';
 import XRoom from '@/pages/chat/XRoom.vue';
 import { i18n } from '@/i18n.js';
 
@@ -28,7 +29,80 @@ const stubs = {
 	Mfm: { props: ['text', 'plain'], template: '<span data-testid="mfm" :data-plain="plain">{{ text }}</span>' },
 };
 
-afterEach(() => { cleanup(); mocks.apiWithDialog.mockReset(); });
+afterEach(() => { cleanup(); mocks.apiWithDialog.mockReset(); mocks.confirm.mockReset(); mocks.push.mockReset(); });
+
+test('the owner archives the room after confirming, and the saved room propagates', async () => {
+	const updated = { ...room, isArchived: true };
+	mocks.confirm.mockResolvedValueOnce({ canceled: false });
+	mocks.apiWithDialog.mockResolvedValueOnce(updated);
+	const result = render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.archive }));
+	await waitFor(() => expect(result.emitted().updated).toEqual([[updated]]));
+	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/update', { roomId: 'r1', isArchived: true }, undefined, chatRoomUpdateErrors);
+});
+
+test('tells the room page while its own deletion is in progress', async () => {
+	mocks.confirm.mockResolvedValueOnce({ canceled: false });
+	mocks.apiWithDialog.mockResolvedValueOnce(undefined);
+	const result = render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.deleteRoom }));
+	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/delete', { roomId: 'r1' }, undefined, chatRoomDeleteErrors));
+	expect(result.emitted().deleting).toEqual([[true]]);
+});
+
+test('a failed deletion lets later deletions be announced again', async () => {
+	mocks.confirm.mockResolvedValueOnce({ canceled: false });
+	mocks.apiWithDialog.mockRejectedValueOnce(new Error('failed'));
+	const result = render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.deleteRoom }));
+	await waitFor(() => expect(result.emitted().deleting).toEqual([[true], [false]]));
+});
+
+test('leaves the page when the deletion fails after the room has already closed', async () => {
+	let fail!: (reason: unknown) => void;
+	mocks.confirm.mockResolvedValueOnce({ canceled: false });
+	mocks.apiWithDialog.mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
+	const result = render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.deleteRoom }));
+	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalled());
+	result.unmount();
+
+	fail(new Error('No such room.'));
+
+	await waitFor(() => expect(mocks.push).toHaveBeenCalledWith('/chat'));
+});
+
+test('stays on the page when the deletion fails while the room is still open', async () => {
+	mocks.confirm.mockResolvedValueOnce({ canceled: false });
+	mocks.apiWithDialog.mockRejectedValueOnce(new Error('failed'));
+	const result = render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat.deleteRoom }));
+	await waitFor(() => expect(result.emitted().deleting).toEqual([[true], [false]]));
+	expect(mocks.push).not.toHaveBeenCalled();
+});
+
+test('canceling the confirmation does not archive', async () => {
+	mocks.confirm.mockResolvedValueOnce({ canceled: true });
+	render(XInfo, { props: { room: { ...room, isArchived: false } }, global: { stubs } });
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.archive }));
+	await waitFor(() => expect(mocks.confirm).toHaveBeenCalled());
+	await nextTick();
+	expect(mocks.apiWithDialog).not.toHaveBeenCalled();
+});
+
+test('an archived room offers unarchiving without a confirmation, and no saving', async () => {
+	mocks.apiWithDialog.mockResolvedValueOnce({ ...room, isArchived: false });
+	render(XInfo, { props: { room: { ...room, isArchived: true } }, global: { stubs } });
+	expect(screen.queryByRole('button', { name: i18n.ts.save })).toBeNull();
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.unarchive }));
+	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/update', { roomId: 'r1', isArchived: false }, undefined, chatRoomUpdateErrors));
+	expect(mocks.confirm).not.toHaveBeenCalled();
+});
+
+test('other members cannot archive', () => {
+	render(XInfo, { props: { room: { ...room, ownerId: 'someone-else', isArchived: false } }, global: { stubs } });
+	expect(screen.queryByRole('button', { name: i18n.ts.archive })).toBeNull();
+});
 
 test('enables emoji completion for both editable fields and propagates the saved room', async () => {
 	const updated = { ...room, name: ':other: name', description: ':other: description' };
@@ -43,7 +117,7 @@ test('enables emoji completion for both editable fields and propagates the saved
 	await fireEvent.update(textarea, updated.description);
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.save }));
 	await nextTick();
-	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/update', { roomId: 'r1', name: updated.name, description: updated.description });
+	expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/update', { roomId: 'r1', name: updated.name, description: updated.description }, undefined, chatRoomUpdateErrors);
 	expect(result.emitted().updated).toEqual([[updated]]);
 });
 

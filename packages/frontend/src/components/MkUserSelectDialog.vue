@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <MkModalWindow
 	ref="dialogEl"
 	:withOkButton="true"
-	:okButtonDisabled="selected == null"
+	:okButtonDisabled="multiple ? pickedUsers.length === 0 : selected == null"
 	@click="cancel()"
 	@close="cancel()"
 	@ok="ok()"
@@ -15,45 +15,63 @@ SPDX-License-Identifier: AGPL-3.0-only
 >
 	<template #header>{{ i18n.ts.selectUser }}</template>
 	<div>
-		<div :class="$style.form">
-			<MkInput v-if="computedLocalOnly" v-model="username" :autofocus="true" @update:modelValue="search">
+		<div :class="$style.form" class="_gaps">
+			<MkInput v-if="computedLocalOnly" v-model="username" :autofocus="true">
 				<template #label>{{ i18n.ts.username }}</template>
 				<template #prefix>@</template>
 			</MkInput>
 			<FormSplit v-else :minWidth="170">
-				<MkInput v-model="username" :autofocus="true" @update:modelValue="search">
+				<MkInput v-model="username" :autofocus="true">
 					<template #label>{{ i18n.ts.username }}</template>
 					<template #prefix>@</template>
 				</MkInput>
-				<MkInput v-model="host" :datalist="[hostname]" @update:modelValue="search">
+				<MkInput v-model="host" :datalist="[hostname]">
 					<template #label>{{ i18n.ts.host }}</template>
 					<template #prefix>@</template>
 				</MkInput>
 			</FormSplit>
+			<MkButton v-if="!computedLocalOnly" :disabled="!canLookup" :wait="lookingUp" @click="lookup">{{ i18n.ts.lookup }}</MkButton>
 		</div>
-		<div v-if="username != '' || host != ''" :class="[$style.result, { [$style.hit]: users.length > 0 }]">
-			<div v-if="users.length > 0" :class="$style.users">
-				<div v-for="user in users" :key="user.id" class="_button" :class="[$style.user, { [$style.selected]: selected && selected.id === user.id }]" @click="selected = user" @dblclick="ok()">
-					<MkAvatar :user="user" :class="$style.avatar" indicator/>
-					<div :class="$style.userBody">
+		<div v-if="multiple" :class="$style.picked">
+			<div :class="$style.pickedLabel" aria-live="polite">{{ i18n.tsx.selectedUsersCount({ n: pickedUsers.length }) }}</div>
+			<div :class="$style.pickedArea">
+				<ul v-if="pickedUsers.length > 0" ref="pickedUsersEl" :class="$style.pickedUsers" @wheel="onPickedUsersWheel">
+					<li v-for="user in pickedUsers" :key="user.id" :class="$style.pickedUser">
+						<MkAvatar :user="user" :class="$style.pickedAvatar" :link="false"/>
+						<span :class="$style.pickedBody">
+							<MkUserName :user="user" :class="$style.pickedName"/>
+							<MkAcct :user="user" :class="$style.pickedAcct"/>
+						</span>
+						<button type="button" class="_button" :class="$style.unpick" :aria-label="i18n.tsx.removeFromSelection({ x: user.name || user.username })" @click="unpick(user)"><i class="ti ti-x"></i></button>
+					</li>
+				</ul>
+				<div v-else :class="$style.pickedHint">{{ i18n.ts.canSelectMultipleUsers }}</div>
+			</div>
+		</div>
+		<div :class="$style.result">
+			<div v-if="listedUsers.length > 0" :class="$style.users">
+				<button
+					v-for="user in listedUsers"
+					:key="user.id"
+					type="button"
+					class="_button"
+					:class="[$style.user, { [$style.selected]: isSelected(user), [$style.unavailable]: unavailableReasons[user.id] != null }]"
+					:aria-pressed="isSelected(user)"
+					:aria-disabled="unavailableReasons[user.id] != null ? true : undefined"
+					@click="onClickUser(user)"
+					@dblclick="onDblclickUser()"
+				>
+					<MkAvatar :user="user" :class="$style.avatar" indicator :link="false"/>
+					<span :class="$style.userBody">
 						<MkUserName :user="user" :class="$style.userName"/>
 						<MkAcct :user="user" :class="$style.userAcct"/>
-					</div>
-				</div>
+						<span v-if="unavailableReasons[user.id] != null" :class="$style.userNote">{{ unavailableReasons[user.id] }}</span>
+					</span>
+					<i v-if="multiple" class="ti ti-check" :class="[$style.userCheck, { [$style.userCheckHidden]: !isSelected(user) }]" aria-hidden="true"></i>
+				</button>
 			</div>
-			<div v-else :class="$style.empty">
+			<div v-else-if="searching && !waitingForUsers" :class="$style.empty">
 				<span>{{ i18n.ts.noUsers }}</span>
-			</div>
-		</div>
-		<div v-if="username == '' && host == ''" :class="$style.recent">
-			<div :class="$style.users">
-				<div v-for="user in recentUsers" :key="user.id" class="_button" :class="[$style.user, { [$style.selected]: selected && selected.id === user.id }]" @click="selected = user" @dblclick="ok()">
-					<MkAvatar :user="user" :class="$style.avatar" indicator/>
-					<div :class="$style.userBody">
-						<MkUserName :user="user" :class="$style.userName"/>
-						<MkAcct :user="user" :class="$style.userAcct"/>
-					</div>
-				</div>
 			</div>
 		</div>
 	</div>
@@ -61,10 +79,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onMounted, ref, computed, useTemplateRef } from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, ref, computed, useTemplateRef, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { host as currentHost, hostname } from '@@/js/config.js';
 import MkInput from '@/components/MkInput.vue';
+import MkButton from '@/components/MkButton.vue';
 import FormSplit from '@/components/form/split.vue';
 import MkModalWindow from '@/components/MkModalWindow.vue';
 import { misskeyApi } from '@/utility/misskey-api.js';
@@ -75,6 +94,7 @@ import { instance } from '@/instance.js';
 
 const emit = defineEmits<{
 	(ev: 'ok', selected: Misskey.entities.UserDetailed): void;
+	(ev: 'okMultiple', selected: Misskey.entities.UserLite[]): void;
 	(ev: 'cancel'): void;
 	(ev: 'closed'): void;
 }>();
@@ -82,9 +102,15 @@ const emit = defineEmits<{
 const props = withDefaults(defineProps<{
 	includeSelf?: boolean;
 	localOnly?: boolean;
+	// 検索し直しても選んだ人を残し、何人でも選べるようにする
+	multiple?: boolean;
+	// 選べない人の ID とその理由。窓を待たせないよう、開いたあとで届いてよい
+	unavailableUsers?: Promise<Record<string, string>>;
 }>(), {
 	includeSelf: false,
 	localOnly: false,
+	multiple: false,
+	unavailableUsers: undefined,
 });
 
 const computedLocalOnly = computed(() => props.localOnly || instance.federation === 'none');
@@ -94,44 +120,177 @@ const host = ref('');
 const users = ref<Misskey.entities.UserLite[]>([]);
 const recentUsers = ref<Misskey.entities.UserDetailed[]>([]);
 const selected = ref<Misskey.entities.UserLite | null>(null);
+const pickedUsers = ref<Misskey.entities.UserLite[]>([]);
+const unavailableReasons = ref<Record<string, string>>({});
 const dialogEl = useTemplateRef('dialogEl');
+const pickedUsersEl = useTemplateRef('pickedUsersEl');
+const lookingUp = ref(false);
+// 答えが来るまでは前の結果を出したままにし、まだ分からないうちは「誰もいない」と言わない
+const waitingForUsers = ref(false);
+let requestId = 0;
+
+const searchQuery = computed(() => {
+	const acct = Misskey.acct.parse(username.value.trim());
+	const accountHost = acct.host?.toLowerCase();
+	if (computedLocalOnly.value && accountHost && accountHost !== hostname && accountHost !== currentHost) return null;
+	return {
+		username: acct.username,
+		host: computedLocalOnly.value ? '.' : accountHost ?? host.value.trim().toLowerCase(),
+	};
+});
+// 「@sora@example.com」を貼り付けたら、ユーザー名とホストの欄に分ける。
+// 打っている途中で分けると続きの文字がユーザー名の欄に入ってしまうので、一度に入ったときだけ分ける (打った場合も searchQuery が同じように読む)
+watch(username, (value, previous) => {
+	if (computedLocalOnly.value || value.length - previous.length < 2) return;
+	const acct = Misskey.acct.parse(value.trim());
+	if (!acct.host) return;
+	host.value = acct.host.toLowerCase();
+	username.value = acct.username;
+}, { flush: 'sync' });
+
+const canLookup = computed(() => !computedLocalOnly.value && !!searchQuery.value?.username && !!searchQuery.value.host && searchQuery.value.host !== '.');
+
+function canSelectUser(user: Misskey.entities.UserLite) {
+	return (!computedLocalOnly.value || user.host == null) && (props.includeSelf || user.id !== $i?.id);
+}
+
+const searching = computed(() => username.value !== '' || host.value !== '');
+const listedUsers = computed(() => searching.value ? users.value : recentUsers.value.filter(canSelectUser));
+
+function isSelected(user: Misskey.entities.UserLite) {
+	return props.multiple ? pickedUsers.value.some(picked => picked.id === user.id) : selected.value?.id === user.id;
+}
+
+function unpick(user: Misskey.entities.UserLite) {
+	pickedUsers.value = pickedUsers.value.filter(picked => picked.id !== user.id);
+}
+
+function onClickUser(user: Misskey.entities.UserLite) {
+	if (unavailableReasons.value[user.id] != null) return;
+	if (!props.multiple) {
+		selected.value = user;
+	} else if (isSelected(user)) {
+		unpick(user);
+	} else {
+		pickedUsers.value = [...pickedUsers.value, user];
+		// 一列に収まらない分は横に隠れるので、今選んだ人が見えるようにする
+		nextTick(() => {
+			if (pickedUsersEl.value != null) pickedUsersEl.value.scrollLeft = pickedUsersEl.value.scrollWidth;
+		});
+	}
+}
+
+// 横に隠れた人にも、縦のホイールで届くようにする
+function onPickedUsersWheel(ev: WheelEvent) {
+	const el = ev.currentTarget as HTMLElement;
+	if (ev.deltaX !== 0 || el.scrollWidth <= el.clientWidth) return;
+	ev.preventDefault();
+	el.scrollBy({ left: ev.deltaY, behavior: 'instant' });
+}
+
+function onDblclickUser() {
+	if (!props.multiple) ok();
+}
 
 function search() {
-	if (username.value === '' && host.value === '') {
+	const currentRequestId = ++requestId;
+	selected.value = null;
+	lookingUp.value = false;
+	const query = searchQuery.value;
+	if (query == null || (username.value.trim() === '' && host.value.trim() === '')) {
 		users.value = [];
+		waitingForUsers.value = false;
 		return;
 	}
+
+	waitingForUsers.value = true;
 	misskeyApi('users/search-by-username-and-host', {
-		username: username.value,
-		host: computedLocalOnly.value ? '.' : host.value,
+		...query,
 		limit: 10,
 		detail: false,
-	}).then(_users => {
-		users.value = _users.filter((u) => {
-			if (props.includeSelf) {
-				return true;
-			} else {
-				return u.id !== $i?.id;
-			}
-		});
+	}).then(async _users => {
+		if (currentRequestId !== requestId) return;
+		showUsers(_users.filter(canSelectUser));
+		await addExactLocalUser(query, currentRequestId);
+		if (currentRequestId === requestId) waitingForUsers.value = false;
+	}).catch(() => {
+		if (currentRequestId !== requestId) return;
+		showUsers([]);
+		waitingForUsers.value = false;
 	});
 }
 
+// 答えを待つあいだに前の結果の人を押していたら、新しい結果にいないその人を選んだままにしない
+function showUsers(found: Misskey.entities.UserLite[]) {
+	users.value = found;
+	if (selected.value != null && !found.some(user => user.id === selected.value?.id)) selected.value = null;
+}
+
+// 検索は、まだノートを書いていないこのサーバーのユーザーを返さない。ユーザー名を最後まで入れたらその人を選べるようにする
+async function addExactLocalUser(query: { username: string; host: string; }, currentRequestId: number) {
+	const isThisServer = query.host === '' || query.host === '.' || query.host === hostname || query.host === currentHost;
+	const name = query.username.toLowerCase();
+	if (!isThisServer || name === '' || users.value.some(user => user.host == null && user.username.toLowerCase() === name)) return;
+
+	try {
+		const user = await misskeyApi('users/show', { username: query.username, host: null });
+		if (currentRequestId === requestId) showUsers([user, ...users.value].filter(canSelectUser));
+	} catch {
+		// そのユーザー名の人はいない
+	}
+}
+
+async function lookup() {
+	const query = searchQuery.value;
+	if (!canLookup.value || lookingUp.value || query == null) return;
+	const currentRequestId = ++requestId;
+	selected.value = null;
+	lookingUp.value = true;
+	waitingForUsers.value = true;
+	try {
+		const user = await misskeyApi('users/show', query);
+		if (currentRequestId === requestId) showUsers([user].filter(canSelectUser));
+	} catch {
+		if (currentRequestId === requestId) showUsers([]);
+	} finally {
+		if (currentRequestId === requestId) {
+			lookingUp.value = false;
+			waitingForUsers.value = false;
+		}
+	}
+}
+
+watch([username, host, computedLocalOnly, () => props.includeSelf], search, { flush: 'sync' });
+onBeforeUnmount(() => { requestId++; });
+
+// 最近使ったユーザー更新。先に渡した人ほど新しい
+function rememberRecentUsers(userIds: string[]) {
+	const recents = [...userIds, ...store.s.recentlyUsedUsers.filter(id => !userIds.includes(id))];
+	store.set('recentlyUsedUsers', recents.slice(0, 16));
+}
+
 async function ok() {
+	if (props.multiple) {
+		if (pickedUsers.value.length === 0) return;
+		emit('okMultiple', [...pickedUsers.value]);
+		dialogEl.value?.close();
+		rememberRecentUsers(pickedUsers.value.map(user => user.id).toReversed());
+		return;
+	}
+
 	if (selected.value == null) return;
+	const selectedId = selected.value.id;
+	const currentRequestId = requestId;
 
 	const user = await misskeyApi('users/show', {
-		userId: selected.value.id,
+		userId: selectedId,
 	});
+	if (currentRequestId !== requestId || selected.value?.id !== selectedId) return;
 	emit('ok', user);
 
 	dialogEl.value?.close();
 
-	// 最近使ったユーザー更新
-	let recents = store.s.recentlyUsedUsers;
-	recents = recents.filter(x => x !== selected.value?.id);
-	recents.unshift(selected.value.id);
-	store.set('recentlyUsedUsers', recents.splice(0, 16));
+	rememberRecentUsers([selectedId]);
 }
 
 function cancel() {
@@ -143,23 +302,14 @@ onMounted(() => {
 	misskeyApi('users/show', {
 		userIds: store.s.recentlyUsedUsers,
 	}).then(foundUsers => {
-		let _users = foundUsers;
-		_users = _users.filter((u) => {
-			if (computedLocalOnly.value) {
-				return u.host == null;
-			} else {
-				return true;
-			}
-		});
-		_users = _users.filter((u) => {
-			if (props.includeSelf) {
-				return true;
-			} else {
-				return u.id !== $i?.id;
-			}
-		});
-		recentUsers.value = _users;
+		recentUsers.value = foundUsers;
 	});
+
+	// 読めなければ誰でも選べるままにする。選べない人はサーバーが断る
+	props.unavailableUsers?.then(reasons => {
+		unavailableReasons.value = reasons;
+		pickedUsers.value = pickedUsers.value.filter(user => reasons[user.id] == null);
+	}).catch(() => {});
 });
 </script>
 
@@ -168,19 +318,106 @@ onMounted(() => {
 	padding: calc(var(--root-margin) / 2) var(--root-margin);
 }
 
-.result,
-.recent {
+.result {
 	display: flex;
 	flex-direction: column;
 	overflow: auto;
 	height: 100%;
+}
 
-	&.result.hit {
-		padding: 0;
-	}
+// 結果を送っても、選んだ人が見えているようにする
+.picked {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	padding: 0 var(--root-margin);
+	background: var(--MI_THEME-bg);
+}
 
-	&.recent {
-		padding: 0;
+.pickedLabel {
+	font-size: 0.85em;
+	opacity: 0.8;
+}
+
+// 選んだ人が増えても減っても下の一覧が動かないよう、誰もいないうちから一列分の高さを取っておく。
+// 一覧が動くと、続けて押した指が今選んだ人に当たって選択が外れてしまう
+.pickedArea {
+	// 一列の高さと、横スクロールバーの分
+	height: calc(max(32px, 2.1em) + 4px + 12px);
+	margin-top: 6px;
+}
+
+.pickedHint {
+	height: 100%;
+	overflow-y: auto;
+	font-size: 0.85em;
+	opacity: 0.8;
+}
+
+.pickedUsers {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+	height: 100%;
+	overflow: auto hidden;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.pickedUser {
+	display: flex;
+	flex-shrink: 0;
+	align-items: center;
+	gap: 6px;
+	box-sizing: border-box;
+	// 住所が長い人だけを選んでも隣の人が少し覗くようにして、横に送れることが分かるようにする
+	max-width: min(220px, 80%);
+	min-width: 0;
+	padding: 2px 2px 2px 6px;
+	border-radius: 12px;
+	background: var(--MI_THEME-buttonBg);
+	font-size: 0.85em;
+}
+
+.pickedAvatar {
+	flex-shrink: 0;
+	width: 28px;
+	height: 28px;
+}
+
+.pickedBody {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	line-height: 1.3;
+}
+
+.pickedName,
+.pickedAcct {
+	display: block;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.pickedName {
+	font-weight: bold;
+}
+
+.pickedAcct {
+	font-size: 0.9em;
+	opacity: 0.8;
+}
+
+.unpick {
+	flex-shrink: 0;
+	width: 32px;
+	height: 32px;
+	border-radius: 100%;
+
+	&:hover {
+		background: var(--MI_THEME-buttonHoverBg);
 	}
 }
 
@@ -193,6 +430,8 @@ onMounted(() => {
 .user {
 	display: flex;
 	align-items: center;
+	width: 100%;
+	text-align: left;
 	padding: 8px var(--root-margin);
 	font-size: 14px;
 
@@ -200,15 +439,56 @@ onMounted(() => {
 		background: light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.05));
 	}
 
+	// 強調色の上の文字色はテーマが決める。明るい強調色のテーマでは白だと読めない
 	&.selected {
 		background: var(--MI_THEME-accent);
-		color: #fff;
+		color: var(--MI_THEME-fgOnAccent);
+
+		// 普段のアカウント名は薄くしてあるが、強調色の上では読めなくなる。MkAcct はホストを style で更に薄くしている
+		.userAcct {
+			opacity: 1;
+		}
+
+		.userAcct :global(span) {
+			opacity: 1 !important;
+		}
 	}
 }
 
 .userBody {
+	flex: 1;
 	padding: 0 8px;
 	min-width: 0;
+}
+
+.userCheck {
+	flex-shrink: 0;
+	padding-left: 8px;
+}
+
+// 選んだときに文字の幅が変わると、折り返しが増えて下の行が動いてしまう
+.userCheckHidden {
+	visibility: hidden;
+}
+
+.userNote {
+	display: block;
+	font-size: 0.85em;
+}
+
+// 理由は読めるように、人の方だけを薄くする
+.unavailable {
+	cursor: default;
+
+	&:hover {
+		background: none;
+	}
+
+	.avatar,
+	.userName,
+	.userAcct {
+		opacity: 0.5;
+	}
 }
 
 .avatar {

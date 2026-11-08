@@ -677,7 +677,7 @@ type Channel = components['schemas']['Channel'];
 // Warning: (ae-forgotten-export) The symbol "AnyOf" needs to be exported by the entry point index.d.ts
 //
 // @public (undocumented)
-export abstract class ChannelConnection<Channel extends AnyOf<Channels> = AnyOf<Channels>> extends EventEmitter<Channel['events']> implements IChannelConnection<Channel> {
+export abstract class ChannelConnection<Channel extends AnyOf<Channels> = AnyOf<Channels>> extends EventEmitter<Channel['events'] & ChannelConnectionEvents> implements IChannelConnection<Channel> {
     constructor(stream: Stream, channel: string, name?: string);
     // (undocumented)
     channel: string;
@@ -696,6 +696,11 @@ export abstract class ChannelConnection<Channel extends AnyOf<Channels> = AnyOf<
     // (undocumented)
     protected stream: Stream;
 }
+
+// @public (undocumented)
+export type ChannelConnectionEvents = {
+    _subscribed_: () => void;
+};
 
 // @public (undocumented)
 export type Channels = {
@@ -721,6 +726,7 @@ export type Channels = {
             unreadAntenna: (payload: Antenna) => void;
             newChatMessage: (payload: ChatMessage) => void;
             chatRoomVoiceState: (payload: ChatRoomVoiceState) => void;
+            chatRoomListChanged: () => void;
             readAllAnnouncements: () => void;
             myTokenRegenerated: () => void;
             signin: (payload: Signin) => void;
@@ -968,6 +974,12 @@ export type Channels = {
         };
         events: {
             message: (payload: ChatMessageLite) => void;
+            updated: (payload: {
+                messageId: ChatMessageLite['id'];
+                text: string;
+                editedAt: string;
+                emojis?: Record<string, string>;
+            }) => void;
             deleted: (payload: ChatMessageLite['id']) => void;
             react: (payload: {
                 reaction: string;
@@ -992,6 +1004,12 @@ export type Channels = {
         };
         events: {
             message: (payload: ChatMessageLite) => void;
+            updated: (payload: {
+                messageId: ChatMessageLite['id'];
+                text: string;
+                editedAt: string;
+                emojis?: Record<string, string>;
+            }) => void;
             deleted: (payload: ChatMessageLite['id']) => void;
             react: (payload: {
                 reaction: string;
@@ -1003,6 +1021,19 @@ export type Channels = {
                 user?: UserLite;
                 messageId: ChatMessageLite['id'];
             }) => void;
+            roomUpdated: (payload: {
+                roomId: string;
+                name: string;
+                description: string;
+                isArchived: boolean;
+            }) => void;
+            membershipStarted: (payload: {
+                userId: string;
+            }) => void;
+            membershipEnded: (payload: {
+                userId: string;
+            }) => void;
+            roomDeleted: () => void;
         };
         receives: {
             read: {
@@ -1211,6 +1242,12 @@ type ChatMessagesShowResponse = operations['chat___messages___show']['responses'
 type ChatMessagesUnreactRequest = operations['chat___messages___unreact']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
+type ChatMessagesUpdateRequest = operations['chat___messages___update']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatMessagesUpdateResponse = operations['chat___messages___update']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type ChatMessagesUserTimelineRequest = operations['chat___messages___user-timeline']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -1269,6 +1306,9 @@ type ChatRoomsJoiningResponse = operations['chat___rooms___joining']['responses'
 
 // @public (undocumented)
 type ChatRoomsJoinRequest = operations['chat___rooms___join']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsKickRequest = operations['chat___rooms___kick']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
 type ChatRoomsLeaveRequest = operations['chat___rooms___leave']['requestBody']['content']['application/json'];
@@ -1911,6 +1951,8 @@ declare namespace entities {
         ChatMessagesShowRequest,
         ChatMessagesShowResponse,
         ChatMessagesUnreactRequest,
+        ChatMessagesUpdateRequest,
+        ChatMessagesUpdateResponse,
         ChatMessagesUserTimelineRequest,
         ChatMessagesUserTimelineResponse,
         ChatRoomsCreateRequest,
@@ -1928,6 +1970,7 @@ declare namespace entities {
         ChatRoomsJoinRequest,
         ChatRoomsJoiningRequest,
         ChatRoomsJoiningResponse,
+        ChatRoomsKickRequest,
         ChatRoomsLeaveRequest,
         ChatRoomsMembersRequest,
         ChatRoomsMembersResponse,
@@ -2805,7 +2848,7 @@ type IAutoDeleteSettingsResponse = operations['i___auto-delete-settings']['respo
 type IChangePasswordRequest = operations['i___change-password']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
-export interface IChannelConnection<Channel extends AnyOf<Channels> = AnyOf<Channels>> extends EventEmitter<Channel['events']> {
+export interface IChannelConnection<Channel extends AnyOf<Channels> = AnyOf<Channels>> extends EventEmitter<Channel['events'] & ChannelConnectionEvents> {
     // (undocumented)
     channel: string;
     // (undocumented)
@@ -4093,9 +4136,9 @@ type VerifyEmailRequest = operations['verify-email']['requestBody']['content']['
 
 // Warnings were encountered during analysis:
 //
-// src/streaming.ts:57:3 - (ae-forgotten-export) The symbol "ReconnectingWebSocket" needs to be exported by the entry point index.d.ts
-// src/streaming.types.ts:256:4 - (ae-forgotten-export) The symbol "ReversiUpdateKey" needs to be exported by the entry point index.d.ts
-// src/streaming.types.ts:271:4 - (ae-forgotten-export) The symbol "ReversiUpdateSettings" needs to be exported by the entry point index.d.ts
+// src/streaming.ts:62:3 - (ae-forgotten-export) The symbol "ReconnectingWebSocket" needs to be exported by the entry point index.d.ts
+// src/streaming.types.ts:257:4 - (ae-forgotten-export) The symbol "ReversiUpdateKey" needs to be exported by the entry point index.d.ts
+// src/streaming.types.ts:272:4 - (ae-forgotten-export) The symbol "ReversiUpdateSettings" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 

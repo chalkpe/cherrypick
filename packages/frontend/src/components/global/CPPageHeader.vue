@@ -85,6 +85,8 @@ export type PageHeaderProps = {
 	centerTitle?: boolean;
 	displayMyAvatar?: boolean;
 	disableFollowButton?: boolean;
+	/** 戻るとアプリの外へ出てしまうときの、戻るボタンの移動先 */
+	backFallback?: string;
 };
 </script>
 
@@ -103,6 +105,7 @@ import { isFriendly } from '@/utility/is-friendly.js';
 import { scrollToVisibility } from '@/utility/scroll-to-visibility.js';
 import MkFollowButton from '@/components/MkFollowButton.vue';
 import { haptic } from '@/utility/haptic.js';
+import { canGoBackInApp } from '@/utility/app-history.js';
 
 const { showEl } = scrollToVisibility();
 const canBack = ref(['index', 'explore', 'my-notifications', 'chat'].includes(<string>mainRouter.currentRoute.value.name));
@@ -199,6 +202,11 @@ function onTabClick(tab: Tab, ev: PointerEvent): void {
 
 function goBack() {
 	haptic();
+
+	if (props.backFallback != null && !canGoBackInApp()) {
+		mainRouter.pushByPath(props.backFallback);
+		return;
+	}
 
 	window.history.back();
 }

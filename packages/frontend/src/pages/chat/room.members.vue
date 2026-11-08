@@ -5,7 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <div class="_gaps">
-	<MkButton v-if="isOwner" primary rounded style="margin: 0 auto;" @click="emit('inviteUser')"><i class="ti ti-plus"></i> {{ i18n.ts._chat.inviteUser }}</MkButton>
+	<MkButton v-if="isOwner && !room.isArchived" primary rounded style="margin: 0 auto;" @click="emit('inviteUser')"><i class="ti ti-plus"></i> {{ i18n.ts._chat.inviteUser }}</MkButton>
 
 	<div>{{ i18n.ts._chat.roomOwner }}</div>
 
@@ -23,6 +23,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkA :class="$style.membershipBody" :to="`${userPage(membership.user!)}`">
 			<MkUserCardMini :user="membership.user!"/>
 		</MkA>
+		<MkButton v-if="isOwner && membership.userId !== $i.id" danger :disabled="removingMemberId != null" @click="kickMember(membership)">
+			<i class="ti ti-user-minus" aria-hidden="true"></i> {{ i18n.ts._chat.kickMember }}
+		</MkButton>
 	</div>
 
 	<template v-if="isOwner">
@@ -34,7 +37,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkA :class="$style.invitationBody" :to="`${userPage(invitation.user)}`">
 				<MkUserCardMini :user="invitation.user"/>
 			</MkA>
-			<button :class="$style.cancelButton" @click="cancelInvitation(invitation)">
+			<button :class="$style.cancelButton" :title="i18n.tsx._chat.cancelInvitationTo({ x: invitation.user.name || invitation.user.username })" :aria-label="i18n.tsx._chat.cancelInvitationTo({ x: invitation.user.name || invitation.user.username })" @click="cancelInvitation(invitation)">
 				<i class="ti ti-x"></i>
 			</button>
 		</div>
@@ -52,6 +55,7 @@ import MkUserCardMini from '@/components/MkUserCardMini.vue';
 import { userPage } from '@@/js/user.js';
 import { ensureSignin } from '@/i.js';
 import * as os from '@/os.js';
+import { chatCancelInvitationErrors, chatKickErrors } from './chat-errors.js';
 
 const $i = ensureSignin();
 
@@ -69,6 +73,25 @@ const isOwner = computed(() => {
 
 const memberships = ref<Misskey.entities.ChatRoomMembership[]>([]);
 const invitations = ref<Misskey.entities.ChatRoomInvitation[]>([]);
+const removingMemberId = ref<string | null>(null);
+
+async function kickMember(membership: Misskey.entities.ChatRoomMembership) {
+	if (!isOwner.value || membership.userId === $i.id || removingMemberId.value != null) return;
+	removingMemberId.value = membership.userId;
+	try {
+		const { canceled } = await os.confirm({
+			type: 'warning',
+			text: i18n.tsx._chat.kickMemberConfirm({ name: membership.user?.name || membership.user?.username || membership.userId, room: props.room.name }),
+		});
+		if (canceled) return;
+		await os.apiWithDialog('chat/rooms/kick', { roomId: props.room.id, userId: membership.userId }, undefined, chatKickErrors);
+		memberships.value = memberships.value.filter(member => member.id !== membership.id);
+	} catch {
+		// apiWithDialog already displays the request error; keep the member visible.
+	} finally {
+		removingMemberId.value = null;
+	}
+}
 
 async function cancelInvitation(invitation: Misskey.entities.ChatRoomInvitation) {
 	const { canceled } = await os.confirm({
@@ -77,9 +100,15 @@ async function cancelInvitation(invitation: Misskey.entities.ChatRoomInvitation)
 	});
 	if (canceled) return;
 
-	await os.apiWithDialog('chat/rooms/invitations/cancel', {
-		invitationId: invitation.id,
-	});
+	try {
+		await os.apiWithDialog('chat/rooms/invitations/cancel', {
+			invitationId: invitation.id,
+		}, undefined, chatCancelInvitationErrors);
+	} catch {
+		// apiWithDialog already displays the request error. The list was out of date, so read it again.
+		invitations.value = await misskeyApi('chat/rooms/invitations/outbox', { roomId: props.room.id, limit: 50 }).catch(() => invitations.value);
+		return;
+	}
 
 	// Remove from local state
 	invitations.value = invitations.value.filter(i => i.id !== invitation.id);
@@ -103,6 +132,7 @@ onMounted(async () => {
 <style lang="scss" module>
 .membership {
 	display: flex;
+	align-items: center;
 }
 
 .membershipBody {
@@ -129,8 +159,9 @@ onMounted(async () => {
 	height: 28px;
 	border: none;
 	border-radius: 100%;
-	background: var(--MI_THEME-error);
-	color: var(--MI_THEME-fgOnAccent);
+	// fgOnAccent はアクセント色の上の色なので、テーマによっては赤の上で読めない
+	background: var(--MI_THEME-buttonBg);
+	color: var(--MI_THEME-error);
 	margin: auto 8px auto auto;
 	cursor: pointer;
 	transition: opacity 0.2s;

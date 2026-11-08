@@ -74,6 +74,7 @@ export interface MainEventTypes {
 	unreadAntenna: MiAntenna;
 	newChatMessage: Packed<'ChatMessage'>;
 	chatRoomVoiceState: Packed<'ChatRoomVoiceState'>;
+	chatRoomListChanged: undefined;
 	readAllAnnouncements: undefined;
 	myTokenRegenerated: undefined;
 	signin: {
@@ -174,6 +175,12 @@ export interface AdminEventTypes {
 
 export interface ChatEventTypes {
 	message: Packed<'ChatMessageLite'>;
+	updated: {
+		messageId: MiChatMessage['id'];
+		text: string;
+		editedAt: string;
+		emojis?: Record<string, string>;
+	};
 	deleted: Packed<'ChatMessageLite'>['id'];
 	react: {
 		reaction: string;
@@ -187,8 +194,15 @@ export interface ChatEventTypes {
 	};
 }
 
-// ルームの内部制御イベントはクライアントへ転送しない。
+// ルームの状態の変化。画面を閉じたり更新したりできるようクライアントへも転送する。
 export interface ChatRoomEventTypes extends ChatEventTypes {
+	roomUpdated: {
+		roomId: MiChatRoom['id'];
+		name: string;
+		description: string;
+		isArchived: boolean;
+	};
+	membershipStarted: { userId: MiUser['id'] };
 	membershipEnded: { userId: MiUser['id'] };
 	roomDeleted: undefined;
 }

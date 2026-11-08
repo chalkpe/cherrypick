@@ -55,6 +55,8 @@ export function chatMessage(room = false, id = 'somechatmessageid', text = 'Hell
 		fromUser,
 		text,
 		isRead: false,
+		fileIds: [],
+		files: [],
 		reactions: [],
 		...room ? {
 			toRoomId: toRoom.id,
@@ -76,6 +78,7 @@ export function chatRoom(id = 'somechatroomid', name = 'Some Chat Room'): entiti
 		name,
 		description: 'A chat room for testing',
 		isMuted: false,
+		isArchived: false,
 	};
 }
 

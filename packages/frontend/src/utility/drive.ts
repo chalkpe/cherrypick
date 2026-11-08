@@ -29,6 +29,15 @@ export class UploadAbortedError extends Error {
 	}
 }
 
+// プロキシのエラーページなど、JSON ではない応答もありうる。例外のままだと onload が途中で終わり、アップロード中のまま止まってしまう
+function parseUploadResponse(response: string) {
+	try {
+		return JSON.parse(response);
+	} catch {
+		return null;
+	}
+}
+
 export function uploadFile(file: File | Blob, options: {
 	name?: string;
 	folderId?: string | null;
@@ -41,7 +50,7 @@ export function uploadFile(file: File | Blob, options: {
 	const { signal } = abortController;
 
 	const filePromise = new Promise<Misskey.entities.DriveFile>((resolve, reject) => {
-		if ($i == null) return reject();
+		if ($i == null) return reject(new Error('Failed to upload: not signed in'));
 
 		// こっち側で検出するMIME typeとサーバーで検出するMIME typeは異なる場合があるため、こっち側ではやらないことにする
 		// https://github.com/misskey-dev/misskey/issues/16091
@@ -66,12 +75,18 @@ export function uploadFile(file: File | Blob, options: {
 				title: i18n.ts.failedToUpload,
 				text: i18n.ts.cannotUploadBecauseExceedsFileSizeLimit,
 			});
-			return reject();
+			return reject(new Error('Failed to upload: the file is too large'));
 		}
 
 		signal.addEventListener('abort', () => {
 			reject(new UploadAbortedError());
 		}, { once: true });
+
+		const alertUnreachable = () => os.alert({
+			type: 'error',
+			title: i18n.ts.failedToUpload,
+			text: i18n.ts.cannotUploadBecauseNetworkError,
+		});
 
 		xhr.open('POST', apiUrl + '/drive/files/create', true);
 		xhr.onload = ((ev: ProgressEvent<XMLHttpRequest>) => {
@@ -83,8 +98,10 @@ export function uploadFile(file: File | Blob, options: {
 						text: i18n.ts.cannotUploadBecauseExceedsFileSizeLimit,
 					});
 				} else if (ev.target?.response) {
-					const res = JSON.parse(ev.target.response);
-					if (res.error?.id === 'bec5bd69-fba3-43c9-b4fb-2894b66ad5d2') {
+					const res = parseUploadResponse(ev.target.response);
+					if (res?.error == null) {
+						alertUnreachable();
+					} else if (res.error?.id === 'bec5bd69-fba3-43c9-b4fb-2894b66ad5d2') {
 						os.alert({
 							type: 'error',
 							title: i18n.ts.failedToUpload,
@@ -117,14 +134,26 @@ export function uploadFile(file: File | Blob, options: {
 					});
 				}
 
-				reject();
+				reject(new Error(`Failed to upload: the server answered ${xhr.status}`));
 				return;
 			}
 
-			const driveFile = JSON.parse(ev.target.response);
+			const driveFile = parseUploadResponse(ev.target.response);
+			if (driveFile == null) {
+				alertUnreachable();
+				reject(new Error('Failed to upload: the answer of the server is not JSON'));
+				return;
+			}
+
 			globalEvents.emit('driveFileCreated', driveFile);
 			resolve(driveFile);
 		}) as (ev: ProgressEvent<EventTarget>) => void;
+
+		// サーバーに届かなかったときは onload が呼ばれない。ここで終わらせないと、アップロード中のまま止まってしまう
+		xhr.onerror = () => {
+			alertUnreachable();
+			reject(new Error('Failed to upload: the request did not reach the server'));
+		};
 
 		if (options.onProgress) {
 			xhr.upload.onprogress = ev => {

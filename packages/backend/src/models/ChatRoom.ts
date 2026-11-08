@@ -34,8 +34,22 @@ export class MiChatRoom {
 	})
 	public description: string;
 
+	@Index({ unique: true })
+	@Column('varchar', {
+		length: 512, nullable: true,
+	})
+	public uri: string | null;
+
 	@Column('boolean', {
 		default: false,
 	})
 	public isArchived: boolean;
+
+	/**
+	 * リモートのルーム所有者が最後に知らせた、状態の時刻。遅れて届いた古い状態で巻き戻らないようにする
+	 */
+	@Column('timestamp with time zone', {
+		nullable: true,
+	})
+	public lastRemoteUpdatedAt: Date | null;
 }

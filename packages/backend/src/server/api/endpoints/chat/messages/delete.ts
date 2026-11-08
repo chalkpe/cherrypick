@@ -4,9 +4,10 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
+import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { DI } from '@/di-symbols.js';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatRoomArchivedError, ChatService } from '@/core/ChatService.js';
 import { ApiError } from '@/server/api/error.js';
 
 export const meta = {
@@ -16,11 +17,21 @@ export const meta = {
 
 	kind: 'write:chat',
 
+	limit: {
+		duration: ms('1hour'),
+		max: 500,
+	},
+
 	errors: {
 		noSuchMessage: {
 			message: 'No such message.',
 			code: 'NO_SUCH_MESSAGE',
 			id: '36b67f0e-66a6-414b-83df-992a55294f17',
+		},
+		roomIsArchived: {
+			message: 'This room is archived.',
+			code: 'ROOM_IS_ARCHIVED',
+			id: 'e7f2083b-96a4-4d1c-b5e7-31c8a0d2f694',
 		},
 	},
 } as const;
@@ -45,7 +56,12 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (message == null) {
 				throw new ApiError(meta.errors.noSuchMessage);
 			}
-			await this.chatService.deleteMessage(message);
+			try {
+				await this.chatService.deleteMessage(message);
+			} catch (e) {
+				if (e instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);
+				throw e;
+			}
 		});
 	}
 }

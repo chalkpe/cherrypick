@@ -216,7 +216,12 @@ export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []
 	const rooms = new Map<string, ReturnType<typeof localRoom>>([['r1', localRoom()]]);
 	const chatRoomsRepository = {
 		findOneBy: vi.fn(async ({ id }: { id: string }) => ({ id, ownerId: 'owner' })),
-		findOne: vi.fn(async ({ where }: { where: { id: string } }) => rooms.get(where.id) ?? null),
+		findOne: vi.fn(async ({ where }: { where: { id?: string; uri?: unknown } }) => {
+			if (typeof where.uri === 'string') return [...rooms.values()].find(room => (room as { uri?: string | null }).uri === where.uri) ?? null;
+			const room = rooms.get(where.id!) ?? null;
+			// The only other thing asked of the URI is that there is none.
+			return where.uri === undefined || (room as { uri?: string | null } | null)?.uri == null ? room : null;
+		}),
 		// 持ち主が他のサーバーのユーザーのルーム (ミラー) を id 順に引く。where は持ち主の host と、続きを引くときの id だけを当てる
 		find: vi.fn(async ({ where, take }: { where: { id?: FindOperator<string>; owner: { host: FindOperator<unknown> } }; take: number }) => {
 			const ownerHost = where.owner.host;

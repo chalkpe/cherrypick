@@ -42,4 +42,12 @@ export class MiChatRoomInvitation {
 		default: false,
 	})
 	public ignored: boolean;
+
+	/**
+	 * リモートのルーム所有者が Invite に記した時刻。受諾・拒否でそのまま返し、どの招待への返事なのかを所有者が判断できるようにする
+	 */
+	@Column('timestamp with time zone', {
+		nullable: true,
+	})
+	public invitePublishedAt: Date | null;
 }

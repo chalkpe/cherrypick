@@ -39,6 +39,11 @@ type UpdateInstanceJob = {
 	shouldUnsuspend: boolean,
 };
 
+/** Whether a failure now would be the end of this job. attemptsMade counts the attempts before this one. */
+export function isLastInboxAttempt(job: Pick<Bull.Job, 'attemptsMade' | 'opts'>): boolean {
+	return job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+}
+
 @Injectable()
 export class InboxProcessorService implements OnApplicationShutdown {
 	private logger: Logger;
@@ -273,7 +278,7 @@ export class InboxProcessorService implements OnApplicationShutdown {
 
 		// アクティビティを処理
 		try {
-			const result = await this.apInboxService.performActivity(authUser.user, activity);
+			const result = await this.apInboxService.performActivity(authUser.user, activity, undefined, { isLastAttempt: isLastInboxAttempt(job) });
 			if (result && !result.startsWith('ok')) {
 				this.logger.warn(`inbox activity ignored (maybe): id=${activity.id} reason=${result}`);
 				return result;

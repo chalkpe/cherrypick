@@ -6,7 +6,7 @@
 import { PrimaryColumn, Entity, Index, JoinColumn, Column, ManyToOne } from 'typeorm';
 import { id } from './util/id.js';
 import { MiUser } from './User.js';
-import { MiDriveFile } from './DriveFile.js';
+import type { MiDriveFile } from './DriveFile.js';
 import { MiChatRoom } from './ChatRoom.js';
 
 @Entity('chat_message')
@@ -55,10 +55,21 @@ export class MiChatMessage {
 	})
 	public text: string | null;
 
+	@Index({ unique: true })
 	@Column('varchar', {
 		length: 512, nullable: true,
 	})
 	public uri: string | null;
+
+	@Column('timestamp with time zone', {
+		nullable: true,
+	})
+	public editedAt: Date | null;
+
+	@Column('timestamp with time zone', {
+		nullable: true,
+	})
+	public deletedAt: Date | null;
 
 	@Column({
 		...id(),
@@ -68,15 +79,9 @@ export class MiChatMessage {
 
 	@Column({
 		...id(),
-		nullable: true,
+		array: true, default: '{}',
 	})
-	public fileId: MiDriveFile['id'] | null;
-
-	@ManyToOne(() => MiDriveFile, {
-		onDelete: 'SET NULL',
-	})
-	@JoinColumn()
-	public file: MiDriveFile | null;
+	public fileIds: MiDriveFile['id'][];
 
 	@Column('varchar', {
 		length: 1024, array: true, default: '{}',

@@ -3,14 +3,12 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { GetterService } from '@/server/api/GetterService.js';
-import { DI } from '@/di-symbols.js';
 import { ApiError } from '@/server/api/error.js';
-import { ChatService } from '@/core/ChatService.js';
-import type { DriveFilesRepository, MiUser } from '@/models/_.js';
+import { ChatMessageAccessError, ChatMessageBlockedError, ChatMessageRecipientSuspendedError, ChatService, MAX_CHAT_MESSAGE_FILES, MAX_CHAT_MESSAGE_TEXT_LENGTH } from '@/core/ChatService.js';
 
 export const meta = {
 	tags: ['chat'],
@@ -51,8 +49,14 @@ export const meta = {
 			id: '4372b8e2-185d-4146-8749-2f68864a3e5f',
 		},
 
+		tooManyFiles: {
+			message: 'A message can have up to 4 files.',
+			code: 'TOO_MANY_FILES',
+			id: 'e577e5c3-5cae-4251-ba3c-d3a8f8e25c5f',
+		},
+
 		contentRequired: {
-			message: 'Content required. You need to set text or fileId.',
+			message: 'Content required. You need to set text or fileIds.',
 			code: 'CONTENT_REQUIRED',
 			id: '25587321-b0e6-449c-9239-f8925092942c',
 		},
@@ -62,14 +66,33 @@ export const meta = {
 			code: 'YOU_HAVE_BEEN_BLOCKED',
 			id: 'c15a5199-7422-4968-941a-2a462c478f7d',
 		},
+
+		recipientIsSuspended: {
+			message: 'You cannot send a message because this user is suspended.',
+			code: 'RECIPIENT_IS_SUSPENDED',
+			id: 'b9febcb3-1b46-4b4a-b8ce-8d695d3bd474',
+		},
+
+		cannotChatWithUser: {
+			message: 'This user does not accept your messages.',
+			code: 'CANNOT_CHAT_WITH_USER',
+			id: 'fcaaed42-3f5a-4246-a08d-18736819e76b',
+		},
 	},
 } as const;
 
 export const paramDef = {
 	type: 'object',
 	properties: {
-		text: { type: 'string', nullable: true, maxLength: 2000 },
+		text: { type: 'string', nullable: true, maxLength: MAX_CHAT_MESSAGE_TEXT_LENGTH },
 		fileId: { type: 'string', format: 'misskey:id' },
+		fileIds: {
+			type: 'array',
+			uniqueItems: true,
+			minItems: 1,
+			maxItems: MAX_CHAT_MESSAGE_FILES,
+			items: { type: 'string', format: 'misskey:id' },
+		},
 		toUserId: { type: 'string', format: 'misskey:id' },
 	},
 	required: ['toUserId'],
@@ -78,29 +101,25 @@ export const paramDef = {
 @Injectable()
 export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-disable-line import/no-default-export
 	constructor(
-		@Inject(DI.driveFilesRepository)
-		private driveFilesRepository: DriveFilesRepository,
-
 		private getterService: GetterService,
 		private chatService: ChatService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			await this.chatService.checkChatAvailability(me.id, 'write');
 
-			let file = null;
-			if (ps.fileId != null) {
-				file = await this.driveFilesRepository.findOneBy({
-					id: ps.fileId,
-					userId: me.id,
-				});
+			// fileId is what clients from before there could be several still send.
+			const fileIds = Array.from(new Set([...(ps.fileId != null ? [ps.fileId] : []), ...(ps.fileIds ?? [])]));
+			if (fileIds.length > MAX_CHAT_MESSAGE_FILES) {
+				throw new ApiError(meta.errors.tooManyFiles);
+			}
 
-				if (file == null) {
-					throw new ApiError(meta.errors.noSuchFile);
-				}
+			const files = await this.chatService.findOwnFilesForMessage(me.id, fileIds);
+			if (files == null) {
+				throw new ApiError(meta.errors.noSuchFile);
 			}
 
 			// テキストが無いかつ添付ファイルも無かったらエラー
-			if (ps.text == null && file == null) {
+			if (ps.text == null && files.length === 0) {
 				throw new ApiError(meta.errors.contentRequired);
 			}
 
@@ -114,10 +133,17 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw err;
 			});
 
-			return await this.chatService.createMessageToUser(me, toUser, {
-				text: ps.text,
-				file: file,
-			});
+			try {
+				return await this.chatService.createMessageToUser(me, toUser, {
+					text: ps.text,
+					files,
+				});
+			} catch (e) {
+				if (e instanceof ChatMessageBlockedError) throw new ApiError(meta.errors.youHaveBeenBlocked);
+				if (e instanceof ChatMessageRecipientSuspendedError) throw new ApiError(meta.errors.recipientIsSuspended);
+				if (e instanceof ChatMessageAccessError) throw new ApiError(meta.errors.cannotChatWithUser);
+				throw e;
+			}
 		});
 	}
 }

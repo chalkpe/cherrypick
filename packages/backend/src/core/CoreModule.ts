@@ -79,6 +79,7 @@ import { FeaturedService } from './FeaturedService.js';
 import { FanoutTimelineService } from './FanoutTimelineService.js';
 import { ChannelFollowingService } from './ChannelFollowingService.js';
 import { ChatService } from './ChatService.js';
+import { ChatRosterService } from './ChatRosterService.js';
 import { LiveKitService } from './LiveKitService.js';
 import { ChatVoiceService } from './ChatVoiceService.js';
 import { RemoteVoiceCallService } from './RemoteVoiceCallService.js';
@@ -246,6 +247,7 @@ const $FanoutTimelineEndpointService: Provider = { provide: 'FanoutTimelineEndpo
 const $ChannelFollowingService: Provider = { provide: 'ChannelFollowingService', useExisting: ChannelFollowingService };
 const $ChannelMutingService: Provider = { provide: 'ChannelMutingService', useExisting: ChannelMutingService };
 const $ChatService: Provider = { provide: 'ChatService', useExisting: ChatService };
+const $ChatRosterService: Provider = { provide: 'ChatRosterService', useExisting: ChatRosterService };
 const $LiveKitService: Provider = { provide: 'LiveKitService', useExisting: LiveKitService };
 const $ChatVoiceService: Provider = { provide: 'ChatVoiceService', useExisting: ChatVoiceService };
 const $RemoteVoiceCallService: Provider = { provide: 'RemoteVoiceCallService', useExisting: RemoteVoiceCallService };
@@ -413,6 +415,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChannelFollowingService,
 		ChannelMutingService,
 		ChatService,
+		ChatRosterService,
 		LiveKitService,
 		ChatVoiceService,
 		RemoteVoiceCallService,
@@ -579,6 +582,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ChannelFollowingService,
 		$ChannelMutingService,
 		$ChatService,
+		$ChatRosterService,
 		$LiveKitService,
 		$ChatVoiceService,
 		$RemoteVoiceCallService,
@@ -744,6 +748,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChannelFollowingService,
 		ChannelMutingService,
 		ChatService,
+		ChatRosterService,
 		LiveKitService,
 		ChatVoiceService,
 		RemoteVoiceCallService,
@@ -908,6 +913,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		$ChannelFollowingService,
 		$ChannelMutingService,
 		$ChatService,
+		$ChatRosterService,
 		$LiveKitService,
 		$ChatVoiceService,
 		$RemoteVoiceCallService,

@@ -19,6 +19,11 @@ export function urlQuery(obj: Record<string, string | number | boolean | undefin
 
 type AnyOf<T extends Record<PropertyKey, unknown>> = T[keyof T];
 
+export type ChannelConnectionEvents = {
+	/** The server has subscribed this channel, so events from here on will arrive. Anything before this may have been missed. */
+	_subscribed_: () => void;
+};
+
 export type StreamEvents = {
 	_connected_: void;
 	_disconnected_: void;
@@ -188,6 +193,8 @@ export default class Stream extends EventEmitter<StreamEvents> implements IStrea
 				c.emit(body.type, body.body);
 				c.inCount++;
 			}
+		} else if (type === 'connected') {
+			(this.nonSharedConnections.find(c => c.id === body.id) as IChannelConnection | undefined)?.emit('_subscribed_');
 		} else {
 			this.emit(type, body);
 		}
@@ -299,7 +306,7 @@ class Pool {
 	}
 }
 
-export interface IChannelConnection<Channel extends AnyOf<Channels> = AnyOf<Channels>> extends EventEmitter<Channel['events']> {
+export interface IChannelConnection<Channel extends AnyOf<Channels> = AnyOf<Channels>> extends EventEmitter<Channel['events'] & ChannelConnectionEvents> {
 	id: string;
 	name?: string;
 	inCount: number;
@@ -310,7 +317,7 @@ export interface IChannelConnection<Channel extends AnyOf<Channels> = AnyOf<Chan
 	dispose(): void;
 }
 
-export abstract class Connection<Channel extends AnyOf<Channels> = AnyOf<Channels>> extends EventEmitter<Channel['events']> implements IChannelConnection<Channel> {
+export abstract class Connection<Channel extends AnyOf<Channels> = AnyOf<Channels>> extends EventEmitter<Channel['events'] & ChannelConnectionEvents> implements IChannelConnection<Channel> {
 	public channel: string;
 	protected stream: Stream;
 	public abstract id: string;
@@ -388,6 +395,7 @@ class NonSharedConnection<Channel extends AnyOf<Channels> = AnyOf<Channels>> ext
 			channel: this.channel,
 			id: this.id,
 			params: this.params,
+			pong: true,
 		});
 	}
 

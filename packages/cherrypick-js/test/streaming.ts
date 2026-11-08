@@ -160,6 +160,33 @@ describe('Streaming', () => {
 		server.close();
 	});
 
+	test('tells a channel with parameters when the server has subscribed it', async () => {
+		const server = new WS('wss://cherrypick.test/streaming');
+		const stream = new Stream('https://cherrypick.test', { token: 'TOKEN' });
+		let subscribed = 0;
+		let otherSubscribed = 0;
+		const room = stream.useChannel('chatRoom', { roomId: 'r1' });
+		room.on('_subscribed_', () => { subscribed++; });
+		const other = stream.useChannel('chatRoom', { roomId: 'r2' });
+		other.on('_subscribed_', () => { otherSubscribed++; });
+
+		await server.connected;
+		const msg = JSON.parse(await server.nextMessage as string);
+		expect(msg.type).toEqual('connect');
+		expect(msg.body.params).toEqual({ roomId: 'r1' });
+		// The server answers only when asked to.
+		expect(msg.body.pong).toEqual(true);
+		await server.nextMessage;
+
+		expect(subscribed).toEqual(0);
+		server.send(JSON.stringify({ type: 'connected', body: { id: msg.body.id } }));
+		expect(subscribed).toEqual(1);
+		expect(otherSubscribed).toEqual(0);
+
+		stream.close();
+		server.close();
+	});
+
 	// TODO: SharedConnection#dispose して一定時間経ったら disconnect メッセージがサーバーに送られてくるかのテスト
 
 	// TODO: チャンネル接続が使いまわされるかのテスト

@@ -15,6 +15,16 @@ export const packedChatMessageSchema = {
 			format: 'date-time',
 			optional: false, nullable: false,
 		},
+		editedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
+		},
+		deletedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
+		},
 		fromUserId: {
 			type: 'string',
 			optional: false, nullable: false,
@@ -55,6 +65,23 @@ export const packedChatMessageSchema = {
 			optional: true, nullable: true,
 			ref: 'DriveFile',
 		},
+		fileIds: {
+			type: 'array',
+			optional: false, nullable: false,
+			items: {
+				type: 'string',
+				optional: false, nullable: false,
+			},
+		},
+		files: {
+			type: 'array',
+			optional: false, nullable: false,
+			items: {
+				type: 'object',
+				optional: false, nullable: false,
+				ref: 'DriveFile',
+			},
+		},
 		isRead: {
 			type: 'boolean',
 			optional: true, nullable: false,
@@ -81,6 +108,9 @@ export const packedChatMessageSchema = {
 		emojis: {
 			type: 'object',
 			optional: true, nullable: false,
+			additionalProperties: {
+				type: 'string',
+			},
 		},
 	},
 } as const;
@@ -96,6 +126,16 @@ export const packedChatMessageLiteSchema = {
 			type: 'string',
 			format: 'date-time',
 			optional: false, nullable: false,
+		},
+		editedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
+		},
+		deletedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
 		},
 		fromUserId: {
 			type: 'string',
@@ -126,6 +166,23 @@ export const packedChatMessageLiteSchema = {
 			type: 'object',
 			optional: true, nullable: true,
 			ref: 'DriveFile',
+		},
+		fileIds: {
+			type: 'array',
+			optional: false, nullable: false,
+			items: {
+				type: 'string',
+				optional: false, nullable: false,
+			},
+		},
+		files: {
+			type: 'array',
+			optional: false, nullable: false,
+			items: {
+				type: 'object',
+				optional: false, nullable: false,
+				ref: 'DriveFile',
+			},
 		},
 		reactions: {
 			type: 'array',
@@ -149,6 +206,9 @@ export const packedChatMessageLiteSchema = {
 		emojis: {
 			type: 'object',
 			optional: true, nullable: false,
+			additionalProperties: {
+				type: 'string',
+			},
 		},
 	},
 } as const;
@@ -164,6 +224,16 @@ export const packedChatMessageLiteFor1on1Schema = {
 			type: 'string',
 			format: 'date-time',
 			optional: false, nullable: false,
+		},
+		editedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
+		},
+		deletedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
 		},
 		fromUserId: {
 			type: 'string',
@@ -186,6 +256,23 @@ export const packedChatMessageLiteFor1on1Schema = {
 			optional: true, nullable: true,
 			ref: 'DriveFile',
 		},
+		fileIds: {
+			type: 'array',
+			optional: false, nullable: false,
+			items: {
+				type: 'string',
+				optional: false, nullable: false,
+			},
+		},
+		files: {
+			type: 'array',
+			optional: false, nullable: false,
+			items: {
+				type: 'object',
+				optional: false, nullable: false,
+				ref: 'DriveFile',
+			},
+		},
 		reactions: {
 			type: 'array',
 			optional: false, nullable: false,
@@ -203,6 +290,9 @@ export const packedChatMessageLiteFor1on1Schema = {
 		emojis: {
 			type: 'object',
 			optional: true, nullable: false,
+			additionalProperties: {
+				type: 'string',
+			},
 		},
 	},
 } as const;
@@ -218,6 +308,16 @@ export const packedChatMessageLiteForRoomSchema = {
 			type: 'string',
 			format: 'date-time',
 			optional: false, nullable: false,
+		},
+		editedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
+		},
+		deletedAt: {
+			type: 'string',
+			format: 'date-time',
+			optional: true, nullable: true,
 		},
 		fromUserId: {
 			type: 'string',
@@ -245,6 +345,23 @@ export const packedChatMessageLiteForRoomSchema = {
 			optional: true, nullable: true,
 			ref: 'DriveFile',
 		},
+		fileIds: {
+			type: 'array',
+			optional: false, nullable: false,
+			items: {
+				type: 'string',
+				optional: false, nullable: false,
+			},
+		},
+		files: {
+			type: 'array',
+			optional: false, nullable: false,
+			items: {
+				type: 'object',
+				optional: false, nullable: false,
+				ref: 'DriveFile',
+			},
+		},
 		reactions: {
 			type: 'array',
 			optional: false, nullable: false,
@@ -267,6 +384,9 @@ export const packedChatMessageLiteForRoomSchema = {
 		emojis: {
 			type: 'object',
 			optional: true, nullable: false,
+			additionalProperties: {
+				type: 'string',
+			},
 		},
 	},
 } as const;

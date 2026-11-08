@@ -32,8 +32,8 @@ export class DriveFileUsageService {
 		// ノート編集履歴
 		q.andWhere('NOT EXISTS (SELECT 1 FROM "note_history" WHERE "note_history"."userId" = :userId AND "note_history"."fileIds" @> ARRAY[file.id]::varchar[])');
 
-		// チャット (fileId は NULL 可なので NOT IN ではなく NOT EXISTS を使う)
-		q.andWhere('NOT EXISTS (SELECT 1 FROM "chat_message" WHERE "chat_message"."fromUserId" = :userId AND "chat_message"."fileId" = file.id)');
+		// チャット
+		q.andWhere('NOT EXISTS (SELECT 1 FROM "chat_message" WHERE "chat_message"."fromUserId" = :userId AND "chat_message"."fileIds" @> ARRAY[file.id]::varchar[])');
 
 		// ギャラリー
 		q.andWhere('NOT EXISTS (SELECT 1 FROM "gallery_post" WHERE "gallery_post"."userId" = :userId AND "gallery_post"."fileIds" @> ARRAY[file.id]::varchar[])');

@@ -2278,12 +2278,31 @@ describe('ChatVoiceService', () => {
 
 			expect(result).toMatch(/^ok/);
 			// 保存する前にミラーであることを確かめられるよう、持ち主ごと読む
-			expect(f.chatRoomsRepository.findOne).toHaveBeenCalledWith({ where: { id: 'r1' }, relations: { owner: true } });
+			expect(f.chatRoomsRepository.findOne).toHaveBeenCalledWith({ where: { uri: ROOM_URI }, relations: { owner: true } });
 			expect(JSON.parse(f.redis.store.get('chatVoice:state:r1')!)).toEqual({
 				participants: [{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: true }],
 				updatedAt: 2000,
 			});
 			expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('m1', 'chatRoomVoiceState', expect.objectContaining({ roomId: 'r1' }));
+		});
+
+		test('finds a copy by the URI the owner wrote, whatever it is called here', async () => {
+			f.rooms.set('hereId', { ...mirrorRoom(), id: 'hereId', uri: 'https://remote.test/chat/rooms/34' });
+
+			const result = await f.service.receiveRemoteSnapshot(owner, voiceState({ room: 'https://remote.test/chat/rooms/34', id: 'https://remote.test/chat/rooms/34/voice' }));
+
+			expect(result).toMatch(/^ok/);
+			expect(f.redis.store.has('chatVoice:state:hereId')).toBe(true);
+		});
+
+		test('does not take a room with the same number that another server gave', async () => {
+			const result = await f.service.receiveRemoteSnapshot(
+				{ id: 'carol', host: 'other.test', uri: 'https://other.test/users/carol' } as any,
+				voiceState({ room: 'https://other.test/chat/rooms/r1', id: 'https://other.test/chat/rooms/r1/voice' }),
+			);
+
+			expect(result).toMatch(/^skip:/);
+			expect(f.redis.store.has('chatVoice:state:r1')).toBe(false);
 		});
 
 		test('ignores a voice state from someone who does not own the room', async () => {

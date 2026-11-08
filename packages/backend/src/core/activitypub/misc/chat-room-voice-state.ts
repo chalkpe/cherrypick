@@ -6,12 +6,14 @@
 import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type { IObject } from '../type.js';
 
-// ルームの id (ルームを持つサーバーが送る `${url}/chat/rooms/${id}` の id)
+// ルームの番号 (ルームを持つサーバーが送る `${url}/chat/rooms/${id}` の id)
 const ROOM_ID = /^[a-zA-Z0-9]+$/;
 
 /** 他のサーバーから届いた通話の参加者の現況 (ChatRoomVoiceState) のうち、確かめた中身 */
 export type ParsedChatRoomVoiceState = {
-	/** room の URI に含まれるルームの id */
+	/** room の URI */
+	roomUri: string;
+	/** room の URI に含まれるルームの番号。そのサーバーの中でしか一意でない */
 	roomId: string;
 	/** identity は参加者のユーザーの URI */
 	participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
@@ -58,7 +60,7 @@ export function parseChatRoomVoiceState(actorUri: string, object: IObject, maxPa
 	const updatedAt = typeof state.updated === 'string' ? Date.parse(state.updated) : NaN;
 	if (!Number.isFinite(updatedAt)) return refuse('invalid updated');
 
-	return { ok: true, state: { roomId, participants, updatedAt } };
+	return { ok: true, state: { roomUri: state.room, roomId, participants, updatedAt } };
 }
 
 function refuse(reason: string): ChatRoomVoiceStateParseResult {

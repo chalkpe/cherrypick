@@ -14,7 +14,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import XRoom from './XRoom.vue';
 import { i18n } from '@/i18n.js';
@@ -22,26 +22,11 @@ import { misskeyApi } from '@/utility/misskey-api.js';
 import { ensureSignin } from '@/i.js';
 import { isChatRoomVoiceAvailable } from '@/utility/chat-room-voice-availability.js';
 import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
+import { useChatRoomList } from '@/composables/use-chat-room-list.js';
 
 const $i = ensureSignin();
-const fetching = ref(true);
-const rooms = ref<Misskey.entities.ChatRoom[]>([]);
+const { items: rooms, fetching } = useChatRoomList<Misskey.entities.ChatRoom>(() => misskeyApi('chat/rooms/owned', {}));
 const voiceStates = useChatRoomVoiceStates(computed(() => rooms.value.filter(room => isChatRoomVoiceAvailable(room, $i.policies.canVoiceCall)).map(room => room.id)));
-
-async function fetchRooms() {
-	fetching.value = true;
-
-	const res = await misskeyApi('chat/rooms/owned', {
-	});
-
-	rooms.value = res;
-
-	fetching.value = false;
-}
-
-onMounted(() => {
-	fetchRooms();
-});
 </script>
 
 <style lang="scss" module>

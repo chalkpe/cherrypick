@@ -23,6 +23,7 @@ type Events = {
 	showEl2: (value: boolean) => void;
 	queueUpdated: (q: number) => void;
 	createChat: (ev: MouseEvent) => void;
+	chatRoomInvitationHandled: (roomId: string, result: 'joined' | 'rejected' | 'gone') => void;
 	showNoteContent: (value: boolean) => void;
 	isAtBottom: (value: boolean) => void;
 	hasRequireRefresh: (value: boolean) => void;

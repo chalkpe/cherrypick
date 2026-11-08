@@ -12,7 +12,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	@closed="emit('closed')"
 >
 	<template #header>
-		<i class="ti ti-upload"></i> {{ i18n.tsx.uploadNFiles({ n: files.length }) }}
+		<i class="ti ti-upload"></i> {{ i18n.tsx.uploadNFiles({ n: items.length || files.length }) }}
 	</template>
 
 	<div :class="$style.root">

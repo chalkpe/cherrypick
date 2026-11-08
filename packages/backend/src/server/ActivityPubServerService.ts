@@ -13,10 +13,12 @@ import accepts from 'accepts';
 import vary from 'vary';
 import secureJson from 'secure-json-parse';
 import { DI } from '@/di-symbols.js';
-import type { FollowingsRepository, NotesRepository, EmojisRepository, NoteReactionsRepository, UserProfilesRepository, UserNotePiningsRepository, UsersRepository, FollowRequestsRepository, MiMeta, ChatMessagesRepository } from '@/models/_.js';
+import type { FollowingsRepository, NotesRepository, EmojisRepository, NoteReactionsRepository, UserProfilesRepository, UserNotePiningsRepository, UsersRepository, FollowRequestsRepository, MiMeta, ChatMessagesRepository, ChatRoomsRepository, ChatRoomMembershipsRepository, ChatRoomInvitationsRepository, MiChatRoom } from '@/models/_.js';
 import * as url from '@/misc/prelude/url.js';
 import type { Config } from '@/config.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
+import { chatActorUri, chatMessageUri, chatRoomUriForOwner } from '@/core/activitypub/misc/chat-payloads.js';
+import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { QueueService } from '@/core/QueueService.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import { UserKeypairService } from '@/core/UserKeypairService.js';
@@ -27,7 +29,7 @@ import { QueryService } from '@/core/QueryService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { bindThis } from '@/decorators.js';
-import { IActivity } from '@/core/activitypub/type.js';
+import type { IActivity, IObject } from '@/core/activitypub/type.js';
 import { isQuote, isRenote } from '@/misc/is-renote.js';
 import * as Acct from '@/misc/acct.js';
 import { FanoutTimelineEndpointService } from '@/core/FanoutTimelineEndpointService.js';
@@ -99,6 +101,15 @@ export class ActivityPubServerService {
 		@Inject(DI.chatMessagesRepository)
 		private chatMessagesRepository: ChatMessagesRepository,
 
+		@Inject(DI.chatRoomsRepository)
+		private chatRoomsRepository: ChatRoomsRepository,
+
+		@Inject(DI.chatRoomMembershipsRepository)
+		private chatRoomMembershipsRepository: ChatRoomMembershipsRepository,
+
+		@Inject(DI.chatRoomInvitationsRepository)
+		private chatRoomInvitationsRepository: ChatRoomInvitationsRepository,
+
 		private utilityService: UtilityService,
 		private userEntityService: UserEntityService,
 		private apRendererService: ApRendererService,
@@ -108,8 +119,23 @@ export class ActivityPubServerService {
 		private fanoutTimelineEndpointService: FanoutTimelineEndpointService,
 		private activityPubAccessControlService: ActivityPubAccessControlService,
 		private apDbResolverService: ApDbResolverService,
+		private chatRosterService: ChatRosterService,
 	) {
 		//this.createServer = this.createServer.bind(this);
+	}
+
+	/**
+	 * The time is taken first. A change while the list is being read then has a later time than the list,
+	 * so a server comparing the two keeps that change rather than taking the list for newer than it is.
+	 */
+	private async chatRoomRoster(room: MiChatRoom): Promise<Pick<IObject, '_misskey_chatRoomMembers' | '_misskey_chatRoomRosterAt'>> {
+		const rosterAt = new Date().toISOString();
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
+		const members = await this.usersRepository.findBy({ id: In([room.ownerId, ...memberships.map(membership => membership.userId)]) });
+		return {
+			_misskey_chatRoomMembers: members.map(member => chatActorUri(member, this.config.url)),
+			_misskey_chatRoomRosterAt: rosterAt,
+		};
 	}
 
 	@bindThis
@@ -280,7 +306,8 @@ export class ActivityPubServerService {
 			return null;
 		}
 
-		return authUser.user;
+		// Membership survives a suspension, so a suspended account has to be turned away here.
+		return authUser.user.isSuspended ? null : authUser.user;
 	}
 
 	@bindThis
@@ -907,28 +934,56 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			if (actor.id !== message.fromUserId && actor.id !== message.toUserId) {
-				reply.code(404);
-				return;
-			}
-
-			// Get fromUser
+			// Get fromUser. A message is out of sight here while its author is suspended, and comes back when that ends.
 			const fromUser = await this.usersRepository.findOneBy({ id: message.fromUserId });
-			if (fromUser == null || fromUser.host !== null) {
+			if (fromUser == null || fromUser.host !== null || fromUser.isSuspended) {
 				reply.code(404);
 				return;
 			}
 
 			// Get toUser(s)
 			let toUsers: MiUser[] = [];
+			let roomId: string | undefined;
+			let roomUri: string | undefined;
 			if (message.toUserId) {
 				// 1:1 chat
+				if (actor.id !== message.fromUserId && actor.id !== message.toUserId) {
+					reply.code(404);
+					return;
+				}
 				const toUser = await this.usersRepository.findOneBy({ id: message.toUserId });
 				if (toUser) toUsers = [toUser];
 			} else if (message.toRoomId) {
-				// Group chat - not yet fully implemented for ActivityPub
-				reply.code(404);
-				return;
+				const room = await this.chatRoomsRepository.findOne({
+					where: { id: message.toRoomId },
+					relations: { owner: true },
+				});
+				if (room == null) {
+					reply.code(404);
+					return;
+				}
+
+				const isOwner = room.ownerId === actor.id;
+				const membership = isOwner ? null : await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId: actor.id });
+				if (!isOwner && membership == null) {
+					// The owner's server may have heard of this member before this one did. Their retry will get the message once it has too.
+					if (room.owner?.host != null) await this.chatRosterService.requestSync(room, actor.id);
+					reply.code(404);
+					return;
+				}
+
+				const owner = room.owner ?? await this.usersRepository.findOneBy({ id: room.ownerId });
+				if (owner == null) {
+					reply.code(404);
+					return;
+				}
+
+				const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
+				const memberIds = Array.from(new Set([room.ownerId, ...memberships.map(membership => membership.userId)]));
+				const members = await this.usersRepository.findBy({ id: In(memberIds) });
+				toUsers = members.filter(member => member.id !== fromUser.id);
+				roomId = room.id;
+				roomUri = chatRoomUriForOwner(room, owner, this.config.url);
 			}
 
 			if (toUsers.length === 0) {
@@ -936,8 +991,66 @@ export class ActivityPubServerService {
 				return;
 			}
 
+			if (message.deletedAt != null) {
+				this.setResponseType(request, reply);
+				return this.apRendererService.addContext({ ...this.apRendererService.renderTombstone(chatMessageUri(message, this.config.url)), formerType: 'Note' });
+			}
+
 			this.setResponseType(request, reply);
-			return this.apRendererService.addContext(await this.apRendererService.renderChatMessage(message, fromUser, toUsers));
+			return this.apRendererService.addContext(await this.apRendererService.renderChatMessage(message, fromUser, toUsers, roomId, roomUri));
+		});
+
+		// chat room
+		fastify.get<{ Params: { id: string; } }>('/chat/rooms/:id', { constraints: { apOrHtml: 'ap' } }, async (request, reply) => {
+			vary(reply.raw, 'Accept');
+			reply.header('Cache-Control', 'private, no-store');
+
+			if (this.meta.federation === 'none') {
+				reply.code(403);
+				return;
+			}
+
+			if (await this.applyAccessControl(request, reply, true)) {
+				return;
+			}
+
+			const actor = await this.getSignedRequestActor(request);
+			if (actor == null) {
+				reply.code(404);
+				return;
+			}
+
+			const room = await this.chatRoomsRepository.findOne({
+				where: { id: request.params.id },
+				relations: { owner: true },
+			});
+			if (room == null) {
+				reply.code(404);
+				return;
+			}
+
+			const isOwner = room.ownerId === actor.id;
+			const membership = isOwner ? null : await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId: actor.id });
+			if (!isOwner && membership == null) {
+				const invitation = await this.chatRoomInvitationsRepository.findOneBy({ roomId: room.id, userId: actor.id });
+				if (invitation == null) {
+					reply.code(404);
+					return;
+				}
+			}
+
+			const owner = room.owner ?? await this.usersRepository.findOneBy({ id: room.ownerId });
+			if (owner == null) {
+				reply.code(404);
+				return;
+			}
+
+			const group = this.apRendererService.renderChatRoom(room, owner);
+			// Someone who is only invited learns who is in the room by joining it.
+			const roster = owner.host == null && (isOwner || membership != null) ? await this.chatRoomRoster(room) : null;
+
+			this.setResponseType(request, reply);
+			return this.apRendererService.addContext({ ...group, ...roster });
 		});
 
 		// outbox
