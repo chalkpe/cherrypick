@@ -2069,7 +2069,7 @@ declare module '../api.js' {
     /**
      * No description provided.
      * 
-     * **Credential required**: *Yes* / **Permission**: *write:chat*
+     * **Credential required**: *Yes* / **Permission**: *read:chat*
      */
     request<E extends 'chat/rooms/members', P extends Endpoints[E]['req']>(
       endpoint: E,

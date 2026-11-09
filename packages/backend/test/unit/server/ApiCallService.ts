@@ -6,6 +6,7 @@
 import { Readable } from 'node:stream';
 import { describe, expect, test, vi } from 'vitest';
 import { ApiCallService } from '@/server/api/ApiCallService.js';
+import MembersEndpoint, { meta as membersMeta, paramDef as membersParams } from '@/server/api/endpoints/chat/rooms/members.js';
 import Logger from '@/logger.js';
 import { envOption } from '@/env.js';
 import { logManager } from '@/logging/logging-runtime.js';
@@ -122,4 +123,37 @@ describe('Play token authorization', () => {
 			});
 		}
 	}
+});
+
+describe('chat room member listing permissions', () => {
+	test.each([
+		['write only', ['write:chat'], true, 'PERMISSION_DENIED'],
+		['read only', ['read:chat'], true, null],
+		['read and write', ['read:chat', 'write:chat'], true, null],
+		['nonmember with read', ['read:chat'], false, 'NO_SUCH_ROOM'],
+	] as const)('%s', async (_label, permission, member, errorCode) => {
+		const { service, authenticateService } = createService();
+		authenticateService.authenticate.mockResolvedValue([{ id: 'user' }, { permission }, null]);
+		const chat = {
+			checkChatAvailability: vi.fn().mockResolvedValue(undefined),
+			findRoomById: vi.fn().mockResolvedValue({ id: 'room1' }),
+			isRoomMember: vi.fn().mockResolvedValue(member),
+			getRoomMembershipsWithPagination: vi.fn().mockResolvedValue([{ id: 'member' }]),
+		};
+		const entities = { packRoomMemberships: vi.fn().mockResolvedValue([{ id: 'member' }]) };
+		const endpoint = new MembersEndpoint(chat as never, entities as never, {} as never);
+		const reply = createReply();
+		const request = { method: 'POST', body: { i: 'app-token', roomId: 'room1' }, headers: {}, ip: '127.0.0.1' };
+		try {
+			await service.handleRequest({ name: 'chat/rooms/members', meta: membersMeta, params: membersParams, exec: endpoint.exec } as never, request as never, reply as never);
+			if (errorCode == null) {
+				expect(reply.send).toHaveBeenCalledWith([{ id: 'member' }]);
+			} else {
+				expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: errorCode }) }));
+				expect(entities.packRoomMemberships).not.toHaveBeenCalled();
+			}
+		} finally {
+			service.dispose();
+		}
+	});
 });

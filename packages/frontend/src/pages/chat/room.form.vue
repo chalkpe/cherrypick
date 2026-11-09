@@ -144,7 +144,7 @@ function getDraftKey() {
 	return props.user ? 'user:' + props.user.id : 'room:' + props.room?.id;
 }
 
-watch([draftText, files], saveDraft, { deep: true });
+watch([draftText, files], saveDraft, { deep: true, flush: 'sync' });
 
 function updateAttachment(changed: Misskey.entities.DriveFile, updates: Partial<Pick<Misskey.entities.DriveFile, 'name' | 'isSensitive'>>) {
 	files.value = files.value.map(file => file.id === changed.id ? { ...file, ...updates } : file);
@@ -159,7 +159,7 @@ function alertTooManyFiles() {
 }
 
 function attachFiles(added: Misskey.entities.DriveFile[]) {
-	const merged = [...files.value, ...added.filter(file => !files.value.some(attached => attached.id === file.id))];
+	const merged = [...files.value, ...added.filter(file => !files.value.some(attached => attached.id === file.id)).map(file => ({ ...file }))];
 	if (merged.length > MAX_FILES) alertTooManyFiles();
 	files.value = merged.slice(0, MAX_FILES);
 }
@@ -339,11 +339,12 @@ function send() {
 
 	if (props.editingMessage) {
 		const session = editSession;
+		const savedText = editText.value;
 		misskeyApi('chat/messages/update', {
 			messageId: props.editingMessage.id,
-			text: text.value,
+			text: savedText,
 		}).then(() => {
-			if (session === editSession) emit('edited');
+			if (session === editSession && editText.value === savedText) emit('edited');
 		}).catch(err => {
 			showSendError(err);
 		}).then(() => {
@@ -352,13 +353,29 @@ function send() {
 		return;
 	}
 
+	const sentText = draftText.value;
+	const sentFiles = [...files.value];
+	saveDraft();
+	const storedSentDraft = JSON.stringify(JSON.parse(miLocalStorage.getItem('chatMessageDrafts') || '{}')[getDraftKey()]);
+	const clearSent = () => {
+		// A later instance may already have saved another draft for this room.
+		if (formClosed) {
+			const storedDraft = JSON.parse(miLocalStorage.getItem('chatMessageDrafts') || '{}')[getDraftKey()];
+			if (JSON.stringify(storedDraft) === storedSentDraft) deleteDraft();
+			return;
+		}
+		if (draftText.value === sentText) draftText.value = '';
+		files.value = files.value.filter(file => !sentFiles.includes(file));
+		if (draftText.value === '' && files.value.length === 0) deleteDraft();
+	};
+
 	if (props.user) {
 		misskeyApi('chat/messages/create-to-user', {
 			toUserId: props.user.id,
-			text: text.value ? text.value : undefined,
-			fileIds: files.value.length > 0 ? files.value.map(file => file.id) : undefined,
+			text: sentText || undefined,
+			fileIds: sentFiles.length > 0 ? sentFiles.map(file => file.id) : undefined,
 		}).then(message => {
-			clear();
+			clearSent();
 			emit('sent', message.id);
 		}).catch(err => {
 			showSendError(err);
@@ -368,10 +385,10 @@ function send() {
 	} else if (props.room) {
 		misskeyApi('chat/messages/create-to-room', {
 			toRoomId: props.room.id,
-			text: text.value ? text.value : undefined,
-			fileIds: files.value.length > 0 ? files.value.map(file => file.id) : undefined,
+			text: sentText || undefined,
+			fileIds: sentFiles.length > 0 ? sentFiles.map(file => file.id) : undefined,
 		}).then(message => {
-			clear();
+			clearSent();
 			emit('sent', message.id);
 		}).catch(err => {
 			showSendError(err);
@@ -381,17 +398,12 @@ function send() {
 	}
 }
 
-function clear() {
-	draftText.value = '';
-	files.value = [];
-	deleteDraft();
-}
-
 function saveDraft() {
 	const drafts = JSON.parse(miLocalStorage.getItem('chatMessageDrafts') || '{}');
+	const previousTime = Date.parse(drafts[getDraftKey()]?.updatedAt) || 0;
 
 	drafts[getDraftKey()] = {
-		updatedAt: new Date(),
+		updatedAt: new Date(Math.max(Date.now(), previousTime + 1)),
 		data: {
 			text: draftText.value,
 			files: files.value,

@@ -69,6 +69,21 @@ describe('chat/messages/update', () => {
 		assert.strictEqual((await api('chat/rooms/kick', params, alice)).status, 204);
 	});
 
+	test('room members require read permission and room membership', async () => {
+		const created = await api('chat/rooms/create', { name: 'roster permission' }, alice);
+		assert.strictEqual(created.status, 200);
+		const roomId = created.body.id;
+		const writeOnly = await createAppToken(alice, ['write:chat']);
+		const readOnly = await createAppToken(alice, ['read:chat']);
+		const readWrite = await createAppToken(alice, ['read:chat', 'write:chat']);
+		const nonmember = await createAppToken(bob, ['read:chat']);
+
+		assert.strictEqual((await api('chat/rooms/members', { roomId }, { token: writeOnly })).status, 403);
+		assert.strictEqual((await api('chat/rooms/members', { roomId }, { token: readOnly })).status, 200);
+		assert.strictEqual((await api('chat/rooms/members', { roomId }, { token: readWrite })).status, 200);
+		assert.strictEqual((await api('chat/rooms/members', { roomId }, { token: nonmember })).status, 400);
+	});
+
 	test('does not reveal a message owned by another user', async () => {
 		const created = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'hello' }, alice);
 		assert.strictEqual(created.status, 200, JSON.stringify(created.body));

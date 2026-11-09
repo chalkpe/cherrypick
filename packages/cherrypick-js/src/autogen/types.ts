@@ -1698,7 +1698,7 @@ export type paths = {
          * chat/rooms/members
          * @description No description provided.
          *
-         *     **Credential required**: *Yes* / **Permission**: *write:chat*
+         *     **Credential required**: *Yes* / **Permission**: *read:chat*
          */
         post: operations['chat___rooms___members'];
     };

@@ -1764,6 +1764,8 @@ export class ChatService {
 	@bindThis
 	public async deleteRemoteMessage(actor: MiUser, message: MiChatMessage, options?: { activity?: IObject }): Promise<MiChatMessage> {
 		if (message.fromUserId !== actor.id) {
+			const author = await this.usersRepository.findOneBy({ id: message.fromUserId });
+			if (author == null || this.userEntityService.isLocalUser(author)) throw new ChatMessageAccessError('cannot delete');
 			// The room's owner moderates it, including what someone else wrote.
 			const room = message.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
 			if (room?.ownerId !== actor.id) throw new ChatMessageAccessError('cannot delete');

@@ -4,12 +4,17 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
+import { meta as membersMeta } from '@/server/api/endpoints/chat/rooms/members.js';
 import { alice, bob, carol, chatRosterFixture, dave, erin, frank, LOCAL, LOCAL_ROOM_URI, mallory, MIRROR_URI } from '../misc/chat-roster-fixture.js';
 
 const BASE = Date.now() - 60 * 60 * 1000;
 const at = (seconds: number) => new Date(BASE + seconds * 1000).toISOString();
 
 const carolMessageUri = 'https://other.test/chat/messages/m1';
+
+test('room member listing requires the chat read permission', () => {
+	expect(membersMeta.kind).toBe('read:chat');
+});
 
 function storedMessage(overrides: Record<string, unknown> = {}) {
 	return { id: 'm1', uri: carolMessageUri, fromUserId: carol.id, toRoomId: 'mirror', toUserId: null, text: 'hello', reactions: [] as string[], deletedAt: null, editedAt: null, fileIds: [], emojis: [], ...overrides };
@@ -303,10 +308,63 @@ describe('receiving what the owner passed on', () => {
 			expect(f.messages.rows[0].deletedAt).toBeNull();
 		});
 
-		test('of a message this server never had asks for nothing further', async () => {
+		test('a relay arriving before the author’s Create prevents the late message from appearing', async () => {
+			const f = chatRosterFixture({ memberships: members });
+			const createMessage = vi.spyOn(f.chatService, 'createMessageToRoom').mockResolvedValue({} as never);
+			const note = { id: carolMessageUri, type: 'Note', attributedTo: carol.uri, to: [`${LOCAL}/users/${alice.id}`], context: MIRROR_URI, _misskey_talk: true, content: 'deleted' };
+
+			await announce(f, relay(deletion()));
+			await f.inbox.create(carol, { id: `${carolMessageUri}#create`, type: 'Create', actor: carol.uri, object: note }, f.resolver);
+
+			expect(createMessage).not.toHaveBeenCalled();
+		});
+
+		test('a pending relay cannot delete a message in another room', async () => {
+			const f = chatRosterFixture({ memberships: [...members, ['localroom', carol.id]] });
+			const createMessage = vi.spyOn(f.chatService, 'createMessageToRoom').mockResolvedValue({} as never);
+			const note = { id: carolMessageUri, type: 'Note', attributedTo: carol.uri, to: [`${LOCAL}/users/${alice.id}`], context: LOCAL_ROOM_URI, _misskey_talk: true, content: 'kept' };
+
+			await announce(f, relay(deletion()));
+			await f.inbox.create(carol, { id: `${carolMessageUri}#create`, type: 'Create', actor: carol.uri, object: note }, f.resolver);
+
+			expect(createMessage).toHaveBeenCalledOnce();
+		});
+
+		test('a pending relay cannot delete another author’s message on the same host', async () => {
+			const f = chatRosterFixture({ memberships: [...members, ['mirror', frank.id]] });
+			const createMessage = vi.spyOn(f.chatService, 'createMessageToRoom').mockResolvedValue({} as never);
+			const note = { id: carolMessageUri, type: 'Note', attributedTo: frank.uri, to: [`${LOCAL}/users/${alice.id}`], context: MIRROR_URI, _misskey_talk: true, content: 'kept' };
+
+			await announce(f, relay(deletion()));
+			await f.inbox.create(frank, { id: `${carolMessageUri}#create`, type: 'Create', actor: frank.uri, object: note }, f.resolver);
+
+			expect(createMessage).toHaveBeenCalledOnce();
+		});
+
+		test('an unrelated actor cannot leave a pending deletion', async () => {
+			const f = chatRosterFixture({ memberships: members });
+			const createMessage = vi.spyOn(f.chatService, 'createMessageToRoom').mockResolvedValue({} as never);
+			const note = { id: carolMessageUri, type: 'Note', attributedTo: carol.uri, to: [`${LOCAL}/users/${alice.id}`], context: MIRROR_URI, _misskey_talk: true, content: 'kept' };
+
+			expect(await announce(f, relay(deletion(erin)))).toMatch(/^skip:/);
+			await f.inbox.create(carol, { id: `${carolMessageUri}#create`, type: 'Create', actor: carol.uri, object: note }, f.resolver);
+
+			expect(createMessage).toHaveBeenCalledOnce();
+		});
+
+		test('an unknown same-host actor cannot leave a pending deletion', async () => {
 			const f = chatRosterFixture({ memberships: members });
 
-			expect(await announce(f, relay(deletion()))).toMatch(/^skip:/);
+			await expect(announce(f, relay(deletion(frank)))).rejects.toThrow('chat room membership is not ready');
+			expect([...f.redisClient.values.keys()].filter(key => key.startsWith('chat_delete_upon_arrival:'))).toEqual([]);
+		});
+
+		test('a local author cannot be impersonated for a pending deletion', async () => {
+			const f = chatRosterFixture({ memberships: members });
+			const localAuthor = { uri: `${LOCAL}/users/${alice.id}` };
+
+			expect(await announce(f, relay(deletion(localAuthor, `${LOCAL}/chat/messages/m2`)))).toMatch(/^skip:/);
+			expect([...f.redisClient.values.keys()].filter(key => key.startsWith('chat_delete_upon_arrival:'))).toEqual([]);
 		});
 	});
 
@@ -493,6 +551,24 @@ describe('what comes straight from a member\'s server', () => {
 	const uri = carolMessageUri;
 	const reaction = { id: `${erin.uri}/chat-reactions/1`, type: 'EmojiReact', actor: erin.uri, object: uri, content: '👍' };
 	const undo = { id: `${reaction.id}/undo`, type: 'Undo', actor: erin.uri, object: reaction };
+
+	test('the remote owner cannot erase a local author’s original through the service', async () => {
+		const original = storedMessage({ uri: `${LOCAL}/chat/messages/m2`, fromUserId: alice.id, text: 'original', fileIds: ['file'], reactions: ['reaction'] });
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id]], messages: [original] });
+
+		await expect(f.chatService.deleteRemoteMessage(bob as never, f.messages.rows[0] as never)).rejects.toThrow('cannot delete');
+		expect(f.messages.rows[0]).toMatchObject({ text: 'original', fileIds: ['file'], reactions: ['reaction'], deletedAt: null });
+	});
+
+	test('the remote owner cannot erase a local author’s original through inbox Delete', async () => {
+		const original = storedMessage({ uri: `${LOCAL}/chat/messages/m2`, fromUserId: alice.id, text: 'original', fileIds: ['file'], reactions: ['reaction'] });
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id]], messages: [original] });
+
+		const result = await f.inbox.delete(bob, { type: 'Delete', actor: bob.uri, object: { id: original.uri, type: 'Tombstone', formerType: 'Note' } });
+
+		expect(result).toMatch(/^skip:/);
+		expect(f.messages.rows[0]).toMatchObject({ text: 'original', fileIds: ['file'], reactions: ['reaction'], deletedAt: null });
+	});
 
 	test('someone who has left can take their reaction back', async () => {
 		const f = chatRosterFixture({ memberships: [['mirror', alice.id]], messages: [storedMessage({ reactions: [`${erin.id}/👍`] })] });

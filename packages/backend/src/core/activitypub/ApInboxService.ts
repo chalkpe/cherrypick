@@ -738,8 +738,13 @@ export class ApInboxService {
 		const unlock = await acquireApObjectLock(this.redisClient, messageUri);
 		try {
 			const message = await this.chatService.findMessageByUri(messageUri);
-			// Its author's own Delete settles a message that is still on its way here.
-			if (message == null) return 'skip: message not found';
+			if (message == null) {
+				if (!this.isOnActorHost(messageUri, doer)) return 'skip: message is not on the actor\'s server';
+				await this.assertKnownInRoom(room, doer);
+				if (!await this.chatService.isRoomMember(room, doer.id)) return 'skip: not a member of the room';
+				const stored = await this.storeDeferredChatDelete(doer, messageUri, room.id);
+				return stored ? 'ok: chat message tombstone stored' : 'skip: too many deferred chat deletes';
+			}
 			if (message.toRoomId !== room.id) return 'skip: message is from another room';
 			await this.chatService.deleteRemoteMessage(doer, message);
 			return 'ok: chat message deleted';
@@ -1256,6 +1261,7 @@ export class ApInboxService {
 				if (isGroup) {
 					const room = await this.chatRoomForMessage(contextUri, recipients, actor);
 					if (typeof room === 'string') return room;
+					if (await this.hasDeferredRoomChatDelete(actor, object.id, room.id)) return 'skip: deleted';
 					await this.chatService.assertRemoteWriteAllowed(room);
 				} else {
 					await this.chatService.assertCanSendToUser(actor, recipients[0]);
@@ -1317,6 +1323,7 @@ export class ApInboxService {
 				// Group chat
 				const room = await this.chatRoomForMessage(contextUri!, recipients, actor);
 				if (typeof room === 'string') return room;
+				if (await this.hasDeferredRoomChatDelete(actor, uri, room.id)) return 'skip: deleted';
 
 				// Create the message to the room
 				await this.chatService.createMessageToRoom(actor, room, {
@@ -2125,14 +2132,19 @@ export class ApInboxService {
 		}
 	}
 
-	private async storeDeferredChatDelete(actor: MiRemoteUser, uri: string): Promise<boolean> {
-		const indexKey = `chat_delete_upon_arrival_index:${actor.id}`;
+	private async hasDeferredRoomChatDelete(actor: MiRemoteUser, uri: string, roomId: string): Promise<boolean> {
+		return await this.redisClient.get(`chat_delete_upon_arrival:${uri}:${encodeURIComponent(actor.uri)}:room:${roomId}`) === actor.uri;
+	}
+
+	private async storeDeferredChatDelete(actor: MiRemoteUser, uri: string, roomId?: string): Promise<boolean> {
+		// Relays share one bounded budget across rooms, separate from the author's own deletes.
+		const indexKey = `chat_delete_upon_arrival_index:${actor.id}:${roomId == null ? 'direct' : 'relay'}`;
 		const count = await this.redisClient.scard(indexKey);
 		if (count >= MAX_DEFERRED_CHAT_DELETES_PER_ACTOR) return false;
-		await this.redisClient.sadd(indexKey, uri);
+		await this.redisClient.sadd(indexKey, roomId == null ? uri : `${uri}:room:${roomId}`);
 		// NX keeps this a fixed window: extended on every call, the set of an actor that stays active never empties until it reaches the cap.
 		await this.redisClient.expire(indexKey, DEFERRED_CHAT_DELETE_TTL, 'NX');
-		await this.redisClient.setex(`chat_delete_upon_arrival:${uri}:${encodeURIComponent(actor.uri)}`, DEFERRED_CHAT_DELETE_TTL, actor.uri);
+		await this.redisClient.setex(`chat_delete_upon_arrival:${uri}:${encodeURIComponent(actor.uri)}${roomId == null ? '' : `:room:${roomId}`}`, DEFERRED_CHAT_DELETE_TTL, actor.uri);
 		return true;
 	}
 

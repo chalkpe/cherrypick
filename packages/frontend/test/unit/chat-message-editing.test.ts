@@ -309,6 +309,150 @@ test('an earlier save does not end a different edit session', async () => {
 	expect(form.textarea.value).toBe('Second message');
 });
 
+test.each(['user', 'room'] as const)('a pending %s send preserves later text and attachments', async target => {
+	const pending = deferred<{ id: string }>();
+	mocks.api.mockReturnValueOnce(pending.promise);
+	const form = renderForm(target);
+	await composeDraft(form.textarea);
+	await fireEvent.click(screen.getByTitle(i18n.ts.send));
+	await fireEvent.update(form.textarea, 'Later draft');
+	const laterFile = { ...driveFile, id: 'later-file', name: 'later.png' };
+	mocks.selectFile.mockResolvedValueOnce([laterFile]);
+	await fireEvent.click(form.container.querySelector('.ti-photo-plus')!.closest('button')!);
+	await waitFor(() => expect(screen.getByAltText('later.png')).toBeTruthy());
+
+	pending.resolve({ id: 'sent-1' });
+	await waitFor(() => expect(screen.getByTitle(i18n.ts.send).getAttribute('aria-disabled')).toBe('false'));
+	expect(form.textarea.value).toBe('Later draft');
+	expect(screen.queryByAltText('draft.png')).toBeNull();
+	expect(screen.getByAltText('later.png')).toBeTruthy();
+	expect(storedDraft(target)).toEqual({ text: 'Later draft', files: [laterFile] });
+});
+
+test('a failed pending send keeps both the original and later draft contents', async () => {
+	const pending = deferred<{ id: string }>();
+	mocks.api.mockReturnValueOnce(pending.promise);
+	const form = renderForm();
+	await composeDraft(form.textarea);
+	await fireEvent.click(screen.getByTitle(i18n.ts.send));
+	await fireEvent.update(form.textarea, 'Later draft');
+	const laterFile = { ...driveFile, id: 'later-file', name: 'later.png' };
+	mocks.selectFile.mockResolvedValueOnce([laterFile]);
+	await fireEvent.click(form.container.querySelector('.ti-photo-plus')!.closest('button')!);
+	await waitFor(() => expect(screen.getByAltText('later.png')).toBeTruthy());
+
+	pending.reject(new Error('refused'));
+	await waitFor(() => expect(os.alert).toHaveBeenCalled());
+	expect(form.textarea.value).toBe('Later draft');
+	expect(storedDraft()).toEqual({ text: 'Later draft', files: [driveFile, laterFile] });
+});
+
+test('a pending send does not disturb an edit or a later compose draft', async () => {
+	const pending = deferred<{ id: string }>();
+	mocks.api.mockReturnValueOnce(pending.promise);
+	const form = renderForm();
+	await fireEvent.update(form.textarea, 'Sent draft');
+	await fireEvent.click(screen.getByTitle(i18n.ts.send));
+	await fireEvent.update(form.textarea, 'Later draft');
+	form.editing.value = message;
+	await nextTick();
+	await fireEvent.update(form.textarea, 'Later edit');
+
+	pending.resolve({ id: 'sent-1' });
+	await waitFor(() => expect(screen.getByTitle(i18n.ts.save).getAttribute('aria-disabled')).toBe('false'));
+	expect(form.textarea.value).toBe('Later edit');
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.cancel }));
+	expect(form.textarea.value).toBe('Later draft');
+	expect(storedDraft()?.text).toBe('Later draft');
+});
+
+test('a pending edit save keeps later text in the same edit session', async () => {
+	const pending = deferred<object>();
+	mocks.api.mockReturnValueOnce(pending.promise);
+	const form = renderForm('room', message);
+	await fireEvent.update(form.textarea, 'Saved version');
+	await fireEvent.click(screen.getByTitle(i18n.ts.save));
+	await fireEvent.update(form.textarea, 'Later edit');
+
+	pending.resolve({});
+	await waitFor(() => expect(screen.getByTitle(i18n.ts.save).getAttribute('aria-disabled')).toBe('false'));
+	expect(form.editing.value?.id).toBe(message.id);
+	expect(form.textarea.value).toBe('Later edit');
+});
+
+test('a send completed after leaving does not delete a new instance draft for the same room', async () => {
+	const pending = deferred<{ id: string }>();
+	mocks.api.mockReturnValueOnce(pending.promise);
+	const first = renderForm();
+	await fireEvent.update(first.textarea, 'Sent draft');
+	await fireEvent.click(screen.getByTitle(i18n.ts.send));
+	first.unmount();
+	const second = renderForm();
+	await fireEvent.update(second.textarea, 'New instance draft');
+
+	pending.resolve({ id: 'sent-1' });
+	await nextTick();
+	await nextTick();
+	expect(second.textarea.value).toBe('New instance draft');
+	expect(storedDraft()?.text).toBe('New instance draft');
+});
+
+test('a completed send clears the unchanged stored draft after leaving', async () => {
+	const pending = deferred<{ id: string }>();
+	mocks.api.mockReturnValueOnce(pending.promise);
+	const first = renderForm();
+	await fireEvent.update(first.textarea, 'Sent draft');
+	await fireEvent.click(screen.getByTitle(i18n.ts.send));
+	first.unmount();
+
+	pending.resolve({ id: 'sent-1' });
+	await nextTick();
+	await nextTick();
+	expect(storedDraft()).toBeUndefined();
+});
+
+test('a new instance retains its restored draft even within the same millisecond', async () => {
+	const clock = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+	try {
+		const pending = deferred<{ id: string }>();
+		mocks.api.mockReturnValueOnce(pending.promise);
+		const first = renderForm();
+		await fireEvent.update(first.textarea, 'Draft');
+		await fireEvent.click(screen.getByTitle(i18n.ts.send));
+		first.unmount();
+		const second = renderForm();
+
+		pending.resolve({ id: 'sent-1' });
+		await nextTick();
+		await nextTick();
+		expect(second.textarea.value).toBe('Draft');
+		expect(storedDraft()?.text).toBe('Draft');
+	} finally {
+		clock.mockRestore();
+	}
+});
+
+test('an attachment removed and selected again during a send stays in the draft', async () => {
+	const pending = deferred<{ id: string }>();
+	mocks.api.mockReturnValueOnce(pending.promise);
+	mocks.popupMenu.mockResolvedValue(undefined);
+	const form = renderForm();
+	await composeDraft(form.textarea);
+	await fireEvent.click(screen.getByTitle(i18n.ts.send));
+	await fireEvent.click(screen.getByAltText('draft.png').closest('[role="button"]')!);
+	const items = mocks.popupMenu.mock.lastCall![0] as MenuItem[];
+	const detach = items.find(item => item != null && 'text' in item && item.text === i18n.ts.attachCancel) as unknown as { action: () => void };
+	detach.action();
+	await nextTick();
+	mocks.selectFile.mockResolvedValueOnce([driveFile]);
+	await fireEvent.click(form.container.querySelector('.ti-photo-plus')!.closest('button')!);
+	await waitFor(() => expect(screen.getByAltText('draft.png')).toBeTruthy());
+
+	pending.resolve({ id: 'sent-1' });
+	await waitFor(() => expect(screen.getByTitle(i18n.ts.send).getAttribute('aria-disabled')).toBe('false'));
+	expect(storedDraft()?.files).toEqual([driveFile]);
+});
+
 test('edit mode blocks the picker, clipboard images, dropped uploads and Drive drops', async () => {
 	const form = renderForm('room', message);
 	const picker = form.container.querySelector('.ti-photo-plus')?.closest('button');
