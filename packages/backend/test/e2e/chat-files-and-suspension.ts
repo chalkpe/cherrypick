@@ -7,11 +7,9 @@ process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
 import { afterAll, beforeAll, describe, test } from 'vitest';
-import { api, signup, uploadFile } from '../utils.js';
+import { api, createAppToken, signup, uploadFile } from '../utils.js';
+import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 import type * as misskey from 'cherrypick-js';
-
-// Let the 3-second unread-notification timers drain before the test server closes.
-const drainTimers = () => new Promise(resolve => setTimeout(resolve, 3500));
 
 let root: misskey.entities.SignupResponse;
 
@@ -45,7 +43,7 @@ describe('the files of a chat message', () => {
 		await api('chat/rooms/join', { roomId }, bob);
 	}, 1000 * 60 * 2);
 
-	afterAll(drainTimers);
+	afterAll(waitForChatNotificationTurn, 30_000);
 
 	test.each([
 		['user', () => ({ endpoint: 'chat/messages/create-to-user' as const, target: { toUserId: bob.id } })],
@@ -117,6 +115,20 @@ describe('the files of a chat message', () => {
 		assert.deepStrictEqual(body.map(found => found.id), [message.id]);
 	});
 
+	test('an app needs chat permission to read a message attached to a drive file', async () => {
+		const only = await upload(alice);
+		const created = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'private', fileIds: [only] }, alice);
+		assert.strictEqual(created.status, 200);
+		const driveToken = await createAppToken(alice, ['read:drive']);
+		const chatToken = await createAppToken(alice, ['read:chat']);
+		const denied = await api('drive/files/attached-chat-messages', { fileId: only }, { token: driveToken });
+		const allowed = await api('drive/files/attached-chat-messages', { fileId: only }, { token: chatToken });
+		assert.strictEqual(denied.status, 403);
+		assert.strictEqual((denied.body as unknown as { error: { code: string } }).error.code, 'PERMISSION_DENIED');
+		assert.strictEqual(allowed.status, 200);
+		assert.deepStrictEqual(allowed.body.map(message => message.id), [created.body.id]);
+	});
+
 	test('a file deleted later is left out, and the message can no longer lose its text', async () => {
 		const only = await upload(alice);
 		const { body: message } = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'caption', fileIds: [only] }, alice);
@@ -181,7 +193,7 @@ describe('a suspended account in chat', () => {
 		assert.strictEqual((await api('admin/suspend-user', { userId: bob.id }, root)).status, 204);
 	}, 1000 * 60 * 2);
 
-	afterAll(drainTimers);
+	afterAll(waitForChatNotificationTurn, 30_000);
 
 	const seen = async () => {
 		const direct = await api('chat/messages/user-timeline', { userId: bob.id, limit: 10 }, alice);

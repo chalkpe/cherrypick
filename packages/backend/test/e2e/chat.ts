@@ -11,6 +11,7 @@ import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
 import type { MiUser } from '@/models/User.js';
 import { api, createAppToken, failedApiCall, initTestDb, signup } from '../utils.js';
+import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 import type * as misskey from 'cherrypick-js';
 
 describe('chat/messages/update', () => {
@@ -24,10 +25,7 @@ describe('chat/messages/update', () => {
 		await api('i/update', { chatScope: 'everyone' }, bob);
 	}, 1000 * 60 * 2);
 
-	afterAll(async () => {
-		// Let the 3-second unread-notification timers drain before the test server closes.
-		await new Promise((resolve) => setTimeout(resolve, 3500));
-	});
+	afterAll(waitForChatNotificationTurn, 30_000);
 
 	test('updates an authored message', async () => {
 		const created = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'hello' }, alice);
@@ -343,7 +341,7 @@ describe('chat/messages/update', () => {
 			assert.strictEqual(stored.editedAt?.toISOString(), '2026-11-02T12:02:00.000Z');
 			assert.strictEqual(events.length, 2);
 
-			await messages.update(snapshot.id, { deletedAt: new Date(), text: null, emojis: [] });
+			assert.strictEqual((await api('chat/messages/delete', { messageId: snapshot.id }, alice)).status, 204);
 			await service.updateRemoteMessage(actor, { ...snapshot }, 'resurrected', new Date('2026-11-02T12:03:00Z'), ['wave']);
 			assert.strictEqual((await messages.findOneByOrFail({ id: snapshot.id })).text, null);
 			assert.strictEqual(events.length, 2);
@@ -363,7 +361,7 @@ describe('chat/messages/update', () => {
 				chatMessagesRepository: {
 					findOneBy: async () => {
 						const snapshot = await messages.findOneByOrFail({ id: created.body.id });
-						await messages.update(snapshot.id, { text: null, deletedAt: new Date() });
+						assert.strictEqual((await api('chat/messages/delete', { messageId: snapshot.id }, alice)).status, 204);
 						return snapshot;
 					},
 					update: messages.update.bind(messages),
@@ -398,7 +396,7 @@ describe('chat/messages/update', () => {
 			assert.deepStrictEqual((await messages.findOneByOrFail({ id: snapshot.id })).reactions, [`${bob.id}/👍`]);
 			assert.strictEqual(events.length, 2);
 
-			await messages.update(snapshot.id, { text: null, reactions: [], deletedAt: new Date() });
+			assert.strictEqual((await api('chat/messages/delete', { messageId: snapshot.id }, alice)).status, 204);
 			await service.reactRemote(actor, { ...snapshot, reactions: [] }, '👍');
 			assert.deepStrictEqual((await messages.findOneByOrFail({ id: snapshot.id })).reactions, []);
 			assert.strictEqual(events.length, 2);
@@ -418,7 +416,7 @@ describe('chat/messages/update', () => {
 				chatMessagesRepository: {
 					findOneBy: async () => {
 						const snapshot = await messages.findOneByOrFail({ id: created.body.id });
-						await messages.update(snapshot.id, { text: null, reactions: [], deletedAt: new Date() });
+						assert.strictEqual((await api('chat/messages/delete', { messageId: snapshot.id }, alice)).status, 204);
 						return snapshot;
 					},
 					createQueryBuilder: messages.createQueryBuilder.bind(messages),

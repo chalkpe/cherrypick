@@ -48,6 +48,9 @@ function fakeRepository(rows: Row[] = [], hooks: { beforeDelete?: () => void | P
 }
 
 type FakeManager = {
+	findOne: (entity: unknown, options: { where: Record<string, unknown> }) => Promise<Row | null>;
+	withRepository: (repository: unknown) => unknown;
+	update: (entity: unknown, where: { id: string }, patch: Record<string, unknown>) => Promise<{ affected: number }>;
 	delete: (entity: unknown, where: Record<string, unknown>) => Promise<{ affected: number }>;
 	findOneBy: (entity: unknown, where: Record<string, unknown>) => Promise<Row | null>;
 	insert: (entity: unknown, row: Row) => Promise<Row>;
@@ -69,6 +72,9 @@ function fakeDataSource(tables: Map<string, ReturnType<typeof fakeRepository>>) 
 	}
 
 	const manager: FakeManager = {
+		findOne: (entity, options) => tableFor(entity).findOneBy(options.where),
+		withRepository: repository => repository,
+		update: (entity, where, patch) => tableFor(entity).update(where.id, patch),
 		delete: (entity, where) => tableFor(entity).delete(where),
 		findOneBy: (entity, where) => tableFor(entity).findOneBy(where),
 		insert: (entity, row) => tableFor(entity).insertOne(row),
@@ -121,6 +127,7 @@ function fixture(options: {
 			: undefined,
 	});
 	const db = fakeDataSource(new Map([
+		['MiChatRoom', rooms],
 		['MiChatRoomInvitation', invitations],
 		['MiChatRoomMembership', memberships],
 	]));
@@ -263,6 +270,7 @@ function fixture(options: {
 	});
 	inbox.chatService.deleteRoom = chatService.deleteRoom;
 	inbox.chatService.removeRoomMember = chatService.removeRoomMember;
+	inbox.chatService.finishRoomMemberRemoval = chatService.finishRoomMemberRemoval;
 	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, pipeline, globalEventService, redisClient };
 }
 

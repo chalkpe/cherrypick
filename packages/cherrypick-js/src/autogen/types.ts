@@ -1905,7 +1905,7 @@ export type paths = {
          * drive/files/attached-chat-messages
          * @description No description provided.
          *
-         *     **Credential required**: *Yes* / **Permission**: *read:drive*
+         *     **Credential required**: *Yes* / **Permission**: *read:chat*
          */
         post: operations['drive___files___attached-chat-messages'];
     };

@@ -426,6 +426,11 @@ function chatServiceFixture() {
 			isRemoteUser: (user: { host: string | null }) => user.host != null,
 		},
 	});
+	service.db = { transaction: async <T>(callback: (manager: unknown) => Promise<T>) => callback({
+		findOne: async () => room,
+		withRepository: (repository: unknown) => repository,
+		delete: async (_entity: unknown, where: unknown) => service.chatRoomMembershipsRepository.delete(where),
+	}) };
 	return { service, liveKitService, room };
 }
 

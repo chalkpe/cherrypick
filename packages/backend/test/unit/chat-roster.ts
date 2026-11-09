@@ -367,12 +367,7 @@ describe('applying the roster the owner publishes', () => {
 			}
 			: options.group;
 		const signers: string[] = [];
-		const removeRoomMember = vi.fn(async (_room: unknown, user: { id: string }) => {
-			const index = memberships.findIndex(membership => membership.userId === user.id);
-			if (index === -1) return false;
-			memberships.splice(index, 1);
-			return true;
-		});
+		const removeRoomMember = vi.fn(async (_room: unknown, _user: { id: string }) => undefined);
 		const insertOne = vi.fn(async (row: { id: string; roomId: string; userId: string }) => {
 			memberships.push({ id: row.id, userId: row.userId });
 			return row;
@@ -383,6 +378,19 @@ describe('applying the roster the owner publishes', () => {
 
 		const processor = Object.assign(Object.create(ChatRoomRosterSyncProcessorService.prototype), {
 			config: { url: 'https://local.example' },
+			db: { transaction: async <T>(callback: (manager: unknown) => Promise<T>) => callback({
+				findOne: async () => room,
+				withRepository: (repository: unknown) => repository,
+				findOneBy: async (_entity: unknown, where: { userId: string }) => memberships.find(row => row.userId === where.userId) ?? null,
+				countBy: async () => memberships.length,
+				insert: async (_entity: unknown, row: { id: string; roomId: string; userId: string }) => insertOne(row),
+				delete: async (_entity: unknown, where: { userId: string }) => {
+					const index = memberships.findIndex(row => row.userId === where.userId);
+					if (index < 0) return { affected: 0 };
+					memberships.splice(index, 1);
+					return { affected: 1 };
+				},
+			}) },
 			chatRoomsRepository: { findOneBy: async () => room },
 			chatRoomMembershipsRepository: {
 				findBy: async () => [...memberships],
@@ -393,7 +401,7 @@ describe('applying the roster the owner publishes', () => {
 				findOneBy: async ({ id }: { id: string }) => users.get(id) ?? null,
 				findBy: async () => memberships.map(membership => users.get(membership.userId)).filter(user => user != null),
 			},
-			chatService: { removeRoomMember },
+			chatService: { finishRoomMemberRemoval: removeRoomMember },
 			chatRosterService: Object.assign(Object.create(ChatRosterService.prototype), {
 				chatRoomRosterStatesRepository: states.repository,
 			}),

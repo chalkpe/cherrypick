@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from 'vitest';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
-import type { MiRemoteUser } from '@/models/_.js';
+import type { MiRemoteUser } from '@/models/User.js';
 
 const actor = { id: 'actor1', uri: 'https://author.test/users/actor1' } as MiRemoteUser;
 const otherActor = { id: 'actor2', uri: 'https://author.test/users/actor2' } as MiRemoteUser;

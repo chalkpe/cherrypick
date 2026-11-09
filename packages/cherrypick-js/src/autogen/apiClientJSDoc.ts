@@ -2322,7 +2322,7 @@ declare module '../api.js' {
     /**
      * No description provided.
      * 
-     * **Credential required**: *Yes* / **Permission**: *read:drive*
+     * **Credential required**: *Yes* / **Permission**: *read:chat*
      */
     request<E extends 'drive/files/attached-chat-messages', P extends Endpoints[E]['req']>(
       endpoint: E,

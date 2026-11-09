@@ -3,16 +3,160 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatMessageAccessError, ChatMessageRecipientSuspendedError, ChatRoomAccessError, ChatRoomInvitationRefusedError, ChatService } from '@/core/ChatService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { UserSuspendService } from '@/core/UserSuspendService.js';
+import type { MiChatMessage } from '@/models/_.js';
 import CreateToUserEndpoint from '@/server/api/endpoints/chat/messages/create-to-user.js';
 import ShowEndpoint from '@/server/api/endpoints/chat/messages/show.js';
 import InvitationCreateEndpoint from '@/server/api/endpoints/chat/rooms/invitations/create.js';
 import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
 
 const alice = { id: 'alice', host: null, uri: null, inbox: null, sharedInbox: null, isSuspended: false };
+
+describe('delayed chat notifications after suspension', () => {
+	afterEach(() => vi.useRealTimers());
+
+	function fixture(blockCleanup = false) {
+		const author = { ...alice, id: 'author' };
+		const reader = { ...alice, id: 'reader', chatScope: 'everyone' };
+		const room = { id: 'room1', ownerId: author.id, isArchived: false };
+		const users = [author, reader];
+		const notifications = vi.fn();
+		const stream = vi.fn();
+		let readerStillMember = true;
+		let readerMuted = false;
+		let message: Partial<MiChatMessage> | null = null;
+		let cleanupStarted!: () => void;
+		let releaseCleanup!: () => void;
+		const cleanupStartedPromise = new Promise<void>(resolve => { cleanupStarted = resolve; });
+		const cleanupGate = new Promise<void>(resolve => { releaseCleanup = resolve; });
+		const pipeline = {
+			set: () => pipeline, sadd: () => pipeline, del: () => pipeline, srem: () => pipeline,
+			get: () => pipeline, exec: async () => [[null, 'message1']],
+		};
+		const usersRepository = {
+			update: async (id: string, values: { isSuspended: boolean }) => {
+				const user = users.find(candidate => candidate.id === id);
+				if (user) Object.assign(user, values);
+			},
+			existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => users.some(user => user.id === id && user.isSuspended === isSuspended),
+			findOneBy: async ({ id }: { id: string }) => users.find(user => user.id === id) ?? null,
+		};
+		const userEntityService = { isLocalUser: () => true, isRemoteUser: () => false, genLocalUserUri: (id: string) => `https://local.test/users/${id}` };
+		const chatService = Object.assign(Object.create(ChatService.prototype), {
+			config: { url: 'https://local.test' }, usersRepository, userEntityService,
+			idService: { gen: () => 'message1' },
+			chatRoomMembershipsRepository: {
+				findBy: async () => [{ userId: reader.id, isMuted: readerMuted }],
+				findOneBy: async ({ userId }: { userId: string }) => readerStillMember && userId === reader.id ? { userId, isMuted: readerMuted } : null,
+			},
+			chatMessagesRepository: {
+				insertOne: async (value: Partial<MiChatMessage>) => (message = value),
+				findOneBy: async () => message,
+				createQueryBuilder: () => ({ select() { return this; }, where() { return this; }, andWhere() { return this; }, getRawMany: async () => {
+					if (blockCleanup) {
+						cleanupStarted();
+						await cleanupGate;
+					}
+					return [];
+				} }),
+			},
+			chatApprovalsRepository: {
+				createQueryBuilder: () => ({ where() { return this; }, orWhere() { return this; }, take() { return this; }, getMany: async () => [] }),
+				insertOne: async () => undefined,
+			},
+			roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
+			userBlockingService: { checkBlocked: async () => false },
+			chatEntityService: { packMessageLiteForRoom: async (value: unknown) => value, packMessageLiteFor1on1: async (value: unknown) => value, packMessageDetailed: async (value: unknown) => value },
+			globalEventService: { publishChatRoomStream: vi.fn(), publishChatUserStream: vi.fn(), publishMainStream: stream },
+			pushNotificationService: { pushNotification: notifications },
+			redisClient: { pipeline: () => pipeline, get: async () => 'message1' },
+		}) as ChatService;
+		const suspension = Object.assign(Object.create(UserSuspendService.prototype), {
+			usersRepository, userEntityService, chatService,
+			moderationLogService: { log: vi.fn() },
+			globalEventService: { publishInternalEvent: vi.fn() },
+			followRequestsRepository: { delete: async () => undefined },
+			followingsRepository: { find: async () => [] },
+			apRendererService: { renderDelete: () => ({}), addContext: (value: unknown) => value },
+			queueService: { createUnfollowJob: vi.fn() },
+		}) as UserSuspendService;
+		return { author, reader, room, chatService, suspension, notifications, stream, cleanupStartedPromise, releaseCleanup, removeReader: () => { readerStillMember = false; }, muteReader: () => { readerMuted = true; } };
+	}
+
+	test('does not send a delayed room message after its author is suspended', async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+
+		await f.chatService.createMessageToRoom(f.author, f.room as never, { text: 'hello' });
+		await f.suspension.suspend(f.author as never, f.author as never);
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(f.stream).not.toHaveBeenCalled();
+		expect(f.notifications).not.toHaveBeenCalled();
+	});
+
+	test('still sends a delayed room message from an active author', async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+
+		await f.chatService.createMessageToRoom(f.author, f.room as never, { text: 'hello' });
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(f.notifications).toHaveBeenCalledWith('reader', 'newChatMessage', expect.objectContaining({ text: 'hello' }));
+	});
+
+	test('does not notify a reader who left while an unread marker is still visible', async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+
+		await f.chatService.createMessageToRoom(f.author, f.room as never, { text: 'hello' });
+		f.removeReader();
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(f.stream).not.toHaveBeenCalled();
+		expect(f.notifications).not.toHaveBeenCalled();
+	});
+
+	test('does not notify a reader who muted the room before delayed delivery', async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+
+		await f.chatService.createMessageToRoom(f.author, f.room as never, { text: 'hello' });
+		f.muteReader();
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(f.stream).not.toHaveBeenCalled();
+		expect(f.notifications).not.toHaveBeenCalled();
+	});
+
+	test('does not notify a direct-message recipient while suspension cleanup is pending', async () => {
+		vi.useFakeTimers();
+		const f = fixture(true);
+
+		await f.chatService.createMessageToUser(f.author, f.reader as never, { text: 'hello' });
+		await f.suspension.suspend(f.author as never, f.author as never);
+		await f.cleanupStartedPromise;
+		await vi.advanceTimersByTimeAsync(3000);
+		f.releaseCleanup();
+
+		expect(f.stream).not.toHaveBeenCalled();
+		expect(f.notifications).not.toHaveBeenCalled();
+	});
+
+	test('still sends a delayed direct message from an active author', async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+
+		await f.chatService.createMessageToUser(f.author, f.reader as never, { text: 'hello' });
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(f.stream).toHaveBeenCalledWith('reader', 'newChatMessage', expect.objectContaining({ text: 'hello' }));
+		expect(f.notifications).toHaveBeenCalledWith('reader', 'newChatMessage', expect.objectContaining({ text: 'hello' }));
+	});
+});
 
 function remoteUser(id: string, overrides: Record<string, unknown> = {}) {
 	return { id, host: `${id}.test`, uri: `https://${id}.test/users/${id}`, inbox: `https://${id}.test/users/${id}/inbox`, sharedInbox: null, isSuspended: false, chatScope: 'everyone', ...overrides };
@@ -169,6 +313,10 @@ describe('suspending a remote account', () => {
 		const removed: string[] = [];
 		const service = Object.assign(Object.create(ChatService.prototype), {
 			config: { url: 'https://local.test' },
+			db: { transaction: async (callback: (manager: unknown) => Promise<unknown>) => callback({
+				findOne: async (_entity: unknown, { where }: { where: { id: string } }) => rooms.find(room => (room as { id: string }).id === where.id) ?? null,
+				delete: async (_entity: unknown, where: { roomId: string }) => { removed.push(where.roomId); return { affected: 1 }; },
+			}) },
 			idService: { gen: () => 'generated' },
 			queueService: { deliver },
 			chatRoomMembershipsRepository: {

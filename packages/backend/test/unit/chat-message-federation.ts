@@ -2064,6 +2064,7 @@ describe('unread chat notification', () => {
 		const pipeline = { set: () => pipeline, sadd: () => pipeline, exec: async () => [] };
 		const service = Object.assign(Object.create(ChatService.prototype), {
 			config: { url: 'https://local.test' },
+			usersRepository: { existsBy: async () => false },
 			chatApprovalsRepository: {
 				createQueryBuilder: () => ({
 					where() { return this; }, orWhere() { return this; }, take() { return this; },
@@ -2105,7 +2106,7 @@ describe('unread chat notification', () => {
 
 	test('pushes the latest revision of a message edited before the notification fires', async () => {
 		vi.useFakeTimers();
-		const edited = { id: 'm1', text: 'edited', deletedAt: null };
+		const edited = { id: 'm1', fromUserId: 'bob', text: 'edited', deletedAt: null };
 		const f = createNotifyingService(() => edited);
 
 		await f.send();

@@ -7,6 +7,7 @@ import { Readable } from 'node:stream';
 import { describe, expect, test, vi } from 'vitest';
 import { ApiCallService } from '@/server/api/ApiCallService.js';
 import MembersEndpoint, { meta as membersMeta, paramDef as membersParams } from '@/server/api/endpoints/chat/rooms/members.js';
+import AttachedChatMessagesEndpoint, { meta as attachedChatMeta, paramDef as attachedChatParams } from '@/server/api/endpoints/drive/files/attached-chat-messages.js';
 import Logger from '@/logger.js';
 import { envOption } from '@/env.js';
 import { logManager } from '@/logging/logging-runtime.js';
@@ -151,6 +152,45 @@ describe('chat room member listing permissions', () => {
 			} else {
 				expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: errorCode }) }));
 				expect(entities.packRoomMemberships).not.toHaveBeenCalled();
+			}
+		} finally {
+			service.dispose();
+		}
+	});
+});
+
+describe('chat messages attached to a drive file', () => {
+	test.each([
+		['drive only', ['read:drive'], null, 'PERMISSION_DENIED'],
+		['chat only', ['read:chat'], null, null],
+		['chat and drive', ['read:chat', 'read:drive'], null, null],
+		['native session', null, null, null],
+		['Play with drive only', null, ['read:drive'], 'PERMISSION_DENIED'],
+		['Play with chat', null, ['read:chat'], null],
+	] as const)('%s requires chat access to read the message', async (_label, permission, flashPermission, errorCode) => {
+		const { service, authenticateService } = createService();
+		authenticateService.authenticate.mockResolvedValue([{ id: 'user' }, permission == null ? null : { permission }, flashPermission == null ? null : { permissions: flashPermission }]);
+		const query = {
+			andWhere() { return this; },
+			limit() { return this; },
+			getMany: async () => [{ id: 'message1', text: 'private text' }],
+		};
+		const endpoint = new AttachedChatMessagesEndpoint(
+			{ findOneBy: async () => ({ id: 'file1', userId: 'user' }) } as never,
+			{ createQueryBuilder: () => query } as never,
+			{ checkChatAvailability: async () => undefined } as never,
+			{ packMessagesDetailed: async (messages: unknown) => messages } as never,
+			{ makePaginationQuery: () => query } as never,
+			{ isModerator: async () => false } as never,
+		);
+		const reply = createReply();
+		const request = { method: 'POST', body: { i: 'app-token', fileId: 'file1' }, headers: {}, ip: '127.0.0.1' };
+		try {
+			await service.handleRequest({ name: 'drive/files/attached-chat-messages', meta: attachedChatMeta, params: attachedChatParams, exec: endpoint.exec } as never, request as never, reply as never);
+			if (errorCode == null) {
+				expect(reply.send).toHaveBeenCalledWith([{ id: 'message1', text: 'private text' }]);
+			} else {
+				expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: errorCode }) }));
 			}
 		} finally {
 			service.dispose();

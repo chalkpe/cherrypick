@@ -21,6 +21,10 @@ function fixture() {
 	const globalEventService = { publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() };
 	const service = Object.assign(Object.create(ChatService.prototype), {
 		config: { url: 'https://local.test' },
+		db: { transaction: async <T>(callback: (manager: unknown) => Promise<T>) => callback({
+			findOne: async () => room,
+			delete: async (_entity: unknown, where: { userId: string }) => ({ affected: Number(members.delete(where.userId)) }),
+		}) },
 		idService: { gen: () => 'remove1' },
 		chatRoomMembershipsRepository: {
 			findBy: async () => [...members].map(userId => ({ roomId: room.id, userId })),

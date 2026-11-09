@@ -336,6 +336,37 @@ describe('receiving the attachments of a remote message', () => {
 
 	const storedIds = (mock: ReturnType<typeof vi.fn>) => (mock.mock.calls[0][2] as { files: { id: string }[] }).files.map(x => x.id);
 
+	test('rejects a message URI that cannot fit in storage before resolving its attachments', async () => {
+		const f = createInbox();
+		const prefix = 'https://remote.test/chat/messages/';
+		const id = prefix + 'x'.repeat(513 - prefix.length);
+
+		await f.receive(f.note({ id, attachment: [document('a')] }));
+
+		expect(f.apImageService.resolveImage).not.toHaveBeenCalled();
+		expect(f.chatService.createMessageToUser).not.toHaveBeenCalled();
+	});
+
+	test('accepts a message URI at the storage length limit', async () => {
+		const f = createInbox();
+		const prefix = 'https://remote.test/chat/messages/';
+		const id = prefix + 'x'.repeat(512 - prefix.length);
+
+		await f.receive(f.note({ id, attachment: [document('a')] }));
+
+		expect(f.chatService.createMessageToUser).toHaveBeenCalled();
+	});
+
+	test('counts Unicode code points at the URI storage length limit', async () => {
+		const f = createInbox();
+		const prefix = 'https://remote.test/chat/messages/';
+		const id = prefix + '🦈'.repeat(512 - prefix.length);
+
+		await f.receive(f.note({ id }));
+
+		expect(f.chatService.createMessageToUser).toHaveBeenCalled();
+	});
+
 	test('stores every attachment in order', async () => {
 		const f = createInbox();
 

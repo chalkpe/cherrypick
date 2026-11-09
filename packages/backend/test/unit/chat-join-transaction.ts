@@ -44,7 +44,21 @@ function createFixture(options: FixtureOptions = {}) {
 		: null;
 
 	const manager = {
-		delete: vi.fn(async (_entity: unknown, where: { id: string; roomId: string; userId: string }) => {
+		findOne: vi.fn(async () => room),
+		find: vi.fn(async () => state.memberships.map(m => ({
+			...m,
+			user: m.userId === joiningUser.id ? joiningUser : m.userId === 'neighbor'
+				? { id: m.userId, host: null }
+				: { id: m.userId, host: 'other.test' },
+		}))),
+		withRepository: (repository: unknown) => repository,
+		delete: vi.fn(async (entity: { name: string }, where: { id?: string; roomId: string; userId: string | { value: string[] } }) => {
+			if (entity.name === 'MiChatRoomMembership') {
+				const userIds = typeof where.userId === 'string' ? [where.userId] : where.userId.value;
+				const before = state.memberships.length;
+				state.memberships = state.memberships.filter(m => m.roomId !== where.roomId || !userIds.includes(m.userId));
+				return { affected: before - state.memberships.length };
+			}
 			let affected = 0;
 			for (const [id, current] of state.invitations) {
 				if (current.id === where.id && current.roomId === where.roomId && current.userId === where.userId) {
@@ -110,7 +124,7 @@ function createFixture(options: FixtureOptions = {}) {
 
 	const chatRoomMembershipsRepository = {
 		findBy: vi.fn(async () => state.memberships),
-		delete: vi.fn(async () => ({ affected: 1 })),
+		delete: vi.fn(async (_where: { roomId: string; userId: { value: string[] } }) => ({ affected: 1 })),
 	};
 
 	const usersRepository = {
@@ -196,10 +210,11 @@ describe('ChatService.joinToRoom invitation consumption', () => {
 
 			await f.service.joinToRoom('user1', 'room1');
 
-			const [where] = f.chatRoomMembershipsRepository.delete.mock.calls[0] as unknown as [{ roomId: string; userId: { value: string[] } }];
+			const deletion = f.manager.delete.mock.calls.find(([entity]) => entity.name === 'MiChatRoomMembership');
+			const where = deletion?.[1] as { roomId: string; userId: { value: string[] } };
 			expect(where.roomId).toBe('room1');
 			expect(where.userId.value).toEqual([leftMember.id]);
-			expect(f.chatRoomMembershipsRepository.delete.mock.invocationCallOrder[0]).toBeLessThan(f.deliver.mock.invocationCallOrder[0]);
+			expect(f.manager.delete.mock.invocationCallOrder.at(-1)).toBeLessThan(f.deliver.mock.invocationCallOrder[0]);
 		});
 
 		test('is kept while someone here is a member, because the owner has kept this server up to date', async () => {
@@ -209,7 +224,26 @@ describe('ChatService.joinToRoom invitation consumption', () => {
 
 			await f.service.joinToRoom('user1', 'room1');
 
-			expect(f.chatRoomMembershipsRepository.delete).not.toHaveBeenCalled();
+			expect(f.manager.delete.mock.calls.some(([entity]) => entity.name === 'MiChatRoomMembership')).toBe(false);
+		});
+
+		test('does not delete a newer Add that replaces a stale member while the join finishes', async () => {
+			const f = createFixture();
+			f.state.memberships = [{ id: 'old1', roomId: 'room1', userId: leftMember.id }];
+			f.usersRepository.findBy.mockImplementation(async () => {
+				// The owner removes and then adds the same member while the join is finishing.
+				f.state.memberships = f.state.memberships.filter(m => m.userId !== leftMember.id);
+				f.state.memberships.push({ id: 'new1', roomId: 'room1', userId: leftMember.id });
+				return [owner, leftMember];
+			});
+			f.chatRoomMembershipsRepository.delete.mockImplementation(async (where: { roomId: string; userId: { value: string[] } }) => {
+				f.state.memberships = f.state.memberships.filter(m => m.roomId !== where.roomId || !where.userId.value.includes(m.userId));
+				return { affected: 1 };
+			});
+
+			await f.service.joinToRoom('user1', 'room1');
+
+			expect(f.state.memberships).toContainEqual({ id: 'new1', roomId: 'room1', userId: leftMember.id });
 		});
 	});
 

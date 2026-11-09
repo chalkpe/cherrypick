@@ -5,7 +5,7 @@
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { alice, bob, carol, chatRosterFixture, dave, erin, LOCAL, LOCAL_ROOM_URI, membersOf, MIRROR_URI } from '../misc/chat-roster-fixture.js';
 
 const BASE = Date.now() - 60 * 60 * 1000;
@@ -31,6 +31,16 @@ const undoInvite = (published?: string) => ({
 });
 
 describe('the order of Add and Remove in a room', () => {
+	test('a newer Add for an existing member is ordered even when the room is full', async () => {
+		const occupants: [string, string][] = [['mirror', carol.id], ...Array.from({ length: 49 }, (_, i): [string, string] => ['mirror', `other${i}`])];
+		const f = chatRosterFixture({ memberships: occupants });
+
+		await f.inbox.add(bob, add(carol, at(2)));
+		await f.inbox.remove(bob, remove(carol, at(1)));
+
+		expect(membersOf(f, 'mirror')).toContain(carol.id);
+	});
+
 	test('a newer Add applies and is remembered', async () => {
 		const f = chatRosterFixture({ states: [['mirror', carol.id, at(1)]] });
 
@@ -385,6 +395,19 @@ describe('what this server sends states its time in milliseconds', () => {
 		expect(f.delivered().find(({ activity }) => activity.type === 'Undo')?.activity.published).toMatch(MILLISECOND_ISO_8601);
 	});
 
+	test('a cancellation that loses the invitation race sends no Undo', async () => {
+		const f = chatRosterFixture({ invitations: [['localroom', carol.id]] });
+		const invitationId = f.invitations.rows[0].id;
+		const originalDelete = f.invitations.delete;
+		vi.spyOn(f.invitations, 'delete').mockImplementationOnce(async where => {
+			await originalDelete(where);
+			return originalDelete(where);
+		});
+
+		expect(await f.chatService.cancelRoomInvitation(alice.id, invitationId)).toBe(false);
+		expect(f.delivered().filter(({ activity }) => activity.type === 'Undo')).toEqual([]);
+	});
+
 	test('Invite', async () => {
 		const f = chatRosterFixture();
 
@@ -399,6 +422,18 @@ describe('what this server sends states its time in milliseconds', () => {
 		await f.chatService.rejectRoomInvitation(alice.id, 'mirror');
 
 		expect(f.delivered().find(({ activity }) => activity.type === 'Reject')?.activity.published).toMatch(MILLISECOND_ISO_8601);
+	});
+
+	test('a rejection that loses the invitation race sends no Reject', async () => {
+		const f = chatRosterFixture({ invitations: [['mirror', alice.id]] });
+		const originalDelete = f.invitations.delete;
+		vi.spyOn(f.invitations, 'delete').mockImplementationOnce(async where => {
+			await originalDelete(where);
+			return originalDelete(where);
+		});
+
+		await expect(f.chatService.rejectRoomInvitation(alice.id, 'mirror')).rejects.toThrow('invitation not found');
+		expect(f.delivered().filter(({ activity }) => activity.type === 'Reject')).toEqual([]);
 	});
 });
 

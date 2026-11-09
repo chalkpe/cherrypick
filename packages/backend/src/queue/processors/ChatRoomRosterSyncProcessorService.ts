@@ -4,7 +4,8 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import { In } from 'typeorm';
+import { DataSource, In } from 'typeorm';
+import type { EntityManager } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import type Logger from '@/logger.js';
@@ -25,8 +26,10 @@ import { getApHrefNullable, getApType } from '@/core/activitypub/type.js';
 import type { IObject } from '@/core/activitypub/type.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { StatusError } from '@/misc/status-error.js';
-import type { ChatRoomMembershipsRepository, ChatRoomsRepository, MiChatRoom, MiChatRoomMembership, MiUser, UsersRepository } from '@/models/_.js';
+import type { ChatRoomMembershipsRepository, ChatRoomsRepository, MiUser, UsersRepository } from '@/models/_.js';
 import type { MiLocalUser } from '@/models/User.js';
+import { MiChatRoom } from '@/models/ChatRoom.js';
+import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 import type * as Bull from 'bullmq';
 import type { ChatRoomRosterSyncJobData } from '../types.js';
@@ -46,6 +49,9 @@ export class ChatRoomRosterSyncProcessorService {
 	constructor(
 		@Inject(DI.config)
 		private config: Config,
+
+		@Inject(DI.db)
+		private db: DataSource,
 
 		@Inject(DI.chatRoomsRepository)
 		private chatRoomsRepository: ChatRoomsRepository,
@@ -136,22 +142,24 @@ export class ChatRoomRosterSyncProcessorService {
 			if (roster.uris.has(uri)) {
 				present.add(uri);
 				// The list has the final word up to its time, so an older Remove still on its way is out of date.
-				await this.chatRosterService.advance(room.id, user.id, roster.at);
+				await this.withRoomLock(room.id, manager => this.chatRosterService.advance(room.id, user.id, roster.at, manager));
 				continue;
 			}
 
-			if (this.userEntityService.isLocalUser(user) && await this.acceptMayBeOnItsWay(room, membership, roster.at)) continue;
-
-			if (await this.chatRosterService.claimRosterRemove(room.id, user.id, roster.at)) {
-				await this.chatService.removeRoomMember(room, user);
-			}
+			const removed = await this.withRoomLock(room.id, async manager => {
+				if (this.userEntityService.isLocalUser(user) && await this.acceptMayBeOnItsWay(room, membership, roster.at, manager)) return false;
+				if (!await this.chatRosterService.claimRosterRemove(room.id, user.id, roster.at, manager)) return false;
+				const result = await manager.delete(MiChatRoomMembership, { roomId: room.id, userId: user.id });
+				return (result.affected ?? 0) > 0;
+			});
+			if (removed) await this.chatService.finishRoomMemberRemoval(room, user);
 		}
 
 		return present;
 	}
 
-	private async acceptMayBeOnItsWay(room: MiChatRoom, membership: MiChatRoomMembership, rosterAt: Date): Promise<boolean> {
-		const acceptedAt = await this.chatRosterService.acceptedAt(room.id, membership.userId) ?? this.idService.parse(membership.id).date;
+	private async acceptMayBeOnItsWay(room: MiChatRoom, membership: MiChatRoomMembership, rosterAt: Date, manager: EntityManager): Promise<boolean> {
+		const acceptedAt = await this.chatRosterService.acceptedAt(room.id, membership.userId, manager) ?? this.idService.parse(membership.id).date;
 		return acceptedAt >= rosterAt || Date.now() - acceptedAt.getTime() < ACCEPT_TRAVEL_TIME;
 	}
 
@@ -164,20 +172,26 @@ export class ChatRoomRosterSyncProcessorService {
 			const user = await this.resolveMember(uri);
 			if (user == null || !this.userEntityService.isRemoteUser(user) || user.id === room.ownerId) continue;
 
-			if (await this.chatRoomMembershipsRepository.countBy({ roomId: room.id }) >= MAX_ROOM_MEMBERS) return;
-			if (!await this.chatRosterService.claimAdd(room.id, user.id, roster.at)) continue;
-
-			await this.chatRoomMembershipsRepository.insertOne({
-				id: this.idService.gen(),
-				roomId: room.id,
-				userId: user.id,
-			}).then(() => {
-				this.globalEventService.publishChatRoomStream(room.id, 'membershipStarted', { userId: user.id });
+			const added = await this.withRoomLock(room.id, async manager => {
+				if (await manager.countBy(MiChatRoomMembership, { roomId: room.id }) >= MAX_ROOM_MEMBERS) return false;
+				if (!await this.chatRosterService.claimAdd(room.id, user.id, roster.at, manager)) return false;
+				if (await manager.findOneBy(MiChatRoomMembership, { roomId: room.id, userId: user.id }) != null) return false;
+				await manager.insert(MiChatRoomMembership, { id: this.idService.gen(), roomId: room.id, userId: user.id });
+				return true;
 			}).catch(err => {
 				// An Add from the owner got here first.
 				if (!isDuplicateKeyValueError(err)) throw err;
+				return false;
 			});
+			if (added) this.globalEventService.publishChatRoomStream(room.id, 'membershipStarted', { userId: user.id });
 		}
+	}
+
+	private async withRoomLock<T>(roomId: MiChatRoom['id'], callback: (manager: EntityManager) => Promise<T>): Promise<T | null> {
+		return await this.db.transaction(async manager => {
+			const room = await manager.findOne(MiChatRoom, { where: { id: roomId }, lock: { mode: 'pessimistic_write' } });
+			return room == null ? null : await callback(manager);
+		});
 	}
 
 	private isRemoteMemberUri(uri: string): boolean {

@@ -55,7 +55,10 @@ async function sendInvitations(roomId: string, invitees: Misskey.entities.UserLi
 // ダイアログの本文は MFM なので、名前の装飾やメンションとして読まれないようにする
 function describeUser(user: Misskey.entities.UserLite): string {
 	const account = `@${acct(user)}`;
-	return `<plain>${user.name ? `${userName(user)} (${account})` : account}</plain>`;
+	let text = user.name ? `${userName(user)} (${account})` : account;
+	// A name can contain the closing tag, including pieces that form it after a replacement.
+	while (text.includes('</plain>')) text = text.replaceAll('</plain>', '');
+	return `<plain>${text}</plain>`;
 }
 
 function describeFailures(failures: InviteFailure[]): string[] {

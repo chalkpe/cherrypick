@@ -21,7 +21,7 @@ import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { PushNotificationService } from '@/core/PushNotificationService.js';
 import { bindThis } from '@/decorators.js';
-import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, DriveFilesRepository, MiChatMessage, MiChatRoom, MiDriveFile, MiUser, MutingsRepository, UsersRepository } from '@/models/_.js';
+import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, DriveFilesRepository, MiChatMessage, MiDriveFile, MiUser, MutingsRepository, UsersRepository } from '@/models/_.js';
 import type { MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { QueryService } from '@/core/QueryService.js';
@@ -29,6 +29,7 @@ import { RoleService } from '@/core/RoleService.js';
 import { UserFollowingService } from '@/core/UserFollowingService.js';
 import { MiChatRoomInvitation } from '@/models/ChatRoomInvitation.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
+import { MiChatRoom } from '@/models/ChatRoom.js';
 import { Packed } from '@/misc/json-schema.js';
 import { sqlLikeEscape } from '@/misc/sql-like-escape.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
@@ -332,6 +333,7 @@ export class ChatService {
 				// Delete and Update can arrive within this delay. Never notify with text the sender already withdrew.
 				const latest = await this.chatMessagesRepository.findOneBy({ id: inserted.id });
 				if (latest == null || latest.deletedAt != null) return;
+				if (await this.isFromSuspendedUser(latest)) return;
 
 				const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest, toUser);
 				this.globalEventService.publishMainStream(toUser.id, 'newChatMessage', packedMessageForTo);
@@ -434,15 +436,21 @@ export class ChatService {
 			// Delete and Update can arrive within this delay. Never notify with text the sender already withdrew.
 			const latest = await this.chatMessagesRepository.findOneBy({ id: inserted.id });
 			if (latest == null || latest.deletedAt != null) return;
+			if (await this.isFromSuspendedUser(latest)) return;
 
 			const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest);
 
 			for (let i = 0; i < membershipsOtherThanMe.length; i++) {
 				const marker = markers[i][1];
 				if (marker == null) continue;
+				const userId = membershipsOtherThanMe[i].userId;
+				if (userId !== toRoom.ownerId) {
+					const currentMembership = await this.chatRoomMembershipsRepository.findOneBy({ roomId: toRoom.id, userId });
+					if (currentMembership == null || currentMembership.isMuted) continue;
+				}
 
-				this.globalEventService.publishMainStream(membershipsOtherThanMe[i].userId, 'newChatMessage', packedMessageForTo);
-				this.pushNotificationService.pushNotification(membershipsOtherThanMe[i].userId, 'newChatMessage', packedMessageForTo);
+				this.globalEventService.publishMainStream(userId, 'newChatMessage', packedMessageForTo);
+				this.pushNotificationService.pushNotification(userId, 'newChatMessage', packedMessageForTo);
 			}
 		}, 3000);
 
@@ -1132,11 +1140,15 @@ export class ChatService {
 		if (roomOwner?.host != null && (roomOwner.isSuspended || await this.hostPolicyService.isRefusedRemoteHost(roomOwner.host))) {
 			throw new ChatRoomAccessError('no such room');
 		}
+		const joiningUser = await this.usersRepository.findOneByOrFail({ id: userId });
 
 		// The invitation is the authorization for joining. Consume it atomically
 		// with the membership insert so that a cancellation cannot race the join
 		// and a failed insert cannot lose the invitation.
 		const newMembership = await this.db.transaction(async (manager) => {
+			const lockedRoom = await manager.findOne(MiChatRoom, { where: { id: roomId }, lock: { mode: 'pessimistic_write' } });
+			if (lockedRoom == null) throw new ChatRoomAccessError('no such room');
+			if (lockedRoom.isArchived) throw new ChatRoomArchivedError('room is archived');
 			const consumed = await manager.delete(MiChatRoomInvitation, {
 				id: invitation.id,
 				roomId,
@@ -1145,15 +1157,27 @@ export class ChatService {
 			if (consumed.affected !== 1) {
 				throw new ChatRoomAccessError('invitation not found');
 			}
-
 			const existingMembership = await manager.findOneBy(MiChatRoomMembership, { roomId, userId });
-			if (existingMembership != null) {
-				return null;
+			if (existingMembership == null) {
+				const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId });
+				if (membershipsCount >= MAX_ROOM_MEMBERS) throw new ChatRoomFullError('room is full');
 			}
 
-			const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId });
-			if (membershipsCount >= MAX_ROOM_MEMBERS) {
-				throw new ChatRoomFullError('room is full');
+			// Drop an abandoned mirror's old remote roster before accepting any new
+			// roster activity. Both paths hold the room lock, so a newer Add cannot
+			// be deleted by a cleanup based on an older snapshot.
+			if (roomOwner != null && this.userEntityService.isRemoteUser(roomOwner) && this.userEntityService.isLocalUser(joiningUser)) {
+				const oldMemberships = await manager.find(MiChatRoomMembership, { where: { roomId }, relations: { user: true } });
+				const otherUsers = oldMemberships.map(m => m.user).filter((u): u is MiUser => u != null && u.id !== userId);
+				if (!otherUsers.some(u => this.userEntityService.isLocalUser(u))) {
+					const staleIds = otherUsers.filter(u => this.userEntityService.isRemoteUser(u) && u.id !== roomOwner.id).map(u => u.id);
+					if (staleIds.length > 0) await manager.delete(MiChatRoomMembership, { roomId, userId: In(staleIds) });
+				}
+			}
+
+			if (existingMembership != null) {
+				await this.chatRosterService.recordAccepted(roomId, userId, new Date(), manager);
+				return null;
 			}
 
 			const created = {
@@ -1163,14 +1187,13 @@ export class ChatService {
 			} satisfies Partial<MiChatRoomMembership>;
 
 			await manager.insert(MiChatRoomMembership, created);
+			await this.chatRosterService.recordAccepted(roomId, userId, new Date(), manager);
 			return created as MiChatRoomMembership;
 		});
 
-		await this.chatRosterService.recordAccepted(roomId, userId, new Date());
 		this.notifyRoomListChanged([userId]);
 
 		// Federation: Notify about acceptance and new member
-		const joiningUser = await this.usersRepository.findOneByOrFail({ id: userId });
 		// Without a new membership (e.g. a duplicate join, or one a lost Remove left behind) there is no new member to announce.
 		if (newMembership != null) this.globalEventService.publishChatRoomStream(roomId, 'membershipStarted', { userId });
 		const owner = await this.usersRepository.findOneByOrFail({ id: room.ownerId });
@@ -1184,14 +1207,6 @@ export class ChatService {
 
 		// Send Accept activity to the inviter (room owner) if they are remote
 		if (this.userEntityService.isLocalUser(joiningUser) && this.userEntityService.isRemoteUser(owner)) {
-			// The owner reports roster changes only to servers with a member, so a roster kept from before
-			// can name people who have since left, and they would keep receiving messages from here.
-			// The owner answers this Accept with the current roster.
-			if (!memberUsers.some(m => this.userEntityService.isLocalUser(m))) {
-				const staleMemberIds = remoteMembers.filter(m => m.id !== owner.id).map(m => m.id);
-				if (staleMemberIds.length > 0) await this.chatRoomMembershipsRepository.delete({ roomId, userId: In(staleMemberIds) });
-			}
-
 			const roomObject = this.apRendererService.renderChatRoom(room, owner);
 			// Create a simplified invite object reference for the Accept activity
 			const inviteObject = {
@@ -1246,7 +1261,8 @@ export class ChatService {
 		if (room == null) throw new ChatRoomAccessError('no such room');
 
 		// Delete the invitation
-		await this.chatRoomInvitationsRepository.delete({ id: invitation.id });
+		const deleted = await this.chatRoomInvitationsRepository.delete({ id: invitation.id });
+		if (deleted.affected !== 1) throw new ChatRoomAccessError('invitation not found');
 		this.notifyRoomListChanged([userId]);
 
 		// Federation: Send Reject activity to the inviter if applicable
@@ -1301,7 +1317,8 @@ export class ChatService {
 		const invitee = await this.usersRepository.findOneByOrFail({ id: invitation.userId });
 
 		// Delete the invitation
-		await this.chatRoomInvitationsRepository.delete({ id: invitation.id });
+		const deleted = await this.chatRoomInvitationsRepository.delete({ id: invitation.id });
+		if (deleted.affected !== 1) return false;
 		this.notifyRoomListChanged(this.localUserIds([invitee]));
 
 		// Federation: Send Undo(Invite) activity to remote invitee
@@ -1338,8 +1355,13 @@ export class ChatService {
 		const room = await this.chatRoomsRepository.findOne({ where: { id: roomId }, relations: { owner: true } });
 		const leavingUser = await this.usersRepository.findOneByOrFail({ id: userId });
 
-		await this.chatRoomMembershipsRepository.delete(membership.id);
-		await this.chatRosterService.forgetAccepted(roomId, userId);
+		await this.db.transaction(async manager => {
+			const locked = await manager.findOne(MiChatRoom, { where: { id: roomId }, lock: { mode: 'pessimistic_write' } });
+			if (locked == null) throw new ChatRoomAccessError('no such room');
+			const removed = await manager.delete(MiChatRoomMembership, { id: membership.id, roomId, userId });
+			if ((removed.affected ?? 0) === 0) throw new ChatRoomAccessError('not a member');
+			await this.chatRosterService.forgetAccepted(roomId, userId, manager);
+		});
 		this.globalEventService.publishChatRoomStream(roomId, 'membershipEnded', { userId });
 		this.notifyRoomListChanged(this.localUserIds([leavingUser]));
 
@@ -1411,9 +1433,20 @@ export class ChatService {
 	/** Applies a membership end that another server announced, so nothing is federated back. */
 	@bindThis
 	public async removeRoomMember(room: MiChatRoom, member: MiUser): Promise<boolean> {
-		const result = await this.chatRoomMembershipsRepository.delete({ roomId: room.id, userId: member.id });
-		if ((result.affected ?? 0) === 0) return false;
+		const removed = await this.db.transaction(async manager => {
+			const locked = await manager.findOne(MiChatRoom, { where: { id: room.id }, lock: { mode: 'pessimistic_write' } });
+			if (locked == null) return false;
+			const result = await manager.delete(MiChatRoomMembership, { roomId: room.id, userId: member.id });
+			return (result.affected ?? 0) > 0;
+		});
+		if (!removed) return false;
+		await this.finishRoomMemberRemoval(room, member);
+		return true;
+	}
 
+	/** Call after the transaction that removed the membership commits. */
+	@bindThis
+	public async finishRoomMemberRemoval(room: MiChatRoom, member: MiUser): Promise<void> {
 		this.globalEventService.publishChatRoomStream(room.id, 'membershipEnded', { userId: member.id });
 
 		const redisPipeline = this.redisClient.pipeline();
@@ -1422,8 +1455,6 @@ export class ChatService {
 		await redisPipeline.exec();
 
 		this.notifyRoomListChanged(this.localUserIds([member]));
-
-		return true;
 	}
 
 	@bindThis

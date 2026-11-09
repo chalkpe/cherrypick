@@ -18,7 +18,7 @@ export const meta = {
 
 	requireCredential: true,
 
-	kind: 'read:drive',
+	kind: 'read:chat',
 
 	res: {
 		type: 'array',

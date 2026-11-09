@@ -8,10 +8,8 @@ process.env.NODE_ENV = 'test';
 import * as assert from 'assert';
 import { afterAll, beforeAll, describe, test } from 'vitest';
 import { api, signup } from '../utils.js';
+import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 import type * as misskey from 'cherrypick-js';
-
-// Let the 3-second unread-notification timers drain before the test server closes.
-const drainTimers = () => new Promise(resolve => setTimeout(resolve, 3500));
 
 // A failed insert nobody waits for is an unhandled rejection in the server, and that fails the whole run.
 describe('the first messages to someone, sent at the same moment', () => {
@@ -29,7 +27,7 @@ describe('the first messages to someone, sent at the same moment', () => {
 		}
 	}, 1000 * 60 * 2);
 
-	afterAll(drainTimers);
+	afterAll(waitForChatNotificationTurn, 30_000);
 
 	test('all arrive, in both directions', async () => {
 		for (const friend of friends) {
