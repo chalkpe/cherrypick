@@ -72,6 +72,7 @@ export class MainChannel extends Channel {
 						this.chatRoomMembershipsRepository.exists({ where: { roomId, userId: this.user!.id } }),
 					]);
 					if (room == null || (room.ownerId !== this.user!.id && !member)) return;
+					if (!(await this.chatService.getChatAvailability(this.user!.id)).read) return;
 					// 空の通知には参加者がいないので、持ち主を許すかは読まない (読んでも送るものは変わらない)
 					if (data.body.participants.length > 0) {
 						const visibility = await this.chatVoiceService.voiceVisibilityOf(room, data.body.updatedAt);
@@ -79,7 +80,6 @@ export class MainChannel extends Channel {
 						if (visibility === 'superseded') return;
 						if (visibility === 'hidden') data = { ...data, body: { ...data.body, participants: [] } };
 					}
-					if (!(await this.chatService.getChatAvailability(this.user!.id)).read) return;
 					if (this.disposed || version !== guard.version) return;
 				} catch {
 					return;

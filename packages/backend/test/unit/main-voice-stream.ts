@@ -86,6 +86,49 @@ describe('voice state at the main channel boundary', () => {
 		f.channel.dispose();
 	});
 
+	test.each([
+		['web session', undefined],
+		['chat app', { permission: ['read:account', 'read:chat'] }],
+	] as const)('a revoked mirror cannot deliver old participants after the empty event to a %s', async (_label, token) => {
+		vi.useFakeTimers({ now: TEST_CLOCK, toFake: ['Date'] });
+		const f = fixture();
+		f.connection.token = token;
+		const room = mirrorRoom();
+		f.rooms.set('r1', room);
+		const frames: { type: string; body: any }[] = [];
+		f.globalEventService.publishMainStream.mockImplementation((_id, type, body) => { frames.push({ type, body }); });
+		await f.channel.init({});
+		expect(await f.service.storeRemoteSnapshot(room, [{ identity: 'https://local.test/users/u1', screenSharing: false }], TEST_CLOCK)).toBe('stored');
+		expect(frames).toHaveLength(1);
+		const policy = pauseNextCall(f.roleService.getUserPolicies);
+		const oldEvent = f.publish('mainStream:m1', frames[0]);
+		await policy.reached;
+		await f.service.clearMirrorSnapshots();
+		expect(frames).toHaveLength(2);
+		await f.publish('mainStream:m1', frames[1]);
+		expect(f.send).toHaveBeenCalledTimes(1);
+		expect(f.send).toHaveBeenLastCalledWith('channel', { id: 'main', type: 'chatRoomVoiceState', body: { roomId: 'r1', participants: [], updatedAt: TEST_CLOCK } });
+		policy.resume();
+		await oldEvent;
+		expect(f.send).toHaveBeenCalledTimes(2);
+		for (const [, event] of f.send.mock.calls) {
+			expect(event.body.participants).toEqual([]);
+		}
+		f.channel.dispose();
+	});
+
+	test('disposing during a policy lookup drops the pending event', async () => {
+		const f = fixture();
+		await f.channel.init({});
+		const policy = pauseNextCall(f.roleService.getUserPolicies);
+		const sending = f.publish('mainStream:m1', state);
+		await policy.reached;
+		f.channel.dispose();
+		policy.resume();
+		await sending;
+		expect(f.send).not.toHaveBeenCalled();
+	});
+
 	test('requires membership even for moderators and fails closed on errors', async () => {
 		const f = fixture();
 		await f.channel.init({});
