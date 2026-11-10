@@ -46,6 +46,23 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		smembers: async () => [],
 		pipeline: () => pipeline,
 	};
+	// ApInboxService writes memberships inside a transaction, so the fixture has to answer the
+	// queries that transaction makes from the same in-memory memberships the assertions inspect.
+	const transactionManager = {
+		findOne: async () => ({ id: 'room1', ownerId: owner.id }),
+		findOneBy: async (_entity: unknown, criteria: { roomId: string; userId: string }) =>
+			memberships.find(member => member.roomId === criteria.roomId && member.userId === criteria.userId) ?? null,
+		countBy: async (_entity: unknown, criteria: { roomId: string }) =>
+			memberships.filter(member => member.roomId === criteria.roomId).length,
+		insert: async (_entity: unknown, membership: typeof memberships[number]) => {
+			memberships.push(membership);
+			return membership;
+		},
+		withRepository: (repository: unknown) => repository,
+	};
+	const db = {
+		transaction: async <T>(run: (manager: typeof transactionManager) => Promise<T>): Promise<T> => await run(transactionManager),
+	};
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
 		config: { url: 'https://local.test' },
 		chatMessagesRepository: {
@@ -81,6 +98,7 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		redisClient,
 	});
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
+		db,
 		chatService,
 		chatMessagesRepository: chatService.chatMessagesRepository,
 		globalEventService: { publishChatUserStream: () => {}, publishChatRoomStream: () => {} },

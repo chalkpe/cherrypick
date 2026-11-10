@@ -263,6 +263,7 @@ describe('chat federation storage', () => {
 				[`https://local.test/users/${carol.id}`, carol],
 			]);
 			const inbox = Object.assign(Object.create(ApInboxService.prototype), {
+				db: app.get(DI.db),
 				utilityService: { punyHost: (url: string) => new URL(url).host },
 				chatRosterService: Object.assign(Object.create(ChatRosterService.prototype), { redisClient, chatRoomRosterStatesRepository }),
 				apDbResolverService: { getUserFromApId: async (uri: string) => usersByUri.get(uri) ?? null },
