@@ -4,6 +4,8 @@
  */
 import { expect, test, vi } from 'vitest';
 import { VoiceBackendService } from '@/core/VoiceBackendService.js';
+import { VoiceRelayConsumerService, type RelayCall } from '@/core/VoiceRelayConsumerService.js';
+import { VoiceRelayError } from '@/core/VoiceRelayClient.js';
 import { createFixture } from '../misc/chat-voice-fixture.js';
 
 // In-memory generation storage: the product methods create and mutate every row.
@@ -39,7 +41,7 @@ function fixture(mode: 'direct' | 'relay', relayOnly = false) {
  if (relayOnly) delete config.voiceCall.livekit;
  const remove = vi.fn(async () => {});
  const relay = { isEnabled: mode === 'relay', hasRetainedCalls: mode === 'relay', providers: mode === 'relay' ? [{}] : [],
-  storage: { directLock: async (_key: string, run: () => Promise<unknown>) => run() },
+  storage: { directLock: async (_key: string, run: () => Promise<unknown>) => run(), lock: async (_key: string, run: () => Promise<unknown>) => run(), read: async () => null },
   get: async () => mode === 'relay' ? { state: 'active' } : null,
   participant: async () => { await remove(); return true; },
  } as any;
@@ -110,5 +112,141 @@ test('a missing relay cannot clear a failed removal without a direct SFU', async
   f.relay.hasRetainedCalls = true;
   f.relay.participant = async () => { await f.remove(); return true; };
   expect(await f.join()).toBe('relay-token');
+ } finally { f.chat.service.onApplicationShutdown(); }
+});
+
+// The relay protocol is faked at the network boundary; allocation records are
+// created and ended only by the product consumer methods.
+function relayOnlyFixture() {
+ const chat = createFixture();
+ const provider = { id: 'relay', origin: 'https://relay.test', enabled: true, validated: true };
+ const values = new Map<string, unknown>([['providers', [provider]]]);
+ const storage = {
+  read: async <T>(key: string): Promise<T | null> => structuredClone((values.get(key) as T | undefined) ?? null),
+  write: async (key: string, value: unknown) => { values.set(key, structuredClone(value)); },
+  lock: async <T>(_key: string, run: () => Promise<T>) => run(),
+  directLock: async <T>(_key: string, run: () => Promise<T>) => run(),
+  query: async () => ({ rows: [...values.entries()].filter(([key, value]) => key.startsWith('allocation:') && (value as RelayCall).state !== 'ended').map(([, value]) => ({ value })) }),
+ };
+ let allocation: { id: string; generation: string; state: 'active' | 'ended'; reservedSlots: number } | undefined;
+ const kick = vi.fn(async (): Promise<unknown> => ({ accepted: true }));
+ const client = { request: async (_provider: unknown, method: string, path: string, body?: any): Promise<any> => {
+  if (path.endsWith('/capacity')) return { protocolVersion: 1, enabled: true, accepting: true, maxSlots: 100, reservedSlots: 0, remainingSlots: 100, remainingRooms: 1, capabilities: { cancelPending: true } };
+  if (path.includes('/allocations?')) throw new VoiceRelayError('NOT_FOUND', 404);
+  if (method === 'POST' && path.endsWith('/allocations')) { allocation = { id: 'allocation-1', generation: body.generation, state: 'active', reservedSlots: body.slots }; return allocation; }
+  if (path.endsWith('/participants/kick')) return kick();
+  if (path.endsWith('/snapshot') && allocation) return { allocationId: allocation.id, generation: allocation.generation, state: allocation.state, participants: [], revision: '1' };
+  if (method === 'DELETE' && allocation) { allocation.state = 'ended'; return allocation; }
+  if (path.endsWith('/join') && allocation) return { token: 'new-relay-token', iceServers: null, generation: allocation.generation, allocationId: allocation.id, mediaProvider: provider.origin };
+  throw new Error(`Unexpected request: ${method} ${path}`);
+ } };
+ const relay = new VoiceRelayConsumerService({ url: 'https://local.test' } as any, storage as any, client as any);
+ relay.providers = [provider];
+ const voice = new VoiceBackendService({ url: 'https://local.test' } as any, relay, database());
+ const params = { roomId: 'r1', identity: 'https://local.test/users/m1', userId: 'm1', canScreenShare: false };
+ const join = () => voice.withParticipantAdmission('r1', params.identity, () => chat.service.canParticipantJoin('r1', params), async () => {
+  await voice.ensureRoom('r1', 10);
+  return voice.createJoinToken(params);
+ });
+ return { chat, voice, relay, storage, kick, params, join };
+}
+
+test('relay-only removal with no allocation permits an authorized user to start a call', async () => {
+ const f = relayOnlyFixture();
+ try {
+  await f.voice.removeParticipant('r1', f.params.identity);
+  expect(await f.join()).toBe('new-relay-token');
+  expect((await f.relay.get('r1'))?.state).toBe('active');
+ } finally { f.chat.service.onApplicationShutdown(); }
+});
+
+test('relay-only failed removal recovers after the allocation is ended', async () => {
+ const f = relayOnlyFixture();
+ try {
+  await f.join();
+  f.kick.mockRejectedValueOnce(new Error('relay unavailable'));
+  await expect(f.voice.removeParticipant('r1', f.params.identity)).rejects.toThrow('relay unavailable');
+  await f.relay.end('r1');
+  expect(await f.join()).toBe('new-relay-token');
+ } finally { f.chat.service.onApplicationShutdown(); }
+});
+
+test('relay-only removal stays pending when kick response is malformed', async () => {
+ const f = relayOnlyFixture();
+ try {
+  await f.join();
+  f.kick.mockResolvedValue({});
+  await expect(f.voice.removeParticipant('r1', f.params.identity)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  await expect(f.join()).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  f.kick.mockResolvedValue({ accepted: true });
+  expect(await f.join()).toBe('new-relay-token');
+ } finally { f.chat.service.onApplicationShutdown(); }
+});
+
+test('a relay kick reporting a missing participant completes revocation', async () => {
+ const f = relayOnlyFixture();
+ try {
+  await f.join();
+  // The relay rotates the token generation before reporting a missing participant.
+  f.kick.mockResolvedValue({ accepted: false });
+  await f.voice.removeParticipant('r1', f.params.identity);
+  expect(await f.join()).toBe('new-relay-token');
+ } finally { f.chat.service.onApplicationShutdown(); }
+});
+
+test('failed relay removal still requires current membership after the allocation ends', async () => {
+ const f = relayOnlyFixture();
+ try {
+  await f.join();
+  f.kick.mockRejectedValueOnce(new Error('relay unavailable'));
+  await expect(f.voice.removeParticipant('r1', f.params.identity)).rejects.toThrow('relay unavailable');
+  await f.relay.end('r1');
+  f.chat.nonMembers.add('m1');
+  await expect(f.join()).rejects.toMatchObject({ code: 'PARTICIPANT_REVOKED' });
+  f.chat.nonMembers.delete('m1');
+  expect(await f.join()).toBe('new-relay-token');
+ } finally { f.chat.service.onApplicationShutdown(); }
+});
+
+test('an uncheckable retained direct allocation keeps relay-only removal pending', async () => {
+ const f = relayOnlyFixture();
+ const direct = new VoiceBackendService({ url: 'https://local.test', voiceCall: { livekit: { internalUrl: 'http://127.0.0.1:1', apiKey: 'devkey', apiSecret: 'secret'.repeat(6) } } } as any, f.relay, database());
+ (direct as any).roomService = { listRooms: async () => [], createRoom: async () => ({}) };
+ try {
+  await direct.ensureRoom('r1', 10);
+  await expect(f.voice.removeParticipant('r1', f.params.identity)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+  await expect(f.join()).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+ } finally { f.chat.service.onApplicationShutdown(); }
+});
+
+test('an allocation lookup failure cannot clear a pending removal', async () => {
+ const f = relayOnlyFixture();
+ const read = f.storage.read;
+ try {
+  f.storage.read = async <T>(key: string): Promise<T | null> => { if (key === 'allocation:r1') throw new Error('storage unavailable'); return read<T>(key); };
+  await expect(f.voice.removeParticipant('r1', f.params.identity)).rejects.toThrow('storage unavailable');
+  await expect(f.join()).rejects.toThrow('storage unavailable');
+  f.storage.read = read;
+  expect(await f.join()).toBe('new-relay-token');
+ } finally { f.chat.service.onApplicationShutdown(); }
+});
+
+test('membership is rechecked after confirming an ended allocation', async () => {
+ const f = relayOnlyFixture();
+ const read = f.storage.read;
+ try {
+  await f.join();
+  f.kick.mockRejectedValueOnce(new Error('relay unavailable'));
+  await expect(f.voice.removeParticipant('r1', f.params.identity)).rejects.toThrow('relay unavailable');
+  await f.relay.end('r1');
+  f.storage.read = async <T>(key: string): Promise<T | null> => {
+   const value = await read<T>(key);
+   if (key === 'direct:r1') f.chat.nonMembers.add('m1');
+   return value;
+  };
+  await expect(f.join()).rejects.toMatchObject({ code: 'PARTICIPANT_REVOKED' });
+  f.storage.read = read;
+  f.chat.nonMembers.delete('m1');
+  expect(await f.join()).toBe('new-relay-token');
  } finally { f.chat.service.onApplicationShutdown(); }
 });

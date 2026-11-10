@@ -228,13 +228,30 @@ export class VoiceBackendService extends LiveKitService {
 		});
 	}
 	private async removeFromSfu(roomId: string, identity: string): Promise<void> {
-		if (!this.hasRelayConfiguration || await this.isLocalRoom(roomId)) {
-			if (!super.isEnabled) throw new VoiceRelayError('PROVIDER_UNAVAILABLE');
+		if (super.isEnabled && !this.hasRelayConfiguration) {
 			await super.removeParticipant(roomId, identity);
-		} else {
-			const accepted = await this.relay.participant(roomId, 'kick', { identity });
-			if (accepted == null) throw new VoiceRelayError('PROVIDER_UNAVAILABLE');
+			return;
 		}
+		const storage = this.relay.storage;
+		const lock = super.isEnabled ? storage.directLock.bind(storage) : storage.lock.bind(storage);
+		await lock(`allocation:${roomId}`, async () => {
+			const call = await this.relay.get(roomId);
+			if (call && call.state !== 'ended') {
+				if (await this.relay.participant(roomId, 'kick', { identity }) == null) throw new VoiceRelayError('PROVIDER_UNAVAILABLE');
+				return;
+			}
+			if (super.isEnabled) {
+				await super.removeParticipant(roomId, identity);
+				return;
+			}
+			const direct = await storage.read<DirectCall>(`direct:${roomId}`);
+			if (direct && direct.state !== 'ended') {
+				if (await this.retainedRoomExists(roomId, direct) !== false) throw new VoiceRelayError('PROVIDER_UNAVAILABLE');
+			} else if (!direct && this.retainedLivekits.length > 0) {
+				// Legacy direct rooms may predate allocation records.
+				if (await this.retainedRoomExists(roomId, { generation: '', state: 'active', slots: 0 }) !== false) throw new VoiceRelayError('PROVIDER_UNAVAILABLE');
+			}
+		});
 	}
 	@bindThis
 	public override async muteMicrophone(roomId: string, identity: string): Promise<void> { if (!this.hasRelayConfiguration || await this.isLocalRoom(roomId)) return super.muteMicrophone(roomId, identity); const accepted = await this.relay.participant(roomId, 'mute', { identity }); if (accepted == null && super.isEnabled) await super.muteMicrophone(roomId, identity); }
