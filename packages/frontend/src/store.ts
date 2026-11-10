@@ -21,6 +21,10 @@ import { isFriendly } from '@/utility/is-friendly.js';
  * 「状態」を管理するストア(not「設定」)
  */
 export const store = markRaw(new Pizzax('base', {
+	driveSortMode: {
+		where: 'account',
+		default: '+createdAt' as NonNullable<Misskey.entities.DriveFilesRequest['sort']>,
+	},
 	accountSetupWizard: {
 		where: 'account',
 		default: 0,
