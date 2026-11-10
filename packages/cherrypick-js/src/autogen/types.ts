@@ -1894,7 +1894,7 @@ export type paths = {
     '/drive/files': {
         /**
          * drive/files
-         * @description No description provided.
+         * @description For name or size sorting, pass the last file’s name as untilName or size as untilSize with untilId to continue even if the file is moved or deleted.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:drive*
          */
@@ -2020,7 +2020,7 @@ export type paths = {
     '/drive/folders': {
         /**
          * drive/folders
-         * @description No description provided.
+         * @description For name sorting, pass the last folder’s name as untilName with untilId to continue even if the folder is moved or deleted.
          *
          *     **Credential required**: *Yes* / **Permission**: *read:drive*
          */
@@ -21670,6 +21670,8 @@ export interface operations {
                     sinceId?: string;
                     /** Format: misskey:id */
                     untilId?: string;
+                    untilName?: string;
+                    untilSize?: number;
                     sinceDate?: number;
                     untilDate?: number;
                     /**
@@ -22679,6 +22681,9 @@ export interface operations {
                     sinceId?: string;
                     /** Format: misskey:id */
                     untilId?: string;
+                    untilName?: string;
+                    /** @enum {string|null} */
+                    sort?: '+createdAt' | '-createdAt' | '+name' | '-name' | null;
                     sinceDate?: number;
                     untilDate?: number;
                     /**
