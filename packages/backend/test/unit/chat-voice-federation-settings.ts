@@ -48,6 +48,7 @@ async function createMetaEntityService(meta: MiMeta) {
 }
 
 describe('remote voice call setting', () => {
+	// Remote calls require both the voice setting and federation to be enabled.
 	test.each<[Pick<MiMeta, 'enableRemoteVoiceCall' | 'federation'>, boolean]>([
 		[{ enableRemoteVoiceCall: true, federation: 'all' }, true],
 		[{ enableRemoteVoiceCall: false, federation: 'all' }, false],
