@@ -106,14 +106,15 @@ const capacityForm = useForm({ limit: meta.voiceCallMaxParticipants }, async sta
  await os.apiWithDialog('admin/update-meta', { voiceCallMaxParticipants: state.limit });
 });
 const livekitForm = useForm({ source: meta.voiceCallLivekitSource, url: meta.voiceCallLivekitUrl ?? '', key: meta.voiceCallLivekitApiKey ?? '', secret: '', clearSecret: false, preference: (meta.voiceCallPreferRelay == null ? 'yaml' : meta.voiceCallPreferRelay ? 'relay' : 'local') as 'yaml' | 'local' | 'relay' }, async state => {
+ const secret = state.secret.trim();
  await os.apiWithDialog('admin/update-meta', {
   voiceCallLivekitSource: state.source,
   voiceCallLivekitUrl: state.url,
   voiceCallLivekitApiKey: state.key,
-  ...(state.clearSecret ? { voiceCallLivekitApiSecret: null } : state.secret ? { voiceCallLivekitApiSecret: state.secret } : {}),
+  ...(state.clearSecret ? { voiceCallLivekitApiSecret: null } : secret ? { voiceCallLivekitApiSecret: secret } : {}),
   voiceCallPreferRelay: state.preference === 'yaml' ? null : state.preference === 'relay',
  });
- if (state.clearSecret || state.secret) livekitSecretSet.value = !state.clearSecret;
+ if (state.clearSecret || secret) livekitSecretSet.value = !state.clearSecret;
  livekitForm.state.secret = '';
  livekitForm.state.clearSecret = false;
 });
