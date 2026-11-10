@@ -23,7 +23,7 @@ import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js
 import { isTemporaryFetchFailure } from '@/misc/is-temporary-fetch-failure.js';
 import { truncate } from '@/misc/truncate.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
-import { LiveKitService } from '@/core/LiveKitService.js';
+import { VoiceBackendService as LiveKitService } from '@/core/VoiceBackendService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { acquireApObjectLock } from '@/misc/distributed-lock.js';
 import { concat, toArray, toSingle, unique } from '@/misc/prelude/array.js';

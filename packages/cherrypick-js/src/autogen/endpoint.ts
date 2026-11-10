@@ -154,6 +154,8 @@ import type {
 	AdminUpdateProxyAccountRequest,
 	AdminUpdateProxyAccountResponse,
 	AdminUpdateUserNoteRequest,
+	AdminVoiceRelayManageRequest,
+	AdminVoiceRelayManageResponse,
 	AnnouncementsRequest,
 	AnnouncementsResponse,
 	AnnouncementsShowRequest,
@@ -285,6 +287,8 @@ import type {
 	ChatRoomsShowResponse,
 	ChatRoomsUpdateRequest,
 	ChatRoomsUpdateResponse,
+	ChatRoomsVoiceConnectionInfoRequest,
+	ChatRoomsVoiceConnectionInfoResponse,
 	ChatRoomsVoiceJoinRequest,
 	ChatRoomsVoiceJoinResponse,
 	ChatRoomsVoiceKickRequest,
@@ -851,6 +855,7 @@ export type Endpoints = {
 	'admin/update-meta': { req: AdminUpdateMetaRequest; res: EmptyResponse };
 	'admin/update-proxy-account': { req: AdminUpdateProxyAccountRequest; res: AdminUpdateProxyAccountResponse };
 	'admin/update-user-note': { req: AdminUpdateUserNoteRequest; res: EmptyResponse };
+	'admin/voice-relay/manage': { req: AdminVoiceRelayManageRequest; res: AdminVoiceRelayManageResponse };
 	'announcements': { req: AnnouncementsRequest; res: AnnouncementsResponse };
 	'announcements/show': { req: AnnouncementsShowRequest; res: AnnouncementsShowResponse };
 	'antennas/create': { req: AntennasCreateRequest; res: AntennasCreateResponse };
@@ -930,6 +935,7 @@ export type Endpoints = {
 	'chat/rooms/owned': { req: ChatRoomsOwnedRequest; res: ChatRoomsOwnedResponse };
 	'chat/rooms/show': { req: ChatRoomsShowRequest; res: ChatRoomsShowResponse };
 	'chat/rooms/update': { req: ChatRoomsUpdateRequest; res: ChatRoomsUpdateResponse };
+	'chat/rooms/voice/connection-info': { req: ChatRoomsVoiceConnectionInfoRequest; res: ChatRoomsVoiceConnectionInfoResponse };
 	'chat/rooms/voice/join': { req: ChatRoomsVoiceJoinRequest; res: ChatRoomsVoiceJoinResponse };
 	'chat/rooms/voice/kick': { req: ChatRoomsVoiceKickRequest; res: EmptyResponse };
 	'chat/rooms/voice/mute': { req: ChatRoomsVoiceMuteRequest; res: EmptyResponse };

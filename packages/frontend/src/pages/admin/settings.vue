@@ -361,35 +361,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</MkFolder>
 				</SearchMarker>
 
-				<SearchMarker v-slot="slotProps" :keywords="['voice', 'call', 'turn', 'cloudflare', 'nat']">
-					<MkFolder :defaultOpen="slotProps.isParentOfTarget">
-						<template #icon><SearchIcon><i class="ti ti-router"></i></SearchIcon></template>
-						<template #label><SearchLabel>{{ i18n.ts._serverSettings.voiceCallCloudflareTurn }}</SearchLabel></template>
-						<template v-if="voiceCallTurnForm.modified.value" #footer>
-							<MkFormFooter :form="voiceCallTurnForm"/>
-						</template>
-
-						<div class="_gaps">
-							<MkInfo>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnDescription }}</MkInfo>
-
-							<SearchMarker :keywords="['key', 'id']">
-								<MkInput v-model="voiceCallTurnForm.state.voiceCallCloudflareTurnKeyId" type="text" autocomplete="off">
-									<template #label><SearchLabel>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnKeyId }}</SearchLabel><span v-if="voiceCallTurnForm.modifiedStates.voiceCallCloudflareTurnKeyId" class="_modified">{{ i18n.ts.modified }}</span></template>
-								</MkInput>
-							</SearchMarker>
-
-							<SearchMarker :keywords="['api', 'token']">
-								<MkInput v-model="voiceCallTurnForm.state.voiceCallCloudflareTurnApiToken" type="password" autocomplete="new-password">
-									<template #prefix><i class="ti ti-key"></i></template>
-									<template #label><SearchLabel>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnApiToken }}</SearchLabel><span v-if="voiceCallTurnForm.modifiedStates.voiceCallCloudflareTurnApiToken" class="_modified">{{ i18n.ts.modified }}</span></template>
-								</MkInput>
-							</SearchMarker>
-
-							<MkInfo warn>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnKeyChangeDescription }}</MkInfo>
-						</div>
-					</MkFolder>
-				</SearchMarker>
-
 				<SearchMarker v-slot="slotProps" :keywords="['proxy', 'account']">
 					<MkFolder :defaultOpen="slotProps.isParentOfTarget">
 						<template #icon><SearchIcon><i class="ti ti-ghost"></i></SearchIcon></template>
@@ -582,18 +553,6 @@ const federationForm = useForm({
 		enableRemoteVoiceCall: state.enableRemoteVoiceCall,
 		cacheRemoteFiles: state.cacheRemoteFiles,
 		cacheRemoteSensitiveFiles: state.cacheRemoteSensitiveFiles,
-	});
-	fetchInstance(true);
-});
-
-// 空にするとサーバー側で null として保存され、TURN を使わなくなる
-const voiceCallTurnForm = useForm({
-	voiceCallCloudflareTurnKeyId: meta.voiceCallCloudflareTurnKeyId ?? '',
-	voiceCallCloudflareTurnApiToken: meta.voiceCallCloudflareTurnApiToken ?? '',
-}, async (state) => {
-	await os.apiWithDialog('admin/update-meta', {
-		voiceCallCloudflareTurnKeyId: state.voiceCallCloudflareTurnKeyId,
-		voiceCallCloudflareTurnApiToken: state.voiceCallCloudflareTurnApiToken,
 	});
 	fetchInstance(true);
 });

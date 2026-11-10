@@ -503,6 +503,12 @@ type AdminUpdateProxyAccountResponse = operations['admin___update-proxy-account'
 type AdminUpdateUserNoteRequest = operations['admin___update-user-note']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
+type AdminVoiceRelayManageRequest = operations['admin___voice-relay___manage']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type AdminVoiceRelayManageResponse = operations['admin___voice-relay___manage']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type Announcement = components['schemas']['Announcement'];
 
 // @public (undocumented)
@@ -1341,6 +1347,12 @@ type ChatRoomsUpdateRequest = operations['chat___rooms___update']['requestBody']
 type ChatRoomsUpdateResponse = operations['chat___rooms___update']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type ChatRoomsVoiceConnectionInfoRequest = operations['chat___rooms___voice___connection-info']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsVoiceConnectionInfoResponse = operations['chat___rooms___voice___connection-info']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type ChatRoomsVoiceJoinRequest = operations['chat___rooms___voice___join']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -1850,6 +1862,8 @@ declare namespace entities {
         AdminUpdateProxyAccountRequest,
         AdminUpdateProxyAccountResponse,
         AdminUpdateUserNoteRequest,
+        AdminVoiceRelayManageRequest,
+        AdminVoiceRelayManageResponse,
         AnnouncementsRequest,
         AnnouncementsResponse,
         AnnouncementsShowRequest,
@@ -1981,6 +1995,8 @@ declare namespace entities {
         ChatRoomsShowResponse,
         ChatRoomsUpdateRequest,
         ChatRoomsUpdateResponse,
+        ChatRoomsVoiceConnectionInfoRequest,
+        ChatRoomsVoiceConnectionInfoResponse,
         ChatRoomsVoiceJoinRequest,
         ChatRoomsVoiceJoinResponse,
         ChatRoomsVoiceKickRequest,

@@ -233,6 +233,11 @@ const menuDef = computed<SuperMenuDef[]>(() => [{
 		to: '/admin/security',
 		active: currentPage.value?.route.name === 'security',
 	}, {
+		icon: 'ti ti-phone',
+		text: i18n.ts._voiceRelay.settingsTitle,
+		to: '/admin/voice-relay',
+		active: currentPage.value?.route.name === 'voice-relay',
+	}, {
 		icon: 'ti ti-planet',
 		text: i18n.ts.relays,
 		to: '/admin/relays',

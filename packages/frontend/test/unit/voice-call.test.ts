@@ -81,6 +81,9 @@ const lk = vi.hoisted(() => {
 		static setup: ((room: FakeRoom) => void) | null = null;
 		remoteParticipants = new Map<string, FakeRemoteParticipant>();
 		canPlaybackAudio = true;
+		publisher = { getConfiguration: vi.fn(() => ({ iceTransportPolicy: 'relay' as RTCIceTransportPolicy, bundlePolicy: 'max-bundle' as RTCBundlePolicy })), setConfiguration: vi.fn() };
+		subscriber = { getConfiguration: vi.fn(() => ({ iceTransportPolicy: 'relay' as RTCIceTransportPolicy })), setConfiguration: vi.fn() };
+		engine = { token: '', rtcConfig: {} as RTCConfiguration, reconnect: vi.fn(), pcManager: { publisher: { _pc: this.publisher }, subscriber: { _pc: this.subscriber }, triggerIceRestart: vi.fn().mockResolvedValue(undefined) } };
 		localParticipant = {
 			identity: 'https://local.test/users/me',
 			// 本物と同じく、画面共有の映像を送っているあいだ true になる
@@ -90,11 +93,15 @@ const lk = vi.hoisted(() => {
 			microphoneTrack: Object.assign(new Emitter(), { kind: 'audio', mediaStreamTrack: {} }),
 			getTrackPublication: vi.fn(() => ({ track: this.localParticipant.microphoneTrack })),
 			setMicrophoneEnabled: vi.fn().mockResolvedValue(undefined),
+			screenVideo: { source: 'screen_share', mediaStreamTrack: { applyConstraints: vi.fn().mockResolvedValue(undefined), getSettings: vi.fn(() => ({ width: 1280, height: 720, frameRate: 10 })) }, stop: vi.fn() },
+			createScreenTracks: vi.fn(async () => [this.localParticipant.screenVideo]),
+			publishTrack: vi.fn(async () => { this.localParticipant.isScreenShareEnabled = true; }),
+			unpublishTrack: vi.fn().mockResolvedValue(undefined),
 			setScreenShareEnabled: vi.fn(async (enabled: boolean, ..._options: unknown[]) => {
 				this.localParticipant.isScreenShareEnabled = enabled;
 			}),
 		};
-		connect = vi.fn().mockResolvedValue(undefined);
+		connect = vi.fn(async (_url: string, token: string, options?: { rtcConfig?: RTCConfiguration }) => { this.engine.token = token; this.engine.rtcConfig = options?.rtcConfig ?? {}; });
 		disconnect = vi.fn(async () => {
 			this.emit(RoomEvent.Disconnected, DisconnectReason.CLIENT_INITIATED);
 		});
@@ -131,9 +138,10 @@ const mocks = vi.hoisted(() => ({
 	misskeyApi: vi.fn(),
 	toast: vi.fn(),
 	alert: vi.fn(),
+	confirm: vi.fn(),
 }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
-vi.mock('@/os.js', () => ({ toast: mocks.toast, alert: mocks.alert }));
+vi.mock('@/os.js', () => ({ toast: mocks.toast, alert: mocks.alert, confirm: mocks.confirm }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer() }));
 
 import { i18n } from '@/i18n.js';
@@ -162,6 +170,7 @@ beforeEach(() => {
 	mocks.misskeyApi.mockReset().mockResolvedValue({ url: 'https://local.test/livekit', token: 't' });
 	mocks.toast.mockReset();
 	mocks.alert.mockReset();
+	mocks.confirm.mockReset().mockResolvedValue({ canceled: false });
 	prefer.reset({
 		'voiceCall.inputDeviceId': null,
 		'voiceCall.outputDeviceId': null,
@@ -179,6 +188,117 @@ beforeEach(() => {
 
 afterEach(async () => {
 	await leaveVoiceCall();
+});
+
+describe('TURN credential refresh', () => {
+	const oldIce = [{ urls: ['turn:turn.example:3478'], username: 'old', credential: 'old' }];
+	const freshIce = [{ urls: ['turn:turn.example:3478'], username: 'new', credential: 'new' }];
+	const credentials = (iceServers: typeof oldIce, token = 't') => ({ url: 'https://local.test/livekit', token, iceServers });
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(async () => { await leaveVoiceCall(); vi.useRealTimers(); });
+
+	test('refreshes before expiry without interrupting the call or weakening relay policy', async () => {
+		let joins = 0;
+		mocks.misskeyApi.mockImplementation(async endpoint => endpoint === 'chat/rooms/voice/join' ? (joins++ === 0 ? credentials(oldIce, 'initial') : credentials(freshIce, 'renewed')) : {});
+		await joinVoiceCall(room1, { micEnabled: false }); const room = lastRoom();
+		room.engine.reconnect.mockImplementation(() => { expect(room.engine.token).toBe('renewed'); });
+		await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+		expect(joins).toBe(2); expect(voiceCall.status).toBe('connected'); expect(room.disconnect).not.toHaveBeenCalled();
+		expect(room.engine.rtcConfig.iceServers).toEqual(freshIce);
+		expect(room.engine.reconnect).toHaveBeenCalledOnce();
+		expect(room.publisher.setConfiguration).toHaveBeenCalledWith(expect.objectContaining({ iceServers: freshIce, iceTransportPolicy: 'relay', bundlePolicy: 'max-bundle' }));
+		expect(room.subscriber.setConfiguration).toHaveBeenCalledWith(expect.objectContaining({ iceServers: freshIce, iceTransportPolicy: 'relay' }));
+	});
+
+	test('a reconnect event refreshes stale credentials without waiting for the periodic timer', async () => {
+		let joins = 0;
+		mocks.misskeyApi.mockImplementation(async endpoint => endpoint === 'chat/rooms/voice/join' ? credentials(joins++ === 0 ? oldIce : freshIce) : {});
+		await joinVoiceCall(room1, { micEnabled: false }); const room = lastRoom();
+		vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000);
+		room.emit(lk.RoomEvent.Reconnecting);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(joins).toBe(2); expect(room.engine.rtcConfig.iceServers).toEqual(freshIce); expect(voiceCall.status).toBe('reconnecting');
+		expect(room.engine.pcManager.triggerIceRestart).toHaveBeenCalledOnce();
+	});
+	test('retries a failed ICE restart with the refreshed credentials', async () => {
+		let joins = 0;
+		mocks.misskeyApi.mockImplementation(async endpoint => endpoint === 'chat/rooms/voice/join' ? credentials(joins++ === 0 ? oldIce : freshIce) : {});
+		await joinVoiceCall(room1, { micEnabled: false }); const room = lastRoom();
+		room.engine.pcManager.triggerIceRestart.mockRejectedValueOnce(new Error('signaling not ready'));
+		vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000); room.emit(lk.RoomEvent.Reconnecting);
+		await vi.advanceTimersByTimeAsync(0); expect(room.engine.pcManager.triggerIceRestart).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(60 * 1000);
+		expect(room.engine.pcManager.triggerIceRestart).toHaveBeenCalledTimes(2); expect(room.disconnect).not.toHaveBeenCalled();
+	});
+
+	test('a failed refresh keeps the call and retries without discarding working credentials', async () => {
+		let joins = 0;
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint !== 'chat/rooms/voice/join') return {};
+			joins++; if (joins === 2) throw new Error('network'); return credentials(joins === 1 ? oldIce : freshIce);
+		});
+		await joinVoiceCall(room1, { micEnabled: false }); const room = lastRoom();
+		await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+		expect(voiceCall.status).toBe('connected'); expect(room.engine.rtcConfig.iceServers).toEqual(oldIce); expect(room.disconnect).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(60 * 1000);
+		expect(joins).toBe(3); expect(room.engine.rtcConfig.iceServers).toEqual(freshIce);
+	});
+
+	test('does not reconnect or reconfigure when cached TURN credentials are unchanged', async () => {
+		let joins = 0;
+		mocks.misskeyApi.mockImplementation(async endpoint => endpoint === 'chat/rooms/voice/join' ? credentials(oldIce, joins++ === 0 ? 'initial' : 'renewed') : {});
+		await joinVoiceCall(room1, { micEnabled: false }); const room = lastRoom();
+		await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+		expect(joins).toBe(2); expect(room.engine.token).toBe('initial'); expect(room.publisher.setConfiguration).not.toHaveBeenCalled(); expect(room.engine.reconnect).not.toHaveBeenCalled(); expect(room.disconnect).not.toHaveBeenCalled();
+	});
+	test('a credential-driven LiveKit reconnect retains the room and follows reconnect events', async () => {
+		let joins = 0;
+		mocks.misskeyApi.mockImplementation(async endpoint => endpoint === 'chat/rooms/voice/join' ? credentials(joins++ === 0 ? oldIce : freshIce) : {});
+		await joinVoiceCall(room1, { micEnabled: false }); const room = lastRoom();
+		room.engine.reconnect.mockImplementation(() => room.emit(lk.RoomEvent.Reconnecting));
+		await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+		expect(voiceCall.status).toBe('reconnecting'); expect(voiceCall.room?.id).toBe('r1');
+		room.emit(lk.RoomEvent.Reconnected); expect(voiceCall.status).toBe('connected');
+		expect(room.disconnect).not.toHaveBeenCalled();
+	});
+
+	test('does not silently apply credentials from a different media provider', async () => {
+		let joins = 0;
+		mocks.misskeyApi.mockImplementation(async endpoint => endpoint === 'chat/rooms/voice/join'
+			? { ...credentials(joins++ === 0 ? oldIce : freshIce), mediaProvider: joins === 1 ? 'https://provider-one.test' : 'https://provider-two.test' } : {});
+		await joinVoiceCall(room1, { micEnabled: false, approvedMediaProvider: 'https://provider-one.test' }); const room = lastRoom();
+		await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+		expect(joins).toBe(2); expect(room.engine.rtcConfig.iceServers).toEqual(oldIce); expect(room.publisher.setConfiguration).not.toHaveBeenCalled(); expect(room.disconnect).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(60 * 60 * 1000); expect(joins).toBe(2);
+	});
+
+	test('a refresh response after leaving cannot modify the previous or next call', async () => {
+		let joins = 0; let finish!: (value: ReturnType<typeof credentials>) => void;
+		const pending = new Promise<ReturnType<typeof credentials>>(resolve => { finish = resolve; });
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint !== 'chat/rooms/voice/join') return {};
+			joins++; return joins === 1 ? credentials(oldIce) : joins === 2 ? await pending : credentials(oldIce);
+		});
+		await joinVoiceCall(room1, { micEnabled: false }); const previous = lastRoom();
+		await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000); expect(joins).toBe(2);
+		await leaveVoiceCall(); await joinVoiceCall(room2, { micEnabled: false }); const next = lastRoom();
+		finish(credentials(freshIce)); await vi.advanceTimersByTimeAsync(0);
+		expect(previous.publisher.setConfiguration).not.toHaveBeenCalled(); expect(next.publisher.setConfiguration).not.toHaveBeenCalled();
+		expect(voiceCall.room?.id).toBe('r2'); expect(next.engine.rtcConfig.iceServers).toEqual(oldIce);
+	});
+
+	test('does not schedule credential refresh when the call has no TURN server', async () => {
+		let joins = 0;
+		mocks.misskeyApi.mockImplementation(async endpoint => endpoint === 'chat/rooms/voice/join' ? (joins++, { url: 'https://local.test/livekit', token: 't', iceServers: null }) : {});
+		await joinVoiceCall(room1, { micEnabled: false }); await vi.advanceTimersByTimeAsync(12 * 60 * 60 * 1000);
+		expect(joins).toBe(1);
+	});
+	test('leaving cancels the scheduled refresh', async () => {
+		let joins = 0;
+		mocks.misskeyApi.mockImplementation(async endpoint => endpoint === 'chat/rooms/voice/join' ? (joins++, credentials(oldIce)) : {});
+		await joinVoiceCall(room1, { micEnabled: false }); await leaveVoiceCall();
+		await vi.advanceTimersByTimeAsync(12 * 60 * 60 * 1000); expect(joins).toBe(1);
+	});
 });
 
 describe('voice call controller', () => {
@@ -930,6 +1050,86 @@ function sharing(identity: string, layers = 3) {
 const screenShareTrack = () => ({ kind: lk.Track.Kind.Video, source: lk.Track.Source.ScreenShare, attach: vi.fn(), detach: vi.fn(() => []) });
 
 describe('screen sharing', () => {
+	test('applies delegated limits when sharing the screen', async () => {
+		const limits = { maxWidth: 1280, maxHeight: 720, maxFrameRate: 10, maxBitrate: 500000 };
+		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: limits });
+		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+
+		await startScreenShare();
+
+		const participant = lastRoom().localParticipant;
+		expect(participant.createScreenTracks).toHaveBeenCalledWith(expect.objectContaining({ resolution: { width: 1280, height: 720, frameRate: 10 } }));
+		expect(participant.screenVideo.mediaStreamTrack.applyConstraints).toHaveBeenCalledWith({ width: { max: 1280 }, height: { max: 720 }, frameRate: { max: 10 } });
+		expect(participant.publishTrack).toHaveBeenCalledWith(participant.screenVideo, expect.objectContaining({ screenShareEncoding: { maxBitrate: 500000, maxFramerate: 10 }, simulcast: false, backupCodec: false, videoCodec: 'vp8' }));
+	});
+
+	test('keeps the existing screen share options when a relay has no policy', async () => {
+		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+
+		await startScreenShare();
+
+		expect(lastRoom().localParticipant.createScreenTracks).not.toHaveBeenCalled();
+		expect(lastRoom().localParticipant.setScreenShareEnabled).toHaveBeenCalledWith(true,
+			expect.objectContaining({ resolution: lk.ScreenSharePresets.h1080fps15.resolution }),
+			expect.objectContaining({ screenShareEncoding: lk.ScreenSharePresets.h1080fps15.encoding }));
+	});
+
+	test('accepts a relay policy above 1080p60 while retaining the selected preset', async () => {
+		const limits = { maxWidth: 3840, maxHeight: 2160, maxFrameRate: 120, maxBitrate: 16000000 };
+		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: limits });
+		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+
+		await startScreenShare();
+
+		const participant = lastRoom().localParticipant;
+		expect(participant.screenVideo.mediaStreamTrack.applyConstraints).toHaveBeenCalledWith({ width: { max: 3840 }, height: { max: 2160 }, frameRate: { max: 120 } });
+		expect(participant.publishTrack).toHaveBeenCalledWith(participant.screenVideo, expect.objectContaining({ screenShareEncoding: lk.ScreenSharePresets.h1080fps15.encoding, simulcast: false, backupCodec: false }));
+	});
+
+	test('keeps delegated limits after stopping, reconnecting, and sharing again', async () => {
+		const limits = { maxWidth: 1280, maxHeight: 720, maxFrameRate: 10, maxBitrate: 500000 };
+		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: limits });
+		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		const room = lastRoom();
+
+		await startScreenShare();
+		await stopScreenShare();
+		room.emit(lk.RoomEvent.Reconnecting);
+		room.emit(lk.RoomEvent.Reconnected);
+		await startScreenShare();
+
+		expect(room.localParticipant.screenVideo.mediaStreamTrack.applyConstraints).toHaveBeenCalledTimes(2);
+		expect(room.localParticipant.publishTrack).toHaveBeenCalledTimes(2);
+		expect(room.localParticipant.publishTrack).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ simulcast: false, backupCodec: false, screenShareEncoding: { maxBitrate: 500000, maxFramerate: 10 } }));
+	});
+
+	test('does not publish a capture that fails to meet delegated limits', async () => {
+		const limits = { maxWidth: 1280, maxHeight: 720, maxFrameRate: 10, maxBitrate: 500000 };
+		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: limits });
+		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		const participant = lastRoom().localParticipant;
+		participant.screenVideo.mediaStreamTrack.getSettings.mockReturnValue({ width: 1920, height: 1080, frameRate: 30 });
+
+		await startScreenShare();
+
+		expect(participant.publishTrack).not.toHaveBeenCalled();
+		expect(participant.screenVideo.stop).toHaveBeenCalled();
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.screenShareFailed);
+	});
+
+	test('reports screen capture permission denial on the delegated path', async () => {
+		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: { maxWidth: 1920, maxHeight: 1080, maxFrameRate: 60, maxBitrate: 8000000 } });
+		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		const participant = lastRoom().localParticipant;
+		participant.createScreenTracks.mockRejectedValueOnce(new DOMException('Permission denied', 'NotAllowedError'));
+
+		await startScreenShare();
+
+		expect(participant.publishTrack).not.toHaveBeenCalled();
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.screenSharePermissionDenied);
+	});
+
 	test('shares the screen with the preferred quality', async () => {
 		await joinVoiceCall(room1);
 
@@ -1468,3 +1668,17 @@ test('initial screen audio is silent, late audio follows watch, and video remova
 	expect(audio.setSubscribed).toHaveBeenLastCalledWith(false);
 	expect(late.setSubscribed).toHaveBeenLastCalledWith(false);
 });
+
+ test('declining the delegated media provider prevents any media connection', async () => {
+  mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://delegated.test' });
+  mocks.confirm.mockResolvedValue({ canceled: true });
+  await joinVoiceCall(room1);
+  expect(lk.FakeRoom.instances).toHaveLength(0);
+  expect(voiceCall.status).toBe('idle');
+ });
+
+ test.each([
+  ['VOICE_RELAY_CAPACITY_EXCEEDED', 'full'], ['VOICE_RELAY_UNREACHABLE', 'unreachable'], ['VOICE_RELAY_REVOKED', 'revoked'],
+ ] as const)('shows a specific delegated failure: %s', async (code, message) => {
+  mocks.misskeyApi.mockRejectedValue({ code }); await joinVoiceCall(room1); expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceRelay[message]);
+ });

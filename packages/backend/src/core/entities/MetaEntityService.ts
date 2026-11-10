@@ -15,7 +15,7 @@ import { SystemAccountService } from '@/core/SystemAccountService.js';
 import type { Config } from '@/config.js';
 import { DI } from '@/di-symbols.js';
 import { DEFAULT_POLICIES } from '@/core/RoleService.js';
-import { LiveKitService } from '@/core/LiveKitService.js';
+import { VoiceBackendService as LiveKitService } from '@/core/VoiceBackendService.js';
 import { isRemoteVoiceCallEnabled } from '@/core/ChatVoiceService.js';
 
 @Injectable()
@@ -163,6 +163,7 @@ export class MetaEntityService {
 
 		const proxyAccount = await this.systemAccountService.fetch('proxy');
 
+		await this.liveKitService.refreshCapability?.();
 		const packDetailed: Packed<'MetaDetailed'> = {
 			...packed,
 			cacheRemoteFiles: instance.cacheRemoteFiles,

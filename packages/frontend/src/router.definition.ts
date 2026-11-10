@@ -500,6 +500,10 @@ export const ROUTE_DEF = [{
 		name: 'security',
 		component: page(() => import('@/pages/admin/security.vue')),
 	}, {
+		path: '/voice-relay',
+		name: 'voice-relay',
+		component: page(() => import('@/pages/admin/voice-relay.vue')),
+	}, {
 		path: '/relays',
 		name: 'relays',
 		component: page(() => import('@/pages/admin/relays.vue')),

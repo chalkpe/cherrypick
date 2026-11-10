@@ -119,6 +119,9 @@ function stringifyParameter(param: any) {
 	}
 }
 
+// SQL 매개변수 기록을 켜더라도 통화 인증 정보는 기록하지 않는다.
+const VOICE_CREDENTIAL_COLUMN = /voiceCall(?:LivekitApiKey|LivekitApiSecret|CloudflareTurnKeyId|CloudflareTurnApiToken)/i;
+
 class MyCustomLogger implements Logger {
 	constructor(private props: LoggerProps = {}) {
 	}
@@ -136,8 +139,8 @@ class MyCustomLogger implements Logger {
 	}
 
 	@bindThis
-	private transformParameters(parameters?: any[]) {
-		if (this.props.enableQueryParamLogging && parameters && parameters.length > 0) {
+	private transformParameters(query: string, parameters?: any[]) {
+		if (!VOICE_CREDENTIAL_COLUMN.test(query) && this.props.enableQueryParamLogging && parameters && parameters.length > 0) {
 			return parameters.map(stringifyParameter);
 		}
 
@@ -149,7 +152,7 @@ class MyCustomLogger implements Logger {
 		const prefix = (this.props.printReplicationMode && queryRunner)
 			? `[${queryRunner.getReplicationMode()}] `
 			: undefined;
-		sqlLogger.info(this.transformQueryLog(query, { prefix }), this.transformParameters(parameters));
+		sqlLogger.info(this.transformQueryLog(query, { prefix }), this.transformParameters(query, parameters));
 	}
 
 	@bindThis
@@ -157,7 +160,7 @@ class MyCustomLogger implements Logger {
 		const prefix = (this.props.printReplicationMode && queryRunner)
 			? `[${queryRunner.getReplicationMode()}] `
 			: undefined;
-		sqlLogger.error(this.transformQueryLog(query, { prefix }), this.transformParameters(parameters));
+		sqlLogger.error(this.transformQueryLog(query, { prefix }), this.transformParameters(query, parameters));
 	}
 
 	@bindThis
@@ -165,7 +168,7 @@ class MyCustomLogger implements Logger {
 		const prefix = (this.props.printReplicationMode && queryRunner)
 			? `[${queryRunner.getReplicationMode()}] `
 			: undefined;
-		sqlLogger.warn(this.transformQueryLog(query, { prefix }), this.transformParameters(parameters));
+		sqlLogger.warn(this.transformQueryLog(query, { prefix }), this.transformParameters(query, parameters));
 	}
 
 	@bindThis

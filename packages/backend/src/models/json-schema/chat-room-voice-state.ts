@@ -6,6 +6,7 @@
 export const packedChatRoomVoiceStateSchema = {
 	type: 'object',
 	properties: {
+		unavailable: { type: 'boolean', optional: true, nullable: false },
 		roomId: {
 			type: 'string',
 			format: 'id',

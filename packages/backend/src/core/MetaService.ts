@@ -99,7 +99,7 @@ export class MetaService implements OnApplicationShutdown {
 	}
 
 	@bindThis
-	public async update(data: Partial<MiMeta>): Promise<MiMeta> {
+	public async update(data: Partial<MiMeta>, validate?: (current: MiMeta | undefined) => void): Promise<MiMeta> {
 		let before: MiMeta | undefined;
 
 		const updated = await this.db.transaction(async transactionalEntityManager => {
@@ -107,9 +107,11 @@ export class MetaService implements OnApplicationShutdown {
 				order: {
 					id: 'DESC',
 				},
+				lock: { mode: 'pessimistic_write' },
 			});
 
 			before = metas[0];
+			validate?.(before);
 
 			if (before) {
 				await transactionalEntityManager.update(MiMeta, before.id, data);

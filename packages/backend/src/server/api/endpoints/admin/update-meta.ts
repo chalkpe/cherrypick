@@ -12,6 +12,8 @@ import { Endpoint } from '@/server/api/endpoint-base.js';
 import { ApiError } from '@/server/api/error.js';
 import { MetaService } from '@/core/MetaService.js';
 import { ServerStatsService } from '@/daemons/ServerStatsService.js';
+import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
+import { VoiceBackendService } from '@/core/VoiceBackendService.js';
 
 export const meta = {
 	tags: ['admin'],
@@ -30,6 +32,11 @@ export const meta = {
 			message: 'The Cloudflare TURN API token is too long.',
 			code: 'INVALID_PARAM',
 			id: '31197e6a-2380-4bc6-8bb7-0d16a30244b7',
+		},
+		invalidLivekitSettings: {
+			message: 'The LiveKit connection settings are invalid.',
+			code: 'INVALID_PARAM',
+			id: '80359a76-4a0d-4a10-90ab-f85652ab3225',
 		},
 	},
 } as const;
@@ -268,6 +275,12 @@ export const paramDef = {
 		signToActivityPubGet: { type: 'boolean' },
 		allowExternalApRedirect: { type: 'boolean' },
 		enableRemoteVoiceCall: { type: 'boolean' },
+		voiceCallMaxParticipants: { type: 'integer', minimum: 1, maximum: MAX_ROOM_MEMBERS + 1 },
+		voiceCallLivekitSource: { type: 'string', enum: ['yaml', 'custom', 'disabled'] },
+		voiceCallLivekitUrl: { type: 'string', nullable: true, maxLength: 2048 },
+		voiceCallLivekitApiKey: { type: 'string', nullable: true, maxLength: 512 },
+		voiceCallLivekitApiSecret: { type: 'string', nullable: true, maxLength: 512 },
+		voiceCallPreferRelay: { type: 'boolean', nullable: true },
 		// 本当の上限 (CLOUDFLARE_TURN_KEY_ID_MAX_LENGTH、CLOUDFLARE_TURN_API_TOKEN_MAX_LENGTH) は前後の空白を除いてから確かめる。
 		// ここでは空白を含めた入力の大きさだけを抑える
 		voiceCallCloudflareTurnKeyId: { type: 'string', nullable: true, maxLength: 4096 },
@@ -310,6 +323,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 		private metaService: MetaService,
 		private moderationLogService: ModerationLogService,
+		private voiceBackendService: VoiceBackendService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const set = {} as Partial<MiMeta>;
@@ -942,6 +956,16 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				set.enableRemoteVoiceCall = ps.enableRemoteVoiceCall;
 			}
 
+			if (ps.voiceCallMaxParticipants !== undefined) {
+				set.voiceCallMaxParticipants = ps.voiceCallMaxParticipants;
+			}
+
+			if (ps.voiceCallLivekitSource !== undefined) set.voiceCallLivekitSource = ps.voiceCallLivekitSource;
+			if (ps.voiceCallLivekitUrl !== undefined) set.voiceCallLivekitUrl = ps.voiceCallLivekitUrl?.trim() || null;
+			if (ps.voiceCallLivekitApiKey !== undefined) set.voiceCallLivekitApiKey = ps.voiceCallLivekitApiKey?.trim() || null;
+			if (ps.voiceCallLivekitApiSecret !== undefined) set.voiceCallLivekitApiSecret = ps.voiceCallLivekitApiSecret?.trim() || null;
+			if (ps.voiceCallPreferRelay !== undefined) set.voiceCallPreferRelay = ps.voiceCallPreferRelay;
+
 			if (ps.voiceCallCloudflareTurnKeyId !== undefined) {
 				const value = (ps.voiceCallCloudflareTurnKeyId ?? '').trim();
 				if (value.length > CLOUDFLARE_TURN_KEY_ID_MAX_LENGTH) throw new ApiError(meta.errors.cloudflareTurnKeyIdTooLong);
@@ -1022,9 +1046,22 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				set.approvalRequiredForSignup = ps.approvalRequiredForSignup;
 			}
 
+			if (ps.voiceCallLivekitSource === 'disabled') await this.voiceBackendService.retireEndedDirectRooms();
+
 			const before = await this.metaService.fetch(true);
 
-			await this.metaService.update(set);
+			const checkLivekit = ps.voiceCallLivekitSource !== undefined || ps.voiceCallLivekitUrl !== undefined || ps.voiceCallLivekitApiKey !== undefined || ps.voiceCallLivekitApiSecret !== undefined;
+			await this.metaService.update(set, checkLivekit ? current => {
+				const next = { ...current, ...set };
+				if (next.voiceCallLivekitSource === 'custom') {
+					try {
+						const url = new URL(next.voiceCallLivekitUrl ?? '');
+						if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || !next.voiceCallLivekitApiKey || !next.voiceCallLivekitApiSecret) throw new Error();
+					} catch {
+						throw new ApiError(meta.errors.invalidLivekitSettings);
+					}
+				}
+			} : undefined);
 
 			const after = await this.metaService.fetch(true);
 

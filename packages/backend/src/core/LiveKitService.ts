@@ -4,7 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import { AccessToken, RoomServiceClient, TrackSource, TwirpError, WebhookReceiver } from 'livekit-server-sdk';
+import { AccessToken, RoomConfiguration, RoomServiceClient, TrackSource, TwirpError, WebhookReceiver } from 'livekit-server-sdk';
 import type { WebhookEvent } from 'livekit-server-sdk';
 import { DI } from '@/di-symbols.js';
 import type { Config, VoiceCallConfig } from '@/config.js';
@@ -29,8 +29,8 @@ export type LiveKitParticipant = {
  */
 @Injectable()
 export class LiveKitService {
-	public readonly isEnabled: boolean;
-	private readonly livekit: VoiceCallConfig['livekit'] | null;
+	public get isEnabled(): boolean { return this.livekit != null; }
+	private readonly livekit: NonNullable<VoiceCallConfig['livekit']> | null;
 	protected roomService: RoomServiceClient | null;
 
 	constructor(
@@ -38,7 +38,6 @@ export class LiveKitService {
 		private config: Config,
 	) {
 		this.livekit = config.voiceCall?.livekit ?? null;
-		this.isEnabled = this.livekit != null;
 		this.roomService = this.livekit
 			? new RoomServiceClient(this.livekit.internalUrl, this.livekit.apiKey, this.livekit.apiSecret)
 			: null;
@@ -74,13 +73,16 @@ export class LiveKitService {
 	}
 
 	@bindThis
-	public async createJoinToken(params: { roomId: string; identity: string; userId: string; canScreenShare: boolean }): Promise<string> {
+	public async createJoinToken(params: { roomId: string; identity: string; userId: string; canScreenShare: boolean; voiceSessionGeneration?: string; maxParticipants?: number }): Promise<string> {
 		const { apiKey, apiSecret } = this.requireConfig();
 		const token = new AccessToken(apiKey, apiSecret, {
 			identity: params.identity,
 			ttl: '10m',
-			metadata: JSON.stringify({ userId: params.userId }),
+			metadata: JSON.stringify({ userId: params.userId, ...(params.voiceSessionGeneration ? { voiceSessionGeneration: params.voiceSessionGeneration } : {}) }),
 		});
+		if (params.maxParticipants != null) {
+			token.roomConfig = new RoomConfiguration({ maxParticipants: params.maxParticipants, emptyTimeout: 60, departureTimeout: 20 });
+		}
 		token.addGrant({
 			roomJoin: true,
 			room: this.roomNameOf(params.roomId),
@@ -204,7 +206,7 @@ export class LiveKitService {
 		return await new WebhookReceiver(apiKey, apiSecret).receive(body, authHeader);
 	}
 
-	private requireConfig(): VoiceCallConfig['livekit'] {
+	private requireConfig(): NonNullable<VoiceCallConfig['livekit']> {
 		if (this.livekit == null) throw new Error('voice calls are not configured');
 		return this.livekit;
 	}

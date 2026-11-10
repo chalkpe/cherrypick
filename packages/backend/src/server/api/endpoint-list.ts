@@ -496,3 +496,6 @@ export * as 'chat/history' from './endpoints/chat/history.js';
 export * as 'chat/read-all' from './endpoints/chat/read-all.js';
 export * as 'users/translate' from './endpoints/users/translate.js';
 export * as 'v2/admin/emoji/list' from './endpoints/v2/admin/emoji/list.js';
+
+export * as 'admin/voice-relay/manage' from './endpoints/admin/voice-relay/manage.js';
+export * as 'chat/rooms/voice/connection-info' from './endpoints/chat/rooms/voice/connection-info.js';

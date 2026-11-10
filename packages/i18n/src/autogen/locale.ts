@@ -16055,4 +16055,146 @@ export interface Locale extends ILocale {
      * 雪を降らせる
      */
     "snowEffect": string;
+    "_voiceRelay": {
+        /**
+         * 通話インフラのレンタル
+         */
+        "title": string;
+        /**
+         * 通話設定
+         */
+        "settingsTitle": string;
+        /**
+         * 通話の参加定員
+         */
+        "capacityTitle": string;
+        /**
+         * ルームの所有者を含む人数です。変更は新しい通話から適用され、進行中の通話の定員は変わりません。
+         */
+        "capacityDescription": string;
+        /**
+         * LiveKit接続
+         */
+        "livekitTitle": string;
+        /**
+         * 接続と優先する提供方法の変更はサーバーの再起動後に適用されます。他の設定を選ばない場合は従来のサーバー設定ファイルを使います。保存済みのシークレットを削除するには、先に別の設定を選んでください。
+         */
+        "livekitDescription": string;
+        /**
+         * LiveKit設定
+         */
+        "livekitSource": string;
+        /**
+         * サーバー設定ファイルを使う
+         */
+        "sourceYaml": string;
+        /**
+         * 以下の設定を使う
+         */
+        "sourceCustom": string;
+        /**
+         * 自前のLiveKitサーバーを使わない
+         */
+        "sourceDisabled": string;
+        /**
+         * 内部LiveKit URL
+         */
+        "livekitUrl": string;
+        /**
+         * APIキー
+         */
+        "livekitKey": string;
+        /**
+         * APIシークレット
+         */
+        "livekitSecret": string;
+        /**
+         * 空欄のままなら保存済みのシークレットを維持します。削除するには削除を選んでください。
+         */
+        "secretHelp": string;
+        /**
+         * 保存済みのシークレットを削除
+         */
+        "deleteSecret": string;
+        /**
+         * シークレットが保存されています。
+         */
+        "secretSet": string;
+        /**
+         * 新しい通話で優先する提供方法
+         */
+        "preference": string;
+        /**
+         * サーバー設定ファイルを使う
+         */
+        "preferYaml": string;
+        /**
+         * 自前のLiveKitを優先
+         */
+        "preferLocal": string;
+        /**
+         * レンタルしたインフラを優先
+         */
+        "preferRelay": string;
+        /**
+         * LiveKitを直接運用せず、承認された提供サーバーから通話インフラを借りられます。
+         */
+        "description": string;
+        /**
+         * 借りる
+         */
+        "consumer": string;
+        /**
+         * リレーアドレス
+         */
+        "origin": string;
+        /**
+         * シークレット
+         */
+        "keyRef": string;
+        /**
+         * 編集時に空欄にすると、現在のシークレットを使い続けます。
+         */
+        "keyHelp": string;
+        /**
+         * 承認を確認済み
+         */
+        "approved": string;
+        /**
+         * 接続確認が必要
+         */
+        "unchecked": string;
+        /**
+         * 接続・承認を確認
+         */
+        "check": string;
+        /**
+         * 通話ごとに参加定員分の枠を予約します。標準の定員は10人です。
+         */
+        "reservation": string;
+        /**
+         * 予約 {reserved} / {max}枠・追加予約可能 {remaining}枠
+         */
+        "capacity": ParameterizedString<"reserved" | "max" | "remaining">;
+        /**
+         * 通話メディアは{host}が提供します。このサーバーにIPアドレスと通話参加情報が伝わります。接続しますか？
+         */
+        "mediaNotice": ParameterizedString<"host">;
+        /**
+         * メディア提供サーバー: {host}
+         */
+        "mediaProvider": ParameterizedString<"host">;
+        /**
+         * 借りている通話サーバーの定員に達しました。しばらくしてから再試行してください。
+         */
+        "full": string;
+        /**
+         * 通話提供サーバーに接続できず、現在の参加状況を確認できません。
+         */
+        "unreachable": string;
+        /**
+         * 通話の貸し出し承認または認証情報が無効です。管理者に連絡してください。
+         */
+        "revoked": string;
+    };
 }

@@ -27,6 +27,8 @@ export const REDACTED_META_KEYS = [
 	'verifymailAuthKey',
 	'voiceCallCloudflareTurnKeyId',
 	'voiceCallCloudflareTurnApiToken',
+	'voiceCallLivekitApiKey',
+	'voiceCallLivekitApiSecret',
 ] as const;
 
 /** 値が設定されていることを示す */

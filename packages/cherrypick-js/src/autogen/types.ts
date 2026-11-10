@@ -1026,6 +1026,15 @@ export type paths = {
          */
         post: operations['admin___update-user-note'];
     };
+    '/admin/voice-relay/manage': {
+        /**
+         * admin/voice-relay/manage
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:admin:meta*
+         */
+        post: operations['admin___voice-relay___manage'];
+    };
     '/announcements': {
         /**
          * announcements
@@ -1737,6 +1746,15 @@ export type paths = {
          *     **Credential required**: *Yes* / **Permission**: *write:chat*
          */
         post: operations['chat___rooms___update'];
+    };
+    '/chat/rooms/voice/connection-info': {
+        /**
+         * chat/rooms/voice/connection-info
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:chat*
+         */
+        post: operations['chat___rooms___voice___connection-info'];
     };
     '/chat/rooms/voice/join': {
         /**
@@ -6314,6 +6332,7 @@ export type components = {
             room?: components['schemas']['ChatRoom'];
         };
         ChatRoomVoiceState: {
+            unavailable?: boolean;
             /** Format: id */
             roomId: string;
             participants: {
@@ -10941,8 +10960,15 @@ export interface operations {
                         signToActivityPubGet: boolean;
                         allowExternalApRedirect: boolean;
                         enableRemoteVoiceCall: boolean;
+                        voiceCallMaxParticipants: number;
+                        /** @enum {string} */
+                        voiceCallLivekitSource: 'yaml' | 'custom' | 'disabled';
+                        voiceCallLivekitUrl: string | null;
+                        voiceCallLivekitApiKey: string | null;
+                        voiceCallLivekitApiSecretSet: boolean;
+                        voiceCallPreferRelay: boolean | null;
                         voiceCallCloudflareTurnKeyId: string | null;
-                        voiceCallCloudflareTurnApiToken: string | null;
+                        voiceCallCloudflareTurnApiTokenSet: boolean;
                         enableRemoteNotesCleaning: boolean;
                         remoteNotesCleaningExpiryDaysForEachNotes: number;
                         remoteNotesCleaningMaxProcessingDurationInMinutes: number;
@@ -14513,6 +14539,13 @@ export interface operations {
                     signToActivityPubGet?: boolean;
                     allowExternalApRedirect?: boolean;
                     enableRemoteVoiceCall?: boolean;
+                    voiceCallMaxParticipants?: number;
+                    /** @enum {string} */
+                    voiceCallLivekitSource?: 'yaml' | 'custom' | 'disabled';
+                    voiceCallLivekitUrl?: string | null;
+                    voiceCallLivekitApiKey?: string | null;
+                    voiceCallLivekitApiSecret?: string | null;
+                    voiceCallPreferRelay?: boolean | null;
                     voiceCallCloudflareTurnKeyId?: string | null;
                     voiceCallCloudflareTurnApiToken?: string | null;
                     enableRemoteNotesCleaning?: boolean;
@@ -14700,6 +14733,99 @@ export interface operations {
             };
             /** @description I'm Ai */
             418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'admin___voice-relay___manage': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** @enum {string} */
+                    action: 'list' | 'save-provider' | 'remove-provider' | 'check-provider';
+                    id?: string;
+                    origin?: string;
+                    secret?: string;
+                    enabled?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        providers: {
+                            id: string;
+                            origin: string;
+                            enabled: boolean;
+                            validated: boolean;
+                        }[];
+                        capacity?: {
+                            accepting: boolean;
+                            maxSlots: number;
+                            reservedSlots: number;
+                            remainingSlots: number;
+                            remainingRooms: number;
+                        };
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -20492,6 +20618,83 @@ export interface operations {
             };
         };
     };
+    'chat___rooms___voice___connection-info': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    roomId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        mediaProvider?: string;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
     chat___rooms___voice___join: {
         requestBody: {
             content: {
@@ -20509,6 +20712,13 @@ export interface operations {
                 };
                 content: {
                     'application/json': {
+                        mediaProvider?: string;
+                        screenShareLimits?: {
+                            maxWidth: number;
+                            maxHeight: number;
+                            maxFrameRate: number;
+                            maxBitrate: number;
+                        };
                         url: string;
                         token: string;
                         iceServers: {

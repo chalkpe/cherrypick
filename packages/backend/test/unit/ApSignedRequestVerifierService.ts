@@ -87,6 +87,14 @@ async function signedRequest(options: { url?: string; body?: string; digest?: st
 }
 
 describe('ApSignedRequestVerifierService', () => {
+	test('accepts an empty-body signed GET including digest and binds the query', async () => {
+		const { verifier } = createVerifier();
+		const target = `${TOKEN_URL}?room=${encodeURIComponent('https://local.test/chat/rooms/room1')}`;
+		const signed = await ApRequestCreator.createSignedGet({ key: { keyId: KEY_ID, privateKeyPem: privateKey }, url: target, additionalHeaders: {}, includeDigest: true });
+		const u = new URL(target); const headers = { ...signed.request.headers, host: u.host };
+		expect(await verifier.verify({ method: 'GET', url: `${u.pathname}${u.search}`, headers }, '')).toBe(remoteUser);
+		expect(await verifier.verify({ method: 'GET', url: `${u.pathname}?room=other`, headers }, '')).toBeNull();
+	});
 	test('accepts a request signed by a known remote user', async () => {
 		const { verifier, userPublickeysRepository } = createVerifier();
 
@@ -351,6 +359,16 @@ describe('ApSignedRequestVerifierService', () => {
 });
 
 describe('ApRequestService.signedPostJson', () => {
+	test('signedGetJson sends an empty-body digest without following redirects', async () => {
+		const httpRequestService = { send: vi.fn(async () => new Response('{"includeIceServers":true}', { headers: { 'content-type': 'application/json' } })) };
+		const service = new ApRequestService({ url: 'https://member.test' } as Config, { getUserKeypair: async () => ({ publicKey, privateKey }) } as any, httpRequestService as any, { getLogger: () => ({}) } as any, {} as any);
+		await expect(service.signedGetJson({ id: 'bob' }, TOKEN_URL, 10000, { redirect: 'manual', size: 65536 })).resolves.toEqual({ includeIceServers: true });
+		const [, args, options] = httpRequestService.send.mock.calls[0] as unknown as [string, { method: string; headers: Record<string, string>; redirect: string; size: number; timeout: number }, object];
+		expect(args).toMatchObject({ method: 'GET', timeout: 10000, redirect: 'manual', size: 65536 });
+		expect(args.headers.digest).toBe(ApRequestCreator.createDigest(''));
+		expect(args.headers.signature).toContain('headers="(request-target) date host digest"');
+		expect(options).toMatchObject({ throwErrorWhenResponseNotOk: true });
+	});
 	test('signedPostJson returns the parsed response body', async () => {
 		const responseBody = { url: 'wss://local.test/livekit', token: 'jwt', participants: [] };
 		const httpRequestService = {

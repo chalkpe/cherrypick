@@ -71,7 +71,7 @@ export class ApRequestCreator {
 		return `SHA-256=${crypto.createHash('sha256').update(body).digest('base64')}`;
 	}
 
-	static async createSignedGet(args: { key: PrivateKey, url: string, additionalHeaders: Record<string, string> }): Promise<Signed> {
+	static async createSignedGet(args: { key: PrivateKey, url: string, additionalHeaders: Record<string, string>, includeDigest?: boolean }): Promise<Signed> {
 		const u = new URL(args.url);
 
 		const request: Request = {
@@ -81,10 +81,11 @@ export class ApRequestCreator {
 				'Accept': 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
 				'Date': new Date().toUTCString(),
 				'Host': new URL(args.url).host,
+				...(args.includeDigest ? { 'Digest': this.createDigest('') } : {}),
 			}, args.additionalHeaders),
 		};
 
-		const result = await this.#signToRequest(request, args.key, ['(request-target)', 'date', 'host']);
+		const result = await this.#signToRequest(request, args.key, ['(request-target)', 'date', 'host', ...(args.includeDigest ? ['digest'] : [])]);
 
 		return {
 			request,
@@ -219,11 +220,16 @@ export class ApRequestService {
 		});
 	}
 
-	/**
-	 * Get AP object with http-signature
-	 * @param user http-signature user
-	 * @param url URL to fetch
-	 */
+	/** Sign an empty-body GET for a JSON endpoint that requires a digest. */
+	@bindThis
+	public async signedGetJson(user: { id: MiUser['id'] }, url: string, timeout: number, options: { redirect?: 'follow' | 'manual'; size?: number } = {}): Promise<unknown> {
+		const keypair = await this.userKeypairService.getUserKeypair(user.id);
+		const req = await ApRequestCreator.createSignedGet({ key: { privateKeyPem: keypair.privateKey, keyId: `${this.config.url}/users/${user.id}#main-key` }, url, additionalHeaders: {}, includeDigest: true });
+		const res = await this.httpRequestService.send(url, { method: 'GET', headers: req.request.headers, timeout, redirect: options.redirect, size: options.size }, { throwErrorWhenResponseNotOk: true });
+		return await res.json();
+	}
+
+	/** Get an AP object using the user's HTTP signature. */
 	@bindThis
 	public async signedGet(url: string, user: { id: MiUser['id'] }, allowSoftfail: FetchAllowSoftFailMask = FetchAllowSoftFailMask.Strict, followAlternate?: boolean): Promise<unknown> {
 		const _followAlternate = followAlternate ?? true;
