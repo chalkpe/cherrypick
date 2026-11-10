@@ -53,7 +53,6 @@ SPDX-License-Identifier: AGPL-3.0-only
     <section class="_panel _gaps" :class="$style.section">
      <h2><i class="ti ti-phone"></i> {{ i18n.ts._voiceRelay.title }}</h2>
      <MkInfo>{{ i18n.ts._voiceRelay.description }}</MkInfo>
-     <MkInfo>{{ i18n.ts._voiceRelay.reservation }}</MkInfo>
      <h3>{{ i18n.ts._voiceRelay.consumer }}</h3>
      <div v-for="provider in settings?.providers ?? []" :key="provider.id" class="_gaps_s" :class="$style.entry">
       <strong>{{ provider.origin }}</strong>

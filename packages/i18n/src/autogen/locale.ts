@@ -16073,7 +16073,7 @@ export interface Locale extends ILocale {
          */
         "capacityTitle": string;
         /**
-         * ルームの所有者を含む人数です。変更は新しい通話から適用され、進行中の通話の定員は変わりません。
+         * ルームの所有者を含む人数です。変更は新しい通話から適用され、進行中の通話の定員は変わりません。レンタルしたインフラを使う通話では、通話ごとにこの人数分の枠を提供元の容量から予約します。
          */
         "capacityDescription": string;
         /**
@@ -16172,10 +16172,6 @@ export interface Locale extends ILocale {
          * 接続・承認を確認
          */
         "check": string;
-        /**
-         * 通話ごとに参加定員分の枠を予約します。標準の定員は10人です。
-         */
-        "reservation": string;
         /**
          * 予約 {reserved} / {max}枠・追加予約可能 {remaining}枠
          */

@@ -34,6 +34,9 @@ test('does not expose controls for lending infrastructure', async () => {
  const view = render(defineComponent({ render: () => h('div', [h(Suspense, null, { default: () => h(component) })]) }), { global: { stubs: { PageWithHeader: { template: '<main><slot /></main>' }, SearchMarker: { template: '<div><slot /></div>' } } } });
  await view.findByLabelText(i18n.ts._voiceRelay.origin);
  expect(view.container.querySelectorAll('h2')).toHaveLength(1);
+ const rental = view.getByRole('heading', { name: i18n.ts._voiceRelay.title }).closest('section')!;
+ expect(view.getByText(i18n.ts._voiceRelay.capacityDescription)).toBeTruthy();
+ expect(within(rental).queryByText(i18n.ts._voiceRelay.capacityDescription)).toBeNull();
  expect(mocks.api).toHaveBeenCalledWith('admin/voice-relay/manage', { action: 'list' });
 });
 
