@@ -73,6 +73,50 @@ function onChildClosed(actioned?: boolean) {
 	}
 }
 
+let positionFrame: number | null = null;
+let settleFrame: number | null = null;
+let unmounted = false;
+
+function scheduleSetPosition() {
+	if (positionFrame != null || settleFrame != null) return;
+	positionFrame = window.requestAnimationFrame(() => {
+		positionFrame = null;
+		setPosition();
+	});
+}
+
+// 부모 메뉴의 배치가 첫 측정 뒤에 바뀔 수 있어 잠시 위치를 다시 계산합니다.
+function settlePosition() {
+	if (positionFrame != null) {
+		window.cancelAnimationFrame(positionFrame);
+		positionFrame = null;
+	}
+	let stableFrames = 0;
+	let frames = 0;
+
+	const step = () => {
+		if (el.value == null) {
+			settleFrame = null;
+			return;
+		}
+
+		const before = `${el.value.style.left}/${el.value.style.top}`;
+		setPosition();
+		const after = `${el.value.style.left}/${el.value.style.top}`;
+
+		stableFrames = before === after ? stableFrames + 1 : 0;
+		frames++;
+
+		if (stableFrames < 3 && frames < 60) {
+			settleFrame = window.requestAnimationFrame(step);
+		} else {
+			settleFrame = null;
+		}
+	};
+
+	settleFrame = window.requestAnimationFrame(step);
+}
+
 watch(() => props.anchorElement, () => {
 	setPosition();
 });
@@ -83,13 +127,23 @@ const ro = new ResizeObserver((entries, observer) => {
 
 onMounted(() => {
 	if (el.value) ro.observe(el.value);
+	if (props.rootElement != null) ro.observe(props.rootElement);
 	setPosition();
 	nextTick(() => {
+		if (unmounted) return;
 		setPosition();
+		settlePosition();
 	});
+	window.addEventListener('resize', scheduleSetPosition, { passive: true });
+	window.visualViewport?.addEventListener('resize', scheduleSetPosition, { passive: true });
 });
 
 onUnmounted(() => {
+	unmounted = true;
+	if (positionFrame != null) window.cancelAnimationFrame(positionFrame);
+	if (settleFrame != null) window.cancelAnimationFrame(settleFrame);
+	window.removeEventListener('resize', scheduleSetPosition);
+	window.visualViewport?.removeEventListener('resize', scheduleSetPosition);
 	ro.disconnect();
 });
 

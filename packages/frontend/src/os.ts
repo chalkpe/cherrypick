@@ -652,6 +652,7 @@ export function popupMenu(items: (MenuItem | null)[], anchorElement?: HTMLElemen
 	width?: number;
 	onClosing?: () => void;
 	onClosed?: () => void;
+	repositionOnResize?: boolean;
 	debugDisablePredictionCone?: boolean;
 	debugShowPredictionCone?: boolean;
 }): Promise<void> {
@@ -667,6 +668,7 @@ export function popupMenu(items: (MenuItem | null)[], anchorElement?: HTMLElemen
 			width: options?.width,
 			align: options?.align,
 			returnFocusTo,
+			repositionOnResize: options?.repositionOnResize,
 			debugDisablePredictionCone: options?.debugDisablePredictionCone,
 			debugShowPredictionCone: options?.debugShowPredictionCone,
 		}, {

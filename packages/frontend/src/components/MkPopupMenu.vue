@@ -12,6 +12,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	:anchorElement="anchorElement"
 	:transparentBg="true"
 	:returnFocusTo="returnFocusTo"
+	:repositionOnResize="repositionOnResize"
 	@click="click"
 	@close="onModalClose"
 	@closed="onModalClosed"
@@ -44,6 +45,7 @@ defineProps<{
 	width?: number;
 	anchorElement?: HTMLElement | null;
 	returnFocusTo?: HTMLElement | null;
+	repositionOnResize?: boolean;
 	debugDisablePredictionCone?: boolean;
 	debugShowPredictionCone?: boolean;
 }>();

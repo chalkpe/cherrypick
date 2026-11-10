@@ -2331,7 +2331,7 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * No description provided.
+     * For name or size sorting, pass the last file’s name as untilName or size as untilSize with untilId to continue even if the file is moved or deleted.
      *
      * **Credential required**: *Yes* / **Permission**: *read:drive*
      */
@@ -2485,7 +2485,7 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * No description provided.
+     * For name sorting, pass the last folder’s name as untilName with untilId to continue even if the folder is moved or deleted.
      *
      * **Credential required**: *Yes* / **Permission**: *read:drive*
      */

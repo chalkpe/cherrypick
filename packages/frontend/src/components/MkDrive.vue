@@ -81,7 +81,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					@dragend="isDragSource = false"
 				/>
 			</div>
-			<MkButton v-if="foldersPaginator.canFetchOlder.value" :class="$style.loadMore" primary rounded @click="foldersPaginator.fetchOlder()">{{ i18n.ts.loadMore }}</MkButton>
+			<MkButton v-if="canFetchFolders" :class="$style.loadMore" primary rounded @click="fetchMoreFolders">{{ i18n.ts.loadMore }}</MkButton>
 
 			<template v-if="shouldBeGroupedByDate">
 				<MkStickyContainer v-for="(item, i) in filesTimeline" :key="`${item.date.getFullYear()}/${item.date.getMonth() + 1}`">
@@ -169,6 +169,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script lang="ts" setup>
 import { nextTick, onActivated, onBeforeUnmount, onMounted, ref, useTemplateRef, watch, computed, TransitionGroup, markRaw } from 'vue';
 import * as Misskey from 'cherrypick-js';
+import { debounce } from 'throttle-debounce';
 import MkButton from './MkButton.vue';
 import type { MenuItem } from '@/types/menu.js';
 import XNavFolder from '@/components/MkDrive.navFolder.vue';
@@ -239,11 +240,13 @@ watch([selectedFolders, isRootSelected], () => {
 
 const fetching = ref(true);
 
-const sortModeSelect = ref<NonNullable<Misskey.entities.DriveFilesRequest['sort']>>('+createdAt');
+const sortModeSelect = store.r.driveSortMode;
+const folderSortMode = computed(() => sortModeSelect.value === '+size' || sortModeSelect.value === '-size' ? '+createdAt' : sortModeSelect.value);
 
 const filesPaginator = markRaw(new Paginator('drive/files', {
 	limit: 30,
 	canFetchDetection: 'limit',
+	olderCursorParams: last => ({ untilId: last.id, untilName: last.name, untilSize: last.size }),
 	params: () => ({ // 自動でリロードしたくないためcomputedParamsは使わない
 		folderId: folder.value ? folder.value.id : null,
 		type: props.type,
@@ -253,18 +256,38 @@ const filesPaginator = markRaw(new Paginator('drive/files', {
 const foldersPaginator = markRaw(new Paginator('drive/folders', {
 	limit: 30,
 	canFetchDetection: 'limit',
+	olderCursorParams: last => ({ untilId: last.id, untilName: last.name }),
 	params: () => ({ // 自動でリロードしたくないためcomputedParamsは使わない
 		folderId: folder.value ? folder.value.id : null,
+		sort: ['-createdAt', '+createdAt'].includes(folderSortMode.value) ? null : folderSortMode.value,
 	}),
 }));
 
+const canFetchFolders = computed(() => !fetching.value && (foldersPaginator.order.value === 'oldest' ? foldersPaginator.canFetchNewer.value : foldersPaginator.canFetchOlder.value));
+
+let loadingMoreFolders: Promise<void> | null = null;
+
+async function fetchMoreFolders() {
+	if (fetching.value || loadingMoreFolders || refreshingFolders) return;
+	loadingMoreFolders = foldersPaginator.order.value === 'oldest' ? foldersPaginator.fetchNewer() : foldersPaginator.fetchOlder();
+	try {
+		await loadingMoreFolders;
+	} finally {
+		loadingMoreFolders = null;
+	}
+}
+
 const canFetchFiles = computed(() => !fetching.value && (filesPaginator.order.value === 'oldest' ? filesPaginator.canFetchNewer.value : filesPaginator.canFetchOlder.value));
 
+let loadingMoreFiles: Promise<void> | null = null;
+
 async function fetchMoreFiles() {
-	if (filesPaginator.order.value === 'oldest') {
-		filesPaginator.fetchNewer();
-	} else {
-		filesPaginator.fetchOlder();
+	if (fetching.value || loadingMoreFiles || refreshingFiles) return;
+	loadingMoreFiles = filesPaginator.order.value === 'oldest' ? filesPaginator.fetchNewer() : filesPaginator.fetchOlder();
+	try {
+		await loadingMoreFiles;
+	} finally {
+		loadingMoreFiles = null;
 	}
 }
 
@@ -276,18 +299,175 @@ watch(sortModeSelect, () => {
 	initialize();
 });
 
-async function initialize() {
-	fetching.value = true;
-	await foldersPaginator.reload();
-	filesPaginator.initialDirection = sortModeSelect.value === '-createdAt' ? 'newer' : 'older';
-	filesPaginator.order.value = sortModeSelect.value === '-createdAt' ? 'oldest' : 'newest';
-	await filesPaginator.reload();
-	fetching.value = false;
+let listGeneration = 0;
+let needsReload = false;
+let reloadPromise: Promise<void> | null = null;
+
+function initialize(): Promise<void> {
+	listGeneration++;
+	pendingCreatedFiles.clear();
+	pendingCreatedFolders.clear();
+	needsReload = true;
+	if (reloadPromise) return reloadPromise;
+
+	reloadPromise = (async () => {
+		fetching.value = true;
+		try {
+			while (needsReload) {
+				needsReload = false;
+				await Promise.all([loadingMoreFolders, loadingMoreFiles]);
+				foldersPaginator.initialDirection = folderSortMode.value === '-createdAt' ? 'newer' : 'older';
+				foldersPaginator.order.value = folderSortMode.value === '-createdAt' ? 'oldest' : 'newest';
+				filesPaginator.initialDirection = sortModeSelect.value === '-createdAt' ? 'newer' : 'older';
+				filesPaginator.order.value = sortModeSelect.value === '-createdAt' ? 'oldest' : 'newest';
+				await Promise.all([foldersPaginator.reload(), filesPaginator.reload()]);
+			}
+		} finally {
+			fetching.value = false;
+			reloadPromise = null;
+		}
+	})();
+	return reloadPromise;
 }
 
-function onStreamDriveFileCreated(file: Misskey.entities.DriveFile) {
-	if (file.folderId === (folder.value?.id ?? null)) {
-		filesPaginator.prepend(file);
+// Refresh only the affected list, retaining the number of rows the user loaded.
+// The server remains responsible for name collation and tuple cursor ordering.
+const pendingCreatedFiles = new Set<string>();
+const pendingCreatedFolders = new Set<string>();
+let refreshingFiles = false;
+let refreshingFolders = false;
+let filesChanged = false;
+let foldersChanged = false;
+
+const notifyUploadedOutsidePage = debounce(1000, () => { os.toast(i18n.ts.saved); });
+const scheduleFilesRefresh = debounce(150, () => { void refreshFiles().catch(() => {}); });
+const scheduleFoldersRefresh = debounce(150, () => { void refreshFolders().catch(() => {}); });
+
+async function refreshFiles() {
+	filesChanged = true;
+	if (refreshingFiles) return;
+	refreshingFiles = true;
+	try {
+		while (filesChanged) {
+			filesChanged = false;
+			const generation = listGeneration;
+			await Promise.all([reloadPromise, loadingMoreFiles]);
+			if (generation !== listGeneration) continue;
+			const count = Math.max(30, filesPaginator.items.value.length);
+			const sort = sortModeSelect.value;
+			const folderId = folder.value?.id ?? null;
+			const items: Misskey.entities.DriveFile[] = [];
+			let more = true;
+			while (items.length < count && more) {
+				const limit = Math.min(100, count - items.length);
+				const last = items.at(-1);
+				const page = await misskeyApi('drive/files', {
+					folderId, type: props.type, limit,
+					sort: sort === '-createdAt' || sort === '+createdAt' ? null : sort,
+					...(last == null ? (sort === '-createdAt' ? { sinceId: '0' } : {}) : sort === '-createdAt'
+						? { sinceId: last.id }
+						: { untilId: last.id, untilName: last.name, untilSize: last.size }),
+				});
+				items.push(...page);
+				more = page.length === limit;
+			}
+			if (generation !== listGeneration) continue;
+			filesPaginator.items.value = items;
+			(filesPaginator.order.value === 'oldest' ? filesPaginator.canFetchNewer : filesPaginator.canFetchOlder).value = more;
+			if ([...pendingCreatedFiles].some(id => !items.some(item => item.id === id))) notifyUploadedOutsidePage();
+			pendingCreatedFiles.clear();
+		}
+	} finally {
+		refreshingFiles = false;
+	}
+}
+
+async function refreshFolders() {
+	foldersChanged = true;
+	if (refreshingFolders) return;
+	refreshingFolders = true;
+	try {
+		while (foldersChanged) {
+			foldersChanged = false;
+			const generation = listGeneration;
+			await Promise.all([reloadPromise, loadingMoreFolders]);
+			if (generation !== listGeneration) continue;
+			const count = Math.max(30, foldersPaginator.items.value.length);
+			const sort = folderSortMode.value;
+			const folderId = folder.value?.id ?? null;
+			const items: Misskey.entities.DriveFolder[] = [];
+			let more = true;
+			while (items.length < count && more) {
+				const limit = Math.min(100, count - items.length);
+				const last = items.at(-1);
+				const page = await misskeyApi('drive/folders', {
+					folderId, limit,
+					sort: sort === '-createdAt' || sort === '+createdAt' ? null : sort,
+					...(last == null ? (sort === '-createdAt' ? { sinceId: '0' } : {}) : sort === '-createdAt'
+						? { sinceId: last.id }
+						: { untilId: last.id, untilName: last.name }),
+				});
+				items.push(...page);
+				more = page.length === limit;
+			}
+			if (generation !== listGeneration) continue;
+			foldersPaginator.items.value = items;
+			(foldersPaginator.order.value === 'oldest' ? foldersPaginator.canFetchNewer : foldersPaginator.canFetchOlder).value = more;
+			if ([...pendingCreatedFolders].some(id => !items.some(item => item.id === id))) os.toast(i18n.ts.saved);
+			pendingCreatedFolders.clear();
+		}
+	} finally {
+		refreshingFolders = false;
+	}
+}
+
+function insertByNewestId<T extends { id: string }>(items: T[], item: T, canFetchMore: boolean): boolean {
+	if (items.some(existing => existing.id === item.id)) return true;
+	const index = items.findIndex(existing => existing.id < item.id);
+	if (index >= 0) items.splice(index, 0, item);
+	else if (!canFetchMore) items.push(item);
+	else return false;
+	return true;
+}
+
+function onFileCreated(file: Misskey.entities.DriveFile, local = false) {
+	if (file.folderId !== (folder.value?.id ?? null)) return;
+	if (props.type && !(props.type.endsWith('/*') ? file.type.startsWith(props.type.slice(0, -1)) : file.type === props.type)) return;
+	if (sortModeSelect.value === '+createdAt' && !fetching.value && !loadingMoreFiles && !refreshingFiles) {
+		if (!insertByNewestId(filesPaginator.items.value, file, filesPaginator.canFetchOlder.value) && local) notifyUploadedOutsidePage();
+	} else {
+		if (local) pendingCreatedFiles.add(file.id);
+		scheduleFilesRefresh();
+	}
+}
+
+function onFilesUpdated(files: Misskey.entities.DriveFile[]) {
+	for (const file of files) {
+		const present = filesPaginator.items.value.some(item => item.id === file.id);
+		const belongs = file.folderId === (folder.value?.id ?? null) && (!props.type || (props.type.endsWith('/*') ? file.type.startsWith(props.type.slice(0, -1)) : file.type === props.type));
+		if (!present && !belongs) continue;
+		if (sortModeSelect.value === '+createdAt' && !fetching.value && !loadingMoreFiles && !refreshingFiles) {
+			if (!belongs) filesPaginator.removeItem(file.id);
+			else if (present) filesPaginator.updateItem(file.id, () => file);
+			else insertByNewestId(filesPaginator.items.value, file, filesPaginator.canFetchOlder.value);
+		} else {
+			scheduleFilesRefresh();
+		}
+	}
+}
+
+function onFoldersUpdated(folders: Misskey.entities.DriveFolder[]) {
+	for (const item of folders) {
+		const present = foldersPaginator.items.value.some(existing => existing.id === item.id);
+		const belongs = item.parentId === (folder.value?.id ?? null);
+		if (!present && !belongs) continue;
+		if (folderSortMode.value === '+createdAt' && !fetching.value && !loadingMoreFolders && !refreshingFolders) {
+			if (!belongs) foldersPaginator.removeItem(item.id);
+			else if (present) foldersPaginator.updateItem(item.id, () => item);
+			else insertByNewestId(foldersPaginator.items.value, item, foldersPaginator.canFetchOlder.value);
+		} else {
+			scheduleFoldersRefresh();
+		}
 	}
 }
 
@@ -456,7 +636,11 @@ async function createFolder() {
 		parentId: folder.value ? folder.value.id : undefined,
 	});
 
-	foldersPaginator.prepend(createdFolder);
+	if (folderSortMode.value !== '+createdAt' || fetching.value || loadingMoreFolders || refreshingFolders) {
+		pendingCreatedFolders.add(createdFolder.id);
+	}
+	onFoldersUpdated([createdFolder]);
+	if (folderSortMode.value === '+createdAt' && !foldersPaginator.items.value.some(item => item.id === createdFolder.id) && !pendingCreatedFolders.has(createdFolder.id)) os.toast(i18n.ts.saved);
 }
 
 async function renameFolder(folderToRename: Misskey.entities.DriveFolder) {
@@ -644,32 +828,32 @@ function getMenu() {
 		children: [{
 			text: `${i18n.ts.registeredDate} (${i18n.ts.descendingOrder})`,
 			icon: 'ti ti-sort-descending-letters',
-			action: () => { sortModeSelect.value = '+createdAt'; },
+			action: () => { store.set('driveSortMode', '+createdAt'); },
 			active: sortModeSelect.value === '+createdAt',
 		}, {
 			text: `${i18n.ts.registeredDate} (${i18n.ts.ascendingOrder})`,
 			icon: 'ti ti-sort-ascending-letters',
-			action: () => { sortModeSelect.value = '-createdAt'; },
+			action: () => { store.set('driveSortMode', '-createdAt'); },
 			active: sortModeSelect.value === '-createdAt',
 		}, {
-			text: `${i18n.ts.size} (${i18n.ts.descendingOrder})`,
+			text: `${i18n.ts.driveSortSize} (${i18n.ts.descendingOrder})`,
 			icon: 'ti ti-sort-descending-letters',
-			action: () => { sortModeSelect.value = '+size'; },
+			action: () => { store.set('driveSortMode', '+size'); },
 			active: sortModeSelect.value === '+size',
 		}, {
-			text: `${i18n.ts.size} (${i18n.ts.ascendingOrder})`,
+			text: `${i18n.ts.driveSortSize} (${i18n.ts.ascendingOrder})`,
 			icon: 'ti ti-sort-ascending-letters',
-			action: () => { sortModeSelect.value = '-size'; },
+			action: () => { store.set('driveSortMode', '-size'); },
 			active: sortModeSelect.value === '-size',
 		}, {
 			text: `${i18n.ts.name} (${i18n.ts.descendingOrder})`,
 			icon: 'ti ti-sort-descending-letters',
-			action: () => { sortModeSelect.value = '+name'; },
+			action: () => { store.set('driveSortMode', '+name'); },
 			active: sortModeSelect.value === '+name',
 		}, {
 			text: `${i18n.ts.name} (${i18n.ts.ascendingOrder})`,
 			icon: 'ti ti-sort-ascending-letters',
-			action: () => { sortModeSelect.value = '-name'; },
+			action: () => { store.set('driveSortMode', '-name'); },
 			active: sortModeSelect.value === '-name',
 		}],
 	});
@@ -701,69 +885,42 @@ function getMenu() {
 }
 
 function showMenu(ev: PointerEvent) {
-	os.popupMenu(getMenu(), (ev.currentTarget ?? ev.target ?? undefined) as HTMLElement | undefined);
+	os.popupMenu(getMenu(), (ev.currentTarget ?? ev.target ?? undefined) as HTMLElement | undefined, { repositionOnResize: true });
 }
 
 function onContextmenu(ev: PointerEvent) {
 	os.contextMenu(getMenu(), ev);
 }
 
-useGlobalEvent('driveFileCreated', (file) => {
-	if (file.folderId === (folder.value?.id ?? null)) {
-		filesPaginator.prepend(file);
-	}
-});
+function onFileDeleted(id: string) {
+	const present = filesPaginator.items.value.some(item => item.id === id);
+	if (present) filesPaginator.removeItem(id);
+	if (refreshingFiles || (present && (fetching.value || loadingMoreFiles))) scheduleFilesRefresh();
+}
 
-useGlobalEvent('driveFilesUpdated', (files) => {
-	for (const f of files) {
-		if (filesPaginator.items.value.some(x => x.id === f.id)) {
-			if (f.folderId === (folder.value?.id ?? null)) {
-				filesPaginator.updateItem(f.id, () => f);
-			} else {
-				filesPaginator.removeItem(f.id);
-			}
-		} else {
-			if (f.folderId === (folder.value?.id ?? null)) {
-				filesPaginator.prepend(f);
-			}
-		}
-	}
-});
+function onFolderDeleted(id: string) {
+	const present = foldersPaginator.items.value.some(item => item.id === id);
+	if (present) foldersPaginator.removeItem(id);
+	if (refreshingFolders || (present && (fetching.value || loadingMoreFolders))) scheduleFoldersRefresh();
+}
 
-useGlobalEvent('driveFilesDeleted', (files) => {
-	for (const f of files) {
-		filesPaginator.removeItem(f.id);
-	}
-});
-
-useGlobalEvent('driveFoldersUpdated', (folders) => {
-	for (const f of folders) {
-		if (foldersPaginator.items.value.some(x => x.id === f.id)) {
-			if (f.parentId === (folder.value?.id ?? null)) {
-				foldersPaginator.updateItem(f.id, () => f);
-			} else {
-				foldersPaginator.removeItem(f.id);
-			}
-		} else {
-			if (f.parentId === (folder.value?.id ?? null)) {
-				foldersPaginator.prepend(f);
-			}
-		}
-	}
-});
-
-useGlobalEvent('driveFoldersDeleted', (folders) => {
-	for (const f of folders) {
-		foldersPaginator.removeItem(f.id);
-	}
-});
+useGlobalEvent('driveFileCreated', file => { onFileCreated(file, true); });
+useGlobalEvent('driveFilesUpdated', onFilesUpdated);
+useGlobalEvent('driveFilesDeleted', files => { for (const file of files) onFileDeleted(file.id); });
+useGlobalEvent('driveFoldersUpdated', onFoldersUpdated);
+useGlobalEvent('driveFoldersDeleted', folders => { for (const item of folders) onFolderDeleted(item.id); });
 
 let connection: Misskey.IChannelConnection<Misskey.Channels['drive']> | null = null;
 
 onMounted(() => {
 	if (store.s.realtimeMode) {
 		connection = useStream().useChannel('drive');
-		connection.on('fileCreated', onStreamDriveFileCreated);
+		connection.on('fileCreated', file => { onFileCreated(file); });
+		connection.on('fileUpdated', file => { onFilesUpdated([file]); });
+		connection.on('fileDeleted', onFileDeleted);
+		connection.on('folderCreated', item => { onFoldersUpdated([item]); });
+		connection.on('folderUpdated', item => { onFoldersUpdated([item]); });
+		connection.on('folderDeleted', onFolderDeleted);
 	}
 
 	if (props.initialFolder) {
@@ -777,6 +934,10 @@ onActivated(() => {
 });
 
 onBeforeUnmount(() => {
+	listGeneration++;
+	scheduleFilesRefresh.cancel();
+	scheduleFoldersRefresh.cancel();
+	notifyUploadedOutsidePage.cancel();
 	if (connection != null) {
 		connection.dispose();
 	}
