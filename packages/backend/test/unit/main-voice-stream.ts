@@ -6,6 +6,7 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { MainChannel } from '@/server/api/stream/channels/main.js';
+import { ChatService } from '@/core/ChatService.js';
 import { createFixture, mirrorRoom, pauseNextCall, TEST_CLOCK } from '../misc/chat-voice-fixture.js';
 
 const state = { type: 'chatRoomVoiceState', body: { roomId: 'r1', participants: [{ identity: 'i1' }], updatedAt: TEST_CLOCK } };
@@ -16,15 +17,17 @@ function fixture() {
 	fixtures.push(f);
 	const subscriber = new EventEmitter();
 	const send = vi.fn();
+	const connection: { user: { id: string }; token?: { permission: readonly string[] }; subscriber: EventEmitter; sendMessageToWs: typeof send } = { user: { id: 'm1' }, subscriber, sendMessageToWs: send };
+	const chatService = Object.assign(Object.create(ChatService.prototype), { roleService: f.roleService });
 	const channel = Object.assign(Object.create(MainChannel.prototype), {
-		connection: { user: { id: 'm1' }, subscriber, sendMessageToWs: send },
+		connection, chatService,
 		id: 'main', noteEntityService: {}, chatVoiceService: f.service,
 		chatRoomsRepository: f.chatRoomsRepository, chatRoomMembershipsRepository: f.chatRoomMembershipsRepository,
 		voiceRooms: new Map(), disposed: false,
 	}) as MainChannel;
 	const publish = (name: string, data: unknown) => Promise.all(subscriber.listeners(name).map(listener => listener(data)));
 	f.globalEventService.publishMainStream.mockImplementation((id, type, body) => { if (id === 'm1') subscriber.emit('mainStream:m1', { type, body }); });
-	return { ...f, channel, subscriber, send, publish };
+	return { ...f, channel, connection, subscriber, send, publish };
 }
 
 afterEach(() => {
@@ -33,6 +36,56 @@ afterEach(() => {
 });
 
 describe('voice state at the main channel boundary', () => {
+	test.each([
+		['web session', undefined, 'available', true],
+		['chat app', { permission: ['read:account', 'read:chat'] }, 'available', true],
+		['account-only app', { permission: ['read:account'] }, 'available', false],
+		['read-only web session', undefined, 'readonly', true],
+		['read-only chat app', { permission: ['read:account', 'read:chat'] }, 'readonly', true],
+		['unavailable web session', undefined, 'unavailable', false],
+		['unavailable chat app', { permission: ['read:account', 'read:chat'] }, 'unavailable', false],
+	] as const)('%s receives voice state only when chat is readable', async (_label, token, availability, delivered) => {
+		const f = fixture();
+		f.connection.token = token;
+		f.roleService.getUserPolicies.mockResolvedValue({ canVoiceCall: true, canScreenShare: true, chatAvailability: availability });
+		await f.channel.init({});
+		await f.publish('mainStream:m1', state);
+		expect(f.send).toHaveBeenCalledTimes(delivered ? 1 : 0);
+		if (delivered) expect(f.send).toHaveBeenCalledWith('channel', { id: 'main', type: 'chatRoomVoiceState', body: state.body });
+		f.channel.dispose();
+	});
+
+	test('policy changes and errors stop voice state without blocking other main events', async () => {
+		const f = fixture();
+		await f.channel.init({});
+		await f.publish('mainStream:m1', state);
+		expect(f.send).toHaveBeenCalledTimes(1);
+		f.send.mockClear();
+		f.roleService.getUserPolicies.mockResolvedValue({ canVoiceCall: true, canScreenShare: true, chatAvailability: 'unavailable' });
+		await f.publish('mainStream:m1', state);
+		expect(f.send).not.toHaveBeenCalled();
+		f.roleService.getUserPolicies.mockRejectedValue(new Error('policy unavailable'));
+		await f.publish('mainStream:m1', state);
+		expect(f.send).not.toHaveBeenCalled();
+		f.connection.token = { permission: ['read:account'] };
+		await f.publish('mainStream:m1', { type: 'unreadNotification', body: null });
+		expect(f.send).toHaveBeenCalledWith('channel', { id: 'main', type: 'unreadNotification', body: null });
+		f.channel.dispose();
+	});
+
+	test('membership revocation during a policy lookup drops the pending event', async () => {
+		const f = fixture();
+		await f.channel.init({});
+		const policy = pauseNextCall(f.roleService.getUserPolicies);
+		const sending = f.publish('mainStream:m1', state);
+		await policy.reached;
+		await f.publish('chatRoomStream:r1', { type: 'membershipEnded', body: { userId: 'm1' } });
+		policy.resume();
+		await sending;
+		expect(f.send).not.toHaveBeenCalled();
+		f.channel.dispose();
+	});
+
 	test('requires membership even for moderators and fails closed on errors', async () => {
 		const f = fixture();
 		await f.channel.init({});

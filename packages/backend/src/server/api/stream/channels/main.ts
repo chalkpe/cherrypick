@@ -7,6 +7,7 @@ import { Inject, Injectable, Scope } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
 import type { ChatRoomsRepository, ChatRoomMembershipsRepository } from '@/models/_.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
+import { ChatService } from '@/core/ChatService.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import { isInstanceMuted, isUserFromMutedInstance } from '@/misc/is-instance-muted.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
@@ -35,6 +36,7 @@ export class MainChannel extends Channel {
 		@Inject(DI.chatRoomMembershipsRepository)
 		private chatRoomMembershipsRepository: ChatRoomMembershipsRepository,
 		private chatVoiceService: ChatVoiceService,
+		private chatService: ChatService,
 	) {
 		super(request);
 	}
@@ -52,6 +54,7 @@ export class MainChannel extends Channel {
 		if (this.disposed) return;
 		switch (data.type) {
 			case 'chatRoomVoiceState': {
+				if (this.connection.token && !this.connection.token.permission.includes('read:chat')) return;
 				const roomId = data.body.roomId;
 				let guard = this.voiceRooms.get(roomId);
 				if (guard == null) {
@@ -76,6 +79,7 @@ export class MainChannel extends Channel {
 						if (visibility === 'superseded') return;
 						if (visibility === 'hidden') data = { ...data, body: { ...data.body, participants: [] } };
 					}
+					if (!(await this.chatService.getChatAvailability(this.user!.id)).read) return;
 					if (this.disposed || version !== guard.version) return;
 				} catch {
 					return;
