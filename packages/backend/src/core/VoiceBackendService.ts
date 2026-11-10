@@ -94,10 +94,16 @@ export class VoiceBackendService extends LiveKitService {
 		const pool = (this.db.driver as unknown as { master?: pg.Pool }).master;
 		if (!pool) throw new VoiceRelayError('PROVIDER_UNAVAILABLE');
 		const observed = await withAdmission(pool, () => new VoiceRelayError('RATE_LIMITED', 429), () => this.db.query('INSERT INTO voice_token_generation(room_id,identity_digest,generation) VALUES($1,$2,$3) ON CONFLICT(room_id,identity_digest) DO UPDATE SET generation=voice_token_generation.generation RETURNING generation,pending', [roomId, digest, randomUUID()]), true);
-		if (observed[0]?.pending || typeof observed[0]?.generation !== 'string') throw new VoiceRelayError('PARTICIPANT_REVOKED', 403);
+		if (typeof observed[0]?.generation !== 'string') throw new VoiceRelayError('PARTICIPANT_REVOKED', 403);
 		return this.withDirectTokenLock(roomId, identity, async (runner, lockedDigest) => {
 			const current = await this.currentDirectGeneration(runner, roomId, lockedDigest);
-			if (current.pending || current.generation !== observed[0].generation || !await authorize()) throw new VoiceRelayError('PARTICIPANT_REVOKED', 403);
+			if (current.generation !== observed[0].generation || !await authorize()) throw new VoiceRelayError('PARTICIPANT_REVOKED', 403);
+			if (current.pending) {
+				// Keep the revoked generation until the SFU confirms removal, then recheck permissions.
+				await this.removeFromSfu(roomId, identity);
+				const cleared = await runner.query('UPDATE voice_token_generation SET pending=false WHERE room_id=$1 AND identity_digest=$2 AND generation=$3 AND pending=true RETURNING generation', [roomId, lockedDigest, current.generation]);
+				if (cleared.length !== 1 || !await authorize()) throw new VoiceRelayError('PARTICIPANT_REVOKED', 403);
+			}
 			return run();
 		});
 	}
@@ -217,13 +223,18 @@ export class VoiceBackendService extends LiveKitService {
 		return this.withDirectTokenLock(roomId, identity, async (runner, digest) => {
 			// Commit revocation before invoking either SFU; failed removal remains pending.
 			await runner.query('INSERT INTO voice_token_generation(room_id,identity_digest,generation,pending) VALUES($1,$2,$3,true) ON CONFLICT(room_id,identity_digest) DO UPDATE SET generation=EXCLUDED.generation,pending=true', [roomId, digest, randomUUID()]);
-			if (!this.hasRelayConfiguration || await this.isLocalRoom(roomId)) await super.removeParticipant(roomId, identity);
-			else {
-				const accepted = await this.relay.participant(roomId, 'kick', { identity });
-				if (accepted == null) await super.removeParticipant(roomId, identity);
-			}
+			await this.removeFromSfu(roomId, identity);
 			await runner.query('UPDATE voice_token_generation SET pending=false WHERE room_id=$1 AND identity_digest=$2', [roomId, digest]);
 		});
+	}
+	private async removeFromSfu(roomId: string, identity: string): Promise<void> {
+		if (!this.hasRelayConfiguration || await this.isLocalRoom(roomId)) {
+			if (!super.isEnabled) throw new VoiceRelayError('PROVIDER_UNAVAILABLE');
+			await super.removeParticipant(roomId, identity);
+		} else {
+			const accepted = await this.relay.participant(roomId, 'kick', { identity });
+			if (accepted == null) throw new VoiceRelayError('PROVIDER_UNAVAILABLE');
+		}
 	}
 	@bindThis
 	public override async muteMicrophone(roomId: string, identity: string): Promise<void> { if (!this.hasRelayConfiguration || await this.isLocalRoom(roomId)) return super.muteMicrophone(roomId, identity); const accepted = await this.relay.participant(roomId, 'mute', { identity }); if (accepted == null && super.isEnabled) await super.muteMicrophone(roomId, identity); }
