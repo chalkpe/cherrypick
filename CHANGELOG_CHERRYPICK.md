@@ -6,6 +6,7 @@
 Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2026101](CHANGELOG.md#2026101) 문서를 참고하십시오.
 
 ### General
+- Feat: 외부 서버의 통화 인프라를 대여하고 통화 설정에서 참가 정원과 연결 방식을 관리할 수 있습니다. 기본 정원은 방 주인을 포함해 10명입니다.
 - Feat: 관리자와 모더레이터가 기존 노트의 본문과 첨부를 유지하면서 공개 범위를 변경할 수 있습니다. 리모트 노트의 변경은 이 서버에 저장된 사본에만 적용됩니다. ([ZerglingGo/misskey@dc47591c](https://github.com/ZerglingGo/misskey/commit/dc47591c13bf82406c466b942bca328157a8862a))
 - Feat: 음성 통화 및 화면 공유를 추가했습니다.
 - Feat: 쪽지를 ActivityPub으로 연합합니다. 1:1과 그룹 쪽지를 다른 CherryPick 서버, 같은 규약을 쓰는 Mastodon 서버와 주고받습니다. 이전 버전 서버와의 통신은 일부 제한됩니다.
@@ -32,6 +33,7 @@ Misskey의 전체 변경 사항을 확인하려면, [CHANGELOG.md#2026101](CHANG
 - Enhance: 드라이브의 폴더와 파일을 이름순·최근순으로 정렬할 수 있습니다.
 
 ### Server
+- Note: 통화 인프라 대여와 설정을 위한 데이터베이스 마이그레이션이 포함됩니다.
 - Fix: 노트 자동 삭제 시 일반 노트 삭제와 동일한 후처리를 수행하여, 리모트 서버로 삭제가 전파되고 검색 색인과 차트 등에도 반영되도록 개선했습니다. ([ZerglingGo/misskey@799bb2df](https://github.com/ZerglingGo/misskey/commit/799bb2dfeebb7f2c321d53c94e2a9e3d4a610512))
 - Feat: 커스텀 이모지의 민감한 콘텐츠 표시를 지원하는 서버와 주고받으며, 표시 여부만 변경된 경우에도 리모트 이모지에 반영합니다. ([ZerglingGo/misskey@1ed8b116](https://github.com/ZerglingGo/misskey/commit/1ed8b116d8a9d3604e1ea9b9bfa68f9a1682049f))
 - Enhance: 쪽지의 수정·삭제·리액션과 그룹 초대·참여·탈퇴·내보내기·보관 상태를 지원 서버 사이에 동기화합니다.
