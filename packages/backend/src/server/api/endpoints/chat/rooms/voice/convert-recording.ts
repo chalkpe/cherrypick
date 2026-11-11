@@ -25,6 +25,8 @@ const MAX_SOURCE_BYTES = 128 * 1024 * 1024;
 // ffmpeg is expensive: run at most this many conversions at once on this process
 const MAX_CONCURRENT_CONVERSIONS = 2;
 let runningConversions = 0;
+// one conversion per user at a time, so a single user cannot hold every slot
+const convertingUsers = new Set<string>();
 
 export const meta = {
 	tags: ['chat'],
@@ -95,14 +97,15 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			const isVideo = file.type.startsWith('video/webm');
 			if (!isAudio && !isVideo) return null;
 			if (file.size > MAX_SOURCE_BYTES) throw new ApiError(meta.errors.tooLarge);
-			if (runningConversions >= MAX_CONCURRENT_CONVERSIONS) throw new ApiError(meta.errors.busy);
+			if (runningConversions >= MAX_CONCURRENT_CONVERSIONS || convertingUsers.has(me.id)) throw new ApiError(meta.errors.busy);
 			runningConversions++;
+			convertingUsers.add(me.id);
 
-			const src = this.internalStorageService.resolvePath(file.accessKey);
-			const dir = fs.mkdtempSync(Path.join(os.tmpdir(), 'voice-recording-'));
-			const dst = Path.join(dir, isVideo ? 'recording.mp4' : 'recording.mp3');
-
+			let dir: string | null = null;
 			try {
+				const src = this.internalStorageService.resolvePath(file.accessKey);
+				dir = fs.mkdtempSync(Path.join(os.tmpdir(), 'voice-recording-'));
+				const dst = Path.join(dir, isVideo ? 'recording.mp4' : 'recording.mp3');
 				await execFileAsync('ffmpeg', isVideo
 					? ['-y', '-threads', '2', '-i', src, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-af', 'alimiter=limit=0.95', '-c:a', 'aac', '-b:a', '256k', '-movflags', '+faststart', dst]
 					: ['-y', '-threads', '2', '-i', src, '-vn', '-af', 'alimiter=limit=0.95', '-c:a', 'libmp3lame', '-b:a', '320k', dst], { timeout: 10 * 60 * 1000 });
@@ -114,7 +117,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.conversionFailed);
 			} finally {
 				runningConversions--;
-				fs.rmSync(dir, { recursive: true, force: true });
+				convertingUsers.delete(me.id);
+				if (dir != null) fs.rmSync(dir, { recursive: true, force: true });
 			}
 		});
 	}

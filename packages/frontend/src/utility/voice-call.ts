@@ -156,6 +156,7 @@ let recordingMicBus: GainNode | null = null;
 let recordingOthersBus: GainNode | null = null;
 let recordingMixedDest: MediaStreamAudioDestinationNode | null = null;
 let pendingRecordingUploads: Promise<void>[] = [];
+let recordingConversions: Promise<void> = Promise.resolve();
 let recordingRawMicStream: MediaStream | null = null;
 const recordingSources = new Map<MediaStreamTrack, { source: MediaStreamAudioSourceNode; kind: 'mic' | 'others' }>();
 let recordingCanvas: HTMLCanvasElement | null = null;
@@ -305,8 +306,12 @@ async function uploadRecording(blob: Blob, name: string): Promise<void> {
 	const res = await window.fetch(apiUrl + '/drive/files/create', { method: 'POST', body: form, credentials: 'omit' });
 	if (!res.ok) throw new Error(`failed to upload the recording: ${res.status}`);
 	let file = await res.json() as Misskey.entities.DriveFile;
+	// the server converts one recording per user at a time, so convert the parts one after another
+	const fileId = file.id;
+	const conversion = recordingConversions.then(() => misskeyApi('chat/rooms/voice/convert-recording', { fileId }));
+	recordingConversions = conversion.then(() => {}, () => {});
 	try {
-		const converted = await misskeyApi('chat/rooms/voice/convert-recording', { fileId: file.id });
+		const converted = await conversion;
 		if (converted != null) file = converted;
 	} catch { /* keep the WebM when ffmpeg fails */ }
 	// the recording stays in the drive; it is not posted to the room
