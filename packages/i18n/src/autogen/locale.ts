@@ -6764,6 +6764,38 @@ export interface Locale extends ILocale {
     };
     "_chat": {
         /**
+         * 合計
+         */
+        "diceTotal": string;
+        /**
+         * ロールの内訳
+         */
+        "diceDetails": string;
+        /**
+         * チャットでダイスを振る
+         */
+        "diceHelp": string;
+        /**
+         * /dice は 1d6、/dice 1d20+1 は補正付きのロールです。2d20kh1 は高い方、2d20kl1 は低い方を採用します。結果付きのメッセージは編集できません。振り直す場合は新しく送信してください。
+         */
+        "diceHelpDescription": string;
+        /**
+         * 使える記法（RPG Dice Roller）
+         */
+        "diceSyntax": string;
+        /**
+         * ダイスの式を読み取れませんでした。記法を確認して修正してください。
+         */
+        "diceInvalid": string;
+        /**
+         * ロールが計算の上限を超えました。ダイスの数や繰り返しを減らしてください。
+         */
+        "diceLimit": string;
+        /**
+         * 今はダイスを振れません。少し待ってからもう一度送信してください。
+         */
+        "diceBusy": string;
+        /**
          * メッセージ
          */
         "messages": string;

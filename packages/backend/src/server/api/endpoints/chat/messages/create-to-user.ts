@@ -7,6 +7,7 @@ import { Injectable } from '@nestjs/common';
 import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { GetterService } from '@/server/api/GetterService.js';
+import { ChatDiceError, createChatDiceApiErrors } from '@/core/chat-dice.js';
 import { ApiError } from '@/server/api/error.js';
 import { ChatMessageAccessError, ChatMessageBlockedError, ChatMessageRecipientSuspendedError, ChatService, MAX_CHAT_MESSAGE_FILES, MAX_CHAT_MESSAGE_TEXT_LENGTH } from '@/core/ChatService.js';
 
@@ -31,6 +32,11 @@ export const meta = {
 	},
 
 	errors: {
+		...createChatDiceApiErrors({
+			invalid: 'f0d2515a-4d95-4a17-a5e8-86f8236c607b',
+			limit: '795eec5c-dfd3-47a8-af77-914f6b6bc229',
+			busy: '37886aa9-507a-4ea4-b8a7-3ccf4ac44bd1',
+		}),
 		recipientIsYourself: {
 			message: 'You can not send a message to yourself.',
 			code: 'RECIPIENT_IS_YOURSELF',
@@ -139,6 +145,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					files,
 				});
 			} catch (e) {
+				if (e instanceof ChatDiceError) throw new ApiError(e.reason === 'invalid' ? meta.errors.diceInvalid : e.reason === 'limit' ? meta.errors.diceLimit : meta.errors.diceBusy);
 				if (e instanceof ChatMessageBlockedError) throw new ApiError(meta.errors.youHaveBeenBlocked);
 				if (e instanceof ChatMessageRecipientSuspendedError) throw new ApiError(meta.errors.recipientIsSuspended);
 				if (e instanceof ChatMessageAccessError) throw new ApiError(meta.errors.cannotChatWithUser);

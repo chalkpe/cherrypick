@@ -78,6 +78,7 @@ import { ClipService } from './ClipService.js';
 import { FeaturedService } from './FeaturedService.js';
 import { FanoutTimelineService } from './FanoutTimelineService.js';
 import { ChannelFollowingService } from './ChannelFollowingService.js';
+import { ChatDiceService } from './ChatDiceService.js';
 import { ChatService } from './ChatService.js';
 import { ChatRosterService } from './ChatRosterService.js';
 import { LiveKitService } from './LiveKitService.js';
@@ -419,6 +420,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChannelFollowingService,
 		ChannelMutingService,
 		ChatService,
+		ChatDiceService,
 		ChatRosterService,
 		LiveKitService,
 		VoiceBackendService,
@@ -757,6 +759,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChannelFollowingService,
 		ChannelMutingService,
 		ChatService,
+		ChatDiceService,
 		ChatRosterService,
 		LiveKitService,
 		VoiceBackendService,

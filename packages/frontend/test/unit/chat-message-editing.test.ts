@@ -110,6 +110,51 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+const dice = { version: 1, engine: '@dice-roller/rpg-dice-roller', engineVersion: '5.5.1', notation: '1d6', total: 4, output: '1d6: [4] = 4 <b>$(spin)</b>' } satisfies NonNullable<Misskey.entities.ChatMessage['dice']>;
+
+test('shows a saved total and closed, plain-text roll details', () => {
+	const { container } = render(XMessage, { props: { message: { ...message, text: '/dice', dice } }, global: { stubs } });
+
+	expect(screen.getByText('4')).toBeTruthy();
+	const details = container.querySelector('details')!;
+	expect(details).toBeTruthy();
+	expect(details.open).toBe(false);
+	expect(details.textContent).toContain(dice.output);
+	expect(details.querySelector('b')).toBeNull();
+});
+
+test('ordinary result-like text cannot create a dice result and tombstones hide it', () => {
+	const normal = render(XMessage, { props: { message: { ...message, text: dice.output } }, global: { stubs } });
+	expect(normal.container.querySelector('details')).toBeNull();
+	normal.unmount();
+
+	const deleted = render(XMessage, { props: { message: { ...message, text: '/dice', dice, deletedAt: new Date().toISOString() } }, global: { stubs } });
+	expect(deleted.container.querySelector('details')).toBeNull();
+	expect(screen.queryByText('4')).toBeNull();
+});
+
+test('a saved dice result has no edit menu entry', async () => {
+	render(XMessage, { props: { message: { ...message, dice }, canEdit: true }, global: { stubs } });
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.menu }));
+
+	const menu = mocks.popupMenu.mock.lastCall![0] as MenuItem[];
+	expect(menu.some(item => item && 'text' in item && item.text === i18n.ts.edit)).toBe(false);
+});
+
+test.each([
+	['DICE_INVALID', 'diceInvalid'],
+	['DICE_LIMIT', 'diceLimit'],
+	['DICE_BUSY', 'diceBusy'],
+] as const)('preserves a failed dice command and shows the localized %s error', async (code, key) => {
+	const form = renderForm();
+	mocks.api.mockRejectedValueOnce({ code });
+	await fireEvent.update(form.textarea, '/dice bad-expression');
+
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.send }));
+	await waitFor(() => expect(os.alert).toHaveBeenCalledWith({ type: 'error', title: i18n.ts.somethingHappened, text: i18n.ts._chat[key] }));
+	expect(form.textarea.value).toBe('/dice bad-expression');
+});
+
 test('the message box and the emoji button have accessible names', () => {
 	const form = renderForm();
 	expect(form.textarea.getAttribute('aria-label')).toBe(i18n.ts.inputMessageHere);

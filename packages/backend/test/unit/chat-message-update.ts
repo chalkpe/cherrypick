@@ -109,7 +109,7 @@ describe('ChatService.updateMessage', () => {
 
 		expect(updated.text).toBe('edited');
 		expect(updated.editedAt).toBeInstanceOf(Date);
-		expect(f.chatMessagesRepository.update).toHaveBeenCalledWith({ id: 'm1', deletedAt: IsNull() }, expect.objectContaining({ text: 'edited' }));
+		expect(f.chatMessagesRepository.update).toHaveBeenCalledWith({ id: 'm1', deletedAt: IsNull(), dice: IsNull() }, expect.objectContaining({ text: 'edited' }));
 	});
 
 	test('rejects editing another user message', async () => {
