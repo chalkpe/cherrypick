@@ -80,10 +80,10 @@ describe('LiveKitService', () => {
 	test('reads reported settings without deriving mute from media tracks', async () => {
 		roomService.listParticipants.mockResolvedValue([{
 			identity: 'i1', metadata: '{"userId":"u1"}',
-			attributes: { 'cherrypick.micMuted': 'false', 'cherrypick.deafened': 'true' },
+			attributes: { 'cherrypick.micMuted': 'false', 'cherrypick.deafened': 'true', 'cherrypick.recording': 'true' },
 			tracks: [],
 		}]);
-		expect((await service.listParticipants('r1'))[0]).toMatchObject({ micMuted: false, deafened: true });
+		expect((await service.listParticipants('r1'))[0]).toMatchObject({ micMuted: false, deafened: true, recording: true });
 	});
 
 	test('does not let a reported mute hide a microphone that is still sending', async () => {
@@ -101,7 +101,7 @@ describe('LiveKitService', () => {
 		roomService.updateParticipant.mockResolvedValue({ identity: 'i1', sid: 'PA_1' });
 		await expect(service.setParticipantStatus('r1', 'i1', 'PA_1', { micMuted: true, deafened: false })).resolves.toBe(true);
 		expect(roomService.updateParticipant).toHaveBeenCalledWith('chatRoom:r1', 'i1', {
-			attributes: { 'cherrypick.micMuted': 'true', 'cherrypick.deafened': 'false' },
+			attributes: { 'cherrypick.micMuted': 'true', 'cherrypick.deafened': 'false', 'cherrypick.recording': 'false' },
 		});
 		roomService.updateParticipant.mockClear();
 		await expect(service.setParticipantStatus('r1', 'i1', 'PA_old', { micMuted: false, deafened: false })).resolves.toBe(false);
@@ -114,7 +114,7 @@ describe('LiveKitService', () => {
 		roomService.updateParticipant.mockResolvedValue({ identity: 'i1', sid: 'PA_new' });
 		await expect(service.setParticipantStatus('r1', 'i1', 'PA_old', { micMuted: true, deafened: true })).resolves.toBe(false);
 		expect(roomService.updateParticipant).toHaveBeenLastCalledWith('chatRoom:r1', 'i1', {
-			attributes: { 'cherrypick.micMuted': '', 'cherrypick.deafened': '' },
+			attributes: { 'cherrypick.micMuted': '', 'cherrypick.deafened': '', 'cherrypick.recording': '' },
 		});
 	});
 
