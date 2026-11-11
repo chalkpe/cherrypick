@@ -26,6 +26,7 @@ const requests: { endpoint: string; body: Record<string, unknown> }[] = [];
 let failedAction: string | null;
 let networkFailure: boolean;
 let eventErrors: unknown[];
+let storedSecrets: boolean;
 
 const stubs = {
 	PageWithHeader: { template: '<main><slot/></main>' },
@@ -84,6 +85,7 @@ beforeEach(() => {
 	failedAction = null;
 	networkFailure = false;
 	eventErrors = [];
+	storedSecrets = false;
 	os.popups.value = [];
 	vi.spyOn(window, 'fetch').mockImplementation(async (input, init) => {
 		const endpoint = String(input).split('/api/')[1];
@@ -96,8 +98,8 @@ beforeEach(() => {
 		if (endpoint === 'admin/meta') {
 			return new Response(JSON.stringify({
 				voiceCallMaxParticipants: 10, voiceCallLivekitSource: 'yaml', voiceCallLivekitUrl: null,
-				voiceCallLivekitApiKey: null, voiceCallLivekitApiSecretSet: false, voiceCallPreferRelay: null,
-				voiceCallCloudflareTurnKeyId: null, voiceCallCloudflareTurnApiTokenSet: false,
+				voiceCallLivekitApiKey: null, voiceCallLivekitApiSecretSet: storedSecrets, voiceCallPreferRelay: null,
+				voiceCallCloudflareTurnKeyId: null, voiceCallCloudflareTurnApiTokenSet: storedSecrets,
 			}), { status: 200 });
 		}
 		if (endpoint === 'admin/voice-relay/manage') {
@@ -235,4 +237,84 @@ test.each([false, true])('capacity save preserves feedback (failure: %s)', async
 	} else {
 		expect(errorPopup()).toBeUndefined();
 	}
+});
+
+test.each([
+	['capacityTitle', () => i18n.ts._voiceRelay.capacityTitle],
+	['livekitTitle', () => i18n.ts._voiceRelay.livekitTitle],
+	['turn', () => i18n.ts._serverSettings.voiceCallCloudflareTurn],
+	['rental', () => i18n.ts._voiceRelay.title],
+] as const)('%s folder exposes its name and expanded state on its native button', async (_section, label) => {
+	await enterPage();
+	const header = screen.getByRole('button', { name: label(), expanded: false });
+	expect(header.tagName).toBe('BUTTON');
+	const labelElement = document.getElementById(header.getAttribute('aria-labelledby')!);
+	expect(labelElement?.textContent).toBe(label());
+
+	await fireEvent.click(header);
+	await waitFor(() => expect(screen.getByRole('button', { name: label(), expanded: true })).toBe(header));
+	await fireEvent.click(header);
+	await waitFor(() => expect(screen.getByRole('button', { name: label(), expanded: false })).toBe(header));
+
+	expect(requests).toHaveLength(2);
+});
+
+test('all eight call settings inputs have the visible name, including custom LiveKit and passwords', async () => {
+	await enterPage();
+	for (const label of [i18n.ts._voiceRelay.capacityTitle, i18n.ts._voiceRelay.livekitTitle, i18n.ts._serverSettings.voiceCallCloudflareTurn, i18n.ts._voiceRelay.title]) {
+		await fireEvent.click(screen.getByRole('button', { name: label }));
+	}
+	await fireEvent.click(await screen.findByText(i18n.ts._voiceRelay.sourceCustom));
+
+	const names = [
+		i18n.ts._voiceRelay.capacityTitle,
+		i18n.ts._voiceRelay.livekitUrl,
+		i18n.ts._voiceRelay.livekitKey,
+		i18n.ts._voiceRelay.livekitSecret,
+		i18n.ts._serverSettings.voiceCallCloudflareTurnKeyId,
+		i18n.ts._serverSettings.voiceCallCloudflareTurnApiToken,
+		i18n.ts._voiceRelay.origin,
+		i18n.ts._voiceRelay.keyRef,
+	];
+	const inputs = names.map(name => screen.getByLabelText(name, { selector: 'input' }));
+	expect(new Set(inputs).size).toBe(8);
+	expect(inputs.every(input => input.tagName === 'INPUT')).toBe(true);
+	expect(screen.getByRole('spinbutton', { name: names[0] })).toBe(inputs[0]);
+	expect((inputs[6] as HTMLInputElement).type).toBe('url');
+});
+
+test('rental checkbox name and native checked state follow edit, click, fold and reset', async () => {
+	const rental = await openRental();
+	const checkbox = within(rental).getByRole<HTMLInputElement>('checkbox', { name: i18n.ts.enable, checked: true });
+	await fireEvent.click(checkbox);
+	expect(checkbox.checked).toBe(false);
+
+	await fireEvent.click(within(rental).getByRole('button', { name: i18n.ts.edit }));
+	expect(checkbox.checked).toBe(true);
+	await fireEvent.click(within(rental).getByText(i18n.ts.enable));
+	expect(checkbox.checked).toBe(false);
+	const header = screen.getByRole('button', { name: i18n.ts._voiceRelay.title });
+	await fireEvent.click(header);
+	await fireEvent.click(header);
+	expect(checkbox.checked).toBe(false);
+
+	await fireEvent.click(within(rental).getByRole('button', { name: i18n.ts.cancel }));
+	expect(checkbox.checked).toBe(true);
+	expect(requests).toHaveLength(2);
+});
+
+test('both stored-secret deletion checkboxes expose their names and actual checked state', async () => {
+	storedSecrets = true;
+	await enterPage();
+	for (const label of [i18n.ts._voiceRelay.livekitTitle, i18n.ts._serverSettings.voiceCallCloudflareTurn]) {
+		const header = screen.getByRole('button', { name: label });
+		await fireEvent.click(header);
+		const group = header.closest<HTMLElement>('[role="group"]')!;
+		const checkbox = await within(group).findByRole<HTMLInputElement>('checkbox', { name: i18n.ts._voiceRelay.deleteSecret, checked: false });
+		await fireEvent.click(checkbox);
+		expect(checkbox.checked).toBe(true);
+		await fireEvent.click(within(group).getByText(i18n.ts._voiceRelay.deleteSecret));
+		expect(checkbox.checked).toBe(false);
+	}
+	expect(requests).toHaveLength(2);
 });

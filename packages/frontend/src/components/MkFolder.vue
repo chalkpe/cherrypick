@@ -7,10 +7,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 <div ref="rootEl" :class="$style.root" role="group" :aria-expanded="opened">
 	<MkStickyContainer>
 		<template #header>
-			<button :class="[$style.header, { [$style.opened]: opened, [$style.inactive]: inactive || isArchived }]" class="_button" role="button" data-testid="folder-header" @click="toggle">
+			<button :class="[$style.header, { [$style.opened]: opened, [$style.inactive]: inactive || isArchived }]" class="_button" role="button" :aria-expanded="accessible ? opened : undefined" :aria-labelledby="accessible ? labelId : undefined" data-testid="folder-header" @click="toggle">
 				<div :class="$style.headerIcon"><slot name="icon"></slot></div>
 				<div :class="$style.headerText">
-					<div :class="$style.headerTextMain">
+					<div :id="accessible ? labelId : undefined" :class="$style.headerTextMain">
 						<MkCondensedLine :minScale="2 / 3"><slot name="label"></slot></MkCondensedLine>
 					</div>
 					<div :class="$style.headerTextSub">
@@ -97,7 +97,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { nextTick, onMounted, ref, useTemplateRef, watch } from 'vue';
+import { nextTick, onMounted, ref, useId, useTemplateRef, watch } from 'vue';
 import { prefer } from '@/preferences.js';
 import { getBgColor } from '@/utility/get-bg-color.js';
 import { pageFolderTeleportCount, popup } from '@/os.js';
@@ -115,6 +115,8 @@ const props = withDefaults(defineProps<{
 	canPage?: boolean;
 	inactive?: boolean;
 	isArchived?: boolean;
+	/** 조작 버튼에 제목과 펼침 상태를 연결합니다. */
+	accessible?: boolean;
 }>(), {
 	defaultOpen: false,
 	maxHeight: null,
@@ -124,6 +126,7 @@ const props = withDefaults(defineProps<{
 	canPage: true,
 	inactive: false,
 	isArchived: false,
+	accessible: false,
 });
 
 const emit = defineEmits<{
@@ -132,6 +135,7 @@ const emit = defineEmits<{
 }>();
 
 const rootEl = useTemplateRef('rootEl');
+const labelId = useId();
 const asPage = props.canPage && deviceKind === 'smartphone' && prefer.s['experimental.enableFolderPageView'];
 const bgSame = ref(false);
 const opened = ref(asPage ? false : props.defaultOpen);
