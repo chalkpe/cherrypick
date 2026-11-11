@@ -21,7 +21,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			@contextmenu="onContextMenu(p, menuable, $event)"
 		>
 			<MkAvatar :user="p.user" :link="false" :decorations="[]" :class="$style.avatar"/>
-			<span v-if="p.micMuted || p.deafened" :class="$style.dot" aria-hidden="true"></span>
+			<span v-if="p.micMuted || p.deafened || p.recording" :class="[$style.dot, { [$style.recording]: p.recording }]" aria-hidden="true"></span>
 		</component>
 		<button v-if="hidden > 0" v-tooltip="moreLabel" type="button" class="_button" :class="$style.more" :aria-label="moreLabel" aria-haspopup="dialog" @click="call.openRoster()">+{{ hidden }}</button>
 	</div>
@@ -58,7 +58,7 @@ const hidden = computed(() => props.call.participants.value.length - visible.val
 
 // 小さな点だけでは分からないので、マイク・スピーカーの状態は名前に添えて伝える
 function labelOf(p: typeof visible.value[number]['p']): string {
-	const status = p.deafened ? i18n.ts._voiceCall.deafened : p.micMuted ? i18n.ts._voiceCall.micMuted : null;
+	const status = p.recording ? i18n.ts._voiceCall.recording : p.deafened ? i18n.ts._voiceCall.deafened : p.micMuted ? i18n.ts._voiceCall.micMuted : null;
 	return status == null ? userNameForLabel(p.user) : `${userNameForLabel(p.user)} (${status})`;
 }
 
@@ -121,6 +121,10 @@ function onContextMenu(p: typeof visible.value[number]['p'], menuable: boolean, 
 	border-radius: 50%;
 	background: color-mix(in srgb, var(--MI_THEME-fg) 50%, transparent);
 	box-shadow: 0 0 0 3px var(--MI_THEME-panel);
+}
+
+.recording {
+	background: var(--MI_THEME-error);
 }
 
 .more {

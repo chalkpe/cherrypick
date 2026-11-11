@@ -363,7 +363,7 @@ export interface IChatRoomVoiceState extends IObject {
 	type: 'ChatRoomVoiceState';
 	id: string;
 	room: string;
-	participants: { id: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
+	participants: { id: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[];
 	updated: string;
 }
 

@@ -588,6 +588,7 @@ const extension_context_definition = {
 	screenSharing: 'cherrypick:screenSharing',
 	micMuted: 'cherrypick:micMuted',
 	deafened: 'cherrypick:deafened',
+	recording: 'cherrypick:recording',
 } satisfies Context;
 
 export const CONTEXT: (string | Context)[] = [...context_iris, extension_context_definition];

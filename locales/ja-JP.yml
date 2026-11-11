@@ -2505,6 +2505,10 @@ _voiceCall:
   inCallCount: "{n}人が通話中"
   moveChatLeft: "チャットを左に移動"
   moveChatRight: "チャットを右に移動"
+  recordingSaved: "録音ファイルをドライブに保存しました"
+  startRecording: "録音を開始"
+  stopRecording: "録音を停止"
+  recording: "録音中"
 _role:
   new: "ロールの作成"
   edit: "ロールの編集"

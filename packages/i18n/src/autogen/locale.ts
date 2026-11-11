@@ -9670,6 +9670,22 @@ export interface Locale extends ILocale {
          * チャットを右に移動
          */
         "moveChatRight": string;
+        /**
+         * 録音ファイルをドライブに保存しました
+         */
+        "recordingSaved": string;
+        /**
+         * 録音を開始
+         */
+        "startRecording": string;
+        /**
+         * 録音を停止
+         */
+        "stopRecording": string;
+        /**
+         * 録音中
+         */
+        "recording": string;
     };
     "_role": {
         /**

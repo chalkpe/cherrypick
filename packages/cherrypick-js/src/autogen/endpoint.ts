@@ -289,6 +289,8 @@ import type {
 	ChatRoomsUpdateResponse,
 	ChatRoomsVoiceConnectionInfoRequest,
 	ChatRoomsVoiceConnectionInfoResponse,
+	ChatRoomsVoiceConvertRecordingRequest,
+	ChatRoomsVoiceConvertRecordingResponse,
 	ChatRoomsVoiceJoinRequest,
 	ChatRoomsVoiceJoinResponse,
 	ChatRoomsVoiceKickRequest,
@@ -936,6 +938,7 @@ export type Endpoints = {
 	'chat/rooms/show': { req: ChatRoomsShowRequest; res: ChatRoomsShowResponse };
 	'chat/rooms/update': { req: ChatRoomsUpdateRequest; res: ChatRoomsUpdateResponse };
 	'chat/rooms/voice/connection-info': { req: ChatRoomsVoiceConnectionInfoRequest; res: ChatRoomsVoiceConnectionInfoResponse };
+	'chat/rooms/voice/convert-recording': { req: ChatRoomsVoiceConvertRecordingRequest; res: ChatRoomsVoiceConvertRecordingResponse };
 	'chat/rooms/voice/join': { req: ChatRoomsVoiceJoinRequest; res: ChatRoomsVoiceJoinResponse };
 	'chat/rooms/voice/kick': { req: ChatRoomsVoiceKickRequest; res: EmptyResponse };
 	'chat/rooms/voice/mute': { req: ChatRoomsVoiceMuteRequest; res: EmptyResponse };

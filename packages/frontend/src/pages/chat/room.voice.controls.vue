@@ -44,6 +44,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<i v-if="voiceCall.screenSharing" class="ti ti-screen-share-off"></i>
 		<i v-else class="ti ti-screen-share"></i>
 	</button>
+	<button
+		v-tooltip="voiceCall.recording ? i18n.ts._voiceCall.stopRecording : i18n.ts._voiceCall.startRecording" class="_button"
+		:class="[$style.action, { [$style.on]: voiceCall.recording }]"
+		:aria-label="voiceCall.recording ? i18n.ts._voiceCall.stopRecording : i18n.ts._voiceCall.startRecording"
+		@click="voiceCall.recording ? stopRecording() : startRecording()"
+	>
+		<i v-if="voiceCall.recording" class="ti ti-player-stop"></i>
+		<i v-else class="ti ti-player-record"></i>
+	</button>
 	</div>
 	<div :class="$style.group">
 	<slot name="leading"></slot>
@@ -71,7 +80,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { i18n } from '@/i18n.js';
-import { leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
+import { leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, startRecording, startScreenShare, stopRecording, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
 import { openVoiceCallSettings, screenShareAvailable } from '@/utility/voice-call-settings.js';
 
 withDefaults(defineProps<{

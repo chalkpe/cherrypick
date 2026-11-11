@@ -291,7 +291,7 @@ const REFRESH_EVENTS = new Set([
 ]);
 
 type VoiceSnapshot = {
-	participants: { identity: string; userId: MiUser['id']; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
+	participants: { identity: string; userId: MiUser['id']; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[];
 	updatedAt: number;
 };
 
@@ -379,7 +379,7 @@ type FederatedRecord = { hash: string; presenceHash?: string; at: number; update
 
 /** 他のサーバーに渡す参加者の現況。userId はこのサーバーの DB の id なので含めない */
 type FederatedVoiceSnapshot = {
-	participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
+	participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[];
 	updatedAt: number;
 };
 
@@ -578,7 +578,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	/** Accept only the authenticated user's own connected session and reported settings. */
 	@bindThis
-	public async reportStatus(user: MiUser, roomId: string, sessionId: string, status: { micMuted: boolean; deafened: boolean }): Promise<boolean> {
+	public async reportStatus(user: MiUser, roomId: string, sessionId: string, status: { micMuted: boolean; deafened: boolean; recording?: boolean }): Promise<boolean> {
 		if (!this.liveKitService.isEnabled) return false;
 		const participant = { identity: this.liveKitService.identityOf(user), userId: user.id };
 		const context = await this.admissionContextOf(roomId, [participant], new Map());
@@ -879,7 +879,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * ミラーの通話はこのサーバーの LiveKit には無いので、定期的な読み直し (sweep) の対象には加えない
 	 */
 	@bindThis
-	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[], updatedAt: number): Promise<RemoteSnapshotStoreResult> {
+	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number): Promise<RemoteSnapshotStoreResult> {
 		// このサーバーのルームの現況は LiveKit から読む。ホストの言う現況で上書きさせない
 		if (room.owner == null || room.owner.host == null) {
 			throw new Error(`Voice call participants sent by another server can only be stored for a room owned there: ${room.id}`);
@@ -1629,7 +1629,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * 持ち主の名前で Update を作り、メンバーの inbox (共有 inbox があればそちら) ごとに一度だけ送る。
 	 * すべての配送を積み終えるまで待ち、どれかを積めなければ例外を投げる
 	 */
-	private async deliverSnapshot(room: MiChatRoom, audience: RoomAudience, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[], updatedAt: number): Promise<void> {
+	private async deliverSnapshot(room: MiChatRoom, audience: RoomAudience, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number): Promise<void> {
 		const owner = audience.localOwner;
 		if (owner == null) return;
 

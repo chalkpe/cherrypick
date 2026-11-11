@@ -2475,6 +2475,10 @@ _voiceCall:
   inCallCount: "{n}명 통화 중"
   moveChatLeft: "채팅을 왼쪽으로 옮기기"
   moveChatRight: "채팅을 오른쪽으로 옮기기"
+  recordingSaved: "녹음 파일을 드라이브에 저장했어요"
+  startRecording: "녹음 시작"
+  stopRecording: "녹음 중지"
+  recording: "녹음 중"
 _role:
   new: "새 역할 생성"
   edit: "역할 편집"

@@ -20,6 +20,7 @@ export type LiveKitParticipant = {
 	screenSharing: boolean;
 	micMuted?: boolean;
 	deafened?: boolean;
+	recording?: boolean;
 	canScreenShare?: boolean;
 	micTrackSid: string | null;
 };
@@ -130,6 +131,7 @@ export class LiveKitService {
 					// 届いているマイクの音は、本人の「切った」という申告より優先する (話しているのに切ったと見せて、誰が話しているか隠させない)
 					micMuted: micTrack?.muted === false ? false : parseReportedBoolean(participant.attributes?.['cherrypick.micMuted']),
 					deafened: parseReportedBoolean(participant.attributes?.['cherrypick.deafened']),
+					recording: parseReportedBoolean(participant.attributes?.['cherrypick.recording']),
 				}),
 				screenSharing: participant.tracks.some(track => track.source === TrackSource.SCREEN_SHARE),
 				// 空のソース一覧は LiveKit では全ソース許可を表す。
@@ -142,7 +144,7 @@ export class LiveKitService {
 
 	/** Reported UI settings, scoped to the connected participant session. */
 	@bindThis
-	public async setParticipantStatus(roomId: string, identity: string, sessionId: string, status: { micMuted: boolean; deafened: boolean }): Promise<boolean> {
+	public async setParticipantStatus(roomId: string, identity: string, sessionId: string, status: { micMuted: boolean; deafened: boolean; recording?: boolean }): Promise<boolean> {
 		const service = this.requireRoomService();
 		const roomName = this.roomNameOf(roomId);
 		try {
@@ -153,10 +155,10 @@ export class LiveKitService {
 			// 書いた設定を消して (空の値は LiveKit で属性の削除) 報告の無い状態に戻し、受け付けたことにしない。
 			// 消すまでのあいだに新しいセッションが報告した設定も消えうるが、どちらも二つの呼び出しのあいだだけのことで、次の報告で直る
 			const updated = await service.updateParticipant(roomName, identity, {
-				attributes: { 'cherrypick.micMuted': String(status.micMuted), 'cherrypick.deafened': String(status.deafened) },
+				attributes: { 'cherrypick.micMuted': String(status.micMuted), 'cherrypick.deafened': String(status.deafened), 'cherrypick.recording': String(status.recording ?? false) },
 			});
 			if (updated.sid === sessionId) return true;
-			await service.updateParticipant(roomName, identity, { attributes: { 'cherrypick.micMuted': '', 'cherrypick.deafened': '' } });
+			await service.updateParticipant(roomName, identity, { attributes: { 'cherrypick.micMuted': '', 'cherrypick.deafened': '', 'cherrypick.recording': '' } });
 			return false;
 		} catch (err) {
 			if (isNotFound(err)) return false;

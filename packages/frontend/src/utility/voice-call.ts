@@ -5,7 +5,8 @@
 
 import { reactive, readonly } from 'vue';
 import * as Misskey from 'cherrypick-js';
-import { url } from '@@/js/config.js';
+import { apiUrl, url } from '@@/js/config.js';
+import { $i } from '@/i.js';
 import type { AudioCaptureOptions, DisconnectReason, LocalAudioTrack, LocalParticipant, LocalTrack, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomConnectOptions, TrackPublication, VideoPreset } from 'livekit-client';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { isApiError } from '@/utility/api-error.js';
@@ -38,6 +39,9 @@ const state = reactive({
 	screenShareIdentities: [] as string[],
 	// 見ている共有画面 (見始めた順)。いくつでも同時に見られる
 	watchingIdentities: [] as string[],
+	// 通話の録音 (声だけ)。録音中は参加者に知らせる
+	recording: false,
+	recordingStartedAt: null as number | null,
 });
 
 /** 現在の通話の状態。書き換えは下の関数経由で行う */
@@ -136,6 +140,249 @@ let statusDelivery: StatusDelivery | null = null;
 // スピーカーを切り替えた回数。マイクを入れるのを待つあいだに切り替えられたかを見分ける
 let deafenRevision = 0;
 
+// record the call in separate tracks (my microphone, the other side, video when present)
+const RECORDING_CHUNK_BYTES = 100 * 1024 * 1024;
+type RecordingPartKind = 'mic' | 'others' | 'video';
+type RecordingPart = {
+	recorder: MediaRecorder;
+	chunks: Blob[];
+	bytes: number;
+	uploads: Promise<void>[];
+	name: string;
+};
+const recordingParts = new Map<RecordingPartKind, RecordingPart>();
+let recordingContext: AudioContext | null = null;
+let recordingMicBus: GainNode | null = null;
+let recordingOthersBus: GainNode | null = null;
+let recordingMixedDest: MediaStreamAudioDestinationNode | null = null;
+let pendingRecordingUploads: Promise<void>[] = [];
+let recordingRawMicStream: MediaStream | null = null;
+const recordingSources = new Map<MediaStreamTrack, { source: MediaStreamAudioSourceNode; kind: 'mic' | 'others' }>();
+let recordingCanvas: HTMLCanvasElement | null = null;
+let recordingCanvasStream: MediaStream | null = null;
+let recordingDrawTimer: number | null = null;
+const recordingVideos = new Map<MediaStreamTrack, { element: HTMLVideoElement; screen: boolean }>();
+
+function recordingMimeType(): string | undefined {
+	if (typeof MediaRecorder === 'undefined') return undefined;
+	return ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'].find(type => MediaRecorder.isTypeSupported(type));
+}
+
+function recordingVideoMimeType(): string | undefined {
+	if (typeof MediaRecorder === 'undefined') return undefined;
+	return ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(type => MediaRecorder.isTypeSupported(type));
+}
+
+function addRecordingVideo(track: MediaStreamTrack, screen: boolean): void {
+	// this runs on every share, not only while recording
+	if (recordingContext == null || recordingVideos.has(track)) return;
+	if (screen) {
+		try { track.contentHint = 'detail'; } catch { /* not supported */ }
+	}
+	const element = window.document.createElement('video');
+	element.muted = true;
+	element.playsInline = true;
+	element.srcObject = new MediaStream([track]);
+	void element.play().catch(() => {});
+	recordingVideos.set(track, { element, screen });
+	watchRecordingVideo(track, element);
+	ensureRecordingVideoPart();
+}
+
+/** redraw whenever the source produces a frame; background tabs throttle timers */
+function watchRecordingVideo(track: MediaStreamTrack, video: HTMLVideoElement): void {
+	const step = () => {
+		const entry = recordingVideos.get(track);
+		if (entry == null || entry.element !== video) return;
+		drawRecordingFrame();
+		schedule();
+	};
+	const schedule = () => {
+		if (typeof video.requestVideoFrameCallback === 'function') {
+			video.requestVideoFrameCallback(step);
+		} else {
+			window.setTimeout(step, 33);
+		}
+	};
+	schedule();
+}
+
+/** start the video part when the first video track appears, even after recording began */
+function ensureRecordingVideoPart(): void {
+	if (recordingParts.has('video') || recordingMixedDest == null || recordingContext == null) return;
+	if (recordingCanvas == null) {
+		const canvas = window.document.createElement('canvas');
+		canvas.width = 1920;
+		canvas.height = 1080;
+		recordingCanvas = canvas;
+		recordingCanvasStream = canvas.captureStream(30);
+		if (typeof HTMLVideoElement.prototype.requestVideoFrameCallback !== 'function') {
+			recordingDrawTimer = window.setInterval(drawRecordingFrame, 33);
+		}
+		drawRecordingFrame();
+	}
+	console.info(`[recording] video sources=${recordingVideos.size}`);
+	const base = recordingParts.get('mic')?.name ?? `voice-${recordingStamp(new Date())}`;
+	createRecordingPart('video', new MediaStream([
+		...recordingMixedDest.stream.getAudioTracks(),
+		...recordingCanvasStream!.getVideoTracks(),
+	]), recordingVideoMimeType(), 12_000_000, `${base.replace(/-mic$/, '')}-video-${recordingStamp(new Date())}`);
+}
+
+function removeRecordingVideo(track: MediaStreamTrack): void {
+	const entry = recordingVideos.get(track);
+	if (entry == null) return;
+	entry.element.pause();
+	entry.element.srcObject = null;
+	recordingVideos.delete(track);
+}
+
+function drawRecordingFrame(): void {
+	const canvas = recordingCanvas;
+	const ctx = canvas?.getContext('2d');
+	if (canvas == null || ctx == null) return;
+	ctx.fillStyle = '#111';
+	ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+	const ready = [...recordingVideos.values()].filter(v => v.element.readyState >= 2);
+	if (ready.length === 0) return;
+
+	const drawFit = (video: HTMLVideoElement, x: number, y: number, w: number, h: number) => {
+		const vw = video.videoWidth || 16;
+		const vh = video.videoHeight || 9;
+		const scale = Math.min(w / vw, h / vh);
+		const dw = vw * scale;
+		const dh = vh * scale;
+		ctx.drawImage(video, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+	};
+
+	// a shared screen gets the whole frame; otherwise lay the cameras out in a grid
+	const screen = ready.find(v => v.screen);
+	if (screen != null) {
+		drawFit(screen.element, 0, 0, canvas.width, canvas.height);
+		return;
+	}
+	const cols = ready.length <= 1 ? 1 : ready.length <= 4 ? 2 : 3;
+	const rows = Math.ceil(ready.length / cols);
+	const cw = canvas.width / cols;
+	const ch = canvas.height / rows;
+	ready.forEach((entry, i) => drawFit(entry.element, (i % cols) * cw, Math.floor(i / cols) * ch, cw, ch));
+}
+
+function addRecordingTrack(track: MediaStreamTrack, kind: 'mic' | 'others'): void {
+	if (recordingContext == null) return;
+	const bus = kind === 'mic' ? recordingMicBus : recordingOthersBus;
+	if (bus == null || recordingSources.has(track)) return;
+	console.info(`[recording] ${kind} track channels=${track.getSettings().channelCount ?? '?'}`);
+	try {
+		const source = recordingContext.createMediaStreamSource(new MediaStream([track]));
+		source.connect(bus);
+		recordingSources.set(track, { source, kind });
+	} catch (err) {
+		console.warn('[recording] could not connect a track', err);
+	}
+}
+
+function removeRecordingTrack(track: MediaStreamTrack): void {
+	const entry = recordingSources.get(track);
+	if (entry == null) return;
+	entry.source.disconnect();
+	recordingSources.delete(track);
+}
+
+function recordingStamp(date: Date): string {
+	const pad = (n: number) => String(n).padStart(2, '0');
+	return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+async function uploadRecording(blob: Blob, name: string): Promise<void> {
+	const roomId = state.room?.id;
+	if (roomId == null || blob.size === 0) return;
+	const form = new FormData();
+	form.append('file', blob, `${name}.webm`);
+	// Misskey authenticates API calls with the token in the form, not with cookies
+	if ($i != null) form.append('i', $i.token);
+	const res = await window.fetch(apiUrl + '/drive/files/create', { method: 'POST', body: form, credentials: 'omit' });
+	if (!res.ok) throw new Error(`failed to upload the recording: ${res.status}`);
+	let file = await res.json() as Misskey.entities.DriveFile;
+	try {
+		const converted = await misskeyApi('chat/rooms/voice/convert-recording', { fileId: file.id });
+		if (converted != null) file = converted;
+	} catch { /* keep the WebM when ffmpeg fails */ }
+	// the recording stays in the drive; it is not posted to the room
+}
+
+function flushRecordingChunk(kind: RecordingPartKind, force: boolean): void {
+	const part = recordingParts.get(kind);
+	if (part == null || part.chunks.length === 0) return;
+	if (!force && part.bytes < RECORDING_CHUNK_BYTES) return;
+	const blob = new Blob(part.chunks, { type: part.recorder.mimeType || 'audio/webm' });
+	part.chunks = [];
+	part.bytes = 0;
+	const upload = uploadRecording(blob, part.name).catch(err => {
+		console.error(err);
+	});
+	part.uploads.push(upload);
+	pendingRecordingUploads.push(upload);
+}
+
+function createRecordingPart(kind: RecordingPartKind, stream: MediaStream, mime: string | undefined, bits: number, name: string): void {
+	const options: MediaRecorderOptions = { ...(mime != null ? { mimeType: mime } : {}) };
+	if (kind === 'video') {
+		options.videoBitsPerSecond = bits;
+		options.audioBitsPerSecond = 192_000;
+	} else {
+		options.audioBitsPerSecond = bits;
+	}
+	const rec = new MediaRecorder(stream, options);
+	const part: RecordingPart = { recorder: rec, chunks: [], bytes: 0, uploads: [], name };
+	recordingParts.set(kind, part);
+	rec.ondataavailable = (ev) => {
+		if (ev.data.size === 0) return;
+		part.chunks.push(ev.data);
+		part.bytes += ev.data.size;
+		flushRecordingChunk(kind, false);
+	};
+	rec.onstop = () => {
+		flushRecordingChunk(kind, true);
+		void Promise.allSettled(part.uploads);
+		if (kind === 'video') stopRecordingVideo();
+		recordingParts.delete(kind);
+		if (recordingParts.size === 0) teardownRecording();
+	};
+	rec.start(10_000);
+}
+
+function stopRecordingVideo(): void {
+	if (recordingDrawTimer != null) {
+		window.clearInterval(recordingDrawTimer);
+		recordingDrawTimer = null;
+	}
+	for (const track of [...recordingVideos.keys()]) removeRecordingVideo(track);
+	recordingCanvas = null;
+	recordingCanvasStream?.getTracks().forEach(track => track.stop());
+	recordingCanvasStream = null;
+}
+
+function teardownRecording(): void {
+	stopRecordingVideo();
+	const uploads = pendingRecordingUploads;
+	pendingRecordingUploads = [];
+	if (uploads.length > 0) {
+		void Promise.allSettled(uploads).then(() => {
+			os.toast(i18n.ts._voiceCall.recordingSaved);
+		});
+	}
+	recordingMicBus = null;
+	recordingOthersBus = null;
+	recordingMixedDest = null;
+	recordingRawMicStream?.getTracks().forEach(track => track.stop());
+	recordingRawMicStream = null;
+	recordingContext?.close().catch(() => {});
+	recordingContext = null;
+	recordingSources.clear();
+}
+
 function resetStatusDelivery(): void {
 	if (statusDelivery?.timer != null) window.clearTimeout(statusDelivery.timer);
 	statusDelivery = null;
@@ -145,7 +392,7 @@ function resetStatusDelivery(): void {
 function reportStatus(room: Room, force = false): void {
 	const roomId = state.room?.id;
 	if (current !== room || roomId == null || state.status === 'connecting') return;
-	const status = { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened };
+	const status = { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened, recording: state.recording };
 	if (statusDelivery?.room !== room || statusDelivery.latest.sessionId !== status.sessionId) {
 		resetStatusDelivery();
 		statusDelivery = { room, latest: status, pending: status, sending: false, retryDelay: 1000, timer: null, stopped: false };
@@ -287,6 +534,110 @@ async function disconnectCurrentRoom(): Promise<void> {
 	}
 }
 
+/** start recording the call in separate tracks (microphone, the other side, video when present) */
+export async function startRecording(): Promise<void> {
+	const room = current;
+	if (room == null || recordingParts.size > 0 || state.status !== 'connected') return;
+	const Context = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+	if (Context == null || typeof MediaRecorder === 'undefined') return;
+
+	const context = new Context();
+	// a suspended context feeds no samples to the recorder
+	await context.resume().catch(() => {});
+	recordingContext = context;
+
+	const micDest = context.createMediaStreamDestination();
+	const othersDest = context.createMediaStreamDestination();
+	const mixedDest = context.createMediaStreamDestination();
+	for (const dest of [micDest, othersDest, mixedDest]) {
+		dest.channelCount = 2;
+		dest.channelCountMode = 'explicit';
+	}
+	const micBus = context.createGain();
+	const othersBus = context.createGain();
+	micBus.connect(micDest);
+	micBus.connect(mixedDest);
+	othersBus.connect(othersDest);
+	othersBus.connect(mixedDest);
+	recordingMixedDest = mixedDest;
+	recordingMicBus = micBus;
+	recordingOthersBus = othersBus;
+	recordingSources.clear();
+
+	const base = recordingStamp(new Date());
+	createRecordingPart('mic', micDest.stream, recordingMimeType(), 192_000, `voice-${base}-mic`);
+	createRecordingPart('others', othersDest.stream, recordingMimeType(), 256_000, `voice-${base}-call`);
+
+	const lk = livekit;
+	let hasVideo = false;
+	// capture the microphone without the call's voice processing (echo cancellation, noise
+	// suppression, auto gain), which makes music and quiet voices sound thin
+	try {
+		const raw = await navigator.mediaDevices.getUserMedia({
+			audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+		});
+		recordingRawMicStream = raw;
+		const track = raw.getAudioTracks()[0];
+		if (track != null) {
+			track.enabled = state.micEnabled;
+			addRecordingTrack(track, 'mic');
+		}
+	} catch {
+		// fall back to the microphone of the call
+		if (lk != null) {
+			const mic = room.localParticipant.getTrackPublication(lk.Track.Source.Microphone)?.track;
+			if (mic?.mediaStreamTrack != null) addRecordingTrack(mic.mediaStreamTrack, 'mic');
+		}
+	}
+	if (lk != null) {
+		// my own tab audio is not played to my speakers, so it only reaches the recording here
+		const shareAudio = room.localParticipant.getTrackPublication(lk.Track.Source.ScreenShareAudio)?.track;
+		if (shareAudio?.mediaStreamTrack != null) addRecordingTrack(shareAudio.mediaStreamTrack, 'others');
+		const shareVideo = room.localParticipant.getTrackPublication(lk.Track.Source.ScreenShare)?.track;
+		if (shareVideo?.mediaStreamTrack != null) {
+			addRecordingVideo(shareVideo.mediaStreamTrack, true);
+			hasVideo = true;
+		}
+		for (const participant of room.remoteParticipants.values()) {
+			for (const publication of participant.trackPublications.values()) {
+				const track = publication.track?.mediaStreamTrack;
+				if (track == null) continue;
+				if (publication.kind === lk.Track.Kind.Audio) {
+					addRecordingTrack(track, 'others');
+				} else if (publication.kind === lk.Track.Kind.Video) {
+					addRecordingVideo(track, publication.source === lk.Track.Source.ScreenShare);
+					hasVideo = true;
+				}
+			}
+		}
+		for (const track of screenShareTracks.values()) {
+			if (track.mediaStreamTrack != null) {
+				addRecordingVideo(track.mediaStreamTrack, true);
+				hasVideo = true;
+			}
+		}
+	}
+
+	// only composite video when there is something to show; otherwise this stays an audio recording
+	if (hasVideo) ensureRecordingVideoPart();
+
+	state.recording = true;
+	state.recordingStartedAt = Date.now();
+	reportStatus(room, true);
+}
+
+/** stop recording and upload what is left */
+export function stopRecording(): void {
+	if (recordingParts.size === 0) return;
+	state.recording = false;
+	state.recordingStartedAt = null;
+	if (current != null) reportStatus(current, true);
+	for (const part of [...recordingParts.values()]) {
+		try { part.recorder.requestData(); } catch { /* not recording yet */ }
+		part.recorder.stop();
+	}
+}
+
 export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { micEnabled?: boolean; approvedMediaProvider?: string } = {}): Promise<void> {
 	migrateParticipantVolumes();
 	// 前の通話の切断を待つあいだに別の参加が始まったら、この参加は捨てる。
@@ -367,6 +718,7 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 
 export async function leaveVoiceCall(): Promise<void> {
 	const attempt = ++joinAttempt;
+	stopRecording();
 	await disconnectCurrentRoom();
 	// 切れるのを待つあいだに次の通話に入り始めていたら、その通話の表示を消さない
 	if (attempt === joinAttempt) resetState();
@@ -376,6 +728,9 @@ export async function leaveVoiceCall(): Promise<void> {
 export async function setMicEnabled(enabled: boolean): Promise<void> {
 	const room = current;
 	if (room == null) return;
+	if (recordingRawMicStream != null) {
+		for (const track of recordingRawMicStream.getAudioTracks()) track.enabled = enabled;
+	}
 	prefer.commit('voiceCall.micEnabled', enabled);
 	if (enabled) {
 		// スピーカーを切ったままマイクだけを入れると、聞こえないまま話すことになる。マイクが入ったらスピーカーも戻す。
@@ -485,11 +840,20 @@ export async function startScreenShare(): Promise<void> {
 	const startedAt = Date.now();
 	try {
 		const captureOptions = {
-			audio: prefer.s['voiceCall.screenShareAudio'],
+			// Preserve tab audio instead of applying microphone speech processing.
+			audio: prefer.s['voiceCall.screenShareAudio'] ? {
+				channelCount: 2,
+				echoCancellation: false,
+				noiseSuppression: false,
+				autoGainControl: false,
+			} : false,
 			resolution: preset.resolution,
 			contentHint,
 		};
 		const publishOptions = {
+			forceStereo: true,
+			audioPreset: livekit.AudioPresets.musicHighQualityStereo,
+			dtx: false,
 			screenShareEncoding: preset.encoding,
 			// 層は低いものから並べる。一番低い層はプレビュー用
 			screenShareSimulcastLayers: [
@@ -755,8 +1119,14 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 	room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
 		if (!isCurrent()) return;
 		if (track.kind === Track.Kind.Audio) {
+			if (publication.source === Track.Source.ScreenShareAudio) {
+				console.info(`[screen-share] received audio channels=${track.mediaStreamTrack.getSettings().channelCount ?? '?'}`);
+			}
+			addRecordingTrack(track.mediaStreamTrack, 'others');
 			window.document.body.appendChild(track.attach());
 			applyVolume(participant);
+		} else if (track.kind === Track.Kind.Video) {
+			addRecordingVideo(track.mediaStreamTrack, publication.source === Track.Source.ScreenShare);
 		} else if (publication.source === Track.Source.ScreenShare) {
 			screenShareTracks.set(participant.identity, track);
 			for (const view of screenShareViews.get(participant.identity) ?? []) track.attach(view.element);
@@ -765,7 +1135,10 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 
 	room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
 		if (track.kind === Track.Kind.Audio) {
+			removeRecordingTrack(track.mediaStreamTrack);
 			for (const element of track.detach()) element.remove();
+		} else if (track.kind === Track.Kind.Video) {
+			removeRecordingVideo(track.mediaStreamTrack);
 		} else if (publication.source === Track.Source.ScreenShare) {
 			for (const view of screenShareViews.get(participant.identity) ?? []) track.detach(view.element);
 			screenShareTracks.delete(participant.identity);
@@ -788,9 +1161,18 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 		if (!isCurrent()) return;
 		if (publication.source === Track.Source.Microphone) {
 			startLocalMeter(room);
+			if (track != null) addRecordingTrack(track.mediaStreamTrack, 'mic');
+			return;
+		}
+		if (publication.source === Track.Source.ScreenShareAudio) {
+			if (track != null) {
+				console.info(`[screen-share] local capture audio channels=${track.mediaStreamTrack.getSettings().channelCount ?? '?'}`);
+				addRecordingTrack(track.mediaStreamTrack, 'mic');
+			}
 			return;
 		}
 		if (publication.source !== Track.Source.ScreenShare || track == null) return;
+		addRecordingVideo(track.mediaStreamTrack, true);
 		state.screenSharing = true;
 		screenShareTracks.set(participant.identity, track);
 		for (const view of screenShareViews.get(participant.identity) ?? []) track.attach(view.element);
@@ -798,7 +1180,15 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 
 	room.on(RoomEvent.LocalTrackUnpublished, (publication: LocalTrackPublication, participant: LocalParticipant) => {
 		// ブラウザの「共有を停止」で終わった場合もここに来る
-		if (!isCurrent() || publication.source !== Track.Source.ScreenShare) return;
+		if (!isCurrent()) return;
+		if (publication.source === Track.Source.ScreenShareAudio) {
+			const track = publication.track;
+			if (track != null) removeRecordingTrack(track.mediaStreamTrack);
+			return;
+		}
+		if (publication.source !== Track.Source.ScreenShare) return;
+		const track = publication.track;
+		if (track != null) removeRecordingVideo(track.mediaStreamTrack);
 		state.screenSharing = false;
 		detachLocalScreenShare(participant.identity);
 		forgetScreenShare(participant.identity);
@@ -905,6 +1295,9 @@ function failToConnect(err?: unknown): void { resetState(); notifyVoiceCallFailu
 function resetState(): void {
 	stopIceRefresh();
 	resetStatusDelivery();
+	stopRecording();
+	state.recording = false;
+	state.recordingStartedAt = null;
 	stopLocalMeter?.();
 	unwatchMicrophoneTrack?.();
 	screenShareTracks.clear();

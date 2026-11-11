@@ -32,6 +32,7 @@ export const paramDef = {
 		sessionId: { type: 'string', minLength: 1, maxLength: 128 },
 		micMuted: { type: 'boolean' },
 		deafened: { type: 'boolean' },
+		recording: { type: 'boolean' },
 	},
 	required: ['roomId', 'sessionId', 'micMuted', 'deafened'],
 } as const;
@@ -52,7 +53,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				this.chatRoomMembershipsRepository.exists({ where: { roomId: ps.roomId, userId: me.id } }),
 			]);
 			if (room == null || room.isArchived || me.isSuspended || me.isDeleted || (room.ownerId !== me.id && !member)) throw new ApiError(meta.errors.accessDenied);
-			const status = { micMuted: ps.micMuted, deafened: ps.deafened };
+			const status = { micMuted: ps.micMuted, deafened: ps.deafened, recording: ps.recording };
 			if (room.owner?.host != null) {
 				try {
 					await this.remoteVoiceCallService.reportStatus(me, room, room.owner as MiRemoteUser, ps.sessionId, status);

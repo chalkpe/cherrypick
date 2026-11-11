@@ -1001,7 +1001,7 @@ export class ApRendererService {
 	 * このサーバーが持つルームの、通話の参加者の現況。participants の id は参加者の identity (LiveKitService.identityOf)
 	 */
 	@bindThis
-	public renderChatRoomVoiceState(room: Pick<MiChatRoom, 'id'>, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[], updatedAt: number): IChatRoomVoiceState {
+	public renderChatRoomVoiceState(room: Pick<MiChatRoom, 'id'>, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number): IChatRoomVoiceState {
 		const roomUri = this.genLocalChatRoomUri(room.id);
 		return {
 			id: chatRoomVoiceStateIdOf(roomUri),

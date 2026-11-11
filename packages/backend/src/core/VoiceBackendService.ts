@@ -216,7 +216,7 @@ export class VoiceBackendService extends LiveKitService {
 	@bindThis
 	public override async listParticipants(roomId: string): Promise<LiveKitParticipant[]> { if (!this.hasRelayConfiguration || await this.isLocalRoom(roomId)) return super.listParticipants(roomId); const result = await this.relay.participants(roomId); return result ?? (super.isEnabled ? super.listParticipants(roomId) : []); }
 	@bindThis
-	public override async setParticipantStatus(roomId: string, identity: string, sessionId: string, status: { micMuted: boolean; deafened: boolean }): Promise<boolean> { if (!this.hasRelayConfiguration || await this.isLocalRoom(roomId)) return super.setParticipantStatus(roomId, identity, sessionId, status); const accepted = await this.relay.participant(roomId, 'status', { identity, sessionId, ...status }); return accepted ?? (super.isEnabled ? super.setParticipantStatus(roomId, identity, sessionId, status) : false); }
+	public override async setParticipantStatus(roomId: string, identity: string, sessionId: string, status: { micMuted: boolean; deafened: boolean; recording?: boolean }): Promise<boolean> { if (!this.hasRelayConfiguration || await this.isLocalRoom(roomId)) return super.setParticipantStatus(roomId, identity, sessionId, status); const accepted = await this.relay.participant(roomId, 'status', { identity, sessionId, ...status }); return accepted ?? (super.isEnabled ? super.setParticipantStatus(roomId, identity, sessionId, status) : false); }
 	@bindThis
 	public override async removeParticipant(roomId: string, identity: string): Promise<void> {
 		if (!this.isEnabled) return;
