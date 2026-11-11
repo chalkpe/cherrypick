@@ -222,7 +222,6 @@ function ensureRecordingVideoPart(): void {
 		}
 		drawRecordingFrame();
 	}
-	console.info(`[recording] video sources=${recordingVideos.size}`);
 	const base = recordingParts.get('mic')?.name ?? `voice-${recordingStamp(new Date())}`;
 	createRecordingPart('video', new MediaStream([
 		...recordingMixedDest.stream.getAudioTracks(),
@@ -274,7 +273,6 @@ function addRecordingTrack(track: MediaStreamTrack, kind: 'mic' | 'others'): voi
 	if (recordingContext == null) return;
 	const bus = kind === 'mic' ? recordingMicBus : recordingOthersBus;
 	if (bus == null || recordingSources.has(track)) return;
-	console.info(`[recording] ${kind} track channels=${track.getSettings().channelCount ?? '?'}`);
 	try {
 		const source = recordingContext.createMediaStreamSource(new MediaStream([track]));
 		source.connect(bus);
@@ -397,12 +395,12 @@ function resetStatusDelivery(): void {
 function reportStatus(room: Room, force = false): void {
 	const roomId = state.room?.id;
 	if (current !== room || roomId == null || state.status === 'connecting') return;
-	const status = { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened, recording: state.recording };
+	const status = { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened, ...(state.recording ? { recording: true } : {}) };
 	if (statusDelivery?.room !== room || statusDelivery.latest.sessionId !== status.sessionId) {
 		resetStatusDelivery();
 		statusDelivery = { room, latest: status, pending: status, sending: false, retryDelay: 1000, timer: null, stopped: false };
 	} else {
-		if (!force && statusDelivery.latest.micMuted === status.micMuted && statusDelivery.latest.deafened === status.deafened) return;
+		if (!force && statusDelivery.latest.micMuted === status.micMuted && statusDelivery.latest.deafened === status.deafened && statusDelivery.latest.recording === status.recording) return;
 		// 止めたのは失敗した報告の再送だけ。設定が変わったら、新しい設定はもう一度だけ送ってみる
 		// (セッションを確かめる一時的な失敗も ACCESS_DENIED になるので、一度の失敗で通話の残りずっと黙らない)
 		statusDelivery.stopped = false;
@@ -845,20 +843,11 @@ export async function startScreenShare(): Promise<void> {
 	const startedAt = Date.now();
 	try {
 		const captureOptions = {
-			// Preserve tab audio instead of applying microphone speech processing.
-			audio: prefer.s['voiceCall.screenShareAudio'] ? {
-				channelCount: 2,
-				echoCancellation: false,
-				noiseSuppression: false,
-				autoGainControl: false,
-			} : false,
+			audio: prefer.s['voiceCall.screenShareAudio'],
 			resolution: preset.resolution,
 			contentHint,
 		};
 		const publishOptions = {
-			forceStereo: true,
-			audioPreset: livekit.AudioPresets.musicHighQualityStereo,
-			dtx: false,
 			screenShareEncoding: preset.encoding,
 			// 層は低いものから並べる。一番低い層はプレビュー用
 			screenShareSimulcastLayers: [
@@ -1124,15 +1113,13 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 	room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
 		if (!isCurrent()) return;
 		if (track.kind === Track.Kind.Audio) {
-			if (publication.source === Track.Source.ScreenShareAudio) {
-				console.info(`[screen-share] received audio channels=${track.mediaStreamTrack.getSettings().channelCount ?? '?'}`);
-			}
 			addRecordingTrack(track.mediaStreamTrack, 'others');
 			window.document.body.appendChild(track.attach());
 			applyVolume(participant);
-		} else if (track.kind === Track.Kind.Video) {
-			addRecordingVideo(track.mediaStreamTrack, publication.source === Track.Source.ScreenShare);
-		} else if (publication.source === Track.Source.ScreenShare) {
+			return;
+		}
+		if (track.kind === Track.Kind.Video) addRecordingVideo(track.mediaStreamTrack, publication.source === Track.Source.ScreenShare);
+		if (publication.source === Track.Source.ScreenShare) {
 			screenShareTracks.set(participant.identity, track);
 			for (const view of screenShareViews.get(participant.identity) ?? []) track.attach(view.element);
 		}
@@ -1142,9 +1129,10 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 		if (track.kind === Track.Kind.Audio) {
 			removeRecordingTrack(track.mediaStreamTrack);
 			for (const element of track.detach()) element.remove();
-		} else if (track.kind === Track.Kind.Video) {
-			removeRecordingVideo(track.mediaStreamTrack);
-		} else if (publication.source === Track.Source.ScreenShare) {
+			return;
+		}
+		if (track.kind === Track.Kind.Video) removeRecordingVideo(track.mediaStreamTrack);
+		if (publication.source === Track.Source.ScreenShare) {
 			for (const view of screenShareViews.get(participant.identity) ?? []) track.detach(view.element);
 			screenShareTracks.delete(participant.identity);
 		}
@@ -1170,10 +1158,8 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 			return;
 		}
 		if (publication.source === Track.Source.ScreenShareAudio) {
-			if (track != null) {
-				console.info(`[screen-share] local capture audio channels=${track.mediaStreamTrack.getSettings().channelCount ?? '?'}`);
-				addRecordingTrack(track.mediaStreamTrack, 'mic');
-			}
+			// my own tab audio is not played to my speakers, so it only reaches the recording here
+			if (track != null) addRecordingTrack(track.mediaStreamTrack, 'others');
 			return;
 		}
 		if (publication.source !== Track.Source.ScreenShare || track == null) return;
