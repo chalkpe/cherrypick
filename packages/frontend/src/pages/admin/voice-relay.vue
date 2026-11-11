@@ -50,27 +50,30 @@ SPDX-License-Identifier: AGPL-3.0-only
       <MkInfo warn>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnKeyChangeDescription }}</MkInfo>
      </div>
     </MkFolder>
-    <section class="_panel _gaps" :class="$style.section">
-     <h2><i class="ti ti-phone"></i> {{ i18n.ts._voiceRelay.title }}</h2>
-     <MkInfo>{{ i18n.ts._voiceRelay.description }}</MkInfo>
-     <h3>{{ i18n.ts._voiceRelay.consumer }}</h3>
-     <div v-for="provider in settings?.providers ?? []" :key="provider.id" class="_gaps_s" :class="$style.entry">
-      <strong>{{ provider.origin }}</strong>
-      <span>{{ provider.validated ? i18n.ts._voiceRelay.approved : i18n.ts._voiceRelay.unchecked }} · {{ provider.enabled ? i18n.ts.enabled : i18n.ts.disabled }}</span>
+    <MkFolder :withSpacer="false">
+     <template #icon><i class="ti ti-phone"></i></template>
+     <template #label>{{ i18n.ts._voiceRelay.title }}</template>
+     <div class="_gaps" :class="$style.section">
+      <MkInfo>{{ i18n.ts._voiceRelay.description }}</MkInfo>
+      <h3>{{ i18n.ts._voiceRelay.consumer }}</h3>
+      <div v-for="provider in settings?.providers ?? []" :key="provider.id" class="_gaps_s" :class="$style.entry">
+       <strong>{{ provider.origin }}</strong>
+       <span>{{ provider.validated ? i18n.ts._voiceRelay.approved : i18n.ts._voiceRelay.unchecked }} · {{ provider.enabled ? i18n.ts.enabled : i18n.ts.disabled }}</span>
+       <div class="_buttons">
+        <MkButton :disabled="busy" @click="edit(provider)">{{ i18n.ts.edit }}</MkButton>
+        <MkButton :disabled="busy" @click="run('check-provider', { id: provider.id })">{{ i18n.ts._voiceRelay.check }}</MkButton>
+        <MkButton danger :disabled="busy" @click="removeProvider(provider)">{{ i18n.ts.delete }}</MkButton>
+       </div>
+      </div>
+      <MkInput v-model="providerDraft.origin" type="url"><template #label>{{ i18n.ts._voiceRelay.origin }}</template></MkInput>
+      <MkInput v-model="providerDraft.secret" type="password" autocomplete="new-password"><template #label>{{ i18n.ts._voiceRelay.keyRef }}</template><template #caption>{{ i18n.ts._voiceRelay.keyHelp }}</template></MkInput>
+      <MkSwitch v-model="providerDraft.enabled">{{ i18n.ts.enable }}</MkSwitch>
       <div class="_buttons">
-       <MkButton :disabled="busy" @click="edit(provider)">{{ i18n.ts.edit }}</MkButton>
-       <MkButton :disabled="busy" @click="run('check-provider', { id: provider.id })">{{ i18n.ts._voiceRelay.check }}</MkButton>
-       <MkButton danger :disabled="busy" @click="removeProvider(provider)">{{ i18n.ts.delete }}</MkButton>
+       <MkButton primary :disabled="busy || !providerDraft.origin || (!providerDraft.id && !providerDraft.secret)" @click="run('save-provider', { ...providerDraft, id: providerDraft.id || undefined, secret: providerDraft.secret || undefined })">{{ i18n.ts.save }}</MkButton>
+       <MkButton v-if="providerDraft.id" :disabled="busy" @click="resetProvider">{{ i18n.ts.cancel }}</MkButton>
       </div>
      </div>
-     <MkInput v-model="providerDraft.origin" type="url"><template #label>{{ i18n.ts._voiceRelay.origin }}</template></MkInput>
-     <MkInput v-model="providerDraft.secret" type="password" autocomplete="new-password"><template #label>{{ i18n.ts._voiceRelay.keyRef }}</template><template #caption>{{ i18n.ts._voiceRelay.keyHelp }}</template></MkInput>
-     <MkSwitch v-model="providerDraft.enabled">{{ i18n.ts.enable }}</MkSwitch>
-     <div class="_buttons">
-      <MkButton primary :disabled="busy || !providerDraft.origin || (!providerDraft.id && !providerDraft.secret)" @click="run('save-provider', { ...providerDraft, id: providerDraft.id || undefined, secret: providerDraft.secret || undefined })">{{ i18n.ts.save }}</MkButton>
-      <MkButton v-if="providerDraft.id" :disabled="busy" @click="resetProvider">{{ i18n.ts.cancel }}</MkButton>
-     </div>
-    </section>
+    </MkFolder>
 
    </div>
   </SearchMarker>
@@ -146,7 +149,9 @@ async function run(action: Request['action'], params: Omit<Partial<Request>, 'ac
  } finally { busy.value = false; }
 }
 
-os.apiWithDialog('admin/voice-relay/manage', { action: 'list' }).then(result => { settings.value = result; }).catch(() => {});
+misskeyApi('admin/voice-relay/manage', { action: 'list' }).then(result => { settings.value = result; }).catch(err => {
+ os.alert({ type: 'error', text: err.message || err });
+});
 definePage(() => ({ title: i18n.ts._voiceRelay.settingsTitle, icon: 'ti ti-phone' }));
 </script>
 <style lang="scss" module>
