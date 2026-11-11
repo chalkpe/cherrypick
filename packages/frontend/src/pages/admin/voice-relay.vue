@@ -152,7 +152,7 @@ async function run(action: Request['action'], params: Omit<Partial<Request>, 'ac
 misskeyApi('admin/voice-relay/manage', { action: 'list' }).then(result => { settings.value = result; }).catch(err => {
  os.alert({ type: 'error', text: err.message || err });
 });
-definePage(() => ({ title: i18n.ts._voiceRelay.settingsTitle, icon: 'ti ti-phone' }));
+definePage(() => ({ title: i18n.ts._voiceRelay.settingsTitle, icon: 'ti ti-phone', mobileFooterInFlow: true }));
 </script>
 <style lang="scss" module>
 .section { padding: var(--MI-margin); }

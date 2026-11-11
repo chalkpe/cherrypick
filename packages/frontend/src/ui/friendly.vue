@@ -21,7 +21,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</div>
 			<StackingRouterView v-if="prefer.s['experimental.stackingRouterView']" :class="$style.content"/>
 			<RouterView v-else :class="$style.content"/>
-			<XMobileFooterMenu v-if="isMobile" ref="navFooter" v-model:drawerMenuShowing="drawerMenuShowing" v-model:widgetsShowing="widgetsShowing"/>
+			<XMobileFooterMenu v-if="isMobile" ref="navFooter" v-model:drawerMenuShowing="drawerMenuShowing" v-model:widgetsShowing="widgetsShowing" :forceInFlow="pageMetadata?.mobileFooterInFlow"/>
 		</div>
 
 		<div v-if="showWidgetsSide && prefer.s.friendlyUiEnableNotificationsArea && mainRouter.currentRoute.value.name !== 'my-notifications'" :class="$style.notificationWidgets">

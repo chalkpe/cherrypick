@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/vue';
-import { defineComponent, h, Suspense, unref } from 'vue';
+import { defineComponent, h, ref, Suspense, unref } from 'vue';
 
 const session = vi.hoisted(() => {
 	vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
@@ -19,6 +19,7 @@ import VoiceRelay from '@/pages/admin/voice-relay.vue';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
 import { provideMetadataReceiver } from '@/page.js';
+import type { PageMetadata } from '@/page.js';
 
 const provider = { id: 'provider-1', origin: 'https://relay.example', enabled: true, validated: false };
 const refusal = { message: 'Could not apply voice relay settings.', code: 'VOICE_RELAY_REQUEST_FAILED', id: '75cc1ac0-334c-4d1a-a34d-6e55c23595cb' };
@@ -44,15 +45,16 @@ function errorPopup() {
 }
 
 async function enterPage() {
+	const metadata = ref<PageMetadata | null>(null);
 	const view = render(defineComponent({
 		setup() {
-			provideMetadataReceiver(() => {});
+			provideMetadataReceiver(getter => { metadata.value = getter(); });
 			return () => h('div', [h(Suspense, null, { default: () => h(VoiceRelay) })]);
 		},
 	}), { global: { stubs, directives: { 'adaptive-border': {}, tooltip: {} }, config: { errorHandler: error => eventErrors.push(error) } } });
 	await view.findByText(i18n.ts._voiceRelay.title);
 	await waitFor(() => expect(requests).toHaveLength(2));
-	return view;
+	return { ...view, metadata };
 }
 
 async function openRental() {
@@ -122,7 +124,8 @@ afterEach(() => {
 });
 
 test('entering call settings only reads meta and the provider list, without a success check', async () => {
-	await enterPage();
+	const { metadata } = await enterPage();
+	expect(metadata.value).toMatchObject({ mobileFooterInFlow: true });
 
 	expect(requests).toEqual([
 		{ endpoint: 'admin/meta', body: { i: 'test-token' } },

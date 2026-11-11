@@ -304,6 +304,7 @@ watch(router.currentRef, (to) => {
 
 provideMetadataReceiver((metadataGetter) => {
 	const info = metadataGetter();
+	INFO.value.mobileFooterInFlow = info?.mobileFooterInFlow;
 	if (info == null) {
 		childInfo.value = null;
 	} else {
