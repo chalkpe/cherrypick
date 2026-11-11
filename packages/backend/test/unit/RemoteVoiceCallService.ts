@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 import { describe, expect, test, vi } from 'vitest';
 import { RemoteVoiceCallError, RemoteVoiceCallService } from '@/core/RemoteVoiceCallService.js';
 import type { ChatVoiceService, RemoteSnapshotStoreResult } from '@/core/ChatVoiceService.js';
@@ -52,6 +54,7 @@ function createFixture(metaOverrides: Record<string, unknown> = {}, instances: {
 	const redis = fakeRedis();
 	const apRequestService = {
 		signedPostJson: vi.fn(async (..._args: unknown[]): Promise<unknown> => hostResponse()),
+		signedGetJson: vi.fn(async (..._args: unknown[]): Promise<unknown> => ({ includeIceServers: true })),
 	};
 	// 実物を使い、ブロックの判定 (ポート付きのホストを含む) と記録を引く host の正規化 (toPuny はポート付きのホストに '' を返す) もそのまま確かめる
 	const utilityService = new UtilityService({ host: 'local.test', url: 'https://local.test' } as Config, meta);
@@ -68,7 +71,8 @@ function createFixture(metaOverrides: Record<string, unknown> = {}, instances: {
 	// このサーバーの TURN (設定されていなければ null)
 	const cloudflareTurnService = {
 		getIceServers: vi.fn(async (): Promise<IceServer[] | null> => null),
-	} satisfies Pick<CloudflareTurnService, 'getIceServers'>;
+		getDelegatedIceServers: vi.fn(async (): Promise<IceServer[] | null> => null),
+	} satisfies Pick<CloudflareTurnService, 'getIceServers' | 'getDelegatedIceServers'>;
 	const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 	const loggerService = { getLogger: () => logger } as unknown as LoggerService;
 	// 持ち主のサーバーを断るかどうかは、通話に入れるかを決めるほかの場所と同じ判定 (HostPolicyService) を実物で使う
@@ -90,6 +94,55 @@ function abortError() {
 }
 
 describe('RemoteVoiceCallService', () => {
+	test.each(['join', 'status'] as const)('rejects an HTTP owner before sending a %s request', async action => {
+		const requests: string[] = [];
+		const server = createServer((request, response) => {
+			requests.push(request.url ?? '');
+			response.setHeader('content-type', 'application/json');
+			response.end(JSON.stringify({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}/livekit`, token: 'test-token', participants: [], updatedAt: 1 }));
+		});
+		server.listen(0, '127.0.0.1');
+		await once(server, 'listening');
+		const port = (server.address() as { port: number }).port;
+		const httpOwner = { ...owner, host: `127.0.0.1:${port}`, uri: `http://127.0.0.1:${port}/users/owner` };
+		const f = createFixture();
+		f.apRequestService.signedPostJson.mockImplementation(async (_user, url, body) => {
+			const response = await fetch(url as string, { method: 'POST', body: JSON.stringify(body) });
+			return response.json();
+		});
+
+		try {
+			const result = action === 'join'
+				? f.service.requestJoin(me, room, httpOwner, false)
+				: f.service.reportStatus(me, room, httpOwner, 'session', { micMuted: true, deafened: false });
+			await expect(result).rejects.toMatchObject({ reason: 'forbidden' });
+			expect(requests).toEqual([]);
+		} finally {
+			server.closeAllConnections();
+			await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+		}
+	});
+
+	test('forwards and validates the delegated screen share policy from the room owner', async () => {
+		const f = createFixture();
+		const screenShareLimits = { maxWidth: 1280, maxHeight: 720, maxFrameRate: 30, maxBitrate: 2000000 };
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ mediaProvider: 'https://relay.test', screenShareLimits }));
+
+		expect((await f.service.requestJoin(me, room, owner, true)).screenShareLimits).toEqual(screenShareLimits);
+
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ mediaProvider: 'https://relay.test', screenShareLimits: { ...screenShareLimits, maxFrameRate: 0 } }));
+		await expect(f.service.requestJoin(me, room, owner, true)).rejects.toMatchObject({ reason: 'unreachable' });
+	});
+
+	test('leaves older delegated and direct hosts without limits', async () => {
+		const f = createFixture();
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ mediaProvider: 'https://relay.test' }));
+		expect((await f.service.requestJoin(me, room, owner, true)).screenShareLimits).toBeUndefined();
+
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse());
+		expect((await f.service.requestJoin(me, room, owner, true)).screenShareLimits).toBeUndefined();
+	});
+
 	test('names a mirror room by the URI its owner wrote, since the two servers call it differently', async () => {
 		const f = createFixture();
 		const mirror = { ...room, id: 'hereId', uri: 'https://remote.test/chat/rooms/34' };
@@ -98,6 +151,7 @@ describe('RemoteVoiceCallService', () => {
 		await f.service.reportStatus(me, mirror, owner, 'PA_1', { micMuted: true, deafened: false });
 
 		expect(f.apRequestService.signedPostJson).toHaveBeenCalledWith(me, TOKEN_URL, { room: 'https://remote.test/chat/rooms/34', canScreenShare: true }, 10_000, { redirect: 'manual', size: 64 * 1024 });
+		expect(f.apRequestService.signedGetJson).not.toHaveBeenCalled();
 		expect(f.apRequestService.signedPostJson).toHaveBeenCalledWith(me, 'https://remote.test/livekit/federation/status', {
 			room: 'https://remote.test/chat/rooms/34', sessionId: 'PA_1', micMuted: true, deafened: false,
 		}, 10_000, { redirect: 'manual', size: 64 * 1024 });
@@ -218,6 +272,70 @@ describe('RemoteVoiceCallService', () => {
 
 		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toMatchObject({ iceServers });
 		expect(f.cloudflareTurnService.getIceServers).not.toHaveBeenCalled();
+	});
+	test('a remotely hosted delegated call prefers the participant server TURN', async () => {
+		const f = createFixture();
+		const own = [{ urls: ['turns:turn.cloudflare.com:443?transport=tcp'], username: 'own', credential: 'own' }];
+		const provided = [{ urls: ['turn:turn.remote.test:3478'], username: 'provider', credential: 'provider' }];
+		f.cloudflareTurnService.getDelegatedIceServers.mockResolvedValue(own);
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ iceServers: provided, mediaProvider: 'https://relay.test' }));
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toMatchObject({ iceServers: own, mediaProvider: 'https://relay.test' });
+	});
+	test('an own TURN checks signed capability before requesting remote issuance suppression', async () => {
+		const f = createFixture();
+		const own = [{ urls: ['turns:turn.cloudflare.com:443?transport=tcp'], username: 'own', credential: 'own' }];
+		f.cloudflareTurnService.getDelegatedIceServers.mockResolvedValue(own);
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ iceServers: null, mediaProvider: 'https://relay.test' }));
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toMatchObject({ iceServers: own });
+		expect(f.apRequestService.signedGetJson).toHaveBeenCalledWith(me, `${TOKEN_URL}?room=${encodeURIComponent('https://remote.test/chat/rooms/r1')}`, 10_000, { redirect: 'manual', size: 64 * 1024 });
+		expect(f.apRequestService.signedPostJson).toHaveBeenCalledWith(me, TOKEN_URL, { room: 'https://remote.test/chat/rooms/r1', canScreenShare: false, includeIceServers: false }, 10_000, { redirect: 'manual', size: 64 * 1024 });
+	});
+	test.each([
+		['unsupported capability', { includeIceServers: false }],
+		['missing capability', {}],
+	])('an own TURN refuses %s without requesting a token', async (_label, response) => {
+		const f = createFixture(); f.cloudflareTurnService.getDelegatedIceServers.mockResolvedValue([]);
+		f.apRequestService.signedGetJson.mockResolvedValueOnce(response);
+		await expect(f.service.requestJoin(me, room, owner, false)).rejects.toMatchObject({ reason: 'unsupported' });
+		expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+	});
+	test('a legacy host without capability cannot incur provider TURN cost', async () => {
+		const f = createFixture(); f.cloudflareTurnService.getDelegatedIceServers.mockResolvedValue([]);
+		f.apRequestService.signedGetJson.mockRejectedValueOnce(new StatusError('404 Not Found', 404, 'Not Found'));
+		await expect(f.service.requestJoin(me, room, owner, false)).rejects.toMatchObject({ reason: 'unsupported' });
+		expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled(); expect(f.redis.set).not.toHaveBeenCalled();
+	});
+	test.each([
+		[new StatusError('403 Forbidden', 403, 'Forbidden'), 'forbidden'],
+		[new StatusError('500 Internal Server Error', 500, 'Internal Server Error'), 'unreachable'],
+		[new Error('network failed'), 'unreachable'],
+	])('capability failures do not trigger a token request', async (error, reason) => {
+		const f = createFixture(); f.cloudflareTurnService.getDelegatedIceServers.mockResolvedValue([]);
+		f.apRequestService.signedGetJson.mockRejectedValueOnce(error);
+		await expect(f.service.requestJoin(me, room, owner, false)).rejects.toMatchObject({ reason });
+		expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+	});
+	test('a refused suppression request is not retried without the field', async () => {
+		const f = createFixture(); f.cloudflareTurnService.getDelegatedIceServers.mockResolvedValue([]);
+		f.apRequestService.signedPostJson.mockRejectedValueOnce(new StatusError('400 Bad Request', 400, 'Bad Request'));
+		await expect(f.service.requestJoin(me, room, owner, false)).rejects.toMatchObject({ reason: 'unreachable' });
+		expect(f.apRequestService.signedPostJson).toHaveBeenCalledTimes(1);
+	});
+	test('a remotely hosted delegated call fails rather than switch TURN after local issuance fails', async () => {
+		const f = createFixture();
+		f.cloudflareTurnService.getDelegatedIceServers.mockRejectedValue(new Error('TURN credentials unavailable'));
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ iceServers: [{ urls: ['turn:turn.remote.test:3478'], username: 'provider', credential: 'provider' }], mediaProvider: 'https://relay.test' }));
+		await expect(f.service.requestJoin(me, room, owner, false)).rejects.toThrow('TURN credentials unavailable');
+		expect(f.apRequestService.signedGetJson).not.toHaveBeenCalled();
+		expect(f.apRequestService.signedPostJson).not.toHaveBeenCalled();
+	});
+	test('an own TURN is preferred for a supported direct remote call', async () => {
+		const f = createFixture(); const own = [{ urls: ['turn:own.example:3478'], username: 'own', credential: 'own' }];
+		f.cloudflareTurnService.getDelegatedIceServers.mockResolvedValue(own);
+		f.apRequestService.signedPostJson.mockResolvedValueOnce(hostResponse({ iceServers: null }));
+		await expect(f.service.requestJoin(me, room, owner, false)).resolves.toMatchObject({ iceServers: own });
+		expect(f.apRequestService.signedGetJson).toHaveBeenCalledOnce();
+		expect(f.apRequestService.signedPostJson).toHaveBeenCalledWith(me, TOKEN_URL, expect.objectContaining({ includeIceServers: false }), 10_000, { redirect: 'manual', size: 64 * 1024 });
 	});
 
 	test('stores the participants the host sent', async () => {

@@ -25,6 +25,23 @@ describe('ChatVoiceService', () => {
 		vi.useRealTimers();
 	});
 
+ test('an unreachable delegated call remains explicitly unavailable after its cached roster expires', async () => {
+  Object.assign(f.liveKitService, { isRoomUnavailable: async () => true });
+  expect(await f.service.getStates({ id: 'm1' }, ['r1'])).toEqual([expect.objectContaining({ roomId: 'r1', participants: [], unavailable: true })]);
+ });
+
+ test('relay outage sends a local stream update even when participant lookup fails', async () => {
+  let unavailable = true;
+  Object.assign(f.liveKitService, { isRoomUnavailable: async () => unavailable });
+  f.liveKitService.listParticipants.mockRejectedValue(new Error('provider offline'));
+  f.relayChange('r1');
+  await vi.waitFor(() => expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('owner', 'chatRoomVoiceState', expect.objectContaining({ roomId: 'r1', unavailable: true })));
+  const before = f.globalEventService.publishMainStream.mock.calls.at(-1)![2].updatedAt;
+  unavailable = false; f.liveKitService.listParticipants.mockResolvedValue([]);
+  f.relayChange('r1');
+  await vi.waitFor(() => expect(f.globalEventService.publishMainStream.mock.calls.some(call => call[2].updatedAt > before && !call[2].unavailable)).toBe(true));
+ });
+
 	test('a worker with delayed meta events cannot store or show a host blocked in authoritative settings', async () => {
 		const other = createFixture(f.redis);
 		const room = mirrorRoom();
@@ -331,9 +348,75 @@ describe('ChatVoiceService', () => {
 	test('issues a join token for the room after making sure it exists', async () => {
 		const result = await f.service.issueJoinToken({ id: 'u1', host: null, uri: null } as any, { id: 'r1' } as any, false);
 
-		expect(f.liveKitService.ensureRoom).toHaveBeenCalledWith('r1', 51);
+		expect(f.liveKitService.ensureRoom).toHaveBeenCalledWith('r1', 10);
 		expect(f.liveKitService.createJoinToken).toHaveBeenCalledWith({ roomId: 'r1', identity: 'https://local.test/users/u1', userId: 'u1', canScreenShare: false });
 		expect(result).toEqual({ url: 'https://local.test/livekit', token: 'jwt', iceServers: null });
+	});
+	test('reserves ten total participants by default', async () => {
+		await f.service.issueJoinToken({ id: 'u1', host: null, uri: null } as any, { id: 'r1' } as any, false);
+
+		expect(f.liveKitService.ensureRoom).toHaveBeenCalledWith('r1', 10);
+	});
+
+	test('uses the administrator participant limit for a new call', async () => {
+		f.metaService.fetch.mockResolvedValueOnce({ ...f.meta, voiceCallMaxParticipants: 25 } as typeof f.meta);
+
+		await f.service.issueJoinToken({ id: 'u1', host: null, uri: null } as any, { id: 'r1' } as any, false);
+
+		expect(f.liveKitService.ensureRoom).toHaveBeenCalledWith('r1', 25);
+	});
+	test('a local join with relay support ensures the room only once', async () => {
+		Object.assign(f.liveKitService, { relayCredentials: vi.fn(async () => null) });
+		const result = await f.service.issueJoinToken({ id: 'u1', host: null, uri: null } as any, { id: 'r1' } as any, false);
+		expect(f.liveKitService.ensureRoom).toHaveBeenCalledTimes(1);
+		expect(result.token).toBe('jwt');
+	});
+	function fakeDelegation(provided: { urls: string[]; username?: string; credential?: string }[] | null) {
+		return vi.fn(async (_room: string, _params: unknown, getOwn: () => Promise<{ urls: string[]; username?: string; credential?: string }[] | null>) => ({ token: 'delegated', iceServers: await getOwn() ?? provided, mediaProvider: 'https://relay.test' }));
+	}
+	test('a delegated local join prefers this server TURN over provider TURN', async () => {
+		const own = [{ urls: ['turn:own.example:3478'], username: 'own', credential: 'own' }];
+		const provided = [{ urls: ['turn:provider.example:3478'], username: 'provider', credential: 'provider' }];
+		f.cloudflareTurnService.getDelegatedIceServers.mockResolvedValue(own);
+		Object.assign(f.liveKitService, { relayCredentials: fakeDelegation(provided) });
+		const result = await f.service.issueJoinToken({ id: 'u1', host: null, uri: null } as any, { id: 'r1' } as any, false);
+		expect(result).toMatchObject({ token: 'delegated', iceServers: own, mediaProvider: 'https://relay.test' });
+	});
+	test('a delegated local join falls back to provider TURN when local TURN is unavailable', async () => {
+		const provided = [{ urls: ['turn:provider.example:3478'], username: 'provider', credential: 'provider' }];
+		f.cloudflareTurnService.getDelegatedIceServers.mockResolvedValue(null);
+		Object.assign(f.liveKitService, { relayCredentials: fakeDelegation(provided) });
+		const result = await f.service.issueJoinToken({ id: 'u1', host: null, uri: null } as any, { id: 'r1' } as any, false);
+		expect(result.iceServers).toEqual(provided);
+	});
+	test('a delegated local join with neither TURN returns an explicit empty ICE list', async () => {
+		f.cloudflareTurnService.getDelegatedIceServers.mockResolvedValue(null);
+		Object.assign(f.liveKitService, { relayCredentials: fakeDelegation(null) });
+		const result = await f.service.issueJoinToken({ id: 'u1', host: null, uri: null } as any, { id: 'r1' } as any, false);
+		expect(result.iceServers).toEqual([]);
+	});
+	test('a delegated local join does not fall back to provider TURN after local issuance fails', async () => {
+		f.cloudflareTurnService.getDelegatedIceServers.mockRejectedValue(new Error('TURN credentials unavailable'));
+		Object.assign(f.liveKitService, { relayCredentials: fakeDelegation([{ urls: ['turn:provider.example:3478'], username: 'provider', credential: 'provider' }]) });
+		await expect(f.service.issueJoinToken({ id: 'u1', host: null, uri: null } as any, { id: 'r1' } as any, false)).rejects.toThrow('TURN credentials unavailable');
+	});
+	test('a delegated local join preserves an explicit local empty ICE list', async () => {
+		f.cloudflareTurnService.getDelegatedIceServers.mockResolvedValue([]);
+		Object.assign(f.liveKitService, { relayCredentials: fakeDelegation([{ urls: ['turn:provider.example:3478'], username: 'provider', credential: 'provider' }]) });
+		const result = await f.service.issueJoinToken({ id: 'u1', host: null, uri: null } as any, { id: 'r1' } as any, false);
+		expect(result.iceServers).toEqual([]);
+	});
+	test('a remote suppression request skips the host TURN for a direct call', async () => {
+		const result = await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false, false);
+		expect(result).toMatchObject({ token: 'jwt', iceServers: null });
+		expect(f.cloudflareTurnService.getIceServers).not.toHaveBeenCalled();
+	});
+	test('a remote suppression request skips the host TURN for a delegated call', async () => {
+		Object.assign(f.liveKitService, { relayCredentials: fakeDelegation([{ urls: ['turn:provider.example:3478'], username: 'provider', credential: 'provider' }]) });
+		const result = await f.service.issueRemoteJoinToken(remoteUser(), 'r1', false, false);
+		expect(result).toMatchObject({ token: 'delegated', iceServers: null });
+		expect(f.cloudflareTurnService.getDelegatedIceServers).not.toHaveBeenCalled();
+		expect(f.cloudflareTurnService.getIceServers).not.toHaveBeenCalled();
 	});
 
 	test('hands out the TURN servers with the join token when they are configured', async () => {
@@ -353,7 +436,7 @@ describe('ChatVoiceService', () => {
 
 			expect(f.chatRoomsRepository.findOne).toHaveBeenCalledWith({ where: { id: 'r1' }, relations: { owner: true } });
 			expect(f.chatRoomMembershipsRepository.exists).toHaveBeenCalledWith({ where: { roomId: 'r1', userId: 'ru1' } });
-			expect(f.liveKitService.ensureRoom).toHaveBeenCalledWith('r1', 51);
+			expect(f.liveKitService.ensureRoom).toHaveBeenCalledWith('r1', 10);
 			expect(f.liveKitService.createJoinToken).toHaveBeenCalledWith({ roomId: 'r1', identity: 'https://remote.test/users/ru1', userId: 'ru1', canScreenShare: false });
 			expect(result).toEqual({
 				url: 'https://local.test/livekit',

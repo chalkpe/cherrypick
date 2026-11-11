@@ -202,7 +202,9 @@ export function matchesWhere(user: Record<string, unknown>, where: Record<string
 export type InstanceRow = { id?: string; host: string; suspensionState: string; quarantineLimited?: boolean };
 
 export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []) {
+	let relayChange: ((roomId: string) => void) | undefined;
 	const liveKitService = {
+		onRelayChange: (callback: (roomId: string) => void) => { relayChange = callback; },
 		isEnabled: true,
 		getPublicUrl: () => 'https://local.test/livekit',
 		identityOf: (user: { id: string; host: string | null; uri: string | null }) => user.host == null ? `https://local.test/users/${user.id}` : user.uri,
@@ -287,6 +289,7 @@ export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []
 	// TURN が設定されていないときと同じ
 	const cloudflareTurnService = {
 		getIceServers: vi.fn(async (): Promise<{ urls: string[]; username?: string; credential?: string }[] | null> => null),
+		getDelegatedIceServers: vi.fn(async (): Promise<{ urls: string[]; username?: string; credential?: string }[] | null> => null),
 	};
 	const metaService = { fetch: vi.fn(async () => ({ ...meta })) };
 	const service = new ChatVoiceService(
@@ -308,7 +311,7 @@ export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []
 		cloudflareTurnService as any,
 		metaService as any,
 	);
-	return { service, metaService, redis, redisForSub, meta, liveKitService, rooms, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, instancesRepository, userEntityService, globalEventService, roleService, utilityService, queueService, cloudflareTurnService, logger, nonMembers };
+	return { relayChange: (roomId: string) => relayChange?.(roomId), service, metaService, redis, redisForSub, meta, liveKitService, rooms, chatRoomsRepository, chatRoomMembershipsRepository, usersRepository, instancesRepository, userEntityService, globalEventService, roleService, utilityService, queueService, cloudflareTurnService, logger, nonMembers };
 }
 
 // テストの時計。ミラーの現況は古いと捨てる (参加者のいる現況は寿命の 10 分に時計のずれの 5 分を足した分、空の現況は 2 日から 5 分を引いた分) ので、

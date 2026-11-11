@@ -6,13 +6,16 @@
 process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
-import { describe, beforeAll, test } from 'vitest';
+import { describe, beforeAll, afterAll, test } from 'vitest';
 import { IncomingMessage } from 'node:http';
+import type { DataSource, QueryRunner } from 'typeorm';
+import { VoiceRelay1794234432342 } from '../../migration/1794234432342-VoiceRelay.js';
 import {
 	api,
 	connectStream,
 	createAppToken,
 	failedApiCall,
+	initTestDb,
 	relativeFetch,
 	signup,
 	successfulApiCall,
@@ -29,6 +32,51 @@ describe('API', () => {
 		alice = await signup({ username: 'alice' });
 		bob = await signup({ username: 'bob' });
 	}, 1000 * 60 * 2);
+
+	describe('voice relay management', () => {
+		let db: DataSource;
+		let runner: QueryRunner;
+		const migration = new VoiceRelay1794234432342();
+
+		beforeAll(async () => {
+			db = await initTestDb(true);
+			runner = db.createQueryRunner();
+			await migration.up(runner);
+		});
+
+		afterAll(async () => {
+			await migration.down(runner);
+			await runner.release();
+			await db.destroy();
+		});
+
+		test('requires an administrator and never returns the provider secret', async () => {
+			const request = { action: 'list' } as const;
+			await failedApiCall({ endpoint: 'admin/voice-relay/manage', parameters: request, user: bob }, {
+				status: 403, code: 'ROLE_PERMISSION_DENIED', id: 'c3d38592-54c0-429d-be96-5636b0431a61',
+			});
+			await failedApiCall({ endpoint: 'admin/voice-relay/manage', parameters: request, user: undefined }, {
+				status: 401, code: 'CREDENTIAL_REQUIRED', id: '1384574d-a912-4b81-8601-c7b1c4085df1',
+			});
+
+			const secret = 'a-unique-test-provider-secret-1234567890';
+			const saved = await api('admin/voice-relay/manage', { action: 'save-provider', origin: 'https://relay.example.org', secret }, alice);
+			assert.strictEqual(saved.status, 200);
+			assert.strictEqual(saved.body.providers.length, 1);
+			const id = saved.body.providers[0].id;
+			try {
+				const listed = await api('admin/voice-relay/manage', request, alice);
+				assert.strictEqual(listed.status, 200);
+				assert.strictEqual(listed.body.providers[0].id, id);
+				assert.ok(!JSON.stringify(saved.body).includes(secret));
+				assert.ok(!JSON.stringify(listed.body).includes(secret));
+				assert.ok(!JSON.stringify(listed.body).includes('credentialVersion'));
+			} finally {
+				const removed = await api('admin/voice-relay/manage', { action: 'remove-provider', id }, alice);
+				assert.strictEqual(removed.status, 200);
+			}
+		});
+	});
 
 	describe('General validation', () => {
 		test('wrong type', async () => {

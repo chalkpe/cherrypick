@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-export function checkHttps(url: string): boolean {
+export function checkHttps(url: string, allowHttpInDevelopment = true): boolean {
 	return url.startsWith('https://') ||
-		(url.startsWith('http://') && process.env.NODE_ENV !== 'production');
+		(allowHttpInDevelopment && url.startsWith('http://') && process.env.NODE_ENV !== 'production');
 }

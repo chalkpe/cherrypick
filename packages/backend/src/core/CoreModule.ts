@@ -81,6 +81,10 @@ import { ChannelFollowingService } from './ChannelFollowingService.js';
 import { ChatService } from './ChatService.js';
 import { ChatRosterService } from './ChatRosterService.js';
 import { LiveKitService } from './LiveKitService.js';
+import { VoiceBackendService } from './VoiceBackendService.js';
+import { VoiceRelayConsumerService } from './VoiceRelayConsumerService.js';
+import { VoiceRelayStorage } from './VoiceRelayStorage.js';
+import { VoiceRelayClient } from './VoiceRelayClient.js';
 import { ChatVoiceService } from './ChatVoiceService.js';
 import { RemoteVoiceCallService } from './RemoteVoiceCallService.js';
 import { CloudflareTurnService } from './CloudflareTurnService.js';
@@ -417,6 +421,11 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChatService,
 		ChatRosterService,
 		LiveKitService,
+		VoiceBackendService,
+		VoiceRelayConsumerService,
+		VoiceRelayStorage,
+		VoiceRelayClient,
+
 		ChatVoiceService,
 		RemoteVoiceCallService,
 		CloudflareTurnService,
@@ -750,6 +759,11 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChatService,
 		ChatRosterService,
 		LiveKitService,
+		VoiceBackendService,
+		VoiceRelayConsumerService,
+		VoiceRelayStorage,
+		VoiceRelayClient,
+
 		ChatVoiceService,
 		RemoteVoiceCallService,
 		CloudflareTurnService,

@@ -10,7 +10,7 @@ import { DI } from '@/di-symbols.js';
 import type { UsersRepository } from '@/models/_.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { ChatService } from '@/core/ChatService.js';
-import { LiveKitService } from '@/core/LiveKitService.js';
+import { VoiceBackendService as LiveKitService } from '@/core/VoiceBackendService.js';
 import { ApiError } from '@/server/api/error.js';
 
 export const meta = {

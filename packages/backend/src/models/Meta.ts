@@ -866,6 +866,26 @@ export class MiMeta {
 	})
 	public enableRemoteVoiceCall: boolean;
 
+	@Column('integer', {
+		default: 10,
+	})
+	public voiceCallMaxParticipants: number;
+
+	@Column('varchar', { length: 16, default: 'yaml' })
+	public voiceCallLivekitSource: 'yaml' | 'custom' | 'disabled';
+
+	@Column('varchar', { length: 2048, nullable: true })
+	public voiceCallLivekitUrl: string | null;
+
+	@Column('varchar', { length: 512, nullable: true })
+	public voiceCallLivekitApiKey: string | null;
+
+	@Column('varchar', { length: 512, nullable: true })
+	public voiceCallLivekitApiSecret: string | null;
+
+	@Column('boolean', { nullable: true })
+	public voiceCallPreferRelay: boolean | null;
+
 	/**
 	 * 通話の参加者に渡す TURN の資格情報を発行する Cloudflare の TURN キーの ID
 	 */

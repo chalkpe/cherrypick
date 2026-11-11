@@ -5,16 +5,18 @@
 
 import * as http from 'node:http';
 import * as https from 'node:https';
-import type * as stream from 'node:stream';
 import { Inject, Injectable } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { bindThis } from '@/decorators.js';
 import { getIpHash } from '@/misc/get-ip-hash.js';
+import { VoiceBackendService } from '@/core/VoiceBackendService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
+import { HttpRequestService } from '@/core/HttpRequestService.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
 import { ApSignedRequestVerifierService } from '@/core/activitypub/ApSignedRequestVerifierService.js';
 import { RateLimiterService } from '@/server/api/RateLimiterService.js';
+import type * as stream from 'node:stream';
 import type { FastifyInstance, FastifyPluginOptions } from 'fastify';
 
 const PREFIX = '/livekit';
@@ -42,6 +44,8 @@ const FORWARDED_UPGRADE_HEADERS = [
 
 // 拒否応答を中継するとき、本文の区切り方を変えるので元のものは捨てる
 const DROPPED_RESPONSE_HEADERS = new Set(['transfer-encoding', 'content-length', 'connection', 'keep-alive']);
+const DELEGATED_UPGRADE_HEADERS = new Set(['upgrade', 'connection', 'sec-websocket-accept', 'sec-websocket-protocol', 'sec-websocket-extensions']);
+const DELEGATED_REJECTION_HEADERS = new Set(['content-type', 'content-encoding']);
 
 /**
  * LiveKit のシグナリングを同じドメインの /livekit 配下で中継し、LiveKit からの webhook を受け取る。
@@ -56,10 +60,11 @@ export class LiveKitServerService {
 		@Inject(DI.config)
 		private config: Config,
 
-		private liveKitService: LiveKitService,
+		@Inject(VoiceBackendService) private liveKitService: LiveKitService & Partial<Pick<VoiceBackendService, 'relayRtc' | 'isDirectEnabled' | 'withRtcAdmission'>>,
 		private chatVoiceService: ChatVoiceService,
 		private apSignedRequestVerifierService: ApSignedRequestVerifierService,
 		private rateLimiterService: RateLimiterService,
+		private httpRequestService?: HttpRequestService,
 	) {
 	}
 
@@ -67,6 +72,7 @@ export class LiveKitServerService {
 	public createServer(fastify: FastifyInstance, options: FastifyPluginOptions, done: (err?: Error) => void) {
 		// 通話が使えないときは、本文を読む前 (大きさや形式を見て 413 / 415 を返す前) に、どの要求にも 404 を返す
 		fastify.addHook('onRequest', async (_request, reply) => {
+			if (_request.url.split('?')[0] === '/livekit/webhook' && this.liveKitService.isDirectEnabled === false) return reply.code(404).send();
 			if (!this.liveKitService.isEnabled) return reply.code(404).send();
 		});
 
@@ -93,6 +99,19 @@ export class LiveKitServerService {
 		// 他のサーバーのユーザーが、このサーバーのルームの通話に入るためのトークン。
 		// 要求はそのユーザーの鍵で署名されている。
 		// 404 は「このサーバーでは通話が使えない」の意味だけに使う (相手のサーバーはそれを覚えておく)
+		fastify.get('/federation/token', async (request, reply) => {
+			try {
+				if (this.config.enableIpRateLimit && await this.rateLimiterService.limit(FEDERATION_TOKEN_IP_LIMIT, getIpHash(request.ip)) != null) return reply.code(429).send();
+				const user = await this.apSignedRequestVerifierService.verify({ method: request.method, url: request.url, headers: request.headers }, '');
+				if (user == null) return reply.code(401).send();
+				if (await this.rateLimiterService.limit(FEDERATION_TOKEN_USER_LIMIT, user.id) != null) return reply.code(429).send();
+				const { room } = request.query as { room?: unknown };
+				if (typeof room !== 'string' || room.length > 2048) return reply.code(400).send();
+				const roomId = this.localRoomIdOf(room);
+				if (roomId == null || !await this.chatVoiceService.canRemoteJoin(user, roomId)) return reply.code(403).send();
+				return reply.header('Cache-Control', 'no-store').code(200).send({ includeIceServers: true });
+			} catch { return reply.code(500).send(); }
+		});
 		fastify.post('/federation/token', { bodyLimit: FEDERATION_TOKEN_BODY_LIMIT }, async (request, reply) => {
 			// LiveKit や DB のエラーの内容を他のサーバーに見せない
 			try {
@@ -111,12 +130,14 @@ export class LiveKitServerService {
 
 				// ルームに関わる拒否はすべて同じ 403 にして、ルームがあるかどうかも分からないようにする
 				const roomId = this.localRoomIdOf(body.room);
-				const result = roomId != null ? await this.chatVoiceService.issueRemoteJoinToken(user, roomId, body.canScreenShare) : 'forbidden';
+				const result = roomId != null ? body.includeIceServers === false
+					? await this.chatVoiceService.issueRemoteJoinToken(user, roomId, body.canScreenShare, false)
+					: await this.chatVoiceService.issueRemoteJoinToken(user, roomId, body.canScreenShare) : 'forbidden';
 				if (result === 'forbidden') return reply.code(403).send();
 
 				// TURN の資格情報も渡す。相手のユーザーのブラウザも、このサーバーの LiveKit に TURN を経由してつなぐことがある
 				const { url, token, iceServers, participants, updatedAt } = result;
-				return reply.code(200).send({ url, token, iceServers, participants, updatedAt });
+				return reply.code(200).send({ url, token, iceServers, participants, updatedAt, ...(result.mediaProvider ? { mediaProvider: result.mediaProvider } : {}), ...(result.screenShareLimits ? { screenShareLimits: result.screenShareLimits } : {}) });
 			} catch {
 				return reply.code(500).send();
 			}
@@ -142,22 +163,32 @@ export class LiveKitServerService {
 		});
 
 		fastify.get('/rtc/*', async (request, reply) => {
-			const target = this.targetOf(request.url);
-			if (target == null) return reply.code(404).send();
+			const execute = async (delegated?: { url: URL; headers: Record<string, string> } | null) => {
+				if (delegated && this.httpRequestService) {
+					const response = await this.httpRequestService.send(delegated.url.href, { headers: delegated.headers, redirect: 'manual', timeout: this.upstreamTimeoutMs, size: 1048576 }, { throwErrorWhenResponseNotOk: false });
+					const type = response.headers.get('content-type');
+					if (type) reply.header('content-type', type);
+					return reply.code(response.status).send(await response.text());
+				}
+				const target = this.targetOf(request.url);
+				if (target == null) return reply.code(404).send();
 
-			const headers: Record<string, string> = {};
-			if (request.headers.authorization) headers.authorization = request.headers.authorization;
+				const headers: Record<string, string> = {};
+				if (request.headers.authorization) headers.authorization = request.headers.authorization;
 
-			let res: Response;
-			try {
-				res = await fetch(target, { headers, redirect: 'manual', signal: AbortSignal.timeout(this.upstreamTimeoutMs) });
-			} catch (err) {
-				return reply.code(err instanceof DOMException && err.name === 'TimeoutError' ? 504 : 502).send();
-			}
+				let res: Response;
+				try {
+					res = await fetch(target, { headers, redirect: 'manual', signal: AbortSignal.timeout(this.upstreamTimeoutMs) });
+				} catch (err) {
+					return reply.code(err instanceof DOMException && err.name === 'TimeoutError' ? 504 : 502).send();
+				}
 
-			const contentType = res.headers.get('content-type');
-			if (contentType) reply.header('content-type', contentType);
-			return reply.code(res.status).send(await res.text());
+				const contentType = res.headers.get('content-type');
+				if (contentType) reply.header('content-type', contentType);
+				return reply.code(res.status).send(await res.text());
+			};
+			if (this.liveKitService.withRtcAdmission) return this.liveKitService.withRtcAdmission(request.url, execute, request.ip, this.chatVoiceService.canParticipantJoin);
+			return execute(await this.liveKitService.relayRtc?.(request.url));
 		});
 
 		done();
@@ -165,24 +196,40 @@ export class LiveKitServerService {
 
 	@bindThis
 	public handles(request: http.IncomingMessage): boolean {
-		if (!this.liveKitService.isEnabled || request.url == null) return false;
+		if (request.url == null || !this.liveKitService.isEnabled) return false;
 		return request.url.startsWith(`${PREFIX}/`);
 	}
 
 	@bindThis
 	public handleUpgrade(request: http.IncomingMessage, socket: stream.Duplex, head: Buffer): void {
+		if (!this.liveKitService.isEnabled) { socket.end(statusLine(404, 'Not Found') + 'Connection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+		if (this.liveKitService.withRtcAdmission) {
+			socket.pause(); socket.on('error', () => socket.destroy());
+			this.liveKitService.withRtcAdmission(request.url ?? '/', target => new Promise<void>((resolve, reject) => { this.proxyUpgrade(request, socket, head, target ?? undefined, error => error ? reject(error) : resolve()); }), request.socket.remoteAddress, this.chatVoiceService.canParticipantJoin).catch(() => { if (socket.writable) socket.end(statusLine(403, 'Forbidden') + 'Connection: close\r\nContent-Length: 0\r\n\r\n'); });
+			return;
+		}
+
+		this.proxyUpgrade(request, socket, head);
+	}
+
+	private proxyUpgrade(request: http.IncomingMessage, socket: stream.Duplex, head: Buffer, delegated?: { url: URL; headers: Record<string, string> }, admitted?: (error?: Error) => void): void {
+		let completed = false;
+		const deadline = admitted ? setTimeout(() => socket.destroy(new Error('Signaling admission timed out')), this.upstreamTimeoutMs + 1000) : undefined;
+		const finish = (error?: Error) => { if (completed) return; completed = true; if (deadline) clearTimeout(deadline); admitted?.(error); };
+		if (admitted) socket.once('close', () => finish(new Error('Signaling closed before admission')));
 		// 拒否応答の書き込みも EPIPE になりうる。バッファの監視とは分け、close までは必ずエラーを受ける。
 		const onSocketError = () => socket.destroy();
 		socket.on('error', onSocketError);
 		socket.once('close', () => socket.off('error', onSocketError));
-		const target = this.targetOf(request.url ?? '/');
+		const target = delegated?.url ?? this.targetOf(request.url ?? '/');
 		if (target == null) {
 			socket.end(statusLine(404, 'Not Found') + 'Connection: close\r\nContent-Length: 0\r\n\r\n', () => socket.destroy());
 			return;
 		}
 
-		const headers: http.OutgoingHttpHeaders = { host: target.host };
+		const headers: http.OutgoingHttpHeaders = { host: target.host, ...delegated?.headers };
 		for (const name of FORWARDED_UPGRADE_HEADERS) {
+			if (delegated && name === 'authorization') continue;
 			const value = request.headers[name];
 			if (value != null) headers[name] = value;
 		}
@@ -198,7 +245,7 @@ export class LiveKitServerService {
 			// proxy must use the matching request module instead of throwing
 			// synchronously on an https: target.
 			proxyRequest = target.protocol === 'https:'
-				? https.request(target, { method: 'GET', headers })
+				? https.request(target, { method: 'GET', headers, ...(delegated && this.httpRequestService ? { agent: this.httpRequestService.httpsAgent } : {}) })
 				: http.request(target, { method: 'GET', headers });
 		} catch {
 			socket.end(statusLine(502, 'Bad Gateway') + 'Connection: close\r\nContent-Length: 0\r\n\r\n', () => socket.destroy());
@@ -242,6 +289,7 @@ export class LiveKitServerService {
 			else early.push(chunk);
 		};
 		socket.on('data', keep);
+		socket.resume();
 		socket.once('end', abandon);
 		socket.once('close', abandon);
 		socket.once('error', abandon);
@@ -252,11 +300,13 @@ export class LiveKitServerService {
 			settled = true;
 			stopWatching();
 			proxySocket.setTimeout(0);
+			if (proxyHead.length > 0) finish();
+			else proxySocket.once('data', () => finish());
 			proxySocket.on('error', () => socket.destroy());
 			socket.on('error', () => proxySocket.destroy());
 			proxySocket.on('close', () => socket.destroy());
 			socket.on('close', () => proxySocket.destroy());
-			socket.write(statusLine(101, 'Switching Protocols') + rawHeaders(proxyResponse) + '\r\n');
+			socket.write(statusLine(101, 'Switching Protocols') + rawHeaders(proxyResponse, new Set(), delegated ? DELEGATED_UPGRADE_HEADERS : undefined) + '\r\n');
 			if (proxyHead.length > 0) socket.write(proxyHead);
 			for (const chunk of early) proxySocket.write(chunk);
 			clear();
@@ -275,7 +325,7 @@ export class LiveKitServerService {
 			socket.once('error', () => proxyResponse.destroy());
 			proxyResponse.once('error', () => socket.destroy());
 			proxyResponse.once('aborted', () => socket.destroy());
-			socket.write(statusLine(proxyResponse.statusCode ?? 502, proxyResponse.statusMessage ?? '') + rawHeaders(proxyResponse, DROPPED_RESPONSE_HEADERS) + 'Connection: close\r\n\r\n');
+			socket.write(statusLine(proxyResponse.statusCode ?? 502, proxyResponse.statusMessage ?? '') + rawHeaders(proxyResponse, DROPPED_RESPONSE_HEADERS, delegated ? DELEGATED_REJECTION_HEADERS : undefined) + 'Connection: close\r\n\r\n');
 			proxyResponse.pipe(socket);
 		});
 		proxyRequest.on('error', () => fail(502, 'Bad Gateway'));
@@ -298,6 +348,7 @@ export class LiveKitServerService {
 	 * `/livekit//other.host/...` のような経路は URL として別ホストに解決されるので弾く
 	 */
 	private targetOf(url: string): URL | null {
+		if (this.liveKitService.isDirectEnabled === false) return null;
 		const path = stripPrefix(url).split('?')[0];
 		// URL と上流ルーターの正規化の差で RTC 配下を抜けないよう、区切り文字と二重エンコードを断る。
 		if (path.includes('\\') || /%(?:2f|5c|25)/i.test(path)) return null;
@@ -319,7 +370,7 @@ export class LiveKitServerService {
 	}
 }
 
-function parseTokenRequest(rawBody: string): { room: string; canScreenShare: boolean } | null {
+function parseTokenRequest(rawBody: string): { room: string; canScreenShare: boolean; includeIceServers?: boolean } | null {
 	let body: unknown;
 	try {
 		body = JSON.parse(rawBody);
@@ -327,9 +378,9 @@ function parseTokenRequest(rawBody: string): { room: string; canScreenShare: boo
 		return null;
 	}
 	if (typeof body !== 'object' || body == null) return null;
-	const { room, canScreenShare } = body as Record<string, unknown>;
-	if (typeof room !== 'string' || typeof canScreenShare !== 'boolean') return null;
-	return { room, canScreenShare };
+	const { room, canScreenShare, includeIceServers } = body as Record<string, unknown>;
+	if (typeof room !== 'string' || typeof canScreenShare !== 'boolean' || includeIceServers !== undefined && typeof includeIceServers !== 'boolean') return null;
+	return { room, canScreenShare, ...(includeIceServers !== undefined ? { includeIceServers } : {}) };
 }
 
 function stripPrefix(url: string): string {
@@ -341,10 +392,10 @@ function statusLine(status: number, message: string): string {
 	return `HTTP/1.1 ${status} ${message}\r\n`;
 }
 
-function rawHeaders(response: http.IncomingMessage, dropped: Set<string> = new Set()): string {
+function rawHeaders(response: http.IncomingMessage, dropped: Set<string> = new Set(), allowed?: Set<string>): string {
 	let result = '';
 	for (let i = 0; i < response.rawHeaders.length; i += 2) {
-		if (dropped.has(response.rawHeaders[i].toLowerCase())) continue;
+		if (dropped.has(response.rawHeaders[i].toLowerCase()) || allowed && !allowed.has(response.rawHeaders[i].toLowerCase())) continue;
 		result += `${response.rawHeaders[i]}: ${response.rawHeaders[i + 1]}\r\n`;
 	}
 	return result;

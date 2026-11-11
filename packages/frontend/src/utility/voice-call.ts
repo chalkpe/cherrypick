@@ -28,6 +28,7 @@ type LiveKit = typeof import('livekit-client');
 const state = reactive({
 	status: 'idle' as VoiceCallStatus,
 	room: null as Misskey.entities.ChatRoom | null,
+	mediaProvider: null as string | null,
 	micEnabled: false,
 	deafened: false,
 	audioBlocked: false,
@@ -44,7 +45,76 @@ export const voiceCall = readonly(state);
 
 let livekit: LiveKit | null = null;
 let current: Room | null = null;
+let screenShareLimits: Misskey.entities.ChatRoomsVoiceJoinResponse['screenShareLimits'] = undefined;
+let pendingScreenShare: { room: Room; promise: Promise<void> } | null = null;
 let joinAttempt = 0;
+const ICE_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const ICE_REFRESH_STALE_MS = 60 * 60 * 1000;
+const ICE_REFRESH_RETRY_MS = 60 * 1000;
+type IceRefresh = { room: Room; roomId: string; url: string; mediaProvider: string; lastSuccess: number; retryDelay: number; timer: number | null; inFlight: boolean; iceServers: RTCIceServer[] };
+let iceRefresh: IceRefresh | null = null;
+
+function stopIceRefresh(): void {
+	if (iceRefresh?.timer != null) window.clearTimeout(iceRefresh.timer);
+	iceRefresh = null;
+}
+
+function scheduleIceRefresh(refresh: IceRefresh, delay: number): void {
+	if (iceRefresh !== refresh || current !== refresh.room) return;
+	if (refresh.timer != null) window.clearTimeout(refresh.timer);
+	refresh.timer = window.setTimeout(() => { refresh.timer = null; void refreshIceServers(refresh); }, delay);
+}
+
+async function refreshIceServers(refresh: IceRefresh): Promise<void> {
+	if (iceRefresh !== refresh || current !== refresh.room || refresh.inFlight) return;
+	refresh.inFlight = true;
+	let nextDelay = refresh.retryDelay;
+	try {
+		const credentials = await misskeyApi('chat/rooms/voice/join', { roomId: refresh.roomId });
+		if (iceRefresh !== refresh || current !== refresh.room) return;
+		if (credentials.url !== refresh.url || (credentials.mediaProvider ?? new URL(credentials.url).origin) !== refresh.mediaProvider) { stopIceRefresh(); return; }
+		if (credentials.iceServers == null || !credentials.token) throw new Error('ICE refresh unavailable');
+		const iceServers = credentials.iceServers;
+		const engine = refresh.room.engine;
+		const changed = JSON.stringify(iceServers) !== JSON.stringify(refresh.iceServers);
+		if (changed) {
+			// livekit-client 2.23 has no public RTC configuration updater. Preserve each
+			// peer's current policy (including server-forced relay) while changing only ICE.
+			const manager = engine.pcManager;
+			for (const transport of [manager?.publisher, manager?.subscriber]) {
+				const pc = (transport as unknown as { _pc?: RTCPeerConnection } | undefined)?._pc;
+				if (pc && pc.connectionState !== 'closed') pc.setConfiguration({ ...pc.getConfiguration(), iceServers });
+			}
+			engine.rtcConfig.iceServers = iceServers;
+		}
+		// LiveKit normally refreshes its own token. Use the freshly authorized token
+		// only when a reconnect is needed, so a short token does not replace its longer one.
+		if (changed || state.status === 'reconnecting') (engine as unknown as { token: string }).token = credentials.token;
+		if (changed) {
+			const manager = engine.pcManager;
+			// A live relay allocation can outlast its credentials. Refresh both publisher
+			// and subscriber through LiveKit's reconnect path before those credentials expire.
+			if (state.status === 'reconnecting' && manager) await manager.triggerIceRestart();
+			else if (state.status === 'connected') engine.reconnect();
+			refresh.iceServers = iceServers;
+		}
+		refresh.lastSuccess = Date.now(); refresh.retryDelay = ICE_REFRESH_RETRY_MS; nextDelay = ICE_REFRESH_INTERVAL_MS;
+	} catch {
+		refresh.retryDelay = Math.min(refresh.retryDelay * 2, 60 * 60 * 1000);
+	} finally {
+		refresh.inFlight = false;
+		scheduleIceRefresh(refresh, nextDelay);
+	}
+}
+
+function startIceRefresh(room: Room, roomId: string, credentials: Misskey.entities.ChatRoomsVoiceJoinResponse): void {
+	stopIceRefresh();
+	const iceServers = credentials.iceServers;
+	if (!iceServers?.some(server => server.urls.some(value => /^turns?:/i.test(value)))) return;
+	iceRefresh = { room, roomId, url: credentials.url, mediaProvider: credentials.mediaProvider ?? new URL(credentials.url).origin, lastSuccess: Date.now(), retryDelay: ICE_REFRESH_RETRY_MS, timer: null, inFlight: false, iceServers };
+	scheduleIceRefresh(iceRefresh, ICE_REFRESH_INTERVAL_MS);
+}
+
 let stopLocalMeter: (() => void) | null = null;
 let localMeterContext: BaseAudioContext | null = null;
 // 測れなかったトラックは測り直さない。createAudioAnalyser は途中で失敗すると作った AudioContext を閉じずに投げるので、
@@ -210,13 +280,14 @@ export function localIdentityOf(userId: string): string {
 async function disconnectCurrentRoom(): Promise<void> {
 	const room = current;
 	current = null;
+	stopIceRefresh();
 	if (room != null) {
 		await room.disconnect();
 		detachAll(room);
 	}
 }
 
-export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { micEnabled?: boolean } = {}): Promise<void> {
+export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { micEnabled?: boolean; approvedMediaProvider?: string } = {}): Promise<void> {
 	migrateParticipantVolumes();
 	// 前の通話の切断を待つあいだに別の参加が始まったら、この参加は捨てる。
 	// leaveVoiceCall は joinAttempt を進めるので、ここでは切断だけを行う
@@ -243,6 +314,13 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 	}
 	if (attempt !== joinAttempt) return;
 
+	if (credentials.mediaProvider && credentials.mediaProvider !== url && credentials.mediaProvider !== options.approvedMediaProvider) {
+		const { canceled } = await os.confirm({ type: 'info', text: i18n.tsx._voiceRelay.mediaNotice({ host: new URL(credentials.mediaProvider).host }) });
+		if (attempt !== joinAttempt) return;
+		if (canceled) { resetState(); return; }
+	}
+	state.mediaProvider = credentials.mediaProvider ?? new URL(credentials.url).origin;
+	screenShareLimits = credentials.screenShareLimits;
 	const lkRoom = new lk.Room({ adaptiveStream: true, dynacast: true });
 	current = lkRoom;
 	bindRoomEvents(lk, lkRoom);
@@ -268,6 +346,7 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 	if (current !== lkRoom) return;
 
 	state.status = 'connected';
+	startIceRefresh(lkRoom, room.id, credentials);
 	state.audioBlocked = !lkRoom.canPlaybackAudio;
 
 	for (const participant of lkRoom.remoteParticipants.values()) {
@@ -401,21 +480,39 @@ const SCREEN_SHARE_PICKER_MIN_MS = 250;
 export async function startScreenShare(): Promise<void> {
 	const room = current;
 	if (room == null || livekit == null) return;
+	if (pendingScreenShare?.room === room) return pendingScreenShare.promise;
 	const { preset, contentHint } = screenSharePreset(livekit, prefer.s['voiceCall.screenShareQuality']);
 	const startedAt = Date.now();
 	try {
-		await room.localParticipant.setScreenShareEnabled(true, {
+		const captureOptions = {
 			audio: prefer.s['voiceCall.screenShareAudio'],
 			resolution: preset.resolution,
 			contentHint,
-		}, {
+		};
+		const publishOptions = {
 			screenShareEncoding: preset.encoding,
 			// 層は低いものから並べる。一番低い層はプレビュー用
 			screenShareSimulcastLayers: [
 				new livekit.VideoPreset(SCREEN_SHARE_PREVIEW_LAYER.width, SCREEN_SHARE_PREVIEW_LAYER.height, SCREEN_SHARE_PREVIEW_LAYER.maxBitrate, SCREEN_SHARE_PREVIEW_LAYER.maxFramerate, SCREEN_SHARE_PREVIEW_LAYER.priority),
 				livekit.ScreenSharePresets.h720fps15,
 			],
-		});
+		};
+		if (screenShareLimits) {
+			const limits = screenShareLimits;
+			const resolution = {
+				width: Math.min(preset.resolution.width, limits.maxWidth),
+				height: Math.min(preset.resolution.height, limits.maxHeight),
+				frameRate: Math.min(preset.resolution.frameRate ?? limits.maxFrameRate, limits.maxFrameRate),
+			};
+			const promise = publishLimitedScreenShare(room, { ...captureOptions, resolution }, {
+				videoCodec: 'vp8', simulcast: false, backupCodec: false,
+				screenShareEncoding: { maxBitrate: Math.min(preset.encoding.maxBitrate, limits.maxBitrate), maxFramerate: Math.min(preset.encoding.maxFramerate ?? limits.maxFrameRate, limits.maxFrameRate) },
+			}, limits);
+			pendingScreenShare = { room, promise };
+			try { await promise; } finally { if (pendingScreenShare?.promise === promise) pendingScreenShare = null; }
+		} else {
+			await room.localParticipant.setScreenShareEnabled(true, captureOptions, publishOptions);
+		}
 		// 待っているあいだに通話を離れていれば何もしない。共有が終わっていれば (ブラウザの「共有を停止」など) 共有中にはしない
 		if (current === room) state.screenSharing = room.localParticipant.isScreenShareEnabled;
 	} catch (err) {
@@ -430,9 +527,35 @@ export async function startScreenShare(): Promise<void> {
 	}
 }
 
+async function publishLimitedScreenShare(room: Room, capture: import('livekit-client').ScreenShareCaptureOptions, publish: import('livekit-client').TrackPublishOptions, limits: NonNullable<typeof screenShareLimits>): Promise<void> {
+	if (room.localParticipant.isScreenShareEnabled) return;
+	const tracks = await room.localParticipant.createScreenTracks(capture);
+	const published: LocalTrack[] = [];
+	try {
+		const video = tracks.find(track => track.source === livekit?.Track.Source.ScreenShare);
+		if (!video) throw new Error('Screen video track missing');
+		await video.mediaStreamTrack.applyConstraints({ width: { max: limits.maxWidth }, height: { max: limits.maxHeight }, frameRate: { max: limits.maxFrameRate } });
+		const settings = video.mediaStreamTrack.getSettings();
+		if (settings.width == null || settings.height == null || settings.frameRate == null || settings.width > limits.maxWidth || settings.height > limits.maxHeight || settings.frameRate > limits.maxFrameRate) throw new Error('Screen capture exceeds relay limits');
+		if (current !== room) return;
+		for (const track of tracks) {
+			await room.localParticipant.publishTrack(track, publish);
+			published.push(track);
+			if (current !== room) throw new Error('Voice call ended');
+		}
+	} catch (error) {
+		await Promise.allSettled(published.map(track => room.localParticipant.unpublishTrack(track)));
+		throw error;
+	} finally {
+		if (published.length !== tracks.length || current !== room) tracks.forEach(track => track.stop());
+	}
+}
+
 export async function stopScreenShare(): Promise<void> {
 	if (current == null) return;
-	await current.localParticipant.setScreenShareEnabled(false);
+	const room = current;
+	if (pendingScreenShare?.room === room) await pendingScreenShare.promise.catch(() => {});
+	await room.localParticipant.setScreenShareEnabled(false);
 	state.screenSharing = false;
 }
 
@@ -708,7 +831,14 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 	});
 
 	room.on(RoomEvent.Reconnecting, () => {
-		if (isCurrent()) state.status = 'reconnecting';
+		if (isCurrent()) {
+			state.status = 'reconnecting';
+			const refresh = iceRefresh;
+			if (refresh?.room === room && Date.now() - refresh.lastSuccess >= ICE_REFRESH_STALE_MS) {
+				if (refresh.timer != null) window.clearTimeout(refresh.timer);
+				refresh.timer = null; void refreshIceServers(refresh);
+			}
+		}
 	});
 
 	room.on(RoomEvent.Reconnected, () => {
@@ -764,20 +894,24 @@ function detachAll(room: Room): void {
 	}
 }
 
-function failToConnect(err?: unknown): void {
-	resetState();
-	// 相手のサーバーが通話に対応していないときだけ、原因が分かる文言にする
-	const code = isApiError(err) ? err.code : undefined;
-	os.toast(code === 'REMOTE_HOST_UNSUPPORTED' ? i18n.ts._voiceCall.remoteHostUnsupported : i18n.ts._voiceCall.connectionFailed);
+export function notifyVoiceCallFailure(err?: unknown): void {
+ const code = isApiError(err) ? err.code : undefined;
+ const message = code === 'VOICE_RELAY_CAPACITY_EXCEEDED' ? i18n.ts._voiceRelay.full : code === 'VOICE_RELAY_UNREACHABLE' ? i18n.ts._voiceRelay.unreachable : code === 'VOICE_RELAY_REVOKED' ? i18n.ts._voiceRelay.revoked : code === 'REMOTE_HOST_UNSUPPORTED' ? i18n.ts._voiceCall.remoteHostUnsupported : i18n.ts._voiceCall.connectionFailed;
+ os.toast(message);
 }
 
+function failToConnect(err?: unknown): void { resetState(); notifyVoiceCallFailure(err); }
+
 function resetState(): void {
+	stopIceRefresh();
 	resetStatusDelivery();
 	stopLocalMeter?.();
 	unwatchMicrophoneTrack?.();
 	screenShareTracks.clear();
 	state.status = 'idle';
 	state.room = null;
+	state.mediaProvider = null;
+	screenShareLimits = undefined;
 	state.micEnabled = false;
 	state.deafened = false;
 	state.audioBlocked = false;

@@ -36,7 +36,7 @@ import { CustomEmojiService } from '@/core/CustomEmojiService.js';
 import { extractCustomEmojisFromMfm } from '@/misc/extract-custom-emojis-from-mfm.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
-import { LiveKitService } from '@/core/LiveKitService.js';
+import { VoiceBackendService as LiveKitService } from '@/core/VoiceBackendService.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { emojiRegex } from '@/misc/emoji-regex.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';

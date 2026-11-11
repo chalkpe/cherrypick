@@ -13,6 +13,7 @@ import { meta as statusMeta } from '@/server/api/endpoints/chat/rooms/voice/stat
 import { ChatService } from '@/core/ChatService.js';
 import { MetaEntityService } from '@/core/entities/MetaEntityService.js';
 import { RemoteVoiceCallError } from '@/core/RemoteVoiceCallService.js';
+import { VoiceRelayError } from '@/core/VoiceRelayClient.js';
 import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
 
 const me = { id: 'me', host: null, uri: null } as any;
@@ -39,7 +40,7 @@ function joinFixture(overrides: { isEnabled?: boolean; remoteEnabled?: boolean; 
 	const chatRoomMembershipsRepository = {
 		exists: overrides.failing === 'membership' ? vi.fn().mockRejectedValue(dbError) : vi.fn().mockResolvedValue(overrides.isMember ?? true),
 	};
-	const chatVoiceService = { issueJoinToken: vi.fn().mockResolvedValue({ url: 'https://local.test/livekit', token: 't' }) };
+	const chatVoiceService = { issueJoinToken: vi.fn().mockResolvedValue({ url: 'https://local.test/livekit', token: 't' }), canParticipantJoin: vi.fn().mockResolvedValue(true) };
 	const roleService = { getUserPolicies: vi.fn().mockResolvedValue({ canVoiceCall: overrides.canVoiceCall ?? true, canScreenShare: overrides.canScreenShare ?? false }) };
 	const remoteVoiceCallService = {
 		isEnabled: overrides.remoteEnabled ?? true,
@@ -54,6 +55,12 @@ describe('chat/rooms/voice/join', () => {
 		const f = joinFixture();
 		await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).resolves.toEqual({ url: 'https://local.test/livekit', token: 't' });
 		expect(f.chatVoiceService.issueJoinToken).toHaveBeenCalledWith(me, expect.objectContaining({ id: 'r1' }), false);
+	});
+
+	test('a pending direct removal reports voice unavailable instead of a relay error', async () => {
+		const f = joinFixture();
+		f.chatVoiceService.issueJoinToken.mockRejectedValue(new VoiceRelayError('DIRECT_REMOVAL_PENDING'));
+		await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'VOICE_CALL_UNAVAILABLE' });
 	});
 
 	test('join passes on the TURN servers and declares them in its response', async () => {
@@ -95,6 +102,21 @@ describe('chat/rooms/voice/join', () => {
 	])('join refuses a deleted user for %s', async (_label, ownerHost) => {
 		const f = joinFixture({ ownerHost });
 		await expect(f.endpoint.exec({ roomId: 'r1' }, { ...me, isDeleted: true }, null, null)).rejects.toMatchObject({ code: 'VOICE_CALL_UNAVAILABLE' });
+		expect(f.chatVoiceService.issueJoinToken).not.toHaveBeenCalled();
+		expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
+	});
+
+	test.each([null, 'remote.test'])('join refuses a suspended user for owner host %s', async ownerHost => {
+		const f = joinFixture({ ownerHost });
+		await expect(f.endpoint.exec({ roomId: 'r1' }, { ...me, isSuspended: true }, null, null)).rejects.toMatchObject({ code: 'VOICE_CALL_UNAVAILABLE' });
+		expect(f.chatVoiceService.issueJoinToken).not.toHaveBeenCalled();
+		expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
+	});
+
+	test.each([null, 'remote.test'])('join rechecks current account and membership before issuing a token for owner host %s', async ownerHost => {
+		const f = joinFixture({ ownerHost });
+		f.chatVoiceService.canParticipantJoin.mockResolvedValue(false);
+		await expect(f.endpoint.exec({ roomId: 'r1' }, me, null, null)).rejects.toMatchObject({ code: 'VOICE_CALL_UNAVAILABLE' });
 		expect(f.chatVoiceService.issueJoinToken).not.toHaveBeenCalled();
 		expect(f.remoteVoiceCallService.requestJoin).not.toHaveBeenCalled();
 	});

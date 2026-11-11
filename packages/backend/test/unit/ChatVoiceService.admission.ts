@@ -23,6 +23,28 @@ describe('ChatVoiceService admission', () => {
 		vi.useRealTimers();
 	});
 
+	test('signaling rechecks membership, identity, suspension, and current role permissions', async () => {
+		const participant = { identity: 'https://local.test/users/m1', userId: 'm1', canScreenShare: true };
+		expect(await f.service.canParticipantJoin('r1', participant)).toBe(true);
+		f.chatRoomsRepository.findOneBy.mockImplementation(async ({ id }) => id === 'r1' ? { id, ownerId: 'owner' } : null as any);
+		expect(await f.service.canParticipantJoin('other-room', participant)).toBe(false);
+		expect(await f.service.canParticipantJoin('r1', { ...participant, identity: 'https://local.test/users/u1' })).toBe(false);
+		f.roleService.getUserPolicies.mockResolvedValue({ canVoiceCall: true, canScreenShare: false, chatAvailability: 'available' });
+		expect(await f.service.canParticipantJoin('r1', participant)).toBe(false);
+		expect(await f.service.canParticipantJoin('r1', { ...participant, canScreenShare: false })).toBe(true);
+		f.roleService.getUserPolicies.mockResolvedValue({ canVoiceCall: false, canScreenShare: true, chatAvailability: 'available' });
+		expect(await f.service.canParticipantJoin('r1', participant)).toBe(false);
+		f.roleService.getUserPolicies.mockResolvedValue({ canVoiceCall: true, canScreenShare: true, chatAvailability: 'available' });
+		const findUsers = f.usersRepository.findBy.getMockImplementation()!;
+		f.usersRepository.findBy.mockImplementation(async where => (await findUsers(where)).map(user => ({ ...user, isSuspended: true })));
+		expect(await f.service.canParticipantJoin('r1', participant)).toBe(false);
+		f.usersRepository.findBy.mockImplementation(findUsers);
+		f.chatRoomMembershipsRepository.findBy.mockResolvedValue([]);
+		expect(await f.service.canParticipantJoin('r1', participant)).toBe(false);
+		f.chatRoomMembershipsRepository.findBy.mockRejectedValue(new Error('unavailable'));
+		expect(await f.service.canParticipantJoin('r1', participant)).toBe(false);
+	});
+
 	test('revokes an existing screen grant while preserving a voice-only participant', async () => {
 		f.roleService.getUserPolicies.mockResolvedValue({ canVoiceCall: true, canScreenShare: false, chatAvailability: 'available' });
 		f.liveKitService.listParticipants.mockResolvedValue([
@@ -187,6 +209,26 @@ describe('ChatVoiceService admission', () => {
 		function removed() {
 			return f.liveKitService.removeParticipant.mock.calls.map(([roomId, identity]) => `${roomId} ${identity}`).sort();
 		}
+
+		test.each(['userRoleAssigned', 'userRoleUnassigned', 'roleUpdated', 'roleDeleted', 'policiesUpdated', 'userChangeSuspendedState'])('rechecks connected participants promptly on %s', async type => {
+			startCall('r1', [u1]);
+			f.roleService.getUserPolicies.mockResolvedValue({ canVoiceCall: false, canScreenShare: false, chatAvailability: 'available' });
+			f.service.onModuleInit();
+			f.redisForSub.emit('message', 'local.test', JSON.stringify({ channel: 'internal', message: { type, body: { id: 'fixture', isSuspended: true } } }));
+			await vi.waitFor(() => expect(f.liveKitService.removeParticipant).toHaveBeenCalledWith('r1', 'https://local.test/users/u1'), { timeout: 500 });
+		});
+
+		test('permission changes during a recheck schedule one follow-up', async () => {
+			let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+			const recheck = vi.spyOn(f.service, 'removeRefusedRemoteParticipants').mockImplementationOnce(async () => { await gate; }).mockResolvedValue(undefined);
+			f.service.onModuleInit();
+			const publish = () => f.redisForSub.emit('message', 'local.test', JSON.stringify({ channel: 'internal', message: { type: 'roleUpdated', body: {} } }));
+			try {
+				publish(); publish(); publish();
+				expect(recheck).toHaveBeenCalledTimes(1);
+				release(); await vi.waitFor(() => expect(recheck).toHaveBeenCalledTimes(2));
+			} finally { release(); }
+		});
 
 		test('removes participants from a newly blocked server', async () => {
 			startCall('r1', [u1, rm1, rm3]);

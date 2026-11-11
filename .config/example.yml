@@ -284,6 +284,9 @@ fulltextSearch:
 # apiKey and apiSecret must match the keys in your
 # LiveKit server config.
 # apiSecret must be a random string of at least 32 characters.
+# LiveKit의 시그널링 및 관리 API 포트는 외부 이용자에게 공개하지 않습니다.
+# 참가자는 CherryPick의 /livekit 경로로 연결해야 퇴장과 권한 회수가 적용됩니다.
+# 역방향 프록시 접근 로그에는 /livekit/rtc 요청의 query를 기록하지 않습니다.
 # Open 7881/tcp and 7882/udp on your firewall for media.
 # Behind NAT, either forward 7881/tcp and 7882/udp or set Cloudflare TURN in the admin settings (LiveKit keeps use_external_ip: true).
 
@@ -292,6 +295,15 @@ fulltextSearch:
 #    internalUrl: http://127.0.0.1:7880
 #    apiKey: cherrypick
 #    apiSecret: ''
+#    # Optional: other LiveKit server signing keys, used only to verify refreshed participant tokens.
+#    # Include every other key configured on the same LiveKit server; restart CherryPick after changes.
+#    # Each secret must contain at least 32 characters. Protect this file as a secret.
+#    verificationKeys:
+#      - apiKey: previous-key
+#        apiSecret: ''
+#  # Borrowing requires only outbound HTTPS, not a public IP or media port.
+#  # Add providers and their secrets in Admin > Voice infrastructure rental.
+#  preferRelay: false
 
 #   ┌───────────────┐
 #───┘ ID generation └───────────────────────────────────────────

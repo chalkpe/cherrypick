@@ -14,7 +14,7 @@ import type { MiLocalUser } from '@/models/User.js';
 import { MetaService } from '@/core/MetaService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { SystemAccountService } from '@/core/SystemAccountService.js';
-import { LiveKitService } from '@/core/LiveKitService.js';
+import { VoiceBackendService } from '@/core/VoiceBackendService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
@@ -41,13 +41,14 @@ async function createMetaEntityService(meta: MiMeta) {
 			{ provide: DI.meta, useValue: meta },
 			{ provide: DI.adsRepository, useValue: { createQueryBuilder: () => adsQuery } },
 			{ provide: SystemAccountService, useValue: { fetch: async () => ({ username: 'proxy' }) } },
-			{ provide: LiveKitService, useValue: { isEnabled: true } },
+			{ provide: VoiceBackendService, useValue: { isEnabled: true } },
 		],
 	}).compile();
 	return module.get(MetaEntityService);
 }
 
 describe('remote voice call setting', () => {
+	// Remote calls require both the voice setting and federation to be enabled.
 	test.each<[Pick<MiMeta, 'enableRemoteVoiceCall' | 'federation'>, boolean]>([
 		[{ enableRemoteVoiceCall: true, federation: 'all' }, true],
 		[{ enableRemoteVoiceCall: false, federation: 'all' }, false],
@@ -72,6 +73,7 @@ describe('remote voice call setting', () => {
 				{ provide: DI.meta, useValue: metaWith({}) },
 				{ provide: MetaService, useValue: metaService },
 				{ provide: ModerationLogService, useValue: { log: vi.fn() } },
+				{ provide: VoiceBackendService, useValue: {} },
 				{ provide: ServerStatsService, useValue: { start: vi.fn(), dispose: vi.fn() } },
 			],
 		}).compile();
@@ -79,7 +81,7 @@ describe('remote voice call setting', () => {
 
 		await endpoint.exec({ enableRemoteVoiceCall: false }, admin, null, null);
 
-		expect(metaService.update).toHaveBeenCalledWith(expect.objectContaining({ enableRemoteVoiceCall: false }));
+		expect(metaService.update).toHaveBeenCalledWith(expect.objectContaining({ enableRemoteVoiceCall: false }), undefined);
 	});
 });
 

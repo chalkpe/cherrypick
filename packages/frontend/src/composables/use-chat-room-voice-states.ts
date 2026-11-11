@@ -30,7 +30,7 @@ function createVoiceStateStore() {
 	let timer: number | null = null;
 
 	function apply(target: Map<string, VoiceState>, state: VoiceState) {
-		if (state.participants.length === 0) target.delete(state.roomId);
+		if (state.participants.length === 0 && !state.unavailable) target.delete(state.roomId);
 		else target.set(state.roomId, state);
 	}
 

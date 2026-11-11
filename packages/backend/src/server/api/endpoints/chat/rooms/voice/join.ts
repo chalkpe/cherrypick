@@ -10,10 +10,11 @@ import { DI } from '@/di-symbols.js';
 import type { ChatRoomMembershipsRepository } from '@/models/_.js';
 import { ChatService } from '@/core/ChatService.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
-import { LiveKitService } from '@/core/LiveKitService.js';
+import { VoiceBackendService as LiveKitService } from '@/core/VoiceBackendService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { RemoteVoiceCallError, RemoteVoiceCallService } from '@/core/RemoteVoiceCallService.js';
 import type { MiRemoteUser } from '@/models/User.js';
+import { VoiceRelayError } from '@/core/VoiceRelayClient.js';
 import { ApiError } from '@/server/api/error.js';
 
 export const meta = {
@@ -32,6 +33,16 @@ export const meta = {
 		type: 'object',
 		optional: false, nullable: false,
 		properties: {
+			mediaProvider: { type: 'string', optional: true, nullable: false },
+			screenShareLimits: {
+				type: 'object', optional: true, nullable: false,
+				properties: {
+					maxWidth: { type: 'integer', optional: false, nullable: false },
+					maxHeight: { type: 'integer', optional: false, nullable: false },
+					maxFrameRate: { type: 'integer', optional: false, nullable: false },
+					maxBitrate: { type: 'integer', optional: false, nullable: false },
+				},
+			},
 			url: {
 				type: 'string',
 				optional: false, nullable: false,
@@ -71,6 +82,9 @@ export const meta = {
 	},
 
 	errors: {
+		relayFull: { message: 'Voice relay capacity is full.', code: 'VOICE_RELAY_CAPACITY_EXCEEDED', id: '15178244-c13a-4c16-991e-79aa7f49a7bd' },
+		relayUnreachable: { message: 'Could not reach the voice relay.', code: 'VOICE_RELAY_UNREACHABLE', id: 'f4c54a69-59af-46e2-accd-fa4996c0e505' },
+		relayRevoked: { message: 'Voice relay approval or credentials are no longer valid.', code: 'VOICE_RELAY_REVOKED', id: 'cc9a9ef3-a135-416b-b9b3-b59adde48708' },
 		noSuchRoom: {
 			message: 'No such room.',
 			code: 'NO_SUCH_ROOM',
@@ -154,8 +168,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.voiceCallUnavailable);
 			}
 
-			// 通話に残れるか (ChatVoiceService の admissionOf) と同じく、削除されたユーザーには発行しない
-			if (room.isArchived || me.isDeleted) {
+			// 通話に残れるか (ChatVoiceService の admissionOf) と同じく、停止・削除されたユーザーには発行しない
+			if (room.isArchived || me.isDeleted || me.isSuspended) {
 				throw new ApiError(meta.errors.voiceCallUnavailable);
 			}
 
@@ -163,9 +177,13 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (!policies.canVoiceCall) {
 				throw new ApiError(meta.errors.voiceCallUnavailable);
 			}
+			// Authentication may have returned a cached user; read current account and room permission before minting.
+			if (!await this.chatVoiceService.canParticipantJoin(room.id, { identity: this.liveKitService.identityOf(me), userId: me.id, canScreenShare: policies.canScreenShare })) {
+				throw new ApiError(meta.errors.voiceCallUnavailable);
+			}
 
 			if (remoteOwner == null) {
-				return await this.chatVoiceService.issueJoinToken(me, room, policies.canScreenShare);
+				try { return await this.chatVoiceService.issueJoinToken(me, room, policies.canScreenShare); } catch (error) { if (error instanceof VoiceRelayError) throw new ApiError(['DIRECT_REMOVAL_PENDING', 'PARTICIPANT_REVOKED'].includes(error.code) ? meta.errors.voiceCallUnavailable : error.code === 'CAPACITY_EXCEEDED' ? meta.errors.relayFull : [401, 403].includes(error.status) ? meta.errors.relayRevoked : meta.errors.relayUnreachable); throw error; }
 			}
 
 			try {

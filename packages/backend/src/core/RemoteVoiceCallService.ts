@@ -13,9 +13,11 @@ import { bindThis } from '@/decorators.js';
 import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
 import { StatusError } from '@/misc/status-error.js';
+import { checkHttps } from '@/misc/check-https.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { ChatVoiceService, isRemoteVoiceCallEnabled } from '@/core/ChatVoiceService.js';
 import type { JoinCredentials } from '@/core/ChatVoiceService.js';
+import { parseScreenShareLimits, type ScreenShareLimits } from '@/core/voice-relay/screen-share-limits.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { CloudflareTurnService, parseIceServers } from '@/core/CloudflareTurnService.js';
 import type { IceServer } from '@/core/CloudflareTurnService.js';
@@ -43,6 +45,8 @@ export class RemoteVoiceCallError extends Error {
 }
 
 type TokenResponse = {
+	mediaProvider?: string;
+	screenShareLimits?: ScreenShareLimits;
 	url: string;
 	token: string;
 	iceServers: IceServer[] | null;
@@ -84,7 +88,7 @@ export class RemoteVoiceCallService {
 	 * 応答に含まれる参加者の現況はこのサーバーにも保存する。
 	 * ICE サーバーは必ず一覧で渡す (null にしない)。ブラウザは、一覧を渡されなければ持ち主のサーバーの LiveKit が渡す ICE サーバーを
 	 * そのまま使うが、それはこのサーバーで確かめていない (ユーザーの手元や同じネットワークの機器を指しうる)。
-	 * 持ち主のサーバーが渡した ICE サーバーが使えればそれを、無ければこのサーバーの TURN を、それも無ければ空の一覧を渡す
+	 * このサーバーの TURN があれば優先し、なければ持ち主が渡した検証済みの一覧、それもなければ空の一覧を渡す
 	 */
 	@bindThis
 	public async requestJoin(me: MiLocalUser, room: MiChatRoom, owner: MiRemoteUser, canScreenShare: boolean): Promise<JoinCredentials> {
@@ -95,6 +99,20 @@ export class RemoteVoiceCallService {
 		await this.assertHostSupported(owner.host);
 
 		const origin = ownerUrl.origin;
+		const roomUri = chatRoomUri(room, origin);
+		const ownIceServers = await this.cloudflareTurnService.getDelegatedIceServers();
+		if (ownIceServers !== null) {
+			const capabilityUrl = new URL(`${origin}/livekit/federation/token`);
+			capabilityUrl.searchParams.set('room', roomUri);
+			let capability: unknown;
+			try {
+				capability = await this.apRequestService.signedGetJson(me, capabilityUrl.href, TOKEN_REQUEST_TIMEOUT_MS, { redirect: 'manual', size: TOKEN_RESPONSE_SIZE_LIMIT });
+			} catch (error) {
+				if (error instanceof StatusError && [404, 405].includes(error.statusCode)) throw new RemoteVoiceCallError('unsupported');
+				throw await this.errorOf(error, owner.host, false);
+			}
+			if (typeof capability !== 'object' || capability == null || (capability as Record<string, unknown>).includeIceServers !== true) throw new RemoteVoiceCallError('unsupported');
+		}
 
 		let body: unknown;
 		try {
@@ -102,7 +120,7 @@ export class RemoteVoiceCallService {
 			body = await this.apRequestService.signedPostJson(
 				me,
 				`${origin}/livekit/federation/token`,
-				{ room: chatRoomUri(room, origin), canScreenShare },
+				{ room: roomUri, canScreenShare, ...(ownIceServers !== null ? { includeIceServers: false } : {}) },
 				TOKEN_REQUEST_TIMEOUT_MS,
 				{ redirect: 'manual', size: TOKEN_RESPONSE_SIZE_LIMIT },
 			);
@@ -120,8 +138,10 @@ export class RemoteVoiceCallService {
 		});
 
 		// このサーバーの TURN は、このサーバーのユーザーの音声を中継するだけなので、他のサーバーの通話に使ってよい
-		const iceServers = response.iceServers ?? await this.cloudflareTurnService.getIceServers() ?? [];
-		return { url: response.url, token: response.token, iceServers };
+		const iceServers = ownIceServers ?? (response.mediaProvider
+			? response.iceServers ?? []
+			: response.iceServers ?? await this.cloudflareTurnService.getIceServers() ?? []);
+		return { url: response.url, token: response.token, iceServers, ...(response.mediaProvider ? { mediaProvider: response.mediaProvider } : {}), ...(response.screenShareLimits ? { screenShareLimits: response.screenShareLimits } : {}) };
 	}
 
 	/**
@@ -180,7 +200,7 @@ export class RemoteVoiceCallService {
 			return null;
 		}
 		// 確かめるホストと要求を送るホストを同じにする
-		if (ownerUrl.host !== owner.host) return null;
+		if (!checkHttps(ownerUrl.href, false) || ownerUrl.host !== owner.host) return null;
 
 		// このサーバーのルームの通話に他のサーバーのユーザーを入れるとき、通話中の参加者を外すときと同じ判定で断る
 		if (await this.hostPolicyService.isRefusedRemoteHost(owner.host)) return null;
@@ -200,7 +220,7 @@ function unsupportedHostKeyOf(host: string): string {
  */
 function parseTokenResponse(body: unknown, expectedUrl: string): TokenResponse | null {
 	if (typeof body !== 'object' || body == null) return null;
-	const { url, token, iceServers, participants, updatedAt } = body as Record<string, unknown>;
+	const { url, token, iceServers, participants, updatedAt, mediaProvider, screenShareLimits } = body as Record<string, unknown>;
 
 	if (url !== expectedUrl) return null;
 	if (typeof token !== 'string' || token === '') return null;
@@ -215,5 +235,9 @@ function parseTokenResponse(body: unknown, expectedUrl: string): TokenResponse |
 		parsed.push({ identity, screenSharing, ...reportedVoiceStatus(participant as Record<string, unknown>) });
 	}
 
-	return { url: expectedUrl, token, iceServers: parseIceServers(iceServers), participants: parsed, updatedAt };
+	let provider: string | undefined;
+	if (typeof mediaProvider === 'string') { try { const parsed = new URL(mediaProvider); if (parsed.protocol === 'https:' && parsed.origin === mediaProvider) provider = mediaProvider; } catch {} }
+	const limits = screenShareLimits === undefined ? undefined : parseScreenShareLimits(screenShareLimits);
+	if (limits === null) return null;
+	return { url: expectedUrl, token, iceServers: provider && Array.isArray(iceServers) && iceServers.length === 0 ? [] : parseIceServers(iceServers), participants: parsed, updatedAt, ...(provider ? { mediaProvider: provider } : {}), ...(limits ? { screenShareLimits: limits } : {}) };
 }

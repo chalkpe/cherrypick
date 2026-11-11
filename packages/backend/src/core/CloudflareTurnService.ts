@@ -136,6 +136,18 @@ export class CloudflareTurnService implements OnModuleInit, OnApplicationShutdow
 		return iceServers;
 	}
 
+	/** Delegation must not silently switch to a provider's paid TURN after a configured local TURN fails. */
+	@bindThis
+	public async getDelegatedIceServers(): Promise<IceServer[] | null> {
+		const settings = await this.currentSettings();
+		if (settings == null) throw new Error('TURN credentials unavailable');
+		if (settings.voiceCallCloudflareTurnKeyId == null && settings.voiceCallCloudflareTurnApiToken == null) return null;
+		if (settings.voiceCallCloudflareTurnKeyId == null || settings.voiceCallCloudflareTurnApiToken == null) throw new Error('TURN credentials unavailable');
+		const iceServers = await this.getIceServers();
+		if (iceServers == null) throw new Error('TURN credentials unavailable');
+		return iceServers;
+	}
+
 	/** metaUpdated がまだ届かないワーカーでも、現在のキーでだけキャッシュ・取得結果を返す。 */
 	private async currentSettings(): Promise<MiMeta | null> {
 		try {

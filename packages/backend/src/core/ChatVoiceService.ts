@@ -19,7 +19,10 @@ import { bindThis } from '@/decorators.js';
 import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
-import { LiveKitService, userIdOfMetadata } from '@/core/LiveKitService.js';
+import { userIdOfMetadata } from '@/core/LiveKitService.js';
+import { VoiceBackendService as LiveKitService } from '@/core/VoiceBackendService.js';
+import { VoiceRelayError } from '@/core/VoiceRelayClient.js';
+import type { ScreenShareLimits } from '@/core/voice-relay/screen-share-limits.js';
 import type { LiveKitParticipant } from '@/core/LiveKitService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
@@ -385,6 +388,8 @@ type FederatedVoiceSnapshot = {
  * 他のサーバーの通話 (RemoteVoiceCallService) では必ず一覧で、空のこともある (持ち主のサーバーの LiveKit が渡すものを使わせない)
  */
 export type JoinCredentials = {
+	mediaProvider?: string;
+	screenShareLimits?: ScreenShareLimits;
 	url: string;
 	token: string;
 	iceServers: IceServer[] | null;
@@ -418,6 +423,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	/** 入った直後の参加者を確かめ直すまで待っているもの (wait)。止めるときは待つのをやめ、確かめ直さない */
 	private pendingWaits = new Map<NodeJS.Timeout, (completed: boolean) => void>();
 	private isShuttingDown = false;
+	private permissionRecheckRunning = false;
+	private permissionRecheckPending = false;
 	private logger: Logger;
 
 	constructor(
@@ -454,15 +461,58 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		private metaService: MetaService,
 	) {
 		this.logger = this.loggerService.getLogger('chat-voice');
+		this.liveKitService.onRelayChange?.(roomId => { this.relayChanged(roomId).catch(err => this.logger.warn('Failed to refresh delegated voice call', { error: err })); });
+	}
+
+	private async relayChanged(roomId: string): Promise<void> {
+		if (await this.liveKitService.isRoomUnavailable?.(roomId)) {
+			const updatedAt = await this.allocateStamp(this.localStampKeyOf(roomId), this.decidedKeyOf(roomId), LOCAL_STAMP_TTL_SECONDS);
+			const raw = await this.redisClient.get(this.keyOf(roomId));
+			const snapshot: VoiceSnapshot = raw == null ? { participants: [], updatedAt } : { ...JSON.parse(raw), updatedAt };
+			const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+			if (room == null) return;
+			const packed = { ...await this.pack(roomId, snapshot, null), unavailable: true };
+			const audience = await this.audienceOf(room);
+			if (!await this.liveKitService.isRoomUnavailable?.(roomId)) return;
+			for (const userId of audience.localUserIds) this.globalEventService.publishMainStream(userId, 'chatRoomVoiceState', packed);
+			return;
+		}
+		await this.reconcileRoom(roomId);
+		await this.refresh(roomId);
+	}
+
+	@bindThis
+	public async ensureCallRoom(roomId: string): Promise<void> {
+		const settings = await this.metaService.fetch(true);
+		await this.liveKitService.ensureRoom(roomId, settings.voiceCallMaxParticipants ?? 10);
 	}
 
 	/**
 	 * 通話のトークンを発行する。TURN が設定されていれば、その ICE サーバーも渡す (無ければ null)
 	 */
 	@bindThis
-	public async issueJoinToken(user: MiLocalUser | MiRemoteUser, room: MiChatRoom, canScreenShare: boolean): Promise<JoinCredentials> {
+	public async issueJoinToken(user: MiLocalUser | MiRemoteUser, room: MiChatRoom, canScreenShare: boolean, includeIceServers = true): Promise<JoinCredentials> {
+		const identity = this.liveKitService.identityOf(user);
+		if (this.liveKitService.withParticipantAdmission) {
+			return this.liveKitService.withParticipantAdmission(room.id, identity,
+				() => this.canParticipantJoin(room.id, { identity, userId: user.id, canScreenShare }),
+				() => this.issueJoinTokenLocked(user, room, canScreenShare, includeIceServers));
+		}
+		return this.issueJoinTokenLocked(user, room, canScreenShare, includeIceServers);
+	}
+
+	private async issueJoinTokenLocked(user: MiLocalUser | MiRemoteUser, room: MiChatRoom, canScreenShare: boolean, includeIceServers: boolean): Promise<JoinCredentials> {
+		let ensured = false;
+		if (this.liveKitService.relayCredentials) {
+			await this.ensureCallRoom(room.id);
+			ensured = true;
+			const delegated = await this.liveKitService.relayCredentials(room.id, { identity: this.liveKitService.identityOf(user), userId: user.id, canScreenShare }, includeIceServers ? () => this.cloudflareTurnService.getDelegatedIceServers() : async () => []);
+			if (delegated) {
+				return { url: this.liveKitService.getPublicUrl(), ...delegated, iceServers: includeIceServers ? delegated.iceServers ?? [] : null };
+			}
+		}
 		const issueToken = async () => {
-			await this.liveKitService.ensureRoom(room.id, MAX_ROOM_MEMBERS + 1);
+			if (!ensured) await this.ensureCallRoom(room.id);
 			return await this.liveKitService.createJoinToken({
 				roomId: room.id,
 				identity: this.liveKitService.identityOf(user),
@@ -470,6 +520,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 				canScreenShare,
 			});
 		};
+		if (!includeIceServers) return { url: this.liveKitService.getPublicUrl(), token: await issueToken(), iceServers: null };
 		// TURN の資格情報の取得は失敗しても null になるだけなので、トークンの発行と並べて待つ
 		const [token, iceServers] = await Promise.all([issueToken(), this.cloudflareTurnService.getIceServers()]);
 		return { url: this.liveKitService.getPublicUrl(), token, iceServers };
@@ -481,7 +532,28 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * 画面共有は、相手のサーバーが求め (canScreenShareRequested)、こちらのポリシーも許すときだけ認める
 	 */
 	@bindThis
-	public async issueRemoteJoinToken(user: MiRemoteUser, roomId: MiChatRoom['id'], canScreenShareRequested: boolean): Promise<(JoinCredentials & FederatedVoiceSnapshot) | 'forbidden'> {
+	public async issueRemoteJoinToken(user: MiRemoteUser, roomId: MiChatRoom['id'], canScreenShareRequested: boolean, includeIceServers = true): Promise<(JoinCredentials & FederatedVoiceSnapshot) | 'forbidden'> {
+		const context = await this.remoteJoinContext(user, roomId);
+		if (context == null) return 'forbidden';
+		let credentials: JoinCredentials;
+		try { credentials = await this.issueJoinToken(user, context.room, canScreenShareRequested && context.canScreenShare, includeIceServers); } catch (error) { if (error instanceof VoiceRelayError && error.code === 'PARTICIPANT_REVOKED') return 'forbidden'; throw error; }
+		const { participants, updatedAt } = await this.snapshotOf(context.room.id);
+		return { ...credentials, participants, updatedAt };
+	}
+
+	@bindThis
+	public async canRemoteJoin(user: MiRemoteUser, roomId: MiChatRoom['id']): Promise<boolean> {
+		return await this.remoteJoinContext(user, roomId) != null;
+	}
+
+	/** Recheck current membership and policies for a verified signaling token. */
+	@bindThis
+	public async canParticipantJoin(roomId: MiChatRoom['id'], participant: NamedCallParticipant): Promise<boolean> {
+		const context = await this.admissionContextOf(roomId, [participant], new Map());
+		return this.admissionOf(participant, context) === 'admitted';
+	}
+
+	private async remoteJoinContext(user: MiRemoteUser, roomId: MiChatRoom['id']): Promise<{ room: MiChatRoom; canScreenShare: boolean } | null> {
 		// ルームがあるかどうかで読むものを変えない。DB や Redis が使えないとき、あるルームへの要求だけが失敗して
 		// ルームがあると分かってしまわないように、断るかどうかを決める前にすべてを並べて読む
 		const [room, isMember, isRefusedHost, policies] = await Promise.all([
@@ -492,19 +564,16 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		]);
 
 		// 他のサーバーが持つルーム (ミラー) の通話はそのサーバーで開く。保管済みのルームはローカルと同じく断る
-		if (room == null || room.owner == null || room.owner.host != null || room.isArchived) return 'forbidden';
+		if (room == null || room.owner == null || room.owner.host != null || room.isArchived) return null;
 
 		// 通話に残れるか (admissionOf) と同じく、停止・削除されたユーザーには発行しない
-		if (user.isSuspended || user.isDeleted) return 'forbidden';
-		if (isRefusedHost) return 'forbidden';
-		if (!isMember) return 'forbidden';
+		if (user.isSuspended || user.isDeleted) return null;
+		if (isRefusedHost) return null;
+		if (!isMember) return null;
 
 		// トークンは常にマイクを許すので、ローカルの参加と同じくチャットの書き込み権限も求める
-		if (!policies.canVoiceCall || policies.chatAvailability !== 'available') return 'forbidden';
-
-		const { url, token, iceServers } = await this.issueJoinToken(user, room, canScreenShareRequested && policies.canScreenShare);
-		const { participants, updatedAt } = await this.snapshotOf(room.id);
-		return { url, token, iceServers, participants, updatedAt };
+		if (!policies.canVoiceCall || policies.chatAvailability !== 'available') return null;
+		return { room, canScreenShare: policies.canScreenShare };
 	}
 
 	/** Accept only the authenticated user's own connected session and reported settings. */
@@ -545,6 +614,22 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			}
 			await this.reconcileRoom(roomId, refusedHosts);
 		}
+	}
+
+	/** Coalesce bursts of permission events while retaining a follow-up for changes during a scan. */
+	private requestPermissionRecheck(): void {
+		this.permissionRecheckPending = true;
+		if (this.permissionRecheckRunning || this.isShuttingDown) return;
+		this.permissionRecheckRunning = true;
+		void (async () => {
+			while (this.permissionRecheckPending && !this.isShuttingDown) {
+				this.permissionRecheckPending = false;
+				try { await this.removeRefusedRemoteParticipants(); } catch (error) { this.logger.error('Failed to recheck voice call permissions', { error }); }
+			}
+		})().finally(() => {
+			this.permissionRecheckRunning = false;
+			if (this.permissionRecheckPending && !this.isShuttingDown) this.requestPermissionRecheck();
+		});
 	}
 
 	/**
@@ -651,16 +736,17 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		let read: MirrorPolicy | undefined;
 		for (let i = 0; i < roomIds.length; i++) {
 			const raw = raws[i];
-			if (raw == null) continue;
-			const snapshot = JSON.parse(raw) as VoiceSnapshot;
-			if (snapshot.participants.length === 0) continue;
+			const unavailable = await this.liveKitService.isRoomUnavailable?.(roomIds[i]) ?? false;
+			if (raw == null && !unavailable) continue;
+			const snapshot = raw == null ? { participants: [], updatedAt: Date.now() } : JSON.parse(raw) as VoiceSnapshot;
+			if (snapshot.participants.length === 0 && !unavailable) continue;
 			const version = this.mirrorPolicyVersion;
 			const room = await this.chatRoomsRepository.findOne({ where: { id: roomIds[i] }, relations: { owner: true } }).catch(() => null);
 			if (room == null) continue;
 			if (room.owner?.host != null) read ??= await this.readMirrorPolicy().catch(() => undefined);
 			if (!(await this.isRoomVoiceVisible(room, undefined, read))) continue;
 			const packed = await this.pack(roomIds[i], snapshot, me);
-			if (version === this.mirrorPolicyVersion && await this.isRoomVoiceVisible(room, snapshot.updatedAt, read)) states.push(packed);
+			if (version === this.mirrorPolicyVersion && await this.isRoomVoiceVisible(room, snapshot.updatedAt, read)) states.push({ ...packed, ...(unavailable ? { unavailable: true } : {}) });
 		}
 		return states;
 	}
@@ -738,6 +824,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const audience = await this.audienceOf(room);
 		if (stored) {
 			const packed = await this.pack(roomId, snapshot, null);
+			if (await this.liveKitService.isRoomUnavailable?.(roomId)) packed.unavailable = true;
 			for (const userId of audience.localUserIds) {
 				this.globalEventService.publishMainStream(userId, 'chatRoomVoiceState', packed);
 			}
@@ -957,7 +1044,6 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	public onModuleInit(): void {
 		// 設定の変更は、このサーバーに LiveKit が無くても受け取る (ミラーの現況は LiveKit が無くても保存されるので)
 		this.redisForSub.on('message', this.onMessage);
-		if (!this.liveKitService.isEnabled) return;
 		this.sweepTimer = setInterval(() => {
 			this.sweep().catch(() => {});
 		}, SWEEP_INTERVAL_MS);
@@ -1017,6 +1103,15 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 							this.logger.error('Failed to remove voice call participants from the suspended server', { error: err });
 						});
 					}
+					break;
+				}
+				case 'userRoleAssigned':
+				case 'userRoleUnassigned':
+				case 'roleUpdated':
+				case 'roleDeleted':
+				case 'policiesUpdated':
+				case 'userChangeSuspendedState': {
+					if (this.liveKitService.isEnabled) this.requestPermissionRecheck();
 					break;
 				}
 				default:

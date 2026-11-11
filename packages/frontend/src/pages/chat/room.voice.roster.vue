@@ -9,6 +9,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<h2 :id="headingId" :class="$style.heading">{{ i18n.ts._chat.members }}</h2>
 			<button v-tooltip="i18n.ts.close" type="button" class="_button" :aria-label="i18n.ts.close" @click="modal?.close()"><i class="ti ti-x" aria-hidden="true"></i></button>
 		</header>
+		<p v-if="mediaHost && call.inThisCall.value">{{ i18n.tsx._voiceRelay.mediaProvider({ host: mediaHost }) }}</p>
 		<div role="list">
 			<div v-for="{ p, menuable } in rows" :key="p.identity" role="listitem">
 				<!-- メニューに出すものが無い参加者 (通話に入っておらず持ち主でもないとき) は、押しても何も起きないボタンにせず、ただの行として出す -->
@@ -33,11 +34,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { computed, useId, useTemplateRef } from 'vue';
 import type { ChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import MkModal from '@/components/MkModal.vue';
+import { voiceCall } from '@/utility/voice-call.js';
 import { i18n } from '@/i18n.js';
 const props = defineProps<{ call: ChatRoomVoiceCall }>();
 const emit = defineEmits<{ (ev: 'closed'): void }>();
 const modal = useTemplateRef('modal');
 const headingId = useId();
+const mediaHost = computed(() => voiceCall.mediaProvider ? new URL(voiceCall.mediaProvider).host : '');
 const rows = computed(() => props.call.participants.value.map(p => ({ p, menuable: props.call.hasParticipantMenu(p) })));
 
 function onContextMenu(p: typeof rows.value[number]['p'], menuable: boolean, ev: MouseEvent) {

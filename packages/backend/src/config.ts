@@ -141,10 +141,12 @@ type Source = {
 };
 
 export type VoiceCallConfig = {
-	livekit: {
+	preferRelay?: boolean;
+	livekit?: {
 		internalUrl: string;
 		apiKey: string;
 		apiSecret: string;
+		verificationKeys?: { apiKey: string; apiSecret: string }[];
 	};
 };
 

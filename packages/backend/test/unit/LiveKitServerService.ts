@@ -176,6 +176,7 @@ async function createTokenApp(opts: { enabled?: boolean; signer?: object | null;
 	// このサーバーにあるルームは r1 だけ
 	const chatVoiceService = {
 		handleWebhook: vi.fn(),
+		canRemoteJoin: vi.fn(async (_user: object, roomId: string) => roomId === 'r1'),
 		issueRemoteJoinToken: vi.fn(async (_user: object, roomId: string, _canScreenShare: boolean): Promise<object | 'forbidden'> => roomId === 'r1' ? {
 			url: 'https://local.test/livekit',
 			token: 'jwt',
@@ -476,6 +477,41 @@ describe('LiveKitServerService', () => {
 	});
 
 	describe('federation token', () => {
+		test('includes delegated screen share limits in the signed join response', async () => {
+			const { app, chatVoiceService } = await createTokenApp();
+			const screenShareLimits = { maxWidth: 1280, maxHeight: 720, maxFrameRate: 30, maxBitrate: 2000000 };
+			chatVoiceService.issueRemoteJoinToken.mockResolvedValueOnce({ url: 'https://local.test/livekit', token: 'jwt', iceServers: null, participants: [], updatedAt: 1234, mediaProvider: 'https://relay.test', screenShareLimits });
+
+			const response = await requestToken(app);
+
+			expect(response.statusCode).toBe(200);
+			expect(response.json().screenShareLimits).toEqual(screenShareLimits);
+		});
+
+		test('capability GET checks the signer and room permission without issuing a token', async () => {
+			const { app, chatVoiceService, verifier } = await createTokenApp();
+			const url = `/livekit/federation/token?room=${encodeURIComponent(ROOM_URI)}`;
+			const result = await app.inject({ method: 'GET', url, headers: SIGNED_HEADERS });
+			expect(result.statusCode).toBe(200); expect(result.json()).toEqual({ includeIceServers: true });
+			expect(verifier.verify).toHaveBeenCalledWith(expect.objectContaining({ method: 'GET', url }), '');
+			expect(chatVoiceService.canRemoteJoin).toHaveBeenCalledWith(REMOTE_USER, 'r1');
+			expect(chatVoiceService.issueRemoteJoinToken).not.toHaveBeenCalled();
+			chatVoiceService.canRemoteJoin.mockResolvedValueOnce(false);
+			expect((await app.inject({ method: 'GET', url, headers: SIGNED_HEADERS })).statusCode).toBe(403);
+		});
+		test('capability GET rejects an unauthenticated sender', async () => {
+			const { app, chatVoiceService } = await createTokenApp({ signer: null });
+			const result = await app.inject({ method: 'GET', url: `/livekit/federation/token?room=${encodeURIComponent(ROOM_URI)}` });
+			expect(result.statusCode).toBe(401); expect(chatVoiceService.canRemoteJoin).not.toHaveBeenCalled();
+		});
+		test('token POST forwards explicit ICE suppression and rejects an invalid flag', async () => {
+			const { app, chatVoiceService } = await createTokenApp();
+			expect((await requestToken(app, { room: ROOM_URI, canScreenShare: true, includeIceServers: false })).statusCode).toBe(200);
+			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledWith(REMOTE_USER, 'r1', true, false);
+			expect((await requestToken(app, { room: ROOM_URI, canScreenShare: true, includeIceServers: true })).statusCode).toBe(200);
+			expect(chatVoiceService.issueRemoteJoinToken).toHaveBeenCalledWith(REMOTE_USER, 'r1', true);
+			expect((await requestToken(app, { room: ROOM_URI, canScreenShare: true, includeIceServers: 'false' })).statusCode).toBe(400);
+		});
 		test('answers 401 to an unsigned token request', async () => {
 			const { app, verifier, chatVoiceService } = await createTokenApp({ signer: null });
 			const { signature: _, ...unsigned } = SIGNED_HEADERS;

@@ -505,6 +505,9 @@ importers:
       is-svg:
         specifier: 6.1.0
         version: 6.1.0
+      jose:
+        specifier: 6.2.12
+        version: 6.2.12
       json5:
         specifier: 2.2.3
         version: 2.2.3

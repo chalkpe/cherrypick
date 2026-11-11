@@ -84,6 +84,19 @@ function turnFields(side: Record<string, unknown>) {
 }
 
 describe('moderation logs of server settings keep the Cloudflare TURN key out', () => {
+	test('LiveKit credentials are redacted from stored and displayed server settings logs', async () => {
+		const f = createFixture();
+		const livekitKey = 'livekit-key-for-test';
+		const livekitSecret = 'livekit-secret-for-test';
+
+		const { stored, packed } = await f.update({ voiceCallLivekitApiKey: livekitKey, voiceCallLivekitApiSecret: livekitSecret });
+
+		expect(stored.info.after).toMatchObject({ voiceCallLivekitApiKey: '(set)', voiceCallLivekitApiSecret: '(set)' });
+		for (const result of [stored, packed]) {
+			expect(JSON.stringify(result)).not.toContain(livekitKey);
+			expect(JSON.stringify(result)).not.toContain(livekitSecret);
+		}
+	});
 	test('setting the key for the first time records only that it is set', async () => {
 		const f = createFixture();
 

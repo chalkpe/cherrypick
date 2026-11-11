@@ -87,6 +87,27 @@ describe('CloudflareTurnService', () => {
 		vi.useRealTimers();
 	});
 
+	test('delegated TURN distinguishes absent configuration from issuance failure', async () => {
+		f = createFixture({ voiceCallCloudflareTurnKeyId: null, voiceCallCloudflareTurnApiToken: null });
+		await expect(f.service.getDelegatedIceServers()).resolves.toBeNull();
+		f.service.onApplicationShutdown();
+		f = createFixture();
+		f.httpRequestService.send.mockRejectedValueOnce(new Error('issuance failed'));
+		await expect(f.service.getDelegatedIceServers()).rejects.toThrow('TURN credentials unavailable');
+		await expect(f.service.getDelegatedIceServers()).rejects.toThrow('TURN credentials unavailable');
+		expect(f.httpRequestService.send).toHaveBeenCalledTimes(1);
+	});
+
+	test('delegated TURN fails closed when authoritative settings are unavailable', async () => {
+		f = createFixture();
+		f.metaService.fetch.mockRejectedValueOnce(new Error('settings unavailable'));
+		await expect(f.service.getDelegatedIceServers()).rejects.toThrow('TURN credentials unavailable');
+	});
+	test('delegated TURN fails closed on partial configuration', async () => {
+		f = createFixture({ voiceCallCloudflareTurnApiToken: null });
+		await expect(f.service.getDelegatedIceServers()).rejects.toThrow('TURN credentials unavailable');
+	});
+
 	test.each([
 		['the key id', { voiceCallCloudflareTurnKeyId: null }],
 		['the API token', { voiceCallCloudflareTurnApiToken: null }],
@@ -554,7 +575,8 @@ describe('Cloudflare TURN setting', () => {
 
 		await endpoint.exec({ voiceCallCloudflareTurnKeyId: '  key  ', voiceCallCloudflareTurnApiToken: '\ttoken\n' }, { id: 'admin' }, undefined);
 
-		expect(metaService.update).toHaveBeenCalledWith(expect.objectContaining({ voiceCallCloudflareTurnKeyId: 'key', voiceCallCloudflareTurnApiToken: 'token' }));
+		const [set] = metaService.update.mock.calls[0] as unknown as [Record<string, unknown>];
+		expect(set).toMatchObject({ voiceCallCloudflareTurnKeyId: 'key', voiceCallCloudflareTurnApiToken: 'token' });
 	});
 
 	test.each([[''], ['   '], [null]])('admin/update-meta clears the key id and API token given %j', async (value) => {
@@ -562,7 +584,8 @@ describe('Cloudflare TURN setting', () => {
 
 		await endpoint.exec({ voiceCallCloudflareTurnKeyId: value, voiceCallCloudflareTurnApiToken: value }, { id: 'admin' }, undefined);
 
-		expect(metaService.update).toHaveBeenCalledWith(expect.objectContaining({ voiceCallCloudflareTurnKeyId: null, voiceCallCloudflareTurnApiToken: null }));
+		const [set] = metaService.update.mock.calls[0] as unknown as [Record<string, unknown>];
+		expect(set).toMatchObject({ voiceCallCloudflareTurnKeyId: null, voiceCallCloudflareTurnApiToken: null });
 	});
 
 	test('admin/update-meta leaves them alone when they are not given', async () => {
@@ -609,22 +632,25 @@ describe('Cloudflare TURN setting', () => {
 
 		await endpoint.exec({ voiceCallCloudflareTurnKeyId: `  ${'k'.repeat(128)}\n`, voiceCallCloudflareTurnApiToken: `\t${'t'.repeat(512)}  ` }, { id: 'admin' }, undefined);
 
-		expect(metaService.update).toHaveBeenCalledWith(expect.objectContaining({ voiceCallCloudflareTurnKeyId: 'k'.repeat(128), voiceCallCloudflareTurnApiToken: 't'.repeat(512) }));
+		const [set] = metaService.update.mock.calls[0] as unknown as [Record<string, unknown>];
+		expect(set).toMatchObject({ voiceCallCloudflareTurnKeyId: 'k'.repeat(128), voiceCallCloudflareTurnApiToken: 't'.repeat(512) });
 	});
 
-	test('admin/meta shows them to administrators', async () => {
+	test('admin/meta reports saved voice secrets without returning them', async () => {
 		expect(adminMetaMeta.requireAdmin).toBe(true);
 		expect(adminMetaMeta.res.properties.voiceCallCloudflareTurnKeyId).toMatchObject({ type: 'string', optional: false, nullable: true });
-		expect(adminMetaMeta.res.properties.voiceCallCloudflareTurnApiToken).toMatchObject({ type: 'string', optional: false, nullable: true });
+		expect(adminMetaMeta.res.properties.voiceCallCloudflareTurnApiTokenSet).toMatchObject({ type: 'boolean', optional: false, nullable: false });
 
-		const instance = { voiceCallCloudflareTurnKeyId: KEY_ID, voiceCallCloudflareTurnApiToken: API_TOKEN, policies: {} };
+		const instance = { voiceCallCloudflareTurnKeyId: KEY_ID, voiceCallCloudflareTurnApiToken: API_TOKEN, voiceCallLivekitApiSecret: 'livekit-secret', policies: {} };
 		const endpoint = new (AdminMetaEndpoint as any)(
 			{ version: '0', url: 'https://local.test' },
 			{ fetch: async () => instance },
 			{ fetch: async () => ({ id: 'proxy' }) },
 		);
 		const result = await endpoint.exec({}, { id: 'admin' }, undefined);
-		expect(result).toMatchObject({ voiceCallCloudflareTurnKeyId: KEY_ID, voiceCallCloudflareTurnApiToken: API_TOKEN });
+		expect(result).toMatchObject({ voiceCallCloudflareTurnKeyId: KEY_ID, voiceCallCloudflareTurnApiTokenSet: true, voiceCallLivekitApiSecretSet: true });
+		expect(JSON.stringify(result)).not.toContain(API_TOKEN);
+		expect(JSON.stringify(result)).not.toContain('livekit-secret');
 	});
 
 	test('the public meta does not include them', async () => {

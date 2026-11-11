@@ -8,13 +8,14 @@ import type { MaybeRefOrGetter } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import type { MenuItem } from '@/types/menu.js';
 import * as os from '@/os.js';
+import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
 import { ensureSignin } from '@/i.js';
 import { userName } from '@/filters/user.js';
 import { isChatRoomVoiceAvailable } from '@/utility/chat-room-voice-availability.js';
 import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
-import { joinVoiceCall, localIdentityOf, setDeafened, setMicEnabled, toggleScreenShareWatch, voiceCall } from '@/utility/voice-call.js';
+import { joinVoiceCall, localIdentityOf, notifyVoiceCallFailure, setDeafened, setMicEnabled, toggleScreenShareWatch, voiceCall } from '@/utility/voice-call.js';
 import XVolume from '@/pages/chat/room.voice.volume.vue';
 import XRoster from '@/pages/chat/room.voice.roster.vue';
 
@@ -40,6 +41,7 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		return available.value && target != null ? [target.id] : [];
 	});
 	const states = useChatRoomVoiceStates(roomIds);
+	const providerUnavailable = computed(() => { const target = toValue(room); return target != null && states.value.get(target.id)?.unavailable === true; });
 	// 参加者の一覧はサーバーを経て届くので、画面共有を始めたりやめたりしても少し遅れて変わる (他のサーバーのルームでは 10 秒以上)。
 	// この通話に入っているあいだは、自分の項目の画面共有だけを手元の状態に合わせ、何を共有しているかをすぐ確かめられるようにする
 	// (始めればすぐプレビューを出し、やめればすぐ消す)。一覧にまだ自分がいなければ自分の項目は作らず、届いたときに合わせる
@@ -83,7 +85,18 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 				if (canceled) return;
 				prefer.commit('voiceCall.acknowledgedRemoteHosts', [...prefer.s['voiceCall.acknowledgedRemoteHosts'], host]);
 			}
-			await joinVoiceCall(target, { micEnabled: prejoinMicEnabled.value });
+			let approvedMediaProvider: string | undefined;
+			if (host == null) {
+				const info = await misskeyApi('chat/rooms/voice/connection-info', { roomId: target.id });
+				if (info?.mediaProvider) {
+					const { canceled } = await os.confirm({ type: 'info', text: i18n.tsx._voiceRelay.mediaNotice({ host: new URL(info.mediaProvider).host }) });
+					if (canceled) return;
+					approvedMediaProvider = info.mediaProvider;
+				}
+			}
+			await joinVoiceCall(target, { micEnabled: prejoinMicEnabled.value, approvedMediaProvider });
+		} catch (error) {
+			notifyVoiceCallFailure(error);
 		} finally {
 			joining = false;
 		}
@@ -148,7 +161,7 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		const { dispose } = os.popup(XRoster, { call: markRaw(call) }, { closed: () => dispose() });
 	}
 
-	const call = { available, inThisCall, participants, watchedParticipants, join, prejoinMicEnabled, myIdentity, isOwner, hasParticipantMenu, openParticipantMenu, openRoster };
+	const call = { providerUnavailable, available, inThisCall, participants, watchedParticipants, join, prejoinMicEnabled, myIdentity, isOwner, hasParticipantMenu, openParticipantMenu, openRoster };
 	return call;
 }
 

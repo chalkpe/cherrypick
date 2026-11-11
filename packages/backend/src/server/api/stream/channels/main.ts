@@ -7,6 +7,7 @@ import { Inject, Injectable, Scope } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
 import type { ChatRoomsRepository, ChatRoomMembershipsRepository } from '@/models/_.js';
 import { ChatVoiceService } from '@/core/ChatVoiceService.js';
+import { ChatService } from '@/core/ChatService.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import { isInstanceMuted, isUserFromMutedInstance } from '@/misc/is-instance-muted.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
@@ -35,6 +36,7 @@ export class MainChannel extends Channel {
 		@Inject(DI.chatRoomMembershipsRepository)
 		private chatRoomMembershipsRepository: ChatRoomMembershipsRepository,
 		private chatVoiceService: ChatVoiceService,
+		private chatService: ChatService,
 	) {
 		super(request);
 	}
@@ -52,6 +54,7 @@ export class MainChannel extends Channel {
 		if (this.disposed) return;
 		switch (data.type) {
 			case 'chatRoomVoiceState': {
+				if (this.connection.token && !this.connection.token.permission.includes('read:chat')) return;
 				const roomId = data.body.roomId;
 				let guard = this.voiceRooms.get(roomId);
 				if (guard == null) {
@@ -69,6 +72,7 @@ export class MainChannel extends Channel {
 						this.chatRoomMembershipsRepository.exists({ where: { roomId, userId: this.user!.id } }),
 					]);
 					if (room == null || (room.ownerId !== this.user!.id && !member)) return;
+					if (!(await this.chatService.getChatAvailability(this.user!.id)).read) return;
 					// 空の通知には参加者がいないので、持ち主を許すかは読まない (読んでも送るものは変わらない)
 					if (data.body.participants.length > 0) {
 						const visibility = await this.chatVoiceService.voiceVisibilityOf(room, data.body.updatedAt);
