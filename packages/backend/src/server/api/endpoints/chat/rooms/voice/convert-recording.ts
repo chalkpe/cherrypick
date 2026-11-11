@@ -11,7 +11,7 @@ import * as os from 'node:os';
 import * as Path from 'node:path';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { DI } from '@/di-symbols.js';
-import type { DriveFilesRepository } from '@/models/_.js';
+import type { DriveFilesRepository, MiMeta } from '@/models/_.js';
 import { DriveService } from '@/core/DriveService.js';
 import { InternalStorageService } from '@/core/InternalStorageService.js';
 import { DriveFileEntityService } from '@/core/entities/DriveFileEntityService.js';
@@ -22,8 +22,7 @@ const execFileAsync = promisify(execFile);
 
 // Recordings are uploaded in 100 MB chunks, so anything much larger is not one of ours
 const MAX_SOURCE_BYTES = 128 * 1024 * 1024;
-// ffmpeg is expensive: run at most this many conversions at once on this process
-const MAX_CONCURRENT_CONVERSIONS = 2;
+// ffmpeg is expensive: the control panel sets how many conversions may run at once (voiceCallMaxRecordingConversions; 0 turns conversion off)
 let runningConversions = 0;
 // one conversion per user at a time, so a single user cannot hold every slot
 const convertingUsers = new Set<string>();
@@ -81,6 +80,9 @@ export const paramDef = {
 @Injectable()
 export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-disable-line import/no-default-export
 	constructor(
+		@Inject(DI.meta)
+		private serverSettings: MiMeta,
+
 		@Inject(DI.driveFilesRepository)
 		private driveFilesRepository: DriveFilesRepository,
 
@@ -96,8 +98,11 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			const isAudio = file.type.startsWith('audio/webm');
 			const isVideo = file.type.startsWith('video/webm');
 			if (!isAudio && !isVideo) return null;
+			// conversion turned off by the admin: keep the WebM as it is
+			const maxConversions = this.serverSettings.voiceCallMaxRecordingConversions;
+			if (maxConversions <= 0) return null;
 			if (file.size > MAX_SOURCE_BYTES) throw new ApiError(meta.errors.tooLarge);
-			if (runningConversions >= MAX_CONCURRENT_CONVERSIONS || convertingUsers.has(me.id)) throw new ApiError(meta.errors.busy);
+			if (runningConversions >= maxConversions || convertingUsers.has(me.id)) throw new ApiError(meta.errors.busy);
 			runningConversions++;
 			convertingUsers.add(me.id);
 

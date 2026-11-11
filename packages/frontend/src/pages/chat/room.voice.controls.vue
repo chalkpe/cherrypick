@@ -45,6 +45,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<i v-else class="ti ti-screen-share"></i>
 	</button>
 	<button
+		v-if="voiceCall.recording || voiceCall.recordingAllowed"
 		v-tooltip="voiceCall.recording ? i18n.ts._voiceCall.stopRecording : i18n.ts._voiceCall.startRecording" class="_button"
 		:class="[$style.action, { [$style.on]: voiceCall.recording }]"
 		:aria-label="voiceCall.recording ? i18n.ts._voiceCall.stopRecording : i18n.ts._voiceCall.startRecording"

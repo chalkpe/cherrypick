@@ -6321,6 +6321,7 @@ export type components = {
             isMuted?: boolean;
             invitationExists?: boolean;
             isArchived: boolean;
+            allowRecording: boolean;
         };
         ChatRoomInvitation: {
             id: string;
@@ -10971,6 +10972,7 @@ export interface operations {
                         allowExternalApRedirect: boolean;
                         enableRemoteVoiceCall: boolean;
                         voiceCallMaxParticipants: number;
+                        voiceCallMaxRecordingConversions: number;
                         /** @enum {string} */
                         voiceCallLivekitSource: 'yaml' | 'custom' | 'disabled';
                         voiceCallLivekitUrl: string | null;
@@ -14550,6 +14552,7 @@ export interface operations {
                     allowExternalApRedirect?: boolean;
                     enableRemoteVoiceCall?: boolean;
                     voiceCallMaxParticipants?: number;
+                    voiceCallMaxRecordingConversions?: number;
                     /** @enum {string} */
                     voiceCallLivekitSource?: 'yaml' | 'custom' | 'disabled';
                     voiceCallLivekitUrl?: string | null;
@@ -20559,6 +20562,7 @@ export interface operations {
                     name?: string;
                     description?: string;
                     isArchived?: boolean;
+                    allowRecording?: boolean;
                 };
             };
         };

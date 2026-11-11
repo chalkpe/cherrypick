@@ -21,6 +21,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkKeyValue><template #key>{{ i18n.ts.description }}</template><template #value><Mfm v-if="room.description" :text="room.description" :author="room.owner"/><template v-else>{{ i18n.ts.noDescription }}</template></template></MkKeyValue>
 	</template>
 
+	<MkSwitch v-if="isOwner" :modelValue="room.allowRecording" :disabled="room.isArchived" @update:modelValue="setAllowRecording">
+		<template #label>{{ i18n.ts._voiceCall.allowRecording }}</template>
+		<template #caption>{{ i18n.ts._voiceCall.allowRecordingDescription }}</template>
+	</MkSwitch>
+	<MkKeyValue v-else><template #key>{{ i18n.ts._voiceCall.allowRecording }}</template><template #value>{{ room.allowRecording ? i18n.ts.yes : i18n.ts.no }}</template></MkKeyValue>
+
 	<hr>
 
 	<MkButton v-if="isOwner" @click="setArchived(!room.isArchived)"><i :class="room.isArchived ? 'ti ti-archive-off' : 'ti ti-archive'"></i> {{ room.isArchived ? i18n.ts.unarchive : i18n.ts.archive }}</MkButton>
@@ -90,6 +96,15 @@ async function setArchived(isArchived: boolean) {
 	const updated = await os.apiWithDialog('chat/rooms/update', {
 		roomId: props.room.id,
 		isArchived,
+	}, undefined, chatRoomUpdateErrors).catch(() => null);
+	if (updated == null) return;
+	emit('updated', updated);
+}
+
+async function setAllowRecording(allowRecording: boolean) {
+	const updated = await os.apiWithDialog('chat/rooms/update', {
+		roomId: props.room.id,
+		allowRecording,
 	}, undefined, chatRoomUpdateErrors).catch(() => null);
 	if (updated == null) return;
 	emit('updated', updated);

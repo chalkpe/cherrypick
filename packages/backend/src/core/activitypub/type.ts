@@ -14,6 +14,7 @@ export interface IObject {
 	summary?: string;
 	_misskey_summary?: string;
 	_misskey_chatArchived?: boolean;
+	allowRecording?: boolean;
 	_misskey_chatRoom?: string;
 	_misskey_chatRoomMembers?: string[];
 	_misskey_chatRoomRosterAt?: string;

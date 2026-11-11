@@ -22,6 +22,7 @@ export const meta = {
 		accessDenied: { message: 'The voice call session is unavailable.', code: 'ACCESS_DENIED', id: '3040789a-82fd-4ac3-a4fd-7d2d623dd547' },
 		remoteHostUnsupported: { message: 'The server that owns this room does not accept voice call settings.', code: 'REMOTE_HOST_UNSUPPORTED', id: 'e9274dc8-5f4f-48e2-ab52-ceb89b239ef0' },
 		remoteHostUnreachable: { message: 'Could not report the voice call settings to the server that owns this room.', code: 'REMOTE_HOST_UNREACHABLE', id: 'eb2520b1-c21a-48f6-b35f-e1c4d69ceba7' },
+		recordingNotAllowed: { message: 'The owner of this room does not allow recording.', code: 'RECORDING_NOT_ALLOWED', id: '5b567867-18ac-4380-bd0d-742fbb0013db' },
 	},
 } as const;
 
@@ -53,6 +54,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				this.chatRoomMembershipsRepository.exists({ where: { roomId: ps.roomId, userId: me.id } }),
 			]);
 			if (room == null || room.isArchived || me.isSuspended || me.isDeleted || (room.ownerId !== me.id && !member)) throw new ApiError(meta.errors.accessDenied);
+			// 録画はルームの持ち主が許したときだけ (持ち主のサーバーでも確かめる)
+			if (ps.recording === true && !room.allowRecording) throw new ApiError(meta.errors.recordingNotAllowed);
 			const status = { micMuted: ps.micMuted, deafened: ps.deafened, recording: ps.recording };
 			if (room.owner?.host != null) {
 				try {

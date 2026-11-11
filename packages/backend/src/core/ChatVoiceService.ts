@@ -589,6 +589,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			throw new AggregateError(context.errors, `Failed to read what decides who may report the voice call settings in ${roomId}`);
 		}
 		if (admission === 'denied' || context.room.value == null) return false;
+		// 録画はルームの持ち主が許したときだけ。既定では許さない
+		if (status.recording === true && !context.room.value.allowRecording) return false;
 		const owner = await this.usersRepository.findOneBy({ id: context.room.value.ownerId });
 		if (owner == null || owner.host != null) return false;
 		if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, status)) return false;

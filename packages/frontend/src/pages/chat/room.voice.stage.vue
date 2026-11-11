@@ -10,6 +10,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 	@pointermove="showControls"
 	@pointerdown="showControls"
 >
+	<!-- 録画しているあいだは、通話の画面にずっと出しておく -->
+	<span v-if="call.someoneRecording.value" :class="$style.recordingBadge" role="status"><i class="ti ti-player-record" aria-hidden="true"></i> {{ i18n.ts._voiceCall.recordingInProgress }}</span>
 	<span :class="showsStatus ? $style.status : '_srOnly'" :aria-live="announcesStatus ? 'polite' : 'off'">{{ voiceCallStatusText }}</span>
 	<div v-if="watchedParticipants.length" ref="screensEl" :class="$style.screensSpace">
 		<XScreens :participants="watchedParticipants" :hideStrip="membersHidden" fill :class="$style.screens" :style="screenStyle"/>
@@ -239,6 +241,19 @@ const screenStyle = computed(() => {
 	height: 100%;
 	padding: 12px;
 	container-type: inline-size;
+}
+
+.recordingBadge {
+	position: absolute;
+	z-index: 6;
+	top: 12px;
+	left: 12px;
+	padding: 4px 10px;
+	border-radius: 999px;
+	background: var(--MI_THEME-error);
+	color: #fff;
+	font-size: 0.85em;
+	font-weight: bold;
 }
 
 .status {

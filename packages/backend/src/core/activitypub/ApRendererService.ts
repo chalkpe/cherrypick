@@ -976,6 +976,7 @@ export class ApRendererService {
 			summary: room.description ?? '',
 			attributedTo: ownerUri || undefined,
 			_misskey_chatArchived: room.isArchived,
+			allowRecording: room.allowRecording,
 			updated: new Date().toISOString(),
 		};
 	}

@@ -700,6 +700,10 @@ export const meta = {
 				type: 'integer',
 				optional: false, nullable: false,
 			},
+			voiceCallMaxRecordingConversions: {
+				type: 'integer',
+				optional: false, nullable: false,
+			},
 			voiceCallLivekitSource: { type: 'string', enum: ['yaml', 'custom', 'disabled'], optional: false, nullable: false },
 			voiceCallLivekitUrl: { type: 'string', optional: false, nullable: true },
 			voiceCallLivekitApiKey: { type: 'string', optional: false, nullable: true },
@@ -973,6 +977,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				allowExternalApRedirect: instance.allowExternalApRedirect,
 				enableRemoteVoiceCall: instance.enableRemoteVoiceCall,
 				voiceCallMaxParticipants: instance.voiceCallMaxParticipants,
+				voiceCallMaxRecordingConversions: instance.voiceCallMaxRecordingConversions,
 				voiceCallLivekitSource: instance.voiceCallLivekitSource,
 				voiceCallLivekitUrl: instance.voiceCallLivekitUrl,
 				voiceCallLivekitApiKey: instance.voiceCallLivekitApiKey,

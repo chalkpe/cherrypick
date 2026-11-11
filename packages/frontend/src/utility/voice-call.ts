@@ -39,9 +39,11 @@ const state = reactive({
 	screenShareIdentities: [] as string[],
 	// 見ている共有画面 (見始めた順)。いくつでも同時に見られる
 	watchingIdentities: [] as string[],
-	// 通話の録音 (声だけ)。録音中は参加者に知らせる
+	// 通話の録画 (声と画面)。録画中は参加者に知らせる
 	recording: false,
 	recordingStartedAt: null as number | null,
+	// ルームの持ち主が録画を許しているか (既定では許さない)
+	recordingAllowed: false,
 });
 
 /** 現在の通話の状態。書き換えは下の関数経由で行う */
@@ -421,6 +423,11 @@ async function deliverStatus(delivery: StatusDelivery): Promise<void> {
 	} catch (err) {
 		if (statusDelivery !== delivery || current !== delivery.room) return;
 		const code = isApiError(err) ? err.code : null;
+		if (code === 'RECORDING_NOT_ALLOWED') {
+			// the owner turned recording off before we heard about it: stop, and report that we stopped
+			state.recordingAllowed = false;
+			stopRecording();
+		}
 		if (code != null && code !== 'RATE_LIMIT_EXCEEDED' && code !== 'INTERNAL_ERROR' && code !== 'REMOTE_HOST_UNREACHABLE') {
 			// Unsupported hosts and permanent API errors must not generate a retry loop.
 			// 送り直さないのは失敗した設定だけ。送っているあいだに変わった新しい設定は、下でもう一度だけ送ってみる
@@ -540,7 +547,7 @@ async function disconnectCurrentRoom(): Promise<void> {
 /** start recording the call in separate tracks (microphone, the other side, video when present) */
 export async function startRecording(): Promise<void> {
 	const room = current;
-	if (room == null || recordingParts.size > 0 || state.status !== 'connected') return;
+	if (room == null || recordingParts.size > 0 || state.status !== 'connected' || !state.recordingAllowed) return;
 	const Context = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
 	if (Context == null || typeof MediaRecorder === 'undefined') return;
 
@@ -641,6 +648,13 @@ export function stopRecording(): void {
 	}
 }
 
+/** follow the room owner's recording setting while in the call; recording stops when it is turned off */
+export function setRecordingAllowed(roomId: string, allowed: boolean): void {
+	if (state.room?.id !== roomId) return;
+	state.recordingAllowed = allowed;
+	if (!allowed) stopRecording();
+}
+
 export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { micEnabled?: boolean; approvedMediaProvider?: string } = {}): Promise<void> {
 	migrateParticipantVolumes();
 	// 前の通話の切断を待つあいだに別の参加が始まったら、この参加は捨てる。
@@ -654,6 +668,7 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 	resetState();
 	state.status = 'connecting';
 	state.room = room;
+	state.recordingAllowed = room.allowRecording === true;
 
 	let credentials: Misskey.entities.ChatRoomsVoiceJoinResponse;
 	let lk: LiveKit;
@@ -1289,6 +1304,7 @@ function resetState(): void {
 	stopRecording();
 	state.recording = false;
 	state.recordingStartedAt = null;
+	state.recordingAllowed = false;
 	stopLocalMeter?.();
 	unwatchMicrophoneTrack?.();
 	screenShareTracks.clear();

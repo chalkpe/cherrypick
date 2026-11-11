@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { computed, markRaw, toValue } from 'vue';
+import { computed, markRaw, toValue, watch } from 'vue';
 import type { MaybeRefOrGetter } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import type { MenuItem } from '@/types/menu.js';
@@ -15,7 +15,8 @@ import { ensureSignin } from '@/i.js';
 import { userName } from '@/filters/user.js';
 import { isChatRoomVoiceAvailable } from '@/utility/chat-room-voice-availability.js';
 import { useChatRoomVoiceStates } from '@/composables/use-chat-room-voice-states.js';
-import { joinVoiceCall, localIdentityOf, notifyVoiceCallFailure, setDeafened, setMicEnabled, toggleScreenShareWatch, voiceCall } from '@/utility/voice-call.js';
+import { joinVoiceCall, localIdentityOf, notifyVoiceCallFailure, setDeafened, setMicEnabled, setRecordingAllowed, toggleScreenShareWatch, voiceCall } from '@/utility/voice-call.js';
+import { playMisskeySfxFile } from '@/utility/sound.js';
 import XVolume from '@/pages/chat/room.voice.volume.vue';
 import XRoster from '@/pages/chat/room.voice.roster.vue';
 
@@ -62,6 +63,37 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 			.filter((participant): participant is Participant => participant != null);
 	});
 
+	// 録画している人。自分の分は手元の状態に合わせ、届くのを待たずに知らせる
+	const recordingIdentities = computed(() => {
+		const ids = participants.value.filter(participant => participant.recording === true && participant.identity !== myIdentity).map(participant => participant.identity);
+		if (inThisCall.value && voiceCall.recording) ids.push(myIdentity);
+		return ids;
+	});
+	const someoneRecording = computed(() => recordingIdentities.value.length > 0);
+
+	// 録画が始まったり終わったりしたら、通話に入っている全員に音と表示で知らせる
+	watch(recordingIdentities, (now, before) => {
+		if (!inThisCall.value) return;
+		const started = now.filter(id => !before.includes(id));
+		const stopped = before.filter(id => !now.includes(id));
+		if (started.length > 0) {
+			void playMisskeySfxFile({ type: 'syuilo/up', volume: 1 });
+			for (const id of started) {
+				const participant = participants.value.find(p => p.identity === id);
+				if (participant != null && id !== myIdentity) os.toast(i18n.tsx._voiceCall.recordingStartedBy({ name: userName(participant.user) }));
+			}
+		} else if (stopped.length > 0) {
+			void playMisskeySfxFile({ type: 'syuilo/down', volume: 1 });
+			if (stopped.some(id => id !== myIdentity)) os.toast(i18n.ts._voiceCall.recordingStopped);
+		}
+	});
+
+	// 持ち主が録画を許さなくなったら、通話中の録画も止める
+	watch(() => toValue(room)?.allowRecording, allowed => {
+		const target = toValue(room);
+		if (target != null && inThisCall.value) setRecordingAllowed(target.id, allowed === true);
+	});
+
 	// 他のサーバーで開かれる通話には相手のサーバーに IP アドレスが見えるので、ホストごとに初回だけ確認する
 	let joining = false;
 
@@ -84,6 +116,11 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 				});
 				if (canceled) return;
 				prefer.commit('voiceCall.acknowledgedRemoteHosts', [...prefer.s['voiceCall.acknowledgedRemoteHosts'], host]);
+			}
+			// 録画している人がいれば、入る前に知らせる。入ると自分の声や画面も録画に残る
+			if (someoneRecording.value) {
+				const { canceled } = await os.confirm({ type: 'warning', text: i18n.ts._voiceCall.recordingJoinNotice });
+				if (canceled) return;
 			}
 			let approvedMediaProvider: string | undefined;
 			if (host == null) {
@@ -161,7 +198,7 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		const { dispose } = os.popup(XRoster, { call: markRaw(call) }, { closed: () => dispose() });
 	}
 
-	const call = { providerUnavailable, available, inThisCall, participants, watchedParticipants, join, prejoinMicEnabled, myIdentity, isOwner, hasParticipantMenu, openParticipantMenu, openRoster };
+	const call = { providerUnavailable, available, inThisCall, participants, watchedParticipants, someoneRecording, join, prejoinMicEnabled, myIdentity, isOwner, hasParticipantMenu, openParticipantMenu, openRoster };
 	return call;
 }
 

@@ -276,6 +276,7 @@ export const paramDef = {
 		allowExternalApRedirect: { type: 'boolean' },
 		enableRemoteVoiceCall: { type: 'boolean' },
 		voiceCallMaxParticipants: { type: 'integer', minimum: 1, maximum: MAX_ROOM_MEMBERS + 1 },
+		voiceCallMaxRecordingConversions: { type: 'integer', minimum: 0, maximum: 16 },
 		voiceCallLivekitSource: { type: 'string', enum: ['yaml', 'custom', 'disabled'] },
 		voiceCallLivekitUrl: { type: 'string', nullable: true, maxLength: 2048 },
 		voiceCallLivekitApiKey: { type: 'string', nullable: true, maxLength: 512 },
@@ -958,6 +959,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			if (ps.voiceCallMaxParticipants !== undefined) {
 				set.voiceCallMaxParticipants = ps.voiceCallMaxParticipants;
+			}
+
+			if (ps.voiceCallMaxRecordingConversions !== undefined) {
+				set.voiceCallMaxRecordingConversions = ps.voiceCallMaxRecordingConversions;
 			}
 
 			if (ps.voiceCallLivekitSource !== undefined) set.voiceCallLivekitSource = ps.voiceCallLivekitSource;
