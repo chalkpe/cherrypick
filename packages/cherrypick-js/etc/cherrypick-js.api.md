@@ -1353,6 +1353,12 @@ type ChatRoomsVoiceConnectionInfoRequest = operations['chat___rooms___voice___co
 type ChatRoomsVoiceConnectionInfoResponse = operations['chat___rooms___voice___connection-info']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type ChatRoomsVoiceConvertRecordingRequest = operations['chat___rooms___voice___convert-recording']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsVoiceConvertRecordingResponse = operations['chat___rooms___voice___convert-recording']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type ChatRoomsVoiceJoinRequest = operations['chat___rooms___voice___join']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -1997,6 +2003,8 @@ declare namespace entities {
         ChatRoomsUpdateResponse,
         ChatRoomsVoiceConnectionInfoRequest,
         ChatRoomsVoiceConnectionInfoResponse,
+        ChatRoomsVoiceConvertRecordingRequest,
+        ChatRoomsVoiceConvertRecordingResponse,
         ChatRoomsVoiceJoinRequest,
         ChatRoomsVoiceJoinResponse,
         ChatRoomsVoiceKickRequest,
