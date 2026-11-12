@@ -247,6 +247,15 @@ describe('what this server sends about a message names its room', () => {
 });
 
 describe('who is named on room updates and deletions', () => {
+	test('deleting an owner also sends the existing group Delete to remote members without a follow', async () => {
+		const f = chatRosterFixture({ memberships: [['localroom', carol.id]], invitations: [['localroom', erin.id]] });
+
+		await f.chatService.deleteRoomsOwnedBy(alice.id);
+
+		expect(f.delivered().filter(({ activity }) => activity.type === 'Delete').map(({ to }) => to).sort()).toEqual([carol.inbox, erin.inbox].sort());
+		expect(await f.rooms.findOneBy({ id: 'localroom' })).toBeNull();
+	});
+
 	const owner = { id: 'alice', host: null };
 	const options = { baseUrl: LOCAL, published: at(1), updated: at(1) };
 	const roomRow = { id: 'localroom', name: 'room', description: '', isArchived: false };

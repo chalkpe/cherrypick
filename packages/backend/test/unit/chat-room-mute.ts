@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatRoomAccessError, ChatService } from '@/core/ChatService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import type { MiChatMessage, MiChatRoom, MiChatRoomMembership, MiUser } from '@/models/_.js';
+import { meets } from '../misc/chat-repository-match.js';
 import { memoryRedis } from '../misc/chat-unread-redis.js';
 
 type Membership = Pick<MiChatRoomMembership, 'id' | 'roomId' | 'userId' | 'isMuted'>;
@@ -65,7 +66,8 @@ function fixture() {
 				return message;
 			},
 			findOneBy: async ({ id }: { id: string }) => messages.find(message => message.id === id) ?? null,
-			existsBy: async () => messages.length > 0,
+			findOne: async ({ where }: { where: Record<string, unknown> }) => messages.find(row => meets({ ...row, fromUser: { isSuspended: false } }, where)) ?? null,
+			existsBy: async (where: Record<string, unknown>) => messages.some(row => meets({ ...row, fromUser: { isSuspended: false } }, where)),
 		},
 		chatRoomsRepository,
 		chatRoomMembershipsRepository,

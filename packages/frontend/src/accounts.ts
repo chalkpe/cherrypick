@@ -140,6 +140,7 @@ export function replaceCurrentAccountData(accountData: Misskey.entities.MeDetail
 }
 
 let chatUnreadRevision = 0;
+let accountRefreshRevision = 0;
 
 export function updateCurrentAccount(accountData: Partial<Misskey.entities.MeDetailed>) {
 	if (!$i) return;
@@ -157,7 +158,9 @@ export async function refreshCurrentAccount() {
 	if (!$i) return;
 	const me = $i;
 	const unreadRevision = chatUnreadRevision;
+	const refreshRevision = ++accountRefreshRevision;
 	return fetchAccount($i.token, $i.id).then(account => {
+		if (refreshRevision !== accountRefreshRevision) return;
 		// 조회하는 동안 받은 읽음·새 쪽지 상태는 이전 HTTP 응답으로 덮어쓰지 않는다.
 		if (unreadRevision !== chatUnreadRevision) account.hasUnreadChatMessages = me.hasUnreadChatMessages;
 		replaceCurrentAccountData(account);

@@ -45,3 +45,18 @@ test('an unrelated account update does not block a fresh unread snapshot', async
 
 	expect($i?.hasUnreadChatMessages).toBe(false);
 });
+
+test.each([true, false])('the newer account request wins when responses finish in reverse order (%s)', async latest => {
+	const responses: ((value: Response) => void)[] = [];
+	vi.spyOn(window, 'fetch').mockImplementation(() => new Promise<Response>(resolve => { responses.push(resolve); }));
+
+	const older = refreshCurrentAccount();
+	const newer = refreshCurrentAccount();
+	responses[1](new Response(JSON.stringify({ id: 'viewer', name: 'Newer profile', hasUnreadChatMessages: latest })));
+	await newer;
+	responses[0](new Response(JSON.stringify({ id: 'viewer', name: 'Older profile', hasUnreadChatMessages: !latest })));
+	await older;
+
+	expect($i?.hasUnreadChatMessages).toBe(latest);
+	expect($i?.name).toBe('Newer profile');
+});

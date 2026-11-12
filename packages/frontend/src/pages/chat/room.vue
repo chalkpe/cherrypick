@@ -593,6 +593,8 @@ function readWhatArrivedWhileAway() {
 		id: arrivedWhileAway,
 	});
 	arrivedWhileAway = null;
+	// 이어서 실행하는 catchUp에서 읽기 완료와 계정의 미읽음 상태를 함께 확인한다.
+	eventsMayBeMissing = true;
 }
 
 function onDeleted(id: string) {

@@ -8,6 +8,7 @@ import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
+import { meets } from '../misc/chat-repository-match.js';
 import { memoryRedis } from '../misc/chat-unread-redis.js';
 
 const owner = { id: 'owner', host: 'owner.test', uri: 'https://owner.test/users/owner' };
@@ -69,7 +70,8 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
 		config: { url: 'https://local.test' },
 		chatMessagesRepository: {
-			findOneBy: async ({ uri }: { uri: string }) => messages.find(message => message.uri === uri) ?? null,
+			findOne: async ({ where }: { where: Record<string, unknown> | Record<string, unknown>[] }) => messages.find(message => [where].flat().some(condition => meets({ ...message, fromUser: { isSuspended: false } }, condition))) ?? null,
+			findOneBy: async ({ uri, id }: { uri?: string; id?: string }) => messages.find(message => id != null ? message.id === id : message.uri === uri) ?? null,
 			existsBy: async () => true,
 			insertOne: async (message: typeof messages[number]) => {
 				await options.beforeInsert?.();
@@ -92,6 +94,7 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 				getMany: async () => [{ userId: localUser.id }, { userId: owner.id }],
 			}),
 		},
+		usersRepository: { existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => [...users.values()].some(user => user.id === id && ((user as { isSuspended?: boolean }).isSuspended ?? false) === isSuspended) },
 		userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null },
 		roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 		userBlockingService: { checkBlocked: async () => false },

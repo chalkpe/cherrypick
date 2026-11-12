@@ -158,6 +158,22 @@ describe('muting a chat room', () => {
 		assert.deepStrictEqual(await roomIsRead(owner), [false]);
 	});
 
+	test('unmuting before the delay never notifies about a message received during the mute', async () => {
+		const [owner, speaker, listener] = [await person(), await person(), await person()];
+		const room = await roomOf(owner, speaker, listener);
+		await told(owner, 'Before muting', () => say(speaker, room, 'Before muting'));
+
+		// 다른 독자의 실제 B 알림 뒤에 courier 알림을 기다려, B의 지연 처리가 시작됐는지도 확인한다.
+		const noticed = await roomNoticesWhile(owner, () => told(listener, 'During the mute', async () => {
+			await setMuted(owner, room, true);
+			assert.strictEqual((await say(speaker, room, 'During the mute')).status, 200);
+			await setMuted(owner, room, false);
+		}));
+
+		assert.deepStrictEqual(noticed, []);
+		assert.strictEqual(await hasUnread(owner), true);
+	});
+
 	test('a muted member gets no unread sign and no notice, while the owner still does', async () => {
 		const [owner, speaker, muted] = [await person(), await person(), await person()];
 		const room = await roomOf(owner, speaker, muted);

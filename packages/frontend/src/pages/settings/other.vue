@@ -178,7 +178,7 @@ import FormSection from '@/components/form/section.vue';
 import * as os from '@/os.js';
 import { enableStoragePersistence, getStoragePersistenceStatusRef, storagePersistenceSupported } from '@/utility/storage.js';
 import { ensureSignin } from '@/i.js';
-import { updateCurrentAccount } from '@/accounts.js';
+import { refreshCurrentAccount } from '@/accounts.js';
 import { i18n } from '@/i18n.js';
 import { definePage } from '@/page.js';
 import { prefer } from '@/preferences.js';
@@ -240,8 +240,8 @@ function hideAllTips() {
 
 async function readAllChatMessages() {
 	await os.apiWithDialog('chat/read-all', {});
-	// リアルタイムモードを切っていると、既読になった知らせが届かない
-	updateCurrentAccount({ hasUnreadChatMessages: false });
+	// HTTP 완료 전에 도착한 새 쪽지는 서버의 현재 상태로 확인한다.
+	await refreshCurrentAccount();
 }
 
 async function forceCloudBackup() {

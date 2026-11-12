@@ -191,4 +191,60 @@ describe('chat unread boundaries', () => {
 		assert.strictEqual((await api('chat/rooms/show', { roomId: room.id }, reader)).status, 400);
 		assert.strictEqual(await redis.sismember(`newChatMessagesExists:${reader.id}`, `room:${room.id}`), 0);
 	});
+
+	test('muting and withdrawing a legacy direct message preserves unread on unmute', async () => {
+		const [reader, sender] = [await person(), await person()];
+		await say(sender, reader, 'Remaining legacy content');
+		const removed = (await say(sender, reader, 'Withdrawn legacy content')).body;
+		const key = `newUserChatMessageExists:${reader.id}:${sender.id}`;
+		await redis.del(`${key}:first`);
+		assert.strictEqual((await api('mute/create', { userId: sender.id }, reader)).status, 204);
+
+		assert.strictEqual((await api('chat/messages/delete', { messageId: removed.id }, sender)).status, 204);
+		assert.strictEqual((await api('mute/delete', { userId: sender.id }, reader)).status, 204);
+
+		assert.strictEqual(await hasUnread(reader), true);
+		assert.notStrictEqual(await redis.get(key), null);
+	});
+
+	test('withdrawal never promotes room messages received during a mute', async () => {
+		const [reader, sender] = [await person(), await person()];
+		const room = await roomOf(reader, sender);
+		const eligible = (await roomSay(sender, room.id)).body;
+		assert.strictEqual((await api('chat/rooms/mute', { roomId: room.id, mute: true }, reader)).status, 204);
+		await roomSay(sender, room.id);
+		assert.strictEqual((await api('chat/rooms/mute', { roomId: room.id, mute: false }, reader)).status, 204);
+
+		assert.strictEqual((await api('chat/messages/delete', { messageId: eligible.id }, sender)).status, 204);
+
+		assert.strictEqual(await hasUnread(reader), false);
+	});
+
+	test('suspending the only unread room author ignores already read history', async () => {
+		const [reader, owner, member] = [await person(), await person(), await person()];
+		const room = await roomOf(owner, reader, member);
+		await roomSay(owner, room.id);
+		await api('chat/messages/room-timeline', { roomId: room.id }, reader);
+		await roomSay(member, room.id);
+
+		assert.strictEqual((await api('admin/suspend-user', { userId: member.id }, root)).status, 204);
+
+		assert.strictEqual(await hasUnread(reader), false);
+		assert.strictEqual(await redis.get(`newRoomChatMessageExists:${reader.id}:${room.id}`), null);
+	});
+
+	test('physically deleting an ordinary member clears only their unread room messages', async () => {
+		const [reader, owner, member] = [await person(), await person(), await person()];
+		const room = await roomOf(owner, reader, member);
+		await roomSay(owner, room.id);
+		await api('chat/messages/room-timeline', { roomId: room.id }, reader);
+		await roomSay(member, room.id);
+
+		assert.strictEqual((await api('admin/delete-account', { userId: member.id }, root)).status, 204);
+		await vi.waitFor(async () => assert.strictEqual((await api('users/show', { userId: member.id }, root)).status, 404), { timeout: 20_000, interval: 100 });
+
+		assert.strictEqual(await hasUnread(reader), false);
+		assert.strictEqual(await redis.get(`newRoomChatMessageExists:${reader.id}:${room.id}`), null);
+		assert.strictEqual((await api('chat/rooms/show', { roomId: room.id }, reader)).status, 200);
+	});
 });

@@ -161,6 +161,7 @@ export class DeleteAccountProcessorService {
 		} else {
 			// CASCADE 전에 기존 그룹 삭제 경로로 참가자에게도 삭제와 읽음 상태를 알린다.
 			await this.chatService.deleteRoomsOwnedBy(user.id);
+			await this.chatService.deleteMessagesFromUser(user.id);
 			await this.usersRepository.delete(job.data.user.id);
 
 			// Trigger CacheService

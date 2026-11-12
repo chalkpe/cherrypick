@@ -62,7 +62,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<MkReactionIcon
 					:withTooltip="true"
 					:reaction="record.reaction.replace(/^:(\w+):$/, ':$1@.:')"
-					:class="prefer.r.limitWidthOfReaction.value ? $style.reactionLimitWidth : ''"
+					:class="[$style.reactionIcon, prefer.r.limitWidthOfReaction.value ? $style.reactionLimitWidth : '']"
 				/>
 			</div>
 		</TransitionGroup>
@@ -381,6 +381,7 @@ function getMenu(): MenuItem[] {
 }
 
 .body {
+	min-width: 0;
 	padding-top: 4px;
 	margin: 0 12px;
 	box-sizing: border-box;
@@ -478,6 +479,7 @@ function getMenu(): MenuItem[] {
 
 .reaction {
 	display: inline-flex;
+	max-width: 100%;
 	height: 38px;
 	padding: 0 12px;
 	font-size: 1.35em;
@@ -530,6 +532,12 @@ function getMenu(): MenuItem[] {
 
 .reactionLimitWidth {
 	max-width: 70px;
+	object-fit: contain;
+}
+
+// 폭 제한을 꺼도 칩 안에서 줄어들 수 있게 하여 좁은 화면에서 이미지를 자르지 않는다.
+.reactionIcon {
+	min-width: 0;
 	object-fit: contain;
 }
 </style>

@@ -39,7 +39,9 @@ function fixture(options: { insertApproval?: () => Promise<void> } = {}) {
 		},
 		chatMessagesRepository: {
 			insertOne: async (message: typeof messages[number]) => { messages.push(message); return message; },
+			findOneBy: async ({ id }: { id: string }) => messages.find(message => message.id === id) ?? null,
 		},
+		usersRepository: { existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => [alice, bob].some(user => user.id === id && user.isSuspended === isSuspended) },
 		userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null, isRemoteUser: (user: { host: string | null }) => user.host != null },
 		roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 		userBlockingService: { checkBlocked: async () => false },

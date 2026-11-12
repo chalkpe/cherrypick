@@ -18,8 +18,8 @@ import { buildChatNote } from '@/core/activitypub/misc/chat-payloads.js';
 import { CONTEXT, PRELOADED_CONTEXTS } from '@/core/activitypub/misc/contexts.js';
 
 const dice: ChatDiceResult = { version: 1, engine: '@dice-roller/rpg-dice-roller', engineVersion: '5.5.1', notation: '1d6', total: 4, output: '1d6: [4] = 4' };
-const sender = { id: 'sender', host: null };
-const recipient = { id: 'recipient', host: null };
+const sender = { id: 'sender', host: null, isSuspended: false };
+const recipient = { id: 'recipient', host: null, isSuspended: false };
 const room = { id: 'room', ownerId: sender.id, isArchived: false };
 
 afterEach(() => vi.useRealTimers());
@@ -55,7 +55,7 @@ function fixture() {
 		chatDiceService: { roll },
 		chatRoomMembershipsRepository: { findBy: vi.fn(async () => []), findOneBy: vi.fn() },
 		chatRoomsRepository: { findOneBy: vi.fn() },
-		usersRepository: { findOneBy: vi.fn(async () => sender), findOneByOrFail: vi.fn(async () => sender), findBy: vi.fn(async () => [sender, recipient]) },
+		usersRepository: { existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => [sender, recipient].some(user => user.id === id && user.isSuspended === isSuspended), findOneBy: vi.fn(async () => sender), findOneByOrFail: vi.fn(async () => sender), findBy: vi.fn(async () => [sender, recipient]) },
 		idService: { gen: () => 'message' },
 		redisClient: { ...memoryRedis(), pipeline: () => pipeline, sismember: async () => 0 },
 		globalEventService: stream,

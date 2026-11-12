@@ -6,7 +6,7 @@
 process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
-import { describe, beforeAll, beforeEach, test } from 'vitest';
+import { describe, beforeAll, beforeEach, test, vi } from 'vitest';
 import {
 	api,
 	failedApiCall,
@@ -727,15 +727,18 @@ describe('アンテナ', () => {
 				user: alice,
 			})));
 
-			const response = await successfulApiCall({
-				endpoint: 'antennas/notes',
-				parameters: { antennaId: antenna.id },
-				user: alice,
-			});
-			assert.deepStrictEqual(
-				response.map(({ userId, id, text }) => ({ userId, id, text })),
-				expected.map(({ userId, id, text }) => ({ userId, id, text })));
-			assert.deepStrictEqual(response, expected);
+			// 노트 저장 응답 뒤 setImmediate에서 안테나 배포가 실행된다. 실제 목록이 완성될 때까지 기다린다.
+			await vi.waitFor(async () => {
+				const response = await successfulApiCall({
+					endpoint: 'antennas/notes',
+					parameters: { antennaId: antenna.id },
+					user: alice,
+				});
+				assert.deepStrictEqual(
+					response.map(({ userId, id, text }) => ({ userId, id, text })),
+					expected.map(({ userId, id, text }) => ({ userId, id, text })));
+				assert.deepStrictEqual(response, expected);
+			}, { timeout: 5000, interval: 25 });
 		});
 
 		test('が取得できること（センシティブチャンネルのノートを除く）', async () => {

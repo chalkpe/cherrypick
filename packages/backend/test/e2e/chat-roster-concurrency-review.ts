@@ -12,18 +12,21 @@ import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatService, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import type { IAdd, IRemove } from '@/core/activitypub/type.js';
-import { MiChatRoom, MiChatRoomMembership, MiChatRoomRosterState, miRepository } from '@/models/_.js';
+import { MiChatMessage, MiChatRoom, MiChatRoomMembership, MiChatRoomRosterState, miRepository } from '@/models/_.js';
 import type { MiRemoteUser } from '@/models/User.js';
 import { api, initTestDb, signup } from '../utils.js';
+import { memoryRedis } from '../misc/chat-unread-redis.js';
 
+let ownerAccount: Awaited<ReturnType<typeof signup>>;
+let memberAccount: Awaited<ReturnType<typeof signup>>;
 let ownerId: string;
 let memberId: string;
 let roomId: string;
 let db: Awaited<ReturnType<typeof initTestDb>>;
 
 beforeAll(async () => {
-	const owner = await signup();
-	const member = await signup();
+	const owner = ownerAccount = await signup();
+	const member = memberAccount = await signup();
 	ownerId = owner.id;
 	memberId = member.id;
 	const created = await api('chat/rooms/create', { name: 'ordered membership' }, owner);
@@ -74,12 +77,26 @@ test('a newer Remove wins when an older Add is paused after its ordering claim',
 		insertOne: async (row: { id: string; roomId: string; userId: string }) => { await pauseAdd(); return await memberships.insertOne(row); },
 		delete: memberships.delete.bind(memberships),
 	};
-	const pipeline = { del: () => pipeline, srem: () => pipeline, exec: async () => [] };
+	const otherRoom = (await api('chat/rooms/create', { name: 'independent unread room' }, ownerAccount)).body;
+	assert.strictEqual((await api('chat/rooms/invitations/create', { roomId: otherRoom.id, userId: memberId }, ownerAccount)).status, 200);
+	assert.strictEqual((await api('chat/rooms/join', { roomId: otherRoom.id }, memberAccount)).status, 204);
+	const otherMessage = (await api('chat/messages/create-to-room', { toRoomId: otherRoom.id, text: 'Keep this unread' }, ownerAccount)).body;
+	assert.ok(otherMessage.id);
+	const removedMessage = (await api('chat/messages/create-to-room', { toRoomId: roomId, text: 'Removed membership unread' }, ownerAccount)).body;
+	assert.ok(removedMessage.id);
+	const unread = memoryRedis();
+	const removedKey = `newRoomChatMessageExists:${memberId}:${roomId}`;
+	await unread.set(removedKey, removedMessage.id);
+	await unread.set(`${removedKey}:first`, removedMessage.id);
+	await unread.sadd(`newChatMessagesExists:${memberId}`, `room:${roomId}`);
+	await unread.sadd(`newChatMessagesExists:${memberId}`, `room:${otherRoom.id}`);
+	await unread.set(`newRoomChatMessageExists:${memberId}:${otherRoom.id}`, otherMessage.id);
 	const events = { publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() };
 	const userEntity = { isLocalUser: () => false };
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
 		db: wrappedDb, chatRoomMembershipsRepository: membershipRepository,
-		globalEventService: events, userEntityService: userEntity, redisClient: { pipeline: () => pipeline },
+		globalEventService: events, userEntityService: userEntity, redisClient: unread,
+		chatMessagesRepository: db.getRepository(MiChatMessage).extend(miRepository),
 	}) as ChatService;
 	const roster = Object.assign(Object.create(ChatRosterService.prototype), { chatRoomRosterStatesRepository: states }) as ChatRosterService;
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
@@ -103,6 +120,10 @@ test('a newer Remove wins when an older Add is paused after its ordering claim',
 	releaseAdd();
 	await Promise.all([adding, removing]);
 	assert.strictEqual(await memberships.findOneBy({ roomId, userId: memberId }), null);
+	assert.strictEqual(await unread.get(removedKey), null);
+	assert.strictEqual(await unread.get(`${removedKey}:first`), null);
+	assert.deepStrictEqual(await unread.smembers(`newChatMessagesExists:${memberId}`), [`room:${otherRoom.id}`]);
+	assert.strictEqual(await unread.get(`newRoomChatMessageExists:${memberId}:${otherRoom.id}`), otherMessage.id);
 }, 30_000);
 
 test('a failed Add insertion can be retried without losing the ordering claim', async () => {

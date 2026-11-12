@@ -1690,6 +1690,32 @@ describe('telling the server what was read', () => {
 });
 
 describe('the unread sign with realtime mode off', () => {
+	test('refreshes the sign after returning to a cached conversation without reconnecting', async () => {
+		mocks.store.realtimeMode = false;
+		mocks.me.hasUnreadChatMessages = true;
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { userId: 'alice' }) : h('div') });
+			},
+		});
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		visible.value = false;
+		await flush();
+		mocks.channel.emit('message', message('m4', 'alice', 3 * MINUTE));
+		await flush();
+		mocks.refreshCurrentAccount.mockClear();
+
+		visible.value = true;
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
 	// メインのチャンネルを聞いていないので、既読になった知らせは届かない
 	test('asks the server about the sign after a conversation is opened and read', async () => {
 		mocks.store.realtimeMode = false;

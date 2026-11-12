@@ -39,6 +39,7 @@ describe('chat federation storage', () => {
 
 	function createService() {
 		return Object.assign(Object.create(ChatService.prototype), {
+			db: app.get(DI.db),
 			userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
 			config: { url: 'https://local.test' },
 			usersRepository,
@@ -48,6 +49,7 @@ describe('chat federation storage', () => {
 			mutingsRepository: app.get(DI.mutingsRepository),
 			chatRoomInvitationsRepository: { findBy: async () => [] },
 			redisClient,
+			chatRosterService: Object.assign(Object.create(ChatRosterService.prototype), { redisClient }),
 			queueService: { deliver },
 			globalEventService: { publishChatUserStream, publishChatRoomStream, publishMainStream: vi.fn() },
 			liveKitService: { deleteRoom: vi.fn(async () => {}) },
@@ -73,8 +75,7 @@ describe('chat federation storage', () => {
 		return usersRepository.findOneByOrFail({ id });
 	}
 
-	async function createDirectMessage() {
-		const id = idService.gen();
+	async function createDirectMessage(id = idService.gen()) {
 		await chatMessagesRepository.insert({ id, fromUserId: bob.id, toUserId: alice.id, text: 'hello', uri: `https://remote.test/chat/messages/${id}` });
 		return id;
 	}
@@ -146,6 +147,42 @@ describe('chat federation storage', () => {
 			expect(await service.getUserReadStateMap(alice.id, [bob.id])).toEqual({ [bob.id]: false });
 		});
 
+		test('a delayed INSERT between the saved boundaries survives the withdrawal query', async () => {
+			const service = createService();
+			const firstId = idService.gen();
+			const middleId = idService.gen();
+			const latestId = idService.gen();
+			await createDirectMessage(firstId);
+			await createDirectMessage(latestId);
+			await markUnread(service, firstId);
+			await markUnread(service, latestId);
+			await service.deleteMessage(await chatMessagesRepository.findOneByOrFail({ id: firstId }));
+			let queried!: () => void;
+			let release!: () => void;
+			const reached = new Promise<void>(resolve => { queried = resolve; });
+			const gate = new Promise<void>(resolve => { release = resolve; });
+			const findOne = chatMessagesRepository.findOne.bind(chatMessagesRepository);
+			vi.spyOn(chatMessagesRepository, 'findOne').mockImplementationOnce(async options => {
+				const remaining = await findOne(options);
+				queried();
+				await gate;
+				return remaining;
+			});
+
+			const deleting = service.deleteMessage(await chatMessagesRepository.findOneByOrFail({ id: latestId }));
+			await reached;
+			try {
+				await createDirectMessage(middleId);
+				await markUnread(service, middleId);
+			} finally {
+				release();
+				await deleting;
+			}
+
+			expect(await service.hasUnreadMessages(alice.id)).toBe(true);
+			expect(await service.getUserReadStateMap(alice.id, [bob.id])).toEqual({ [bob.id]: false });
+		});
+
 		test('an orphan from an older read-all does not make read history unread again', async () => {
 			const service = createService();
 			const oldMessage = await createDirectMessage();
@@ -174,6 +211,54 @@ describe('chat federation storage', () => {
 			await markUnread(service, next);
 			expect(await redisClient.get(`${key}:first`)).toBe(next);
 			await service.deleteMessage(await chatMessagesRepository.findOneByOrFail({ id: next }));
+			expect(await service.hasUnreadMessages(alice.id)).toBe(false);
+		});
+
+		test.each(['withdrawal', 'suspension', 'membership removal', 'room deletion'] as const)('a delayed Redis mark cannot undo completed %s', async cleanup => {
+			const service = createService();
+			let room: MiChatRoom | undefined;
+			if (cleanup === 'membership removal' || cleanup === 'room deletion') {
+				const roomId = idService.gen();
+				await chatRoomsRepository.insert({ id: roomId, name: 'delayed mark', ownerId: bob.id });
+				room = await chatRoomsRepository.findOneByOrFail({ id: roomId });
+				await chatRoomMembershipsRepository.insert({ id: idService.gen(), roomId, userId: alice.id });
+			}
+			const messageId = idService.gen();
+			await chatMessagesRepository.insert({ id: messageId, fromUserId: bob.id, text: 'delayed', ...(room ? { toRoomId: room.id } : { toUserId: alice.id }) });
+			const message = await chatMessagesRepository.findOneByOrFail({ id: messageId });
+			const mark = room ? { readerId: alice.id, roomId: room.id } : { readerId: alice.id, senderId: bob.id };
+			const key = room ? `newRoomChatMessageExists:${alice.id}:${room.id}` : `newUserChatMessageExists:${alice.id}:${bob.id}`;
+			const conversation = room ? `room:${room.id}` : `user:${bob.id}`;
+			let reached!: () => void;
+			let release!: () => void;
+			const waiting = new Promise<void>(resolve => { reached = resolve; });
+			const gate = new Promise<void>(resolve => { release = resolve; });
+			const evalRedis = redisClient.eval.bind(redisClient);
+			vi.spyOn(redisClient, 'eval').mockImplementation(async (...args) => {
+				if (String(args[0]).includes("local active = redis.call('SISMEMBER', KEYS[3]")) {
+					reached();
+					await gate;
+				}
+				return evalRedis(...args);
+			});
+
+			const marking = (service as unknown as { markUnread: (target: typeof mark, id: string) => Promise<void> }).markUnread(mark, messageId);
+			await waiting;
+			try {
+				if (cleanup === 'withdrawal') await service.deleteMessage(message);
+				if (cleanup === 'suspension') {
+					await usersRepository.update(bob.id, { isSuspended: true });
+					await service.handleUserSuspended(await usersRepository.findOneByOrFail({ id: bob.id }));
+				}
+				if (cleanup === 'membership removal') expect(await service.removeRoomMember(room!, alice)).toBe(true);
+				if (cleanup === 'room deletion') await service.deleteRoom(room!, undefined, { federate: false });
+			} finally {
+				release();
+				await marking;
+			}
+
+			expect(await redisClient.get(key)).toBeNull();
+			expect(await redisClient.sismember(`newChatMessagesExists:${alice.id}`, conversation)).toBe(0);
 			expect(await service.hasUnreadMessages(alice.id)).toBe(false);
 		});
 	});

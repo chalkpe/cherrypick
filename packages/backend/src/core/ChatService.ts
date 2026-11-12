@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import * as mfm from 'mfc-js';
 import * as Redis from 'ioredis';
-import { Brackets, DataSource, In, IsNull, LessThan, MoreThanOrEqual, Not } from 'typeorm';
+import { Between, Brackets, DataSource, In, IsNull, LessThan, Not } from 'typeorm';
 import type { SelectQueryBuilder } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
@@ -79,13 +79,18 @@ const ACTIVITIES_FOR_SUSPENDED_ACCOUNTS = new Set(['Delete', 'Remove', 'Undo']);
 const isCustomEmojiRegexp = /^:([\w+-]+)(?:@\.)?:$/;
 
 /** One reader's unread mark on one conversation: a direct conversation goes by its sender, a room by its ID. */
+type UnreadSnapshot = [latest: string, first: string, revision: string, messageIds: string[], previous: string];
+
 type UnreadMark = { readerId: MiUser['id'] } & ({ senderId: MiUser['id'] } | { roomId: MiChatRoom['id'] });
 
 // 개별 표식과 집계 set은 항상 함께 바꾼다. 첫 미읽음 ID는 읽은 과거 글과 새 글을 구분한다.
 const MARK_CHAT_UNREAD = `
 local active = redis.call('SISMEMBER', KEYS[3], ARGV[2]) == 1
+if not active then redis.call('DEL', KEYS[5], KEYS[6]) end
 local latest = active and redis.call('GET', KEYS[1]) or nil
 local first = active and redis.call('GET', KEYS[2]) or nil
+-- 이전 형식의 범위는 고정하고 이후 수신은 개별 ID로 추가한다.
+if first and latest and not redis.call('GET', KEYS[4]) then redis.call('SET', KEYS[6], first .. ':' .. latest) end
 -- An active legacy mark has no saved read boundary. Receiving more cannot reconstruct it.
 if not active or first then
  if not first or ARGV[1] < first then first = ARGV[1] end
@@ -93,6 +98,8 @@ if not active or first then
 end
 if not latest or ARGV[1] > latest then redis.call('SET', KEYS[1], ARGV[1]) end
 redis.call('SADD', KEYS[3], ARGV[2])
+redis.call('SADD', KEYS[5], ARGV[1])
+redis.call('SET', KEYS[4], ARGV[3])
 return 1
 `;
 
@@ -101,7 +108,7 @@ for _, conversation in ipairs(redis.call('SMEMBERS', KEYS[1])) do
  local kind, id = string.match(conversation, '^(%w+):(.+)$')
  if id then
   local key = (kind == 'user' and ARGV[1] or ARGV[2]) .. id
-  redis.call('DEL', key, key .. ':first')
+  redis.call('DEL', key, key .. ':first', key .. ':revision', key .. ':messages', key .. ':previous')
  end
 end
 for i = 2, #KEYS do redis.call('DEL', KEYS[i]) end
@@ -110,18 +117,25 @@ return 1
 `;
 
 const CLEAR_CHAT_UNREAD = `
-redis.call('DEL', KEYS[1], KEYS[2])
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6])
 return redis.call('SREM', KEYS[3], ARGV[1])
 `;
 
+// 읽음 표식의 여러 키를 한 시점에 읽는다.
+const SNAPSHOT_CHAT_UNREAD = `-- snapshot chat unread
+return {redis.call('GET', KEYS[1]) or '', redis.call('GET', KEYS[2]) or '', redis.call('GET', KEYS[3]) or '', redis.call('SMEMBERS', KEYS[4]), redis.call('GET', KEYS[5]) or ''}
+`;
+
 const RECONCILE_CHAT_UNREAD = `
-if (redis.call('GET', KEYS[1]) or '') ~= ARGV[1] or (redis.call('GET', KEYS[2]) or '') ~= ARGV[2] then return 0 end
-if ARGV[3] ~= '' then
- redis.call('SET', KEYS[1], ARGV[3])
+if (redis.call('GET', KEYS[1]) or '') ~= ARGV[1] or (redis.call('GET', KEYS[2]) or '') ~= ARGV[2] or (redis.call('GET', KEYS[4]) or '') ~= ARGV[3] then return 0 end
+if ARGV[4] ~= '' then
+ if ARGV[3] == '' then redis.call('SET', KEYS[6], ARGV[2] .. ':' .. ARGV[1]) end
+ redis.call('SET', KEYS[1], ARGV[4])
+ redis.call('SET', KEYS[4], ARGV[6])
  return 1
 end
-redis.call('DEL', KEYS[1], KEYS[2])
-redis.call('SREM', KEYS[3], ARGV[4])
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6])
+redis.call('SREM', KEYS[3], ARGV[5])
 return 2
 `;
 
@@ -363,7 +377,12 @@ export class ChatService {
 		const packedMessage = await this.chatEntityService.packMessageLiteFor1on1(inserted);
 
 		if (this.userEntityService.isLocalUser(toUser)) {
-			await this.markUnread({ readerId: toUser.id, senderId: fromUser.id }, message.id);
+			try {
+				await this.markUnread({ readerId: toUser.id, senderId: fromUser.id }, message.id);
+			} catch (error) {
+				await this.rollbackMessage(inserted, [{ readerId: toUser.id, senderId: fromUser.id }]);
+				throw error;
+			}
 		}
 
 		if (this.userEntityService.isLocalUser(fromUser)) {
@@ -441,7 +460,7 @@ export class ChatService {
 			await this.assertRemoteWriteAllowed(toRoom);
 		}
 
-		const membershipsOtherThanMe = memberships.filter(member => member.userId !== fromUser.id);
+		const membershipsOtherThanMe = memberships.filter(member => member.userId !== fromUser.id && !member.isMuted);
 
 		// Extract emojis from text if not provided
 		// Store only emoji names (like notes do), not name@host format
@@ -474,9 +493,12 @@ export class ChatService {
 
 		const packedMessage = await this.chatEntityService.packMessageLiteForRoom(inserted);
 
-		for (const membership of membershipsOtherThanMe) {
-			if (membership.isMuted) continue;
-			await this.markUnread({ readerId: membership.userId, roomId: toRoom.id }, message.id);
+		const unreadMarks = membershipsOtherThanMe.map(membership => ({ readerId: membership.userId, roomId: toRoom.id }));
+		try {
+			for (const mark of unreadMarks) await this.markUnread(mark, message.id);
+		} catch (error) {
+			await this.rollbackMessage(inserted, unreadMarks);
+			throw error;
 		}
 
 		this.globalEventService.publishChatRoomStream(toRoom.id, 'message', packedMessage);
@@ -626,7 +648,24 @@ export class ChatService {
 
 	private async markUnread(mark: UnreadMark, messageId: MiChatMessage['id']): Promise<void> {
 		const key = this.unreadKey(mark);
-		await this.redisClient.eval(MARK_CHAT_UNREAD, 3, key, `${key}:first`, `newChatMessagesExists:${mark.readerId}`, messageId, this.unreadConversation(mark));
+		await this.redisClient.eval(MARK_CHAT_UNREAD, 6, key, `${key}:first`, `newChatMessagesExists:${mark.readerId}`, `${key}:revision`, `${key}:messages`, `${key}:previous`, messageId, this.unreadConversation(mark), randomUUID());
+
+		// INSERT 뒤 준비·Redis 대기 중 끝난 철회와 관리 작업을 늦은 표식이 되돌리지 않게 한다.
+		const message = await this.chatMessagesRepository.findOneBy({ id: messageId });
+		if (message == null || message.deletedAt != null || await this.isFromSuspendedUser(message)) {
+			await this.reconcileUnreadMarks([mark]);
+			return;
+		}
+		if ('roomId' in mark) {
+			const room = await this.chatRoomsRepository.findOneBy({ id: mark.roomId });
+			if (room == null || !(await this.isRoomMember(room, mark.readerId))) await this.clearUnreadMarks([mark]);
+		}
+	}
+
+	private async rollbackMessage(message: MiChatMessage, marks: UnreadMark[]): Promise<void> {
+		// 읽음 저장에 실패한 전송은 화면·연합에 발행하기 전에 되돌려 재전송 중복을 막는다.
+		await this.chatMessagesRepository.delete(message.id);
+		await this.reconcileUnreadMarks(marks);
 	}
 
 	/**
@@ -639,7 +678,7 @@ export class ChatService {
 
 		const results = await Promise.all(marks.map(mark => {
 			const key = this.unreadKey(mark);
-			return this.redisClient.eval(CLEAR_CHAT_UNREAD, 3, key, `${key}:first`, `newChatMessagesExists:${mark.readerId}`, this.unreadConversation(mark));
+			return this.redisClient.eval(CLEAR_CHAT_UNREAD, 6, key, `${key}:first`, `newChatMessagesExists:${mark.readerId}`, `${key}:revision`, `${key}:messages`, `${key}:previous`, this.unreadConversation(mark));
 		}));
 
 		const readerIds = new Set(marks.filter((_, index) => Number(results[index]) > 0).map(mark => mark.readerId));
@@ -661,31 +700,60 @@ export class ChatService {
 			marks = (await this.participantsForRoom(room)).map(participant => ({ readerId: participant.id, roomId }));
 		}
 
-		for (const mark of marks) {
-			const key = this.unreadKey(mark);
-			const marker = await this.redisClient.get(key);
-			if (marker == null) continue;
-			const first = await this.redisClient.get(`${key}:first`);
-			if (first == null) {
-				// 업그레이드 전 표식은 읽음 경계가 없다. 내용이 남아 있으면 읽었다고 추정하지 않는다.
-				if (await this.hasUnreadMessages(mark.readerId)) continue;
-				await this.clearUnreadMarks([mark]);
-				continue;
-			}
+		await this.reconcileUnreadMarks(marks);
+	}
 
-			const remaining = await this.chatMessagesRepository.findOne({
+	private async snapshotUnread(mark: UnreadMark): Promise<UnreadSnapshot> {
+		const key = this.unreadKey(mark);
+		return await this.redisClient.eval(SNAPSHOT_CHAT_UNREAD, 5,
+			key, `${key}:first`, `${key}:revision`, `${key}:messages`, `${key}:previous`) as UnreadSnapshot;
+	}
+
+	private async remainingUnreadMessage(mark: UnreadMark, [marker, first, revision, messageIds, previous]: UnreadSnapshot): Promise<MiChatMessage | null> {
+		const [rangeFirst, rangeLatest] = previous ? previous.split(':') : [first, revision === '' ? marker : ''];
+		const conditions = rangeLatest !== '' ? [Between(rangeFirst, rangeLatest)] : [];
+		// 장기간 읽지 않은 방도 DB 매개변수 한도를 넘지 않게 나눠 조회한다.
+		for (let offset = 0; offset < messageIds.length; offset += 1000) conditions.push(In(messageIds.slice(offset, offset + 1000)));
+		let latest: MiChatMessage | null = null;
+		for (const id of conditions) {
+			const message = await this.chatMessagesRepository.findOne({
 				where: {
 					...('senderId' in mark ? { fromUserId: mark.senderId, toUserId: mark.readerId } : { toRoomId: mark.roomId, fromUserId: Not(mark.readerId) }),
-					id: MoreThanOrEqual(first),
+					id,
 					deletedAt: IsNull(),
 					fromUser: { isSuspended: false },
 				},
 				order: { id: 'DESC' },
 			});
+			if (message != null && (latest == null || message.id > latest.id)) latest = message;
+		}
+		return latest;
+	}
+
+	private async isConversationUnread(mark: UnreadMark): Promise<boolean> {
+		const snapshot = await this.snapshotUnread(mark);
+		if (snapshot[0] === '') return false;
+		if (snapshot[1] !== '') return await this.remainingUnreadMessage(mark, snapshot) != null;
+		// 레거시 표식은 저장하지 않았던 읽음 경계를 만들어 내지 않는다.
+		return this.chatMessagesRepository.existsBy('senderId' in mark ? [
+			{ fromUserId: mark.senderId, toUserId: mark.readerId, deletedAt: IsNull(), fromUser: { isSuspended: false } },
+			{ fromUserId: mark.readerId, toUserId: mark.senderId, deletedAt: IsNull(), fromUser: { isSuspended: false } },
+		] : { toRoomId: mark.roomId, deletedAt: IsNull(), fromUser: { isSuspended: false } });
+	}
+
+	private async reconcileUnreadMarks(marks: UnreadMark[]): Promise<void> {
+		for (const mark of marks) {
+			const key = this.unreadKey(mark);
+			const snapshot = await this.snapshotUnread(mark);
+			const [marker, first, revision] = snapshot;
+			if (marker === '' || first === '') continue;
+			// 과거 읽음 정보가 없는 표식은 명시적 읽기만 정리한다. 뮤트·철회는 읽기가 아니다.
+
+			const remaining = await this.remainingUnreadMessage(mark, snapshot);
 			if (remaining?.id === marker) continue;
 			// DB를 읽는 동안 새 수신이나 읽음이 있었다면 그 상태를 보존한다.
-			const result = await this.redisClient.eval(RECONCILE_CHAT_UNREAD, 3, key, `${key}:first`, `newChatMessagesExists:${mark.readerId}`,
-				marker, first, remaining?.id ?? '', this.unreadConversation(mark));
+			const result = await this.redisClient.eval(RECONCILE_CHAT_UNREAD, 6, key, `${key}:first`, `newChatMessagesExists:${mark.readerId}`, `${key}:revision`, `${key}:messages`, `${key}:previous`,
+				marker, first, revision, remaining?.id ?? '', this.unreadConversation(mark), randomUUID());
 			if (result === 0) continue;
 			if (await this.hasUnreadMessages(mark.readerId)) {
 				if (result === 1) {
@@ -753,19 +821,32 @@ export class ChatService {
 		]);
 	}
 
-	private async clearUnreadMarksOfHiddenRoomsFrom(authorId: MiUser['id']): Promise<void> {
+	private async unreadMarksOfRoomsFrom(authorId: MiUser['id']): Promise<UnreadMark[]> {
+		const marks: UnreadMark[] = [];
 		const messages = await this.chatMessagesRepository.createQueryBuilder('message')
 			.select('DISTINCT message.toRoomId', 'roomId')
 			.where('message.fromUserId = :authorId', { authorId })
 			.andWhere('message.toRoomId IS NOT NULL')
 			.getRawMany<{ roomId: MiChatRoom['id'] }>();
 		for (const { roomId } of messages) {
-			if (roomId == null || await this.hasVisibleRoomMessages([roomId])) continue;
+			if (roomId == null) continue;
 			const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
 			if (room == null) continue;
 			const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId });
-			await this.clearUnreadMarks([...memberships.map(member => member.userId), room.ownerId].map(readerId => ({ readerId, roomId })));
+			marks.push(...[...memberships.map(member => member.userId), room.ownerId].map(readerId => ({ readerId, roomId })));
 		}
+		return marks;
+	}
+
+	private async clearUnreadMarksOfHiddenRoomsFrom(authorId: MiUser['id']): Promise<void> {
+		await this.reconcileUnreadMarks(await this.unreadMarksOfRoomsFrom(authorId));
+	}
+
+	@bindThis
+	public async deleteMessagesFromUser(authorId: MiUser['id']): Promise<void> {
+		const marks = await this.unreadMarksOfRoomsFrom(authorId);
+		await this.chatMessagesRepository.delete({ fromUserId: authorId });
+		await this.reconcileUnreadMarks(marks);
 	}
 
 	/** For an account whose direct messages are going out of sight: suspended, or being deleted. */
@@ -1004,44 +1085,12 @@ export class ChatService {
 
 	@bindThis
 	public async getUserReadStateMap(userId: MiUser['id'], otherIds: MiUser['id'][]) {
-		const readStateMap: Record<MiUser['id'], boolean> = {};
-
-		const redisPipeline = this.redisClient.pipeline();
-
-		for (const otherId of otherIds) {
-			redisPipeline.get(`newUserChatMessageExists:${userId}:${otherId}`);
-		}
-
-		const markers = await redisPipeline.exec();
-		if (markers == null) throw new Error('redis error');
-
-		for (let i = 0; i < otherIds.length; i++) {
-			const marker = markers[i][1];
-			readStateMap[otherIds[i]] = marker == null;
-		}
-
-		return readStateMap;
+		return Object.fromEntries(await Promise.all(otherIds.map(async senderId => [senderId, !(await this.isConversationUnread({ readerId: userId, senderId }))])));
 	}
 
 	@bindThis
 	public async getRoomReadStateMap(userId: MiUser['id'], roomIds: MiChatRoom['id'][]) {
-		const readStateMap: Record<MiChatRoom['id'], boolean> = {};
-
-		const redisPipeline = this.redisClient.pipeline();
-
-		for (const roomId of roomIds) {
-			redisPipeline.get(`newRoomChatMessageExists:${userId}:${roomId}`);
-		}
-
-		const markers = await redisPipeline.exec();
-		if (markers == null) throw new Error('redis error');
-
-		for (let i = 0; i < roomIds.length; i++) {
-			const marker = markers[i][1];
-			readStateMap[roomIds[i]] = marker == null;
-		}
-
-		return readStateMap;
+		return Object.fromEntries(await Promise.all(roomIds.map(async roomId => [roomId, !(await this.isConversationUnread({ readerId: userId, roomId }))])));
 	}
 
 	/**
@@ -1057,7 +1106,7 @@ export class ChatService {
 		const idsOf = (kind: 'user' | 'room') => conversations.filter(conversation => conversation.startsWith(`${kind}:`)).map(conversation => conversation.slice(kind.length + 1));
 
 		const roomIds = idsOf('room');
-		if (roomIds.length > 0 && await this.hasVisibleRoomMessages(roomIds)) return true;
+		for (const roomId of roomIds) if (await this.isConversationUnread({ readerId: userId, roomId })) return true;
 
 		const senderIds = idsOf('user');
 		if (senderIds.length === 0) return false;
@@ -1066,14 +1115,8 @@ export class ChatService {
 		const shownIds = senderIds.filter(senderId => !mutings.some(muting => muting.muteeId === senderId));
 		if (shownIds.length === 0) return false;
 
-		return await this.chatMessagesRepository.existsBy([
-			{ fromUserId: In(shownIds), toUserId: userId, deletedAt: IsNull(), fromUser: { isSuspended: false } },
-			{ fromUserId: userId, toUserId: In(shownIds), deletedAt: IsNull(), fromUser: { isSuspended: false } },
-		]);
-	}
-
-	private hasVisibleRoomMessages(roomIds: MiChatRoom['id'][]): Promise<boolean> {
-		return this.chatMessagesRepository.existsBy({ toRoomId: In(roomIds), deletedAt: IsNull(), fromUser: { isSuspended: false } });
+		for (const senderId of shownIds) if (await this.isConversationUnread({ readerId: userId, senderId })) return true;
+		return false;
 	}
 
 	/**
@@ -1151,8 +1194,8 @@ export class ChatService {
 	public async deleteRoomsOwnedBy(ownerId: MiUser['id']): Promise<void> {
 		const rooms = await this.chatRoomsRepository.findBy({ ownerId });
 		for (const room of rooms) {
-			// 계정 삭제의 연합 동작은 기존 Delete에 맡기고, 참가자의 표식과 열린 방만 정리한다.
-			await this.deleteRoom(room, undefined, { federate: false });
+			// 팔로우하지 않는 원격 참가자에게도 기존 그룹 Delete를 보낸다.
+			await this.deleteRoom(room);
 		}
 	}
 

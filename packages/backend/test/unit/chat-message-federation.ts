@@ -380,6 +380,7 @@ describe('ChatService chat federation delivery', () => {
 				findOneBy: vi.fn(async ({ id }: { id: string }) => users.get(id) ?? null),
 				findOneByOrFail: vi.fn(async ({ id }: { id: string }) => users.get(id)),
 				findBy: vi.fn(async ({ id }: { id: { value: string[] } }) => (id.value ?? []).map(value => users.get(value)).filter(Boolean)),
+			existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => users.has(id) && ((users.get(id) as { isSuspended?: boolean }).isSuspended ?? false) === isSuspended,
 			},
 			userEntityService: {
 				isLocalUser: (user: { host: string | null }) => user.host == null,
@@ -408,7 +409,7 @@ describe('ChatService chat federation delivery', () => {
 			userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
 		}) as ChatService;
 
-		return { service, alice, bob, carol, directMessage, roomMessage, roomDeleteMessage, room, queueService, apRendererService, globalEventService, redisClient };
+		return { service, messages, alice, bob, carol, directMessage, roomMessage, roomDeleteMessage, room, queueService, apRendererService, globalEventService, redisClient };
 	}
 
 	test('delivers Update to the remote 1:1 counterpart', async () => {
@@ -1097,10 +1098,15 @@ describe('ChatService chat federation delivery', () => {
 			});
 			Object.assign((f.service as never as { redisClient: object }).redisClient, { pipeline: () => pipeline });
 			Object.assign((f.service as never as { chatMessagesRepository: object }).chatMessagesRepository, {
-				insertOne: vi.fn(async (message: object) => message),
+				insertOne: vi.fn(async (message: object) => {
+					const row = { ...f.roomMessage, ...message };
+					f.messages.set(row.id, row);
+					return row;
+				}),
 			});
 			Object.assign((f.service as never as { chatRoomMembershipsRepository: object }).chatRoomMembershipsRepository, {
 				findBy: vi.fn(async () => ['alice', 'bob', 'carol', 'dave', 'erin'].filter(id => id !== ownerId).map(userId => ({ roomId: 'r1', userId, isMuted: false }))),
+				findOneBy: async ({ userId }: { userId: string }) => userId !== ownerId && users.has(userId) ? { roomId: 'r1', userId, isMuted: false } : null,
 			});
 			Object.assign((f.service as never as { usersRepository: object }).usersRepository, {
 				findOneBy: vi.fn(async ({ id }: { id: string }) => users.get(id) ?? null),
@@ -1112,6 +1118,7 @@ describe('ChatService chat federation delivery', () => {
 				chatEntityService: { packMessageLiteForRoom: vi.fn(async (message: object) => message) },
 			});
 			const room = { id: 'r1', ownerId, isArchived: false, uri: null };
+			Object.assign((f.service as unknown as { chatRoomsRepository: object }).chatRoomsRepository, { findOneBy: async () => room });
 			return { ...f, room, dave, erin, renderChatRoomRelay };
 		}
 
@@ -2065,10 +2072,10 @@ describe('unread chat notification', () => {
 		const publishMainStream = vi.fn();
 		const pushNotification = vi.fn();
 		const packMessageDetailed = vi.fn(async (message: unknown) => message);
-		const pipeline = { set: () => pipeline, sadd: () => pipeline, exec: async () => [] };
+		let stored: Record<string, unknown> | null = null;
 		const service = Object.assign(Object.create(ChatService.prototype), {
 			config: { url: 'https://local.test' },
-			usersRepository: { existsBy: async () => false },
+			usersRepository: { existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => ['alice', 'bob'].includes(id) && !isSuspended },
 			chatApprovalsRepository: {
 				createQueryBuilder: () => ({
 					where() { return this; }, orWhere() { return this; }, take() { return this; },
@@ -2076,8 +2083,8 @@ describe('unread chat notification', () => {
 				}),
 			},
 			chatMessagesRepository: {
-				insertOne: async (message: unknown) => message,
-				findOneBy: async () => current(),
+				insertOne: async (message: Record<string, unknown>) => (stored = message),
+				findOneBy: async () => stored,
 			},
 			roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 			userBlockingService: { checkBlocked: async () => false },
@@ -2089,13 +2096,13 @@ describe('unread chat notification', () => {
 			},
 			globalEventService: { publishChatUserStream: vi.fn(), publishMainStream },
 			pushNotificationService: { pushNotification },
-			redisClient: { ...memoryRedis(), pipeline: () => pipeline, get: async () => 'm1', sismember: async () => 1 },
+			redisClient: memoryRedis(),
 			mutingsRepository: { existsBy: async () => false },
 		});
 		const send = () => service.createMessageToUser(
 			{ id: 'bob', host: 'remote.test' }, { id: 'alice', host: null, chatScope: 'everyone' }, { text: 'secret', uri: 'https://remote.test/chat/messages/m1' },
 		);
-		return { send, publishMainStream, pushNotification, packMessageDetailed };
+		return { send, publishMainStream, pushNotification, packMessageDetailed, refreshStored: () => { stored = { ...stored, ...current() }; } };
 	}
 
 	test('does not push the text of a message deleted before the notification fires', async () => {
@@ -2103,6 +2110,7 @@ describe('unread chat notification', () => {
 		const f = createNotifyingService(() => ({ id: 'm1', text: null, deletedAt: new Date() }));
 
 		await f.send();
+		f.refreshStored();
 		await vi.advanceTimersByTimeAsync(3000);
 
 		expect(f.publishMainStream).not.toHaveBeenCalled();
@@ -2115,9 +2123,10 @@ describe('unread chat notification', () => {
 		const f = createNotifyingService(() => edited);
 
 		await f.send();
+		f.refreshStored();
 		await vi.advanceTimersByTimeAsync(3000);
 
-		expect(f.pushNotification).toHaveBeenCalledWith('alice', 'newChatMessage', edited);
+		expect(f.pushNotification).toHaveBeenCalledWith('alice', 'newChatMessage', expect.objectContaining(edited));
 	});
 });
 

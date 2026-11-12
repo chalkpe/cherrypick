@@ -49,12 +49,18 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 	const evaluate = async (_script: string, numberOfKeys: number, ...values: string[]) => {
 		const keys = values.slice(0, numberOfKeys);
 		const args = values.slice(numberOfKeys);
+		if (_script.startsWith('-- snapshot chat unread')) {
+			return [strings.get(keys[0]) ?? '', strings.get(keys[1]) ?? '', strings.get(keys[2]) ?? '', [...(sets.get(keys[3]) ?? [])], strings.get(keys[4]) ?? ''];
+		}
 		if (keys[0].startsWith('newChatMessagesExists:')) {
 			for (const conversation of sets.get(keys[0]) ?? []) {
 				const [kind, id] = conversation.split(':');
 				const key = `${kind === 'user' ? args[0] : args[1]}${id}`;
 				commands.del(key);
 				commands.del(`${key}:first`);
+				commands.del(`${key}:revision`);
+				commands.del(`${key}:messages`);
+				commands.del(`${key}:previous`);
 			}
 			for (const key of keys) commands.del(key);
 			return 1;
@@ -62,34 +68,49 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 		if (args.length === 1) {
 			commands.del(keys[0]);
 			commands.del(keys[1]);
+			commands.del(keys[3]);
+			commands.del(keys[4]);
+			commands.del(keys[5]);
 			return commands.srem(keys[2], args[0]) as number;
 		}
-		if (args.length === 2) {
+		if (args.length === 3) {
 			const active = sets.get(keys[2])?.has(args[1]);
+			if (!active) {
+				commands.del(keys[4]);
+				commands.del(keys[5]);
+			}
 			const latest = active ? strings.get(keys[0]) : undefined;
 			const first = active ? strings.get(keys[1]) : undefined;
+			if (first != null && latest != null && !strings.has(keys[3])) commands.set(keys[5], `${first}:${latest}`);
 			if (!active || first != null) {
 				commands.set(keys[1], first != null && first < args[0] ? first : args[0]);
 			}
 			commands.set(keys[0], latest != null && latest > args[0] ? latest : args[0]);
 			commands.sadd(keys[2], args[1]);
+			commands.sadd(keys[4], args[0]);
+			commands.set(keys[3], args[2]);
 			return 1;
 		}
-		if ((strings.get(keys[0]) ?? '') !== args[0] || (strings.get(keys[1]) ?? '') !== args[1]) return 0;
-		if (args[2] !== '') {
-			commands.set(keys[0], args[2]);
+		if ((strings.get(keys[0]) ?? '') !== args[0] || (strings.get(keys[1]) ?? '') !== args[1] || (strings.get(keys[3]) ?? '') !== args[2]) return 0;
+		if (args[3] !== '') {
+			if (args[2] === '') commands.set(keys[5], `${args[1]}:${args[0]}`);
+			commands.set(keys[0], args[3]);
+			commands.set(keys[3], args[5]);
 			return 1;
 		}
 		commands.del(keys[0]);
 		commands.del(keys[1]);
-		commands.srem(keys[2], args[3]);
+		commands.del(keys[3]);
+		commands.del(keys[4]);
+		commands.del(keys[5]);
+		commands.srem(keys[2], args[4]);
 		return 2;
 	};
 	const client: Record<string, unknown> = {
 		pipeline,
 		multi: pipeline,
 		options: { keyPrefix: '' },
-		scan: async (_cursor: string, _match: string, pattern: string) => ['0', [...strings.keys()].filter(key => key.startsWith(pattern.slice(0, -1)))],
+		scan: async (_cursor: string, _match: string, pattern: string) => ['0', [...new Set([...strings.keys(), ...sets.keys()])].filter(key => key.startsWith(pattern.slice(0, -1)))],
 	};
 	for (const name of names) client[name] = async (...args: string[]) => run(name, args);
 	return { ...client, eval: evaluate } as {

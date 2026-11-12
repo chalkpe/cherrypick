@@ -49,6 +49,7 @@ describe('delayed chat notifications after suspension', () => {
 		const chatService = Object.assign(Object.create(ChatService.prototype), {
 			config: { url: 'https://local.test' }, usersRepository, userEntityService,
 			idService: { gen: () => 'message1' },
+			chatRoomsRepository: { findOneBy: async ({ id }: { id: string }) => id === room.id ? room : null },
 			chatRoomMembershipsRepository: {
 				findBy: async () => [{ userId: reader.id, isMuted: readerMuted }],
 				findOneBy: async ({ userId }: { userId: string }) => readerStillMember && userId === reader.id ? { userId, isMuted: readerMuted } : null,
