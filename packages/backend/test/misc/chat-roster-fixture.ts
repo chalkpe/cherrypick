@@ -4,6 +4,7 @@
  */
 
 import { vi } from 'vitest';
+import { FindOperator } from 'typeorm';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
@@ -33,6 +34,7 @@ type Row = { id: string; [key: string]: unknown };
 
 function matches(row: Row, where: Record<string, unknown>) {
 	return Object.entries(where).every(([key, value]) => {
+		if (value instanceof FindOperator && value.type === 'isNull') return row[key] == null;
 		if (value != null && typeof value === 'object' && '_value' in value) return ((value as { _value: unknown[] })._value).includes(row[key]);
 		return row[key] === value;
 	});
@@ -45,6 +47,7 @@ function fakeRepository(rows: Row[] = []) {
 		findOne: async ({ where }: { where: Record<string, unknown> }) => rows.find(row => matches(row, where)) ?? null,
 		findBy: async (where: Record<string, unknown>) => rows.filter(row => matches(row, where)),
 		countBy: async (where: Record<string, unknown>) => rows.filter(row => matches(row, where)).length,
+		existsBy: async (where: Record<string, unknown> | Record<string, unknown>[]) => [where].flat().some(condition => rows.some(row => matches(row, condition))),
 		insertOne: async (row: Row) => {
 			if (rows.some(existing => existing.roomId === row.roomId && existing.userId === row.userId && row.userId != null)) throw Object.assign(new Error('duplicate'), { code: '23505' });
 			rows.push(row);
@@ -146,6 +149,8 @@ function fakeRedis() {
 			return had ? 1 : 0;
 		},
 		scard: async (key: string) => sets.get(key)?.size ?? 0,
+		sismember: async (key: string, value: string) => Number(sets.get(key)?.has(value) ?? false),
+		smembers: async (key: string) => [...(sets.get(key) ?? [])],
 		sadd: async (key: string, value: string) => {
 			const set = sets.get(key) ?? new Set<string>();
 			set.add(value);
