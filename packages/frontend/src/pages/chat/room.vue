@@ -557,7 +557,7 @@ function onMessage(message: Misskey.entities.ChatMessageLite) {
 	// 読み直しのほうが先に届けていることがある
 	if (messages.value.some(m => m.id === message.id)) return;
 
-	sound.playMisskeySfx('chatMessage');
+	if (!('shouldNotify' in message) || message.shouldNotify !== false) sound.playMisskeySfx('chatMessage');
 
 	// 読み直しで手元にもっと新しいものが入っていても、順番を崩さない
 	const index = messages.value.findIndex(m => m.id < message.id);
@@ -614,11 +614,12 @@ function onUnreact(ctx: Parameters<Misskey.Channels['chatUser']['events']['unrea
 	}
 }
 
-function onUpdated(ctx: Parameters<Misskey.Channels['chatUser']['events']['updated']>[0]) {
+function onUpdated(ctx: Parameters<Misskey.Channels['chatUser']['events']['updated']>[0] & { shouldNotify?: boolean }) {
 	noteChangeDuringRead();
 	const message = messages.value.find(m => m.id === ctx.messageId);
 	if (message && !message.deletedAt) {
 		if (message.editedAt && Date.parse(ctx.editedAt) <= Date.parse(message.editedAt)) return;
+		if (ctx.shouldNotify === true) sound.playMisskeySfx('chatMessage');
 		message.text = ctx.text;
 		message.editedAt = ctx.editedAt;
 		if (ctx.emojis != null) message.emojis = ctx.emojis;

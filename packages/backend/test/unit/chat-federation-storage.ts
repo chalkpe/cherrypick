@@ -9,6 +9,8 @@ import type * as Redis from 'ioredis';
 import type { TestingModule } from '@nestjs/testing';
 import type { ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomRosterStatesRepository, ChatRoomsRepository, MiChatRoom, MiUser, UsersRepository } from '@/models/_.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
+import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatService, ChatTooManyReactionsError } from '@/core/ChatService.js';
@@ -44,6 +46,7 @@ describe('chat federation storage', () => {
 			config: { url: 'https://local.test' },
 			db: app.get(DI.db),
 			chatRoomChannelService: app.get(ChatRoomChannelService),
+			chatRoomNotificationService: app.get(ChatRoomNotificationService),
 			usersRepository,
 			chatMessagesRepository,
 			chatRoomsRepository,
@@ -81,7 +84,7 @@ describe('chat federation storage', () => {
 	}
 
 	beforeAll(async () => {
-		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService, ChatRoomChannelService] }).compile();
+		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService, ChatRoomChannelService, ChatRoomNotificationService, GlobalEventService] }).compile();
 		await app.init();
 		idService = app.get(IdService);
 		usersRepository = app.get(DI.usersRepository);

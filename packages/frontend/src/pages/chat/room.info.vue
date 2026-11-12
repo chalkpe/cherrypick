@@ -27,14 +27,20 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 	<MkButton v-if="isOwner || ($i.isAdmin || $i.isModerator)" danger @click="del">{{ i18n.ts._chat.deleteRoom }}</MkButton>
 
-	<MkSwitch v-if="!isOwner" :modelValue="isMuted" @update:modelValue="setMuted">
-		<template #label>{{ i18n.ts._chat.muteThisRoom }}</template>
-	</MkSwitch>
+	<MkSelect :modelValue="notificationLevel" :items="groupNotificationItems" :disabled="savingNotification" @update:modelValue="setNotificationLevel">
+		<template #label>{{ i18n.ts.notificationSetting }}</template>
+	</MkSelect>
+	<template v-if="room.hasChannels">
+		<MkSelect v-for="channel in channels" :key="channel.id" :modelValue="channelLevels[channel.id] ?? 'inherit'" :items="channelNotificationItems" :disabled="savingNotification" @update:modelValue="level => setChannelNotification(channel.id, level)">
+			<template #label>#{{ channel.name }}</template>
+		</MkSelect>
+	</template>
+	<MkButton @click="readAll"><i class="ti ti-checks"></i> {{ i18n.ts._chat.readAllRoom }}</MkButton>
 </div>
 </template>
 
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
@@ -42,10 +48,12 @@ import * as os from '@/os.js';
 import { ensureSignin } from '@/i.js';
 import MkInput from '@/components/MkInput.vue';
 import MkTextarea from '@/components/MkTextarea.vue';
-import MkSwitch from '@/components/MkSwitch.vue';
+import MkSelect from '@/components/MkSelect.vue';
+import type { MkSelectItem } from '@/components/MkSelect.vue';
 import MkKeyValue from '@/components/MkKeyValue.vue';
 import { useRouter } from '@/router.js';
-import { chatMuteErrors, chatRoomDeleteErrors, chatRoomUpdateErrors } from './chat-errors.js';
+import { chatNotificationErrors, chatRoomDeleteErrors, chatRoomUpdateErrors } from './chat-errors.js';
+import { misskeyApi } from '@/utility/misskey-api.js';
 
 const router = useRouter();
 const $i = ensureSignin();
@@ -120,19 +128,64 @@ async function del() {
 	router.push('/chat');
 }
 
-const isMuted = ref(props.room.isMuted ?? false);
+type NotificationLevel = 'all' | 'mentions' | 'none';
+const groupNotificationItems = [
+	{ label: i18n.ts._chat.notificationAll, value: 'all' },
+	{ label: i18n.ts._chat.notificationMentions, value: 'mentions' },
+	{ label: i18n.ts._chat.notificationNone, value: 'none' },
+] satisfies MkSelectItem<NotificationLevel>[];
+const channelNotificationItems = [
+	{ label: i18n.ts._chat.notificationInherit, value: 'inherit' },
+	...groupNotificationItems,
+] satisfies MkSelectItem<NotificationLevel | 'inherit'>[];
+const notificationLevel = ref<NotificationLevel>(props.room.notificationLevel ?? (props.room.isMuted ? 'none' : 'all'));
+const savingNotification = ref(false);
+const channels = ref<Misskey.entities.ChatRoomChannel[]>([]);
+const channelLevels = ref<Record<string, NotificationLevel | 'inherit'>>({});
 
-async function setMuted(mute: boolean) {
-	isMuted.value = mute;
+onMounted(async () => {
+	if (!props.room.hasChannels) return;
 	try {
-		await os.apiWithDialog('chat/rooms/mute', {
-			roomId: props.room.id,
-			mute,
-		}, undefined, chatMuteErrors);
+		const [listed, settings] = await Promise.all([
+			misskeyApi('chat/rooms/channels/list', { roomId: props.room.id }),
+			misskeyApi('chat/rooms/notifications', { roomId: props.room.id }),
+		]);
+		channels.value = listed;
+		channelLevels.value = Object.fromEntries(settings.channelOverrides.map(setting => [setting.channelId, setting.level]));
 	} catch {
-		// apiWithDialog がエラーを表示済み。変わっていないのだから、スイッチも戻す
-		isMuted.value = !mute;
+		await os.alert({ type: 'error', text: i18n.ts._chat.roomUnavailable });
 	}
+});
+
+async function setNotificationLevel(level: NotificationLevel) {
+	const previous = notificationLevel.value;
+	notificationLevel.value = level;
+	savingNotification.value = true;
+	try {
+		await os.apiWithDialog('chat/rooms/notifications', { roomId: props.room.id, level }, undefined, chatNotificationErrors);
+		emit('updated', { ...props.room, notificationLevel: level, isMuted: level === 'none' });
+	} catch {
+		notificationLevel.value = previous;
+	} finally {
+		savingNotification.value = false;
+	}
+}
+
+async function setChannelNotification(channelId: string, level: NotificationLevel | 'inherit') {
+	const previous = channelLevels.value[channelId];
+	channelLevels.value[channelId] = level;
+	savingNotification.value = true;
+	try {
+		await os.apiWithDialog('chat/rooms/notifications', { roomId: props.room.id, channelId, level }, undefined, chatNotificationErrors);
+	} catch {
+		channelLevels.value[channelId] = previous;
+	} finally {
+		savingNotification.value = false;
+	}
+}
+
+async function readAll() {
+	await os.apiWithDialog('chat/rooms/read', { roomId: props.room.id, readAll: true }, undefined, chatNotificationErrors);
 }
 </script>
 

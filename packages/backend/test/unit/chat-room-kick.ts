@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { notificationServiceOver } from '../misc/chat-room-notification-fixture.js';
 import { describe, expect, test, vi } from 'vitest';
 import { ChatService } from '@/core/ChatService.js';
 import KickEndpoint from '@/server/api/endpoints/chat/rooms/kick.js';
@@ -44,6 +45,7 @@ function fixture() {
 		redisClient: { pipeline: () => pipeline },
 		queueService, liveKitService, globalEventService,
 	});
+	Object.assign(service, { chatRoomNotificationService: notificationServiceOver(service as ChatService) });
 	return { service, members, pipeline, queueService, liveKitService, globalEventService };
 }
 

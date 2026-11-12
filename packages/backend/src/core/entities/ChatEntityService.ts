@@ -13,6 +13,7 @@ import type { } from '@/models/Blocking.js';
 import { bindThis } from '@/decorators.js';
 import { parseChatDiceResult } from '@/core/chat-dice.js';
 import { IdService } from '@/core/IdService.js';
+import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
 import { UserEntityService } from './UserEntityService.js';
 import { DriveFileEntityService } from './DriveFileEntityService.js';
@@ -39,6 +40,7 @@ export class ChatEntityService {
 		private driveFileEntityService: DriveFileEntityService,
 		private customEmojiService: CustomEmojiService,
 		private idService: IdService,
+		private chatRoomNotificationService: ChatRoomNotificationService,
 
 		@Inject(DI.chatRoomChannelsRepository)
 		private chatRoomChannelsRepository: ChatRoomChannelsRepository,
@@ -335,7 +337,8 @@ export class ChatEntityService {
 			description: room.description,
 			ownerId: room.ownerId,
 			owner: options?._hint_?.packedOwners.get(room.ownerId) ?? (await this.userEntityService.pack(room.owner ?? room.ownerId, me)),
-			isMuted: membership != null ? membership.isMuted : false,
+			isMuted: me != null ? (await this.chatRoomNotificationService.settings(me.id, room.id)).notificationLevel === 'none' : false,
+			...(me != null && (me.id === room.ownerId || membership != null) ? { notificationLevel: (await this.chatRoomNotificationService.settings(me.id, room.id)).notificationLevel } : {}),
 			invitationExists: invitation != null,
 			isArchived: room.isArchived,
 			hasChannels: room.hasChannels ?? false,

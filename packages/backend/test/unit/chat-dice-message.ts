@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { notificationServiceOver } from '../misc/chat-room-notification-fixture.js';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import jsonld from 'jsonld';
 import { ChatService, ChatMessageAccessError } from '@/core/ChatService.js';
@@ -73,6 +74,7 @@ function fixture() {
 	};
 	const service = Object.create(ChatService.prototype) as ChatService;
 	for (const [key, value] of Object.entries(dependencies)) Object.defineProperty(service, key, { value, writable: true, configurable: true });
+	Object.assign(service, { chatRoomNotificationService: notificationServiceOver(service) });
 	const send = (text: string, group = false, extra: object = {}) => group
 		? new CreateToRoom({} as never, service).exec({ toRoomId: room.id, text, ...extra }, sender as never, null, null)
 		: new CreateToUser({ getUser: async () => recipient } as never, service).exec({ toUserId: recipient.id, text, ...extra }, sender as never, null, null);

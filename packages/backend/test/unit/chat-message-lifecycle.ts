@@ -20,6 +20,7 @@ function createService() {
 		{ populateEmojis: vi.fn().mockResolvedValue([]) } as never,
 		{ parse: vi.fn().mockReturnValue({ date: new Date('2026-11-02T00:00:00.000Z') }) } as never,
 		{} as never,
+		{} as never,
 	);
 }
 

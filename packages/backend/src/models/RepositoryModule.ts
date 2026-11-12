@@ -86,6 +86,8 @@ import {
 	MiWebhook,
 	MiChatMessage,
 	MiChatRoomChannel,
+	MiChatRoomUserSettings,
+	MiChatRoomUnread,
 	MiChatRoom,
 	MiChatRoomMembership,
 	MiChatRoomRosterState,
@@ -540,6 +542,18 @@ const $chatMessagesRepository: Provider = {
 	inject: [DI.db],
 };
 
+const $chatRoomUserSettingsRepository: Provider = {
+	provide: DI.chatRoomUserSettingsRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiChatRoomUserSettings).extend(miRepository as MiRepository<MiChatRoomUserSettings>),
+	inject: [DI.db],
+};
+
+const $chatRoomUnreadsRepository: Provider = {
+	provide: DI.chatRoomUnreadsRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiChatRoomUnread).extend(miRepository as MiRepository<MiChatRoomUnread>),
+	inject: [DI.db],
+};
+
 const $chatRoomChannelsRepository: Provider = {
 	provide: DI.chatRoomChannelsRepository,
 	useFactory: (db: DataSource) => db.getRepository(MiChatRoomChannel).extend(miRepository as MiRepository<MiChatRoomChannel>),
@@ -678,6 +692,8 @@ const $noteHistoryRepository: Provider = {
 		$userMemosRepository,
 		$chatMessagesRepository,
 		$chatRoomChannelsRepository,
+		$chatRoomUserSettingsRepository,
+		$chatRoomUnreadsRepository,
 		$chatRoomsRepository,
 		$chatRoomMembershipsRepository,
 		$chatRoomRosterStatesRepository,
@@ -764,6 +780,8 @@ const $noteHistoryRepository: Provider = {
 		$userMemosRepository,
 		$chatMessagesRepository,
 		$chatRoomChannelsRepository,
+		$chatRoomUserSettingsRepository,
+		$chatRoomUnreadsRepository,
 		$chatRoomsRepository,
 		$chatRoomMembershipsRepository,
 		$chatRoomRosterStatesRepository,

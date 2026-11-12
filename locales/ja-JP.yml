@@ -1696,6 +1696,11 @@ _order:
   oldest: "古い順"
 
 _chat:
+  notificationAll: "すべて受け取る"
+  notificationMentions: "メンションのみ"
+  notificationNone: "通知しない"
+  notificationInherit: "グループの設定に従う"
+  readAllRoom: "グループ全体を既読にする"
   diceTotal: "合計"
   diceDetails: "ロールの内訳"
   diceInvalid: "ダイスの式を読み取れませんでした。記法を確認して修正してください。"

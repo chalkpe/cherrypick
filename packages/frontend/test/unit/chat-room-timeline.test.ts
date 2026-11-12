@@ -153,6 +153,7 @@ import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { chatLeaveErrors } from '@/pages/chat/chat-errors.js';
 import { installFakeResizeObserver, resizeObserved } from './fake-resize-observer.js';
+import { playMisskeySfx } from '@/utility/sound.js';
 
 const apiMock = vi.mocked(misskeyApi).getMockImplementation()!;
 
@@ -201,6 +202,7 @@ const bubbles = (container: Element) => [...container.querySelectorAll('[data-te
 }));
 
 beforeEach(() => {
+	vi.mocked(playMisskeySfx).mockClear();
 	mocks.channel = new mocks.FakeChannel();
 	mocks.renders.clear();
 	mocks.roomIsArchived = false;
@@ -230,6 +232,39 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+});
+
+describe('수신자별 그룹 알림 소리', () => {
+	test.each([false, true])('shouldNotify=%s인 새 메시지의 소리를 따른다', async shouldNotify => {
+		const { container } = await renderRoom();
+
+		mocks.channel.emit('message', { ...message('m4', 'alice', 3 * MINUTE), shouldNotify });
+		await flush();
+
+		expect(container.querySelector('[data-id="m4"]')).not.toBeNull();
+		expect(playMisskeySfx).toHaveBeenCalledTimes(shouldNotify ? 1 : 0);
+	});
+
+	test('일대일과 구버전 스트림의 기존 소리를 유지한다', async () => {
+		await renderRoom('user');
+
+		mocks.channel.emit('message', message('m4', 'alice', 3 * MINUTE));
+		await flush();
+
+		expect(playMisskeySfx).toHaveBeenCalledExactlyOnceWith('chatMessage');
+	});
+
+	test('수정으로 새로 멘션되면 소리를 내며 같은 수정 재수신은 조용하다', async () => {
+		await renderRoom();
+		const edited = { messageId: 'm3', text: '@me 멘션', editedAt: '2026-10-27T12:04:00.000Z', shouldNotify: true };
+
+		mocks.channel.emit('updated', edited);
+		await flush();
+		mocks.channel.emit('updated', edited);
+		await flush();
+
+		expect(playMisskeySfx).toHaveBeenCalledExactlyOnceWith('chatMessage');
+	});
 });
 
 describe('following the newest message', () => {

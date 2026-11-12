@@ -7,6 +7,7 @@ import { vi } from 'vitest';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
+import { notificationServiceOver } from './chat-room-notification-fixture.js';
 import { ChatService } from '@/core/ChatService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 
@@ -389,13 +390,15 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 
 	const db = {
 		transaction: async <T>(callback: (manager: unknown) => Promise<T>): Promise<T> => {
-			const table = (entity: { name: string }) => entity.name === 'MiChatRoom' ? rooms : entity.name === 'MiChatRoomInvitation' ? invitations : memberships;
+			const table = (entity: { name: string }) => entity.name === 'MiChatMessage' ? messages : entity.name === 'MiChatRoom' ? rooms : entity.name === 'MiChatRoomInvitation' ? invitations : entity.name === 'MiChatRoomUnread' || entity.name === 'MiChatRoomUserSettings' ? fakeRepository() : memberships;
 			return await callback({
-				findOne: (_entity: unknown, options: { where: Record<string, unknown> }) => rooms.findOneBy(options.where),
+				findOne: (entity: { name: string }, options: { where: Record<string, unknown> }) => table(entity).findOneBy(options.where),
+				findBy: (entity: { name: string }, where: Record<string, unknown>) => table(entity).findBy(where),
 				find: async (_entity: unknown, options: { where: Record<string, unknown> }) => (await memberships.findBy(options.where)).map(membership => ({ ...membership, user: users.get(membership.userId as string) ?? null })),
 				withRepository: (repository: unknown) => repository,
 				delete: (entity: { name: string }, where: Record<string, unknown>) => table(entity).delete(where),
 				findOneBy: (entity: { name: string }, where: Record<string, unknown>) => table(entity).findOneBy(where),
+				existsBy: async (entity: { name: string }, where: Record<string, unknown>) => await table(entity).findOneBy(where) != null,
 				update: (entity: { name: string }, where: string | Record<string, unknown>, patch: Record<string, unknown>) => table(entity).update(where, patch),
 				countBy: (entity: { name: string }, where: Record<string, unknown>) => table(entity).countBy(where),
 				insert: (entity: { name: string }, row: Row) => table(entity).insertOne(row),
@@ -428,6 +431,8 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 		chatRosterService,
 		hostPolicyService: { isRefusedRemoteHost: async (host: string) => (options.refusedHosts ?? []).includes(host) },
 	}) as ChatService;
+
+	Object.assign(chatService, { chatRoomNotificationService: notificationServiceOver(chatService) });
 
 	const signers: (string | null)[] = [];
 	const fetched = new Map(Object.entries(options.fetched ?? {}));

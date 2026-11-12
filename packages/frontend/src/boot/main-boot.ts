@@ -361,8 +361,15 @@ export async function mainBoot() {
 				});
 			});
 
-			main.on('newChatMessage', () => {
-				updateCurrentAccount({ hasUnreadChatMessages: true });
+			let chatUnreadVersion = 0;
+			main.on('chatUnread', ({ version, ...state }) => {
+				if (version <= chatUnreadVersion) return;
+				chatUnreadVersion = version;
+				updateCurrentAccount(state);
+			});
+
+			main.on('newChatMessage', message => {
+				if (message.toRoomId == null) updateCurrentAccount({ hasUnreadChatMessages: true, hasUnreadChatNotifications: true });
 				sound.playMisskeySfx('chatMessage');
 			});
 

@@ -84,7 +84,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			let messages;
 			try {
 				messages = await this.chatService.roomTimeline(room.id, ps.limit, sinceId, untilId, ps.includeDeleted, ps.channelId);
-				await this.chatService.readRoomChatMessage(me.id, room.id, ps.channelId);
+				if (messages.length && ps.untilId == null && ps.untilDate == null && await this.chatService.isRoomMember(room, me.id)) {
+					const newest = messages.reduce((latest, message) => BigInt(message.roomMessageSequence ?? '0') > BigInt(latest.roomMessageSequence ?? '0') ? message : latest);
+					await this.chatService.readRoomChatMessage(me.id, room.id, ps.channelId, newest.id);
+				}
 			} catch (err) {
 				if (err instanceof ChatChannelError) throw new ApiError(meta.errors[err.reason]);
 				throw err;

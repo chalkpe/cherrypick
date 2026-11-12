@@ -49,6 +49,9 @@ export class MiChatRoom {
 	@Column('boolean', { default: false })
 	public hasChannels: boolean;
 
+	@Column('bigint', { default: 0 })
+	public messageSequence: string;
+
 	@Column({ ...id(), nullable: true })
 	public legacyChannelId: MiChatRoomChannel['id'] | null;
 

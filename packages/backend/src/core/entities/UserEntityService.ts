@@ -618,6 +618,7 @@ export class UserEntityService implements OnModuleInit {
 				hasUnreadSpecifiedNotes: false, // 後方互換性のため
 				hasUnreadMentions: false, // 後方互換性のため
 				hasUnreadChatMessages: this.chatService.hasUnreadMessages(user.id),
+				hasUnreadChatNotifications: this.chatService.hasUnreadChatNotifications(user.id),
 				hasUnreadAnnouncement: unreadAnnouncements!.length > 0,
 				unreadAnnouncements,
 				hasUnreadAntenna: this.getHasUnreadAntenna(user.id),

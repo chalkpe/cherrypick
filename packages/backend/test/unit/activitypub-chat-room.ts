@@ -6,6 +6,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import { TwirpError } from 'livekit-server-sdk';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { notificationServiceOver } from '../misc/chat-room-notification-fixture.js';
 import { ChatService } from '@/core/ChatService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
@@ -268,6 +269,7 @@ function fixture(options: {
 		globalEventService,
 		liveKitService,
 	});
+	Object.assign(chatService, { chatRoomNotificationService: notificationServiceOver(chatService as ChatService) });
 	inbox.chatService.deleteRoom = chatService.deleteRoom;
 	inbox.chatService.removeRoomMember = chatService.removeRoomMember;
 	inbox.chatService.finishRoomMemberRemoval = chatService.finishRoomMemberRemoval;

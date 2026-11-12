@@ -1686,6 +1686,11 @@ _order:
   newest: "Newest First"
   oldest: "Oldest First"
 _chat:
+  notificationAll: "All messages"
+  notificationMentions: "Mentions only"
+  notificationNone: "Off"
+  notificationInherit: "Use group settings"
+  readAllRoom: "Mark the whole group as read"
   diceTotal: "Total"
   diceDetails: "Roll details"
   diceInvalid: "The dice notation could not be read. Check the syntax and edit your message."

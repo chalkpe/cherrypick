@@ -6,6 +6,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { describe, expect, test, vi } from 'vitest';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
+import { ChatService } from '@/core/ChatService.js';
 import { parseRemoteChatDate } from '@/core/activitypub/misc/chat-remote-date.js';
 import { ChatRoomRosterSyncProcessorService } from '@/queue/processors/ChatRoomRosterSyncProcessorService.js';
 import { StatusError } from '@/misc/status-error.js';
@@ -401,7 +402,7 @@ describe('applying the roster the owner publishes', () => {
 				findOneBy: async ({ id }: { id: string }) => users.get(id) ?? null,
 				findBy: async () => memberships.map(membership => users.get(membership.userId)).filter(user => user != null),
 			},
-			chatService: { finishRoomMemberRemoval: removeRoomMember },
+			chatService: { finishRoomMemberRemoval: removeRoomMember, updateRoom: ChatService.prototype.updateRoom },
 			chatRosterService: Object.assign(Object.create(ChatRosterService.prototype), {
 				chatRoomRosterStatesRepository: states.repository,
 			}),

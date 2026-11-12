@@ -35,17 +35,52 @@ function fixture() {
 	}) as ChatService;
 	Object.defineProperty(permissions, 'isRoomMember', { value: isMember });
 	const permission = vi.fn(permissions.hasPermissionToViewRoomTimeline.bind(permissions));
+	const shouldNotify = vi.fn(async () => false);
+	const read = vi.fn(async () => {});
 	const channel = new ChatRoomChannel({
 		id: 'channel-1',
 		connection: { user: { id: 'member' }, subscriber, sendMessageToWs: send },
 	} as unknown as ChannelRequest, rooms as unknown as ChatRoomsRepository, {
 		hasPermissionToViewRoomTimeline: permission,
+		shouldNotifyRoomMessage: shouldNotify,
+		readRoomChatMessage: read,
 		resolveRoomChannel: vi.fn(async (_room, channelId) => channelId ?? room.legacyChannelId),
 		findMessageById: vi.fn(async () => ({ toRoomChannelId: room.hasChannels ? 'other' : null })),
 	} as unknown as ChatService);
 	const publish = (data: unknown) => Promise.all(subscriber.listeners(stream).map(listener => listener(data)));
-	return { channel, room, rooms, permission, isMember, isModerator, subscriber, send, publish };
+	return { channel, room, rooms, permission, isMember, isModerator, subscriber, send, publish, shouldNotify, read };
 }
+
+describe('수신자별 알림과 읽음 경계', () => {
+	test.each([false, true])('메시지에 수신자의 소리 허용 %s를 전달한다', async allowed => {
+		const f = fixture();
+		f.shouldNotify.mockResolvedValue(allowed);
+		await f.channel.init({ roomId: 'r1' });
+
+		await f.publish({ type: 'message', body: { id: 'm1', toRoomId: 'r1', text: '본문' } });
+
+		expect(f.send).toHaveBeenCalledWith('channel', expect.objectContaining({ type: 'message', body: expect.objectContaining({ shouldNotify: allowed }) }));
+	});
+
+	test('읽음 요청은 실제로 받은 메시지 경계를 전달한다', async () => {
+		const f = fixture();
+		await f.channel.init({ roomId: 'r1' });
+
+		f.channel.onMessage('read', { id: 'seen' });
+
+		expect(f.read).toHaveBeenCalledWith('member', 'r1', undefined, 'seen');
+	});
+
+	test('개인 설정 조회 실패는 이벤트를 중단하지 않고 소리만 억제한다', async () => {
+		const f = fixture();
+		f.shouldNotify.mockRejectedValue(new Error('settings unavailable'));
+		await f.channel.init({ roomId: 'r1' });
+
+		await expect(f.publish({ type: 'message', body: { id: 'm1', toRoomId: 'r1', text: '본문' } })).resolves.toBeDefined();
+
+		expect(f.send).toHaveBeenCalledWith('channel', expect.objectContaining({ type: 'message', body: expect.objectContaining({ shouldNotify: false }) }));
+	});
+});
 
 describe('ChatRoomChannel access lifetime', () => {
 	test('a removed member receives one termination notice, then no room events', async () => {
@@ -306,7 +341,6 @@ describe('ChatRoomChannel access lifetime', () => {
 	});
 });
 
-
 describe('채널별 스트림', () => {
 	test('채널을 지정하지 않은 연결에 다른 채널 본문을 보내지 않는다', async () => {
 		const f = fixture();
@@ -331,7 +365,6 @@ describe('채널별 스트림', () => {
 		expect(JSON.stringify(f.send.mock.calls)).not.toContain('구버전 채널');
 	});
 });
-
 
 test('모드 갱신 통지를 놓친 연결도 새 채널 본문을 받지 않는다', async () => {
 	const f = fixture();

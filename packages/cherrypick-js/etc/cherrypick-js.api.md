@@ -733,6 +733,11 @@ export type Channels = {
             newChatMessage: (payload: ChatMessage) => void;
             chatRoomVoiceState: (payload: ChatRoomVoiceState) => void;
             chatRoomListChanged: () => void;
+            chatUnread: (payload: {
+                hasUnreadChatMessages: boolean;
+                hasUnreadChatNotifications: boolean;
+                version: number;
+            }) => void;
             readAllAnnouncements: () => void;
             myTokenRegenerated: () => void;
             signin: (payload: Signin) => void;
@@ -1020,6 +1025,7 @@ export type Channels = {
             message: (payload: ChatMessageLite) => void;
             updated: (payload: {
                 messageId: ChatMessageLite['id'];
+                shouldNotify?: boolean;
                 text: string;
                 editedAt: string;
                 channelRefs?: {
@@ -1379,16 +1385,31 @@ type ChatRoomsMembersResponse = operations['chat___rooms___members']['responses'
 type ChatRoomsMuteRequest = operations['chat___rooms___mute']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
+type ChatRoomsNotificationsRequest = operations['chat___rooms___notifications']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsNotificationsResponse = operations['chat___rooms___notifications']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type ChatRoomsOwnedRequest = operations['chat___rooms___owned']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
 type ChatRoomsOwnedResponse = operations['chat___rooms___owned']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type ChatRoomsReadRequest = operations['chat___rooms___read']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
 type ChatRoomsShowRequest = operations['chat___rooms___show']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
 type ChatRoomsShowResponse = operations['chat___rooms___show']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsUnreadRequest = operations['chat___rooms___unread']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsUnreadResponse = operations['chat___rooms___unread']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type ChatRoomsUpdateRequest = operations['chat___rooms___update']['requestBody']['content']['application/json'];
@@ -2068,10 +2089,15 @@ declare namespace entities {
         ChatRoomsMembersRequest,
         ChatRoomsMembersResponse,
         ChatRoomsMuteRequest,
+        ChatRoomsNotificationsRequest,
+        ChatRoomsNotificationsResponse,
         ChatRoomsOwnedRequest,
         ChatRoomsOwnedResponse,
+        ChatRoomsReadRequest,
         ChatRoomsShowRequest,
         ChatRoomsShowResponse,
+        ChatRoomsUnreadRequest,
+        ChatRoomsUnreadResponse,
         ChatRoomsUpdateRequest,
         ChatRoomsUpdateResponse,
         ChatRoomsVoiceConnectionInfoRequest,
@@ -4239,8 +4265,8 @@ type VerifyEmailRequest = operations['verify-email']['requestBody']['content']['
 // Warnings were encountered during analysis:
 //
 // src/streaming.ts:62:3 - (ae-forgotten-export) The symbol "ReconnectingWebSocket" needs to be exported by the entry point index.d.ts
-// src/streaming.types.ts:257:4 - (ae-forgotten-export) The symbol "ReversiUpdateKey" needs to be exported by the entry point index.d.ts
-// src/streaming.types.ts:272:4 - (ae-forgotten-export) The symbol "ReversiUpdateSettings" needs to be exported by the entry point index.d.ts
+// src/streaming.types.ts:258:4 - (ae-forgotten-export) The symbol "ReversiUpdateKey" needs to be exported by the entry point index.d.ts
+// src/streaming.types.ts:273:4 - (ae-forgotten-export) The symbol "ReversiUpdateSettings" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 

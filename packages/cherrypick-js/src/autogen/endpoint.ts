@@ -292,10 +292,15 @@ import type {
 	ChatRoomsMembersRequest,
 	ChatRoomsMembersResponse,
 	ChatRoomsMuteRequest,
+	ChatRoomsNotificationsRequest,
+	ChatRoomsNotificationsResponse,
 	ChatRoomsOwnedRequest,
 	ChatRoomsOwnedResponse,
+	ChatRoomsReadRequest,
 	ChatRoomsShowRequest,
 	ChatRoomsShowResponse,
+	ChatRoomsUnreadRequest,
+	ChatRoomsUnreadResponse,
 	ChatRoomsUpdateRequest,
 	ChatRoomsUpdateResponse,
 	ChatRoomsVoiceConnectionInfoRequest,
@@ -955,8 +960,11 @@ export type Endpoints = {
 	'chat/rooms/leave': { req: ChatRoomsLeaveRequest; res: EmptyResponse };
 	'chat/rooms/members': { req: ChatRoomsMembersRequest; res: ChatRoomsMembersResponse };
 	'chat/rooms/mute': { req: ChatRoomsMuteRequest; res: EmptyResponse };
+	'chat/rooms/notifications': { req: ChatRoomsNotificationsRequest; res: ChatRoomsNotificationsResponse };
 	'chat/rooms/owned': { req: ChatRoomsOwnedRequest; res: ChatRoomsOwnedResponse };
+	'chat/rooms/read': { req: ChatRoomsReadRequest; res: EmptyResponse };
 	'chat/rooms/show': { req: ChatRoomsShowRequest; res: ChatRoomsShowResponse };
+	'chat/rooms/unread': { req: ChatRoomsUnreadRequest; res: ChatRoomsUnreadResponse };
 	'chat/rooms/update': { req: ChatRoomsUpdateRequest; res: ChatRoomsUpdateResponse };
 	'chat/rooms/voice/connection-info': { req: ChatRoomsVoiceConnectionInfoRequest; res: ChatRoomsVoiceConnectionInfoResponse };
 	'chat/rooms/voice/join': { req: ChatRoomsVoiceJoinRequest; res: ChatRoomsVoiceJoinResponse };

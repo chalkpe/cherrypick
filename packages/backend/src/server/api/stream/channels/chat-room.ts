@@ -144,15 +144,28 @@ export class ChatRoomChannel extends Channel {
 				return;
 			}
 		}
-		this.send(data.type, data.body);
+		if (data.type === 'message' || data.type === 'updated') {
+			const id = data.type === 'message' ? data.body.id : data.body.messageId;
+			const newMentions = data.type === 'updated' ? data.body.newMentionUserIds ?? [] : undefined;
+			const shouldNotify = (newMentions == null || newMentions.includes(this.user!.id)) && await this.chatService.shouldNotifyRoomMessage(this.user!.id, id).catch(() => false);
+			if (this.disposed || version !== this.permissionVersion) return;
+			if (data.type === 'updated') {
+				const { newMentionUserIds: _newMentionUserIds, ...body } = data.body;
+				this.send('updated', { ...body, shouldNotify });
+			} else {
+				this.send('message', { ...data.body, shouldNotify });
+			}
+		} else {
+			this.send(data.type, data.body);
+		}
 	}
 
 	@bindThis
 	public onMessage(type: string, body: any) {
 		switch (type) {
 			case 'read':
-				if (this.roomId) {
-					void this.chatService.readRoomChatMessage(this.user!.id, this.roomId, this.channelId).catch(() => {});
+				if (this.roomId && typeof body?.id === 'string') {
+					void this.chatService.readRoomChatMessage(this.user!.id, this.roomId, this.channelId, body.id).catch(() => {});
 				}
 				break;
 		}

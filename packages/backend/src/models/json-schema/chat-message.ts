@@ -324,6 +324,7 @@ export const packedChatMessageLiteFor1on1Schema = {
 export const packedChatMessageLiteForRoomSchema = {
 	type: 'object',
 	properties: {
+		shouldNotify: { type: 'boolean', optional: true, nullable: false },
 		id: {
 			type: 'string',
 			optional: false, nullable: false,

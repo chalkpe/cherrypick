@@ -55,6 +55,7 @@ export type Channels = {
 			newChatMessage: (payload: ChatMessage) => void;
 			chatRoomVoiceState: (payload: ChatRoomVoiceState) => void;
 			chatRoomListChanged: () => void;
+			chatUnread: (payload: { hasUnreadChatMessages: boolean; hasUnreadChatNotifications: boolean; version: number }) => void;
 			readAllAnnouncements: () => void;
 			myTokenRegenerated: () => void;
 			signin: (payload: Signin) => void;
@@ -315,6 +316,7 @@ export type Channels = {
 			message: (payload: ChatMessageLite) => void;
 			updated: (payload: {
 				messageId: ChatMessageLite['id'];
+				shouldNotify?: boolean;
 				text: string;
 				editedAt: string;
 				channelRefs?: { channelId: string; start: number; length: number }[];

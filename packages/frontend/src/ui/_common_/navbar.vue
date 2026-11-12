@@ -37,7 +37,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					v-on="navbarItemDef[item].action ? { click: navbarItemDef[item].action } : {}"
 				>
 					<i class="ti-fw" :class="[$style.itemIcon, navbarItemDef[item].icon]" :style="{ viewTransitionName: 'navbar-item-' + item }"></i><span :class="$style.itemText">{{ navbarItemDef[item].title }}</span>
-					<span v-if="navbarItemDef[item].indicated" :class="$style.itemIndicator" class="_blink">
+					<span v-if="navbarItemDef[item].indicated" :class="[$style.itemIndicator, { _blink: isNavbarItemPulsing(navbarItemDef[item]) }]">
 						<span v-if="navbarItemDef[item].indicateValue && prefer.s.showUnreadNotificationsCount" class="_indicateCounter" :class="$style.itemIndicateValueIcon">{{ navbarItemDef[item].indicateValue }}</span>
 						<i v-else class="_indicatorCircle"></i>
 					</span>
@@ -50,7 +50,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</MkA>
 			<button class="_button" :class="$style.item" @click="more">
 				<i :class="$style.itemIcon" class="ti ti-grid-dots ti-fw" style="view-transition-name: navbar-more;"></i><span :class="$style.itemText">{{ i18n.ts.more }}</span>
-				<span v-if="otherMenuItemIndicated" :class="$style.itemIndicator" class="_blink"><i class="_indicatorCircle"></i></span>
+				<span v-if="otherMenuItemIndicated" :class="[$style.itemIndicator, { _blink: otherMenuItemPulsing }]"><i class="_indicatorCircle"></i></span>
 			</button>
 			<MkA v-tooltip.noDelay.right="i18n.ts.settings" :class="$style.item" :activeClass="$style.active" to="/settings">
 				<i :class="$style.itemIcon" class="ti ti-settings ti-fw" style="view-transition-name: navbar-settings;"></i><span :class="$style.itemText">{{ i18n.ts.settings }}</span>
@@ -111,7 +111,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { computed, defineAsyncComponent, ref, watch, onUnmounted } from 'vue';
 import { openInstanceMenu } from './common.js';
 import * as os from '@/os.js';
-import { navbarItemDef } from '@/navbar.js';
+import { isNavbarItemPulsing, navbarItemDef } from '@/navbar.js';
 import { store } from '@/store.js';
 import { i18n } from '@/i18n.js';
 import { instance } from '@/instance.js';
@@ -141,6 +141,7 @@ const iconOnly = computed(() => {
 	return !props.asDrawer && (forceIconOnly.value || (store.r.menuDisplay.value === 'sideIcon'));
 });
 
+const otherMenuItemPulsing = computed(() => Object.entries(navbarItemDef).some(([key, item]) => !prefer.r.menu.value.includes(key) && item.indicated && isNavbarItemPulsing(item)));
 const otherMenuItemIndicated = computed(() => {
 	for (const def in navbarItemDef) {
 		if (prefer.r.menu.value.includes(def)) continue;

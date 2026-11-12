@@ -90,6 +90,12 @@ export const chatMuteErrors: ApiWithDialogCustomErrors = {
 	'c2cde4eb-8d0f-42f1-8f2f-c4d6bfc8e5df': { text: i18n.ts._chat.roomUnavailable },
 };
 
+export const chatNotificationErrors: ApiWithDialogCustomErrors = {
+	...fallback,
+	'ef41ee7c-5e74-48a0-8126-177a2afec201': { text: i18n.ts._chat.roomUnavailable },
+	'ea728d98-6b11-494d-887e-fae0abeec404': { text: i18n.ts._chat.roomUnavailable },
+};
+
 export const chatCancelInvitationErrors: ApiWithDialogCustomErrors = {
 	...fallback,
 	'8c8f38f0-3b7e-4f5e-9c6d-2e3f4a5b6c7d': { text: i18n.ts._chat.invitationGone },

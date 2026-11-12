@@ -3,8 +3,10 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { notificationServiceOver } from '../misc/chat-room-notification-fixture.js';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatMessageAccessError, ChatMessageRecipientSuspendedError, ChatRoomAccessError, ChatRoomInvitationRefusedError, ChatService } from '@/core/ChatService.js';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { UserSuspendService } from '@/core/UserSuspendService.js';
 import type { MiChatMessage } from '@/models/_.js';
@@ -47,9 +49,17 @@ describe('delayed chat notifications after suspension', () => {
 		const userEntityService = { isLocalUser: () => true, isRemoteUser: () => false, genLocalUserUri: (id: string) => `https://local.test/users/${id}` };
 		const chatService = Object.assign(Object.create(ChatService.prototype), {
 			config: { url: 'https://local.test' }, usersRepository, userEntityService,
+			chatRoomChannelService: Object.assign(Object.create(ChatRoomChannelService.prototype), { db: { manager: {} } }),
+			db: { transaction: async <T>(run: (manager: unknown) => Promise<T>) => run({
+				findOne: async (entity: { name: string }) => entity.name === 'MiChatMessage' ? message : room,
+				findOneBy: async (entity: { name: string }) => entity.name === 'MiChatMessage' ? message : room,
+				existsBy: async (_entity: unknown, where: { userId: string }) => readerStillMember && where.userId === reader.id,
+				findBy: async () => readerStillMember ? [{ userId: reader.id, isMuted: readerMuted }] : [],
+				withRepository: (repository: unknown) => repository,
+			}) },
 			idService: { gen: () => 'message1' },
 			chatRoomMembershipsRepository: {
-				findBy: async () => [{ userId: reader.id, isMuted: readerMuted }],
+				findBy: async () => readerStillMember ? [{ userId: reader.id, isMuted: readerMuted }] : [],
 				findOneBy: async ({ userId }: { userId: string }) => readerStillMember && userId === reader.id ? { userId, isMuted: readerMuted } : null,
 			},
 			chatMessagesRepository: {
@@ -74,6 +84,7 @@ describe('delayed chat notifications after suspension', () => {
 			pushNotificationService: { pushNotification: notifications },
 			redisClient: { pipeline: () => pipeline, get: async () => 'message1' },
 		}) as ChatService;
+		Object.assign(chatService, { chatRoomsRepository: { findOneBy: async () => room }, chatRoomNotificationService: notificationServiceOver(chatService) });
 		const suspension = Object.assign(Object.create(UserSuspendService.prototype), {
 			usersRepository, userEntityService, chatService,
 			moderationLogService: { log: vi.fn() },
@@ -342,6 +353,7 @@ describe('suspending a remote account', () => {
 			liveKitService: { removeParticipant: vi.fn().mockResolvedValue(undefined), identityOf: (user: { id: string }) => user.id },
 			redisClient: { pipeline: () => ({ del: vi.fn().mockReturnThis(), srem: vi.fn().mockReturnThis(), exec: vi.fn().mockResolvedValue([]) }) },
 		}) as ChatService;
+		Object.assign(service, { chatRoomNotificationService: notificationServiceOver(service) });
 		return { service, deliver, removed };
 	}
 
@@ -456,7 +468,8 @@ describe('messages from a suspended author', () => {
 			queryService: { makePaginationQuery: () => builder },
 			chatMessagesRepository: { createQueryBuilder: () => builder },
 			chatRoomMembershipsRepository: { findBy: async () => [{ roomId: 'r1' }], createQueryBuilder: () => builder },
-			chatRoomsRepository: { findBy: async () => [], createQueryBuilder: () => builder },
+			chatRoomsRepository: { findBy: async () => [], findOneBy: async () => ({ id: 'r1', hasChannels: false }), createQueryBuilder: () => builder },
+			chatRoomChannelService: Object.assign(Object.create(ChatRoomChannelService.prototype), { db: { manager: {} } }),
 			mutingsRepository: { createQueryBuilder: () => builder },
 		}) as ChatService;
 		return { service, conditions };

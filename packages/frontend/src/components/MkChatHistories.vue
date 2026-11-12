@@ -8,7 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<MkA
 		v-for="item in history"
 		:key="item.id"
-		:class="[$style.message, { [$style.unread]: !item.isMe && !item.message.isRead, [$style.isMe]: item.isMe, [$style.isRead]: item.message.isRead }]"
+		:class="[$style.message, { [$style.unread]: (item.message.toRoomId != null || !item.isMe) && !item.message.isRead, [$style.isMe]: item.isMe, [$style.isRead]: item.message.isRead }]"
 		class="_panel"
 		:to="item.message.toRoomId ? `/chat/room/${item.message.toRoomId}` : `/chat/user/${item.other!.id}`"
 	>

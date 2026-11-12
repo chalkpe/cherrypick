@@ -1691,6 +1691,11 @@ _order:
   newest: "최신 순"
   oldest: "오래된 순"
 _chat:
+  notificationAll: "모두 받기"
+  notificationMentions: "멘션만 받기"
+  notificationNone: "알림 끄기"
+  notificationInherit: "그룹 설정대로"
+  readAllRoom: "그룹 전체 읽음"
   diceTotal: "합계"
   diceDetails: "굴림 내역"
   diceInvalid: "주사위 식을 읽을 수 없어요. 문법을 확인하고 고쳐 주세요."

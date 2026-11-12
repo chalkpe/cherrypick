@@ -61,6 +61,12 @@ export class MiChatMessage {
 	@JoinColumn()
 	public toRoomChannel: MiChatRoomChannel | null;
 
+	@Column({ ...id(), array: true, default: '{}' })
+	public mentionedUserIds: string[];
+
+	@Column('bigint', { nullable: true })
+	public roomMessageSequence: string | null;
+
 	@Column('jsonb', { default: [] })
 	public channelRefs: ChatChannelRef[];
 

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { notificationServiceOver } from '../misc/chat-room-notification-fixture.js';
 import { QueryFailedError } from 'typeorm';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
@@ -406,14 +407,17 @@ describe('ChatService chat federation delivery', () => {
 		}) as ChatService;
 
 		Object.assign(service, {
+			chatRoomNotificationService: notificationServiceOver(service),
 			chatRoomChannelService: Object.create(ChatRoomChannelService.prototype),
 			db: {
 				transaction: async (run: (manager: unknown) => Promise<unknown>) => run({
-					findOne: async () => ({ ...room }),
+					findOne: async (entity: { name: string }, options: { where: { id: string } }) => entity.name === 'MiChatMessage' ? messages.get(options.where.id) ?? null : { ...room },
+					findOneBy: async (entity: { name: string }, where: { id: string }) => entity.name === 'MiChatMessage' ? messages.get(where.id) ?? null : { ...room },
 					existsBy: async () => true,
-					findBy: async () => (service as unknown as { chatRoomMembershipsRepository: { findBy(): Promise<unknown[]> } }).chatRoomMembershipsRepository.findBy(),
+					findBy: async (entity: { name: string }) => entity.name === 'MiChatRoomUnread' ? [] : (service as unknown as { chatRoomMembershipsRepository: { findBy(): Promise<unknown[]> } }).chatRoomMembershipsRepository.findBy(),
 					withRepository: (repository: unknown) => repository,
-					update: async (_entity: unknown, _id: string, patch: object) => { Object.assign(room, patch); },
+					update: async (entity: { name: string }, id: string, patch: object) => { Object.assign(entity.name === 'MiChatMessage' ? messages.get(id)! : room, patch); },
+					delete: async () => ({ affected: 0 }),
 				}),
 			},
 		});

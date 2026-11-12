@@ -74,6 +74,7 @@ export interface MainEventTypes {
 	unreadNotification: Packed<'Notification'>;
 	unreadAntenna: MiAntenna;
 	newChatMessage: Packed<'ChatMessage'>;
+	chatUnread: { hasUnreadChatMessages: boolean; hasUnreadChatNotifications: boolean; version: number };
 	chatRoomVoiceState: Packed<'ChatRoomVoiceState'>;
 	chatRoomListChanged: undefined;
 	readAllAnnouncements: undefined;
@@ -198,6 +199,7 @@ export interface ChatEventTypes {
 
 // ルームの状態の変化。画面を閉じたり更新したりできるようクライアントへも転送する。
 export interface ChatRoomEventTypes extends ChatEventTypes {
+	updated: ChatEventTypes['updated'] & { newMentionUserIds?: string[] };
 	channelsUpdated: { roomId: string };
 	channelMessage: { channelId: string; messageId: string };
 	roomUpdated: {

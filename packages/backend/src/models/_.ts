@@ -28,6 +28,8 @@ import { MiChannelMuting } from '@/models/ChannelMuting.js';
 import { MiChatApproval } from '@/models/ChatApproval.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
 import { MiChatRoomChannel } from '@/models/ChatRoomChannel.js';
+import { MiChatRoomUserSettings } from '@/models/ChatRoomUserSettings.js';
+import { MiChatRoomUnread } from '@/models/ChatRoomUnread.js';
 import { MiChatRoom } from '@/models/ChatRoom.js';
 import { MiChatRoomInvitation } from '@/models/ChatRoomInvitation.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
@@ -181,6 +183,8 @@ export {
 	MiUserMemo,
 	MiChatMessage,
 	MiChatRoomChannel,
+	MiChatRoomUserSettings,
+	MiChatRoomUnread,
 	MiChatRoom,
 	MiChatRoomMembership,
 	MiChatRoomRosterState,
@@ -277,3 +281,5 @@ export type BubbleGameRecordsRepository = Repository<MiBubbleGameRecord> & MiRep
 export type ReversiGamesRepository = Repository<MiReversiGame> & MiRepository<MiReversiGame>;
 export type NoteHistoryRepository = Repository<NoteHistory> & MiRepository<NoteHistory>;
 
+export type ChatRoomUserSettingsRepository = Repository<MiChatRoomUserSettings> & MiRepository<MiChatRoomUserSettings>;
+export type ChatRoomUnreadsRepository = Repository<MiChatRoomUnread> & MiRepository<MiChatRoomUnread>;

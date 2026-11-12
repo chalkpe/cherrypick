@@ -508,3 +508,6 @@ export * as 'v2/admin/emoji/list' from './endpoints/v2/admin/emoji/list.js';
 
 export * as 'admin/voice-relay/manage' from './endpoints/admin/voice-relay/manage.js';
 export * as 'chat/rooms/voice/connection-info' from './endpoints/chat/rooms/voice/connection-info.js';
+export * as 'chat/rooms/notifications' from './endpoints/chat/rooms/notifications.js';
+export * as 'chat/rooms/read' from './endpoints/chat/rooms/read.js';
+export * as 'chat/rooms/unread' from './endpoints/chat/rooms/unread.js';

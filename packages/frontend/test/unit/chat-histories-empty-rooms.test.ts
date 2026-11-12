@@ -89,6 +89,14 @@ afterEach(() => {
 });
 
 describe('chat home with rooms without messages', () => {
+	test('마지막 글이 내 글이어도 다른 채널의 미읽음 표시는 유지한다', async () => {
+		const room = mkRoom('channels', '2026-02-01T00:00:00Z');
+		setup({ history: [{ ...roomMessage(room, room.createdAt), fromUserId: 'me', fromUser: owner, isRead: false }] });
+
+		const { container } = await mount();
+
+		expect(container.querySelector('a[href="/chat/room/channels"]')!.className).toMatch(/unread/);
+	});
 	test('keeps an eleventh messaged room truthful when the history page changes', async () => {
 		const rooms = Array.from({ length: 11 }, (_, i) => mkRoom(`r${i}`, new Date(2026, 0, i + 1).toISOString()));
 		const messages = rooms.map(r => roomMessage(r, r.createdAt)).reverse();

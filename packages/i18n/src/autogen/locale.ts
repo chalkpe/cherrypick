@@ -6764,6 +6764,26 @@ export interface Locale extends ILocale {
     };
     "_chat": {
         /**
+         * すべて受け取る
+         */
+        "notificationAll": string;
+        /**
+         * メンションのみ
+         */
+        "notificationMentions": string;
+        /**
+         * 通知しない
+         */
+        "notificationNone": string;
+        /**
+         * グループの設定に従う
+         */
+        "notificationInherit": string;
+        /**
+         * グループ全体を既読にする
+         */
+        "readAllRoom": string;
+        /**
          * 合計
          */
         "diceTotal": string;
