@@ -114,7 +114,7 @@ export default defineConfig((args) => {
 
 	if (isE2E) {
 		return {
-			input: './test-server/entry.ts',
+			input: ['./test-server/entry.ts', './src/core/chat-dice-worker.ts'],
 			platform: 'node',
 			tsconfig: './test-server/tsconfig.json',
 			plugins: [
@@ -137,6 +137,7 @@ export default defineConfig((args) => {
 		return {
 			input: [
 				'./src/boot/entry.ts',
+				'./src/core/chat-dice-worker.ts',
 				'./src/boot/cli.ts',
 				'./src/config.ts',
 				'./src/postgres.ts',

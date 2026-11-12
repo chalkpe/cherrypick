@@ -19,7 +19,7 @@ export default [
 		languageOptions: {
 			parserOptions: {
 				parser: tsParser,
-				project: ['./tsconfig.json', './test/tsconfig.json', './test-federation/tsconfig.json'],
+				project: ['./tsconfig.json', './test/tsconfig.json', './test-federation/tsconfig.json', './tsconfig.config.json'],
 				sourceType: 'module',
 				tsconfigRootDir: import.meta.dirname,
 			},

@@ -352,6 +352,9 @@ importers:
       '@aws-sdk/lib-storage':
         specifier: 3.1152.0
         version: 3.1152.0(@aws-sdk/client-s3@3.1152.0)
+      '@dice-roller/rpg-dice-roller':
+        specifier: 5.5.1
+        version: 5.5.1
       '@fastify/accepts':
         specifier: 5.0.7
         version: 5.0.7

@@ -8,6 +8,7 @@ import { id } from './util/id.js';
 import { MiUser } from './User.js';
 import type { MiDriveFile } from './DriveFile.js';
 import { MiChatRoom } from './ChatRoom.js';
+import type { ChatDiceResult } from '@/core/chat-dice.js';
 
 @Entity('chat_message')
 export class MiChatMessage {
@@ -54,6 +55,9 @@ export class MiChatMessage {
 		length: 4096, nullable: true,
 	})
 	public text: string | null;
+
+	@Column('jsonb', { nullable: true })
+	public dice: ChatDiceResult | null;
 
 	@Index({ unique: true })
 	@Column('varchar', {

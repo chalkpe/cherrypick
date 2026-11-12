@@ -10,13 +10,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 		type="checkbox"
 		:disabled="disabled"
 		:class="$style.input"
+		:checked="accessible ? unref(modelValue) : undefined"
+		:aria-labelledby="accessible && !noBody ? labelId : undefined"
 		@click="toggle"
 	>
-	<XButton :class="$style.toggle" :checked="checked" :disabled="disabled" @toggle="toggle"/>
+	<XButton :class="$style.toggle" :checked="accessible ? unref(modelValue) : checked" :disabled="disabled" @toggle="toggle"/>
 	<span v-if="!noBody" :class="$style.body">
 		<!-- TODO: 無名slotの方は廃止 -->
 		<span :class="$style.label">
-			<span @click="toggle">
+			<span :id="accessible ? labelId : undefined" @click="toggle">
 				<slot name="label"></slot><slot></slot>
 			</span>
 			<span v-if="helpText" v-tooltip:dialog="helpText" class="_button _help" :class="$style.help"><i class="ti ti-help-circle"></i></span>
@@ -27,7 +29,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { toRefs } from 'vue';
+import { toRefs, unref, useId } from 'vue';
 import type { Ref } from 'vue';
 import XButton from '@/components/MkSwitch.button.vue';
 import { haptic } from '@/utility/haptic.js';
@@ -37,6 +39,8 @@ const props = defineProps<{
 	disabled?: boolean;
 	helpText?: string;
 	noBody?: boolean;
+	/** 네이티브 입력에 표시된 이름과 모델의 체크 상태를 연결합니다. */
+	accessible?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -45,10 +49,12 @@ const emit = defineEmits<{
 }>();
 
 const checked = toRefs(props).modelValue;
+const labelId = useId();
 const toggle = () => {
 	if (props.disabled) return;
-	emit('update:modelValue', !checked.value);
-	emit('change', !checked.value);
+	const next = props.accessible ? !unref(checked.value) : !checked.value;
+	emit('update:modelValue', next);
+	emit('change', next);
 
 	haptic();
 };

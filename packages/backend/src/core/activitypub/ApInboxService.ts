@@ -1324,6 +1324,7 @@ export class ApInboxService {
 					uri,
 					emojis: apEmojis,
 					editedAt,
+					dice: object._misskey_dice,
 				});
 			} else {
 				// Group chat
@@ -1338,6 +1339,7 @@ export class ApInboxService {
 					uri,
 					emojis: apEmojis,
 					editedAt,
+					dice: object._misskey_dice,
 				});
 			}
 

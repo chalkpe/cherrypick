@@ -1,0 +1,12 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"noEmit": true,
+		"rootDir": "."
+	},
+	"include": [
+		"./rolldown.config.ts"
+	]
+}

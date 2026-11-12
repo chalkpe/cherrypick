@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div ref="rootEl" :class="[$style.root, { [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.showEl]: (showEl && ['hideFloatBtnNavBar', 'hide'].includes(<string>prefer.s.displayHeaderNavBarWhenScroll)), [$style.scrollToTransparent]: showEl, [$style.atBottom]: isAtBottom }]">
+<div ref="rootEl" :class="[$style.root, { [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.showEl]: (showEl && ['hideFloatBtnNavBar', 'hide'].includes(<string>prefer.s.displayHeaderNavBarWhenScroll)), [$style.scrollToTransparent]: showEl, [$style.atBottom]: forceInFlow || isAtBottom }]">
 	<button v-if="store.s.showHomeButtonInNavbar" :class="$style.item" class="_button" @click="clickHomeButton" @touchstart="openAccountMenu" @touchend="closeAccountMenu">
 		<div :class="[$style.itemInner, { [$style.active]: mainRouter.currentRoute.value.name === 'index' }]">
 			<i :class="$style.itemIcon" class="ti ti-home"></i>
@@ -65,6 +65,12 @@ import { getAccountMenu } from '@/accounts.js';
 import { scrollToVisibility } from '@/utility/scroll-to-visibility.js';
 import { haptic } from '@/utility/haptic.js';
 import * as os from '@/os.js';
+
+withDefaults(defineProps<{
+	forceInFlow?: boolean;
+}>(), {
+	forceInFlow: false,
+});
 
 const { showEl } = scrollToVisibility();
 const queuedAheadItemsCount = ref(0);
