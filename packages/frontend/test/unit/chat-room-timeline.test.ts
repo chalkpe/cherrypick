@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
-import { defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
+import { defineAsyncComponent, defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
 
 const mocks = vi.hoisted(() => {
 	class FakeChannel {
@@ -157,6 +157,10 @@ import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { chatLeaveErrors } from '@/pages/chat/chat-errors.js';
 import { installFakeResizeObserver, resizeObserved } from './fake-resize-observer.js';
+
+// ルーターはページを非同期コンポーネントに包んでからキャッシュする (router.definition.ts の page())。
+// 包まれたページの onActivated を、Vue はページが登録したのと逆の順に呼ぶ。キャッシュから戻る試験は、ルーターと同じ形で置いて確かめる
+const RoutedRoomPage = defineAsyncComponent(() => Promise.resolve(XRoomPage));
 
 const apiMock = vi.mocked(misskeyApi).getMockImplementation()!;
 
@@ -1143,7 +1147,7 @@ describe('following the newest message', () => {
 			const host = defineComponent({
 				setup() {
 					provideMetadataReceiver(() => {});
-					return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+					return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { roomId: 'r1' }) : h('div') });
 				},
 			});
 			const { container } = render(host, { global: { stubs, directives: { tooltip: {} } } });
@@ -1516,7 +1520,7 @@ describe('after the stream reconnects', () => {
 		const page = defineComponent({
 			setup() {
 				provideMetadataReceiver(() => {});
-				return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { roomId: 'r1' }) : h('div') });
 			},
 		});
 		const { container } = render(page, { global: { stubs, directives: { tooltip: {} } } });
@@ -1573,7 +1577,7 @@ describe('telling the server what was read', () => {
 		const page = defineComponent({
 			setup() {
 				provideMetadataReceiver(() => {});
-				return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { userId: 'alice' }) : h('div') });
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { userId: 'alice' }) : h('div') });
 			},
 		});
 		return { page, visible };
@@ -1784,7 +1788,7 @@ describe('a deleted room', () => {
 		const page = defineComponent({
 			setup() {
 				provideMetadataReceiver(() => {});
-				return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { roomId: 'r1' }) : h('div') });
 			},
 		});
 		const dispose = vi.spyOn(mocks.channel, 'dispose');
@@ -1836,7 +1840,7 @@ test('returning to a cached room after being removed explains why instead of sho
 	const page = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
-			return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+			return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { roomId: 'r1' }) : h('div') });
 		},
 	});
 	render(page, { global: { stubs, directives: { tooltip: {} } } });
@@ -1866,7 +1870,7 @@ test('someone who moved on before the room answered is told when they return, no
 	const page = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
-			return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+			return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { roomId: 'r1' }) : h('div') });
 		},
 	});
 	render(page, { global: { stubs, directives: { tooltip: {} } } });
@@ -2182,7 +2186,7 @@ test('rejoining a kicked room reinitializes its cached page and subscribes again
 	const page = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
-			return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+			return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { roomId: 'r1' }) : h('div') });
 		},
 	});
 	const result = render(page, { global: { stubs } });

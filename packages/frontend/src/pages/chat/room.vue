@@ -525,11 +525,8 @@ function recheckUnreadSign() {
 	refreshCurrentAccount();
 }
 
+// 見ているページかどうか。戻ってきたときに立てるのは、下の onActivated の先頭
 let isActivated = true;
-
-onActivated(() => {
-	isActivated = true;
-});
 
 onDeactivated(() => {
 	isActivated = false;
@@ -845,6 +842,10 @@ onUnmounted(() => {
 });
 
 onActivated(() => {
+	// ルーターはページを非同期コンポーネントに包んでキャッシュする。そのとき Vue は onActivated をページが登録したのと逆の順に呼ぶので、
+	// 別の onActivated で立てると、戻ってきたときの処理が「まだ見ていない」と判断して何もしない。同じ場所で先に立てる
+	isActivated = true;
+
 	if (roomDeletedWhileInactive) {
 		roomDeletedWhileInactive = false;
 		notifyRoomClosed(i18n.ts._chat.roomDeleted);
