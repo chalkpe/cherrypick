@@ -1053,7 +1053,7 @@ export class ActivityPubServerService {
 			}
 
 			const snapshot = room.hasChannels && (isOwner || membership != null) ? await this.chatRoomChannelService.snapshot(room.id) : null;
-			const group = this.apRendererService.renderChatRoom(snapshot?.room ?? room, owner);
+			const group = await this.apRendererService.renderChatRoom(snapshot?.room ?? room, owner);
 			// Someone who is only invited learns who is in the room by joining it.
 			const roster = owner.host == null && (isOwner || membership != null) ? await this.chatRoomRoster(room) : null;
 			const channels = snapshot?.fields;

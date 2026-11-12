@@ -13,7 +13,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 >
 	<template #header>
 		<template v-if="pageMetadata">
-			<i :class="pageMetadata.icon"></i>
+			<MkAvatar v-if="pageMetadata.roomAvatar" :room="pageMetadata.roomAvatar" style="width: 1.4em; height: 1.4em; margin-right: 0.5em; vertical-align: middle;"/>
+			<i v-else :class="pageMetadata.icon"></i>
 			<Mfm v-if="pageMetadata.titleAsMfm" :text="pageMetadata.title" :plain="true" :nowrap="true" :author="pageMetadata.titleMfmAuthor"/>
 			<template v-else>{{ pageMetadata.title }}</template>
 		</template>

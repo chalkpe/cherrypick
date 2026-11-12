@@ -7,16 +7,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 <SearchMarker path="/settings/avatar-decoration" :label="i18n.ts.avatarDecorations" :keywords="['avatar', 'icon', 'decoration']" icon="ti ti-sparkles">
 	<div>
 		<div v-if="!loading" class="_gaps">
-			<MkInfo>{{ i18n.tsx._profile.avatarDecorationMax({ max: $i.policies.avatarDecorationLimit }) }} ({{ i18n.tsx.remainingN({ n: $i.policies.avatarDecorationLimit - $i.avatarDecorations.length }) }})</MkInfo>
+			<MkInfo>{{ i18n.tsx._profile.avatarDecorationMax({ max: $i.policies.avatarDecorationLimit }) }} ({{ i18n.tsx.remainingN({ n: $i.policies.avatarDecorationLimit - currentDecorations.length }) }})</MkInfo>
 
-			<MkAvatar :class="$style.avatar" :user="$i" forceShowDecoration/>
+			<MkAvatar :class="$style.avatar" :user="room ? undefined : $i" :room="room" forceShowDecoration/>
 
-			<div v-if="$i.avatarDecorations.length > 0" v-panel :class="$style.current" class="_gaps_s">
+			<div v-if="currentDecorations.length > 0" v-panel :class="$style.current" class="_gaps_s">
 				<div>{{ i18n.ts.inUse }}</div>
 
 				<div :class="$style.decorations">
 					<XDecoration
-						v-for="(avatarDecoration, i) in $i.avatarDecorations"
+						v-for="(avatarDecoration, i) in currentDecorations"
 						:decoration="avatarDecorations.find(d => d.id === avatarDecoration.id) ?? { id: '', url: '', name: '?', roleIdsThatCanBeUsedThisDecoration: [] }"
 						:angle="avatarDecoration.angle"
 						:flipH="avatarDecoration.flipH"
@@ -25,6 +25,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						:scale="avatarDecoration.scale"
 						:opacity="avatarDecoration.opacity"
 						:active="true"
+						:room="room"
 						@click="openAttachedDecoration(i)"
 					/>
 				</div>
@@ -38,6 +39,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						v-for="avatarDecoration in groupedDecorations[category]"
 						:key="avatarDecoration.id"
 						:decoration="avatarDecoration"
+						:room="room"
 						@click="openDecoration(avatarDecoration)"
 					/>
 				</div>
@@ -63,9 +65,25 @@ import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
 import MkInfo from '@/components/MkInfo.vue';
 import { definePage } from '@/page.js';
+import { chatRoomUpdateErrors } from '@/pages/chat/chat-errors.js';
 import { groupAvatarDecorations } from '@/utility/group-avatar-decorations.js';
 
 const $i = ensureSignin();
+const props = defineProps<{ room?: Misskey.entities.ChatRoom }>();
+const emit = defineEmits<{ (ev: 'updated', room: Misskey.entities.ChatRoom): void }>();
+const currentDecorations = computed(() => props.room ? props.room.iconDecorations ?? [] : $i.avatarDecorations);
+
+async function saveDecorations(update: Misskey.entities.UserDetailed['avatarDecorations'], targetRoomId = props.room?.id) {
+	if (props.room?.id !== targetRoomId) return;
+	if (props.room) {
+		if (props.room.isArchived || props.room.ownerId !== $i.id) return;
+		const room = await os.apiWithDialog('chat/rooms/update', { roomId: props.room.id, iconDecorations: update }, undefined, chatRoomUpdateErrors);
+		emit('updated', room);
+	} else {
+		await os.apiWithDialog('i/update', { avatarDecorations: update });
+		$i.avatarDecorations = update;
+	}
+}
 
 const loading = ref(true);
 const avatarDecorations = ref<Misskey.entities.GetAvatarDecorationsResponse>([]);
@@ -77,7 +95,7 @@ misskeyApi('get-avatar-decorations').then(_avatarDecorations => {
 });
 
 function openAttachedDecoration(index: number) {
-	openDecoration(avatarDecorations.value.find(d => d.id === $i.avatarDecorations[index].id) ?? { id: '', url: '', name: '?', roleIdsThatCanBeUsedThisDecoration: [] }, index);
+	openDecoration(avatarDecorations.value.find(d => d.id === currentDecorations.value[index].id) ?? { id: '', url: '', name: '?', roleIdsThatCanBeUsedThisDecoration: [] }, index);
 }
 
 async function openDecoration(avatarDecoration: {
@@ -86,9 +104,11 @@ async function openDecoration(avatarDecoration: {
 	name: string;
 	roleIdsThatCanBeUsedThisDecoration: string[];
 }, index?: number) {
+	const targetRoomId = props.room?.id;
 	const { dispose } = os.popup(XDialog, {
 		decoration: avatarDecoration,
 		usingIndex: index ?? null,
+		room: props.room,
 	}, {
 		'attach': async (payload) => {
 			const decoration = {
@@ -101,11 +121,8 @@ async function openDecoration(avatarDecoration: {
 				scale: payload.scale,
 				opacity: payload.opacity,
 			};
-			const update = [...$i.avatarDecorations, decoration];
-			await os.apiWithDialog('i/update', {
-				avatarDecorations: update,
-			});
-			$i.avatarDecorations = update;
+			const update = [...currentDecorations.value, decoration];
+			await saveDecorations(update, targetRoomId);
 		},
 		'update': async (payload) => {
 			const decoration = {
@@ -118,35 +135,27 @@ async function openDecoration(avatarDecoration: {
 				scale: payload.scale,
 				opacity: payload.opacity,
 			};
-			const update = [...$i.avatarDecorations];
+			const update = [...currentDecorations.value];
 			update[index!] = decoration;
-			await os.apiWithDialog('i/update', {
-				avatarDecorations: update,
-			});
-			$i.avatarDecorations = update;
+			await saveDecorations(update, targetRoomId);
 		},
 		'detach': async () => {
-			const update = [...$i.avatarDecorations];
+			const update = [...currentDecorations.value];
 			update.splice(index!, 1);
-			await os.apiWithDialog('i/update', {
-				avatarDecorations: update,
-			});
-			$i.avatarDecorations = update;
+			await saveDecorations(update, targetRoomId);
 		},
 		closed: () => dispose(),
 	});
 }
 
 function detachAllDecorations() {
+	const targetRoomId = props.room?.id;
 	os.confirm({
 		type: 'warning',
 		text: i18n.ts.areYouSure,
 	}).then(async ({ canceled }) => {
 		if (canceled) return;
-		await os.apiWithDialog('i/update', {
-			avatarDecorations: [],
-		});
-		$i.avatarDecorations = [];
+		await saveDecorations([], targetRoomId);
 	});
 }
 
@@ -154,7 +163,7 @@ const headerActions = computed(() => []);
 
 const headerTabs = computed(() => []);
 
-definePage(() => ({
+if (props.room == null) definePage(() => ({
 	title: i18n.ts.avatarDecorations,
 	icon: 'ti ti-sparkles',
 }));

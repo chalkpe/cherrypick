@@ -76,6 +76,10 @@ export const chatKickErrors: ApiWithDialogCustomErrors = {
 
 export const chatRoomUpdateErrors: ApiWithDialogCustomErrors = {
 	...fallback,
+	'b334628c-fdf3-461f-91a7-8317b8f9e552': { text: i18n.ts._chat.actionFailed },
+	'7ce861bf-3302-4007-a7e1-f70134f927c2': { text: i18n.ts._chat.actionFailed },
+	'cf67aeac-f60f-44ac-b08b-040befbc4e84': { title: i18n.ts.cannotSelectSensitiveMedia, text: i18n.ts.cannotSelectSensitiveMediaDescription },
+	'eb1c651a-cc8f-4fa5-8d7d-e0e7bd3c2faa': { text: i18n.ts.permissionDeniedErrorDescription },
 	'fcdb0f92-bda6-47f9-bd05-343e0e020932': { text: i18n.ts._chat.roomUnavailable },
 	'8655493b-6d45-4466-95ec-c8c38ddae472': { text: i18n.ts._chat.thisRoomIsArchived },
 };

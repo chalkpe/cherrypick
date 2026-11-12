@@ -4,12 +4,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<component :is="link ? MkA : 'span'" v-user-preview="preview && !deidentified ? user.id : undefined" v-bind="bound" class="_noSelect" :class="[$style.root, { [$style.animation]: animation && (!isToastAvatar && !isFloatingBtn), [$style.cat]: !deidentified && user.isCat && (!isToastAvatar && !isFloatingBtn), [$style.square]: squareAvatars && !isFloatingBtn, [$style.isFloatingBtn]: isFloatingBtn }]" :style="{ color }" :title="deidentified ? i18n.ts.mutedUsers : acct(user)" @click="onClick">
+<component :is="link && !room ? MkA : 'span'" v-user-preview="!room && user && preview && !deidentified ? user.id : undefined" v-bind="bound" class="_noSelect" :class="[$style.root, { [$style.animation]: animation && (!isToastAvatar && !isFloatingBtn), [$style.cat]: !deidentified && avatar.isCat && (!isToastAvatar && !isFloatingBtn), [$style.square]: squareAvatars && !isFloatingBtn, [$style.isFloatingBtn]: isFloatingBtn }]" :style="{ color }" :title="room ? room.name : deidentified ? i18n.ts.mutedUsers : user ? acct(user) : undefined" @click="onClick">
 	<MkImgWithBlurhash
 		v-if="prefer.s.enableHighQualityImagePlaceholders"
 		:class="[$style.inner, { [$style.reduceBlurEffect]: !prefer.s.useBlurEffect, [$style.reduceAnimation]: !prefer.s.animation, [$style.scrollToTransparent]: showEl && !forceOpacity, [$style.isFloatingBtn]: isFloatingBtn }]"
 		:src="deidentified ? (instance.iconUrl || '/favicon.ico') : url"
-		:hash="deidentified ? null : user.avatarBlurhash"
+		:hash="deidentified ? null : avatar.avatarBlurhash"
 		:cover="true"
 		:onlyAvgColor="true"
 		@mouseover="prefer.s.showingAnimatedImages === 'interaction' ? playAnimation = true : ''"
@@ -29,8 +29,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		@touchstart="prefer.s.showingAnimatedImages === 'interaction' ? playAnimation = true : ''"
 		@touchend="prefer.s.showingAnimatedImages === 'interaction' ? playAnimation = false : ''"
 	/>
-	<MkUserOnlineIndicator v-if="!deidentified && indicator && !isToastAvatar" :class="$style.indicator" :user="user"/>
-	<div v-if="!deidentified && user.isCat && !isToastAvatar" :class="[$style.ears]">
+	<MkUserOnlineIndicator v-if="!room && user && !deidentified && indicator && !isToastAvatar" :class="$style.indicator" :user="user"/>
+	<div v-if="!deidentified && avatar.isCat && !isToastAvatar" :class="[$style.ears]">
 		<div :class="$style.earLeft">
 			<div v-if="false" :class="$style.layer">
 				<div :class="$style.plot" :style="{ backgroundImage: `url(${JSON.stringify(url)})` }"></div>
@@ -48,7 +48,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 	<template v-if="showDecoration || showDecorationWithFloatingBtn">
 		<img
-			v-for="decoration in decorations ?? user.avatarDecorations"
+			v-for="decoration in decorations ?? avatar.avatarDecorations"
 			:class="[$style.decoration, { [$style.decorationBlink]: getDecorationIsBrink(decoration) }]"
 			:src="getDecorationUrl(decoration)"
 			:style="{
@@ -79,6 +79,7 @@ import { prefer } from '@/preferences.js';
 import { instance } from '@/instance.js';
 import { i18n } from '@/i18n.js';
 import { scrollToVisibility } from '@/utility/scroll-to-visibility.js';
+import { url as instanceUrl, host as instanceHost } from '@@/js/config.js';
 import { isSquareAvatar } from '@/utility/avatar-shape.js';
 
 const { showEl } = scrollToVisibility();
@@ -89,7 +90,8 @@ type Decoration = Misskey.entities.UserDetailed['avatarDecorations'][number];
 type DecorationEditorDecoration = Omit<Misskey.entities.UserDetailed['avatarDecorations'][number], 'id'> & { blink?: boolean; };
 
 const props = withDefaults(defineProps<{
-	user: Misskey.entities.User;
+	user?: Misskey.entities.User;
+	room?: Pick<Misskey.entities.ChatRoom, 'id' | 'name' | 'iconUrl' | 'iconBlurhash' | 'iconDecorations'> & { owner: Pick<Misskey.entities.UserLite, 'host'> };
 	target?: string | null;
 	link?: boolean;
 	preview?: boolean;
@@ -117,14 +119,19 @@ const emit = defineEmits<{
 	(ev: 'click', v: PointerEvent): void;
 }>();
 
-const squareAvatars = ref(isSquareAvatar(props.user));
-const deidentified = computed(() => prefer.r.deidentifyMutedUsers.value && 'isMuted' in props.user && props.user.isMuted === true);
-const decorationMuted = computed(() => prefer.r.mutedAvatarDecorationUsers.value.includes(props.user.id));
-const remoteDecorationVisible = computed(() => props.user.host == null || prefer.r.showRemoteAvatarDecorations.value);
+const avatar = computed(() => props.room ? {
+	id: props.room.id, host: props.room.owner.host, isCat: false,
+	avatarUrl: props.room.iconUrl ?? `${instanceUrl}/identicon/${encodeURIComponent(props.room.id)}@${props.room.owner.host ?? instanceHost}`, avatarBlurhash: props.room.iconBlurhash ?? null,
+	avatarDecorations: props.room.iconDecorations ?? [],
+} : props.user!);
+const squareAvatars = ref(isSquareAvatar(props.room ? {} : props.user!));
+const deidentified = computed(() => !props.room && props.user != null && prefer.r.deidentifyMutedUsers.value && 'isMuted' in props.user && props.user.isMuted === true);
+const decorationMuted = computed(() => props.room == null && props.user != null && prefer.r.mutedAvatarDecorationUsers.value.includes(props.user.id));
+const remoteDecorationVisible = computed(() => avatar.value.host == null || prefer.r.showRemoteAvatarDecorations.value);
 const showDecoration = computed(() => (props.forceShowDecoration || (prefer.r.showAvatarDecorations.value && remoteDecorationVisible.value)) && !props.isFloatingBtn && !decorationMuted.value && !deidentified.value);
 const showDecorationWithFloatingBtn = computed(() => props.isFloatingBtn && prefer.r.showAvatarDecorations.value && remoteDecorationVisible.value && prefer.r.friendlyUiShowAvatarDecorationsInNavBtn.value && !decorationMuted.value && !deidentified.value);
 
-const bound = computed(() => props.link
+const bound = computed(() => props.link && props.room == null && props.user != null
 	? { to: userPage(props.user), target: props.target }
 	: {});
 
@@ -132,13 +139,13 @@ const playAnimation = ref(true);
 if (prefer.s.showingAnimatedImages === 'interaction') playAnimation.value = false;
 let playAnimationTimer = window.setTimeout(() => playAnimation.value = false, 5000);
 const url = computed(() => {
-	if (prefer.s.disableShowingAnimatedImages || prefer.s.dataSaver.avatar || (['interaction', 'inactive'].includes(<string>prefer.s.showingAnimatedImages) && !playAnimation.value)) return getStaticImageUrl(props.user.avatarUrl);
-	return props.user.avatarUrl;
+	if (prefer.s.disableShowingAnimatedImages || prefer.s.dataSaver.avatar || (['interaction', 'inactive'].includes(<string>prefer.s.showingAnimatedImages) && !playAnimation.value)) return getStaticImageUrl(avatar.value.avatarUrl);
+	return avatar.value.avatarUrl;
 });
 
 function onClick(ev: PointerEvent): void {
 	if (props.noteClick) ev.stopPropagation();
-	if (props.link) return;
+	if (props.link && !props.room) return;
 	emit('click', ev);
 }
 
@@ -185,9 +192,9 @@ function resetTimer() {
 
 const color = ref<string | undefined>();
 
-watch(() => props.user.avatarBlurhash, () => {
-	if (props.user.avatarBlurhash == null) return;
-	color.value = extractAvgColorFromBlurhash(props.user.avatarBlurhash);
+watch(() => avatar.value.avatarBlurhash, () => {
+	if (avatar.value.avatarBlurhash == null) return;
+	color.value = extractAvgColorFromBlurhash(avatar.value.avatarBlurhash);
 }, {
 	immediate: true,
 });

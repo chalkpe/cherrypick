@@ -1052,6 +1052,10 @@ export type Channels = {
                 description: string;
                 isArchived: boolean;
                 hasChannels?: boolean;
+                iconId?: string | null;
+                iconUrl?: string;
+                iconBlurhash?: string | null;
+                iconDecorations?: UserLite['avatarDecorations'];
             }) => void;
             membershipStarted: (payload: {
                 userId: string;

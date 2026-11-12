@@ -452,6 +452,7 @@ async function initialize() {
 			const confirm = await os.confirm({
 				type: 'question',
 				title: r.name,
+				room: r,
 				text: i18n.ts._chat.youAreNotAMemberOfThisRoomButInvited + '\n' + i18n.ts._chat.doYouAcceptInvitation,
 			});
 			if (confirm.canceled) {
@@ -634,6 +635,13 @@ function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['r
 		name: ctx.name,
 		description: ctx.description,
 		isArchived: ctx.isArchived,
+		// 아이콘 필드는 아이콘이나 장식이 바뀐 갱신에만 함께 온다.
+		...(ctx.iconUrl !== undefined ? {
+			iconId: ctx.iconId,
+			iconUrl: ctx.iconUrl,
+			iconBlurhash: ctx.iconBlurhash,
+			iconDecorations: ctx.iconDecorations,
+		} : {}),
 	};
 }
 
@@ -852,6 +860,7 @@ async function leaveRoom() {
 	const { canceled } = await os.confirm({
 		type: 'warning',
 		text: i18n.tsx._chat.leaveRoomConfirm({ name: room.value.name }),
+		room: room.value,
 	});
 	if (canceled) return;
 
@@ -1112,7 +1121,7 @@ definePage(computed(() => {
 				title: room.value.name,
 				titleAsMfm: true,
 				titleMfmAuthor: room.value.owner,
-				icon: 'ti ti-users',
+				roomAvatar: room.value,
 			};
 		} else {
 			return {

@@ -63,6 +63,7 @@ function createFixture(initial: Record<string, unknown> = {}) {
 		{} as any,
 		{ pack: async () => ({ id: 'admin' }) } as any,
 		idService as any,
+		{} as never,
 	);
 
 	async function update(params: Record<string, unknown>) {

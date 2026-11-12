@@ -33,6 +33,7 @@ import { CustomEmojiService } from '@/core/CustomEmojiService.js';
 import { IdService } from '@/core/IdService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { escapeHtml } from '@/misc/escape-html.js';
+import { AvatarDecorationService } from '@/core/AvatarDecorationService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { JsonLdService } from './JsonLdService.js';
 import { ApMfmService } from './ApMfmService.js';
@@ -115,6 +116,7 @@ export class ApRendererService {
 		private customEmojiService: CustomEmojiService,
 		private userEntityService: UserEntityService,
 		private driveFileEntityService: DriveFileEntityService,
+		private avatarDecorationService: AvatarDecorationService,
 		private jsonLdService: JsonLdService,
 		private userKeypairService: UserKeypairService,
 		private apMfmService: ApMfmService,
@@ -932,12 +934,13 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public renderChatRoomUpdate(room: MiChatRoom, owner: MiUser, fields: Pick<IObject, '_misskey_chatChannels' | '_misskey_chatLegacyChannel'> = {}): IUpdate {
+	public async renderChatRoomUpdate(room: MiChatRoom, owner: MiUser, fields: Pick<IObject, '_misskey_chatChannels' | '_misskey_chatLegacyChannel'> = {}): Promise<IUpdate> {
 		const now = room.lastRemoteUpdatedAt?.toISOString() ?? new Date().toISOString();
 		const activity = buildChatRoomUpdate(this.chatRoomForRender(room, owner), owner, {
 			baseUrl: this.config.url,
 			published: now,
 			updated: now,
+			...await this.chatRoomIconFields(room),
 		});
 		Object.assign(activity.object as IObject, fields);
 		return activity;
@@ -968,7 +971,7 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public renderChatRoom(room: any, owner: MiUser): IObject {
+	public async renderChatRoom(room: Pick<MiChatRoom, 'id' | 'name'> & Partial<Omit<MiChatRoom, 'description'>> & { description?: string | null }, owner: MiUser): Promise<IObject> {
 		const ownerUri = this.userEntityService.isLocalUser(owner)
 			? this.userEntityService.genLocalUserUri(owner.id)
 			: owner.uri;
@@ -981,7 +984,24 @@ export class ApRendererService {
 			summary: room.description ?? '',
 			attributedTo: ownerUri || undefined,
 			_misskey_chatArchived: room.isArchived,
+			...await this.chatRoomFederatedIconFields(room),
 			updated: room.lastRemoteUpdatedAt?.toISOString() ?? new Date().toISOString(),
+		};
+	}
+
+	private async chatRoomFederatedIconFields(room: Partial<Pick<MiChatRoom, 'iconId' | 'iconUrl' | 'iconDecorations'>>) {
+		const { icon, iconDecorations } = await this.chatRoomIconFields(room);
+		return { icon, _misskey_chatIconDecorations: iconDecorations };
+	}
+
+	private async chatRoomIconFields(room: Partial<Pick<MiChatRoom, 'iconId' | 'iconUrl' | 'iconDecorations'>>) {
+		const decorations = (room.iconDecorations?.length ?? 0) > 0 ? await this.avatarDecorationService.getAll(false, true) : [];
+		return {
+			icon: room.iconId != null && room.iconUrl != null ? { type: 'Image' as const, url: room.iconUrl } : null,
+			iconDecorations: (room.iconDecorations ?? []).flatMap(used => {
+				const decoration = decorations.find(d => d.id === used.id);
+				return decoration == null ? [] : [{ ...used, id: decoration.remoteId ?? decoration.id, url: decoration.rawUrl ?? decoration.url, name: decoration.name }];
+			}),
 		};
 	}
 

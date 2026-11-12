@@ -55,6 +55,7 @@ import { ApAudienceService } from './ApAudienceService.js';
 import { ApPersonService } from './models/ApPersonService.js';
 import { ApQuestionService } from './models/ApQuestionService.js';
 import { ApImageService } from './models/ApImageService.js';
+import { ApChatRoomStateService } from './ApChatRoomStateService.js';
 import { ApMfmService } from './ApMfmService.js';
 import type { Resolver } from './ApResolverService.js';
 import type { IAccept, IActivity, IAdd, IAnnounce, IBlock, ICreate, IDelete, IFlag, IFollow, IInvite, ILike, IObject, IRead, IReject, IRemove, IUndo, IUpdate, IMove, IPost } from './type.js';
@@ -139,6 +140,7 @@ export class ApInboxService {
 		private apPersonService: ApPersonService,
 		private apQuestionService: ApQuestionService,
 		private apImageService: ApImageService,
+		private apChatRoomStateService: ApChatRoomStateService,
 		private apMfmService: ApMfmService,
 		private queueService: QueueService,
 		private globalEventService: GlobalEventService,
@@ -505,7 +507,7 @@ export class ApInboxService {
 		const currentRoom = await this.chatRoomsRepository.findOneBy({ id: room.id });
 		if (currentRoom?.hasChannels && owner.host == null && actor.inbox != null) {
 			const snapshot = await this.chatRoomChannelService.snapshot(room.id);
-			if (snapshot != null) this.queueService.deliver(owner, this.apRendererService.addContext(this.apRendererService.renderChatRoomUpdate(snapshot.room, owner, snapshot.fields)), actor.inbox, false);
+			if (snapshot != null) this.queueService.deliver(owner, this.apRendererService.addContext(await this.apRendererService.renderChatRoomUpdate(snapshot.room, owner, snapshot.fields)), actor.inbox, false);
 		}
 
 		return result;
@@ -2153,11 +2155,7 @@ export class ApInboxService {
 	}
 
 	private applyRemoteRoomState(room: MiChatRoom, object: IObject): Promise<MiChatRoom> {
-		return this.chatService.updateRoom(room, {
-			name: typeof object.name === 'string' ? truncate(object.name, 256) : room.name,
-			description: typeof object.summary === 'string' ? truncate(object.summary, 2048) : room.description,
-			isArchived: typeof object._misskey_chatArchived === 'boolean' ? object._misskey_chatArchived : room.isArchived,
-		}, { federate: false, remoteUpdatedAt: this.chatRoomUpdatedAt(object), remoteGroup: object });
+		return this.apChatRoomStateService.apply(room, object);
 	}
 
 	private isChatMessageUri(uri: string): boolean {
@@ -2346,13 +2344,11 @@ export class ApInboxService {
 
 		if (room.ownerId !== actor.id) return 'skip: inviter is not the room owner';
 
-		if (!created) {
-			if (room.uri == null) {
-				await this.chatRoomsRepository.update(room.id, { uri: roomUri });
-				room.uri = roomUri;
-			}
-			// The owner tells a server about changes only while someone there takes part or is invited, so a mirror
-			// can be out of date by now. Left archived, it would refuse the invitation this activity brings.
+		if (!created && room.uri == null) {
+			await this.chatRoomsRepository.update(room.id, { uri: roomUri });
+			room.uri = roomUri;
+		}
+		if (!created || Object.hasOwn(roomObject, 'icon') || Object.hasOwn(roomObject, '_misskey_chatIconDecorations')) {
 			const mirror = room;
 			room = await this.applyRemoteRoomState(mirror, roomObject).catch(err => {
 				this.logger.warn(`Failed to refresh chat room ${mirror.id} from an Invite: ${err}`);

@@ -208,6 +208,10 @@ export interface ChatRoomEventTypes extends ChatEventTypes {
 		description: string;
 		isArchived: boolean;
 		hasChannels?: boolean;
+		iconId?: string | null;
+		iconUrl?: string;
+		iconBlurhash?: string | null;
+		iconDecorations?: Packed<'UserLite'>['avatarDecorations'];
 	};
 	membershipStarted: { userId: MiUser['id'] };
 	membershipEnded: { userId: MiUser['id'] };

@@ -625,7 +625,6 @@ describe('a server that is not told about Announce with an activity inside', () 
 	});
 });
 
-
 describe('일반 채널 활동의 소유 서버 중계', () => {
 	test.each(['update', 'delete', 'react', 'unreact'] as const)('%s를 미지원 멤버 서버로 중계하지 않는다', async operation => {
 		const source = storedMessage({ toRoomId: 'localroom', toRoomChannelId: 'private', channelRefs: [], reactions: operation === 'unreact' ? [`${carol.id}/👍`] : [] });

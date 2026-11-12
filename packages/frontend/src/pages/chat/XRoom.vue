@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <MkA :to="`/chat/room/${room.id}`" class="_panel _gaps_s" :class="$style.root">
 	<div :class="$style.header">
 		<div style="font-weight: bold;"><Mfm :text="room.name" :plain="true" :nowrap="true" :author="room.owner"/></div>
-		<MkAvatar :user="room.owner" :link="false" :class="$style.headerAvatar"/>
+		<MkAvatar :room="room" :class="$style.headerAvatar"/>
 	</div>
 	<hr>
 	<!-- カード全体がリンクなので、説明の中に URL やメンションのリンクを入れ子にしない -->

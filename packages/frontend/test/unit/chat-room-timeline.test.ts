@@ -1245,7 +1245,15 @@ describe('leaving a room from the menu', () => {
 
 		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/leave', { roomId: 'r1' }, undefined, chatLeaveErrors);
 		expect(mocks.routerPush).not.toHaveBeenCalled();
-		expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.tsx._chat.leaveRoomConfirm({ name: 'room 1' }) });
+		expect(mocks.confirm).toHaveBeenCalledWith({
+			type: 'warning',
+			text: i18n.tsx._chat.leaveRoomConfirm({ name: 'room 1' }),
+			room: {
+				id: 'r1', name: 'room 1', ownerId: 'owner',
+				owner: { id: 'owner', username: 'owner', host: null },
+				isArchived: false, invitationExists: false,
+			},
+		});
 		expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
 	});
 

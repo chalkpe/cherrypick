@@ -14,6 +14,7 @@ export interface IObject {
 	summary?: string;
 	_misskey_summary?: string;
 	_misskey_chatChannels?: unknown;
+	_misskey_chatIconDecorations?: unknown;
 	_misskey_chatLegacyChannel?: unknown;
 	_misskey_chatChannel?: unknown;
 	_misskey_chatChannelRefs?: unknown;

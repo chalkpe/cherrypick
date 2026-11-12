@@ -17,6 +17,8 @@ import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { HttpRequestService } from '@/core/HttpRequestService.js';
 import { appendQuery, query } from '@/misc/prelude/url.js';
 import type { Config } from '@/config.js';
+import { normalizeAvatarDecoration } from '@/core/avatar-decoration.js';
+import { checkHttps } from '@/misc/check-https.js';
 
 // Software that serves the Misskey API, which avatar decorations are fetched through, without saying so
 const DECORATION_SOFTWARE = ['misskey', 'cherrypick', 'sharkey'];
@@ -133,6 +135,52 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		);
 	}
 
+	@bindThis
+	public async pack(used: MiUser['avatarDecorations']) {
+		if (used.length === 0) return [];
+		const decorations = await this.getAll(false, true);
+		return used.flatMap(d => {
+			const decoration = decorations.find(item => item.id === d.id);
+			return decoration == null ? [] : [{
+				id: d.id, angle: d.angle || undefined, flipH: d.flipH || undefined,
+				offsetX: d.offsetX || undefined, offsetY: d.offsetY || undefined,
+				scale: d.scale || undefined, opacity: d.opacity || undefined, url: decoration.url,
+			}];
+		});
+	}
+
+	@bindThis
+	public async registerRemote(host: string, remoteId: string, url: string, name: string, description?: string, options?: { preserveDescription?: boolean }) {
+		const existing = await this.avatarDecorationsRepository.findOneBy({ host, remoteId });
+		const data = { host, remoteId, url: this.getProxiedUrl(url, 'avatar'), rawUrl: url, name, description: options?.preserveDescription ? existing?.description ?? '' : description };
+		const decoration = existing == null ? await this.create(data) : (await this.update(existing.id, data), existing);
+		this.cacheWithRemote.delete();
+		return decoration.id;
+	}
+
+	@bindThis
+	public async resolveChatDecorations(host: string, value: unknown): Promise<MiUser['avatarDecorations'] | undefined> {
+		if (!Array.isArray(value) || value.length > 16) return undefined;
+		const result: MiUser['avatarDecorations'] = [];
+		for (const item of value) {
+			if (item == null || typeof item !== 'object' || typeof item.id !== 'string' || item.id.length === 0 || item.id.length > 32) continue;
+			if (typeof item.url !== 'string' || item.url.length > 4096 || !checkHttps(item.url)) continue;
+			try {
+				const url = new URL(item.url);
+				if (url.username || url.password || this.getProxiedUrl(item.url, 'avatar').length > 1024) continue;
+			} catch {
+				continue;
+			}
+			if (typeof item.name !== 'string' || item.name.length > 256) continue;
+			if (item.flipH != null && typeof item.flipH !== 'boolean') continue;
+			const ranges = { angle: [-0.5, 0.5], offsetX: [-0.25, 0.25], offsetY: [-0.25, 0.25], scale: [0.5, 1.5], opacity: [0.1, 1] };
+			if (Object.entries(ranges).some(([key, [min, max]]) => item[key] != null && (typeof item[key] !== 'number' || !Number.isFinite(item[key]) || item[key] < min || item[key] > max))) continue;
+			const id = await this.registerRemote(host, item.id, item.url, item.name, undefined, { preserveDescription: true });
+			result.push(normalizeAvatarDecoration({ id, angle: item.angle, flipH: item.flipH, offsetX: item.offsetX, offsetY: item.offsetY, scale: item.scale, opacity: item.opacity }));
+		}
+		return result;
+	}
+
 	/**
 	 * Whether the instance serves the API that avatar decorations are fetched through.
 	 * Other software, such as Sharlayan Mastodon, serves it as well and advertises that in its NodeInfo.
@@ -208,35 +256,10 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 				}
 			}
 
-			const existingDecoration = await this.avatarDecorationsRepository.findOneBy({
-				host: userHost,
-				remoteId: avatarDecorationId,
-			});
-
-			const decorationData = {
-				name: name,
-				description: description,
-				url: this.getProxiedUrl(avatarDecoration.url, 'avatar'),
-				remoteId: avatarDecorationId,
-				host: userHost,
-				rawUrl: avatarDecoration.url,
-			};
-
-			if (existingDecoration == null) {
-				await this.create(decorationData);
-				this.cacheWithRemote.delete();
-			} else {
-				await this.update(existingDecoration.id, decorationData);
-				this.cacheWithRemote.delete();
-			}
-
-			const findDecoration = await this.avatarDecorationsRepository.findOneBy({
-				host: userHost,
-				remoteId: avatarDecorationId,
-			});
+			const decorationId = await this.registerRemote(userHost, avatarDecorationId, avatarDecoration.url, name, description);
 
 			updates.avatarDecorations.push({
-				id: findDecoration?.id ?? '',
+				id: decorationId,
 				angle: avatarDecoration.angle ?? 0,
 				flipH: avatarDecoration.flipH ?? false,
 				offsetX: avatarDecoration.offsetX ?? 0,

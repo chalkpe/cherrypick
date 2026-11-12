@@ -12,6 +12,7 @@ import type { Packed } from '@/misc/json-schema.js';
 import type { } from '@/models/Blocking.js';
 import { bindThis } from '@/decorators.js';
 import { parseChatDiceResult } from '@/core/chat-dice.js';
+import { ChatRoomIconEntityService } from './ChatRoomIconEntityService.js';
 import { IdService } from '@/core/IdService.js';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
@@ -41,6 +42,7 @@ export class ChatEntityService {
 		private customEmojiService: CustomEmojiService,
 		private idService: IdService,
 		private chatRoomNotificationService: ChatRoomNotificationService,
+		private chatRoomIconEntityService: ChatRoomIconEntityService,
 
 		@Inject(DI.chatRoomChannelsRepository)
 		private chatRoomChannelsRepository: ChatRoomChannelsRepository,
@@ -314,6 +316,11 @@ export class ChatEntityService {
 	}
 
 	@bindThis
+	public async packRoomIcon(room: MiChatRoom, owner?: Pick<Packed<'UserLite'>, 'host'>) {
+		return this.chatRoomIconEntityService.pack(room, false, owner);
+	}
+
+	@bindThis
 	public async packRoom(
 		src: MiChatRoom['id'] | MiChatRoom,
 		me?: { id: MiUser['id'] },
@@ -329,14 +336,16 @@ export class ChatEntityService {
 
 		const membership = me && me.id !== room.ownerId ? (options?._hint_?.myMemberships?.get(room.id) ?? (await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId: me.id }))) : null;
 		const invitation = me && me.id !== room.ownerId ? (options?._hint_?.myInvitations?.get(room.id) ?? (await this.chatRoomInvitationsRepository.findOneBy({ roomId: room.id, userId: me.id }))) : null;
+		const owner = options?._hint_?.packedOwners.get(room.ownerId) ?? (await this.userEntityService.pack(room.owner ?? room.ownerId, me));
 
 		return {
 			id: room.id,
 			createdAt: this.idService.parse(room.id).date.toISOString(),
+			...await this.packRoomIcon(room, owner),
 			name: room.name,
 			description: room.description,
 			ownerId: room.ownerId,
-			owner: options?._hint_?.packedOwners.get(room.ownerId) ?? (await this.userEntityService.pack(room.owner ?? room.ownerId, me)),
+			owner,
 			isMuted: me != null ? (await this.chatRoomNotificationService.settings(me.id, room.id)).notificationLevel === 'none' : false,
 			...(me != null && (me.id === room.ownerId || membership != null) ? { notificationLevel: (await this.chatRoomNotificationService.settings(me.id, room.id)).notificationLevel } : {}),
 			invitationExists: invitation != null,

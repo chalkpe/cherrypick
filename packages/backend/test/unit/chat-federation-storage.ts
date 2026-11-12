@@ -9,6 +9,7 @@ import type * as Redis from 'ioredis';
 import type { TestingModule } from '@nestjs/testing';
 import type { ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomRosterStatesRepository, ChatRoomsRepository, MiChatRoom, MiUser, UsersRepository } from '@/models/_.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateService.js';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
@@ -323,6 +324,7 @@ describe('chat federation storage', () => {
 				[`https://local.test/users/${alice.id}`, alice],
 				[`https://local.test/users/${carol.id}`, carol],
 			]);
+			const chatService = createService();
 			const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 				db: app.get(DI.db),
 				utilityService: { punyHost: (url: string) => new URL(url).host },
@@ -334,7 +336,8 @@ describe('chat federation storage', () => {
 				chatRoomInvitationsRepository,
 				idService,
 				redisClient,
-				chatService: createService(),
+				chatService,
+				apChatRoomStateService: Object.assign(Object.create(ApChatRoomStateService.prototype), { chatService }),
 				notificationService: { createNotification },
 				logger: { info: vi.fn(), warn: vi.fn() },
 			});

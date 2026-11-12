@@ -5,6 +5,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <div class="_gaps">
+	<div>
+		<MkAvatar :room="room" style="width: 72px; height: 72px;"/>
+		<div v-if="isOwner && !room.isArchived" class="_buttons" style="margin-top: 16px;">
+			<MkButton @click="changeIcon">{{ i18n.ts._profile.changeAvatar }}</MkButton>
+			<MkButton @click="decorationEditorOpen = !decorationEditorOpen">{{ i18n.ts.decorate }} <i class="ti ti-sparkles"></i></MkButton>
+		</div>
+	</div>
+	<XDecorationEditor v-if="isOwner && !room.isArchived && decorationEditorOpen" :room="room" @updated="updated => emit('updated', updated)"/>
+
 	<template v-if="isOwner">
 		<MkInput v-model="name_" :mfmAutocomplete="['emoji']" :disabled="room.isArchived">
 			<template #label>{{ i18n.ts.name }}</template>
@@ -42,6 +51,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 <script lang="ts" setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
+import { chooseAvatar } from '@/utility/choose-avatar.js';
+import XDecorationEditor from '@/pages/settings/avatar-decoration.vue';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
 import * as os from '@/os.js';
@@ -74,6 +85,18 @@ const emit = defineEmits<{
 	(ev: 'deleting', deleting: boolean): void;
 }>();
 
+const decorationEditorOpen = ref(false);
+
+function changeIcon(ev: PointerEvent) {
+	if (!isOwner.value || props.room.isArchived) return;
+	const targetId = props.room.id;
+	chooseAvatar(ev.currentTarget ?? ev.target, props.room.iconId ?? null, async iconId => {
+		if (!isOwner.value || props.room.isArchived || props.room.id !== targetId) return;
+		const updated = await os.apiWithDialog('chat/rooms/update', { roomId: props.room.id, iconId }, undefined, chatRoomUpdateErrors).catch(() => null);
+		if (updated) emit('updated', updated);
+	});
+}
+
 async function save() {
 	// 失敗したときは apiWithDialog がダイアログで知らせるので、ここでは何もしない
 	const updated = await os.apiWithDialog('chat/rooms/update', {
@@ -91,6 +114,7 @@ async function setArchived(isArchived: boolean) {
 			type: 'warning',
 			title: i18n.tsx._chat.archiveRoomConfirmTitle({ name: props.room.name }),
 			text: i18n.ts._chat.archiveRoomConfirmDescription,
+			room: props.room,
 		});
 		if (canceled) return;
 	}
@@ -112,6 +136,7 @@ async function del() {
 	const { canceled } = await os.confirm({
 		type: 'warning',
 		text: i18n.tsx._chat.deleteRoomConfirm({ name: props.room.name }),
+		room: props.room,
 	});
 	if (canceled) return;
 

@@ -190,18 +190,18 @@ describe('ApRendererService chat wrappers', () => {
 		expect(activity.object).toMatchObject({ type: 'Tombstone', formerType: 'Note' });
 	});
 
-	test('derives a remote mirror room URI when the stored uri is missing', () => {
+	test('derives a remote mirror room URI when the stored uri is missing', async () => {
 		const renderer = createRenderer();
-		const room = renderer.renderChatRoom({ id: 'r1', name: 'Room', description: '' }, bob as never);
+		const room = await renderer.renderChatRoom({ id: 'r1', name: 'Room', description: '' }, bob as never);
 
 		expect(room.id).toBe('https://remote.test/chat/rooms/r1');
 	});
 
-	test('a room object always names its description, so that an Invite can clear the one on a mirror', () => {
+	test('a room object always names its description, so that an Invite can clear the one on a mirror', async () => {
 		const renderer = createRenderer();
 
-		expect(renderer.renderChatRoom({ id: 'r1', name: 'Room', description: '' }, bob as never).summary).toBe('');
-		expect(renderer.renderChatRoom({ id: 'r1', name: 'Room', description: null }, bob as never).summary).toBe('');
+		expect((await renderer.renderChatRoom({ id: 'r1', name: 'Room', description: '' }, bob as never)).summary).toBe('');
+		expect((await renderer.renderChatRoom({ id: 'r1', name: 'Room', description: null }, bob as never)).summary).toBe('');
 	});
 
 	test('message updates preserve the attachment, emoji tags and original publication time', async () => {

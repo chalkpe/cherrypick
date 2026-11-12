@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <div class="_gaps">
 	<div v-if="invitations.length > 0" class="_gaps_s">
 		<MkFolder v-for="invitation in invitations" :key="invitation.id" :defaultOpen="true">
-			<template #icon><i class="ti ti-users-group"></i></template>
+			<template #icon><MkAvatar :room="invitation.room" style="width: 1.5em; height: 1.5em; vertical-align: middle;"/></template>
 			<template #label><Mfm :text="invitation.room.name" :plain="true" :author="invitation.room.owner"/></template>
 			<template #suffix><MkTime :time="invitation.createdAt"/></template>
 			<template #footer>

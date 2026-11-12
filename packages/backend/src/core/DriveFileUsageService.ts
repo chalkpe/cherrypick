@@ -51,6 +51,9 @@ export class DriveFileUsageService {
 		// チャンネルのバナー (モデレーターは他人のチャンネルのバナーを自分のファイルに差し替えられるので、チャンネルの持ち主では絞らない)
 		q.andWhere('NOT EXISTS (SELECT 1 FROM "channel" WHERE "channel"."bannerId" = file.id)');
 
+		// 그룹 아이콘은 소유자의 드라이브 파일을 참조한다.
+		q.andWhere('NOT EXISTS (SELECT 1 FROM "chat_room" WHERE "chat_room"."iconId" = file.id)');
+
 		// アバター・バナー
 		q.andWhere('NOT EXISTS (SELECT 1 FROM "user" WHERE "user"."id" = :userId AND ("user"."avatarId" = file.id OR "user"."bannerId" = file.id))');
 

@@ -5,6 +5,7 @@
 
 import { vi } from 'vitest';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { notificationServiceOver } from './chat-room-notification-fixture.js';
@@ -466,6 +467,7 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 		chatRoomInvitationsRepository: invitations,
 		chatRoomMembershipsRepository: memberships,
 		chatService,
+		apChatRoomStateService: Object.assign(Object.create(ApChatRoomStateService.prototype), { chatService }),
 		chatRosterService,
 		chatVoiceService: {},
 		liveKitService,

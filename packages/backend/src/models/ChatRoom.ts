@@ -7,6 +7,7 @@ import { PrimaryColumn, Entity, Index, JoinColumn, Column, ManyToOne } from 'typ
 import { id } from './util/id.js';
 import { MiUser } from './User.js';
 import { MiChatRoomChannel } from './ChatRoomChannel.js';
+import { MiDriveFile } from './DriveFile.js';
 
 @Entity('chat_room')
 export class MiChatRoom {
@@ -34,6 +35,23 @@ export class MiChatRoom {
 		length: 2048, default: '',
 	})
 	public description: string;
+
+	@Index()
+	@Column({ ...id(), nullable: true })
+	public iconId: MiDriveFile['id'] | null;
+
+	@ManyToOne(() => MiDriveFile, { onDelete: 'SET NULL' })
+	@JoinColumn()
+	public icon: MiDriveFile | null;
+
+	@Column('varchar', { length: 1024, nullable: true })
+	public iconUrl: string | null;
+
+	@Column('varchar', { length: 128, nullable: true })
+	public iconBlurhash: string | null;
+
+	@Column('jsonb', { default: [] })
+	public iconDecorations: MiUser['avatarDecorations'];
 
 	@Index({ unique: true })
 	@Column('varchar', {

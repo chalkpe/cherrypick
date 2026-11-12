@@ -39,6 +39,8 @@ export type ChatPayloadOptions = {
 	channelRefs?: { id: string; start: number; length: number }[];
 	channels?: { id: string; name: string }[];
 	legacyChannel?: string | null;
+	icon?: IObject | null;
+	iconDecorations?: unknown[];
 	attachment?: IApDocument[];
 	tag?: IObject[];
 	activityId?: string;
@@ -238,6 +240,8 @@ export function buildChatRoomUpdate(
 			summary: room.description ?? '',
 			attributedTo: chatActorUri(owner, options.baseUrl),
 			_misskey_chatArchived: room.isArchived,
+			icon: options.icon ?? null,
+			_misskey_chatIconDecorations: options.iconDecorations ?? [],
 			...(options.channels != null ? { _misskey_chatChannels: options.channels, _misskey_chatLegacyChannel: options.legacyChannel ?? null } : {}),
 			updated,
 		},
