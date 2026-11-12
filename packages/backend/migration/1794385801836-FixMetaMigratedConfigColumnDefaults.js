@@ -3,14 +3,9 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { loadConfig } from './js/migration-config.js';
-
 /**
- * 1746949539915-migrateSomeConfigFileSettingsToMeta は設定ファイルの値をカラムの DEFAULT として ADD COLUMN するため、
- * カラムの DEFAULT が設定ファイルに依存し、エンティティ (MiMeta) の default: true と食い違う場合がある。
- * (特に proxyRemoteFiles は設定ファイルで未指定だと false になり、新規インスタンスの meta レコードが false で作成されてしまう)
- *
- * 既存レコードの値 (コントロールパネルの設定) は変更せず、カラムの DEFAULT のみエンティティに揃える。
+ * 공식 Misskey에서 설정 이관 시 남은 DEFAULT를 엔티티와 맞춘다. 기존 행의 값은 바꾸지 않는다.
+ * CherryPick의 기존 이관 migration은 세 DEFAULT를 모두 true로 만들었으므로, 되돌릴 때도 그 값을 보존한다.
  */
 export class FixMetaMigratedConfigColumnDefaults1794385801836 {
     name = 'FixMetaMigratedConfigColumnDefaults1794385801836'
@@ -22,10 +17,8 @@ export class FixMetaMigratedConfigColumnDefaults1794385801836 {
     }
 
     async down(queryRunner) {
-        const config = loadConfig();
-        // $1 cannot be used in ALTER TABLE queries
-        await queryRunner.query(`ALTER TABLE "meta" ALTER COLUMN "allowExternalApRedirect" SET DEFAULT ${!config.disallowExternalApRedirect}`);
-        await queryRunner.query(`ALTER TABLE "meta" ALTER COLUMN "signToActivityPubGet" SET DEFAULT ${config.signToActivityPubGet}`);
-        await queryRunner.query(`ALTER TABLE "meta" ALTER COLUMN "proxyRemoteFiles" SET DEFAULT ${config.proxyRemoteFiles}`);
+        await queryRunner.query(`ALTER TABLE "meta" ALTER COLUMN "allowExternalApRedirect" SET DEFAULT true`);
+        await queryRunner.query(`ALTER TABLE "meta" ALTER COLUMN "signToActivityPubGet" SET DEFAULT true`);
+        await queryRunner.query(`ALTER TABLE "meta" ALTER COLUMN "proxyRemoteFiles" SET DEFAULT true`);
     }
 }

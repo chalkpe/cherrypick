@@ -119,31 +119,36 @@ watch(url, (v) => {
 
 function onClick(ev: PointerEvent) {
 	if (props.menu) {
+		const targetName = props.name;
+		const targetHost = props.host;
+		const targetCustomEmojiName = customEmojiName.value;
+		const targetEmojiCode = emojiCodeToMute.value;
+		const targetEmojiTitle = isLocal.value ? `:${targetCustomEmojiName}:` : targetEmojiCode;
 		const menuItems: MenuItem[] = [];
 
 		menuItems.push({
 			type: 'label',
-			text: `:${props.name}:`,
+			text: `:${targetName}:`,
 		});
 
-		if (isLocal.value || (customEmojis.value.find(it => it.name === customEmojiName.value)?.name ?? null)) {
+		if (isLocal.value || (customEmojis.value.find(it => it.name === targetCustomEmojiName)?.name ?? null)) {
 			menuItems.push({
 				text: i18n.ts.copy,
 				icon: 'ti ti-copy',
 				action: () => {
-					copyToClipboard(`:${props.name}:`);
+					copyToClipboard(`:${targetName}:`);
 				},
 			});
 		}
 
-		if (props.host && $i && ($i.isAdmin || $i.policies.canManageCustomEmojis)) {
+		if (targetHost && $i && ($i.isAdmin || $i.policies.canManageCustomEmojis)) {
 			menuItems.push({
 				text: i18n.ts.import,
 				icon: 'ti ti-plus',
 				action: () => {
 					os.apiWithDialog('admin/emoji/steal', {
-						name: customEmojiName.value,
-						host: props.host!,
+						name: targetCustomEmojiName,
+						host: targetHost,
 					});
 				},
 			});
@@ -154,7 +159,7 @@ function onClick(ev: PointerEvent) {
 				text: i18n.ts.doReaction,
 				icon: 'ti ti-mood-plus',
 				action: () => {
-					react(`:${props.name}:`);
+					react(`:${targetName}:`);
 				},
 			});
 		}
@@ -168,7 +173,7 @@ function onClick(ev: PointerEvent) {
 				action: async () => {
 					const { dispose } = os.popup(MkCustomEmojiDetailedDialog, {
 						emoji: await misskeyApiGet('emoji', {
-							name: customEmojiName.value,
+							name: targetCustomEmojiName,
 						}),
 					}, {
 						closed: () => dispose(),
@@ -182,7 +187,7 @@ function onClick(ev: PointerEvent) {
 				text: i18n.ts.emojiUnmute,
 				icon: 'ti ti-mood-smile',
 				action: async () => {
-					await unmute();
+					await unmute(targetEmojiCode, targetEmojiTitle);
 				},
 			});
 		} else {
@@ -190,7 +195,7 @@ function onClick(ev: PointerEvent) {
 				text: i18n.ts.emojiMute,
 				icon: 'ti ti-mood-off',
 				action: async () => {
-					await mute();
+					await mute(targetEmojiCode, targetEmojiTitle);
 				},
 			});
 		}
@@ -200,7 +205,7 @@ function onClick(ev: PointerEvent) {
 				text: i18n.ts.addToEmojiPalette,
 				icon: 'ti ti-palette',
 				action: () => {
-					addToEmojiPalette(`:${props.name}:`);
+					addToEmojiPalette(`:${targetName}:`);
 				},
 			});
 		}
@@ -212,7 +217,7 @@ function onClick(ev: PointerEvent) {
 				text: i18n.ts.edit,
 				icon: 'ti ti-pencil',
 				action: async () => {
-					await edit(props.name);
+					await edit(targetName);
 				},
 			});
 		}
@@ -232,12 +237,7 @@ async function edit(name: string) {
 	});
 }
 
-function mute() {
-	// 確認ダイアログを開いている間に props が変わっても、ダイアログに出したものと同じ絵文字を対象にする
-	const targetEmojiCode = emojiCodeToMute.value;
-	const titleEmojiName = isLocal.value
-		? `:${customEmojiName.value}:`
-		: targetEmojiCode;
+function mute(targetEmojiCode: string, titleEmojiName: string) {
 	os.confirm({
 		type: 'question',
 		title: i18n.tsx.muteX({ x: titleEmojiName }),
@@ -249,11 +249,7 @@ function mute() {
 	});
 }
 
-function unmute() {
-	const targetEmojiCode = emojiCodeToMute.value;
-	const titleEmojiName = isLocal.value
-		? `:${customEmojiName.value}:`
-		: targetEmojiCode;
+function unmute(targetEmojiCode: string, titleEmojiName: string) {
 	os.confirm({
 		type: 'question',
 		title: i18n.tsx.unmuteX({ x: titleEmojiName }),
