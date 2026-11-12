@@ -50,11 +50,14 @@ export function chatDiceNotation(text: string | null | undefined): string | null
 
 export function assertChatDiceNotation(notation: string): void {
 	if (Buffer.byteLength(notation) > DICE_MAX_NOTATION_BYTES) throw new ChatDiceError('limit');
+	// 엔진 5.5.1의 Comment 규칙과 같은 영역만 깊이 계산에서 제외하고, 원문은 그대로 엔진에 넘긴다.
+	// 숫자식의 괄호는 엔진의 파싱 결과에서 사라지므로 깊이는 원문에서 검사한다.
+	const expression = notation.replace(/\/\*[\s\S]*?\*\/|\[[^\]]*\]|(?:\/\/|#)[^\n\r\u2028\u2029]*/g, '');
 	let depth = 0;
 	// 문법은 엔진이 해석하고, 이 순회는 파서의 자원 사용 깊이만 제한한다.
-	for (const character of notation) {
-		if ('([{'.includes(character)) depth++;
-		if (')]}'.includes(character)) depth = Math.max(0, depth - 1);
+	for (const character of expression) {
+		if ('({'.includes(character)) depth++;
+		if (')}'.includes(character)) depth = Math.max(0, depth - 1);
 		if (depth > 32) throw new ChatDiceError('limit');
 	}
 }
