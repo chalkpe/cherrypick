@@ -373,7 +373,9 @@ function getMenu(): MenuItem[] {
 		width: 42px;
 	}
 
-	.fukidashi {
+	// リアクションはノートと同じく本文の文字の大きさに合わせる
+	.fukidashi,
+	.reactions {
 		font-size: 90%;
 	}
 }
@@ -482,6 +484,8 @@ function getMenu(): MenuItem[] {
 	border-radius: 999px;
 	align-items: center;
 	justify-content: center;
+	// ノートのリアクションは button なので、高さに余白を含める計算を揃える
+	box-sizing: border-box;
 
 	&.reactionCanToggle {
 		background: var(--MI_THEME-buttonBg);
