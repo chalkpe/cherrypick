@@ -42,7 +42,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				</MkButton>
 			</template>
 			<template v-else>
-				<MkButton v-if="!selectedFolders.some(f => f.id === folder!.id)" @click="selectedFolders.push(folder)">
+				<MkButton v-if="!selectedFolders.some(f => f.id === folder!.id)" @click="selectedFolders = [...selectedFolders, folder]">
 					<i class="ti ti-square"></i> {{ i18n.ts.selectFolder }}
 				</MkButton>
 				<MkButton v-else @click="selectedFolders = selectedFolders.filter(f => f.id !== folder!.id)">
