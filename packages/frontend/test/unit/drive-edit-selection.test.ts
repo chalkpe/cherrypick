@@ -10,7 +10,7 @@ import type * as Misskey from 'cherrypick-js';
 vi.mock('@/store.js', async () => ({ store: { s: { realtimeMode: false }, r: { driveSortMode: (await import('vue')).ref('+name') } } }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ enableInfiniteScroll: false, animation: false }) }));
 vi.mock('@/i.js', () => ({ $i: { token: 'unit-token' } }));
-vi.mock('@/os.js', () => ({ waiting: () => () => {}, toast: vi.fn(), alert: vi.fn(), confirm: vi.fn() }));
+vi.mock('@/os.js', () => ({ waiting: () => () => {}, toast: vi.fn(), alert: vi.fn(), confirm: vi.fn(), contextMenu: vi.fn() }));
 vi.mock('@/utility/drive.js', () => ({ chooseFileFromPcAndUpload: vi.fn(), selectDriveFolder: vi.fn() }));
 vi.mock('@/utility/achievements.js', () => ({ claimAchievement: vi.fn() }));
 vi.mock('@/utility/get-drive-file-menu.js', () => ({ getDriveFileMenu: vi.fn() }));
@@ -25,6 +25,8 @@ import * as os from '@/os.js';
 import { globalEvents } from '@/events.js';
 import { store } from '@/store.js';
 import { selectDriveFolder } from '@/utility/drive.js';
+import { driveDeletionBusy } from '@/utility/drive-delete.js';
+import { pendingApiRequestsCount } from '@/utility/misskey-api.js';
 
 const sand = { id: 'sand', name: 'Sand', parentId: null, parent: null } as Misskey.entities.DriveFolder;
 const wind = { id: 'wind', name: 'Wind', parentId: null, parent: null } as Misskey.entities.DriveFolder;
@@ -44,6 +46,8 @@ let failFileList: boolean;
 let failedMoveBatch: number | undefined;
 let moveBatchCount: number;
 let fileListGate: Promise<void> | undefined;
+let failedDeleteIds: Set<string>;
+let failPrepare: boolean;
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -54,6 +58,8 @@ beforeEach(() => {
 	failedMoveBatch = undefined;
 	moveBatchCount = 0;
 	fileListGate = undefined;
+	failedDeleteIds = new Set();
+	failPrepare = false;
 	store.r.driveSortMode.value = '+name';
 	vi.mocked(os.confirm).mockResolvedValue({ canceled: false });
 	fetchMock.resetMocks();
@@ -72,15 +78,18 @@ beforeEach(() => {
 		if (endpoint === '/api/drive/folders') return JSON.stringify(folders.filter(folder => folder.parentId === params.folderId));
 		if (endpoint === '/api/drive/folders/show') return JSON.stringify(folders.find(folder => folder.id === params.folderId));
 		if (endpoint === '/api/drive/delete/prepare') {
-			preparedIds = params.fileIds;
+			if (failPrepare) return { status: 500, body: JSON.stringify({ error: { code: 'INTERNAL_ERROR' } }) };
+			preparedIds = params.fileIds ?? files.filter(file => file.folderId === params.folderId).map(file => file.id);
 			return JSON.stringify({ operationId: 'operation', totalCount: preparedIds.length });
 		}
 		if (endpoint === '/api/drive/delete/execute') {
-			files = files.filter(file => !preparedIds.includes(file.id));
+			const deletedIds = preparedIds.filter(id => !failedDeleteIds.has(id));
+			const failedCount = preparedIds.length - deletedIds.length;
+			files = files.filter(file => !deletedIds.includes(file.id));
 			return JSON.stringify({
-				operationId: 'operation', totalCount: preparedIds.length, deletedCount: preparedIds.length,
-				missingCount: 0, failedCount: 0, remainingCount: 0, remainingFoldersCount: 0,
-				deletedIds: preparedIds, missingIds: [], deletedFolderIds: [], missingFolderIds: [], folderDeleted: false, done: true,
+				operationId: 'operation', totalCount: preparedIds.length, deletedCount: deletedIds.length,
+				missingCount: 0, failedCount, remainingCount: failedCount, remainingFoldersCount: 0,
+				deletedIds, missingIds: [], deletedFolderIds: [], missingFolderIds: [], folderDeleted: false, done: true,
 			});
 		}
 		if (endpoint === '/api/drive/files/move-bulk') {
@@ -232,6 +241,60 @@ async function selectPaginatedFiles(count = 103) {
 	expectCount(screen, count);
 	return screen;
 }
+
+test.each([
+	{ sort: '+createdAt', failed: 103 },
+	{ sort: '+name', failed: 103 },
+	{ sort: '+createdAt', failed: 100 },
+	{ sort: '+name', failed: 100 },
+] as const)('delete failures in $sort order retain all $failed selections for retry', async ({ sort, failed }) => {
+	store.r.driveSortMode.value = sort;
+	const screen = await selectPaginatedFiles();
+	const retryIds = files.slice(0, failed).map(file => file.id);
+	failedDeleteIds = new Set(retryIds);
+
+	await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+	await waitFor(() => expect(os.alert).toHaveBeenCalledOnce());
+	await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' }).hasAttribute('disabled')).toBe(false));
+	await waitFor(() => expect(pendingApiRequestsCount.value).toBe(0));
+
+	expectCount(screen, failed);
+	expect(screen.getAllByRole('button', { name: /^Piece-/, pressed: true })).toHaveLength(failed);
+	expect(files.map(file => file.id)).toEqual(retryIds);
+	failedDeleteIds.clear();
+	await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+	await waitFor(() => expectCount(screen, 0));
+	expect(requests('drive/delete/prepare').at(-1).fileIds).toEqual(retryIds);
+});
+
+test.each([
+	{ sort: '+createdAt', prepareFails: false },
+	{ sort: '+name', prepareFails: false },
+	{ sort: '+createdAt', prepareFails: true },
+	{ sort: '+name', prepareFails: true },
+] as const)('current-folder deletion in $sort order preserves 103 selections without a result (prepare failure: $prepareFails)', async ({ sort, prepareFails }) => {
+	store.r.driveSortMode.value = sort;
+	const screen = await selectPaginatedFiles();
+	const fileQueries = requests('drive/files').length;
+	const folderQueries = requests('drive/folders').length;
+	failPrepare = prepareFails;
+	vi.mocked(os.confirm).mockResolvedValue({ canceled: true });
+
+	await fireEvent.contextMenu(screen.getByRole('button', { name: 'Piece-103.png' }));
+	const menu = vi.mocked(os.contextMenu).mock.calls.at(-1)![0];
+	const item = menu.find(entry => entry && typeof entry === 'object' && 'text' in entry && entry.text === 'Delete this folder');
+	if (!item || typeof item !== 'object' || !('action' in item) || !item.action) throw new Error('Folder delete action missing');
+	item.action(new PointerEvent('click'));
+	await waitFor(() => expect(requests('drive/delete/prepare')).toHaveLength(1));
+	await waitFor(() => expect(driveDeletionBusy.value).toBe(false));
+	await waitFor(() => expect(pendingApiRequestsCount.value).toBe(0));
+
+	expectCount(screen, 103);
+	expect(screen.getAllByRole('button', { name: /^Piece-/, pressed: true })).toHaveLength(103);
+	expect(requests('drive/delete/execute')).toHaveLength(0);
+	expect(requests('drive/files')).toHaveLength(fileQueries);
+	expect(requests('drive/folders')).toHaveLength(folderQueries);
+});
 
 test.each(['+createdAt', '+name'] as const)('canceling a delete in %s order preserves all 103 selections for the next confirmation', async sort => {
 	store.r.driveSortMode.value = sort;

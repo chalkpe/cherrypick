@@ -543,7 +543,7 @@ function onDragleave() {
 	draghover.value = false;
 }
 
-function onDrop(ev: DragEvent): void | boolean {
+async function onDrop(ev: DragEvent): Promise<void | boolean> {
 	draghover.value = false;
 
 	if (!ev.dataTransfer) return;
@@ -560,16 +560,18 @@ function onDrop(ev: DragEvent): void | boolean {
 	{
 		const droppedData = getDragData(ev, 'driveFiles');
 		if (droppedData != null) {
-			misskeyApi('drive/files/move-bulk', {
-				fileIds: droppedData.map(f => f.id),
-				folderId: folder.value ? folder.value.id : null,
-			}).then(() => {
-				globalEvents.emit('driveFilesUpdated', droppedData.map(x => ({
-					...x,
-					folderId: folder.value ? folder.value.id : null,
-					folder: folder.value,
-				})));
-			});
+			const target = folder.value;
+			const closeWaiting = os.waiting();
+			let result: Awaited<ReturnType<typeof runDriveFileBatches>>;
+			try {
+				result = await runDriveFileBatches(droppedData.map(file => file.id), fileIds => misskeyApi('drive/files/move-bulk', { fileIds, folderId: target?.id ?? null }));
+			} finally {
+				closeWaiting();
+			}
+			const moved = new Set(result.succeededIds);
+			globalEvents.emit('driveFilesUpdated', droppedData.filter(file => moved.has(file.id)).map(file => ({ ...file, folderId: target?.id ?? null, folder: target })));
+			if (result.failedIds.length > 0) await os.alert({ type: 'warning', text: i18n.tsx._driveDeletion.moveResult({ moved: moved.size, failed: result.failedIds.length }) });
+			else os.toast(i18n.ts.saved);
 		}
 	}
 	//#endregion
@@ -675,8 +677,9 @@ async function renameFolder(folderToRename: Misskey.entities.DriveFolder) {
 
 async function deleteFolder(folderToDelete: Misskey.entities.DriveFolder) {
 	const result = await deleteDriveItems({ folderId: folderToDelete.id, name: folderToDelete.name });
-	if (result?.folderDeleted && folder.value?.id === folderToDelete.id) cd(folderToDelete.parentId);
-	else initialize();
+	if (!result) return;
+	if (result.folderDeleted && folder.value?.id === folderToDelete.id) cd(folderToDelete.parentId);
+	else await Promise.all([refreshFiles(), refreshFolders()]).catch(() => {});
 }
 
 async function deleteFilesBulk() {
@@ -684,7 +687,7 @@ async function deleteFilesBulk() {
 	bulkBusy.value = true;
 	try {
 		const result = await deleteDriveItems({ fileIds: selectedFiles.value.map(file => file.id) });
-		if (result) initialize();
+		if (result) await refreshFiles().catch(() => {});
 	} finally {
 		bulkBusy.value = false;
 	}

@@ -45,6 +45,7 @@ import { prefer } from '@/preferences.js';
 import { globalEvents } from '@/events.js';
 import { checkDragDataType, getDragData, setDragData } from '@/drag-and-drop.js';
 import { selectDriveFolder } from '@/utility/drive.js';
+import { runDriveFileBatches } from '@/utility/drive-bulk.js';
 
 const props = withDefaults(defineProps<{
 	folder: Misskey.entities.DriveFolder;
@@ -126,7 +127,7 @@ function onDragleave() {
 	draghover.value = false;
 }
 
-function onDrop(ev: DragEvent) {
+async function onDrop(ev: DragEvent) {
 	draghover.value = false;
 
 	if (!ev.dataTransfer) return;
@@ -141,16 +142,18 @@ function onDrop(ev: DragEvent) {
 	{
 		const droppedData = getDragData(ev, 'driveFiles');
 		if (droppedData != null) {
-			misskeyApi('drive/files/move-bulk', {
-				fileIds: droppedData.map(f => f.id),
-				folderId: props.folder.id,
-			}).then(() => {
-				globalEvents.emit('driveFilesUpdated', droppedData.map(x => ({
-					...x,
-					folderId: props.folder.id,
-					folder: props.folder,
-				})));
-			});
+			const target = props.folder;
+			const closeWaiting = os.waiting();
+			let result: Awaited<ReturnType<typeof runDriveFileBatches>>;
+			try {
+				result = await runDriveFileBatches(droppedData.map(file => file.id), fileIds => misskeyApi('drive/files/move-bulk', { fileIds, folderId: target.id }));
+			} finally {
+				closeWaiting();
+			}
+			const moved = new Set(result.succeededIds);
+			globalEvents.emit('driveFilesUpdated', droppedData.filter(file => moved.has(file.id)).map(file => ({ ...file, folderId: target.id, folder: target })));
+			if (result.failedIds.length > 0) await os.alert({ type: 'warning', text: i18n.tsx._driveDeletion.moveResult({ moved: moved.size, failed: result.failedIds.length }) });
+			else os.toast(i18n.ts.saved);
 		}
 	}
 	//#endregion
