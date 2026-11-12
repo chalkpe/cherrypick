@@ -14,9 +14,9 @@ type Events = {
 	noteRemovedFromAntenna: (antennaId: Misskey.entities.Antenna['id'], noteId: Misskey.entities.Note['id']) => void;
 	driveFileCreated: (file: Misskey.entities.DriveFile) => void;
 	driveFilesUpdated: (files: Misskey.entities.DriveFile[]) => void;
-	driveFilesDeleted: (files: Misskey.entities.DriveFile[]) => void;
+	driveFilesDeleted: (files: Pick<Misskey.entities.DriveFile, 'id'>[]) => void;
 	driveFoldersUpdated: (folders: Misskey.entities.DriveFolder[]) => void;
-	driveFoldersDeleted: (folders: Misskey.entities.DriveFolder[]) => void;
+	driveFoldersDeleted: (folders: Pick<Misskey.entities.DriveFolder, 'id'>[]) => void;
 
 	// CherryPick
 	showEl: (value: boolean) => void;

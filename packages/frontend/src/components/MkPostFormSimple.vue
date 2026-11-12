@@ -252,7 +252,7 @@ watch(showAddMfmFunction, () => prefer.commit('enableQuickAddMfmFunction', showA
 const cw = ref<string | null>(props.initialCw ?? null);
 const localOnly = ref(props.initialLocalOnly ?? (prefer.s.rememberNoteVisibility ? store.s.localOnly : prefer.s.defaultNoteLocalOnly));
 const requestedVisibility = ref(props.initialVisibility ?? (prefer.s.rememberNoteVisibility ? store.s.visibility : prefer.s.defaultNoteVisibility));
-const visibleUsers = ref<Misskey.entities.UserDetailed[]>([]);
+const visibleUsers = ref<Misskey.entities.UserLite[]>([]);
 if (props.initialVisibleUsers) {
 	props.initialVisibleUsers.forEach(u => pushVisibleUser(u));
 }
@@ -786,7 +786,7 @@ function showOtherSettings() {
 }
 //#endregion
 
-function pushVisibleUser(user: Misskey.entities.UserDetailed) {
+function pushVisibleUser(user: Misskey.entities.UserLite) {
 	if (!visibleUsers.value.some(u => u.username === user.username && u.host === user.host)) {
 		visibleUsers.value.push(user);
 	}
@@ -802,7 +802,7 @@ function addVisibleUser() {
 	});
 }
 
-function removeVisibleUser(user: Misskey.entities.UserDetailed) {
+function removeVisibleUser(user: Misskey.entities.UserLite) {
 	visibleUsers.value = erase(user, visibleUsers.value);
 }
 

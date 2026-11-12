@@ -1,6 +1,6 @@
 # syntax = docker/dockerfile:1.27
 
-ARG NODE_VERSION=26.12.1-trixie
+ARG NODE_VERSION=26.13.1-trixie
 
 # build assets & compile TypeScript
 
@@ -115,4 +115,4 @@ ENV MALLOC_CONF=background_thread:true,metadata_thp:auto,dirty_decay_ms:30000,mu
 ENV NODE_ENV=production
 HEALTHCHECK --interval=5s --retries=20 CMD ["/bin/bash", "/cherrypick/healthcheck.sh"]
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["pnpm", "run", "migrateandstart"]
+CMD ["node", "scripts/start.mjs", "--migrate"]

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { Session } from 'node:inspector';
 import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -112,12 +112,7 @@ async function collectServerCoverage(project: TestProject, provider: V8CoverageP
 	await mkdir(bundleProvider.coverageFilesDirectory, { recursive: true });
 
 	try {
-		bundleProvider.onAfterSuiteRun({
-			coverage: { result: chunks },
-			environment: 'ssr',
-			projectName: project.name,
-			testFiles: ['test-server'],
-		});
+		await recordServerCoverage(bundleProvider, chunks, project.name);
 
 		const convertStartedAt = performance.now();
 
@@ -135,6 +130,18 @@ async function collectServerCoverage(project: TestProject, provider: V8CoverageP
 	} finally {
 		await rm(bundleProvider.coverageFilesDirectory, { recursive: true, force: true });
 	}
+}
+
+export async function recordServerCoverage(provider: V8CoverageProvider, chunks: ScriptCoverageWithOffset[], projectName: string): Promise<void> {
+	// Vitest는 커버리지 본문 대신 저장한 JSON 파일의 경로를 받는다.
+	const filename = resolve(provider.coverageFilesDirectory, 'server-coverage.json');
+	await writeFile(filename, JSON.stringify({ result: chunks }));
+	provider.onAfterSuiteRun({
+		coverage: filename,
+		environment: 'ssr',
+		projectName,
+		testFiles: ['test-server'],
+	});
 }
 
 class BundledCoverageProvider extends V8CoverageProvider {

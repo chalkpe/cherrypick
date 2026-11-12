@@ -11,6 +11,7 @@ import { awaitAll } from '@/misc/prelude/await-all.js';
 import type { Packed } from '@/misc/json-schema.js';
 import type { } from '@/models/Blocking.js';
 import { bindThis } from '@/decorators.js';
+import { parseChatDiceResult } from '@/core/chat-dice.js';
 import { IdService } from '@/core/IdService.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
 import { UserEntityService } from './UserEntityService.js';
@@ -103,6 +104,7 @@ export class ChatEntityService {
 			editedAt: message.editedAt?.toISOString() ?? null,
 			deletedAt: message.deletedAt?.toISOString() ?? null,
 			text: deleted ? null : message.text,
+			dice: deleted ? null : parseChatDiceResult(message.dice),
 			fromUserId: message.fromUserId,
 			fromUser: packedUsers?.get(message.fromUserId) ?? (await this.userEntityService.pack(message.fromUser ?? message.fromUserId, me)),
 			toUserId: message.toUserId,
@@ -195,6 +197,7 @@ export class ChatEntityService {
 			editedAt: message.editedAt?.toISOString() ?? null,
 			deletedAt: message.deletedAt?.toISOString() ?? null,
 			text: deleted ? null : message.text,
+			dice: deleted ? null : parseChatDiceResult(message.dice),
 			fromUserId: message.fromUserId,
 			toUserId: message.toUserId!,
 			...(await this.packMessageFiles(message, packedFiles)),
@@ -260,6 +263,7 @@ export class ChatEntityService {
 			editedAt: message.editedAt?.toISOString() ?? null,
 			deletedAt: message.deletedAt?.toISOString() ?? null,
 			text: deleted ? null : message.text,
+			dice: deleted ? null : parseChatDiceResult(message.dice),
 			fromUserId: message.fromUserId,
 			fromUser: packedUsers?.get(message.fromUserId) ?? (await this.userEntityService.pack(message.fromUser ?? message.fromUserId)),
 			toRoomId: message.toRoomId!,

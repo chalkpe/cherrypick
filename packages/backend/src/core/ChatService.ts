@@ -41,6 +41,8 @@ import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { emojiRegex } from '@/misc/emoji-regex.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { chatMessageUri, chatRoomUriForOwner, localChatMessageIdFromUri } from '@/core/activitypub/misc/chat-payloads.js';
+import { ChatDiceService } from '@/core/ChatDiceService.js';
+import { chatDiceNotation, parseChatDiceResult } from '@/core/chat-dice.js';
 import { ApiError } from '@/server/api/error.js';
 
 export class ChatMessageAccessError extends Error {}
@@ -143,6 +145,7 @@ export class ChatService {
 		private liveKitService: LiveKitService,
 		private hostPolicyService: HostPolicyService,
 		private chatRosterService: ChatRosterService,
+		private chatDiceService: ChatDiceService,
 	) {
 	}
 
@@ -263,6 +266,7 @@ export class ChatService {
 		uri?: string | null;
 		emojis?: string[];
 		editedAt?: Date | null;
+		dice?: unknown;
 	}): Promise<Packed<'ChatMessageLiteFor1on1'>> {
 		const { iApprovedOther } = await this.assertCanSendToUser(fromUser, toUser);
 
@@ -275,12 +279,17 @@ export class ChatService {
 			emojis = extractCustomEmojisFromMfm(tokens);
 		}
 
+		const notation = fromUser.host == null ? chatDiceNotation(params.text) : null;
+		const dice = fromUser.host == null
+			? (notation != null ? await this.chatDiceService.roll(fromUser.id, notation) : null)
+			: parseChatDiceResult(params.dice);
 		const id = this.idService.gen();
 		const message = {
 			id,
 			fromUserId: fromUser.id,
 			toUserId: toUser.id,
 			text: params.text ? params.text.trim() : null,
+			dice,
 			fileIds: params.files?.map(file => file.id) ?? [],
 			reads: [],
 			uri: chatMessageUri({ id, uri: params.uri }, this.config.url),
@@ -364,6 +373,7 @@ export class ChatService {
 		uri?: string | null;
 		emojis?: string[];
 		editedAt?: Date | null;
+		dice?: unknown;
 	}): Promise<Packed<'ChatMessageLiteForRoom'>> {
 		const memberships = (await this.chatRoomMembershipsRepository.findBy({ roomId: toRoom.id })).map(m => ({
 			userId: m.userId,
@@ -394,12 +404,17 @@ export class ChatService {
 			emojis = extractCustomEmojisFromMfm(tokens);
 		}
 
+		const notation = fromUser.host == null ? chatDiceNotation(params.text) : null;
+		const dice = fromUser.host == null
+			? (notation != null ? await this.chatDiceService.roll(fromUser.id, notation) : null)
+			: parseChatDiceResult(params.dice);
 		const id = this.idService.gen();
 		const message = {
 			id,
 			fromUserId: fromUser.id,
 			toRoomId: toRoom.id,
 			text: params.text ? params.text.trim() : null,
+			dice,
 			fileIds: params.files?.map(file => file.id) ?? [],
 			reads: [],
 			uri: chatMessageUri({ id, uri: params.uri }, this.config.url),
@@ -633,6 +648,7 @@ export class ChatService {
 		if (message == null) throw new ChatMessageAccessError('no such message');
 		if (message.fromUserId !== userId) throw new ChatMessageAccessError('cannot edit');
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
+		if (message.dice != null) throw new ChatMessageAccessError('dice message is immutable');
 		await this.assertCanStillEdit(message);
 		await this.assertMessageRoomNotArchived(message);
 
@@ -641,7 +657,7 @@ export class ChatService {
 
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));
-		const result = await this.chatMessagesRepository.update({ id: message.id, deletedAt: IsNull() }, { text: trimmed, editedAt, emojis });
+		const result = await this.chatMessagesRepository.update({ id: message.id, deletedAt: IsNull(), dice: IsNull() }, { text: trimmed, editedAt, emojis });
 		if (result.affected === 0) throw new ChatMessageAccessError('deleted');
 		message.text = trimmed;
 		message.editedAt = editedAt;
@@ -675,11 +691,13 @@ export class ChatService {
 		const deletedAt = new Date();
 		await this.chatMessagesRepository.update(message.id, {
 			text: null,
+			dice: null,
 			fileIds: [],
 			reactions: [],
 			deletedAt,
 		});
 		message.text = null;
+		message.dice = null;
 		message.fileIds = [];
 		message.reactions = [];
 		message.deletedAt = deletedAt;
@@ -1757,6 +1775,7 @@ export class ChatService {
 	public async updateRemoteMessage(actor: MiUser, message: MiChatMessage, text: string, editedAt: Date, emojis: string[] = []): Promise<MiChatMessage> {
 		if (message.fromUserId !== actor.id) throw new ChatMessageAccessError('cannot edit');
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
+		if (message.dice != null) throw new ChatMessageAccessError('dice message is immutable');
 		if (message.editedAt != null && message.editedAt >= editedAt) return message;
 		await this.assertCanStillEdit(message);
 		const room = message.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
@@ -1767,8 +1786,8 @@ export class ChatService {
 
 		// Keep this conditional in SQL as multiple inbox workers may read the same revision.
 		const result = await this.chatMessagesRepository.update([
-			{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), editedAt: IsNull() },
-			{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), editedAt: LessThan(editedAt) },
+			{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), dice: IsNull(), editedAt: IsNull() },
+			{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), dice: IsNull(), editedAt: LessThan(editedAt) },
 		], { text: trimmed, editedAt, emojis });
 		if (result.affected === 0) return message;
 		message.text = trimmed;
@@ -1808,11 +1827,13 @@ export class ChatService {
 		const deletedAt = new Date();
 		await this.chatMessagesRepository.update(message.id, {
 			text: null,
+			dice: null,
 			fileIds: [],
 			reactions: [],
 			deletedAt,
 		});
 		message.text = null;
+		message.dice = null;
 		message.fileIds = [];
 		message.reactions = [];
 		message.deletedAt = deletedAt;

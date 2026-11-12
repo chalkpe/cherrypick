@@ -1918,6 +1918,33 @@ export type paths = {
          */
         post: operations['drive'];
     };
+    '/drive/delete/execute': {
+        /**
+         * drive/delete/execute
+         * @description Execute one batch of a confirmed drive deletion. Deletes only frozen file IDs, even if moved, and empty unchanged folders from children to parents. New files are never added to the operation. Call until done. Repeated calls preserve cumulative outcomes; prepare and confirm again to retry failures. Counts describe drive database removal; object-storage cleanup uses the usual deletion queue.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:drive*
+         */
+        post: operations['drive___delete___execute'];
+    };
+    '/drive/delete/prepare': {
+        /**
+         * drive/delete/prepare
+         * @description Prepare a deletion of your selected files (including in-use files) or an entire folder tree. Freezes file IDs for confirmation for one hour, replacing your previous confirmation. At most 10000 files and 1000 folders. Does not delete anything.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:drive*
+         */
+        post: operations['drive___delete___prepare'];
+    };
+    '/drive/delete/status': {
+        /**
+         * drive/delete/status
+         * @description Read your deletion outcomes after a lost execute response without deleting another batch. The owner-bound operation expires one hour after preparation or its latest execution update; status requests do not extend it.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:drive*
+         */
+        post: operations['drive___delete___status'];
+    };
     '/drive/files': {
         /**
          * drive/files
@@ -6225,6 +6252,15 @@ export type components = {
             toUser?: components['schemas']['UserLite'] | null;
             toRoomId?: string | null;
             toRoom?: components['schemas']['ChatRoom'] | null;
+            dice?: {
+                version: number;
+                /** @enum {string} */
+                engine: '@dice-roller/rpg-dice-roller';
+                engineVersion: string;
+                notation: string;
+                total: number;
+                output: string;
+            } | null;
             text?: string | null;
             fileId?: string | null;
             file?: components['schemas']['DriveFile'] | null;
@@ -6251,6 +6287,15 @@ export type components = {
             fromUser?: components['schemas']['UserLite'];
             toUserId?: string | null;
             toRoomId?: string | null;
+            dice?: {
+                version: number;
+                /** @enum {string} */
+                engine: '@dice-roller/rpg-dice-roller';
+                engineVersion: string;
+                notation: string;
+                total: number;
+                output: string;
+            } | null;
             text?: string | null;
             fileId?: string | null;
             file?: components['schemas']['DriveFile'] | null;
@@ -6274,6 +6319,15 @@ export type components = {
             deletedAt?: string | null;
             fromUserId: string;
             toUserId: string;
+            dice?: {
+                version: number;
+                /** @enum {string} */
+                engine: '@dice-roller/rpg-dice-roller';
+                engineVersion: string;
+                notation: string;
+                total: number;
+                output: string;
+            } | null;
             text?: string | null;
             fileId?: string | null;
             file?: components['schemas']['DriveFile'] | null;
@@ -6297,6 +6351,15 @@ export type components = {
             fromUserId: string;
             fromUser: components['schemas']['UserLite'];
             toRoomId: string;
+            dice?: {
+                version: number;
+                /** @enum {string} */
+                engine: '@dice-roller/rpg-dice-roller';
+                engineVersion: string;
+                notation: string;
+                total: number;
+                output: string;
+            } | null;
             text?: string | null;
             fileId?: string | null;
             file?: components['schemas']['DriveFile'] | null;
@@ -15926,6 +15989,8 @@ export interface operations {
                         id: string;
                         app: components['schemas']['App'];
                         token: string;
+                        /** @description CherryPick permissions for the pending Mastodon OAuth request. */
+                        permission?: string[];
                     };
                 };
             };
@@ -21966,6 +22031,251 @@ export interface operations {
             };
         };
     };
+    drive___delete___execute: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    operationId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        operationId: string;
+                        totalCount: number;
+                        deletedCount: number;
+                        missingCount: number;
+                        failedCount: number;
+                        remainingCount: number;
+                        remainingFoldersCount: number;
+                        done: boolean;
+                        folderDeleted: boolean;
+                        /** @description IDs sorted in lexicographic order. */
+                        deletedIds: string[];
+                        /** @description IDs sorted in lexicographic order. */
+                        missingIds: string[];
+                        /** @description IDs sorted in lexicographic order. */
+                        deletedFolderIds: string[];
+                        /** @description IDs sorted in lexicographic order. */
+                        missingFolderIds: string[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    drive___delete___prepare: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    fileIds?: string[];
+                    /** Format: misskey:id */
+                    folderId?: string;
+                } & (unknown | unknown);
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        operationId: string;
+                        totalCount: number;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    drive___delete___status: {
+        requestBody: {
+            content: {
+                'application/json': {
+                    operationId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        operationId: string;
+                        totalCount: number;
+                        deletedCount: number;
+                        missingCount: number;
+                        failedCount: number;
+                        remainingCount: number;
+                        remainingFoldersCount: number;
+                        done: boolean;
+                        folderDeleted: boolean;
+                        /** @description IDs sorted in lexicographic order. */
+                        deletedIds: string[];
+                        /** @description IDs sorted in lexicographic order. */
+                        missingIds: string[];
+                        /** @description IDs sorted in lexicographic order. */
+                        deletedFolderIds: string[];
+                        /** @description IDs sorted in lexicographic order. */
+                        missingFolderIds: string[];
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
     drive___files: {
         requestBody: {
             content: {
@@ -27598,7 +27908,6 @@ export interface operations {
                 };
                 content: {
                     'application/json': {
-                        qr: string;
                         url: string;
                         secret: string;
                         label: string;

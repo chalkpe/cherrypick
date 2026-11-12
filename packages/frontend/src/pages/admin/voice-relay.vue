@@ -7,25 +7,25 @@ SPDX-License-Identifier: AGPL-3.0-only
  <div class="_spacer" style="--MI_SPACER-w: 800px;">
   <SearchMarker path="/admin/voice-relay" :label="i18n.ts._voiceRelay.settingsTitle" :keywords="['call', 'voice', 'livekit', 'turn', 'cloudflare', 'relay', 'rental', 'borrow', '통화', '인프라', '대여', '대여하기', '通話', 'レンタル', '借りる']" icon="ti ti-phone">
    <div class="_gaps">
-    <MkFolder>
+    <MkFolder accessible>
      <template #icon><i class="ti ti-users"></i></template>
      <template #label>{{ i18n.ts._voiceRelay.capacityTitle }}</template>
      <template v-if="capacityForm.modified.value" #footer><MkFormFooter :form="capacityForm"/></template>
-     <MkInput v-model="capacityForm.state.limit" type="number" :min="1" :max="51" :step="1">
+     <MkInput v-model="capacityForm.state.limit" accessible type="number" :min="1" :max="51" :step="1">
       <template #label>{{ i18n.ts._voiceRelay.capacityTitle }} <span v-if="capacityForm.modifiedStates.limit" class="_modified">{{ i18n.ts.modified }}</span></template>
       <template #caption>{{ i18n.ts._voiceRelay.capacityDescription }}</template>
      </MkInput>
     </MkFolder>
-    <MkFolder>
+    <MkFolder accessible>
      <template #icon><i class="ti ti-video"></i></template>
      <template #label>{{ i18n.ts._voiceRelay.recordingConversionsTitle }}</template>
      <template v-if="recordingForm.modified.value" #footer><MkFormFooter :form="recordingForm"/></template>
-     <MkInput v-model="recordingForm.state.limit" type="number" :min="0" :max="16" :step="1">
+     <MkInput v-model="recordingForm.state.limit" accessible type="number" :min="0" :max="16" :step="1">
       <template #label>{{ i18n.ts._voiceRelay.recordingConversionsTitle }} <span v-if="recordingForm.modifiedStates.limit" class="_modified">{{ i18n.ts.modified }}</span></template>
       <template #caption>{{ i18n.ts._voiceRelay.recordingConversionsDescription }}</template>
      </MkInput>
     </MkFolder>
-    <MkFolder>
+    <MkFolder accessible>
      <template #icon><i class="ti ti-phone"></i></template>
      <template #label>{{ i18n.ts._voiceRelay.livekitTitle }}</template>
      <template v-if="livekitForm.modified.value" #footer><MkFormFooter :form="livekitForm"/></template>
@@ -35,51 +35,54 @@ SPDX-License-Identifier: AGPL-3.0-only
        <template #label>{{ i18n.ts._voiceRelay.livekitSource }} <span v-if="livekitForm.modifiedStates.source" class="_modified">{{ i18n.ts.modified }}</span></template>
       </MkRadios>
       <template v-if="livekitForm.state.source === 'custom'">
-       <MkInput v-model="livekitForm.state.url" type="url"><template #label>{{ i18n.ts._voiceRelay.livekitUrl }} <span v-if="livekitForm.modifiedStates.url" class="_modified">{{ i18n.ts.modified }}</span></template></MkInput>
-       <MkInput v-model="livekitForm.state.key" autocomplete="off"><template #label>{{ i18n.ts._voiceRelay.livekitKey }} <span v-if="livekitForm.modifiedStates.key" class="_modified">{{ i18n.ts.modified }}</span></template></MkInput>
-       <MkInput v-model="livekitForm.state.secret" type="password" autocomplete="new-password"><template #label>{{ i18n.ts._voiceRelay.livekitSecret }} <span v-if="livekitForm.modifiedStates.secret" class="_modified">{{ i18n.ts.modified }}</span></template><template #caption>{{ i18n.ts._voiceRelay.secretHelp }}</template></MkInput>
+       <MkInput v-model="livekitForm.state.url" accessible type="url"><template #label>{{ i18n.ts._voiceRelay.livekitUrl }} <span v-if="livekitForm.modifiedStates.url" class="_modified">{{ i18n.ts.modified }}</span></template></MkInput>
+       <MkInput v-model="livekitForm.state.key" accessible autocomplete="off"><template #label>{{ i18n.ts._voiceRelay.livekitKey }} <span v-if="livekitForm.modifiedStates.key" class="_modified">{{ i18n.ts.modified }}</span></template></MkInput>
+       <MkInput v-model="livekitForm.state.secret" accessible type="password" autocomplete="new-password"><template #label>{{ i18n.ts._voiceRelay.livekitSecret }} <span v-if="livekitForm.modifiedStates.secret" class="_modified">{{ i18n.ts.modified }}</span></template><template #caption>{{ i18n.ts._voiceRelay.secretHelp }}</template></MkInput>
       </template>
-      <MkSwitch v-if="livekitSecretSet && livekitForm.state.source !== 'custom'" v-model="livekitForm.state.clearSecret">{{ i18n.ts._voiceRelay.deleteSecret }}</MkSwitch>
+      <MkSwitch v-if="livekitSecretSet && livekitForm.state.source !== 'custom'" v-model="livekitForm.state.clearSecret" accessible>{{ i18n.ts._voiceRelay.deleteSecret }}</MkSwitch>
       <MkInfo v-if="livekitSecretSet">{{ i18n.ts._voiceRelay.secretSet }}</MkInfo>
       <MkRadios v-model="livekitForm.state.preference" :options="[{ value: 'yaml', label: i18n.ts._voiceRelay.preferYaml }, { value: 'local', label: i18n.ts._voiceRelay.preferLocal }, { value: 'relay', label: i18n.ts._voiceRelay.preferRelay }]" vertical>
        <template #label>{{ i18n.ts._voiceRelay.preference }} <span v-if="livekitForm.modifiedStates.preference" class="_modified">{{ i18n.ts.modified }}</span></template>
       </MkRadios>
      </div>
     </MkFolder>
-    <MkFolder>
+    <MkFolder accessible>
      <template #icon><i class="ti ti-router"></i></template>
      <template #label>{{ i18n.ts._serverSettings.voiceCallCloudflareTurn }}</template>
      <template v-if="turnForm.modified.value" #footer><MkFormFooter :form="turnForm"/></template>
      <div class="_gaps">
       <MkInfo>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnDescription }}</MkInfo>
-      <MkInput v-model="turnForm.state.keyId" autocomplete="off"><template #label>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnKeyId }} <span v-if="turnForm.modifiedStates.keyId" class="_modified">{{ i18n.ts.modified }}</span></template></MkInput>
-      <MkInput v-model="turnForm.state.token" type="password" autocomplete="new-password"><template #label>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnApiToken }} <span v-if="turnForm.modifiedStates.token" class="_modified">{{ i18n.ts.modified }}</span></template><template #caption>{{ i18n.ts._voiceRelay.secretHelp }}</template></MkInput>
-      <MkSwitch v-if="turnSecretSet" v-model="turnForm.state.clearSecret">{{ i18n.ts._voiceRelay.deleteSecret }}</MkSwitch>
+      <MkInput v-model="turnForm.state.keyId" accessible autocomplete="off"><template #label>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnKeyId }} <span v-if="turnForm.modifiedStates.keyId" class="_modified">{{ i18n.ts.modified }}</span></template></MkInput>
+      <MkInput v-model="turnForm.state.token" accessible type="password" autocomplete="new-password"><template #label>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnApiToken }} <span v-if="turnForm.modifiedStates.token" class="_modified">{{ i18n.ts.modified }}</span></template><template #caption>{{ i18n.ts._voiceRelay.secretHelp }}</template></MkInput>
+      <MkSwitch v-if="turnSecretSet" v-model="turnForm.state.clearSecret" accessible>{{ i18n.ts._voiceRelay.deleteSecret }}</MkSwitch>
       <MkInfo v-if="turnSecretSet">{{ i18n.ts._voiceRelay.secretSet }}</MkInfo>
       <MkInfo warn>{{ i18n.ts._serverSettings.voiceCallCloudflareTurnKeyChangeDescription }}</MkInfo>
      </div>
     </MkFolder>
-    <section class="_panel _gaps" :class="$style.section">
-     <h2><i class="ti ti-phone"></i> {{ i18n.ts._voiceRelay.title }}</h2>
-     <MkInfo>{{ i18n.ts._voiceRelay.description }}</MkInfo>
-     <h3>{{ i18n.ts._voiceRelay.consumer }}</h3>
-     <div v-for="provider in settings?.providers ?? []" :key="provider.id" class="_gaps_s" :class="$style.entry">
-      <strong>{{ provider.origin }}</strong>
-      <span>{{ provider.validated ? i18n.ts._voiceRelay.approved : i18n.ts._voiceRelay.unchecked }} · {{ provider.enabled ? i18n.ts.enabled : i18n.ts.disabled }}</span>
+    <MkFolder accessible :withSpacer="false">
+     <template #icon><i class="ti ti-phone"></i></template>
+     <template #label>{{ i18n.ts._voiceRelay.title }}</template>
+     <div class="_gaps" :class="$style.section">
+      <MkInfo>{{ i18n.ts._voiceRelay.description }}</MkInfo>
+      <h3>{{ i18n.ts._voiceRelay.consumer }}</h3>
+      <div v-for="provider in settings?.providers ?? []" :key="provider.id" class="_gaps_s" :class="$style.entry">
+       <strong>{{ provider.origin }}</strong>
+       <span>{{ provider.validated ? i18n.ts._voiceRelay.approved : i18n.ts._voiceRelay.unchecked }} · {{ provider.enabled ? i18n.ts.enabled : i18n.ts.disabled }}</span>
+       <div class="_buttons">
+        <MkButton :disabled="busy" @click="edit(provider)">{{ i18n.ts.edit }}</MkButton>
+        <MkButton :disabled="busy" @click="run('check-provider', { id: provider.id })">{{ i18n.ts._voiceRelay.check }}</MkButton>
+        <MkButton danger :disabled="busy" @click="removeProvider(provider)">{{ i18n.ts.delete }}</MkButton>
+       </div>
+      </div>
+      <MkInput v-model="providerDraft.origin" accessible type="url"><template #label>{{ i18n.ts._voiceRelay.origin }}</template></MkInput>
+      <MkInput v-model="providerDraft.secret" accessible type="password" autocomplete="new-password"><template #label>{{ i18n.ts._voiceRelay.keyRef }}</template><template #caption>{{ i18n.ts._voiceRelay.keyHelp }}</template></MkInput>
+      <MkSwitch v-model="providerDraft.enabled" accessible>{{ i18n.ts.enable }}</MkSwitch>
       <div class="_buttons">
-       <MkButton :disabled="busy" @click="edit(provider)">{{ i18n.ts.edit }}</MkButton>
-       <MkButton :disabled="busy" @click="run('check-provider', { id: provider.id })">{{ i18n.ts._voiceRelay.check }}</MkButton>
-       <MkButton danger :disabled="busy" @click="removeProvider(provider)">{{ i18n.ts.delete }}</MkButton>
+       <MkButton primary :disabled="busy || !providerDraft.origin || (!providerDraft.id && !providerDraft.secret)" @click="run('save-provider', { ...providerDraft, id: providerDraft.id || undefined, secret: providerDraft.secret || undefined })">{{ i18n.ts.save }}</MkButton>
+       <MkButton v-if="providerDraft.id" :disabled="busy" @click="resetProvider">{{ i18n.ts.cancel }}</MkButton>
       </div>
      </div>
-     <MkInput v-model="providerDraft.origin" type="url"><template #label>{{ i18n.ts._voiceRelay.origin }}</template></MkInput>
-     <MkInput v-model="providerDraft.secret" type="password" autocomplete="new-password"><template #label>{{ i18n.ts._voiceRelay.keyRef }}</template><template #caption>{{ i18n.ts._voiceRelay.keyHelp }}</template></MkInput>
-     <MkSwitch v-model="providerDraft.enabled">{{ i18n.ts.enable }}</MkSwitch>
-     <div class="_buttons">
-      <MkButton primary :disabled="busy || !providerDraft.origin || (!providerDraft.id && !providerDraft.secret)" @click="run('save-provider', { ...providerDraft, id: providerDraft.id || undefined, secret: providerDraft.secret || undefined })">{{ i18n.ts.save }}</MkButton>
-      <MkButton v-if="providerDraft.id" :disabled="busy" @click="resetProvider">{{ i18n.ts.cancel }}</MkButton>
-     </div>
-    </section>
+    </MkFolder>
 
    </div>
   </SearchMarker>
@@ -158,8 +161,10 @@ async function run(action: Request['action'], params: Omit<Partial<Request>, 'ac
  } finally { busy.value = false; }
 }
 
-os.apiWithDialog('admin/voice-relay/manage', { action: 'list' }).then(result => { settings.value = result; }).catch(() => {});
-definePage(() => ({ title: i18n.ts._voiceRelay.settingsTitle, icon: 'ti ti-phone' }));
+misskeyApi('admin/voice-relay/manage', { action: 'list' }).then(result => { settings.value = result; }).catch(err => {
+ os.alert({ type: 'error', text: err.message || err });
+});
+definePage(() => ({ title: i18n.ts._voiceRelay.settingsTitle, icon: 'ti ti-phone', mobileFooterInFlow: true }));
 </script>
 <style lang="scss" module>
 .section { padding: var(--MI-margin); }

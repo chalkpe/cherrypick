@@ -6,8 +6,12 @@
 process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
-import { describe, beforeAll, test } from 'vitest';
-import { api, makeStreamCatcher, post, signup, uploadFile } from '../utils.js';
+import { describe, beforeAll, afterAll, test } from 'vitest';
+import { api, createAppToken, initTestDb, makeStreamCatcher, post, signup, uploadFile, waitFire } from '../utils.js';
+import { IdService } from '@/core/IdService.js';
+import { loadConfig } from '@/config.js';
+import { MiDriveFolder } from '@/models/DriveFolder.js';
+import { MiDriveFile } from '@/models/DriveFile.js';
 import type * as misskey from 'cherrypick-js';
 
 // このファイルで最初に signup する alice が root (モデレーター権限あり) になる
@@ -334,14 +338,51 @@ describe('Drive folder and file sorting', () => {
 	let owner: misskey.entities.SignupResponse;
 	let other: misskey.entities.SignupResponse;
 	let parentId: string;
+	let db: Awaited<ReturnType<typeof initTestDb>>;
+	const idService = new IdService(loadConfig());
+	const fixtureDate = Date.UTC(2020, 0, 1);
 
 	beforeAll(async () => {
+		db = await initTestDb(true);
 		owner = await signup({ username: 'drive_sort_owner' });
 		other = await signup({ username: 'drive_sort_other' });
 		const parent = await api('drive/folders/create', { name: 'sort-test' }, owner);
 		assert.strictEqual(parent.status, 200);
 		parentId = parent.body.id;
 	}, 1000 * 60 * 2);
+
+	afterAll(async () => {
+		await db?.destroy();
+	});
+
+	async function datedFolder(name: string, parentId: string, date: number) {
+		const created = await api('drive/folders/create', { name, parentId }, owner);
+		assert.strictEqual(created.status, 200);
+
+		// 생성 시각은 ID에서 파생하므로 fixture의 ID만 고정하고 조회는 실제 API를 사용해요.
+		const id = idService.gen(date);
+		await db.getRepository(MiDriveFolder).update(created.body.id, { id });
+
+		const folder = await api('drive/folders/show', { folderId: id }, owner);
+		assert.strictEqual(folder.status, 200);
+		assert.strictEqual(Date.parse(folder.body.createdAt), date);
+		return folder;
+	}
+
+	async function datedFile(name: string, folderId: string, date: number) {
+		const uploaded = await uploadFile(owner, { name });
+		assert.strictEqual(uploaded.status, 200);
+		const moved = await api('drive/files/update', { fileId: uploaded.body!.id, folderId }, owner);
+		assert.strictEqual(moved.status, 200);
+
+		const id = idService.gen(date);
+		await db.getRepository(MiDriveFile).update(uploaded.body!.id, { id });
+
+		const file = await api('drive/files/show', { fileId: id }, owner);
+		assert.strictEqual(file.status, 200);
+		assert.strictEqual(Date.parse(file.body.createdAt), date);
+		return file;
+	}
 
 	test('folder names are sorted across pages, including duplicate names', async () => {
 		for (const name of ['003 한글', '001 English', '002 한글', '001 English', '10 English', '2 English']) {
@@ -398,14 +439,10 @@ describe('Drive folder and file sorting', () => {
 		const parent = await api('drive/folders/create', { name: 'date-cursor' }, owner);
 		assert.strictEqual(parent.status, 200);
 
-		const firstFolder = await api('drive/folders/create', { name: 'first', parentId: parent.body.id }, owner);
-		const middleFolder = await api('drive/folders/create', { name: 'middle', parentId: parent.body.id }, owner);
-		const lastFolder = await api('drive/folders/create', { name: 'last', parentId: parent.body.id }, owner);
-		assert.strictEqual(firstFolder.status, 200);
-		assert.strictEqual(middleFolder.status, 200);
-		assert.strictEqual(lastFolder.status, 200);
-		const folderDate = Date.parse(firstFolder.body.createdAt) + 1;
-		assert.ok(folderDate <= Date.parse(middleFolder.body.createdAt));
+		const firstFolder = await datedFolder('first', parent.body.id, fixtureDate);
+		await datedFolder('middle', parent.body.id, fixtureDate + 2000);
+		const lastFolder = await datedFolder('last', parent.body.id, fixtureDate + 4000);
+		const folderDate = fixtureDate + 1000;
 		const folderParams = { folderId: parent.body.id, sort: '-name' as const, untilDate: folderDate, limit: 100 };
 		const folders = await api('drive/folders', folderParams, owner);
 		const cursorFolders = await api('drive/folders', { ...folderParams, untilId: lastFolder.body.id, untilName: '' }, owner);
@@ -413,7 +450,7 @@ describe('Drive folder and file sorting', () => {
 		assert.strictEqual(cursorFolders.status, 200);
 		assert.deepStrictEqual(folders.body.map(folder => folder.id), [firstFolder.body.id]);
 		assert.deepStrictEqual(cursorFolders.body.map(folder => folder.id), folders.body.map(folder => folder.id));
-		const boundedFolders = await api('drive/folders', { ...folderParams, sinceDate: folderDate - 1000, untilId: lastFolder.body.id, untilName: '' }, owner);
+		const boundedFolders = await api('drive/folders', { ...folderParams, sinceDate: fixtureDate - 1000, untilId: lastFolder.body.id, untilName: '' }, owner);
 		assert.strictEqual(boundedFolders.status, 200);
 		assert.deepStrictEqual(boundedFolders.body.map(folder => folder.id), folders.body.map(folder => folder.id));
 	});
@@ -422,17 +459,10 @@ describe('Drive folder and file sorting', () => {
 		const parent = await api('drive/folders/create', { name: 'file-date-cursor' }, owner);
 		assert.strictEqual(parent.status, 200);
 
-		const firstFile = await uploadFile(owner, { name: 'first' });
-		const middleFile = await uploadFile(owner, { name: 'middle' });
-		const lastFile = await uploadFile(owner, { name: 'last' });
-		assert.strictEqual(firstFile.status, 200);
-		assert.strictEqual(middleFile.status, 200);
-		assert.strictEqual(lastFile.status, 200);
-		assert.strictEqual((await api('drive/files/update', { fileId: firstFile.body!.id, folderId: parent.body.id }, owner)).status, 200);
-		assert.strictEqual((await api('drive/files/update', { fileId: middleFile.body!.id, folderId: parent.body.id }, owner)).status, 200);
-		assert.strictEqual((await api('drive/files/update', { fileId: lastFile.body!.id, folderId: parent.body.id }, owner)).status, 200);
-		const fileDate = Date.parse(firstFile.body!.createdAt) + 1;
-		assert.ok(fileDate <= Date.parse(middleFile.body!.createdAt));
+		const firstFile = await datedFile('first', parent.body.id, fixtureDate);
+		await datedFile('middle', parent.body.id, fixtureDate + 2000);
+		const lastFile = await datedFile('last', parent.body.id, fixtureDate + 4000);
+		const fileDate = fixtureDate + 1000;
 		for (const sort of ['-name', '-size'] as const) {
 			const params = { folderId: parent.body.id, sort, untilDate: fileDate, limit: 100 };
 			const files = await api('drive/files', params, owner);
@@ -441,7 +471,7 @@ describe('Drive folder and file sorting', () => {
 			assert.strictEqual(cursorFiles.status, 200);
 			assert.deepStrictEqual(files.body.map(file => file.id), [firstFile.body!.id]);
 			assert.deepStrictEqual(cursorFiles.body.map(file => file.id), files.body.map(file => file.id), sort);
-			const boundedFiles = await api('drive/files', { ...params, sinceDate: fileDate - 1000, untilId: lastFile.body!.id, untilName: '', untilSize: 0 }, owner);
+			const boundedFiles = await api('drive/files', { ...params, sinceDate: fixtureDate - 1000, untilId: lastFile.body!.id, untilName: '', untilSize: 0 }, owner);
 			assert.strictEqual(boundedFiles.status, 200);
 			assert.deepStrictEqual(boundedFiles.body.map(file => file.id), files.body.map(file => file.id), sort);
 		}
@@ -597,5 +627,206 @@ describe('Drive folder and file sorting', () => {
 			}
 			assert.deepStrictEqual(ids, all.body.map(file => file.id), sort);
 		}
+	});
+});
+
+// 실제 HTTP 경로를 사용하는 회귀 시험. 전용 일회용 DB/Redis에서만 실행한다.
+describe('Confirmed drive deletion', () => {
+	let owner: misskey.entities.SignupResponse;
+	let other: misskey.entities.SignupResponse;
+
+	beforeAll(async () => {
+		await signup({ username: 'delete_bootstrap' });
+		owner = await signup({ username: 'delete_owner' });
+		other = await signup({ username: 'delete_other' });
+	});
+
+	async function folder(name: string, parentId?: string) {
+		const result = await api('drive/folders/create', { name, parentId }, owner);
+		assert.strictEqual(result.status, 200, JSON.stringify(result.body));
+		return result.body;
+	}
+
+	async function file(folderId?: string, user = owner) {
+		const uploaded = await uploadFile(user, { path: 'drive-delete.png', name: 'drive-delete.png' });
+		assert.strictEqual(uploaded.status, 200, JSON.stringify(uploaded.body));
+		const created = uploaded.body!;
+		if (folderId) {
+			const moved = await api('drive/files/update', { fileId: created.id, folderId }, user);
+			assert.strictEqual(moved.status, 200, JSON.stringify(moved.body));
+		}
+		return created;
+	}
+
+	async function prepare(input: misskey.Endpoints['drive/delete/prepare']['req']) {
+		const response = await api('drive/delete/prepare', input, owner);
+		assert.strictEqual(response.status, 200, JSON.stringify(response.body));
+		return response.body;
+	}
+
+	async function execute(operationId: string) {
+		const response = await api('drive/delete/execute', { operationId }, owner);
+		assert.strictEqual(response.status, 200, JSON.stringify(response.body));
+		for (const ids of [response.body.deletedIds, response.body.missingIds, response.body.deletedFolderIds, response.body.missingFolderIds]) {
+			assert.deepStrictEqual(ids, [...ids].sort());
+		}
+		return response.body;
+	}
+
+	test('requires credentials and write:drive, and binds confirmation to its owner', async () => {
+		const root = await folder('owned');
+		assert.strictEqual((await api('drive/delete/prepare', { folderId: root.id })).status, 401);
+		const token = await createAppToken(owner, ['read:drive']);
+		const denied = await api('drive/delete/prepare', { folderId: root.id }, { token });
+		assert.strictEqual(denied.status, 403, JSON.stringify(denied.body));
+		assert.strictEqual((await api('drive/delete/prepare', { folderId: root.id }, other)).status, 400);
+		const writer = await createAppToken(owner, ['write:drive']);
+		const allowed = await api('drive/delete/prepare', { folderId: root.id }, { token: writer });
+		assert.strictEqual(allowed.status, 200, JSON.stringify(allowed.body));
+		const plan = allowed.body;
+		assert.strictEqual((await api('drive/delete/execute', { operationId: plan.operationId }, other)).status, 400);
+		assert.strictEqual((await api('drive/delete/status', { operationId: plan.operationId }, other)).status, 400);
+		assert.strictEqual((await api('drive/folders/show', { folderId: root.id }, owner)).status, 200);
+	});
+
+	test('preparation and cancellation do not delete; an empty folder confirms zero and is removed', async () => {
+		const root = await folder('empty');
+		const plan = await prepare({ folderId: root.id });
+		assert.strictEqual(plan.totalCount, 0);
+		assert.strictEqual((await api('drive/folders/show', { folderId: root.id }, owner)).status, 200);
+
+		let result!: misskey.Endpoints['drive/delete/execute']['res'];
+		const streamed = await waitFire(owner, 'drive', async () => { result = await execute(plan.operationId); }, msg => msg.type === 'folderDeleted' && msg.body === root.id);
+
+		assert.strictEqual(streamed, true);
+		assert.strictEqual(result.deletedCount, 0);
+		assert.strictEqual(result.folderDeleted, true);
+		assert.strictEqual(result.remainingFoldersCount, 0);
+		assert.strictEqual((await api('drive/folders/show', { folderId: root.id }, owner)).status, 400);
+	});
+
+	test('deletes used selected files while preserving cleaner protection and owner boundaries', async () => {
+		const used = await file();
+		const foreign = await file(undefined, other);
+		await post(owner, { text: 'attachment', fileIds: [used.id] });
+		const cleaned = await api('drive/files/delete-bulk', { fileIds: [used.id, foreign.id] }, owner);
+		assert.strictEqual(cleaned.status, 200);
+		assert.deepStrictEqual(cleaned.body.deletedIds, []);
+		const before = await api('drive', {}, owner);
+		const plan = await prepare({ fileIds: [used.id, used.id, foreign.id, '0000000000000000'] });
+		assert.strictEqual(plan.totalCount, 3);
+
+		let result!: misskey.Endpoints['drive/delete/execute']['res'];
+		const streamed = await waitFire(owner, 'drive', async () => { result = await execute(plan.operationId); }, msg => msg.type === 'fileDeleted' && msg.body === used.id);
+
+		assert.strictEqual(streamed, true);
+		assert.strictEqual(result.deletedCount, 1);
+		assert.strictEqual(result.missingCount, 2);
+		assert.strictEqual((await api('drive/files/show', { fileId: used.id }, owner)).status, 400);
+		assert.strictEqual((await api('drive/files/show', { fileId: foreign.id }, other)).status, 200);
+		const after = await api('drive', {}, owner);
+		assert.strictEqual(before.body.usage - after.body.usage, used.size);
+		assert.deepStrictEqual(await execute(plan.operationId), result);
+	});
+
+	test('counts unloaded files across every nested folder and deletes children first', async () => {
+		const root = await folder('tree');
+		const child = await folder('child', root.id);
+		const grandchild = await folder('grandchild', child.id);
+		await folder('empty-child', root.id);
+		await file(root.id);
+		await file(child.id);
+		await file(grandchild.id);
+		const plan = await prepare({ folderId: root.id });
+		assert.strictEqual(plan.totalCount, 3);
+		// 기존 API는 내용 있는 폴더를 계속 거부한다.
+		assert.strictEqual((await api('drive/folders/delete', { folderId: root.id }, owner)).status, 400);
+
+		const result = await execute(plan.operationId);
+
+		assert.strictEqual(result.deletedCount, 3);
+		assert.strictEqual(result.deletedFolderIds.length, 4);
+		assert.strictEqual(result.folderDeleted, true);
+		assert.strictEqual(result.remainingCount, 0);
+		assert.strictEqual(result.remainingFoldersCount, 0);
+	});
+
+	test('processes more than 100 files without a loaded browser list or an oversized delete request', async () => {
+		const root = await folder('many');
+		for (let i = 0; i < 103; i++) await file(root.id);
+		const incoming = await file();
+		const plan = await prepare({ folderId: root.id });
+		assert.strictEqual(plan.totalCount, 103);
+
+		const [first, added, moved] = await Promise.all([
+			execute(plan.operationId),
+			file(root.id),
+			api('drive/files/update', { fileId: incoming.id, folderId: root.id }, owner),
+		]);
+		assert.strictEqual(moved.status, 200, JSON.stringify(moved.body));
+		const observed = await api('drive/delete/status', { operationId: plan.operationId }, owner);
+		assert.strictEqual(observed.status, 200);
+		assert.deepStrictEqual(observed.body, first);
+		const last = await execute(plan.operationId);
+
+		assert.strictEqual(first.deletedCount, 100);
+		assert.strictEqual(first.done, false);
+		assert.strictEqual(last.deletedCount, 103);
+		assert.strictEqual(last.done, true);
+		assert.strictEqual(last.folderDeleted, false);
+		assert.strictEqual(last.remainingCount, 2);
+		assert.strictEqual((await api('drive/files/show', { fileId: added.id }, owner)).body.folderId, root.id);
+		assert.strictEqual((await api('drive/files/show', { fileId: incoming.id }, owner)).body.folderId, root.id);
+		const retry = await prepare({ folderId: root.id });
+		assert.strictEqual(retry.totalCount, 2);
+		assert.strictEqual((await execute(retry.operationId)).folderDeleted, true);
+	});
+
+	test('preserves new and moved-in files, deletes only confirmed moved-out IDs, and permits reconfirmation', async () => {
+		const root = await folder('changing');
+		const child = await folder('moving-child', root.id);
+		const original = await file(child.id);
+		const movedIn = await file();
+		const plan = await prepare({ folderId: root.id });
+		const added = await file(root.id);
+		await api('drive/files/update', { fileId: movedIn.id, folderId: child.id }, owner);
+		await api('drive/files/update', { fileId: original.id, folderId: null }, owner);
+
+		const result = await execute(plan.operationId);
+
+		assert.strictEqual(result.totalCount, 1);
+		assert.strictEqual(result.deletedCount, 1);
+		assert.strictEqual(result.remainingCount, 2);
+		assert.strictEqual(result.folderDeleted, false);
+		assert.strictEqual((await api('drive/files/show', { fileId: added.id }, owner)).body.folderId, root.id);
+		assert.strictEqual((await api('drive/files/show', { fileId: movedIn.id }, owner)).body.folderId, child.id);
+		const retry = await prepare({ folderId: root.id });
+		assert.strictEqual(retry.totalCount, 2);
+		assert.strictEqual((await execute(retry.operationId)).folderDeleted, true);
+	});
+
+	test('handles concurrent execute and an already deleted confirmed file without double counts', async () => {
+		const first = await file();
+		const second = await file();
+		const independent = await file(undefined, other);
+		const otherPlan = await api('drive/delete/prepare', { fileIds: [independent.id] }, other);
+		assert.strictEqual(otherPlan.status, 200, JSON.stringify(otherPlan.body));
+		const plan = await prepare({ fileIds: [first.id, second.id] });
+		await api('drive/files/delete', { fileId: first.id }, owner);
+
+		const results = await Promise.all([
+			api('drive/delete/execute', { operationId: plan.operationId }, owner),
+			api('drive/delete/execute', { operationId: plan.operationId }, owner),
+			api('drive/delete/execute', { operationId: otherPlan.body.operationId }, other),
+		]);
+		assert.strictEqual(results[2].status, 200, JSON.stringify(results[2].body));
+		assert.strictEqual(results[2].body.deletedCount, 1);
+		assert.ok(results.slice(0, 2).some(result => result.status === 200));
+		for (const result of results.slice(0, 2)) assert.ok([200, 400].includes(result.status), JSON.stringify(result.body));
+		const final = await execute(plan.operationId);
+
+		assert.strictEqual(final.deletedCount, 1);
+		assert.strictEqual(final.missingCount, 1);
+		assert.strictEqual(final.failedCount, 0);
 	});
 });

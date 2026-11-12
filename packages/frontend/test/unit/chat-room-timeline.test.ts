@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => {
 		roomShowFails: false,
 		roomInvitationExists: false,
 		roomShowError: null as Error | null,
+		userShowError: null as Error | null,
 		roomShowGate: null as Promise<void> | null,
 		timelineGate: null as Promise<void> | null,
 		timelineError: null as Error | null,
@@ -61,6 +62,7 @@ vi.mock('@/utility/misskey-api.js', () => ({
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowError != null) throw mocks.roomShowError;
 		if (endpoint === 'chat/messages/room-timeline' && mocks.timelineError != null) throw mocks.timelineError;
 		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: mocks.roomOwnerId, owner: { id: mocks.roomOwnerId, username: 'owner', host: null }, isArchived: mocks.roomIsArchived, invitationExists: mocks.roomInvitationExists };
+		if (endpoint === 'users/show' && mocks.userShowError != null) throw mocks.userShowError;
 		if (endpoint === 'users/show') return { id: 'alice', username: 'alice', host: null };
 		if (endpoint === 'chat/messages/room-timeline' || endpoint === 'chat/messages/user-timeline') return mocks.timeline;
 		if (endpoint === 'chat/rooms/members') return mocks.roomMembers;
@@ -165,6 +167,7 @@ const stubs = {
 	PageWithHeader: { props: ['actions', 'tab'], emits: ['update:tab'], template: '<div style="overflow-y: scroll;"><button v-for="action in actions" :data-icon="action.icon" @click="action.handler($event)"></button><button v-if="tab !== \'chat\'" data-testid="back-to-chat" @click="$emit(\'update:tab\', \'chat\')"></button><slot /><slot name="footer" /></div>' },
 	MkStickyContainer: { template: '<div><slot name="header" /><slot /></div>' },
 	MkLoading: { template: '<div></div>' },
+	MkResult: { props: ['type'], template: '<div role="alert" :data-result-type="type"></div>' },
 	MkAvatar: true,
 	// 本物の TransitionGroup で動かす (吹き出しに transition を付けるので、再描画の起き方が変わる)
 	'transition-group': false,
@@ -205,6 +208,7 @@ beforeEach(() => {
 	mocks.roomShowFails = false;
 	mocks.roomInvitationExists = false;
 	mocks.roomShowError = null;
+	mocks.userShowError = null;
 	mocks.roomShowGate = null;
 	mocks.timelineGate = null;
 	mocks.timelineError = null;
@@ -1422,13 +1426,27 @@ describe('after the stream reconnects', () => {
 		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
 	});
 
-	test('keeps reporting a failure to ask as an error', async () => {
+	test('shows a room fetch failure in the conversation', async () => {
 		mocks.roomShowError = new Error('Failed to fetch');
 
-		await renderRoom();
+		const { container } = await renderRoom();
 
-		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'error', text: i18n.ts.somethingHappened });
+		expect(container.querySelector('[data-result-type="error"]')).not.toBeNull();
+		expect(form(container)).toBeNull();
+		expect(mocks.alert).not.toHaveBeenCalled();
 		expect(mocks.routerReplace).not.toHaveBeenCalled();
+	});
+
+	test.each([
+		{ code: 'NO_SUCH_USER', result: 'notFound' },
+		{ code: 'INTERNAL_ERROR', result: 'error' },
+	])('shows $result when a direct conversation cannot load', async ({ code, result }) => {
+		mocks.userShowError = Object.assign(new Error('Cannot load user'), { code });
+
+		const { container } = await renderRoom('user');
+
+		expect(container.querySelector(`[data-result-type="${result}"]`)).not.toBeNull();
+		expect(form(container)).toBeNull();
 	});
 
 	test('offers the invitation of someone removed and invited again in the meantime', async () => {

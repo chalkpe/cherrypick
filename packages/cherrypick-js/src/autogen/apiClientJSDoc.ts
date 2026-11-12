@@ -2342,6 +2342,39 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
+     * Execute one batch of a confirmed drive deletion. Deletes only frozen file IDs, even if moved, and empty unchanged folders from children to parents. New files are never added to the operation. Call until done. Repeated calls preserve cumulative outcomes; prepare and confirm again to retry failures. Counts describe drive database removal; object-storage cleanup uses the usual deletion queue.
+     *
+     * **Credential required**: *Yes* / **Permission**: *write:drive*
+     */
+    request<E extends 'drive/delete/execute', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Prepare a deletion of your selected files (including in-use files) or an entire folder tree. Freezes file IDs for confirmation for one hour, replacing your previous confirmation. At most 10000 files and 1000 folders. Does not delete anything.
+     *
+     * **Credential required**: *Yes* / **Permission**: *write:drive*
+     */
+    request<E extends 'drive/delete/prepare', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Read your deletion outcomes after a lost execute response without deleting another batch. The owner-bound operation expires one hour after preparation or its latest execution update; status requests do not extend it.
+     *
+     * **Credential required**: *Yes* / **Permission**: *write:drive*
+     */
+    request<E extends 'drive/delete/status', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
      * For name or size sorting, pass the last file’s name as untilName or size as untilSize with untilId to continue even if the file is moved or deleted.
      *
      * **Credential required**: *Yes* / **Permission**: *read:drive*

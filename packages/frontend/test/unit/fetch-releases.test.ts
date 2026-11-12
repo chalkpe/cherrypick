@@ -37,7 +37,7 @@ describe('CherryPick release selection', () => {
 		['2026.10.0+choco.10', '2026.10.0+choco.2', 1],
 		['2026.10.0+choco.1', '2026.10.0+choco.1', 0],
 		['4.17.0', '2026.10.0+choco.1', -1],
-		['2026.11.0+choco.1', '2026.10.0+choco.10', 1],
+		['2026.11.0+choco.0', '2026.10.0+choco.10', 1],
 		['2026.10.0-beta.1+choco.2', '2026.10.0+choco.1', -1],
 	])('compares %s with %s', (a, b, expected) => {
 		expect(Math.sign(compareCherryPickVersions(a, b))).toBe(expected);

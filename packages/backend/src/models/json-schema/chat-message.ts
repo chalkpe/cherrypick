@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { chatDiceResultSchema } from '@/core/chat-dice.js';
+
 export const packedChatMessageSchema = {
 	type: 'object',
 	properties: {
@@ -52,6 +54,7 @@ export const packedChatMessageSchema = {
 			optional: true, nullable: true,
 			ref: 'ChatRoom',
 		},
+		dice: { ...chatDiceResultSchema, optional: true, nullable: true },
 		text: {
 			type: 'string',
 			optional: true, nullable: true,
@@ -154,6 +157,7 @@ export const packedChatMessageLiteSchema = {
 			type: 'string',
 			optional: true, nullable: true,
 		},
+		dice: { ...chatDiceResultSchema, optional: true, nullable: true },
 		text: {
 			type: 'string',
 			optional: true, nullable: true,
@@ -243,6 +247,7 @@ export const packedChatMessageLiteFor1on1Schema = {
 			type: 'string',
 			optional: false, nullable: false,
 		},
+		dice: { ...chatDiceResultSchema, optional: true, nullable: true },
 		text: {
 			type: 'string',
 			optional: true, nullable: true,
@@ -332,6 +337,7 @@ export const packedChatMessageLiteForRoomSchema = {
 			type: 'string',
 			optional: false, nullable: false,
 		},
+		dice: { ...chatDiceResultSchema, optional: true, nullable: true },
 		text: {
 			type: 'string',
 			optional: true, nullable: true,

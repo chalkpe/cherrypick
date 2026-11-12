@@ -140,6 +140,7 @@ export interface IPost extends IObject {
 	_misskey_quote?: string;
 	_misskey_content?: string;
 	_misskey_talk?: boolean;
+	_misskey_dice?: unknown;
 	quoteUrl?: string;
 	disableRightClick?: boolean;
 	deleteAt?: string;

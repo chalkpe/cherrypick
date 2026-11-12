@@ -38,7 +38,7 @@ const emit = defineEmits<{
 const app = computed(() => props.session.app);
 
 const permissions = computed(() => {
-	return props.session.app.permission.filter((p): p is typeof Misskey.permissions[number] => typeof p === 'string');
+	return (props.session.permission ?? props.session.app.permission).filter((p): p is typeof Misskey.permissions[number] => typeof p === 'string');
 });
 
 const name = computed(() => {

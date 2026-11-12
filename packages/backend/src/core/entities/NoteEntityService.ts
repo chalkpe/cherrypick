@@ -205,7 +205,7 @@ export class NoteEntityService implements OnModuleInit {
 	}
 
 	@bindThis
-	private async populatePoll(note: MiNote, meId: MiUser['id'] | null) {
+	private async populatePoll(note: Pick<MiNote, 'id'>, meId: MiUser['id'] | null) {
 		const poll = await this.pollsRepository.findOneByOrFail({ noteId: note.id });
 		const choices = poll.choices.map(c => ({
 			text: c,
@@ -252,6 +252,19 @@ export class NoteEntityService implements OnModuleInit {
 			end: event.end?.toISOString() ?? null,
 			metadata: event.metadata,
 		};
+	}
+
+	@bindThis
+	public async withMyPollVotes(note: Packed<'Note'>, meId: MiUser['id'] | null): Promise<Packed<'Note'>> {
+		const [poll, renote, reply] = await Promise.all([
+			note.poll ? this.populatePoll(note, meId) : note.poll,
+			note.renote ? this.withMyPollVotes(note.renote, meId) : note.renote,
+			note.reply ? this.withMyPollVotes(note.reply, meId) : note.reply,
+		]);
+
+		if (poll === note.poll && renote === note.renote && reply === note.reply) return note;
+
+		return { ...note, poll, renote, reply };
 	}
 
 	@bindThis

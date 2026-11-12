@@ -45,6 +45,8 @@ import { isMimeImage } from '@/misc/is-mime-image.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 
+type DriveFileDeletionRepository = Pick<DriveFilesRepository, 'delete' | 'update'>;
+
 type AddFileArgs = {
 	/** User who wish to add file */
 	user: { id: MiUser['id']; host: MiUser['host'] } | null;
@@ -803,7 +805,7 @@ export class DriveService {
 	}
 
 	@bindThis
-	public async deleteFile(file: MiDriveFile, isExpired = false, deleter?: MiUser) {
+	public async deleteFile(file: MiDriveFile, isExpired = false, deleter?: MiUser, filesRepository: DriveFileDeletionRepository = this.driveFilesRepository, options: { awaitStorageQueue?: boolean } = {}) {
 		if (file.storedInternal) {
 			this.internalStorageService.del(file.accessKey!);
 
@@ -815,18 +817,17 @@ export class DriveService {
 				this.internalStorageService.del(file.webpublicAccessKey!);
 			}
 		} else if (!file.isLink) {
-			this.queueService.createDeleteObjectStorageFileJob(file.accessKey!);
-
-			if (file.thumbnailUrl) {
-				this.queueService.createDeleteObjectStorageFileJob(file.thumbnailAccessKey!);
-			}
-
-			if (file.webpublicUrl) {
-				this.queueService.createDeleteObjectStorageFileJob(file.webpublicAccessKey!);
+			const keys = [file.accessKey!];
+			if (file.thumbnailUrl) keys.push(file.thumbnailAccessKey!);
+			if (file.webpublicUrl) keys.push(file.webpublicAccessKey!);
+			for (const key of keys) {
+				const job = this.queueService.createDeleteObjectStorageFileJob(key);
+				// 일부만 접수되면 모든 키를 가진 DB 행을 남겨 새 확인 뒤 다시 접수할 수 있게 한다.
+				if (options.awaitStorageQueue) await job;
 			}
 		}
 
-		await this.deletePostProcess(file, isExpired, deleter);
+		return await this.deletePostProcess(file, isExpired, deleter, filesRepository);
 	}
 
 	@bindThis
@@ -857,14 +858,14 @@ export class DriveService {
 			await Promise.all(promises);
 		}
 
-		await this.deletePostProcess(file, isExpired, deleter);
+		return await this.deletePostProcess(file, isExpired, deleter);
 	}
 
 	@bindThis
-	private async deletePostProcess(file: MiDriveFile, isExpired = false, deleter?: MiUser) {
+	private async deletePostProcess(file: MiDriveFile, isExpired = false, deleter?: MiUser, filesRepository: DriveFileDeletionRepository = this.driveFilesRepository) {
 		// リモートファイル期限切れ削除後は直リンクにする
 		if (isExpired && file.userHost !== null && file.uri != null) {
-			await this.driveFilesRepository.update(file.id, {
+			await filesRepository.update(file.id, {
 				isLink: true,
 				url: file.uri,
 				thumbnailUrl: null,
@@ -876,7 +877,8 @@ export class DriveService {
 				webpublicAccessKey: 'webpublic-' + randomUUID(),
 			});
 		} else {
-			await this.driveFilesRepository.delete(file.id);
+			const result = await filesRepository.delete(file.id);
+			if (result.affected === 0) return false;
 		}
 
 		this.driveChart.update(file, false);
@@ -902,6 +904,7 @@ export class DriveService {
 				fileUserHost: user?.host ?? null,
 			});
 		}
+		return true;
 	}
 
 	@bindThis

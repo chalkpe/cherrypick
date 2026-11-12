@@ -4,13 +4,13 @@
 
 ```ts
 
-import type { AuthenticationResponseJSON } from '@simplewebauthn/browser';
+import type { AuthenticationResponseJSON as AuthenticationResponseJSON_2 } from '@simplewebauthn/browser';
 import { EventEmitter } from 'eventemitter3';
 import { Options } from 'reconnecting-websocket';
 import type { PublicKeyCredentialCreationOptionsJSON as PublicKeyCredentialCreationOptionsJSON_2 } from '@simplewebauthn/browser';
 import type { PublicKeyCredentialRequestOptionsJSON as PublicKeyCredentialRequestOptionsJSON_2 } from '@simplewebauthn/browser';
 import _ReconnectingWebSocket from 'reconnecting-websocket';
-import type { RegistrationResponseJSON } from '@simplewebauthn/browser';
+import type { RegistrationResponseJSON as RegistrationResponseJSON_2 } from '@simplewebauthn/browser';
 
 // Warning: (ae-forgotten-export) The symbol "components" needs to be exported by the entry point index.d.ts
 //
@@ -1438,6 +1438,24 @@ type ClipsUpdateResponse = operations['clips___update']['responses']['200']['con
 type DateString = string;
 
 // @public (undocumented)
+type DriveDeleteExecuteRequest = operations['drive___delete___execute']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type DriveDeleteExecuteResponse = operations['drive___delete___execute']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type DriveDeletePrepareRequest = operations['drive___delete___prepare']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type DriveDeletePrepareResponse = operations['drive___delete___prepare']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type DriveDeleteStatusRequest = operations['drive___delete___status']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type DriveDeleteStatusResponse = operations['drive___delete___status']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type DriveFile = components['schemas']['DriveFile'];
 
 // @public (undocumented)
@@ -2030,6 +2048,12 @@ declare namespace entities {
         ClipsUpdateRequest,
         ClipsUpdateResponse,
         DriveResponse,
+        DriveDeleteExecuteRequest,
+        DriveDeleteExecuteResponse,
+        DriveDeletePrepareRequest,
+        DriveDeletePrepareResponse,
+        DriveDeleteStatusRequest,
+        DriveDeleteStatusResponse,
         DriveFilesRequest,
         DriveFilesResponse,
         DriveFilesAttachedChatMessagesRequest,
@@ -2824,7 +2848,7 @@ type I2faKeyDoneRequest_2 = {
     password: string;
     token?: string | null;
     name: string;
-    credential: RegistrationResponseJSON;
+    credential: RegistrationResponseJSON_2;
 };
 
 // @public (undocumented)
@@ -3735,7 +3759,7 @@ type SigninFlowRequest = {
     username: string;
     password?: string;
     token?: string;
-    credential?: AuthenticationResponseJSON;
+    credential?: AuthenticationResponseJSON_2;
     'hcaptcha-response'?: string | null;
     'g-recaptcha-response'?: string | null;
     'turnstile-response'?: string | null;
@@ -3765,7 +3789,7 @@ type SigninWithPasskeyInitResponse = {
 
 // @public (undocumented)
 type SigninWithPasskeyRequest = {
-    credential?: AuthenticationResponseJSON;
+    credential?: AuthenticationResponseJSON_2;
     context?: string;
 };
 

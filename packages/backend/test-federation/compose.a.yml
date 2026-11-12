@@ -39,11 +39,11 @@ services:
       - internal_network_a
     volumes:
       - type: bind
-        source: ./.config/a.test.config.json
-        target: /cherrypick/built/._config_.json
+        source: ./.config/a.test.default.yml
+        target: /cherrypick/.config/default.yml
         read_only: true
 
-  # a.test の通話 (voiceCall.livekit) が使う LiveKit。setup.sh が a.test.config.json に同じ鍵を書く。
+  # a.test の通話 (voiceCall.livekit) が使う LiveKit。setup.sh が a.test.default.yml に同じ鍵を書く。
   # b.test には LiveKit を置かず、通話に対応していないサーバーとして扱う
   livekit.a.test:
     image: livekit/livekit-server:v1.13.10

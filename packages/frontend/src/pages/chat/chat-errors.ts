@@ -10,6 +10,9 @@ import { i18n } from '@/i18n.js';
 export function chatErrorText(err: unknown): string {
 	const code = (err as { code?: unknown } | null | undefined)?.code;
 	switch (code) {
+		case 'DICE_INVALID': return i18n.ts._chat.diceInvalid;
+		case 'DICE_LIMIT': return i18n.ts._chat.diceLimit;
+		case 'DICE_BUSY': return i18n.ts._chat.diceBusy;
 		case 'NO_SUCH_MESSAGE': return i18n.ts._chat.messageUnavailable;
 		case 'NO_SUCH_ROOM': return i18n.ts._chat.roomUnavailable;
 		case 'ROOM_IS_ARCHIVED': return i18n.ts._chat.thisRoomIsArchived;

@@ -32,6 +32,8 @@ function truncateBody<T extends keyof PushNotificationsTypes>(type: T, body: Pus
 
 	return {
 		...body,
+		// 굴림 내역은 Web Push 크기 한도를 넘을 수 있으므로 채팅 화면에서 저장값을 조회한다.
+		...(type === 'newChatMessage' ? { dice: undefined } : {}),
 		...(('note' in body && body.note) ? {
 			note: {
 				...body.note,
@@ -118,7 +120,7 @@ export class PushNotificationService implements OnApplicationShutdown {
 
 			push.sendNotification(pushSubscription, JSON.stringify({
 				type,
-				body: (type === 'notification' || type === 'unreadAntennaNote') ? truncateBody(type, body) : body,
+				body: (type === 'notification' || type === 'unreadAntennaNote' || type === 'newChatMessage') ? truncateBody(type, body) : body,
 				userId,
 				dateTime: Date.now(),
 			}), {
@@ -128,7 +130,7 @@ export class PushNotificationService implements OnApplicationShutdown {
 				//swLogger.info(err.headers);
 				//swLogger.info(err.body);
 
-				if (err.statusCode === 410) {
+				if (err.statusCode === 410 || err.statusCode === 404) {
 					this.swSubscriptionsRepository.delete({
 						userId: userId,
 						endpoint: subscription.endpoint,

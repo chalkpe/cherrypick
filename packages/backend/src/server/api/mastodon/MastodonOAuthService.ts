@@ -14,7 +14,7 @@ import { IdService } from '@/core/IdService.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
-import { MASTODON_OAUTH_PREFIX } from '@/misc/mastodon-oauth.js';
+import { MASTODON_OAUTH_PREFIX, mastodonOAuthPendingKey, type MastodonPendingAuthorization } from '@/misc/mastodon-oauth.js';
 import { secureRndstr } from '@/misc/secure-rndstr.js';
 import type { FastifyReply } from 'fastify';
 
@@ -105,12 +105,6 @@ const scopePermissions: Record<string, readonly string[]> = {
 	// Marking a conversation as read only looks up the public note
 	'write:conversations': [],
 };
-
-interface PendingAuthorization {
-	redirectUri: string;
-	scope: string;
-	codeChallenge: string | null;
-}
 
 export class MastodonOAuthError extends Error {
 	constructor(
@@ -255,12 +249,12 @@ export class MastodonOAuthService {
 				token: MASTODON_OAUTH_PREFIX + randomUUID(),
 			});
 
-			const pending: PendingAuthorization = {
+			const pending: MastodonPendingAuthorization = {
 				redirectUri,
 				scope: scopes.join(' '),
 				codeChallenge,
 			};
-			await this.redisClient.set(this.pendingKey(session.token), JSON.stringify(pending), 'EX', AUTHORIZATION_TTL_SECONDS);
+			await this.redisClient.set(mastodonOAuthPendingKey(session.token), JSON.stringify(pending), 'EX', AUTHORIZATION_TTL_SECONDS);
 
 			const authUrl = new URL(`${this.config.authUrl}/${session.token}`);
 			authUrl.searchParams.set('mastodon', 'true');
@@ -313,11 +307,11 @@ export class MastodonOAuthService {
 				throw new MastodonOAuthError('invalid_grant', 'The authorization code is invalid or has not been approved yet');
 			}
 
-			const pendingJson = await this.redisClient.get(this.pendingKey(code));
+			const pendingJson = await this.redisClient.get(mastodonOAuthPendingKey(code));
 			if (pendingJson == null) {
 				throw new MastodonOAuthError('invalid_grant', 'The authorization code has expired');
 			}
-			const pending = JSON.parse(pendingJson) as PendingAuthorization;
+			const pending = JSON.parse(pendingJson) as MastodonPendingAuthorization;
 
 			const redirectUri = firstValue(params.redirect_uri);
 			if (redirectUri != null && redirectUri !== pending.redirectUri) {
@@ -332,7 +326,7 @@ export class MastodonOAuthService {
 			}
 
 			// Claim the code atomically only after all checks. Concurrent exchanges must not issue two tokens.
-			if (await this.redisClient.getdel(this.pendingKey(code)) == null) {
+			if (await this.redisClient.getdel(mastodonOAuthPendingKey(code)) == null) {
 				throw new MastodonOAuthError('invalid_grant', 'The authorization code has expired or was already used');
 			}
 			await this.authSessionsRepository.delete(session.id);
@@ -404,10 +398,6 @@ export class MastodonOAuthService {
 
 	private getRegisteredRedirectUris(app: MiApp): string[] {
 		return parseRedirectUris(app.callbackUrl ?? undefined);
-	}
-
-	private pendingKey(sessionToken: string): string {
-		return `mastodonOAuth:${sessionToken}`;
 	}
 
 	private sendError(reply: FastifyReply, err: unknown): void {

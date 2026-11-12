@@ -122,7 +122,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 				<template v-else>
 					<div v-if="gridItems.length > 0" :class="$style.gridArea">
-						<MkGrid :data="gridItems" :settings="setupGrid()" @event="onGridEvent"/>
+						<MkGrid :data="gridItems" :settings="setupGrid({ changedRow: $style.changedRow })" @event="onGridEvent"/>
 					</div>
 
 					<div :class="$style.footer">
@@ -150,7 +150,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, useCssModule, useTemplateRef } from 'vue';
+import { computed, onMounted, ref, useTemplateRef } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import type { GridSortOrderKey, RequestLogItem } from '@/pages/admin/custom-emojis-manager.impl.js';
 import type { GridCellValueChangeEvent, GridEvent } from '@/components/grid/grid-event.js';
@@ -179,9 +179,7 @@ type GridItem = {
 	host: string;
 };
 
-function setupGrid(): GridSetting {
-	const $style = useCssModule();
-
+function setupGrid(rowClass: { changedRow: string }): GridSetting {
 	return {
 		row: {
 			// グリッドの行数をあらかじめ100行確保する
@@ -190,7 +188,7 @@ function setupGrid(): GridSetting {
 				{
 					// チェックされたら背景色を変える
 					condition: ({ row }) => gridItems.value[row.index].checked,
-					applyStyle: { className: $style.changedRow },
+					applyStyle: { className: rowClass.changedRow },
 				},
 			],
 			contextMenuFactory: (row, context) => {
