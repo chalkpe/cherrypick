@@ -133,7 +133,7 @@ async function collectServerCoverage(project: TestProject, provider: V8CoverageP
 }
 
 export async function recordServerCoverage(provider: V8CoverageProvider, chunks: ScriptCoverageWithOffset[], projectName: string): Promise<void> {
-	// Vitest はカバレッジ本体ではなく、それを保存した JSON ファイルのパスを受け取る。
+	// Vitest는 커버리지 본문 대신 저장한 JSON 파일의 경로를 받는다.
 	const filename = resolve(provider.coverageFilesDirectory, 'server-coverage.json');
 	await writeFile(filename, JSON.stringify({ result: chunks }));
 	provider.onAfterSuiteRun({
