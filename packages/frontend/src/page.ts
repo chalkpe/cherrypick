@@ -17,6 +17,7 @@ export type PageMetadata = {
 	avatar?: Misskey.entities.User | null;
 	userName?: Misskey.entities.User | null;
 	needWideArea?: boolean;
+	mobileFooterInFlow?: boolean;
 };
 
 type PageMetadataGetter = () => PageMetadata;
