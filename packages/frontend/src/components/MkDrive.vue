@@ -794,11 +794,12 @@ async function moveFilesBulk() {
 		const moved = new Set(result.succeededIds);
 		selectedFiles.value = selectedFiles.value.filter(file => !moved.has(file.id));
 		globalEvents.emit('driveFilesUpdated', snapshot.filter(file => moved.has(file.id)).map(file => ({ ...file, folderId: target?.id ?? null, folder: target })));
+		// 취소 시에는 재조회하지 않고, 실행 후에는 불러온 범위를 유지해 실패한 파일도 확인한다.
+		await refreshFiles().catch(() => {});
 		if (result.failedIds.length > 0) await os.alert({ type: 'warning', text: i18n.tsx._driveDeletion.moveResult({ moved: moved.size, failed: result.failedIds.length }) });
 		else os.toast(i18n.ts.saved);
 	} finally {
 		bulkBusy.value = false;
-		initialize();
 	}
 }
 

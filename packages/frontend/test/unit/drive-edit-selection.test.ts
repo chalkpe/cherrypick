@@ -40,6 +40,9 @@ const original = [
 let files: Misskey.entities.DriveFile[];
 let preparedIds: string[];
 let failMove: boolean;
+let failFileList: boolean;
+let failedMoveBatch: number | undefined;
+let moveBatchCount: number;
 let fileListGate: Promise<void> | undefined;
 
 beforeEach(() => {
@@ -47,6 +50,9 @@ beforeEach(() => {
 	files = original.map(file => ({ ...file }));
 	preparedIds = [];
 	failMove = false;
+	failFileList = false;
+	failedMoveBatch = undefined;
+	moveBatchCount = 0;
 	fileListGate = undefined;
 	store.r.driveSortMode.value = '+name';
 	vi.mocked(os.confirm).mockResolvedValue({ canceled: false });
@@ -58,7 +64,10 @@ beforeEach(() => {
 		const params = await request.json();
 		if (endpoint === '/api/drive/files') {
 			await fileListGate;
-			return JSON.stringify(files.filter(file => file.folderId === params.folderId));
+			if (failFileList) return { status: 500, body: JSON.stringify({ error: { code: 'INTERNAL_ERROR' } }) };
+			const folderFiles = files.filter(file => file.folderId === params.folderId);
+			const offset = params.untilId == null ? 0 : folderFiles.findIndex(file => file.id === params.untilId) + 1;
+			return JSON.stringify(folderFiles.slice(offset, offset + params.limit));
 		}
 		if (endpoint === '/api/drive/folders') return JSON.stringify(folders.filter(folder => folder.parentId === params.folderId));
 		if (endpoint === '/api/drive/folders/show') return JSON.stringify(folders.find(folder => folder.id === params.folderId));
@@ -75,7 +84,8 @@ beforeEach(() => {
 			});
 		}
 		if (endpoint === '/api/drive/files/move-bulk') {
-			if (failMove) return { status: 500, body: JSON.stringify({ error: { code: 'INTERNAL_ERROR' } }) };
+			moveBatchCount++;
+			if (failMove || moveBatchCount === failedMoveBatch) return { status: 500, body: JSON.stringify({ error: { code: 'INTERNAL_ERROR' } }) };
 			files = files.map(file => params.fileIds.includes(file.id) ? { ...file, folderId: params.folderId } : file);
 			return { status: 204, body: '' };
 		}
@@ -202,6 +212,124 @@ test('failed bulk move keeps visible files selected for retry after reloading', 
 	await screen.findByRole('button', { name: 'One.png' });
 	expectCount(screen, 1);
 	expect(screen.getByRole('button', { name: 'One.png' }).getAttribute('aria-pressed')).toBe('true');
+});
+
+async function selectPaginatedFiles(count = 103) {
+	files = Array.from({ length: 103 }, (_, index) => ({
+		...original[0],
+		id: `piece-${String(103 - index).padStart(3, '0')}`,
+		name: `Piece-${String(103 - index).padStart(3, '0')}.png`,
+	}));
+	const screen = drive({ initialFolder: sand.id });
+	await screen.findByRole('button', { name: 'Piece-103.png' });
+
+	for (const loaded of [60, 90, 103]) {
+		await fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+		await waitFor(() => expect(screen.getAllByRole('button', { name: /^Piece-/ })).toHaveLength(loaded));
+	}
+	const cards = screen.getAllByRole('button', { name: /^Piece-/ });
+	for (const card of cards.slice(0, count)) await fireEvent.click(card, { shiftKey: true });
+	expectCount(screen, count);
+	return screen;
+}
+
+test.each(['+createdAt', '+name'] as const)('canceling a move in %s order preserves all 103 loaded cards and selections without reloading', async sort => {
+	store.r.driveSortMode.value = sort;
+	const screen = await selectPaginatedFiles();
+	const fileQueries = requests('drive/files').length;
+	const folderQueries = requests('drive/folders').length;
+	vi.mocked(selectDriveFolder).mockResolvedValue({ canceled: true, folders: undefined });
+
+	await fireEvent.click(screen.getByRole('button', { name: /Move/ }));
+	await waitFor(() => expect(screen.getByRole('button', { name: /Move/ }).hasAttribute('disabled')).toBe(false));
+
+	expectCount(screen, 103);
+	expect(screen.getAllByRole('button', { name: /^Piece-/, pressed: true })).toHaveLength(103);
+	expect(requests('drive/files/move-bulk')).toHaveLength(0);
+	expect(requests('drive/files')).toHaveLength(fileQueries);
+	expect(requests('drive/folders')).toHaveLength(folderQueries);
+});
+
+test.each(['+createdAt', '+name'] as const)('paginated bulk moves in %s order retain all unmoved cards and failed selections', async sort => {
+	store.r.driveSortMode.value = sort;
+	const screen = await selectPaginatedFiles();
+	const selectedIds = files.map(file => file.id);
+	failMove = true;
+	vi.mocked(selectDriveFolder).mockResolvedValue({ canceled: false, folders: [wind] });
+
+	await fireEvent.click(screen.getByRole('button', { name: /Move/ }));
+	await waitFor(() => expect(screen.getByRole('button', { name: /Move/ }).hasAttribute('disabled')).toBe(false));
+
+	expectCount(screen, 103);
+	expect(screen.getAllByRole('button', { name: /^Piece-/, pressed: true })).toHaveLength(103);
+	expect(requests('drive/files/move-bulk').map(body => body.fileIds)).toEqual([selectedIds.slice(0, 100), selectedIds.slice(100)]);
+});
+
+test('a failed list refresh after a failed move still reports the result and allows retry', async () => {
+	const screen = await selectPaginatedFiles();
+	failMove = true;
+	failFileList = true;
+	vi.mocked(selectDriveFolder).mockResolvedValue({ canceled: false, folders: [wind] });
+
+	await fireEvent.click(screen.getByRole('button', { name: /Move/ }));
+	await waitFor(() => expect(os.alert).toHaveBeenCalledOnce());
+	await waitFor(() => expect(screen.getByRole('button', { name: /Move/ }).hasAttribute('disabled')).toBe(false));
+
+	expectCount(screen, 103);
+	expect(screen.getAllByRole('button', { name: /^Piece-/, pressed: true })).toHaveLength(103);
+	failMove = false;
+	failFileList = false;
+	await fireEvent.click(screen.getByRole('button', { name: /Move/ }));
+
+	await waitFor(() => expectCount(screen, 0));
+	await waitFor(() => expect(screen.queryAllByRole('button', { name: /^Piece-/ })).toHaveLength(0));
+});
+
+test.each([
+	{ sort: '+createdAt', failedBatch: 1, remaining: 100 },
+	{ sort: '+name', failedBatch: 1, remaining: 100 },
+	{ sort: '+createdAt', failedBatch: 2, remaining: 3 },
+	{ sort: '+name', failedBatch: 2, remaining: 3 },
+] as const)('partial move in $sort order keeps $remaining failed files selected and visible for retry', async ({ sort, failedBatch, remaining }) => {
+	store.r.driveSortMode.value = sort;
+	const screen = await selectPaginatedFiles();
+	const selectedIds = files.map(file => file.id);
+	failedMoveBatch = failedBatch;
+	vi.mocked(selectDriveFolder).mockResolvedValue({ canceled: false, folders: [wind] });
+
+	await fireEvent.click(screen.getByRole('button', { name: /Move/ }));
+	await waitFor(() => expect(screen.getByRole('button', { name: /Move/ }).hasAttribute('disabled')).toBe(false));
+	await waitFor(() => expect(screen.getAllByRole('button', { name: /^Piece-/ })).toHaveLength(remaining));
+
+	expectCount(screen, remaining);
+	expect(screen.getAllByRole('button', { name: /^Piece-/, pressed: true })).toHaveLength(remaining);
+	expect(requests('drive/files/move-bulk').map(body => body.fileIds)).toEqual([selectedIds.slice(0, 100), selectedIds.slice(100)]);
+	const retryIds = failedBatch === 1 ? selectedIds.slice(0, 100) : selectedIds.slice(100);
+	await fireEvent.click(screen.getByRole('button', { name: /Move/ }));
+
+	await waitFor(() => expectCount(screen, 0));
+	await waitFor(() => expect(screen.queryAllByRole('button', { name: /^Piece-/ })).toHaveLength(0));
+	expect(requests('drive/files/move-bulk').at(-1).fileIds).toEqual(retryIds);
+});
+
+test.each([
+	{ sort: '+createdAt', selected: 103, remaining: 0 },
+	{ sort: '+name', selected: 103, remaining: 0 },
+	{ sort: '+createdAt', selected: 63, remaining: 40 },
+	{ sort: '+name', selected: 63, remaining: 40 },
+] as const)('successful move of $selected files in $sort order keeps all $remaining unselected cards loaded', async ({ sort, selected, remaining }) => {
+	store.r.driveSortMode.value = sort;
+	const screen = await selectPaginatedFiles(selected);
+	vi.mocked(selectDriveFolder).mockResolvedValue({ canceled: false, folders: [wind] });
+
+	await fireEvent.click(screen.getByRole('button', { name: /Move/ }));
+	await waitFor(() => expectCount(screen, 0));
+	await waitFor(() => expect(os.toast).toHaveBeenCalledOnce());
+	await waitFor(() => expect(screen.queryAllByRole('button', { name: /^Piece-/ })).toHaveLength(remaining));
+
+	expect(screen.getByRole('button', { name: 'Delete' }).hasAttribute('disabled')).toBe(true);
+	expect(screen.queryAllByRole('button', { name: /^Piece-/, pressed: true })).toHaveLength(0);
+	expect(files.filter(file => file.folderId === wind.id)).toHaveLength(selected);
 });
 
 test('bulk actions wait until reloading resolves which selected files are still visible', async () => {
