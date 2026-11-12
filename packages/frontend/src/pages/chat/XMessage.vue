@@ -46,13 +46,23 @@ SPDX-License-Identifier: AGPL-3.0-only
 			:moveClass="prefer.s.animation ? $style.transition_reaction_move : ''"
 			tag="div" :class="$style.reactions"
 		>
-			<div v-for="record in message.reactions" :key="record.reaction + record.user.id" :class="[$style.reaction, record.user.id === $i.id ? $style.reactionMy : null]" @click="onReactionClick(record)">
+			<div
+				v-for="record in message.reactions"
+				:key="record.reaction + record.user.id"
+				:class="[$style.reaction, {
+					[$style.reactionReacted]: record.user.id === $i.id,
+					[$style.reactionCanToggle]: isUsableReaction(record.reaction),
+					[$style.reactionClickable]: isReactionClickable(record),
+					[$style.reactionSmall]: prefer.r.reactionsDisplaySize.value === 'small',
+					[$style.reactionLarge]: prefer.r.reactionsDisplaySize.value === 'large',
+				}]"
+				@click.capture="onReactionClick(record)"
+			>
 				<MkAvatar :user="record.user" :link="false" :class="$style.reactionAvatar"/>
 				<MkReactionIcon
 					:withTooltip="true"
 					:reaction="record.reaction.replace(/^:(\w+):$/, ':$1@.:')"
-					:noStyle="true"
-					:class="$style.reactionIcon"
+					:class="prefer.r.limitWidthOfReaction.value ? $style.reactionLimitWidth : ''"
 				/>
 			</div>
 		</TransitionGroup>
@@ -66,6 +76,8 @@ import * as mfm from 'mfc-js';
 import * as Misskey from 'cherrypick-js';
 import { url } from '@@/js/config.js';
 import { isLink } from '@@/js/is-link.js';
+import { getUnicodeEmojiOrNull } from '@@/js/emojilist.js';
+import { getEmojiNameFromReaction } from '@@/js/emoji-name.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { NormalizedChatMessage } from './room.vue';
 import { chatErrorText } from './chat-errors.js';
@@ -83,6 +95,7 @@ import { reactionPicker } from '@/utility/reaction-picker.js';
 import * as sound from '@/utility/sound.js';
 import MkReactionIcon from '@/components/MkReactionIcon.vue';
 import { prefer } from '@/preferences.js';
+import { customEmojisMap } from '@/custom-emojis.js';
 import { DI } from '@/di.js';
 import { getHTMLElementOrNull } from '@/utility/get-dom-node-or-null.js';
 
@@ -152,12 +165,30 @@ function react(ev: PointerEvent) {
 	});
 }
 
+// 他サーバーのカスタム絵文字はこのサーバーからはリアクションできない
+function isRemoteCustomEmoji(reaction: string): boolean {
+	return /@[\w.-]/.test(reaction);
+}
+
+// ノートのリアクション (MkReactionsViewer.reaction.vue の canToggle) と同じく、このサーバーで使える絵文字かどうか
+function isUsableReaction(reaction: string): boolean {
+	if (reaction[0] !== ':') return getUnicodeEmojiOrNull(reaction) != null;
+	if (isRemoteCustomEmoji(reaction)) return false;
+	return customEmojisMap.has(getEmojiNameFromReaction(reaction));
+}
+
+// 押すと何かが起きるリアクション。onReactionClick が何もしないものには、押せる見た目を付けない
+function isReactionClickable(record: Misskey.entities.ChatMessage['reactions'][0]): boolean {
+	return canReact.value && (record.user.id === $i.id || !isRemoteCustomEmoji(record.reaction));
+}
+
+// 絵文字 (MkEmoji / MkCustomEmoji) は自分でクリックの伝播を止めるので、テンプレートではキャプチャで受けて絵文字の上を押しても反応するようにしている
 function onReactionClick(record: Misskey.entities.ChatMessage['reactions'][0]) {
 	if (!canReact.value) return;
 
 	if (record.user.id === $i.id) {
 		sendReaction('chat/messages/unreact', record.reaction);
-	} else if (!/@[\w.-]/.test(record.reaction)) { // 他サーバーのカスタム絵文字はこのサーバーからはリアクションできない
+	} else if (!isRemoteCustomEmoji(record.reaction)) {
 		if (!props.message.reactions.some(r => r.user.id === $i.id && r.reaction === record.reaction)) {
 			sound.playMisskeySfx('reaction');
 			sendReaction('chat/messages/react', record.reaction);
@@ -429,11 +460,13 @@ function getMenu(): MenuItem[] {
 	font-style: italic;
 }
 
+// リアクションの見た目はノートのもの (MkReactionsViewer.vue / MkReactionsViewer.reaction.vue) に揃える。
+// 大きさ・背景・自分のリアクションの強調は、誰が送ったメッセージかによらず同じにする
 .reactions {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
-	gap: 8px;
+	gap: 4px;
 	margin-top: 8px;
 
 	&:empty {
@@ -442,25 +475,57 @@ function getMenu(): MenuItem[] {
 }
 
 .reaction {
-	display: flex;
-	align-items: center;
-	border: solid 1px var(--MI_THEME-divider);
+	display: inline-flex;
+	height: 38px;
+	padding: 0 12px;
+	font-size: 1.35em;
 	border-radius: 999px;
-	padding: 8px;
+	align-items: center;
+	justify-content: center;
 
-	&.reactionMy {
-		border-color: var(--MI_THEME-accent);
+	&.reactionCanToggle {
+		background: var(--MI_THEME-buttonBg);
+	}
+
+	&.reactionClickable {
+		cursor: pointer;
+	}
+
+	&.reactionCanToggle.reactionClickable:hover {
+		background: var(--MI_THEME-buttonHoverBg);
+	}
+
+	&.reactionSmall {
+		height: 30px;
+		font-size: 1em;
+	}
+
+	&.reactionLarge {
+		height: 46px;
+		font-size: 1.8em;
+		padding: 4px 16px;
+
+		> .reactionAvatar {
+			margin: 0 8px 0 0;
+		}
+	}
+
+	&.reactionReacted, &.reactionReacted.reactionClickable:hover {
+		background: var(--MI_THEME-accentedBg);
+		color: var(--MI_THEME-accent);
+		box-shadow: 0 0 0 1px var(--MI_THEME-accent) inset;
 	}
 }
 
+// 誰のリアクションかは、絵文字と同じ高さのアバターで示す。絵文字との間隔はノートのリアクション数と同じにする
 .reactionAvatar {
-	width: 24px;
-	height: 24px;
-	margin-right: 8px;
+	width: 1.25em;
+	height: 1.25em;
+	margin: 0 5px 0 0;
 }
 
-.reactionIcon {
-	width: 24px;
-	height: 24px;
+.reactionLimitWidth {
+	max-width: 70px;
+	object-fit: contain;
 }
 </style>
