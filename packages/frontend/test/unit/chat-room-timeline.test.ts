@@ -1727,10 +1727,34 @@ describe('the unread sign with realtime mode off', () => {
 
 		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
 	});
+});
 
-	test('does not ask in realtime mode, where the server sends word', async () => {
+// 既読になった知らせはメインのチャンネルで届く。ページを開いた直後やつなぎ直した直後は、購読が済む前に
+// サーバーが知らせを出してしまうことがあり、その知らせはあとから流れてこない
+describe('the unread sign in realtime mode', () => {
+	test.each(['user', 'room'] as const)('asks the server about the sign after a %s conversation is opened and read', async kind => {
 		mocks.me.hasUnreadChatMessages = true;
 
+		await renderRoom(kind);
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	test('asks again after reading what came while the stream was away', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		await renderRoom('user');
+		mocks.refreshCurrentAccount.mockClear();
+
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	test('does not ask while the sign is off', async () => {
 		await renderRoom('user');
 
 		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();

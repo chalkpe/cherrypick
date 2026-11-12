@@ -186,7 +186,6 @@ import { ensureSignin } from '@/i.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { definePage } from '@/page.js';
 import { prefer } from '@/preferences.js';
-import { store } from '@/store.js';
 import { refreshCurrentAccount } from '@/accounts.js';
 import MkButton from '@/components/MkButton.vue';
 import { useRouter } from '@/router.js';
@@ -518,10 +517,11 @@ async function initialize() {
 	recheckUnreadSign();
 }
 
-// リアルタイムモードを切っているあいだはメインのチャンネルを聞いていないので、既読になった知らせが届かない。
+// 既読になった知らせはメインのチャンネルで届くが、聞いていないあいだに出たものは届かない。リアルタイムモードを切っているあいだと、
+// ページを開いた直後やつなぎ直した直後でチャンネルの購読がまだ済んでいないあいだがそうで、印が点いたまま残る。
 // 未読の印が付いているときだけ、会話を読んだあとにサーバーへ確かめ直す
 function recheckUnreadSign() {
-	if (store.s.realtimeMode || !$i.hasUnreadChatMessages) return;
+	if (!$i.hasUnreadChatMessages) return;
 	refreshCurrentAccount();
 }
 
