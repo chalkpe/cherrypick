@@ -254,7 +254,7 @@ export class ServerService implements OnApplicationShutdown {
 			reply.header('Access-Control-Allow-Origin', '*');
 
 			if (this.meta.enableIdenticonGeneration) {
-				return await genIdenticon(request.params.x);
+				return genIdenticon(request.params.x);
 			} else {
 				return reply.redirect('/static-assets/avatar.png');
 			}

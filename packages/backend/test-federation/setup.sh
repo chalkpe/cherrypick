@@ -35,7 +35,7 @@ function generate {
   fi
   if [ ! -f .config/docker.env ]; then cp .config/example.docker.env .config/docker.env; fi
   if [ ! -f .config/$1.conf ]; then sed "s/\${HOST}/$1/g" .config/example.conf > .config/$1.conf; fi
-  if [ ! -f .config/$1.config.json ]; then sed "s/\${HOST}/$1/g" .config/example.config.json > .config/$1.config.json; fi
+  if [ ! -f .config/$1.default.yml ]; then sed "s/\${HOST}/$1/g" .config/example.default.yml > .config/$1.default.yml; fi
 }
 
 generate a.test
@@ -46,7 +46,8 @@ generate b.test
 node -e '
 const fs = require("node:fs");
 const file = process.argv[1];
-const config = JSON.parse(fs.readFileSync(file, "utf8"));
+const yaml = require("js-yaml");
+const config = yaml.load(fs.readFileSync(file, "utf8"));
 if (config.voiceCall == null) {
   config.voiceCall = {
     livekit: {
@@ -55,6 +56,6 @@ if (config.voiceCall == null) {
       apiSecret: "test-federation-livekit-secret-0123456789",
     },
   };
-  fs.writeFileSync(file, JSON.stringify(config, null, 2) + "\n");
+  fs.writeFileSync(file, yaml.dump(config));
 }
-' .config/a.test.config.json
+' .config/a.test.default.yml

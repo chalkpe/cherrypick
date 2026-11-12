@@ -10,7 +10,7 @@ import { Redis } from 'ioredis';
 import { createAccount, type LoginUser, resolveRemoteUser, WAIT_FOR_FEDERATION } from './utils.js';
 
 /**
- * a.test だけが LiveKit を持つ (compose.a.yml の livekit.a.test と、setup.sh が a.test.config.json に足す voiceCall)。
+ * a.test だけが LiveKit を持つ (compose.a.yml の livekit.a.test と、setup.sh が a.test.default.yml に足す voiceCall)。
  * b.test には LiveKit が無いので、b.test の /livekit/* は 404 を返す
  */
 describe('Voice call', () => {

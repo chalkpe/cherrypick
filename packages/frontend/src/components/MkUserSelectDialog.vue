@@ -93,7 +93,7 @@ import { $i } from '@/i.js';
 import { instance } from '@/instance.js';
 
 const emit = defineEmits<{
-	(ev: 'ok', selected: Misskey.entities.UserDetailed): void;
+	(ev: 'ok', selected: Misskey.entities.UserLite): void;
 	(ev: 'okMultiple', selected: Misskey.entities.UserLite[]): void;
 	(ev: 'cancel'): void;
 	(ev: 'closed'): void;
@@ -269,7 +269,7 @@ function rememberRecentUsers(userIds: string[]) {
 	store.set('recentlyUsedUsers', recents.slice(0, 16));
 }
 
-async function ok() {
+function ok() {
 	if (props.multiple) {
 		if (pickedUsers.value.length === 0) return;
 		emit('okMultiple', [...pickedUsers.value]);
@@ -279,18 +279,12 @@ async function ok() {
 	}
 
 	if (selected.value == null) return;
-	const selectedId = selected.value.id;
-	const currentRequestId = requestId;
-
-	const user = await misskeyApi('users/show', {
-		userId: selectedId,
-	});
-	if (currentRequestId !== requestId || selected.value?.id !== selectedId) return;
+	const user = selected.value;
 	emit('ok', user);
 
 	dialogEl.value?.close();
 
-	rememberRecentUsers([selectedId]);
+	rememberRecentUsers([user.id]);
 }
 
 function cancel() {

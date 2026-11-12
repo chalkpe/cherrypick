@@ -1025,7 +1025,7 @@ export class ApInboxService {
 			return object._misskey_content;
 		}
 		if (typeof object.content === 'string') {
-			return this.apMfmService.htmlToMfm(object.content, object.tag);
+			return this.apMfmService.htmlToMfm(object.content, { tag: object.tag });
 		}
 		return null;
 	}

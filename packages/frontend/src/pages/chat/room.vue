@@ -49,6 +49,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<MkLoading/>
 						</div>
 
+						<MkResult v-else-if="fetchError != null" :type="fetchError"/>
+
 						<div v-else-if="messages.length === 0">
 							<div class="_gaps" style="text-align: center;">
 								<div>{{ i18n.ts._chat.noMessagesYet }}</div>
@@ -229,6 +231,7 @@ export type NormalizedChatMessage = Omit<Misskey.entities.ChatMessageLite, 'from
 
 const initializing = ref(false);
 const initialized = ref(false);
+const fetchError = ref<'notFound' | 'error' | null>(null);
 const moreFetching = ref(false);
 const messages = ref<NormalizedChatMessage[]>([]);
 const editingMessage = ref<NormalizedChatMessage | null>(null);
@@ -372,6 +375,11 @@ function normalizeMessage(message: Misskey.entities.ChatMessageLite | Misskey.en
 	};
 }
 
+function toFetchError(err: unknown): 'notFound' | 'error' {
+	const code = (err as { code?: string } | null)?.code;
+	return code === 'NO_SUCH_ROOM' || code === 'NO_SUCH_USER' ? 'notFound' : 'error';
+}
+
 async function initialize() {
 	const LIMIT = 20;
 
@@ -381,12 +389,23 @@ async function initialize() {
 	initialized.value = false;
 	deletingOwnRoom.value = false;
 	leavingRoom.value = false;
+	fetchError.value = null;
 
 	if (props.userId) {
-		const [u, m] = await Promise.all([
+		const result = await Promise.all([
 			misskeyApi('users/show', { userId: props.userId }),
 			misskeyApi('chat/messages/user-timeline', { userId: props.userId, limit: LIMIT, includeDeleted: true }),
-		]);
+		]).catch(err => {
+			fetchError.value = toFetchError(err);
+			return null;
+		});
+
+		if (result == null) {
+			initializing.value = false;
+			return;
+		}
+
+		const [u, m] = result;
 
 		user.value = u;
 		messages.value = m.map(x => normalizeMessage(x));
@@ -421,10 +440,7 @@ async function initialize() {
 				// 外されたあとの削除はこのサーバーに届かないことがあり、削除されたのか外されただけなのかは分からない
 				notifyRoomClosed(i18n.ts._chat.roomUnavailable);
 			} else {
-				os.alert({
-					type: 'error',
-					text: i18n.ts.somethingHappened,
-				});
+				fetchError.value = toFetchError(rResult.reason);
 			}
 			initializing.value = false;
 			return;
@@ -458,7 +474,14 @@ async function initialize() {
 			}
 		}
 
-		const m = mResult.status === 'fulfilled' ? mResult.value as Misskey.entities.ChatMessagesRoomTimelineResponse : [];
+		// ルーム情報は取れても、タイムラインの取得だけ失敗することがある（通信エラーなど）
+		if (mResult.status === 'rejected') {
+			fetchError.value = toFetchError(mResult.reason);
+			initializing.value = false;
+			return;
+		}
+
+		const m = mResult.value as Misskey.entities.ChatMessagesRoomTimelineResponse;
 
 		room.value = r;
 		messages.value = m.map(x => normalizeMessage(x));

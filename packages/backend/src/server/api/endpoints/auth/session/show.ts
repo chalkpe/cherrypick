@@ -4,10 +4,13 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
+import * as Redis from 'ioredis';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import type { AuthSessionsRepository } from '@/models/_.js';
 import { AuthSessionEntityService } from '@/core/entities/AuthSessionEntityService.js';
 import { DI } from '@/di-symbols.js';
+import { MASTODON_OAUTH_PREFIX, mastodonOAuthPendingKey, type MastodonPendingAuthorization } from '@/misc/mastodon-oauth.js';
+import { parseMastodonScopes, toCherryPickPermissions } from '@/server/api/mastodon/MastodonOAuthService.js';
 import { ApiError } from '../../../error.js';
 
 export const meta = {
@@ -41,6 +44,12 @@ export const meta = {
 				type: 'string',
 				optional: false, nullable: false,
 			},
+			permission: {
+				type: 'array',
+				optional: true, nullable: false,
+				description: 'CherryPick permissions for the pending Mastodon OAuth request.',
+				items: { type: 'string', optional: false, nullable: false },
+			},
 		},
 	},
 } as const;
@@ -60,6 +69,9 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private authSessionsRepository: AuthSessionsRepository,
 
 		private authSessionEntityService: AuthSessionEntityService,
+
+		@Inject(DI.redis)
+		private redisClient: Redis.Redis,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			// Lookup session
@@ -69,6 +81,16 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			if (session == null) {
 				throw new ApiError(meta.errors.noSuchSession);
+			}
+
+			if (session.token.startsWith(MASTODON_OAUTH_PREFIX)) {
+				const pendingJson = await this.redisClient.get(mastodonOAuthPendingKey(session.token));
+				if (pendingJson == null) throw new ApiError(meta.errors.noSuchSession);
+				const pending = JSON.parse(pendingJson) as MastodonPendingAuthorization;
+				return {
+					...await this.authSessionEntityService.pack(session, me),
+					permission: toCherryPickPermissions(parseMastodonScopes(pending.scope)),
+				};
 			}
 
 			return await this.authSessionEntityService.pack(session, me);

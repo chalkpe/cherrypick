@@ -36,7 +36,7 @@ const char2path = prefer.s.emojiStyle === 'twemoji' ? char2twemojiFilePath : cha
 const useOsNativeEmojis = computed(() => prefer.s.emojiStyle === 'native');
 const url = computed(() => char2path(props.emoji));
 const colorizedNativeEmoji = computed(() => colorizeEmoji(props.emoji));
-const isMuted = checkMutedEmoji(props.emoji);
+const isMuted = checkMutedEmoji(() => props.emoji);
 const shouldMute = computed(() => isMuted.value && !props.ignoreMuted);
 
 // Searching from an array with 2000 items for every emoji felt like too energy-consuming, so I decided to do it lazily on pointerenter
@@ -44,42 +44,43 @@ function computeTitle(event: PointerEvent): void {
 	(event.target as HTMLElement).title = getEmojiName(props.emoji);
 }
 
-function mute() {
+function mute(emoji: string) {
 	os.confirm({
 		type: 'question',
-		title: i18n.tsx.muteX({ x: props.emoji }),
+		title: i18n.tsx.muteX({ x: emoji }),
 	}).then(({ canceled }) => {
 		if (canceled) {
 			return;
 		}
-		muteEmoji(props.emoji);
+		muteEmoji(emoji);
 	});
 }
 
-function unmute() {
+function unmute(emoji: string) {
 	os.confirm({
 		type: 'question',
-		title: i18n.tsx.unmuteX({ x: props.emoji }),
+		title: i18n.tsx.unmuteX({ x: emoji }),
 	}).then(({ canceled }) => {
 		if (canceled) {
 			return;
 		}
-		unmuteEmoji(props.emoji);
+		unmuteEmoji(emoji);
 	});
 }
 
 function onClick(ev: PointerEvent) {
 	if (props.menu) {
+		const emoji = props.emoji;
 		const menuItems: MenuItem[] = [];
 
 		menuItems.push({
 			type: 'label',
-			text: props.emoji,
+			text: emoji,
 		}, {
 			text: i18n.ts.copy,
 			icon: 'ti ti-copy',
 			action: () => {
-				copyToClipboard(props.emoji);
+				copyToClipboard(emoji);
 			},
 		});
 
@@ -88,7 +89,7 @@ function onClick(ev: PointerEvent) {
 				text: i18n.ts.doReaction,
 				icon: 'ti ti-mood-plus',
 				action: () => {
-					react(props.emoji);
+					react(emoji);
 				},
 			});
 		}
@@ -102,7 +103,7 @@ function onClick(ev: PointerEvent) {
 				text: i18n.ts.emojiUnmute,
 				icon: 'ti ti-mood-smile',
 				action: () => {
-					unmute();
+					unmute(emoji);
 				},
 			});
 		} else {
@@ -110,7 +111,7 @@ function onClick(ev: PointerEvent) {
 				text: i18n.ts.emojiMute,
 				icon: 'ti ti-mood-off',
 				action: () => {
-					mute();
+					mute(emoji);
 				},
 			});
 		}
@@ -119,7 +120,7 @@ function onClick(ev: PointerEvent) {
 			text: i18n.ts.addToEmojiPalette,
 			icon: 'ti ti-palette',
 			action: () => {
-				addToEmojiPalette(props.emoji);
+				addToEmojiPalette(emoji);
 			},
 		});
 
