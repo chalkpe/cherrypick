@@ -77,7 +77,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			const messages = await this.chatService.userTimeline(me.id, other.id, ps.limit, sinceId, untilId, ps.includeDeleted);
 
-			this.chatService.readUserChatMessage(me.id, other.id);
+			// Done before answering, so that a client asking for its unread state right after gets the new one.
+			await this.chatService.readUserChatMessage(me.id, other.id);
 
 			return await this.chatEntityService.packMessagesLiteFor1on1(messages);
 		});

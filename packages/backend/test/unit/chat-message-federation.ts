@@ -294,6 +294,7 @@ describe('ChatService chat federation delivery', () => {
 		const reactionActivityIds = new Map<string, string>();
 		const redisClient = {
 			pipeline: vi.fn(() => redisPipeline),
+			sismember: vi.fn(async () => 0),
 			multi: () => {
 				const commands: (() => unknown)[] = [];
 				const transaction = {
@@ -350,6 +351,7 @@ describe('ChatService chat federation delivery', () => {
 			config: { url: 'https://local.test' },
 			chatMessagesRepository: {
 				findOneBy: vi.fn(async ({ id }: { id: string }) => messages.get(id) ?? null),
+				existsBy: vi.fn(async () => true),
 				update: vi.fn(async (where: string | { id: string } | { id: string }[], patch: Record<string, unknown>) => {
 					const id = typeof where === 'string' ? where : Array.isArray(where) ? where[0].id : where.id;
 					const target = messages.get(id);
@@ -2085,7 +2087,8 @@ describe('unread chat notification', () => {
 			},
 			globalEventService: { publishChatUserStream: vi.fn(), publishMainStream },
 			pushNotificationService: { pushNotification },
-			redisClient: { pipeline: () => pipeline, get: async () => 'm1' },
+			redisClient: { pipeline: () => pipeline, get: async () => 'm1', sismember: async () => 1 },
+			mutingsRepository: { existsBy: async () => false },
 		});
 		const send = () => service.createMessageToUser(
 			{ id: 'bob', host: 'remote.test' }, { id: 'alice', host: null, chatScope: 'everyone' }, { text: 'secret', uri: 'https://remote.test/chat/messages/m1' },

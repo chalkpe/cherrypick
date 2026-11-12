@@ -186,6 +186,8 @@ import { ensureSignin } from '@/i.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { definePage } from '@/page.js';
 import { prefer } from '@/preferences.js';
+import { store } from '@/store.js';
+import { refreshCurrentAccount } from '@/accounts.js';
 import MkButton from '@/components/MkButton.vue';
 import { useRouter } from '@/router.js';
 import MkInfo from '@/components/MkInfo.vue';
@@ -512,6 +514,15 @@ async function initialize() {
 	initialized.value = true;
 	membershipEnded.value = false;
 	initializing.value = false;
+
+	recheckUnreadSign();
+}
+
+// リアルタイムモードを切っているあいだはメインのチャンネルを聞いていないので、既読になった知らせが届かない。
+// 未読の印が付いているときだけ、会話を読んだあとにサーバーへ確かめ直す
+function recheckUnreadSign() {
+	if (store.s.realtimeMode || !$i.hasUnreadChatMessages) return;
+	refreshCurrentAccount();
 }
 
 let isActivated = true;
@@ -553,6 +564,9 @@ async function fetchMore() {
 	earlierLoaded();
 }
 
+// 見ていないあいだに届いたメッセージは、見に戻ったときに既読にする。サーバーは会話ごとに既読にするので、最後の一通を伝えれば足りる
+let arrivedWhileAway: NormalizedChatMessage['id'] | null = null;
+
 function onMessage(message: Misskey.entities.ChatMessageLite) {
 	// 読み直しのほうが先に届けていることがある
 	if (messages.value.some(m => m.id === message.id)) return;
@@ -563,12 +577,25 @@ function onMessage(message: Misskey.entities.ChatMessageLite) {
 	const index = messages.value.findIndex(m => m.id < message.id);
 	messages.value.splice(index === -1 ? messages.value.length : index, 0, normalizeMessage(message));
 
-	// TODO: DOM的にバックグラウンドになっていないかどうかも考慮する
-	if (message.fromUserId !== $i.id && !window.document.hidden && isActivated) {
-		connection.value?.send('read', {
-			id: message.id,
-		});
+	if (message.fromUserId !== $i.id) {
+		// TODO: DOM的にバックグラウンドになっていないかどうかも考慮する
+		if (!window.document.hidden && isActivated) {
+			connection.value?.send('read', {
+				id: message.id,
+			});
+		} else {
+			arrivedWhileAway = message.id;
+		}
 	}
+}
+
+function readWhatArrivedWhileAway() {
+	if (arrivedWhileAway == null || !isActivated || window.document.hidden) return;
+
+	connection.value?.send('read', {
+		id: arrivedWhileAway,
+	});
+	arrivedWhileAway = null;
 }
 
 function onDeleted(id: string) {
@@ -722,6 +749,7 @@ function notifyNewMessage() {
 
 function onVisibilitychange() {
 	if (window.document.hidden) return;
+	readWhatArrivedWhileAway();
 	catchUp();
 }
 
@@ -795,6 +823,7 @@ async function readLatest(): Promise<boolean> {
 		room.value = r;
 		onMembershipChanged();
 	}
+	recheckUnreadSign();
 	return true;
 }
 
@@ -824,6 +853,7 @@ onActivated(() => {
 	if (!initialized.value) {
 		initialize();
 	} else {
+		readWhatArrivedWhileAway();
 		catchUp();
 	}
 });

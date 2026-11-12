@@ -44,6 +44,7 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		sadd: async () => 1,
 		expire: async () => 1,
 		smembers: async () => [],
+		sismember: async () => 0,
 		pipeline: () => pipeline,
 	};
 	// ApInboxService writes memberships inside a transaction, so the fixture has to answer the
@@ -67,6 +68,7 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		config: { url: 'https://local.test' },
 		chatMessagesRepository: {
 			findOneBy: async ({ uri }: { uri: string }) => messages.find(message => message.uri === uri) ?? null,
+			existsBy: async () => true,
 			insertOne: async (message: typeof messages[number]) => {
 				await options.beforeInsert?.();
 				messages.push(message);

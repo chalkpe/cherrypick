@@ -33,6 +33,7 @@ function fixture() {
 			return message;
 		}),
 		findOneBy: vi.fn(async () => rows[0] ?? null),
+		existsBy: vi.fn(async () => true),
 		update: vi.fn(async (_query: unknown, patch: object) => { Object.assign(rows[0], patch); return { affected: 1 }; }),
 	};
 	const entity = Object.assign(Object.create(ChatEntityService.prototype), {
@@ -54,7 +55,7 @@ function fixture() {
 		chatRoomsRepository: { findOneBy: vi.fn() },
 		usersRepository: { findOneBy: vi.fn(async () => sender), findOneByOrFail: vi.fn(async () => sender), findBy: vi.fn(async () => [sender, recipient]) },
 		idService: { gen: () => 'message' },
-		redisClient: { pipeline: () => pipeline },
+		redisClient: { pipeline: () => pipeline, sismember: async () => 0 },
 		globalEventService: stream,
 		userEntityService: { isLocalUser: (u: { host: string | null }) => u.host == null, isRemoteUser: (u: { host: string | null }) => u.host != null },
 		assertCanSendToUser: vi.fn(async () => ({ iApprovedOther: true })),

@@ -23,7 +23,9 @@ const mocks = vi.hoisted(() => {
 	return {
 		FakeChannel,
 		channel: new FakeChannel(),
-		me: { id: 'me', username: 'me', policies: { chatAvailability: 'available', canVoiceCall: false } },
+		me: { id: 'me', username: 'me', policies: { chatAvailability: 'available', canVoiceCall: false }, hasUnreadChatMessages: false },
+		store: { realtimeMode: true },
+		refreshCurrentAccount: vi.fn(),
 		timeline: [] as unknown[],
 		roomMembers: [] as unknown[],
 		sentInvitations: [] as unknown[],
@@ -73,6 +75,8 @@ vi.mock('@/utility/misskey-api.js', () => ({
 vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: mocks.streamOff, useChannel: () => mocks.channel }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
+vi.mock('@/store.js', () => ({ store: { s: mocks.store } }));
+vi.mock('@/accounts.js', () => ({ refreshCurrentAccount: mocks.refreshCurrentAccount }));
 vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog, selectUsers: mocks.selectUsers, success: mocks.success, promiseDialog: (promise: Promise<unknown>) => promise }));
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace, useListener: vi.fn() }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
@@ -224,6 +228,9 @@ beforeEach(() => {
 	mocks.apiWithDialog.mockReset().mockResolvedValue(undefined);
 	mocks.selectUsers.mockReset().mockResolvedValue([{ id: 'invitee', username: 'invitee', host: null, name: null }]);
 	mocks.membersMounts.value = 0;
+	mocks.me.hasUnreadChatMessages = false;
+	mocks.store.realtimeMode = true;
+	mocks.refreshCurrentAccount.mockReset();
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
 });
@@ -1544,6 +1551,189 @@ describe('after the stream reconnects', () => {
 		unmount();
 
 		expect(mocks.streamOff).toHaveBeenCalledWith('_connected_', listener);
+	});
+});
+
+describe('telling the server what was read', () => {
+	const reads = (send: { mock: { calls: unknown[][] } }) => send.mock.calls.filter(([type]) => type === 'read').map(([, body]) => body);
+
+	async function arrive(newMessage: ReturnType<typeof message>) {
+		mocks.channel.emit('message', newMessage);
+		await flush();
+	}
+
+	async function lookAtTab(hidden: { mockReturnValue: (value: boolean) => unknown }) {
+		hidden.mockReturnValue(false);
+		window.document.dispatchEvent(new Event('visibilitychange'));
+		await flush();
+	}
+
+	function cachedPage() {
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { userId: 'alice' }) : h('div') });
+			},
+		});
+		return { page, visible };
+	}
+
+	test('marks a message read as it arrives in the conversation being looked at', async () => {
+		const send = vi.spyOn(mocks.channel, 'send');
+		await renderRoom('user');
+
+		await arrive(message('m4', 'alice', 3 * MINUTE));
+
+		expect(reads(send)).toEqual([{ id: 'm4' }]);
+	});
+
+	test('leaves a message unread while the tab is hidden, and marks it read once the tab is looked at', async () => {
+		const send = vi.spyOn(mocks.channel, 'send');
+		await renderRoom('user');
+		const hidden = vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
+
+		try {
+			await arrive(message('m4', 'alice', 3 * MINUTE));
+			await arrive(message('m5', 'alice', 4 * MINUTE));
+			expect(reads(send)).toEqual([]);
+
+			await lookAtTab(hidden);
+
+			// サーバーは会話ごとに既読にするので、最後の一通を伝えれば足りる
+			expect(reads(send)).toEqual([{ id: 'm5' }]);
+		} finally {
+			hidden.mockRestore();
+		}
+	});
+
+	test('marks what arrived while another page was open as read once the cached page is opened again', async () => {
+		const send = vi.spyOn(mocks.channel, 'send');
+		const { page, visible } = cachedPage();
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+
+		visible.value = false;
+		await flush();
+		await arrive(message('m4', 'alice', 3 * MINUTE));
+		expect(reads(send)).toEqual([]);
+
+		visible.value = true;
+		await flush();
+
+		expect(reads(send)).toEqual([{ id: 'm4' }]);
+	});
+
+	test('waits for the tab too when a cached page is opened again behind a hidden tab', async () => {
+		const send = vi.spyOn(mocks.channel, 'send');
+		const { page, visible } = cachedPage();
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		visible.value = false;
+		await flush();
+		await arrive(message('m4', 'alice', 3 * MINUTE));
+		const hidden = vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
+
+		try {
+			visible.value = true;
+			await flush();
+			expect(reads(send)).toEqual([]);
+
+			await lookAtTab(hidden);
+
+			expect(reads(send)).toEqual([{ id: 'm4' }]);
+		} finally {
+			hidden.mockRestore();
+		}
+	});
+
+	test('sends nothing on coming back when nothing arrived meanwhile', async () => {
+		const send = vi.spyOn(mocks.channel, 'send');
+		await renderRoom('user');
+		const hidden = vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
+
+		try {
+			// 自分がほかの端末から送ったものは、読むものではない
+			await arrive(message('m4', 'me', 3 * MINUTE));
+			await lookAtTab(hidden);
+			hidden.mockReturnValue(true);
+			await lookAtTab(hidden);
+
+			expect(reads(send)).toEqual([]);
+		} finally {
+			hidden.mockRestore();
+		}
+	});
+
+	test('does not repeat the read each time the tab is looked at', async () => {
+		const send = vi.spyOn(mocks.channel, 'send');
+		await renderRoom('user');
+		const hidden = vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
+
+		try {
+			await arrive(message('m4', 'alice', 3 * MINUTE));
+			await lookAtTab(hidden);
+			hidden.mockReturnValue(true);
+			await lookAtTab(hidden);
+
+			expect(reads(send)).toEqual([{ id: 'm4' }]);
+		} finally {
+			hidden.mockRestore();
+		}
+	});
+});
+
+describe('the unread sign with realtime mode off', () => {
+	// メインのチャンネルを聞いていないので、既読になった知らせは届かない
+	test('asks the server about the sign after a conversation is opened and read', async () => {
+		mocks.store.realtimeMode = false;
+		mocks.me.hasUnreadChatMessages = true;
+
+		await renderRoom('user');
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	test('asks about a room as well', async () => {
+		mocks.store.realtimeMode = false;
+		mocks.me.hasUnreadChatMessages = true;
+
+		await renderRoom('room');
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	test('asks again after reading what came while the stream was away', async () => {
+		mocks.store.realtimeMode = false;
+		mocks.me.hasUnreadChatMessages = true;
+		await renderRoom('user');
+		mocks.refreshCurrentAccount.mockClear();
+
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	test('does not ask while the sign is off', async () => {
+		mocks.store.realtimeMode = false;
+
+		await renderRoom('user');
+
+		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+	});
+
+	test('does not ask in realtime mode, where the server sends word', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+
+		await renderRoom('user');
+
+		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
 	});
 });
 

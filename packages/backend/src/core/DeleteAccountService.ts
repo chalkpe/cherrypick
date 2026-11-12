@@ -14,6 +14,7 @@ import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { SystemAccountService } from '@/core/SystemAccountService.js';
+import { ChatService } from '@/core/ChatService.js';
 
 @Injectable()
 export class DeleteAccountService {
@@ -33,6 +34,7 @@ export class DeleteAccountService {
 		private globalEventService: GlobalEventService,
 		private moderationLogService: ModerationLogService,
 		private systemAccountService: SystemAccountService,
+		private chatService: ChatService,
 	) {
 	}
 
@@ -98,6 +100,9 @@ export class DeleteAccountService {
 		await this.usersRepository.update(user.id, {
 			isDeleted: true,
 		});
+
+		// Its direct messages go away with it, and nothing could read them after that.
+		await this.chatService.clearUnreadMarksOfDirectMessagesFrom(user.id).catch(() => {});
 
 		this.globalEventService.publishInternalEvent('userChangeDeletedState', { id: user.id, isDeleted: true });
 	}

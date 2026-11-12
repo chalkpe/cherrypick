@@ -78,6 +78,9 @@ const MAX_REMOTE_REACTION_ACTIVITY_ID_LENGTH = 2048;
 const ACTIVITIES_FOR_SUSPENDED_ACCOUNTS = new Set(['Delete', 'Remove', 'Undo']);
 const isCustomEmojiRegexp = /^:([\w+-]+)(?:@\.)?:$/;
 
+/** One reader's unread mark on one conversation: a direct conversation goes by its sender, a room by its ID. */
+type UnreadMark = { readerId: MiUser['id'] } & ({ senderId: MiUser['id'] } | { roomId: MiChatRoom['id'] });
+
 // TODO: ReactionServiceのやつと共通化
 function normalizeEmojiString(x: string) {
 	const match = emojiRegex.exec(x);
@@ -344,7 +347,11 @@ export class ChatService {
 				if (latest == null || latest.deletedAt != null) return;
 				if (await this.isFromSuspendedUser(latest)) return;
 
+				// The chat list leaves out a conversation with a muted account, so nothing points the recipient at it either.
+				if (await this.mutingsRepository.existsBy({ muterId: toUser.id, muteeId: fromUser.id })) return;
+
 				const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest, toUser);
+				if (!(await this.isMarkedUnread(toUser.id, `user:${fromUser.id}`))) return;
 				this.globalEventService.publishMainStream(toUser.id, 'newChatMessage', packedMessageForTo);
 				this.pushNotificationService.pushNotification(toUser.id, 'newChatMessage', packedMessageForTo);
 			}, 3000);
@@ -464,6 +471,7 @@ export class ChatService {
 					if (currentMembership == null || currentMembership.isMuted) continue;
 				}
 
+				if (!(await this.isMarkedUnread(userId, `room:${toRoom.id}`))) continue;
 				this.globalEventService.publishMainStream(userId, 'newChatMessage', packedMessageForTo);
 				this.pushNotificationService.pushNotification(userId, 'newChatMessage', packedMessageForTo);
 			}
@@ -540,10 +548,7 @@ export class ChatService {
 		readerId: MiUser['id'],
 		senderId: MiUser['id'],
 	): Promise<void> {
-		const redisPipeline = this.redisClient.pipeline();
-		redisPipeline.del(`newUserChatMessageExists:${readerId}:${senderId}`);
-		redisPipeline.srem(`newChatMessagesExists:${readerId}`, `user:${senderId}`);
-		await redisPipeline.exec();
+		await this.clearUnreadMarks([{ readerId, senderId }]);
 	}
 
 	@bindThis
@@ -551,20 +556,87 @@ export class ChatService {
 		readerId: MiUser['id'],
 		roomId: MiChatRoom['id'],
 	): Promise<void> {
-		const redisPipeline = this.redisClient.pipeline();
-		redisPipeline.del(`newRoomChatMessageExists:${readerId}:${roomId}`);
-		redisPipeline.srem(`newChatMessagesExists:${readerId}`, `room:${roomId}`);
-		await redisPipeline.exec();
+		await this.clearUnreadMarks([{ readerId, roomId }]);
 	}
 
 	@bindThis
 	public async readAllChatMessages(
 		readerId: MiUser['id'],
 	): Promise<void> {
+		// The set names every conversation that has a mark of its own (`user:<id>` or `room:<id>`).
+		const conversations = await this.redisClient.smembers(`newChatMessagesExists:${readerId}`);
+
 		const redisPipeline = this.redisClient.pipeline();
-		// TODO: newUserChatMessageExists とか newRoomChatMessageExists も消したい(けどキーの列挙が必要になって面倒)
+		for (const conversation of conversations) {
+			const [kind, id] = conversation.split(':');
+			redisPipeline.del(kind === 'user' ? `newUserChatMessageExists:${readerId}:${id}` : `newRoomChatMessageExists:${readerId}:${id}`);
+		}
 		redisPipeline.del(`newChatMessagesExists:${readerId}`);
 		await redisPipeline.exec();
+
+		// Asked for outright, so the reader's screens are told even if the server had nothing left to clear.
+		this.globalEventService.publishMainStream(readerId, 'readAllChatMessages');
+	}
+
+	/**
+	 * Clears unread marks, then tells every reader for whom that was the last unread conversation the chat list shows,
+	 * so that screens already open drop the sign. Clearing a mark that was not there is not announced:
+	 * an open conversation sends a read for each message it receives.
+	 */
+	private async clearUnreadMarks(marks: UnreadMark[]): Promise<void> {
+		if (marks.length === 0) return;
+
+		const redisPipeline = this.redisClient.pipeline();
+		for (const mark of marks) {
+			if ('senderId' in mark) {
+				redisPipeline.del(`newUserChatMessageExists:${mark.readerId}:${mark.senderId}`);
+				redisPipeline.srem(`newChatMessagesExists:${mark.readerId}`, `user:${mark.senderId}`);
+			} else {
+				redisPipeline.del(`newRoomChatMessageExists:${mark.readerId}:${mark.roomId}`);
+				redisPipeline.srem(`newChatMessagesExists:${mark.readerId}`, `room:${mark.roomId}`);
+			}
+		}
+		const results = await redisPipeline.exec();
+
+		// Each mark queued two commands, and the second says whether the conversation was in the set.
+		const readerIds = new Set(marks.filter((_, index) => Number(results?.[index * 2 + 1]?.[1]) > 0).map(mark => mark.readerId));
+		for (const readerId of readerIds) {
+			if (await this.hasUnreadMessages(readerId)) continue;
+			this.globalEventService.publishMainStream(readerId, 'readAllChatMessages');
+		}
+	}
+
+	/**
+	 * Taking back a message can empty its conversation, which then leaves the chat list. Readers whose sign
+	 * was on for that conversation alone are told, as nothing will ever read it for them.
+	 */
+	private async dropSignIfConversationEmptied(message: MiChatMessage): Promise<void> {
+		let marks: UnreadMark[] = [];
+		if (message.toUserId != null) {
+			marks = [{ readerId: message.toUserId, senderId: message.fromUserId }];
+		} else if (message.toRoomId != null) {
+			// A room keeps its place in the list while any message is left, and then nobody's sign changes.
+			if (await this.chatMessagesRepository.existsBy({ toRoomId: message.toRoomId, deletedAt: IsNull() })) return;
+			const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
+			if (room == null) return;
+			const roomId = room.id;
+			marks = (await this.participantsForRoom(room)).map(participant => ({ readerId: participant.id, roomId }));
+		}
+
+		for (const mark of marks) {
+			const conversation = 'senderId' in mark ? `user:${mark.senderId}` as const : `room:${mark.roomId}` as const;
+			if (!(await this.isMarkedUnread(mark.readerId, conversation))) continue;
+			if (await this.hasUnreadMessages(mark.readerId)) continue;
+			this.globalEventService.publishMainStream(mark.readerId, 'readAllChatMessages');
+		}
+	}
+
+	/**
+	 * Whether the conversation is still unread, asked just before a delayed notice goes out.
+	 * A notice that reached a screen after the word that everything had been read would leave the sign on for good.
+	 */
+	private async isMarkedUnread(readerId: MiUser['id'], conversation: `user:${MiUser['id']}` | `room:${MiChatRoom['id']}`): Promise<boolean> {
+		return await this.redisClient.sismember(`newChatMessagesExists:${readerId}`, conversation) === 1;
 	}
 
 	@bindThis
@@ -589,17 +661,7 @@ export class ChatService {
 	 */
 	@bindThis
 	public async handleUserSuspended(user: MiUser): Promise<void> {
-		const readers = await this.chatMessagesRepository.createQueryBuilder('message')
-			.select('DISTINCT message.toUserId', 'toUserId')
-			.where('message.fromUserId = :userId', { userId: user.id })
-			.andWhere('message.toUserId IS NOT NULL')
-			.getRawMany<{ toUserId: MiUser['id'] }>();
-		const redisPipeline = this.redisClient.pipeline();
-		for (const { toUserId } of readers) {
-			redisPipeline.del(`newUserChatMessageExists:${toUserId}:${user.id}`);
-			redisPipeline.srem(`newChatMessagesExists:${toUserId}`, `user:${user.id}`);
-		}
-		await redisPipeline.exec();
+		await this.clearUnreadMarksOfDirectMessagesFrom(user.id);
 
 		if (!this.userEntityService.isRemoteUser(user)) return;
 
@@ -621,6 +683,17 @@ export class ChatService {
 				if (room != null) await this.cancelRoomInvitation(room.ownerId, invitation.id);
 			}),
 		]);
+	}
+
+	/** For an account whose direct messages are going out of sight: suspended, or being deleted. */
+	@bindThis
+	public async clearUnreadMarksOfDirectMessagesFrom(senderId: MiUser['id']): Promise<void> {
+		const readers = await this.chatMessagesRepository.createQueryBuilder('message')
+			.select('DISTINCT message.toUserId', 'toUserId')
+			.where('message.fromUserId = :userId', { userId: senderId })
+			.andWhere('message.toUserId IS NOT NULL')
+			.getRawMany<{ toUserId: MiUser['id'] }>();
+		await this.clearUnreadMarks(readers.map(({ toUserId }) => ({ readerId: toUserId, senderId })));
 	}
 
 	@bindThis
@@ -712,6 +785,8 @@ export class ChatService {
 		} else if (message.toRoomId) {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'deleted', message.id);
 		}
+
+		await this.dropSignIfConversationEmptied(message);
 
 		const toUsers = participants.filter(user => user.id !== fromUser.id);
 		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers, await this.roomUriForMessage(message)));
@@ -886,10 +961,49 @@ export class ChatService {
 		return readStateMap;
 	}
 
+	/**
+	 * Whether a conversation the chat list shows is unread. A mark does not count while the list leaves its
+	 * conversation out: one with no message left in it, or a direct one with an account the reader mutes.
+	 * Otherwise the sign would stay on with nothing to open.
+	 */
 	@bindThis
 	public async hasUnreadMessages(userId: MiUser['id']) {
-		const card = await this.redisClient.scard(`newChatMessagesExists:${userId}`);
-		return card > 0;
+		const conversations = await this.redisClient.smembers(`newChatMessagesExists:${userId}`);
+		if (conversations.length === 0) return false;
+
+		const idsOf = (kind: 'user' | 'room') => conversations.filter(conversation => conversation.startsWith(`${kind}:`)).map(conversation => conversation.slice(kind.length + 1));
+
+		const roomIds = idsOf('room');
+		if (roomIds.length > 0 && await this.chatMessagesRepository.existsBy({ toRoomId: In(roomIds), deletedAt: IsNull() })) return true;
+
+		const senderIds = idsOf('user');
+		if (senderIds.length === 0) return false;
+
+		const mutings = await this.mutingsRepository.findBy({ muterId: userId, muteeId: In(senderIds) });
+		const shownIds = senderIds.filter(senderId => !mutings.some(muting => muting.muteeId === senderId));
+		if (shownIds.length === 0) return false;
+
+		return await this.chatMessagesRepository.existsBy([
+			{ fromUserId: In(shownIds), toUserId: userId, deletedAt: IsNull() },
+			{ fromUserId: userId, toUserId: In(shownIds), deletedAt: IsNull() },
+		]);
+	}
+
+	/**
+	 * Muting takes a direct conversation out of the chat list and unmuting puts it back, unread mark and all.
+	 * When that conversation is unread, the muter's screens get the account again to bring the sign up to date.
+	 */
+	@bindThis
+	public async handleMutingChanged(muterId: MiUser['id'], muteeIds: MiUser['id'][]): Promise<void> {
+		const redisPipeline = this.redisClient.pipeline();
+		for (const muteeId of muteeIds) {
+			redisPipeline.sismember(`newChatMessagesExists:${muterId}`, `user:${muteeId}`);
+		}
+		const results = await redisPipeline.exec();
+		if (results == null || results.every(result => result[1] !== 1)) return;
+
+		const account = await this.userEntityService.pack(muterId, { id: muterId }, { schema: 'MeDetailed', includeSecrets: true });
+		this.globalEventService.publishMainStream(muterId, 'meUpdated', account);
 	}
 
 	@bindThis
@@ -968,12 +1082,7 @@ export class ChatService {
 		});
 
 		// 未読フラグ削除
-		const redisPipeline = this.redisClient.pipeline();
-		for (const membership of memberships) {
-			redisPipeline.del(`newRoomChatMessageExists:${membership.userId}:${room.id}`);
-			redisPipeline.srem(`newChatMessagesExists:${membership.userId}`, `room:${room.id}`);
-		}
-		await redisPipeline.exec();
+		await this.clearUnreadMarks(memberships.map(membership => ({ readerId: membership.userId, roomId: room.id })));
 
 		const peopleHere = this.localUserIds([...participants, ...invitees]);
 		await this.chatRosterService.markRoomDeletedFor(peopleHere, room.id);
@@ -1387,10 +1496,7 @@ export class ChatService {
 		this.liveKitService.removeParticipant(roomId, this.liveKitService.identityOf(leavingUser)).catch(() => {});
 
 		// 未読フラグを消す (「既読にする」というわけでもないのでreadメソッドは使わないでおく)
-		const redisPipeline = this.redisClient.pipeline();
-		redisPipeline.del(`newRoomChatMessageExists:${userId}:${roomId}`);
-		redisPipeline.srem(`newChatMessagesExists:${userId}`, `room:${roomId}`);
-		await redisPipeline.exec();
+		await this.clearUnreadMarks([{ readerId: userId, roomId }]);
 
 		// Federation: Send Remove activity when local user leaves
 		if (room && this.userEntityService.isLocalUser(leavingUser)) {
@@ -1467,10 +1573,7 @@ export class ChatService {
 	public async finishRoomMemberRemoval(room: MiChatRoom, member: MiUser): Promise<void> {
 		this.globalEventService.publishChatRoomStream(room.id, 'membershipEnded', { userId: member.id });
 
-		const redisPipeline = this.redisClient.pipeline();
-		redisPipeline.del(`newRoomChatMessageExists:${member.id}:${room.id}`);
-		redisPipeline.srem(`newChatMessagesExists:${member.id}`, `room:${room.id}`);
-		await redisPipeline.exec();
+		await this.clearUnreadMarks([{ readerId: member.id, roomId: room.id }]);
 
 		this.notifyRoomListChanged(this.localUserIds([member]));
 	}
@@ -1842,6 +1945,8 @@ export class ChatService {
 		} else if (message.toRoomId) {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'deleted', message.id);
 		}
+
+		await this.dropSignIfConversationEmptied(message);
 
 		await this.relayRoomActivity(message, actor, options?.activity);
 

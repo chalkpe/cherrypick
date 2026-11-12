@@ -366,6 +366,10 @@ export async function mainBoot() {
 				sound.playMisskeySfx('chatMessage');
 			});
 
+			main.on('readAllChatMessages', () => {
+				updateCurrentAccount({ hasUnreadChatMessages: false });
+			});
+
 			main.on('readAllAnnouncements', () => {
 				updateCurrentAccount({ hasUnreadAnnouncement: false });
 			});
