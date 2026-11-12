@@ -250,3 +250,24 @@ describe('voice state at the main channel boundary', () => {
 		f.channel.dispose();
 	});
 });
+
+
+describe('recording events at the main channel boundary', () => {
+	const event = { type: 'chatRoomRecording', body: { roomId: 'r1', id: '070d4100-0123-4321-a123-012345678901', identity: 'https://local.test/users/u1', recording: true, updatedAt: TEST_CLOCK, user: { id: 'u1' } } };
+
+	test.each([
+		['account only', ['read:account'], true, false],
+		['chat reader', ['read:account', 'read:chat'], true, true],
+		['former member', ['read:account', 'read:chat'], false, false],
+	] as const)('%s receives only authorized recording notices', async (_label, permission, member, delivered) => {
+		const f = fixture();
+		f.connection.token = { permission };
+		f.chatRoomMembershipsRepository.exists.mockResolvedValue(member);
+		await f.channel.init({});
+
+		await f.publish('mainStream:m1', event);
+
+		expect(f.send).toHaveBeenCalledTimes(delivered ? 1 : 0);
+		f.channel.dispose();
+	});
+});

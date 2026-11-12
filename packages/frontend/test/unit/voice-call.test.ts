@@ -139,14 +139,16 @@ const mocks = vi.hoisted(() => ({
 	toast: vi.fn(),
 	alert: vi.fn(),
 	confirm: vi.fn(),
+	actions: vi.fn(),
+	promiseDialog: vi.fn(promise => promise),
 }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
-vi.mock('@/os.js', () => ({ toast: mocks.toast, alert: mocks.alert, confirm: mocks.confirm }));
+vi.mock('@/os.js', () => ({ toast: mocks.toast, alert: mocks.alert, confirm: mocks.confirm, actions: mocks.actions, promiseDialog: mocks.promiseDialog }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer() }));
 
 import { i18n } from '@/i18n.js';
 import { prefer as mockedPrefer } from '@/preferences.js';
-import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, migrateParticipantVolumes, participantVolume, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, setParticipantVolume, startScreenShare, stopScreenShare, toggleScreenShareWatch, unwatchScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, migrateParticipantVolumes, participantVolume, resumeAudio, restartMicrophone, selectAudioDevice, setDeafened, setMicEnabled, setParticipantVolume, setRecordingAllowed, startRecording, stopRecording, startScreenShare, stopScreenShare, toggleScreenShareWatch, unwatchScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
 
 const prefer = mockedPrefer as unknown as FakePrefer;
 const room1 = { id: 'r1', name: 'room 1' } as any;
@@ -1682,3 +1684,384 @@ test('initial screen audio is silent, late audio follows watch, and video remova
  ] as const)('shows a specific delegated failure: %s', async (code, message) => {
   mocks.misskeyApi.mockRejectedValue({ code }); await joinVoiceCall(room1); expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceRelay[message]);
  });
+
+// 이 시험은 실제 통화/녹화 수명 코드를 실행하고 브라우저와 미디어 장치 경계만 대체한다.
+describe('call recording lifecycle', () => {
+	function deferred<T>() {
+		let resolve!: (value: T) => void;
+		const promise = new Promise<T>(done => { resolve = done; });
+		return { promise, resolve };
+	}
+
+	class RecordingStream {
+		constructor(private tracks: { kind: string; enabled: boolean; stop: () => void }[] = []) {}
+		getTracks() { return this.tracks; }
+		getAudioTracks() { return this.tracks.filter(track => track.kind === 'audio'); }
+		getVideoTracks() { return this.tracks.filter(track => track.kind === 'video'); }
+	}
+
+	class RecordingContext {
+		static instances: RecordingContext[] = [];
+		static resume = () => Promise.resolve();
+		state = 'running';
+		close = vi.fn(async () => { this.state = 'closed'; });
+		resume = () => RecordingContext.resume();
+		createMediaStreamDestination = () => ({ stream: new RecordingStream(), channelCount: 2, channelCountMode: 'explicit' });
+		createGain = () => ({ connect: vi.fn(), gain: { value: 1 } });
+		createMediaStreamSource = vi.fn(() => ({ connect: vi.fn(), disconnect: vi.fn() }));
+		constructor() { RecordingContext.instances.push(this); }
+	}
+
+	class Recorder {
+		static instances: Recorder[] = [];
+		static isTypeSupported = () => true;
+		static failStartAt: number | null = null;
+		state = 'inactive';
+		mimeType = 'audio/webm';
+		onstop: (() => void) | null = null;
+		ondataavailable: ((event: { data: Blob }) => void) | null = null;
+		constructor(_stream: unknown, _options: unknown) { Recorder.instances.push(this); }
+		start() {
+			if (Recorder.instances.length === Recorder.failStartAt) throw new Error('recorder unavailable');
+			this.state = 'recording';
+		}
+		requestData() { if (this.state === 'inactive') throw new DOMException('inactive', 'InvalidStateError'); }
+		stop() {
+			if (this.state === 'inactive') throw new DOMException('inactive', 'InvalidStateError');
+			this.state = 'inactive';
+			queueMicrotask(() => {
+				this.ondataavailable?.({ data: new Blob(['last chunk'], { type: this.mimeType }) });
+				this.onstop?.();
+			});
+		}
+	}
+
+	let rawTrack: { kind: string; enabled: boolean; stop: ReturnType<typeof vi.fn<() => void>> };
+	let raw: RecordingStream;
+	let getUserMedia: ReturnType<typeof vi.fn>;
+
+	async function flushRecording() {
+		for (let i = 0; i < 10; i++) await Promise.resolve();
+	}
+
+	async function joinRecordingCall(micEnabled = true) {
+		await joinVoiceCall({ ...room1, allowRecording: true }, { micEnabled });
+		// 화면 공유가 없는 통화의 실제 publication 분기를 따른다.
+		lastRoom().localParticipant.getTrackPublication.mockImplementation((source?: string) => source === lk.Track.Source.Microphone
+			? { track: lastRoom().localParticipant.microphoneTrack }
+			: undefined as any);
+		await flushRecording();
+	}
+
+	beforeEach(() => {
+		RecordingContext.instances = [];
+		RecordingContext.resume = () => Promise.resolve();
+		Recorder.instances = [];
+		Recorder.failStartAt = null;
+		rawTrack = { kind: 'audio', enabled: true, stop: vi.fn() };
+		raw = new RecordingStream([rawTrack]);
+		getUserMedia = vi.fn().mockResolvedValue(raw);
+		vi.stubGlobal('MediaStream', RecordingStream);
+		vi.stubGlobal('MediaRecorder', Recorder);
+		vi.stubGlobal('AudioContext', RecordingContext);
+		Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
+		vi.spyOn(window, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ id: 'recording-file' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async endpoint => endpoint === 'chat/rooms/voice/join' ? { url: 'https://local.test/livekit', token: 't' } : {});
+		mocks.actions.mockReset().mockResolvedValue({ canceled: false, result: 'retry' });
+	});
+
+	afterEach(async () => {
+		await leaveVoiceCall();
+		await flushRecording();
+		vi.restoreAllMocks();
+	});
+
+	test('exposes a cancelable pending state through server approval and device acquisition', async () => {
+		await joinRecordingCall();
+		const media = deferred<RecordingStream>();
+		getUserMedia.mockReturnValueOnce(media.promise);
+		const starting = startRecording();
+		await flushRecording();
+
+		expect(voiceCall.recordingStarting).toBe(true);
+		stopRecording();
+		expect(voiceCall.recordingStarting).toBe(false);
+		media.resolve(raw);
+		await starting;
+		expect(voiceCall.recordingStarting).toBe(false);
+	});
+
+	test.each(['stop', 'revoke', 'leave', 'switch'] as const)('cancels a pending server approval on %s', async action => {
+		await joinRecordingCall();
+		const approval = deferred<unknown>();
+		mocks.misskeyApi.mockReturnValueOnce(approval.promise);
+		const starting = startRecording();
+
+		if (action === 'stop') stopRecording();
+		if (action === 'revoke') setRecordingAllowed('r1', false);
+		if (action === 'leave') await leaveVoiceCall();
+		if (action === 'switch') await joinVoiceCall({ ...room2, allowRecording: true }, { micEnabled: false });
+		approval.resolve({});
+		await starting;
+
+		expect(voiceCall.recording).toBe(false);
+		expect(getUserMedia).not.toHaveBeenCalled();
+		expect(RecordingContext.instances.every(context => context.state === 'closed')).toBe(true);
+	});
+
+	test.each(['stop', 'revoke', 'leave', 'switch'] as const)('closes a pending AudioContext on %s without reviving the recording', async action => {
+		await joinRecordingCall();
+		const resume = deferred<void>();
+		RecordingContext.resume = () => resume.promise;
+		const starting = startRecording();
+		await flushRecording();
+
+		if (action === 'stop') stopRecording();
+		if (action === 'revoke') setRecordingAllowed('r1', false);
+		if (action === 'leave') await leaveVoiceCall();
+		if (action === 'switch') await joinVoiceCall({ ...room2, allowRecording: true }, { micEnabled: false });
+		resume.resolve();
+		await starting;
+
+		expect(voiceCall.recording).toBe(false);
+		expect(getUserMedia).not.toHaveBeenCalled();
+		expect(RecordingContext.instances.every(context => context.state === 'closed')).toBe(true);
+	});
+
+	test.each(['stop', 'revoke', 'leave', 'switch'] as const)('stops a microphone acquired after %s without reviving the recording', async action => {
+		await joinRecordingCall();
+		const media = deferred<RecordingStream>();
+		getUserMedia.mockReturnValueOnce(media.promise);
+		const starting = startRecording();
+		await flushRecording();
+		expect(getUserMedia).toHaveBeenCalledOnce();
+
+		if (action === 'stop') stopRecording();
+		if (action === 'revoke') setRecordingAllowed('r1', false);
+		if (action === 'leave') await leaveVoiceCall();
+		if (action === 'switch') await joinVoiceCall({ ...room2, allowRecording: true }, { micEnabled: false });
+		await flushRecording();
+		media.resolve(raw);
+		await starting;
+
+		expect(voiceCall.recording).toBe(false);
+		expect(rawTrack.stop).toHaveBeenCalledOnce();
+		expect(RecordingContext.instances.every(context => context.state === 'closed')).toBe(true);
+	});
+
+	test('cancels recording setup as soon as a room switch starts, even if disconnect is pending', async () => {
+		await joinRecordingCall();
+		const resumed = deferred<void>();
+		const disconnected = deferred<void>();
+		RecordingContext.resume = () => resumed.promise;
+		const starting = startRecording();
+		await flushRecording();
+		lastRoom().disconnect.mockImplementationOnce(() => disconnected.promise);
+
+		const switching = joinVoiceCall({ ...room2, allowRecording: true }, { micEnabled: false });
+		await flushRecording();
+		const closedBeforeDisconnect = RecordingContext.instances.every(context => context.state === 'closed');
+		disconnected.resolve();
+		resumed.resolve();
+		await Promise.all([starting, switching]);
+
+		expect(closedBeforeDisconnect).toBe(true);
+		expect(getUserMedia).not.toHaveBeenCalled();
+		expect(voiceCall.room?.id).toBe('r2');
+	});
+
+	test('a second start cannot overtake device acquisition', async () => {
+		await joinRecordingCall();
+		const media = deferred<RecordingStream>();
+		getUserMedia.mockReturnValueOnce(media.promise);
+		const starting = startRecording();
+		await flushRecording();
+
+		await startRecording();
+		media.resolve(raw);
+		await starting;
+
+		expect(getUserMedia).toHaveBeenCalledOnce();
+		expect(voiceCall.recording).toBe(true);
+	});
+
+	test('stop is idempotent while final recorder events are queued and uploads both final chunks', async () => {
+		await joinRecordingCall();
+		await startRecording();
+
+		stopRecording();
+		expect(() => stopRecording()).not.toThrow();
+		await leaveVoiceCall();
+		await flushRecording();
+
+		expect(voiceCall.status).toBe('idle');
+		expect(rawTrack.stop).toHaveBeenCalledOnce();
+		expect(window.fetch).toHaveBeenCalledTimes(2);
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved);
+	});
+
+	test.each(['deafen', 'forced mute', 'restart', 'failed enable'] as const)('silences the raw recording microphone on %s', async action => {
+		await joinRecordingCall();
+		await startRecording();
+		expect(rawTrack.enabled).toBe(true);
+
+		if (action === 'deafen') setDeafened(true);
+		if (action === 'forced mute') lastRoom().emit(lk.RoomEvent.TrackMuted, { source: lk.Track.Source.Microphone }, lastRoom().localParticipant);
+		if (action === 'restart') {
+			const enable = deferred<void>();
+			lastRoom().localParticipant.setMicrophoneEnabled.mockImplementationOnce(async () => {}).mockImplementationOnce(() => enable.promise);
+			const restarting = restartMicrophone();
+			await flushRecording();
+			expect(rawTrack.enabled).toBe(false);
+			enable.resolve();
+			await restarting;
+			expect(rawTrack.enabled).toBe(true);
+			return;
+		}
+		if (action === 'failed enable') {
+			await setMicEnabled(false);
+			lastRoom().localParticipant.setMicrophoneEnabled.mockRejectedValueOnce(new Error('device unavailable'));
+			await setMicEnabled(true);
+		}
+		await flushRecording();
+
+		expect(voiceCall.micEnabled).toBe(false);
+		expect(rawTrack.enabled).toBe(false);
+	});
+
+	test('replaces the raw input when the call switches microphones', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		const switchedTrack = { kind: 'audio', enabled: true, stop: vi.fn() };
+		getUserMedia.mockResolvedValueOnce(new RecordingStream([switchedTrack]));
+
+		await selectAudioDevice('audioinput', 'second-input');
+
+		expect(rawTrack.stop).toHaveBeenCalledOnce();
+		expect(getUserMedia).toHaveBeenLastCalledWith({ audio: expect.objectContaining({ deviceId: 'second-input' }) });
+		expect(switchedTrack.enabled).toBe(true);
+	});
+
+	test('stops an input acquired after a device switch was canceled by stopping the recording', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		const switchedTrack = { kind: 'audio', enabled: true, stop: vi.fn() };
+		const media = deferred<RecordingStream>();
+		getUserMedia.mockReturnValueOnce(media.promise);
+		const switching = selectAudioDevice('audioinput', 'second-input');
+		await flushRecording();
+
+		stopRecording();
+		media.resolve(new RecordingStream([switchedTrack]));
+		await switching;
+
+		expect(switchedTrack.stop).toHaveBeenCalledOnce();
+		expect(voiceCall.recording).toBe(false);
+	});
+
+	test('does not mix the processed call microphone on top of the raw input when LiveKit republishes it', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		const room = lastRoom();
+		const context = RecordingContext.instances[0];
+		expect(context.createMediaStreamSource).toHaveBeenCalledOnce();
+
+		room.emit(lk.RoomEvent.LocalTrackPublished, { source: lk.Track.Source.Microphone, track: room.localParticipant.microphoneTrack }, room.localParticipant);
+
+		expect(context.createMediaStreamSource).toHaveBeenCalledOnce();
+	});
+
+	test('closes the recording context when starting the second recorder fails', async () => {
+		await joinRecordingCall();
+		Recorder.failStartAt = 2;
+
+		await startRecording();
+		await flushRecording();
+
+		expect(voiceCall.recording).toBe(false);
+		expect(RecordingContext.instances.every(context => context.state === 'closed')).toBe(true);
+	});
+
+	test('records the selected microphone instead of reopening the system default', async () => {
+		prefer.commit('voiceCall.inputDeviceId', 'selected-input');
+		await joinRecordingCall();
+
+		await startRecording();
+
+		expect(getUserMedia).toHaveBeenCalledWith({ audio: expect.objectContaining({ deviceId: 'selected-input' }) });
+	});
+
+	test('uses one recording ID for the approval and the rollback when device setup fails', async () => {
+		await joinRecordingCall();
+		RecordingContext.resume = () => Promise.reject(new Error('audio context failed'));
+
+		await startRecording();
+		await flushRecording();
+
+		const reports = mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status').map(([, report]) => report);
+		const approval = reports.find(report => report.recording === true);
+		expect(approval.recordingId).toMatch(/^[0-9a-f-]{36}$/);
+		expect(reports.some(report => report.recording !== true && report.recordingId === approval.recordingId)).toBe(true);
+		expect(voiceCall.recording).toBe(false);
+	});
+
+	test('preserves both failed final chunks and reports success only after their retries finish after leaving', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const firstRetry = deferred<Response>();
+		const secondRetry = deferred<Response>();
+		vi.mocked(window.fetch).mockReset()
+			.mockRejectedValueOnce(new Error('upload unavailable'))
+			.mockRejectedValueOnce(new Error('upload unavailable'))
+			.mockReturnValueOnce(firstRetry.promise)
+			.mockReturnValueOnce(secondRetry.promise);
+
+		await leaveVoiceCall();
+		await flushRecording();
+
+		expect(voiceCall.status).toBe('idle');
+		expect(window.fetch).toHaveBeenCalledTimes(4);
+		expect(mocks.toast).not.toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved);
+		const uploadedParts = vi.mocked(window.fetch).mock.calls.map(([, options]) => (options!.body as FormData).get('file') as File);
+		expect(await uploadedParts[2].text()).toBe(await uploadedParts[0].text());
+		expect(await uploadedParts[3].text()).toBe(await uploadedParts[1].text());
+
+		firstRetry.resolve({ ok: true, json: async () => ({ id: 'mic-file' }) } as Response);
+		secondRetry.resolve({ ok: true, json: async () => ({ id: 'call-file' }) } as Response);
+		await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved));
+	});
+
+	test('a permanent status refusal closes a pending AudioContext before any recorder exists', async () => {
+		await joinRecordingCall();
+		const resumed = deferred<void>();
+		RecordingContext.resume = () => resumed.promise;
+		const starting = startRecording();
+		await flushRecording();
+		mocks.misskeyApi.mockRejectedValueOnce({ code: 'ACCESS_DENIED' });
+
+		await setMicEnabled(false);
+		await flushRecording();
+
+		expect(RecordingContext.instances.every(context => context.state === 'closed')).toBe(true);
+		expect(voiceCall.recordingStarting).toBe(false);
+		resumed.resolve();
+		await starting;
+		expect(getUserMedia).not.toHaveBeenCalled();
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingRejected);
+	});
+
+	test('a server recording refusal stops capture and keeps the final uploads', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		mocks.misskeyApi.mockRejectedValueOnce({ code: 'ACCESS_DENIED' });
+
+		await setMicEnabled(false);
+		await flushRecording();
+
+		expect(voiceCall.recording).toBe(false);
+		expect(rawTrack.stop).toHaveBeenCalledOnce();
+		expect(window.fetch).toHaveBeenCalledTimes(2);
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingRejected);
+	});
+});

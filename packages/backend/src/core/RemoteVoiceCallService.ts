@@ -152,7 +152,7 @@ export class RemoteVoiceCallService {
 	 * その通話は進行中なので、覚えるとそのホストのすべてのルームに入れなくなってしまう
 	 */
 	@bindThis
-	public async reportStatus(me: MiLocalUser, room: MiChatRoom, owner: MiRemoteUser, sessionId: string, status: { micMuted: boolean; deafened: boolean; recording?: boolean }): Promise<void> {
+	public async reportStatus(me: MiLocalUser, room: MiChatRoom, owner: MiRemoteUser, sessionId: string, status: import('@/core/recording-event.js').RecordingStatus): Promise<void> {
 		if (!this.isEnabled) throw new RemoteVoiceCallError('forbidden');
 		const ownerUrl = await this.trustedOwnerUrlOf(owner);
 		if (ownerUrl == null) throw new RemoteVoiceCallError('forbidden');

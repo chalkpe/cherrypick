@@ -4,6 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
+import { RECORDING_ID } from '@/core/recording-event.js';
 import { DI } from '@/di-symbols.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { ApiError } from '@/server/api/error.js';
@@ -34,6 +35,7 @@ export const paramDef = {
 		micMuted: { type: 'boolean' },
 		deafened: { type: 'boolean' },
 		recording: { type: 'boolean' },
+		recordingId: { type: 'string', minLength: 36, maxLength: 36, pattern: RECORDING_ID.source },
 	},
 	required: ['roomId', 'sessionId', 'micMuted', 'deafened'],
 } as const;
@@ -56,7 +58,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (room == null || room.isArchived || me.isSuspended || me.isDeleted || (room.ownerId !== me.id && !member)) throw new ApiError(meta.errors.accessDenied);
 			// 録画はルームの持ち主が許したときだけ (持ち主のサーバーでも確かめる)
 			if (ps.recording === true && !room.allowRecording) throw new ApiError(meta.errors.recordingNotAllowed);
-			const status = { micMuted: ps.micMuted, deafened: ps.deafened, recording: ps.recording };
+			const status = { micMuted: ps.micMuted, deafened: ps.deafened, recording: ps.recording, ...(ps.recordingId != null ? { recordingId: ps.recordingId } : {}) };
 			if (room.owner?.host != null) {
 				try {
 					await this.remoteVoiceCallService.reportStatus(me, room, room.owner as MiRemoteUser, ps.sessionId, status);

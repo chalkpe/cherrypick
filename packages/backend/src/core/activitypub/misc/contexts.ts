@@ -565,6 +565,7 @@ const extension_context_definition = {
 	},
 	'_misskey_talk': 'misskey:_misskey_talk',
 	'_misskey_dice': { '@id': 'misskey:_misskey_dice', '@type': '@json' },
+	'_misskey_recordingEvent': { '@id': 'misskey:_misskey_recordingEvent', '@type': '@json' },
 	'_misskey_chatRoom': 'misskey:_misskey_chatRoom',
 	'_misskey_chatScope': 'misskey:_misskey_chatScope',
 	'_misskey_chatArchived': 'misskey:_misskey_chatArchived',

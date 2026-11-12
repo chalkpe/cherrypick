@@ -16,6 +16,8 @@ import type { MiMeta } from '@/models/Meta.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { bindThis } from '@/decorators.js';
+import { CLAIM_RECORDING_EVENT_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, MAX_RECORDING_IDS, PREPARE_RECORDING_EVENT_SCRIPT, RECORDING_ID, RENEW_ACTIVE_RECORDING_SCRIPT, parseRecordingEvent, recordingDeliveryWindowMs, recordingEventDeadline, recordingRetentionSeconds } from '@/core/recording-event.js';
+import type { RecordingBinding, RecordingEvent, RecordingStatus } from '@/core/recording-event.js';
 import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
@@ -578,7 +580,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	/** Accept only the authenticated user's own connected session and reported settings. */
 	@bindThis
-	public async reportStatus(user: MiUser, roomId: string, sessionId: string, status: { micMuted: boolean; deafened: boolean; recording?: boolean }): Promise<boolean> {
+	public async reportStatus(user: MiUser, roomId: string, sessionId: string, status: RecordingStatus): Promise<boolean> {
 		if (!this.liveKitService.isEnabled) return false;
 		const participant = { identity: this.liveKitService.identityOf(user), userId: user.id };
 		const context = await this.admissionContextOf(roomId, [participant], new Map());
@@ -593,8 +595,35 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		if (status.recording === true && !context.room.value.allowRecording) return false;
 		const owner = await this.usersRepository.findOneBy({ id: context.room.value.ownerId });
 		if (owner == null || owner.host != null) return false;
-		if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, status)) return false;
-		this.scheduleRefresh(roomId);
+		if (status.recordingId == null) {
+			if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, status)) return false;
+		} else {
+			if (!RECORDING_ID.test(status.recordingId)) return false;
+			const lockKey = `chatVoice:recordingLock:${hashOf([roomId, participant.identity])}`;
+			const token = randomUUID();
+			if (await this.redisClient.set(lockKey, token, 'PX', 30_000, 'NX') !== 'OK') throw new Error('Recording status is being updated');
+			try {
+				const bindingKey = `chatVoice:recording:${status.recordingId}`;
+				const raw = await this.redisClient.get(bindingKey);
+				const held = raw != null ? JSON.parse(raw) as RecordingBinding : null;
+				if (held != null && (held.roomId !== roomId || held.identity !== participant.identity || held.sessionId !== sessionId || (held.stop != null && status.recording === true))) return false;
+				if (held?.stop == null && !await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, status)) return false;
+				const prepared = await this.redisClient.eval(PREPARE_RECORDING_EVENT_SCRIPT, 6, bindingKey,
+					`chatVoice:recordingActive:${hashOf([roomId, participant.identity, sessionId])}`, lockKey, `chatVoice:recordingRoom:${roomId}`, `chatVoice:recordingHistory:${roomId}`, ACTIVE_ROOMS_KEY,
+					token, roomId, participant.identity, sessionId, status.recordingId, status.recording === true ? '1' : '0', Date.now(),
+					recordingRetentionSeconds(Math.max(recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts), held?.start.deliveryWindowMs ?? 0), this.config.inboxJobMaxAttempts), randomUUID(), recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts), MAX_RECORDING_IDS);
+				if (typeof prepared !== 'string' || prepared === '') {
+					await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, { ...status, recording: false });
+					return false;
+				}
+				const binding = JSON.parse(prepared) as RecordingBinding;
+				await this.deliverPendingRecordingEvents(context.room.value, binding, bindingKey, lockKey, token);
+			} finally {
+				await this.redisClient.eval(RELEASE_FEDERATION_LOCK_SCRIPT, 1, lockKey, token);
+				this.scheduleRefresh(roomId);
+			}
+		}
+		if (status.recordingId == null) this.scheduleRefresh(roomId);
 		return true;
 	}
 
@@ -800,6 +829,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		// 外している間に変わった参加者は、その webhook の読み直し (後に決めた時刻) が保存する
 		const removed = refusedHosts != null ? await this.removeUnadmitted(roomId, listed, refusedHosts, 'sweep') : new Set<string>();
 		const participants = listed.filter(p => !removed.has(p.identity));
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		if (room != null) await this.flushRecordingEvents(room, participants);
 		const snapshot: VoiceSnapshot = {
 			participants: participants.map(p => ({ identity: p.identity, userId: p.userId, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) })),
 			updatedAt: readAt,
@@ -818,7 +849,6 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			snapshot.participants.length === 0 ? '1' : '0',
 		) === 1;
 
-		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
 		if (room == null) return;
 
 		// 通話の参加者はルームの今のメンバーにだけ知らせる。ルームのストリーム (chatRoom) はメンバーでないモデレーターも購読でき、
@@ -846,7 +876,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		if (!isRemoteVoiceCallEnabled(this.meta)) return 'skip: remote voice calls are disabled';
 
 		// 形と出所 (送り主と同じサーバーのルームか) を確かめる。ルームに入れる人数より多い参加者は受け付けない
-		const parsed = parseChatRoomVoiceState(actor.uri, object, MAX_ROOM_MEMBERS + 1);
+		const parsed = parseChatRoomVoiceState(actor.uri, object, MAX_ROOM_MEMBERS + 1, this.config.inboxJobMaxAttempts);
 		if (!parsed.ok) return `skip: ${parsed.reason}`;
 		const { roomUri, roomId, participants, updatedAt } = parsed.state;
 
@@ -857,6 +887,10 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		// 送り主は他のサーバーのユーザーなので、送り主が持ち主ならそのルームはミラー
 		if (room.ownerId !== actor.id) return 'skip: sender does not own the room';
 
+		if (parsed.state.recordingEvent != null) {
+			await this.publishRecordingEvent(room, parsed.state.recordingEvent, participants, updatedAt);
+		}
+
 		switch (await this.storeRemoteSnapshot(room, participants, updatedAt)) {
 			case 'stored': return 'ok: voice state stored';
 			case 'stale': return 'skip: voice state is not newer than the last one accepted';
@@ -864,6 +898,76 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			case 'old': return 'skip: voice state is too old';
 			case 'disabled': return 'skip: remote voice calls are disabled';
 		}
+	}
+
+	private async deliverPendingRecordingEvents(room: MiChatRoom, binding: RecordingBinding, bindingKey: string, lockKey: string, token: string): Promise<void> {
+		for (const [event, sent] of [[binding.start, 'startSent'], [binding.stop, 'stopSent']] as const) {
+			if (event == null || binding[sent]) continue;
+			await this.deliverRecordingEvent(room, event);
+			if (await this.redisClient.eval(MARK_RECORDING_EVENT_SENT_SCRIPT, 2, bindingKey, lockKey, token, sent, recordingRetentionSeconds((binding.stop ?? binding.start).deliveryWindowMs, this.config.inboxJobMaxAttempts)) !== 1) throw new Error('Recording status lock expired');
+		}
+		if (binding.stop != null) await this.redisClient.srem(`chatVoice:recordingRoom:${room.id}`, binding.clientId);
+	}
+
+	// 클라이언트의 종료 보고가 유실되거나 프로세스가 중단돼도, 다음 webhook/sweep에서 고지를 마친다.
+	private async flushRecordingEvents(room: MiChatRoom, participants: LiveKitParticipant[]): Promise<void> {
+		for (const id of await this.redisClient.smembers(`chatVoice:recordingRoom:${room.id}`)) {
+			const bindingKey = `chatVoice:recording:${id}`;
+			const raw = await this.redisClient.get(bindingKey);
+			if (raw == null) { await this.redisClient.srem(`chatVoice:recordingRoom:${room.id}`, id); continue; }
+			const binding = JSON.parse(raw) as RecordingBinding;
+			const recording = binding.stop == null && participants.some(p => p.identity === binding.identity && p.recording === true);
+			if (recording) {
+				await this.redisClient.eval(RENEW_ACTIVE_RECORDING_SCRIPT, 4, bindingKey,
+					`chatVoice:recordingActive:${hashOf([room.id, binding.identity, binding.sessionId])}`, `chatVoice:recordingRoom:${room.id}`, `chatVoice:recordingHistory:${room.id}`,
+					id, recordingRetentionSeconds(binding.start.deliveryWindowMs, this.config.inboxJobMaxAttempts), Date.now());
+				if (binding.startSent) continue;
+			}
+			const lockKey = `chatVoice:recordingLock:${hashOf([room.id, binding.identity])}`;
+			const token = randomUUID();
+			if (await this.redisClient.set(lockKey, token, 'PX', 30_000, 'NX') !== 'OK') throw new Error('Recording status is being updated');
+			try {
+				const prepared = await this.redisClient.eval(PREPARE_RECORDING_EVENT_SCRIPT, 6, bindingKey,
+					`chatVoice:recordingActive:${hashOf([room.id, binding.identity, binding.sessionId])}`, lockKey, `chatVoice:recordingRoom:${room.id}`, `chatVoice:recordingHistory:${room.id}`, ACTIVE_ROOMS_KEY,
+					token, room.id, binding.identity, binding.sessionId, id, recording ? '1' : '0', Date.now(),
+					recordingRetentionSeconds(Math.max(binding.start.deliveryWindowMs, recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts)), this.config.inboxJobMaxAttempts), randomUUID(), recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts), MAX_RECORDING_IDS);
+				if (typeof prepared !== 'string' || prepared === '') throw new Error('Recording status lock expired');
+				await this.deliverPendingRecordingEvents(room, JSON.parse(prepared) as RecordingBinding, bindingKey, lockKey, token);
+			} finally {
+				await this.redisClient.eval(RELEASE_FEDERATION_LOCK_SCRIPT, 1, lockKey, token);
+			}
+		}
+	}
+
+	private async deliverRecordingEvent(room: MiChatRoom, event: RecordingEvent): Promise<void> {
+		const listed = await this.liveKitService.listParticipants(room.id);
+		const participants = listed.map(p => ({ identity: p.identity, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) }));
+		const audience = await this.audienceOf(room);
+		const updatedAt = await this.allocateStamp(this.localStampKeyOf(room.id), this.decidedKeyOf(room.id), LOCAL_STAMP_TTL_SECONDS);
+		await this.deliverSnapshot(room, audience, participants, updatedAt, event);
+		await this.publishRecordingEvent(room, event, participants, updatedAt);
+	}
+
+	private async publishRecordingEvent(room: MiChatRoom, event: RecordingEvent, participants: { identity: string }[], updatedAt: number): Promise<void> {
+		if (room.isArchived || parseRecordingEvent(event, Date.now(), this.config.inboxJobMaxAttempts) == null) return;
+		if (room.owner?.host != null && !await this.isRoomVoiceVisible(room)) return;
+		const held = await this.redisClient.get(this.keyOf(room.id));
+		const snapshot = held != null ? JSON.parse(held) as VoiceSnapshot : null;
+		const currentParticipants = snapshot != null && snapshot.updatedAt > updatedAt ? snapshot.participants : participants;
+		const users = await this.knownUsersOf([event.identity, ...currentParticipants.map(p => p.identity)]);
+		const recordingUser = users.get(event.identity);
+		if (recordingUser == null) return;
+		if (recordingUser.host != null && await this.hostPolicyService.isRefusedRemoteHost(recordingUser.host)) return;
+		if (event.recording && recordingUser.host == null && recordingUser.id !== room.ownerId && !(await this.memberIdsOf(room, [recordingUser.id])).has(recordingUser.id)) return;
+		const audience = await this.audienceOf(room);
+		const recipients = audience.localUserIds.filter(userId => currentParticipants.some(p => users.get(p.identity)?.id === userId));
+		const [packedUser] = await this.userEntityService.packMany([recordingUser.id], null);
+		if (packedUser == null) return;
+		const claim = await this.redisClient.eval(CLAIM_RECORDING_EVENT_SCRIPT, 2, `chatVoice:recordingSeen:${room.id}`, `chatVoice:recordingSeenFlags:${room.id}`,
+			hashOf([event.identity, event.id]), event.recording ? 1 : 2, Date.now(), recordingEventDeadline(event, this.config.inboxJobMaxAttempts), MAX_RECORDING_IDS);
+		if (claim === -1) throw new Error('Recording notification capacity is exhausted');
+		if (claim !== 1) return;
+		for (const userId of recipients) this.globalEventService.publishMainStream(userId, 'chatRoomRecording', { ...event, roomId: room.id, user: packedUser });
 	}
 
 	/**
@@ -1632,7 +1736,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * 持ち主の名前で Update を作り、メンバーの inbox (共有 inbox があればそちら) ごとに一度だけ送る。
 	 * すべての配送を積み終えるまで待ち、どれかを積めなければ例外を投げる
 	 */
-	private async deliverSnapshot(room: MiChatRoom, audience: RoomAudience, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number): Promise<void> {
+	private async deliverSnapshot(room: MiChatRoom, audience: RoomAudience, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number, recordingEvent?: RecordingEvent): Promise<void> {
 		const owner = audience.localOwner;
 		if (owner == null) return;
 
@@ -1640,7 +1744,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const activity = this.apRendererService.addContext({
 			type: 'Update',
 			actor: this.userEntityService.genLocalUserUri(owner.id),
-			object: this.apRendererService.renderChatRoomVoiceState(room, participants, updatedAt),
+			object: this.apRendererService.renderChatRoomVoiceState(room, participants, updatedAt, recordingEvent),
 			published: new Date(updatedAt).toISOString(),
 		});
 		await Promise.all([...audience.remoteInboxes].map(([inbox, isSharedInbox]) => this.queueService.deliver(owner, activity, inbox, isSharedInbox)));

@@ -21168,6 +21168,7 @@ export interface operations {
                     micMuted: boolean;
                     deafened: boolean;
                     recording?: boolean;
+                    recordingId?: string;
                 };
             };
         };

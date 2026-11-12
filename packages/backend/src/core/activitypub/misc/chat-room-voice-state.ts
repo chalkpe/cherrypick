@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { parseRecordingEvent } from '@/core/recording-event.js';
+import type { RecordingEvent } from '@/core/recording-event.js';
 import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type { IObject } from '../type.js';
 
@@ -19,6 +21,7 @@ export type ParsedChatRoomVoiceState = {
 	participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[];
 	/** ホストの時刻 (ミリ秒) */
 	updatedAt: number;
+	recordingEvent?: RecordingEvent;
 };
 
 /** parseChatRoomVoiceState の結果。受け付けないときは inbox のログに残す理由を返す */
@@ -41,8 +44,8 @@ export function chatRoomVoiceStateIdOf(roomUri: string): string {
  * - updated が時刻として読める
  * ルームがこのサーバーのミラーで、送り主がその持ち主かどうかは DB を読む側 (ChatVoiceService) が確かめる
  */
-export function parseChatRoomVoiceState(actorUri: string, object: IObject, maxParticipants: number): ChatRoomVoiceStateParseResult {
-	const state = object as IObject & { room?: unknown; participants?: unknown };
+export function parseChatRoomVoiceState(actorUri: string, object: IObject, maxParticipants: number, inboxAttempts = 8): ChatRoomVoiceStateParseResult {
+	const state = object as IObject & { room?: unknown; participants?: unknown; _misskey_recordingEvent?: unknown };
 	if (typeof state.id !== 'string' || typeof state.room !== 'string') return refuse('invalid voice state');
 
 	const origin = originOf(actorUri);
@@ -60,7 +63,10 @@ export function parseChatRoomVoiceState(actorUri: string, object: IObject, maxPa
 	const updatedAt = typeof state.updated === 'string' ? Date.parse(state.updated) : NaN;
 	if (!Number.isFinite(updatedAt)) return refuse('invalid updated');
 
-	return { ok: true, state: { roomUri: state.room, roomId, participants, updatedAt } };
+	const rawEvent = state._misskey_recordingEvent;
+	const recordingEvent = rawEvent != null ? parseRecordingEvent(rawEvent, Date.now(), inboxAttempts) : null;
+	if (rawEvent != null && (recordingEvent == null || recordingEvent.updatedAt > updatedAt)) return refuse('invalid recording event');
+	return { ok: true, state: { roomUri: state.room, roomId, participants, updatedAt, ...(recordingEvent != null ? { recordingEvent } : {}) } };
 }
 
 function refuse(reason: string): ChatRoomVoiceStateParseResult {

@@ -16,6 +16,8 @@ import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 export function fakeRedis() {
 	const store = new Map<string, string>();
 	const sets = new Map<string, Set<string>>();
+	const recordingHistory = new Map<string, Map<string, number>>();
+	const recordingClaims = new Map<string, Map<string, { flags: number; deadline: number }>>();
 	// EX / PX の寿命は Date.now() で数えるので、偽のタイマーで時間を進めると切れる。
 	// 本物の Redis と同じく、寿命の時刻ちょうどにはまだ残っていて、それを過ぎると切れる
 	const expiresAt = new Map<string, number>();
@@ -64,6 +66,68 @@ export function fakeRedis() {
 		// 送る順番の鍵 (chatVoice:federateLock:*) は、自分が取ったもの (ARGV[1]) のときだけ外す
 		eval: vi.fn(async (_script: string, numKeys: number, ...args: (string | number)[]) => {
 			const [key, lastSeenKey, generationKey] = args.slice(0, numKeys) as string[];
+			if (_script.startsWith('-- PREPARE_RECORDING_EVENT')) {
+				const [token, roomId, identity, sessionId, id, starting, now, ttl, eventId, deliveryWindowMs, capacity] = args.slice(numKeys);
+				if (!live(generationKey) || store.get(generationKey) !== token) return '';
+				let binding = live(key) ? JSON.parse(store.get(key)!) : null;
+				const historyKey = String(args[4]);
+				const history = recordingHistory.get(historyKey) ?? new Map<string, number>();
+				recordingHistory.set(historyKey, history);
+				for (const [entry, deadline] of history) if (deadline <= Number(now)) history.delete(entry);
+				if (!binding && history.size >= Number(capacity)) return '';
+				const active = live(lastSeenKey) ? store.get(lastSeenKey) : null;
+				if (binding && (binding.roomId !== roomId || binding.identity !== identity || binding.sessionId !== sessionId)) return '';
+				if (starting === '1' && (binding?.stop || (active && active !== id))) return '';
+				if (!binding) {
+					if (starting !== '1') return '';
+					binding = { clientId: id, roomId, identity, sessionId, start: { id: eventId, identity, recording: true, updatedAt: Number(now), deliveryWindowMs: Number(deliveryWindowMs) } };
+				}
+				if (starting === '1') {
+					store.set(lastSeenKey, String(id));
+					expiresAt.set(lastSeenKey, Date.now() + Number(ttl) * 1000);
+				} else {
+					binding.stop ??= { id: binding.start.id, identity, recording: false, updatedAt: Math.max(Number(now), binding.start.updatedAt + 1), deliveryWindowMs: Math.max(binding.start.deliveryWindowMs, Number(deliveryWindowMs)) };
+					if (active === id) store.delete(lastSeenKey);
+				}
+				const activeRoomsKey = String(args[5]);
+				if (!sets.has(activeRoomsKey)) sets.set(activeRoomsKey, new Set());
+				sets.get(activeRoomsKey)!.add(String(roomId));
+				history.set(String(id), Number(now) + Number(ttl) * 1000);
+				const roomKey = String(args[3]);
+				if (!sets.has(roomKey)) sets.set(roomKey, new Set());
+				sets.get(roomKey)!.add(String(id));
+				const result = JSON.stringify(binding);
+				store.set(key, result);
+				expiresAt.set(key, Date.now() + Number(ttl) * 1000);
+				return result;
+			}
+			if (_script.startsWith('-- CLAIM_RECORDING_EVENT')) {
+				const [id, transition, now, deadline, capacity] = args.slice(numKeys);
+				const claims = recordingClaims.get(key) ?? new Map<string, { flags: number; deadline: number }>();
+				recordingClaims.set(key, claims);
+				for (const [entry, held] of claims) if (held.deadline <= Number(now)) claims.delete(entry);
+				const previous = claims.get(String(id));
+				if (previous && (previous.flags & Number(transition)) !== 0) return 0;
+				if (!previous && claims.size >= Number(capacity)) return -1;
+				claims.set(String(id), { flags: (previous?.flags ?? 0) | Number(transition), deadline: Math.max(previous?.deadline ?? 0, Number(deadline) + 1000) });
+				return 1;
+			}
+			if (_script.startsWith('-- RENEW_ACTIVE_RECORDING')) {
+				const [id, ttl, now] = args.slice(numKeys);
+				if (!live(key) || !live(lastSeenKey) || store.get(lastSeenKey) !== id || JSON.parse(store.get(key)!).stop) return 0;
+				for (const entry of args.slice(0, 3)) expiresAt.set(String(entry), Number(now) + Number(ttl) * 1000);
+				recordingHistory.get(String(args[3]))?.set(String(id), Number(now) + Number(ttl) * 1000);
+				return 1;
+			}
+			if (_script.startsWith('-- MARK_RECORDING_EVENT_SENT')) {
+				const [token, sent, ttl] = args.slice(numKeys);
+				if (!live(lastSeenKey) || store.get(lastSeenKey) !== token || !live(key)) return 0;
+				const binding = JSON.parse(store.get(key)!);
+				binding[String(sent)] = true;
+				store.set(key, JSON.stringify(binding));
+				expiresAt.set(key, Date.now() + Number(ttl) * 1000);
+				return 1;
+			}
 			if (_script.startsWith('-- GATE_MIRROR_PUBLICATION')) {
 				const [generation, updatedAt, emptyValue, interval, ttl] = args.slice(numKeys);
 				if ((live(generationKey) ? store.get(generationKey) : '0') !== generation) return -2;
@@ -135,7 +199,7 @@ export function fakeRedis() {
 				expiresAt.set(key, Date.now() + Number(ttlSeconds) * 1000);
 				return count;
 			}
-			if (key.startsWith('chatVoice:federateLock:')) {
+			if (key.startsWith('chatVoice:federateLock:') || key.startsWith('chatVoice:recordingLock:')) {
 				if (!live(key) || store.get(key) !== String(args[numKeys])) return 0;
 				store.delete(key);
 				expiresAt.delete(key);

@@ -41,6 +41,7 @@ const state = reactive({
 	watchingIdentities: [] as string[],
 	// 通話の録画 (声と画面)。録画中は参加者に知らせる
 	recording: false,
+	recordingStarting: false,
 	recordingStartedAt: null as number | null,
 	// ルームの持ち主が録画を許しているか (既定では許さない)
 	recordingAllowed: false,
@@ -150,9 +151,12 @@ type FailedRecording = { blob: Blob; name: string };
  * 一回の録画。通話の状態 (state.room) とは別に持ち、通話が終わって状態が片付いた後に届く最後の部分も同じ録画として保存する
  */
 type RecordingSession = {
+	id: string;
 	roomId: string;
 	uploads: Promise<boolean>[];
 	failed: FailedRecording[];
+	stopping: boolean;
+	micRevision: number;
 };
 type RecordingPart = {
 	recorder: MediaRecorder;
@@ -164,7 +168,7 @@ type RecordingPart = {
 const recordingParts = new Map<RecordingPartKind, RecordingPart>();
 let recordingSession: RecordingSession | null = null;
 // サーバーが録画を受け付けるのを待っているあいだ。二重に始めない
-let recordingStarting = false;
+let recordingStarting: { id: string } | null = null;
 let recordingContext: AudioContext | null = null;
 let recordingMicBus: GainNode | null = null;
 let recordingOthersBus: GainNode | null = null;
@@ -189,7 +193,7 @@ function recordingVideoMimeType(): string | undefined {
 
 function addRecordingVideo(track: MediaStreamTrack, screen: boolean): void {
 	// this runs on every share, not only while recording
-	if (recordingContext == null || recordingVideos.has(track)) return;
+	if (recordingSession?.stopping !== false || recordingContext == null || recordingVideos.has(track)) return;
 	if (screen) {
 		try { track.contentHint = 'detail'; } catch { /* not supported */ }
 	}
@@ -224,7 +228,7 @@ function watchRecordingVideo(track: MediaStreamTrack, video: HTMLVideoElement): 
 /** start the video part when the first video track appears, even after recording began */
 function ensureRecordingVideoPart(): void {
 	const session = recordingSession;
-	if (session == null || recordingParts.has('video') || recordingMixedDest == null || recordingContext == null) return;
+	if (session == null || session.stopping || recordingParts.has('video') || recordingMixedDest == null || recordingContext == null) return;
 	if (recordingCanvas == null) {
 		const canvas = window.document.createElement('canvas');
 		canvas.width = 1920;
@@ -284,7 +288,7 @@ function drawRecordingFrame(): void {
 }
 
 function addRecordingTrack(track: MediaStreamTrack, kind: 'mic' | 'others'): void {
-	if (recordingContext == null) return;
+	if (recordingSession?.stopping !== false || recordingContext == null) return;
 	const bus = kind === 'mic' ? recordingMicBus : recordingOthersBus;
 	if (bus == null || recordingSources.has(track)) return;
 	try {
@@ -357,7 +361,6 @@ function createRecordingPart(session: RecordingSession, kind: RecordingPartKind,
 	}
 	const rec = new MediaRecorder(stream, options);
 	const part: RecordingPart = { recorder: rec, chunks: [], bytes: 0, name, session };
-	recordingParts.set(kind, part);
 	rec.ondataavailable = (ev) => {
 		if (ev.data.size === 0) return;
 		part.chunks.push(ev.data);
@@ -372,6 +375,7 @@ function createRecordingPart(session: RecordingSession, kind: RecordingPartKind,
 		if (recordingParts.size === 0) teardownRecording();
 	};
 	rec.start(10_000);
+	recordingParts.set(kind, part);
 }
 
 function stopRecordingVideo(): void {
@@ -461,15 +465,16 @@ function resetStatusDelivery(): void {
 }
 
 // Keep only the newest settings. A failed report must not leave the server stale for the rest of the call.
-function reportStatus(room: Room, force = false): void {
+function reportStatus(room: Room, force = false, stoppedRecordingId?: string): void {
 	const roomId = state.room?.id;
 	if (current !== room || roomId == null || state.status === 'connecting') return;
-	const status = { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened, ...(state.recording ? { recording: true } : {}) };
+	const recordingId = stoppedRecordingId ?? recordingSession?.id ?? recordingStarting?.id;
+	const status = { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened, ...((state.recording || recordingStarting != null) ? { recording: true } : {}), ...(recordingId != null ? { recordingId } : {}) };
 	if (statusDelivery?.room !== room || statusDelivery.latest.sessionId !== status.sessionId) {
 		resetStatusDelivery();
 		statusDelivery = { room, latest: status, pending: status, sending: false, retryDelay: 1000, timer: null, stopped: false };
 	} else {
-		if (!force && statusDelivery.latest.micMuted === status.micMuted && statusDelivery.latest.deafened === status.deafened && statusDelivery.latest.recording === status.recording) return;
+		if (!force && statusDelivery.latest.micMuted === status.micMuted && statusDelivery.latest.deafened === status.deafened && statusDelivery.latest.recording === status.recording && statusDelivery.latest.recordingId === status.recordingId) return;
 		// 止めたのは失敗した報告の再送だけ。設定が変わったら、新しい設定はもう一度だけ送ってみる
 		// (セッションを確かめる一時的な失敗も ACCESS_DENIED になるので、一度の失敗で通話の残りずっと黙らない)
 		statusDelivery.stopped = false;
@@ -492,7 +497,7 @@ async function deliverStatus(delivery: StatusDelivery): Promise<void> {
 		const code = isApiError(err) ? err.code : null;
 		const permanent = code != null && code !== 'RATE_LIMIT_EXCEEDED' && code !== 'INTERNAL_ERROR' && code !== 'REMOTE_HOST_UNREACHABLE';
 		if (code === 'RECORDING_NOT_ALLOWED') state.recordingAllowed = false;
-		if (permanent && status.recording === true && recordingParts.size > 0) {
+		if (permanent && status.recording === true && (recordingStarting != null || recordingSession != null)) {
 			// 録画していると伝えるのを断られたら (持ち主が許さなくなった・通話の資格を確かめられないなど)、理由によらず録画を止め、止めたことを伝える
 			stopRecording();
 			os.toast(i18n.ts._voiceCall.recordingRejected);
@@ -535,7 +540,11 @@ function watchMicrophoneTrack(room: Room, track: LocalAudioTrack): void {
 	if (livekit == null || watchedMicrophoneTrack === track) return;
 	unwatchMicrophoneTrack?.();
 	const events = livekit.TrackEvent;
-	const onRestarted = () => { if (current === room) startLocalMeter(room); };
+	const onRestarted = () => {
+		if (current !== room) return;
+		startLocalMeter(room);
+		if (recordingSession != null) void captureRecordingMicrophone(recordingSession, room);
+	};
 	const onEnded = () => { stopLocalMeter?.(); };
 	track.on(events.Restarted, onRestarted);
 	track.on(events.Ended, onEnded);
@@ -605,6 +614,7 @@ export function localIdentityOf(userId: string): string {
 
 async function disconnectCurrentRoom(): Promise<void> {
 	const room = current;
+	stopRecording();
 	current = null;
 	stopIceRefresh();
 	if (room != null) {
@@ -621,120 +631,165 @@ export async function startRecording(): Promise<void> {
 	const Context = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
 	if (Context == null || typeof MediaRecorder === 'undefined') return;
 
-	// 録画は、サーバーが「録画している」と受け付けてから始める。断られたら (持ち主が許していない・通話の資格がないなど) 何も録らない
-	recordingStarting = true;
+	// 시작 전체에 소유권을 두어, 취소한 대기의 continuation이 다음 통화의 자원을 덮어쓰지 못하게 한다.
+	const attempt = { id: window.crypto.randomUUID() };
+	recordingStarting = attempt;
+	state.recordingStarting = true;
+	const active = () => recordingStarting === attempt && current === room && state.room?.id === roomId && state.status === 'connected' && state.recordingAllowed;
+	let approved = false;
 	try {
-		await misskeyApi('chat/rooms/voice/status', { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened, recording: true });
-	} catch (err) {
-		if (isApiError(err) && err.code === 'RECORDING_NOT_ALLOWED') state.recordingAllowed = false;
-		os.toast(i18n.ts._voiceCall.recordingStartRejected);
-		return;
-	} finally {
-		recordingStarting = false;
-	}
-	// 待っているあいだに通話が変わったり、持ち主が許さなくなったりしたら始めない。サーバーには録画していないと伝え直す
-	if (current !== room || state.room?.id !== roomId || state.status !== 'connected' || !state.recordingAllowed || recordingParts.size > 0) {
-		if (current === room) reportStatus(room, true);
-		return;
-	}
-	const session: RecordingSession = { roomId, uploads: [], failed: [] };
-	recordingSession = session;
-
-	const context = new Context();
-	// a suspended context feeds no samples to the recorder
-	await context.resume().catch(() => {});
-	recordingContext = context;
-
-	const micDest = context.createMediaStreamDestination();
-	const othersDest = context.createMediaStreamDestination();
-	const mixedDest = context.createMediaStreamDestination();
-	for (const dest of [micDest, othersDest, mixedDest]) {
-		dest.channelCount = 2;
-		dest.channelCountMode = 'explicit';
-	}
-	const micBus = context.createGain();
-	const othersBus = context.createGain();
-	micBus.connect(micDest);
-	micBus.connect(mixedDest);
-	othersBus.connect(othersDest);
-	othersBus.connect(mixedDest);
-	recordingMixedDest = mixedDest;
-	recordingMicBus = micBus;
-	recordingOthersBus = othersBus;
-	recordingSources.clear();
-
-	const base = recordingStamp(new Date());
-	createRecordingPart(session, 'mic', micDest.stream, recordingMimeType(), 192_000, `voice-${base}-mic`);
-	createRecordingPart(session, 'others', othersDest.stream, recordingMimeType(), 256_000, `voice-${base}-call`);
-
-	const lk = livekit;
-	let hasVideo = false;
-	// capture the microphone without the call's voice processing (echo cancellation, noise
-	// suppression, auto gain), which makes music and quiet voices sound thin
-	try {
-		const raw = await navigator.mediaDevices.getUserMedia({
-			audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-		});
-		recordingRawMicStream = raw;
-		const track = raw.getAudioTracks()[0];
-		if (track != null) {
-			track.enabled = state.micEnabled;
-			addRecordingTrack(track, 'mic');
+		await misskeyApi('chat/rooms/voice/status', { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened, recording: true, recordingId: attempt.id });
+		approved = true;
+		if (!active()) {
+			if (current === room && recordingStarting == null && recordingSession == null) reportStatus(room, true, attempt.id);
+			return;
 		}
-	} catch {
-		// fall back to the microphone of the call
+		const session: RecordingSession = { id: attempt.id, roomId, uploads: [], failed: [], stopping: false, micRevision: 0 };
+		recordingSession = session;
+
+		const context = new Context();
+		// resume을 기다리는 동안에도 stopRecording이 이 context를 닫을 수 있다.
+		recordingContext = context;
+		await context.resume();
+		if (!active()) return;
+
+		const micDest = context.createMediaStreamDestination();
+		const othersDest = context.createMediaStreamDestination();
+		const mixedDest = context.createMediaStreamDestination();
+		for (const dest of [micDest, othersDest, mixedDest]) {
+			dest.channelCount = 2;
+			dest.channelCountMode = 'explicit';
+		}
+		const micBus = context.createGain();
+		const othersBus = context.createGain();
+		micBus.connect(micDest);
+		micBus.connect(mixedDest);
+		othersBus.connect(othersDest);
+		othersBus.connect(mixedDest);
+		recordingMixedDest = mixedDest;
+		recordingMicBus = micBus;
+		recordingOthersBus = othersBus;
+		recordingSources.clear();
+
+		syncRecordingMicrophone();
+		const base = recordingStamp(new Date());
+		createRecordingPart(session, 'mic', micDest.stream, recordingMimeType(), 192_000, `voice-${base}-mic`);
+		createRecordingPart(session, 'others', othersDest.stream, recordingMimeType(), 256_000, `voice-${base}-call`);
+
+		const lk = livekit;
+		let hasVideo = false;
+		await captureRecordingMicrophone(session, room);
+		if (!active()) return;
 		if (lk != null) {
-			const mic = room.localParticipant.getTrackPublication(lk.Track.Source.Microphone)?.track;
-			if (mic?.mediaStreamTrack != null) addRecordingTrack(mic.mediaStreamTrack, 'mic');
-		}
-	}
-	if (lk != null) {
-		// my own tab audio is not played to my speakers, so it only reaches the recording here
-		const shareAudio = room.localParticipant.getTrackPublication(lk.Track.Source.ScreenShareAudio)?.track;
-		if (shareAudio?.mediaStreamTrack != null) addRecordingTrack(shareAudio.mediaStreamTrack, 'others');
-		const shareVideo = room.localParticipant.getTrackPublication(lk.Track.Source.ScreenShare)?.track;
-		if (shareVideo?.mediaStreamTrack != null) {
-			addRecordingVideo(shareVideo.mediaStreamTrack, true);
-			hasVideo = true;
-		}
-		for (const participant of room.remoteParticipants.values()) {
-			for (const publication of participant.trackPublications.values()) {
-				const track = publication.track?.mediaStreamTrack;
-				if (track == null) continue;
-				if (publication.kind === lk.Track.Kind.Audio) {
-					addRecordingTrack(track, 'others');
-				} else if (publication.kind === lk.Track.Kind.Video) {
-					addRecordingVideo(track, publication.source === lk.Track.Source.ScreenShare);
+			// my own tab audio is not played to my speakers, so it only reaches the recording here
+			const shareAudio = room.localParticipant.getTrackPublication(lk.Track.Source.ScreenShareAudio)?.track;
+			if (shareAudio?.mediaStreamTrack != null) addRecordingTrack(shareAudio.mediaStreamTrack, 'others');
+			const shareVideo = room.localParticipant.getTrackPublication(lk.Track.Source.ScreenShare)?.track;
+			if (shareVideo?.mediaStreamTrack != null) {
+				addRecordingVideo(shareVideo.mediaStreamTrack, true);
+				hasVideo = true;
+			}
+			for (const participant of room.remoteParticipants.values()) {
+				for (const publication of participant.trackPublications.values()) {
+					const track = publication.track?.mediaStreamTrack;
+					if (track == null) continue;
+					if (publication.kind === lk.Track.Kind.Audio) {
+						addRecordingTrack(track, 'others');
+					} else if (publication.kind === lk.Track.Kind.Video) {
+						addRecordingVideo(track, publication.source === lk.Track.Source.ScreenShare);
+						hasVideo = true;
+					}
+				}
+			}
+			for (const track of screenShareTracks.values()) {
+				if (track.mediaStreamTrack != null) {
+					addRecordingVideo(track.mediaStreamTrack, true);
 					hasVideo = true;
 				}
 			}
 		}
-		for (const track of screenShareTracks.values()) {
-			if (track.mediaStreamTrack != null) {
-				addRecordingVideo(track.mediaStreamTrack, true);
-				hasVideo = true;
-			}
+
+		// only composite video when there is something to show; otherwise this stays an audio recording
+		if (hasVideo) ensureRecordingVideoPart();
+
+		state.recording = true;
+		state.recordingStartedAt = Date.now();
+		reportStatus(room, true);
+	} catch (err) {
+		if (recordingStarting === attempt) {
+			if (isApiError(err) && err.code === 'RECORDING_NOT_ALLOWED') state.recordingAllowed = false;
+			stopRecording();
+			os.toast(i18n.ts._voiceCall.recordingStartRejected);
 		}
+	} finally {
+		if (recordingStarting === attempt) {
+			if (!state.recording) stopRecording();
+			recordingStarting = null;
+			state.recordingStarting = false;
+		}
+		// 승인 뒤 실패하거나 취소됐으면 서버에 남은 녹화 표시도 되돌린다.
+		if (approved && !state.recording && current === room && recordingStarting == null && recordingSession == null) reportStatus(room, true, attempt.id);
 	}
-
-	// only composite video when there is something to show; otherwise this stays an audio recording
-	if (hasVideo) ensureRecordingVideoPart();
-
-	state.recording = true;
-	state.recordingStartedAt = Date.now();
-	reportStatus(room, true);
 }
 
 /** stop recording and upload what is left */
 export function stopRecording(): void {
-	if (recordingParts.size === 0) return;
+	const session = recordingSession;
+	const hadRecording = recordingStarting != null || session?.stopping === false || state.recording;
+	const recordingId = session?.id ?? recordingStarting?.id;
+	recordingStarting = null;
+	state.recordingStarting = false;
+	if (session != null) session.stopping = true;
 	state.recording = false;
 	state.recordingStartedAt = null;
-	if (current != null) reportStatus(current, true);
+	if (hadRecording && current != null) reportStatus(current, true, recordingId);
+	// 최종 recorder 이벤트를 기다리는 동안에도 원본 마이크를 계속 열어 두지 않는다.
+	recordingRawMicStream?.getTracks().forEach(track => track.stop());
+	recordingRawMicStream = null;
 	for (const part of [...recordingParts.values()]) {
-		try { part.recorder.requestData(); } catch { /* not recording yet */ }
+		if (part.recorder.state === 'inactive') continue;
+		try { part.recorder.requestData(); } catch { /* 마지막 청크는 onstop에서도 받는다 */ }
 		part.recorder.stop();
 	}
+	if (recordingParts.size === 0) teardownRecording();
+}
+
+function clearRecordingMicrophone(): void {
+	for (const [track, source] of recordingSources) if (source.kind === 'mic') removeRecordingTrack(track);
+	recordingRawMicStream?.getTracks().forEach(track => track.stop());
+	recordingRawMicStream = null;
+}
+
+async function captureRecordingMicrophone(session: RecordingSession, room: Room): Promise<void> {
+	const active = () => recordingSession === session && !session.stopping && current === room;
+	if (!active()) return;
+	const revision = ++session.micRevision;
+	clearRecordingMicrophone();
+	try {
+		const raw = await navigator.mediaDevices.getUserMedia({
+			audio: { deviceId: prefer.s['voiceCall.inputDeviceId'] ?? undefined, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+		});
+		if (!active() || session.micRevision !== revision) {
+			raw.getTracks().forEach(track => track.stop());
+			return;
+		}
+		// 장치를 얻는 동안 LiveKit이 발행한 대체 입력도 제거해 같은 마이크를 두 번 섞지 않는다.
+		clearRecordingMicrophone();
+		recordingRawMicStream = raw;
+		syncRecordingMicrophone();
+		const track = raw.getAudioTracks()[0];
+		if (track != null) addRecordingTrack(track, 'mic');
+	} catch {
+		if (!active() || session.micRevision !== revision || livekit == null) return;
+		const mic = room.localParticipant.getTrackPublication(livekit.Track.Source.Microphone)?.track;
+		if (mic?.mediaStreamTrack != null) addRecordingTrack(mic.mediaStreamTrack, 'mic');
+	}
+}
+
+function syncRecordingMicrophone(): void {
+	const enabled = state.micEnabled && !state.deafened;
+	for (const track of recordingRawMicStream?.getAudioTracks() ?? []) track.enabled = enabled;
+	if (recordingMicBus != null) recordingMicBus.gain.value = enabled ? 1 : 0;
 }
 
 /** follow the room owner's recording setting while in the call; recording stops when it is turned off */
@@ -835,9 +890,6 @@ export async function leaveVoiceCall(): Promise<void> {
 export async function setMicEnabled(enabled: boolean): Promise<void> {
 	const room = current;
 	if (room == null) return;
-	if (recordingRawMicStream != null) {
-		for (const track of recordingRawMicStream.getAudioTracks()) track.enabled = enabled;
-	}
 	prefer.commit('voiceCall.micEnabled', enabled);
 	if (enabled) {
 		// スピーカーを切ったままマイクだけを入れると、聞こえないまま話すことになる。マイクが入ったらスピーカーも戻す。
@@ -860,6 +912,7 @@ export async function restartMicrophone(): Promise<void> {
 export function setDeafened(deafened: boolean): void {
 	deafenRevision++;
 	state.deafened = deafened;
+	syncRecordingMicrophone();
 	if (current == null) return;
 	const room = current;
 	applyVolumes(room);
@@ -926,9 +979,13 @@ export function activeAudioDeviceId(kind: 'audioinput' | 'audiooutput'): string 
 
 export async function selectAudioDevice(kind: 'audioinput' | 'audiooutput', deviceId: string): Promise<void> {
 	prefer.commit(kind === 'audioinput' ? 'voiceCall.inputDeviceId' : 'voiceCall.outputDeviceId', deviceId);
-	if (current == null) return;
-	await current.switchActiveDevice(kind, deviceId);
-	if (kind === 'audioinput' && current != null) startLocalMeter(current);
+	const room = current;
+	if (room == null) return;
+	await room.switchActiveDevice(kind, deviceId);
+	if (kind === 'audioinput' && current != null) {
+		startLocalMeter(current);
+		if (current === room && recordingSession != null) await captureRecordingMicrophone(recordingSession, room);
+	}
 }
 
 export function canShareScreen(): boolean {
@@ -1149,12 +1206,14 @@ async function enableMicrophone(room: Room, undeafenAt: number | null = null): P
 			await disableMicrophone(room).catch(() => reportStatus(room));
 			return;
 		}
+		syncRecordingMicrophone();
 		startLocalMeter(room);
 		reportStatus(room);
 	} catch {
 		// マイクが無い・許可されない場合でも、聞くだけの参加者として通話に残る
 		if (current !== room) return;
 		state.micEnabled = false;
+		syncRecordingMicrophone();
 		stopLocalMeter?.();
 		reportStatus(room);
 		os.toast(i18n.ts._voiceCall.micUnavailable);
@@ -1165,6 +1224,7 @@ async function disableMicrophone(room: Room): Promise<void> {
 	await room.localParticipant.setMicrophoneEnabled(false, captureOptions());
 	if (current !== room) return;
 	state.micEnabled = false;
+	syncRecordingMicrophone();
 	stopLocalMeter?.();
 	unwatchMicrophoneTrack?.();
 	reportStatus(room);
@@ -1258,7 +1318,10 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 		if (!isCurrent()) return;
 		if (publication.source === Track.Source.Microphone) {
 			startLocalMeter(room);
-			if (track != null) addRecordingTrack(track.mediaStreamTrack, 'mic');
+			if (track != null && recordingRawMicStream == null) {
+				for (const [input, source] of recordingSources) if (source.kind === 'mic') removeRecordingTrack(input);
+				addRecordingTrack(track.mediaStreamTrack, 'mic');
+			}
 			return;
 		}
 		if (publication.source === Track.Source.ScreenShareAudio) {
@@ -1294,6 +1357,7 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 		// オーナーによる強制ミュート
 		if (participant === room.localParticipant && publication.source === Track.Source.Microphone) {
 			state.micEnabled = false;
+			syncRecordingMicrophone();
 			stopLocalMeter?.();
 			reportStatus(room);
 		}
@@ -1402,6 +1466,7 @@ function resetState(): void {
 	state.mediaProvider = null;
 	screenShareLimits = undefined;
 	state.micEnabled = false;
+	syncRecordingMicrophone();
 	state.deafened = false;
 	state.audioBlocked = false;
 	state.speakingIdentities = [];

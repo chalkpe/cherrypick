@@ -74,6 +74,7 @@ export interface MainEventTypes {
 	unreadAntenna: MiAntenna;
 	newChatMessage: Packed<'ChatMessage'>;
 	chatRoomVoiceState: Packed<'ChatRoomVoiceState'>;
+	chatRoomRecording: import('@/core/recording-event.js').RecordingEvent & { roomId: string; user: Packed<'UserLite'> };
 	chatRoomListChanged: undefined;
 	readAllAnnouncements: undefined;
 	myTokenRegenerated: undefined;

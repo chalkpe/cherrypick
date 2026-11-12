@@ -54,6 +54,7 @@ export type Channels = {
 			unreadAntenna: (payload: Antenna) => void;
 			newChatMessage: (payload: ChatMessage) => void;
 			chatRoomVoiceState: (payload: ChatRoomVoiceState) => void;
+			chatRoomRecording: (payload: { roomId: string; id: string; identity: string; recording: boolean; updatedAt: number; deliveryWindowMs: number; user: UserLite }) => void;
 			chatRoomListChanged: () => void;
 			readAllAnnouncements: () => void;
 			myTokenRegenerated: () => void;
