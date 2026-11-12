@@ -10,6 +10,15 @@ import { QueueService } from '@/core/QueueService.js';
 import type { MiDriveFile } from '@/models/DriveFile.js';
 import type { DriveFilesRepository } from '@/models/_.js';
 
+function withDeletionManager<T extends Pick<DriveFilesRepository, 'delete'>>(repository: T, current: () => unknown) {
+	return Object.assign(repository, { manager: {
+		transaction: async (action: (manager: unknown) => Promise<unknown>) => action({
+			findOne: async () => current(), find: async () => [],
+			delete: async (_entity: unknown, id: string) => repository.delete(id),
+		}),
+	} }) as unknown as T & Pick<DriveFilesRepository, 'manager'>;
+}
+
 // 실제 삭제·큐 접수 메서드를 사용하고 DB/Redis 전송 경계만 대체한다.
 function storageFixture() {
 	const file = {
@@ -25,10 +34,10 @@ function storageFixture() {
 	const add = vi.fn(async (_name: string, _data: { key: string }) => ({}));
 	const queue = Object.create(QueueService.prototype) as QueueService;
 	Object.assign(queue, { objectStorageQueue: { add } });
-	const repository = {
+	const repository = withDeletionManager({
 		findOneBy: async ({ id, userId }: { id: string; userId: string }) => rows.get(id)?.userId === userId ? rows.get(id) : null,
-		delete: async (id: string) => ({ affected: rows.delete(id) ? 1 : 0 }),
-	};
+		delete: async (id: string) => ({ affected: rows.delete(id) ? 1 : 0, raw: [] }),
+	}, () => rows.get(file.id));
 	const drive = Object.create(DriveService.prototype) as DriveService;
 	Object.assign(drive, {
 		queueService: queue, driveFilesRepository: repository,
@@ -179,7 +188,7 @@ test('concurrent deletion reports and publishes only the row actually removed', 
 	const stream = { publishDriveStream: vi.fn() };
 	const service = Object.create(DriveService.prototype) as DriveService;
 	Object.assign(service, {
-		driveFilesRepository: { delete: async () => ({ affected: rows.delete('file') ? 1 : 0 }) },
+		driveFilesRepository: withDeletionManager({ delete: async () => ({ affected: rows.delete('file') ? 1 : 0 }) } as never, () => rows.has('file') ? { id: 'file' } : null),
 		driveChart: chart,
 		perUserDriveChart: { update: vi.fn() },
 		globalEventService: stream,
@@ -204,7 +213,7 @@ test('removes the row on the provided SQL connection without acquiring a global 
 		globalEventService: stream,
 	});
 	const file = { id: 'file', isLink: true, storedInternal: false, userHost: null, userId: 'owner' } as MiDriveFile;
-	const scopedRepository = { delete: async () => ({ affected: 1 }) } as unknown as DriveFilesRepository;
+	const scopedRepository = withDeletionManager({ delete: async () => ({ affected: 1 }) } as never, () => ({ id: 'file' }));
 
 	const removed = await service.deleteFile(file, false, undefined, scopedRepository);
 

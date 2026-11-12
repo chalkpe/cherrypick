@@ -3,9 +3,15 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { packedUserLiteSchema } from './user.js';
+
 export const packedChatRoomSchema = {
 	type: 'object',
 	properties: {
+		iconId: { type: 'string', optional: true, nullable: true },
+		iconUrl: { type: 'string', optional: true, nullable: false },
+		iconBlurhash: { type: 'string', optional: true, nullable: true },
+		iconDecorations: { ...packedUserLiteSchema.properties.avatarDecorations, optional: true },
 		id: {
 			type: 'string',
 			optional: false, nullable: false,

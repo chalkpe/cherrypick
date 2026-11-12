@@ -87,7 +87,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<span v-else-if="log.type === 'deletePage'">: @{{ log.info.pageUserUsername }}</span>
 		<span v-else-if="log.type === 'deleteFlash'">: @{{ log.info.flashUserUsername }}</span>
 		<span v-else-if="log.type === 'deleteGalleryPost'">: @{{ log.info.postUserUsername }}</span>
-		<span v-else-if="log.type === 'deleteChatRoom'">: @{{ log.info.room.name }}</span>
+		<span v-else-if="log.type === 'deleteChatRoom'">: <MkAvatar v-if="log.info.room.iconUrl && log.info.room.owner" :room="log.info.room" style="width: 1.4em; height: 1.4em; vertical-align: middle; margin-right: 0.4em;"/>{{ log.info.room.name }}</span>
 	</template>
 	<template #icon>
 		<i v-if="log.type === 'updateServerSettings'" class="ti ti-settings"></i>

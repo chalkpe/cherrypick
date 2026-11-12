@@ -6,6 +6,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import { TwirpError } from 'livekit-server-sdk';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
@@ -254,6 +255,9 @@ function fixture(options: {
 		chatVoiceService,
 		apResolverService,
 		userBlockingService: { checkBlocked: vi.fn(async (_blockerId: string, _blockeeId: string) => false) },
+	});
+	inbox.apChatRoomStateService = Object.assign(Object.create(ApChatRoomStateService.prototype), {
+		chatService: inbox.chatService,
 	});
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
 		chatRoomsRepository: rooms,

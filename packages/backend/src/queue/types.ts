@@ -66,6 +66,7 @@ export type DbJobMap = {
 	deleteAccount: DbUserDeleteJobData;
 	truncateAccount: DbUserTruncateJobData;
 	chatRoomRosterSync: ChatRoomRosterSyncJobData;
+	chatRoomIconDeleted: { roomId: string; fileId: string };
 };
 
 export type ChatRoomRosterSyncJobData = {

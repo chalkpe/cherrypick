@@ -6449,6 +6449,21 @@ export type components = {
             };
         };
         ChatRoom: {
+            iconId?: string | null;
+            iconUrl?: string;
+            iconBlurhash?: string | null;
+            iconDecorations?: {
+                /** Format: id */
+                id: string;
+                angle?: number;
+                flipH?: boolean;
+                offsetX?: number;
+                offsetY?: number;
+                scale?: number;
+                opacity?: number;
+                /** Format: url */
+                url: string;
+            }[];
             id: string;
             /** Format: date-time */
             createdAt: string;
@@ -21165,6 +21180,18 @@ export interface operations {
                     name?: string;
                     description?: string;
                     isArchived?: boolean;
+                    /** Format: misskey:id */
+                    iconId?: string | null;
+                    iconDecorations?: {
+                        /** Format: misskey:id */
+                        id: string;
+                        angle?: number | null;
+                        flipH?: boolean | null;
+                        offsetX?: number | null;
+                        offsetY?: number | null;
+                        scale?: number | null;
+                        opacity?: number | null;
+                    }[];
                 };
             };
         };

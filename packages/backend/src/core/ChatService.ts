@@ -24,7 +24,8 @@ import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { PushNotificationService } from '@/core/PushNotificationService.js';
 import { bindThis } from '@/decorators.js';
-import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, DriveFilesRepository, MiChatMessage, MiDriveFile, MiUser, MutingsRepository, UsersRepository } from '@/models/_.js';
+import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, DriveFilesRepository, MiChatMessage, MiDriveFile, MutingsRepository, UsersRepository } from '@/models/_.js';
+import { MiUser } from '@/models/User.js';
 import type { MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { QueryService } from '@/core/QueryService.js';
@@ -1142,7 +1143,7 @@ export class ChatService {
 
 		// Federation: Send Invite activity to remote user if applicable
 		if (this.userEntityService.isLocalUser(inviter) && this.userEntityService.isRemoteUser(invitee)) {
-			const roomObject = this.apRendererService.renderChatRoom(room, inviter);
+			const roomObject = await this.apRendererService.renderChatRoom(room, inviter);
 			const inviteeUri = invitee.uri;
 			const inviteActivity = this.apRendererService.renderInvite(roomObject, inviteeUri, inviter);
 			const activity = {
@@ -1267,7 +1268,7 @@ export class ChatService {
 
 		// Send Accept activity to the inviter (room owner) if they are remote
 		if (this.userEntityService.isLocalUser(joiningUser) && this.userEntityService.isRemoteUser(owner)) {
-			const roomObject = this.apRendererService.renderChatRoom(room, owner);
+			const roomObject = await this.apRendererService.renderChatRoom(room, owner);
 			// Create a simplified invite object reference for the Accept activity
 			const inviteObject = {
 				type: 'Invite',
@@ -1383,7 +1384,7 @@ export class ChatService {
 
 		// Federation: Send Undo(Invite) activity to remote invitee
 		if (this.userEntityService.isLocalUser(inviter) && this.userEntityService.isRemoteUser(invitee)) {
-			const roomObject = this.apRendererService.renderChatRoom(room, inviter);
+			const roomObject = await this.apRendererService.renderChatRoom(room, inviter);
 			const inviteObject = this.apRendererService.renderInvite(roomObject, invitee.uri, inviter);
 
 			// Generate activity ID for the original Invite
@@ -1531,17 +1532,21 @@ export class ChatService {
 		name?: string;
 		description?: string;
 		isArchived?: boolean;
-	}, options?: { federate?: boolean; remoteUpdatedAt?: Date; remoteGroup?: IObject }): Promise<MiChatRoom> {
+	} & Partial<Pick<MiChatRoom, 'iconId' | 'iconUrl' | 'iconBlurhash' | 'iconDecorations'>>, options?: { federate?: boolean; remoteUpdatedAt?: Date; remoteGroup?: IObject; deletedIconId?: string }): Promise<MiChatRoom> {
 		const wasArchived = room.isArchived;
 		const patch = Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined)) as typeof params;
 		const remoteUpdatedAt = options?.remoteUpdatedAt;
 		// TypeORM refuses an UPDATE that has nothing to set.
 		if (remoteUpdatedAt == null && Object.values(params).every(value => value === undefined)) return room;
 		const snapshot = options?.remoteGroup?._misskey_chatChannels !== undefined && remoteUpdatedAt != null ? parseChatChannels(options.remoteGroup, await this.chatRoomChannelService.roomUri(room)) : null;
+		let resetOwner: MiUser | null = null;
 		const updated = await this.db.transaction(async manager => {
 			const current = await manager.findOne(MiChatRoom, { where: { id: room.id }, lock: { mode: 'pessimistic_write' } });
 			if (current == null || (remoteUpdatedAt != null && current.lastRemoteUpdatedAt != null && current.lastRemoteUpdatedAt > remoteUpdatedAt)) return null;
-			const revision = remoteUpdatedAt ?? (options?.federate === false ? current.lastRemoteUpdatedAt : new Date(Math.max(Date.now(), (current.lastRemoteUpdatedAt?.getTime() ?? 0) + 1)));
+			if (options?.deletedIconId != null && current.iconId != null && current.iconId !== options.deletedIconId) return null;
+			if (options?.federate !== false && options?.deletedIconId == null && current.isArchived && (params.iconId !== undefined || params.iconDecorations !== undefined)) throw new ChatRoomArchivedError();
+			if (options?.deletedIconId != null) resetOwner = await manager.findOne(MiUser, { where: { id: current.ownerId } });
+			const revision = remoteUpdatedAt ?? (options?.federate === false || resetOwner?.host != null ? current.lastRemoteUpdatedAt : new Date(Math.max(Date.now(), (current.lastRemoteUpdatedAt?.getTime() ?? 0) + 1)));
 			await manager.update(MiChatRoom, current.id, { ...patch, lastRemoteUpdatedAt: revision });
 			const updated = { ...current, ...patch, lastRemoteUpdatedAt: revision };
 			return snapshot != null ? this.chatRoomChannelService.applyRemote(manager, updated, snapshot) : updated;
@@ -1559,9 +1564,10 @@ export class ChatService {
 			description: merged.description,
 			isArchived: merged.isArchived,
 			hasChannels: merged.hasChannels,
+			...(params.iconId !== undefined || params.iconDecorations !== undefined ? await this.chatEntityService.packRoomIcon(merged) : {}),
 		});
 
-		const owner = await this.usersRepository.findOneBy({ id: merged.ownerId });
+		const owner = resetOwner ?? await this.usersRepository.findOneBy({ id: merged.ownerId });
 		if (owner != null && owner.host == null && merged.isArchived && !wasArchived) {
 			// 残っている参加者は定期的な読み直しでも外れるが、それを待たずに通話を閉じる
 			this.liveKitService.deleteRoom(merged.id).catch(() => {});
@@ -1619,9 +1625,9 @@ export class ChatService {
 		room = snapshot?.room ?? room;
 		const members = await this.participantsForRoom(room);
 		const fields = snapshot?.fields ?? {};
-		await this.deliverToRemoteUsers(owner, members, this.apRendererService.renderChatRoomUpdate(room, owner, fields));
+		await this.deliverToRemoteUsers(owner, members, await this.apRendererService.renderChatRoomUpdate(room, owner, fields));
 		const invitees = (await this.inviteesForRoom(room)).filter(user => !members.some(member => member.id === user.id));
-		if (invitees.length > 0) await this.deliverToRemoteUsers(owner, invitees, this.apRendererService.renderChatRoomUpdate(room, owner));
+		if (invitees.length > 0) await this.deliverToRemoteUsers(owner, invitees, await this.apRendererService.renderChatRoomUpdate(room, owner));
 	}
 
 	@bindThis

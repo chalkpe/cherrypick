@@ -37,7 +37,7 @@ afterEach(cleanup);
 test('the owner confirms the named member and removes that row after success', async () => {
 	render(Members, { props: { room }, global: { stubs } });
 	await fireEvent.click(await screen.findByRole('button', { name: i18n.ts._chat.kickMember }));
-	expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.tsx._chat.kickMemberConfirm({ name: 'Member', room: room.name }) });
+	expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.tsx._chat.kickMemberConfirm({ name: 'Member', room: room.name }), room });
 	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/kick', { roomId: 'room', userId: 'member' }, undefined, chatKickErrors));
 	await waitFor(() => expect(screen.queryByText('member')).toBeNull());
 });

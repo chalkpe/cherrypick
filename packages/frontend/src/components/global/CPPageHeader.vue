@@ -26,6 +26,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div v-if="pageMetadata.avatar" :class="$style.titleAvatarContainer" @click="top">
 				<MkAvatar :class="$style.titleAvatar" :user="pageMetadata.avatar" indicator/>
 			</div>
+			<div v-else-if="pageMetadata.roomAvatar" :class="$style.titleAvatarContainer" @click="top">
+				<MkAvatar :class="$style.titleAvatar" :room="pageMetadata.roomAvatar"/>
+			</div>
 			<i v-else-if="pageMetadata.icon" :class="[$style.titleIcon, pageMetadata.icon]" @click="top"></i>
 
 			<div class="_nowrap" :class="$style.title">

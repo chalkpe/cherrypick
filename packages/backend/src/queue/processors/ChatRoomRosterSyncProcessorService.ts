@@ -17,6 +17,7 @@ import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { IdService } from '@/core/IdService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
+import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateService.js';
 import { ApDbResolverService } from '@/core/activitypub/ApDbResolverService.js';
 import { ApPersonService } from '@/core/activitypub/models/ApPersonService.js';
 import { ApResolverService } from '@/core/activitypub/ApResolverService.js';
@@ -63,6 +64,7 @@ export class ChatRoomRosterSyncProcessorService {
 		private usersRepository: UsersRepository,
 
 		private chatService: ChatService,
+		private apChatRoomStateService: ApChatRoomStateService,
 		private chatRosterService: ChatRosterService,
 		private apResolverService: ApResolverService,
 		private apDbResolverService: ApDbResolverService,
@@ -95,7 +97,11 @@ export class ChatRoomRosterSyncProcessorService {
 		const roster = this.parseRoster(group, room.uri, owner.uri);
 		if (roster == null) return 'skip: the owner\'s server gave no roster';
 
-		await this.chatService.updateRoom(room, {}, { federate: false, remoteUpdatedAt: parseRemoteChatDate(group.updated) ?? undefined, remoteGroup: group });
+		if (Object.hasOwn(group, 'icon') || Object.hasOwn(group, '_misskey_chatIconDecorations')) {
+			await this.apChatRoomStateService.apply(room, group);
+		} else {
+			await this.chatService.updateRoom(room, {}, { federate: false, remoteUpdatedAt: parseRemoteChatDate(group.updated) ?? undefined, remoteGroup: group });
+		}
 
 		const present = await this.removeDropped(room, memberships, members, roster);
 		await this.addListed(room, owner.uri, roster, present);

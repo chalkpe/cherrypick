@@ -37,7 +37,7 @@ import MkChatHistories from '@/components/MkChatHistories.vue';
 
 const stubs = {
 	MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' },
-	MkAvatar: { props: ['user'], template: '<span class="avatar" :data-user="user.id"></span>' },
+	MkAvatar: { props: ['user', 'room'], template: '<span class="avatar" :data-user="user?.id" :data-room="room?.id"></span>' },
 	MkUserName: { template: '<span></span>' },
 	MkAcct: { template: '<span></span>' },
 	MkTime: { template: '<span></span>' },
@@ -174,12 +174,12 @@ describe('chat home with rooms without messages', () => {
 		expect(emptyRow.className).not.toMatch(/isRead/);
 	});
 
-	test('uses the owner as the avatar of a room without messages', async () => {
+	test('uses the group icon of a room without messages', async () => {
 		const empty = { ...mkRoom('a1', '2026-01-01T00:00:00Z'), owner: { id: 'the-owner' } };
 		setup({ owned: [empty] });
 		const { container } = await mount();
 
-		expect(container.querySelector('.avatar')!.getAttribute('data-user')).toBe('the-owner');
+		expect(container.querySelector('.avatar')!.getAttribute('data-room')).toBe('a1');
 	});
 
 	test('skips a membership without a room', async () => {

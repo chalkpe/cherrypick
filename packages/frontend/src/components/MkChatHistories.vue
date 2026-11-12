@@ -12,7 +12,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		class="_panel"
 		:to="item.message.toRoomId ? `/chat/room/${item.message.toRoomId}` : `/chat/user/${item.other!.id}`"
 	>
-		<MkAvatar v-if="item.message.toRoomId" :class="$style.messageAvatar" :user="item.message.fromUser" indicator :preview="false"/>
+		<MkAvatar v-if="item.message.toRoom" :class="$style.messageAvatar" :room="item.message.toRoom"/>
 		<MkAvatar v-else-if="item.other" :class="$style.messageAvatar" :user="item.other" indicator :preview="false"/>
 		<div :class="$style.messageBody">
 			<header v-if="item.message.toRoom" :class="$style.messageHeader">
@@ -41,7 +41,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		class="_panel"
 		:to="`/chat/room/${room.id}`"
 	>
-		<MkAvatar :class="$style.messageAvatar" :user="room.owner" indicator :preview="false"/>
+		<MkAvatar :class="$style.messageAvatar" :room="room"/>
 		<div :class="$style.messageBody">
 			<header :class="$style.messageHeader">
 				<span :class="$style.messageHeaderName"><i class="ti ti-users"></i> <Mfm :text="room.name" :plain="true" :nowrap="true" :author="room.owner"/></span>
