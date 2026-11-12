@@ -99,6 +99,13 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				case '-size': query.orderBy('file.size', 'ASC').addOrderBy('file.id', 'ASC'); break;
 			}
 
+			// IS NULL は等値条件扱いされず (userId, folderId, id) インデックスの並びが使われないため、
+			// folderId も ORDER BY に含めて PK スキャンを避ける
+			const idOrder = query.expressionMap.orderBys['file.id'];
+			if (!ps.folderId && sortKey == null && typeof idOrder === 'string') {
+				query.orderBy('file.folderId', idOrder).addOrderBy('file.id', idOrder);
+			}
+
 			const files = await query.limit(ps.limit).getMany();
 
 			return await this.driveFileEntityService.packMany(files, { detail: false, self: true });

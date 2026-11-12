@@ -6,7 +6,6 @@
 //import bcrypt from 'bcryptjs';
 import * as argon2 from 'argon2';
 import * as OTPAuth from 'otpauth';
-import * as QRCode from 'qrcode';
 import { Inject, Injectable } from '@nestjs/common';
 import type { UserProfilesRepository } from '@/models/_.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
@@ -33,7 +32,6 @@ export const meta = {
 		nullable: false,
 		optional: false,
 		properties: {
-			qr: { type: 'string' },
 			url: { type: 'string' },
 			secret: { type: 'string' },
 			label: { type: 'string' },
@@ -98,10 +96,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				issuer: this.config.host,
 			});
 			const url = totp.toString();
-			const qr = await QRCode.toDataURL(url);
 
 			return {
-				qr,
 				url,
 				secret: secret.base32,
 				label: me.username,

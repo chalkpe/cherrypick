@@ -29,19 +29,19 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { onMounted, provide, ref, computed, onUnmounted } from 'vue';
+import { onMounted, provide, ref, computed, onUnmounted, defineAsyncComponent } from 'vue';
 import { instanceName, gitHash } from '@@/js/config.js';
 import XCommon from './_common_/common.vue';
 import type { PageMetadata } from '@/page.js';
-import * as os from '@/os.js';
 import { instance } from '@/instance.js';
 import { provideMetadataReceiver, provideReactiveMetadata } from '@/page.js';
 import { i18n } from '@/i18n.js';
-import MkVisitorDashboard from '@/components/MkVisitorDashboard.vue';
 import { mainRouter } from '@/router.js';
 import { DI } from '@/di.js';
 import MkButton from '@/components/MkButton.vue';
 import { sourceCodeUrl } from '@/utility/source-code-url.js';
+
+const MkVisitorDashboard = defineAsyncComponent(() => import('@/components/MkVisitorDashboard.vue'));
 
 const isRoot = computed(() => mainRouter.currentRoute.value.name === 'index');
 

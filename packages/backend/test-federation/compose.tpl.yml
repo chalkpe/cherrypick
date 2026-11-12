@@ -21,10 +21,6 @@ services:
       - type: bind
         source: ../../../built
         target: /cherrypick/built
-        read_only: false
-      - type: bind
-        source: ./.config/dummy.yml
-        target: /cherrypick/.config/default.yml
         read_only: true
       - type: bind
         source: ../assets
@@ -51,12 +47,8 @@ services:
         target: /cherrypick/packages/backend/package.json
         read_only: true
       - type: bind
-        source: ../scripts/compile_config.js
-        target: /cherrypick/packages/backend/scripts/compile_config.js
-        read_only: true
-      - type: bind
-        source: ../scripts/bridge_from_misskey.js
-        target: /cherrypick/packages/backend/scripts/bridge_from_misskey.js
+        source: ../scripts
+        target: /cherrypick/packages/backend/scripts
         read_only: true
       - type: bind
         source: ../../cherrypick-js/built
@@ -81,6 +73,10 @@ services:
       - type: bind
         source: ../../misskey-reversi/package.json
         target: /cherrypick/packages/misskey-reversi/package.json
+        read_only: true
+      - type: bind
+        source: ../../../scripts
+        target: /cherrypick/scripts
         read_only: true
       - type: bind
         source: ../../../healthcheck.sh
@@ -110,8 +106,7 @@ services:
     command: >
       bash -c "
         npm install -g pnpm
-        pnpm -F backend migrate
-        pnpm -F backend start
+        exec node scripts/start.mjs --migrate
       "
     healthcheck:
       test: bash /cherrypick/healthcheck.sh

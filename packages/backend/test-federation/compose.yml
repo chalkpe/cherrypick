@@ -51,14 +51,6 @@ services:
         target: /cherrypick/packages/backend/vitest.config.fed.ts
         read_only: true
       - type: bind
-        source: ./.config/dummy.yml
-        target: /cherrypick/.config/test.yml
-        read_only: true
-      - type: bind
-        source: ../scripts/compile_config.js
-        target: /cherrypick/packages/backend/scripts/compile_config.js
-        read_only: true
-      - type: bind
         source: ../../cherrypick-js/built
         target: /cherrypick/packages/cherrypick-js/built
         read_only: true
