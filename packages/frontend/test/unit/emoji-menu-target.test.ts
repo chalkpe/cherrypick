@@ -15,6 +15,10 @@ const mocks = vi.hoisted(() => ({
 	api: vi.fn(async () => ({ name: 'first' })),
 	apiGet: vi.fn(async () => ({ name: 'first' })),
 	apiWithDialog: vi.fn(),
+	popupAsyncWithDialog: vi.fn(async (component: Promise<unknown>) => {
+		await component;
+		return { dispose: vi.fn() };
+	}),
 	copy: vi.fn(),
 	palette: vi.fn(),
 	react: vi.fn(),
@@ -28,7 +32,7 @@ vi.mock('@/os.js', () => ({
 	confirm: mocks.confirm,
 	apiWithDialog: mocks.apiWithDialog,
 	popup: () => ({ dispose: vi.fn() }),
-	popupAsyncWithDialog: async () => ({ dispose: vi.fn() }),
+	popupAsyncWithDialog: mocks.popupAsyncWithDialog,
 }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api, misskeyApiGet: mocks.apiGet }));
 vi.mock('@/utility/copy-to-clipboard.js', () => ({ copyToClipboard: mocks.copy }));
@@ -37,6 +41,7 @@ vi.mock('@/utility/media-proxy.js', () => ({ getProxiedImageUrl: (url: string) =
 vi.mock('@/custom-emojis.js', async () => ({ customEmojis: (await import('vue')).ref([]), customEmojisMap: new Map() }));
 vi.mock('@/i.js', () => ({ $i: { isAdmin: true, isModerator: true, policies: { canManageCustomEmojis: true } } }));
 vi.mock('@/components/MkCustomEmojiDetailedDialog.vue', () => ({ default: { render: () => null } }));
+vi.mock('@/pages/emoji-edit-dialog.vue', () => ({ default: { render: () => null } }));
 vi.mock('@/utility/emoji-mute', async importOriginal => {
 	const { computed } = await import('vue');
 	return {
@@ -98,6 +103,7 @@ describe('open emoji menu targets', () => {
 
 		if (call === 'api' || call === 'apiGet') expect(mocks[call]).toHaveBeenCalledWith('emoji', { name: 'first' });
 		else expect(mocks[call]).toHaveBeenCalledWith(':first:');
+		if (call === 'api') expect(mocks.popupAsyncWithDialog).toHaveBeenCalledWith(expect.any(Promise), { emoji: { name: 'first' } }, expect.any(Object));
 	});
 
 	test.each([
