@@ -1693,9 +1693,6 @@ _order:
 _chat:
   diceTotal: "합계"
   diceDetails: "굴림 내역"
-  diceHelp: "채팅에서 주사위 굴리기"
-  diceHelpDescription: "/dice는 1d6, /dice 1d20+1은 보정을 더한 굴림이에요. 2d20kh1은 높은 눈, 2d20kl1은 낮은 눈을 사용해요. 결과가 있는 쪽지는 수정할 수 없어요. 다시 굴리려면 새로 보내 주세요."
-  diceSyntax: "사용할 수 있는 문법 (RPG Dice Roller)"
   diceInvalid: "주사위 식을 읽을 수 없어요. 문법을 확인하고 고쳐 주세요."
   diceLimit: "굴림이 계산 한도를 넘었어요. 주사위 수나 반복을 줄여 주세요."
   diceBusy: "지금은 주사위를 굴릴 수 없어요. 잠시 후 다시 보내 주세요."

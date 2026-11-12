@@ -155,6 +155,37 @@ test.each([
 	expect(form.textarea.value).toBe('/dice bad-expression');
 });
 
+describe.each(['user', 'room'] as const)('the %s message box offers no dice help', target => {
+	function expectNoDiceHelp(container: Element) {
+		expect(container.querySelector('details, summary')).toBeNull();
+		expect(container.querySelector('a[href]')).toBeNull();
+		expect(container.textContent).not.toMatch(/dice/i);
+	}
+
+	test('while it is empty', () => {
+		const form = renderForm(target);
+
+		expect(form.textarea.value).toBe('');
+		expectNoDiceHelp(form.container);
+	});
+
+	test('after /dice is typed', async () => {
+		const form = renderForm(target);
+
+		await fireEvent.update(form.textarea, '/dice');
+
+		expect(form.textarea.value).toBe('/dice');
+		expectNoDiceHelp(form.container);
+	});
+
+	test('while a message is being edited', () => {
+		const form = renderForm(target, message);
+
+		expect(screen.getByText(i18n.ts._chat.editingMessage)).toBeTruthy();
+		expectNoDiceHelp(form.container);
+	});
+});
+
 test('the message box and the emoji button have accessible names', () => {
 	const form = renderForm();
 	expect(form.textarea.getAttribute('aria-label')).toBe(i18n.ts.inputMessageHere);
