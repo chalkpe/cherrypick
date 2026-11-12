@@ -313,6 +313,12 @@ import type {
 	ClipsUpdateRequest,
 	ClipsUpdateResponse,
 	DriveResponse,
+	DriveDeleteExecuteRequest,
+	DriveDeleteExecuteResponse,
+	DriveDeletePrepareRequest,
+	DriveDeletePrepareResponse,
+	DriveDeleteStatusRequest,
+	DriveDeleteStatusResponse,
 	DriveFilesRequest,
 	DriveFilesResponse,
 	DriveFilesAttachedChatMessagesRequest,
@@ -953,6 +959,9 @@ export type Endpoints = {
 	'clips/unfavorite': { req: ClipsUnfavoriteRequest; res: EmptyResponse };
 	'clips/update': { req: ClipsUpdateRequest; res: ClipsUpdateResponse };
 	'drive': { req: EmptyRequest; res: DriveResponse };
+	'drive/delete/execute': { req: DriveDeleteExecuteRequest; res: DriveDeleteExecuteResponse };
+	'drive/delete/prepare': { req: DriveDeletePrepareRequest; res: DriveDeletePrepareResponse };
+	'drive/delete/status': { req: DriveDeleteStatusRequest; res: DriveDeleteStatusResponse };
 	'drive/files': { req: DriveFilesRequest; res: DriveFilesResponse };
 	'drive/files/attached-chat-messages': { req: DriveFilesAttachedChatMessagesRequest; res: DriveFilesAttachedChatMessagesResponse };
 	'drive/files/attached-notes': { req: DriveFilesAttachedNotesRequest; res: DriveFilesAttachedNotesResponse };

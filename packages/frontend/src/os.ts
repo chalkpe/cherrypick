@@ -45,63 +45,69 @@ export const apiWithDialog = (<E extends keyof Misskey.Endpoints>(
 	customErrors?: ApiWithDialogCustomErrors,
 ) => {
 	const promise = misskeyApi(endpoint, data, token);
-	promiseDialog(promise, null, async (err) => {
-		let title: string | undefined;
-		let text = err.message + '\n' + err.id;
-		if (err.code === 'INTERNAL_ERROR') {
-			title = i18n.ts.internalServerError;
-			text = i18n.ts.internalServerErrorDescription;
-			const date = new Date().toISOString();
-			const { result } = await actions({
-				type: 'error',
-				title,
-				text,
-				actions: [{
-					value: 'ok',
-					text: i18n.ts.gotIt,
-					primary: true,
-				}, {
-					value: 'copy',
-					text: i18n.ts.copyErrorInfo,
-				}],
-			});
-			if (result === 'copy') {
-				copyToClipboard(`Endpoint: ${endpoint}\nInfo: ${JSON.stringify(err.info)}\nDate: ${date}`);
-			}
-			return;
-		} else if (err.code === 'RATE_LIMIT_EXCEEDED') {
-			title = i18n.ts.cannotPerformTemporary;
-			text = i18n.ts.cannotPerformTemporaryDescription;
-		} else if (err.code === 'INVALID_PARAM') {
-			title = i18n.ts.invalidParamError;
-			text = i18n.ts.invalidParamErrorDescription;
-		} else if (err.code === 'ROLE_PERMISSION_DENIED') {
-			title = i18n.ts.permissionDeniedError;
-			text = i18n.ts.permissionDeniedErrorDescription;
-		} else if (err.code?.startsWith('TOO_MANY')) {
-			title = i18n.ts.youCannotCreateAnymore;
-			text = `${i18n.ts.error}: ${err.id}`;
-		} else if (err.message.startsWith('Unexpected token')) {
-			title = i18n.ts.gotInvalidResponseError;
-			text = i18n.ts.gotInvalidResponseErrorDescription;
-		} else if (customErrors && (customErrors[err.id] ?? customErrors.default) != null) {
-			const customError = customErrors[err.id] ?? customErrors.default;
-			title = customError.title;
-			text = customError.text;
-		} else if (err.id == null) {
-			// 通信に失敗したときなど、サーバーの答えではないエラーには ID が無い。
-			// customErrors.default で言葉を用意した画面以外では、ブラウザの英語を出さず、これまでどおり何も開かない
-			return;
-		}
-		alert({
-			type: 'error',
-			title,
-			text,
-		});
-	});
+	promiseDialog(promise, null, err => apiErrorDialog(endpoint, err, customErrors));
 
 	return promise;
 });
+
+export async function apiErrorDialog(
+	endpoint: keyof Misskey.Endpoints,
+	err: Misskey.api.APIError,
+	customErrors?: ApiWithDialogCustomErrors,
+) {
+	let title: string | undefined;
+	let text = err.message + '\n' + err.id;
+	if (err.code === 'INTERNAL_ERROR') {
+		title = i18n.ts.internalServerError;
+		text = i18n.ts.internalServerErrorDescription;
+		const date = new Date().toISOString();
+		const { result } = await actions({
+			type: 'error',
+			title,
+			text,
+			actions: [{
+				value: 'ok',
+				text: i18n.ts.gotIt,
+				primary: true,
+			}, {
+				value: 'copy',
+				text: i18n.ts.copyErrorInfo,
+			}],
+		});
+		if (result === 'copy') {
+			copyToClipboard(`Endpoint: ${endpoint}\nInfo: ${JSON.stringify(err.info)}\nDate: ${date}`);
+		}
+		return;
+	} else if (err.code === 'RATE_LIMIT_EXCEEDED') {
+		title = i18n.ts.cannotPerformTemporary;
+		text = i18n.ts.cannotPerformTemporaryDescription;
+	} else if (err.code === 'INVALID_PARAM') {
+		title = i18n.ts.invalidParamError;
+		text = i18n.ts.invalidParamErrorDescription;
+	} else if (err.code === 'ROLE_PERMISSION_DENIED') {
+		title = i18n.ts.permissionDeniedError;
+		text = i18n.ts.permissionDeniedErrorDescription;
+	} else if (err.code?.startsWith('TOO_MANY')) {
+		title = i18n.ts.youCannotCreateAnymore;
+		text = `${i18n.ts.error}: ${err.id}`;
+	} else if (err.message.startsWith('Unexpected token')) {
+		title = i18n.ts.gotInvalidResponseError;
+		text = i18n.ts.gotInvalidResponseErrorDescription;
+	} else if (customErrors && (customErrors[err.id] ?? customErrors.default) != null) {
+		const customError = customErrors[err.id] ?? customErrors.default;
+		title = customError.title;
+		text = customError.text;
+	} else if (err.id == null) {
+		// 通信に失敗したときなど、サーバーの答えではないエラーには ID が無い。
+		// customErrors.default で言葉を用意した画面以外では、ブラウザの英語を出さず、これまでどおり何も開かない
+		return;
+	}
+	alert({
+		type: 'error',
+		title,
+		text,
+	});
+}
 
 export function promiseDialog<T extends Promise<any>>(
 	promise: T,

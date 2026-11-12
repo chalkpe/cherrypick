@@ -1431,6 +1431,24 @@ type ClipsUpdateResponse = operations['clips___update']['responses']['200']['con
 type DateString = string;
 
 // @public (undocumented)
+type DriveDeleteExecuteRequest = operations['drive___delete___execute']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type DriveDeleteExecuteResponse = operations['drive___delete___execute']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type DriveDeletePrepareRequest = operations['drive___delete___prepare']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type DriveDeletePrepareResponse = operations['drive___delete___prepare']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type DriveDeleteStatusRequest = operations['drive___delete___status']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type DriveDeleteStatusResponse = operations['drive___delete___status']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type DriveFile = components['schemas']['DriveFile'];
 
 // @public (undocumented)
@@ -2021,6 +2039,12 @@ declare namespace entities {
         ClipsUpdateRequest,
         ClipsUpdateResponse,
         DriveResponse,
+        DriveDeleteExecuteRequest,
+        DriveDeleteExecuteResponse,
+        DriveDeletePrepareRequest,
+        DriveDeletePrepareResponse,
+        DriveDeleteStatusRequest,
+        DriveDeleteStatusResponse,
         DriveFilesRequest,
         DriveFilesResponse,
         DriveFilesAttachedChatMessagesRequest,

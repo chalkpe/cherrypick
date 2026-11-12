@@ -16217,4 +16217,90 @@ export interface Locale extends ILocale {
          */
         "revoked": string;
     };
+    "_driveDeletion": {
+        /**
+         * 選択したファイル: {count}個
+         */
+        "selectedCount": ParameterizedString<"count">;
+        /**
+         * 選択した{count}個のファイルを削除しますか？削除すると元に戻せません。
+         */
+        "filesConfirm": ParameterizedString<"count">;
+        /**
+         * フォルダー「{name}」とすべてのサブフォルダー（ファイル合計{count}個）を削除しますか？削除すると元に戻せません。
+         */
+        "folderConfirm": ParameterizedString<"name" | "count">;
+        /**
+         * 投稿・添付・アイコン・バナーなどで使用中のファイルも削除され、表示できなくなる場合があります。
+         */
+        "scope": string;
+        /**
+         * 削除したファイル: {count}個。
+         */
+        "deletedFiles": ParameterizedString<"count">;
+        /**
+         * 削除したフォルダー: {count}個。
+         */
+        "deletedFolders": ParameterizedString<"count">;
+        /**
+         * 既に存在しないかアクセスできないファイル: {count}個。
+         */
+        "missingFiles": ParameterizedString<"count">;
+        /**
+         * 既に存在しないかアクセスできないフォルダー: {count}個。
+         */
+        "missingFolders": ParameterizedString<"count">;
+        /**
+         * 削除に失敗したファイル: {count}個。
+         */
+        "failedFiles": ParameterizedString<"count">;
+        /**
+         * 残ったファイル: {count}個。
+         */
+        "remainingFiles": ParameterizedString<"count">;
+        /**
+         * 残ったフォルダー: {count}個。
+         */
+        "remainingFolders": ParameterizedString<"count">;
+        /**
+         * 削除した項目はありません。
+         */
+        "noItemsDeleted": string;
+        /**
+         * 残った項目を確認して、もう一度削除してください。
+         */
+        "retry": string;
+        /**
+         * 削除が中断されました。残ったファイルとフォルダーを確認してください。
+         */
+        "interrupted": string;
+        /**
+         * 一度に削除できるのはファイル10,000個、フォルダー1,000個までです。分けて削除してください。
+         */
+        "tooMany": string;
+        /**
+         * 削除の確認の有効期限が切れました。再試行してください。
+         */
+        "expired": string;
+        /**
+         * 別の削除を実行中です。しばらくお待ちください。
+         */
+        "busy": string;
+        /**
+         * 削除するフォルダーが見つかりません。リストを再読み込みしてください。
+         */
+        "folderUnavailable": string;
+        /**
+         * 選択が正しくありません。削除するファイルかフォルダーを選び直してください。
+         */
+        "invalidSelection": string;
+        /**
+         * 削除を開始できませんでした。もう一度お試しください。
+         */
+        "prepareFailed": string;
+        /**
+         * 移動したファイル: {moved}個。失敗: {failed}個。失敗したファイルをもう一度移動してください。
+         */
+        "moveResult": ParameterizedString<"moved" | "failed">;
+    };
 }

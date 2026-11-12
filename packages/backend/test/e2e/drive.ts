@@ -7,7 +7,7 @@ process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
 import { describe, beforeAll, test } from 'vitest';
-import { api, makeStreamCatcher, post, signup, uploadFile } from '../utils.js';
+import { api, createAppToken, makeStreamCatcher, post, signup, uploadFile, waitFire } from '../utils.js';
 import type * as misskey from 'cherrypick-js';
 
 // このファイルで最初に signup する alice が root (モデレーター権限あり) になる
@@ -597,5 +597,206 @@ describe('Drive folder and file sorting', () => {
 			}
 			assert.deepStrictEqual(ids, all.body.map(file => file.id), sort);
 		}
+	});
+});
+
+// 실제 HTTP 경로를 사용하는 회귀 시험. 전용 일회용 DB/Redis에서만 실행한다.
+describe('Confirmed drive deletion', () => {
+	let owner: misskey.entities.SignupResponse;
+	let other: misskey.entities.SignupResponse;
+
+	beforeAll(async () => {
+		await signup({ username: 'delete_bootstrap' });
+		owner = await signup({ username: 'delete_owner' });
+		other = await signup({ username: 'delete_other' });
+	});
+
+	async function folder(name: string, parentId?: string) {
+		const result = await api('drive/folders/create', { name, parentId }, owner);
+		assert.strictEqual(result.status, 200, JSON.stringify(result.body));
+		return result.body;
+	}
+
+	async function file(folderId?: string, user = owner) {
+		const uploaded = await uploadFile(user, { path: 'drive-delete.png', name: 'drive-delete.png' });
+		assert.strictEqual(uploaded.status, 200, JSON.stringify(uploaded.body));
+		const created = uploaded.body!;
+		if (folderId) {
+			const moved = await api('drive/files/update', { fileId: created.id, folderId }, user);
+			assert.strictEqual(moved.status, 200, JSON.stringify(moved.body));
+		}
+		return created;
+	}
+
+	async function prepare(input: misskey.Endpoints['drive/delete/prepare']['req']) {
+		const response = await api('drive/delete/prepare', input, owner);
+		assert.strictEqual(response.status, 200, JSON.stringify(response.body));
+		return response.body;
+	}
+
+	async function execute(operationId: string) {
+		const response = await api('drive/delete/execute', { operationId }, owner);
+		assert.strictEqual(response.status, 200, JSON.stringify(response.body));
+		for (const ids of [response.body.deletedIds, response.body.missingIds, response.body.deletedFolderIds, response.body.missingFolderIds]) {
+			assert.deepStrictEqual(ids, [...ids].sort());
+		}
+		return response.body;
+	}
+
+	test('requires credentials and write:drive, and binds confirmation to its owner', async () => {
+		const root = await folder('owned');
+		assert.strictEqual((await api('drive/delete/prepare', { folderId: root.id })).status, 401);
+		const token = await createAppToken(owner, ['read:drive']);
+		const denied = await api('drive/delete/prepare', { folderId: root.id }, { token });
+		assert.strictEqual(denied.status, 403, JSON.stringify(denied.body));
+		assert.strictEqual((await api('drive/delete/prepare', { folderId: root.id }, other)).status, 400);
+		const writer = await createAppToken(owner, ['write:drive']);
+		const allowed = await api('drive/delete/prepare', { folderId: root.id }, { token: writer });
+		assert.strictEqual(allowed.status, 200, JSON.stringify(allowed.body));
+		const plan = allowed.body;
+		assert.strictEqual((await api('drive/delete/execute', { operationId: plan.operationId }, other)).status, 400);
+		assert.strictEqual((await api('drive/delete/status', { operationId: plan.operationId }, other)).status, 400);
+		assert.strictEqual((await api('drive/folders/show', { folderId: root.id }, owner)).status, 200);
+	});
+
+	test('preparation and cancellation do not delete; an empty folder confirms zero and is removed', async () => {
+		const root = await folder('empty');
+		const plan = await prepare({ folderId: root.id });
+		assert.strictEqual(plan.totalCount, 0);
+		assert.strictEqual((await api('drive/folders/show', { folderId: root.id }, owner)).status, 200);
+
+		let result!: misskey.Endpoints['drive/delete/execute']['res'];
+		const streamed = await waitFire(owner, 'drive', async () => { result = await execute(plan.operationId); }, msg => msg.type === 'folderDeleted' && msg.body === root.id);
+
+		assert.strictEqual(streamed, true);
+		assert.strictEqual(result.deletedCount, 0);
+		assert.strictEqual(result.folderDeleted, true);
+		assert.strictEqual(result.remainingFoldersCount, 0);
+		assert.strictEqual((await api('drive/folders/show', { folderId: root.id }, owner)).status, 400);
+	});
+
+	test('deletes used selected files while preserving cleaner protection and owner boundaries', async () => {
+		const used = await file();
+		const foreign = await file(undefined, other);
+		await post(owner, { text: 'attachment', fileIds: [used.id] });
+		const cleaned = await api('drive/files/delete-bulk', { fileIds: [used.id, foreign.id] }, owner);
+		assert.strictEqual(cleaned.status, 200);
+		assert.deepStrictEqual(cleaned.body.deletedIds, []);
+		const before = await api('drive', {}, owner);
+		const plan = await prepare({ fileIds: [used.id, used.id, foreign.id, '0000000000000000'] });
+		assert.strictEqual(plan.totalCount, 3);
+
+		let result!: misskey.Endpoints['drive/delete/execute']['res'];
+		const streamed = await waitFire(owner, 'drive', async () => { result = await execute(plan.operationId); }, msg => msg.type === 'fileDeleted' && msg.body === used.id);
+
+		assert.strictEqual(streamed, true);
+		assert.strictEqual(result.deletedCount, 1);
+		assert.strictEqual(result.missingCount, 2);
+		assert.strictEqual((await api('drive/files/show', { fileId: used.id }, owner)).status, 400);
+		assert.strictEqual((await api('drive/files/show', { fileId: foreign.id }, other)).status, 200);
+		const after = await api('drive', {}, owner);
+		assert.strictEqual(before.body.usage - after.body.usage, used.size);
+		assert.deepStrictEqual(await execute(plan.operationId), result);
+	});
+
+	test('counts unloaded files across every nested folder and deletes children first', async () => {
+		const root = await folder('tree');
+		const child = await folder('child', root.id);
+		const grandchild = await folder('grandchild', child.id);
+		await folder('empty-child', root.id);
+		await file(root.id);
+		await file(child.id);
+		await file(grandchild.id);
+		const plan = await prepare({ folderId: root.id });
+		assert.strictEqual(plan.totalCount, 3);
+		// 기존 API는 내용 있는 폴더를 계속 거부한다.
+		assert.strictEqual((await api('drive/folders/delete', { folderId: root.id }, owner)).status, 400);
+
+		const result = await execute(plan.operationId);
+
+		assert.strictEqual(result.deletedCount, 3);
+		assert.strictEqual(result.deletedFolderIds.length, 4);
+		assert.strictEqual(result.folderDeleted, true);
+		assert.strictEqual(result.remainingCount, 0);
+		assert.strictEqual(result.remainingFoldersCount, 0);
+	});
+
+	test('processes more than 100 files without a loaded browser list or an oversized delete request', async () => {
+		const root = await folder('many');
+		for (let i = 0; i < 103; i++) await file(root.id);
+		const incoming = await file();
+		const plan = await prepare({ folderId: root.id });
+		assert.strictEqual(plan.totalCount, 103);
+
+		const [first, added, moved] = await Promise.all([
+			execute(plan.operationId),
+			file(root.id),
+			api('drive/files/update', { fileId: incoming.id, folderId: root.id }, owner),
+		]);
+		assert.strictEqual(moved.status, 200, JSON.stringify(moved.body));
+		const observed = await api('drive/delete/status', { operationId: plan.operationId }, owner);
+		assert.strictEqual(observed.status, 200);
+		assert.deepStrictEqual(observed.body, first);
+		const last = await execute(plan.operationId);
+
+		assert.strictEqual(first.deletedCount, 100);
+		assert.strictEqual(first.done, false);
+		assert.strictEqual(last.deletedCount, 103);
+		assert.strictEqual(last.done, true);
+		assert.strictEqual(last.folderDeleted, false);
+		assert.strictEqual(last.remainingCount, 2);
+		assert.strictEqual((await api('drive/files/show', { fileId: added.id }, owner)).body.folderId, root.id);
+		assert.strictEqual((await api('drive/files/show', { fileId: incoming.id }, owner)).body.folderId, root.id);
+		const retry = await prepare({ folderId: root.id });
+		assert.strictEqual(retry.totalCount, 2);
+		assert.strictEqual((await execute(retry.operationId)).folderDeleted, true);
+	});
+
+	test('preserves new and moved-in files, deletes only confirmed moved-out IDs, and permits reconfirmation', async () => {
+		const root = await folder('changing');
+		const child = await folder('moving-child', root.id);
+		const original = await file(child.id);
+		const movedIn = await file();
+		const plan = await prepare({ folderId: root.id });
+		const added = await file(root.id);
+		await api('drive/files/update', { fileId: movedIn.id, folderId: child.id }, owner);
+		await api('drive/files/update', { fileId: original.id, folderId: null }, owner);
+
+		const result = await execute(plan.operationId);
+
+		assert.strictEqual(result.totalCount, 1);
+		assert.strictEqual(result.deletedCount, 1);
+		assert.strictEqual(result.remainingCount, 2);
+		assert.strictEqual(result.folderDeleted, false);
+		assert.strictEqual((await api('drive/files/show', { fileId: added.id }, owner)).body.folderId, root.id);
+		assert.strictEqual((await api('drive/files/show', { fileId: movedIn.id }, owner)).body.folderId, child.id);
+		const retry = await prepare({ folderId: root.id });
+		assert.strictEqual(retry.totalCount, 2);
+		assert.strictEqual((await execute(retry.operationId)).folderDeleted, true);
+	});
+
+	test('handles concurrent execute and an already deleted confirmed file without double counts', async () => {
+		const first = await file();
+		const second = await file();
+		const independent = await file(undefined, other);
+		const otherPlan = await api('drive/delete/prepare', { fileIds: [independent.id] }, other);
+		assert.strictEqual(otherPlan.status, 200, JSON.stringify(otherPlan.body));
+		const plan = await prepare({ fileIds: [first.id, second.id] });
+		await api('drive/files/delete', { fileId: first.id }, owner);
+
+		const results = await Promise.all([
+			api('drive/delete/execute', { operationId: plan.operationId }, owner),
+			api('drive/delete/execute', { operationId: plan.operationId }, owner),
+			api('drive/delete/execute', { operationId: otherPlan.body.operationId }, other),
+		]);
+		assert.strictEqual(results[2].status, 200, JSON.stringify(results[2].body));
+		assert.strictEqual(results[2].body.deletedCount, 1);
+		assert.ok(results.slice(0, 2).some(result => result.status === 200));
+		for (const result of results.slice(0, 2)) assert.ok([200, 400].includes(result.status), JSON.stringify(result.body));
+		const final = await execute(plan.operationId);
+
+		assert.strictEqual(final.deletedCount, 1);
+		assert.strictEqual(final.missingCount, 1);
+		assert.strictEqual(final.failedCount, 0);
 	});
 });
