@@ -374,7 +374,7 @@ type RoomAudience = {
 export type RemoteSnapshotStoreResult = 'stored' | 'stale' | 'ahead' | 'old' | 'disabled';
 
 /** 他のサーバーに送った現況の記録。at は送った時刻、updatedAt は送った現況の時刻 */
-/** 他のサーバーに最後に送った現況の記録。presenceHash は設定 (micMuted / deafened) を除いた現況の hash (古い記録には無い) */
+/** 他のサーバーに最後に送った現況の記録。presenceHash は設定 (micMuted / deafened) を除いた現況 (録画中かどうかは含む) の hash (古い記録には無い) */
 type FederatedRecord = { hash: string; presenceHash?: string; at: number; updatedAt: number };
 
 /** 他のサーバーに渡す参加者の現況。userId はこのサーバーの DB の id なので含めない */
@@ -1564,7 +1564,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 		const sorted = [...participants].sort((a, b) => a.identity.localeCompare(b.identity));
 		const hash = hashOf(sorted);
-		const presenceHash = hashOf(sorted.map(p => ({ identity: p.identity, screenSharing: p.screenSharing })));
+		// 録画の開始と終了は全員に確実に知らせるので、マイクなどの設定とは違って間隔を待たずにすぐ送る (録画していなければ以前と同じ hash)
+		const presenceHash = hashOf(sorted.map(p => ({ identity: p.identity, screenSharing: p.screenSharing, ...(p.recording === true ? { recording: true } : {}) })));
 		const ended = participants.length === 0;
 
 		const last = ended ? null : await this.lastFederatedOf(room.id);

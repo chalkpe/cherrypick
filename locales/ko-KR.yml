@@ -2489,6 +2489,12 @@ _voiceCall:
   recordingJoinNotice: "이 통화는 녹화되고 있어요. 참가하면 내 목소리와 공유한 화면도 녹화에 남아요. 참가할까요?"
   recordingStartedBy: "{name}님이 녹화를 시작했어요"
   recordingStopped: "녹화가 끝났어요"
+  recordingSaveFailed: "녹화 파일 {n}개를 드라이브에 저장하지 못했어요. 어떻게 할까요?"
+  recordingSaveToDevice: "이 기기에 저장"
+  recordingDiscard: "버리기"
+  recordingDiscardConfirm: "저장하지 못한 녹화를 버릴까요? 되돌릴 수 없어요."
+  recordingStartRejected: "서버가 녹화를 받아들이지 않아 녹화를 시작하지 못했어요"
+  recordingRejected: "서버가 녹화를 받아들이지 않아 녹화를 멈췄어요"
   allowRecording: "통화 녹화 허용"
   allowRecordingDescription: "켜면 참가자가 통화(목소리와 공유 화면)를 녹화할 수 있어요. 녹화가 시작되면 모두에게 알려요."
 _role:

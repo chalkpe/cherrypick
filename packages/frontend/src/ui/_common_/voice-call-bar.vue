@@ -19,6 +19,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<i :id="micLabelId" :class="[voiceCall.micEnabled ? 'ti ti-microphone' : 'ti ti-microphone-off', $style.roomIcon, { [$style.speaking]: micSpeaking, [$style.muted]: !voiceCall.micEnabled }]" role="img" :aria-label="micLabel"></i>
 		<span :id="statusId" :class="$style.status" :aria-live="voiceCallStatusAnnouncedInRoom ? 'off' : 'polite'">{{ voiceCallStatusText }}</span>
 	</MkA>
+	<!-- 録画中は、ルーム画面の外にいても通話バーで分かるようにする -->
+	<span v-if="someoneRecording" v-tooltip="i18n.ts._voiceCall.recordingInProgress" :class="$style.recording" role="status" :aria-label="i18n.ts._voiceCall.recordingInProgress">
+		<i class="ti ti-player-record-filled" aria-hidden="true"></i>
+		<span :class="$style.recordingLabel">{{ i18n.ts._voiceCall.recording }}</span>
+	</span>
 	<button v-if="voiceCall.audioBlocked" v-tooltip="i18n.ts._voiceCall.enableAudio" class="_buttonPrimary" :class="$style.enableAudio" :aria-label="i18n.ts._voiceCall.enableAudio" @click="resumeAudio">
 		<i class="ti ti-volume"></i>
 		<span :class="$style.enableAudioLabel">{{ i18n.ts._voiceCall.enableAudio }}</span>
@@ -82,9 +87,13 @@ import { leaveVoiceCall, restartMicrophone, resumeAudio, setDeafened, setMicEnab
 import { voiceCallBarHidden, voiceCallBarPlacement as placement } from '@/utility/voice-call-placement.js';
 import { openVoiceCallSettings as openSettings, screenShareAvailable } from '@/utility/voice-call-settings.js';
 import { voiceCallStatusAnnouncedInRoom, voiceCallStatusText } from '@/utility/voice-call-status.js';
+import { useVoiceCallRecordingWatch } from '@/composables/use-voice-call-recording-watch.js';
 
 const micSpeaking = computed(() => voiceCall.status === 'connected' && voiceCall.micEnabled && voiceCall.localSpeaking);
 const micLabel = computed(() => micSpeaking.value ? i18n.ts._voiceCall.micInputDetected : voiceCall.micEnabled ? i18n.ts._voiceCall.micOn : i18n.ts._voiceCall.micMuted);
+// 通話バーは通話のあいだずっとあるので、録画の知らせと停止もここに付ける (ルーム画面を離れても続く)
+const { someoneRecording } = useVoiceCallRecordingWatch();
+
 const micLabelId = useId();
 const statusId = useId();
 
@@ -205,6 +214,24 @@ watch(() => [
 	.docked & {
 		font-size: 0.85em;
 	}
+}
+
+.recording {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex-shrink: 0;
+	padding: 2px 8px;
+	border-radius: 999px;
+	font-size: 0.8em;
+	font-weight: bold;
+	color: var(--MI_THEME-fgOnAccent);
+	background: var(--MI_THEME-error);
+}
+
+// 入力欄では点だけにして幅を確保する。文言はアクセシブル名に残す
+.docked .recordingLabel {
+	display: none;
 }
 
 .enableAudio {

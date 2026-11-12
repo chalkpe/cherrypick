@@ -145,19 +145,30 @@ let deafenRevision = 0;
 // record the call in separate tracks (my microphone, the other side, video when present)
 const RECORDING_CHUNK_BYTES = 100 * 1024 * 1024;
 type RecordingPartKind = 'mic' | 'others' | 'video';
+type FailedRecording = { blob: Blob; name: string };
+/**
+ * 一回の録画。通話の状態 (state.room) とは別に持ち、通話が終わって状態が片付いた後に届く最後の部分も同じ録画として保存する
+ */
+type RecordingSession = {
+	roomId: string;
+	uploads: Promise<boolean>[];
+	failed: FailedRecording[];
+};
 type RecordingPart = {
 	recorder: MediaRecorder;
 	chunks: Blob[];
 	bytes: number;
-	uploads: Promise<void>[];
 	name: string;
+	session: RecordingSession;
 };
 const recordingParts = new Map<RecordingPartKind, RecordingPart>();
+let recordingSession: RecordingSession | null = null;
+// サーバーが録画を受け付けるのを待っているあいだ。二重に始めない
+let recordingStarting = false;
 let recordingContext: AudioContext | null = null;
 let recordingMicBus: GainNode | null = null;
 let recordingOthersBus: GainNode | null = null;
 let recordingMixedDest: MediaStreamAudioDestinationNode | null = null;
-let pendingRecordingUploads: Promise<void>[] = [];
 let recordingConversions: Promise<void> = Promise.resolve();
 let recordingRawMicStream: MediaStream | null = null;
 const recordingSources = new Map<MediaStreamTrack, { source: MediaStreamAudioSourceNode; kind: 'mic' | 'others' }>();
@@ -212,7 +223,8 @@ function watchRecordingVideo(track: MediaStreamTrack, video: HTMLVideoElement): 
 
 /** start the video part when the first video track appears, even after recording began */
 function ensureRecordingVideoPart(): void {
-	if (recordingParts.has('video') || recordingMixedDest == null || recordingContext == null) return;
+	const session = recordingSession;
+	if (session == null || recordingParts.has('video') || recordingMixedDest == null || recordingContext == null) return;
 	if (recordingCanvas == null) {
 		const canvas = window.document.createElement('canvas');
 		canvas.width = 1920;
@@ -225,7 +237,7 @@ function ensureRecordingVideoPart(): void {
 		drawRecordingFrame();
 	}
 	const base = recordingParts.get('mic')?.name ?? `voice-${recordingStamp(new Date())}`;
-	createRecordingPart('video', new MediaStream([
+	createRecordingPart(session, 'video', new MediaStream([
 		...recordingMixedDest.stream.getAudioTracks(),
 		...recordingCanvasStream!.getVideoTracks(),
 	]), recordingVideoMimeType(), 12_000_000, `${base.replace(/-mic$/, '')}-video-${recordingStamp(new Date())}`);
@@ -296,25 +308,33 @@ function recordingStamp(date: Date): string {
 	return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
+/** 録画の一部をドライブに上げる。上げられなければ例外を投げる (変換に失敗しただけなら WebM のまま残るので成功とする) */
 async function uploadRecording(blob: Blob, name: string): Promise<void> {
-	const roomId = state.room?.id;
-	if (roomId == null || blob.size === 0) return;
+	if (blob.size === 0) return;
 	const form = new FormData();
 	form.append('file', blob, `${name}.webm`);
 	// Misskey authenticates API calls with the token in the form, not with cookies
 	if ($i != null) form.append('i', $i.token);
 	const res = await window.fetch(apiUrl + '/drive/files/create', { method: 'POST', body: form, credentials: 'omit' });
 	if (!res.ok) throw new Error(`failed to upload the recording: ${res.status}`);
-	let file = await res.json() as Misskey.entities.DriveFile;
+	const file = await res.json() as Misskey.entities.DriveFile;
 	// the server converts one recording per user at a time, so convert the parts one after another
 	const fileId = file.id;
 	const conversion = recordingConversions.then(() => misskeyApi('chat/rooms/voice/convert-recording', { fileId }));
 	recordingConversions = conversion.then(() => {}, () => {});
 	try {
-		const converted = await conversion;
-		if (converted != null) file = converted;
+		await conversion;
 	} catch { /* keep the WebM when ffmpeg fails */ }
 	// the recording stays in the drive; it is not posted to the room
+}
+
+/** 上げた結果を録画ごとに数える。失敗した部分は捨てずに残し、録画が終わった後で再試行できるようにする */
+function trackRecordingUpload(session: RecordingSession, blob: Blob, name: string): void {
+	session.uploads.push(uploadRecording(blob, name).then(() => true, err => {
+		console.error(err);
+		session.failed.push({ blob, name });
+		return false;
+	}));
 }
 
 function flushRecordingChunk(kind: RecordingPartKind, force: boolean): void {
@@ -324,14 +344,10 @@ function flushRecordingChunk(kind: RecordingPartKind, force: boolean): void {
 	const blob = new Blob(part.chunks, { type: part.recorder.mimeType || 'audio/webm' });
 	part.chunks = [];
 	part.bytes = 0;
-	const upload = uploadRecording(blob, part.name).catch(err => {
-		console.error(err);
-	});
-	part.uploads.push(upload);
-	pendingRecordingUploads.push(upload);
+	trackRecordingUpload(part.session, blob, part.name);
 }
 
-function createRecordingPart(kind: RecordingPartKind, stream: MediaStream, mime: string | undefined, bits: number, name: string): void {
+function createRecordingPart(session: RecordingSession, kind: RecordingPartKind, stream: MediaStream, mime: string | undefined, bits: number, name: string): void {
 	const options: MediaRecorderOptions = { ...(mime != null ? { mimeType: mime } : {}) };
 	if (kind === 'video') {
 		options.videoBitsPerSecond = bits;
@@ -340,7 +356,7 @@ function createRecordingPart(kind: RecordingPartKind, stream: MediaStream, mime:
 		options.audioBitsPerSecond = bits;
 	}
 	const rec = new MediaRecorder(stream, options);
-	const part: RecordingPart = { recorder: rec, chunks: [], bytes: 0, uploads: [], name };
+	const part: RecordingPart = { recorder: rec, chunks: [], bytes: 0, name, session };
 	recordingParts.set(kind, part);
 	rec.ondataavailable = (ev) => {
 		if (ev.data.size === 0) return;
@@ -348,9 +364,9 @@ function createRecordingPart(kind: RecordingPartKind, stream: MediaStream, mime:
 		part.bytes += ev.data.size;
 		flushRecordingChunk(kind, false);
 	};
+	// 最後の部分は、通話が終わって状態が片付いた後に届くことがある。録画ごとの session に上げるので、通話の状態には頼らない
 	rec.onstop = () => {
 		flushRecordingChunk(kind, true);
-		void Promise.allSettled(part.uploads);
 		if (kind === 'video') stopRecordingVideo();
 		recordingParts.delete(kind);
 		if (recordingParts.size === 0) teardownRecording();
@@ -371,13 +387,9 @@ function stopRecordingVideo(): void {
 
 function teardownRecording(): void {
 	stopRecordingVideo();
-	const uploads = pendingRecordingUploads;
-	pendingRecordingUploads = [];
-	if (uploads.length > 0) {
-		void Promise.allSettled(uploads).then(() => {
-			os.toast(i18n.ts._voiceCall.recordingSaved);
-		});
-	}
+	const session = recordingSession;
+	recordingSession = null;
+	if (session != null) void finishRecordingSession(session);
 	recordingMicBus = null;
 	recordingOthersBus = null;
 	recordingMixedDest = null;
@@ -386,6 +398,61 @@ function teardownRecording(): void {
 	recordingContext?.close().catch(() => {});
 	recordingContext = null;
 	recordingSources.clear();
+}
+
+/** 録画のすべての部分を上げ終えてから知らせる。保存できたと言うのは、本当に全部保存できたときだけ */
+async function finishRecordingSession(session: RecordingSession): Promise<void> {
+	if (session.uploads.length === 0) return;
+	await Promise.all(session.uploads);
+	if (session.failed.length === 0) {
+		os.toast(i18n.ts._voiceCall.recordingSaved);
+		return;
+	}
+	await offerFailedRecordings(session.failed);
+}
+
+function downloadRecording(recording: FailedRecording): void {
+	const objectUrl = URL.createObjectURL(recording.blob);
+	const a = window.document.createElement('a');
+	a.href = objectUrl;
+	a.download = `${recording.name}.webm`;
+	a.click();
+	window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+}
+
+/** 保存できなかった部分は、利用者が選ぶまで手元に残す (もう一度上げる・この機器に保存する・捨てる) */
+async function offerFailedRecordings(initial: FailedRecording[]): Promise<void> {
+	let failed = initial;
+	while (failed.length > 0) {
+		const { canceled, result } = await os.actions({
+			type: 'error',
+			text: i18n.tsx._voiceCall.recordingSaveFailed({ n: failed.length }),
+			actions: [
+				{ value: 'retry', text: i18n.ts.retry, primary: true },
+				{ value: 'download', text: i18n.ts._voiceCall.recordingSaveToDevice },
+				{ value: 'discard', text: i18n.ts._voiceCall.recordingDiscard, danger: true },
+			],
+		});
+		// 閉じただけでは捨てない。選ぶまでもう一度聞く
+		if (canceled) continue;
+		if (result === 'download') {
+			for (const recording of failed) downloadRecording(recording);
+			return;
+		}
+		if (result === 'discard') {
+			const confirmed = await os.confirm({ type: 'warning', text: i18n.ts._voiceCall.recordingDiscardConfirm });
+			if (!confirmed.canceled) return;
+			continue;
+		}
+		const retrying = failed;
+		failed = [];
+		const results = await os.promiseDialog(Promise.all(retrying.map(recording => uploadRecording(recording.blob, recording.name).then(() => true, err => {
+			console.error(err);
+			failed.push(recording);
+			return false;
+		}))), null, null);
+		if (results.every(ok => ok)) os.toast(i18n.ts._voiceCall.recordingSaved);
+	}
 }
 
 function resetStatusDelivery(): void {
@@ -423,12 +490,14 @@ async function deliverStatus(delivery: StatusDelivery): Promise<void> {
 	} catch (err) {
 		if (statusDelivery !== delivery || current !== delivery.room) return;
 		const code = isApiError(err) ? err.code : null;
-		if (code === 'RECORDING_NOT_ALLOWED') {
-			// the owner turned recording off before we heard about it: stop, and report that we stopped
-			state.recordingAllowed = false;
+		const permanent = code != null && code !== 'RATE_LIMIT_EXCEEDED' && code !== 'INTERNAL_ERROR' && code !== 'REMOTE_HOST_UNREACHABLE';
+		if (code === 'RECORDING_NOT_ALLOWED') state.recordingAllowed = false;
+		if (permanent && status.recording === true && recordingParts.size > 0) {
+			// 録画していると伝えるのを断られたら (持ち主が許さなくなった・通話の資格を確かめられないなど)、理由によらず録画を止め、止めたことを伝える
 			stopRecording();
+			os.toast(i18n.ts._voiceCall.recordingRejected);
 		}
-		if (code != null && code !== 'RATE_LIMIT_EXCEEDED' && code !== 'INTERNAL_ERROR' && code !== 'REMOTE_HOST_UNREACHABLE') {
+		if (permanent) {
 			// Unsupported hosts and permanent API errors must not generate a retry loop.
 			// 送り直さないのは失敗した設定だけ。送っているあいだに変わった新しい設定は、下でもう一度だけ送ってみる
 			if (delivery.pending == null) {
@@ -547,9 +616,29 @@ async function disconnectCurrentRoom(): Promise<void> {
 /** start recording the call in separate tracks (microphone, the other side, video when present) */
 export async function startRecording(): Promise<void> {
 	const room = current;
-	if (room == null || recordingParts.size > 0 || state.status !== 'connected' || !state.recordingAllowed) return;
+	const roomId = state.room?.id;
+	if (room == null || roomId == null || recordingStarting || recordingParts.size > 0 || state.status !== 'connected' || !state.recordingAllowed) return;
 	const Context = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
 	if (Context == null || typeof MediaRecorder === 'undefined') return;
+
+	// 録画は、サーバーが「録画している」と受け付けてから始める。断られたら (持ち主が許していない・通話の資格がないなど) 何も録らない
+	recordingStarting = true;
+	try {
+		await misskeyApi('chat/rooms/voice/status', { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened, recording: true });
+	} catch (err) {
+		if (isApiError(err) && err.code === 'RECORDING_NOT_ALLOWED') state.recordingAllowed = false;
+		os.toast(i18n.ts._voiceCall.recordingStartRejected);
+		return;
+	} finally {
+		recordingStarting = false;
+	}
+	// 待っているあいだに通話が変わったり、持ち主が許さなくなったりしたら始めない。サーバーには録画していないと伝え直す
+	if (current !== room || state.room?.id !== roomId || state.status !== 'connected' || !state.recordingAllowed || recordingParts.size > 0) {
+		if (current === room) reportStatus(room, true);
+		return;
+	}
+	const session: RecordingSession = { roomId, uploads: [], failed: [] };
+	recordingSession = session;
 
 	const context = new Context();
 	// a suspended context feeds no samples to the recorder
@@ -575,8 +664,8 @@ export async function startRecording(): Promise<void> {
 	recordingSources.clear();
 
 	const base = recordingStamp(new Date());
-	createRecordingPart('mic', micDest.stream, recordingMimeType(), 192_000, `voice-${base}-mic`);
-	createRecordingPart('others', othersDest.stream, recordingMimeType(), 256_000, `voice-${base}-call`);
+	createRecordingPart(session, 'mic', micDest.stream, recordingMimeType(), 192_000, `voice-${base}-mic`);
+	createRecordingPart(session, 'others', othersDest.stream, recordingMimeType(), 256_000, `voice-${base}-call`);
 
 	const lk = livekit;
 	let hasVideo = false;

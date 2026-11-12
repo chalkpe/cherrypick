@@ -2519,6 +2519,12 @@ _voiceCall:
   recordingJoinNotice: "この通話は録画されています。参加すると、あなたの声や共有した画面も録画に残ります。参加しますか？"
   recordingStartedBy: "{name}さんが録画を開始しました"
   recordingStopped: "録画が終了しました"
+  recordingSaveFailed: "録画ファイルを {n} 個ドライブに保存できませんでした。どうしますか？"
+  recordingSaveToDevice: "この端末に保存"
+  recordingDiscard: "破棄"
+  recordingDiscardConfirm: "保存できなかった録画を破棄しますか？元に戻せません。"
+  recordingStartRejected: "サーバーが録画を受け付けなかったため、録画を開始できませんでした"
+  recordingRejected: "サーバーが録画を受け付けなかったため、録画を停止しました"
   allowRecording: "通話の録画を許可"
   allowRecordingDescription: "オンにすると、参加者が通話 (声と共有画面) を録画できます。録画が始まると全員に知らされます。"
 _role:

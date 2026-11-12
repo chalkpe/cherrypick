@@ -9727,6 +9727,30 @@ export interface Locale extends ILocale {
          */
         "recordingStopped": string;
         /**
+         * 録画ファイルを {n} 個ドライブに保存できませんでした。どうしますか？
+         */
+        "recordingSaveFailed": ParameterizedString<"n">;
+        /**
+         * この端末に保存
+         */
+        "recordingSaveToDevice": string;
+        /**
+         * 破棄
+         */
+        "recordingDiscard": string;
+        /**
+         * 保存できなかった録画を破棄しますか？元に戻せません。
+         */
+        "recordingDiscardConfirm": string;
+        /**
+         * サーバーが録画を受け付けなかったため、録画を開始できませんでした
+         */
+        "recordingStartRejected": string;
+        /**
+         * サーバーが録画を受け付けなかったため、録画を停止しました
+         */
+        "recordingRejected": string;
+        /**
          * 通話の録画を許可
          */
         "allowRecording": string;
