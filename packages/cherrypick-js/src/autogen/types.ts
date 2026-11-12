@@ -15949,6 +15949,8 @@ export interface operations {
                         id: string;
                         app: components['schemas']['App'];
                         token: string;
+                        /** @description CherryPick permissions for the pending Mastodon OAuth request. */
+                        permission?: string[];
                     };
                 };
             };

@@ -219,6 +219,24 @@ describe('Mastodon API', () => {
 			assert.strictEqual((await api('notes/create', { text: 'must not be posted' }, { token: token.access_token })).status, 403);
 		});
 
+		test('shows each pending grant scope independently of registered app permissions', async () => {
+			const readCode = await authorize(app, alice, { scope: 'read' });
+			const writeCode = await authorize(app, alice, { scope: 'write:statuses' });
+			const fullCode = await authorize(app, alice);
+			const read = await api('auth/session/show', { token: readCode, scope: 'write' }, alice);
+			const write = await api('auth/session/show', { token: writeCode }, alice);
+			const full = await api('auth/session/show', { token: fullCode }, alice);
+			assert.strictEqual(read.status, 200);
+			assert.strictEqual(write.status, 200);
+			assert.strictEqual(full.status, 200);
+			assert.deepStrictEqual(read.body.permission?.slice().sort(), [
+				'read:account', 'read:blocks', 'read:drive', 'read:favorites', 'read:following', 'read:mutes', 'read:notifications',
+			]);
+			assert.deepStrictEqual(write.body.permission, ['write:notes', 'write:reactions', 'write:votes']);
+			assert.deepStrictEqual(full.body.permission?.slice().sort(), full.body.app.permission.slice().sort());
+			assert.ok(read.body.app.permission.includes('write:notes'));
+		});
+
 		test('never exposes a redeemed OAuth token through MiAuth check', async () => {
 			const code = await authorize(app, alice);
 			const issued = await requestToken({ grant_type: 'authorization_code', client_id: app.client_id, client_secret: app.client_secret, code });
@@ -260,6 +278,7 @@ describe('Mastodon API', () => {
 			const generated = await api('auth/session/generate', { appSecret: scopedApp.client_secret });
 			const session = await api('auth/session/show', { token: generated.body.token }, alice);
 			assert.strictEqual(session.body.app.isAuthorized, false);
+			assert.strictEqual(session.body.permission, undefined);
 			const apps = await api('i/apps', {}, alice);
 			const grant = apps.body.find(a => a.name === 'Scoped consent test');
 			assert.ok(grant?.permission.includes('read:account'));

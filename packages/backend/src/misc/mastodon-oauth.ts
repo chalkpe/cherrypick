@@ -5,3 +5,13 @@
 
 // A persistent namespace keeps OAuth sessions out of legacy token exchange even after Redis expiry.
 export const MASTODON_OAUTH_PREFIX = 'mastodon:';
+
+export interface MastodonPendingAuthorization {
+	redirectUri: string;
+	scope: string;
+	codeChallenge: string | null;
+}
+
+export function mastodonOAuthPendingKey(sessionToken: string): string {
+	return `mastodonOAuth:${sessionToken}`;
+}
