@@ -7,6 +7,7 @@ process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
 import { describe, test } from 'vitest';
+import packageJson from '../../../../package.json' with { type: 'json' };
 import { relativeFetch } from '../utils.js';
 
 describe('nodeinfo', () => {
@@ -17,7 +18,7 @@ describe('nodeinfo', () => {
 
 		const nodeInfo = await res.json() as any;
 		assert.strictEqual(nodeInfo.software.name, 'cherrypick');
-		assert.strictEqual(nodeInfo.software.version, '2026.10.1+choco.6');
+		assert.strictEqual(nodeInfo.software.version, packageJson.version);
 		assert.strictEqual(nodeInfo.software.repository, 'https://github.com/chalkpe/cherrypick');
 	});
 
