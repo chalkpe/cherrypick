@@ -77,9 +77,12 @@ test('a newer Remove wins when an older Add is paused after its ordering claim',
 	const pipeline = { del: () => pipeline, srem: () => pipeline, exec: async () => [] };
 	const events = { publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() };
 	const userEntity = { isLocalUser: () => false };
+	// 원격 제거를 마치면 그 멤버의 개인 미읽음·알림 설정도 정리한다
+	const forget = vi.fn<(userId: string, roomId: string) => Promise<void>>(async () => {});
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
 		db: wrappedDb, chatRoomMembershipsRepository: membershipRepository,
 		globalEventService: events, userEntityService: userEntity, redisClient: { pipeline: () => pipeline },
+		chatRoomNotificationService: { forget },
 	}) as ChatService;
 	const roster = Object.assign(Object.create(ChatRosterService.prototype), { chatRoomRosterStatesRepository: states }) as ChatRosterService;
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
@@ -103,6 +106,7 @@ test('a newer Remove wins when an older Add is paused after its ordering claim',
 	releaseAdd();
 	await Promise.all([adding, removing]);
 	assert.strictEqual(await memberships.findOneBy({ roomId, userId: memberId }), null);
+	assert.deepStrictEqual(forget.mock.calls, [[memberId, roomId]]);
 }, 30_000);
 
 test('a failed Add insertion can be retried without losing the ordering claim', async () => {

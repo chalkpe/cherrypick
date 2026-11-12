@@ -142,6 +142,7 @@ describe('ユーザー', () => {
 			hasUnreadAntenna: user.hasUnreadAntenna,
 			hasUnreadChannel: user.hasUnreadChannel,
 			hasUnreadChatMessages: user.hasUnreadChatMessages,
+			hasUnreadChatNotifications: user.hasUnreadChatNotifications,
 			hasUnreadNotification: user.hasUnreadNotification,
 			unreadNotificationsCount: user.unreadNotificationsCount,
 			hasPendingReceivedFollowRequest: user.hasPendingReceivedFollowRequest,
@@ -386,6 +387,7 @@ describe('ユーザー', () => {
 		assert.strictEqual(response.hasUnreadAntenna, false);
 		assert.strictEqual(response.hasUnreadChannel, false);
 		assert.strictEqual(response.hasUnreadChatMessages, false);
+		assert.strictEqual(response.hasUnreadChatNotifications, false);
 		assert.strictEqual(response.hasUnreadNotification, false);
 		assert.strictEqual(response.unreadNotificationsCount, 0);
 		assert.strictEqual(response.hasPendingReceivedFollowRequest, false);

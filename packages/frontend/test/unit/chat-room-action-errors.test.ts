@@ -61,7 +61,7 @@ import XInfo from '@/pages/chat/room.info.vue';
 import { i18n } from '@/i18n.js';
 import {
 	chatCancelInvitationErrors, chatInviteErrors, chatJoinErrors, chatKickErrors, chatLeaveErrors,
-	chatMuteErrors, chatRejectErrors, chatRoomDeleteErrors, chatRoomUpdateErrors,
+	chatMuteErrors, chatNotificationErrors, chatRejectErrors, chatRoomDeleteErrors, chatRoomUpdateErrors,
 } from '@/pages/chat/chat-errors.js';
 import type { ApiWithDialogCustomErrors } from '@/os.js';
 
@@ -80,6 +80,8 @@ const stubs = {
 	MkInput: { props: ['modelValue'], template: '<input :value="modelValue">' },
 	MkTextarea: { props: ['modelValue'], template: '<textarea :value="modelValue"></textarea>' },
 	MkSwitch: { props: ['modelValue'], emits: ['update:modelValue'], template: '<button data-testid="switch" :data-on="String(modelValue)" @click="$emit(\'update:modelValue\', !modelValue)"><slot name="label"/></button>' },
+	// 실제 MkSelect처럼 items만 선택지로 그린다
+	MkSelect: { props: ['modelValue', 'items'], emits: ['update:modelValue'], template: '<label><slot name="label"/><select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="item in items" :key="item.value" :value="item.value">{{ item.label }}</option></select></label>' },
 	MkKeyValue: true,
 };
 
@@ -138,10 +140,13 @@ const actions: Record<string, () => Promise<void>> = {
 		render(XInfo, { props: { room: mocks.room as never }, global: { stubs } });
 		await clickButton(i18n.ts._chat.deleteRoom);
 	},
-	'chat/rooms/mute': async () => {
-		mocks.room.ownerId = 'owner';
+	'chat/rooms/notifications': async () => {
 		render(XInfo, { props: { room: mocks.room as never }, global: { stubs } });
-		await fireEvent.click(await screen.findByTestId('switch'));
+		await fireEvent.update(await screen.findByRole('combobox', { name: i18n.ts.notificationSetting }), 'mentions');
+	},
+	'chat/rooms/read': async () => {
+		render(XInfo, { props: { room: mocks.room as never }, global: { stubs } });
+		await clickButton(i18n.ts._chat.readAllRoom);
 	},
 	'chat/rooms/invitations/reject': async () => {
 		render(XInvitations, { global: { stubs } });
@@ -155,7 +160,8 @@ const REFUSED: [string, Record<string, string>, string][] = [
 	['chat/rooms/invitations/cancel', { message: 'No such invitation.', code: 'NO_SUCH_INVITATION', id: '8c8f38f0-3b7e-4f5e-9c6d-2e3f4a5b6c7d' }, i18n.ts._chat.invitationGone],
 	['chat/rooms/update', { message: 'No such room.', code: 'NO_SUCH_ROOM', id: 'fcdb0f92-bda6-47f9-bd05-343e0e020932' }, i18n.ts._chat.roomUnavailable],
 	['chat/rooms/delete', { message: 'No such room.', code: 'NO_SUCH_ROOM', id: 'd4e3753d-97bf-4a19-ab8e-21080fbc0f4b' }, i18n.ts._chat.roomUnavailable],
-	['chat/rooms/mute', { message: 'No such room.', code: 'NO_SUCH_ROOM', id: 'c2cde4eb-8d0f-42f1-8f2f-c4d6bfc8e5df' }, i18n.ts._chat.roomUnavailable],
+	['chat/rooms/notifications', { message: 'No such room.', code: 'NO_SUCH_ROOM', id: 'ef41ee7c-5e74-48a0-8126-177a2afec201' }, i18n.ts._chat.roomUnavailable],
+	['chat/rooms/read', { message: 'No such room.', code: 'NO_SUCH_ROOM', id: 'ef41ee7c-5e74-48a0-8126-177a2afec201' }, i18n.ts._chat.roomUnavailable],
 	['chat/rooms/invitations/reject', { message: 'No such room.', code: 'NO_SUCH_ROOM', id: '5130557e-5a11-4cfb-9cc5-fe60cda5de0d' }, i18n.ts._chat.invitationGone],
 ];
 
@@ -208,14 +214,15 @@ describe.each(REFUSED.map(([endpoint]) => endpoint))('%s failing in a way nobody
 	});
 });
 
-test('a mute that failed puts the switch back', async () => {
-	mocks.refusal.endpoint = 'chat/rooms/mute';
-	mocks.refusal.error = REFUSED.find(([endpoint]) => endpoint === 'chat/rooms/mute')![1];
+test.each(['me', 'owner'])('a notification setting that failed puts the choice back (owner=%s)', async ownerId => {
+	mocks.room.ownerId = ownerId;
+	mocks.refusal.endpoint = 'chat/rooms/notifications';
+	mocks.refusal.error = REFUSED.find(([endpoint]) => endpoint === 'chat/rooms/notifications')![1];
 
-	await actions['chat/rooms/mute']();
+	await actions['chat/rooms/notifications']();
 
 	await waitFor(() => expect(shownDialog()).toBeDefined());
-	await waitFor(() => expect(screen.getByTestId('switch').getAttribute('data-on')).toBe('false'));
+	await waitFor(() => expect((screen.getByRole('combobox', { name: i18n.ts.notificationSetting }) as HTMLSelectElement).value).toBe('all'));
 });
 
 test('an invitation already gone leaves the tab it was shown in', async () => {
@@ -243,4 +250,14 @@ test.each<[string, ApiWithDialogCustomErrors]>([
 	const declared = [...source.matchAll(/\bid: '([0-9a-f-]{36})'/g)].map(match => match[1]).toSorted();
 
 	expect(Object.keys(errors).filter(id => id !== 'default').toSorted()).toEqual(declared);
+});
+
+// 알림 설정과 그룹 전체 읽음은 채널 공용 오류 목록을 선언한다. 이 경로가 실제로 내는 것은 그룹·채널이 없을 때뿐이다
+test.each(['chat/rooms/notifications', 'chat/rooms/read'])('%s: the shared refusals it raises have their own words', endpoint => {
+	const source = readFileSync(resolve(process.cwd(), `../backend/src/server/api/endpoints/${endpoint}.ts`), 'utf8');
+	const shared = readFileSync(resolve(process.cwd(), '../backend/src/server/api/chat-channel-errors.ts'), 'utf8');
+	const raised = ['NO_SUCH_ROOM', 'NO_SUCH_CHANNEL'].map(code => shared.match(new RegExp(`\\b${code}: \\{[^}]*\\bid: '([0-9a-f-]{36})'`))![1]).toSorted();
+
+	expect(source).toContain('errors: chatChannelApiErrors');
+	expect(Object.keys(chatNotificationErrors).filter(id => id !== 'default').toSorted()).toEqual(raised);
 });
