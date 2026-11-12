@@ -160,7 +160,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 	<template #footer>
 		<div v-if="isEditMode" :class="$style.footer">
-			<MkButton primary rounded @click="moveFilesBulk()"><i class="ti ti-folder-symlink"></i> {{ i18n.ts.move }}...</MkButton>
+			<span role="status">{{ i18n.tsx._driveDeletion.selectedCount({ count: selectedFiles.length }) }}</span>
+			<MkButton primary rounded :disabled="selectedFiles.length === 0 || bulkBusy || driveDeletionBusy" @click="moveFilesBulk()"><i class="ti ti-folder-symlink"></i> {{ i18n.ts.move }}...</MkButton>
+			<MkButton v-if="!select" danger rounded :disabled="selectedFiles.length === 0 || bulkBusy || driveDeletionBusy" @click="deleteFilesBulk()"><i class="ti ti-trash"></i> {{ i18n.ts.delete }}</MkButton>
 		</div>
 	</template>
 </MkStickyContainer>
@@ -176,6 +178,8 @@ import XNavFolder from '@/components/MkDrive.navFolder.vue';
 import XFolder from '@/components/MkDrive.folder.vue';
 import XFile from '@/components/MkDrive.file.vue';
 import * as os from '@/os.js';
+import { deleteDriveItems, driveDeletionBusy } from '@/utility/drive-delete.js';
+import { runDriveFileBatches } from '@/utility/drive-bulk.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { useStream } from '@/stream.js';
 import { i18n } from '@/i18n.js';
@@ -225,6 +229,7 @@ const draghover = ref(false);
 const isDragSource = ref(false);
 
 const isEditMode = ref(false);
+const bulkBusy = ref(false);
 
 const selectedFiles = ref<Misskey.entities.DriveFile[]>([]);
 const selectedFolders = ref<Misskey.entities.DriveFolder[]>([]);
@@ -659,32 +664,25 @@ async function renameFolder(folderToRename: Misskey.entities.DriveFolder) {
 	globalEvents.emit('driveFoldersUpdated', [updatedFolder]);
 }
 
-function deleteFolder(folderToDelete: Misskey.entities.DriveFolder) {
-	misskeyApi('drive/folders/delete', {
-		folderId: folderToDelete.id,
-	}).then(() => {
-		// 削除時に親フォルダに移動
-		cd(folderToDelete.parentId);
-		globalEvents.emit('driveFoldersDeleted', [folderToDelete]);
-	}).catch(err => {
-		switch (err.id) {
-			case 'b0fc8a17-963c-405d-bfbc-859a487295e1':
-				os.alert({
-					type: 'error',
-					title: i18n.ts.unableToDelete,
-					text: i18n.ts.hasChildFilesOrFolders,
-				});
-				break;
-			default:
-				os.alert({
-					type: 'error',
-					text: i18n.ts.unableToDelete,
-				});
-		}
-	});
+async function deleteFolder(folderToDelete: Misskey.entities.DriveFolder) {
+	const result = await deleteDriveItems({ folderId: folderToDelete.id, name: folderToDelete.name });
+	if (result?.folderDeleted && folder.value?.id === folderToDelete.id) cd(folderToDelete.parentId);
+	else initialize();
+}
+
+async function deleteFilesBulk() {
+	if (bulkBusy.value || driveDeletionBusy.value || selectedFiles.value.length === 0 || props.select) return;
+	bulkBusy.value = true;
+	try {
+		await deleteDriveItems({ fileIds: selectedFiles.value.map(file => file.id) });
+	} finally {
+		bulkBusy.value = false;
+		initialize();
+	}
 }
 
 function onFileClick(ev: PointerEvent, file: Misskey.entities.DriveFile) {
+	if (bulkBusy.value || driveDeletionBusy.value) return;
 	if (props.excludeSensitive && file.isSensitive) return;
 
 	if (ev.shiftKey) {
@@ -770,22 +768,29 @@ function cd(target?: Misskey.entities.DriveFolder | Misskey.entities.DriveFolder
 }
 
 async function moveFilesBulk() {
-	if (selectedFiles.value.length === 0) return;
-
-	const { canceled, folders } = await selectDriveFolder(folder.value ? folder.value.id : null);
-
-	if (canceled) return;
-
-	await os.apiWithDialog('drive/files/move-bulk', {
-		fileIds: selectedFiles.value.map(f => f.id),
-		folderId: folders[0] ? folders[0].id : null,
-	});
-
-	globalEvents.emit('driveFilesUpdated', selectedFiles.value.map(x => ({
-		...x,
-		folderId: folders[0] ? folders[0].id : null,
-		folder: folders[0] ?? null,
-	})));
+	if (selectedFiles.value.length === 0 || bulkBusy.value || driveDeletionBusy.value) return;
+	bulkBusy.value = true;
+	const snapshot = [...selectedFiles.value];
+	try {
+		const { canceled, folders } = await selectDriveFolder(folder.value ? folder.value.id : null);
+		if (canceled) return;
+		const target = folders[0] ?? null;
+		const closeWaiting = os.waiting();
+		let result: Awaited<ReturnType<typeof runDriveFileBatches>>;
+		try {
+			result = await runDriveFileBatches(snapshot.map(file => file.id), fileIds => misskeyApi('drive/files/move-bulk', { fileIds, folderId: target?.id ?? null }));
+		} finally {
+			closeWaiting();
+		}
+		const moved = new Set(result.succeededIds);
+		selectedFiles.value = selectedFiles.value.filter(file => !moved.has(file.id));
+		globalEvents.emit('driveFilesUpdated', snapshot.filter(file => moved.has(file.id)).map(file => ({ ...file, folderId: target?.id ?? null, folder: target })));
+		if (result.failedIds.length > 0) await os.alert({ type: 'warning', text: i18n.tsx._driveDeletion.moveResult({ moved: moved.size, failed: result.failedIds.length }) });
+		else os.toast(i18n.ts.saved);
+	} finally {
+		bulkBusy.value = false;
+		initialize();
+	}
 }
 
 function goRoot() {
@@ -893,6 +898,7 @@ function onContextmenu(ev: PointerEvent) {
 }
 
 function onFileDeleted(id: string) {
+	selectedFiles.value = selectedFiles.value.filter(file => file.id !== id);
 	const present = filesPaginator.items.value.some(item => item.id === id);
 	if (present) filesPaginator.removeItem(id);
 	if (refreshingFiles || (present && (fetching.value || loadingMoreFiles))) scheduleFilesRefresh();
@@ -1058,6 +1064,10 @@ onBeforeUnmount(() => {
 }
 
 .footer {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
 	padding: 8px 16px;
 	font-size: 90%;
 	-webkit-backdrop-filter: var(--MI-blur, blur(8px));

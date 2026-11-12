@@ -29,6 +29,7 @@ import { DeleteAccountService } from './DeleteAccountService.js';
 import { TruncateAccountService } from './TruncateAccountService.js';
 import { DownloadService } from './DownloadService.js';
 import { DriveService } from './DriveService.js';
+import { DriveDeletionService } from './DriveDeletionService.js';
 import { DriveFileUsageService } from './DriveFileUsageService.js';
 import { EmailService } from './EmailService.js';
 import { FederatedInstanceService } from './FederatedInstanceService.js';
@@ -363,6 +364,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		TruncateAccountService,
 		DownloadService,
 		DriveService,
+		DriveDeletionService,
 		DriveFileUsageService,
 		EmailService,
 		FederatedInstanceService,
@@ -701,6 +703,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		TruncateAccountService,
 		DownloadService,
 		DriveService,
+		DriveDeletionService,
 		DriveFileUsageService,
 		EmailService,
 		FederatedInstanceService,

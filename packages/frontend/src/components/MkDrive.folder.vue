@@ -36,6 +36,7 @@ import { computed, defineAsyncComponent, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import type { MenuItem } from '@/types/menu.js';
 import * as os from '@/os.js';
+import { deleteDriveItems } from '@/utility/drive-delete.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
 import { claimAchievement } from '@/utility/achievements.js';
@@ -247,30 +248,8 @@ function move() {
 	});
 }
 
-function deleteFolder() {
-	misskeyApi('drive/folders/delete', {
-		folderId: props.folder.id,
-	}).then(() => {
-		if (prefer.s.uploadFolder === props.folder.id) {
-			prefer.commit('uploadFolder', null);
-		}
-		globalEvents.emit('driveFoldersDeleted', [props.folder]);
-	}).catch(err => {
-		switch (err.id) {
-			case 'b0fc8a17-963c-405d-bfbc-859a487295e1':
-				os.alert({
-					type: 'error',
-					title: i18n.ts.unableToDelete,
-					text: i18n.ts.hasChildFilesOrFolders,
-				});
-				break;
-			default:
-				os.alert({
-					type: 'error',
-					text: i18n.ts.unableToDelete,
-				});
-		}
-	});
+async function deleteFolder() {
+	await deleteDriveItems({ folderId: props.folder.id, name: props.folder.name });
 }
 
 function setAsUploadFolder() {

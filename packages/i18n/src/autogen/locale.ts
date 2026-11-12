@@ -16197,4 +16197,50 @@ export interface Locale extends ILocale {
          */
         "revoked": string;
     };
+    "_driveDeletion": {
+        /**
+         * 選択したファイル: {count}個
+         */
+        "selectedCount": ParameterizedString<"count">;
+        /**
+         * 選択した{count}個のファイルを削除しますか？削除すると元に戻せません。
+         */
+        "filesConfirm": ParameterizedString<"count">;
+        /**
+         * フォルダー「{name}」とすべてのサブフォルダーを削除しますか？ファイルは合計{count}個です。空のフォルダーも削除します。削除すると元に戻せません。
+         */
+        "folderConfirm": ParameterizedString<"name" | "count">;
+        /**
+         * 今確認したファイルだけを削除し、後で移動されたファイルも含みます。新たに追加されたファイルは残します。投稿・添付・アイコン・バナーなどで使用中のファイルも個別削除と同様に削除され、表示できなくなる場合があります。
+         */
+        "scope": string;
+        /**
+         * 削除したファイル: {deleted}個。既に存在しないかアクセスできないファイル: {missing}個。失敗: {failed}個。残ったファイル: {remaining}個。残ったフォルダー: {folders}個。
+         */
+        "result": ParameterizedString<"deleted" | "missing" | "failed" | "remaining" | "folders">;
+        /**
+         * 残った項目を確認して、もう一度削除を実行してください。
+         */
+        "retry": string;
+        /**
+         * 処理が中断されました。表示は最後に受け取った結果で、その後も削除されている場合があります。再読み込みして残った項目を確認し、再試行してください。
+         */
+        "interrupted": string;
+        /**
+         * 一度に削除できるのはファイル10,000個、フォルダー1,000個までです。大きなフォルダーは範囲を分けて削除してください。
+         */
+        "tooMany": string;
+        /**
+         * 確認の有効期限が切れたか、別の確認に置き換わりました。対象を確認してもう一度実行してください。
+         */
+        "expired": string;
+        /**
+         * 別の削除リクエストを処理中です。完了までお待ちください。
+         */
+        "busy": string;
+        /**
+         * 移動したファイル: {moved}個。失敗: {failed}個。失敗したファイルは選択されたままです。再試行してください。
+         */
+        "moveResult": ParameterizedString<"moved" | "failed">;
+    };
 }

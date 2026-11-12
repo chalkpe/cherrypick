@@ -4189,3 +4189,16 @@ _voiceRelay:
   full: "The borrowed voice capacity is full. Please try again later."
   unreachable: "The voice provider is unreachable; current participation cannot be confirmed."
   revoked: "Voice lending approval or credentials are no longer valid. Please contact an administrator."
+
+_driveDeletion:
+  selectedCount: "Selected: {count}"
+  filesConfirm: "Delete {count} selected files? This cannot be undone."
+  folderConfirm: "Delete folder “{name}” and all its subfolders ({count} files in total)? An empty folder is deleted too. This cannot be undone."
+  scope: "Only files captured now will be deleted, including those moved later. Newly added files stay. Files used in posts, attachments, avatars or banners are deleted just as with individual deletion and may stop displaying."
+  result: "Files deleted: {deleted}. Already missing or unavailable: {missing}. Failed: {failed}. Files remaining: {remaining}. Folders remaining: {folders}."
+  retry: "Review the remaining items and confirm again to retry."
+  interrupted: "Processing was interrupted. The displayed counts cover the last confirmed response; more files may have been deleted. Refresh and review the remaining items before retrying."
+  tooMany: "Delete at most 10,000 files and 1,000 folders at a time. Split a larger folder into smaller selections."
+  expired: "The deletion confirmation expired or another confirmation replaced it. Review the items and confirm again."
+  busy: "Another deletion request is running. Wait for it to finish."
+  moveResult: "Files moved: {moved}. Failed: {failed}. Failed files remain selected; try again."
