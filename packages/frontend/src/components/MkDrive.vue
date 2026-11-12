@@ -315,6 +315,7 @@ watch(sortModeSelect, () => {
 
 let listGeneration = 0;
 let navigationGeneration = 0;
+let pendingFolderId: string | null = null;
 let needsReload = false;
 let reloadPromise: Promise<void> | null = null;
 
@@ -762,11 +763,13 @@ function cd(target?: Misskey.entities.DriveFolder | Misskey.entities.DriveFolder
 
 	fetching.value = true;
 	const generation = ++navigationGeneration;
+	pendingFolderId = target;
 
 	return misskeyApi('drive/folders/show', {
 		folderId: target,
 	}).then(folderToMove => {
 		if (generation !== navigationGeneration) return;
+		pendingFolderId = null;
 		folder.value = folderToMove;
 		hierarchyFolders.value = [];
 
@@ -779,7 +782,9 @@ function cd(target?: Misskey.entities.DriveFolder | Misskey.entities.DriveFolder
 
 		initialize();
 	}).catch(error => {
-		if (generation === navigationGeneration) throw error;
+		if (generation !== navigationGeneration) return;
+		pendingFolderId = null;
+		throw error;
 	});
 }
 
@@ -811,10 +816,12 @@ async function moveFilesBulk() {
 }
 
 function goRoot() {
-	// 既にrootにいるなら何もしない
-	if (folder.value == null) return;
-
+	const wasNavigating = pendingFolderId != null;
 	navigationGeneration++;
+	pendingFolderId = null;
+	// 루트가 표시 중이어도 진행 중인 목적지 조회는 취소한다.
+	if (folder.value == null && !wasNavigating) return;
+
 	folder.value = null;
 	hierarchyFolders.value = [];
 	initialize();
@@ -926,6 +933,11 @@ function onFolderDeleted(id: string) {
 	selectedFolders.value = selectedFolders.value.filter(item => item.id !== id);
 	if (folder.value?.id === id) cd(folder.value.parentId)?.catch(() => goRoot());
 	else if (hierarchyFolders.value.some(item => item.id === id)) goRoot();
+	else if (pendingFolderId === id) {
+		navigationGeneration++;
+		pendingFolderId = null;
+		initialize();
+	}
 	const present = foldersPaginator.items.value.some(item => item.id === id);
 	if (present) foldersPaginator.removeItem(id);
 	if (refreshingFolders || (present && (fetching.value || loadingMoreFolders))) scheduleFoldersRefresh();
@@ -962,6 +974,8 @@ onActivated(() => {
 
 onBeforeUnmount(() => {
 	listGeneration++;
+	navigationGeneration++;
+	pendingFolderId = null;
 	scheduleFilesRefresh.cancel();
 	scheduleFoldersRefresh.cancel();
 	notifyUploadedOutsidePage.cancel();
