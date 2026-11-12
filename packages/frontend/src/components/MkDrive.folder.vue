@@ -36,6 +36,7 @@ import { computed, defineAsyncComponent, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import type { MenuItem } from '@/types/menu.js';
 import * as os from '@/os.js';
+import { deleteDriveItems } from '@/utility/drive-delete.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
 import { claimAchievement } from '@/utility/achievements.js';
@@ -44,6 +45,7 @@ import { prefer } from '@/preferences.js';
 import { globalEvents } from '@/events.js';
 import { checkDragDataType, getDragData, setDragData } from '@/drag-and-drop.js';
 import { selectDriveFolder } from '@/utility/drive.js';
+import { runDriveFileBatches } from '@/utility/drive-bulk.js';
 
 const props = withDefaults(defineProps<{
 	folder: Misskey.entities.DriveFolder;
@@ -125,7 +127,7 @@ function onDragleave() {
 	draghover.value = false;
 }
 
-function onDrop(ev: DragEvent) {
+async function onDrop(ev: DragEvent) {
 	draghover.value = false;
 
 	if (!ev.dataTransfer) return;
@@ -140,16 +142,18 @@ function onDrop(ev: DragEvent) {
 	{
 		const droppedData = getDragData(ev, 'driveFiles');
 		if (droppedData != null) {
-			misskeyApi('drive/files/move-bulk', {
-				fileIds: droppedData.map(f => f.id),
-				folderId: props.folder.id,
-			}).then(() => {
-				globalEvents.emit('driveFilesUpdated', droppedData.map(x => ({
-					...x,
-					folderId: props.folder.id,
-					folder: props.folder,
-				})));
-			});
+			const target = props.folder;
+			const closeWaiting = os.waiting();
+			let result: Awaited<ReturnType<typeof runDriveFileBatches>>;
+			try {
+				result = await runDriveFileBatches(droppedData.map(file => file.id), fileIds => misskeyApi('drive/files/move-bulk', { fileIds, folderId: target.id }));
+			} finally {
+				closeWaiting();
+			}
+			const moved = new Set(result.succeededIds);
+			globalEvents.emit('driveFilesUpdated', droppedData.filter(file => moved.has(file.id)).map(file => ({ ...file, folderId: target.id, folder: target })));
+			if (result.failedIds.length > 0) await os.alert({ type: 'warning', text: i18n.tsx._driveDeletion.moveResult({ moved: moved.size, failed: result.failedIds.length }) });
+			else os.toast(i18n.ts.saved);
 		}
 	}
 	//#endregion
@@ -247,30 +251,8 @@ function move() {
 	});
 }
 
-function deleteFolder() {
-	misskeyApi('drive/folders/delete', {
-		folderId: props.folder.id,
-	}).then(() => {
-		if (prefer.s.uploadFolder === props.folder.id) {
-			prefer.commit('uploadFolder', null);
-		}
-		globalEvents.emit('driveFoldersDeleted', [props.folder]);
-	}).catch(err => {
-		switch (err.id) {
-			case 'b0fc8a17-963c-405d-bfbc-859a487295e1':
-				os.alert({
-					type: 'error',
-					title: i18n.ts.unableToDelete,
-					text: i18n.ts.hasChildFilesOrFolders,
-				});
-				break;
-			default:
-				os.alert({
-					type: 'error',
-					text: i18n.ts.unableToDelete,
-				});
-		}
-	});
+async function deleteFolder() {
+	await deleteDriveItems({ folderId: props.folder.id, name: props.folder.name });
 }
 
 function setAsUploadFolder() {
