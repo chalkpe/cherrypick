@@ -805,7 +805,7 @@ export class DriveService {
 	}
 
 	@bindThis
-	public async deleteFile(file: MiDriveFile, isExpired = false, deleter?: MiUser, filesRepository: DriveFileDeletionRepository = this.driveFilesRepository) {
+	public async deleteFile(file: MiDriveFile, isExpired = false, deleter?: MiUser, filesRepository: DriveFileDeletionRepository = this.driveFilesRepository, options: { awaitStorageQueue?: boolean } = {}) {
 		if (file.storedInternal) {
 			this.internalStorageService.del(file.accessKey!);
 
@@ -817,14 +817,13 @@ export class DriveService {
 				this.internalStorageService.del(file.webpublicAccessKey!);
 			}
 		} else if (!file.isLink) {
-			this.queueService.createDeleteObjectStorageFileJob(file.accessKey!);
-
-			if (file.thumbnailUrl) {
-				this.queueService.createDeleteObjectStorageFileJob(file.thumbnailAccessKey!);
-			}
-
-			if (file.webpublicUrl) {
-				this.queueService.createDeleteObjectStorageFileJob(file.webpublicAccessKey!);
+			const keys = [file.accessKey!];
+			if (file.thumbnailUrl) keys.push(file.thumbnailAccessKey!);
+			if (file.webpublicUrl) keys.push(file.webpublicAccessKey!);
+			for (const key of keys) {
+				const job = this.queueService.createDeleteObjectStorageFileJob(key);
+				// 일부만 접수되면 모든 키를 가진 DB 행을 남겨 새 확인 뒤 다시 접수할 수 있게 한다.
+				if (options.awaitStorageQueue) await job;
 			}
 		}
 

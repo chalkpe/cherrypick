@@ -61,11 +61,19 @@ export class DriveDeletionService {
 			if (!acquired) throw new DriveDeletionError('DELETE_BUSY');
 			return await action(runner);
 		} finally {
-			try {
-				if (acquired) await runner.query('SELECT pg_advisory_unlock($1, hashtext($2))', [LOCK_NAMESPACE, userId]);
-			} finally {
-				await runner.release();
-			}
+			await this.releaseLock(runner, userId, acquired);
+		}
+	}
+
+	private async releaseLock(runner: QueryRunner, userId: string, acquired: boolean): Promise<void> {
+		try {
+			if (acquired) await runner.query('SELECT pg_advisory_unlock($1, hashtext($2))', [LOCK_NAMESPACE, userId]);
+		} catch (error) {
+			// 잠금이 남은 세션을 풀에서 재사용하지 않도록 오류와 함께 연결을 폐기한다.
+			await (runner as unknown as { releasePostgresConnection(error: Error): Promise<void> }).releasePostgresConnection(new Error('Drive deletion database unlock failed'));
+			throw error;
+		} finally {
+			await runner.release();
 		}
 	}
 
@@ -132,7 +140,7 @@ export class DriveDeletionService {
 					try {
 						status = await queryLimit(async () => {
 							const file = await files.findOneBy({ id, userId: user.id });
-							return file == null ? 'missing' : await this.driveService.deleteFile(file, false, undefined, files) ? 'deleted' : 'missing';
+							return file == null ? 'missing' : await this.driveService.deleteFile(file, false, undefined, files, { awaitStorageQueue: true }) ? 'deleted' : 'missing';
 						});
 					} catch (error) {
 						this.logger.error(`Failed to delete drive file ${id}`, { error });

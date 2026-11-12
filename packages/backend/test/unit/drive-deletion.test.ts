@@ -5,6 +5,7 @@
 
 import { describe, expect, test, vi } from 'vitest';
 import { Client } from 'pg';
+import { PostgresQueryRunner } from 'typeorm/driver/postgres/PostgresQueryRunner.js';
 import { PostgresStream } from '../fixtures/postgres-stream.js';
 vi.mock('@/core/DriveService.js', () => ({ DriveService: class {} }));
 vi.mock('@/core/GlobalEventService.js', () => ({ GlobalEventService: class {} }));
@@ -92,6 +93,31 @@ function fixture() {
 }
 
 describe('Drive deletion snapshots (unit boundaries)', () => {
+	test('evicts the PostgreSQL session when unlocking fails instead of returning a held lock to the pool', async () => {
+		const f = fixture();
+		const releases: (Error | undefined)[] = [];
+		const error = Object.assign(new Error('canceling statement due to user request'), { code: '57014' });
+		const runner = Object.create(PostgresQueryRunner.prototype) as PostgresQueryRunner;
+		Object.assign(runner, {
+			isReleased: false,
+			driver: { connectedQueryRunners: [runner] },
+			connect: async () => {},
+			releaseCallback: (reason?: Error) => releases.push(reason),
+			query: async (sql: string) => {
+				if (sql.includes('pg_advisory_unlock')) throw error;
+				return [{ locked: true }];
+			},
+		});
+		f.db.createQueryRunner = () => runner as unknown as typeof f.runner;
+
+		await expect(f.service.prepare(f.me, { fileIds: ['file'] })).rejects.toBe(error);
+
+		expect(releases).toHaveLength(1);
+		expect(releases[0]).toBeInstanceOf(Error);
+		expect(runner.isReleased).toBe(true);
+		expect(runner.driver.connectedQueryRunners).toHaveLength(0);
+	});
+
 	test('deletes confirmed IDs including used files without asking the unused cleaner', async () => {
 		const f = fixture();
 		f.files.set('used', { id: 'used', userId: 'owner' });
