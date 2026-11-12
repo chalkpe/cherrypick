@@ -161,8 +161,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<template #footer>
 		<div v-if="isEditMode" :class="$style.footer">
 			<span role="status">{{ i18n.tsx._driveDeletion.selectedCount({ count: selectedFiles.length }) }}</span>
-			<MkButton primary rounded :disabled="selectedFiles.length === 0 || bulkBusy || driveDeletionBusy" @click="moveFilesBulk()"><i class="ti ti-folder-symlink"></i> {{ i18n.ts.move }}...</MkButton>
-			<MkButton v-if="!select" danger rounded :disabled="selectedFiles.length === 0 || bulkBusy || driveDeletionBusy" @click="deleteFilesBulk()"><i class="ti ti-trash"></i> {{ i18n.ts.delete }}</MkButton>
+			<MkButton primary rounded :disabled="selectedFiles.length === 0 || (!select && fetching) || bulkBusy || driveDeletionBusy" @click="moveFilesBulk()"><i class="ti ti-folder-symlink"></i> {{ i18n.ts.move }}...</MkButton>
+			<MkButton v-if="!select" danger rounded :disabled="selectedFiles.length === 0 || fetching || bulkBusy || driveDeletionBusy" @click="deleteFilesBulk()"><i class="ti ti-trash"></i> {{ i18n.ts.delete }}</MkButton>
 		</div>
 	</template>
 </MkStickyContainer>
@@ -299,7 +299,16 @@ async function fetchMoreFiles() {
 const filesTimeline = makeDateGroupedTimelineComputedRef(filesPaginator.items, 'month');
 const shouldBeGroupedByDate = computed(() => ['+createdAt', '-createdAt'].includes(sortModeSelect.value));
 
-watch(folder, () => emit('cd', folder.value));
+watch(folder, (current, previous) => {
+	if (!props.select && current?.id !== previous?.id) selectedFiles.value = [];
+	emit('cd', folder.value);
+});
+// 같은 폴더의 재조회 중에는 선택을 유지하고, 응답에 남은 파일만 선택한다.
+watch(() => fetching.value ? null : filesPaginator.items.value.map(file => file.id), fileIds => {
+	if (props.select || fileIds == null) return;
+	const visibleIds = new Set(fileIds);
+	selectedFiles.value = selectedFiles.value.filter(file => visibleIds.has(file.id));
+});
 watch(sortModeSelect, () => {
 	initialize();
 });
@@ -671,7 +680,7 @@ async function deleteFolder(folderToDelete: Misskey.entities.DriveFolder) {
 }
 
 async function deleteFilesBulk() {
-	if (bulkBusy.value || driveDeletionBusy.value || selectedFiles.value.length === 0 || props.select) return;
+	if (fetching.value || bulkBusy.value || driveDeletionBusy.value || selectedFiles.value.length === 0 || props.select) return;
 	bulkBusy.value = true;
 	try {
 		await deleteDriveItems({ fileIds: selectedFiles.value.map(file => file.id) });
@@ -768,7 +777,7 @@ function cd(target?: Misskey.entities.DriveFolder | Misskey.entities.DriveFolder
 }
 
 async function moveFilesBulk() {
-	if (selectedFiles.value.length === 0 || bulkBusy.value || driveDeletionBusy.value) return;
+	if ((!props.select && fetching.value) || selectedFiles.value.length === 0 || bulkBusy.value || driveDeletionBusy.value) return;
 	bulkBusy.value = true;
 	const snapshot = [...selectedFiles.value];
 	try {
