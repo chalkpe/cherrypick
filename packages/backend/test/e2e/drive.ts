@@ -6,8 +6,12 @@
 process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
-import { describe, beforeAll, test } from 'vitest';
-import { api, createAppToken, makeStreamCatcher, post, signup, uploadFile, waitFire } from '../utils.js';
+import { describe, beforeAll, afterAll, test } from 'vitest';
+import { api, createAppToken, initTestDb, makeStreamCatcher, post, signup, uploadFile, waitFire } from '../utils.js';
+import { IdService } from '@/core/IdService.js';
+import { loadConfig } from '@/config.js';
+import { MiDriveFolder } from '@/models/DriveFolder.js';
+import { MiDriveFile } from '@/models/DriveFile.js';
 import type * as misskey from 'cherrypick-js';
 
 // このファイルで最初に signup する alice が root (モデレーター権限あり) になる
@@ -334,14 +338,51 @@ describe('Drive folder and file sorting', () => {
 	let owner: misskey.entities.SignupResponse;
 	let other: misskey.entities.SignupResponse;
 	let parentId: string;
+	let db: Awaited<ReturnType<typeof initTestDb>>;
+	const idService = new IdService(loadConfig());
+	const fixtureDate = Date.UTC(2020, 0, 1);
 
 	beforeAll(async () => {
+		db = await initTestDb(true);
 		owner = await signup({ username: 'drive_sort_owner' });
 		other = await signup({ username: 'drive_sort_other' });
 		const parent = await api('drive/folders/create', { name: 'sort-test' }, owner);
 		assert.strictEqual(parent.status, 200);
 		parentId = parent.body.id;
 	}, 1000 * 60 * 2);
+
+	afterAll(async () => {
+		await db?.destroy();
+	});
+
+	async function datedFolder(name: string, parentId: string, date: number) {
+		const created = await api('drive/folders/create', { name, parentId }, owner);
+		assert.strictEqual(created.status, 200);
+
+		// 생성 시각은 ID에서 파생하므로 fixture의 ID만 고정하고 조회는 실제 API를 사용해요.
+		const id = idService.gen(date);
+		await db.getRepository(MiDriveFolder).update(created.body.id, { id });
+
+		const folder = await api('drive/folders/show', { folderId: id }, owner);
+		assert.strictEqual(folder.status, 200);
+		assert.strictEqual(Date.parse(folder.body.createdAt), date);
+		return folder;
+	}
+
+	async function datedFile(name: string, folderId: string, date: number) {
+		const uploaded = await uploadFile(owner, { name });
+		assert.strictEqual(uploaded.status, 200);
+		const moved = await api('drive/files/update', { fileId: uploaded.body!.id, folderId }, owner);
+		assert.strictEqual(moved.status, 200);
+
+		const id = idService.gen(date);
+		await db.getRepository(MiDriveFile).update(uploaded.body!.id, { id });
+
+		const file = await api('drive/files/show', { fileId: id }, owner);
+		assert.strictEqual(file.status, 200);
+		assert.strictEqual(Date.parse(file.body.createdAt), date);
+		return file;
+	}
 
 	test('folder names are sorted across pages, including duplicate names', async () => {
 		for (const name of ['003 한글', '001 English', '002 한글', '001 English', '10 English', '2 English']) {
@@ -398,14 +439,10 @@ describe('Drive folder and file sorting', () => {
 		const parent = await api('drive/folders/create', { name: 'date-cursor' }, owner);
 		assert.strictEqual(parent.status, 200);
 
-		const firstFolder = await api('drive/folders/create', { name: 'first', parentId: parent.body.id }, owner);
-		const middleFolder = await api('drive/folders/create', { name: 'middle', parentId: parent.body.id }, owner);
-		const lastFolder = await api('drive/folders/create', { name: 'last', parentId: parent.body.id }, owner);
-		assert.strictEqual(firstFolder.status, 200);
-		assert.strictEqual(middleFolder.status, 200);
-		assert.strictEqual(lastFolder.status, 200);
-		const folderDate = Date.parse(firstFolder.body.createdAt) + 1;
-		assert.ok(folderDate <= Date.parse(middleFolder.body.createdAt));
+		const firstFolder = await datedFolder('first', parent.body.id, fixtureDate);
+		await datedFolder('middle', parent.body.id, fixtureDate + 2000);
+		const lastFolder = await datedFolder('last', parent.body.id, fixtureDate + 4000);
+		const folderDate = fixtureDate + 1000;
 		const folderParams = { folderId: parent.body.id, sort: '-name' as const, untilDate: folderDate, limit: 100 };
 		const folders = await api('drive/folders', folderParams, owner);
 		const cursorFolders = await api('drive/folders', { ...folderParams, untilId: lastFolder.body.id, untilName: '' }, owner);
@@ -413,7 +450,7 @@ describe('Drive folder and file sorting', () => {
 		assert.strictEqual(cursorFolders.status, 200);
 		assert.deepStrictEqual(folders.body.map(folder => folder.id), [firstFolder.body.id]);
 		assert.deepStrictEqual(cursorFolders.body.map(folder => folder.id), folders.body.map(folder => folder.id));
-		const boundedFolders = await api('drive/folders', { ...folderParams, sinceDate: folderDate - 1000, untilId: lastFolder.body.id, untilName: '' }, owner);
+		const boundedFolders = await api('drive/folders', { ...folderParams, sinceDate: fixtureDate - 1000, untilId: lastFolder.body.id, untilName: '' }, owner);
 		assert.strictEqual(boundedFolders.status, 200);
 		assert.deepStrictEqual(boundedFolders.body.map(folder => folder.id), folders.body.map(folder => folder.id));
 	});
@@ -422,17 +459,10 @@ describe('Drive folder and file sorting', () => {
 		const parent = await api('drive/folders/create', { name: 'file-date-cursor' }, owner);
 		assert.strictEqual(parent.status, 200);
 
-		const firstFile = await uploadFile(owner, { name: 'first' });
-		const middleFile = await uploadFile(owner, { name: 'middle' });
-		const lastFile = await uploadFile(owner, { name: 'last' });
-		assert.strictEqual(firstFile.status, 200);
-		assert.strictEqual(middleFile.status, 200);
-		assert.strictEqual(lastFile.status, 200);
-		assert.strictEqual((await api('drive/files/update', { fileId: firstFile.body!.id, folderId: parent.body.id }, owner)).status, 200);
-		assert.strictEqual((await api('drive/files/update', { fileId: middleFile.body!.id, folderId: parent.body.id }, owner)).status, 200);
-		assert.strictEqual((await api('drive/files/update', { fileId: lastFile.body!.id, folderId: parent.body.id }, owner)).status, 200);
-		const fileDate = Date.parse(firstFile.body!.createdAt) + 1;
-		assert.ok(fileDate <= Date.parse(middleFile.body!.createdAt));
+		const firstFile = await datedFile('first', parent.body.id, fixtureDate);
+		await datedFile('middle', parent.body.id, fixtureDate + 2000);
+		const lastFile = await datedFile('last', parent.body.id, fixtureDate + 4000);
+		const fileDate = fixtureDate + 1000;
 		for (const sort of ['-name', '-size'] as const) {
 			const params = { folderId: parent.body.id, sort, untilDate: fileDate, limit: 100 };
 			const files = await api('drive/files', params, owner);
@@ -441,7 +471,7 @@ describe('Drive folder and file sorting', () => {
 			assert.strictEqual(cursorFiles.status, 200);
 			assert.deepStrictEqual(files.body.map(file => file.id), [firstFile.body!.id]);
 			assert.deepStrictEqual(cursorFiles.body.map(file => file.id), files.body.map(file => file.id), sort);
-			const boundedFiles = await api('drive/files', { ...params, sinceDate: fileDate - 1000, untilId: lastFile.body!.id, untilName: '', untilSize: 0 }, owner);
+			const boundedFiles = await api('drive/files', { ...params, sinceDate: fixtureDate - 1000, untilId: lastFile.body!.id, untilName: '', untilSize: 0 }, owner);
 			assert.strictEqual(boundedFiles.status, 200);
 			assert.deepStrictEqual(boundedFiles.body.map(file => file.id), files.body.map(file => file.id), sort);
 		}
