@@ -211,6 +211,7 @@ export class CacheService implements OnApplicationShutdown {
 		this.localUserByIdCache.dispose();
 		this.uriPersonCache.dispose();
 		this.userProfileCache.dispose();
+		this.flashAccessTokensCache.dispose();
 		this.userMutingsCache.dispose();
 		this.userBlockingCache.dispose();
 		this.userBlockedCache.dispose();
