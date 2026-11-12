@@ -4,6 +4,8 @@
  */
 
 import { escapeHtml } from '@/misc/escape-html.js';
+import { parseChatDiceResult } from '@/core/chat-dice.js';
+import type { ChatDiceResult } from '@/core/chat-dice.js';
 import type { IAnnounce, IApDocument, IDelete, ILike, IObject, IPost, ITombstone, IUndo, IUpdate } from '../type.js';
 
 type ChatActor = {
@@ -17,6 +19,7 @@ type ChatMessage = {
 	uri?: string | null;
 	text?: string | null;
 	editedAt?: Date | null;
+	dice?: ChatDiceResult | null;
 };
 
 type ChatRoom = {
@@ -89,6 +92,8 @@ export function buildChatNote(
 		updated: message.editedAt?.toISOString(),
 		_misskey_talk: true,
 	};
+	const dice = parseChatDiceResult(message.dice);
+	if (dice != null) note._misskey_dice = dice;
 
 	const roomUri = options.roomUri ?? (roomId ? chatRoomUri({ id: roomId }, options.baseUrl) : null);
 	if (roomUri != null) {

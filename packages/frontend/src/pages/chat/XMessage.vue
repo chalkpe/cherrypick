@@ -25,6 +25,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					:enableEmojiMenu="true"
 					:enableEmojiMenuReaction="canReact"
 				/>
+				<XDiceResult v-if="message.dice" :class="$style.dice" :dice="message.dice"/>
 				<MkMediaList v-if="hasFiles" :mediaList="message.files" :user="message.fromUser"/>
 			</template>
 		</MkFukidashi>
@@ -68,6 +69,7 @@ import { isLink } from '@@/js/is-link.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { NormalizedChatMessage } from './room.vue';
 import { chatErrorText } from './chat-errors.js';
+import XDiceResult from './XDiceResult.vue';
 import { extractUrlFromMfm } from '@/utility/extract-url-from-mfm.js';
 import MkUrlPreview from '@/components/MkUrlPreview.vue';
 import { ensureSignin } from '@/i.js';
@@ -215,7 +217,7 @@ function getMenu(): MenuItem[] {
 	}
 
 	if (isMe.value && !deletedAt.value && !isReadOnly.value && $i.policies.chatAvailability === 'available') {
-		if (props.canEdit) {
+		if (props.canEdit && props.message.dice == null) {
 			menu.push({
 				text: i18n.ts.edit,
 				icon: 'ti ti-pencil',
@@ -266,6 +268,10 @@ function getMenu(): MenuItem[] {
 </script>
 
 <style lang="scss" module>
+.dice {
+	margin-top: 8px;
+}
+
 .transition_reaction_move,
 .transition_reaction_enterActive,
 .transition_reaction_leaveActive {

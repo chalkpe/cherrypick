@@ -44,6 +44,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</button>
 		</div>
 	</footer>
+	<details v-if="!editingMessage" :class="$style.diceHelp">
+		<summary>{{ i18n.ts._chat.diceHelp }}</summary>
+		<p>{{ i18n.ts._chat.diceHelpDescription }}</p>
+		<a href="https://dice-roller.github.io/documentation/guide/notation/" target="_blank" rel="noopener noreferrer">{{ i18n.ts._chat.diceSyntax }}</a>
+	</details>
 	<input ref="fileEl" style="display: none;" type="file" :disabled="!!editingMessage" @change="onChangeFile"/>
 </div>
 </template>
@@ -476,6 +481,15 @@ onBeforeUnmount(() => {
 </script>
 
 <style lang="scss" module>
+.diceHelp {
+	padding: 0 12px 8px;
+	font-size: 0.8em;
+	color: var(--MI_THEME-fg);
+
+	> summary { cursor: pointer; width: fit-content; }
+	> p { margin: 8px 0; }
+}
+
 .root {
 	position: relative;
 	border-bottom: none;
