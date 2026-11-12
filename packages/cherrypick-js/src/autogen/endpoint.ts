@@ -261,6 +261,17 @@ import type {
 	ChatMessagesUpdateResponse,
 	ChatMessagesUserTimelineRequest,
 	ChatMessagesUserTimelineResponse,
+	ChatRoomsChannelsCreateRequest,
+	ChatRoomsChannelsCreateResponse,
+	ChatRoomsChannelsDeleteRequest,
+	ChatRoomsChannelsListRequest,
+	ChatRoomsChannelsListResponse,
+	ChatRoomsChannelsReorderRequest,
+	ChatRoomsChannelsReorderResponse,
+	ChatRoomsChannelsUpdateRequest,
+	ChatRoomsChannelsUpdateResponse,
+	ChatRoomsConvertToChannelsRequest,
+	ChatRoomsConvertToChannelsResponse,
 	ChatRoomsCreateRequest,
 	ChatRoomsCreateResponse,
 	ChatRoomsDeleteRequest,
@@ -924,6 +935,12 @@ export type Endpoints = {
 	'chat/messages/update': { req: ChatMessagesUpdateRequest; res: ChatMessagesUpdateResponse };
 	'chat/messages/user-timeline': { req: ChatMessagesUserTimelineRequest; res: ChatMessagesUserTimelineResponse };
 	'chat/read-all': { req: EmptyRequest; res: EmptyResponse };
+	'chat/rooms/channels/create': { req: ChatRoomsChannelsCreateRequest; res: ChatRoomsChannelsCreateResponse };
+	'chat/rooms/channels/delete': { req: ChatRoomsChannelsDeleteRequest; res: EmptyResponse };
+	'chat/rooms/channels/list': { req: ChatRoomsChannelsListRequest; res: ChatRoomsChannelsListResponse };
+	'chat/rooms/channels/reorder': { req: ChatRoomsChannelsReorderRequest; res: ChatRoomsChannelsReorderResponse };
+	'chat/rooms/channels/update': { req: ChatRoomsChannelsUpdateRequest; res: ChatRoomsChannelsUpdateResponse };
+	'chat/rooms/convert-to-channels': { req: ChatRoomsConvertToChannelsRequest; res: ChatRoomsConvertToChannelsResponse };
 	'chat/rooms/create': { req: ChatRoomsCreateRequest; res: ChatRoomsCreateResponse };
 	'chat/rooms/delete': { req: ChatRoomsDeleteRequest; res: EmptyResponse };
 	'chat/rooms/invitations/cancel': { req: ChatRoomsInvitationsCancelRequest; res: EmptyResponse };

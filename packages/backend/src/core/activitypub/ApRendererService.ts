@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import type { MiChatMessage } from '@/models/ChatMessage.js';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { createPublicKey, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { In } from 'typeorm';
@@ -18,7 +20,6 @@ import type { MiNoteReaction } from '@/models/NoteReaction.js';
 import type { MiEmoji } from '@/models/Emoji.js';
 import type { MiPoll } from '@/models/Poll.js';
 import type { MiPollVote } from '@/models/PollVote.js';
-import type { MiChatMessage } from '@/models/ChatMessage.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
 import { UserKeypairService } from '@/core/UserKeypairService.js';
 import { MfmService } from '@/core/MfmService.js';
@@ -121,6 +122,7 @@ export class ApRendererService {
 		private idService: IdService,
 		private utilityService: UtilityService,
 		private roleService: RoleService,
+		private chatRoomChannelService: ChatRoomChannelService,
 	) {
 	}
 
@@ -867,7 +869,7 @@ export class ApRendererService {
 		return buildChatNote(message, fromUser, toUsers, roomId, await this.chatPayloadOptions(message, roomUri));
 	}
 
-	private async chatPayloadOptions(message: any, roomUri?: string): Promise<ChatPayloadOptions> {
+	private async chatPayloadOptions(message: MiChatMessage, roomUri?: string): Promise<ChatPayloadOptions> {
 		// Files are not referred to by a foreign key, so one can be gone by now. The database returns them in no particular order.
 		const fileIds: MiDriveFile['id'][] = message.fileIds ?? [];
 		const files = fileIds.length > 0 ? await this.driveFilesRepository.findBy({ id: In(fileIds) }) : [];
@@ -883,6 +885,7 @@ export class ApRendererService {
 			roomUri,
 			attachment,
 			tag: apemojis,
+			...(message.toRoomChannelId != null ? await this.chatRoomChannelService.messageFields(message) : {}),
 		};
 	}
 
@@ -929,13 +932,15 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public renderChatRoomUpdate(room: MiChatRoom, owner: MiUser): IUpdate {
-		const now = new Date().toISOString();
-		return buildChatRoomUpdate(this.chatRoomForRender(room, owner), owner, {
+	public renderChatRoomUpdate(room: MiChatRoom, owner: MiUser, fields: Pick<IObject, '_misskey_chatChannels' | '_misskey_chatLegacyChannel'> = {}): IUpdate {
+		const now = room.lastRemoteUpdatedAt?.toISOString() ?? new Date().toISOString();
+		const activity = buildChatRoomUpdate(this.chatRoomForRender(room, owner), owner, {
 			baseUrl: this.config.url,
 			published: now,
 			updated: now,
 		});
+		Object.assign(activity.object as IObject, fields);
+		return activity;
 	}
 
 	@bindThis
@@ -976,7 +981,7 @@ export class ApRendererService {
 			summary: room.description ?? '',
 			attributedTo: ownerUri || undefined,
 			_misskey_chatArchived: room.isArchived,
-			updated: new Date().toISOString(),
+			updated: room.lastRemoteUpdatedAt?.toISOString() ?? new Date().toISOString(),
 		};
 	}
 

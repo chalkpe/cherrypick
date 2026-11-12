@@ -112,6 +112,7 @@ export class FetchInstanceMetadataService {
 
 			const updates = {
 				infoUpdatedAt: new Date(),
+				supportsChatRoomChannels: info != null && Array.isArray(info.metadata?.features) && info.metadata.features.includes('chat_room_channels'),
 			} as Record<string, any>;
 
 			if (info) {

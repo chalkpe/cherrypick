@@ -5,6 +5,7 @@
 
 import { QueryFailedError } from 'typeorm';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatMessageAccessError, ChatService, ChatRoomArchivedError } from '@/core/ChatService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
@@ -403,6 +404,19 @@ describe('ChatService chat federation delivery', () => {
 			},
 			userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
 		}) as ChatService;
+
+		Object.assign(service, {
+			chatRoomChannelService: Object.create(ChatRoomChannelService.prototype),
+			db: {
+				transaction: async (run: (manager: unknown) => Promise<unknown>) => run({
+					findOne: async () => ({ ...room }),
+					existsBy: async () => true,
+					findBy: async () => (service as unknown as { chatRoomMembershipsRepository: { findBy(): Promise<unknown[]> } }).chatRoomMembershipsRepository.findBy(),
+					withRepository: (repository: unknown) => repository,
+					update: async (_entity: unknown, _id: string, patch: object) => { Object.assign(room, patch); },
+				}),
+			},
+		});
 
 		return { service, alice, bob, carol, directMessage, roomMessage, roomDeleteMessage, room, queueService, apRendererService, globalEventService, redisClient };
 	}
@@ -1107,7 +1121,7 @@ describe('ChatService chat federation delivery', () => {
 				idService: { gen: () => 'new-message', parse: () => ({ date: new Date(0) }) },
 				chatEntityService: { packMessageLiteForRoom: vi.fn(async (message: object) => message) },
 			});
-			const room = { id: 'r1', ownerId, isArchived: false, uri: null };
+			const room = Object.assign(f.room, { ownerId, isArchived: false, uri: null });
 			return { ...f, room, dave, erin, renderChatRoomRelay };
 		}
 
@@ -1298,7 +1312,7 @@ describe('ApInboxService chat activity routing', () => {
 
 			await expect(create(f, note(f.actor.uri, f.localUser.uri, { content: '', ...overrides }), 'Update')).resolves.toBe('ok: chat message updated');
 
-			expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, stored, '', expect.any(Date), []);
+			expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, stored, '', expect.any(Date), [], undefined);
 		});
 	});
 
@@ -1487,7 +1501,7 @@ describe('ApInboxService chat activity routing', () => {
 
 		await (f.inbox as never as { update: (...args: unknown[]) => Promise<string> }).update(f.actor, { type: 'Update', actor: f.actor.uri, object: note });
 
-		expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', expect.any(Date), []);
+		expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', expect.any(Date), [], undefined);
 	});
 
 	test('an edit dated outside what the database can hold counts as edited now', async () => {
@@ -1817,7 +1831,7 @@ describe('ApInboxService chat activity routing', () => {
 			});
 
 			expect(result).toBe('ok: chat message updated');
-			expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', new Date('2026-11-03T00:00:00.000Z'), []);
+			expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', new Date('2026-11-03T00:00:00.000Z'), [], undefined);
 		});
 
 		test('Like reacts to the chat message', async () => {

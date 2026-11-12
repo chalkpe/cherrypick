@@ -68,6 +68,7 @@ export type ChatMessageLite = components['schemas']['ChatMessageLite'];
 export type ChatMessageLiteFor1on1 = components['schemas']['ChatMessageLiteFor1on1'];
 export type ChatMessageLiteForRoom = components['schemas']['ChatMessageLiteForRoom'];
 export type ChatRoom = components['schemas']['ChatRoom'];
+export type ChatRoomChannel = components['schemas']['ChatRoomChannel'];
 export type ChatRoomInvitation = components['schemas']['ChatRoomInvitation'];
 export type ChatRoomMembership = components['schemas']['ChatRoomMembership'];
 export type ChatRoomVoiceState = components['schemas']['ChatRoomVoiceState'];

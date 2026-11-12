@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import type { ChatChannelRef } from '@/core/chat-room-channels.js';
 import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import * as Reversi from 'misskey-reversi';
@@ -178,6 +179,7 @@ export interface ChatEventTypes {
 	updated: {
 		messageId: MiChatMessage['id'];
 		text: string;
+		channelRefs?: ChatChannelRef[];
 		editedAt: string;
 		emojis?: Record<string, string>;
 	};
@@ -196,11 +198,14 @@ export interface ChatEventTypes {
 
 // ルームの状態の変化。画面を閉じたり更新したりできるようクライアントへも転送する。
 export interface ChatRoomEventTypes extends ChatEventTypes {
+	channelsUpdated: { roomId: string };
+	channelMessage: { channelId: string; messageId: string };
 	roomUpdated: {
 		roomId: MiChatRoom['id'];
 		name: string;
 		description: string;
 		isArchived: boolean;
+		hasChannels?: boolean;
 	};
 	membershipStarted: { userId: MiUser['id'] };
 	membershipEnded: { userId: MiUser['id'] };

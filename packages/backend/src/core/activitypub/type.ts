@@ -13,6 +13,10 @@ export interface IObject {
 	name?: string | null;
 	summary?: string;
 	_misskey_summary?: string;
+	_misskey_chatChannels?: unknown;
+	_misskey_chatLegacyChannel?: unknown;
+	_misskey_chatChannel?: unknown;
+	_misskey_chatChannelRefs?: unknown;
 	_misskey_chatArchived?: boolean;
 	_misskey_chatRoom?: string;
 	_misskey_chatRoomMembers?: string[];

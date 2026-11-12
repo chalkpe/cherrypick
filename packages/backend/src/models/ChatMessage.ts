@@ -8,6 +8,8 @@ import { id } from './util/id.js';
 import { MiUser } from './User.js';
 import type { MiDriveFile } from './DriveFile.js';
 import { MiChatRoom } from './ChatRoom.js';
+import { MiChatRoomChannel } from './ChatRoomChannel.js';
+import type { ChatChannelRef } from '@/core/chat-room-channels.js';
 import type { ChatDiceResult } from '@/core/chat-dice.js';
 
 @Entity('chat_message')
@@ -50,6 +52,17 @@ export class MiChatMessage {
 	})
 	@JoinColumn()
 	public toRoom: MiChatRoom | null;
+
+	@Index()
+	@Column({ ...id(), nullable: true })
+	public toRoomChannelId: MiChatRoomChannel['id'] | null;
+
+	@ManyToOne(() => MiChatRoomChannel, { onDelete: 'CASCADE' })
+	@JoinColumn()
+	public toRoomChannel: MiChatRoomChannel | null;
+
+	@Column('jsonb', { default: [] })
+	public channelRefs: ChatChannelRef[];
 
 	@Column('varchar', {
 		length: 4096, nullable: true,

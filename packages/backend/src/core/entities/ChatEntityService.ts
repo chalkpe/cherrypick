@@ -6,7 +6,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { In } from 'typeorm';
 import { DI } from '@/di-symbols.js';
-import type { MiUser, MiDriveFile, ChatMessagesRepository, MiChatMessage, ChatRoomsRepository, MiChatRoom, MiChatRoomInvitation, ChatRoomInvitationsRepository, MiChatRoomMembership, ChatRoomMembershipsRepository, UsersRepository } from '@/models/_.js';
+import type { MiUser, MiDriveFile, ChatMessagesRepository, MiChatMessage, ChatRoomsRepository, MiChatRoom, MiChatRoomInvitation, ChatRoomInvitationsRepository, MiChatRoomMembership, ChatRoomMembershipsRepository, UsersRepository, ChatRoomChannelsRepository } from '@/models/_.js';
 import { awaitAll } from '@/misc/prelude/await-all.js';
 import type { Packed } from '@/misc/json-schema.js';
 import type { } from '@/models/Blocking.js';
@@ -39,7 +39,19 @@ export class ChatEntityService {
 		private driveFileEntityService: DriveFileEntityService,
 		private customEmojiService: CustomEmojiService,
 		private idService: IdService,
+
+		@Inject(DI.chatRoomChannelsRepository)
+		private chatRoomChannelsRepository: ChatRoomChannelsRepository,
 	) {
+	}
+
+	private async packMessageChannel(message: MiChatMessage) {
+		const channel = message.toRoomChannelId != null ? await this.chatRoomChannelsRepository.findOneBy({ id: message.toRoomChannelId, roomId: message.toRoomId! }) : null;
+		return {
+			toRoomChannelId: message.toRoomChannelId ?? null,
+			toRoomChannel: channel != null ? { id: channel.id, name: channel.name } : null,
+			channelRefs: message.deletedAt != null ? [] : (message.channelRefs ?? []).map(({ channelId, start, length }) => ({ channelId, start, length })),
+		};
 	}
 
 	/** A file can be gone by now, as nothing refers to it by a foreign key. `fileId` and `file` are for clients from before there could be several. */
@@ -110,6 +122,7 @@ export class ChatEntityService {
 			toUserId: message.toUserId,
 			toUser: message.toUserId ? (packedUsers?.get(message.toUserId) ?? (await this.userEntityService.pack(message.toUser ?? message.toUserId, me))) : undefined,
 			toRoomId: message.toRoomId,
+			...(await this.packMessageChannel(message)),
 			toRoom: message.toRoomId ? (packedRooms?.get(message.toRoomId) ?? (await this.packRoom(message.toRoom ?? message.toRoomId, me))) : undefined,
 			...(await this.packMessageFiles(message, packedFiles)),
 			reactions: deleted ? [] : reactions.filter((r): r is { user: Packed<'UserLite'>; reaction: string; } => r.user != null),
@@ -267,6 +280,7 @@ export class ChatEntityService {
 			fromUserId: message.fromUserId,
 			fromUser: packedUsers?.get(message.fromUserId) ?? (await this.userEntityService.pack(message.fromUser ?? message.fromUserId)),
 			toRoomId: message.toRoomId!,
+			...(await this.packMessageChannel(message)),
 			...(await this.packMessageFiles(message, packedFiles)),
 			reactions: deleted ? [] : reactions.filter((r): r is { user: Packed<'UserLite'>; reaction: string; } => r.user != null),
 			emojis: emojis,
@@ -324,6 +338,8 @@ export class ChatEntityService {
 			isMuted: membership != null ? membership.isMuted : false,
 			invitationExists: invitation != null,
 			isArchived: room.isArchived,
+			hasChannels: room.hasChannels ?? false,
+			legacyChannelId: me != null && (me.id === room.ownerId || membership != null) ? room.legacyChannelId ?? null : null,
 		};
 	}
 

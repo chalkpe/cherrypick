@@ -4,6 +4,7 @@
  */
 
 import * as crypto from 'node:crypto';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { IncomingMessage } from 'node:http';
 import { Inject, Injectable } from '@nestjs/common';
 import fastifyAccepts from '@fastify/accepts';
@@ -120,6 +121,7 @@ export class ActivityPubServerService {
 		private activityPubAccessControlService: ActivityPubAccessControlService,
 		private apDbResolverService: ApDbResolverService,
 		private chatRosterService: ChatRosterService,
+		private chatRoomChannelService: ChatRoomChannelService,
 	) {
 		//this.createServer = this.createServer.bind(this);
 	}
@@ -963,6 +965,11 @@ export class ActivityPubServerService {
 					return;
 				}
 
+				if (room.hasChannels && !await this.chatRoomChannelService.deliverableTo(actor.host, message, room)) {
+					reply.code(404);
+					return;
+				}
+
 				const isOwner = room.ownerId === actor.id;
 				const membership = isOwner ? null : await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId: actor.id });
 				if (!isOwner && membership == null) {
@@ -1045,12 +1052,14 @@ export class ActivityPubServerService {
 				return;
 			}
 
-			const group = this.apRendererService.renderChatRoom(room, owner);
+			const snapshot = room.hasChannels && (isOwner || membership != null) ? await this.chatRoomChannelService.snapshot(room.id) : null;
+			const group = this.apRendererService.renderChatRoom(snapshot?.room ?? room, owner);
 			// Someone who is only invited learns who is in the room by joining it.
 			const roster = owner.host == null && (isOwner || membership != null) ? await this.chatRoomRoster(room) : null;
+			const channels = snapshot?.fields;
 
 			this.setResponseType(request, reply);
-			return this.apRendererService.addContext({ ...group, ...roster });
+			return this.apRendererService.addContext({ ...group, ...roster, ...channels });
 		});
 
 		// outbox

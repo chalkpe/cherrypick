@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { ChatService } from '@/core/ChatService.js';
 
@@ -18,6 +19,7 @@ function createService() {
 		{ pack: vi.fn().mockResolvedValue({ id: 'f1' }) } as never,
 		{ populateEmojis: vi.fn().mockResolvedValue([]) } as never,
 		{ parse: vi.fn().mockReturnValue({ date: new Date('2026-11-02T00:00:00.000Z') }) } as never,
+		{} as never,
 	);
 }
 
@@ -62,6 +64,8 @@ describe('deleted messages in a timeline', () => {
 		const service = Object.assign(Object.create(ChatService.prototype), {
 			queryService: { makePaginationQuery: () => builder },
 			chatMessagesRepository: { createQueryBuilder: () => builder },
+			chatRoomsRepository: { findOneBy: async () => ({ id: 'r1' }) },
+			chatRoomChannelService: Object.assign(Object.create(ChatRoomChannelService.prototype), { db: { manager: {} } }),
 		}) as ChatService;
 		return { service, conditions };
 	}

@@ -40,6 +40,8 @@ export const packedChatRoomSchema = {
 			type: 'boolean',
 			optional: true, nullable: false,
 		},
+		hasChannels: { type: 'boolean', optional: true, nullable: false },
+		legacyChannelId: { type: 'string', optional: true, nullable: true },
 		isArchived: {
 			type: 'boolean',
 			optional: false, nullable: false,

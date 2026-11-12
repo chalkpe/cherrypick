@@ -12,6 +12,9 @@ import type { SelectQueryBuilder } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { QueueService } from '@/core/QueueService.js';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
+import { ChatChannelError, parseChatChannels } from '@/core/chat-room-channels.js';
+import type { ChatChannelRef } from '@/core/chat-room-channels.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import type { IObject } from '@/core/activitypub/type.js';
 import { IdService } from '@/core/IdService.js';
@@ -76,6 +79,7 @@ const CHAT_REACTION_ACTIVITY_ID_TTL = 30 * 24 * 60 * 60;
 const MAX_REMOTE_REACTION_ACTIVITY_ID_LENGTH = 2048;
 // An account suspended here gets nothing new, but still hears what was taken back.
 const ACTIVITIES_FOR_SUSPENDED_ACCOUNTS = new Set(['Delete', 'Remove', 'Undo']);
+const CLEAR_CHAT_CHANNEL_UNREAD = `redis.call('SREM', KEYS[1], ARGV[1]); if redis.call('SCARD', KEYS[1]) == 0 then redis.call('DEL', KEYS[2]); redis.call('SREM', KEYS[3], ARGV[2]); end`;
 const isCustomEmojiRegexp = /^:([\w+-]+)(?:@\.)?:$/;
 
 // TODO: ReactionServiceのやつと共通化
@@ -146,6 +150,7 @@ export class ChatService {
 		private hostPolicyService: HostPolicyService,
 		private chatRosterService: ChatRosterService,
 		private chatDiceService: ChatDiceService,
+		private chatRoomChannelService: ChatRoomChannelService,
 	) {
 	}
 
@@ -374,8 +379,11 @@ export class ChatService {
 		emojis?: string[];
 		editedAt?: Date | null;
 		dice?: unknown;
+		toRoomChannelId?: string | null;
+		channelRefs?: ChatChannelRef[];
+		remoteChannelRefs?: unknown;
 	}): Promise<Packed<'ChatMessageLiteForRoom'>> {
-		const memberships = (await this.chatRoomMembershipsRepository.findBy({ roomId: toRoom.id })).map(m => ({
+		let memberships = (await this.chatRoomMembershipsRepository.findBy({ roomId: toRoom.id })).map(m => ({
 			userId: m.userId,
 			isMuted: m.isMuted,
 		})).concat({ // ownerはmembershipレコードを作らないため
@@ -392,8 +400,6 @@ export class ChatService {
 		} else {
 			await this.assertRemoteWriteAllowed(toRoom);
 		}
-
-		const membershipsOtherThanMe = memberships.filter(member => member.userId !== fromUser.id);
 
 		// Extract emojis from text if not provided
 		// Store only emoji names (like notes do), not name@host format
@@ -422,31 +428,46 @@ export class ChatService {
 			emojis,
 		} satisfies Partial<MiChatMessage>;
 
-		const inserted = await this.chatMessagesRepository.insertOne(message);
+		const inserted = await this.db.transaction(async manager => {
+			const current = await manager.findOne(MiChatRoom, { where: { id: toRoom.id }, lock: { mode: 'pessimistic_read' } });
+			if (current == null || (current.ownerId !== fromUser.id && !await manager.existsBy(MiChatRoomMembership, { roomId: current.id, userId: fromUser.id }))) throw new ChatMessageAccessError('you are not a member of the room');
+			if (current.isArchived) throw new ChatRoomArchivedError('room is archived');
+			memberships = (await manager.findBy(MiChatRoomMembership, { roomId: current.id })).map(member => ({ userId: member.userId, isMuted: member.isMuted })).concat({ userId: current.ownerId, isMuted: false });
+			const toRoomChannelId = await this.chatRoomChannelService.resolve(current, params.toRoomChannelId, manager);
+			const text = params.text ?? '';
+			const channelRefs = fromUser.host == null
+				? await this.chatRoomChannelService.localRefs(current, text, params.channelRefs ?? [], manager)
+				: await this.chatRoomChannelService.remoteRefs(current, text, params.remoteChannelRefs, manager);
+			const inserted = await manager.withRepository(this.chatMessagesRepository).insertOne({ ...message, toRoomChannelId, channelRefs });
+			Object.assign(toRoom, current);
+			return inserted;
+		});
 
+		const membershipsOtherThanMe = memberships.filter(member => member.userId !== fromUser.id);
 		const packedMessage = await this.chatEntityService.packMessageLiteForRoom(inserted);
-
-		this.globalEventService.publishChatRoomStream(toRoom.id, 'message', packedMessage);
 
 		const redisPipeline = this.redisClient.pipeline();
 		for (const membership of membershipsOtherThanMe) {
 			if (membership.isMuted) continue;
 
+			if (inserted.toRoomChannelId != null) redisPipeline.sadd(`newRoomChatUnreadChannels:${membership.userId}:${toRoom.id}`, inserted.toRoomChannelId);
 			redisPipeline.set(`newRoomChatMessageExists:${membership.userId}:${toRoom.id}`, message.id);
 			redisPipeline.sadd(`newChatMessagesExists:${membership.userId}`, `room:${toRoom.id}`);
 		}
-		redisPipeline.exec();
+		await redisPipeline.exec();
+		this.globalEventService.publishChatRoomStream(toRoom.id, 'message', packedMessage);
 
 		// 3秒経っても既読にならなかったらイベント発行
 		setTimeout(async () => {
 			const redisPipeline = this.redisClient.pipeline();
 			for (const membership of membershipsOtherThanMe) {
-				redisPipeline.get(`newRoomChatMessageExists:${membership.userId}:${toRoom.id}`);
+				if (inserted.toRoomChannelId != null) redisPipeline.sismember(`newRoomChatUnreadChannels:${membership.userId}:${toRoom.id}`, inserted.toRoomChannelId);
+				else redisPipeline.get(`newRoomChatMessageExists:${membership.userId}:${toRoom.id}`);
 			}
 			const markers = await redisPipeline.exec();
 			if (markers == null) throw new Error('redis error');
 
-			if (markers.every(marker => marker[1] == null)) return;
+			if (markers.every(marker => !marker[1])) return;
 
 			// Delete and Update can arrive within this delay. Never notify with text the sender already withdrew.
 			const latest = await this.chatMessagesRepository.findOneBy({ id: inserted.id });
@@ -457,7 +478,7 @@ export class ChatService {
 
 			for (let i = 0; i < membershipsOtherThanMe.length; i++) {
 				const marker = markers[i][1];
-				if (marker == null) continue;
+				if (!marker) continue;
 				const userId = membershipsOtherThanMe[i].userId;
 				if (userId !== toRoom.ownerId) {
 					const currentMembership = await this.chatRoomMembershipsRepository.findOneBy({ roomId: toRoom.id, userId });
@@ -490,10 +511,10 @@ export class ChatService {
 					object: { ...chatMessageObject, '@context': roomUri },
 					published: this.idService.parse(inserted.id).date.toISOString(),
 				};
-				await this.deliverToRemoteUsers(fullFromUser, remoteMembers, activity);
+				await this.deliverToRemoteUsers(fullFromUser, remoteMembers, activity, inserted);
 			}
 		} else {
-			await this.relayToOtherServers(toRoom, fromUser, (owner, toUsers) => this.apRendererService.renderChatRoomRelay(inserted, toRoom, owner, toUsers));
+			await this.relayToOtherServers(toRoom, fromUser, (owner, toUsers) => this.apRendererService.renderChatRoomRelay(inserted, toRoom, owner, toUsers), inserted);
 		}
 
 		return packedMessage;
@@ -503,7 +524,7 @@ export class ChatService {
 	 * A sender's server only knows the members it has heard about so far, so a message can miss someone
 	 * who joined just before. The owner's server knows them all and points them at the message.
 	 */
-	private async relayToOtherServers(room: MiChatRoom, fromUser: Pick<MiUser, 'id' | 'host'>, render: (owner: MiUser, toUsers: MiUser[]) => IObject): Promise<void> {
+	private async relayToOtherServers(room: MiChatRoom, fromUser: Pick<MiUser, 'id' | 'host'>, render: (owner: MiUser, toUsers: MiUser[]) => IObject, message?: MiChatMessage): Promise<void> {
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
 		if (owner == null || !this.userEntityService.isLocalUser(owner)) return;
 
@@ -512,7 +533,7 @@ export class ChatService {
 		if (others.length === 0) return;
 
 		const toUsers = members.filter(member => member.id !== owner.id && member.id !== fromUser.id);
-		await this.deliverToRemoteUsers(owner, others, render(owner, toUsers));
+		await this.deliverToRemoteUsers(owner, others, render(owner, toUsers), message);
 	}
 
 	/** Only what changed something here gets this far, so a copy of an activity is not passed on again. An activity without an ID could not be told from its copies. */
@@ -520,7 +541,7 @@ export class ChatService {
 		if (activity == null || typeof activity.id !== 'string' || message.toRoomId == null) return;
 		const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
 		if (room == null) return;
-		await this.relayToOtherServers(room, fromUser, (owner, toUsers) => this.apRendererService.renderChatRoomActivityRelay(activity as IObject & { id: string }, room, owner, toUsers));
+		await this.relayToOtherServers(room, fromUser, (owner, toUsers) => this.apRendererService.renderChatRoomActivityRelay(activity as IObject & { id: string }, room, owner, toUsers), message);
 	}
 
 	/** The invitation, joined room and owned room lists stay on screen until told to read again. */
@@ -547,12 +568,24 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async readRoomChatMessage(
-		readerId: MiUser['id'],
-		roomId: MiChatRoom['id'],
-	): Promise<void> {
+	public resolveRoomChannel(room: MiChatRoom, channelId?: string | null) {
+		return this.chatRoomChannelService.resolve(room, channelId);
+	}
+
+	@bindThis
+	public async readRoomChatMessage(readerId: string, roomId: string, channelId?: string | null): Promise<void> {
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		if (room?.hasChannels) {
+			const resolved = await this.chatRoomChannelService.resolve(room, channelId);
+			await this.redisClient.eval(
+				CLEAR_CHAT_CHANNEL_UNREAD,
+				3, `newRoomChatUnreadChannels:${readerId}:${roomId}`, `newRoomChatMessageExists:${readerId}:${roomId}`, `newChatMessagesExists:${readerId}`, resolved!, `room:${roomId}`,
+			);
+			return;
+		}
 		const redisPipeline = this.redisClient.pipeline();
 		redisPipeline.del(`newRoomChatMessageExists:${readerId}:${roomId}`);
+		redisPipeline.del(`newRoomChatUnreadChannels:${readerId}:${roomId}`);
 		redisPipeline.srem(`newChatMessagesExists:${readerId}`, `room:${roomId}`);
 		await redisPipeline.exec();
 	}
@@ -643,7 +676,7 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async updateMessage(userId: MiUser['id'], messageId: MiChatMessage['id'], text: string): Promise<MiChatMessage> {
+	public async updateMessage(userId: MiUser['id'], messageId: MiChatMessage['id'], text: string, refs: ChatChannelRef[] = []): Promise<MiChatMessage> {
 		const message = await this.chatMessagesRepository.findOneBy({ id: messageId });
 		if (message == null) throw new ChatMessageAccessError('no such message');
 		if (message.fromUserId !== userId) throw new ChatMessageAccessError('cannot edit');
@@ -655,10 +688,13 @@ export class ChatService {
 		const trimmed = text.trim();
 		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > MAX_CHAT_MESSAGE_TEXT_LENGTH) throw new ChatMessageInvalidTextError('invalid text');
 
+		const channelRefs = message.toRoomId != null ? await this.chatRoomChannelService.localRefs(await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }), text, refs) : [];
+		if (message.toRoomId == null && refs.length) throw new ChatChannelError('INVALID_CHANNEL_REFS');
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));
-		const result = await this.chatMessagesRepository.update({ id: message.id, deletedAt: IsNull(), dice: IsNull() }, { text: trimmed, editedAt, emojis });
+		const result = await this.chatMessagesRepository.update({ id: message.id, deletedAt: IsNull(), dice: IsNull() }, { text: trimmed, editedAt, emojis, channelRefs });
 		if (result.affected === 0) throw new ChatMessageAccessError('deleted');
+		message.channelRefs = channelRefs;
 		message.text = trimmed;
 		message.editedAt = editedAt;
 		message.emojis = emojis;
@@ -666,6 +702,7 @@ export class ChatService {
 		const payload = {
 			messageId: message.id,
 			text: trimmed,
+			channelRefs,
 			editedAt: editedAt.toISOString(),
 			emojis: await this.customEmojiService.populateEmojis(emojis, null),
 		};
@@ -679,7 +716,7 @@ export class ChatService {
 		const fromUser = await this.usersRepository.findOneByOrFail({ id: message.fromUserId });
 		const participants = await this.participantsForMessage(message);
 		const toUsers = participants.filter(user => user.id !== fromUser.id);
-		await this.deliverToRemoteUsers(fromUser, participants, await this.apRendererService.renderChatUpdate(message, fromUser, toUsers, message.toRoomId ?? undefined, await this.roomUriForMessage(message)));
+		await this.deliverToRemoteUsers(fromUser, participants, await this.apRendererService.renderChatUpdate(message, fromUser, toUsers, message.toRoomId ?? undefined, await this.roomUriForMessage(message)), message);
 
 		return message;
 	}
@@ -714,7 +751,7 @@ export class ChatService {
 		}
 
 		const toUsers = participants.filter(user => user.id !== fromUser.id);
-		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers, await this.roomUriForMessage(message)));
+		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers, await this.roomUriForMessage(message)), message);
 	}
 
 	@bindThis
@@ -744,10 +781,14 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async roomTimeline(roomId: MiChatRoom['id'], limit: number, sinceId?: MiChatMessage['id'] | null, untilId?: MiChatMessage['id'] | null, includeDeleted = false) {
+	public async roomTimeline(roomId: MiChatRoom['id'], limit: number, sinceId?: MiChatMessage['id'] | null, untilId?: MiChatMessage['id'] | null, includeDeleted = false, channelId?: string | null) {
 		const query = this.queryService.makePaginationQuery(this.chatMessagesRepository.createQueryBuilder('message'), sinceId, untilId)
 			.andWhere('message.toRoomId = :roomId', { roomId })
 			.leftJoinAndSelect('message.fromUser', 'fromUser');
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		if (room == null) throw new ChatChannelError('NO_SUCH_ROOM');
+		const resolvedChannel = await this.chatRoomChannelService.resolve(room, channelId);
+		if (resolvedChannel != null) query.andWhere('message.toRoomChannelId = :channelId', { channelId: resolvedChannel });
 		this.excludeSuspendedAuthors(query);
 		if (!includeDeleted) query.andWhere('message.deletedAt IS NULL');
 
@@ -971,6 +1012,7 @@ export class ChatService {
 		const redisPipeline = this.redisClient.pipeline();
 		for (const membership of memberships) {
 			redisPipeline.del(`newRoomChatMessageExists:${membership.userId}:${room.id}`);
+			redisPipeline.del(`newRoomChatUnreadChannels:${membership.userId}:${room.id}`);
 			redisPipeline.srem(`newChatMessagesExists:${membership.userId}`, `room:${room.id}`);
 		}
 		await redisPipeline.exec();
@@ -1389,6 +1431,7 @@ export class ChatService {
 		// 未読フラグを消す (「既読にする」というわけでもないのでreadメソッドは使わないでおく)
 		const redisPipeline = this.redisClient.pipeline();
 		redisPipeline.del(`newRoomChatMessageExists:${userId}:${roomId}`);
+		redisPipeline.del(`newRoomChatUnreadChannels:${userId}:${roomId}`);
 		redisPipeline.srem(`newChatMessagesExists:${userId}`, `room:${roomId}`);
 		await redisPipeline.exec();
 
@@ -1469,6 +1512,7 @@ export class ChatService {
 
 		const redisPipeline = this.redisClient.pipeline();
 		redisPipeline.del(`newRoomChatMessageExists:${member.id}:${room.id}`);
+		redisPipeline.del(`newRoomChatUnreadChannels:${member.id}:${room.id}`);
 		redisPipeline.srem(`newChatMessagesExists:${member.id}`, `room:${room.id}`);
 		await redisPipeline.exec();
 
@@ -1487,32 +1531,34 @@ export class ChatService {
 		name?: string;
 		description?: string;
 		isArchived?: boolean;
-	}, options?: { federate?: boolean; remoteUpdatedAt?: Date }): Promise<MiChatRoom> {
+	}, options?: { federate?: boolean; remoteUpdatedAt?: Date; remoteGroup?: IObject }): Promise<MiChatRoom> {
 		const wasArchived = room.isArchived;
+		const patch = Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined)) as typeof params;
 		const remoteUpdatedAt = options?.remoteUpdatedAt;
 		// TypeORM refuses an UPDATE that has nothing to set.
 		if (remoteUpdatedAt == null && Object.values(params).every(value => value === undefined)) return room;
-		const query = this.chatRoomsRepository.createQueryBuilder().update()
-			.set(remoteUpdatedAt != null ? { ...params, lastRemoteUpdatedAt: remoteUpdatedAt } : params)
-			.where('id = :id', { id: room.id });
-		// Keep this conditional in SQL as multiple inbox workers may read the same revision.
-		if (remoteUpdatedAt != null) {
-			query.andWhere('("lastRemoteUpdatedAt" IS NULL OR "lastRemoteUpdatedAt" <= :remoteUpdatedAt)', { remoteUpdatedAt });
-		}
-		const updated = await query
-			.returning('*')
-			.execute()
-			.then((response) => {
-				return response.raw[0] as MiChatRoom | undefined;
-			});
+		const snapshot = options?.remoteGroup?._misskey_chatChannels !== undefined && remoteUpdatedAt != null ? parseChatChannels(options.remoteGroup, await this.chatRoomChannelService.roomUri(room)) : null;
+		const updated = await this.db.transaction(async manager => {
+			const current = await manager.findOne(MiChatRoom, { where: { id: room.id }, lock: { mode: 'pessimistic_write' } });
+			if (current == null || (remoteUpdatedAt != null && current.lastRemoteUpdatedAt != null && current.lastRemoteUpdatedAt > remoteUpdatedAt)) return null;
+			const revision = remoteUpdatedAt ?? (options?.federate === false ? current.lastRemoteUpdatedAt : new Date(Math.max(Date.now(), (current.lastRemoteUpdatedAt?.getTime() ?? 0) + 1)));
+			await manager.update(MiChatRoom, current.id, { ...patch, lastRemoteUpdatedAt: revision });
+			const updated = { ...current, ...patch, lastRemoteUpdatedAt: revision };
+			return snapshot != null ? this.chatRoomChannelService.applyRemote(manager, updated, snapshot) : updated;
+		});
 		if (updated == null) return room;
 
 		const merged = { ...room, ...updated };
+		if (snapshot != null) {
+			await this.cleanChannelUnread(merged);
+			this.globalEventService.publishChatRoomStream(merged.id, 'channelsUpdated', { roomId: merged.id });
+		}
 		this.globalEventService.publishChatRoomStream(merged.id, 'roomUpdated', {
 			roomId: merged.id,
 			name: merged.name,
 			description: merged.description,
 			isArchived: merged.isArchived,
+			hasChannels: merged.hasChannels,
 		});
 
 		const owner = await this.usersRepository.findOneBy({ id: merged.ownerId });
@@ -1523,10 +1569,59 @@ export class ChatService {
 		const participants = [...await this.participantsForRoom(merged), ...await this.inviteesForRoom(merged)];
 		this.notifyRoomListChanged(this.localUserIds(participants));
 		if (options?.federate !== false && owner != null && owner.host == null) {
-			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomUpdate(merged, owner));
+			await this.federateRoomUpdate(merged, owner);
 		}
 
 		return merged;
+	}
+
+	@bindThis
+	public async notifyRoomChannelsChanged(roomId: string): Promise<void> {
+		const room = await this.chatRoomsRepository.findOneByOrFail({ id: roomId });
+		await this.cleanChannelUnread(room);
+		this.globalEventService.publishChatRoomStream(roomId, 'channelsUpdated', { roomId });
+		const members = await this.participantsForRoom(room);
+		this.notifyRoomListChanged(this.localUserIds(members));
+		const owner = await this.usersRepository.findOneByOrFail({ id: room.ownerId });
+		if (owner.host == null) await this.federateRoomUpdate(room, owner);
+	}
+
+	private async cleanChannelUnread(room: MiChatRoom): Promise<void> {
+		const members = this.localUserIds(await this.participantsForRoom(room));
+		for (const userId of members) {
+			const key = `newRoomChatUnreadChannels:${userId}:${room.id}`;
+			let unread = await this.redisClient.smembers(key);
+			if (unread.length === 0) {
+				const marker = await this.redisClient.get(`newRoomChatMessageExists:${userId}:${room.id}`);
+				const message = marker != null ? await this.chatMessagesRepository.findOneBy({ id: marker, toRoomId: room.id }) : null;
+				if (message?.toRoomChannelId != null) {
+					await this.redisClient.sadd(key, message.toRoomChannelId);
+					unread = [message.toRoomChannelId];
+				}
+			}
+			for (const channelId of unread) {
+				try {
+					await this.chatRoomChannelService.resolve(room, channelId);
+				} catch (err) {
+					if (!(err instanceof ChatChannelError)) throw err;
+					await this.redisClient.eval(
+						CLEAR_CHAT_CHANNEL_UNREAD,
+						3, key, `newRoomChatMessageExists:${userId}:${room.id}`, `newChatMessagesExists:${userId}`, channelId, `room:${room.id}`,
+					);
+				}
+			}
+		}
+	}
+
+	private async federateRoomUpdate(room: MiChatRoom, owner: MiUser): Promise<void> {
+		const snapshot = room.hasChannels ? await this.chatRoomChannelService.snapshot(room.id) : null;
+		if (room.hasChannels && snapshot == null) return;
+		room = snapshot?.room ?? room;
+		const members = await this.participantsForRoom(room);
+		const fields = snapshot?.fields ?? {};
+		await this.deliverToRemoteUsers(owner, members, this.apRendererService.renderChatRoomUpdate(room, owner, fields));
+		const invitees = (await this.inviteesForRoom(room)).filter(user => !members.some(member => member.id === user.id));
+		if (invitees.length > 0) await this.deliverToRemoteUsers(owner, invitees, this.apRendererService.renderChatRoomUpdate(room, owner));
 	}
 
 	@bindThis
@@ -1543,6 +1638,7 @@ export class ChatService {
 	public async searchMessages(meId: MiUser['id'], query: string, limit: number, params: {
 		userId?: MiUser['id'] | null;
 		roomId?: MiChatRoom['id'] | null;
+		channelId?: string | null;
 	}) {
 		const q = this.chatMessagesRepository.createQueryBuilder('message');
 
@@ -1583,6 +1679,13 @@ export class ChatService {
 
 			q.setParameters(membershipsQuery.getParameters());
 			q.setParameters(ownedRoomsQuery.getParameters());
+		}
+
+		if (params.channelId != null) {
+			if (params.roomId == null) throw new ChatChannelError('NO_SUCH_CHANNEL');
+			const room = await this.chatRoomsRepository.findOneByOrFail({ id: params.roomId });
+			await this.chatRoomChannelService.resolve(room, params.channelId);
+			q.andWhere('message.toRoomChannelId = :channelId', { channelId: params.channelId });
 		}
 
 		q.andWhere('LOWER(message.text) LIKE :q', { q: `%${ sqlLikeEscape(query.toLowerCase()) }%` });
@@ -1685,7 +1788,7 @@ export class ChatService {
 		const messageUri = chatMessageUri(message, this.config.url);
 		const activityId = `${this.userEntityService.genLocalUserUri(actor.id)}/chat-reactions/${randomUUID()}`;
 		await this.redisClient.setex(this.chatReactionActivityIdKey(actor.id, messageUri, reaction), CHAT_REACTION_ACTIVITY_ID_TTL, activityId);
-		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReaction(message, actor, toUsers, reaction, activityId, await this.roomUriForMessage(message)));
+		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReaction(message, actor, toUsers, reaction, activityId, await this.roomUriForMessage(message)), message);
 	}
 
 	@bindThis
@@ -1757,7 +1860,7 @@ export class ChatService {
 		const activityIdKey = this.chatReactionActivityIdKey(actor.id, messageUri, reaction);
 		const activityId = await this.redisClient.get(activityIdKey) ?? undefined;
 		await this.redisClient.del(activityIdKey);
-		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReactionUndo(message, actor, toUsers, reaction, activityId, await this.roomUriForMessage(message)));
+		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReactionUndo(message, actor, toUsers, reaction, activityId, await this.roomUriForMessage(message)), message);
 	}
 
 	@bindThis
@@ -1770,7 +1873,7 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async updateRemoteMessage(actor: MiUser, message: MiChatMessage, text: string, editedAt: Date, emojis: string[] = []): Promise<MiChatMessage> {
+	public async updateRemoteMessage(actor: MiUser, message: MiChatMessage, text: string, editedAt: Date, emojis: string[] = [], refs?: unknown): Promise<MiChatMessage> {
 		if (message.fromUserId !== actor.id) throw new ChatMessageAccessError('cannot edit');
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 		if (message.dice != null) throw new ChatMessageAccessError('dice message is immutable');
@@ -1782,12 +1885,15 @@ export class ChatService {
 		const trimmed = text.trim();
 		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > MAX_CHAT_MESSAGE_TEXT_LENGTH) throw new ChatMessageAccessError('invalid text');
 
+		const channelRefs = room != null && room.hasChannels ? await this.chatRoomChannelService.remoteRefs(room, text, refs) : [];
+
 		// Keep this conditional in SQL as multiple inbox workers may read the same revision.
 		const result = await this.chatMessagesRepository.update([
 			{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), dice: IsNull(), editedAt: IsNull() },
 			{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), dice: IsNull(), editedAt: LessThan(editedAt) },
-		], { text: trimmed, editedAt, emojis });
+		], { text: trimmed, editedAt, emojis, channelRefs });
 		if (result.affected === 0) return message;
+		message.channelRefs = channelRefs;
 		message.text = trimmed;
 		message.editedAt = editedAt;
 		message.emojis = emojis;
@@ -1795,6 +1901,7 @@ export class ChatService {
 		const payload = {
 			messageId: message.id,
 			text: trimmed,
+			channelRefs,
 			editedAt: editedAt.toISOString(),
 			emojis: actor.host == null ? {} : await this.customEmojiService.populateEmojis(emojis, actor.host),
 		};
@@ -1805,7 +1912,7 @@ export class ChatService {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', payload);
 		}
 
-		if (room != null) await this.relayToOtherServers(room, actor, (owner, toUsers) => this.apRendererService.renderChatRoomRelay(message, room, owner, toUsers, editedAt));
+		if (room != null) await this.relayToOtherServers(room, actor, (owner, toUsers) => this.apRendererService.renderChatRoomRelay(message, room, owner, toUsers, editedAt), message);
 
 		return message;
 	}
@@ -2132,7 +2239,8 @@ export class ChatService {
 		return [];
 	}
 
-	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any): Promise<void> {
+	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any, message?: MiChatMessage): Promise<void> {
+		const room = message?.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
 		const contextedActivity = this.apRendererService.addContext(activity);
 		const delivered = new Set<string>();
 
@@ -2140,6 +2248,9 @@ export class ChatService {
 			if (user.id === actor.id) continue;
 			if (!this.userEntityService.isRemoteUser(user)) continue;
 			if (user.isSuspended && !ACTIVITIES_FOR_SUSPENDED_ACCOUNTS.has(activity.type)) continue;
+
+			if (message?.toRoomId != null && room == null) continue;
+			if (message != null && room?.hasChannels && !await this.chatRoomChannelService.deliverableTo(user.host, message, room)) continue;
 
 			// Every recipient is named in the activity, so a server needs it only once however many members it has.
 			const inbox = user.sharedInbox ?? user.inbox;

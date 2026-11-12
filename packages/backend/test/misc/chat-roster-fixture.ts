@@ -389,14 +389,14 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 
 	const db = {
 		transaction: async <T>(callback: (manager: unknown) => Promise<T>): Promise<T> => {
-			const table = (entity: { name: string }) => entity.name === 'MiChatRoomInvitation' ? invitations : memberships;
+			const table = (entity: { name: string }) => entity.name === 'MiChatRoom' ? rooms : entity.name === 'MiChatRoomInvitation' ? invitations : memberships;
 			return await callback({
 				findOne: (_entity: unknown, options: { where: Record<string, unknown> }) => rooms.findOneBy(options.where),
 				find: async (_entity: unknown, options: { where: Record<string, unknown> }) => (await memberships.findBy(options.where)).map(membership => ({ ...membership, user: users.get(membership.userId as string) ?? null })),
 				withRepository: (repository: unknown) => repository,
 				delete: (entity: { name: string }, where: Record<string, unknown>) => table(entity).delete(where),
 				findOneBy: (entity: { name: string }, where: Record<string, unknown>) => table(entity).findOneBy(where),
-				update: (entity: { name: string }, where: Record<string, unknown>, patch: Record<string, unknown>) => table(entity).update(where, patch),
+				update: (entity: { name: string }, where: string | Record<string, unknown>, patch: Record<string, unknown>) => table(entity).update(where, patch),
 				countBy: (entity: { name: string }, where: Record<string, unknown>) => table(entity).countBy(where),
 				insert: (entity: { name: string }, row: Row) => table(entity).insertOne(row),
 			});

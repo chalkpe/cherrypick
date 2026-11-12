@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
+import { ChatChannelError } from '@/core/chat-room-channels.js';
 import { Inject, Injectable } from '@nestjs/common';
 import { DataSource, In } from 'typeorm';
 import * as Redis from 'ioredis';
@@ -124,6 +126,7 @@ export class ApInboxService {
 		private noteDeleteService: NoteDeleteService,
 		private notificationService: NotificationService,
 		private chatService: ChatService,
+		private chatRoomChannelService: ChatRoomChannelService,
 		private chatRosterService: ChatRosterService,
 		private chatVoiceService: ChatVoiceService,
 		private liveKitService: LiveKitService,
@@ -315,7 +318,7 @@ export class ApInboxService {
 				}
 				return 'ok';
 			} catch (err) {
-				if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+				if (err instanceof ChatMessageAccessError || err instanceof ChatChannelError) return `skip: ${err.message}`;
 				throw err;
 			}
 		};
@@ -497,6 +500,12 @@ export class ApInboxService {
 				published: new Date().toISOString(),
 			});
 			this.queueService.deliver(owner, activity, member.inbox, false);
+		}
+
+		const currentRoom = await this.chatRoomsRepository.findOneBy({ id: room.id });
+		if (currentRoom?.hasChannels && owner.host == null && actor.inbox != null) {
+			const snapshot = await this.chatRoomChannelService.snapshot(room.id);
+			if (snapshot != null) this.queueService.deliver(owner, this.apRendererService.addContext(this.apRendererService.renderChatRoomUpdate(snapshot.room, owner, snapshot.fields)), actor.inbox, false);
 		}
 
 		return result;
@@ -683,10 +692,10 @@ export class ApInboxService {
 		const emojis = await this.apNoteService.extractEmojis(note.tag ?? [], author.host).catch(() => []);
 		const unlock = await acquireApObjectLock(this.redisClient, message.uri ?? getApId(note));
 		try {
-			await this.chatService.updateRemoteMessage(author, message, text, editedAt, emojis.map(emoji => emoji.name));
+			await this.chatService.updateRemoteMessage(author, message, text, editedAt, emojis.map(emoji => emoji.name), note._misskey_chatChannelRefs);
 			return 'ok: chat message updated';
 		} catch (err) {
-			if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+			if (err instanceof ChatMessageAccessError || err instanceof ChatChannelError) return `skip: ${err.message}`;
 			throw err;
 		} finally {
 			await unlock();
@@ -753,7 +762,7 @@ export class ApInboxService {
 			await this.chatService.deleteRemoteMessage(doer, message);
 			return 'ok: chat message deleted';
 		} catch (err) {
-			if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+			if (err instanceof ChatMessageAccessError || err instanceof ChatChannelError) return `skip: ${err.message}`;
 			throw err;
 		} finally {
 			await unlock();
@@ -1269,11 +1278,12 @@ export class ApInboxService {
 					if (typeof room === 'string') return room;
 					if (await this.hasDeferredRoomChatDelete(actor, object.id, room.id)) return 'skip: deleted';
 					await this.chatService.assertRemoteWriteAllowed(room);
+					await this.resolveChatMessageChannel(room, object, options);
 				} else {
 					await this.chatService.assertCanSendToUser(actor, recipients[0]);
 				}
 			} catch (err) {
-				if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+				if (err instanceof ChatMessageAccessError || err instanceof ChatChannelError) return `skip: ${err.message}`;
 				throw err;
 			}
 		}
@@ -1298,7 +1308,7 @@ export class ApInboxService {
 			if (existing != null) {
 				if (getApType(activity) === 'Update') {
 					if (text == null) return 'skip: chat message has no content';
-					await this.chatService.updateRemoteMessage(actor, existing, text, editedAt ?? new Date(), apEmojis);
+					await this.chatService.updateRemoteMessage(actor, existing, text, editedAt ?? new Date(), apEmojis, object._misskey_chatChannelRefs);
 					return 'ok: chat message updated';
 				}
 				return 'skip: chat message exists';
@@ -1332,9 +1342,13 @@ export class ApInboxService {
 				if (typeof room === 'string') return room;
 				if (await this.hasDeferredRoomChatDelete(actor, uri, room.id)) return 'skip: deleted';
 
+				const toRoomChannelId = await this.resolveChatMessageChannel(room, object, options);
+
 				// Create the message to the room
 				await this.chatService.createMessageToRoom(actor, room, {
 					text,
+					toRoomChannelId,
+					remoteChannelRefs: object._misskey_chatChannelRefs,
 					files,
 					uri,
 					emojis: apEmojis,
@@ -1352,7 +1366,7 @@ export class ApInboxService {
 			return 'ok';
 		} catch (err) {
 			// The recipient refused for good.
-			if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+			if (err instanceof ChatMessageAccessError || err instanceof ChatChannelError) return `skip: ${err.message}`;
 			// The attachment or recipient work above can outlast the lock, so another worker may have got there first.
 			if (isDuplicateKeyValueError(err)) return 'skip: chat message exists';
 			this.logger.error(`Failed to create chat message: ${err}`);
@@ -1360,6 +1374,21 @@ export class ApInboxService {
 		} finally {
 			await unlock();
 		}
+	}
+
+	private async resolveChatMessageChannel(room: MiChatRoom, object: IPost, options?: ActivityAttempt): Promise<string | null> {
+		if (!room.hasChannels && object._misskey_chatChannel == null) return null;
+		try {
+			const channelId = await this.chatRoomChannelService.remoteChannel(room, object._misskey_chatChannel);
+			if (channelId !== undefined) return channelId;
+		} catch (err) {
+			if (err instanceof ChatChannelError) throw new ChatMessageAccessError(err.message);
+			throw err;
+		}
+		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
+		if (owner?.host == null || options?.isLastAttempt) throw new ChatMessageAccessError('unknown chat channel');
+		await this.chatRosterService.requestSync(room, 'channels');
+		throw new Error('chat room channel is not ready');
 	}
 
 	@bindThis
@@ -1401,7 +1430,7 @@ export class ApInboxService {
 					await this.chatService.deleteRemoteMessage(actor, chatMessage, { activity });
 					return 'ok: chat message deleted';
 				} catch (err) {
-					if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+					if (err instanceof ChatMessageAccessError || err instanceof ChatChannelError) return `skip: ${err.message}`;
 					throw err;
 				}
 			}
@@ -2009,10 +2038,10 @@ export class ApInboxService {
 				const messageRoom = message.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
 				if (messageRoom != null) await this.assertKnownInRoom(messageRoom, actor);
 
-				await this.chatService.updateRemoteMessage(actor, message, text, editedAt, emojis.map(emoji => emoji.name));
+				await this.chatService.updateRemoteMessage(actor, message, text, editedAt, emojis.map(emoji => emoji.name), note._misskey_chatChannelRefs);
 				return 'ok: chat message updated';
 			} catch (err) {
-				if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
+				if (err instanceof ChatMessageAccessError || err instanceof ChatChannelError) return `skip: ${err.message}`;
 				throw err;
 			}
 		}
@@ -2128,7 +2157,7 @@ export class ApInboxService {
 			name: typeof object.name === 'string' ? truncate(object.name, 256) : room.name,
 			description: typeof object.summary === 'string' ? truncate(object.summary, 2048) : room.description,
 			isArchived: typeof object._misskey_chatArchived === 'boolean' ? object._misskey_chatArchived : room.isArchived,
-		}, { federate: false, remoteUpdatedAt: this.chatRoomUpdatedAt(object) });
+		}, { federate: false, remoteUpdatedAt: this.chatRoomUpdatedAt(object), remoteGroup: object });
 	}
 
 	private isChatMessageUri(uri: string): boolean {

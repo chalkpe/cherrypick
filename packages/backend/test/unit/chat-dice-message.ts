@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import jsonld from 'jsonld';
 import { ChatService, ChatMessageAccessError } from '@/core/ChatService.js';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import CreateToUser, { meta as userMeta } from '@/server/api/endpoints/chat/messages/create-to-user.js';
 import CreateToRoom, { meta as roomMeta } from '@/server/api/endpoints/chat/messages/create-to-room.js';
@@ -47,6 +48,8 @@ function fixture() {
 	const pipeline = { set: vi.fn(), sadd: vi.fn(), exec: vi.fn() };
 	const dependencies = {
 		config: { url: 'https://local.test' },
+		chatRoomChannelService: Object.assign(Object.create(ChatRoomChannelService.prototype), { db: { manager: {} } }),
+		db: { transaction: async (run: (manager: unknown) => Promise<unknown>) => run({ findOne: async () => room, findBy: async () => [], withRepository: (repository: unknown) => repository }) },
 		chatMessagesRepository: repository,
 		chatEntityService: entity,
 		chatDiceService: { roll },

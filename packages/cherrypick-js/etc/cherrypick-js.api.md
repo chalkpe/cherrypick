@@ -1007,13 +1007,26 @@ export type Channels = {
     chatRoom: {
         params: {
             roomId: string;
+            channelId?: string;
         };
         events: {
+            channelsUpdated: (payload: {
+                roomId: string;
+            }) => void;
+            channelMessage: (payload: {
+                channelId: string;
+                messageId: string;
+            }) => void;
             message: (payload: ChatMessageLite) => void;
             updated: (payload: {
                 messageId: ChatMessageLite['id'];
                 text: string;
                 editedAt: string;
+                channelRefs?: {
+                    channelId: string;
+                    start: number;
+                    length: number;
+                }[];
                 emojis?: Record<string, string>;
             }) => void;
             deleted: (payload: ChatMessageLite['id']) => void;
@@ -1032,6 +1045,7 @@ export type Channels = {
                 name: string;
                 description: string;
                 isArchived: boolean;
+                hasChannels?: boolean;
             }) => void;
             membershipStarted: (payload: {
                 userId: string;
@@ -1263,10 +1277,46 @@ type ChatMessagesUserTimelineResponse = operations['chat___messages___user-timel
 type ChatRoom = components['schemas']['ChatRoom'];
 
 // @public (undocumented)
+type ChatRoomChannel = components['schemas']['ChatRoomChannel'];
+
+// @public (undocumented)
 type ChatRoomInvitation = components['schemas']['ChatRoomInvitation'];
 
 // @public (undocumented)
 type ChatRoomMembership = components['schemas']['ChatRoomMembership'];
+
+// @public (undocumented)
+type ChatRoomsChannelsCreateRequest = operations['chat___rooms___channels___create']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsChannelsCreateResponse = operations['chat___rooms___channels___create']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsChannelsDeleteRequest = operations['chat___rooms___channels___delete']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsChannelsListRequest = operations['chat___rooms___channels___list']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsChannelsListResponse = operations['chat___rooms___channels___list']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsChannelsReorderRequest = operations['chat___rooms___channels___reorder']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsChannelsReorderResponse = operations['chat___rooms___channels___reorder']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsChannelsUpdateRequest = operations['chat___rooms___channels___update']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsChannelsUpdateResponse = operations['chat___rooms___channels___update']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsConvertToChannelsRequest = operations['chat___rooms___convert-to-channels']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsConvertToChannelsResponse = operations['chat___rooms___convert-to-channels']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type ChatRoomsCreateRequest = operations['chat___rooms___create']['requestBody']['content']['application/json'];
@@ -1987,6 +2037,17 @@ declare namespace entities {
         ChatMessagesUpdateResponse,
         ChatMessagesUserTimelineRequest,
         ChatMessagesUserTimelineResponse,
+        ChatRoomsChannelsCreateRequest,
+        ChatRoomsChannelsCreateResponse,
+        ChatRoomsChannelsDeleteRequest,
+        ChatRoomsChannelsListRequest,
+        ChatRoomsChannelsListResponse,
+        ChatRoomsChannelsReorderRequest,
+        ChatRoomsChannelsReorderResponse,
+        ChatRoomsChannelsUpdateRequest,
+        ChatRoomsChannelsUpdateResponse,
+        ChatRoomsConvertToChannelsRequest,
+        ChatRoomsConvertToChannelsResponse,
         ChatRoomsCreateRequest,
         ChatRoomsCreateResponse,
         ChatRoomsDeleteRequest,
@@ -2539,6 +2600,7 @@ declare namespace entities {
         ChatMessageLiteFor1on1,
         ChatMessageLiteForRoom,
         ChatRoom,
+        ChatRoomChannel,
         ChatRoomInvitation,
         ChatRoomMembership,
         ChatRoomVoiceState,

@@ -12,6 +12,7 @@ import { ApImageService } from '@/core/activitypub/models/ApImageService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { buildChatNote } from '@/core/activitypub/misc/chat-payloads.js';
 import { ChatMessageAccessError, ChatService, MAX_CHAT_MESSAGE_FILES, MAX_REMOTE_CHAT_MESSAGE_FILES } from '@/core/ChatService.js';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { DriveFileUsageService } from '@/core/DriveFileUsageService.js';
 import CreateToRoomEndpoint, { paramDef as createToRoomParams } from '@/server/api/endpoints/chat/messages/create-to-room.js';
@@ -243,6 +244,8 @@ describe('storing the attachments of a new message', () => {
 		const insertOne = vi.fn(async (message: object) => message);
 		const service = Object.assign(Object.create(ChatService.prototype), {
 			config: { url: 'https://local.test' },
+			chatRoomChannelService: Object.assign(Object.create(ChatRoomChannelService.prototype), { db: { manager: {} } }),
+			db: { transaction: async (run: (manager: unknown) => Promise<unknown>) => run({ findOne: async () => ({ id: 'r1', ownerId: 'bob', isArchived: false }), findBy: async () => [], withRepository: (repository: unknown) => repository }) },
 			idService: { gen: () => 'generated', parse: () => ({ date: new Date('2026-11-04T00:00:00Z') }) },
 			chatMessagesRepository: { insertOne },
 			chatApprovalsRepository: { createQueryBuilder: () => ({ where() { return this; }, orWhere() { return this; }, take() { return this; }, getMany: async () => [] }), insertOne: vi.fn() },

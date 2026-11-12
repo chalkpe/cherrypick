@@ -6,6 +6,7 @@
 import { PrimaryColumn, Entity, Index, JoinColumn, Column, ManyToOne } from 'typeorm';
 import { id } from './util/id.js';
 import { MiUser } from './User.js';
+import { MiChatRoomChannel } from './ChatRoomChannel.js';
 
 @Entity('chat_room')
 export class MiChatRoom {
@@ -44,6 +45,16 @@ export class MiChatRoom {
 		default: false,
 	})
 	public isArchived: boolean;
+
+	@Column('boolean', { default: false })
+	public hasChannels: boolean;
+
+	@Column({ ...id(), nullable: true })
+	public legacyChannelId: MiChatRoomChannel['id'] | null;
+
+	@ManyToOne(() => MiChatRoomChannel, { onDelete: 'SET NULL' })
+	@JoinColumn()
+	public legacyChannel: MiChatRoomChannel | null;
 
 	/**
 	 * リモートのルーム所有者が最後に知らせた、状態の時刻。遅れて届いた古い状態で巻き戻らないようにする

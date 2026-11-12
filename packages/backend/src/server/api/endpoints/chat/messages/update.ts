@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { ChatChannelError, chatChannelRefsParam } from '@/core/chat-room-channels.js';
+import { chatChannelApiErrors } from '@/server/api/chat-channel-errors.js';
 import { Injectable } from '@nestjs/common';
 import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
@@ -31,6 +33,7 @@ export const meta = {
 	},
 
 	errors: {
+		...chatChannelApiErrors,
 		noSuchMessage: {
 			message: 'No such message.',
 			code: 'NO_SUCH_MESSAGE',
@@ -53,6 +56,7 @@ export const paramDef = {
 	type: 'object',
 	properties: {
 		messageId: { type: 'string', format: 'misskey:id' },
+		channelRefs: chatChannelRefsParam,
 		text: { type: 'string', maxLength: MAX_CHAT_MESSAGE_TEXT_LENGTH },
 	},
 	required: ['messageId', 'text'],
@@ -68,9 +72,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			await this.chatService.checkChatAvailability(me.id, 'write');
 
 			try {
-				const updated = await this.chatService.updateMessage(me.id, ps.messageId, ps.text);
+				const updated = await this.chatService.updateMessage(me.id, ps.messageId, ps.text, ps.channelRefs);
 				return this.chatEntityService.packMessageDetailed(updated, me);
 			} catch (e) {
+				if (e instanceof ChatChannelError) throw new ApiError(meta.errors[e.reason]);
 				if (e instanceof ChatMessageInvalidTextError) throw new ApiError(meta.errors.invalidText);
 				if (e instanceof ChatMessageAccessError) throw new ApiError(meta.errors.noSuchMessage);
 				if (e instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);

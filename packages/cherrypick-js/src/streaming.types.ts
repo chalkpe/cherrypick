@@ -307,13 +307,17 @@ export type Channels = {
 	chatRoom: {
 		params: {
 			roomId: string;
+			channelId?: string;
 		};
 		events: {
+			channelsUpdated: (payload: { roomId: string }) => void;
+			channelMessage: (payload: { channelId: string; messageId: string }) => void;
 			message: (payload: ChatMessageLite) => void;
 			updated: (payload: {
 				messageId: ChatMessageLite['id'];
 				text: string;
 				editedAt: string;
+				channelRefs?: { channelId: string; start: number; length: number }[];
 				emojis?: Record<string, string>;
 			}) => void;
 			deleted: (payload: ChatMessageLite['id']) => void;
@@ -332,6 +336,7 @@ export type Channels = {
 				name: string;
 				description: string;
 				isArchived: boolean;
+				hasChannels?: boolean;
 			}) => void;
 			membershipStarted: (payload: { userId: string; }) => void;
 			membershipEnded: (payload: { userId: string; }) => void;

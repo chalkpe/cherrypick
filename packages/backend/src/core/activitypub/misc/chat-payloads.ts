@@ -35,6 +35,10 @@ export type ChatPayloadOptions = {
 	published?: string;
 	updated?: string;
 	roomUri?: string;
+	channelUri?: string;
+	channelRefs?: { id: string; start: number; length: number }[];
+	channels?: { id: string; name: string }[];
+	legacyChannel?: string | null;
 	attachment?: IApDocument[];
 	tag?: IObject[];
 	activityId?: string;
@@ -99,6 +103,8 @@ export function buildChatNote(
 	if (roomUri != null) {
 		note.context = roomUri;
 		note._misskey_chatRoom = roomUri;
+		if (options.channelUri != null) note._misskey_chatChannel = options.channelUri;
+		if (options.channelRefs?.length) note._misskey_chatChannelRefs = options.channelRefs;
 	}
 
 	if (options.attachment != null && options.attachment.length > 0) {
@@ -232,6 +238,7 @@ export function buildChatRoomUpdate(
 			summary: room.description ?? '',
 			attributedTo: chatActorUri(owner, options.baseUrl),
 			_misskey_chatArchived: room.isArchived,
+			...(options.channels != null ? { _misskey_chatChannels: options.channels, _misskey_chatLegacyChannel: options.legacyChannel ?? null } : {}),
 			updated,
 		},
 		published: options.published ?? new Date().toISOString(),

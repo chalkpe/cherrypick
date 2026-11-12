@@ -1182,7 +1182,7 @@ describe('Chat room federation: Add/Update/Delete', () => {
 			object: { id: roomUri, type: 'Group', name: 'new name', attributedTo: ownerActor.uri, updated: '2026-11-03T00:00:00.000Z' },
 		});
 
-		expect(f.inbox.chatService.updateRoom).toHaveBeenCalledWith(f.rooms.rows[0], expect.anything(), { federate: false, remoteUpdatedAt: new Date('2026-11-03T00:00:00.000Z') });
+		expect(f.inbox.chatService.updateRoom).toHaveBeenCalledWith(f.rooms.rows[0], expect.anything(), expect.objectContaining({ federate: false, remoteUpdatedAt: new Date('2026-11-03T00:00:00.000Z') }));
 	});
 
 	test.each([undefined, 'not a date'])('Update with the unusable time %s falls back to arrival order', async (updated) => {
@@ -1195,7 +1195,7 @@ describe('Chat room federation: Add/Update/Delete', () => {
 			object: { id: roomUri, type: 'Group', name: 'new name', attributedTo: ownerActor.uri, updated },
 		});
 
-		expect(f.inbox.chatService.updateRoom).toHaveBeenCalledWith(f.rooms.rows[0], expect.anything(), { federate: false, remoteUpdatedAt: undefined });
+		expect(f.inbox.chatService.updateRoom).toHaveBeenCalledWith(f.rooms.rows[0], expect.anything(), expect.objectContaining({ federate: false, remoteUpdatedAt: undefined }));
 	});
 
 	test.each([true, false])('Update applies the archived state %s from the room owner', async (archived) => {

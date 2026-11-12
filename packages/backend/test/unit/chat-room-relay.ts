@@ -624,3 +624,25 @@ describe('a server that is not told about Announce with an activity inside', () 
 		expect(await f.inbox.announce(bob, announced, f.resolver)).toMatch(/^skip: unknown object type/);
 	});
 });
+
+
+describe('일반 채널 활동의 소유 서버 중계', () => {
+	test.each(['update', 'delete', 'react', 'unreact'] as const)('%s를 미지원 멤버 서버로 중계하지 않는다', async operation => {
+		const source = storedMessage({ toRoomId: 'localroom', toRoomChannelId: 'private', channelRefs: [], reactions: operation === 'unreact' ? [`${carol.id}/👍`] : [] });
+		const f = chatRosterFixture({ memberships: [['localroom', carol.id], ['localroom', erin.id], ['localroom', bob.id]], messages: [source] });
+		Object.assign(f.rooms.rows.find(room => room.id === 'localroom')!, { hasChannels: true, legacyChannelId: 'general' });
+		Object.assign(f.chatService, { chatRoomChannelService: {
+			remoteRefs: async () => [],
+			deliverableTo: async (host: string) => host === erin.host,
+		} });
+		const stored = await f.messages.findOneBy({ id: source.id });
+		const like = { id: `${carol.uri}/chat-reactions/channels`, type: 'EmojiReact', actor: carol.uri, object: source.uri, content: '👍' };
+
+		if (operation === 'update') await f.chatService.updateRemoteMessage(carol as never, stored as never, 'edited', new Date());
+		if (operation === 'delete') await f.chatService.deleteRemoteMessage(carol as never, stored as never, { activity: { id: `${source.uri}#delete`, type: 'Delete', actor: carol.uri, object: source.uri } as never });
+		if (operation === 'react') await f.chatService.reactRemote(carol as never, { ...stored, fromUserId: erin.id } as never, '👍', like.id, { activity: like as never });
+		if (operation === 'unreact') await f.chatService.unreactRemote(carol as never, stored as never, '👍', like.id, { activity: { id: `${like.id}/undo`, type: 'Undo', actor: carol.uri, object: like } as never });
+
+		expect(f.delivered().map(delivery => delivery.to)).toEqual([erin.inbox]);
+	});
+});

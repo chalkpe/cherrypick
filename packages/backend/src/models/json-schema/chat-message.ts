@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { packedChatChannelRefsSchema } from '@/core/chat-room-channels.js';
 import { chatDiceResultSchema } from '@/core/chat-dice.js';
 
 export const packedChatMessageSchema = {
@@ -54,6 +55,15 @@ export const packedChatMessageSchema = {
 			optional: true, nullable: true,
 			ref: 'ChatRoom',
 		},
+		toRoomChannelId: { type: 'string', optional: true, nullable: true },
+		toRoomChannel: {
+			type: 'object', optional: true, nullable: true,
+			properties: {
+				id: { type: 'string', optional: false, nullable: false },
+				name: { type: 'string', optional: false, nullable: false },
+			},
+		},
+		channelRefs: { ...packedChatChannelRefsSchema, optional: true },
 		dice: { ...chatDiceResultSchema, optional: true, nullable: true },
 		text: {
 			type: 'string',
@@ -157,6 +167,15 @@ export const packedChatMessageLiteSchema = {
 			type: 'string',
 			optional: true, nullable: true,
 		},
+		toRoomChannelId: { type: 'string', optional: true, nullable: true },
+		toRoomChannel: {
+			type: 'object', optional: true, nullable: true,
+			properties: {
+				id: { type: 'string', optional: false, nullable: false },
+				name: { type: 'string', optional: false, nullable: false },
+			},
+		},
+		channelRefs: { ...packedChatChannelRefsSchema, optional: true },
 		dice: { ...chatDiceResultSchema, optional: true, nullable: true },
 		text: {
 			type: 'string',
@@ -337,6 +356,15 @@ export const packedChatMessageLiteForRoomSchema = {
 			type: 'string',
 			optional: false, nullable: false,
 		},
+		toRoomChannelId: { type: 'string', optional: true, nullable: true },
+		toRoomChannel: {
+			type: 'object', optional: true, nullable: true,
+			properties: {
+				id: { type: 'string', optional: false, nullable: false },
+				name: { type: 'string', optional: false, nullable: false },
+			},
+		},
+		channelRefs: { ...packedChatChannelRefsSchema, optional: true },
 		dice: { ...chatDiceResultSchema, optional: true, nullable: true },
 		text: {
 			type: 'string',

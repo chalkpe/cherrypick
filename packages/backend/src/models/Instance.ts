@@ -123,6 +123,9 @@ export class MiInstance {
 	})
 	public supportsAvatarDecorations: boolean;
 
+	@Column('boolean', { default: false })
+	public supportsChatRoomChannels: boolean;
+
 	@Column('boolean', {
 		nullable: true,
 	})

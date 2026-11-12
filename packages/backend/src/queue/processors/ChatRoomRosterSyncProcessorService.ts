@@ -95,6 +95,8 @@ export class ChatRoomRosterSyncProcessorService {
 		const roster = this.parseRoster(group, room.uri, owner.uri);
 		if (roster == null) return 'skip: the owner\'s server gave no roster';
 
+		await this.chatService.updateRoom(room, {}, { federate: false, remoteUpdatedAt: parseRemoteChatDate(group.updated) ?? undefined, remoteGroup: group });
+
 		const present = await this.removeDropped(room, memberships, members, roster);
 		await this.addListed(room, owner.uri, roster, present);
 		return 'ok';
