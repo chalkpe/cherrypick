@@ -4204,7 +4204,7 @@ _voiceRelay:
 _driveDeletion:
   selectedCount: "선택한 파일: {count}개"
   filesConfirm: "선택한 파일 {count}개를 삭제할까요? 삭제한 파일은 복구할 수 없어요."
-  folderConfirm: "폴더 “{name}”과 모든 하위 폴더(파일 총 {count}개)를 삭제할까요? 삭제한 폴더와 파일은 복구할 수 없어요."
+  folderConfirm: "“{name}” 폴더와 모든 하위 폴더(파일 총 {count}개)를 삭제할까요? 삭제한 폴더와 파일은 복구할 수 없어요."
   scope: "게시물·첨부·아바타·배너 등에서 쓰는 파일도 삭제되어 표시되지 않을 수 있어요."
   deletedFiles: "삭제한 파일: {count}개."
   deletedFolders: "삭제한 폴더: {count}개."
