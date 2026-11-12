@@ -683,10 +683,10 @@ async function deleteFilesBulk() {
 	if (fetching.value || bulkBusy.value || driveDeletionBusy.value || selectedFiles.value.length === 0 || props.select) return;
 	bulkBusy.value = true;
 	try {
-		await deleteDriveItems({ fileIds: selectedFiles.value.map(file => file.id) });
+		const result = await deleteDriveItems({ fileIds: selectedFiles.value.map(file => file.id) });
+		if (result) initialize();
 	} finally {
 		bulkBusy.value = false;
-		initialize();
 	}
 }
 

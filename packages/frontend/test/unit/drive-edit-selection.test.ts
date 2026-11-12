@@ -233,6 +233,39 @@ async function selectPaginatedFiles(count = 103) {
 	return screen;
 }
 
+test.each(['+createdAt', '+name'] as const)('canceling a delete in %s order preserves all 103 selections for the next confirmation', async sort => {
+	store.r.driveSortMode.value = sort;
+	const screen = await selectPaginatedFiles();
+	const selectedIds = files.map(file => file.id);
+	const fileQueries = requests('drive/files').length;
+	const folderQueries = requests('drive/folders').length;
+	vi.mocked(os.confirm).mockResolvedValueOnce({ canceled: true });
+
+	await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+	await waitFor(() => expect(os.confirm).toHaveBeenCalledOnce());
+	await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' }).hasAttribute('disabled')).toBe(false));
+
+	expectCount(screen, 103);
+	expect(screen.getAllByRole('button', { name: /^Piece-/, pressed: true })).toHaveLength(103);
+	expect(requests('drive/delete/prepare').map(body => body.fileIds)).toEqual([selectedIds]);
+	expect(requests('drive/delete/execute')).toHaveLength(0);
+	expect(requests('drive/files')).toHaveLength(fileQueries);
+	expect(requests('drive/folders')).toHaveLength(folderQueries);
+	expect(files.map(file => file.id)).toEqual(selectedIds);
+
+	await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+	await waitFor(() => expect(requests('drive/delete/execute')).toHaveLength(1));
+	await waitFor(() => expectCount(screen, 0));
+	await waitFor(() => expect(screen.queryAllByRole('button', { name: /^Piece-/ })).toHaveLength(0));
+
+	expect(vi.mocked(os.confirm).mock.calls.map(([options]) => options.text)).toEqual([
+		expect.stringContaining('103'),
+		expect.stringContaining('103'),
+	]);
+	expect(requests('drive/delete/prepare').map(body => body.fileIds)).toEqual([selectedIds, selectedIds]);
+	expect(files).toHaveLength(0);
+});
+
 test.each(['+createdAt', '+name'] as const)('canceling a move in %s order preserves all 103 loaded cards and selections without reloading', async sort => {
 	store.r.driveSortMode.value = sort;
 	const screen = await selectPaginatedFiles();
