@@ -105,5 +105,13 @@ export async function deleteDriveItems(input: Selection): Promise<DeleteResult |
 }
 
 function resultText(result: DeleteResult) {
-	return i18n.tsx._driveDeletion.result({ deleted: result.deletedCount, missing: result.missingCount, failed: result.failedCount, remaining: result.remainingCount, folders: result.remainingFoldersCount });
+	const messages: string[] = [];
+	if (result.deletedCount > 0) messages.push(i18n.tsx._driveDeletion.deletedFiles({ count: result.deletedCount }));
+	if (result.deletedFolderIds.length > 0) messages.push(i18n.tsx._driveDeletion.deletedFolders({ count: result.deletedFolderIds.length }));
+	if (result.missingCount > 0) messages.push(i18n.tsx._driveDeletion.missingFiles({ count: result.missingCount }));
+	if (result.missingFolderIds.length > 0) messages.push(i18n.tsx._driveDeletion.missingFolders({ count: result.missingFolderIds.length }));
+	if (result.failedCount > 0) messages.push(i18n.tsx._driveDeletion.failedFiles({ count: result.failedCount }));
+	if (result.remainingCount > 0) messages.push(i18n.tsx._driveDeletion.remainingFiles({ count: result.remainingCount }));
+	if (result.remainingFoldersCount > 0) messages.push(i18n.tsx._driveDeletion.remainingFolders({ count: result.remainingFoldersCount }));
+	return messages.length > 0 ? messages.join('\n') : i18n.ts._driveDeletion.noItemsDeleted;
 }

@@ -16239,39 +16239,67 @@ export interface Locale extends ILocale {
          */
         "filesConfirm": ParameterizedString<"count">;
         /**
-         * フォルダー「{name}」とすべてのサブフォルダーを削除しますか？ファイルは合計{count}個です。空のフォルダーも削除します。削除すると元に戻せません。
+         * フォルダー「{name}」とすべてのサブフォルダー（ファイル合計{count}個）を削除しますか？削除すると元に戻せません。
          */
         "folderConfirm": ParameterizedString<"name" | "count">;
         /**
-         * 今確認したファイルだけを削除し、後で移動されたファイルも含みます。新たに追加されたファイルは残します。投稿・添付・アイコン・バナーなどで使用中のファイルも個別削除と同様に削除され、表示できなくなる場合があります。
+         * 投稿・添付・アイコン・バナーなどで使用中のファイルも削除され、表示できなくなる場合があります。
          */
         "scope": string;
         /**
-         * 削除したファイル: {deleted}個。既に存在しないかアクセスできないファイル: {missing}個。失敗: {failed}個。残ったファイル: {remaining}個。残ったフォルダー: {folders}個。
+         * 削除したファイル: {count}個。
          */
-        "result": ParameterizedString<"deleted" | "missing" | "failed" | "remaining" | "folders">;
+        "deletedFiles": ParameterizedString<"count">;
         /**
-         * 残った項目を確認して、もう一度削除を実行してください。
+         * 削除したフォルダー: {count}個。
+         */
+        "deletedFolders": ParameterizedString<"count">;
+        /**
+         * 既に存在しないかアクセスできないファイル: {count}個。
+         */
+        "missingFiles": ParameterizedString<"count">;
+        /**
+         * 既に存在しないかアクセスできないフォルダー: {count}個。
+         */
+        "missingFolders": ParameterizedString<"count">;
+        /**
+         * 削除に失敗したファイル: {count}個。
+         */
+        "failedFiles": ParameterizedString<"count">;
+        /**
+         * 残ったファイル: {count}個。
+         */
+        "remainingFiles": ParameterizedString<"count">;
+        /**
+         * 残ったフォルダー: {count}個。
+         */
+        "remainingFolders": ParameterizedString<"count">;
+        /**
+         * 削除した項目はありません。
+         */
+        "noItemsDeleted": string;
+        /**
+         * 残った項目を確認して、もう一度削除してください。
          */
         "retry": string;
         /**
-         * 処理が中断されました。表示は最後に受け取った結果で、その後も削除されている場合があります。再読み込みして残った項目を確認し、再試行してください。
+         * 削除が中断されました。残ったファイルとフォルダーを確認してください。
          */
         "interrupted": string;
         /**
-         * 一度に削除できるのはファイル10,000個、フォルダー1,000個までです。大きなフォルダーは範囲を分けて削除してください。
+         * 一度に削除できるのはファイル10,000個、フォルダー1,000個までです。分けて削除してください。
          */
         "tooMany": string;
         /**
-         * 確認の有効期限が切れたか、別の確認に置き換わりました。対象を確認してもう一度実行してください。
+         * 削除の確認の有効期限が切れました。再試行してください。
          */
         "expired": string;
         /**
-         * 別の削除リクエストを処理中です。完了までお待ちください。
+         * 別の削除を実行中です。しばらくお待ちください。
          */
         "busy": string;
         /**
-         * 移動したファイル: {moved}個。失敗: {failed}個。失敗したファイルは選択されたままです。再試行してください。
+         * 移動したファイル: {moved}個。失敗: {failed}個。失敗したファイルをもう一度移動してください。
          */
         "moveResult": ParameterizedString<"moved" | "failed">;
     };
