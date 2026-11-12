@@ -46,6 +46,8 @@ let failFileList: boolean;
 let failedMoveBatch: number | undefined;
 let moveBatchCount: number;
 let fileListGate: Promise<void> | undefined;
+let folderLookupGate: Promise<void> | undefined;
+let deletedFolderIds: Set<string>;
 let failedDeleteIds: Set<string>;
 let failPrepare: boolean;
 
@@ -58,6 +60,8 @@ beforeEach(() => {
 	failedMoveBatch = undefined;
 	moveBatchCount = 0;
 	fileListGate = undefined;
+	folderLookupGate = undefined;
+	deletedFolderIds = new Set();
 	failedDeleteIds = new Set();
 	failPrepare = false;
 	store.r.driveSortMode.value = '+name';
@@ -75,8 +79,11 @@ beforeEach(() => {
 			const offset = params.untilId == null ? 0 : folderFiles.findIndex(file => file.id === params.untilId) + 1;
 			return JSON.stringify(folderFiles.slice(offset, offset + params.limit));
 		}
-		if (endpoint === '/api/drive/folders') return JSON.stringify(folders.filter(folder => folder.parentId === params.folderId));
-		if (endpoint === '/api/drive/folders/show') return JSON.stringify(folders.find(folder => folder.id === params.folderId));
+		if (endpoint === '/api/drive/folders') return JSON.stringify(folders.filter(folder => folder.parentId === params.folderId && !deletedFolderIds.has(folder.id)));
+		if (endpoint === '/api/drive/folders/show') {
+			await folderLookupGate;
+			return JSON.stringify(folders.find(folder => folder.id === params.folderId));
+		}
 		if (endpoint === '/api/drive/delete/prepare') {
 			if (failPrepare) return { status: 500, body: JSON.stringify({ error: { code: 'INTERNAL_ERROR' } }) };
 			preparedIds = params.fileIds ?? files.filter(file => file.folderId === params.folderId).map(file => file.id);
@@ -223,13 +230,14 @@ test('failed bulk move keeps visible files selected for retry after reloading', 
 	expect(screen.getByRole('button', { name: 'One.png' }).getAttribute('aria-pressed')).toBe('true');
 });
 
-async function selectPaginatedFiles(count = 103) {
+async function selectPaginatedFiles(count = 103, folderId: string | null = sand.id) {
 	files = Array.from({ length: 103 }, (_, index) => ({
 		...original[0],
+		folderId,
 		id: `piece-${String(103 - index).padStart(3, '0')}`,
 		name: `Piece-${String(103 - index).padStart(3, '0')}.png`,
 	}));
-	const screen = drive({ initialFolder: sand.id });
+	const screen = drive({ initialFolder: folderId });
 	await screen.findByRole('button', { name: 'Piece-103.png' });
 
 	for (const loaded of [60, 90, 103]) {
@@ -241,6 +249,29 @@ async function selectPaginatedFiles(count = 103) {
 	expectCount(screen, count);
 	return screen;
 }
+
+test.each(['destination deletion', 'root return'] as const)('canceling a pending navigation by %s preserves all 103 loaded edit selections', async cancellation => {
+	const rootReturn = cancellation === 'root return';
+	const screen = await selectPaginatedFiles(103, rootReturn ? null : sand.id);
+	let release!: () => void;
+	folderLookupGate = new Promise<void>(resolve => { release = resolve; });
+	const target = rootReturn ? sand : inner;
+
+	await fireEvent.click(screen.getByRole('button', { name: target.name }));
+	await waitFor(() => expect(requests('drive/folders/show').at(-1)?.folderId).toBe(target.id));
+	if (rootReturn) {
+		await fireEvent.click(screen.getByRole('button', { name: 'Drive' }));
+	} else {
+		deletedFolderIds.add(target.id);
+		globalEvents.emit('driveFoldersDeleted', [{ id: target.id }]);
+	}
+	release();
+	await waitFor(() => expect(pendingApiRequestsCount.value).toBe(0));
+	await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' }).hasAttribute('disabled')).toBe(false));
+
+	expectCount(screen, 103);
+	expect(screen.getAllByRole('button', { name: /^Piece-/, pressed: true })).toHaveLength(103);
+});
 
 test.each([
 	{ sort: '+createdAt', failed: 103 },

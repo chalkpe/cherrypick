@@ -816,11 +816,13 @@ async function moveFilesBulk() {
 }
 
 function goRoot() {
-	const wasNavigating = pendingFolderId != null;
 	navigationGeneration++;
 	pendingFolderId = null;
 	// 루트가 표시 중이어도 진행 중인 목적지 조회는 취소한다.
-	if (folder.value == null && !wasNavigating) return;
+	if (folder.value == null) {
+		fetching.value = reloadPromise != null;
+		return;
+	}
 
 	folder.value = null;
 	hierarchyFolders.value = [];
@@ -936,7 +938,8 @@ function onFolderDeleted(id: string) {
 	else if (pendingFolderId === id) {
 		navigationGeneration++;
 		pendingFolderId = null;
-		initialize();
+		fetching.value = reloadPromise != null;
+		scheduleFoldersRefresh();
 	}
 	const present = foldersPaginator.items.value.some(item => item.id === id);
 	if (present) foldersPaginator.removeItem(id);
