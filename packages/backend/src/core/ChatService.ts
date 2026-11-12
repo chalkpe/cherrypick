@@ -387,7 +387,7 @@ export class ChatService {
 			isMuted: m.isMuted,
 		})).concat({ // ownerはmembershipレコードを作らないため
 			userId: toRoom.ownerId,
-			isMuted: false,
+			isMuted: toRoom.isMutedByOwner,
 		});
 
 		if (!memberships.some(member => member.userId === fromUser.id)) {
@@ -466,10 +466,7 @@ export class ChatService {
 				const marker = markers[i][1];
 				if (marker == null) continue;
 				const userId = membershipsOtherThanMe[i].userId;
-				if (userId !== toRoom.ownerId) {
-					const currentMembership = await this.chatRoomMembershipsRepository.findOneBy({ roomId: toRoom.id, userId });
-					if (currentMembership == null || currentMembership.isMuted) continue;
-				}
+				if (await this.isRoomQuietFor(toRoom, userId)) continue;
 
 				if (!(await this.isMarkedUnread(userId, `room:${toRoom.id}`))) continue;
 				this.globalEventService.publishMainStream(userId, 'newChatMessage', packedMessageForTo);
@@ -1578,11 +1575,34 @@ export class ChatService {
 		this.notifyRoomListChanged(this.localUserIds([member]));
 	}
 
+	/**
+	 * Muting is each participant's own choice, told to nobody else on this server or another.
+	 * A member's is kept on the membership. The owner has none, so the room keeps theirs.
+	 */
 	@bindThis
 	public async muteRoom(userId: MiUser['id'], roomId: MiChatRoom['id'], mute: boolean) {
 		const membership = await this.chatRoomMembershipsRepository.findOneBy({ roomId, userId });
-		if (membership == null) throw new ChatRoomAccessError('not a member');
-		await this.chatRoomMembershipsRepository.update(membership.id, { isMuted: mute });
+		if (membership != null) {
+			await this.chatRoomMembershipsRepository.update(membership.id, { isMuted: mute });
+			return;
+		}
+
+		const owned = await this.chatRoomsRepository.update({ id: roomId, ownerId: userId }, { isMutedByOwner: mute });
+		if ((owned.affected ?? 0) === 0) throw new ChatRoomAccessError('not a member');
+	}
+
+	/**
+	 * Whether a new message in the room is to stay away from this participant: they muted the room, or are no longer in it.
+	 * Asked again just before the delayed notice, as both can change while it waits.
+	 */
+	private async isRoomQuietFor(room: Pick<MiChatRoom, 'id' | 'ownerId'>, userId: MiUser['id']): Promise<boolean> {
+		if (userId === room.ownerId) {
+			const current = await this.chatRoomsRepository.findOneBy({ id: room.id });
+			return current == null || current.isMutedByOwner;
+		}
+
+		const membership = await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId });
+		return membership == null || membership.isMuted;
 	}
 
 	@bindThis

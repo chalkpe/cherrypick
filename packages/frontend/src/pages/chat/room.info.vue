@@ -27,14 +27,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 	<MkButton v-if="isOwner || ($i.isAdmin || $i.isModerator)" danger @click="del">{{ i18n.ts._chat.deleteRoom }}</MkButton>
 
-	<MkSwitch v-if="!isOwner" :modelValue="isMuted" @update:modelValue="setMuted">
+	<MkSwitch :modelValue="isMuted" @update:modelValue="setMuted">
 		<template #label>{{ i18n.ts._chat.muteThisRoom }}</template>
 	</MkSwitch>
 </div>
 </template>
 
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
@@ -120,7 +120,13 @@ async function del() {
 	router.push('/chat');
 }
 
+// ミュートは見ている本人だけの通知の設定で、ルームの持ち主も自分の分を切り替えられる
 const isMuted = ref(props.room.isMuted ?? false);
+
+// ページがルームを読み直したら、スイッチもそれに合わせる
+watch(() => props.room.isMuted, muted => {
+	isMuted.value = muted ?? false;
+});
 
 async function setMuted(mute: boolean) {
 	isMuted.value = mute;
@@ -132,7 +138,11 @@ async function setMuted(mute: boolean) {
 	} catch {
 		// apiWithDialog がエラーを表示済み。変わっていないのだから、スイッチも戻す
 		isMuted.value = !mute;
+		return;
 	}
+
+	// このタブは開き直すたびに作り直される。ページが持つルームにも伝えておかないと、戻ってきたときにスイッチが前の状態で出る
+	emit('updated', { ...props.room, isMuted: mute });
 }
 </script>
 
