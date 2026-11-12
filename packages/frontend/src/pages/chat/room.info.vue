@@ -185,7 +185,7 @@ async function setChannelNotification(channelId: string, level: NotificationLeve
 }
 
 async function readAll() {
-	// 失敗したときは apiWithDialog がダイアログで知らせるので、ここでは何もしない
+	// 실패는 apiWithDialog가 대화상자로 알리므로 여기서는 따로 처리하지 않는다
 	await os.apiWithDialog('chat/rooms/read', { roomId: props.room.id, readAll: true }, undefined, chatNotificationErrors).catch(() => null);
 }
 </script>
