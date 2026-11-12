@@ -11,6 +11,7 @@ import CreateToUser, { meta as userMeta } from '@/server/api/endpoints/chat/mess
 import CreateToRoom, { meta as roomMeta } from '@/server/api/endpoints/chat/messages/create-to-room.js';
 import { ChatDiceError } from '@/core/chat-dice.js';
 import type { ChatDiceResult } from '@/core/chat-dice.js';
+import { memoryRedis } from '../misc/chat-unread-redis.js';
 import type { MiChatMessage, MiUser } from '@/models/_.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { buildChatNote } from '@/core/activitypub/misc/chat-payloads.js';
@@ -33,6 +34,7 @@ function fixture() {
 			return message;
 		}),
 		findOneBy: vi.fn(async () => rows[0] ?? null),
+		findOne: vi.fn(async () => rows.find(row => row.deletedAt == null) ?? null),
 		existsBy: vi.fn(async () => true),
 		update: vi.fn(async (_query: unknown, patch: object) => { Object.assign(rows[0], patch); return { affected: 1 }; }),
 	};
@@ -43,7 +45,7 @@ function fixture() {
 		userEntityService: { pack: vi.fn(async (id: string) => ({ id })) },
 		driveFileEntityService: { packManyByIdsMap: vi.fn(async () => new Map()) },
 	}) as ChatEntityService;
-	const stream = { publishChatUserStream: vi.fn(), publishChatRoomStream: vi.fn() };
+	const stream = { publishChatUserStream: vi.fn(), publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() };
 	const roll = vi.fn(async (_id: string, notation: string) => ({ ...dice, notation }));
 	const pipeline = { set: vi.fn(), sadd: vi.fn(), exec: vi.fn() };
 	const dependencies = {
@@ -55,7 +57,7 @@ function fixture() {
 		chatRoomsRepository: { findOneBy: vi.fn() },
 		usersRepository: { findOneBy: vi.fn(async () => sender), findOneByOrFail: vi.fn(async () => sender), findBy: vi.fn(async () => [sender, recipient]) },
 		idService: { gen: () => 'message' },
-		redisClient: { pipeline: () => pipeline, sismember: async () => 0 },
+		redisClient: { ...memoryRedis(), pipeline: () => pipeline, sismember: async () => 0 },
 		globalEventService: stream,
 		userEntityService: { isLocalUser: (u: { host: string | null }) => u.host == null, isRemoteUser: (u: { host: string | null }) => u.host != null },
 		assertCanSendToUser: vi.fn(async () => ({ iApprovedOther: true })),

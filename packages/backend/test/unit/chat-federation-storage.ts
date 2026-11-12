@@ -45,6 +45,7 @@ describe('chat federation storage', () => {
 			chatMessagesRepository,
 			chatRoomsRepository,
 			chatRoomMembershipsRepository,
+			mutingsRepository: app.get(DI.mutingsRepository),
 			chatRoomInvitationsRepository: { findBy: async () => [] },
 			redisClient,
 			queueService: { deliver },
@@ -60,6 +61,7 @@ describe('chat federation storage', () => {
 			apRendererService: {
 				renderChatReaction,
 				renderChatReactionUndo,
+				renderChatDelete: () => ({ type: 'Delete' }),
 				addContext: (activity: unknown) => activity,
 			},
 		}) as ChatService;
@@ -97,11 +99,83 @@ describe('chat federation storage', () => {
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
+		await createService().readAllChatMessages(alice.id);
+		await createService().readAllChatMessages(bob.id);
 		await usersRepository.delete([alice.id, bob.id]);
 	});
 
 	afterAll(async () => {
 		await app.close();
+	});
+
+	describe('unread storage', () => {
+		function markUnread(service: ChatService, messageId: string) {
+			// 전송 경로가 사용하는 실제 Redis 저장 연산만 호출한다. DB 행은 위 fixture가 준비한다.
+			return (service as unknown as { markUnread: (mark: { readerId: string; senderId: string }, id: string) => Promise<void> })
+				.markUnread({ readerId: alice.id, senderId: bob.id }, messageId);
+		}
+
+		test('deletion preserves a new unread message arriving during the database lookup', async () => {
+			const service = createService();
+			const messageId = await createDirectMessage();
+			const message = await chatMessagesRepository.findOneByOrFail({ id: messageId });
+			await markUnread(service, messageId);
+			let queried!: () => void;
+			let release!: () => void;
+			const queryReached = new Promise<void>(resolve => { queried = resolve; });
+			const gate = new Promise<void>(resolve => { release = resolve; });
+			const findOne = chatMessagesRepository.findOne.bind(chatMessagesRepository);
+			vi.spyOn(chatMessagesRepository, 'findOne').mockImplementationOnce(async options => {
+				const remaining = await findOne(options);
+				queried();
+				await gate;
+				return remaining;
+			});
+
+			const deleting = service.deleteMessage(message);
+			await queryReached;
+			try {
+				await markUnread(service, await createDirectMessage());
+			} finally {
+				release();
+				await deleting;
+			}
+
+			expect(await service.hasUnreadMessages(alice.id)).toBe(true);
+			expect(await service.getUserReadStateMap(alice.id, [bob.id])).toEqual({ [bob.id]: false });
+		});
+
+		test('an orphan from an older read-all does not make read history unread again', async () => {
+			const service = createService();
+			const oldMessage = await createDirectMessage();
+			// 이전 버전 전체 읽음 이후 개별 키만 남은 업그레이드 fixture다.
+			await redisClient.set(`newUserChatMessageExists:${alice.id}:${bob.id}`, oldMessage);
+			const latest = await createDirectMessage();
+			await markUnread(service, latest);
+
+			await service.deleteMessage(await chatMessagesRepository.findOneByOrFail({ id: latest }));
+
+			expect(await service.hasUnreadMessages(alice.id)).toBe(false);
+			expect(await service.getUserReadStateMap(alice.id, [bob.id])).toEqual({ [bob.id]: true });
+		});
+
+		test('an active legacy mark stays unknown until explicitly read, then uses the new boundary', async () => {
+			const service = createService();
+			const key = `newUserChatMessageExists:${alice.id}:${bob.id}`;
+			await redisClient.set(key, await createDirectMessage());
+			await redisClient.sadd(`newChatMessagesExists:${alice.id}`, `user:${bob.id}`);
+			await markUnread(service, await createDirectMessage());
+			expect(await redisClient.get(`${key}:first`)).toBeNull();
+			expect(await service.hasUnreadMessages(alice.id)).toBe(true);
+
+			await service.readUserChatMessage(alice.id, bob.id);
+			const next = await createDirectMessage();
+			await markUnread(service, next);
+			expect(await redisClient.get(`${key}:first`)).toBe(next);
+			await service.deleteMessage(await chatMessagesRepository.findOneByOrFail({ id: next }));
+			expect(await service.hasUnreadMessages(alice.id)).toBe(false);
+		});
 	});
 
 	describe('local reactions', () => {

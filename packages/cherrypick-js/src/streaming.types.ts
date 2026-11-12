@@ -54,6 +54,7 @@ export type Channels = {
 			unreadAntenna: (payload: Antenna) => void;
 			newChatMessage: (payload: ChatMessage) => void;
 			readAllChatMessages: () => void;
+			chatUnreadChanged: () => void;
 			chatRoomVoiceState: (payload: ChatRoomVoiceState) => void;
 			chatRoomListChanged: () => void;
 			readAllAnnouncements: () => void;

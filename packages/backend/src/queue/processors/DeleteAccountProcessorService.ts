@@ -17,6 +17,7 @@ import { SearchService } from '@/core/SearchService.js';
 import { PageService } from '@/core/PageService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
+import { ChatService } from '@/core/ChatService.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 import type * as Bull from 'bullmq';
 import type { DbUserDeleteJobData } from '../types.js';
@@ -48,6 +49,7 @@ export class DeleteAccountProcessorService {
 		private queueLoggerService: QueueLoggerService,
 		private searchService: SearchService,
 		private globalEventService: GlobalEventService,
+		private chatService: ChatService,
 	) {
 		this.logger = this.queueLoggerService.logger.createSubLogger('delete-account');
 	}
@@ -157,6 +159,8 @@ export class DeleteAccountProcessorService {
 		if (job.data.soft) {
 		// nop
 		} else {
+			// CASCADE 전에 기존 그룹 삭제 경로로 참가자에게도 삭제와 읽음 상태를 알린다.
+			await this.chatService.deleteRoomsOwnedBy(user.id);
 			await this.usersRepository.delete(job.data.user.id);
 
 			// Trigger CacheService

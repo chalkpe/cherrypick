@@ -15,6 +15,7 @@ import { MetaEntityService } from '@/core/entities/MetaEntityService.js';
 import { RemoteVoiceCallError } from '@/core/RemoteVoiceCallService.js';
 import { VoiceRelayError } from '@/core/VoiceRelayClient.js';
 import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
+import { memoryRedis } from '../misc/chat-unread-redis.js';
 
 const me = { id: 'me', host: null, uri: null } as any;
 const liveKit = (isEnabled = true) => ({
@@ -442,7 +443,7 @@ function chatServiceFixture() {
 			addContext: vi.fn((activity: unknown) => activity),
 		},
 		queueService: { deliver: vi.fn() },
-		redisClient: { pipeline: () => ({ del: vi.fn(), srem: vi.fn(), exec: vi.fn().mockResolvedValue([]) }) },
+		redisClient: memoryRedis(),
 		userEntityService: {
 			isLocalUser: (user: { host: string | null }) => user.host == null,
 			isRemoteUser: (user: { host: string | null }) => user.host != null,

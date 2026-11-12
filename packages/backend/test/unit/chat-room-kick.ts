@@ -6,6 +6,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import { ChatService } from '@/core/ChatService.js';
 import KickEndpoint from '@/server/api/endpoints/chat/rooms/kick.js';
+import { memoryRedis } from '../misc/chat-unread-redis.js';
 
 const owner = { id: 'owner', host: null, uri: null };
 const member = { id: 'member', host: 'remote.test', uri: 'https://remote.test/users/member', inbox: 'https://remote.test/inbox' };
@@ -15,7 +16,7 @@ const room = { id: 'room', ownerId: owner.id, isArchived: false };
 function fixture() {
 	const members = new Set([member.id, other.id]);
 	const users = [owner, member, other];
-	const pipeline = { del: vi.fn(), srem: vi.fn(), exec: vi.fn().mockResolvedValue([]) };
+	const unread = memoryRedis();
 	const queueService = { deliver: vi.fn() };
 	const liveKitService = { identityOf: (user: typeof member) => user.uri, removeParticipant: vi.fn().mockResolvedValue(undefined) };
 	const globalEventService = { publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() };
@@ -41,19 +42,29 @@ function fixture() {
 			renderRemove: (actor: typeof owner, target: string, object: string) => ({ type: 'Remove', actor: `https://local.test/users/${actor.id}`, target, object }),
 			addContext: (activity: object) => ({ '@context': 'https://www.w3.org/ns/activitystreams', ...activity }),
 		},
-		redisClient: { pipeline: () => pipeline },
+		redisClient: unread,
 		queueService, liveKitService, globalEventService,
 	});
-	return { service, members, pipeline, queueService, liveKitService, globalEventService };
+	return { service, members, unread, queueService, liveKitService, globalEventService };
 }
 
 describe('room owner kicks a member', () => {
 	test('removes membership and unread state, ends the call, and sends owner Remove to the target and remaining peers', async () => {
 		const f = fixture();
+		await f.unread.set(`newRoomChatMessageExists:${member.id}:${room.id}`, 'message1');
+		await f.unread.set(`newRoomChatMessageExists:${member.id}:${room.id}:first`, 'message1');
+		await f.unread.sadd(`newChatMessagesExists:${member.id}`, `room:${room.id}`);
+		await f.unread.set(`newRoomChatMessageExists:${other.id}:${room.id}`, 'message1');
+		await f.unread.sadd(`newChatMessagesExists:${other.id}`, `room:${room.id}`);
+
 		await expect(f.service.kickRoomMember(owner, room, member.id)).resolves.toBe(true);
+
 		expect([...f.members]).toEqual([other.id]);
 		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith(room.id, 'membershipEnded', { userId: member.id });
-		expect(f.pipeline.srem).toHaveBeenCalledWith(`newChatMessagesExists:${member.id}`, `room:${room.id}`);
+		expect(await f.unread.get(`newRoomChatMessageExists:${member.id}:${room.id}`)).toBeNull();
+		expect(await f.unread.get(`newRoomChatMessageExists:${member.id}:${room.id}:first`)).toBeNull();
+		expect(await f.unread.smembers(`newChatMessagesExists:${member.id}`)).toEqual([]);
+		expect(await f.unread.smembers(`newChatMessagesExists:${other.id}`)).toEqual([`room:${room.id}`]);
 		expect(f.liveKitService.removeParticipant).toHaveBeenCalledWith(room.id, member.uri);
 		for (const inbox of [member.inbox, other.inbox]) {
 			expect(f.queueService.deliver).toHaveBeenCalledWith(owner, expect.objectContaining({

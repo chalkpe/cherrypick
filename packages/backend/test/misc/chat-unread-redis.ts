@@ -6,10 +6,7 @@
 type RedisReply = string | number | string[] | null;
 
 /** Just enough of Redis to keep unread marks: strings and sets, one command at a time or in a pipeline. */
-export function memoryRedis() {
-	const strings = new Map<string, string>();
-	const sets = new Map<string, Set<string>>();
-
+export function memoryRedis({ strings = new Map<string, string>(), sets = new Map<string, Set<string>>() } = {}) {
 	const commands = {
 		set: (key: string, value: string): RedisReply => {
 			strings.set(key, value);
@@ -48,7 +45,54 @@ export function memoryRedis() {
 		return self;
 	};
 
-	const client: Record<string, unknown> = { pipeline };
+	// Lua 자체는 실제 Redis E2E에서 검증한다. 이 double은 표식 명령의 입출력 계약만 흉내 낸다.
+	const evaluate = async (_script: string, numberOfKeys: number, ...values: string[]) => {
+		const keys = values.slice(0, numberOfKeys);
+		const args = values.slice(numberOfKeys);
+		if (keys[0].startsWith('newChatMessagesExists:')) {
+			for (const conversation of sets.get(keys[0]) ?? []) {
+				const [kind, id] = conversation.split(':');
+				const key = `${kind === 'user' ? args[0] : args[1]}${id}`;
+				commands.del(key);
+				commands.del(`${key}:first`);
+			}
+			for (const key of keys) commands.del(key);
+			return 1;
+		}
+		if (args.length === 1) {
+			commands.del(keys[0]);
+			commands.del(keys[1]);
+			return commands.srem(keys[2], args[0]) as number;
+		}
+		if (args.length === 2) {
+			const active = sets.get(keys[2])?.has(args[1]);
+			const latest = active ? strings.get(keys[0]) : undefined;
+			const first = active ? strings.get(keys[1]) : undefined;
+			if (!active || first != null) {
+				commands.set(keys[1], first != null && first < args[0] ? first : args[0]);
+			}
+			commands.set(keys[0], latest != null && latest > args[0] ? latest : args[0]);
+			commands.sadd(keys[2], args[1]);
+			return 1;
+		}
+		if ((strings.get(keys[0]) ?? '') !== args[0] || (strings.get(keys[1]) ?? '') !== args[1]) return 0;
+		if (args[2] !== '') {
+			commands.set(keys[0], args[2]);
+			return 1;
+		}
+		commands.del(keys[0]);
+		commands.del(keys[1]);
+		commands.srem(keys[2], args[3]);
+		return 2;
+	};
+	const client: Record<string, unknown> = {
+		pipeline,
+		multi: pipeline,
+		options: { keyPrefix: '' },
+		scan: async (_cursor: string, _match: string, pattern: string) => ['0', [...strings.keys()].filter(key => key.startsWith(pattern.slice(0, -1)))],
+	};
 	for (const name of names) client[name] = async (...args: string[]) => run(name, args);
-	return client;
+	return { ...client, eval: evaluate } as {
+		[K in Command]: (...args: Parameters<(typeof commands)[K]>) => Promise<RedisReply>;
+	} & { eval: typeof evaluate };
 }

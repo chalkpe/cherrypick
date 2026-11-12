@@ -8,6 +8,7 @@ import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
+import { memoryRedis } from '../misc/chat-unread-redis.js';
 
 const owner = { id: 'owner', host: 'owner.test', uri: 'https://owner.test/users/owner' };
 const otherActor = { id: 'other', host: 'owner.test', uri: 'https://owner.test/users/other' };
@@ -29,6 +30,7 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 	let sequence = 0;
 	const pipeline = { set: () => pipeline, sadd: () => pipeline, exec: async () => [] };
 	const redisClient = {
+		eval: memoryRedis().eval,
 		get: async (key: string) => locks.get(key) ?? tombstones.get(key) ?? null,
 		set: async (key: string, value: string, _mode: string, timeout: number) => {
 			if ((lockExpirations.get(key) ?? Infinity) <= Date.now()) locks.delete(key);

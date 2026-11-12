@@ -6,6 +6,7 @@
 import { describe, expect, test } from 'vitest';
 import { QueryFailedError } from 'typeorm';
 import { ChatService } from '@/core/ChatService.js';
+import { memoryRedis } from '../misc/chat-unread-redis.js';
 
 const alice = { id: 'alice', host: null, chatScope: 'everyone', isSuspended: false };
 const bob = { id: 'bob', host: null, chatScope: 'everyone', isSuspended: false };
@@ -19,7 +20,6 @@ function fixture(options: { insertApproval?: () => Promise<void> } = {}) {
 	const messages: { id: string; text: string | null }[] = [];
 	const published: unknown[] = [];
 	let sequence = 0;
-	const pipeline = { set: () => pipeline, sadd: () => pipeline, exec: async () => [] };
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
 		config: { url: 'https://local.test' },
 		chatApprovalsRepository: {
@@ -50,7 +50,7 @@ function fixture(options: { insertApproval?: () => Promise<void> } = {}) {
 			publishChatUserStream: (...args: unknown[]) => { published.push(args); },
 			publishMainStream: () => {},
 		},
-		redisClient: { pipeline: () => pipeline },
+		redisClient: memoryRedis(),
 	});
 	const send = (text: string) => chatService.createMessageToUser(alice, bob, { text });
 	return { send, approvals, messages, published };

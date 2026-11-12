@@ -15,9 +15,14 @@ import { memoryRedis } from '../misc/chat-unread-redis.js';
 function meets(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
 	return Object.entries(where).every(([key, expected]) => {
 		const actual = row[key] ?? null;
-		if (!(expected instanceof FindOperator)) return actual === expected;
+		if (!(expected instanceof FindOperator)) {
+			if (expected != null && typeof expected === 'object') return actual != null && meets(actual as Record<string, unknown>, expected as Record<string, unknown>);
+			return actual === expected;
+		}
 		if (expected.type === 'in') return (expected.value as unknown as unknown[]).includes(actual);
 		if (expected.type === 'isNull') return actual == null;
+		if (expected.type === 'not') return actual !== expected.value;
+		if (expected.type === 'moreThanOrEqual') return typeof actual === 'string' && actual >= expected.value;
 		throw new Error(`condition not supported in this test: ${expected.type}`);
 	});
 }
@@ -68,12 +73,21 @@ function fixture() {
 				return message;
 			},
 			findOneBy: async ({ id }: { id: string }) => messages.find(message => message.id === id) ?? null,
-			existsBy: async (where: Record<string, unknown> | Record<string, unknown>[]) => messages.some(row => [where].flat().some(condition => meets(row, condition))),
+			existsBy: async (where: Record<string, unknown> | Record<string, unknown>[]) => messages.some(row => [where].flat().some(condition => meets({ ...row, fromUser: users.find(user => user.id === row.fromUserId) }, condition))),
+			findOne: async ({ where }: { where: Record<string, unknown> }) => messages.filter(row => meets({ ...row, fromUser: users.find(user => user.id === row.fromUserId) }, where)).sort((a, b) => b.id!.localeCompare(a.id!))[0] ?? null,
 			update: async (id: string, values: Partial<MiChatMessage>) => { Object.assign(messages.find(message => message.id === id)!, values); },
-			createQueryBuilder: () => ({
-				select() { return this; }, where() { return this; }, andWhere() { return this; },
-				getRawMany: async () => [{ toUserId: reader.id }],
-			}),
+			createQueryBuilder: () => {
+				let alias = '';
+				let authorId = '';
+				return {
+					select(_expression: string, selected: string) { alias = selected; return this; },
+					where(_expression: string, parameters: { authorId?: string }) { authorId = parameters.authorId ?? ''; return this; },
+					andWhere() { return this; },
+					getRawMany: async () => alias === 'roomId'
+						? [...new Set(messages.filter(message => message.fromUserId === authorId && message.toRoomId != null).map(message => message.toRoomId))].map(roomId => ({ roomId }))
+						: [{ toUserId: reader.id }],
+				};
+			},
 		},
 		chatApprovalsRepository: {
 			createQueryBuilder: () => ({ where() { return this; }, orWhere() { return this; }, take() { return this; }, getMany: async () => [] }),
@@ -262,7 +276,8 @@ describe('chat unread sign', () => {
 			await f.chatService.deleteMessage(f.stored('second'));
 
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(true);
-			expect(f.told()).toEqual([]);
+			expect(f.told()).not.toContain('readAllChatMessages');
+			expect(f.told()).toContain('chatUnreadChanged');
 		});
 
 		test('taking back the only message of one conversation leaves the sign on while another is unread', async () => {

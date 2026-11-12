@@ -26,7 +26,7 @@ import { mainRouter } from '@/router.js';
 import { makeHotkey } from '@/utility/hotkey.js';
 import { addCustomEmoji, removeCustomEmojis, updateCustomEmojis } from '@/custom-emojis.js';
 import { prefer } from '@/preferences.js';
-import { updateCurrentAccount } from '@/accounts.js';
+import { refreshCurrentAccount, updateCurrentAccount } from '@/accounts.js';
 import { unisonReload } from '@/utility/unison-reload.js';
 import { isBirthday } from '@/utility/is-birthday.js';
 import { userName } from '@/filters/user.js';
@@ -368,6 +368,10 @@ export async function mainBoot() {
 
 			main.on('readAllChatMessages', () => {
 				updateCurrentAccount({ hasUnreadChatMessages: false });
+			});
+
+			main.on('chatUnreadChanged', () => {
+				refreshCurrentAccount();
 			});
 
 			main.on('readAllAnnouncements', () => {

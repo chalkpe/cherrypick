@@ -139,8 +139,11 @@ export function replaceCurrentAccountData(accountData: Misskey.entities.MeDetail
 	miLocalStorage.setItem('account', JSON.stringify($i));
 }
 
+let chatUnreadRevision = 0;
+
 export function updateCurrentAccount(accountData: Partial<Misskey.entities.MeDetailed>) {
 	if (!$i) return;
+	if (accountData.hasUnreadChatMessages !== undefined) chatUnreadRevision++;
 	for (const [key, value] of Object.entries(accountData)) {
 		($i[key as keyof typeof accountData] as any) = value;
 	}
@@ -153,7 +156,12 @@ export function updateCurrentAccount(accountData: Partial<Misskey.entities.MeDet
 export async function refreshCurrentAccount() {
 	if (!$i) return;
 	const me = $i;
-	return fetchAccount($i.token, $i.id).then(replaceCurrentAccountData).catch(reason => {
+	const unreadRevision = chatUnreadRevision;
+	return fetchAccount($i.token, $i.id).then(account => {
+		// 조회하는 동안 받은 읽음·새 쪽지 상태는 이전 HTTP 응답으로 덮어쓰지 않는다.
+		if (unreadRevision !== chatUnreadRevision) account.hasUnreadChatMessages = me.hasUnreadChatMessages;
+		replaceCurrentAccountData(account);
+	}).catch(reason => {
 		if (reason === isAccountDeleted) {
 			removeAccount(host, me.id);
 			if (Object.keys(store.s.accountTokens).length > 0) {

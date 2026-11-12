@@ -10,6 +10,7 @@ import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { UtilityService } from '@/core/UtilityService.js';
+import { memoryRedis } from './chat-unread-redis.js';
 
 export const LOCAL = 'https://local.test';
 export const MIRROR_URI = 'https://remote.test/chat/rooms/mirror';
@@ -131,6 +132,7 @@ function fakeRedis() {
 	const client = {
 		values,
 		lists,
+		eval: memoryRedis({ strings: values, sets }).eval,
 		ttl: new Map<string, number>(),
 		get: async (key: string) => values.get(key) ?? null,
 		set: async (key: string, value: string, _ex: string, ttl: number, _nx: string) => {

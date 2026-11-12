@@ -11,6 +11,7 @@ import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { Resolver } from '@/core/activitypub/ApResolverService.js';
 import { StatusError } from '@/misc/status-error.js';
 import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
+import { memoryRedis } from '../misc/chat-unread-redis.js';
 import {
 	buildChatDelete,
 	buildChatNote,
@@ -293,6 +294,7 @@ describe('ChatService chat federation delivery', () => {
 		const pendingReactionCounts = new Map<string, number>();
 		const reactionActivityIds = new Map<string, string>();
 		const redisClient = {
+			eval: memoryRedis().eval,
 			pipeline: vi.fn(() => redisPipeline),
 			sismember: vi.fn(async () => 0),
 			multi: () => {
@@ -1012,7 +1014,7 @@ describe('ChatService chat federation delivery', () => {
 			const users = new Map([owner, f.bob, f.carol].map(user => [user.id, user]));
 			const pipeline = { del: vi.fn().mockReturnThis(), srem: vi.fn().mockReturnThis(), exec: vi.fn().mockResolvedValue([]) };
 			Object.assign(f.service, {
-				redisClient: { pipeline: () => pipeline },
+				redisClient: { ...memoryRedis(), pipeline: () => pipeline },
 				liveKitService: { deleteRoom: vi.fn().mockResolvedValue(undefined) },
 				roleService: { isModerator: vi.fn().mockResolvedValue(true) },
 				moderationLogService: { log: vi.fn() },
@@ -2087,7 +2089,7 @@ describe('unread chat notification', () => {
 			},
 			globalEventService: { publishChatUserStream: vi.fn(), publishMainStream },
 			pushNotificationService: { pushNotification },
-			redisClient: { pipeline: () => pipeline, get: async () => 'm1', sismember: async () => 1 },
+			redisClient: { ...memoryRedis(), pipeline: () => pipeline, get: async () => 'm1', sismember: async () => 1 },
 			mutingsRepository: { existsBy: async () => false },
 		});
 		const send = () => service.createMessageToUser(
