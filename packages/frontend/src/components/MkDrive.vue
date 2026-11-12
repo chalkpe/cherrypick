@@ -314,6 +314,7 @@ watch(sortModeSelect, () => {
 });
 
 let listGeneration = 0;
+let navigationGeneration = 0;
 let needsReload = false;
 let reloadPromise: Promise<void> | null = null;
 
@@ -677,9 +678,8 @@ async function renameFolder(folderToRename: Misskey.entities.DriveFolder) {
 
 async function deleteFolder(folderToDelete: Misskey.entities.DriveFolder) {
 	const result = await deleteDriveItems({ folderId: folderToDelete.id, name: folderToDelete.name });
-	if (!result) return;
-	if (result.folderDeleted && folder.value?.id === folderToDelete.id) cd(folderToDelete.parentId);
-	else await Promise.all([refreshFiles(), refreshFolders()]).catch(() => {});
+	if (!result || result.folderDeleted) return;
+	await Promise.all([refreshFiles(), refreshFolders()]).catch(() => {});
 }
 
 async function deleteFilesBulk() {
@@ -761,10 +761,12 @@ function cd(target?: Misskey.entities.DriveFolder | Misskey.entities.DriveFolder
 	}
 
 	fetching.value = true;
+	const generation = ++navigationGeneration;
 
-	misskeyApi('drive/folders/show', {
+	return misskeyApi('drive/folders/show', {
 		folderId: target,
 	}).then(folderToMove => {
+		if (generation !== navigationGeneration) return;
 		folder.value = folderToMove;
 		hierarchyFolders.value = [];
 
@@ -776,6 +778,8 @@ function cd(target?: Misskey.entities.DriveFolder | Misskey.entities.DriveFolder
 		if (folderToMove.parent) dive(folderToMove.parent);
 
 		initialize();
+	}).catch(error => {
+		if (generation === navigationGeneration) throw error;
 	});
 }
 
@@ -810,6 +814,7 @@ function goRoot() {
 	// 既にrootにいるなら何もしない
 	if (folder.value == null) return;
 
+	navigationGeneration++;
 	folder.value = null;
 	hierarchyFolders.value = [];
 	initialize();
@@ -918,6 +923,9 @@ function onFileDeleted(id: string) {
 }
 
 function onFolderDeleted(id: string) {
+	selectedFolders.value = selectedFolders.value.filter(item => item.id !== id);
+	if (folder.value?.id === id) cd(folder.value.parentId)?.catch(() => goRoot());
+	else if (hierarchyFolders.value.some(item => item.id === id)) goRoot();
 	const present = foldersPaginator.items.value.some(item => item.id === id);
 	if (present) foldersPaginator.removeItem(id);
 	if (refreshingFolders || (present && (fetching.value || loadingMoreFolders))) scheduleFoldersRefresh();

@@ -16299,6 +16299,18 @@ export interface Locale extends ILocale {
          */
         "busy": string;
         /**
+         * 削除するフォルダーが見つかりません。リストを再読み込みしてください。
+         */
+        "folderUnavailable": string;
+        /**
+         * 選択が正しくありません。削除するファイルかフォルダーを選び直してください。
+         */
+        "invalidSelection": string;
+        /**
+         * 削除を開始できませんでした。もう一度お試しください。
+         */
+        "prepareFailed": string;
+        /**
          * 移動したファイル: {moved}個。失敗: {failed}個。失敗したファイルをもう一度移動してください。
          */
         "moveResult": ParameterizedString<"moved" | "failed">;

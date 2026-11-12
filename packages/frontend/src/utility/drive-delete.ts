@@ -95,8 +95,16 @@ export async function deleteDriveItems(input: Selection): Promise<DeleteResult |
 		const text = code === 'TOO_MANY_ITEMS' ? i18n.ts._driveDeletion.tooMany
 			: code === 'PLAN_EXPIRED' ? i18n.ts._driveDeletion.expired
 				: code === 'DELETE_BUSY' ? i18n.ts._driveDeletion.busy
-					: i18n.ts._driveDeletion.interrupted;
-		await os.alert({ type: 'error', text: (result ? resultText(result) + '\n' : '') + text });
+					: null;
+		if (text == null && !confirmed) {
+			await os.apiErrorDialog('drive/delete/prepare', error as Misskey.api.APIError, {
+				'8f7f49d8-a63d-480a-a4cd-7a54b8bb87f1': { text: i18n.ts._driveDeletion.folderUnavailable },
+				'86206bf8-8890-4407-ac04-3c90c7a25424': { text: i18n.ts._driveDeletion.invalidSelection },
+				default: { text: i18n.ts._driveDeletion.prepareFailed },
+			});
+		} else {
+			await os.alert({ type: 'error', text: (result ? resultText(result) + '\n' : '') + (text ?? i18n.ts._driveDeletion.interrupted) });
+		}
 		return result;
 	} finally {
 		closeWaiting?.();

@@ -2353,7 +2353,7 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * Read your deletion operation outcomes without deleting another batch. Use after a lost execute response. The operation is owner-bound and expires after one hour of inactivity.
+     * Read your deletion outcomes after a lost execute response without deleting another batch. The owner-bound operation expires one hour after preparation or its latest execution update; status requests do not extend it.
      *
      * **Credential required**: *Yes* / **Permission**: *write:drive*
      */

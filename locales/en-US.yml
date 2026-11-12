@@ -4216,4 +4216,7 @@ _driveDeletion:
   tooMany: "Delete at most 10,000 files and 1,000 folders at a time. Delete them in smaller groups."
   expired: "The deletion confirmation expired. Please try again."
   busy: "Another deletion is in progress. Please wait."
+  folderUnavailable: "The folder to delete could not be found. Refresh the list."
+  invalidSelection: "The selection is invalid. Reselect the files or folder to delete."
+  prepareFailed: "Unable to start deletion. Please try again."
   moveResult: "Files moved: {moved}. Failed: {failed}. Retry moving the failed files."
