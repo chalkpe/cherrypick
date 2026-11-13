@@ -80,6 +80,7 @@ export const MAX_CHAT_MESSAGE_FILES = 4;
 export const MAX_REMOTE_CHAT_MESSAGE_FILES = 16;
 export const MAX_CHAT_MESSAGE_TEXT_LENGTH = 4096;
 const MAX_REACTIONS_PER_MESSAGE = 100;
+const MAX_ROOM_NOTIFICATION_RETRIES = 5;
 const PENDING_CHAT_REACTION_TTL = 6 * 60 * 60;
 const MAX_PENDING_CHAT_REACTIONS = 100;
 const MAX_PENDING_CHAT_REACTIONS_PER_ACTOR = 1000;
@@ -632,7 +633,9 @@ export class ChatService {
 	private scheduleRoomNotification(messageId: string, onlyUserIds?: string[]): void {
 		setTimeout(async () => {
 			if (onlyUserIds?.length === 0) return;
-			while (true) {
+			// 수정이 계속되어도 재시도는 상한까지만 하고, 마지막에는 포장한 내용을 그대로 전달한다.
+			for (let attempt = 0; ; attempt++) {
+				const finalAttempt = attempt >= MAX_ROOM_NOTIFICATION_RETRIES;
 				const initial = await this.chatMessagesRepository.findOneBy({ id: messageId });
 				if (initial?.toRoomId == null || initial.deletedAt != null) return;
 				// 알릴 행이 없으면 포장이나 그룹 잠금이 필요하지 않다. 새 멘션은 수정 시 별도로 예약한다.
@@ -649,11 +652,11 @@ export class ChatService {
 				const retry = await this.db.transaction(async manager => {
 					const room = await manager.findOne(MiChatRoom, { where: { id: initial.toRoomId! }, lock: { mode: 'pessimistic_write' } });
 					if (room == null) return false;
-					if (JSON.stringify({ ...room, messageSequence: null }) !== roomSnapshot) return true;
+					if (!finalAttempt && JSON.stringify({ ...room, messageSequence: null }) !== roomSnapshot) return true;
 					const message = await manager.findOneBy(ChatMessageEntity, { id: messageId });
 					if (message == null || message.deletedAt != null) return false;
 					// 잠금을 기다리는 동안 수정되었다면 최신 내용을 다시 포장한다.
-					if (JSON.stringify(message) !== snapshot) return true;
+					if (!finalAttempt && JSON.stringify(message) !== snapshot) return true;
 					if (message.fromUserId != null && await manager.existsBy(MiUser, { id: message.fromUserId, isSuspended: true })) return false;
 					const recipients = await this.chatRoomNotificationService.pendingRecipients(message, manager, onlyUserIds);
 					for (const userId of recipients) {
