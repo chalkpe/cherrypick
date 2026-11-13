@@ -16,7 +16,7 @@ import type { MiMeta } from '@/models/Meta.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { bindThis } from '@/decorators.js';
-import { ACK_RECORDING_PUBLICATION_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, MAX_RECORDING_IDS, PREPARE_RECORDING_EVENT_SCRIPT, PREPARE_RECORDING_PUBLICATION_SCRIPT, RECORDING_ID, RENEW_ACTIVE_RECORDING_SCRIPT, parseRecordingEvent, recordingDeliveryWindowMs, recordingEventDeadline, recordingRetentionSeconds } from '@/core/recording-event.js';
+import { ABORT_UNSENT_RECORDING_SCRIPT, ACK_RECORDING_PUBLICATION_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, MAX_RECORDING_IDS, PREPARE_RECORDING_EVENT_SCRIPT, PREPARE_RECORDING_PUBLICATION_SCRIPT, RECORDING_ID, RENEW_ACTIVE_RECORDING_SCRIPT, parseRecordingEvent, recordingDeliveryWindowMs, recordingEventDeadline, recordingRetentionSeconds } from '@/core/recording-event.js';
 import type { RecordingBinding, RecordingEvent, RecordingStatus } from '@/core/recording-event.js';
 import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
@@ -243,7 +243,9 @@ return 1
 // このサーバーが持つルームの現況を、保存済みのものより新しい (updatedAt が大きい) ときだけ書き、通話中のルームの一覧も合わせて変える。
 // 書いたら 1、書かなければ 0。比べてから一覧を変えるまでを一つの操作にし、遅れて読み終えた古い現況が新しい現況や一覧を戻さないようにする。
 // 空の現況 (通話の終わり) も時刻ごと残す (getStates は空のものを返さない)。保存済みのものが読めなければ無いものとして扱う。
-// KEYS[1]: 現況の鍵、KEYS[2]: 通話中のルームの一覧、ARGV: 現況 (JSON)、その updatedAt、寿命 (秒)、ルームの id、空なら '1'
+// 空の現況でも、未完了の録音転換 (KEYS[3]) が残るルームは sweep 対象から外さない。外すと、残ったロックが切れたあとも sweep がこのルームを読み直せず、未完了の転換が回復されない。
+// PREPARE の SADD とこの除去はそれぞれ原子なので、新規録音の登録と競合しない。
+// KEYS[1]: 現況の鍵、KEYS[2]: 通話中のルームの一覧、KEYS[3]: ルームの未完了録音 ID 集合、ARGV: 現況 (JSON)、その updatedAt、寿命 (秒)、ルームの id、空なら '1'
 const STORE_LOCAL_SNAPSHOT_IF_NEWER_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
 if current then
@@ -254,7 +256,9 @@ if current then
 end
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
 if ARGV[5] == '1' then
-	redis.call('SREM', KEYS[2], ARGV[4])
+	if redis.call('SCARD', KEYS[3]) == 0 then
+		redis.call('SREM', KEYS[2], ARGV[4])
+	end
 else
 	redis.call('SADD', KEYS[2], ARGV[4])
 end
@@ -607,6 +611,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			if (await this.redisClient.set(lockKey, token, 'PX', 30_000, 'NX') !== 'OK') throw new Error('Recording status is being updated');
 			try {
 				const bindingKey = `chatVoice:recording:${status.recordingId}`;
+				const activeKey = `chatVoice:recordingActive:${hashOf([roomId, participant.identity, sessionId])}`;
+				const roomKey = `chatVoice:recordingRoom:${roomId}`;
+				const historyKey = `chatVoice:recordingHistory:${roomId}`;
 				const raw = await this.redisClient.get(bindingKey);
 				const held = raw != null ? JSON.parse(raw) as RecordingBinding : null;
 				if (held != null && (held.roomId !== roomId || held.identity !== participant.identity || held.sessionId !== sessionId || (held.stop != null && status.recording === true))) return false;
@@ -614,12 +621,21 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 				if (held?.stop == null && !(await this.liveKitService.listParticipants(roomId)).some(p => p.identity === participant.identity && p.sessionId === sessionId)) return false;
 				if (held?.stop == null && !await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, { micMuted: status.micMuted, deafened: status.deafened })) return false;
 				const prepared = await this.redisClient.eval(PREPARE_RECORDING_EVENT_SCRIPT, 6, bindingKey,
-					`chatVoice:recordingActive:${hashOf([roomId, participant.identity, sessionId])}`, lockKey, `chatVoice:recordingRoom:${roomId}`, `chatVoice:recordingHistory:${roomId}`, ACTIVE_ROOMS_KEY,
+					activeKey, lockKey, roomKey, historyKey, ACTIVE_ROOMS_KEY,
 					token, roomId, participant.identity, sessionId, status.recordingId, status.recording === true ? '1' : '0', Date.now(),
 					recordingRetentionSeconds(Math.max(recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts), held?.start.deliveryWindowMs ?? 0), this.config.inboxJobMaxAttempts), randomUUID(), recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts), MAX_RECORDING_IDS);
 				if (typeof prepared !== 'string' || prepared === '') return false;
 				const binding = JSON.parse(prepared) as RecordingBinding;
-				await this.deliverPendingRecordingEvents(context.room.value, binding, bindingKey, lockKey, token);
+				try {
+					await this.deliverPendingRecordingEvents(context.room.value, binding, bindingKey, lockKey, token);
+				} catch (error) {
+					// 시작을 아직 보내지 못한 결속은 폐기해, 후속 flush가 실제 캡처 없는 시작+종료를 배달하지 못하게 한다.
+					// 이미 시작을 보낸 결속은 남겨 flush가 종료를 마저 보내게 한다. 폐기는 best-effort이며 원래 오류를 그대로 던진다.
+					if (!binding.startSent) {
+						await this.redisClient.eval(ABORT_UNSENT_RECORDING_SCRIPT, 5, bindingKey, activeKey, lockKey, roomKey, historyKey, token, binding.clientId).catch(() => {});
+					}
+					throw error;
+				}
 			} finally {
 				await this.redisClient.eval(RELEASE_FEDERATION_LOCK_SCRIPT, 1, lockKey, token);
 				this.scheduleRefresh(roomId);
@@ -853,9 +869,10 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		// 後から読み始めた (後に時刻を決めた) 読み直しが保存していれば、この現況では保存も、通話中の一覧の変更も、メンバーへの知らせもしない
 		const stored = await this.redisClient.eval(
 			STORE_LOCAL_SNAPSHOT_IF_NEWER_SCRIPT,
-			2,
+			3,
 			this.keyOf(roomId),
 			ACTIVE_ROOMS_KEY,
+			`chatVoice:recordingRoom:${roomId}`,
 			JSON.stringify(snapshot),
 			snapshot.updatedAt,
 			SNAPSHOT_TTL_SECONDS,

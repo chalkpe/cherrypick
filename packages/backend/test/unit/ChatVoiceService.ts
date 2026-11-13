@@ -261,7 +261,7 @@ describe('ChatVoiceService', () => {
 
 		await f.service.refresh('r1');
 
-		expect(f.redis.eval).toHaveBeenCalledWith(expect.any(String), 2, 'chatVoice:state:r1', 'chatVoice:active', expect.any(String), TEST_CLOCK, 120, 'r1', '0');
+		expect(f.redis.eval).toHaveBeenCalledWith(expect.any(String), 3, 'chatVoice:state:r1', 'chatVoice:active', 'chatVoice:recordingRoom:r1', expect.any(String), TEST_CLOCK, 120, 'r1', '0');
 	});
 
 	test('tracks rooms with an active call', async () => {

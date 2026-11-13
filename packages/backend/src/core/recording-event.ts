@@ -78,7 +78,12 @@ if binding and (binding.roomId ~= ARGV[2] or binding.identity ~= ARGV[3] or bind
 local starting = ARGV[6] == '1'
 local active = redis.call('GET', KEYS[2])
 redis.call('ZREMRANGEBYSCORE', KEYS[5], '-inf', ARGV[7])
-if not binding and redis.call('ZCARD', KEYS[5]) >= tonumber(ARGV[11]) then return '' end
+-- 상한에 차면 신규 녹음을 거부하는 대신 가장 오래된 보관 항목을 축출한다. 보관 목록은 읽히지 않고 수명 계산에만 쓰이며,
+-- 재시작 방지와 소유권은 결속·활성 키가 지키므로 축출은 안전하다. 기존 ID의 종료는 상한 검사를 받지 않는다.
+if not binding and redis.call('ZCARD', KEYS[5]) >= tonumber(ARGV[11]) then
+	local oldest = redis.call('ZRANGE', KEYS[5], 0, 0)
+	if oldest[1] then redis.call('ZREM', KEYS[5], oldest[1]) end
+end
 if starting and ((binding and binding.stop) or (active and active ~= ARGV[5])) then return '' end
 if not binding then
 	if not starting then return '' end
@@ -108,6 +113,22 @@ if not raw then return 0 end
 local binding = cjson.decode(raw)
 binding[ARGV[2]] = true
 redis.call('SET', KEYS[1], cjson.encode(binding), 'EX', ARGV[3])
+return 1
+`;
+
+// 승인 배달이 실패해 시작을 아직 보내지 못한 결속은 폐기한다. 이미 시작을 보낸 (startSent) 결속은 flush가 종료를 마저 보내도록 남긴다.
+// 잠금 토큰과 클라이언트 ID가 모두 일치할 때만 지워, 잠금이 만료된 사이 다른 요청이 만든 결속을 건드리지 않는다.
+// KEYS: ID 결속, 세션의 활성 ID, 소유권 잠금, 미완료 목록, 보관 목록. ARGV: 잠금 토큰, 클라이언트 ID.
+export const ABORT_UNSENT_RECORDING_SCRIPT = `-- ABORT_UNSENT_RECORDING
+if redis.call('GET', KEYS[3]) ~= ARGV[1] then return 0 end
+local raw = redis.call('GET', KEYS[1])
+if not raw then return 0 end
+local binding = cjson.decode(raw)
+if binding.startSent or binding.clientId ~= ARGV[2] then return 0 end
+redis.call('DEL', KEYS[1])
+if redis.call('GET', KEYS[2]) == ARGV[2] then redis.call('DEL', KEYS[2]) end
+redis.call('SREM', KEYS[4], ARGV[2])
+redis.call('ZREM', KEYS[5], ARGV[2])
 return 1
 `;
 
@@ -165,7 +186,7 @@ if not permitted({
 	{'HSET', KEYS[3], id, '1'}, {'PEXPIRE', KEYS[3], '1000'},
 	{'HSET', KEYS[2], id, '1'}, {'PEXPIRE', KEYS[2], '1000'},
 	{'ZRANGEBYSCORE', KEYS[1], '-inf', now}, {'ZSCORE', KEYS[1], id},
-	{'ZCARD', KEYS[1]}, {'ZREVRANGE', KEYS[1], '0', '0', 'WITHSCORES'}
+	{'ZCARD', KEYS[1]}, {'ZREVRANGE', KEYS[1], '0', '0', 'WITHSCORES'}, {'ZRANGE', KEYS[1], '0', '0'}
 }) then return redis.error_reply('NOPERM Recording publication preparation') end
 local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now)
 for _, old in ipairs(expired) do
@@ -177,7 +198,16 @@ local flags = tonumber(redis.call('HGET', KEYS[2], id)) or 0
 local pending = tonumber(redis.call('HGET', KEYS[3], id)) or 0
 if bit.band(flags, transition) ~= 0 and bit.band(pending, transition) == 0 then return 0 end
 local previous = tonumber(redis.call('ZSCORE', KEYS[1], id))
-if not previous and redis.call('ZCARD', KEYS[1]) >= capacity then return -1 end
+-- 상한에 차면 신규 이벤트를 거부하는 대신 기한이 가장 이른 seen 항목을 축출한다. seen은 유한 중복 억제 캐시이므로,
+-- 축출은 아주 오래된 이벤트의 재알림을 허용할 뿐 신규 알림 유실보다 낫다.
+if not previous and redis.call('ZCARD', KEYS[1]) >= capacity then
+	local oldest = redis.call('ZRANGE', KEYS[1], 0, 0)
+	if oldest[1] then
+		redis.call('HDEL', KEYS[2], oldest[1])
+		redis.call('HDEL', KEYS[3], oldest[1])
+		redis.call('ZREM', KEYS[1], oldest[1])
+	end
+end
 redis.call('ZADD', KEYS[1], math.max(previous or 0, deadline), id)
 local latest = redis.call('ZREVRANGE', KEYS[1], 0, 0, 'WITHSCORES')
 local ttl = math.max(1000, tonumber(latest[2]) - now)
@@ -216,7 +246,21 @@ for old, held in pairs(entries) do
 end
 local held = entries[id]
 if held and bit.band(held.flags, transition) ~= 0 then return 0 end
-if not held and count >= capacity then return -1 end
+-- 상한에 차면 신규 발행을 거부하는 대신 기한이 가장 이른 기록을 축출한다 (seen 축출과 같은 이유).
+if not held and count >= capacity then
+	local oldest, oldestDeadline
+	for old, entry in pairs(entries) do
+		if oldestDeadline == nil or entry.deadline < oldestDeadline then oldest, oldestDeadline = old, entry.deadline end
+	end
+	if oldest ~= nil then
+		entries[oldest] = nil
+		-- 축출한 항목이 가장 늦은 기한이었으면 (단일 항목 등) 수명 계산을 다시 맞춘다
+		if oldestDeadline >= latest then
+			latest = deadline
+			for _, entry in pairs(entries) do if entry.deadline > latest then latest = entry.deadline end end
+		end
+	end
+end
 entries[id] = {flags = bit.bor(held and held.flags or 0, transition), deadline = math.max(held and held.deadline or 0, deadline)}
 local encoded, ttl = cjson.encode(entries), latest - now
 if not redis.acl_check_cmd('SET', KEYS[1], encoded, 'PX', ttl) then return redis.error_reply('NOPERM Recording publication ledger') end

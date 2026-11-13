@@ -45,13 +45,16 @@ async function prepare(starting: boolean, options: { id?: string; identity?: str
 	return { raw, keys, binding: typeof raw === 'string' && raw !== '' ? JSON.parse(raw) as RecordingBinding : null };
 }
 
-test('Redis keeps a stable event ID, binds the caller, and reserves room for the stop at capacity', async () => {
+test('Redis keeps a stable event ID, binds the caller, and lets a stopped ID finish at capacity', async () => {
 	const first = await prepare(true, { capacity: 1 });
 	const duplicate = await prepare(true, { capacity: 1 });
 
 	expect(duplicate.binding?.start.id).toBe(first.binding?.start.id);
 	expect((await prepare(true, { identity: 'https://local.test/users/u2', capacity: 1 })).raw).toBe('');
-	expect((await prepare(true, { id: 'second', capacity: 1 })).raw).toBe('');
+	// 상한에 찬 보관 목록은 가장 오래된 항목을 축출하고 새 녹음을 받는다 (거부하지 않는다)
+	const second = await prepare(true, { id: 'second', identity: 'https://local.test/users/u2', capacity: 1 });
+	expect(second.binding?.clientId).toBe('second');
+	expect(await redis.zscore(first.keys[4], 'client-id')).toBeNull();
 
 	const stopped = await prepare(false, { capacity: 1 });
 
@@ -221,18 +224,27 @@ test('a new SID for the same identity does not keep the previous recording alive
 	expect(snapshot.participants.find((p: { identity: string }) => p.identity === participants[0].identity).recording).toBe(true);
 });
 
-test('a rejected approval followed by a lost rollback cannot leave recording active', async () => {
+test('a rejected approval leaves no recording behind and the next approval starts clean', async () => {
 	const { fixture, participants } = recordingFixture();
 	const recordingId = randomUUID();
 	fixture.queueService.deliver.mockRejectedValueOnce(new Error('queue unavailable'));
 
 	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId })).rejects.toThrow('queue unavailable');
 	expect(participants[0].recording).toBe(false);
+	fixture.queueService.deliver.mockClear();
 	await fixture.service.refresh('r1');
 
-	const binding = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
-	expect(binding.stop?.recording).toBe(false);
-	expect(binding.stopSent).toBe(true);
+	// 폐기됐으면 flush가 시작+종료를 배달할 결속도, snapshot에 남는 녹음 표시도 없다
+	expect(await redis.get(`chatVoice:recording:${recordingId}`)).toBeNull();
+	const snapshot = JSON.parse((await redis.get('chatVoice:state:r1'))!);
+	expect(snapshot.participants.find((p: { identity: string }) => p.identity === participants[0].identity).recording).toBeFalsy();
+	const events = fixture.queueService.deliver.mock.calls.map(call => (call[1] as any).object._misskey_recordingEvent).filter(Boolean);
+	expect(events).toEqual([]);
+
+	const nextId = randomUUID();
+	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId: nextId })).resolves.toBe(true);
+	const nextEvents = fixture.queueService.deliver.mock.calls.map(call => (call[1] as any).object._misskey_recordingEvent).filter(Boolean);
+	expect(nextEvents.map((event: any) => event.recording)).toEqual([true]);
 });
 
 test('the frontend stop shape clears only its ID-bound recording when the recording flag is omitted', async () => {
@@ -248,4 +260,73 @@ test('the frontend stop shape clears only its ID-bound recording when the record
 	expect(participants[0].recording).toBe(false);
 	expect(binding.stop?.recording).toBe(false);
 	expect(binding.stopSent).toBe(true);
+});
+
+test('a leftover lock and an empty snapshot keep the room sweepable until the pending stop is delivered', async () => {
+	const { fixture } = recordingFixture();
+	const recordingId = randomUUID();
+	const setSpy = vi.spyOn(redis, 'set');
+	await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId });
+	const lockKey = setSpy.mock.calls.find(call => String(call[0]).startsWith('chatVoice:recordingLock:'))![0] as string;
+	setSpy.mockRestore();
+	// 프로세스 중단 흉내: finally의 잠금 해제 없이 30초 잠금만 남는다
+	await redis.set(lockKey, 'leftover', 'PX', 30_000);
+	fixture.liveKitService.listParticipants.mockResolvedValue([]);
+
+	await fixture.service.refresh('r1');
+
+	// 빈 snapshot이 미완료 녹음 방을 sweep 대상에서 지우면 안 된다
+	expect(await redis.smembers('chatVoice:active')).toContain('r1');
+	await redis.del(lockKey);
+	await fixture.service.sweep();
+
+	const binding = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(binding.stopSent).toBe(true);
+	const events = fixture.queueService.deliver.mock.calls.map(call => (call[1] as any).object._misskey_recordingEvent).filter(Boolean);
+	expect(events.map(event => event.recording)).toEqual([true, false]);
+});
+
+test('a failed approval delivery aborts the unsent binding instead of leaving a phantom start for flush', async () => {
+	const { fixture } = recordingFixture();
+	const recordingId = randomUUID();
+	fixture.queueService.deliver.mockRejectedValueOnce(new Error('queue unavailable'));
+
+	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId })).rejects.toThrow('queue unavailable');
+
+	expect(await redis.get(`chatVoice:recording:${recordingId}`)).toBeNull();
+	expect(await redis.smembers(`chatVoice:recordingRoom:r1`)).toEqual([]);
+	fixture.queueService.deliver.mockClear();
+	await fixture.service.refresh('r1');
+	const events = fixture.queueService.deliver.mock.calls.map(call => (call[1] as any).object._misskey_recordingEvent).filter(Boolean);
+	expect(events).toEqual([]);
+});
+
+test('a failed stop delivery keeps the sent start bound so flush still delivers the stop', async () => {
+	const { fixture } = recordingFixture();
+	const recordingId = randomUUID();
+	await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId });
+	fixture.queueService.deliver.mockRejectedValueOnce(new Error('queue unavailable'));
+
+	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { micMuted: false, deafened: false, recordingId })).rejects.toThrow('queue unavailable');
+
+	const binding = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(binding.startSent).toBe(true);
+	expect(binding.stopSent).toBeUndefined();
+	await fixture.service.refresh('r1');
+	const after = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(after.stopSent).toBe(true);
+});
+
+test('a new recording at the history capacity evicts the oldest entry instead of being refused', async () => {
+	const first = await prepare(true, { capacity: 1 });
+	expect(first.binding).not.toBeNull();
+
+	const second = await prepare(true, { id: 'second', identity: 'https://local.test/users/u2', capacity: 1 });
+
+	expect(second.binding?.clientId).toBe('second');
+	expect(await redis.zcard(first.keys[4])).toBe(1);
+	expect(await redis.zscore(first.keys[4], 'client-id')).toBeNull();
+	// 축출돼도 결속은 남아 있어 그 녹음의 종료는 계속 가능하다
+	const stopped = await prepare(false, { capacity: 1 });
+	expect(stopped.binding?.stop?.id).toBe(first.binding?.start.id);
 });

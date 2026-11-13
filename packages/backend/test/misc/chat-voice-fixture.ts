@@ -75,7 +75,13 @@ export function fakeRedis() {
 				const history = recordingHistory.get(historyKey) ?? new Map<string, number>();
 				recordingHistory.set(historyKey, history);
 				for (const [entry, deadline] of history) if (deadline <= Number(now)) history.delete(entry);
-				if (!binding && history.size >= Number(capacity)) return '';
+				// 上限に達したら新規録音を拒む代わりに最も古い保管項目を除く (本物の Lua と同じ)
+				if (!binding && history.size >= Number(capacity)) {
+					let oldest: string | undefined;
+					let oldestDeadline = Infinity;
+					for (const [entry, deadline] of history) if (deadline < oldestDeadline) { oldest = entry; oldestDeadline = deadline; }
+					if (oldest != null) history.delete(oldest);
+				}
 				const active = live(lastSeenKey) ? store.get(lastSeenKey) : null;
 				if (binding && (binding.roomId !== roomId || binding.identity !== identity || binding.sessionId !== sessionId)) return '';
 				if (starting === '1' && (binding?.stop || (active && active !== id))) return '';
@@ -102,6 +108,23 @@ export function fakeRedis() {
 				expiresAt.set(key, Date.now() + Number(ttl) * 1000);
 				return result;
 			}
+			if (_script.startsWith('-- ABORT_UNSENT_RECORDING')) {
+				const [token, clientId] = args.slice(numKeys);
+				const lockKey = String(args[2]);
+				if (!live(lockKey) || store.get(lockKey) !== String(token)) return 0;
+				if (!live(key)) return 0;
+				const binding = JSON.parse(store.get(key)!);
+				if (binding.startSent || binding.clientId !== String(clientId)) return 0;
+				store.delete(key);
+				expiresAt.delete(key);
+				if (live(lastSeenKey) && store.get(lastSeenKey) === String(clientId)) {
+					store.delete(lastSeenKey);
+					expiresAt.delete(lastSeenKey);
+				}
+				sets.get(String(args[3]))?.delete(String(clientId));
+				recordingHistory.get(String(args[4]))?.delete(String(clientId));
+				return 1;
+			}
 			if (_script.startsWith('-- CLAIM_RECORDING_EVENT') || _script.includes('-- PREPARE_RECORDING_PUBLICATION')) {
 				const [id, transition, now, deadline, capacity] = args.slice(numKeys);
 				const claims = recordingClaims.get(key) ?? new Map<string, { flags: number; deadline: number }>();
@@ -112,7 +135,14 @@ export function fakeRedis() {
 				const previous = claims.get(String(id));
 				const pendingFlags = pending.get(String(id)) ?? 0;
 				if (previous && (previous.flags & Number(transition)) !== 0 && (pendingFlags & Number(transition)) === 0) return 0;
-				if (!previous && claims.size >= Number(capacity)) return -1;
+				if (!previous && claims.size >= Number(capacity)) {
+					// PREPARE は上限で拒まず最も早い期限の seen 項目を除く。CLAIM (試験専用) はそのまま -1
+					if (numKeys !== 3) return -1;
+					let oldest: string | undefined;
+					let oldestDeadline = Infinity;
+					for (const [entry, held] of claims) if (held.deadline < oldestDeadline) { oldest = entry; oldestDeadline = held.deadline; }
+					if (oldest != null) { claims.delete(oldest); pending.delete(oldest); }
+				}
 				if (numKeys === 3) pending.set(String(id), pendingFlags | Number(transition));
 				claims.set(String(id), { flags: (previous?.flags ?? 0) | Number(transition), deadline: Math.max(previous?.deadline ?? 0, Number(deadline) + 1000) });
 				return (pendingFlags & Number(transition)) !== 0 ? 2 : 1;
@@ -180,15 +210,17 @@ export function fakeRedis() {
 				expiresAt.set(key, Date.now() + Number(stampTtlSeconds) * 1000);
 				return stamp;
 			}
-			// このサーバーが持つルームの現況 (KEYS[2] が通話中のルームの一覧) は、保存済みのものより新しいときだけ書き、一覧も変える
+			// このサーバーが持つルームの現況 (KEYS[2] が通話中のルームの一覧、KEYS[3] が未完了録音 ID の集合) は、保存済みのものより新しいときだけ書き、一覧も変える。
+			// 空の現況でも、未完了の録音が残るルームは一覧から外さない (本物の Lua と同じ)
 			if (lastSeenKey === 'chatVoice:active') {
 				const [snapshot, snapshotUpdatedAt, snapshotTtlSeconds, roomId, empty] = args.slice(numKeys);
 				if (live(key) && (JSON.parse(store.get(key)!) as { updatedAt: number }).updatedAt >= Number(snapshotUpdatedAt)) return 0;
 				store.set(key, String(snapshot));
 				expiresAt.set(key, Date.now() + Number(snapshotTtlSeconds) * 1000);
 				if (!sets.has(lastSeenKey)) sets.set(lastSeenKey, new Set());
-				if (String(empty) === '1') sets.get(lastSeenKey)!.delete(String(roomId));
-				else sets.get(lastSeenKey)!.add(String(roomId));
+				if (String(empty) === '1') {
+					if ((sets.get(generationKey)?.size ?? 0) === 0) sets.get(lastSeenKey)!.delete(String(roomId));
+				} else sets.get(lastSeenKey)!.add(String(roomId));
 				return 1;
 			}
 			if (key.startsWith('chatVoice:federated:')) {

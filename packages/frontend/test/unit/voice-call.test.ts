@@ -1908,6 +1908,40 @@ describe('call recording lifecycle', () => {
 		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved);
 	});
 
+	test('a failed stop report keeps its recording ID when settings change before the retry', async () => {
+		vi.useFakeTimers();
+		try {
+			await joinRecordingCall();
+			await vi.advanceTimersByTimeAsync(0);
+			await startRecording();
+			await flushRecording();
+			expect(voiceCall.recording).toBe(true);
+			const startReport = mocks.misskeyApi.mock.calls.find(([endpoint, status]) => endpoint === 'chat/rooms/voice/status' && status.recording === true && status.recordingId != null);
+			const recordingId = startReport![1].recordingId;
+			mocks.misskeyApi.mockClear();
+
+			// 종료 보고만 전달 전에 일시 오류로 실패한다
+			mocks.misskeyApi.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+			stopRecording();
+			await flushRecording();
+			expect(voiceCall.recording).toBe(false);
+			expect(RecordingContext.instances.every(context => context.state === 'closed')).toBe(true);
+
+			// 재시도 전에 설정을 바꿔도, ID 없는 일반 보고가 실패한 종료를 덮어쓰면 안 된다
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(1000);
+
+			const reports = mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status');
+			const retry = reports[reports.length - 1][1];
+			expect(retry.recordingId).toBe(recordingId);
+			expect(retry.recording).not.toBe(true);
+			expect(retry.deafened).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test.each(['deafen', 'forced mute', 'restart', 'failed enable'] as const)('silences the raw recording microphone on %s', async action => {
 		await joinRecordingCall();
 		await startRecording();

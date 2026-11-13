@@ -140,6 +140,8 @@ type StatusDelivery = {
 	retryDelay: number;
 	timer: number | null;
 	stopped: boolean;
+	// 서버가 아직 받아들이지 않은 종료 보고의 녹음 ID. 수락될 때까지 일반 설정 보고에도 실어 보낸다
+	pendingStops: string[];
 };
 let statusDelivery: StatusDelivery | null = null;
 // スピーカーを切り替えた回数。マイクを入れるのを待つあいだに切り替えられたかを見分ける
@@ -509,20 +511,29 @@ function resetStatusDelivery(): void {
 function reportStatus(room: Room, force = false, stoppedRecordingId?: string): void {
 	const roomId = state.room?.id;
 	if (current !== room || roomId == null || state.status === 'connecting') return;
-	const recordingId = stoppedRecordingId ?? recordingSession?.id ?? recordingStarting?.id;
-	const status = { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened, ...((state.recording || recordingStarting != null) ? { recording: true } : {}), ...(recordingId != null ? { recordingId } : {}) };
-	if (statusDelivery?.room !== room || statusDelivery.latest.sessionId !== status.sessionId) {
+	const recording = state.recording || recordingStarting != null;
+	const sessionId = room.localParticipant.sid;
+	const prev = statusDelivery != null && statusDelivery.room === room && statusDelivery.latest.sessionId === sessionId ? statusDelivery : null;
+	const pendingStops = prev != null ? prev.pendingStops : [];
+	// 아직 서버가 받아들이지 않은 종료는 설정이 바뀌어 다른 보고로 덮여도 ID를 잃지 않게 모아 둔다
+	if (stoppedRecordingId != null && !pendingStops.includes(stoppedRecordingId)) pendingStops.push(stoppedRecordingId);
+	const recordingId = stoppedRecordingId ?? (recording ? (recordingSession?.id ?? recordingStarting?.id) : pendingStops[0]);
+	const status = { roomId, sessionId, micMuted: !state.micEnabled, deafened: state.deafened, ...(recording ? { recording: true } : {}), ...(recordingId != null ? { recordingId } : {}) };
+	let delivery: StatusDelivery;
+	if (prev == null) {
 		resetStatusDelivery();
-		statusDelivery = { room, latest: status, pending: status, sending: false, retryDelay: 1000, timer: null, stopped: false };
+		delivery = { room, latest: status, pending: status, sending: false, retryDelay: 1000, timer: null, stopped: false, pendingStops };
+		statusDelivery = delivery;
 	} else {
-		if (!force && statusDelivery.latest.micMuted === status.micMuted && statusDelivery.latest.deafened === status.deafened && statusDelivery.latest.recording === status.recording && statusDelivery.latest.recordingId === status.recordingId) return;
+		if (!force && prev.latest.micMuted === status.micMuted && prev.latest.deafened === status.deafened && prev.latest.recording === status.recording && prev.latest.recordingId === status.recordingId) return;
 		// 止めたのは失敗した報告の再送だけ。設定が変わったら、新しい設定はもう一度だけ送ってみる
 		// (セッションを確かめる一時的な失敗も ACCESS_DENIED になるので、一度の失敗で通話の残りずっと黙らない)
-		statusDelivery.stopped = false;
-		statusDelivery.latest = status;
-		statusDelivery.pending = status;
+		prev.stopped = false;
+		prev.latest = status;
+		prev.pending = status;
+		delivery = prev;
 	}
-	void deliverStatus(statusDelivery);
+	void deliverStatus(delivery);
 }
 
 async function deliverStatus(delivery: StatusDelivery): Promise<void> {
@@ -533,6 +544,12 @@ async function deliverStatus(delivery: StatusDelivery): Promise<void> {
 	try {
 		await misskeyApi('chat/rooms/voice/status', status);
 		delivery.retryDelay = 1000;
+		// 서버가 종료를 받아들였으면 그 ID는 더 실지 않는다. 남은 종료는 이어서 보고한다
+		if (status.recording !== true && status.recordingId != null) {
+			const accepted = delivery.pendingStops.indexOf(status.recordingId);
+			if (accepted !== -1) delivery.pendingStops.splice(accepted, 1);
+			if (delivery.pendingStops.length > 0 && delivery.pending == null) reportStatus(delivery.room, true);
+		}
 	} catch (err) {
 		if (statusDelivery !== delivery || current !== delivery.room) return;
 		const code = isApiError(err) ? err.code : null;
@@ -544,6 +561,11 @@ async function deliverStatus(delivery: StatusDelivery): Promise<void> {
 			os.toast(i18n.ts._voiceCall.recordingRejected);
 		}
 		if (permanent) {
+			// 영구 오류로 거절된 종료는 더 재시도하지 않는다 (남은 정리는 서버의 sweep이 맡는다)
+			if (status.recording !== true && status.recordingId != null) {
+				const dropped = delivery.pendingStops.indexOf(status.recordingId);
+				if (dropped !== -1) delivery.pendingStops.splice(dropped, 1);
+			}
 			// Unsupported hosts and permanent API errors must not generate a retry loop.
 			// 送り直さないのは失敗した設定だけ。送っているあいだに変わった新しい設定は、下でもう一度だけ送ってみる
 			if (delivery.pending == null) {

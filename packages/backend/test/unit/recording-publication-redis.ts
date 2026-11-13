@@ -221,13 +221,15 @@ test('a full preparation budget still permits the same ID stop and both pending 
 	const deadline = Date.now() + 3_600_000;
 	const seed = main.pipeline();
 	for (let index = 0; index < 4095; index++) {
-		seed.zadd('seen', deadline, `fixture-${index}`);
+		seed.zadd('seen', deadline + index, `fixture-${index}`);
 		seed.hset('flags', `fixture-${index}`, '1');
 	}
 	await seed.exec();
 
-	expect(await prepare(true, 'event', 4096, deadline)).toBe(1);
-	expect(await prepare(true, 'second')).toBe(-1);
+	expect(await prepare(true, 'event', 4096, deadline + 4095)).toBe(1);
+	// 상한에 차면 새 녹음은 가장 이른 기한의 seen 항목을 축출하고 받아들여진다
+	expect(await prepare(true, 'second', 4096, deadline + 4096)).toBe(1);
+	expect(await main.zscore('seen', 'fixture-0')).toBeNull();
 	expect(await prepare(false, 'event', 4096, Date.now() + 60_000)).toBe(1);
 
 	await publish(false);
@@ -264,16 +266,55 @@ test('preparation repairs pending retained by a real Lua error before its seen w
 test('a full ID budget preserves its matching stop and the longer lifetime', async () => {
 	await listen();
 	const now = Date.now();
-	const ledger = Object.fromEntries(Array.from({ length: 4096 }, (_, index) => [`fixture-${index}`, { flags: 1, deadline: now + 3_600_000 }]));
+	const ledger = Object.fromEntries(Array.from({ length: 4096 }, (_, index) => [`fixture-${index}`, { flags: 1, deadline: now + 3_600_000 + index }]));
 	await pubsub.set('published', JSON.stringify(ledger), 'PX', 3_600_000);
 
-	expect(await publish(true, 'new-id')).toBe(-1);
-	expect(await publish(false, 'fixture-0', 4096, now + 60_000)).toBe(1);
+	// 상한에 차면 새 발행은 가장 이른 기한의 기록을 축출하고 받아들여진다. 기존 ID의 종료는 그대로다
+	expect(await publish(true, 'new-id', 4096, now + 3_600_000)).toBe(1);
+	expect(await publish(false, 'fixture-1', 4096, now + 7_200_000)).toBe(1);
 	await flushPublications();
 
-	expect(delivered).toEqual([message(false)]);
-	expect(Object.keys(JSON.parse((await pubsub.get('published'))!))).toHaveLength(4096);
+	expect(delivered).toEqual([message(true), message(false)]);
+	const stored = JSON.parse((await pubsub.get('published'))!);
+	expect(Object.keys(stored)).toHaveLength(4096);
+	expect(stored['fixture-0']).toBeUndefined();
+	expect(stored['fixture-1'].flags).toBe(3);
+	expect(stored['fixture-1'].deadline).toBe(now + 7_200_000 + 1000);
 	expect(await pubsub.pttl('published')).toBeGreaterThan(3_000_000);
+});
+
+test('a full preparation budget evicts its oldest seen entry for a new recording', async () => {
+	const deadline = Date.now() + 3_600_000;
+	const seed = main.pipeline();
+	for (let index = 0; index < 4096; index++) {
+		seed.zadd('seen', deadline + index, `fixture-${index}`);
+		seed.hset('flags', `fixture-${index}`, '1');
+	}
+	await seed.exec();
+
+	expect(await prepare(true, 'new-id', 4096, deadline)).toBe(1);
+
+	expect(await main.zcard('seen')).toBe(4096);
+	expect(await main.zscore('seen', 'fixture-0')).toBeNull();
+	expect(await main.hget('flags', 'fixture-0')).toBeNull();
+	expect(await main.hget('flags', 'new-id')).toBe('1');
+	expect(await main.hget('pending', 'new-id')).toBe('1');
+});
+
+test('a full publication ledger evicts its oldest entry for a new recording', async () => {
+	await listen();
+	const now = Date.now();
+	const ledger = Object.fromEntries(Array.from({ length: 4096 }, (_, index) => [`fixture-${index}`, { flags: 1, deadline: now + 3_600_000 + index }]));
+	await pubsub.set('published', JSON.stringify(ledger), 'PX', 3_600_000);
+
+	expect(await publish(true, 'new-id', 4096, now + 3_600_000)).toBe(1);
+	await flushPublications();
+
+	expect(delivered).toEqual([message(true)]);
+	const stored = JSON.parse((await pubsub.get('published'))!);
+	expect(Object.keys(stored)).toHaveLength(4096);
+	expect(stored['fixture-0']).toBeUndefined();
+	expect(stored['new-id']).toBeDefined();
 });
 
 test('wrong-type publication state preserves pending until the state is repaired', async () => {
