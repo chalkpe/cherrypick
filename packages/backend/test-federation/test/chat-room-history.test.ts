@@ -100,6 +100,8 @@ describe('Chat room history', () => {
 			await carol.client.request('chat/messages/react', { messageId: byAlice.id, reaction: '🎉' });
 			await alice.client.request('i/update', { chatScope: 'everyone' });
 			const direct = await carol.client.request('chat/messages/create-to-user', { toUserId: alice.id, text: 'direct from carol' });
+			// 참여할 서버가 삭제 전에 작성자의 프로필을 이미 알고 있는 경우도 확인한다.
+			await resolveRemoteUser(hostOf, carol.id, bob);
 			const admin = await fetchAdmin(hostOf);
 			await admin.client.request('admin/delete-account', { userId: carol.id });
 			await vi.waitFor(async () => {

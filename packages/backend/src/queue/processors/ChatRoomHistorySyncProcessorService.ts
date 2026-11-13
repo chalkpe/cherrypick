@@ -29,7 +29,7 @@ import { ApPersonService } from '@/core/activitypub/models/ApPersonService.js';
 import { chatHistoryPageUri, parseChatHistoryItem, parseChatHistoryPage } from '@/core/activitypub/misc/chat-history.js';
 import type { ChatHistoryItem, ChatHistoryItemContext } from '@/core/activitypub/misc/chat-history.js';
 import { chatNoteText } from '@/core/activitypub/misc/chat-payloads.js';
-import { getApType, isEmoji } from '@/core/activitypub/type.js';
+import { getApType, isActor, isEmoji } from '@/core/activitypub/type.js';
 import type { IObject, IPost } from '@/core/activitypub/type.js';
 import { acquireApObjectLock } from '@/misc/distributed-lock.js';
 import { isTemporaryFetchFailure } from '@/misc/is-temporary-fetch-failure.js';
@@ -56,6 +56,7 @@ const MAX_REACTIONS_PER_MESSAGE = 100;
 type ImportRun = {
 	lastAttempt: boolean;
 	accounts: Map<string, MiRemoteUser | null>;
+	authors: Map<string, MiRemoteUser | null>;
 	checkedEmojis: Set<string>;
 	channelsRefreshed: boolean;
 };
@@ -129,6 +130,7 @@ export class ChatRoomHistorySyncProcessorService {
 		const run: ImportRun = {
 			lastAttempt: job.attemptsMade + 1 >= (job.opts.attempts ?? 1),
 			accounts: new Map(),
+			authors: new Map(),
 			checkedEmojis: new Set(),
 			channelsRefreshed: false,
 		};
@@ -292,16 +294,23 @@ export class ChatRoomHistorySyncProcessorService {
 	 * @param retryTemporary 일시적인 실패면 큐의 재시도로 다시 찾는다. 마지막 시도에서는 null로 둔다.
 	 */
 	private async resolveAccount(uri: string, run: ImportRun, retryTemporary: boolean): Promise<MiRemoteUser | null> {
-		if (run.accounts.has(uri)) return run.accounts.get(uri)!;
+		const cache = retryTemporary ? run.authors : run.accounts;
+		if (cache.has(uri)) return cache.get(uri)!;
 		let account: MiRemoteUser | null = null;
 		try {
-			const user = await this.apDbResolverService.getUserFromApId(uri) ?? await this.apPersonService.resolvePerson(uri, await this.apResolverService.createResolver());
-			account = this.userEntityService.isRemoteUser(user) ? user : null;
+			const existing = await this.apDbResolverService.getUserFromApId(uri);
+			if (retryTemporary && existing != null) {
+				// 캐시된 계정은 삭제되었거나 접근할 수 없을 수 있으므로 작성자는 다시 확인한다.
+				const actor = await (await this.apResolverService.createResolver()).resolve(uri);
+				if (!isActor(actor) || actor.id !== uri) throw new Error('invalid history author');
+			}
+			const user = existing ?? await this.apPersonService.resolvePerson(uri, await this.apResolverService.createResolver());
+			account = this.userEntityService.isRemoteUser(user) && !user.isDeleted ? user : null;
 		} catch (err) {
 			if (retryTemporary && isTemporaryFetchFailure(err) && !run.lastAttempt) throw err;
 			this.logger.info(`Could not resolve ${uri} in a chat room history: ${err}`);
 		}
-		run.accounts.set(uri, account);
+		cache.set(uri, account);
 		return account;
 	}
 

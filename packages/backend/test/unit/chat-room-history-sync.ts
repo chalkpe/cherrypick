@@ -36,6 +36,7 @@ function note(id: string, overrides: Record<string, unknown> = {}): IObject {
 type Setup = {
 	pages?: Map<string, IObject | Error>;
 	accounts?: Map<string, unknown>;
+	cachedAccounts?: Map<string, unknown>;
 	existing?: Set<string>;
 	signers?: unknown[];
 	pass?: number;
@@ -95,7 +96,7 @@ function setup(options: Setup = {}) {
 		chatRoomHistoryService: history,
 		chatRoomRosterSyncProcessorService: { syncRoom },
 		apResolverService: { createResolver: async () => ({ signAs: vi.fn(), resolve }) },
-		apDbResolverService: { getUserFromApId: vi.fn(async () => null) },
+		apDbResolverService: { getUserFromApId: vi.fn(async (uri: string) => options.cachedAccounts?.get(uri) ?? null) },
 		apPersonService: { resolvePerson },
 		apInboxService: { resolveChatAttachments: vi.fn(async () => ({ files: [], failed: true, temporarilyFailed: false })) },
 		apNoteService: { extractEmojis: vi.fn() },
@@ -266,6 +267,28 @@ describe('과거 기록 가져오기 작업', () => {
 
 		await ctx.run(7);
 		expect(ctx.imported[0]).toMatchObject({ authorId: null, archivedAuthor: { uri: author.uri, username: null, name: null } });
+	});
+
+	test('캐시된 작성자가 삭제됐거나 응답하지 않으면 보관된 작성자로 글을 보존한다', async () => {
+		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+			_misskey_chatAuthor: { name: '지난 이름', username: 'gone', host: 'member.test' },
+		})], null));
+		pages.set(author.uri, new StatusError('Not Found', 404));
+		const ctx = setup({ pages, cachedAccounts: new Map([[author.uri, author]]) });
+
+		await ctx.run();
+
+		expect(ctx.imported[0]).toMatchObject({ authorId: null, archivedAuthor: { uri: author.uri, username: 'gone', name: '지난 이름' } });
+	});
+
+	test('캐시된 작성자가 살아 있으면 실제 계정으로 가져온다', async () => {
+		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
+		pages.set(author.uri, { id: author.uri, type: 'Person' } as IObject);
+		const ctx = setup({ pages, cachedAccounts: new Map([[author.uri, author]]) });
+
+		await ctx.run();
+
+		expect(ctx.imported[0]).toMatchObject({ authorId: author.id, archivedAuthor: null });
 	});
 
 	test('리액션은 확인한 계정의 것만, 작성자 자신과 받는 서버 계정의 것은 빼고 저장한다', async () => {
