@@ -1324,7 +1324,7 @@ export class ChatService {
 			}
 			const existingMembership = await manager.findOneBy(MiChatRoomMembership, { roomId, userId });
 			if (existingMembership == null) {
-				// 이미 멤버인 사람(계정 이전으로 금지를 이어받은 새 계정 등)은 그대로 둔다.
+				// 이미 멤버인 사람은 그대로 둔다.
 				// 금지 기록은 그룹장의 서버가 가지므로 이 서버의 그룹에서만 확인한다.
 				if (roomOwner?.host == null && await this.chatRoomBanService.isBanned(roomId, userId, manager)) {
 					throw new ChatRoomBannedError('banned from the room');

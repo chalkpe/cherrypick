@@ -263,7 +263,7 @@ export type ChatJoinFacts = {
 
 /**
  * 참여 판정. 사유가 겹치면 링크 → 보관 → 금지 → 그룹장 차단 → 정원 순으로 알린다.
- * 이미 멤버면 링크만 확인하고 기존 멤버십을 그대로 둔다(계정 이전으로 금지를 이어받은 기존 멤버 포함).
+ * 이미 멤버면 링크만 확인하고 기존 멤버십을 그대로 둔다.
  */
 export function decideChatJoin(facts: ChatJoinFacts): 'join' | 'member' | ChatJoinRefusal {
 	if (!facts.linkValid) return 'revoked';
