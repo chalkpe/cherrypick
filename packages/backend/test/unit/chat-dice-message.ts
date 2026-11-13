@@ -58,7 +58,7 @@ function fixture() {
 		chatEntityService: entity,
 		chatDiceService: { roll },
 		chatRoomMembershipsRepository: { findBy: vi.fn(async () => []), findOneBy: vi.fn() },
-		chatRoomsRepository: { findOneBy: vi.fn() },
+		chatRoomsRepository: { findOneBy: vi.fn(async () => room) },
 		usersRepository: { existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => [sender, recipient].some(user => user.id === id && user.isSuspended === isSuspended), findOneBy: vi.fn(async () => sender), findOneByOrFail: vi.fn(async () => sender), findBy: vi.fn(async () => [sender, recipient]) },
 		idService: { gen: () => 'message' },
 		redisClient: { ...memoryRedis(), pipeline: () => pipeline, sismember: async () => 0 },

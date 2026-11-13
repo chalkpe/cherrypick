@@ -249,6 +249,7 @@ describe('storing the attachments of a new message', () => {
 			chatMessagesRepository: { insertOne },
 			chatApprovalsRepository: { createQueryBuilder: () => ({ where() { return this; }, orWhere() { return this; }, take() { return this; }, getMany: async () => [] }), insertOne: vi.fn() },
 			chatRoomMembershipsRepository: { findBy: async () => [] },
+			chatRoomsRepository: { findOneBy: async () => ({ id: 'r1', ownerId: 'bob', isArchived: false }) },
 			chatEntityService: { packMessageLiteFor1on1: async (message: unknown) => message, packMessageLiteForRoom: async (message: unknown) => message },
 			roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 			userBlockingService: { checkBlocked: async () => false },
