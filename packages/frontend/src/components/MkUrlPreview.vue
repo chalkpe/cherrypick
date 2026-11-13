@@ -58,12 +58,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 <div v-else>
 	<component :is="self ? 'MkA' : 'a'" :class="[$style.link, { [$style.compact]: compact }]" :[attr]="maybeRelativeUrl" rel="nofollow noopener" :target="target" :title="url" @click.stop="(ev: MouseEvent) => warningExternalWebsite(ev, url)">
-		<div v-if="thumbnail && !sensitive" :class="[$style.thumbnail, { [$style.thumbnailBlur]: sensitive }]" :style="prefer.s.dataSaver.urlPreviewThumbnail ? '' : { backgroundImage: `url('${thumbnail}')` }">
+		<div v-if="!chatInvite && thumbnail && !sensitive" :class="[$style.thumbnail, { [$style.thumbnailBlur]: sensitive }]" :style="prefer.s.dataSaver.urlPreviewThumbnail ? '' : { backgroundImage: `url('${thumbnail}')` }">
 		</div>
 		<article :class="$style.body">
 			<header :class="$style.header">
 				<h1 v-if="unknownUrl" :class="$style.title">{{ url }}</h1>
 				<h1 v-else-if="fetching" :class="$style.title"><MkEllipsis/></h1>
+				<!-- 서버가 확인한 그룹 초대일 때만 그룹 표시를 붙인다. 다른 링크 카드는 아래 기존 그대로 -->
+				<h1 v-else-if="chatInvite" :class="$style.title" :title="title ?? undefined"><MkAvatar v-if="!sensitive && inviteAvatar" :room="inviteAvatar" :class="$style.inviteIcon"/> {{ title }}</h1>
 				<h1 v-else :class="$style.title" :title="title ?? undefined">{{ title }}</h1>
 			</header>
 			<p v-if="unknownUrl" :class="$style.text">{{ i18n.ts.failedToPreviewUrl }}</p>
@@ -74,6 +76,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<p v-if="unknownUrl" :class="$style.siteName">{{ requestUrl.host }}</p>
 				<p v-else-if="fetching" :class="$style.siteName"><MkEllipsis/></p>
 				<p v-else :class="$style.siteName" :title="sitename ?? requestUrl.host">{{ sitename ?? requestUrl.host }}</p>
+				<p v-if="chatInvite" :class="[$style.siteName, $style.inviteMembers]">{{ i18n.tsx._chat._inviteLink.membersCount({ n: chatInvite.membersCount }) }}</p>
 			</footer>
 		</article>
 	</component>
@@ -96,6 +99,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<i class="ti ti-picture-in-picture"></i> {{ i18n.ts.openInWindow }}
 			</MkButton>
 		</div>
+		<XChatInviteJoin v-if="chatInvite" :invite="chatInvite"/>
 	</template>
 </div>
 </template>
@@ -105,7 +109,6 @@ import { computed, defineAsyncComponent, onDeactivated, onUnmounted, ref } from 
 import { maybeMakeRelative } from '@@/js/url.js';
 import { url as local } from '@@/js/config.js';
 import { versatileLang } from '@@/js/intl-const.js';
-import type { SummalyResult } from '@misskey-dev/summaly';
 import { i18n } from '@/i18n.js';
 import * as os from '@/os.js';
 import { deviceKind } from '@/utility/device-kind.js';
@@ -114,6 +117,11 @@ import { transformPlayerUrl } from '@/utility/url-preview.js';
 import { store } from '@/store.js';
 import { prefer } from '@/preferences.js';
 import { warningExternalWebsite } from '@/utility/warning-external-website.js';
+import { chatInviteAvatar, getChatInviteSummary } from '@/pages/chat/chat-invite-link.js';
+import type { SummalyResultWithChatInvite } from '@/pages/chat/chat-invite-link.js';
+
+// 그룹 초대 카드에서만 쓰므로, 다른 링크 카드에는 불러오지 않는다
+const XChatInviteJoin = defineAsyncComponent(() => import('@/pages/chat/XInviteJoin.vue'));
 
 const props = withDefaults(defineProps<{
 	url: string;
@@ -134,7 +142,7 @@ const self = maybeRelativeUrl !== props.url;
 const attr = self ? 'to' : 'href';
 const target = self ? null : '_blank';
 const fetching = ref(true);
-const summalyResult = ref<SummalyResult | null>(null);
+const summalyResult = ref<SummalyResultWithChatInvite | null>(null);
 const title = computed(() => summalyResult.value?.title ?? null);
 const description = computed(() => summalyResult.value?.description ?? null);
 const thumbnail = computed(() => summalyResult.value?.thumbnail ?? null);
@@ -142,6 +150,8 @@ const icon = computed(() => summalyResult.value?.icon ?? null);
 const sitename = computed(() => summalyResult.value?.sitename ?? null);
 const sensitive = computed(() => summalyResult.value?.sensitive ?? false);
 const player = computed(() => summalyResult.value?.player ?? { url: null, width: null, height: null });
+const chatInvite = computed(() => getChatInviteSummary(summalyResult.value));
+const inviteAvatar = computed(() => chatInvite.value == null ? null : chatInviteAvatar(chatInvite.value, chatInvite.value.url, chatInvite.value.isLocal ? null : chatInvite.value.host));
 const playerEnabled = ref(false);
 const embedId = `embed${Math.random().toString().replace(/\D/, '')}`;
 
@@ -196,7 +206,7 @@ window.fetch(`/url?url=${encodeURIComponent(requestUrl.href)}&lang=${versatileLa
 
 		return res.json();
 	})
-	.then((info: SummalyResult | null) => {
+	.then((info: SummalyResultWithChatInvite | null) => {
 		if (!info || info.url == null) {
 			fetching.value = false;
 			unknownUrl.value = true;
@@ -377,6 +387,17 @@ onUnmounted(() => {
 	font-size: 0.8em;
 	line-height: 16px;
 	vertical-align: top;
+}
+
+.inviteMembers {
+	margin-left: 8px;
+}
+
+.inviteIcon {
+	width: 32px;
+	height: 32px;
+	margin-right: 8px;
+	vertical-align: middle;
 }
 
 .action {

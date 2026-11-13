@@ -138,6 +138,7 @@ function createFixture(options: FixtureOptions = {}) {
 	};
 
 	const deliver = vi.fn();
+	const requestImport = vi.fn(async () => {});
 
 	const service = Object.assign(Object.create(ChatService.prototype), {
 		config: { url: 'https://local.test' },
@@ -170,15 +171,28 @@ function createFixture(options: FixtureOptions = {}) {
 			publishMainStream: vi.fn(),
 		},
 		chatRosterService: chatRosterOver(forgetfulRedis()),
+		chatRoomHistoryService: { requestImport },
 		queueService: { deliver },
 	}) as ChatService;
 
-	return { service, state, manager, deliver, usersRepository, chatRoomMembershipsRepository };
+	return { service, state, manager, deliver, requestImport, usersRepository, chatRoomMembershipsRepository };
 }
 
 describe('ChatService.joinToRoom invitation consumption', () => {
 	test('joins normally and consumes the invitation', async () => {
 		const f = createFixture();
+
+		await f.service.joinToRoom('user1', 'room1');
+
+		expect(f.state.invitations.size).toBe(0);
+		expect(f.state.memberships).toEqual([{ id: 'membership1', roomId: 'room1', userId: 'user1' }]);
+		expect(f.deliver).toHaveBeenCalled();
+		expect(f.requestImport).toHaveBeenCalledWith(room, { restart: true });
+	});
+
+	test('기록 가져오기 요청이 실패해도 완료된 참여와 원격 수락은 유지한다', async () => {
+		const f = createFixture();
+		f.requestImport.mockRejectedValueOnce(new Error('queue unavailable'));
 
 		await f.service.joinToRoom('user1', 'room1');
 

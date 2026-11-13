@@ -628,6 +628,27 @@ export class QueueService {
 		});
 	}
 
+	/** 다른 서버가 소유한 그룹의 과거 기록 가져오기. 한 번에 몇 페이지씩 받고 delay를 두고 이어서 다시 넣는다. */
+	@bindThis
+	public createChatRoomHistorySyncJob(roomId: MiChatRoom['id'], delay?: number) {
+		return this.dbQueue.add('chatRoomHistorySync', { roomId }, {
+			delay,
+			attempts: 8,
+			backoff: {
+				type: 'exponential',
+				delay: 30 * 1000,
+			},
+			removeOnComplete: {
+				age: 3600 * 24, // keep up to 1 day
+				count: 30,
+			},
+			removeOnFail: {
+				age: 3600 * 24 * 7, // keep up to 7 days
+				count: 100,
+			},
+		});
+	}
+
 	@bindThis
 	public createChatRoomRosterSyncJob(roomId: MiChatRoom['id']) {
 		return this.dbQueue.add('chatRoomRosterSync', { roomId }, {

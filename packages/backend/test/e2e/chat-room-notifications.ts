@@ -193,6 +193,17 @@ describe('그룹 알림과 채널 읽음', () => {
 		expect((await unread(roomId)).hasUnread).toBe(true);
 	});
 
+	test('과거 페이지의 글이 수정되어 순번이 커져도 화면 뒤의 새 글을 읽음 처리하지 않는다', async () => {
+		const { roomId, general } = await room(true);
+		const old = await send(roomId, general, '과거 페이지에서 읽은 글');
+		await send(roomId, general, '아직 화면에서 보지 않은 새 글');
+		expect((await api('chat/messages/update', { messageId: old.id, text: '수정된 과거 글' }, member)).status).toBe(200);
+
+		expect((await request('read', { roomId, channelId: general, untilId: old.id }, owner)).status).toBe(204);
+
+		expect((await unread(roomId)).hasUnread).toBe(true);
+	});
+
 	test('삭제·채널 삭제가 미읽음 집계를 정리한다', async () => {
 		const { roomId, general, other } = await room(true);
 		const message = await send(roomId, general, '삭제할 글');

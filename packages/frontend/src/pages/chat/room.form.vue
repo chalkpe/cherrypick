@@ -24,6 +24,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:aria-invalid="remainingLength < 0"
 		:aria-describedby="remainingLength < 100 ? remainingLengthId : undefined"
 		:readonly="textareaReadOnly"
+		@beforeinput="onBeforeInput"
 		@input="onTextInput"
 		@compositionstart="onCompositionStart"
 		@compositionend="onCompositionEnd"
@@ -52,6 +53,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { onMounted, watch, ref, shallowRef, computed, nextTick, readonly, onBeforeUnmount, useId, useTemplateRef } from 'vue';
 import * as Misskey from 'cherrypick-js';
 //import insertTextAtCursor from 'insert-text-at-cursor';
+import { rebaseChannelRefs } from './chat-channel-references.js';
+import type { ChatChannelRef } from './chat-channel-references.js';
 import { chatErrorText } from './chat-errors.js';
 import { formatTimeString } from '@/utility/format-time-string.js';
 import { selectFile } from '@/utility/drive.js';
@@ -74,7 +77,9 @@ const MAX_TEXT_LENGTH = 4096;
 const props = defineProps<{
 	user?: Misskey.entities.UserDetailed | null;
 	room?: Misskey.entities.ChatRoom | null;
-	editingMessage?: { id: string; text?: string | null; fileIds?: string[] } | null;
+	channelId?: string;
+	channels?: Misskey.entities.ChatRoomChannel[];
+	editingMessage?: { id: string; text?: string | null; fileIds?: string[]; channelRefs?: ChatChannelRef[] } | null;
 }>();
 
 const emit = defineEmits<{
@@ -87,11 +92,18 @@ const rootEl = useTemplateRef('rootEl');
 const textareaEl = shallowRef<HTMLTextAreaElement>();
 const fileEl = shallowRef<HTMLInputElement>();
 
+const draftRefs = ref<ChatChannelRef[]>([]);
+const editRefs = ref<ChatChannelRef[]>([]);
+const channelRefs = computed({ get: () => props.editingMessage ? editRefs.value : draftRefs.value, set: value => { if (props.editingMessage) editRefs.value = value; else draftRefs.value = value; } });
+let pendingEdit: { start: number; end: number; inputType: string } | undefined;
 const draftText = ref('');
 const editText = ref('');
 const text = computed({
 	get: () => props.editingMessage ? editText.value : draftText.value,
 	set: value => {
+		const before = props.editingMessage ? editText.value : draftText.value;
+		channelRefs.value = rebaseChannelRefs(before, value, channelRefs.value, pendingEdit);
+		pendingEdit = undefined;
 		if (props.editingMessage) editText.value = value;
 		else draftText.value = value;
 	},
@@ -111,19 +123,34 @@ const canSend = computed(() => remainingLength.value >= 0 && (props.editingMessa
 watch(() => props.editingMessage, (message) => {
 	editSession++;
 	editText.value = message?.text ?? '';
+	editRefs.value = message?.channelRefs?.map(ref => ({ ...ref })) ?? [];
 	if (message == null) return;
 	void nextTick(() => textareaEl.value?.focus());
 }, { immediate: true, flush: 'sync' });
 
 // v-model は変換中の文字を渡さない。スマートフォンのキーボードは打った文字をほとんど常に変換中のままにするので、
 // それでは文字があるのに送れない。入力欄の値をそのまま使う
+function onBeforeInput(ev: InputEvent) {
+	const target = ev.target as HTMLTextAreaElement;
+	pendingEdit = !ev.isComposing && /^(insert|delete)/.test(ev.inputType)
+		? { start: target.selectionStart, end: target.selectionEnd, inputType: ev.inputType }
+		: undefined;
+}
+
 function onTextInput(ev: Event) {
-	text.value = (ev.target as HTMLTextAreaElement).value;
+	const value = (ev.target as HTMLTextAreaElement).value;
+	if (pendingEdit?.inputType.startsWith('delete') && pendingEdit.start === pendingEdit.end) {
+		const removed = Math.max(0, text.value.length - value.length);
+		if (pendingEdit.inputType.endsWith('Backward')) pendingEdit.start -= removed;
+		else pendingEdit.end += removed;
+	}
+	text.value = value;
 }
 
 let composingText = false;
 
 function onCompositionStart() {
+	pendingEdit = undefined;
 	composingText = true;
 }
 
@@ -141,10 +168,10 @@ function finishComposition() {
 }
 
 function getDraftKey() {
-	return props.user ? 'user:' + props.user.id : 'room:' + props.room?.id;
+	return props.user ? 'user:' + props.user.id : 'room:' + props.room?.id + (props.channelId ? ':channel:' + props.channelId : '');
 }
 
-watch([draftText, files], saveDraft, { deep: true, flush: 'sync' });
+watch([draftText, files, draftRefs], saveDraft, { deep: true, flush: 'sync' });
 
 function updateAttachment(changed: Misskey.entities.DriveFile, updates: Partial<Pick<Misskey.entities.DriveFile, 'name' | 'isSensitive'>>) {
 	files.value = files.value.map(file => file.id === changed.id ? { ...file, ...updates } : file);
@@ -286,6 +313,7 @@ async function onDrop(ev: DragEvent) {
 defineExpose({ onDragover, onDrop });
 
 function onKeydown(ev: KeyboardEvent) {
+	if (props.channelId && autocompleteInstance?.isOpen) return;
 	if (ev.isComposing || ev.key === 'Process' || ev.keyCode === 229) return;
 	if (ev.key === 'Enter') {
 		if (prefer.s['chat.sendOnEnter']) {
@@ -343,6 +371,7 @@ function send() {
 		misskeyApi('chat/messages/update', {
 			messageId: props.editingMessage.id,
 			text: savedText,
+			...(props.channelId ? { channelRefs: editRefs.value } : {}),
 		}).then(() => {
 			if (session === editSession && editText.value === savedText) emit('edited');
 		}).catch(err => {
@@ -364,7 +393,7 @@ function send() {
 			if (JSON.stringify(storedDraft) === storedSentDraft) deleteDraft();
 			return;
 		}
-		if (draftText.value === sentText) draftText.value = '';
+		if (draftText.value === sentText) { draftText.value = ''; draftRefs.value = []; }
 		files.value = files.value.filter(file => !sentFiles.includes(file));
 		if (draftText.value === '' && files.value.length === 0) deleteDraft();
 	};
@@ -385,6 +414,7 @@ function send() {
 	} else if (props.room) {
 		misskeyApi('chat/messages/create-to-room', {
 			toRoomId: props.room.id,
+			...(props.channelId ? { toRoomChannelId: props.channelId, channelRefs: draftRefs.value } : {}),
 			text: sentText || undefined,
 			fileIds: sentFiles.length > 0 ? sentFiles.map(file => file.id) : undefined,
 		}).then(message => {
@@ -406,6 +436,7 @@ function saveDraft() {
 		updatedAt: new Date(Math.max(Date.now(), previousTime + 1)),
 		data: {
 			text: draftText.value,
+			...(props.channelId ? { channelRefs: draftRefs.value } : {}),
 			files: files.value,
 		},
 	};
@@ -452,13 +483,18 @@ async function insertEmoji(ev: MouseEvent) {
 
 onMounted(() => {
 	if (textareaEl.value != null) {
-		autocompleteInstance = new Autocomplete(textareaEl.value, text);
+		autocompleteInstance = new Autocomplete(textareaEl.value, text, undefined, props.channelId ? {
+			get: () => props.channels ?? [],
+			ranges: () => channelRefs.value,
+			selected: (channel, start, length) => { channelRefs.value = [...channelRefs.value, { channelId: channel.id, start, length }].sort((a, b) => a.start - b.start); },
+		} : undefined);
 	}
 
 	// 書きかけの投稿を復元
 	const draft = JSON.parse(miLocalStorage.getItem('chatMessageDrafts') || '{}')[getDraftKey()];
 	if (draft) {
 		draftText.value = draft.data.text;
+		draftRefs.value = draft.data.channelRefs ?? [];
 		// A draft saved when a message could have one file keeps it under `file`.
 		files.value = draft.data.files ?? (draft.data.file != null ? [draft.data.file] : []);
 	}

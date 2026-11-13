@@ -25,6 +25,7 @@ import { CleanRemoteFilesProcessorService } from './processors/CleanRemoteFilesP
 import { AutoDeleteNotesProcessorService } from './processors/AutoDeleteNotesProcessorService.js';
 import { ChatRoomRosterSyncProcessorService } from './processors/ChatRoomRosterSyncProcessorService.js';
 import { ChatRoomIconDeletedProcessorService } from './processors/ChatRoomIconDeletedProcessorService.js';
+import { ChatRoomHistorySyncProcessorService } from './processors/ChatRoomHistorySyncProcessorService.js';
 import { DeleteAccountProcessorService } from './processors/DeleteAccountProcessorService.js';
 import { TruncateAccountProcessorService } from './processors/TruncateAccountProcessorService.js';
 import { DeleteDriveFilesProcessorService } from './processors/DeleteDriveFilesProcessorService.js';
@@ -85,6 +86,7 @@ import { ScheduledNoteDeleteProcessorService } from './processors/ScheduledNoteD
 		ImportClipsProcessorService,
 		ChatRoomRosterSyncProcessorService,
 		ChatRoomIconDeletedProcessorService,
+		ChatRoomHistorySyncProcessorService,
 		DeleteAccountProcessorService,
 		TruncateAccountProcessorService,
 		DeleteFileProcessorService,

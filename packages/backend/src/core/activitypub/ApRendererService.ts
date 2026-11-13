@@ -891,6 +891,37 @@ export class ApRendererService {
 		};
 	}
 
+	/**
+	 * 그룹 소유 서버가 내주는 과거 기록의 글. 작성자 계정이 없어진 글도 원래 작성자 주소로 싣는다.
+	 * 다른 서버 작성자의 이모지는 이 서버의 같은 이름 이모지가 아니라 그 서버의 Emoji로 싣는다.
+	 */
+	@bindThis
+	public async renderChatHistoryNote(message: MiChatMessage, authorUri: string, remoteEmojis: MiEmoji[] | null, toUsers: MiUser[], roomUri: string): Promise<IPost> {
+		const options = await this.chatPayloadOptions(message, roomUri);
+		return buildChatNote(message, { id: '', host: null }, toUsers, undefined, {
+			...options,
+			authorUri,
+			...(remoteEmojis != null ? { tag: remoteEmojis.map(emoji => this.renderRemoteEmoji(emoji)) } : {}),
+		});
+	}
+
+	/** 다른 서버에서 받은 이모지. id는 그 서버의 주소이므로 받는 쪽이 그 서버에 직접 확인할 수 있다. */
+	@bindThis
+	public renderRemoteEmoji(emoji: MiEmoji): IApEmoji {
+		return {
+			id: emoji.uri!,
+			type: 'Emoji',
+			name: `:${emoji.name}:`,
+			updated: emoji.updatedAt != null ? emoji.updatedAt.toISOString() : new Date().toISOString(),
+			icon: {
+				type: 'Image',
+				mediaType: emoji.type ?? 'image/png',
+				url: emoji.originalUrl,
+			},
+			sensitive: emoji.isSensitive,
+		};
+	}
+
 	@bindThis
 	public async renderChatUpdate(message: any, fromUser: MiUser, toUsers: MiUser[], roomId?: string, roomUri?: string): Promise<IUpdate> {
 		return buildChatUpdate(message, fromUser, toUsers, roomId, await this.chatPayloadOptions(message, roomUri));

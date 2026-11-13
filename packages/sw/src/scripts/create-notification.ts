@@ -317,6 +317,8 @@ async function composeNotification(data: PushNotificationDataMap[keyof PushNotif
 				renotify: true,
 			}];
 		case 'newChatMessage':
+			// 새 글의 알림에는 항상 작성자가 있다. 계정이 없어진 뒤 남은 과거 기록은 알리지 않는다
+			if (data.body.fromUser == null) return null;
 			if (data.body.toRoom != null) {
 				return [`${data.body.toRoom.name}`, {
 					body: `${getUserName(data.body.fromUser)}: ${data.body.text}`,

@@ -49,6 +49,8 @@ export const packedChatRoomSchema = {
 		notificationLevel: { type: 'string', enum: ['all', 'mentions', 'none'], optional: true, nullable: false },
 		hasChannels: { type: 'boolean', optional: true, nullable: false },
 		legacyChannelId: { type: 'string', optional: true, nullable: true },
+		// 다른 서버가 소유한 그룹에서 과거 기록을 가져오는 상태. 그룹 하나를 조회할 때만 싣는다
+		historyImportStatus: { type: 'string', enum: ['running', 'completed', 'unavailable'], optional: true, nullable: true },
 		isArchived: {
 			type: 'boolean',
 			optional: false, nullable: false,

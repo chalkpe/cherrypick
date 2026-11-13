@@ -6763,6 +6763,80 @@ export interface Locale extends ILocale {
         "oldest": string;
     };
     "_chat": {
+        "_channels": {
+            /**
+             * チャンネル
+             */
+            "channels": string;
+            /**
+             * チャンネル形式に切り替える
+             */
+            "convert": string;
+            /**
+             * これまでの会話はすべて #general チャンネルに移動します。
+             */
+            "convertHistory": string;
+            /**
+             * 切り替え後は単一の会話に戻せません。
+             */
+            "convertPermanent": string;
+            /**
+             * チャンネルの管理
+             */
+            "manage": string;
+            /**
+             * チャンネルを作成
+             */
+            "create": string;
+            /**
+             * チャンネル名
+             */
+            "name": string;
+            /**
+             * チャンネル名は前後の空白を除いて1〜128文字で入力してください。
+             */
+            "nameLimit": string;
+            /**
+             * チャンネルは128個まで作成できます。
+             */
+            "limit": string;
+            /**
+             * #{name} チャンネルとすべてのメッセージを完全に削除しますか？添付ファイルの原本はドライブに残ります。
+             */
+            "deleteConfirm": ParameterizedString<"name">;
+            /**
+             * このチャンネルを削除すると、旧バージョンのサーバーやアプリとは会話できなくなります。
+             */
+            "legacyDeleteWarning": string;
+            /**
+             * 最後のチャンネルは削除できません。
+             */
+            "lastChannel": string;
+            /**
+             * 削除されたチャンネル
+             */
+            "deleted": string;
+            /**
+             * チャンネルが削除されたため、残っている先頭のチャンネルに移動します。
+             */
+            "deletedNotice": string;
+            /**
+             * すべてのチャンネル
+             */
+            "all": string;
+            /**
+             * 上へ移動
+             */
+            "moveUp": string;
+            /**
+             * 下へ移動
+             */
+            "moveDown": string;
+            /**
+             * チャンネル一覧
+             */
+            "openList": string;
+        };
         /**
          * すべて受け取る
          */
@@ -7027,6 +7101,14 @@ export interface Locale extends ILocale {
          */
         "deletedMessage": string;
         /**
+         * 不明なユーザー
+         */
+        "unknownUser": string;
+        /**
+         * これ以上取得できません
+         */
+        "cannotFetchMoreHistory": string;
+        /**
          * グループが削除されました
          */
         "roomDeleted": string;
@@ -7035,7 +7117,7 @@ export interface Locale extends ILocale {
          */
         "kickMember": string;
         /**
-         * {name}さんを「{room}」から外しますか？このグループのメッセージは見られなくなり、戻るには再度招待が必要です。
+         * {name}さんを「{room}」から外しますか？このグループのメッセージは見られなくなり、再参加を許可するまで戻れません。
          */
         "kickMemberConfirm": ParameterizedString<"name" | "room">;
         /**
@@ -7119,6 +7201,30 @@ export interface Locale extends ILocale {
          */
         "memberAlreadyGone": string;
         /**
+         * 外したユーザー
+         */
+        "bannedUsers": string;
+        /**
+         * 再参加を許可
+         */
+        "pardon": string;
+        /**
+         * {name}さんの再参加を許可しますか？再び招待したり、参加したりできるようになります。
+         */
+        "pardonConfirm": ParameterizedString<"name">;
+        /**
+         * グループのオーナーに外されたため、このグループには再参加できません。
+         */
+        "bannedFromRoom": string;
+        /**
+         * このグループから外したユーザーです。再参加を許可すると招待できます。
+         */
+        "cannotInviteBannedUser": string;
+        /**
+         * このユーザーはすでに再参加が許可されています。
+         */
+        "banAlreadyLifted": string;
+        /**
          * メッセージを編集中
          */
         "editingMessage": string;
@@ -7138,6 +7244,100 @@ export interface Locale extends ILocale {
          * {x}さんへの招待をキャンセル
          */
         "cancelInvitationTo": ParameterizedString<"x">;
+        "_inviteLink": {
+            /**
+             * 招待リンク
+             */
+            "title": string;
+            /**
+             * グループへの招待
+             */
+            "pageTitle": string;
+            /**
+             * リンクを知っている人は誰でも、承認なしでこのグループに参加できます。無効化するまで使い続けられます。
+             */
+            "description": string;
+            /**
+             * 発行した招待リンクはありません。
+             */
+            "none": string;
+            /**
+             * 招待リンクを発行
+             */
+            "create": string;
+            /**
+             * 招待リンクを無効化
+             */
+            "revoke": string;
+            /**
+             * 招待リンクを無効化しますか？このリンクからは参加できなくなります。
+             */
+            "revokeConfirm": string;
+            /**
+             * アーカイブされたグループは、アーカイブを解除すると招待リンクを発行・無効化できます。
+             */
+            "archivedNote": string;
+            /**
+             * 招待リンクはすでにあります。新しいリンクが必要な場合は、先に今のリンクを無効化してください。
+             */
+            "alreadyExists": string;
+            /**
+             * この招待リンクはすでに無効化されています。
+             */
+            "alreadyRevoked": string;
+            /**
+             * メンバー{n}人
+             */
+            "membersCount": ParameterizedString<"n">;
+            /**
+             * グループを開く
+             */
+            "openRoom": string;
+            /**
+             * 参加をリクエストしました。グループがあるサーバーの応答を待っています。
+             */
+            "pending": string;
+            /**
+             * 参加リクエスト中
+             */
+            "pendingButton": string;
+            /**
+             * このグループに招待されています。グループを開いて招待を承認してください。
+             */
+            "invited": string;
+            /**
+             * 招待リンクが見つかりません。無効化されたか、グループが削除された可能性があります。
+             */
+            "notFound": string;
+            /**
+             * 正しい招待リンクではありません。
+             */
+            "invalidLink": string;
+            /**
+             * 招待リンクが無効化されたか、グループが削除されたため参加できません。
+             */
+            "refusedRevoked": string;
+            /**
+             * アーカイブされたグループのため参加できません。
+             */
+            "refusedArchived": string;
+            /**
+             * グループオーナーにグループから外されたアカウントのため、このグループには再参加できません。
+             */
+            "refusedBanned": string;
+            /**
+             * グループオーナーがこのアカウントをブロックしているため参加できません。
+             */
+            "refusedBlocked": string;
+            /**
+             * グループがあるサーバーが参加を拒否しました。
+             */
+            "refusedUnknown": string;
+            /**
+             * このサーバーからはこのグループに参加できません。リンクを開いて、グループがあるサーバーで確認してください。
+             */
+            "remoteJoinUnavailable": string;
+        };
     };
     "_emojiPalette": {
         /**

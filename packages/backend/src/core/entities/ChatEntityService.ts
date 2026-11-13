@@ -6,7 +6,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { In } from 'typeorm';
 import { DI } from '@/di-symbols.js';
-import type { MiUser, MiDriveFile, ChatMessagesRepository, MiChatMessage, ChatRoomsRepository, MiChatRoom, MiChatRoomInvitation, ChatRoomInvitationsRepository, MiChatRoomMembership, ChatRoomMembershipsRepository, UsersRepository, ChatRoomChannelsRepository } from '@/models/_.js';
+import type { MiUser, MiDriveFile, ChatMessagesRepository, MiChatMessage, ChatRoomsRepository, MiChatRoom, MiChatRoomInvitation, ChatRoomInvitationsRepository, MiChatRoomMembership, ChatRoomMembershipsRepository, MiChatRoomBan, UsersRepository, ChatRoomChannelsRepository } from '@/models/_.js';
 import { awaitAll } from '@/misc/prelude/await-all.js';
 import type { Packed } from '@/misc/json-schema.js';
 import type { } from '@/models/Blocking.js';
@@ -58,6 +58,23 @@ export class ChatEntityService {
 		};
 	}
 
+	/**
+	 * 그룹 메시지의 작성자 계정이 없어졌거나 지워졌으면 과거 기록용 작성자 정보만 내준다. 계정이 아니므로 fromUser는 null이다.
+	 * 일대일 메시지는 계정과 함께 지워지므로 해당하지 않는다.
+	 */
+	private archivedAuthorOf(message: MiChatMessage, fromUser: MiUser | null): { name: string | null; username: string | null; host: string | null } | null {
+		if (message.toRoomId == null) return null;
+		if (fromUser == null) {
+			const archived = message.archivedAuthor;
+			return archived != null && (archived.name != null || archived.username != null) ? { name: archived.name, username: archived.username, host: archived.host } : null;
+		}
+		return fromUser.isDeleted ? { name: fromUser.name, username: fromUser.username, host: fromUser.host } : null;
+	}
+
+	private hasArchivedAuthor(message: MiChatMessage, fromUser: MiUser | null): boolean {
+		return message.toRoomId != null && (fromUser == null || fromUser.isDeleted);
+	}
+
 	/** A file can be gone by now, as nothing refers to it by a foreign key. `fileId` and `file` are for clients from before there could be several. */
 	private async packMessageFiles(message: MiChatMessage, packedFiles?: Map<MiDriveFile['id'], Packed<'DriveFile'> | null>) {
 		let files: Packed<'DriveFile'>[] = [];
@@ -106,8 +123,8 @@ export class ChatEntityService {
 		}
 
 		// Get fromUser host for emoji URL resolution
-		const fromUser = message.fromUser ?? await this.usersRepository.findOneBy({ id: message.fromUserId });
-		const fromUserHost = fromUser?.host ?? null;
+		const fromUser = message.fromUser ?? (message.fromUserId != null ? await this.usersRepository.findOneBy({ id: message.fromUserId }) : null);
+		const fromUserHost = fromUser?.host ?? message.archivedAuthor?.host ?? null;
 
 		// Populate emoji URLs - only for remote users, like notes do
 		const emojis = !deleted && fromUserHost != null
@@ -122,7 +139,9 @@ export class ChatEntityService {
 			text: deleted ? null : message.text,
 			dice: deleted ? null : parseChatDiceResult(message.dice),
 			fromUserId: message.fromUserId,
-			fromUser: packedUsers?.get(message.fromUserId) ?? (await this.userEntityService.pack(message.fromUser ?? message.fromUserId, me)),
+			fromUser: this.hasArchivedAuthor(message, fromUser) ? null : packedUsers?.get(message.fromUserId!) ?? (await this.userEntityService.pack(fromUser ?? message.fromUserId!, me)),
+			archivedAuthor: this.archivedAuthorOf(message, fromUser),
+			unavailableFileCount: message.unavailableFileCount ?? 0,
 			toUserId: message.toUserId,
 			toUser: message.toUserId ? (packedUsers?.get(message.toUserId) ?? (await this.userEntityService.pack(message.toUser ?? message.toUserId, me))) : undefined,
 			toRoomId: message.toRoomId,
@@ -150,7 +169,7 @@ export class ChatEntityService {
 		};
 
 		const users = [
-			...messages.map((m) => m.fromUser ?? m.fromUserId).filter(excludeMe),
+			...messages.map((m) => m.fromUser ?? m.fromUserId).filter(x => x != null).filter(excludeMe),
 			...messages.map((m) => m.toUser ?? m.toUserId).filter(x => x != null).filter(excludeMe),
 		];
 
@@ -200,7 +219,8 @@ export class ChatEntityService {
 		}
 
 		// Get fromUser host for emoji URL resolution
-		const fromUser = message.fromUser ?? await this.usersRepository.findOneBy({ id: message.fromUserId });
+		// 일대일 메시지는 작성자 계정과 함께 지워지므로 작성자가 항상 있다
+		const fromUser = message.fromUser ?? await this.usersRepository.findOneBy({ id: message.fromUserId! });
 		const fromUserHost = fromUser?.host ?? null;
 
 		// Populate emoji URLs - only for remote users, like notes do
@@ -215,7 +235,7 @@ export class ChatEntityService {
 			deletedAt: message.deletedAt?.toISOString() ?? null,
 			text: deleted ? null : message.text,
 			dice: deleted ? null : parseChatDiceResult(message.dice),
-			fromUserId: message.fromUserId,
+			fromUserId: message.fromUserId!,
 			toUserId: message.toUserId!,
 			...(await this.packMessageFiles(message, packedFiles)),
 			reactions,
@@ -266,8 +286,8 @@ export class ChatEntityService {
 		}
 
 		// Get fromUser host for emoji URL resolution
-		const fromUser = message.fromUser ?? await this.usersRepository.findOneBy({ id: message.fromUserId });
-		const fromUserHost = fromUser?.host ?? null;
+		const fromUser = message.fromUser ?? (message.fromUserId != null ? await this.usersRepository.findOneBy({ id: message.fromUserId }) : null);
+		const fromUserHost = fromUser?.host ?? message.archivedAuthor?.host ?? null;
 
 		// Populate emoji URLs - only for remote users, like notes do
 		const emojis = !deleted && fromUserHost != null
@@ -282,7 +302,9 @@ export class ChatEntityService {
 			text: deleted ? null : message.text,
 			dice: deleted ? null : parseChatDiceResult(message.dice),
 			fromUserId: message.fromUserId,
-			fromUser: packedUsers?.get(message.fromUserId) ?? (await this.userEntityService.pack(message.fromUser ?? message.fromUserId)),
+			fromUser: this.hasArchivedAuthor(message, fromUser) ? null : packedUsers?.get(message.fromUserId!) ?? (await this.userEntityService.pack(fromUser ?? message.fromUserId!)),
+			archivedAuthor: this.archivedAuthorOf(message, fromUser),
+			unavailableFileCount: message.unavailableFileCount ?? 0,
 			toRoomId: message.toRoomId!,
 			...(await this.packMessageChannel(message)),
 			...(await this.packMessageFiles(message, packedFiles)),
@@ -297,7 +319,7 @@ export class ChatEntityService {
 	) {
 		if (messages.length === 0) return [];
 
-		const users = messages.map(x => x.fromUser ?? x.fromUserId);
+		const users = messages.map(x => x.fromUser ?? x.fromUserId).filter(x => x != null);
 		const reactedUserIds = messages.flatMap(x => x.reactions.map(r => r.split('/')[0]));
 
 		for (const reactedUserId of reactedUserIds) {
@@ -476,5 +498,28 @@ export class ChatEntityService {
 		]);
 
 		return Promise.all(memberships.map(membership => this.packRoomMembership(membership, me, { ...options, _hint_: { packedUsers, packedRooms } })));
+	}
+
+	@bindThis
+	public async packRoomBans(
+		bans: MiChatRoomBan[],
+		me: { id: MiUser['id'] },
+	): Promise<Packed<'ChatRoomBan'>[]> {
+		if (bans.length === 0) return [];
+
+		const packedUsers = new Map((await this.userEntityService.packMany(bans.map(ban => ban.user ?? ban.userId), me)).map(user => [user.id, user]));
+
+		return bans.flatMap(ban => {
+			const user = packedUsers.get(ban.userId);
+			// 그 사이 삭제된 계정은 금지 기록도 함께 지워진다.
+			if (user == null) return [];
+			return [{
+				id: ban.id,
+				createdAt: this.idService.parse(ban.id).date.toISOString(),
+				roomId: ban.roomId,
+				userId: ban.userId,
+				user,
+			}];
+		});
 	}
 }

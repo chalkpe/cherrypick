@@ -22,6 +22,11 @@ export class ChatRoomIconEntityService {
 		private avatarDecorationService: AvatarDecorationService,
 	) {}
 
+	public getIdenticonUrl(roomUri: string): string {
+		// 프로필과 같은 길이를 써서 서버 주소가 길어도 identicon 경로가 라우터 한도를 넘지 않게 한다.
+		return this.userEntityService.getIdenticonUrl({ username: createHash('sha256').update(roomUri).digest('hex').slice(0, 20), host: new URL(roomUri).host });
+	}
+
 	/**
 	 * @param ownerHint 이미 패킹한 소유자. 로컬 소유자이거나 그룹 URI가 있으면 기본 그림을 만들려고 소유자를 다시 읽지 않는다.
 	 */
@@ -37,7 +42,7 @@ export class ChatRoomIconEntityService {
 		const present = room.iconId != null && (!checkFile || await this.driveFilesRepository.existsBy({ id: room.iconId }));
 		return {
 			iconId: present ? room.iconId : null,
-			iconUrl: (present ? room.iconUrl : null) ?? this.userEntityService.getIdenticonUrl({ username: createHash('sha256').update(uri).digest('hex'), host: new URL(uri).host }),
+			iconUrl: (present ? room.iconUrl : null) ?? this.getIdenticonUrl(uri),
 			iconBlurhash: present ? room.iconBlurhash : null,
 			iconDecorations: await this.avatarDecorationService.pack(room.iconDecorations ?? []),
 		};

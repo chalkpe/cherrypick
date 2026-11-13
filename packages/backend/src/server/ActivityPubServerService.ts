@@ -5,6 +5,7 @@
 
 import * as crypto from 'node:crypto';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
+import { ChatInviteLinkService } from '@/core/ChatInviteLinkService.js';
 import { IncomingMessage } from 'node:http';
 import { Inject, Injectable } from '@nestjs/common';
 import fastifyAccepts from '@fastify/accepts';
@@ -20,6 +21,9 @@ import type { Config } from '@/config.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { chatActorUri, chatMessageUri, chatRoomUriForOwner } from '@/core/activitypub/misc/chat-payloads.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
+import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
+import { isChatHistoryCursor } from '@/core/activitypub/misc/chat-history.js';
+import { RateLimiterService } from '@/server/api/RateLimiterService.js';
 import { QueueService } from '@/core/QueueService.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import { UserKeypairService } from '@/core/UserKeypairService.js';
@@ -48,6 +52,8 @@ const LD_JSON = 'application/ld+json; profile="https://www.w3.org/ns/activitystr
 // Date, so X-Date is never trusted here and the signed Date is validated
 // explicitly instead of relying on the parser's freshness check alone.
 const SIGNATURE_CLOCK_SKEW_MS = 5 * 60 * 1000;
+// 과거 기록 조회는 요청 서버와 그룹마다 이만큼. 큰 기록도 이 속도로 끝까지 받는다.
+const CHAT_ROOM_HISTORY_LIMIT = { duration: 60 * 1000, max: 120 };
 
 function isSignedDateFresh(request: FastifyRequest): boolean {
 	if (request.headers['x-date'] != null) return false;
@@ -122,6 +128,9 @@ export class ActivityPubServerService {
 		private apDbResolverService: ApDbResolverService,
 		private chatRosterService: ChatRosterService,
 		private chatRoomChannelService: ChatRoomChannelService,
+		private chatInviteLinkService: ChatInviteLinkService,
+		private chatRoomHistoryService: ChatRoomHistoryService,
+		private rateLimiterService: RateLimiterService,
 	) {
 		//this.createServer = this.createServer.bind(this);
 	}
@@ -937,7 +946,7 @@ export class ActivityPubServerService {
 			}
 
 			// Get fromUser. A message is out of sight here while its author is suspended, and comes back when that ends.
-			const fromUser = await this.usersRepository.findOneBy({ id: message.fromUserId });
+			const fromUser = message.fromUserId != null ? await this.usersRepository.findOneBy({ id: message.fromUserId }) : null;
 			if (fromUser == null || fromUser.host !== null || fromUser.isSuspended) {
 				reply.code(404);
 				return;
@@ -1060,6 +1069,85 @@ export class ActivityPubServerService {
 
 			this.setResponseType(request, reply);
 			return this.apRendererService.addContext({ ...group, ...roster, ...channels });
+		});
+
+		// 초대 링크의 서버 간 미리보기. 그룹의 공개 정보만 싣고 멤버·채널·그룹장은 싣지 않는다.
+		// 조회만으로는 참여하지 않는다. Join을 보내기 직전의 서버가 새로 읽으므로 캐시하지 않는다
+		fastify.get<{ Params: { code: string; } }>('/chat/invite/:code', { constraints: { apOrHtml: 'ap' } }, async (request, reply) => {
+			vary(reply.raw, 'Accept');
+			reply.header('Cache-Control', 'private, no-store');
+
+			if (this.meta.federation === 'none') {
+				reply.code(403);
+				return;
+			}
+
+			if (await this.applyAccessControl(request, reply, true)) {
+				return;
+			}
+
+			const preview = await this.chatInviteLinkService.renderLocalPreviewDocument(request.params.code);
+			if (preview == null) {
+				reply.code(404);
+				return;
+			}
+
+			this.setResponseType(request, reply);
+			return this.apRendererService.addContext(preview);
+		});
+
+		// 그룹의 과거 기록. 소유 서버만 내주며, 서명한 계정이 지금 멤버인지 페이지마다 확인한다.
+		fastify.get<{ Params: { id: string; }; Querystring: { until?: unknown; } }>('/chat/rooms/:id/history', { constraints: { apOrHtml: 'ap' } }, async (request, reply) => {
+			vary(reply.raw, 'Accept');
+			reply.header('Cache-Control', 'private, no-store');
+
+			if (this.meta.federation === 'none') {
+				reply.code(403);
+				return;
+			}
+
+			if (await this.applyAccessControl(request, reply, true)) {
+				return;
+			}
+
+			const until = request.query.until;
+			if (until != null && !isChatHistoryCursor(until)) {
+				reply.code(400);
+				return;
+			}
+
+			const actor = await this.getSignedRequestActor(request);
+			if (actor?.host == null) {
+				reply.code(404);
+				return;
+			}
+
+			const room = await this.chatRoomsRepository.findOne({
+				where: { id: request.params.id },
+				relations: { owner: true },
+			});
+			// 다른 서버의 그룹은 그 서버가 기록의 권위이다. 사본을 대신 내주지 않는다.
+			if (room == null || room.uri != null || room.owner == null || room.owner.host != null) {
+				reply.code(404);
+				return;
+			}
+
+			// 초대만 받은 사람, 나간 사람, 내보낸 사람에게는 주지 않는다
+			const isMember = room.ownerId === actor.id || await this.chatRoomMembershipsRepository.existsBy({ roomId: room.id, userId: actor.id });
+			if (!isMember) {
+				reply.code(404);
+				return;
+			}
+
+			const limited = await this.rateLimiterService.limit({ key: `chatRoomHistory:${room.id}`, duration: CHAT_ROOM_HISTORY_LIMIT.duration, max: CHAT_ROOM_HISTORY_LIMIT.max }, actor.host);
+			if (limited != null) {
+				reply.header('Retry-After', Math.max(Math.ceil((limited.info.resetMs - Date.now()) / 1000), 0).toString(10));
+				reply.code(429);
+				return;
+			}
+
+			this.setResponseType(request, reply);
+			return this.apRendererService.addContext(await this.chatRoomHistoryService.renderPage(room, actor, until ?? null));
 		});
 
 		// outbox

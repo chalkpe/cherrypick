@@ -12,6 +12,8 @@ vi.mock('@/i.js', () => ({ ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog, confirm: mocks.confirm }));
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.push }) }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
+vi.mock('@/utility/choose-avatar.js', () => ({ chooseAvatar: vi.fn() }));
+vi.mock('@/pages/settings/avatar-decoration.vue', () => ({ default: { template: '<div/>' } }));
 
 import XInfo from '@/pages/chat/room.info.vue';
 import { chatRoomDeleteErrors, chatRoomUpdateErrors } from '@/pages/chat/chat-errors.js';
@@ -20,6 +22,7 @@ import { i18n } from '@/i18n.js';
 
 const room = { id: 'r1', ownerId: 'me', owner: { id: 'me', username: 'me' }, name: ':test: room', description: ':test: description' } as any;
 const stubs = {
+	XChannelManagement: true,
 	MkInput: { props: ['modelValue', 'mfmAutocomplete'], emits: ['update:modelValue'], template: '<label><slot name="label"/><input :value="modelValue" :data-autocomplete="JSON.stringify(mfmAutocomplete)" @input="$emit(\'update:modelValue\', $event.target.value)"/><slot name="caption"/></label>' },
 	MkTextarea: { props: { modelValue: String, mfmAutocomplete: Array, mfmPreview: Boolean }, emits: ['update:modelValue'], template: '<label><slot name="label"/><textarea :value="modelValue" :data-autocomplete="JSON.stringify(mfmAutocomplete)" :data-preview="mfmPreview" @input="$emit(\'update:modelValue\', $event.target.value)"/></label>' },
 	MkButton: { emits: ['click'], template: '<button @click="$emit(\'click\')"><slot/></button>' },
@@ -176,4 +179,19 @@ test('renders the name and description with MFM for other members', () => {
 test('uses MFM for the room card name and description', () => {
 	render(XRoom, { props: { room }, global: { stubs } });
 	expect(screen.getAllByTestId('mfm').map(el => el.textContent)).toEqual([room.name, room.description]);
+});
+
+test('keeps channel notification options in sync with the parent management list', async () => {
+	mocks.api.mockImplementation(async endpoint => endpoint === 'chat/rooms/channels/list'
+		? [{ id: 'stale', name: 'Stale name' }]
+		: { level: 'all', channelOverrides: [{ channelId: 'kept', level: 'mentions' }] });
+	const view = render(XInfo, { props: { room: { ...room, hasChannels: true }, channels: [{ id: 'kept', roomId: 'r1', name: 'Current name' }] as any }, global: { stubs } });
+	const kept = await screen.findByRole('combobox', { name: '#Current name' });
+	await waitFor(() => expect((kept as HTMLSelectElement).value).toBe('mentions'));
+	expect(screen.queryByRole('combobox', { name: '#Stale name' })).toBeNull();
+	await view.rerender({ channels: [{ id: 'kept', roomId: 'r1', name: 'Renamed' }, { id: 'new', roomId: 'r1', name: 'Added' }] });
+	expect((await screen.findByRole('combobox', { name: '#Renamed' }) as HTMLSelectElement).value).toBe('mentions');
+	expect(screen.getByRole('combobox', { name: '#Added' })).toBeDefined();
+	await view.rerender({ channels: [{ id: 'new', roomId: 'r1', name: 'Added' }] });
+	expect(screen.queryByRole('combobox', { name: '#Renamed' })).toBeNull();
 });

@@ -5,7 +5,8 @@
 
 import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { In } from 'typeorm';
+import { DataSource, In } from 'typeorm';
+import type Redis from 'ioredis';
 import { IdService } from '@/core/IdService.js';
 import type { MiUser } from '@/models/User.js';
 import type { MiBlocking } from '@/models/Blocking.js';
@@ -21,6 +22,9 @@ import { UserWebhookService } from '@/core/UserWebhookService.js';
 import { bindThis } from '@/decorators.js';
 import { CacheService } from '@/core/CacheService.js';
 import { UserFollowingService } from '@/core/UserFollowingService.js';
+import { chatInviteJoinInvitationKey } from '@/core/chat-invite-link.js';
+import { MiChatRoom } from '@/models/ChatRoom.js';
+import { MiChatRoomInvitation } from '@/models/ChatRoomInvitation.js';
 
 @Injectable()
 export class UserBlockingService implements OnModuleInit {
@@ -29,6 +33,12 @@ export class UserBlockingService implements OnModuleInit {
 
 	constructor(
 		private moduleRef: ModuleRef,
+
+		@Inject(DI.db)
+		private db: DataSource,
+
+		@Inject(DI.redis)
+		private redisClient: Redis.Redis,
 
 		@Inject(DI.followRequestsRepository)
 		private followRequestsRepository: FollowRequestsRepository,
@@ -73,7 +83,7 @@ export class UserBlockingService implements OnModuleInit {
 			this.userFollowingService.unfollow(blockee, blocker, silent),
 			this.removeFromList(blockee, blocker),
 			this.removeRoomInvitations(blocker, blockee),
-			this.removeRoomInvitations(blockee, blocker),
+			this.removeRoomInvitations(blockee, blocker, true),
 		]);
 
 		const blocking = {
@@ -159,7 +169,7 @@ export class UserBlockingService implements OnModuleInit {
 	}
 
 	@bindThis
-	private async removeRoomInvitations(roomOwner: MiUser, user: MiUser) {
+	private async removeRoomInvitations(roomOwner: MiUser, user: MiUser, preserveLinkJoin = false) {
 		const rooms = await this.chatRoomsRepository.find({
 			select: { id: true },
 			where: { ownerId: roomOwner.id },
@@ -169,10 +179,24 @@ export class UserBlockingService implements OnModuleInit {
 			return;
 		}
 
-		await this.chatRoomInvitationsRepository.delete({
-			roomId: In(rooms.map(room => room.id)),
-			userId: user.id,
-		});
+		if (!preserveLinkJoin || !this.userEntityService.isLocalUser(roomOwner) || !this.userEntityService.isRemoteUser(user)) {
+			await this.chatRoomInvitationsRepository.delete({ roomId: In(rooms.map(room => room.id)), userId: user.id });
+			return;
+		}
+
+		for (const room of rooms) {
+			await this.db.transaction(async manager => {
+				const locked = await manager.findOne(MiChatRoom, { where: { id: room.id }, lock: { mode: 'pessimistic_write' } });
+				if (locked == null) return;
+				const invitation = await manager.findOneBy(MiChatRoomInvitation, { roomId: room.id, userId: user.id });
+				if (invitation == null) return;
+				const raw = await this.redisClient.get(chatInviteJoinInvitationKey(room.id, user.id));
+				let linkInvitationId: unknown;
+				try { linkInvitationId = raw == null ? null : JSON.parse(raw).invitationId; } catch { linkInvitationId = null; }
+				if (linkInvitationId === invitation.id) return;
+				await manager.delete(MiChatRoomInvitation, { id: invitation.id });
+			});
+		}
 	}
 
 	@bindThis

@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle backFallback="/chat" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
+<PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle backFallback="/chat" :backTo="channelId && channelListBack ? channelListPath(roomId!) : undefined" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
 	<!-- 自分が通話に入っているあいだは、通話 (ステージ) を出す。広いページではステージとチャットを左右に並べ、ステージは一つだけ作ってチャットを置く側の反対へ CSS の順序で移す。
 	狭いページではステージをいっぱいに広げ、チャットはその上に下から重ねるシートとして開く -->
 	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="[$style.chatTab, { [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }]">
@@ -51,9 +51,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 						<MkResult v-else-if="fetchError != null" :type="fetchError"/>
 
+						<!-- 다른 서버의 그룹에 막 참여했으면 소유 서버의 기록을 가져오는 동안 기다린다 -->
+						<div v-else-if="messages.length === 0 && historyImportStatus === 'running'">
+							<MkLoading/>
+						</div>
+
 						<div v-else-if="messages.length === 0">
 							<div class="_gaps" style="text-align: center;">
 								<div>{{ i18n.ts._chat.noMessagesYet }}</div>
+								<div v-if="historyImportStatus === 'unavailable'" :class="$style.historyEnd">{{ i18n.ts._chat.cannotFetchMoreHistory }}</div>
 								<template v-if="user">
 									<div v-if="user.chatScope === 'followers'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromFollowers }}</div>
 									<div v-else-if="user.chatScope === 'following'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromFollowing }}</div>
@@ -79,6 +85,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<div v-if="canFetchMore" :class="$style.moreRow">
 								<MkButton :class="$style.more" :wait="moreFetching" primary rounded @click="fetchMore">{{ i18n.ts.loadMore }}</MkButton>
 							</div>
+							<!-- 손에 있는 옛 글을 다 보였을 때, 소유 서버의 기록을 아직 가져오는 중인지 더 가져올 수 없는지 -->
+							<MkLoading v-else-if="historyImportStatus === 'running'" :em="true"/>
+							<div v-else-if="historyImportStatus === 'unavailable'" :class="$style.historyEnd">{{ i18n.ts._chat.cannotFetchMoreHistory }}</div>
 
 							<TransitionGroup
 								ref="timelineItemsEl"
@@ -95,6 +104,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 									<div v-if="item.type === 'item'" :class="{ [$style.stackedMessage]: groupPositions[i]?.first === false }">
 										<XMessage
 											:message="item.data"
+											:channels="channels"
 											:canEdit="true"
 											:roomArchived="room?.isArchived === true"
 											:firstInGroup="groupPositions[i]?.first ?? true"
@@ -129,7 +139,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 
 	<div v-if="tab === 'search'" class="_spacer" style="--MI_SPACER-w: 700px;">
-		<XSearch :userId="userId" :roomId="roomId"/>
+		<XSearch :key="roomId ?? userId" :userId="userId" :roomId="roomId" :channels="channels"/>
 	</div>
 
 	<div v-else-if="tab === 'members'" class="_spacer" style="--MI_SPACER-w: 700px;">
@@ -137,7 +147,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 
 	<div v-else-if="tab === 'info'" class="_spacer" style="--MI_SPACER-w: 700px;">
-		<XInfo v-if="room != null" :room="room" @updated="room = $event" @deleting="deletingOwnRoom = $event"/>
+		<XInfo v-if="room != null" :room="room" :channels="channels" @updated="onRoomInfoUpdated" @channelsUpdated="emit('channelsUpdated')" @deleting="deletingOwnRoom = $event"/>
 	</div>
 
 	<template #footer>
@@ -154,7 +164,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</button>
 						</div>
 					</Transition>
-					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @sent="onSent"/>
+					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :key="channelId ?? roomId ?? userId" :channelId="channelId" :channels="channels" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @sent="onSent"/>
 				</div>
 			</Teleport>
 		</div>
@@ -166,6 +176,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { ref, useTemplateRef, computed, watch, nextTick, onMounted, onBeforeUnmount, onDeactivated, onActivated, onUnmounted } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { getScrollContainer } from '@@/js/scroll.js';
+import { channelConversationPath, channelListPath } from './chat-channel-references.js';
 import XMessage from './XMessage.vue';
 import XForm from './room.form.vue';
 import XSearch from './room.search.vue';
@@ -218,10 +229,16 @@ const router = useRouter();
 const props = defineProps<{
 	userId?: string;
 	roomId?: string;
+	channelId?: string;
+	channels?: Misskey.entities.ChatRoomChannel[];
+	channelListBack?: boolean;
 }>();
 
+const emit = defineEmits<{ (ev: 'channelsUpdated'): void }>();
+
 export type NormalizedChatMessage = Omit<Misskey.entities.ChatMessageLite, 'fromUser' | 'reactions'> & {
-	fromUser: Misskey.entities.UserLite;
+	// 그룹 메시지의 작성자 계정이 없어졌으면 null이고 archivedAuthor로 표시한다
+	fromUser: Misskey.entities.UserLite | null;
 	editedAt?: string | null;
 	deletedAt?: string | null;
 	reactions: (Misskey.entities.ChatMessageLite['reactions'][number] & {
@@ -251,6 +268,8 @@ function onCancelEdit() {
 const canFetchMore = ref(false);
 const user = ref<Misskey.entities.UserDetailed | null>(null);
 const room = ref<Misskey.entities.ChatRoom | null>(null);
+// 다른 서버가 소유한 그룹의 과거 기록 가져오기
+const historyImportStatus = computed(() => room.value?.historyImportStatus ?? null);
 const joinedMemberCount = ref(0);
 const sentInvitationCount = ref(0);
 const membershipVersion = ref(0);
@@ -367,7 +386,8 @@ watch(timelineEl, el => {
 function normalizeMessage(message: Misskey.entities.ChatMessageLite | Misskey.entities.ChatMessage): NormalizedChatMessage {
 	return {
 		...message,
-		fromUser: message.fromUser ?? (message.fromUserId === $i.id ? $i : user.value!),
+		// 일대일 메시지에는 작성자가 실리지 않는다. 그룹 메시지의 null은 계정이 없어진 작성자다
+		fromUser: message.fromUser !== undefined ? message.fromUser : (message.fromUserId === $i.id ? $i : user.value!),
 		reactions: message.reactions.map(record => ({
 			...record,
 			user: record.user ?? (message.fromUserId === $i.id ? user.value! : $i),
@@ -380,140 +400,138 @@ function toFetchError(err: unknown): 'notFound' | 'error' {
 	return code === 'NO_SUCH_ROOM' || code === 'NO_SUCH_USER' ? 'notFound' : 'error';
 }
 
+let conversationVersion = 0;
+let initializingKey = '';
+let destroyed = false;
+
+function conversationKey() {
+	return `${props.userId ?? ''}:${props.roomId ?? ''}:${props.channelId ?? ''}`;
+}
+
+async function openFirstChannel(target: Misskey.entities.ChatRoom) {
+	const version = conversationVersion;
+	const key = conversationKey();
+	const list = await misskeyApi('chat/rooms/channels/list', { roomId: target.id });
+	if (destroyed || !isActivated || version !== conversationVersion || key !== conversationKey() || target.id !== props.roomId) return;
+	if (list[0]) router.replaceByPath(channelConversationPath(target.id, list[0].id));
+}
+
+function onRoomInfoUpdated(updated: Misskey.entities.ChatRoom) {
+	if (updated.id !== props.roomId) return;
+	room.value = updated;
+	if (updated.hasChannels && !props.channelId) void openFirstChannel(updated);
+}
+
 async function initialize() {
 	const LIMIT = 20;
-
-	if (initializing.value) return;
-
+	const key = conversationKey();
+	if (destroyed || !isActivated || (initializing.value && initializingKey === key)) return;
+	initializingKey = key;
+	const version = ++conversationVersion;
+	const sameTarget = () => !destroyed && version === conversationVersion && key === conversationKey();
+	const current = () => sameTarget() && isActivated;
+	connection.value?.dispose();
+	connection.value = null;
 	initializing.value = true;
 	initialized.value = false;
 	deletingOwnRoom.value = false;
 	leavingRoom.value = false;
 	fetchError.value = null;
-
-	if (props.userId) {
-		const result = await Promise.all([
-			misskeyApi('users/show', { userId: props.userId }),
-			misskeyApi('chat/messages/user-timeline', { userId: props.userId, limit: LIMIT, includeDeleted: true }),
-		]).catch(err => {
-			fetchError.value = toFetchError(err);
-			return null;
-		});
-
-		if (result == null) {
-			initializing.value = false;
-			return;
-		}
-
-		const [u, m] = result;
-
-		user.value = u;
-		messages.value = m.map(x => normalizeMessage(x));
-
-		if (messages.value.length === LIMIT) {
-			canFetchMore.value = true;
-		}
-
-		connection.value = useStream().useChannel('chatUser', {
-			otherId: user.value.id,
-		});
-		connection.value.on('_subscribed_', readAgain);
-		connection.value.on('message', onMessage);
-		connection.value.on('deleted', onDeleted);
-		connection.value.on('react', onReact);
-		connection.value.on('unreact', onUnreact);
-		connection.value.on('updated', onUpdated);
-	} else if (props.roomId) {
-		const [rResult, mResult] = await Promise.allSettled([
-			misskeyApi('chat/rooms/show', { roomId: props.roomId }),
-			misskeyApi('chat/messages/room-timeline', { roomId: props.roomId, limit: LIMIT, includeDeleted: true }),
-		]);
-
-		if (rResult.status === 'rejected') {
-			const code = (rResult.reason as Misskey.api.APIError | null | undefined)?.code;
-			if (code === 'ROOM_DELETED') {
-				notifyRoomClosed(i18n.ts._chat.roomDeleted);
-			} else if (membershipEnded.value) {
-				// 別のページを見ているあいだに外された
-				notifyRoomClosed(i18n.ts._chat.removedFromRoom);
-			} else if (code === 'NO_SUCH_ROOM') {
-				// 外されたあとの削除はこのサーバーに届かないことがあり、削除されたのか外されただけなのかは分からない
-				notifyRoomClosed(i18n.ts._chat.roomUnavailable);
-			} else {
-				fetchError.value = toFetchError(rResult.reason);
-			}
-			initializing.value = false;
-			return;
-		}
-
-		const r = rResult.value as Misskey.entities.ChatRoomsShowResponse;
-
-		if (r.invitationExists) {
-			const confirm = await os.confirm({
-				type: 'question',
-				title: r.name,
-				room: r,
-				text: i18n.ts._chat.youAreNotAMemberOfThisRoomButInvited + '\n' + i18n.ts._chat.doYouAcceptInvitation,
-			});
-			if (confirm.canceled) {
-				initializing.value = false;
-				router.push('/chat');
-				return;
-			} else {
+	messages.value = [];
+	editingMessage.value = null;
+	user.value = null;
+	room.value = null;
+	canFetchMore.value = false;
+	moreFetching.value = false;
+	latestRoomPeopleRequest++;
+	// 일대일과 그룹의 연결은 같은 이름의 쪽지 이벤트를 쓰지만 타입이 달라 연결마다 따로 등록한다
+	let userConnection: Misskey.IChannelConnection<Misskey.Channels['chatUser']> | null = null;
+	let roomConnection: Misskey.IChannelConnection<Misskey.Channels['chatRoom']> | null = null;
+	try {
+		if (props.userId) {
+			const [u, m] = await Promise.all([
+				misskeyApi('users/show', { userId: props.userId }),
+				misskeyApi('chat/messages/user-timeline', { userId: props.userId, limit: LIMIT, includeDeleted: true }),
+			]);
+			if (!current()) return;
+			user.value = u;
+			messages.value = m.map(normalizeMessage);
+			userConnection = useStream().useChannel('chatUser', { otherId: u.id });
+			connection.value = userConnection;
+		} else if (props.roomId) {
+			const r = await misskeyApi('chat/rooms/show', { roomId: props.roomId });
+			if (!current()) return;
+			if (r.invitationExists) {
+				const { canceled } = await os.confirm({ type: 'question', title: r.name, room: r, text: i18n.ts._chat.youAreNotAMemberOfThisRoomButInvited + '\n' + i18n.ts._chat.doYouAcceptInvitation });
+				if (!current()) return;
+				if (canceled) { router.push('/chat'); return; }
 				try {
 					await os.apiWithDialog('chat/rooms/join', { roomId: r.id }, undefined, chatJoinErrors);
 					globalEvents.emit('chatRoomInvitationHandled', r.id, 'joined');
 				} catch {
-					// The dialog already explained the refusal, and this page has nothing to show a non-member.
-					initializing.value = false;
-					router.push('/chat');
+					if (current()) router.push('/chat');
 					return;
 				}
-				initializing.value = false;
-				initialize();
+				if (current()) { initializing.value = false; void initialize(); }
 				return;
 			}
+			if (r.hasChannels && !props.channelId) {
+				await openFirstChannel(r);
+				return;
+			}
+			const m = await misskeyApi('chat/messages/room-timeline', { roomId: r.id, ...(props.channelId ? { channelId: props.channelId } : {}), limit: LIMIT, includeDeleted: true });
+			if (!current()) return;
+			room.value = r;
+			messages.value = m.map(normalizeMessage);
+			void refreshRoomPeople();
+			roomConnection = useStream().useChannel('chatRoom', { roomId: r.id, ...(props.channelId ? { channelId: props.channelId } : {}) });
+			connection.value = roomConnection;
+			connection.value.on('channelsUpdated', () => {
+				if (!current()) return;
+				if (props.channelId) emit('channelsUpdated');
+				else void initialize();
+			});
+			connection.value.on('roomUpdated', onRoomUpdated);
+			connection.value.on('membershipStarted', onMembershipChanged);
+			connection.value.on('membershipEnded', onMembershipEnded);
+			connection.value.on('roomDeleted', onRoomDeleted);
+			connection.value.on('historyImported', onHistoryImported);
 		}
-
-		// ルーム情報は取れても、タイムラインの取得だけ失敗することがある（通信エラーなど）
-		if (mResult.status === 'rejected') {
-			fetchError.value = toFetchError(mResult.reason);
-			initializing.value = false;
-			return;
+		if (!current()) return;
+		canFetchMore.value = messages.value.length === LIMIT;
+		if (userConnection != null) {
+			userConnection.on('_subscribed_', readAgain);
+			userConnection.on('message', payload => { if (sameTarget()) onMessage(payload); });
+			userConnection.on('deleted', payload => { if (sameTarget()) onDeleted(payload); });
+			userConnection.on('react', payload => { if (sameTarget()) onReact(payload); });
+			userConnection.on('unreact', payload => { if (sameTarget()) onUnreact(payload); });
+			userConnection.on('updated', payload => { if (sameTarget()) onUpdated(payload); });
 		}
-
-		const m = mResult.value as Misskey.entities.ChatMessagesRoomTimelineResponse;
-
-		room.value = r;
-		messages.value = m.map(x => normalizeMessage(x));
-
-		await refreshRoomPeople();
-
-		if (messages.value.length === LIMIT) {
-			canFetchMore.value = true;
+		if (roomConnection != null) {
+			roomConnection.on('_subscribed_', readAgain);
+			roomConnection.on('message', payload => { if (sameTarget()) onMessage(payload); });
+			roomConnection.on('deleted', payload => { if (sameTarget()) onDeleted(payload); });
+			roomConnection.on('react', payload => { if (sameTarget()) onReact(payload); });
+			roomConnection.on('unreact', payload => { if (sameTarget()) onUnreact(payload); });
+			roomConnection.on('updated', payload => { if (sameTarget()) onUpdated(payload); });
 		}
-
-		connection.value = useStream().useChannel('chatRoom', {
-			roomId: room.value.id,
-		});
-		connection.value.on('_subscribed_', readAgain);
-		connection.value.on('message', onMessage);
-		connection.value.on('deleted', onDeleted);
-		connection.value.on('react', onReact);
-		connection.value.on('unreact', onUnreact);
-		connection.value.on('updated', onUpdated);
-		connection.value.on('roomUpdated', onRoomUpdated);
-		connection.value.on('membershipStarted', onMembershipChanged);
-		connection.value.on('membershipEnded', onMembershipEnded);
-		connection.value.on('roomDeleted', onRoomDeleted);
+		window.document.addEventListener('visibilitychange', onVisibilitychange);
+		initialized.value = true;
+		membershipEnded.value = false;
+	} catch (err) {
+		if (!current()) return;
+		const code = (err as Misskey.api.APIError | null)?.code;
+		if (props.roomId && code === 'ROOM_DELETED') notifyRoomClosed(i18n.ts._chat.roomDeleted);
+		else if (props.roomId && membershipEnded.value) notifyRoomClosed(i18n.ts._chat.removedFromRoom);
+		else if (props.roomId && code === 'NO_SUCH_ROOM') notifyRoomClosed(membershipEnded.value ? i18n.ts._chat.removedFromRoom : i18n.ts._chat.roomUnavailable);
+		else if (props.channelId && code === 'NO_SUCH_CHANNEL') emit('channelsUpdated');
+		else fetchError.value = toFetchError(err);
+	} finally {
+		if (current()) initializing.value = false;
 	}
-
-	window.document.addEventListener('visibilitychange', onVisibilitychange);
-
-	initialized.value = true;
-	membershipEnded.value = false;
-	initializing.value = false;
 }
+
+watch(() => [props.userId, props.roomId, props.channelId], () => { void initialize(); });
 
 let isActivated = true;
 
@@ -523,38 +541,40 @@ onActivated(() => {
 
 onDeactivated(() => {
 	isActivated = false;
+	if (initializing.value) { conversationVersion++; initializing.value = false; }
 	showIndicator.value = false;
 });
 
 async function fetchMore() {
 	const LIMIT = 30;
-
+	const version = conversationVersion;
+	if (moreFetching.value || !messages.value.length) return;
 	moreFetching.value = true;
-
-	const newMessages = props.userId ? await misskeyApi('chat/messages/user-timeline', {
-		userId: user.value!.id,
-		limit: LIMIT,
-		untilId: messages.value[messages.value.length - 1].id,
-		includeDeleted: true,
-	}) : await misskeyApi('chat/messages/room-timeline', {
-		roomId: room.value!.id,
-		limit: LIMIT,
-		untilId: messages.value[messages.value.length - 1].id,
-		includeDeleted: true,
-	});
-
-	const earlierLoaded = readingPlace.whileLoadingEarlier();
-
-	messages.value.push(...newMessages.map(x => normalizeMessage(x)));
-
-	canFetchMore.value = newMessages.length === LIMIT;
-	moreFetching.value = false;
-
-	await nextTick();
-	earlierLoaded();
+	try {
+		const newMessages = props.userId ? await misskeyApi('chat/messages/user-timeline', {
+			userId: user.value!.id, limit: LIMIT, untilId: messages.value[messages.value.length - 1].id, includeDeleted: true,
+		}) : await misskeyApi('chat/messages/room-timeline', {
+			roomId: room.value!.id, ...(props.channelId ? { channelId: props.channelId } : {}), limit: LIMIT, untilId: messages.value[messages.value.length - 1].id, includeDeleted: true,
+		});
+		if (destroyed || version !== conversationVersion) return;
+		const earlierLoaded = readingPlace.whileLoadingEarlier();
+		messages.value.push(...newMessages.map(normalizeMessage));
+		canFetchMore.value = newMessages.length === LIMIT;
+		await nextTick();
+		earlierLoaded();
+	} catch (err) {
+		if (!destroyed && version === conversationVersion) {
+			if ((err as Misskey.api.APIError | null)?.code === 'NO_SUCH_CHANNEL') emit('channelsUpdated');
+			else os.alert({ type: 'error', text: i18n.ts._chat.actionFailed });
+		}
+	} finally {
+		if (version === conversationVersion) moreFetching.value = false;
+	}
 }
 
 function onMessage(message: Misskey.entities.ChatMessageLite) {
+	if (props.roomId && message.toRoomId != null && message.toRoomId !== props.roomId) return;
+	if (props.channelId && message.toRoomChannelId !== props.channelId) return;
 	// 読み直しのほうが先に届けていることがある
 	if (messages.value.some(m => m.id === message.id)) return;
 
@@ -615,7 +635,7 @@ function onUnreact(ctx: Parameters<Misskey.Channels['chatUser']['events']['unrea
 	}
 }
 
-function onUpdated(ctx: Parameters<Misskey.Channels['chatUser']['events']['updated']>[0] & { shouldNotify?: boolean }) {
+function onUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['updated']>[0] & { shouldNotify?: boolean }) {
 	noteChangeDuringRead();
 	const message = messages.value.find(m => m.id === ctx.messageId);
 	if (message && !message.deletedAt) {
@@ -623,6 +643,7 @@ function onUpdated(ctx: Parameters<Misskey.Channels['chatUser']['events']['updat
 		if (ctx.shouldNotify === true) sound.playMisskeySfx('chatMessage');
 		message.text = ctx.text;
 		message.editedAt = ctx.editedAt;
+		if (ctx.channelRefs != null) message.channelRefs = ctx.channelRefs;
 		if (ctx.emojis != null) message.emojis = ctx.emojis;
 	}
 }
@@ -669,7 +690,7 @@ async function refreshRoomPeople() {
 			misskeyApi('chat/rooms/invitations/outbox', { roomId: target.id, limit: 50 }),
 		]);
 		// 遅れて返ってきた古い人数で、新しい人数を置き換えない
-		if (request !== latestRoomPeopleRequest) return;
+		if (request !== latestRoomPeopleRequest || target.id !== room.value?.id || destroyed) return;
 		joinedMemberCount.value = members.filter(member => member.userId !== target.ownerId).length;
 		sentInvitationCount.value = invitations.length;
 	} catch {
@@ -686,6 +707,17 @@ function onMembershipEnded(ctx: Parameters<Misskey.Channels['chatRoom']['events'
 	// 自分で退出したときは、退出の結果として leaveRoom が移動する
 	if (leavingRoom.value) return;
 	if (isActivated) notifyRoomClosed(i18n.ts._chat.removedFromRoom);
+}
+
+// 가져온 옛 글은 새 글로 알려지지 않는다. 진행을 알려 오면 옛 글을 다시 읽을 수 있게 한다
+function onHistoryImported(ctx: Parameters<Misskey.Channels['chatRoom']['events']['historyImported']>[0]) {
+	if (room.value == null) return;
+	room.value = { ...room.value, historyImportStatus: ctx.status };
+	if (messages.value.length === 0) {
+		readAgain();
+	} else {
+		canFetchMore.value = true;
+	}
 }
 
 function onRoomDeleted() {
@@ -767,16 +799,19 @@ async function catchUp() {
 /** @returns 一時的な失敗で読めなかったときは false */
 async function readLatest(): Promise<boolean> {
 	const LIMIT = 20;
+	const version = conversationVersion;
 	let r: Misskey.entities.ChatRoomsShowResponse | null;
 	let m: (Misskey.entities.ChatMessageLite | Misskey.entities.ChatMessage)[];
 	try {
 		[r, m] = await Promise.all([
 			props.roomId ? misskeyApi('chat/rooms/show', { roomId: props.roomId }) : null,
 			props.roomId
-				? misskeyApi('chat/messages/room-timeline', { roomId: props.roomId, limit: LIMIT, includeDeleted: true })
+				? misskeyApi('chat/messages/room-timeline', { roomId: props.roomId, ...(props.channelId ? { channelId: props.channelId } : {}), limit: LIMIT, includeDeleted: true })
 				: misskeyApi('chat/messages/user-timeline', { userId: props.userId!, limit: LIMIT, includeDeleted: true }),
 		]);
 	} catch (err) {
+		if (destroyed || version !== conversationVersion) return true;
+		if ((err as Misskey.api.APIError | null)?.code === 'NO_SUCH_CHANNEL') { emit('channelsUpdated'); return true; }
 		// 一時的な失敗なら、次の機会まで今の表示のままにする
 		const code = (err as Misskey.api.APIError | null | undefined)?.code;
 		if (code !== 'NO_SUCH_ROOM' && code !== 'ROOM_DELETED') {
@@ -789,7 +824,7 @@ async function readLatest(): Promise<boolean> {
 		if (isActivated) initialize();
 		return true;
 	}
-	if (!initialized.value) return true;
+	if (!initialized.value || destroyed || version !== conversationVersion) return true;
 
 	const latest = m.map(x => normalizeMessage(x));
 	const latestIds = new Set(latest.map(x => x.id));
@@ -838,6 +873,9 @@ onActivated(() => {
 });
 
 onBeforeUnmount(() => {
+	destroyed = true;
+	conversationVersion++;
+	latestRoomPeopleRequest++;
 	connection.value?.dispose();
 	listChannel?.dispose();
 	useStream().off('_connected_', readAgain);
@@ -891,6 +929,14 @@ function showMenu(ev: PointerEvent) {
 					},
 				});
 			}
+			// 초대 링크는 정보 탭에서 관리한다. 보관 중에도 링크를 볼 수 있다
+			menuItems.push({
+				text: i18n.ts._chat._inviteLink.title,
+				icon: 'ti ti-link',
+				action: () => {
+					tab.value = 'info';
+				},
+			});
 			// 削除は情報タブにある。メニューから探す人のために、そこへの道を置く
 			menuItems.push({
 				text: i18n.ts._chat.roomInfoAndDelete,
@@ -1118,8 +1164,9 @@ definePage(computed(() => {
 			};
 		} else if (room.value) {
 			return {
-				title: room.value.name,
-				titleAsMfm: true,
+				title: props.channelId ? `#${props.channels?.find(channel => channel.id === props.channelId)?.name ?? ''}` : room.value.name,
+				subtitle: props.channelId ? room.value.name : undefined,
+				titleAsMfm: !props.channelId,
 				titleMfmAuthor: room.value.owner,
 				roomAvatar: room.value,
 			};
@@ -1174,6 +1221,13 @@ definePage(computed(() => {
 
 .more {
 	margin: 0 auto;
+}
+
+.historyEnd {
+	overflow-anchor: none;
+	text-align: center;
+	font-size: 0.9em;
+	opacity: 0.7;
 }
 
 .emptyActions {

@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
 vi.mock('@/utility/drive.js', () => ({ selectFile: mocks.selectFile }));
-vi.mock('@/os.js', () => ({ launchUploader: mocks.upload, popupMenu: mocks.popupMenu, contextMenu: mocks.contextMenu, confirm: mocks.confirm, alert: vi.fn() }));
+vi.mock('@/os.js', () => ({ launchUploader: mocks.upload, popupMenu: mocks.popupMenu, contextMenu: mocks.contextMenu, confirm: mocks.confirm, alert: vi.fn(), popup: vi.fn(() => ({ dispose: vi.fn() })) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/utility/emoji-picker.js', () => ({ emojiPicker: { show: vi.fn() } }));
 vi.mock('@/utility/reaction-picker.js', () => ({ reactionPicker: { show: mocks.reactionPicker } }));
@@ -109,6 +109,44 @@ beforeEach(() => {
 	mocks.upload.mockResolvedValue([driveFile]);
 });
 afterEach(cleanup);
+
+test('sends channel messages and preserves selected references during editing', async () => {
+	const channelMessage = { ...message, text: '😀 #same', channelRefs: [{ channelId: 'same2', start: 3, length: 5 }] };
+	const form = render(XForm, {
+		props: { room: { ...room, hasChannels: true }, channelId: 'same1', editingMessage: channelMessage },
+		global: { stubs },
+	});
+	await fireEvent.update(screen.getByRole('textbox'), 'hello 😀 #same');
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.save }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/messages/update', {
+		messageId: 'm1', text: 'hello 😀 #same', channelRefs: [{ channelId: 'same2', start: 9, length: 5 }],
+	}));
+	form.unmount();
+
+	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'same2' }, global: { stubs } });
+	await fireEvent.update(screen.getByRole('textbox'), '/dice 1d6');
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.send }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/messages/create-to-room', {
+		toRoomId: 'room1', toRoomChannelId: 'same2', text: '/dice 1d6', fileIds: undefined, channelRefs: [],
+	}));
+});
+
+test('connects only the channel selected from the mention-style candidate list', async () => {
+	const channels = [{ id: 'same1', roomId: room.id, name: 'same', isLegacy: true }, { id: 'same2', roomId: room.id, name: 'same', isLegacy: false }];
+	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'same1', channels }, global: { stubs } });
+	const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+	await fireEvent.update(textarea, '😀 #sa');
+	textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+	await fireEvent.input(textarea);
+	const popup = vi.mocked(os.popup).mock.lastCall!;
+	expect(popup[1]).toMatchObject({ type: 'chatChannel' });
+	(popup[2] as unknown as { done: (result: unknown) => void }).done({ type: 'chatChannel', value: channels[1] });
+	await nextTick();
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.send }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/messages/create-to-room', {
+		toRoomId: 'room1', toRoomChannelId: 'same1', text: '😀 #same ', fileIds: undefined, channelRefs: [{ channelId: 'same2', start: 3, length: 5 }],
+	}));
+});
 
 const dice = { version: 1, engine: '@dice-roller/rpg-dice-roller', engineVersion: '5.5.1', notation: '1d6', total: 4, output: '1d6: [4] = 4 <b>$(spin)</b>' } satisfies NonNullable<Misskey.entities.ChatMessage['dice']>;
 
@@ -1345,4 +1383,43 @@ describe('pasting text that the clipboard also holds as a URL', () => {
 		expect(event.defaultPrevented).toBe(false);
 		expect(form.textarea.value).toBe('');
 	});
+});
+
+test('keeps the second identical reference when the first plain occurrence is deleted', async () => {
+	const editingMessage = { ...message, text: '#same #same', channelRefs: [{ channelId: 'second', start: 6, length: 5 }] };
+	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'first', editingMessage }, global: { stubs } });
+	const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+	textarea.setSelectionRange(0, 6);
+	await fireEvent(textarea, new InputEvent('beforeinput', { inputType: 'deleteContentBackward', bubbles: true }));
+	await fireEvent.update(textarea, '#same');
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.save }));
+
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/messages/update', { messageId: 'm1', text: '#same', channelRefs: [{ channelId: 'second', start: 0, length: 5 }] }));
+});
+
+test('unmatched channel text stays plain and can be sent from the keyboard', async () => {
+	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'first', channels: [{ id: 'first', roomId: room.id, name: 'general', isLegacy: true }] }, global: { stubs } });
+	const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+	await fireEvent.update(textarea, '#not-a-channel');
+	textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+	await fireEvent.input(textarea);
+	await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/messages/create-to-room', { toRoomId: room.id, toRoomChannelId: 'first', text: '#not-a-channel', fileIds: undefined, channelRefs: [] }));
+});
+
+test('typing after a selected reference does not reopen its candidate list', async () => {
+	const channels = [{ id: 'first', roomId: room.id, name: 'same', isLegacy: true }];
+	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'first', channels }, global: { stubs } });
+	const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+	await fireEvent.update(textarea, '#sa');
+	textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+	await fireEvent.input(textarea);
+	const popup = vi.mocked(os.popup).mock.lastCall!;
+	(popup[2] as unknown as { done: (result: unknown) => void }).done({ type: 'chatChannel', value: channels[0] });
+	await nextTick();
+	vi.mocked(os.popup).mockClear();
+	await fireEvent.update(textarea, '#same more words');
+
+	expect(os.popup).not.toHaveBeenCalled();
 });

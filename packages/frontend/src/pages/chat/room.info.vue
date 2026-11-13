@@ -30,7 +30,31 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkKeyValue><template #key>{{ i18n.ts.description }}</template><template #value><Mfm v-if="room.description" :text="room.description" :author="room.owner"/><template v-else>{{ i18n.ts.noDescription }}</template></template></MkKeyValue>
 	</template>
 
+	<XChannelManagement :room="room" :channels="channels" @updated="emit('updated', $event)" @channelsUpdated="emit('channelsUpdated')"/>
+
 	<hr>
+
+	<!-- 활성 초대 링크는 하나뿐이다. 발급과 폐기는 서로 다른 동작이며 자동으로 바꾸거나 다시 발급하지 않는다 -->
+	<div v-if="isOwner" class="_gaps_s">
+		<MkKeyValue>
+			<template #key>{{ i18n.ts._chat._inviteLink.title }}</template>
+			<template #value>
+				<MkEllipsis v-if="inviteLink === undefined && inviteLinkError == null"/>
+				<template v-else-if="inviteLinkError != null">{{ inviteLinkError }}</template>
+				<span v-else-if="inviteLink != null" :class="$style.inviteLinkUrl">{{ inviteLink.url }}</span>
+				<template v-else>{{ i18n.ts._chat._inviteLink.none }}</template>
+			</template>
+		</MkKeyValue>
+		<div class="_buttons">
+			<template v-if="inviteLink != null">
+				<MkButton @click="copyInviteLink"><i class="ti ti-copy"></i> {{ i18n.ts.copyLink }}</MkButton>
+				<MkButton danger :disabled="room.isArchived || inviteLinkBusy" @click="revokeInviteLink"><i class="ti ti-link-off"></i> {{ i18n.ts._chat._inviteLink.revoke }}</MkButton>
+			</template>
+			<MkButton v-else-if="inviteLink === null" primary :disabled="room.isArchived || inviteLinkBusy" @click="createInviteLink"><i class="ti ti-link"></i> {{ i18n.ts._chat._inviteLink.create }}</MkButton>
+		</div>
+		<MkInfo v-if="room.isArchived" warn>{{ i18n.ts._chat._inviteLink.archivedNote }}</MkInfo>
+		<MkInfo v-else>{{ i18n.ts._chat._inviteLink.description }}</MkInfo>
+	</div>
 
 	<MkButton v-if="isOwner" @click="setArchived(!room.isArchived)"><i :class="room.isArchived ? 'ti ti-archive-off' : 'ti ti-archive'"></i> {{ room.isArchived ? i18n.ts.unarchive : i18n.ts.archive }}</MkButton>
 
@@ -40,7 +64,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<template #label>{{ i18n.ts.notificationSetting }}</template>
 	</MkSelect>
 	<template v-if="room.hasChannels">
-		<MkSelect v-for="channel in channels" :key="channel.id" :modelValue="channelLevels[channel.id] ?? 'inherit'" :items="channelNotificationItems" :disabled="savingNotification" @update:modelValue="level => setChannelNotification(channel.id, level)">
+		<MkSelect v-for="channel in notificationChannels" :key="channel.id" :modelValue="channelLevels[channel.id] ?? 'inherit'" :items="channelNotificationItems" :disabled="savingNotification" @update:modelValue="level => setChannelNotification(channel.id, level)">
 			<template #label>#{{ channel.name }}</template>
 		</MkSelect>
 	</template>
@@ -49,8 +73,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
+import XChannelManagement from './room.channels.manage.vue';
 import { chooseAvatar } from '@/utility/choose-avatar.js';
 import XDecorationEditor from '@/pages/settings/avatar-decoration.vue';
 import MkButton from '@/components/MkButton.vue';
@@ -62,15 +87,18 @@ import MkTextarea from '@/components/MkTextarea.vue';
 import MkSelect from '@/components/MkSelect.vue';
 import type { MkSelectItem } from '@/components/MkSelect.vue';
 import MkKeyValue from '@/components/MkKeyValue.vue';
+import MkInfo from '@/components/MkInfo.vue';
 import { useRouter } from '@/router.js';
-import { chatNotificationErrors, chatRoomDeleteErrors, chatRoomUpdateErrors } from './chat-errors.js';
+import { chatInviteLinkManageErrorText, chatNotificationErrors, chatRoomDeleteErrors, chatRoomUpdateErrors } from './chat-errors.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
+import { copyToClipboard } from '@/utility/copy-to-clipboard.js';
 
 const router = useRouter();
 const $i = ensureSignin();
 
 const props = defineProps<{
 	room: Misskey.entities.ChatRoom;
+	channels?: Misskey.entities.ChatRoomChannel[];
 }>();
 
 const isOwner = computed(() => {
@@ -83,6 +111,7 @@ const description_ = ref(props.room.description);
 const emit = defineEmits<{
 	(ev: 'updated', room: Misskey.entities.ChatRoom): void;
 	(ev: 'deleting', deleting: boolean): void;
+	(ev: 'channelsUpdated'): void;
 }>();
 
 const decorationEditorOpen = ref(false);
@@ -165,22 +194,29 @@ const channelNotificationItems = [
 ] satisfies MkSelectItem<NotificationLevel | 'inherit'>[];
 const notificationLevel = ref<NotificationLevel>(props.room.notificationLevel ?? (props.room.isMuted ? 'none' : 'all'));
 const savingNotification = ref(false);
-const channels = ref<Misskey.entities.ChatRoomChannel[]>([]);
+const listedChannels = ref<Misskey.entities.ChatRoomChannel[]>([]);
+const notificationChannels = computed(() => props.channels ?? listedChannels.value);
+let notificationRequest = 0;
 const channelLevels = ref<Record<string, NotificationLevel | 'inherit'>>({});
 
-onMounted(async () => {
-	if (!props.room.hasChannels) return;
+watch([() => props.room.id, () => props.room.hasChannels], async ([roomId, hasChannels]) => {
+	const request = ++notificationRequest;
+	listedChannels.value = [];
+	channelLevels.value = {};
+	notificationLevel.value = props.room.notificationLevel ?? (props.room.isMuted ? 'none' : 'all');
+	if (!hasChannels) return;
 	try {
 		const [listed, settings] = await Promise.all([
-			misskeyApi('chat/rooms/channels/list', { roomId: props.room.id }),
-			misskeyApi('chat/rooms/notifications', { roomId: props.room.id }),
+			props.channels ?? misskeyApi('chat/rooms/channels/list', { roomId }),
+			misskeyApi('chat/rooms/notifications', { roomId }),
 		]);
-		channels.value = listed;
+		if (request !== notificationRequest || roomClosed || props.room.id !== roomId) return;
+		listedChannels.value = listed;
 		channelLevels.value = Object.fromEntries(settings.channelOverrides.map(setting => [setting.channelId, setting.level]));
 	} catch {
-		await os.alert({ type: 'error', text: i18n.ts._chat.roomUnavailable });
+		if (request === notificationRequest && !roomClosed && props.room.id === roomId) await os.alert({ type: 'error', text: i18n.ts._chat.roomUnavailable });
 	}
-});
+}, { immediate: true });
 
 async function setNotificationLevel(level: NotificationLevel) {
 	const previous = notificationLevel.value;
@@ -209,6 +245,84 @@ async function setChannelNotification(channelId: string, level: NotificationLeve
 	}
 }
 
+type InviteLink = Misskey.Endpoints['chat/rooms/invite-link/show']['res'];
+
+// undefined는 아직 읽는 중, null은 활성 링크가 없음
+const inviteLink = ref<InviteLink | undefined>(undefined);
+const inviteLinkError = ref<string | null>(null);
+const inviteLinkBusy = ref(false);
+let latestInviteLinkRequest = 0;
+
+// 보관 중에도 조회는 된다. 발급·폐기만 보관을 해제한 뒤에 할 수 있다
+async function loadInviteLink() {
+	const request = ++latestInviteLinkRequest;
+	const roomId = props.room.id;
+	try {
+		const link = await misskeyApi('chat/rooms/invite-link/show', { roomId });
+		if (request !== latestInviteLinkRequest || roomClosed || props.room.id !== roomId) return;
+		inviteLink.value = link;
+		inviteLinkError.value = null;
+	} catch (err) {
+		if (request !== latestInviteLinkRequest || roomClosed || props.room.id !== roomId) return;
+		inviteLinkError.value = chatInviteLinkManageErrorText(err);
+	}
+}
+
+// 같은 화면에서 다른 그룹으로 바뀌면 이전 그룹의 링크를 보이지 않고 새로 읽는다
+watch([() => props.room.id, isOwner], ([, owner]) => {
+	++latestInviteLinkRequest;
+	inviteLink.value = undefined;
+	inviteLinkError.value = null;
+	if (owner) void loadInviteLink();
+}, { immediate: true });
+
+function showInviteLinkError(err: unknown) {
+	os.alert({ type: 'error', text: chatInviteLinkManageErrorText(err) });
+}
+
+async function createInviteLink() {
+	inviteLinkBusy.value = true;
+	const roomId = props.room.id;
+	try {
+		const created = await os.promiseDialog(misskeyApi('chat/rooms/invite-link/create', { roomId }), null, showInviteLinkError);
+		if (roomClosed || props.room.id !== roomId) return;
+		++latestInviteLinkRequest;
+		inviteLink.value = created;
+		inviteLinkError.value = null;
+	} catch (err) {
+		// 이미 있으면 서버의 기존 링크를 그대로 보인다. 그 링크를 바꾸거나 폐기하지 않는다
+		if ((err as { code?: string } | null)?.code === 'INVITE_LINK_ALREADY_EXISTS' && props.room.id === roomId) await loadInviteLink();
+	} finally {
+		inviteLinkBusy.value = false;
+	}
+}
+
+async function revokeInviteLink() {
+	const { canceled } = await os.confirm({
+		type: 'warning',
+		text: i18n.ts._chat._inviteLink.revokeConfirm,
+	});
+	if (canceled) return;
+
+	inviteLinkBusy.value = true;
+	const roomId = props.room.id;
+	try {
+		await os.promiseDialog(misskeyApi('chat/rooms/invite-link/revoke', { roomId }), null, showInviteLinkError);
+		if (roomClosed || props.room.id !== roomId) return;
+		++latestInviteLinkRequest;
+		inviteLink.value = null;
+	} catch (err) {
+		if ((err as { code?: string } | null)?.code === 'NO_SUCH_INVITE_LINK' && props.room.id === roomId) await loadInviteLink();
+	} finally {
+		inviteLinkBusy.value = false;
+	}
+}
+
+function copyInviteLink() {
+	if (inviteLink.value == null) return;
+	copyToClipboard(inviteLink.value.url, 'link');
+}
+
 async function readAll() {
 	// 실패는 apiWithDialog가 대화상자로 알리므로 여기서는 따로 처리하지 않는다
 	await os.apiWithDialog('chat/rooms/read', { roomId: props.room.id, readAll: true }, undefined, chatNotificationErrors).catch(() => null);
@@ -218,6 +332,10 @@ async function readAll() {
 <style lang="scss" module>
 .membership {
 	display: flex;
+}
+
+.inviteLinkUrl {
+	overflow-wrap: anywhere;
 }
 
 .membershipBody {

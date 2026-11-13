@@ -4,6 +4,7 @@
  */
 
 import type { ChatChannelRef } from '@/core/chat-room-channels.js';
+import type { ChatJoinRefusalReceived } from '@/core/chat-invite-link.js';
 import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import * as Reversi from 'misskey-reversi';
@@ -77,6 +78,12 @@ export interface MainEventTypes {
 	chatUnread: { hasUnreadChatMessages: boolean; hasUnreadChatNotifications: boolean; version: number };
 	chatRoomVoiceState: Packed<'ChatRoomVoiceState'>;
 	chatRoomListChanged: undefined;
+	chatInviteJoinResult: {
+		url: string;
+		status: 'joined' | 'invited' | 'refused';
+		roomId: string | null;
+		reason: ChatJoinRefusalReceived | null;
+	};
 	readAllAnnouncements: undefined;
 	myTokenRegenerated: undefined;
 	signin: {
@@ -216,6 +223,8 @@ export interface ChatRoomEventTypes extends ChatEventTypes {
 	membershipStarted: { userId: MiUser['id'] };
 	membershipEnded: { userId: MiUser['id'] };
 	roomDeleted: undefined;
+	// 과거 기록 가져오기의 진행. 새 글 알림이 아니며 화면은 이 알림으로 옛 글을 다시 읽는다
+	historyImported: { status: 'running' | 'completed' | 'unavailable' };
 }
 
 export interface ReversiEventTypes {

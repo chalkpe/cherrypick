@@ -93,11 +93,19 @@ export class ChatRoomNotificationService {
 		const mentioned = this.mentioned(message, members);
 		const added = newlyMentionedUserIds(mentioned, previousMentions ?? []);
 		const remembered = [...new Set([...(previousMentions ?? []), ...mentioned])];
-		const sequence = await manager.createQueryBuilder().update(MiChatRoom).set({ messageSequence: () => '"messageSequence" + 1' }).where('id = :roomId', { roomId: room.id }).returning('messageSequence').execute();
-		const roomMessageSequence = String(sequence.raw[0].messageSequence);
-		await manager.update(MiChatMessage, message.id, { mentionedUserIds: remembered, roomMessageSequence });
+		// 수정은 새 글이 아니므로 그룹 순번을 새로 받지 않는다. 순번을 올리면 지난 글이 화면 뒤의 새 글보다 뒤로 가서
+		// 그 글까지 읽을 때 아직 보지 않은 새 글도 읽음이 된다. 순번이 없는 글(가져온 과거 기록)은 어떤 읽음 경계에도 포함된다
+		let roomMessageSequence: string;
+		if (previousMentions != null) {
+			roomMessageSequence = message.roomMessageSequence ?? '0';
+			await manager.update(MiChatMessage, message.id, { mentionedUserIds: remembered });
+		} else {
+			const sequence = await manager.createQueryBuilder().update(MiChatRoom).set({ messageSequence: () => '"messageSequence" + 1' }).where('id = :roomId', { roomId: room.id }).returning('messageSequence').execute();
+			roomMessageSequence = String(sequence.raw[0].messageSequence);
+			await manager.update(MiChatMessage, message.id, { mentionedUserIds: remembered, roomMessageSequence });
+			message.roomMessageSequence = roomMessageSequence;
+		}
 		message.mentionedUserIds = remembered;
-		message.roomMessageSequence = roomMessageSequence;
 		if (previousMentions != null) {
 			for (const row of await manager.withRepository(this.unreadsRepository).findBy({ messageId: message.id })) {
 				await manager.withRepository(this.unreadsRepository).update({ userId: row.userId, messageId: row.messageId }, { isMention: mentioned.includes(row.userId) });

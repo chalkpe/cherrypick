@@ -55,6 +55,12 @@ export type Channels = {
 			newChatMessage: (payload: ChatMessage) => void;
 			chatRoomVoiceState: (payload: ChatRoomVoiceState) => void;
 			chatRoomListChanged: () => void;
+			chatInviteJoinResult: (payload: {
+				url: string;
+				status: 'joined' | 'invited' | 'refused';
+				roomId: string | null;
+				reason: 'revoked' | 'archived' | 'banned' | 'blocked' | 'full' | 'unknown' | null;
+			}) => void;
 			chatUnread: (payload: { hasUnreadChatMessages: boolean; hasUnreadChatNotifications: boolean; version: number }) => void;
 			readAllAnnouncements: () => void;
 			myTokenRegenerated: () => void;
@@ -347,6 +353,7 @@ export type Channels = {
 			membershipStarted: (payload: { userId: string; }) => void;
 			membershipEnded: (payload: { userId: string; }) => void;
 			roomDeleted: () => void;
+			historyImported: (payload: { status: 'running' | 'completed' | 'unavailable'; }) => void;
 		};
 		receives: {
 			read: {

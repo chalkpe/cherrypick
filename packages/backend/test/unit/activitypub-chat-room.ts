@@ -14,7 +14,7 @@ import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { JsonLdService } from '@/core/activitypub/JsonLdService.js';
 import { parseChatRoomVoiceState } from '@/core/activitypub/misc/chat-room-voice-state.js';
 import { UtilityService } from '@/core/UtilityService.js';
-import { chatRosterOver } from '../misc/chat-roster-stub.js';
+import { chatRosterOver, noChatInviteJoins } from '../misc/chat-roster-stub.js';
 
 type Row = { id: string; [key: string]: unknown };
 
@@ -112,6 +112,7 @@ function fixture(options: {
 	invitations?: Row[];
 	rooms?: Row[];
 	memberships?: Row[];
+	banned?: string[];
 	hooks?: { beforeInvitationDelete?: () => void | Promise<void>; failMembershipInsert?: boolean };
 } = {}) {
 	const rooms = fakeRepository([
@@ -201,11 +202,17 @@ function fixture(options: {
 		},
 	};
 	const chatRosterService = chatRosterOver(redisClient);
+	const chatRoomBanService = {
+		isBanned: vi.fn(async (roomId: string, userId: string, _manager?: unknown) => roomId === 'localroom' && (options.banned ?? []).includes(userId)),
+		ban: vi.fn(async () => {}),
+	};
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 		logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 		db,
+		chatRoomBanService,
 		redisClient,
 		chatRosterService,
+		chatInviteLinkService: noChatInviteJoins(),
 		globalEventService,
 		chatRoomsRepository: rooms,
 		chatRoomInvitationsRepository: invitations,
@@ -277,7 +284,7 @@ function fixture(options: {
 	inbox.chatService.deleteRoom = chatService.deleteRoom;
 	inbox.chatService.removeRoomMember = chatService.removeRoomMember;
 	inbox.chatService.finishRoomMemberRemoval = chatService.finishRoomMemberRemoval;
-	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, pipeline, globalEventService, redisClient };
+	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, pipeline, globalEventService, redisClient, chatRoomBanService };
 }
 
 function inviteActivity(actor: { uri: string }, roomUri: string, invitee: string, attributedTo: string | undefined = actor.uri) {
@@ -423,6 +430,52 @@ describe('Chat room federation: Accept(Invite)', () => {
 		expect(result).toBe('ok');
 		expect(f.invitations.rows).toEqual([]);
 		expect(f.memberships.rows).toHaveLength(1);
+	});
+});
+
+describe('Chat room federation: Accept(Invite) from an account the owner removed', () => {
+	const accepted = inviteActivity({ uri: remoteOwner.uri }, 'https://remote.test/chat/rooms/localroom', invitedRemote.uri);
+
+	test('consumes the invitation, adds no membership and tells its server to drop the one it added', async () => {
+		const f = fixture({ invitations: [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }], banned: [invitedRemote.id] });
+
+		const result = await f.inbox.acceptInvite(invitedRemote, accepted);
+
+		expect(result).toBe('skip: banned from the room');
+		expect(f.chatRoomBanService.isBanned).toHaveBeenCalledWith('localroom', invitedRemote.id, expect.anything());
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.invitations.rows).toEqual([]);
+		expect(f.inbox.queueService.deliver).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ id: localOwner.id }),
+			expect.objectContaining({ type: 'Remove', object: invitedRemote.uri, target: `${LOCAL}/chat/rooms/localroom` }),
+			invitedRemote.inbox,
+			false,
+		);
+		expect(f.globalEventService.publishChatRoomStream).not.toHaveBeenCalled();
+	});
+
+	test('tells the invite-link Join this Accept answered that the owner removed the account', async () => {
+		const f = fixture({ invitations: [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }], banned: [invitedRemote.id] });
+		const refuseAcceptedJoin = vi.spyOn(f.inbox.chatInviteLinkService, 'refuseAcceptedJoin').mockResolvedValue(undefined);
+
+		const result = await f.inbox.acceptInvite(invitedRemote, accepted);
+
+		expect(result).toBe('skip: banned from the room');
+		expect(refuseAcceptedJoin).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'localroom' }), invitedRemote, 'banned');
+	});
+
+	test('keeps someone who is a member already, as a ban carried by an account move does not remove anyone', async () => {
+		const f = fixture({
+			invitations: [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }],
+			memberships: [{ id: 'membership', roomId: 'localroom', userId: invitedRemote.id }],
+			banned: [invitedRemote.id],
+		});
+
+		const result = await f.inbox.acceptInvite(invitedRemote, accepted);
+
+		expect(result).toBe('ok');
+		expect(f.memberships.rows).toHaveLength(1);
+		expect(f.inbox.queueService.deliver).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'Remove' }), expect.anything(), expect.anything());
 	});
 });
 
@@ -931,6 +984,18 @@ describe('Chat room federation: Remove', () => {
 		expect(roomService.removeParticipant).toHaveBeenCalledTimes(1);
 		expect(f.memberships.rows).toEqual([]);
 		expect(f.inbox.logger.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to remove'), expect.anything());
+	});
+
+	test.each([
+		['a member leaving', dave, leave(dave, `${LOCAL}/chat/rooms/localroom`)],
+		['a member naming someone else', dave, { type: 'Remove', actor: dave.uri, object: invitedRemote.uri, target: `${LOCAL}/chat/rooms/localroom` }],
+		['an outsider naming a member', remoteOwner, { type: 'Remove', actor: remoteOwner.uri, object: dave.uri, target: `${LOCAL}/chat/rooms/localroom` }],
+	])('records no ban for %s', async (_label, actor, activity) => {
+		const f = fixture({ memberships: [{ id: 'm1', roomId: 'localroom', userId: dave.id }, { id: 'm2', roomId: 'localroom', userId: invitedRemote.id }] });
+
+		await f.inbox.remove(actor, activity);
+
+		expect(f.chatRoomBanService.ban).not.toHaveBeenCalled();
 	});
 
 	test('leaves calls alone for a room hosted on another server', async () => {

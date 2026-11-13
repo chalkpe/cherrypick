@@ -90,6 +90,7 @@ export type PageHeaderProps = {
 	disableFollowButton?: boolean;
 	/** 戻るとアプリの外へ出てしまうときの、戻るボタンの移動先 */
 	backFallback?: string;
+	backTo?: string;
 };
 </script>
 
@@ -205,6 +206,11 @@ function onTabClick(tab: Tab, ev: PointerEvent): void {
 
 function goBack() {
 	haptic();
+
+	if (props.backTo != null) {
+		mainRouter.pushByPath(props.backTo);
+		return;
+	}
 
 	if (props.backFallback != null && !canGoBackInApp()) {
 		mainRouter.pushByPath(props.backFallback);

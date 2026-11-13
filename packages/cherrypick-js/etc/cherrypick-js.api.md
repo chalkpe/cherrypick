@@ -733,6 +733,12 @@ export type Channels = {
             newChatMessage: (payload: ChatMessage) => void;
             chatRoomVoiceState: (payload: ChatRoomVoiceState) => void;
             chatRoomListChanged: () => void;
+            chatInviteJoinResult: (payload: {
+                url: string;
+                status: 'joined' | 'invited' | 'refused';
+                roomId: string | null;
+                reason: 'revoked' | 'archived' | 'banned' | 'blocked' | 'full' | 'unknown' | null;
+            }) => void;
             chatUnread: (payload: {
                 hasUnreadChatMessages: boolean;
                 hasUnreadChatNotifications: boolean;
@@ -1064,6 +1070,9 @@ export type Channels = {
                 userId: string;
             }) => void;
             roomDeleted: () => void;
+            historyImported: (payload: {
+                status: 'running' | 'completed' | 'unavailable';
+            }) => void;
         };
         receives: {
             read: {
@@ -1221,6 +1230,24 @@ type ChatHistoryRequest = operations['chat___history']['requestBody']['content']
 type ChatHistoryResponse = operations['chat___history']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type ChatInviteLinkJoinRequest = operations['chat___invite-link___join']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatInviteLinkJoinResponse = operations['chat___invite-link___join']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChatInviteLinkJoinStatusRequest = operations['chat___invite-link___join-status']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatInviteLinkJoinStatusResponse = operations['chat___invite-link___join-status']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChatInviteLinkShowRequest = operations['chat___invite-link___show']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatInviteLinkShowResponse = operations['chat___invite-link___show']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type ChatMessage = components['schemas']['ChatMessage'];
 
 // @public (undocumented)
@@ -1287,6 +1314,9 @@ type ChatMessagesUserTimelineResponse = operations['chat___messages___user-timel
 type ChatRoom = components['schemas']['ChatRoom'];
 
 // @public (undocumented)
+type ChatRoomBan = components['schemas']['ChatRoomBan'];
+
+// @public (undocumented)
 type ChatRoomChannel = components['schemas']['ChatRoomChannel'];
 
 // @public (undocumented)
@@ -1294,6 +1324,15 @@ type ChatRoomInvitation = components['schemas']['ChatRoomInvitation'];
 
 // @public (undocumented)
 type ChatRoomMembership = components['schemas']['ChatRoomMembership'];
+
+// @public (undocumented)
+type ChatRoomsBansDeleteRequest = operations['chat___rooms___bans___delete']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsBansListRequest = operations['chat___rooms___bans___list']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsBansListResponse = operations['chat___rooms___bans___list']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type ChatRoomsChannelsCreateRequest = operations['chat___rooms___channels___create']['requestBody']['content']['application/json'];
@@ -1363,6 +1402,21 @@ type ChatRoomsInvitationsOutboxResponse = operations['chat___rooms___invitations
 
 // @public (undocumented)
 type ChatRoomsInvitationsRejectRequest = operations['chat___rooms___invitations___reject']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsInviteLinkCreateRequest = operations['chat___rooms___invite-link___create']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsInviteLinkCreateResponse = operations['chat___rooms___invite-link___create']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsInviteLinkRevokeRequest = operations['chat___rooms___invite-link___revoke']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsInviteLinkShowRequest = operations['chat___rooms___invite-link___show']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsInviteLinkShowResponse = operations['chat___rooms___invite-link___show']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type ChatRoomsJoiningRequest = operations['chat___rooms___joining']['requestBody']['content']['application/json'];
@@ -2045,6 +2099,12 @@ declare namespace entities {
         ChartsUsersResponse,
         ChatHistoryRequest,
         ChatHistoryResponse,
+        ChatInviteLinkJoinRequest,
+        ChatInviteLinkJoinResponse,
+        ChatInviteLinkJoinStatusRequest,
+        ChatInviteLinkJoinStatusResponse,
+        ChatInviteLinkShowRequest,
+        ChatInviteLinkShowResponse,
         ChatMessagesCreateToRoomRequest,
         ChatMessagesCreateToRoomResponse,
         ChatMessagesCreateToUserRequest,
@@ -2062,6 +2122,9 @@ declare namespace entities {
         ChatMessagesUpdateResponse,
         ChatMessagesUserTimelineRequest,
         ChatMessagesUserTimelineResponse,
+        ChatRoomsBansDeleteRequest,
+        ChatRoomsBansListRequest,
+        ChatRoomsBansListResponse,
         ChatRoomsChannelsCreateRequest,
         ChatRoomsChannelsCreateResponse,
         ChatRoomsChannelsDeleteRequest,
@@ -2085,6 +2148,11 @@ declare namespace entities {
         ChatRoomsInvitationsOutboxRequest,
         ChatRoomsInvitationsOutboxResponse,
         ChatRoomsInvitationsRejectRequest,
+        ChatRoomsInviteLinkCreateRequest,
+        ChatRoomsInviteLinkCreateResponse,
+        ChatRoomsInviteLinkRevokeRequest,
+        ChatRoomsInviteLinkShowRequest,
+        ChatRoomsInviteLinkShowResponse,
         ChatRoomsJoinRequest,
         ChatRoomsJoiningRequest,
         ChatRoomsJoiningResponse,
@@ -2633,6 +2701,7 @@ declare namespace entities {
         ChatRoomChannel,
         ChatRoomInvitation,
         ChatRoomMembership,
+        ChatRoomBan,
         ChatRoomVoiceState,
         NoteHistory
     }
@@ -4269,8 +4338,8 @@ type VerifyEmailRequest = operations['verify-email']['requestBody']['content']['
 // Warnings were encountered during analysis:
 //
 // src/streaming.ts:62:3 - (ae-forgotten-export) The symbol "ReconnectingWebSocket" needs to be exported by the entry point index.d.ts
-// src/streaming.types.ts:258:4 - (ae-forgotten-export) The symbol "ReversiUpdateKey" needs to be exported by the entry point index.d.ts
-// src/streaming.types.ts:273:4 - (ae-forgotten-export) The symbol "ReversiUpdateSettings" needs to be exported by the entry point index.d.ts
+// src/streaming.types.ts:264:4 - (ae-forgotten-export) The symbol "ReversiUpdateKey" needs to be exported by the entry point index.d.ts
+// src/streaming.types.ts:279:4 - (ae-forgotten-export) The symbol "ReversiUpdateSettings" needs to be exported by the entry point index.d.ts
 
 // (No @packageDocumentation comment for this package)
 

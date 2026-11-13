@@ -27,6 +27,7 @@ function fixture() {
 			delete: async (_entity: unknown, where: { userId: string }) => ({ affected: Number(members.delete(where.userId)) }),
 		}) },
 		idService: { gen: () => 'remove1' },
+		chatRoomBanService: { ban: vi.fn(async () => {}) },
 		chatRoomMembershipsRepository: {
 			findBy: async () => [...members].map(userId => ({ roomId: room.id, userId })),
 			delete: async ({ userId }: { userId: string }) => ({ affected: Number(members.delete(userId)) }),

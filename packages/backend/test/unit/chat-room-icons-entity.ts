@@ -31,6 +31,17 @@ describe('그룹 아이콘 응답', () => {
 		expect(packed.iconUrl).not.toContain('stale');
 	});
 
+	test('긴 서버 주소에서도 기본 그림이 프로필과 같은 길이의 이름을 쓴다', () => {
+		const host = 'a'.repeat(45) + '.example';
+		const service = fixture(`https://${host}`, { id: 'owner', host: null });
+
+		const url = new URL(service.getIdenticonUrl(`https://${host}/chat/rooms/room`));
+		const parameter = url.pathname.slice('/identicon/'.length);
+
+		expect(parameter.split('@')[0]).toHaveLength(20);
+		expect(parameter.length).toBeLessThanOrEqual(100);
+	});
+
 	test('사본의 DB ID와 표시 서버가 달라도 같은 그룹 URI는 같은 도트 이미지가 된다', async () => {
 		const source = fixture('https://source.example', { id: 'owner', host: null });
 		const mirror = fixture('https://mirror.example', { id: 'remote-owner', host: 'source.example', uri: 'https://source.example/users/owner' });

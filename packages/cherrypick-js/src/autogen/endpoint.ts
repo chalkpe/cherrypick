@@ -244,6 +244,12 @@ import type {
 	ChartsUsersResponse,
 	ChatHistoryRequest,
 	ChatHistoryResponse,
+	ChatInviteLinkJoinRequest,
+	ChatInviteLinkJoinResponse,
+	ChatInviteLinkJoinStatusRequest,
+	ChatInviteLinkJoinStatusResponse,
+	ChatInviteLinkShowRequest,
+	ChatInviteLinkShowResponse,
 	ChatMessagesCreateToRoomRequest,
 	ChatMessagesCreateToRoomResponse,
 	ChatMessagesCreateToUserRequest,
@@ -261,6 +267,9 @@ import type {
 	ChatMessagesUpdateResponse,
 	ChatMessagesUserTimelineRequest,
 	ChatMessagesUserTimelineResponse,
+	ChatRoomsBansDeleteRequest,
+	ChatRoomsBansListRequest,
+	ChatRoomsBansListResponse,
 	ChatRoomsChannelsCreateRequest,
 	ChatRoomsChannelsCreateResponse,
 	ChatRoomsChannelsDeleteRequest,
@@ -284,6 +293,11 @@ import type {
 	ChatRoomsInvitationsOutboxRequest,
 	ChatRoomsInvitationsOutboxResponse,
 	ChatRoomsInvitationsRejectRequest,
+	ChatRoomsInviteLinkCreateRequest,
+	ChatRoomsInviteLinkCreateResponse,
+	ChatRoomsInviteLinkRevokeRequest,
+	ChatRoomsInviteLinkShowRequest,
+	ChatRoomsInviteLinkShowResponse,
 	ChatRoomsJoinRequest,
 	ChatRoomsJoiningRequest,
 	ChatRoomsJoiningResponse,
@@ -929,6 +943,9 @@ export type Endpoints = {
 	'charts/user/reactions': { req: ChartsUserReactionsRequest; res: ChartsUserReactionsResponse };
 	'charts/users': { req: ChartsUsersRequest; res: ChartsUsersResponse };
 	'chat/history': { req: ChatHistoryRequest; res: ChatHistoryResponse };
+	'chat/invite-link/join': { req: ChatInviteLinkJoinRequest; res: ChatInviteLinkJoinResponse };
+	'chat/invite-link/join-status': { req: ChatInviteLinkJoinStatusRequest; res: ChatInviteLinkJoinStatusResponse };
+	'chat/invite-link/show': { req: ChatInviteLinkShowRequest; res: ChatInviteLinkShowResponse };
 	'chat/messages/create-to-room': { req: ChatMessagesCreateToRoomRequest; res: ChatMessagesCreateToRoomResponse };
 	'chat/messages/create-to-user': { req: ChatMessagesCreateToUserRequest; res: ChatMessagesCreateToUserResponse };
 	'chat/messages/delete': { req: ChatMessagesDeleteRequest; res: EmptyResponse };
@@ -940,6 +957,8 @@ export type Endpoints = {
 	'chat/messages/update': { req: ChatMessagesUpdateRequest; res: ChatMessagesUpdateResponse };
 	'chat/messages/user-timeline': { req: ChatMessagesUserTimelineRequest; res: ChatMessagesUserTimelineResponse };
 	'chat/read-all': { req: EmptyRequest; res: EmptyResponse };
+	'chat/rooms/bans/delete': { req: ChatRoomsBansDeleteRequest; res: EmptyResponse };
+	'chat/rooms/bans/list': { req: ChatRoomsBansListRequest; res: ChatRoomsBansListResponse };
 	'chat/rooms/channels/create': { req: ChatRoomsChannelsCreateRequest; res: ChatRoomsChannelsCreateResponse };
 	'chat/rooms/channels/delete': { req: ChatRoomsChannelsDeleteRequest; res: EmptyResponse };
 	'chat/rooms/channels/list': { req: ChatRoomsChannelsListRequest; res: ChatRoomsChannelsListResponse };
@@ -954,6 +973,9 @@ export type Endpoints = {
 	'chat/rooms/invitations/inbox': { req: ChatRoomsInvitationsInboxRequest; res: ChatRoomsInvitationsInboxResponse };
 	'chat/rooms/invitations/outbox': { req: ChatRoomsInvitationsOutboxRequest; res: ChatRoomsInvitationsOutboxResponse };
 	'chat/rooms/invitations/reject': { req: ChatRoomsInvitationsRejectRequest; res: EmptyResponse };
+	'chat/rooms/invite-link/create': { req: ChatRoomsInviteLinkCreateRequest; res: ChatRoomsInviteLinkCreateResponse };
+	'chat/rooms/invite-link/revoke': { req: ChatRoomsInviteLinkRevokeRequest; res: EmptyResponse };
+	'chat/rooms/invite-link/show': { req: ChatRoomsInviteLinkShowRequest; res: ChatRoomsInviteLinkShowResponse };
 	'chat/rooms/join': { req: ChatRoomsJoinRequest; res: EmptyResponse };
 	'chat/rooms/joining': { req: ChatRoomsJoiningRequest; res: ChatRoomsJoiningResponse };
 	'chat/rooms/kick': { req: ChatRoomsKickRequest; res: EmptyResponse };

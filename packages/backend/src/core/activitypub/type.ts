@@ -22,6 +22,8 @@ export interface IObject {
 	_misskey_chatRoom?: string;
 	_misskey_chatRoomMembers?: string[];
 	_misskey_chatRoomRosterAt?: string;
+	_misskey_chatAuthor?: unknown;
+	_misskey_chatReactions?: unknown;
 	_misskey_followedMessage?: string | null;
 	_misskey_requireSigninToViewContents?: boolean;
 	_misskey_makeNotesFollowersOnlyBefore?: number | null;
@@ -361,6 +363,10 @@ export interface IInvite extends IActivity {
 	type: 'Invite';
 }
 
+export interface IJoin extends IActivity {
+	type: 'Join';
+}
+
 /**
  * CherryPick: チャットルームの通話の参加者の現況。ルームを持つサーバーが、持ち主の Update として他のサーバーのメンバーに送る。
  * id はルームの URI に `/voice` を付けたもの。participants の id は参加者の identity (ユーザーの URI)
@@ -391,4 +397,5 @@ export const isBlock = (object: IObject): object is IBlock => getApType(object) 
 export const isFlag = (object: IObject): object is IFlag => getApType(object) === 'Flag';
 export const isMove = (object: IObject): object is IMove => getApType(object) === 'Move';
 export const isInvite = (object: IObject): object is IInvite => getApType(object) === 'Invite';
+export const isJoin = (object: IObject): object is IJoin => getApType(object) === 'Join';
 export const isNote = (object: IObject): object is IPost => getApType(object) === 'Note';

@@ -63,6 +63,11 @@ export const ROUTE_DEF = [{
 	component: chatPage(() => import('@/pages/chat/room.vue')),
 	loginRequired: true,
 }, {
+	path: '/chat/room/:roomId/channels/:channelId?',
+	name: 'chat-room',
+	component: chatPage(() => import('@/pages/chat/room.channels.vue')),
+	loginRequired: true,
+}, {
 	path: '/chat/room/:roomId',
 	name: 'chat-room',
 	component: chatPage(() => import('@/pages/chat/room.vue')),
@@ -71,6 +76,10 @@ export const ROUTE_DEF = [{
 	path: '/chat/messages/:messageId',
 	component: chatPage(() => import('@/pages/chat/message.vue')),
 	loginRequired: true,
+}, {
+	// 로그인하지 않아도 초대받은 그룹의 공개 정보를 볼 수 있다. 참여할 때 로그인을 안내한다
+	path: '/chat/invite/:code',
+	component: chatPage(() => import('@/pages/chat/invite.vue')),
 }, {
 	path: '/instance-info/:host',
 	component: page(() => import('@/pages/instance-info.vue')),

@@ -86,6 +86,14 @@ services:
         source: ./certificates/rootCA.crt
         target: /usr/local/share/ca-certificates/rootCA.crt
         read_only: true
+      - type: bind
+        source: ./certificates/fake.test.crt
+        target: /cherrypick/packages/backend/test-federation/certificates/fake.test.crt
+        read_only: true
+      - type: bind
+        source: ./certificates/fake.test.key
+        target: /cherrypick/packages/backend/test-federation/certificates/fake.test.key
+        read_only: true
     working_dir: /cherrypick
     entrypoint: >
       bash -c '

@@ -263,3 +263,14 @@ describe('chat home with rooms without messages', () => {
 		expect(calls('chat/rooms/joining')).toBe(2);
 	});
 });
+
+test('shows the latest message channel and opens the channel list for a channel group', async () => {
+	const room = { ...mkRoom('channels', '2026-01-01T00:00:00Z'), hasChannels: true };
+	setup({ history: [{ ...roomMessage(room, '2026-02-01T00:00:00Z'), text: 'latest across channels', toRoomChannelId: 'second', toRoomChannel: { id: 'second', name: 'Second' } }] });
+	const { container } = await mount();
+
+	const entry = container.querySelector('a[href="/chat/room/channels/channels"]')!;
+	expect(entry).toBeTruthy();
+	expect(entry.textContent).toContain('#Second');
+	expect(entry.textContent).toContain('latest across channels');
+});

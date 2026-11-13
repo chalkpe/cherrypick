@@ -81,7 +81,13 @@ export class ChatRoomRosterSyncProcessorService {
 
 	@bindThis
 	public async process(job: Bull.Job<ChatRoomRosterSyncJobData>): Promise<string> {
-		const room = await this.chatRoomsRepository.findOneBy({ id: job.data.roomId });
+		return await this.syncRoom(job.data.roomId);
+	}
+
+	/** 그룹 객체를 다시 읽어 명단과 채널 목록을 맞춘다. 과거 기록 가져오기가 모르는 채널을 만났을 때도 쓴다. */
+	@bindThis
+	public async syncRoom(roomId: MiChatRoom['id']): Promise<string> {
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
 		if (room?.uri == null) return 'skip: no room to read the roster of';
 
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });

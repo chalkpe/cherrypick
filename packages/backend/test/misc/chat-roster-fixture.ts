@@ -9,6 +9,7 @@ import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateServic
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { notificationServiceOver } from './chat-room-notification-fixture.js';
+import { noChatInviteJoins } from './chat-roster-stub.js';
 import { ChatService } from '@/core/ChatService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 
@@ -408,6 +409,8 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 	};
 
 	const roleService = { isModerator: async () => false, getUserPolicies: async () => ({ chatAvailability: 'available' }) };
+	// 이 fixture에는 내보낸 계정이 없다. 재참여 금지 자체는 chat-room-ban 시험에서 다룬다.
+	const chatRoomBanService = { isBanned: vi.fn(async () => false), ban: vi.fn(async () => {}) };
 
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
 		config,
@@ -430,6 +433,9 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 		notificationService: { createNotification: vi.fn() },
 		liveKitService,
 		chatRosterService,
+		chatRoomBanService,
+		// 다른 서버 그룹 참여 뒤의 과거 기록 가져오기 요청. 명단 시험은 가져오기를 보지 않는다
+		chatRoomHistoryService: { requestImport: vi.fn(async () => {}) },
 		hostPolicyService: { isRefusedRemoteHost: async (host: string) => (options.refusedHosts ?? []).includes(host) },
 	}) as ChatService;
 
@@ -469,6 +475,8 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 		chatService,
 		apChatRoomStateService: Object.assign(Object.create(ApChatRoomStateService.prototype), { chatService }),
 		chatRosterService,
+		chatInviteLinkService: noChatInviteJoins(),
+		chatRoomBanService,
 		chatVoiceService: {},
 		liveKitService,
 		apRendererService,

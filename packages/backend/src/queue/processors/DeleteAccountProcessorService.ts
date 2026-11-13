@@ -4,7 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import { MoreThan } from 'typeorm';
+import { DataSource, MoreThan } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { DriveFilesRepository, NotesRepository, PagesRepository, UserProfilesRepository, UsersRepository } from '@/models/_.js';
 import type Logger from '@/logger.js';
@@ -17,6 +17,8 @@ import { SearchService } from '@/core/SearchService.js';
 import { PageService } from '@/core/PageService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
+import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
+import { MiUser } from '@/models/User.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 import type * as Bull from 'bullmq';
 import type { DbUserDeleteJobData } from '../types.js';
@@ -26,6 +28,9 @@ export class DeleteAccountProcessorService {
 	private logger: Logger;
 
 	constructor(
+		@Inject(DI.db)
+		private db: DataSource,
+
 		@Inject(DI.usersRepository)
 		private usersRepository: UsersRepository,
 
@@ -48,6 +53,7 @@ export class DeleteAccountProcessorService {
 		private queueLoggerService: QueueLoggerService,
 		private searchService: SearchService,
 		private globalEventService: GlobalEventService,
+		private chatRoomHistoryService: ChatRoomHistoryService,
 	) {
 		this.logger = this.queueLoggerService.logger.createSubLogger('delete-account');
 	}
@@ -157,7 +163,11 @@ export class DeleteAccountProcessorService {
 		if (job.data.soft) {
 		// nop
 		} else {
-			await this.usersRepository.delete(job.data.user.id);
+			// 그룹 메시지는 과거 기록으로 남긴다. 같은 트랜잭션이어야 그 사이에 쓴 글이 계정과 함께 지워지지 않는다.
+			await this.db.transaction(async manager => {
+				await this.chatRoomHistoryService.preserveRoomMessagesOf(user, manager);
+				await manager.delete(MiUser, job.data.user.id);
+			});
 
 			// Trigger CacheService
 			this.globalEventService.publishInternalEvent('remoteUserUpdated', { id: job.data.user.id });

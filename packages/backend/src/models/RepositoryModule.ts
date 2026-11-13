@@ -86,12 +86,15 @@ import {
 	MiWebhook,
 	MiChatMessage,
 	MiChatRoomChannel,
+	MiChatRoomInviteLink,
 	MiChatRoomUserSettings,
 	MiChatRoomUnread,
 	MiChatRoom,
 	MiChatRoomMembership,
 	MiChatRoomRosterState,
+	MiChatRoomHistoryState,
 	MiChatRoomInvitation,
+	MiChatRoomBan,
 	MiChatApproval,
 } from './_.js';
 import { NoteHistory } from './NoteHistory.js';
@@ -560,6 +563,12 @@ const $chatRoomChannelsRepository: Provider = {
 	inject: [DI.db],
 };
 
+const $chatRoomInviteLinksRepository: Provider = {
+	provide: DI.chatRoomInviteLinksRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiChatRoomInviteLink).extend(miRepository as MiRepository<MiChatRoomInviteLink>),
+	inject: [DI.db],
+};
+
 const $chatRoomsRepository: Provider = {
 	provide: DI.chatRoomsRepository,
 	useFactory: (db: DataSource) => db.getRepository(MiChatRoom).extend(miRepository as MiRepository<MiChatRoom>),
@@ -578,9 +587,21 @@ const $chatRoomRosterStatesRepository: Provider = {
 	inject: [DI.db],
 };
 
+const $chatRoomHistoryStatesRepository: Provider = {
+	provide: DI.chatRoomHistoryStatesRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiChatRoomHistoryState).extend(miRepository as MiRepository<MiChatRoomHistoryState>),
+	inject: [DI.db],
+};
+
 const $chatRoomInvitationsRepository: Provider = {
 	provide: DI.chatRoomInvitationsRepository,
 	useFactory: (db: DataSource) => db.getRepository(MiChatRoomInvitation).extend(miRepository as MiRepository<MiChatRoomInvitation>),
+	inject: [DI.db],
+};
+
+const $chatRoomBansRepository: Provider = {
+	provide: DI.chatRoomBansRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiChatRoomBan).extend(miRepository as MiRepository<MiChatRoomBan>),
 	inject: [DI.db],
 };
 
@@ -692,12 +713,15 @@ const $noteHistoryRepository: Provider = {
 		$userMemosRepository,
 		$chatMessagesRepository,
 		$chatRoomChannelsRepository,
+		$chatRoomInviteLinksRepository,
 		$chatRoomUserSettingsRepository,
 		$chatRoomUnreadsRepository,
 		$chatRoomsRepository,
 		$chatRoomMembershipsRepository,
 		$chatRoomRosterStatesRepository,
+		$chatRoomHistoryStatesRepository,
 		$chatRoomInvitationsRepository,
+		$chatRoomBansRepository,
 		$chatApprovalsRepository,
 		$bubbleGameRecordsRepository,
 		$reversiGamesRepository,
@@ -780,12 +804,15 @@ const $noteHistoryRepository: Provider = {
 		$userMemosRepository,
 		$chatMessagesRepository,
 		$chatRoomChannelsRepository,
+		$chatRoomInviteLinksRepository,
 		$chatRoomUserSettingsRepository,
 		$chatRoomUnreadsRepository,
 		$chatRoomsRepository,
 		$chatRoomMembershipsRepository,
 		$chatRoomRosterStatesRepository,
+		$chatRoomHistoryStatesRepository,
 		$chatRoomInvitationsRepository,
+		$chatRoomBansRepository,
 		$chatApprovalsRepository,
 		$bubbleGameRecordsRepository,
 		$reversiGamesRepository,

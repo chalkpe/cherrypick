@@ -10,7 +10,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:key="item.id"
 		:class="[$style.message, { [$style.unread]: (item.message.toRoomId != null || !item.isMe) && !item.message.isRead, [$style.isMe]: item.isMe, [$style.isRead]: item.message.isRead }]"
 		class="_panel"
-		:to="item.message.toRoomId ? `/chat/room/${item.message.toRoomId}` : `/chat/user/${item.other!.id}`"
+		:to="item.message.toRoomId ? (item.message.toRoom?.hasChannels ? channelListPath(item.message.toRoomId) : `/chat/room/${item.message.toRoomId}`) : `/chat/user/${item.other!.id}`"
 	>
 		<MkAvatar v-if="item.message.toRoom" :class="$style.messageAvatar" :room="item.message.toRoom"/>
 		<MkAvatar v-else-if="item.other" :class="$style.messageAvatar" :user="item.other" indicator :preview="false"/>
@@ -31,7 +31,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<MkAcct :class="$style.messageHeaderUsername" :user="item.other!"/>
 				<MkTime :time="item.message.createdAt" :class="$style.messageHeaderTime"/>
 			</header>
-			<div :class="$style.messageBodyText"><span v-if="item.isMe" :class="$style.youSaid">{{ i18n.ts.you }}:</span>{{ item.message.text }}</div>
+			<div :class="$style.messageBodyText"><span v-if="item.message.toRoomChannel" :class="$style.channelName">#{{ item.message.toRoomChannel.name }} · </span><span v-if="item.isMe" :class="$style.youSaid">{{ i18n.ts.you }}:</span>{{ item.message.text }}</div>
 		</div>
 	</MkA>
 	<MkA
@@ -39,7 +39,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:key="`additional-${room.id}`"
 		:class="$style.message"
 		class="_panel"
-		:to="`/chat/room/${room.id}`"
+		:to="room.hasChannels ? channelListPath(room.id) : `/chat/room/${room.id}`"
 	>
 		<MkAvatar :class="$style.messageAvatar" :room="room"/>
 		<div :class="$style.messageBody">
@@ -62,6 +62,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
+import { channelListPath } from '@/pages/chat/chat-channel-references.js';
 import { computed, onActivated, onDeactivated, onMounted, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { useInterval } from '@@/js/use-interval.js';
@@ -284,6 +285,11 @@ onMounted(() => {
 	overflow: hidden;
 	overflow-wrap: break-word;
 	font-size: 1.1em;
+}
+
+.channelName {
+	font-size: 0.9em;
+	color: var(--MI_THEME-fgTransparent);
 }
 
 .youSaid {

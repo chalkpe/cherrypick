@@ -4,6 +4,8 @@
  */
 
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
+import { ChatInviteLinkService } from '@/core/ChatInviteLinkService.js';
+import { ChatRoomBanService } from '@/core/ChatRoomBanService.js';
 import { ChatChannelError } from '@/core/chat-room-channels.js';
 import { Inject, Injectable } from '@nestjs/common';
 import { DataSource, In } from 'typeorm';
@@ -46,7 +48,8 @@ import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { AbuseReportService } from '@/core/AbuseReportService.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
 import { parseRemoteChatDate } from './misc/chat-remote-date.js';
-import { getApHrefNullable, getApId, getApIds, getApType, getOneApId, isAccept, isActor, isAdd, isAnnounce, isBlock, isCollection, isCollectionOrOrderedCollection, isCreate, isDelete, isEmoji, isFlag, isFollow, isInvite, isLike, isMove, isPost, isReject, isRemove, isTombstone, isUndo, isUpdate, validActor, validPost } from './type.js';
+import { chatNoteText } from './misc/chat-payloads.js';
+import { getApHrefNullable, getApId, getApIds, getApType, getOneApId, isAccept, isActor, isAdd, isAnnounce, isBlock, isCollection, isCollectionOrOrderedCollection, isCreate, isDelete, isEmoji, isFlag, isFollow, isInvite, isJoin, isLike, isMove, isPost, isReject, isRemove, isTombstone, isUndo, isUpdate, validActor, validPost } from './type.js';
 import { ApNoteService } from './models/ApNoteService.js';
 import { ApLoggerService } from './ApLoggerService.js';
 import { ApDbResolverService } from './ApDbResolverService.js';
@@ -67,6 +70,7 @@ const MAX_PENDING_ROOMS_PER_ACTOR = 100;
 const DEFERRED_CHAT_DELETE_TTL = 6 * 60 * 60;
 const ROOM_FULL = 'skip: room is full';
 const ROOM_ARCHIVED = 'skip: room is archived';
+const ROOM_BANNED = 'skip: banned from the room';
 const CHAT_ROOM_URI = /\/chat\/rooms\/([a-zA-Z0-9]+)$/;
 const MAX_DEFERRED_CHAT_DELETES_PER_ACTOR = 1000;
 
@@ -128,6 +132,8 @@ export class ApInboxService {
 		private notificationService: NotificationService,
 		private chatService: ChatService,
 		private chatRoomChannelService: ChatRoomChannelService,
+		private chatInviteLinkService: ChatInviteLinkService,
+		private chatRoomBanService: ChatRoomBanService,
 		private chatRosterService: ChatRosterService,
 		private chatVoiceService: ChatVoiceService,
 		private liveKitService: LiveKitService,
@@ -233,6 +239,8 @@ export class ApInboxService {
 			return await this.move(actor, activity, resolver);
 		} else if (isInvite(activity)) {
 			return await this.invite(actor, activity, resolver);
+		} else if (isJoin(activity)) {
+			return await this.chatInviteLinkService.receiveJoin(actor, activity);
 		} else {
 			return `unrecognized activity type: ${activity.type}`;
 		}
@@ -449,6 +457,8 @@ export class ApInboxService {
 
 			// Commit the delete: the invitee's server consumed its copy before sending Accept,
 			// so the invitation can never be accepted again and would only block a new one.
+			// 그룹장이 내보낸 계정은 어느 초대에 답하든 들이지 않는다. 정원·보관과 같이 상대 서버에 취소를 보낸다.
+			if (await this.chatRoomBanService.isBanned(room.id, actor.id, manager)) return ROOM_BANNED;
 			if (locked.isArchived) return ROOM_ARCHIVED;
 
 			const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId: room.id });
@@ -467,11 +477,14 @@ export class ApInboxService {
 			return 'ok';
 		});
 
-		if (result === ROOM_FULL || result === ROOM_ARCHIVED) {
+		if (result === ROOM_FULL || result === ROOM_ARCHIVED || result === ROOM_BANNED) {
 			await this.revokeRemoteJoin(room, actor);
+			// 초대 링크의 Join에 답한 초대였으면 그 Join에도 사유를 알린다. 요청한 서버가 사용자에게 사유를 보여 준다
+			await this.chatInviteLinkService.refuseAcceptedJoin(room, actor, result === ROOM_FULL ? 'full' : result === ROOM_BANNED ? 'banned' : 'archived');
 			return result;
 		}
 		if (result !== 'ok') return result;
+		await this.chatInviteLinkService.forgetAcceptedJoin(room.id, actor.id);
 
 		this.globalEventService.publishChatRoomStream(room.id, 'membershipStarted', { userId: actor.id });
 
@@ -1029,16 +1042,7 @@ export class ApInboxService {
 	}
 
 	private chatMessageText(object: IPost): string | null {
-		if (object.source?.mediaType === 'text/x.misskeymarkdown' && typeof object.source.content === 'string') {
-			return object.source.content;
-		}
-		if (typeof object._misskey_content === 'string') {
-			return object._misskey_content;
-		}
-		if (typeof object.content === 'string') {
-			return this.apMfmService.htmlToMfm(object.content, { tag: object.tag });
-		}
-		return null;
+		return chatNoteText(object, (html, tag) => this.apMfmService.htmlToMfm(html, { tag }));
 	}
 
 	private chatRoomUriOf(object: IPost): string | null {
@@ -1174,7 +1178,8 @@ export class ApInboxService {
 	 * again, so that a retry only fetches what failed. `failed` tells a failed download from something that is not a file,
 	 * and `temporarilyFailed` tells one that may work later, such as a 429 or a broken connection, from one that never will.
 	 */
-	private async resolveChatAttachments(actor: MiRemoteUser, object: IPost): Promise<{ files: MiDriveFile[]; failed: boolean; temporarilyFailed: boolean }> {
+	@bindThis
+	public async resolveChatAttachments(actor: MiRemoteUser, object: IPost): Promise<{ files: MiDriveFile[]; failed: boolean; temporarilyFailed: boolean }> {
 		const files = new Map<MiDriveFile['id'], MiDriveFile>();
 		let failed = false;
 		let temporarilyFailed = false;
@@ -1310,6 +1315,9 @@ export class ApInboxService {
 			if (existing != null) {
 				if (getApType(activity) === 'Update') {
 					if (text == null) return 'skip: chat message has no content';
+					// 기록 가져오기가 수정 처리 도중 글을 먼저 저장했다면 명단 반영을 기다린 뒤 수정한다.
+					const messageRoom = existing.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: existing.toRoomId }) : null;
+					if (messageRoom != null) await this.assertKnownInRoom(messageRoom, actor);
 					await this.chatService.updateRemoteMessage(actor, existing, text, editedAt ?? new Date(), apEmojis, object._misskey_chatChannelRefs);
 					return 'ok: chat message updated';
 				}
@@ -1557,6 +1565,11 @@ export class ApInboxService {
 		const uri = activity.id ?? activity;
 
 		this.logger.info(`Reject: ${uri}`);
+
+		// 초대 링크 Join의 거절에는 이 서버가 보낸 Join이 실려 온다. 조회할 수 있는 객체가 아니므로 resolve하지 않는다
+		if (typeof activity.object === 'object' && !Array.isArray(activity.object) && isJoin(activity.object)) {
+			return await this.chatInviteLinkService.receiveJoinReject(actor, activity);
+		}
 
 		// eslint-disable-next-line no-param-reassign
 		resolver ??= await this.apResolverService.createResolver();
@@ -2303,7 +2316,8 @@ export class ApInboxService {
 		if (!invitee) return 'skip: target user not found';
 		if (!this.userEntityService.isLocalUser(invitee)) return 'skip: target user is not local';
 		// A local inviter is refused the same way in ChatService.createRoomInvitation.
-		if (await this.userBlockingService.checkBlocked(invitee.id, actor.id)) return 'skip: the invitee has blocked the inviter';
+		// 초대 링크로 참여를 요청한 사람이 그룹장을 차단한 것은 막는 이유가 아니다(차단의 방향 구분)
+		if (await this.userBlockingService.checkBlocked(invitee.id, actor.id) && !await this.chatInviteLinkService.isAwaitingInvite(invitee.id, roomUri)) return 'skip: the invitee has blocked the inviter';
 
 		// Check if the room already exists locally
 		let room = await this.chatRoomByUri(roomUri);
@@ -2388,6 +2402,11 @@ export class ApInboxService {
 			await manager.insert(MiChatRoomInvitation, invitation);
 			return 'ok';
 		});
+		if (result !== 'ok' && result !== 'skip: invitation already exists') return result;
+
+		// 이 사용자가 보낸 초대 링크 Join의 답이면 요청대로 수락하고 초대 알림을 남기지 않는다
+		const awaited = await this.chatInviteLinkService.acceptAwaitedInvite(invitee, room, roomUri);
+		if (awaited === 'joined') return 'ok: joined through an invite link';
 		if (result !== 'ok') return result;
 
 		// Send local notification

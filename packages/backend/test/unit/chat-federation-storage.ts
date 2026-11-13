@@ -19,6 +19,7 @@ import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js
 import { DI } from '@/di-symbols.js';
 import { GlobalModule } from '@/GlobalModule.js';
 import { IdService } from '@/core/IdService.js';
+import { noChatInviteJoins } from '../misc/chat-roster-stub.js';
 import { ChatMessageUriUnique1793708299161 } from '../../migration/1793708299161-chat-message-uri-unique.js';
 
 // These cases depend on what PostgreSQL and Redis do with the query, so they use the real ones.
@@ -338,6 +339,7 @@ describe('chat federation storage', () => {
 				redisClient,
 				chatService,
 				apChatRoomStateService: Object.assign(Object.create(ApChatRoomStateService.prototype), { chatService }),
+				chatInviteLinkService: noChatInviteJoins(),
 				notificationService: { createNotification },
 				logger: { info: vi.fn(), warn: vi.fn() },
 			});

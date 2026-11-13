@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => {
 		room: { id: 'r1', name: 'room 1', description: '', ownerId: 'me', owner: { id: 'me', username: 'me', host: null }, isArchived: false, isMuted: false, invitationExists: false } as Record<string, unknown>,
 		confirm: vi.fn(),
 		popupMenu: vi.fn(),
+		routerReplace: vi.fn(),
+		streamChannels: [] as { name: string; params: unknown }[],
 		bodies: [] as { endpoint: string; body: Record<string, unknown> }[],
 		// 断る要求と、そのときの本文
 		refusal: { endpoint: '', error: null as Record<string, string> | 'network' | null },
@@ -28,6 +30,7 @@ const mocks = vi.hoisted(() => {
 			if (state.refusal.error === 'network') throw new TypeError('Failed to fetch');
 			return new Response(JSON.stringify({ error: state.refusal.error }), { status: 400 });
 		}
+		if (endpoint === 'chat/rooms/channels/list') return new Response(JSON.stringify([{ id: 'first', roomId: 'r1', name: 'First', isLegacy: true }]), { status: 200 });
 		if (endpoint === 'chat/rooms/show') return new Response(JSON.stringify(state.room), { status: 200 });
 		if (endpoint === 'chat/rooms/members') return new Response(JSON.stringify([{ id: 'ms1', userId: 'member', user: { id: 'member', username: 'member', host: null } }]), { status: 200 });
 		if (endpoint === 'chat/rooms/invitations/outbox') return new Response(JSON.stringify([{ id: 'i1', userId: 'invitee', user: { id: 'invitee', username: 'invitee', host: null } }]), { status: 200 });
@@ -38,8 +41,8 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
-vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), useChannel: () => ({ on: vi.fn(), off: vi.fn(), send: vi.fn(), dispose: vi.fn() }) }) }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn(), useListener: vi.fn() }) }));
+vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), useChannel: (name: string, params: unknown) => { mocks.streamChannels.push({ name, params }); return { on: vi.fn(), off: vi.fn(), send: vi.fn(), dispose: vi.fn() }; } }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), replace: mocks.routerReplace, replaceByPath: mocks.routerReplace, useListener: vi.fn() }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: false, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // apiWithDialog は本物のまま。利用者の答えを待つものだけを差し替える
@@ -94,11 +97,11 @@ function requestTo(endpoint: string) {
 	return mocks.bodies.findLast(request => request.endpoint === endpoint);
 }
 
-function roomPage() {
+function roomPage(extra: Record<string, unknown> = {}) {
 	const host = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
-			return () => h(XRoomPage, { roomId: 'r1' });
+			return () => h(XRoomPage, { roomId: 'r1', ...extra });
 		},
 	});
 	return render(host, { global: { stubs, directives: { tooltip: {} } } });
@@ -168,6 +171,9 @@ const REFUSED: [string, Record<string, string>, string][] = [
 beforeEach(() => {
 	mocks.bodies.length = 0;
 	mocks.room.ownerId = 'me';
+	mocks.room.hasChannels = false;
+	mocks.routerReplace.mockClear();
+	mocks.streamChannels.length = 0;
 	mocks.refusal.endpoint = '';
 	mocks.refusal.error = null;
 	mocks.confirm.mockReset().mockResolvedValue({ canceled: false });
@@ -250,6 +256,24 @@ test.each<[string, ApiWithDialogCustomErrors]>([
 	const declared = [...source.matchAll(/\bid: '([0-9a-f-]{36})'/g)].map(match => match[1]).toSorted();
 
 	expect(Object.keys(errors).filter(id => id !== 'default').toSorted()).toEqual(declared);
+});
+
+test('uses the selected channel for the credentialed timeline and stream', async () => {
+	mocks.room.hasChannels = true;
+	roomPage({ channelId: 'selected', channels: [{ id: 'selected', roomId: 'r1', name: 'Selected' }] });
+	await waitFor(() => expect(requestTo('chat/messages/room-timeline')).toBeDefined());
+
+	expect(requestTo('chat/messages/room-timeline')!.body).toMatchObject({ roomId: 'r1', channelId: 'selected', i: 'my-token' });
+	await waitFor(() => expect(mocks.streamChannels).toContainEqual({ name: 'chatRoom', params: { roomId: 'r1', channelId: 'selected' } }));
+});
+
+test('resolves an old group address to the first channel before reading messages', async () => {
+	mocks.room.hasChannels = true;
+	roomPage();
+	await waitFor(() => expect(mocks.routerReplace).toHaveBeenCalledWith('/chat/room/r1/channels/first'));
+
+	expect(requestTo('chat/messages/room-timeline')).toBeUndefined();
+	expect(requestTo('chat/rooms/channels/list')!.body).toMatchObject({ roomId: 'r1', i: 'my-token' });
 });
 
 // 알림 설정과 그룹 전체 읽음은 채널 공용 오류 목록을 선언한다. 이 경로가 실제로 내는 것은 그룹·채널이 없을 때뿐이다

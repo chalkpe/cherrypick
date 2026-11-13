@@ -82,8 +82,11 @@ import { ChannelFollowingService } from './ChannelFollowingService.js';
 import { ChatDiceService } from './ChatDiceService.js';
 import { ChatService } from './ChatService.js';
 import { ChatRoomChannelService } from './ChatRoomChannelService.js';
+import { ChatInviteLinkService } from './ChatInviteLinkService.js';
 import { ChatRoomNotificationService } from './ChatRoomNotificationService.js';
+import { ChatRoomBanService } from './ChatRoomBanService.js';
 import { ChatRosterService } from './ChatRosterService.js';
+import { ChatRoomHistoryService } from './ChatRoomHistoryService.js';
 import { LiveKitService } from './LiveKitService.js';
 import { VoiceBackendService } from './VoiceBackendService.js';
 import { VoiceRelayConsumerService } from './VoiceRelayConsumerService.js';
@@ -429,9 +432,12 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChannelMutingService,
 		ChatService,
 		ChatRoomChannelService,
+		ChatInviteLinkService,
 		ChatRoomNotificationService,
+		ChatRoomBanService,
 		ChatDiceService,
 		ChatRosterService,
+		ChatRoomHistoryService,
 		LiveKitService,
 		VoiceBackendService,
 		VoiceRelayConsumerService,
@@ -775,9 +781,12 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChannelMutingService,
 		ChatService,
 		ChatRoomChannelService,
+		ChatInviteLinkService,
 		ChatRoomNotificationService,
+		ChatRoomBanService,
 		ChatDiceService,
 		ChatRosterService,
+		ChatRoomHistoryService,
 		LiveKitService,
 		VoiceBackendService,
 		VoiceRelayConsumerService,
