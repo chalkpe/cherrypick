@@ -2368,14 +2368,19 @@ export class ChatService {
 			if (user.isSuspended && !ACTIVITIES_FOR_SUSPENDED_ACCOUNTS.has(activity.type)) continue;
 
 			if (message?.toRoomId != null && room == null) continue;
-			if (message != null && room?.hasChannels && !await this.chatRoomChannelService.deliverableTo(user.host, message, room)) continue;
+			const isLegacyChannel = message?.toRoomChannelId != null && message.toRoomChannelId === room?.legacyChannelId;
+			const channelCapabilityHost = message != null && room?.hasChannels && !isLegacyChannel ? user.host : undefined;
 
 			// Every recipient is named in the activity, so a server needs it only once however many members it has.
 			const inbox = user.sharedInbox ?? user.inbox;
 			if (inbox == null || delivered.has(inbox)) continue;
 
 			delivered.add(inbox);
-			this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null);
+			if (channelCapabilityHost != null) {
+				this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null, channelCapabilityHost);
+			} else {
+				this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null);
+			}
 		}
 	}
 

@@ -100,7 +100,9 @@ export class ChatRoomHistoryService {
 	@bindThis
 	public async renderPage(room: MiChatRoom, requester: Pick<MiUser, 'host'>, until: string | null): Promise<IObject> {
 		const roomUri = this.apRendererService.genLocalChatRoomUri(room.id);
-		const legacyOnly = room.hasChannels && !await this.chatRoomChannelService.deliverableTo(requester.host, { toRoomChannelId: null }, room);
+		const capability = await this.chatRoomChannelService.deliverableTo(requester.host, { toRoomChannelId: null }, room);
+		if (capability == null) throw new Error('chat room channel capability is temporarily unavailable');
+		const legacyOnly = room.hasChannels && !capability;
 		if (legacyOnly && room.legacyChannelId == null) return buildChatHistoryPage(roomUri, until, [], null);
 
 		const query = this.chatMessagesRepository.createQueryBuilder('message')

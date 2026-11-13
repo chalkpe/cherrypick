@@ -71,6 +71,12 @@ export class DeliverProcessorService {
 			return 'skip (suspended)';
 		}
 
+		if (job.data.channelCapabilityHost != null) {
+			const capability = await this.fetchInstanceMetadataService.chatRoomChannelsCapability(job.data.channelCapabilityHost);
+			if (capability == null) throw new Error('chat room channel capability is temporarily unavailable');
+			if (!capability) return 'skip (chat room channels unsupported)';
+		}
+
 		const i = await (this.meta.enableStatsForFederatedInstances
 			? this.federatedInstanceService.fetchOrRegister(host)
 			: this.federatedInstanceService.fetch(host));
