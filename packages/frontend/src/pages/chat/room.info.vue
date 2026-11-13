@@ -260,7 +260,7 @@ async function loadInviteLink() {
 	try {
 		const link = await misskeyApi('chat/rooms/invite-link/show', { roomId });
 		if (request !== latestInviteLinkRequest || roomClosed || props.room.id !== roomId) return;
-		inviteLink.value = link;
+		inviteLink.value = link ?? null;
 		inviteLinkError.value = null;
 	} catch (err) {
 		if (request !== latestInviteLinkRequest || roomClosed || props.room.id !== roomId) return;

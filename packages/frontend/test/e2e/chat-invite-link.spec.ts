@@ -34,6 +34,7 @@ async function memberIds(owner: RegisteredUser, room: Room): Promise<string[]> {
 
 async function shot(page: Page, testInfo: TestInfo, name: string) {
 	const path = testInfo.outputPath(`${name}.png`);
+	await expect(page.locator('#splash')).toHaveCount(0);
 	await page.screenshot({ path, fullPage: false });
 	await testInfo.attach(name, { path, contentType: 'image/png' });
 }
@@ -134,13 +135,20 @@ test.describe('Group invite links', () => {
 			await context.close();
 		});
 
-		test('lets a signed-in account join and opens the group, then offers to open it again', async ({ page }) => {
+		test('lets a signed-in account join and opens the group, then offers to open it again', async ({ page }, testInfo) => {
 			const room = await createRoom(owner, `direct join ${Date.now()}`, '');
 			const link = await createLink(owner, room);
 			await signIn(page, 'bob', 'bob12345');
 
 			await page.goto(link.url);
+			const joined = page.waitForResponse(response => response.url().endsWith('/api/chat/invite-link/join') && response.request().method() === 'POST');
 			await page.getByRole('button', { name: 'Join' }).click();
+			const joinResponse = await joined;
+			expect(joinResponse.status()).toBe(200);
+			expect(joinResponse.request().postDataJSON().url).toBe(link.url);
+			const joinResult = await joinResponse.json();
+			expect(joinResult).toMatchObject({ status: 'joined', roomId: room.id });
+			await testInfo.attach('invite-join', { body: JSON.stringify({ endpoint: 'chat/invite-link/join', requestUrlMatchesIssued: joinResponse.request().postDataJSON().url === link.url, httpStatus: joinResponse.status(), response: joinResult }), contentType: 'application/json' });
 
 			await expect(page).toHaveURL(new RegExp(`/chat/room/${room.id}`));
 			expect(await memberIds(owner, room)).toContain(bob.id);
@@ -180,24 +188,32 @@ test.describe('Group invite links', () => {
 	});
 
 	test.describe('the card in a note and in a message', () => {
-		test('joins from a note in the timeline', async ({ page }) => {
+		test('joins from a note in the timeline', async ({ page }, testInfo) => {
 			const room = await createRoom(owner, `timeline card ${Date.now()}`, 'Circles welcome.');
 			const link = await createLink(owner, room);
 			await api(BASE_URL, 'notes/create', { i: owner.token, text: `Come in ${link.url}`, visibility: 'public' });
 			await signIn(page, 'carol', 'carol1234');
 
 			await page.goto(`${BASE_URL}/@alice`);
+			await page.getByRole('button', { name: /Notes$/ }).and(page.locator('button:not(:disabled)')).click();
 			const card = page.locator('article', { hasText: room.name }).first();
 			await expect(page.getByText(room.name)).toBeVisible();
 			await expect(page.getByText(/1 members/)).toBeVisible();
+			const joined = page.waitForResponse(response => response.url().endsWith('/api/chat/invite-link/join') && response.request().method() === 'POST');
 			await page.getByRole('button', { name: 'Join' }).first().click();
+			const joinResponse = await joined;
+			expect(joinResponse.status()).toBe(200);
+			expect(joinResponse.request().postDataJSON().url).toBe(link.url);
+			const joinResult = await joinResponse.json();
+			expect(joinResult).toMatchObject({ status: 'joined', roomId: room.id });
+			await testInfo.attach('invite-join', { body: JSON.stringify({ endpoint: 'chat/invite-link/join', requestUrlMatchesIssued: joinResponse.request().postDataJSON().url === link.url, httpStatus: joinResponse.status(), response: joinResult }), contentType: 'application/json' });
 
 			await expect(page).toHaveURL(new RegExp(`/chat/room/${room.id}`));
 			expect(await memberIds(owner, room)).toContain(carol.id);
 			await expect(card).toHaveCount(0);
 		});
 
-		test('joins from a message, and a plain link next to it stays a plain card', async ({ page }) => {
+		test('joins from a message, and a plain link next to it stays a plain card', async ({ page }, testInfo) => {
 			const room = await createRoom(owner, `message card ${Date.now()}`, '');
 			const link = await createLink(owner, room);
 			await api(BASE_URL, 'chat/messages/create-to-user', { i: owner.token, toUserId: dave.id, text: `${link.url}\n${BASE_URL}/about` });
@@ -207,7 +223,15 @@ test.describe('Group invite links', () => {
 			await expect(page.getByText(room.name)).toBeVisible();
 			// 초대가 아닌 링크 카드에는 참여 버튼이 없다
 			await expect(page.getByRole('button', { name: 'Join' })).toHaveCount(1);
+			await shot(page, testInfo, 'message-invite-and-link');
+			const joined = page.waitForResponse(response => response.url().endsWith('/api/chat/invite-link/join') && response.request().method() === 'POST');
 			await page.getByRole('button', { name: 'Join' }).click();
+			const joinResponse = await joined;
+			expect(joinResponse.status()).toBe(200);
+			expect(joinResponse.request().postDataJSON().url).toBe(link.url);
+			const joinResult = await joinResponse.json();
+			expect(joinResult).toMatchObject({ status: 'joined', roomId: room.id });
+			await testInfo.attach('invite-join', { body: JSON.stringify({ endpoint: 'chat/invite-link/join', requestUrlMatchesIssued: joinResponse.request().postDataJSON().url === link.url, httpStatus: joinResponse.status(), response: joinResult }), contentType: 'application/json' });
 
 			await expect(page).toHaveURL(new RegExp(`/chat/room/${room.id}`));
 			expect(await memberIds(owner, room)).toContain(dave.id);
@@ -226,6 +250,7 @@ test.describe('Group invite links', () => {
 					await signIn(page, 'alice', 'alice1234');
 
 					await page.goto(`${BASE_URL}/@alice`);
+					await page.getByRole('button', { name: /Notes$/ }).and(page.locator('button:not(:disabled)')).click();
 					await expect(page.getByText(room.name).first()).toBeVisible();
 					await shot(page, testInfo, `card-${viewport.name}-${colorScheme}`);
 

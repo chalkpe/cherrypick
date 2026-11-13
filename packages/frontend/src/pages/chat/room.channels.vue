@@ -19,6 +19,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:channelId="selectedChannel.id"
 		:channels="channels"
 		:channelListBack="narrow"
+		:mobileFooterInFlow="true"
 		@channelsUpdated="refresh"
 	/>
 	<PageWithHeader v-else :class="$style.listPage" backFallback="/chat" :backTo="narrow ? '/chat' : undefined" :actions="actions">
@@ -155,13 +156,14 @@ onActivated(() => { if (!active) { active = true; void refresh(); } });
 onBeforeUnmount(() => { active = false; request++; unreadRequest++; subscription?.dispose(); mainSubscription?.dispose(); });
 
 const actions = computed(() => room.value ? [{ icon: showInfo.value ? 'ti ti-hash' : 'ti ti-info-circle', text: showInfo.value ? i18n.ts._chat._channels.channels : i18n.ts.info, handler: () => { showInfo.value = !showInfo.value; } }] : []);
-definePage(computed(() => ({ title: room.value?.name ?? i18n.ts._chat._channels.channels, subtitle: i18n.ts._chat._channels.channels, ...(room.value ? { roomAvatar: room.value } : { icon: 'ti ti-users' }) })));
+definePage(computed(() => ({ title: room.value?.name ?? i18n.ts._chat._channels.channels, subtitle: i18n.ts._chat._channels.channels, mobileFooterInFlow: true, ...(room.value ? { roomAvatar: room.value } : { icon: 'ti ti-users' }) })));
 </script>
 
 <style lang="scss" module>
 .root {
+	height: 100%;
 	min-width: 0;
-	min-height: 100cqh;
+	min-height: 0;
 }
 
 .wide {

@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle backFallback="/chat" :backTo="channelId && channelListBack ? channelListPath(roomId!) : undefined" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
 	<!-- 自分が通話に入っているあいだは、通話 (ステージ) を出す。広いページではステージとチャットを左右に並べ、ステージは一つだけ作ってチャットを置く側の反対へ CSS の順序で移す。
 	狭いページではステージをいっぱいに広げ、チャットはその上に下から重ねるシートとして開く -->
-	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="[$style.chatTab, { [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }]">
+	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value && !mobileFooterInFlow ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="[$style.chatTab, { [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }]">
 		<XStage v-if="split && room" :room="room" :call="voiceCallState" :class="$style.stage" :chatOpen="chatOpen" @toggleChat="chatOpen = !chatOpen"/>
 		<div v-if="split && voiceInOwnTab && chatOpen" ref="sheetBackdropEl" :class="$style.sheetBackdrop" @click="chatOpen = false"></div>
 		<!-- シートを開いたらすぐ中へフォーカスを移すので、v-show (フォーカスを移す watch より後に表示を切り替える) ではなく style で隠す -->
@@ -152,7 +152,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 	<template #footer>
 		<!-- 表示は v-show ではなく style で切り替える (上の paneFormHostEl と同じ理由) -->
-		<div v-if="tab === 'chat'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]" :style="split ? { display: 'none' } : undefined">
+		<div v-if="tab === 'chat'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value && !mobileFooterInFlow }]" :style="split ? { display: 'none' } : undefined">
 			<!-- 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (並べているときはメッセージの欄の下へ)。
 			作り直すとフォーカスが外れてページ全体のショートカットが効いてしまい、変換中の文字や送信中の状態も失われる -->
 			<Teleport v-if="paneFormHostEl != null" :to="paneFormHostEl" :disabled="!split">
@@ -232,6 +232,7 @@ const props = defineProps<{
 	channelId?: string;
 	channels?: Misskey.entities.ChatRoomChannel[];
 	channelListBack?: boolean;
+	mobileFooterInFlow?: boolean;
 }>();
 
 const emit = defineEmits<{ (ev: 'channelsUpdated'): void }>();
@@ -1154,9 +1155,11 @@ const headerActions = computed<PageHeaderItem[]>(() => [
 ]);
 
 definePage(computed(() => {
+	const footerMetadata = props.mobileFooterInFlow ? { mobileFooterInFlow: true } : {};
 	if (initialized.value) {
 		if (user.value) {
 			return {
+				...footerMetadata,
 				userName: user.value,
 				title: user.value.name ? `${user.value.name} (@${user.value.username})` : `@${user.value.username}`,
 				subtitle: `@${getAcct(user.value)}`,
@@ -1164,6 +1167,7 @@ definePage(computed(() => {
 			};
 		} else if (room.value) {
 			return {
+				...footerMetadata,
 				title: props.channelId ? `#${props.channels?.find(channel => channel.id === props.channelId)?.name ?? ''}` : room.value.name,
 				subtitle: props.channelId ? room.value.name : undefined,
 				titleAsMfm: !props.channelId,
@@ -1172,11 +1176,13 @@ definePage(computed(() => {
 			};
 		} else {
 			return {
+				...footerMetadata,
 				title: i18n.ts.directMessage,
 			};
 		}
 	} else {
 		return {
+			...footerMetadata,
 			title: i18n.ts.directMessage,
 		};
 	}

@@ -138,14 +138,36 @@ test('direct addresses, refresh and browser history retain the selected channel'
 	await page.reload();
 	await expect(page).toHaveURL(base + path(group.id, channels[1].id));
 	await expect(page.getByText('channel-specific message', { exact: true })).toBeVisible();
+	await page.locator('button:has(.ti-arrow-left):visible').last().click();
+	await expect(page).toHaveURL(base + path(group.id));
 	await page.getByRole('link', { name: '#general', exact: true }).click();
 	await expect(page.getByText('scope needle general', { exact: true })).toBeVisible();
 	await expect(page.getByText('channel-specific message', { exact: true })).toHaveCount(0);
 	await page.goBack();
+	await expect(page).toHaveURL(base + path(group.id));
+	await page.goBack();
 	await expect(page).toHaveURL(base + path(group.id, channels[1].id));
+	await page.goForward();
+	await expect(page).toHaveURL(base + path(group.id));
 	await page.goForward();
 	await expect(page).toHaveURL(base + path(group.id, channels[0].id));
 	await page.goto(`${base}/chat/room/${group.id}`);
+	await expect(page).toHaveURL(base + path(group.id, channels[0].id));
+});
+
+test('the wide conversation shows the channel rail and navigates between channels', async ({ page }, testInfo) => {
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	await login(page);
+	await open(page, path(group.id, channels[1].id));
+	await expect(page.getByRole('link', { name: '#work', exact: true })).toBeVisible();
+	await page.getByRole('link', { name: '#general', exact: true }).click();
+	await expect(page).toHaveURL(base + path(group.id, channels[0].id));
+	await expect(page.getByText('scope needle general', { exact: true })).toBeVisible();
+	await expect(page.locator('#splash')).toHaveCount(0);
+	await page.screenshot({ path: testInfo.outputPath('wide-channel-rail.png'), fullPage: false });
+	await page.goBack();
+	await expect(page).toHaveURL(base + path(group.id, channels[1].id));
+	await page.goForward();
 	await expect(page).toHaveURL(base + path(group.id, channels[0].id));
 });
 
@@ -156,7 +178,7 @@ test('channel attachments, saved dice and reactions use the real message endpoin
 	const chooser = page.waitForEvent('filechooser');
 	await page.getByText('Upload', { exact: true }).click();
 	await (await chooser).setFiles({ name: 'blue-square.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64') });
-	await page.getByRole('button', { name: 'Upload', exact: true }).click();
+	await page.getByRole('button', { name: /Upload$/ }).click();
 	await expect(page.getByText('Upload 1 files', { exact: true })).toHaveCount(0);
 	const attached = await send(page, 'channel attachment');
 	expect(attached.request.toRoomChannelId).toBe(channels[1].id);
@@ -168,7 +190,7 @@ test('channel attachments, saved dice and reactions use the real message endpoin
 	await expect(page.locator(`[data-chat-message-id="${rolled.message.id}"] details`)).toBeVisible();
 	const incoming = await api(base, 'chat/messages/create-to-room', { i: member.token, toRoomId: group.id, toRoomChannelId: channels[1].id, text: 'reaction target' });
 	await api(base, 'chat/messages/react', { i: owner.token, messageId: incoming.id, reaction: '👍' });
-	const reaction = page.locator(`[data-chat-message-id="${incoming.id}"] [class*="reactionMy"]`);
+	const reaction = page.locator(`[data-chat-message-id="${incoming.id}"]`).getByRole('img', { name: '👍' });
 	await expect(reaction).toBeVisible();
 	const unreacted = page.waitForResponse(response => response.url().endsWith('/api/chat/messages/unreact'));
 	await reaction.click();
@@ -191,7 +213,7 @@ test('selected references keep duplicate IDs, survive edits and follow renaming 
 	const message = await sent.json();
 	const bubble = page.locator(`[data-chat-message-id="${message.id}"]`);
 	await expect(bubble.locator(`a[href="${path(group.id, duplicate2.id)}"]`)).toBeVisible();
-	await bubble.getByText('😀', { exact: false }).click({ button: 'right' });
+	await bubble.getByRole('img', { name: '😀' }).click({ button: 'right' });
 	await page.getByText('Edit', { exact: true }).click();
 	await input.press('Home');
 	await input.press('Control+Home');
@@ -202,7 +224,7 @@ test('selected references keep duplicate IDs, survive edits and follow renaming 
 	await api(base, 'chat/rooms/channels/update', { i: owner.token, channelId: duplicate2.id, name: 'Renamed' });
 	await expect(bubble.getByRole('link', { name: '#Renamed', exact: true })).toHaveAttribute('href', path(group.id, duplicate2.id));
 	await api(base, 'chat/rooms/channels/delete', { i: owner.token, channelId: duplicate2.id });
-	await expect(bubble.getByText('Deleted channel', { exact: true })).toBeVisible();
+	await expect(bubble.getByText('Deleted channel', { exact: false })).toBeVisible();
 	await expect(bubble.locator(`a[href="${path(group.id, duplicate2.id)}"]`)).toHaveCount(0);
 	await api(base, 'chat/rooms/channels/delete', { i: owner.token, channelId: duplicate1.id });
 });
@@ -219,26 +241,31 @@ test('conversion shows the confirmed Korean warning and management uses channel 
 	await expect(page).toHaveURL(new RegExp(`/chat/room/${room.id}/channels/`));
 	await page.getByText('정보', { exact: true }).click();
 	await page.getByRole('button', { name: '채널 만들기', exact: true }).click();
-	await page.locator('input:visible').last().fill('  same  ');
+	const nameDialog = page.locator('header:visible').filter({ hasText: '채널 이름' }).locator('..').filter({ has: page.locator('input:focus') });
+	await nameDialog.getByRole('textbox').fill('  same  ');
 	const created = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/channels/create'));
-	await page.getByTestId('modal-dialog-ok').click();
+	await nameDialog.getByTestId('modal-dialog-ok').click();
 	const channel = await (await created).json();
 	expect(channel.name).toBe('same');
 	const row = page.locator(`[data-chat-channel-id="${channel.id}"]`);
 	await row.getByRole('button', { name: '위로 이동', exact: true }).click();
 	await expect.poll(async () => (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0].id).toBe(channel.id);
 	await row.getByRole('button', { name: '이름 변경', exact: true }).click();
-	await page.locator('input:visible').last().fill('renamed');
+	await nameDialog.getByRole('textbox').fill('renamed');
 	const renamed = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/channels/update'));
-	await page.getByTestId('modal-dialog-ok').click();
+	await nameDialog.getByTestId('modal-dialog-ok').click();
 	expect((await (await renamed).json()).name).toBe('renamed');
 	const legacy = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id })).find((channel: Misskey.entities.ChatRoomChannel) => channel.isLegacy);
 	await page.locator(`[data-chat-channel-id="${legacy.id}"]`).getByRole('button', { name: '삭제', exact: true }).click();
-	await expect(page.getByText('이 채널을 삭제하면 구버전 서버와 앱에서 대화할 수 없어요.', { exact: false })).toBeVisible();
-	await page.getByTestId('modal-dialog-cancel').click();
+	const legacyWarning = page.getByText('이 채널을 삭제하면 구버전 서버와 앱에서 대화할 수 없어요.', { exact: false });
+	await expect(legacyWarning).toBeVisible();
+	const legacyDialog = legacyWarning.locator('xpath=ancestor::div[.//button[@data-testid="modal-dialog-cancel"]][1]');
+	await legacyDialog.getByTestId('modal-dialog-cancel').click();
 	await row.getByRole('button', { name: '삭제', exact: true }).click();
+	const deleteWarning = page.getByText('#renamed 채널과 모든 메시지를 영구 삭제할까요?', { exact: false });
+	const deleteDialog = deleteWarning.locator('xpath=ancestor::div[.//button[@data-testid="modal-dialog-ok"]][1]');
 	const deleted = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/channels/delete'));
-	await page.getByTestId('modal-dialog-ok').click();
+	await deleteDialog.getByTestId('modal-dialog-ok').click();
 	expect((await deleted).status()).toBe(204);
 	await expect(page.locator(`[data-chat-channel-id="${legacy.id}"]`).getByRole('button', { name: '삭제', exact: true })).toBeDisabled();
 	await api(base, 'chat/rooms/update', { i: owner.token, roomId: room.id, isArchived: true });
@@ -256,7 +283,7 @@ test('a newly accepted invitation opens the first channel conversation', async (
 	await page.getByTestId('modal-dialog-ok').click();
 	await expect(page).toHaveURL(base + path(room.id, first.id));
 	await expect(page.getByPlaceholder('Enter message here')).toBeInViewport();
-	await page.getByText('Info', { exact: true }).click();
+	await page.getByText('About', { exact: true }).click();
 	await expect(page.getByRole('button', { name: 'Create channel', exact: true })).toHaveCount(0);
 });
 
@@ -280,17 +307,75 @@ test('deleted current and direct channel addresses return to the first remaining
 test('search covers every channel and can filter one channel through the product select', async ({ page }) => {
 	await login(page);
 	await open(page, path(group.id, channels[1].id));
-	await page.locator('button:has(.ti-dots):visible').click();
-	await page.getByText('Search', { exact: true }).click();
+	await page.locator('button[aria-label="Menu"]:not([data-chat-message-id] button)').click();
+	await page.getByRole('menuitem', { name: /Search$/ }).click();
 	await page.getByPlaceholder('Search messages').fill('scope needle');
 	await page.getByRole('button', { name: 'Search', exact: true }).click();
 	await expect(page.getByText('scope needle general', { exact: true })).toBeVisible();
 	await expect(page.getByText('scope needle work', { exact: true })).toBeVisible();
-	await page.getByText('All channels', { exact: true }).click();
+	await page.getByText('All channels', { exact: true }).locator('xpath=ancestor::div[@tabindex="0"][1]').click();
 	await page.getByText('#work · 2', { exact: true }).click();
 	await page.getByRole('button', { name: 'Search', exact: true }).click();
 	await expect(page.getByText('scope needle general', { exact: true })).toHaveCount(0);
 	await expect(page.getByText('scope needle work', { exact: true })).toBeVisible();
+});
+
+for (const name of ['channel', 'group', 'individual'] as const) test(`the narrow composer keeps its controls usable in a ${name} conversation`, async ({ page }, testInfo) => {
+	await login(page);
+	const room = name === 'individual' ? null : await createGroup(`Composer ${name}`, name === 'channel');
+	const channel = name === 'channel' ? (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room!.id }))[0] : null;
+	const other = name === 'individual'
+		? await api(base, 'signup', { username: 'composeruser', password: 'composer-test-password' }) as Account
+		: member;
+	if (name === 'individual') await api(base, 'i/update', { i: other.token, chatScope: 'everyone' });
+	for (let index = 0; index < 16; index++) {
+		const sender = index % 2 === 0 ? owner : other;
+		const text = `composer history ${index}`;
+		if (name === 'channel') await api(base, 'chat/messages/create-to-room', { i: sender.token, toRoomId: room!.id, toRoomChannelId: channel.id, text });
+		else if (name === 'group') await api(base, 'chat/messages/create-to-room', { i: sender.token, toRoomId: room!.id, text });
+		else await api(base, 'chat/messages/create-to-user', { i: sender.token, toUserId: sender.id === owner.id ? other.id : owner.id, text });
+	}
+	const target = name === 'channel' ? path(room!.id, channel.id) : name === 'group' ? `/chat/room/${room!.id}` : `/chat/user/${other.id}`;
+	const endpoint = name === 'individual' ? 'create-to-user' : 'create-to-room';
+	for (const height of [844, 1000]) {
+		await page.setViewportSize({ width: 390, height });
+		await open(page, target);
+		const file = page.getByRole('button', { name: 'Select a file', exact: true });
+		const emoji = page.getByRole('button', { name: 'Emoji', exact: true });
+		const sendButton = page.getByRole('button', { name: 'Send', exact: true });
+		const layout = await file.evaluate(element => {
+			const result: object[] = [];
+			for (let node: Element | null = element; node; node = node.parentElement) {
+				const rect = node.getBoundingClientRect();
+				const style = getComputedStyle(node);
+				result.push({ tag: node.tagName, className: node.getAttribute('class'), top: rect.top, height: rect.height, scrollHeight: node.scrollHeight, overflowY: style.overflowY, position: style.position });
+			}
+			return result;
+		});
+		await testInfo.attach(`composer-layout-${name}-${height}`, { body: JSON.stringify(layout), contentType: 'application/json' });
+		await expect(file).toBeInViewport({ ratio: 1 });
+		await expect(emoji).toBeInViewport({ ratio: 1 });
+		await expect(sendButton).toBeInViewport({ ratio: 1 });
+		const sendBounds = await sendButton.boundingBox();
+		const navigationBounds = await page.locator('button:has(i.ti-messages)').filter({ hasNotText: 'Messages' }).boundingBox();
+		expect(sendBounds).not.toBeNull();
+		expect(navigationBounds).not.toBeNull();
+		expect(Math.abs(sendBounds!.y + sendBounds!.height - navigationBounds!.y)).toBeLessThanOrEqual(2);
+		await file.click();
+		await expect(page.getByText('Upload', { exact: true })).toBeVisible();
+		await page.keyboard.press('Escape');
+		await emoji.click();
+		await expect(page.locator('.omfetrab').getByPlaceholder('Search')).toBeVisible();
+		await page.keyboard.press('Escape');
+		const text = `narrow composer ${name} ${height}`;
+		await page.getByPlaceholder('Enter message here').fill(text);
+		await expect(page.locator('#splash')).toHaveCount(0);
+		await page.screenshot({ path: testInfo.outputPath(`composer-${name}-${height}.png`), fullPage: false });
+		const response = page.waitForResponse(result => result.url().endsWith(`/api/chat/messages/${endpoint}`) && result.request().method() === 'POST');
+		await sendButton.click();
+		expect((await response).status()).toBe(200);
+		await expect(page.getByText(text, { exact: true })).toBeVisible();
+	}
 });
 
 for (const width of [390, 820, 1600]) {
@@ -309,6 +394,7 @@ for (const width of [390, 820, 1600]) {
 				await expect(page.getByPlaceholder('Enter message here')).toBeInViewport();
 				await expect(page.locator('html')).toHaveAttribute('data-color-scheme', theme);
 				expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+				await expect(page.locator('#splash')).toHaveCount(0);
 				await page.screenshot({ path: testInfo.outputPath(`${name}-${width}-${theme}.png`), fullPage: true });
 			}
 		});
