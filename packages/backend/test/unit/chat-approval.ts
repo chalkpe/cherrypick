@@ -7,6 +7,7 @@ import { describe, expect, test } from 'vitest';
 import { QueryFailedError } from 'typeorm';
 import { ChatService } from '@/core/ChatService.js';
 import { memoryRedis } from '../misc/chat-unread-redis.js';
+import { chatTransactions } from '../misc/chat-transactions.js';
 
 const alice = { id: 'alice', host: null, chatScope: 'everyone', isSuspended: false };
 const bob = { id: 'bob', host: null, chatScope: 'everyone', isSuspended: false };
@@ -21,6 +22,7 @@ function fixture(options: { insertApproval?: () => Promise<void> } = {}) {
 	const published: unknown[] = [];
 	let sequence = 0;
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
+		db: chatTransactions(),
 		config: { url: 'https://local.test' },
 		chatApprovalsRepository: {
 			createQueryBuilder: () => ({

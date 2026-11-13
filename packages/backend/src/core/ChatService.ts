@@ -7,8 +7,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import * as mfm from 'mfc-js';
 import * as Redis from 'ioredis';
-import { Between, Brackets, DataSource, In, IsNull, LessThan, Not } from 'typeorm';
-import type { SelectQueryBuilder } from 'typeorm';
+import { Brackets, DataSource, In, IsNull, LessThan, Not } from 'typeorm';
+import type { EntityManager, SelectQueryBuilder } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { QueueService } from '@/core/QueueService.js';
@@ -21,7 +21,7 @@ import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { PushNotificationService } from '@/core/PushNotificationService.js';
 import { bindThis } from '@/decorators.js';
-import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, DriveFilesRepository, MiChatMessage, MiDriveFile, MiUser, MutingsRepository, UsersRepository } from '@/models/_.js';
+import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, DriveFilesRepository, MiDriveFile, MiUser, MutingsRepository, UsersRepository } from '@/models/_.js';
 import type { MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { QueryService } from '@/core/QueryService.js';
@@ -30,6 +30,7 @@ import { UserFollowingService } from '@/core/UserFollowingService.js';
 import { MiChatRoomInvitation } from '@/models/ChatRoomInvitation.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
 import { MiChatRoom } from '@/models/ChatRoom.js';
+import { MiChatMessage } from '@/models/ChatMessage.js';
 import { Packed } from '@/misc/json-schema.js';
 import { sqlLikeEscape } from '@/misc/sql-like-escape.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
@@ -44,6 +45,8 @@ import { chatMessageUri, chatRoomUriForOwner, localChatMessageIdFromUri } from '
 import { ChatDiceService } from '@/core/ChatDiceService.js';
 import { chatDiceNotation, parseChatDiceResult } from '@/core/chat-dice.js';
 import { ApiError } from '@/server/api/error.js';
+import type Logger from '@/logger.js';
+import { LoggerService } from '@/core/LoggerService.js';
 
 export class ChatMessageAccessError extends Error {}
 export class ChatMessageInvalidTextError extends ChatMessageAccessError {}
@@ -79,18 +82,37 @@ const ACTIVITIES_FOR_SUSPENDED_ACCOUNTS = new Set(['Delete', 'Remove', 'Undo']);
 const isCustomEmojiRegexp = /^:([\w+-]+)(?:@\.)?:$/;
 
 /** One reader's unread mark on one conversation: a direct conversation goes by its sender, a room by its ID. */
-type UnreadSnapshot = [latest: string, first: string, revision: string, messageIds: string[], previous: string];
+type UnreadSnapshot = [latest: string, first: string, revision: string, messageIds: string[], pendingIds: string[]];
 
 type UnreadMark = { readerId: MiUser['id'] } & ({ senderId: MiUser['id'] } | { roomId: MiChatRoom['id'] });
 
+/**
+ * What one read covered: the messages it handed out, and everything up to and including `upTo`.
+ * A message stored after the read looked is not in it, so it stays unread.
+ */
+export type ChatReadBoundary = { seenIds: MiChatMessage['id'][]; upTo: MiChatMessage['id'] | null };
+
+/** Serializes remote message storage with a Delete for the same ActivityPub URI. */
+export function chatMessageUriLockKey(uri: string): string {
+	return `chat-message-uri:${uri}`;
+}
+
+const READ_RETRY_DELAYS = [1000, 5000, 30000];
+
+/** The read a chat screen sends over the stream names the newest message it has shown. Older clients name none. */
+export function chatReadBoundaryOfStream(body: unknown): ChatReadBoundary | undefined {
+	const id = typeof body === 'object' && body != null ? (body as { id?: unknown }).id : undefined;
+	return typeof id === 'string' && id.length > 0 && id.length <= 32 ? { seenIds: [], upTo: id } : undefined;
+}
+
+// KEYS: 최신 ID, 첫 미읽음 ID, 집계 set, revision, 미읽음 ID set, 저장 중인 ID set
 // 개별 표식과 집계 set은 항상 함께 바꾼다. 첫 미읽음 ID는 읽은 과거 글과 새 글을 구분한다.
-const MARK_CHAT_UNREAD = `
+// 표식은 쪽지를 저장하기 전에 남긴다. 저장된 쪽지를 본 읽기는 반드시 표식 뒤에 온다.
+const MARK_CHAT_UNREAD = `-- mark chat unread
 local active = redis.call('SISMEMBER', KEYS[3], ARGV[2]) == 1
 if not active then redis.call('DEL', KEYS[5], KEYS[6]) end
 local latest = active and redis.call('GET', KEYS[1]) or nil
 local first = active and redis.call('GET', KEYS[2]) or nil
--- 이전 형식의 범위는 고정하고 이후 수신은 개별 ID로 추가한다.
-if first and latest and not redis.call('GET', KEYS[4]) then redis.call('SET', KEYS[6], first .. ':' .. latest) end
 -- An active legacy mark has no saved read boundary. Receiving more cannot reconstruct it.
 if not active or first then
  if not first or ARGV[1] < first then first = ARGV[1] end
@@ -99,37 +121,136 @@ end
 if not latest or ARGV[1] > latest then redis.call('SET', KEYS[1], ARGV[1]) end
 redis.call('SADD', KEYS[3], ARGV[2])
 redis.call('SADD', KEYS[5], ARGV[1])
+-- 저장이 끝날 때까지 이 ID를 보지 못한 읽기·정리가 표식을 지우지 않게 한다.
+redis.call('SADD', KEYS[6], ARGV[1])
 redis.call('SET', KEYS[4], ARGV[3])
 return 1
 `;
 
-const CLEAR_ALL_CHAT_UNREAD = `
-for _, conversation in ipairs(redis.call('SMEMBERS', KEYS[1])) do
- local kind, id = string.match(conversation, '^(%w+):(.+)$')
- if id then
-  local key = (kind == 'user' and ARGV[1] or ARGV[2]) .. id
-  redis.call('DEL', key, key .. ':first', key .. ':revision', key .. ':messages', key .. ':previous')
- end
-end
-for i = 2, #KEYS do redis.call('DEL', KEYS[i]) end
-redis.call('DEL', KEYS[1])
+// 저장이 끝났다. 그사이 이 쪽지를 본 읽기가 이미 지웠다면 되살리지 않는다.
+const SETTLE_CHAT_UNREAD = `-- settle chat unread
+if redis.call('SREM', KEYS[6], ARGV[1]) == 0 then return 0 end
+redis.call('SET', KEYS[4], ARGV[2])
 return 1
 `;
 
-const CLEAR_CHAT_UNREAD = `
+// 받지 않은 것이 된 쪽지(저장 실패, 그사이의 뮤트)만 뺀다. 그 전의 미읽음은 그대로 둔다.
+const UNMARK_CHAT_UNREAD = `-- unmark chat unread
+local removed = 0
+for i = 3, #ARGV do
+ removed = removed + redis.call('SREM', KEYS[5], ARGV[i])
+ redis.call('SREM', KEYS[6], ARGV[i])
+end
+if removed == 0 then return 0 end
+-- 첫 미읽음 ID가 없는 이전 형식은 개별 ID 밖의 미읽음이 남아 있을 수 있으므로 지우지 않는다.
+if redis.call('SCARD', KEYS[5]) == 0 and redis.call('EXISTS', KEYS[2]) == 1 then
+ redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6])
+ redis.call('SREM', KEYS[3], ARGV[1])
+ return 2
+end
+redis.call('SET', KEYS[4], ARGV[2])
+return 1
+`;
+
+// ARGV[3]: '*'는 저장이 끝난 전부, ''는 경계 없음, 그 밖에는 그 ID까지. ARGV[4] 이후는 읽기가 돌려준 ID.
+const READ_CHAT_UNREAD = `-- read chat unread
+local seen = {}
+for i = 4, #ARGV do seen[ARGV[i]] = true end
+local pending = {}
+for _, id in ipairs(redis.call('SMEMBERS', KEYS[6])) do pending[id] = true end
+local changed = 0
+for _, id in ipairs(redis.call('SMEMBERS', KEYS[5])) do
+ if seen[id] or (not pending[id] and (ARGV[3] == '*' or (ARGV[3] ~= '' and id <= ARGV[3]))) then
+  redis.call('SREM', KEYS[5], id)
+  redis.call('SREM', KEYS[6], id)
+  changed = 1
+ end
+end
+local first, latest
+for _, id in ipairs(redis.call('SMEMBERS', KEYS[5])) do
+ if not first or id < first then first = id end
+ if not latest or id > latest then latest = id end
+end
+-- 남은 저장 중 ID도 돌려준다. 끝나지 않은 전송의 것인지는 호출한 쪽이 PostgreSQL 잠금으로 확인한다.
+if not first then
+ redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6])
+ if redis.call('SREM', KEYS[3], ARGV[1]) == 1 then return {2, {}} end
+ return {changed, {}}
+end
+local pendingLeft = redis.call('SMEMBERS', KEYS[6])
+-- 첫 미읽음 ID가 없는 이전 형식은 개별 ID 밖의 미읽음이 대화를 읽으면서 모두 읽은 것이 되어 새 형식이 된다.
+if changed == 0 and redis.call('GET', KEYS[2]) then return {0, pendingLeft} end
+redis.call('SET', KEYS[1], latest)
+redis.call('SET', KEYS[2], first)
+redis.call('SET', KEYS[4], ARGV[2])
+return {1, pendingLeft}
+`;
+
+const READ_ALL_CHAT_UNREAD = `-- read all chat unread
+local suffixes = {':first', ':revision', ':messages', ':pending'}
+-- 저장 중인 쪽지는 전체 읽음 뒤에 도착한 것으로 남긴다.
+local function keepPending(base)
+ local pending = redis.call('SMEMBERS', base .. ':pending')
+ if #pending == 0 then
+  redis.call('DEL', base, base .. ':first', base .. ':revision', base .. ':messages', base .. ':pending')
+  return false
+ end
+ redis.call('DEL', base .. ':messages')
+ local first, latest
+ for _, id in ipairs(pending) do
+  redis.call('SADD', base .. ':messages', id)
+  if not first or id < first then first = id end
+  if not latest or id > latest then latest = id end
+ end
+ redis.call('SET', base, latest)
+ redis.call('SET', base .. ':first', first)
+ redis.call('SET', base .. ':revision', ARGV[3])
+ return true
+end
+local kept = {}
+local left = {}
+for _, conversation in ipairs(redis.call('SMEMBERS', KEYS[1])) do
+ local kind, id = string.match(conversation, '^(%w+):(.+)$')
+ local base = id and ((kind == 'user' and ARGV[1] or ARGV[2]) .. id)
+ if base and keepPending(base) then
+  kept[base] = true
+  table.insert(left, conversation)
+ else
+  redis.call('SREM', KEYS[1], conversation)
+ end
+end
+for i = 2, #KEYS do
+ local base = KEYS[i]
+ for _, suffix in ipairs(suffixes) do
+  if string.sub(base, -#suffix) == suffix then base = string.sub(base, 1, #base - #suffix) end
+ end
+ if not kept[base] then redis.call('DEL', KEYS[i]) end
+end
+-- 저장 중이라 남긴 대화. 끝나지 않은 전송의 것인지는 호출한 쪽이 확인한다.
+return left
+`;
+
+const CLEAR_CHAT_UNREAD = `-- clear chat unread
 redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6])
 return redis.call('SREM', KEYS[3], ARGV[1])
 `;
 
 // 읽음 표식의 여러 키를 한 시점에 읽는다.
 const SNAPSHOT_CHAT_UNREAD = `-- snapshot chat unread
-return {redis.call('GET', KEYS[1]) or '', redis.call('GET', KEYS[2]) or '', redis.call('GET', KEYS[3]) or '', redis.call('SMEMBERS', KEYS[4]), redis.call('GET', KEYS[5]) or ''}
+return {redis.call('GET', KEYS[1]) or '', redis.call('GET', KEYS[2]) or '', redis.call('GET', KEYS[3]) or '', redis.call('SMEMBERS', KEYS[4]), redis.call('SMEMBERS', KEYS[5])}
 `;
 
-const RECONCILE_CHAT_UNREAD = `
+// A valid latest ID is enough for the normal unread check; only a stale one needs the full set.
+const SNAPSHOT_CHAT_UNREAD_HEAD = `-- snapshot chat unread head
+local latest = redis.call('GET', KEYS[1]) or ''
+return {latest, redis.call('GET', KEYS[2]) or '', latest ~= '' and redis.call('SISMEMBER', KEYS[3], latest) or 0}
+`;
+
+// 저장 중인 쪽지가 있으면 DB에서 아직 보이지 않으므로 그 대화는 정리하지 않는다.
+const RECONCILE_CHAT_UNREAD = `-- reconcile chat unread
+if redis.call('SCARD', KEYS[6]) > 0 then return 0 end
 if (redis.call('GET', KEYS[1]) or '') ~= ARGV[1] or (redis.call('GET', KEYS[2]) or '') ~= ARGV[2] or (redis.call('GET', KEYS[4]) or '') ~= ARGV[3] then return 0 end
 if ARGV[4] ~= '' then
- if ARGV[3] == '' then redis.call('SET', KEYS[6], ARGV[2] .. ':' .. ARGV[1]) end
  redis.call('SET', KEYS[1], ARGV[4])
  redis.call('SET', KEYS[4], ARGV[6])
  return 1
@@ -155,6 +276,8 @@ function normalizeEmojiString(x: string) {
 
 @Injectable()
 export class ChatService {
+	private logger: Logger;
+
 	constructor(
 		@Inject(DI.config)
 		private config: Config,
@@ -207,7 +330,9 @@ export class ChatService {
 		private hostPolicyService: HostPolicyService,
 		private chatRosterService: ChatRosterService,
 		private chatDiceService: ChatDiceService,
+		private loggerService: LoggerService,
 	) {
+		this.logger = this.loggerService.getLogger('chat');
 	}
 
 	@bindThis
@@ -328,6 +453,7 @@ export class ChatService {
 		emojis?: string[];
 		editedAt?: Date | null;
 		dice?: unknown;
+		deleteActorUri?: string;
 	}): Promise<Packed<'ChatMessageLiteFor1on1'>> {
 		const { iApprovedOther } = await this.assertCanSendToUser(fromUser, toUser);
 
@@ -372,18 +498,12 @@ export class ChatService {
 			}
 		}
 
-		const inserted = await this.chatMessagesRepository.insertOne(message);
+		const unreadMarks: UnreadMark[] = this.userEntityService.isLocalUser(toUser) ? [{ readerId: toUser.id, senderId: fromUser.id }] : [];
+		const inserted = await this.insertMarkedUnread(message, unreadMarks, params.deleteActorUri);
 
 		const packedMessage = await this.chatEntityService.packMessageLiteFor1on1(inserted);
 
-		if (this.userEntityService.isLocalUser(toUser)) {
-			try {
-				await this.markUnread({ readerId: toUser.id, senderId: fromUser.id }, message.id);
-			} catch (error) {
-				await this.rollbackMessage(inserted, [{ readerId: toUser.id, senderId: fromUser.id }]);
-				throw error;
-			}
-		}
+		await this.settleUnreadMarks(inserted, unreadMarks);
 
 		if (this.userEntityService.isLocalUser(fromUser)) {
 			// 自分のストリーム
@@ -396,24 +516,9 @@ export class ChatService {
 		}
 
 		// 3秒経っても既読にならなかったらイベント発行
-		if (this.userEntityService.isLocalUser(toUser)) {
-			setTimeout(async () => {
-				const marker = await this.redisClient.get(`newUserChatMessageExists:${toUser.id}:${fromUser.id}`);
-
-				if (marker == null) return; // 既読
-
-				// Delete and Update can arrive within this delay. Never notify with text the sender already withdrew.
-				const latest = await this.chatMessagesRepository.findOneBy({ id: inserted.id });
-				if (latest == null || latest.deletedAt != null) return;
-				if (await this.isFromSuspendedUser(latest)) return;
-
-				// The chat list leaves out a conversation with a muted account, so nothing points the recipient at it either.
-				if (await this.mutingsRepository.existsBy({ muterId: toUser.id, muteeId: fromUser.id })) return;
-
-				const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest, toUser);
-				if (!(await this.isMarkedUnread(toUser.id, `user:${fromUser.id}`))) return;
-				this.globalEventService.publishMainStream(toUser.id, 'newChatMessage', packedMessageForTo);
-				this.pushNotificationService.pushNotification(toUser.id, 'newChatMessage', packedMessageForTo);
+		if (unreadMarks.length > 0) {
+			setTimeout(() => {
+				this.noticeUnreadDirectMessage(inserted, toUser, unreadMarks[0]).catch(error => this.reportUnreadFailure('notice of a direct message', error));
 			}, 3000);
 		}
 
@@ -441,8 +546,10 @@ export class ChatService {
 		emojis?: string[];
 		editedAt?: Date | null;
 		dice?: unknown;
+		deleteActorUri?: string;
 	}): Promise<Packed<'ChatMessageLiteForRoom'>> {
-		const memberships = (await this.chatRoomMembershipsRepository.findBy({ roomId: toRoom.id })).map(m => ({
+		// The recipients of this send must include members already committed on the primary.
+		const memberships = (await this.db.transaction(manager => manager.withRepository(this.chatRoomMembershipsRepository).findBy({ roomId: toRoom.id }))).map(m => ({
 			userId: m.userId,
 			isMuted: m.isMuted,
 		})).concat({ // ownerはmembershipレコードを作らないため
@@ -489,49 +596,24 @@ export class ChatService {
 			emojis,
 		} satisfies Partial<MiChatMessage>;
 
-		const inserted = await this.chatMessagesRepository.insertOne(message);
+		// 다른 서버의 참가자는 이 서버에서 읽지 않으므로, 아무도 거두지 않을 표식이 쌓이지 않게 이 서버 계정에만 남긴다.
+		const readers = membershipsOtherThanMe.length === 0 ? [] : await this.db.transaction(manager => manager.withRepository(this.usersRepository).findBy({ id: In(membershipsOtherThanMe.map(member => member.userId)) }));
+		const localReaderIds = new Set(readers.filter(user => this.userEntityService.isLocalUser(user)).map(user => user.id));
+		const unreadMarks: UnreadMark[] = membershipsOtherThanMe.filter(member => localReaderIds.has(member.userId)).map(member => ({ readerId: member.userId, roomId: toRoom.id }));
+		const inserted = await this.insertMarkedUnread(message, unreadMarks, params.deleteActorUri);
 
 		const packedMessage = await this.chatEntityService.packMessageLiteForRoom(inserted);
 
-		const unreadMarks = membershipsOtherThanMe.map(membership => ({ readerId: membership.userId, roomId: toRoom.id }));
-		try {
-			for (const mark of unreadMarks) await this.markUnread(mark, message.id);
-		} catch (error) {
-			await this.rollbackMessage(inserted, unreadMarks);
-			throw error;
-		}
+		await this.settleUnreadMarks(inserted, unreadMarks);
 
 		this.globalEventService.publishChatRoomStream(toRoom.id, 'message', packedMessage);
 
 		// 3秒経っても既読にならなかったらイベント発行
-		setTimeout(async () => {
-			const redisPipeline = this.redisClient.pipeline();
-			for (const membership of membershipsOtherThanMe) {
-				redisPipeline.get(`newRoomChatMessageExists:${membership.userId}:${toRoom.id}`);
-			}
-			const markers = await redisPipeline.exec();
-			if (markers == null) throw new Error('redis error');
-
-			if (markers.every(marker => marker[1] == null)) return;
-
-			// Delete and Update can arrive within this delay. Never notify with text the sender already withdrew.
-			const latest = await this.chatMessagesRepository.findOneBy({ id: inserted.id });
-			if (latest == null || latest.deletedAt != null) return;
-			if (await this.isFromSuspendedUser(latest)) return;
-
-			const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest);
-
-			for (let i = 0; i < membershipsOtherThanMe.length; i++) {
-				const marker = markers[i][1];
-				if (marker == null) continue;
-				const userId = membershipsOtherThanMe[i].userId;
-				if (await this.isRoomQuietFor(toRoom, userId)) continue;
-
-				if (!(await this.isMarkedUnread(userId, `room:${toRoom.id}`))) continue;
-				this.globalEventService.publishMainStream(userId, 'newChatMessage', packedMessageForTo);
-				this.pushNotificationService.pushNotification(userId, 'newChatMessage', packedMessageForTo);
-			}
-		}, 3000);
+		if (unreadMarks.length > 0) {
+			setTimeout(() => {
+				this.noticeUnreadRoomMessage(inserted, toRoom, unreadMarks).catch(error => this.reportUnreadFailure('notice of a room message', error));
+			}, 3000);
+		}
 
 		// Federation: Send to remote members if applicable
 		if (this.userEntityService.isLocalUser(fromUser)) {
@@ -603,22 +685,110 @@ export class ChatService {
 	public async readUserChatMessage(
 		readerId: MiUser['id'],
 		senderId: MiUser['id'],
+		boundary?: ChatReadBoundary,
 	): Promise<void> {
-		await this.clearUnreadMarks([{ readerId, senderId }]);
+		await this.readUnreadMark({ readerId, senderId }, boundary);
 	}
 
 	@bindThis
 	public async readRoomChatMessage(
 		readerId: MiUser['id'],
 		roomId: MiChatRoom['id'],
+		boundary?: ChatReadBoundary,
 	): Promise<void> {
-		await this.clearUnreadMarks([{ readerId, roomId }]);
+		await this.readUnreadMark({ readerId, roomId }, boundary);
+	}
+
+	/**
+	 * Records a read that came with something the reader asked for, such as a timeline. The answer goes out even when
+	 * the read cannot be recorded: the conversation then stays unread as stored, and the same read is tried again shortly.
+	 * The boundary keeps a late retry from covering messages that arrived after the read.
+	 */
+	@bindThis
+	public async recordUserChatRead(readerId: MiUser['id'], senderId: MiUser['id'], boundary?: ChatReadBoundary): Promise<void> {
+		await this.recordRead({ readerId, senderId }, boundary);
+	}
+
+	/** {@link recordUserChatRead} for a room. */
+	@bindThis
+	public async recordRoomChatRead(readerId: MiUser['id'], roomId: MiChatRoom['id'], boundary?: ChatReadBoundary): Promise<void> {
+		await this.recordRead({ readerId, roomId }, boundary);
+	}
+
+	/** What a timeline page covered, for the read that comes with it. */
+	@bindThis
+	public readBoundaryOf(messages: Pick<MiChatMessage, 'id'>[], limit: number, sinceId?: MiChatMessage['id'] | null, beforeQuery?: MiChatMessage['id'][]): ChatReadBoundary {
+		const seenIds = messages.map(message => message.id);
+		// A full page stops short of older messages. Opening the conversation counts those as read, as it always has.
+		const oldest = seenIds.length >= limit ? seenIds.reduce((a, b) => (a < b ? a : b)) : null;
+		const upTo = sinceId ?? oldest;
+		if (beforeQuery == null) return { seenIds, upTo };
+		// IDs issued earlier can commit after the query. Only cover older marks that were settled before it began.
+		const older = upTo == null ? [] : beforeQuery.filter(id => id <= upTo);
+		return { seenIds: [...new Set([...seenIds, ...older])], upTo: null };
+	}
+
+	/** Captures settled unread IDs before a timeline query, without preventing the query if Redis is unavailable. */
+	private async captureChatRead(mark: UnreadMark): Promise<MiChatMessage['id'][]> {
+		try {
+			const [, , , ids, pending] = await this.snapshotUnread(mark);
+			const sending = new Set(pending);
+			return ids.filter(id => !sending.has(id));
+		} catch (error) {
+			this.reportUnreadFailure('capturing a read boundary', error);
+			return [];
+		}
+	}
+
+	@bindThis
+	public async captureUserChatRead(readerId: MiUser['id'], senderId: MiUser['id']): Promise<MiChatMessage['id'][]> {
+		return await this.captureChatRead({ readerId, senderId });
+	}
+
+	@bindThis
+	public async captureRoomChatRead(readerId: MiUser['id'], roomId: MiChatRoom['id']): Promise<MiChatMessage['id'][]> {
+		return await this.captureChatRead({ readerId, roomId });
+	}
+
+	private async recordRead(mark: UnreadMark, boundary: ChatReadBoundary | undefined, attempt = 0): Promise<void> {
+		try {
+			await this.readUnreadMark(mark, boundary);
+		} catch (error) {
+			const delay = READ_RETRY_DELAYS.at(attempt);
+			this.reportUnreadFailure(delay == null ? 'read, given up' : 'read, retrying', error);
+			if (delay == null) return;
+			setTimeout(() => {
+				this.recordRead(mark, boundary, attempt + 1).catch(() => {});
+			}, delay);
+		}
+	}
+
+	private async readUnreadMark(mark: UnreadMark, boundary: ChatReadBoundary | undefined): Promise<void> {
+		const upTo = boundary == null ? '*' : (boundary.upTo ?? '');
+		const [result, pendingLeft] = await this.redisClient.eval(READ_CHAT_UNREAD, 6, ...this.unreadKeys(mark),
+			this.unreadConversation(mark), randomUUID(), upTo, ...(boundary?.seenIds ?? [])) as [number, string[]];
+		if (Number(result) > 0) await this.announceIfAllRead([mark.readerId]);
+		// 읽기가 남긴 저장 중 표식이 끝난 전송의 것이면 여기서 정리한다.
+		if (pendingLeft.length > 0) await this.settleAbandonedSends([mark], [pendingLeft]);
 	}
 
 	@bindThis
 	public async readAllChatMessages(
 		readerId: MiUser['id'],
 	): Promise<void> {
+		// 저장까지 마치고 끝난 전송이 남긴 저장 중 표시를 먼저 정리한다. 그래야 이미 저장된 그 쪽지도 이번 전체 읽음에 든다.
+		// 지금 저장 중인 전송의 쪽지는 아래에서 전체 읽음 뒤에 도착한 것으로 남는다.
+		const active = (await this.redisClient.smembers(`newChatMessagesExists:${readerId}`)).map(conversation => this.markOf(readerId, conversation));
+		if (active.length > 0) {
+			const pipeline = this.redisClient.pipeline();
+			for (const mark of active) pipeline.smembers(`${this.unreadKey(mark)}:pending`);
+			const pending = ((await pipeline.exec()) ?? []).map(([error, ids]) => {
+				if (error != null) throw error;
+				return ids as string[];
+			});
+			await this.settleAbandonedSends(active, pending);
+		}
+
 		const prefix = this.redisClient.options?.keyPrefix ?? '';
 		const keys = new Set<string>();
 		// 이전 버전에서 전체 읽음이 집계만 지워 남긴 키도 찾는다. SCAN은 Redis를 막지 않는다.
@@ -631,8 +801,13 @@ export class ChatService {
 			} while (cursor !== '0');
 		}
 		// SCAN 중 새로 수신한 대화도 현재 집계에서 읽어 같은 원자적 작업으로 정리한다.
-		await this.redisClient.eval(CLEAR_ALL_CHAT_UNREAD, keys.size + 1, `newChatMessagesExists:${readerId}`, ...keys,
-			`${prefix}newUserChatMessageExists:${readerId}:`, `${prefix}newRoomChatMessageExists:${readerId}:`);
+		const left = await this.redisClient.eval(READ_ALL_CHAT_UNREAD, keys.size + 1, `newChatMessagesExists:${readerId}`, ...keys,
+			`${prefix}newUserChatMessageExists:${readerId}:`, `${prefix}newRoomChatMessageExists:${readerId}:`, randomUUID()) as string[];
+		const marks = left.map(conversation => this.markOf(readerId, conversation));
+		if (marks.length > 0) {
+			const snapshots = await Promise.all(marks.map(mark => this.snapshotUnread(mark)));
+			await this.settleAbandonedSends(marks, snapshots.map(snapshot => snapshot[4]));
+		}
 
 		// Asked for outright, so the reader's screens are told even if the server had nothing left to clear.
 		this.globalEventService.publishMainStream(readerId, 'readAllChatMessages');
@@ -642,30 +817,126 @@ export class ChatService {
 		return 'senderId' in mark ? `newUserChatMessageExists:${mark.readerId}:${mark.senderId}` : `newRoomChatMessageExists:${mark.readerId}:${mark.roomId}`;
 	}
 
+	private unreadKeys(mark: UnreadMark): string[] {
+		const key = this.unreadKey(mark);
+		return [key, `${key}:first`, `newChatMessagesExists:${mark.readerId}`, `${key}:revision`, `${key}:messages`, `${key}:pending`];
+	}
+
 	private unreadConversation(mark: UnreadMark): string {
 		return 'senderId' in mark ? `user:${mark.senderId}` : `room:${mark.roomId}`;
 	}
 
-	private async markUnread(mark: UnreadMark, messageId: MiChatMessage['id']): Promise<void> {
-		const key = this.unreadKey(mark);
-		await this.redisClient.eval(MARK_CHAT_UNREAD, 6, key, `${key}:first`, `newChatMessagesExists:${mark.readerId}`, `${key}:revision`, `${key}:messages`, `${key}:previous`, messageId, this.unreadConversation(mark), randomUUID());
+	/** The mark a member of the reader's aggregate set stands for: {@link unreadConversation} read back. */
+	private markOf(readerId: MiUser['id'], conversation: string): UnreadMark {
+		return conversation.startsWith('user:')
+			? { readerId, senderId: conversation.slice('user:'.length) }
+			: { readerId, roomId: conversation.slice('room:'.length) };
+	}
 
-		// INSERT 뒤 준비·Redis 대기 중 끝난 철회와 관리 작업을 늦은 표식이 되돌리지 않게 한다.
-		const message = await this.chatMessagesRepository.findOneBy({ id: messageId });
-		if (message == null || message.deletedAt != null || await this.isFromSuspendedUser(message)) {
-			await this.reconcileUnreadMarks([mark]);
-			return;
-		}
-		if ('roomId' in mark) {
-			const room = await this.chatRoomsRepository.findOneBy({ id: mark.roomId });
-			if (room == null || !(await this.isRoomMember(room, mark.readerId))) await this.clearUnreadMarks([mark]);
+	/** A failed unread update never undoes what it follows. The mark stays as it was, and the next read or check settles it. */
+	private reportUnreadFailure(step: string, error: unknown): void {
+		this.logger.warn(`Chat unread mark not updated (${step}): ${error instanceof Error ? error.message : String(error)}`);
+	}
+
+	/**
+	 * Marks the message unread for its readers, then stores it. A reader can fetch a stored message at once,
+	 * so the mark has to be there first, or the read that fetched it would leave the late mark behind.
+	 * If either step fails, nothing is stored and the sender can send again without a duplicate.
+	 */
+	private async insertMarkedUnread(message: Parameters<ChatMessagesRepository['insertOne']>[0] & { id: MiChatMessage['id'] }, marks: UnreadMark[], deleteActorUri?: string): Promise<MiChatMessage> {
+		// insertOne reads the inserted row back; that read must use the primary even without unread recipients.
+		if (marks.length === 0 && deleteActorUri == null) return await this.db.transaction(manager => manager.withRepository(this.chatMessagesRepository).insertOne(message));
+
+		try {
+			// 표식부터 저장 완료까지 이 쪽지의 잠금을 쥔다. 프로세스가 끝나면 PostgreSQL이 연결과 함께 잠금을 푼다.
+			return await this.db.transaction(async manager => {
+				if (deleteActorUri != null) {
+					if (typeof message.uri !== 'string') throw new Error('remote chat message has no URI');
+					await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [chatMessageUriLockKey(message.uri)]);
+					const key = `chat_delete_upon_arrival:${message.uri}:${encodeURIComponent(deleteActorUri)}`;
+					if (await this.redisClient.get(key) === deleteActorUri || (typeof message.toRoomId === 'string' && await this.redisClient.get(`${key}:room:${message.toRoomId}`) === deleteActorUri)) {
+						throw new ChatMessageAccessError('deleted');
+					}
+				}
+				await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [this.sendLockKey(message.id)]);
+				const marked = await Promise.allSettled(marks.map(mark => this.redisClient.eval(MARK_CHAT_UNREAD, 6, ...this.unreadKeys(mark),
+					message.id, this.unreadConversation(mark), randomUUID())));
+				const failure = marked.find(result => result.status === 'rejected');
+				if (failure != null) throw failure.reason;
+				return await manager.withRepository(this.chatMessagesRepository).insertOne(message);
+			});
+		} catch (error) {
+			// 저장되지 않았다. 여기서 거두지 못한 표식은 다음 읽기나 정리가 끝난 전송의 것임을 확인하고 거둔다.
+			await this.unmarkUnread(marks, [message.id]).catch(cleanupError => this.reportUnreadFailure('cleanup after a failed send', cleanupError));
+			throw error;
 		}
 	}
 
-	private async rollbackMessage(message: MiChatMessage, marks: UnreadMark[]): Promise<void> {
-		// 읽음 저장에 실패한 전송은 화면·연합에 발행하기 전에 되돌려 재전송 중복을 막는다.
-		await this.chatMessagesRepository.delete(message.id);
-		await this.reconcileUnreadMarks(marks);
+	private sendLockKey(messageId: MiChatMessage['id']): string {
+		return `chat-message-send:${messageId}`;
+	}
+
+	/**
+	 * Settles what sends left as being stored when they ended without settling it: the process stopped, or the cleanup failed.
+	 * A send still holding its lock is left alone however long it takes. Once the lock is free, the table says how it ended:
+	 * a stored message stays unread, one that was never stored is taken back.
+	 * @returns Whether anything was settled.
+	 */
+	private async settleAbandonedSends(marks: UnreadMark[], pendingIds: string[][]): Promise<boolean> {
+		let settled = false;
+		for (const id of new Set(pendingIds.flat())) {
+			const outcome = await this.db.transaction(async manager => {
+				const [{ free }] = await manager.query('SELECT pg_try_advisory_xact_lock(hashtext($1)) AS free', [this.sendLockKey(id)]) as [{ free: boolean }];
+				if (!free) return 'sending';
+				return await manager.existsBy(MiChatMessage, { id }) ? 'stored' : 'abandoned';
+			});
+			if (outcome === 'sending') continue;
+			const owners = marks.filter((_, index) => pendingIds[index].includes(id));
+			if (outcome === 'stored') {
+				await Promise.all(owners.map(mark => this.redisClient.eval(SETTLE_CHAT_UNREAD, 6, ...this.unreadKeys(mark), id, randomUUID())));
+			} else {
+				await this.unmarkUnread(owners, [id]);
+			}
+			settled = true;
+		}
+		return settled;
+	}
+
+	/**
+	 * After the message is stored: lets reads and cleanups touch its mark again, then undoes what a withdrawal,
+	 * suspension, departure or mute that finished in the meantime would have cleared. The message is out by now,
+	 * so a failure here is only reported.
+	 */
+	private async settleUnreadMarks(message: MiChatMessage, marks: UnreadMark[]): Promise<void> {
+		if (marks.length === 0) return;
+		try {
+			await Promise.all(marks.map(mark => this.redisClient.eval(SETTLE_CHAT_UNREAD, 6, ...this.unreadKeys(mark), message.id, randomUUID())));
+
+			// 표식을 거둘지는 주 DB에서 정한다. 읽기 복제본은 방금 저장한 쪽지나 참가자를 아직 모를 수 있다.
+			const quiet = await this.db.transaction(async manager => {
+				const current = await manager.withRepository(this.chatMessagesRepository).findOneBy({ id: message.id });
+				if (current == null || current.deletedAt != null || await manager.withRepository(this.usersRepository).existsBy({ id: message.fromUserId, isSuspended: true })) return 'withdrawn';
+				if (message.toRoomId == null) return null;
+				return await this.quietReadersOf({ id: message.toRoomId }, marks.map(mark => mark.readerId), manager);
+			});
+			if (quiet === 'withdrawn') {
+				await this.reconcileUnreadMarks(marks);
+				return;
+			}
+			if (quiet == null) return;
+			await this.clearUnreadMarks(marks.filter(mark => quiet.get(mark.readerId) === 'gone'));
+			// 뮤트 전에 받은 미읽음은 그대로 두고, 뮤트와 겹친 이 쪽지만 받지 않은 것으로 한다.
+			await this.unmarkUnread(marks.filter(mark => quiet.get(mark.readerId) === 'muted'), [message.id]);
+		} catch (error) {
+			this.reportUnreadFailure('settling a new message', error);
+		}
+	}
+
+	private async unmarkUnread(marks: UnreadMark[], messageIds: MiChatMessage['id'][]): Promise<void> {
+		if (marks.length === 0) return;
+		const results = await Promise.all(marks.map(mark => this.redisClient.eval(UNMARK_CHAT_UNREAD, 6, ...this.unreadKeys(mark),
+			this.unreadConversation(mark), randomUUID(), ...messageIds)));
+		await this.announceIfAllRead(marks.filter((_, index) => Number(results[index]) === 2).map(mark => mark.readerId));
 	}
 
 	/**
@@ -676,20 +947,19 @@ export class ChatService {
 	private async clearUnreadMarks(marks: UnreadMark[]): Promise<void> {
 		if (marks.length === 0) return;
 
-		const results = await Promise.all(marks.map(mark => {
-			const key = this.unreadKey(mark);
-			return this.redisClient.eval(CLEAR_CHAT_UNREAD, 6, key, `${key}:first`, `newChatMessagesExists:${mark.readerId}`, `${key}:revision`, `${key}:messages`, `${key}:previous`, this.unreadConversation(mark));
-		}));
+		const results = await Promise.all(marks.map(mark => this.redisClient.eval(CLEAR_CHAT_UNREAD, 6, ...this.unreadKeys(mark), this.unreadConversation(mark))));
+		await this.announceIfAllRead(marks.filter((_, index) => Number(results[index]) > 0).map(mark => mark.readerId));
+	}
 
-		const readerIds = new Set(marks.filter((_, index) => Number(results[index]) > 0).map(mark => mark.readerId));
-		for (const readerId of readerIds) {
-			if (await this.hasUnreadMessages(readerId)) continue;
+	private async announceIfAllRead(readerIds: MiUser['id'][]): Promise<void> {
+		await Promise.all([...new Set(readerIds)].map(async readerId => {
+			if (await this.hasUnreadMessages(readerId)) return;
 			this.globalEventService.publishMainStream(readerId, 'readAllChatMessages');
-		}
+		}));
 	}
 
 	/** 철회 뒤 남은 미읽음만 센다. 읽은 과거 글이나 독자 본인의 글은 미읽음을 유지하지 않는다. */
-	private async reconcileUnreadAfterMessageDeletion(message: MiChatMessage): Promise<void> {
+	private async reconcileUnreadAfterMessageDeletion(message: MiChatMessage, participants?: MiUser[]): Promise<void> {
 		let marks: UnreadMark[] = [];
 		if (message.toUserId != null) {
 			marks = [{ readerId: message.toUserId, senderId: message.fromUserId }];
@@ -697,81 +967,189 @@ export class ChatService {
 			const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
 			if (room == null) return;
 			const roomId = room.id;
-			marks = (await this.participantsForRoom(room)).map(participant => ({ readerId: participant.id, roomId }));
+			const people = participants ?? await this.participantsForRoom(room);
+			marks = people.filter(user => this.userEntityService.isLocalUser(user)).map(user => ({ readerId: user.id, roomId }));
 		}
 
+		// 철회한 ID는 읽기 응답에 포함되지 않는다. 이전 형식의 경계가 없어도 개별 ID에서는 뺀다.
+		await this.unmarkUnread(marks, [message.id]);
 		await this.reconcileUnreadMarks(marks);
 	}
 
 	private async snapshotUnread(mark: UnreadMark): Promise<UnreadSnapshot> {
 		const key = this.unreadKey(mark);
 		return await this.redisClient.eval(SNAPSHOT_CHAT_UNREAD, 5,
-			key, `${key}:first`, `${key}:revision`, `${key}:messages`, `${key}:previous`) as UnreadSnapshot;
-	}
-
-	private async remainingUnreadMessage(mark: UnreadMark, [marker, first, revision, messageIds, previous]: UnreadSnapshot): Promise<MiChatMessage | null> {
-		const [rangeFirst, rangeLatest] = previous ? previous.split(':') : [first, revision === '' ? marker : ''];
-		const conditions = rangeLatest !== '' ? [Between(rangeFirst, rangeLatest)] : [];
-		// 장기간 읽지 않은 방도 DB 매개변수 한도를 넘지 않게 나눠 조회한다.
-		for (let offset = 0; offset < messageIds.length; offset += 1000) conditions.push(In(messageIds.slice(offset, offset + 1000)));
-		let latest: MiChatMessage | null = null;
-		for (const id of conditions) {
-			const message = await this.chatMessagesRepository.findOne({
-				where: {
-					...('senderId' in mark ? { fromUserId: mark.senderId, toUserId: mark.readerId } : { toRoomId: mark.roomId, fromUserId: Not(mark.readerId) }),
-					id,
-					deletedAt: IsNull(),
-					fromUser: { isSuspended: false },
-				},
-				order: { id: 'DESC' },
-			});
-			if (message != null && (latest == null || message.id > latest.id)) latest = message;
-		}
-		return latest;
-	}
-
-	private async isConversationUnread(mark: UnreadMark): Promise<boolean> {
-		const snapshot = await this.snapshotUnread(mark);
-		if (snapshot[0] === '') return false;
-		if (snapshot[1] !== '') return await this.remainingUnreadMessage(mark, snapshot) != null;
-		// 레거시 표식은 저장하지 않았던 읽음 경계를 만들어 내지 않는다.
-		return this.chatMessagesRepository.existsBy('senderId' in mark ? [
-			{ fromUserId: mark.senderId, toUserId: mark.readerId, deletedAt: IsNull(), fromUser: { isSuspended: false } },
-			{ fromUserId: mark.readerId, toUserId: mark.senderId, deletedAt: IsNull(), fromUser: { isSuspended: false } },
-		] : { toRoomId: mark.roomId, deletedAt: IsNull(), fromUser: { isSuspended: false } });
-	}
-
-	private async reconcileUnreadMarks(marks: UnreadMark[]): Promise<void> {
-		for (const mark of marks) {
-			const key = this.unreadKey(mark);
-			const snapshot = await this.snapshotUnread(mark);
-			const [marker, first, revision] = snapshot;
-			if (marker === '' || first === '') continue;
-			// 과거 읽음 정보가 없는 표식은 명시적 읽기만 정리한다. 뮤트·철회는 읽기가 아니다.
-
-			const remaining = await this.remainingUnreadMessage(mark, snapshot);
-			if (remaining?.id === marker) continue;
-			// DB를 읽는 동안 새 수신이나 읽음이 있었다면 그 상태를 보존한다.
-			const result = await this.redisClient.eval(RECONCILE_CHAT_UNREAD, 6, key, `${key}:first`, `newChatMessagesExists:${mark.readerId}`, `${key}:revision`, `${key}:messages`, `${key}:previous`,
-				marker, first, revision, remaining?.id ?? '', this.unreadConversation(mark), randomUUID());
-			if (result === 0) continue;
-			if (await this.hasUnreadMessages(mark.readerId)) {
-				if (result === 1) {
-					// 철회한 마지막 글의 지연 알림은 취소되므로, 남은 미읽음은 소리 없이 동기화한다.
-					this.globalEventService.publishMainStream(mark.readerId, 'chatUnreadChanged');
-				}
-			} else {
-				this.globalEventService.publishMainStream(mark.readerId, 'readAllChatMessages');
-			}
-		}
+			key, `${key}:first`, `${key}:revision`, `${key}:messages`, `${key}:pending`) as UnreadSnapshot;
 	}
 
 	/**
-	 * Whether the conversation is still unread, asked just before a delayed notice goes out.
-	 * A notice that reached a screen after the word that everything had been read would leave the sign on for good.
+	 * The newest message each mark still stands for, or null: shown, not withdrawn, from someone other than the reader.
+	 * All the marked IDs go in one query, newest first, until every mark has its answer.
 	 */
-	private async isMarkedUnread(readerId: MiUser['id'], conversation: `user:${MiUser['id']}` | `room:${MiChatRoom['id']}`): Promise<boolean> {
-		return await this.redisClient.sismember(`newChatMessagesExists:${readerId}`, conversation) === 1;
+	private async newestVisibleUnread(marks: UnreadMark[], snapshots: UnreadSnapshot[], messages: ChatMessagesRepository = this.chatMessagesRepository): Promise<(MiChatMessage['id'] | null)[]> {
+		const newest: (MiChatMessage['id'] | null)[] = marks.map(() => null);
+		const owners = new Map<MiChatMessage['id'], number[]>();
+		snapshots.forEach(([marker, first, , messageIds], index) => {
+			if (marker === '' || first === '') return;
+			for (const id of messageIds) owners.set(id, [...(owners.get(id) ?? []), index]);
+		});
+
+		const ids = [...owners.keys()].sort().reverse();
+		const unresolved = new Set([...owners.values()].flat());
+		// 장기간 읽지 않은 방도 DB 매개변수 한도를 넘지 않게 나눠 조회한다.
+		for (let offset = 0; offset < ids.length && unresolved.size > 0; offset += 1000) {
+			const chunk = ids.slice(offset, offset + 1000).filter(id => owners.get(id)!.some(index => unresolved.has(index)));
+			if (chunk.length === 0) continue;
+			const visible = await messages.find({
+				select: { id: true, fromUserId: true },
+				where: { id: In(chunk), deletedAt: IsNull(), fromUser: { isSuspended: false } },
+			});
+			for (const message of visible.sort((a, b) => (a.id < b.id ? 1 : -1))) {
+				for (const index of owners.get(message.id) ?? []) {
+					if (!unresolved.has(index) || message.fromUserId === marks[index].readerId) continue;
+					newest[index] = message.id;
+					unresolved.delete(index);
+				}
+			}
+		}
+
+		return newest;
+	}
+
+	/** Messages addressed to the reader in the mark's conversation, by someone else. */
+	private conversationOf(mark: UnreadMark) {
+		return 'senderId' in mark
+			? { fromUserId: mark.senderId, toUserId: mark.readerId }
+			: { toRoomId: mark.roomId, fromUserId: Not(mark.readerId) };
+	}
+
+	private async unreadConversations(marks: UnreadMark[]): Promise<boolean[]> {
+		const heads = await Promise.all(marks.map(async mark => {
+			const key = this.unreadKey(mark);
+			return await this.redisClient.eval(SNAPSHOT_CHAT_UNREAD_HEAD, 3, key, `${key}:first`, `${key}:messages`) as [string, string, number];
+		}));
+		const candidates: UnreadSnapshot[] = heads.map(([marker, first, present]) => [marker, first, '', Number(present) === 1 ? [marker] : [], []]);
+		const newest = await this.newestVisibleUnread(marks, candidates);
+		const unresolved = marks.map((_, index) => index).filter(index => heads[index][0] !== '' && heads[index][1] !== '' && newest[index] == null);
+		const remainingMarks = unresolved.map(index => marks[index]);
+		const snapshots = await Promise.all(remainingMarks.map(mark => this.snapshotUnread(mark)));
+		const remaining = await this.newestVisibleUnread(remainingMarks, snapshots);
+		const fallback = new Map(unresolved.map((index, position) => [index, { snapshot: snapshots[position], newest: remaining[position] }]));
+		return await Promise.all(marks.map(async (mark, index) => {
+			const [marker, first] = fallback.get(index)?.snapshot ?? heads[index];
+			if (marker === '') return false;
+			if (first !== '') return newest[index] != null || fallback.get(index)?.newest != null;
+			// 레거시 표식은 저장하지 않았던 읽음 경계를 만들어 내지 않는다. 다만 독자 본인의 글로는 미읽음이 되지 않는다.
+			return this.chatMessagesRepository.existsBy({ ...this.conversationOf(mark), deletedAt: IsNull(), fromUser: { isSuspended: false } });
+		}));
+	}
+
+	private async reconcileUnreadMarks(marks: UnreadMark[]): Promise<void> {
+		if (marks.length === 0) return;
+		let snapshots = await Promise.all(marks.map(mark => this.snapshotUnread(mark)));
+		// 저장 중 표식이 있으면 정리하지 않는다. 그중 끝난 전송이 남긴 것은 먼저 정리한다.
+		if (await this.settleAbandonedSends(marks, snapshots.map(snapshot => snapshot[4]))) {
+			snapshots = await Promise.all(marks.map(mark => this.snapshotUnread(mark)));
+		}
+		// 남은 미읽음이 없다고 보고 표식을 거두는 판단이므로 주 DB에서 읽는다. 복제본은 방금 저장하거나 철회한 쪽지를 아직 모를 수 있다.
+		const remaining = await this.db.transaction(manager => this.newestVisibleUnread(marks, snapshots, manager.withRepository(this.chatMessagesRepository)));
+
+		const results = await Promise.all(marks.map(async (mark, index) => {
+			const [marker, first, revision] = snapshots[index];
+			// 과거 읽음 정보가 없는 표식은 명시적 읽기만 정리한다. 뮤트·철회는 읽기가 아니다.
+			if (marker === '' || first === '') return 0;
+			if (remaining[index] === marker) return 0;
+			// DB를 읽는 동안 새 수신이나 읽음이 있었다면 그 상태를 보존한다.
+			return Number(await this.redisClient.eval(RECONCILE_CHAT_UNREAD, 6, ...this.unreadKeys(mark),
+				marker, first, revision, remaining[index] ?? '', this.unreadConversation(mark), randomUUID()));
+		}));
+
+		const changedReaders = new Map<MiUser['id'], boolean>();
+		marks.forEach((mark, index) => {
+			if (results[index] === 0) return;
+			changedReaders.set(mark.readerId, (changedReaders.get(mark.readerId) ?? false) || results[index] === 1);
+		});
+		await Promise.all([...changedReaders].map(async ([readerId, unreadLeft]) => {
+			if (await this.hasUnreadMessages(readerId)) {
+				// 철회한 마지막 글의 지연 알림은 취소되므로, 남은 미읽음은 소리 없이 동기화한다.
+				if (unreadLeft) this.globalEventService.publishMainStream(readerId, 'chatUnreadChanged');
+			} else {
+				this.globalEventService.publishMainStream(readerId, 'readAllChatMessages');
+			}
+		}));
+	}
+
+	/** Whether this very message is still unread for the reader, asked just before a delayed notice goes out. */
+	private async isMessageUnread(mark: UnreadMark, messageId: MiChatMessage['id']): Promise<boolean> {
+		return await this.redisClient.sismember(`${this.unreadKey(mark)}:messages`, messageId) === 1;
+	}
+
+	/**
+	 * A notice for a message still unread after a while. A read in the meantime, of this message or of a later one,
+	 * cancels it: a notice arriving after the word that everything had been read would leave the sign on for good.
+	 */
+	private async noticeUnreadDirectMessage(message: MiChatMessage, toUser: MiUser, mark: UnreadMark): Promise<void> {
+		if (!(await this.isMessageUnread(mark, message.id))) return;
+
+		// Delete and Update can arrive within this delay. Never notify with text the sender already withdrew.
+		const latest = await this.chatMessagesRepository.findOneBy({ id: message.id });
+		if (latest == null || latest.deletedAt != null) return;
+		if (await this.isFromSuspendedUser(latest)) return;
+
+		// The chat list leaves out a conversation with a muted account, so nothing points the recipient at it either.
+		if (await this.mutingsRepository.existsBy({ muterId: toUser.id, muteeId: message.fromUserId })) return;
+
+		const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest, toUser);
+		if (!(await this.isMessageUnread(mark, message.id))) return;
+		this.globalEventService.publishMainStream(toUser.id, 'newChatMessage', packedMessageForTo);
+		this.pushNotificationService.pushNotification(toUser.id, 'newChatMessage', packedMessageForTo);
+	}
+
+	/** {@link noticeUnreadDirectMessage} for a room: only those who still have it unread, and still take the room's messages. */
+	private async noticeUnreadRoomMessage(message: MiChatMessage, room: MiChatRoom, marks: UnreadMark[]): Promise<void> {
+		const unread = await this.stillUnread(marks, message.id);
+		if (unread.length === 0) return;
+
+		const latest = await this.chatMessagesRepository.findOneBy({ id: message.id });
+		if (latest == null || latest.deletedAt != null) return;
+		if (await this.isFromSuspendedUser(latest)) return;
+
+		const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest);
+
+		const quiet = await this.quietReadersOf(room, unread.map(mark => mark.readerId));
+		for (const mark of await this.stillUnread(unread.filter(mark => !quiet.has(mark.readerId)), message.id)) {
+			this.globalEventService.publishMainStream(mark.readerId, 'newChatMessage', packedMessageForTo);
+			this.pushNotificationService.pushNotification(mark.readerId, 'newChatMessage', packedMessageForTo);
+		}
+	}
+
+	private async stillUnread(marks: UnreadMark[], messageId: MiChatMessage['id']): Promise<UnreadMark[]> {
+		const unread = await Promise.all(marks.map(mark => this.isMessageUnread(mark, messageId)));
+		return marks.filter((_, index) => unread[index]);
+	}
+
+	/**
+	 * Of these participants, those a new message in the room is to stay away from: they muted the room, or are no longer in it.
+	 * Asked again after storing and before the delayed notice, as both can change in the meantime.
+	 */
+	private async quietReadersOf(room: Pick<MiChatRoom, 'id'>, userIds: MiUser['id'][], manager?: EntityManager): Promise<Map<MiUser['id'], 'muted' | 'gone'>> {
+		const quiet = new Map<MiUser['id'], 'muted' | 'gone'>();
+		const current = await (manager?.withRepository(this.chatRoomsRepository) ?? this.chatRoomsRepository).findOneBy({ id: room.id });
+		if (current == null) {
+			for (const userId of userIds) quiet.set(userId, 'gone');
+			return quiet;
+		}
+		const memberships = await (manager?.withRepository(this.chatRoomMembershipsRepository) ?? this.chatRoomMembershipsRepository).findBy({ roomId: current.id });
+		for (const userId of userIds) {
+			if (userId === current.ownerId) {
+				if (current.isMutedByOwner) quiet.set(userId, 'muted');
+				continue;
+			}
+			const membership = memberships.find(member => member.userId === userId);
+			if (membership == null) quiet.set(userId, 'gone');
+			else if (membership.isMuted) quiet.set(userId, 'muted');
+		}
+		return quiet;
 	}
 
 	@bindThis
@@ -796,8 +1174,9 @@ export class ChatService {
 	 */
 	@bindThis
 	public async handleUserSuspended(user: MiUser): Promise<void> {
-		await this.clearUnreadMarksOfDirectMessagesFrom(user.id);
-		await this.clearUnreadMarksOfHiddenRoomsFrom(user.id);
+		// 정지는 이미 저장됐다. 읽음 정리가 실패해도 아래의 연합 정리는 계속한다.
+		await this.clearUnreadMarksOfDirectMessagesFrom(user.id).catch(error => this.reportUnreadFailure('suspension, direct messages', error));
+		await this.clearUnreadMarksOfHiddenRoomsFrom(user.id).catch(error => this.reportUnreadFailure('suspension, rooms', error));
 
 		if (!this.userEntityService.isRemoteUser(user)) return;
 
@@ -842,22 +1221,30 @@ export class ChatService {
 		await this.reconcileUnreadMarks(await this.unreadMarksOfRoomsFrom(authorId));
 	}
 
+	/** Removes every message of an account being deleted for good, and the unread marks they leave behind. */
 	@bindThis
 	public async deleteMessagesFromUser(authorId: MiUser['id']): Promise<void> {
-		const marks = await this.unreadMarksOfRoomsFrom(authorId);
+		const roomMarks = await this.unreadMarksOfRoomsFrom(authorId);
+		const directMarks = await this.unreadMarksOfDirectMessagesFrom(authorId);
 		await this.chatMessagesRepository.delete({ fromUserId: authorId });
-		await this.reconcileUnreadMarks(marks);
+		// The messages are gone already. Marks that fail to clear here no longer count, as nothing is left for them to show.
+		await this.clearUnreadMarks(directMarks).catch(error => this.reportUnreadFailure('account deletion, direct messages', error));
+		await this.reconcileUnreadMarks(roomMarks).catch(error => this.reportUnreadFailure('account deletion, rooms', error));
 	}
 
-	/** For an account whose direct messages are going out of sight: suspended, or being deleted. */
-	@bindThis
-	public async clearUnreadMarksOfDirectMessagesFrom(senderId: MiUser['id']): Promise<void> {
+	private async unreadMarksOfDirectMessagesFrom(senderId: MiUser['id']): Promise<UnreadMark[]> {
 		const readers = await this.chatMessagesRepository.createQueryBuilder('message')
 			.select('DISTINCT message.toUserId', 'toUserId')
 			.where('message.fromUserId = :userId', { userId: senderId })
 			.andWhere('message.toUserId IS NOT NULL')
 			.getRawMany<{ toUserId: MiUser['id'] }>();
-		await this.clearUnreadMarks(readers.map(({ toUserId }) => ({ readerId: toUserId, senderId })));
+		return readers.map(({ toUserId }) => ({ readerId: toUserId, senderId }));
+	}
+
+	/** For an account whose direct messages are going out of sight while they stay stored: suspended. */
+	@bindThis
+	public async clearUnreadMarksOfDirectMessagesFrom(senderId: MiUser['id']): Promise<void> {
+		await this.clearUnreadMarks(await this.unreadMarksOfDirectMessagesFrom(senderId));
 	}
 
 	@bindThis
@@ -950,10 +1337,11 @@ export class ChatService {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'deleted', message.id);
 		}
 
-		await this.reconcileUnreadAfterMessageDeletion(message);
-
 		const toUsers = participants.filter(user => user.id !== fromUser.id);
 		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers, await this.roomUriForMessage(message)));
+
+		// The withdrawal is stored and on its way to other servers. A failed unread update does not undo or fail it.
+		await this.reconcileUnreadAfterMessageDeletion(message, participants).catch(error => this.reportUnreadFailure('withdrawal', error));
 	}
 
 	@bindThis
@@ -1026,7 +1414,7 @@ export class ChatService {
 
 			query.setParameters(mutingQuery.getParameters());
 
-			const message = await query.getOne();
+			const message = await query.take(1).getOne();
 
 			if (message) {
 				history.push(message);
@@ -1050,7 +1438,7 @@ export class ChatService {
 			}).then(xs => xs.map(x => x.id)),
 		]);
 
-		const roomIds = memberRoomIds.concat(ownedRoomIds);
+		const roomIds = [...new Set(memberRoomIds.concat(ownedRoomIds))];
 
 		if (memberRoomIds.length === 0 && ownedRoomIds.length === 0) {
 			return [];
@@ -1058,7 +1446,8 @@ export class ChatService {
 
 		const history: MiChatMessage[] = [];
 
-		for (let i = 0; i < limit; i++) {
+		// Once every room has a result, another lookup can only scan messages from rooms already found.
+		for (let i = 0; i < Math.min(limit, roomIds.length); i++) {
 			const found = history.map(m => m.toRoomId!);
 
 			const query = this.chatMessagesRepository.createQueryBuilder('message')
@@ -1071,7 +1460,7 @@ export class ChatService {
 				query.andWhere('message.toRoomId NOT IN (:...found)', { found: found });
 			}
 
-			const message = await query.getOne();
+			const message = await query.take(1).getOne();
 
 			if (message) {
 				history.push(message);
@@ -1085,12 +1474,14 @@ export class ChatService {
 
 	@bindThis
 	public async getUserReadStateMap(userId: MiUser['id'], otherIds: MiUser['id'][]) {
-		return Object.fromEntries(await Promise.all(otherIds.map(async senderId => [senderId, !(await this.isConversationUnread({ readerId: userId, senderId }))])));
+		const unread = await this.unreadConversations(otherIds.map(senderId => ({ readerId: userId, senderId })));
+		return Object.fromEntries(otherIds.map((senderId, index) => [senderId, !unread[index]]));
 	}
 
 	@bindThis
 	public async getRoomReadStateMap(userId: MiUser['id'], roomIds: MiChatRoom['id'][]) {
-		return Object.fromEntries(await Promise.all(roomIds.map(async roomId => [roomId, !(await this.isConversationUnread({ readerId: userId, roomId }))])));
+		const unread = await this.unreadConversations(roomIds.map(roomId => ({ readerId: userId, roomId })));
+		return Object.fromEntries(roomIds.map((roomId, index) => [roomId, !unread[index]]));
 	}
 
 	/**
@@ -1105,23 +1496,23 @@ export class ChatService {
 
 		const idsOf = (kind: 'user' | 'room') => conversations.filter(conversation => conversation.startsWith(`${kind}:`)).map(conversation => conversation.slice(kind.length + 1));
 
-		const roomIds = idsOf('room');
-		for (const roomId of roomIds) if (await this.isConversationUnread({ readerId: userId, roomId })) return true;
-
 		const senderIds = idsOf('user');
-		if (senderIds.length === 0) return false;
-
-		const mutings = await this.mutingsRepository.findBy({ muterId: userId, muteeId: In(senderIds) });
+		const mutings = senderIds.length > 0 ? await this.mutingsRepository.findBy({ muterId: userId, muteeId: In(senderIds) }) : [];
 		const shownIds = senderIds.filter(senderId => !mutings.some(muting => muting.muteeId === senderId));
-		if (shownIds.length === 0) return false;
 
-		for (const senderId of shownIds) if (await this.isConversationUnread({ readerId: userId, senderId })) return true;
-		return false;
+		// 대화마다 따로 묻지 않고 한 번에 확인한다. 계정 정보를 받을 때마다 불린다.
+		const marks: UnreadMark[] = [
+			...idsOf('room').map(roomId => ({ readerId: userId, roomId })),
+			...shownIds.map(senderId => ({ readerId: userId, senderId })),
+		];
+		if (marks.length === 0) return false;
+		return (await this.unreadConversations(marks)).some(unread => unread);
 	}
 
 	/**
 	 * Muting takes a direct conversation out of the chat list and unmuting puts it back, unread mark and all.
 	 * When that conversation is unread, the muter's screens get the account again to bring the sign up to date.
+	 * Apps with a token listen on the same stream, so the account goes out without what only the account itself may see.
 	 */
 	@bindThis
 	public async handleMutingChanged(muterId: MiUser['id'], muteeIds: MiUser['id'][]): Promise<void> {
@@ -1132,7 +1523,7 @@ export class ChatService {
 		const results = await redisPipeline.exec();
 		if (results == null || results.every(result => result[1] !== 1)) return;
 
-		const account = await this.userEntityService.pack(muterId, { id: muterId }, { schema: 'MeDetailed', includeSecrets: true });
+		const account = await this.userEntityService.pack(muterId, { id: muterId }, { schema: 'MeDetailed' });
 		this.globalEventService.publishMainStream(muterId, 'meUpdated', account);
 	}
 
@@ -1190,25 +1581,32 @@ export class ChatService {
 		return false;
 	}
 
+	/**
+	 * Deletes the rooms of an account that is going away, telling remote participants and invitees even if they follow no one here.
+	 * Returns the deliveries signed with the owner's key, which has to outlive them.
+	 */
 	@bindThis
-	public async deleteRoomsOwnedBy(ownerId: MiUser['id']): Promise<void> {
+	public async deleteRoomsOwnedBy(ownerId: MiUser['id']): Promise<string[]> {
 		const rooms = await this.chatRoomsRepository.findBy({ ownerId });
+		const deliveries: string[] = [];
 		for (const room of rooms) {
-			// 팔로우하지 않는 원격 참가자에게도 기존 그룹 Delete를 보낸다.
-			await this.deleteRoom(room);
+			deliveries.push(...await this.deleteRoom(room));
 		}
+		return deliveries;
 	}
 
+	/** @returns The queued deliveries the owner signs, for a caller that must keep the owner's key until they are done. */
 	@bindThis
-	public async deleteRoom(room: MiChatRoom, deleter?: MiUser, options?: { federate?: boolean }) {
+	public async deleteRoom(room: MiChatRoom, deleter?: MiUser, options?: { federate?: boolean }): Promise<string[]> {
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
 		const participants = await this.participantsForRoom(room);
 		const invitees = await this.inviteesForRoom(room);
+		let ownerDeliveries: string[] = [];
 		if (options?.federate !== false && owner != null) {
 			if (this.userEntityService.isLocalUser(owner)) {
 				// A remote owner's server is the authority for its room, so only rooms owned here are announced.
 				// The announcement is signed by the owner even when a moderator deletes the room.
-				await this.deliverToRemoteUsers(owner, [...participants, ...invitees], this.apRendererService.renderChatRoomDelete(room, owner));
+				ownerDeliveries = await this.deliverToRemoteUsers(owner, [...participants, ...invitees], this.apRendererService.renderChatRoomDelete(room, owner));
 			} else if (this.userEntityService.isRemoteUser(owner)) {
 				await this.leaveRoomRemovedHere(room, owner, participants, invitees);
 			}
@@ -1220,8 +1618,9 @@ export class ChatService {
 			userId: room.ownerId,
 		});
 
-		// 未読フラグ削除
-		await this.clearUnreadMarks(memberships.map(membership => ({ readerId: membership.userId, roomId: room.id })));
+		// 未読フラグ削除. 다른 서버에는 이미 삭제를 보냈으므로 실패해도 이 서버의 방 삭제를 마친다.
+		await this.clearUnreadMarks(memberships.map(membership => ({ readerId: membership.userId, roomId: room.id })))
+			.catch(error => this.reportUnreadFailure('room deletion', error));
 
 		const peopleHere = this.localUserIds([...participants, ...invitees]);
 		await this.chatRosterService.markRoomDeletedFor(peopleHere, room.id);
@@ -1243,6 +1642,8 @@ export class ChatService {
 				});
 			}
 		}
+
+		return ownerDeliveries;
 	}
 
 	/** A moderator removed this server's copy. The room goes on on its owner's server, which has to stop counting the people here. */
@@ -1635,7 +2036,8 @@ export class ChatService {
 		this.liveKitService.removeParticipant(roomId, this.liveKitService.identityOf(leavingUser)).catch(() => {});
 
 		// 未読フラグを消す (「既読にする」というわけでもないのでreadメソッドは使わないでおく)
-		await this.clearUnreadMarks([{ readerId: userId, roomId }]);
+		// 탈퇴는 이미 저장됐다. 읽음 정리가 실패해도 다른 서버에 탈퇴를 알린다.
+		await this.clearUnreadMarks([{ readerId: userId, roomId }]).catch(error => this.reportUnreadFailure('leaving a room', error));
 
 		// Federation: Send Remove activity when local user leaves
 		if (room && this.userEntityService.isLocalUser(leavingUser)) {
@@ -1712,7 +2114,8 @@ export class ChatService {
 	public async finishRoomMemberRemoval(room: MiChatRoom, member: MiUser): Promise<void> {
 		this.globalEventService.publishChatRoomStream(room.id, 'membershipEnded', { userId: member.id });
 
-		await this.clearUnreadMarks([{ readerId: member.id, roomId: room.id }]);
+		// 멤버 제거는 이미 저장됐다. 읽음 정리가 실패해도 호출한 쪽의 연합 전달을 막지 않는다.
+		await this.clearUnreadMarks([{ readerId: member.id, roomId: room.id }]).catch(error => this.reportUnreadFailure('removing a member', error));
 
 		this.notifyRoomListChanged(this.localUserIds([member]));
 	}
@@ -1731,20 +2134,6 @@ export class ChatService {
 
 		const owned = await this.chatRoomsRepository.update({ id: roomId, ownerId: userId }, { isMutedByOwner: mute });
 		if ((owned.affected ?? 0) === 0) throw new ChatRoomAccessError('not a member');
-	}
-
-	/**
-	 * Whether a new message in the room is to stay away from this participant: they muted the room, or are no longer in it.
-	 * Asked again just before the delayed notice, as both can change while it waits.
-	 */
-	private async isRoomQuietFor(room: Pick<MiChatRoom, 'id' | 'ownerId'>, userId: MiUser['id']): Promise<boolean> {
-		if (userId === room.ownerId) {
-			const current = await this.chatRoomsRepository.findOneBy({ id: room.id });
-			return current == null || current.isMutedByOwner;
-		}
-
-		const membership = await this.chatRoomMembershipsRepository.findOneBy({ roomId: room.id, userId });
-		return membership == null || membership.isMuted;
 	}
 
 	@bindThis
@@ -2108,9 +2497,10 @@ export class ChatService {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'deleted', message.id);
 		}
 
-		await this.reconcileUnreadAfterMessageDeletion(message);
-
 		await this.relayRoomActivity(message, actor, options?.activity);
+
+		// The withdrawal is stored and passed on. A failed unread update does not make the activity fail and come back.
+		await this.reconcileUnreadAfterMessageDeletion(message).catch(error => this.reportUnreadFailure('withdrawal from another server', error));
 
 		return message;
 	}
@@ -2399,9 +2789,11 @@ export class ChatService {
 		return [];
 	}
 
-	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any): Promise<void> {
+	/** @returns The IDs of the queued delivery jobs. A delivery that could not be queued is reported, never thrown. */
+	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any): Promise<string[]> {
 		const contextedActivity = this.apRendererService.addContext(activity);
 		const delivered = new Set<string>();
+		const jobs: Promise<{ id?: string } | null>[] = [];
 
 		for (const user of users) {
 			if (user.id === actor.id) continue;
@@ -2413,8 +2805,14 @@ export class ChatService {
 			if (inbox == null || delivered.has(inbox)) continue;
 
 			delivered.add(inbox);
-			this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null);
+			jobs.push(Promise.resolve(this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null)));
 		}
+
+		const queued = await Promise.allSettled(jobs);
+		for (const result of queued) {
+			if (result.status === 'rejected') this.logger.error(`Failed to queue a chat delivery from ${actor.id}: ${result.reason}`);
+		}
+		return queued.flatMap(result => result.status === 'fulfilled' && result.value?.id != null ? [result.value.id] : []);
 	}
 
 	@bindThis

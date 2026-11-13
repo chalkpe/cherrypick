@@ -8,7 +8,7 @@ import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import type { JsonObject } from '@/misc/json-value.js';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatService, chatReadBoundaryOfStream } from '@/core/ChatService.js';
 import Channel, { type ChannelRequest } from '../channel.js';
 import { REQUEST } from '@nestjs/core';
 import type { ChatRoomsRepository } from '@/models/_.js';
@@ -119,7 +119,8 @@ export class ChatRoomChannel extends Channel {
 		switch (type) {
 			case 'read':
 				if (this.roomId) {
-					this.chatService.readRoomChatMessage(this.user!.id, this.roomId);
+					// The screen tells which message it has shown. Anything newer it has not received yet stays unread.
+					this.chatService.recordRoomChatRead(this.user!.id, this.roomId, chatReadBoundaryOfStream(body));
 				}
 				break;
 		}

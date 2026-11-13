@@ -26,7 +26,7 @@ import { mainRouter } from '@/router.js';
 import { makeHotkey } from '@/utility/hotkey.js';
 import { addCustomEmoji, removeCustomEmojis, updateCustomEmojis } from '@/custom-emojis.js';
 import { prefer } from '@/preferences.js';
-import { refreshCurrentAccount, updateCurrentAccount } from '@/accounts.js';
+import { refreshChatUnreadState, updateCurrentAccount } from '@/accounts.js';
 import { unisonReload } from '@/utility/unison-reload.js';
 import { isBirthday } from '@/utility/is-birthday.js';
 import { userName } from '@/filters/user.js';
@@ -361,17 +361,18 @@ export async function mainBoot() {
 				});
 			});
 
+			// 서버의 두 작업이 보낸 알림은 순서가 바뀌어 도착할 수 있다. 표시는 알림 값이 아닌 새로 받은 계정 상태를 따른다.
 			main.on('newChatMessage', () => {
-				updateCurrentAccount({ hasUnreadChatMessages: true });
+				refreshChatUnreadState();
 				sound.playMisskeySfx('chatMessage');
 			});
 
 			main.on('readAllChatMessages', () => {
-				updateCurrentAccount({ hasUnreadChatMessages: false });
+				refreshChatUnreadState();
 			});
 
 			main.on('chatUnreadChanged', () => {
-				refreshCurrentAccount();
+				refreshChatUnreadState();
 			});
 
 			main.on('readAllAnnouncements', () => {

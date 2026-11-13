@@ -45,66 +45,125 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 		return self;
 	};
 
-	// Lua 자체는 실제 Redis E2E에서 검증한다. 이 double은 표식 명령의 입출력 계약만 흉내 낸다.
-	const evaluate = async (_script: string, numberOfKeys: number, ...values: string[]) => {
-		const keys = values.slice(0, numberOfKeys);
-		const args = values.slice(numberOfKeys);
-		if (_script.startsWith('-- snapshot chat unread')) {
-			return [strings.get(keys[0]) ?? '', strings.get(keys[1]) ?? '', strings.get(keys[2]) ?? '', [...(sets.get(keys[3]) ?? [])], strings.get(keys[4]) ?? ''];
-		}
-		if (keys[0].startsWith('newChatMessagesExists:')) {
-			for (const conversation of sets.get(keys[0]) ?? []) {
-				const [kind, id] = conversation.split(':');
-				const key = `${kind === 'user' ? args[0] : args[1]}${id}`;
-				commands.del(key);
-				commands.del(`${key}:first`);
-				commands.del(`${key}:revision`);
-				commands.del(`${key}:messages`);
-				commands.del(`${key}:previous`);
-			}
-			for (const key of keys) commands.del(key);
-			return 1;
-		}
-		if (args.length === 1) {
-			commands.del(keys[0]);
-			commands.del(keys[1]);
-			commands.del(keys[3]);
-			commands.del(keys[4]);
-			commands.del(keys[5]);
-			return commands.srem(keys[2], args[0]) as number;
-		}
-		if (args.length === 3) {
-			const active = sets.get(keys[2])?.has(args[1]);
-			if (!active) {
-				commands.del(keys[4]);
-				commands.del(keys[5]);
-			}
-			const latest = active ? strings.get(keys[0]) : undefined;
-			const first = active ? strings.get(keys[1]) : undefined;
-			if (first != null && latest != null && !strings.has(keys[3])) commands.set(keys[5], `${first}:${latest}`);
+	// Lua 자체는 실제 Redis 시험에서 검증한다. 이 double은 스크립트 첫 줄의 이름으로 같은 계약을 흉내 낸다.
+	const members = (key: string) => [...(sets.get(key) ?? [])];
+	const del = (...keys: string[]) => keys.reduce((count, key) => count + (commands.del(key) as number), 0);
+	const extremes = (ids: string[]) => ({ first: ids.reduce<string | undefined>((a, b) => (a == null || b < a ? b : a), undefined), latest: ids.reduce<string | undefined>((a, b) => (a == null || b > a ? b : a), undefined) });
+	const scripts: Record<string, (keys: string[], args: string[]) => RedisReply | (RedisReply | RedisReply[])[]> = {
+		'mark chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey], [id, conversation, revision]) => {
+			const active = sets.get(aggregate)?.has(conversation) ?? false;
+			if (!active) del(messagesKey, pendingKey);
+			const latest = active ? strings.get(latestKey) : undefined;
+			let first = active ? strings.get(firstKey) : undefined;
 			if (!active || first != null) {
-				commands.set(keys[1], first != null && first < args[0] ? first : args[0]);
+				if (first == null || id < first) first = id;
+				commands.set(firstKey, first);
 			}
-			commands.set(keys[0], latest != null && latest > args[0] ? latest : args[0]);
-			commands.sadd(keys[2], args[1]);
-			commands.sadd(keys[4], args[0]);
-			commands.set(keys[3], args[2]);
+			if (latest == null || id > latest) commands.set(latestKey, id);
+			commands.sadd(aggregate, conversation);
+			commands.sadd(messagesKey, id);
+			commands.sadd(pendingKey, id);
+			commands.set(revisionKey, revision);
 			return 1;
-		}
-		if ((strings.get(keys[0]) ?? '') !== args[0] || (strings.get(keys[1]) ?? '') !== args[1] || (strings.get(keys[3]) ?? '') !== args[2]) return 0;
-		if (args[3] !== '') {
-			if (args[2] === '') commands.set(keys[5], `${args[1]}:${args[0]}`);
-			commands.set(keys[0], args[3]);
-			commands.set(keys[3], args[5]);
+		},
+		'settle chat unread': ([, , , revisionKey, , pendingKey], [id, revision]) => {
+			if (commands.srem(pendingKey, id) === 0) return 0;
+			commands.set(revisionKey, revision);
 			return 1;
-		}
-		commands.del(keys[0]);
-		commands.del(keys[1]);
-		commands.del(keys[3]);
-		commands.del(keys[4]);
-		commands.del(keys[5]);
-		commands.srem(keys[2], args[4]);
-		return 2;
+		},
+		'unmark chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey], [conversation, revision, ...ids]) => {
+			let removed = 0;
+			for (const id of ids) {
+				removed += commands.srem(messagesKey, id) as number;
+				commands.srem(pendingKey, id);
+			}
+			if (removed === 0) return 0;
+			if (!sets.has(messagesKey) && strings.has(firstKey)) {
+				del(latestKey, firstKey, revisionKey, messagesKey, pendingKey);
+				commands.srem(aggregate, conversation);
+				return 2;
+			}
+			commands.set(revisionKey, revision);
+			return 1;
+		},
+		'read chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey], [conversation, revision, upTo, ...seenIds]) => {
+			const seen = new Set(seenIds);
+			const pending = new Set(members(pendingKey));
+			let changed = 0;
+			for (const id of members(messagesKey)) {
+				if (seen.has(id) || (!pending.has(id) && (upTo === '*' || (upTo !== '' && id <= upTo)))) {
+					commands.srem(messagesKey, id);
+					commands.srem(pendingKey, id);
+					changed = 1;
+				}
+			}
+			const { first, latest } = extremes(members(messagesKey));
+			if (first == null || latest == null) {
+				del(latestKey, firstKey, revisionKey, messagesKey, pendingKey);
+				return [commands.srem(aggregate, conversation) === 1 ? 2 : changed, []];
+			}
+			if (changed === 0 && strings.has(firstKey)) return [0, members(pendingKey)];
+			commands.set(latestKey, latest);
+			commands.set(firstKey, first);
+			commands.set(revisionKey, revision);
+			return [1, members(pendingKey)];
+		},
+		'read all chat unread': ([aggregate, ...scanned], [userPrefix, roomPrefix, revision]) => {
+			const suffixes = [':first', ':revision', ':messages', ':pending'];
+			const kept = new Set<string>();
+			const left: string[] = [];
+			for (const conversation of members(aggregate)) {
+				const match = /^(\w+):(.+)$/.exec(conversation);
+				const base = match ? `${match[1] === 'user' ? userPrefix : roomPrefix}${match[2]}` : null;
+				const pending = base != null ? members(`${base}:pending`) : [];
+				if (base == null || pending.length === 0) {
+					if (base != null) del(base, ...suffixes.map(suffix => `${base}${suffix}`));
+					commands.srem(aggregate, conversation);
+					continue;
+				}
+				del(`${base}:messages`);
+				for (const id of pending) commands.sadd(`${base}:messages`, id);
+				const { first, latest } = extremes(pending);
+				commands.set(base, latest!);
+				commands.set(`${base}:first`, first!);
+				commands.set(`${base}:revision`, revision);
+				kept.add(base);
+				left.push(conversation);
+			}
+			for (const key of scanned) {
+				const suffix = suffixes.find(candidate => key.endsWith(candidate));
+				if (!kept.has(suffix != null ? key.slice(0, -suffix.length) : key)) del(key);
+			}
+			return left;
+		},
+		'clear chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey], [conversation]) => {
+			del(latestKey, firstKey, revisionKey, messagesKey, pendingKey);
+			return commands.srem(aggregate, conversation);
+		},
+		'snapshot chat unread': ([latestKey, firstKey, revisionKey, messagesKey, pendingKey]) =>
+			[strings.get(latestKey) ?? '', strings.get(firstKey) ?? '', strings.get(revisionKey) ?? '', members(messagesKey), members(pendingKey)],
+		'snapshot chat unread head': ([latestKey, firstKey, messagesKey]) => {
+			const latest = strings.get(latestKey) ?? '';
+			return [latest, strings.get(firstKey) ?? '', Number(sets.get(messagesKey)?.has(latest) ?? false)];
+		},
+		'reconcile chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey], [marker, first, revision, remaining, conversation, newRevision]) => {
+			if (sets.has(pendingKey)) return 0;
+			if ((strings.get(latestKey) ?? '') !== marker || (strings.get(firstKey) ?? '') !== first || (strings.get(revisionKey) ?? '') !== revision) return 0;
+			if (remaining !== '') {
+				commands.set(latestKey, remaining);
+				commands.set(revisionKey, newRevision);
+				return 1;
+			}
+			del(latestKey, firstKey, revisionKey, messagesKey, pendingKey);
+			commands.srem(aggregate, conversation);
+			return 2;
+		},
+	};
+	const evaluate = async (script: string, numberOfKeys: number, ...values: string[]) => {
+		const name = /^-- (.+)$/m.exec(script)?.[1];
+		const run = name != null ? scripts[name] : undefined;
+		if (run == null) throw new Error(`script not known to this test double: ${name}`);
+		return run(values.slice(0, numberOfKeys), values.slice(numberOfKeys));
 	};
 	const client: Record<string, unknown> = {
 		pipeline,

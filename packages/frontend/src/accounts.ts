@@ -176,6 +176,30 @@ export async function refreshCurrentAccount() {
 	});
 }
 
+let chatUnreadRefreshing: Promise<void> | null = null;
+let chatUnreadRefreshQueued = false;
+
+/**
+ * Brings the chat unread sign up to date after the server says it changed. The events that say so can reach the screen
+ * in another order than the changes they report, so the sign follows a fresh account, never the event itself.
+ * One request runs at a time; events during it ask for one more, which starts after them all.
+ */
+export function refreshChatUnreadState(): Promise<void> {
+	if (chatUnreadRefreshing != null) {
+		chatUnreadRefreshQueued = true;
+		return chatUnreadRefreshing;
+	}
+	chatUnreadRefreshing = (async () => {
+		do {
+			chatUnreadRefreshQueued = false;
+			await refreshCurrentAccount();
+		} while (chatUnreadRefreshQueued);
+	})().finally(() => {
+		chatUnreadRefreshing = null;
+	});
+	return chatUnreadRefreshing;
+}
+
 export async function login(token: AccountWithToken['token'], redirect?: string) {
 	const showing = ref(true);
 	const { dispose } = popup(defineAsyncComponent(() => import('@/components/MkWaitingDialog.vue')), {

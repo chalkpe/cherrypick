@@ -4,7 +4,7 @@
  */
 
 import { afterEach, expect, test, vi } from 'vitest';
-import { refreshCurrentAccount, updateCurrentAccount } from '@/accounts.js';
+import { refreshChatUnreadState, refreshCurrentAccount, updateCurrentAccount } from '@/accounts.js';
 import { $i } from '@/i.js';
 import { miLocalStorage } from '@/local-storage.js';
 
@@ -59,4 +59,23 @@ test.each([true, false])('the newer account request wins when responses finish i
 
 	expect($i?.hasUnreadChatMessages).toBe(latest);
 	expect($i?.name).toBe('Newer profile');
+});
+
+test('unread events during a refresh ask for one more account, sent after them', async () => {
+	const responses: ((value: Response) => void)[] = [];
+	const fetch = vi.spyOn(window, 'fetch').mockImplementation(() => new Promise<Response>(resolve => { responses.push(resolve); }));
+
+	// A new-message event, then a read event that the server sent after the read, arrive while the first request is out.
+	const settled = refreshChatUnreadState();
+	refreshChatUnreadState();
+	refreshChatUnreadState();
+	expect(fetch).toHaveBeenCalledTimes(1);
+
+	responses[0](new Response(JSON.stringify({ id: 'viewer', hasUnreadChatMessages: true })));
+	await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+	responses[1](new Response(JSON.stringify({ id: 'viewer', hasUnreadChatMessages: false })));
+	await settled;
+
+	expect(fetch).toHaveBeenCalledTimes(2);
+	expect($i?.hasUnreadChatMessages).toBe(false);
 });

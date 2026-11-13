@@ -25,6 +25,8 @@ export default defineConfig((args) => {
 		'mock-aws-s3',
 		'aws-sdk',
 		'nock',
+		// i18n 번역 파일은 패키지의 실행 경로에서 읽는다
+		/^i18n(?:\/.*)?$/,
 		'sharp',
 		'jsdom',
 		're2',
@@ -42,7 +44,7 @@ export default defineConfig((args) => {
 
 	if (isE2E) {
 		return {
-			input: ['./test-server/entry.ts', './src/core/chat-dice-worker.ts'],
+			input: ['./test-server/entry.ts', './src/core/chat-dice-worker.ts', './test/misc/chat-send-process-fixture.ts', './test/misc/chat-queue-process-fixture.ts'],
 			platform: 'node',
 			tsconfig: './test-server/tsconfig.json',
 			plugins: [

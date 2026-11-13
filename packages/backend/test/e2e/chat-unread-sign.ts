@@ -7,7 +7,7 @@ process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
 import { afterAll, beforeAll, describe, test } from 'vitest';
-import { api, signup, waitFire } from '../utils.js';
+import { api, createAppToken, signup, waitFire } from '../utils.js';
 import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 import type * as misskey from 'cherrypick-js';
 
@@ -119,6 +119,29 @@ describe('chat unread sign', () => {
 
 		assert.strictEqual(accountSent, true);
 		assert.strictEqual(await hasUnread(reader), false);
+	});
+
+	test('an app that mutes the sender is told the sign without what only the account itself may see', async () => {
+		const [reader, sender] = [await person(), await person()];
+		await send(sender, reader, 'hello');
+		// The app may read the account and change its mutes, and nothing else.
+		const app = { token: await createAppToken(reader, ['read:account', 'write:mutes']) };
+		let account: Record<string, unknown> | undefined;
+
+		const accountSent = await waitFire(app, 'main', () => api('mute/create', { userId: sender.id }, app), message => {
+			if (message.type !== 'meUpdated') return false;
+			account = message.body;
+			return true;
+		});
+
+		assert.strictEqual(accountSent, true);
+		assert.strictEqual(account?.hasUnreadChatMessages, false);
+		// `i` leaves these out for an app. The stream must not hand them over either.
+		const fromApi = (await api('i', {}, app)).body as Record<string, unknown>;
+		for (const secret of ['email', 'emailVerified', 'securityKeysList', 'signupReason']) {
+			assert.strictEqual(secret in fromApi, false, `i: ${secret}`);
+			assert.strictEqual(secret in account!, false, `meUpdated: ${secret}`);
+		}
 	});
 
 	test('a conversation left empty by taking back its only message is not unread', async () => {

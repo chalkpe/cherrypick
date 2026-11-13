@@ -89,6 +89,15 @@ export type DBExportAntennasData = {
 export type DbUserDeleteJobData = {
 	user: ThinUser;
 	soft?: boolean;
+	/** Deliveries the account still signs. The account is removed once they are done, everything else having gone already. */
+	deliveries?: string[];
+	/** Deliveries of the account's own Delete, queued before this job. They are waited for with the room deletions. */
+	accountDeliveries?: string[];
+	/**
+	 * Set on the job before the rooms are deleted. A job that comes back with it, after its process was gone,
+	 * cannot list the room deletions again, so it looks for the deliveries the account still signs on the queue.
+	 */
+	removingRooms?: boolean;
 };
 
 export type DbUserTruncateJobData = {

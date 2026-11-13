@@ -14,7 +14,6 @@ import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { SystemAccountService } from '@/core/SystemAccountService.js';
-import { ChatService } from '@/core/ChatService.js';
 
 @Injectable()
 export class DeleteAccountService {
@@ -34,7 +33,6 @@ export class DeleteAccountService {
 		private globalEventService: GlobalEventService,
 		private moderationLogService: ModerationLogService,
 		private systemAccountService: SystemAccountService,
-		private chatService: ChatService,
 	) {
 	}
 
@@ -83,12 +81,13 @@ export class DeleteAccountService {
 				if (inbox != null && !queue.includes(inbox)) queue.push(inbox);
 			}
 
-			for (const inbox of queue) {
-				this.queueService.deliver(user, content, inbox, true);
-			}
+			// 이 Delete도 계정 키로 서명한다. 삭제 작업이 배송이 끝날 때까지 계정을 남기도록 큐에 들어간 배송을 넘긴다.
+			const queued = await Promise.allSettled(queue.map(inbox => this.queueService.deliver(user, content, inbox, true)));
+			const accountDeliveries = queued.flatMap(result => result.status === 'fulfilled' && result.value?.id != null ? [result.value.id] : []);
 
 			this.queueService.createDeleteAccountJob(user, {
 				soft: false,
+				accountDeliveries,
 			});
 		} else {
 			// リモートユーザーの削除は、完全にDBから物理削除してしまうと再度連合してきてアカウントが復活する可能性があるため、soft指定する
@@ -100,9 +99,6 @@ export class DeleteAccountService {
 		await this.usersRepository.update(user.id, {
 			isDeleted: true,
 		});
-
-		// Its direct messages go away with it, and nothing could read them after that.
-		await this.chatService.clearUnreadMarksOfDirectMessagesFrom(user.id).catch(() => {});
 
 		this.globalEventService.publishInternalEvent('userChangeDeletedState', { id: user.id, isDeleted: true });
 	}

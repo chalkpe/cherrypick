@@ -10,6 +10,7 @@ import { UtilityService } from '@/core/UtilityService.js';
 import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
 import { meets } from '../misc/chat-repository-match.js';
 import { memoryRedis } from '../misc/chat-unread-redis.js';
+import { chatTransactions } from '../misc/chat-transactions.js';
 
 const owner = { id: 'owner', host: 'owner.test', uri: 'https://owner.test/users/owner' };
 const otherActor = { id: 'other', host: 'owner.test', uri: 'https://owner.test/users/other' };
@@ -64,13 +65,14 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		},
 		withRepository: (repository: unknown) => repository,
 	};
-	const db = {
-		transaction: async <T>(run: (manager: typeof transactionManager) => Promise<T>): Promise<T> => await run(transactionManager),
-	};
+	const db = chatTransactions(transactionManager);
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
+		db,
 		config: { url: 'https://local.test' },
+		logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 		chatMessagesRepository: {
 			findOne: async ({ where }: { where: Record<string, unknown> | Record<string, unknown>[] }) => messages.find(message => [where].flat().some(condition => meets({ ...message, fromUser: { isSuspended: false } }, condition))) ?? null,
+			find: async ({ where }: { where: Record<string, unknown> | Record<string, unknown>[] }) => messages.filter(message => [where].flat().some(condition => meets({ ...message, fromUser: { isSuspended: false } }, condition))),
 			findOneBy: async ({ uri, id }: { uri?: string; id?: string }) => messages.find(message => id != null ? message.id === id : message.uri === uri) ?? null,
 			existsBy: async () => true,
 			insertOne: async (message: typeof messages[number]) => {

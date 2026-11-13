@@ -9,6 +9,7 @@ import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import type { MiChatMessage, MiChatRoom, MiChatRoomMembership, MiUser } from '@/models/_.js';
 import { meets } from '../misc/chat-repository-match.js';
 import { memoryRedis } from '../misc/chat-unread-redis.js';
+import { chatTransactions } from '../misc/chat-transactions.js';
 
 type Membership = Pick<MiChatRoomMembership, 'id' | 'roomId' | 'userId' | 'isMuted'>;
 
@@ -51,11 +52,13 @@ function fixture() {
 	};
 
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
+		db: chatTransactions(),
 		config: { url: 'https://local.test' },
 		redisClient: memoryRedis(),
 		usersRepository: {
 			findOneBy: async ({ id }: { id: string }) => users.find(user => user.id === id) ?? null,
 			findOneByOrFail: async ({ id }: { id: string }) => users.find(user => user.id === id)!,
+			findBy: async ({ id }: { id: { value: string[] } }) => users.filter(user => id.value.includes(user.id)),
 			existsBy: async () => false,
 		},
 		userEntityService: { isLocalUser: () => true, isRemoteUser: () => false },
@@ -67,6 +70,7 @@ function fixture() {
 			},
 			findOneBy: async ({ id }: { id: string }) => messages.find(message => message.id === id) ?? null,
 			findOne: async ({ where }: { where: Record<string, unknown> }) => messages.find(row => meets({ ...row, fromUser: { isSuspended: false } }, where)) ?? null,
+			find: async ({ where }: { where: Record<string, unknown> }) => messages.filter(row => meets({ ...row, fromUser: { isSuspended: false } }, where)),
 			existsBy: async (where: Record<string, unknown>) => messages.some(row => meets({ ...row, fromUser: { isSuspended: false } }, where)),
 		},
 		chatRoomsRepository,

@@ -612,11 +612,14 @@ export class QueueService {
 	}
 
 	@bindThis
-	public createDeleteAccountJob(user: ThinUser, opts: { soft?: boolean; } = {}) {
+	public createDeleteAccountJob(user: ThinUser, opts: { soft?: boolean; deliveries?: string[]; accountDeliveries?: string[]; delay?: number; } = {}) {
 		return this.dbQueue.add('deleteAccount', {
 			user: { id: user.id },
 			soft: opts.soft,
+			...(opts.deliveries != null ? { deliveries: opts.deliveries } : {}),
+			...(opts.accountDeliveries != null ? { accountDeliveries: opts.accountDeliveries } : {}),
 		}, {
+			delay: opts.delay,
 			removeOnComplete: {
 				age: 3600 * 24 * 7, // keep up to 7 days
 				count: 30,

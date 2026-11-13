@@ -7,7 +7,7 @@ import { Inject, Injectable, Scope } from '@nestjs/common';
 import { bindThis } from '@/decorators.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import type { JsonObject } from '@/misc/json-value.js';
-import { ChatService } from '@/core/ChatService.js';
+import { ChatService, chatReadBoundaryOfStream } from '@/core/ChatService.js';
 import Channel, { type ChannelRequest } from '../channel.js';
 import { REQUEST } from '@nestjs/core';
 
@@ -51,7 +51,8 @@ export class ChatUserChannel extends Channel {
 		switch (type) {
 			case 'read':
 				if (this.otherId) {
-					this.chatService.readUserChatMessage(this.user!.id, this.otherId);
+					// The screen tells which message it has shown. Anything newer it has not received yet stays unread.
+					this.chatService.recordUserChatRead(this.user!.id, this.otherId, chatReadBoundaryOfStream(body));
 				}
 				break;
 		}

@@ -75,10 +75,12 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw err;
 			});
 
+			const beforeQuery = await this.chatService.captureUserChatRead(me.id, other.id);
 			const messages = await this.chatService.userTimeline(me.id, other.id, ps.limit, sinceId, untilId, ps.includeDeleted);
 
 			// Done before answering, so that a client asking for its unread state right after gets the new one.
-			await this.chatService.readUserChatMessage(me.id, other.id);
+			// The read covers only what this page holds. A failed read leaves the conversation unread and is tried again.
+			await this.chatService.recordUserChatRead(me.id, other.id, this.chatService.readBoundaryOf(messages, ps.limit, sinceId, beforeQuery));
 
 			return await this.chatEntityService.packMessagesLiteFor1on1(messages);
 		});

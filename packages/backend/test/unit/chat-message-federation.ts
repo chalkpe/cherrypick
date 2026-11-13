@@ -12,6 +12,7 @@ import { Resolver } from '@/core/activitypub/ApResolverService.js';
 import { StatusError } from '@/misc/status-error.js';
 import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
 import { memoryRedis } from '../misc/chat-unread-redis.js';
+import { chatTransactions } from '../misc/chat-transactions.js';
 import {
 	buildChatDelete,
 	buildChatNote,
@@ -350,6 +351,7 @@ describe('ChatService chat federation delivery', () => {
 		};
 
 		const service = Object.assign(Object.create(ChatService.prototype), {
+			db: chatTransactions(),
 			config: { url: 'https://local.test' },
 			chatMessagesRepository: {
 				findOneBy: vi.fn(async ({ id }: { id: string }) => messages.get(id) ?? null),
@@ -1229,8 +1231,10 @@ describe('ApInboxService chat activity routing', () => {
 			},
 		};
 		const chatRoomsRepository = { findOneBy: vi.fn().mockResolvedValue({ id: 'r1', uri: 'https://remote.test/chat/rooms/r1' }) };
+		const chatMessagesRepository = { findOneBy: vi.fn().mockResolvedValue(null) };
 		const apPersonService = { resolvePerson: vi.fn(async (uri: string) => uri === localUser.uri ? localUser : null) };
 		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
+			db: chatTransactions({ withRepository: () => ({ findOneBy: ({ uri }: { uri: string }) => chatService.findMessageByUri(uri) }) }),
 			chatService,
 			chatRosterService: chatRosterOver(forgetfulRedis()),
 			redisClient,
@@ -1246,7 +1250,7 @@ describe('ApInboxService chat activity routing', () => {
 			roleService: { getUserPolicies: vi.fn().mockResolvedValue({ chatAvailability: 'available' }) },
 			userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null, isRemoteUser: (user: { host: string | null }) => user.host != null },
 			chatRoomsRepository,
-			chatMessagesRepository: { findOneBy: vi.fn().mockResolvedValue(null) },
+			chatMessagesRepository,
 		}) as ApInboxService;
 
 		return { inbox, actor, message, chatService, redisClient, chatRoomsRepository, localUser };
@@ -2074,6 +2078,7 @@ describe('unread chat notification', () => {
 		const packMessageDetailed = vi.fn(async (message: unknown) => message);
 		let stored: Record<string, unknown> | null = null;
 		const service = Object.assign(Object.create(ChatService.prototype), {
+			db: chatTransactions(),
 			config: { url: 'https://local.test' },
 			usersRepository: { existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => ['alice', 'bob'].includes(id) && !isSuspended },
 			chatApprovalsRepository: {
@@ -2171,6 +2176,7 @@ describe('chat custom emoji federation', () => {
 		};
 		const publishChatUserStream = vi.fn();
 		const chatService = Object.assign(Object.create(ChatService.prototype), {
+			db: chatTransactions(),
 			chatMessagesRepository: { findOneBy: async () => chatMessage, createQueryBuilder: () => queryBuilder },
 			globalEventService: { publishChatUserStream },
 			userEntityService: { pack: async (id: string) => ({ id }) },

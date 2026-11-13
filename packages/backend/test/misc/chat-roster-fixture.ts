@@ -398,6 +398,10 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 		transaction: async <T>(callback: (manager: unknown) => Promise<T>): Promise<T> => {
 			const table = (entity: { name: string }) => entity.name === 'MiChatRoomInvitation' ? invitations : memberships;
 			return await callback({
+				query: async (sql: string) => {
+					if (!sql.includes('pg_advisory_xact_lock')) throw new Error(`query not supported in this test: ${sql}`);
+					return [];
+				},
 				findOne: (_entity: unknown, options: { where: Record<string, unknown> }) => rooms.findOneBy(options.where),
 				find: async (_entity: unknown, options: { where: Record<string, unknown> }) => (await memberships.findBy(options.where)).map(membership => ({ ...membership, user: users.get(membership.userId as string) ?? null })),
 				withRepository: (repository: unknown) => repository,

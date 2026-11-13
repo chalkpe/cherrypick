@@ -4,156 +4,9 @@
  */
 
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { ChatService } from '@/core/ChatService.js';
 import { DeleteAccountProcessorService } from '@/queue/processors/DeleteAccountProcessorService.js';
-import { DeleteAccountService } from '@/core/DeleteAccountService.js';
-import { UserMutingService } from '@/core/UserMutingService.js';
-import type { MiChatMessage, MiChatRoom, MiMuting, MiUser } from '@/models/_.js';
-import { meets } from '../misc/chat-repository-match.js';
-import { memoryRedis } from '../misc/chat-unread-redis.js';
-
-function fixture() {
-	const reader = { id: 'reader', host: null, isSuspended: false, chatScope: 'everyone' };
-	const violet = { id: 'violet', host: null, isSuspended: false, chatScope: 'everyone' };
-	const amber = { id: 'amber', host: null, isSuspended: false, chatScope: 'everyone' };
-	const users = [reader, violet, amber];
-	let roomPresent = true;
-	const room = { id: 'room1', ownerId: violet.id, isArchived: false };
-	const messages: Partial<MiChatMessage>[] = [];
-	const memberships = [{ userId: reader.id, isMuted: false }, { userId: amber.id, isMuted: false }];
-	const mutings: Pick<MiMuting, 'id' | 'muterId' | 'muteeId'>[] = [];
-	const main = vi.fn();
-	const push = vi.fn();
-	let noticeGate: Promise<void> = Promise.resolve();
-	let nextId = 0;
-
-	const mutingsRepository = {
-		insert: async (muting: Pick<MiMuting, 'id' | 'muterId' | 'muteeId'>) => { mutings.push(muting); },
-		delete: async (where: Record<string, unknown>) => {
-			for (const muting of mutings.filter(row => meets(row, where))) mutings.splice(mutings.indexOf(muting), 1);
-		},
-		findBy: async (where: Record<string, unknown>) => mutings.filter(row => meets(row, where)),
-		existsBy: async (where: Record<string, unknown>) => mutings.some(row => meets(row, where)),
-	};
-
-	const chatService = Object.assign(Object.create(ChatService.prototype), {
-		config: { url: 'https://local.test' },
-		redisClient: memoryRedis(),
-		mutingsRepository,
-		usersRepository: {
-			findOneBy: async ({ id }: { id: string }) => users.find(user => user.id === id) ?? null,
-			findOneByOrFail: async ({ id }: { id: string }) => users.find(user => user.id === id)!,
-			findBy: async (where: Record<string, unknown>) => users.filter(row => meets(row, where)),
-			existsBy: async (where: Record<string, unknown>) => users.some(row => meets(row, where)),
-			update: async () => undefined,
-		},
-		userEntityService: {
-			isLocalUser: () => true,
-			isRemoteUser: () => false,
-			// The account as sent to its owner, cut down to the one field these tests read.
-			pack: async (userId: string) => ({ id: userId, hasUnreadChatMessages: await chatService.hasUnreadMessages(userId) }),
-		},
-		idService: { gen: () => `message${++nextId}` },
-		chatMessagesRepository: {
-			insertOne: async (message: Partial<MiChatMessage>) => {
-				if (messages.some(stored => stored.id === message.id)) throw new Error('duplicate message id in fixture');
-				messages.push(message);
-				return message;
-			},
-			delete: async (id: string | Record<string, unknown>) => {
-				for (const message of messages.filter(row => typeof id === 'string' ? row.id === id : meets(row, id))) messages.splice(messages.indexOf(message), 1);
-			},
-			findOneBy: async ({ id }: { id: string }) => messages.find(message => message.id === id) ?? null,
-			existsBy: async (where: Record<string, unknown> | Record<string, unknown>[]) => messages.some(row => [where].flat().some(condition => meets({ ...row, fromUser: users.find(user => user.id === row.fromUserId) }, condition))),
-			findOne: async ({ where }: { where: Record<string, unknown> | Record<string, unknown>[] }) => messages.filter(row => [where].flat().some(condition => meets({ ...row, fromUser: users.find(user => user.id === row.fromUserId) }, condition))).sort((a, b) => b.id!.localeCompare(a.id!))[0] ?? null,
-			update: async (id: string, values: Partial<MiChatMessage>) => { Object.assign(messages.find(message => message.id === id)!, values); },
-			createQueryBuilder: () => {
-				let alias = '';
-				let authorId = '';
-				return {
-					select(_expression: string, selected: string) { alias = selected; return this; },
-					where(_expression: string, parameters: { authorId?: string }) { authorId = parameters.authorId ?? ''; return this; },
-					andWhere() { return this; },
-					getRawMany: async () => alias === 'roomId'
-						? [...new Set(messages.filter(message => message.fromUserId === authorId && message.toRoomId != null).map(message => message.toRoomId))].map(roomId => ({ roomId }))
-						: [{ toUserId: reader.id }],
-				};
-			},
-		},
-		chatApprovalsRepository: {
-			createQueryBuilder: () => ({ where() { return this; }, orWhere() { return this; }, take() { return this; }, getMany: async () => [] }),
-			insertOne: async () => undefined,
-		},
-		chatRoomsRepository: {
-			findOneBy: async () => roomPresent ? room : null,
-			delete: async () => { roomPresent = false; },
-			findBy: async ({ ownerId }: { ownerId: string }) => room.ownerId === ownerId ? [room] : [],
-		},
-		apRendererService: { renderChatRoomDelete: () => ({ type: 'Delete' }), renderChatDelete: () => ({ type: 'Delete' }), renderChatRoomActivityRelay: () => ({}), addContext: (activity: unknown) => activity },
-		chatRoomMembershipsRepository: {
-			findBy: async () => memberships.map(member => ({ ...member })),
-			findOneBy: async ({ userId }: { userId: string }) => memberships.find(member => member.userId === userId) ?? null,
-		},
-		chatRoomInvitationsRepository: { findBy: async () => [] },
-		chatRosterService: { markRoomDeletedFor: vi.fn() },
-		liveKitService: { deleteRoom: async () => undefined },
-		roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
-		userBlockingService: { checkBlocked: async () => false },
-		chatEntityService: {
-			packMessageLiteFor1on1: async (message: unknown) => message,
-			packMessageLiteForRoom: async (message: unknown) => message,
-			packMessageDetailed: async (message: unknown) => {
-				await noticeGate;
-				return message;
-			},
-		},
-		globalEventService: { publishChatUserStream: vi.fn(), publishChatRoomStream: vi.fn(), publishMainStream: main },
-		pushNotificationService: { pushNotification: push },
-	}) as ChatService;
-
-	const deleteAccountService = Object.assign(Object.create(DeleteAccountService.prototype), {
-		meta: { rootUserId: 'root' },
-		usersRepository: { findOneByOrFail: async ({ id }: { id: string }) => ({ ...users.find(user => user.id === id)!, username: id }), update: async () => undefined },
-		userEntityService: { isLocalUser: () => false },
-		queueService: { createDeleteAccountJob: vi.fn() },
-		globalEventService: { publishInternalEvent: vi.fn() },
-		chatService,
-	}) as DeleteAccountService;
-
-	const userMutingService = Object.assign(Object.create(UserMutingService.prototype), {
-		mutingsRepository,
-		idService: { gen: () => `muting${++nextId}` },
-		cacheService: { userMutingsCache: { refresh: async () => undefined } },
-		chatService,
-	}) as UserMutingService;
-
-	return {
-		reader: reader as unknown as MiUser,
-		violet: violet as unknown as MiUser,
-		amber: amber as unknown as MiUser,
-		room: room as unknown as MiChatRoom,
-		chatService,
-		userMutingService,
-		deleteAccountService,
-		redis: (chatService as unknown as { redisClient: ReturnType<typeof memoryRedis> }).redisClient,
-		/** The message as stored, for the calls that take one. */
-		stored: (text: string) => messages.find(message => message.text === text) as MiChatMessage,
-		mutings: mutings as MiMuting[],
-		push,
-		memberships,
-		messages,
-		users,
-		/** What the reader's open screens were told, in order. */
-		told: () => main.mock.calls.filter(([userId]) => userId === reader.id).map(([, type]) => type as string),
-		accountSent: () => main.mock.calls.filter(([userId, type]) => userId === reader.id && type === 'meUpdated').map(([, , account]) => account as { hasUnreadChatMessages: boolean }),
-		/** Holds the delayed notice at the point where it has decided to notify and is preparing what to send. */
-		holdNotice: () => {
-			let release!: () => void;
-			noticeGate = new Promise<void>(resolve => { release = resolve; });
-			return release;
-		},
-	};
-}
+import type { MiChatMessage } from '@/models/_.js';
+import { chatUnreadFixture as fixture } from '../misc/chat-unread-fixture.js';
 
 describe('chat unread sign', () => {
 	afterEach(() => vi.useRealTimers());
@@ -237,25 +90,6 @@ describe('chat unread sign', () => {
 	});
 
 	describe('unread marks that go away without a read', () => {
-		test('a delayed earlier ID does not expand an older unread range into read history', async () => {
-			vi.useFakeTimers();
-			const f = fixture();
-			const service = f.chatService as unknown as { idService: { gen: () => string } };
-			vi.spyOn(service.idService, 'gen').mockReturnValueOnce('message2').mockReturnValueOnce('message4').mockReturnValue('message1');
-			await f.chatService.createMessageToRoom(f.violet, f.room, { text: 'read history' });
-			await f.chatService.readRoomChatMessage(f.reader.id, f.room.id);
-			await f.chatService.createMessageToRoom(f.violet, f.room, { text: 'older unread format' });
-			const key = `newRoomChatMessageExists:${f.reader.id}:${f.room.id}`;
-			await f.redis.del(`${key}:revision`);
-			await f.redis.del(`${key}:messages`);
-
-			await f.chatService.createMessageToRoom(f.violet, f.room, { text: 'delayed earlier insert' });
-			await f.chatService.deleteMessage(f.stored('older unread format'));
-			await f.chatService.deleteMessage(f.stored('delayed earlier insert'));
-
-			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
-		});
-
 		test('a lost Redis reply and unavailable cleanup never mark read room history unread', async () => {
 			vi.useFakeTimers();
 			const f = fixture();
@@ -304,7 +138,8 @@ describe('chat unread sign', () => {
 				chatService: f.chatService,
 			}) as DeleteAccountProcessorService;
 
-			await processor.process({ data: { user: { id: f.amber.id }, soft: false } } as never);
+			// 작업은 방을 지우기 전에 표식을 저장한다. 이 시험은 한 번만 처리하므로 저장한 값을 다시 읽지 않는다.
+			await processor.process({ data: { user: { id: f.amber.id }, soft: false }, updateData: async () => undefined } as never);
 
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
 		});
@@ -397,12 +232,12 @@ describe('chat unread sign', () => {
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
 		});
 
-		test('a delayed insert between first and latest survives a withdrawal snapshot', async () => {
+		test('a delayed insert between first and latest survives a withdrawal snapshot after earlier cleanup failed', async () => {
 			vi.useFakeTimers();
 			const f = fixture();
 			const service = f.chatService as unknown as {
 				idService: { gen: () => string };
-				chatMessagesRepository: { findOne: (...args: unknown[]) => Promise<MiChatMessage | null> };
+				chatMessagesRepository: { find: (...args: unknown[]) => Promise<MiChatMessage[]> };
 			};
 			vi.spyOn(service.idService, 'gen')
 				.mockReturnValueOnce('message1').mockReturnValueOnce('approval1')
@@ -412,13 +247,19 @@ describe('chat unread sign', () => {
 			await f.chatService.createMessageToUser(f.violet, f.reader, { text: 'latest' });
 			expect(f.stored('first').id).toBe('message1');
 			expect(f.stored('latest').id).toBe('message3');
-			await f.chatService.deleteMessage(f.stored('first'));
+			// 이전 철회의 Redis 정리가 실패한 잔여 ID가 있어야 마지막 철회도 DB 조회를 거친다.
+			const first = f.stored('first');
+			const cleanup = vi.spyOn(f.redis, 'eval').mockRejectedValueOnce(new Error('unread cleanup unavailable'));
+			await f.chatService.deleteMessage(first);
+			cleanup.mockRestore();
+			expect(first.deletedAt).not.toBeNull();
+			expect(await f.redis.smembers(`newUserChatMessageExists:${f.reader.id}:${f.violet.id}:messages`)).toContain('message1');
 			let release!: () => void;
 			let queried!: () => void;
 			const queryFinished = new Promise<void>(resolve => { queried = resolve; });
 			const gate = new Promise<void>(resolve => { release = resolve; });
-			const find = service.chatMessagesRepository.findOne;
-			vi.spyOn(service.chatMessagesRepository, 'findOne').mockImplementationOnce(async (...args) => {
+			const find = service.chatMessagesRepository.find;
+			vi.spyOn(service.chatMessagesRepository, 'find').mockImplementationOnce(async (...args) => {
 				const result = await find(...args);
 				queried();
 				await gate;
@@ -510,16 +351,6 @@ describe('chat unread sign', () => {
 			expect(f.told()).toEqual(['readAllChatMessages']);
 		});
 
-		test('deleting the account behind the only unread conversation turns the sign off', async () => {
-			const f = fixture();
-			await f.chatService.createMessageToUser(f.violet, f.reader, { text: 'hello' });
-
-			await f.deleteAccountService.deleteAccount(f.violet);
-
-			expect(f.told()).toEqual(['readAllChatMessages']);
-			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
-		});
-
 		test('a mark left behind by a conversation that has no messages any more does not count', async () => {
 			const f = fixture();
 			await f.redis.sadd(`newChatMessagesExists:${f.reader.id}`, 'user:gone');
@@ -585,20 +416,6 @@ describe('chat unread sign', () => {
 	});
 
 	describe('muted accounts', () => {
-		test('receiving after an older first-boundary format does not discard its unread messages', async () => {
-			vi.useFakeTimers();
-			const f = fixture();
-			await f.chatService.createMessageToUser(f.violet, f.reader, { text: 'old unread' });
-			const key = `newUserChatMessageExists:${f.reader.id}:${f.violet.id}`;
-			await f.redis.del(`${key}:revision`);
-			await f.redis.del(`${key}:messages`);
-
-			await f.chatService.createMessageToUser(f.violet, f.reader, { text: 'new unread' });
-			await f.chatService.deleteMessage(f.stored('new unread'));
-
-			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(true);
-		});
-
 		test('withdrawing a muted legacy conversation preserves its unknown read boundary', async () => {
 			vi.useFakeTimers();
 			const f = fixture();

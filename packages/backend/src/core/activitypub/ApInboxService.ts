@@ -16,7 +16,7 @@ import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NoteCreateService } from '@/core/NoteCreateService.js';
 import { NotificationService } from '@/core/NotificationService.js';
-import { ChatMessageAccessError, ChatService, MAX_CHAT_MESSAGE_TEXT_LENGTH, MAX_REMOTE_CHAT_MESSAGE_FILES, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
+import { chatMessageUriLockKey, ChatMessageAccessError, ChatService, MAX_CHAT_MESSAGE_TEXT_LENGTH, MAX_REMOTE_CHAT_MESSAGE_FILES, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
@@ -741,14 +741,18 @@ export class ApInboxService {
 
 		const unlock = await acquireApObjectLock(this.redisClient, messageUri);
 		try {
-			const message = await this.chatService.findMessageByUri(messageUri);
-			if (message == null) {
-				if (!this.isOnActorHost(messageUri, doer)) return 'skip: message is not on the actor\'s server';
+			const decision = await this.db.transaction(async manager => {
+				await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [chatMessageUriLockKey(messageUri)]);
+				const message = await manager.withRepository(this.chatMessagesRepository).findOneBy({ uri: messageUri });
+				if (message != null) return { message };
+				if (!this.isOnActorHost(messageUri, doer)) return { result: 'skip: message is not on the actor\'s server' };
 				await this.assertKnownInRoom(room, doer);
-				if (!await this.chatService.isRoomMember(room, doer.id)) return 'skip: not a member of the room';
+				if (!await this.chatService.isRoomMember(room, doer.id)) return { result: 'skip: not a member of the room' };
 				const stored = await this.storeDeferredChatDelete(doer, messageUri, room.id);
-				return stored ? 'ok: chat message tombstone stored' : 'skip: too many deferred chat deletes';
-			}
+				return { result: stored ? 'ok: chat message tombstone stored' : 'skip: too many deferred chat deletes' };
+			});
+			if (decision.message == null) return decision.result!;
+			const message = decision.message;
 			if (message.toRoomId !== room.id) return 'skip: message is from another room';
 			await this.chatService.deleteRemoteMessage(doer, message);
 			return 'ok: chat message deleted';
@@ -1325,6 +1329,7 @@ export class ApInboxService {
 					emojis: apEmojis,
 					editedAt,
 					dice: object._misskey_dice,
+					deleteActorUri: actor.uri,
 				});
 			} else {
 				// Group chat
@@ -1340,6 +1345,7 @@ export class ApInboxService {
 					emojis: apEmojis,
 					editedAt,
 					dice: object._misskey_dice,
+					deleteActorUri: actor.uri,
 				});
 			}
 
@@ -1395,10 +1401,20 @@ export class ApInboxService {
 		const isChatUri = uri !== actor.uri && (this.isChatMessageUri(uri) || await this.chatService.findMessageByUri(uri) != null);
 		const unlock = isChatUri ? await acquireApObjectLock(this.redisClient, uri) : null;
 		try {
-			const chatMessage = isChatUri ? await this.chatService.findMessageByUri(uri) : null;
-			if (chatMessage != null) {
+			const decision: { message?: MiChatMessage; result?: string } = isChatUri ? await this.db.transaction(async manager => {
+				await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [chatMessageUriLockKey(uri)]);
+				const message = await manager.withRepository(this.chatMessagesRepository).findOneBy({ uri });
+				if (message != null) return { message };
+				// A chat-disabled recipient stores the object as a private Note instead.
+				if (await this.apNoteService.fetchNote(uri) != null) return {};
+				if (!this.isOnActorHost(uri, actor)) return { result: 'skip: message is not on the actor\'s server' };
+				if (await this.namesRoomThatIsGone(activity)) return { result: 'skip: room was deleted' };
+				const stored = await this.storeDeferredChatDelete(actor, uri);
+				return { result: stored ? 'ok: chat message tombstone stored' : 'skip: too many deferred chat deletes' };
+			}) : {};
+			if (decision.message != null) {
 				try {
-					await this.chatService.deleteRemoteMessage(actor, chatMessage, { activity });
+					await this.chatService.deleteRemoteMessage(actor, decision.message, { activity });
 					return 'ok: chat message deleted';
 				} catch (err) {
 					if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
@@ -1406,14 +1422,7 @@ export class ApInboxService {
 				}
 			}
 
-			// A chat-disabled recipient stores the object as a private Note instead.
-			// Let that object use the normal Note deletion and author checks below.
-			if (isChatUri && await this.apNoteService.fetchNote(uri) == null) {
-				if (!this.isOnActorHost(uri, actor)) return 'skip: message is not on the actor\'s server';
-				if (await this.namesRoomThatIsGone(activity)) return 'skip: room was deleted';
-				const stored = await this.storeDeferredChatDelete(actor, uri);
-				return stored ? 'ok: chat message tombstone stored' : 'skip: too many deferred chat deletes';
-			}
+			if (decision.result != null) return decision.result;
 		} finally {
 			if (unlock != null) await unlock();
 		}

@@ -10,8 +10,10 @@ import { Redis } from 'ioredis';
 import { afterAll, beforeAll, describe, test, vi } from 'vitest';
 import type { INestApplicationContext } from '@nestjs/common';
 import type * as misskey from 'cherrypick-js';
+import type { DataSource } from 'typeorm';
 import { loadConfig } from '@/config.js';
-import { api, signup, startJobQueue, waitFire } from '../utils.js';
+import { MiUser } from '@/models/_.js';
+import { api, connectStream, initTestDb, signup, startJobQueue, waitFire } from '../utils.js';
 import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 
 type Account = misskey.entities.SignupResponse;
@@ -20,6 +22,7 @@ describe('chat unread boundaries', () => {
 	let root: Account;
 	let queue: INestApplicationContext;
 	let redis: Redis;
+	let db: DataSource;
 	let count = 0;
 
 	async function person() {
@@ -45,6 +48,7 @@ describe('chat unread boundaries', () => {
 		queue = await startJobQueue();
 		root = await signup({ username: 'root' });
 		redis = new Redis(loadConfig().redis);
+		db = await initTestDb(true);
 		assert.strictEqual((await api('i', {}, root)).body.isAdmin, true);
 	}, 120_000);
 
@@ -52,6 +56,7 @@ describe('chat unread boundaries', () => {
 		await waitForChatNotificationTurn();
 		await queue.close();
 		await redis.quit();
+		await db.destroy();
 	}, 30_000);
 
 	test('read-all recovers direct and room markers left by an older read-all', async () => {
@@ -172,6 +177,31 @@ describe('chat unread boundaries', () => {
 		assert.deepStrictEqual((await api('chat/history', { room: true }, reader)).body.map(message => message.fromUserId), [member.id]);
 	});
 
+	test('room messages leave no unread marks for a member on another server', async () => {
+		const [owner, reader, faraway] = [await person(), await person(), await person()];
+		const room = await roomOf(owner, reader, faraway);
+		// fixture: 참가자 한 명을 다른 서버 계정으로 바꾼다. 그 사람은 이 서버에서 쪽지를 읽지 않는다.
+		await db.getRepository(MiUser).update(faraway.id, {
+			host: 'remote.test',
+			uri: `https://remote.test/users/${faraway.id}`,
+			inbox: `https://remote.test/users/${faraway.id}/inbox`,
+			sharedInbox: null,
+		});
+		for (let i = 0; i < 5; i++) assert.strictEqual((await roomSay(owner, room.id)).status, 200);
+
+		const marks = async (account: Account) => ({
+			conversation: await redis.sismember(`newChatMessagesExists:${account.id}`, `room:${room.id}`),
+			latest: await redis.exists(`newRoomChatMessageExists:${account.id}:${room.id}`),
+			messages: await redis.scard(`newRoomChatMessageExists:${account.id}:${room.id}:messages`),
+		});
+		const state = { reader: await marks(reader), faraway: await marks(faraway) };
+		console.log('CHAT_REMOTE_READER_MARKS', JSON.stringify(state));
+		assert.deepStrictEqual(state, {
+			reader: { conversation: 1, latest: 1, messages: 5 },
+			faraway: { conversation: 0, latest: 0, messages: 0 },
+		});
+	});
+
 	test('physically deleting an owner clears owned rooms without clearing another conversation', async () => {
 		const [owner, reader, otherReader, sender] = [await person(), await person(), await person(), await person()];
 		const room = await roomOf(owner, reader, otherReader);
@@ -246,5 +276,66 @@ describe('chat unread boundaries', () => {
 		assert.strictEqual(await hasUnread(reader), false);
 		assert.strictEqual(await redis.get(`newRoomChatMessageExists:${reader.id}:${room.id}`), null);
 		assert.strictEqual((await api('chat/rooms/show', { roomId: room.id }, reader)).status, 200);
+	});
+
+	describe('a read covers what the reader was given', () => {
+		const timeline = (reader: Account, sender: Account, params: Record<string, unknown>) => api('chat/messages/user-timeline', { userId: sender.id, ...params }, reader);
+		const isRead = async (reader: Account, sender: Account) => (await api('chat/history', { room: false }, reader)).body.find(message => message.fromUserId === sender.id)?.isRead;
+
+		test('an older page leaves a newer message unread', async () => {
+			const [reader, sender] = [await person(), await person()];
+			const older = (await say(sender, reader, 'Older')).body;
+			const newer = (await say(sender, reader, 'Newer')).body;
+
+			const page = await timeline(reader, sender, { untilId: newer.id, limit: 10 });
+
+			assert.deepStrictEqual(page.body.map(message => message.id), [older.id]);
+			assert.strictEqual(await hasUnread(reader), true);
+			assert.strictEqual(await isRead(reader, sender), false);
+			assert.strictEqual((await timeline(reader, sender, { limit: 10 })).status, 200);
+			assert.strictEqual(await hasUnread(reader), false);
+		});
+
+		test('a page after a known message leaves what comes after the page unread', async () => {
+			const [reader, sender] = [await person(), await person()];
+			const known = (await say(sender, reader, 'Known')).body;
+			const next = (await say(sender, reader, 'Next')).body;
+			assert.strictEqual((await say(sender, reader, 'Beyond the page')).status, 200);
+
+			const page = await timeline(reader, sender, { sinceId: known.id, limit: 1 });
+
+			assert.deepStrictEqual(page.body.map(message => message.id), [next.id]);
+			assert.strictEqual(await hasUnread(reader), true);
+		});
+
+		test('a read sent over the stream stops at the message the screen names', async () => {
+			const [reader, sender] = [await person(), await person()];
+			const shown = (await say(sender, reader, 'Shown')).body;
+			assert.strictEqual((await say(sender, reader, 'Not shown yet')).status, 200);
+			const stream = await connectStream(reader, 'chatUser', () => {}, { otherId: sender.id });
+
+			try {
+				stream.send(JSON.stringify({ type: 'ch', body: { id: 'a', type: 'read', body: { id: shown.id } } }));
+				// 같은 연결의 다음 읽기는 앞의 읽기 뒤에 처리된다. 그 결과가 보일 때까지 기다린다.
+				await vi.waitFor(async () => assert.strictEqual((await redis.smembers(`newUserChatMessageExists:${reader.id}:${sender.id}:messages`)).includes(shown.id), false));
+			} finally {
+				stream.close();
+			}
+
+			assert.strictEqual(await hasUnread(reader), true);
+		});
+
+		test('the reader’s own reply does not keep a mark from an older version on', async () => {
+			const [reader, sender] = [await person(), await person()];
+			const only = (await say(sender, reader, 'Only one')).body;
+			const key = `newUserChatMessageExists:${reader.id}:${sender.id}`;
+			// 이전 버전의 표식: 최신 ID와 집계 set만 있다.
+			await redis.del(`${key}:first`, `${key}:revision`, `${key}:messages`, `${key}:pending`);
+			assert.strictEqual((await say(reader, sender, 'A reply')).status, 200);
+
+			assert.strictEqual((await api('chat/messages/delete', { messageId: only.id }, sender)).status, 204);
+
+			assert.strictEqual(await hasUnread(reader), false);
+		});
 	});
 });

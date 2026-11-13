@@ -12,6 +12,7 @@ import CreateToRoom, { meta as roomMeta } from '@/server/api/endpoints/chat/mess
 import { ChatDiceError } from '@/core/chat-dice.js';
 import type { ChatDiceResult } from '@/core/chat-dice.js';
 import { memoryRedis } from '../misc/chat-unread-redis.js';
+import { chatTransactions } from '../misc/chat-transactions.js';
 import type { MiChatMessage, MiUser } from '@/models/_.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { buildChatNote } from '@/core/activitypub/misc/chat-payloads.js';
@@ -35,6 +36,7 @@ function fixture() {
 		}),
 		findOneBy: vi.fn(async () => rows[0] ?? null),
 		findOne: vi.fn(async () => rows.find(row => row.deletedAt == null) ?? null),
+		find: vi.fn(async () => rows.filter(row => row.deletedAt == null)),
 		existsBy: vi.fn(async () => true),
 		update: vi.fn(async (_query: unknown, patch: object) => { Object.assign(rows[0], patch); return { affected: 1 }; }),
 	};
@@ -50,6 +52,8 @@ function fixture() {
 	const pipeline = { set: vi.fn(), sadd: vi.fn(), exec: vi.fn() };
 	const dependencies = {
 		config: { url: 'https://local.test' },
+		logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+		db: chatTransactions(),
 		chatMessagesRepository: repository,
 		chatEntityService: entity,
 		chatDiceService: { roll },

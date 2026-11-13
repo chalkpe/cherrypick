@@ -15,6 +15,7 @@ import type { MiLocalUser, MiUser } from '@/models/User.js';
 import { MastodonClientService } from '@/server/api/mastodon/MastodonClientService.js';
 import type { MastodonEntity } from 'megalodon';
 import type { FastifyRequest } from 'fastify';
+import type { OnApplicationShutdown } from '@nestjs/common';
 
 type MuteEntry = string | string[];
 export type FilterAction = 'warn' | 'hide' | 'blur';
@@ -98,7 +99,7 @@ function keywordEntry(keyword: StoredKeyword): MuteEntry {
  * Word mutes added outside of the Mastodon API show up as filters of their own.
  */
 @Injectable()
-export class MastodonFilterService {
+export class MastodonFilterService implements OnApplicationShutdown {
 	private readonly storedCache = new MemoryKVCache<StoredFilter[]>(1000 * 10);
 
 	constructor(
@@ -112,6 +113,10 @@ export class MastodonFilterService {
 		private readonly clientService: MastodonClientService,
 		private readonly cacheService: CacheService,
 	) {}
+
+	public onApplicationShutdown(): void {
+		this.storedCache.dispose();
+	}
 
 	private key(userId: MiUser['id']): string {
 		return `mastodonFilters:${userId}`;
