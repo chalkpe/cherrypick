@@ -223,11 +223,11 @@ describe('ChatVoiceService', () => {
 
 		await f.service.refresh('r1');
 
-		expect(JSON.parse(f.redis.store.get('chatVoice:state:r1')!).participants).toEqual([{ identity: 'i1', userId: 'u1', screenSharing: true }]);
+		expect(JSON.parse(f.redis.store.get('chatVoice:state:r1')!).participants).toEqual([{ identity: 'i1', userId: 'u1', screenSharing: true, recording: false }]);
 		expect(f.globalEventService.publishMainStream.mock.calls.map(call => call[0]).sort()).toEqual(['m1', 'owner']);
 		expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('owner', 'chatRoomVoiceState', {
 			roomId: 'r1',
-			participants: [{ identity: 'i1', user: expect.objectContaining({ id: 'u1' }), screenSharing: true }],
+			participants: [{ identity: 'i1', user: expect.objectContaining({ id: 'u1' }), screenSharing: true, recording: false }],
 			updatedAt: JSON.parse(f.redis.store.get('chatVoice:state:r1')!).updatedAt,
 		});
 	});
@@ -1206,7 +1206,7 @@ describe('ChatVoiceService', () => {
 						id: `${ROOM_URI}/voice`,
 						type: 'ChatRoomVoiceState',
 						room: ROOM_URI,
-						participants: [{ id: 'https://local.test/users/u1', screenSharing: true }],
+						participants: [{ id: 'https://local.test/users/u1', screenSharing: true, recording: false }],
 						updated: '2026-10-27T00:00:00.001Z',
 					},
 				}));
@@ -1447,8 +1447,8 @@ describe('ChatVoiceService', () => {
 			f.liveKitService.listParticipants.mockResolvedValue([{ ...u1, screenSharing: true }]);
 			await f.service.refresh('r1');
 			expect(deliveredObjects().map(object => object.participants)).toEqual([
-				[{ id: 'https://local.test/users/u1', screenSharing: true }],
-				[{ id: 'https://local.test/users/u1', screenSharing: true }],
+				[{ id: 'https://local.test/users/u1', screenSharing: true, recording: false }],
+				[{ id: 'https://local.test/users/u1', screenSharing: true, recording: false }],
 			]);
 		});
 
@@ -1476,8 +1476,8 @@ describe('ChatVoiceService', () => {
 			// 送ってから 30 秒経つと、その時点の設定を一度だけ送る
 			await vi.advanceTimersByTimeAsync(10_001);
 			expect(deliveredObjects().map(object => object.participants)).toEqual([
-				[{ id: 'https://local.test/users/u1', screenSharing: false, micMuted: true, deafened: true }],
-				[{ id: 'https://local.test/users/u1', screenSharing: false, micMuted: true, deafened: true }],
+				[{ id: 'https://local.test/users/u1', screenSharing: false, micMuted: true, deafened: true, recording: false }],
+				[{ id: 'https://local.test/users/u1', screenSharing: false, micMuted: true, deafened: true, recording: false }],
 			]);
 			expect(vi.getTimerCount()).toBe(0);
 		});
@@ -1498,8 +1498,8 @@ describe('ChatVoiceService', () => {
 			f.liveKitService.listParticipants.mockResolvedValue([{ ...u1, micMuted: true, deafened: false, screenSharing: true }]);
 			await f.service.refresh('r1');
 			expect(deliveredObjects().map(object => object.participants)).toEqual([
-				[{ id: 'https://local.test/users/u1', screenSharing: true, micMuted: true, deafened: false }],
-				[{ id: 'https://local.test/users/u1', screenSharing: true, micMuted: true, deafened: false }],
+				[{ id: 'https://local.test/users/u1', screenSharing: true, micMuted: true, deafened: false, recording: false }],
+				[{ id: 'https://local.test/users/u1', screenSharing: true, micMuted: true, deafened: false, recording: false }],
 			]);
 		});
 
@@ -2189,7 +2189,7 @@ describe('ChatVoiceService', () => {
 				workerA.liveKitService.listParticipants.mockResolvedValue([u1]);
 				const activeSend = workerA.service.refresh('r1');
 				await vi.advanceTimersByTimeAsync(1_000);
-				expect(sent.at(-1)).toEqual([{ id: u1.identity, screenSharing: false }]);
+				expect(sent.at(-1)).toEqual([{ id: u1.identity, screenSharing: false, recording: false }]);
 				workerB.liveKitService.listParticipants.mockResolvedValue([]);
 				await workerB.service.refresh('r1');
 
@@ -2228,7 +2228,7 @@ describe('ChatVoiceService', () => {
 
 				expect(await workerB.redis.get('chatVoice:federated:r1')).toBeNull();
 				await vi.advanceTimersByTimeAsync(20_000);
-				expect(sent.at(-1)).toEqual([{ id: u1.identity, screenSharing: true }]);
+				expect(sent.at(-1)).toEqual([{ id: u1.identity, screenSharing: true, recording: false }]);
 				expect((JSON.parse((await workerB.redis.get('chatVoice:federated:r1'))!) as { updatedAt: number }).updatedAt).toBeGreaterThan(newer.updatedAt);
 			} finally {
 				workerA.service.onApplicationShutdown();
@@ -2273,7 +2273,7 @@ describe('ChatVoiceService', () => {
 			expect(sent.size).toBe(50);
 			for (const deliveries of sent.values()) {
 				expect(deliveries.length).toBeLessThanOrEqual(7);
-				expect(deliveries.at(-1)!.participants).toEqual([{ id: 'https://local.test/users/u1', screenSharing: true }]);
+				expect(deliveries.at(-1)!.participants).toEqual([{ id: 'https://local.test/users/u1', screenSharing: true, recording: false }]);
 			}
 		});
 
@@ -2317,8 +2317,8 @@ describe('ChatVoiceService', () => {
 				// 送れなかった変化は、間隔の鍵が切れたときに最新の現況を読み直して送る
 				await vi.advanceTimersByTimeAsync(10_001);
 				expect(deliveredObjects(workerB).map(object => object.participants)).toEqual([
-					[{ id: 'https://local.test/users/u1', screenSharing: true }],
-					[{ id: 'https://local.test/users/u1', screenSharing: true }],
+					[{ id: 'https://local.test/users/u1', screenSharing: true, recording: false }],
+					[{ id: 'https://local.test/users/u1', screenSharing: true, recording: false }],
 				]);
 			} finally {
 				workerA.service.onApplicationShutdown();

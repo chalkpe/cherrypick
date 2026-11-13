@@ -10,7 +10,7 @@ import { DI } from '@/di-symbols.js';
 import type { Config, VoiceCallConfig } from '@/config.js';
 import type { MiUser } from '@/models/User.js';
 import { bindThis } from '@/decorators.js';
-import { recordingAttribute, reportedVoiceStatus } from '@/core/voice-participant-status.js';
+import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 
 const ROOM_NAME_PREFIX = 'chatRoom:';
 
@@ -32,7 +32,6 @@ export type LiveKitParticipant = {
 @Injectable()
 export class LiveKitService {
 	public get isEnabled(): boolean { return this.livekit != null; }
-	public async supportsRecording(_roomId: string): Promise<boolean> { return this.isEnabled; }
 	private readonly livekit: NonNullable<VoiceCallConfig['livekit']> | null;
 	protected roomService: RoomServiceClient | null;
 
@@ -134,7 +133,6 @@ export class LiveKitService {
 					// 届いているマイクの音は、本人の「切った」という申告より優先する (話しているのに切ったと見せて、誰が話しているか隠させない)
 					micMuted: micTrack?.muted === false ? false : parseReportedBoolean(participant.attributes?.['cherrypick.micMuted']),
 					deafened: parseReportedBoolean(participant.attributes?.['cherrypick.deafened']),
-					recording: participant.sid ? participant.attributes?.[recordingAttribute(participant.sid)] === 'true' : undefined,
 				}),
 				screenSharing: participant.tracks.some(track => track.source === TrackSource.SCREEN_SHARE),
 				// 空のソース一覧は LiveKit では全ソース許可を表す。
@@ -147,7 +145,7 @@ export class LiveKitService {
 
 	/** Reported UI settings, scoped to the connected participant session. */
 	@bindThis
-	public async setParticipantStatus(roomId: string, identity: string, sessionId: string, status: { micMuted: boolean; deafened: boolean; recording?: boolean }): Promise<boolean> {
+	public async setParticipantStatus(roomId: string, identity: string, sessionId: string, status: { micMuted: boolean; deafened: boolean }): Promise<boolean> {
 		const service = this.requireRoomService();
 		const roomName = this.roomNameOf(roomId);
 		try {
@@ -160,7 +158,6 @@ export class LiveKitService {
 			const attributes = {
 				'cherrypick.micMuted': String(status.micMuted),
 				'cherrypick.deafened': String(status.deafened),
-				...(status.recording != null ? { [recordingAttribute(sessionId)]: String(status.recording) } : {}),
 			};
 			const updated = await service.updateParticipant(roomName, identity, {
 				attributes,

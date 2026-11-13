@@ -19,10 +19,7 @@ beforeEach(() => {
 	f = createFixture();
 	f.chatRoomsRepository.findOneBy.mockResolvedValue({ ...f.rooms.get('r1'), allowRecording: true });
 	Object.assign(f.usersRepository, { findOneBy: vi.fn().mockResolvedValue(KNOWN_USERS.find(user => user.id === 'owner')) });
-	setStatus = vi.fn(async (_roomId: string, identity: string, _sid: string, status: { recording?: boolean }) => {
-		for (const participant of await f.liveKitService.listParticipants()) if (participant.identity === identity) participant.recording = status.recording === true;
-		return true;
-	});
+	setStatus = vi.fn().mockResolvedValue(true);
 	Object.assign(f.liveKitService, { setParticipantStatus: setStatus });
 	f.liveKitService.listParticipants.mockResolvedValue([{ ...recorder }, { ...member }]);
 	vi.spyOn(f.service, 'scheduleRefresh').mockImplementation(() => {});
@@ -51,6 +48,17 @@ function mirror() {
 }
 
 describe('recording event delivery independent of the voice snapshot gate', () => {
+	test('uses the approved binding for the current session in snapshots', async () => {
+		await f.service.reportStatus(me as any, 'r1', 'PA_1', { ...base, recording: true });
+		await f.service.refresh('r1');
+		const snapshot = () => JSON.parse(f.redis.store.get('chatVoice:state:r1')!).participants;
+		expect(snapshot().find((p: { identity: string }) => p.identity === recorder.identity).recording).toBe(true);
+
+		f.liveKitService.listParticipants.mockResolvedValue([{ ...recorder, sessionId: 'PA_2' }, { ...member }]);
+		await f.service.refresh('r1');
+		expect(snapshot().find((p: { identity: string }) => p.identity === recorder.identity).recording).toBe(false);
+	});
+
 	test('rejects a recording start without an ID before updating LiveKit', async () => {
 		const status = { micMuted: false, deafened: false, recording: true };
 

@@ -120,7 +120,6 @@ function recordingFixture(participants = [
 	Object.assign(fixture.liveKitService, { setParticipantStatus: vi.fn(async (_roomId: string, identity: string, sessionId: string, status: { recording?: boolean }) => {
 		const participant = participants.find(candidate => candidate.identity === identity);
 		if (participant == null || participant.sessionId !== sessionId) return false;
-		if (status.recording != null) participant.recording = status.recording;
 		return true;
 	}) });
 	vi.spyOn(fixture.service, 'scheduleRefresh').mockImplementation(() => {});
@@ -158,10 +157,12 @@ test('an older sweep cannot stop a recording approved while its room lookup is d
 
 	const binding = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
 	expect(binding.stop).toBeUndefined();
-	expect(participants[0].recording).toBe(true);
+	await fixture.service.refresh('r1');
+	const snapshot = JSON.parse((await redis.get('chatVoice:state:r1'))!);
+	expect(snapshot.participants.find((p: { identity: string }) => p.identity === participants[0].identity).recording).toBe(true);
 });
 
-test('a request that loses its lock cannot clear its replacement recording in LiveKit', async () => {
+test('a request that loses its lock cannot clear its replacement recording', async () => {
 	const { fixture, participants } = recordingFixture();
 	const paused = signal();
 	const resume = signal();
@@ -188,7 +189,9 @@ test('a request that loses its lock cannot clear its replacement recording in Li
 		resume.resolve();
 		await expect(first).resolves.toBe(false);
 
-		expect(participants[0].recording).toBe(true);
+		await fixture.service.refresh('r1');
+	const snapshot = JSON.parse((await redis.get('chatVoice:state:r1'))!);
+	expect(snapshot.participants.find((p: { identity: string }) => p.identity === participants[0].identity).recording).toBe(true);
 		const replacement = JSON.parse((await redis.get(`chatVoice:recording:${replacementId}`))!) as RecordingBinding;
 		expect(replacement.stop).toBeUndefined();
 	} finally {
@@ -213,7 +216,9 @@ test('a new SID for the same identity does not keep the previous recording alive
 	expect(previous.stop?.recording).toBe(false);
 	expect(previous.stopSent).toBe(true);
 	expect(current.stop).toBeUndefined();
-	expect(participants[0].recording).toBe(true);
+	await fixture.service.refresh('r1');
+	const snapshot = JSON.parse((await redis.get('chatVoice:state:r1'))!);
+	expect(snapshot.participants.find((p: { identity: string }) => p.identity === participants[0].identity).recording).toBe(true);
 });
 
 test('a rejected approval followed by a lost rollback cannot leave recording active', async () => {

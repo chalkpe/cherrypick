@@ -80,10 +80,10 @@ describe('LiveKitService', () => {
 	test('reads reported settings without deriving mute from media tracks', async () => {
 		roomService.listParticipants.mockResolvedValue([{
 			identity: 'i1', sid: 'PA_1', metadata: '{"userId":"u1"}',
-			attributes: { 'cherrypick.micMuted': 'false', 'cherrypick.deafened': 'true', 'cherrypick.recording:PA_1': 'true' },
+			attributes: { 'cherrypick.micMuted': 'false', 'cherrypick.deafened': 'true' },
 			tracks: [],
 		}]);
-		expect((await service.listParticipants('r1'))[0]).toMatchObject({ micMuted: false, deafened: true, recording: true });
+		expect((await service.listParticipants('r1'))[0]).toMatchObject({ micMuted: false, deafened: true });
 	});
 
 	test('does not let a reported mute hide a microphone that is still sending', async () => {
@@ -106,41 +106,6 @@ describe('LiveKitService', () => {
 		roomService.updateParticipant.mockClear();
 		await expect(service.setParticipantStatus('r1', 'i1', 'PA_old', { micMuted: false, deafened: false })).resolves.toBe(false);
 		expect(roomService.updateParticipant).not.toHaveBeenCalled();
-	});
-
-	test('a delayed microphone report leaves the recording attribute untouched', async () => {
-		roomService.getParticipant.mockResolvedValue({ identity: 'i1', sid: 'PA_1', attributes: { 'cherrypick.recording:PA_1': 'true' } });
-		roomService.updateParticipant.mockResolvedValue({ identity: 'i1', sid: 'PA_1' });
-
-		await service.setParticipantStatus('r1', 'i1', 'PA_1', { micMuted: true, deafened: false });
-
-		const attributes = roomService.updateParticipant.mock.calls[0][2].attributes;
-		expect(attributes).not.toHaveProperty('cherrypick.recording');
-		expect(attributes).not.toHaveProperty('cherrypick.recording:PA_1');
-	});
-
-	test.each([true, false])('an old SID write and cleanup cannot change a new SID recording=%s', async recording => {
-		const participant = {
-			identity: 'i1', sid: 'PA_new', metadata: '{"userId":"u1"}', joinedAt: 1n, tracks: [],
-			attributes: { 'cherrypick.recording': String(!recording), 'cherrypick.recording:PA_new': String(recording) } as Record<string, string>,
-		};
-		roomService.getParticipant.mockResolvedValue({ ...participant, sid: 'PA_old' });
-		roomService.listParticipants.mockResolvedValue([participant]);
-		let lateWrite: Record<string, string> | undefined;
-		roomService.updateParticipant.mockImplementation(async (_room, _identity, settings) => {
-			lateWrite ??= settings.attributes;
-			for (const [key, value] of Object.entries(settings.attributes)) {
-				if (value === '') delete participant.attributes[key];
-				else participant.attributes[key] = value as string;
-			}
-			return { ...participant };
-		});
-
-		await expect(service.setParticipantStatus('r1', 'i1', 'PA_old', { micMuted: false, deafened: false, recording: !recording })).resolves.toBe(false);
-		expect((await service.listParticipants('r1'))[0]).toMatchObject({ sessionId: 'PA_new', recording });
-		// 시간 초과한 이전 쓰기가 정리 뒤 적용되는 순서도 새 SID의 판정에 영향을 주지 않는다.
-		Object.assign(participant.attributes, lateWrite);
-		expect((await service.listParticipants('r1'))[0].recording).toBe(recording);
 	});
 
 	test('does not accept or leave behind settings written to a session that replaced the reporting one', async () => {

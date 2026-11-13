@@ -20,26 +20,16 @@ const validate = new Ajv().compile({
 	required: ['identity', 'sessionId', 'micMuted', 'deafened'],
 	properties: {
 		identity: { type: 'string' }, sessionId: { type: 'string' },
-		micMuted: { type: 'boolean' }, deafened: { type: 'boolean' }, recording: { type: 'boolean' },
+		micMuted: { type: 'boolean' }, deafened: { type: 'boolean' },
 	},
 });
 
-test.each([true, false, undefined])('relay status preserves recording=%s without leaking the client recording ID', async recording => {
-	const requests: unknown[] = [];
-	const relay = {
-		providers: [{}],
-		participant: async (_roomId: string, _action: string, body: unknown) => {
-			if (!validate(body)) throw new Error(JSON.stringify(validate.errors));
-			requests.push(body);
-			return true;
-		},
-	} as unknown as VoiceRelayConsumerService;
-	const service = new VoiceBackendService({ url: 'https://consumer.test' } as Config, relay, {} as DataSource);
-	const status = { micMuted: true, deafened: false, ...(recording != null ? { recording } : {}), recordingId: '12345678-1234-4123-8123-123456789abc' };
-
-	await expect(service.setParticipantStatus('room', 'identity', 'PA_1', status)).resolves.toBe(true);
-
-	expect(requests).toEqual([{ identity: 'identity', sessionId: 'PA_1', micMuted: true, deafened: false, ...(recording != null ? { recording } : {}) }]);
+test('relay status contains only the ordinary session settings', async () => {
+	const { backend, requests } = consumerFixture(undefined);
+	await expect(backend.setParticipantStatus('r1', 'identity', 'PA_1', { micMuted: true, deafened: false })).resolves.toBe(true);
+	expect(requests.filter(request => request.path.endsWith('/participants/status')).map(request => request.body)).toEqual([
+		{ identity: 'identity', sessionId: 'PA_1', micMuted: true, deafened: false },
+	]);
 });
 
 function consumerFixture(recordingStatus: boolean | undefined) {
@@ -56,6 +46,7 @@ function consumerFixture(recordingStatus: boolean | undefined) {
 				protocolVersion: 1, enabled: true, accepting: true, maxSlots: 100, reservedSlots: 10, remainingSlots: 90, remainingRooms: 10,
 				capabilities: { cancelPending: true, includeIceServers: true, ...(recordingStatus == null ? {} : { recordingStatus }) },
 			};
+			if (path.endsWith('/snapshot')) return { allocationId: 'allocation', generation: 'generation', state: 'active', revision: '1', participants: [{ identity: 'https://local.test/users/u1', userId: 'u1', sessionId: 'PA_1', screenSharing: false, allowScreenShare: true, micMuted: false, deafened: false }] };
 			if (path.endsWith('/participants/status')) {
 				if (!validate(body) || (recordingStatus !== true && Object.hasOwn(body as object, 'recording'))) throw new Error('INVALID_REQUEST');
 				return { accepted: true };
@@ -70,19 +61,7 @@ function consumerFixture(recordingStatus: boolean | undefined) {
 	return { consumer, backend, requests };
 }
 
-test.each([true, false, undefined])('recordingStatus=%s gates capture while preserving ordinary relay status', async capability => {
-	const { backend, requests } = consumerFixture(capability);
-	expect(await backend.supportsRecording('r1')).toBe(capability === true);
-	await expect(backend.setParticipantStatus('r1', 'identity', 'PA_1', { micMuted: false, deafened: false, recording: true })).resolves.toBe(capability === true);
-	await expect(backend.setParticipantStatus('r1', 'identity', 'PA_1', { micMuted: true, deafened: false })).resolves.toBe(true);
-	await expect(backend.setParticipantStatus('r1', 'identity', 'PA_1', { micMuted: true, deafened: false, recording: false })).resolves.toBe(true);
-
-	const bodies = requests.filter(request => request.path.endsWith('/participants/status')).map(request => request.body);
-	expect(bodies).toHaveLength(capability === true ? 3 : 2);
-	if (capability !== true) expect(bodies.every(body => !Object.hasOwn(body as object, 'recording'))).toBe(true);
-});
-
-test('an older provider is refused before preparing or delivering a recording event', async () => {
+test('a provider without recording capability accepts recording with its session snapshot', async () => {
 	const { backend, requests } = consumerFixture(undefined);
 	const fixture = createFixture();
 	Object.assign(fixture.service, { liveKitService: backend });
@@ -95,10 +74,9 @@ test('an older provider is refused before preparing or delivering a recording ev
 	try {
 		const result = await fixture.service.reportStatus(KNOWN_USERS.find(user => user.id === 'u1')! as any, 'r1', 'PA_1', { micMuted: false, deafened: false, recording: true, recordingId });
 
-		expect(result).toBe(false);
-		expect(await fixture.redis.get(`chatVoice:recording:${recordingId}`)).toBeNull();
-		expect(fixture.queueService.deliver).not.toHaveBeenCalled();
-		expect(requests.every(request => request.method === 'GET' && request.path.endsWith('/capacity'))).toBe(true);
+		expect(result).toBe(true);
+		expect(await fixture.redis.get(`chatVoice:recording:${recordingId}`)).not.toBeNull();
+		expect(requests.some(request => request.path.endsWith('/snapshot'))).toBe(true);
 	} finally {
 		fixture.service.onApplicationShutdown();
 	}

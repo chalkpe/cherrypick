@@ -602,7 +602,6 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, settings)) return false;
 		} else {
 			if (!RECORDING_ID.test(status.recordingId)) return false;
-			if (status.recording === true && !await this.liveKitService.supportsRecording(roomId)) return false;
 			const lockKey = `chatVoice:recordingLock:${hashOf([roomId, participant.identity])}`;
 			const token = randomUUID();
 			if (await this.redisClient.set(lockKey, token, 'PX', 30_000, 'NX') !== 'OK') throw new Error('Recording status is being updated');
@@ -613,22 +612,14 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 				if (held != null && (held.roomId !== roomId || held.identity !== participant.identity || held.sessionId !== sessionId || (held.stop != null && status.recording === true))) return false;
 				// 승인 전에는 녹음 표시를 쓰지 않는다. 큐 적재 실패와 클라이언트 rollback 유실이 겹쳐도 표시가 남지 않아야 한다.
 				if (held?.stop == null && !(await this.liveKitService.listParticipants(roomId)).some(p => p.identity === participant.identity && p.sessionId === sessionId)) return false;
+				if (held?.stop == null && !await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, { micMuted: status.micMuted, deafened: status.deafened })) return false;
 				const prepared = await this.redisClient.eval(PREPARE_RECORDING_EVENT_SCRIPT, 6, bindingKey,
 					`chatVoice:recordingActive:${hashOf([roomId, participant.identity, sessionId])}`, lockKey, `chatVoice:recordingRoom:${roomId}`, `chatVoice:recordingHistory:${roomId}`, ACTIVE_ROOMS_KEY,
 					token, roomId, participant.identity, sessionId, status.recordingId, status.recording === true ? '1' : '0', Date.now(),
 					recordingRetentionSeconds(Math.max(recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts), held?.start.deliveryWindowMs ?? 0), this.config.inboxJobMaxAttempts), randomUUID(), recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts), MAX_RECORDING_IDS);
-				// 잠금을 잃은 요청은 새 소유자의 LiveKit 상태를 정리하지 않는다.
 				if (typeof prepared !== 'string' || prepared === '') return false;
 				const binding = JSON.parse(prepared) as RecordingBinding;
-				if (held?.stop == null && status.recording !== true) {
-					if (await this.redisClient.get(lockKey) !== token) return false;
-					if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, { ...status, recording: false })) return false;
-				}
 				await this.deliverPendingRecordingEvents(context.room.value, binding, bindingKey, lockKey, token);
-				if (status.recording === true) {
-					if (await this.redisClient.get(lockKey) !== token) return false;
-					if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, status)) return false;
-				}
 			} finally {
 				await this.redisClient.eval(RELEASE_FEDERATION_LOCK_SCRIPT, 1, lockKey, token);
 				this.scheduleRefresh(roomId);
@@ -821,6 +812,18 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}));
 	}
 
+	private async participantsWithRecording(roomId: string): Promise<LiveKitParticipant[]> {
+		const participants = await this.liveKitService.listParticipants(roomId);
+		return await Promise.all(participants.map(async participant => {
+			const sessionId = participant.sessionId;
+			if (!sessionId) return { ...participant, recording: false };
+			const id = await this.redisClient.get(`chatVoice:recordingActive:${hashOf([roomId, participant.identity, sessionId])}`);
+			const raw = id == null ? null : await this.redisClient.get(`chatVoice:recording:${id}`);
+			const binding = raw == null ? null : JSON.parse(raw) as RecordingBinding;
+			return { ...participant, recording: binding != null && binding.roomId === roomId && binding.identity === participant.identity && binding.sessionId === sessionId && binding.stop == null && binding.startSent === true };
+		}));
+	}
+
 	/**
 	 * ルームの参加者を LiveKit から読み直して保存し、メンバーに知らせ、他のサーバーへ送るかを決める。
 	 * refusedHosts を渡すと (定期的な読み直し)、読んだ参加者のうちいまそのルームに残れない者を外し (removeUnadmitted の sweep。
@@ -835,7 +838,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const readAt = await this.allocateStamp(this.localStampKeyOf(roomId), this.decidedKeyOf(roomId), LOCAL_STAMP_TTL_SECONDS);
 		// 最初の読み取りが失敗しても、次の sweep で権限を確かめ直す。
 		await this.redisClient.sadd(ACTIVE_ROOMS_KEY, roomId);
-		const listed = await this.liveKitService.listParticipants(roomId);
+		const listed = await this.participantsWithRecording(roomId);
 		// 残れない参加者を外すのにも、時刻を決めた後に読んだこの一覧を使い、LiveKit を読み直さない。
 		// 外している間に変わった参加者は、その webhook の読み直し (後に決めた時刻) が保存する
 		const removed = refusedHosts != null ? await this.removeUnadmitted(roomId, listed, refusedHosts, 'sweep') : new Set<string>();
@@ -948,7 +951,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 				const currentRaw = await this.redisClient.get(bindingKey);
 				if (currentRaw == null) { await this.redisClient.srem(`chatVoice:recordingRoom:${room.id}`, id); continue; }
 				const current = JSON.parse(currentRaw) as RecordingBinding;
-				const listed = current.stop == null ? await this.liveKitService.listParticipants(room.id) : [];
+				const listed = current.stop == null ? await this.participantsWithRecording(room.id) : [];
 				const recording = current.stop == null && listed.some(p => p.identity === current.identity && p.sessionId === current.sessionId && p.recording === true);
 				if (recording) {
 					await this.redisClient.eval(RENEW_ACTIVE_RECORDING_SCRIPT, 4, bindingKey,
@@ -970,7 +973,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	private async deliverRecordingEvent(room: MiChatRoom, event: RecordingEvent): Promise<void> {
 		const updatedAt = await this.allocateStamp(this.localStampKeyOf(room.id), this.decidedKeyOf(room.id), LOCAL_STAMP_TTL_SECONDS);
-		const listed = await this.liveKitService.listParticipants(room.id);
+		const listed = await this.participantsWithRecording(room.id);
 		const participants = listed.map(p => ({ identity: p.identity, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) }));
 		const audience = await this.audienceOf(room);
 		await this.deliverSnapshot(room, audience, participants, updatedAt, event);
@@ -1697,7 +1700,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 		let listed: LiveKitParticipant[];
 		try {
-			listed = await this.liveKitService.listParticipants(room.id);
+			listed = await this.participantsWithRecording(room.id);
 		} catch (err) {
 			// 読み直し (refresh) がルームを通話中の一覧から外した後なら、定期的な読み直しはもうこのルームを見ない。間隔を延ばしながら決め直す
 			this.retryFederationLater(room.id);

@@ -283,7 +283,6 @@ export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []
 	const liveKitService = {
 		onRelayChange: (callback: (roomId: string) => void) => { relayChange = callback; },
 		isEnabled: true,
-		supportsRecording: vi.fn().mockResolvedValue(true),
 		getPublicUrl: () => 'https://local.test/livekit',
 		identityOf: (user: { id: string; host: string | null; uri: string | null }) => user.host == null ? `https://local.test/users/${user.id}` : user.uri,
 		roomIdOf: (name: string) => name.startsWith('chatRoom:') ? name.slice('chatRoom:'.length) : null,
