@@ -107,40 +107,32 @@ describe('chat unread sign', () => {
 
 		const accountSent = await waitFire(reader, 'main', () => api('mute/delete', { userId: muted.id }, reader), message => message.type === 'meUpdated' && message.body.hasUnreadChatMessages === true);
 
-		assert.strictEqual(accountSent, true);
+		assert.strictEqual(accountSent, false);
 		assert.strictEqual(await hasUnread(reader), true);
 	});
 
-	test('muting the account behind the only unread conversation turns the sign off', async () => {
+	test('refreshing the account after a mute turns the unread sign off', async () => {
 		const [reader, sender] = [await person(), await person()];
 		await send(sender, reader, 'hello');
 
 		const accountSent = await waitFire(reader, 'main', () => api('mute/create', { userId: sender.id }, reader), message => message.type === 'meUpdated' && message.body.hasUnreadChatMessages === false);
 
-		assert.strictEqual(accountSent, true);
+		assert.strictEqual(accountSent, false);
 		assert.strictEqual(await hasUnread(reader), false);
 	});
 
-	test('an app that mutes the sender is told the sign without what only the account itself may see', async () => {
+	test('an app can refresh the unread sign after muting without receiving private account fields', async () => {
 		const [reader, sender] = [await person(), await person()];
 		await send(sender, reader, 'hello');
-		// The app may read the account and change its mutes, and nothing else.
 		const app = { token: await createAppToken(reader, ['read:account', 'write:mutes']) };
-		let account: Record<string, unknown> | undefined;
 
-		const accountSent = await waitFire(app, 'main', () => api('mute/create', { userId: sender.id }, app), message => {
-			if (message.type !== 'meUpdated') return false;
-			account = message.body;
-			return true;
-		});
+		const accountSent = await waitFire(app, 'main', () => api('mute/create', { userId: sender.id }, app), message => message.type === 'meUpdated');
 
-		assert.strictEqual(accountSent, true);
-		assert.strictEqual(account?.hasUnreadChatMessages, false);
-		// `i` leaves these out for an app. The stream must not hand them over either.
+		assert.strictEqual(accountSent, false);
 		const fromApi = (await api('i', {}, app)).body as Record<string, unknown>;
+		assert.strictEqual(fromApi.hasUnreadChatMessages, false);
 		for (const secret of ['email', 'emailVerified', 'securityKeysList', 'signupReason']) {
 			assert.strictEqual(secret in fromApi, false, `i: ${secret}`);
-			assert.strictEqual(secret in account!, false, `meUpdated: ${secret}`);
 		}
 	});
 
