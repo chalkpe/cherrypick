@@ -5,7 +5,7 @@
 
 import { FindOperator } from 'typeorm';
 
-/** Whether a stored row meets a repository condition made of plain values, In, IsNull and range operators. */
+/** Whether a stored row meets a repository condition made of plain values, In, IsNull, Not, And and range operators. */
 export function meets(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
 	return Object.entries(where).every(([key, expected]) => {
 		const actual = row[key] ?? null;
@@ -15,7 +15,8 @@ export function meets(row: Record<string, unknown>, where: Record<string, unknow
 		}
 		if (expected.type === 'in') return (expected.value as unknown as unknown[]).includes(actual);
 		if (expected.type === 'isNull') return actual == null;
-		if (expected.type === 'not') return actual !== expected.value;
+		// value는 중첩 연산자를 잎 값까지 풀어 버린다. 중첩 연산자는 child로 꺼내 다시 판정한다.
+		if (expected.type === 'not') return !meets(row, { [key]: expected.child ?? expected.value });
 		if (expected.type === 'between') return typeof actual === 'string' && actual >= expected.value[0] && actual <= expected.value[1];
 		if (expected.type === 'moreThanOrEqual') return typeof actual === 'string' && actual >= expected.value;
 		if (expected.type === 'moreThan') return typeof actual === 'string' && actual > expected.value;

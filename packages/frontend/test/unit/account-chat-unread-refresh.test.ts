@@ -4,7 +4,7 @@
  */
 
 import { afterEach, expect, test, vi } from 'vitest';
-import { refreshChatUnreadState, refreshCurrentAccount, updateCurrentAccount } from '@/accounts.js';
+import { refreshCurrentAccount, updateCurrentAccount } from '@/accounts.js';
 import { $i } from '@/i.js';
 import { miLocalStorage } from '@/local-storage.js';
 import { signout } from '@/signout.js';
@@ -66,25 +66,6 @@ test.each([true, false])('the newer account request wins when responses finish i
 	expect($i?.name).toBe('Newer profile');
 });
 
-test('unread events during a refresh ask for one more account, sent after them', async () => {
-	const responses: ((value: Response) => void)[] = [];
-	const fetch = vi.spyOn(window, 'fetch').mockImplementation(() => new Promise<Response>(resolve => { responses.push(resolve); }));
-
-	// A new-message event, then a read event that the server sent after the read, arrive while the first request is out.
-	const settled = refreshChatUnreadState();
-	refreshChatUnreadState();
-	refreshChatUnreadState();
-	expect(fetch).toHaveBeenCalledTimes(1);
-
-	responses[0](new Response(JSON.stringify({ id: 'viewer', hasUnreadChatMessages: true })));
-	await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
-	responses[1](new Response(JSON.stringify({ id: 'viewer', hasUnreadChatMessages: false })));
-	await settled;
-
-	expect(fetch).toHaveBeenCalledTimes(2);
-	expect($i?.hasUnreadChatMessages).toBe(false);
-});
-
 test('ordinary account refreshes retain their existing completion order', async () => {
 	const responses: ((value: Response) => void)[] = [];
 	vi.spyOn(window, 'fetch').mockImplementation(() => new Promise<Response>(resolve => { responses.push(resolve); }));
@@ -99,87 +80,8 @@ test('ordinary account refreshes retain their existing completion order', async 
 	expect($i?.name).toBe('Older');
 });
 
-// 일시적인 조회 실패가 동기화 이벤트를 소모한 채 끝내면, 다음 이벤트나 재시작 전까지 표시가 어긋난다.
-test.each([
-	{ direction: 'new message', before: false, after: true },
-	{ direction: 'read elsewhere', before: true, after: false },
-])('a failed unread sync recovers without another event ($direction)', async ({ before, after }) => {
-	vi.useFakeTimers();
-	updateCurrentAccount({ hasUnreadChatMessages: before });
-	let calls = 0;
-	vi.spyOn(window, 'fetch').mockImplementation(() => {
-		calls++;
-		if (calls === 1) return Promise.reject(new Error('network down'));
-		return Promise.resolve(new Response(JSON.stringify({ id: 'viewer', hasUnreadChatMessages: after })));
-	});
-
-	const settled = refreshChatUnreadState();
-	await vi.advanceTimersByTimeAsync(60_000);
-	await settled;
-
-	expect(calls).toBe(2);
-	expect($i?.hasUnreadChatMessages).toBe(after);
-});
-
-test('a server-error unread sync also recovers without another event', async () => {
-	vi.useFakeTimers();
-	updateCurrentAccount({ hasUnreadChatMessages: false });
-	let calls = 0;
-	vi.spyOn(window, 'fetch').mockImplementation(() => {
-		calls++;
-		if (calls === 1) return Promise.resolve(new Response('', { status: 503 }));
-		return Promise.resolve(new Response(JSON.stringify({ id: 'viewer', hasUnreadChatMessages: true })));
-	});
-
-	const settled = refreshChatUnreadState();
-	await vi.advanceTimersByTimeAsync(60_000);
-	await settled;
-
-	expect(calls).toBe(2);
-	expect($i?.hasUnreadChatMessages).toBe(true);
-});
-
-test('retries stop once the unread sync succeeds', async () => {
-	vi.useFakeTimers();
-	updateCurrentAccount({ hasUnreadChatMessages: false });
-	let calls = 0;
-	vi.spyOn(window, 'fetch').mockImplementation(() => {
-		calls++;
-		if (calls === 1) return Promise.reject(new Error('network down'));
-		return Promise.resolve(new Response(JSON.stringify({ id: 'viewer', hasUnreadChatMessages: true })));
-	});
-
-	const settled = refreshChatUnreadState();
-	await vi.advanceTimersByTimeAsync(60_000);
-	await settled;
-	await vi.advanceTimersByTimeAsync(120_000);
-
-	expect(calls).toBe(2);
-});
-
-test('events during a retry wait still merge into one retry', async () => {
-	vi.useFakeTimers();
-	updateCurrentAccount({ hasUnreadChatMessages: false });
-	let calls = 0;
-	vi.spyOn(window, 'fetch').mockImplementation(() => {
-		calls++;
-		if (calls === 1) return Promise.reject(new Error('network down'));
-		return Promise.resolve(new Response(JSON.stringify({ id: 'viewer', hasUnreadChatMessages: true })));
-	});
-
-	const settled = refreshChatUnreadState();
-	await vi.advanceTimersByTimeAsync(100);
-	refreshChatUnreadState();
-	refreshChatUnreadState();
-	await vi.advanceTimersByTimeAsync(60_000);
-	await settled;
-
-	expect(calls).toBe(2);
-	expect($i?.hasUnreadChatMessages).toBe(true);
-});
-
-test('a deleted account is not retried', async () => {
-	vi.useFakeTimers();
+// 계정 삭제는 쪽지와 무관한 공용 경로다. 삭제된 계정은 재시도 없이 로그아웃한다.
+test('a deleted account signs out without retrying', async () => {
 	updateCurrentAccount({ hasUnreadChatMessages: false });
 	let calls = 0;
 	vi.spyOn(window, 'fetch').mockImplementation(() => {
@@ -187,9 +89,7 @@ test('a deleted account is not retried', async () => {
 		return Promise.resolve(new Response(JSON.stringify({ error: { id: 'e5b3b9f0-2b8f-4b9f-9c1f-8c5c1b2e1b1a' } })));
 	});
 
-	const settled = refreshChatUnreadState();
-	await vi.advanceTimersByTimeAsync(120_000);
-	await settled;
+	await refreshCurrentAccount({ protectChatUnread: true });
 
 	expect(calls).toBe(1);
 	expect(signout).toHaveBeenCalled();

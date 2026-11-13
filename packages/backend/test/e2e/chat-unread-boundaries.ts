@@ -212,7 +212,7 @@ describe('chat unread boundaries', () => {
 
 		const latest = (await say(sender, reader, 'New unread content')).body;
 		assert.strictEqual(await redis.get(`${key}:first`), latest.id);
-		const told = await waitFire(reader, 'main', () => api('chat/messages/delete', { messageId: latest.id }, sender), message => message.type === 'readAllChatMessages');
+		const told = await waitFire(reader, 'main', () => api('chat/messages/delete', { messageId: latest.id }, sender), message => message.type === 'chatUnread' && message.body.hasUnreadChatMessages === false);
 
 		assert.strictEqual(told, true);
 		assert.strictEqual(await hasUnread(reader), false);
@@ -229,7 +229,7 @@ describe('chat unread boundaries', () => {
 		const latest = (await say(sender, reader, 'Withdraw this')).body;
 		assert.strictEqual(await hasUnread(reader), true);
 
-		const told = await waitFire(reader, 'main', () => api('chat/messages/delete', { messageId: latest.id }, sender), message => message.type === 'readAllChatMessages');
+		const told = await waitFire(reader, 'main', () => api('chat/messages/delete', { messageId: latest.id }, sender), message => message.type === 'chatUnread' && message.body.hasUnreadChatMessages === false);
 
 		assert.strictEqual(told, true);
 		assert.strictEqual(await hasUnread(reader), false);
@@ -243,7 +243,7 @@ describe('chat unread boundaries', () => {
 		assert.strictEqual((await api('chat/messages/room-timeline', { roomId: room.id }, reader)).status, 200);
 		const latest = (await roomSay(owner, room.id)).body;
 
-		const told = await waitFire(reader, 'main', () => api('chat/messages/delete', { messageId: latest.id }, owner), message => message.type === 'readAllChatMessages');
+		const told = await waitFire(reader, 'main', () => api('chat/messages/delete', { messageId: latest.id }, owner), message => message.type === 'chatUnread' && message.body.hasUnreadChatMessages === false);
 
 		assert.strictEqual(told, true);
 		assert.strictEqual(await hasUnread(reader), false);
@@ -257,7 +257,7 @@ describe('chat unread boundaries', () => {
 
 		const told = await waitFire(reader, 'main', async () => {
 			assert.strictEqual((await api('admin/suspend-user', { userId: owner.id }, root)).status, 204);
-		}, message => message.type === 'readAllChatMessages');
+		}, message => message.type === 'chatUnread' && message.body.hasUnreadChatMessages === false);
 
 		assert.strictEqual(told, true);
 		assert.strictEqual(await hasUnread(reader), false);

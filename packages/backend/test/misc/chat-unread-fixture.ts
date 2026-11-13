@@ -28,8 +28,8 @@ export function chatUnreadFixture({ remoteMembers = false } = {}) {
 	let roomPresent = true;
 	const room = { id: 'room1', ownerId: violet.id, isArchived: false, isMutedByOwner: false };
 	const messages: Partial<MiChatMessage>[] = [];
-	const memberships = [{ userId: reader.id, isMuted: false }, { userId: amber.id, isMuted: false }];
-	if (remoteMembers) memberships.push({ userId: cobalt.id, isMuted: false }, { userId: dahlia.id, isMuted: false });
+	const memberships = [{ id: 'membership1', userId: reader.id, isMuted: false }, { id: 'membership2', userId: amber.id, isMuted: false }];
+	if (remoteMembers) memberships.push({ id: 'membership3', userId: cobalt.id, isMuted: false }, { id: 'membership4', userId: dahlia.id, isMuted: false });
 	const delivered: { actorId: string; type: string; inbox: string; jobId: string }[] = [];
 	const mutings: Pick<MiMuting, 'id' | 'muterId' | 'muteeId'>[] = [];
 	const main = vi.fn();
@@ -149,6 +149,12 @@ export function chatUnreadFixture({ remoteMembers = false } = {}) {
 				.filter(member => where.userId == null || member.userId === where.userId)
 				.map(member => ({ ...member, roomId: room.id })),
 			findOneBy: async ({ userId }: { userId: string }) => memberships.find(member => member.userId === userId) ?? null,
+			update: async (id: string, values: { isMuted?: boolean }) => {
+				const member = memberships.find(candidate => candidate.id === id);
+				if (member == null) return { affected: 0 };
+				Object.assign(member, values);
+				return { affected: 1 };
+			},
 		},
 		chatRoomInvitationsRepository: { findBy: async () => [] },
 		chatRosterService: { markRoomDeletedFor: vi.fn(), forgetAccepted: vi.fn() },
@@ -195,6 +201,8 @@ export function chatUnreadFixture({ remoteMembers = false } = {}) {
 		users,
 		/** What the reader's open screens were told, in order. */
 		told: (userId = reader.id) => main.mock.calls.filter(([to]) => to === userId).map(([, type]) => type as string),
+		/** The versioned unread states the reader was told, in order. */
+		chatUnreadSent: (userId = reader.id) => main.mock.calls.filter(([to, type]) => to === userId && type === 'chatUnread').map(([, , state]) => state as { hasUnreadChatMessages: boolean; version: number }),
 		accountSent: () => main.mock.calls.filter(([userId, type]) => userId === reader.id && type === 'meUpdated').map(([, , account]) => account as { hasUnreadChatMessages: boolean }),
 		/** Holds the delayed notice at the point where it has decided to notify and is preparing what to send. */
 		holdNotice: () => {

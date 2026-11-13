@@ -199,7 +199,7 @@ describe('muting a chat room', () => {
 		assert.strictEqual(await hasUnread(owner), true);
 		assert.deepStrictEqual(await roomIsRead(owner), [false]);
 
-		const toldEverythingIsRead = await waitFire(owner, 'main', () => api('chat/messages/room-timeline', { roomId: room.id }, owner), message => message.type === 'readAllChatMessages');
+		const toldEverythingIsRead = await waitFire(owner, 'main', () => api('chat/messages/room-timeline', { roomId: room.id }, owner), message => message.type === 'chatUnread' && message.body.hasUnreadChatMessages === false);
 
 		assert.strictEqual(toldEverythingIsRead, true);
 		assert.strictEqual(await hasUnread(owner), false);

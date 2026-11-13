@@ -154,7 +154,7 @@ export function updateCurrentAccount(accountData: Partial<Misskey.entities.MeDet
 	miLocalStorage.setItem('account', JSON.stringify($i));
 }
 
-export async function refreshCurrentAccount(options?: { protectChatUnread?: boolean; reportFailure?: boolean }) {
+export async function refreshCurrentAccount(options?: { protectChatUnread?: boolean }) {
 	if (!$i) return;
 	const me = $i;
 	const unreadRevision = chatUnreadRevision;
@@ -174,58 +174,7 @@ export async function refreshCurrentAccount(options?: { protectChatUnread?: bool
 			}
 			return;
 		}
-		// 채팅 미읽음 동기화는 실패를 삼키면 다음 이벤트까지 표시가 어긋난 채 남으므로 호출한 쪽에 알린다.
-		if (options?.reportFailure) throw reason;
 	});
-}
-
-const CHAT_UNREAD_RETRY_DELAYS = [1000, 5000, 30000];
-let chatUnreadRefreshing: Promise<void> | null = null;
-let chatUnreadRefreshQueued = false;
-let chatUnreadRetryWake: (() => void) | null = null;
-
-/**
- * Brings the chat unread sign up to date after the server says it changed. The events that say so can reach the screen
- * in another order than the changes they report, so the sign follows a fresh account, never the event itself.
- * One request runs at a time; events during it ask for one more, which starts after them all.
- * A failed request is retried with growing delays instead of consuming the event: the sign would stay wrong until
- * the next event otherwise. Events during a retry wait join that retry.
- */
-export function refreshChatUnreadState(): Promise<void> {
-	if (chatUnreadRefreshing != null) {
-		chatUnreadRefreshQueued = true;
-		chatUnreadRetryWake?.();
-		return chatUnreadRefreshing;
-	}
-	chatUnreadRefreshing = (async () => {
-		let attempt = 0;
-		for (;;) {
-			chatUnreadRefreshQueued = false;
-			try {
-				await refreshCurrentAccount({ protectChatUnread: true, reportFailure: true });
-			} catch {
-				const retryDelay = CHAT_UNREAD_RETRY_DELAYS.at(attempt++);
-				if (retryDelay == null) return;
-				await new Promise<void>(resolve => {
-					const timer = window.setTimeout(() => {
-						chatUnreadRetryWake = null;
-						resolve();
-					}, retryDelay);
-					chatUnreadRetryWake = () => {
-						window.clearTimeout(timer);
-						chatUnreadRetryWake = null;
-						resolve();
-					};
-				});
-				continue;
-			}
-			if (!chatUnreadRefreshQueued) return;
-		}
-	})().finally(() => {
-		chatUnreadRefreshing = null;
-		chatUnreadRetryWake = null;
-	});
-	return chatUnreadRefreshing;
 }
 
 export async function login(token: AccountWithToken['token'], redirect?: string) {

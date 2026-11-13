@@ -73,8 +73,7 @@ export interface MainEventTypes {
 	unreadNotification: Packed<'Notification'>;
 	unreadAntenna: MiAntenna;
 	newChatMessage: Packed<'ChatMessage'>;
-	readAllChatMessages: undefined;
-	chatUnreadChanged: undefined;
+	chatUnread: { hasUnreadChatMessages: boolean; version: number };
 	chatRoomVoiceState: Packed<'ChatRoomVoiceState'>;
 	chatRoomListChanged: undefined;
 	readAllAnnouncements: undefined;

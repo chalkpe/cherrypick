@@ -9,9 +9,9 @@ import { createFakePrefer } from './fake-prefer.js';
 const mocks = vi.hoisted(() => ({
 	streamHandlers: new Map<string, (...args: any[]) => void>(),
 	channelHandlers: new Map<string, (...args: any[]) => void>(),
-	refreshChatUnreadState: vi.fn(),
 	updateCurrentAccount: vi.fn(),
 	playMisskeySfx: vi.fn(),
+	misskeyApi: vi.fn(),
 	confirm: vi.fn(async () => ({ canceled: true })),
 	prefer: null as any,
 }));
@@ -57,11 +57,11 @@ vi.mock('@/preferences.js', () => {
 	});
 	return { prefer: mocks.prefer };
 });
-vi.mock('@/accounts.js', () => ({ refreshChatUnreadState: mocks.refreshChatUnreadState, updateCurrentAccount: mocks.updateCurrentAccount }));
+vi.mock('@/accounts.js', () => ({ updateCurrentAccount: mocks.updateCurrentAccount }));
 vi.mock('@/utility/unison-reload.js', () => ({ unisonReload: vi.fn() }));
 vi.mock('@/utility/is-birthday.js', () => ({ isBirthday: () => false }));
 vi.mock('@/filters/user.js', () => ({ userName: () => 'Viewer' }));
-vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: vi.fn() }));
+vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
 vi.mock('@/utility/snow-effect-watcher.js', () => ({ watchSnowEffect: vi.fn() }));
 
 import { mainBoot } from '@/boot/main-boot.js';
@@ -81,28 +81,16 @@ beforeEach(() => {
 	});
 });
 
-// 재연결은 모든 사용자의 공통 경로다. 쪽지 미읽음 복구은 쪽지 이벤트와 재시도가 담당하므로, 재연결 자체가 계정 조회를 추가하면 안 된다.
+// 재연결은 모든 사용자의 공통 경로다. 쪽지 미읽음은 버전 붙은 이벤트가 담당하므로, 재연결 자체가 계정 조회를 추가하면 안 된다.
 test('a stream reconnect does not refresh the account by itself', async () => {
 	await mainBoot();
 
 	mocks.streamHandlers.get('_connected_')?.();
-	expect(mocks.refreshChatUnreadState).not.toHaveBeenCalled();
+	expect(mocks.updateCurrentAccount).not.toHaveBeenCalled();
 
 	mocks.streamHandlers.get('_disconnected_')!();
 	mocks.streamHandlers.get('_connected_')?.();
-	expect(mocks.refreshChatUnreadState).not.toHaveBeenCalled();
-});
-
-test('chat events still refresh the account through the chat-only refresh', async () => {
-	await mainBoot();
-
-	mocks.channelHandlers.get('newChatMessage')!({});
-	expect(mocks.refreshChatUnreadState).toHaveBeenCalledTimes(1);
-	expect(mocks.playMisskeySfx).toHaveBeenCalledWith('chatMessage');
-
-	mocks.channelHandlers.get('readAllChatMessages')!();
-	mocks.channelHandlers.get('chatUnreadChanged')!();
-	expect(mocks.refreshChatUnreadState).toHaveBeenCalledTimes(3);
+	expect(mocks.updateCurrentAccount).not.toHaveBeenCalled();
 });
 
 test('other main-channel events keep their existing direct account updates', async () => {
@@ -113,7 +101,7 @@ test('other main-channel events keep their existing direct account updates', asy
 
 	mocks.channelHandlers.get('meUpdated')!({ id: 'viewer' });
 	expect(mocks.updateCurrentAccount).toHaveBeenCalledWith({ id: 'viewer' });
-	expect(mocks.refreshChatUnreadState).not.toHaveBeenCalled();
+	expect(mocks.updateCurrentAccount).toHaveBeenCalledTimes(2);
 });
 
 test('the disconnect dialog still asks to reload', async () => {
@@ -122,5 +110,33 @@ test('the disconnect dialog still asks to reload', async () => {
 
 	mocks.streamHandlers.get('_disconnected_')!();
 	expect(mocks.confirm).toHaveBeenCalledTimes(1);
-	expect(mocks.refreshChatUnreadState).not.toHaveBeenCalled();
+	expect(mocks.updateCurrentAccount).not.toHaveBeenCalled();
+});
+
+// Sol4/OC5.3: 쪽지 이벤트는 버전 붙은 상태를 직접 적용한다. 이벤트마다 계정 전체를 재조회하지 않는다.
+test('chat events apply the versioned unread state without an account request', async () => {
+	await mainBoot();
+
+	mocks.channelHandlers.get('chatUnread')?.({ version: 1, hasUnreadChatMessages: true });
+	expect(mocks.updateCurrentAccount).toHaveBeenCalledWith({ hasUnreadChatMessages: true });
+	expect(mocks.misskeyApi).not.toHaveBeenCalled();
+});
+
+test('an older version arriving late does not overwrite the newer unread state', async () => {
+	await mainBoot();
+
+	mocks.channelHandlers.get('chatUnread')?.({ version: 2, hasUnreadChatMessages: false });
+	mocks.channelHandlers.get('chatUnread')?.({ version: 1, hasUnreadChatMessages: true });
+	mocks.channelHandlers.get('chatUnread')?.({ version: 2, hasUnreadChatMessages: false });
+	expect(mocks.updateCurrentAccount).toHaveBeenCalledTimes(1);
+	expect(mocks.updateCurrentAccount).toHaveBeenCalledWith({ hasUnreadChatMessages: false });
+});
+
+test('a new chat message plays the sound without an account request', async () => {
+	await mainBoot();
+
+	mocks.channelHandlers.get('newChatMessage')!({});
+	expect(mocks.playMisskeySfx).toHaveBeenCalledWith('chatMessage');
+	expect(mocks.updateCurrentAccount).not.toHaveBeenCalled();
+	expect(mocks.misskeyApi).not.toHaveBeenCalled();
 });

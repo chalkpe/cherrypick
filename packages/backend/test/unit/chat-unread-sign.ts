@@ -17,7 +17,8 @@ describe('chat unread sign', () => {
 
 			await f.chatService.readUserChatMessage(f.reader.id, f.violet.id);
 
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
+			expect(f.chatUnreadSent()).toEqual([{ hasUnreadChatMessages: false, version: 1 }]);
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
 		});
 
@@ -33,7 +34,7 @@ describe('chat unread sign', () => {
 
 			await f.chatService.readUserChatMessage(f.reader.id, f.amber.id);
 
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
 		});
 
 		test('tells the reader once the only unread room is read', async () => {
@@ -42,7 +43,7 @@ describe('chat unread sign', () => {
 
 			await f.chatService.readRoomChatMessage(f.reader.id, f.room.id);
 
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
 		});
 
 		test('keeps quiet when a room is read while a direct conversation is still unread', async () => {
@@ -64,7 +65,7 @@ describe('chat unread sign', () => {
 			await f.chatService.readUserChatMessage(f.reader.id, f.violet.id);
 			await f.chatService.readRoomChatMessage(f.reader.id, f.room.id);
 
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
 		});
 
 		test('marking everything read clears every conversation and tells the reader', async () => {
@@ -74,7 +75,8 @@ describe('chat unread sign', () => {
 
 			await f.chatService.readAllChatMessages(f.reader.id);
 
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
+			expect(f.chatUnreadSent()).toEqual([{ hasUnreadChatMessages: false, version: 1 }]);
 			expect(await f.chatService.getUserReadStateMap(f.reader.id, [f.violet.id])).toEqual({ violet: true });
 			expect(await f.chatService.getRoomReadStateMap(f.reader.id, [f.room.id])).toEqual({ room1: true });
 		});
@@ -84,7 +86,7 @@ describe('chat unread sign', () => {
 
 			await f.chatService.readAllChatMessages(f.reader.id);
 
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
 		});
 	});
 
@@ -111,7 +113,6 @@ describe('chat unread sign', () => {
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
 			expect(await f.chatService.getRoomReadStateMap(f.reader.id, [f.room.id])).toEqual({ room1: true });
 		});
-
 
 		test.each(['direct', 'room'] as const)('a Redis failure never leaves a stored %s message behind a failed send', async kind => {
 			vi.useFakeTimers();
@@ -251,7 +252,7 @@ describe('chat unread sign', () => {
 
 			await f.chatService.finishRoomMemberRemoval(f.room, f.reader);
 
-			expect(f.told()).toContain('readAllChatMessages');
+			expect(f.told()).toContain('chatUnread');
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
 		});
 
@@ -261,7 +262,7 @@ describe('chat unread sign', () => {
 
 			await f.chatService.handleUserSuspended(f.violet);
 
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
 		});
 	});
 
@@ -274,7 +275,7 @@ describe('chat unread sign', () => {
 			await f.chatService.deleteMessage(f.stored('hello'));
 
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
 		});
 
 		test('taking back one of several messages keeps the conversation unread', async () => {
@@ -285,8 +286,7 @@ describe('chat unread sign', () => {
 			await f.chatService.deleteMessage(f.stored('second'));
 
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(true);
-			expect(f.told()).not.toContain('readAllChatMessages');
-			expect(f.told()).toContain('chatUnreadChanged');
+			expect(f.chatUnreadSent()).toEqual([{ hasUnreadChatMessages: true, version: 1 }]);
 		});
 
 		test('taking back the only message of one conversation leaves the sign on while another is unread', async () => {
@@ -307,7 +307,7 @@ describe('chat unread sign', () => {
 			await f.chatService.deleteMessage(f.stored('hello'));
 
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
 		});
 
 		test('a message taken back on another server is treated the same', async () => {
@@ -317,7 +317,7 @@ describe('chat unread sign', () => {
 			await f.chatService.deleteRemoteMessage(f.violet, f.stored('hello'));
 
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
 		});
 
 		test('a mark left behind by a conversation that has no messages any more does not count', async () => {
@@ -337,7 +337,8 @@ describe('chat unread sign', () => {
 			await f.chatService.createMessageToUser(f.violet, f.reader, { text: 'hello' });
 			await vi.advanceTimersByTimeAsync(3000);
 
-			expect(f.told()).toEqual(['newChatMessage']);
+			expect(f.told()).toEqual(['chatUnread', 'newChatMessage']);
+			expect(f.chatUnreadSent()).toEqual([{ hasUnreadChatMessages: true, version: 1 }]);
 			expect(f.push).toHaveBeenCalledWith(f.reader.id, 'newChatMessage', expect.objectContaining({ text: 'hello' }));
 		});
 
@@ -353,7 +354,7 @@ describe('chat unread sign', () => {
 			await vi.advanceTimersByTimeAsync(0);
 
 			// A notice arriving after the word that everything was read would leave the sign on.
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
 			expect(f.push).not.toHaveBeenCalled();
 		});
 
@@ -368,7 +369,7 @@ describe('chat unread sign', () => {
 			release();
 			await vi.advanceTimersByTimeAsync(0);
 
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
 			expect(f.push).not.toHaveBeenCalledWith(f.reader.id, 'newChatMessage', expect.anything());
 		});
 
@@ -380,7 +381,7 @@ describe('chat unread sign', () => {
 			await f.chatService.readAllChatMessages(f.reader.id);
 			await vi.advanceTimersByTimeAsync(3000);
 
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
 		});
 	});
 
@@ -423,7 +424,7 @@ describe('chat unread sign', () => {
 
 			await f.chatService.readUserChatMessage(f.reader.id, f.amber.id);
 
-			expect(f.told()).toEqual(['readAllChatMessages']);
+			expect(f.told()).toEqual(['chatUnread']);
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
 		});
 
@@ -480,7 +481,7 @@ describe('chat unread sign', () => {
 			await vi.advanceTimersByTimeAsync(3000);
 
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(true);
-			expect(f.told()).toEqual(['newChatMessage']);
+			expect(f.told()).toEqual(['chatUnread', 'newChatMessage']);
 		});
 	});
 });

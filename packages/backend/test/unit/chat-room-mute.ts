@@ -137,7 +137,7 @@ describe('muting a chat room', () => {
 			await vi.advanceTimersByTimeAsync(3000);
 
 			expect(await f.chatService.hasUnreadMessages(f.owner.id)).toBe(true);
-			expect(f.toldTo(f.owner)).toEqual(['newChatMessage']);
+			expect(f.toldTo(f.owner)).toEqual(['chatUnread', 'newChatMessage']);
 			expect(f.pushedTo(f.owner)).toEqual(['newChatMessage']);
 			expect((await f.shownTo(f.owner)).isMuted).toBe(false);
 			expect((await f.shownTo(f.other)).isMuted).toBe(false);
@@ -169,7 +169,7 @@ describe('muting a chat room', () => {
 			await vi.advanceTimersByTimeAsync(3000);
 
 			expect(await f.chatService.hasUnreadMessages(f.other.id)).toBe(true);
-			expect(f.toldTo(f.other)).toEqual(['newChatMessage']);
+			expect(f.toldTo(f.other)).toEqual(['chatUnread', 'newChatMessage']);
 			expect(f.pushedTo(f.other)).toEqual(['newChatMessage']);
 			expect((await f.shownTo(f.member)).isMuted).toBe(false);
 			expect((await f.shownTo(f.other)).isMuted).toBe(false);
@@ -198,7 +198,7 @@ describe('muting a chat room', () => {
 
 			expect((await f.shownTo(f.owner)).isMuted).toBe(false);
 			expect(await f.chatService.hasUnreadMessages(f.owner.id)).toBe(true);
-			expect(f.toldTo(f.owner)).toEqual(['newChatMessage']);
+			expect(f.toldTo(f.owner)).toEqual(['chatUnread', 'newChatMessage']);
 			expect(f.push).toHaveBeenCalledWith(f.owner.id, 'newChatMessage', expect.objectContaining({ text: 'after the mute' }));
 			expect(f.push).not.toHaveBeenCalledWith(f.owner.id, 'newChatMessage', expect.objectContaining({ text: 'during the mute' }));
 		});
@@ -219,7 +219,7 @@ describe('muting a chat room', () => {
 
 			await f.chatService.readRoomChatMessage(f.owner.id, f.room.id);
 
-			expect(f.toldTo(f.owner)).toEqual(['readAllChatMessages']);
+			expect(f.toldTo(f.owner)).toEqual(['chatUnread']);
 			expect(await f.chatService.hasUnreadMessages(f.owner.id)).toBe(false);
 		});
 	});

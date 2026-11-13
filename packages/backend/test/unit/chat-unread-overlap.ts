@@ -266,7 +266,6 @@ describe('chat unread marks around other requests', () => {
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
 		});
 	});
-
 });
 
 describe('a mark left by a send that never finished', () => {
@@ -307,7 +306,7 @@ describe('a mark left by a send that never finished', () => {
 
 			await f.chatService.deleteMessage(f.stored('later'));
 
-			expect(f.told()).toContain('readAllChatMessages');
+			expect(f.chatUnreadSent().at(-1)).toMatchObject({ hasUnreadChatMessages: false });
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
 		});
 
@@ -344,7 +343,7 @@ describe('a mark left by a send that never finished', () => {
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(true);
 			await f.chatService.deleteMessage(f.stored('stored'));
 
-			expect(f.told()).toContain('readAllChatMessages');
+			expect(f.chatUnreadSent().at(-1)).toMatchObject({ hasUnreadChatMessages: false });
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
 		});
 

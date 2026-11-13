@@ -429,7 +429,7 @@ describe('chat federation storage', () => {
 
 				await service.deleteMessage(await chatMessagesRepository.findOneByOrFail({ id: later }));
 
-				expect(publishMainStream).toHaveBeenCalledWith(alice.id, 'readAllChatMessages');
+				expect(publishMainStream).toHaveBeenCalledWith(alice.id, 'chatUnread', { hasUnreadChatMessages: false, version: expect.any(Number) });
 				expect(await redisClient.exists(`${directKey()}:pending`)).toBe(0);
 			});
 

@@ -5,8 +5,8 @@
 
 type RedisReply = string | number | string[] | null;
 
-/** Just enough of Redis to keep unread marks: strings and sets, one command at a time or in a pipeline. */
-export function memoryRedis({ strings = new Map<string, string>(), sets = new Map<string, Set<string>>() } = {}) {
+/** Just enough of Redis to keep unread marks: strings, sets and lists, one command at a time or in a pipeline. */
+export function memoryRedis({ strings = new Map<string, string>(), sets = new Map<string, Set<string>>(), lists = new Map<string, string[]>() } = {}) {
 	// 스크립트 안의 호출까지 세어, 한 작업이 처리하는 양을 시험에서 확인한다.
 	const stats: Record<string, number> = {};
 	const commands = {
@@ -16,8 +16,8 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 			return 'OK';
 		},
 		get: (key: string): RedisReply => strings.get(key) ?? null,
-		del: (key: string): RedisReply => Number(strings.delete(key)) + Number(sets.delete(key)),
-		unlink: (...keys: string[]): RedisReply => keys.reduce((count, key) => count + Number(strings.delete(key)) + Number(sets.delete(key)), 0),
+		del: (key: string): RedisReply => Number(strings.delete(key)) + Number(sets.delete(key)) + Number(lists.delete(key)),
+		unlink: (...keys: string[]): RedisReply => keys.reduce((count, key) => count + Number(strings.delete(key)) + Number(sets.delete(key)) + Number(lists.delete(key)), 0),
 		sadd: (key: string, member: string): RedisReply => {
 			const set = sets.get(key) ?? new Set<string>();
 			const added = !set.has(member);
@@ -32,6 +32,34 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 		scard: (key: string): RedisReply => sets.get(key)?.size ?? 0,
 		sismember: (key: string, member: string): RedisReply => Number(sets.get(key)?.has(member) ?? false),
 		smembers: (key: string): RedisReply => [...(sets.get(key) ?? [])],
+		rpush: (key: string, value: string): RedisReply => {
+			const list = lists.get(key) ?? [];
+			lists.set(key, list);
+			list.push(value);
+			return list.length;
+		},
+		lindex: (key: string, index: number): RedisReply => {
+			const list = lists.get(key);
+			if (list == null) return null;
+			return list[index < 0 ? list.length + index : index] ?? null;
+		},
+		lset: (key: string, index: number, value: string): RedisReply => {
+			const list = lists.get(key);
+			if (list == null) throw new Error('no such key');
+			list[index < 0 ? list.length + index : index] = value;
+			return 'OK';
+		},
+		lrange: (key: string, start: number, stop: number): RedisReply => {
+			const list = lists.get(key) ?? [];
+			const from = start < 0 ? Math.max(list.length + start, 0) : start;
+			const to = stop < 0 ? list.length + stop : stop;
+			return list.slice(from, to + 1);
+		},
+		incr: (key: string): RedisReply => {
+			const value = Number(strings.get(key) ?? '0') + 1;
+			strings.set(key, String(value));
+			return value;
+		},
 	};
 	type Command = keyof typeof commands;
 	const names = Object.keys(commands) as Command[];
@@ -39,7 +67,7 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 		stats[name] = (stats[name] ?? 0) + 1;
 		return (commands[name] as (...args: string[]) => RedisReply)(...args);
 	};
-	const counted = Object.fromEntries(names.map(name => [name, (...args: string[]) => run(name, args)])) as typeof commands;
+	const counted = Object.fromEntries(names.map(name => [name, (...args: string[]) => run(name, args)])) as unknown as typeof commands;
 
 	const pipeline = () => {
 		const queued: (() => RedisReply | (RedisReply | RedisReply[])[] | Promise<RedisReply | (RedisReply | RedisReply[])[]>)[] = [];
@@ -66,18 +94,20 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 	const del = (...keys: string[]) => keys.reduce((count, key) => count + (counted.del(key) as number), 0);
 	const extremes = (ids: string[]) => ({ first: ids.reduce<string | undefined>((a, b) => (a == null || b < a ? b : a), undefined), latest: ids.reduce<string | undefined>((a, b) => (a == null || b > a ? b : a), undefined) });
 	const scripts: Record<string, (keys: string[], args: string[]) => RedisReply | (RedisReply | RedisReply[])[]> = {
-		'mark chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, trimmedKey], [id, conversation, revision]) => {
+		'mark chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, trimmedKey, excludedKey, readboundKey], [id, conversation, revision]) => {
 			const active = sets.get(aggregate)?.has(conversation) ?? false;
 			const pending = active ? [] : members(pendingKey);
 			if (!active) {
-				del(messagesKey, trimmedKey);
+				del(messagesKey, trimmedKey, excludedKey, readboundKey);
 				for (const pendingId of pending) counted.sadd(messagesKey, pendingId);
 			}
 			const latest = active ? strings.get(latestKey) : extremes(pending).latest;
 			let first = active ? strings.get(firstKey) : undefined;
+			const readbound = active ? strings.get(readboundKey) : undefined;
 			if (!active) first = extremes(pending).first;
 			if (!active || first != null) {
 				if (first == null || id < first) first = id;
+				if (readbound != null && first < readbound) first = readbound;
 				counted.set(firstKey, first);
 			}
 			counted.set(latestKey, latest == null || id > latest ? id : latest);
@@ -86,18 +116,22 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 			counted.sadd(pendingKey, id);
 			counted.set(revisionKey, revision);
 			let count = sets.get(messagesKey)?.size ?? 0;
-			if (first != null && count > 1256) {
+			if (count > 1256) {
 				const pendingIds = new Set(members(pendingKey));
 				let trimmed = strings.get(trimmedKey);
 				for (const candidate of members(messagesKey).sort()) {
 					if (count <= 1000) break;
-					if (!pendingIds.has(candidate) && candidate !== first) {
+					if (!pendingIds.has(candidate) && candidate !== first && (readbound == null || candidate > readbound)) {
 						counted.srem(messagesKey, candidate);
 						count--;
 						if (trimmed == null || candidate > trimmed) trimmed = candidate;
 					}
 				}
 				if (trimmed != null) counted.set(trimmedKey, trimmed);
+				if (readbound != null && count > 1256) {
+					del(firstKey, readboundKey);
+					if (trimmed == null || readbound > trimmed) counted.set(trimmedKey, readbound);
+				}
 			}
 			return 1;
 		},
@@ -107,7 +141,7 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 			counted.set(revisionKey, revision);
 			return 1;
 		},
-		'unmark chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, trimmedKey], [conversation, revision, ...ids]) => {
+		'unmark chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, trimmedKey, excludedKey, readboundKey], [conversation, revision, ...ids]) => {
 			let removed = 0;
 			for (const id of ids) {
 				removed += counted.srem(messagesKey, id) as number;
@@ -123,7 +157,7 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 					return 1;
 				}
 				if (strings.has(firstKey)) {
-					del(latestKey, firstKey, revisionKey, messagesKey, pendingKey, trimmedKey);
+					del(latestKey, firstKey, revisionKey, messagesKey, pendingKey, trimmedKey, excludedKey, readboundKey);
 					counted.srem(aggregate, conversation);
 					return 2;
 				}
@@ -131,7 +165,7 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 			counted.set(revisionKey, revision);
 			return 1;
 		},
-		'read chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, trimmedKey, snapshotKey], [conversation, revision, upTo, captured, ...seenIds]) => {
+		'read chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, trimmedKey, excludedKey, readboundKey, snapshotKey], [conversation, revision, upTo, captured, ...seenIds]) => {
 			if (!sets.get(aggregate)?.has(conversation)) {
 				if (captured === '1') del(snapshotKey);
 				return [0, []];
@@ -149,7 +183,7 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 			if (captured === '1') del(snapshotKey);
 			let trimmed = strings.get(trimmedKey);
 			if (trimmed != null && (upTo === '*' || (upTo !== '' && trimmed <= upTo))) {
-				del(trimmedKey);
+				del(trimmedKey, readboundKey);
 				trimmed = undefined;
 				changed = 1;
 			}
@@ -163,11 +197,14 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 					if (upTo !== '*' && upTo !== '' && upTo > boundary) boundary = upTo;
 					if (changed === 0 && boundary === (oldFirst ?? '') && trimmed === (oldLatest ?? '')) return [0, pendingLeft];
 					counted.set(latestKey, trimmed);
-					counted.set(firstKey, boundary);
+					if (boundary !== '') {
+						counted.set(firstKey, boundary);
+						counted.set(readboundKey, boundary);
+					}
 					counted.set(revisionKey, revision);
 					return [1, pendingLeft];
 				}
-				del(latestKey, firstKey, revisionKey, messagesKey, pendingKey, trimmedKey);
+				del(latestKey, firstKey, revisionKey, messagesKey, pendingKey, trimmedKey, excludedKey, readboundKey);
 				return [counted.srem(aggregate, conversation) === 1 ? 2 : changed, []];
 			}
 			if (trimmed != null) {
@@ -175,7 +212,10 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 				if (upTo !== '*' && upTo !== '' && upTo > boundary) boundary = upTo;
 				if (changed === 0 && boundary === (oldFirst ?? '') && latest === (oldLatest ?? '')) return [0, pendingLeft];
 				counted.set(latestKey, latest);
-				counted.set(firstKey, boundary);
+				if (boundary !== '') {
+					counted.set(firstKey, boundary);
+					counted.set(readboundKey, boundary);
+				}
 				counted.set(revisionKey, revision);
 				return [1, pendingLeft];
 			}
@@ -186,7 +226,7 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 			return [1, pendingLeft];
 		},
 		'read all chat unread': ([aggregate, ...scanned], [userPrefix, roomPrefix, revision]) => {
-			const suffixes = [':first', ':revision', ':messages', ':pending', ':trimmed'];
+			const suffixes = [':first', ':revision', ':messages', ':pending', ':trimmed', ':excluded', ':readbound'];
 			const kept = new Set<string>();
 			const left: string[] = [];
 			for (const conversation of members(aggregate)) {
@@ -198,7 +238,7 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 					counted.srem(aggregate, conversation);
 					continue;
 				}
-				del(`${base}:messages`, `${base}:trimmed`);
+				del(`${base}:messages`, `${base}:trimmed`, `${base}:excluded`, `${base}:readbound`);
 				for (const id of pending) counted.sadd(`${base}:messages`, id);
 				const { first, latest } = extremes(pending);
 				counted.set(base, latest!);
@@ -213,12 +253,12 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 			}
 			return left;
 		},
-		'clear chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, trimmedKey], [conversation]) => {
-			del(latestKey, firstKey, revisionKey, messagesKey, pendingKey, trimmedKey);
+		'clear chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, trimmedKey, excludedKey, readboundKey], [conversation]) => {
+			del(latestKey, firstKey, revisionKey, messagesKey, pendingKey, trimmedKey, excludedKey, readboundKey);
 			return counted.srem(aggregate, conversation);
 		},
-		'snapshot chat unread': ([latestKey, firstKey, revisionKey, messagesKey, pendingKey, trimmedKey]) =>
-			[strings.get(latestKey) ?? '', strings.get(firstKey) ?? '', strings.get(revisionKey) ?? '', members(messagesKey), members(pendingKey), strings.get(trimmedKey) ?? ''],
+		'snapshot chat unread': ([latestKey, firstKey, revisionKey, messagesKey, pendingKey, trimmedKey, readboundKey]) =>
+			[strings.get(latestKey) ?? '', strings.get(firstKey) ?? '', strings.get(revisionKey) ?? '', members(messagesKey), members(pendingKey), strings.get(trimmedKey) ?? '', strings.get(readboundKey) ?? ''],
 		'capture chat read': ([messagesKey, pendingKey, snapshotKey]) => {
 			const pending = sets.get(pendingKey) ?? new Set<string>();
 			const captured = members(messagesKey).filter(id => !pending.has(id));
@@ -231,15 +271,25 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 			const latest = strings.get(latestKey) ?? '';
 			return [latest, strings.get(firstKey) ?? '', Number(sets.get(messagesKey)?.has(latest) ?? false)];
 		},
-		'is chat message unread': ([aggregate, messagesKey, firstKey, trimmedKey], [conversation, id]) => {
+		'is chat message unread': ([aggregate, messagesKey, firstKey, trimmedKey, readboundKey, excludedKey], [conversation, id]) => {
 			if (!sets.get(aggregate)?.has(conversation)) return 0;
 			if (sets.get(messagesKey)?.has(id)) return 1;
 			const first = strings.get(firstKey);
 			if (first == null) return 0;
 			const trimmed = strings.get(trimmedKey);
-			return trimmed != null && id > first && id <= trimmed ? 1 : 0;
+			if (trimmed == null) return 0;
+			const lower = strings.get(readboundKey) ?? first;
+			if (id <= lower || id > trimmed) return 0;
+			for (const interval of lists.get(excludedKey) ?? []) {
+				const separator = interval.indexOf('|');
+				if (separator === -1) continue;
+				const start = interval.slice(0, separator);
+				const end = interval.slice(separator + 1);
+				if (id > start && (end === '' || id <= end)) return 0;
+			}
+			return 1;
 		},
-		'reconcile chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, trimmedKey], [marker, first, revision, remaining, conversation, newRevision]) => {
+		'reconcile chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, trimmedKey, excludedKey, readboundKey], [marker, first, revision, remaining, conversation, newRevision]) => {
 			if (!sets.get(aggregate)?.has(conversation)) return 0;
 			if (sets.has(pendingKey)) return 0;
 			if ((strings.get(latestKey) ?? '') !== marker || (strings.get(firstKey) ?? '') !== first || (strings.get(revisionKey) ?? '') !== revision) return 0;
@@ -250,7 +300,7 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 				counted.set(revisionKey, newRevision);
 				return 1;
 			}
-			del(latestKey, firstKey, revisionKey, messagesKey, pendingKey, trimmedKey);
+			del(latestKey, firstKey, revisionKey, messagesKey, pendingKey, trimmedKey, excludedKey, readboundKey);
 			counted.srem(aggregate, conversation);
 			return 2;
 		},
@@ -291,7 +341,7 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 		options: { keyPrefix: '' },
 		scan: async (_cursor: string, _match: string, pattern: string) => {
 			const parts = pattern.split('*');
-			return ['0', [...new Set([...strings.keys(), ...sets.keys()])].filter(key => parts.every((part, index) => index === 0 ? key.startsWith(part) : index === parts.length - 1 ? key.endsWith(part) : key.includes(part)))];
+			return ['0', [...new Set([...strings.keys(), ...sets.keys(), ...lists.keys()])].filter(key => parts.every((part, index) => index === 0 ? key.startsWith(part) : index === parts.length - 1 ? key.endsWith(part) : key.includes(part)))];
 		},
 		sscan: async (key: string, _cursor: string) => ['0', [...(sets.get(key) ?? [])]],
 	};

@@ -25,7 +25,7 @@ describe('chat unread sign', () => {
 	}
 
 	const hasUnread = async (account: Account) => (await api('i', {}, account)).body.hasUnreadChatMessages;
-	const toldEverythingIsRead = (account: Account, action: () => Promise<unknown>) => waitFire(account, 'main', action, message => message.type === 'readAllChatMessages');
+	const toldEverythingIsRead = (account: Account, action: () => Promise<unknown>) => waitFire(account, 'main', action, message => message.type === 'chatUnread' && message.body.hasUnreadChatMessages === false);
 	const send = (from: Account, to: Account, text: string) => api('chat/messages/create-to-user', { toUserId: to.id, text }, from);
 	const open = (reader: Account, other: Account) => api('chat/messages/user-timeline', { userId: other.id }, reader);
 
