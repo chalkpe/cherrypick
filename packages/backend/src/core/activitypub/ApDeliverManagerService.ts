@@ -63,7 +63,7 @@ class DeliverManager {
 	 */
 	constructor(
 		private userEntityService: UserEntityService,
-		private followingsRepository: Pick<FollowingsRepository, 'find'>,
+		private followingsRepository: FollowingsRepository,
 		private queueService: QueueService,
 
 		actor: { id: MiUser['id']; host: null; },
@@ -133,10 +133,10 @@ class DeliverManager {
 	}
 
 	/**
-	 * 전송 없이 기존 recipe의 inbox 선택만 확정한다.
+	 * Execute delivers
 	 */
 	@bindThis
-	public async selectInboxes(): Promise<Map<string, boolean>> {
+	public async execute(): Promise<void> {
 		// The value flags whether it is shared or not.
 		// key: inbox URL, value: whether it is sharedInbox
 		const inboxes = new Map<string, boolean>();
@@ -217,13 +217,6 @@ class DeliverManager {
 
 			inboxes.set(recipe.to.inbox, false);
 		}
-
-		return inboxes;
-	}
-
-	@bindThis
-	public async execute(): Promise<void> {
-		const inboxes = await this.selectInboxes();
 
 		// deliver to bsky.brid.gy sharedInbox with changes visibility `home` to `public`
 		if (this.bridgeHomeVisibility) {
@@ -343,10 +336,10 @@ export class ApDeliverManagerService {
 	}
 
 	@bindThis
-	public createDeliverManager(actor: { id: MiUser['id']; host: null; }, activity: IActivity | null, bridgeHomeVisibility?: boolean, followingsRepository: Pick<FollowingsRepository, 'find'> = this.followingsRepository): DeliverManager {
+	public createDeliverManager(actor: { id: MiUser['id']; host: null; }, activity: IActivity | null, bridgeHomeVisibility?: boolean): DeliverManager {
 		return new DeliverManager(
 			this.userEntityService,
-			followingsRepository,
+			this.followingsRepository,
 			this.queueService,
 
 			actor,

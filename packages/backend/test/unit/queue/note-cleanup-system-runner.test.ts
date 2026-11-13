@@ -3,13 +3,10 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { expect, test, vi } from 'vitest';
-import { DelayedError } from 'bullmq';
 import { QueueProcessorService } from '@/queue/QueueProcessorService.js';
 import { AutoDeleteNotesProcessorService } from '@/queue/processors/AutoDeleteNotesProcessorService.js';
 
 vi.mock('@/core/UtilityService.js', () => ({ UtilityService: class {} }));
-vi.mock('@/core/NoteDeleteDeliveryService.js', () => ({ NoteDeleteDeliveryService: class {} }));
-vi.mock('@/core/NoteDeleteLocalRunnerService.js', () => ({ NoteDeleteLocalRunnerService: class {} }));
 vi.mock('@/core/telemetry/TelemetryService.js', () => ({ TelemetryService: class {} }));
 vi.mock('@/queue/processors/CheckModeratorsActivityProcessorService.js', () => ({ CheckModeratorsActivityProcessorService: class {} }));
 vi.mock('@/queue/processors/UserWebhookDeliverProcessorService.js', () => ({ UserWebhookDeliverProcessorService: class {} }));
@@ -79,71 +76,31 @@ function fixture() {
 		},
 		captureMessage: vi.fn((...args: unknown[]) => { expect(active).toBe(true); captures.push(args); }),
 	};
-	const cleanup = new AutoDeleteNotesProcessorService({} as any, { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] } } as any);
+	const cleanup = new AutoDeleteNotesProcessorService({} as any, { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: vi.fn(async () => {}) } } as any);
 	const other = { process: vi.fn() };
-	const localRecovery = { scan: vi.fn(async () => 1) };
-	const deliveryRecovery = { scanPage: vi.fn(async () => ({ accepted: 1, full: false })), requestRecovery: vi.fn(async () => {}) };
-	const args = [{ redisForJobQueue: {}, outbox: {}, inbox: {} }, {}, { logger }, telemetry, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, cleanup, other, other, localRecovery, deliveryRecovery];
+	const args = [{ redisForJobQueue: {}, outbox: {}, inbox: {} }, {}, { logger }, telemetry, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, cleanup, other, other];
 	new (QueueProcessorService as any)(...args);
-	return { localRecovery, deliveryRecovery, errors, captures, spans, other, cleanup, active: () => active, process: workers.get('system')! };
+	return { errors, captures, spans, other, cleanup, active: () => active, process: workers.get('system')! };
 }
 
-test('system wrapper의 실제 수동 cleanup 정상 지연은 실패 로그·telemetry·span 오류 없이 원래 제어 오류를 전달한다', async () => {
+test('수동 정리의 정상 지연은 공통 실행기에 오류를 전달하지 않는다', async () => {
 	const f = fixture();
-	let delayed: unknown;
-	const process = f.cleanup.process.bind(f.cleanup);
-	vi.spyOn(f.cleanup, 'process').mockImplementation(async job => {
-		try { return await process(job); } catch (error) { delayed = error; throw error; }
-	});
-	const job = { id: 'job', opts: {}, timestamp: Date.now(), attemptsMade: 0, name: 'autoDeleteNotes', data: { userId: 'alice', ruleIds: ['rule'] }, token: 'token', moveToDelayed: vi.fn(async () => {}) };
-	const thrown = await f.process(job).catch(error => error);
-	expect(thrown).toBeInstanceOf(DelayedError);
-	expect(thrown).toBe(delayed);
-	expect(job.moveToDelayed).toHaveBeenCalledOnce();
+	const job: any = { id: 'job', opts: {}, timestamp: Date.now(), attemptsMade: 0, name: 'autoDeleteNotes', data: { userId: 'alice', ruleIds: ['rule'], requestId: 'request', step: 0 } };
+	job.updateData = async (data: unknown) => { job.data = data; };
+
+	await expect(f.process(job)).resolves.toMatchObject({ delayed: true });
+
 	expect(f.errors).toHaveLength(0);
 	expect(f.captures).toHaveLength(0);
 	expect(f.spans).toHaveLength(0);
-	expect(f.active()).toBe(false);
 });
 
-test('다른 system 작업의 DelayedError와 cleanup 실제 오류는 기존 실패 관측과 원래 오류를 유지한다', async () => {
-	for (const name of ['clean', 'autoDeleteNotes']) {
-		const f = fixture();
-		const original = name === 'clean' ? new DelayedError() : new Error('infrastructure failed');
-		if (name === 'clean') f.other.process.mockRejectedValue(original);
-		else vi.spyOn(f.cleanup, 'process').mockRejectedValue(original);
-		await expect(f.process({ id: 'job', opts: {}, timestamp: Date.now(), attemptsMade: 0, name, data: {} })).rejects.toBe(original);
-		expect(f.errors).toHaveLength(1);
-		expect(f.captures).toHaveLength(1);
-		expect(f.spans).toEqual([original]);
-		expect(f.active()).toBe(false);
-	}
-});
-
-test('기존 system 복구 주기는 원본 없이 전달 scanner와 로컬 정산을 실행한다', async () => {
+test('실제 작업 오류는 기존 실패 관측과 원래 오류를 유지한다', async () => {
 	const f = fixture();
-	await f.process({ id: 'job', opts: {}, timestamp: Date.now(), attemptsMade: 0, name: 'recoverNoteDeletes', data: {} });
-
-	expect(f.deliveryRecovery.scanPage).toHaveBeenCalledTimes(1);
-	expect(f.localRecovery.scan).toHaveBeenCalledTimes(1);
-});
-
-test('전달 scanner DB 오류도 로컬 복구를 막거나 정상 완료가 되지 않는다', async () => {
-	const f = fixture();
-	f.deliveryRecovery.scanPage.mockRejectedValue(new Error('database'));
-	await expect(f.process({ id: 'job', opts: {}, timestamp: Date.now(), attemptsMade: 0, name: 'recoverNoteDeletes', data: {} })).rejects.toThrow('database');
-
-	expect(f.localRecovery.scan).toHaveBeenCalledTimes(1);
-});
-
-test('가득 찬 전달 또는 로컬 묶음은 즉시 다음 작업을 접수한다', async () => {
-	for (const kind of ['delivery', 'local'] as const) {
-		const f = fixture();
-		if (kind === 'delivery') f.deliveryRecovery.scanPage.mockResolvedValue({ accepted: 0, full: true });
-		else f.localRecovery.scan.mockResolvedValue(10);
-
-		await f.process({ id: 'job', opts: {}, timestamp: Date.now(), attemptsMade: 0, name: 'recoverNoteDeletes', data: {} });
-
-		expect(f.deliveryRecovery.requestRecovery).toHaveBeenCalledOnce();
-	}
+	const original = new Error('infrastructure failed');
+	vi.spyOn(f.cleanup, 'process').mockRejectedValue(original);
+	await expect(f.process({ id: 'job', opts: {}, timestamp: Date.now(), attemptsMade: 0, name: 'autoDeleteNotes', data: {} })).rejects.toBe(original);
+	expect(f.errors).toHaveLength(1);
+	expect(f.captures).toHaveLength(1);
+	expect(f.spans).toEqual([original]);
 });

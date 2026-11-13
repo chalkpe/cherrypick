@@ -47,10 +47,6 @@ import { ModerationLogService } from './ModerationLogService.js';
 import { NoteCreateService } from './NoteCreateService.js';
 import { NoteUpdateService } from './NoteUpdateService.js';
 import { NoteCleanupService } from './NoteCleanupService.js';
-import { NoteDeleteLocalRunnerService } from './NoteDeleteLocalRunnerService.js';
-import { NoteDeleteChartService } from './NoteDeleteChartService.js';
-import { NoteDeleteDeliveryService } from './NoteDeleteDeliveryService.js';
-import { NoteDeletePayloadService } from './NoteDeletePayloadService.js';
 import { NoteDeleteService } from './NoteDeleteService.js';
 import { NotePiningService } from './NotePiningService.js';
 import { NoteDraftService } from './NoteDraftService.js';
@@ -388,10 +384,6 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		NoteUpdateService,
 		NoteCleanupService,
 		NoteDeleteService,
-		NoteDeleteDeliveryService,
-		NoteDeletePayloadService,
-		NoteDeleteChartService,
-		NoteDeleteLocalRunnerService,
 		NotePiningService,
 		NoteDraftService,
 		NotificationService,
@@ -733,10 +725,6 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		NoteUpdateService,
 		NoteCleanupService,
 		NoteDeleteService,
-		NoteDeleteDeliveryService,
-		NoteDeletePayloadService,
-		NoteDeleteChartService,
-		NoteDeleteLocalRunnerService,
 		NotePiningService,
 		NoteDraftService,
 		NotificationService,

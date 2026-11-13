@@ -5,9 +5,6 @@
 
 import { URL } from 'node:url';
 import { Inject, Injectable } from '@nestjs/common';
-import { DataSource } from 'typeorm';
-import { DI } from '@/di-symbols.js';
-import { MiNoteDeleteDelivery } from '@/models/NoteDeleteDelivery.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import type { DeliverQueue } from '@/core/QueueModule.js';
 import { ApiLoggerService } from '@/server/api/ApiLoggerService.js';
@@ -52,7 +49,6 @@ export const paramDef = {
 export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-disable-line import/no-default-export
 	constructor(
 		@Inject('queue:deliver') public deliverQueue: DeliverQueue,
-		@Inject(DI.db) private db: DataSource,
 
 		private apiLoggerService: ApiLoggerService,
 	) {
@@ -64,15 +60,14 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			for (const job of jobs) {
 				let host: string;
 				try {
-					const endpoint = 'to' in job.data ? job.data.to : (await this.db.getRepository(MiNoteDeleteDelivery).findOneBy(job.data.noteDeleteDelivery))?.endpoint;
-					if (!endpoint) continue;
-					host = new URL(endpoint).host;
+					host = new URL(job.data.to).host;
 				} catch (e) {
 					this.apiLoggerService.logger.warn(`failed to parse url in ${job.id}: ${e}`);
 					this.apiLoggerService.logger.warn(`id: ${job.id}, data: ${JSON.stringify(job.data)}`);
 					continue;
 				}
 
+				//const host = new URL(job.data.to).host;
 				counts.set(host, (counts.get(host) ?? 0) + 1);
 			}
 

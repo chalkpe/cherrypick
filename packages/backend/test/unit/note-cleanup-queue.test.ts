@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { DelayedError } from 'bullmq';
 vi.mock('../../src/models/_.js', () => Object.fromEntries(['MiNote', 'MiUser', 'MiClip', 'MiClipNote', 'MiChannel', 'MiPoll', 'MiDriveFile', 'MiNoteFavorite', 'MiNoteReaction', 'MiUserNotePining'].map(name => [name, { name }])));
 vi.mock('../../src/models/NoteCleanupRule.js', () => ({ MiNoteCleanupRule: { name: 'Rule' }, MiNoteCleanupState: { name: 'State' } }));
 vi.mock('../../src/logger.js', () => ({ default: class { error() {} warn() {} } }));
@@ -144,10 +143,11 @@ function fixture() {
 			rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === target.id), 1);
 		},
 	};
+	let continuation: { data: Record<string, unknown>; delay: number } | undefined;
 	const systemQueue = {
 		toKey: (s: string) => `test:system:${s}`,
 		getJob: async (id: string) => jobs.get(id),
-		add: async (name: string, data: unknown, options: { jobId: string }) => { added.push(options.jobId); jobs.set(options.jobId, { name, data }); },
+		add: async (name: string, data: Record<string, unknown>, options: { jobId: string; delay?: number }) => { added.push(options.jobId); jobs.set(options.jobId, { name, data, getState: async () => 'waiting' }); if (options.delay !== undefined) continuation = { data, delay: options.delay }; },
 	};
 	const waiting = { deliver: [] as { timestamp: number }[], inbox: [] as { timestamp: number }[] };
 	const queueService = {
@@ -164,21 +164,23 @@ function fixture() {
 	const addNotes = (userId: string, count: number) => { for (let i = 0; i < count; i++) rows.MiNote.push(note(userId, i)); };
 	const notesOf = (userId: string) => rows.MiNote.filter(n => n.userId === userId);
 	const state = (userId: string) => rows.State.find(s => s.userId === userId);
-	// 수동 정리 요청 작업. 지연되면 DelayedError를 던지고, 그때 보존된 데이터와 재개 시각을 기록한다.
+	// 이어 받기 작업을 같은 시험 핸들로 넘겨 반복 회차를 관찰한다.
 	const job = (data: Record<string, unknown>) => {
 		const delays: number[] = [];
-		const self = { data: { ...data }, token: 'token', delays, updateData: async (next: Record<string, unknown>) => { self.data = next; }, moveToDelayed: async (timestamp: number) => { delays.push(timestamp); } };
+		const self = { data: { ...data }, delays, updateData: async (next: Record<string, unknown>) => { self.data = next; }, take: () => continuation };
 		return self;
 	};
 	return { faults, onRead: (callback: () => void) => { afterRead = callback; }, rows, busy, scanned, failingNotes, deleteAttempts, redis, jobs, added, waiting, service, processor, addUser, addNotes, notesOf, state, job };
 }
 
-// 작업 한 번 실행: 완료면 'done', 지연이면 'delayed'
-async function run(processor: AutoDeleteNotesProcessorService, job: { data: Record<string, unknown> }) {
-	try { await processor.process(job as any); return 'done'; } catch (error) {
-		if (error instanceof DelayedError) return 'delayed';
-		throw error;
-	}
+// 작업 한 번 실행: 완료면 'done', 이어 받기를 접수하면 'delayed'
+async function run(processor: AutoDeleteNotesProcessorService, job: { data: Record<string, unknown>; delays: number[]; take: () => { data: Record<string, unknown>; delay: number } | undefined }) {
+	const result = await processor.process(job as any) as { delayed?: boolean };
+	if (!result.delayed) return 'done';
+	const next = job.take()!;
+	job.data = next.data;
+	job.delays.push(Date.now() + next.delay);
+	return 'delayed';
 }
 
 test('연합 큐가 밀리면 수동 정리 요청도 지우지 않고 요청과 커서를 그대로 둔 채 지연하며 해소 후 그 커서부터 잇는다', async () => {
@@ -192,7 +194,7 @@ test('연합 큐가 밀리면 수동 정리 요청도 지우지 않고 요청과
 	expect(await run(f.processor, manual)).toBe('delayed');
 	expect(f.notesOf('alice')).toHaveLength(4);
 	expect(f.scanned.get('alice') ?? 0).toBe(0);
-	expect(manual.data).toEqual(data);
+	expect(manual.data).toMatchObject(data);
 	expect(manual.delays[0]).toBeGreaterThan(NOW);
 	// 자동 회차도 지연 중에는 커서와 순번을 바꾸지 않는다.
 	f.rows.Rule.push(deleteRule('alice', 'auto'));
@@ -400,7 +402,7 @@ test('수동 요청은 한 작업에서 회차 시간 상한까지만 이어 처
 	expect(await run(f.processor, request)).toBe('delayed');
 	// 두 페이지(삭제 시도 5개씩)를 처리한 뒤 시간 상한에 걸린다. 예산 소진이 아니므로 다음 창까지 기다리지 않는다.
 	expect(f.notesOf('alice')).toHaveLength(20);
-	expect(request.data).toEqual({ userId: 'alice', ruleIds: ['d1'], afterId: noteId('alice', 9), requestId: 'long' });
+	expect(request.data).toMatchObject({ userId: 'alice', ruleIds: ['d1'], afterId: noteId('alice', 9), requestId: 'long' });
 	expect(request.delays[0] - (started + NOTE_CLEANUP_LIMITS.roundMs)).toBeLessThan(NOTE_CLEANUP_LIMITS.windowMs / 2);
 	expect(await run(f.processor, request)).toBe('delayed');
 	expect(f.notesOf('alice')).toHaveLength(10);

@@ -25,8 +25,6 @@ import {
 	MiChannelMuting,
 	MiClip,
 	MiClipFavorite,
-	MiNoteDeleteReceipt,
-	MiNoteDeleteDelivery,
 	MiNoteCleanupRule,
 	MiNoteCleanupState,
 	MiClipNote,
@@ -411,18 +409,6 @@ const $clipsRepository: Provider = {
 	inject: [DI.db],
 };
 
-const $noteDeleteReceiptsRepository: Provider = {
-	provide: DI.noteDeleteReceiptsRepository,
-	useFactory: (db: DataSource) => db.getRepository(MiNoteDeleteReceipt).extend(miRepository as MiRepository<MiNoteDeleteReceipt>),
-	inject: [DI.db],
-};
-
-const $noteDeleteDeliveriesRepository: Provider = {
-	provide: DI.noteDeleteDeliveriesRepository,
-	useFactory: (db: DataSource) => db.getRepository(MiNoteDeleteDelivery).extend(miRepository as MiRepository<MiNoteDeleteDelivery>),
-	inject: [DI.db],
-};
-
 const $noteCleanupRulesRepository: Provider = {
 	provide: DI.noteCleanupRulesRepository,
 	useFactory: (db: DataSource) => db.getRepository(MiNoteCleanupRule).extend(miRepository as MiRepository<MiNoteCleanupRule>),
@@ -625,8 +611,6 @@ const $noteHistoryRepository: Provider = {
 	providers: [
 		$usersRepository,
 		$notesRepository,
-		$noteDeleteReceiptsRepository,
-		$noteDeleteDeliveriesRepository,
 		$announcementsRepository,
 		$announcementReadsRepository,
 		$appsRepository,
@@ -714,8 +698,6 @@ const $noteHistoryRepository: Provider = {
 	exports: [
 		$usersRepository,
 		$notesRepository,
-		$noteDeleteReceiptsRepository,
-		$noteDeleteDeliveriesRepository,
 		$announcementsRepository,
 		$announcementReadsRepository,
 		$appsRepository,

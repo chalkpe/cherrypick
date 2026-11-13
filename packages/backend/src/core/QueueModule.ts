@@ -11,7 +11,7 @@ import type { Config } from '@/config.js';
 import { baseQueueOptions, QUEUE } from '@/queue/const.js';
 import { allSettled } from '@/misc/promise-tracker.js';
 import {
-	DeliveryQueueJobData,
+	DeliverJobData,
 	EndedPollNotificationJobData,
 	InboxJobData,
 	RelationshipJobData,
@@ -25,7 +25,7 @@ import type { Provider } from '@nestjs/common';
 export type SystemQueue = Bull.Queue<Record<string, unknown>>;
 export type EndedPollNotificationQueue = Bull.Queue<EndedPollNotificationJobData>;
 export type PostScheduledNoteQueue = Bull.Queue<PostScheduledNoteJobData>;
-export type DeliverQueue = Bull.Queue<DeliveryQueueJobData>;
+export type DeliverQueue = Bull.Queue<DeliverJobData>;
 export type InboxQueue = Bull.Queue<InboxJobData>;
 export type DbQueue = Bull.Queue;
 export type RelationshipQueue = Bull.Queue<RelationshipJobData>;
@@ -58,7 +58,7 @@ const $postScheduledNote: Provider = {
 
 const $deliver: Provider = {
 	provide: 'queue:deliver',
-	useFactory: (config: Config, redis: Redis.Redis) => createQueue<DeliveryQueueJobData>(QUEUE.DELIVER, config, redis),
+	useFactory: (config: Config, redis: Redis.Redis) => createQueue<DeliverJobData>(QUEUE.DELIVER, config, redis),
 	inject: [DI.config, DI.redisForJobQueue],
 };
 

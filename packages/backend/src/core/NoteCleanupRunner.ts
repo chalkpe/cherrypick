@@ -2,6 +2,15 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+// 일시적인 연결 장애만 재시도한다.
+export function isRetryableCleanupFailure(error: unknown): boolean {
+	if (typeof error !== 'object' || error === null) return false;
+	const value = error as { code?: unknown; message?: unknown; driverError?: unknown; cause?: unknown };
+	if (typeof value.code === 'string' && (value.code.startsWith('08') || ['57P01', '57P02', '57P03', '53300', '40001', '40P01', '55P03', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT'].includes(value.code))) return true;
+	if (typeof value.message === 'string' && ['Connection terminated unexpectedly', 'Connection terminated', 'Connection ended unexpectedly'].includes(value.message)) return true;
+	return (value.driverError !== error && isRetryableCleanupFailure(value.driverError)) || (value.cause !== error && isRetryableCleanupFailure(value.cause));
+}
+
 // budget는 삭제 시도 수(성공+실패)의 상한이다. 이미 없는 노트(remove가 false)는 시도로 세지 않는다.
 // 예산이 다 떨어지면 다음 지울 노트 앞에서 멈추므로, 그 앞의 보존 노트까지는 커서가 전진한다.
 // onFailure가 없으면 삭제 실패를 그대로 던진다. 있으면 실패를 성공으로 세지 않고 다음 노트로 진행한다.

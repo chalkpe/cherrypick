@@ -118,31 +118,6 @@ function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0)
 const keep = () => ({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null, legacy: null });
 
 // 실제 두 서비스의 저장 경계를 실행하며 Redis·DB 자체는 메모리 의존성으로 대체한다.
-test.each(['profileFailure', 'storageFailure'] as const)('최초 %s 뒤 같은 미해결 오류의 알림 접수를 재시도한다', async (failure) => {
-	const { service, rows, delivery, notifications } = fixture();
-	rows.Rule.push(keep());
-	delivery[failure] = true;
-
-	await service.list('alice');
-	await new Promise<void>(resolve => setImmediate(resolve));
-	expect(rows.Rule[0].lastError.code).toBe('MISSING_CLIP');
-	expect(notifications).toHaveLength(0);
-	delivery[failure] = false;
-	await service.list('alice');
-	await new Promise<void>(resolve => setImmediate(resolve));
-
-	expect(notifications).toHaveLength(1);
-	expect(notifications[0]).toMatchObject({ type: 'noteCleanupProtectionFailed', ruleId: 'keep', errorCode: 'MISSING_CLIP' });
-	await service.list('alice');
-	expect(notifications).toHaveLength(1);
-});
-
-function deferred() {
-	let resolve!: () => void;
-	const promise = new Promise<void>(done => { resolve = done; });
-	return { promise, resolve };
-}
-
 test.each(['packFailure', 'pushFailure'] as const)('저장 뒤 %s는 같은 오류 알림을 다시 만들지 않는다', async (failure) => {
 	const { rows, service, notifications, delivery } = fixture();
 	rows.Rule.push(keep());
@@ -155,42 +130,6 @@ test.each(['packFailure', 'pushFailure'] as const)('저장 뒤 %s는 같은 오�
 	expect(notifications).toHaveLength(1);
 });
 
-test.each(['loseReply', 'ackFailure'] as const)('접수 뒤 %s는 다음 검사와 서비스 재생성에서도 같은 알림을 중복하지 않는다', async (failure) => {
-	const { rows, service, createService, notifications, delivery } = fixture();
-	rows.Rule.push(keep());
-	delivery[failure] = true;
-
-	await service.list('alice');
-	expect(rows.Rule[0].protectionNotification.status).toBe('pending');
-	expect(notifications).toHaveLength(1);
-	delivery[failure] = false;
-	await createService().list('alice');
-
-	expect(rows.Rule[0].protectionNotification.status).toBe('accepted');
-	expect(notifications).toHaveLength(1);
-});
-
-test('명시 수신 거부는 실패와 구분하고 해결 뒤 재발은 새 세대로 접수한다', async () => {
-	const { rows, service, notifications, delivery, jobs } = fixture();
-	rows.Rule.push(keep());
-	delivery.disabled = true;
-
-	await service.list('alice');
-	expect(rows.Rule[0].protectionNotification.status).toBe('suppressed');
-	delivery.disabled = false;
-	await service.list('alice');
-	expect(notifications).toHaveLength(0);
-	rows.MiClip.push({ id: 'gone', userId: 'alice' });
-	expect((await service.list('alice')).blocked).toBe(false);
-	expect(jobs.size).toBe(0);
-	rows.MiClip.splice(0);
-	await service.list('alice');
-	await service.list('alice');
-
-	expect(notifications).toHaveLength(1);
-	expect(rows.Rule[0].protectionNotification.generation).toBe(2);
-});
-
 test('오류만 남은 구 형식은 한 번 재접수하고 내부 상태를 공개 응답에서 제외한다', async () => {
 	const { rows, service, notifications } = fixture();
 	rows.Rule.push({ ...keep(), lastError: { ruleId: 'keep', code: 'MISSING_CLIP', path: 'condition', message: 'MISSING_CLIP', referenceType: 'clip', referenceId: 'gone', userActionable: true } });
@@ -201,25 +140,6 @@ test('오류만 남은 구 형식은 한 번 재접수하고 내부 상태를 �
 	expect(notifications).toHaveLength(1);
 	expect(response.rules[0]).not.toHaveProperty('protectionNotification');
 	expect(JSON.stringify(response)).not.toContain('generation');
-});
-
-test('자료 확인 실패는 userActionable=false여도 접수 실패 후 다시 알린다', async () => {
-	const { rows, service, input, notifications, delivery, failing } = fixture();
-	rows.Rule.push({ ...input, id: 'delete', userId: 'alice', enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ ...keep(), condition: { type: 'flag', field: 'pinned', value: true } });
-	rows.MiNote.push({ id: '0', userId: 'alice', text: '정리', cw: null, fileIds: [], hasPoll: false, renoteId: null, replyId: null, channelId: null, localOnly: false, visibility: 'public', reactions: {}, renoteCount: 0, tags: [] });
-	failing.add('MiUserNotePining');
-	delivery.storageFailure = true;
-
-	await service.preview('alice', ['delete']);
-	expect(rows.Rule[1].lastError.userActionable).toBe(false);
-	delivery.storageFailure = false;
-	await service.list('alice');
-	await service.list('alice');
-
-	expect(notifications).toHaveLength(1);
-	expect(notifications[0].errorCode).toBe('TEMPORARY_FAILURE');
-	expect(rows.MiNote).toHaveLength(1);
 });
 
 test('지우기 규칙 오류와 규칙 조회 인프라 실패에는 보호 알림을 만들지 않는다', async () => {
@@ -241,44 +161,6 @@ test('오류 저장 전 실패하면 알림을 접수하지 않고 다음 검사
 	await expect(service.list('alice')).rejects.toThrow('write unavailable');
 	expect(notifications).toHaveLength(0);
 	failingWrites.clear();
-	await service.list('alice');
-
-	expect(notifications).toHaveLength(1);
-});
-
-test.each(['newError', 'resolved', 'otherUser', 'removed'] as const)('늦은 접수 결과는 %s 상태를 덮지 않는다', async (change) => {
-	const { rows, service, notifications, delivery } = fixture();
-	rows.Rule.push(keep());
-	const gate = deferred();
-	delivery.profileGate = gate.promise;
-	const first = service.list('alice');
-	await vi.waitFor(() => expect(rows.Rule[0].protectionNotification?.status).toBe('pending'));
-	const newer = { generation: 2, identity: '새 오류', status: 'pending' };
-	if (change === 'newError') rows.Rule[0].protectionNotification = newer;
-	if (change === 'resolved') { rows.Rule[0].lastError = null; rows.Rule[0].protectionNotification = { generation: 1, identity: null, status: 'resolved' }; }
-	if (change === 'otherUser') rows.Rule[0].userId = 'bob';
-	if (change === 'removed') rows.Rule.splice(0);
-	gate.resolve();
-	await first;
-
-	if (change === 'newError') expect(rows.Rule[0].protectionNotification).toEqual(newer);
-	if (change === 'resolved') expect(rows.Rule[0].protectionNotification.status).toBe('resolved');
-	if (change === 'otherUser') expect(rows.Rule[0].protectionNotification.status).toBe('pending');
-	if (change === 'removed') expect(rows.Rule).toHaveLength(0);
-	expect(notifications).toHaveLength(1);
-});
-
-test('접수 중 동시 검사는 기존 계정 잠금에서 거부하고 하나만 접수한다', async () => {
-	const { rows, service, notifications, delivery } = fixture();
-	rows.Rule.push(keep());
-	const gate = deferred();
-	delivery.profileGate = gate.promise;
-	const first = service.list('alice');
-	await vi.waitFor(() => expect(rows.Rule[0].protectionNotification?.status).toBe('pending'));
-
-	await expect(service.list('alice')).rejects.toThrow('CLEANUP_BUSY');
-	gate.resolve();
-	await first;
 	await service.list('alice');
 
 	expect(notifications).toHaveLength(1);
@@ -314,59 +196,13 @@ test('일반 createNotification 호출은 기존 XADD와 수신 설정을 사용
 	expect(notifications).toHaveLength(1);
 });
 
-test('다음 자동 검사에서 자료 재확인이 실패해도 미접수 보호 알림은 재시도한다', async () => {
-	const { rows, service, input, notifications, delivery, failing } = fixture();
-	rows.Rule.push({ ...input, id: 'delete', userId: 'alice', enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ ...keep(), condition: { type: 'flag', field: 'pinned', value: true } });
-	rows.MiNote.push({ id: '0', userId: 'alice', text: '정리', cw: null, fileIds: [], hasPoll: false, renoteId: null, replyId: null, channelId: null, localOnly: false, visibility: 'public', reactions: {}, renoteCount: 0, tags: [] });
-	failing.add('MiUserNotePining');
-	delivery.storageFailure = true;
-	await service.preview('alice', ['delete']);
-	expect(notifications).toHaveLength(0);
-	delivery.storageFailure = false;
-	failing.add('MiNote');
-
-	await expect(service.processUser('alice')).rejects.toThrow('query unavailable');
-
-	expect(notifications).toHaveLength(1);
-	expect(rows.Rule[1].lastError.code).toBe('TEMPORARY_FAILURE');
-});
-
-test('저장 응답이 오기 전에는 최초 알림을 접수 완료로 기록하지 않는다', async () => {
-	const { rows, service, delivery, notifications } = fixture();
-	rows.Rule.push(keep());
-	const gate = deferred();
-	delivery.storageGate = gate.promise;
-	const listing = service.list('alice');
-	await vi.waitFor(() => expect(rows.Rule[0].protectionNotification?.status).toBe('pending'));
-
-	expect(notifications).toHaveLength(0);
-	gate.resolve();
-	await listing;
-
-	expect(rows.Rule[0].protectionNotification.status).toBe('accepted');
-	expect(notifications).toHaveLength(1);
-});
-
-test('새 세대 접수 뒤 도착한 과거 세대는 성공으로 추정하지 않는다', async () => {
-	const { notificationService, notifications } = fixture();
-	const data = { ruleId: 'keep', errorCode: 'MISSING_CLIP' };
-
-	await expect(notificationService.createNoteCleanupProtectionNotification('alice', data, 2)).resolves.toBe('accepted');
-	await expect(notificationService.createNoteCleanupProtectionNotification('alice', data, 1)).rejects.toThrow('Invalid cleanup notification acceptance result');
-	await expect(notificationService.createNoteCleanupProtectionNotification('alice', data, 2)).resolves.toBe('accepted');
-
-	expect(notifications).toHaveLength(1);
-});
-
-test('규칙 삭제는 해당 규칙의 중복 억제 메타데이터도 반환한다', async () => {
-	const { rows, service, markerCount } = fixture();
+test('규칙 삭제는 규칙에 보관한 중복 억제 상태도 제거한다', async () => {
+	const { rows, service } = fixture();
 	rows.Rule.push(keep());
 	await service.list('alice');
-	expect(markerCount()).toBe(1);
+	expect(rows.Rule[0].protectionNotification.status).toBe('accepted');
 
 	await service.remove('alice', 'keep');
 
 	expect(rows.Rule).toHaveLength(0);
-	expect(markerCount()).toBe(0);
 });

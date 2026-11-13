@@ -2,12 +2,13 @@
  * SPDX-FileCopyrightText: noridev and cherrypick-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { CleanupInputError, NOTE_CLEANUP_LIMITS, NoteCleanupService } from '@/core/NoteCleanupService.js';
 import { QueueService } from '@/core/QueueService.js';
 import Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
-import { DelayedError } from 'bullmq';
+import { isRetryableCleanupFailure } from '@/core/NoteCleanupRunner.js';
 import type * as Bull from 'bullmq';
 
 // 잠금 충돌·회차 시간 초과 뒤 다시 시도하기까지의 지연, 연합 큐 적체가 풀리기를 기다리는 지연
@@ -69,34 +70,52 @@ export class AutoDeleteNotesProcessorService {
 		return { deletedCount, skipped: false };
 	}
 
-	// 수동 정리 요청: 완료·적체·예산 소진·시간 초과까지 한 작업 안에서 페이지를 이어 처리한다.
-	// 지연할 때는 진행한 커서만 작업 데이터에 남기고, 요청(규칙 조합·requestId)은 그대로 보존한다.
+	// 같은 요청의 이어 받기 작업은 고정 ID로 접수해 재시작 시 중복 등록을 막는다.
 	private async processRequest(job: Bull.Job<Record<string, unknown>>, userId: string, ruleIds: string[], afterId: string | undefined, requestId: unknown) {
 		const started = Date.now();
+		const id = typeof requestId === 'string' ? requestId : randomUUID();
+		const step = typeof job.data.step === 'number' ? job.data.step : 0;
 		let cursor = afterId;
-		const delay = async (until: number) => {
-			if (cursor !== afterId) await job.updateData({ userId, ruleIds, afterId: cursor, requestId });
-			await job.moveToDelayed(until, job.token);
-			throw new DelayedError();
+		let failures = typeof job.data.retryFailures === 'number' ? job.data.retryFailures : 0;
+		const handoff = async (until: number) => {
+			const next = { userId, ruleIds, afterId: cursor, requestId: id, step: step + 1, retryFailures: failures };
+			// 접수 전에 다음 작업을 기록하므로 이 작업이 중단돼도 같은 ID로 다시 접수한다.
+			await job.updateData({ ...job.data, requestId: id, step, handoff: { next, until } });
+			await this.queueService.systemQueue.add('autoDeleteNotes', next, {
+				jobId: `note-cleanup-${id}-${step + 1}`, delay: Math.max(0, until - Date.now()),
+				attempts: 1000000, backoff: { type: 'fixed', delay: 5000 },
+				removeOnComplete: false, removeOnFail: false,
+			});
+			return { delayed: true };
 		};
+		const saved = job.data.handoff as { next?: { afterId?: string; retryFailures?: number }; until?: number } | undefined;
+		if (saved?.next && typeof saved.until === 'number') {
+			cursor = saved.next.afterId;
+			failures = saved.next.retryFailures ?? 0;
+			return handoff(saved.until);
+		}
 		let deleted = 0;
 		let failed = 0;
 		for (;;) {
-			if (await this.backlogged()) return delay(Date.now() + BACKLOG_DELAY);
 			let result;
-			try { result = await this.noteCleanupService.processUser(userId, ruleIds, cursor); } catch (error) {
-				// 정상 잠금 충돌은 실패가 아니므로 요청을 보존한 채 다시 시도한다.
-				if (!(error instanceof CleanupInputError) || error.code !== 'CLEANUP_BUSY') throw error;
-				return delay(Date.now() + RETRY_DELAY);
+			try {
+				if (await this.backlogged()) return handoff(Date.now() + BACKLOG_DELAY);
+				result = await this.noteCleanupService.processUser(userId, ruleIds, cursor);
+			} catch (error) {
+				if (error instanceof CleanupInputError && error.code === 'CLEANUP_BUSY') return handoff(Date.now() + RETRY_DELAY);
+				if (!isRetryableCleanupFailure(error)) throw error;
+				this.logger.error('Manual note cleanup temporarily failed', { userId, error });
+				failures = Math.min(failures + 1, 11);
+				return handoff(Date.now() + Math.min(3600000, 5000 * 2 ** (failures - 1)));
 			}
+			failures = 0;
 			deleted += result.deleted;
 			failed += result.failed;
 			if (result.complete) return { ...result, deleted, failed };
-			// 빈 커서('')는 아직 지난 노트가 없다는 뜻이므로 기존 위치를 유지한다.
 			cursor = result.cursor || cursor;
-			// 예산이 다 찼으면 다음 예약 창이 시작될 때까지 미룬다.
-			if (result.throttled) return delay((Math.floor(Date.now() / NOTE_CLEANUP_LIMITS.windowMs) + 1) * NOTE_CLEANUP_LIMITS.windowMs);
-			if (Date.now() - started >= NOTE_CLEANUP_LIMITS.roundMs) return delay(Date.now() + RETRY_DELAY);
+			await job.updateData({ ...job.data, userId, ruleIds, afterId: cursor, requestId: id, step, retryFailures: failures });
+			if (result.throttled) return handoff((Math.floor(Date.now() / NOTE_CLEANUP_LIMITS.windowMs) + 1) * NOTE_CLEANUP_LIMITS.windowMs);
+			if (Date.now() - started >= NOTE_CLEANUP_LIMITS.roundMs) return handoff(Date.now() + RETRY_DELAY);
 		}
 	}
 }

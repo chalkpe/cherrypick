@@ -25,7 +25,6 @@ import type {
 	DbJobData,
 	ArchiveAnnouncementJobData,
 	DeliverJobData,
-	NoteDeleteDeliverJobData,
 	RelationshipJobData,
 	SystemWebhookDeliverJobData,
 	ThinUser,
@@ -90,9 +89,6 @@ const REPEATABLE_SYSTEM_JOB_DEF = [{
 	// 毎日午前4時に起動(最も人の少ない時間帯)
 	pattern: '0 4 * * *',
 }, {
-	name: 'recoverNoteDeletes',
-	pattern: '* * * * *',
-}, {
 	name: 'autoDeleteNotes',
 	// 소량 검사와 삭제 예산을 나누어 반복한다.
 	pattern: '*/5 * * * *',
@@ -132,7 +128,7 @@ export class QueueService {
 		for (const def of REPEATABLE_SYSTEM_JOB_DEF) {
 			this.systemQueue.upsertJobScheduler(def.name, {
 				pattern: def.pattern,
-				immediately: def.name === 'recoverNoteDeletes',
+				immediately: false,
 			}, {
 				name: def.name,
 				opts: {
@@ -175,15 +171,9 @@ export class QueueService {
 			isSharedInbox,
 		};
 
-		return this.enqueueDeliver(data);
-	}
+		const label = to.replace('https://', '').replace('/inbox', '');
 
-	// 고정된 전송 문자열을 다시 직렬화하지 않고 기존 DELIVER 옵션으로 접수한다.
-	@bindThis
-	public enqueueDeliver(data: DeliverJobData, jobId?: string) {
-		const label = data.to.replace('https://', '').replace('/inbox', '');
 		return this.deliverQueue.add(label, data, {
-			...(jobId == null ? {} : { jobId }),
 			attempts: this.config.deliverJobMaxAttempts ?? 12,
 			backoff: {
 				type: 'custom',
@@ -196,20 +186,6 @@ export class QueueService {
 				age: 3600 * 24 * 7, // keep up to 7 days
 				count: 100,
 			},
-		});
-	}
-
-	// 삭제 전달은 DB 의무 식별자만 Redis에 보관한다.
-	@bindThis
-	public enqueueNoteDeleteDeliver(data: NoteDeleteDeliverJobData, jobId: string) {
-		const identity = data.noteDeleteDelivery;
-		return this.deliverQueue.add('note-delete-delivery', { noteDeleteDelivery: {
-			receiptNoteId: identity.receiptNoteId, ownerUserId: identity.ownerUserId,
-			channel: identity.channel, targetKey: identity.targetKey, generation: identity.generation,
-		} }, {
-			jobId, attempts: this.config.deliverJobMaxAttempts ?? 12, backoff: { type: 'custom' },
-			removeOnComplete: { age: 3600 * 24 * 7, count: 30 },
-			removeOnFail: { age: 3600 * 24 * 7, count: 100 },
 		});
 	}
 

@@ -397,12 +397,12 @@ export class GlobalEventService {
 	}
 
 	@bindThis
-	private publish(channel: StreamChannels, type: string | null, value?: any): Promise<number> {
+	private publish(channel: StreamChannels, type: string | null, value?: any): void {
 		const message = type == null ? value : value == null ?
 			{ type: type, body: null } :
 			{ type: type, body: value };
 
-		return this.redisForPub.publish(this.config.host, JSON.stringify({
+		this.redisForPub.publish(this.config.host, JSON.stringify({
 			channel: channel,
 			message: message,
 		}));
@@ -430,18 +430,7 @@ export class GlobalEventService {
 
 	@bindThis
 	public publishNoteStream<K extends keyof NoteEventTypes>(note: MiNote, type: K, value?: NoteEventTypes[K]): void {
-		this.publishNoteStreamWithCompletion(note, type, value);
-	}
-
-	// 삭제 복구에서만 Redis 접수 완료를 기다린다. 구독자의 처리를 보증하지는 않는다.
-	@bindThis
-	public publishNoteStreamForDeletion(note: Pick<MiNote, 'id' | 'userId' | 'visibility' | 'visibleUserIds' | 'mentions' | 'replyUserId'>, deletedAt: Date): Promise<number> {
-		return this.publishNoteStreamWithCompletion(note, 'deleted', { deletedAt });
-	}
-
-	@bindThis
-	private publishNoteStreamWithCompletion<K extends keyof NoteEventTypes>(note: Pick<MiNote, 'id' | 'userId' | 'visibility' | 'visibleUserIds' | 'mentions' | 'replyUserId'>, type: K, value?: NoteEventTypes[K]): Promise<number> {
-		return this.publish(`noteStream:${note.id}`, type, {
+		this.publish(`noteStream:${note.id}`, type, {
 			id: note.id,
 			userId: note.userId,
 			visibility: note.visibility,

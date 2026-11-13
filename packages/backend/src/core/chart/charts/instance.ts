@@ -5,18 +5,15 @@
 
 import { Injectable, Inject } from '@nestjs/common';
 import { DataSource } from 'typeorm';
-import type { EntityManager } from 'typeorm';
 import * as Redis from 'ioredis';
 import type { DriveFilesRepository, FollowingsRepository, UsersRepository, NotesRepository } from '@/models/_.js';
 import type { MiDriveFile } from '@/models/DriveFile.js';
-import { MiNote } from '@/models/Note.js';
+import type { MiNote } from '@/models/Note.js';
 import { DI } from '@/di-symbols.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { bindThis } from '@/decorators.js';
 import { acquireChartInsertLock } from '@/misc/distributed-lock.js';
 import Chart from '../core.js';
-import { deletionDiff } from '../note-deletion.js';
-import type { DeletedChartNote } from '../note-deletion.js';
 import { ChartLoggerService } from '../ChartLoggerService.js';
 import { name, schema } from './entities/instance.js';
 import type { KVs } from '../core.js';
@@ -26,8 +23,6 @@ import type { KVs } from '../core.js';
  */
 @Injectable()
 export default class InstanceChart extends Chart<typeof schema> { // eslint-disable-line import/no-default-export
-	protected override authoritativeTotalKeys = ['notes.total'];
-
 	constructor(
 		@Inject(DI.db)
 		private db: DataSource,
@@ -53,24 +48,28 @@ export default class InstanceChart extends Chart<typeof schema> { // eslint-disa
 		super(db, (k) => acquireChartInsertLock(redisClient, k), chartLoggerService.logger, name, schema, true);
 	}
 
-	protected async authoritativeTotals(manager: EntityManager, group: string): Promise<Partial<KVs<typeof schema>>> {
-		return { 'notes.total': await manager.getRepository(MiNote).countBy({ userHost: group }) };
-	}
+	protected async tickMajor(group: string): Promise<Partial<KVs<typeof schema>>> {
+		const [
+			notesCount,
+			usersCount,
+			followingCount,
+			followersCount,
+			driveFiles,
+		] = await Promise.all([
+			this.notesRepository.countBy({ userHost: group }),
+			this.usersRepository.countBy({ host: group }),
+			this.followingsRepository.countBy({ followerHost: group }),
+			this.followingsRepository.countBy({ followeeHost: group }),
+			this.driveFilesRepository.countBy({ userHost: group }),
+		]);
 
-	protected async tickMajor(group: string, manager?: EntityManager): Promise<Partial<KVs<typeof schema>>> {
-		const users = manager ? manager.getRepository(this.usersRepository.target) : this.usersRepository;
-		const followings = manager ? manager.getRepository(this.followingsRepository.target) : this.followingsRepository;
-		const driveFiles = manager ? manager.getRepository(this.driveFilesRepository.target) : this.driveFilesRepository;
 		return {
-			'users.total': await users.countBy({ host: group }),
-			'following.total': await followings.countBy({ followerHost: group }),
-			'followers.total': await followings.countBy({ followeeHost: group }),
-			'drive.totalFiles': await driveFiles.countBy({ userHost: group }),
+			'notes.total': notesCount,
+			'users.total': usersCount,
+			'following.total': followingCount,
+			'followers.total': followersCount,
+			'drive.totalFiles': driveFiles,
 		};
-	}
-
-	public async applyDeletionInTransaction(manager: EntityManager, notes: readonly DeletedChartNote[], group: string, bucketAt: Date): Promise<void> {
-		await this.applyDeletionDiffInTransaction(manager, deletionDiff(notes, 'notes.'), group, bucketAt);
 	}
 
 	protected async tickMinor(): Promise<Partial<KVs<typeof schema>>> {
@@ -103,6 +102,7 @@ export default class InstanceChart extends Chart<typeof schema> { // eslint-disa
 	@bindThis
 	public async updateNote(host: string, note: MiNote, isAdditional: boolean): Promise<void> {
 		await this.commit({
+			'notes.total': isAdditional ? 1 : -1,
 			'notes.inc': isAdditional ? 1 : 0,
 			'notes.dec': isAdditional ? 0 : 1,
 			'notes.diffs.normal': note.replyId == null && note.renoteId == null ? (isAdditional ? 1 : -1) : 0,

@@ -43,7 +43,7 @@ function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0
 			findOneByOrFail: async (where: any) => { const row = data.find(row => matches(row, where)); if (!row) throw new Error('not found'); return row; },
 			countBy: async (where: any) => data.filter(row => matches(row, where)).length,
 			save: async (input: any) => { write(entity.name, input); const i = data.findIndex(row => row.id === input.id); if (i >= 0) data[i] = input; else data.push(input); return input; },
-			update: async (id: any, input: any) => { write(entity.name, input); for (const row of data) if (typeof id === 'object' ? matches(row, id) : row.id === id || row.userId === id) Object.assign(row, input); },
+			update: async (id: any, input: any) => { write(entity.name, input); let affected = 0; for (const row of data) if (typeof id === 'object' ? matches(row, id) : row.id === id || row.userId === id) { Object.assign(row, input); affected++; } return { affected }; },
 			delete: async (where: any) => { write(entity.name, {}); for (let i = data.length - 1; i >= 0; i--) if (matches(data[i], where)) data.splice(i, 1); },
 			createQueryBuilder: () => {
 				let afterId: string | undefined;
@@ -74,7 +74,7 @@ function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0
 	const buffered = new Map<string, { deltas: Record<string, number>; pairs: [string, string][] }>();
 	const buffering = Object.create(ReactionsBufferingService.prototype) as ReactionsBufferingService;
 	Object.defineProperty(buffering, 'getMany', { value: async () => buffered, writable: true });
-	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, { deleteNoteCleanupProtectionMarker: async () => {}, createNoteCleanupProtectionNotification: async (...args: unknown[]) => { notifications.push(args); return 'accepted'; } } as any, { eval: async () => 5 } as any, meta as any, buffering);
+	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, { createNotification: (...args: unknown[]) => { notifications.push(args); } } as any, { eval: async () => 5 } as any, meta as any, buffering);
 	const condition = { type: 'age', operator: 'gte', seconds: 60 };
 	return { rows, service, notifications, jobs, failing, failingWrites, lock, meta, buffered, buffering, noteReads, input: { name: '정리', action: 'delete' as const, condition } };
 }
@@ -172,6 +172,23 @@ test('같은 진행 요청은 중복 등록하지 않고 규칙 수정도 큐를
 	expect((await service.request('alice', [rule.id])).queued).toBe(false);
 	await service.save('alice', { ...input, condition: { type: 'age', operator: 'gt', seconds: 3600 } }, rule.id);
 	expect(jobs.size).toBe(1);
+});
+
+test('지연된 이어 받기가 끝날 때까지 같은 요청을 중복 접수하지 않고 완료 뒤에는 다시 요청할 수 있다', async () => {
+	const { service, input, jobs } = fixture();
+	const { rule } = await service.save('alice', input);
+	const first = await service.request('alice', [rule.id]);
+	const root = jobs.get(first.jobId) as any;
+	const requestId = root.data.requestId;
+	root.data.handoff = { next: { requestId, step: 1 } };
+	root.getState = async () => 'completed';
+	let childState = 'delayed';
+	const childId = `note-cleanup-${requestId}-1`;
+	jobs.set(childId, { data: { requestId, step: 1 }, getState: async () => childState, remove: async () => { jobs.delete(childId); } });
+
+	expect((await service.request('alice', [rule.id])).queued).toBe(false);
+	childState = 'completed';
+	expect((await service.request('alice', [rule.id])).queued).toBe(true);
 });
 
 test('타인 소유의 클립을 보존이나 지우기 조건으로 저장하지 않는다', async () => {

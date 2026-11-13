@@ -8,7 +8,6 @@ import * as Redis from 'ioredis';
 import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common';
 import { In } from 'typeorm';
 import { ReplyError } from 'ioredis';
-import Logger from '@/logger.js';
 import { DI } from '@/di-symbols.js';
 import type { UsersRepository } from '@/models/_.js';
 import type { MiUser } from '@/models/User.js';
@@ -25,20 +24,9 @@ import { FilterUnionByProperty, groupedNotificationTypes, obsoleteNotificationTy
 import { trackPromise } from '@/misc/promise-tracker.js';
 // import { escapeHtml } from '@/misc/escape-html.js';
 
-// 같은 규칙의 과거 세대는 새 세대를 덮지 않는다. 두 키는 같은 Redis 슬롯에 둔다.
-const CLEANUP_NOTIFICATION_SCRIPT = `
-local previous = tonumber(redis.call('GET', KEYS[2]) or '0')
-if previous > tonumber(ARGV[1]) then return -1 end
-if previous == tonumber(ARGV[1]) then return 0 end
-redis.call('XADD', KEYS[1], 'MAXLEN', '~', ARGV[2], ARGV[3], 'data', ARGV[4])
-redis.call('SET', KEYS[2], ARGV[1])
-return 1
-`;
-
 @Injectable()
 export class NotificationService implements OnApplicationShutdown {
 	#shutdownController = new AbortController();
-	private logger = new Logger('notification');
 
 	constructor(
 		@Inject(DI.config)
@@ -100,30 +88,11 @@ export class NotificationService implements OnApplicationShutdown {
 		);
 	}
 
-	// 이 기능만 저장 접수를 기다린다. 화면 전파 실패는 이미 접수한 통지를 다시 만들지 않는다.
-	public async createNoteCleanupProtectionNotification(
-		userId: string,
-		data: { ruleId: string; errorCode: string },
-		generation: number,
-	): Promise<'accepted' | 'suppressed'> {
-		const notification = await this.#createNotificationInternal(userId, 'noteCleanupProtectionFailed', data, undefined, generation);
-		return notification === null ? 'suppressed' : 'accepted';
-	}
-
-	public async deleteNoteCleanupProtectionMarker(userId: string, ruleId: string): Promise<void> {
-		await this.redisClient.del(this.cleanupProtectionMarker(userId, ruleId));
-	}
-
-	private cleanupProtectionMarker(userId: string, ruleId: string): string {
-		return `noteCleanupProtection:{notificationTimeline:${userId}}:${ruleId}`;
-	}
-
 	async #createNotificationInternal<T extends MiNotification['type']>(
 		notifieeId: MiUser['id'],
 		type: T,
 		data: Omit<FilterUnionByProperty<MiNotification, 'type', T>, 'type' | 'id' | 'createdAt' | 'notifierId'>,
 		notifierId?: MiUser['id'] | null,
-		cleanupGeneration?: number,
 	): Promise<MiNotification | null> {
 		const profile = await this.cacheService.userProfileCache.fetch(notifieeId);
 
@@ -194,26 +163,14 @@ export class NotificationService implements OnApplicationShutdown {
 			} as unknown as FilterUnionByProperty<MiNotification, 'type', T>;
 
 			try {
-				if (cleanupGeneration !== undefined) {
-					const stream = `notificationTimeline:${notifieeId}`;
-					if (type !== 'noteCleanupProtectionFailed' || !('ruleId' in data) || typeof data.ruleId !== 'string') throw new Error('Invalid cleanup notification data');
-					const ruleId = data.ruleId;
-					const added = Number(await this.redisClient.eval(CLEANUP_NOTIFICATION_SCRIPT, 2,
-						stream, this.cleanupProtectionMarker(notifieeId, ruleId), cleanupGeneration.toString(),
-						this.config.perUserNotificationsMaxCount.toString(), this.toXListId(notification.id), JSON.stringify(notification)));
-					if (added === 0) return notification;
-					if (added !== 1) throw new Error('Invalid cleanup notification acceptance result');
-					redisId = this.toXListId(notification.id);
-				} else {
-					redisId = (await this.redisClient.xadd(
-						`notificationTimeline:${notifieeId}`,
-						'MAXLEN', '~', this.config.perUserNotificationsMaxCount.toString(),
-						this.toXListId(notification.id),
-						'data', JSON.stringify(notification)))!;
-				}
+				redisId = (await this.redisClient.xadd(
+					`notificationTimeline:${notifieeId}`,
+					'MAXLEN', '~', this.config.perUserNotificationsMaxCount.toString(),
+					this.toXListId(notification.id),
+					'data', JSON.stringify(notification)))!;
 			} catch (e) {
 				// The ID specified in XADD is equal or smaller than the target stream top item で失敗することがあるのでリトライ
-				if (e instanceof ReplyError && e instanceof Error && (cleanupGeneration === undefined || e.message.includes('equal or smaller than the target stream top item'))) continue;
+				if (e instanceof ReplyError) continue;
 				throw e;
 			}
 
@@ -221,17 +178,6 @@ export class NotificationService implements OnApplicationShutdown {
 			// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
 		} while (true);
 
-		if (cleanupGeneration !== undefined) {
-			trackPromise(this.#publishNotification(notifieeId, notification, redisId, notifierId).catch(error => {
-				this.logger.error('Cleanup notification publication failed', { error });
-			}));
-			return notification;
-		}
-		return this.#publishNotification(notifieeId, notification, redisId, notifierId);
-	}
-
-	async #publishNotification(notifieeId: string, notification: MiNotification, redisId: string, notifierId?: string | null): Promise<MiNotification | null> {
-		const type = notification.type;
 		const packed = await this.notificationEntityService.pack(notification, notifieeId, {});
 
 		if (packed == null) return null;

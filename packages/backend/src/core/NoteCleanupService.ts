@@ -21,7 +21,7 @@ import { IdService } from '@/core/IdService.js';
 import { isQuote, isRenote } from '@/misc/is-renote.js';
 import { CleanupConditionError, cleanupReferences, decideCleanup, validateCleanupCondition } from './NoteCleanupCondition.js';
 import type { CleanupCondition, CleanupContext, CleanupEvaluationRule } from './NoteCleanupCondition.js';
-import { runCleanupBatch, initialCleanupRules } from './NoteCleanupRunner.js';
+import { runCleanupBatch, initialCleanupRules, isRetryableCleanupFailure } from './NoteCleanupRunner.js';
 
 export class CleanupInputError extends Error {
 	constructor(public code: string, public path = 'condition', public referenceId?: string) { super(code); }
@@ -226,7 +226,6 @@ export class NoteCleanupService {
 				await this.states.update(userId, { cursor: null, previewToken: null });
 				if (rule.legacy) await this.repository(MiUser).update(userId, legacyFields(rule.legacy, null));
 			});
-			try { await this.notificationService.deleteNoteCleanupProtectionMarker(userId, ruleId); } catch (error) { this.logger.error('Cleanup protection notification marker deletion failed', { error }); }
 		});
 	}
 
@@ -241,6 +240,7 @@ export class NoteCleanupService {
 				await this.validate(userId, rule.condition);
 				recheck = rule.lastError !== null;
 			} catch (e) {
+				if (isRetryableCleanupFailure(e)) throw e;
 				// 이번 참조 조회가 일시 실패하면 확인하지 못한 것이므로 저장된 오류를 그대로 유지한다.
 				if (e instanceof CleanupInputError || rule.lastError === null) {
 					const code = e instanceof CleanupInputError ? e.code : 'TEMPORARY_FAILURE';
@@ -308,6 +308,7 @@ export class NoteCleanupService {
 		const notes = await this.scanNotes(query, consumption);
 		let contexts: CleanupContext[];
 		try { contexts = await this.contexts(userId, notes); } catch (error) {
+			if (isRetryableCleanupFailure(error)) throw error;
 			for (const { rule } of prepared.filter(p => p.rule.action === 'keep' && p.lastError === null)) await this.recordTemporaryFailure(userId, rule, notes);
 			throw error;
 		}
@@ -345,9 +346,9 @@ export class NoteCleanupService {
 			const current = await this.rules.findOneBy({ id: ruleId, userId });
 			const pending = current?.protectionNotification;
 			if (!current?.enabled || current.action !== 'keep' || !current.lastError || pending?.status !== 'pending' || pending.identity !== canonicalJson(publicError(current.lastError))) return;
-			const status = await this.notificationService.createNoteCleanupProtectionNotification(userId, { ruleId, errorCode: current.lastError.code }, pending.generation);
-			// 늦은 결과는 같은 소유자의 같은 세대 접수 상태만 바꿀 수 있다.
-			await this.rules.update({ id: ruleId, userId, protectionNotification: pending }, { protectionNotification: { ...pending, status } });
+			// 같은 오류의 통지 자격을 규칙 상태에서 한 번만 소비한다.
+			const claimed = await this.rules.update({ id: ruleId, userId, protectionNotification: pending }, { protectionNotification: { ...pending, status: 'accepted' } });
+			if (claimed.affected) this.notificationService.createNotification(userId, 'noteCleanupProtectionFailed', { ruleId, errorCode: current.lastError.code });
 		} catch (error) {
 			this.logger.error('Cleanup protection notification acceptance failed', { error });
 		}
@@ -360,6 +361,7 @@ export class NoteCleanupService {
 		const errors: Record<string, string> = {};
 		const guarded = async <T>(source: string, value: Promise<T> | T, fallback: T): Promise<T> => {
 			try { return await value; } catch (error) {
+				if (isRetryableCleanupFailure(error)) throw error;
 				this.logger.error(`Cleanup data lookup failed (${source})`, { error });
 				errors[source] = 'TEMPORARY_FAILURE';
 				return fallback;
@@ -418,8 +420,21 @@ export class NoteCleanupService {
 			await this.page(userId, ruleIds, undefined, 1);
 			const jobId = `note-cleanup-${userId}-${createHash('sha256').update([...ruleIds].sort().join(',')).digest('hex')}`;
 			const existing = await this.queueService.systemQueue.getJob(jobId);
-			if (existing) return { queued: false, jobId };
-			await this.queueService.systemQueue.add('autoDeleteNotes', { userId, ruleIds, requestId: randomUUID() }, { jobId, removeOnComplete: true, removeOnFail: true, attempts: 1 });
+			if (existing) {
+				// 최초 작업을 보관하고 이어 받기까지 확인해 진행 중인 같은 요청을 구별한다.
+				let current = existing;
+				for (;;) {
+					if (await current.getState() !== 'completed') return { queued: false, jobId };
+					const next = (current.data.handoff as { next?: { requestId?: unknown; step?: unknown } } | undefined)?.next;
+					if (!next) break;
+					if (typeof next.requestId !== 'string' || typeof next.step !== 'number') return { queued: false, jobId };
+					const child = await this.queueService.systemQueue.getJob(`note-cleanup-${next.requestId}-${next.step}`);
+					if (!child) return { queued: false, jobId };
+					current = child;
+				}
+				await existing.remove();
+			}
+			await this.queueService.systemQueue.add('autoDeleteNotes', { userId, ruleIds, requestId: randomUUID() }, { jobId, removeOnComplete: false, removeOnFail: false, attempts: 1000000, backoff: { type: 'fixed', delay: 5000 } });
 			return { queued: true, jobId };
 		});
 	}
@@ -478,6 +493,7 @@ export class NoteCleanupService {
 				if (!note) return false;
 				return await this.noteDeleteService.delete(user, note, false);
 			}, (noteId, error) => {
+				if (ruleIds && isRetryableCleanupFailure(error)) throw error;
 				// 한 노트의 실패가 뒤 노트와 다른 계정을 멈추지 않게 한다. 커서가 지나가므로 다음 순회에서 다시 검사된다.
 				failed++;
 				this.logger.error('Cleanup note deletion failed', { userId, noteId, error });
