@@ -68,7 +68,7 @@ jobs:
       - name: Test
         run: |
           cd packages/backend/test-federation
-          docker compose run --no-deps tester
+          docker compose run --no-deps --use-aliases tester
       - name: Log
         if: always()
         run: |
