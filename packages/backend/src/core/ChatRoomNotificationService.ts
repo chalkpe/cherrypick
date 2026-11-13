@@ -146,9 +146,11 @@ export class ChatRoomNotificationService {
 	private unreadQuery(userId: string) {
 		return this.unreadsRepository.createQueryBuilder('unread')
 			.innerJoin('unread.message', 'message')
-			.innerJoin('message.fromUser', 'author', 'author.isSuspended = false')
+			// 작성자가 탈퇴해 비어 있는 글도 미읽음에서 빠지지 않는다. 정지된 작성자의 글만 숨긴다.
+			.leftJoin('message.fromUser', 'author')
 			.where('unread.userId = :userId', { userId })
-			.andWhere('message.deletedAt IS NULL');
+			.andWhere('message.deletedAt IS NULL')
+			.andWhere('(message.fromUserId IS NULL OR author.isSuspended = false)');
 	}
 
 	public async state(userId: string, room: MiChatRoom): Promise<ChatRoomUnreadState> {
