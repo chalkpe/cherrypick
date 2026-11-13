@@ -1587,7 +1587,7 @@ export class ChatService {
 	 */
 	@bindThis
 	public async deleteRoomsOwnedBy(ownerId: MiUser['id']): Promise<string[]> {
-		const rooms = await this.chatRoomsRepository.findBy({ ownerId });
+		const rooms = await this.db.transaction(manager => manager.withRepository(this.chatRoomsRepository).findBy({ ownerId }));
 		const deliveries: string[] = [];
 		for (const room of rooms) {
 			deliveries.push(...await this.deleteRoom(room));
@@ -1597,29 +1597,41 @@ export class ChatService {
 
 	/** @returns The queued deliveries the owner signs, for a caller that must keep the owner's key until they are done. */
 	@bindThis
-	public async deleteRoom(room: MiChatRoom, deleter?: MiUser, options?: { federate?: boolean }): Promise<string[]> {
-		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
-		const participants = await this.participantsForRoom(room);
-		const invitees = await this.inviteesForRoom(room);
+	public async deleteRoom(requestedRoom: MiChatRoom, deleter?: MiUser, options?: { federate?: boolean }): Promise<string[]> {
+		// 삭제할 방과 수신 대상을 주 DB에서 함께 읽고, 큐 등록을 기다리기 전에 트랜잭션을 닫는다.
+		const snapshot = await this.db.transaction(async manager => {
+			const room = await manager.withRepository(this.chatRoomsRepository).findOneBy({ id: requestedRoom.id });
+			if (room == null) return null;
+			const memberships = await manager.withRepository(this.chatRoomMembershipsRepository).findBy({ roomId: room.id });
+			const invitations = await manager.withRepository(this.chatRoomInvitationsRepository).findBy({ roomId: room.id });
+			const ids = [...new Set([room.ownerId, ...memberships.map(membership => membership.userId), ...invitations.map(invitation => invitation.userId)])];
+			const users = await manager.withRepository(this.usersRepository).findBy({ id: In(ids) });
+			const byId = new Map(users.map(user => [user.id, user]));
+			const participants = [...new Set([room.ownerId, ...memberships.map(membership => membership.userId)])].flatMap(id => {
+				const user = byId.get(id);
+				return user == null ? [] : [user];
+			});
+			const invitees = invitations.flatMap(invitation => {
+				const user = byId.get(invitation.userId);
+				return user == null ? [] : [user];
+			});
+			return { room, owner: byId.get(room.ownerId), participants, invitees, memberships, invitations };
+		});
+		if (snapshot == null) return [];
+		const { room, owner, participants, invitees, memberships, invitations } = snapshot;
 		let ownerDeliveries: string[] = [];
 		if (options?.federate !== false && owner != null) {
 			if (this.userEntityService.isLocalUser(owner)) {
 				// A remote owner's server is the authority for its room, so only rooms owned here are announced.
 				// The announcement is signed by the owner even when a moderator deletes the room.
-				ownerDeliveries = await this.deliverToRemoteUsers(owner, [...participants, ...invitees], this.apRendererService.renderChatRoomDelete(room, owner));
+				ownerDeliveries = await this.deliverToRemoteUsers(owner, [...participants, ...invitees], this.apRendererService.renderChatRoomDelete(room, owner), { required: true });
 			} else if (this.userEntityService.isRemoteUser(owner)) {
-				await this.leaveRoomRemovedHere(room, owner, participants, invitees);
+				await this.leaveRoomRemovedHere(room, owner, participants, invitees, invitations);
 			}
 		}
 
-		const memberships = (await this.chatRoomMembershipsRepository.findBy({ roomId: room.id })).map(m => ({
-			userId: m.userId,
-		})).concat({ // ownerはmembershipレコードを作らないため
-			userId: room.ownerId,
-		});
-
-		// 未読フラグ削除. 다른 서버에는 이미 삭제를 보냈으므로 실패해도 이 서버의 방 삭제를 마친다.
-		await this.clearUnreadMarks(memberships.map(membership => ({ readerId: membership.userId, roomId: room.id })))
+		// 미읽음 정리는 배송 등록 뒤에 진행하며, 소유자는 별도 membership 행이 없다.
+		await this.clearUnreadMarks([...memberships.map(membership => membership.userId), room.ownerId].map(readerId => ({ readerId, roomId: room.id })))
 			.catch(error => this.reportUnreadFailure('room deletion', error));
 
 		const peopleHere = this.localUserIds([...participants, ...invitees]);
@@ -1647,7 +1659,7 @@ export class ChatService {
 	}
 
 	/** A moderator removed this server's copy. The room goes on on its owner's server, which has to stop counting the people here. */
-	private async leaveRoomRemovedHere(room: MiChatRoom, owner: MiRemoteUser, participants: MiUser[], invitees: MiUser[]): Promise<void> {
+	private async leaveRoomRemovedHere(room: MiChatRoom, owner: MiRemoteUser, participants: MiUser[], invitees: MiUser[], invitations: MiChatRoomInvitation[]): Promise<void> {
 		const roomUri = await this.roomUriForRoom(room);
 		for (const member of participants) {
 			if (!this.userEntityService.isLocalUser(member)) continue;
@@ -1655,13 +1667,17 @@ export class ChatService {
 				...this.apRendererService.renderRemove(member, roomUri, this.userEntityService.genLocalUserUri(member.id)),
 				id: `${this.config.url}/activities/${this.idService.gen()}`,
 				published: new Date().toISOString(),
-			});
+			}, { required: true });
 		}
-		const invitations = invitees.length > 0 ? await this.chatRoomInvitationsRepository.findBy({ roomId: room.id }) : [];
-		for (const invitee of invitees) {
+		const rejections = invitees.flatMap(invitee => {
 			const invitation = invitations.find(candidate => candidate.userId === invitee.id);
-			if (invitation != null && this.userEntityService.isLocalUser(invitee)) this.deliverInvitationReject(room, owner, invitee, invitation);
-		}
+			return invitation != null && this.userEntityService.isLocalUser(invitee)
+				? [Promise.resolve(this.deliverInvitationReject(room, owner, invitee, invitation))]
+				: [];
+		});
+		const results = await Promise.allSettled(rejections);
+		const failures = results.filter(result => result.status === 'rejected');
+		if (failures.length > 0) throw new AggregateError(failures.map(result => result.reason), 'Failed to queue room invitation rejections');
 		await this.chatRosterService.markRoomClosedHere(roomUri);
 	}
 
@@ -1949,7 +1965,7 @@ export class ChatService {
 		return invitation.invitePublishedAt != null ? { published: invitation.invitePublishedAt.toISOString() } : {};
 	}
 
-	private deliverInvitationReject(room: MiChatRoom, inviter: MiRemoteUser, invitee: MiLocalUser, invitation: Pick<MiChatRoomInvitation, 'invitePublishedAt'>): void {
+	private deliverInvitationReject(room: MiChatRoom, inviter: MiRemoteUser, invitee: MiLocalUser, invitation: Pick<MiChatRoomInvitation, 'invitePublishedAt'>) {
 		const roomUri = chatRoomUriForOwner(room, inviter, this.config.url);
 
 		// Create a simplified invite object reference for the Reject activity
@@ -1965,7 +1981,7 @@ export class ChatService {
 			...rejectActivity,
 			published: new Date().toISOString(),
 		};
-		this.queueService.deliver(invitee, this.apRendererService.addContext(activity), inviter.inbox, false);
+		return this.queueService.deliver(invitee, this.apRendererService.addContext(activity), inviter.inbox, false);
 	}
 
 	@bindThis
@@ -2789,8 +2805,8 @@ export class ChatService {
 		return [];
 	}
 
-	/** @returns The IDs of the queued delivery jobs. A delivery that could not be queued is reported, never thrown. */
-	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any): Promise<string[]> {
+	/** @returns The IDs of the queued delivery jobs. Required deliveries fail the caller if registration fails. */
+	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any, options?: { required?: boolean }): Promise<string[]> {
 		const contextedActivity = this.apRendererService.addContext(activity);
 		const delivered = new Set<string>();
 		const jobs: Promise<{ id?: string } | null>[] = [];
@@ -2812,6 +2828,8 @@ export class ChatService {
 		for (const result of queued) {
 			if (result.status === 'rejected') this.logger.error(`Failed to queue a chat delivery from ${actor.id}: ${result.reason}`);
 		}
+		const failures = queued.filter(result => result.status === 'rejected');
+		if (options?.required && failures.length > 0) throw new AggregateError(failures.map(result => result.reason), 'Failed to queue required chat deliveries');
 		return queued.flatMap(result => result.status === 'fulfilled' && result.value?.id != null ? [result.value.id] : []);
 	}
 

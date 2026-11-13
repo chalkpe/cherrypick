@@ -417,6 +417,7 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 	const roleService = { isModerator: async () => false, getUserPolicies: async () => ({ chatAvailability: 'available' }) };
 
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
+		logger,
 		config,
 		db,
 		redisClient,

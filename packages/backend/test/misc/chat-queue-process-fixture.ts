@@ -18,8 +18,12 @@ export type ChatQueueProcessMessage = { type: 'ready' } | { type: 'error'; messa
 const config = loadConfig();
 if (process.send == null || process.env.CHAT_PROCESS_FIXTURE_DB !== config.db.db) throw new Error('chat queue process fixture requires its parent and explicit test database');
 
+// 읽기 복제본을 쓰는 설정을 재현할 때만 부모가 복제본 주소를 준다.
+const replica = process.env.CHAT_PROCESS_FIXTURE_REPLICA?.split(':');
+const replication = replica == null ? {} : { dbReplications: true, dbSlaves: [{ ...config.db, host: replica[0], port: Number(replica[1]) }] };
+
 // TypeORM은 생성자에서 cache provider를 만든다. 생성 뒤 cache:false만 설정하면 연결이 남는다.
-const db = createPostgresDataSource({ ...config, db: { ...config.db, disableCache: true } });
+const db = createPostgresDataSource({ ...config, ...replication, db: { ...config.db, disableCache: true } });
 db.setOptions({ synchronize: false, dropSchema: false, cache: false });
 if (db.queryResultCache != null) throw new Error('chat queue process fixture must not allocate a database cache');
 let app: TestingModule | undefined;

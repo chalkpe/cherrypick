@@ -222,6 +222,8 @@ test('the deliveries of an account’s own Delete keep the account until they ar
 			expect(found).toBeDefined();
 			return found!;
 		}, { timeout: 10_000 });
+		worker = spawnWorker('account-delete');
+		await worker.ready;
 		const queued = await vi.waitFor(async () => {
 			const found = await deletionsSignedBy(owner.id, sharedInbox);
 			expect(found).toHaveLength(1);
@@ -230,8 +232,6 @@ test('the deliveries of an account’s own Delete keep the account until they ar
 		expect(queued[0].state).toBe('waiting');
 		console.log('CHAT_DELETION_RECOVERY', JSON.stringify({ event: 'account-delete-queued', job: { id: deletion.id, data: deletion.data }, queued }));
 
-		worker = spawnWorker('account-delete');
-		await worker.ready;
 		const result = await deletion.waitUntilFinished(dbEvents, 60_000);
 		const after = await deletionsSignedBy(owner.id, sharedInbox);
 		const account = await db.getRepository(MiUser).existsBy({ id: owner.id });

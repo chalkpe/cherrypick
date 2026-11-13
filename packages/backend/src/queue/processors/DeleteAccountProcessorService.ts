@@ -19,6 +19,7 @@ import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { QueueService } from '@/core/QueueService.js';
+import { DeleteAccountService } from '@/core/DeleteAccountService.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 import type * as Bull from 'bullmq';
 import type { DbUserDeleteJobData } from '../types.js';
@@ -56,6 +57,7 @@ export class DeleteAccountProcessorService {
 		private globalEventService: GlobalEventService,
 		private chatService: ChatService,
 		private queueService: QueueService,
+		private deleteAccountService: DeleteAccountService,
 	) {
 		this.logger = this.queueLoggerService.logger.createSubLogger('delete-account');
 	}
@@ -75,94 +77,102 @@ export class DeleteAccountProcessorService {
 			return await this.removeAfterDeliveries(user.id, job.data.deliveries);
 		}
 
-		{ // Delete notes
-			let cursor: MiNote['id'] | null = null;
+		const resumed = job.data.removingRooms === true;
+		if (this.userEntityService.isLocalUser(user) && !job.data.soft && job.data.accountDeliveries == null) {
+			const accountDeliveries = await this.deleteAccountService.queueAccountDelete(user);
+			await job.updateData({ ...job.data, accountDeliveries });
+		}
 
-			while (true) {
-				const notes = await this.notesRepository.find({
-					where: {
-						userId: user.id,
-						...(cursor ? { id: MoreThan(cursor) } : {}),
-					},
-					take: 100,
-					order: {
-						id: 1,
-					},
-				}) as MiNote[];
+		if (!resumed) {
+			{ // Delete notes
+				let cursor: MiNote['id'] | null = null;
 
-				if (notes.length === 0) {
-					break;
+				while (true) {
+					const notes = await this.notesRepository.find({
+						where: {
+							userId: user.id,
+							...(cursor ? { id: MoreThan(cursor) } : {}),
+						},
+						take: 100,
+						order: {
+							id: 1,
+						},
+					}) as MiNote[];
+
+					if (notes.length === 0) {
+						break;
+					}
+
+					cursor = notes.at(-1)?.id ?? null;
+
+					await this.notesRepository.delete(notes.map(note => note.id));
+
+					for (const note of notes) {
+						await this.searchService.unindexNote(note);
+					}
 				}
 
-				cursor = notes.at(-1)?.id ?? null;
+				this.logger.succ(`All of notes deleted: ${job.data.user.id}`);
+			}
 
-				await this.notesRepository.delete(notes.map(note => note.id));
+			{ // Delete files
+				let cursor: MiDriveFile['id'] | null = null;
 
-				for (const note of notes) {
-					await this.searchService.unindexNote(note);
+				while (true) {
+					const files = await this.driveFilesRepository.find({
+						where: {
+							userId: user.id,
+							...(cursor ? { id: MoreThan(cursor) } : {}),
+						},
+						take: 10,
+						order: {
+							id: 1,
+						},
+					}) as MiDriveFile[];
+
+					if (files.length === 0) {
+						break;
+					}
+
+					cursor = files.at(-1)?.id ?? null;
+
+					for (const file of files) {
+						await this.driveService.deleteFileSync(file, undefined, isRemote);
+					}
+				}
+
+				this.logger.succ(`All of files deleted: ${job.data.user.id}`);
+			}
+
+			{
+				// delete pages. Necessary for decrementing pageCount of notes.
+				while (true) {
+					const pages = await this.pagesRepository.find({
+						where: {
+							userId: user.id,
+						},
+						take: 100,
+						order: {
+							id: 1,
+						},
+					});
+
+					if (pages.length === 0) {
+						break;
+					}
+					for (const page of pages) {
+						await this.pageService.delete(user, page.id);
+					}
 				}
 			}
 
-			this.logger.succ(`All of notes deleted: ${job.data.user.id}`);
-		}
-
-		{ // Delete files
-			let cursor: MiDriveFile['id'] | null = null;
-
-			while (true) {
-				const files = await this.driveFilesRepository.find({
-					where: {
-						userId: user.id,
-						...(cursor ? { id: MoreThan(cursor) } : {}),
-					},
-					take: 10,
-					order: {
-						id: 1,
-					},
-				}) as MiDriveFile[];
-
-				if (files.length === 0) {
-					break;
+			{ // Send email notification
+				const profile = await this.userProfilesRepository.findOneByOrFail({ userId: user.id });
+				if (profile.email && profile.emailVerified) {
+					this.emailService.sendEmail(profile.email, 'Account deleted',
+						'Your account has been deleted.',
+						'Your account has been deleted.');
 				}
-
-				cursor = files.at(-1)?.id ?? null;
-
-				for (const file of files) {
-					await this.driveService.deleteFileSync(file, undefined, isRemote);
-				}
-			}
-
-			this.logger.succ(`All of files deleted: ${job.data.user.id}`);
-		}
-
-		{
-			// delete pages. Necessary for decrementing pageCount of notes.
-			while (true) {
-				const pages = await this.pagesRepository.find({
-					where: {
-						userId: user.id,
-					},
-					take: 100,
-					order: {
-						id: 1,
-					},
-				});
-
-				if (pages.length === 0) {
-					break;
-				}
-				for (const page of pages) {
-					await this.pageService.delete(user, page.id);
-				}
-			}
-		}
-
-		{ // Send email notification
-			const profile = await this.userProfilesRepository.findOneByOrFail({ userId: user.id });
-			if (profile.email && profile.emailVerified) {
-				this.emailService.sendEmail(profile.email, 'Account deleted',
-					'Your account has been deleted.',
-					'Your account has been deleted.');
 			}
 		}
 
@@ -172,7 +182,6 @@ export class DeleteAccountProcessorService {
 		} else {
 			// 방을 지운 뒤 처리가 끊기면 BullMQ가 이 작업을 처음 데이터로 다시 처리한다. 그때는 방이 없어 그 배송을 다시 셀 수 없으므로,
 			// 방을 지우기 전에 작업에 표식을 남기고, 표식을 가지고 다시 온 작업은 이 계정이 서명하는 남은 배송을 큐에서 찾는다.
-			const resumed = job.data.removingRooms === true;
 			if (!resumed) await job.updateData({ ...job.data, removingRooms: true });
 			// CASCADE 전에 기존 그룹 삭제 경로로 참가자에게도 삭제와 읽음 상태를 알린다.
 			const deliveries = [...(job.data.accountDeliveries ?? []), ...await this.chatService.deleteRoomsOwnedBy(user.id)];

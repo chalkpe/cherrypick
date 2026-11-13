@@ -273,7 +273,7 @@ describe('chat unread marks around other requests', () => {
 				pagesRepository: { find: async () => [] },
 				userProfilesRepository: { findOneByOrFail: async () => ({ email: 'violet@local.test', emailVerified: true }) },
 				emailService: { sendEmail },
-				userEntityService: { isRemoteUser: () => false },
+				userEntityService: { isRemoteUser: () => false, isLocalUser: () => true },
 				globalEventService: { publishInternalEvent: vi.fn() },
 				queueService: {
 					createDeleteAccountJob,
@@ -291,6 +291,7 @@ describe('chat unread marks around other requests', () => {
 					},
 				},
 				chatService: f.chatService,
+				deleteAccountService: { queueAccountDelete: vi.fn(async () => []) },
 			}) as DeleteAccountProcessorService;
 			return { processor, notesFind, usersDelete, createDeleteAccountJob, sendEmail };
 		}
@@ -377,7 +378,7 @@ describe('chat unread marks around other requests', () => {
 			expect(run.createDeleteAccountJob).toHaveBeenCalledWith({ id: f.violet.id }, expect.objectContaining({ soft: false, deliveries: ['account-delete'] }));
 		});
 
-		test('a local account hands the deliveries of its own Delete to the job that removes it', async () => {
+		test('the deletion job registers each known shared inbox once', async () => {
 			const deliver = vi.fn(async (_user: unknown, _content: unknown, inbox: string) => ({ id: `delivery:${inbox}` }));
 			const createDeleteAccountJob = vi.fn();
 			const service = Object.assign(Object.create(DeleteAccountService.prototype), {
@@ -397,10 +398,12 @@ describe('chat unread marks around other requests', () => {
 				globalEventService: { publishInternalEvent: vi.fn() },
 			}) as DeleteAccountService;
 
-			await service.deleteAccount({ id: 'leaving', host: null });
+			const deliveries = await service.queueAccountDelete({ id: 'leaving', host: null });
 
+			expect(deliveries).toEqual(['delivery:https://one.test/inbox', 'delivery:https://two.test/inbox']);
 			expect(deliver).toHaveBeenCalledTimes(2);
-			expect(createDeleteAccountJob).toHaveBeenCalledWith({ id: 'leaving', host: null }, { soft: false, accountDeliveries: ['delivery:https://one.test/inbox', 'delivery:https://two.test/inbox'] });
+			await service.deleteAccount({ id: 'leaving', host: null });
+			expect(createDeleteAccountJob).toHaveBeenCalledWith({ id: 'leaving', host: null }, { soft: false });
 		});
 	});
 });

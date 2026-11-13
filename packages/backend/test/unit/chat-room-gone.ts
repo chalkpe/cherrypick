@@ -434,3 +434,40 @@ describe('telling someone their room lists changed', () => {
 		expect(membersOf(f, 'localroom')).toBeDefined();
 	});
 });
+
+describe('a room deletion whose federation cannot be queued', () => {
+	test('keeps a locally owned room if one recipient rejects a Delete', async () => {
+		const f = chatRosterFixture({ memberships: [['localroom', bob.id], ['localroom', carol.id]] });
+		f.queueService.deliver.mockImplementation((_actor, _activity, to) => to === bob.inbox ? Promise.resolve({ id: 'queued' }) : Promise.reject(new Error('queue refused')));
+
+		await expect(f.chatService.deleteRoom(await f.rooms.findOneBy({ id: 'localroom' }) as never)).rejects.toThrow();
+
+		expect(await f.rooms.findOneBy({ id: 'localroom' })).not.toBeNull();
+	});
+
+	test('keeps a remote room if a member Remove cannot be queued', async () => {
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id], ['mirror', carol.id]] });
+		f.queueService.deliver.mockImplementation((_actor, _activity, to) => to === bob.inbox ? Promise.resolve({ id: 'queued' }) : Promise.reject(new Error('queue refused')));
+
+		await expect(f.chatService.deleteRoom(await f.rooms.findOneBy({ id: 'mirror' }) as never)).rejects.toThrow();
+
+		expect(await f.rooms.findOneBy({ id: 'mirror' })).not.toBeNull();
+	});
+
+	test('keeps a remote room if an invitation Reject cannot be queued', async () => {
+		const f = chatRosterFixture({ invitations: [['mirror', dave.id]] });
+		f.queueService.deliver.mockRejectedValue(new Error('queue refused'));
+
+		await expect(f.chatService.deleteRoom(await f.rooms.findOneBy({ id: 'mirror' }) as never)).rejects.toThrow();
+
+		expect(await f.rooms.findOneBy({ id: 'mirror' })).not.toBeNull();
+	});
+
+	test('ordinary room updates still complete when a delivery cannot be queued', async () => {
+		const f = chatRosterFixture({ memberships: [['localroom', bob.id]] });
+		f.queueService.deliver.mockRejectedValue(new Error('queue refused'));
+
+		await expect(f.chatService.updateRoom(await f.rooms.findOneBy({ id: 'localroom' }) as never, { name: 'renamed' })).resolves.not.toThrow();
+		expect((await f.rooms.findOneBy({ id: 'localroom' }))?.name).toBe('renamed');
+	});
+});

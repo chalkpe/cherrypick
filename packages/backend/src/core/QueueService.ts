@@ -620,6 +620,8 @@ export class QueueService {
 			...(opts.accountDeliveries != null ? { accountDeliveries: opts.accountDeliveries } : {}),
 		}, {
 			delay: opts.delay,
+			attempts: this.config.deliverJobMaxAttempts ?? 12,
+			backoff: { type: 'exponential', delay: 60 * 1000 },
 			removeOnComplete: {
 				age: 3600 * 24 * 7, // keep up to 7 days
 				count: 30,
