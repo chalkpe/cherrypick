@@ -81,13 +81,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 								<MkButton :class="$style.more" :wait="moreFetching" primary rounded @click="fetchMore">{{ i18n.ts.loadMore }}</MkButton>
 							</div>
 
+							<!-- 過去のメッセージを追加するときは、読んでいる位置を move アニメーションで動かさない。 -->
 							<TransitionGroup
 								ref="timelineItemsEl"
 								:enterActiveClass="prefer.s.animation ? $style.transition_x_enterActive : ''"
 								:leaveActiveClass="prefer.s.animation ? $style.transition_x_leaveActive : ''"
 								:enterFromClass="prefer.s.animation ? $style.transition_x_enterFrom : ''"
 								:leaveToClass="prefer.s.animation ? $style.transition_x_leaveTo : ''"
-								:moveClass="prefer.s.animation ? $style.transition_x_move : ''"
+								:moveClass="prefer.s.animation && !moreFetching ? $style.transition_x_move : ''"
 								tag="div" class="_gaps"
 							>
 								<template v-for="(item, i) in displayTimeline" :key="item.id">
@@ -550,10 +551,10 @@ async function fetchMore() {
 	messages.value.push(...newMessages.map(x => normalizeMessage(x)));
 
 	canFetchMore.value = newMessages.length === LIMIT;
-	moreFetching.value = false;
 
 	await nextTick();
 	earlierLoaded();
+	moreFetching.value = false;
 }
 
 // 見ていないあいだに届いたメッセージは、見に戻ったときに既読にする。サーバーは会話ごとに既読にするので、最後の一通を伝えれば足りる

@@ -986,7 +986,17 @@ test.describe('Chat', () => {
 
 			test('an edit, a reaction, a deletion and loading earlier messages leave the place alone, and say nothing', async ({ page }) => {
 				const room = await roomToReadFarAbove(page);
-				const moved = await readFarAbove(page, room.reading);
+				// 読んでいるメッセージと「もっと見る」を同時に表示してから位置を記録する。
+				const reading = page.getByText(`line 6 of ${room.id}`);
+				const moved = await readFarAbove(page, reading);
+				const more = page.getByLabel('Messages').getByRole('button', { name: 'Load more', exact: true });
+				const buttonBox = (await more.boundingBox())!;
+				const readingBox = (await reading.boundingBox())!;
+				const scrollerBox = (await page.locator('._pageScrollableReversed').boundingBox())!;
+				for (const box of [buttonBox, readingBox]) {
+					expect(box.y).toBeGreaterThanOrEqual(scrollerBox.y);
+					expect(box.y + box.height).toBeLessThanOrEqual(scrollerBox.y + scrollerBox.height);
+				}
 
 				const edited = `edited ${room.id}`;
 				await api(BASE_URL, 'chat/messages/update', { i: bob.token, messageId: room.newest, text: edited });
@@ -999,9 +1009,11 @@ test.describe('Chat', () => {
 				expect(await moved()).toBeLessThan(2);
 				await expect(newMessageNotice(page)).toBeHidden();
 
-				await page.getByLabel('Messages').getByRole('button', { name: 'Load more', exact: true }).click();
+				const worstMove = await watchEveryFrame(reading);
+				await more.click();
 				await page.getByText(`line 1 of ${room.id}`).waitFor({ state: 'attached' });
 				await expect.poll(moved).toBeLessThan(4);
+				expect(await worstMove()).toBeLessThan(4);
 				await expect(newMessageNotice(page)).toBeHidden();
 			});
 
