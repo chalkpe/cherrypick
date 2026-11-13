@@ -9759,6 +9759,10 @@ export interface Locale extends ILocale {
          */
         "recordingDiscardConfirm": string;
         /**
+         * 保存できなかった録画を破棄しますか？ドライブにアップロード済みの元のファイルも削除されます。元に戻せません。
+         */
+        "recordingDiscardConfirmUploaded": string;
+        /**
          * サーバーが録画を受け付けなかったため、録画を開始できませんでした
          */
         "recordingStartRejected": string;

@@ -2492,6 +2492,7 @@ _voiceCall:
   recordingSaveToDevice: "Save to this device"
   recordingDiscard: "Discard"
   recordingDiscardConfirm: "Discard the recordings that could not be saved? This cannot be undone."
+  recordingDiscardConfirmUploaded: "Discard the recordings that could not be saved? The original files already uploaded to your drive will also be deleted. This cannot be undone."
   recordingStartRejected: "The server did not accept the recording, so it was not started"
   recordingRejected: "The server did not accept the recording, so it was stopped"
   allowRecording: "Allow call recording"

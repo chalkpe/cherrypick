@@ -441,6 +441,16 @@ function downloadRecording(recording: FailedRecording): void {
 	window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 }
 
+/** 버리기를 확정하면 이미 드라이브에 올라간 원본도 지운다. 저장에 성공한 부분의 변환 결과는 버리기 대상이 아니다. */
+async function discardUploadedOriginals(failed: FailedRecording[]): Promise<void> {
+	await Promise.all(failed.map(recording => {
+		if (recording.fileId == null) return;
+		return misskeyApi('drive/files/delete', { fileId: recording.fileId }).catch(error => {
+			console.warn('[recording] could not delete a discarded original', error);
+		});
+	}));
+}
+
 /** 保存できなかった部分は、利用者が選ぶまで手元に残す (もう一度上げる・この機器に保存する・捨てる) */
 async function offerFailedRecordings(initial: FailedRecording[]): Promise<void> {
 	let failed = initial;
@@ -472,8 +482,11 @@ async function offerFailedRecordings(initial: FailedRecording[]): Promise<void> 
 			return;
 		}
 		if (result === 'discard') {
-			const confirmed = await os.confirm({ type: 'warning', text: i18n.ts._voiceCall.recordingDiscardConfirm });
-			if (!confirmed.canceled) return;
+			const confirmed = await os.confirm({ type: 'warning', text: hasOriginal ? i18n.ts._voiceCall.recordingDiscardConfirmUploaded : i18n.ts._voiceCall.recordingDiscardConfirm });
+			if (!confirmed.canceled) {
+				await discardUploadedOriginals(failed);
+				return;
+			}
 			continue;
 		}
 		const retrying = failed;
