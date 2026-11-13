@@ -4,6 +4,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Inject, Injectable } from '@nestjs/common';
 import * as mfm from 'mfc-js';
 import * as Redis from 'ioredis';
@@ -114,15 +115,24 @@ function escapeRedisPattern(value: string): string {
 // 표식은 쪽지를 저장하기 전에 남긴다. 저장된 쪽지를 본 읽기는 반드시 표식 뒤에 온다.
 const MARK_CHAT_UNREAD = `-- mark chat unread
 local active = redis.call('SISMEMBER', KEYS[3], ARGV[2]) == 1
-if not active then redis.call('DEL', KEYS[5], KEYS[6]) end
 local latest = active and redis.call('GET', KEYS[1]) or nil
 local first = active and redis.call('GET', KEYS[2]) or nil
+if not active then
+ local pending = redis.call('SMEMBERS', KEYS[6])
+ redis.call('DEL', KEYS[5])
+ for _, id in ipairs(pending) do
+  redis.call('SADD', KEYS[5], id)
+  if not first or id < first then first = id end
+  if not latest or id > latest then latest = id end
+ end
+end
 -- An active legacy mark has no saved read boundary. Receiving more cannot reconstruct it.
 if not active or first then
  if not first or ARGV[1] < first then first = ARGV[1] end
  redis.call('SET', KEYS[2], first)
 end
-if not latest or ARGV[1] > latest then redis.call('SET', KEYS[1], ARGV[1]) end
+if not latest or ARGV[1] > latest then latest = ARGV[1] end
+redis.call('SET', KEYS[1], latest)
 redis.call('SADD', KEYS[3], ARGV[2])
 redis.call('SADD', KEYS[5], ARGV[1])
 -- 저장이 끝날 때까지 이 ID를 보지 못한 읽기·정리가 표식을 지우지 않게 한다.
@@ -134,6 +144,7 @@ return 1
 // 저장이 끝났다. 그사이 이 쪽지를 본 읽기가 이미 지웠다면 되살리지 않는다.
 const SETTLE_CHAT_UNREAD = `-- settle chat unread
 if redis.call('SREM', KEYS[6], ARGV[1]) == 0 then return 0 end
+if redis.call('SISMEMBER', KEYS[3], ARGV[3]) == 0 then return 0 end
 redis.call('SET', KEYS[4], ARGV[2])
 return 1
 `;
@@ -146,6 +157,7 @@ for i = 3, #ARGV do
  redis.call('SREM', KEYS[6], ARGV[i])
 end
 if removed == 0 then return 0 end
+if redis.call('SISMEMBER', KEYS[3], ARGV[1]) == 0 then return 0 end
 -- 첫 미읽음 ID가 없는 이전 형식은 개별 ID 밖의 미읽음이 남아 있을 수 있으므로 지우지 않는다.
 if redis.call('SCARD', KEYS[5]) == 0 and redis.call('EXISTS', KEYS[2]) == 1 then
  redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6])
@@ -158,6 +170,10 @@ return 1
 
 // ARGV[3]: '*'는 저장이 끝난 전부, ''는 경계 없음, 그 밖에는 그 ID까지. ARGV[5] 이후는 읽기가 돌려준 ID.
 const READ_CHAT_UNREAD = `-- read chat unread
+if redis.call('SISMEMBER', KEYS[3], ARGV[1]) == 0 then
+ if ARGV[4] == '1' then redis.call('DEL', KEYS[7]) end
+ return {0, {}}
+end
 local seen = {}
 for i = 5, #ARGV do seen[ARGV[i]] = true end
 local pending = {}
@@ -192,7 +208,6 @@ return {1, pendingLeft}
 `;
 
 const READ_ALL_CHAT_UNREAD = `-- read all chat unread
-local suffixes = {':first', ':revision', ':messages', ':pending'}
 -- 저장 중인 쪽지는 전체 읽음 뒤에 도착한 것으로 남긴다.
 local function keepPending(base)
  local pending = redis.call('SMEMBERS', base .. ':pending')
@@ -212,24 +227,15 @@ local function keepPending(base)
  redis.call('SET', base .. ':revision', ARGV[3])
  return true
 end
-local kept = {}
 local left = {}
 for _, conversation in ipairs(redis.call('SMEMBERS', KEYS[1])) do
  local kind, id = string.match(conversation, '^(%w+):(.+)$')
  local base = id and ((kind == 'user' and ARGV[1] or ARGV[2]) .. id)
  if base and keepPending(base) then
-  kept[base] = true
   table.insert(left, conversation)
  else
   redis.call('SREM', KEYS[1], conversation)
  end
-end
-for i = 2, #KEYS do
- local base = KEYS[i]
- for _, suffix in ipairs(suffixes) do
-  if string.sub(base, -#suffix) == suffix then base = string.sub(base, 1, #base - #suffix) end
- end
- if not kept[base] then redis.call('DEL', KEYS[i]) end
 end
 -- 저장 중이라 남긴 대화. 끝나지 않은 전송의 것인지는 호출한 쪽이 확인한다.
 return left
@@ -254,12 +260,59 @@ return 1
 
 // A valid latest ID is enough for the normal unread check; only a stale one needs the full set.
 const SNAPSHOT_CHAT_UNREAD_HEAD = `-- snapshot chat unread head
+if redis.call('SISMEMBER', KEYS[4], ARGV[1]) == 0 then return {'', '', 0} end
 local latest = redis.call('GET', KEYS[1]) or ''
 return {latest, redis.call('GET', KEYS[2]) or '', latest ~= '' and redis.call('SISMEMBER', KEYS[3], latest) or 0}
 `;
 
+const IS_CHAT_MESSAGE_UNREAD = `-- is chat message unread
+return redis.call('SISMEMBER', KEYS[1], ARGV[1]) * redis.call('SISMEMBER', KEYS[2], ARGV[2])
+`;
+
+const DELETE_ACCOUNT_CHAT_UNREAD = `-- delete account chat unread
+for _, conversation in ipairs(redis.call('SMEMBERS', KEYS[1])) do
+ local kind, id = string.match(conversation, '^(%w+):(.+)$')
+ local base = id and ((kind == 'user' and ARGV[1] or ARGV[2]) .. id)
+ if base then redis.call('UNLINK', base, base .. ':first', base .. ':revision', base .. ':messages', base .. ':pending') end
+end
+for i = 2, #KEYS do
+ local base = KEYS[i]
+ redis.call('UNLINK', base, base .. ':first', base .. ':revision', base .. ':messages', base .. ':pending')
+end
+redis.call('UNLINK', KEYS[1])
+return 1
+`;
+
+// Check both conditions in the same Redis operation that removes the candidate.
+const CLEAN_LEGACY_CHAT_UNREAD = `-- clean legacy chat unread
+if redis.call('GET', KEYS[5]) ~= ARGV[3] then return -1 end
+if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then
+ redis.call('SREM', KEYS[4], ARGV[2])
+ return 0
+end
+if redis.call('SCARD', KEYS[2]) > 0 then
+ redis.call('SADD', KEYS[4], ARGV[2])
+ return 2
+end
+redis.call('UNLINK', KEYS[3])
+redis.call('SREM', KEYS[4], ARGV[2])
+return 1
+`;
+
+const SAVE_LEGACY_CLEANUP_CURSOR = `-- save legacy cleanup cursor
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[2], ARGV[2])
+return 1
+`;
+
+const RELEASE_LEGACY_CLEANUP_LOCK = `-- release legacy cleanup lock
+if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+return 0
+`;
+
 // 저장 중인 쪽지가 있으면 DB에서 아직 보이지 않으므로 그 대화는 정리하지 않는다.
 const RECONCILE_CHAT_UNREAD = `-- reconcile chat unread
+if redis.call('SISMEMBER', KEYS[3], ARGV[5]) == 0 then return 0 end
 if redis.call('SCARD', KEYS[6]) > 0 then return 0 end
 if (redis.call('GET', KEYS[1]) or '') ~= ARGV[1] or (redis.call('GET', KEYS[2]) or '') ~= ARGV[2] or (redis.call('GET', KEYS[4]) or '') ~= ARGV[3] then return 0 end
 if ARGV[4] ~= '' then
@@ -746,7 +799,7 @@ export class ChatService {
 	/** Captures settled unread IDs before a timeline query, without preventing the query if Redis is unavailable. */
 	private async captureChatRead(mark: UnreadMark): Promise<string | null> {
 		const key = this.unreadKey(mark);
-		const snapshot = `${key}:read:${randomUUID()}`;
+		const snapshot = `chatReadSnapshot:${randomUUID()}`;
 		try {
 			await this.redisClient.eval(CAPTURE_CHAT_READ, 3, `${key}:messages`, `${key}:pending`, snapshot);
 			return snapshot;
@@ -808,19 +861,7 @@ export class ChatService {
 		}
 
 		const prefix = this.redisClient.options?.keyPrefix ?? '';
-		const keys = new Set<string>();
-		// 이전 버전에서 집계만 지워 남긴 두 종류의 키를 한 번의 순회로 찾는다.
-		const escapedPrefix = escapeRedisPattern(prefix);
-		let cursor = '0';
-		do {
-			const result = await this.redisClient.scan(cursor, 'MATCH', `${escapedPrefix}new*ChatMessageExists:${readerId}:*`, 'COUNT', 1000);
-			cursor = result[0];
-			for (const key of result[1]) {
-				if (key.startsWith(`${prefix}newUserChatMessageExists:${readerId}:`) || key.startsWith(`${prefix}newRoomChatMessageExists:${readerId}:`)) keys.add(key.slice(prefix.length));
-			}
-		} while (cursor !== '0');
-		// SCAN 중 새로 수신한 대화도 현재 집계에서 읽어 같은 원자적 작업으로 정리한다.
-		const left = await this.redisClient.eval(READ_ALL_CHAT_UNREAD, keys.size + 1, `newChatMessagesExists:${readerId}`, ...keys,
+		const left = await this.redisClient.eval(READ_ALL_CHAT_UNREAD, 1, `newChatMessagesExists:${readerId}`,
 			`${prefix}newUserChatMessageExists:${readerId}:`, `${prefix}newRoomChatMessageExists:${readerId}:`, randomUUID()) as string[];
 		const marks = left.map(conversation => this.markOf(readerId, conversation));
 		if (marks.length > 0) {
@@ -835,18 +876,78 @@ export class ChatService {
 	/** Removes all unread state owned by an account immediately before physical deletion. */
 	@bindThis
 	public async deleteUnreadForAccount(readerId: MiUser['id']): Promise<void> {
+		const [messages, memberships, rooms] = await Promise.all([
+			this.chatMessagesRepository.createQueryBuilder('message')
+				.select('message.fromUserId', 'senderId')
+				.addSelect('message.toUserId', 'recipientId')
+				.distinct(true)
+				.where('message.toRoomId IS NULL')
+				.andWhere('(message.fromUserId = :readerId OR message.toUserId = :readerId)', { readerId })
+				.getRawMany<{ senderId: string; recipientId: string | null }>(),
+			this.chatRoomMembershipsRepository.findBy({ userId: readerId }),
+			this.chatRoomsRepository.findBy({ ownerId: readerId }),
+		]);
+		const bases = new Set(messages.flatMap(({ senderId, recipientId }) => {
+			const otherId = senderId === readerId ? recipientId : senderId;
+			return otherId == null ? [] : [this.unreadKey({ readerId, senderId: otherId })];
+		}));
+		for (const { roomId } of memberships) bases.add(this.unreadKey({ readerId, roomId }));
+		for (const { id: roomId } of rooms) bases.add(this.unreadKey({ readerId, roomId }));
 		const prefix = this.redisClient.options?.keyPrefix ?? '';
-		for (const kind of ['User', 'Room']) {
-			let cursor = '0';
-			const keyPrefix = `${prefix}new${kind}ChatMessageExists:${readerId}:`;
-			do {
-				const [next, keys] = await this.redisClient.scan(cursor, 'MATCH', `${escapeRedisPattern(keyPrefix)}*`, 'COUNT', 1000);
-				cursor = next;
-				const own = keys.filter(key => key.startsWith(keyPrefix));
-				if (own.length > 0) await this.redisClient.unlink(...own.map(key => key.slice(prefix.length)));
-			} while (cursor !== '0');
+		await this.redisClient.eval(DELETE_ACCOUNT_CHAT_UNREAD, 1 + bases.size, `newChatMessagesExists:${readerId}`, ...bases,
+			`${prefix}newUserChatMessageExists:${readerId}:`, `${prefix}newRoomChatMessageExists:${readerId}:`);
+	}
+
+	/** Incrementally removes marks left outside the aggregate by older versions. */
+	@bindThis
+	public async cleanupLegacyUnreadMarks(): Promise<boolean> {
+		const lock = 'chatLegacyUnreadCleanup:lock';
+		const cursorKey = 'chatLegacyUnreadCleanup:cursor';
+		const deferred = 'chatLegacyUnreadCleanup:deferred';
+		const token = randomUUID();
+		if (await this.redisClient.set(lock, token, 'PX', 30000, 'NX') == null) return false;
+		try {
+			let cursor = await this.redisClient.get(cursorKey) ?? '0';
+			if (cursor === 'done') return true;
+			const prefix = this.redisClient.options?.keyPrefix ?? '';
+			const clean = async (keys: string[]) => {
+				const pipeline = this.redisClient.pipeline();
+				const candidates: UnreadMark[] = [];
+				for (const key of keys) {
+					const match = /^new(User|Room)ChatMessageExists:([^:]+):([^:]+)(?::.*)?$/.exec(key);
+					if (match == null) continue;
+					const [, kind, readerId, id] = match;
+					const base = `new${kind}ChatMessageExists:${readerId}:${id}`;
+					candidates.push(kind === 'User' ? { readerId, senderId: id } : { readerId, roomId: id });
+					pipeline.eval(CLEAN_LEGACY_CHAT_UNREAD, 5, `newChatMessagesExists:${readerId}`, `${base}:pending`, key, deferred, lock,
+						`${kind === 'User' ? 'user' : 'room'}:${id}`, key, token);
+				}
+				const results = await pipeline.exec();
+				if (results == null) throw new Error('legacy chat cleanup pipeline did not complete');
+				for (const [error] of results) if (error != null) throw error;
+				if (results.some(([, result]) => Number(result) === -1)) throw new Error('legacy chat cleanup lock expired');
+				const pending = candidates.filter((_, index) => Number(results[index][1]) === 2);
+				const unique = [...new Map(pending.map(mark => [this.unreadKey(mark), mark])).values()];
+				if (unique.length > 0) {
+					const ids = await Promise.all(unique.map(mark => this.redisClient.smembers(`${this.unreadKey(mark)}:pending`)));
+					await this.settleAbandonedSends(unique, ids);
+				}
+			};
+			for (let page = 0; page < 20 && cursor !== 'scanned'; page++) {
+				const [next, keys] = await this.redisClient.scan(cursor, 'MATCH', `${escapeRedisPattern(prefix)}new*ChatMessageExists:*`, 'COUNT', 100);
+				await clean(keys.filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length)));
+				cursor = next === '0' ? 'scanned' : next;
+				if (Number(await this.redisClient.eval(SAVE_LEGACY_CLEANUP_CURSOR, 2, lock, cursorKey, token, cursor)) !== 1) return false;
+				await delay(20);
+			}
+			if (cursor !== 'scanned') return false;
+			const [, keys] = await this.redisClient.sscan(deferred, '0', 'COUNT', 100);
+			await clean(keys);
+			if (await this.redisClient.scard(deferred) > 0) return false;
+			return Number(await this.redisClient.eval(SAVE_LEGACY_CLEANUP_CURSOR, 2, lock, cursorKey, token, 'done')) === 1;
+		} finally {
+			await this.redisClient.eval(RELEASE_LEGACY_CLEANUP_LOCK, 1, lock, token);
 		}
-		await this.redisClient.unlink(`newChatMessagesExists:${readerId}`);
 	}
 
 	private unreadKey(mark: UnreadMark): string {
@@ -929,7 +1030,7 @@ export class ChatService {
 			if (outcome === 'sending') continue;
 			const owners = marks.filter((_, index) => pendingIds[index].includes(id));
 			if (outcome === 'stored') {
-				await Promise.all(owners.map(mark => this.redisClient.eval(SETTLE_CHAT_UNREAD, 6, ...this.unreadKeys(mark), id, randomUUID())));
+				await Promise.all(owners.map(mark => this.redisClient.eval(SETTLE_CHAT_UNREAD, 6, ...this.unreadKeys(mark), id, randomUUID(), this.unreadConversation(mark))));
 			} else {
 				await this.unmarkUnread(owners, [id]);
 			}
@@ -946,7 +1047,7 @@ export class ChatService {
 	private async settleUnreadMarks(message: MiChatMessage, marks: UnreadMark[]): Promise<void> {
 		if (marks.length === 0) return;
 		try {
-			await Promise.all(marks.map(mark => this.redisClient.eval(SETTLE_CHAT_UNREAD, 6, ...this.unreadKeys(mark), message.id, randomUUID())));
+			await Promise.all(marks.map(mark => this.redisClient.eval(SETTLE_CHAT_UNREAD, 6, ...this.unreadKeys(mark), message.id, randomUUID(), this.unreadConversation(mark))));
 
 			// 표식을 거둘지는 주 DB에서 정한다. 읽기 복제본은 방금 저장한 쪽지나 참가자를 아직 모를 수 있다.
 			const quiet = await this.db.transaction(async manager => {
@@ -1062,7 +1163,7 @@ export class ChatService {
 	private async unreadConversations(marks: UnreadMark[]): Promise<boolean[]> {
 		const heads = await Promise.all(marks.map(async mark => {
 			const key = this.unreadKey(mark);
-			return await this.redisClient.eval(SNAPSHOT_CHAT_UNREAD_HEAD, 3, key, `${key}:first`, `${key}:messages`) as [string, string, number];
+			return await this.redisClient.eval(SNAPSHOT_CHAT_UNREAD_HEAD, 4, key, `${key}:first`, `${key}:messages`, `newChatMessagesExists:${mark.readerId}`, this.unreadConversation(mark)) as [string, string, number];
 		}));
 		const candidates: UnreadSnapshot[] = heads.map(([marker, first, present]) => [marker, first, '', Number(present) === 1 ? [marker] : [], []]);
 		const newest = await this.newestVisibleUnread(marks, candidates);
@@ -1117,7 +1218,7 @@ export class ChatService {
 
 	/** Whether this very message is still unread for the reader, asked just before a delayed notice goes out. */
 	private async isMessageUnread(mark: UnreadMark, messageId: MiChatMessage['id']): Promise<boolean> {
-		return await this.redisClient.sismember(`${this.unreadKey(mark)}:messages`, messageId) === 1;
+		return Number(await this.redisClient.eval(IS_CHAT_MESSAGE_UNREAD, 2, `newChatMessagesExists:${mark.readerId}`, `${this.unreadKey(mark)}:messages`, this.unreadConversation(mark), messageId)) === 1;
 	}
 
 	/**

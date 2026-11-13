@@ -53,22 +53,28 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 	const scripts: Record<string, (keys: string[], args: string[]) => RedisReply | (RedisReply | RedisReply[])[]> = {
 		'mark chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey], [id, conversation, revision]) => {
 			const active = sets.get(aggregate)?.has(conversation) ?? false;
-			if (!active) del(messagesKey, pendingKey);
-			const latest = active ? strings.get(latestKey) : undefined;
+			const pending = active ? [] : members(pendingKey);
+			if (!active) {
+				del(messagesKey);
+				for (const pendingId of pending) commands.sadd(messagesKey, pendingId);
+			}
+			const latest = active ? strings.get(latestKey) : extremes(pending).latest;
 			let first = active ? strings.get(firstKey) : undefined;
+			if (!active) first = extremes(pending).first;
 			if (!active || first != null) {
 				if (first == null || id < first) first = id;
 				commands.set(firstKey, first);
 			}
-			if (latest == null || id > latest) commands.set(latestKey, id);
+			commands.set(latestKey, latest == null || id > latest ? id : latest);
 			commands.sadd(aggregate, conversation);
 			commands.sadd(messagesKey, id);
 			commands.sadd(pendingKey, id);
 			commands.set(revisionKey, revision);
 			return 1;
 		},
-		'settle chat unread': ([, , , revisionKey, , pendingKey], [id, revision]) => {
+		'settle chat unread': ([, , aggregate, revisionKey, , pendingKey], [id, revision, conversation]) => {
 			if (commands.srem(pendingKey, id) === 0) return 0;
+			if (!sets.get(aggregate)?.has(conversation)) return 0;
 			commands.set(revisionKey, revision);
 			return 1;
 		},
@@ -79,6 +85,7 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 				commands.srem(pendingKey, id);
 			}
 			if (removed === 0) return 0;
+			if (!sets.get(aggregate)?.has(conversation)) return 0;
 			if (!sets.has(messagesKey) && strings.has(firstKey)) {
 				del(latestKey, firstKey, revisionKey, messagesKey, pendingKey);
 				commands.srem(aggregate, conversation);
@@ -88,6 +95,10 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 			return 1;
 		},
 		'read chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, snapshotKey], [conversation, revision, upTo, captured, ...seenIds]) => {
+			if (!sets.get(aggregate)?.has(conversation)) {
+				if (captured === '1') del(snapshotKey);
+				return [0, []];
+			}
 			const seen = new Set(seenIds);
 			const pending = new Set(members(pendingKey));
 			let changed = 0;
@@ -151,11 +162,25 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 			for (const id of captured) commands.sadd(snapshotKey, id);
 			return 1;
 		},
-		'snapshot chat unread head': ([latestKey, firstKey, messagesKey]) => {
+		'snapshot chat unread head': ([latestKey, firstKey, messagesKey, aggregate], [conversation]) => {
+			if (!sets.get(aggregate)?.has(conversation)) return ['', '', 0];
 			const latest = strings.get(latestKey) ?? '';
 			return [latest, strings.get(firstKey) ?? '', Number(sets.get(messagesKey)?.has(latest) ?? false)];
 		},
+		'is chat message unread': ([aggregate, messagesKey], [conversation, id]) =>
+			Number(Boolean(sets.get(aggregate)?.has(conversation) && sets.get(messagesKey)?.has(id))),
+		'delete account chat unread': ([aggregate, ...bases], [userPrefix, roomPrefix]) => {
+			for (const conversation of members(aggregate)) {
+				const [kind, id] = conversation.split(':');
+				const base = `${kind === 'user' ? userPrefix : roomPrefix}${id}`;
+				del(base, ...[':first', ':revision', ':messages', ':pending'].map(suffix => `${base}${suffix}`));
+			}
+			for (const base of bases) del(base, ...[':first', ':revision', ':messages', ':pending'].map(suffix => `${base}${suffix}`));
+			del(aggregate);
+			return 1;
+		},
 		'reconcile chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey], [marker, first, revision, remaining, conversation, newRevision]) => {
+			if (!sets.get(aggregate)?.has(conversation)) return 0;
 			if (sets.has(pendingKey)) return 0;
 			if ((strings.get(latestKey) ?? '') !== marker || (strings.get(firstKey) ?? '') !== first || (strings.get(revisionKey) ?? '') !== revision) return 0;
 			if (remaining !== '') {

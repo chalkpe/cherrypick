@@ -88,13 +88,18 @@ export function chatUnreadFixture({ remoteMembers = false } = {}) {
 			createQueryBuilder: () => {
 				let alias = '';
 				let authorId = '';
+				let readerId = '';
 				return {
 					select(_expression: string, selected: string) { alias = selected; return this; },
-					where(_expression: string, parameters: { authorId?: string }) { authorId = parameters.authorId ?? ''; return this; },
-					andWhere() { return this; },
+					addSelect() { return this; },
+					distinct() { return this; },
+					where(_expression: string, parameters?: { authorId?: string }) { authorId = parameters?.authorId ?? ''; return this; },
+					andWhere(_expression: string, parameters?: { readerId?: string }) { readerId = parameters?.readerId ?? readerId; return this; },
 					getRawMany: async () => alias === 'roomId'
 						? [...new Set(messages.filter(message => message.fromUserId === authorId && message.toRoomId != null).map(message => message.toRoomId))].map(roomId => ({ roomId }))
-						: [{ toUserId: reader.id }],
+						: alias === 'senderId'
+							? messages.filter(message => message.toRoomId == null && (message.fromUserId === readerId || message.toUserId === readerId)).map(message => ({ senderId: message.fromUserId, recipientId: message.toUserId }))
+							: [{ toUserId: reader.id }],
 				};
 			},
 		},

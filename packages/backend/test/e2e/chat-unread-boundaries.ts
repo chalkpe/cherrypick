@@ -12,6 +12,7 @@ import type { INestApplicationContext } from '@nestjs/common';
 import type * as misskey from 'cherrypick-js';
 import type { DataSource } from 'typeorm';
 import { loadConfig } from '@/config.js';
+import { ChatService } from '@/core/ChatService.js';
 import { MiUser } from '@/models/_.js';
 import { api, connectStream, initTestDb, signup, startJobQueue, waitFire } from '../utils.js';
 import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
@@ -43,6 +44,19 @@ describe('chat unread boundaries', () => {
 	const hasUnread = async (reader: Account) => (await api('i', {}, reader)).body.hasUnreadChatMessages;
 	const say = (from: Account, to: Account, text: string) => api('chat/messages/create-to-user', { toUserId: to.id, text }, from);
 	const roomSay = (owner: Account, roomId: string) => api('chat/messages/create-to-room', { toRoomId: roomId, text: 'Plans for Saturday' }, owner);
+	const receiveNotice = async (reader: Account, sender: Account, text: string) => {
+		let resolve: () => void = () => {};
+		const received = new Promise<void>(done => { resolve = done; });
+		const stream = await connectStream(reader, 'main', message => {
+			if (message.type === 'newChatMessage' && message.body.text === text) resolve();
+		});
+		try {
+			assert.strictEqual((await say(sender, reader, text)).status, 200);
+			await Promise.race([received, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('chat notice timed out')), 7000))]);
+		} finally {
+			stream.close();
+		}
+	};
 
 	beforeAll(async () => {
 		queue = await startJobQueue();
@@ -58,6 +72,78 @@ describe('chat unread boundaries', () => {
 		await redis.quit();
 		await db.destroy();
 	}, 30_000);
+
+	test('orphan markers do not make a conversation unread before cleanup', async () => {
+		const [reader, sender] = [await person(), await person()];
+		assert.strictEqual((await say(sender, reader, 'Already read')).status, 200);
+		await redis.del(`newChatMessagesExists:${reader.id}`);
+		assert.strictEqual(await hasUnread(reader), false);
+		assert.deepStrictEqual((await api('chat/history', { room: false }, reader)).body.map(message => message.isRead), [true]);
+		assert.strictEqual((await api('chat/read-all', {}, reader)).status, 204);
+		assert.notStrictEqual(await redis.get(`newUserChatMessageExists:${reader.id}:${sender.id}`), null);
+		await receiveNotice(reader, sender, 'New message');
+		assert.strictEqual(await hasUnread(reader), true);
+		assert.deepStrictEqual((await api('chat/history', { room: false }, reader)).body.map(message => message.isRead), [false]);
+		assert.strictEqual((await api('chat/read-all', {}, reader)).status, 204);
+		assert.strictEqual(await hasUnread(reader), false);
+	});
+
+	test('reading a conversation does not rebuild an unindexed orphan marker', async () => {
+		const [reader, sender] = [await person(), await person()];
+		assert.strictEqual((await say(sender, reader, 'Already read')).status, 200);
+		const key = `newUserChatMessageExists:${reader.id}:${sender.id}`;
+		await redis.del(`newChatMessagesExists:${reader.id}`, key, `${key}:first`, `${key}:revision`, `${key}:messages`, `${key}:pending`);
+		await redis.sadd(`${key}:messages`, 'pending-id');
+		await redis.sadd(`${key}:pending`, 'pending-id');
+		assert.strictEqual((await api('chat/messages/user-timeline', { userId: sender.id }, reader)).status, 200);
+		assert.strictEqual(await redis.get(key), null);
+		assert.strictEqual(await redis.sismember(`${key}:pending`, 'pending-id'), 1);
+	});
+
+	test('legacy cleanup resumes and preserves active and pending marks', async () => {
+		let service = queue.get(ChatService) as ChatService & { cleanupLegacyUnreadMarks?: () => Promise<boolean> };
+		assert.strictEqual(typeof service.cleanupLegacyUnreadMarks, 'function');
+		const clean = () => service.cleanupLegacyUnreadMarks!();
+		const [reader, sender, other, arriving] = [await person(), await person(), await person(), await person()];
+		assert.strictEqual((await say(sender, reader, 'Active unread')).status, 200);
+		const active = `newUserChatMessageExists:${reader.id}:${sender.id}`;
+		const orphan = `newUserChatMessageExists:${reader.id}:${other.id}`;
+		const pending = `newRoomChatMessageExists:${reader.id}:pendingroom`;
+		await redis.set(orphan, 'old');
+		await redis.set(`${orphan}:first`, 'old');
+		await redis.set(pending, 'sending');
+		await redis.sadd(`${pending}:pending`, 'sending');
+		const blocker = db.createQueryRunner();
+		await blocker.connect();
+		await blocker.startTransaction();
+		await blocker.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['chat-message-send:sending']);
+		const pipeline = redis.pipeline();
+		for (let i = 0; i < 5000; i++) pipeline.set(`cleanup-fixture:${i}`, 'x');
+		await pipeline.exec();
+		assert.strictEqual(await clean(), false);
+		assert.notStrictEqual(await redis.get('chatLegacyUnreadCleanup:cursor'), null);
+		service = Object.assign(Object.create(ChatService.prototype), service);
+		const renewed = `newUserChatMessageExists:${reader.id}:${arriving.id}`;
+		await redis.set(renewed, 'old');
+		assert.strictEqual((await say(arriving, reader, 'Arrived during cleanup')).status, 200);
+		for (let i = 0; i < 20 && await redis.exists(orphan); i++) await clean();
+		assert.strictEqual(await redis.get(orphan), null);
+		assert.notStrictEqual(await redis.get(active), null);
+		assert.notStrictEqual(await redis.get(renewed), null);
+		assert.notStrictEqual(await redis.get(pending), null);
+		await blocker.rollbackTransaction();
+		await blocker.release();
+		let complete = false;
+		for (let i = 0; i < 20 && !complete; i++) complete = await clean();
+		assert.strictEqual(complete, true);
+		assert.strictEqual(await redis.get(pending), null);
+		assert.notStrictEqual(await redis.get(active), null);
+		assert.strictEqual(await clean(), true);
+		await receiveNotice(reader, other, 'Arrived after cleanup');
+		assert.strictEqual(await hasUnread(reader), true);
+		assert.strictEqual((await api('chat/read-all', {}, reader)).status, 204);
+		assert.strictEqual(await hasUnread(reader), false);
+	});
 
 	test('read-all recovers direct and room markers left by an older read-all', async () => {
 		const [reader, owner, otherReader] = [await person(), await person(), await person()];
@@ -239,6 +325,25 @@ describe('chat unread boundaries', () => {
 		console.log('CHAT_DELETED_READER_KEYS', JSON.stringify(keys.sort()));
 		assert.deepStrictEqual(keys, []);
 		assert.strictEqual(await hasUnread(other), true);
+	});
+
+	test('account deletion clears known orphan conversations without a keyspace scan', async () => {
+		const [reader, sender] = [await person(), await person()];
+		assert.strictEqual((await say(sender, reader, 'Old unread')).status, 200);
+		const known = `newUserChatMessageExists:${reader.id}:${sender.id}`;
+		const unknown = `newUserChatMessageExists:${reader.id}:unknown`;
+		await redis.del(`newChatMessagesExists:${reader.id}`);
+		await redis.set(unknown, 'old');
+		assert.strictEqual((await api('admin/delete-account', { userId: reader.id }, root)).status, 204);
+		await vi.waitFor(async () => assert.strictEqual(await db.getRepository(MiUser).findOneBy({ id: reader.id }), null), { timeout: 15_000, interval: 50 });
+		assert.strictEqual(await redis.get(known), null);
+		assert.strictEqual(await redis.get(unknown), 'old');
+		await redis.del('chatLegacyUnreadCleanup:cursor');
+		const service = queue.get(ChatService);
+		let complete = false;
+		for (let i = 0; i < 30 && !complete; i++) complete = await service.cleanupLegacyUnreadMarks();
+		assert.strictEqual(complete, true);
+		assert.strictEqual(await redis.get(unknown), null);
 	});
 
 	test('muting and withdrawing a legacy direct message preserves unread on unmute', async () => {
