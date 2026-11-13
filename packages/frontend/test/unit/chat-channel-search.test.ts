@@ -9,8 +9,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/vu
 const state = vi.hoisted(() => ({ requests: [] as Record<string, unknown>[], answers: [] as { id: string; text: string }[], popupMenu: vi.fn(), respond: null as null | (() => Promise<Response>) }));
 vi.mock('@/i.js', () => ({ $i: { id: 'me', token: 'unit-token' } }));
 vi.mock('@/os.js', () => ({ alert: vi.fn(), popupMenu: state.popupMenu }));
-vi.mock('@/components/MkInput.vue', () => ({ default: { props: ['modelValue', 'placeholder'], emits: ['update:modelValue'], template: '<input :placeholder="placeholder" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)"/>' } }));
-vi.mock('@/components/MkButton.vue', () => ({ default: { template: '<button><slot/></button>' } }));
+vi.mock('@/components/MkInput.vue', () => ({ default: { props: ['modelValue', 'placeholder'], emits: ['update:modelValue', 'enter'], template: '<div><input :placeholder="placeholder" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" @keydown.enter="$emit(\'enter\', $event)"/><slot name="suffix"/></div>' } }));
 vi.mock('@/components/MkFoldableSection.vue', () => ({ default: { template: '<section><slot name="header"/><slot/></section>' } }));
 vi.mock('@/pages/chat/XMessage.vue', () => ({ default: { props: ['message'], template: '<div>{{ message.text }}</div>' } }));
 
@@ -59,4 +58,16 @@ test('rejects an old search response after switching groups', async () => {
 	await view.rerender({ roomId: 'other', channels: [] });
 	resolve(new Response(JSON.stringify([{ id: 'old', text: 'old group secret' }]), { status: 200 }));
 	await waitFor(() => expect(screen.queryByText('old group secret')).toBeNull());
+});
+
+test('searches on Enter and ignores whitespace-only input', async () => {
+	render(Search, { props: { roomId: 'r', channels }, global: { stubs: { MkResult: true }, directives: { adaptiveBorder: {} } } });
+	const input = screen.getByPlaceholderText(i18n.ts._chat.searchMessages);
+	await fireEvent.update(input, '   ');
+	await fireEvent.keyDown(input, { key: 'Enter' });
+	expect(state.requests).toHaveLength(0);
+	await fireEvent.update(input, ' needle ');
+	await fireEvent.keyDown(input, { key: 'Enter' });
+	await waitFor(() => expect(state.requests).toHaveLength(1));
+	expect(state.requests[0]).toEqual({ roomId: 'r', query: 'needle', i: 'unit-token' });
 });
