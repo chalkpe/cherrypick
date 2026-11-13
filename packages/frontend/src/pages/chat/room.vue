@@ -4,10 +4,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle backFallback="/chat" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
+<PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle backFallback="/chat" :reversed="split" :tabs="headerTabs" :actions="headerActions">
 	<!-- 自分が通話に入っているあいだは、通話 (ステージ) を出す。広いページではステージとチャットを左右に並べ、ステージは一つだけ作ってチャットを置く側の反対へ CSS の順序で移す。
 	狭いページではステージをいっぱいに広げ、チャットはその上に下から重ねるシートとして開く -->
-	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="[$style.chatTab, { [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }]">
+	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="[$style.chatTab, { [$style.single]: !split, [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }]">
 		<XStage v-if="split && room" :room="room" :call="voiceCallState" :class="$style.stage" :chatOpen="chatOpen" @toggleChat="chatOpen = !chatOpen"/>
 		<div v-if="split && voiceInOwnTab && chatOpen" ref="sheetBackdropEl" :class="$style.sheetBackdrop" @click="chatOpen = false"></div>
 		<!-- シートを開いたらすぐ中へフォーカスを移すので、v-show (フォーカスを移す watch より後に表示を切り替える) ではなく style で隠す -->
@@ -37,8 +37,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 			>
 				<i :class="chatSide === 'right' ? 'ti ti-layout-sidebar' : 'ti ti-layout-sidebar-right'" aria-hidden="true"></i>
 			</button>
-			<!-- 並べているときはメッセージの欄だけを自分でスクロールさせる -->
-			<div ref="chatScrollerEl" :class="$style.chatScroller">
+			<!-- iOS Safari에서 역방향 스크롤 안의 sticky 입력란이 키보드를 열 때 사라진다.
+			입력란은 스크롤 영역 밖에 두고 메시지만 역방향으로 스크롤한다. -->
+			<div :class="[$style.chatScroller, { '_pageScrollableReversed': !split }]">
 				<!-- 通話の参加バナーはメッセージをスクロールしてもページヘッダーの下に貼り付ける -->
 				<MkStickyContainer ref="chatStickyEl" class="_spacer" style="--MI_SPACER-w: 700px;">
 					<template #header>
@@ -75,7 +76,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</div>
 						</div>
 
-						<div v-else ref="timelineEl" class="_gaps" :class="{ [$style.ownScroller]: split }">
+						<div v-else ref="timelineEl" class="_gaps" :class="$style.ownScroller">
 							<div v-if="canFetchMore" :class="$style.moreRow">
 								<MkButton :class="$style.more" :wait="moreFetching" primary rounded @click="fetchMore">{{ i18n.ts.loadMore }}</MkButton>
 							</div>
@@ -121,10 +122,18 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</div>
 				</MkStickyContainer>
 			</div>
-			<!-- 並べているときの入力欄の置き場所。入力欄はページの下端 (footer) からここへ移ってくる。
-			v-show は描画のあと (フォーカスを戻す watch より後) に表示を切り替えるので、隠れた所へ focus() してしまう。
-			ブラウザは隠れた要素への focus() を無視するので、表示は style で描画と同時に切り替える -->
-			<div ref="paneFormHostEl" :class="$style.paneFooter" :style="split ? undefined : { display: 'none' }"></div>
+			<div :class="[$style.paneFooter, { [$style.isFriendly]: !split && isMobile && isFriendly().value }]">
+				<div ref="formEl" class="_gaps" :class="$style.formArea" @compositionstart="composing = true" @compositionend="composing = false" @focusout="composing = false">
+					<Transition name="fade">
+						<div v-show="showIndicator" :class="$style.new">
+							<button class="_buttonPrimary" :class="$style.newButton" @click="onIndicatorClick">
+								<i class="ti ti-circle-arrow-down" :class="$style.newIcon" aria-hidden="true"></i>{{ i18n.ts._chat.newMessage }}
+							</button>
+						</div>
+					</Transition>
+					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @sent="onSent"/>
+				</div>
+			</div>
 		</div>
 	</div>
 
@@ -140,25 +149,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<XInfo v-if="room != null" :room="room" @updated="room = $event" @deleting="deletingOwnRoom = $event"/>
 	</div>
 
-	<template #footer>
-		<!-- 表示は v-show ではなく style で切り替える (上の paneFormHostEl と同じ理由) -->
-		<div v-if="tab === 'chat'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]" :style="split ? { display: 'none' } : undefined">
-			<!-- 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (並べているときはメッセージの欄の下へ)。
-			作り直すとフォーカスが外れてページ全体のショートカットが効いてしまい、変換中の文字や送信中の状態も失われる -->
-			<Teleport v-if="paneFormHostEl != null" :to="paneFormHostEl" :disabled="!split">
-				<div ref="formEl" class="_gaps" :class="$style.formArea" @compositionstart="composing = true" @compositionend="composing = false" @focusout="composing = false">
-					<Transition name="fade">
-						<div v-show="showIndicator" :class="$style.new">
-							<button class="_buttonPrimary" :class="$style.newButton" @click="onIndicatorClick">
-								<i class="ti ti-circle-arrow-down" :class="$style.newIcon" aria-hidden="true"></i>{{ i18n.ts._chat.newMessage }}
-							</button>
-						</div>
-					</Transition>
-					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @sent="onSent"/>
-				</div>
-			</Teleport>
-		</div>
-	</template>
 </PageWithHeader>
 </template>
 
@@ -348,6 +338,11 @@ function goToNewest() {
 		behavior: 'instant',
 	});
 }
+
+router.useListener('same', () => {
+	if (tab.value !== 'chat' || split.value) return;
+	getScrollContainer(timelineEl.value)?.scrollTo({ top: 0, behavior: 'smooth' });
+});
 
 // スクロールする箱は並べ方で変わるので、箱ごとに付け替えずにまとめて受ける (scroll は上へ伝わらないがキャプチャでは受けられる)
 function onScrollWhileNotified(ev: Event) {
@@ -1024,55 +1019,16 @@ function onSheetEsc(ev: KeyboardEvent) {
 	if (split.value && voiceInOwnTab.value) chatOpen.value = false;
 }
 
-// スクロール先を付け替える前の位置を覚え、描画直後・次のフレームより前に column-reverse の位置を揃える。
 const pageEl = useTemplateRef('pageEl');
 const chatStickyEl = useTemplateRef('chatStickyEl');
-const chatScrollerEl = useTemplateRef('chatScrollerEl');
-let scrollToRestore = 0;
-
-function currentChatScroller(isSplit: boolean) {
-	return isSplit ? chatScrollerEl.value : getScrollContainer(chatScrollerEl.value?.parentElement ?? null);
-}
-
-watch(split, (_next, previous) => {
-	scrollToRestore = currentChatScroller(previous)?.scrollTop ?? 0;
-}, { flush: 'pre' });
-watch(split, next => {
-	// footer とカードの高さも即時に測り直す。通常の ResizeObserver は 100ms 待つため、それだけでは一瞬ずれる。
+watch(split, () => {
+	// 배치가 바뀌면 배너와 페이지 헤더의 높이를 바로 다시 잰다.
 	pageEl.value?.refreshStickyLayout();
 	chatStickyEl.value?.refresh();
-	const scroller = currentChatScroller(next);
-	if (scroller != null) scroller.scrollTop = scrollToRestore;
 }, { flush: 'post' });
 
-// 入力欄を移すと (要素の付け替えで) フォーカスが外れるので、移す前にフォーカスと選択範囲を覚えておき、移したあとに戻す。
-// 戻すのは描画のあと (flush: 'post')。そのときには入力欄の置き場所の表示も描画で切り替わっている
-const paneFormHostEl = useTemplateRef('paneFormHostEl');
 const formEl = useTemplateRef('formEl');
 const chatFormEl = useTemplateRef('chatFormEl');
-let focusToRestore: { el: HTMLElement; selection: [number, number, 'forward' | 'backward' | 'none'] | null } | null = null;
-
-watch(split, () => {
-	const active = window.document.activeElement;
-	if (formEl.value == null || !(active instanceof HTMLElement) || !formEl.value.contains(active)) {
-		focusToRestore = null;
-		return;
-	}
-	focusToRestore = {
-		el: active,
-		selection: active instanceof HTMLTextAreaElement ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null,
-	};
-}, { flush: 'pre' });
-
-watch(split, () => {
-	const target = focusToRestore;
-	focusToRestore = null;
-	if (target == null || !target.el.isConnected || window.document.activeElement === target.el) return;
-	target.el.focus({ preventScroll: true });
-	if (target.selection != null && target.el instanceof HTMLTextAreaElement) {
-		target.el.setSelectionRange(...target.selection);
-	}
-}, { flush: 'post' });
 
 // 設定が変わったらすぐ並びを変えたいので、変更を追える prefer.r を見る
 const chatSide = computed(() => prefer.r['voiceCall.stageChatSide'].value);
@@ -1206,6 +1162,23 @@ definePage(computed(() => {
 	gap: 8px;
 }
 
+// 일반 채팅과 분할 통화 모두 메시지만 스크롤하고 입력란은 아래에 둔다.
+.single {
+	height: calc(100cqh - var(--MI-stickyTop, 0px) - var(--MI-stickyBottom, 0px));
+
+	.chatPane {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		min-height: 0;
+	}
+
+	.chatScroller {
+		--MI-stickyTop: 0px;
+		--MI-stickyBottom: 0px;
+	}
+}
+
 // 左右に並べるときは、ページヘッダーと下端の間 (スクロールしない高さ) にちょうど収める
 .split {
 	display: flex;
@@ -1233,18 +1206,17 @@ definePage(computed(() => {
 		border-left: none;
 		border-right: solid 0.5px var(--MI_THEME-divider);
 	}
+}
 
-	// ページと同じく、新しいメッセージが下に来るよう逆向きにスクロールさせる
-	.chatScroller {
-		display: flex;
-		flex: 1;
-		flex-direction: column-reverse;
-		min-height: 0;
-		overflow-y: scroll;
-		overscroll-behavior: contain;
-		container-type: inline-size;
-		background: var(--MI_THEME-bg);
-	}
+.chatScroller {
+	display: flex;
+	flex: 1;
+	flex-direction: column-reverse;
+	min-height: 0;
+	overflow-y: scroll;
+	overscroll-behavior: contain;
+	container-type: inline-size;
+	background: var(--MI_THEME-bg);
 }
 
 // メッセージの欄だけがスクロールするので、アイコンはページヘッダーではなく欄の上端を基準に貼り付ける
@@ -1255,11 +1227,7 @@ definePage(computed(() => {
 .paneFooter {
 	flex-shrink: 0;
 	padding-top: 8px;
-}
-
-.footer {
 	width: 100%;
-	padding-top: 8px;
 
 	&.isFriendly {
 		padding-bottom: calc(50px + env(safe-area-inset-bottom));

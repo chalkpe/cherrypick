@@ -530,10 +530,9 @@ describe('voice call on the room page', () => {
 		} finally { window.innerWidth = originalWidth; window.dispatchEvent(new Event('resize')); }
 	});
 	// シートの背景 (v-if) は閉じると先に DOM から消える。その後の解放で周囲の inert が残ると画面全体が操作不能になる
-	// 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (room.vue の Teleport)。変換中の文字や送信中の状態を失わないため
+	// 배치가 바뀌어도 입력란과 작성 중인 내용, 전송 상태를 유지한다.
 	describe('chat form across the layout switch', () => {
 		const theTextarea = () => screen.getByRole('textbox') as HTMLTextAreaElement;
-		const pageFooter = () => screen.getByTestId('page-footer');
 
 		async function callEnds() { Object.assign(callState, { status: 'idle', room: null }); await flush(); }
 
@@ -543,7 +542,9 @@ describe('voice call on the room page', () => {
 			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me)] }]);
 			await setPageWidth(1280);
 			const textarea = theTextarea();
+			await fireEvent.update(textarea, 'draft');
 			textarea.focus();
+			textarea.setSelectionRange(1, 3);
 			await fireEvent.compositionStart(textarea);
 
 			await callEnds();
@@ -554,7 +555,9 @@ describe('voice call on the room page', () => {
 			await flush();
 			expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
 			expect(theTextarea()).toBe(textarea);
-			expect(pageFooter().contains(textarea)).toBe(true);
+			expect(textarea.value).toBe('draft');
+			expect(document.activeElement).toBe(textarea);
+			expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([1, 3]);
 		});
 
 		// 変換を終えないまま (compositionend が届かないまま) ページが裏に回ったら、その変換は忘れる
