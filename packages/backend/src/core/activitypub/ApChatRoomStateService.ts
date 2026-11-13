@@ -8,13 +8,14 @@ import type * as Redis from 'ioredis';
 import { DI } from '@/di-symbols.js';
 import type { ChatRoomsRepository, MiChatRoom, UsersRepository } from '@/models/_.js';
 import { ChatService } from '@/core/ChatService.js';
+import { QueueService } from '@/core/QueueService.js';
 import { AvatarDecorationService } from '@/core/AvatarDecorationService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { DriveFileEntityService } from '@/core/entities/DriveFileEntityService.js';
 import { truncate } from '@/misc/truncate.js';
 import { acquireApObjectLock } from '@/misc/distributed-lock.js';
-import { parseRemoteChatDate } from './misc/chat-remote-date.js';
+import { isFutureRemoteChatDate, parseRemoteChatDate } from './misc/chat-remote-date.js';
 import { getApId } from './type.js';
 import type { IObject } from './type.js';
 import { ApImageService } from './models/ApImageService.js';
@@ -28,6 +29,7 @@ export class ApChatRoomStateService {
 		@Inject(DI.chatRoomsRepository) private chatRoomsRepository: ChatRoomsRepository,
 		@Inject(DI.usersRepository) private usersRepository: UsersRepository,
 		private chatService: ChatService,
+		private queueService: QueueService,
 		private roleService: RoleService,
 		private userEntityService: UserEntityService,
 		private apImageService: ApImageService,
@@ -38,6 +40,10 @@ export class ApChatRoomStateService {
 	// 호출자는 소유자의 활동 또는 그룹 호스트에서 서명 조회한 응답임을 먼저 확인한다.
 	public async apply(room: MiChatRoom, object: IObject): Promise<MiChatRoom> {
 		const updatedAt = parseRemoteChatDate(object.updated) ?? undefined;
+		if (object._misskey_chatChannels !== undefined && isFutureRemoteChatDate(object.updated)) {
+			// 미래 revision을 저장하지 않고, 서명된 그룹 조회로 나중에 최신 상태를 다시 확인한다.
+			await this.queueService.createChatRoomChannelRefreshJob(room.id);
+		}
 		const olderThan = (current: MiChatRoom) => updatedAt != null && current.lastRemoteUpdatedAt != null && updatedAt < current.lastRemoteUpdatedAt;
 		if (olderThan(room)) return room;
 		const icon = await this.resolveIcon(room, object);

@@ -19,6 +19,7 @@ import { ChatChannelError, parseChatChannels } from '@/core/chat-room-channels.j
 import type { ChatChannelRef } from '@/core/chat-room-channels.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
+import { MiBlocking } from '@/models/Blocking.js';
 import type { IObject } from '@/core/activitypub/type.js';
 import { IdService } from '@/core/IdService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
@@ -1276,6 +1277,9 @@ export class ChatService {
 				// 금지 기록은 그룹장의 서버가 가지므로 이 서버의 그룹에서만 확인한다.
 				if (roomOwner?.host == null && await this.chatRoomBanService.isBanned(roomId, userId, manager)) {
 					throw new ChatRoomBannedError('banned from the room');
+				}
+				if (roomOwner?.host == null && await manager.existsBy(MiBlocking, { blockerId: room.ownerId, blockeeId: userId })) {
+					throw new ChatRoomAccessError('blocked by the room owner');
 				}
 				const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId });
 				if (membershipsCount >= MAX_ROOM_MEMBERS) throw new ChatRoomFullError('room is full');

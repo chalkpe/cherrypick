@@ -7,7 +7,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { describe, expect, test, vi } from 'vitest';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatService } from '@/core/ChatService.js';
-import { parseRemoteChatDate } from '@/core/activitypub/misc/chat-remote-date.js';
+import { isFutureRemoteChatDate, parseRemoteChatDate } from '@/core/activitypub/misc/chat-remote-date.js';
 import { ChatRoomRosterSyncProcessorService } from '@/queue/processors/ChatRoomRosterSyncProcessorService.js';
 import { StatusError } from '@/misc/status-error.js';
 import { ActivityPubServerService } from '@/server/ActivityPubServerService.js';
@@ -34,6 +34,14 @@ describe('parseRemoteChatDate', () => {
 		['nothing', undefined],
 	])('counts %s as not stated', (_label, value) => {
 		expect(parseRemoteChatDate(value, NOW)).toBeNull();
+	});
+
+	test('only valid future dates outside the allowance need a later check', () => {
+		expect(isFutureRemoteChatDate('2026-11-04T00:05:00.000Z', NOW)).toBe(false);
+		expect(isFutureRemoteChatDate('2026-11-04T00:05:00.001Z', NOW)).toBe(true);
+		expect(isFutureRemoteChatDate('9999-12-31T23:59:59.999Z', NOW)).toBe(true);
+		expect(isFutureRemoteChatDate('+010000-01-01T00:00:00.000Z', NOW)).toBe(false);
+		expect(isFutureRemoteChatDate('not a date', NOW)).toBe(false);
 	});
 });
 

@@ -631,18 +631,16 @@ export class QueueService {
 
 	/** 다른 서버가 소유한 그룹의 과거 기록 가져오기. 한 번에 몇 페이지씩 받고 delay를 두고 이어서 다시 넣는다. */
 	@bindThis
-	public createChatRoomHistorySyncJob(roomId: MiChatRoom['id'], delay?: number) {
-		return this.dbQueue.add('chatRoomHistorySync', { roomId }, {
+	public createChatRoomHistorySyncJob(roomId: MiChatRoom['id'], pass: number, jobId: string, delay?: number) {
+		return this.dbQueue.add('chatRoomHistorySync', { roomId, pass }, {
+			jobId,
 			delay,
 			attempts: 8,
 			backoff: {
 				type: 'exponential',
 				delay: 30 * 1000,
 			},
-			removeOnComplete: {
-				age: 3600 * 24, // keep up to 1 day
-				count: 30,
-			},
+			removeOnComplete: true,
 			removeOnFail: {
 				age: 3600 * 24 * 7, // keep up to 7 days
 				count: 100,
@@ -666,6 +664,19 @@ export class QueueService {
 				age: 3600 * 24 * 7, // keep up to 7 days
 				count: 100,
 			},
+		});
+	}
+
+	/** 미래 시각 때문에 거른 채널 상태를 그룹 소유 서버에 다시 묻는다. */
+	@bindThis
+	public createChatRoomChannelRefreshJob(roomId: MiChatRoom['id']) {
+		return this.dbQueue.add('chatRoomRosterSync', { roomId, retryFutureChannels: true }, {
+			jobId: `chat-channel-refresh-${roomId}`,
+			delay: 60 * 1000,
+			attempts: 8,
+			backoff: { type: 'exponential', delay: 30 * 1000 },
+			removeOnComplete: true,
+			removeOnFail: true,
 		});
 	}
 
