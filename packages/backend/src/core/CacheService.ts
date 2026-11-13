@@ -11,15 +11,12 @@ import type { MiLocalUser, MiUser } from '@/models/User.js';
 import { DI } from '@/di-symbols.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { bindThis } from '@/decorators.js';
-import Logger from '@/logger.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import type { FlashToken } from '@/misc/flash-token.js';
-import type { BeforeApplicationShutdown, OnApplicationShutdown } from '@nestjs/common';
+import type { OnApplicationShutdown } from '@nestjs/common';
 
 @Injectable()
-export class CacheService implements BeforeApplicationShutdown, OnApplicationShutdown {
-	private readonly logger = new Logger('cache');
-	private readonly pendingMessages = new Set<Promise<void>>();
+export class CacheService implements OnApplicationShutdown {
 	public userByIdCache: MemoryKVCache<MiUser>;
 	public localUserByNativeTokenCache: MemoryKVCache<MiLocalUser | null>;
 	public localUserByIdCache: MemoryKVCache<MiLocalUser>;
@@ -148,15 +145,7 @@ export class CacheService implements BeforeApplicationShutdown, OnApplicationShu
 	}
 
 	@bindThis
-	private onMessage(_: string, data: string): void {
-		const pending = this.handleMessage(data).catch(error => {
-			this.logger.error('Cache update failed', { error });
-		});
-		this.pendingMessages.add(pending);
-		void pending.then(() => this.pendingMessages.delete(pending));
-	}
-
-	private async handleMessage(data: string): Promise<void> {
+	private async onMessage(_: string, data: string): Promise<void> {
 		const obj = JSON.parse(data);
 
 		if (obj.channel === 'internal') {
@@ -212,11 +201,6 @@ export class CacheService implements BeforeApplicationShutdown, OnApplicationShu
 	@bindThis
 	public findUserById(userId: MiUser['id']) {
 		return this.userByIdCache.fetch(userId, () => this.usersRepository.findOneByOrFail({ id: userId }));
-	}
-
-	public async beforeApplicationShutdown(): Promise<void> {
-		this.redisForSub.off('message', this.onMessage);
-		await Promise.all(this.pendingMessages);
 	}
 
 	@bindThis

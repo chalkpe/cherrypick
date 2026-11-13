@@ -44,11 +44,7 @@ export function validateCleanupCondition(input: unknown): asserts input is Clean
 			case 'not': visit(c.child, depth + 1, `${path}.child`); break;
 			case 'keyword':
 				if (typeof c.value !== 'string' || !c.value.length || c.value.length > 512 || !strings(c.targets) || !c.targets.every(t => targets.includes(t)) || typeof c.flags !== 'string') fail();
-				if (c.mode === 'regex') {
-					const regexFlags = c.flags as string;
-					if (!/^[dgimsuy]*$/.test(regexFlags) || new Set(regexFlags).size !== regexFlags.length) fail();
-					try { new RE2(c.value as string, regexFlags); } catch { fail(); }
-				} else if (c.mode !== 'literal' || c.flags !== '') fail();
+				if (c.mode === 'regex') { try { new RE2(c.value as string, c.flags as string); } catch { fail(); } } else if (c.mode !== 'literal' || c.flags !== '') fail();
 				break;
 			case 'age': case 'count': {
 				const n = c.type === 'age' ? c.seconds : c.value;

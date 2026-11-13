@@ -90,21 +90,10 @@ test('손상된 받은 횟수는 불일치나 NOT의 참으로 바꾸지 않는�
 	expect(results[0].reason).toBe('blocked');
 });
 
-test('지원하지 않는 플래그를 저장하거나 잘못 저장된 규칙으로 판정하지 않는다', () => {
-	const keyword = { type: 'keyword', mode: 'regex', value: 'HELLO', flags: 'z', targets: ['text'] };
-	expect(() => validateCleanupCondition(keyword)).toThrow();
-	for (const action of ['delete', 'keep'] as const) {
-		const [result] = decideCleanup([{ id: 'invalid', action, condition: { type: 'not', child: keyword } }, { id: 'valid', action: 'delete', condition: word('고양이') }], [context]);
-		expect(result.errors.map(error => error.ruleId)).toEqual(['invalid']);
-		expect(result.reason).toBe(action === 'keep' ? 'blocked' : 'matched');
-	}
-});
-
-test('RE2의 지원 플래그만 각 한 번 허용한다', () => {
-	for (const flags of ['', 'd', 'g', 'i', 'm', 's', 'u', 'y', 'dgimsuy']) {
-		expect(() => validateCleanupCondition({ type: 'keyword', mode: 'regex', value: 'x', flags, targets: ['text'] })).not.toThrow();
-	}
-	for (const flags of ['z', 'v', 'ii']) {
-		expect(() => validateCleanupCondition({ type: 'keyword', mode: 'regex', value: 'x', flags, targets: ['text'] })).toThrow();
+test('정규식 플래그는 단어 뮤트와 같은 RE2 생성자를 따른다', () => {
+	for (const flags of ['', 'd', 'g', 'i', 'm', 's', 'u', 'y', 'dgimsuy', 'z', 'x', 'v', 'iz', 'ii']) {
+		const condition = { type: 'keyword', mode: 'regex', value: 'hello', flags, targets: ['text'] };
+		expect(() => validateCleanupCondition(condition)).not.toThrow();
+		expect(matchesCleanupCondition(condition, { ...context, text: 'HELLO' })).toBe(flags.includes('i'));
 	}
 });

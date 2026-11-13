@@ -48,7 +48,7 @@ import type { NoteCleanupCondition as Condition } from 'cherrypick-js/entities.j
 import type { CleanupDraft, CleanupPreview, CleanupRule } from '@/utility/note-cleanup-api.js';
 import { cleanupErrorMessage, cleanupFailure, canRevealCleanupError } from '@/utility/note-cleanup-errors.js';
 import { cleanupApi } from '@/utility/note-cleanup-api.js';
-import { assertSize, conditionAt, createCondition, createHistory, groupPaths, incompletePaths, moveCondition, removeCondition, replaceCondition, serverConditionPath } from '@/utility/note-cleanup-editor.js';
+import { assertSize, childrenOf, conditionAt, createCondition, createHistory, groupPaths, incompletePaths, moveCondition, removeCondition, replaceCondition, serverConditionPath } from '@/utility/note-cleanup-editor.js';
 import MkInput from '@/components/MkInput.vue';
 import MkSelect from '@/components/MkSelect.vue';
 import MkButton from '@/components/MkButton.vue';
@@ -170,9 +170,27 @@ async function run(operation: () => Promise<unknown>) {
 	} finally { busy.value = false; }
 }
 
+function invalidRegex(condition: Condition, path: number[] = []): { path: number[]; error: unknown } | undefined {
+	if (condition.type === 'keyword' && condition.mode === 'regex') {
+		try { new RegExp(condition.value, condition.flags); } catch (error) { return { path, error }; }
+	}
+	for (const [index, child] of childrenOf(condition).entries()) {
+		const invalid = invalidRegex(child, [...path, index]);
+		if (invalid) return invalid;
+	}
+	return undefined;
+}
+
 async function save() {
 	const incomplete = incompletePaths(draft.value.condition);
 	if (incomplete.length) { error.value = { code: 'INCOMPLETE', path: `condition.${incomplete[0].join('.')}` }; await focus(incomplete[0]); return; }
+	const invalid = invalidRegex(draft.value.condition);
+	if (invalid) {
+		const location = invalid.path.length ? invalid.path.map(index => index + 1).join(' › ') : i18n.ts._noteCleanup.root;
+		await os.alert({ type: 'error', title: i18n.ts.regexpError, text: `${i18n.ts._noteCleanup.condition}: ${location}\n${String(invalid.error)}` });
+		await focus(invalid.path);
+		return;
+	}
 	await run(async () => { const result = await cleanupApi.save(draft.value, props.rule?.id); emit('saved', result.rule.id); });
 }
 

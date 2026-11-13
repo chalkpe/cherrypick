@@ -20,8 +20,9 @@ vi.mock('@/i18n.js', async () => {
 	return { i18n: { get ts() { return instances[activeLocale.current].ts; }, get tsx() { return instances[activeLocale.current].tsx; } } };
 });
 const popupMenu = vi.hoisted(() => vi.fn((_items: { text: string; action: () => void | Promise<void> }[]) => {}));
+const alert = vi.hoisted(() => vi.fn(async (_options: { type: string; title: string; text?: string }) => {}));
 const confirm = vi.hoisted(() => vi.fn(async (_options: { title: string }) => ({ canceled: true })));
-vi.mock('@/os.js', () => ({ confirm, popupMenu }));
+vi.mock('@/os.js', () => ({ alert, confirm, popupMenu }));
 vi.mock('@/components/MkInput.vue', () => ({ default: defineComponent({
 	props: ['modelValue'], emits: ['update:modelValue'],
 	setup: (props, { slots, emit }) => () => h('label', [slots.label?.(), h('input', { value: props.modelValue, onInput: (event: Event) => emit('update:modelValue', (event.target as HTMLInputElement).value) })]),
@@ -47,7 +48,7 @@ import type { NoteCleanupCondition as Condition } from 'cherrypick-js/entities.j
 import RuleEditor from '@/pages/settings/note-cleanup/RuleEditor.vue';
 import { summary } from '@/pages/settings/note-cleanup/labels.js';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); popupMenu.mockReset(); confirm.mockClear(); activeLocale.current = 'en-US'; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); popupMenu.mockReset(); confirm.mockClear(); alert.mockClear(); activeLocale.current = 'en-US'; });
 
 test('saving an incomplete editor sends no request; a complete draft reaches the real API transport', async () => {
 	const requests: { url: string; body: unknown }[] = [];
@@ -78,6 +79,21 @@ test('server rejection retains the draft and explains the invalid condition with
 	expect((view.getByLabelText('Rule name') as HTMLInputElement).value).toBe('실패해도 보존');
 	expect(view.container.textContent).not.toMatch(/INVALID_CONDITION|condition.child/);
 	expect(onSaved).not.toHaveBeenCalled();
+});
+
+test.each([
+	{ value: 'a', flags: 'z' },
+	{ value: '[', flags: '' },
+])('잘못된 정규식은 중첩 조건에서도 대화상자를 띄우고 저장하지 않는다: $value / $flags', async ({ value, flags }) => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({ rule: { id: 'saved-rule' } })));
+	vi.stubGlobal('fetch', fetch);
+	const rule: CleanupRule = { id: 'rule-1', name: 'Regex', defaultName: null, action: 'delete', enabled: true, automatic: false, automaticConfirmed: false, condition: { type: 'not', child: { type: 'keyword', mode: 'regex', value, flags, targets: ['text'] } }, legacy: null, lastError: null };
+	const view = render(RuleEditor, { props: { rule } });
+
+	await fireEvent.click(view.getByRole('button', { name: 'Save' }));
+	await waitFor(() => expect(alert).toHaveBeenCalledOnce());
+	expect(alert.mock.calls[0][0]).toMatchObject({ type: 'error', title: 'Regular Expression error', text: expect.stringMatching(/^Condition: 1\nSyntaxError:/) });
+	expect(fetch).not.toHaveBeenCalled();
 });
 
 test('temporary data failures give retry guidance instead of asking the user to repair references', async () => {

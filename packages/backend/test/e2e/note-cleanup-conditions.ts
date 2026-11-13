@@ -12,6 +12,7 @@ import { IdService } from '@/core/IdService.js';
 import { MiNote } from '@/models/Note.js';
 import { MiNoteCleanupRule } from '@/models/NoteCleanupRule.js';
 import { QueueService } from '@/core/QueueService.js';
+import { CacheService } from '@/core/CacheService.js';
 import { api, channel, clip, initTestDb, post, relativeFetch, signup, startJobQueue, uploadFile } from '../utils.js';
 import type { UserToken } from '../utils.js';
 import type { INestApplicationContext } from '@nestjs/common';
@@ -114,8 +115,35 @@ beforeAll(async () => {
 	await vi.waitFor(async () => expect((await api('admin/meta', {}, root)).status).toBe(200), { timeout: 30000 });
 }, 120000);
 afterEach(async () => {
-	// 계정 삭제 요청은 시험 데이터 정리이며 완료 검증을 대체하지 않는다.
-	for (const user of accounts.splice(0)) expect((await api('i/delete-account', { password: 'test' }, user)).status).toBe(204);
+	const users = accounts.splice(0);
+	if (!users.length) return;
+	const dbQueue = queue.get(QueueService).dbQueue;
+	const cache = queue.get(CacheService);
+	const events = new QueueEvents(dbQueue.name, { connection: dbQueue.opts.connection, prefix: dbQueue.opts.prefix });
+	await events.waitUntilReady();
+	const addedIds: string[] = [];
+	events.on('added', ({ jobId, name }) => { if (name === 'deleteAccount') addedIds.push(jobId); });
+	await dbQueue.pause();
+	try {
+		for (const user of users) {
+			// 삭제 표시 이벤트와 물리 삭제 이벤트를 각각 관찰해 종료 순서를 확정한다.
+			await cache.findUserById(user.id);
+			expect((await api('i/delete-account', { password: 'test' }, user)).status).toBe(204);
+			await vi.waitFor(() => expect(cache.userByIdCache.get(user.id)?.isDeleted).toBe(true), { timeout: 30000 });
+		}
+		const jobs = await vi.waitFor(async () => {
+			const pending = await Promise.all(addedIds.map(id => dbQueue.getJob(id)));
+			const matching = users.map(user => pending.find(job => job?.data.user.id === user.id));
+			if (matching.some(job => !job)) throw new Error('Account deletion job was not queued');
+			return matching.map(job => job!);
+		}, { timeout: 30000 });
+		await dbQueue.resume();
+		await Promise.all(jobs.map(job => job.waitUntilFinished(events, 30000)));
+		for (const user of users) await vi.waitFor(() => expect(cache.userByIdCache.get(user.id)).toBeUndefined(), { timeout: 30000 });
+	} finally {
+		await dbQueue.resume();
+		await events.close();
+	}
 }, 240000);
 afterAll(async () => { await queue?.close(); });
 
@@ -170,9 +198,9 @@ test.each(strings)('$name 저장·조회·미리 보기·삭제', async ({ condi
 	expect((await api('notes/show', { noteId: negative.id }, user)).body.text).toBe(no);
 }, 240000);
 
-test.each(['[', '(a)\\1', '(?=a)', 'a'])('잘못된 RE2 또는 플래그 저장 차단: %s', async value => {
+test.each(['[', '(a)\\1', '(?=a)'])('잘못된 RE2 저장 차단: %s', async value => {
 	const user = await owner();
-	const condition = { type: 'keyword', mode: 'regex', value, flags: value === 'a' ? 'z' : '', targets: ['text'] };
+	const condition = { type: 'keyword', mode: 'regex', value, flags: '', targets: ['text'] };
 	const res = await cleanup('create', { name: '거절', action: 'delete', condition }, user);
 	expect(res.status).toBe(400);
 	expect(res.body.error.code).toBe('INVALID_CLEANUP');
@@ -180,7 +208,19 @@ test.each(['[', '(a)\\1', '(?=a)', 'a'])('잘못된 RE2 또는 플래그 저장 
 	expect((await cleanup('list', {}, user)).body.rules).toEqual([]);
 }, 240000);
 
-test.each(['delete', 'keep'] as const)('기존 잘못된 플래그가 든 %s 규칙은 오류로 처리한다', async action => {
+test.each(['z', 'x', 'v', 'iz', 'ii'])('단어 뮤트와 같이 RE2가 받는 플래그 %s를 저장하고 판정한다', async flags => {
+	const user = await owner();
+	const positive = await post(user, { text: 'flagprobe' });
+	const negative = await post(user, { text: 'other' });
+	const condition: Condition = { type: 'keyword', mode: 'regex', value: '^flagprobe$', flags, targets: ['text'] };
+	const muted = await api('i/update', { mutedWords: [`/^flagprobe$/${flags}`] }, user);
+	expect(muted.status).toBe(200);
+	expect((await api('i/update', { mutedWords: [] }, user)).status).toBe(200);
+
+	await check(user, condition, [positive.id], [negative.id]);
+}, 240000);
+
+test.each(['delete', 'keep'] as const)('기존 잘못된 RE2 식이 든 %s 규칙은 오류로 처리한다', async action => {
 	const user = await owner();
 	const note = await post(user, { text: 'flagprobe' });
 	const valid: Condition = { type: 'keyword', mode: 'regex', value: action === 'delete' ? '^never$' : '^flagprobe$', flags: '', targets: ['text'] };
@@ -189,7 +229,7 @@ test.each(['delete', 'keep'] as const)('기존 잘못된 플래그가 든 %s 규
 	const db = await initTestDb(true);
 	try {
 		// 이전 버전에서 저장된 잘못된 조건을 재현하는 fixture다.
-		await db.getRepository(MiNoteCleanupRule).update(invalid.id, { condition: { type: 'not', child: { ...valid, flags: 'z' } } });
+		await db.getRepository(MiNoteCleanupRule).update(invalid.id, { condition: { type: 'not', child: { ...valid, value: '[' } } });
 	} finally {
 		await db.destroy();
 	}
