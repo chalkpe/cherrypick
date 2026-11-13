@@ -13,6 +13,8 @@ on:
       - packages/backend/**
       - .github/workflows/test-frontend.yml
       - .github/cherrypick/test.yml
+      - package.json
+      - scripts/prepare-frontend-e2e.mjs
   pull_request:
     branches-ignore:
       - master
@@ -24,6 +26,8 @@ on:
       - packages/backend/**
       - .github/workflows/test-frontend.yml
       - .github/cherrypick/test.yml
+      - package.json
+      - scripts/prepare-frontend-e2e.mjs
 jobs:
   vitest:
     name: Unit tests (frontend)
@@ -92,7 +96,7 @@ jobs:
       working-directory: packages/frontend
       run: pnpm exec playwright install --with-deps chromium
     - name: Test
-      run: pnpm start-server-and-test start:test http://localhost:61812 "pnpm --filter frontend test:e2e"
+      run: pnpm e2e
       timeout-minutes: 30
     - uses: actions/upload-artifact@v7
       if: failure()
