@@ -23,7 +23,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 	<MkFoldableSection v-if="channels?.length" expanded>
 		<template #header>{{ i18n.ts.options }}</template>
-		<MkSelect v-model="channelId" :items="channelItems" small>
+		<MkSelect v-model="channelId" :items="channelItems" :class="$style.channelSelect" small>
 			<template #label>{{ i18n.ts._chat._channels.channels }}</template>
 		</MkSelect>
 	</MkFoldableSection>
@@ -94,6 +94,13 @@ async function search() {
 </script>
 
 <style lang="scss" module>
+.channelSelect :deep([tabindex="-1"] > div:first-child) {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .searchInputButton {
 	position: relative;
 	z-index: 2;
