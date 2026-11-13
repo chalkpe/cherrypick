@@ -27,8 +27,9 @@ export class VoiceRelayConsumerService implements OnModuleInit, OnApplicationShu
 	private timer?: ReturnType<typeof setInterval>;
 	private busyProviders = new Set<string>();
 	private capacityCooldown = new Map<string, number>();
-	private capabilities = new Map<string, { includeIceServers: boolean; expires: number }>();
+	private capabilities = new Map<string, { includeIceServers: boolean; recordingStatus: boolean; expires: number }>();
 	private capabilityRequests = new Map<string, Promise<boolean>>();
+	private recordingCapabilityRequests = new Map<string, Promise<boolean>>();
 	private tokenCache = new Map<string, { roomId: string | null; generation?: string; expires: number }>();
 	private inspections = 0;
 	private inspectionWindows = new Map<string, { started: number; count: number }>();
@@ -84,7 +85,7 @@ export class VoiceRelayConsumerService implements OnModuleInit, OnApplicationShu
 		const screenShareLimits = c.screenShareLimits === undefined ? undefined : parseScreenShareLimits(c.screenShareLimits);
 		if (screenShareLimits === null) throw new VoiceRelayError('INVALID_RESPONSE');
 		if (this.capabilities.size >= 256) this.capabilities.delete(this.capabilities.keys().next().value!);
-		this.capabilities.set(this.capacityKey(provider), { includeIceServers: c.capabilities?.includeIceServers === true, expires: Date.now() + 5000 });
+		this.capabilities.set(this.capacityKey(provider), { includeIceServers: c.capabilities?.includeIceServers === true, recordingStatus: c.capabilities?.recordingStatus === true, expires: Date.now() + 5000 });
 		return { ...c, screenShareLimits };
 	}
 	private async supportsIceSuppression(provider: RelayProvider): Promise<boolean> {
@@ -94,6 +95,19 @@ export class VoiceRelayConsumerService implements OnModuleInit, OnApplicationShu
 		if (pending) return pending;
 		const request = this.capacity(provider).then(c => c.capabilities?.includeIceServers === true).finally(() => this.capabilityRequests.delete(key));
 		this.capabilityRequests.set(key, request);
+		return request;
+	}
+	async supportsRecording(roomId: string): Promise<boolean> {
+		const call = await this.get(roomId);
+		if (!call || call.state !== 'active') return false;
+		const provider = await this.authFor(call);
+		const key = this.capacityKey(provider);
+		const cached = this.capabilities.get(key);
+		if (cached && cached.expires > Date.now()) return cached.recordingStatus;
+		const pending = this.recordingCapabilityRequests.get(key);
+		if (pending) return pending;
+		const request = this.capacity(provider).then(capacity => capacity.capabilities?.recordingStatus === true).finally(() => this.recordingCapabilityRequests.delete(key));
+		this.recordingCapabilityRequests.set(key, request);
 		return request;
 	}
 	async checkProvider(id: string): Promise<RelayCapacity> {
@@ -202,7 +216,19 @@ export class VoiceRelayConsumerService implements OnModuleInit, OnApplicationShu
 		return { ...snapshot, participants: snapshot.participants.map(({ allowScreenShare, ...participant }) => ({ ...participant, canScreenShare: allowScreenShare })) };
 	}
 	async participants(roomId: string): Promise<LiveKitParticipant[] | null> { const call = await this.get(roomId); if (!call || call.state === 'ended') return null; return (await this.snapshot(call)).participants; }
-	async participant(roomId: string, action: string, data: unknown): Promise<boolean | null> { const call = await this.get(roomId); if (!call || call.state === 'ended') return null; const result = await this.client.request<{ accepted: boolean }>(await this.authFor(call), 'POST', this.path(call, `/participants/${action}`), data); if (action === 'kick' && (result == null || typeof result.accepted !== 'boolean')) throw new VoiceRelayError('INVALID_RESPONSE'); return result.accepted === true; }
+	async participant(roomId: string, action: string, data: unknown): Promise<boolean | null> {
+		const call = await this.get(roomId);
+		if (!call || call.state === 'ended') return null;
+		if (action === 'status' && data != null && typeof data === 'object' && 'recording' in data && data.recording !== undefined && !await this.supportsRecording(roomId)) {
+			if (data.recording === true) return false;
+			// 이전 제공자에서도 종료 시의 일반 mic/deafen 보고는 유지한다.
+			const { recording: _recording, ...settings } = data;
+			data = settings;
+		}
+		const result = await this.client.request<{ accepted: boolean }>(await this.authFor(call), 'POST', this.path(call, `/participants/${action}`), data);
+		if (action === 'kick' && (result == null || typeof result.accepted !== 'boolean')) throw new VoiceRelayError('INVALID_RESPONSE');
+		return result.accepted === true;
+	}
 	async end(roomId: string): Promise<boolean> {
 		return this.storage.lock(`allocation:${roomId}`, async () => {
 			const call = await this.get(roomId); if (!call || call.state === 'ended') return false;

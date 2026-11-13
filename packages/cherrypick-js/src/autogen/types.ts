@@ -1759,7 +1759,7 @@ export type paths = {
     '/chat/rooms/voice/convert-recording': {
         /**
          * chat/rooms/voice/convert-recording
-         * @description No description provided.
+         * @description Convert a recording without deleting the original. A null response means that no conversion was performed and the original remains.
          *
          *     **Credential required**: *Yes* / **Permission**: *write:drive*
          */

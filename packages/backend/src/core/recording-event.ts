@@ -130,6 +130,113 @@ redis.call('PEXPIRE', KEYS[2], ttl)
 return 1
 `;
 
+const PUBLICATION_ARGUMENTS_SCRIPT = `
+local id, transition = ARGV[1], tonumber(ARGV[2])
+local now, deadline, capacity = tonumber(ARGV[3]), tonumber(ARGV[4]), tonumber(ARGV[5])
+if #id == 0 or #id > 128 or not now or not deadline or not capacity or (transition ~= 1 and transition ~= 2) or capacity < 1 or capacity > ${MAX_RECORDING_IDS} or capacity ~= math.floor(capacity) then
+	return redis.error_reply('ERR Invalid recording publication arguments')
+end
+deadline = deadline + 1000
+if now ~= now or deadline ~= deadline or math.abs(now) > 9007199254740991 or math.abs(deadline) > 9007199254740991 or now ~= math.floor(now) or deadline ~= math.floor(deadline) or deadline <= now or deadline - now > ${MAX_RECORDING_TTL_SECONDS * 1000} then
+	return redis.error_reply('ERR Invalid recording publication lifetime')
+end
+local function permitted(commands)
+	for _, command in ipairs(commands) do
+		if not redis.acl_check_cmd(unpack(command)) then return false end
+	end
+	return true
+end
+`;
+
+// pending을 먼저 쓰고 seen을 쓴다. 중간 오류가 나도 미발행 전환을 완료 기록으로 오인하지 않는다.
+// KEYS: 기존 기한 sorted set, 기존 seen hash, pending hash. ARGV: ID, 전환 비트, 현재 시각, 수락 기한, ID 상한.
+export const PREPARE_RECORDING_PUBLICATION_SCRIPT = `#!lua
+-- PREPARE_RECORDING_PUBLICATION
+${PUBLICATION_ARGUMENTS_SCRIPT}
+local kinds = {'zset', 'hash', 'hash'}
+for i, expected in ipairs(kinds) do
+	local kind = redis.call('TYPE', KEYS[i]).ok
+	if kind ~= 'none' and kind ~= expected then return redis.error_reply('WRONGTYPE Recording publication state') end
+end
+if not permitted({
+	{'HGET', KEYS[2], id}, {'HGET', KEYS[3], id},
+	{'HDEL', KEYS[2], id}, {'HDEL', KEYS[3], id}, {'ZREM', KEYS[1], id},
+	{'ZADD', KEYS[1], '1', id}, {'PEXPIRE', KEYS[1], '1000'},
+	{'HSET', KEYS[3], id, '1'}, {'PEXPIRE', KEYS[3], '1000'},
+	{'HSET', KEYS[2], id, '1'}, {'PEXPIRE', KEYS[2], '1000'},
+	{'ZRANGEBYSCORE', KEYS[1], '-inf', now}, {'ZSCORE', KEYS[1], id},
+	{'ZCARD', KEYS[1]}, {'ZREVRANGE', KEYS[1], '0', '0', 'WITHSCORES'}
+}) then return redis.error_reply('NOPERM Recording publication preparation') end
+local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now)
+for _, old in ipairs(expired) do
+	redis.call('HDEL', KEYS[2], old)
+	redis.call('HDEL', KEYS[3], old)
+	redis.call('ZREM', KEYS[1], old)
+end
+local flags = tonumber(redis.call('HGET', KEYS[2], id)) or 0
+local pending = tonumber(redis.call('HGET', KEYS[3], id)) or 0
+if bit.band(flags, transition) ~= 0 and bit.band(pending, transition) == 0 then return 0 end
+local previous = tonumber(redis.call('ZSCORE', KEYS[1], id))
+if not previous and redis.call('ZCARD', KEYS[1]) >= capacity then return -1 end
+redis.call('ZADD', KEYS[1], math.max(previous or 0, deadline), id)
+local latest = redis.call('ZREVRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+local ttl = math.max(1000, tonumber(latest[2]) - now)
+redis.call('PEXPIRE', KEYS[1], ttl)
+redis.call('HSET', KEYS[3], id, bit.bor(pending, transition))
+redis.call('PEXPIRE', KEYS[3], ttl)
+redis.call('HSET', KEYS[2], id, bit.bor(flags, transition))
+redis.call('PEXPIRE', KEYS[2], ttl)
+return bit.band(pending, transition) ~= 0 and 2 or 1
+`;
+
+// 일반 Redis와 다른 PubSub Redis에서도 쓸 수 있다. 방당 최대 4096개 ID의 두 비트와 기한을 한 값으로 보관한다.
+// SET 전에 JSON·타입·권한을 검사하고, PUBLISH 뒤에는 실패할 수 있는 저장 명령을 두지 않는다.
+// Redis 7의 기본 script flag는 진입 시 OOM을 거절한다. allow-oom을 켜지 않는다.
+// KEYS: 방의 발행 기록. ARGV: ID, 전환 비트, 현재 시각, 수락 기한, ID 상한, main envelope 문자열 배열, PubSub 채널.
+export const PUBLISH_RECORDING_EVENT_SCRIPT = `#!lua
+-- PUBLISH_RECORDING_EVENT
+${PUBLICATION_ARGUMENTS_SCRIPT}
+local messages = cjson.decode(ARGV[6])
+if type(messages) ~= 'table' then return redis.error_reply('ERR Invalid recording messages') end
+local messageCount = 0
+for index, message in pairs(messages) do
+	if type(index) ~= 'number' or index < 1 or index ~= math.floor(index) or type(message) ~= 'string' then return redis.error_reply('ERR Invalid recording message') end
+	messageCount = messageCount + 1
+	if not redis.acl_check_cmd('PUBLISH', ARGV[7], message) then return redis.error_reply('NOPERM Recording publication') end
+end
+if messageCount ~= #messages then return redis.error_reply('ERR Invalid recording message array') end
+local raw = redis.call('GET', KEYS[1])
+local entries = raw and cjson.decode(raw) or {}
+if type(entries) ~= 'table' then return redis.error_reply('ERR Invalid recording publication ledger') end
+local count, latest = 0, deadline
+for old, held in pairs(entries) do
+	if type(held) ~= 'table' or type(held.flags) ~= 'number' or held.flags < 0 or held.flags > 3 or held.flags ~= math.floor(held.flags) or type(held.deadline) ~= 'number' or held.deadline ~= math.floor(held.deadline) or held.deadline - now > ${MAX_RECORDING_TTL_SECONDS * 1000} then return redis.error_reply('ERR Invalid recording publication entry') end
+	if held.deadline <= now then entries[old] = nil
+	else count = count + 1; latest = math.max(latest, held.deadline) end
+end
+local held = entries[id]
+if held and bit.band(held.flags, transition) ~= 0 then return 0 end
+if not held and count >= capacity then return -1 end
+entries[id] = {flags = bit.bor(held and held.flags or 0, transition), deadline = math.max(held and held.deadline or 0, deadline)}
+local encoded, ttl = cjson.encode(entries), latest - now
+if not redis.acl_check_cmd('SET', KEYS[1], encoded, 'PX', ttl) then return redis.error_reply('NOPERM Recording publication ledger') end
+redis.call('SET', KEYS[1], encoded, 'PX', ttl)
+for _, message in ipairs(messages) do redis.call('PUBLISH', ARGV[7], message) end
+return 1
+`;
+
+export const ACK_RECORDING_PUBLICATION_SCRIPT = `#!lua
+-- ACK_RECORDING_PUBLICATION
+local flags = tonumber(redis.call('HGET', KEYS[1], ARGV[1])) or 0
+local transition = tonumber(ARGV[2])
+if bit.band(flags, transition) == 0 then return redis.error_reply('ERR Recording publication was not prepared') end
+local pending = tonumber(redis.call('HGET', KEYS[2], ARGV[1])) or 0
+local remaining = bit.band(pending, bit.bnot(transition))
+if remaining == 0 then redis.call('HDEL', KEYS[2], ARGV[1])
+else redis.call('HSET', KEYS[2], ARGV[1], remaining) end
+return 1
+`;
+
 export const RENEW_ACTIVE_RECORDING_SCRIPT = `-- RENEW_ACTIVE_RECORDING
 local raw = redis.call('GET', KEYS[1])
 if not raw or redis.call('GET', KEYS[2]) ~= ARGV[1] then return 0 end

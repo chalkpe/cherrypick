@@ -4,24 +4,26 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createFixture, KNOWN_USERS, mirrorRoom } from '../misc/chat-voice-fixture.js';
+import { createFixture, KNOWN_USERS, mirrorRoom, pauseNextCall } from '../misc/chat-voice-fixture.js';
 
 const id = '070d4100-0123-4321-a123-012345678901';
 const me = KNOWN_USERS.find(user => user.id === 'u1')!;
-const member = { identity: 'https://local.test/users/m1', userId: 'm1', screenSharing: false, micTrackSid: null };
-const recorder = { identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: false, micTrackSid: null };
+const member = { identity: 'https://local.test/users/m1', sessionId: 'PA_member', userId: 'm1', screenSharing: false, micTrackSid: null };
+const recorder = { identity: 'https://local.test/users/u1', sessionId: 'PA_1', userId: 'u1', screenSharing: false, micTrackSid: null };
 const base = { micMuted: false, deafened: false, recordingId: id };
 let f: ReturnType<typeof createFixture>;
+let setStatus: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
 	vi.useFakeTimers({ now: Date.parse('2026-11-12T00:00:00Z') });
 	f = createFixture();
 	f.chatRoomsRepository.findOneBy.mockResolvedValue({ ...f.rooms.get('r1'), allowRecording: true });
 	Object.assign(f.usersRepository, { findOneBy: vi.fn().mockResolvedValue(KNOWN_USERS.find(user => user.id === 'owner')) });
-	Object.assign(f.liveKitService, { setParticipantStatus: vi.fn(async (_roomId: string, identity: string, _sid: string, status: { recording?: boolean }) => {
+	setStatus = vi.fn(async (_roomId: string, identity: string, _sid: string, status: { recording?: boolean }) => {
 		for (const participant of await f.liveKitService.listParticipants()) if (participant.identity === identity) participant.recording = status.recording === true;
 		return true;
-	}) });
+	});
+	Object.assign(f.liveKitService, { setParticipantStatus: setStatus });
 	f.liveKitService.listParticipants.mockResolvedValue([{ ...recorder }, { ...member }]);
 	vi.spyOn(f.service, 'scheduleRefresh').mockImplementation(() => {});
 	const find = f.chatRoomMembershipsRepository.findBy.getMockImplementation()!;
@@ -49,6 +51,24 @@ function mirror() {
 }
 
 describe('recording event delivery independent of the voice snapshot gate', () => {
+	test('rejects a recording start without an ID before updating LiveKit', async () => {
+		const status = { micMuted: false, deafened: false, recording: true };
+
+		expect(await f.service.reportStatus(me as any, 'r1', 'PA_1', status)).toBe(false);
+
+		expect(setStatus).not.toHaveBeenCalled();
+		expect(f.queueService.deliver).not.toHaveBeenCalled();
+	});
+
+	test('an old ID-less false report cannot stop a recording bound to an ID', async () => {
+		await f.service.reportStatus(me as any, 'r1', 'PA_1', { ...base, recording: true });
+		setStatus.mockClear();
+
+		await f.service.reportStatus(me as any, 'r1', 'PA_1', { micMuted: true, deafened: false, recording: false });
+
+		expect(setStatus.mock.calls[0][3]).not.toHaveProperty('recording');
+	});
+
 	test('queues both transitions even when recording starts and stops inside ten seconds', async () => {
 		await f.service.refresh('r1');
 		f.queueService.deliver.mockClear();
@@ -172,5 +192,68 @@ describe('recording event delivery independent of the voice snapshot gate', () =
 		await f.service.receiveRemoteSnapshot({ ...actor, id: 'another-owner' } as any, object(true) as any);
 
 		expect(f.globalEventService.publishMainStream.mock.calls.filter(call => call[1] === 'chatRoomRecording')).toEqual([]);
+	});
+
+	test('does not select current recipients from an expired event snapshot', async () => {
+		const actor = mirror();
+		const delayed = object(true);
+		await f.service.receiveRemoteSnapshot(actor as any, { ...object(false), _misskey_recordingEvent: undefined } as any);
+		f.globalEventService.publishMainStream.mockClear();
+		// 미러 현황의 TTL 600초와 허용 시계 차이 300초를 모두 넘긴다. 이벤트 수락 수명은 남아 있다.
+		vi.setSystemTime(Date.now() + 901_000);
+
+		await f.service.receiveRemoteSnapshot(actor as any, delayed as any);
+
+		expect(f.globalEventService.publishMainStream.mock.calls.filter(call => call[1] === 'chatRoomRecording')).toEqual([]);
+	});
+
+	test('stores a snapshot even when its recording event must be retried', async () => {
+		const actor = mirror();
+		const evaluate = f.redis.eval.getMockImplementation()!;
+		f.redis.eval.mockImplementation(async (script, numberOfKeys, ...args) => {
+			if (script.includes('-- PREPARE_RECORDING_PUBLICATION')) return -1;
+			return evaluate(script, numberOfKeys, ...args);
+		});
+
+		await expect(f.service.receiveRemoteSnapshot(actor as any, object(true) as any)).rejects.toThrow();
+
+		const states = await f.service.getStates({ id: 'm1' }, ['r1']);
+		expect(states[0]?.participants.some(participant => participant.identity === notice(true).identity && participant.recording)).toBe(true);
+		f.redis.eval.mockImplementation(evaluate);
+		await f.service.receiveRemoteSnapshot(actor as any, object(true) as any);
+		const events = f.globalEventService.publishMainStream.mock.calls.filter(call => call[1] === 'chatRoomRecording');
+		expect(events).toHaveLength(1);
+	});
+
+	test('stamps an event snapshot before reading the participants it describes', async () => {
+		const audienceRead = pauseNextCall(f.chatRoomMembershipsRepository.findBy);
+		const sending = (f.service as any).deliverRecordingEvent(f.rooms.get('r1'), { ...notice(true), identity: recorder.identity });
+		await audienceRead.reached;
+		f.liveKitService.listParticipants.mockResolvedValue([member]);
+
+		await f.service.refresh('r1');
+		const [current] = await f.service.getStates({ id: 'm1' }, ['r1']);
+		audienceRead.resume();
+		await sending;
+
+		const delivered = f.queueService.deliver.mock.calls.map(call => (call[1] as any).object).find(payload => payload._misskey_recordingEvent != null);
+		expect(delivered.participants.some((participant: { id: string }) => participant.id === recorder.identity)).toBe(true);
+		expect(Date.parse(delivered.updated)).toBeLessThan(current.updatedAt);
+	});
+
+	test('a busy recording lock does not block the current participant snapshot', async () => {
+		await f.service.refresh('r1');
+		await f.service.reportStatus(me as any, 'r1', 'PA_1', { ...base, recording: true });
+		const lockKey = f.redis.set.mock.calls.find(call => call[0].startsWith('chatVoice:recordingLock:'))![0];
+		await f.redis.set(lockKey, 'another-request', 'PX', 30_000);
+		f.liveKitService.listParticipants.mockResolvedValue([]);
+
+		await expect(f.service.refresh('r1')).resolves.toBeUndefined();
+
+		expect(await f.service.getStates({ id: 'm1' }, ['r1'])).toEqual([]);
+		await f.redis.del(lockKey);
+		await f.service.refresh('r1');
+		const events = f.queueService.deliver.mock.calls.map(call => (call[1] as any).object._misskey_recordingEvent).filter(Boolean);
+		expect(events.map(event => event.recording)).toEqual([true, false]);
 	});
 });

@@ -11,3 +11,8 @@ export function reportedVoiceStatus(value: { micMuted?: unknown; deafened?: unkn
 		...(typeof value.recording === 'boolean' ? { recording: value.recording } : {}),
 	};
 }
+
+// LiveKit의 쓰기는 identity만 받으므로, 녹음 속성 자체를 검증한 SID에 결속한다.
+export function recordingAttribute(sessionId: string): string {
+	return `cherrypick.recording:${sessionId}`;
+}

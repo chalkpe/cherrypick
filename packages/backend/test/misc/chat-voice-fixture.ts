@@ -18,6 +18,7 @@ export function fakeRedis() {
 	const sets = new Map<string, Set<string>>();
 	const recordingHistory = new Map<string, Map<string, number>>();
 	const recordingClaims = new Map<string, Map<string, { flags: number; deadline: number }>>();
+	const pendingPublications = new Map<string, Map<string, number>>();
 	// EX / PX の寿命は Date.now() で数えるので、偽のタイマーで時間を進めると切れる。
 	// 本物の Redis と同じく、寿命の時刻ちょうどにはまだ残っていて、それを過ぎると切れる
 	const expiresAt = new Map<string, number>();
@@ -101,15 +102,27 @@ export function fakeRedis() {
 				expiresAt.set(key, Date.now() + Number(ttl) * 1000);
 				return result;
 			}
-			if (_script.startsWith('-- CLAIM_RECORDING_EVENT')) {
+			if (_script.startsWith('-- CLAIM_RECORDING_EVENT') || _script.includes('-- PREPARE_RECORDING_PUBLICATION')) {
 				const [id, transition, now, deadline, capacity] = args.slice(numKeys);
 				const claims = recordingClaims.get(key) ?? new Map<string, { flags: number; deadline: number }>();
 				recordingClaims.set(key, claims);
-				for (const [entry, held] of claims) if (held.deadline <= Number(now)) claims.delete(entry);
+				const pending = pendingPublications.get(generationKey) ?? new Map<string, number>();
+				if (numKeys === 3) pendingPublications.set(generationKey, pending);
+				for (const [entry, held] of claims) if (held.deadline <= Number(now)) { claims.delete(entry); pending.delete(entry); }
 				const previous = claims.get(String(id));
-				if (previous && (previous.flags & Number(transition)) !== 0) return 0;
+				const pendingFlags = pending.get(String(id)) ?? 0;
+				if (previous && (previous.flags & Number(transition)) !== 0 && (pendingFlags & Number(transition)) === 0) return 0;
 				if (!previous && claims.size >= Number(capacity)) return -1;
+				if (numKeys === 3) pending.set(String(id), pendingFlags | Number(transition));
 				claims.set(String(id), { flags: (previous?.flags ?? 0) | Number(transition), deadline: Math.max(previous?.deadline ?? 0, Number(deadline) + 1000) });
+				return (pendingFlags & Number(transition)) !== 0 ? 2 : 1;
+			}
+			if (_script.includes('-- ACK_RECORDING_PUBLICATION')) {
+				const [id, transition] = args.slice(numKeys);
+				const pending = pendingPublications.get(lastSeenKey);
+				const remaining = (pending?.get(String(id)) ?? 0) & ~Number(transition);
+				if (remaining === 0) pending?.delete(String(id));
+				else pending?.set(String(id), remaining);
 				return 1;
 			}
 			if (_script.startsWith('-- RENEW_ACTIVE_RECORDING')) {
@@ -270,6 +283,7 @@ export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []
 	const liveKitService = {
 		onRelayChange: (callback: (roomId: string) => void) => { relayChange = callback; },
 		isEnabled: true,
+		supportsRecording: vi.fn().mockResolvedValue(true),
 		getPublicUrl: () => 'https://local.test/livekit',
 		identityOf: (user: { id: string; host: string | null; uri: string | null }) => user.host == null ? `https://local.test/users/${user.id}` : user.uri,
 		roomIdOf: (name: string) => name.startsWith('chatRoom:') ? name.slice('chatRoom:'.length) : null,
@@ -319,7 +333,16 @@ export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []
 	const globalEventService = {
 		publishChatRoomStream: vi.fn(),
 		publishMainStream: vi.fn(),
+		publishRecordingMainStream: vi.fn<(userIds: string[], value: any, receipt: { id: string; deadline: number }) => Promise<void>>(),
 	};
+	// 전송 경계의 fixture다. 실제 PubSub Lua·다중 프로세스 검사는 별도 Redis 시험에서 수행한다.
+	const published = new Set<string>();
+	globalEventService.publishRecordingMainStream.mockImplementation(async (userIds, value, receipt) => {
+		const key = `${value.roomId}:${receipt.id}:${value.recording}`;
+		if (published.has(key)) return;
+		for (const userId of userIds) globalEventService.publishMainStream(userId, 'chatRoomRecording', value);
+		published.add(key);
+	});
 	const roleService = {
 		getUserPolicies: vi.fn(async (_userId: string) => ({ canVoiceCall: true, canScreenShare: true, chatAvailability: 'available' })),
 	};

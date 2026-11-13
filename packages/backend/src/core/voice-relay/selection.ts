@@ -8,7 +8,7 @@ export type RelayProvider = {
 };
 import type { ScreenShareLimits } from './screen-share-limits.js';
 
-export type RelayCapacity = { protocolVersion?: number; enabled?: boolean; accepting: boolean; maxSlots: number; reservedSlots: number; remainingSlots: number; remainingRooms: number; allowScreenShare?: boolean; mediaProvider?: string; screenShareLimits?: ScreenShareLimits; capabilities?: { cancelPending?: boolean; includeIceServers?: boolean } };
+export type RelayCapacity = { protocolVersion?: number; enabled?: boolean; accepting: boolean; maxSlots: number; reservedSlots: number; remainingSlots: number; remainingRooms: number; allowScreenShare?: boolean; mediaProvider?: string; screenShareLimits?: ScreenShareLimits; capabilities?: { cancelPending?: boolean; includeIceServers?: boolean; recordingStatus?: boolean } };
 export function relayCapability(providers: { enabled: boolean; validated: boolean }[]): boolean {
 	return providers.some(provider => provider.enabled && provider.validated);
 }

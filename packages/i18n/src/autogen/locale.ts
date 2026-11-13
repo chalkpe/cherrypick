@@ -9731,6 +9731,22 @@ export interface Locale extends ILocale {
          */
         "recordingSaveFailed": ParameterizedString<"n">;
         /**
+         * 録画ファイルを {n} 個変換できませんでした。元のファイルはドライブに保存されています。どうしますか？
+         */
+        "recordingConversionFailed": ParameterizedString<"n">;
+        /**
+         * アップロードできなかった録画と変換できなかった録画があります。アップロード済みの元のファイルはドライブに保存されています。どうしますか？
+         */
+        "recordingMixedFailure": string;
+        /**
+         * 変換後のファイルがファイルサイズの上限を超えています。
+         */
+        "recordingConversionTooLarge": string;
+        /**
+         * 変換後のファイルを保存するドライブの空き容量がありません。
+         */
+        "recordingConversionNoFreeSpace": string;
+        /**
          * この端末に保存
          */
         "recordingSaveToDevice": string;

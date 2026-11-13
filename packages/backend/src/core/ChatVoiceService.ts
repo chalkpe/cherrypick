@@ -16,7 +16,7 @@ import type { MiMeta } from '@/models/Meta.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { bindThis } from '@/decorators.js';
-import { CLAIM_RECORDING_EVENT_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, MAX_RECORDING_IDS, PREPARE_RECORDING_EVENT_SCRIPT, RECORDING_ID, RENEW_ACTIVE_RECORDING_SCRIPT, parseRecordingEvent, recordingDeliveryWindowMs, recordingEventDeadline, recordingRetentionSeconds } from '@/core/recording-event.js';
+import { ACK_RECORDING_PUBLICATION_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, MAX_RECORDING_IDS, PREPARE_RECORDING_EVENT_SCRIPT, PREPARE_RECORDING_PUBLICATION_SCRIPT, RECORDING_ID, RENEW_ACTIVE_RECORDING_SCRIPT, parseRecordingEvent, recordingDeliveryWindowMs, recordingEventDeadline, recordingRetentionSeconds } from '@/core/recording-event.js';
 import type { RecordingBinding, RecordingEvent, RecordingStatus } from '@/core/recording-event.js';
 import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
@@ -596,9 +596,13 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const owner = await this.usersRepository.findOneBy({ id: context.room.value.ownerId });
 		if (owner == null || owner.host != null) return false;
 		if (status.recordingId == null) {
-			if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, status)) return false;
+			const { recording, ...settings } = status;
+			if (recording === true) return false;
+			// 이전 mic/deafen 보고는 ID로 결속한 녹음의 시작이나 종료를 결정하지 않는다.
+			if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, settings)) return false;
 		} else {
 			if (!RECORDING_ID.test(status.recordingId)) return false;
+			if (status.recording === true && !await this.liveKitService.supportsRecording(roomId)) return false;
 			const lockKey = `chatVoice:recordingLock:${hashOf([roomId, participant.identity])}`;
 			const token = randomUUID();
 			if (await this.redisClient.set(lockKey, token, 'PX', 30_000, 'NX') !== 'OK') throw new Error('Recording status is being updated');
@@ -607,17 +611,24 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 				const raw = await this.redisClient.get(bindingKey);
 				const held = raw != null ? JSON.parse(raw) as RecordingBinding : null;
 				if (held != null && (held.roomId !== roomId || held.identity !== participant.identity || held.sessionId !== sessionId || (held.stop != null && status.recording === true))) return false;
-				if (held?.stop == null && !await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, status)) return false;
+				// 승인 전에는 녹음 표시를 쓰지 않는다. 큐 적재 실패와 클라이언트 rollback 유실이 겹쳐도 표시가 남지 않아야 한다.
+				if (held?.stop == null && !(await this.liveKitService.listParticipants(roomId)).some(p => p.identity === participant.identity && p.sessionId === sessionId)) return false;
 				const prepared = await this.redisClient.eval(PREPARE_RECORDING_EVENT_SCRIPT, 6, bindingKey,
 					`chatVoice:recordingActive:${hashOf([roomId, participant.identity, sessionId])}`, lockKey, `chatVoice:recordingRoom:${roomId}`, `chatVoice:recordingHistory:${roomId}`, ACTIVE_ROOMS_KEY,
 					token, roomId, participant.identity, sessionId, status.recordingId, status.recording === true ? '1' : '0', Date.now(),
 					recordingRetentionSeconds(Math.max(recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts), held?.start.deliveryWindowMs ?? 0), this.config.inboxJobMaxAttempts), randomUUID(), recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts), MAX_RECORDING_IDS);
-				if (typeof prepared !== 'string' || prepared === '') {
-					await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, { ...status, recording: false });
-					return false;
-				}
+				// 잠금을 잃은 요청은 새 소유자의 LiveKit 상태를 정리하지 않는다.
+				if (typeof prepared !== 'string' || prepared === '') return false;
 				const binding = JSON.parse(prepared) as RecordingBinding;
+				if (held?.stop == null && status.recording !== true) {
+					if (await this.redisClient.get(lockKey) !== token) return false;
+					if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, { ...status, recording: false })) return false;
+				}
 				await this.deliverPendingRecordingEvents(context.room.value, binding, bindingKey, lockKey, token);
+				if (status.recording === true) {
+					if (await this.redisClient.get(lockKey) !== token) return false;
+					if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, status)) return false;
+				}
 			} finally {
 				await this.redisClient.eval(RELEASE_FEDERATION_LOCK_SCRIPT, 1, lockKey, token);
 				this.scheduleRefresh(roomId);
@@ -830,7 +841,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const removed = refusedHosts != null ? await this.removeUnadmitted(roomId, listed, refusedHosts, 'sweep') : new Set<string>();
 		const participants = listed.filter(p => !removed.has(p.identity));
 		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
-		if (room != null) await this.flushRecordingEvents(room, participants);
+		if (room != null) await this.flushRecordingEvents(room);
 		const snapshot: VoiceSnapshot = {
 			participants: participants.map(p => ({ identity: p.identity, userId: p.userId, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) })),
 			updatedAt: readAt,
@@ -887,11 +898,24 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		// 送り主は他のサーバーのユーザーなので、送り主が持ち主ならそのルームはミラー
 		if (room.ownerId !== actor.id) return 'skip: sender does not own the room';
 
-		if (parsed.state.recordingEvent != null) {
-			await this.publishRecordingEvent(room, parsed.state.recordingEvent, participants, updatedAt);
+		const event = parsed.state.recordingEvent;
+		const errors: unknown[] = [];
+		let stored: RemoteSnapshotStoreResult = 'disabled';
+		try {
+			// 수신자 판단에는 먼저 최신성 검사를 통과한 현황을 쓴다. 화면 고지는 이벤트 뒤로 미룬다.
+			stored = await this.storeRemoteSnapshot(room, participants, updatedAt, { publish: event == null });
+		} catch (error) { errors.push(error); }
+		if (event != null) {
+			try { await this.publishRecordingEvent(room, event, participants, updatedAt); } catch (error) { errors.push(error); }
+			if (stored === 'stored') {
+				try { await this.flushMirrorPublication(room.id); } catch (error) { errors.push(error); }
+			}
 		}
+		// 한 경계의 실패가 다른 경계를 버리지 않으며, 실패한 이벤트는 inbox에서 다시 시도한다.
+		if (errors.length === 1) throw errors[0];
+		if (errors.length > 1) throw new AggregateError(errors, 'Failed to receive voice state and recording event');
 
-		switch (await this.storeRemoteSnapshot(room, participants, updatedAt)) {
+		switch (stored) {
 			case 'stored': return 'ok: voice state stored';
 			case 'stale': return 'skip: voice state is not newer than the last one accepted';
 			case 'ahead': return 'skip: voice state is stamped too far ahead';
@@ -910,27 +934,32 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	// 클라이언트의 종료 보고가 유실되거나 프로세스가 중단돼도, 다음 webhook/sweep에서 고지를 마친다.
-	private async flushRecordingEvents(room: MiChatRoom, participants: LiveKitParticipant[]): Promise<void> {
+	private async flushRecordingEvents(room: MiChatRoom): Promise<void> {
 		for (const id of await this.redisClient.smembers(`chatVoice:recordingRoom:${room.id}`)) {
 			const bindingKey = `chatVoice:recording:${id}`;
 			const raw = await this.redisClient.get(bindingKey);
 			if (raw == null) { await this.redisClient.srem(`chatVoice:recordingRoom:${room.id}`, id); continue; }
 			const binding = JSON.parse(raw) as RecordingBinding;
-			const recording = binding.stop == null && participants.some(p => p.identity === binding.identity && p.recording === true);
-			if (recording) {
-				await this.redisClient.eval(RENEW_ACTIVE_RECORDING_SCRIPT, 4, bindingKey,
-					`chatVoice:recordingActive:${hashOf([room.id, binding.identity, binding.sessionId])}`, `chatVoice:recordingRoom:${room.id}`, `chatVoice:recordingHistory:${room.id}`,
-					id, recordingRetentionSeconds(binding.start.deliveryWindowMs, this.config.inboxJobMaxAttempts), Date.now());
-				if (binding.startSent) continue;
-			}
 			const lockKey = `chatVoice:recordingLock:${hashOf([room.id, binding.identity])}`;
 			const token = randomUUID();
-			if (await this.redisClient.set(lockKey, token, 'PX', 30_000, 'NX') !== 'OK') throw new Error('Recording status is being updated');
+			if (await this.redisClient.set(lockKey, token, 'PX', 30_000, 'NX') !== 'OK') continue;
 			try {
+				// refresh의 이전 목록을 재사용하지 않는다. 승인과 같은 잠금 아래 결속과 SID별 현황을 다시 읽는다.
+				const currentRaw = await this.redisClient.get(bindingKey);
+				if (currentRaw == null) { await this.redisClient.srem(`chatVoice:recordingRoom:${room.id}`, id); continue; }
+				const current = JSON.parse(currentRaw) as RecordingBinding;
+				const listed = current.stop == null ? await this.liveKitService.listParticipants(room.id) : [];
+				const recording = current.stop == null && listed.some(p => p.identity === current.identity && p.sessionId === current.sessionId && p.recording === true);
+				if (recording) {
+					await this.redisClient.eval(RENEW_ACTIVE_RECORDING_SCRIPT, 4, bindingKey,
+						`chatVoice:recordingActive:${hashOf([room.id, current.identity, current.sessionId])}`, `chatVoice:recordingRoom:${room.id}`, `chatVoice:recordingHistory:${room.id}`,
+						id, recordingRetentionSeconds(current.start.deliveryWindowMs, this.config.inboxJobMaxAttempts), Date.now());
+					if (current.startSent) continue;
+				}
 				const prepared = await this.redisClient.eval(PREPARE_RECORDING_EVENT_SCRIPT, 6, bindingKey,
-					`chatVoice:recordingActive:${hashOf([room.id, binding.identity, binding.sessionId])}`, lockKey, `chatVoice:recordingRoom:${room.id}`, `chatVoice:recordingHistory:${room.id}`, ACTIVE_ROOMS_KEY,
-					token, room.id, binding.identity, binding.sessionId, id, recording ? '1' : '0', Date.now(),
-					recordingRetentionSeconds(Math.max(binding.start.deliveryWindowMs, recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts)), this.config.inboxJobMaxAttempts), randomUUID(), recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts), MAX_RECORDING_IDS);
+					`chatVoice:recordingActive:${hashOf([room.id, current.identity, current.sessionId])}`, lockKey, `chatVoice:recordingRoom:${room.id}`, `chatVoice:recordingHistory:${room.id}`, ACTIVE_ROOMS_KEY,
+					token, room.id, current.identity, current.sessionId, id, recording ? '1' : '0', Date.now(),
+					recordingRetentionSeconds(Math.max(current.start.deliveryWindowMs, recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts)), this.config.inboxJobMaxAttempts), randomUUID(), recordingDeliveryWindowMs(this.config.deliverJobMaxAttempts), MAX_RECORDING_IDS);
 				if (typeof prepared !== 'string' || prepared === '') throw new Error('Recording status lock expired');
 				await this.deliverPendingRecordingEvents(room, JSON.parse(prepared) as RecordingBinding, bindingKey, lockKey, token);
 			} finally {
@@ -940,10 +969,10 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	}
 
 	private async deliverRecordingEvent(room: MiChatRoom, event: RecordingEvent): Promise<void> {
+		const updatedAt = await this.allocateStamp(this.localStampKeyOf(room.id), this.decidedKeyOf(room.id), LOCAL_STAMP_TTL_SECONDS);
 		const listed = await this.liveKitService.listParticipants(room.id);
 		const participants = listed.map(p => ({ identity: p.identity, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) }));
 		const audience = await this.audienceOf(room);
-		const updatedAt = await this.allocateStamp(this.localStampKeyOf(room.id), this.decidedKeyOf(room.id), LOCAL_STAMP_TTL_SECONDS);
 		await this.deliverSnapshot(room, audience, participants, updatedAt, event);
 		await this.publishRecordingEvent(room, event, participants, updatedAt);
 	}
@@ -953,7 +982,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		if (room.owner?.host != null && !await this.isRoomVoiceVisible(room)) return;
 		const held = await this.redisClient.get(this.keyOf(room.id));
 		const snapshot = held != null ? JSON.parse(held) as VoiceSnapshot : null;
-		const currentParticipants = snapshot != null && snapshot.updatedAt > updatedAt ? snapshot.participants : participants;
+		const currentParticipants = room.owner?.host != null
+			? snapshot?.participants ?? []
+			: snapshot != null && snapshot.updatedAt > updatedAt ? snapshot.participants : participants;
 		const users = await this.knownUsersOf([event.identity, ...currentParticipants.map(p => p.identity)]);
 		const recordingUser = users.get(event.identity);
 		if (recordingUser == null) return;
@@ -963,11 +994,18 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const recipients = audience.localUserIds.filter(userId => currentParticipants.some(p => users.get(p.identity)?.id === userId));
 		const [packedUser] = await this.userEntityService.packMany([recordingUser.id], null);
 		if (packedUser == null) return;
-		const claim = await this.redisClient.eval(CLAIM_RECORDING_EVENT_SCRIPT, 2, `chatVoice:recordingSeen:${room.id}`, `chatVoice:recordingSeenFlags:${room.id}`,
-			hashOf([event.identity, event.id]), event.recording ? 1 : 2, Date.now(), recordingEventDeadline(event, this.config.inboxJobMaxAttempts), MAX_RECORDING_IDS);
+		const id = hashOf([event.identity, event.id]);
+		const transition = event.recording ? 1 : 2;
+		const deadline = recordingEventDeadline(event, this.config.inboxJobMaxAttempts);
+		const flagsKey = `chatVoice:recordingSeenFlags:${room.id}`;
+		const pendingKey = `chatVoice:recordingPending:${room.id}`;
+		const claim = await this.redisClient.eval(PREPARE_RECORDING_PUBLICATION_SCRIPT, 3, `chatVoice:recordingSeen:${room.id}`, flagsKey, pendingKey,
+			id, transition, Date.now(), deadline, MAX_RECORDING_IDS);
 		if (claim === -1) throw new Error('Recording notification capacity is exhausted');
-		if (claim !== 1) return;
-		for (const userId of recipients) this.globalEventService.publishMainStream(userId, 'chatRoomRecording', { ...event, roomId: room.id, user: packedUser });
+		if (claim === 0) return;
+		if (claim !== 1 && claim !== 2) throw new Error('Recording publication was not prepared');
+		await this.globalEventService.publishRecordingMainStream(recipients, { ...event, roomId: room.id, user: packedUser }, { id, deadline });
+		await this.redisClient.eval(ACK_RECORDING_PUBLICATION_SCRIPT, 2, flagsKey, pendingKey, id, transition);
 	}
 
 	/**
@@ -985,7 +1023,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * ミラーの通話はこのサーバーの LiveKit には無いので、定期的な読み直し (sweep) の対象には加えない
 	 */
 	@bindThis
-	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number): Promise<RemoteSnapshotStoreResult> {
+	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number, options: { publish?: boolean } = {}): Promise<RemoteSnapshotStoreResult> {
 		// このサーバーのルームの現況は LiveKit から読む。ホストの言う現況で上書きさせない
 		if (room.owner == null || room.owner.host == null) {
 			throw new Error(`Voice call participants sent by another server can only be stored for a room owned there: ${room.id}`);
@@ -1041,6 +1079,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		);
 		if (stored === 2) return 'disabled';
 		if (stored !== 1) return 'stale';
+		if (options.publish === false) return 'stored';
 
 		return await this.publishMirrorSnapshot(room, snapshot, read) ? 'stored' : 'disabled';
 	}

@@ -107,8 +107,8 @@ test('Redis renews active ownership without recreating a stopped recording', asy
 });
 
 function recordingFixture(participants = [
-	{ identity: 'https://local.test/users/u1', userId: 'u1', screenSharing: false, micTrackSid: null, recording: false },
-	{ identity: 'https://local.test/users/m1', userId: 'm1', screenSharing: false, micTrackSid: null, recording: false },
+	{ identity: 'https://local.test/users/u1', sessionId: 'PA_1', userId: 'u1', screenSharing: false, micTrackSid: null, recording: false },
+	{ identity: 'https://local.test/users/m1', sessionId: 'PA_member', userId: 'm1', screenSharing: false, micTrackSid: null, recording: false },
 ]) {
 	const fixture = createFixture(redis as any);
 	fixtures.push(fixture);
@@ -117,10 +117,10 @@ function recordingFixture(participants = [
 	fixture.chatRoomsRepository.findOneBy.mockResolvedValue(room);
 	Object.assign(fixture.usersRepository, { findOneBy: vi.fn().mockResolvedValue(KNOWN_USERS.find(user => user.id === 'owner')) });
 	fixture.liveKitService.listParticipants.mockResolvedValue(participants);
-	Object.assign(fixture.liveKitService, { setParticipantStatus: vi.fn(async (_roomId: string, identity: string, _sessionId: string, status: { recording?: boolean }) => {
+	Object.assign(fixture.liveKitService, { setParticipantStatus: vi.fn(async (_roomId: string, identity: string, sessionId: string, status: { recording?: boolean }) => {
 		const participant = participants.find(candidate => candidate.identity === identity);
-		if (participant == null) return false;
-		participant.recording = status.recording === true;
+		if (participant == null || participant.sessionId !== sessionId) return false;
+		if (status.recording != null) participant.recording = status.recording;
 		return true;
 	}) });
 	vi.spyOn(fixture.service, 'scheduleRefresh').mockImplementation(() => {});
@@ -129,29 +129,118 @@ function recordingFixture(participants = [
 	return { fixture, participants };
 }
 
-test.each([false, true])('Redis recovers an undelivered start while recording remains active (replacement worker: %s)', async replacementWorker => {
+function signal() {
+	let resolve!: () => void;
+	const promise = new Promise<void>(done => { resolve = done; });
+	return { promise, resolve };
+}
+
+const recordingUser = KNOWN_USERS.find(user => user.id === 'u1')!;
+const recordingStatus = { micMuted: false, deafened: false, recording: true };
+
+test('an older sweep cannot stop a recording approved while its room lookup is delayed', async () => {
+	const { fixture, participants } = recordingFixture();
+	fixture.liveKitService.listParticipants.mockImplementation(async () => participants.map(participant => ({ ...participant })));
+	const listed = signal();
+	const resume = signal();
+	fixture.chatRoomsRepository.findOneBy.mockImplementationOnce(async () => {
+		listed.resolve();
+		await resume.promise;
+		return fixture.rooms.get('r1')!;
+	});
+	const refresh = fixture.service.refresh('r1');
+	await listed.promise;
+	const recordingId = randomUUID();
+
+	await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId });
+	resume.resolve();
+	await refresh;
+
+	const binding = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(binding.stop).toBeUndefined();
+	expect(participants[0].recording).toBe(true);
+});
+
+test('a request that loses its lock cannot clear its replacement recording in LiveKit', async () => {
+	const { fixture, participants } = recordingFixture();
+	const paused = signal();
+	const resume = signal();
+	const evaluate = redis.eval.bind(redis);
+	let lockKey = '';
+	let intercepted = false;
+	const spy = vi.spyOn(redis, 'eval').mockImplementation(async (...args: any[]) => {
+		if (!intercepted && args[0] === PREPARE_RECORDING_EVENT_SCRIPT) {
+			intercepted = true;
+			lockKey = args[4];
+			paused.resolve();
+			await resume.promise;
+		}
+		return evaluate(...args as Parameters<typeof redis.eval>);
+	});
+	try {
+		const first = fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId: randomUUID() });
+		await paused.promise;
+		// TTL 만료와 같은 잠금 제거를 주입하고, 새 소유자의 승인을 먼저 완료한다.
+		await redis.pexpire(lockKey, -1);
+		const replacementId = randomUUID();
+		await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId: replacementId })).resolves.toBe(true);
+
+		resume.resolve();
+		await expect(first).resolves.toBe(false);
+
+		expect(participants[0].recording).toBe(true);
+		const replacement = JSON.parse((await redis.get(`chatVoice:recording:${replacementId}`))!) as RecordingBinding;
+		expect(replacement.stop).toBeUndefined();
+	} finally {
+		resume.resolve();
+		spy.mockRestore();
+	}
+});
+
+test('a new SID for the same identity does not keep the previous recording alive', async () => {
+	const { fixture, participants } = recordingFixture();
+	Object.assign(participants[0], { sessionId: 'PA_1' });
+	const previousId = randomUUID();
+	await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId: previousId });
+	Object.assign(participants[0], { sessionId: 'PA_2', recording: false });
+	const currentId = randomUUID();
+	await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_2', { ...recordingStatus, recordingId: currentId });
+
+	await fixture.service.refresh('r1');
+
+	const previous = JSON.parse((await redis.get(`chatVoice:recording:${previousId}`))!) as RecordingBinding;
+	const current = JSON.parse((await redis.get(`chatVoice:recording:${currentId}`))!) as RecordingBinding;
+	expect(previous.stop?.recording).toBe(false);
+	expect(previous.stopSent).toBe(true);
+	expect(current.stop).toBeUndefined();
+	expect(participants[0].recording).toBe(true);
+});
+
+test('a rejected approval followed by a lost rollback cannot leave recording active', async () => {
 	const { fixture, participants } = recordingFixture();
 	const recordingId = randomUUID();
-	const bindingKey = `chatVoice:recording:${recordingId}`;
 	fixture.queueService.deliver.mockRejectedValueOnce(new Error('queue unavailable'));
 
-	await expect(fixture.service.reportStatus(KNOWN_USERS.find(user => user.id === 'u1')! as any, 'r1', 'PA_1', {
-		micMuted: false, deafened: false, recording: true, recordingId,
-	})).rejects.toThrow('queue unavailable');
+	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId })).rejects.toThrow('queue unavailable');
+	expect(participants[0].recording).toBe(false);
+	await fixture.service.refresh('r1');
 
-	const pending = JSON.parse((await redis.get(bindingKey))!) as RecordingBinding;
-	expect(pending.startSent).toBeUndefined();
-	expect(participants[0].recording).toBe(true);
-	const recovering = replacementWorker ? recordingFixture(participants).fixture : fixture;
-	recovering.queueService.deliver.mockClear();
+	const binding = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(binding.stop?.recording).toBe(false);
+	expect(binding.stopSent).toBe(true);
+});
 
-	await recovering.service.refresh('r1');
-	await recovering.service.refresh('r1');
+test('the frontend stop shape clears only its ID-bound recording when the recording flag is omitted', async () => {
+	const { fixture, participants } = recordingFixture();
+	const recordingId = randomUUID();
+	await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId });
 
-	const completed = JSON.parse((await redis.get(bindingKey))!) as RecordingBinding;
-	expect(completed.startSent).toBe(true);
-	expect(completed.start.id).toBe(pending.start.id);
-	expect(completed.stop).toBeUndefined();
-	const events = recovering.queueService.deliver.mock.calls.map(call => (call[1] as any).object._misskey_recordingEvent).filter(Boolean);
-	expect(events).toEqual([pending.start]);
+	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', {
+		micMuted: false, deafened: false, recordingId,
+	})).resolves.toBe(true);
+
+	const binding = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(participants[0].recording).toBe(false);
+	expect(binding.stop?.recording).toBe(false);
+	expect(binding.stopSent).toBe(true);
 });

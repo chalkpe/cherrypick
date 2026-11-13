@@ -7,12 +7,14 @@ import { reactive, readonly } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { apiUrl, url } from '@@/js/config.js';
 import { $i } from '@/i.js';
+import { instance } from '@/instance.js';
 import type { AudioCaptureOptions, DisconnectReason, LocalAudioTrack, LocalParticipant, LocalTrack, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomConnectOptions, TrackPublication, VideoPreset } from 'livekit-client';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { isApiError } from '@/utility/api-error.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
+import { createRecordingSegments, recordingSegmentBytes } from '@/utility/recording-recorder.js';
 
 export type VoiceCallStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting';
 
@@ -144,9 +146,15 @@ let statusDelivery: StatusDelivery | null = null;
 let deafenRevision = 0;
 
 // record the call in separate tracks (my microphone, the other side, video when present)
-const RECORDING_CHUNK_BYTES = 100 * 1024 * 1024;
 type RecordingPartKind = 'mic' | 'others' | 'video';
-type FailedRecording = { blob: Blob; name: string };
+type RecordingUploadReason = 'noFreeSpace' | 'tooLarge' | 'network' | null;
+type FailedRecording = { blob: Blob; name: string; reason: RecordingUploadReason; fileId?: string };
+
+class RecordingUploadError extends Error {
+	constructor(public reason: RecordingUploadReason, public fileId?: string) {
+		super('Failed to save or convert the recording');
+	}
+}
 /**
  * 一回の録画。通話の状態 (state.room) とは別に持ち、通話が終わって状態が片付いた後に届く最後の部分も同じ録画として保存する
  */
@@ -159,11 +167,8 @@ type RecordingSession = {
 	micRevision: number;
 };
 type RecordingPart = {
-	recorder: MediaRecorder;
-	chunks: Blob[];
-	bytes: number;
+	stop: () => void;
 	name: string;
-	session: RecordingSession;
 };
 const recordingParts = new Map<RecordingPartKind, RecordingPart>();
 let recordingSession: RecordingSession | null = null;
@@ -312,43 +317,58 @@ function recordingStamp(date: Date): string {
 	return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-/** 録画の一部をドライブに上げる。上げられなければ例外を投げる (変換に失敗しただけなら WebM のまま残るので成功とする) */
-async function uploadRecording(blob: Blob, name: string): Promise<void> {
+/** 녹화 원본을 독립적으로 저장하고 변환한다. 재시도할 때는 이미 저장된 원본을 다시 사용한다. */
+async function uploadRecording(blob: Blob, name: string, originalFileId?: string): Promise<void> {
 	if (blob.size === 0) return;
-	const form = new FormData();
-	form.append('file', blob, `${name}.webm`);
-	// Misskey authenticates API calls with the token in the form, not with cookies
-	if ($i != null) form.append('i', $i.token);
-	const res = await window.fetch(apiUrl + '/drive/files/create', { method: 'POST', body: form, credentials: 'omit' });
-	if (!res.ok) throw new Error(`failed to upload the recording: ${res.status}`);
-	const file = await res.json() as Misskey.entities.DriveFile;
+	let fileId = originalFileId;
+	if (fileId == null) {
+		const form = new FormData();
+		form.append('file', blob, `${name}.webm`);
+		// 변환 후 정리할 원본이 기존 첨부와 공유되지 않도록 독립 파일로 저장한다.
+		form.append('force', 'true');
+		if ($i != null) form.append('i', $i.token);
+		let res: Response;
+		try {
+			res = await window.fetch(apiUrl + '/drive/files/create', { method: 'POST', body: form, credentials: 'omit' });
+		} catch {
+			throw new RecordingUploadError('network');
+		}
+		if (!res.ok) {
+			const body = await res.json().catch(() => null) as { error?: { id?: string } } | null;
+			const id = body?.error?.id;
+			const reason = id === 'd08dbc37-a6a9-463a-8c47-96c32ab5f064' ? 'noFreeSpace'
+				: res.status === 413 || id === 'b9d8c348-33f0-4673-b9a9-5d4da058977a' ? 'tooLarge' : null;
+			throw new RecordingUploadError(reason);
+		}
+		const file = await res.json() as Misskey.entities.DriveFile;
+		fileId = file.id;
+	}
+	const uploadedFileId = fileId;
 	// the server converts one recording per user at a time, so convert the parts one after another
-	const fileId = file.id;
-	const conversion = recordingConversions.then(() => misskeyApi('chat/rooms/voice/convert-recording', { fileId }));
+	const conversion = recordingConversions.then(async () => {
+		const converted = await misskeyApi('chat/rooms/voice/convert-recording', { fileId: uploadedFileId });
+		if (converted?.id == null || converted.id === uploadedFileId) return;
+		await misskeyApi('drive/files/delete', { fileId: uploadedFileId }).catch(error => {
+			console.warn('[recording] could not delete the converted original', error);
+		});
+	});
 	recordingConversions = conversion.then(() => {}, () => {});
 	try {
 		await conversion;
-	} catch { /* keep the WebM when ffmpeg fails */ }
-	// the recording stays in the drive; it is not posted to the room
+	} catch (error) {
+		const code = isApiError(error) ? error.code : null;
+		const reason = code === 'OUTPUT_TOO_LARGE' ? 'tooLarge' : code === 'NO_FREE_SPACE' ? 'noFreeSpace' : null;
+		throw new RecordingUploadError(reason, uploadedFileId);
+	}
 }
 
 /** 上げた結果を録画ごとに数える。失敗した部分は捨てずに残し、録画が終わった後で再試行できるようにする */
 function trackRecordingUpload(session: RecordingSession, blob: Blob, name: string): void {
 	session.uploads.push(uploadRecording(blob, name).then(() => true, err => {
 		console.error(err);
-		session.failed.push({ blob, name });
+		session.failed.push({ blob, name, reason: err instanceof RecordingUploadError ? err.reason : null, fileId: err instanceof RecordingUploadError ? err.fileId : undefined });
 		return false;
 	}));
-}
-
-function flushRecordingChunk(kind: RecordingPartKind, force: boolean): void {
-	const part = recordingParts.get(kind);
-	if (part == null || part.chunks.length === 0) return;
-	if (!force && part.bytes < RECORDING_CHUNK_BYTES) return;
-	const blob = new Blob(part.chunks, { type: part.recorder.mimeType || 'audio/webm' });
-	part.chunks = [];
-	part.bytes = 0;
-	trackRecordingUpload(part.session, blob, part.name);
 }
 
 function createRecordingPart(session: RecordingSession, kind: RecordingPartKind, stream: MediaStream, mime: string | undefined, bits: number, name: string): void {
@@ -359,23 +379,20 @@ function createRecordingPart(session: RecordingSession, kind: RecordingPartKind,
 	} else {
 		options.audioBitsPerSecond = bits;
 	}
-	const rec = new MediaRecorder(stream, options);
-	const part: RecordingPart = { recorder: rec, chunks: [], bytes: 0, name, session };
-	rec.ondataavailable = (ev) => {
-		if (ev.data.size === 0) return;
-		part.chunks.push(ev.data);
-		part.bytes += ev.data.size;
-		flushRecordingChunk(kind, false);
-	};
-	// 最後の部分は、通話が終わって状態が片付いた後に届くことがある。録画ごとの session に上げるので、通話の状態には頼らない
-	rec.onstop = () => {
-		flushRecordingChunk(kind, true);
-		if (kind === 'video') stopRecordingVideo();
-		recordingParts.delete(kind);
-		if (recordingParts.size === 0) teardownRecording();
-	};
-	rec.start(10_000);
-	recordingParts.set(kind, part);
+	if ($i == null) throw new Error('Recording requires an authenticated user');
+	const recorder = createRecordingSegments(stream, options, recordingSegmentBytes($i.policies.maxFileSizeMb, instance.maxFileSize), {
+		onSegment: (blob, index) => trackRecordingUpload(session, blob, index === 1 ? name : `${name}-${String(index).padStart(3, '0')}`),
+		onStop: () => {
+			recordingParts.delete(kind);
+			if (recordingParts.size === 0) teardownRecording();
+		},
+		onError: error => {
+			console.error(error);
+			stopRecording();
+			os.toast(i18n.ts._voiceCall.recordingStopped);
+		},
+	});
+	recordingParts.set(kind, { stop: recorder.stop, name });
 }
 
 function stopRecordingVideo(): void {
@@ -428,9 +445,20 @@ function downloadRecording(recording: FailedRecording): void {
 async function offerFailedRecordings(initial: FailedRecording[]): Promise<void> {
 	let failed = initial;
 	while (failed.length > 0) {
+		const reason = (['noFreeSpace', 'tooLarge', 'network'] as const).find(candidate => failed.some(recording => recording.reason === candidate));
+		const failedPart = failed.find(recording => recording.reason === reason);
+		const hasOriginal = failed.some(recording => recording.fileId != null);
+		const hasUploadFailure = failed.some(recording => recording.fileId == null);
+		const caption = reason === 'noFreeSpace' ? (failedPart?.fileId != null ? i18n.ts._voiceCall.recordingConversionNoFreeSpace : i18n.ts.cannotUploadBecauseNoFreeSpace)
+			: reason === 'tooLarge' ? (failedPart?.fileId != null ? i18n.ts._voiceCall.recordingConversionTooLarge : i18n.ts.cannotUploadBecauseExceedsFileSizeLimit)
+				: reason === 'network' ? i18n.ts.cannotUploadBecauseNetworkError : undefined;
+		const text = hasOriginal
+			? hasUploadFailure ? i18n.ts._voiceCall.recordingMixedFailure : i18n.tsx._voiceCall.recordingConversionFailed({ n: failed.length })
+			: i18n.tsx._voiceCall.recordingSaveFailed({ n: failed.length });
 		const { canceled, result } = await os.actions({
 			type: 'error',
-			text: i18n.tsx._voiceCall.recordingSaveFailed({ n: failed.length }),
+			text,
+			caption,
 			actions: [
 				{ value: 'retry', text: i18n.ts.retry, primary: true },
 				{ value: 'download', text: i18n.ts._voiceCall.recordingSaveToDevice },
@@ -450,9 +478,9 @@ async function offerFailedRecordings(initial: FailedRecording[]): Promise<void> 
 		}
 		const retrying = failed;
 		failed = [];
-		const results = await os.promiseDialog(Promise.all(retrying.map(recording => uploadRecording(recording.blob, recording.name).then(() => true, err => {
+		const results = await os.promiseDialog(Promise.all(retrying.map(recording => uploadRecording(recording.blob, recording.name, recording.fileId).then(() => true, err => {
 			console.error(err);
-			failed.push(recording);
+			failed.push({ ...recording, reason: err instanceof RecordingUploadError ? err.reason : null, fileId: err instanceof RecordingUploadError ? err.fileId : recording.fileId });
 			return false;
 		}))), null, null);
 		if (results.every(ok => ok)) os.toast(i18n.ts._voiceCall.recordingSaved);
@@ -743,13 +771,12 @@ export function stopRecording(): void {
 	state.recording = false;
 	state.recordingStartedAt = null;
 	if (hadRecording && current != null) reportStatus(current, true, recordingId);
-	// 최종 recorder 이벤트를 기다리는 동안에도 원본 마이크를 계속 열어 두지 않는다.
-	recordingRawMicStream?.getTracks().forEach(track => track.stop());
-	recordingRawMicStream = null;
-	for (const part of [...recordingParts.values()]) {
-		if (part.recorder.state === 'inactive') continue;
-		try { part.recorder.requestData(); } catch { /* 마지막 청크는 onstop에서도 받는다 */ }
-		part.recorder.stop();
+	try {
+		for (const part of recordingParts.values()) part.stop();
+	} finally {
+		// 종료 요청 뒤 원본 마이크 점유는 바로 해제한다. 녹음 destination과 복제 트랙은 최종 이벤트까지 별도로 유지한다.
+		recordingRawMicStream?.getTracks().forEach(track => track.stop());
+		recordingRawMicStream = null;
 	}
 	if (recordingParts.size === 0) teardownRecording();
 }

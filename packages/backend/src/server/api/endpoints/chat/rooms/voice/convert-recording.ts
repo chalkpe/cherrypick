@@ -18,12 +18,15 @@ import { DriveService } from '@/core/DriveService.js';
 import { InternalStorageService } from '@/core/InternalStorageService.js';
 import { DriveFileEntityService } from '@/core/entities/DriveFileEntityService.js';
 import { ApiError } from '@/server/api/error.js';
+import { recordingConversionArgs } from '@/core/recording-conversion.js';
+import { ApiLoggerService } from '@/server/api/ApiLoggerService.js';
+import { RoleService } from '@/core/RoleService.js';
+import { IdentifiableError } from '@/misc/identifiable-error.js';
+import type { Config } from '@/config.js';
 
 // Turns a recorded voice call (WebM) into MP3, or MP4 when it has video, which players handle more widely
 const execFileAsync = promisify(execFile);
 
-// Recordings are uploaded in 100 MB chunks, so anything much larger is not one of ours
-const MAX_SOURCE_BYTES = 128 * 1024 * 1024;
 const CONVERSION_TIMEOUT_MS = 10 * 60 * 1000;
 // ffmpeg is expensive: the control panel sets how many conversions may run at once on the whole server (voiceCallMaxRecordingConversions; 0 turns conversion off).
 // The API can run in several processes, so the slots live in Redis rather than in this process's memory.
@@ -54,6 +57,7 @@ return 1
 
 export const meta = {
 	tags: ['chat'],
+	description: 'Convert a recording without deleting the original. A null response means that no conversion was performed and the original remains.',
 
 	requireCredential: true,
 
@@ -76,18 +80,23 @@ export const meta = {
 			code: 'NO_SUCH_FILE',
 			id: '9dece6fd-b314-408e-98ef-daa64f0fed82',
 		},
-		tooLarge: {
-			message: 'The file is too large to convert.',
-			code: 'TOO_LARGE',
-			id: '5f0f4f3e-6f2b-4c2e-9d36-0d3c4bd0e2a1',
-		},
 		busy: {
 			message: 'Too many recordings are being converted. Try again later.',
 			code: 'BUSY',
 			id: 'b9a7e2c4-31d8-4f0a-8b6e-7c2d9e5f1a03',
 		},
+		outputTooLarge: {
+			message: 'The converted file exceeds the maximum file size. The original was kept.',
+			code: 'OUTPUT_TOO_LARGE',
+			id: '5150ba37-9451-4e36-bc67-d190715935b4',
+		},
+		noFreeSpace: {
+			message: 'There is not enough drive space for the converted file. The original was kept.',
+			code: 'NO_FREE_SPACE',
+			id: '3bbe49fe-1726-4211-96ad-788b76b89427',
+		},
 		conversionFailed: {
-			message: 'Could not convert the recording.',
+			message: 'Could not convert the recording. The original was kept.',
 			code: 'CONVERSION_FAILED',
 			id: 'febe7309-ae3e-47d1-bae1-d393ec0bb877',
 		},
@@ -105,6 +114,9 @@ export const paramDef = {
 @Injectable()
 export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-disable-line import/no-default-export
 	constructor(
+		@Inject(DI.config)
+		private config: Config,
+
 		@Inject(DI.meta)
 		private serverSettings: MiMeta,
 
@@ -117,6 +129,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private driveService: DriveService,
 		private internalStorageService: InternalStorageService,
 		private driveFileEntityService: DriveFileEntityService,
+		private roleService: RoleService,
+		private apiLoggerService: ApiLoggerService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const file = await this.driveFilesRepository.findOneBy({ id: ps.fileId });
@@ -129,25 +143,36 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			// conversion turned off by the admin: keep the WebM as it is
 			const maxConversions = this.serverSettings.voiceCallMaxRecordingConversions;
 			if (maxConversions <= 0) return null;
-			if (file.size > MAX_SOURCE_BYTES) throw new ApiError(meta.errors.tooLarge);
 			const token = randomUUID();
 			const slots = [CONVERSION_SLOTS_KEY, conversionUserKey(me.id)];
 			const acquired = await this.redisClient.eval(ACQUIRE_CONVERSION_SCRIPT, 2, ...slots, token, Date.now(), CONVERSION_SLOT_TTL_MS, maxConversions);
 			if (acquired !== 1) throw new ApiError(meta.errors.busy);
 
 			let dir: string | null = null;
+			let src: string | null = null;
+			let dst: string | null = null;
+			let outputBytes: number | null = null;
 			try {
-				const src = this.internalStorageService.resolvePath(file.accessKey);
+				src = this.internalStorageService.resolvePath(file.accessKey);
 				dir = fs.mkdtempSync(Path.join(os.tmpdir(), 'voice-recording-'));
-				const dst = Path.join(dir, isVideo ? 'recording.mp4' : 'recording.mp3');
-				await execFileAsync('ffmpeg', isVideo
-					? ['-y', '-threads', '2', '-i', src, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-af', 'alimiter=limit=0.95', '-c:a', 'aac', '-b:a', '256k', '-movflags', '+faststart', dst]
-					: ['-y', '-threads', '2', '-i', src, '-vn', '-af', 'alimiter=limit=0.95', '-c:a', 'libmp3lame', '-b:a', '320k', dst], { timeout: CONVERSION_TIMEOUT_MS });
+				dst = Path.join(dir, isVideo ? 'recording.mp4' : 'recording.mp3');
+				await execFileAsync('ffmpeg', recordingConversionArgs(src, dst, isVideo), { timeout: CONVERSION_TIMEOUT_MS });
+				outputBytes = fs.statSync(dst).size;
+				if (outputBytes > this.config.maxFileSize) throw new ApiError(meta.errors.outputTooLarge);
 				const name = file.name.replace(/\.[^.]+$/, '') + (isVideo ? '.mp4' : '.mp3');
 				const converted = await this.driveService.addFile({ user: me, path: dst, name, force: true });
-				await this.driveService.deleteFile(file, false, me);
 				return await this.driveFileEntityService.pack(converted, { self: true });
-			} catch {
+			} catch (error) {
+				const identifiableId = error instanceof IdentifiableError ? error.id : null;
+				const policies = outputBytes != null ? await this.roleService.getUserPolicies(me.id).catch(() => null) : null;
+				const failure = error as { code?: string | number; signal?: string | null; killed?: boolean; stderr?: string };
+				let stderr = typeof failure?.stderr === 'string' ? failure.stderr.slice(-2048) : undefined;
+				if (stderr && src) stderr = stderr.replaceAll(src, '[source]');
+				if (stderr && dst) stderr = stderr.replaceAll(dst, '[output]');
+				this.apiLoggerService.logger.warn(`Recording conversion failed: ${JSON.stringify({ fileId: file.id, inputBytes: file.size, outputBytes, serverMaxBytes: this.config.maxFileSize, roleMaxBytes: policies ? policies.maxFileSizeMb * 1024 * 1024 : null, driveCapacityBytes: policies ? policies.driveCapacityMb * 1024 * 1024 : null, identifiableId, code: failure?.code, signal: failure?.signal, killed: failure?.killed, stderr })}`);
+				if (error instanceof ApiError) throw error;
+				if (identifiableId === 'f9e4e5f3-4df4-40b5-b400-f236945f7073') throw new ApiError(meta.errors.outputTooLarge);
+				if (identifiableId === 'c6244ed2-a39a-4e1c-bf93-f0fbd7764fa6') throw new ApiError(meta.errors.noFreeSpace);
 				throw new ApiError(meta.errors.conversionFailed);
 			} finally {
 				await this.redisClient.eval(RELEASE_CONVERSION_SCRIPT, 2, ...slots, token).catch(() => {});

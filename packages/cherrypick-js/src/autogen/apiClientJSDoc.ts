@@ -2144,7 +2144,7 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * No description provided.
+     * Convert a recording without deleting the original. A null response means that no conversion was performed and the original remains.
      *
      * **Credential required**: *Yes* / **Permission**: *write:drive*
      */

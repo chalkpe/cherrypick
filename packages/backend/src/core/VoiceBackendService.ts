@@ -216,7 +216,20 @@ export class VoiceBackendService extends LiveKitService {
 	@bindThis
 	public override async listParticipants(roomId: string): Promise<LiveKitParticipant[]> { if (!this.hasRelayConfiguration || await this.isLocalRoom(roomId)) return super.listParticipants(roomId); const result = await this.relay.participants(roomId); return result ?? (super.isEnabled ? super.listParticipants(roomId) : []); }
 	@bindThis
-	public override async setParticipantStatus(roomId: string, identity: string, sessionId: string, status: { micMuted: boolean; deafened: boolean; recording?: boolean }): Promise<boolean> { if (!this.hasRelayConfiguration || await this.isLocalRoom(roomId)) return super.setParticipantStatus(roomId, identity, sessionId, status); const accepted = await this.relay.participant(roomId, 'status', { identity, sessionId, ...status }); return accepted ?? (super.isEnabled ? super.setParticipantStatus(roomId, identity, sessionId, status) : false); }
+	public override async supportsRecording(roomId: string): Promise<boolean> {
+		if (!this.hasRelayConfiguration || await this.isLocalRoom(roomId)) return super.supportsRecording(roomId);
+		return this.relay.supportsRecording(roomId);
+	}
+	@bindThis
+	public override async setParticipantStatus(roomId: string, identity: string, sessionId: string, status: { micMuted: boolean; deafened: boolean; recording?: boolean }): Promise<boolean> {
+		if (!this.hasRelayConfiguration || await this.isLocalRoom(roomId)) return super.setParticipantStatus(roomId, identity, sessionId, status);
+		// 클라이언트 녹음 ID는 이용 서버의 결속에만 쓰고 제공자 status 규약에는 보내지 않는다.
+		const accepted = await this.relay.participant(roomId, 'status', {
+			identity, sessionId, micMuted: status.micMuted, deafened: status.deafened,
+			...(status.recording != null ? { recording: status.recording } : {}),
+		});
+		return accepted ?? (super.isEnabled ? super.setParticipantStatus(roomId, identity, sessionId, status) : false);
+	}
 	@bindThis
 	public override async removeParticipant(roomId: string, identity: string): Promise<void> {
 		if (!this.isEnabled) return;
