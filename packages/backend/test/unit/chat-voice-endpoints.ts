@@ -431,6 +431,7 @@ function chatServiceFixture() {
 		},
 		chatRoomsRepository: {
 			findOne: vi.fn().mockResolvedValue(room),
+			findOneBy: vi.fn().mockResolvedValue(room),
 			delete: vi.fn().mockResolvedValue({ affected: 1 }),
 		},
 		usersRepository: {

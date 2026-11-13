@@ -133,7 +133,8 @@ describe('chat unread sign', () => {
 				driveFilesRepository: emptyRepository,
 				pagesRepository: emptyRepository,
 				userProfilesRepository: { findOneByOrFail: async () => ({}) },
-				userEntityService: { isRemoteUser: () => false },
+				userEntityService: { isRemoteUser: () => false, isLocalUser: () => true },
+				deleteAccountService: { queueAccountDelete: vi.fn().mockResolvedValue([]) },
 				globalEventService: { publishInternalEvent: vi.fn() },
 				chatService: f.chatService,
 			}) as DeleteAccountProcessorService;

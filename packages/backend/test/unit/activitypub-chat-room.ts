@@ -257,6 +257,7 @@ function fixture(options: {
 		userBlockingService: { checkBlocked: vi.fn(async (_blockerId: string, _blockeeId: string) => false) },
 	});
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
+		db,
 		chatRoomsRepository: rooms,
 		chatRoomMembershipsRepository: inbox.chatRoomMembershipsRepository,
 		chatRoomInvitationsRepository: { findBy: async (where: Record<string, unknown>) => invitations.rows.filter(row => matches(row, where)) },

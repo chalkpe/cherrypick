@@ -1023,10 +1023,11 @@ describe('ChatService chat federation delivery', () => {
 				moderationLogService: { log: vi.fn() },
 			});
 			const s = f.service as never as {
-				chatRoomsRepository: { delete: ReturnType<typeof vi.fn> };
+				chatRoomsRepository: { findOneBy: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
 				usersRepository: { findOneBy: ReturnType<typeof vi.fn>; findBy: ReturnType<typeof vi.fn> };
 				apRendererService: { renderChatRoomDelete: ReturnType<typeof vi.fn> };
 			};
+			s.chatRoomsRepository.findOneBy = vi.fn().mockResolvedValue(room);
 			s.chatRoomsRepository.delete = vi.fn().mockResolvedValue({ affected: 1 });
 			s.usersRepository.findOneBy = vi.fn(async ({ id }: { id: string }) => users.get(id) ?? null);
 			s.usersRepository.findBy = vi.fn(async () => [...users.values()]);
