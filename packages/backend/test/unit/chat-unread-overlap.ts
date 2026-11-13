@@ -267,18 +267,6 @@ describe('chat unread marks around other requests', () => {
 		});
 	});
 
-	describe('deleting an account', () => {
-		test('a remote account deleted here keeps the conversations it left on screen unread', async () => {
-			const f = fixture();
-			await f.chatService.createMessageToUser(f.violet, f.reader, { text: 'still shown' });
-
-			await f.deleteAccountService.deleteAccount(f.violet);
-
-			expect(f.told()).toEqual([]);
-			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(true);
-		});
-
-	});
 });
 
 describe('a mark left by a send that never finished', () => {

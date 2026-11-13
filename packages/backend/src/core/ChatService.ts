@@ -17,8 +17,6 @@ import { ChatRosterService } from '@/core/ChatRosterService.js';
 import type { IObject } from '@/core/activitypub/type.js';
 import { IdService } from '@/core/IdService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
-import type { GlobalEvents } from '@/core/GlobalEventService.js';
-import { acquireApObjectLock } from '@/misc/distributed-lock.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
@@ -271,20 +269,6 @@ const IS_CHAT_MESSAGE_UNREAD = `-- is chat message unread
 return redis.call('SISMEMBER', KEYS[1], ARGV[1]) * redis.call('SISMEMBER', KEYS[2], ARGV[2])
 `;
 
-const DELETE_ACCOUNT_CHAT_UNREAD = `-- delete account chat unread
-for _, conversation in ipairs(redis.call('SMEMBERS', KEYS[1])) do
- local kind, id = string.match(conversation, '^(%w+):(.+)$')
- local base = id and ((kind == 'user' and ARGV[1] or ARGV[2]) .. id)
- if base then redis.call('UNLINK', base, base .. ':first', base .. ':revision', base .. ':messages', base .. ':pending') end
-end
-for i = 2, #KEYS do
- local base = KEYS[i]
- redis.call('UNLINK', base, base .. ':first', base .. ':revision', base .. ':messages', base .. ':pending')
-end
-redis.call('UNLINK', KEYS[1])
-return 1
-`;
-
 // Check both conditions in the same Redis operation that removes the candidate.
 const CLEAN_LEGACY_CHAT_UNREAD = `-- clean legacy chat unread
 if redis.call('GET', KEYS[5]) ~= ARGV[3] then return -1 end
@@ -352,9 +336,6 @@ export class ChatService {
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
 
-		@Inject(DI.redisForSub)
-		private redisForSub: Redis.Redis,
-
 		@Inject(DI.db)
 		private db: DataSource,
 
@@ -403,51 +384,6 @@ export class ChatService {
 		private loggerService: LoggerService,
 	) {
 		this.logger = this.loggerService.getLogger('chat');
-		this.redisForSub.on('message', this.onInternalEvent);
-	}
-
-	@bindThis
-	public onApplicationShutdown(): void {
-		this.redisForSub.off('message', this.onInternalEvent);
-	}
-
-	@bindThis
-	private onInternalEvent(_: string, data: string): void {
-		const event = JSON.parse(data);
-		if (event.channel !== 'internal') return;
-		const message = event.message as GlobalEvents['internal']['payload'];
-		if (message.type === 'userChangeDeletedState' && message.body.isDeleted) {
-			this.cleanupDeletedAccount(message.body.id, 'local').catch(error => {
-				this.logger.error(`Failed to clean up chat for deleted account ${message.body.id}: ${String(error)}`);
-			});
-		} else if (message.type === 'remoteUserUpdated') {
-			this.cleanupDeletedAccount(message.body.id, 'remote').catch(error => {
-				this.logger.error(`Failed to clean up chat for remote account ${message.body.id}: ${String(error)}`);
-			});
-		}
-	}
-
-	private async cleanupDeletedAccount(userId: MiUser['id'], kind: 'local' | 'remote'): Promise<void> {
-		const unlock = await acquireApObjectLock(this.redisClient, `chat-account-delete:${userId}`);
-		try {
-			const user = await this.usersRepository.findOneBy({ id: userId });
-			if (user == null || !user.isDeleted) return;
-			if (kind === 'remote') {
-				if (!this.userEntityService.isRemoteUser(user)) return;
-				const rooms = await this.chatRoomsRepository.findBy({ ownerId: userId });
-				for (const room of rooms) {
-					if (room.uri != null) await this.chatRosterService.markRoomDeletedByOwner(room.uri);
-					await this.deleteRoom(room, undefined, { federate: false });
-				}
-				return;
-			}
-			if (!this.userEntityService.isLocalUser(user)) return;
-			await this.deleteRoomsOwnedBy(userId);
-			await this.deleteMessagesFromUser(userId);
-			await this.deleteUnreadForAccount(userId);
-		} finally {
-			await unlock();
-		}
 	}
 
 	@bindThis
@@ -923,31 +859,6 @@ export class ChatService {
 		this.globalEventService.publishMainStream(readerId, 'readAllChatMessages');
 	}
 
-	/** Removes all unread state owned by an account immediately before physical deletion. */
-	@bindThis
-	public async deleteUnreadForAccount(readerId: MiUser['id']): Promise<void> {
-		const [messages, memberships, rooms] = await Promise.all([
-			this.chatMessagesRepository.createQueryBuilder('message')
-				.select('message.fromUserId', 'senderId')
-				.addSelect('message.toUserId', 'recipientId')
-				.distinct(true)
-				.where('message.toRoomId IS NULL')
-				.andWhere('(message.fromUserId = :readerId OR message.toUserId = :readerId)', { readerId })
-				.getRawMany<{ senderId: string; recipientId: string | null }>(),
-			this.chatRoomMembershipsRepository.findBy({ userId: readerId }),
-			this.chatRoomsRepository.findBy({ ownerId: readerId }),
-		]);
-		const bases = new Set(messages.flatMap(({ senderId, recipientId }) => {
-			const otherId = senderId === readerId ? recipientId : senderId;
-			return otherId == null ? [] : [this.unreadKey({ readerId, senderId: otherId })];
-		}));
-		for (const { roomId } of memberships) bases.add(this.unreadKey({ readerId, roomId }));
-		for (const { id: roomId } of rooms) bases.add(this.unreadKey({ readerId, roomId }));
-		const prefix = this.redisClient.options?.keyPrefix ?? '';
-		await this.redisClient.eval(DELETE_ACCOUNT_CHAT_UNREAD, 1 + bases.size, `newChatMessagesExists:${readerId}`, ...bases,
-			`${prefix}newUserChatMessageExists:${readerId}:`, `${prefix}newRoomChatMessageExists:${readerId}:`);
-	}
-
 	/** Incrementally removes marks left outside the aggregate by older versions. */
 	@bindThis
 	public async cleanupLegacyUnreadMarks(): Promise<boolean> {
@@ -1411,17 +1322,6 @@ export class ChatService {
 		await this.reconcileUnreadMarks(await this.unreadMarksOfRoomsFrom(authorId));
 	}
 
-	/** Removes every message of an account being deleted for good, and the unread marks they leave behind. */
-	@bindThis
-	public async deleteMessagesFromUser(authorId: MiUser['id']): Promise<void> {
-		const roomMarks = await this.unreadMarksOfRoomsFrom(authorId);
-		const directMarks = await this.unreadMarksOfDirectMessagesFrom(authorId);
-		await this.chatMessagesRepository.delete({ fromUserId: authorId });
-		// The messages are gone already. Marks that fail to clear here no longer count, as nothing is left for them to show.
-		await this.clearUnreadMarks(directMarks).catch(error => this.reportUnreadFailure('account deletion, direct messages', error));
-		await this.reconcileUnreadMarks(roomMarks).catch(error => this.reportUnreadFailure('account deletion, rooms', error));
-	}
-
 	private async unreadMarksOfDirectMessagesFrom(senderId: MiUser['id']): Promise<UnreadMark[]> {
 		const readers = await this.chatMessagesRepository.createQueryBuilder('message')
 			.select('DISTINCT message.toUserId', 'toUserId')
@@ -1762,23 +1662,8 @@ export class ChatService {
 		return false;
 	}
 
-	/**
-	 * Deletes the rooms of an account that is going away, telling remote participants and invitees even if they follow no one here.
-	 * The account key may disappear before a queued delivery is processed.
-	 */
 	@bindThis
-	public async deleteRoomsOwnedBy(ownerId: MiUser['id']): Promise<string[]> {
-		const rooms = await this.db.transaction(manager => manager.withRepository(this.chatRoomsRepository).findBy({ ownerId }));
-		const deliveries: string[] = [];
-		for (const room of rooms) {
-			deliveries.push(...await this.deleteRoom(room));
-		}
-		return deliveries;
-	}
-
-	/** @returns The queued deliveries signed by the room owner. */
-	@bindThis
-	public async deleteRoom(requestedRoom: MiChatRoom, deleter?: MiUser, options?: { federate?: boolean }): Promise<string[]> {
+	public async deleteRoom(requestedRoom: MiChatRoom, deleter?: MiUser, options?: { federate?: boolean }): Promise<void> {
 		// 삭제할 방과 수신 대상을 주 DB에서 함께 읽고, 큐 등록을 기다리기 전에 트랜잭션을 닫는다.
 		const snapshot = await this.db.transaction(async manager => {
 			const room = await manager.withRepository(this.chatRoomsRepository).findOneBy({ id: requestedRoom.id });
@@ -1798,14 +1683,13 @@ export class ChatService {
 			});
 			return { room, owner: byId.get(room.ownerId), participants, invitees, memberships, invitations };
 		});
-		if (snapshot == null) return [];
+		if (snapshot == null) return;
 		const { room, owner, participants, invitees, memberships, invitations } = snapshot;
-		let ownerDeliveries: string[] = [];
 		if (options?.federate !== false && owner != null) {
 			if (this.userEntityService.isLocalUser(owner)) {
 				// A remote owner's server is the authority for its room, so only rooms owned here are announced.
 				// The announcement is signed by the owner even when a moderator deletes the room.
-				ownerDeliveries = await this.deliverToRemoteUsers(owner, [...participants, ...invitees], this.apRendererService.renderChatRoomDelete(room, owner), { required: true });
+				await this.deliverToRemoteUsers(owner, [...participants, ...invitees], this.apRendererService.renderChatRoomDelete(room, owner), { required: true });
 			} else if (this.userEntityService.isRemoteUser(owner)) {
 				await this.leaveRoomRemovedHere(room, owner, participants, invitees, invitations);
 			}
@@ -1835,8 +1719,6 @@ export class ChatService {
 				});
 			}
 		}
-
-		return ownerDeliveries;
 	}
 
 	/** A moderator removed this server's copy. The room goes on on its owner's server, which has to stop counting the people here. */
@@ -2987,10 +2869,10 @@ export class ChatService {
 	}
 
 	/** @returns The IDs of the queued delivery jobs. Required deliveries fail the caller if registration fails. */
-	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any, options?: { required?: boolean }): Promise<string[]> {
+	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any, options?: { required?: boolean }): Promise<void> {
 		const contextedActivity = this.apRendererService.addContext(activity);
 		const delivered = new Set<string>();
-		const jobs: Promise<{ id?: string } | null>[] = [];
+		const jobs: Promise<unknown>[] = [];
 
 		for (const user of users) {
 			if (user.id === actor.id) continue;
@@ -3011,7 +2893,6 @@ export class ChatService {
 		}
 		const failures = queued.filter(result => result.status === 'rejected');
 		if (options?.required && failures.length > 0) throw new AggregateError(failures.map(result => result.reason), 'Failed to queue required chat deliveries');
-		return queued.flatMap(result => result.status === 'fulfilled' && result.value?.id != null ? [result.value.id] : []);
 	}
 
 	@bindThis

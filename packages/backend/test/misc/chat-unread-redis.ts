@@ -169,16 +169,6 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 		},
 		'is chat message unread': ([aggregate, messagesKey], [conversation, id]) =>
 			Number(Boolean(sets.get(aggregate)?.has(conversation) && sets.get(messagesKey)?.has(id))),
-		'delete account chat unread': ([aggregate, ...bases], [userPrefix, roomPrefix]) => {
-			for (const conversation of members(aggregate)) {
-				const [kind, id] = conversation.split(':');
-				const base = `${kind === 'user' ? userPrefix : roomPrefix}${id}`;
-				del(base, ...[':first', ':revision', ':messages', ':pending'].map(suffix => `${base}${suffix}`));
-			}
-			for (const base of bases) del(base, ...[':first', ':revision', ':messages', ':pending'].map(suffix => `${base}${suffix}`));
-			del(aggregate);
-			return 1;
-		},
 		'reconcile chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey], [marker, first, revision, remaining, conversation, newRevision]) => {
 			if (!sets.get(aggregate)?.has(conversation)) return 0;
 			if (sets.has(pendingKey)) return 0;

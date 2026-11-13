@@ -301,64 +301,6 @@ describe('chat unread boundaries', () => {
 		});
 	});
 
-	test('physically deleting an owner clears owned rooms without clearing another conversation', async () => {
-		const [owner, reader, otherReader, sender] = [await person(), await person(), await person(), await person()];
-		const room = await roomOf(owner, reader, otherReader);
-		assert.strictEqual((await roomSay(owner, room.id)).status, 200);
-		assert.strictEqual((await say(sender, otherReader, 'Another conversation')).status, 200);
-
-		const told = await waitFire(reader, 'main', async () => {
-			assert.strictEqual((await api('admin/delete-account', { userId: owner.id }, root)).status, 204);
-			await vi.waitFor(async () => {
-				assert.strictEqual((await api('users/show', { userId: owner.id }, root)).status, 404);
-			}, { timeout: 15_000, interval: 50 });
-		}, message => message.type === 'readAllChatMessages');
-
-		assert.strictEqual(told, true);
-		assert.strictEqual(await hasUnread(reader), false);
-		assert.strictEqual(await hasUnread(otherReader), true);
-		assert.strictEqual((await api('chat/rooms/show', { roomId: room.id }, reader)).status, 400);
-		assert.strictEqual(await redis.sismember(`newChatMessagesExists:${reader.id}`, `room:${room.id}`), 0);
-	});
-
-	test('physical account deletion removes its own unread markers', async () => {
-		const [reader, sender, other] = [await person(), await person(), await person()];
-		const room = await roomOf(sender, reader, other);
-		assert.strictEqual((await say(sender, reader, 'Unread direct')).status, 200);
-		assert.strictEqual((await roomSay(sender, room.id)).status, 200);
-		const direct = `newUserChatMessageExists:${reader.id}:${sender.id}`;
-		const roomKey = `newRoomChatMessageExists:${reader.id}:${room.id}`;
-		assert.strictEqual(await redis.exists(direct, roomKey, `newChatMessagesExists:${reader.id}`), 3);
-		assert.strictEqual((await api('admin/delete-account', { userId: reader.id }, root)).status, 204);
-		await vi.waitFor(async () => {
-			assert.strictEqual(await db.getRepository(MiUser).findOneBy({ id: reader.id }), null);
-		}, { timeout: 15_000, interval: 50 });
-
-		const keys = await redis.keys(`${redis.options.keyPrefix ?? ''}new*ChatMessage*:${reader.id}*`);
-		console.log('CHAT_DELETED_READER_KEYS', JSON.stringify(keys.sort()));
-		assert.deepStrictEqual(keys, []);
-		assert.strictEqual(await hasUnread(other), true);
-	});
-
-	test('account deletion clears known orphan conversations without a keyspace scan', async () => {
-		const [reader, sender] = [await person(), await person()];
-		assert.strictEqual((await say(sender, reader, 'Old unread')).status, 200);
-		const known = `newUserChatMessageExists:${reader.id}:${sender.id}`;
-		const unknown = `newUserChatMessageExists:${reader.id}:unknown`;
-		await redis.del(`newChatMessagesExists:${reader.id}`);
-		await redis.set(unknown, 'old');
-		assert.strictEqual((await api('admin/delete-account', { userId: reader.id }, root)).status, 204);
-		await vi.waitFor(async () => assert.strictEqual(await db.getRepository(MiUser).findOneBy({ id: reader.id }), null), { timeout: 15_000, interval: 50 });
-		assert.strictEqual(await redis.get(known), null);
-		assert.strictEqual(await redis.get(unknown), 'old');
-		await redis.del('chatLegacyUnreadCleanup:cursor');
-		const service = queue.get(ChatService);
-		let complete = false;
-		for (let i = 0; i < 30 && !complete; i++) complete = await service.cleanupLegacyUnreadMarks();
-		assert.strictEqual(complete, true);
-		assert.strictEqual(await redis.get(unknown), null);
-	});
-
 	test('refreshing the account excludes unread messages from a muted sender', async () => {
 		const [reader, sender] = [await person(), await person()];
 		assert.strictEqual((await say(sender, reader, 'Unread before mute')).status, 200);
@@ -410,21 +352,6 @@ describe('chat unread boundaries', () => {
 
 		assert.strictEqual(await hasUnread(reader), false);
 		assert.strictEqual(await redis.get(`newRoomChatMessageExists:${reader.id}:${room.id}`), null);
-	});
-
-	test('physically deleting an ordinary member clears only their unread room messages', async () => {
-		const [reader, owner, member] = [await person(), await person(), await person()];
-		const room = await roomOf(owner, reader, member);
-		await roomSay(owner, room.id);
-		await api('chat/messages/room-timeline', { roomId: room.id }, reader);
-		await roomSay(member, room.id);
-
-		assert.strictEqual((await api('admin/delete-account', { userId: member.id }, root)).status, 204);
-		await vi.waitFor(async () => assert.strictEqual((await api('users/show', { userId: member.id }, root)).status, 404), { timeout: 20_000, interval: 100 });
-
-		assert.strictEqual(await hasUnread(reader), false);
-		assert.strictEqual(await redis.get(`newRoomChatMessageExists:${reader.id}:${room.id}`), null);
-		assert.strictEqual((await api('chat/rooms/show', { roomId: room.id }, reader)).status, 200);
 	});
 
 	describe('a read covers what the reader was given', () => {

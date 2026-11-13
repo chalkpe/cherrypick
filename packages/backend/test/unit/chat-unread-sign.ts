@@ -112,16 +112,6 @@ describe('chat unread sign', () => {
 			expect(await f.chatService.getRoomReadStateMap(f.reader.id, [f.room.id])).toEqual({ room1: true });
 		});
 
-		test('physical deletion of an ordinary member reconciles unread above read history', async () => {
-			vi.useFakeTimers();
-			const f = fixture();
-			await f.chatService.createMessageToRoom(f.violet, f.room, { text: 'read history' });
-			await f.chatService.readRoomChatMessage(f.reader.id, f.room.id);
-			await f.chatService.createMessageToRoom(f.amber, f.room, { text: 'unread' });
-			await f.chatService.deleteMessagesFromUser(f.amber.id);
-
-			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
-		});
 
 		test.each(['direct', 'room'] as const)('a Redis failure never leaves a stored %s message behind a failed send', async kind => {
 			vi.useFakeTimers();

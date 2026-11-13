@@ -5,7 +5,6 @@
 
 import { vi } from 'vitest';
 import { ChatService } from '@/core/ChatService.js';
-import { DeleteAccountService } from '@/core/DeleteAccountService.js';
 import { UserMutingService } from '@/core/UserMutingService.js';
 import type { MiChatMessage, MiChatRoom, MiMuting, MiUser } from '@/models/_.js';
 import { meets } from './chat-repository-match.js';
@@ -168,15 +167,6 @@ export function chatUnreadFixture({ remoteMembers = false } = {}) {
 		pushNotificationService: { pushNotification: push },
 	}) as ChatService;
 
-	const deleteAccountService = Object.assign(Object.create(DeleteAccountService.prototype), {
-		meta: { rootUserId: 'root' },
-		usersRepository: { findOneByOrFail: async ({ id }: { id: string }) => ({ ...users.find(user => user.id === id)!, username: id }), update: async () => undefined },
-		userEntityService: { isLocalUser: () => false },
-		queueService: { createDeleteAccountJob: vi.fn() },
-		globalEventService: { publishInternalEvent: vi.fn() },
-		chatService,
-	}) as DeleteAccountService;
-
 	const userMutingService = Object.assign(Object.create(UserMutingService.prototype), {
 		mutingsRepository,
 		idService: { gen: () => `muting${++nextId}` },
@@ -195,7 +185,6 @@ export function chatUnreadFixture({ remoteMembers = false } = {}) {
 		logger,
 		chatService,
 		userMutingService,
-		deleteAccountService,
 		redis: (chatService as unknown as { redisClient: ReturnType<typeof memoryRedis> }).redisClient,
 		/** The message as stored, for the calls that take one. */
 		stored: (text: string) => messages.find(message => message.text === text) as MiChatMessage,
