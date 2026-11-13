@@ -30,6 +30,21 @@ export function fakeRedis() {
 		}
 		return store.has(key);
 	};
+	// 本物の Lua と同じく、保管一覧が上限なら最も古い項目を除き、終了まで配達した (stopSent) 結束だけ一緒に消す。
+	// 活性・未配達の結束は flush の終了配達と所有権検査にまだ必要なので、寿命切れに任せる
+	const evictRecordingHistory = (history: Map<string, number>, capacity: number, bindingPrefix: string) => {
+		if (history.size < capacity) return;
+		let oldest: string | undefined;
+		let oldestDeadline = Infinity;
+		for (const [entry, deadline] of history) if (deadline < oldestDeadline) { oldest = entry; oldestDeadline = deadline; }
+		if (oldest == null) return;
+		history.delete(oldest);
+		const evictedKey = bindingPrefix + oldest;
+		if (live(evictedKey) && JSON.parse(store.get(evictedKey)!).stopSent) {
+			store.delete(evictedKey);
+			expiresAt.delete(evictedKey);
+		}
+	};
 	return {
 		store,
 		sets,
@@ -75,13 +90,6 @@ export function fakeRedis() {
 				const history = recordingHistory.get(historyKey) ?? new Map<string, number>();
 				recordingHistory.set(historyKey, history);
 				for (const [entry, deadline] of history) if (deadline <= Number(now)) history.delete(entry);
-				// 上限に達したら新規録音を拒む代わりに最も古い保管項目を除く (本物の Lua と同じ)
-				if (!binding && history.size >= Number(capacity)) {
-					let oldest: string | undefined;
-					let oldestDeadline = Infinity;
-					for (const [entry, deadline] of history) if (deadline < oldestDeadline) { oldest = entry; oldestDeadline = deadline; }
-					if (oldest != null) history.delete(oldest);
-				}
 				const active = live(lastSeenKey) ? store.get(lastSeenKey) : null;
 				if (binding && (binding.roomId !== roomId || binding.identity !== identity || binding.sessionId !== sessionId)) return '';
 				if (starting === '1' && (binding?.stop || (active && active !== id))) return '';
@@ -99,6 +107,8 @@ export function fakeRedis() {
 				const activeRoomsKey = String(args[5]);
 				if (!sets.has(activeRoomsKey)) sets.set(activeRoomsKey, new Set());
 				sets.get(activeRoomsKey)!.add(String(roomId));
+				// 上限なら最も古い保管項目を除く。再挿入 (既存 ID の終了・更新) も同じ上限を守り、既にある ID は点数だけ更新する (本物の Lua と同じ)
+				if (!history.has(String(id))) evictRecordingHistory(history, Number(capacity), key.slice(0, key.length - String(id).length));
 				history.set(String(id), Number(now) + Number(ttl) * 1000);
 				const roomKey = String(args[3]);
 				if (!sets.has(roomKey)) sets.set(roomKey, new Set());
@@ -156,10 +166,13 @@ export function fakeRedis() {
 				return 1;
 			}
 			if (_script.startsWith('-- RENEW_ACTIVE_RECORDING')) {
-				const [id, ttl, now] = args.slice(numKeys);
+				const [id, ttl, now, capacity] = args.slice(numKeys);
 				if (!live(key) || !live(lastSeenKey) || store.get(lastSeenKey) !== id || JSON.parse(store.get(key)!).stop) return 0;
 				for (const entry of args.slice(0, 3)) expiresAt.set(String(entry), Number(now) + Number(ttl) * 1000);
-				recordingHistory.get(String(args[3]))?.set(String(id), Number(now) + Number(ttl) * 1000);
+				const history = recordingHistory.get(String(args[3])) ?? new Map<string, number>();
+				recordingHistory.set(String(args[3]), history);
+				if (!history.has(String(id))) evictRecordingHistory(history, Number(capacity), key.slice(0, key.length - String(id).length));
+				history.set(String(id), Number(now) + Number(ttl) * 1000);
 				return 1;
 			}
 			if (_script.startsWith('-- MARK_RECORDING_EVENT_SENT')) {

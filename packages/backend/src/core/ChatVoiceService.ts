@@ -16,7 +16,7 @@ import type { MiMeta } from '@/models/Meta.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { bindThis } from '@/decorators.js';
-import { ABORT_UNSENT_RECORDING_SCRIPT, ACK_RECORDING_PUBLICATION_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, MAX_RECORDING_IDS, PREPARE_RECORDING_EVENT_SCRIPT, PREPARE_RECORDING_PUBLICATION_SCRIPT, RECORDING_ID, RENEW_ACTIVE_RECORDING_SCRIPT, parseRecordingEvent, recordingDeliveryWindowMs, recordingEventDeadline, recordingRetentionSeconds } from '@/core/recording-event.js';
+import { ABORT_UNSENT_RECORDING_SCRIPT, ACK_RECORDING_PUBLICATION_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, MAX_RECORDING_IDS, PREPARE_RECORDING_EVENT_SCRIPT, PREPARE_RECORDING_PUBLICATION_SCRIPT, PartialRecordingDeliveryError, RECORDING_ID, RENEW_ACTIVE_RECORDING_SCRIPT, parseRecordingEvent, recordingDeliveryWindowMs, recordingEventDeadline, recordingRetentionSeconds } from '@/core/recording-event.js';
 import type { RecordingBinding, RecordingEvent, RecordingStatus } from '@/core/recording-event.js';
 import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
@@ -632,7 +632,13 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 					// 시작을 아직 보내지 못한 결속은 폐기해, 후속 flush가 실제 캡처 없는 시작+종료를 배달하지 못하게 한다.
 					// 이미 시작을 보낸 결속은 남겨 flush가 종료를 마저 보내게 한다. 폐기는 best-effort이며 원래 오류를 그대로 던진다.
 					if (!binding.startSent) {
-						await this.redisClient.eval(ABORT_UNSENT_RECORDING_SCRIPT, 5, bindingKey, activeKey, lockKey, roomKey, historyKey, token, binding.clientId).catch(() => {});
+						if (error instanceof PartialRecordingDeliveryError) {
+							// 일부 대상에게 이미 시작이 접수됐다. 폐기하면 그 대상의 종료를 영원히 만들 수 없으므로,
+							// 결속을 남기되 시작을 다시 발행하지 않도록 표시하고 flush가 종료를 마저 보내게 한다.
+							await this.redisClient.eval(MARK_RECORDING_EVENT_SENT_SCRIPT, 2, bindingKey, lockKey, token, 'startPartial', recordingRetentionSeconds((binding.stop ?? binding.start).deliveryWindowMs, this.config.inboxJobMaxAttempts)).catch(() => {});
+						} else {
+							await this.redisClient.eval(ABORT_UNSENT_RECORDING_SCRIPT, 5, bindingKey, activeKey, lockKey, roomKey, historyKey, token, binding.clientId).catch(() => {});
+						}
 					}
 					throw error;
 				}
@@ -947,6 +953,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	private async deliverPendingRecordingEvents(room: MiChatRoom, binding: RecordingBinding, bindingKey: string, lockKey: string, token: string): Promise<void> {
 		for (const [event, sent] of [[binding.start, 'startSent'], [binding.stop, 'stopSent']] as const) {
 			if (event == null || binding[sent]) continue;
+			// 부분 발행된 시작은 승인 실패로 실제 캡처가 없으므로 새 대상에게 다시 보내지 않고 종료만 마저 배달한다
+			if (sent === 'startSent' && binding.startPartial) continue;
 			await this.deliverRecordingEvent(room, event);
 			if (await this.redisClient.eval(MARK_RECORDING_EVENT_SENT_SCRIPT, 2, bindingKey, lockKey, token, sent, recordingRetentionSeconds((binding.stop ?? binding.start).deliveryWindowMs, this.config.inboxJobMaxAttempts)) !== 1) throw new Error('Recording status lock expired');
 		}
@@ -973,7 +981,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 				if (recording) {
 					await this.redisClient.eval(RENEW_ACTIVE_RECORDING_SCRIPT, 4, bindingKey,
 						`chatVoice:recordingActive:${hashOf([room.id, current.identity, current.sessionId])}`, `chatVoice:recordingRoom:${room.id}`, `chatVoice:recordingHistory:${room.id}`,
-						id, recordingRetentionSeconds(current.start.deliveryWindowMs, this.config.inboxJobMaxAttempts), Date.now());
+						id, recordingRetentionSeconds(current.start.deliveryWindowMs, this.config.inboxJobMaxAttempts), Date.now(), MAX_RECORDING_IDS);
 					if (current.startSent) continue;
 				}
 				const prepared = await this.redisClient.eval(PREPARE_RECORDING_EVENT_SCRIPT, 6, bindingKey,
@@ -994,7 +1002,13 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const participants = listed.map(p => ({ identity: p.identity, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) }));
 		const audience = await this.audienceOf(room);
 		await this.deliverSnapshot(room, audience, participants, updatedAt, event);
-		await this.publishRecordingEvent(room, event, participants, updatedAt);
+		try {
+			await this.publishRecordingEvent(room, event, participants, updatedAt);
+		} catch (error) {
+			// 원격 적재가 하나라도 성공한 뒤의 로컬 발행 실패는 일부 대상에게 이미 고지가 접수된 실패다.
+			// 원격이 없는 방에서는 발행 자체가 원자적이라, 접수 후 실패 (ACK) 만 부분 실패로 올라온다.
+			throw audience.remoteInboxes.size > 0 || error instanceof PartialRecordingDeliveryError ? new PartialRecordingDeliveryError(error) : error;
+		}
 	}
 
 	private async publishRecordingEvent(room: MiChatRoom, event: RecordingEvent, participants: { identity: string }[], updatedAt: number): Promise<void> {
@@ -1025,7 +1039,12 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		if (claim === 0) return;
 		if (claim !== 1 && claim !== 2) throw new Error('Recording publication was not prepared');
 		await this.globalEventService.publishRecordingMainStream(recipients, { ...event, roomId: room.id, user: packedUser }, { id, deadline });
-		await this.redisClient.eval(ACK_RECORDING_PUBLICATION_SCRIPT, 2, flagsKey, pendingKey, id, transition);
+		try {
+			await this.redisClient.eval(ACK_RECORDING_PUBLICATION_SCRIPT, 2, flagsKey, pendingKey, id, transition);
+		} catch (error) {
+			// 발행 (SET+PUBLISH) 은 원자적이라 여기까지 왔으면 로컬 고지는 이미 나갔다. 완료 기록 실패는 부분 실패로 취급한다.
+			throw new PartialRecordingDeliveryError(error);
+		}
 	}
 
 	/**
@@ -1793,7 +1812,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	/**
 	 * このサーバーが持つルームの通話の参加者の現況を、他のサーバーのメンバーに届ける。
 	 * 持ち主の名前で Update を作り、メンバーの inbox (共有 inbox があればそちら) ごとに一度だけ送る。
-	 * すべての配送を積み終えるまで待ち、どれかを積めなければ例外を投げる
+	 * すべての配送を積み終えるまで待ち、どれかを積めなければ例外を投げる。
+	 * 녹음 전환은 일부만 접수된 실패를 구분해야 하므로 (PartialRecordingDeliveryError) 전부 실패와 일부 실패를 다른 오류로 던진다.
+	 * 일반 현황 배달은 종전과 같은 Promise.all 경로를 그대로 쓴다
 	 */
 	private async deliverSnapshot(room: MiChatRoom, audience: RoomAudience, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number, recordingEvent?: RecordingEvent): Promise<void> {
 		const owner = audience.localOwner;
@@ -1806,7 +1827,17 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			object: this.apRendererService.renderChatRoomVoiceState(room, participants, updatedAt, recordingEvent),
 			published: new Date(updatedAt).toISOString(),
 		});
-		await Promise.all([...audience.remoteInboxes].map(([inbox, isSharedInbox]) => this.queueService.deliver(owner, activity, inbox, isSharedInbox)));
+		const deliveries = [...audience.remoteInboxes].map(([inbox, isSharedInbox]) => this.queueService.deliver(owner, activity, inbox, isSharedInbox));
+		if (recordingEvent == null) {
+			await Promise.all(deliveries);
+			return;
+		}
+		// 이미 접수된 작업은 취소할 수 없으므로, 일부 성공을 전부 실패와 같은 오류로 뭉개지 않는다
+		const results = await Promise.allSettled(deliveries);
+		const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+		if (failures.length === 0) return;
+		if (failures.length === results.length) throw failures[0].reason;
+		throw new PartialRecordingDeliveryError(failures[0].reason);
 	}
 
 	/**

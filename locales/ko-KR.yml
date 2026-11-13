@@ -2498,6 +2498,7 @@ _voiceCall:
   recordingDiscard: "버리기"
   recordingDiscardConfirm: "저장하지 못한 녹화를 버릴까요? 되돌릴 수 없어요."
   recordingDiscardConfirmUploaded: "저장하지 못한 녹화를 버릴까요? 드라이브에 이미 올라간 원본 파일도 삭제돼요. 되돌릴 수 없어요."
+  recordingDiscardDeleteFailed: "원본 파일 {n}개를 삭제하지 못했어요. 삭제하지 못한 파일은 드라이브에 남아 있어요. 다시 버리거나 드라이브에서 직접 삭제해 주세요."
   recordingStartRejected: "서버가 녹화를 받아들이지 않아 녹화를 시작하지 못했어요"
   recordingRejected: "서버가 녹화를 받아들이지 않아 녹화를 멈췄어요"
   allowRecording: "통화 녹화 허용"

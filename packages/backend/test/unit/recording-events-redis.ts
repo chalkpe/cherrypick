@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { afterAll, afterEach, beforeAll, expect, test, vi } from 'vitest';
 import { loadConfig } from '@/config.js';
-import { CLAIM_RECORDING_EVENT_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, PREPARE_RECORDING_EVENT_SCRIPT, RENEW_ACTIVE_RECORDING_SCRIPT } from '@/core/recording-event.js';
+import { ACK_RECORDING_PUBLICATION_SCRIPT, CLAIM_RECORDING_EVENT_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, PREPARE_RECORDING_EVENT_SCRIPT, PartialRecordingDeliveryError, RENEW_ACTIVE_RECORDING_SCRIPT } from '@/core/recording-event.js';
 import type { RecordingBinding } from '@/core/recording-event.js';
 import { createFixture, KNOWN_USERS } from '../misc/chat-voice-fixture.js';
 
@@ -103,10 +103,10 @@ test('Redis renews active ownership without recreating a stopped recording', asy
 	const first = await prepare(true, { ttl: 1 });
 	const renewKeys = [first.keys[0], first.keys[1], first.keys[3], first.keys[4]];
 
-	expect(await redis.eval(RENEW_ACTIVE_RECORDING_SCRIPT, 4, ...renewKeys, 'client-id', 3600, Date.now())).toBe(1);
+	expect(await redis.eval(RENEW_ACTIVE_RECORDING_SCRIPT, 4, ...renewKeys, 'client-id', 3600, Date.now(), 4096)).toBe(1);
 	expect(await redis.ttl(first.keys[0])).toBeGreaterThan(3500);
 	await prepare(false);
-	expect(await redis.eval(RENEW_ACTIVE_RECORDING_SCRIPT, 4, ...renewKeys, 'client-id', 3600, Date.now())).toBe(0);
+	expect(await redis.eval(RENEW_ACTIVE_RECORDING_SCRIPT, 4, ...renewKeys, 'client-id', 3600, Date.now(), 4096)).toBe(0);
 });
 
 function recordingFixture(participants = [
@@ -329,4 +329,123 @@ test('a new recording at the history capacity evicts the oldest entry instead of
 	// 축출돼도 결속은 남아 있어 그 녹음의 종료는 계속 가능하다
 	const stopped = await prepare(false, { capacity: 1 });
 	expect(stopped.binding?.stop?.id).toBe(first.binding?.start.id);
+});
+
+test('evicting a completed recording at capacity also removes its binding key', async () => {
+	const first = await prepare(true, { id: 'old', capacity: 1 });
+	await prepare(false, { id: 'old', capacity: 1 });
+	expect(await redis.eval(MARK_RECORDING_EVENT_SENT_SCRIPT, 2, first.keys[0], first.keys[2], 'owner', 'stopSent', 3600)).toBe(1);
+
+	const second = await prepare(true, { id: 'new', identity: 'https://local.test/users/u2', capacity: 1 });
+
+	expect(second.binding?.clientId).toBe('new');
+	// 종료까지 배달한 결속은 축출과 함께 지워져 방별 보관 자원이 상한 안에 머문다
+	expect(await redis.get(first.keys[0])).toBeNull();
+	// 활성·미전달 결속은 축출해도 지우지 않는다 (flush의 종료 배달과 소유권 검사가 아직 필요)
+	const third = await prepare(true, { id: 'newer', identity: 'https://local.test/users/u3', capacity: 1 });
+	expect(third.binding?.clientId).toBe('newer');
+	expect(await redis.get(second.keys[0])).not.toBeNull();
+});
+
+test('a duplicate stop of an evicted ID keeps the history within capacity', async () => {
+	const first = await prepare(true, { id: 'a', capacity: 2 });
+	await prepare(true, { id: 'b', identity: 'https://local.test/users/u2', capacity: 2 });
+	const third = await prepare(true, { id: 'c', identity: 'https://local.test/users/u3', capacity: 2 });
+	expect(await redis.zcard(third.keys[4])).toBe(2);
+	expect(await redis.zscore(third.keys[4], 'a')).toBeNull();
+
+	const stopped = await prepare(false, { id: 'a', capacity: 2 });
+
+	expect(stopped.binding?.stop?.id).toBe(first.binding?.start.id);
+	// 재삽입도 상한을 지켜야 한다 (축출 없이 목록이 늘어나면 안 된다)
+	expect(await redis.zcard(third.keys[4])).toBe(2);
+});
+
+test('renewing an evicted active recording keeps the history within capacity', async () => {
+	const first = await prepare(true, { id: 'a', capacity: 2 });
+	await prepare(true, { id: 'b', identity: 'https://local.test/users/u2', capacity: 2 });
+	await prepare(true, { id: 'c', identity: 'https://local.test/users/u3', capacity: 2 });
+	expect(await redis.zscore(first.keys[4], 'a')).toBeNull();
+	const renewKeys = [first.keys[0], first.keys[1], first.keys[3], first.keys[4]];
+
+	expect(await redis.eval(RENEW_ACTIVE_RECORDING_SCRIPT, 4, ...renewKeys, 'a', 3600, Date.now(), 2)).toBe(1);
+
+	expect(await redis.zcard(first.keys[4])).toBe(2);
+	expect(await redis.zscore(first.keys[4], 'a')).not.toBeNull();
+});
+
+test('a partially delivered approval keeps the binding so flush finishes the stop without re-announcing the start', async () => {
+	const { fixture, participants } = recordingFixture();
+	// 서로 다른 inbox 둘 (remote.test 공유 inbox, far.test 개별 inbox)
+	const findMembers = fixture.chatRoomMembershipsRepository.findBy.getMockImplementation()!;
+	fixture.chatRoomMembershipsRepository.findBy.mockImplementation(async where => where?.userId ? findMembers(where) : [{ userId: 'm1' }, { userId: 'rm1' }, { userId: 'rm3' }]);
+	const recordingId = randomUUID();
+	fixture.queueService.deliver.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('queue unavailable'));
+
+	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId })).rejects.toThrow(PartialRecordingDeliveryError);
+
+	// 일부 inbox에는 이미 시작이 접수됐으므로 결속을 폐기하면 안 된다
+	const binding = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(binding.startPartial).toBe(true);
+	expect(binding.startSent).toBeUndefined();
+	expect(binding.stop).toBeUndefined();
+
+	fixture.queueService.deliver.mockClear();
+	await fixture.service.refresh('r1');
+
+	const after = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(after.stopSent).toBe(true);
+	const events = fixture.queueService.deliver.mock.calls.map(call => (call[1] as any).object._misskey_recordingEvent).filter(Boolean);
+	// 승인받지 못한 시작을 새 대상에게 다시 보내지 않고 종료만 마저 배달한다
+	expect(events.length).toBeGreaterThan(0);
+	expect(events.every((event: any) => event.recording === false)).toBe(true);
+	const snapshot = JSON.parse((await redis.get('chatVoice:state:r1'))!);
+	expect(snapshot.participants.find((p: { identity: string }) => p.identity === participants[0].identity).recording).toBeFalsy();
+});
+
+test('an approval whose local announcement fails after remote delivery keeps the binding for the stop', async () => {
+	const { fixture } = recordingFixture();
+	const recordingId = randomUUID();
+	fixture.globalEventService.publishRecordingMainStream.mockRejectedValueOnce(new Error('pubsub unavailable'));
+
+	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId })).rejects.toThrow(PartialRecordingDeliveryError);
+
+	const binding = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(binding.startPartial).toBe(true);
+	expect(binding.startSent).toBeUndefined();
+
+	await fixture.service.refresh('r1');
+
+	const after = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(after.stopSent).toBe(true);
+	const events = fixture.queueService.deliver.mock.calls.map(call => (call[1] as any).object._misskey_recordingEvent).filter(Boolean);
+	expect(events.map((event: any) => event.recording)).toEqual([true, false]);
+});
+
+test('a local-only approval whose acknowledgement fails after the announcement keeps the binding', async () => {
+	const { fixture } = recordingFixture();
+	const findMembers = fixture.chatRoomMembershipsRepository.findBy.getMockImplementation()!;
+	fixture.chatRoomMembershipsRepository.findBy.mockImplementation(async where => where?.userId ? findMembers(where) : [{ userId: 'm1' }]);
+	const recordingId = randomUUID();
+	const evaluate = redis.eval.bind(redis);
+	const spy = vi.spyOn(redis, 'eval').mockImplementation(async (...args: any[]) => {
+		if (args[0] === ACK_RECORDING_PUBLICATION_SCRIPT) throw new Error('ack unavailable');
+		return evaluate(...args as Parameters<typeof redis.eval>);
+	});
+	try {
+		await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId })).rejects.toThrow(PartialRecordingDeliveryError);
+	} finally {
+		spy.mockRestore();
+	}
+
+	// 로컬 시작 고지는 이미 발행됐으므로 결속을 남겨 종료를 마저 보내게 한다
+	expect(fixture.globalEventService.publishMainStream.mock.calls.some(call => call[1] === 'chatRoomRecording' && call[2].recording === true)).toBe(true);
+	const binding = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(binding.startPartial).toBe(true);
+	expect(binding.startSent).toBeUndefined();
+
+	await fixture.service.refresh('r1');
+
+	const after = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(after.stopSent).toBe(true);
 });

@@ -64,13 +64,40 @@ export type RecordingBinding = {
 	start: RecordingEvent;
 	stop?: RecordingEvent;
 	startSent?: boolean;
+	// 승인 배달이 일부 대상에게만 접수된 실패. 시작을 이미 받은 대상의 종료를 마저 보내야 하므로 결속을 남기되,
+	// 승인받지 못한 시작을 새 대상에게 다시 발행하지 않도록 표시한다 (startSent와 달리 배지를 켜지 않는다).
+	startPartial?: boolean;
 	stopSent?: boolean;
 };
+
+// 일부 대상에게는 이미 고지가 접수된 배달 실패. 전혀 접수되지 않은 실패와 달리 결속을 폐기하면 안 된다.
+export class PartialRecordingDeliveryError extends Error {
+	constructor(cause: unknown) {
+		super('Recording delivery partially succeeded', { cause });
+		this.name = 'PartialRecordingDeliveryError';
+	}
+}
+
+// 보관 목록이 상한에 차면 가장 오래된 항목을 축출한다. 보관 목록은 읽히지 않고 수명 계산에만 쓰이며,
+// 재시작 방지와 소유권은 결속·활성 키가 지키므로 축출은 안전하다. 축출된 결속은 종료까지 배달한 (stopSent) 경우에만
+// 함께 지워 방별 결속 자원을 상한 안에 묶는다. 활성·미전달 결속은 flush의 종료 배달과 소유권 검사가 아직 필요하므로
+// 지우지 않고 TTL 만료에 맡긴다.
+const EVICT_RECORDING_HISTORY_FUNCTION = `
+local function evictRecordingHistory(historyKey, capacity, bindingPrefix)
+	if redis.call('ZCARD', historyKey) < capacity then return end
+	local oldest = redis.call('ZRANGE', historyKey, 0, 0)
+	if not oldest[1] then return end
+	redis.call('ZREM', historyKey, oldest[1])
+	local raw = redis.call('GET', bindingPrefix .. oldest[1])
+	if raw and cjson.decode(raw).stopSent then redis.call('DEL', bindingPrefix .. oldest[1]) end
+end
+`;
 
 // 세션 검증 후, 인증된 identity/room/session과 서버 시각으로만 전환을 만든다.
 // KEYS: ID 결속, 세션의 활성 ID, 소유권 잠금, 미완료 목록, 보관 목록, sweep 목록.
 // ARGV: 잠금 토큰, 방, identity, session, 클라이언트 ID, 시작 여부, 시각, TTL, 서버 이벤트 ID, 배송 예산, ID 상한.
 export const PREPARE_RECORDING_EVENT_SCRIPT = `-- PREPARE_RECORDING_EVENT
+${EVICT_RECORDING_HISTORY_FUNCTION}
 if redis.call('GET', KEYS[3]) ~= ARGV[1] then return '' end
 local raw = redis.call('GET', KEYS[1])
 local binding = raw and cjson.decode(raw) or nil
@@ -78,12 +105,6 @@ if binding and (binding.roomId ~= ARGV[2] or binding.identity ~= ARGV[3] or bind
 local starting = ARGV[6] == '1'
 local active = redis.call('GET', KEYS[2])
 redis.call('ZREMRANGEBYSCORE', KEYS[5], '-inf', ARGV[7])
--- 상한에 차면 신규 녹음을 거부하는 대신 가장 오래된 보관 항목을 축출한다. 보관 목록은 읽히지 않고 수명 계산에만 쓰이며,
--- 재시작 방지와 소유권은 결속·활성 키가 지키므로 축출은 안전하다. 기존 ID의 종료는 상한 검사를 받지 않는다.
-if not binding and redis.call('ZCARD', KEYS[5]) >= tonumber(ARGV[11]) then
-	local oldest = redis.call('ZRANGE', KEYS[5], 0, 0)
-	if oldest[1] then redis.call('ZREM', KEYS[5], oldest[1]) end
-end
 if starting and ((binding and binding.stop) or (active and active ~= ARGV[5])) then return '' end
 if not binding then
 	if not starting then return '' end
@@ -95,6 +116,9 @@ else
 	if not binding.stop then binding.stop = {id=binding.start.id, identity=ARGV[3], recording=false, updatedAt=math.max(tonumber(ARGV[7]), binding.start.updatedAt + 1), deliveryWindowMs=math.max(binding.start.deliveryWindowMs, tonumber(ARGV[10]))} end
 	if active == ARGV[5] then redis.call('DEL', KEYS[2]) end
 end
+-- 상한에 차면 신규 녹음을 거부하는 대신 가장 오래된 보관 항목을 축출한다. 기존 ID의 재삽입 (축출된 ID의 종료·갱신)도
+-- 같은 상한을 지키며, 이미 목록에 있는 ID는 축출 없이 점수만 갱신한다. 거부가 끝난 뒤에만 축출하므로 거부된 시도는 목록을 바꾸지 않는다.
+if not redis.call('ZSCORE', KEYS[5], ARGV[5]) then evictRecordingHistory(KEYS[5], tonumber(ARGV[11]), string.sub(KEYS[1], 1, #KEYS[1] - #ARGV[5])) end
 redis.call('ZADD', KEYS[5], tonumber(ARGV[7]) + tonumber(ARGV[8]) * 1000, ARGV[5])
 local latest = redis.call('ZREVRANGE', KEYS[5], 0, 0, 'WITHSCORES')
 redis.call('PEXPIRE', KEYS[5], math.max(1000, tonumber(latest[2]) - tonumber(ARGV[7])))
@@ -281,12 +305,16 @@ else redis.call('HSET', KEYS[2], ARGV[1], remaining) end
 return 1
 `;
 
+// KEYS: ID 결속, 세션의 활성 ID, 미완료 목록, 보관 목록. ARGV: 클라이언트 ID, TTL, 시각, ID 상한.
 export const RENEW_ACTIVE_RECORDING_SCRIPT = `-- RENEW_ACTIVE_RECORDING
+${EVICT_RECORDING_HISTORY_FUNCTION}
 local raw = redis.call('GET', KEYS[1])
 if not raw or redis.call('GET', KEYS[2]) ~= ARGV[1] then return 0 end
 local binding = cjson.decode(raw)
 if binding.stop then return 0 end
 for i = 1, 3 do redis.call('EXPIRE', KEYS[i], ARGV[2]) end
+-- 축출됐던 활성 ID의 갱신도 보관 목록 상한을 지킨다 (재삽입 경로에 같은 규칙)
+if not redis.call('ZSCORE', KEYS[4], ARGV[1]) then evictRecordingHistory(KEYS[4], tonumber(ARGV[4]), string.sub(KEYS[1], 1, #KEYS[1] - #ARGV[1])) end
 redis.call('ZADD', KEYS[4], tonumber(ARGV[3]) + tonumber(ARGV[2]) * 1000, ARGV[1])
 local latest = redis.call('ZREVRANGE', KEYS[4], 0, 0, 'WITHSCORES')
 redis.call('PEXPIRE', KEYS[4], math.max(1000, tonumber(latest[2]) - tonumber(ARGV[3])))

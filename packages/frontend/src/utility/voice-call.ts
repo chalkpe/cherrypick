@@ -142,6 +142,8 @@ type StatusDelivery = {
 	stopped: boolean;
 	// 서버가 아직 받아들이지 않은 종료 보고의 녹음 ID. 수락될 때까지 일반 설정 보고에도 실어 보낸다
 	pendingStops: string[];
+	// 종료 보고가 일시 오류로 재시도된 적이 있는지. 응답 유실로 설정이 누락될 수 있어 수락 후 ID 없이 한 번 더 보낸다
+	stopRetried: boolean;
 };
 let statusDelivery: StatusDelivery | null = null;
 // スピーカーを切り替えた回数。マイクを入れるのを待つあいだに切り替えられたかを見分ける
@@ -443,14 +445,21 @@ function downloadRecording(recording: FailedRecording): void {
 	window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 }
 
-/** 버리기를 확정하면 이미 드라이브에 올라간 원본도 지운다. 저장에 성공한 부분의 변환 결과는 버리기 대상이 아니다. */
-async function discardUploadedOriginals(failed: FailedRecording[]): Promise<void> {
-	await Promise.all(failed.map(recording => {
+/** 버리기를 확정하면 이미 드라이브에 올라간 원본도 지운다. 저장에 성공한 부분의 변환 결과는 버리기 대상이 아니다. 삭제에 실패한 원본은 목록에 남도록 돌려준다. */
+async function discardUploadedOriginals(failed: FailedRecording[]): Promise<FailedRecording[]> {
+	const undeleted: FailedRecording[] = [];
+	await Promise.all(failed.map(async recording => {
 		if (recording.fileId == null) return;
-		return misskeyApi('drive/files/delete', { fileId: recording.fileId }).catch(error => {
+		try {
+			await misskeyApi('drive/files/delete', { fileId: recording.fileId });
+		} catch (error) {
+			// 이미 지워진 파일은 성공으로 취급한다. 그 밖의 실패는 원본을 남겨 다시 버릴 수 있게 한다
+			if (isApiError(error) && error.code === 'NO_SUCH_FILE') return;
 			console.warn('[recording] could not delete a discarded original', error);
-		});
+			undeleted.push(recording);
+		}
 	}));
+	return undeleted;
 }
 
 /** 保存できなかった部分は、利用者が選ぶまで手元に残す (もう一度上げる・この機器に保存する・捨てる) */
@@ -486,8 +495,11 @@ async function offerFailedRecordings(initial: FailedRecording[]): Promise<void> 
 		if (result === 'discard') {
 			const confirmed = await os.confirm({ type: 'warning', text: hasOriginal ? i18n.ts._voiceCall.recordingDiscardConfirmUploaded : i18n.ts._voiceCall.recordingDiscardConfirm });
 			if (!confirmed.canceled) {
-				await discardUploadedOriginals(failed);
-				return;
+				const undeleted = await discardUploadedOriginals(failed);
+				if (undeleted.length === 0) return;
+				// 삭제에 실패한 원본은 드라이브에 남는다. 오류로 알리고 다시 버릴 수 있게 목록을 유지한다
+				failed = undeleted;
+				os.alert({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardDeleteFailed({ n: undeleted.length }) });
 			}
 			continue;
 		}
@@ -522,7 +534,7 @@ function reportStatus(room: Room, force = false, stoppedRecordingId?: string): v
 	let delivery: StatusDelivery;
 	if (prev == null) {
 		resetStatusDelivery();
-		delivery = { room, latest: status, pending: status, sending: false, retryDelay: 1000, timer: null, stopped: false, pendingStops };
+		delivery = { room, latest: status, pending: status, sending: false, retryDelay: 1000, timer: null, stopped: false, pendingStops, stopRetried: false };
 		statusDelivery = delivery;
 	} else {
 		if (!force && prev.latest.micMuted === status.micMuted && prev.latest.deafened === status.deafened && prev.latest.recording === status.recording && prev.latest.recordingId === status.recordingId) return;
@@ -548,7 +560,13 @@ async function deliverStatus(delivery: StatusDelivery): Promise<void> {
 		if (status.recording !== true && status.recordingId != null) {
 			const accepted = delivery.pendingStops.indexOf(status.recordingId);
 			if (accepted !== -1) delivery.pendingStops.splice(accepted, 1);
-			if (delivery.pendingStops.length > 0 && delivery.pending == null) reportStatus(delivery.room, true);
+			if (delivery.pendingStops.length > 0 && delivery.pending == null) {
+				reportStatus(delivery.room, true);
+			} else if (delivery.pendingStops.length === 0 && delivery.stopRetried) {
+				// 종료 응답 유실로 재시도된 종료가 수락되면, 함께 실렸던 설정을 ID 없이 한 번 더 보내 적용시킨다
+				delivery.stopRetried = false;
+				if (delivery.pending == null) reportStatus(delivery.room, true);
+			}
 		}
 	} catch (err) {
 		if (statusDelivery !== delivery || current !== delivery.room) return;
@@ -566,14 +584,19 @@ async function deliverStatus(delivery: StatusDelivery): Promise<void> {
 				const dropped = delivery.pendingStops.indexOf(status.recordingId);
 				if (dropped !== -1) delivery.pendingStops.splice(dropped, 1);
 			}
-			// Unsupported hosts and permanent API errors must not generate a retry loop.
-			// 送り直さないのは失敗した設定だけ。送っているあいだに変わった新しい設定は、下でもう一度だけ送ってみる
-			if (delivery.pending == null) {
+			// 거절된 종료를 빼고도 남은 종료가 있으면 이어서 보고한다. 새 녹음 승인이 거절돼도 이전 녹음의 미전달 종료를 멈추지 않는다
+			if (delivery.pending == null && delivery.pendingStops.length > 0) {
+				reportStatus(delivery.room, true);
+			} else if (delivery.pending == null) {
+				// Unsupported hosts and permanent API errors must not generate a retry loop.
+				// 送り直さないのは失敗した設定だけ。送っているあいだに変わった新しい設定は、下でもう一度だけ送ってみる
 				delivery.stopped = true;
 				return;
 			}
 		} else {
 			delivery.pending ??= status;
+			// 일시 오류로 실패한 종료는 서버에 적용됐어도 응답만 유실됐을 수 있다. 수락 후 설정을 ID 없이 다시 보내게 표시한다
+			if (status.recording !== true && status.recordingId != null) delivery.stopRetried = true;
 			const delay = code === 'RATE_LIMIT_EXCEEDED' ? 60_000 : delivery.retryDelay;
 			delivery.retryDelay = Math.min(delivery.retryDelay * 2, 30_000);
 			delivery.timer = window.setTimeout(() => {

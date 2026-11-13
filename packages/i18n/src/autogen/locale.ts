@@ -9763,6 +9763,10 @@ export interface Locale extends ILocale {
          */
         "recordingDiscardConfirmUploaded": string;
         /**
+         * 元のファイルを {n} 個削除できませんでした。削除できなかったファイルはドライブに残っています。もう一度破棄するか、ドライブから直接削除してください。
+         */
+        "recordingDiscardDeleteFailed": ParameterizedString<"n">;
+        /**
          * サーバーが録画を受け付けなかったため、録画を開始できませんでした
          */
         "recordingStartRejected": string;

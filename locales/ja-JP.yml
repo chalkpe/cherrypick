@@ -2528,6 +2528,7 @@ _voiceCall:
   recordingDiscard: "破棄"
   recordingDiscardConfirm: "保存できなかった録画を破棄しますか？元に戻せません。"
   recordingDiscardConfirmUploaded: "保存できなかった録画を破棄しますか？ドライブにアップロード済みの元のファイルも削除されます。元に戻せません。"
+  recordingDiscardDeleteFailed: "元のファイルを {n} 個削除できませんでした。削除できなかったファイルはドライブに残っています。もう一度破棄するか、ドライブから直接削除してください。"
   recordingStartRejected: "サーバーが録画を受け付けなかったため、録画を開始できませんでした"
   recordingRejected: "サーバーが録画を受け付けなかったため、録画を停止しました"
   allowRecording: "通話の録画を許可"

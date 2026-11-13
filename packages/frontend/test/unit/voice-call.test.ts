@@ -1932,11 +1932,11 @@ describe('call recording lifecycle', () => {
 			await vi.advanceTimersByTimeAsync(0);
 			await vi.advanceTimersByTimeAsync(1000);
 
-			const reports = mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status');
-			const retry = reports[reports.length - 1][1];
-			expect(retry.recordingId).toBe(recordingId);
-			expect(retry.recording).not.toBe(true);
-			expect(retry.deafened).toBe(true);
+			const reports = mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status').map(([, status]) => status);
+			// 재시도 보고는 실패한 종료 ID를 유지한 채 변경된 설정을 함께 실어야 한다 (ID 없는 보고가 종료를 덮어쓰면 안 된다)
+			const retry = reports.find(status => status.recordingId === recordingId && status.deafened === true);
+			expect(retry).toBeDefined();
+			expect(retry!.recording).not.toBe(true);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -2240,6 +2240,150 @@ describe('call recording lifecycle', () => {
 
 		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.ts._voiceCall.recordingDiscardConfirm }));
 		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('drive/files/delete', expect.anything());
+	});
+
+	test('a failed discard delete notifies the user and keeps the original re-discardable', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		const secondChoice = deferred<{ canceled: boolean; result: string }>();
+		const confirmation = deferred<{ canceled: boolean }>();
+		const secondConfirmation = deferred<{ canceled: boolean }>();
+		mocks.actions.mockReturnValueOnce(choice.promise).mockReturnValueOnce(secondChoice.promise);
+		mocks.confirm.mockReturnValueOnce(confirmation.promise).mockReturnValueOnce(secondConfirmation.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'mic-file' }) } as Response)
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'call-file' }) } as Response);
+		let micDeleteAttempts = 0;
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw Object.assign(new Error('NO_FREE_SPACE'), { code: 'NO_FREE_SPACE' });
+			if (endpoint === 'drive/files/delete' && params.fileId === 'mic-file') {
+				micDeleteAttempts += 1;
+				// 첫 삭제는 서버 도달 전에 실패한다. 두 번째는 성공한다
+				if (micDeleteAttempts === 1) throw new TypeError('Failed to fetch');
+			}
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+		confirmation.resolve({ canceled: false });
+
+		// 삭제에 실패한 원본은 오류로 알리고, 다시 버릴 수 있게 목록에 남아 있어야 한다
+		await vi.waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardDeleteFailed({ n: 1 }) }));
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
+		secondChoice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(2));
+		secondConfirmation.resolve({ canceled: false });
+
+		await vi.waitFor(() => expect(micDeleteAttempts).toBe(2));
+		const deletes = mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'drive/files/delete');
+		expect(deletes.filter(([, params]) => params.fileId === 'mic-file')).toHaveLength(2);
+		expect(deletes.filter(([, params]) => params.fileId === 'call-file')).toHaveLength(1);
+	});
+
+	test('a rejected new recording still delivers the previous undelivered stop', async () => {
+		vi.useFakeTimers();
+		try {
+			await joinRecordingCall();
+			await vi.advanceTimersByTimeAsync(0);
+			let aId: string | null = null;
+			let bId: string | null = null;
+			let aStopAttempts = 0;
+			mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+				if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
+				if (endpoint !== 'chat/rooms/voice/status') return {};
+				if (params.recording === true) {
+					if (aId == null) { aId = params.recordingId; return {}; }
+					if (params.recordingId === aId) return {};
+					// 새 녹음 B의 승인은 같은 SID의 A가 아직 active라 거절된다
+					bId = params.recordingId;
+					throw Object.assign(new Error('ACCESS_DENIED'), { code: 'ACCESS_DENIED' });
+				}
+				if (params.recordingId === aId) {
+					aStopAttempts += 1;
+					// A의 종료만 전달 전에 일시 오류로 실패한다 (재시도 대기)
+					if (aStopAttempts === 1) throw new TypeError('Failed to fetch');
+					return {};
+				}
+				// B의 종료는 결속이 없으므로 영구 거절된다
+				throw Object.assign(new Error('ACCESS_DENIED'), { code: 'ACCESS_DENIED' });
+			});
+
+			await startRecording();
+			await flushRecording();
+			expect(voiceCall.recording).toBe(true);
+			expect(aId).not.toBeNull();
+
+			stopRecording();
+			await flushRecording();
+			expect(voiceCall.recording).toBe(false);
+
+			// 재시도 전에 새 녹음 B를 시작하면 승인과 종료 rollback이 모두 거절된다
+			await startRecording();
+			await flushRecording();
+			expect(bId).not.toBeNull();
+
+			// 설정 변경 없이도 남은 A 종료가 이어서 전달되어야 한다
+			await vi.advanceTimersByTimeAsync(2000);
+			await flushRecording();
+			await vi.advanceTimersByTimeAsync(120_000);
+			await flushRecording();
+
+			const reports = mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status').map(([, status]) => status);
+			const aStops = reports.filter(status => status.recordingId === aId && status.recording !== true);
+			expect(aStops.length).toBeGreaterThanOrEqual(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('a retried stop acceptance re-sends the changed settings without the recording ID', async () => {
+		vi.useFakeTimers();
+		try {
+			await joinRecordingCall();
+			await vi.advanceTimersByTimeAsync(0);
+			await startRecording();
+			await flushRecording();
+			const startReport = mocks.misskeyApi.mock.calls.find(([endpoint, status]) => endpoint === 'chat/rooms/voice/status' && status.recording === true && status.recordingId != null);
+			const recordingId = startReport![1].recordingId;
+			mocks.misskeyApi.mockClear();
+
+			// 종료는 서버에 이미 적용됐지만 응답만 유실된 변형: 첫 종료 보고는 일시 오류, 재시도는 멱등 수락
+			let stopAttempts = 0;
+			mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+				if (endpoint !== 'chat/rooms/voice/status') return {};
+				if (params.recording === true) return {};
+				if (params.recordingId != null) {
+					stopAttempts += 1;
+					if (stopAttempts === 1) throw new TypeError('Failed to fetch');
+					return {};
+				}
+				return {};
+			});
+			stopRecording();
+			await flushRecording();
+
+			// 재시도 전에 설정을 바꾸면 변경된 설정이 종료 ID와 함께 전송된다
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(1000);
+			await flushRecording();
+			await vi.advanceTimersByTimeAsync(0);
+			await flushRecording();
+
+			const reports = mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status').map(([, status]) => status);
+			const last = reports[reports.length - 1];
+			expect(last.recordingId).toBeUndefined();
+			expect(last.deafened).toBe(true);
+			expect(reports.some(status => status.recordingId === recordingId && status.deafened === true)).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test('uploads independent recordings and deletes only their converted originals', async () => {
