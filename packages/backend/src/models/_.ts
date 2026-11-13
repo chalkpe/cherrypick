@@ -90,6 +90,7 @@ import { MiUserList } from '@/models/UserList.js';
 import { MiUserListFavorite } from '@/models/UserListFavorite.js';
 import { MiUserListMembership } from '@/models/UserListMembership.js';
 import { MiUserMemo } from '@/models/UserMemo.js';
+import { MiUserMove } from '@/models/UserMove.js';
 import { MiUserNotePining } from '@/models/UserNotePining.js';
 import { MiUserPending } from '@/models/UserPending.js';
 import { MiUserProfile } from '@/models/UserProfile.js';
@@ -184,6 +185,7 @@ export {
 	MiFlash,
 	MiFlashLike,
 	MiUserMemo,
+	MiUserMove,
 	MiChatMessage,
 	MiChatRoomChannel,
 	MiChatRoomInviteLink,
