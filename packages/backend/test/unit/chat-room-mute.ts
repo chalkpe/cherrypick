@@ -33,6 +33,7 @@ function fixture() {
 
 	const chatRoomsRepository = {
 		findOneBy: async ({ id }: { id: string }) => id === room.id ? { ...room } : null,
+		findBy: async (where: Record<string, unknown>) => meets(room, where) ? [{ ...room }] : [],
 		update: async (where: { id: string; ownerId: string }, values: Partial<MiChatRoom>) => {
 			if (where.id !== room.id || where.ownerId !== room.ownerId) return { affected: 0 };
 			Object.assign(room, values);
@@ -41,7 +42,7 @@ function fixture() {
 	};
 
 	const chatRoomMembershipsRepository = {
-		findBy: async ({ roomId }: { roomId: string }) => memberships.filter(membership => membership.roomId === roomId).map(membership => ({ ...membership })),
+		findBy: async (where: Record<string, unknown>) => memberships.filter(membership => meets(membership, where)).map(membership => ({ ...membership })),
 		findOneBy: async ({ roomId, userId }: { roomId: string; userId: string }) => {
 			const found = memberships.find(membership => membership.roomId === roomId && membership.userId === userId);
 			return found != null ? { ...found } : null;

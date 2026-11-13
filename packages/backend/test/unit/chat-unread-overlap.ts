@@ -4,6 +4,7 @@
  */
 
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { chatReadBoundaryOfStream } from '@/core/ChatService.js';
 import { DeleteAccountService } from '@/core/DeleteAccountService.js';
 import { DeleteAccountProcessorService } from '@/queue/processors/DeleteAccountProcessorService.js';
 import type { MiChatMessage } from '@/models/_.js';
@@ -104,6 +105,29 @@ describe('chat unread marks around other requests', () => {
 	});
 
 	describe.each(['direct', 'room'] as const)('a %s message and the reader’s timeline', kind => {
+		test('one stream read clears a stored message whose settle failed', async () => {
+			vi.useFakeTimers();
+			const f = fixture();
+			const evaluate = f.redis.eval.bind(f.redis);
+			let failed = false;
+			vi.spyOn(f.redis, 'eval').mockImplementation(async (script, ...args) => {
+				if (!failed && script.startsWith('-- settle chat unread\n')) {
+					failed = true;
+					throw new Error('injected settle failure');
+				}
+				return await evaluate(script, ...args);
+			});
+
+			await send(f, kind, 'received');
+			const id = f.stored('received').id;
+			await read(f, kind, chatReadBoundaryOfStream({ id }));
+
+			const key = kind === 'direct'
+				? `newUserChatMessageExists:${f.reader.id}:${f.violet.id}`
+				: `newRoomChatMessageExists:${f.reader.id}:${f.room.id}`;
+			expect(await f.redis.smembers(`${key}:messages`)).not.toContain(id);
+		});
+
 		test('a failed send never takes away a message the reader could already fetch', async () => {
 			vi.useFakeTimers();
 			const f = fixture();

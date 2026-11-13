@@ -6,6 +6,7 @@
 import { Test } from '@nestjs/testing';
 import type { TestingModule } from '@nestjs/testing';
 import { loadConfig } from '@/config.js';
+import { initExtraThreadPool } from '@/boot/common.js';
 import { DI } from '@/di-symbols.js';
 import { createPostgresDataSource } from '@/postgres.js';
 import { QueueProcessorModule } from '@/queue/QueueProcessorModule.js';
@@ -17,6 +18,7 @@ export type ChatQueueProcessMessage = { type: 'ready' } | { type: 'error'; messa
 // 부모가 만든 일회용 DB를 빌리며 스키마를 초기화하지 않는다.
 const config = loadConfig();
 if (process.send == null || process.env.CHAT_PROCESS_FIXTURE_DB !== config.db.db) throw new Error('chat queue process fixture requires its parent and explicit test database');
+initExtraThreadPool(config);
 
 // 읽기 복제본을 쓰는 설정을 재현할 때만 부모가 복제본 주소를 준다.
 const replica = process.env.CHAT_PROCESS_FIXTURE_REPLICA?.split(':');

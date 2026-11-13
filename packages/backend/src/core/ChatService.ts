@@ -102,7 +102,7 @@ const READ_RETRY_DELAYS = [1000, 5000, 30000];
 /** The read a chat screen sends over the stream names the newest message it has shown. Older clients name none. */
 export function chatReadBoundaryOfStream(body: unknown): ChatReadBoundary | undefined {
 	const id = typeof body === 'object' && body != null ? (body as { id?: unknown }).id : undefined;
-	return typeof id === 'string' && id.length > 0 && id.length <= 32 ? { seenIds: [], upTo: id } : undefined;
+	return typeof id === 'string' && id.length > 0 && id.length <= 32 ? { seenIds: [id], upTo: id } : undefined;
 }
 
 // KEYS: 최신 ID, 첫 미읽음 ID, 집계 set, revision, 미읽음 ID set, 저장 중인 ID set
@@ -549,12 +549,16 @@ export class ChatService {
 		deleteActorUri?: string;
 	}): Promise<Packed<'ChatMessageLiteForRoom'>> {
 		// The recipients of this send must include members already committed on the primary.
-		const memberships = (await this.db.transaction(manager => manager.withRepository(this.chatRoomMembershipsRepository).findBy({ roomId: toRoom.id }))).map(m => ({
-			userId: m.userId,
-			isMuted: m.isMuted,
-		})).concat({ // ownerはmembershipレコードを作らないため
-			userId: toRoom.ownerId,
-			isMuted: toRoom.isMutedByOwner,
+		const memberships = await this.db.transaction(async manager => {
+			const room = await manager.withRepository(this.chatRoomsRepository).findOneBy({ id: toRoom.id });
+			if (room == null) throw new ChatMessageAccessError('no such room');
+			return (await manager.withRepository(this.chatRoomMembershipsRepository).findBy({ roomId: room.id })).map(m => ({
+				userId: m.userId,
+				isMuted: m.isMuted,
+			})).concat({ // ownerはmembershipレコードを作らないため
+				userId: room.ownerId,
+				isMuted: room.isMutedByOwner,
+			});
 		});
 
 		if (!memberships.some(member => member.userId === fromUser.id)) {
@@ -1110,13 +1114,16 @@ export class ChatService {
 		const unread = await this.stillUnread(marks, message.id);
 		if (unread.length === 0) return;
 
-		const latest = await this.chatMessagesRepository.findOneBy({ id: message.id });
-		if (latest == null || latest.deletedAt != null) return;
-		if (await this.isFromSuspendedUser(latest)) return;
+		const latest = await this.db.transaction(async manager => {
+			const current = await manager.withRepository(this.chatMessagesRepository).findOneBy({ id: message.id });
+			if (current == null || current.deletedAt != null || await manager.withRepository(this.usersRepository).existsBy({ id: current.fromUserId, isSuspended: true })) return null;
+			return current;
+		});
+		if (latest == null) return;
 
 		const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest);
 
-		const quiet = await this.quietReadersOf(room, unread.map(mark => mark.readerId));
+		const quiet = await this.db.transaction(manager => this.quietReadersOf(room, unread.map(mark => mark.readerId), manager));
 		for (const mark of await this.stillUnread(unread.filter(mark => !quiet.has(mark.readerId)), message.id)) {
 			this.globalEventService.publishMainStream(mark.readerId, 'newChatMessage', packedMessageForTo);
 			this.pushNotificationService.pushNotification(mark.readerId, 'newChatMessage', packedMessageForTo);
@@ -1499,10 +1506,19 @@ export class ChatService {
 		const senderIds = idsOf('user');
 		const mutings = senderIds.length > 0 ? await this.mutingsRepository.findBy({ muterId: userId, muteeId: In(senderIds) }) : [];
 		const shownIds = senderIds.filter(senderId => !mutings.some(muting => muting.muteeId === senderId));
+		const roomIds = idsOf('room');
+		// 탈퇴나 제거가 저장된 직후에도 접근할 수 없는 방은 미읽음에 포함하지 않는다.
+		const visibleRoomIds = roomIds.length === 0 ? new Set<string>() : await this.db.transaction(async manager => {
+			const [memberships, owned] = await Promise.all([
+				manager.withRepository(this.chatRoomMembershipsRepository).findBy({ userId, roomId: In(roomIds) }),
+				manager.withRepository(this.chatRoomsRepository).findBy({ ownerId: userId, id: In(roomIds) }),
+			]);
+			return new Set([...memberships.map(membership => membership.roomId), ...owned.map(room => room.id)]);
+		});
 
 		// 대화마다 따로 묻지 않고 한 번에 확인한다. 계정 정보를 받을 때마다 불린다.
 		const marks: UnreadMark[] = [
-			...idsOf('room').map(roomId => ({ readerId: userId, roomId })),
+			...roomIds.filter(roomId => visibleRoomIds.has(roomId)).map(roomId => ({ readerId: userId, roomId })),
 			...shownIds.map(senderId => ({ readerId: userId, senderId })),
 		];
 		if (marks.length === 0) return false;

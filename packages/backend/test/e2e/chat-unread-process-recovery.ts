@@ -7,21 +7,30 @@ process.env.NODE_ENV = 'test';
 
 import { fork } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
+import { createHash, verify } from 'node:crypto';
 import { once } from 'node:events';
-import { closeSync, mkdirSync, mkdtempSync, openSync } from 'node:fs';
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync } from 'node:fs';
+import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as Bull from 'bullmq';
 import { Redis } from 'ioredis';
 import { afterAll, beforeAll, expect, test, vi } from 'vitest';
 import type { DataSource, QueryRunner } from 'typeorm';
 import { loadConfig, path as configPath } from '@/config.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
-import { api, initTestDb, signup } from '../utils.js';
+import { MiUser } from '@/models/User.js';
+import { MiUserKeypair } from '@/models/UserKeypair.js';
+import { QUEUE, baseQueueOptions } from '@/queue/const.js';
+import type { DeliverJobData } from '@/queue/types.js';
+import { api, connectStream, initTestDb, signup } from '../utils.js';
 import type { UserToken } from '../utils.js';
 import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 import { chatUnreadReadGate } from '../misc/chat-unread-read-gate.js';
+import { chatUnreadSettleFailureGate } from '../misc/chat-unread-settle-failure-gate.js';
 import { chatProcessExitError } from '../misc/chat-process-stderr.js';
 import type { ChatSendProcessMessage } from '../misc/chat-send-process-fixture.js';
+import type { ChatQueueProcessMessage } from '../misc/chat-queue-process-fixture.js';
 
 const config = loadConfig();
 let db: DataSource;
@@ -119,6 +128,215 @@ async function release(blocker: QueryRunner | undefined): Promise<void> {
 	if (blocker?.isTransactionActive) await blocker.rollbackTransaction();
 	await blocker?.release();
 }
+
+test('one stream read clears a received message after settle fails without reading an unfinished send', async () => {
+	const { sender, reader, key } = await readyPair();
+	const gate = await chatUnreadSettleFailureGate(config.redis.host, config.redis.port);
+	let resolveMessage: (id: string) => void = () => {};
+	const received = new Promise<string>(resolve => { resolveMessage = resolve; });
+	let worker: Sender | undefined;
+	let stream: Awaited<ReturnType<typeof connectStream>> | undefined;
+	let blocker: QueryRunner | undefined;
+	let sending: Promise<{ status: number }> | undefined;
+	try {
+		worker = await spawnSender(gate.port);
+		stream = await connectStream(reader, 'chatUser', message => {
+			if (message.type === 'message' && message.body.text === 'Received despite settle failure') resolveMessage(message.body.id);
+		}, { otherId: sender.id });
+		gate.arm(reader.id);
+		const response = await fetch(`http://127.0.0.1:${worker.port}/api/chat/messages/create-to-user`, {
+			method: 'POST', headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ i: sender.token, toUserId: reader.id, text: 'Received despite settle failure' }),
+			signal: AbortSignal.timeout(15_000),
+		});
+		expect(response.status).toBe(200);
+		const sent = await response.json() as { id: string };
+		const streamId = await Promise.race([received, new Promise<never>((_, reject) => {
+			setTimeout(() => reject(new Error('stream message timed out')), 5000).unref();
+		})]);
+		expect(streamId).toBe(sent.id);
+		expect(gate.failures).toBe(1);
+		expect(await db.getRepository(MiChatMessage).existsBy({ id: streamId })).toBe(true);
+		expect(await redis.sismember(`${key}:pending`, streamId)).toBe(1);
+
+		blocker = await lockRecipientRow(reader.id);
+		sending = api('chat/messages/create-to-user', { toUserId: reader.id, text: 'Still saving' }, sender);
+		const otherId = await vi.waitFor(async () => {
+			const ids = await redis.smembers(`${key}:pending`);
+			const other = ids.find(id => id !== streamId);
+			expect(other).toBeDefined();
+			return other!;
+		}, { timeout: 5000 });
+		expect(await db.getRepository(MiChatMessage).existsBy({ id: otherId })).toBe(false);
+
+		stream.send(JSON.stringify({ type: 'ch', body: { id: 'a', type: 'read', body: { id: streamId } } }));
+		await vi.waitFor(async () => expect(await redis.sismember(`${key}:pending`, streamId)).toBe(0), { timeout: 5000 });
+		const state = {
+			receivedMarked: await redis.sismember(`${key}:messages`, streamId),
+			unfinishedMarked: await redis.sismember(`${key}:messages`, otherId),
+			unfinishedPending: await redis.sismember(`${key}:pending`, otherId),
+		};
+		console.log('CHAT_STREAM_SETTLE_FAILURE', JSON.stringify({ streamId, otherId, ...state }));
+		expect(state).toEqual({ receivedMarked: 0, unfinishedMarked: 1, unfinishedPending: 1 });
+		expect((await api('i', {}, reader)).body.hasUnreadChatMessages).toBe(false);
+		await release(blocker);
+		blocker = undefined;
+		expect((await sending).status).toBe(200);
+		expect((await api('i', {}, reader)).body.hasUnreadChatMessages).toBe(true);
+	} finally {
+		stream?.close();
+		await release(blocker);
+		await sending?.catch(() => undefined);
+		if (worker != null) await killSender(worker);
+		await gate.close();
+	}
+}, 60_000);
+
+test.each(['leave', 'kick'] as const)('unread after room %s excludes a room whose cleanup failed', async action => {
+	const owner = await signup();
+	const reader = await signup();
+	const rooms = await Promise.all(['Departed', 'Still joined'].map(async name => {
+		const created = await api('chat/rooms/create', { name }, owner);
+		expect(created.status).toBe(200);
+		expect((await api('chat/rooms/invitations/create', { roomId: created.body.id, userId: reader.id }, owner)).status).toBe(200);
+		expect((await api('chat/rooms/join', { roomId: created.body.id }, reader)).status).toBe(204);
+		expect((await api('chat/messages/create-to-room', { toRoomId: created.body.id, text: name }, owner)).status).toBe(200);
+		return created.body;
+	}));
+	const [departed, remaining] = rooms;
+	const remote = await signup();
+	expect((await api('chat/rooms/invitations/create', { roomId: departed.id, userId: remote.id }, owner)).status).toBe(200);
+	expect((await api('chat/rooms/join', { roomId: departed.id }, remote)).status).toBe(204);
+	const inbox = `https://remote.test/users/${remote.id}/inbox`;
+	await db.getRepository(MiUser).update(remote.id, { host: 'remote.test', uri: `https://remote.test/users/${remote.id}`, inbox, sharedInbox: null });
+	const deliveries = new Bull.Queue<DeliverJobData>(QUEUE.DELIVER, baseQueueOptions(config, QUEUE.DELIVER));
+	let gate: Awaited<ReturnType<typeof chatUnreadSettleFailureGate>> | undefined;
+	let worker: Sender | undefined;
+	try {
+		gate = await chatUnreadSettleFailureGate(config.redis.host, config.redis.port);
+		worker = await spawnSender(gate.port);
+		gate.arm(reader.id, 'clear');
+		const actor = action === 'leave' ? reader : owner;
+		const response = await fetch(`http://127.0.0.1:${worker.port}/api/chat/rooms/${action}`, {
+			method: 'POST', headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ i: actor.token, roomId: departed.id, ...(action === 'kick' ? { userId: reader.id } : {}) }),
+			signal: AbortSignal.timeout(15_000),
+		});
+		expect(response.status).toBe(204);
+		expect(gate.failures).toBe(1);
+		await vi.waitFor(async () => {
+			const jobs = (await deliveries.getJobs(['wait', 'active', 'delayed', 'prioritized', 'completed', 'failed']))
+				.filter(job => job.data.user.id === actor.id && job.data.to === inbox && JSON.parse(job.data.content).type === 'Remove');
+			expect(jobs).toHaveLength(1);
+		}, { timeout: 5000 });
+		const history = await api('chat/history', { room: true }, reader);
+		expect(history.body.map(message => message.toRoomId)).toEqual([remaining.id]);
+		expect(history.body[0].isRead).toBe(false);
+		expect((await api('chat/messages/room-timeline', { roomId: departed.id }, reader)).status).toBe(400);
+		expect((await api('i', {}, reader)).body.hasUnreadChatMessages).toBe(true);
+		expect((await api('chat/messages/room-timeline', { roomId: remaining.id }, reader)).status).toBe(200);
+		const hasUnread = (await api('i', {}, reader)).body.hasUnreadChatMessages;
+		console.log('CHAT_ROOM_REMOVAL_UNREAD', JSON.stringify({ action, hasUnread, history: history.body.map(message => message.toRoomId) }));
+		expect(hasUnread).toBe(false);
+	} finally {
+		if (worker != null) await killSender(worker);
+		await gate?.close();
+		await deliveries.close();
+	}
+}, 60_000);
+
+test.skipIf(process.env.CHAT_DELIVERY_CERT == null || process.env.CHAT_DELIVERY_KEY == null)('a leave with failed unread cleanup still delivers a signed Remove', async () => {
+	const owner = await signup();
+	const reader = await signup();
+	const remote = await signup();
+	const room = (await api('chat/rooms/create', { name: 'Federated leave' }, owner)).body;
+	for (const participant of [reader, remote]) {
+		expect((await api('chat/rooms/invitations/create', { roomId: room.id, userId: participant.id }, owner)).status).toBe(200);
+		expect((await api('chat/rooms/join', { roomId: room.id }, participant)).status).toBe(204);
+	}
+	expect((await api('chat/messages/create-to-room', { toRoomId: room.id, text: 'Unread before leaving' }, owner)).status).toBe(200);
+
+	type Received = { body: string; signature: string; date: string; host: string; digest: string; target: string };
+	let receive!: (value: Received) => void;
+	const received = new Promise<Received>(resolve => { receive = resolve; });
+	const inbox = createServer({ key: readFileSync(process.env.CHAT_DELIVERY_KEY!), cert: readFileSync(process.env.CHAT_DELIVERY_CERT!) }, (request, response) => {
+		const chunks: Buffer[] = [];
+		request.on('data', chunk => chunks.push(Buffer.from(chunk)));
+		request.on('end', () => {
+			response.writeHead(202).end();
+			receive({ body: Buffer.concat(chunks).toString(), signature: String(request.headers.signature), date: String(request.headers.date), host: String(request.headers.host), digest: String(request.headers.digest), target: request.url ?? '' });
+		});
+	});
+	inbox.listen(0, '0.0.0.0');
+	await once(inbox, 'listening');
+	const address = inbox.address();
+	if (address == null || typeof address === 'string') throw new Error('test inbox did not bind a TCP port');
+	const remoteHost = `remote.test:${address.port}`;
+	const remoteInbox = `https://${remoteHost}/inbox`;
+	await db.getRepository(MiUser).update(remote.id, { host: remoteHost, uri: `https://${remoteHost}/users/${remote.id}`, inbox: remoteInbox, sharedInbox: null });
+	const deliveries = new Bull.Queue<DeliverJobData>(QUEUE.DELIVER, baseQueueOptions(config, QUEUE.DELIVER));
+	let gate: Awaited<ReturnType<typeof chatUnreadSettleFailureGate>> | undefined;
+	let sender: Sender | undefined;
+	let worker: ChildProcess | undefined;
+	let workerExit: Promise<unknown[]> | undefined;
+	try {
+		gate = await chatUnreadSettleFailureGate(config.redis.host, config.redis.port);
+		sender = await spawnSender(gate.port);
+		gate.arm(reader.id, 'clear');
+		const response = await fetch(`http://127.0.0.1:${sender.port}/api/chat/rooms/leave`, {
+			method: 'POST', headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ i: reader.token, roomId: room.id }),
+			signal: AbortSignal.timeout(15_000),
+		});
+		expect(response.status).toBe(204);
+		expect(gate.failures).toBe(1);
+
+		const evidenceRoot = process.env.CHAT_PROCESS_EVIDENCE_DIR ?? tmpdir();
+		mkdirSync(evidenceRoot, { recursive: true });
+		const evidenceDir = mkdtempSync(join(evidenceRoot, 'chat-leave-delivery-'));
+		const stdout = openSync(join(evidenceDir, 'stdout.log'), 'wx');
+		const stderr = openSync(join(evidenceDir, 'stderr.log'), 'wx');
+		worker = fork(new URL('../../built-test/chat-queue-process-fixture.js', import.meta.url), [], {
+			execArgv: ['--max-old-space-size=512'], stdio: ['ignore', stdout, stderr, 'ipc'],
+			env: { ...process.env, NODE_ENV: 'production', CHERRYPICK_CONFIG_YML: configPath, CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db },
+		});
+		closeSync(stdout);
+		closeSync(stderr);
+		workerExit = once(worker, 'exit');
+		const [ready] = await Promise.race([
+			once(worker, 'message', { signal: AbortSignal.timeout(30_000) }),
+			workerExit.then(([code, signal]) => { throw chatProcessExitError('chat queue', code, signal, evidenceDir); }),
+		]) as [ChatQueueProcessMessage];
+		if (ready.type === 'error') throw new Error(ready.message);
+		const delivered = await Promise.race([received, new Promise<never>((_, reject) => {
+			setTimeout(() => reject(new Error('signed Remove delivery timed out')), 30_000).unref();
+		})]);
+		const activity = JSON.parse(delivered.body) as { type: string; object: string };
+		expect(activity.type).toBe('Remove');
+		expect(activity.object).toContain(reader.id);
+		expect(delivered.digest).toBe(`SHA-256=${createHash('sha256').update(delivered.body).digest('base64')}`);
+		const signature = delivered.signature.match(/signature="([^"]+)"/)?.[1];
+		expect(signature).toBeDefined();
+		const key = await db.getRepository(MiUserKeypair).findOneByOrFail({ userId: reader.id });
+		const signed = `(request-target): post ${delivered.target}\ndate: ${delivered.date}\nhost: ${delivered.host}\ndigest: ${delivered.digest}`;
+		expect(verify('RSA-SHA256', Buffer.from(signed), key.publicKey, Buffer.from(signature!, 'base64'))).toBe(true);
+		await vi.waitFor(async () => {
+			const jobs = (await deliveries.getJobs(['completed'])).filter(job => job.data.to === remoteInbox && job.data.user.id === reader.id && JSON.parse(job.data.content).type === 'Remove');
+			expect(jobs).toHaveLength(1);
+		}, { timeout: 10_000 });
+		console.log('CHAT_LEAVE_SIGNED_DELIVERY', JSON.stringify({ status: response.status, digestValid: true, signatureValid: true, completed: true }));
+	} finally {
+		if (worker != null && worker.exitCode == null && worker.signalCode == null) {
+			worker.kill('SIGKILL');
+			await workerExit;
+		}
+		if (sender != null) await killSender(sender);
+		await gate?.close();
+		await deliveries.close();
+		inbox.close();
+		await once(inbox, 'close');
+	}
+}, 90_000);
 
 test('an HTTP sender killed before its INSERT leaves no unread mark or duplicate on retry', async () => {
 	const { sender, reader, key } = await readyPair();

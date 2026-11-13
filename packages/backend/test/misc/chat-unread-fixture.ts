@@ -141,7 +141,9 @@ export function chatUnreadFixture({ remoteMembers = false } = {}) {
 			existsBy: async (_entity: unknown, where: Record<string, unknown>) => matching(where).length > 0,
 		}),
 		chatRoomMembershipsRepository: {
-			findBy: async () => memberships.map(member => ({ ...member })),
+			findBy: async (where: { userId?: string }) => memberships
+				.filter(member => where.userId == null || member.userId === where.userId)
+				.map(member => ({ ...member, roomId: room.id })),
 			findOneBy: async ({ userId }: { userId: string }) => memberships.find(member => member.userId === userId) ?? null,
 		},
 		chatRoomInvitationsRepository: { findBy: async () => [] },

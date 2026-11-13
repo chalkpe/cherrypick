@@ -15,7 +15,7 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import type { DataSource } from 'typeorm';
 import { loadConfig, path as configPath } from '@/config.js';
-import { api, initTestDb, signup } from '../utils.js';
+import { api, connectStream, initTestDb, signup } from '../utils.js';
 import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 import { chatProcessExitError } from '../misc/chat-process-stderr.js';
 import type { ChatSendProcessMessage } from '../misc/chat-send-process-fixture.js';
@@ -179,4 +179,79 @@ describe.skipIf(replica == null)('chat unread marks with a read replica', () => 
 		expect(observation).toEqual({ primaryMembers: 1, replicaMembers: 0, conversation: 1, message: 1 });
 		expect((await api('i', {}, reader)).body.hasUnreadChatMessages).toBe(true);
 	});
+
+	test('an owner unmuted on the primary receives a message while the replica still says muted', async () => {
+		const owner = await signup();
+		const sender = await signup();
+		const courier = await signup();
+		expect((await api('i/update', { chatScope: 'everyone' }, owner)).status).toBe(200);
+		const room = (await api('chat/rooms/create', { name: 'Owner unmute with replica delay' }, owner)).body;
+		expect((await api('chat/rooms/invitations/create', { roomId: room.id, userId: sender.id }, owner)).status).toBe(200);
+		expect((await api('chat/rooms/join', { roomId: room.id }, sender)).status).toBe(204);
+		expect((await api('chat/rooms/mute', { roomId: room.id, mute: true }, owner)).status).toBe(204);
+
+		const evidenceRoot = process.env.CHAT_PROCESS_EVIDENCE_DIR ?? tmpdir();
+		mkdirSync(evidenceRoot, { recursive: true });
+		const evidenceDir = mkdtempSync(join(evidenceRoot, 'chat-replica-unmute-'));
+		const stdout = openSync(join(evidenceDir, 'stdout.log'), 'wx');
+		const stderr = openSync(join(evidenceDir, 'stderr.log'), 'wx');
+		const child = fork(new URL('../../built-test/chat-send-process-fixture.js', import.meta.url), [], {
+			execArgv: ['--max-old-space-size=512'],
+			stdio: ['ignore', stdout, stderr, 'ipc'],
+			env: { ...process.env, NODE_ENV: 'production', CHERRYPICK_CONFIG_YML: configPath, CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db, CHAT_PROCESS_FIXTURE_REPLICA: replica },
+		});
+		closeSync(stdout);
+		closeSync(stderr);
+		const exited = once(child, 'exit');
+		let onPrimary: boolean | undefined;
+		let onReplica: boolean | undefined;
+		let marked: number | undefined;
+		let noticed = false;
+		const notices: string[] = [];
+		let resolveSentinel: () => void = () => {};
+		const sentinel = new Promise<void>(resolve => { resolveSentinel = resolve; });
+		let stream: Awaited<ReturnType<typeof connectStream>> | undefined;
+		try {
+			stream = await connectStream(owner, 'main', message => {
+				if (message.type !== 'newChatMessage') return;
+				notices.push(message.body.text);
+				if (message.body.text === 'Notice barrier') resolveSentinel();
+			});
+			const [ready] = await Promise.race([
+				once(child, 'message', { signal: AbortSignal.timeout(20_000) }),
+				exited.then(([code, signal]) => { throw chatProcessExitError('chat sender', code, signal, evidenceDir); }),
+			]) as [ChatSendProcessMessage];
+			if (ready.type === 'error') throw new Error(ready.message);
+			await caughtUp();
+			await setReplay(true);
+			expect((await api('chat/rooms/mute', { roomId: room.id, mute: false }, owner)).status).toBe(204);
+			[{ isMutedByOwner: onPrimary }] = await db.query('SELECT "isMutedByOwner" FROM "chat_room" WHERE "id" = $1', [room.id]) as [{ isMutedByOwner: boolean }];
+			({ rows: [{ isMutedByOwner: onReplica }] } = await standby.query('SELECT "isMutedByOwner" FROM "chat_room" WHERE "id" = $1', [room.id]));
+			const response = await fetch(`http://127.0.0.1:${ready.port}/api/chat/messages/create-to-room`, {
+				method: 'POST', headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ i: sender.token, toRoomId: room.id, text: 'After owner unmute' }),
+				signal: AbortSignal.timeout(15_000),
+			});
+			expect(response.status).toBe(200);
+			const message = await response.json() as { id: string };
+			marked = await redis.sismember(`newRoomChatMessageExists:${owner.id}:${room.id}:messages`, message.id);
+			expect((await api('chat/messages/create-to-user', { toUserId: owner.id, text: 'Notice barrier' }, courier)).status).toBe(200);
+			await Promise.race([sentinel, new Promise<never>((_, reject) => {
+				setTimeout(() => reject(new Error('notice barrier timed out')), 15_000).unref();
+			})]);
+			noticed = notices.includes('After owner unmute');
+		} finally {
+			stream?.close();
+			await setReplay(false);
+			if (child.exitCode == null && child.signalCode == null) {
+				child.kill('SIGKILL');
+				await exited;
+			}
+		}
+		await caughtUp();
+		expect((await api('chat/messages/user-timeline', { userId: courier.id }, owner)).status).toBe(200);
+		const hasUnread = (await api('i', {}, owner)).body.hasUnreadChatMessages;
+		console.log('CHAT_REPLICA_OWNER_UNMUTE', JSON.stringify({ onPrimary, onReplica, marked, noticed, hasUnread }));
+		expect({ onPrimary, onReplica, marked, noticed, hasUnread }).toEqual({ onPrimary: false, onReplica: true, marked: 1, noticed: true, hasUnread: true });
+	}, 60_000);
 });
