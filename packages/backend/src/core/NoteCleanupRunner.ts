@@ -2,6 +2,7 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+
 // 일시적인 연결 장애만 재시도한다.
 export function isRetryableCleanupFailure(error: unknown): boolean {
 	if (typeof error !== 'object' || error === null) return false;
