@@ -13,6 +13,7 @@ import type { ChatMessagesRepository, ChatRoomChannelsRepository, ChatRoomHistor
 import { DeleteAccountProcessorService } from '@/queue/processors/DeleteAccountProcessorService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
+import { FetchInstanceMetadataService } from '@/core/FetchInstanceMetadataService.js';
 import type { ChatHistoryImport } from '@/core/ChatRoomHistoryService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { buildChatNote } from '@/core/activitypub/misc/chat-payloads.js';
@@ -107,7 +108,7 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 	}
 
 	beforeAll(async () => {
-		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService, ChatRoomChannelService] }).compile();
+		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService, ChatRoomChannelService, { provide: FetchInstanceMetadataService, useValue: { chatRoomChannelsCapability: vi.fn(async () => false) } }] }).compile();
 		await app.init();
 		db = app.get(DI.db);
 		idService = app.get(IdService);
@@ -168,13 +169,13 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 			expect(page.orderedItems[0]).toMatchObject({ attributedTo: `${LOCAL}/users/gone`, _misskey_chatAuthor: { username: 'gone', name: '떠난 사람', host: new URL(LOCAL).host }, _misskey_chatAuthorArchived: true });
 		});
 
-		test('채널을 모르는 서버에는 구버전용 기본 채널의 글만, 그 채널이 없으면 아무것도 주지 않는다', async () => {
+		test('채널을 지원하지 않는 서버에는 구버전용 기본 채널의 글만, 그 채널이 없으면 아무것도 주지 않는다', async () => {
 			const room = await createRoom(owner);
 			const legacy = idService.gen();
 			const other = idService.gen();
 			await chatRoomChannelsRepository.insert([{ id: legacy, roomId: room.id, name: 'general', position: 0 }, { id: other, roomId: room.id, name: 'other', position: 1 }]);
 			await chatRoomsRepository.update(room.id, { hasChannels: true, legacyChannelId: legacy });
-			// member.test는 채널 지원을 알린 적이 없는 서버다
+			// member.test는 채널을 지원하지 않는 서버다
 			const inLegacy = await insertMessage(room, owner, { toRoomChannelId: legacy });
 			await insertMessage(room, owner, { toRoomChannelId: other });
 			const service = historyService();

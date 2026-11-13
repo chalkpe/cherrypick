@@ -27,6 +27,8 @@ export type DeliverJobData = {
 	to: string;
 	/** whether it is sharedInbox */
 	isSharedInbox: boolean;
+	/** Host whose channel support must be confirmed before delivery. */
+	channelCapabilityHost?: string;
 };
 
 export type InboxJobData = {

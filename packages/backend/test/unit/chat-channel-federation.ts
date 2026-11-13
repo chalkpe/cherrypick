@@ -25,7 +25,7 @@ function channelService() {
 		config: { url: 'https://local.test' },
 		db: { manager },
 		channels: { find: async () => channels },
-		instances: { findOneBy: async ({ host }: { host: string }) => host === 'new.test' ? { supportsChatRoomChannels: true } : null },
+		fetchInstanceMetadataService: { chatRoomChannelsCapability: async (host: string) => host === 'new.test' },
 	}) as ChatRoomChannelService;
 }
 
@@ -86,7 +86,7 @@ type MessageDelivery = {
 };
 
 describe('채널 메시지의 구버전 배달 경계', () => {
-	test.each(['Create', 'Update', 'Delete', 'EmojiReact', 'Undo', 'Announce'])('%s를 미지원 서버 inbox에 넣지 않는다', async type => {
+	test.each(['Create', 'Update', 'Delete', 'EmojiReact', 'Undo', 'Announce'])('%s를 지원 여부 확인이 필요한 배달로 예약한다', async type => {
 		const actor = { id: 'actor', host: null } as MiUser;
 		const peers = ['old.test', 'new.test', 'unknown.test'].map(host => ({ id: host, host, inbox: `https://${host}/inbox` } as MiUser));
 		const deliver = vi.fn();
@@ -101,9 +101,24 @@ describe('채널 메시지의 구버전 배달 경계', () => {
 
 		await service.deliverToRemoteUsers(actor, peers, { type }, message);
 
-		expect(deliver.mock.calls.map(call => call[2])).toEqual(['https://new.test/inbox']);
+		expect(deliver.mock.calls.map(call => [call[2], call[4]])).toEqual(peers.map(peer => [peer.inbox, peer.host]));
 		deliver.mockClear();
 		await service.deliverToRemoteUsers(actor, peers, { type }, { ...message, toRoomChannelId: general.id });
 		expect(deliver).toHaveBeenCalledTimes(3);
+		expect(deliver.mock.calls.every(call => call[4] == null)).toBe(true);
 	});
+});
+
+test('구버전 채널이 삭제된 방에서 채널 없는 메시지를 구버전 메시지로 취급하지 않는다', async () => {
+	const actor = { id: 'actor', host: null } as MiUser;
+	const peer = { id: 'peer', host: 'old.test', inbox: 'https://old.test/inbox' } as MiUser;
+	const deliver = vi.fn();
+	const service = Object.assign(Object.create(ChatService.prototype), {
+		chatRoomsRepository: { findOneBy: async () => ({ ...room, legacyChannelId: null }) },
+		apRendererService: { addContext: (value: unknown) => value },
+		userEntityService: { isRemoteUser: () => true },
+		queueService: { deliver },
+	}) as MessageDelivery;
+	await service.deliverToRemoteUsers(actor, [peer], { type: 'Create' }, { toRoomId: room.id, toRoomChannelId: null } as MiChatMessage);
+	expect(deliver.mock.calls[0][4]).toBe('old.test');
 });

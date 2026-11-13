@@ -13,8 +13,9 @@ import { MiChatRoomChannel } from '@/models/ChatRoomChannel.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
 import { MiUser } from '@/models/User.js';
-import type { ChatRoomChannelsRepository, InstancesRepository } from '@/models/_.js';
+import type { ChatRoomChannelsRepository } from '@/models/_.js';
 import { IdService } from '@/core/IdService.js';
+import { FetchInstanceMetadataService } from '@/core/FetchInstanceMetadataService.js';
 import { chatRoomUriForOwner } from '@/core/activitypub/misc/chat-payloads.js';
 import { ChatChannelError, chatChannelUri, isChatChannelUri, MAX_CHAT_ROOM_CHANNELS, normalizeChatChannelName, validChatChannelRefRanges } from '@/core/chat-room-channels.js';
 import type { ChatChannelRef, RemoteChatChannels } from '@/core/chat-room-channels.js';
@@ -25,8 +26,8 @@ export class ChatRoomChannelService {
 		@Inject(DI.db) private db: DataSource,
 		@Inject(DI.config) private config: Config,
 		@Inject(DI.chatRoomChannelsRepository) private channels: ChatRoomChannelsRepository,
-		@Inject(DI.instancesRepository) private instances: InstancesRepository,
 		private idService: IdService,
+		private fetchInstanceMetadataService: FetchInstanceMetadataService,
 	) {}
 
 	public list(roomId: string): Promise<MiChatRoomChannel[]> {
@@ -202,10 +203,10 @@ export class ChatRoomChannelService {
 		};
 	}
 
-	public async deliverableTo(host: string | null, message: Pick<MiChatMessage, 'toRoomChannelId'>, room: MiChatRoom): Promise<boolean> {
+	public async deliverableTo(host: string | null, message: Pick<MiChatMessage, 'toRoomChannelId'>, room: MiChatRoom): Promise<boolean | null> {
 		if (!room.hasChannels || host == null) return true;
 		if (message.toRoomChannelId != null && message.toRoomChannelId === room.legacyChannelId) return true;
-		return (await this.instances.findOneBy({ host }))?.supportsChatRoomChannels === true;
+		return this.fetchInstanceMetadataService.chatRoomChannelsCapability(host);
 	}
 
 	// 호출자는 소유자와 revision을 확인하고 그룹 행을 잠근 동일 트랜잭션을 전달한다.

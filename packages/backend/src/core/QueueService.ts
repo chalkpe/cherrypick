@@ -154,7 +154,7 @@ export class QueueService {
 	}
 
 	@bindThis
-	public deliver(user: ThinUser, content: IActivity | null, to: string | null, isSharedInbox: boolean) {
+	public deliver(user: ThinUser, content: IActivity | null, to: string | null, isSharedInbox: boolean, channelCapabilityHost?: string) {
 		if (content == null) return null;
 		if (to == null) return null;
 
@@ -169,6 +169,7 @@ export class QueueService {
 			digest,
 			to,
 			isSharedInbox,
+			channelCapabilityHost,
 		};
 
 		const label = to.replace('https://', '').replace('/inbox', '');

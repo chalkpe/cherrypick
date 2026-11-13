@@ -140,6 +140,25 @@ export class FetchInstanceMetadataService {
 		}
 	}
 
+	/** Channel support is independent of the optional instance statistics collection. */
+	@bindThis
+	public async chatRoomChannelsCapability(host: string): Promise<boolean | null> {
+		const key = `chat_room_channels_capability:${host}`;
+		const cached = await this.redisClient.get(key);
+		if (cached === 'yes') return true;
+		if (cached === 'no') return false;
+		if (cached === 'unknown') return null;
+		try {
+			const info = await this.fetchNodeinfo({ host } as MiInstance);
+			const supported = Array.isArray(info.metadata?.features) && info.metadata.features.includes('chat_room_channels');
+			await this.redisClient.set(key, supported ? 'yes' : 'no', 'EX', 60 * 60);
+			return supported;
+		} catch {
+			await this.redisClient.set(key, 'unknown', 'EX', 5);
+			return null;
+		}
+	}
+
 	/**
 	 * Whether the NodeInfo says that avatar decorations can be fetched from the instance,
 	 * as Sharlayan Mastodon does: "avatarDecorations" among the features in the metadata, or a flag of that name.
