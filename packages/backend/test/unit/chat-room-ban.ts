@@ -430,9 +430,11 @@ describe('a verified account move', () => {
 	function moveFixture({ banCopyFails = false } = {}) {
 		const transactionManager = { tx: 'move' };
 		const chatRoomBanService = {
-			inheritOnMove: vi.fn(async () => {
+			carryOnMove: vi.fn(async () => {
 				if (banCopyFails) throw copyFailure;
 			}),
+			// 옛 계정에 금지가 없으면 뒤쪽 이전을 찾지 않고 이 이전만 기록한다.
+			hasBans: vi.fn(async () => false),
 		};
 		const usersRepository = {
 			update: vi.fn(async () => ({})),
@@ -477,7 +479,7 @@ describe('a verified account move', () => {
 
 		await f.service.postMoveProcess(src as never, dst as never);
 
-		expect(f.chatRoomBanService.inheritOnMove).toHaveBeenCalledWith(src, dst);
+		expect(f.chatRoomBanService.carryOnMove).toHaveBeenCalledWith([{ src, dst }]);
 	});
 
 	test('a remote move reports a failed ban copy instead of finishing as if it succeeded', async () => {
@@ -499,7 +501,7 @@ describe('a verified account move', () => {
 
 		// 이전 표시와 금지 승계가 같은 트랜잭션에 있어 승계 실패로 둘 다 확정되지 않는다.
 		expect(f.transactionUpdate).toHaveBeenCalledWith(expect.anything(), 'old', expect.objectContaining({ movedToUri: 'https://local.test/users/new' }));
-		expect(f.chatRoomBanService.inheritOnMove).toHaveBeenCalledWith(src, dst, f.transactionManager);
+		expect(f.chatRoomBanService.carryOnMove).toHaveBeenCalledWith([{ src, dst }], f.transactionManager);
 		expect(f.usersRepository.update).not.toHaveBeenCalled();
 		expect(src.movedToUri).toBeNull();
 		expect(f.delivered).toEqual([]);
@@ -512,8 +514,8 @@ describe('a verified account move', () => {
 
 		await f.service.moveFromLocal(src as never, dst as never);
 
-		expect(f.chatRoomBanService.inheritOnMove).toHaveBeenCalledTimes(1);
-		expect(f.chatRoomBanService.inheritOnMove).toHaveBeenCalledWith(src, dst, f.transactionManager);
+		expect(f.chatRoomBanService.carryOnMove).toHaveBeenCalledTimes(1);
+		expect(f.chatRoomBanService.carryOnMove).toHaveBeenCalledWith([{ src, dst }], f.transactionManager);
 		expect(src.movedToUri).toBe('https://local.test/users/new');
 		expect(f.relations.copyBlocking).toHaveBeenCalled();
 	});
