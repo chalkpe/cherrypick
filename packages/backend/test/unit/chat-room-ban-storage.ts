@@ -258,42 +258,4 @@ describe('chat room bans in the database', () => {
 		});
 	});
 
-	describe('account moves', () => {
-		test('checks both sides of each recorded move without copying ban rows', async () => {
-			const room = await createRoom();
-			const first = await createUser({ host: 'a.test', uri: 'https://a.test/users/first', movedToUri: 'https://b.test/users/middle' });
-			const middle = await createUser({ host: 'b.test', uri: 'https://b.test/users/middle', alsoKnownAs: [first.uri!], movedToUri: 'https://c.test/users/last' });
-			const last = await createUser({ host: 'c.test', uri: 'https://c.test/users/last', alsoKnownAs: [middle.uri!] });
-			await db.transaction(manager => banService.ban(manager, room.id, first.id));
-			expect(await banService.isBanned(room.id, last.id)).toBe(true);
-			expect(await chatRoomBansRepository.existsBy({ roomId: room.id, userId: last.id })).toBe(false);
-			await usersRepository.update(middle.id, { alsoKnownAs: [] });
-			expect(await banService.isBanned(room.id, last.id)).toBe(false);
-		});
-		test('ignores an unconfirmed alias and terminates on a cycle', async () => {
-			const room = await createRoom();
-			const first = await createUser({ host: 'one.test', uri: 'https://one.test/users/first', movedToUri: 'https://two.test/users/second', alsoKnownAs: ['https://two.test/users/second'] });
-			const second = await createUser({ host: 'two.test', uri: 'https://two.test/users/second', alsoKnownAs: [first.uri!], movedToUri: first.uri });
-			const unrelated = await createUser({ host: 'three.test', uri: 'https://three.test/users/third', alsoKnownAs: [first.uri!] });
-			await db.transaction(manager => banService.ban(manager, room.id, first.id));
-			expect(await banService.isBanned(room.id, second.id)).toBe(true);
-			expect(await banService.isBanned(room.id, unrelated.id)).toBe(false);
-			await banService.pardon(room.id, first.id);
-			expect(await banService.isBanned(room.id, second.id)).toBe(false);
-		});
-
-		test('fails closed when an account move chain exceeds the search limit', async () => {
-			const room = await createRoom();
-			const users: MiUser[] = [];
-			for (let index = 0; index < 12; index++) {
-				users.push(await createUser({ host: 'chain.test', uri: `https://chain.test/users/${index}` }));
-			}
-			for (let index = 0; index < users.length - 1; index++) {
-				await usersRepository.update(users[index].id, { movedToUri: users[index + 1].uri });
-				await usersRepository.update(users[index + 1].id, { alsoKnownAs: [users[index].uri!] });
-			}
-			expect(await banService.isBanned(room.id, users[11].id)).toBe(true);
-		});
-
-	});
 });

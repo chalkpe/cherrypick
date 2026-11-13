@@ -3,81 +3,11 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { rejects, strictEqual } from 'node:assert';
+import { strictEqual } from 'node:assert';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import * as Redis from 'ioredis';
-import pg from 'pg';
 import { test, vi } from 'vitest';
-import { createAccount, fetchAdmin, resolveRemoteUser, waitForFollowRelation, WAIT_FOR_SLOW_FEDERATION } from './utils.js';
-
-test('an account moved from a banned account cannot join by link', async () => {
-	const owner = await createAccount('a.test');
-	const old = await createAccount('b.test');
-	const next = await createAccount('b.test');
-	const room = await owner.client.request('chat/rooms/create', { name: crypto.randomUUID() });
-	const { url } = await owner.client.request('chat/rooms/invite-link/create', { roomId: room.id });
-	await old.client.request('chat/invite-link/join', { url });
-	await vi.waitFor(async () => strictEqual((await old.client.request('chat/invite-link/join-status', { url })).status, 'joined'), WAIT_FOR_SLOW_FEDERATION);
-	const oldRemote = await resolveRemoteUser('b.test', old.id, owner);
-	await owner.client.request('chat/rooms/kick', { roomId: room.id, userId: oldRemote.id });
-	await owner.client.request('following/create', { userId: oldRemote.id });
-	await waitForFollowRelation(owner, old, 1, WAIT_FOR_SLOW_FEDERATION);
-	await next.client.request('i/update', { alsoKnownAs: [`@${old.username}@b.test`] });
-	await old.client.request('i/move', { moveToAccount: `@${next.username}@b.test` });
-	const admin = await fetchAdmin('a.test');
-	await vi.waitFor(async () => {
-		const jobs = await admin.client.request('admin/queue/jobs', { queue: 'inbox', state: ['completed'], search: old.id });
-		const update = jobs.find(job => (job.data as { activity?: { type?: string } }).activity?.type === 'Update' && String(job.returnValue) === 'ok');
-		const move = jobs.find(job => (job.data as { activity?: { type?: string } }).activity?.type === 'Move');
-		strictEqual(update?.returnValue, 'ok');
-		strictEqual(['ok', 'skip'].includes(String(move?.returnValue)), true);
-	}, WAIT_FOR_SLOW_FEDERATION);
-	await admin.client.request('federation/update-remote-user', { userId: oldRemote.id });
-	await next.client.request('chat/invite-link/join', { url });
-	await vi.waitFor(async () => {
-		const status = await next.client.request('chat/invite-link/join-status', { url });
-		strictEqual(status.status, 'refused');
-		strictEqual(status.reason, 'banned');
-	}, WAIT_FOR_SLOW_FEDERATION);
-}, 180_000);
-
-test('a remote account moving to the room server is checked at acceptance and link join', async () => {
-	const owner = await createAccount('a.test');
-	const old = await createAccount('b.test');
-	const next = await createAccount('a.test');
-	const room = await owner.client.request('chat/rooms/create', { name: crypto.randomUUID() });
-	const { url } = await owner.client.request('chat/rooms/invite-link/create', { roomId: room.id });
-	await old.client.request('chat/invite-link/join', { url });
-	await vi.waitFor(async () => strictEqual((await old.client.request('chat/invite-link/join-status', { url })).status, 'joined'), WAIT_FOR_SLOW_FEDERATION);
-	const oldRemote = await resolveRemoteUser('b.test', old.id, owner);
-	await owner.client.request('chat/rooms/kick', { roomId: room.id, userId: oldRemote.id });
-	await owner.client.request('chat/rooms/invitations/create', { roomId: room.id, userId: next.id });
-	await owner.client.request('following/create', { userId: oldRemote.id });
-	await waitForFollowRelation(owner, old, 1, WAIT_FOR_SLOW_FEDERATION);
-	await next.client.request('i/update', { alsoKnownAs: [`@${old.username}@b.test`] });
-	await old.client.request('i/move', { moveToAccount: `@${next.username}@a.test` });
-	await vi.waitFor(async () => {
-		const current = await owner.client.request('users/show', { userId: oldRemote.id });
-		strictEqual(current.movedTo, next.id);
-	}, WAIT_FOR_SLOW_FEDERATION);
-	if (process.env.CHERRYPICK_FED_A_DB_URL != null) {
-		const db = new pg.Client({ connectionString: process.env.CHERRYPICK_FED_A_DB_URL });
-		await db.connect();
-		try {
-			await vi.waitFor(async () => {
-				const result = await db.query('SELECT "movedToUri" FROM "user" WHERE id = $1', [oldRemote.id]);
-				strictEqual(result.rows[0].movedToUri, `https://a.test/users/${next.id}`);
-				const target = await db.query('SELECT "alsoKnownAs" FROM "user" WHERE id = $1', [next.id]);
-				strictEqual(target.rows[0].alsoKnownAs.includes(`https://b.test/users/${old.id}`), true);
-			}, WAIT_FOR_SLOW_FEDERATION);
-		} finally {
-			await db.end();
-		}
-	}
-	const banned = (err: unknown) => { strictEqual((err as { code?: unknown }).code, 'BANNED_FROM_ROOM'); return true; };
-	await rejects(next.client.request('chat/rooms/join', { roomId: room.id }), banned);
-	await rejects(next.client.request('chat/invite-link/join', { url }), banned);
-}, 180_000);
+import { createAccount, fetchAdmin, resolveRemoteUser, WAIT_FOR_SLOW_FEDERATION } from './utils.js';
 
 test('a channel update reaches a server advertising channel support', async () => {
 	const owner = await createAccount('a.test');
@@ -104,36 +34,6 @@ test('a channel update reaches a server advertising channel support', async () =
 		const activity = JSON.parse(data.content ?? '{}') as { type?: string; object?: { _misskey_chatChannels?: unknown } };
 		return data.to?.includes('b.test') === true && activity.type === 'Update' && activity.object?._misskey_chatChannels != null;
 	}), true);
-}, 180_000);
-
-test('an account moved from an unbanned remote account can join', async () => {
-	const owner = await createAccount('a.test');
-	const old = await createAccount('b.test');
-	const next = await createAccount('a.test');
-	const room = await owner.client.request('chat/rooms/create', { name: crypto.randomUUID() });
-	const { url } = await owner.client.request('chat/rooms/invite-link/create', { roomId: room.id });
-	const remote = await resolveRemoteUser('b.test', old.id, owner);
-	await owner.client.request('following/create', { userId: remote.id });
-	await waitForFollowRelation(owner, old, 1, WAIT_FOR_SLOW_FEDERATION);
-	await next.client.request('i/update', { alsoKnownAs: [`@${old.username}@b.test`] });
-	await old.client.request('i/move', { moveToAccount: `@${next.username}@a.test` });
-	await vi.waitFor(async () => {
-		const current = await owner.client.request('users/show', { userId: remote.id });
-		strictEqual(current.movedTo, next.id);
-	}, WAIT_FOR_SLOW_FEDERATION);
-	if (process.env.CHERRYPICK_FED_A_DB_URL != null) {
-		const db = new pg.Client({ connectionString: process.env.CHERRYPICK_FED_A_DB_URL });
-		await db.connect();
-		try {
-			await vi.waitFor(async () => {
-				const result = await db.query('SELECT "movedToUri" FROM "user" WHERE id = $1', [remote.id]);
-				strictEqual(result.rows[0].movedToUri, `https://a.test/users/${next.id}`);
-			}, WAIT_FOR_SLOW_FEDERATION);
-		} finally {
-			await db.end();
-		}
-	}
-	strictEqual((await next.client.request('chat/invite-link/join', { url })).status, 'joined');
 }, 180_000);
 
 test.skipIf(process.env.CHERRYPICK_NODEINFO_BLOCK == null)('a temporary NodeInfo outage defers the channel update until capability is known', async () => {

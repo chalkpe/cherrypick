@@ -4,14 +4,12 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import { In, IsNull } from 'typeorm';
 import type { EntityManager } from 'typeorm';
-import type { Config } from '@/config.js';
 import { DI } from '@/di-symbols.js';
 import type { ChatRoomBansRepository } from '@/models/_.js';
 import { MiChatRoomBan } from '@/models/ChatRoomBan.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
-import { MiUser } from '@/models/User.js';
+import type { MiUser } from '@/models/User.js';
 import { IdService } from '@/core/IdService.js';
 import { QueryService } from '@/core/QueryService.js';
 import { bindThis } from '@/decorators.js';
@@ -26,9 +24,6 @@ import { bindThis } from '@/decorators.js';
 @Injectable()
 export class ChatRoomBanService {
 	constructor(
-		@Inject(DI.config)
-		private config: Config,
-
 		@Inject(DI.chatRoomBansRepository)
 		private chatRoomBansRepository: ChatRoomBansRepository,
 
@@ -42,32 +37,8 @@ export class ChatRoomBanService {
 	 * 참여 처리는 그룹을 잠근 트랜잭션의 manager를 넘겨, 커밋할 때까지 답이 바뀌지 않게 한다.
 	 */
 	@bindThis
-	public async isBanned(roomId: MiChatRoom['id'], userId: MiUser['id'], manager?: EntityManager): Promise<boolean> {
-		const db = manager ?? this.chatRoomBansRepository.manager;
-		const start = await db.findOneBy(MiUser, { id: userId });
-		if (start == null) return false;
-		const queue = [{ user: start, depth: 0 }];
-		const seen = new Set<string>();
-		while (queue.length > 0) {
-			const { user, depth } = queue.shift()!;
-			if (seen.has(user.id)) continue;
-			seen.add(user.id);
-			if (await db.existsBy(MiChatRoomBan, { roomId, userId: user.id })) return true;
-			const aliases = user.alsoKnownAs ?? [];
-			if (aliases.length === 0) continue;
-			// A bounded search fails closed when it cannot inspect the whole graph.
-			if (depth >= 10 || seen.size > 1000 || aliases.length > 1000) return true;
-			const uri = user.uri ?? `${this.config.url}/users/${user.id}`;
-			const localPrefix = `${this.config.url}/users/`;
-			const localIds = aliases.filter(alias => alias.startsWith(localPrefix)).map(alias => alias.slice(localPrefix.length));
-			const predecessors = await db.findBy(MiUser, [
-				{ uri: In(aliases), movedToUri: uri },
-				{ id: In(localIds), host: IsNull(), movedToUri: uri },
-			]);
-			if (seen.size + queue.length + predecessors.length > 1000) return true;
-			queue.push(...predecessors.map(predecessor => ({ user: predecessor, depth: depth + 1 })));
-		}
-		return false;
+	public isBanned(roomId: MiChatRoom['id'], userId: MiUser['id'], manager?: EntityManager): Promise<boolean> {
+		return (manager ?? this.chatRoomBansRepository.manager).existsBy(MiChatRoomBan, { roomId, userId });
 	}
 
 	/** 그룹장의 내보내기 전용. 그룹을 잠그고 멤버십을 지우는 트랜잭션 안에서 부른다. */
