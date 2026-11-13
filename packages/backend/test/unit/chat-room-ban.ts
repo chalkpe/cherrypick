@@ -249,6 +249,8 @@ function joinFixture(options: { banned: boolean; roomOwner?: typeof owner | type
 			return { affected: index >= 0 ? 1 : 0 };
 		}),
 		findOneBy: vi.fn(async () => null),
+		// 그룹장이 참여하려는 계정을 차단하지 않았다.
+		existsBy: vi.fn(async () => false),
 		countBy: vi.fn(async () => memberships.length),
 		insert: vi.fn(async (_entity: unknown, row: { id: string; roomId: string; userId: string }) => {
 			memberships.push(row);
