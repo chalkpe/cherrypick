@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, test } from 'vitest';
+import { CONTEXT } from '@/core/activitypub/misc/contexts.js';
 import {
 	buildChatHistoryPage,
 	chatHistoryNoteFields,
@@ -85,6 +86,14 @@ describe('과거 기록 페이지 주소', () => {
 			_misskey_chatAuthor: { name: '이름', username: 'u1', host: 'member.example' },
 			_misskey_chatReactions: [{ actor: 'https://x.example/users/a', reaction: '👍' }],
 		});
+	});
+
+	test('보관한 작성자의 기록에만 보관 표시를 싣는다', () => {
+		const author = { name: null, username: 'gone', host: 'member.example' };
+
+		expect(chatHistoryNoteFields(author, [], true)).toMatchObject({ _misskey_chatAuthor: author, _misskey_chatAuthorArchived: true });
+		expect(chatHistoryNoteFields(author, [], false)).not.toHaveProperty('_misskey_chatAuthorArchived');
+		expect(CONTEXT).toContainEqual(expect.objectContaining({ _misskey_chatAuthorArchived: 'misskey:_misskey_chatAuthorArchived' }));
 	});
 });
 

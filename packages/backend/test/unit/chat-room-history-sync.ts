@@ -291,6 +291,33 @@ describe('과거 기록 가져오기 작업', () => {
 		expect(ctx.imported[0]).toMatchObject({ authorId: author.id, archivedAuthor: null });
 	});
 
+	test.each([
+		['완전한 보관 정보', { name: '지난 이름', username: 'gone', host: 'member.test' }, { name: '지난 이름', username: 'gone' }],
+		['보관 정보 없음', undefined, { name: null, username: null }],
+		['형식이 틀린 보관 정보', { name: 1, username: 'gone', host: 'member.test' }, { name: null, username: null }],
+	])('보관 표시가 있는 기록은 %s이어도 캐시된 계정 대신 보관 작성자로 받는다', async (_label, authorInfo, expected) => {
+		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+			_misskey_chatAuthorArchived: true,
+			_misskey_chatAuthor: authorInfo,
+		})], null));
+		pages.set(author.uri, { id: author.uri, type: 'Person' } as IObject);
+		const ctx = setup({ pages, cachedAccounts: new Map([[author.uri, author]]) });
+
+		await ctx.run();
+
+		expect(ctx.imported[0]).toMatchObject({ authorId: null, archivedAuthor: { uri: author.uri, host: 'member.test', ...expected } });
+	});
+
+	test.each([undefined, false, 'true', 1])('보관 표시가 정확한 true가 아니면 기존 작성자 확인을 유지한다: %s', async marker => {
+		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', { _misskey_chatAuthorArchived: marker })], null));
+		pages.set(author.uri, { id: author.uri, type: 'Person' } as IObject);
+		const ctx = setup({ pages, cachedAccounts: new Map([[author.uri, author]]) });
+
+		await ctx.run();
+
+		expect(ctx.imported[0]).toMatchObject({ authorId: author.id, archivedAuthor: null });
+	});
+
 	test('리액션은 확인한 계정의 것만, 작성자 자신과 받는 서버 계정의 것은 빼고 저장한다', async () => {
 		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
 			_misskey_chatReactions: [

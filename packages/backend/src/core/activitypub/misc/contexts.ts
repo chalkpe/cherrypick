@@ -571,6 +571,7 @@ const extension_context_definition = {
 	'_misskey_chatChannel': { '@id': 'misskey:_misskey_chatChannel', '@type': '@id' },
 	'_misskey_chatChannelRefs': { '@id': 'misskey:_misskey_chatChannelRefs', '@type': '@json' },
 	'_misskey_chatAuthor': { '@id': 'misskey:_misskey_chatAuthor', '@type': '@json' },
+	'_misskey_chatAuthorArchived': 'misskey:_misskey_chatAuthorArchived',
 	'_misskey_chatReactions': { '@id': 'misskey:_misskey_chatReactions', '@type': '@json' },
 	'_misskey_chatRoom': 'misskey:_misskey_chatRoom',
 	'_misskey_chatScope': 'misskey:_misskey_chatScope',

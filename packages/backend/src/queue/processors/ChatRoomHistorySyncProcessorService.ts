@@ -225,7 +225,7 @@ export class ChatRoomHistorySyncProcessorService {
 		const channel = await this.resolveChannel(room, item.note, run);
 		if (channel === false) return;
 
-		const author = await this.resolveAccount(item.authorUri, run, true);
+		const author = item.note._misskey_chatAuthorArchived === true ? null : await this.resolveAccount(item.authorUri, run, true);
 		const text = item.text;
 		const attachments = toArray(item.note.attachment).filter(attach => attach != null && typeof attach === 'object').slice(0, MAX_REMOTE_CHAT_MESSAGE_FILES);
 		let fileIds: string[] = [];

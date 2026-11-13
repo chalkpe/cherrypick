@@ -154,7 +154,7 @@ export class ChatRoomHistoryService {
 		const remoteEmojis = authorHost != null ? await this.remoteEmojis(message.emojis, authorHost) : null;
 		const toUsers = members.filter(member => member.id !== message.fromUserId);
 		const note = await this.apRendererService.renderChatHistoryNote(message, authorUri, remoteEmojis, toUsers, roomUri);
-		return { ...note, ...chatHistoryNoteFields(author, await this.renderReactions(message, users)) };
+		return { ...note, ...chatHistoryNoteFields(author, await this.renderReactions(message, users), fromUser == null) };
 	}
 
 	private async remoteEmojis(names: string[], host: string): Promise<MiEmoji[]> {

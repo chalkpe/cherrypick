@@ -150,6 +150,7 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 			expect(firstPage.orderedItems).toHaveLength(20);
 			expect(firstPage.orderedItems[0]).toMatchObject({ id: `${LOCAL}/chat/messages/${ids[20]}`, attributedTo: `${LOCAL}/users/${owner.id}` });
 			expect(firstPage.orderedItems[1]).toMatchObject({ id: 'https://member.test/chat/messages/m19', attributedTo: member.uri, _misskey_chatAuthor: { name: '멤버', username: member.username, host: 'member.test' } });
+			expect(firstPage.orderedItems[1]).not.toHaveProperty('_misskey_chatAuthorArchived');
 			expect(secondPage.orderedItems.map(item => item.id)).toEqual([`${LOCAL}/chat/messages/${ids[0]}`]);
 			expect(secondPage.next).toBeUndefined();
 		});
@@ -164,7 +165,7 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 			const page = await historyService().renderPage(room, member, null) as unknown as { orderedItems: Record<string, unknown>[] };
 
 			expect(page.orderedItems).toHaveLength(1);
-			expect(page.orderedItems[0]).toMatchObject({ attributedTo: `${LOCAL}/users/gone`, _misskey_chatAuthor: { username: 'gone', name: '떠난 사람', host: new URL(LOCAL).host } });
+			expect(page.orderedItems[0]).toMatchObject({ attributedTo: `${LOCAL}/users/gone`, _misskey_chatAuthor: { username: 'gone', name: '떠난 사람', host: new URL(LOCAL).host }, _misskey_chatAuthorArchived: true });
 		});
 
 		test('채널을 모르는 서버에는 구버전용 기본 채널의 글만, 그 채널이 없으면 아무것도 주지 않는다', async () => {

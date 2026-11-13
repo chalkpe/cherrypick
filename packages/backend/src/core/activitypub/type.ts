@@ -23,6 +23,7 @@ export interface IObject {
 	_misskey_chatRoomMembers?: string[];
 	_misskey_chatRoomRosterAt?: string;
 	_misskey_chatAuthor?: unknown;
+	_misskey_chatAuthorArchived?: boolean;
 	_misskey_chatReactions?: unknown;
 	_misskey_followedMessage?: string | null;
 	_misskey_requireSigninToViewContents?: boolean;

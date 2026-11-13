@@ -90,9 +90,10 @@ export function buildChatHistoryPage(roomUri: string, until: string | null, item
 	} as IObject;
 }
 
-export function chatHistoryNoteFields(author: ChatHistoryAuthor | null, reactions: ChatHistoryReaction[]): Pick<IObject, '_misskey_chatAuthor' | '_misskey_chatReactions'> {
+export function chatHistoryNoteFields(author: ChatHistoryAuthor | null, reactions: ChatHistoryReaction[], archived = false): Pick<IObject, '_misskey_chatAuthor' | '_misskey_chatAuthorArchived' | '_misskey_chatReactions'> {
 	return {
 		...(author != null ? { _misskey_chatAuthor: author } : {}),
+		...(archived ? { _misskey_chatAuthorArchived: true } : {}),
 		_misskey_chatReactions: reactions,
 	};
 }
