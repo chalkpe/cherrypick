@@ -5,6 +5,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
+import { DelayedError } from 'bullmq';
 import * as Redis from 'ioredis';
 import { In } from 'typeorm';
 import { DI } from '@/di-symbols.js';
@@ -17,7 +18,6 @@ import { ChatChannelError } from '@/core/chat-room-channels.js';
 import { parseChatDiceResult } from '@/core/chat-dice.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { IdService } from '@/core/IdService.js';
-import { QueueService } from '@/core/QueueService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { ApDbResolverService } from '@/core/activitypub/ApDbResolverService.js';
@@ -50,6 +50,10 @@ const MAX_SIGNERS = 3;
 const PAGES_PER_RUN = 25;
 const CONTINUE_DELAY = 1000;
 const LOCK_TTL = 10 * 60;
+const LOCK_RECHECK_DELAY = 30 * 1000;
+// 삭제된 작성자 정보가 없는 행은 응답에서 빠질 수 있다. 연속 100페이지까지는 기다린다.
+const MAX_PAGES_WITHOUT_PROGRESS = 100;
+const PROGRESS_TTL = 7 * 24 * 60 * 60;
 // 메시지당 리액션 한도와 같다
 const MAX_REACTIONS_PER_MESSAGE = 100;
 
@@ -97,7 +101,6 @@ export class ChatRoomHistorySyncProcessorService {
 		private utilityService: UtilityService,
 		private hostPolicyService: HostPolicyService,
 		private idService: IdService,
-		private queueService: QueueService,
 		private queueLoggerService: QueueLoggerService,
 		private chatRoomRosterSyncProcessorService: ChatRoomRosterSyncProcessorService,
 	) {
@@ -112,6 +115,7 @@ export class ChatRoomHistorySyncProcessorService {
 
 		const state = await this.chatRoomHistoryService.getState(room.id);
 		if (state == null || state.status !== 'running') return 'skip: nothing to fetch';
+		if (job.data.pass != null && job.data.pass !== state.pass) return 'skip: started over';
 
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
 		if (owner == null || !this.userEntityService.isRemoteUser(owner)) return 'skip: the room is owned here';
@@ -123,9 +127,12 @@ export class ChatRoomHistorySyncProcessorService {
 		// 한 그룹은 한 작업만 받는다. 같은 글을 두 작업이 동시에 저장하지 않게 하는 것은 메시지 잠금이 맡는다.
 		const lockKey = `chat_room_history_lock:${room.id}`;
 		const token = randomUUID();
-		// 다시 참여해 pass가 바뀐 작업이 앞선 작업의 잠금과 겹칠 수 있다.
-		// 성공 종료하면 앞선 작업도 pass 변경으로 멈춘 뒤 이어 받을 작업이 없어지므로 큐에서 재시도한다.
-		if (await this.redisClient.set(lockKey, token, 'EX', LOCK_TTL, 'NX') == null) throw new Error('another worker is fetching this room');
+		// 앞선 작업의 잠금이 남아 있으면 시도 횟수를 소모하지 않고 나중에 다시 확인한다.
+		// 비정상 종료 뒤 잠금이 만료되기를 기다려도 다른 그룹의 작업은 계속 진행한다.
+		if (await this.redisClient.set(lockKey, token, 'EX', LOCK_TTL, 'NX') == null) {
+			await job.moveToDelayed(Date.now() + LOCK_RECHECK_DELAY, job.token);
+			throw new DelayedError();
+		}
 
 		const run: ImportRun = {
 			lastAttempt: job.attemptsMade + 1 >= (job.opts.attempts ?? 1),
@@ -150,15 +157,32 @@ export class ChatRoomHistorySyncProcessorService {
 				const page = parseChatHistoryPage(await this.fetchPage(url, signers), room.uri, url);
 				if (page == null) throw new HistoryUnavailableError('the owner\'s server gave no history page');
 
+				// 이 서버 작성자의 글은 보안 검사에서 저장하지 않지만, 서로 다른 글이면 기록은 진행된 것이다.
+				const itemIds = page.items.flatMap(item => {
+					if (item == null || typeof item !== 'object') return [];
+					const note = item as IObject;
+					return getApType(note) === 'Note' && typeof note.id === 'string' && note.id.length > 0 && note.id.length <= 1024 ? [note.id] : [];
+				});
+				if (await this.pagesWithoutProgress(room.id, state.pass, url, itemIds) > MAX_PAGES_WITHOUT_PROGRESS) {
+					this.logger.warn(`Stopped fetching ${room.uri}: no new history items in ${MAX_PAGES_WITHOUT_PROGRESS + 1} consecutive pages`);
+					throw new HistoryUnavailableError('the history has made no progress');
+				}
+
 				for (const item of page.items) {
 					await this.importItem(room, item, run);
 				}
 
 				if (!await this.chatRoomHistoryService.advance(room.id, state.pass, page.next)) return 'skip: started over';
-				if (page.next == null) return 'ok: completed';
+				if (page.next == null) {
+					await this.redisClient.del(...this.progressKeys(room.id, state.pass));
+					return 'ok: completed';
+				}
 			}
 
-			await this.queueService.createChatRoomHistorySyncJob(room.id, CONTINUE_DELAY);
+			const current = await this.chatRoomHistoryService.getState(room.id);
+			if (current?.status === 'running' && current.pass === state.pass) {
+				await this.chatRoomHistoryService.enqueueImport(room.id, current.pass, current.nextUri, CONTINUE_DELAY);
+			}
 			return 'ok: continues';
 		} catch (err) {
 			if (err instanceof HistoryUnavailableError || run.lastAttempt) {
@@ -169,6 +193,33 @@ export class ChatRoomHistorySyncProcessorService {
 		} finally {
 			if (await this.redisClient.get(lockKey) === token) await this.redisClient.del(lockKey);
 		}
+	}
+
+	private progressKeys(roomId: string, pass: number): [string, string] {
+		const prefix = `chat_room_history_progress:${roomId}:${pass}`;
+		return [`${prefix}:seen`, `${prefix}:state`];
+	}
+
+	/** 같은 페이지의 재시도는 한 번만 세고, 새 항목이 나타나면 다시 진행하도록 한다. */
+	private async pagesWithoutProgress(roomId: string, pass: number, page: string, ids: string[]): Promise<number> {
+		const result = await this.redisClient.eval(`
+			local samePage = redis.call('HGET', KEYS[2], 'page') == ARGV[1]
+			local fresh = 0
+			for i = 3, #ARGV do
+				fresh = fresh + redis.call('HSETNX', KEYS[1], ARGV[i], '1')
+			end
+			local count = tonumber(redis.call('HGET', KEYS[2], 'count') or '0')
+			if fresh > 0 then
+				count = 0
+			elseif not samePage then
+				count = count + 1
+			end
+			redis.call('HSET', KEYS[2], 'page', ARGV[1], 'count', count)
+			redis.call('EXPIRE', KEYS[1], ARGV[2])
+			redis.call('EXPIRE', KEYS[2], ARGV[2])
+			return count
+		`, 2, ...this.progressKeys(roomId, pass), page, PROGRESS_TTL, ...ids);
+		return Number(result);
 	}
 
 	/** 그룹 소유 서버에 이 서버의 멤버로 서명해 직접 묻는다. 다른 곳에서 온 기록은 쓰지 않는다. */

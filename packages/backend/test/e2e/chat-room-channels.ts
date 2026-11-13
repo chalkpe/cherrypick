@@ -4,7 +4,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { api, connectStream, signup, uploadFile } from '../utils.js';
+import { api, connectStream, role, signup, uploadFile } from '../utils.js';
 import type { UserToken } from '../utils.js';
 import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 
@@ -193,6 +193,58 @@ describe('그룹 채널 API', () => {
 		expect(stored.body.channelRefs).toEqual(response.body.channelRefs);
 		const edited = await api('chat/messages/update', { messageId: response.body.id, text: '수정된 본문' }, member);
 		expect(edited.body.channelRefs).toEqual([]);
+	});
+
+	test('삭제된 채널의 기존 참조를 유지하며 본문을 수정한다', async () => {
+		const roomId = await createRoom();
+		const general = await convert(roomId);
+		const target = await createChannel(roomId, '대상');
+		const reference = { channelId: target.id, start: 0, length: 3 };
+		const created = await api('chat/messages/create-to-room', {
+			toRoomId: roomId, toRoomChannelId: general.id, text: '#대상 원문', channelRefs: [reference],
+		}, member);
+		expect(created.status).toBe(200);
+		expect((await api('chat/rooms/channels/delete', { channelId: target.id }, owner)).status).toBe(204);
+		const foreignRoom = await createRoom(false);
+		const foreign = await convert(foreignRoom);
+		for (const [text, channelRefs] of [
+			['#다른 수정', [reference]],
+			['#대상 수정', [{ ...reference, start: 50 }]],
+			['#대상 수정', [{ ...reference, channelId: foreign.id }]],
+			['#대상 #대상', [reference, { ...reference, start: 4 }]],
+		] as const) {
+			const rejected = await api('chat/messages/update', { messageId: created.body.id, text, channelRefs: [...channelRefs] }, member);
+			expect(rejected.status).toBe(400);
+		}
+
+		const updated = await api('chat/messages/update', { messageId: created.body.id, text: '새 글 #대상 수정', channelRefs: [{ ...reference, start: 4 }] }, member);
+		expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+		expect(updated.body.channelRefs).toEqual([{ ...reference, start: 4 }]);
+		const stored = await api('chat/messages/show', { messageId: created.body.id }, member);
+		expect(stored.body).toMatchObject({ text: '새 글 #대상 수정', channelRefs: [{ ...reference, start: 4 }] });
+	});
+
+	test('비멤버 모더레이터는 일반 그룹과 채널형 그룹을 읽되 쓰거나 설정할 수 없다', async () => {
+		const moderator = await signup({ username: 'channelmoderator' });
+		const modRole = await role(owner, { name: 'Channel moderator', isModerator: true });
+		expect((await api('admin/roles/assign', { roleId: modRole.id, userId: moderator.id }, owner)).status).toBe(204);
+		const plain = await createRoom(false);
+		const plainMessage = await send(plain, undefined, '일반 그룹 내용', owner);
+		const channelRoom = await createRoom(false);
+		const general = await convert(channelRoom);
+		const channelMessage = await send(channelRoom, general.id, '채널 그룹 내용', owner);
+
+		for (const [roomId, messageId, channelId] of [[plain, plainMessage.id, undefined], [channelRoom, channelMessage.id, general.id]] as const) {
+			expect((await api('chat/rooms/show', { roomId }, moderator)).status).toBe(200);
+			const timeline = await api('chat/messages/room-timeline', { roomId, ...(channelId ? { channelId } : {}) }, moderator);
+			expect(timeline.status).toBe(200);
+			expect(timeline.body.some(message => message.id === messageId)).toBe(true);
+			expect((await api('chat/messages/create-to-room', { toRoomId: roomId, ...(channelId ? { toRoomChannelId: channelId } : {}), text: '거부' }, moderator)).status).toBe(400);
+			expect((await api('chat/rooms/update', { roomId, name: '거부' }, moderator)).status).toBe(400);
+		}
+		expect((await api('chat/rooms/channels/list', { roomId: channelRoom }, moderator)).status).toBe(200);
+		expect((await api('chat/rooms/channels/create', { roomId: channelRoom, name: '거부' }, moderator)).status).toBe(400);
+		expect((await api('chat/rooms/channels/list', { roomId: channelRoom }, outsider)).status).toBe(400);
 	});
 
 	test('채널 삭제로 메시지는 삭제하지만 드라이브 원본은 남긴다', async () => {

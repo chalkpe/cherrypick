@@ -9,7 +9,7 @@ import { createServer } from 'node:https';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { deepStrictEqual, strictEqual } from 'node:assert';
 import { afterAll, beforeAll, describe, test, vi } from 'vitest';
-import { createAccount, fetchAdmin, type LoginUser, WAIT_FOR_FEDERATION } from './utils.js';
+import { createAccount, fetchAdmin, resolveRemoteUser, type LoginUser, WAIT_FOR_FEDERATION } from './utils.js';
 
 /**
  * tester가 fake.test라는 그룹 소유 서버가 되어 b.test의 사용자를 초대하고, 위조한 과거 기록을 내준다.
@@ -25,8 +25,16 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', {
 	privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
 });
 
-const owner = `${FAKE}/users/owner`;
-const member = `${FAKE}/users/m1`;
+const ownerName = `owner${crypto.randomUUID().replaceAll('-', '')}`;
+const memberName = `member${crypto.randomUUID().replaceAll('-', '')}`;
+const owner = `${FAKE}/users/${ownerName}`;
+const member = `${FAKE}/users/${memberName}`;
+const messageNamespace = crypto.randomUUID().replaceAll('-', '');
+const repeatRoom = `r${Date.now()}`;
+const emptyRoom = `r${Date.now() + 1}`;
+const localAuthorRoom = `r${Date.now() + 2}`;
+const firstRoom = `r${Date.now() + 3}`;
+const secondRoom = `r${Date.now() + 4}`;
 
 function person(username: string) {
 	const id = `${FAKE}/users/${username}`;
@@ -45,7 +53,7 @@ function person(username: string) {
 
 function note(roomUri: string, id: string, overrides: Record<string, unknown> = {}) {
 	return {
-		id: `${FAKE}/chat/messages/${id}`,
+		id: `${FAKE}/chat/messages/${messageNamespace}/${id}`,
 		type: 'Note',
 		attributedTo: member,
 		content: id,
@@ -88,6 +96,9 @@ describe('Chat room history from a forging owner', () => {
 	let server: Server;
 	let alice: LoginUser, bob: LoginUser;
 	const pages = new Map<string, object>();
+	let repeatedRequests = 0;
+	let emptyRequests = 0;
+	let localAuthorRequests = 0;
 
 	function json(res: ServerResponse, status: number, body?: object) {
 		res.writeHead(status, { 'Content-Type': 'application/activity+json; charset=utf-8' });
@@ -109,11 +120,31 @@ describe('Chat room history from a forging owner', () => {
 			res.end(JSON.stringify({ subject: `acct:${name}@fake.test`, links: [{ rel: 'self', type: 'application/activity+json', href: `${FAKE}/users/${name}` }] }));
 			return;
 		}
-		const user = url.pathname.match(/^\/users\/(owner|m1)$/)?.[1];
-		if (user != null) return json(res, 200, person(user));
+		const user = url.pathname.slice('/users/'.length);
+		if (url.pathname === `/users/${ownerName}` || url.pathname === `/users/${memberName}`) return json(res, 200, person(user));
+		if (url.pathname === `/chat/rooms/${repeatRoom}/history`) {
+			repeatedRequests++;
+			const roomUri = `${FAKE}/chat/rooms/${repeatRoom}`;
+			const next = repeatedRequests < 110 ? `${roomUri}/history?until=${String(1000 - repeatedRequests).padStart(4, '0')}` : undefined;
+			setTimeout(() => json(res, 200, { ...page(roomUri, [note(roomUri, 'same')], next), id: `${FAKE}${url.pathname}${url.search}` }), 50);
+			return;
+		}
+		if (url.pathname === `/chat/rooms/${emptyRoom}/history`) {
+			emptyRequests++;
+			const roomUri = `${FAKE}/chat/rooms/${emptyRoom}`;
+			const next = emptyRequests < 110 ? `${roomUri}/history?until=${String(1000 - emptyRequests).padStart(4, '0')}` : undefined;
+			return json(res, 200, { ...page(roomUri, [], next), id: `${FAKE}${url.pathname}${url.search}` });
+		}
+		if (url.pathname === `/chat/rooms/${localAuthorRoom}/history`) {
+			localAuthorRequests++;
+			const roomUri = `${FAKE}/chat/rooms/${localAuthorRoom}`;
+			const next = localAuthorRequests < 110 ? `${roomUri}/history?until=${String(1000 - localAuthorRequests).padStart(4, '0')}` : undefined;
+			const id = `https://b.test/chat/messages/local${localAuthorRequests}`;
+			return json(res, 200, { ...page(roomUri, [note(roomUri, 'local', { id, attributedTo: `https://b.test/users/${bob.id}` })], next), id: `${FAKE}${url.pathname}${url.search}` });
+		}
 		const pageBody = pages.get(`${FAKE}${url.pathname}${url.search}`);
 		if (pageBody != null) return json(res, 200, pageBody);
-		const room = url.pathname.match(/^\/chat\/rooms\/(r\d)$/)?.[1];
+		const room = url.pathname.match(/^\/chat\/rooms\/(r\d+)$/)?.[1];
 		if (room != null) return json(res, 200, { '@context': AS, id: `${FAKE}/chat/rooms/${room}`, type: 'Group', name: room, attributedTo: owner, summary: '' });
 		// 지워진 계정처럼 답한다
 		if (url.pathname === '/users/gone') return json(res, 410);
@@ -148,7 +179,7 @@ describe('Chat room history from a forging owner', () => {
 			cert: readFileSync(new URL('../certificates/fake.test.crt', import.meta.url)),
 			key: readFileSync(new URL('../certificates/fake.test.key', import.meta.url)),
 		}, handle);
-		await new Promise<void>(resolve => server.listen(443, resolve));
+		await new Promise<void>(resolve => server.listen(443, process.env.CHERRYPICK_FED_FAKE_BIND ?? '0.0.0.0', resolve));
 	});
 
 	afterAll(async () => {
@@ -156,7 +187,7 @@ describe('Chat room history from a forging owner', () => {
 	});
 
 	test('only what passes the checks is kept, and nothing is told about the rest', async () => {
-		const roomUri = `${FAKE}/chat/rooms/r1`;
+		const roomUri = `${FAKE}/chat/rooms/${firstRoom}`;
 		const bobUri = `https://b.test/users/${bob.id}`;
 		const aliceUri = `https://a.test/users/${alice.id}`;
 		pages.set(`${roomUri}/history`, page(roomUri, [
@@ -194,7 +225,7 @@ describe('Chat room history from a forging owner', () => {
 	});
 
 	test('a page that points elsewhere for the rest is not used at all', async () => {
-		const roomUri = `${FAKE}/chat/rooms/r2`;
+		const roomUri = `${FAKE}/chat/rooms/${secondRoom}`;
 		pages.set(`${roomUri}/history`, page(roomUri, [note(roomUri, 'misdirected')], 'https://a.test/chat/rooms/r2/history?until=abc'));
 
 		const mirrorId = await inviteBob(roomUri, `forged ${crypto.randomUUID()}`);
@@ -205,5 +236,62 @@ describe('Chat room history from a forging owner', () => {
 
 		const messages = await bob.client.request('chat/messages/room-timeline', { roomId: mirrorId, limit: 100 });
 		deepStrictEqual(messages, []);
+	});
+	test('a repeated item with decreasing fabricated cursors stops', async () => {
+		const roomUri = `${FAKE}/chat/rooms/${repeatRoom}`;
+		const mirrorId = await inviteBob(roomUri, `repeat ${crypto.randomUUID()}`);
+
+		// 다른 그룹의 정상 가져오기는 반복 응답이 끝나기를 기다리지 않는다.
+		const otherRoom = await alice.client.request('chat/rooms/create', { name: `other ${crypto.randomUUID()}` });
+		await alice.client.request('chat/messages/create-to-room', { toRoomId: otherRoom.id, text: 'other history' });
+		const remoteBob = await resolveRemoteUser('b.test', bob.id, alice);
+		await alice.client.request('chat/rooms/invitations/create', { roomId: otherRoom.id, userId: remoteBob.id });
+		const otherMirror = await vi.waitFor(async () => {
+			const invitation = (await bob.client.request('chat/rooms/invitations/inbox', {})).find(item => item.room.name === otherRoom.name);
+			if (invitation == null) throw new Error('the other invitation has not arrived yet');
+			return invitation.roomId;
+		}, WAIT_FOR_FEDERATION);
+		await bob.client.request('chat/rooms/join', { roomId: otherMirror });
+		await vi.waitFor(async () => {
+			const shown = await bob.client.request('chat/rooms/show', { roomId: otherMirror });
+			strictEqual(shown.historyImportStatus, 'completed');
+		}, WAIT_FOR_HISTORY);
+		strictEqual((await bob.client.request('chat/rooms/show', { roomId: mirrorId })).historyImportStatus, 'running');
+		strictEqual((await bob.client.request('chat/messages/room-timeline', { roomId: otherMirror, limit: 100 }))[0]?.text, 'other history');
+
+		const status = await vi.waitFor(async () => {
+			const shown = await bob.client.request('chat/rooms/show', { roomId: mirrorId });
+			if (shown.historyImportStatus === 'running') throw new Error('still running');
+			return shown.historyImportStatus;
+		}, WAIT_FOR_HISTORY);
+
+		strictEqual(status, 'unavailable');
+		strictEqual(repeatedRequests <= 102, true);
+	});
+
+	test('a long series of empty pages stops without being reported as complete', async () => {
+		const roomUri = `${FAKE}/chat/rooms/${emptyRoom}`;
+		const mirrorId = await inviteBob(roomUri, `empty ${crypto.randomUUID()}`);
+		const status = await vi.waitFor(async () => {
+			const shown = await bob.client.request('chat/rooms/show', { roomId: mirrorId });
+			if (shown.historyImportStatus === 'running') throw new Error('still running');
+			return shown.historyImportStatus;
+		}, WAIT_FOR_HISTORY);
+
+		strictEqual(status, 'unavailable');
+		strictEqual(emptyRequests <= 101, true);
+	});
+
+	test('distinct local-author items still count as progress when they are not imported', async () => {
+		const roomUri = `${FAKE}/chat/rooms/${localAuthorRoom}`;
+		const mirrorId = await inviteBob(roomUri, `local author ${crypto.randomUUID()}`);
+		const status = await vi.waitFor(async () => {
+			const shown = await bob.client.request('chat/rooms/show', { roomId: mirrorId });
+			if (shown.historyImportStatus === 'running') throw new Error('still running');
+			return shown.historyImportStatus;
+		}, WAIT_FOR_HISTORY);
+
+		strictEqual(status, 'completed');
+		strictEqual(localAuthorRequests, 110);
 	});
 });

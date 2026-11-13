@@ -40,6 +40,7 @@ import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { QueueService } from '@/core/QueueService.js';
 import { MiChatRoom, MiChatRoomInvitation, MiChatRoomMembership, type UsersRepository, type NotesRepository, type FollowingsRepository, type AbuseUserReportsRepository, type FollowRequestsRepository, type MiChatMessage, type MiMeta, type ChatMessagesRepository, type ChatRoomsRepository, type ChatRoomInvitationsRepository, type ChatRoomMembershipsRepository } from '@/models/_.js';
+import { MiBlocking } from '@/models/Blocking.js';
 import { bindThis } from '@/decorators.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { MiNote } from '@/models/Note.js';
@@ -71,6 +72,7 @@ const DEFERRED_CHAT_DELETE_TTL = 6 * 60 * 60;
 const ROOM_FULL = 'skip: room is full';
 const ROOM_ARCHIVED = 'skip: room is archived';
 const ROOM_BANNED = 'skip: banned from the room';
+const ROOM_BLOCKED = 'skip: blocked by the room owner';
 const CHAT_ROOM_URI = /\/chat\/rooms\/([a-zA-Z0-9]+)$/;
 const MAX_DEFERRED_CHAT_DELETES_PER_ACTOR = 1000;
 
@@ -425,7 +427,12 @@ export class ApInboxService {
 			const locked = await manager.findOne(MiChatRoom, { where: { id: room.id }, lock: { mode: 'pessimistic_write' } });
 			if (locked == null) return 'skip: room not found';
 			const pending = await manager.findOneBy(MiChatRoomInvitation, { roomId: room.id, userId: actor.id });
-			if (pending == null) return 'skip: invitation not found';
+			if (pending == null) {
+				// 차단이 초대를 지운 뒤 상대가 이미 받은 초대에 답했을 수 있다.
+				const member = await manager.existsBy(MiChatRoomMembership, { roomId: room.id, userId: actor.id });
+				if (!member && room.uri == null && await manager.existsBy(MiBlocking, { blockerId: room.ownerId, blockeeId: actor.id })) return ROOM_BLOCKED;
+				return 'skip: invitation not found';
+			}
 			if (activity.published != null && this.answersEarlierInvitation(activity, pending)) return 'skip: this answers an earlier invitation';
 			const lastStated = published != null ? await this.chatRosterService.lastMemberAt(room.id, actor.id, manager) : null;
 			const alreadyLeft = published != null && lastStated != null && published <= lastStated;
@@ -459,6 +466,7 @@ export class ApInboxService {
 			// so the invitation can never be accepted again and would only block a new one.
 			// 그룹장이 내보낸 계정은 어느 초대에 답하든 들이지 않는다. 정원·보관과 같이 상대 서버에 취소를 보낸다.
 			if (await this.chatRoomBanService.isBanned(room.id, actor.id, manager)) return ROOM_BANNED;
+			if (await manager.existsBy(MiBlocking, { blockerId: room.ownerId, blockeeId: actor.id })) return ROOM_BLOCKED;
 			if (locked.isArchived) return ROOM_ARCHIVED;
 
 			const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId: room.id });
@@ -477,10 +485,10 @@ export class ApInboxService {
 			return 'ok';
 		});
 
-		if (result === ROOM_FULL || result === ROOM_ARCHIVED || result === ROOM_BANNED) {
+		if (result === ROOM_FULL || result === ROOM_ARCHIVED || result === ROOM_BANNED || result === ROOM_BLOCKED) {
 			await this.revokeRemoteJoin(room, actor);
 			// 초대 링크의 Join에 답한 초대였으면 그 Join에도 사유를 알린다. 요청한 서버가 사용자에게 사유를 보여 준다
-			await this.chatInviteLinkService.refuseAcceptedJoin(room, actor, result === ROOM_FULL ? 'full' : result === ROOM_BANNED ? 'banned' : 'archived');
+			await this.chatInviteLinkService.refuseAcceptedJoin(room, actor, result === ROOM_FULL ? 'full' : result === ROOM_BANNED ? 'banned' : result === ROOM_BLOCKED ? 'blocked' : 'archived');
 			return result;
 		}
 		if (result !== 'ok') return result;

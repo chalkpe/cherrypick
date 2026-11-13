@@ -270,6 +270,45 @@ describe('수신자별 그룹 알림 소리', () => {
 	});
 });
 
+test('가져오기 완료 후 열린 일부 기록의 중간과 최근 글을 읽음 처리 없이 합친다', async () => {
+	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m1', 'bob', 0)];
+	const { container } = await renderRoom();
+	mocks.timeline = [message('m4', 'alice', 3 * MINUTE), message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
+	vi.mocked(misskeyApi).mockClear();
+
+	mocks.channel.emit('historyImported', { status: 'completed' });
+
+	await waitFor(() => {
+		expect([...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'))).toEqual(['m1', 'm2', 'm3', 'm4']);
+	});
+	const reads = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline');
+	expect(reads.length).toBeGreaterThan(0);
+	expect(reads.every(([, params]) => params != null && ('untilDate' in params || 'untilId' in params))).toBe(true);
+	expect(reads[0][1]).toMatchObject({ untilDate: Number.MAX_SAFE_INTEGER });
+	expect(playMisskeySfx).not.toHaveBeenCalled();
+});
+
+test('가져온 기록이 한 페이지보다 많아도 열린 범위까지 이어서 합친다', async () => {
+	mocks.timeline = [message('m151', 'alice', 151 * MINUTE), message('m001', 'bob', MINUTE)];
+	const { container } = await renderRoom();
+	const imported = Array.from({ length: 150 }, (_, i) => message(`m${String(150 - i).padStart(3, '0')}`, 'alice', (150 - i) * MINUTE));
+	vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+		if (endpoint === 'chat/messages/room-timeline') {
+			return (params != null && 'untilId' in params ? imported.slice(100) : imported.slice(0, 100)) as never;
+		}
+		return apiMock(endpoint, params);
+	});
+	try {
+		mocks.channel.emit('historyImported', { status: 'completed' });
+		await waitFor(() => expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(151));
+		const reads = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline');
+		expect(reads.some(([, params]) => params != null && 'untilId' in params && params.untilId === 'm051')).toBe(true);
+		expect(playMisskeySfx).not.toHaveBeenCalled();
+	} finally {
+		vi.mocked(misskeyApi).mockImplementation(apiMock);
+	}
+});
+
 describe('following the newest message', () => {
 	const FULL_PAGE = 20;
 

@@ -310,6 +310,7 @@ watch([displayTimeline, groupPositions], () => {
 // ボタンを押している途中に動かすと、ボタンが逃げて押せなくなる
 const newestMessageId = computed(() => messages.value[0]?.id);
 let wasNearNewest = true;
+let mergingHistory = false;
 
 // 描画のあとに測ると、読んでいた場所を保つためにブラウザが新着の高さの分だけ動かしたあとの位置になり、
 // 新着が高いと最下部の近くにいても遠くにいたことになってしまう。column-reverseなのでscrollTopは負になる
@@ -321,6 +322,7 @@ watch(newestMessageId, () => {
 // column-reverseなので本来はスクロール位置の最下部への追従は不要なはずだが、おそらくブラウザのバグにより、最下部にスクロールした状態でも追従されない場合がある(スクロール位置が少数になることがあるのが関わっていそう)
 // そのため補助として描画のあとに追従を行う
 watch(newestMessageId, (_newest, previous) => {
+	if (mergingHistory) return;
 	// KeepAlive で裏に回っているあいだや、ほかのタブを見ているあいだは、スクロールする箱がない
 	const scrollContainer = getScrollContainer(timelineEl.value);
 	if (scrollContainer == null) return;
@@ -713,11 +715,65 @@ function onMembershipEnded(ctx: Parameters<Misskey.Channels['chatRoom']['events'
 // 가져온 옛 글은 새 글로 알려지지 않는다. 진행을 알려 오면 옛 글을 다시 읽을 수 있게 한다
 function onHistoryImported(ctx: Parameters<Misskey.Channels['chatRoom']['events']['historyImported']>[0]) {
 	if (room.value == null) return;
-	room.value = { ...room.value, historyImportStatus: ctx.status };
-	if (messages.value.length === 0) {
-		readAgain();
+	if (messages.value.length > 0 && ctx.status === 'completed') {
+		void refreshImportedHistory();
 	} else {
-		canFetchMore.value = true;
+		room.value = { ...room.value, historyImportStatus: ctx.status };
+		if (messages.value.length > 0) return;
+		readAgain();
+	}
+}
+
+let refreshingImportedHistory = false;
+let importedHistoryRefreshPending = false;
+
+async function refreshImportedHistory() {
+	importedHistoryRefreshPending = true;
+	if (refreshingImportedHistory) return;
+	refreshingImportedHistory = true;
+	try {
+		while (importedHistoryRefreshPending && room.value != null && messages.value.length > 0) {
+			importedHistoryRefreshPending = false;
+			const version = conversationVersion;
+			const roomId = room.value.id;
+			const channelId = props.channelId;
+			const oldest = messages.value[messages.value.length - 1].id;
+			const imported: Misskey.entities.ChatMessageLiteForRoom[] = [];
+			let untilId: string | undefined;
+			try {
+				for (;;) {
+					// untilDate / untilId を付けると、履歴の再取得で既読にならない。未来の日付はサーバーの現在時刻に丸められる。
+					const page = await misskeyApi('chat/messages/room-timeline', {
+						roomId, ...(channelId ? { channelId } : {}), limit: 100, includeDeleted: true,
+						...(untilId ? { untilId } : { untilDate: Number.MAX_SAFE_INTEGER }),
+					});
+					if (destroyed || version !== conversationVersion) return;
+					imported.push(...page);
+					const last = page.at(-1)?.id;
+					if (page.length < 100 || last == null || last <= oldest || last === untilId) break;
+					untilId = last;
+				}
+			} catch {
+				// 取得できなかった範囲は、次の読み直しで再試行できる。
+				if (!destroyed && version === conversationVersion && room.value != null) {
+					room.value = { ...room.value, historyImportStatus: 'completed' };
+					canFetchMore.value = true;
+				}
+				return;
+			}
+			const existing = new Set(messages.value.map(message => message.id));
+			const added = imported.filter(message => !existing.has(message.id)).map(normalizeMessage);
+			const restore = readingPlace.whileMergingHistory();
+			mergingHistory = true;
+			room.value = { ...room.value!, historyImportStatus: 'completed' };
+			canFetchMore.value = true;
+			messages.value = [...messages.value, ...added].toSorted((a, b) => a.id < b.id ? 1 : -1);
+			await nextTick();
+			restore();
+			mergingHistory = false;
+		}
+	} finally {
+		refreshingImportedHistory = false;
 	}
 }
 

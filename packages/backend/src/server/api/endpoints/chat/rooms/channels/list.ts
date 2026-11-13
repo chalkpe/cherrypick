@@ -36,7 +36,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		super(meta, paramDef, async (ps, me) => {
 			await this.chatService.checkChatAvailability(me.id, 'read');
 			try {
-				const room = await this.channels.memberRoom(me.id, ps.roomId);
+				const room = await this.chatService.findRoomById(ps.roomId);
+				if (room == null || !await this.chatService.hasPermissionToViewRoomTimeline(me.id, room)) throw new ChatChannelError('NO_SUCH_ROOM');
 				return (await this.channels.list(room.id)).map(channel => this.channels.pack(channel, room));
 			} catch (err) {
 				if (err instanceof ChatChannelError) throw new ApiError(meta.errors[err.reason]);

@@ -19,6 +19,7 @@ import { ChatChannelError, parseChatChannels } from '@/core/chat-room-channels.j
 import type { ChatChannelRef } from '@/core/chat-room-channels.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
+import { MiBlocking } from '@/models/Blocking.js';
 import type { IObject } from '@/core/activitypub/type.js';
 import { IdService } from '@/core/IdService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
@@ -724,7 +725,7 @@ export class ChatService {
 		const trimmed = text.trim();
 		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > MAX_CHAT_MESSAGE_TEXT_LENGTH) throw new ChatMessageInvalidTextError('invalid text');
 
-		const channelRefs = message.toRoomId != null ? await this.chatRoomChannelService.localRefs(await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }), text, refs) : [];
+		const channelRefs = message.toRoomId != null ? await this.chatRoomChannelService.localRefs(await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }), text, refs, undefined, message) : [];
 		if (message.toRoomId == null && refs.length) throw new ChatChannelError('INVALID_CHANNEL_REFS');
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));
@@ -1276,6 +1277,9 @@ export class ChatService {
 				// 금지 기록은 그룹장의 서버가 가지므로 이 서버의 그룹에서만 확인한다.
 				if (roomOwner?.host == null && await this.chatRoomBanService.isBanned(roomId, userId, manager)) {
 					throw new ChatRoomBannedError('banned from the room');
+				}
+				if (roomOwner?.host == null && await manager.existsBy(MiBlocking, { blockerId: room.ownerId, blockeeId: userId })) {
+					throw new ChatRoomAccessError('blocked by the room owner');
 				}
 				const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId });
 				if (membershipsCount >= MAX_ROOM_MEMBERS) throw new ChatRoomFullError('room is full');
@@ -2368,14 +2372,19 @@ export class ChatService {
 			if (user.isSuspended && !ACTIVITIES_FOR_SUSPENDED_ACCOUNTS.has(activity.type)) continue;
 
 			if (message?.toRoomId != null && room == null) continue;
-			if (message != null && room?.hasChannels && !await this.chatRoomChannelService.deliverableTo(user.host, message, room)) continue;
+			const isLegacyChannel = message?.toRoomChannelId != null && message.toRoomChannelId === room?.legacyChannelId;
+			const channelCapabilityHost = message != null && room?.hasChannels && !isLegacyChannel ? user.host : undefined;
 
 			// Every recipient is named in the activity, so a server needs it only once however many members it has.
 			const inbox = user.sharedInbox ?? user.inbox;
 			if (inbox == null || delivered.has(inbox)) continue;
 
 			delivered.add(inbox);
-			this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null);
+			if (channelCapabilityHost != null) {
+				this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null, channelCapabilityHost);
+			} else {
+				this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null);
+			}
 		}
 	}
 

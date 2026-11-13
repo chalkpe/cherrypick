@@ -54,6 +54,8 @@ export function useChatReadingPlace(options: {
 	 * 読み込んだ分とのつなぎ目の吹き出しは、まとまりの途中になって低くなることがある。その下の読んでいた場所は動かないので、つなぎ目を基準に保ってはいけない
 	 */
 	whileLoadingEarlier: () => () => void;
+	/** 読み込んだ履歴を現在表示中の範囲に挿入するとき、見ている場所を保つ。 */
+	whileMergingHistory: () => () => void;
 } {
 	let place: ReadingPlace | null = null;
 	let settleTimer: number | null = null;
@@ -198,6 +200,21 @@ export function useChatReadingPlace(options: {
 				// 動いたときだけ戻す。慣性で動いている途中に書くとスクロールが止まるので、同じ値は書かない
 				if (scroller != null && scrollTop != null && scroller.scrollTop !== scrollTop) scroller.scrollTop = scrollTop;
 				paused = false;
+				if (settleTimer == null) remember();
+			};
+		},
+		whileMergingHistory() {
+			const scroller = getScrollContainer(options.timeline.value ?? null);
+			const viewTop = scroller?.getBoundingClientRect().top;
+			const anchor = viewTop == null ? undefined : options.items().find(item => item.getBoundingClientRect().bottom > viewTop);
+			const top = anchor == null ? undefined : topOnScreen(anchor);
+			paused = true;
+			return () => {
+				paused = false;
+				if (scroller != null && anchor?.isConnected && top != null && settleTimer == null && !isTouching() && getScrollContainer(options.timeline.value ?? null) === scroller) {
+					const moved = topOnScreen(anchor) - top;
+					if (Math.abs(moved) >= SAME_POSITION_PX) scroller.scrollTop += moved;
+				}
 				if (settleTimer == null) remember();
 			};
 		},

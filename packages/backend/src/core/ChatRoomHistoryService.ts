@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { createHash } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { In, IsNull } from 'typeorm';
@@ -100,7 +101,9 @@ export class ChatRoomHistoryService {
 	@bindThis
 	public async renderPage(room: MiChatRoom, requester: Pick<MiUser, 'host'>, until: string | null): Promise<IObject> {
 		const roomUri = this.apRendererService.genLocalChatRoomUri(room.id);
-		const legacyOnly = room.hasChannels && !await this.chatRoomChannelService.deliverableTo(requester.host, { toRoomChannelId: null }, room);
+		const capability = await this.chatRoomChannelService.deliverableTo(requester.host, { toRoomChannelId: null }, room);
+		if (capability == null) throw new Error('chat room channel capability is temporarily unavailable');
+		const legacyOnly = room.hasChannels && !capability;
 		if (legacyOnly && room.legacyChannelId == null) return buildChatHistoryPage(roomUri, until, [], null);
 
 		const query = this.chatMessagesRepository.createQueryBuilder('message')
@@ -211,6 +214,10 @@ export class ChatRoomHistoryService {
 
 		const now = new Date();
 		const state = await this.chatRoomHistoryStatesRepository.findOneBy({ roomId: room.id });
+		if (!options.restart && state?.status === 'running') {
+			if (await this.redisClient.exists(`chat_room_history_lock:${room.id}`)) return;
+			if (await this.hasPendingImport(room.id, state.pass)) return;
+		}
 		if (state == null) {
 			await this.chatRoomHistoryStatesRepository.createQueryBuilder().insert()
 				.values({ roomId: room.id, status: 'running', nextUri: null, pass: 1, completedAt: null, updatedAt: now })
@@ -228,7 +235,28 @@ export class ChatRoomHistoryService {
 		}
 
 		// 참여 직후에는 소유 서버가 수락을 처리할 시간을 조금 둔다
-		await this.queueService.createChatRoomHistorySyncJob(room.id, options.restart ? JOIN_DELAY : undefined);
+		const current = await this.getState(room.id);
+		if (current?.status === 'running') await this.enqueueImport(room.id, current.pass, current.nextUri, options.restart ? JOIN_DELAY : undefined);
+	}
+
+	private historyJobKey(roomId: string, pass: number): string {
+		return `chat_room_history_job:${roomId}:${pass}`;
+	}
+
+	private async hasPendingImport(roomId: string, pass: number): Promise<boolean> {
+		const id = await this.redisClient.get(this.historyJobKey(roomId, pass));
+		if (id == null) return false;
+		const job = await this.queueService.dbQueue.getJob(id);
+		if (job == null) return false;
+		return ['active', 'waiting', 'delayed', 'prioritized', 'waiting-children'].includes(await job.getState());
+	}
+
+	/** 같은 차례의 같은 위치는 큐에 한 번만 넣는다. 큐가 사라지면 다시 요청할 수 있다. */
+	public async enqueueImport(roomId: string, pass: number, nextUri: string | null, delay?: number): Promise<void> {
+		const hash = createHash('sha256').update(JSON.stringify([roomId, pass, nextUri])).digest('hex');
+		const id = `chat-history-${hash}`;
+		await this.queueService.createChatRoomHistorySyncJob(roomId, pass, id, delay);
+		await this.redisClient.set(this.historyJobKey(roomId, pass), id, 'EX', 7 * 24 * 60 * 60);
 	}
 
 	/** 지금 받고 있는 차례. 처음부터 다시 받기로 바뀌면 pass가 달라진다. */

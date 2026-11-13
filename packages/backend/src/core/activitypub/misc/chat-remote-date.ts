@@ -5,6 +5,14 @@
 
 const MAX_REMOTE_CLOCK_LEAD = 5 * 60 * 1000;
 
+/** 유효한 날짜지만 현재 허용 범위보다 앞서 있어 나중에 다시 확인할 수 있다. */
+export function isFutureRemoteChatDate(value: unknown, now = Date.now()): boolean {
+	if (typeof value !== 'string') return false;
+	const date = new Date(value);
+	const year = date.getUTCFullYear();
+	return Number.isFinite(date.getTime()) && year >= 0 && year <= 9999 && date.getTime() > now + MAX_REMOTE_CLOCK_LEAD;
+}
+
 /**
  * A date another server stated, for ordering what it sends. A date far ahead would freeze whatever it is compared
  * with until then, and JavaScript accepts years PostgreSQL refuses, which would only use up the inbox queue's retries.

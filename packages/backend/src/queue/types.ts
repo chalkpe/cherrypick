@@ -27,6 +27,8 @@ export type DeliverJobData = {
 	to: string;
 	/** whether it is sharedInbox */
 	isSharedInbox: boolean;
+	/** Host whose channel support must be confirmed before delivery. */
+	channelCapabilityHost?: string;
 };
 
 export type InboxJobData = {
@@ -72,10 +74,12 @@ export type DbJobMap = {
 
 export type ChatRoomRosterSyncJobData = {
 	roomId: string;
+	retryFutureChannels?: boolean;
 };
 
 export type ChatRoomHistorySyncJobData = {
 	roomId: string;
+	pass?: number;
 };
 
 export type DbJobDataWithUser = {
