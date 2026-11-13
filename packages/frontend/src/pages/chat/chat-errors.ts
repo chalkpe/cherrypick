@@ -38,6 +38,7 @@ export const chatJoinErrors: ApiWithDialogCustomErrors = {
 	'84416476-5ce8-4a2c-b568-9569f1b10733': { text: i18n.ts._chat.roomUnavailable },
 	'c60a4f18-d3b2-4e75-9c06-7a1e58d3f2b9': { text: i18n.ts._chat.thisRoomIsArchived },
 	'56d5a1da-4d30-4f7d-a931-f62e746533f9': { text: i18n.ts._chat.roomIsFull },
+	'5ebcda3b-b8cc-4be8-9e3b-6422c7d915ad': { text: i18n.ts._chat.bannedFromRoom },
 };
 
 // 招待を送ったときに返るエラー
@@ -50,6 +51,7 @@ export const chatInviteErrors: ApiWithDialogCustomErrors = {
 	'167a1ccf-d9ab-415e-941d-d08f28b2ca07': { text: i18n.ts._chat.cannotInviteUser },
 	'c2789971-48e2-41ac-b4f4-1304696987f7': { text: i18n.ts._chat.cannotInviteUser },
 	'a10a39b2-9ecb-4c77-8827-028bc550f977': { text: i18n.ts._chat.alreadyMember },
+	'f76f1893-4efa-4c4c-94ea-a7b47a60e056': { text: i18n.ts._chat.cannotInviteBannedUser },
 	'20ec0050-1c71-4cd9-b246-67772af61bbf': { text: i18n.ts._chat.alreadyInvited },
 	'a3fc0535-5d74-4106-8b78-3f6ee467baca': { text: i18n.ts._chat.cannotInviteUser },
 	'9f802721-ad05-411c-806a-e9367ab1facf': { text: i18n.ts._chat.cannotInviteUser },
@@ -72,6 +74,13 @@ export const chatKickErrors: ApiWithDialogCustomErrors = {
 	...fallback,
 	'932260a0-ccf0-4caf-87be-3e9cccd12c2f': { text: i18n.ts._chat.roomUnavailable },
 	'b4c87e54-c36a-40f4-99c7-b72032c48482': { text: i18n.ts._chat.memberAlreadyGone },
+};
+
+// 내보낸 사람을 사면할 때 돌아오는 오류
+export const chatBanDeleteErrors: ApiWithDialogCustomErrors = {
+	...fallback,
+	'a47c066d-ec11-4e15-930c-49977f0ffac4': { text: i18n.ts._chat.roomUnavailable },
+	'9b33975c-b8a2-4378-b3f9-3a7e898e0b0d': { text: i18n.ts._chat.banAlreadyLifted },
 };
 
 export const chatRoomUpdateErrors: ApiWithDialogCustomErrors = {

@@ -92,6 +92,7 @@ import {
 	MiChatRoomMembership,
 	MiChatRoomRosterState,
 	MiChatRoomInvitation,
+	MiChatRoomBan,
 	MiChatApproval,
 } from './_.js';
 import { NoteHistory } from './NoteHistory.js';
@@ -584,6 +585,12 @@ const $chatRoomInvitationsRepository: Provider = {
 	inject: [DI.db],
 };
 
+const $chatRoomBansRepository: Provider = {
+	provide: DI.chatRoomBansRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiChatRoomBan).extend(miRepository as MiRepository<MiChatRoomBan>),
+	inject: [DI.db],
+};
+
 const $chatApprovalsRepository: Provider = {
 	provide: DI.chatApprovalsRepository,
 	useFactory: (db: DataSource) => db.getRepository(MiChatApproval).extend(miRepository as MiRepository<MiChatApproval>),
@@ -698,6 +705,7 @@ const $noteHistoryRepository: Provider = {
 		$chatRoomMembershipsRepository,
 		$chatRoomRosterStatesRepository,
 		$chatRoomInvitationsRepository,
+		$chatRoomBansRepository,
 		$chatApprovalsRepository,
 		$bubbleGameRecordsRepository,
 		$reversiGamesRepository,
@@ -786,6 +794,7 @@ const $noteHistoryRepository: Provider = {
 		$chatRoomMembershipsRepository,
 		$chatRoomRosterStatesRepository,
 		$chatRoomInvitationsRepository,
+		$chatRoomBansRepository,
 		$chatApprovalsRepository,
 		$bubbleGameRecordsRepository,
 		$reversiGamesRepository,

@@ -83,6 +83,7 @@ import { ChatDiceService } from './ChatDiceService.js';
 import { ChatService } from './ChatService.js';
 import { ChatRoomChannelService } from './ChatRoomChannelService.js';
 import { ChatRoomNotificationService } from './ChatRoomNotificationService.js';
+import { ChatRoomBanService } from './ChatRoomBanService.js';
 import { ChatRosterService } from './ChatRosterService.js';
 import { LiveKitService } from './LiveKitService.js';
 import { VoiceBackendService } from './VoiceBackendService.js';
@@ -430,6 +431,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChatService,
 		ChatRoomChannelService,
 		ChatRoomNotificationService,
+		ChatRoomBanService,
 		ChatDiceService,
 		ChatRosterService,
 		LiveKitService,
@@ -776,6 +778,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ChatService,
 		ChatRoomChannelService,
 		ChatRoomNotificationService,
+		ChatRoomBanService,
 		ChatDiceService,
 		ChatRosterService,
 		LiveKitService,

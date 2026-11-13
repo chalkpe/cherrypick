@@ -7035,7 +7035,7 @@ export interface Locale extends ILocale {
          */
         "kickMember": string;
         /**
-         * {name}さんを「{room}」から外しますか？このグループのメッセージは見られなくなり、戻るには再度招待が必要です。
+         * {name}さんを「{room}」から外しますか？このグループのメッセージは見られなくなり、再参加を許可するまで戻れません。
          */
         "kickMemberConfirm": ParameterizedString<"name" | "room">;
         /**
@@ -7118,6 +7118,30 @@ export interface Locale extends ILocale {
          * このメンバーはすでにグループにいません。
          */
         "memberAlreadyGone": string;
+        /**
+         * 外したユーザー
+         */
+        "bannedUsers": string;
+        /**
+         * 再参加を許可
+         */
+        "pardon": string;
+        /**
+         * {name}さんの再参加を許可しますか？再び招待したり、参加したりできるようになります。
+         */
+        "pardonConfirm": ParameterizedString<"name">;
+        /**
+         * グループのオーナーに外されたため、このグループには再参加できません。
+         */
+        "bannedFromRoom": string;
+        /**
+         * このグループから外したユーザーです。再参加を許可すると招待できます。
+         */
+        "cannotInviteBannedUser": string;
+        /**
+         * このユーザーはすでに再参加が許可されています。
+         */
+        "banAlreadyLifted": string;
         /**
          * メッセージを編集中
          */

@@ -28,6 +28,22 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</MkButton>
 	</div>
 
+	<template v-if="isOwner && bans.length > 0">
+		<hr>
+
+		<div>{{ i18n.ts._chat.bannedUsers }}</div>
+
+		<div v-for="ban in bans" :key="ban.id" :class="$style.membership">
+			<MkA :class="$style.membershipBody" :to="`${userPage(ban.user)}`">
+				<MkUserCardMini :user="ban.user"/>
+			</MkA>
+			<MkButton :disabled="pardoningUserId != null" @click="pardon(ban)">
+				<i class="ti ti-user-check" aria-hidden="true"></i> {{ i18n.ts._chat.pardon }}
+			</MkButton>
+		</div>
+		<MkButton v-if="hasMoreBans" rounded style="margin: 0 auto;" @click="loadBans(true)">{{ i18n.ts.loadMore }}</MkButton>
+	</template>
+
 	<template v-if="isOwner">
 		<hr>
 
@@ -55,7 +71,7 @@ import MkUserCardMini from '@/components/MkUserCardMini.vue';
 import { userPage } from '@@/js/user.js';
 import { ensureSignin } from '@/i.js';
 import * as os from '@/os.js';
-import { chatCancelInvitationErrors, chatKickErrors } from './chat-errors.js';
+import { chatBanDeleteErrors, chatCancelInvitationErrors, chatKickErrors } from './chat-errors.js';
 
 const $i = ensureSignin();
 
@@ -74,6 +90,23 @@ const isOwner = computed(() => {
 const memberships = ref<Misskey.entities.ChatRoomMembership[]>([]);
 const invitations = ref<Misskey.entities.ChatRoomInvitation[]>([]);
 const removingMemberId = ref<string | null>(null);
+const bans = ref<Misskey.entities.ChatRoomBan[]>([]);
+const hasMoreBans = ref(false);
+const pardoningUserId = ref<string | null>(null);
+
+// 그룹장이 내보낸 사람은 사면하기 전까지 다시 참여할 수 없다. 목록은 그룹장만 읽을 수 있다
+const BAN_PAGE_SIZE = 100;
+
+async function loadBans(more = false) {
+	const untilId = more ? bans.value.at(-1)?.id : undefined;
+	const page = await misskeyApi('chat/rooms/bans/list', {
+		roomId: props.room.id,
+		limit: BAN_PAGE_SIZE,
+		...(untilId != null ? { untilId } : {}),
+	});
+	bans.value = more ? [...bans.value, ...page] : page;
+	hasMoreBans.value = page.length === BAN_PAGE_SIZE;
+}
 
 async function kickMember(membership: Misskey.entities.ChatRoomMembership) {
 	if (!isOwner.value || membership.userId === $i.id || removingMemberId.value != null) return;
@@ -87,10 +120,31 @@ async function kickMember(membership: Misskey.entities.ChatRoomMembership) {
 		if (canceled) return;
 		await os.apiWithDialog('chat/rooms/kick', { roomId: props.room.id, userId: membership.userId }, undefined, chatKickErrors);
 		memberships.value = memberships.value.filter(member => member.id !== membership.id);
+		// 방금 내보낸 사람이 목록에 바로 보이도록 다시 읽는다
+		await loadBans().catch(() => {});
 	} catch {
 		// apiWithDialog already displays the request error; keep the member visible.
 	} finally {
 		removingMemberId.value = null;
+	}
+}
+
+// 사면은 금지 기록만 지운다. 다시 초대하거나 알리는 일은 하지 않는다
+async function pardon(ban: Misskey.entities.ChatRoomBan) {
+	if (!isOwner.value || pardoningUserId.value != null) return;
+	pardoningUserId.value = ban.userId;
+	try {
+		const { canceled } = await os.confirm({
+			type: 'warning',
+			text: i18n.tsx._chat.pardonConfirm({ name: ban.user.name || ban.user.username }),
+		});
+		if (canceled) return;
+		await os.apiWithDialog('chat/rooms/bans/delete', { roomId: props.room.id, userId: ban.userId }, undefined, chatBanDeleteErrors);
+		bans.value = bans.value.filter(other => other.id !== ban.id);
+	} catch {
+		// apiWithDialog가 오류를 이미 보여 줬다. 목록은 그대로 둔다
+	} finally {
+		pardoningUserId.value = null;
 	}
 }
 
@@ -126,6 +180,7 @@ onMounted(async () => {
 			roomId: props.room.id,
 			limit: 50,
 		});
+		await loadBans();
 	}
 });
 </script>

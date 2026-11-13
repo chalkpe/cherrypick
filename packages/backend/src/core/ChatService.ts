@@ -14,6 +14,7 @@ import type { Config } from '@/config.js';
 import { QueueService } from '@/core/QueueService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
+import { ChatRoomBanService } from '@/core/ChatRoomBanService.js';
 import { ChatChannelError, parseChatChannels } from '@/core/chat-room-channels.js';
 import type { ChatChannelRef } from '@/core/chat-room-channels.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
@@ -61,8 +62,10 @@ export class ChatRoomArchivedError extends Error {}
 /** The invitation or membership a request relies on is missing. Callers must not reveal whether the room exists. */
 export class ChatRoomAccessError extends Error {}
 export class ChatRoomFullError extends Error {}
+/** 그룹장이 내보낸 계정이며 아직 사면되지 않았다. */
+export class ChatRoomBannedError extends Error {}
 export class ChatRoomInvitationRefusedError extends Error {
-	constructor(public reason: 'yourself' | 'noSuchUser' | 'suspended' | 'alreadyMember' | 'alreadyInvited' | 'blocked' | 'blocking') {
+	constructor(public reason: 'yourself' | 'noSuchUser' | 'suspended' | 'alreadyMember' | 'banned' | 'alreadyInvited' | 'blocked' | 'blocking') {
 		super(reason);
 	}
 }
@@ -157,6 +160,7 @@ export class ChatService {
 		private chatDiceService: ChatDiceService,
 		private chatRoomChannelService: ChatRoomChannelService,
 		private chatRoomNotificationService: ChatRoomNotificationService,
+		private chatRoomBanService: ChatRoomBanService,
 	) {
 	}
 
@@ -610,6 +614,7 @@ export class ChatService {
 	 * The unread marks of a direct message from this account lead to something no longer shown, so they go.
 	 * A remote account also leaves the rooms owned here and loses its invitations to them, for good:
 	 * lifting the suspension does not bring either back.
+	 * 다만 재참여 금지는 남기지 않는다. 그룹장이 직접 내보낸 것이 아니므로 정지가 풀리면 다시 초대할 수 있다.
 	 */
 	@bindThis
 	public async handleUserSuspended(user: MiUser): Promise<void> {
@@ -638,7 +643,7 @@ export class ChatService {
 		await Promise.allSettled([
 			...memberships.map(async membership => {
 				const room = roomOwnedHere(membership.roomId);
-				if (room?.owner != null) await this.kickRoomMember(room.owner, room, user.id);
+				if (room?.owner != null) await this.evictRoomMember(room.owner, room, user.id);
 			}),
 			...invitations.map(async invitation => {
 				const room = roomOwnedHere(invitation.roomId);
@@ -1108,50 +1113,48 @@ export class ChatService {
 			throw new ChatRoomInvitationRefusedError('yourself');
 		}
 
-		const room = await this.chatRoomsRepository.findOneBy({ id: roomId, ownerId: inviterId });
-		if (room == null) throw new ChatRoomAccessError('no such room');
+		const initialRoom = await this.chatRoomsRepository.findOneBy({ id: roomId, ownerId: inviterId });
+		if (initialRoom == null) throw new ChatRoomAccessError('no such room');
 
-		if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
+		if (initialRoom.isArchived) throw new ChatRoomArchivedError('room is archived');
 
 		const invitee = await this.usersRepository.findOneBy({ id: inviteeId });
 		if (invitee == null) throw new ChatRoomInvitationRefusedError('noSuchUser');
 		if (invitee.isSuspended) throw new ChatRoomInvitationRefusedError('suspended');
 
-		if (await this.isRoomMember(room, inviteeId)) {
-			throw new ChatRoomInvitationRefusedError('alreadyMember');
-		}
-
-		const existingInvitation = await this.chatRoomInvitationsRepository.findOneBy({ roomId, userId: inviteeId });
-		if (existingInvitation) {
-			throw new ChatRoomInvitationRefusedError('alreadyInvited');
-		}
-
-		const membershipsCount = await this.chatRoomMembershipsRepository.countBy({ roomId });
-		if (membershipsCount >= MAX_ROOM_MEMBERS) {
-			throw new ChatRoomFullError('room is full');
-		}
-
+		// 차단 조회는 잠금 전에 끝내고, 거절은 기존 자격 검사 순서로 처리한다.
 		const [blocked, blocking] = await Promise.all([
 			this.userBlockingService.checkBlocked(inviteeId, inviterId),
 			this.userBlockingService.checkBlocked(inviterId, inviteeId),
 		]);
-		if (blocked) {
-			throw new ChatRoomInvitationRefusedError('blocked');
-		}
-		if (blocking) {
-			throw new ChatRoomInvitationRefusedError('blocking');
-		}
 
-		const invitation = {
-			id: this.idService.gen(),
-			roomId: room.id,
-			userId: inviteeId,
-		} satisfies Partial<MiChatRoomInvitation>;
+		// 보관·내보내기·가입과 같은 그룹 잠금 아래에서 자격을 다시 확인하고 초대를 만든다.
+		const { room, invitation, created } = await this.db.transaction(async manager => {
+			const room = await manager.findOne(MiChatRoom, { where: { id: roomId, ownerId: inviterId }, lock: { mode: 'pessimistic_write' } });
+			if (room == null) throw new ChatRoomAccessError('no such room');
+			if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
 
-		const created = await this.chatRoomInvitationsRepository.insertOne(invitation).catch(err => {
-			// A second request can pass the check above while the first one is still inserting.
-			if (isDuplicateKeyValueError(err)) throw new ChatRoomInvitationRefusedError('alreadyInvited');
-			throw err;
+			const membership = await manager.findOneBy(MiChatRoomMembership, { roomId, userId: inviteeId });
+			if (membership != null) throw new ChatRoomInvitationRefusedError('alreadyMember');
+			if (await this.chatRoomBanService.isBanned(roomId, inviteeId, manager)) throw new ChatRoomInvitationRefusedError('banned');
+
+			const existingInvitation = await manager.findOneBy(MiChatRoomInvitation, { roomId, userId: inviteeId });
+			if (existingInvitation != null) throw new ChatRoomInvitationRefusedError('alreadyInvited');
+			const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId });
+			if (membershipsCount >= MAX_ROOM_MEMBERS) throw new ChatRoomFullError('room is full');
+			if (blocked) throw new ChatRoomInvitationRefusedError('blocked');
+			if (blocking) throw new ChatRoomInvitationRefusedError('blocking');
+
+			const invitation = {
+				id: this.idService.gen(),
+				roomId,
+				userId: inviteeId,
+			} satisfies Partial<MiChatRoomInvitation>;
+			const created = await manager.withRepository(this.chatRoomInvitationsRepository).insertOne(invitation).catch(err => {
+				if (isDuplicateKeyValueError(err)) throw new ChatRoomInvitationRefusedError('alreadyInvited');
+				throw err;
+			});
+			return { room, invitation, created };
 		});
 
 		const inviter = await this.usersRepository.findOneByOrFail({ id: inviterId });
@@ -1243,6 +1246,11 @@ export class ChatService {
 			}
 			const existingMembership = await manager.findOneBy(MiChatRoomMembership, { roomId, userId });
 			if (existingMembership == null) {
+				// 이미 멤버인 사람(계정 이전으로 금지를 이어받은 새 계정 등)은 그대로 둔다.
+				// 금지 기록은 그룹장의 서버가 가지므로 이 서버의 그룹에서만 확인한다.
+				if (roomOwner?.host == null && await this.chatRoomBanService.isBanned(roomId, userId, manager)) {
+					throw new ChatRoomBannedError('banned from the room');
+				}
 				const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId });
 				if (membershipsCount >= MAX_ROOM_MEMBERS) throw new ChatRoomFullError('room is full');
 			}
@@ -1496,15 +1504,29 @@ export class ChatService {
 		}
 	}
 
-	/** Only the local owner can remove another member and announce it to all peers. */
+	/**
+	 * 그룹장이 멤버를 직접 내보낸다. 내보낸 계정은 사면하기 전까지 다시 참여할 수 없다.
+	 * 멤버십을 끝내는 트랜잭션에서 그룹 잠금 아래 금지를 기록하므로 그 사이에 참여가 끼어들 수 없다.
+	 */
 	@bindThis
 	public async kickRoomMember(owner: MiUser, room: MiChatRoom, userId: MiUser['id']): Promise<boolean> {
+		return await this.removeRoomMemberAsOwner(owner, room, userId, { ban: true });
+	}
+
+	/** 계정 정지처럼 서버가 스스로 멤버를 정리한다. 그룹장의 결정이 아니므로 금지를 기록하지 않는다. */
+	@bindThis
+	public async evictRoomMember(owner: MiUser, room: MiChatRoom, userId: MiUser['id']): Promise<boolean> {
+		return await this.removeRoomMemberAsOwner(owner, room, userId, { ban: false });
+	}
+
+	/** Only the local owner can remove another member and announce it to all peers. */
+	private async removeRoomMemberAsOwner(owner: MiUser, room: MiChatRoom, userId: MiUser['id'], options: { ban: boolean }): Promise<boolean> {
 		if (owner.host != null || room.ownerId !== owner.id || userId === owner.id) return false;
 
 		// Keep the target in the delivery list so their server also revokes access.
 		const participants = await this.participantsForRoom(room);
 		const member = participants.find(user => user.id === userId);
-		if (member == null || !await this.removeRoomMember(room, member)) return false;
+		if (member == null || !await this.removeRoomMember(room, member, options)) return false;
 
 		await this.liveKitService.removeParticipant(room.id, this.liveKitService.identityOf(member)).catch(() => {});
 		const memberUri = member.host == null ? this.userEntityService.genLocalUserUri(member.id) : member.uri;
@@ -1518,14 +1540,19 @@ export class ChatService {
 		return true;
 	}
 
-	/** Applies a membership end that another server announced, so nothing is federated back. */
+	/**
+	 * 멤버십을 끝내되 연합으로 알리지는 않는다.
+	 * `ban`은 그룹장의 직접 내보내기만 넘기며, 같은 트랜잭션에서 재참여 금지를 기록한다.
+	 */
 	@bindThis
-	public async removeRoomMember(room: MiChatRoom, member: MiUser): Promise<boolean> {
+	public async removeRoomMember(room: MiChatRoom, member: MiUser, options: { ban?: boolean } = {}): Promise<boolean> {
 		const removed = await this.db.transaction(async manager => {
 			const locked = await manager.findOne(MiChatRoom, { where: { id: room.id }, lock: { mode: 'pessimistic_write' } });
 			if (locked == null) return false;
 			const result = await manager.delete(MiChatRoomMembership, { roomId: room.id, userId: member.id });
-			return (result.affected ?? 0) > 0;
+			const ended = (result.affected ?? 0) > 0;
+			if (ended && options.ban === true) await this.chatRoomBanService.ban(manager, room.id, member.id);
+			return ended;
 		});
 		if (!removed) return false;
 		await this.finishRoomMemberRemoval(room, member);

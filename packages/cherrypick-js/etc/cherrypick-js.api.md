@@ -1287,6 +1287,9 @@ type ChatMessagesUserTimelineResponse = operations['chat___messages___user-timel
 type ChatRoom = components['schemas']['ChatRoom'];
 
 // @public (undocumented)
+type ChatRoomBan = components['schemas']['ChatRoomBan'];
+
+// @public (undocumented)
 type ChatRoomChannel = components['schemas']['ChatRoomChannel'];
 
 // @public (undocumented)
@@ -1294,6 +1297,15 @@ type ChatRoomInvitation = components['schemas']['ChatRoomInvitation'];
 
 // @public (undocumented)
 type ChatRoomMembership = components['schemas']['ChatRoomMembership'];
+
+// @public (undocumented)
+type ChatRoomsBansDeleteRequest = operations['chat___rooms___bans___delete']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsBansListRequest = operations['chat___rooms___bans___list']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsBansListResponse = operations['chat___rooms___bans___list']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type ChatRoomsChannelsCreateRequest = operations['chat___rooms___channels___create']['requestBody']['content']['application/json'];
@@ -2062,6 +2074,9 @@ declare namespace entities {
         ChatMessagesUpdateResponse,
         ChatMessagesUserTimelineRequest,
         ChatMessagesUserTimelineResponse,
+        ChatRoomsBansDeleteRequest,
+        ChatRoomsBansListRequest,
+        ChatRoomsBansListResponse,
         ChatRoomsChannelsCreateRequest,
         ChatRoomsChannelsCreateResponse,
         ChatRoomsChannelsDeleteRequest,
@@ -2633,6 +2648,7 @@ declare namespace entities {
         ChatRoomChannel,
         ChatRoomInvitation,
         ChatRoomMembership,
+        ChatRoomBan,
         ChatRoomVoiceState,
         NoteHistory
     }

@@ -261,6 +261,9 @@ import type {
 	ChatMessagesUpdateResponse,
 	ChatMessagesUserTimelineRequest,
 	ChatMessagesUserTimelineResponse,
+	ChatRoomsBansDeleteRequest,
+	ChatRoomsBansListRequest,
+	ChatRoomsBansListResponse,
 	ChatRoomsChannelsCreateRequest,
 	ChatRoomsChannelsCreateResponse,
 	ChatRoomsChannelsDeleteRequest,
@@ -940,6 +943,8 @@ export type Endpoints = {
 	'chat/messages/update': { req: ChatMessagesUpdateRequest; res: ChatMessagesUpdateResponse };
 	'chat/messages/user-timeline': { req: ChatMessagesUserTimelineRequest; res: ChatMessagesUserTimelineResponse };
 	'chat/read-all': { req: EmptyRequest; res: EmptyResponse };
+	'chat/rooms/bans/delete': { req: ChatRoomsBansDeleteRequest; res: EmptyResponse };
+	'chat/rooms/bans/list': { req: ChatRoomsBansListRequest; res: ChatRoomsBansListResponse };
 	'chat/rooms/channels/create': { req: ChatRoomsChannelsCreateRequest; res: ChatRoomsChannelsCreateResponse };
 	'chat/rooms/channels/delete': { req: ChatRoomsChannelsDeleteRequest; res: EmptyResponse };
 	'chat/rooms/channels/list': { req: ChatRoomsChannelsListRequest; res: ChatRoomsChannelsListResponse };

@@ -6,7 +6,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { In } from 'typeorm';
 import { DI } from '@/di-symbols.js';
-import type { MiUser, MiDriveFile, ChatMessagesRepository, MiChatMessage, ChatRoomsRepository, MiChatRoom, MiChatRoomInvitation, ChatRoomInvitationsRepository, MiChatRoomMembership, ChatRoomMembershipsRepository, UsersRepository, ChatRoomChannelsRepository } from '@/models/_.js';
+import type { MiUser, MiDriveFile, ChatMessagesRepository, MiChatMessage, ChatRoomsRepository, MiChatRoom, MiChatRoomInvitation, ChatRoomInvitationsRepository, MiChatRoomMembership, ChatRoomMembershipsRepository, MiChatRoomBan, UsersRepository, ChatRoomChannelsRepository } from '@/models/_.js';
 import { awaitAll } from '@/misc/prelude/await-all.js';
 import type { Packed } from '@/misc/json-schema.js';
 import type { } from '@/models/Blocking.js';
@@ -476,5 +476,28 @@ export class ChatEntityService {
 		]);
 
 		return Promise.all(memberships.map(membership => this.packRoomMembership(membership, me, { ...options, _hint_: { packedUsers, packedRooms } })));
+	}
+
+	@bindThis
+	public async packRoomBans(
+		bans: MiChatRoomBan[],
+		me: { id: MiUser['id'] },
+	): Promise<Packed<'ChatRoomBan'>[]> {
+		if (bans.length === 0) return [];
+
+		const packedUsers = new Map((await this.userEntityService.packMany(bans.map(ban => ban.user ?? ban.userId), me)).map(user => [user.id, user]));
+
+		return bans.flatMap(ban => {
+			const user = packedUsers.get(ban.userId);
+			// 그 사이 삭제된 계정은 금지 기록도 함께 지워진다.
+			if (user == null) return [];
+			return [{
+				id: ban.id,
+				createdAt: this.idService.parse(ban.id).date.toISOString(),
+				roomId: ban.roomId,
+				userId: ban.userId,
+				user,
+			}];
+		});
 	}
 }

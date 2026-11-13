@@ -8,7 +8,8 @@ import { IsNull, In, MoreThan, Not } from 'typeorm';
 
 import { bindThis } from '@/decorators.js';
 import { DI } from '@/di-symbols.js';
-import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
+import { MiUser } from '@/models/User.js';
+import type { MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import type { BlockingsRepository, FollowingsRepository, InstancesRepository, MiMeta, MutingsRepository, UserListMembershipsRepository, UsersRepository } from '@/models/_.js';
 import type { RelationshipJobData, ThinUser } from '@/queue/types.js';
 
@@ -26,6 +27,7 @@ import PerUserFollowingChart from '@/core/chart/charts/per-user-following.js';
 import { SystemAccountService } from '@/core/SystemAccountService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { AntennaService } from '@/core/AntennaService.js';
+import { ChatRoomBanService } from '@/core/ChatRoomBanService.js';
 
 @Injectable()
 export class AccountMoveService {
@@ -65,6 +67,7 @@ export class AccountMoveService {
 		private systemAccountService: SystemAccountService,
 		private roleService: RoleService,
 		private antennaService: AntennaService,
+		private chatRoomBanService: ChatRoomBanService,
 	) {
 	}
 
@@ -83,7 +86,11 @@ export class AccountMoveService {
 		update.alsoKnownAs = src.alsoKnownAs?.includes(dstUri) ? src.alsoKnownAs : src.alsoKnownAs?.concat([dstUri]) ?? [dstUri];
 		update.movedToUri = dstUri;
 		update.movedAt = new Date();
-		await this.usersRepository.update(src.id, update);
+		// 이전 표시와 재참여 금지 승계를 함께 저장한다. 승계가 실패하면 이전도 확정되지 않아 같은 요청을 다시 보낼 수 있다.
+		await this.usersRepository.manager.transaction(async manager => {
+			await manager.update(MiUser, src.id, update);
+			await this.chatRoomBanService.inheritOnMove(src, dst, manager);
+		});
 		Object.assign(src, update);
 
 		// Update cache
@@ -111,13 +118,21 @@ export class AccountMoveService {
 			to: { id: following.followeeId },
 		})), process.env.NODE_ENV === 'test' ? 10000 : 1000 * 60 * 60 * 24);
 
-		await this.postMoveProcess(src, dst);
+		await this.carryRelations(src, dst);
 
 		return iObj;
 	}
 
+	/** 다른 서버에서 확인한 계정 이전의 후속 처리. */
 	@bindThis
 	public async postMoveProcess(src: MiUser, dst: MiUser): Promise<void> {
+		await this.carryRelations(src, dst);
+		// 차단처럼 옛 계정이 내보내진 그룹의 재참여 금지도 새 계정에 잇는다. 저장 실패를 성공한 이전으로 숨기지 않고 호출자에게 전한다.
+		await this.chatRoomBanService.inheritOnMove(src, dst);
+	}
+
+	@bindThis
+	private async carryRelations(src: MiUser, dst: MiUser): Promise<void> {
 		// Copy blockings and mutings, and update lists
 		try {
 			await Promise.all([

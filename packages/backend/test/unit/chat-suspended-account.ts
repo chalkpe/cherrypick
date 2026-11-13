@@ -177,7 +177,14 @@ function createService(invitee?: { id: string }) {
 	const deliver = vi.fn();
 	const insertOne = vi.fn(async (message: unknown) => message);
 	const insertInvitation = vi.fn(async (invitation: unknown) => invitation);
+	const room = { id: 'room1', ownerId: alice.id, isArchived: false };
 	const service = Object.assign(Object.create(ChatService.prototype), {
+		db: { transaction: async <T>(callback: (manager: unknown) => Promise<T>) => callback({
+			findOne: async () => room,
+			findOneBy: async () => null,
+			countBy: async () => 1,
+			withRepository: (repository: unknown) => repository,
+		}) },
 		config: { url: 'https://local.test' },
 		idService: { gen: () => 'generated', parse: () => ({ date: new Date('2026-11-04T00:00:00Z') }) },
 		queueService: { deliver },
@@ -205,9 +212,10 @@ function createService(invitee?: { id: string }) {
 		},
 		chatMessagesRepository: { insertOne },
 		chatEntityService: { packMessageLiteFor1on1: async (message: unknown) => message },
-		chatRoomsRepository: { findOneBy: async () => ({ id: 'room1', ownerId: alice.id, isArchived: false }) },
+		chatRoomsRepository: { findOneBy: async () => room },
 		chatRoomMembershipsRepository: { countBy: async () => 1, findOneBy: async () => null },
 		chatRoomInvitationsRepository: { findOneBy: async () => null, insertOne: insertInvitation },
+		chatRoomBanService: { isBanned: async () => false },
 		roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 		userBlockingService: { checkBlocked: async () => false },
 		globalEventService: { publishChatUserStream: vi.fn(), publishMainStream: vi.fn() },
@@ -379,11 +387,11 @@ describe('suspending a remote account', () => {
 
 	test('a failure in one room does not keep it in the others', async () => {
 		const f = createRoomService([{ ...localRoom, id: 'first' }, { ...localRoom, id: 'second' }]);
-		const kick = vi.spyOn(f.service, 'kickRoomMember').mockRejectedValueOnce(new Error('database')).mockResolvedValue(true);
+		const evict = vi.spyOn(f.service, 'evictRoomMember').mockRejectedValueOnce(new Error('database')).mockResolvedValue(true);
 
 		await f.service.handleUserSuspended(member as never);
 
-		expect(kick).toHaveBeenCalledTimes(2);
+		expect(evict).toHaveBeenCalledTimes(2);
 	});
 
 	test('keeps a suspended account of this server in its rooms', async () => {

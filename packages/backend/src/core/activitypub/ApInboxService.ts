@@ -4,6 +4,7 @@
  */
 
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
+import { ChatRoomBanService } from '@/core/ChatRoomBanService.js';
 import { ChatChannelError } from '@/core/chat-room-channels.js';
 import { Inject, Injectable } from '@nestjs/common';
 import { DataSource, In } from 'typeorm';
@@ -67,6 +68,7 @@ const MAX_PENDING_ROOMS_PER_ACTOR = 100;
 const DEFERRED_CHAT_DELETE_TTL = 6 * 60 * 60;
 const ROOM_FULL = 'skip: room is full';
 const ROOM_ARCHIVED = 'skip: room is archived';
+const ROOM_BANNED = 'skip: banned from the room';
 const CHAT_ROOM_URI = /\/chat\/rooms\/([a-zA-Z0-9]+)$/;
 const MAX_DEFERRED_CHAT_DELETES_PER_ACTOR = 1000;
 
@@ -128,6 +130,7 @@ export class ApInboxService {
 		private notificationService: NotificationService,
 		private chatService: ChatService,
 		private chatRoomChannelService: ChatRoomChannelService,
+		private chatRoomBanService: ChatRoomBanService,
 		private chatRosterService: ChatRosterService,
 		private chatVoiceService: ChatVoiceService,
 		private liveKitService: LiveKitService,
@@ -449,6 +452,8 @@ export class ApInboxService {
 
 			// Commit the delete: the invitee's server consumed its copy before sending Accept,
 			// so the invitation can never be accepted again and would only block a new one.
+			// 그룹장이 내보낸 계정은 어느 초대에 답하든 들이지 않는다. 정원·보관과 같이 상대 서버에 취소를 보낸다.
+			if (await this.chatRoomBanService.isBanned(room.id, actor.id, manager)) return ROOM_BANNED;
 			if (locked.isArchived) return ROOM_ARCHIVED;
 
 			const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId: room.id });
@@ -467,7 +472,7 @@ export class ApInboxService {
 			return 'ok';
 		});
 
-		if (result === ROOM_FULL || result === ROOM_ARCHIVED) {
+		if (result === ROOM_FULL || result === ROOM_ARCHIVED || result === ROOM_BANNED) {
 			await this.revokeRemoteJoin(room, actor);
 			return result;
 		}
