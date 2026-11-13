@@ -14,6 +14,7 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 		},
 		get: (key: string): RedisReply => strings.get(key) ?? null,
 		del: (key: string): RedisReply => Number(strings.delete(key)) + Number(sets.delete(key)),
+		unlink: (...keys: string[]): RedisReply => keys.reduce((count, key) => count + Number(strings.delete(key)) + Number(sets.delete(key)), 0),
 		sadd: (key: string, member: string): RedisReply => {
 			const set = sets.get(key) ?? new Set<string>();
 			const added = !set.has(member);
@@ -86,17 +87,18 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 			commands.set(revisionKey, revision);
 			return 1;
 		},
-		'read chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey], [conversation, revision, upTo, ...seenIds]) => {
+		'read chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, snapshotKey], [conversation, revision, upTo, captured, ...seenIds]) => {
 			const seen = new Set(seenIds);
 			const pending = new Set(members(pendingKey));
 			let changed = 0;
 			for (const id of members(messagesKey)) {
-				if (seen.has(id) || (!pending.has(id) && (upTo === '*' || (upTo !== '' && id <= upTo)))) {
+				if (seen.has(id) || (!pending.has(id) && (upTo === '*' || (upTo !== '' && id <= upTo)) && (captured !== '1' || sets.get(snapshotKey)?.has(id)))) {
 					commands.srem(messagesKey, id);
 					commands.srem(pendingKey, id);
 					changed = 1;
 				}
 			}
+			if (captured === '1') del(snapshotKey);
 			const { first, latest } = extremes(members(messagesKey));
 			if (first == null || latest == null) {
 				del(latestKey, firstKey, revisionKey, messagesKey, pendingKey);
@@ -142,6 +144,13 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 		},
 		'snapshot chat unread': ([latestKey, firstKey, revisionKey, messagesKey, pendingKey]) =>
 			[strings.get(latestKey) ?? '', strings.get(firstKey) ?? '', strings.get(revisionKey) ?? '', members(messagesKey), members(pendingKey)],
+		'capture chat read': ([messagesKey, pendingKey, snapshotKey]) => {
+			const pending = sets.get(pendingKey) ?? new Set<string>();
+			const captured = members(messagesKey).filter(id => !pending.has(id));
+			del(snapshotKey);
+			for (const id of captured) commands.sadd(snapshotKey, id);
+			return 1;
+		},
 		'snapshot chat unread head': ([latestKey, firstKey, messagesKey]) => {
 			const latest = strings.get(latestKey) ?? '';
 			return [latest, strings.get(firstKey) ?? '', Number(sets.get(messagesKey)?.has(latest) ?? false)];
@@ -169,7 +178,10 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 		pipeline,
 		multi: pipeline,
 		options: { keyPrefix: '' },
-		scan: async (_cursor: string, _match: string, pattern: string) => ['0', [...new Set([...strings.keys(), ...sets.keys()])].filter(key => key.startsWith(pattern.slice(0, -1)))],
+		scan: async (_cursor: string, _match: string, pattern: string) => {
+			const parts = pattern.split('*');
+			return ['0', [...new Set([...strings.keys(), ...sets.keys()])].filter(key => parts.every((part, index) => index === 0 ? key.startsWith(part) : index === parts.length - 1 ? key.endsWith(part) : key.includes(part)))];
+		},
 	};
 	for (const name of names) client[name] = async (...args: string[]) => run(name, args);
 	return { ...client, eval: evaluate } as {

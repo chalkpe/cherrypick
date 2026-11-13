@@ -6,8 +6,10 @@
 process.env.NODE_ENV = 'test';
 
 import * as assert from 'node:assert';
+import { Redis } from 'ioredis';
 import { afterAll, beforeAll, test, vi } from 'vitest';
 import type { EntityManager } from 'typeorm';
+import { loadConfig } from '@/config.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatService, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
@@ -15,7 +17,6 @@ import type { IAdd, IRemove } from '@/core/activitypub/type.js';
 import { MiChatMessage, MiChatRoom, MiChatRoomMembership, MiChatRoomRosterState, miRepository } from '@/models/_.js';
 import type { MiRemoteUser } from '@/models/User.js';
 import { api, initTestDb, signup } from '../utils.js';
-import { memoryRedis } from '../misc/chat-unread-redis.js';
 
 let ownerAccount: Awaited<ReturnType<typeof signup>>;
 let memberAccount: Awaited<ReturnType<typeof signup>>;
@@ -23,6 +24,7 @@ let ownerId: string;
 let memberId: string;
 let roomId: string;
 let db: Awaited<ReturnType<typeof initTestDb>>;
+let redis: Redis;
 
 beforeAll(async () => {
 	const owner = ownerAccount = await signup();
@@ -33,9 +35,13 @@ beforeAll(async () => {
 	assert.strictEqual(created.status, 200);
 	roomId = created.body.id;
 	db = await initTestDb(true);
+	redis = new Redis(loadConfig().redis);
 }, 120_000);
 
-afterAll(async () => { await db?.destroy(); });
+afterAll(async () => {
+	await redis?.quit();
+	await db?.destroy();
+});
 
 test('a newer Remove wins when an older Add is paused after its ordering claim', async () => {
 	const owner = { id: ownerId, host: 'remote.test', uri: 'https://remote.test/users/owner', isSuspended: false } as MiRemoteUser;
@@ -84,7 +90,7 @@ test('a newer Remove wins when an older Add is paused after its ordering claim',
 	assert.ok(otherMessage.id);
 	const removedMessage = (await api('chat/messages/create-to-room', { toRoomId: roomId, text: 'Removed membership unread' }, ownerAccount)).body;
 	assert.ok(removedMessage.id);
-	const unread = memoryRedis();
+	const unread = redis;
 	const removedKey = `newRoomChatMessageExists:${memberId}:${roomId}`;
 	await unread.set(removedKey, removedMessage.id);
 	await unread.set(`${removedKey}:first`, removedMessage.id);
@@ -93,8 +99,10 @@ test('a newer Remove wins when an older Add is paused after its ordering claim',
 	await unread.set(`newRoomChatMessageExists:${memberId}:${otherRoom.id}`, otherMessage.id);
 	const events = { publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() };
 	const userEntity = { isLocalUser: () => false };
+	const logger = { warn: vi.fn() };
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
-		db: wrappedDb, chatRoomMembershipsRepository: membershipRepository,
+		db: wrappedDb, chatRoomMembershipsRepository: memberships,
+		chatRoomsRepository: db.getRepository(MiChatRoom).extend(miRepository), logger,
 		globalEventService: events, userEntityService: userEntity, redisClient: unread,
 		chatMessagesRepository: db.getRepository(MiChatMessage).extend(miRepository),
 	}) as ChatService;
@@ -124,6 +132,8 @@ test('a newer Remove wins when an older Add is paused after its ordering claim',
 	assert.strictEqual(await unread.get(`${removedKey}:first`), null);
 	assert.deepStrictEqual(await unread.smembers(`newChatMessagesExists:${memberId}`), [`room:${otherRoom.id}`]);
 	assert.strictEqual(await unread.get(`newRoomChatMessageExists:${memberId}:${otherRoom.id}`), otherMessage.id);
+	assert.strictEqual(await chatService.hasUnreadMessages(memberId), true);
+	assert.deepStrictEqual(logger.warn.mock.calls, []);
 }, 30_000);
 
 test('a failed Add insertion can be retried without losing the ordering claim', async () => {

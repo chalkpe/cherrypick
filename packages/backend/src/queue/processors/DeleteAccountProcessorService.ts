@@ -220,6 +220,7 @@ export class DeleteAccountProcessorService {
 			return `[${userId}] Waiting for ${pending.length} deliveries`;
 		}
 
+		await this.chatService.deleteUnreadForAccount(userId);
 		await this.usersRepository.delete(userId);
 
 		// Trigger CacheService

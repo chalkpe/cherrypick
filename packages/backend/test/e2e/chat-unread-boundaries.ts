@@ -222,6 +222,25 @@ describe('chat unread boundaries', () => {
 		assert.strictEqual(await redis.sismember(`newChatMessagesExists:${reader.id}`, `room:${room.id}`), 0);
 	});
 
+	test('physical account deletion removes its own unread markers', async () => {
+		const [reader, sender, other] = [await person(), await person(), await person()];
+		const room = await roomOf(sender, reader, other);
+		assert.strictEqual((await say(sender, reader, 'Unread direct')).status, 200);
+		assert.strictEqual((await roomSay(sender, room.id)).status, 200);
+		const direct = `newUserChatMessageExists:${reader.id}:${sender.id}`;
+		const roomKey = `newRoomChatMessageExists:${reader.id}:${room.id}`;
+		assert.strictEqual(await redis.exists(direct, roomKey, `newChatMessagesExists:${reader.id}`), 3);
+		assert.strictEqual((await api('admin/delete-account', { userId: reader.id }, root)).status, 204);
+		await vi.waitFor(async () => {
+			assert.strictEqual(await db.getRepository(MiUser).findOneBy({ id: reader.id }), null);
+		}, { timeout: 15_000, interval: 50 });
+
+		const keys = await redis.keys(`${redis.options.keyPrefix ?? ''}new*ChatMessage*:${reader.id}*`);
+		console.log('CHAT_DELETED_READER_KEYS', JSON.stringify(keys.sort()));
+		assert.deepStrictEqual(keys, []);
+		assert.strictEqual(await hasUnread(other), true);
+	});
+
 	test('muting and withdrawing a legacy direct message preserves unread on unmute', async () => {
 		const [reader, sender] = [await person(), await person()];
 		await say(sender, reader, 'Remaining legacy content');

@@ -90,7 +90,7 @@ type UnreadMark = { readerId: MiUser['id'] } & ({ senderId: MiUser['id'] } | { r
  * What one read covered: the messages it handed out, and everything up to and including `upTo`.
  * A message stored after the read looked is not in it, so it stays unread.
  */
-export type ChatReadBoundary = { seenIds: MiChatMessage['id'][]; upTo: MiChatMessage['id'] | null };
+export type ChatReadBoundary = { seenIds: MiChatMessage['id'][]; upTo: MiChatMessage['id'] | null; snapshot?: string | null };
 
 /** Serializes remote message storage with a Delete for the same ActivityPub URI. */
 export function chatMessageUriLockKey(uri: string): string {
@@ -103,6 +103,10 @@ const READ_RETRY_DELAYS = [1000, 5000, 30000];
 export function chatReadBoundaryOfStream(body: unknown): ChatReadBoundary | undefined {
 	const id = typeof body === 'object' && body != null ? (body as { id?: unknown }).id : undefined;
 	return typeof id === 'string' && id.length > 0 && id.length <= 32 ? { seenIds: [id], upTo: id } : undefined;
+}
+
+function escapeRedisPattern(value: string): string {
+	return value.replaceAll('\\', '\\\\').replaceAll('*', '\\*').replaceAll('?', '\\?').replaceAll('[', '\\[');
 }
 
 // KEYS: 최신 ID, 첫 미읽음 ID, 집계 set, revision, 미읽음 ID set, 저장 중인 ID set
@@ -152,20 +156,21 @@ redis.call('SET', KEYS[4], ARGV[2])
 return 1
 `;
 
-// ARGV[3]: '*'는 저장이 끝난 전부, ''는 경계 없음, 그 밖에는 그 ID까지. ARGV[4] 이후는 읽기가 돌려준 ID.
+// ARGV[3]: '*'는 저장이 끝난 전부, ''는 경계 없음, 그 밖에는 그 ID까지. ARGV[5] 이후는 읽기가 돌려준 ID.
 const READ_CHAT_UNREAD = `-- read chat unread
 local seen = {}
-for i = 4, #ARGV do seen[ARGV[i]] = true end
+for i = 5, #ARGV do seen[ARGV[i]] = true end
 local pending = {}
 for _, id in ipairs(redis.call('SMEMBERS', KEYS[6])) do pending[id] = true end
 local changed = 0
 for _, id in ipairs(redis.call('SMEMBERS', KEYS[5])) do
- if seen[id] or (not pending[id] and (ARGV[3] == '*' or (ARGV[3] ~= '' and id <= ARGV[3]))) then
+ if seen[id] or (not pending[id] and (ARGV[3] == '*' or (ARGV[3] ~= '' and id <= ARGV[3])) and (ARGV[4] ~= '1' or redis.call('SISMEMBER', KEYS[7], id) == 1)) then
   redis.call('SREM', KEYS[5], id)
   redis.call('SREM', KEYS[6], id)
   changed = 1
  end
 end
+if ARGV[4] == '1' then redis.call('DEL', KEYS[7]) end
 local first, latest
 for _, id in ipairs(redis.call('SMEMBERS', KEYS[5])) do
  if not first or id < first then first = id end
@@ -238,6 +243,13 @@ return redis.call('SREM', KEYS[3], ARGV[1])
 // 읽음 표식의 여러 키를 한 시점에 읽는다.
 const SNAPSHOT_CHAT_UNREAD = `-- snapshot chat unread
 return {redis.call('GET', KEYS[1]) or '', redis.call('GET', KEYS[2]) or '', redis.call('GET', KEYS[3]) or '', redis.call('SMEMBERS', KEYS[4]), redis.call('SMEMBERS', KEYS[5])}
+`;
+
+// 읽기 전에 저장을 마친 ID를 Redis 안에 고정한다. 조회 실패나 프로세스 종료 때는 만료된다.
+const CAPTURE_CHAT_READ = `-- capture chat read
+redis.call('SDIFFSTORE', KEYS[3], KEYS[1], KEYS[2])
+redis.call('PEXPIRE', KEYS[3], 120000)
+return 1
 `;
 
 // A valid latest ID is enough for the normal unread check; only a stale one needs the full set.
@@ -721,36 +733,36 @@ export class ChatService {
 
 	/** What a timeline page covered, for the read that comes with it. */
 	@bindThis
-	public readBoundaryOf(messages: Pick<MiChatMessage, 'id'>[], limit: number, sinceId?: MiChatMessage['id'] | null, beforeQuery?: MiChatMessage['id'][]): ChatReadBoundary {
+	public readBoundaryOf(messages: Pick<MiChatMessage, 'id'>[], limit: number, sinceId?: MiChatMessage['id'] | null, beforeQuery?: string | null): ChatReadBoundary {
 		const seenIds = messages.map(message => message.id);
 		// A full page stops short of older messages. Opening the conversation counts those as read, as it always has.
 		const oldest = seenIds.length >= limit ? seenIds.reduce((a, b) => (a < b ? a : b)) : null;
 		const upTo = sinceId ?? oldest;
-		if (beforeQuery == null) return { seenIds, upTo };
-		// IDs issued earlier can commit after the query. Only cover older marks that were settled before it began.
-		const older = upTo == null ? [] : beforeQuery.filter(id => id <= upTo);
-		return { seenIds: [...new Set([...seenIds, ...older])], upTo: null };
+		if (beforeQuery === undefined) return { seenIds, upTo };
+		// Only IDs settled before the query may be covered below the page boundary.
+		return { seenIds, upTo, snapshot: beforeQuery };
 	}
 
 	/** Captures settled unread IDs before a timeline query, without preventing the query if Redis is unavailable. */
-	private async captureChatRead(mark: UnreadMark): Promise<MiChatMessage['id'][]> {
+	private async captureChatRead(mark: UnreadMark): Promise<string | null> {
+		const key = this.unreadKey(mark);
+		const snapshot = `${key}:read:${randomUUID()}`;
 		try {
-			const [, , , ids, pending] = await this.snapshotUnread(mark);
-			const sending = new Set(pending);
-			return ids.filter(id => !sending.has(id));
+			await this.redisClient.eval(CAPTURE_CHAT_READ, 3, `${key}:messages`, `${key}:pending`, snapshot);
+			return snapshot;
 		} catch (error) {
 			this.reportUnreadFailure('capturing a read boundary', error);
-			return [];
+			return null;
 		}
 	}
 
 	@bindThis
-	public async captureUserChatRead(readerId: MiUser['id'], senderId: MiUser['id']): Promise<MiChatMessage['id'][]> {
+	public async captureUserChatRead(readerId: MiUser['id'], senderId: MiUser['id']): Promise<string | null> {
 		return await this.captureChatRead({ readerId, senderId });
 	}
 
 	@bindThis
-	public async captureRoomChatRead(readerId: MiUser['id'], roomId: MiChatRoom['id']): Promise<MiChatMessage['id'][]> {
+	public async captureRoomChatRead(readerId: MiUser['id'], roomId: MiChatRoom['id']): Promise<string | null> {
 		return await this.captureChatRead({ readerId, roomId });
 	}
 
@@ -769,8 +781,10 @@ export class ChatService {
 
 	private async readUnreadMark(mark: UnreadMark, boundary: ChatReadBoundary | undefined): Promise<void> {
 		const upTo = boundary == null ? '*' : (boundary.upTo ?? '');
-		const [result, pendingLeft] = await this.redisClient.eval(READ_CHAT_UNREAD, 6, ...this.unreadKeys(mark),
-			this.unreadConversation(mark), randomUUID(), upTo, ...(boundary?.seenIds ?? [])) as [number, string[]];
+		const captured = boundary != null && 'snapshot' in boundary;
+		const snapshot = boundary?.snapshot ?? `${this.unreadKey(mark)}:read:none`;
+		const [result, pendingLeft] = await this.redisClient.eval(READ_CHAT_UNREAD, 7, ...this.unreadKeys(mark), snapshot,
+			this.unreadConversation(mark), randomUUID(), upTo, captured ? '1' : '0', ...(boundary?.seenIds ?? [])) as [number, string[]];
 		if (Number(result) > 0) await this.announceIfAllRead([mark.readerId]);
 		// 읽기가 남긴 저장 중 표식이 끝난 전송의 것이면 여기서 정리한다.
 		if (pendingLeft.length > 0) await this.settleAbandonedSends([mark], [pendingLeft]);
@@ -795,15 +809,16 @@ export class ChatService {
 
 		const prefix = this.redisClient.options?.keyPrefix ?? '';
 		const keys = new Set<string>();
-		// 이전 버전에서 전체 읽음이 집계만 지워 남긴 키도 찾는다. SCAN은 Redis를 막지 않는다.
-		for (const kind of ['User', 'Room']) {
-			let cursor = '0';
-			do {
-				const result = await this.redisClient.scan(cursor, 'MATCH', `${prefix}new${kind}ChatMessageExists:${readerId}:*`, 'COUNT', 1000);
-				cursor = result[0];
-				for (const key of result[1]) keys.add(key.slice(prefix.length));
-			} while (cursor !== '0');
-		}
+		// 이전 버전에서 집계만 지워 남긴 두 종류의 키를 한 번의 순회로 찾는다.
+		const escapedPrefix = escapeRedisPattern(prefix);
+		let cursor = '0';
+		do {
+			const result = await this.redisClient.scan(cursor, 'MATCH', `${escapedPrefix}new*ChatMessageExists:${readerId}:*`, 'COUNT', 1000);
+			cursor = result[0];
+			for (const key of result[1]) {
+				if (key.startsWith(`${prefix}newUserChatMessageExists:${readerId}:`) || key.startsWith(`${prefix}newRoomChatMessageExists:${readerId}:`)) keys.add(key.slice(prefix.length));
+			}
+		} while (cursor !== '0');
 		// SCAN 중 새로 수신한 대화도 현재 집계에서 읽어 같은 원자적 작업으로 정리한다.
 		const left = await this.redisClient.eval(READ_ALL_CHAT_UNREAD, keys.size + 1, `newChatMessagesExists:${readerId}`, ...keys,
 			`${prefix}newUserChatMessageExists:${readerId}:`, `${prefix}newRoomChatMessageExists:${readerId}:`, randomUUID()) as string[];
@@ -815,6 +830,23 @@ export class ChatService {
 
 		// Asked for outright, so the reader's screens are told even if the server had nothing left to clear.
 		this.globalEventService.publishMainStream(readerId, 'readAllChatMessages');
+	}
+
+	/** Removes all unread state owned by an account immediately before physical deletion. */
+	@bindThis
+	public async deleteUnreadForAccount(readerId: MiUser['id']): Promise<void> {
+		const prefix = this.redisClient.options?.keyPrefix ?? '';
+		for (const kind of ['User', 'Room']) {
+			let cursor = '0';
+			const keyPrefix = `${prefix}new${kind}ChatMessageExists:${readerId}:`;
+			do {
+				const [next, keys] = await this.redisClient.scan(cursor, 'MATCH', `${escapeRedisPattern(keyPrefix)}*`, 'COUNT', 1000);
+				cursor = next;
+				const own = keys.filter(key => key.startsWith(keyPrefix));
+				if (own.length > 0) await this.redisClient.unlink(...own.map(key => key.slice(prefix.length)));
+			} while (cursor !== '0');
+		}
+		await this.redisClient.unlink(`newChatMessagesExists:${readerId}`);
 	}
 
 	private unreadKey(mark: UnreadMark): string {
