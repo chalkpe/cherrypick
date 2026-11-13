@@ -3,11 +3,15 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterAll, afterEach, beforeAll, expect, test } from 'vitest';
+import { afterAll, afterEach, beforeAll, expect, test, vi } from 'vitest';
 import { Blob } from 'node-fetch';
+import { createHash } from 'node:crypto';
+import { QueueEvents } from 'bullmq';
 import type { entities } from 'cherrypick-js';
 import { IdService } from '@/core/IdService.js';
 import { MiNote } from '@/models/Note.js';
+import { MiNoteCleanupRule } from '@/models/NoteCleanupRule.js';
+import { QueueService } from '@/core/QueueService.js';
 import { api, channel, clip, initTestDb, post, relativeFetch, signup, startJobQueue, uploadFile } from '../utils.js';
 import type { UserToken } from '../utils.js';
 import type { INestApplicationContext } from '@nestjs/common';
@@ -15,7 +19,7 @@ import type { INestApplicationContext } from '@nestjs/common';
 type Condition = entities.NoteCleanupCondition;
 type Rule = { id: string; condition: Condition; action: 'keep' | 'delete' };
 type Item = { noteId: string; decision: 'keep' | 'delete'; reason: string; keepRuleIds: string[]; deleteRuleIds: string[] };
-type Response = { rule: Rule; rules: Rule[]; items: Item[]; errors: unknown[]; complete: boolean; queued: boolean; error: { code: string; info: { code: string } } };
+type Response = { rule: Rule; rules: Rule[]; items: Item[]; errors: { ruleId: string; code: string }[]; complete: boolean; queued: boolean; jobId: string; error: { code: string; info: { code: string } } };
 let queue: INestApplicationContext;
 const accounts: Awaited<ReturnType<typeof signup>>[] = [];
 
@@ -103,7 +107,12 @@ async function check(user: UserToken, condition: Condition, matched: string[], u
 	await execute(user, [deletion.id], action === 'keep' ? unmatched : matched, action === 'keep' ? matched : unmatched);
 }
 
-beforeAll(async () => { queue = await startJobQueue(); }, 120000);
+beforeAll(async () => {
+	// 큐 시작이 시험 DB를 초기화하므로 그 뒤에 보호할 첫 계정을 준비한다.
+	queue = await startJobQueue();
+	const root = await signup({ username: 'cleanuproot' });
+	await vi.waitFor(async () => expect((await api('admin/meta', {}, root)).status).toBe(200), { timeout: 30000 });
+}, 120000);
 afterEach(async () => {
 	// 계정 삭제 요청은 시험 데이터 정리이며 완료 검증을 대체하지 않는다.
 	for (const user of accounts.splice(0)) expect((await api('i/delete-account', { password: 'test' }, user)).status).toBe(204);
@@ -167,7 +176,46 @@ test.each(['[', '(a)\\1', '(?=a)', 'a'])('잘못된 RE2 또는 플래그 저장 
 	const res = await cleanup('create', { name: '거절', action: 'delete', condition }, user);
 	expect(res.status).toBe(400);
 	expect(res.body.error.code).toBe('INVALID_CLEANUP');
+	expect(res.body.error.info.code).toBe('INVALID_CONDITION');
 	expect((await cleanup('list', {}, user)).body.rules).toEqual([]);
+}, 240000);
+
+test.each(['delete', 'keep'] as const)('기존 잘못된 플래그가 든 %s 규칙은 오류로 처리한다', async action => {
+	const user = await owner();
+	const note = await post(user, { text: 'flagprobe' });
+	const valid: Condition = { type: 'keyword', mode: 'regex', value: action === 'delete' ? '^never$' : '^flagprobe$', flags: '', targets: ['text'] };
+	const invalid = await rule(user, { type: 'not', child: valid }, action);
+	const deletion = action === 'delete' ? invalid : await rule(user, allVisibility);
+	const db = await initTestDb(true);
+	try {
+		// 이전 버전에서 저장된 잘못된 조건을 재현하는 fixture다.
+		await db.getRepository(MiNoteCleanupRule).update(invalid.id, { condition: { type: 'not', child: { ...valid, flags: 'z' } } });
+	} finally {
+		await db.destroy();
+	}
+	const result = await cleanup('preview', { ruleIds: [deletion.id] }, user);
+	expect(result.status).toBe(200);
+
+	const system = queue.get(QueueService).systemQueue;
+	const events = new QueueEvents(system.name, { connection: system.opts.connection, prefix: system.opts.prefix });
+	try {
+		await events.waitUntilReady();
+		const expectedJobId = `note-cleanup-${user.id}-${createHash('sha256').update(deletion.id).digest('hex')}`;
+		const completed = new Promise<void>((resolve, reject) => {
+			const timeout = setTimeout(() => reject(new Error('cleanup job timed out')), 30000);
+			events.on('completed', ({ jobId }) => { if (jobId === expectedJobId) { clearTimeout(timeout); resolve(); } });
+			events.on('failed', ({ jobId, failedReason }) => { if (jobId === expectedJobId) { clearTimeout(timeout); reject(new Error(failedReason)); } });
+		});
+		const requested = await cleanup('request', { ruleIds: [deletion.id] }, user);
+		expect(requested.body.queued).toBe(true);
+		expect(requested.body.jobId).toBe(expectedJobId);
+		await completed;
+	} finally {
+		await events.close();
+	}
+	await exists(user, note.id, true);
+	expect(result.body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: invalid.id, code: 'INVALID_CONDITION' })]));
+	expect(result.body.items.find(item => item.noteId === note.id)).toMatchObject({ decision: 'keep', reason: action === 'keep' ? 'blocked' : 'unmatched' });
 }, 240000);
 
 test('빈 묶음·불완전·과대·과심도 조건을 저장하지 않는다', async () => {
@@ -217,7 +265,7 @@ test.each(['pinned', 'favorite', 'selfReaction', 'selfRenote'] as const)('자기
 	const foreignMark = await post(user, { text: '타인 표시' });
 	const plain = await post(user, { text: '표시 없음' });
 	if (field === 'pinned') {
-		expect((await api('i/pin', { noteId: own.id }, user)).status).toBe(204);
+		expect((await api('i/pin', { noteId: own.id }, user)).status).toBe(200);
 	} else if (field === 'favorite') {
 		expect((await api('notes/favorites/create', { noteId: own.id }, user)).status).toBe(204);
 		expect((await api('notes/favorites/create', { noteId: foreignMark.id }, other)).status).toBe(204);
@@ -361,7 +409,7 @@ test.each([600, 3600, 86400] as const)('작성 시각 기준 %s초 전후와 네
 	} finally {
 		await db.destroy();
 	}
-	const edited = await api('notes/update', { noteId: oldId, text: '방금 수정한 과거 글' }, user);
+	const edited = await api('notes/update', { noteId: oldId, text: '방금 수정한 과거 글', cw: null }, user);
 	expect(edited.status).toBe(200);
 	for (const operator of ['gt', 'gte', 'lt', 'lte'] as const) {
 		const tested = await rule(user, { type: 'age', operator, seconds });
