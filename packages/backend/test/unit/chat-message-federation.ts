@@ -1577,6 +1577,75 @@ describe('ApInboxService chat activity routing', () => {
 		);
 	});
 
+	describe('a Delete for an object with an ordinary Note URI', () => {
+		function withNotes(f: ReturnType<typeof createInbox>, note: { id: string; userId: string; uri: string } | null) {
+			const noteDeleteService = { delete: vi.fn().mockResolvedValue(undefined) };
+			Object.assign(f.inbox, {
+				apNoteService: { fetchNote: vi.fn().mockResolvedValue(note), extractEmojis: vi.fn().mockResolvedValue([]) },
+				apDbResolverService: { getNoteFromApId: vi.fn().mockResolvedValue(note) },
+				noteDeleteService,
+			});
+			f.chatService.findMessageByUri.mockResolvedValue(null);
+			return { noteDeleteService };
+		}
+
+		const deleteOf = (f: ReturnType<typeof createInbox>, object: unknown) => (f.inbox as never as { delete: (...args: unknown[]) => Promise<string> }).delete(f.actor, {
+			type: 'Delete',
+			actor: f.actor.uri,
+			object,
+		});
+
+		// 채팅 답장과 예전 talk 쪽지는 일반 Note 주소를 쓴다. Create보다 먼저 온 Delete가 그 주소를 놓치면 늦은 Create가 저장된다.
+		test('stores a tombstone when it arrives before the chat message', async () => {
+			const f = createInbox();
+			const { noteDeleteService } = withNotes(f, null);
+
+			const result = await deleteOf(f, { id: 'https://remote.test/notes/reply', type: 'Tombstone' });
+
+			expect(result).toBe('ok: chat message tombstone stored');
+			expect(f.redisClient.setex).toHaveBeenCalledWith(
+				`chat_delete_upon_arrival:https://remote.test/notes/reply:${encodeURIComponent(f.actor.uri)}`,
+				6 * 60 * 60,
+				f.actor.uri,
+			);
+			expect(noteDeleteService.delete).not.toHaveBeenCalled();
+		});
+
+		test('deletes a stored Note as before, without a tombstone', async () => {
+			const f = createInbox();
+			const note = { id: 'n1', userId: f.actor.id, uri: 'https://remote.test/notes/n1' };
+			const { noteDeleteService } = withNotes(f, note);
+
+			const result = await deleteOf(f, { id: note.uri, type: 'Tombstone' });
+
+			expect(result).toBe('ok: note deleted');
+			expect(noteDeleteService.delete).toHaveBeenCalledWith(f.actor, note);
+			expect(f.redisClient.setex).not.toHaveBeenCalled();
+		});
+
+		test('keeps a tombstone off another server', async () => {
+			const f = createInbox();
+			withNotes(f, null);
+
+			const result = await deleteOf(f, { id: 'https://elsewhere.test/notes/reply', type: 'Tombstone' });
+
+			expect(result).toBe('skip: message is not on the actor\'s server');
+			expect(f.redisClient.setex).not.toHaveBeenCalled();
+		});
+
+		test('stores nothing for a room or an actor', async () => {
+			const f = createInbox();
+			withNotes(f, null);
+
+			const room = await deleteOf(f, { id: 'https://remote.test/chat/rooms/r1', type: 'Tombstone', formerType: 'Group' });
+			const actor = await deleteOf(f, { id: 'https://remote.test/users/other', type: 'Tombstone', formerType: 'Person' });
+
+			expect(room).toBe('skip: only the room owner can delete it');
+			expect(actor).toMatch(/^skip: delete actor /);
+			expect(f.redisClient.setex).not.toHaveBeenCalled();
+		});
+	});
+
 	test('routes EmojiReact to reactRemote', async () => {
 		const f = createInbox();
 
