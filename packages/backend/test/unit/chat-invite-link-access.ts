@@ -18,6 +18,15 @@ const code = 'Ab3dEf6hIj9lMn0p';
 const path = `/chat/invite/${code}`;
 const actor = { id: 'instance', host: 'consumer.example', uri: 'https://consumer.example/users/instance', isSuspended: false };
 const keyId = `${actor.uri}#main-key`;
+const preview = {
+	id: `${baseUrl}${path}`, type: 'Invite',
+	object: {
+		id: `${baseUrl}/chat/rooms/room1`, type: 'Group', name: '모임', summary: '설명',
+		_misskey_chatArchived: false, _misskey_chatRoomMembersCount: 2,
+		icon: { type: 'Image', url: `${baseUrl}/icon.png` }, _misskey_chatIconDecorations: [],
+	},
+	endpoints: { sharedInbox: `${baseUrl}/inbox` },
+};
 const keys = generateKeyPairSync('rsa', {
 	modulusLength: 2048,
 	publicKeyEncoding: { type: 'spki', format: 'pem' },
@@ -43,6 +52,7 @@ async function fixture(options: { blocked?: boolean; suspended?: boolean; federa
 		chatInviteLinkService: {
 			renderLocalPreviewDocument: async () => renderChatInvitePreview({
 				baseUrl, code, room: { id: 'room1', name: '모임', description: '설명', isArchived: false }, membersCount: 2,
+				icon: { url: `${baseUrl}/icon.png`, decorations: [] },
 			}),
 		},
 	}) as ActivityPubServerService;
@@ -59,29 +69,19 @@ async function signedHeaders() {
 	return { ...signed.request.headers, host: 'invite.example', accept: 'application/activity+json' };
 }
 
-describe('서버 간 초대 미리보기의 서명과 접근 정책', () => {
-	test('서명 없는 AP 조회에는 문서를 주지 않는다', async () => {
-		const server = await fixture();
+describe('서버 간 초대 미리보기의 접근 정책', () => {
+	test.each([
+		['서명 없는 조회', {}, false],
+		['허용된 서버의 유효한 서명', {}, true],
+		['정지된 계정의 유효한 서명', { suspended: true }, true],
+	])('%s에 공개 정보만 준다', async (_label, options, signed) => {
+		const server = await fixture(options);
 		try {
-			const response = await server.inject({ method: 'GET', url: path, headers: { host: 'invite.example', accept: 'application/activity+json' } });
-
-			expect(response.statusCode).toBe(404);
-		} finally {
-			await server.close();
-		}
-	});
-
-	test('허용된 서버의 유효한 서명에는 공개 정보만 준다', async () => {
-		const server = await fixture();
-		try {
-			const response = await server.inject({ method: 'GET', url: path, headers: await signedHeaders() });
+			const headers = signed ? await signedHeaders() : { host: 'invite.example', accept: 'application/activity+json' };
+			const response = await server.inject({ method: 'GET', url: path, headers });
 
 			expect(response.statusCode).toBe(200);
-			expect(response.json()).toEqual({
-				id: `${baseUrl}${path}`, type: 'Invite',
-				object: { id: `${baseUrl}/chat/rooms/room1`, type: 'Group', name: '모임', summary: '설명', _misskey_chatArchived: false, _misskey_chatRoomMembersCount: 2 },
-				endpoints: { sharedInbox: `${baseUrl}/inbox` },
-			});
+			expect(response.json()).toEqual(preview);
 			expect(response.headers['cache-control']).toBe('private, no-store');
 		} finally {
 			await server.close();
@@ -89,15 +89,15 @@ describe('서버 간 초대 미리보기의 서명과 접근 정책', () => {
 	});
 
 	test.each([
-		['차단한 서버', { blocked: true }, 403],
-		['정지된 서명 계정', { suspended: true }, 404],
-		['연합이 꺼진 발급 서버', { federation: 'none' as const }, 403],
-	])('%s는 거부한다', async (_label, options, status) => {
+		['차단한 서버', { blocked: true }],
+		['정지된 계정이 서명한 차단 서버', { blocked: true, suspended: true }],
+		['연합이 꺼진 발급 서버', { federation: 'none' as const }],
+	])('%s는 거부한다', async (_label, options) => {
 		const server = await fixture(options);
 		try {
 			const response = await server.inject({ method: 'GET', url: path, headers: await signedHeaders() });
 
-			expect(response.statusCode).toBe(status);
+			expect(response.statusCode).toBe(403);
 		} finally {
 			await server.close();
 		}
