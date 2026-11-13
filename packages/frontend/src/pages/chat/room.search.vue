@@ -94,7 +94,7 @@ async function search() {
 </script>
 
 <style lang="scss" module>
-.channelSelect :deep([tabindex="-1"] > div:first-child) {
+.channelSelect :global([tabindex="-1"] > div:first-child) {
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
