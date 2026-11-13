@@ -3,7 +3,11 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
+import { DelayedError } from 'bullmq';
+import { Redis } from 'ioredis';
+import { loadConfig } from '@/config.js';
 import { ChatRoomHistorySyncProcessorService } from '@/queue/processors/ChatRoomHistorySyncProcessorService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { buildChatHistoryPage } from '@/core/activitypub/misc/chat-history.js';
@@ -13,6 +17,11 @@ import type { IObject } from '@/core/activitypub/type.js';
 vi.mock('@/misc/distributed-lock.js', () => ({ acquireApObjectLock: async () => async () => {} }));
 
 // 받는 서버의 처리 순서와 판정만 본다. 저장과 실제 HTTP는 실제 DB 시험과 서버 사이 검증에서 따로 확인한다.
+// 잠금과 진행 위치 판정(Lua)은 이 시험 전용 접두사를 붙인 실제 Redis로 확인한다.
+const prefix = `test-chatRoomHistorySync-${randomUUID()}:`;
+let redis: Redis;
+let raw: Redis;
+
 const roomUri = 'https://owner.test/chat/rooms/room1';
 const owner = { id: 'owner', host: 'owner.test', uri: 'https://owner.test/users/owner', isSuspended: false };
 const signer = { id: 'me', host: null, isSuspended: false };
@@ -64,6 +73,7 @@ function setup(options: Setup = {}) {
 		markUnavailable: vi.fn(async () => {
 			state.status = 'unavailable';
 		}),
+		enqueueImport: vi.fn(async () => {}),
 	};
 	const resolve = vi.fn(async (url: string) => {
 		const page = options.pages?.get(url);
@@ -79,12 +89,10 @@ function setup(options: Setup = {}) {
 		return account;
 	});
 	const syncRoom = vi.fn(async () => 'ok');
-	const createChatRoomHistorySyncJob = vi.fn();
 	const applyPendingChatReactions = vi.fn(async () => {});
-	const acquireLock = vi.fn(async (): Promise<string | null> => 'OK');
 	const service = Object.assign(Object.create(ChatRoomHistorySyncProcessorService.prototype), {
 		logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
-		redisClient: { set: acquireLock, get: vi.fn(async () => null), del: vi.fn(), expire: vi.fn() },
+		redisClient: redis,
 		chatRoomsRepository: { findOneBy: vi.fn(async () => room), findOneByOrFail: vi.fn(async () => room) },
 		usersRepository: { findOneBy: vi.fn(async () => owner) },
 		emojisRepository: { findBy: vi.fn(async () => []), existsBy: vi.fn(async () => false) },
@@ -109,12 +117,34 @@ function setup(options: Setup = {}) {
 		},
 		hostPolicyService: { isRefusedRemoteHost: vi.fn(async () => false) },
 		idService: { isSafeT: () => true },
-		queueService: { createChatRoomHistorySyncJob },
 	}) as ChatRoomHistorySyncProcessorService;
 
-	const run = (attemptsMade = 0) => service.process({ data: { roomId: 'room1' }, attemptsMade, opts: { attempts: 8 } } as never);
-	return { run, state, history, imported, resolve, resolvePerson, syncRoom, createChatRoomHistorySyncJob, applyPendingChatReactions, acquireLock };
+	const moveToDelayed = vi.fn(async () => {});
+	const run = (attemptsMade = 0) => service.process({ data: { roomId: 'room1' }, attemptsMade, opts: { attempts: 8 }, token: 'job-token', moveToDelayed } as never);
+	return { service, run, state, history, imported, resolve, resolvePerson, syncRoom, applyPendingChatReactions, moveToDelayed };
 }
+
+const lockKey = 'chat_room_history_lock:room1';
+const progressKeys = (pass: number) => [`chat_room_history_progress:room1:${pass}:seen`, `chat_room_history_progress:room1:${pass}:state`];
+
+async function clearRedis() {
+	const keys = await raw.keys(`${prefix}*`);
+	if (keys.length > 0) await raw.del(...keys);
+}
+
+beforeAll(() => {
+	const config = loadConfig();
+	redis = new Redis({ ...config.redis, keyPrefix: prefix });
+	raw = new Redis({ ...config.redis, keyPrefix: undefined });
+});
+
+beforeEach(clearRedis);
+
+afterAll(async () => {
+	await clearRedis();
+	redis.disconnect();
+	raw.disconnect();
+});
 
 const first = `${roomUri}/history`;
 const second = `${roomUri}/history?until=c1`;
@@ -136,6 +166,8 @@ describe('과거 기록 가져오기 작업', () => {
 		expect(imported.map(input => input.uri)).toEqual(['m3', 'm2', 'm1'].map(id => `https://member.test/chat/messages/${id}`));
 		expect(state.status).toBe('completed');
 		expect(applyPendingChatReactions).toHaveBeenCalledTimes(3);
+		expect(await redis.exists(lockKey)).toBe(0);
+		expect(await redis.exists(...progressKeys(1))).toBe(0);
 	});
 
 	test('한 번에 받는 페이지 수를 넘으면 이어서 받을 작업을 다시 넣는다', async () => {
@@ -144,12 +176,15 @@ describe('과거 기록 가져오기 작업', () => {
 			const url = i === 0 ? first : `${roomUri}/history?until=${cursor(i)}`;
 			pages.set(url, buildChatHistoryPage(roomUri, i === 0 ? null : cursor(i), [], cursor(i + 1)));
 		}
-		const { run, state, createChatRoomHistorySyncJob } = setup({ pages });
+		const { run, state, history } = setup({ pages });
 
 		expect(await run()).toBe('ok: continues');
 
 		expect(state.nextUri).toBe(`${roomUri}/history?until=c975`);
-		expect(createChatRoomHistorySyncJob).toHaveBeenCalledWith('room1', expect.any(Number));
+		expect(history.enqueueImport).toHaveBeenCalledWith('room1', 1, `${roomUri}/history?until=c975`, expect.any(Number));
+		expect(await redis.exists(lockKey)).toBe(0);
+		// 이어서 받을 때 쓰도록 진행 위치는 남긴다. 글이 없는 페이지뿐이면 본 글 목록은 아직 없다
+		expect(await redis.exists(progressKeys(1)[1])).toBe(1);
 	});
 
 	test('중단된 곳부터 이어 받는다', async () => {
@@ -165,13 +200,18 @@ describe('과거 기록 가져오기 작업', () => {
 	test('다른 작업이 잠금을 쥐고 있으면 완료로 버리지 않고 큐 재시도 뒤 기록을 받는다', async () => {
 		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
 		const ctx = setup({ pages });
-		ctx.acquireLock.mockResolvedValueOnce(null);
+		await redis.set(lockKey, 'another-job', 'EX', 60);
 
-		await expect(ctx.run()).rejects.toThrow();
+		await expect(ctx.run()).rejects.toBeInstanceOf(DelayedError);
 
+		expect(ctx.moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'job-token');
 		expect(ctx.state.status).toBe('running');
 		expect(ctx.imported).toEqual([]);
-		expect(await ctx.run(1)).toBe('ok: completed');
+		expect(await redis.get(lockKey)).toBe('another-job');
+
+		await redis.del(lockKey);
+
+		expect(await ctx.run(0)).toBe('ok: completed');
 		expect(ctx.imported.map(input => input.uri)).toEqual(['https://member.test/chat/messages/m1']);
 	});
 
@@ -357,5 +397,105 @@ describe('과거 기록 가져오기 작업', () => {
 
 		expect(await ctx.run()).toBe('skip: started over');
 		expect(ctx.state.nextUri).toBeNull();
+	});
+});
+
+describe('과거 기록 가져오기의 진행 없는 페이지 판정', () => {
+	type Progress = { pagesWithoutProgress(roomId: string, pass: number, page: string, ids: string[]): Promise<number> };
+
+	const pageUri = (index: number) => index === 0 ? first : `${roomUri}/history?until=c${1000 - index}`;
+	const cursorOf = (index: number) => index === 0 ? null : `c${1000 - index}`;
+
+	/** index번째 페이지부터 last번째까지 이어지는 기록. items에 없는 페이지는 비어 있다. */
+	function chain(last: number, items = new Map<number, IObject[]>()) {
+		const pages = new Map<string, IObject | Error>();
+		for (let i = 0; i <= last; i++) {
+			pages.set(pageUri(i), buildChatHistoryPage(roomUri, cursorOf(i), items.get(i) ?? [], i === last ? null : `c${1000 - (i + 1)}`));
+		}
+		return pages;
+	}
+
+	/** 한 번에 받는 페이지 수를 넘으면 이어서 받을 작업을 큐에 넣으므로, 끝나거나 멈출 때까지 작업을 되풀이한다. */
+	async function runUntilSettled(ctx: ReturnType<typeof setup>) {
+		for (let i = 0; i < 20 && ctx.state.status === 'running'; i++) await ctx.run();
+	}
+
+	test('새 글이 없는 페이지가 연속 101쪽 나오면 더 가져올 수 없다고 남기고 그 페이지는 저장하지 않는다', async () => {
+		const ctx = setup({ pages: chain(150) });
+
+		await runUntilSettled(ctx);
+
+		expect(ctx.state.status).toBe('unavailable');
+		expect(ctx.resolve).toHaveBeenCalledTimes(101);
+		expect(ctx.imported).toEqual([]);
+	});
+
+	test('중간에 새 글이 나오면 세던 횟수를 처음부터 다시 센다', async () => {
+		const ctx = setup({ pages: chain(160, new Map([[80, [note('m1')]]])) });
+
+		await runUntilSettled(ctx);
+
+		expect(ctx.state.status).toBe('completed');
+		expect(ctx.resolve).toHaveBeenCalledTimes(161);
+		expect(ctx.imported.map(input => input.uri)).toEqual(['https://member.test/chat/messages/m1']);
+		expect(await redis.exists(...progressKeys(1))).toBe(0);
+	});
+
+	test('이미 받은 글만 되풀이되는 페이지는 새 글로 세지 않는다', async () => {
+		const repeated = note('m1');
+		const ctx = setup({ pages: chain(150, new Map(Array.from({ length: 150 }, (_, i) => [i, [repeated]] as [number, IObject[]]))) });
+
+		await runUntilSettled(ctx);
+
+		expect(ctx.state.status).toBe('unavailable');
+		// 첫 페이지의 글만 새 글이고, 그 뒤로 연속 101쪽이 지나면 멈춘다
+		expect(ctx.resolve).toHaveBeenCalledTimes(102);
+	});
+
+	test('같은 페이지를 재시도해도 한 번만 세고 다음 페이지부터 더한다', async () => {
+		const { service } = setup();
+		const progress = service as unknown as Progress;
+
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(0), [])).toBe(1);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(0), [])).toBe(1);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(1), [])).toBe(2);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(1), [])).toBe(2);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(2), [])).toBe(3);
+	});
+
+	test('새 글이 나오면 0으로 돌아가고, 이미 센 글은 다시 나와도 새 글로 세지 않는다', async () => {
+		const { service } = setup();
+		const progress = service as unknown as Progress;
+
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(0), [])).toBe(1);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(1), ['a', 'b'])).toBe(0);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(2), ['a'])).toBe(1);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(3), ['b', 'c'])).toBe(0);
+	});
+
+	test('처음부터 다시 받는 차례와 다른 그룹은 따로 센다', async () => {
+		const { service } = setup();
+		const progress = service as unknown as Progress;
+
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(0), ['a'])).toBe(0);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(1), [])).toBe(1);
+
+		expect(await progress.pagesWithoutProgress('room1', 2, pageUri(0), ['a'])).toBe(0);
+		expect(await progress.pagesWithoutProgress('room2', 1, pageUri(0), [])).toBe(1);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(2), [])).toBe(2);
+	});
+
+	test('진행 기록은 사라지는 기한을 가진다', async () => {
+		const { service } = setup();
+		const progress = service as unknown as Progress;
+
+		await progress.pagesWithoutProgress('room1', 1, pageUri(0), ['a']);
+
+		const week = 7 * 24 * 60 * 60;
+		for (const key of progressKeys(1)) {
+			const ttl = await raw.ttl(`${prefix}${key}`);
+			expect(ttl).toBeGreaterThan(week - 60);
+			expect(ttl).toBeLessThanOrEqual(week);
+		}
 	});
 });
