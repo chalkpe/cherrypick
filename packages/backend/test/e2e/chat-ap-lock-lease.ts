@@ -16,7 +16,7 @@ import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { IdService } from '@/core/IdService.js';
 import { DI } from '@/di-symbols.js';
 import { GlobalModule } from '@/GlobalModule.js';
-import { MiChatMessage, MiUser } from '@/models/_.js';
+import { MiChatMessage, MiChatRoom, MiChatRoomMembership, MiUser } from '@/models/_.js';
 import { createPostgresDataSource } from '@/postgres.js';
 import { api, initTestDb, signup } from '../utils.js';
 import { chatUnreadMarkGate } from '../misc/chat-unread-mark-gate.js';
@@ -39,9 +39,9 @@ afterAll(async () => {
 }, 30_000);
 
 /** An inbox worker with its own PostgreSQL and Redis connections. */
-async function inboxWorker(redisPort?: number): Promise<TestingModule> {
+async function inboxWorker(redisPort?: number, poolSize?: number): Promise<TestingModule> {
 	const dataSource = createPostgresDataSource({ ...config, db: { ...config.db, disableCache: true } });
-	dataSource.setOptions({ synchronize: false, dropSchema: false, cache: false });
+	dataSource.setOptions({ synchronize: false, dropSchema: false, cache: false, ...(poolSize == null ? {} : { extra: { ...dataSource.options.extra, max: poolSize } }) });
 	await dataSource.initialize();
 	const workerRedis = new Redis(redisPort == null ? config.redis : { ...config.redis, host: '127.0.0.1', port: redisPort });
 	try {
@@ -121,3 +121,51 @@ test.each([
 		await gate.close();
 	}
 }, 120_000);
+
+/** Settles with what the work returned, or with 'timed out' if it never finishes. */
+function within<T>(work: Promise<T>, ms: number): Promise<T | 'timed out'> {
+	return Promise.race([work, new Promise<'timed out'>(resolve => setTimeout(() => resolve('timed out'), ms))]);
+}
+
+// inbox는 DB 커넥션보다 많은 작업을 함께 처리한다. 아직 오지 않은 쪽지의 Delete가 몰려도
+// 저장 결정 트랜잭션이 풀의 다른 커넥션을 기다리며 서로 막히면 안 된다.
+test.each([
+	['an ordinary Note URI', 'direct', 'notes'],
+	['a chat message URI', 'direct', 'chat/messages'],
+	['a Delete relayed by the room owner', 'relayed', 'chat/messages'],
+])('Deletes of messages not here yet finish with fewer connections than Deletes (%s)', async (_, route, path) => {
+	const worker = await inboxWorker(undefined, 2);
+	let finished = false;
+	try {
+		const idService = worker.get(IdService);
+		const inbox = worker.get(ApInboxService) as unknown as {
+			delete: (...args: unknown[]) => Promise<string>;
+			relayedChatDelete: (...args: unknown[]) => Promise<string>;
+		};
+		const remoteUser = async (host: string) => {
+			const id = idService.gen();
+			await db.getRepository(MiUser).insert({ id, username: `actor${id}`, usernameLower: `actor${id}`, host, uri: `https://${host}/users/${id}`, inbox: `https://${host}/inbox` });
+			return await db.getRepository(MiUser).findOneByOrFail({ id });
+		};
+		const owner = await remoteUser('remote.test');
+		const author = route === 'relayed' ? await remoteUser('member.test') : owner;
+		const roomNumber = idService.gen();
+		const room = { id: idService.gen(), name: 'room', ownerId: owner.id, description: '', uri: `https://remote.test/chat/rooms/${roomNumber}` };
+		await db.getRepository(MiChatRoom).insert(room);
+		await db.getRepository(MiChatRoomMembership).insert({ id: idService.gen(), userId: author.id, roomId: room.id });
+		const uris = Array.from({ length: 6 }, () => `https://${author.host}/${path}/${idService.gen()}`);
+
+		const deleting = Promise.all(uris.map(uri => route === 'relayed'
+			? inbox.relayedChatDelete(room, author, { type: 'Delete', id: `${uri}#delete`, actor: author.uri, object: { id: uri, type: 'Tombstone' } })
+			: inbox.delete(author, { type: 'Delete', actor: author.uri, object: { id: uri, type: 'Tombstone' } })));
+		const results = await within(deleting, 20_000);
+		console.log('CHAT_DELETE_SMALL_POOL', JSON.stringify({ route, path, results }));
+
+		expect(results).toEqual(uris.map(() => 'ok: chat message tombstone stored'));
+		finished = true;
+	} finally {
+		// 막힌 커넥션은 풀을 닫아도 돌아오지 않으므로, 실패한 시험은 기다리지 않는다
+		if (finished) await worker.close();
+		else void worker.close().catch(() => undefined);
+	}
+}, 60_000);
