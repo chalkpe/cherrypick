@@ -14,12 +14,13 @@ import { join } from 'node:path';
 import { Redis } from 'ioredis';
 import { afterAll, beforeAll, expect, test, vi } from 'vitest';
 import type { DataSource, QueryRunner } from 'typeorm';
-import { loadConfig } from '@/config.js';
+import { loadConfig, path as configPath } from '@/config.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
 import { api, initTestDb, signup } from '../utils.js';
 import type { UserToken } from '../utils.js';
 import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 import { chatUnreadReadGate } from '../misc/chat-unread-read-gate.js';
+import { chatProcessExitError } from '../misc/chat-process-stderr.js';
 import type { ChatSendProcessMessage } from '../misc/chat-send-process-fixture.js';
 
 const config = loadConfig();
@@ -50,7 +51,7 @@ async function spawnSender(redisPort?: number): Promise<Sender> {
 	const child = fork(new URL('../../built-test/chat-send-process-fixture.js', import.meta.url), [], {
 		execArgv: ['--max-old-space-size=512'],
 		stdio: ['ignore', stdout, stderr, 'ipc'],
-		env: { ...process.env, NODE_ENV: 'production', CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db, ...(redisPort == null ? {} : { CHAT_PROCESS_FIXTURE_REDIS_PORT: String(redisPort) }) },
+		env: { ...process.env, NODE_ENV: 'production', CHERRYPICK_CONFIG_YML: configPath, CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db, ...(redisPort == null ? {} : { CHAT_PROCESS_FIXTURE_REDIS_PORT: String(redisPort) }) },
 	});
 	closeSync(stdout);
 	closeSync(stderr);
@@ -59,7 +60,7 @@ async function spawnSender(redisPort?: number): Promise<Sender> {
 	try {
 		const [message] = await Promise.race([
 			once(child, 'message', { signal: AbortSignal.timeout(20_000) }),
-			exited.then(([code, signal]) => { throw new Error(`chat sender exited before readiness: ${code}/${signal}`); }),
+			exited.then(([code, signal]) => { throw chatProcessExitError('chat sender', code, signal, evidenceDir); }),
 		]) as [ChatSendProcessMessage];
 		if (message.type === 'error') throw new Error(message.message);
 		console.log('CHAT_PROCESS_RECOVERY', JSON.stringify({ event: 'ready', pid: child.pid, port: message.port }));

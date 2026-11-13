@@ -14,11 +14,12 @@ import { join } from 'node:path';
 import * as Bull from 'bullmq';
 import { afterAll, beforeAll, expect, test, vi } from 'vitest';
 import type { DataSource, QueryRunner } from 'typeorm';
-import { loadConfig } from '@/config.js';
+import { loadConfig, path as configPath } from '@/config.js';
 import { MiChatRoom, MiFollowing, MiUser, MiUserKeypair } from '@/models/_.js';
 import { QUEUE, baseQueueOptions } from '@/queue/const.js';
 import type { DbUserDeleteJobData, DeliverJobData } from '@/queue/types.js';
 import { api, initTestDb, signup } from '../utils.js';
+import { chatProcessExitError } from '../misc/chat-process-stderr.js';
 import type { ChatQueueProcessMessage } from '../misc/chat-queue-process-fixture.js';
 
 const config = loadConfig();
@@ -56,7 +57,7 @@ function spawnWorker(name: string): Worker {
 	const child = fork(new URL('../../built-test/chat-queue-process-fixture.js', import.meta.url), [], {
 		execArgv: ['--max-old-space-size=512'],
 		stdio: ['ignore', stdout, stderr, 'ipc'],
-		env: { ...process.env, NODE_ENV: 'production', CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db },
+		env: { ...process.env, NODE_ENV: 'production', CHERRYPICK_CONFIG_YML: configPath, CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db },
 	});
 	closeSync(stdout);
 	closeSync(stderr);
@@ -64,7 +65,7 @@ function spawnWorker(name: string): Worker {
 	const exited = once(child, 'exit');
 	const ready = Promise.race([
 		once(child, 'message', { signal: AbortSignal.timeout(30_000) }),
-		exited.then(([code, signal]) => { throw new Error(`${name} job worker exited before readiness: ${code}/${signal}`); }),
+		exited.then(([code, signal]) => { throw chatProcessExitError(`${name} job worker`, code, signal, evidenceDir); }),
 	]).then(([message]) => {
 		if ((message as ChatQueueProcessMessage).type === 'error') throw new Error((message as { message: string }).message);
 		console.log('CHAT_DELETION_RECOVERY', JSON.stringify({ event: 'ready', name, pid: child.pid }));

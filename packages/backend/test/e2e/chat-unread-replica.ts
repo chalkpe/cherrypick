@@ -14,9 +14,10 @@ import { Redis } from 'ioredis';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import type { DataSource } from 'typeorm';
-import { loadConfig } from '@/config.js';
+import { loadConfig, path as configPath } from '@/config.js';
 import { api, initTestDb, signup } from '../utils.js';
 import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
+import { chatProcessExitError } from '../misc/chat-process-stderr.js';
 import type { ChatSendProcessMessage } from '../misc/chat-send-process-fixture.js';
 
 const config = loadConfig();
@@ -79,7 +80,7 @@ describe.skipIf(replica == null)('chat unread marks with a read replica', () => 
 		const child = fork(new URL('../../built-test/chat-send-process-fixture.js', import.meta.url), [], {
 			execArgv: ['--max-old-space-size=512'],
 			stdio: ['ignore', stdout, stderr, 'ipc'],
-			env: { ...process.env, NODE_ENV: 'production', CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db, CHAT_PROCESS_FIXTURE_REPLICA: replica },
+			env: { ...process.env, NODE_ENV: 'production', CHERRYPICK_CONFIG_YML: configPath, CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db, CHAT_PROCESS_FIXTURE_REPLICA: replica },
 		});
 		closeSync(stdout);
 		closeSync(stderr);
@@ -88,7 +89,7 @@ describe.skipIf(replica == null)('chat unread marks with a read replica', () => 
 		try {
 			const [message] = await Promise.race([
 				once(child, 'message', { signal: AbortSignal.timeout(20_000) }),
-				exited.then(([code, signal]) => { throw new Error(`chat sender exited before readiness: ${code}/${signal}`); }),
+				exited.then(([code, signal]) => { throw chatProcessExitError('chat sender', code, signal, evidenceDir); }),
 			]) as [ChatSendProcessMessage];
 			if (message.type === 'error') throw new Error(message.message);
 
@@ -137,7 +138,7 @@ describe.skipIf(replica == null)('chat unread marks with a read replica', () => 
 		const child = fork(new URL('../../built-test/chat-send-process-fixture.js', import.meta.url), [], {
 			execArgv: ['--max-old-space-size=512'],
 			stdio: ['ignore', stdout, stderr, 'ipc'],
-			env: { ...process.env, NODE_ENV: 'production', CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db, CHAT_PROCESS_FIXTURE_REPLICA: replica },
+			env: { ...process.env, NODE_ENV: 'production', CHERRYPICK_CONFIG_YML: configPath, CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db, CHAT_PROCESS_FIXTURE_REPLICA: replica },
 		});
 		closeSync(stdout);
 		closeSync(stderr);
@@ -146,7 +147,7 @@ describe.skipIf(replica == null)('chat unread marks with a read replica', () => 
 		try {
 			const [message] = await Promise.race([
 				once(child, 'message', { signal: AbortSignal.timeout(20_000) }),
-				exited.then(([code, signal]) => { throw new Error(`chat sender exited before readiness: ${code}/${signal}`); }),
+				exited.then(([code, signal]) => { throw chatProcessExitError('chat sender', code, signal, evidenceDir); }),
 			]) as [ChatSendProcessMessage];
 			if (message.type === 'error') throw new Error(message.message);
 			await caughtUp();
