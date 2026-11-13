@@ -85,8 +85,16 @@ function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0)
 		notifications.push(JSON.parse(args.at(-1)));
 		return `${notifications.length}-0`;
 	};
-	// 저장 확인 조회는 실제로 쌓인 스트림 항목을 최신순으로 돌려준다.
-	const xrevrange = async () => notifications.map((payload, i) => [`${i + 1}-0`, ['data', JSON.stringify(payload)]]).reverse();
+	// 저장 확인 조회는 실제 XREVRANGE 계약처럼 시작 커서('+' 또는 배타적 '(id')와 COUNT 페이지를 따른다.
+	let streamReads = 0;
+	const xrevrange = async (_key: string, start: string, _end: string, ...args: unknown[]) => {
+		streamReads++;
+		const count = args[0] === 'COUNT' ? Number(args[1]) : Infinity;
+		const seq = (id: string) => Number(id.split('-')[0]);
+		let entries = notifications.map((payload, i) => [`${i + 1}-0`, ['data', JSON.stringify(payload)]] as [string, string[]]).reverse();
+		if (start !== '+') entries = entries.filter(([id]) => start.startsWith('(') ? seq(id) < seq(start.slice(1)) : seq(id) <= seq(start));
+		return entries.slice(0, count);
+	};
 	// Lua의 저장 계약을 모형화한다. 실제 스크립트 실행·원자성·클러스터 슬롯은 별도 검증 대상이다.
 	const redis = { xadd, xrevrange, del: async (key: string) => Number(markers.delete(key)), get: async () => null, eval: async (_script: string, _count: number, stream: string, marker: string, generation: string, max: string, id: string, payload: string) => {
 		if ((markers.get(marker) ?? 0) > Number(generation)) return -1;
@@ -101,7 +109,8 @@ function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0)
 		if (delivery.profileFailure) throw new Error('profile unavailable');
 		return { notificationRecieveConfig: delivery.disabled ? { noteCleanupProtectionFailed: { type: 'never' } } : {} };
 	} } };
-	const notificationService = new NotificationService({ perUserNotificationsMaxCount: 100 } as any, redis as any, {} as any,
+	// 보존 한도는 실제 기본값(500)을 쓴다. 최신 50개 밖의 세대도 스트림에는 남아 있을 수 있다.
+	const notificationService = new NotificationService({ perUserNotificationsMaxCount: 500 } as any, redis as any, {} as any,
 		{ pack: async (value: unknown) => { if (delivery.packFailure) throw new Error('pack unavailable'); return value; } } as any,
 		{ gen: () => String(++nextId), parseFull: (id: string) => ({ date: Number(id), additional: 0n }) } as any,
 		{ publishMainStream: () => { if (delivery.pushFailure) throw new Error('push unavailable'); } } as any, { pushNotification: () => {} } as any, cache as any, {} as any);
@@ -114,7 +123,7 @@ function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0)
 	const createService = () => new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, notificationService, { eval: async () => 5 } as any, meta as any, buffering, redis as any, cache as any);
 	const service = createService();
 	const condition = { type: 'age', operator: 'gte', seconds: 60 };
-	return { rows, service, createService, markerCount: () => markers.size, notificationService, delivery, notifications, jobs, failing, failingWrites, lock, meta, buffered, buffering, noteReads, input: { name: '정리', action: 'delete' as const, condition } };
+	return { rows, service, createService, markerCount: () => markers.size, notificationService, delivery, notifications, jobs, failing, failingWrites, lock, meta, buffered, buffering, noteReads, streamReads: () => streamReads, input: { name: '정리', action: 'delete' as const, condition } };
 }
 
 const keep = () => ({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null, legacy: null });
@@ -281,4 +290,63 @@ test('Sol1: 저장 뒤 접수 기록 전에 중단된 세대는 스트림 확인
 
 	expect(notifications).toHaveLength(1);
 	expect(rows.Rule[0].protectionNotification.status).toBe('accepted');
+});
+
+// === 델타 검토 지적 재현 (review-fix2) ===
+
+// 다른 종류의 알림을 스트림 뒤에 쌓아 저장 확인의 읽기 창 밖으로 세대를 밀어낸다.
+const newerNotifications = (notifications: any[], count: number) => {
+	for (let i = 0; i < count; i++) notifications.push({ id: `other-${i}`, type: 'reaction', createdAt: new Date().toISOString() });
+};
+
+test('Sol2: 저장 확인 창 밖으로 밀린 세대도 페이지 이어읽기로 찾아 중복 알림을 만들지 않는다', async () => {
+	const { rows, service, notifications, streamReads } = fixture();
+	rows.Rule.push(keep());
+	await service.list('alice');
+	expect(rows.Rule[0].protectionNotification.status).toBe('accepted');
+	// 원래 알림은 스트림에 남아 있지만 최신 50개(한 페이지) 밖으로 밀린다.
+	newerNotifications(notifications, 120);
+	const before = streamReads();
+	rows.Rule[0].protectionNotification = { ...rows.Rule[0].protectionNotification, status: 'pending' };
+
+	await service.list('alice');
+
+	expect(notifications).toHaveLength(121);
+	expect(rows.Rule[0].protectionNotification.status).toBe('accepted');
+	expect(streamReads() - before).toBeGreaterThanOrEqual(2);
+});
+
+test('Sol2: 원래 알림이 유실되면 창 밖 세대라도 끝까지 확인한 뒤 새 알림을 한 번만 만든다', async () => {
+	const { rows, service, notifications } = fixture();
+	rows.Rule.push(keep());
+	await service.list('alice');
+	// 보존 기한 초과 등으로 원래 알림이 사라지고 다른 알림만 남은 상태
+	notifications.splice(0);
+	newerNotifications(notifications, 120);
+	rows.Rule[0].protectionNotification = { ...rows.Rule[0].protectionNotification, status: 'pending' };
+
+	await service.list('alice');
+
+	expect(notifications).toHaveLength(121);
+	expect(rows.Rule[0].protectionNotification.status).toBe('accepted');
+});
+
+test('Sol2: 저장 확인은 기준 시각 이전 항목을 만나면 페이지 읽기를 멈춘다', async () => {
+	const { rows, service, notifications, streamReads } = fixture();
+	// 기준 시각(pendingSince)보다 오래된 항목을 먼저 쌓는다.
+	for (let i = 0; i < 80; i++) notifications.push({ id: `old-${i}`, type: 'reaction', createdAt: new Date(0).toISOString() });
+	rows.Rule.push(keep());
+	await service.list('alice');
+	// 원래 알림이 유실된 뒤 최신 항목이 쌓인 상태: 최신 60개 + 기준 이전 80개
+	notifications.splice(80, 1);
+	newerNotifications(notifications, 60);
+	const before = streamReads();
+	rows.Rule[0].protectionNotification = { ...rows.Rule[0].protectionNotification, status: 'pending' };
+
+	await service.list('alice');
+
+	expect(notifications).toHaveLength(141);
+	expect(rows.Rule[0].protectionNotification.status).toBe('accepted');
+	// 첫 확인은 기준 이전 항목에서 멈추고(1회), 새 알림 저장 확인에서 바로 찾는다(1회).
+	expect(streamReads() - before).toBe(2);
 });

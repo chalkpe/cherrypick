@@ -88,6 +88,13 @@ export class AutoDeleteNotesProcessorService {
 				// 완료된 자식은 자동 제거하고 실패 이력만 보존 기한을 둔다. 루트가 체인 정리의 근거를 남긴다.
 				removeOnComplete: true, removeOnFail: { age: 7 * 86400 },
 			});
+			// 루트에 최신 꼬리를 기록해, 완료·제거된 중간 자식 때문에 진행 중인 후손을 놓치지 않게 한다.
+			// 루트 자신의 handoff 기록은 재시작 시 같은 자식을 다시 접수하는 근거이므로 덮어쓰지 않는다.
+			const rootJobId = noteCleanupRequestJobId(userId, ruleIds);
+			if (job.id !== rootJobId) {
+				const root = await this.queueService.systemQueue.getJob(rootJobId);
+				if (root) await root.updateData({ ...root.data, tail: { requestId: id, step: step + 1 } });
+			}
 			return { delayed: true };
 		};
 		const saved = job.data.handoff as { next?: { afterId?: string; retryFailures?: number }; until?: number } | undefined;

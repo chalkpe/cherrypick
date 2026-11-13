@@ -23,7 +23,7 @@ import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
 import type { MiMeta } from '@/models/_.js';
 import { IdService } from '@/core/IdService.js';
 import { isQuote, isRenote } from '@/misc/is-renote.js';
-import { CleanupConditionError, cleanupReferences, decideCleanup, validateCleanupCondition } from './NoteCleanupCondition.js';
+import { CleanupConditionError, cleanupDependencies, cleanupReferences, decideCleanup, validateCleanupCondition } from './NoteCleanupCondition.js';
 import type { CleanupCondition, CleanupContext, CleanupEvaluationRule } from './NoteCleanupCondition.js';
 import { runCleanupBatch, initialCleanupRules, isRetryableCleanupFailure } from './NoteCleanupRunner.js';
 
@@ -376,12 +376,15 @@ export class NoteCleanupService {
 		}
 		let contexts: CleanupContext[];
 		try { contexts = await this.contexts(userId, notes); } catch (error) {
+			// 실패한 자료를 실제로 쓰는 남기기 규칙만 보호 오류로 기록한다. 출처를 모르면 보수적으로 모두 기록한다.
+			const source = (error as { cleanupSource?: string } | null)?.cleanupSource;
+			const affected = prepared.filter(p => p.rule.action === 'keep' && p.lastError === null && (source === undefined || cleanupDependencies(p.rule.condition).includes(source)));
 			if (isRetryableCleanupFailure(error)) {
 				// 실제 남기기 자료 확인까지 진행한 뒤의 연결 실패는 보호 오류로 남기고 기존 재시도 경로로 넘긴다.
-				for (const { rule } of prepared.filter(p => p.rule.action === 'keep' && p.lastError === null)) await this.recordRetryableProtectionFailure(userId, rule, { source: 'data', noteIds: notes.map(n => n.id) });
+				for (const { rule } of affected) await this.recordRetryableProtectionFailure(userId, rule, { source: 'data', noteIds: notes.map(n => n.id) });
 				throw error;
 			}
-			for (const { rule } of prepared.filter(p => p.rule.action === 'keep' && p.lastError === null)) await this.recordTemporaryFailure(userId, rule, notes);
+			for (const { rule } of affected) await this.recordTemporaryFailure(userId, rule, notes);
 			throw error;
 		}
 		const rules: CleanupEvaluationRule[] = prepared.map(({ rule, lastError }) => ({ id: rule.id, action: rule.action, condition: rule.condition, error: lastError?.code }));
@@ -411,15 +414,19 @@ export class NoteCleanupService {
 		}
 	}
 
-	// 복구 뒤 첫 검사에서, 아직 기록되지 않은 보호 실패만 기록한다. 사라진 규칙·이미 기록되거나 해결된 오류는 버린다.
+	// 복구 뒤 첫 검사에서, 아직 기록되지 않은 보호 실패만 기록한다. 사라진 규칙·꺼진 규칙·남기기가 아닌 규칙·이미 기록된 오류는 버린다.
+	// 조회·쓰기가 실패하면 항목을 남겨 다음 검사에서 다시 기록한다. 해결된 세대는 새 실패의 해결이 아니므로 폐기 근거가 아니다.
 	private async flushProtectionFailures(userId: string) {
 		for (const [ruleId, pending] of [...this.pendingProtectionFailures]) {
 			if (pending.userId !== userId) continue;
-			this.pendingProtectionFailures.delete(ruleId);
 			try {
 				const current = await this.rules.findOneBy({ id: ruleId, userId });
-				if (!current || !current.enabled || current.action !== 'keep' || current.lastError !== null || current.protectionNotification?.status === 'resolved') continue;
+				if (!current || !current.enabled || current.action !== 'keep' || current.lastError !== null) {
+					this.pendingProtectionFailures.delete(ruleId);
+					continue;
+				}
 				await this.storeFailure(userId, current, { ruleId, code: 'TEMPORARY_FAILURE', path: 'condition', message: 'TEMPORARY_FAILURE', userActionable: false, recovery: pending.recovery });
+				this.pendingProtectionFailures.delete(ruleId);
 				await this.notifyProtectionFailure(userId, ruleId);
 			} catch (error) {
 				this.logger.error('Cleanup deferred protection failure flush failed', { userId, ruleId, error });
@@ -473,18 +480,32 @@ export class NoteCleanupService {
 		}
 	}
 
-	// 같은 세대의 보호 실패 알림이 스트림에 저장됐는지 확인한다. 오래된 항목은 밀려날 수 있어 최근 항목만 본다.
+	// 같은 세대의 보호 실패 알림이 스트림에 저장됐는지 확인한다. 최신 항목부터 페이지로 이어 읽다가 기준 시각 이전 항목을 만나면 멈춘다.
 	private async notificationStored(userId: string, ruleId: string, errorCode: string, since: number): Promise<boolean> {
-		const entries = await this.notificationRedis.xrevrange(`notificationTimeline:${userId}`, '+', '-', 'COUNT', 50);
-		for (const [, fields] of entries) {
-			const raw = fields[fields.indexOf('data') + 1];
-			if (!raw) continue;
-			try {
-				const data = JSON.parse(raw) as { type?: string; ruleId?: string; errorCode?: string; createdAt?: string };
-				if (data.type === 'noteCleanupProtectionFailed' && data.ruleId === ruleId && data.errorCode === errorCode && data.createdAt && new Date(data.createdAt).getTime() >= since) return true;
-			} catch { /* 읽을 수 없는 항목은 건너뛴다 */ }
+		const key = `notificationTimeline:${userId}`;
+		let start = '+';
+		for (;;) {
+			const entries = await this.notificationRedis.xrevrange(key, start, '-', 'COUNT', 100);
+			if (!entries.length) return false;
+			for (const [id, fields] of entries) {
+				const raw = fields[fields.indexOf('data') + 1];
+				if (!raw) continue;
+				try {
+					const data = JSON.parse(raw) as { type?: string; ruleId?: string; errorCode?: string; createdAt?: string };
+					if (!data.createdAt) continue;
+					const createdAt = new Date(data.createdAt).getTime();
+					if (data.type === 'noteCleanupProtectionFailed' && data.ruleId === ruleId && data.errorCode === errorCode && createdAt >= since) return true;
+					// 스트림은 시간순이므로 기준 시각 이전 항목을 만나면 그 뒤에는 같은 세대가 있을 수 없다.
+					if (createdAt < since) return false;
+				} catch { /* 읽을 수 없는 항목은 건너뛴다 */ }
+			}
+			start = `(${entries.at(-1)![0]}`;
 		}
-		return false;
+	}
+
+	// 실패한 자료 출처를 오류에 표시한다. 객체가 아닌 오류는 그대로 두어 출처 미상으로 처리한다.
+	private tagCleanupSource(error: unknown, source: string): unknown {
+		return typeof error === 'object' && error !== null ? Object.assign(error, { cleanupSource: source }) : error;
 	}
 
 	private async contexts(userId: string, notes: MiNote[]): Promise<CleanupContext[]> {
@@ -494,7 +515,8 @@ export class NoteCleanupService {
 		const errors: Record<string, string> = {};
 		const guarded = async <T>(source: string, value: Promise<T> | T, fallback: T): Promise<T> => {
 			try { return await value; } catch (error) {
-				if (isRetryableCleanupFailure(error)) throw error;
+				// 재시도 오류는 실패한 자료 출처를 표시해, 그 자료를 쓰는 남기기 규칙만 보호 오류로 기록하게 한다.
+				if (isRetryableCleanupFailure(error)) throw this.tagCleanupSource(error, source);
 				this.logger.error(`Cleanup data lookup failed (${source})`, { error });
 				errors[source] = 'TEMPORARY_FAILURE';
 				return fallback;
@@ -511,7 +533,12 @@ export class NoteCleanupService {
 			guarded('reactions', this.meta.enableReactionsBuffering ? this.reactionsBufferingService.getMany(ids) : new Map(), new Map<string, { deltas: Record<string, number>; pairs: [string, string][] }>()),
 		]);
 		const reactionCounts = new Map(notes.map(note => {
-			const merged = this.reactionsBufferingService.mergeReactions(note.reactions, bufferedReactions.get(note.id)?.deltas ?? {});
+			let merged: Record<string, number>;
+			try {
+				merged = this.reactionsBufferingService.mergeReactions(note.reactions, bufferedReactions.get(note.id)?.deltas ?? {});
+			} catch (error) {
+				throw this.tagCleanupSource(error, 'reactions');
+			}
 			if (Object.values(merged).some(count => !Number.isSafeInteger(count) || count < 0)) {
 				errors.reactions = 'TEMPORARY_FAILURE';
 				this.logger.error('Invalid cleanup reaction count', { noteId: note.id });
@@ -575,7 +602,9 @@ export class NoteCleanupService {
 			const state = await current.getState();
 			if (state !== 'completed' && state !== 'failed') return { inFlight: true, jobs };
 			jobs.push(current);
-			const next = (current.data.handoff as { next?: { requestId?: unknown; step?: unknown } } | undefined)?.next;
+			// 루트의 tail은 최신 후손을 가리킨다. 완료·제거된 중간 자식을 건너뛰어도 진행 중인 꼬리를 찾을 수 있다.
+			const data = current.data as { handoff?: { next?: { requestId?: unknown; step?: unknown } }; tail?: { requestId?: unknown; step?: unknown } };
+			const next = data.tail ?? data.handoff?.next;
 			if (!next || typeof next.requestId !== 'string' || typeof next.step !== 'number') break;
 			const child = await this.queueService.systemQueue.getJob(`note-cleanup-${next.requestId}-${next.step}`);
 			// 완료 정리나 보존 기한 만료로 사라진 자식은 체인의 끝으로 본다.

@@ -53,8 +53,8 @@ function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0
 			find: async ({ where }: any) => lookup(where),
 			findBy: async (where: any) => lookup(where),
 			existsBy: async (where: any) => data.some(row => matches(row, where)),
-			findOneBy: async (where: any) => data.find(row => matches(row, where)) ?? null,
-			findOneByOrFail: async (where: any) => { const row = data.find(row => matches(row, where)); if (!row) throw new Error('not found'); return row; },
+			findOneBy: async (where: any) => { lookup(where); return data.find(row => matches(row, where)) ?? null; },
+			findOneByOrFail: async (where: any) => { lookup(where); const row = data.find(row => matches(row, where)); if (!row) throw new Error('not found'); return row; },
 			countBy: async (where: any) => data.filter(row => matches(row, where)).length,
 			save: async (input: any) => { write(entity.name, input); const i = data.findIndex(row => row.id === input.id); if (i >= 0) data[i] = input; else data.push(input); return input; },
 			update: async (id: any, input: any) => { write(entity.name, input); let affected = 0; for (const row of data) if (typeof id === 'object' ? matches(row, id) : row.id === id || row.userId === id) { Object.assign(row, input); affected++; } return { affected }; },
@@ -85,7 +85,14 @@ function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0
 	const notifications: unknown[] = [];
 	// 통지 저장 모형: createNotification이 스트림에 항목을 쌓고 저장 확인 조회가 이를 읽는다.
 	const stream: Record<string, unknown>[] = [];
-	const notificationRedis = { xrevrange: async () => stream.map((payload, i) => [`${i + 1}-0`, ['data', JSON.stringify(payload)]]).reverse() };
+	// 저장 확인 조회는 실제 XREVRANGE 계약처럼 시작 커서('+' 또는 배타적 '(id')와 COUNT 페이지를 따른다.
+	const notificationRedis = { xrevrange: async (_key: string, start: string, _end: string, ...args: unknown[]) => {
+		const count = args[0] === 'COUNT' ? Number(args[1]) : Infinity;
+		const seq = (id: string) => Number(id.split('-')[0]);
+		let entries = stream.map((payload, i) => [`${i + 1}-0`, ['data', JSON.stringify(payload)]] as [string, string[]]).reverse();
+		if (start !== '+') entries = entries.filter(([id]) => start.startsWith('(') ? seq(id) < seq(start.slice(1)) : seq(id) <= seq(start));
+		return entries.slice(0, count);
+	} };
 	const cache = { userProfileCache: { fetch: async () => ({}) } };
 	const jobs = new Map<string, unknown>();
 	const meta = { enableReactionsBuffering: false };
@@ -986,7 +993,8 @@ test('Sol3: 검사 예산이 모자란 회복은 확인한 범위만 덜어내�
 test('Sol2: 남기기 자료 조회의 연결 오류는 보호 오류와 최초 알림을 남기고 재시도 경로로 넘긴다', async () => {
 	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
 	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null, legacy: null });
+	// 주입 실패원(MiNoteReaction)은 selfReaction 자료이므로 남기기 조건도 같은 자료에 의존해야 한다.
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'selfReaction', value: true }, lastError: null, legacy: null });
 	rows.MiNote.push(note('0'));
 	retryable.add('MiNoteReaction');
 
@@ -1016,7 +1024,7 @@ test('Sol2: 참조 조회의 연결 오류도 남기기 규칙의 보호 오류�
 test('Sol2: DB까지 중단돼 기록하지 못한 보호 오류는 복구 뒤 첫 검사에서 기록한다', async () => {
 	const { rows, service, input, retryable, failingWrites, notifications } = fixture({ detached: true });
 	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null, legacy: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'selfReaction', value: true }, lastError: null, legacy: null });
 	rows.MiNote.push(note('0'));
 	retryable.add('MiNoteReaction');
 	failingWrites.add('Rule');
@@ -1034,5 +1042,151 @@ test('Sol2: DB까지 중단돼 기록하지 못한 보호 오류는 복구 뒤 �
 	retryable.clear();
 	expect((await service.list('alice')).blocked).toBe(false);
 	expect(rows.Rule[1].lastError).toBeNull();
+	expect(notifications).toHaveLength(1);
+});
+
+// === 델타 검토 지적 재현 (review-fix2) ===
+
+// 주입 실패원(MiNoteReaction)과 같은 자료에 의존하는 남기기 규칙
+const selfReactionKeep = (id: string) => ({ id, userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'selfReaction', value: true }, lastError: null, legacy: null });
+
+test('Sol3: 첫 flush의 쓰기 실패는 지연 기록을 유실시키지 않고 다음 검사에서 기록한다', async () => {
+	const { rows, service, input, retryable, failingWrites, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push(selfReactionKeep('keep'));
+	rows.MiNote.push(note('0'));
+	retryable.add('MiNoteReaction');
+	failingWrites.add('Rule');
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+	expect(rows.Rule[1].lastError).toBeNull();
+
+	// 쓰기가 아직 실패하므로 첫 flush는 기록하지 못하지만 지연 항목은 남아 있어야 한다.
+	await service.list('alice');
+	expect(notifications).toHaveLength(0);
+	failingWrites.clear();
+	retryable.clear();
+	await service.list('alice');
+
+	expect(notifications).toHaveLength(1);
+	expect(rows.Rule[1].protectionNotification.generation).toBe(1);
+});
+
+test('Sol3: 첫 flush의 조회 실패는 지연 기록을 유실시키지 않고 다음 검사에서 기록한다', async () => {
+	const { rows, service, input, retryable, failingWrites, failing, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push(selfReactionKeep('keep'));
+	rows.MiNote.push(note('0'));
+	retryable.add('MiNoteReaction');
+	failingWrites.add('Rule');
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+
+	failingWrites.clear();
+	failing.add('Rule');
+	await expect(service.list('alice')).rejects.toThrow('lookup unavailable');
+	failing.clear();
+	retryable.clear();
+	await service.list('alice');
+
+	expect(notifications).toHaveLength(1);
+	expect(rows.Rule[1].protectionNotification.generation).toBe(1);
+});
+
+test('Sol3: 사라진 규칙·꺼진 규칙·남기기 아님·이미 기록된 오류의 지연 항목은 기록 없이 폐기한다', async () => {
+	const { rows, service, input, retryable, failingWrites, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	for (const id of ['gone', 'off', 'changed', 'recorded']) rows.Rule.push(selfReactionKeep(id));
+	rows.MiNote.push(note('0'));
+	retryable.add('MiNoteReaction');
+	failingWrites.add('Rule');
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+	failingWrites.clear();
+	retryable.clear();
+	// flush가 기록 없이 폐기해야 하는 상태들
+	rows.Rule.splice(rows.Rule.findIndex(r => r.id === 'gone'), 1);
+	rows.Rule.find(r => r.id === 'off')!.enabled = false;
+	rows.Rule.find(r => r.id === 'changed')!.action = 'delete';
+	rows.Rule.find(r => r.id === 'recorded')!.lastError = { ...temporaryFailure('recorded'), recovery: { source: 'data', noteIds: ['0'] } };
+
+	await service.list('alice');
+	expect(notifications).toHaveLength(0);
+
+	// 규칙을 되돌려도 폐기된 지연 항목이 되살아나 기록하면 안 된다.
+	rows.Rule.push(selfReactionKeep('gone'));
+	rows.Rule.find(r => r.id === 'off')!.enabled = true;
+	rows.Rule.find(r => r.id === 'changed')!.action = 'keep';
+	await service.list('alice');
+	expect(notifications).toHaveLength(0);
+	expect(rows.Rule.filter(r => r.action === 'keep').every(r => r.lastError === null)).toBe(true);
+});
+
+test('Sol4: 해결된 세대는 새 지연 실패의 해결로 오인하지 않고 새 세대로 기록·통지한다', async () => {
+	const { rows, service, input, retryable, failingWrites, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push(selfReactionKeep('keep'));
+	rows.MiNote.push(note('0'));
+	// 첫 실패를 기록한 뒤 해결해 resolved 세대를 만든다.
+	retryable.add('MiNoteReaction');
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+	expect(notifications).toHaveLength(1);
+	retryable.clear();
+	await service.list('alice');
+	expect(rows.Rule[1].protectionNotification).toMatchObject({ generation: 1, status: 'resolved' });
+
+	// 해결 뒤 새 연결 실패가 DB까지 중단돼 지연 기록으로 남는다.
+	retryable.add('MiNoteReaction');
+	failingWrites.add('Rule');
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+	failingWrites.clear();
+	retryable.clear();
+	await service.list('alice');
+
+	expect(notifications).toHaveLength(2);
+	expect(rows.Rule[1].protectionNotification).toMatchObject({ generation: 2, status: 'resolved' });
+	expect(rows.Rule[1].lastError).toBeNull();
+});
+
+test('Sol5: 남기기 조건이 쓰지 않는 자료의 연결 오류는 보호 오류·알림 없이 재시도로 중단한다', async () => {
+	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'pinned', value: true }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	retryable.add('MiNoteFavorite');
+
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+
+	expect(rows.MiNote).toHaveLength(1);
+	expect(rows.Rule[1].lastError).toBeNull();
+	expect(notifications).toHaveLength(0);
+	retryable.clear();
+	expect((await service.processUser('alice')).deleted).toBe(1);
+});
+
+test('Sol5: 남기기 조건이 쓰는 자료의 연결 오류는 보호 오류와 최초 알림을 남긴다', async () => {
+	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'favorite', value: true }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	retryable.add('MiNoteFavorite');
+
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+
+	expect(rows.MiNote).toHaveLength(1);
+	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
+	expect(notifications).toHaveLength(1);
+});
+
+test('Sol5: 재시도 불가한 병합 실패는 반응 수에 의존하는 남기기 규칙만 기록한다', async () => {
+	const { rows, service, input, buffering, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'count', userId: 'alice', name: '반응 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null, legacy: null });
+	rows.Rule.push({ id: 'pinned', userId: 'alice', name: '고정 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'pinned', value: true }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	// bindThis 접근자 대신 인스턴스 속성으로 교체해 병합 실패를 주입한다.
+	Object.defineProperty(buffering, 'mergeReactions', { value: () => { throw new Error('merge failed'); }, writable: true, configurable: true });
+
+	await expect(service.processUser('alice')).rejects.toThrow('merge failed');
+
+	expect(rows.Rule.find(r => r.id === 'count')!.lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
+	expect(rows.Rule.find(r => r.id === 'pinned')!.lastError).toBeNull();
 	expect(notifications).toHaveLength(1);
 });

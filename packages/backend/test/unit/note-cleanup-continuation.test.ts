@@ -5,12 +5,18 @@
 import { expect, test, vi } from 'vitest';
 import { AutoDeleteNotesProcessorService } from '@/queue/processors/AutoDeleteNotesProcessorService.js';
 
-vi.mock('@/core/NoteCleanupService.js', () => ({ NoteCleanupService: class {}, CleanupInputError: class extends Error {}, NOTE_CLEANUP_LIMITS: { roundMs: 10000, windowMs: 300000 } }));
+vi.mock('@/core/NoteCleanupService.js', async () => {
+	const { createHash } = await import('node:crypto');
+	return {
+		NoteCleanupService: class {}, CleanupInputError: class extends Error {}, NOTE_CLEANUP_LIMITS: { roundMs: 10000, windowMs: 300000 },
+		noteCleanupRequestJobId: (userId: string, ruleIds: string[]) => `note-cleanup-${userId}-${createHash('sha256').update([...ruleIds].sort().join(',')).digest('hex')}`,
+	};
+});
 vi.mock('@/core/QueueService.js', () => ({ QueueService: class {} }));
 
 test('연합 큐가 밀리면 요청 ID를 보존한 지연 작업을 접수하고 정상 종료한다', async () => {
 	const added: any[] = [];
-	const queue = { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: async (...args: any[]) => { added.push(args); } } };
+	const queue = { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: async (...args: any[]) => { added.push(args); }, getJob: async () => null } };
 	const processor = new AutoDeleteNotesProcessorService({} as any, queue as any);
 	const job: any = { data: { userId: 'alice', ruleIds: ['rule'], requestId: 'request', step: 0 }, updateData: async (data: any) => { job.data = data; } };
 
@@ -23,7 +29,7 @@ test('연합 큐가 밀리면 요청 ID를 보존한 지연 작업을 접수하�
 
 test('이어 받기 접수 뒤 부모 작업이 재시작돼도 같은 작업 ID를 다시 사용한다', async () => {
 	const added: any[] = [];
-	const queue = { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: async (...args: any[]) => { added.push(args); } } };
+	const queue = { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: async (...args: any[]) => { added.push(args); }, getJob: async () => null } };
 	const processor = new AutoDeleteNotesProcessorService({} as any, queue as any);
 	const job: any = { data: { userId: 'alice', ruleIds: ['rule'], requestId: 'request', step: 0 }, updateData: async (data: any) => { job.data = data; } };
 
@@ -37,7 +43,7 @@ test('이어 받기 접수 뒤 부모 작업이 재시작돼도 같은 작업 ID
 test('일시적인 DB 연결 오류는 같은 요청 ID로 다시 접수한다', async () => {
 	const added: any[] = [];
 	const cleanup = { processUser: async () => { throw new Error('Connection terminated unexpectedly'); } };
-	const queue = { deliverQueue: { getWaiting: async () => [] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: async (...args: any[]) => { added.push(args); } } };
+	const queue = { deliverQueue: { getWaiting: async () => [] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: async (...args: any[]) => { added.push(args); }, getJob: async () => null } };
 	const processor = new AutoDeleteNotesProcessorService(cleanup as any, queue as any);
 	const job: any = { data: { userId: 'alice', ruleIds: ['rule'], requestId: 'request', step: 0 }, updateData: async (data: any) => { job.data = data; } };
 

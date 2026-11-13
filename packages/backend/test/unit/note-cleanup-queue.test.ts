@@ -153,7 +153,14 @@ function fixture() {
 	const systemQueue = {
 		toKey: (s: string) => `test:system:${s}`,
 		getJob: async (id: string) => jobs.get(id),
-		add: async (name: string, data: Record<string, unknown>, options: { jobId: string; delay?: number }) => { added.push(options.jobId); addedJobs.push({ name, data, options }); jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); if (options.delay !== undefined && data.sweep === undefined) continuation = { data, delay: options.delay }; },
+		add: async (name: string, data: Record<string, unknown>, options: { jobId: string; delay?: number }) => {
+			added.push(options.jobId); addedJobs.push({ name, data, options });
+			// 실제 BullMQ처럼 저장된 작업도 id와 data 갱신을 가진다.
+			const stored: any = { id: options.jobId, name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } };
+			stored.updateData = async (next: Record<string, unknown>) => { stored.data = next; };
+			jobs.set(options.jobId, stored);
+			if (options.delay !== undefined && data.sweep === undefined) continuation = { data, delay: options.delay };
+		},
 	};
 	const waiting = { deliver: [] as { timestamp: number }[], inbox: [] as { timestamp: number }[] };
 	const queueService = {
@@ -163,7 +170,14 @@ function fixture() {
 	};
 	// 통지 저장 모형: createNotification이 스트림에 항목을 쌓고 저장 확인 조회가 이를 읽는다.
 	const notifications: Record<string, unknown>[] = [];
-	const notificationRedis = { xrevrange: async () => notifications.map((payload, i) => [`${i + 1}-0`, ['data', JSON.stringify(payload)]]).reverse() };
+	// 저장 확인 조회는 실제 XREVRANGE 계약처럼 시작 커서('+' 또는 배타적 '(id')와 COUNT 페이지를 따른다.
+	const notificationRedis = { xrevrange: async (_key: string, start: string, _end: string, ...args: unknown[]) => {
+		const count = args[0] === 'COUNT' ? Number(args[1]) : Infinity;
+		const seq = (id: string) => Number(id.split('-')[0]);
+		let entries = notifications.map((payload, i) => [`${i + 1}-0`, ['data', JSON.stringify(payload)]] as [string, string[]]).reverse();
+		if (start !== '+') entries = entries.filter(([id]) => start.startsWith('(') ? seq(id) < seq(start.slice(1)) : seq(id) <= seq(start));
+		return entries.slice(0, count);
+	} };
 	const cache = { userProfileCache: { fetch: async () => ({}) } };
 	const service = new NoteCleanupService(db as any, { gen: () => String(Math.random()), parse: () => ({ date: new Date(0) }) } as any, queueService as any, noteDelete as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering, notificationRedis as any, cache as any);
 	const processor = new AutoDeleteNotesProcessorService(service, queueService as any);
@@ -174,10 +188,10 @@ function fixture() {
 	const addNotes = (userId: string, count: number) => { for (let i = 0; i < count; i++) rows.MiNote.push(note(userId, i)); };
 	const notesOf = (userId: string) => rows.MiNote.filter(n => n.userId === userId);
 	const state = (userId: string) => rows.State.find(s => s.userId === userId);
-	// 이어 받기 작업을 같은 시험 핸들로 넘겨 반복 회차를 관찰한다.
-	const job = (data: Record<string, unknown>) => {
+	// 이어 받기 작업을 같은 시험 핸들로 넘겨 반복 회차를 관찰한다. id를 주면 실제 작업처럼 저장 행과 data를 공유한다.
+	const job = (data: Record<string, unknown>, id?: string) => {
 		const delays: number[] = [];
-		const self = { data: { ...data }, delays, updateData: async (next: Record<string, unknown>) => { self.data = next; }, take: () => continuation };
+		const self = { id, data: { ...data }, delays, updateData: async (next: Record<string, unknown>) => { self.data = next; const stored = id ? jobs.get(id) as any : undefined; if (stored) stored.data = next; }, take: () => continuation };
 		return self;
 	};
 	return { faults, onRead: (callback: () => void) => { afterRead = callback; }, rows, busy, scanned, failingNotes, retryableDeletes, deleteAttempts, redis, jobs, added, addedJobs, waiting, service, processor, addUser, addNotes, notesOf, state, job };
@@ -845,4 +859,76 @@ test('Sol6: 체인 정리는 진행 중인 체인을 건드리지 않고 종료�
 	await f.service.sweepRequestChain('alice', first.jobId);
 	expect(f.jobs.has(childId)).toBe(false);
 	expect(f.jobs.has(first.jobId)).toBe(false);
+});
+
+// === 델타 검토 지적 재현 (review-fix2) ===
+
+// 매 페이지 뒤 회차 시간 상한의 절반만큼 시각을 당겨, 작업 하나가 두 페이지 처리 후 이어 받기를 만든다.
+function hopFixture() {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	f.addNotes('alice', 30);
+	const original = f.service.processUser.bind(f.service);
+	f.service.processUser = async (...args: Parameters<typeof original>) => {
+		const result = await original(...args);
+		vi.setSystemTime(Date.now() + NOTE_CLEANUP_LIMITS.roundMs / 2);
+		return result;
+	};
+	return f;
+}
+
+test('N1: 두 번 이어 받은 요청은 루트가 최신 꼬리를 가리켜 중간 자식이 제거돼도 중복 접수를 막는다', async () => {
+	const f = hopFixture();
+	const first = await f.service.request('alice', ['d1']);
+	const rootId = first.jobId;
+	const root = f.jobs.get(rootId) as any;
+	const requestId = root.data.requestId as string;
+	// 홉 1: 루트가 자식 1을 등록하고 완료한다.
+	expect(await run(f.processor, f.job({ ...root.data }, rootId))).toBe('delayed');
+	root.getState = async () => 'completed';
+	expect((f.jobs.get(rootId) as any).data.handoff.next.step).toBe(1);
+	const child1Id = `note-cleanup-${requestId}-1`;
+	// 홉 2: 자식 1이 자식 2를 등록하고 완료·자동 제거된다.
+	const child1 = f.jobs.get(child1Id) as any;
+	expect(await run(f.processor, f.job({ ...child1.data }, child1Id))).toBe('delayed');
+	f.jobs.delete(child1Id);
+	const child2Id = `note-cleanup-${requestId}-2`;
+	expect(f.jobs.has(child2Id)).toBe(true);
+	// 루트는 최신 꼬리(자식 2)를 가리켜야 한다.
+	expect((f.jobs.get(rootId) as any).data.tail).toMatchObject({ requestId, step: 2 });
+	// 꼬리가 진행 중이면 같은 요청을 중복 접수하지 않고, sweep도 건드리지 않는다.
+	expect((await f.service.request('alice', ['d1'])).queued).toBe(false);
+	await f.service.sweepRequestChain('alice', rootId);
+	expect(f.jobs.has(rootId)).toBe(true);
+	expect(f.jobs.has(child2Id)).toBe(true);
+	// 꼬리가 완료·제거되면 종료된 체인을 정리하고 새 요청을 접수한다.
+	f.jobs.delete(child2Id);
+	await f.service.sweepRequestChain('alice', rootId);
+	expect(f.jobs.has(rootId)).toBe(false);
+	expect((await f.service.request('alice', ['d1'])).queued).toBe(true);
+});
+
+test('N1: 이어 받기 기록 뒤 중단된 자식은 같은 꼬리를 다시 등록하고 루트 포인터를 유지한다', async () => {
+	const f = hopFixture();
+	const first = await f.service.request('alice', ['d1']);
+	const rootId = first.jobId;
+	const root = f.jobs.get(rootId) as any;
+	const requestId = root.data.requestId as string;
+	expect(await run(f.processor, f.job({ ...root.data }, rootId))).toBe('delayed');
+	root.getState = async () => 'completed';
+	const child1Id = `note-cleanup-${requestId}-1`;
+	const child1 = f.jobs.get(child1Id) as any;
+	expect(await run(f.processor, f.job({ ...child1.data }, child1Id))).toBe('delayed');
+	const child2Id = `note-cleanup-${requestId}-2`;
+	// 자식 1이 완료 전에 중단돼 BullMQ가 같은 작업으로 재시도하는 상황: 저장된 handoff로 다시 접수한다.
+	const addedBefore = f.added.length;
+	const resumed = f.job({ ...(f.jobs.get(child1Id) as any).data }, child1Id);
+	expect(await f.processor.process(resumed as any)).toMatchObject({ delayed: true });
+	expect(f.added.length).toBe(addedBefore + 1);
+	expect(f.added.at(-1)).toBe(child2Id);
+	expect((f.jobs.get(rootId) as any).data.tail).toMatchObject({ requestId, step: 2 });
+	// 재시도 뒤 자식 1이 완료·제거돼도 꼬리 추적은 유지된다.
+	f.jobs.delete(child1Id);
+	expect((await f.service.request('alice', ['d1'])).queued).toBe(false);
 });

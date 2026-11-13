@@ -108,7 +108,8 @@ export function compileCleanupCondition(input: unknown): (context: CleanupContex
 	};
 }
 
-function cleanupDependencies(c: CleanupCondition): string[] {
+// 조건이 판정에 쓰는 자료 출처. 보호 실패 기록은 실패한 출처에 의존하는 규칙에만 남긴다.
+export function cleanupDependencies(c: CleanupCondition): string[] {
 	if (c.type === 'all' || c.type === 'any') return c.children.flatMap(cleanupDependencies);
 	if (c.type === 'not') return cleanupDependencies(c.child);
 	if (c.type === 'count') return [c.field];

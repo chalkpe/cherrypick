@@ -59,7 +59,13 @@ vi.mock('bullmq', async importOriginal => {
 		on() { return this; }
 	} };
 });
-vi.mock('@/core/NoteCleanupService.js', () => ({ NoteCleanupService: class {}, NOTE_CLEANUP_LIMITS: { roundMs: 10000 } }));
+vi.mock('@/core/NoteCleanupService.js', async () => {
+	const { createHash } = await import('node:crypto');
+	return {
+		NoteCleanupService: class {}, NOTE_CLEANUP_LIMITS: { roundMs: 10000 },
+		noteCleanupRequestJobId: (userId: string, ruleIds: string[]) => `note-cleanup-${userId}-${createHash('sha256').update([...ruleIds].sort().join(',')).digest('hex')}`,
+	};
+});
 
 // Worker만 대체하여 실제 system callback → runQueueJob → cleanup processor를 실행한다.
 // telemetry 모형은 span callback의 rejection을 기록한다. 실제 collector는 사용하지 않는다.
@@ -76,7 +82,7 @@ function fixture() {
 		},
 		captureMessage: vi.fn((...args: unknown[]) => { expect(active).toBe(true); captures.push(args); }),
 	};
-	const cleanup = new AutoDeleteNotesProcessorService({} as any, { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: vi.fn(async () => {}) } } as any);
+	const cleanup = new AutoDeleteNotesProcessorService({} as any, { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: vi.fn(async () => {}), getJob: async () => null } } as any);
 	const other = { process: vi.fn() };
 	const args = [{ redisForJobQueue: {}, outbox: {}, inbox: {} }, {}, { logger }, telemetry, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, cleanup, other, other];
 	new (QueueProcessorService as any)(...args);
