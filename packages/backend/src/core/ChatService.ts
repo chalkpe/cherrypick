@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Inject, Injectable } from '@nestjs/common';
 import * as mfm from 'mfc-js';
 import * as Redis from 'ioredis';
-import { Brackets, DataSource, In, IsNull, LessThan, Not } from 'typeorm';
+import { And, Brackets, DataSource, In, IsNull, LessThan, LessThanOrEqual, MoreThan, Not } from 'typeorm';
 import type { EntityManager, SelectQueryBuilder } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
@@ -83,7 +83,7 @@ const ACTIVITIES_FOR_SUSPENDED_ACCOUNTS = new Set(['Delete', 'Remove', 'Undo']);
 const isCustomEmojiRegexp = /^:([\w+-]+)(?:@\.)?:$/;
 
 /** One reader's unread mark on one conversation: a direct conversation goes by its sender, a room by its ID. */
-type UnreadSnapshot = [latest: string, first: string, revision: string, messageIds: string[], pendingIds: string[]];
+type UnreadSnapshot = [latest: string, first: string, revision: string, messageIds: string[], pendingIds: string[], trimmed: string];
 
 type UnreadMark = { readerId: MiUser['id'] } & ({ senderId: MiUser['id'] } | { roomId: MiChatRoom['id'] });
 
@@ -100,6 +100,12 @@ export function chatMessageUriLockKey(uri: string): string {
 
 const READ_RETRY_DELAYS = [1000, 5000, 30000];
 
+// 미읽음 ID 창은 최신 1000개만 개별 ID로 남긴다. 여유 256개를 넘기면 오래된 것부터 압축 경계로 모은다.
+const UNREAD_WINDOW_SIZE = 1000;
+const UNREAD_WINDOW_SLACK = 256;
+// 완료된 레거시 정리는 이 주기가 지나면 다시 훑는다. 구버전 롤백 기간에 생긴 표식을 줍기 위해서다.
+const LEGACY_CLEANUP_RESCAN_INTERVAL = 7 * 24 * 60 * 60 * 1000;
+
 /** The read a chat screen sends over the stream names the newest message it has shown. Older clients name none. */
 export function chatReadBoundaryOfStream(body: unknown): ChatReadBoundary | undefined {
 	const id = typeof body === 'object' && body != null ? (body as { id?: unknown }).id : undefined;
@@ -110,7 +116,7 @@ function escapeRedisPattern(value: string): string {
 	return value.replaceAll('\\', '\\\\').replaceAll('*', '\\*').replaceAll('?', '\\?').replaceAll('[', '\\[');
 }
 
-// KEYS: 최신 ID, 첫 미읽음 ID, 집계 set, revision, 미읽음 ID set, 저장 중인 ID set
+// KEYS: 최신 ID, 첫 미읽음 ID, 집계 set, revision, 미읽음 ID set, 저장 중인 ID set, 압축 경계 ID
 // 개별 표식과 집계 set은 항상 함께 바꾼다. 첫 미읽음 ID는 읽은 과거 글과 새 글을 구분한다.
 // 표식은 쪽지를 저장하기 전에 남긴다. 저장된 쪽지를 본 읽기는 반드시 표식 뒤에 온다.
 const MARK_CHAT_UNREAD = `-- mark chat unread
@@ -119,7 +125,7 @@ local latest = active and redis.call('GET', KEYS[1]) or nil
 local first = active and redis.call('GET', KEYS[2]) or nil
 if not active then
  local pending = redis.call('SMEMBERS', KEYS[6])
- redis.call('DEL', KEYS[5])
+ redis.call('DEL', KEYS[5], KEYS[7])
  for _, id in ipairs(pending) do
   redis.call('SADD', KEYS[5], id)
   if not first or id < first then first = id end
@@ -138,6 +144,26 @@ redis.call('SADD', KEYS[5], ARGV[1])
 -- 저장이 끝날 때까지 이 ID를 보지 못한 읽기·정리가 표식을 지우지 않게 한다.
 redis.call('SADD', KEYS[6], ARGV[1])
 redis.call('SET', KEYS[4], ARGV[3])
+-- 창이 여유를 넘기면 저장 중이 아닌 오래된 ID부터 압축 경계로 모은다.
+-- 첫 미읽음 ID 자체는 창에 남긴다. 압축 경계는 그 뒤의 미읽음만 모으므로 경계가 첫 ID를 삼키면 안 된다.
+-- 첫 미읽음 ID가 없는 이전 형식은 경계 없이 ID 전부가 미읽음이므로 압축하지 않는다. 읽기가 새 형식으로 바꾼다.
+local count = redis.call('SCARD', KEYS[5])
+if first and count > ${UNREAD_WINDOW_SIZE + UNREAD_WINDOW_SLACK} then
+ local ids = redis.call('SMEMBERS', KEYS[5])
+ table.sort(ids)
+ local pending = {}
+ for _, id in ipairs(redis.call('SMEMBERS', KEYS[6])) do pending[id] = true end
+ local trimmed = redis.call('GET', KEYS[7])
+ for _, id in ipairs(ids) do
+  if count <= ${UNREAD_WINDOW_SIZE} then break end
+  if not pending[id] and id ~= first then
+   redis.call('SREM', KEYS[5], id)
+   count = count - 1
+   if not trimmed or id > trimmed then trimmed = id end
+  end
+ end
+ if trimmed then redis.call('SET', KEYS[7], trimmed) end
+end
 return 1
 `;
 
@@ -158,11 +184,20 @@ for i = 3, #ARGV do
 end
 if removed == 0 then return 0 end
 if redis.call('SISMEMBER', KEYS[3], ARGV[1]) == 0 then return 0 end
--- 첫 미읽음 ID가 없는 이전 형식은 개별 ID 밖의 미읽음이 남아 있을 수 있으므로 지우지 않는다.
-if redis.call('SCARD', KEYS[5]) == 0 and redis.call('EXISTS', KEYS[2]) == 1 then
- redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6])
- redis.call('SREM', KEYS[3], ARGV[1])
- return 2
+if redis.call('SCARD', KEYS[5]) == 0 then
+ local trimmed = redis.call('GET', KEYS[7])
+ if trimmed then
+  -- 창은 비었지만 압축 경계 안의 미읽음이 남았다. 최신 ID를 경계로 내린다.
+  redis.call('SET', KEYS[1], trimmed)
+  redis.call('SET', KEYS[4], ARGV[2])
+  return 1
+ end
+ -- 첫 미읽음 ID가 없는 이전 형식은 개별 ID 밖의 미읽음이 남아 있을 수 있으므로 지우지 않는다.
+ if redis.call('EXISTS', KEYS[2]) == 1 then
+  redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6], KEYS[7])
+  redis.call('SREM', KEYS[3], ARGV[1])
+  return 2
+ end
 end
 redis.call('SET', KEYS[4], ARGV[2])
 return 1
@@ -171,7 +206,7 @@ return 1
 // ARGV[3]: '*'는 저장이 끝난 전부, ''는 경계 없음, 그 밖에는 그 ID까지. ARGV[5] 이후는 읽기가 돌려준 ID.
 const READ_CHAT_UNREAD = `-- read chat unread
 if redis.call('SISMEMBER', KEYS[3], ARGV[1]) == 0 then
- if ARGV[4] == '1' then redis.call('DEL', KEYS[7]) end
+ if ARGV[4] == '1' then redis.call('DEL', KEYS[8]) end
  return {0, {}}
 end
 local seen = {}
@@ -180,27 +215,56 @@ local pending = {}
 for _, id in ipairs(redis.call('SMEMBERS', KEYS[6])) do pending[id] = true end
 local changed = 0
 for _, id in ipairs(redis.call('SMEMBERS', KEYS[5])) do
- if seen[id] or (not pending[id] and (ARGV[3] == '*' or (ARGV[3] ~= '' and id <= ARGV[3])) and (ARGV[4] ~= '1' or redis.call('SISMEMBER', KEYS[7], id) == 1)) then
+ if seen[id] or (not pending[id] and (ARGV[3] == '*' or (ARGV[3] ~= '' and id <= ARGV[3])) and (ARGV[4] ~= '1' or redis.call('SISMEMBER', KEYS[8], id) == 1)) then
   redis.call('SREM', KEYS[5], id)
   redis.call('SREM', KEYS[6], id)
   changed = 1
  end
 end
-if ARGV[4] == '1' then redis.call('DEL', KEYS[7]) end
+if ARGV[4] == '1' then redis.call('DEL', KEYS[8]) end
+-- 압축 경계 안의 미읽음도 읽음 경계가 덮으면 거둔다. 경계 없는 읽기는 개별 ID만 지운다.
+local trimmed = redis.call('GET', KEYS[7])
+if trimmed and (ARGV[3] == '*' or (ARGV[3] ~= '' and trimmed <= ARGV[3])) then
+ redis.call('DEL', KEYS[7])
+ trimmed = nil
+ changed = 1
+end
+local oldFirst = redis.call('GET', KEYS[2])
+local oldLatest = redis.call('GET', KEYS[1])
 local first, latest
 for _, id in ipairs(redis.call('SMEMBERS', KEYS[5])) do
  if not first or id < first then first = id end
  if not latest or id > latest then latest = id end
 end
 -- 남은 저장 중 ID도 돌려준다. 끝나지 않은 전송의 것인지는 호출한 쪽이 PostgreSQL 잠금으로 확인한다.
+local pendingLeft = redis.call('SMEMBERS', KEYS[6])
 if not first then
- redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6])
+ if trimmed then
+  -- 창은 비었지만 압축 경계 안의 미읽음이 남았다. 표식을 유지하고 읽음 경계만 올린다.
+  local boundary = oldFirst or ''
+  if ARGV[3] ~= '*' and ARGV[3] ~= '' and ARGV[3] > boundary then boundary = ARGV[3] end
+  if changed == 0 and boundary == (oldFirst or '') and trimmed == (oldLatest or '') then return {0, pendingLeft} end
+  redis.call('SET', KEYS[1], trimmed)
+  redis.call('SET', KEYS[2], boundary)
+  redis.call('SET', KEYS[4], ARGV[2])
+  return {1, pendingLeft}
+ end
+ redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6], KEYS[7])
  if redis.call('SREM', KEYS[3], ARGV[1]) == 1 then return {2, {}} end
  return {changed, {}}
 end
-local pendingLeft = redis.call('SMEMBERS', KEYS[6])
+if trimmed then
+ -- 창 밖 미읽음이 남았으므로 첫 미읽음 ID는 느슨한 읽음 경계로 올린다.
+ local boundary = oldFirst or ''
+ if ARGV[3] ~= '*' and ARGV[3] ~= '' and ARGV[3] > boundary then boundary = ARGV[3] end
+ if changed == 0 and boundary == (oldFirst or '') and latest == (oldLatest or '') then return {0, pendingLeft} end
+ redis.call('SET', KEYS[1], latest)
+ redis.call('SET', KEYS[2], boundary)
+ redis.call('SET', KEYS[4], ARGV[2])
+ return {1, pendingLeft}
+end
 -- 첫 미읽음 ID가 없는 이전 형식은 개별 ID 밖의 미읽음이 대화를 읽으면서 모두 읽은 것이 되어 새 형식이 된다.
-if changed == 0 and redis.call('GET', KEYS[2]) then return {0, pendingLeft} end
+if changed == 0 and oldFirst then return {0, pendingLeft} end
 redis.call('SET', KEYS[1], latest)
 redis.call('SET', KEYS[2], first)
 redis.call('SET', KEYS[4], ARGV[2])
@@ -212,10 +276,10 @@ const READ_ALL_CHAT_UNREAD = `-- read all chat unread
 local function keepPending(base)
  local pending = redis.call('SMEMBERS', base .. ':pending')
  if #pending == 0 then
-  redis.call('DEL', base, base .. ':first', base .. ':revision', base .. ':messages', base .. ':pending')
+  redis.call('DEL', base, base .. ':first', base .. ':revision', base .. ':messages', base .. ':pending', base .. ':trimmed')
   return false
  end
- redis.call('DEL', base .. ':messages')
+ redis.call('DEL', base .. ':messages', base .. ':trimmed')
  local first, latest
  for _, id in ipairs(pending) do
   redis.call('SADD', base .. ':messages', id)
@@ -242,13 +306,13 @@ return left
 `;
 
 const CLEAR_CHAT_UNREAD = `-- clear chat unread
-redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6])
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6], KEYS[7])
 return redis.call('SREM', KEYS[3], ARGV[1])
 `;
 
 // 읽음 표식의 여러 키를 한 시점에 읽는다.
 const SNAPSHOT_CHAT_UNREAD = `-- snapshot chat unread
-return {redis.call('GET', KEYS[1]) or '', redis.call('GET', KEYS[2]) or '', redis.call('GET', KEYS[3]) or '', redis.call('SMEMBERS', KEYS[4]), redis.call('SMEMBERS', KEYS[5])}
+return {redis.call('GET', KEYS[1]) or '', redis.call('GET', KEYS[2]) or '', redis.call('GET', KEYS[3]) or '', redis.call('SMEMBERS', KEYS[4]), redis.call('SMEMBERS', KEYS[5]), redis.call('GET', KEYS[6]) or ''}
 `;
 
 // 읽기 전에 저장을 마친 ID를 Redis 안에 고정한다. 조회 실패나 프로세스 종료 때는 만료된다.
@@ -266,7 +330,14 @@ return {latest, redis.call('GET', KEYS[2]) or '', latest ~= '' and redis.call('S
 `;
 
 const IS_CHAT_MESSAGE_UNREAD = `-- is chat message unread
-return redis.call('SISMEMBER', KEYS[1], ARGV[1]) * redis.call('SISMEMBER', KEYS[2], ARGV[2])
+if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 0 then return 0 end
+if redis.call('SISMEMBER', KEYS[2], ARGV[2]) == 1 then return 1 end
+-- 창 밖의 미읽음은 압축 경계 안에 있다. 첫 미읽음 ID가 없는 이전 형식은 창이 전부다.
+local first = redis.call('GET', KEYS[3])
+if not first then return 0 end
+local trimmed = redis.call('GET', KEYS[4])
+if trimmed and ARGV[2] > first and ARGV[2] <= trimmed then return 1 end
+return 0
 `;
 
 // Check both conditions in the same Redis operation that removes the candidate.
@@ -303,10 +374,13 @@ if redis.call('SCARD', KEYS[6]) > 0 then return 0 end
 if (redis.call('GET', KEYS[1]) or '') ~= ARGV[1] or (redis.call('GET', KEYS[2]) or '') ~= ARGV[2] or (redis.call('GET', KEYS[4]) or '') ~= ARGV[3] then return 0 end
 if ARGV[4] ~= '' then
  redis.call('SET', KEYS[1], ARGV[4])
+ -- 남은 미읽음이 압축 경계 안이면 경계도 함께 내린다. 창 밖 미읽음의 윗끝이므로.
+ local trimmed = redis.call('GET', KEYS[7])
+ if trimmed and ARGV[4] <= trimmed then redis.call('SET', KEYS[7], ARGV[4]) end
  redis.call('SET', KEYS[4], ARGV[6])
  return 1
 end
-redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6])
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[4], KEYS[5], KEYS[6], KEYS[7])
 redis.call('SREM', KEYS[3], ARGV[5])
 return 2
 `;
@@ -822,7 +896,7 @@ export class ChatService {
 		const upTo = boundary == null ? '*' : (boundary.upTo ?? '');
 		const captured = boundary != null && 'snapshot' in boundary;
 		const snapshot = boundary?.snapshot ?? `${this.unreadKey(mark)}:read:none`;
-		const [result, pendingLeft] = await this.redisClient.eval(READ_CHAT_UNREAD, 7, ...this.unreadKeys(mark), snapshot,
+		const [result, pendingLeft] = await this.redisClient.eval(READ_CHAT_UNREAD, 8, ...this.unreadKeys(mark), `${this.unreadKey(mark)}:trimmed`, snapshot,
 			this.unreadConversation(mark), randomUUID(), upTo, captured ? '1' : '0', ...(boundary?.seenIds ?? [])) as [number, string[]];
 		if (Number(result) > 0) await this.announceIfAllRead([mark.readerId]);
 		// 읽기가 남긴 저장 중 표식이 끝난 전송의 것이면 여기서 정리한다.
@@ -869,7 +943,12 @@ export class ChatService {
 		if (await this.redisClient.set(lock, token, 'PX', 30000, 'NX') == null) return false;
 		try {
 			let cursor = await this.redisClient.get(cursorKey) ?? '0';
-			if (cursor === 'done') return true;
+			if (cursor === 'done' || cursor.startsWith('done:')) {
+				// 완료 시각이 오래됐으면 다시 훑는다. 구버전 롤백 기간에 새 레거시 표식이 생겼을 수 있다. 시각이 없는 옛 커서는 즉시 재스캔한다.
+				const doneAt = Number(cursor.slice('done:'.length));
+				if (Date.now() - doneAt < LEGACY_CLEANUP_RESCAN_INTERVAL) return true;
+				cursor = '0';
+			}
 			const prefix = this.redisClient.options?.keyPrefix ?? '';
 			const clean = async (keys: string[]) => {
 				const pipeline = this.redisClient.pipeline();
@@ -905,7 +984,7 @@ export class ChatService {
 			const [, keys] = await this.redisClient.sscan(deferred, '0', 'COUNT', 100);
 			await clean(keys);
 			if (await this.redisClient.scard(deferred) > 0) return false;
-			return Number(await this.redisClient.eval(SAVE_LEGACY_CLEANUP_CURSOR, 2, lock, cursorKey, token, 'done')) === 1;
+			return Number(await this.redisClient.eval(SAVE_LEGACY_CLEANUP_CURSOR, 2, lock, cursorKey, token, `done:${Date.now()}`)) === 1;
 		} finally {
 			await this.redisClient.eval(RELEASE_LEGACY_CLEANUP_LOCK, 1, lock, token);
 		}
@@ -957,7 +1036,7 @@ export class ChatService {
 					}
 				}
 				await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [this.sendLockKey(message.id)]);
-				const marked = await Promise.allSettled(marks.map(mark => this.redisClient.eval(MARK_CHAT_UNREAD, 6, ...this.unreadKeys(mark),
+				const marked = await Promise.allSettled(marks.map(mark => this.redisClient.eval(MARK_CHAT_UNREAD, 7, ...this.unreadKeys(mark), `${this.unreadKey(mark)}:trimmed`,
 					message.id, this.unreadConversation(mark), randomUUID())));
 				const failure = marked.find(result => result.status === 'rejected');
 				if (failure != null) throw failure.reason;
@@ -1032,7 +1111,7 @@ export class ChatService {
 
 	private async unmarkUnread(marks: UnreadMark[], messageIds: MiChatMessage['id'][]): Promise<void> {
 		if (marks.length === 0) return;
-		const results = await Promise.all(marks.map(mark => this.redisClient.eval(UNMARK_CHAT_UNREAD, 6, ...this.unreadKeys(mark),
+		const results = await Promise.all(marks.map(mark => this.redisClient.eval(UNMARK_CHAT_UNREAD, 7, ...this.unreadKeys(mark), `${this.unreadKey(mark)}:trimmed`,
 			this.unreadConversation(mark), randomUUID(), ...messageIds)));
 		await this.announceIfAllRead(marks.filter((_, index) => Number(results[index]) === 2).map(mark => mark.readerId));
 	}
@@ -1045,7 +1124,7 @@ export class ChatService {
 	private async clearUnreadMarks(marks: UnreadMark[]): Promise<void> {
 		if (marks.length === 0) return;
 
-		const results = await Promise.all(marks.map(mark => this.redisClient.eval(CLEAR_CHAT_UNREAD, 6, ...this.unreadKeys(mark), this.unreadConversation(mark))));
+		const results = await Promise.all(marks.map(mark => this.redisClient.eval(CLEAR_CHAT_UNREAD, 7, ...this.unreadKeys(mark), `${this.unreadKey(mark)}:trimmed`, this.unreadConversation(mark))));
 		await this.announceIfAllRead(marks.filter((_, index) => Number(results[index]) > 0).map(mark => mark.readerId));
 	}
 
@@ -1076,8 +1155,8 @@ export class ChatService {
 
 	private async snapshotUnread(mark: UnreadMark): Promise<UnreadSnapshot> {
 		const key = this.unreadKey(mark);
-		return await this.redisClient.eval(SNAPSHOT_CHAT_UNREAD, 5,
-			key, `${key}:first`, `${key}:revision`, `${key}:messages`, `${key}:pending`) as UnreadSnapshot;
+		return await this.redisClient.eval(SNAPSHOT_CHAT_UNREAD, 6,
+			key, `${key}:first`, `${key}:revision`, `${key}:messages`, `${key}:pending`, `${key}:trimmed`) as UnreadSnapshot;
 	}
 
 	/**
@@ -1111,6 +1190,21 @@ export class ChatService {
 			}
 		}
 
+		// 창 밖으로 압축된 미읽음은 경계 안의 최신 글을 DB에서 확인한다. 창이 비었거나 철회로 최신 ID가 창 밖인 표식이 여기 해당한다.
+		for (const index of [...unresolved]) {
+			const [marker, first, , , , trimmed] = snapshots[index];
+			if (marker === '' || first === '' || trimmed === '') continue;
+			const older = await messages.findOne({
+				select: { id: true },
+				where: { ...this.conversationOf(marks[index]), id: And(MoreThan(first), LessThanOrEqual(trimmed)), deletedAt: IsNull(), fromUser: { isSuspended: false } },
+				order: { id: 'DESC' },
+			});
+			if (older != null) {
+				newest[index] = older.id;
+				unresolved.delete(index);
+			}
+		}
+
 		return newest;
 	}
 
@@ -1122,11 +1216,17 @@ export class ChatService {
 	}
 
 	private async unreadConversations(marks: UnreadMark[]): Promise<boolean[]> {
-		const heads = await Promise.all(marks.map(async mark => {
+		// 대화마다 따로 묻지 않고 한 파이프라인으로 모든 대화의 머리를 읽는다.
+		const pipeline = this.redisClient.pipeline();
+		for (const mark of marks) {
 			const key = this.unreadKey(mark);
-			return await this.redisClient.eval(SNAPSHOT_CHAT_UNREAD_HEAD, 4, key, `${key}:first`, `${key}:messages`, `newChatMessagesExists:${mark.readerId}`, this.unreadConversation(mark)) as [string, string, number];
-		}));
-		const candidates: UnreadSnapshot[] = heads.map(([marker, first, present]) => [marker, first, '', Number(present) === 1 ? [marker] : [], []]);
+			pipeline.eval(SNAPSHOT_CHAT_UNREAD_HEAD, 4, key, `${key}:first`, `${key}:messages`, `newChatMessagesExists:${mark.readerId}`, this.unreadConversation(mark));
+		}
+		const heads = ((await pipeline.exec()) ?? []).map(([error, head]) => {
+			if (error != null) throw error;
+			return head as [string, string, number];
+		});
+		const candidates: UnreadSnapshot[] = heads.map(([marker, first, present]) => [marker, first, '', Number(present) === 1 ? [marker] : [], [], '']);
 		const newest = await this.newestVisibleUnread(marks, candidates);
 		const unresolved = marks.map((_, index) => index).filter(index => heads[index][0] !== '' && heads[index][1] !== '' && newest[index] == null);
 		const remainingMarks = unresolved.map(index => marks[index]);
@@ -1158,7 +1258,7 @@ export class ChatService {
 			if (marker === '' || first === '') return 0;
 			if (remaining[index] === marker) return 0;
 			// DB를 읽는 동안 새 수신이나 읽음이 있었다면 그 상태를 보존한다.
-			return Number(await this.redisClient.eval(RECONCILE_CHAT_UNREAD, 6, ...this.unreadKeys(mark),
+			return Number(await this.redisClient.eval(RECONCILE_CHAT_UNREAD, 7, ...this.unreadKeys(mark), `${this.unreadKey(mark)}:trimmed`,
 				marker, first, revision, remaining[index] ?? '', this.unreadConversation(mark), randomUUID()));
 		}));
 
@@ -1179,7 +1279,8 @@ export class ChatService {
 
 	/** Whether this very message is still unread for the reader, asked just before a delayed notice goes out. */
 	private async isMessageUnread(mark: UnreadMark, messageId: MiChatMessage['id']): Promise<boolean> {
-		return Number(await this.redisClient.eval(IS_CHAT_MESSAGE_UNREAD, 2, `newChatMessagesExists:${mark.readerId}`, `${this.unreadKey(mark)}:messages`, this.unreadConversation(mark), messageId)) === 1;
+		const key = this.unreadKey(mark);
+		return Number(await this.redisClient.eval(IS_CHAT_MESSAGE_UNREAD, 4, `newChatMessagesExists:${mark.readerId}`, `${key}:messages`, `${key}:first`, `${key}:trimmed`, this.unreadConversation(mark), messageId)) === 1;
 	}
 
 	/**

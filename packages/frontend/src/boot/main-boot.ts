@@ -307,7 +307,9 @@ export async function mainBoot() {
 			const stream = useStream();
 
 			let reloadDialogShowing = false;
+			let streamWasDisconnected = false;
 			stream.on('_disconnected_', async () => {
+				streamWasDisconnected = true;
 				if (prefer.s.serverDisconnectedBehavior === 'reload') {
 					window.location.reload();
 				} else if (prefer.s.serverDisconnectedBehavior === 'dialog') {
@@ -323,6 +325,13 @@ export async function mainBoot() {
 						window.location.reload();
 					}
 				}
+			});
+
+			// 끊긴 동안 놓친 읽음·새 쪽지 이벤트는 재연결 때 계정 조회로 따라잡는다. 재시도가 끝난 뒤의 공백도 여기서 메운다.
+			stream.on('_connected_', () => {
+				if (!streamWasDisconnected) return;
+				streamWasDisconnected = false;
+				refreshChatUnreadState();
 			});
 
 			stream.on('emojiAdded', emojiData => {
