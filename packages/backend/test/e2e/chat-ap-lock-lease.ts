@@ -58,7 +58,11 @@ async function inboxWorker(redisPort?: number): Promise<TestingModule> {
 	}
 }
 
-test('a delayed Create cannot store a message after its Delete has taken the expired URI lock', async () => {
+// 예전 talk 쪽지와 채팅 답장은 일반 Note 주소로 온다
+test.each([
+	['a chat message URI', 'chat/messages'],
+	['an ordinary Note URI', 'notes'],
+])('a delayed Create cannot store a message after its Delete has taken the expired URI lock (%s)', async (_, path) => {
 	const reader = await signup();
 	expect((await api('i/update', { chatScope: 'everyone' }, reader)).status).toBe(200);
 	const gate = await chatUnreadMarkGate(config.redis.host, config.redis.port);
@@ -70,7 +74,7 @@ test('a delayed Create cannot store a message after its Delete has taken the exp
 		second = await inboxWorker();
 		const id = first.get(IdService).gen();
 		const actorUri = `https://remote.test/users/${id}`;
-		const uri = `https://remote.test/chat/messages/${id}`;
+		const uri = `https://remote.test/${path}/${id}`;
 		await db.getRepository(MiUser).insert({ id, username: `actor${id}`, usernameLower: `actor${id}`, host: 'remote.test', uri: actorUri, inbox: 'https://remote.test/inbox' });
 		const actor = await db.getRepository(MiUser).findOneByOrFail({ id });
 		const inboxA = first.get(ApInboxService) as unknown as { createChatMessage: (...args: unknown[]) => Promise<string> };
