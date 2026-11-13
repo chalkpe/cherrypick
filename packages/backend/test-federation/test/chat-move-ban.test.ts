@@ -27,7 +27,7 @@ test('an account moved from a banned account cannot join by link', async () => {
 	const admin = await fetchAdmin('a.test');
 	await vi.waitFor(async () => {
 		const jobs = await admin.client.request('admin/queue/jobs', { queue: 'inbox', state: ['completed'], search: old.id });
-		const update = jobs.find(job => (job.data as { activity?: { type?: string } }).activity?.type === 'Update' && job.returnValue === 'ok');
+		const update = jobs.find(job => (job.data as { activity?: { type?: string } }).activity?.type === 'Update' && String(job.returnValue) === 'ok');
 		const move = jobs.find(job => (job.data as { activity?: { type?: string } }).activity?.type === 'Move');
 		strictEqual(update?.returnValue, 'ok');
 		strictEqual(['ok', 'skip'].includes(String(move?.returnValue)), true);
@@ -56,17 +56,23 @@ test('a remote account moving to the room server is checked at acceptance and li
 	await waitForFollowRelation(owner, old, 1, WAIT_FOR_SLOW_FEDERATION);
 	await next.client.request('i/update', { alsoKnownAs: [`@${old.username}@b.test`] });
 	await old.client.request('i/move', { moveToAccount: `@${next.username}@a.test` });
-	const db = new pg.Client({ connectionString: process.env.CHERRYPICK_FED_A_DB_URL });
-	await db.connect();
-	try {
-		await vi.waitFor(async () => {
-			const result = await db.query('SELECT "movedToUri" FROM "user" WHERE id = $1', [oldRemote.id]);
-			strictEqual(result.rows[0].movedToUri, `https://a.test/users/${next.id}`);
-			const target = await db.query('SELECT "alsoKnownAs" FROM "user" WHERE id = $1', [next.id]);
-			strictEqual(target.rows[0].alsoKnownAs.includes(`https://b.test/users/${old.id}`), true);
-		}, WAIT_FOR_SLOW_FEDERATION);
-	} finally {
-		await db.end();
+	await vi.waitFor(async () => {
+		const current = await owner.client.request('users/show', { userId: oldRemote.id });
+		strictEqual(current.movedTo, next.id);
+	}, WAIT_FOR_SLOW_FEDERATION);
+	if (process.env.CHERRYPICK_FED_A_DB_URL != null) {
+		const db = new pg.Client({ connectionString: process.env.CHERRYPICK_FED_A_DB_URL });
+		await db.connect();
+		try {
+			await vi.waitFor(async () => {
+				const result = await db.query('SELECT "movedToUri" FROM "user" WHERE id = $1', [oldRemote.id]);
+				strictEqual(result.rows[0].movedToUri, `https://a.test/users/${next.id}`);
+				const target = await db.query('SELECT "alsoKnownAs" FROM "user" WHERE id = $1', [next.id]);
+				strictEqual(target.rows[0].alsoKnownAs.includes(`https://b.test/users/${old.id}`), true);
+			}, WAIT_FOR_SLOW_FEDERATION);
+		} finally {
+			await db.end();
+		}
 	}
 	const banned = (err: unknown) => { strictEqual((err as { code?: unknown }).code, 'BANNED_FROM_ROOM'); return true; };
 	await rejects(next.client.request('chat/rooms/join', { roomId: room.id }), banned);
@@ -111,15 +117,21 @@ test('an account moved from an unbanned remote account can join', async () => {
 	await waitForFollowRelation(owner, old, 1, WAIT_FOR_SLOW_FEDERATION);
 	await next.client.request('i/update', { alsoKnownAs: [`@${old.username}@b.test`] });
 	await old.client.request('i/move', { moveToAccount: `@${next.username}@a.test` });
-	const db = new pg.Client({ connectionString: process.env.CHERRYPICK_FED_A_DB_URL });
-	await db.connect();
-	try {
-		await vi.waitFor(async () => {
-			const result = await db.query('SELECT "movedToUri" FROM "user" WHERE id = $1', [remote.id]);
-			strictEqual(result.rows[0].movedToUri, `https://a.test/users/${next.id}`);
-		}, WAIT_FOR_SLOW_FEDERATION);
-	} finally {
-		await db.end();
+	await vi.waitFor(async () => {
+		const current = await owner.client.request('users/show', { userId: remote.id });
+		strictEqual(current.movedTo, next.id);
+	}, WAIT_FOR_SLOW_FEDERATION);
+	if (process.env.CHERRYPICK_FED_A_DB_URL != null) {
+		const db = new pg.Client({ connectionString: process.env.CHERRYPICK_FED_A_DB_URL });
+		await db.connect();
+		try {
+			await vi.waitFor(async () => {
+				const result = await db.query('SELECT "movedToUri" FROM "user" WHERE id = $1', [remote.id]);
+				strictEqual(result.rows[0].movedToUri, `https://a.test/users/${next.id}`);
+			}, WAIT_FOR_SLOW_FEDERATION);
+		} finally {
+			await db.end();
+		}
 	}
 	strictEqual((await next.client.request('chat/invite-link/join', { url })).status, 'joined');
 }, 180_000);
@@ -186,6 +198,8 @@ test.skipIf(process.env.CHERRYPICK_OLD_SERVER == null)('a server without channel
 	const redis = new Redis.Redis({ host: '127.0.0.1', port: 6379, db: 15, keyPrefix: `${config.redis.prefix}:` });
 	try {
 		strictEqual(await redis.get('chat_room_channels_capability:b.test'), 'no');
+		const ttl = await redis.ttl('chat_room_channels_capability:b.test');
+		strictEqual(ttl > 0 && ttl <= 600, true);
 	} finally {
 		redis.disconnect();
 	}

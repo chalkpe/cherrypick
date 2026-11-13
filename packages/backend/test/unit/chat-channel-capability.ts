@@ -69,3 +69,14 @@ test('일시 실패는 재시도하고 미지원 서버는 건너뛰며 지원 �
 	expect(await service.process(job)).toBe('ok');
 	expect(deliver).toHaveBeenCalledWith(job.data.user, job.data.content, job.data.to, false);
 });
+
+test.each([[false, 600], [true, 3600]] as const)('채널 지원 상태 %s의 캐시 수명은 %i초다', async (supported, ttl) => {
+	const set = vi.fn();
+	const service = Object.create(FetchInstanceMetadataService.prototype) as FetchInstanceMetadataService;
+	Object.defineProperties(service, {
+		redisClient: { value: { get: async () => null, set } },
+		fetchNodeinfo: { value: async () => ({ metadata: { features: supported ? ['chat_room_channels'] : [] } }) },
+	});
+	expect(await service.chatRoomChannelsCapability('peer.test')).toBe(supported);
+	expect(set).toHaveBeenCalledWith('chat_room_channels_capability:peer.test', supported ? 'yes' : 'no', 'EX', ttl);
+});

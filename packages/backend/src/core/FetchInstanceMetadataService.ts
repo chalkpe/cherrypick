@@ -151,7 +151,7 @@ export class FetchInstanceMetadataService {
 		try {
 			const info = await this.fetchNodeinfo({ host } as MiInstance);
 			const supported = Array.isArray(info.metadata?.features) && info.metadata.features.includes('chat_room_channels');
-			await this.redisClient.set(key, supported ? 'yes' : 'no', 'EX', 60 * 60);
+			await this.redisClient.set(key, supported ? 'yes' : 'no', 'EX', supported ? 60 * 60 : 10 * 60);
 			return supported;
 		} catch {
 			await this.redisClient.set(key, 'unknown', 'EX', 5);
