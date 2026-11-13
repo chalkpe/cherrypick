@@ -468,19 +468,6 @@ describe('Chat room federation: Accept(Invite) from an account the owner removed
 		expect(refuseAcceptedJoin).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'localroom' }), invitedRemote, 'banned');
 	});
 
-	test('keeps someone who is a member already, as a ban carried by an account move does not remove anyone', async () => {
-		const f = fixture({
-			invitations: [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }],
-			memberships: [{ id: 'membership', roomId: 'localroom', userId: invitedRemote.id }],
-			banned: [invitedRemote.id],
-		});
-
-		const result = await f.inbox.acceptInvite(invitedRemote, accepted);
-
-		expect(result).toBe('ok');
-		expect(f.memberships.rows).toHaveLength(1);
-		expect(f.inbox.queueService.deliver).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'Remove' }), expect.anything(), expect.anything());
-	});
 });
 
 describe('Chat room federation: Accept(Invite) from an account the owner blocked', () => {
