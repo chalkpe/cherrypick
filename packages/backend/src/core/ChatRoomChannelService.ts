@@ -163,9 +163,11 @@ export class ChatRoomChannelService {
 		const roomUri = await this.roomUri(room, manager);
 		if (refs.some(ref => !isChatChannelUri(roomUri, ref.id))) return [];
 		const channels = await manager.findBy(MiChatRoomChannel, { roomId: room.id });
-		return refs.flatMap(ref => {
+		return refs.map(ref => {
 			const channel = channels.find(c => (c.uri ?? chatChannelUri(roomUri, c.id)) === ref.id);
-			return channel != null ? [{ channelId: channel.id, start: ref.start, length: ref.length, uri: ref.id }] : [];
+			// 채널 행이 삭제되었어도 같은 그룹의 유효한 URI면 삭제된 대상으로 참조를 보존한다.
+			const channelId = channel?.id ?? ref.id.slice(`${roomUri}/channels/`.length);
+			return { channelId, start: ref.start, length: ref.length, uri: ref.id };
 		});
 	}
 

@@ -36,6 +36,57 @@ test('a channel update reaches a server advertising channel support', async () =
 	}), true);
 }, 180_000);
 
+test('an edit keeps a reference to a deleted channel on the member server', async () => {
+	const owner = await createAccount('a.test');
+	const member = await createAccount('b.test');
+	const room = await owner.client.request('chat/rooms/create', { name: crypto.randomUUID() });
+	const { url } = await owner.client.request('chat/rooms/invite-link/create', { roomId: room.id });
+	await member.client.request('chat/invite-link/join', { url });
+	const joined = await vi.waitFor(async () => {
+		const status = await member.client.request('chat/invite-link/join-status', { url });
+		if (status.status !== 'joined' || status.roomId == null) throw new Error('join pending');
+		return status;
+	}, WAIT_FOR_SLOW_FEDERATION);
+	await owner.client.request('chat/rooms/convert-to-channels', { roomId: room.id });
+	const goneName = crypto.randomUUID();
+	const keptName = crypto.randomUUID();
+	const gone = await owner.client.request('chat/rooms/channels/create', { roomId: room.id, name: goneName });
+	await owner.client.request('chat/rooms/channels/create', { roomId: room.id, name: keptName });
+	await vi.waitFor(async () => {
+		const channels = await member.client.request('chat/rooms/channels/list', { roomId: joined.roomId! });
+		strictEqual(channels.some(channel => channel.name === goneName) && channels.some(channel => channel.name === keptName), true);
+	}, WAIT_FOR_SLOW_FEDERATION);
+
+	const ref = { channelId: gone.id, start: 0, length: goneName.length + 1 };
+	const text = `#${goneName} deleted-channel reference`;
+	const sent = await owner.client.request('chat/messages/create-to-room', { toRoomId: room.id, text, channelRefs: [ref] });
+	// 받는 서버는 자기 id로 사본을 만들므로 글 내용은 같아도 id는 다르다. 내용으로 찾는다.
+	await vi.waitFor(async () => {
+		const messages = await member.client.request('chat/messages/room-timeline', { roomId: joined.roomId!, limit: 100 });
+		const found = messages.find(message => message.text === text);
+		strictEqual(found?.channelRefs?.length, 1);
+	}, WAIT_FOR_SLOW_FEDERATION);
+
+	await owner.client.request('chat/rooms/channels/delete', { channelId: gone.id });
+	await vi.waitFor(async () => {
+		const channels = await member.client.request('chat/rooms/channels/list', { roomId: joined.roomId! });
+		strictEqual(channels.some(channel => channel.name === goneName), false);
+	}, WAIT_FOR_SLOW_FEDERATION);
+
+	const edited = `#${goneName} deleted-channel reference (edited)`;
+	await owner.client.request('chat/messages/update', { messageId: sent.id, text: edited, channelRefs: [ref] });
+	await vi.waitFor(async () => {
+		const messages = await member.client.request('chat/messages/room-timeline', { roomId: joined.roomId!, limit: 100 });
+		const found = messages.find(message => message.text === edited);
+		strictEqual(found?.text, edited);
+		// 채널 행이 사라져도 참조는 남고, channelId는 원래 채널 URI의 끝부분(소유 서버의 채널 id)이다
+		strictEqual(found?.channelRefs?.length, 1);
+		strictEqual(found?.channelRefs?.[0]?.channelId, gone.id);
+		strictEqual(found?.channelRefs?.[0]?.start, 0);
+		strictEqual(found?.channelRefs?.[0]?.length, goneName.length + 1);
+	}, WAIT_FOR_SLOW_FEDERATION);
+}, 180_000);
+
 test.skipIf(process.env.CHERRYPICK_NODEINFO_BLOCK == null)('a temporary NodeInfo outage defers the channel update until capability is known', async () => {
 	const owner = await createAccount('a.test');
 	const member = await createAccount('b.test');

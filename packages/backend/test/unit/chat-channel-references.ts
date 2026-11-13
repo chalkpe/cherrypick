@@ -84,4 +84,19 @@ describe('본문 구간으로 선택한 채널 참조', () => {
 		expect(await service.remoteRefs(room, '#가', [{ id: 'https://other.test/channels/one', start: 0, length: 2 }])).toEqual([]);
 		expect(await service.remoteRefs(room, '#가', [{ id: channelUri, start: -1, length: 2 }])).toEqual([]);
 	});
+
+	test('목록에서 사라진 채널의 참조도 같은 그룹의 유효한 URI면 삭제된 대상으로 보존한다', async () => {
+		const service = referenceService();
+		const deletedUri = `${roomUri}/channels/deleted`;
+
+		const refs = await service.remoteRefs(room, '#가 #나', [
+			{ id: channelUri, start: 0, length: 2 },
+			{ id: deletedUri, start: 3, length: 2 },
+		]);
+
+		expect(refs).toEqual([
+			{ channelId: 'selected', start: 0, length: 2, uri: channelUri },
+			{ channelId: 'deleted', start: 3, length: 2, uri: deletedUri },
+		]);
+	});
 });
