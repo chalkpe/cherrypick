@@ -3,12 +3,14 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { UnrecoverableError } from 'bullmq';
 vi.mock('../../src/models/_.js', () => Object.fromEntries(['MiNote', 'MiUser', 'MiClip', 'MiClipNote', 'MiChannel', 'MiPoll', 'MiDriveFile', 'MiNoteFavorite', 'MiNoteReaction', 'MiUserNotePining'].map(name => [name, { name }])));
 vi.mock('../../src/models/NoteCleanupRule.js', () => ({ MiNoteCleanupRule: { name: 'Rule' }, MiNoteCleanupState: { name: 'State' } }));
 vi.mock('../../src/logger.js', () => ({ default: class { error() {} warn() {} } }));
 vi.mock('../../src/core/QueueService.js', () => ({ QueueService: class {} }));
 vi.mock('../../src/core/NoteDeleteService.js', () => ({ NoteDeleteService: class {} }));
 vi.mock('../../src/core/NotificationService.js', () => ({ NotificationService: class {} }));
+vi.mock('../../src/core/CacheService.js', () => ({ CacheService: class {} }));
 vi.mock('../../src/core/IdService.js', () => ({ IdService: class {} }));
 import { ReactionsBufferingService } from '../../src/core/ReactionsBufferingService.js';
 import { NOTE_CLEANUP_LIMITS, NoteCleanupService } from '../../src/core/NoteCleanupService.js';
@@ -66,6 +68,8 @@ function fixture() {
 	const busy = new Set<string>();
 	const scanned = new Map<string, number>();
 	const failingNotes = new Set<string>();
+	// retryableDeletes: 재시도 가능한 연결 오류로 삭제를 실패시킨다.
+	const retryableDeletes = new Set<string>();
 	const faults = { pageRules: false, noteLookup: false, lastRun: false, contexts: false, release: false };
 	let afterRead: (() => void) | undefined;
 	const deleteAttempts = new Map<string, number>();
@@ -124,6 +128,7 @@ function fixture() {
 	};
 	const jobs = new Map<string, unknown>();
 	const added: string[] = [];
+	const addedJobs: { name: string; data: Record<string, unknown>; options: Record<string, unknown> }[] = [];
 	const redis = fakeRedis();
 	const evaluate = redis.eval;
 	redis.eval = async (script, count, ...args) => {
@@ -139,6 +144,7 @@ function fixture() {
 	const noteDelete = {
 		delete: async (_user: unknown, target: { id: string }) => {
 			deleteAttempts.set(target.id, (deleteAttempts.get(target.id) ?? 0) + 1);
+			if (retryableDeletes.has(target.id)) throw Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' });
 			if (failingNotes.has(target.id)) throw new Error('delete side effect failed');
 			rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === target.id), 1);
 		},
@@ -147,7 +153,7 @@ function fixture() {
 	const systemQueue = {
 		toKey: (s: string) => `test:system:${s}`,
 		getJob: async (id: string) => jobs.get(id),
-		add: async (name: string, data: Record<string, unknown>, options: { jobId: string; delay?: number }) => { added.push(options.jobId); jobs.set(options.jobId, { name, data, getState: async () => 'waiting' }); if (options.delay !== undefined) continuation = { data, delay: options.delay }; },
+		add: async (name: string, data: Record<string, unknown>, options: { jobId: string; delay?: number }) => { added.push(options.jobId); addedJobs.push({ name, data, options }); jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); if (options.delay !== undefined && data.sweep === undefined) continuation = { data, delay: options.delay }; },
 	};
 	const waiting = { deliver: [] as { timestamp: number }[], inbox: [] as { timestamp: number }[] };
 	const queueService = {
@@ -155,7 +161,11 @@ function fixture() {
 		deliverQueue: { getWaiting: async () => waiting.deliver.slice(0, 1) },
 		inboxQueue: { getWaiting: async () => waiting.inbox.slice(0, 1) },
 	};
-	const service = new NoteCleanupService(db as any, { gen: () => String(Math.random()), parse: () => ({ date: new Date(0) }) } as any, queueService as any, noteDelete as any, { createNotification: () => {} } as any, redis as any, { enableReactionsBuffering: false } as any, buffering);
+	// 통지 저장 모형: createNotification이 스트림에 항목을 쌓고 저장 확인 조회가 이를 읽는다.
+	const notifications: Record<string, unknown>[] = [];
+	const notificationRedis = { xrevrange: async () => notifications.map((payload, i) => [`${i + 1}-0`, ['data', JSON.stringify(payload)]]).reverse() };
+	const cache = { userProfileCache: { fetch: async () => ({}) } };
+	const service = new NoteCleanupService(db as any, { gen: () => String(Math.random()), parse: () => ({ date: new Date(0) }) } as any, queueService as any, noteDelete as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering, notificationRedis as any, cache as any);
 	const processor = new AutoDeleteNotesProcessorService(service, queueService as any);
 	const addUser = (userId: string, lastRunAt = EPOCH) => {
 		rows.MiUser.push({ id: userId, host: null, autoDeleteNotesAfterDays: null, autoDeleteKeepFavorites: false });
@@ -170,7 +180,7 @@ function fixture() {
 		const self = { data: { ...data }, delays, updateData: async (next: Record<string, unknown>) => { self.data = next; }, take: () => continuation };
 		return self;
 	};
-	return { faults, onRead: (callback: () => void) => { afterRead = callback; }, rows, busy, scanned, failingNotes, deleteAttempts, redis, jobs, added, waiting, service, processor, addUser, addNotes, notesOf, state, job };
+	return { faults, onRead: (callback: () => void) => { afterRead = callback; }, rows, busy, scanned, failingNotes, retryableDeletes, deleteAttempts, redis, jobs, added, addedJobs, waiting, service, processor, addUser, addNotes, notesOf, state, job };
 }
 
 // 작업 한 번 실행: 완료면 'done', 이어 받기를 접수하면 'delayed'
@@ -432,6 +442,8 @@ test('이전 자동 회차가 아직 잠금을 쥐고 있으면 새 회차는 �
 // 서비스는 실제로 실행하고 DB·Redis 경계의 실패만 주입한다. 이 모형은 실제 SQL·Lua 실행 근거가 아니다.
 const scanKey = (scope: string, time = NOW) => `test:system:note-cleanup-budget:{${Math.floor(time / NOTE_CLEANUP_LIMITS.windowMs)}}:scan:${scope}`;
 const scanUsed = (f: ReturnType<typeof fixture>, scope: string, time = NOW) => f.redis.store.get(scanKey(scope, time)) ?? 0;
+const deleteKey = (scope: string, time = NOW) => `test:system:note-cleanup-budget:{${Math.floor(time / NOTE_CLEANUP_LIMITS.windowMs)}}:delete:${scope}`;
+const deleteUsed = (f: ReturnType<typeof fixture>, scope: string, time = NOW) => f.redis.store.get(deleteKey(scope, time)) ?? 0;
 
 function scanFixture(count = 3) {
 	const f = fixture();
@@ -630,4 +642,207 @@ test('회복 조회를 마친 뒤 본 페이지 조회가 실패해도 예약 �
 	expect(f.scanned.get('alice')).toBe(2);
 	expect(scanUsed(f, 'global')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
 	expect(scanUsed(f, 'user:alice')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
+});
+
+// === 최종 검토 지적 재현 (review-fix) ===
+
+test('Sol3: 회복 조회는 예약된 검사 예산 안에서만 읽고 본 페이지 한도에서 회복 사용량을 뺀다', async () => {
+	const f = recoveryFixture();
+	// 계정 검사 예산을 1개만 남게 채워 둔다. 회복 범위 2건 중 1건만 확인할 수 있다.
+	f.redis.store.set(scanKey('user:alice'), NOTE_CLEANUP_LIMITS.userScan - 1);
+
+	await f.service.processUser('alice');
+
+	// 회복 1건만 읽고 본 페이지는 읽지 않는다. 예약 1개를 초과하지 않는다.
+	expect(f.scanned.get('alice')).toBe(1);
+	expect(scanUsed(f, 'global')).toBe(1);
+	expect(scanUsed(f, 'user:alice')).toBe(NOTE_CLEANUP_LIMITS.userScan);
+	// 일부만 확인했으므로 오류를 해제하지 않고 미확인 범위를 보존한다.
+	const keep = f.rows.Rule.find(r => r.id === 'keep');
+	expect(keep.lastError).not.toBeNull();
+	expect(keep.lastError.recovery.noteIds).toEqual([noteId('alice', 2)]);
+	expect(f.notesOf('alice')).toHaveLength(3);
+});
+
+test('Sol3: 예산이 모자라 일부만 확인한 회복 범위는 다음 회차에 이어서 확인하고 해제한다', async () => {
+	const f = recoveryFixture();
+	f.redis.store.set(scanKey('user:alice'), NOTE_CLEANUP_LIMITS.userScan - 1);
+	await f.service.processUser('alice');
+	expect(f.rows.Rule.find(r => r.id === 'keep').lastError).not.toBeNull();
+
+	// 다음 창에서 남은 미확인 범위 1건을 확인하면 해제한다.
+	vi.setSystemTime(NOW + NOTE_CLEANUP_LIMITS.windowMs);
+	await f.service.processUser('alice');
+	expect(f.rows.Rule.find(r => r.id === 'keep').lastError).toBeNull();
+});
+
+test('Sol3: 여러 규칙의 같은 회복 범위는 한 번만 읽어 예산을 중복 쓰지 않는다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	const failure = (ruleId: string) => ({ ruleId, code: 'TEMPORARY_FAILURE', path: 'condition', message: 'TEMPORARY_FAILURE', userActionable: false, recovery: { source: 'data', noteIds: [noteId('alice', 1), noteId('alice', 2)] } });
+	f.rows.Rule.push(deleteRule('alice', 'delete'), { ...keepAll('alice', 'keep1'), lastError: failure('keep1') }, { ...keepAll('alice', 'keep2'), lastError: failure('keep2') });
+	f.addNotes('alice', 3);
+
+	await f.service.processUser('alice');
+
+	// 같은 범위 2건을 두 규칙이 공유하므로 회복 2건 + 본 페이지 3건 = 5건만 읽는다.
+	expect(f.scanned.get('alice')).toBe(5);
+	expect(scanUsed(f, 'global')).toBe(5);
+	expect(f.rows.Rule.filter(r => r.action === 'keep').every(r => r.lastError === null)).toBe(true);
+});
+
+test('OC4: 수동 요청의 재시도 가능한 삭제 실패도 시도한 만큼만 삭제 예산을 쓰고 나머지는 반납한다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	f.addNotes('alice', 3);
+	f.retryableDeletes.add(noteId('alice', 1));
+
+	await expect(f.service.processUser('alice', ['d1'])).rejects.toThrow('Connection terminated unexpectedly');
+
+	// 노트 0 삭제 성공 + 노트 1 삭제 시도 실패 = 2개만 쓰고 예약 3개 중 1개는 반납한다.
+	expect(deleteUsed(f, 'global')).toBe(2);
+	expect(deleteUsed(f, 'user:alice')).toBe(2);
+	expect(f.notesOf('alice').map(n => n.id)).toEqual([noteId('alice', 1), noteId('alice', 2)]);
+});
+
+test('OC1: 수동 요청의 비재시도 오류는 종료 실패로 처리해 무한 재시도를 막는다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	f.addNotes('alice', 1);
+	// 큐 등록 뒤 계정이 물리 삭제된 상태
+	f.rows.MiUser.splice(0);
+	const manual = f.job({ userId: 'alice', ruleIds: ['d1'], requestId: 'gone' });
+
+	await expect(f.processor.process(manual as any)).rejects.toBeInstanceOf(UnrecoverableError);
+});
+
+test('OC1: 실패한 요청 작업은 새 요청으로 교체할 수 있다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	const first = await f.service.request('alice', ['d1']);
+	const root = f.jobs.get(first.jobId) as any;
+	root.getState = async () => 'failed';
+
+	const second = await f.service.request('alice', ['d1']);
+
+	expect(second.queued).toBe(true);
+	expect(second.jobId).toBe(first.jobId);
+});
+
+test('Sol6: 요청 작업은 유한 재시도와 보존 기한을 두고 이어 받기 자식은 완료 뒤 자동 제거한다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	f.addNotes('alice', 2);
+	await f.service.request('alice', ['d1']);
+	const rootOptions = f.addedJobs[0].options as any;
+	expect(rootOptions.removeOnComplete).toBe(false);
+	expect(rootOptions.attempts).toBeLessThan(1000);
+	expect(rootOptions.removeOnFail).toMatchObject({ age: expect.any(Number) });
+	f.waiting.deliver.push({ timestamp: NOW - 60_000 });
+	const manual = f.job({ userId: 'alice', ruleIds: ['d1'], requestId: 'req' });
+
+	expect(await run(f.processor, manual)).toBe('delayed');
+
+	const childOptions = f.addedJobs.at(-1)!.options as any;
+	expect(childOptions.removeOnComplete).not.toBe(false);
+	expect(childOptions.attempts).toBeLessThan(1000);
+	expect(childOptions.removeOnFail).toMatchObject({ age: expect.any(Number) });
+});
+
+test('OC2: 완료된 이어 받기 체인은 새 요청이 루트와 자손을 함께 정리한다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	const first = await f.service.request('alice', ['d1']);
+	const root = f.jobs.get(first.jobId) as any;
+	root.data.handoff = { next: { requestId: 'req', step: 1 } };
+	root.getState = async () => 'completed';
+	const childId = 'note-cleanup-req-1';
+	f.jobs.set(childId, { data: { requestId: 'req', step: 1 }, getState: async () => 'completed', remove: async () => { f.jobs.delete(childId); } });
+
+	const second = await f.service.request('alice', ['d1']);
+
+	expect(second.queued).toBe(true);
+	expect(f.jobs.has(childId)).toBe(false);
+});
+
+test('OC2: 이어 받기 자식이 유실·만료돼도 같은 요청을 다시 접수할 수 있다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	const first = await f.service.request('alice', ['d1']);
+	const root = f.jobs.get(first.jobId) as any;
+	root.data.handoff = { next: { requestId: 'req', step: 1 } };
+	root.getState = async () => 'completed';
+	// 자식 작업이 보존 기한 만료 등으로 사라진 상태
+
+	const second = await f.service.request('alice', ['d1']);
+
+	expect(second.queued).toBe(true);
+	expect(f.jobs.has(first.jobId)).toBe(true);
+});
+
+test('OC2: 실패한 이어 받기 자식은 루트와 함께 정리되고 새 요청을 접수한다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	const first = await f.service.request('alice', ['d1']);
+	const root = f.jobs.get(first.jobId) as any;
+	root.data.handoff = { next: { requestId: 'req', step: 1 } };
+	root.getState = async () => 'completed';
+	const childId = 'note-cleanup-req-1';
+	f.jobs.set(childId, { data: { requestId: 'req', step: 1 }, getState: async () => 'failed', remove: async () => { f.jobs.delete(childId); } });
+
+	const second = await f.service.request('alice', ['d1']);
+
+	expect(second.queued).toBe(true);
+	expect(f.jobs.has(childId)).toBe(false);
+});
+
+test('Sol6: 최종 완료는 체인 정리를 접수하고 정리 작업은 종료된 루트를 제거한다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	f.addNotes('alice', 1);
+	const first = await f.service.request('alice', ['d1']);
+	const root = f.jobs.get(first.jobId) as any;
+	root.getState = async () => 'completed';
+	const manual = f.job({ userId: 'alice', ruleIds: ['d1'], requestId: 'req' });
+
+	expect(await run(f.processor, manual)).toBe('done');
+
+	const sweep = f.addedJobs.at(-1)!;
+	expect(sweep.data).toMatchObject({ userId: 'alice', sweep: first.jobId });
+	expect((sweep.options as any).delay).toBeGreaterThan(0);
+	expect((sweep.options as any).removeOnComplete).toBe(true);
+
+	await f.processor.process({ data: sweep.data } as any);
+
+	expect(f.jobs.has(first.jobId)).toBe(false);
+});
+
+test('Sol6: 체인 정리는 진행 중인 체인을 건드리지 않고 종료된 루트와 자손만 제거한다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	const first = await f.service.request('alice', ['d1']);
+	const root = f.jobs.get(first.jobId) as any;
+	root.data.handoff = { next: { requestId: 'req', step: 1 } };
+	root.getState = async () => 'completed';
+	let childState = 'delayed';
+	const childId = 'note-cleanup-req-1';
+	f.jobs.set(childId, { data: { requestId: 'req', step: 1 }, getState: async () => childState, remove: async () => { f.jobs.delete(childId); } });
+
+	await f.service.sweepRequestChain('alice', first.jobId);
+	expect(f.jobs.has(childId)).toBe(true);
+	expect(f.jobs.has(first.jobId)).toBe(true);
+
+	childState = 'completed';
+	await f.service.sweepRequestChain('alice', first.jobId);
+	expect(f.jobs.has(childId)).toBe(false);
+	expect(f.jobs.has(first.jobId)).toBe(false);
 });

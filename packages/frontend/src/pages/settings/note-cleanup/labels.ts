@@ -46,7 +46,7 @@ export function summary(node: Condition): string {
 		case 'count': return i18n.tsx._noteCleanup._countSummary[node.operator]({ field: i18n.ts._noteCleanup[node.field], value: node.value });
 		case 'clip': return node.ids === null ? i18n.ts._noteCleanup.allClips : `${conditionNames.clip}: ${i18n.tsx._noteCleanup.selectedReferences({ n: node.ids.length })}`;
 		case 'channel': return `${conditionNames.channel}: ${i18n.tsx._noteCleanup.selectedReferences({ n: node.ids.length })}`;
-		case 'hashtag': return `#${node.value.replace(/^#+/, '')}`;
+		case 'hashtag': return `#${node.value.replace(/^#/, '')}`;
 		case 'visibility': return `${conditionNames.visibility}: ${node.values.map(v => visibilityNames[v as keyof typeof visibilityNames]).join(', ')}`;
 	}
 }

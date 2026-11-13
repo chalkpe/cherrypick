@@ -17,6 +17,7 @@ import { AutoDeleteNotesProcessorService } from '@/queue/processors/AutoDeleteNo
 // 처리기와 정리 서비스가 남기는 오류 기록을 검사한다.
 const logged = vi.hoisted(() => [] as unknown[][]);
 vi.mock('@/logger.js', () => ({ default: class { error(...args: unknown[]) { logged.push(args); } warn() {} info() {} succ() {} } }));
+vi.mock('@/core/CacheService.js', () => ({ CacheService: class {} }));
 
 // 이 처리기는 이제 계정별 정리 규칙을 판정하는 NoteCleanupService에 위임한다.
 // 기존 시험이 확인하던 자동 삭제 의미(정상 삭제 경로·소유자 기준 즐겨찾기 보호·실패 격리·사라진 후보·비활성 설정)를
@@ -156,7 +157,11 @@ async function fixture() {
 	let sequence = 0;
 	const idService = { gen: () => `rule-${String(sequence++).padStart(4, '0')}`, parse: (id: string) => ({ date: new Date(createdAt.get(id) ?? 0) }) };
 	const buffering = Object.create(ReactionsBufferingService.prototype) as ReactionsBufferingService;
-	const service = new NoteCleanupService(db as any, idService as any, queueService as any, { delete: deleteNote } as any, { createNotification: () => {} } as any, redis as any, { enableReactionsBuffering: false } as any, buffering);
+	// 통지 저장 모형: createNotification이 스트림에 항목을 쌓고 저장 확인 조회가 이를 읽는다.
+	const notifications: Record<string, unknown>[] = [];
+	const notificationRedis = { xrevrange: async () => notifications.map((payload, i) => [`${i + 1}-0`, ['data', JSON.stringify(payload)]]).reverse() };
+	const cache = { userProfileCache: { fetch: async () => ({}) } };
+	const service = new NoteCleanupService(db as any, idService as any, queueService as any, { delete: deleteNote } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering, notificationRedis as any, cache as any);
 
 	// 처리기의 생성자 의존성을 Nest가 실제로 해석할 수 있는지도 함께 확인한다.
 	const app = await Test.createTestingModule({

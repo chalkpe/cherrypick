@@ -85,6 +85,14 @@ test('해시태그 표지만 입력한 미완성 조건은 NOT 안에서도 저�
 	expect(() => validateCleanupCondition({ type: 'not', child: { type: 'hashtag', value: '#' } })).toThrow();
 });
 
+test('Sol7: 중복 접두 해시태그는 판정과 어긋나므로 저장 전에 거부하고 tag·#tag는 유지한다', () => {
+	expect(() => validateCleanupCondition({ type: 'hashtag', value: '##tag' })).toThrow();
+	expect(() => validateCleanupCondition({ type: 'hashtag', value: '###' })).toThrow();
+	expect(() => validateCleanupCondition({ type: 'hashtag', value: 'tag' })).not.toThrow();
+	expect(() => validateCleanupCondition({ type: 'hashtag', value: '#tag' })).not.toThrow();
+	expect(matchesCleanupCondition({ type: 'hashtag', value: '#tag' }, { ...context, tags: ['tag'] })).toBe(true);
+});
+
 test('손상된 받은 횟수는 불일치나 NOT의 참으로 바꾸지 않는다', () => {
 	const results = decideCleanup([{ id: 'keep', action: 'keep', condition: { type: 'not', child: { type: 'count', field: 'renotes', operator: 'gte', value: 2 } } }, { id: 'delete', action: 'delete', condition: word('고양이') }], [{ ...context, renotes: -1 }]);
 	expect(results[0].reason).toBe('blocked');

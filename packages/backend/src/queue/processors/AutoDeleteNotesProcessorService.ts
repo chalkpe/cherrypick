@@ -4,12 +4,12 @@
  */
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import { CleanupInputError, NOTE_CLEANUP_LIMITS, NoteCleanupService } from '@/core/NoteCleanupService.js';
+import * as Bull from 'bullmq';
+import { CleanupInputError, NOTE_CLEANUP_LIMITS, NoteCleanupService, noteCleanupRequestJobId } from '@/core/NoteCleanupService.js';
 import { QueueService } from '@/core/QueueService.js';
 import Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { isRetryableCleanupFailure } from '@/core/NoteCleanupRunner.js';
-import type * as Bull from 'bullmq';
 
 // 잠금 충돌·회차 시간 초과 뒤 다시 시도하기까지의 지연, 연합 큐 적체가 풀리기를 기다리는 지연
 const RETRY_DELAY = 1000;
@@ -31,7 +31,8 @@ export class AutoDeleteNotesProcessorService {
 
 	@bindThis
 	public async process(job: Bull.Job<Record<string, unknown>>) {
-		const { userId, ruleIds, afterId, requestId } = job.data;
+		const { userId, ruleIds, afterId, requestId, sweep } = job.data;
+		if (typeof sweep === 'string' && typeof userId === 'string') return this.noteCleanupService.sweepRequestChain(userId, sweep);
 		if (typeof userId === 'string' && Array.isArray(ruleIds) && ruleIds.every(id => typeof id === 'string')) {
 			return this.processRequest(job, userId, ruleIds, typeof afterId === 'string' ? afterId : undefined, requestId);
 		}
@@ -83,8 +84,9 @@ export class AutoDeleteNotesProcessorService {
 			await job.updateData({ ...job.data, requestId: id, step, handoff: { next, until } });
 			await this.queueService.systemQueue.add('autoDeleteNotes', next, {
 				jobId: `note-cleanup-${id}-${step + 1}`, delay: Math.max(0, until - Date.now()),
-				attempts: 1000000, backoff: { type: 'fixed', delay: 5000 },
-				removeOnComplete: false, removeOnFail: false,
+				attempts: 10, backoff: { type: 'fixed', delay: 5000 },
+				// 완료된 자식은 자동 제거하고 실패 이력만 보존 기한을 둔다. 루트가 체인 정리의 근거를 남긴다.
+				removeOnComplete: true, removeOnFail: { age: 7 * 86400 },
 			});
 			return { delayed: true };
 		};
@@ -103,7 +105,11 @@ export class AutoDeleteNotesProcessorService {
 				result = await this.noteCleanupService.processUser(userId, ruleIds, cursor);
 			} catch (error) {
 				if (error instanceof CleanupInputError && error.code === 'CLEANUP_BUSY') return handoff(Date.now() + RETRY_DELAY);
-				if (!isRetryableCleanupFailure(error)) throw error;
+				if (!isRetryableCleanupFailure(error)) {
+					// 비재시도 오류는 종료 실패로 처리한다. 무한 재시도는 큐를 점유하고 새 요청을 영구히 막는다.
+					this.logger.error('Manual note cleanup failed permanently', { userId, error });
+					throw new Bull.UnrecoverableError(error instanceof Error ? error.message : String(error));
+				}
 				this.logger.error('Manual note cleanup temporarily failed', { userId, error });
 				failures = Math.min(failures + 1, 11);
 				return handoff(Date.now() + Math.min(3600000, 5000 * 2 ** (failures - 1)));
@@ -111,7 +117,15 @@ export class AutoDeleteNotesProcessorService {
 			failures = 0;
 			deleted += result.deleted;
 			failed += result.failed;
-			if (result.complete) return { ...result, deleted, failed };
+			if (result.complete) {
+				// 현재 작업이 완료된 뒤 종료된 체인을 정리하도록 지연 접수한다. 진행 중 작업은 직접 제거할 수 없다.
+				await this.queueService.systemQueue.add('autoDeleteNotes', { userId, sweep: noteCleanupRequestJobId(userId, ruleIds) }, {
+					jobId: `note-cleanup-sweep-${id}-${step}`, delay: 1000,
+					attempts: 3, backoff: { type: 'fixed', delay: 5000 },
+					removeOnComplete: true, removeOnFail: { age: 7 * 86400 },
+				});
+				return { ...result, deleted, failed };
+			}
 			cursor = result.cursor || cursor;
 			await job.updateData({ ...job.data, userId, ruleIds, afterId: cursor, requestId: id, step, retryFailures: failures });
 			if (result.throttled) return handoff((Math.floor(Date.now() / NOTE_CLEANUP_LIMITS.windowMs) + 1) * NOTE_CLEANUP_LIMITS.windowMs);

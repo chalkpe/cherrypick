@@ -85,8 +85,10 @@ function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0)
 		notifications.push(JSON.parse(args.at(-1)));
 		return `${notifications.length}-0`;
 	};
+	// 저장 확인 조회는 실제로 쌓인 스트림 항목을 최신순으로 돌려준다.
+	const xrevrange = async () => notifications.map((payload, i) => [`${i + 1}-0`, ['data', JSON.stringify(payload)]]).reverse();
 	// Lua의 저장 계약을 모형화한다. 실제 스크립트 실행·원자성·클러스터 슬롯은 별도 검증 대상이다.
-	const redis = { xadd, del: async (key: string) => Number(markers.delete(key)), get: async () => null, eval: async (_script: string, _count: number, stream: string, marker: string, generation: string, max: string, id: string, payload: string) => {
+	const redis = { xadd, xrevrange, del: async (key: string) => Number(markers.delete(key)), get: async () => null, eval: async (_script: string, _count: number, stream: string, marker: string, generation: string, max: string, id: string, payload: string) => {
 		if ((markers.get(marker) ?? 0) > Number(generation)) return -1;
 		if ((markers.get(marker) ?? 0) === Number(generation)) return 0;
 		await xadd(stream, 'MAXLEN', '~', max, id, 'data', payload);
@@ -109,7 +111,7 @@ function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0)
 	const buffered = new Map<string, { deltas: Record<string, number>; pairs: [string, string][] }>();
 	const buffering = Object.create(ReactionsBufferingService.prototype) as ReactionsBufferingService;
 	Object.defineProperty(buffering, 'getMany', { value: async () => buffered, writable: true });
-	const createService = () => new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, notificationService, { eval: async () => 5 } as any, meta as any, buffering);
+	const createService = () => new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, notificationService, { eval: async () => 5 } as any, meta as any, buffering, redis as any, cache as any);
 	const service = createService();
 	const condition = { type: 'age', operator: 'gte', seconds: 60 };
 	return { rows, service, createService, markerCount: () => markers.size, notificationService, delivery, notifications, jobs, failing, failingWrites, lock, meta, buffered, buffering, noteReads, input: { name: '정리', action: 'delete' as const, condition } };
@@ -205,4 +207,78 @@ test('규칙 삭제는 규칙에 보관한 중복 억제 상태도 제거한다'
 	await service.remove('alice', 'keep');
 
 	expect(rows.Rule).toHaveLength(0);
+});
+
+// === 최종 검토 지적 재현 (review-fix) ===
+
+test('Sol1: 프로필 조회 실패로 저장되지 않은 알림은 다음 검사에서 다시 접수한다', async () => {
+	const { rows, service, notifications, delivery } = fixture();
+	rows.Rule.push(keep());
+	delivery.profileFailure = true;
+
+	await service.list('alice');
+	expect(notifications).toHaveLength(0);
+	expect(rows.Rule[0].protectionNotification.status).not.toBe('accepted');
+	delivery.profileFailure = false;
+	await service.list('alice');
+
+	expect(notifications).toHaveLength(1);
+	expect(rows.Rule[0].protectionNotification.status).toBe('accepted');
+});
+
+test('Sol1: XADD 실패로 저장되지 않은 알림은 다음 검사에서 다시 접수한다', async () => {
+	const { rows, service, notifications, delivery } = fixture();
+	rows.Rule.push(keep());
+	delivery.storageFailure = true;
+
+	await service.list('alice');
+	expect(notifications).toHaveLength(0);
+	delivery.storageFailure = false;
+	await service.list('alice');
+
+	expect(notifications).toHaveLength(1);
+	expect(rows.Rule[0].protectionNotification.status).toBe('accepted');
+});
+
+test('Sol1: 수신을 끈 사용자는 발송 없이 억제 상태로 구분하고 같은 오류를 재발송하지 않는다', async () => {
+	const { rows, service, notifications, delivery } = fixture();
+	rows.Rule.push(keep());
+	delivery.disabled = true;
+
+	await service.list('alice');
+
+	expect(notifications).toHaveLength(0);
+	expect(rows.Rule[0].protectionNotification.status).toBe('suppressed');
+	delivery.disabled = false;
+	await service.list('alice');
+	expect(notifications).toHaveLength(0);
+});
+
+test('Sol1: 접수 기록 쓰기가 반복 실패해도 이미 저장된 알림은 다시 만들지 않는다', async () => {
+	const { rows, service, notifications, delivery } = fixture();
+	rows.Rule.push(keep());
+	delivery.ackFailure = true;
+
+	await service.list('alice');
+	await service.list('alice');
+
+	expect(notifications).toHaveLength(1);
+	delivery.ackFailure = false;
+	await service.list('alice');
+	expect(notifications).toHaveLength(1);
+	expect(rows.Rule[0].protectionNotification.status).toBe('accepted');
+});
+
+test('Sol1: 저장 뒤 접수 기록 전에 중단된 세대는 스트림 확인으로 중복 없이 접수한다', async () => {
+	const { rows, service, notifications } = fixture();
+	rows.Rule.push(keep());
+	await service.list('alice');
+	expect(notifications).toHaveLength(1);
+	// 접수 기록 직전 프로세스가 중단된 것처럼 같은 세대를 pending으로 되돌린다.
+	rows.Rule[0].protectionNotification = { ...rows.Rule[0].protectionNotification, status: 'pending' };
+
+	await service.list('alice');
+
+	expect(notifications).toHaveLength(1);
+	expect(rows.Rule[0].protectionNotification.status).toBe('accepted');
 });

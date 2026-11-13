@@ -65,7 +65,8 @@ test('목록과 실제 편집기 요청은 보호 차단과 재조회 회복을 
  await waitFor(() => expect(requests.filter(url => url.endsWith('/request'))).toHaveLength(1));
 });
 
-test.each(['tag', '#tag', '##tag'])('실제 태그 입력은 %s 원문과 요약을 유지하고 고정 #를 더하지 않는다', async value => {
+// 요약은 판정과 같이 접두 #을 하나만 벗긴다. 중복 접두(##tag)는 백엔드 저장이 거부하지만 표시는 원문과 어긋나지 않는다.
+test.each([['tag', '#tag'], ['#tag', '#tag'], ['##tag', '##tag']])('실제 태그 입력은 %s 원문과 요약을 유지하고 고정 #를 더하지 않는다', async (value, expected) => {
  const onUpdate = vi.fn();
  const view = render(ConditionFields, { props: { condition: { type: 'hashtag', value: '' }, onUpdate } });
  const input = view.container.querySelector('input') as HTMLInputElement;
@@ -73,5 +74,5 @@ test.each(['tag', '#tag', '##tag'])('실제 태그 입력은 %s 원문과 요약
  await waitFor(() => expect(onUpdate).toHaveBeenCalledWith({ type: 'hashtag', value }));
  expect(input.value).toBe(value);
  expect(view.container.textContent).not.toContain('#');
- expect(summary({ type: 'hashtag', value })).toBe('#tag');
+ expect(summary({ type: 'hashtag', value })).toBe(expected);
 });

@@ -49,9 +49,9 @@ export class MiNoteCleanupRule {
 	@Column('jsonb', { nullable: true })
 	public lastError: { ruleId: string; code: string; path: string; message: string; referenceType?: string; referenceId?: string; userActionable: boolean; recovery: NoteCleanupRecovery } | null;
 
-	// 오류 발생 세대와 최초 통지 접수 상태는 오류 본문과 별도로 보관한다.
+	// 오류 발생 세대와 최초 통지 접수 상태는 오류 본문과 별도로 보관한다. pendingSince는 저장 확인의 세대 기준 시각이다.
 	@Column('jsonb', { nullable: true })
-	public protectionNotification: { generation: number; identity: string | null; status: 'pending' | 'accepted' | 'suppressed' | 'resolved' } | null;
+	public protectionNotification: { generation: number; identity: string | null; status: 'pending' | 'accepted' | 'suppressed' | 'resolved'; pendingSince?: number } | null;
 
 	@Column('varchar', { length: 16, nullable: true })
 	public legacy: 'age' | 'favorite' | null;

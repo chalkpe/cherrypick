@@ -3,12 +3,14 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { expect, test, vi } from 'vitest';
+import { FindOperator } from 'typeorm';
 vi.mock('../../src/models/_.js', () => Object.fromEntries(['MiNote', 'MiUser', 'MiClip', 'MiClipNote', 'MiChannel', 'MiPoll', 'MiDriveFile', 'MiNoteFavorite', 'MiNoteReaction', 'MiUserNotePining'].map(name => [name, { name }])));
 vi.mock('../../src/models/NoteCleanupRule.js', () => ({ MiNoteCleanupRule: { name: 'Rule' }, MiNoteCleanupState: { name: 'State' } }));
 vi.mock('../../src/logger.js', () => ({ default: class { error() {} } }));
 vi.mock('../../src/core/QueueService.js', () => ({ QueueService: class {} }));
 vi.mock('../../src/core/NoteDeleteService.js', () => ({ NoteDeleteService: class {} }));
 vi.mock('../../src/core/NotificationService.js', () => ({ NotificationService: class {} }));
+vi.mock('../../src/core/CacheService.js', () => ({ CacheService: class {} }));
 vi.mock('../../src/core/IdService.js', () => ({ IdService: class {} }));
 import { ReactionsBufferingService } from '../../src/core/ReactionsBufferingService.js';
 import { CleanupInputError, NoteCleanupService } from '../../src/core/NoteCleanupService.js';
@@ -19,6 +21,9 @@ import { meta as previewMeta } from '../../src/server/api/endpoints/i/note-clean
 function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0) } = {}) {
 	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, migrated: true }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
 	const failing = new Set<string>();
+	// retryable: 재시도 가능한 연결 오류로 조회를 실패시킨다.
+	const retryable = new Set<string>();
+	const faults = { createQueryRunner: false };
 	const noteReads: string[][] = [];
 	// failingWrites: 해당 엔티티의 쓰기 실패를 주입한다.
 	const failingWrites = new Set<string>();
@@ -27,12 +32,21 @@ function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0
 		// PostgreSQL integer 열처럼 정수가 아닌 구 기간 값을 거부한다.
 		if (name === 'MiUser' && input.autoDeleteNotesAfterDays != null && !Number.isInteger(input.autoDeleteNotesAfterDays)) throw new Error('invalid input syntax for type integer');
 	};
-	const matches = (row: any, where: any) => Object.entries(where).every(([k, v]) => typeof v === 'object' && v !== null ? ('_type' in v || JSON.stringify(row[k]) === JSON.stringify(v)) : row[k] === v);
+	// typeorm 조회 연산자 중 이 경로가 쓰는 In·IsNull만 해석하고, 나머지 객체 조건은 값 비교로 본다.
+	const matches = (row: any, where: any) => Object.entries(where).every(([k, v]) => {
+		if (v instanceof FindOperator) {
+			if (v.type === 'in') return (v.value as unknown[]).includes(row[k]);
+			if (v.type === 'isNull') return row[k] == null;
+			throw new Error(`unsupported operator ${v.type}`);
+		}
+		return typeof v === 'object' && v !== null ? JSON.stringify(row[k]) === JSON.stringify(v) : row[k] === v;
+	});
 	const copy = (list: any[]) => detached ? list.map(row => structuredClone(row)) : list;
 	const repository = (entity: { name: string }) => {
 		const data = rows[entity.name] ??= [];
 		const lookup = (where: any) => {
 			if (failing.has(entity.name)) throw new Error(`${entity.name} lookup unavailable`);
+			if (retryable.has(entity.name)) throw Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' });
 			return copy(data.filter(row => matches(row, where)));
 		};
 		return {
@@ -50,7 +64,7 @@ function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0
 				let ids: string[] | undefined;
 				let limit = Infinity;
 				const filter = (_sql: string, params?: { afterId?: string; ids?: string[] }) => { afterId = params?.afterId ?? afterId; ids = params?.ids ?? ids; return builder; };
-				const builder: any = { where: filter, andWhere: filter, innerJoin: () => builder, orderBy: () => builder, take: (value: number) => { limit = value; return builder; }, select: () => builder, getRawMany: async () => [], getMany: async () => { const result = copy(data.filter(row => (!afterId || row.id > afterId) && (!ids || ids.includes(row.id))).slice(0, limit)); if (entity.name === 'MiNote') noteReads.push(result.map(row => row.id)); return result; } };
+				const builder: any = { where: filter, andWhere: filter, innerJoin: () => builder, orderBy: () => builder, take: (value: number) => { limit = value; return builder; }, select: () => builder, getRawMany: async () => [], getMany: async () => { if (retryable.has(entity.name)) throw Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' }); const result = copy(data.filter(row => (!afterId || row.id > afterId) && (!ids || ids.includes(row.id))).slice(0, limit)); if (entity.name === 'MiNote') noteReads.push(result.map(row => row.id)); return result; } };
 				return builder;
 			},
 		};
@@ -66,17 +80,21 @@ function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0
 			throw error;
 		}
 	};
-	const db = { getRepository: repository, transaction, createQueryRunner: () => ({ connect: async () => {}, query: async () => [{ locked: lock.available }], release: async () => { lock.released++; } }) };
+	const db = { getRepository: repository, transaction, createQueryRunner: () => { if (faults.createQueryRunner) throw new Error('runner unavailable'); return { connect: async () => {}, query: async () => [{ locked: lock.available }], release: async () => { lock.released++; } }; } };
 	let nextId = 0;
 	const notifications: unknown[] = [];
+	// 통지 저장 모형: createNotification이 스트림에 항목을 쌓고 저장 확인 조회가 이를 읽는다.
+	const stream: Record<string, unknown>[] = [];
+	const notificationRedis = { xrevrange: async () => stream.map((payload, i) => [`${i + 1}-0`, ['data', JSON.stringify(payload)]]).reverse() };
+	const cache = { userProfileCache: { fetch: async () => ({}) } };
 	const jobs = new Map<string, unknown>();
 	const meta = { enableReactionsBuffering: false };
 	const buffered = new Map<string, { deltas: Record<string, number>; pairs: [string, string][] }>();
 	const buffering = Object.create(ReactionsBufferingService.prototype) as ReactionsBufferingService;
 	Object.defineProperty(buffering, 'getMany', { value: async () => buffered, writable: true });
-	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, { createNotification: (...args: unknown[]) => { notifications.push(args); } } as any, { eval: async () => 5 } as any, meta as any, buffering);
+	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push([userId, type, data]); stream.push({ ...data, type, createdAt: new Date().toISOString() }); } } as any, { eval: async () => 5 } as any, meta as any, buffering, notificationRedis as any, cache as any);
 	const condition = { type: 'age', operator: 'gte', seconds: 60 };
-	return { rows, service, notifications, jobs, failing, failingWrites, lock, meta, buffered, buffering, noteReads, input: { name: '정리', action: 'delete' as const, condition } };
+	return { rows, service, notifications, jobs, failing, failingWrites, retryable, faults, lock, meta, buffered, buffering, noteReads, input: { name: '정리', action: 'delete' as const, condition } };
 }
 
 const note = (id: string) => ({ id, userId: 'alice', text: '정리', cw: null, fileIds: [], hasPoll: false, renoteId: null, replyId: null, channelId: null, localOnly: false, visibility: 'public', reactions: {}, renoteCount: 0, tags: [] });
@@ -902,4 +920,119 @@ test.each([
 	} finally {
 		vi.useRealTimers();
 	}
+});
+
+// === 최종 검토 지적 재현 (review-fix) ===
+
+test('OC5: createQueryRunner 실패는 잠금 카운터를 새지 않아 이후 정리가 계속 가능하다', async () => {
+	const { service, faults } = fixture();
+	faults.createQueryRunner = true;
+	for (let i = 0; i < 6; i++) await expect(service.list('alice')).rejects.toThrow('runner unavailable');
+	faults.createQueryRunner = false;
+	await expect(service.list('alice')).resolves.toBeDefined();
+});
+
+test('Sol4: 호환 규칙을 일반 규칙으로 전환할 때도 일반 규칙 수 제한을 적용한다', async () => {
+	const { rows, service, linked } = await legacyFixture(30, true);
+	for (let i = 0; i < 32; i++) rows.Rule.push({ id: `g${i}`, userId: 'alice', name: `일반${i}`, action: 'delete', enabled: true, automatic: false, condition: { type: 'age', operator: 'gt', seconds: 60 }, lastError: null, legacy: null });
+	const age = linked('age');
+	await expect(service.save('alice', { name: age.name, action: 'delete', condition: { type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['text'] } }, age.id)).rejects.toThrow('RULE_LIMIT');
+	expect(rows.Rule.filter(r => r.legacy === null)).toHaveLength(32);
+});
+
+test('OC8: 기본 이름의 역할과 다른 행동으로 바꾸면 기본 이름을 지운다', async () => {
+	const { rows, service } = fixture();
+	rows.Rule.push({ id: 'pinned', userId: 'alice', name: '고정한 내 글', defaultName: 'pinned', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'pinned', value: true }, lastError: null, legacy: null });
+	const result = await service.save('alice', { action: 'delete', condition: { type: 'flag', field: 'pinned', value: true } }, 'pinned');
+	expect(result.rule.defaultName).toBeNull();
+	expect(result.rule.name).toBe('고정한 내 글');
+});
+
+test('OC9: 구 API의 빈 호출과 같은 값 저장은 커서와 미리보기 토큰을 초기화하지 않는다', async () => {
+	const { rows, service } = await legacyFixture(30, true);
+	rows.State[0].cursor = 'cursor';
+	rows.State[0].previewToken = 'token';
+	await service.updateLegacy('alice', {});
+	expect(rows.State[0].cursor).toBe('cursor');
+	expect(rows.State[0].previewToken).toBe('token');
+	await service.updateLegacy('alice', { autoDeleteNotesAfterDays: 30 });
+	expect(rows.State[0].cursor).toBe('cursor');
+	expect(rows.State[0].previewToken).toBe('token');
+	await service.updateLegacy('alice', { autoDeleteNotesAfterDays: 7 });
+	expect(rows.State[0].cursor).toBeNull();
+	expect(rows.State[0].previewToken).toBeNull();
+});
+
+test('Sol3: 검사 예산이 모자란 회복은 확인한 범위만 덜어내고 오류와 알림 세대를 유지한다', async () => {
+	const { rows, service, notifications } = latePageFixture();
+	await service.preview('alice', ['delete'], '099');
+	expect(notifications).toHaveLength(1);
+	// 이 모형의 Redis 예약은 항상 5개만 허용하므로 회복 범위 50건 중 5건만 확인한다.
+	await service.processUser('alice');
+	const error = rows.Rule[1].lastError;
+	expect(error).not.toBeNull();
+	expect(error.recovery.noteIds).toHaveLength(45);
+	expect(error.recovery.noteIds.every((id: string) => id >= '105')).toBe(true);
+	expect(notifications).toHaveLength(1);
+	expect(rows.MiNote).toHaveLength(150);
+
+	// 자료를 고친 뒤 남은 범위를 회차마다 이어서 확인하면 해제한다.
+	rows.MiNote[125].reactions = {};
+	for (let i = 0; i < 9; i++) await service.processUser('alice');
+	expect(rows.Rule[1].lastError).toBeNull();
+	expect(notifications).toHaveLength(1);
+});
+
+test('Sol2: 남기기 자료 조회의 연결 오류는 보호 오류와 최초 알림을 남기고 재시도 경로로 넘긴다', async () => {
+	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	retryable.add('MiNoteReaction');
+
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+
+	expect(rows.MiNote).toHaveLength(1);
+	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', userActionable: false, recovery: { source: 'data', noteIds: ['0'] } });
+	expect(notifications).toHaveLength(1);
+	expect((await service.list('alice')).blocked).toBe(true);
+});
+
+test('Sol2: 참조 조회의 연결 오류도 남기기 규칙의 보호 오류와 최초 알림을 남긴다', async () => {
+	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['clip'] }, lastError: null, legacy: null });
+	rows.MiClip = [{ id: 'clip', userId: 'alice' }];
+	rows.MiNote.push(note('0'));
+	retryable.add('MiClip');
+
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+
+	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', userActionable: false, recovery: { source: 'reference' } });
+	expect(notifications).toHaveLength(1);
+	expect(rows.MiNote).toHaveLength(1);
+});
+
+test('Sol2: DB까지 중단돼 기록하지 못한 보호 오류는 복구 뒤 첫 검사에서 기록한다', async () => {
+	const { rows, service, input, retryable, failingWrites, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	retryable.add('MiNoteReaction');
+	failingWrites.add('Rule');
+
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+	expect(rows.Rule[1].lastError).toBeNull();
+	expect(notifications).toHaveLength(0);
+
+	failingWrites.clear();
+	// 자료 조회는 아직 실패하므로 기록만 남고 해제는 다음 확인으로 미룬다.
+	expect((await service.list('alice')).blocked).toBe(true);
+	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
+	expect(notifications).toHaveLength(1);
+
+	retryable.clear();
+	expect((await service.list('alice')).blocked).toBe(false);
+	expect(rows.Rule[1].lastError).toBeNull();
+	expect(notifications).toHaveLength(1);
 });

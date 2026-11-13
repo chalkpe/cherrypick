@@ -56,7 +56,8 @@ export function validateCleanupCondition(input: unknown): asserts input is Clean
 			case 'visibility': if (!strings(c.values) || !c.values.every(v => ['public', 'home', 'followers', 'specified'].includes(v))) fail(); break;
 			case 'channel': if (!strings(c.ids)) fail(); break;
 			case 'clip': if (c.ids !== null && !strings(c.ids)) fail(); break;
-			case 'hashtag': if (typeof c.value !== 'string' || !c.value.replace(/^#/, '').trim().length || c.value.length > 128) fail(); break;
+			// 판정은 접두 #을 하나만 벗기므로 중복 접두는 저장 전에 거부한다.
+			case 'hashtag': if (typeof c.value !== 'string' || !c.value.replace(/^#/, '').trim().length || c.value.replace(/^#/, '').startsWith('#') || c.value.length > 128) fail(); break;
 			default: fail();
 		}
 	};
