@@ -9,6 +9,7 @@ import { UtilityService } from '@/core/UtilityService.js';
 import { StatusError } from '@/misc/status-error.js';
 import { getApId } from '@/core/activitypub/type.js';
 import type { IPost } from '@/core/activitypub/type.js';
+import { chatTransactions } from '../misc/chat-transactions.js';
 
 const actor = { id: 'author', host: 'remote.test', uri: 'https://remote.test/users/author' };
 const otherActor = { id: 'other', host: 'remote.test', uri: 'https://remote.test/users/other' };
@@ -37,6 +38,7 @@ function fixture(options: { beforeNoteInsert?: () => Promise<void>; resolveImage
 	const storePendingChatReaction = vi.fn(async () => true);
 	let creationAttempts = 0;
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
+		db: chatTransactions(),
 		chatService: {
 			findMessageByUri: async () => null,
 			createMessageToUser: async (_actor: unknown, _recipient: unknown, params: { text: string }) => { chatTexts.push(params.text); },
