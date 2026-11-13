@@ -38,6 +38,8 @@ const JOIN_DELAY = 5000;
 
 export type ChatHistoryImport = {
 	uri: string;
+	/** 원래 작성자 서버의 메시지 주소. 보관 사본이면 uri와 다르다 */
+	sourceUri: string;
 	authorUri: string;
 	authorId: MiUser['id'] | null;
 	archivedAuthor: ChatMessageArchivedAuthor | null;
@@ -295,10 +297,14 @@ export class ChatRoomHistoryService {
 	 */
 	@bindThis
 	public async importMessage(room: MiChatRoom, input: ChatHistoryImport): Promise<MiChatMessage | null> {
-		if (await this.chatMessagesRepository.existsBy({ uri: input.uri })) return null;
-		const tombstone = `chat_delete_upon_arrival:${input.uri}:${encodeURIComponent(input.authorUri)}`;
-		const [direct, relayed] = await this.redisClient.mget(tombstone, `${tombstone}:room:${room.id}`);
-		if (direct === input.authorUri || relayed === input.authorUri) return null;
+		// 보관 사본은 원래 URI와 별개이지만, 원래 URI의 글이 이미 있거나 삭제가 먼저 도착했으면 사본도 저장하지 않는다.
+		const uris = input.uri === input.sourceUri ? [input.uri] : [input.uri, input.sourceUri];
+		if (await this.chatMessagesRepository.existsBy({ uri: In(uris) })) return null;
+		for (const uri of uris) {
+			const tombstone = `chat_delete_upon_arrival:${uri}:${encodeURIComponent(input.authorUri)}`;
+			const [direct, relayed] = await this.redisClient.mget(tombstone, `${tombstone}:room:${room.id}`);
+			if (direct === input.authorUri || relayed === input.authorUri) return null;
+		}
 
 		const reactions = [...new Set(input.reactions)].slice(0, MAX_REACTIONS_PER_MESSAGE);
 		const author = input.authorId != null ? await this.usersRepository.findOneBy({ id: input.authorId }) : null;

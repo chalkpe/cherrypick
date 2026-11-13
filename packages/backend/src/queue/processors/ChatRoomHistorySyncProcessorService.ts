@@ -9,6 +9,7 @@ import { DelayedError } from 'bullmq';
 import * as Redis from 'ioredis';
 import { In } from 'typeorm';
 import { DI } from '@/di-symbols.js';
+import type { Config } from '@/config.js';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { ChatService } from '@/core/ChatService.js';
@@ -26,10 +27,10 @@ import { ApMfmService } from '@/core/activitypub/ApMfmService.js';
 import { ApResolverService } from '@/core/activitypub/ApResolverService.js';
 import { ApNoteService } from '@/core/activitypub/models/ApNoteService.js';
 import { ApPersonService } from '@/core/activitypub/models/ApPersonService.js';
-import { chatHistoryPageUri, parseChatHistoryItem, parseChatHistoryPage } from '@/core/activitypub/misc/chat-history.js';
+import { chatHistoryCopyUri, chatHistoryPageUri, parseChatHistoryItem, parseChatHistoryPage, roomUriOf } from '@/core/activitypub/misc/chat-history.js';
 import type { ChatHistoryItem, ChatHistoryItemContext } from '@/core/activitypub/misc/chat-history.js';
 import { chatNoteText } from '@/core/activitypub/misc/chat-payloads.js';
-import { getApType, isActor, isEmoji } from '@/core/activitypub/type.js';
+import { getApType, getOneApId, isActor, isEmoji } from '@/core/activitypub/type.js';
 import type { IObject, IPost } from '@/core/activitypub/type.js';
 import { acquireApObjectLock } from '@/misc/distributed-lock.js';
 import { isTemporaryFetchFailure } from '@/misc/is-temporary-fetch-failure.js';
@@ -59,6 +60,8 @@ const MAX_REACTIONS_PER_MESSAGE = 100;
 
 type ImportRun = {
 	lastAttempt: boolean;
+	ownerHost: string;
+	signers: MiUser[];
 	accounts: Map<string, MiRemoteUser | null>;
 	authors: Map<string, MiRemoteUser | null>;
 	checkedEmojis: Set<string>;
@@ -76,6 +79,9 @@ export class ChatRoomHistorySyncProcessorService {
 	private logger: Logger;
 
 	constructor(
+		@Inject(DI.config)
+		private config: Config,
+
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
 
@@ -136,6 +142,8 @@ export class ChatRoomHistorySyncProcessorService {
 
 		const run: ImportRun = {
 			lastAttempt: job.attemptsMade + 1 >= (job.opts.attempts ?? 1),
+			ownerHost: owner.host,
+			signers: [],
 			accounts: new Map(),
 			authors: new Map(),
 			checkedEmojis: new Set(),
@@ -152,6 +160,7 @@ export class ChatRoomHistorySyncProcessorService {
 				const signers = await this.chatRoomHistoryService.localMembers(room);
 				// 처음부터 다시 받는 것은 이 서버의 사용자가 다시 참여할 때다
 				if (signers.length === 0) return 'skip: nobody here is in the room';
+				run.signers = signers;
 
 				const url = current.nextUri ?? chatHistoryPageUri(room.uri, null);
 				const page = parseChatHistoryPage(await this.fetchPage(url, signers), room.uri, url);
@@ -273,10 +282,26 @@ export class ChatRoomHistorySyncProcessorService {
 		// 이미 있는 글은 소유 서버가 다른 내용을 내줘도 바꾸지 않는다. 수정은 작성자 서버의 Update로만 반영한다.
 		if (await this.chatRoomHistoryService.findImported(item.uri) != null) return;
 
+		// 소유 서버 자신의 글은 그대로 믿고, 제3 서버의 글은 작성자 서버에 물어 확인한다.
+		// 확인할 수 없는 글은 원래 URI를 선점하지 않는 보관 사본으로 남긴다.
+		let uri = item.uri;
+		let archived = item.note._misskey_chatAuthorArchived === true;
+		if (host !== run.ownerHost) {
+			const verdict = await this.verifySource(room, item, run);
+			if (verdict === 'reject') {
+				this.logger.debug(`Skipped a history item of ${room.uri}: the author's server did not confirm ${item.uri}`);
+				return;
+			}
+			if (verdict === 'archive') {
+				uri = chatHistoryCopyUri(this.config.url, room.id, item.uri);
+				archived = true;
+			}
+		}
+
 		const channel = await this.resolveChannel(room, item.note, run);
 		if (channel === false) return;
 
-		const author = item.note._misskey_chatAuthorArchived === true ? null : await this.resolveAccount(item.authorUri, run, true);
+		const author = archived ? null : await this.resolveAccount(item.authorUri, run, true);
 		const text = item.text;
 		const attachments = toArray(item.note.attachment).filter(attach => attach != null && typeof attach === 'object').slice(0, MAX_REMOTE_CHAT_MESSAGE_FILES);
 		let fileIds: string[] = [];
@@ -296,7 +321,8 @@ export class ChatRoomHistorySyncProcessorService {
 		const unlock = await acquireApObjectLock(this.redisClient, item.uri);
 		try {
 			const stored = await this.chatRoomHistoryService.importMessage(room, {
-				uri: item.uri,
+				uri,
+				sourceUri: item.uri,
 				authorUri: item.authorUri,
 				authorId: author?.id ?? null,
 				archivedAuthor: author == null ? { uri: item.authorUri, username: item.author?.username ?? null, name: item.author?.name ?? null, host } : null,
@@ -320,6 +346,47 @@ export class ChatRoomHistorySyncProcessorService {
 		} finally {
 			await unlock();
 		}
+	}
+
+	/**
+	 * 제3 서버의 글은 작성자 서버에 이 서버의 멤버로 서명해 직접 확인한다. 소유 서버가 대신 말할 수 없다.
+	 * 확인하면 원래 URI로 받고, 어긋나면 버리며, 확인할 수 없으면 보관 사본으로 남긴다.
+	 */
+	private async verifySource(room: MiChatRoom & { uri: string }, item: ChatHistoryItem, run: ImportRun): Promise<'verified' | 'reject' | 'archive'> {
+		for (const signer of run.signers.slice(0, MAX_SIGNERS)) {
+			const resolver = await this.apResolverService.createResolver();
+			resolver.signAs(signer as MiLocalUser);
+			try {
+				const object = await resolver.resolve(item.uri);
+				if (getApType(object) === 'Tombstone') return 'reject';
+				if (object.id !== item.uri || getApType(object) !== 'Note') return 'reject';
+				const note = object as IPost;
+				if (note._misskey_talk !== true) return 'reject';
+				if (roomUriOf(note) !== room.uri) return 'reject';
+				try {
+					if (note.attributedTo == null || getOneApId(note.attributedTo) !== item.authorUri) return 'reject';
+				} catch {
+					return 'reject';
+				}
+				return 'verified';
+			} catch (err) {
+				// 작성자 서버가 글을 내주지 않으면(404/410) 보관 표시가 있는 경우 바로 사본으로 남긴다.
+				if (err instanceof StatusError && (err.statusCode === 404 || err.statusCode === 410)) {
+					if (item.note._misskey_chatAuthorArchived === true || run.lastAttempt) return 'archive';
+					throw err;
+				}
+				if (isTemporaryFetchFailure(err)) {
+					if (run.lastAttempt) return 'archive';
+					throw err;
+				}
+				// 작성자 서버가 이 멤버를 아직 모를 수 있으니 다른 멤버로도 묻는다
+				if (err instanceof StatusError && err.isClientError) continue;
+				if (run.lastAttempt) return 'archive';
+				throw err;
+			}
+		}
+		if (run.lastAttempt) return 'archive';
+		throw new Error('the author\'s server does not count anyone here as a member yet');
 	}
 
 	/** 실시간 수신과 같은 채널 판정. 모르는 채널이면 그룹 객체를 한 번 다시 읽고, 그래도 없으면 그 글을 버린다. */

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { DelayedError } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -78,8 +78,16 @@ function setup(options: Setup = {}) {
 	const resolve = vi.fn(async (url: string) => {
 		const page = options.pages?.get(url);
 		if (page instanceof Error) throw page;
-		if (page == null) throw new StatusError('Not Found', 404);
-		return page;
+		if (page != null) return page;
+		// 작성자 서버의 메시지 조회: 등록된 페이지가 싣는 항목을 id로 내준다. 명시한 응답이 우선한다
+		for (const registered of options.pages?.values() ?? []) {
+			if (registered == null || typeof registered !== 'object') continue;
+			const items = (registered as { orderedItems?: unknown }).orderedItems;
+			if (!Array.isArray(items)) continue;
+			const item = items.find(entry => entry != null && typeof entry === 'object' && (entry as IObject).id === url);
+			if (item != null) return item as IObject;
+		}
+		throw new StatusError('Not Found', 404);
 	});
 	const accounts = options.accounts ?? new Map<string, unknown>([[author.uri, author], [reactor.uri, reactor]]);
 	const resolvePerson = vi.fn(async (uri: string) => {
@@ -92,6 +100,7 @@ function setup(options: Setup = {}) {
 	const applyPendingChatReactions = vi.fn(async () => {});
 	const service = Object.assign(Object.create(ChatRoomHistorySyncProcessorService.prototype), {
 		logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
+		config: { url: 'https://here.test' },
 		redisClient: redis,
 		chatRoomsRepository: { findOneBy: vi.fn(async () => room), findOneByOrFail: vi.fn(async () => room) },
 		usersRepository: { findOneBy: vi.fn(async () => owner) },
@@ -398,6 +407,103 @@ describe('과거 기록 가져오기 작업', () => {
 		expect(await ctx.run()).toBe('skip: started over');
 		expect(ctx.state.nextUri).toBeNull();
 	});
+
+	describe('제3 서버 기록의 출처 확인', () => {
+		const messageUri = 'https://member.test/chat/messages/m1';
+		const copyUri = `https://here.test/chat/history/${createHash('sha256').update(`room1\n${messageUri}`).digest('hex').slice(0, 32)}`;
+
+		test('소유 서버가 보관한 자기 글은 출처 확인 없이 받는다', async () => {
+			const ownUri = 'https://owner.test/chat/messages/m1';
+			pages.set(first, buildChatHistoryPage(roomUri, null, [{ ...note('m1'), id: ownUri, attributedTo: owner.uri } as IObject], null));
+			const { run, imported, resolve } = setup({ pages, accounts: new Map([[author.uri, author], [reactor.uri, reactor], [owner.uri, owner]]) });
+
+			await run();
+
+			expect(imported.map(input => input.uri)).toEqual([ownUri]);
+			expect(resolve).not.toHaveBeenCalledWith(ownUri);
+		});
+
+		test('제3 서버의 글은 작성자 서버에서 확인하고 원래 URI로 받는다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
+			const { run, imported, resolve } = setup({ pages });
+
+			await run();
+
+			expect(resolve).toHaveBeenCalledWith(messageUri);
+			expect(imported[0]).toMatchObject({ uri: messageUri, sourceUri: messageUri, authorId: author.id, archivedAuthor: null });
+		});
+
+		test.each([
+			['다른 id의 객체', { id: 'https://member.test/notes/other', type: 'Note', _misskey_talk: true, context: roomUri, attributedTo: author.uri }],
+			['채팅이 아닌 일반 노트', { id: messageUri, type: 'Note', attributedTo: author.uri }],
+			['다른 그룹의 글', { id: messageUri, type: 'Note', _misskey_talk: true, context: 'https://owner.test/chat/rooms/other', attributedTo: author.uri }],
+			['다른 작성자의 글', { id: messageUri, type: 'Note', _misskey_talk: true, context: roomUri, attributedTo: 'https://member.test/users/other' }],
+			['삭제된 글', { id: messageUri, type: 'Tombstone' }],
+		])('작성자 서버가 %s를 내주면 그 글은 버린다', async (_label, object) => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
+			pages.set(messageUri, object as IObject);
+			const { run, imported } = setup({ pages });
+
+			await run();
+
+			expect(imported).toEqual([]);
+		});
+
+		test.each([404, 410])('작성자 서버가 없고(%s) 보관 표시가 있으면 사본 URI로 보존한다', async status => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+				_misskey_chatAuthorArchived: true,
+				_misskey_chatAuthor: { name: '지난 이름', username: 'gone', host: 'member.test' },
+			})], null));
+			pages.set(messageUri, new StatusError('Gone', status));
+			const { run, imported } = setup({ pages });
+
+			await run();
+
+			expect(imported).toHaveLength(1);
+			expect(imported[0]).toMatchObject({
+				uri: copyUri,
+				sourceUri: messageUri,
+				authorId: null,
+				archivedAuthor: { uri: author.uri, username: 'gone', name: '지난 이름', host: 'member.test' },
+			});
+		});
+
+		test('보관 표시 없이 확인할 수 없으면(404) 다시 시도하고 마지막 시도에서 사본으로 보존한다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
+			pages.set(messageUri, new StatusError('Not Found', 404));
+			const ctx = setup({ pages });
+
+			await expect(ctx.run(0)).rejects.toThrow();
+			expect(ctx.imported).toEqual([]);
+
+			await ctx.run(7);
+			expect(ctx.imported[0]).toMatchObject({ uri: copyUri, sourceUri: messageUri, authorId: null, archivedAuthor: { uri: author.uri, username: null, name: null, host: 'member.test' } });
+		});
+
+		test('작성자 서버의 일시적인 장애는 다시 시도하고, 마지막 시도에서는 사본으로 보존한다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
+			pages.set(messageUri, new StatusError('Service Unavailable', 503));
+			const ctx = setup({ pages });
+
+			await expect(ctx.run(0)).rejects.toThrow();
+			expect(ctx.imported).toEqual([]);
+
+			await ctx.run(7);
+			expect(ctx.imported[0]).toMatchObject({ uri: copyUri, sourceUri: messageUri, authorId: null, archivedAuthor: { uri: author.uri, username: null, name: null, host: 'member.test' } });
+		});
+
+		test('확인한 글에 보관 표시가 있으면 실제 계정 대신 보관 작성자로 받는다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+				_misskey_chatAuthorArchived: true,
+				_misskey_chatAuthor: { name: '지난 이름', username: 'gone', host: 'member.test' },
+			})], null));
+			const { run, imported } = setup({ pages });
+
+			await run();
+
+			expect(imported[0]).toMatchObject({ uri: messageUri, sourceUri: messageUri, authorId: null, archivedAuthor: { uri: author.uri, username: 'gone', name: '지난 이름' } });
+		});
+	});
 });
 
 describe('과거 기록 가져오기의 진행 없는 페이지 판정', () => {
@@ -420,6 +526,9 @@ describe('과거 기록 가져오기의 진행 없는 페이지 판정', () => {
 		for (let i = 0; i < 20 && ctx.state.status === 'running'; i++) await ctx.run();
 	}
 
+	/** 기록 페이지를 받은 횟수. 항목의 출처 확인 조회는 세지 않는다 */
+	const pageFetches = (ctx: ReturnType<typeof setup>) => ctx.resolve.mock.calls.filter(([url]) => (url as string).startsWith(`${roomUri}/history`)).length;
+
 	test('새 글이 없는 페이지가 연속 101쪽 나오면 더 가져올 수 없다고 남기고 그 페이지는 저장하지 않는다', async () => {
 		const ctx = setup({ pages: chain(150) });
 
@@ -436,7 +545,7 @@ describe('과거 기록 가져오기의 진행 없는 페이지 판정', () => {
 		await runUntilSettled(ctx);
 
 		expect(ctx.state.status).toBe('completed');
-		expect(ctx.resolve).toHaveBeenCalledTimes(161);
+		expect(pageFetches(ctx)).toBe(161);
 		expect(ctx.imported.map(input => input.uri)).toEqual(['https://member.test/chat/messages/m1']);
 		expect(await redis.exists(...progressKeys(1))).toBe(0);
 	});
@@ -449,7 +558,7 @@ describe('과거 기록 가져오기의 진행 없는 페이지 판정', () => {
 
 		expect(ctx.state.status).toBe('unavailable');
 		// 첫 페이지의 글만 새 글이고, 그 뒤로 연속 101쪽이 지나면 멈춘다
-		expect(ctx.resolve).toHaveBeenCalledTimes(102);
+		expect(pageFetches(ctx)).toBe(102);
 	});
 
 	test('같은 페이지를 재시도해도 한 번만 세고 다음 페이지부터 더한다', async () => {

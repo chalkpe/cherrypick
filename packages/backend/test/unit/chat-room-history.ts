@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { createHash } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import type * as Redis from 'ioredis';
@@ -90,8 +91,10 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 
 	function importInput(room: MiChatRoom, overrides: Partial<ChatHistoryImport> = {}): ChatHistoryImport {
 		const n = idService.gen();
+		const uri = `https://member.test/chat/messages/${n}`;
 		return {
-			uri: `https://member.test/chat/messages/${n}`,
+			uri,
+			sourceUri: uri,
 			authorUri: member.uri!,
 			authorId: member.id,
 			archivedAuthor: null,
@@ -258,6 +261,38 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 			expect(await historyService().importMessage(room, input)).toBeNull();
 			expect(await historyService().importMessage(room, relayed)).toBeNull();
 			expect(await chatMessagesRepository.existsBy({ uri: In([input.uri, relayed.uri]) })).toBe(false);
+		});
+
+		describe('보관 사본', () => {
+			const sourceUri = 'https://member.test/chat/messages/source';
+			const copyUriOf = (roomId: string) => `${LOCAL}/chat/history/${createHash('sha256').update(`${roomId}\n${sourceUri}`).digest('hex').slice(0, 32)}`;
+
+			test('원래 URI로 삭제가 먼저 도착했으면 사본은 저장하지 않는다', async () => {
+				const { room } = await mirrorRoom();
+				await redisClient.setex(`chat_delete_upon_arrival:${sourceUri}:${encodeURIComponent(member.uri!)}`, 60, member.uri!);
+
+				expect(await historyService().importMessage(room, importInput(room, { uri: copyUriOf(room.id), sourceUri }))).toBeNull();
+				expect(await chatMessagesRepository.existsBy({ uri: copyUriOf(room.id) })).toBe(false);
+			});
+
+			test('원래 URI로 이미 저장된 글이 있으면 사본은 저장하지 않는다', async () => {
+				const { room } = await mirrorRoom();
+				await insertMessage(room, member, { uri: sourceUri, text: 'original' });
+
+				expect(await historyService().importMessage(room, importInput(room, { uri: copyUriOf(room.id), sourceUri }))).toBeNull();
+				expect(await chatMessagesRepository.findOneByOrFail({ uri: sourceUri })).toMatchObject({ text: 'original' });
+			});
+
+			test('사본은 사본 URI로 저장하고 원래 URI의 실시간 수신을 막지 않는다', async () => {
+				const { room } = await mirrorRoom();
+				const service = historyService();
+
+				const stored = await service.importMessage(room, importInput(room, { uri: copyUriOf(room.id), sourceUri, authorId: null, archivedAuthor: { uri: member.uri!, username: member.username, name: member.name, host: 'member.test' } }));
+
+				expect(stored).toMatchObject({ uri: copyUriOf(room.id), fromUserId: null });
+				const live = await service.importMessage(room, importInput(room, { uri: sourceUri, sourceUri }));
+				expect(live).toMatchObject({ uri: sourceUri, fromUserId: member.id });
+			});
 		});
 
 		test('리액션은 중복 없이 메시지당 한도까지만 저장한다', async () => {

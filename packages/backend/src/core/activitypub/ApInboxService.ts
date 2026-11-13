@@ -50,6 +50,7 @@ import { AbuseReportService } from '@/core/AbuseReportService.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
 import { parseRemoteChatDate } from './misc/chat-remote-date.js';
 import { chatNoteText } from './misc/chat-payloads.js';
+import { chatHistoryCopyUri } from './misc/chat-history.js';
 import { getApHrefNullable, getApId, getApIds, getApType, getOneApId, isAccept, isActor, isAdd, isAnnounce, isBlock, isCollection, isCollectionOrOrderedCollection, isCreate, isDelete, isEmoji, isFlag, isFollow, isInvite, isJoin, isLike, isMove, isPost, isReject, isRemove, isTombstone, isUndo, isUpdate, validActor, validPost } from './type.js';
 import { ApNoteService } from './models/ApNoteService.js';
 import { ApLoggerService } from './ApLoggerService.js';
@@ -1359,6 +1360,8 @@ export class ApInboxService {
 				const room = await this.chatRoomForMessage(contextUri!, recipients, actor);
 				if (typeof room === 'string') return room;
 				if (await this.hasDeferredRoomChatDelete(actor, uri, room.id)) return 'skip: deleted';
+				// 보관 사본으로 이미 남은 글은 실시간으로 다시 만들지 않는다. 수정도 사본을 바꾸지 않는다.
+				if (await this.chatMessagesRepository.existsBy({ uri: chatHistoryCopyUri(this.config.url, room.id, uri) })) return 'skip: archived copy exists';
 
 				const toRoomChannelId = await this.resolveChatMessageChannel(room, object, options);
 

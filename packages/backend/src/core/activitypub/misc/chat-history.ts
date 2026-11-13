@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { createHash } from 'node:crypto';
 import { toArray } from '@/misc/prelude/array.js';
 import { getApType, getOneApId } from '../type.js';
 import { parseRemoteChatDate } from './chat-remote-date.js';
@@ -71,6 +72,11 @@ export function chatHistoryUri(roomUri: string): string {
 	return `${roomUri}/history`;
 }
 
+/** 보관 사본의 로컬 URI. 원래 URI를 선점하지 않도록 이 서버의 그룹과 원본 주소로 만든다. */
+export function chatHistoryCopyUri(localUrl: string, roomId: string, sourceUri: string): string {
+	return `${localUrl}/chat/history/${createHash('sha256').update(`${roomId}\n${sourceUri}`).digest('hex').slice(0, 32)}`;
+}
+
 export function chatHistoryPageUri(roomUri: string, until: string | null): string {
 	return until == null ? chatHistoryUri(roomUri) : `${chatHistoryUri(roomUri)}?until=${until}`;
 }
@@ -128,7 +134,7 @@ export function parseChatHistoryPage(page: unknown, roomUri: string, requestedUr
 	return { items: object.orderedItems, next };
 }
 
-function roomUriOf(note: IPost): string | null {
+export function roomUriOf(note: IPost): string | null {
 	const values = [note._misskey_chatRoom, ...toArray(note.context)].filter(value => value != null);
 	const roomUri = values[0];
 	// 두 표현이 서로 다른 그룹을 가리키면 어느 하나를 우선해서 받아들이지 않는다.
