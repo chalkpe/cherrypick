@@ -55,6 +55,7 @@ type FakeManager = {
 	update: (entity: unknown, where: { id: string }, patch: Record<string, unknown>) => Promise<{ affected: number }>;
 	delete: (entity: unknown, where: Record<string, unknown>) => Promise<{ affected: number }>;
 	findOneBy: (entity: unknown, where: Record<string, unknown>) => Promise<Row | null>;
+	existsBy: (entity: unknown, where: Record<string, unknown>) => Promise<boolean>;
 	insert: (entity: unknown, row: Row) => Promise<Row>;
 	countBy: (entity: unknown, where: Record<string, unknown>) => Promise<number>;
 };
@@ -79,6 +80,7 @@ function fakeDataSource(tables: Map<string, ReturnType<typeof fakeRepository>>) 
 		update: (entity, where, patch) => tableFor(entity).update(where.id, patch),
 		delete: (entity, where) => tableFor(entity).delete(where),
 		findOneBy: (entity, where) => tableFor(entity).findOneBy(where),
+		existsBy: async (entity, where) => (await tableFor(entity).findOneBy(where)) != null,
 		insert: (entity, row) => tableFor(entity).insertOne(row),
 		countBy: (entity, where) => tableFor(entity).countBy(where),
 	};
@@ -113,6 +115,7 @@ function fixture(options: {
 	rooms?: Row[];
 	memberships?: Row[];
 	banned?: string[];
+	blocked?: string[];
 	hooks?: { beforeInvitationDelete?: () => void | Promise<void>; failMembershipInsert?: boolean };
 } = {}) {
 	const rooms = fakeRepository([
@@ -133,6 +136,7 @@ function fixture(options: {
 		['MiChatRoom', rooms],
 		['MiChatRoomInvitation', invitations],
 		['MiChatRoomMembership', memberships],
+		['MiBlocking', fakeRepository((options.blocked ?? []).map(blockeeId => ({ id: blockeeId, blockerId: localOwner.id, blockeeId })))],
 	]));
 	const usersByUri = new Map<string, unknown>([
 		[`${LOCAL}/users/${localOwner.id}`, localOwner],
@@ -476,6 +480,38 @@ describe('Chat room federation: Accept(Invite) from an account the owner removed
 		expect(result).toBe('ok');
 		expect(f.memberships.rows).toHaveLength(1);
 		expect(f.inbox.queueService.deliver).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'Remove' }), expect.anything(), expect.anything());
+	});
+});
+
+describe('Chat room federation: Accept(Invite) from an account the owner blocked', () => {
+	const accepted = inviteActivity({ uri: remoteOwner.uri }, 'https://remote.test/chat/rooms/localroom', invitedRemote.uri);
+
+	test.each([true, false])('refuses a blocked nonmember with or without the invitation (pending: %s)', async pending => {
+		const f = fixture({
+			invitations: pending ? [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }] : [],
+			blocked: [invitedRemote.id],
+		});
+
+		const result = await f.inbox.acceptInvite(invitedRemote, accepted);
+
+		expect(result).toBe('skip: blocked by the room owner');
+		expect(f.invitations.rows).toEqual([]);
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.inbox.queueService.deliver).toHaveBeenCalledWith(
+			expect.objectContaining({ id: localOwner.id }),
+			expect.objectContaining({ type: 'Remove', object: invitedRemote.uri }),
+			invitedRemote.inbox,
+			false,
+		);
+	});
+
+	test('does not remove an existing member for a block alone', async () => {
+		const f = fixture({ memberships: [{ id: 'membership', roomId: 'localroom', userId: invitedRemote.id }], blocked: [invitedRemote.id] });
+
+		await f.inbox.acceptInvite(invitedRemote, accepted);
+
+		expect(f.memberships.rows).toHaveLength(1);
+		expect(f.inbox.queueService.deliver).not.toHaveBeenCalled();
 	});
 });
 

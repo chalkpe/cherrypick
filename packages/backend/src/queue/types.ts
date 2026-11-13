@@ -74,10 +74,12 @@ export type DbJobMap = {
 
 export type ChatRoomRosterSyncJobData = {
 	roomId: string;
+	retryFutureChannels?: boolean;
 };
 
 export type ChatRoomHistorySyncJobData = {
 	roomId: string;
+	pass?: number;
 };
 
 export type DbJobDataWithUser = {
