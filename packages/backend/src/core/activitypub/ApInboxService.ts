@@ -528,7 +528,7 @@ export class ApInboxService {
 		const currentRoom = await this.chatRoomsRepository.findOneBy({ id: room.id });
 		if (currentRoom?.hasChannels && owner.host == null && actor.inbox != null) {
 			const snapshot = await this.chatRoomChannelService.snapshot(room.id);
-			if (snapshot != null) this.queueService.deliver(owner, this.apRendererService.addContext(await this.apRendererService.renderChatRoomUpdate(snapshot.room, owner, snapshot.fields)), actor.inbox, false);
+			if (snapshot != null) await this.chatRoomChannelService.deliverWithCapability(owner, this.apRendererService.addContext(await this.apRendererService.renderChatRoomUpdate(snapshot.room, owner, snapshot.fields)), actor.inbox, false, actor.host);
 		}
 
 		return result;
@@ -2083,8 +2083,7 @@ export class ApInboxService {
 		}
 
 		if (isActor(object)) {
-			// 이전 처리에서 재참여 금지를 잇지 못했으면 작업을 실패로 남겨 큐가 다시 시도하게 한다.
-			await this.apPersonService.updatePerson(actor.uri, resolver, object, [], { throwOnBanCarryFailure: true });
+			await this.apPersonService.updatePerson(actor.uri, resolver, object);
 			return 'ok: Person updated';
 		} else if (getApType(object) === 'Question') {
 			const question = object as IPost;
@@ -2149,8 +2148,7 @@ export class ApInboxService {
 		const targetUri = getApHrefNullable(activity.target);
 		if (!targetUri) return 'skip: invalid activity target';
 
-		// 이전 처리에서 재참여 금지를 잇지 못했으면 작업을 실패로 남겨 큐가 다시 시도하게 한다.
-		return await this.apPersonService.updatePerson(actor.uri, resolver, undefined, [], { throwOnBanCarryFailure: true }) ?? 'skip: nothing to do';
+		return await this.apPersonService.updatePerson(actor.uri, resolver) ?? 'skip: nothing to do';
 	}
 
 	@bindThis

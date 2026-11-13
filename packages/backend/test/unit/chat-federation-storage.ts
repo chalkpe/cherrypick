@@ -13,6 +13,7 @@ import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateServic
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
+import { QueueService } from '@/core/QueueService.js';
 import { FetchInstanceMetadataService } from '@/core/FetchInstanceMetadataService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatService, ChatTooManyReactionsError } from '@/core/ChatService.js';
@@ -87,7 +88,7 @@ describe('chat federation storage', () => {
 	}
 
 	beforeAll(async () => {
-		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService, ChatRoomChannelService, ChatRoomNotificationService, GlobalEventService, { provide: FetchInstanceMetadataService, useValue: { chatRoomChannelsCapability: vi.fn(async () => false) } }] }).compile();
+		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService, ChatRoomChannelService, { provide: QueueService, useValue: {} }, ChatRoomNotificationService, GlobalEventService, { provide: FetchInstanceMetadataService, useValue: { chatRoomChannelsCapability: vi.fn(async () => false) } }] }).compile();
 		await app.init();
 		idService = app.get(IdService);
 		usersRepository = app.get(DI.usersRepository);

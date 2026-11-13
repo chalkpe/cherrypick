@@ -27,8 +27,6 @@ export type DeliverJobData = {
 	to: string;
 	/** whether it is sharedInbox */
 	isSharedInbox: boolean;
-	/** Host whose channel support must be confirmed before delivery. */
-	channelCapabilityHost?: string;
 };
 
 export type InboxJobData = {
@@ -67,9 +65,18 @@ export type DbJobMap = {
 	importCustomEmojis: DbUserImportJobData;
 	deleteAccount: DbUserDeleteJobData;
 	truncateAccount: DbUserTruncateJobData;
+	chatChannelDeliver: ChatChannelDeliverJobData;
 	chatRoomRosterSync: ChatRoomRosterSyncJobData;
 	chatRoomIconDeleted: { roomId: string; fileId: string };
 	chatRoomHistorySync: ChatRoomHistorySyncJobData;
+};
+
+export type ChatChannelDeliverJobData = {
+	user: ThinUser;
+	content: IActivity;
+	to: string;
+	isSharedInbox: boolean;
+	host: string;
 };
 
 export type ChatRoomRosterSyncJobData = {

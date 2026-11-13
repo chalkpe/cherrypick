@@ -259,158 +259,41 @@ describe('chat room bans in the database', () => {
 	});
 
 	describe('account moves', () => {
-		const move = (src: MiUser, dst: MiUser) => ({ src, dst });
-
-		async function bannedUser(...rooms: MiChatRoom[]): Promise<MiUser> {
-			const service = createChatService();
-			const user = await createUser();
-			for (const room of rooms) {
-				await addMember(room, user);
-				await service.kickRoomMember(owner, room, user.id);
-			}
-			return user;
-		}
-
-		/** 승계 트랜잭션이 잡는 advisory lock을 다른 세션이 쥐고 있게 한다. */
-		async function holdMoveLock(): Promise<QueryRunner> {
-			const runner = db.createQueryRunner();
-			await runner.connect();
-			await runner.startTransaction();
-			await runner.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['chat_room_ban:move']);
-			return runner;
-		}
-
-		test('a ban reaches an account whose own next move was recorded first', async () => {
+		test('checks both sides of each recorded move without copying ban rows', async () => {
 			const room = await createRoom();
-			const first = await bannedUser(room);
-			const [middle, last] = [await createUser(), await createUser()];
-
-			await banService.carryOnMove([move(middle, last)]);
-			await banService.carryOnMove([move(first, middle)]);
-
-			expect(await banService.isBanned(room.id, middle.id)).toBe(true);
+			const first = await createUser({ host: 'a.test', uri: 'https://a.test/users/first', movedToUri: 'https://b.test/users/middle' });
+			const middle = await createUser({ host: 'b.test', uri: 'https://b.test/users/middle', alsoKnownAs: [first.uri!], movedToUri: 'https://c.test/users/last' });
+			const last = await createUser({ host: 'c.test', uri: 'https://c.test/users/last', alsoKnownAs: [middle.uri!] });
+			await db.transaction(manager => banService.ban(manager, room.id, first.id));
 			expect(await banService.isBanned(room.id, last.id)).toBe(true);
-		});
-
-		test('moves recorded together reach the end of the chain in one go', async () => {
-			const room = await createRoom();
-			const first = await bannedUser(room);
-			const [middle, last] = [await createUser(), await createUser()];
-
-			await banService.carryOnMove([move(first, middle), move(middle, last)]);
-
-			expect(await banService.isBanned(room.id, middle.id)).toBe(true);
-			expect(await banService.isBanned(room.id, last.id)).toBe(true);
-		});
-
-		test('processing a recorded move again does not undo a pardon', async () => {
-			const room = await createRoom();
-			const first = await bannedUser(room);
-			const [middle, last] = [await createUser(), await createUser()];
-			await banService.carryOnMove([move(first, middle), move(middle, last)]);
-			await banService.pardon(room.id, last.id);
-
-			await banService.carryOnMove([move(first, middle)]);
-			await banService.carryOnMove([move(middle, last)]);
-			await banService.carryOnMove([move(first, middle), move(middle, last)]);
-
-			expect(await banService.isBanned(room.id, first.id)).toBe(true);
-			expect(await banService.isBanned(room.id, middle.id)).toBe(true);
+			expect(await chatRoomBansRepository.existsBy({ roomId: room.id, userId: last.id })).toBe(false);
+			await usersRepository.update(middle.id, { alsoKnownAs: [] });
 			expect(await banService.isBanned(room.id, last.id)).toBe(false);
 		});
-
-		test('a later move only passes on the bans it newly created', async () => {
-			const [pardonedRoom, newRoom] = [await createRoom(), await createRoom()];
-			const first = await bannedUser(pardonedRoom);
-			const [middle, last] = [await createUser(), await createUser()];
-			await banService.carryOnMove([move(first, middle), move(middle, last)]);
-			await banService.pardon(pardonedRoom.id, last.id);
-			// 처음 기록되는 앞쪽 이전이 두 그룹의 금지를 싣고 온다. 이미 금지돼 있던 그룹은 사면한 뒤쪽 계정에 다시 퍼지지 않는다.
-			const earlier = await bannedUser(pardonedRoom, newRoom);
-
-			await banService.carryOnMove([move(earlier, first)]);
-
-			expect(await banService.isBanned(newRoom.id, last.id)).toBe(true);
-			expect(await banService.isBanned(pardonedRoom.id, last.id)).toBe(false);
-		});
-
-		test('carrying around a cycle of moves ends', async () => {
+		test('ignores an unconfirmed alias and terminates on a cycle', async () => {
 			const room = await createRoom();
-			const first = await bannedUser(room);
-			const [second, third] = [await createUser(), await createUser()];
-			await banService.carryOnMove([move(second, third)]);
-			await banService.carryOnMove([move(third, first)]);
-
-			await banService.carryOnMove([move(first, second)]);
-
+			const first = await createUser({ host: 'one.test', uri: 'https://one.test/users/first', movedToUri: 'https://two.test/users/second', alsoKnownAs: ['https://two.test/users/second'] });
+			const second = await createUser({ host: 'two.test', uri: 'https://two.test/users/second', alsoKnownAs: [first.uri!], movedToUri: first.uri });
+			const unrelated = await createUser({ host: 'three.test', uri: 'https://three.test/users/third', alsoKnownAs: [first.uri!] });
+			await db.transaction(manager => banService.ban(manager, room.id, first.id));
 			expect(await banService.isBanned(room.id, second.id)).toBe(true);
-			expect(await banService.isBanned(room.id, third.id)).toBe(true);
-			expect(await chatRoomBansRepository.countBy({ roomId: room.id })).toBe(3);
+			expect(await banService.isBanned(room.id, unrelated.id)).toBe(false);
+			await banService.pardon(room.id, first.id);
+			expect(await banService.isBanned(room.id, second.id)).toBe(false);
 		});
 
-		test('moves carried at the same time see each other', async () => {
+		test('fails closed when an account move chain exceeds the search limit', async () => {
 			const room = await createRoom();
-			const first = await bannedUser(room);
-			const [middle, last] = [await createUser(), await createUser()];
-			const holder = await holdMoveLock();
-
-			const carries = Promise.all([
-				banService.carryOnMove([move(first, middle)]),
-				banService.carryOnMove([move(middle, last)]),
-			]);
-			await lockWaiters(2);
-			await holder.commitTransaction();
-			await holder.release();
-			await carries;
-
-			expect(await banService.isBanned(room.id, middle.id)).toBe(true);
-			expect(await banService.isBanned(room.id, last.id)).toBe(true);
+			const users: MiUser[] = [];
+			for (let index = 0; index < 12; index++) {
+				users.push(await createUser({ host: 'chain.test', uri: `https://chain.test/users/${index}` }));
+			}
+			for (let index = 0; index < users.length - 1; index++) {
+				await usersRepository.update(users[index].id, { movedToUri: users[index + 1].uri });
+				await usersRepository.update(users[index + 1].id, { alsoKnownAs: [users[index].uri!] });
+			}
+			expect(await banService.isBanned(room.id, users[11].id)).toBe(true);
 		});
 
-		test('the new account inherits every ban once, the old one keeps them, and memberships stay', async () => {
-			const service = createChatService();
-			const [roomA, roomB, roomC] = [await createRoom(), await createRoom(), await createRoom()];
-			const oldAccount = await bannedUser(roomA, roomB);
-			const newAccount = await createUser();
-			// 새 계정은 B에서 이미 따로 내보내졌고 A의 멤버다.
-			await addMember(roomB, newAccount);
-			await service.kickRoomMember(owner, roomB, newAccount.id);
-			await addMember(roomA, newAccount);
-
-			await banService.carryOnMove([move(oldAccount, newAccount)]);
-			await banService.carryOnMove([move(oldAccount, newAccount)]);
-
-			expect(await chatRoomBansRepository.countBy({ userId: oldAccount.id })).toBe(2);
-			expect(await chatRoomBansRepository.countBy({ userId: newAccount.id, roomId: roomA.id })).toBe(1);
-			expect(await chatRoomBansRepository.countBy({ userId: newAccount.id, roomId: roomB.id })).toBe(1);
-			expect(await chatRoomBansRepository.countBy({ userId: newAccount.id, roomId: roomC.id })).toBe(0);
-			expect(await isMember(roomA, newAccount)).toBe(true);
-		});
-
-		test('the inherited ban refuses the next join of the new account', async () => {
-			const service = createChatService();
-			const room = await createRoom();
-			const oldAccount = await bannedUser(room);
-			const newAccount = await createUser();
-			await invite(room, newAccount);
-
-			await banService.carryOnMove([move(oldAccount, newAccount)]);
-
-			await expect(service.joinToRoom(newAccount.id, room.id)).rejects.toBeInstanceOf(ChatRoomBannedError);
-			expect(await isMember(room, newAccount)).toBe(false);
-		});
-
-		test('pending carries are judged from what is recorded', async () => {
-			const room = await createRoom();
-			const first = await bannedUser(room);
-			const next = await createUser();
-
-			expect(await banService.hasBans(first.id)).toBe(true);
-			expect(await banService.hasBans(next.id)).toBe(false);
-			expect(await banService.isMoveRecorded(first.id, next.id)).toBe(false);
-			await banService.carryOnMove([move(first, next)]);
-			expect(await banService.isMoveRecorded(first.id, next.id)).toBe(true);
-			expect(await banService.isMoveRecorded(next.id, first.id)).toBe(false);
-		});
 	});
 });

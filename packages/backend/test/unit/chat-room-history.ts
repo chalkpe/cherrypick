@@ -12,6 +12,7 @@ import type { DataSource } from 'typeorm';
 import type { ChatMessagesRepository, ChatRoomChannelsRepository, ChatRoomHistoryStatesRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, MiChatRoom, MiUser, UsersRepository } from '@/models/_.js';
 import { DeleteAccountProcessorService } from '@/queue/processors/DeleteAccountProcessorService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
+import { QueueService } from '@/core/QueueService.js';
 import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
 import { FetchInstanceMetadataService } from '@/core/FetchInstanceMetadataService.js';
 import type { ChatHistoryImport } from '@/core/ChatRoomHistoryService.js';
@@ -108,7 +109,7 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 	}
 
 	beforeAll(async () => {
-		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService, ChatRoomChannelService, { provide: FetchInstanceMetadataService, useValue: { chatRoomChannelsCapability: vi.fn(async () => false) } }] }).compile();
+		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService, ChatRoomChannelService, { provide: QueueService, useValue: {} }, { provide: FetchInstanceMetadataService, useValue: { chatRoomChannelsCapability: vi.fn(async () => false) } }] }).compile();
 		await app.init();
 		db = app.get(DI.db);
 		idService = app.get(IdService);

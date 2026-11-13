@@ -570,10 +570,9 @@ export class ApPersonService implements OnModuleInit {
 	 * @param resolver Resolver
 	 * @param hint Hint of Person object (この値が正当なPersonの場合、Remote resolveをせずに更新に利用します)
 	 * @param movePreventUris ここに指定されたURIがPersonのmovedToに指定されていたり10回より多く回っている場合これ以上アカウント移行を行わない（無限ループ防止）
-	 * @param options.throwOnBanCarryFailure 이전 처리가 실패해 재참여 금지를 아직 잇지 못했으면 오류를 던진다. inbox 작업이 큐의 재시도로 다시 처리하게 할 때 쓴다.
 	 */
 	@bindThis
-	public async updatePerson(uri: string, resolver?: Resolver | null, hint?: IObject, movePreventUris: string[] = [], options: { throwOnBanCarryFailure?: boolean } = {}): Promise<string | void> {
+	public async updatePerson(uri: string, resolver?: Resolver | null, hint?: IObject, movePreventUris: string[] = []): Promise<string | void> {
 		if (typeof uri !== 'string') throw new Error('uri is not string');
 
 		// URIがこのサーバーを指しているならスキップ
@@ -816,37 +815,12 @@ export class ApPersonService implements OnModuleInit {
 					this.logger.info(`Processing Move Finished [${result}] @${updated.username}@${updated.host} (${uri})`);
 					return result;
 				})
-				.catch(e => this.onMoveFailure(e, updated, uri, options));
+				.catch(e => {
+					this.logger.info(`Processing Move Failed @${updated.username}@${updated.host} (${uri})`, { stack: e });
+				});
 		}
 
-		// 이미 처리한 이전이라도 재참여 금지를 아직 잇지 못했으면 그것만 다시 한다.
-		return this.resumeBanCarry(updated, movePreventUris)
-			.catch(e => this.onMoveFailure(e, updated, uri, options));
-	}
-
-	/**
-	 * 이전 처리의 실패는 기존처럼 기록만 하고 넘긴다. 단, 호출자가 원하고 재참여 금지를 아직 잇지 못했으면 오류를 다시 던져
-	 * inbox 작업이 실패로 남아 큐의 재시도를 받게 한다. 금지가 없는 계정의 이전 실패는 지금처럼 정상 완료된다.
-	 */
-	private async onMoveFailure(e: unknown, user: MiRemoteUser, uri: string, options: { throwOnBanCarryFailure?: boolean }): Promise<void> {
-		this.logger.info(`Processing Move Failed @${user.username}@${user.host} (${uri})`, { stack: e });
-		if (options.throwOnBanCarryFailure && await this.accountMoveService.needsBanCarry(user)) throw e;
-	}
-
-	/**
-	 * 이미 처리한 이전의 재참여 금지 승계만 다시 한다. 앞선 처리가 실패했거나, 이전 사슬의 뒤쪽을 이 서버가 나중에 알게 된 경우다.
-	 * 팔로·차단 등 다른 관계는 다시 옮기지 않는다. 별칭·순환·대상 확인은 처음 처리와 똑같이 거치지만 14일 제한은 두지 않는다.
-	 * 그 제한은 관계를 반복해 옮기는 것을 막는 장치인데 이 경로는 관계를 옮기지 않고, 제한을 두면 그 안의 두 번째 이전으로 금지를 벗어날 수 있다.
-	 */
-	private async resumeBanCarry(src: MiRemoteUser, movePreventUris: string[]): Promise<string> {
-		if (!await this.accountMoveService.needsBanCarry(src)) return 'skip';
-
-		this.logger.info(`Resume carrying chat room bans of @${src.username}@${src.host} (${src.uri})`);
-		const dst = await this.resolveVerifiedMoveTarget(src, movePreventUris);
-		if (typeof dst === 'string') return dst;
-
-		await this.accountMoveService.carryBans(src, dst, movePreventUris);
-		return 'ok: chat room bans carried';
+		return 'skip';
 	}
 
 	/**
@@ -936,22 +910,6 @@ export class ApPersonService implements OnModuleInit {
 	 */
 	@bindThis
 	private async processRemoteMove(src: MiRemoteUser, movePreventUris: string[] = []): Promise<string> {
-		const dst = await this.resolveVerifiedMoveTarget(src, movePreventUris);
-		if (typeof dst === 'string') return dst;
-
-		await this.accountMoveService.postMoveProcess(src, dst, movePreventUris);
-
-		return 'ok';
-	}
-
-	/**
-	 * 원격 계정의 이전 대상을 확인한다. 대상이 옛 계정을 별칭으로 두는 등 이전을 처리해도 될 때만 대상을 돌려준다.
-	 * @param src 옛 계정(원격 계정이며 updatePerson으로 갱신한 뒤여야 한다)
-	 * @param movePreventUris src.movedToUri가 여기 있거나 10개보다 많으면 처리하지 않는다(무한 반복 방지)
-	 * @returns 이전 대상, 또는 처리하지 않는 이유
-	 */
-	@bindThis
-	public async resolveVerifiedMoveTarget(src: MiRemoteUser, movePreventUris: string[] = []): Promise<MiLocalUser | MiRemoteUser | string> {
 		if (!src.movedToUri) return 'skip: no movedToUri';
 		if (src.uri === src.movedToUri) return 'skip: movedTo itself (src)'; // ？？？
 		if (movePreventUris.length > 10) return 'skip: too many moves';
@@ -990,7 +948,9 @@ export class ApPersonService implements OnModuleInit {
 			return 'skip: alsoKnownAs does not include from.uri';
 		}
 
-		return dst;
+		await this.accountMoveService.postMoveProcess(src, dst);
+
+		return 'ok';
 	}
 
 	@bindThis

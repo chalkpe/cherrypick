@@ -5,7 +5,6 @@
 
 import { describe, expect, test, vi } from 'vitest';
 import type { MiLocalUser } from '@/models/User.js';
-import { AccountMoveService } from '@/core/AccountMoveService.js';
 import { ChatRoomBannedError, ChatRoomInvitationRefusedError, ChatService } from '@/core/ChatService.js';
 import type { ChatRoomBanService } from '@/core/ChatRoomBanService.js';
 import type { ChatEntityService } from '@/core/entities/ChatEntityService.js';
@@ -423,102 +422,5 @@ describe('the list of removed people and pardons', () => {
 		const f = endpoints({ isOwner: true, pardoned: false });
 
 		await expect(f.remove.exec({ roomId: room.id, userId: other.id }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_BAN' });
-	});
-});
-
-describe('a verified account move', () => {
-	const copyFailure = new Error('ban copy failed');
-
-	function moveFixture({ banCopyFails = false } = {}) {
-		const transactionManager = { tx: 'move' };
-		const chatRoomBanService = {
-			carryOnMove: vi.fn(async () => {
-				if (banCopyFails) throw copyFailure;
-			}),
-			// 옛 계정에 금지가 없으면 뒤쪽 이전을 찾지 않고 이 이전만 기록한다.
-			hasBans: vi.fn(async () => false),
-		};
-		const usersRepository = {
-			update: vi.fn(async () => ({})),
-			manager: { transaction: vi.fn(async (work: (manager: unknown) => Promise<unknown>) => work(transactionManager)) },
-		};
-		const transactionUpdate = vi.fn(async () => ({}));
-		Object.assign(transactionManager, { update: transactionUpdate });
-		const delivered: unknown[] = [];
-		const relations = {
-			copyBlocking: vi.fn(async () => {}),
-			copyMutings: vi.fn(async () => {}),
-			copyRoles: vi.fn(async () => {}),
-			updateLists: vi.fn(async () => {}),
-		};
-		const queueService = { createFollowJob: vi.fn(), createDelayedUnfollowJob: vi.fn() };
-		const service = Object.create(AccountMoveService.prototype) as AccountMoveService;
-		// 서비스 메서드는 bindThis getter라 대입하지 않고 속성으로 덮는다.
-		for (const [key, value] of Object.entries({
-			chatRoomBanService,
-			usersRepository,
-			queueService,
-			...relations,
-			antennaService: { onMoveAccount: vi.fn(async () => {}) },
-			systemAccountService: { fetch: vi.fn(async () => ({ id: 'proxy' })) },
-			followingsRepository: { findBy: vi.fn(async () => []) },
-			userEntityService: {
-				getUserUri: (user: { id: string }) => `https://local.test/users/${user.id}`,
-				pack: vi.fn(async () => ({ id: 'old' })),
-			},
-			globalEventService: { publishInternalEvent: vi.fn(), publishMainStream: vi.fn() },
-			apRendererService: { renderPerson: vi.fn(async () => ({})), renderUpdate: vi.fn(() => ({})), renderMove: vi.fn(() => ({})), addContext: (activity: unknown) => activity },
-			apDeliverManagerService: { deliverToFollowers: vi.fn(async (_user: unknown, activity: unknown) => { delivered.push(activity); }) },
-			relayService: { deliverToRelays: vi.fn() },
-		})) Object.defineProperty(service, key, { value });
-		return { service, chatRoomBanService, usersRepository, transactionManager, transactionUpdate, relations, queueService, delivered };
-	}
-
-	test('carries the bans of the old account to the new one where blocks are carried', async () => {
-		const f = moveFixture();
-		const src = { id: 'old' };
-		const dst = { id: 'new' };
-
-		await f.service.postMoveProcess(src as never, dst as never);
-
-		expect(f.chatRoomBanService.carryOnMove).toHaveBeenCalledWith([{ src, dst }]);
-	});
-
-	test('a remote move reports a failed ban copy instead of finishing as if it succeeded', async () => {
-		const f = moveFixture({ banCopyFails: true });
-
-		await expect(f.service.postMoveProcess({ id: 'old' } as never, { id: 'new' } as never)).rejects.toBe(copyFailure);
-
-		// 다른 관계 이전은 이전처럼 끝까지 진행하고 금지 승계 실패만 호출자에게 전한다.
-		expect(f.relations.copyBlocking).toHaveBeenCalled();
-		expect(f.queueService.createFollowJob).toHaveBeenCalled();
-	});
-
-	test('a local move records the move together with the bans, so a failed ban copy leaves the account free to retry', async () => {
-		const f = moveFixture({ banCopyFails: true });
-		const src = { id: 'old', alsoKnownAs: null, movedToUri: null };
-		const dst = { id: 'new' };
-
-		await expect(f.service.moveFromLocal(src as never, dst as never)).rejects.toBe(copyFailure);
-
-		// 이전 표시와 금지 승계가 같은 트랜잭션에 있어 승계 실패로 둘 다 확정되지 않는다.
-		expect(f.transactionUpdate).toHaveBeenCalledWith(expect.anything(), 'old', expect.objectContaining({ movedToUri: 'https://local.test/users/new' }));
-		expect(f.chatRoomBanService.carryOnMove).toHaveBeenCalledWith([{ src, dst }], f.transactionManager);
-		expect(f.usersRepository.update).not.toHaveBeenCalled();
-		expect(src.movedToUri).toBeNull();
-		expect(f.delivered).toEqual([]);
-	});
-
-	test('a local move copies the bans once, inside the move transaction', async () => {
-		const f = moveFixture();
-		const src = { id: 'old', alsoKnownAs: null, movedToUri: null };
-		const dst = { id: 'new' };
-
-		await f.service.moveFromLocal(src as never, dst as never);
-
-		expect(f.chatRoomBanService.carryOnMove).toHaveBeenCalledTimes(1);
-		expect(f.chatRoomBanService.carryOnMove).toHaveBeenCalledWith([{ src, dst }], f.transactionManager);
-		expect(src.movedToUri).toBe('https://local.test/users/new');
-		expect(f.relations.copyBlocking).toHaveBeenCalled();
 	});
 });

@@ -1736,7 +1736,7 @@ export class ChatService {
 		room = snapshot?.room ?? room;
 		const members = await this.participantsForRoom(room);
 		const fields = snapshot?.fields ?? {};
-		await this.deliverToRemoteUsers(owner, members, await this.apRendererService.renderChatRoomUpdate(room, owner, fields));
+		await this.deliverToRemoteUsers(owner, members, await this.apRendererService.renderChatRoomUpdate(room, owner, fields), undefined, room.hasChannels);
 		const invitees = (await this.inviteesForRoom(room)).filter(user => !members.some(member => member.id === user.id));
 		if (invitees.length > 0) await this.deliverToRemoteUsers(owner, invitees, await this.apRendererService.renderChatRoomUpdate(room, owner));
 	}
@@ -2361,7 +2361,7 @@ export class ChatService {
 		return [];
 	}
 
-	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any, message?: MiChatMessage): Promise<void> {
+	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any, message?: MiChatMessage, channelState = false): Promise<void> {
 		const room = message?.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
 		const contextedActivity = this.apRendererService.addContext(activity);
 		const delivered = new Set<string>();
@@ -2372,16 +2372,15 @@ export class ChatService {
 			if (user.isSuspended && !ACTIVITIES_FOR_SUSPENDED_ACCOUNTS.has(activity.type)) continue;
 
 			if (message?.toRoomId != null && room == null) continue;
-			const isLegacyChannel = message?.toRoomChannelId != null && message.toRoomChannelId === room?.legacyChannelId;
-			const channelCapabilityHost = message != null && room?.hasChannels && !isLegacyChannel ? user.host : undefined;
 
 			// Every recipient is named in the activity, so a server needs it only once however many members it has.
 			const inbox = user.sharedInbox ?? user.inbox;
 			if (inbox == null || delivered.has(inbox)) continue;
 
 			delivered.add(inbox);
-			if (channelCapabilityHost != null) {
-				this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null, channelCapabilityHost);
+			const needsCapability = channelState || (message != null && room?.hasChannels === true && (message.toRoomChannelId == null || message.toRoomChannelId !== room.legacyChannelId));
+			if (needsCapability) {
+				await this.chatRoomChannelService.deliverWithCapability(actor, contextedActivity, inbox, user.sharedInbox != null, user.host);
 			} else {
 				this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null);
 			}

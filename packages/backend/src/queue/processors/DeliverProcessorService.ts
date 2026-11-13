@@ -23,16 +23,6 @@ import { bindThis } from '@/decorators.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 import type { DeliverJobData } from '../types.js';
 
-/** 채널 상태의 인증 실패는 서버 시계가 어긋난 동안에도 발생할 수 있다. */
-function isChatChannelUpdate(content: string): boolean {
-	try {
-		const activity = JSON.parse(content);
-		return activity?.type === 'Update' && activity.object?.type === 'Group' && Array.isArray(activity.object._misskey_chatChannels);
-	} catch {
-		return false;
-	}
-}
-
 @Injectable()
 export class DeliverProcessorService {
 	private logger: Logger;
@@ -79,12 +69,6 @@ export class DeliverProcessorService {
 		}
 		if (suspendedHosts.map(x => x.host).includes(this.utilityService.toPuny(host))) {
 			return 'skip (suspended)';
-		}
-
-		if (job.data.channelCapabilityHost != null) {
-			const capability = await this.fetchInstanceMetadataService.chatRoomChannelsCapability(job.data.channelCapabilityHost);
-			if (capability == null) throw new Error('chat room channel capability is temporarily unavailable');
-			if (!capability) return 'skip (chat room channels unsupported)';
 		}
 
 		const i = await (this.meta.enableStatsForFederatedInstances
@@ -157,10 +141,6 @@ export class DeliverProcessorService {
 			if (res instanceof StatusError) {
 				// 4xx
 				if (!res.isRetryable) {
-					if (res.statusCode === 401 && isChatChannelUpdate(job.data.content)) {
-						// 기존 배송 재시도에서 매번 새 요청에 서명한다.
-						throw new Error(`${res.statusCode} ${res.statusMessage}`);
-					}
 					// 相手が閉鎖していることを明示しているため、配送停止する
 					if (job.data.isSharedInbox && res.statusCode === 410) {
 						this.federatedInstanceService.fetchOrRegister(host).then(i => {

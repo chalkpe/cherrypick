@@ -154,7 +154,7 @@ export class QueueService {
 	}
 
 	@bindThis
-	public deliver(user: ThinUser, content: IActivity | null, to: string | null, isSharedInbox: boolean, channelCapabilityHost?: string) {
+	public deliver(user: ThinUser, content: IActivity | null, to: string | null, isSharedInbox: boolean) {
 		if (content == null) return null;
 		if (to == null) return null;
 
@@ -169,7 +169,6 @@ export class QueueService {
 			digest,
 			to,
 			isSharedInbox,
-			channelCapabilityHost,
 		};
 
 		const label = to.replace('https://', '').replace('/inbox', '');
@@ -626,6 +625,17 @@ export class QueueService {
 				age: 3600 * 24 * 7, // keep up to 7 days
 				count: 100,
 			},
+		});
+	}
+
+	@bindThis
+	public createChatChannelDeliverJob(user: ThinUser, content: IActivity, to: string, isSharedInbox: boolean, host: string) {
+		return this.dbQueue.add('chatChannelDeliver', { user: { id: user.id }, content, to, isSharedInbox, host }, {
+			delay: 10_000,
+			attempts: 12,
+			backoff: { type: 'exponential', delay: 30_000 },
+			removeOnComplete: true,
+			removeOnFail: { age: 3600 * 24 * 7, count: 100 },
 		});
 	}
 

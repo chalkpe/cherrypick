@@ -5,7 +5,7 @@
 
 import { expect, test, vi } from 'vitest';
 import { FetchInstanceMetadataService } from '@/core/FetchInstanceMetadataService.js';
-import { DeliverProcessorService } from '@/queue/processors/DeliverProcessorService.js';
+import { ChatChannelDeliverProcessorService } from '@/queue/processors/ChatChannelDeliverProcessorService.js';
 import type { MiInstance } from '@/models/Instance.js';
 
 test.each([null, { metadata: {} }, { metadata: { features: ['chat_room_channels'] } }])('NodeInfo %j의 채널 지원 상태를 기록한다', async info => {
@@ -55,18 +55,17 @@ test('NodeInfo가 채널을 광고하지 않으면 미지원으로 판단한다'
 	expect(await service.chatRoomChannelsCapability('old.test')).toBe(false);
 });
 
-test('채널 미지원 서버에는 배달하지 않고 지원 여부를 모르면 재시도한다', async () => {
-	const signedPost = vi.fn();
-	const capability = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(false);
-	const service = Object.assign(Object.create(DeliverProcessorService.prototype), {
-		utilityService: { isFederationAllowedUri: () => true, toPuny: (host: string) => host },
-		suspendedHostsCache: { get: () => [] },
+test('일시 실패는 재시도하고 미지원 서버는 건너뛰며 지원 서버는 일반 배달을 예약한다', async () => {
+	const deliver = vi.fn();
+	const capability = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+	const service = Object.assign(Object.create(ChatChannelDeliverProcessorService.prototype), {
 		fetchInstanceMetadataService: { chatRoomChannelsCapability: capability },
-		apRequestService: { signedPost },
-	}) as DeliverProcessorService;
-	const job = { data: { to: 'https://peer.test/inbox', channelCapabilityHost: 'peer.test' } } as Parameters<DeliverProcessorService['process']>[0];
-
+		queueService: { deliver },
+	}) as ChatChannelDeliverProcessorService;
+	const job = { data: { host: 'peer.test', to: 'https://peer.test/inbox', user: { id: 'actor' }, content: { type: 'Update' }, isSharedInbox: false } } as Parameters<ChatChannelDeliverProcessorService['process']>[0];
 	await expect(service.process(job)).rejects.toThrow('temporarily unavailable');
-	expect(await service.process(job)).toBe('skip (chat room channels unsupported)');
-	expect(signedPost).not.toHaveBeenCalled();
+	expect(await service.process(job)).toBe('skip: chat room channels unsupported');
+	expect(deliver).not.toHaveBeenCalled();
+	expect(await service.process(job)).toBe('ok');
+	expect(deliver).toHaveBeenCalledWith(job.data.user, job.data.content, job.data.to, false);
 });

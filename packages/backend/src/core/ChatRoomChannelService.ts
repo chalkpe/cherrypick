@@ -16,6 +16,9 @@ import { MiUser } from '@/models/User.js';
 import type { ChatRoomChannelsRepository } from '@/models/_.js';
 import { IdService } from '@/core/IdService.js';
 import { FetchInstanceMetadataService } from '@/core/FetchInstanceMetadataService.js';
+import { QueueService } from '@/core/QueueService.js';
+import type { IActivity } from '@/core/activitypub/type.js';
+import type { ThinUser } from '@/queue/types.js';
 import { chatRoomUriForOwner } from '@/core/activitypub/misc/chat-payloads.js';
 import { ChatChannelError, chatChannelUri, isChatChannelUri, MAX_CHAT_ROOM_CHANNELS, normalizeChatChannelName, validChatChannelRefRanges } from '@/core/chat-room-channels.js';
 import type { ChatChannelRef, RemoteChatChannels } from '@/core/chat-room-channels.js';
@@ -28,6 +31,7 @@ export class ChatRoomChannelService {
 		@Inject(DI.chatRoomChannelsRepository) private channels: ChatRoomChannelsRepository,
 		private idService: IdService,
 		private fetchInstanceMetadataService: FetchInstanceMetadataService,
+		private queueService: QueueService,
 	) {}
 
 	public list(roomId: string): Promise<MiChatRoomChannel[]> {
@@ -201,6 +205,12 @@ export class ChatRoomChannelService {
 			channelUri: channel.uri ?? chatChannelUri(await this.roomUri(room), channel.id),
 			channelRefs: (message.channelRefs ?? []).filter(ref => ref.uri != null).map(ref => ({ id: ref.uri!, start: ref.start, length: ref.length })),
 		};
+	}
+
+	public async deliverWithCapability(user: ThinUser, activity: IActivity, inbox: string, shared: boolean, host: string): Promise<void> {
+		const capability = await this.fetchInstanceMetadataService.chatRoomChannelsCapability(host);
+		if (capability === true) await this.queueService.deliver(user, activity, inbox, shared);
+		else if (capability == null) await this.queueService.createChatChannelDeliverJob(user, activity, inbox, shared, host);
 	}
 
 	public async deliverableTo(host: string | null, message: Pick<MiChatMessage, 'toRoomChannelId'>, room: MiChatRoom): Promise<boolean | null> {

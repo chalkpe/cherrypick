@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { meta as membersMeta } from '@/server/api/endpoints/chat/rooms/members.js';
 import { alice, bob, carol, chatRosterFixture, dave, erin, frank, LOCAL, LOCAL_ROOM_URI, mallory, MIRROR_URI } from '../misc/chat-roster-fixture.js';
 
@@ -630,10 +631,12 @@ describe('일반 채널 활동의 소유 서버 중계', () => {
 		const source = storedMessage({ toRoomId: 'localroom', toRoomChannelId: 'private', channelRefs: [], reactions: operation === 'unreact' ? [`${carol.id}/👍`] : [] });
 		const f = chatRosterFixture({ memberships: [['localroom', carol.id], ['localroom', erin.id], ['localroom', bob.id]], messages: [source] });
 		Object.assign(f.rooms.rows.find(room => room.id === 'localroom')!, { hasChannels: true, legacyChannelId: 'general' });
-		Object.assign(f.chatService, { chatRoomChannelService: {
+		const channels = Object.assign(Object.create(ChatRoomChannelService.prototype), {
 			remoteRefs: async () => [],
-			deliverableTo: async (host: string) => host === erin.host,
-		} });
+			fetchInstanceMetadataService: { chatRoomChannelsCapability: async (host: string) => host === erin.host },
+			queueService: f.queueService,
+		});
+		Object.assign(f.chatService, { chatRoomChannelService: channels });
 		const stored = await f.messages.findOneBy({ id: source.id });
 		const like = { id: `${carol.uri}/chat-reactions/channels`, type: 'EmojiReact', actor: carol.uri, object: source.uri, content: '👍' };
 
