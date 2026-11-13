@@ -387,7 +387,7 @@ export class UserEntityService implements OnModuleInit {
 	}
 
 	@bindThis
-	public getIdenticonUrl(user: Pick<MiUser, 'username' | 'host'>): string {
+	public getIdenticonUrl(user: MiUser): string {
 		if ((user.host == null || user.host === this.config.host) && user.username.includes('.') && this.meta.iconUrl) { // ローカルのシステムアカウントの場合
 			return this.meta.iconUrl;
 		} else {
@@ -494,7 +494,16 @@ export class UserEntityService implements OnModuleInit {
 			host: user.host,
 			avatarUrl: (user.avatarId == null ? null : user.avatarUrl) ?? this.getIdenticonUrl(user),
 			avatarBlurhash: (user.avatarId == null ? null : user.avatarBlurhash),
-			avatarDecorations: this.avatarDecorationService.pack(user.avatarDecorations),
+			avatarDecorations: user.avatarDecorations.length > 0 ? this.avatarDecorationService.getAll(false, true).then(decorations => user.avatarDecorations.filter(ud => decorations.some(d => d.id === ud.id)).map(ud => ({
+				id: ud.id,
+				angle: ud.angle || undefined,
+				flipH: ud.flipH || undefined,
+				offsetX: ud.offsetX || undefined,
+				offsetY: ud.offsetY || undefined,
+				scale: ud.scale || undefined,
+				opacity: ud.opacity || undefined,
+				url: decorations.find(d => d.id === ud.id)!.url,
+			}))) : [],
 			isLocked: user.isLocked,
 			isBot: user.isBot,
 			isCat: user.isCat,

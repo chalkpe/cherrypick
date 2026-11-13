@@ -5,7 +5,7 @@
 
 import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common';
 import * as Redis from 'ioredis';
-import { IsNull, Not } from 'typeorm';
+import { In, IsNull, Not } from 'typeorm';
 import type { AvatarDecorationsRepository, InstancesRepository, UsersRepository, MiAvatarDecoration, MiInstance, MiUser } from '@/models/_.js';
 import { IdService } from '@/core/IdService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
@@ -135,10 +135,20 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		);
 	}
 
+	/**
+	 * 그룹처럼 방금 만든 장식을 바로 보여 주어야 하는 곳에서 쓴다.
+	 * getAll의 캐시는 다른 프로세스가 만든 장식을 몰라서 캐시를 거치지 않고 id로 직접 읽는다.
+	 */
+	@bindThis
+	public async findByIds(ids: MiAvatarDecoration['id'][]): Promise<MiAvatarDecoration[]> {
+		if (ids.length === 0) return [];
+		return this.avatarDecorationsRepository.findBy({ id: In(ids) });
+	}
+
 	@bindThis
 	public async pack(used: MiUser['avatarDecorations']) {
 		if (used.length === 0) return [];
-		const decorations = await this.getAll(false, true);
+		const decorations = await this.findByIds(used.map(d => d.id));
 		return used.flatMap(d => {
 			const decoration = decorations.find(item => item.id === d.id);
 			return decoration == null ? [] : [{
@@ -256,10 +266,35 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 				}
 			}
 
-			const decorationId = await this.registerRemote(userHost, avatarDecorationId, avatarDecoration.url, name, description);
+			const existingDecoration = await this.avatarDecorationsRepository.findOneBy({
+				host: userHost,
+				remoteId: avatarDecorationId,
+			});
+
+			const decorationData = {
+				name: name,
+				description: description,
+				url: this.getProxiedUrl(avatarDecoration.url, 'avatar'),
+				remoteId: avatarDecorationId,
+				host: userHost,
+				rawUrl: avatarDecoration.url,
+			};
+
+			if (existingDecoration == null) {
+				await this.create(decorationData);
+				this.cacheWithRemote.delete();
+			} else {
+				await this.update(existingDecoration.id, decorationData);
+				this.cacheWithRemote.delete();
+			}
+
+			const findDecoration = await this.avatarDecorationsRepository.findOneBy({
+				host: userHost,
+				remoteId: avatarDecorationId,
+			});
 
 			updates.avatarDecorations.push({
-				id: decorationId,
+				id: findDecoration?.id ?? '',
 				angle: avatarDecoration.angle ?? 0,
 				flipH: avatarDecoration.flipH ?? false,
 				offsetX: avatarDecoration.offsetX ?? 0,

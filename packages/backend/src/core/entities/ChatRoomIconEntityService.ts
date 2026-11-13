@@ -10,7 +10,6 @@ import { DI } from '@/di-symbols.js';
 import type { DriveFilesRepository, MiChatRoom, UsersRepository } from '@/models/_.js';
 import { AvatarDecorationService } from '@/core/AvatarDecorationService.js';
 import { chatRoomUriForOwner } from '@/core/activitypub/misc/chat-payloads.js';
-import { UserEntityService } from './UserEntityService.js';
 
 @Injectable()
 export class ChatRoomIconEntityService {
@@ -18,13 +17,13 @@ export class ChatRoomIconEntityService {
 		@Inject(DI.config) private config: Config,
 		@Inject(DI.usersRepository) private usersRepository: UsersRepository,
 		@Inject(DI.driveFilesRepository) private driveFilesRepository: DriveFilesRepository,
-		private userEntityService: UserEntityService,
 		private avatarDecorationService: AvatarDecorationService,
 	) {}
 
 	public getIdenticonUrl(roomUri: string): string {
 		// 프로필과 같은 길이를 써서 서버 주소가 길어도 identicon 경로가 라우터 한도를 넘지 않게 한다.
-		return this.userEntityService.getIdenticonUrl({ username: createHash('sha256').update(roomUri).digest('hex').slice(0, 20), host: new URL(roomUri).host });
+		const username = createHash('sha256').update(roomUri).digest('hex').slice(0, 20);
+		return `${this.config.url}/identicon/${username}@${new URL(roomUri).host}`;
 	}
 
 	/**

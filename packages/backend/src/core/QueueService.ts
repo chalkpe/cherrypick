@@ -693,10 +693,11 @@ export class QueueService {
 	@bindThis
 	public createChatRoomIconDeletedJob(roomId: MiChatRoom['id'], fileId: string) {
 		return this.dbQueue.add('chatRoomIconDeleted', { roomId, fileId }, {
+			jobId: `chat-room-icon-deleted-${roomId}-${fileId}`,
 			attempts: 8,
 			backoff: { type: 'exponential', delay: 1000 },
-			removeOnComplete: { age: 3600 * 24, count: 30 },
-			removeOnFail: { age: 3600 * 24 * 7, count: 100 },
+			removeOnComplete: true,
+			removeOnFail: true,
 		});
 	}
 

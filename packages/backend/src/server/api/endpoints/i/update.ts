@@ -3,8 +3,6 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { avatarFileError } from '@/core/avatar-file.js';
-import { avatarDecorationsSchema, normalizeAvatarDecoration, usableAvatarDecorationIds } from '@/core/avatar-decoration.js';
 import RE2 from 're2';
 import * as mfm from 'mfc-js';
 import { Inject, Injectable } from '@nestjs/common';
@@ -162,7 +160,19 @@ export const paramDef = {
 		birthday: { ...birthdaySchema, nullable: true },
 		lang: { type: 'string', enum: [null, ...Object.keys(langmap)] as string[], nullable: true },
 		avatarId: { type: 'string', format: 'misskey:id', nullable: true },
-		avatarDecorations: avatarDecorationsSchema,
+		avatarDecorations: { type: 'array', maxItems: 16, items: {
+			type: 'object',
+			properties: {
+				id: { type: 'string', format: 'misskey:id' },
+				angle: { type: 'number', nullable: true, maximum: 0.5, minimum: -0.5 },
+				flipH: { type: 'boolean', nullable: true },
+				offsetX: { type: 'number', nullable: true, maximum: 0.25, minimum: -0.25 },
+				offsetY: { type: 'number', nullable: true, maximum: 0.25, minimum: -0.25 },
+				scale: { type: 'number', nullable: true, maximum: 1.5, minimum: 0.5 },
+				opacity: { type: 'number', nullable: true, maximum: 1, minimum: 0.1 },
+			},
+			required: ['id'],
+		} },
 		bannerId: { type: 'string', format: 'misskey:id', nullable: true },
 		fields: {
 			type: 'array',
@@ -391,9 +401,9 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 				const avatar = await this.driveFilesRepository.findOneBy({ id: ps.avatarId });
 
-				const avatarError = avatarFileError(avatar, user.id);
-				if (avatarError != null) throw new ApiError(meta.errors[avatarError]);
-				if (avatar == null) throw new ApiError(meta.errors.noSuchAvatar);
+				if (avatar == null || avatar.userId !== user.id) throw new ApiError(meta.errors.noSuchAvatar);
+				if (!avatar.type.startsWith('image/')) throw new ApiError(meta.errors.avatarNotAnImage);
+				if (avatar.isSensitive) throw new ApiError(meta.errors.avatarIsSensitive);
 
 				updates.avatarId = avatar.id;
 				updates.avatarUrl = this.driveFileEntityService.getPublicUrl(avatar, 'avatar');
@@ -428,11 +438,21 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				const decorations = await this.avatarDecorationService.getAll(true);
 				const myRoles = await this.roleService.getUserRoles(user.id);
 				const allRoles = await this.roleService.getRoles();
-				const decorationIds = usableAvatarDecorationIds(decorations, myRoles, allRoles);
+				const decorationIds = decorations
+					.filter(d => d.roleIdsThatCanBeUsedThisDecoration.filter(roleId => allRoles.some(r => r.id === roleId)).length === 0 || myRoles.some(r => d.roleIdsThatCanBeUsedThisDecoration.includes(r.id)))
+					.map(d => d.id);
 
 				if (ps.avatarDecorations.length > policies.avatarDecorationLimit) throw new ApiError(meta.errors.restrictedByRole);
 
-				updates.avatarDecorations = ps.avatarDecorations.filter(d => decorationIds.includes(d.id)).map(normalizeAvatarDecoration);
+				updates.avatarDecorations = ps.avatarDecorations.filter(d => decorationIds.includes(d.id)).map(d => ({
+					id: d.id,
+					angle: d.angle ?? 0,
+					flipH: d.flipH ?? false,
+					offsetX: d.offsetX ?? 0,
+					offsetY: d.offsetY ?? 0,
+					scale: d.scale ?? 1,
+					opacity: d.opacity ?? 1,
+				}));
 			}
 
 			if (ps.pinnedPageId) {

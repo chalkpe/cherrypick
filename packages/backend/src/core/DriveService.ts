@@ -17,7 +17,6 @@ import type { Config } from '@/config.js';
 import Logger from '@/logger.js';
 import type { MiRemoteUser, MiUser } from '@/models/User.js';
 import { MiDriveFile } from '@/models/DriveFile.js';
-import { MiChatRoom } from '@/models/ChatRoom.js';
 import { IdService } from '@/core/IdService.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { FILE_TYPE_BROWSERSAFE } from '@/const.js';
@@ -46,7 +45,7 @@ import { isMimeImage } from '@/misc/is-mime-image.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 
-type DriveFileDeletionRepository = Pick<DriveFilesRepository, 'delete' | 'update' | 'manager'>;
+type DriveFileDeletionRepository = Pick<DriveFilesRepository, 'delete' | 'update'>;
 
 type AddFileArgs = {
 	/** User who wish to add file */
@@ -880,14 +879,7 @@ export class DriveService {
 				webpublicAccessKey: 'webpublic-' + randomUUID(),
 			});
 		} else {
-			const result = await filesRepository.manager.transaction(async manager => {
-				const current = await manager.findOne(MiDriveFile, { where: { id: file.id }, lock: { mode: 'pessimistic_write' } });
-				if (current == null) return { affected: 0 };
-				// FK의 KEY SHARE와 충돌하는 파일 잠금 뒤에 참조를 읽어 동시 설정을 놓치지 않는다.
-				const rooms = await manager.find(MiChatRoom, { where: { iconId: file.id }, select: { id: true } });
-				for (const room of rooms) await this.queueService.createChatRoomIconDeletedJob(room.id, file.id);
-				return manager.delete(MiDriveFile, file.id);
-			});
+			const result = await filesRepository.delete(file.id);
 			if (result.affected === 0) return false;
 		}
 

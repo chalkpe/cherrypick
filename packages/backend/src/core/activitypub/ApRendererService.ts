@@ -1026,7 +1026,7 @@ export class ApRendererService {
 	}
 
 	private async chatRoomIconFields(room: Partial<Pick<MiChatRoom, 'iconId' | 'iconUrl' | 'iconDecorations'>>) {
-		const decorations = (room.iconDecorations?.length ?? 0) > 0 ? await this.avatarDecorationService.getAll(false, true) : [];
+		const decorations = (room.iconDecorations?.length ?? 0) > 0 ? await this.avatarDecorationService.findByIds(room.iconDecorations!.map(d => d.id)) : [];
 		return {
 			icon: room.iconId != null && room.iconUrl != null ? { type: 'Image' as const, url: room.iconUrl } : null,
 			iconDecorations: (room.iconDecorations ?? []).flatMap(used => {

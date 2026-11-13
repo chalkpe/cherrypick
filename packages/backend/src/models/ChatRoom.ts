@@ -40,6 +40,10 @@ export class MiChatRoom {
 	@Column({ ...id(), nullable: true })
 	public iconId: MiDriveFile['id'] | null;
 
+	@Index()
+	@Column({ ...id(), nullable: true })
+	public iconFileId: MiDriveFile['id'] | null;
+
 	@ManyToOne(() => MiDriveFile, { onDelete: 'SET NULL' })
 	@JoinColumn()
 	public icon: MiDriveFile | null;

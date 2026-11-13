@@ -126,6 +126,36 @@ describe('Chat room history', () => {
 			deepStrictEqual(byCarol.archivedAuthor, { name: null, username: carol.username, host: hostOf });
 		});
 
+		test('a member of the other server who was deleted stays in the host record under the original address', async () => {
+			const room = await alice.client.request('chat/rooms/create', { name: `history ${crypto.randomUUID()}` });
+			const author = await createAccount(memberHost);
+			const newcomer = await createAccount(memberHost);
+			const authorMirrorId = await join(alice, room, author, memberHost);
+			await author.client.request('chat/messages/create-to-room', { toRoomId: authorMirrorId, text: 'by remote member' });
+			await vi.waitFor(async () => {
+				const messages = await readAll(alice, room.id);
+				strictEqual(messages.some(message => message.text === 'by remote member'), true);
+			}, WAIT_FOR_FEDERATION);
+
+			const memberAdmin = await fetchAdmin(memberHost);
+			await memberAdmin.client.request('admin/delete-account', { userId: author.id });
+			const hostAdmin = await fetchAdmin(hostOf);
+			await vi.waitFor(async () => {
+				const users = await hostAdmin.client.request('admin/show-users', { username: author.username, origin: 'remote', hostname: memberHost });
+				strictEqual(users.length, 0);
+			}, { timeout: 60000, interval: 1000 });
+
+			const kept = (await readAll(alice, room.id)).find(message => message.text === 'by remote member')!;
+			strictEqual(kept.fromUser, null);
+			deepStrictEqual(kept.archivedAuthor, { name: null, username: author.username, host: memberHost });
+			const mirrorId = await join(alice, room, newcomer, memberHost);
+			await waitForCompleted(newcomer, mirrorId);
+			const copied = (await readAll(newcomer, mirrorId)).find(message => message.text === 'by remote member')!;
+			strictEqual(copied.fromUser, null);
+			// 작성자의 원래 주소가 받는 서버 자신의 주소이므로 그 서버에서는 로컬 작성자로 보인다
+			deepStrictEqual(copied.archivedAuthor, { name: null, username: author.username, host: null });
+		});
+
 		test('a server that already has part of the history fills in what it missed', async () => {
 			const room = await alice.client.request('chat/rooms/create', { name: `history ${crypto.randomUUID()}` });
 			const mirrorId = await join(alice, room, bob, memberHost);

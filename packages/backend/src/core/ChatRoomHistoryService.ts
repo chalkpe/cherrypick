@@ -7,7 +7,6 @@ import { createHash } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { In, IsNull } from 'typeorm';
-import type { EntityManager } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { bindThis } from '@/decorators.js';
@@ -146,7 +145,7 @@ export class ChatRoomHistoryService {
 			authorUri = chatActorUri(fromUser, this.config.url);
 			author = { name: fromUser.name, username: fromUser.username, host: fromUser.host ?? this.config.host };
 		} else if (message.archivedAuthor != null) {
-			authorUri = message.archivedAuthor.uri;
+			authorUri = message.archivedAuthor.uri.startsWith('/') ? new URL(message.archivedAuthor.uri, this.config.url).href : message.archivedAuthor.uri;
 			author = { name: message.archivedAuthor.name, username: message.archivedAuthor.username, host: message.archivedAuthor.host ?? this.config.host };
 		} else {
 			// 원래 작성자 주소가 없으면 받는 서버가 출처를 확인할 수 없다
@@ -302,10 +301,11 @@ export class ChatRoomHistoryService {
 		if (direct === input.authorUri || relayed === input.authorUri) return null;
 
 		const reactions = [...new Set(input.reactions)].slice(0, MAX_REACTIONS_PER_MESSAGE);
+		const author = input.authorId != null ? await this.usersRepository.findOneBy({ id: input.authorId }) : null;
 		const message = {
 			id: this.idService.gen(input.published.getTime()),
 			fromUserId: input.authorId,
-			archivedAuthor: input.authorId == null ? input.archivedAuthor : null,
+			archivedAuthor: author != null ? { uri: input.authorUri, username: author.username, name: author.name, host: author.host } : input.archivedAuthor,
 			toRoomId: room.id,
 			toRoomChannelId: input.toRoomChannelId,
 			channelRefs: input.channelRefs,
@@ -331,25 +331,6 @@ export class ChatRoomHistoryService {
 	}
 
 	//#endregion
-
-	/**
-	 * 계정을 물리 삭제하기 직전에 부른다. 그룹 메시지는 과거 기록으로 남기고 작성자 정보를 보관한다.
-	 * 일대일 메시지는 기존대로 계정과 함께 지워진다.
-	 */
-	@bindThis
-	public async preserveRoomMessagesOf(user: MiUser, manager: EntityManager): Promise<void> {
-		const archivedAuthor: ChatMessageArchivedAuthor = {
-			uri: chatActorUri(user, this.config.url),
-			username: user.username,
-			name: user.name,
-			host: user.host,
-		};
-		await manager.createQueryBuilder().update(MiChatMessage)
-			.set({ fromUserId: null, archivedAuthor })
-			.where('fromUserId = :userId', { userId: user.id })
-			.andWhere('toRoomId IS NOT NULL')
-			.execute();
-	}
 
 	/** 이 서버의 사용자가 서명할 수 있는, 지금의 멤버 */
 	@bindThis

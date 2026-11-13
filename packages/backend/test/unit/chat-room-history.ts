@@ -13,6 +13,7 @@ import type { ChatMessagesRepository, ChatRoomChannelsRepository, ChatRoomHistor
 import { DeleteAccountProcessorService } from '@/queue/processors/DeleteAccountProcessorService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { QueueService } from '@/core/QueueService.js';
+import { ChatService } from '@/core/ChatService.js';
 import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
 import { FetchInstanceMetadataService } from '@/core/FetchInstanceMetadataService.js';
 import type { ChatHistoryImport } from '@/core/ChatRoomHistoryService.js';
@@ -310,6 +311,20 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 		});
 	});
 
+	test('파일 삭제 후 남은 그룹 아이콘을 찾아 복구 작업을 접수한다', async () => {
+		const room = await createRoom(owner);
+		await chatRoomsRepository.update(room.id, { iconFileId: 'deleted-file' });
+		const enqueue = vi.fn();
+		const chat = Object.assign(Object.create(ChatService.prototype), {
+			chatRoomsRepository,
+			queueService: { createChatRoomIconDeletedJob: enqueue },
+		}) as ChatService;
+
+		await chat.enqueueMissingRoomIcons('deleted-file');
+
+		expect(enqueue).toHaveBeenCalledWith(room.id, 'deleted-file');
+	});
+
 	describe('작성자 계정 삭제', () => {
 		// 실제 계정 삭제 작업(DeleteAccountProcessorService)을 실행한다. 파일·노트·페이지가 없는 계정이라 그 정리 서비스는 불리지 않는다
 		function deleteAccountProcessor() {
@@ -335,14 +350,27 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 			return user;
 		}
 
+		test('사용자 행 삭제 시 기록한 그룹 글은 남고 일대일 메시지는 지워진다', async () => {
+			const room = await createRoom(owner);
+			const author = await createUserWithProfile({ name: '떠나는 사람' });
+			const inRoom = await insertMessage(room, author, { archivedAuthor: { uri: `${LOCAL}/users/${author.id}`, username: author.username, name: author.name, host: null } });
+			const direct = idService.gen();
+			await chatMessagesRepository.insert({ id: direct, fromUserId: author.id, directFromUserId: author.id, toUserId: owner.id, text: 'direct' });
+
+			await usersRepository.delete(author.id);
+
+			expect(await chatMessagesRepository.findOneBy({ id: inRoom })).toMatchObject({ fromUserId: null, archivedAuthor: { uri: `${LOCAL}/users/${author.id}` } });
+			expect(await chatMessagesRepository.existsBy({ id: direct })).toBe(false);
+		});
+
 		test('계정을 지우면 그룹 메시지는 보관한 작성자로 남고 일대일 메시지는 기존대로 함께 지워진다', async () => {
 			const room = await createRoom(owner);
 			const leaving = await createUserWithProfile({ name: '떠나는 사람' });
-			const inRoom = await insertMessage(room, leaving);
+			const inRoom = await insertMessage(room, leaving, { archivedAuthor: { uri: `${LOCAL}/users/${leaving.id}`, username: leaving.username, name: leaving.name, host: leaving.host } });
 			const direct = idService.gen();
 			const received = idService.gen();
 			await chatMessagesRepository.insert([
-				{ id: direct, fromUserId: leaving.id, toUserId: owner.id, text: 'direct' },
+				{ id: direct, fromUserId: leaving.id, directFromUserId: leaving.id, toUserId: owner.id, text: 'direct' },
 				{ id: received, fromUserId: owner.id, toUserId: leaving.id, text: 'received' },
 			]);
 

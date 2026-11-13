@@ -5,18 +5,15 @@
 
 import { describe, expect, test } from 'vitest';
 import { ChatRoomIconEntityService } from '@/core/entities/ChatRoomIconEntityService.js';
-import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { AvatarDecorationService } from '@/core/AvatarDecorationService.js';
 
 function fixture(baseUrl: string, owner: { id: string; host: string | null; uri?: string } | null, present = true) {
 	const config = { url: baseUrl, host: new URL(baseUrl).host };
 	const users = { findOneBy: async () => owner };
 	const avatar = Object.assign(Object.create(AvatarDecorationService.prototype), {
-		cacheWithRemote: { fetch: async (load: () => unknown) => load() },
-		avatarDecorationsRepository: { find: async () => [{ id: 'decoration', url: `${baseUrl}/proxy/frame.png` }] },
+		avatarDecorationsRepository: { findBy: async () => [{ id: 'decoration', url: `${baseUrl}/proxy/frame.png` }] },
 	}) as AvatarDecorationService;
-	const user = Object.assign(Object.create(UserEntityService.prototype), { config }) as UserEntityService;
-	return new ChatRoomIconEntityService(config as never, users as never, { existsBy: async () => present } as never, user, avatar);
+	return new ChatRoomIconEntityService(config as never, users as never, { existsBy: async () => present } as never, avatar);
 }
 
 describe('그룹 아이콘 응답', () => {

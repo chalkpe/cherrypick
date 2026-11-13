@@ -106,6 +106,53 @@ describe('Chat invite link', () => {
 		deepStrictEqual(await alice.client.request('chat/rooms/invitations/outbox', { roomId: room.id }), []);
 	});
 
+	test('드라이브에서 그룹 아이콘을 지우면 양쪽 그룹에서 아이콘이 사라지고 프로필 장식은 유지된다', async () => {
+		const { room, url } = await createRoomWithLink();
+		const bob = await createAccount('b.test');
+		const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAI0lEQVR4nGN49uHXf0owwzA0QK74Dl48asDIMGDgUyLdDQAAHih2brHx0sgAAAAASUVORK5CYII=', 'base64');
+
+		async function upload(name: string) {
+			const form = new FormData();
+			form.append('i', alice.i);
+			form.append('file', new Blob([Uint8Array.from(Buffer.concat([png, Buffer.from(name)]))], { type: 'image/png' }), name);
+			const response = await fetch('https://a.test/api/drive/files/create', { method: 'POST', body: form });
+			strictEqual(response.status, 200);
+			return await response.json() as Misskey.entities.DriveFile;
+		}
+
+		const icon = await upload('room.png');
+		const avatar = await upload('profile.png');
+		const admin = await fetchAdmin('a.test');
+		const decoration = await admin.client.request('admin/avatar-decorations/create', { name: '보존 장식', description: '', url: avatar.url });
+		await alice.client.request('i/update', { avatarId: avatar.id, avatarDecorations: [{ id: decoration.id, angle: 0.1 }], name: '프로필 확인' });
+		await alice.client.request('chat/rooms/update', { roomId: room.id, iconId: icon.id, iconDecorations: [{ id: decoration.id, angle: 0.1 }] });
+		await bob.client.request('chat/invite-link/join', { url });
+		const status = await settled(bob, url);
+		strictEqual(status.status, 'joined');
+		const mirrorId = status.roomId!;
+		await vi.waitFor(async () => {
+			const mirror = await bob.client.request('chat/rooms/show', { roomId: mirrorId });
+			strictEqual(mirror.iconId != null, true);
+			strictEqual(mirror.iconDecorations?.length, 1);
+		}, WAIT_FOR_SLOW_FEDERATION);
+
+		await alice.client.request('drive/files/delete', { fileId: icon.id });
+
+		await vi.waitFor(async () => {
+			const local = await alice.client.request('chat/rooms/show', { roomId: room.id });
+			const remote = await bob.client.request('chat/rooms/show', { roomId: mirrorId });
+			strictEqual(local.iconId, null);
+			strictEqual(remote.iconId, null);
+			strictEqual(local.iconDecorations?.length, 1);
+			strictEqual(remote.iconDecorations?.length, 1);
+		}, WAIT_FOR_SLOW_FEDERATION);
+		const profile = await alice.client.request('i', {});
+		strictEqual(profile.name, '프로필 확인');
+		strictEqual(profile.avatarId, avatar.id);
+		strictEqual(profile.avatarDecorations[0].id, decoration.id);
+		await rejects(alice.client.request('drive/files/show', { fileId: icon.id }));
+	});
+
 	test('다른 서버 계정은 Join → Invite → 자동 Accept로 양쪽에서 멤버가 되고, 다시 눌러도 그대로다', async () => {
 		const { room, url } = await createRoomWithLink();
 		const bob = await createAccount('b.test');

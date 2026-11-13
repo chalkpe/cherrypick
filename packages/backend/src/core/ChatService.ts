@@ -4,10 +4,10 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import * as mfm from 'mfc-js';
 import * as Redis from 'ioredis';
-import { Brackets, DataSource, In, IsNull, LessThan } from 'typeorm';
+import { Brackets, DataSource, In, IsNull, LessThan, Not } from 'typeorm';
 import type { SelectQueryBuilder } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
@@ -51,7 +51,7 @@ import { VoiceBackendService as LiveKitService } from '@/core/VoiceBackendServic
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { emojiRegex } from '@/misc/emoji-regex.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
-import { chatMessageUri, chatRoomUriForOwner, localChatMessageIdFromUri } from '@/core/activitypub/misc/chat-payloads.js';
+import { chatActorUri, chatMessageUri, chatRoomUriForOwner, localChatMessageIdFromUri } from '@/core/activitypub/misc/chat-payloads.js';
 import { ChatDiceService } from '@/core/ChatDiceService.js';
 import { chatDiceNotation, parseChatDiceResult } from '@/core/chat-dice.js';
 import { ApiError } from '@/server/api/error.js';
@@ -108,12 +108,17 @@ function normalizeEmojiString(x: string) {
 
 @Injectable()
 export class ChatService {
+	private iconRecoveryTimer: NodeJS.Timeout;
+
 	constructor(
 		@Inject(DI.config)
 		private config: Config,
 
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
+
+		@Inject(DI.redisForSub)
+		private redisForSub: Redis.Redis,
 
 		@Inject(DI.db)
 		private db: DataSource,
@@ -165,6 +170,49 @@ export class ChatService {
 		private chatRoomHistoryService: ChatRoomHistoryService,
 		private chatRoomBanService: ChatRoomBanService,
 	) {
+	}
+
+	public onModuleInit(): void {
+		this.redisForSub.on('message', this.onIconFileEvent);
+		this.recoverMissingRoomIcons();
+		this.iconRecoveryTimer = setInterval(() => this.recoverMissingRoomIcons(), 60_000);
+		this.iconRecoveryTimer.unref();
+	}
+
+	public onApplicationShutdown(): void {
+		this.redisForSub.off('message', this.onIconFileEvent);
+		clearInterval(this.iconRecoveryTimer);
+	}
+
+	private recoverMissingRoomIcons(): void {
+		this.enqueueMissingRoomIcons().catch(error => Logger.error(error, 'ChatService'));
+	}
+
+	@bindThis
+	private onIconFileEvent(_channel: string, data: string): void {
+		// 모든 이벤트가 지나가므로 파일 삭제가 아니면 해석하지 않는다.
+		if (!data.includes('"fileDeleted"')) return;
+		try {
+			const event = JSON.parse(data);
+			if (typeof event.channel === 'string' && event.channel.startsWith('driveStream:') && event.message?.type === 'fileDeleted' && typeof event.message.body === 'string') {
+				this.enqueueMissingRoomIcons(event.message.body).catch(error => Logger.error(error, 'ChatService'));
+			}
+		} catch (error) {
+			Logger.error(error, 'ChatService');
+		}
+	}
+
+	@bindThis
+	public async enqueueMissingRoomIcons(fileId?: string): Promise<void> {
+		const rooms = await this.chatRoomsRepository.find({
+			where: { iconId: IsNull(), iconFileId: fileId ?? Not(IsNull()) },
+			select: { id: true, iconFileId: true },
+			take: 100,
+			order: { id: 'ASC' },
+		});
+		for (const room of rooms) {
+			if (room.iconFileId != null) await this.queueService.createChatRoomIconDeletedJob(room.id, room.iconFileId);
+		}
 	}
 
 	@bindThis
@@ -305,6 +353,7 @@ export class ChatService {
 		const message = {
 			id,
 			fromUserId: fromUser.id,
+			directFromUserId: fromUser.id,
 			toUserId: toUser.id,
 			text: params.text ? params.text.trim() : null,
 			dice,
@@ -385,7 +434,7 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async createMessageToRoom(fromUser: { id: MiUser['id']; host: MiUser['host']; }, toRoom: MiChatRoom, params: {
+	public async createMessageToRoom(fromUser: { id: MiUser['id']; host: MiUser['host']; } & Partial<Pick<MiUser, 'username' | 'name' | 'uri'>>, toRoom: MiChatRoom, params: {
 		text?: string | null;
 		files?: MiDriveFile[];
 		uri?: string | null;
@@ -454,7 +503,9 @@ export class ChatService {
 			const channelRefs = fromUser.host == null
 				? await this.chatRoomChannelService.localRefs(current, text, params.channelRefs ?? [], manager)
 				: await this.chatRoomChannelService.remoteRefs(current, text, params.remoteChannelRefs, manager);
-			const inserted = await manager.withRepository(this.chatMessagesRepository).insertOne({ ...message, toRoomChannelId, channelRefs });
+			// 계정이 지워져도 그룹 글이 남도록 작성자 정보를 글과 함께 보관한다.
+			const archivedAuthor = fromUser.username != null ? { uri: chatActorUri(fromUser, this.config.url), username: fromUser.username, name: fromUser.name ?? null, host: fromUser.host } : null;
+			const inserted = await manager.withRepository(this.chatMessagesRepository).insertOne({ ...message, archivedAuthor, toRoomChannelId, channelRefs });
 			await this.chatRoomNotificationService.record(manager, current, inserted);
 			Object.assign(toRoom, current);
 			return inserted;
@@ -1653,12 +1704,13 @@ export class ChatService {
 		const updated = await this.db.transaction(async manager => {
 			const current = await manager.findOne(MiChatRoom, { where: { id: room.id }, lock: { mode: 'pessimistic_write' } });
 			if (current == null || (remoteUpdatedAt != null && current.lastRemoteUpdatedAt != null && current.lastRemoteUpdatedAt > remoteUpdatedAt)) return null;
-			if (options?.deletedIconId != null && current.iconId != null && current.iconId !== options.deletedIconId) return null;
+			if (options?.deletedIconId != null && (current.iconFileId !== options.deletedIconId || current.iconId != null)) return null;
 			if (options?.federate !== false && options?.deletedIconId == null && current.isArchived && (params.iconId !== undefined || params.iconDecorations !== undefined)) throw new ChatRoomArchivedError();
 			if (options?.deletedIconId != null) resetOwner = await manager.findOne(MiUser, { where: { id: current.ownerId } });
 			const revision = remoteUpdatedAt ?? (options?.federate === false || resetOwner?.host != null ? current.lastRemoteUpdatedAt : new Date(Math.max(Date.now(), (current.lastRemoteUpdatedAt?.getTime() ?? 0) + 1)));
-			await manager.update(MiChatRoom, current.id, { ...patch, lastRemoteUpdatedAt: revision });
-			const updated = { ...current, ...patch, lastRemoteUpdatedAt: revision };
+			const iconFileId = options?.deletedIconId != null || params.iconId === undefined ? current.iconFileId : params.iconId;
+			await manager.update(MiChatRoom, current.id, { ...patch, iconFileId, lastRemoteUpdatedAt: revision });
+			const updated = { ...current, ...patch, iconFileId, lastRemoteUpdatedAt: revision };
 			return snapshot != null ? this.chatRoomChannelService.applyRemote(manager, updated, snapshot) : updated;
 		});
 		if (updated == null) return room;
@@ -1686,6 +1738,10 @@ export class ChatService {
 		this.notifyRoomListChanged(this.localUserIds(participants));
 		if (options?.federate !== false && owner != null && owner.host == null) {
 			await this.federateRoomUpdate(merged, owner);
+		}
+
+		if (options?.deletedIconId != null) {
+			await this.chatRoomsRepository.update({ id: merged.id, iconId: IsNull(), iconFileId: options.deletedIconId }, { iconFileId: null });
 		}
 
 		return merged;

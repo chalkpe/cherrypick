@@ -34,10 +34,17 @@ export class MiChatMessage {
 	public fromUserId: MiUser['id'] | null;
 
 	@ManyToOne(() => MiUser, {
-		onDelete: 'CASCADE',
+		onDelete: 'SET NULL',
 	})
 	@JoinColumn()
 	public fromUser: MiUser | null;
+
+	@Column({ ...id(), nullable: true })
+	public directFromUserId: MiUser['id'] | null;
+
+	@ManyToOne(() => MiUser, { onDelete: 'CASCADE' })
+	@JoinColumn()
+	public directFromUser: MiUser | null;
 
 	@Index()
 	@Column({
