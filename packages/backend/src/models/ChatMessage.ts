@@ -39,6 +39,7 @@ export class MiChatMessage {
 	@JoinColumn()
 	public fromUser: MiUser | null;
 
+	@Index()
 	@Column({ ...id(), nullable: true })
 	public directFromUserId: MiUser['id'] | null;
 

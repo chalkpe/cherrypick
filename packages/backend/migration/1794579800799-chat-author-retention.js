@@ -16,9 +16,11 @@ export class ChatAuthorRetention1794579800799 {
 		await queryRunner.query(`ALTER TABLE "chat_message" DROP CONSTRAINT "FK_79a26e7a4d9afa5e4fc05f134ed"`);
 		await queryRunner.query(`ALTER TABLE "chat_message" ADD CONSTRAINT "FK_79a26e7a4d9afa5e4fc05f134ed" FOREIGN KEY ("fromUserId") REFERENCES "user"("id") ON DELETE SET NULL ON UPDATE NO ACTION`);
 		await queryRunner.query(`ALTER TABLE "chat_message" ADD CONSTRAINT "FK_3d29b5e7abe1a6b7f0fa4128739" FOREIGN KEY ("directFromUserId") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE NO ACTION`);
+		await queryRunner.query(`CREATE INDEX "IDX_3d29b5e7abe1a6b7f0fa412873" ON "chat_message" ("directFromUserId")`);
 	}
 
 	async down(queryRunner) {
+		await queryRunner.query(`DROP INDEX "public"."IDX_3d29b5e7abe1a6b7f0fa412873"`);
 		await queryRunner.query(`ALTER TABLE "chat_message" DROP CONSTRAINT "FK_3d29b5e7abe1a6b7f0fa4128739"`);
 		await queryRunner.query(`ALTER TABLE "chat_message" DROP CONSTRAINT "FK_79a26e7a4d9afa5e4fc05f134ed"`);
 		await queryRunner.query(`ALTER TABLE "chat_message" ADD CONSTRAINT "FK_79a26e7a4d9afa5e4fc05f134ed" FOREIGN KEY ("fromUserId") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE NO ACTION`);
