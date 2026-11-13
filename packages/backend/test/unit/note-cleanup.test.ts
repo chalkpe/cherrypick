@@ -89,3 +89,22 @@ test('손상된 받은 횟수는 불일치나 NOT의 참으로 바꾸지 않는�
 	const results = decideCleanup([{ id: 'keep', action: 'keep', condition: { type: 'not', child: { type: 'count', field: 'renotes', operator: 'gte', value: 2 } } }, { id: 'delete', action: 'delete', condition: word('고양이') }], [{ ...context, renotes: -1 }]);
 	expect(results[0].reason).toBe('blocked');
 });
+
+test('지원하지 않는 플래그를 저장하거나 잘못 저장된 규칙으로 판정하지 않는다', () => {
+	const keyword = { type: 'keyword', mode: 'regex', value: 'HELLO', flags: 'z', targets: ['text'] };
+	expect(() => validateCleanupCondition(keyword)).toThrow();
+	for (const action of ['delete', 'keep'] as const) {
+		const [result] = decideCleanup([{ id: 'invalid', action, condition: { type: 'not', child: keyword } }, { id: 'valid', action: 'delete', condition: word('고양이') }], [context]);
+		expect(result.errors.map(error => error.ruleId)).toEqual(['invalid']);
+		expect(result.reason).toBe(action === 'keep' ? 'blocked' : 'matched');
+	}
+});
+
+test('RE2의 지원 플래그만 각 한 번 허용한다', () => {
+	for (const flags of ['', 'd', 'g', 'i', 'm', 's', 'u', 'y', 'dgimsuy']) {
+		expect(() => validateCleanupCondition({ type: 'keyword', mode: 'regex', value: 'x', flags, targets: ['text'] })).not.toThrow();
+	}
+	for (const flags of ['z', 'v', 'ii']) {
+		expect(() => validateCleanupCondition({ type: 'keyword', mode: 'regex', value: 'x', flags, targets: ['text'] })).toThrow();
+	}
+});
