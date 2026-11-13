@@ -189,7 +189,7 @@ let chatUnreadRetryWake: (() => void) | null = null;
  * in another order than the changes they report, so the sign follows a fresh account, never the event itself.
  * One request runs at a time; events during it ask for one more, which starts after them all.
  * A failed request is retried with growing delays instead of consuming the event: the sign would stay wrong until
- * the next event otherwise. Events during a retry wait join that retry, and a restored connection asks again.
+ * the next event otherwise. Events during a retry wait join that retry.
  */
 export function refreshChatUnreadState(): Promise<void> {
 	if (chatUnreadRefreshing != null) {
