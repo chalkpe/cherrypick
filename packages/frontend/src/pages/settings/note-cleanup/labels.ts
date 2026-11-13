@@ -23,6 +23,7 @@ export const targetNames = {
 	text: i18n.ts._noteCleanup.text, cw: i18n.ts._noteCleanup.cw, poll: i18n.ts._noteCleanup.poll,
 	fileComment: i18n.ts._noteCleanup.fileComment, fileName: i18n.ts._noteCleanup.fileName,
 };
+const visibilityNames = i18n.ts._visibility;
 // 조건 입력란과 같은 기준으로 나누어떨어지는 가장 큰 단위를 고르며, 저장된 초 값은 반올림하지 않는다.
 export function ageUnit(seconds: number): number {
 	return [86400, 3600, 60, 1].find(unit => seconds % unit === 0) ?? 1;
@@ -46,7 +47,7 @@ export function summary(node: Condition): string {
 		case 'clip': return node.ids === null ? i18n.ts._noteCleanup.allClips : `${conditionNames.clip}: ${i18n.tsx._noteCleanup.selectedReferences({ n: node.ids.length })}`;
 		case 'channel': return `${conditionNames.channel}: ${i18n.tsx._noteCleanup.selectedReferences({ n: node.ids.length })}`;
 		case 'hashtag': return `#${node.value.replace(/^#+/, '')}`;
-		case 'visibility': return `${conditionNames.visibility}: ${node.values.map(v => i18n.ts._visibility[v as keyof typeof i18n.ts._visibility]).join(', ')}`;
+		case 'visibility': return `${conditionNames.visibility}: ${node.values.map(v => visibilityNames[v as keyof typeof visibilityNames]).join(', ')}`;
 	}
 }
 export function fullSummary(node: Condition): string {

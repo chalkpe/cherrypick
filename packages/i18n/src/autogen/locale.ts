@@ -16765,9 +16765,9 @@ export interface Locale extends ILocale {
          */
         "saveFirst": string;
         /**
-         * このページ: 検査 {scanned}件、削除候補 {deleted}件、保護 {protected}件（全体件数ではありません）
+         * このページ: 検査 {scanned}件、削除候補 {deleted}件、保護 {protectedCount}件（全体件数ではありません）
          */
-        "pageCounts": ParameterizedString<"scanned" | "deleted" | "protected">;
+        "pageCounts": ParameterizedString<"scanned" | "deleted" | "protectedCount">;
         /**
          * 次の検査ページ
          */

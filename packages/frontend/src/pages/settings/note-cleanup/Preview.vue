@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<MkButton :disabled="disabled || loading || !ruleIds.length" @click="load()">{{ i18n.ts._noteCleanup.preview }}</MkButton>
 	<MkInfo v-if="failed" warn>{{ cleanupErrorMessage(failed) }}</MkInfo>
 	<template v-if="page">
-		<p>{{ i18n.tsx._noteCleanup.pageCounts({ scanned: page.scanned, deleted: page.deleteCount, protected: page.protectedCount }) }}</p>
+		<p>{{ i18n.tsx._noteCleanup.pageCounts({ scanned: page.scanned, deleted: page.deleteCount, protectedCount: page.protectedCount }) }}</p>
 		<MkInfo v-for="error in page.errors" :key="`${error.ruleId}:${error.path}`" warn>
 			<MkA :to="`/settings/note-cleanup/${error.ruleId}`">{{ ruleName(error.ruleId) }}</MkA>
 			<div>{{ cleanupErrorMessage(error.code, page.rules.find(rule => rule.id === error.ruleId)?.action) }}</div>

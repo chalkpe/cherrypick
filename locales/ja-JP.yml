@@ -4474,7 +4474,7 @@ _noteCleanup:
   removeRule: "このルールを削除しますか？保持ルールの場合、以後の保護がなくなります。キューは取り消されません。"
   preview: "保存したルールをプレビュー"
   saveFirst: "変更を保存してからプレビュー・リクエストしてください。"
-  pageCounts: "このページ: 検査 {scanned}件、削除候補 {deleted}件、保護 {protected}件（全体件数ではありません）"
+  pageCounts: "このページ: 検査 {scanned}件、削除候補 {deleted}件、保護 {protectedCount}件（全体件数ではありません）"
   nextPage: "次の検査ページ"
   complete: "この順回の末尾です。最新の状態で結果は変わることがあります。"
   matched: "削除ルールに該当"

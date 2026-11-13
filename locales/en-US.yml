@@ -4336,7 +4336,7 @@ _noteCleanup:
   removeRule: "Delete this rule? A keep rule will no longer protect notes. Queued work is not canceled."
   preview: "Preview saved rules"
   saveFirst: "Save changes before previewing or requesting cleanup."
-  pageCounts: "This page: {scanned} inspected, {deleted} deletion candidates, {protected} protected (not totals)."
+  pageCounts: "This page: {scanned} inspected, {deleted} deletion candidates, {protectedCount} protected (not totals)."
   nextPage: "Next inspected page"
   complete: "End of this pass. Results can change as note state changes."
   matched: "Delete rule matched"
