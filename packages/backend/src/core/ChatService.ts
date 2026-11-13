@@ -1708,24 +1708,6 @@ export class ChatService {
 		return (await this.unreadConversations(marks)).some(unread => unread);
 	}
 
-	/**
-	 * Muting takes a direct conversation out of the chat list and unmuting puts it back, unread mark and all.
-	 * When that conversation is unread, the muter's screens get the account again to bring the sign up to date.
-	 * Apps with a token listen on the same stream, so the account goes out without what only the account itself may see.
-	 */
-	@bindThis
-	public async handleMutingChanged(muterId: MiUser['id'], muteeIds: MiUser['id'][]): Promise<void> {
-		const redisPipeline = this.redisClient.pipeline();
-		for (const muteeId of muteeIds) {
-			redisPipeline.sismember(`newChatMessagesExists:${muterId}`, `user:${muteeId}`);
-		}
-		const results = await redisPipeline.exec();
-		if (results == null || results.every(result => result[1] !== 1)) return;
-
-		const account = await this.userEntityService.pack(muterId, { id: muterId }, { schema: 'MeDetailed' });
-		this.globalEventService.publishMainStream(muterId, 'meUpdated', account);
-	}
-
 	@bindThis
 	public async createRoom(owner: MiUser, params: Partial<{
 		name: string;

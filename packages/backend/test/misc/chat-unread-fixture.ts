@@ -181,7 +181,6 @@ export function chatUnreadFixture({ remoteMembers = false } = {}) {
 		mutingsRepository,
 		idService: { gen: () => `muting${++nextId}` },
 		cacheService: { userMutingsCache: { refresh: async () => undefined } },
-		chatService,
 	}) as UserMutingService;
 
 	return {

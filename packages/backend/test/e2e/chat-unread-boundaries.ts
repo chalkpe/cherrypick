@@ -359,6 +359,18 @@ describe('chat unread boundaries', () => {
 		assert.strictEqual(await redis.get(unknown), null);
 	});
 
+	test('refreshing the account excludes unread messages from a muted sender', async () => {
+		const [reader, sender] = [await person(), await person()];
+		assert.strictEqual((await say(sender, reader, 'Unread before mute')).status, 200);
+		assert.strictEqual(await hasUnread(reader), true);
+
+		assert.strictEqual((await api('mute/create', { userId: sender.id }, reader)).status, 204);
+
+		assert.strictEqual(await hasUnread(reader), false);
+		assert.strictEqual((await api('mute/delete', { userId: sender.id }, reader)).status, 204);
+		assert.strictEqual(await hasUnread(reader), true);
+	});
+
 	test('muting and withdrawing a legacy direct message preserves unread on unmute', async () => {
 		const [reader, sender] = [await person(), await person()];
 		await say(sender, reader, 'Remaining legacy content');

@@ -11,7 +11,6 @@ import type { MiUser } from '@/models/User.js';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import { CacheService } from '@/core/CacheService.js';
-import { ChatService } from '@/core/ChatService.js';
 
 @Injectable()
 export class UserMutingService {
@@ -21,7 +20,6 @@ export class UserMutingService {
 
 		private idService: IdService,
 		private cacheService: CacheService,
-		private chatService: ChatService,
 	) {
 	}
 
@@ -35,8 +33,6 @@ export class UserMutingService {
 		});
 
 		this.cacheService.userMutingsCache.refresh(user.id);
-
-		await this.chatService.handleMutingChanged(user.id, [target.id]).catch(() => {});
 	}
 
 	@bindThis
@@ -50,9 +46,6 @@ export class UserMutingService {
 		const muterIds = [...new Set(mutings.map(m => m.muterId))];
 		for (const muterId of muterIds) {
 			this.cacheService.userMutingsCache.refresh(muterId);
-
-			const muteeIds = mutings.filter(m => m.muterId === muterId).map(m => m.muteeId);
-			await this.chatService.handleMutingChanged(muterId, muteeIds).catch(() => {});
 		}
 	}
 }

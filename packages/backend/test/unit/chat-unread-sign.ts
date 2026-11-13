@@ -437,23 +437,25 @@ describe('chat unread sign', () => {
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
 		});
 
-		test('muting the account behind the only unread conversation turns the sign off', async () => {
+		test('a later unread lookup excludes a muted direct conversation', async () => {
 			const f = fixture();
 			await f.chatService.createMessageToUser(f.violet, f.reader, { text: 'hello' });
 
 			await f.userMutingService.mute(f.reader, f.violet);
 
-			expect(f.accountSent()).toEqual([{ id: f.reader.id, hasUnreadChatMessages: false }]);
+			expect(f.accountSent()).toEqual([]);
+			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
 		});
 
-		test('muting one account leaves the sign on while another conversation is unread', async () => {
+		test('a later unread lookup keeps another conversation unread after muting', async () => {
 			const f = fixture();
 			await f.chatService.createMessageToUser(f.violet, f.reader, { text: 'hello' });
 			await f.chatService.createMessageToUser(f.amber, f.reader, { text: 'hi' });
 
 			await f.userMutingService.mute(f.reader, f.violet);
 
-			expect(f.accountSent()).toEqual([{ id: f.reader.id, hasUnreadChatMessages: true }]);
+			expect(f.accountSent()).toEqual([]);
+			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(true);
 		});
 
 		test('unmuting brings back what was unread before and during the mute', async () => {
@@ -464,7 +466,8 @@ describe('chat unread sign', () => {
 
 			await f.userMutingService.unmute([...f.mutings]);
 
-			expect(f.accountSent().at(-1)).toEqual({ id: f.reader.id, hasUnreadChatMessages: true });
+			expect(f.accountSent()).toEqual([]);
+			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(true);
 			expect(await f.chatService.getUserReadStateMap(f.reader.id, [f.violet.id])).toEqual({ violet: false });
 		});
 
