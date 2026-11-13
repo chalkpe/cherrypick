@@ -170,11 +170,14 @@ export class SearchService {
 	}
 
 	@bindThis
-	public async unindexNote(note: MiNote): Promise<void> {
+	public async unindexNote(note: Pick<MiNote, 'id' | 'visibility'>, waitForCompletion = false): Promise<void> {
 		if (!this.meilisearch) return;
 		if (!['home', 'public'].includes(note.visibility)) return;
 
-		await this.meilisearchNoteIndex?.deleteDocument(note.id);
+		const task = await this.meilisearchNoteIndex!.deleteDocument(note.id);
+		if (!waitForCompletion) return;
+		const completed = await this.meilisearch.tasks.waitForTask(task.taskUid, { timeout: 30_000 });
+		if (completed.status !== 'succeeded') throw new Error('search_delete_failed');
 	}
 
 	@bindThis

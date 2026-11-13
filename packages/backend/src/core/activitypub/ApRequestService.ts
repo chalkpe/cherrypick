@@ -18,6 +18,7 @@ import { UtilityService } from '@/core/UtilityService.js';
 import { HttpRequestService } from '@/core/HttpRequestService.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import { bindThis } from '@/decorators.js';
+import { activityPubDigest } from '@/misc/activitypub-payload.js';
 import type Logger from '@/logger.js';
 import { validateContentTypeSetAsActivityPub } from '@/core/activitypub/misc/validator.js';
 import { assertActivityMatchesUrl, FetchAllowSoftFailMask as FetchAllowSoftFailMask } from '@/core/activitypub/misc/check-against-url.js';
@@ -68,7 +69,7 @@ export class ApRequestCreator {
 	}
 
 	static createDigest(body: string) {
-		return `SHA-256=${crypto.createHash('sha256').update(body).digest('base64')}`;
+		return activityPubDigest(body);
 	}
 
 	static async createSignedGet(args: { key: PrivateKey, url: string, additionalHeaders: Record<string, string>, includeDigest?: boolean }): Promise<Signed> {
@@ -162,10 +163,10 @@ export class ApRequestService {
 	}
 
 	@bindThis
-	public async signedPost(user: { id: MiUser['id'] }, url: string, object: unknown, digest?: string): Promise<void> {
+	public async signedPost(user: { id: MiUser['id'] }, url: string, object: unknown, digest?: string, beforeSend?: () => Promise<void>): Promise<void> {
 		const body = typeof object === 'string' ? object : JSON.stringify(object);
 
-		await this.sendSignedPost(user, url, body, digest, {});
+		await this.sendSignedPost(user, url, body, digest, {}, beforeSend);
 	}
 
 	/**
@@ -198,6 +199,7 @@ export class ApRequestService {
 		body: string,
 		digest: string | undefined,
 		sendOptions: { timeout?: number; redirect?: 'follow' | 'manual'; size?: number },
+		beforeSend?: () => Promise<void>,
 	): Promise<Response> {
 		const keypair = await this.userKeypairService.getUserKeypair(user.id);
 
@@ -212,6 +214,8 @@ export class ApRequestService {
 			additionalHeaders: {},
 		});
 
+		// 키 조회와 서명 준비를 마친 뒤 실제 HTTP 직전에 전달 권한을 확인한다.
+		await beforeSend?.();
 		return await this.httpRequestService.send(url, {
 			method: req.request.method,
 			headers: req.request.headers,

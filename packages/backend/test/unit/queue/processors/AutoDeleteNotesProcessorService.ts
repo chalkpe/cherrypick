@@ -4,223 +4,320 @@
  */
 
 import { Test } from '@nestjs/testing';
-import pg from 'pg';
-import { afterEach, describe, expect, test, vi } from 'vitest';
-import { loadConfig } from '@/config.js';
-import { DI } from '@/di-symbols.js';
-import { IdService } from '@/core/IdService.js';
-import { NoteDeleteService } from '@/core/NoteDeleteService.js';
-import { MiNote, MiUser } from '@/models/_.js';
+import { FindOperator } from 'typeorm';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { MiNote, MiNoteFavorite, MiUser } from '@/models/_.js';
+import { MiNoteCleanupRule, MiNoteCleanupState } from '@/models/NoteCleanupRule.js';
+import { QueueService } from '@/core/QueueService.js';
+import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
+import { NoteCleanupService } from '@/core/NoteCleanupService.js';
+import { initialCleanupRules } from '@/core/NoteCleanupRunner.js';
 import { AutoDeleteNotesProcessorService } from '@/queue/processors/AutoDeleteNotesProcessorService.js';
-import { QueueLoggerService } from '@/queue/QueueLoggerService.js';
 
-function user(id: string, days: number | null = 30, keepFavorites = true) {
-	return new MiUser({ id, host: null, autoDeleteNotesAfterDays: days, autoDeleteKeepFavorites: keepFavorites });
-}
+// 처리기와 정리 서비스가 남기는 오류 기록을 검사한다.
+const logged = vi.hoisted(() => [] as unknown[][]);
+vi.mock('@/logger.js', () => ({ default: class { error(...args: unknown[]) { logged.push(args); } warn() {} info() {} succ() {} } }));
 
-function note(id: string, userId: string) {
-	return new MiNote({
-		id, userId, text: 'Old note', fileIds: ['attachment'], replyId: null, renoteId: null,
-		localOnly: false, visibility: 'public', mentionedRemoteUsers: '[]',
+// 이 처리기는 이제 계정별 정리 규칙을 판정하는 NoteCleanupService에 위임한다.
+// 기존 시험이 확인하던 자동 삭제 의미(정상 삭제 경로·소유자 기준 즐겨찾기 보호·실패 격리·사라진 후보·비활성 설정)를
+// 마이그레이션이 만든 호환 규칙(initialCleanupRules(true, ...))으로 같은 실제 진입점 processor.process()에서 검증한다.
+// 계정당 1000개 일괄 삭제·processedUsers 응답은 예산이 있는 페이지 처리로 바뀌었고, 그 상한은 note-cleanup-queue.test.ts가 다룬다.
+// 가짜 DB·Redis·큐는 실제 SQL·Lua·BullMQ 동작을 재현하지 않는다.
+
+const NOW = Date.UTC(2026, 0, 31);
+const DAY = 86400_000;
+
+beforeEach(() => {
+	vi.useFakeTimers({ toFake: ['Date'] });
+	vi.setSystemTime(NOW);
+	logged.length = 0;
+});
+afterEach(() => {
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+});
+
+// typeorm 조회 연산자 중 이 경로가 쓰는 In·IsNull만 해석하고, 나머지 조건은 값 비교로 본다.
+function matches(row: Record<string, unknown>, where: Record<string, unknown>) {
+	return Object.entries(where).every(([key, value]) => {
+		if (value instanceof FindOperator) {
+			if (value.type === 'in') return (value.value as unknown[]).includes(row[key]);
+			if (value.type === 'isNull') return row[key] == null;
+			throw new Error(`unsupported operator ${value.type}`);
+		}
+		return row[key] === value;
 	});
 }
 
-function makeBuilder() {
-	return {
-		where: vi.fn().mockReturnThis(),
-		andWhere: vi.fn().mockReturnThis(),
-		select: vi.fn().mockReturnThis(),
-		limit: vi.fn().mockReturnThis(),
-		getMany: vi.fn(),
+async function fixture() {
+	const rows = new Map<string, Record<string, any>[]>();
+	const table = (entity: { name: string }) => {
+		let data = rows.get(entity.name);
+		if (!data) rows.set(entity.name, data = []);
+		return data;
 	};
-}
+	const createdAt = new Map<string, number>();
+	const favoriteLookups: Record<string, unknown>[] = [];
+	const noteRepositoryDeletes: unknown[] = [];
+	// 페이지 조회 직후 다른 경로에서 지워진 노트를 흉내 낸다.
+	const vanishAfterScan = new Set<string>();
+	const failingNotes = new Set<string>();
 
-async function fixture(users: MiUser[], batches: MiNote[][]) {
-	const builders: ReturnType<typeof makeBuilder>[] = [];
-	const existing = new Set(batches.flat().map(n => n.id));
-	const notesRepository = {
-		createQueryBuilder: vi.fn(() => {
-			const builder = makeBuilder();
-			builder.getMany.mockResolvedValueOnce(batches[builders.length] ?? []);
-			builders.push(builder);
-			return builder;
-		}),
-		existsBy: vi.fn(async ({ id }: { id: string }) => existing.has(id)),
-		delete: vi.fn(),
+	const repository = (entity: { name: string }) => {
+		const data = table(entity);
+		const builder = () => {
+			const params: Record<string, any> = {};
+			let limit = Infinity;
+			const self: any = {
+				where: (_sql: string, p?: object) => { Object.assign(params, p); return self; },
+				andWhere: (_sql: string, p?: object) => { Object.assign(params, p); return self; },
+				innerJoin: () => self, select: () => self, orderBy: () => self, addOrderBy: () => self,
+				take: (n: number) => { limit = n; return self; },
+				getRawMany: async () => [],
+				getMany: async () => {
+					if (entity === MiNoteCleanupState) {
+						// automaticUsers: 활성 자동 지우기 규칙이 있는 계정을 lastRunAt, userId 순으로
+						return data.filter(s => table(MiNoteCleanupRule).some(r => r.userId === s.userId && r.enabled && r.automatic && r.action === 'delete'))
+							.sort((a, b) => a.lastRunAt.getTime() - b.lastRunAt.getTime() || a.userId.localeCompare(b.userId)).slice(0, limit);
+					}
+					if (entity !== MiNote) return [];
+					const result = data.filter(n => n.userId === params.userId && (!params.afterId || n.id > params.afterId))
+						.sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit).map(n => ({ ...n }));
+					for (const id of vanishAfterScan) {
+						const i = data.findIndex(n => n.id === id);
+						if (i >= 0) data.splice(i, 1);
+					}
+					return result;
+				},
+			};
+			return self;
+		};
+		return {
+			find: async ({ where }: any) => data.filter(row => matches(row, where)).sort((a, b) => String(a.id).localeCompare(String(b.id))),
+			findBy: async (where: any) => {
+				if (entity === MiNoteFavorite) favoriteLookups.push(where);
+				return data.filter(row => matches(row, where));
+			},
+			existsBy: async (where: any) => data.some(row => matches(row, where)),
+			findOneBy: async (where: any) => data.find(row => matches(row, where)) ?? null,
+			findOneByOrFail: async (where: any) => {
+				const row = data.find(row => matches(row, where));
+				if (!row) throw new Error(`${entity.name} not found`);
+				return row;
+			},
+			countBy: async (where: any) => data.filter(row => matches(row, where)).length,
+			update: async (id: string, input: any) => { for (const row of data) if (row.id === id || row.userId === id) Object.assign(row, input); },
+			delete: async (where: any) => {
+				if (entity === MiNote) noteRepositoryDeletes.push(where);
+				for (let i = data.length - 1; i >= 0; i--) if (matches(data[i], where)) data.splice(i, 1);
+			},
+			createQueryBuilder: builder,
+		};
 	};
-	const deleteNote = vi.fn<NoteDeleteService['delete']>(async (_user, selectedNote) => {
-		existing.delete(selectedNote.id);
+	const db = {
+		getRepository: repository,
+		transaction: async (work: (manager: unknown) => Promise<unknown>) => work({ getRepository: repository }),
+		createQueryRunner: () => ({ connect: async () => {}, query: async () => [{ locked: true }], release: async () => {} }),
+	};
+
+	// 예약 스크립트의 계약(키별 한도, 부족한 키 번호를 음수로 반환, 반납)만 흉내 낸 모형이다.
+	const budget = new Map<string, number>();
+	const redis = {
+		eval: async (_script: string, numKeys: number, ...args: (string | number)[]) => {
+			const keys = args.slice(0, numKeys).map(String);
+			const argv = args.slice(numKeys).map(Number);
+			const get = (key: string) => budget.get(key) ?? 0;
+			if (argv.length === 1) {
+				for (const key of keys) budget.set(key, Math.max(0, get(key) - Math.min(argv[0], get(key))));
+				return argv[0];
+			}
+			const [want, , ...limits] = argv;
+			let grant = want;
+			for (const [i, key] of keys.entries()) {
+				const left = limits[i] - get(key);
+				if (left <= 0) return -(i + 1);
+				grant = Math.min(grant, left);
+			}
+			for (const key of keys) budget.set(key, get(key) + grant);
+			return grant;
+		},
+	};
+
+	const deleteNote = vi.fn(async (_user: unknown, target: { id: string }) => {
+		if (failingNotes.has(target.id)) throw new Error('Deletion failed');
+		const notes = table(MiNote);
+		notes.splice(notes.findIndex(n => n.id === target.id), 1);
 	});
-	const logger = { info: vi.fn(), error: vi.fn(), succ: vi.fn() };
-	const gen = vi.fn().mockReturnValue('cutoff');
+	const queueService = {
+		systemQueue: { toKey: (key: string) => `test:system:${key}` },
+		deliverQueue: { getWaiting: async () => [] },
+		inboxQueue: { getWaiting: async () => [] },
+	};
+	let sequence = 0;
+	const idService = { gen: () => `rule-${String(sequence++).padStart(4, '0')}`, parse: (id: string) => ({ date: new Date(createdAt.get(id) ?? 0) }) };
+	const buffering = Object.create(ReactionsBufferingService.prototype) as ReactionsBufferingService;
+	const service = new NoteCleanupService(db as any, idService as any, queueService as any, { delete: deleteNote } as any, { createNotification: () => {} } as any, redis as any, { enableReactionsBuffering: false } as any, buffering);
+
+	// 처리기의 생성자 의존성을 Nest가 실제로 해석할 수 있는지도 함께 확인한다.
 	const app = await Test.createTestingModule({
 		providers: [
 			AutoDeleteNotesProcessorService,
-			{ provide: DI.usersRepository, useValue: { findBy: async () => users } },
-			{ provide: DI.notesRepository, useValue: notesRepository },
-			{ provide: IdService, useValue: { gen } },
-			{ provide: NoteDeleteService, useValue: { delete: deleteNote } },
-			{ provide: QueueLoggerService, useValue: { logger: { createSubLogger: () => logger } } },
+			{ provide: NoteCleanupService, useValue: service },
+			{ provide: QueueService, useValue: queueService },
 		],
 	}).compile();
+
+	// 마이그레이션은 로컬 계정마다 상태를 만들고, 양수 기간만 자동 지우기 규칙으로, 즐겨찾기 보호는 설정값 그대로 옮긴다.
+	const user = (id: string, days: number | null = 30, keepFavorites = true) => {
+		const row = { id, host: null, autoDeleteNotesAfterDays: days, autoDeleteKeepFavorites: keepFavorites };
+		table(MiUser).push(row);
+		table(MiNoteCleanupState).push({ userId: id, migrated: true, cursor: null, lastRunAt: new Date(0), previewAt: null, previewToken: null });
+		for (const input of initialCleanupRules(true, days, keepFavorites)) {
+			table(MiNoteCleanupRule).push({ ...input, id: idService.gen(), userId: id, lastError: null, automaticConfirmed: input.automatic });
+		}
+		return row;
+	};
+	const note = (id: string, userId: string, ageDays = 40) => {
+		createdAt.set(id, NOW - ageDays * DAY);
+		const row = { id, userId, text: 'Old note', cw: null, fileIds: [], hasPoll: false, replyId: null, renoteId: null, channelId: null, localOnly: false, visibility: 'public', reactions: {}, renoteCount: 0, tags: [] };
+		table(MiNote).push(row);
+		return row;
+	};
+	const favorite = (noteId: string, userId: string) => { table(MiNoteFavorite).push({ id: `fav-${noteId}-${userId}`, noteId, userId }); };
+	const remaining = () => table(MiNote).map(n => n.id).sort();
+	const state = (userId: string) => table(MiNoteCleanupState).find(s => s.userId === userId)!;
 	return {
 		app,
-		service: app.get(AutoDeleteNotesProcessorService),
-		get builder() { return builders[0]; },
-		builders,
-		notesRepository,
-		deleteNote,
-		logger,
-		gen,
-		existing,
+		processor: app.get(AutoDeleteNotesProcessorService),
+		user, note, favorite, remaining, state,
+		deleteNote, favoriteLookups, noteRepositoryDeletes, vanishAfterScan, failingNotes,
 	};
 }
 
-// Runs the owner's candidate filters from the service against session-local tables, leaving the shared test database untouched
-async function selectCandidates(owner: MiUser, notes: string[], favorites: { noteId: string; userId: string }[]) {
-	const f = await fixture([owner], [[]]);
-	try {
-		await f.service.process({} as never);
-	} finally {
-		await f.app.close();
-	}
-	const filters = [...f.builder.where.mock.calls, ...f.builder.andWhere.mock.calls]
-		.filter(([sql]) => !sql.includes(':deleteBeforeId')) as [string, Record<string, unknown>?][];
-	const values: unknown[] = [];
-	const params = Object.assign({}, ...filters.map(([, p]) => p ?? {}));
-	// TypeORM quotes alias property paths and binds named parameters; mirror both for raw execution
-	const where = filters.map(([sql]) => sql
-		.replace(/\bnote\.(\w+)/g, 'note."$1"')
-		.replace(/:(\w+)/g, (_, name: string) => `$${values.push(params[name])}`)).join(' AND ');
-
-	const { db } = loadConfig();
-	const client = new pg.Client({ host: db.host, port: db.port, database: db.db, user: db.user, password: db.pass });
-	await client.connect();
-	try {
-		await client.query('CREATE TEMP TABLE note (id varchar PRIMARY KEY, "userId" varchar NOT NULL)');
-		await client.query('CREATE TEMP TABLE note_favorite ("noteId" varchar NOT NULL, "userId" varchar NOT NULL)');
-		for (const id of notes) await client.query('INSERT INTO note VALUES ($1, $2)', [id, owner.id]);
-		for (const { noteId, userId } of favorites) await client.query('INSERT INTO note_favorite VALUES ($1, $2)', [noteId, userId]);
-		const { rows } = await client.query<{ id: string }>(`SELECT note.id FROM note WHERE ${where} ORDER BY note.id`, values);
-		return rows.map(row => row.id);
-	} finally {
-		await client.end();
-	}
-}
+// 자동 회차는 작업 데이터 없이 실행된다.
+const automaticRound = { data: {} } as never;
 
 describe('AutoDeleteNotesProcessorService', () => {
-	afterEach(() => {
-		vi.restoreAllMocks();
-	});
-
-	test('deletes full notes through the normal service with federation enabled', async () => {
-		vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 0, 31));
-		const alice = user('alice');
-		const oldNote = note('old-note', alice.id);
-		const f = await fixture([alice], [[oldNote]]);
+	test('deletes expired notes through the normal note deletion service with federation enabled', async () => {
+		const f = await fixture();
 		try {
-			expect(await f.service.process({} as never)).toEqual({ deletedCount: 1, processedUsers: 1 });
-			expect(f.deleteNote).toHaveBeenCalledExactlyOnceWith(alice, oldNote, false);
-			expect(f.notesRepository.delete).not.toHaveBeenCalled();
-			expect(f.builder.select).not.toHaveBeenCalled();
-			expect(f.gen).toHaveBeenCalledWith(Date.UTC(2026, 0, 1));
-			expect(f.builder.where).toHaveBeenCalledWith('note.userId = :userId', { userId: 'alice' });
-			expect(f.builder.andWhere).toHaveBeenCalledWith('note.id < :deleteBeforeId', { deleteBeforeId: 'cutoff' });
-			expect(f.builder.andWhere).toHaveBeenCalledWith(
-				'NOT EXISTS (SELECT 1 FROM note_favorite WHERE "noteId" = note.id AND "userId" = :userId)',
-				{ userId: 'alice' },
-			);
-			expect(f.builder.limit).toHaveBeenCalledWith(1000);
+			const alice = f.user('alice');
+			const oldNote = f.note('old-note', 'alice', 40);
+			f.note('recent-note', 'alice', 10);
+			expect(await f.processor.process(automaticRound)).toEqual({ deletedCount: 1, skipped: false });
+			// 노트 행을 직접 지우지 않고 통계·검색·연합 삭제를 수행하는 정상 삭제 서비스를 연합 전송 켬(false)으로 부른다.
+			expect(f.deleteNote).toHaveBeenCalledExactlyOnceWith(alice, expect.objectContaining({ id: oldNote.id }), false);
+			expect(f.noteRepositoryDeletes).toEqual([]);
+			// 이관된 기간 규칙(30일 초과)은 기간이 지나지 않은 노트를 남긴다.
+			expect(f.remaining()).toEqual(['recent-note']);
 		} finally {
 			await f.app.close();
 		}
 	});
 
 	test('scopes favorite protection to the note owner instead of any favoriter', async () => {
-		const alice = user('alice', 30, true);
-		const bob = user('bob', 30, true);
-		const f = await fixture([alice, bob], [[], []]);
+		const f = await fixture();
 		try {
-			expect(await f.service.process({} as never)).toEqual({ deletedCount: 0, processedUsers: 2 });
-			expect(f.builders).toHaveLength(2);
-			for (const [index, ownerId] of ['alice', 'bob'].entries()) {
-				const favoriteGuard = f.builders[index].andWhere.mock.calls.find(([sql]) => String(sql).includes('note_favorite'));
-				expect(favoriteGuard).toEqual([
-					'NOT EXISTS (SELECT 1 FROM note_favorite WHERE "noteId" = note.id AND "userId" = :userId)',
-					{ userId: ownerId },
-				]);
-			}
+			f.user('alice', 30, true);
+			f.user('bob', 30, true);
+			f.note('alice-note', 'alice');
+			f.note('bob-note', 'bob');
+			expect(await f.processor.process(automaticRound)).toEqual({ deletedCount: 2, skipped: false });
+			// 즐겨찾기 조회는 각 페이지의 노트 소유자로만 한정된다.
+			expect(f.favoriteLookups.map(where => where.userId)).toEqual(['alice', 'bob']);
 		} finally {
 			await f.app.close();
 		}
 	});
 
 	test('does not let another user\'s favorite exempt the owner\'s note from deletion', async () => {
-		const alice = user('alice', 30, true);
-		expect(await selectCandidates(alice, ['favorited-by-mallory'], [{ noteId: 'favorited-by-mallory', userId: 'mallory' }]))
-			.toEqual(['favorited-by-mallory']);
+		const f = await fixture();
+		try {
+			f.user('alice', 30, true);
+			f.note('favorited-by-mallory', 'alice');
+			f.favorite('favorited-by-mallory', 'mallory');
+			expect(await f.processor.process(automaticRound)).toEqual({ deletedCount: 1, skipped: false });
+			expect(f.remaining()).toEqual([]);
+		} finally {
+			await f.app.close();
+		}
 	});
 
 	test('keeps notes favorited by the owner even when other users also favorited them', async () => {
-		const alice = user('alice', 30, true);
-		const notes = ['by-owner', 'by-owner-and-mallory', 'by-mallory', 'plain'];
-		const favorites = [
-			{ noteId: 'by-owner', userId: 'alice' },
-			{ noteId: 'by-owner-and-mallory', userId: 'mallory' },
-			{ noteId: 'by-owner-and-mallory', userId: 'alice' },
-			{ noteId: 'by-mallory', userId: 'mallory' },
-		];
-		expect(await selectCandidates(alice, notes, favorites)).toEqual(['by-mallory', 'plain']);
+		const f = await fixture();
+		try {
+			f.user('alice', 30, true);
+			for (const id of ['by-owner', 'by-owner-and-mallory', 'by-mallory', 'plain']) f.note(id, 'alice');
+			f.favorite('by-owner', 'alice');
+			f.favorite('by-owner-and-mallory', 'mallory');
+			f.favorite('by-owner-and-mallory', 'alice');
+			f.favorite('by-mallory', 'mallory');
+			expect(await f.processor.process(automaticRound)).toEqual({ deletedCount: 2, skipped: false });
+			expect(f.remaining()).toEqual(['by-owner', 'by-owner-and-mallory']);
+		} finally {
+			await f.app.close();
+		}
 	});
 
 	test('ignores every favorite when favorite protection is disabled', async () => {
-		const alice = user('alice', 30, false);
-		const notes = ['by-owner', 'by-mallory', 'plain'];
-		const favorites = [{ noteId: 'by-owner', userId: 'alice' }, { noteId: 'by-mallory', userId: 'mallory' }];
-		expect(await selectCandidates(alice, notes, favorites)).toEqual(['by-mallory', 'by-owner', 'plain']);
+		const f = await fixture();
+		try {
+			f.user('alice', 30, false);
+			for (const id of ['by-owner', 'by-mallory', 'plain']) f.note(id, 'alice');
+			f.favorite('by-owner', 'alice');
+			f.favorite('by-mallory', 'mallory');
+			expect(await f.processor.process(automaticRound)).toEqual({ deletedCount: 3, skipped: false });
+			expect(f.remaining()).toEqual([]);
+		} finally {
+			await f.app.close();
+		}
 	});
 
 	test('continues after one deletion fails and counts only successful deletions across users', async () => {
-		const alice = user('alice');
-		const bob = user('bob', 7, false);
-		const failed = note('failed', alice.id);
-		const succeeding = note('succeeding', alice.id);
-		const otherUser = note('other-user', bob.id);
-		const f = await fixture([alice, bob], [[failed, succeeding], [otherUser]]);
-		f.deleteNote.mockRejectedValueOnce(new Error('Deletion failed'));
+		const f = await fixture();
 		try {
-			expect(await f.service.process({} as never)).toEqual({ deletedCount: 2, processedUsers: 2 });
+			const alice = f.user('alice');
+			const bob = f.user('bob', 7, false);
+			f.note('failed', 'alice');
+			const succeeding = f.note('succeeding', 'alice');
+			const otherUser = f.note('other-user', 'bob');
+			f.failingNotes.add('failed');
+			expect(await f.processor.process(automaticRound)).toEqual({ deletedCount: 2, skipped: false });
 			expect(f.deleteNote).toHaveBeenCalledTimes(3);
-			expect(f.deleteNote).toHaveBeenNthCalledWith(2, alice, succeeding, false);
-			expect(f.deleteNote).toHaveBeenNthCalledWith(3, bob, otherUser, false);
-			expect(f.existing).toEqual(new Set(['failed']));
-			expect(f.logger.error).toHaveBeenCalledWith(expect.stringContaining('failed'));
-			expect(f.builder.andWhere.mock.calls.filter(([sql]) => sql.includes('note_favorite'))).toHaveLength(1);
+			expect(f.deleteNote).toHaveBeenNthCalledWith(2, alice, expect.objectContaining({ id: succeeding.id }), false);
+			expect(f.deleteNote).toHaveBeenNthCalledWith(3, bob, expect.objectContaining({ id: otherUser.id }), false);
+			expect(f.remaining()).toEqual(['failed']);
+			expect(logged).toContainEqual(['Cleanup note deletion failed', expect.objectContaining({ userId: 'alice', noteId: 'failed' })]);
 		} finally {
 			await f.app.close();
 		}
 	});
 
 	test('does not replay deletion effects for a candidate that has already disappeared', async () => {
-		const alice = user('alice');
-		const deletedElsewhere = note('gone', alice.id);
-		const remaining = note('remaining', alice.id);
-		const f = await fixture([alice], [[deletedElsewhere, remaining]]);
-		f.existing.delete(deletedElsewhere.id);
+		const f = await fixture();
 		try {
-			expect(await f.service.process({} as never)).toEqual({ deletedCount: 1, processedUsers: 1 });
-			expect(f.deleteNote).toHaveBeenCalledExactlyOnceWith(alice, remaining, false);
+			const alice = f.user('alice');
+			f.note('gone', 'alice');
+			const remaining = f.note('remaining', 'alice');
+			f.vanishAfterScan.add('gone');
+			expect(await f.processor.process(automaticRound)).toEqual({ deletedCount: 1, skipped: false });
+			expect(f.deleteNote).toHaveBeenCalledExactlyOnceWith(alice, expect.objectContaining({ id: remaining.id }), false);
 		} finally {
 			await f.app.close();
 		}
 	});
 
 	test('skips disabled or invalid settings and handles an empty eligible batch', async () => {
-		const f = await fixture([user('disabled', null), user('zero', 0), user('negative', -1), user('empty')], [[]]);
+		const f = await fixture();
 		try {
-			expect(await f.service.process({} as never)).toEqual({ deletedCount: 0, processedUsers: 1 });
-			expect(f.builder.getMany).toHaveBeenCalledTimes(1);
+			for (const [id, days] of [['disabled', null], ['zero', 0], ['negative', -1], ['empty', 30]] as const) f.user(id, days);
+			f.note('recent', 'empty', 1);
+			expect(await f.processor.process(automaticRound)).toEqual({ deletedCount: 0, skipped: false });
 			expect(f.deleteNote).not.toHaveBeenCalled();
+			// 기간이 없거나 0 이하인 계정은 자동 지우기 규칙이 없어 검사 순번에도 들지 않는다.
+			for (const id of ['disabled', 'zero', 'negative']) expect(f.state(id).lastRunAt).toEqual(new Date(0));
+			expect(f.state('empty').lastRunAt).toEqual(new Date(NOW));
+			expect(f.remaining()).toEqual(['recent']);
 		} finally {
 			await f.app.close();
 		}

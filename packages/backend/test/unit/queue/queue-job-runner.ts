@@ -54,3 +54,24 @@ describe('runQueueJob', () => {
 		expect(spanActive).toBe(false);
 	});
 });
+
+test('정상 제어 오류는 span 밖에서 원래 값으로 전달하고 다른 오류는 span 안에서 처리한다', async () => {
+	const spanFailures: unknown[] = [];
+	let active = false;
+	const telemetry = { startSpan: async <T>(_name: string, fn: () => T): Promise<Awaited<T>> => {
+		active = true;
+		try { return await fn(); } catch (error) { spanFailures.push(error); throw error; } finally { active = false; }
+	} } as unknown as TelemetryService;
+	const control = new Error('control');
+	const onError = vi.fn(() => { expect(active).toBe(true); throw new Error('logger failed'); });
+	await expect(runQueueJob(telemetry, 'control', () => { throw control; }, onError, error => error === control)).rejects.toBe(control);
+	expect(spanFailures).toEqual([]);
+	expect(onError).not.toHaveBeenCalled();
+	expect(active).toBe(false);
+	const failure = { message: 'non-Error failure' };
+	await expect(runQueueJob(telemetry, 'failure', () => { throw failure; }, onError, error => error === control)).rejects.toBe(failure);
+	expect(spanFailures).toEqual([failure]);
+	expect(onError).toHaveBeenCalledOnce();
+	expect(active).toBe(false);
+	await expect(runQueueJob(telemetry, 'result', () => undefined, onError)).resolves.toBeUndefined();
+});

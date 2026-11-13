@@ -1700,6 +1700,11 @@ type EndpointsResponse = operations['endpoints']['responses']['200']['content'][
 
 declare namespace entities {
     export {
+        NoteCleanupDefaultName,
+        NoteCleanupOperator,
+        NoteCleanupTarget,
+        NoteCleanupFlag,
+        NoteCleanupCondition,
         ID,
         DateString,
         PureRenote,
@@ -2207,6 +2212,16 @@ declare namespace entities {
         IImportUserListsRequest,
         IMoveRequest,
         IMoveResponse,
+        INoteCleanupCreateRequest,
+        INoteCleanupCreateResponse,
+        INoteCleanupDeleteRequest,
+        INoteCleanupListResponse,
+        INoteCleanupPreviewRequest,
+        INoteCleanupPreviewResponse,
+        INoteCleanupRequestRequest,
+        INoteCleanupRequestResponse,
+        INoteCleanupUpdateRequest,
+        INoteCleanupUpdateResponse,
         INotificationsRequest,
         INotificationsResponse,
         INotificationsGroupedRequest,
@@ -2506,6 +2521,7 @@ declare namespace entities {
         QueueMetrics,
         QueueJob,
         Antenna,
+        NoteCleanupRule,
         Clip,
         FederationInstance,
         GalleryPost,
@@ -2963,6 +2979,36 @@ type IMoveRequest = operations['i___move']['requestBody']['content']['applicatio
 type IMoveResponse = operations['i___move']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type INoteCleanupCreateRequest = operations['i___note-cleanup___create']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type INoteCleanupCreateResponse = operations['i___note-cleanup___create']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type INoteCleanupDeleteRequest = operations['i___note-cleanup___delete']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type INoteCleanupListResponse = operations['i___note-cleanup___list']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type INoteCleanupPreviewRequest = operations['i___note-cleanup___preview']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type INoteCleanupPreviewResponse = operations['i___note-cleanup___preview']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type INoteCleanupRequestRequest = operations['i___note-cleanup___request']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type INoteCleanupRequestResponse = operations['i___note-cleanup___request']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type INoteCleanupUpdateRequest = operations['i___note-cleanup___update']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type INoteCleanupUpdateResponse = operations['i___note-cleanup___update']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type INotificationsGroupedRequest = operations['i___notifications-grouped']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -3244,6 +3290,61 @@ declare namespace note {
 export { note }
 
 // @public (undocumented)
+type NoteCleanupCondition = {
+    type: 'all' | 'any';
+    children: NoteCleanupCondition[];
+} | {
+    type: 'not';
+    child: NoteCleanupCondition;
+} | {
+    type: 'keyword';
+    mode: 'literal' | 'regex';
+    value: string;
+    flags: string;
+    targets: NoteCleanupTarget[];
+} | {
+    type: 'age';
+    operator: NoteCleanupOperator;
+    seconds: number;
+} | {
+    type: 'count';
+    field: 'reactions' | 'renotes';
+    operator: NoteCleanupOperator;
+    value: number;
+} | {
+    type: 'flag';
+    field: NoteCleanupFlag;
+    value: boolean;
+} | {
+    type: 'visibility';
+    values: string[];
+} | {
+    type: 'channel';
+    ids: string[];
+} | {
+    type: 'clip';
+    ids: string[] | null;
+} | {
+    type: 'hashtag';
+    value: string;
+};
+
+// @public (undocumented)
+type NoteCleanupDefaultName = 'pinned' | 'favorite' | 'clip' | 'selfReaction' | 'age';
+
+// @public (undocumented)
+type NoteCleanupFlag = 'pinned' | 'favorite' | 'selfReaction' | 'selfRenote' | 'reply' | 'quote' | 'poll' | 'files' | 'cw' | 'localOnly';
+
+// @public (undocumented)
+type NoteCleanupOperator = 'gt' | 'gte' | 'lt' | 'lte';
+
+// @public (undocumented)
+type NoteCleanupRule = components['schemas']['NoteCleanupRule'];
+
+// @public (undocumented)
+type NoteCleanupTarget = 'text' | 'cw' | 'poll' | 'fileComment' | 'fileName';
+
+// @public (undocumented)
 type NoteDraft = components['schemas']['NoteDraft'];
 
 // @public (undocumented)
@@ -3481,7 +3582,7 @@ type Notification_2 = components['schemas']['Notification'];
 type NotificationsCreateRequest = operations['notifications___create']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
-export const notificationTypes: readonly ["note", "follow", "mention", "reply", "renote", "quote", "reaction", "pollEnded", "scheduledNotePosted", "scheduledNotePostFailed", "receiveFollowRequest", "followRequestAccepted", "groupInvited", "app", "roleAssigned", "chatRoomInvitationReceived", "achievementEarned", "exportCompleted", "test", "login", "createToken"];
+export const notificationTypes: readonly ["note", "follow", "mention", "reply", "renote", "quote", "reaction", "pollEnded", "noteCleanupProtectionFailed", "scheduledNotePosted", "scheduledNotePostFailed", "receiveFollowRequest", "followRequestAccepted", "groupInvited", "app", "roleAssigned", "chatRoomInvitationReceived", "achievementEarned", "exportCompleted", "test", "login", "createToken"];
 
 // @public (undocumented)
 export function nyaize(text: string): string;

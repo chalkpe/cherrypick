@@ -88,6 +88,12 @@ export const ROUTE_DEF = [{
 		name: 'avatarDecoration',
 		component: page(() => import('@/pages/settings/avatar-decoration.vue')),
 	}, {
+		path: '/note-cleanup/:ruleId?',
+		name: 'note-cleanup',
+		query: { ruleId: 'ruleId' },
+		component: page(() => import('@/pages/settings/note-cleanup.vue')),
+		loginRequired: true,
+	}, {
 		path: '/privacy',
 		name: 'privacy',
 		component: page(() => import('@/pages/settings/privacy.vue')),

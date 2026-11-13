@@ -16,7 +16,7 @@ import { sqlStringEscape } from '@/misc/sql-string-escape.js';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { MiRepository, miRepository } from '@/models/_.js';
-import type { DataSource, Repository } from 'typeorm';
+import type { DataSource, EntityManager, Repository } from 'typeorm';
 
 const COLUMN_PREFIX = '___' as const;
 const UNIQUE_TEMP_COLUMN_PREFIX = 'unique_temp___' as const;
@@ -176,6 +176,8 @@ export function getJsonSchema<S extends Schema>(schema: S): ToJsonSchema<Unflatt
 // eslint-disable-next-line import/no-default-export
 export default abstract class Chart<T extends Schema> {
 	private logger: Logger;
+	private chartDb: DataSource;
+	protected authoritativeTotalKeys: readonly string[] = [];
 
 	public schema: T;
 
@@ -193,7 +195,7 @@ export default abstract class Chart<T extends Schema> {
 	/**
 	 * 1日に一回程度実行されれば良いような計算処理を入れる(主にCASCADE削除などアプリケーション側で感知できない変動によるズレの修正用)
 	 */
-	protected abstract tickMajor(group: string | null): Promise<Partial<KVs<T>>>;
+	protected abstract tickMajor(group: string | null, manager?: EntityManager): Promise<Partial<KVs<T>>>;
 
 	/**
 	 * 少なくとも最小スパン内に1回は実行されて欲しい計算処理を入れる
@@ -307,8 +309,9 @@ export default abstract class Chart<T extends Schema> {
 		logger: Logger,
 		name: string,
 		schema: T,
-		grouped = false,
+		private readonly grouped = false,
 	) {
+		this.chartDb = db;
 		this.name = name;
 		this.schema = schema;
 		this.lock = lock;
@@ -445,6 +448,73 @@ export default abstract class Chart<T extends Schema> {
 		}
 	}
 
+	// 세 노트 차트만 선택한다. 다른 차트의 buffered/unique/intersection 경로는 유지한다.
+	protected async authoritativeTotals(_manager: EntityManager, _group: string | null): Promise<Partial<KVs<T>>> {
+		return {};
+	}
+
+	public deletionLockKey(group: string | null): string {
+		return JSON.stringify([this.name, group]);
+	}
+
+	public async lockDeletionGroup(manager: EntityManager, group: string | null): Promise<void> {
+		if (this.authoritativeTotalKeys.length > 0 && this.grouped && (typeof group !== 'string' || group.trim().length === 0)) {
+			throw new Error('Chart requires a non-empty group');
+		}
+		// 날짜를 제외하여 새 bucket의 이전 누적값 복사까지 직렬화한다.
+		// 해시 충돌은 직렬화 범위만 넓히며 쓰기 대상을 바꾸지 않는다.
+		await manager.query('SELECT pg_advisory_xact_lock(19770418, hashtext($1))', [this.deletionLockKey(group)]);
+	}
+
+	private async claimLogInTransaction(manager: EntityManager, group: string | null, span: 'hour' | 'day', bucketAt: Date): Promise<RawRecord<T>> {
+		const source = span === 'hour' ? this.repositoryForHour : this.repositoryForDay;
+		const repository = manager.getRepository(source.target);
+		const [y, m, d, h] = Chart.parseDate(bucketAt);
+		const date = Chart.dateToTimestamp(dateUTC(span === 'hour' ? [y, m, d, h] : [y, m, d]));
+		const where = { date, ...(group !== null ? { group } : {}) };
+		const current = await repository.findOneBy(where);
+		if (current) return current as RawRecord<T>;
+
+		const latest = await repository.findOne({ where: group !== null ? { group } : {}, order: { date: -1 } });
+		const data = this.getNewLog(latest ? this.convertRawRecord(latest as RawRecord<T>) : null);
+		const columns: Record<string, number> = {};
+		for (const [k, v] of Object.entries(data)) columns[COLUMN_PREFIX + k.replaceAll('.', COLUMN_DELIMITER)] = v;
+		await repository.insert({ ...where, ...columns });
+		return await repository.findOneByOrFail(where) as RawRecord<T>;
+	}
+
+	private async writeAuthoritativeInTransaction(manager: EntityManager, group: string | null, bucketAt: Date, diff: Record<string, number>, absolute: Partial<KVs<T>> = {}): Promise<void> {
+		// count와 hour/day는 같은 잠금 아래 같은 연결과 bucket을 사용한다.
+		const totals = await this.authoritativeTotals(manager, group);
+		const columns: Record<string, number | (() => string)> = {};
+		for (const [k, v] of Object.entries(diff)) {
+			if (this.authoritativeTotalKeys.includes(k)) continue;
+			if (!this.schema[k] || typeof v !== 'number' || !Number.isFinite(v) || this.schema[k].uniqueIncrement || this.schema[k].intersection) throw new Error('Invalid numeric chart diff');
+			if (v !== 0) {
+				const column = COLUMN_PREFIX + k.replaceAll('.', COLUMN_DELIMITER);
+				columns[column] = () => buildIncrementExpression(column, v, this.schema[k].range);
+			}
+		}
+		for (const [k, v] of Object.entries({ ...absolute, ...totals })) {
+			if (!this.schema[k] || typeof v !== 'number' || !Number.isFinite(v)) throw new Error('Invalid chart total');
+			columns[COLUMN_PREFIX + k.replaceAll('.', COLUMN_DELIMITER)] = clampToColumnRange(v as number, this.schema[k].range);
+		}
+		for (const span of ['hour', 'day'] as const) {
+			const log = await this.claimLogInTransaction(manager, group, span, bucketAt);
+			const source = span === 'hour' ? this.repositoryForHour : this.repositoryForDay;
+			await manager.getRepository(source.target).createQueryBuilder().update().set(columns).where('id = :id', { id: log.id }).execute();
+		}
+	}
+
+	protected async applyDeletionDiffInTransaction(manager: EntityManager, diff: Record<string, number>, group: string | null, bucketAt: Date): Promise<void> {
+		if (this.authoritativeTotalKeys.length === 0) throw new Error('Chart does not support deletion receipts');
+		for (const [k, v] of Object.entries(diff)) {
+			if (this.authoritativeTotalKeys.includes(k) || !(k.endsWith('.dec') || k === 'dec' || k.includes('diffs.')) || typeof v !== 'number') throw new Error('Invalid deletion chart diff');
+		}
+		await this.lockDeletionGroup(manager, group);
+		await this.writeAuthoritativeInTransaction(manager, group, bucketAt, diff);
+	}
+
 	protected commit(diff: Commit<T>, group: string | null = null): void {
 		for (const [k, v] of Object.entries(diff)) {
 			if (v == null || v === 0 || (Array.isArray(v) && v.length === 0)) delete diff[k];
@@ -473,6 +543,23 @@ export default abstract class Chart<T extends Schema> {
 		// 次に save が行われるのは 02:10 ということになるが、もし 01:55 に新規ログが buffer に追加されたとすると、
 		// そのログは本来は 01:00~ のログとしてDBに保存されて欲しいのに、02:00~ のログ扱いになってしまう。
 		// これを回避するための実装は複雑になりそうなため、一旦保留。
+
+		if (this.authoritativeTotalKeys.length > 0) {
+			for (const group of removeDuplicates(buffer.map(log => log.group))) {
+				const diff: Record<string, number> = {};
+				for (const entry of buffer.filter(log => log.group === group)) {
+					for (const [k, v] of Object.entries(entry.diff)) {
+						if (typeof v !== 'number') throw new Error('Invalid numeric chart buffer');
+						diff[k] = (diff[k] ?? 0) + v;
+					}
+				}
+				await this.chartDb.transaction(async manager => {
+					await this.lockDeletionGroup(manager, group);
+					await this.writeAuthoritativeInTransaction(manager, group, new Date(), diff);
+				});
+			}
+			return;
+		}
 
 		const update = async (logHour: RawRecord<T>, logDay: RawRecord<T>): Promise<void> => {
 			const finalDiffs = {} as Record<string, number | string[]>;
@@ -581,6 +668,17 @@ export default abstract class Chart<T extends Schema> {
 
 	@bindThis
 	public async tick(major: boolean, group: string | null = null): Promise<void> {
+		if (this.authoritativeTotalKeys.length > 0) {
+			// 정기 처리기의 인자 없는 grouped minor tick은 기존처럼 무작업이다.
+			if (this.grouped && group === null && !major) return;
+			await this.chartDb.transaction(async manager => {
+				await this.lockDeletionGroup(manager, group);
+				const bucketAt = new Date();
+				const data = major ? await this.tickMajor(group, manager) : await this.tickMinor(group);
+				await this.writeAuthoritativeInTransaction(manager, group, bucketAt, {}, data);
+			});
+			return;
+		}
 		const data = major ? await this.tickMajor(group) : await this.tickMinor(group);
 
 		const columns = {} as Record<keyof Columns<T>, number>;

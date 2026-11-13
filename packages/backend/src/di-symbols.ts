@@ -19,6 +19,8 @@ export const DI = {
 	//#region Repositories
 	usersRepository: Symbol('usersRepository'),
 	notesRepository: Symbol('notesRepository'),
+	noteDeleteReceiptsRepository: Symbol('noteDeleteReceiptsRepository'),
+	noteDeleteDeliveriesRepository: Symbol('noteDeleteDeliveriesRepository'),
 	abuseReportResolversRepository: Symbol('abuseReportResolversRepository'),
 	announcementsRepository: Symbol('announcementsRepository'),
 	announcementReadsRepository: Symbol('announcementReadsRepository'),
@@ -68,6 +70,8 @@ export const DI = {
 	galleryLikesRepository: Symbol('galleryLikesRepository'),
 	moderationLogsRepository: Symbol('moderationLogsRepository'),
 	clipsRepository: Symbol('clipsRepository'),
+	noteCleanupRulesRepository: Symbol('noteCleanupRulesRepository'),
+	noteCleanupStatesRepository: Symbol('noteCleanupStatesRepository'),
 	clipNotesRepository: Symbol('clipNotesRepository'),
 	clipFavoritesRepository: Symbol('clipFavoritesRepository'),
 	antennasRepository: Symbol('antennasRepository'),

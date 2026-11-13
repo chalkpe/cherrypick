@@ -110,6 +110,19 @@ export class RelayService {
 		);
 	}
 
+	// 기존 10분 accepted 캐시에서 대상 값만 복사한다.
+	@bindThis
+	public async snapshotDeliveryTargets(): Promise<{ id: string; inbox: string }[]> {
+		return (await this.getAcceptedRelays()).map(relay => ({ id: relay.id, inbox: relay.inbox }));
+	}
+
+	@bindThis
+	public prepareActivity(activity: any): any {
+		const copy = deepClone(activity);
+		if (!copy.to) copy.to = ['https://www.w3.org/ns/activitystreams#Public'];
+		return copy;
+	}
+
 	@bindThis
 	public async deliverToRelays(user: { id: MiUser['id']; host: null; }, activity: any): Promise<void> {
 		if (activity == null) return;
@@ -117,8 +130,7 @@ export class RelayService {
 		const relays = await this.getAcceptedRelays();
 		if (relays.length === 0) return;
 
-		const copy = deepClone(activity);
-		if (!copy.to) copy.to = ['https://www.w3.org/ns/activitystreams#Public'];
+		const copy = this.prepareActivity(activity);
 
 		const signed = await this.apRendererService.attachLdSignature(copy, user);
 

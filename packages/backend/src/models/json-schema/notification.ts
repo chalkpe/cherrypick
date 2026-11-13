@@ -32,6 +32,14 @@ export const packedNotificationSchema = {
 		type: 'object',
 		properties: {
 			...baseSchema.properties,
+			type: { type: 'string', optional: false, nullable: false, enum: ['noteCleanupProtectionFailed'] },
+			ruleId: { type: 'string', optional: false, nullable: false, format: 'id' },
+			errorCode: { type: 'string', optional: false, nullable: false },
+		},
+	}, {
+		type: 'object',
+		properties: {
+			...baseSchema.properties,
 			type: {
 				type: 'string',
 				optional: false, nullable: false,

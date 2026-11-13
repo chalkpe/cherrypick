@@ -27,6 +27,9 @@ import { MiChannelFollowing } from '@/models/ChannelFollowing.js';
 import { MiChannelFavorite } from '@/models/ChannelFavorite.js';
 import { MiChannelMuting } from '@/models/ChannelMuting.js';
 import { MiClip } from '@/models/Clip.js';
+import { MiNoteDeleteReceipt } from '@/models/NoteDeleteReceipt.js';
+import { MiNoteDeleteDelivery } from '@/models/NoteDeleteDelivery.js';
+import { MiNoteCleanupRule, MiNoteCleanupState } from '@/models/NoteCleanupRule.js';
 import { MiClipNote } from '@/models/ClipNote.js';
 import { MiClipFavorite } from '@/models/ClipFavorite.js';
 import { MiDriveFile } from '@/models/DriveFile.js';
@@ -239,6 +242,10 @@ export const entities = [
 	MiSignin,
 	MiModerationLog,
 	MiClip,
+	MiNoteDeleteReceipt,
+	MiNoteDeleteDelivery,
+	MiNoteCleanupRule,
+	MiNoteCleanupState,
 	MiClipNote,
 	MiClipFavorite,
 	MiAntenna,

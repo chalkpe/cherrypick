@@ -25,6 +25,10 @@ import {
 	MiChannelMuting,
 	MiClip,
 	MiClipFavorite,
+	MiNoteDeleteReceipt,
+	MiNoteDeleteDelivery,
+	MiNoteCleanupRule,
+	MiNoteCleanupState,
 	MiClipNote,
 	MiDriveFile,
 	MiDriveFolder,
@@ -407,6 +411,29 @@ const $clipsRepository: Provider = {
 	inject: [DI.db],
 };
 
+const $noteDeleteReceiptsRepository: Provider = {
+	provide: DI.noteDeleteReceiptsRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiNoteDeleteReceipt).extend(miRepository as MiRepository<MiNoteDeleteReceipt>),
+	inject: [DI.db],
+};
+
+const $noteDeleteDeliveriesRepository: Provider = {
+	provide: DI.noteDeleteDeliveriesRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiNoteDeleteDelivery).extend(miRepository as MiRepository<MiNoteDeleteDelivery>),
+	inject: [DI.db],
+};
+
+const $noteCleanupRulesRepository: Provider = {
+	provide: DI.noteCleanupRulesRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiNoteCleanupRule).extend(miRepository as MiRepository<MiNoteCleanupRule>),
+	inject: [DI.db],
+};
+const $noteCleanupStatesRepository: Provider = {
+	provide: DI.noteCleanupStatesRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiNoteCleanupState).extend(miRepository as MiRepository<MiNoteCleanupState>),
+	inject: [DI.db],
+};
+
 const $clipNotesRepository: Provider = {
 	provide: DI.clipNotesRepository,
 	useFactory: (db: DataSource) => db.getRepository(MiClipNote).extend(miRepository as MiRepository<MiClipNote>),
@@ -598,6 +625,8 @@ const $noteHistoryRepository: Provider = {
 	providers: [
 		$usersRepository,
 		$notesRepository,
+		$noteDeleteReceiptsRepository,
+		$noteDeleteDeliveriesRepository,
 		$announcementsRepository,
 		$announcementReadsRepository,
 		$appsRepository,
@@ -648,6 +677,8 @@ const $noteHistoryRepository: Provider = {
 		$galleryLikesRepository,
 		$moderationLogsRepository,
 		$clipsRepository,
+		$noteCleanupRulesRepository,
+		$noteCleanupStatesRepository,
 		$clipNotesRepository,
 		$clipFavoritesRepository,
 		$antennasRepository,
@@ -683,6 +714,8 @@ const $noteHistoryRepository: Provider = {
 	exports: [
 		$usersRepository,
 		$notesRepository,
+		$noteDeleteReceiptsRepository,
+		$noteDeleteDeliveriesRepository,
 		$announcementsRepository,
 		$announcementReadsRepository,
 		$appsRepository,
@@ -733,6 +766,8 @@ const $noteHistoryRepository: Provider = {
 		$galleryLikesRepository,
 		$moderationLogsRepository,
 		$clipsRepository,
+		$noteCleanupRulesRepository,
+		$noteCleanupStatesRepository,
 		$clipNotesRepository,
 		$clipFavoritesRepository,
 		$antennasRepository,

@@ -16,6 +16,20 @@ import type { SystemWebhookPayload } from '@/core/SystemWebhookService.js';
 import type { UserWebhookPayload } from '@/core/UserWebhookService.js';
 import type httpSignature from '@peertube/http-signature';
 
+export type NoteDeleteDeliveryIdentity = {
+	receiptNoteId: string;
+	ownerUserId: string;
+	channel: 'followers' | 'direct' | 'relay';
+	targetKey: string;
+	generation: number;
+};
+
+export type NoteDeleteDeliverJobData = {
+	noteDeleteDelivery: NoteDeleteDeliveryIdentity;
+};
+
+export type DeliveryQueueJobData = DeliverJobData | NoteDeleteDeliverJobData;
+
 export type DeliverJobData = {
 	/** Actor */
 	user: ThinUser;

@@ -17,6 +17,7 @@ import type {
 	PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/browser';
 
+export type { NoteCleanupDefaultName, NoteCleanupOperator, NoteCleanupTarget, NoteCleanupFlag, NoteCleanupCondition } from './note-cleanup.js';
 export * from './autogen/entities.js';
 export * from './autogen/models.js';
 

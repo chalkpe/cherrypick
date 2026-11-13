@@ -136,7 +136,7 @@ const nonConfigurableNotificationTypes = ['note', 'roleAssigned', 'followRequest
 
 const configurableNotificationTypes = notificationTypes.filter(type => !nonConfigurableNotificationTypes.includes(type as any)) as Exclude<typeof notificationTypes[number], typeof nonConfigurableNotificationTypes[number]>[];
 
-const onlyOnOrOffNotificationTypes = ['app', 'achievementEarned', 'login', 'createToken', 'scheduledNotePosted', 'scheduledNotePostFailed'] as const satisfies (typeof notificationTypes[number])[];
+const onlyOnOrOffNotificationTypes = ['app', 'achievementEarned', 'login', 'createToken', 'scheduledNotePosted', 'scheduledNotePostFailed', 'noteCleanupProtectionFailed'] as const satisfies (typeof notificationTypes[number])[];
 
 const allowButton = useTemplateRef('allowButton');
 const pushRegistrationInServer = computed(() => allowButton.value?.pushRegistrationInServer);

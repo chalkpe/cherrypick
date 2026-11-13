@@ -55,6 +55,8 @@ import { AggregateRetentionProcessorService } from './processors/AggregateRetent
 import { CleanRemoteNotesProcessorService } from './processors/CleanRemoteNotesProcessorService.js';
 import { ScheduledNoteDeleteProcessorService } from './processors/ScheduledNoteDeleteProcessorService.js';
 import { QueueLoggerService } from './QueueLoggerService.js';
+import { NoteDeleteDeliveryService } from '@/core/NoteDeleteDeliveryService.js';
+import { NoteDeleteLocalRunnerService } from '@/core/NoteDeleteLocalRunnerService.js';
 import { AutoDeleteNotesProcessorService } from './processors/AutoDeleteNotesProcessorService.js';
 import { QUEUE, baseWorkerOptions } from './const.js';
 
@@ -150,6 +152,8 @@ export class QueueProcessorService implements OnApplicationShutdown {
 		private autoDeleteNotesProcessorService: AutoDeleteNotesProcessorService,
 		private cleanRemoteNotesProcessorService: CleanRemoteNotesProcessorService,
 		private scheduledNoteDeleteProcessorService: ScheduledNoteDeleteProcessorService,
+		private noteDeleteLocalRunnerService: NoteDeleteLocalRunnerService,
+		private noteDeleteDeliveryService: NoteDeleteDeliveryService,
 	) {
 		this.logger = this.queueLoggerService.logger;
 
@@ -182,7 +186,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 		// 以下の各 Worker はジョブの実処理全体を worker span で囲む。
 		//#region system
 		{
-			const processer = (job: Bull.Job) => {
+			const processer = async (job: Bull.Job) => {
 				switch (job.name) {
 					case 'tickCharts': return this.tickChartsProcessorService.process();
 					case 'resyncCharts': return this.resyncChartsProcessorService.process();
@@ -194,6 +198,12 @@ export class QueueProcessorService implements OnApplicationShutdown {
 					case 'checkModeratorsActivity': return this.checkModeratorsActivityProcessorService.process();
 					case 'clean': return this.cleanProcessorService.process();
 					case 'cleanRemoteNotes': return this.cleanRemoteNotesProcessorService.process(job);
+					case 'recoverNoteDeletes': {
+						let full = false;
+						try { full = (await this.noteDeleteDeliveryService.scanPage()).full; } finally { full = (await this.noteDeleteLocalRunnerService.scan()) === 10 || full; }
+						if (full) await this.noteDeleteDeliveryService.requestRecovery();
+						return;
+					}
 					case 'autoDeleteNotes': return this.autoDeleteNotesProcessorService.process(job);
 					default: throw new Error(`unrecognized job type ${job.name} for system`);
 				}
@@ -212,6 +222,7 @@ export class QueueProcessorService implements OnApplicationShutdown {
 							extra: { job, err },
 						});
 					},
+					job.name === 'autoDeleteNotes' ? error => error instanceof Bull.DelayedError : undefined,
 				);
 			}, {
 				...baseWorkerOptions(this.config, QUEUE.SYSTEM, this.redisForJobQueue),

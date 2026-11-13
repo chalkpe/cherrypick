@@ -2947,6 +2947,64 @@ export type paths = {
          */
         post: operations['i___move'];
     };
+    '/i/note-cleanup/create': {
+        /**
+         * i/note-cleanup/create
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the cherrypick mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:account*
+         */
+        post: operations['i___note-cleanup___create'];
+    };
+    '/i/note-cleanup/delete': {
+        /**
+         * i/note-cleanup/delete
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the cherrypick mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:account*
+         */
+        post: operations['i___note-cleanup___delete'];
+    };
+    '/i/note-cleanup/list': {
+        /**
+         * i/note-cleanup/list
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:account*
+         */
+        post: operations['i___note-cleanup___list'];
+    };
+    '/i/note-cleanup/preview': {
+        /**
+         * i/note-cleanup/preview
+         * @description No description provided.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *read:account*
+         */
+        post: operations['i___note-cleanup___preview'];
+    };
+    '/i/note-cleanup/request': {
+        /**
+         * i/note-cleanup/request
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the cherrypick mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:account*
+         */
+        post: operations['i___note-cleanup___request'];
+    };
+    '/i/note-cleanup/update': {
+        /**
+         * i/note-cleanup/update
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the cherrypick mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:account*
+         */
+        post: operations['i___note-cleanup___update'];
+    };
     '/i/notifications': {
         /**
          * i/notifications
@@ -4735,6 +4793,15 @@ export type components = {
                     /** Format: misskey:id */
                     userListId: string;
                 };
+                noteCleanupProtectionFailed?: {
+                    /** @enum {string} */
+                    type: 'all' | 'following' | 'follower' | 'mutualFollow' | 'followingOrFollower' | 'never';
+                } | {
+                    /** @enum {string} */
+                    type: 'list';
+                    /** Format: misskey:id */
+                    userListId: string;
+                };
                 scheduledNotePosted?: {
                     /** @enum {string} */
                     type: 'all' | 'following' | 'follower' | 'mutualFollow' | 'followingOrFollower' | 'never';
@@ -5154,6 +5221,16 @@ export type components = {
             noteId: string;
         };
         Notification: {
+            /** Format: id */
+            id: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** @enum {string} */
+            type: 'noteCleanupProtectionFailed';
+            /** Format: id */
+            ruleId: string;
+            errorCode: string;
+        } | {
             /** Format: id */
             id: string;
             /** Format: date-time */
@@ -5685,6 +5762,31 @@ export type components = {
             notify: boolean;
             /** @default false */
             excludeNotesInSensitiveChannel: boolean;
+        };
+        NoteCleanupRule: {
+            id: string;
+            name: string;
+            /** @enum {string|null} */
+            defaultName: 'pinned' | 'favorite' | 'clip' | 'selfReaction' | 'age' | null;
+            /** @enum {string} */
+            action: 'keep' | 'delete';
+            enabled: boolean;
+            automatic: boolean;
+            automaticConfirmed: boolean;
+            condition: {
+                [key: string]: unknown;
+            };
+            lastError: {
+                ruleId: string;
+                code: string;
+                path: string;
+                message: string;
+                userActionable: boolean;
+                referenceId?: string;
+                referenceType?: string;
+            } | null;
+            /** @enum {string|null} */
+            legacy: 'age' | 'favorite' | null;
         };
         Clip: {
             /**
@@ -29843,6 +29945,584 @@ export interface operations {
             };
         };
     };
+    'i___note-cleanup___create': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    name: string;
+                    /** @enum {string} */
+                    action: 'keep' | 'delete';
+                    condition: {
+                        [key: string]: unknown;
+                    };
+                    enabled?: boolean;
+                    automatic?: boolean;
+                    confirmed?: boolean;
+                    previewToken?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        rule: {
+                            id: string;
+                            name: string;
+                            /** @enum {string|null} */
+                            defaultName: 'pinned' | 'favorite' | 'clip' | 'selfReaction' | 'age' | null;
+                            /** @enum {string} */
+                            action: 'keep' | 'delete';
+                            enabled: boolean;
+                            automatic: boolean;
+                            automaticConfirmed: boolean;
+                            condition: {
+                                [key: string]: unknown;
+                            };
+                            lastError: {
+                                ruleId: string;
+                                code: string;
+                                path: string;
+                                message: string;
+                                userActionable: boolean;
+                                referenceId?: string;
+                                referenceType?: string;
+                            } | null;
+                            /** @enum {string|null} */
+                            legacy: 'age' | 'favorite' | null;
+                        };
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'i___note-cleanup___delete': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    ruleId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (without any results) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'i___note-cleanup___list': {
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        rules: {
+                            id: string;
+                            name: string;
+                            /** @enum {string|null} */
+                            defaultName: 'pinned' | 'favorite' | 'clip' | 'selfReaction' | 'age' | null;
+                            /** @enum {string} */
+                            action: 'keep' | 'delete';
+                            enabled: boolean;
+                            automatic: boolean;
+                            automaticConfirmed: boolean;
+                            condition: {
+                                [key: string]: unknown;
+                            };
+                            lastError: {
+                                ruleId: string;
+                                code: string;
+                                path: string;
+                                message: string;
+                                userActionable: boolean;
+                                referenceId?: string;
+                                referenceType?: string;
+                            } | null;
+                            /** @enum {string|null} */
+                            legacy: 'age' | 'favorite' | null;
+                        }[];
+                        blocked: boolean;
+                        migrated: boolean;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'i___note-cleanup___preview': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    ruleIds: string[];
+                    /** Format: misskey:id */
+                    afterId?: string;
+                    /** @default 100 */
+                    limit?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        rules: {
+                            id: string;
+                            name: string;
+                            /** @enum {string|null} */
+                            defaultName: 'pinned' | 'favorite' | 'clip' | 'selfReaction' | 'age' | null;
+                            /** @enum {string} */
+                            action: 'keep' | 'delete';
+                        }[];
+                        items: {
+                            noteId: string;
+                            text: string | null;
+                            cw: string | null;
+                            createdAt: string;
+                            keepRuleIds: string[];
+                            deleteRuleIds: string[];
+                            /** @enum {string} */
+                            decision: 'keep' | 'delete';
+                            /** @enum {string} */
+                            reason: 'protected' | 'unmatched' | 'matched' | 'blocked';
+                        }[];
+                        scanned: number;
+                        deleteCount: number;
+                        protectedCount: number;
+                        nextCursor: string | null;
+                        complete: boolean;
+                        errors: {
+                            ruleId: string;
+                            code: string;
+                            path: string;
+                            message: string;
+                            userActionable: boolean;
+                            referenceId?: string;
+                            referenceType?: string;
+                        }[];
+                        previewToken: string;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'i___note-cleanup___request': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    ruleIds: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        queued: boolean;
+                        jobId: string;
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'i___note-cleanup___update': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    name?: string;
+                    /** @enum {string} */
+                    action: 'keep' | 'delete';
+                    condition: {
+                        [key: string]: unknown;
+                    };
+                    enabled?: boolean;
+                    automatic?: boolean;
+                    confirmed?: boolean;
+                    previewToken?: string;
+                    /** Format: misskey:id */
+                    ruleId: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        rule: {
+                            id: string;
+                            name: string;
+                            /** @enum {string|null} */
+                            defaultName: 'pinned' | 'favorite' | 'clip' | 'selfReaction' | 'age' | null;
+                            /** @enum {string} */
+                            action: 'keep' | 'delete';
+                            enabled: boolean;
+                            automatic: boolean;
+                            automaticConfirmed: boolean;
+                            condition: {
+                                [key: string]: unknown;
+                            };
+                            lastError: {
+                                ruleId: string;
+                                code: string;
+                                path: string;
+                                message: string;
+                                userActionable: boolean;
+                                referenceId?: string;
+                                referenceType?: string;
+                            } | null;
+                            /** @enum {string|null} */
+                            legacy: 'age' | 'favorite' | null;
+                        };
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
     i___notifications: {
         requestBody: {
             content: {
@@ -29857,8 +30537,8 @@ export interface operations {
                     untilDate?: number;
                     /** @default true */
                     markAsRead?: boolean;
-                    includeTypes?: ('note' | 'follow' | 'mention' | 'reply' | 'renote' | 'quote' | 'reaction' | 'pollEnded' | 'scheduledNotePosted' | 'scheduledNotePostFailed' | 'receiveFollowRequest' | 'followRequestAccepted' | 'groupInvited' | 'roleAssigned' | 'chatRoomInvitationReceived' | 'achievementEarned' | 'exportCompleted' | 'login' | 'createToken' | 'app' | 'test' | 'pollVote')[];
-                    excludeTypes?: ('note' | 'follow' | 'mention' | 'reply' | 'renote' | 'quote' | 'reaction' | 'pollEnded' | 'scheduledNotePosted' | 'scheduledNotePostFailed' | 'receiveFollowRequest' | 'followRequestAccepted' | 'groupInvited' | 'roleAssigned' | 'chatRoomInvitationReceived' | 'achievementEarned' | 'exportCompleted' | 'login' | 'createToken' | 'app' | 'test' | 'pollVote')[];
+                    includeTypes?: ('note' | 'follow' | 'mention' | 'reply' | 'renote' | 'quote' | 'reaction' | 'pollEnded' | 'noteCleanupProtectionFailed' | 'scheduledNotePosted' | 'scheduledNotePostFailed' | 'receiveFollowRequest' | 'followRequestAccepted' | 'groupInvited' | 'roleAssigned' | 'chatRoomInvitationReceived' | 'achievementEarned' | 'exportCompleted' | 'login' | 'createToken' | 'app' | 'test' | 'pollVote')[];
+                    excludeTypes?: ('note' | 'follow' | 'mention' | 'reply' | 'renote' | 'quote' | 'reaction' | 'pollEnded' | 'noteCleanupProtectionFailed' | 'scheduledNotePosted' | 'scheduledNotePostFailed' | 'receiveFollowRequest' | 'followRequestAccepted' | 'groupInvited' | 'roleAssigned' | 'chatRoomInvitationReceived' | 'achievementEarned' | 'exportCompleted' | 'login' | 'createToken' | 'app' | 'test' | 'pollVote')[];
                 };
             };
         };
@@ -29942,8 +30622,8 @@ export interface operations {
                     untilDate?: number;
                     /** @default true */
                     markAsRead?: boolean;
-                    includeTypes?: ('note' | 'follow' | 'mention' | 'reply' | 'renote' | 'quote' | 'reaction' | 'pollEnded' | 'scheduledNotePosted' | 'scheduledNotePostFailed' | 'receiveFollowRequest' | 'followRequestAccepted' | 'groupInvited' | 'roleAssigned' | 'chatRoomInvitationReceived' | 'achievementEarned' | 'exportCompleted' | 'login' | 'createToken' | 'app' | 'test' | 'pollVote')[];
-                    excludeTypes?: ('note' | 'follow' | 'mention' | 'reply' | 'renote' | 'quote' | 'reaction' | 'pollEnded' | 'scheduledNotePosted' | 'scheduledNotePostFailed' | 'receiveFollowRequest' | 'followRequestAccepted' | 'groupInvited' | 'roleAssigned' | 'chatRoomInvitationReceived' | 'achievementEarned' | 'exportCompleted' | 'login' | 'createToken' | 'app' | 'test' | 'pollVote')[];
+                    includeTypes?: ('note' | 'follow' | 'mention' | 'reply' | 'renote' | 'quote' | 'reaction' | 'pollEnded' | 'noteCleanupProtectionFailed' | 'scheduledNotePosted' | 'scheduledNotePostFailed' | 'receiveFollowRequest' | 'followRequestAccepted' | 'groupInvited' | 'roleAssigned' | 'chatRoomInvitationReceived' | 'achievementEarned' | 'exportCompleted' | 'login' | 'createToken' | 'app' | 'test' | 'pollVote')[];
+                    excludeTypes?: ('note' | 'follow' | 'mention' | 'reply' | 'renote' | 'quote' | 'reaction' | 'pollEnded' | 'noteCleanupProtectionFailed' | 'scheduledNotePosted' | 'scheduledNotePostFailed' | 'receiveFollowRequest' | 'followRequestAccepted' | 'groupInvited' | 'roleAssigned' | 'chatRoomInvitationReceived' | 'achievementEarned' | 'exportCompleted' | 'login' | 'createToken' | 'app' | 'test' | 'pollVote')[];
                 };
             };
         };
@@ -31279,6 +31959,15 @@ export interface operations {
                             userListId: string;
                         };
                         pollEnded?: {
+                            /** @enum {string} */
+                            type: 'all' | 'following' | 'follower' | 'mutualFollow' | 'followingOrFollower' | 'never';
+                        } | {
+                            /** @enum {string} */
+                            type: 'list';
+                            /** Format: misskey:id */
+                            userListId: string;
+                        };
+                        noteCleanupProtectionFailed?: {
                             /** @enum {string} */
                             type: 'all' | 'following' | 'follower' | 'mutualFollow' | 'followingOrFollower' | 'never';
                         } | {

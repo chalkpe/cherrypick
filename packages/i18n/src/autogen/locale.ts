@@ -13303,6 +13303,10 @@ export interface Locale extends ILocale {
              */
             "scheduledNotePostFailed": string;
             /**
+             * ノート保護の判定エラー
+             */
+            "noteCleanupProtectionFailed": string;
+            /**
              * フォロー申請を受け取った
              */
             "receiveFollowRequest": string;
@@ -16306,5 +16310,587 @@ export interface Locale extends ILocale {
          * 移動したファイル: {moved}個。失敗: {failed}個。失敗したファイルをもう一度移動してください。
          */
         "moveResult": ParameterizedString<"moved" | "failed">;
+    };
+    "_noteCleanup": {
+        "_defaultNames": {
+            /**
+             * ピン留めした自分のノート
+             */
+            "pinned": string;
+            /**
+             * お気に入りに登録した自分のノート
+             */
+            "favorite": string;
+            /**
+             * 自分のクリップに追加した自分のノート
+             */
+            "clip": string;
+            /**
+             * リアクションした自分のノート
+             */
+            "selfReaction": string;
+            /**
+             * 保存期間を過ぎた自分のノート
+             */
+            "age": string;
+        };
+        /**
+         * ノート整理
+         */
+        "title": string;
+        /**
+         * 自分が書いたノートだけを整理します。残すルールはすべての実行に共通し、削除より優先します。どの削除ルールにも該当しないノートは残ります。
+         */
+        "intro": string;
+        /**
+         * 残す範囲が広いと、ノートが一切削除されないことがあります。
+         */
+        "broadProtection": string;
+        /**
+         * 残す
+         */
+        "keep": string;
+        /**
+         * 削除する
+         */
+        "delete": string;
+        /**
+         * ルール名
+         */
+        "name": string;
+        /**
+         * ルールの役割
+         */
+        "action": string;
+        /**
+         * ルールを追加
+         */
+        "newRule": string;
+        /**
+         * 保存したルール
+         */
+        "rules": string;
+        /**
+         * 条件
+         */
+        "condition": string;
+        /**
+         * 条件を検索
+         */
+        "searchCondition": string;
+        /**
+         * 追加する条件
+         */
+        "chooseCondition": string;
+        /**
+         * すべて満たす
+         */
+        "all": string;
+        /**
+         * いずれかを満たす
+         */
+        "any": string;
+        /**
+         * 条件を反転
+         */
+        "not": string;
+        /**
+         * キーワード
+         */
+        "keyword": string;
+        /**
+         * 作成からの経過期間
+         */
+        "age": string;
+        /**
+         * 受け取った反応数
+         */
+        "count": string;
+        /**
+         * ノートの状態
+         */
+        "flag": string;
+        /**
+         * 公開範囲
+         */
+        "visibility": string;
+        /**
+         * チャンネル
+         */
+        "channel": string;
+        /**
+         * 自分のクリップ
+         */
+        "clip": string;
+        /**
+         * ハッシュタグ
+         */
+        "hashtag": string;
+        /**
+         * 通常のキーワード
+         */
+        "literal": string;
+        /**
+         * 高度な設定: 正規表現
+         */
+        "regex": string;
+        /**
+         * 検索方法
+         */
+        "mode": string;
+        /**
+         * キーワード・パターン
+         */
+        "pattern": string;
+        /**
+         * 正規表現のフラグ
+         */
+        "flags": string;
+        /**
+         * 通常のキーワードはNFCで部分一致し、英字の大文字小文字を区別しません。空白・改行は保持し、頭文字・類義語・互換文字は展開しません。スラッシュや記号も文字として扱います。正規表現はサーバーのRE2で検証・判定します。
+         */
+        "keywordHelp": string;
+        /**
+         * キーワードの検索範囲
+         */
+        "targets": string;
+        /**
+         * 本文
+         */
+        "text": string;
+        /**
+         * CW
+         */
+        "cw": string;
+        /**
+         * アンケート
+         */
+        "poll": string;
+        /**
+         * 添付の説明
+         */
+        "fileComment": string;
+        /**
+         * ファイル名
+         */
+        "fileName": string;
+        /**
+         * 比較
+         */
+        "operator": string;
+        /**
+         * 以上
+         */
+        "gte": string;
+        /**
+         * 超過
+         */
+        "gt": string;
+        /**
+         * 以下
+         */
+        "lte": string;
+        /**
+         * 未満
+         */
+        "lt": string;
+        /**
+         * 数値
+         */
+        "amount": string;
+        /**
+         * 期間の単位
+         */
+        "unit": string;
+        /**
+         * 秒
+         */
+        "seconds": string;
+        /**
+         * 分
+         */
+        "minutes": string;
+        /**
+         * 時間
+         */
+        "hours": string;
+        /**
+         * 日
+         */
+        "days": string;
+        "_duration": {
+            /**
+             * {n}秒
+             */
+            "seconds": ParameterizedString<"n">;
+            /**
+             * {n}分
+             */
+            "minutes": ParameterizedString<"n">;
+            /**
+             * {n}時間
+             */
+            "hours": ParameterizedString<"n">;
+            /**
+             * {n}日
+             */
+            "days": ParameterizedString<"n">;
+        };
+        "_ageSummary": {
+            /**
+             * 経過期間が{duration}以上
+             */
+            "gte": ParameterizedString<"duration">;
+            /**
+             * 経過期間が{duration}を超える
+             */
+            "gt": ParameterizedString<"duration">;
+            /**
+             * 経過期間が{duration}以下
+             */
+            "lte": ParameterizedString<"duration">;
+            /**
+             * 経過期間が{duration}未満
+             */
+            "lt": ParameterizedString<"duration">;
+        };
+        "_countSummary": {
+            /**
+             * {field}が{value}以上
+             */
+            "gte": ParameterizedString<"field" | "value">;
+            /**
+             * {field}が{value}を超える
+             */
+            "gt": ParameterizedString<"field" | "value">;
+            /**
+             * {field}が{value}以下
+             */
+            "lte": ParameterizedString<"field" | "value">;
+            /**
+             * {field}が{value}未満
+             */
+            "lt": ParameterizedString<"field" | "value">;
+        };
+        /**
+         * 元の作成時刻から数えます。1日は24時間です。
+         */
+        "ageHelp": string;
+        /**
+         * 受け取ったリアクション数
+         */
+        "reactions": string;
+        /**
+         * 受け取ったリノート数
+         */
+        "renotes": string;
+        /**
+         * 自分が固定したノート
+         */
+        "pinned": string;
+        /**
+         * 自分がお気に入りにした自分のノート
+         */
+        "favorite": string;
+        /**
+         * 自分がリアクションした自分のノート
+         */
+        "selfReaction": string;
+        /**
+         * 自分がリノートした元の自分のノート
+         */
+        "selfRenote": string;
+        /**
+         * 返信
+         */
+        "reply": string;
+        /**
+         * 引用
+         */
+        "quote": string;
+        /**
+         * 添付ファイルあり
+         */
+        "files": string;
+        /**
+         * ローカルのみ
+         */
+        "localOnly": string;
+        /**
+         * 該当する
+         */
+        "yes": string;
+        /**
+         * 該当しない
+         */
+        "no": string;
+        /**
+         * 自分のすべてのクリップ（公開・非公開）
+         */
+        "allClips": string;
+        /**
+         * 指定した自分のクリップ
+         */
+        "selectedClips": string;
+        /**
+         * 参照を選択・修正
+         */
+        "references": string;
+        /**
+         * 名前で検索
+         */
+        "searchReferences": string;
+        /**
+         * この選択項目を確認できません。削除するか、別の対象を選んでください。
+         */
+        "missingReference": string;
+        /**
+         * 参照一覧を取得できませんでした。再試行してください。
+         */
+        "referenceError": string;
+        /**
+         * 元に戻す
+         */
+        "undo": string;
+        /**
+         * やり直す
+         */
+        "redo": string;
+        /**
+         * 複製
+         */
+        "duplicate": string;
+        /**
+         * 上へ移動
+         */
+        "up": string;
+        /**
+         * 下へ移動
+         */
+        "down": string;
+        /**
+         * 別のグループへ移動
+         */
+        "move": string;
+        /**
+         * 先頭
+         */
+        "root": string;
+        /**
+         * 条件の種類を変更
+         */
+        "replace": string;
+        /**
+         * この操作で下位条件が置き換わります。元に戻す操作で復元できます。
+         */
+        "replaceWarning": string;
+        /**
+         * 未完成の条件があります。値・検索範囲・参照を入力してください。
+         */
+        "incomplete": string;
+        /**
+         * 最大32ルール、128条件、深さ8、キーワード512文字、参照32件です。
+         */
+        "limits": string;
+        /**
+         * 条件の数または深さの上限を超えています。
+         */
+        "limitError": string;
+        /**
+         * 引き続き自動で整理する
+         */
+        "automatic": string;
+        /**
+         * 変更は以後の判定に適用されます。キューは取り消されず、開始済みの少量処理や削除確定後の処理は続く場合があります。
+         */
+        "queueHelp": string;
+        /**
+         * 整理をリクエスト
+         */
+        "request": string;
+        /**
+         * 検査キューへのリクエストを受け付けました。削除完了ではありません。
+         */
+        "queued": string;
+        /**
+         * 今回は新しい処理を登録しませんでした。
+         */
+        "notQueued": string;
+        /**
+         * 過去のノートも対象です。表示したページは全体件数ではありません。確認すると今後も自動で検査をリクエストします。
+         */
+        "automaticConfirm": string;
+        /**
+         * 有効にする
+         */
+        "enable": string;
+        /**
+         * 無効にする
+         */
+        "disable": string;
+        /**
+         * 今後のすべての判定で、このルールの保護を適用します。
+         */
+        "enableKeep": string;
+        /**
+         * 今後の保護が減り、削除対象が増える可能性があります。
+         */
+        "disableKeep": string;
+        /**
+         * 今後のリクエストに参加します。自動整理が設定済みなら、自動リクエストの対象にもなります。
+         */
+        "enableDelete": string;
+        /**
+         * 今後の整理リクエストには参加しません。条件と自動整理の設定は保持します。
+         */
+        "disableDelete": string;
+        /**
+         * 有効
+         */
+        "enabled": string;
+        /**
+         * 無効
+         */
+        "disabled": string;
+        /**
+         * このルールを削除しますか？保持ルールの場合、以後の保護がなくなります。キューは取り消されません。
+         */
+        "removeRule": string;
+        /**
+         * 保存したルールをプレビュー
+         */
+        "preview": string;
+        /**
+         * 変更を保存してからプレビュー・リクエストしてください。
+         */
+        "saveFirst": string;
+        /**
+         * このページ: 検査 {scanned}件、削除候補 {deleted}件、保護 {protected}件（全体件数ではありません）
+         */
+        "pageCounts": ParameterizedString<"scanned" | "deleted" | "protected">;
+        /**
+         * 次の検査ページ
+         */
+        "nextPage": string;
+        /**
+         * この順回の末尾です。最新の状態で結果は変わることがあります。
+         */
+        "complete": string;
+        /**
+         * 削除ルールに該当
+         */
+        "matched": string;
+        /**
+         * 残すルールで保護
+         */
+        "protected": string;
+        /**
+         * 削除ルールに該当せず残す
+         */
+        "unmatched": string;
+        /**
+         * 保護ルールを確認できないため、新しい削除を停止しています。該当するルールの案内を確認してください。
+         */
+        "blocked": string;
+        /**
+         * 以後のリクエストで再び判定できます。自動でリクエストは送りませんでした。
+         */
+        "recovered": string;
+        /**
+         * 強調された条件を確認し、設定を修正してください。
+         */
+        "ruleError": string;
+        /**
+         * 処理を確認できませんでした。入力を保持しています。再読み込み・再試行してください。
+         */
+        "requestError": string;
+        /**
+         * 以前の自動削除設定を移しました。元の期間・お気に入り保護・有効状態を保持しています。
+         */
+        "migrated": string;
+        /**
+         * 初めての設定では、固定・自分のお気に入り・自分のクリップ・自分のリアクションの4つを独立した保護ルールとして提供します。各ルールは編集・削除できます。
+         */
+        "defaults": string;
+        /**
+         * 以前の設定から移行
+         */
+        "legacy": string;
+        /**
+         * ノート保護の判定を停止しました
+         */
+        "notification": string;
+        /**
+         * 条件の位置を変更しました。
+         */
+        "moved": string;
+        /**
+         * 元に戻す操作は未保存の編集だけが対象です。
+         */
+        "draftOnly": string;
+        /**
+         * 保存していない変更を破棄しますか？
+         */
+        "discardDraft": string;
+        /**
+         * 参照をさらに読み込む
+         */
+        "moreReferences": string;
+        /**
+         * 削除条件にも一致しますが、保持が優先されます
+         */
+        "protectionWins": string;
+        /**
+         * 一時的に保護ルールを確認できないため、安全のため新しい削除を停止しています。しばらくしてから再試行してください。
+         */
+        "temporaryError": string;
+        /**
+         * 一時的にこの削除ルールを確認できないため、このルールを除外しています。他の削除ルールは引き続き適用される場合があります。しばらくしてから再試行してください。
+         */
+        "temporaryDeleteError": string;
+        /**
+         * 一時的にリクエストを処理できません。しばらくしてから再試行してください。
+         */
+        "temporaryRequestError": string;
+        /**
+         * ノート整理が混み合っています。しばらくしてから再試行してください。
+         */
+        "busyError": string;
+        /**
+         * 選択したクリップを利用できません。別のクリップを選ぶか、この条件を修正してください。
+         */
+        "missingClipError": string;
+        /**
+         * 選択したチャンネルを利用できません。別のチャンネルを選ぶか、この条件を修正してください。
+         */
+        "missingChannelError": string;
+        /**
+         * {n}件選択
+         */
+        "selectedReferences": ParameterizedString<"n">;
+        /**
+         * 許可された長さでルール名を入力してください。
+         */
+        "nameError": string;
+        /**
+         * ルール数が上限に達しています。使わないルールを削除してから追加してください。
+         */
+        "ruleLimitError": string;
+        /**
+         * 自動整理を有効にする前に、保存したルールを再度プレビューしてください。
+         */
+        "previewRequiredError": string;
+        /**
+         * ルールの有効・無効の変更内容を確認して承認してください。
+         */
+        "confirmationError": string;
+        /**
+         * 選択したルールを利用できません。再読み込みしてルールを選び直してください。
+         */
+        "selectionError": string;
+        /**
+         * 保護ルールはノートを保護します。整理を実行するには削除ルールを選んでください。
+         */
+        "keepRunError": string;
     };
 }
