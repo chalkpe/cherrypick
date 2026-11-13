@@ -312,8 +312,9 @@ describe('receiving the attachments of a remote message', () => {
 		const apImageService = { resolveImage: vi.fn(async (_actor: unknown, attach: { name: string }) => ({ id: attach.name })), findStoredImage: vi.fn().mockResolvedValue(null) };
 		const noRooms = { innerJoin: () => noRooms, where: () => noRooms, getMany: async () => [] };
 		const chatRoomsRepository = { findOneBy: vi.fn().mockResolvedValue(room), createQueryBuilder: () => noRooms };
-		const chatMessagesRepository = { findOneBy: vi.fn().mockResolvedValue(null) };
+		const chatMessagesRepository = { findOneBy: vi.fn().mockResolvedValue(null), existsBy: vi.fn().mockResolvedValue(false) };
 		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
+			config: { url: 'https://local.test' },
 			chatService,
 			chatRosterService,
 			apImageService,

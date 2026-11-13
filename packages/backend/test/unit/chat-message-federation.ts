@@ -1238,6 +1238,7 @@ describe('ApInboxService chat activity routing', () => {
 		const chatRoomsRepository = { findOneBy: vi.fn().mockResolvedValue({ id: 'r1', uri: 'https://remote.test/chat/rooms/r1' }) };
 		const apPersonService = { resolvePerson: vi.fn(async (uri: string) => uri === localUser.uri ? localUser : null) };
 		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
+			config: { url: 'https://local.test' },
 			chatService,
 			chatRosterService: chatRosterOver(forgetfulRedis()),
 			redisClient,
@@ -1253,7 +1254,7 @@ describe('ApInboxService chat activity routing', () => {
 			roleService: { getUserPolicies: vi.fn().mockResolvedValue({ chatAvailability: 'available' }) },
 			userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null, isRemoteUser: (user: { host: string | null }) => user.host != null },
 			chatRoomsRepository,
-			chatMessagesRepository: { findOneBy: vi.fn().mockResolvedValue(null) },
+			chatMessagesRepository: { findOneBy: vi.fn().mockResolvedValue(null), existsBy: vi.fn().mockResolvedValue(false) },
 		}) as ApInboxService;
 
 		return { inbox, actor, message, chatService, redisClient, chatRoomsRepository, localUser };

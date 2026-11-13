@@ -48,6 +48,7 @@ function fakeRepository(rows: Row[] = []) {
 		findOne: async ({ where }: { where: Record<string, unknown> }) => rows.find(row => matches(row, where)) ?? null,
 		findBy: async (where: Record<string, unknown>) => rows.filter(row => matches(row, where)),
 		countBy: async (where: Record<string, unknown>) => rows.filter(row => matches(row, where)).length,
+		existsBy: async (where: Record<string, unknown>) => rows.some(row => matches(row, where)),
 		insertOne: async (row: Row) => {
 			if (rows.some(existing => existing.roomId === row.roomId && existing.userId === row.userId && row.userId != null)) throw Object.assign(new Error('duplicate'), { code: '23505' });
 			rows.push(row);

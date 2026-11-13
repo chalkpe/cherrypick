@@ -246,7 +246,7 @@ function incoming() {
 		createMessageToRoom: vi.fn(),
 		isRoomMember: vi.fn(async () => true),
 	};
-	const repository = { findOneBy: vi.fn(async () => null) };
+	const repository = { findOneBy: vi.fn(async () => null), existsBy: vi.fn(async () => false) };
 	const locks = new Map<string, string>();
 	const noRooms = { innerJoin: () => noRooms, where: () => noRooms, getMany: async () => [] };
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
@@ -260,7 +260,7 @@ function incoming() {
 		chatMessagesRepository: repository,
 		chatRoomsRepository: { findOneBy: vi.fn(async () => remoteRoom), createQueryBuilder: () => noRooms },
 		redisClient: { set: vi.fn(async (key: string, token: string) => { locks.set(key, token); return 'OK'; }), get: vi.fn(async (key: string) => key.startsWith('ap-object-lock:') ? locks.get(key) ?? null : null), del: vi.fn(async (key: string) => Number(locks.delete(key))), eval: vi.fn(async () => 1) },
-		logger: { warn: vi.fn(), info: vi.fn() },
+		logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
 		apPersonService: { resolvePerson: vi.fn(async () => local) },
 		apNoteService: { extractEmojis: vi.fn(async () => []) },
 		roleService: { getUserPolicies: vi.fn(async () => ({ chatAvailability: 'available' })) },
