@@ -724,7 +724,7 @@ export class ChatService {
 		const trimmed = text.trim();
 		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > MAX_CHAT_MESSAGE_TEXT_LENGTH) throw new ChatMessageInvalidTextError('invalid text');
 
-		const channelRefs = message.toRoomId != null ? await this.chatRoomChannelService.localRefs(await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }), text, refs) : [];
+		const channelRefs = message.toRoomId != null ? await this.chatRoomChannelService.localRefs(await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }), text, refs, undefined, message) : [];
 		if (message.toRoomId == null && refs.length) throw new ChatChannelError('INVALID_CHANNEL_REFS');
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));

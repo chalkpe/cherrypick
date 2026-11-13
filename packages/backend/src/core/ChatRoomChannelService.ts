@@ -129,17 +129,23 @@ export class ChatRoomChannelService {
 		return id;
 	}
 
-	public async localRefs(room: MiChatRoom, text: string, refs: ChatChannelRef[], manager = this.db.manager): Promise<ChatChannelRef[]> {
+	public async localRefs(room: MiChatRoom, text: string, refs: ChatChannelRef[], manager = this.db.manager, previous?: Pick<MiChatMessage, 'text' | 'channelRefs'>): Promise<ChatChannelRef[]> {
 		if (refs.length === 0) return [];
 		refs = refs.map(ref => ({ ...ref, start: ref.start - (text.length - text.trimStart().length) }));
 		text = text.trim();
 		if (!room.hasChannels || !validChatChannelRefRanges(refs, text)) throw new ChatChannelError('INVALID_CHANNEL_REFS');
 		const channels = await manager.findBy(MiChatRoomChannel, { roomId: room.id, id: In(refs.map(r => r.channelId)) });
-		if (refs.some(ref => !channels.some(channel => channel.id === ref.channelId))) throw new ChatChannelError('INVALID_CHANNEL_REFS');
 		const roomUri = await this.roomUri(room, manager);
+		const oldRefs = [...(previous?.channelRefs ?? [])];
 		return refs.map(ref => {
-			const channel = channels.find(c => c.id === ref.channelId)!;
-			return { channelId: channel.id, start: ref.start, length: ref.length, uri: channel.uri ?? chatChannelUri(roomUri, channel.id) };
+			const channel = channels.find(c => c.id === ref.channelId);
+			if (channel != null) return { channelId: channel.id, start: ref.start, length: ref.length, uri: channel.uri ?? chatChannelUri(roomUri, channel.id) };
+			const previousText = previous?.text ?? '';
+			const oldIndex = oldRefs.findIndex(old => old.channelId === ref.channelId && old.length === ref.length &&
+				previousText.slice(old.start, old.start + old.length) === text.slice(ref.start, ref.start + ref.length));
+			if (oldIndex < 0) throw new ChatChannelError('INVALID_CHANNEL_REFS');
+			const [old] = oldRefs.splice(oldIndex, 1);
+			return { channelId: ref.channelId, start: ref.start, length: ref.length, uri: old.uri };
 		});
 	}
 
