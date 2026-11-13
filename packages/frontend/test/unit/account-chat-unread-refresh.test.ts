@@ -22,7 +22,7 @@ test.each([true, false])('a delayed account snapshot does not replace a newer ch
 	let respond!: (value: Response) => void;
 	vi.spyOn(window, 'fetch').mockReturnValue(new Promise<Response>(resolve => { respond = resolve; }));
 
-	const refreshed = refreshCurrentAccount();
+	const refreshed = refreshCurrentAccount({ protectChatUnread: true });
 	updateCurrentAccount({ hasUnreadChatMessages: !snapshot });
 	respond(new Response(JSON.stringify({ id: 'viewer', name: 'Updated profile', hasUnreadChatMessages: snapshot })));
 	await refreshed;
@@ -38,7 +38,7 @@ test('an unrelated account update does not block a fresh unread snapshot', async
 	let respond!: (value: Response) => void;
 	vi.spyOn(window, 'fetch').mockReturnValue(new Promise<Response>(resolve => { respond = resolve; }));
 
-	const refreshed = refreshCurrentAccount();
+	const refreshed = refreshCurrentAccount({ protectChatUnread: true });
 	updateCurrentAccount({ hasUnreadNotification: false });
 	respond(new Response(JSON.stringify({ id: 'viewer', hasUnreadChatMessages: false })));
 	await refreshed;
@@ -50,8 +50,8 @@ test.each([true, false])('the newer account request wins when responses finish i
 	const responses: ((value: Response) => void)[] = [];
 	vi.spyOn(window, 'fetch').mockImplementation(() => new Promise<Response>(resolve => { responses.push(resolve); }));
 
-	const older = refreshCurrentAccount();
-	const newer = refreshCurrentAccount();
+	const older = refreshCurrentAccount({ protectChatUnread: true });
+	const newer = refreshCurrentAccount({ protectChatUnread: true });
 	responses[1](new Response(JSON.stringify({ id: 'viewer', name: 'Newer profile', hasUnreadChatMessages: latest })));
 	await newer;
 	responses[0](new Response(JSON.stringify({ id: 'viewer', name: 'Older profile', hasUnreadChatMessages: !latest })));
@@ -78,4 +78,19 @@ test('unread events during a refresh ask for one more account, sent after them',
 
 	expect(fetch).toHaveBeenCalledTimes(2);
 	expect($i?.hasUnreadChatMessages).toBe(false);
+});
+
+
+test('ordinary account refreshes retain their existing completion order', async () => {
+	const responses: ((value: Response) => void)[] = [];
+	vi.spyOn(window, 'fetch').mockImplementation(() => new Promise<Response>(resolve => { responses.push(resolve); }));
+
+	const older = refreshCurrentAccount();
+	const newer = refreshCurrentAccount();
+	responses[1](new Response(JSON.stringify({ id: 'viewer', name: 'Newer' })));
+	await newer;
+	responses[0](new Response(JSON.stringify({ id: 'viewer', name: 'Older' })));
+	await older;
+
+	expect($i?.name).toBe('Older');
 });

@@ -1406,8 +1406,7 @@ export class ApInboxService {
 		// Servers announce deleted accounts to everyone they know, so spare that flood the query.
 		const isChatUri = uri !== actor.uri && (
 			this.isChatMessageUri(uri)
-			|| await this.chatService.findMessageByUri(uri) != null
-			|| await this.mayBeChatMessageYetToArrive(uri, formerType));
+			|| await this.chatService.findMessageByUri(uri) != null);
 		const unlock = isChatUri ? await acquireApObjectLock(this.redisClient, uri) : null;
 		try {
 			// 채팅을 쓸 수 없는 받는 사람은 쪽지를 비공개 Note로 저장한다. 그 Note는 이 잠금 아래에서 찾는다.
@@ -2152,16 +2151,6 @@ export class ApInboxService {
 
 	private isChatMessageUri(uri: string): boolean {
 		return uri.includes('/chat/messages/');
-	}
-
-	/**
-	 * 채팅 답장과 예전 talk 쪽지는 일반 Note 주소로 와도 채팅으로 저장된다. 그 Create보다 먼저 온 Delete는
-	 * 아직 아무것도 찾지 못하므로, 채팅 주소와 같이 묘비를 남겨 늦게 온 Create를 막아야 한다.
-	 * 이 서버에 있는 Note의 Delete와 Note가 아닌 객체의 Delete는 지금처럼 처리한다.
-	 */
-	private async mayBeChatMessageYetToArrive(uri: string, formerType: string | undefined): Promise<boolean> {
-		if (formerType != null && !validPost.includes(formerType)) return false;
-		return await this.apNoteService.fetchNote(uri) == null;
 	}
 
 	private chatRoomUriFromActivity(activity: IAdd | IUpdate | IDelete | IUndo): string | null {

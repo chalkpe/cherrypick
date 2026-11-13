@@ -19,14 +19,17 @@ import { MiChatRoom, MiChatRoomInvitation, MiChatRoomMembership, MiUser } from '
 import { QUEUE, baseQueueOptions } from '@/queue/const.js';
 import type { DeliverJobData } from '@/queue/types.js';
 import { api, initTestDb, signup } from '../utils.js';
+import { buildChatProcessFixtures } from '../misc/chat-process-bundle.js';
 import type { ChatSendProcessMessage } from '../misc/chat-send-process-fixture.js';
 
 const config = loadConfig();
 let db: DataSource;
+let fixtures: Awaited<ReturnType<typeof buildChatProcessFixtures>>;
 let queueRedis: Redis;
 let deliverQueue: Bull.Queue<DeliverJobData>;
 
 beforeAll(async () => {
+	fixtures = await buildChatProcessFixtures();
 	db = await initTestDb(true);
 	queueRedis = new Redis(config.redisForJobQueue);
 	deliverQueue = new Bull.Queue(QUEUE.DELIVER, baseQueueOptions(config, QUEUE.DELIVER));
@@ -34,6 +37,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+	await fixtures?.dispose();
 	await queueRedis.config('SET', 'maxmemory', '0');
 	await queueRedis.quit();
 	await deliverQueue.close();
@@ -59,7 +63,7 @@ test('a room remains available for retry when its Delete cannot be queued', asyn
 	const evidenceDir = mkdtempSync(join(evidenceRoot, 'chat-delete-sender-'));
 	const stdout = openSync(join(evidenceDir, 'stdout.log'), 'wx');
 	const stderr = openSync(join(evidenceDir, 'stderr.log'), 'wx');
-	const child = fork(new URL('../../built-test/chat-send-process-fixture.js', import.meta.url), [], {
+	const child = fork(fixtures.sender, [], {
 		execArgv: ['--max-old-space-size=512'],
 		stdio: ['ignore', stdout, stderr, 'ipc'],
 		env: { ...process.env, NODE_ENV: 'production', CHERRYPICK_CONFIG_YML: configPath, CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db },

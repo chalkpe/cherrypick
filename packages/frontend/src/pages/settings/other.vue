@@ -241,7 +241,7 @@ function hideAllTips() {
 async function readAllChatMessages() {
 	await os.apiWithDialog('chat/read-all', {});
 	// HTTP 완료 전에 도착한 새 쪽지는 서버의 현재 상태로 확인한다.
-	await refreshCurrentAccount();
+	await refreshCurrentAccount({ protectChatUnread: true });
 }
 
 async function forceCloudBackup() {

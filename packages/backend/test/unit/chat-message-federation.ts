@@ -1595,19 +1595,16 @@ describe('ApInboxService chat activity routing', () => {
 			object,
 		});
 
-		// 채팅 답장과 예전 talk 쪽지는 일반 Note 주소를 쓴다. Create보다 먼저 온 Delete가 그 주소를 놓치면 늦은 Create가 저장된다.
-		test('stores a tombstone when it arrives before the chat message', async () => {
+		test('leaves an unknown ordinary Note on the normal deletion path', async () => {
 			const f = createInbox();
 			const { noteDeleteService } = withNotes(f, null);
+			const transaction = vi.spyOn((f.inbox as never as { db: { transaction: () => unknown } }).db, 'transaction');
 
 			const result = await deleteOf(f, { id: 'https://remote.test/notes/reply', type: 'Tombstone' });
 
-			expect(result).toBe('ok: chat message tombstone stored');
-			expect(f.redisClient.setex).toHaveBeenCalledWith(
-				`chat_delete_upon_arrival:https://remote.test/notes/reply:${encodeURIComponent(f.actor.uri)}`,
-				6 * 60 * 60,
-				f.actor.uri,
-			);
+			expect(result).toBe('message not found');
+			expect(f.redisClient.setex).not.toHaveBeenCalled();
+			expect(transaction).not.toHaveBeenCalled();
 			expect(noteDeleteService.delete).not.toHaveBeenCalled();
 		});
 
@@ -1629,7 +1626,7 @@ describe('ApInboxService chat activity routing', () => {
 
 			const result = await deleteOf(f, { id: 'https://elsewhere.test/notes/reply', type: 'Tombstone' });
 
-			expect(result).toBe('skip: message is not on the actor\'s server');
+			expect(result).toBe('message not found');
 			expect(f.redisClient.setex).not.toHaveBeenCalled();
 		});
 

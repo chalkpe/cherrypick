@@ -154,15 +154,15 @@ export function updateCurrentAccount(accountData: Partial<Misskey.entities.MeDet
 	miLocalStorage.setItem('account', JSON.stringify($i));
 }
 
-export async function refreshCurrentAccount() {
+export async function refreshCurrentAccount(options?: { protectChatUnread?: boolean }) {
 	if (!$i) return;
 	const me = $i;
 	const unreadRevision = chatUnreadRevision;
-	const refreshRevision = ++accountRefreshRevision;
+	const refreshRevision = options?.protectChatUnread ? ++accountRefreshRevision : null;
 	return fetchAccount($i.token, $i.id).then(account => {
-		if (refreshRevision !== accountRefreshRevision) return;
+		if (refreshRevision != null && refreshRevision !== accountRefreshRevision) return;
 		// 조회하는 동안 받은 읽음·새 쪽지 상태는 이전 HTTP 응답으로 덮어쓰지 않는다.
-		if (unreadRevision !== chatUnreadRevision) account.hasUnreadChatMessages = me.hasUnreadChatMessages;
+		if (options?.protectChatUnread && unreadRevision !== chatUnreadRevision) account.hasUnreadChatMessages = me.hasUnreadChatMessages;
 		replaceCurrentAccountData(account);
 	}).catch(reason => {
 		if (reason === isAccountDeleted) {
@@ -192,7 +192,7 @@ export function refreshChatUnreadState(): Promise<void> {
 	chatUnreadRefreshing = (async () => {
 		do {
 			chatUnreadRefreshQueued = false;
-			await refreshCurrentAccount();
+			await refreshCurrentAccount({ protectChatUnread: true });
 		} while (chatUnreadRefreshQueued);
 	})().finally(() => {
 		chatUnreadRefreshing = null;

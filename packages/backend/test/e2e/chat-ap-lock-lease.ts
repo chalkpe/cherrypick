@@ -58,10 +58,8 @@ async function inboxWorker(redisPort?: number, poolSize?: number): Promise<Testi
 	}
 }
 
-// 예전 talk 쪽지와 채팅 답장은 일반 Note 주소로 온다
 test.each([
 	['a chat message URI', 'chat/messages'],
-	['an ordinary Note URI', 'notes'],
 ])('a delayed Create cannot store a message after its Delete has taken the expired URI lock (%s)', async (_, path) => {
 	const reader = await signup();
 	expect((await api('i/update', { chatScope: 'everyone' }, reader)).status).toBe(200);
@@ -130,7 +128,6 @@ function within<T>(work: Promise<T>, ms: number): Promise<T | 'timed out'> {
 // inbox는 DB 커넥션보다 많은 작업을 함께 처리한다. 아직 오지 않은 쪽지의 Delete가 몰려도
 // 저장 결정 트랜잭션이 풀의 다른 커넥션을 기다리며 서로 막히면 안 된다.
 test.each([
-	['an ordinary Note URI', 'direct', 'notes'],
 	['a chat message URI', 'direct', 'chat/messages'],
 	['a Delete relayed by the room owner', 'relayed', 'chat/messages'],
 ])('Deletes of messages not here yet finish with fewer connections than Deletes (%s)', async (_, route, path) => {

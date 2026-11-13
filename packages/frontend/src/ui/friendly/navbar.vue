@@ -215,8 +215,8 @@ function toggleRealtimeMode(ev: MouseEvent) {
 	}, {
 		text: store.s.realtimeMode ? i18n.ts.turnItOff : i18n.ts.turnItOn,
 		icon: store.s.realtimeMode ? 'ti ti-bolt-off' : 'ti ti-bolt',
-		action: async () => {
-			await store.set('realtimeMode', !store.s.realtimeMode);
+		action: () => {
+			store.set('realtimeMode', !store.s.realtimeMode);
 			window.location.reload();
 		},
 	}], ev.currentTarget ?? ev.target);

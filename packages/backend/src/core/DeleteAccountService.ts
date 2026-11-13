@@ -57,34 +57,48 @@ export class DeleteAccountService {
 			});
 		}
 
-		// 작업 등록에 실패하면 삭제 상태를 바꾸지 않고 요청자가 다시 시도할 수 있다.
-		await this.queueService.createDeleteAccountJob(user, { soft: !this.userEntityService.isLocalUser(user) });
+		// 物理削除する前にDelete activityを送信する
+		if (this.userEntityService.isLocalUser(user)) {
+			// 知り得る全SharedInboxにDelete配信
+			const content = this.apRendererService.addContext(this.apRendererService.renderDelete(this.userEntityService.genLocalUserUri(user.id), user));
+
+			const queue: string[] = [];
+
+			const followings = await this.followingsRepository.find({
+				where: [
+					{ followerSharedInbox: Not(IsNull()) },
+					{ followeeSharedInbox: Not(IsNull()) },
+				],
+				select: {
+					followerSharedInbox: true,
+					followeeSharedInbox: true,
+				},
+			});
+
+			const inboxes = followings.map(x => x.followerSharedInbox ?? x.followeeSharedInbox);
+
+			for (const inbox of inboxes) {
+				if (inbox != null && !queue.includes(inbox)) queue.push(inbox);
+			}
+
+			for (const inbox of queue) {
+				this.queueService.deliver(user, content, inbox, true);
+			}
+
+			this.queueService.createDeleteAccountJob(user, {
+				soft: false,
+			});
+		} else {
+			// リモートユーザーの削除は、完全にDBから物理削除してしまうと再度連合してきてアカウントが復活する可能性があるため、soft指定する
+			this.queueService.createDeleteAccountJob(user, {
+				soft: true,
+			});
+		}
 
 		await this.usersRepository.update(user.id, {
 			isDeleted: true,
 		});
 
 		this.globalEventService.publishInternalEvent('userChangeDeletedState', { id: user.id, isDeleted: true });
-	}
-
-	/** Registers the account's own Delete before destructive account cleanup starts. */
-	@bindThis
-	public async queueAccountDelete(user: { id: string; host: null }): Promise<string[]> {
-		const content = this.apRendererService.addContext(this.apRendererService.renderDelete(this.userEntityService.genLocalUserUri(user.id), user));
-		const followings = await this.followingsRepository.find({
-			where: [
-				{ followerSharedInbox: Not(IsNull()) },
-				{ followeeSharedInbox: Not(IsNull()) },
-			],
-			select: { followerSharedInbox: true, followeeSharedInbox: true },
-		});
-		const inboxes = [...new Set(followings.flatMap(following => {
-			const inbox = following.followerSharedInbox ?? following.followeeSharedInbox;
-			return inbox == null ? [] : [inbox];
-		}))];
-		const queued = await Promise.allSettled(inboxes.map(inbox => this.queueService.deliver(user, content, inbox, true)));
-		const failures = queued.filter(result => result.status === 'rejected');
-		if (failures.length > 0) throw new AggregateError(failures.map(result => result.reason), 'Failed to queue account Delete');
-		return queued.flatMap(result => result.status === 'fulfilled' && result.value?.id != null ? [result.value.id] : []);
 	}
 }

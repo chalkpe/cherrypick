@@ -17,6 +17,8 @@ import { ChatRosterService } from '@/core/ChatRosterService.js';
 import type { IObject } from '@/core/activitypub/type.js';
 import { IdService } from '@/core/IdService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
+import type { GlobalEvents } from '@/core/GlobalEventService.js';
+import { acquireApObjectLock } from '@/misc/distributed-lock.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
@@ -350,6 +352,9 @@ export class ChatService {
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
 
+		@Inject(DI.redisForSub)
+		private redisForSub: Redis.Redis,
+
 		@Inject(DI.db)
 		private db: DataSource,
 
@@ -398,6 +403,51 @@ export class ChatService {
 		private loggerService: LoggerService,
 	) {
 		this.logger = this.loggerService.getLogger('chat');
+		this.redisForSub.on('message', this.onInternalEvent);
+	}
+
+	@bindThis
+	public onApplicationShutdown(): void {
+		this.redisForSub.off('message', this.onInternalEvent);
+	}
+
+	@bindThis
+	private onInternalEvent(_: string, data: string): void {
+		const event = JSON.parse(data);
+		if (event.channel !== 'internal') return;
+		const message = event.message as GlobalEvents['internal']['payload'];
+		if (message.type === 'userChangeDeletedState' && message.body.isDeleted) {
+			this.cleanupDeletedAccount(message.body.id, 'local').catch(error => {
+				this.logger.error(`Failed to clean up chat for deleted account ${message.body.id}: ${String(error)}`);
+			});
+		} else if (message.type === 'remoteUserUpdated') {
+			this.cleanupDeletedAccount(message.body.id, 'remote').catch(error => {
+				this.logger.error(`Failed to clean up chat for remote account ${message.body.id}: ${String(error)}`);
+			});
+		}
+	}
+
+	private async cleanupDeletedAccount(userId: MiUser['id'], kind: 'local' | 'remote'): Promise<void> {
+		const unlock = await acquireApObjectLock(this.redisClient, `chat-account-delete:${userId}`);
+		try {
+			const user = await this.usersRepository.findOneBy({ id: userId });
+			if (user == null || !user.isDeleted) return;
+			if (kind === 'remote') {
+				if (!this.userEntityService.isRemoteUser(user)) return;
+				const rooms = await this.chatRoomsRepository.findBy({ ownerId: userId });
+				for (const room of rooms) {
+					if (room.uri != null) await this.chatRosterService.markRoomDeletedByOwner(room.uri);
+					await this.deleteRoom(room, undefined, { federate: false });
+				}
+				return;
+			}
+			if (!this.userEntityService.isLocalUser(user)) return;
+			await this.deleteRoomsOwnedBy(userId);
+			await this.deleteMessagesFromUser(userId);
+			await this.deleteUnreadForAccount(userId);
+		} finally {
+			await unlock();
+		}
 	}
 
 	@bindThis
@@ -1732,7 +1782,7 @@ export class ChatService {
 
 	/**
 	 * Deletes the rooms of an account that is going away, telling remote participants and invitees even if they follow no one here.
-	 * Returns the deliveries signed with the owner's key, which has to outlive them.
+	 * The account key may disappear before a queued delivery is processed.
 	 */
 	@bindThis
 	public async deleteRoomsOwnedBy(ownerId: MiUser['id']): Promise<string[]> {
@@ -1744,7 +1794,7 @@ export class ChatService {
 		return deliveries;
 	}
 
-	/** @returns The queued deliveries the owner signs, for a caller that must keep the owner's key until they are done. */
+	/** @returns The queued deliveries signed by the room owner. */
 	@bindThis
 	public async deleteRoom(requestedRoom: MiChatRoom, deleter?: MiUser, options?: { federate?: boolean }): Promise<string[]> {
 		// 삭제할 방과 수신 대상을 주 DB에서 함께 읽고, 큐 등록을 기다리기 전에 트랜잭션을 닫는다.

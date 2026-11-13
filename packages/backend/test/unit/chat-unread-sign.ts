@@ -4,7 +4,6 @@
  */
 
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { DeleteAccountProcessorService } from '@/queue/processors/DeleteAccountProcessorService.js';
 import type { MiChatMessage } from '@/models/_.js';
 import { chatUnreadFixture as fixture } from '../misc/chat-unread-fixture.js';
 
@@ -119,28 +118,7 @@ describe('chat unread sign', () => {
 			await f.chatService.createMessageToRoom(f.violet, f.room, { text: 'read history' });
 			await f.chatService.readRoomChatMessage(f.reader.id, f.room.id);
 			await f.chatService.createMessageToRoom(f.amber, f.room, { text: 'unread' });
-			const emptyRepository = { find: async () => [] };
-			const processor = Object.assign(Object.create(DeleteAccountProcessorService.prototype), {
-				logger: { info: vi.fn(), succ: vi.fn() },
-				usersRepository: {
-					findOneBy: async () => f.amber,
-					delete: async () => {
-						// 사용자 FK CASCADE가 작성자의 메시지를 제거하는 저장소 경계이다.
-						for (const message of f.messages.filter(row => row.fromUserId === f.amber.id)) f.messages.splice(f.messages.indexOf(message), 1);
-					},
-				},
-				notesRepository: emptyRepository,
-				driveFilesRepository: emptyRepository,
-				pagesRepository: emptyRepository,
-				userProfilesRepository: { findOneByOrFail: async () => ({}) },
-				userEntityService: { isRemoteUser: () => false, isLocalUser: () => true },
-				deleteAccountService: { queueAccountDelete: vi.fn().mockResolvedValue([]) },
-				globalEventService: { publishInternalEvent: vi.fn() },
-				chatService: f.chatService,
-			}) as DeleteAccountProcessorService;
-
-			// 작업은 방을 지우기 전에 표식을 저장한다. 이 시험은 한 번만 처리하므로 저장한 값을 다시 읽지 않는다.
-			await processor.process({ data: { user: { id: f.amber.id }, soft: false }, updateData: async () => undefined } as never);
+			await f.chatService.deleteMessagesFromUser(f.amber.id);
 
 			expect(await f.chatService.hasUnreadMessages(f.reader.id)).toBe(false);
 		});

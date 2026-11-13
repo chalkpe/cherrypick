@@ -29,20 +29,24 @@ import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js'
 import { chatUnreadReadGate } from '../misc/chat-unread-read-gate.js';
 import { chatUnreadSettleFailureGate } from '../misc/chat-unread-settle-failure-gate.js';
 import { chatProcessExitError } from '../misc/chat-process-stderr.js';
+import { buildChatProcessFixtures } from '../misc/chat-process-bundle.js';
 import type { ChatSendProcessMessage } from '../misc/chat-send-process-fixture.js';
 import type { ChatQueueProcessMessage } from '../misc/chat-queue-process-fixture.js';
 
 const config = loadConfig();
 let db: DataSource;
+let fixtures: Awaited<ReturnType<typeof buildChatProcessFixtures>>;
 let redis: Redis;
 
 beforeAll(async () => {
+	fixtures = await buildChatProcessFixtures();
 	db = await initTestDb(true);
 	redis = new Redis(config.redis);
 	await signup({ username: 'root' });
 });
 
 afterAll(async () => {
+	await fixtures?.dispose();
 	await waitForChatNotificationTurn();
 	await redis.quit();
 	await db.destroy();
@@ -57,7 +61,7 @@ async function spawnSender(redisPort?: number): Promise<Sender> {
 	const evidenceDir = mkdtempSync(join(evidenceRoot, 'chat-sender-'));
 	const stdout = openSync(join(evidenceDir, 'stdout.log'), 'wx');
 	const stderr = openSync(join(evidenceDir, 'stderr.log'), 'wx');
-	const child = fork(new URL('../../built-test/chat-send-process-fixture.js', import.meta.url), [], {
+	const child = fork(fixtures.sender, [], {
 		execArgv: ['--max-old-space-size=512'],
 		stdio: ['ignore', stdout, stderr, 'ipc'],
 		env: { ...process.env, NODE_ENV: 'production', CHERRYPICK_CONFIG_YML: configPath, CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db, ...(redisPort == null ? {} : { CHAT_PROCESS_FIXTURE_REDIS_PORT: String(redisPort) }) },
@@ -296,7 +300,7 @@ test.skipIf(process.env.CHAT_DELIVERY_CERT == null || process.env.CHAT_DELIVERY_
 		const evidenceDir = mkdtempSync(join(evidenceRoot, 'chat-leave-delivery-'));
 		const stdout = openSync(join(evidenceDir, 'stdout.log'), 'wx');
 		const stderr = openSync(join(evidenceDir, 'stderr.log'), 'wx');
-		worker = fork(new URL('../../built-test/chat-queue-process-fixture.js', import.meta.url), [], {
+		worker = fork(fixtures.queue, [], {
 			execArgv: ['--max-old-space-size=512'], stdio: ['ignore', stdout, stderr, 'ipc'],
 			env: { ...process.env, NODE_ENV: 'production', CHERRYPICK_CONFIG_YML: configPath, CP_NO_DAEMONS: '1', CHAT_PROCESS_FIXTURE_DB: config.db.db },
 		});

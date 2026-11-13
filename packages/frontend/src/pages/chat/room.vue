@@ -518,7 +518,7 @@ async function initialize() {
 // 未読の印が付いているときだけ、会話を読んだあとにサーバーへ確かめ直す
 function recheckUnreadSign() {
 	if (!$i.hasUnreadChatMessages) return;
-	refreshCurrentAccount();
+	refreshCurrentAccount({ protectChatUnread: true });
 }
 
 // 見ているページかどうか。戻ってきたときに立てるのは、下の onActivated の先頭
