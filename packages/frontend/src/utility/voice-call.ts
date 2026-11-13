@@ -497,9 +497,10 @@ async function offerFailedRecordings(initial: FailedRecording[]): Promise<void> 
 			if (!confirmed.canceled) {
 				const undeleted = await discardUploadedOriginals(failed);
 				if (undeleted.length === 0) return;
-				// 삭제에 실패한 원본은 드라이브에 남는다. 오류로 알리고 다시 버릴 수 있게 목록을 유지한다
+				// 삭제에 실패한 원본은 드라이브에 남는다. 오류로 알리고 다시 버릴 수 있게 목록을 유지한다.
+				// 알림이 닫힌 뒤에 목록을 다시 띄운다. 바로 띄우면 알림이 목록 뒤에 가려져 보이지 않는다
 				failed = undeleted;
-				os.alert({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardDeleteFailed({ n: undeleted.length }) });
+				await os.alert({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardDeleteFailed({ n: undeleted.length }) });
 			}
 			continue;
 		}
