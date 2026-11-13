@@ -36,7 +36,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<XMessage :message="message" :channels="channels" :user="message.fromUser" :isSearchResult="true"/>
 			</div>
 		</div>
-		<MkResult v-else type="notFound"/>
+		<MkResult v-else type="empty"/>
 	</MkFoldableSection>
 </div>
 </template>
