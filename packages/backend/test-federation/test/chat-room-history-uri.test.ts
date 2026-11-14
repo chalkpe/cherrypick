@@ -369,6 +369,11 @@ describe('Chat room history and third-party message URIs', () => {
 			await adminA.client.request('admin/unsuspend-user', { userId: charlie.id }).catch(() => {});
 		}
 
+		// 정지 해제는 인증 캐시 갱신까지 비동기로 이어지므로, 해제된 계정의 요청이 통과할 때까지 기다린다
+		await vi.waitFor(async () => {
+			await charlie.client.request('i', {});
+		}, WAIT_FOR_FEDERATION);
+
 		// 정지가 풀린 작성자가 원래 URI로 지우면 보관 사본도 지워진다
 		await charlie.client.request('chat/messages/delete', { messageId: sent.id });
 		await vi.waitFor(async () => {
