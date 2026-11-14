@@ -194,11 +194,6 @@ export default class Stream extends EventEmitter<StreamEvents> implements IStrea
 				c.inCount++;
 			}
 		} else if (type === 'connected') {
-			// 共有接続も購読完了の知らせを受け取る。同じプールの接続はすべて同じ id で購読される
-			this.sharedConnectionPools.find(p => p.id === body.id)?.markSubscribed();
-			for (const c of this.sharedConnections) {
-				if (c.id === body.id) c.emit('_subscribed_');
-			}
 			(this.nonSharedConnections.find(c => c.id === body.id) as IChannelConnection | undefined)?.emit('_subscribed_');
 		} else {
 			this.emit(type, body);
@@ -249,7 +244,6 @@ class Pool {
 	public users = 0;
 	private disposeTimerId: ReturnType<typeof setTimeout> | null = null;
 	private isConnected = false;
-	private subscribed = false;
 
 	constructor(stream: Stream, channel: string, id: string) {
 		this.onStreamDisconnected = this.onStreamDisconnected.bind(this);
@@ -265,18 +259,8 @@ class Pool {
 		this.stream.on('_disconnected_', this.onStreamDisconnected);
 	}
 
-	// サーバーが購読を済ませたか。済んだあとからプールへ参加する接続にも知らせる必要がある
-	public get hasSubscribed(): boolean {
-		return this.subscribed;
-	}
-
-	public markSubscribed(): void {
-		this.subscribed = true;
-	}
-
 	private onStreamDisconnected(): void {
 		this.isConnected = false;
-		this.subscribed = false;
 	}
 
 	public inc(): void {
@@ -312,8 +296,6 @@ class Pool {
 		this.stream.send('connect', {
 			channel: this.channel,
 			id: this.id,
-			// 購読完了の知らせを要求する。サーバーは pong が無いと応答しない
-			pong: true,
 		});
 	}
 
@@ -383,11 +365,6 @@ class SharedConnection<Channel extends AnyOf<Channels> = AnyOf<Channels>> extend
 
 		this.pool = pool;
 		this.pool.inc();
-
-		// 購読が済んだあとから参加する場合も知らせる。サーバーの応答は参加より先に届くことがある
-		if (pool.hasSubscribed) {
-			queueMicrotask(() => (this as unknown as SharedConnection).emit('_subscribed_'));
-		}
 	}
 
 	public dispose(): void {
