@@ -8,24 +8,44 @@ import { id } from './util/id.js';
 import { MiUser } from './User.js';
 import type { MiDriveFile } from './DriveFile.js';
 import { MiChatRoom } from './ChatRoom.js';
+import { MiChatRoomChannel } from './ChatRoomChannel.js';
+import type { ChatChannelRef } from '@/core/chat-room-channels.js';
 import type { ChatDiceResult } from '@/core/chat-dice.js';
 
+/** 계정이 없어진 뒤에도 보존하는 그룹 메시지의 과거 기록용 작성자 정보. 계정이 아니며 프로필로 연결하지 않는다. host가 null이면 이 서버의 계정이었다. */
+export type ChatMessageArchivedAuthor = {
+	uri: string;
+	username: string | null;
+	name: string | null;
+	host: string | null;
+};
+
 @Entity('chat_message')
+@Index(['toRoomId', 'id'])
 export class MiChatMessage {
 	@PrimaryColumn(id())
 	public id: string;
 
+	/** 그룹 메시지는 작성자 계정이 지워진 뒤에도 남으며, 그때는 null이고 archivedAuthor로 표시한다. */
 	@Index()
 	@Column({
-		...id(),
+		...id(), nullable: true,
 	})
-	public fromUserId: MiUser['id'];
+	public fromUserId: MiUser['id'] | null;
 
 	@ManyToOne(() => MiUser, {
-		onDelete: 'CASCADE',
+		onDelete: 'SET NULL',
 	})
 	@JoinColumn()
 	public fromUser: MiUser | null;
+
+	@Index()
+	@Column({ ...id(), nullable: true })
+	public directFromUserId: MiUser['id'] | null;
+
+	@ManyToOne(() => MiUser, { onDelete: 'CASCADE' })
+	@JoinColumn()
+	public directFromUser: MiUser | null;
 
 	@Index()
 	@Column({
@@ -51,6 +71,23 @@ export class MiChatMessage {
 	@JoinColumn()
 	public toRoom: MiChatRoom | null;
 
+	@Index()
+	@Column({ ...id(), nullable: true })
+	public toRoomChannelId: MiChatRoomChannel['id'] | null;
+
+	@ManyToOne(() => MiChatRoomChannel, { onDelete: 'CASCADE' })
+	@JoinColumn()
+	public toRoomChannel: MiChatRoomChannel | null;
+
+	@Column({ ...id(), array: true, default: '{}' })
+	public mentionedUserIds: string[];
+
+	@Column('bigint', { nullable: true })
+	public roomMessageSequence: string | null;
+
+	@Column('jsonb', { default: [] })
+	public channelRefs: ChatChannelRef[];
+
 	@Column('varchar', {
 		length: 4096, nullable: true,
 	})
@@ -64,6 +101,13 @@ export class MiChatMessage {
 		length: 512, nullable: true,
 	})
 	public uri: string | null;
+
+	/** 보관 사본이면 원래 작성자 서버의 메시지 주소. 사본이 아닌 글과 업그레이드된 글은 null이다. */
+	@Index()
+	@Column('varchar', {
+		length: 512, nullable: true,
+	})
+	public sourceUri: string | null;
 
 	@Column('timestamp with time zone', {
 		nullable: true,
@@ -96,4 +140,15 @@ export class MiChatMessage {
 		length: 128, array: true, default: '{}',
 	})
 	public emojis: string[];
+
+	@Column('jsonb', { nullable: true })
+	public archivedAuthor: ChatMessageArchivedAuthor | null;
+
+	/** 그룹 소유 서버의 과거 기록에서 가져온 사본이면 가져온 시각. 미읽음·알림을 만들지 않은 글이다. */
+	@Column('timestamp with time zone', { nullable: true })
+	public importedAt: Date | null;
+
+	/** 과거 기록을 가져올 때 받을 수 없었던 첨부 파일 수. 글 자체는 보존한다. */
+	@Column('integer', { default: 0 })
+	public unavailableFileCount: number;
 }

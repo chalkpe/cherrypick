@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import type { MiChatMessage } from '@/models/ChatMessage.js';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { createPublicKey, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { In } from 'typeorm';
@@ -18,7 +20,6 @@ import type { MiNoteReaction } from '@/models/NoteReaction.js';
 import type { MiEmoji } from '@/models/Emoji.js';
 import type { MiPoll } from '@/models/Poll.js';
 import type { MiPollVote } from '@/models/PollVote.js';
-import type { MiChatMessage } from '@/models/ChatMessage.js';
 import type { MiChatRoom } from '@/models/ChatRoom.js';
 import { UserKeypairService } from '@/core/UserKeypairService.js';
 import { MfmService } from '@/core/MfmService.js';
@@ -32,6 +33,7 @@ import { CustomEmojiService } from '@/core/CustomEmojiService.js';
 import { IdService } from '@/core/IdService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { escapeHtml } from '@/misc/escape-html.js';
+import { AvatarDecorationService } from '@/core/AvatarDecorationService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { JsonLdService } from './JsonLdService.js';
 import { ApMfmService } from './ApMfmService.js';
@@ -114,6 +116,7 @@ export class ApRendererService {
 		private customEmojiService: CustomEmojiService,
 		private userEntityService: UserEntityService,
 		private driveFileEntityService: DriveFileEntityService,
+		private avatarDecorationService: AvatarDecorationService,
 		private jsonLdService: JsonLdService,
 		private userKeypairService: UserKeypairService,
 		private apMfmService: ApMfmService,
@@ -121,6 +124,7 @@ export class ApRendererService {
 		private idService: IdService,
 		private utilityService: UtilityService,
 		private roleService: RoleService,
+		private chatRoomChannelService: ChatRoomChannelService,
 	) {
 	}
 
@@ -867,7 +871,7 @@ export class ApRendererService {
 		return buildChatNote(message, fromUser, toUsers, roomId, await this.chatPayloadOptions(message, roomUri));
 	}
 
-	private async chatPayloadOptions(message: any, roomUri?: string): Promise<ChatPayloadOptions> {
+	private async chatPayloadOptions(message: MiChatMessage, roomUri?: string): Promise<ChatPayloadOptions> {
 		// Files are not referred to by a foreign key, so one can be gone by now. The database returns them in no particular order.
 		const fileIds: MiDriveFile['id'][] = message.fileIds ?? [];
 		const files = fileIds.length > 0 ? await this.driveFilesRepository.findBy({ id: In(fileIds) }) : [];
@@ -883,6 +887,38 @@ export class ApRendererService {
 			roomUri,
 			attachment,
 			tag: apemojis,
+			...(message.toRoomChannelId != null ? await this.chatRoomChannelService.messageFields(message) : {}),
+		};
+	}
+
+	/**
+	 * 그룹 소유 서버가 내주는 과거 기록의 글. 작성자 계정이 없어진 글도 원래 작성자 주소로 싣는다.
+	 * 다른 서버 작성자의 이모지는 이 서버의 같은 이름 이모지가 아니라 그 서버의 Emoji로 싣는다.
+	 */
+	@bindThis
+	public async renderChatHistoryNote(message: MiChatMessage, authorUri: string, remoteEmojis: MiEmoji[] | null, toUsers: MiUser[], roomUri: string): Promise<IPost> {
+		const options = await this.chatPayloadOptions(message, roomUri);
+		return buildChatNote(message, { id: '', host: null }, toUsers, undefined, {
+			...options,
+			authorUri,
+			...(remoteEmojis != null ? { tag: remoteEmojis.map(emoji => this.renderRemoteEmoji(emoji)) } : {}),
+		});
+	}
+
+	/** 다른 서버에서 받은 이모지. id는 그 서버의 주소이므로 받는 쪽이 그 서버에 직접 확인할 수 있다. */
+	@bindThis
+	public renderRemoteEmoji(emoji: MiEmoji): IApEmoji {
+		return {
+			id: emoji.uri!,
+			type: 'Emoji',
+			name: `:${emoji.name}:`,
+			updated: emoji.updatedAt != null ? emoji.updatedAt.toISOString() : new Date().toISOString(),
+			icon: {
+				type: 'Image',
+				mediaType: emoji.type ?? 'image/png',
+				url: emoji.originalUrl,
+			},
+			sensitive: emoji.isSensitive,
 		};
 	}
 
@@ -929,13 +965,16 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public renderChatRoomUpdate(room: MiChatRoom, owner: MiUser): IUpdate {
-		const now = new Date().toISOString();
-		return buildChatRoomUpdate(this.chatRoomForRender(room, owner), owner, {
+	public async renderChatRoomUpdate(room: MiChatRoom, owner: MiUser, fields: Pick<IObject, '_misskey_chatChannels' | '_misskey_chatLegacyChannel'> = {}): Promise<IUpdate> {
+		const now = room.lastRemoteUpdatedAt?.toISOString() ?? new Date().toISOString();
+		const activity = buildChatRoomUpdate(this.chatRoomForRender(room, owner), owner, {
 			baseUrl: this.config.url,
 			published: now,
 			updated: now,
+			...await this.chatRoomIconFields(room),
 		});
+		Object.assign(activity.object as IObject, fields);
+		return activity;
 	}
 
 	@bindThis
@@ -963,7 +1002,7 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public renderChatRoom(room: any, owner: MiUser): IObject {
+	public async renderChatRoom(room: Pick<MiChatRoom, 'id' | 'name'> & Partial<Omit<MiChatRoom, 'description'>> & { description?: string | null }, owner: MiUser): Promise<IObject> {
 		const ownerUri = this.userEntityService.isLocalUser(owner)
 			? this.userEntityService.genLocalUserUri(owner.id)
 			: owner.uri;
@@ -976,7 +1015,24 @@ export class ApRendererService {
 			summary: room.description ?? '',
 			attributedTo: ownerUri || undefined,
 			_misskey_chatArchived: room.isArchived,
-			updated: new Date().toISOString(),
+			...await this.chatRoomFederatedIconFields(room),
+			updated: room.lastRemoteUpdatedAt?.toISOString() ?? new Date().toISOString(),
+		};
+	}
+
+	private async chatRoomFederatedIconFields(room: Partial<Pick<MiChatRoom, 'iconId' | 'iconUrl' | 'iconDecorations'>>) {
+		const { icon, iconDecorations } = await this.chatRoomIconFields(room);
+		return { icon, _misskey_chatIconDecorations: iconDecorations };
+	}
+
+	private async chatRoomIconFields(room: Partial<Pick<MiChatRoom, 'iconId' | 'iconUrl' | 'iconDecorations'>>) {
+		const decorations = (room.iconDecorations?.length ?? 0) > 0 ? await this.avatarDecorationService.findByIds(room.iconDecorations!.map(d => d.id)) : [];
+		return {
+			icon: room.iconId != null && room.iconUrl != null ? { type: 'Image' as const, url: room.iconUrl } : null,
+			iconDecorations: (room.iconDecorations ?? []).flatMap(used => {
+				const decoration = decorations.find(d => d.id === used.id);
+				return decoration == null ? [] : [{ ...used, id: decoration.remoteId ?? decoration.id, url: decoration.rawUrl ?? decoration.url, name: decoration.name }];
+			}),
 		};
 	}
 

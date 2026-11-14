@@ -12,6 +12,7 @@ import { ApImageService } from '@/core/activitypub/models/ApImageService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { buildChatNote } from '@/core/activitypub/misc/chat-payloads.js';
 import { ChatMessageAccessError, ChatService, MAX_CHAT_MESSAGE_FILES, MAX_REMOTE_CHAT_MESSAGE_FILES } from '@/core/ChatService.js';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { DriveFileUsageService } from '@/core/DriveFileUsageService.js';
 import CreateToRoomEndpoint, { paramDef as createToRoomParams } from '@/server/api/endpoints/chat/messages/create-to-room.js';
@@ -241,10 +242,15 @@ describe('choosing the attachments of a new message', () => {
 describe('storing the attachments of a new message', () => {
 	function createService() {
 		const insertOne = vi.fn(async (message: object) => message);
+		const record = vi.fn<(manager: unknown, room: unknown, message: unknown) => Promise<{ added: string[]; mentioned: string[]; recipients: string[] }>>(async () => ({ added: [], mentioned: [], recipients: [] }));
 		const service = Object.assign(Object.create(ChatService.prototype), {
 			config: { url: 'https://local.test' },
+			chatRoomChannelService: Object.assign(Object.create(ChatRoomChannelService.prototype), { db: { manager: {} } }),
+			db: { transaction: async (run: (manager: unknown) => Promise<unknown>) => run({ findOne: async () => ({ id: 'r1', ownerId: 'bob', isArchived: false }), findBy: async () => [], withRepository: (repository: unknown) => repository }) },
 			idService: { gen: () => 'generated', parse: () => ({ date: new Date('2026-11-04T00:00:00Z') }) },
-			chatMessagesRepository: { insertOne },
+			// 3초 뒤의 지연 알림은 저장된 메시지를 다시 읽는다. 여기서는 이미 사라진 것으로 둔다
+			chatMessagesRepository: { insertOne, findOneBy: async () => null },
+			chatRoomNotificationService: { record, mark: vi.fn(async () => {}), notify: vi.fn<(userIds: string[]) => Promise<void>>(async () => {}) },
 			chatApprovalsRepository: { createQueryBuilder: () => ({ where() { return this; }, orWhere() { return this; }, take() { return this; }, getMany: async () => [] }), insertOne: vi.fn() },
 			chatRoomMembershipsRepository: { findBy: async () => [] },
 			chatEntityService: { packMessageLiteFor1on1: async (message: unknown) => message, packMessageLiteForRoom: async (message: unknown) => message },
@@ -255,7 +261,7 @@ describe('storing the attachments of a new message', () => {
 			userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null, isRemoteUser: (user: { host: string | null }) => user.host != null },
 			usersRepository: { findOneBy: async () => null },
 		}) as ChatService;
-		return { service, insertOne };
+		return { service, insertOne, record };
 	}
 
 	test('a direct message keeps them in order', async () => {
@@ -272,6 +278,7 @@ describe('storing the attachments of a new message', () => {
 		await f.service.createMessageToRoom({ id: 'bob', host: 'remote.test' }, { id: 'r1', ownerId: 'bob', isArchived: false } as never, { files: [file('f2'), file('f1')] as never[] });
 
 		expect(f.insertOne.mock.calls[0][0]).toMatchObject({ fileIds: ['f2', 'f1'] });
+		expect(f.record).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({ id: 'r1' }), expect.objectContaining({ fileIds: ['f2', 'f1'] }));
 	});
 
 	test('a message with no file stores an empty list', async () => {
@@ -305,13 +312,15 @@ describe('receiving the attachments of a remote message', () => {
 		const apImageService = { resolveImage: vi.fn(async (_actor: unknown, attach: { name: string }) => ({ id: attach.name })), findStoredImage: vi.fn().mockResolvedValue(null) };
 		const noRooms = { innerJoin: () => noRooms, where: () => noRooms, getMany: async () => [] };
 		const chatRoomsRepository = { findOneBy: vi.fn().mockResolvedValue(room), createQueryBuilder: () => noRooms };
-		const chatMessagesRepository = { findOneBy: vi.fn().mockResolvedValue(null) };
+		const chatMessagesRepository = { findOneBy: vi.fn().mockResolvedValue(null), existsBy: vi.fn().mockResolvedValue(false) };
 		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
+			config: { url: 'https://local.test' },
 			chatService,
 			chatRosterService,
 			apImageService,
 			chatRoomsRepository,
 			chatMessagesRepository,
+			chatRoomHistoryService: { findExistingCopy: vi.fn().mockResolvedValue(null) },
 			usersRepository: { findOneBy: vi.fn().mockResolvedValue(actor) },
 			chatRoomInvitationsRepository: { findOneBy: vi.fn().mockResolvedValue(null) },
 			redisClient: {

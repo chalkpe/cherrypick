@@ -6,13 +6,15 @@
 import { describe, expect, test, vi } from 'vitest';
 import { TwirpError } from 'livekit-server-sdk';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { notificationServiceOver } from '../misc/chat-room-notification-fixture.js';
+import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { JsonLdService } from '@/core/activitypub/JsonLdService.js';
 import { parseChatRoomVoiceState } from '@/core/activitypub/misc/chat-room-voice-state.js';
 import { UtilityService } from '@/core/UtilityService.js';
-import { chatRosterOver } from '../misc/chat-roster-stub.js';
+import { chatRosterOver, noChatInviteJoins } from '../misc/chat-roster-stub.js';
 
 type Row = { id: string; [key: string]: unknown };
 
@@ -53,6 +55,7 @@ type FakeManager = {
 	update: (entity: unknown, where: { id: string }, patch: Record<string, unknown>) => Promise<{ affected: number }>;
 	delete: (entity: unknown, where: Record<string, unknown>) => Promise<{ affected: number }>;
 	findOneBy: (entity: unknown, where: Record<string, unknown>) => Promise<Row | null>;
+	existsBy: (entity: unknown, where: Record<string, unknown>) => Promise<boolean>;
 	insert: (entity: unknown, row: Row) => Promise<Row>;
 	countBy: (entity: unknown, where: Record<string, unknown>) => Promise<number>;
 };
@@ -77,6 +80,7 @@ function fakeDataSource(tables: Map<string, ReturnType<typeof fakeRepository>>) 
 		update: (entity, where, patch) => tableFor(entity).update(where.id, patch),
 		delete: (entity, where) => tableFor(entity).delete(where),
 		findOneBy: (entity, where) => tableFor(entity).findOneBy(where),
+		existsBy: async (entity, where) => (await tableFor(entity).findOneBy(where)) != null,
 		insert: (entity, row) => tableFor(entity).insertOne(row),
 		countBy: (entity, where) => tableFor(entity).countBy(where),
 	};
@@ -110,6 +114,8 @@ function fixture(options: {
 	invitations?: Row[];
 	rooms?: Row[];
 	memberships?: Row[];
+	banned?: string[];
+	blocked?: string[];
 	hooks?: { beforeInvitationDelete?: () => void | Promise<void>; failMembershipInsert?: boolean };
 } = {}) {
 	const rooms = fakeRepository([
@@ -130,6 +136,7 @@ function fixture(options: {
 		['MiChatRoom', rooms],
 		['MiChatRoomInvitation', invitations],
 		['MiChatRoomMembership', memberships],
+		['MiBlocking', fakeRepository((options.blocked ?? []).map(blockeeId => ({ id: blockeeId, blockerId: localOwner.id, blockeeId })))],
 	]));
 	const usersByUri = new Map<string, unknown>([
 		[`${LOCAL}/users/${localOwner.id}`, localOwner],
@@ -199,11 +206,17 @@ function fixture(options: {
 		},
 	};
 	const chatRosterService = chatRosterOver(redisClient);
+	const chatRoomBanService = {
+		isBanned: vi.fn(async (roomId: string, userId: string, _manager?: unknown) => roomId === 'localroom' && (options.banned ?? []).includes(userId)),
+		ban: vi.fn(async () => {}),
+	};
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 		logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 		db,
+		chatRoomBanService,
 		redisClient,
 		chatRosterService,
+		chatInviteLinkService: noChatInviteJoins(),
 		globalEventService,
 		chatRoomsRepository: rooms,
 		chatRoomInvitationsRepository: invitations,
@@ -255,6 +268,9 @@ function fixture(options: {
 		apResolverService,
 		userBlockingService: { checkBlocked: vi.fn(async (_blockerId: string, _blockeeId: string) => false) },
 	});
+	inbox.apChatRoomStateService = Object.assign(Object.create(ApChatRoomStateService.prototype), {
+		chatService: inbox.chatService,
+	});
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
 		chatRoomsRepository: rooms,
 		chatRoomMembershipsRepository: inbox.chatRoomMembershipsRepository,
@@ -268,10 +284,11 @@ function fixture(options: {
 		globalEventService,
 		liveKitService,
 	});
+	Object.assign(chatService, { chatRoomNotificationService: notificationServiceOver(chatService as ChatService) });
 	inbox.chatService.deleteRoom = chatService.deleteRoom;
 	inbox.chatService.removeRoomMember = chatService.removeRoomMember;
 	inbox.chatService.finishRoomMemberRemoval = chatService.finishRoomMemberRemoval;
-	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, pipeline, globalEventService, redisClient };
+	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, pipeline, globalEventService, redisClient, chatRoomBanService, chatRoomNotificationService: chatService.chatRoomNotificationService };
 }
 
 function inviteActivity(actor: { uri: string }, roomUri: string, invitee: string, attributedTo: string | undefined = actor.uri) {
@@ -417,6 +434,70 @@ describe('Chat room federation: Accept(Invite)', () => {
 		expect(result).toBe('ok');
 		expect(f.invitations.rows).toEqual([]);
 		expect(f.memberships.rows).toHaveLength(1);
+	});
+});
+
+describe('Chat room federation: Accept(Invite) from an account the owner removed', () => {
+	const accepted = inviteActivity({ uri: remoteOwner.uri }, 'https://remote.test/chat/rooms/localroom', invitedRemote.uri);
+
+	test('consumes the invitation, adds no membership and tells its server to drop the one it added', async () => {
+		const f = fixture({ invitations: [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }], banned: [invitedRemote.id] });
+
+		const result = await f.inbox.acceptInvite(invitedRemote, accepted);
+
+		expect(result).toBe('skip: banned from the room');
+		expect(f.chatRoomBanService.isBanned).toHaveBeenCalledWith('localroom', invitedRemote.id, expect.anything());
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.invitations.rows).toEqual([]);
+		expect(f.inbox.queueService.deliver).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ id: localOwner.id }),
+			expect.objectContaining({ type: 'Remove', object: invitedRemote.uri, target: `${LOCAL}/chat/rooms/localroom` }),
+			invitedRemote.inbox,
+			false,
+		);
+		expect(f.globalEventService.publishChatRoomStream).not.toHaveBeenCalled();
+	});
+
+	test('tells the invite-link Join this Accept answered that the owner removed the account', async () => {
+		const f = fixture({ invitations: [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }], banned: [invitedRemote.id] });
+		const refuseAcceptedJoin = vi.spyOn(f.inbox.chatInviteLinkService, 'refuseAcceptedJoin').mockResolvedValue(undefined);
+
+		const result = await f.inbox.acceptInvite(invitedRemote, accepted);
+
+		expect(result).toBe('skip: banned from the room');
+		expect(refuseAcceptedJoin).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'localroom' }), invitedRemote, 'banned');
+	});
+});
+
+describe('Chat room federation: Accept(Invite) from an account the owner blocked', () => {
+	const accepted = inviteActivity({ uri: remoteOwner.uri }, 'https://remote.test/chat/rooms/localroom', invitedRemote.uri);
+
+	test.each([true, false])('refuses a blocked nonmember with or without the invitation (pending: %s)', async pending => {
+		const f = fixture({
+			invitations: pending ? [{ id: 'inv', roomId: 'localroom', userId: invitedRemote.id }] : [],
+			blocked: [invitedRemote.id],
+		});
+
+		const result = await f.inbox.acceptInvite(invitedRemote, accepted);
+
+		expect(result).toBe('skip: blocked by the room owner');
+		expect(f.invitations.rows).toEqual([]);
+		expect(f.memberships.rows).toEqual([]);
+		expect(f.inbox.queueService.deliver).toHaveBeenCalledWith(
+			expect.objectContaining({ id: localOwner.id }),
+			expect.objectContaining({ type: 'Remove', object: invitedRemote.uri }),
+			invitedRemote.inbox,
+			false,
+		);
+	});
+
+	test('does not remove an existing member for a block alone', async () => {
+		const f = fixture({ memberships: [{ id: 'membership', roomId: 'localroom', userId: invitedRemote.id }], blocked: [invitedRemote.id] });
+
+		await f.inbox.acceptInvite(invitedRemote, accepted);
+
+		expect(f.memberships.rows).toHaveLength(1);
+		expect(f.inbox.queueService.deliver).not.toHaveBeenCalled();
 	});
 });
 
@@ -818,7 +899,8 @@ describe('Chat room federation: Remove by the room owner', () => {
 
 		expect(f.memberships.rows).toEqual([]);
 		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('bobroom', 'membershipEnded', { userId: alice.id });
-		expect(f.pipeline.srem).toHaveBeenCalledWith(`newChatMessagesExists:${alice.id}`, 'room:bobroom');
+		const unreadRedis = (f.chatRoomNotificationService as unknown as { redis: { srem: ReturnType<typeof vi.fn> } }).redis;
+		expect(unreadRedis.srem).toHaveBeenCalledWith(`newChatMessagesExists:${alice.id}`, 'room:bobroom');
 	});
 
 	test('a member cannot remove someone else', async () => {
@@ -925,6 +1007,18 @@ describe('Chat room federation: Remove', () => {
 		expect(roomService.removeParticipant).toHaveBeenCalledTimes(1);
 		expect(f.memberships.rows).toEqual([]);
 		expect(f.inbox.logger.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to remove'), expect.anything());
+	});
+
+	test.each([
+		['a member leaving', dave, leave(dave, `${LOCAL}/chat/rooms/localroom`)],
+		['a member naming someone else', dave, { type: 'Remove', actor: dave.uri, object: invitedRemote.uri, target: `${LOCAL}/chat/rooms/localroom` }],
+		['an outsider naming a member', remoteOwner, { type: 'Remove', actor: remoteOwner.uri, object: dave.uri, target: `${LOCAL}/chat/rooms/localroom` }],
+	])('records no ban for %s', async (_label, actor, activity) => {
+		const f = fixture({ memberships: [{ id: 'm1', roomId: 'localroom', userId: dave.id }, { id: 'm2', roomId: 'localroom', userId: invitedRemote.id }] });
+
+		await f.inbox.remove(actor, activity);
+
+		expect(f.chatRoomBanService.ban).not.toHaveBeenCalled();
 	});
 
 	test('leaves calls alone for a room hosted on another server', async () => {
@@ -1182,7 +1276,7 @@ describe('Chat room federation: Add/Update/Delete', () => {
 			object: { id: roomUri, type: 'Group', name: 'new name', attributedTo: ownerActor.uri, updated: '2026-11-03T00:00:00.000Z' },
 		});
 
-		expect(f.inbox.chatService.updateRoom).toHaveBeenCalledWith(f.rooms.rows[0], expect.anything(), { federate: false, remoteUpdatedAt: new Date('2026-11-03T00:00:00.000Z') });
+		expect(f.inbox.chatService.updateRoom).toHaveBeenCalledWith(f.rooms.rows[0], expect.anything(), expect.objectContaining({ federate: false, remoteUpdatedAt: new Date('2026-11-03T00:00:00.000Z') }));
 	});
 
 	test.each([undefined, 'not a date'])('Update with the unusable time %s falls back to arrival order', async (updated) => {
@@ -1195,7 +1289,7 @@ describe('Chat room federation: Add/Update/Delete', () => {
 			object: { id: roomUri, type: 'Group', name: 'new name', attributedTo: ownerActor.uri, updated },
 		});
 
-		expect(f.inbox.chatService.updateRoom).toHaveBeenCalledWith(f.rooms.rows[0], expect.anything(), { federate: false, remoteUpdatedAt: undefined });
+		expect(f.inbox.chatService.updateRoom).toHaveBeenCalledWith(f.rooms.rows[0], expect.anything(), expect.objectContaining({ federate: false, remoteUpdatedAt: undefined }));
 	});
 
 	test.each([true, false])('Update applies the archived state %s from the room owner', async (archived) => {
@@ -1275,9 +1369,9 @@ describe('Chat room federation: Add/Update/Delete', () => {
 		});
 
 		expect(f.rooms.rows.some(room => room.id === 'bobroom')).toBe(false);
-		expect(f.pipeline.del).toHaveBeenCalledWith('newRoomChatMessageExists:alice:bobroom');
-		expect(f.pipeline.srem).toHaveBeenCalledWith('newChatMessagesExists:alice', 'room:bobroom');
-		expect(f.pipeline.exec).toHaveBeenCalledOnce();
+		const unreadRedis = (f.chatRoomNotificationService as unknown as { redis: { del: ReturnType<typeof vi.fn>; srem: ReturnType<typeof vi.fn> } }).redis;
+		expect(unreadRedis.del).toHaveBeenCalledWith('newRoomChatMessageExists:alice:bobroom', 'newRoomChatMentionExists:alice:bobroom', 'newRoomChatUnreadChannels:alice:bobroom');
+		expect(unreadRedis.srem).toHaveBeenCalledWith('newChatMessagesExists:alice', 'room:bobroom');
 		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('bobroom', 'roomDeleted');
 		expect(f.liveKitService.deleteRoom).toHaveBeenCalledWith('bobroom');
 		expect(f.inbox.queueService.deliver).not.toHaveBeenCalled();

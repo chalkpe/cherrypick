@@ -104,6 +104,7 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		globalEventService: { publishChatUserStream: () => {}, publishChatRoomStream: () => {} },
 		redisClient,
 		chatRosterService: chatRosterOver(redisClient),
+		chatRoomHistoryService: { findArchivedCopiesBySourceUri: async () => [], findExistingCopy: async () => null },
 		chatRoomsRepository: { findOneBy: async () => ({ id: 'room1', ownerId: owner.id }) },
 		chatRoomMembershipsRepository: {
 			findOneBy: async ({ userId }: { userId: string }) => memberships.find(member => member.userId === userId) ?? null,
@@ -257,7 +258,7 @@ test('chat Updates import emoji metadata for the edited text', async () => {
 		_misskey_content: ':newemoji:', updated: '2026-11-02T00:02:00.000Z',
 		tag: [{ type: 'Emoji', name: ':newemoji:', icon: { type: 'Image', url: 'https://owner.test/newemoji.png' } }],
 	} });
-	expect(updateRemoteMessage).toHaveBeenCalledWith(owner, message, ':newemoji:', new Date('2026-11-02T00:02:00.000Z'), ['newemoji']);
+	expect(updateRemoteMessage).toHaveBeenCalledWith(owner, message, ':newemoji:', new Date('2026-11-02T00:02:00.000Z'), ['newemoji'], undefined);
 });
 
 test('Delete during a slow attachment download suppresses insertion after the old lock lease expires', async () => {

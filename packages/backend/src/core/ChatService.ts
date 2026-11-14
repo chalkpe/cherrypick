@@ -4,15 +4,23 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import * as mfm from 'mfc-js';
 import * as Redis from 'ioredis';
-import { Brackets, DataSource, In, IsNull, LessThan } from 'typeorm';
+import { Brackets, DataSource, In, IsNull, LessThan, Not } from 'typeorm';
 import type { SelectQueryBuilder } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { QueueService } from '@/core/QueueService.js';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
+import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
+import { ChatRoomBanService } from '@/core/ChatRoomBanService.js';
+import { ChatChannelError, parseChatChannels } from '@/core/chat-room-channels.js';
+import type { ChatChannelRef } from '@/core/chat-room-channels.js';
+import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_MOVE_MARKER, CHAT_UNREAD_PRUNE_CHANNEL, chatUnreadMarkerMessageId } from '@/core/chat-room-notifications.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
+import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
+import { MiBlocking } from '@/models/Blocking.js';
 import type { IObject } from '@/core/activitypub/type.js';
 import { IdService } from '@/core/IdService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
@@ -21,7 +29,8 @@ import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { PushNotificationService } from '@/core/PushNotificationService.js';
 import { bindThis } from '@/decorators.js';
-import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, DriveFilesRepository, MiChatMessage, MiDriveFile, MiUser, MutingsRepository, UsersRepository } from '@/models/_.js';
+import type { ChatApprovalsRepository, ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomsRepository, DriveFilesRepository, MiChatMessage, MiDriveFile, MutingsRepository, UsersRepository } from '@/models/_.js';
+import { MiUser } from '@/models/User.js';
 import type { MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { QueryService } from '@/core/QueryService.js';
@@ -30,6 +39,8 @@ import { UserFollowingService } from '@/core/UserFollowingService.js';
 import { MiChatRoomInvitation } from '@/models/ChatRoomInvitation.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
 import { MiChatRoom } from '@/models/ChatRoom.js';
+import { MiChatMessage as ChatMessageEntity } from '@/models/ChatMessage.js';
+import { MiChatRoomUserSettings } from '@/models/ChatRoomUserSettings.js';
 import { Packed } from '@/misc/json-schema.js';
 import { sqlLikeEscape } from '@/misc/sql-like-escape.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
@@ -40,7 +51,7 @@ import { VoiceBackendService as LiveKitService } from '@/core/VoiceBackendServic
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { emojiRegex } from '@/misc/emoji-regex.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
-import { chatMessageUri, chatRoomUriForOwner, localChatMessageIdFromUri } from '@/core/activitypub/misc/chat-payloads.js';
+import { chatActorUri, chatMessageUri, chatRoomUriForOwner, localChatMessageIdFromUri } from '@/core/activitypub/misc/chat-payloads.js';
 import { ChatDiceService } from '@/core/ChatDiceService.js';
 import { chatDiceNotation, parseChatDiceResult } from '@/core/chat-dice.js';
 import { ApiError } from '@/server/api/error.js';
@@ -53,8 +64,10 @@ export class ChatRoomArchivedError extends Error {}
 /** The invitation or membership a request relies on is missing. Callers must not reveal whether the room exists. */
 export class ChatRoomAccessError extends Error {}
 export class ChatRoomFullError extends Error {}
+/** 그룹장이 내보낸 계정이며 아직 사면되지 않았다. */
+export class ChatRoomBannedError extends Error {}
 export class ChatRoomInvitationRefusedError extends Error {
-	constructor(public reason: 'yourself' | 'noSuchUser' | 'suspended' | 'alreadyMember' | 'alreadyInvited' | 'blocked' | 'blocking') {
+	constructor(public reason: 'yourself' | 'noSuchUser' | 'suspended' | 'alreadyMember' | 'banned' | 'alreadyInvited' | 'blocked' | 'blocking') {
 		super(reason);
 	}
 }
@@ -94,12 +107,17 @@ function normalizeEmojiString(x: string) {
 
 @Injectable()
 export class ChatService {
+	private iconRecoveryTimer: NodeJS.Timeout;
+
 	constructor(
 		@Inject(DI.config)
 		private config: Config,
 
 		@Inject(DI.redis)
 		private redisClient: Redis.Redis,
+
+		@Inject(DI.redisForSub)
+		private redisForSub: Redis.Redis,
 
 		@Inject(DI.db)
 		private db: DataSource,
@@ -146,7 +164,54 @@ export class ChatService {
 		private hostPolicyService: HostPolicyService,
 		private chatRosterService: ChatRosterService,
 		private chatDiceService: ChatDiceService,
+		private chatRoomChannelService: ChatRoomChannelService,
+		private chatRoomNotificationService: ChatRoomNotificationService,
+		private chatRoomHistoryService: ChatRoomHistoryService,
+		private chatRoomBanService: ChatRoomBanService,
 	) {
+	}
+
+	public onModuleInit(): void {
+		this.redisForSub.on('message', this.onIconFileEvent);
+		this.recoverMissingRoomIcons();
+		this.iconRecoveryTimer = setInterval(() => this.recoverMissingRoomIcons(), 60_000);
+		this.iconRecoveryTimer.unref();
+	}
+
+	public onApplicationShutdown(): void {
+		this.redisForSub.off('message', this.onIconFileEvent);
+		clearInterval(this.iconRecoveryTimer);
+	}
+
+	private recoverMissingRoomIcons(): void {
+		this.enqueueMissingRoomIcons().catch(error => Logger.error(error, 'ChatService'));
+	}
+
+	@bindThis
+	private onIconFileEvent(_channel: string, data: string): void {
+		// 모든 이벤트가 지나가므로 파일 삭제가 아니면 해석하지 않는다.
+		if (!data.includes('"fileDeleted"')) return;
+		try {
+			const event = JSON.parse(data);
+			if (typeof event.channel === 'string' && event.channel.startsWith('driveStream:') && event.message?.type === 'fileDeleted' && typeof event.message.body === 'string') {
+				this.enqueueMissingRoomIcons(event.message.body).catch(error => Logger.error(error, 'ChatService'));
+			}
+		} catch (error) {
+			Logger.error(error, 'ChatService');
+		}
+	}
+
+	@bindThis
+	public async enqueueMissingRoomIcons(fileId?: string): Promise<void> {
+		const rooms = await this.chatRoomsRepository.find({
+			where: { iconId: IsNull(), iconFileId: fileId ?? Not(IsNull()) },
+			select: { id: true, iconFileId: true },
+			take: 100,
+			order: { id: 'ASC' },
+		});
+		for (const room of rooms) {
+			if (room.iconFileId != null) await this.queueService.createChatRoomIconDeletedJob(room.id, room.iconFileId);
+		}
 	}
 
 	@bindThis
@@ -287,6 +352,7 @@ export class ChatService {
 		const message = {
 			id,
 			fromUserId: fromUser.id,
+			directFromUserId: fromUser.id,
 			toUserId: toUser.id,
 			text: params.text ? params.text.trim() : null,
 			dice,
@@ -367,15 +433,18 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async createMessageToRoom(fromUser: { id: MiUser['id']; host: MiUser['host']; }, toRoom: MiChatRoom, params: {
+	public async createMessageToRoom(fromUser: { id: MiUser['id']; host: MiUser['host']; } & Partial<Pick<MiUser, 'username' | 'name' | 'uri'>>, toRoom: MiChatRoom, params: {
 		text?: string | null;
 		files?: MiDriveFile[];
 		uri?: string | null;
 		emojis?: string[];
 		editedAt?: Date | null;
 		dice?: unknown;
+		toRoomChannelId?: string | null;
+		channelRefs?: ChatChannelRef[];
+		remoteChannelRefs?: unknown;
 	}): Promise<Packed<'ChatMessageLiteForRoom'>> {
-		const memberships = (await this.chatRoomMembershipsRepository.findBy({ roomId: toRoom.id })).map(m => ({
+		let memberships = (await this.chatRoomMembershipsRepository.findBy({ roomId: toRoom.id })).map(m => ({
 			userId: m.userId,
 			isMuted: m.isMuted,
 		})).concat({ // ownerはmembershipレコードを作らないため
@@ -392,8 +461,6 @@ export class ChatService {
 		} else {
 			await this.assertRemoteWriteAllowed(toRoom);
 		}
-
-		const membershipsOtherThanMe = memberships.filter(member => member.userId !== fromUser.id);
 
 		// Extract emojis from text if not provided
 		// Store only emoji names (like notes do), not name@host format
@@ -422,52 +489,34 @@ export class ChatService {
 			emojis,
 		} satisfies Partial<MiChatMessage>;
 
-		const inserted = await this.chatMessagesRepository.insertOne(message);
+		const { inserted, recorded } = await this.db.transaction(async manager => {
+			const current = await manager.findOne(MiChatRoom, { where: { id: toRoom.id }, lock: { mode: 'pessimistic_write' } });
+			if (current == null || (current.ownerId !== fromUser.id && !await manager.existsBy(MiChatRoomMembership, { roomId: current.id, userId: fromUser.id }))) throw new ChatMessageAccessError('you are not a member of the room');
+			if (current.isArchived) {
+				if (fromUser.host == null) throw new ChatRoomArchivedError('room is archived');
+				await this.assertRemoteWriteAllowed(current);
+			}
+			memberships = (await manager.findBy(MiChatRoomMembership, { roomId: current.id })).map(member => ({ userId: member.userId, isMuted: member.isMuted })).concat({ userId: current.ownerId, isMuted: false });
+			const toRoomChannelId = await this.chatRoomChannelService.resolve(current, params.toRoomChannelId, manager);
+			const text = params.text ?? '';
+			const channelRefs = fromUser.host == null
+				? await this.chatRoomChannelService.localRefs(current, text, params.channelRefs ?? [], manager)
+				: await this.chatRoomChannelService.remoteRefs(current, text, params.remoteChannelRefs, manager);
+			// 계정이 지워져도 그룹 글이 남도록 작성자 정보를 글과 함께 보관한다.
+			const archivedAuthor = fromUser.username != null ? { uri: chatActorUri(fromUser, this.config.url), username: fromUser.username, name: fromUser.name ?? null, host: fromUser.host } : null;
+			const inserted = await manager.withRepository(this.chatMessagesRepository).insertOne({ ...message, archivedAuthor, toRoomChannelId, channelRefs });
+			const recorded = await this.chatRoomNotificationService.record(manager, current, inserted);
+			Object.assign(toRoom, current);
+			return { inserted, recorded };
+		});
+		await this.chatRoomNotificationService.mark(toRoom, inserted, recorded);
 
+		const membershipsOtherThanMe = memberships.filter(member => member.userId !== fromUser.id);
 		const packedMessage = await this.chatEntityService.packMessageLiteForRoom(inserted);
 
 		this.globalEventService.publishChatRoomStream(toRoom.id, 'message', packedMessage);
-
-		const redisPipeline = this.redisClient.pipeline();
-		for (const membership of membershipsOtherThanMe) {
-			if (membership.isMuted) continue;
-
-			redisPipeline.set(`newRoomChatMessageExists:${membership.userId}:${toRoom.id}`, message.id);
-			redisPipeline.sadd(`newChatMessagesExists:${membership.userId}`, `room:${toRoom.id}`);
-		}
-		redisPipeline.exec();
-
-		// 3秒経っても既読にならなかったらイベント発行
-		setTimeout(async () => {
-			const redisPipeline = this.redisClient.pipeline();
-			for (const membership of membershipsOtherThanMe) {
-				redisPipeline.get(`newRoomChatMessageExists:${membership.userId}:${toRoom.id}`);
-			}
-			const markers = await redisPipeline.exec();
-			if (markers == null) throw new Error('redis error');
-
-			if (markers.every(marker => marker[1] == null)) return;
-
-			// Delete and Update can arrive within this delay. Never notify with text the sender already withdrew.
-			const latest = await this.chatMessagesRepository.findOneBy({ id: inserted.id });
-			if (latest == null || latest.deletedAt != null) return;
-			if (await this.isFromSuspendedUser(latest)) return;
-
-			const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest);
-
-			for (let i = 0; i < membershipsOtherThanMe.length; i++) {
-				const marker = markers[i][1];
-				if (marker == null) continue;
-				const userId = membershipsOtherThanMe[i].userId;
-				if (userId !== toRoom.ownerId) {
-					const currentMembership = await this.chatRoomMembershipsRepository.findOneBy({ roomId: toRoom.id, userId });
-					if (currentMembership == null || currentMembership.isMuted) continue;
-				}
-
-				this.globalEventService.publishMainStream(userId, 'newChatMessage', packedMessageForTo);
-				this.pushNotificationService.pushNotification(userId, 'newChatMessage', packedMessageForTo);
-			}
-		}, 3000);
+		await this.chatRoomNotificationService.notify(membershipsOtherThanMe.map(member => member.userId));
+		this.scheduleRoomNotification(inserted.id);
 
 		// Federation: Send to remote members if applicable
 		if (this.userEntityService.isLocalUser(fromUser)) {
@@ -490,10 +539,10 @@ export class ChatService {
 					object: { ...chatMessageObject, '@context': roomUri },
 					published: this.idService.parse(inserted.id).date.toISOString(),
 				};
-				await this.deliverToRemoteUsers(fullFromUser, remoteMembers, activity);
+				await this.deliverToRemoteUsers(fullFromUser, remoteMembers, activity, inserted);
 			}
 		} else {
-			await this.relayToOtherServers(toRoom, fromUser, (owner, toUsers) => this.apRendererService.renderChatRoomRelay(inserted, toRoom, owner, toUsers));
+			await this.relayToOtherServers(toRoom, fromUser, (owner, toUsers) => this.apRendererService.renderChatRoomRelay(inserted, toRoom, owner, toUsers), inserted);
 		}
 
 		return packedMessage;
@@ -503,7 +552,7 @@ export class ChatService {
 	 * A sender's server only knows the members it has heard about so far, so a message can miss someone
 	 * who joined just before. The owner's server knows them all and points them at the message.
 	 */
-	private async relayToOtherServers(room: MiChatRoom, fromUser: Pick<MiUser, 'id' | 'host'>, render: (owner: MiUser, toUsers: MiUser[]) => IObject): Promise<void> {
+	private async relayToOtherServers(room: MiChatRoom, fromUser: Pick<MiUser, 'id' | 'host'>, render: (owner: MiUser, toUsers: MiUser[]) => IObject, message?: MiChatMessage): Promise<void> {
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
 		if (owner == null || !this.userEntityService.isLocalUser(owner)) return;
 
@@ -512,7 +561,7 @@ export class ChatService {
 		if (others.length === 0) return;
 
 		const toUsers = members.filter(member => member.id !== owner.id && member.id !== fromUser.id);
-		await this.deliverToRemoteUsers(owner, others, render(owner, toUsers));
+		await this.deliverToRemoteUsers(owner, others, render(owner, toUsers), message);
 	}
 
 	/** Only what changed something here gets this far, so a copy of an activity is not passed on again. An activity without an ID could not be told from its copies. */
@@ -520,7 +569,7 @@ export class ChatService {
 		if (activity == null || typeof activity.id !== 'string' || message.toRoomId == null) return;
 		const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
 		if (room == null) return;
-		await this.relayToOtherServers(room, fromUser, (owner, toUsers) => this.apRendererService.renderChatRoomActivityRelay(activity as IObject & { id: string }, room, owner, toUsers));
+		await this.relayToOtherServers(room, fromUser, (owner, toUsers) => this.apRendererService.renderChatRoomActivityRelay(activity as IObject & { id: string }, room, owner, toUsers), message);
 	}
 
 	/** The invitation, joined room and owned room lists stay on screen until told to read again. */
@@ -544,27 +593,65 @@ export class ChatService {
 		redisPipeline.del(`newUserChatMessageExists:${readerId}:${senderId}`);
 		redisPipeline.srem(`newChatMessagesExists:${readerId}`, `user:${senderId}`);
 		await redisPipeline.exec();
+		await this.chatRoomNotificationService.notify([readerId]);
 	}
 
 	@bindThis
-	public async readRoomChatMessage(
-		readerId: MiUser['id'],
-		roomId: MiChatRoom['id'],
-	): Promise<void> {
-		const redisPipeline = this.redisClient.pipeline();
-		redisPipeline.del(`newRoomChatMessageExists:${readerId}:${roomId}`);
-		redisPipeline.srem(`newChatMessagesExists:${readerId}`, `room:${roomId}`);
-		await redisPipeline.exec();
+	public resolveRoomChannel(room: MiChatRoom, channelId?: string | null) {
+		return this.chatRoomChannelService.resolve(room, channelId);
 	}
 
 	@bindThis
-	public async readAllChatMessages(
-		readerId: MiUser['id'],
-	): Promise<void> {
-		const redisPipeline = this.redisClient.pipeline();
-		// TODO: newUserChatMessageExists とか newRoomChatMessageExists も消したい(けどキーの列挙が必要になって面倒)
-		redisPipeline.del(`newChatMessagesExists:${readerId}`);
-		await redisPipeline.exec();
+	public async readRoomChatMessage(readerId: string, roomId: string, channelId?: string | null, untilId?: string): Promise<void> {
+		await this.chatRoomNotificationService.read(readerId, roomId, channelId ?? undefined, untilId);
+	}
+
+	@bindThis
+	public async readAllChatMessages(readerId: MiUser['id']): Promise<void> {
+		const rooms = await this.chatRoomsRepository.findBy({ ownerId: readerId });
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ userId: readerId });
+		for (const roomId of new Set([...rooms.map(room => room.id), ...memberships.map(member => member.roomId)])) {
+			await this.chatRoomNotificationService.read(readerId, roomId, undefined, undefined, true);
+		}
+		const entries = await this.redisClient.smembers(`newChatMessagesExists:${readerId}`);
+		const pipeline = this.redisClient.multi();
+		for (const entry of entries.filter(value => value.startsWith('user:'))) {
+			pipeline.del(`newUserChatMessageExists:${readerId}:${entry.slice(5)}`);
+			pipeline.srem(`newChatMessagesExists:${readerId}`, entry);
+		}
+		await pipeline.exec();
+		await this.chatRoomNotificationService.notify([readerId]);
+	}
+
+	@bindThis
+	public async shouldNotifyRoomMessage(userId: string, messageId: string): Promise<boolean> {
+		const message = await this.chatMessagesRepository.findOneBy({ id: messageId });
+		return message != null && await this.chatRoomNotificationService.shouldNotify(userId, message);
+	}
+
+	private scheduleRoomNotification(messageId: string, editRecipients?: string[]): void {
+		setTimeout(async () => {
+			if (editRecipients?.length === 0) return;
+			// 지연 후 한 번만 최신 내용을 읽어 포장한다. 그동안의 수정은 이 읽기에 모두 담긴다.
+			const message = await this.chatMessagesRepository.findOneBy({ id: messageId });
+			if (message?.toRoomId == null || message.deletedAt != null) return;
+			if (await this.isFromSuspendedUser(message)) return;
+			const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
+			if (room == null) return;
+			const recipients = await this.chatRoomNotificationService.notificationRecipients(message, room, editRecipients);
+			if (recipients.length === 0) return;
+			const packed = await this.chatEntityService.packMessageDetailed(message);
+			// 포장 사이에 삭제되었으면 보내지 않는다
+			const latest = await this.chatMessagesRepository.findOneBy({ id: messageId });
+			if (latest == null || latest.deletedAt != null) return;
+			for (const userId of recipients) {
+				// 생성·수정 타이머가 겹쳐도 같은 글은 한 번만 알린다
+				if (await this.redisClient.sadd(`chatRoomNotified:${messageId}`, userId) === 0) continue;
+				this.globalEventService.publishMainStream(userId, 'newChatMessage', packed);
+				this.pushNotificationService.pushNotification(userId, 'newChatMessage', packed);
+			}
+			await this.redisClient.expire(`chatRoomNotified:${messageId}`, 60, 'NX');
+		}, 3000);
 	}
 
 	@bindThis
@@ -578,14 +665,16 @@ export class ChatService {
 	}
 
 	@bindThis
-	public isFromSuspendedUser(message: Pick<MiChatMessage, 'fromUserId'>): Promise<boolean> {
-		return this.usersRepository.existsBy({ id: message.fromUserId, isSuspended: true });
+	public async isFromSuspendedUser(message: Pick<MiChatMessage, 'fromUserId'>): Promise<boolean> {
+		if (message.fromUserId == null) return false;
+		return await this.usersRepository.existsBy({ id: message.fromUserId, isSuspended: true });
 	}
 
 	/**
 	 * The unread marks of a direct message from this account lead to something no longer shown, so they go.
 	 * A remote account also leaves the rooms owned here and loses its invitations to them, for good:
 	 * lifting the suspension does not bring either back.
+	 * 다만 재참여 금지는 남기지 않는다. 그룹장이 직접 내보낸 것이 아니므로 정지가 풀리면 다시 초대할 수 있다.
 	 */
 	@bindThis
 	public async handleUserSuspended(user: MiUser): Promise<void> {
@@ -614,7 +703,7 @@ export class ChatService {
 		await Promise.allSettled([
 			...memberships.map(async membership => {
 				const room = roomOwnedHere(membership.roomId);
-				if (room?.owner != null) await this.kickRoomMember(room.owner, room, user.id);
+				if (room?.owner != null) await this.evictRoomMember(room.owner, room, user.id);
 			}),
 			...invitations.map(async invitation => {
 				const room = roomOwnedHere(invitation.roomId);
@@ -642,8 +731,27 @@ export class ChatService {
 		}
 	}
 
+	private async saveRoomMessageEdit(message: MiChatMessage, patch: Pick<MiChatMessage, 'text' | 'editedAt' | 'emojis' | 'channelRefs'>, remote = false) {
+		return this.db.transaction(async manager => {
+			const room = await manager.findOne(MiChatRoom, { where: { id: message.toRoomId! }, lock: { mode: 'pessimistic_write' } });
+			if (room == null || message.fromUserId == null || !await this.chatRoomNotificationService.isMember(message.fromUserId, room, manager)) throw new ChatMessageAccessError('not a room member');
+			if (room.isArchived) {
+				if (!remote) throw new ChatRoomArchivedError('room is archived');
+				await this.assertRemoteWriteAllowed(room);
+			}
+			const current = await manager.findOne(ChatMessageEntity, { where: { id: message.id }, lock: { mode: 'pessimistic_write' } });
+			if (current == null || current.deletedAt != null || current.dice != null) return null;
+			if (remote && current.editedAt != null && current.editedAt >= patch.editedAt!) return null;
+			const previous = current.mentionedUserIds?.length ? current.mentionedUserIds : this.chatRoomNotificationService.mentioned(current, await this.chatRoomNotificationService.participants(room, manager));
+			await manager.update(ChatMessageEntity, current.id, patch);
+			Object.assign(current, patch);
+			const recorded = await this.chatRoomNotificationService.record(manager, room, current, previous);
+			return { message: current, newMentionUserIds: recorded.added, room, recorded };
+		});
+	}
+
 	@bindThis
-	public async updateMessage(userId: MiUser['id'], messageId: MiChatMessage['id'], text: string): Promise<MiChatMessage> {
+	public async updateMessage(userId: MiUser['id'], messageId: MiChatMessage['id'], text: string, refs: ChatChannelRef[] = []): Promise<MiChatMessage> {
 		const message = await this.chatMessagesRepository.findOneBy({ id: messageId });
 		if (message == null) throw new ChatMessageAccessError('no such message');
 		if (message.fromUserId !== userId) throw new ChatMessageAccessError('cannot edit');
@@ -655,10 +763,23 @@ export class ChatService {
 		const trimmed = text.trim();
 		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > MAX_CHAT_MESSAGE_TEXT_LENGTH) throw new ChatMessageInvalidTextError('invalid text');
 
+		const channelRefs = message.toRoomId != null ? await this.chatRoomChannelService.localRefs(await this.chatRoomsRepository.findOneByOrFail({ id: message.toRoomId }), text, refs, undefined, message) : [];
+		if (message.toRoomId == null && refs.length) throw new ChatChannelError('INVALID_CHANNEL_REFS');
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));
-		const result = await this.chatMessagesRepository.update({ id: message.id, deletedAt: IsNull(), dice: IsNull() }, { text: trimmed, editedAt, emojis });
-		if (result.affected === 0) throw new ChatMessageAccessError('deleted');
+		let newMentionUserIds: string[] = [];
+		let editRecipients: string[] = [];
+		if (message.toRoomId != null) {
+			const saved = await this.saveRoomMessageEdit(message, { text: trimmed, editedAt, emojis, channelRefs });
+			if (saved == null) throw new ChatMessageAccessError('deleted');
+			Object.assign(message, saved.message);
+			newMentionUserIds = saved.newMentionUserIds;
+			editRecipients = await this.chatRoomNotificationService.mark(saved.room, saved.message, saved.recorded, true);
+		} else {
+			const result = await this.chatMessagesRepository.update({ id: message.id, deletedAt: IsNull(), dice: IsNull() }, { text: trimmed, editedAt, emojis, channelRefs });
+			if (result.affected === 0) throw new ChatMessageAccessError('deleted');
+		}
+		message.channelRefs = channelRefs;
 		message.text = trimmed;
 		message.editedAt = editedAt;
 		message.emojis = emojis;
@@ -666,22 +787,35 @@ export class ChatService {
 		const payload = {
 			messageId: message.id,
 			text: trimmed,
+			channelRefs,
 			editedAt: editedAt.toISOString(),
 			emojis: await this.customEmojiService.populateEmojis(emojis, null),
 		};
 		if (message.toUserId) {
-			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId, 'updated', payload);
-			this.globalEventService.publishChatUserStream(message.toUserId, message.fromUserId, 'updated', payload);
+			this.globalEventService.publishChatUserStream(userId, message.toUserId, 'updated', payload);
+			this.globalEventService.publishChatUserStream(message.toUserId, userId, 'updated', payload);
 		} else if (message.toRoomId) {
-			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', payload);
+			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', { ...payload, newMentionUserIds });
+			await this.chatRoomNotificationService.notify(this.localUserIds(await this.participantsForMessage(message)));
+			// 수정 알림은 표식 CAS와 무관하게 예약하고 발송 시점에 멘션 표식 존재로 걸른다. 끄기 중 수정은 예약되지 않는다.
+			if (editRecipients.length) this.scheduleRoomNotification(message.id, editRecipients);
 		}
 
-		const fromUser = await this.usersRepository.findOneByOrFail({ id: message.fromUserId });
+		const fromUser = await this.usersRepository.findOneByOrFail({ id: userId });
 		const participants = await this.participantsForMessage(message);
 		const toUsers = participants.filter(user => user.id !== fromUser.id);
-		await this.deliverToRemoteUsers(fromUser, participants, await this.apRendererService.renderChatUpdate(message, fromUser, toUsers, message.toRoomId ?? undefined, await this.roomUriForMessage(message)));
+		await this.deliverToRemoteUsers(fromUser, participants, await this.apRendererService.renderChatUpdate(message, fromUser, toUsers, message.toRoomId ?? undefined, await this.roomUriForMessage(message)), message);
 
 		return message;
+	}
+
+	private async removeMessageContent(message: MiChatMessage, deletedAt: Date): Promise<void> {
+		const patch = { text: null, dice: null, fileIds: [], reactions: [], deletedAt };
+		await this.chatMessagesRepository.update(message.id, patch);
+		// 삭제된 글의 미읽음 표식은 다음 열람까지 보수적으로 남긴다. 집계만 지금 다시 계산한다.
+		if (message.toRoomId != null) {
+			await this.chatRoomNotificationService.notify(this.localUserIds(await this.participantsForMessage(message)));
+		}
 	}
 
 	@bindThis
@@ -689,32 +823,27 @@ export class ChatService {
 		await this.assertMessageRoomNotArchived(message);
 
 		const deletedAt = new Date();
-		await this.chatMessagesRepository.update(message.id, {
-			text: null,
-			dice: null,
-			fileIds: [],
-			reactions: [],
-			deletedAt,
-		});
+		await this.removeMessageContent(message, deletedAt);
 		message.text = null;
 		message.dice = null;
 		message.fileIds = [];
 		message.reactions = [];
 		message.deletedAt = deletedAt;
 
-		const fromUser = await this.usersRepository.findOneByOrFail({ id: message.fromUserId });
 		const participants = await this.participantsForMessage(message);
+		if (message.toRoomId) this.globalEventService.publishChatRoomStream(message.toRoomId, 'deleted', message.id);
+		// 계정이 없어진 뒤 남은 그룹 메시지에는 삭제를 대신 알릴 작성자가 없다
+		if (message.fromUserId == null) return;
+		const fromUser = await this.usersRepository.findOneByOrFail({ id: message.fromUserId });
 		const toUser = message.toUserId ? participants.find(user => user.id === message.toUserId) : null;
 
 		if (message.toUserId) {
-			if (this.userEntityService.isLocalUser(fromUser)) this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId, 'deleted', message.id);
-			if (toUser && this.userEntityService.isLocalUser(toUser)) this.globalEventService.publishChatUserStream(message.toUserId, message.fromUserId, 'deleted', message.id);
-		} else if (message.toRoomId) {
-			this.globalEventService.publishChatRoomStream(message.toRoomId, 'deleted', message.id);
+			if (this.userEntityService.isLocalUser(fromUser)) this.globalEventService.publishChatUserStream(fromUser.id, message.toUserId, 'deleted', message.id);
+			if (toUser && this.userEntityService.isLocalUser(toUser)) this.globalEventService.publishChatUserStream(message.toUserId, fromUser.id, 'deleted', message.id);
 		}
 
 		const toUsers = participants.filter(user => user.id !== fromUser.id);
-		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers, await this.roomUriForMessage(message)));
+		await this.deliverToRemoteUsers(fromUser, participants, this.apRendererService.renderChatDelete(message, fromUser, toUsers, await this.roomUriForMessage(message)), message);
 	}
 
 	@bindThis
@@ -744,10 +873,14 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async roomTimeline(roomId: MiChatRoom['id'], limit: number, sinceId?: MiChatMessage['id'] | null, untilId?: MiChatMessage['id'] | null, includeDeleted = false) {
+	public async roomTimeline(roomId: MiChatRoom['id'], limit: number, sinceId?: MiChatMessage['id'] | null, untilId?: MiChatMessage['id'] | null, includeDeleted = false, channelId?: string | null) {
 		const query = this.queryService.makePaginationQuery(this.chatMessagesRepository.createQueryBuilder('message'), sinceId, untilId)
 			.andWhere('message.toRoomId = :roomId', { roomId })
 			.leftJoinAndSelect('message.fromUser', 'fromUser');
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+		if (room == null) throw new ChatChannelError('NO_SUCH_ROOM');
+		const resolvedChannel = await this.chatRoomChannelService.resolve(room, channelId);
+		if (resolvedChannel != null) query.andWhere('message.toRoomChannelId = :channelId', { channelId: resolvedChannel });
 		this.excludeSuspendedAuthors(query);
 		if (!includeDeleted) query.andWhere('message.deletedAt IS NULL');
 
@@ -867,29 +1000,18 @@ export class ChatService {
 
 	@bindThis
 	public async getRoomReadStateMap(userId: MiUser['id'], roomIds: MiChatRoom['id'][]) {
-		const readStateMap: Record<MiChatRoom['id'], boolean> = {};
-
-		const redisPipeline = this.redisClient.pipeline();
-
-		for (const roomId of roomIds) {
-			redisPipeline.get(`newRoomChatMessageExists:${userId}:${roomId}`);
+		const states: Record<string, boolean> = {};
+		for (const roomId of new Set(roomIds)) {
+			const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
+			states[roomId] = room == null || !(await this.chatRoomNotificationService.state(userId, room)).hasUnread;
 		}
-
-		const markers = await redisPipeline.exec();
-		if (markers == null) throw new Error('redis error');
-
-		for (let i = 0; i < roomIds.length; i++) {
-			const marker = markers[i][1];
-			readStateMap[roomIds[i]] = marker == null;
-		}
-
-		return readStateMap;
+		return states;
 	}
 
+	/** 두 미읽음 플래그는 같은 집계에서 나오므로 한 번만 계산해 함께 돌려준다. */
 	@bindThis
-	public async hasUnreadMessages(userId: MiUser['id']) {
-		const card = await this.redisClient.scard(`newChatMessagesExists:${userId}`);
-		return card > 0;
+	public async chatUnreadTotals(userId: MiUser['id']) {
+		return await this.chatRoomNotificationService.totals(userId);
 	}
 
 	@bindThis
@@ -968,12 +1090,7 @@ export class ChatService {
 		});
 
 		// 未読フラグ削除
-		const redisPipeline = this.redisClient.pipeline();
-		for (const membership of memberships) {
-			redisPipeline.del(`newRoomChatMessageExists:${membership.userId}:${room.id}`);
-			redisPipeline.srem(`newChatMessagesExists:${membership.userId}`, `room:${room.id}`);
-		}
-		await redisPipeline.exec();
+		await this.chatRoomNotificationService.clearRoom(room.id, memberships.map(membership => membership.userId));
 
 		const peopleHere = this.localUserIds([...participants, ...invitees]);
 		await this.chatRosterService.markRoomDeletedFor(peopleHere, room.id);
@@ -981,6 +1098,7 @@ export class ChatService {
 		await this.chatRoomsRepository.delete(room.id);
 		this.globalEventService.publishChatRoomStream(room.id, 'roomDeleted');
 		this.notifyRoomListChanged(peopleHere);
+		await this.chatRoomNotificationService.notify(peopleHere);
 
 		// ルームが消えたら通話も終了する。LiveKit が落ちていても削除自体は成功させる
 		this.liveKitService.deleteRoom(room.id).catch(() => {});
@@ -1042,50 +1160,48 @@ export class ChatService {
 			throw new ChatRoomInvitationRefusedError('yourself');
 		}
 
-		const room = await this.chatRoomsRepository.findOneBy({ id: roomId, ownerId: inviterId });
-		if (room == null) throw new ChatRoomAccessError('no such room');
+		const initialRoom = await this.chatRoomsRepository.findOneBy({ id: roomId, ownerId: inviterId });
+		if (initialRoom == null) throw new ChatRoomAccessError('no such room');
 
-		if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
+		if (initialRoom.isArchived) throw new ChatRoomArchivedError('room is archived');
 
 		const invitee = await this.usersRepository.findOneBy({ id: inviteeId });
 		if (invitee == null) throw new ChatRoomInvitationRefusedError('noSuchUser');
 		if (invitee.isSuspended) throw new ChatRoomInvitationRefusedError('suspended');
 
-		if (await this.isRoomMember(room, inviteeId)) {
-			throw new ChatRoomInvitationRefusedError('alreadyMember');
-		}
-
-		const existingInvitation = await this.chatRoomInvitationsRepository.findOneBy({ roomId, userId: inviteeId });
-		if (existingInvitation) {
-			throw new ChatRoomInvitationRefusedError('alreadyInvited');
-		}
-
-		const membershipsCount = await this.chatRoomMembershipsRepository.countBy({ roomId });
-		if (membershipsCount >= MAX_ROOM_MEMBERS) {
-			throw new ChatRoomFullError('room is full');
-		}
-
+		// 차단 조회는 잠금 전에 끝내고, 거절은 기존 자격 검사 순서로 처리한다.
 		const [blocked, blocking] = await Promise.all([
 			this.userBlockingService.checkBlocked(inviteeId, inviterId),
 			this.userBlockingService.checkBlocked(inviterId, inviteeId),
 		]);
-		if (blocked) {
-			throw new ChatRoomInvitationRefusedError('blocked');
-		}
-		if (blocking) {
-			throw new ChatRoomInvitationRefusedError('blocking');
-		}
 
-		const invitation = {
-			id: this.idService.gen(),
-			roomId: room.id,
-			userId: inviteeId,
-		} satisfies Partial<MiChatRoomInvitation>;
+		// 보관·내보내기·가입과 같은 그룹 잠금 아래에서 자격을 다시 확인하고 초대를 만든다.
+		const { room, invitation, created } = await this.db.transaction(async manager => {
+			const room = await manager.findOne(MiChatRoom, { where: { id: roomId, ownerId: inviterId }, lock: { mode: 'pessimistic_write' } });
+			if (room == null) throw new ChatRoomAccessError('no such room');
+			if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
 
-		const created = await this.chatRoomInvitationsRepository.insertOne(invitation).catch(err => {
-			// A second request can pass the check above while the first one is still inserting.
-			if (isDuplicateKeyValueError(err)) throw new ChatRoomInvitationRefusedError('alreadyInvited');
-			throw err;
+			const membership = await manager.findOneBy(MiChatRoomMembership, { roomId, userId: inviteeId });
+			if (membership != null) throw new ChatRoomInvitationRefusedError('alreadyMember');
+			if (await this.chatRoomBanService.isBanned(roomId, inviteeId, manager)) throw new ChatRoomInvitationRefusedError('banned');
+
+			const existingInvitation = await manager.findOneBy(MiChatRoomInvitation, { roomId, userId: inviteeId });
+			if (existingInvitation != null) throw new ChatRoomInvitationRefusedError('alreadyInvited');
+			const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId });
+			if (membershipsCount >= MAX_ROOM_MEMBERS) throw new ChatRoomFullError('room is full');
+			if (blocked) throw new ChatRoomInvitationRefusedError('blocked');
+			if (blocking) throw new ChatRoomInvitationRefusedError('blocking');
+
+			const invitation = {
+				id: this.idService.gen(),
+				roomId,
+				userId: inviteeId,
+			} satisfies Partial<MiChatRoomInvitation>;
+			const created = await manager.withRepository(this.chatRoomInvitationsRepository).insertOne(invitation).catch(err => {
+				if (isDuplicateKeyValueError(err)) throw new ChatRoomInvitationRefusedError('alreadyInvited');
+				throw err;
+			});
+			return { room, invitation, created };
 		});
 
 		const inviter = await this.usersRepository.findOneByOrFail({ id: inviterId });
@@ -1100,17 +1216,21 @@ export class ChatService {
 
 		// Federation: Send Invite activity to remote user if applicable
 		if (this.userEntityService.isLocalUser(inviter) && this.userEntityService.isRemoteUser(invitee)) {
-			const roomObject = this.apRendererService.renderChatRoom(room, inviter);
-			const inviteeUri = invitee.uri;
-			const inviteActivity = this.apRendererService.renderInvite(roomObject, inviteeUri, inviter);
-			const activity = {
-				...inviteActivity,
-				published: this.idService.parse(invitation.id).date.toISOString(),
-			};
-			this.queueService.deliver(inviter, this.apRendererService.addContext(activity), invitee.inbox, false);
+			await this.deliverRoomInvite(room, inviter, invitee, invitation.id);
 		}
 
 		return created;
+	}
+
+	/** Invite의 시각은 초대장의 시각이다. 받은 서버가 답에 그대로 실어 예전 초대에 대한 답과 구분한다 */
+	@bindThis
+	public async deliverRoomInvite(room: MiChatRoom, inviter: MiLocalUser, invitee: MiRemoteUser, invitationId: MiChatRoomInvitation['id']): Promise<void> {
+		const roomObject = await this.apRendererService.renderChatRoom(room, inviter);
+		const activity = {
+			...this.apRendererService.renderInvite(roomObject, invitee.uri, inviter),
+			published: this.idService.parse(invitationId).date.toISOString(),
+		};
+		this.queueService.deliver(inviter, this.apRendererService.addContext(activity), invitee.inbox, false);
 	}
 
 	@bindThis
@@ -1177,6 +1297,14 @@ export class ChatService {
 			}
 			const existingMembership = await manager.findOneBy(MiChatRoomMembership, { roomId, userId });
 			if (existingMembership == null) {
+				// 이미 멤버인 사람은 그대로 둔다.
+				// 금지 기록은 그룹장의 서버가 가지므로 이 서버의 그룹에서만 확인한다.
+				if (roomOwner?.host == null && await this.chatRoomBanService.isBanned(roomId, userId, manager)) {
+					throw new ChatRoomBannedError('banned from the room');
+				}
+				if (roomOwner?.host == null && await manager.existsBy(MiBlocking, { blockerId: room.ownerId, blockeeId: userId })) {
+					throw new ChatRoomAccessError('blocked by the room owner');
+				}
 				const membershipsCount = await manager.countBy(MiChatRoomMembership, { roomId });
 				if (membershipsCount >= MAX_ROOM_MEMBERS) throw new ChatRoomFullError('room is full');
 			}
@@ -1211,6 +1339,13 @@ export class ChatService {
 
 		this.notifyRoomListChanged([userId]);
 
+		// 다른 서버가 소유한 그룹이면 초대 방식과 관계없이 소유 서버가 보관한 전체 기록을 가져온다.
+		// 이미 사본이 있던 그룹도 처음부터 다시 받아 빠진 글을 채운다.
+		if (roomOwner != null && this.userEntityService.isRemoteUser(roomOwner) && this.userEntityService.isLocalUser(joiningUser)) {
+			// 가져오기를 요청하지 못해도 참여는 끝났다. 그룹을 열 때 다시 요청한다.
+			await this.chatRoomHistoryService.requestImport(room, { restart: true }).catch(() => {});
+		}
+
 		// Federation: Notify about acceptance and new member
 		// Without a new membership (e.g. a duplicate join, or one a lost Remove left behind) there is no new member to announce.
 		if (newMembership != null) this.globalEventService.publishChatRoomStream(roomId, 'membershipStarted', { userId });
@@ -1218,14 +1353,11 @@ export class ChatService {
 		const joinedAt = newMembership != null ? this.idService.parse(newMembership.id).date : new Date();
 
 		// Get all members (including owner, excluding the joining user)
-		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId });
-		const memberUserIds = [room.ownerId, ...memberships.map(m => m.userId)].filter(id => id !== userId);
-		const memberUsers = await this.usersRepository.findBy({ id: In(memberUserIds) });
-		const remoteMembers = memberUsers.filter(m => this.userEntityService.isRemoteUser(m));
+		const remoteMembers = await this.remoteMembersOtherThan(room, userId);
 
 		// Send Accept activity to the inviter (room owner) if they are remote
 		if (this.userEntityService.isLocalUser(joiningUser) && this.userEntityService.isRemoteUser(owner)) {
-			const roomObject = this.apRendererService.renderChatRoom(room, owner);
+			const roomObject = await this.apRendererService.renderChatRoom(room, owner);
 			// Create a simplified invite object reference for the Accept activity
 			const inviteObject = {
 				type: 'Invite',
@@ -1244,22 +1376,40 @@ export class ChatService {
 		}
 
 		// Send Add activity to other remote members (not the owner, as they got Accept)
-		if (newMembership != null && remoteMembers.length > 0 && this.userEntityService.isLocalUser(owner)) {
-			const roomUri = this.apRendererService.genLocalChatRoomUri(room.id);
-			const joiningUserUri = this.userEntityService.isLocalUser(joiningUser)
-				? this.userEntityService.genLocalUserUri(joiningUser.id)
-				: joiningUser.uri;
+		if (newMembership != null) this.deliverRoomMemberAdd(room, owner, joiningUser, remoteMembers, joinedAt);
+	}
 
-			const addActivity = this.apRendererService.renderAdd(owner, roomUri, joiningUserUri ?? '');
-			const activity = {
-				...addActivity,
-				published: joinedAt.toISOString(),
-			};
-			const contextedActivity = this.apRendererService.addContext(activity);
+	private async remoteMembersOtherThan(room: MiChatRoom, userId: MiUser['id']): Promise<MiUser[]> {
+		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
+		const memberUserIds = [room.ownerId, ...memberships.map(m => m.userId)].filter(id => id !== userId);
+		const memberUsers = await this.usersRepository.findBy({ id: In(memberUserIds) });
+		return memberUsers.filter(m => this.userEntityService.isRemoteUser(m));
+	}
 
-			for (const remoteMember of remoteMembers) {
-				if (!remoteMember.isSuspended) this.queueService.deliver(owner, contextedActivity, remoteMember.inbox, false);
-			}
+	/** 새 멤버를 다른 멤버들의 서버에 알린다. 그룹을 소유한 서버만 알리고, 다른 서버 그룹의 사본은 알리지 않는다 */
+	@bindThis
+	public async announceNewRoomMember(room: MiChatRoom, owner: MiUser, joiningUser: MiUser, joinedAt: Date): Promise<void> {
+		if (!this.userEntityService.isLocalUser(owner)) return;
+		this.deliverRoomMemberAdd(room, owner, joiningUser, await this.remoteMembersOtherThan(room, joiningUser.id), joinedAt);
+	}
+
+	private deliverRoomMemberAdd(room: MiChatRoom, owner: MiUser, joiningUser: MiUser, remoteMembers: MiUser[], joinedAt: Date): void {
+		if (remoteMembers.length === 0 || !this.userEntityService.isLocalUser(owner)) return;
+
+		const roomUri = this.apRendererService.genLocalChatRoomUri(room.id);
+		const joiningUserUri = this.userEntityService.isLocalUser(joiningUser)
+			? this.userEntityService.genLocalUserUri(joiningUser.id)
+			: joiningUser.uri;
+
+		const addActivity = this.apRendererService.renderAdd(owner, roomUri, joiningUserUri ?? '');
+		const activity = {
+			...addActivity,
+			published: joinedAt.toISOString(),
+		};
+		const contextedActivity = this.apRendererService.addContext(activity);
+
+		for (const remoteMember of remoteMembers) {
+			if (!remoteMember.isSuspended) this.queueService.deliver(owner, contextedActivity, remoteMember.inbox, false);
 		}
 	}
 
@@ -1341,7 +1491,7 @@ export class ChatService {
 
 		// Federation: Send Undo(Invite) activity to remote invitee
 		if (this.userEntityService.isLocalUser(inviter) && this.userEntityService.isRemoteUser(invitee)) {
-			const roomObject = this.apRendererService.renderChatRoom(room, inviter);
+			const roomObject = await this.apRendererService.renderChatRoom(room, inviter);
 			const inviteObject = this.apRendererService.renderInvite(roomObject, invitee.uri, inviter);
 
 			// Generate activity ID for the original Invite
@@ -1379,18 +1529,16 @@ export class ChatService {
 			const removed = await manager.delete(MiChatRoomMembership, { id: membership.id, roomId, userId });
 			if ((removed.affected ?? 0) === 0) throw new ChatRoomAccessError('not a member');
 			await this.chatRosterService.forgetAccepted(roomId, userId, manager);
+			await manager.delete(MiChatRoomUserSettings, { roomId, userId });
 		});
+		// 未読フラグを消す (「既読にする」というわけでもないのでreadメソッドは使わないでおく)
+		await this.chatRoomNotificationService.clearRoom(roomId, [userId]);
 		this.globalEventService.publishChatRoomStream(roomId, 'membershipEnded', { userId });
 		this.notifyRoomListChanged(this.localUserIds([leavingUser]));
+		await this.chatRoomNotificationService.notify(this.localUserIds([leavingUser]));
 
 		// ルームを抜けたら通話からも外す。LiveKit が落ちていても退出自体は成功させる
 		this.liveKitService.removeParticipant(roomId, this.liveKitService.identityOf(leavingUser)).catch(() => {});
-
-		// 未読フラグを消す (「既読にする」というわけでもないのでreadメソッドは使わないでおく)
-		const redisPipeline = this.redisClient.pipeline();
-		redisPipeline.del(`newRoomChatMessageExists:${userId}:${roomId}`);
-		redisPipeline.srem(`newChatMessagesExists:${userId}`, `room:${roomId}`);
-		await redisPipeline.exec();
 
 		// Federation: Send Remove activity when local user leaves
 		if (room && this.userEntityService.isLocalUser(leavingUser)) {
@@ -1426,15 +1574,29 @@ export class ChatService {
 		}
 	}
 
-	/** Only the local owner can remove another member and announce it to all peers. */
+	/**
+	 * 그룹장이 멤버를 직접 내보낸다. 내보낸 계정은 사면하기 전까지 다시 참여할 수 없다.
+	 * 멤버십을 끝내는 트랜잭션에서 그룹 잠금 아래 금지를 기록하므로 그 사이에 참여가 끼어들 수 없다.
+	 */
 	@bindThis
 	public async kickRoomMember(owner: MiUser, room: MiChatRoom, userId: MiUser['id']): Promise<boolean> {
+		return await this.removeRoomMemberAsOwner(owner, room, userId, { ban: true });
+	}
+
+	/** 계정 정지처럼 서버가 스스로 멤버를 정리한다. 그룹장의 결정이 아니므로 금지를 기록하지 않는다. */
+	@bindThis
+	public async evictRoomMember(owner: MiUser, room: MiChatRoom, userId: MiUser['id']): Promise<boolean> {
+		return await this.removeRoomMemberAsOwner(owner, room, userId, { ban: false });
+	}
+
+	/** Only the local owner can remove another member and announce it to all peers. */
+	private async removeRoomMemberAsOwner(owner: MiUser, room: MiChatRoom, userId: MiUser['id'], options: { ban: boolean }): Promise<boolean> {
 		if (owner.host != null || room.ownerId !== owner.id || userId === owner.id) return false;
 
 		// Keep the target in the delivery list so their server also revokes access.
 		const participants = await this.participantsForRoom(room);
 		const member = participants.find(user => user.id === userId);
-		if (member == null || !await this.removeRoomMember(room, member)) return false;
+		if (member == null || !await this.removeRoomMember(room, member, options)) return false;
 
 		await this.liveKitService.removeParticipant(room.id, this.liveKitService.identityOf(member)).catch(() => {});
 		const memberUri = member.host == null ? this.userEntityService.genLocalUserUri(member.id) : member.uri;
@@ -1448,14 +1610,19 @@ export class ChatService {
 		return true;
 	}
 
-	/** Applies a membership end that another server announced, so nothing is federated back. */
+	/**
+	 * 멤버십을 끝내되 연합으로 알리지는 않는다.
+	 * `ban`은 그룹장의 직접 내보내기만 넘기며, 같은 트랜잭션에서 재참여 금지를 기록한다.
+	 */
 	@bindThis
-	public async removeRoomMember(room: MiChatRoom, member: MiUser): Promise<boolean> {
+	public async removeRoomMember(room: MiChatRoom, member: MiUser, options: { ban?: boolean } = {}): Promise<boolean> {
 		const removed = await this.db.transaction(async manager => {
 			const locked = await manager.findOne(MiChatRoom, { where: { id: room.id }, lock: { mode: 'pessimistic_write' } });
 			if (locked == null) return false;
 			const result = await manager.delete(MiChatRoomMembership, { roomId: room.id, userId: member.id });
-			return (result.affected ?? 0) > 0;
+			const ended = (result.affected ?? 0) > 0;
+			if (ended && options.ban === true) await this.chatRoomBanService.ban(manager, room.id, member.id);
+			return ended;
 		});
 		if (!removed) return false;
 		await this.finishRoomMemberRemoval(room, member);
@@ -1466,20 +1633,19 @@ export class ChatService {
 	@bindThis
 	public async finishRoomMemberRemoval(room: MiChatRoom, member: MiUser): Promise<void> {
 		this.globalEventService.publishChatRoomStream(room.id, 'membershipEnded', { userId: member.id });
-
-		const redisPipeline = this.redisClient.pipeline();
-		redisPipeline.del(`newRoomChatMessageExists:${member.id}:${room.id}`);
-		redisPipeline.srem(`newChatMessagesExists:${member.id}`, `room:${room.id}`);
-		await redisPipeline.exec();
-
+		await this.chatRoomNotificationService.forget(member.id, room.id);
 		this.notifyRoomListChanged(this.localUserIds([member]));
 	}
 
 	@bindThis
 	public async muteRoom(userId: MiUser['id'], roomId: MiChatRoom['id'], mute: boolean) {
-		const membership = await this.chatRoomMembershipsRepository.findOneBy({ roomId, userId });
-		if (membership == null) throw new ChatRoomAccessError('not a member');
-		await this.chatRoomMembershipsRepository.update(membership.id, { isMuted: mute });
+		try {
+			await this.chatRoomNotificationService.setLevel(userId, roomId, mute ? 'none' : 'all');
+			await this.chatRoomNotificationService.notify([userId]);
+		} catch (err) {
+			if (err instanceof ChatChannelError && err.reason === 'NO_SUCH_ROOM') throw new ChatRoomAccessError('not a member');
+			throw err;
+		}
 	}
 
 	@bindThis
@@ -1487,35 +1653,43 @@ export class ChatService {
 		name?: string;
 		description?: string;
 		isArchived?: boolean;
-	}, options?: { federate?: boolean; remoteUpdatedAt?: Date }): Promise<MiChatRoom> {
+	} & Partial<Pick<MiChatRoom, 'iconId' | 'iconUrl' | 'iconBlurhash' | 'iconDecorations'>>, options?: { federate?: boolean; remoteUpdatedAt?: Date; remoteGroup?: IObject; deletedIconId?: string }): Promise<MiChatRoom> {
 		const wasArchived = room.isArchived;
+		const patch = Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined)) as typeof params;
 		const remoteUpdatedAt = options?.remoteUpdatedAt;
 		// TypeORM refuses an UPDATE that has nothing to set.
 		if (remoteUpdatedAt == null && Object.values(params).every(value => value === undefined)) return room;
-		const query = this.chatRoomsRepository.createQueryBuilder().update()
-			.set(remoteUpdatedAt != null ? { ...params, lastRemoteUpdatedAt: remoteUpdatedAt } : params)
-			.where('id = :id', { id: room.id });
-		// Keep this conditional in SQL as multiple inbox workers may read the same revision.
-		if (remoteUpdatedAt != null) {
-			query.andWhere('("lastRemoteUpdatedAt" IS NULL OR "lastRemoteUpdatedAt" <= :remoteUpdatedAt)', { remoteUpdatedAt });
-		}
-		const updated = await query
-			.returning('*')
-			.execute()
-			.then((response) => {
-				return response.raw[0] as MiChatRoom | undefined;
-			});
+		const snapshot = options?.remoteGroup?._misskey_chatChannels !== undefined && remoteUpdatedAt != null ? parseChatChannels(options.remoteGroup, await this.chatRoomChannelService.roomUri(room)) : null;
+		let resetOwner: MiUser | null = null;
+		const updated = await this.db.transaction(async manager => {
+			const current = await manager.findOne(MiChatRoom, { where: { id: room.id }, lock: { mode: 'pessimistic_write' } });
+			if (current == null || (remoteUpdatedAt != null && current.lastRemoteUpdatedAt != null && current.lastRemoteUpdatedAt > remoteUpdatedAt)) return null;
+			if (options?.deletedIconId != null && (current.iconFileId !== options.deletedIconId || current.iconId != null)) return null;
+			if (options?.federate !== false && options?.deletedIconId == null && current.isArchived && (params.iconId !== undefined || params.iconDecorations !== undefined)) throw new ChatRoomArchivedError();
+			if (options?.deletedIconId != null) resetOwner = await manager.findOne(MiUser, { where: { id: current.ownerId } });
+			const revision = remoteUpdatedAt ?? (options?.federate === false || resetOwner?.host != null ? current.lastRemoteUpdatedAt : new Date(Math.max(Date.now(), (current.lastRemoteUpdatedAt?.getTime() ?? 0) + 1)));
+			const iconFileId = options?.deletedIconId != null || params.iconId === undefined ? current.iconFileId : params.iconId;
+			await manager.update(MiChatRoom, current.id, { ...patch, iconFileId, lastRemoteUpdatedAt: revision });
+			const updated = { ...current, ...patch, iconFileId, lastRemoteUpdatedAt: revision };
+			return snapshot != null ? this.chatRoomChannelService.applyRemote(manager, updated, snapshot) : updated;
+		});
 		if (updated == null) return room;
 
 		const merged = { ...room, ...updated };
+		if (snapshot != null) {
+			await this.cleanChannelUnread(merged);
+			this.globalEventService.publishChatRoomStream(merged.id, 'channelsUpdated', { roomId: merged.id });
+		}
 		this.globalEventService.publishChatRoomStream(merged.id, 'roomUpdated', {
 			roomId: merged.id,
 			name: merged.name,
 			description: merged.description,
 			isArchived: merged.isArchived,
+			hasChannels: merged.hasChannels,
+			...(params.iconId !== undefined || params.iconDecorations !== undefined ? await this.chatEntityService.packRoomIcon(merged) : {}),
 		});
 
-		const owner = await this.usersRepository.findOneBy({ id: merged.ownerId });
+		const owner = resetOwner ?? await this.usersRepository.findOneBy({ id: merged.ownerId });
 		if (owner != null && owner.host == null && merged.isArchived && !wasArchived) {
 			// 残っている参加者は定期的な読み直しでも外れるが、それを待たずに通話を閉じる
 			this.liveKitService.deleteRoom(merged.id).catch(() => {});
@@ -1523,10 +1697,78 @@ export class ChatService {
 		const participants = [...await this.participantsForRoom(merged), ...await this.inviteesForRoom(merged)];
 		this.notifyRoomListChanged(this.localUserIds(participants));
 		if (options?.federate !== false && owner != null && owner.host == null) {
-			await this.deliverToRemoteUsers(owner, participants, this.apRendererService.renderChatRoomUpdate(merged, owner));
+			await this.federateRoomUpdate(merged, owner);
+		}
+
+		if (options?.deletedIconId != null) {
+			await this.chatRoomsRepository.update({ id: merged.id, iconId: IsNull(), iconFileId: options.deletedIconId }, { iconFileId: null });
 		}
 
 		return merged;
+	}
+
+	@bindThis
+	public async notifyRoomChannelsChanged(roomId: string): Promise<void> {
+		const room = await this.chatRoomsRepository.findOneByOrFail({ id: roomId });
+		await this.cleanChannelUnread(room);
+		this.globalEventService.publishChatRoomStream(roomId, 'channelsUpdated', { roomId });
+		const members = await this.participantsForRoom(room);
+		this.notifyRoomListChanged(this.localUserIds(members));
+		const owner = await this.usersRepository.findOneByOrFail({ id: room.ownerId });
+		if (owner.host == null) await this.federateRoomUpdate(room, owner);
+	}
+
+	private async cleanChannelUnread(room: MiChatRoom): Promise<void> {
+		const members = this.localUserIds(await this.participantsForRoom(room));
+		for (const userId of members) {
+			const key = `newRoomChatUnreadChannels:${userId}:${room.id}`;
+			const roomMessageKey = `newRoomChatMessageExists:${userId}:${room.id}`;
+			const roomMentionKey = `newRoomChatMentionExists:${userId}:${room.id}`;
+			// 채널 전환 전에 남은 그룹 표식은 그 글이 속한 채널의 표식으로 옮긴다. 채널 표식이 이미 있어도
+			// 순번 CAS로 더 새 것만 남기고, 메시지·멘션 표식은 각각 옮긴다. 출발 표식이 조회 시점과 그대로일 때만
+			// 옮기고 지운다. 그 사이 읽음이 출발 표식을 지웠으면 되살리지 않는다.
+			const moveMarker = async (sourceKey: string, channelKeyOf: (channelId: string) => string) => {
+				const marker = await this.redisClient.get(sourceKey);
+				const markerMessageId = chatUnreadMarkerMessageId(marker);
+				if (markerMessageId == null) return;
+				const message = await this.chatMessagesRepository.findOneBy({ id: markerMessageId, toRoomId: room.id });
+				if (message == null) {
+					// 가리키는 글이 사라졌으면 표식만 지운다
+					await this.redisClient.eval(CHAT_UNREAD_GUARDED_DEL, 1, sourceKey, marker!);
+					return;
+				}
+				if (message.toRoomChannelId == null) return;
+				const channelId = message.toRoomChannelId;
+				await this.redisClient.eval(CHAT_UNREAD_MOVE_MARKER, 4, sourceKey, channelKeyOf(channelId), key, `newChatMessagesExists:${userId}`, marker!, channelId, `room:${room.id}`);
+			};
+			await moveMarker(roomMessageKey, channelId => `newRoomChatChannelMessageExists:${userId}:${room.id}:${channelId}`);
+			await moveMarker(roomMentionKey, channelId => `newRoomChatChannelMentionExists:${userId}:${room.id}:${channelId}`);
+			for (const channelId of await this.redisClient.smembers(key)) {
+				try {
+					await this.chatRoomChannelService.resolve(room, channelId);
+				} catch (err) {
+					if (!(err instanceof ChatChannelError)) throw err;
+					// 사라진 채널의 표식은 지우고 목록을 정리한다
+					await this.redisClient.del(`newRoomChatChannelMessageExists:${userId}:${room.id}:${channelId}`, `newRoomChatChannelMentionExists:${userId}:${room.id}:${channelId}`);
+					await this.redisClient.eval(
+						CHAT_UNREAD_PRUNE_CHANNEL,
+						6, key, `newRoomChatChannelMessageExists:${userId}:${room.id}:${channelId}`, `newRoomChatChannelMentionExists:${userId}:${room.id}:${channelId}`, roomMessageKey, roomMentionKey, `newChatMessagesExists:${userId}`, channelId, `room:${room.id}`,
+					);
+				}
+			}
+		}
+		await this.chatRoomNotificationService.channelsChanged(room);
+	}
+
+	private async federateRoomUpdate(room: MiChatRoom, owner: MiUser): Promise<void> {
+		const snapshot = room.hasChannels ? await this.chatRoomChannelService.snapshot(room.id) : null;
+		if (room.hasChannels && snapshot == null) return;
+		room = snapshot?.room ?? room;
+		const members = await this.participantsForRoom(room);
+		const fields = snapshot?.fields ?? {};
+		await this.deliverToRemoteUsers(owner, members, await this.apRendererService.renderChatRoomUpdate(room, owner, fields), undefined, room.hasChannels);
+		const invitees = (await this.inviteesForRoom(room)).filter(user => !members.some(member => member.id === user.id));
+		if (invitees.length > 0) await this.deliverToRemoteUsers(owner, invitees, await this.apRendererService.renderChatRoomUpdate(room, owner));
 	}
 
 	@bindThis
@@ -1543,6 +1785,7 @@ export class ChatService {
 	public async searchMessages(meId: MiUser['id'], query: string, limit: number, params: {
 		userId?: MiUser['id'] | null;
 		roomId?: MiChatRoom['id'] | null;
+		channelId?: string | null;
 	}) {
 		const q = this.chatMessagesRepository.createQueryBuilder('message');
 
@@ -1583,6 +1826,13 @@ export class ChatService {
 
 			q.setParameters(membershipsQuery.getParameters());
 			q.setParameters(ownedRoomsQuery.getParameters());
+		}
+
+		if (params.channelId != null) {
+			if (params.roomId == null) throw new ChatChannelError('NO_SUCH_CHANNEL');
+			const room = await this.chatRoomsRepository.findOneByOrFail({ id: params.roomId });
+			await this.chatRoomChannelService.resolve(room, params.channelId);
+			q.andWhere('message.toRoomChannelId = :channelId', { channelId: params.channelId });
 		}
 
 		q.andWhere('LOWER(message.text) LIKE :q', { q: `%${ sqlLikeEscape(query.toLowerCase()) }%` });
@@ -1638,7 +1888,7 @@ export class ChatService {
 				throw new ChatMessageAccessError('cannot react to others message');
 			}
 			if (room.isArchived) throw new ChatRoomArchivedError('room is archived');
-		} else if (await this.userBlockingService.checkBlocked(message.fromUserId, userId)) {
+		} else if (await this.userBlockingService.checkBlocked(message.fromUserId!, userId)) {
 			throw new ChatMessageAccessError('blocked');
 		}
 
@@ -1668,11 +1918,11 @@ export class ChatService {
 				reaction,
 			});
 		} else {
-			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId!, 'react', {
+			this.globalEventService.publishChatUserStream(message.fromUserId!, message.toUserId!, 'react', {
 				messageId: message.id,
 				reaction,
 			});
-			this.globalEventService.publishChatUserStream(message.toUserId!, message.fromUserId, 'react', {
+			this.globalEventService.publishChatUserStream(message.toUserId!, message.fromUserId!, 'react', {
 				messageId: message.id,
 				reaction,
 			});
@@ -1685,7 +1935,7 @@ export class ChatService {
 		const messageUri = chatMessageUri(message, this.config.url);
 		const activityId = `${this.userEntityService.genLocalUserUri(actor.id)}/chat-reactions/${randomUUID()}`;
 		await this.redisClient.setex(this.chatReactionActivityIdKey(actor.id, messageUri, reaction), CHAT_REACTION_ACTIVITY_ID_TTL, activityId);
-		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReaction(message, actor, toUsers, reaction, activityId, await this.roomUriForMessage(message)));
+		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReaction(message, actor, toUsers, reaction, activityId, await this.roomUriForMessage(message)), message);
 	}
 
 	@bindThis
@@ -1737,12 +1987,12 @@ export class ChatService {
 				reaction,
 			});
 		} else {
-			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId!, 'unreact', {
+			this.globalEventService.publishChatUserStream(message.fromUserId!, message.toUserId!, 'unreact', {
 				messageId: message.id,
 				user: packedUser,
 				reaction,
 			});
-			this.globalEventService.publishChatUserStream(message.toUserId!, message.fromUserId, 'unreact', {
+			this.globalEventService.publishChatUserStream(message.toUserId!, message.fromUserId!, 'unreact', {
 				messageId: message.id,
 				user: packedUser,
 				reaction,
@@ -1757,7 +2007,7 @@ export class ChatService {
 		const activityIdKey = this.chatReactionActivityIdKey(actor.id, messageUri, reaction);
 		const activityId = await this.redisClient.get(activityIdKey) ?? undefined;
 		await this.redisClient.del(activityIdKey);
-		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReactionUndo(message, actor, toUsers, reaction, activityId, await this.roomUriForMessage(message)));
+		await this.deliverToRemoteUsers(actor, participants, await this.apRendererService.renderChatReactionUndo(message, actor, toUsers, reaction, activityId, await this.roomUriForMessage(message)), message);
 	}
 
 	@bindThis
@@ -1770,7 +2020,7 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async updateRemoteMessage(actor: MiUser, message: MiChatMessage, text: string, editedAt: Date, emojis: string[] = []): Promise<MiChatMessage> {
+	public async updateRemoteMessage(actor: MiUser, message: MiChatMessage, text: string, editedAt: Date, emojis: string[] = [], refs?: unknown): Promise<MiChatMessage> {
 		if (message.fromUserId !== actor.id) throw new ChatMessageAccessError('cannot edit');
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 		if (message.dice != null) throw new ChatMessageAccessError('dice message is immutable');
@@ -1782,12 +2032,24 @@ export class ChatService {
 		const trimmed = text.trim();
 		if ((trimmed.length === 0 && !await this.hasFile(message)) || Array.from(trimmed).length > MAX_CHAT_MESSAGE_TEXT_LENGTH) throw new ChatMessageAccessError('invalid text');
 
-		// Keep this conditional in SQL as multiple inbox workers may read the same revision.
-		const result = await this.chatMessagesRepository.update([
-			{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), dice: IsNull(), editedAt: IsNull() },
-			{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), dice: IsNull(), editedAt: LessThan(editedAt) },
-		], { text: trimmed, editedAt, emojis });
-		if (result.affected === 0) return message;
+		const channelRefs = room != null && room.hasChannels ? await this.chatRoomChannelService.remoteRefs(room, text, refs) : [];
+
+		let newMentionUserIds: string[] = [];
+		let editRecipients: string[] = [];
+		if (message.toRoomId != null) {
+			const saved = await this.saveRoomMessageEdit(message, { text: trimmed, editedAt, emojis, channelRefs }, true);
+			if (saved == null) return message;
+			Object.assign(message, saved.message);
+			newMentionUserIds = saved.newMentionUserIds;
+			editRecipients = await this.chatRoomNotificationService.mark(saved.room, saved.message, saved.recorded, true);
+		} else {
+			const result = await this.chatMessagesRepository.update([
+				{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), dice: IsNull(), editedAt: IsNull() },
+				{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), dice: IsNull(), editedAt: LessThan(editedAt) },
+			], { text: trimmed, editedAt, emojis, channelRefs });
+			if (result.affected === 0) return message;
+		}
+		message.channelRefs = channelRefs;
 		message.text = trimmed;
 		message.editedAt = editedAt;
 		message.emojis = emojis;
@@ -1795,17 +2057,21 @@ export class ChatService {
 		const payload = {
 			messageId: message.id,
 			text: trimmed,
+			channelRefs,
 			editedAt: editedAt.toISOString(),
 			emojis: actor.host == null ? {} : await this.customEmojiService.populateEmojis(emojis, actor.host),
 		};
 		if (message.toUserId) {
-			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId, 'updated', payload);
-			this.globalEventService.publishChatUserStream(message.toUserId, message.fromUserId, 'updated', payload);
+			this.globalEventService.publishChatUserStream(actor.id, message.toUserId, 'updated', payload);
+			this.globalEventService.publishChatUserStream(message.toUserId, actor.id, 'updated', payload);
 		} else if (message.toRoomId) {
-			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', payload);
+			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', { ...payload, newMentionUserIds });
+			await this.chatRoomNotificationService.notify(this.localUserIds(await this.participantsForMessage(message)));
+			// 수정 알림은 표식 CAS와 무관하게 예약하고 발송 시점에 멘션 표식 존재로 걸른다. 끄기 중 수정은 예약되지 않는다.
+			if (editRecipients.length) this.scheduleRoomNotification(message.id, editRecipients);
 		}
 
-		if (room != null) await this.relayToOtherServers(room, actor, (owner, toUsers) => this.apRendererService.renderChatRoomRelay(message, room, owner, toUsers, editedAt));
+		if (room != null) await this.relayToOtherServers(room, actor, (owner, toUsers) => this.apRendererService.renderChatRoomRelay(message, room, owner, toUsers, editedAt), message);
 
 		return message;
 	}
@@ -1814,22 +2080,20 @@ export class ChatService {
 	@bindThis
 	public async deleteRemoteMessage(actor: MiUser, message: MiChatMessage, options?: { activity?: IObject }): Promise<MiChatMessage> {
 		if (message.fromUserId !== actor.id) {
-			const author = await this.usersRepository.findOneBy({ id: message.fromUserId });
-			if (author == null || this.userEntityService.isLocalUser(author)) throw new ChatMessageAccessError('cannot delete');
-			// The room's owner moderates it, including what someone else wrote.
-			const room = message.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
-			if (room?.ownerId !== actor.id) throw new ChatMessageAccessError('cannot delete');
+			// The author of an archived copy may remove their own copy even though the account is gone.
+			const ownArchivedCopy = message.fromUserId == null && message.sourceUri != null && message.archivedAuthor?.uri === actor.uri;
+			if (!ownArchivedCopy) {
+				const author = message.fromUserId != null ? await this.usersRepository.findOneBy({ id: message.fromUserId }) : null;
+				if (message.fromUserId != null ? author == null || this.userEntityService.isLocalUser(author) : message.archivedAuthor?.host == null) throw new ChatMessageAccessError('cannot delete');
+				// The room's owner moderates it, including what someone else wrote.
+				const room = message.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
+				if (room?.ownerId !== actor.id) throw new ChatMessageAccessError('cannot delete');
+			}
 		}
 		if (message.deletedAt != null) return message;
 
 		const deletedAt = new Date();
-		await this.chatMessagesRepository.update(message.id, {
-			text: null,
-			dice: null,
-			fileIds: [],
-			reactions: [],
-			deletedAt,
-		});
+		await this.removeMessageContent(message, deletedAt);
 		message.text = null;
 		message.dice = null;
 		message.fileIds = [];
@@ -1837,8 +2101,8 @@ export class ChatService {
 		message.deletedAt = deletedAt;
 
 		if (message.toUserId) {
-			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId, 'deleted', message.id);
-			this.globalEventService.publishChatUserStream(message.toUserId, message.fromUserId, 'deleted', message.id);
+			this.globalEventService.publishChatUserStream(message.fromUserId!, message.toUserId, 'deleted', message.id);
+			this.globalEventService.publishChatUserStream(message.toUserId, message.fromUserId!, 'deleted', message.id);
 		} else if (message.toRoomId) {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'deleted', message.id);
 		}
@@ -1865,7 +2129,7 @@ export class ChatService {
 			await this.assertRemoteWriteAllowed(room);
 		} else if (message.toUserId !== actor.id) {
 			throw new ChatMessageAccessError('cannot react to others message');
-		} else if (await this.userBlockingService.checkBlocked(message.fromUserId, actor.id)) {
+		} else if (await this.userBlockingService.checkBlocked(message.fromUserId!, actor.id)) {
 			throw new ChatMessageAccessError('blocked');
 		}
 
@@ -1892,11 +2156,11 @@ export class ChatService {
 				reaction,
 			});
 		} else {
-			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId!, 'react', {
+			this.globalEventService.publishChatUserStream(message.fromUserId!, message.toUserId!, 'react', {
 				messageId: message.id,
 				reaction,
 			});
-			this.globalEventService.publishChatUserStream(message.toUserId!, message.fromUserId, 'react', {
+			this.globalEventService.publishChatUserStream(message.toUserId!, message.fromUserId!, 'react', {
 				messageId: message.id,
 				reaction,
 			});
@@ -1944,12 +2208,12 @@ export class ChatService {
 				reaction,
 			});
 		} else {
-			this.globalEventService.publishChatUserStream(message.fromUserId, message.toUserId!, 'unreact', {
+			this.globalEventService.publishChatUserStream(message.fromUserId!, message.toUserId!, 'unreact', {
 				messageId: message.id,
 				user: packedUser,
 				reaction,
 			});
-			this.globalEventService.publishChatUserStream(message.toUserId!, message.fromUserId, 'unreact', {
+			this.globalEventService.publishChatUserStream(message.toUserId!, message.fromUserId!, 'unreact', {
 				messageId: message.id,
 				user: packedUser,
 				reaction,
@@ -2016,8 +2280,15 @@ export class ChatService {
 	@bindThis
 	public async applyPendingChatReactions(message: MiChatMessage): Promise<void> {
 		if (message.uri == null) return;
+		await this.drainPendingChatReactions(message, message.uri);
+		// 보관 사본은 원래 주소로 보류된 리액션도 받는다.
+		if (message.sourceUri != null && message.sourceUri !== message.uri) {
+			await this.drainPendingChatReactions(message, message.sourceUri);
+		}
+	}
 
-		const key = `chat_pending_reaction_events:${message.uri}`;
+	private async drainPendingChatReactions(message: MiChatMessage, messageUri: string): Promise<void> {
+		const key = `chat_pending_reaction_events:${messageUri}`;
 		// Drain atomically so an append between reading and deleting cannot be lost.
 		const results = await this.redisClient.multi().lrange(key, 0, -1).del(key).exec();
 		if (results == null) return;
@@ -2050,7 +2321,8 @@ export class ChatService {
 	 * A custom emoji name only means something on the server that sent it, so it is stored
 	 * with the actor's host rather than resolving to a local emoji that happens to share the name.
 	 */
-	private normalizeRemoteReaction(reaction: string, actorHost: MiUser['host']): string {
+	@bindThis
+	public normalizeRemoteReaction(reaction: string, actorHost: MiUser['host']): string {
 		const custom = reaction.match(isCustomEmojiRegexp);
 		if (custom != null) return actorHost == null ? `:${custom[1]}:` : `:${custom[1]}@${actorHost}:`;
 		try {
@@ -2084,6 +2356,7 @@ export class ChatService {
 
 	/** Creating a message checks these too; an edit must not be a way around them. */
 	private async assertCanStillEdit(message: MiChatMessage): Promise<void> {
+		if (message.fromUserId == null) throw new ChatMessageAccessError('cannot edit');
 		if (message.toRoomId != null) {
 			const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
 			if (room == null || !(await this.isRoomMember(room, message.fromUserId))) throw new ChatMessageAccessError('cannot edit');
@@ -2121,7 +2394,7 @@ export class ChatService {
 
 	private async participantsForMessage(message: MiChatMessage): Promise<MiUser[]> {
 		if (message.toUserId) {
-			return this.usersRepository.findBy({ id: In([message.fromUserId, message.toUserId]) });
+			return this.usersRepository.findBy({ id: In([message.fromUserId!, message.toUserId]) });
 		}
 
 		if (message.toRoomId) {
@@ -2132,7 +2405,8 @@ export class ChatService {
 		return [];
 	}
 
-	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any): Promise<void> {
+	private async deliverToRemoteUsers(actor: MiUser, users: MiUser[], activity: any, message?: MiChatMessage, channelState = false): Promise<void> {
+		const room = message?.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
 		const contextedActivity = this.apRendererService.addContext(activity);
 		const delivered = new Set<string>();
 
@@ -2141,12 +2415,19 @@ export class ChatService {
 			if (!this.userEntityService.isRemoteUser(user)) continue;
 			if (user.isSuspended && !ACTIVITIES_FOR_SUSPENDED_ACCOUNTS.has(activity.type)) continue;
 
+			if (message?.toRoomId != null && room == null) continue;
+
 			// Every recipient is named in the activity, so a server needs it only once however many members it has.
 			const inbox = user.sharedInbox ?? user.inbox;
 			if (inbox == null || delivered.has(inbox)) continue;
 
 			delivered.add(inbox);
-			this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null);
+			const needsCapability = channelState || (message != null && room?.hasChannels === true && (message.toRoomChannelId == null || message.toRoomChannelId !== room.legacyChannelId));
+			if (needsCapability) {
+				await this.chatRoomChannelService.deliverWithCapability(actor, contextedActivity, inbox, user.sharedInbox != null, user.host);
+			} else {
+				this.queueService.deliver(actor, contextedActivity, inbox, user.sharedInbox != null);
+			}
 		}
 	}
 

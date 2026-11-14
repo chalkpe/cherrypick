@@ -10,6 +10,10 @@ import { i18n } from '@/i18n.js';
 export function chatErrorText(err: unknown): string {
 	const code = (err as { code?: unknown } | null | undefined)?.code;
 	switch (code) {
+		case 'NO_SUCH_CHANNEL': return i18n.ts._chat._channels.deleted;
+		case 'INVALID_CHANNEL_NAME': return i18n.ts._chat._channels.nameLimit;
+		case 'TOO_MANY_CHANNELS': return i18n.ts._chat._channels.limit;
+		case 'LAST_CHANNEL': return i18n.ts._chat._channels.lastChannel;
 		case 'DICE_INVALID': return i18n.ts._chat.diceInvalid;
 		case 'DICE_LIMIT': return i18n.ts._chat.diceLimit;
 		case 'DICE_BUSY': return i18n.ts._chat.diceBusy;
@@ -38,6 +42,7 @@ export const chatJoinErrors: ApiWithDialogCustomErrors = {
 	'84416476-5ce8-4a2c-b568-9569f1b10733': { text: i18n.ts._chat.roomUnavailable },
 	'c60a4f18-d3b2-4e75-9c06-7a1e58d3f2b9': { text: i18n.ts._chat.thisRoomIsArchived },
 	'56d5a1da-4d30-4f7d-a931-f62e746533f9': { text: i18n.ts._chat.roomIsFull },
+	'5ebcda3b-b8cc-4be8-9e3b-6422c7d915ad': { text: i18n.ts._chat.bannedFromRoom },
 };
 
 // 招待を送ったときに返るエラー
@@ -50,6 +55,7 @@ export const chatInviteErrors: ApiWithDialogCustomErrors = {
 	'167a1ccf-d9ab-415e-941d-d08f28b2ca07': { text: i18n.ts._chat.cannotInviteUser },
 	'c2789971-48e2-41ac-b4f4-1304696987f7': { text: i18n.ts._chat.cannotInviteUser },
 	'a10a39b2-9ecb-4c77-8827-028bc550f977': { text: i18n.ts._chat.alreadyMember },
+	'f76f1893-4efa-4c4c-94ea-a7b47a60e056': { text: i18n.ts._chat.cannotInviteBannedUser },
 	'20ec0050-1c71-4cd9-b246-67772af61bbf': { text: i18n.ts._chat.alreadyInvited },
 	'a3fc0535-5d74-4106-8b78-3f6ee467baca': { text: i18n.ts._chat.cannotInviteUser },
 	'9f802721-ad05-411c-806a-e9367ab1facf': { text: i18n.ts._chat.cannotInviteUser },
@@ -63,6 +69,51 @@ export function chatInviteErrorText(err: unknown): string {
 	return (id != null ? chatInviteErrors[id]?.text : null) ?? i18n.ts._chat.actionFailed;
 }
 
+export type ChatInviteRefusalReason = 'revoked' | 'archived' | 'banned' | 'blocked' | 'full' | 'unknown';
+
+// 다른 서버의 그룹이 참여를 거절한 사유. 사유를 모르는 서버의 거절은 unknown으로 온다
+export function chatInviteRefusalText(reason: ChatInviteRefusalReason | null): string {
+	switch (reason) {
+		case 'revoked': return i18n.ts._chat._inviteLink.refusedRevoked;
+		case 'archived': return i18n.ts._chat._inviteLink.refusedArchived;
+		case 'banned': return i18n.ts._chat._inviteLink.refusedBanned;
+		case 'blocked': return i18n.ts._chat._inviteLink.refusedBlocked;
+		case 'full': return i18n.ts._chat.roomIsFull;
+		default: return i18n.ts._chat._inviteLink.refusedUnknown;
+	}
+}
+
+// 초대 링크로 참여할 때의 거절. 서버 계약은 오류 ID가 아니라 code를 고정하므로 code로 문구를 고른다
+export function chatInviteJoinErrorText(err: unknown): string {
+	const code = (err as { code?: unknown } | null | undefined)?.code;
+	switch (code) {
+		case 'INVALID_INVITE_LINK': return i18n.ts._chat._inviteLink.invalidLink;
+		case 'NO_SUCH_INVITE_LINK': return chatInviteRefusalText('revoked');
+		case 'ROOM_IS_ARCHIVED': return chatInviteRefusalText('archived');
+		case 'BANNED_FROM_ROOM': return chatInviteRefusalText('banned');
+		case 'BLOCKED_BY_ROOM_OWNER': return chatInviteRefusalText('blocked');
+		case 'ROOM_IS_FULL': return chatInviteRefusalText('full');
+		case 'REMOTE_JOIN_UNAVAILABLE': return i18n.ts._chat._inviteLink.remoteJoinUnavailable;
+		case 'ROLE_PERMISSION_DENIED': return i18n.ts.permissionDeniedErrorDescription;
+		case 'RATE_LIMIT_EXCEEDED': return i18n.ts.cannotPerformTemporaryDescription;
+		default: return i18n.ts._chat.actionFailed;
+	}
+}
+
+// 그룹장이 초대 링크를 발급·폐기할 때의 거절
+export function chatInviteLinkManageErrorText(err: unknown): string {
+	const code = (err as { code?: unknown } | null | undefined)?.code;
+	switch (code) {
+		case 'NO_SUCH_ROOM': return i18n.ts._chat.roomUnavailable;
+		case 'ROOM_IS_ARCHIVED': return i18n.ts._chat._inviteLink.archivedNote;
+		case 'INVITE_LINK_ALREADY_EXISTS': return i18n.ts._chat._inviteLink.alreadyExists;
+		case 'NO_SUCH_INVITE_LINK': return i18n.ts._chat._inviteLink.alreadyRevoked;
+		case 'ROLE_PERMISSION_DENIED': return i18n.ts.permissionDeniedErrorDescription;
+		case 'RATE_LIMIT_EXCEEDED': return i18n.ts.cannotPerformTemporaryDescription;
+		default: return i18n.ts._chat.actionFailed;
+	}
+}
+
 export const chatLeaveErrors: ApiWithDialogCustomErrors = {
 	...fallback,
 	'cb7f3179-50e8-4389-8c30-dbe2650a67c9': { text: i18n.ts._chat.roomUnavailable },
@@ -74,8 +125,19 @@ export const chatKickErrors: ApiWithDialogCustomErrors = {
 	'b4c87e54-c36a-40f4-99c7-b72032c48482': { text: i18n.ts._chat.memberAlreadyGone },
 };
 
+// 내보낸 사람을 사면할 때 돌아오는 오류
+export const chatBanDeleteErrors: ApiWithDialogCustomErrors = {
+	...fallback,
+	'a47c066d-ec11-4e15-930c-49977f0ffac4': { text: i18n.ts._chat.roomUnavailable },
+	'9b33975c-b8a2-4378-b3f9-3a7e898e0b0d': { text: i18n.ts._chat.banAlreadyLifted },
+};
+
 export const chatRoomUpdateErrors: ApiWithDialogCustomErrors = {
 	...fallback,
+	'b334628c-fdf3-461f-91a7-8317b8f9e552': { text: i18n.ts._chat.actionFailed },
+	'7ce861bf-3302-4007-a7e1-f70134f927c2': { text: i18n.ts._chat.actionFailed },
+	'cf67aeac-f60f-44ac-b08b-040befbc4e84': { title: i18n.ts.cannotSelectSensitiveMedia, text: i18n.ts.cannotSelectSensitiveMediaDescription },
+	'eb1c651a-cc8f-4fa5-8d7d-e0e7bd3c2faa': { text: i18n.ts.permissionDeniedErrorDescription },
 	'fcdb0f92-bda6-47f9-bd05-343e0e020932': { text: i18n.ts._chat.roomUnavailable },
 	'8655493b-6d45-4466-95ec-c8c38ddae472': { text: i18n.ts._chat.thisRoomIsArchived },
 };
@@ -88,6 +150,12 @@ export const chatRoomDeleteErrors: ApiWithDialogCustomErrors = {
 export const chatMuteErrors: ApiWithDialogCustomErrors = {
 	...fallback,
 	'c2cde4eb-8d0f-42f1-8f2f-c4d6bfc8e5df': { text: i18n.ts._chat.roomUnavailable },
+};
+
+export const chatNotificationErrors: ApiWithDialogCustomErrors = {
+	...fallback,
+	'ef41ee7c-5e74-48a0-8126-177a2afec201': { text: i18n.ts._chat.roomUnavailable },
+	'ea728d98-6b11-494d-887e-fae0abeec404': { text: i18n.ts._chat.roomUnavailable },
 };
 
 export const chatCancelInvitationErrors: ApiWithDialogCustomErrors = {

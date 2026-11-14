@@ -44,6 +44,46 @@ beforeEach(async () => {
 });
 afterEach(cleanup);
 
+const room = {
+	id: 'group', name: '그룹', owner: user, iconUrl: 'https://example.com/group.png', iconBlurhash: null,
+	iconDecorations: user.avatarDecorations,
+} as Misskey.entities.ChatRoom;
+
+test('그룹 그림은 계정 링크와 계정별 장식 숨김을 사용하지 않는다', async () => {
+	prefer.commit('mutedAvatarDecorationUsers', ['group', 'alice']);
+	const { container } = render(MkAvatar, { props: { room, link: true, preview: true, indicator: true }, global: { directives: { 'user-preview': {} } } });
+
+	expect(container.querySelector('a')).toBeNull();
+	expect(container.firstElementChild?.getAttribute('title')).toBe('그룹');
+	expect(container.querySelector('img[src="https://example.com/group.png"]')).not.toBeNull();
+	expect(container.querySelector(decorationSelector)).not.toBeNull();
+
+	prefer.commit('showAvatarDecorations', false);
+	await nextTick();
+	expect(container.querySelector(decorationSelector)).toBeNull();
+});
+
+test('원격 그룹 장식은 그룹 소유 서버와 보는 사람의 기존 설정을 따른다', async () => {
+	const { container, rerender } = render(MkAvatar, { props: { room: { ...room, owner: { ...user, host: 'remote.example' } } }, global: { directives: { 'user-preview': {} } } });
+	expect(container.querySelector(decorationSelector)).not.toBeNull();
+
+	prefer.commit('showRemoteAvatarDecorations', false);
+	await nextTick();
+	expect(container.querySelector(decorationSelector)).toBeNull();
+	expect(container.querySelector('img[src="https://example.com/group.png"]')).not.toBeNull();
+
+	await rerender({ room });
+	expect(container.querySelector(decorationSelector)).not.toBeNull();
+});
+
+test('그룹 변경은 이미 마운트된 그림과 장식에 반영된다', async () => {
+	const { container, rerender } = render(MkAvatar, { props: { room }, global: { directives: { 'user-preview': {} } } });
+	await rerender({ room: { ...room, iconUrl: 'https://example.com/identicon.png', iconDecorations: [] } });
+
+	expect(container.querySelector('img[src="https://example.com/identicon.png"]')).not.toBeNull();
+	expect(container.querySelector(decorationSelector)).toBeNull();
+});
+
 test.each([false, true])('updates mounted avatars on mute and unmute (floating button: %s)', async (isFloatingBtn) => {
 	const { container } = render(MkAvatar, { props: { user, isFloatingBtn }, global: { directives: { 'user-preview': {} } } });
 	expect(container.querySelector(decorationSelector)).not.toBeNull();

@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => {
 		me: { id: 'me', username: 'me', token: 'my-token', policies: {} },
 		// 招待の相手ごとの答え。無ければ招待できる
 		answers: new Map<string, () => Promise<Response>>(),
-		lists: { members: '[]', outbox: '[]' },
+		lists: { members: '[]', outbox: '[]', bans: '[]' },
 		requests: [] as { endpoint: string; body: Record<string, unknown> }[],
 	};
 	vi.stubGlobal('fetch', vi.fn(async (url: string, init: { body: string }) => {
@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => {
 		if (endpoint === 'chat/rooms/invitations/create') return (state.answers.get(body.userId) ?? (async () => new Response('{}', { status: 200 })))();
 		if (endpoint === 'chat/rooms/members') return new Response(state.lists.members, { status: 200 });
 		if (endpoint === 'chat/rooms/invitations/outbox') return new Response(state.lists.outbox, { status: 200 });
+		if (endpoint === 'chat/rooms/bans/list') return new Response(state.lists.bans, { status: 200 });
 		return new Response('[]', { status: 200 });
 	}));
 	return state;
@@ -49,6 +50,7 @@ function refuses(error: { message: string; code: string; id: string }, status = 
 const alreadyMember = { message: 'That user is already a member of this room.', code: 'ALREADY_MEMBER', id: 'a10a39b2-9ecb-4c77-8827-028bc550f977' };
 const alreadyInvited = { message: 'That user has already been invited to this room.', code: 'ALREADY_INVITED', id: '20ec0050-1c71-4cd9-b246-67772af61bbf' };
 const rateLimit = { message: 'Rate limit exceeded.', code: 'RATE_LIMIT_EXCEEDED', id: 'd5826d14-3982-4d2e-8011-b9e9f02499ef' };
+const banned = { message: 'You removed that user from this room. Pardon them before inviting them again.', code: 'USER_IS_BANNED', id: 'f76f1893-4efa-4c4c-94ea-a7b47a60e056' };
 
 function shownDialog(): { type: string; title?: string; text?: string } | undefined {
 	return os.popups.value.map(popup => popup.props as { type: string; title?: string; text?: string }).findLast(props => props.type === 'error' || props.type === 'warning');
@@ -59,6 +61,7 @@ beforeEach(() => {
 	mocks.answers.clear();
 	mocks.lists.members = '[]';
 	mocks.lists.outbox = '[]';
+	mocks.lists.bans = '[]';
 	os.popups.value = [];
 });
 
@@ -123,6 +126,14 @@ describe('sending invitations', () => {
 		expect(both).toContain(i18n.ts._chat.alreadyInvited);
 	});
 
+	test('says a person the owner removed cannot be invited until pardoned', async () => {
+		mocks.answers.set('sora', refuses(banned));
+
+		await inviteUsersToRoom('r1', people);
+
+		expect(shownDialog()?.text).toContain(`: ${i18n.ts._chat.cannotInviteBannedUser}`);
+	});
+
 	test('at the limit, does not keep asking, and tells everyone left in the language of the screen', async () => {
 		mocks.answers.set('haru', refuses(rateLimit, 429));
 
@@ -164,18 +175,28 @@ describe('sending invitations', () => {
 });
 
 describe('who cannot be invited', () => {
-	test('are those already in the room and those already invited, each with why', async () => {
+	test('are those already in the room, those already invited and those the owner removed, each with why', async () => {
 		mocks.lists.members = JSON.stringify([{ id: 'm1', userId: 'haru' }]);
 		mocks.lists.outbox = JSON.stringify([{ id: 'i1', userId: 'sora' }]);
+		mocks.lists.bans = JSON.stringify([{ id: 'b1', userId: 'dami' }]);
 
 		expect(await getUninvitableUsers('r1')).toEqual({
 			haru: i18n.ts._chat.alreadyMember,
 			sora: i18n.ts._chat.alreadyInvited,
+			dami: i18n.ts._chat.cannotInviteBannedUser,
 		});
-		expect(mocks.requests.map(request => request.body)).toEqual([
-			{ roomId: 'r1', limit: 100, i: 'my-token' },
-			{ roomId: 'r1', limit: 100, i: 'my-token' },
+		expect(mocks.requests.map(request => [request.endpoint, request.body])).toEqual([
+			['chat/rooms/members', { roomId: 'r1', limit: 100, i: 'my-token' }],
+			['chat/rooms/invitations/outbox', { roomId: 'r1', limit: 100, i: 'my-token' }],
+			['chat/rooms/bans/list', { roomId: 'r1', limit: 100, i: 'my-token' }],
 		]);
+	});
+
+	test('still know the members and invitations when the removed people cannot be read', async () => {
+		mocks.lists.members = JSON.stringify([{ id: 'm1', userId: 'haru' }]);
+		mocks.lists.bans = 'not json';
+
+		expect(await getUninvitableUsers('r1')).toEqual({ haru: i18n.ts._chat.alreadyMember });
 	});
 
 	test('are nobody as far as we know when that cannot be read, and the server refuses them later', async () => {

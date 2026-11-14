@@ -5,7 +5,7 @@
 
 import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common';
 import * as Redis from 'ioredis';
-import { IsNull, Not } from 'typeorm';
+import { In, IsNull, Not } from 'typeorm';
 import type { AvatarDecorationsRepository, InstancesRepository, UsersRepository, MiAvatarDecoration, MiInstance, MiUser } from '@/models/_.js';
 import { IdService } from '@/core/IdService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
@@ -17,6 +17,8 @@ import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { HttpRequestService } from '@/core/HttpRequestService.js';
 import { appendQuery, query } from '@/misc/prelude/url.js';
 import type { Config } from '@/config.js';
+import { normalizeAvatarDecoration } from '@/core/avatar-decoration.js';
+import { checkHttps } from '@/misc/check-https.js';
 
 // Software that serves the Misskey API, which avatar decorations are fetched through, without saying so
 const DECORATION_SOFTWARE = ['misskey', 'cherrypick', 'sharkey'];
@@ -123,7 +125,7 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 	}
 
 	@bindThis
-	private getProxiedUrl(url: string, mode?: 'static' | 'avatar'): string {
+	public getProxiedUrl(url: string, mode?: 'static' | 'avatar'): string {
 		return appendQuery(
 			`${this.config.mediaProxy}/${mode ?? 'image'}.webp`,
 			query({
@@ -131,6 +133,62 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 				...(mode ? { [mode]: '1' } : {}),
 			}),
 		);
+	}
+
+	/**
+	 * 그룹처럼 방금 만든 장식을 바로 보여 주어야 하는 곳에서 쓴다.
+	 * getAll의 캐시는 다른 프로세스가 만든 장식을 몰라서 캐시를 거치지 않고 id로 직접 읽는다.
+	 */
+	@bindThis
+	public async findByIds(ids: MiAvatarDecoration['id'][]): Promise<MiAvatarDecoration[]> {
+		if (ids.length === 0) return [];
+		return this.avatarDecorationsRepository.findBy({ id: In(ids) });
+	}
+
+	@bindThis
+	public async pack(used: MiUser['avatarDecorations']) {
+		if (used.length === 0) return [];
+		const decorations = await this.findByIds(used.map(d => d.id));
+		return used.flatMap(d => {
+			const decoration = decorations.find(item => item.id === d.id);
+			return decoration == null ? [] : [{
+				id: d.id, angle: d.angle || undefined, flipH: d.flipH || undefined,
+				offsetX: d.offsetX || undefined, offsetY: d.offsetY || undefined,
+				scale: d.scale || undefined, opacity: d.opacity || undefined, url: decoration.url,
+			}];
+		});
+	}
+
+	@bindThis
+	public async registerRemote(host: string, remoteId: string, url: string, name: string, description?: string, options?: { preserveDescription?: boolean }) {
+		const existing = await this.avatarDecorationsRepository.findOneBy({ host, remoteId });
+		const data = { host, remoteId, url: this.getProxiedUrl(url, 'avatar'), rawUrl: url, name, description: options?.preserveDescription ? existing?.description ?? '' : description };
+		const decoration = existing == null ? await this.create(data) : (await this.update(existing.id, data), existing);
+		this.cacheWithRemote.delete();
+		return decoration.id;
+	}
+
+	@bindThis
+	public async resolveChatDecorations(host: string, value: unknown): Promise<MiUser['avatarDecorations'] | undefined> {
+		if (!Array.isArray(value) || value.length > 16) return undefined;
+		const result: MiUser['avatarDecorations'] = [];
+		for (const item of value) {
+			if (item == null || typeof item !== 'object' || typeof item.id !== 'string' || item.id.length === 0 || item.id.length > 32) continue;
+			if (typeof item.url !== 'string' || item.url.length > 4096 || !checkHttps(item.url)) continue;
+			try {
+				const url = new URL(item.url);
+				if (url.username || url.password || this.getProxiedUrl(item.url, 'avatar').length > 1024) continue;
+			} catch {
+				continue;
+			}
+			if (typeof item.name !== 'string' || item.name.length > 256) continue;
+			if (item.flipH != null && typeof item.flipH !== 'boolean') continue;
+			const ranges = { angle: [-0.5, 0.5], offsetX: [-0.25, 0.25], offsetY: [-0.25, 0.25], scale: [0.5, 1.5], opacity: [0.1, 1] };
+			if (Object.entries(ranges).some(([key, [min, max]]) => item[key] != null && (typeof item[key] !== 'number' || !Number.isFinite(item[key]) || item[key] < min || item[key] > max))) continue;
+			const id = await this.registerRemote(host, item.id, item.url, item.name, undefined, { preserveDescription: true });
+			result.push(normalizeAvatarDecoration({ id, angle: item.angle, flipH: item.flipH, offsetX: item.offsetX, offsetY: item.offsetY, scale: item.scale, opacity: item.opacity }));
+		}
+		return result;
 	}
 
 	/**

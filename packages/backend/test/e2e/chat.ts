@@ -38,7 +38,7 @@ describe('chat/messages/update', () => {
 		assert.ok(updated.body.editedAt != null);
 	});
 
-	test('only an authorized owner can kick, revoke access, and reinvite a member', async () => {
+	test('only an authorized owner can kick, revoke access, and reinvite a member after a pardon', async () => {
 		const created = await api('chat/rooms/create', { name: 'kick lifecycle' }, alice);
 		assert.strictEqual(created.status, 200);
 		const roomId = created.body.id;
@@ -60,6 +60,19 @@ describe('chat/messages/update', () => {
 		assert.strictEqual((await api('chat/messages/create-to-room', { toRoomId: roomId, text: 'denied' }, bob)).status, 400);
 		const history = await api('chat/messages/room-timeline', { roomId }, alice);
 		assert.ok(history.body.some(item => item.id === message.body.id && item.text === 'preserved'));
+
+		// 그룹장이 내보낸 멤버는 사면하기 전까지 다시 초대할 수 없다.
+		await failedApiCall({
+			endpoint: 'chat/rooms/invitations/create',
+			parameters: params,
+			user: alice,
+		}, {
+			status: 400,
+			code: 'USER_IS_BANNED',
+			id: 'f76f1893-4efa-4c4c-94ea-a7b47a60e056',
+		});
+		assert.strictEqual((await api('chat/rooms/bans/delete', params, alice)).status, 204);
+
 		assert.strictEqual((await api('chat/rooms/invitations/create', params, alice)).status, 200);
 		assert.strictEqual((await api('chat/rooms/join', { roomId }, bob)).status, 204);
 		assert.strictEqual((await api('chat/messages/create-to-room', { toRoomId: roomId, text: 'back' }, bob)).status, 200);
@@ -462,13 +475,21 @@ describe('chat/messages/update', () => {
 			assertRefused(await api('chat/rooms/invitations/reject', { roomId }, bob), 'NO_SUCH_ROOM');
 		});
 
-		test('leaving and muting need a membership, which the owner does not have', async () => {
+		test('leaving needs a membership, which the owner does not have', async () => {
 			const roomId = await createRoom(alice);
 
 			assertRefused(await api('chat/rooms/leave', { roomId }, bob), 'NO_SUCH_ROOM');
 			assertRefused(await api('chat/rooms/mute', { roomId, mute: true }, bob), 'NO_SUCH_ROOM');
 			assertRefused(await api('chat/rooms/leave', { roomId }, alice), 'NO_SUCH_ROOM');
-			assertRefused(await api('chat/rooms/mute', { roomId, mute: true }, alice), 'NO_SUCH_ROOM');
+		});
+
+		test('the owner mutes through the same personal notification setting as members', async () => {
+			const roomId = await createRoom(alice);
+
+			assert.strictEqual((await api('chat/rooms/mute', { roomId, mute: true }, alice)).status, 204);
+			assert.strictEqual((await api('chat/rooms/notifications', { roomId }, alice)).body.level, 'none');
+			assert.strictEqual((await api('chat/rooms/mute', { roomId, mute: false }, alice)).status, 204);
+			assert.strictEqual((await api('chat/rooms/notifications', { roomId }, alice)).body.level, 'all');
 		});
 
 		test('only the owner can cancel an invitation', async () => {

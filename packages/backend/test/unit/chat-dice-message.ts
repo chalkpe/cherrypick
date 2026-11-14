@@ -3,9 +3,11 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { notificationServiceOver } from '../misc/chat-room-notification-fixture.js';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import jsonld from 'jsonld';
 import { ChatService, ChatMessageAccessError } from '@/core/ChatService.js';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import CreateToUser, { meta as userMeta } from '@/server/api/endpoints/chat/messages/create-to-user.js';
 import CreateToRoom, { meta as roomMeta } from '@/server/api/endpoints/chat/messages/create-to-room.js';
@@ -47,6 +49,8 @@ function fixture() {
 	const pipeline = { set: vi.fn(), sadd: vi.fn(), exec: vi.fn() };
 	const dependencies = {
 		config: { url: 'https://local.test' },
+		chatRoomChannelService: Object.assign(Object.create(ChatRoomChannelService.prototype), { db: { manager: {} } }),
+		db: { transaction: async (run: (manager: unknown) => Promise<unknown>) => run({ findOne: async () => room, findBy: async () => [], withRepository: (repository: unknown) => repository }) },
 		chatMessagesRepository: repository,
 		chatEntityService: entity,
 		chatDiceService: { roll },
@@ -70,6 +74,7 @@ function fixture() {
 	};
 	const service = Object.create(ChatService.prototype) as ChatService;
 	for (const [key, value] of Object.entries(dependencies)) Object.defineProperty(service, key, { value, writable: true, configurable: true });
+	Object.assign(service, { chatRoomNotificationService: notificationServiceOver(service) });
 	const send = (text: string, group = false, extra: object = {}) => group
 		? new CreateToRoom({} as never, service).exec({ toRoomId: room.id, text, ...extra }, sender as never, null, null)
 		: new CreateToUser({ getUser: async () => recipient } as never, service).exec({ toUserId: recipient.id, text, ...extra }, sender as never, null, null);
@@ -241,7 +246,7 @@ function incoming() {
 		createMessageToRoom: vi.fn(),
 		isRoomMember: vi.fn(async () => true),
 	};
-	const repository = { findOneBy: vi.fn(async () => null) };
+	const repository = { findOneBy: vi.fn(async () => null), existsBy: vi.fn(async () => false) };
 	const locks = new Map<string, string>();
 	const noRooms = { innerJoin: () => noRooms, where: () => noRooms, getMany: async () => [] };
 	const inbox = Object.assign(Object.create(ApInboxService.prototype), {
@@ -254,8 +259,9 @@ function incoming() {
 		chatService,
 		chatMessagesRepository: repository,
 		chatRoomsRepository: { findOneBy: vi.fn(async () => remoteRoom), createQueryBuilder: () => noRooms },
+		chatRoomHistoryService: { findExistingCopy: vi.fn().mockResolvedValue(null) },
 		redisClient: { set: vi.fn(async (key: string, token: string) => { locks.set(key, token); return 'OK'; }), get: vi.fn(async (key: string) => key.startsWith('ap-object-lock:') ? locks.get(key) ?? null : null), del: vi.fn(async (key: string) => Number(locks.delete(key))), eval: vi.fn(async () => 1) },
-		logger: { warn: vi.fn(), info: vi.fn() },
+		logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
 		apPersonService: { resolvePerson: vi.fn(async () => local) },
 		apNoteService: { extractEmojis: vi.fn(async () => []) },
 		roleService: { getUserPolicies: vi.fn(async () => ({ chatAvailability: 'available' })) },

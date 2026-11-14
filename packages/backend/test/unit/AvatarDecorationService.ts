@@ -64,6 +64,39 @@ describe('AvatarDecorationService', () => {
 		);
 	});
 
+	describe('group decorations', () => {
+		test.each([
+			{ id: 'a'.repeat(33), url: 'https://remote.example/frame.png', name: 'frame' },
+			{ id: 'remote1', url: `https://remote.example/${'a'.repeat(1200)}.png`, name: 'frame' },
+			{ id: 'remote1', url: 'http://remote.example/frame.png', name: 'frame' },
+			{ id: 'remote1', url: 'https://%', name: 'frame' },
+			{ id: 'remote1', url: 'https://user:password@remote.example/frame.png', name: 'frame' },
+			{ id: 'remote1', url: 'https://remote.example/frame.png', name: 'frame', angle: Number.NaN },
+		])('discards an invalid or unrepresentable remote decoration: %j', async value => {
+			vi.stubEnv('NODE_ENV', 'production');
+			try {
+				const result = await service.resolveChatDecorations('remote.example', [value]);
+
+				expect(result).toEqual([]);
+				expect(decorations).toEqual([]);
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		});
+
+		test('registers against the owner host and proxies the URL without importing permissions', async () => {
+			const url = 'https://cdn.example/frame.png';
+
+			const result = await service.resolveChatDecorations('remote.example', [{ id: 'remote1', url, name: 'frame', roleIdsThatCanBeUsedThisDecoration: ['admin'] }]);
+
+			expect(result).toMatchObject([{ id: 'local1', angle: 0, scale: 1 }]);
+			expect(decorations[0]).toMatchObject({ host: 'remote.example', remoteId: 'remote1', rawUrl: url, description: '' });
+			expect(new URL(decorations[0].url!).origin).toBe('https://local.example');
+			expect(new URL(decorations[0].url!).searchParams.get('url')).toBe(url);
+			expect(decorations[0]).not.toHaveProperty('roleIdsThatCanBeUsedThisDecoration');
+		});
+	});
+
 	describe('remoteUserUpdate', () => {
 		test.each([
 			// Misskey and its forks serve the API without saying so

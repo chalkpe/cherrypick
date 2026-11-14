@@ -17,11 +17,12 @@ import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { IdService } from '@/core/IdService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
+import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateService.js';
 import { ApDbResolverService } from '@/core/activitypub/ApDbResolverService.js';
 import { ApPersonService } from '@/core/activitypub/models/ApPersonService.js';
 import { ApResolverService } from '@/core/activitypub/ApResolverService.js';
 import { chatActorUri } from '@/core/activitypub/misc/chat-payloads.js';
-import { parseRemoteChatDate } from '@/core/activitypub/misc/chat-remote-date.js';
+import { isFutureRemoteChatDate, parseRemoteChatDate } from '@/core/activitypub/misc/chat-remote-date.js';
 import { getApHrefNullable, getApType } from '@/core/activitypub/type.js';
 import type { IObject } from '@/core/activitypub/type.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
@@ -63,6 +64,7 @@ export class ChatRoomRosterSyncProcessorService {
 		private usersRepository: UsersRepository,
 
 		private chatService: ChatService,
+		private apChatRoomStateService: ApChatRoomStateService,
 		private chatRosterService: ChatRosterService,
 		private apResolverService: ApResolverService,
 		private apDbResolverService: ApDbResolverService,
@@ -79,7 +81,13 @@ export class ChatRoomRosterSyncProcessorService {
 
 	@bindThis
 	public async process(job: Bull.Job<ChatRoomRosterSyncJobData>): Promise<string> {
-		const room = await this.chatRoomsRepository.findOneBy({ id: job.data.roomId });
+		return await this.syncRoom(job.data.roomId, job.data.retryFutureChannels === true);
+	}
+
+	/** 그룹 객체를 다시 읽어 명단과 채널 목록을 맞춘다. 과거 기록 가져오기가 모르는 채널을 만났을 때도 쓴다. */
+	@bindThis
+	public async syncRoom(roomId: MiChatRoom['id'], retryFutureChannels = false): Promise<string> {
+		const room = await this.chatRoomsRepository.findOneBy({ id: roomId });
 		if (room?.uri == null) return 'skip: no room to read the roster of';
 
 		const owner = await this.usersRepository.findOneBy({ id: room.ownerId });
@@ -90,10 +98,25 @@ export class ChatRoomRosterSyncProcessorService {
 		const members = memberships.length > 0 ? await this.usersRepository.findBy({ id: In(memberships.map(membership => membership.userId)) }) : [];
 
 		const group = await this.fetchGroup(room.uri, members);
-		if (group == null) return 'skip: nobody here can read the room';
+		if (group == null) {
+			if (retryFutureChannels) throw new Error('the room cannot be read yet');
+			return 'skip: nobody here can read the room';
+		}
+		if (retryFutureChannels && group._misskey_chatChannels !== undefined && isFutureRemoteChatDate(group.updated)) {
+			throw new Error('the channel revision is still in the future');
+		}
 
 		const roster = this.parseRoster(group, room.uri, owner.uri);
-		if (roster == null) return 'skip: the owner\'s server gave no roster';
+		if (roster == null) {
+			if (retryFutureChannels) throw new Error('the room roster cannot be read yet');
+			return 'skip: the owner\'s server gave no roster';
+		}
+
+		if (Object.hasOwn(group, 'icon') || Object.hasOwn(group, '_misskey_chatIconDecorations')) {
+			await this.apChatRoomStateService.apply(room, group);
+		} else {
+			await this.chatService.updateRoom(room, {}, { federate: false, remoteUpdatedAt: parseRemoteChatDate(group.updated) ?? undefined, remoteGroup: group });
+		}
 
 		const present = await this.removeDropped(room, memberships, members, roster);
 		await this.addListed(room, owner.uri, roster, present);

@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => {
 		roomMembers: [] as unknown[],
 		sentInvitations: [] as unknown[],
 		roomIsArchived: false,
+		roomHasChannels: false,
 		roomOwnerId: 'owner',
 		roomShowFails: false,
 		roomInvitationExists: false,
@@ -61,7 +62,8 @@ vi.mock('@/utility/misskey-api.js', () => ({
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowFails) throw new Error('No such room.');
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowError != null) throw mocks.roomShowError;
 		if (endpoint === 'chat/messages/room-timeline' && mocks.timelineError != null) throw mocks.timelineError;
-		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: mocks.roomOwnerId, owner: { id: mocks.roomOwnerId, username: 'owner', host: null }, isArchived: mocks.roomIsArchived, invitationExists: mocks.roomInvitationExists };
+		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: mocks.roomOwnerId, owner: { id: mocks.roomOwnerId, username: 'owner', host: null }, isArchived: mocks.roomIsArchived, hasChannels: mocks.roomHasChannels, invitationExists: mocks.roomInvitationExists };
+		if (endpoint === 'chat/rooms/channels/list') return [{ id: 'first', roomId: 'r1', name: 'First', isLegacy: true }];
 		if (endpoint === 'users/show' && mocks.userShowError != null) throw mocks.userShowError;
 		if (endpoint === 'users/show') return { id: 'alice', username: 'alice', host: null };
 		if (endpoint === 'chat/messages/room-timeline' || endpoint === 'chat/messages/user-timeline') return mocks.timeline;
@@ -74,7 +76,7 @@ vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: moc
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog, selectUsers: mocks.selectUsers, success: mocks.success, promiseDialog: (promise: Promise<unknown>) => promise }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace, useListener: vi.fn() }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace, replaceByPath: mocks.routerReplace, useListener: vi.fn() }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // 通話や入力欄は吹き出しのまとまりと関係ないので空にする
 vi.mock('@/composables/use-chat-room-voice-call.js', async () => {
@@ -153,6 +155,7 @@ import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { chatLeaveErrors } from '@/pages/chat/chat-errors.js';
 import { installFakeResizeObserver, resizeObserved } from './fake-resize-observer.js';
+import { playMisskeySfx } from '@/utility/sound.js';
 
 const apiMock = vi.mocked(misskeyApi).getMockImplementation()!;
 
@@ -201,9 +204,11 @@ const bubbles = (container: Element) => [...container.querySelectorAll('[data-te
 }));
 
 beforeEach(() => {
+	vi.mocked(playMisskeySfx).mockClear();
 	mocks.channel = new mocks.FakeChannel();
 	mocks.renders.clear();
 	mocks.roomIsArchived = false;
+	mocks.roomHasChannels = false;
 	mocks.roomOwnerId = 'owner';
 	mocks.roomShowFails = false;
 	mocks.roomInvitationExists = false;
@@ -230,6 +235,78 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+});
+
+describe('수신자별 그룹 알림 소리', () => {
+	test.each([false, true])('shouldNotify=%s인 새 메시지의 소리를 따른다', async shouldNotify => {
+		const { container } = await renderRoom();
+
+		mocks.channel.emit('message', { ...message('m4', 'alice', 3 * MINUTE), shouldNotify });
+		await flush();
+
+		expect(container.querySelector('[data-id="m4"]')).not.toBeNull();
+		expect(playMisskeySfx).toHaveBeenCalledTimes(shouldNotify ? 1 : 0);
+	});
+
+	test('일대일과 구버전 스트림의 기존 소리를 유지한다', async () => {
+		await renderRoom('user');
+
+		mocks.channel.emit('message', message('m4', 'alice', 3 * MINUTE));
+		await flush();
+
+		expect(playMisskeySfx).toHaveBeenCalledExactlyOnceWith('chatMessage');
+	});
+
+	test('수정으로 새로 멘션되면 소리를 내며 같은 수정 재수신은 조용하다', async () => {
+		await renderRoom();
+		const edited = { messageId: 'm3', text: '@me 멘션', editedAt: '2026-10-27T12:04:00.000Z', shouldNotify: true };
+
+		mocks.channel.emit('updated', edited);
+		await flush();
+		mocks.channel.emit('updated', edited);
+		await flush();
+
+		expect(playMisskeySfx).toHaveBeenCalledExactlyOnceWith('chatMessage');
+	});
+});
+
+test('가져오기 완료 후 열린 일부 기록의 중간과 최근 글을 읽음 처리 없이 합친다', async () => {
+	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m1', 'bob', 0)];
+	const { container } = await renderRoom();
+	mocks.timeline = [message('m4', 'alice', 3 * MINUTE), message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
+	vi.mocked(misskeyApi).mockClear();
+
+	mocks.channel.emit('historyImported', { status: 'completed' });
+
+	await waitFor(() => {
+		expect([...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'))).toEqual(['m1', 'm2', 'm3', 'm4']);
+	});
+	const reads = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline');
+	expect(reads.length).toBeGreaterThan(0);
+	expect(reads.every(([, params]) => params != null && ('untilDate' in params || 'untilId' in params))).toBe(true);
+	expect(reads[0][1]).toMatchObject({ untilDate: Number.MAX_SAFE_INTEGER });
+	expect(playMisskeySfx).not.toHaveBeenCalled();
+});
+
+test('가져온 기록이 한 페이지보다 많아도 열린 범위까지 이어서 합친다', async () => {
+	mocks.timeline = [message('m151', 'alice', 151 * MINUTE), message('m001', 'bob', MINUTE)];
+	const { container } = await renderRoom();
+	const imported = Array.from({ length: 150 }, (_, i) => message(`m${String(150 - i).padStart(3, '0')}`, 'alice', (150 - i) * MINUTE));
+	vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+		if (endpoint === 'chat/messages/room-timeline') {
+			return (params != null && 'untilId' in params ? imported.slice(100) : imported.slice(0, 100)) as never;
+		}
+		return apiMock(endpoint, params);
+	});
+	try {
+		mocks.channel.emit('historyImported', { status: 'completed' });
+		await waitFor(() => expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(151));
+		const reads = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline');
+		expect(reads.some(([, params]) => params != null && 'untilId' in params && params.untilId === 'm051')).toBe(true);
+		expect(playMisskeySfx).not.toHaveBeenCalled();
+	} finally {
+		vi.mocked(misskeyApi).mockImplementation(apiMock);
+	}
 });
 
 describe('following the newest message', () => {
@@ -1210,7 +1287,15 @@ describe('leaving a room from the menu', () => {
 
 		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/leave', { roomId: 'r1' }, undefined, chatLeaveErrors);
 		expect(mocks.routerPush).not.toHaveBeenCalled();
-		expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.tsx._chat.leaveRoomConfirm({ name: 'room 1' }) });
+		expect(mocks.confirm).toHaveBeenCalledWith({
+			type: 'warning',
+			text: i18n.tsx._chat.leaveRoomConfirm({ name: 'room 1' }),
+			room: {
+				id: 'r1', name: 'room 1', ownerId: 'owner',
+				owner: { id: 'owner', username: 'owner', host: null },
+				isArchived: false, invitationExists: false, hasChannels: false,
+			},
+		});
 		expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
 	});
 
@@ -2200,4 +2285,30 @@ describe.each(['room', 'user'] as const)('a %s conversation that has just opened
 			vi.mocked(misskeyApi).mockImplementation(apiMock);
 		}
 	});
+});
+
+test('a cached pending group response cannot replace the page that was opened afterwards', async () => {
+	let release!: () => void;
+	mocks.roomHasChannels = true;
+	mocks.roomShowGate = new Promise(resolve => { release = resolve; });
+	const visible = ref(true);
+	const host = defineComponent({
+		setup() {
+			provideMetadataReceiver(() => {});
+			return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+		},
+	});
+	render(host, { global: { stubs, directives: { tooltip: {} } } });
+	await flush();
+	visible.value = false;
+	await flush();
+	release();
+	await flush();
+	await flush();
+
+	expect(mocks.routerReplace).not.toHaveBeenCalled();
+	visible.value = true;
+	await flush();
+	await flush();
+	expect(mocks.routerReplace).toHaveBeenCalledWith('/chat/room/r1/channels/first');
 });

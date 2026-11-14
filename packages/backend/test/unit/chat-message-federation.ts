@@ -3,8 +3,10 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { notificationServiceOver } from '../misc/chat-room-notification-fixture.js';
 import { QueryFailedError } from 'typeorm';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatMessageAccessError, ChatService, ChatRoomArchivedError } from '@/core/ChatService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
@@ -188,18 +190,18 @@ describe('ApRendererService chat wrappers', () => {
 		expect(activity.object).toMatchObject({ type: 'Tombstone', formerType: 'Note' });
 	});
 
-	test('derives a remote mirror room URI when the stored uri is missing', () => {
+	test('derives a remote mirror room URI when the stored uri is missing', async () => {
 		const renderer = createRenderer();
-		const room = renderer.renderChatRoom({ id: 'r1', name: 'Room', description: '' }, bob as never);
+		const room = await renderer.renderChatRoom({ id: 'r1', name: 'Room', description: '' }, bob as never);
 
 		expect(room.id).toBe('https://remote.test/chat/rooms/r1');
 	});
 
-	test('a room object always names its description, so that an Invite can clear the one on a mirror', () => {
+	test('a room object always names its description, so that an Invite can clear the one on a mirror', async () => {
 		const renderer = createRenderer();
 
-		expect(renderer.renderChatRoom({ id: 'r1', name: 'Room', description: '' }, bob as never).summary).toBe('');
-		expect(renderer.renderChatRoom({ id: 'r1', name: 'Room', description: null }, bob as never).summary).toBe('');
+		expect((await renderer.renderChatRoom({ id: 'r1', name: 'Room', description: '' }, bob as never)).summary).toBe('');
+		expect((await renderer.renderChatRoom({ id: 'r1', name: 'Room', description: null }, bob as never)).summary).toBe('');
 	});
 
 	test('message updates preserve the attachment, emoji tags and original publication time', async () => {
@@ -403,6 +405,22 @@ describe('ChatService chat federation delivery', () => {
 			},
 			userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
 		}) as ChatService;
+
+		Object.assign(service, {
+			chatRoomNotificationService: notificationServiceOver(service),
+			chatRoomChannelService: Object.create(ChatRoomChannelService.prototype),
+			db: {
+				transaction: async (run: (manager: unknown) => Promise<unknown>) => run({
+					findOne: async (entity: { name: string }, options: { where: { id: string } }) => entity.name === 'MiChatMessage' ? messages.get(options.where.id) ?? null : { ...room },
+					findOneBy: async (entity: { name: string }, where: { id: string }) => entity.name === 'MiChatMessage' ? messages.get(where.id) ?? null : { ...room },
+					existsBy: async () => true,
+					findBy: async (_entity: { name: string }) => (service as unknown as { chatRoomMembershipsRepository: { findBy(): Promise<unknown[]> } }).chatRoomMembershipsRepository.findBy(),
+					withRepository: (repository: unknown) => repository,
+					update: async (entity: { name: string }, id: string, patch: object) => { Object.assign(entity.name === 'MiChatMessage' ? messages.get(id)! : room, patch); },
+					delete: async () => ({ affected: 0 }),
+				}),
+			},
+		});
 
 		return { service, alice, bob, carol, directMessage, roomMessage, roomDeleteMessage, room, queueService, apRendererService, globalEventService, redisClient };
 	}
@@ -797,6 +815,17 @@ describe('ChatService chat federation delivery', () => {
 		expect(f.roomMessage.reactions).toEqual(expected);
 	});
 
+	test('an archived copy also receives reactions deferred under its original URI', async () => {
+		const f = createService();
+		const copy = { ...f.roomMessage, uri: 'https://local.test/chat-history/r1/m2', sourceUri: 'https://remote.test/chat/messages/m2' };
+		const reactRemote = vi.spyOn(f.service, 'reactRemote').mockResolvedValue(undefined);
+
+		await f.service.storePendingChatReaction('bob', copy.sourceUri, '👍', false);
+		await f.service.applyPendingChatReactions(copy as never);
+
+		expect(reactRemote).toHaveBeenCalledWith(f.bob, copy, '👍', undefined, expect.anything());
+	});
+
 	test('reactRemote qualifies an unqualified custom emoji with the actor host', async () => {
 		const f = createService();
 
@@ -1107,7 +1136,7 @@ describe('ChatService chat federation delivery', () => {
 				idService: { gen: () => 'new-message', parse: () => ({ date: new Date(0) }) },
 				chatEntityService: { packMessageLiteForRoom: vi.fn(async (message: object) => message) },
 			});
-			const room = { id: 'r1', ownerId, isArchived: false, uri: null };
+			const room = Object.assign(f.room, { ownerId, isArchived: false, uri: null });
 			return { ...f, room, dave, erin, renderChatRoomRelay };
 		}
 
@@ -1220,6 +1249,7 @@ describe('ApInboxService chat activity routing', () => {
 		const chatRoomsRepository = { findOneBy: vi.fn().mockResolvedValue({ id: 'r1', uri: 'https://remote.test/chat/rooms/r1' }) };
 		const apPersonService = { resolvePerson: vi.fn(async (uri: string) => uri === localUser.uri ? localUser : null) };
 		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
+			config: { url: 'https://local.test' },
 			chatService,
 			chatRosterService: chatRosterOver(forgetfulRedis()),
 			redisClient,
@@ -1235,10 +1265,15 @@ describe('ApInboxService chat activity routing', () => {
 			roleService: { getUserPolicies: vi.fn().mockResolvedValue({ chatAvailability: 'available' }) },
 			userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null, isRemoteUser: (user: { host: string | null }) => user.host != null },
 			chatRoomsRepository,
-			chatMessagesRepository: { findOneBy: vi.fn().mockResolvedValue(null) },
+			chatMessagesRepository: { findOneBy: vi.fn().mockResolvedValue(null), existsBy: vi.fn().mockResolvedValue(false) },
+			chatRoomHistoryService: {
+				findArchivedCopiesBySourceUri: vi.fn().mockResolvedValue([]),
+				findArchivedCopyBySourceUri: vi.fn().mockResolvedValue(null),
+				findExistingCopy: vi.fn().mockResolvedValue(null),
+			},
 		}) as ApInboxService;
 
-		return { inbox, actor, message, chatService, redisClient, chatRoomsRepository, localUser };
+		return { inbox, actor, message, chatService, redisClient, chatRoomsRepository, localUser, chatRoomHistoryService: (inbox as never as { chatRoomHistoryService: { findArchivedCopiesBySourceUri: ReturnType<typeof vi.fn>; findArchivedCopyBySourceUri: ReturnType<typeof vi.fn>; findExistingCopy: ReturnType<typeof vi.fn> } }).chatRoomHistoryService };
 	}
 
 	describe('a message with nothing to show', () => {
@@ -1298,7 +1333,7 @@ describe('ApInboxService chat activity routing', () => {
 
 			await expect(create(f, note(f.actor.uri, f.localUser.uri, { content: '', ...overrides }), 'Update')).resolves.toBe('ok: chat message updated');
 
-			expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, stored, '', expect.any(Date), []);
+			expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, stored, '', expect.any(Date), [], undefined);
 		});
 	});
 
@@ -1487,7 +1522,7 @@ describe('ApInboxService chat activity routing', () => {
 
 		await (f.inbox as never as { update: (...args: unknown[]) => Promise<string> }).update(f.actor, { type: 'Update', actor: f.actor.uri, object: note });
 
-		expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', expect.any(Date), []);
+		expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', expect.any(Date), [], undefined);
 	});
 
 	test('an edit dated outside what the database can hold counts as edited now', async () => {
@@ -1559,6 +1594,53 @@ describe('ApInboxService chat activity routing', () => {
 			6 * 60 * 60,
 			f.actor.uri,
 		);
+	});
+
+	describe('Delete of an archived copy through the original URI', () => {
+		const copy = {
+			id: 'copy1',
+			uri: 'https://local.test/chat/history/copy1',
+			sourceUri: 'https://remote.test/chat/messages/m1',
+			fromUserId: null,
+			archivedAuthor: { uri: 'https://remote.test/users/someone-else', username: 'someone-else', name: null, host: 'remote.test' },
+			toRoomId: 'r1',
+			reactions: [] as string[],
+		};
+		const activity = (uri: string) => ({ type: 'Delete', actor: 'https://remote.test/users/remote-user', object: { id: uri, type: 'Tombstone', formerType: 'Note' } });
+		const deleteIt = (f: ReturnType<typeof createInbox>, uri: string) => (f.inbox as never as { delete: (...args: unknown[]) => Promise<string> }).delete(f.actor, activity(uri));
+
+		test('deletes the copy when the original message is not stored', async () => {
+			const f = createInbox();
+			f.chatService.findMessageByUri.mockResolvedValue(null);
+			f.chatRoomHistoryService.findArchivedCopiesBySourceUri.mockResolvedValue([copy]);
+
+			const result = await deleteIt(f, copy.sourceUri);
+
+			expect(result).toBe('ok: chat message deleted');
+			expect(f.chatRoomHistoryService.findArchivedCopiesBySourceUri).toHaveBeenCalledWith(copy.sourceUri);
+			expect(f.chatService.deleteRemoteMessage).toHaveBeenCalledWith(f.actor, copy, expect.anything());
+		});
+
+		test('leaves the copy alone when the actor may not delete it', async () => {
+			const f = createInbox();
+			f.chatService.findMessageByUri.mockResolvedValue(null);
+			f.chatRoomHistoryService.findArchivedCopiesBySourceUri.mockResolvedValue([copy]);
+			f.chatService.deleteRemoteMessage.mockRejectedValue(new ChatMessageAccessError('cannot delete'));
+
+			const result = await deleteIt(f, copy.sourceUri);
+
+			expect(f.chatRoomHistoryService.findArchivedCopiesBySourceUri).toHaveBeenCalledWith(copy.sourceUri);
+			expect(result).toBe('ok: chat message tombstone stored');
+		});
+
+		test('does not look for copies when an ordinary note is deleted', async () => {
+			const f = createInbox();
+			f.chatService.findMessageByUri.mockResolvedValue(null);
+
+			await deleteIt(f, 'https://remote.test/notes/n1').catch(() => undefined);
+
+			expect(f.chatRoomHistoryService.findArchivedCopiesBySourceUri).not.toHaveBeenCalled();
+		});
 	});
 
 	test('routes EmojiReact to reactRemote', async () => {
@@ -1713,6 +1795,22 @@ describe('ApInboxService chat activity routing', () => {
 		expect(result).toMatch(/^skip:/);
 	});
 
+	test('a reaction to the original URI reaches an archived copy of the message', async () => {
+		const f = createInbox();
+		f.chatService.findMessageByUri.mockResolvedValue(null);
+		const copy = { ...f.message, id: 'm1-copy', uri: 'https://local.test/chat-history/r1/m1', sourceUri: f.message.uri };
+		f.chatRoomHistoryService.findArchivedCopyBySourceUri.mockResolvedValue(copy);
+
+		const result = await (f.inbox as never as { like: (...args: unknown[]) => Promise<string> }).like(f.actor, {
+			type: 'EmojiReact', actor: f.actor.uri, object: f.message.uri, content: '👍',
+		});
+
+		expect(result).toBe('ok');
+		expect(f.chatRoomHistoryService.findArchivedCopyBySourceUri).toHaveBeenCalledWith(f.message.uri, undefined);
+		expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, copy, '👍', undefined, expect.anything());
+		expect(f.chatService.storePendingChatReaction).not.toHaveBeenCalled();
+	});
+
 	describe('creating a chat message', () => {
 		const object = (f: ReturnType<typeof createInbox>) => ({
 			id: 'https://remote.test/chat/messages/new', type: 'Note', attributedTo: f.actor.uri,
@@ -1792,6 +1890,23 @@ describe('ApInboxService chat activity routing', () => {
 			)).rejects.toThrow('membership is not ready');
 			expect(f.chatService.createMessageToRoom).not.toHaveBeenCalled();
 		});
+
+		test('a live Create does not duplicate a message already kept as an archived copy', async () => {
+			const f = createInbox();
+			f.chatService.isRoomMember.mockResolvedValue(true);
+			f.chatRoomHistoryService.findExistingCopy.mockResolvedValue({ id: 'copy1', uri: 'https://local.test/chat-history/r1/new' });
+
+			const result = await (f.inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage(
+				{},
+				f.actor,
+				{ ...object(f), context: 'https://remote.test/chat/rooms/r1' },
+				{ type: 'Create', actor: f.actor.uri },
+			);
+
+			expect(result).toBe('skip: archived copy exists');
+			expect(f.chatRoomHistoryService.findExistingCopy).toHaveBeenCalledWith('r1', 'https://remote.test/chat/messages/new');
+			expect(f.chatService.createMessageToRoom).not.toHaveBeenCalled();
+		});
 	});
 
 	describe('a chat message stored under a foreign URI', () => {
@@ -1817,7 +1932,7 @@ describe('ApInboxService chat activity routing', () => {
 			});
 
 			expect(result).toBe('ok: chat message updated');
-			expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', new Date('2026-11-03T00:00:00.000Z'), []);
+			expect(f.chatService.updateRemoteMessage).toHaveBeenCalledWith(f.actor, f.message, 'edited', new Date('2026-11-03T00:00:00.000Z'), [], undefined);
 		});
 
 		test('Like reacts to the chat message', async () => {

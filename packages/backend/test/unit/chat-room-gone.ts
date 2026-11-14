@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { buildChatRoomDelete, buildChatRoomUpdate } from '@/core/activitypub/misc/chat-payloads.js';
 import { alice, bob, carol, chatRosterFixture, dave, erin, LOCAL, LOCAL_ROOM_URI, membersOf, MIRROR_URI } from '../misc/chat-roster-fixture.js';
 
@@ -278,11 +278,9 @@ describe('times from other servers in the changes they announce', () => {
 		const f = chatRosterFixture({ memberships: [['mirror', alice.id]] });
 		const updateRoom = f.chatService.updateRoom;
 		const seen: unknown[] = [];
-		f.inbox.chatService = Object.assign(Object.create(f.chatService), {
-			updateRoom: async (room: unknown, patch: unknown, options: { remoteUpdatedAt?: Date }) => {
-				seen.push(options.remoteUpdatedAt);
-				return await updateRoom(room as never, patch as never, { ...options, remoteUpdatedAt: undefined });
-			},
+		vi.spyOn(f.chatService, 'updateRoom').mockImplementation(async (room, patch, options) => {
+			seen.push(options?.remoteUpdatedAt);
+			return await updateRoom(room, patch, { ...options, remoteUpdatedAt: undefined });
 		});
 
 		await f.inbox.update(bob, updateGroup(FAR_AHEAD), f.resolver);

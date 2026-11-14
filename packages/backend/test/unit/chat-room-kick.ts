@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { notificationServiceOver } from '../misc/chat-room-notification-fixture.js';
 import { describe, expect, test, vi } from 'vitest';
 import { ChatService } from '@/core/ChatService.js';
 import KickEndpoint from '@/server/api/endpoints/chat/rooms/kick.js';
@@ -26,6 +27,7 @@ function fixture() {
 			delete: async (_entity: unknown, where: { userId: string }) => ({ affected: Number(members.delete(where.userId)) }),
 		}) },
 		idService: { gen: () => 'remove1' },
+		chatRoomBanService: { ban: vi.fn(async () => {}) },
 		chatRoomMembershipsRepository: {
 			findBy: async () => [...members].map(userId => ({ roomId: room.id, userId })),
 			delete: async ({ userId }: { userId: string }) => ({ affected: Number(members.delete(userId)) }),
@@ -44,6 +46,7 @@ function fixture() {
 		redisClient: { pipeline: () => pipeline },
 		queueService, liveKitService, globalEventService,
 	});
+	Object.assign(service, { chatRoomNotificationService: notificationServiceOver(service as ChatService) });
 	return { service, members, pipeline, queueService, liveKitService, globalEventService };
 }
 
@@ -53,7 +56,8 @@ describe('room owner kicks a member', () => {
 		await expect(f.service.kickRoomMember(owner, room, member.id)).resolves.toBe(true);
 		expect([...f.members]).toEqual([other.id]);
 		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith(room.id, 'membershipEnded', { userId: member.id });
-		expect(f.pipeline.srem).toHaveBeenCalledWith(`newChatMessagesExists:${member.id}`, `room:${room.id}`);
+		const unreadRedis = (f.service.chatRoomNotificationService as unknown as { redis: { srem: ReturnType<typeof vi.fn> } }).redis;
+		expect(unreadRedis.srem).toHaveBeenCalledWith(`newChatMessagesExists:${member.id}`, `room:${room.id}`);
 		expect(f.liveKitService.removeParticipant).toHaveBeenCalledWith(room.id, member.uri);
 		for (const inbox of [member.inbox, other.inbox]) {
 			expect(f.queueService.deliver).toHaveBeenCalledWith(owner, expect.objectContaining({

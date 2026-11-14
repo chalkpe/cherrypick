@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => {
 		room: { id: 'r1', name: 'room 1', description: '', ownerId: 'me', owner: { id: 'me', username: 'me', host: null }, isArchived: false, isMuted: false, invitationExists: false } as Record<string, unknown>,
 		confirm: vi.fn(),
 		popupMenu: vi.fn(),
+		routerReplace: vi.fn(),
+		streamChannels: [] as { name: string; params: unknown }[],
 		bodies: [] as { endpoint: string; body: Record<string, unknown> }[],
 		// 断る要求と、そのときの本文
 		refusal: { endpoint: '', error: null as Record<string, string> | 'network' | null },
@@ -28,6 +30,7 @@ const mocks = vi.hoisted(() => {
 			if (state.refusal.error === 'network') throw new TypeError('Failed to fetch');
 			return new Response(JSON.stringify({ error: state.refusal.error }), { status: 400 });
 		}
+		if (endpoint === 'chat/rooms/channels/list') return new Response(JSON.stringify([{ id: 'first', roomId: 'r1', name: 'First', isLegacy: true }]), { status: 200 });
 		if (endpoint === 'chat/rooms/show') return new Response(JSON.stringify(state.room), { status: 200 });
 		if (endpoint === 'chat/rooms/members') return new Response(JSON.stringify([{ id: 'ms1', userId: 'member', user: { id: 'member', username: 'member', host: null } }]), { status: 200 });
 		if (endpoint === 'chat/rooms/invitations/outbox') return new Response(JSON.stringify([{ id: 'i1', userId: 'invitee', user: { id: 'invitee', username: 'invitee', host: null } }]), { status: 200 });
@@ -38,8 +41,8 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
-vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), useChannel: () => ({ on: vi.fn(), off: vi.fn(), send: vi.fn(), dispose: vi.fn() }) }) }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn(), useListener: vi.fn() }) }));
+vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), useChannel: (name: string, params: unknown) => { mocks.streamChannels.push({ name, params }); return { on: vi.fn(), off: vi.fn(), send: vi.fn(), dispose: vi.fn() }; } }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), replace: mocks.routerReplace, replaceByPath: mocks.routerReplace, useListener: vi.fn() }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: false, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // apiWithDialog は本物のまま。利用者の答えを待つものだけを差し替える
@@ -61,7 +64,7 @@ import XInfo from '@/pages/chat/room.info.vue';
 import { i18n } from '@/i18n.js';
 import {
 	chatCancelInvitationErrors, chatInviteErrors, chatJoinErrors, chatKickErrors, chatLeaveErrors,
-	chatMuteErrors, chatRejectErrors, chatRoomDeleteErrors, chatRoomUpdateErrors,
+	chatMuteErrors, chatNotificationErrors, chatRejectErrors, chatRoomDeleteErrors, chatRoomUpdateErrors,
 } from '@/pages/chat/chat-errors.js';
 import type { ApiWithDialogCustomErrors } from '@/os.js';
 
@@ -80,6 +83,8 @@ const stubs = {
 	MkInput: { props: ['modelValue'], template: '<input :value="modelValue">' },
 	MkTextarea: { props: ['modelValue'], template: '<textarea :value="modelValue"></textarea>' },
 	MkSwitch: { props: ['modelValue'], emits: ['update:modelValue'], template: '<button data-testid="switch" :data-on="String(modelValue)" @click="$emit(\'update:modelValue\', !modelValue)"><slot name="label"/></button>' },
+	// 실제 MkSelect처럼 items만 선택지로 그린다
+	MkSelect: { props: ['modelValue', 'items'], emits: ['update:modelValue'], template: '<label><slot name="label"/><select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="item in items" :key="item.value" :value="item.value">{{ item.label }}</option></select></label>' },
 	MkKeyValue: true,
 };
 
@@ -92,11 +97,11 @@ function requestTo(endpoint: string) {
 	return mocks.bodies.findLast(request => request.endpoint === endpoint);
 }
 
-function roomPage() {
+function roomPage(extra: Record<string, unknown> = {}) {
 	const host = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
-			return () => h(XRoomPage, { roomId: 'r1' });
+			return () => h(XRoomPage, { roomId: 'r1', ...extra });
 		},
 	});
 	return render(host, { global: { stubs, directives: { tooltip: {} } } });
@@ -138,10 +143,13 @@ const actions: Record<string, () => Promise<void>> = {
 		render(XInfo, { props: { room: mocks.room as never }, global: { stubs } });
 		await clickButton(i18n.ts._chat.deleteRoom);
 	},
-	'chat/rooms/mute': async () => {
-		mocks.room.ownerId = 'owner';
+	'chat/rooms/notifications': async () => {
 		render(XInfo, { props: { room: mocks.room as never }, global: { stubs } });
-		await fireEvent.click(await screen.findByTestId('switch'));
+		await fireEvent.update(await screen.findByRole('combobox', { name: i18n.ts.notificationSetting }), 'mentions');
+	},
+	'chat/rooms/read': async () => {
+		render(XInfo, { props: { room: mocks.room as never }, global: { stubs } });
+		await clickButton(i18n.ts._chat.readAllRoom);
 	},
 	'chat/rooms/invitations/reject': async () => {
 		render(XInvitations, { global: { stubs } });
@@ -155,13 +163,17 @@ const REFUSED: [string, Record<string, string>, string][] = [
 	['chat/rooms/invitations/cancel', { message: 'No such invitation.', code: 'NO_SUCH_INVITATION', id: '8c8f38f0-3b7e-4f5e-9c6d-2e3f4a5b6c7d' }, i18n.ts._chat.invitationGone],
 	['chat/rooms/update', { message: 'No such room.', code: 'NO_SUCH_ROOM', id: 'fcdb0f92-bda6-47f9-bd05-343e0e020932' }, i18n.ts._chat.roomUnavailable],
 	['chat/rooms/delete', { message: 'No such room.', code: 'NO_SUCH_ROOM', id: 'd4e3753d-97bf-4a19-ab8e-21080fbc0f4b' }, i18n.ts._chat.roomUnavailable],
-	['chat/rooms/mute', { message: 'No such room.', code: 'NO_SUCH_ROOM', id: 'c2cde4eb-8d0f-42f1-8f2f-c4d6bfc8e5df' }, i18n.ts._chat.roomUnavailable],
+	['chat/rooms/notifications', { message: 'No such room.', code: 'NO_SUCH_ROOM', id: 'ef41ee7c-5e74-48a0-8126-177a2afec201' }, i18n.ts._chat.roomUnavailable],
+	['chat/rooms/read', { message: 'No such room.', code: 'NO_SUCH_ROOM', id: 'ef41ee7c-5e74-48a0-8126-177a2afec201' }, i18n.ts._chat.roomUnavailable],
 	['chat/rooms/invitations/reject', { message: 'No such room.', code: 'NO_SUCH_ROOM', id: '5130557e-5a11-4cfb-9cc5-fe60cda5de0d' }, i18n.ts._chat.invitationGone],
 ];
 
 beforeEach(() => {
 	mocks.bodies.length = 0;
 	mocks.room.ownerId = 'me';
+	mocks.room.hasChannels = false;
+	mocks.routerReplace.mockClear();
+	mocks.streamChannels.length = 0;
 	mocks.refusal.endpoint = '';
 	mocks.refusal.error = null;
 	mocks.confirm.mockReset().mockResolvedValue({ canceled: false });
@@ -208,14 +220,15 @@ describe.each(REFUSED.map(([endpoint]) => endpoint))('%s failing in a way nobody
 	});
 });
 
-test('a mute that failed puts the switch back', async () => {
-	mocks.refusal.endpoint = 'chat/rooms/mute';
-	mocks.refusal.error = REFUSED.find(([endpoint]) => endpoint === 'chat/rooms/mute')![1];
+test.each(['me', 'owner'])('a notification setting that failed puts the choice back (owner=%s)', async ownerId => {
+	mocks.room.ownerId = ownerId;
+	mocks.refusal.endpoint = 'chat/rooms/notifications';
+	mocks.refusal.error = REFUSED.find(([endpoint]) => endpoint === 'chat/rooms/notifications')![1];
 
-	await actions['chat/rooms/mute']();
+	await actions['chat/rooms/notifications']();
 
 	await waitFor(() => expect(shownDialog()).toBeDefined());
-	await waitFor(() => expect(screen.getByTestId('switch').getAttribute('data-on')).toBe('false'));
+	await waitFor(() => expect((screen.getByRole('combobox', { name: i18n.ts.notificationSetting }) as HTMLSelectElement).value).toBe('all'));
 });
 
 test('an invitation already gone leaves the tab it was shown in', async () => {
@@ -243,4 +256,32 @@ test.each<[string, ApiWithDialogCustomErrors]>([
 	const declared = [...source.matchAll(/\bid: '([0-9a-f-]{36})'/g)].map(match => match[1]).toSorted();
 
 	expect(Object.keys(errors).filter(id => id !== 'default').toSorted()).toEqual(declared);
+});
+
+test('uses the selected channel for the credentialed timeline and stream', async () => {
+	mocks.room.hasChannels = true;
+	roomPage({ channelId: 'selected', channels: [{ id: 'selected', roomId: 'r1', name: 'Selected' }] });
+	await waitFor(() => expect(requestTo('chat/messages/room-timeline')).toBeDefined());
+
+	expect(requestTo('chat/messages/room-timeline')!.body).toMatchObject({ roomId: 'r1', channelId: 'selected', i: 'my-token' });
+	await waitFor(() => expect(mocks.streamChannels).toContainEqual({ name: 'chatRoom', params: { roomId: 'r1', channelId: 'selected' } }));
+});
+
+test('resolves an old group address to the first channel before reading messages', async () => {
+	mocks.room.hasChannels = true;
+	roomPage();
+	await waitFor(() => expect(mocks.routerReplace).toHaveBeenCalledWith('/chat/room/r1/channels/first'));
+
+	expect(requestTo('chat/messages/room-timeline')).toBeUndefined();
+	expect(requestTo('chat/rooms/channels/list')!.body).toMatchObject({ roomId: 'r1', i: 'my-token' });
+});
+
+// 알림 설정과 그룹 전체 읽음은 채널 공용 오류 목록을 선언한다. 이 경로가 실제로 내는 것은 그룹·채널이 없을 때뿐이다
+test.each(['chat/rooms/notifications', 'chat/rooms/read'])('%s: the shared refusals it raises have their own words', endpoint => {
+	const source = readFileSync(resolve(process.cwd(), `../backend/src/server/api/endpoints/${endpoint}.ts`), 'utf8');
+	const shared = readFileSync(resolve(process.cwd(), '../backend/src/server/api/chat-channel-errors.ts'), 'utf8');
+	const raised = ['NO_SUCH_ROOM', 'NO_SUCH_CHANNEL'].map(code => shared.match(new RegExp(`\\b${code}: \\{[^}]*\\bid: '([0-9a-f-]{36})'`))![1]).toSorted();
+
+	expect(source).toContain('errors: chatChannelApiErrors');
+	expect(Object.keys(chatNotificationErrors).filter(id => id !== 'default').toSorted()).toEqual(raised);
 });

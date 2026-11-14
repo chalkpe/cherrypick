@@ -9,12 +9,19 @@ import type * as Redis from 'ioredis';
 import type { TestingModule } from '@nestjs/testing';
 import type { ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomRosterStatesRepository, ChatRoomsRepository, MiChatRoom, MiUser, UsersRepository } from '@/models/_.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateService.js';
+import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
+import { GlobalEventService } from '@/core/GlobalEventService.js';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
+import { QueueService } from '@/core/QueueService.js';
+import { FetchInstanceMetadataService } from '@/core/FetchInstanceMetadataService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatService, ChatTooManyReactionsError } from '@/core/ChatService.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { DI } from '@/di-symbols.js';
 import { GlobalModule } from '@/GlobalModule.js';
 import { IdService } from '@/core/IdService.js';
+import { noChatInviteJoins } from '../misc/chat-roster-stub.js';
 import { ChatMessageUriUnique1793708299161 } from '../../migration/1793708299161-chat-message-uri-unique.js';
 
 // These cases depend on what PostgreSQL and Redis do with the query, so they use the real ones.
@@ -41,6 +48,9 @@ describe('chat federation storage', () => {
 		return Object.assign(Object.create(ChatService.prototype), {
 			userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
 			config: { url: 'https://local.test' },
+			db: app.get(DI.db),
+			chatRoomChannelService: app.get(ChatRoomChannelService),
+			chatRoomNotificationService: app.get(ChatRoomNotificationService),
 			usersRepository,
 			chatMessagesRepository,
 			chatRoomsRepository,
@@ -78,7 +88,7 @@ describe('chat federation storage', () => {
 	}
 
 	beforeAll(async () => {
-		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService] }).compile();
+		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService, ChatRoomChannelService, { provide: QueueService, useValue: {} }, ChatRoomNotificationService, GlobalEventService, { provide: FetchInstanceMetadataService, useValue: { chatRoomChannelsCapability: vi.fn(async () => false) } }] }).compile();
 		await app.init();
 		idService = app.get(IdService);
 		usersRepository = app.get(DI.usersRepository);
@@ -220,6 +230,61 @@ describe('chat federation storage', () => {
 		const newer = new Date('2026-11-03T00:00:10.000Z');
 		const older = new Date('2026-11-03T00:00:05.000Z');
 
+		test('채널 전환 목록을 동일 트랜잭션에서 적용하고 기존 메시지를 legacy 채널로 옮긴다', async () => {
+			const room = await createMirrorRoom();
+			const messageId = idService.gen();
+			await chatMessagesRepository.insert({ id: messageId, fromUserId: bob.id, toRoomId: room.id, text: 'before conversion' });
+			const generalUri = `${room.uri}/channels/same-number`;
+			const service = createService();
+
+			const applied = await service.updateRoom(room, {}, { federate: false, remoteUpdatedAt: newer, remoteGroup: { type: 'Group',
+				_misskey_chatChannels: [{ id: generalUri, name: 'renamed general' }], _misskey_chatLegacyChannel: generalUri,
+			} });
+
+			expect(applied.hasChannels).toBe(true);
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels).toHaveLength(1);
+			expect(channels[0].id).not.toBe('same-number');
+			expect((await chatMessagesRepository.findOneByOrFail({ id: messageId })).toRoomChannelId).toBe(channels[0].id);
+		});
+
+		test('지연된 목록이나 잘못된 목록이 최신 채널을 삭제하지 않는다', async () => {
+			const room = await createMirrorRoom();
+			const uri = `${room.uri}/channels/general`;
+			const service = createService();
+			await service.updateRoom(room, {}, { federate: false, remoteUpdatedAt: newer, remoteGroup: { type: 'Group', _misskey_chatChannels: [{ id: uri, name: 'newest' }], _misskey_chatLegacyChannel: uri } });
+
+			await service.updateRoom(room, {}, { federate: false, remoteUpdatedAt: older, remoteGroup: { type: 'Group', _misskey_chatChannels: [{ id: uri, name: 'old' }], _misskey_chatLegacyChannel: uri } });
+			await service.updateRoom(room, {}, { federate: false, remoteUpdatedAt: new Date(newer.getTime() + 1000), remoteGroup: { type: 'Group', _misskey_chatChannels: [], _misskey_chatLegacyChannel: null } });
+			await service.updateRoom(room, { name: 'unversioned' }, { federate: false });
+
+			expect((await app.get(ChatRoomChannelService).list(room.id)).map(channel => channel.name)).toEqual(['newest']);
+			expect((await chatRoomsRepository.findOneByOrFail({ id: room.id })).hasChannels).toBe(true);
+		});
+
+		test('원격 목록에서 삭제된 채널의 메시지는 삭제하고 다른 메시지의 참조 JSON은 보존한다', async () => {
+			const room = await createMirrorRoom();
+			const legacyUri = `${room.uri}/channels/general`;
+			const otherUri = `${room.uri}/channels/other`;
+			const service = createService();
+			await service.updateRoom(room, {}, { federate: false, remoteUpdatedAt: older, remoteGroup: { type: 'Group', _misskey_chatChannels: [{ id: legacyUri, name: 'general' }, { id: otherUri, name: 'other' }], _misskey_chatLegacyChannel: legacyUri } });
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			const general = channels.find(channel => channel.uri === legacyUri)!;
+			const other = channels.find(channel => channel.uri === otherUri)!;
+			const removedId = idService.gen();
+			const preservedId = idService.gen();
+			const refs = [{ channelId: other.id, uri: otherUri, start: 0, length: 2 }];
+			await chatMessagesRepository.insert([
+				{ id: removedId, fromUserId: bob.id, toRoomId: room.id, toRoomChannelId: other.id, text: 'removed' },
+				{ id: preservedId, fromUserId: bob.id, toRoomId: room.id, toRoomChannelId: general.id, text: '#가', channelRefs: refs },
+			]);
+
+			await service.updateRoom(room, {}, { federate: false, remoteUpdatedAt: newer, remoteGroup: { type: 'Group', _misskey_chatChannels: [{ id: legacyUri, name: 'renamed' }], _misskey_chatLegacyChannel: legacyUri } });
+
+			expect(await chatMessagesRepository.findOneBy({ id: removedId })).toBeNull();
+			expect((await chatMessagesRepository.findOneByOrFail({ id: preservedId })).channelRefs).toEqual(refs);
+		});
+
 		test('a delayed older update does not overwrite a newer one', async () => {
 			const room = await createMirrorRoom();
 			const service = createService();
@@ -262,6 +327,7 @@ describe('chat federation storage', () => {
 				[`https://local.test/users/${alice.id}`, alice],
 				[`https://local.test/users/${carol.id}`, carol],
 			]);
+			const chatService = createService();
 			const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 				db: app.get(DI.db),
 				utilityService: { punyHost: (url: string) => new URL(url).host },
@@ -273,7 +339,9 @@ describe('chat federation storage', () => {
 				chatRoomInvitationsRepository,
 				idService,
 				redisClient,
-				chatService: createService(),
+				chatService,
+				apChatRoomStateService: Object.assign(Object.create(ApChatRoomStateService.prototype), { chatService }),
+				chatInviteLinkService: noChatInviteJoins(),
 				notificationService: { createNotification },
 				logger: { info: vi.fn(), warn: vi.fn() },
 			});

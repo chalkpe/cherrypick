@@ -39,7 +39,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<button v-if="store.s.showChatButtonInNavbar && $i != null && $i.policies.chatAvailability !== 'unavailable'" :class="$style.item" class="_button" @click="clickChatButton">
 		<div :class="[$style.itemInner, { [$style.active]: ['chat', 'chat-room'].includes(<string>mainRouter.currentRoute.value.name) }]">
 			<i :class="$style.itemIcon" class="ti ti-messages"></i>
-			<span v-if="$i?.hasUnreadChatMessages" :class="$style.itemIndicator" class="_blink">
+			<span v-if="$i?.hasUnreadChatMessages" :class="[$style.itemIndicator, { _blink: $i?.hasUnreadChatNotifications ?? true }]">
 				<i class="_indicatorCircle"></i>
 			</span>
 		</div>

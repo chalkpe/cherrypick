@@ -10,7 +10,7 @@ import type { Ref } from 'vue';
 import type { CompleteInfo } from '@/components/MkAutocomplete.vue';
 import { popup } from '@/os.js';
 
-export type SuggestionType = 'user' | 'hashtag' | 'emoji' | 'mfmTag' | 'mfmParam' | 'htmlTag';
+export type SuggestionType = 'chatChannel' | 'user' | 'hashtag' | 'emoji' | 'mfmTag' | 'mfmParam' | 'htmlTag';
 
 type CompleteProps<T extends keyof CompleteInfo> = {
 	type: T;
@@ -33,6 +33,8 @@ export class Autocomplete {
 	private textRef: Ref<string | number | null>;
 	private opening: boolean;
 	private onlyType: SuggestionType[];
+	private chatChannels?: { get: () => CompleteInfo['chatChannel']['query']['channels']; ranges: () => readonly { start: number; length: number }[]; selected: (channel: CompleteInfo['chatChannel']['payload'], start: number, length: number) => void };
+	public get isOpen(): boolean { return this.suggestion != null; }
 
 	private get text(): string {
 		// Use raw .value to get the latest value
@@ -49,7 +51,7 @@ export class Autocomplete {
 	/**
 	 * 対象のテキストエリアを与えてインスタンスを初期化します。
 	 */
-	constructor(textarea: HTMLInputElement | HTMLTextAreaElement, textRef: Ref<string | number | null>, onlyType?: SuggestionType[]) {
+	constructor(textarea: HTMLInputElement | HTMLTextAreaElement, textRef: Ref<string | number | null>, onlyType?: SuggestionType[], chatChannels?: Autocomplete['chatChannels']) {
 		//#region BIND
 		this.onInput = this.onInput.bind(this);
 		this.complete = this.complete.bind(this);
@@ -60,6 +62,7 @@ export class Autocomplete {
 		this.textarea = textarea;
 		this.textRef = textRef;
 		this.opening = false;
+		this.chatChannels = chatChannels;
 		this.onlyType = onlyType ?? ['user', 'hashtag', 'emoji', 'mfmTag', 'mfmParam', 'htmlTag'];
 
 		this.attach();
@@ -122,7 +125,7 @@ export class Autocomplete {
 
 		let opened = false;
 
-		if (maybeMention && this.onlyType.includes('user')) {
+		if (maybeMention && this.onlyType.includes('user') && !(this.chatChannels && hashtagIndex > text.lastIndexOf('@'))) {
 			// ユーザのサジェスト中に@を入力すると、その位置から新たにユーザ名を取りなおそうとしてしまう
 			// この動きはリモートユーザのサジェストを阻害するので、@を検知したらその位置よりも前の@を探し、
 			// ホスト名を含むリモートのユーザ名を全て拾えるようにする
@@ -146,7 +149,18 @@ export class Autocomplete {
 			}
 		}
 
-		if (isHashtag && !opened && this.onlyType.includes('hashtag')) {
+		if (isHashtag && !opened && this.chatChannels) {
+			const query = text.substring(hashtagIndex + 1);
+			const channels = this.chatChannels.get();
+			const start = caretPos - text.length + hashtagIndex;
+			const selected = this.chatChannels.ranges().some(ref => ref.start <= start && start < ref.start + ref.length);
+			if (!selected && channels.some(channel => channel.name.toLowerCase().includes(query.toLowerCase()))) {
+				this.open('chatChannel', { query, channels });
+				opened = true;
+			}
+		}
+
+		if (isHashtag && !opened && !this.chatChannels && this.onlyType.includes('hashtag')) {
 			const hashtag = text.substring(hashtagIndex + 1);
 			if (!hashtag.includes(' ')) {
 				this.open('hashtag', hashtag);
@@ -278,7 +292,18 @@ export class Autocomplete {
 
 		const caret = Number(this.textarea.selectionStart);
 
-		if (isCompleteType('user', props)) {
+		if (isCompleteType('chatChannel', props)) {
+			const source = this.text;
+			const start = source.lastIndexOf('#', caret - 1);
+			if (start < 0) return;
+			const label = `#${props.value.name}`;
+			this.text = source.slice(0, start) + label + ' ' + source.slice(caret);
+			this.chatChannels?.selected(props.value, start, label.length);
+			nextTick(() => {
+				this.textarea.focus();
+				this.textarea.setSelectionRange(start + label.length + 1, start + label.length + 1);
+			});
+		} else if (isCompleteType('user', props)) {
 			const source = this.text;
 
 			const before = source.substring(0, caret);

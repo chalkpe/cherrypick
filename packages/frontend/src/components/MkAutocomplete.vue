@@ -5,7 +5,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <div ref="rootEl" :class="[$style.root, { _popup: !prefer.s.useBlurEffect || !prefer.s.useBlurEffectForModal || !prefer.s.removeModalBgColorForBlur, _popupAcrylic: prefer.s.useBlurEffect && prefer.s.useBlurEffectForModal && prefer.s.removeModalBgColorForBlur }]" class="_shadow" :style="{ zIndex }" @contextmenu.prevent="() => {}">
-	<ol v-if="type === 'user'" ref="suggests" :class="$style.list">
+	<ol v-if="type === 'chatChannel'" ref="suggests" :class="$style.list" role="listbox">
+		<li v-for="(channel, index) in channelCandidates" :key="channel.id" tabindex="-1" role="option" :aria-selected="select === index" :class="[$style.item, $style.channelCandidate]" @click="complete('chatChannel', channel)" @keydown="onKeydown">
+			<span>#{{ channel.name }}</span><small>{{ channel.order }} · {{ channel.id }}</small>
+		</li>
+	</ol>
+	<ol v-else-if="type === 'user'" ref="suggests" :class="$style.list">
 		<li v-for="user in users" tabindex="-1" :class="$style.item" @click="complete(type, user)" @keydown="onKeydown">
 			<img :class="$style.avatar" :src="user.avatarUrl"/>
 			<span :class="$style.userName">
@@ -68,6 +73,10 @@ import { searchEmoji, searchEmojiExact } from '@/utility/search-emoji.js';
 import { prefer } from '@/preferences.js';
 
 export type CompleteInfo = {
+	chatChannel: {
+		payload: Misskey.entities.ChatRoomChannel;
+		query: { query: string; channels: readonly Misskey.entities.ChatRoomChannel[] };
+	},
 	user: {
 		payload: Misskey.entities.User;
 		query: string | null;
@@ -184,7 +193,7 @@ type PropsType<T extends keyof CompleteInfo> = {
 //const props = defineProps<PropsType<keyof CompleteInfo>>();
 // ↑と同じだけど↓にしないとdiscriminated unionにならない。
 // https://www.typescriptlang.org/docs/handbook/typescript-in-5-minutes-func.html#discriminated-unions
-const props = defineProps<PropsType<'user'> | PropsType<'hashtag'> | PropsType<'emoji'> | PropsType<'emojiComplete'> | PropsType<'mfmTag'> | PropsType<'mfmParam'> | PropsType<'htmlTag'>>();
+const props = defineProps<PropsType<'chatChannel'> | PropsType<'user'> | PropsType<'hashtag'> | PropsType<'emoji'> | PropsType<'emojiComplete'> | PropsType<'mfmTag'> | PropsType<'mfmParam'> | PropsType<'htmlTag'>>();
 
 const emit = defineEmits<{
 	<T extends keyof CompleteInfo>(event: 'done', value: { type: T; value: CompleteInfo[T]['payload'] }): void;
@@ -193,6 +202,12 @@ const emit = defineEmits<{
 
 const suggests = ref<Element>();
 const rootEl = useTemplateRef('rootEl');
+
+const channelCandidates = computed(() => {
+	if (props.type !== 'chatChannel') return [];
+	const { channels, query } = props.q;
+	return channels.map((channel, index) => ({ ...channel, order: index + 1 })).filter(channel => channel.name.toLowerCase().includes(query.toLowerCase()));
+});
 
 const fetching = ref(true);
 const users = ref<Misskey.entities.User[]>([]);
@@ -490,6 +505,16 @@ onBeforeUnmount(() => {
 	&:active {
 		background: hsl(from var(--MI_THEME-accent) h s calc(l - 10));
 		color: #fff !important;
+	}
+}
+
+.channelCandidate {
+	gap: 8px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+
+	small {
+		opacity: 0.7;
 	}
 }
 

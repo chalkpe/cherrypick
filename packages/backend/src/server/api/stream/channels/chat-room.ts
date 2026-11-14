@@ -11,7 +11,7 @@ import type { JsonObject } from '@/misc/json-value.js';
 import { ChatService } from '@/core/ChatService.js';
 import Channel, { type ChannelRequest } from '../channel.js';
 import { REQUEST } from '@nestjs/core';
-import type { ChatRoomsRepository } from '@/models/_.js';
+import type { ChatRoomsRepository, MiChatRoom } from '@/models/_.js';
 
 @Injectable({ scope: Scope.TRANSIENT })
 export class ChatRoomChannel extends Channel {
@@ -20,6 +20,8 @@ export class ChatRoomChannel extends Channel {
 	public static requireCredential = true as const;
 	public static kind = 'read:chat';
 	private roomId: string;
+	private channelId?: string;
+	private room: MiChatRoom | null = null;
 	private disposed = false;
 	private permissionVersion = 0;
 	private lastPermissionCheck = -Infinity;
@@ -43,6 +45,8 @@ export class ChatRoomChannel extends Channel {
 		if (!this.user) return false;
 
 		this.roomId = params.roomId;
+		if (params.channelId != null && typeof params.channelId !== 'string') return false;
+		this.channelId = params.channelId as string | undefined;
 
 		// 初期チェック中の退出・削除も受け取り、古い判定を無効にする。
 		this.subscriber.on(`chatRoomStream:${this.roomId}`, this.onEvent);
@@ -50,7 +54,13 @@ export class ChatRoomChannel extends Channel {
 			const version = this.permissionVersion;
 			const allowed = await this.checkPermission();
 			// 制御イベントで古くなった判定は、最新の判定を待ち直す。
-			if (version === this.permissionVersion) return allowed && !this.disposed;
+			if (version === this.permissionVersion) {
+				if (!allowed || this.disposed || this.room == null) return false;
+				if (this.room.hasChannels || this.channelId != null) {
+					try { await this.chatService.resolveRoomChannel(this.room, this.channelId); } catch { this.dispose(); return false; }
+				}
+				return true;
+			}
 		}
 		return false;
 	}
@@ -71,6 +81,7 @@ export class ChatRoomChannel extends Channel {
 					this.dispose();
 					return false;
 				}
+				this.room = room;
 				this.lastPermissionCheck = checkedAt;
 				return true;
 			} catch {
@@ -108,18 +119,53 @@ export class ChatRoomChannel extends Channel {
 			return;
 		}
 
+		let messageChannelId: string | null | undefined;
+		const permissionVersion = this.permissionVersion;
+		if (data.type === 'message') {
+			messageChannelId = data.body.toRoomChannelId ?? null;
+		} else if (data.type === 'updated' || data.type === 'deleted' || data.type === 'react' || data.type === 'unreact') {
+			const id = data.type === 'deleted' ? data.body : data.body.messageId;
+			const message = await this.chatService.findMessageById(id).catch(() => null);
+			if (message == null || this.disposed || permissionVersion !== this.permissionVersion) return;
+			messageChannelId = message.toRoomChannelId ?? null;
+		}
+		// 모드 전환 통지와 수신이 경합해도 옛 구독에 다른 채널의 본문을 보내지 않는다.
+		if (data.type === 'channelsUpdated' || (messageChannelId != null && !this.room?.hasChannels)) {
+			this.permissionVersion++;
+			this.lastPermissionCheck = -Infinity;
+		}
 		const version = this.permissionVersion;
 		if (!(await this.checkPermission())) return;
 		if (this.disposed || version !== this.permissionVersion) return;
-		this.send(data.type, data.body);
+		if (this.room?.hasChannels && messageChannelId !== undefined) {
+			const selected = this.channelId ?? this.room.legacyChannelId;
+			if (selected == null || messageChannelId !== selected) {
+				if (data.type === 'message' && messageChannelId != null) this.send('channelMessage', { channelId: messageChannelId, messageId: data.body.id });
+				return;
+			}
+		}
+		if (data.type === 'message' || data.type === 'updated') {
+			const id = data.type === 'message' ? data.body.id : data.body.messageId;
+			const newMentions = data.type === 'updated' ? data.body.newMentionUserIds ?? [] : undefined;
+			const shouldNotify = (newMentions == null || newMentions.includes(this.user!.id)) && await this.chatService.shouldNotifyRoomMessage(this.user!.id, id).catch(() => false);
+			if (this.disposed || version !== this.permissionVersion) return;
+			if (data.type === 'updated') {
+				const { newMentionUserIds: _newMentionUserIds, ...body } = data.body;
+				this.send('updated', { ...body, shouldNotify });
+			} else {
+				this.send('message', { ...data.body, shouldNotify });
+			}
+		} else {
+			this.send(data.type, data.body);
+		}
 	}
 
 	@bindThis
 	public onMessage(type: string, body: any) {
 		switch (type) {
 			case 'read':
-				if (this.roomId) {
-					this.chatService.readRoomChatMessage(this.user!.id, this.roomId);
+				if (this.roomId && typeof body?.id === 'string') {
+					void this.chatService.readRoomChatMessage(this.user!.id, this.roomId, this.channelId, body.id).catch(() => {});
 				}
 				break;
 		}

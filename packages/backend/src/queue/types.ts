@@ -65,11 +65,28 @@ export type DbJobMap = {
 	importCustomEmojis: DbUserImportJobData;
 	deleteAccount: DbUserDeleteJobData;
 	truncateAccount: DbUserTruncateJobData;
+	chatChannelDeliver: ChatChannelDeliverJobData;
 	chatRoomRosterSync: ChatRoomRosterSyncJobData;
+	chatRoomIconDeleted: { roomId: string; fileId: string };
+	chatRoomHistorySync: ChatRoomHistorySyncJobData;
+};
+
+export type ChatChannelDeliverJobData = {
+	user: ThinUser;
+	content: IActivity;
+	to: string;
+	isSharedInbox: boolean;
+	host: string;
 };
 
 export type ChatRoomRosterSyncJobData = {
 	roomId: string;
+	retryFutureChannels?: boolean;
+};
+
+export type ChatRoomHistorySyncJobData = {
+	roomId: string;
+	pass?: number;
 };
 
 export type DbJobDataWithUser = {

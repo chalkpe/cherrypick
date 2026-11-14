@@ -35,9 +35,17 @@ export type ChatPayloadOptions = {
 	published?: string;
 	updated?: string;
 	roomUri?: string;
+	channelUri?: string;
+	channelRefs?: { id: string; start: number; length: number }[];
+	channels?: { id: string; name: string }[];
+	legacyChannel?: string | null;
+	icon?: IObject | null;
+	iconDecorations?: unknown[];
 	attachment?: IApDocument[];
 	tag?: IObject[];
 	activityId?: string;
+	/** 작성자 계정이 없어진 글처럼 계정 객체 없이 원래 작성자 주소를 쓸 때 */
+	authorUri?: string;
 };
 
 export type ChatScope = 'everyone' | 'followers' | 'following' | 'mutual' | 'none';
@@ -72,6 +80,20 @@ export function chatRoomUriForOwner(room: Pick<ChatRoom, 'id'> & { uri?: string 
 	return chatRoomUri(room, ownerBase ?? baseUrl);
 }
 
+/** 받은 쪽지의 본문. 실시간 수신과 과거 기록 가져오기가 같은 규칙을 쓴다. */
+export function chatNoteText(object: IPost, htmlToMfm: (html: string, tag: IPost['tag']) => string): string | null {
+	if (object.source?.mediaType === 'text/x.misskeymarkdown' && typeof object.source.content === 'string') {
+		return object.source.content;
+	}
+	if (typeof object._misskey_content === 'string') {
+		return object._misskey_content;
+	}
+	if (typeof object.content === 'string') {
+		return htmlToMfm(object.content, object.tag);
+	}
+	return null;
+}
+
 export function buildChatNote(
 	message: ChatMessage,
 	fromUser: ChatActor,
@@ -83,7 +105,7 @@ export function buildChatNote(
 	const note: IPost = {
 		id: chatMessageUri(message, options.baseUrl),
 		type: 'Note',
-		attributedTo: chatActorUri(fromUser, options.baseUrl),
+		attributedTo: options.authorUri ?? chatActorUri(fromUser, options.baseUrl),
 		content: escapeHtml(text),
 		_misskey_content: text,
 		source: { content: text, mediaType: 'text/x.misskeymarkdown' },
@@ -99,6 +121,8 @@ export function buildChatNote(
 	if (roomUri != null) {
 		note.context = roomUri;
 		note._misskey_chatRoom = roomUri;
+		if (options.channelUri != null) note._misskey_chatChannel = options.channelUri;
+		if (options.channelRefs?.length) note._misskey_chatChannelRefs = options.channelRefs;
 	}
 
 	if (options.attachment != null && options.attachment.length > 0) {
@@ -232,6 +256,9 @@ export function buildChatRoomUpdate(
 			summary: room.description ?? '',
 			attributedTo: chatActorUri(owner, options.baseUrl),
 			_misskey_chatArchived: room.isArchived,
+			icon: options.icon ?? null,
+			_misskey_chatIconDecorations: options.iconDecorations ?? [],
+			...(options.channels != null ? { _misskey_chatChannels: options.channels, _misskey_chatLegacyChannel: options.legacyChannel ?? null } : {}),
 			updated,
 		},
 		published: options.published ?? new Date().toISOString(),

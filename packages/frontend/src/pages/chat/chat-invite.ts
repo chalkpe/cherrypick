@@ -15,12 +15,16 @@ const LIST_LIMIT = 100;
 
 // 招待しても断られる人と、その理由
 export async function getUninvitableUsers(roomId: string): Promise<Record<string, string>> {
+	const lists = Promise.all([
+		misskeyApi('chat/rooms/members', { roomId, limit: LIST_LIMIT }),
+		misskeyApi('chat/rooms/invitations/outbox', { roomId, limit: LIST_LIMIT }),
+	]);
+	// 내보낸 사람 목록을 못 읽어도 고를 수 있을 뿐이고, 보내면 서버가 사유와 함께 거절한다
+	const bans = misskeyApi('chat/rooms/bans/list', { roomId, limit: LIST_LIMIT }).catch(() => []);
 	try {
-		const [members, invitations] = await Promise.all([
-			misskeyApi('chat/rooms/members', { roomId, limit: LIST_LIMIT }),
-			misskeyApi('chat/rooms/invitations/outbox', { roomId, limit: LIST_LIMIT }),
-		]);
+		const [members, invitations] = await lists;
 		return {
+			...Object.fromEntries((await bans).map(ban => [ban.userId, i18n.ts._chat.cannotInviteBannedUser])),
 			...Object.fromEntries(invitations.map(invitation => [invitation.userId, i18n.ts._chat.alreadyInvited])),
 			...Object.fromEntries(members.map(member => [member.userId, i18n.ts._chat.alreadyMember])),
 		};
