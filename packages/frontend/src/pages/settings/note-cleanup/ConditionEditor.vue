@@ -23,7 +23,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</MkDraggable>
 		<MkButton rounded style="margin: 0 auto;" @click="add"><i class="ti ti-plus"></i> {{ i18n.ts._noteCleanup.addCondition }}</MkButton>
 	</div>
-	<ConditionFields v-else :condition="condition" @update="emit('change', path, $event, path.join('.'))"/>
+	<ConditionFields v-else :key="condition.type" :condition="condition" @update="emit('change', path, $event, path.join('.'))"/>
 </section>
 </template>
 <script lang="ts" setup>

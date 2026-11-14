@@ -8,8 +8,10 @@ import type { NoteCleanupCondition as Condition } from 'cherrypick-js/entities.j
 const ids = new WeakMap<object, string>();
 let sequence = 0;
 export function conditionId(node: Condition): string {
-	let id = ids.get(node);
-	if (!id) { id = `cleanup-condition-${++sequence}`; ids.set(node, id); }
+	// 화면은 반응형 프록시로 조건을 읽으므로 원본 객체를 기준으로 정체성을 기억한다.
+	const raw = toRaw(node);
+	let id = ids.get(raw);
+	if (!id) { id = `cleanup-condition-${++sequence}`; ids.set(raw, id); }
 	return id;
 }
 
@@ -21,7 +23,7 @@ function rawClone<T>(value: T, keepIds: boolean): T {
 		if (Array.isArray(raw)) return raw.map(item => clone(item));
 		const target: Record<string, unknown> = {};
 		if (keepIds) {
-			const id = ids.get(source as object) ?? ids.get(raw);
+			const id = ids.get(raw);
 			if (id) ids.set(target, id);
 		}
 		for (const key of Object.keys(raw)) target[key] = clone((raw as Record<string, unknown>)[key]);
@@ -40,7 +42,7 @@ export function cloneCondition(node: Condition): Condition {
 }
 
 function inheritId(source: Condition, target: Condition): Condition {
-	ids.set(target, conditionId(source));
+	ids.set(toRaw(target), conditionId(source));
 	return target;
 }
 
@@ -121,6 +123,17 @@ export function assertSize(root: Condition): void {
 // 키워드 입력은 줄마다 하나씩이며 빈 줄은 제외한다. 서버 검증과 같은 기준이다.
 export function keywordLines(value: string): string[] {
 	return value.split('\n').filter(line => line.length > 0);
+}
+
+// 단위 변경 뒤에도 표시 수량이 유지되도록 초 값을 새 단위로 변환한다. 나누어떨어지지 않으면 비율을 약분해 계산한다.
+export function convertAgeSeconds(seconds: number, from: number, to: number): number {
+	if (from === to || !Number.isFinite(seconds)) return seconds;
+	let a = from;
+	let b = to;
+	while (b !== 0) [a, b] = [b, a % b];
+	const div = from / a;
+	const mul = to / a;
+	return seconds % div === 0 ? (seconds / div) * mul : (seconds * mul) / div;
 }
 
 export function incompletePaths(root: Condition, path: number[] = []): number[][] {

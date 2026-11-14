@@ -20,7 +20,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</template>
 	<template v-else-if="condition.type === 'age'">
 		<MkInput :modelValue="condition.seconds / unit" type="number" step="any" :min="0" @update:modelValue="patch({ seconds: $event == null ? NaN : $event * unit })"><template #label>{{ i18n.ts._noteCleanup.amount }}</template></MkInput>
-		<MkSelect v-model="unit" v-select-label="i18n.ts._noteCleanup.unit" :items="units"><template #label>{{ i18n.ts._noteCleanup.unit }}</template></MkSelect>
+		<MkSelect v-select-label="i18n.ts._noteCleanup.unit" :modelValue="unit" :items="units" @update:modelValue="changeUnit"><template #label>{{ i18n.ts._noteCleanup.unit }}</template></MkSelect>
 		<MkSelect v-select-label="i18n.ts._noteCleanup.operator" :modelValue="condition.operator" :items="operators" @update:modelValue="patch({ operator: $event })"><template #label>{{ i18n.ts._noteCleanup.operator }}</template></MkSelect>
 	</template>
 	<template v-else-if="condition.type === 'count'">
@@ -53,6 +53,7 @@ import MkTextarea from '@/components/MkTextarea.vue';
 import MkSwitch from '@/components/MkSwitch.vue';
 import MkFolder from '@/components/MkFolder.vue';
 import { i18n } from '@/i18n.js';
+import { convertAgeSeconds } from '@/utility/note-cleanup-editor.js';
 const props = defineProps<{ condition: Condition }>();
 const emit = defineEmits<{ (ev: 'update', value: Condition): void }>();
 const unit = ref(props.condition.type === 'age' ? ageUnit(props.condition.seconds) : 86400);
@@ -64,6 +65,14 @@ const clipModes = [{ value: 'all', label: i18n.ts._noteCleanup.allClips }, { val
 const visibilities = ['public', 'home', 'followers', 'specified'] as const;
 
 function toggle<T>(values: T[], value: T): T[] { return values.includes(value) ? values.filter(v => v !== value) : [...values, value]; }
+
+function changeUnit(value: number) {
+	if (props.condition.type !== 'age') return;
+	// 표시 수량은 그대로 두고 저장된 초 값만 새 단위로 변환한다.
+	const seconds = convertAgeSeconds(props.condition.seconds, unit.value, value);
+	unit.value = value;
+	emit('update', { ...props.condition, seconds } as Condition);
+}
 
 function patch(value: Record<string, unknown>) { emit('update', { ...props.condition, ...value } as Condition); }
 </script>
