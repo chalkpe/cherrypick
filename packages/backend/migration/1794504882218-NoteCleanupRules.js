@@ -26,6 +26,7 @@ export class NoteCleanupRules1794504882218 {
 		await queryRunner.createTable(new Table({ name: 'note_cleanup_state', columns: [
 			{ name: 'userId', type: 'varchar', length: '32', isPrimary: true },
 			{ name: 'migrated', type: 'boolean', default: false },
+			{ name: 'keepDriveFiles', type: 'boolean', default: true },
 			{ name: 'cursor', type: 'varchar', length: '32', isNullable: true },
 			{ name: 'lastRunAt', type: 'timestamp with time zone', default: "'1970-01-01 00:00:00+00'" },
 		] }));

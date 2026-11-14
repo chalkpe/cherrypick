@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { afterAll, beforeAll, expect, test } from 'vitest';
-import { api, post, relativeFetch, signup, startJobQueue } from '../utils.js';
+import { api, post, relativeFetch, signup, startJobQueue, uploadFile } from '../utils.js';
 import type { UserToken } from '../utils.js';
 import type { INestApplicationContext } from '@nestjs/common';
 
@@ -72,4 +72,44 @@ test('CW 미리 보기와 실제 삭제는 공통 보호를 지키며 타인의 
 	await expect.poll(async () => (await api('notes/show', { noteId: deletable.id }, alice)).status, { timeout: 20000, interval: 100 }).toBe(400);
 	expect((await api('notes/show', { noteId: protectedNote.id }, alice)).status).toBe(200);
 	expect((await api('notes/show', { noteId: foreign.id }, bob)).status).toBe(200);
+});
+
+test('드라이브 보존 설정은 기본 켜짐이고 끄면 지운 노트의 미사용 첨부만 삭제한다', async () => {
+	const alice = await signup({ username: 'cleanupdrive' });
+	// secure 엔드포인트라 미인증 호출은 403(ACCESS_DENIED)이다. 다른 정리 쓰기 엔드포인트와 동일하다.
+	expect((await cleanup('update-settings', { keepDriveFiles: false })).status).toBe(403);
+	expect((await cleanup('update-settings', {}, alice)).status).toBe(400);
+	expect((await cleanup('update-settings', { keepDriveFiles: 'no' }, alice)).status).toBe(400);
+	expect((await cleanup('list', {}, alice)).body.keepDriveFiles).toBe(true);
+
+	const unusedFile = await uploadFile(alice);
+	const sharedFile = await uploadFile(alice);
+	const avatarFile = await uploadFile(alice);
+	const keptFile = await uploadFile(alice);
+	expect((await api('i/update', { avatarId: avatarFile.body!.id }, alice)).status).toBe(200);
+	const target = await post(alice, { text: '정리 대상', fileIds: [unusedFile.body!.id, sharedFile.body!.id, avatarFile.body!.id, keptFile.body!.id] });
+	const keeper = await post(alice, { text: '유지', fileIds: [sharedFile.body!.id] });
+	const deletion = await cleanup('create', { name: '정리', action: 'delete', condition: keyword('정리 대상') }, alice);
+	const ruleIds = [deletion.body.rule.id];
+
+	// 기본 켜짐: 노트만 지우고 첨부 파일은 모두 남는다.
+	expect((await cleanup('request', { ruleIds }, alice)).body.queued).toBe(true);
+	await expect.poll(async () => (await api('notes/show', { noteId: target.id }, alice)).status, { timeout: 20000, interval: 100 }).toBe(400);
+	for (const file of [unusedFile, sharedFile, avatarFile, keptFile]) {
+		expect((await api('drive/files/show', { fileId: file.body!.id }, alice)).status).toBe(200);
+	}
+
+	// 끄면 지운 노트의 첨부 중 미사용 파일만 지운다. 사용 중(다른 노트·아바타) 파일과 이전에 지킨 파일은 남는다.
+	expect((await cleanup('update-settings', { keepDriveFiles: false }, alice)).body.keepDriveFiles).toBe(false);
+	expect((await cleanup('list', {}, alice)).body.keepDriveFiles).toBe(false);
+	const secondFile = await uploadFile(alice);
+	const target2 = await post(alice, { text: '정리 대상 2', fileIds: [secondFile.body!.id, unusedFile.body!.id] });
+	expect((await cleanup('request', { ruleIds }, alice)).body.queued).toBe(true);
+	await expect.poll(async () => (await api('notes/show', { noteId: target2.id }, alice)).status, { timeout: 20000, interval: 100 }).toBe(400);
+	await expect.poll(async () => (await api('drive/files/show', { fileId: secondFile.body!.id }, alice)).status, { timeout: 20000, interval: 100 }).toBe(400);
+	expect((await api('drive/files/show', { fileId: unusedFile.body!.id }, alice)).status).toBe(400);
+	expect((await api('drive/files/show', { fileId: sharedFile.body!.id }, alice)).status).toBe(200);
+	expect((await api('drive/files/show', { fileId: avatarFile.body!.id }, alice)).status).toBe(200);
+	expect((await api('drive/files/show', { fileId: keptFile.body!.id }, alice)).status).toBe(200);
+	expect((await api('notes/show', { noteId: keeper.id }, alice)).status).toBe(200);
 });

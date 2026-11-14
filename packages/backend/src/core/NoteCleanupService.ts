@@ -4,6 +4,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Inject, Injectable } from '@nestjs/common';
+import promiseLimit from 'promise-limit';
 import type * as Redis from 'ioredis';
 import { DataSource, In, IsNull } from 'typeorm';
 import type { EntityManager, EntityTarget, ObjectLiteral, Repository, QueryRunner } from 'typeorm';
@@ -15,6 +16,8 @@ import { QueueService } from '@/core/QueueService.js';
 import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
+import { DriveService } from '@/core/DriveService.js';
+import { DriveFileUsageService } from '@/core/DriveFileUsageService.js';
 import type { MiMeta } from '@/models/_.js';
 import { IdService } from '@/core/IdService.js';
 import { isQuote, isRenote } from '@/misc/is-renote.js';
@@ -47,6 +50,8 @@ export class NoteCleanupService {
 		@Inject(DI.redisForJobQueue) private redis: Redis.Redis,
 		@Inject(DI.meta) private meta: MiMeta,
 		private reactionsBufferingService: ReactionsBufferingService,
+		private driveService: DriveService,
+		private driveFileUsageService: DriveFileUsageService,
 	) {}
 
 	private repository<T extends ObjectLiteral>(target: EntityTarget<T>): Repository<T> {
@@ -92,7 +97,7 @@ export class NoteCleanupService {
 		if (await this.states.existsBy({ userId })) return;
 		const user = await this.repository(MiUser).findOneByOrFail({ id: userId, host: IsNull() });
 		await this.db.transaction(async manager => {
-			await manager.insert(MiNoteCleanupState, { userId, migrated: false, cursor: null, manualRequest: null });
+			await manager.insert(MiNoteCleanupState, { userId, migrated: false, keepDriveFiles: true, cursor: null, manualRequest: null });
 			for (const input of initialCleanupRules(false, user.autoDeleteNotesAfterDays, user.autoDeleteKeepFavorites)) {
 				await manager.insert(MiNoteCleanupRule, { ...input, id: this.idService.gen(), userId, lastError: null, protectionNotified: false, automaticConfirmed: false });
 			}
@@ -187,7 +192,17 @@ export class NoteCleanupService {
 			const prepared = await this.prepare(rules.filter(r => r.enabled), userId);
 			for (const item of prepared) await this.notifyProtectionFailure(userId, item.rule.id);
 			const refreshed = await this.rules.find({ where: { userId }, order: { id: 'ASC' } });
-			return { rules: refreshed.map(publicRule), blocked: refreshed.some(r => r.enabled && r.action === 'keep' && r.lastError !== null) };
+			const state = await this.states.findOneByOrFail({ userId });
+			return { rules: refreshed.map(publicRule), blocked: refreshed.some(r => r.enabled && r.action === 'keep' && r.lastError !== null), keepDriveFiles: state.keepDriveFiles };
+		});
+	}
+
+	// 드라이브 보존 설정은 정리 진행 커서와 무관하므로 커서를 초기화하지 않는다.
+	public async updateSettings(userId: string, keepDriveFiles: boolean) {
+		return this.locked(userId, async () => {
+			await this.initialize(userId);
+			await this.states.update(userId, { keepDriveFiles });
+			return { keepDriveFiles };
 		});
 	}
 
@@ -420,6 +435,7 @@ export class NoteCleanupService {
 		const candidates = page.items.filter(i => i.decision === 'delete').length;
 		const removal = candidates ? await this.reserveBudget('delete', userId, Math.min(candidates, NOTE_CLEANUP_LIMITS.deleteChunk)) : null;
 		let failed = 0;
+		const removedFileIds: string[] = [];
 		const result = await runCleanupBatch(page.items.map(i => ({ id: i.noteId, decision: i.decision })), removal?.amount ?? 0, async id => {
 			let note: MiNote | null;
 			try {
@@ -428,7 +444,9 @@ export class NoteCleanupService {
 				throw new CleanupNoteLookupError(error);
 			}
 			if (!note) return false;
-			return await this.noteDeleteService.delete(user, note, false);
+			await this.noteDeleteService.delete(user, note, false);
+			removedFileIds.push(...note.fileIds);
+			return true;
 		}, (noteId, error) => {
 			// 수동 요청은 노트 조회 실패와 재시도 가능한 삭제 실패를 묶음 실패로 올린다. 일시 실패는 마커를 보존해 잇고, 비재시도 오류는 마커를 지워 무한 재시도를 막는다.
 			if (ruleIds && (error instanceof CleanupNoteLookupError || isRetryableCleanupFailure(error))) throw error;
@@ -436,12 +454,35 @@ export class NoteCleanupService {
 			failed++;
 			this.logger.error('Cleanup note deletion failed', { userId, noteId, error });
 		});
+		// 실제로 지운 노트의 첨부만 대상으로 삼는다. 삭제에 실패한 노트의 첨부는 건드리지 않는다.
+		if (state.keepDriveFiles === false && removedFileIds.length) await this.deleteUnusedAttachments(userId, user, removedFileIds);
 		const complete = page.complete && result.examined === page.scanned;
 		// 첫 노트부터 삭제 예산이 없어 하나도 지나지 못했으면 기존 커서를 유지한다.
 		const next = result.cursor ?? cursor ?? null;
 		if (!ruleIds) await this.states.update(userId, { cursor: complete ? null : next });
 		const throttled = !complete && removal?.exhausted && result.examined < page.scanned ? removal.exhausted : undefined;
 		return { deleted: result.deleted, failed, examined: result.examined, complete, cursor: complete ? null : next ?? '', throttled };
+	}
+
+	// 지운 노트의 첨부 중 어디에서도 쓰지 않는 파일만 지운다(drive/files/delete-bulk와 같은 판정).
+	// 파일 삭제 실패는 로그만 남기고 노트 정리 결과에는 영향을 주지 않는다.
+	private async deleteUnusedAttachments(userId: string, user: MiUser, fileIds: string[]) {
+		try {
+			const query = this.repository(MiDriveFile).createQueryBuilder('file')
+				.andWhere('file.id IN (:...fileIds)', { fileIds: [...new Set(fileIds)] });
+			this.driveFileUsageService.applyUnusedFilter(query, userId);
+			const files = await query.getMany();
+			const limit = promiseLimit<void>(4);
+			await Promise.all(files.map(file => limit(async () => {
+				try {
+					await this.driveService.deleteFile(file, false, user);
+				} catch (error) {
+					this.logger.error('Cleanup drive file deletion failed', { userId, fileId: file.id, error });
+				}
+			})));
+		} catch (error) {
+			this.logger.error('Cleanup drive file lookup failed', { userId, error });
+		}
 	}
 
 	// 자동 회차에서 계정 처리에 실패하면 순번을 뒤로 보내, 실패 계정이 오래된 lastRunAt으로 매번 앞자리를 차지하지 않게 한다.

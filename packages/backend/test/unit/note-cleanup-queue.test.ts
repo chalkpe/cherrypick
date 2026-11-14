@@ -154,7 +154,7 @@ function fixture() {
 		inboxQueue: { getWaiting: async () => waiting.inbox.slice(0, 1) },
 	};
 	const notifications: Record<string, unknown>[] = [];
-	const service = new NoteCleanupService(db as any, { gen: () => String(Math.random()), parse: () => ({ date: new Date(0) }) } as any, queueService as any, noteDelete as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering);
+	const service = new NoteCleanupService(db as any, { gen: () => String(Math.random()), parse: () => ({ date: new Date(0) }) } as any, queueService as any, noteDelete as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering, {} as any, {} as any);
 	const processor = new AutoDeleteNotesProcessorService(service, queueService as any);
 	const addUser = (userId: string, lastRunAt = EPOCH) => {
 		rows.MiUser.push({ id: userId, host: null, autoDeleteNotesAfterDays: null, autoDeleteKeepFavorites: false });

@@ -157,7 +157,7 @@ async function fixture() {
 	const idService = { gen: () => `rule-${String(sequence++).padStart(4, '0')}`, parse: (id: string) => ({ date: new Date(createdAt.get(id) ?? 0) }) };
 	const buffering = Object.create(ReactionsBufferingService.prototype) as ReactionsBufferingService;
 	const notifications: Record<string, unknown>[] = [];
-	const service = new NoteCleanupService(db as any, idService as any, queueService as any, { delete: deleteNote } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering);
+	const service = new NoteCleanupService(db as any, idService as any, queueService as any, { delete: deleteNote } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering, {} as any, {} as any);
 
 	// 처리기의 생성자 의존성을 Nest가 실제로 해석할 수 있는지도 함께 확인한다.
 	const app = await Test.createTestingModule({

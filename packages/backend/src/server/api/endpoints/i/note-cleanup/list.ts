@@ -14,7 +14,7 @@ export const meta = {
 	tags: ['account'], requireCredential: true, kind: 'read:account',
 	limit: { duration: 60000, max: 60 },
 	errors: { cleanupBusy: { ...cleanupBusyError, id: 'a9266652-f942-4021-8677-2ca26e50c344' }, invalidCleanup: { message: 'Invalid note cleanup request.', code: 'INVALID_CLEANUP', id: 'b06bddcb-7004-4800-bf8f-d9b99cdb6e23' } },
-	res: { type: 'object', properties: { rules: { type: 'array', items: packedNoteCleanupRuleSchema, optional: false, nullable: false }, blocked: { type: 'boolean', optional: false, nullable: false } } },
+	res: { type: 'object', properties: { rules: { type: 'array', items: packedNoteCleanupRuleSchema, optional: false, nullable: false }, blocked: { type: 'boolean', optional: false, nullable: false }, keepDriveFiles: { type: 'boolean', optional: false, nullable: false } } },
 } as const;
 
 export const paramDef = { type: 'object', properties: {}, required: [] } as const;

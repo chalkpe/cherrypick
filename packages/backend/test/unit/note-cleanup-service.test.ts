@@ -2,11 +2,19 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { expect, test, vi } from 'vitest';
+import { beforeEach, expect, test, vi } from 'vitest';
 import { FindOperator } from 'typeorm';
+// 드라이브 삭제 흉내는 모듈 수준에서 공유하므로 시험마다 초기화한다.
+const drive = vi.hoisted(() => ({
+	deletes: [] as { fileId: string; isExpired: boolean; deleterId: string | undefined }[],
+	failures: new Set<string>(),
+	used: new Set<string>(),
+	usageCalls: [] as string[],
+	logs: [] as unknown[][],
+}));
 vi.mock('../../src/models/_.js', () => Object.fromEntries(['MiNote', 'MiUser', 'MiClip', 'MiClipNote', 'MiChannel', 'MiPoll', 'MiDriveFile', 'MiNoteFavorite', 'MiNoteReaction', 'MiUserNotePining'].map(name => [name, { name }])));
 vi.mock('../../src/models/NoteCleanupRule.js', () => ({ MiNoteCleanupRule: { name: 'Rule' }, MiNoteCleanupState: { name: 'State' } }));
-vi.mock('../../src/logger.js', () => ({ default: class { error() {} } }));
+vi.mock('../../src/logger.js', () => ({ default: class { error(...args: unknown[]) { drive.logs.push(args); } } }));
 vi.mock('../../src/core/QueueService.js', () => ({ QueueService: class {} }));
 vi.mock('../../src/core/NoteDeleteService.js', () => ({ NoteDeleteService: class {} }));
 vi.mock('../../src/core/NotificationService.js', () => ({ NotificationService: class {} }));
@@ -19,8 +27,10 @@ import PreviewEndpoint, { meta as previewMeta } from '../../src/server/api/endpo
 
 // detached: 실제 DB처럼 조회 결과를 저장 행과 분리한 복사본으로 돌려준다.
 function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0) } = {}) {
-	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, migrated: true, manualRequest: null }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
+	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, migrated: true, manualRequest: null, keepDriveFiles: true }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
 	const failing = new Set<string>();
+	// deleteFailures: 해당 노트의 삭제를 실패시킨다.
+	const deleteFailures = new Set<string>();
 	// retryable: 재시도 가능한 연결 오류로 조회를 실패시킨다.
 	const retryable = new Set<string>();
 	const faults = { createQueryRunner: false };
@@ -62,9 +72,11 @@ function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0
 			createQueryBuilder: () => {
 				let afterId: string | undefined;
 				let ids: string[] | undefined;
+				let fileIds: string[] | undefined;
+				let owner: string | undefined;
 				let limit = Infinity;
-				const filter = (_sql: string, params?: { afterId?: string; ids?: string[] }) => { afterId = params?.afterId ?? afterId; ids = params?.ids ?? ids; return builder; };
-				const builder: any = { where: filter, andWhere: filter, innerJoin: () => builder, orderBy: () => builder, take: (value: number) => { limit = value; return builder; }, select: () => builder, getRawMany: async () => [], getMany: async () => { if (retryable.has(entity.name)) throw Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' }); const result = copy(data.filter(row => (!afterId || row.id > afterId) && (!ids || ids.includes(row.id))).slice(0, limit)); if (entity.name === 'MiNote') noteReads.push(result.map(row => row.id)); return result; } };
+				const filter = (_sql: string, params?: { afterId?: string; ids?: string[]; fileIds?: string[]; userId?: string }) => { afterId = params?.afterId ?? afterId; ids = params?.ids ?? ids; fileIds = params?.fileIds ?? fileIds; owner = params?.userId ?? owner; return builder; };
+				const builder: any = { where: filter, andWhere: filter, innerJoin: () => builder, orderBy: () => builder, take: (value: number) => { limit = value; return builder; }, select: () => builder, requestedFileIds: () => fileIds, getRawMany: async () => [], getMany: async () => { if (retryable.has(entity.name)) throw Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' }); const result = copy(data.filter(row => (!afterId || row.id > afterId) && (!ids || ids.includes(row.id)) && (!fileIds || fileIds.includes(row.id)) && (!owner || row.userId === owner)).slice(0, limit)); if (entity.name === 'MiNote') noteReads.push(result.map(row => row.id)); return result; } };
 				return builder;
 			},
 		};
@@ -89,10 +101,37 @@ function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0
 	const buffered = new Map<string, { deltas: Record<string, number>; pairs: [string, string][] }>();
 	const buffering = Object.create(ReactionsBufferingService.prototype) as ReactionsBufferingService;
 	Object.defineProperty(buffering, 'getMany', { value: async () => buffered, writable: true });
-	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push([userId, type, data]); } } as any, { eval: async (...args: unknown[]) => { evalCalls.push(args); return 5; } } as any, meta as any, buffering);
+	// 실제 deleteFile처럼 행을 제거하고, 주입된 파일은 스토리지 오류로 실패시킨다.
+	const driveService = {
+		deleteFile: async (file: { id: string }, isExpired: boolean, deleter?: { id: string }) => {
+			drive.deletes.push({ fileId: file.id, isExpired, deleterId: deleter?.id });
+			if (drive.failures.has(file.id)) throw new Error(`storage unavailable (${file.id})`);
+			const files = rows.MiDriveFile ?? [];
+			const i = files.findIndex(f => f.id === file.id);
+			if (i >= 0) files.splice(i, 1);
+		},
+	};
+	// 실제 applyUnusedFilter처럼 소유자와 미사용 여부로만 좁힌다. 사용 중 출처 판정은 e2e와 실서버에서 검사한다.
+	const driveFileUsageService = {
+		applyUnusedFilter: (query: any, userId: string) => {
+			drive.usageCalls.push(userId);
+			const requested: string[] = query.requestedFileIds() ?? [];
+			const unused = requested.filter(id => !drive.used.has(id) && (rows.MiDriveFile ?? []).some(f => f.id === id && f.userId === userId));
+			return query.andWhere('file.id IN (:...ids)', { ids: unused });
+		},
+	};
+	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { if (deleteFailures.has(note.id)) throw new Error(`note delete unavailable (${note.id})`); rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push([userId, type, data]); } } as any, { eval: async (...args: unknown[]) => { evalCalls.push(args); return 5; } } as any, meta as any, buffering, driveService as any, driveFileUsageService as any);
 	const condition = { type: 'age', operator: 'gte', seconds: 60 };
-	return { rows, service, notifications, jobs, evalCalls, failing, failingWrites, retryable, faults, lock, meta, buffered, buffering, noteReads, input: { name: '정리', action: 'delete' as const, condition } };
+	return { rows, service, notifications, jobs, evalCalls, failing, failingWrites, retryable, faults, lock, meta, buffered, buffering, noteReads, deleteFailures, drive, input: { name: '정리', action: 'delete' as const, condition } };
 }
+
+beforeEach(() => {
+	drive.deletes.length = 0;
+	drive.failures.clear();
+	drive.used.clear();
+	drive.usageCalls.length = 0;
+	drive.logs.length = 0;
+});
 
 const note = (id: string) => ({ id, userId: 'alice', text: '정리', cw: null, fileIds: [], hasPoll: false, renoteId: null, replyId: null, channelId: null, localOnly: false, visibility: 'public', reactions: {}, renoteCount: 0, tags: [] });
 
@@ -953,6 +992,8 @@ import ListEndpoint, { meta as listMeta } from '../../src/server/api/endpoints/i
 
 import RequestEndpoint, { meta as requestMeta } from '../../src/server/api/endpoints/i/note-cleanup/request.js';
 
+import UpdateSettingsEndpoint, { meta as updateSettingsMeta, paramDef as updateSettingsParamDef } from '../../src/server/api/endpoints/i/note-cleanup/update-settings.js';
+
 const noteEntityService = { packMany: async (notes: unknown[]) => notes };
 
 for (const [EndpointClass, meta, params] of [
@@ -960,6 +1001,7 @@ for (const [EndpointClass, meta, params] of [
 	[UpdateEndpoint, updateMeta, { ruleId: 'rule', action: 'delete', condition: { type: 'age', operator: 'gt', seconds: 60 } }],
 	[DeleteEndpoint, deleteMeta, { ruleId: 'rule' }], [ListEndpoint, listMeta, {}],
 	[PreviewEndpoint, previewMeta, { ruleIds: ['rule'] }], [RequestEndpoint, requestMeta, { ruleIds: ['rule'] }],
+	[UpdateSettingsEndpoint, updateSettingsMeta, { keepDriveFiles: false }],
 ] as const) {
 	test(`${meta.errors.invalidCleanup.id}: 실제 endpoint 잠금 충돌은 503 서버 혼잡이다`, async () => {
 		const { service, lock } = fixture();
@@ -971,13 +1013,32 @@ for (const [EndpointClass, meta, params] of [
 	test(`${meta.errors.invalidCleanup.id}: 입력 오류 세부 정보와 원래 예외를 보존한다`, async () => {
 		for (const error of [new CleanupInputError('INVALID_CLIP', 'condition'), new Error('database unavailable')]) {
 			const fail = async () => { throw error; };
-			const endpoint = new (EndpointClass as any)({ save: fail, remove: fail, list: fail, preview: fail, request: fail }, noteEntityService);
+			const endpoint = new (EndpointClass as any)({ save: fail, remove: fail, list: fail, preview: fail, request: fail, updateSettings: fail }, noteEntityService);
 			const result = endpoint.exec(params, { id: 'alice' } as any, null, null);
 			if (error instanceof CleanupInputError) await expect(result).rejects.toMatchObject({ code: 'INVALID_CLEANUP', kind: 'client', info: { code: 'INVALID_CLIP', path: 'condition' } });
 			else await expect(result).rejects.toBe(error);
 		}
 	});
 }
+
+test('update-settings 진입점은 드라이브 보존 설정을 저장하고 결과를 돌려준다', async () => {
+	const { rows, service } = fixture();
+	rows.State[0].cursor = 'cursor';
+	const endpoint = new UpdateSettingsEndpoint(service);
+	expect(await endpoint.exec({ keepDriveFiles: false }, { id: 'alice' } as any, null, null)).toEqual({ keepDriveFiles: false });
+	expect(rows.State[0].keepDriveFiles).toBe(false);
+	expect(rows.State[0].cursor).toBe('cursor');
+	expect((await service.list('alice')).keepDriveFiles).toBe(false);
+	expect(updateSettingsMeta).toMatchObject({ requireCredential: true, kind: 'write:account', secure: true });
+	expect(updateSettingsParamDef).toMatchObject({ type: 'object', properties: { keepDriveFiles: { type: 'boolean' } }, required: ['keepDriveFiles'] });
+});
+
+test('목록 응답은 선언된 스키마와 같은 키로 드라이브 보존 설정을 포함한다', async () => {
+	const { service } = fixture();
+	const result = await service.list('alice');
+	expect(Object.keys(result).sort()).toEqual(Object.keys(listMeta.res.properties).sort());
+	expect((listMeta.res.properties as Record<string, unknown>).keepDriveFiles).toMatchObject({ type: 'boolean', optional: false, nullable: false });
+});
 
 test('create 진입점은 자동 실행 요청을 명시 거절하고 false·생략은 저장한다', async () => {
 	const { service, input, rows } = fixture();
@@ -1041,4 +1102,121 @@ test('키워드가 쓰는 poll 자료의 조회 실패는 오류·알림 없이 
 	expect(notifications).toHaveLength(0);
 	retryable.clear();
 	expect((await service.processUser('alice')).deleted).toBe(1);
+});
+
+// === 드라이브 파일 보존 설정 ===
+
+test('목록은 드라이브 보존 설정을 돌려주고 설정 변경은 진행 커서를 초기화하지 않는다', async () => {
+	const { rows, service } = fixture();
+	expect((await service.list('alice')).keepDriveFiles).toBe(true);
+	rows.State[0].cursor = 'cursor';
+	expect(await service.updateSettings('alice', false)).toEqual({ keepDriveFiles: false });
+	expect(rows.State[0].keepDriveFiles).toBe(false);
+	expect(rows.State[0].cursor).toBe('cursor');
+	expect((await service.list('alice')).keepDriveFiles).toBe(false);
+	await service.updateSettings('alice', true);
+	expect(rows.State[0].keepDriveFiles).toBe(true);
+});
+
+test('상태가 없는 신규 계정의 드라이브 보존 설정은 기본 켜짐이다', async () => {
+	const f = fixture({ detached: true });
+	f.rows.MiUser.push({ id: 'bob', host: null });
+	expect((await f.service.list('bob')).keepDriveFiles).toBe(true);
+	expect(f.rows.State.find(s => s.userId === 'bob').keepDriveFiles).toBe(true);
+});
+
+test('드라이브 보존이 켜져 있으면 노트를 지워도 첨부 파일을 삭제하지 않는다', async () => {
+	const { rows, service, input, drive } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.MiDriveFile = [{ id: 'f1', userId: 'alice' }, { id: 'f2', userId: 'alice' }];
+	rows.MiNote.push({ ...note('0'), fileIds: ['f1', 'f2'] });
+	expect((await service.processUser('alice')).deleted).toBe(1);
+	expect(rows.MiNote).toHaveLength(0);
+	expect(rows.MiDriveFile.map(f => f.id)).toEqual(['f1', 'f2']);
+	expect(drive.deletes).toHaveLength(0);
+	expect(drive.usageCalls).toHaveLength(0);
+});
+
+test('드라이브 보존이 꺼져 있으면 지운 노트의 미사용 첨부만 파일별 삭제한다', async () => {
+	const { rows, service, input, drive } = fixture();
+	rows.State[0].keepDriveFiles = false;
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.MiDriveFile = [{ id: 'f1', userId: 'alice' }, { id: 'f2', userId: 'alice' }, { id: 'f3', userId: 'alice' }];
+	// f2는 다른 곳에서 사용 중이고 f3는 지워진 노트에 첨부되지 않았다.
+	drive.used.add('f2');
+	rows.MiNote.push({ ...note('0'), fileIds: ['f1', 'f2'] }, { ...note('1'), fileIds: ['f1'] });
+	expect((await service.processUser('alice')).deleted).toBe(2);
+	expect(drive.usageCalls).toEqual(['alice']);
+	expect(drive.deletes).toEqual([{ fileId: 'f1', isExpired: false, deleterId: 'alice' }]);
+	expect(rows.MiDriveFile.map(f => f.id)).toEqual(['f2', 'f3']);
+});
+
+test('드라이브 보존이 꺼져 있어도 삭제에 실패한 노트의 첨부는 삭제하지 않는다', async () => {
+	const { rows, service, input, deleteFailures, drive } = fixture();
+	rows.State[0].keepDriveFiles = false;
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.MiDriveFile = [{ id: 'f1', userId: 'alice' }, { id: 'f2', userId: 'alice' }];
+	rows.MiNote.push({ ...note('0'), fileIds: ['f1'] }, { ...note('1'), fileIds: ['f2'] });
+	deleteFailures.add('1');
+	const result = await service.processUser('alice');
+	expect(result.deleted).toBe(1);
+	expect(result.failed).toBe(1);
+	expect(drive.deletes.map(d => d.fileId)).toEqual(['f1']);
+	expect(rows.MiDriveFile.map(f => f.id)).toEqual(['f2']);
+});
+
+test('파일 하나의 삭제 실패는 다른 파일 삭제를 막지 않고 로그만 남긴다', async () => {
+	const { rows, service, input, notifications, drive } = fixture();
+	rows.State[0].keepDriveFiles = false;
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.MiDriveFile = [{ id: 'f1', userId: 'alice' }, { id: 'f2', userId: 'alice' }, { id: 'f3', userId: 'alice' }];
+	drive.failures.add('f2');
+	rows.MiNote.push({ ...note('0'), fileIds: ['f1', 'f2', 'f3'] });
+	const result = await service.processUser('alice');
+	expect(result.deleted).toBe(1);
+	expect(result.failed).toBe(0);
+	expect(result.complete).toBe(true);
+	expect(drive.deletes.map(d => d.fileId)).toEqual(['f1', 'f2', 'f3']);
+	expect(rows.MiDriveFile.map(f => f.id)).toEqual(['f2']);
+	expect(notifications).toHaveLength(0);
+	expect(drive.logs.some(args => String(args[0]).includes('drive file'))).toBe(true);
+});
+
+test('미사용 조회 자체가 실패해도 노트 정리 결과는 바뀌지 않고 로그만 남긴다', async () => {
+	const { rows, service, input, retryable, notifications, drive } = fixture();
+	rows.State[0].keepDriveFiles = false;
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.MiDriveFile = [{ id: 'f1', userId: 'alice' }];
+	rows.MiNote.push({ ...note('0'), fileIds: ['f1'] });
+	retryable.add('MiDriveFile');
+	const result = await service.processUser('alice');
+	expect(result.deleted).toBe(1);
+	expect(result.complete).toBe(true);
+	expect(rows.MiDriveFile).toHaveLength(1);
+	expect(notifications).toHaveLength(0);
+	expect(drive.logs.length).toBeGreaterThan(0);
+});
+
+test('수동 요청 이어 처리도 드라이브 보존 설정에 따라 미사용 첨부를 삭제한다', async () => {
+	const { rows, service, input, drive } = fixture();
+	rows.State[0].keepDriveFiles = false;
+	const { rule } = await service.save('alice', input);
+	rows.MiDriveFile = [{ id: 'f1', userId: 'alice' }];
+	rows.MiNote.push({ ...note('0'), fileIds: ['f1'] });
+	await service.request('alice', [rule.id]);
+	expect((await service.continueManual('alice')).deleted).toBe(1);
+	expect(rows.State[0].manualRequest).toBeNull();
+	expect(drive.deletes.map(d => d.fileId)).toEqual(['f1']);
+	expect(rows.MiDriveFile).toHaveLength(0);
+});
+
+test('드라이브 보존이 꺼져 있어도 다른 사용자의 파일은 삭제하지 않는다', async () => {
+	const { rows, service, input, drive } = fixture();
+	rows.State[0].keepDriveFiles = false;
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.MiDriveFile = [{ id: 'f1', userId: 'bob' }];
+	rows.MiNote.push({ ...note('0'), fileIds: ['f1'] });
+	expect((await service.processUser('alice')).deleted).toBe(1);
+	expect(drive.deletes).toHaveLength(0);
+	expect(rows.MiDriveFile).toHaveLength(1);
 });

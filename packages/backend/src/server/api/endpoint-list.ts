@@ -67,6 +67,7 @@ export * as 'i/note-cleanup/update' from './endpoints/i/note-cleanup/update.js';
 export * as 'i/note-cleanup/delete' from './endpoints/i/note-cleanup/delete.js';
 export * as 'i/note-cleanup/preview' from './endpoints/i/note-cleanup/preview.js';
 export * as 'i/note-cleanup/request' from './endpoints/i/note-cleanup/request.js';
+export * as 'i/note-cleanup/update-settings' from './endpoints/i/note-cleanup/update-settings.js';
 export * as 'i/auto-delete-settings' from './endpoints/i/auto-delete-settings.js';
 export * as 'i/update-auto-delete-settings' from './endpoints/i/update-auto-delete-settings.js';
 export * as 'admin/federation/delete-all-files' from './endpoints/admin/federation/delete-all-files.js';
