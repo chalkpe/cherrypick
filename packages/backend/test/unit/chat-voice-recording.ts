@@ -135,6 +135,19 @@ describe('one recording state per participant', () => {
 		expect([true, false]).toContain(recordingOf(recorder.identity));
 	});
 
+	test('a continuous recording keeps its display through sweeps beyond the state lifetime', async () => {
+		await f.service.reportStatus(me as any, 'r1', 'PA_1', { ...settings, recording: true });
+		await f.service.refresh('r1');
+		expect(recordingOf(recorder.identity)).toBe(true);
+
+		// 設定の変更も再報告もないまま、状態の寿命 (120秒) の二倍を超えても定期読み直しが表示を保つ
+		for (let i = 0; i < 4; i++) {
+			await vi.advanceTimersByTimeAsync(60_000);
+			await f.service.sweep();
+			expect(recordingOf(recorder.identity)).toBe(true);
+		}
+	});
+
 	test('a failed remote queue does not fail the recording approval or the local display', async () => {
 		await expect(f.service.reportStatus(me as any, 'r1', 'PA_1', { ...settings, recording: true })).resolves.toBe(true);
 		f.queueService.deliver.mockRejectedValue(new Error('queue unavailable'));

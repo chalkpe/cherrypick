@@ -34,7 +34,8 @@ export function useVoiceCallRecordingWatch() {
 	});
 	const someoneRecording = computed(() => recordingIdentities.value.length > 0);
 
-	// 録画が始まったり終わったりしたら、音と表示で知らせる。別の通話に移ったときは知らせない
+	// 録画が始まったり終わったりしたら、音と表示で知らせる。同じ一覧の変化で始まりと終わりが重なったら、どちらも知らせる。
+	// 別の通話に移ったときは知らせない
 	watch([recordingIdentities, callRoomId], ([now, roomId], [before, roomIdBefore]) => {
 		if (roomId == null || roomId !== roomIdBefore) return;
 		const started = now.filter(id => !before.includes(id));
@@ -45,7 +46,8 @@ export function useVoiceCallRecordingWatch() {
 				const participant = participants.value.find(p => p.identity === id);
 				if (participant != null && id !== myIdentity) os.toast(i18n.tsx._voiceCall.recordingStartedBy({ name: userName(participant.user) }));
 			}
-		} else if (stopped.length > 0) {
+		}
+		if (stopped.length > 0) {
 			void playMisskeySfxFile({ type: 'syuilo/down', volume: 1 });
 			if (stopped.some(id => id !== myIdentity)) os.toast(i18n.ts._voiceCall.recordingStopped);
 		}

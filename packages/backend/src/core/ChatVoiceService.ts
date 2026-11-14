@@ -16,8 +16,8 @@ import type { MiMeta } from '@/models/Meta.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { bindThis } from '@/decorators.js';
-import { CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT } from '@/core/recording-state.js';
-import type { RecordingStatus } from '@/core/recording-state.js';
+import { CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT, RENEW_RECORDING_STATE_IF_CURRENT_SCRIPT, STORE_RECORDING_STATE_SCRIPT } from '@/core/recording-state.js';
+import type { RecordingState, RecordingStatus } from '@/core/recording-state.js';
 import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
@@ -602,10 +602,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		// 録音状態は参加者 (ルーム, identity) ごとに一つだけ持ち、最後の報告が勝つ。recording の無い報告は設定だけで、状態を変えない。
 		// 表示は報告したセッション (SID) がいま接続しているときだけ重なる (participantsWithRecording)
 		if (recording !== undefined) {
-			const identitiesKey = this.recordingIdentitiesKeyOf(roomId);
-			await this.redisClient.set(this.recordingStateKeyOf(roomId, participant.identity), JSON.stringify({ sessionId, recording }), 'EX', SNAPSHOT_TTL_SECONDS);
-			await this.redisClient.sadd(identitiesKey, participant.identity);
-			await this.redisClient.expire(identitiesKey, SNAPSHOT_TTL_SECONDS);
+			await this.redisClient.eval(STORE_RECORDING_STATE_SCRIPT, 2,
+				this.recordingStateKeyOf(roomId, participant.identity), this.recordingIdentitiesKeyOf(roomId),
+				sessionId, recording ? '1' : '0', participant.identity, SNAPSHOT_TTL_SECONDS);
 		}
 		this.scheduleRefresh(roomId);
 		return true;
@@ -796,30 +795,41 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	private async participantsWithRecording(roomId: string): Promise<LiveKitParticipant[]> {
 		const participants = await this.liveKitService.listParticipants(roomId);
+		const identitiesKey = this.recordingIdentitiesKeyOf(roomId);
 		return await Promise.all(participants.map(async participant => {
-			const raw = await this.redisClient.get(this.recordingStateKeyOf(roomId, participant.identity));
-			const state = raw == null ? null : JSON.parse(raw) as { sessionId: string; recording: boolean };
+			const stateKey = this.recordingStateKeyOf(roomId, participant.identity);
+			const raw = await this.redisClient.get(stateKey);
+			const state = raw == null ? null : JSON.parse(raw) as RecordingState;
 			// 報告したセッションがいま接続しているときだけ録音中を見せる。新しいセッションは前の状態を引き継がない
-			return { ...participant, recording: state != null && state.sessionId === participant.sessionId && state.recording === true };
+			const recording = state != null && state.sessionId === participant.sessionId && state.recording === true;
+			// 接続が続いている録音は、読み直すたびに寿命を延ばして表示を保つ (定期読み直しは寿命より短い間隔)。
+			// いまの値が同じセッションの録音中のときだけ延ばすので、間に届いた終了報告を昔の録音中で戻さない
+			if (recording) {
+				await this.redisClient.eval(RENEW_RECORDING_STATE_IF_CURRENT_SCRIPT, 2, stateKey, identitiesKey, state.sessionId, SNAPSHOT_TTL_SECONDS);
+			}
+			return { ...participant, recording };
 		}));
 	}
 
+	/** 録音状態を持つ参加者の一覧と、そのときの値 (無ければ null)。参加者一覧より先に読み、整理の基準にする */
+	private async recordingStatesOf(roomId: string): Promise<Map<string, string | null>> {
+		const identities = await this.redisClient.smembers(this.recordingIdentitiesKeyOf(roomId));
+		const entries = await Promise.all(identities.map(async identity =>
+			[identity, await this.redisClient.get(this.recordingStateKeyOf(roomId, identity))] as [string, string | null]));
+		return new Map(entries);
+	}
+
 	/**
-	 * 通話から離れた参加者の録音状態を消す。読んだときの値のままのときだけ消す (CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT) ので、
-	 * 読み直しているあいだに同じ identity が新しいセッションで報告した状態は消さない。状態の寿命が切れた項目も一覧から外す
+	 * 通話から離れた参加者の録音状態を消す。参加者一覧を読む前に読んだ値のままのときだけ消す (CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT) ので、
+	 * 一覧の後に届いた報告 (新しいセッション・同じ値の再報告) は消さない。状態の寿命が切れた項目も一覧から外す
 	 */
-	private async clearDepartedRecordingStates(roomId: string, participants: { identity: string }[]): Promise<void> {
-		const identitiesKey = this.recordingIdentitiesKeyOf(roomId);
-		const identities = await this.redisClient.smembers(identitiesKey);
-		if (identities.length === 0) return;
+	private async clearDepartedRecordingStates(roomId: string, participants: { identity: string }[], candidates: Map<string, string | null>): Promise<void> {
 		const current = new Set(participants.map(p => p.identity));
-		for (const identity of identities) {
+		const identitiesKey = this.recordingIdentitiesKeyOf(roomId);
+		for (const [identity, raw] of candidates) {
 			if (current.has(identity)) continue;
-			const stateKey = this.recordingStateKeyOf(roomId, identity);
-			const raw = await this.redisClient.get(stateKey);
-			if (await this.redisClient.eval(CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT, 1, stateKey, raw ?? '') === 1) {
-				await this.redisClient.srem(identitiesKey, identity);
-			}
+			await this.redisClient.eval(CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT, 2,
+				this.recordingStateKeyOf(roomId, identity), identitiesKey, raw ?? '', identity);
 		}
 	}
 
@@ -837,12 +847,14 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const readAt = await this.allocateStamp(this.localStampKeyOf(roomId), this.decidedKeyOf(roomId), LOCAL_STAMP_TTL_SECONDS);
 		// 最初の読み取りが失敗しても、次の sweep で権限を確かめ直す。
 		await this.redisClient.sadd(ACTIVE_ROOMS_KEY, roomId);
+		// 整理の候補は参加者一覧を読む前に読む。一覧より後に承認された報告は、ここで読んだ値と違うので消さない
+		const recordingCandidates = await this.recordingStatesOf(roomId);
 		const listed = await this.participantsWithRecording(roomId);
 		// 残れない参加者を外すのにも、時刻を決めた後に読んだこの一覧を使い、LiveKit を読み直さない。
 		// 外している間に変わった参加者は、その webhook の読み直し (後に決めた時刻) が保存する
 		const removed = refusedHosts != null ? await this.removeUnadmitted(roomId, listed, refusedHosts, 'sweep') : new Set<string>();
 		const participants = listed.filter(p => !removed.has(p.identity));
-		await this.clearDepartedRecordingStates(roomId, participants);
+		await this.clearDepartedRecordingStates(roomId, participants, recordingCandidates);
 		const snapshot: VoiceSnapshot = {
 			participants: participants.map(p => ({ identity: p.identity, userId: p.userId, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) })),
 			updatedAt: readAt,

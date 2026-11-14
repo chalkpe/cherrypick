@@ -77,7 +77,7 @@ test('a provider without recording capability keeps recording state on the owner
 		const result = await fixture.service.reportStatus(KNOWN_USERS.find(user => user.id === 'u1')! as any, 'r1', 'PA_1', { micMuted: false, deafened: false, recording: true });
 
 		expect(result).toBe(true);
-		expect(JSON.parse((await fixture.redis.get(stateKey))!)).toEqual({ sessionId: 'PA_1', recording: true });
+		expect(JSON.parse((await fixture.redis.get(stateKey))!)).toMatchObject({ sessionId: 'PA_1', recording: true });
 		// 녹음을 모르는 relay에는 합의한 설정만 보낸다 (엄격한 status 스키마가 recording을 거부한다)
 		expect(requests.filter(request => request.path.endsWith('/participants/status')).map(request => request.body)).toEqual([
 			{ identity, sessionId: 'PA_1', micMuted: false, deafened: false },

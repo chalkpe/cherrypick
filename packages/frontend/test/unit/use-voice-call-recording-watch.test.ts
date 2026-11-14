@@ -35,6 +35,7 @@ vi.mock('@/filters/user.js', () => ({ userName: () => 'participant' }));
 vi.mock('@/i.js', () => ({ $i: { id: 'me' } }));
 
 import { voiceCall } from '@/utility/voice-call.js';
+import { i18n } from '@/i18n.js';
 import { useVoiceCallRecordingWatch } from '@/composables/use-voice-call-recording-watch.js';
 
 let scope: EffectScope;
@@ -164,6 +165,46 @@ test('announces only the net recording change within one tick', async () => {
 	expect(mocks.toast).toHaveBeenCalledTimes(1);
 	expect(mocks.sound).toHaveBeenCalledTimes(1);
 	expect(watch.someoneRecording.value).toBe(true);
+});
+
+test('announces both the stop and the start when one update replaces the recorder', async () => {
+	start();
+	await flush();
+	const a = { identity: 'user-a', user: { id: 'user-a' } };
+	const b = { identity: 'user-b', user: { id: 'user-b' } };
+
+	setParticipants('r1', [{ ...a, recording: true }]);
+	await flush();
+	mocks.toast.mockClear();
+	mocks.sound.mockClear();
+
+	setParticipants('r1', [{ ...b, recording: true }]);
+	await flush();
+
+	expect(mocks.toast.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining([
+		i18n.tsx._voiceCall.recordingStartedBy({ name: 'participant' }),
+		i18n.ts._voiceCall.recordingStopped,
+	]));
+	expect(mocks.sound.mock.calls.map(call => call[0].type)).toEqual(expect.arrayContaining(['syuilo/up', 'syuilo/down']));
+});
+
+test('announces another participant stopping when my own recording starts in the same update', async () => {
+	start();
+	await flush();
+	const a = { identity: 'user-a', user: { id: 'user-a' } };
+
+	setParticipants('r1', [{ ...a, recording: true }]);
+	await flush();
+	mocks.toast.mockClear();
+	mocks.sound.mockClear();
+
+	setParticipants('r1', []);
+	Object.assign(voiceCall, { recording: true });
+	await flush();
+
+	expect(mocks.toast).toHaveBeenCalledTimes(1);
+	expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingStopped);
+	expect(mocks.sound.mock.calls.map(call => call[0].type)).toEqual(expect.arrayContaining(['syuilo/up', 'syuilo/down']));
 });
 
 test('does not announce the previous call recording state after switching calls', async () => {

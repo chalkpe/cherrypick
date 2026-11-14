@@ -74,16 +74,22 @@ function signal() {
 
 test('the cleanup script deletes only the state it read', async () => {
 	const stateKey = key('chatVoice:recordingState:cas');
-	await redis.set(stateKey, JSON.stringify({ sessionId: 'PA_1', recording: true }));
+	const identitiesKey = key('chatVoice:recordingIdentities:cas');
+	await redis.set(stateKey, JSON.stringify({ sessionId: 'PA_1', recording: true, version: 1 }));
+	await redis.sadd(identitiesKey, 'someone');
 
-	expect(await redis.eval(CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT, 1, stateKey, 'another-value')).toBe(0);
+	expect(await redis.eval(CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT, 2, stateKey, identitiesKey, 'another-value', 'someone')).toBe(0);
 	expect(await redis.get(stateKey)).not.toBeNull();
+	expect(await redis.smembers(identitiesKey)).toEqual(['someone']);
 
 	const raw = (await redis.get(stateKey))!;
-	expect(await redis.eval(CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT, 1, stateKey, raw)).toBe(1);
+	expect(await redis.eval(CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT, 2, stateKey, identitiesKey, raw, 'someone')).toBe(1);
 	expect(await redis.get(stateKey)).toBeNull();
+	expect(await redis.smembers(identitiesKey)).toEqual([]);
 	// 鍵がもう無くても、読んだ値 (空文字) と一致すれば一覧の項目を消せる
-	expect(await redis.eval(CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT, 1, stateKey, '')).toBe(1);
+	await redis.sadd(identitiesKey, 'someone');
+	expect(await redis.eval(CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT, 2, stateKey, identitiesKey, '', 'someone')).toBe(1);
+	expect(await redis.smembers(identitiesKey)).toEqual([]);
 });
 
 test('a recording report stores one state per participant with the snapshot lifetime', async () => {
@@ -92,7 +98,7 @@ test('a recording report stores one state per participant with the snapshot life
 	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', recordingStatus)).resolves.toBe(true);
 
 	const stateKey = stateKeyOf('r1', recordingIdentity);
-	expect(JSON.parse((await redis.get(stateKey))!)).toEqual({ sessionId: 'PA_1', recording: true });
+	expect(JSON.parse((await redis.get(stateKey))!)).toEqual({ sessionId: 'PA_1', recording: true, version: 1 });
 	const ttl = await redis.ttl(stateKey);
 	expect(ttl).toBeGreaterThan(0);
 	expect(ttl).toBeLessThanOrEqual(120);
@@ -166,7 +172,7 @@ test('cleanup does not delete a state re-reported after it was read', async () =
 		resume.resolve();
 		await refresh;
 
-		expect(JSON.parse((await redis.get(stateKey))!)).toEqual({ sessionId: 'PA_2', recording: true });
+		expect(JSON.parse((await redis.get(stateKey))!)).toMatchObject({ sessionId: 'PA_2', recording: true });
 		await fixture.service.refresh('r1');
 		const snapshot = JSON.parse((await redis.get('chatVoice:state:r1'))!);
 		expect(snapshot.participants.find((p: { identity: string }) => p.identity === recordingIdentity).recording).toBe(true);
@@ -174,6 +180,110 @@ test('cleanup does not delete a state re-reported after it was read', async () =
 		resume.resolve();
 		spy.mockRestore();
 	}
+});
+
+test('a periodic re-read extends the lifetime of a connected recording state', async () => {
+	const { fixture } = recordingFixture();
+	await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', recordingStatus);
+	const stateKey = stateKeyOf('r1', recordingIdentity);
+	// 報告から時間が経ち、状態の寿命が残りわずかになった状況を短く作る
+	await redis.expire(stateKey, 5);
+	await redis.expire('chatVoice:recordingIdentities:r1', 5);
+
+	await fixture.service.refresh('r1');
+
+	expect(await redis.ttl(stateKey)).toBeGreaterThan(60);
+	expect(await redis.ttl('chatVoice:recordingIdentities:r1')).toBeGreaterThan(60);
+	expect(JSON.parse((await redis.get(stateKey))!).recording).toBe(true);
+	const snapshot = JSON.parse((await redis.get('chatVoice:state:r1'))!);
+	expect(snapshot.participants.find((p: { identity: string }) => p.identity === recordingIdentity).recording).toBe(true);
+});
+
+test('extending the lifetime does not revive a stop reported in the meantime', async () => {
+	const { fixture } = recordingFixture();
+	await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', recordingStatus);
+	const stateKey = stateKeyOf('r1', recordingIdentity);
+	await redis.expire(stateKey, 5);
+	await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { micMuted: false, deafened: false, recording: false });
+
+	await fixture.service.refresh('r1');
+
+	expect(JSON.parse((await redis.get(stateKey))!).recording).toBe(false);
+	const snapshot = JSON.parse((await redis.get('chatVoice:state:r1'))!);
+	expect(snapshot.participants.find((p: { identity: string }) => p.identity === recordingIdentity).recording).toBe(false);
+});
+
+test('a re-read does not extend the state of a session that is no longer connected', async () => {
+	const { fixture, participants } = recordingFixture();
+	await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', recordingStatus);
+	Object.assign(participants[0], { sessionId: 'PA_2' });
+	const stateKey = stateKeyOf('r1', recordingIdentity);
+	await redis.expire(stateKey, 5);
+
+	await fixture.service.refresh('r1');
+
+	expect(await redis.ttl(stateKey)).toBeLessThanOrEqual(5);
+	const snapshot = JSON.parse((await redis.get('chatVoice:state:r1'))!);
+	expect(snapshot.participants.find((p: { identity: string }) => p.identity === recordingIdentity).recording).toBe(false);
+});
+
+test('cleanup keeps a recording approved after the participant list was read', async () => {
+	const { fixture, participants } = recordingFixture();
+	// 録音する参加者はまだ一覧にいない
+	fixture.liveKitService.listParticipants.mockResolvedValue([participants[1]]);
+	const listed = signal();
+	const proceed = signal();
+	const list = fixture.liveKitService.listParticipants.getMockImplementation()!;
+	fixture.liveKitService.listParticipants.mockImplementationOnce(async (...args: unknown[]) => {
+		const result = await list(...args);
+		listed.resolve();
+		await proceed.promise;
+		return result;
+	});
+
+	const refresh = fixture.service.refresh('r1');
+	await listed.promise;
+	// 参加者一覧の読み取り完了 → 新しい SID の録音報告が成功 → 整理用の状態読み取り → 削除、の順
+	Object.assign(participants[0], { sessionId: 'PA_2' });
+	fixture.liveKitService.listParticipants.mockResolvedValue(participants);
+	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_2', recordingStatus)).resolves.toBe(true);
+	proceed.resolve();
+	await refresh;
+
+	const raw = await redis.get(stateKeyOf('r1', recordingIdentity));
+	expect(raw).not.toBeNull();
+	expect(JSON.parse(raw!)).toMatchObject({ sessionId: 'PA_2', recording: true });
+	await fixture.service.refresh('r1');
+	const snapshot = JSON.parse((await redis.get('chatVoice:state:r1'))!);
+	expect(snapshot.participants.find((p: { identity: string }) => p.identity === recordingIdentity).recording).toBe(true);
+});
+
+test('cleanup keeps a same-value re-report made after the participant list was read', async () => {
+	const { fixture, participants } = recordingFixture();
+	await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', recordingStatus);
+	// 一覧の読み取りは、録音する参加者が一時的に抜けた古い一覧を返す
+	fixture.liveKitService.listParticipants.mockResolvedValue([participants[1]]);
+	const listed = signal();
+	const proceed = signal();
+	const list = fixture.liveKitService.listParticipants.getMockImplementation()!;
+	fixture.liveKitService.listParticipants.mockImplementationOnce(async (...args: unknown[]) => {
+		const result = await list(...args);
+		listed.resolve();
+		await proceed.promise;
+		return result;
+	});
+
+	const refresh = fixture.service.refresh('r1');
+	await listed.promise;
+	// 同じ SID・同じ値の再報告 (設定の切り替えなど) が一覧の読み取り後に届く
+	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { micMuted: true, deafened: false, recording: true })).resolves.toBe(true);
+	fixture.liveKitService.listParticipants.mockResolvedValue(participants);
+	proceed.resolve();
+	await refresh;
+
+	const raw = await redis.get(stateKeyOf('r1', recordingIdentity));
+	expect(raw).not.toBeNull();
+	expect(JSON.parse(raw!)).toMatchObject({ sessionId: 'PA_1', recording: true });
 });
 
 test('a failed remote delivery does not fail the recording approval or the local display', async () => {

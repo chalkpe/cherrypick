@@ -101,12 +101,43 @@ export function fakeRedis() {
 				expiresAt.set(key, Date.now() + Number(ttl) * 1000);
 				return -1;
 			}
-			// 録音状態を、読んだときの値 (ARGV[1]、無ければ空文字) のままのときだけ消す
+			// 録音状態を報告する。版を一つ進めて書き、参加者の一覧にも足す
+			if (_script.startsWith('-- STORE_RECORDING_STATE')) {
+				const [sessionId, recording, identity, ttlSeconds] = args.slice(numKeys);
+				const identitiesKey = String(args[1]);
+				let version = 0;
+				if (live(key)) {
+					const state = JSON.parse(store.get(key)!) as { version?: number };
+					if (typeof state.version === 'number') version = state.version;
+				}
+				version += 1;
+				store.set(key, JSON.stringify({ sessionId: String(sessionId), recording: recording === '1', version }));
+				expiresAt.set(key, Date.now() + Number(ttlSeconds) * 1000);
+				liveSet(identitiesKey);
+				if (!sets.has(identitiesKey)) sets.set(identitiesKey, new Set());
+				sets.get(identitiesKey)!.add(String(identity));
+				setExpiresAt.set(identitiesKey, Date.now() + Number(ttlSeconds) * 1000);
+				return version;
+			}
+			// いまの値が同じセッションの録音中のときだけ、状態と一覧の寿命を延ばす
+			if (_script.startsWith('-- RENEW_RECORDING_STATE_IF_CURRENT')) {
+				const [sessionId, ttlSeconds] = args.slice(numKeys);
+				const identitiesKey = String(args[1]);
+				if (!live(key)) return 0;
+				const state = JSON.parse(store.get(key)!) as { sessionId: string; recording: boolean };
+				if (state.sessionId !== String(sessionId) || state.recording !== true) return 0;
+				expiresAt.set(key, Date.now() + Number(ttlSeconds) * 1000);
+				if (liveSet(identitiesKey)) setExpiresAt.set(identitiesKey, Date.now() + Number(ttlSeconds) * 1000);
+				return 1;
+			}
+			// 録音状態を、参加者一覧を読む前に読んだ値 (ARGV[1]、無ければ空文字) のままのときだけ消し、一覧からも外す
 			if (_script.startsWith('-- CLEAR_RECORDING_STATE_IF_CURRENT')) {
-				const [previous] = args.slice(numKeys);
+				const [previous, identity] = args.slice(numKeys);
+				const identitiesKey = String(args[1]);
 				if ((live(key) ? store.get(key) : '') !== String(previous)) return 0;
 				store.delete(key);
 				expiresAt.delete(key);
+				if (liveSet(identitiesKey)) sets.get(identitiesKey)!.delete(String(identity));
 				return 1;
 			}
 			if (_script.startsWith('-- CLEAR_MIRROR_IF_CURRENT')) {
