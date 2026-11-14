@@ -78,7 +78,7 @@ function fixture() {
 		},
 		captureMessage: vi.fn((...args: unknown[]) => { expect(active).toBe(true); captures.push(args); }),
 	};
-	const cleanup = new AutoDeleteNotesProcessorService({} as any, { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: vi.fn(async () => {}), getJob: async () => null } } as any);
+	const cleanup = new AutoDeleteNotesProcessorService({ locked: async (_id: unknown, work: () => Promise<unknown>) => work() } as any, { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: vi.fn(async () => {}), getJob: async () => null } } as any);
 	const other = { process: vi.fn() };
 	const args = [{ redisForJobQueue: {}, outbox: {}, inbox: {} }, {}, { logger }, telemetry, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, cleanup, other, other];
 	new (QueueProcessorService as any)(...args);
@@ -104,4 +104,16 @@ test('실제 작업 오류는 기존 실패 관측과 원래 오류를 유지한
 	expect(f.errors).toHaveLength(1);
 	expect(f.captures).toHaveLength(1);
 	expect(f.spans).toEqual([original]);
+});
+
+test('수동 전용 회차 작업도 공통 실행기에 오류를 전달하지 않는다', async () => {
+	const f = fixture();
+	const job: any = { id: 'job', opts: {}, timestamp: Date.now(), attemptsMade: 0, name: 'autoDeleteNotesManual', data: {} };
+
+	// fixture의 deliver 큐는 적체 상태 → 수동 전용 회차는 건너뛰기로 정상 종료해야 한다.
+	await expect(f.process(job)).resolves.toEqual({ deletedCount: 0, skipped: true });
+
+	expect(f.errors).toHaveLength(0);
+	expect(f.captures).toHaveLength(0);
+	expect(f.spans).toHaveLength(0);
 });

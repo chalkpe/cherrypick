@@ -31,6 +31,24 @@ export class AutoDeleteNotesProcessorService {
 		return this.automaticRound();
 	}
 
+	// 수동 요청 이어 처리 전용 회차(1분): 접수된 요청의 재시도가 5분 자동 회차에 묶이지 않게 한다.
+	// 자동 검사는 건드리지 않으며, 적체·혼잡 건너뛰기와 계정별 대기 계약은 자동 회차와 같다.
+	@bindThis
+	public async processManualRound() {
+		try {
+			return await this.noteCleanupService.locked('scheduler', () => this.runManualRound());
+		} catch (error) {
+			if (error instanceof CleanupInputError && error.code === 'CLEANUP_BUSY') return { deletedCount: 0, skipped: true };
+			throw error;
+		}
+	}
+
+	private async runManualRound() {
+		if (await this.backlogged()) return { deletedCount: 0, skipped: true };
+		const { deletedCount } = await this.runManualUsers(Date.now());
+		return { deletedCount, skipped: false };
+	}
+
 	// 자동 회차: 수동 대기 계정을 먼저 처리하고 남은 계정 몫만 자동 검사에 쓴다. 회차 사용자·시간 상한은 함께 나눈다.
 	private async automaticRound() {
 		try {
@@ -45,9 +63,30 @@ export class AutoDeleteNotesProcessorService {
 	private async runRound() {
 		if (await this.backlogged()) return { deletedCount: 0, skipped: true };
 		const started = Date.now();
+		const manual = await this.runManualUsers(started);
+		let deletedCount = manual.deletedCount;
+		const remaining = NOTE_CLEANUP_LIMITS.roundUsers - manual.count;
+		const automatic = !manual.globalExhausted && remaining > 0 ? await this.noteCleanupService.automaticUsers(remaining) : [];
+		for (const id of automatic) {
+			if (Date.now() - started >= NOTE_CLEANUP_LIMITS.roundMs) break;
+			try {
+				const result = await this.noteCleanupService.processUser(id);
+				deletedCount += result.deleted;
+				if (result.throttled === 'global') break;
+			} catch (error) {
+				// 한 계정의 잠금 충돌이나 자료 실패가 같은 회차의 다른 계정을 멈추지 않게 하고, 순번을 뒤로 보낸다.
+				if (!(error instanceof CleanupInputError && error.code === 'CLEANUP_BUSY')) this.logger.error('Automatic note cleanup failed', { userId: id, error });
+				try { await this.noteCleanupService.deferUser(id); } catch (deferError) { this.logger.error('Cleanup turn deferral failed', { userId: id, error: deferError }); }
+			}
+		}
+		return { deletedCount, skipped: false };
+	}
+
+	// 수동 대기 계정을 먼저 처리한다. 회차 시간을 넘기거나 전역 예산이 차면 남은 계정은 다음 회차로 넘긴다.
+	private async runManualUsers(started: number): Promise<{ deletedCount: number; globalExhausted: boolean; count: number }> {
+		const manual = await this.noteCleanupService.manualUsers();
 		let deletedCount = 0;
 		let globalExhausted = false;
-		const manual = await this.noteCleanupService.manualUsers();
 		for (const id of manual) {
 			// system 큐를 오래 점유하지 않도록 회차 시간을 넘기면 남은 계정은 다음 회차로 넘긴다.
 			if (Date.now() - started >= NOTE_CLEANUP_LIMITS.roundMs) break;
@@ -62,21 +101,7 @@ export class AutoDeleteNotesProcessorService {
 				try { await this.noteCleanupService.deferUser(id); } catch (deferError) { this.logger.error('Cleanup turn deferral failed', { userId: id, error: deferError }); }
 			}
 		}
-		const remaining = NOTE_CLEANUP_LIMITS.roundUsers - manual.length;
-		const automatic = !globalExhausted && remaining > 0 ? await this.noteCleanupService.automaticUsers(remaining) : [];
-		for (const id of automatic) {
-			if (Date.now() - started >= NOTE_CLEANUP_LIMITS.roundMs) break;
-			try {
-				const result = await this.noteCleanupService.processUser(id);
-				deletedCount += result.deleted;
-				if (result.throttled === 'global') break;
-			} catch (error) {
-				// 한 계정의 잠금 충돌이나 자료 실패가 같은 회차의 다른 계정을 멈추지 않게 하고, 순번을 뒤로 보낸다.
-				if (!(error instanceof CleanupInputError && error.code === 'CLEANUP_BUSY')) this.logger.error('Automatic note cleanup failed', { userId: id, error });
-				try { await this.noteCleanupService.deferUser(id); } catch (deferError) { this.logger.error('Cleanup turn deferral failed', { userId: id, error: deferError }); }
-			}
-		}
-		return { deletedCount, skipped: false };
+		return { deletedCount, globalExhausted, count: manual.length };
 	}
 
 	// 수동 요청의 깨우기 작업: 마커를 따라 완료까지 페이지를 잇는다. 대기는 자식 작업 없이 정상 종료해 마커를 다음 회차에 넘긴다.
