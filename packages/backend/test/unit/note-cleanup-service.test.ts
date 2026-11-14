@@ -1303,3 +1303,49 @@ test('수동 요청도 손상된 반응 수 노트를 남기고 완료한다', a
 	expect(rows.MiNote.map(n => n.id)).toEqual(['0']);
 	expect(drive.logs.some(args => (args[1] as { noteId?: string })?.noteId === '0')).toBe(true);
 });
+
+test('개별 반응 수가 정상이어도 합이 안전 정수 범위를 넘으면 남기고 정리를 계속한다', async () => {
+	const { rows, service, input, drive } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '반응 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 100 }, lastError: null, legacy: null });
+	rows.MiNote.push({ ...note('0'), reactions: { '👍': Number.MAX_SAFE_INTEGER, '❤️': 1 } }, { ...note('1') });
+
+	const result = await service.processUser('alice');
+
+	expect(result.deleted).toBe(1);
+	expect(result.complete).toBe(true);
+	expect(rows.MiNote.map(n => n.id)).toEqual(['0']);
+	expect(drive.logs.some(args => (args[1] as { noteId?: string })?.noteId === '0')).toBe(true);
+});
+
+test('수동 요청도 반응 수 합이 범위를 넘는 노트를 남기고 완료한다', async () => {
+	const { rows, service, input, drive } = fixture();
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '반응 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 100 }, lastError: null, legacy: null });
+	const { rule } = await service.save('alice', input);
+	rows.MiNote.push({ ...note('0'), reactions: { '👍': Number.MAX_SAFE_INTEGER, '❤️': 1 } }, { ...note('1') });
+	await service.request('alice', [rule.id]);
+
+	const result = await service.continueManual('alice');
+
+	expect(result.deleted).toBe(1);
+	expect(result.complete).toBe(true);
+	expect(rows.State[0].manualRequest).toBeNull();
+	expect(rows.MiNote.map(n => n.id)).toEqual(['0']);
+	expect(drive.logs.some(args => (args[1] as { noteId?: string })?.noteId === '0')).toBe(true);
+});
+
+test('버퍼 델타를 더한 반응 수 합이 범위를 넘으면 판정하지 않고 남긴다', async () => {
+	const { rows, service, input, drive, meta, buffered } = fixture();
+	meta.enableReactionsBuffering = true;
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '반응 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 100 }, lastError: null, legacy: null });
+	rows.MiNote.push({ ...note('0'), reactions: { '👍': Number.MAX_SAFE_INTEGER } }, { ...note('1') });
+	buffered.set('0', { deltas: { '❤️': 1 }, pairs: [] });
+
+	const result = await service.processUser('alice');
+
+	expect(result.deleted).toBe(1);
+	expect(result.complete).toBe(true);
+	expect(rows.MiNote.map(n => n.id)).toEqual(['0']);
+	expect(drive.logs.some(args => (args[1] as { noteId?: string })?.noteId === '0')).toBe(true);
+});

@@ -339,11 +339,13 @@ export class NoteCleanupService {
 		const undecidable = new Set<string>();
 		const reactionCounts = new Map(notes.map(note => {
 			const merged = this.reactionsBufferingService.mergeReactions(note.reactions, bufferedReactions.get(note.id)?.deltas ?? {});
-			if (typeof note.reactions !== 'object' || note.reactions === null || Object.values(merged).some(count => !Number.isSafeInteger(count) || count < 0)) {
+			const total = Object.values(merged).reduce((a, b) => a + b, 0);
+			// 개별 반응 수가 안전 정수여도 합계가 넘칠 수 있으므로 합계도 같은 기준으로 검사한다.
+			if (typeof note.reactions !== 'object' || note.reactions === null || Object.values(merged).some(count => !Number.isSafeInteger(count) || count < 0) || !Number.isSafeInteger(total) || total < 0) {
 				undecidable.add(note.id);
 				return [note.id, 0] as const;
 			}
-			return [note.id, Object.values(merged).reduce((a, b) => a + b, 0)] as const;
+			return [note.id, total] as const;
 		}));
 		const now = Date.now();
 		const contexts = notes.map(note => {
