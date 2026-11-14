@@ -236,6 +236,17 @@ test('already confirmed rules toggle automatic without waiting for the preview',
 	expect(confirm).not.toHaveBeenCalled();
 });
 
+test('cleanup actions sit above the notes-to-delete list', async () => {
+	const view = renderEdit({ ruleId: 'delete' });
+	await view.findByLabelText('Rule name');
+	const preview = view.getByTestId('preview');
+	const button = view.getByRole('button', { name: 'Clean up now' });
+	const toggle = view.getByRole('switch', { name: 'Keep cleaning up automatically' });
+	// 구획 제목 아래에 조작이 먼저 나오고 지워질 노트 목록은 그 아래에 펼쳐진다.
+	expect(button.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	expect(toggle.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 test('manual cleanup reports queued and duplicate requests through toasts', async () => {
 	const view = renderEdit({ ruleId: 'delete' });
 	await view.findByLabelText('Rule name');
