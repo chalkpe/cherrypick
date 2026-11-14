@@ -1370,7 +1370,7 @@ describe('Chat room federation: Add/Update/Delete', () => {
 
 		expect(f.rooms.rows.some(room => room.id === 'bobroom')).toBe(false);
 		const unreadRedis = (f.chatRoomNotificationService as unknown as { redis: { del: ReturnType<typeof vi.fn>; srem: ReturnType<typeof vi.fn> } }).redis;
-		expect(unreadRedis.del).toHaveBeenCalledWith('newRoomChatMessageExists:alice:bobroom', 'newRoomChatMentionExists:alice:bobroom', 'newRoomChatUnreadChannels:alice:bobroom');
+		expect(unreadRedis.del).toHaveBeenCalledWith('newRoomChatMessageExists:alice:bobroom', 'newRoomChatMentionExists:alice:bobroom', 'newRoomChatUnreadChannels:alice:bobroom', 'newRoomChatReadBoundary:alice:bobroom');
 		expect(unreadRedis.srem).toHaveBeenCalledWith('newChatMessagesExists:alice', 'room:bobroom');
 		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('bobroom', 'roomDeleted');
 		expect(f.liveKitService.deleteRoom).toHaveBeenCalledWith('bobroom');

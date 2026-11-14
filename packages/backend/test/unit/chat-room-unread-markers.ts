@@ -19,8 +19,9 @@ const reader = { id: 'reader', username: 'reader', host: null, uri: null, inbox:
 const room = { id: 'room1', ownerId: author.id, hasChannels: false, isArchived: false, uri: null } as unknown as MiChatRoom;
 
 function serviceFixture() {
+	const fixtureRoom = { ...room, messageSequence: '0' } as MiChatRoom;
 	const chat = {
-		chatRoomsRepository: { findOneBy: async ({ id }: { id: string }) => id === room.id ? room : null },
+		chatRoomsRepository: { findOneBy: async ({ id }: { id: string }) => id === fixtureRoom.id ? fixtureRoom : null },
 		chatRoomMembershipsRepository: { findBy: async () => [{ userId: reader.id, isMuted: false }] },
 		usersRepository: { findOneBy: async ({ id }: { id: string }) => [author, reader].find(user => user.id === id) ?? null },
 	};
@@ -82,12 +83,17 @@ describe('미읽음 표식의 순번 보장', () => {
 	test('수정은 더 새 글의 표식을 덮어쓰지 않는다', async () => {
 		const service = serviceFixture();
 		const first = await recordAndMark(service, '첫 글');
-		const second = await recordAndMark(service, '둘째 글');
+		const second = await recordAndMark(service, '@reader 둘째 멘션');
 
+		// 실제 새 멘션이 추가되는 수정이어야 표식 쓰기에 도달한다
+		first.text = '@reader 첫 멘션 추가';
 		const edited = await service.record({} as EntityManager, room, first, []);
-		await service.mark(room, first, edited, true);
+		const marked = await service.mark(room, first, edited, true);
 
 		expect(await service.notificationRecipients(second, room)).toEqual([reader.id]);
+		// 표식이 더 새 글에 남아 있어도 수정 알림 예약 대상에서는 빠지지 않는다
+		expect(marked).toHaveLength(1);
+		expect(await service.notificationRecipients(first, room, marked)).toEqual([reader.id]);
 	});
 
 	test('수정은 오래된 표식을 그 글의 순번으로 전진시킨다', async () => {
@@ -140,6 +146,7 @@ describe('수정 지연 알림의 예약 대상', () => {
 
 	function editFixture() {
 		const users = [author, reader];
+		const fixtureRoom = { ...room, messageSequence: '0' } as MiChatRoom;
 		const messages = new Map<string, Partial<MiChatMessage>>();
 		let sequence = 0;
 		let idSeq = 0;
@@ -152,9 +159,9 @@ describe('수정 지연 알림의 예약 대상', () => {
 			findBy: async ({ id }: { id: { value: string[] } }) => users.filter(user => id.value.includes(user.id)),
 		};
 		const manager = {
-			findOne: async (entity: unknown, options: { where: { id: string } }) => entity === MiChatRoom ? room : messages.get(options.where.id) ?? null,
+			findOne: async (entity: unknown, options: { where: { id: string } }) => entity === MiChatRoom ? fixtureRoom : messages.get(options.where.id) ?? null,
 			findOneBy: async (entity: unknown, where: { id: string }) => {
-				if (entity === MiChatRoom) return room;
+				if (entity === MiChatRoom) return fixtureRoom;
 				if (entity === MiChatMessage) return messages.get(where.id) ?? null;
 				return null;
 			},
@@ -171,7 +178,11 @@ describe('수정 지연 알림의 예약 대상', () => {
 			},
 			withRepository: (repository: unknown) => repository,
 			createQueryBuilder: () => {
-				const builder = { update: () => builder, set: () => builder, where: () => builder, returning: () => builder, execute: async () => ({ raw: [{ messageSequence: String(++sequence) }] }) };
+				const builder = { update: () => builder, set: () => builder, where: () => builder, returning: () => builder, execute: async () => {
+					const value = String(++sequence);
+					fixtureRoom.messageSequence = value;
+					return { raw: [{ messageSequence: value }] };
+				} };
 				return builder;
 			},
 		};
@@ -186,7 +197,7 @@ describe('수정 지연 알림의 예약 대상', () => {
 				findBy: async () => [{ userId: reader.id, isMuted: false }],
 				findOneBy: async ({ userId }: { userId: string }) => userId === reader.id ? { userId, isMuted: false } : null,
 			},
-			chatRoomsRepository: { findOneBy: async () => room, findOneByOrFail: async () => room },
+			chatRoomsRepository: { findOneBy: async () => fixtureRoom, findOneByOrFail: async () => fixtureRoom },
 			chatMessagesRepository: {
 				insertOne: async (value: Partial<MiChatMessage>) => { messages.set(value.id!, value); return value; },
 				findOneBy: async ({ id }: { id: string }) => messages.get(id) ?? null,
@@ -258,5 +269,56 @@ describe('수정 지연 알림의 예약 대상', () => {
 
 		expect(f.notifications).not.toHaveBeenCalled();
 		expect(f.stream).not.toHaveBeenCalled();
+	});
+
+	test('더 새 미읽음 멘션이 있어도 이전 글의 첫 멘션 수정은 알린다', async () => {
+		vi.useFakeTimers();
+		const f = editFixture();
+		await f.roomNotifications.setLevel(reader.id, room.id, 'mentions');
+
+		const first = await f.chatService.createMessageToRoom(author, room, { text: '멘션 없는 첫 글' });
+		const second = await f.chatService.createMessageToRoom(author, room, { text: '@reader 둘째 멘션' });
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(f.notifications).toHaveBeenCalledTimes(1);
+		expect(f.notifications).toHaveBeenCalledWith(reader.id, 'newChatMessage', expect.objectContaining({ id: second.id }));
+
+		await f.chatService.updateMessage(author.id, first.id, '@reader 첫 멘션 추가');
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(f.notifications).toHaveBeenCalledTimes(2);
+		expect(f.notifications).toHaveBeenLastCalledWith(reader.id, 'newChatMessage', expect.objectContaining({ id: first.id }));
+	});
+
+	test('수정 전에 읽은 글도 첫 멘션 수정이면 알린다', async () => {
+		vi.useFakeTimers();
+		const f = editFixture();
+		await f.roomNotifications.setLevel(reader.id, room.id, 'mentions');
+
+		const created = await f.chatService.createMessageToRoom(author, room, { text: '멘션 없는 글' });
+		await vi.advanceTimersByTimeAsync(3000);
+		await f.chatService.readRoomChatMessage(reader.id, room.id);
+
+		await f.chatService.updateMessage(author.id, created.id, '@reader 새 멘션');
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(f.notifications).toHaveBeenCalledTimes(1);
+		expect(f.notifications).toHaveBeenCalledWith(reader.id, 'newChatMessage', expect.objectContaining({ id: created.id }));
+	});
+
+	test('수정 지연 사이에 그 글까지 읽으면 발송하지 않는다', async () => {
+		vi.useFakeTimers();
+		const f = editFixture();
+		await f.roomNotifications.setLevel(reader.id, room.id, 'mentions');
+
+		const first = await f.chatService.createMessageToRoom(author, room, { text: '멘션 없는 글' });
+		const second = await f.chatService.createMessageToRoom(author, room, { text: '뒤따른 글' });
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(f.notifications).not.toHaveBeenCalled();
+
+		await f.chatService.updateMessage(author.id, first.id, '@reader 새 멘션');
+		await f.chatService.readRoomChatMessage(reader.id, room.id, undefined, second.id);
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(f.notifications).not.toHaveBeenCalled();
 	});
 });

@@ -204,6 +204,19 @@ describe('chat messages converted to private notes', () => {
 		expect(f.tombstones.size).toBe(0);
 	});
 
+	test('shares one note lookup between the copy deletion and the fall-through check', async () => {
+		const f = fixture({ archivedCopy: true });
+		await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });
+		const fetchNote = vi.fn(f.inbox.apNoteService.fetchNote);
+		f.inbox.apNoteService.fetchNote = fetchNote;
+
+		await f.inbox.delete(actor, { type: 'Delete', actor: actor.uri, object: messageUri });
+
+		expect(f.copies.size).toBe(0);
+		expect(f.notes.size).toBe(0);
+		expect(fetchNote).toHaveBeenCalledTimes(1);
+	});
+
 	test('keeps both the archived copy and the converted note against an unrelated Delete', async () => {
 		const f = fixture({ archivedCopy: true });
 		await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });

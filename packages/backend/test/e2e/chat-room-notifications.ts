@@ -19,6 +19,7 @@ import { IdService } from '@/core/IdService.js';
 import { HttpRequestService } from '@/core/HttpRequestService.js';
 import { PushNotificationService } from '@/core/PushNotificationService.js';
 import { ChatService } from '@/core/ChatService.js';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import type { Config } from '@/config.js';
@@ -355,6 +356,208 @@ describe('그룹 알림과 채널 읽음', () => {
 		} finally {
 			stream.close();
 		}
+	});
+
+	test.each([false, true])('더 새 미읽음 멘션이 있어도 이전 글의 첫 멘션 수정은 알린다 (채널=%s)', async channels => {
+		const { roomId, general } = await room(channels);
+		await settings(roomId, owner, 'mentions');
+		const received: { id: string }[] = [];
+		const stream = await connectStream(owner, 'main', event => {
+			if (event.type === 'newChatMessage' && event.body?.toRoomId === roomId) received.push(event.body);
+		});
+		try {
+			const first = await send(roomId, general, '멘션 없는 첫 글');
+			const second = await send(roomId, general, '@notifyowner 둘째 멘션');
+			await waitForChatNotificationTurn();
+			expect(received.map(message => message.id)).toEqual([second.id]);
+
+			expect((await api('chat/messages/update', { messageId: first.id, text: '@notifyowner 첫 멘션 추가' }, member)).status).toBe(200);
+			await waitForChatNotificationTurn();
+
+			expect(received.map(message => message.id)).toEqual([second.id, first.id]);
+		} finally {
+			stream.close();
+		}
+	});
+
+	test('이미 읽은 글의 첫 멘션 수정도 알린다', async () => {
+		const { roomId } = await room();
+		await settings(roomId, owner, 'mentions');
+		const received: { id: string }[] = [];
+		const stream = await connectStream(owner, 'main', event => {
+			if (event.type === 'newChatMessage' && event.body?.toRoomId === roomId) received.push(event.body);
+		});
+		try {
+			const message = await send(roomId, undefined, '멘션 없는 글');
+			await waitForChatNotificationTurn();
+			expect((await request('read', { roomId }, owner)).status).toBe(204);
+
+			expect((await api('chat/messages/update', { messageId: message.id, text: '@notifyowner 새 멘션' }, member)).status).toBe(200);
+			await waitForChatNotificationTurn();
+
+			expect(received.map(value => value.id)).toEqual([message.id]);
+		} finally {
+			stream.close();
+		}
+	});
+
+	test('원격 수정도 더 새 미읽음 멘션 뒤에서 첫 멘션을 알린다', async () => {
+		const { roomId } = await room();
+		await settings(roomId, owner, 'mentions');
+		const id = app.get(IdService).gen();
+		const users = db.getRepository(MiUser);
+		await users.insert({ id, username: 'remote-edit-notify', usernameLower: 'remote-edit-notify', host: 'remote-edit-notify.example', uri: 'https://remote-edit-notify.example/users/remote', inbox: 'https://remote-edit-notify.example/inbox', lastFetchedAt: new Date() });
+		const actor = await users.findOneByOrFail({ id }) as MiRemoteUser;
+		await db.getRepository(MiChatRoomMembership).insert({ id: app.get(IdService).gen(), userId: id, roomId });
+		const roomUri = app.get(ApRendererService).genLocalChatRoomUri(roomId);
+		const inbox = app.get(ApInboxService);
+		const received: { id: string }[] = [];
+		const stream = await connectStream(owner, 'main', event => {
+			if (event.type === 'newChatMessage' && event.body?.toRoomId === roomId) received.push(event.body);
+		});
+		try {
+			const mention = `@notifyowner@${new URL(origin).hostname}`;
+			const firstUri = `https://remote-edit-notify.example/chat/messages/${app.get(IdService).gen()}`;
+			const secondUri = `https://remote-edit-notify.example/chat/messages/${app.get(IdService).gen()}`;
+			const note = (uri: string, text: string) => ({ id: uri, type: 'Note', attributedTo: actor.uri, to: [`${origin}/users/${owner.id}`, `${origin}/users/${member.id}`], _misskey_talk: true, _misskey_chatRoom: roomUri, _misskey_content: text, content: `<p>${text}</p>` });
+			const firstCreate = { id: `${firstUri}/create`, type: 'Create', actor: actor.uri, object: note(firstUri, '원격 첫 글') };
+			const secondCreate = { id: `${secondUri}/create`, type: 'Create', actor: actor.uri, object: note(secondUri, `${mention} 원격 둘째 멘션`) };
+			await inbox.performOneActivity(actor, firstCreate);
+			await inbox.performOneActivity(actor, secondCreate);
+			await waitForChatNotificationTurn();
+			const second = await db.getRepository(MiChatMessage).findOneByOrFail({ uri: secondUri });
+			expect(received.map(message => message.id)).toEqual([second.id]);
+
+			const text = `${mention} 원격 첫 멘션 추가`;
+			const firstUpdate = { id: `${firstUri}/update`, type: 'Update', actor: actor.uri, object: { ...note(firstUri, text), updated: new Date().toISOString() } };
+			await inbox.performOneActivity(actor, firstUpdate);
+			await waitForChatNotificationTurn();
+			const first = await db.getRepository(MiChatMessage).findOneByOrFail({ uri: firstUri });
+			expect(received.map(message => message.id)).toEqual([second.id, first.id]);
+		} finally {
+			stream.close();
+		}
+	});
+
+	test('채널 전환의 표식 이동은 그 사이 도착한 더 새 표식을 덮어쓰지 않는다', async () => {
+		const { roomId } = await room();
+		const first = await send(roomId, undefined, '전환 전 글');
+		const repository = app.get(DI.chatMessagesRepository);
+		const original = repository.findOneBy.bind(repository);
+		let injected = false;
+		// 전환 정리가 이전 글의 소속 채널을 조회하는 순간에 새 글이 먼저 도착한 순서를 만든다
+		const spy = vi.spyOn(repository, 'findOneBy').mockImplementation(async where => {
+			const condition = where as { id?: string; toRoomId?: string };
+			if (!injected && condition?.id === first.id && condition?.toRoomId === roomId) {
+				injected = true;
+				await send(roomId, undefined, '전환 중에 도착한 새 글');
+			}
+			return original(where);
+		});
+		let general: string;
+		try {
+			const converted = await app.get(ChatRoomChannelService).convert(owner.id, roomId);
+			general = converted.legacyChannelId!;
+			await app.get(ChatService).notifyRoomChannelsChanged(roomId);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(injected).toBe(true);
+
+		const redis = app.get(DI.redis);
+		const marker = await redis.get(`newRoomChatChannelMessageExists:${owner.id}:${roomId}:${general}`);
+		expect(marker?.startsWith('2:')).toBe(true);
+
+		expect((await request('read', { roomId, channelId: general, untilId: first.id }, owner)).status).toBe(204);
+		expect((await unread(roomId)).hasUnread).toBe(true);
+	});
+
+	test('채널 전환은 채널 표식이 이미 있어도 남은 그룹 멘션 표식을 옮긴다', async () => {
+		const { roomId } = await room();
+		await settings(roomId, owner, 'mentions');
+		await send(roomId, undefined, '@notifyowner 전환 전 멘션');
+		const redis = app.get(DI.redis);
+		const setKey = `newRoomChatUnreadChannels:${owner.id}:${roomId}`;
+		const original = redis.smembers.bind(redis);
+		let injected = false;
+		// 전환 정리가 채널 목록을 읽는 순간에 새 채널 표식이 먼저 생긴 순서를 만든다
+		const spy = vi.spyOn(redis, 'smembers').mockImplementation(async key => {
+			if (!injected && key === setKey) {
+				injected = true;
+				await send(roomId, undefined, '전환 중에 도착한 일반 글');
+			}
+			return original(key);
+		});
+		let general: string;
+		try {
+			const converted = await app.get(ChatRoomChannelService).convert(owner.id, roomId);
+			general = converted.legacyChannelId!;
+			await app.get(ChatService).notifyRoomChannelsChanged(roomId);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(injected).toBe(true);
+
+		expect(await redis.get(`newRoomChatChannelMentionExists:${owner.id}:${roomId}:${general}`)).not.toBeNull();
+		expect((await redis.get(`newRoomChatChannelMessageExists:${owner.id}:${roomId}:${general}`))?.startsWith('2:')).toBe(true);
+		expect(await unread(roomId)).toMatchObject({ hasUnread: true, hasUnreadNotification: true });
+	});
+
+	test('전체 읽음과 새 글이 겹쳐도 표식과 전체 목록이 함께 남는다', async () => {
+		const { roomId } = await room();
+		const redis = app.get(DI.redis);
+		const notifications = app.get(ChatRoomNotificationService);
+		const totalsKey = `newChatMessagesExists:${owner.id}`;
+		const roomEntry = `room:${roomId}`;
+		// 새 글의 트랜잭션은 먼저 커밋하고 표식 쓰기 직전에서 멈춰, 읽음의 정리 사이에 끼운다
+		let markStarted!: () => void;
+		let markRelease!: () => void;
+		let markDone!: () => void;
+		const markBegan = new Promise<void>(resolve => { markStarted = resolve; });
+		const markGate = new Promise<void>(resolve => { markRelease = resolve; });
+		const markFinished = new Promise<void>(resolve => { markDone = resolve; });
+		const originalMark = notifications.mark.bind(notifications);
+		const markSpy = vi.spyOn(notifications, 'mark').mockImplementation(async (...args) => {
+			markStarted();
+			await markGate;
+			const result = await originalMark(...args);
+			markDone();
+			return result;
+		});
+		const memberUser = await db.getRepository(MiUser).findOneByOrFail({ id: member.id });
+		const target = await db.getRepository(MiChatRoom).findOneByOrFail({ id: roomId });
+		const creating = app.get(ChatService).createMessageToRoom(memberUser, target, { text: '전체 읽음과 겹친 새 글' });
+		await markBegan;
+		// 옛 경로는 del 뒤 srem 앞에서 표식 쓰기를 진행하고, 새 경로는 원자적 정리 뒤에 진행한다
+		const originalSrem = redis.srem.bind(redis);
+		const sremSpy = vi.spyOn(redis, 'srem').mockImplementation(async (key, ...values) => {
+			if (key === totalsKey && values.includes(roomEntry)) {
+				markRelease();
+				await markFinished;
+			}
+			return originalSrem(key, ...values);
+		});
+		const originalEval = redis.eval.bind(redis);
+		const evalSpy = vi.spyOn(redis, 'eval').mockImplementation(async (script, numKeys, ...args) => {
+			const result = await originalEval(script, numKeys, ...args);
+			const lua = String(script);
+			if (lua.includes('DEL') && lua.includes('SREM')) {
+				markRelease();
+				await markFinished;
+			}
+			return result;
+		});
+		try {
+			await notifications.read(owner.id, roomId, undefined, undefined, true);
+			await creating;
+		} finally {
+			markSpy.mockRestore();
+			sremSpy.mockRestore();
+			evalSpy.mockRestore();
+		}
+
+		expect(await redis.get(`newRoomChatMessageExists:${owner.id}:${roomId}`)).not.toBeNull();
+		expect(await redis.sismember(totalsKey, roomEntry)).toBe(1);
 	});
 
 	test('MeDetailed 포장은 미읽음 집계를 한 번만 계산한다', async () => {

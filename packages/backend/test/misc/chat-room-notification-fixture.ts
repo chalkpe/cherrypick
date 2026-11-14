@@ -5,7 +5,7 @@
 
 import { vi } from 'vitest';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
-import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_MARK, CHAT_UNREAD_PRUNE_CHANNEL, CHAT_UNREAD_PRUNE_ROOM } from '@/core/chat-room-notifications.js';
+import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_MARK, CHAT_UNREAD_PRUNE_CHANNEL, CHAT_UNREAD_PRUNE_ROOM, CHAT_UNREAD_READ_ALL, CHAT_UNREAD_READ_BOUNDARY } from '@/core/chat-room-notifications.js';
 import { ChatChannelError } from '@/core/chat-room-channels.js';
 import { MiChatRoom } from '@/models/ChatRoom.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
@@ -15,7 +15,7 @@ import { MiUser } from '@/models/User.js';
 import type { ChatService } from '@/core/ChatService.js';
 import type { EntityManager } from 'typeorm';
 
-/** 표식 서비스가 쓰는 Redis 명령만 흉내낸다. Lua는 서비스가 쓰는 두 스크립트만 해석한다. */
+/** 표식 서비스가 쓰는 Redis 명령만 흉내낸다. Lua는 서비스가 쓰는 스크립트만 해석한다. */
 export function fakeUnreadRedis() {
 	const strings = new Map<string, string>();
 	const sets = new Map<string, Set<string>>();
@@ -110,6 +110,23 @@ export function fakeUnreadRedis() {
 				}
 				return 0;
 			}
+			if (script === CHAT_UNREAD_READ_BOUNDARY) {
+				const [key, incoming] = args;
+				const current = strings.get(key);
+				if (current == null || incoming.length > current.length || (incoming.length === current.length && incoming > current)) {
+					strings.set(key, incoming);
+					return 1;
+				}
+				return 0;
+			}
+			if (script === CHAT_UNREAD_READ_ALL) {
+				const keys = args.slice(0, _numKeys - 1);
+				const totalsKey = args[_numKeys - 1];
+				const roomEntry = args[_numKeys];
+				del(...keys);
+				await redis.srem(totalsKey, roomEntry);
+				return 1;
+			}
 			throw new Error('unknown script in fake unread redis');
 		}),
 	};
@@ -176,7 +193,13 @@ export function notificationServiceOver(chat: ChatService): ChatRoomNotification
 			return { affected: 0 };
 		},
 		createQueryBuilder: () => {
-			const builder = { update: () => builder, set: () => builder, where: () => builder, returning: () => builder, execute: async () => ({ raw: [{ messageSequence: String(++sequence) }] }) };
+			let roomId: string | undefined;
+			const builder = { update: () => builder, set: () => builder, where: (_sql: string, params?: { roomId?: string }) => { roomId = params?.roomId; return builder; }, returning: () => builder, execute: async () => {
+				const value = String(++sequence);
+				const target = roomId != null ? await dependencies.chatRoomsRepository?.findOneBy?.({ id: roomId }) : null;
+				if (target != null) target.messageSequence = value;
+				return { raw: [{ messageSequence: value }] };
+			} };
 			return builder;
 		},
 	};

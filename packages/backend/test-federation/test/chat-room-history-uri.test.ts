@@ -541,13 +541,14 @@ describe('Chat room history and third-party message URIs', () => {
 			const after = await timeline(bob, mirrorId);
 			strictEqual(after.some(m => m.text === 'converted dm'), false);
 		}, WAIT_FOR_FEDERATION);
-		await new Promise(resolve => setTimeout(resolve, 1000));
-		await rejects(
-			async () => await dmRecipient.client.request('notes/show', { noteId: mirrored.id }),
-			(err: any) => {
-				strictEqual(err.code, 'NO_SUCH_NOTE');
-				return true;
-			},
-		);
+		await vi.waitFor(async () => {
+			await rejects(
+				async () => await dmRecipient.client.request('notes/show', { noteId: mirrored.id }),
+				(err: any) => {
+					strictEqual(err.code, 'NO_SUCH_NOTE');
+					return true;
+				},
+			);
+		}, WAIT_FOR_FEDERATION);
 	});
 });
