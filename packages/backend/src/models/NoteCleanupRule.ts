@@ -64,9 +64,6 @@ export class MiNoteCleanupState {
 	@JoinColumn()
 	public user: MiUser | null;
 
-	@Column('boolean', { default: false })
-	public migrated: boolean;
-
 	// 지운 노트의 첨부 파일을 드라이브에 남길지. 끄면 다른 곳에서 쓰지 않는 파일만 지운다.
 	@Column('boolean', { default: true })
 	public keepDriveFiles: boolean;

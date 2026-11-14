@@ -25,7 +25,6 @@ export class NoteCleanupRules1794504882218 {
 		await queryRunner.createForeignKey('note_cleanup_rule', new TableForeignKey({ columnNames: ['userId'], referencedTableName: 'user', referencedColumnNames: ['id'], onDelete: 'CASCADE' }));
 		await queryRunner.createTable(new Table({ name: 'note_cleanup_state', columns: [
 			{ name: 'userId', type: 'varchar', length: '32', isPrimary: true },
-			{ name: 'migrated', type: 'boolean', default: false },
 			{ name: 'keepDriveFiles', type: 'boolean', default: true },
 			{ name: 'cursor', type: 'varchar', length: '32', isNullable: true },
 			{ name: 'lastRunAt', type: 'timestamp with time zone', default: "'1970-01-01 00:00:00+00'" },
@@ -33,7 +32,7 @@ export class NoteCleanupRules1794504882218 {
 		await queryRunner.createIndex('note_cleanup_state', new TableIndex({ columnNames: ['lastRunAt'] }));
 		await queryRunner.createForeignKey('note_cleanup_state', new TableForeignKey({ columnNames: ['userId'], referencedTableName: 'user', referencedColumnNames: ['id'], onDelete: 'CASCADE' }));
 		// 기존 활성 설정은 보호 범위를 추가하지 않고 그대로 옮긴다.
-		await queryRunner.query(`INSERT INTO note_cleanup_state ("userId", migrated) SELECT id, true FROM "user" WHERE host IS NULL`);
+		await queryRunner.query(`INSERT INTO note_cleanup_state ("userId") SELECT id FROM "user" WHERE host IS NULL`);
 		// 이전 처리기는 기간이 null이거나 0 이하이면 지우지 않았으므로 양수 기간만 지우기 규칙으로 옮긴다.
 		// integer 열끼리 곱하면 24856일 이상에서 integer 범위를 넘어 이관 전체가 실패하므로 bigint로 계산한다.
 		await queryRunner.query(`INSERT INTO note_cleanup_rule (id, "userId", name, action, enabled, automatic, "automaticConfirmed", condition, legacy, "defaultName")
