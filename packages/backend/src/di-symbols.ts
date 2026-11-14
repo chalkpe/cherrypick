@@ -95,7 +95,6 @@ export const DI = {
 	chatRoomChannelsRepository: Symbol('chatRoomChannelsRepository'),
 	chatRoomInviteLinksRepository: Symbol('chatRoomInviteLinksRepository'),
 	chatRoomUserSettingsRepository: Symbol('chatRoomUserSettingsRepository'),
-	chatRoomUnreadsRepository: Symbol('chatRoomUnreadsRepository'),
 	chatRoomsRepository: Symbol('chatRoomsRepository'),
 	chatRoomMembershipsRepository: Symbol('chatRoomMembershipsRepository'),
 	chatRoomRosterStatesRepository: Symbol('chatRoomRosterStatesRepository'),

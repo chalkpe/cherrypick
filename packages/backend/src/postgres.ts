@@ -88,7 +88,6 @@ import { MiChatMessage } from '@/models/ChatMessage.js';
 import { MiChatRoomChannel } from '@/models/ChatRoomChannel.js';
 import { MiChatRoomInviteLink } from '@/models/ChatRoomInviteLink.js';
 import { MiChatRoomUserSettings } from '@/models/ChatRoomUserSettings.js';
-import { MiChatRoomUnread } from '@/models/ChatRoomUnread.js';
 import { MiChatRoom } from '@/models/ChatRoom.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
 import { MiChatRoomRosterState } from '@/models/ChatRoomRosterState.js';
@@ -272,7 +271,6 @@ export const entities = [
 	MiChatRoomChannel,
 	MiChatRoomInviteLink,
 	MiChatRoomUserSettings,
-	MiChatRoomUnread,
 	MiChatRoom,
 	MiChatRoomMembership,
 	MiChatRoomRosterState,

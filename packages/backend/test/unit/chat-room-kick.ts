@@ -56,7 +56,8 @@ describe('room owner kicks a member', () => {
 		await expect(f.service.kickRoomMember(owner, room, member.id)).resolves.toBe(true);
 		expect([...f.members]).toEqual([other.id]);
 		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith(room.id, 'membershipEnded', { userId: member.id });
-		expect(f.pipeline.srem).toHaveBeenCalledWith(`newChatMessagesExists:${member.id}`, `room:${room.id}`);
+		const unreadRedis = (f.service.chatRoomNotificationService as unknown as { redis: { srem: ReturnType<typeof vi.fn> } }).redis;
+		expect(unreadRedis.srem).toHaveBeenCalledWith(`newChatMessagesExists:${member.id}`, `room:${room.id}`);
 		expect(f.liveKitService.removeParticipant).toHaveBeenCalledWith(room.id, member.uri);
 		for (const inbox of [member.inbox, other.inbox]) {
 			expect(f.queueService.deliver).toHaveBeenCalledWith(owner, expect.objectContaining({

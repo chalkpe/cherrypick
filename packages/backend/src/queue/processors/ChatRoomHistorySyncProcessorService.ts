@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { DelayedError } from 'bullmq';
 import * as Redis from 'ioredis';
@@ -27,10 +27,10 @@ import { ApMfmService } from '@/core/activitypub/ApMfmService.js';
 import { ApResolverService } from '@/core/activitypub/ApResolverService.js';
 import { ApNoteService } from '@/core/activitypub/models/ApNoteService.js';
 import { ApPersonService } from '@/core/activitypub/models/ApPersonService.js';
-import { chatHistoryCopyUri, chatHistoryPageUri, parseChatHistoryItem, parseChatHistoryPage, roomUriOf } from '@/core/activitypub/misc/chat-history.js';
+import { chatHistoryPageUri, parseChatHistoryItem, parseChatHistoryPage } from '@/core/activitypub/misc/chat-history.js';
 import type { ChatHistoryItem, ChatHistoryItemContext } from '@/core/activitypub/misc/chat-history.js';
 import { chatNoteText } from '@/core/activitypub/misc/chat-payloads.js';
-import { getApType, getOneApId, isActor, isEmoji } from '@/core/activitypub/type.js';
+import { getApType, isEmoji } from '@/core/activitypub/type.js';
 import type { IObject, IPost } from '@/core/activitypub/type.js';
 import { acquireApObjectLock } from '@/misc/distributed-lock.js';
 import { isTemporaryFetchFailure } from '@/misc/is-temporary-fetch-failure.js';
@@ -60,10 +60,7 @@ const MAX_REACTIONS_PER_MESSAGE = 100;
 
 type ImportRun = {
 	lastAttempt: boolean;
-	ownerHost: string;
-	signers: MiUser[];
 	accounts: Map<string, MiRemoteUser | null>;
-	authors: Map<string, MiRemoteUser | null>;
 	checkedEmojis: Set<string>;
 	channelsRefreshed: boolean;
 };
@@ -142,10 +139,7 @@ export class ChatRoomHistorySyncProcessorService {
 
 		const run: ImportRun = {
 			lastAttempt: job.attemptsMade + 1 >= (job.opts.attempts ?? 1),
-			ownerHost: owner.host,
-			signers: [],
 			accounts: new Map(),
-			authors: new Map(),
 			checkedEmojis: new Set(),
 			channelsRefreshed: false,
 		};
@@ -160,19 +154,12 @@ export class ChatRoomHistorySyncProcessorService {
 				const signers = await this.chatRoomHistoryService.localMembers(room);
 				// 처음부터 다시 받는 것은 이 서버의 사용자가 다시 참여할 때다
 				if (signers.length === 0) return 'skip: nobody here is in the room';
-				run.signers = signers;
 
 				const url = current.nextUri ?? chatHistoryPageUri(room.uri, null);
 				const page = parseChatHistoryPage(await this.fetchPage(url, signers), room.uri, url);
 				if (page == null) throw new HistoryUnavailableError('the owner\'s server gave no history page');
 
-				// 이 서버 작성자의 글은 보안 검사에서 저장하지 않지만, 서로 다른 글이면 기록은 진행된 것이다.
-				const itemIds = page.items.flatMap(item => {
-					if (item == null || typeof item !== 'object') return [];
-					const note = item as IObject;
-					return getApType(note) === 'Note' && typeof note.id === 'string' && note.id.length > 0 && note.id.length <= 1024 ? [note.id] : [];
-				});
-				if (await this.pagesWithoutProgress(room.id, state.pass, url, itemIds) > MAX_PAGES_WITHOUT_PROGRESS) {
+				if (await this.pagesWithoutProgress(room.id, state.pass, url, page.items) > MAX_PAGES_WITHOUT_PROGRESS) {
 					this.logger.warn(`Stopped fetching ${room.uri}: no new history items in ${MAX_PAGES_WITHOUT_PROGRESS + 1} consecutive pages`);
 					throw new HistoryUnavailableError('the history has made no progress');
 				}
@@ -183,17 +170,20 @@ export class ChatRoomHistorySyncProcessorService {
 
 				if (!await this.chatRoomHistoryService.advance(room.id, state.pass, page.next)) return 'skip: started over';
 				if (page.next == null) {
-					await this.redisClient.del(...this.progressKeys(room.id, state.pass));
+					await this.redisClient.del(this.progressKey(room.id, state.pass));
 					return 'ok: completed';
 				}
 			}
 
 			const current = await this.chatRoomHistoryService.getState(room.id);
 			if (current?.status === 'running' && current.pass === state.pass) {
-				await this.chatRoomHistoryService.enqueueImport(room.id, current.pass, current.nextUri, CONTINUE_DELAY);
+				// 새 작업을 넣지 않고 같은 작업을 지연시켜 이어서 받는다. 진행 위치는 작업 데이터가 아니라 DB가 쥐고 있다.
+				await job.moveToDelayed(Date.now() + CONTINUE_DELAY, job.token);
+				throw new DelayedError();
 			}
 			return 'ok: continues';
 		} catch (err) {
+			if (err instanceof DelayedError) throw err;
 			if (err instanceof HistoryUnavailableError || run.lastAttempt) {
 				await this.chatRoomHistoryService.markUnavailable(room.id, state.pass);
 				return `skip: ${err}`;
@@ -204,31 +194,29 @@ export class ChatRoomHistorySyncProcessorService {
 		}
 	}
 
-	private progressKeys(roomId: string, pass: number): [string, string] {
-		const prefix = `chat_room_history_progress:${roomId}:${pass}`;
-		return [`${prefix}:seen`, `${prefix}:state`];
+	private progressKey(roomId: string, pass: number): string {
+		return `chat_room_history_progress:${roomId}:${pass}`;
 	}
 
-	/** 같은 페이지의 재시도는 한 번만 세고, 새 항목이 나타나면 다시 진행하도록 한다. */
-	private async pagesWithoutProgress(roomId: string, pass: number, page: string, ids: string[]): Promise<number> {
-		const result = await this.redisClient.eval(`
-			local samePage = redis.call('HGET', KEYS[2], 'page') == ARGV[1]
-			local fresh = 0
-			for i = 3, #ARGV do
-				fresh = fresh + redis.call('HSETNX', KEYS[1], ARGV[i], '1')
-			end
-			local count = tonumber(redis.call('HGET', KEYS[2], 'count') or '0')
-			if fresh > 0 then
-				count = 0
-			elseif not samePage then
-				count = count + 1
-			end
-			redis.call('HSET', KEYS[2], 'page', ARGV[1], 'count', count)
-			redis.call('EXPIRE', KEYS[1], ARGV[2])
-			redis.call('EXPIRE', KEYS[2], ARGV[2])
-			return count
-		`, 2, ...this.progressKeys(roomId, pass), page, PROGRESS_TTL, ...ids);
-		return Number(result);
+	/**
+	 * 같은 페이지의 재시도는 한 번만 세고, 새 항목이 나타나면 다시 진행하도록 한다.
+	 * 직전 페이지와 내용이 같으면 새 항목이 없는 것으로 본다. 서로 다른 내용이 교대로 오는 경우는 진행으로 센다.
+	 */
+	private async pagesWithoutProgress(roomId: string, pass: number, page: string, items: unknown[]): Promise<number> {
+		const key = this.progressKey(roomId, pass);
+		const hash = createHash('sha256').update(JSON.stringify(items)).digest('hex');
+		const stored = await this.redisClient.get(key);
+		const previous = stored != null ? JSON.parse(stored) as { page: string; hash: string; count: number } : null;
+		let count: number;
+		if (previous != null && previous.page === page) {
+			count = previous.count;
+		} else if (items.length === 0 || previous?.hash === hash) {
+			count = (previous?.count ?? 0) + 1;
+		} else {
+			count = 0;
+		}
+		await this.redisClient.set(key, JSON.stringify({ page, hash, count }), 'EX', PROGRESS_TTL);
+		return count;
 	}
 
 	/** 그룹 소유 서버에 이 서버의 멤버로 서명해 직접 묻는다. 다른 곳에서 온 기록은 쓰지 않는다. */
@@ -280,68 +268,42 @@ export class ChatRoomHistorySyncProcessorService {
 		const host = this.hostOf(item.uri)!;
 		if (await this.hostPolicyService.isRefusedRemoteHost(host)) return;
 		// 이미 있는 글은 소유 서버가 다른 내용을 내줘도 바꾸지 않는다. 수정은 작성자 서버의 Update로만 반영한다.
-		if (await this.chatRoomHistoryService.findImported(item.uri) != null) return;
+		if (await this.chatRoomHistoryService.findExistingCopy(room.id, item.uri) != null) return;
 
-		// 소유 서버 자신의 글은 그대로 믿고, 제3 서버의 글은 작성자 서버에 물어 확인한다.
-		// 확인할 수 없는 글은 원래 URI를 선점하지 않는 보관 사본으로 남긴다.
-		let uri = item.uri;
-		let archived = item.note._misskey_chatAuthorArchived === true;
-		let source = item;
-		if (host !== run.ownerHost) {
-			const verdict = await this.verifySource(room, item, run);
-			if (verdict === 'reject') {
-				this.logger.debug(`Skipped a history item of ${room.uri}: the author's server did not confirm ${item.uri}`);
-				return;
-			}
-			if (verdict === 'archive') {
-				uri = chatHistoryCopyUri(this.config.url, room.id, item.uri);
-				archived = true;
-			} else {
-				// 검증된 글의 본문·첨부·시각은 소유 서버의 기록이 아니라 출처 객체에서 다시 읽는다.
-				const verified = parseChatHistoryItem(verdict, this.itemContext(room));
-				if ('skip' in verified) {
-					this.logger.debug(`Skipped a history item of ${room.uri}: the verified source is not readable: ${verified.skip}`);
-					return;
-				}
-				source = verified;
-				// 확인에 성공했으므로 보관 표시가 있어도 실제 작성자의 글로 받는다.
-				archived = false;
-			}
-		}
-
-		const channel = await this.resolveChannel(room, source.note, run);
+		const channel = await this.resolveChannel(room, item.note, run);
 		if (channel === false) return;
 
-		const author = archived ? null : await this.resolveAccount(item.authorUri, run, true);
-		const text = source.text;
-		const attachments = toArray(source.note.attachment).filter(attach => attach != null && typeof attach === 'object').slice(0, MAX_REMOTE_CHAT_MESSAGE_FILES);
+		// 소유 서버가 보관한 기록을 그대로 믿고 전부 사본으로 저장한다. 원래 URI는 선점하지 않는다.
+		// 보관 표시가 있으면 작성자를 조회하지 않고, 아니면 기존 계정 조회만 쓴다. 못 찾으면 보관 작성자로 남긴다.
+		const author = item.note._misskey_chatAuthorArchived === true ? null : await this.resolveAccount(item.authorUri, run);
+		const text = item.text;
+		const attachments = toArray(item.note.attachment).filter(attach => attach != null && typeof attach === 'object').slice(0, MAX_REMOTE_CHAT_MESSAGE_FILES);
 		let fileIds: string[] = [];
 		let unavailableFileCount = attachments.length;
 		if (author != null && attachments.length > 0) {
-			const resolved = await this.apInboxService.resolveChatAttachments(author, { ...source.note, attachment: attachments });
+			const resolved = await this.apInboxService.resolveChatAttachments(author, { ...item.note, attachment: attachments });
 			if (resolved.temporarilyFailed && !run.lastAttempt) throw new Error('a history attachment is temporarily unavailable');
 			fileIds = resolved.files.map(file => file.id);
 			unavailableFileCount = Math.max(0, attachments.length - fileIds.length);
 		}
 		if ((text == null || text.trim() === '') && fileIds.length === 0 && unavailableFileCount === 0) return;
 
-		const emojis = await this.confirmedEmojis(source.note, author?.host ?? host, run);
+		const emojis = await this.confirmedEmojis(item.note, author?.host ?? host, run);
 		// 리액션과 작성자 스냅샷은 소유 서버만 아는 기록이므로 기록 항목의 것을 유지한다.
 		const reactions = await this.resolveReactions(item, author, run);
-		const channelRefs = room.hasChannels ? await this.chatRoomChannelService.remoteRefs(room, text ?? '', source.note._misskey_chatChannelRefs) : [];
+		const channelRefs = room.hasChannels ? await this.chatRoomChannelService.remoteRefs(room, text ?? '', item.note._misskey_chatChannelRefs) : [];
 
 		const unlock = await acquireApObjectLock(this.redisClient, item.uri);
 		try {
 			const stored = await this.chatRoomHistoryService.importMessage(room, {
-				uri,
 				sourceUri: item.uri,
 				authorUri: item.authorUri,
 				authorId: author?.id ?? null,
 				archivedAuthor: author == null ? { uri: item.authorUri, username: item.author?.username ?? null, name: item.author?.name ?? null, host } : null,
-				published: source.published,
-				editedAt: source.editedAt,
+				published: item.published,
+				editedAt: item.editedAt,
 				text,
-				dice: parseChatDiceResult(source.note._misskey_dice),
+				dice: parseChatDiceResult(item.note._misskey_dice),
 				fileIds,
 				unavailableFileCount,
 				emojis,
@@ -358,49 +320,6 @@ export class ChatRoomHistorySyncProcessorService {
 		} finally {
 			await unlock();
 		}
-	}
-
-	/**
-	 * 제3 서버의 글은 작성자 서버에 이 서버의 멤버로 서명해 직접 확인한다. 소유 서버가 대신 말할 수 없다.
-	 * 확인하면 검증된 출처 객체를 돌려주고, 어긋나면 버리며, 확인할 수 없으면 보관 사본으로 남긴다.
-	 */
-	private async verifySource(room: MiChatRoom & { uri: string }, item: ChatHistoryItem, run: ImportRun): Promise<IPost | 'reject' | 'archive'> {
-		let denied: StatusError | null = null;
-		for (const signer of run.signers.slice(0, MAX_SIGNERS)) {
-			const resolver = await this.apResolverService.createResolver();
-			resolver.signAs(signer as MiLocalUser);
-			try {
-				const object = await resolver.resolve(item.uri);
-				if (getApType(object) === 'Tombstone') return 'reject';
-				if (object.id !== item.uri || getApType(object) !== 'Note') return 'reject';
-				const note = object as IPost;
-				if (note._misskey_talk !== true) return 'reject';
-				if (roomUriOf(note) !== room.uri) return 'reject';
-				try {
-					if (note.attributedTo == null || getOneApId(note.attributedTo) !== item.authorUri) return 'reject';
-				} catch {
-					return 'reject';
-				}
-				return note;
-			} catch (err) {
-				// 작성자 서버가 글을 내주지 않으면(404/410) 다른 서명자로도 물어본다. 서명자가 정지되었을 수 있다.
-				if (err instanceof StatusError && (err.statusCode === 404 || err.statusCode === 410)) {
-					denied = err;
-					continue;
-				}
-				if (isTemporaryFetchFailure(err)) {
-					if (run.lastAttempt) return 'archive';
-					throw err;
-				}
-				// 작성자 서버가 이 멤버를 아직 모를 수 있으니 다른 멤버로도 묻는다
-				if (err instanceof StatusError && err.isClientError) continue;
-				if (run.lastAttempt) return 'archive';
-				throw err;
-			}
-		}
-		// 모든 서명자가 내주지 않았어도 보관 표시가 있으면 사본으로 남기고, 아니면 큐의 재시도로 다시 묻는다.
-		if (run.lastAttempt || (denied != null && item.note._misskey_chatAuthorArchived === true)) return 'archive';
-		throw denied ?? new Error('the author\'s server does not count anyone here as a member yet');
 	}
 
 	/** 실시간 수신과 같은 채널 판정. 모르는 채널이면 그룹 객체를 한 번 다시 읽고, 그래도 없으면 그 글을 버린다. */
@@ -422,27 +341,19 @@ export class ChatRoomHistorySyncProcessorService {
 	}
 
 	/**
-	 * 작성자나 리액션한 계정. 찾지 못하면 null이고, 작성자면 그 글은 과거 기록용 작성자 정보로 보존한다.
-	 * @param retryTemporary 일시적인 실패면 큐의 재시도로 다시 찾는다. 마지막 시도에서는 null로 둔다.
+	 * 작성자나 리액션한 계정. 이미 아는 계정은 다시 확인하지 않고, 처음 보는 계정만 조회한다.
+	 * 찾지 못하면 null이고, 작성자면 그 글은 과거 기록용 작성자 정보로 보존한다. 일시적인 장애도 재시도하지 않는다.
 	 */
-	private async resolveAccount(uri: string, run: ImportRun, retryTemporary: boolean): Promise<MiRemoteUser | null> {
-		const cache = retryTemporary ? run.authors : run.accounts;
-		if (cache.has(uri)) return cache.get(uri)!;
+	private async resolveAccount(uri: string, run: ImportRun): Promise<MiRemoteUser | null> {
+		if (run.accounts.has(uri)) return run.accounts.get(uri)!;
 		let account: MiRemoteUser | null = null;
 		try {
-			const existing = await this.apDbResolverService.getUserFromApId(uri);
-			if (retryTemporary && existing != null) {
-				// 캐시된 계정은 삭제되었거나 접근할 수 없을 수 있으므로 작성자는 다시 확인한다.
-				const actor = await (await this.apResolverService.createResolver()).resolve(uri);
-				if (!isActor(actor) || actor.id !== uri) throw new Error('invalid history author');
-			}
-			const user = existing ?? await this.apPersonService.resolvePerson(uri, await this.apResolverService.createResolver());
+			const user = await this.apDbResolverService.getUserFromApId(uri) ?? await this.apPersonService.resolvePerson(uri, await this.apResolverService.createResolver());
 			account = this.userEntityService.isRemoteUser(user) && !user.isDeleted ? user : null;
 		} catch (err) {
-			if (retryTemporary && isTemporaryFetchFailure(err) && !run.lastAttempt) throw err;
 			this.logger.info(`Could not resolve ${uri} in a chat room history: ${err}`);
 		}
-		cache.set(uri, account);
+		run.accounts.set(uri, account);
 		return account;
 	}
 
@@ -451,7 +362,7 @@ export class ChatRoomHistorySyncProcessorService {
 		for (const entry of item.reactions) {
 			if (pairs.length >= MAX_REACTIONS_PER_MESSAGE) break;
 			// 리액션한 계정을 확인할 수 없으면 그 리액션만 버린다
-			const reactor = await this.resolveAccount(entry.actor, run, false);
+			const reactor = await this.resolveAccount(entry.actor, run);
 			if (reactor == null || reactor.isSuspended || reactor.id === author?.id) continue;
 			if (await this.hostPolicyService.isRefusedRemoteHost(reactor.host)) continue;
 			let reaction: string;

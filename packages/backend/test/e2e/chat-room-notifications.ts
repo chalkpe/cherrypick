@@ -21,7 +21,7 @@ import { PushNotificationService } from '@/core/PushNotificationService.js';
 import { ChatService } from '@/core/ChatService.js';
 import type { Config } from '@/config.js';
 import type * as Redis from 'ioredis';
-import { MiChatMessage, MiChatRoom, MiChatRoomMembership, MiChatRoomUnread, MiChatRoomUserSettings, MiUser } from '@/models/_.js';
+import { MiChatMessage, MiChatRoom, MiChatRoomMembership, MiChatRoomUserSettings, MiUser } from '@/models/_.js';
 import type { MiMeta, SwSubscriptionsRepository } from '@/models/_.js';
 import type { MiRemoteUser } from '@/models/User.js';
 import { api, connectStream, initTestDb, origin, relativeFetch, signup } from '../utils.js';
@@ -204,12 +204,15 @@ describe('그룹 알림과 채널 읽음', () => {
 		expect((await unread(roomId)).hasUnread).toBe(true);
 	});
 
-	test('삭제·채널 삭제가 미읽음 집계를 정리한다', async () => {
+	test('삭제는 표식을 보수적으로 남기고 열람·채널 삭제가 미읽음 집계를 정리한다', async () => {
 		const { roomId, general, other } = await room(true);
 		const message = await send(roomId, general, '삭제할 글');
 		await send(roomId, other, '삭제할 채널');
 
 		expect((await api('chat/messages/delete', { messageId: message.id }, member)).status).toBe(204);
+		// 삭제된 글의 표식은 다음 열람까지 남을 수 있다
+		expect((await unread(roomId)).unreadChannelIds.sort()).toEqual([general, other].sort());
+		expect((await request('read', { roomId, channelId: general }, owner)).status).toBe(204);
 		expect((await unread(roomId)).unreadChannelIds).toEqual([other]);
 		expect((await api('chat/rooms/channels/delete', { channelId: other! }, owner)).status).toBe(204);
 		expect((await unread(roomId)).hasUnread).toBe(false);
@@ -354,7 +357,7 @@ describe('그룹 알림과 채널 읽음', () => {
 		}
 	});
 
-	test('지연 알림 전에 삭제한 글은 소리·푸시용 이벤트와 미읽음을 남기지 않는다', async () => {
+	test('지연 알림 전에 삭제한 글은 알리지 않고 미읽음 표식은 열람까지 남는다', async () => {
 		const { roomId } = await room();
 		const received: unknown[] = [];
 		const stream = await connectStream(owner, 'main', event => {
@@ -366,6 +369,8 @@ describe('그룹 알림과 채널 읽음', () => {
 			await waitForChatNotificationTurn();
 
 			expect(received).toHaveLength(0);
+			expect((await unread(roomId)).hasUnread).toBe(true);
+			expect((await request('read', { roomId }, owner)).status).toBe(204);
 			expect((await unread(roomId)).hasUnread).toBe(false);
 		} finally {
 			stream.close();
@@ -376,12 +381,20 @@ describe('그룹 알림과 채널 읽음', () => {
 		const { roomId } = await room();
 		await settings(roomId, member, 'mentions');
 		expect((await api('chat/messages/create-to-room', { toRoomId: roomId, text: '@notifymember 새 글' }, owner)).status).toBe(200);
+		expect((await api('chat/messages/create-to-room', { toRoomId: roomId, text: '@notifyowner 답글' }, member)).status).toBe(200);
+		const redis = app.get(DI.redis);
+		expect(await redis.get(`newRoomChatMessageExists:${member.id}:${roomId}`)).not.toBeNull();
+		expect(await redis.get(`newRoomChatMessageExists:${owner.id}:${roomId}`)).not.toBeNull();
 
 		expect((await api('chat/rooms/leave', { roomId }, member)).status).toBe(204);
-		expect(await db.getRepository(MiChatRoomUnread).countBy({ roomId, userId: member.id })).toBe(0);
+		expect(await redis.get(`newRoomChatMessageExists:${member.id}:${roomId}`)).toBeNull();
+		expect(await redis.get(`newRoomChatMentionExists:${member.id}:${roomId}`)).toBeNull();
+		expect(await redis.sismember(`newChatMessagesExists:${member.id}`, `room:${roomId}`)).toBe(0);
 		expect(await db.getRepository(MiChatRoomUserSettings).countBy({ roomId, userId: member.id })).toBe(0);
+
 		expect((await api('chat/rooms/delete', { roomId }, owner)).status).toBe(204);
-		expect(await db.getRepository(MiChatRoomUnread).countBy({ roomId })).toBe(0);
+		expect(await redis.get(`newRoomChatMessageExists:${owner.id}:${roomId}`)).toBeNull();
+		expect(await redis.sismember(`newChatMessagesExists:${owner.id}`, `room:${roomId}`)).toBe(0);
 		expect(await db.getRepository(MiChatRoomUserSettings).countBy({ roomId })).toBe(0);
 	});
 

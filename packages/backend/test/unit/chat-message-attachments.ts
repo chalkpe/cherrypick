@@ -242,7 +242,7 @@ describe('choosing the attachments of a new message', () => {
 describe('storing the attachments of a new message', () => {
 	function createService() {
 		const insertOne = vi.fn(async (message: object) => message);
-		const record = vi.fn<(manager: unknown, room: unknown, message: unknown) => Promise<string[]>>(async () => []);
+		const record = vi.fn<(manager: unknown, room: unknown, message: unknown) => Promise<{ added: string[]; mentioned: string[]; recipients: string[] }>>(async () => ({ added: [], mentioned: [], recipients: [] }));
 		const service = Object.assign(Object.create(ChatService.prototype), {
 			config: { url: 'https://local.test' },
 			chatRoomChannelService: Object.assign(Object.create(ChatRoomChannelService.prototype), { db: { manager: {} } }),
@@ -250,7 +250,7 @@ describe('storing the attachments of a new message', () => {
 			idService: { gen: () => 'generated', parse: () => ({ date: new Date('2026-11-04T00:00:00Z') }) },
 			// 3초 뒤의 지연 알림은 저장된 메시지를 다시 읽는다. 여기서는 이미 사라진 것으로 둔다
 			chatMessagesRepository: { insertOne, findOneBy: async () => null },
-			chatRoomNotificationService: { record, notify: vi.fn<(userIds: string[]) => Promise<void>>(async () => {}) },
+			chatRoomNotificationService: { record, mark: vi.fn(async () => {}), notify: vi.fn<(userIds: string[]) => Promise<void>>(async () => {}) },
 			chatApprovalsRepository: { createQueryBuilder: () => ({ where() { return this; }, orWhere() { return this; }, take() { return this; }, getMany: async () => [] }), insertOne: vi.fn() },
 			chatRoomMembershipsRepository: { findBy: async () => [] },
 			chatEntityService: { packMessageLiteFor1on1: async (message: unknown) => message, packMessageLiteForRoom: async (message: unknown) => message },
@@ -320,6 +320,7 @@ describe('receiving the attachments of a remote message', () => {
 			apImageService,
 			chatRoomsRepository,
 			chatMessagesRepository,
+			chatRoomHistoryService: { findExistingCopy: vi.fn().mockResolvedValue(null) },
 			usersRepository: { findOneBy: vi.fn().mockResolvedValue(actor) },
 			chatRoomInvitationsRepository: { findOneBy: vi.fn().mockResolvedValue(null) },
 			redisClient: {

@@ -56,7 +56,7 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 			chatRoomHistoryStatesRepository: historyStatesRepository,
 			emojisRepository: app.get(DI.emojisRepository),
 			idService,
-			queueService: { createChatRoomHistorySyncJob },
+			queueService: { createChatRoomHistorySyncJob, dbQueue: { getJob: vi.fn(async () => null) } },
 			globalEventService: { publishChatRoomStream },
 			customEmojiService: { localEmojisCache: { fetch: async () => new Map() } },
 			chatRoomChannelService: app.get(ChatRoomChannelService),
@@ -91,10 +91,9 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 
 	function importInput(room: MiChatRoom, overrides: Partial<ChatHistoryImport> = {}): ChatHistoryImport {
 		const n = idService.gen();
-		const uri = `https://member.test/chat/messages/${n}`;
+		const sourceUri = `https://member.test/chat/messages/${n}`;
 		return {
-			uri,
-			sourceUri: uri,
+			sourceUri,
 			authorUri: member.uri!,
 			authorId: member.id,
 			archivedAuthor: null,
@@ -111,6 +110,8 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 			...overrides,
 		};
 	}
+
+	const copyUriOf = (roomId: string, sourceUri: string) => `${LOCAL}/chat/history/${createHash('sha256').update(`${roomId}\n${sourceUri}`).digest('hex').slice(0, 32)}`;
 
 	beforeAll(async () => {
 		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService, ChatRoomChannelService, { provide: QueueService, useValue: {} }, { provide: FetchInstanceMetadataService, useValue: { chatRoomChannelsCapability: vi.fn(async () => false) } }] }).compile();
@@ -225,11 +226,13 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 			const live = await insertMessage(room, member);
 			const service = historyService();
 
-			const stored = await service.importMessage(room, importInput(room));
+			const input = importInput(room);
+			const stored = await service.importMessage(room, input);
 
 			expect(stored).not.toBeNull();
 			expect(stored!.id < live).toBe(true);
-			expect(stored!.sourceUri).toBeNull();
+			expect(stored!.uri).toBe(copyUriOf(room.id, input.sourceUri));
+			expect(stored!.sourceUri).toBe(input.sourceUri);
 			expect(idService.parse(stored!.id).date.toISOString()).toBe('2025-01-01T00:00:00.000Z');
 			expect(stored!.importedAt).toBeInstanceOf(Date);
 			expect(publishChatRoomStream).not.toHaveBeenCalled();
@@ -245,8 +248,8 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 			await insertMessage(room, member, { uri: deletedUri, text: null, deletedAt: new Date() });
 			const service = historyService();
 
-			expect(await service.importMessage(room, importInput(room, { uri, text: 'forged', reactions: [] }))).toBeNull();
-			expect(await service.importMessage(room, importInput(room, { uri: deletedUri, text: 'back again' }))).toBeNull();
+			expect(await service.importMessage(room, importInput(room, { sourceUri: uri, text: 'forged', reactions: [] }))).toBeNull();
+			expect(await service.importMessage(room, importInput(room, { sourceUri: deletedUri, text: 'back again' }))).toBeNull();
 
 			expect(await chatMessagesRepository.findOneByOrFail({ uri })).toMatchObject({ text: 'original', reactions: [`${reactor.id}/👍`] });
 			expect(await chatMessagesRepository.findOneByOrFail({ uri: deletedUri })).toMatchObject({ text: null, deletedAt: expect.any(Date) });
@@ -255,89 +258,85 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 		test('삭제가 먼저 도착한 글은 저장하지 않는다', async () => {
 			const { room } = await mirrorRoom();
 			const input = importInput(room);
-			await redisClient.setex(`chat_delete_upon_arrival:${input.uri}:${encodeURIComponent(input.authorUri)}`, 60, input.authorUri);
+			await redisClient.setex(`chat_delete_upon_arrival:${input.sourceUri}:${encodeURIComponent(input.authorUri)}`, 60, input.authorUri);
 			const relayed = importInput(room);
-			await redisClient.setex(`chat_delete_upon_arrival:${relayed.uri}:${encodeURIComponent(relayed.authorUri)}:room:${room.id}`, 60, relayed.authorUri);
+			await redisClient.setex(`chat_delete_upon_arrival:${relayed.sourceUri}:${encodeURIComponent(relayed.authorUri)}:room:${room.id}`, 60, relayed.authorUri);
 
 			expect(await historyService().importMessage(room, input)).toBeNull();
 			expect(await historyService().importMessage(room, relayed)).toBeNull();
-			expect(await chatMessagesRepository.existsBy({ uri: In([input.uri, relayed.uri]) })).toBe(false);
+			expect(await chatMessagesRepository.existsBy({ uri: In([input.sourceUri, relayed.sourceUri, copyUriOf(room.id, input.sourceUri), copyUriOf(room.id, relayed.sourceUri)]) })).toBe(false);
 		});
 
 		describe('보관 사본', () => {
 			const sourceUri = 'https://member.test/chat/messages/source';
-			const copyUriOf = (roomId: string) => `${LOCAL}/chat/history/${createHash('sha256').update(`${roomId}\n${sourceUri}`).digest('hex').slice(0, 32)}`;
 
 			test('원래 URI로 삭제가 먼저 도착했으면 사본은 저장하지 않는다', async () => {
 				const { room } = await mirrorRoom();
 				await redisClient.setex(`chat_delete_upon_arrival:${sourceUri}:${encodeURIComponent(member.uri!)}`, 60, member.uri!);
 
-				expect(await historyService().importMessage(room, importInput(room, { uri: copyUriOf(room.id), sourceUri }))).toBeNull();
-				expect(await chatMessagesRepository.existsBy({ uri: copyUriOf(room.id) })).toBe(false);
+				expect(await historyService().importMessage(room, importInput(room, { sourceUri }))).toBeNull();
+				expect(await chatMessagesRepository.existsBy({ uri: In([copyUriOf(room.id, sourceUri), sourceUri]) })).toBe(false);
 			});
 
 			test('원래 URI로 이미 저장된 글이 있으면 사본은 저장하지 않는다', async () => {
 				const { room } = await mirrorRoom();
 				await insertMessage(room, member, { uri: sourceUri, text: 'original' });
 
-				expect(await historyService().importMessage(room, importInput(room, { uri: copyUriOf(room.id), sourceUri }))).toBeNull();
+				expect(await historyService().importMessage(room, importInput(room, { sourceUri }))).toBeNull();
 				expect(await chatMessagesRepository.findOneByOrFail({ uri: sourceUri })).toMatchObject({ text: 'original' });
 			});
 
 			test('사본은 사본 URI와 원래 주소를 기록해 저장한다', async () => {
 				const { room } = await mirrorRoom();
-				const service = historyService();
 
-				const stored = await service.importMessage(room, importInput(room, { uri: copyUriOf(room.id), sourceUri, authorId: null, archivedAuthor: { uri: member.uri!, username: member.username, name: member.name, host: 'member.test' } }));
+				const stored = await historyService().importMessage(room, importInput(room, { sourceUri, authorId: null, archivedAuthor: { uri: member.uri!, username: member.username, name: member.name, host: 'member.test' } }));
 
-				expect(stored).toMatchObject({ uri: copyUriOf(room.id), sourceUri, fromUserId: null });
+				expect(stored).toMatchObject({ uri: copyUriOf(room.id, sourceUri), sourceUri, fromUserId: null });
 			});
 
-			test('검증된 원본이 오면 살아있는 사본은 같은 행에서 원래 URI로 업그레이드한다', async () => {
+			test('이미 사본이 있으면 같은 글을 다시 저장하지 않는다', async () => {
 				const { room } = await mirrorRoom();
 				const service = historyService();
-				const stored = await service.importMessage(room, importInput(room, { uri: copyUriOf(room.id), sourceUri, authorId: null, archivedAuthor: { uri: member.uri!, username: member.username, name: member.name, host: 'member.test' }, text: 'archived text' }));
+				const stored = await service.importMessage(room, importInput(room, { sourceUri, authorId: null, archivedAuthor: { uri: member.uri!, username: member.username, name: member.name, host: 'member.test' }, text: 'archived text' }));
 				await chatMessagesRepository.update(stored!.id, { reads: [owner.id] });
 
-				const live = await service.importMessage(room, importInput(room, { uri: sourceUri, sourceUri, text: 'verified text', reactions: [`${reactor.id}/👍`] }));
+				expect(await service.importMessage(room, importInput(room, { sourceUri, text: 'forged text', reactions: [`${reactor.id}/👍`] }))).toBeNull();
 
-				// 미읽음·알림을 만들지 않도록 행과 가져온 시각은 그대로 둔다
-				expect(live).toMatchObject({
-					id: stored!.id,
-					uri: sourceUri,
-					sourceUri: null,
-					fromUserId: member.id,
-					text: 'verified text',
-					reactions: [`${reactor.id}/👍`],
+				// 행과 읽음·가져온 시각은 그대로 둔다
+				expect(await chatMessagesRepository.findOneByOrFail({ id: stored!.id })).toMatchObject({
+					uri: copyUriOf(room.id, sourceUri),
+					sourceUri,
+					text: 'archived text',
+					reactions: [],
 					reads: [owner.id],
-					importedAt: stored!.importedAt,
 				});
-				expect(live!.archivedAuthor).toMatchObject({ uri: member.uri!, username: member.username, host: 'member.test' });
-				expect(await chatMessagesRepository.existsBy({ uri: copyUriOf(room.id) })).toBe(false);
 				expect(await chatMessagesRepository.countBy({ toRoomId: room.id })).toBe(1);
 			});
 
-			test('삭제된 사본은 검증된 원본이 와도 되살아나지 않는다', async () => {
+			test('삭제된 사본은 작성자를 다시 확인해도 되살아나지 않는다', async () => {
 				const { room } = await mirrorRoom();
 				const service = historyService();
-				const stored = await service.importMessage(room, importInput(room, { uri: copyUriOf(room.id), sourceUri, authorId: null, archivedAuthor: { uri: member.uri!, username: null, name: null, host: 'member.test' } }));
+				const stored = await service.importMessage(room, importInput(room, { sourceUri, authorId: null, archivedAuthor: { uri: member.uri!, username: null, name: null, host: 'member.test' } }));
 				await chatMessagesRepository.update(stored!.id, { deletedAt: new Date(), text: null });
 
-				expect(await service.importMessage(room, importInput(room, { uri: sourceUri, sourceUri }))).toBeNull();
+				expect(await service.importMessage(room, importInput(room, { sourceUri }))).toBeNull();
 
 				expect(await chatMessagesRepository.existsBy({ uri: sourceUri })).toBe(false);
 				expect(await chatMessagesRepository.findOneByOrFail({ id: stored!.id })).toMatchObject({ deletedAt: expect.any(Date), text: null });
+				expect(await chatMessagesRepository.countBy({ toRoomId: room.id })).toBe(1);
 			});
 
-			test('삭제된 사본은 같은 사본 가져오기로도 되살아나지 않는다', async () => {
+			test('같은 원래 주소라도 다른 그룹에는 각각 사본으로 저장한다', async () => {
 				const { room } = await mirrorRoom();
+				const other = await mirrorRoom();
 				const service = historyService();
-				const input = importInput(room, { uri: copyUriOf(room.id), sourceUri, authorId: null, archivedAuthor: { uri: member.uri!, username: null, name: null, host: 'member.test' } });
-				const stored = await service.importMessage(room, input);
-				await chatMessagesRepository.update(stored!.id, { deletedAt: new Date(), text: null });
 
-				expect(await service.importMessage(room, input)).toBeNull();
-				expect(await chatMessagesRepository.countBy({ toRoomId: room.id })).toBe(1);
+				const first = await service.importMessage(room, importInput(room, { sourceUri }));
+				const second = await service.importMessage(other.room, importInput(other.room, { sourceUri }));
+
+				expect(first!.uri).toBe(copyUriOf(room.id, sourceUri));
+				expect(second!.uri).toBe(copyUriOf(other.room.id, sourceUri));
+				expect(second!.id).not.toBe(first!.id);
 			});
 		});
 
@@ -380,6 +379,38 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 			expect(await service.getState(room.id)).toMatchObject({ status: 'completed', completedAt: expect.any(Date) });
 			expect(publishChatRoomStream).toHaveBeenCalledWith(room.id, 'historyImported', { status: 'completed' });
 			expect(createChatRoomHistorySyncJob).toHaveBeenCalledTimes(3);
+			// 같은 차례는 같은 작업 ID, 처음부터 다시 받는 새 차례는 다른 작업 ID
+			const jobIds = createChatRoomHistorySyncJob.mock.calls.map(call => call[2] as string);
+			expect(jobIds[0]).toMatch(/^chat-history-[0-9a-f]{64}$/);
+			expect(jobIds[1]).toBe(jobIds[0]);
+			expect(jobIds[2]).not.toBe(jobIds[0]);
+		});
+
+		test('실패해 남은 작업은 지우고 같은 작업 ID로 다시 넣는다', async () => {
+			const { room } = await mirrorRoom();
+			const service = historyService();
+			const remove = vi.fn(async () => {});
+			const queue = (service as unknown as { queueService: { dbQueue: { getJob: ReturnType<typeof vi.fn> } } }).queueService;
+			queue.dbQueue.getJob.mockResolvedValue({ getState: async () => 'failed', remove });
+
+			await service.requestImport(room, { restart: true });
+
+			expect(remove).toHaveBeenCalledOnce();
+			expect(createChatRoomHistorySyncJob).toHaveBeenCalledOnce();
+		});
+
+		test('대기 중인 작업이 있으면 이어 받기를 다시 넣지 않는다', async () => {
+			const { room } = await mirrorRoom();
+			const service = historyService();
+			await service.requestImport(room, { restart: true });
+			createChatRoomHistorySyncJob.mockClear();
+			await redisClient.del(`chat_room_history_request:${room.id}`);
+			const queue = (service as unknown as { queueService: { dbQueue: { getJob: ReturnType<typeof vi.fn> } } }).queueService;
+			queue.dbQueue.getJob.mockResolvedValue({ getState: async () => 'delayed', remove: vi.fn() });
+
+			await service.requestImport(room, { restart: false });
+
+			expect(createChatRoomHistorySyncJob).not.toHaveBeenCalled();
 		});
 
 		test('이 서버가 소유한 그룹에는 가져오기를 요청하지 않는다', async () => {

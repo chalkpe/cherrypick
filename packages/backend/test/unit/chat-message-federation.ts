@@ -414,7 +414,7 @@ describe('ChatService chat federation delivery', () => {
 					findOne: async (entity: { name: string }, options: { where: { id: string } }) => entity.name === 'MiChatMessage' ? messages.get(options.where.id) ?? null : { ...room },
 					findOneBy: async (entity: { name: string }, where: { id: string }) => entity.name === 'MiChatMessage' ? messages.get(where.id) ?? null : { ...room },
 					existsBy: async () => true,
-					findBy: async (entity: { name: string }) => entity.name === 'MiChatRoomUnread' ? [] : (service as unknown as { chatRoomMembershipsRepository: { findBy(): Promise<unknown[]> } }).chatRoomMembershipsRepository.findBy(),
+					findBy: async (_entity: { name: string }) => (service as unknown as { chatRoomMembershipsRepository: { findBy(): Promise<unknown[]> } }).chatRoomMembershipsRepository.findBy(),
 					withRepository: (repository: unknown) => repository,
 					update: async (entity: { name: string }, id: string, patch: object) => { Object.assign(entity.name === 'MiChatMessage' ? messages.get(id)! : room, patch); },
 					delete: async () => ({ affected: 0 }),
@@ -813,6 +813,17 @@ describe('ChatService chat federation delivery', () => {
 		await f.service.applyPendingChatReactions(f.roomMessage as never);
 
 		expect(f.roomMessage.reactions).toEqual(expected);
+	});
+
+	test('an archived copy also receives reactions deferred under its original URI', async () => {
+		const f = createService();
+		const copy = { ...f.roomMessage, uri: 'https://local.test/chat-history/r1/m2', sourceUri: 'https://remote.test/chat/messages/m2' };
+		const reactRemote = vi.spyOn(f.service, 'reactRemote').mockResolvedValue(undefined);
+
+		await f.service.storePendingChatReaction('bob', copy.sourceUri, '👍', false);
+		await f.service.applyPendingChatReactions(copy as never);
+
+		expect(reactRemote).toHaveBeenCalledWith(f.bob, copy, '👍', undefined, expect.anything());
 	});
 
 	test('reactRemote qualifies an unqualified custom emoji with the actor host', async () => {
@@ -1255,10 +1266,14 @@ describe('ApInboxService chat activity routing', () => {
 			userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null, isRemoteUser: (user: { host: string | null }) => user.host != null },
 			chatRoomsRepository,
 			chatMessagesRepository: { findOneBy: vi.fn().mockResolvedValue(null), existsBy: vi.fn().mockResolvedValue(false) },
-			chatRoomHistoryService: { findArchivedCopiesBySourceUri: vi.fn().mockResolvedValue([]) },
+			chatRoomHistoryService: {
+				findArchivedCopiesBySourceUri: vi.fn().mockResolvedValue([]),
+				findArchivedCopyBySourceUri: vi.fn().mockResolvedValue(null),
+				findExistingCopy: vi.fn().mockResolvedValue(null),
+			},
 		}) as ApInboxService;
 
-		return { inbox, actor, message, chatService, redisClient, chatRoomsRepository, localUser, chatRoomHistoryService: (inbox as never as { chatRoomHistoryService: { findArchivedCopiesBySourceUri: ReturnType<typeof vi.fn> } }).chatRoomHistoryService };
+		return { inbox, actor, message, chatService, redisClient, chatRoomsRepository, localUser, chatRoomHistoryService: (inbox as never as { chatRoomHistoryService: { findArchivedCopiesBySourceUri: ReturnType<typeof vi.fn>; findArchivedCopyBySourceUri: ReturnType<typeof vi.fn>; findExistingCopy: ReturnType<typeof vi.fn> } }).chatRoomHistoryService };
 	}
 
 	describe('a message with nothing to show', () => {
@@ -1780,6 +1795,22 @@ describe('ApInboxService chat activity routing', () => {
 		expect(result).toMatch(/^skip:/);
 	});
 
+	test('a reaction to the original URI reaches an archived copy of the message', async () => {
+		const f = createInbox();
+		f.chatService.findMessageByUri.mockResolvedValue(null);
+		const copy = { ...f.message, id: 'm1-copy', uri: 'https://local.test/chat-history/r1/m1', sourceUri: f.message.uri };
+		f.chatRoomHistoryService.findArchivedCopyBySourceUri.mockResolvedValue(copy);
+
+		const result = await (f.inbox as never as { like: (...args: unknown[]) => Promise<string> }).like(f.actor, {
+			type: 'EmojiReact', actor: f.actor.uri, object: f.message.uri, content: '👍',
+		});
+
+		expect(result).toBe('ok');
+		expect(f.chatRoomHistoryService.findArchivedCopyBySourceUri).toHaveBeenCalledWith(f.message.uri, undefined);
+		expect(f.chatService.reactRemote).toHaveBeenCalledWith(f.actor, copy, '👍', undefined, expect.anything());
+		expect(f.chatService.storePendingChatReaction).not.toHaveBeenCalled();
+	});
+
 	describe('creating a chat message', () => {
 		const object = (f: ReturnType<typeof createInbox>) => ({
 			id: 'https://remote.test/chat/messages/new', type: 'Note', attributedTo: f.actor.uri,
@@ -1857,6 +1888,23 @@ describe('ApInboxService chat activity routing', () => {
 				{ ...object(f), context: 'https://remote.test/chat/rooms/r1' },
 				{ type: 'Create', actor: f.actor.uri },
 			)).rejects.toThrow('membership is not ready');
+			expect(f.chatService.createMessageToRoom).not.toHaveBeenCalled();
+		});
+
+		test('a live Create does not duplicate a message already kept as an archived copy', async () => {
+			const f = createInbox();
+			f.chatService.isRoomMember.mockResolvedValue(true);
+			f.chatRoomHistoryService.findExistingCopy.mockResolvedValue({ id: 'copy1', uri: 'https://local.test/chat-history/r1/new' });
+
+			const result = await (f.inbox as never as { createChatMessage: (...args: unknown[]) => Promise<string> }).createChatMessage(
+				{},
+				f.actor,
+				{ ...object(f), context: 'https://remote.test/chat/rooms/r1' },
+				{ type: 'Create', actor: f.actor.uri },
+			);
+
+			expect(result).toBe('skip: archived copy exists');
+			expect(f.chatRoomHistoryService.findExistingCopy).toHaveBeenCalledWith('r1', 'https://remote.test/chat/messages/new');
 			expect(f.chatService.createMessageToRoom).not.toHaveBeenCalled();
 		});
 	});

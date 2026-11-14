@@ -11,7 +11,7 @@ import KickEndpoint, { meta as kickMeta } from '@/server/api/endpoints/chat/room
 import MuteEndpoint, { meta as muteMeta } from '@/server/api/endpoints/chat/rooms/voice/mute.js';
 import { meta as statusMeta } from '@/server/api/endpoints/chat/rooms/voice/status.js';
 import { ChatService } from '@/core/ChatService.js';
-import { MiChatRoomMembership, MiChatRoomUnread, MiChatRoomUserSettings } from '@/models/_.js';
+import { MiChatRoomMembership, MiChatRoomUserSettings } from '@/models/_.js';
 import { MetaEntityService } from '@/core/entities/MetaEntityService.js';
 import { RemoteVoiceCallError } from '@/core/RemoteVoiceCallService.js';
 import { VoiceRelayError } from '@/core/VoiceRelayClient.js';
@@ -422,7 +422,7 @@ function chatServiceFixture() {
 	const service = Object.assign(Object.create(ChatService.prototype), {
 		liveKitService,
 		globalEventService: { publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() },
-		chatRoomNotificationService: { notify: vi.fn<(userIds: string[]) => Promise<void>>(async () => {}) },
+		chatRoomNotificationService: { notify: vi.fn<(userIds: string[]) => Promise<void>>(async () => {}), clearRoom: vi.fn(async () => {}) },
 		chatRosterService: chatRosterOver(forgetfulRedis()),
 		chatRoomInvitationsRepository: { findBy: vi.fn(async () => []) },
 		chatRoomMembershipsRepository: {
@@ -510,13 +510,14 @@ describe('ChatService room control publication', () => {
 		expect(publish).toHaveBeenCalledExactlyOnceWith('r1', 'membershipEnded', { userId: 'u1' });
 	});
 
-	test('leaving clears my unread state and notification settings in the same transaction', async () => {
+	test('leaving clears my unread flags and deletes notification settings in the same transaction', async () => {
 		const f = chatServiceFixture();
 		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 		await f.service.leaveRoom('u1', 'r1');
 		log.mockRestore();
 
-		expect(f.deleted).toEqual([MiChatRoomUnread, MiChatRoomUserSettings]);
+		expect(f.deleted).toEqual([MiChatRoomUserSettings]);
+		expect(f.service.chatRoomNotificationService.clearRoom).toHaveBeenCalledWith('r1', ['u1']);
 		expect(f.service.chatRoomNotificationService.notify).toHaveBeenCalledWith(['u1']);
 	});
 

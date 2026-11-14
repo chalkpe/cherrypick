@@ -37,8 +37,7 @@ const RESUME_INTERVAL = 60;
 const JOIN_DELAY = 5000;
 
 export type ChatHistoryImport = {
-	uri: string;
-	/** 원래 작성자 서버의 메시지 주소. 보관 사본이면 uri와 다르다 */
+	/** 원래 작성자 서버의 메시지 주소. 저장하는 사본의 출처 */
 	sourceUri: string;
 	authorUri: string;
 	authorId: MiUser['id'] | null;
@@ -237,27 +236,29 @@ export class ChatRoomHistoryService {
 
 		// 참여 직후에는 소유 서버가 수락을 처리할 시간을 조금 둔다
 		const current = await this.getState(room.id);
-		if (current?.status === 'running') await this.enqueueImport(room.id, current.pass, current.nextUri, options.restart ? JOIN_DELAY : undefined);
+		if (current?.status === 'running') await this.enqueueImport(room.id, current.pass, options.restart ? JOIN_DELAY : undefined);
 	}
 
-	private historyJobKey(roomId: string, pass: number): string {
-		return `chat_room_history_job:${roomId}:${pass}`;
+	/** 같은 차례는 항상 같은 작업 ID. 진행 위치는 작업 데이터가 아니라 DB가 쥐고 있다. */
+	private historyJobId(roomId: string, pass: number): string {
+		return `chat-history-${createHash('sha256').update(JSON.stringify([roomId, pass])).digest('hex')}`;
 	}
 
 	private async hasPendingImport(roomId: string, pass: number): Promise<boolean> {
-		const id = await this.redisClient.get(this.historyJobKey(roomId, pass));
-		if (id == null) return false;
-		const job = await this.queueService.dbQueue.getJob(id);
+		const job = await this.queueService.dbQueue.getJob(this.historyJobId(roomId, pass));
 		if (job == null) return false;
 		return ['active', 'waiting', 'delayed', 'prioritized', 'waiting-children'].includes(await job.getState());
 	}
 
-	/** 같은 차례의 같은 위치는 큐에 한 번만 넣는다. 큐가 사라지면 다시 요청할 수 있다. */
-	public async enqueueImport(roomId: string, pass: number, nextUri: string | null, delay?: number): Promise<void> {
-		const hash = createHash('sha256').update(JSON.stringify([roomId, pass, nextUri])).digest('hex');
-		const id = `chat-history-${hash}`;
+	/**
+	 * 같은 차례는 큐에 한 번만 넣는다. 큐가 사라지면 다시 요청할 수 있다.
+	 * 실패해 남은 작업은 같은 ID로 다시 넣을 수 없으므로 지우고 넣는다.
+	 */
+	public async enqueueImport(roomId: string, pass: number, delay?: number): Promise<void> {
+		const id = this.historyJobId(roomId, pass);
+		const job = await this.queueService.dbQueue.getJob(id);
+		if (job != null && await job.getState() === 'failed') await job.remove();
 		await this.queueService.createChatRoomHistorySyncJob(roomId, pass, id, delay);
-		await this.redisClient.set(this.historyJobKey(roomId, pass), id, 'EX', 7 * 24 * 60 * 60);
 	}
 
 	/** 지금 받고 있는 차례. 처음부터 다시 받기로 바뀌면 pass가 달라진다. */
@@ -291,26 +292,16 @@ export class ChatRoomHistoryService {
 	}
 
 	/**
-	 * 소유 서버가 내준 글 하나를 저장한다. 호출자는 실시간 수신과 같은 메시지 잠금을 잡고 있어야 한다.
+	 * 소유 서버가 내준 글 하나를 사본으로 저장한다. 호출자는 실시간 수신과 같은 메시지 잠금을 잡고 있어야 한다.
 	 * 이미 있는 글(삭제 표시 포함)과 삭제가 먼저 도착한 글은 건드리지 않는다.
-	 * 검증된 원본이 오면 살아있는 보관 사본은 같은 행에서 원래 URI로 업그레이드한다.
-	 * @returns 새로 저장하거나 업그레이드한 글. 저장하지 않았으면 null
+	 * @returns 새로 저장한 글. 저장하지 않았으면 null
 	 */
 	@bindThis
 	public async importMessage(room: MiChatRoom, input: ChatHistoryImport): Promise<MiChatMessage | null> {
-		// 보관 사본은 원래 URI와 별개이지만, 원래 URI의 글이 이미 있거나 삭제가 먼저 도착했으면 사본도 저장하지 않는다.
-		const isCopy = input.uri !== input.sourceUri;
-		const copyUri = isCopy ? input.uri : chatHistoryCopyUri(this.config.url, room.id, input.sourceUri);
-		const uris = isCopy ? [input.uri, input.sourceUri] : [input.uri, copyUri];
-		const existing = await this.chatMessagesRepository.findBy({ uri: In(uris) });
-		let liveCopy: MiChatMessage | null = null;
-		if (existing.length > 0) {
-			// 원래 URI의 글(삭제 표시 포함)은 그대로 두고, 삭제된 사본도 되살리지 않는다.
-			if (isCopy || existing.some(m => m.uri === input.sourceUri)) return null;
-			liveCopy = existing.find(m => m.deletedAt == null) ?? null;
-			if (liveCopy == null) return null;
-		}
-		for (const uri of uris) {
+		// 사본은 원래 URI를 선점하지 않는다. 원래 URI의 글이 이미 있거나 삭제가 먼저 도착했으면 사본도 저장하지 않는다.
+		const copyUri = chatHistoryCopyUri(this.config.url, room.id, input.sourceUri);
+		if (await this.findExistingCopy(room.id, input.sourceUri) != null) return null;
+		for (const uri of [copyUri, input.sourceUri]) {
 			const tombstone = `chat_delete_upon_arrival:${uri}:${encodeURIComponent(input.authorUri)}`;
 			const [direct, relayed] = await this.redisClient.mget(tombstone, `${tombstone}:room:${room.id}`);
 			if (direct === input.authorUri || relayed === input.authorUri) return null;
@@ -319,7 +310,15 @@ export class ChatRoomHistoryService {
 		const reactions = [...new Set(input.reactions)].slice(0, MAX_REACTIONS_PER_MESSAGE);
 		const author = input.authorId != null ? await this.usersRepository.findOneBy({ id: input.authorId }) : null;
 		const archivedAuthor = author != null ? { uri: input.authorUri, username: author.username, name: author.name, host: author.host } : input.archivedAuthor;
-		const content = {
+		const message = {
+			id: this.idService.gen(input.published.getTime()),
+			fromUserId: input.authorId,
+			archivedAuthor,
+			toRoomId: room.id,
+			uri: copyUri,
+			sourceUri: input.sourceUri,
+			reads: [],
+			importedAt: new Date(),
 			toRoomChannelId: input.toRoomChannelId,
 			channelRefs: input.channelRefs,
 			text: input.text != null ? input.text.trim() : null,
@@ -329,30 +328,6 @@ export class ChatRoomHistoryService {
 			unavailableFileCount: input.unavailableFileCount,
 			emojis: input.emojis,
 			reactions,
-		};
-
-		if (liveCopy != null) {
-			// id·읽음·가져온 시각은 그대로 두어 미읽음·알림을 만들지 않는다.
-			await this.chatMessagesRepository.update({ id: liveCopy.id }, {
-				uri: input.uri,
-				sourceUri: null,
-				fromUserId: input.authorId,
-				archivedAuthor,
-				...content,
-			});
-			return Object.assign(liveCopy, { uri: input.uri, sourceUri: null, fromUserId: input.authorId, archivedAuthor, ...content });
-		}
-
-		const message = {
-			id: this.idService.gen(input.published.getTime()),
-			fromUserId: input.authorId,
-			archivedAuthor,
-			toRoomId: room.id,
-			uri: input.uri,
-			sourceUri: isCopy ? input.sourceUri : null,
-			reads: [],
-			importedAt: new Date(),
-			...content,
 		} satisfies Partial<MiChatMessage>;
 
 		try {
@@ -362,6 +337,20 @@ export class ChatRoomHistoryService {
 			if (isDuplicateKeyValueError(err) || (err as { code?: string }).code === '23503') return null;
 			throw err;
 		}
+	}
+
+	/** 사본 URI나 원래 주소로 이미 저장된 글(삭제 표시 포함). 사본이 있으면 사본을 우선 돌려준다. */
+	@bindThis
+	public async findExistingCopy(roomId: MiChatRoom['id'], sourceUri: string): Promise<MiChatMessage | null> {
+		const copyUri = chatHistoryCopyUri(this.config.url, roomId, sourceUri);
+		const rows = await this.chatMessagesRepository.findBy({ uri: In([copyUri, sourceUri]) });
+		return rows.find(message => message.uri === copyUri) ?? rows[0] ?? null;
+	}
+
+	/** 원래 URI로 도착한 리액션이 닿을, 삭제되지 않은 보관 사본 하나. 중계된 리액션은 그 그룹의 사본만 본다. */
+	@bindThis
+	public findArchivedCopyBySourceUri(sourceUri: string, roomId?: MiChatRoom['id']): Promise<MiChatMessage | null> {
+		return this.chatMessagesRepository.findOneBy({ sourceUri, deletedAt: IsNull(), ...(roomId != null ? { toRoomId: roomId } : {}) });
 	}
 
 	/** 원래 URI로 도착한 Delete가 닿을 수 있는, 삭제되지 않은 보관 사본들 */
@@ -378,11 +367,5 @@ export class ChatRoomHistoryService {
 		const memberships = await this.chatRoomMembershipsRepository.findBy({ roomId: room.id });
 		if (memberships.length === 0) return [];
 		return this.usersRepository.findBy({ id: In(memberships.map(m => m.userId)), host: IsNull(), isSuspended: false });
-	}
-
-	/** 저장된 글의 실제 행. 저장 직후의 보류 리액션 적용에 쓴다. */
-	@bindThis
-	public findImported(uri: string): Promise<MiChatMessage | null> {
-		return this.chatMessagesRepository.findOneBy({ uri });
 	}
 }

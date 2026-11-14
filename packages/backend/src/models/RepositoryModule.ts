@@ -88,7 +88,6 @@ import {
 	MiChatRoomChannel,
 	MiChatRoomInviteLink,
 	MiChatRoomUserSettings,
-	MiChatRoomUnread,
 	MiChatRoom,
 	MiChatRoomMembership,
 	MiChatRoomRosterState,
@@ -551,12 +550,6 @@ const $chatRoomUserSettingsRepository: Provider = {
 	inject: [DI.db],
 };
 
-const $chatRoomUnreadsRepository: Provider = {
-	provide: DI.chatRoomUnreadsRepository,
-	useFactory: (db: DataSource) => db.getRepository(MiChatRoomUnread).extend(miRepository as MiRepository<MiChatRoomUnread>),
-	inject: [DI.db],
-};
-
 const $chatRoomChannelsRepository: Provider = {
 	provide: DI.chatRoomChannelsRepository,
 	useFactory: (db: DataSource) => db.getRepository(MiChatRoomChannel).extend(miRepository as MiRepository<MiChatRoomChannel>),
@@ -715,7 +708,6 @@ const $noteHistoryRepository: Provider = {
 		$chatRoomChannelsRepository,
 		$chatRoomInviteLinksRepository,
 		$chatRoomUserSettingsRepository,
-		$chatRoomUnreadsRepository,
 		$chatRoomsRepository,
 		$chatRoomMembershipsRepository,
 		$chatRoomRosterStatesRepository,
@@ -806,7 +798,6 @@ const $noteHistoryRepository: Provider = {
 		$chatRoomChannelsRepository,
 		$chatRoomInviteLinksRepository,
 		$chatRoomUserSettingsRepository,
-		$chatRoomUnreadsRepository,
 		$chatRoomsRepository,
 		$chatRoomMembershipsRepository,
 		$chatRoomRosterStatesRepository,

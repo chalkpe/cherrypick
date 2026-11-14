@@ -259,6 +259,7 @@ function incoming() {
 		chatService,
 		chatMessagesRepository: repository,
 		chatRoomsRepository: { findOneBy: vi.fn(async () => remoteRoom), createQueryBuilder: () => noRooms },
+		chatRoomHistoryService: { findExistingCopy: vi.fn().mockResolvedValue(null) },
 		redisClient: { set: vi.fn(async (key: string, token: string) => { locks.set(key, token); return 'OK'; }), get: vi.fn(async (key: string) => key.startsWith('ap-object-lock:') ? locks.get(key) ?? null : null), del: vi.fn(async (key: string) => Number(locks.delete(key))), eval: vi.fn(async () => 1) },
 		logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
 		apPersonService: { resolvePerson: vi.fn(async () => local) },

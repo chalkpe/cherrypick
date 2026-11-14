@@ -12,9 +12,9 @@ import { afterAll, beforeAll, describe, test, vi } from 'vitest';
 import { createAccount, fetchAdmin, resolveRemoteUser, waitForFollowRelation, WAIT_FOR_FEDERATION, type LoginUser } from './utils.js';
 
 /**
- * 소유 서버는 과거 기록으로 제3 서버 메시지의 URI를 선점할 수 없다.
- * 실제 HTTPS 요청으로 일반 노트 삭제, 제3 서버 채팅 검증, 본문 위조 거부, 서명자별 정지 대체,
- * 보관 사본의 업그레이드와 삭제, 삭제된 글 거부를 확인한다.
+ * 받는 서버는 소유 서버가 보관한 과거 기록을 그대로 믿고 전부 사본으로 저장한다.
+ * 실제 HTTPS 요청으로 일반 노트 삭제 무간섭, 제3 서버 글의 사본 저장과 수정 건너뜀·작성자 삭제,
+ * 바뀐 본문 수용, 보관 사본의 삭제, 삭제된 글의 사본 저장, 재수신 시 사본 유지를 확인한다.
  */
 const FAKE = 'https://fake.test';
 const AS = 'https://www.w3.org/ns/activitystreams';
@@ -41,7 +41,6 @@ const legitRoom = `r${Date.now() + 1}`;
 const archivedRoom = `r${Date.now() + 2}`;
 const tombstoneRoom = `r${Date.now() + 3}`;
 const forgedRoom = `r${Date.now() + 4}`;
-const signerRoom = `r${Date.now() + 5}`;
 const upgradeRoom = `r${Date.now() + 6}`;
 
 function person(username: string, publicKeyPem: string) {
@@ -248,11 +247,13 @@ describe('Chat room history and third-party message URIs', () => {
 			},
 		), WAIT_FOR_FEDERATION);
 
-		// 검증에 실패한 항목은 채팅 메시지로 저장되지 않는다
-		deepStrictEqual(await timeline(bob, mirrorId), []);
+		// 호스트 기록을 믿으므로 채팅 사본은 남는다. 사본은 노트 URI를 선점하지 않아 노트 삭제에는 간섭하지 않는다
+		const messages = await timeline(bob, mirrorId);
+		strictEqual(messages.length, 1);
+		strictEqual(messages[0].text, 'forged note claim');
 	});
 
-	test('제3 서버의 채팅 메시지는 검증되어 원래 URI로 저장되고 수정과 삭제가 동작한다', async () => {
+	test('제3 서버의 채팅 메시지는 사본으로 저장되고 수정은 건너뛰며 작성자의 삭제만 닿는다', async () => {
 		const roomUri = `${FAKE}/chat/rooms/${legitRoom}`;
 		rosters.set(roomUri, [aliceUri, bobUri]);
 
@@ -285,16 +286,23 @@ describe('Chat room history and third-party message URIs', () => {
 		strictEqual(messages[0].text, 'third-party chat');
 		strictEqual(messages[0].fromUser?.id, aliceOnB.id);
 
+		// 사본만 있는 글의 수정은 건너뛴다. 수정 시도가 배달되었음은 뒤따르는 새 글의 도착으로 확인한다
 		await alice.client.request('chat/messages/update', { messageId: sent.id, text: 'edited third-party' });
+		await alice.client.request('chat/messages/create-to-room', { toRoomId: aliceMirror, text: 'after the edit' });
 		await vi.waitFor(async () => {
-			const updated = await timeline(bob, mirrorId);
-			strictEqual(updated.length, 1);
-			strictEqual(updated[0].text, 'edited third-party');
+			const later = await timeline(bob, mirrorId);
+			strictEqual(later.some(m => m.text === 'after the edit'), true);
 		}, WAIT_FOR_FEDERATION);
+		await new Promise(resolve => setTimeout(resolve, 2000));
+		const kept = await timeline(bob, mirrorId);
+		strictEqual(kept.some(m => m.text === 'third-party chat'), true);
+		strictEqual(kept.some(m => m.text === 'edited third-party'), false);
 
+		// 작성자의 Delete는 원래 URI로 오고, 사본은 sourceUri 연결로 지워진다
 		await alice.client.request('chat/messages/delete', { messageId: sent.id });
 		await vi.waitFor(async () => {
-			deepStrictEqual(await timeline(bob, mirrorId), []);
+			const after = await timeline(bob, mirrorId);
+			strictEqual(after.some(m => m.text === 'third-party chat'), false);
 		}, WAIT_FOR_FEDERATION);
 	});
 
@@ -382,7 +390,7 @@ describe('Chat room history and third-party message URIs', () => {
 		}, WAIT_FOR_FEDERATION);
 	});
 
-	test('소유 서버가 바꾼 본문은 저장하지 않고 작성자 서버가 확인한 본문으로 받는다', async () => {
+	test('소유 서버가 바꾼 본문도 호스트 기록 그대로 받는다', async () => {
 		const roomUri = `${FAKE}/chat/rooms/${forgedRoom}`;
 		rosters.set(roomUri, [aliceUri, bobUri]);
 
@@ -405,55 +413,11 @@ describe('Chat room history and third-party message URIs', () => {
 
 		const messages = await timeline(bob, mirrorId);
 		strictEqual(messages.length, 1);
-		strictEqual(messages[0].text, 'the real text');
+		strictEqual(messages[0].text, 'forged by the owner');
 		strictEqual(messages[0].fromUser?.id, aliceOnB.id);
 	});
 
-	test('첫 서명자가 작성자 서버에서 정지되어도 다른 서명자로 확인해 원래 URI로 받는다', async () => {
-		const roomUri = `${FAKE}/chat/rooms/${signerRoom}`;
-		const bob2 = await createAccount('b.test');
-		const bob2Uri = `https://b.test/users/${bob2.id}`;
-		rosters.set(roomUri, [aliceUri, bobUri, bob2Uri]);
-
-		const aliceMirror = await invite('a.test', alice, roomUri, `signer ${crypto.randomUUID()}`);
-		const sent = await alice.client.request('chat/messages/create-to-room', { toRoomId: aliceMirror, text: 'signed by another member' });
-		const messageUri = `https://a.test/chat/messages/${sent.id}`;
-
-		// bob이 먼저 참여해 첫 서명자가 되고, bob2가 그 다음 서명자가 된다
-		await addMember(roomUri, bobUri, 'https://a.test/inbox');
-		await addMember(roomUri, bob2Uri, 'https://a.test/inbox');
-		const bob2OnA = await resolveRemoteUser('b.test', bob2.id, alice);
-		await vi.waitFor(async () => {
-			const members = await alice.client.request('chat/rooms/members', { roomId: aliceMirror, limit: 100 });
-			strictEqual(members.some(member => member.userId === bobOnA.id), true);
-			strictEqual(members.some(member => member.userId === bob2OnA.id), true);
-		}, WAIT_FOR_FEDERATION);
-
-		// 첫 서명자를 작성자 서버에서 정지하면 그 서명의 조회는 404가 된다
-		const adminA = await fetchAdmin('a.test');
-		await adminA.client.request('admin/suspend-user', { userId: bobOnA.id });
-		try {
-			pages.set(`${roomUri}/history`, page(roomUri, [
-				message(roomUri, messageUri, aliceUri, 'signed by another member', {
-					_misskey_chatAuthorArchived: true,
-					_misskey_chatAuthor: { name: 'Archived Alice', username: alice.username, host: 'a.test' },
-				}),
-			]));
-			const mirrorId = await invite('b.test', bob, roomUri, `signer ${crypto.randomUUID()}`);
-			await invite('b.test', bob2, roomUri, `signer ${crypto.randomUUID()}`);
-			await waitCompleted(bob, mirrorId);
-
-			const messages = await timeline(bob, mirrorId);
-			strictEqual(messages.length, 1);
-			strictEqual(messages[0].text, 'signed by another member');
-			// 보관 표시가 있어도 다른 서명자로 확인했으면 실제 작성자의 원래 URI다
-			strictEqual(messages[0].fromUser?.id, aliceOnB.id);
-		} finally {
-			await adminA.client.request('admin/unsuspend-user', { userId: bobOnA.id }).catch(() => {});
-		}
-	});
-
-	test('사본으로 남은 글은 작성자 회복 뒤 다시 받으면 같은 행이 원래 URI로 업그레이드된다', async () => {
+	test('사본으로 남은 글은 작성자가 회복되어 다시 받아도 사본으로 남는다', async () => {
 		const roomUri = `${FAKE}/chat/rooms/${upgradeRoom}`;
 		const charlie = await createAccount('a.test');
 		const charlieUri = `https://a.test/users/${charlie.id}`;
@@ -501,16 +465,16 @@ describe('Chat room history and third-party message URIs', () => {
 		await invite('b.test', bob2, roomUri, `upgrade ${crypto.randomUUID()}`);
 		await waitCompleted(bob, mirrorId);
 
-		const charlieOnB = await resolveRemoteUser('a.test', charlie.id, bob);
 		const messages = await timeline(bob, mirrorId);
-		// 사본과 원본 두 행이 아니라 같은 행이 업그레이드되어야 한다
+		// 다시 받아도 같은 사본 행이 그대로다. 원래 URI로 승격하지 않는다
 		strictEqual(messages.length, 1);
 		strictEqual(messages[0].id, copyId);
 		strictEqual(messages[0].text, 'upgrade me');
-		strictEqual(messages[0].fromUser?.id, charlieOnB.id);
+		strictEqual(messages[0].fromUser, null);
+		deepStrictEqual(messages[0].archivedAuthor, { name: 'Archived Charlie', username: charlie.username, host: 'a.test' });
 	});
 
-	test('참여 전에 삭제된 메시지는 Tombstone 확인으로 거부한다', async () => {
+	test('참여 전에 삭제된 메시지도 소유 서버가 싣고 있으면 사본으로 받는다', async () => {
 		const roomUri = `${FAKE}/chat/rooms/${tombstoneRoom}`;
 		rosters.set(roomUri, [aliceUri, bobUri]);
 
@@ -532,6 +496,9 @@ describe('Chat room history and third-party message URIs', () => {
 		const mirrorId = await invite('b.test', bob, roomUri, `tombstone ${crypto.randomUUID()}`);
 		await waitCompleted(bob, mirrorId);
 
-		deepStrictEqual(await timeline(bob, mirrorId), []);
+		// 삭제가 이 서버에 도착한 적이 없으므로 호스트가 싣고 있는 기록을 그대로 받는다
+		const messages = await timeline(bob, mirrorId);
+		strictEqual(messages.length, 1);
+		strictEqual(messages[0].text, 'deleted before join');
 	});
 });

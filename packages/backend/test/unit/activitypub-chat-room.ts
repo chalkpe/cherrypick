@@ -288,7 +288,7 @@ function fixture(options: {
 	inbox.chatService.deleteRoom = chatService.deleteRoom;
 	inbox.chatService.removeRoomMember = chatService.removeRoomMember;
 	inbox.chatService.finishRoomMemberRemoval = chatService.finishRoomMemberRemoval;
-	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, pipeline, globalEventService, redisClient, chatRoomBanService };
+	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, pipeline, globalEventService, redisClient, chatRoomBanService, chatRoomNotificationService: chatService.chatRoomNotificationService };
 }
 
 function inviteActivity(actor: { uri: string }, roomUri: string, invitee: string, attributedTo: string | undefined = actor.uri) {
@@ -467,7 +467,6 @@ describe('Chat room federation: Accept(Invite) from an account the owner removed
 		expect(result).toBe('skip: banned from the room');
 		expect(refuseAcceptedJoin).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'localroom' }), invitedRemote, 'banned');
 	});
-
 });
 
 describe('Chat room federation: Accept(Invite) from an account the owner blocked', () => {
@@ -900,7 +899,8 @@ describe('Chat room federation: Remove by the room owner', () => {
 
 		expect(f.memberships.rows).toEqual([]);
 		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('bobroom', 'membershipEnded', { userId: alice.id });
-		expect(f.pipeline.srem).toHaveBeenCalledWith(`newChatMessagesExists:${alice.id}`, 'room:bobroom');
+		const unreadRedis = (f.chatRoomNotificationService as unknown as { redis: { srem: ReturnType<typeof vi.fn> } }).redis;
+		expect(unreadRedis.srem).toHaveBeenCalledWith(`newChatMessagesExists:${alice.id}`, 'room:bobroom');
 	});
 
 	test('a member cannot remove someone else', async () => {
@@ -1369,9 +1369,9 @@ describe('Chat room federation: Add/Update/Delete', () => {
 		});
 
 		expect(f.rooms.rows.some(room => room.id === 'bobroom')).toBe(false);
-		expect(f.pipeline.del).toHaveBeenCalledWith('newRoomChatMessageExists:alice:bobroom');
-		expect(f.pipeline.srem).toHaveBeenCalledWith('newChatMessagesExists:alice', 'room:bobroom');
-		expect(f.pipeline.exec).toHaveBeenCalledOnce();
+		const unreadRedis = (f.chatRoomNotificationService as unknown as { redis: { del: ReturnType<typeof vi.fn>; srem: ReturnType<typeof vi.fn> } }).redis;
+		expect(unreadRedis.del).toHaveBeenCalledWith('newRoomChatMessageExists:alice:bobroom', 'newRoomChatMentionExists:alice:bobroom', 'newRoomChatUnreadChannels:alice:bobroom');
+		expect(unreadRedis.srem).toHaveBeenCalledWith('newChatMessagesExists:alice', 'room:bobroom');
 		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('bobroom', 'roomDeleted');
 		expect(f.liveKitService.deleteRoom).toHaveBeenCalledWith('bobroom');
 		expect(f.inbox.queueService.deliver).not.toHaveBeenCalled();

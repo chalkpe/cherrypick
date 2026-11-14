@@ -13,12 +13,11 @@ import { MiChatRoom } from '@/models/ChatRoom.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
 import { MiChatRoomUserSettings } from '@/models/ChatRoomUserSettings.js';
-import { MiChatRoomUnread } from '@/models/ChatRoomUnread.js';
 import { MiUser } from '@/models/User.js';
-import type { ChatRoomUnreadsRepository, ChatRoomUserSettingsRepository } from '@/models/_.js';
+import type { ChatRoomUserSettingsRepository } from '@/models/_.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
-import { chatMentionedUserIds, effectiveChatNotificationLevel, newlyMentionedUserIds } from '@/core/chat-room-notifications.js';
+import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_PRUNE_CHANNEL, chatMentionedUserIds, effectiveChatNotificationLevel, newlyMentionedUserIds } from '@/core/chat-room-notifications.js';
 import type { ChatNotificationLevel } from '@/core/chat-room-notifications.js';
 import { ChatChannelError } from '@/core/chat-room-channels.js';
 
@@ -30,6 +29,8 @@ export type ChatRoomNotificationSettings = {
 	effectiveLevel: ChatNotificationLevel;
 	channelOverrides: { channelId: string; level: ChatNotificationLevel }[];
 };
+/** record가 트랜잭션 안에서 계산해 커밋 후 mark에 넘기는 결과. */
+export type ChatRoomRecordResult = { added: string[]; mentioned: string[]; recipients: string[] };
 
 @Injectable()
 export class ChatRoomNotificationService {
@@ -38,10 +39,33 @@ export class ChatRoomNotificationService {
 		@Inject(DI.redis) private redis: Redis.Redis,
 		@Inject(DI.config) private config: Config,
 		@Inject(DI.chatRoomUserSettingsRepository) private settingsRepository: ChatRoomUserSettingsRepository,
-		@Inject(DI.chatRoomUnreadsRepository) private unreadsRepository: ChatRoomUnreadsRepository,
 		private channels: ChatRoomChannelService,
 		private events: GlobalEventService,
 	) {}
+
+	private roomMessageKey(userId: string, roomId: string) {
+		return `newRoomChatMessageExists:${userId}:${roomId}`;
+	}
+
+	private roomMentionKey(userId: string, roomId: string) {
+		return `newRoomChatMentionExists:${userId}:${roomId}`;
+	}
+
+	private channelMessageKey(userId: string, roomId: string, channelId: string) {
+		return `newRoomChatChannelMessageExists:${userId}:${roomId}:${channelId}`;
+	}
+
+	private channelMentionKey(userId: string, roomId: string, channelId: string) {
+		return `newRoomChatChannelMentionExists:${userId}:${roomId}:${channelId}`;
+	}
+
+	private channelSetKey(userId: string, roomId: string) {
+		return `newRoomChatUnreadChannels:${userId}:${roomId}`;
+	}
+
+	private totalsKey(userId: string) {
+		return `newChatMessagesExists:${userId}`;
+	}
 
 	public async settings(userId: string, roomId: string, manager = this.db.manager) {
 		const stored = await manager.withRepository(this.settingsRepository).findOneBy({ userId, roomId });
@@ -88,7 +112,8 @@ export class ChatRoomNotificationService {
 		return author == null ? [] : chatMentionedUserIds(message.text ?? '', author, members, this.config.hostname ?? this.config.host);
 	}
 
-	public async record(manager: EntityManager, room: MiChatRoom, message: MiChatMessage, previousMentions?: string[]): Promise<string[]> {
+	/** 트랜잭션 안에서 순번·멘션만 기록한다. 미읽음 표식은 커밋 후 mark가 남긴다. */
+	public async record(manager: EntityManager, room: MiChatRoom, message: MiChatMessage, previousMentions?: string[]): Promise<ChatRoomRecordResult> {
 		const members = await this.participants(room, manager);
 		const mentioned = this.mentioned(message, members);
 		const added = newlyMentionedUserIds(mentioned, previousMentions ?? []);
@@ -106,17 +131,29 @@ export class ChatRoomNotificationService {
 			message.roomMessageSequence = roomMessageSequence;
 		}
 		message.mentionedUserIds = remembered;
-		if (previousMentions != null) {
-			for (const row of await manager.withRepository(this.unreadsRepository).findBy({ messageId: message.id })) {
-				await manager.withRepository(this.unreadsRepository).update({ userId: row.userId, messageId: row.messageId }, { isMention: mentioned.includes(row.userId) });
-			}
-		}
 		const recipients = members.filter(member => member.host == null && member.id !== message.fromUserId && (previousMentions == null || added.includes(member.id)));
-		for (const member of recipients) {
-			const membership = await manager.findOneBy(MiChatRoomMembership, { roomId: room.id, userId: member.id });
-			await manager.withRepository(this.unreadsRepository).upsert({ userId: member.id, roomId: room.id, membershipId: membership?.id ?? null, messageId: message.id, sequence: roomMessageSequence, isMention: mentioned.includes(member.id), notificationSent: false }, ['userId', 'messageId']);
+		return { added, mentioned, recipients: recipients.map(member => member.id) };
+	}
+
+	/** 커밋 후 미읽음 표식을 남긴다. 알림 끄기는 표식도 남기지 않는다. 수정은 더 새 글의 표식을 덮어쓰지 않는다. */
+	public async mark(room: MiChatRoom, message: MiChatMessage, recorded: ChatRoomRecordResult, edit = false): Promise<void> {
+		const channelId = message.toRoomChannelId ?? null;
+		for (const userId of recorded.recipients) {
+			const settings = await this.settings(userId, room.id);
+			const level = effectiveChatNotificationLevel(settings.notificationLevel, channelId != null ? settings.channelOverrides[channelId] : null);
+			if (level === 'none') continue;
+			const messageKey = channelId != null ? this.channelMessageKey(userId, room.id, channelId) : this.roomMessageKey(userId, room.id);
+			const mentionKey = channelId != null ? this.channelMentionKey(userId, room.id, channelId) : this.roomMentionKey(userId, room.id);
+			if (edit) {
+				if (recorded.mentioned.includes(userId)) await this.redis.set(mentionKey, message.id, 'NX');
+				await this.redis.set(messageKey, message.id, 'NX');
+			} else {
+				await this.redis.set(messageKey, message.id);
+				if (recorded.mentioned.includes(userId)) await this.redis.set(mentionKey, message.id);
+			}
+			if (channelId != null) await this.redis.sadd(this.channelSetKey(userId, room.id), channelId);
+			await this.redis.sadd(this.totalsKey(userId), `room:${room.id}`);
 		}
-		return added;
 	}
 
 	public async shouldNotify(userId: string, message: MiChatMessage, manager = this.db.manager): Promise<boolean> {
@@ -129,70 +166,75 @@ export class ChatRoomNotificationService {
 		return level === 'all' || this.mentioned(message, await this.participants(room, manager)).includes(userId);
 	}
 
-	/** 아직 알리지 않은 수신자를 고른다. 수정 알림은 onlyUserIds(새로 멘션된 사람)로 한정한다. */
-	public async pendingRecipients(message: MiChatMessage, manager = this.db.manager, onlyUserIds?: string[]): Promise<string[]> {
-		const repository = manager.withRepository(this.unreadsRepository);
+	/**
+	 * 지연 알림 시점에 아직 알릴 수신자를 고른다. 설정·멤버십은 지금 다시 조회한다.
+	 * 생성은 표식이 이 글을 가리키는(아직 읽지 않은) 사람에게만, 수정은 onlyUserIds(새로 멘션된 사람)에게만 간다.
+	 */
+	public async notificationRecipients(message: MiChatMessage, room: MiChatRoom, onlyUserIds?: string[]): Promise<string[]> {
 		if (onlyUserIds != null && onlyUserIds.length === 0) return [];
-		const rows = await repository.findBy({ messageId: message.id, notificationSent: false, ...(onlyUserIds != null ? { userId: In(onlyUserIds) } : {}) });
+		const members = await this.participants(room);
+		const mentioned = onlyUserIds != null ? this.mentioned(message, members) : null;
 		const recipients: string[] = [];
-		for (const row of rows) {
-			if (!await this.shouldNotify(row.userId, message, manager)) continue;
-			const result = await repository.update({ userId: row.userId, messageId: row.messageId, notificationSent: false }, { notificationSent: true });
-			if (result.affected) recipients.push(row.userId);
+		for (const member of members) {
+			if (member.host != null || member.id === message.fromUserId) continue;
+			if (onlyUserIds != null && !onlyUserIds.includes(member.id)) continue;
+			const settings = await this.settings(member.id, room.id);
+			const channelId = message.toRoomChannelId;
+			const level = effectiveChatNotificationLevel(settings.notificationLevel, channelId != null ? settings.channelOverrides[channelId] : null);
+			if (level === 'none') continue;
+			if (onlyUserIds != null) {
+				// 수정 사이에 멘션이 사라졌으면 알리지 않는다
+				if (!mentioned!.includes(member.id)) continue;
+			} else {
+				const messageKey = channelId != null ? this.channelMessageKey(member.id, room.id, channelId) : this.roomMessageKey(member.id, room.id);
+				if (await this.redis.get(messageKey) !== message.id) continue;
+				if (level === 'mentions') {
+					const mentionKey = channelId != null ? this.channelMentionKey(member.id, room.id, channelId) : this.roomMentionKey(member.id, room.id);
+					if (await this.redis.get(mentionKey) !== message.id) continue;
+				}
+			}
+			recipients.push(member.id);
 		}
 		return recipients;
 	}
 
-	private unreadQuery(userId: string) {
-		return this.unreadsRepository.createQueryBuilder('unread')
-			.innerJoin('unread.message', 'message')
-			// 작성자가 탈퇴해 비어 있는 글도 미읽음에서 빠지지 않는다. 정지된 작성자의 글만 숨긴다.
-			.leftJoin('message.fromUser', 'author')
-			.where('unread.userId = :userId', { userId })
-			.andWhere('message.deletedAt IS NULL')
-			.andWhere('(message.fromUserId IS NULL OR author.isSuspended = false)');
-	}
-
 	public async state(userId: string, room: MiChatRoom): Promise<ChatRoomUnreadState> {
-		const rows = await this.unreadQuery(userId).andWhere('unread.roomId = :roomId', { roomId: room.id })
-			.select('message.toRoomChannelId', 'channelId').addSelect('BOOL_OR(unread.isMention)', 'isMention')
-			.groupBy('message.toRoomChannelId').getRawMany<{ channelId: string | null; isMention: boolean }>();
-		// 기존 Redis 표시도 최초 열람까지 유지한다. 새 메시지는 DB에만 기록한다.
-		const legacy = await this.redis.get(`newRoomChatMessageExists:${userId}:${room.id}`);
-		if (legacy != null) {
-			const message = await this.db.manager.findOneBy(MiChatMessage, { id: legacy, toRoomId: room.id, deletedAt: IsNull() });
-			if (message != null) {
-				const channels = room.hasChannels ? await this.redis.smembers(`newRoomChatUnreadChannels:${userId}:${room.id}`) : [];
-				const valid = room.hasChannels ? (await this.channels.list(room.id)).map(channel => channel.id) : [];
-				for (const channelId of room.hasChannels ? (channels.length ? channels : [message.toRoomChannelId]).filter((id): id is string => id != null && valid.includes(id)) : [null]) {
-					if (!rows.some(row => row.channelId === channelId)) rows.push({ channelId, isMention: false });
-				}
-			}
-		}
 		const settings = await this.settings(userId, room.id);
 		const levelOf = (channelId: string | null) => effectiveChatNotificationLevel(settings.notificationLevel, channelId != null ? settings.channelOverrides[channelId] : null);
-		// 알림 끄기는 정적인 미읽음 표시도 만들지 않는다. 행은 남겨 두어 다시 켜면 그대로 보인다.
-		const visible = rows.filter(row => levelOf(row.channelId) !== 'none');
-		const attention = visible.filter(row => levelOf(row.channelId) === 'all' || row.isMention);
-		return { hasUnread: visible.length > 0, hasUnreadNotification: attention.length > 0, unreadChannelIds: visible.flatMap(row => row.channelId != null ? [row.channelId] : []), notificationChannelIds: attention.flatMap(row => row.channelId != null ? [row.channelId] : []) };
+		const unreadChannelIds: string[] = [];
+		const notificationChannelIds: string[] = [];
+		let hasUnread = false;
+		let hasUnreadNotification = false;
+		const consider = (channelId: string | null, messageMarker: string | null, mentionMarker: string | null) => {
+			const level = levelOf(channelId);
+			// 알림 끄기는 정적인 미읽음 표시도 만들지 않는다. 표식은 남겨 두어 다시 켜면 그대로 보인다.
+			if (level === 'none' || (messageMarker == null && mentionMarker == null)) return;
+			hasUnread = true;
+			if (channelId != null) unreadChannelIds.push(channelId);
+			if (level === 'all' || mentionMarker != null) {
+				hasUnreadNotification = true;
+				if (channelId != null) notificationChannelIds.push(channelId);
+			}
+		};
+		if (room.hasChannels) {
+			const valid = new Set((await this.channels.list(room.id)).map(channel => channel.id));
+			const channelIds = (await this.redis.smembers(this.channelSetKey(userId, room.id))).filter(id => valid.has(id));
+			for (const channelId of channelIds) {
+				const [messageMarker, mentionMarker] = await this.redis.mget(this.channelMessageKey(userId, room.id, channelId), this.channelMentionKey(userId, room.id, channelId));
+				consider(channelId, messageMarker, mentionMarker);
+			}
+		} else {
+			const [messageMarker, mentionMarker] = await this.redis.mget(this.roomMessageKey(userId, room.id), this.roomMentionKey(userId, room.id));
+			consider(null, messageMarker, mentionMarker);
+		}
+		return { hasUnread, hasUnreadNotification, unreadChannelIds, notificationChannelIds };
 	}
 
 	public async totals(userId: string) {
-		const rows = await this.unreadQuery(userId).select('unread.roomId', 'roomId').addSelect('message.toRoomChannelId', 'channelId')
-			.addSelect('BOOL_OR(unread.isMention)', 'isMention').groupBy('unread.roomId').addGroupBy('message.toRoomChannelId')
-			.getRawMany<{ roomId: string; channelId: string | null; isMention: boolean }>();
-		const settings = new Map((await this.settingsRepository.findBy({ userId })).map(settings => [settings.roomId, settings]));
-		const legacy = await this.redis.smembers(`newChatMessagesExists:${userId}`);
-		const roomIds = legacy.filter(value => value.startsWith('room:')).map(value => value.slice(5));
-		const direct = legacy.some(value => value.startsWith('user:'));
-		const levelOf = (row: { roomId: string; channelId: string | null }) => {
-			const setting = settings.get(row.roomId);
-			return effectiveChatNotificationLevel(setting?.notificationLevel ?? 'all', row.channelId != null ? setting?.channelOverrides[row.channelId] : null);
-		};
-		const visible = rows.filter(row => levelOf(row) !== 'none');
-		let hasUnreadChatMessages = direct || visible.length > 0;
-		let hasUnreadChatNotifications = direct || visible.some(row => levelOf(row) === 'all' || row.isMention);
-		for (const roomId of roomIds) {
+		const entries = await this.redis.smembers(this.totalsKey(userId));
+		let hasUnreadChatMessages = entries.some(value => value.startsWith('user:'));
+		let hasUnreadChatNotifications = hasUnreadChatMessages;
+		for (const roomId of entries.filter(value => value.startsWith('room:')).map(value => value.slice(5))) {
 			const room = await this.db.manager.findOneBy(MiChatRoom, { id: roomId });
 			if (room == null || !await this.isMember(userId, room)) continue;
 			const state = await this.state(userId, room);
@@ -217,27 +259,61 @@ export class ChatRoomNotificationService {
 			const selected = !readAll ? await this.channels.resolve(room, channelId, manager) : undefined;
 			const boundary = untilId != null ? await manager.findOneBy(MiChatMessage, { id: untilId, toRoomId: roomId, ...(selected != null ? { toRoomChannelId: selected } : {}) }) : null;
 			if (untilId != null && boundary == null) throw new ChatChannelError('NO_SUCH_ROOM');
-			const messages = manager.createQueryBuilder(MiChatMessage, 'message').select('message.id').where('message.toRoomId = :roomId', { roomId });
-			if (selected != null) messages.andWhere('message.toRoomChannelId = :channelId', { channelId: selected });
-			const deletion = manager.createQueryBuilder().delete().from(MiChatRoomUnread).where('userId = :userId', { userId }).andWhere(`"messageId" IN (${messages.getQuery()})`, messages.getParameters());
-			if (untilId != null) deletion.andWhere('sequence <= :sequence', { sequence: boundary?.roomMessageSequence ?? '0' });
-			await deletion.execute();
+			const boundarySequence = BigInt(boundary?.roomMessageSequence ?? '0');
+			// 표식이 가리키는 글이 경계 안에 있을 때만 지운다. 그 사이 새 글이 표식을 바꾸었으면 지우지 않는다.
+			const clearMarker = async (key: string) => {
+				if (untilId == null) {
+					await this.redis.del(key);
+					return;
+				}
+				const marker = await this.redis.get(key);
+				if (marker == null) return;
+				const message = await manager.findOneBy(MiChatMessage, { id: marker, toRoomId: roomId });
+				if (BigInt(message?.roomMessageSequence ?? '0') <= boundarySequence) {
+					await this.redis.eval(CHAT_UNREAD_GUARDED_DEL, 1, key, marker);
+				}
+			};
 			if (readAll || !room.hasChannels) {
-				await this.redis.multi().del(`newRoomChatMessageExists:${userId}:${roomId}`, `newRoomChatUnreadChannels:${userId}:${roomId}`).srem(`newChatMessagesExists:${userId}`, `room:${roomId}`).exec();
+				const keys = [this.roomMessageKey(userId, roomId), this.roomMentionKey(userId, roomId), this.channelSetKey(userId, roomId)];
+				if (room.hasChannels) {
+					const channelIds = new Set((await this.channels.list(room.id)).map(channel => channel.id));
+					for (const id of await this.redis.smembers(this.channelSetKey(userId, roomId))) channelIds.add(id);
+					for (const id of channelIds) keys.push(this.channelMessageKey(userId, roomId, id), this.channelMentionKey(userId, roomId, id));
+				}
+				await this.redis.del(...keys);
+				await this.redis.srem(this.totalsKey(userId), `room:${roomId}`);
 			} else {
-				await this.redis.eval("redis.call('SREM', KEYS[1], ARGV[1]); if redis.call('SCARD', KEYS[1]) == 0 then redis.call('DEL', KEYS[2]); redis.call('SREM', KEYS[3], ARGV[2]); end", 3, `newRoomChatUnreadChannels:${userId}:${roomId}`, `newRoomChatMessageExists:${userId}:${roomId}`, `newChatMessagesExists:${userId}`, selected!, `room:${roomId}`);
+				await clearMarker(this.channelMessageKey(userId, roomId, selected!));
+				await clearMarker(this.channelMentionKey(userId, roomId, selected!));
+				await this.redis.eval(
+					CHAT_UNREAD_PRUNE_CHANNEL,
+					6, this.channelSetKey(userId, roomId), this.channelMessageKey(userId, roomId, selected!), this.channelMentionKey(userId, roomId, selected!), this.roomMessageKey(userId, roomId), this.roomMentionKey(userId, roomId), this.totalsKey(userId), selected!, `room:${roomId}`,
+				);
 			}
 		});
 		await this.notify([userId]);
 	}
 
+	/** 그룹을 떠나거나 사라진 사람의 미읽음 표식을 지운다. deleteRoom/leave/kick/forget이 함께 쓴다. */
+	public async clearRoom(roomId: string, userIds: string[]): Promise<void> {
+		for (const userId of new Set(userIds)) {
+			const keys = [this.roomMessageKey(userId, roomId), this.roomMentionKey(userId, roomId), this.channelSetKey(userId, roomId)];
+			for (const channelId of await this.redis.smembers(this.channelSetKey(userId, roomId))) {
+				keys.push(this.channelMessageKey(userId, roomId, channelId), this.channelMentionKey(userId, roomId, channelId));
+			}
+			await this.redis.del(...keys);
+			await this.redis.srem(this.totalsKey(userId), `room:${roomId}`);
+		}
+	}
+
 	public async forget(userId: string, roomId: string): Promise<void> {
-		await this.db.transaction(async manager => {
+		const removed = await this.db.transaction(async manager => {
 			const room = await manager.findOne(MiChatRoom, { where: { id: roomId }, lock: { mode: 'pessimistic_write' } });
-			if (room != null && await this.isMember(userId, room, manager)) return;
-			await manager.delete(MiChatRoomUnread, { userId, roomId });
+			if (room != null && await this.isMember(userId, room, manager)) return false;
 			await manager.delete(MiChatRoomUserSettings, { userId, roomId });
+			return true;
 		});
+		if (removed) await this.clearRoom(roomId, [userId]);
 		await this.notify([userId]);
 	}
 

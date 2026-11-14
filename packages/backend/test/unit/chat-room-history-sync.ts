@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { DelayedError } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -17,7 +17,7 @@ import type { IObject } from '@/core/activitypub/type.js';
 vi.mock('@/misc/distributed-lock.js', () => ({ acquireApObjectLock: async () => async () => {} }));
 
 // 받는 서버의 처리 순서와 판정만 본다. 저장과 실제 HTTP는 실제 DB 시험과 서버 사이 검증에서 따로 확인한다.
-// 잠금과 진행 위치 판정(Lua)은 이 시험 전용 접두사를 붙인 실제 Redis로 확인한다.
+// 잠금과 진행 위치 판정(단일 JSON 키)은 이 시험 전용 접두사를 붙인 실제 Redis로 확인한다.
 const prefix = `test-chatRoomHistorySync-${randomUUID()}:`;
 let redis: Redis;
 let raw: Redis;
@@ -44,10 +44,6 @@ function note(id: string, overrides: Record<string, unknown> = {}): IObject {
 
 type Setup = {
 	pages?: Map<string, IObject | Error>;
-	/** 출처 조회의 기본 응답. 없으면 페이지가 싣는 항목을 id로 내준다 */
-	sources?: Map<string, IObject | Error>;
-	/** 서명자별 출처 응답. 첫 서명자만 모르는 작성자 서버 등을 재현한다 */
-	signerSources?: Map<string, Map<string, IObject | Error>>;
 	accounts?: Map<string, unknown>;
 	cachedAccounts?: Map<string, unknown>;
 	existing?: Set<string>;
@@ -63,10 +59,10 @@ function setup(options: Setup = {}) {
 	const history = {
 		getState: vi.fn(async () => ({ ...state })),
 		localMembers: vi.fn(async () => options.signers ?? [signer]),
-		findImported: vi.fn(async (uri: string) => options.existing?.has(uri) ? { uri } : null),
+		findExistingCopy: vi.fn(async (_roomId: string, sourceUri: string) => options.existing?.has(sourceUri) ? { uri: sourceUri } : null),
 		importMessage: vi.fn(async (_room: unknown, input: Record<string, unknown>) => {
 			imported.push(input);
-			return { id: `stored-${imported.length}`, uri: input.uri };
+			return { id: `stored-${imported.length}` };
 		}),
 		advance: vi.fn(async (_roomId: string, pass: number, nextUri: string | null) => {
 			if (pass !== state.pass) return false;
@@ -84,20 +80,9 @@ function setup(options: Setup = {}) {
 		signedAs = user.id;
 	});
 	const resolve = vi.fn(async (url: string) => {
-		const source = options.signerSources?.get(signedAs ?? '')?.get(url) ?? options.sources?.get(url);
-		if (source instanceof Error) throw source;
-		if (source != null) return source;
 		const page = options.pages?.get(url);
 		if (page instanceof Error) throw page;
 		if (page != null) return page;
-		// 작성자 서버의 메시지 조회: 등록된 페이지가 싣는 항목을 id로 내준다. 명시한 응답이 우선한다
-		for (const registered of options.pages?.values() ?? []) {
-			if (registered == null || typeof registered !== 'object') continue;
-			const items = (registered as { orderedItems?: unknown }).orderedItems;
-			if (!Array.isArray(items)) continue;
-			const item = items.find(entry => entry != null && typeof entry === 'object' && (entry as IObject).id === url);
-			if (item != null) return item as IObject;
-		}
 		throw new StatusError('Not Found', 404);
 	});
 	const accounts = options.accounts ?? new Map<string, unknown>([[author.uri, author], [reactor.uri, reactor]]);
@@ -145,7 +130,7 @@ function setup(options: Setup = {}) {
 }
 
 const lockKey = 'chat_room_history_lock:room1';
-const progressKeys = (pass: number) => [`chat_room_history_progress:room1:${pass}:seen`, `chat_room_history_progress:room1:${pass}:state`];
+const progressKey = (pass: number) => `chat_room_history_progress:room1:${pass}`;
 
 async function clearRedis() {
 	const keys = await raw.keys(`${prefix}*`);
@@ -183,28 +168,29 @@ describe('과거 기록 가져오기 작업', () => {
 
 		expect(await run()).toBe('ok: completed');
 
-		expect(imported.map(input => input.uri)).toEqual(['m3', 'm2', 'm1'].map(id => `https://member.test/chat/messages/${id}`));
+		expect(imported.map(input => input.sourceUri)).toEqual(['m3', 'm2', 'm1'].map(id => `https://member.test/chat/messages/${id}`));
 		expect(state.status).toBe('completed');
 		expect(applyPendingChatReactions).toHaveBeenCalledTimes(3);
 		expect(await redis.exists(lockKey)).toBe(0);
-		expect(await redis.exists(...progressKeys(1))).toBe(0);
+		expect(await redis.exists(progressKey(1))).toBe(0);
 	});
 
-	test('한 번에 받는 페이지 수를 넘으면 이어서 받을 작업을 다시 넣는다', async () => {
+	test('한 번에 받는 페이지 수를 넘으면 같은 작업을 지연시켜 이어서 받는다', async () => {
 		const cursor = (page: number) => `c${1000 - page}`;
 		for (let i = 0; i < 30; i++) {
 			const url = i === 0 ? first : `${roomUri}/history?until=${cursor(i)}`;
 			pages.set(url, buildChatHistoryPage(roomUri, i === 0 ? null : cursor(i), [], cursor(i + 1)));
 		}
-		const { run, state, history } = setup({ pages });
+		const { run, state, history, moveToDelayed } = setup({ pages });
 
-		expect(await run()).toBe('ok: continues');
+		await expect(run()).rejects.toBeInstanceOf(DelayedError);
 
 		expect(state.nextUri).toBe(`${roomUri}/history?until=c975`);
-		expect(history.enqueueImport).toHaveBeenCalledWith('room1', 1, `${roomUri}/history?until=c975`, expect.any(Number));
+		expect(moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'job-token');
+		expect(history.enqueueImport).not.toHaveBeenCalled();
 		expect(await redis.exists(lockKey)).toBe(0);
 		// 이어서 받을 때 쓰도록 진행 위치는 남긴다. 글이 없는 페이지뿐이면 본 글 목록은 아직 없다
-		expect(await redis.exists(progressKeys(1)[1])).toBe(1);
+		expect(await redis.exists(progressKey(1))).toBe(1);
 	});
 
 	test('중단된 곳부터 이어 받는다', async () => {
@@ -232,7 +218,7 @@ describe('과거 기록 가져오기 작업', () => {
 		await redis.del(lockKey);
 
 		expect(await ctx.run(0)).toBe('ok: completed');
-		expect(ctx.imported.map(input => input.uri)).toEqual(['https://member.test/chat/messages/m1']);
+		expect(ctx.imported.map(input => input.sourceUri)).toEqual(['https://member.test/chat/messages/m1']);
 	});
 
 	test('이미 있는 글은 소유 서버가 다른 내용을 내줘도 저장하지 않는다', async () => {
@@ -317,61 +303,58 @@ describe('과거 기록 가져오기 작업', () => {
 		});
 	});
 
-	test('작성자 서버의 일시적인 장애는 다시 시도하고, 마지막 시도에서는 글을 보존한다', async () => {
+	test('작성자 서버가 일시적으로 장애여도 다시 묻지 않고 보관 작성자로 보존한다', async () => {
 		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
 		const accounts = new Map<string, unknown>([[author.uri, new StatusError('Bad Gateway', 502)]]);
 		const ctx = setup({ pages, accounts });
 
-		await expect(ctx.run(0)).rejects.toThrow();
-		expect(ctx.imported).toEqual([]);
-
-		await ctx.run(7);
+		expect(await ctx.run(0)).toBe('ok: completed');
+		expect(ctx.resolvePerson).toHaveBeenCalledTimes(1);
 		expect(ctx.imported[0]).toMatchObject({ authorId: null, archivedAuthor: { uri: author.uri, username: null, name: null } });
 	});
 
-	test('캐시된 작성자가 삭제됐거나 응답하지 않으면 보관된 작성자로 글을 보존한다', async () => {
+	test('캐시된 작성자는 다시 확인하지 않고 실제 계정으로 가져온다', async () => {
+		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
+		pages.set(author.uri, new StatusError('Not Found', 404));
+		const ctx = setup({ pages, cachedAccounts: new Map([[author.uri, author]]) });
+
+		await ctx.run();
+
+		expect(ctx.imported[0]).toMatchObject({ authorId: author.id, archivedAuthor: null });
+		expect(ctx.resolve).not.toHaveBeenCalledWith(author.uri);
+		expect(ctx.resolvePerson).not.toHaveBeenCalled();
+	});
+
+	test('캐시된 계정이 삭제 표시면 보관된 작성자로 글을 보존한다', async () => {
 		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
 			_misskey_chatAuthor: { name: '지난 이름', username: 'gone', host: 'member.test' },
 		})], null));
-		pages.set(author.uri, new StatusError('Not Found', 404));
-		const ctx = setup({ pages, cachedAccounts: new Map([[author.uri, author]]) });
+		const ctx = setup({ pages, cachedAccounts: new Map([[author.uri, { ...author, isDeleted: true }]]) });
 
 		await ctx.run();
 
 		expect(ctx.imported[0]).toMatchObject({ authorId: null, archivedAuthor: { uri: author.uri, username: 'gone', name: '지난 이름' } });
 	});
 
-	test('캐시된 작성자가 살아 있으면 실제 계정으로 가져온다', async () => {
-		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
-		pages.set(author.uri, { id: author.uri, type: 'Person' } as IObject);
-		const ctx = setup({ pages, cachedAccounts: new Map([[author.uri, author]]) });
-
-		await ctx.run();
-
-		expect(ctx.imported[0]).toMatchObject({ authorId: author.id, archivedAuthor: null });
-	});
-
 	test.each([
 		['완전한 보관 정보', { name: '지난 이름', username: 'gone', host: 'member.test' }, { name: '지난 이름', username: 'gone' }],
 		['보관 정보 없음', undefined, { name: null, username: null }],
 		['형식이 틀린 보관 정보', { name: 1, username: 'gone', host: 'member.test' }, { name: null, username: null }],
-	])('작성자 서버가 내주지 않는(404) 보관 기록은 %s이어도 캐시된 계정 대신 보관 작성자로 받는다', async (_label, authorInfo, expected) => {
+	])('보관 표시가 있는 기록은 %s이어도 작성자 조회 없이 보관 작성자로 받는다', async (_label, authorInfo, expected) => {
 		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
 			_misskey_chatAuthorArchived: true,
 			_misskey_chatAuthor: authorInfo,
 		})], null));
-		pages.set(author.uri, { id: author.uri, type: 'Person' } as IObject);
-		pages.set('https://member.test/chat/messages/m1', new StatusError('Not Found', 404));
 		const ctx = setup({ pages, cachedAccounts: new Map([[author.uri, author]]) });
 
 		await ctx.run();
 
 		expect(ctx.imported[0]).toMatchObject({ authorId: null, archivedAuthor: { uri: author.uri, host: 'member.test', ...expected } });
+		expect(ctx.resolvePerson).not.toHaveBeenCalled();
 	});
 
 	test.each([undefined, false, 'true', 1])('보관 표시가 정확한 true가 아니면 기존 작성자 확인을 유지한다: %s', async marker => {
 		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', { _misskey_chatAuthorArchived: marker })], null));
-		pages.set(author.uri, { id: author.uri, type: 'Person' } as IObject);
 		const ctx = setup({ pages, cachedAccounts: new Map([[author.uri, author]]) });
 
 		await ctx.run();
@@ -420,211 +403,84 @@ describe('과거 기록 가져오기 작업', () => {
 		expect(ctx.state.nextUri).toBeNull();
 	});
 
-	describe('제3 서버 기록의 출처 확인', () => {
+	describe('호스트 기록 신뢰와 사본 저장', () => {
 		const messageUri = 'https://member.test/chat/messages/m1';
-		const copyUri = `https://here.test/chat/history/${createHash('sha256').update(`room1\n${messageUri}`).digest('hex').slice(0, 32)}`;
 
-		test('소유 서버가 보관한 자기 글은 출처 확인 없이 받는다', async () => {
+		test('소유 서버가 보관한 자기 글도 출처 확인 없이 사본으로 저장한다', async () => {
 			const ownUri = 'https://owner.test/chat/messages/m1';
 			pages.set(first, buildChatHistoryPage(roomUri, null, [{ ...note('m1'), id: ownUri, attributedTo: owner.uri } as IObject], null));
 			const { run, imported, resolve } = setup({ pages, accounts: new Map([[author.uri, author], [reactor.uri, reactor], [owner.uri, owner]]) });
 
 			await run();
 
-			expect(imported.map(input => input.uri)).toEqual([ownUri]);
+			expect(imported.map(input => input.sourceUri)).toEqual([ownUri]);
+			expect(imported[0]).toMatchObject({ authorId: owner.id, archivedAuthor: null });
 			expect(resolve).not.toHaveBeenCalledWith(ownUri);
 		});
 
-		test('제3 서버의 글은 작성자 서버에서 확인하고 원래 URI로 받는다', async () => {
+		test('제3 서버의 글은 출처 확인 없이 사본으로 저장한다', async () => {
 			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
 			const { run, imported, resolve } = setup({ pages });
 
 			await run();
 
-			expect(resolve).toHaveBeenCalledWith(messageUri);
-			expect(imported[0]).toMatchObject({ uri: messageUri, sourceUri: messageUri, authorId: author.id, archivedAuthor: null });
+			expect(resolve).not.toHaveBeenCalledWith(messageUri);
+			expect(imported[0]).toMatchObject({ sourceUri: messageUri, authorId: author.id, archivedAuthor: null });
 		});
 
-		test('소유 서버가 본문을 바꿔 내줘도 작성자 서버가 확인한 본문으로 받는다', async () => {
+		test('소유 서버가 내준 본문·첨부·시각을 그대로 믿는다', async () => {
 			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
-				_misskey_content: 'forged text',
-				_misskey_chatReactions: [{ actor: reactor.uri, reaction: '👍' }],
-			})], null));
-			const sources = new Map<string, IObject | Error>([[messageUri, note('m1')]]);
-			const { run, imported } = setup({ pages, sources });
-
-			await run();
-
-			// 리액션은 소유 서버만 아는 기록이므로 그대로 유지한다
-			expect(imported[0]).toMatchObject({ uri: messageUri, text: 'text m1', reactions: [`${reactor.id}/👍`] });
-		});
-
-		test('소유 서버가 첨부·게시 시각을 바꿔 내줘도 출처의 것으로 받는다', async () => {
-			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+				_misskey_content: 'host snapshot',
 				published: '2026-11-02T00:00:00.000Z',
 				updated: '2026-11-03T00:00:00.000Z',
 				attachment: [
-					{ type: 'Document', url: 'https://member.test/files/forged1.png' },
-					{ type: 'Document', url: 'https://member.test/files/forged2.png' },
+					{ type: 'Document', url: 'https://member.test/files/1.png' },
+					{ type: 'Document', url: 'https://member.test/files/2.png' },
 				],
+				_misskey_chatReactions: [{ actor: reactor.uri, reaction: '👍' }],
 			})], null));
-			const sources = new Map<string, IObject | Error>([[messageUri, note('m1', {
-				published: '2026-11-01T00:00:00.000Z',
-				attachment: [{ type: 'Document', url: 'https://member.test/files/real.png' }],
-			})]]);
-			const { run, imported } = setup({ pages, sources });
-
-			await run();
-
-			expect(imported[0]).toMatchObject({
-				published: new Date('2026-11-01T00:00:00.000Z'),
-				editedAt: null,
-				unavailableFileCount: 1,
-			});
-		});
-
-		test('출처 객체가 기록으로 읽을 수 없으면 그 글은 버린다', async () => {
-			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
-			const sources = new Map<string, IObject | Error>([[messageUri, note('m1', { published: 'not a date' })]]);
-			const { run, imported } = setup({ pages, sources });
-
-			await run();
-
-			expect(imported).toEqual([]);
-		});
-
-		test.each([
-			['다른 id의 객체', { id: 'https://member.test/notes/other', type: 'Note', _misskey_talk: true, context: roomUri, attributedTo: author.uri }],
-			['채팅이 아닌 일반 노트', { id: messageUri, type: 'Note', attributedTo: author.uri }],
-			['다른 그룹의 글', { id: messageUri, type: 'Note', _misskey_talk: true, context: 'https://owner.test/chat/rooms/other', attributedTo: author.uri }],
-			['다른 작성자의 글', { id: messageUri, type: 'Note', _misskey_talk: true, context: roomUri, attributedTo: 'https://member.test/users/other' }],
-			['삭제된 글', { id: messageUri, type: 'Tombstone' }],
-		])('작성자 서버가 %s를 내주면 그 글은 버린다', async (_label, object) => {
-			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
-			pages.set(messageUri, object as IObject);
 			const { run, imported } = setup({ pages });
 
 			await run();
 
-			expect(imported).toEqual([]);
+			expect(imported[0]).toMatchObject({
+				sourceUri: messageUri,
+				text: 'host snapshot',
+				published: new Date('2026-11-02T00:00:00.000Z'),
+				editedAt: new Date('2026-11-03T00:00:00.000Z'),
+				unavailableFileCount: 2,
+				reactions: [`${reactor.id}/👍`],
+			});
 		});
 
-		test.each([404, 410])('작성자 서버가 없고(%s) 보관 표시가 있으면 사본 URI로 보존한다', async status => {
-			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
-				_misskey_chatAuthorArchived: true,
-				_misskey_chatAuthor: { name: '지난 이름', username: 'gone', host: 'member.test' },
-			})], null));
-			pages.set(messageUri, new StatusError('Gone', status));
+		test('작성자 서버가 글을 내주지 않아도(404) 사본으로 저장한다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
+			pages.set(messageUri, new StatusError('Not Found', 404));
 			const { run, imported } = setup({ pages });
 
 			await run();
 
 			expect(imported).toHaveLength(1);
-			expect(imported[0]).toMatchObject({
-				uri: copyUri,
-				sourceUri: messageUri,
-				authorId: null,
-				archivedAuthor: { uri: author.uri, username: 'gone', name: '지난 이름', host: 'member.test' },
-			});
+			expect(imported[0]).toMatchObject({ sourceUri: messageUri, authorId: author.id });
 		});
 
-		test('첫 서명자를 모르는 작성자 서버라도 다른 서명자로 확인하면 원래 URI로 받는다', async () => {
-			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
-			const signerSources = new Map<string, Map<string, IObject | Error>>([
-				['me', new Map([[messageUri, new StatusError('Not Found', 404)]])],
-				['me2', new Map([[messageUri, note('m1')]])],
-			]);
-			const { run, imported, signAs } = setup({ pages, signers: [signer, { ...signer, id: 'me2' }], signerSources });
-
-			await run();
-
-			expect(imported[0]).toMatchObject({ uri: messageUri, sourceUri: messageUri, authorId: author.id, archivedAuthor: null });
-			expect(signAs.mock.calls.map(([user]) => (user as { id: string }).id)).toContain('me2');
-		});
-
-		test('모든 서명자가 내주지 않으면(404/410) 보관 표시가 있을 때 사본으로 보존한다', async () => {
+		test('보관 표시가 있으면 작성자 조회 없이 보관 작성자로 저장한다', async () => {
 			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
 				_misskey_chatAuthorArchived: true,
 				_misskey_chatAuthor: { name: '지난 이름', username: 'gone', host: 'member.test' },
 			})], null));
-			const signerSources = new Map<string, Map<string, IObject | Error>>([
-				['me', new Map([[messageUri, new StatusError('Not Found', 404)]])],
-				['me2', new Map([[messageUri, new StatusError('Gone', 410)]])],
-			]);
-			const { run, imported, signAs } = setup({ pages, signers: [signer, { ...signer, id: 'me2' }], signerSources });
+			const ctx = setup({ pages, cachedAccounts: new Map([[author.uri, author]]) });
 
-			await run();
+			await ctx.run();
 
-			expect(imported[0]).toMatchObject({ uri: copyUri, sourceUri: messageUri, authorId: null, archivedAuthor: { uri: author.uri, username: 'gone', name: '지난 이름' } });
-			expect(signAs.mock.calls.map(([user]) => (user as { id: string }).id)).toContain('me2');
-		});
-
-		test('보관 표시 없이 모든 서명자가 내주지 않으면(404) 다 같이 물어본 뒤 다시 시도한다', async () => {
-			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
-			const signerSources = new Map<string, Map<string, IObject | Error>>([
-				['me', new Map([[messageUri, new StatusError('Not Found', 404)]])],
-				['me2', new Map([[messageUri, new StatusError('Not Found', 404)]])],
-			]);
-			const ctx = setup({ pages, signers: [signer, { ...signer, id: 'me2' }], signerSources });
-
-			await expect(ctx.run(0)).rejects.toThrow();
-			expect(ctx.imported).toEqual([]);
-			expect(ctx.resolve.mock.calls.filter(([url]) => url === messageUri)).toHaveLength(2);
-		});
-
-		test('다른 서명자가 Tombstone을 내주면 보관 표시가 있어도 버린다', async () => {
-			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', { _misskey_chatAuthorArchived: true })], null));
-			const signerSources = new Map<string, Map<string, IObject | Error>>([
-				['me', new Map([[messageUri, new StatusError('Not Found', 404)]])],
-				['me2', new Map([[messageUri, { id: messageUri, type: 'Tombstone' } as IObject]])],
-			]);
-			const { run, imported } = setup({ pages, signers: [signer, { ...signer, id: 'me2' }], signerSources });
-
-			await run();
-
-			expect(imported).toEqual([]);
-		});
-
-		test('보관 표시 없이 확인할 수 없으면(404) 다시 시도하고 마지막 시도에서 사본으로 보존한다', async () => {
-			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
-			pages.set(messageUri, new StatusError('Not Found', 404));
-			const ctx = setup({ pages });
-
-			await expect(ctx.run(0)).rejects.toThrow();
-			expect(ctx.imported).toEqual([]);
-
-			await ctx.run(7);
-			expect(ctx.imported[0]).toMatchObject({ uri: copyUri, sourceUri: messageUri, authorId: null, archivedAuthor: { uri: author.uri, username: null, name: null, host: 'member.test' } });
-		});
-
-		test('작성자 서버의 일시적인 장애는 다시 시도하고, 마지막 시도에서는 사본으로 보존한다', async () => {
-			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
-			pages.set(messageUri, new StatusError('Service Unavailable', 503));
-			const ctx = setup({ pages });
-
-			await expect(ctx.run(0)).rejects.toThrow();
-			expect(ctx.imported).toEqual([]);
-
-			await ctx.run(7);
-			expect(ctx.imported[0]).toMatchObject({ uri: copyUri, sourceUri: messageUri, authorId: null, archivedAuthor: { uri: author.uri, username: null, name: null, host: 'member.test' } });
-		});
-
-		test('확인한 글에 보관 표시가 있어도 실제 작성자로 받는다', async () => {
-			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
-				_misskey_chatAuthorArchived: true,
-				_misskey_chatAuthor: { name: '지난 이름', username: 'gone', host: 'member.test' },
-			})], null));
-			const { run, imported } = setup({ pages });
-
-			await run();
-
-			expect(imported[0]).toMatchObject({ uri: messageUri, sourceUri: messageUri, authorId: author.id, archivedAuthor: null });
+			expect(ctx.imported[0]).toMatchObject({ sourceUri: messageUri, authorId: null, archivedAuthor: { uri: author.uri, username: 'gone', name: '지난 이름', host: 'member.test' } });
+			expect(ctx.resolvePerson).not.toHaveBeenCalled();
 		});
 	});
 });
 
 describe('과거 기록 가져오기의 진행 없는 페이지 판정', () => {
-	type Progress = { pagesWithoutProgress(roomId: string, pass: number, page: string, ids: string[]): Promise<number> };
+	type Progress = { pagesWithoutProgress(roomId: string, pass: number, page: string, items: unknown[]): Promise<number> };
 
 	const pageUri = (index: number) => index === 0 ? first : `${roomUri}/history?until=c${1000 - index}`;
 	const cursorOf = (index: number) => index === 0 ? null : `c${1000 - index}`;
@@ -638,12 +494,18 @@ describe('과거 기록 가져오기의 진행 없는 페이지 판정', () => {
 		return pages;
 	}
 
-	/** 한 번에 받는 페이지 수를 넘으면 이어서 받을 작업을 큐에 넣으므로, 끝나거나 멈출 때까지 작업을 되풀이한다. */
+	/** 한 번에 받는 페이지 수를 넘으면 같은 작업을 지연시켜 이으므로, 끝나거나 멈출 때까지 작업을 되풀이한다. */
 	async function runUntilSettled(ctx: ReturnType<typeof setup>) {
-		for (let i = 0; i < 20 && ctx.state.status === 'running'; i++) await ctx.run();
+		for (let i = 0; i < 20 && ctx.state.status === 'running'; i++) {
+			try {
+				await ctx.run();
+			} catch (err) {
+				if (!(err instanceof DelayedError)) throw err;
+			}
+		}
 	}
 
-	/** 기록 페이지를 받은 횟수. 항목의 출처 확인 조회는 세지 않는다 */
+	/** 기록 페이지를 받은 횟수 */
 	const pageFetches = (ctx: ReturnType<typeof setup>) => ctx.resolve.mock.calls.filter(([url]) => (url as string).startsWith(`${roomUri}/history`)).length;
 
 	test('새 글이 없는 페이지가 연속 101쪽 나오면 더 가져올 수 없다고 남기고 그 페이지는 저장하지 않는다', async () => {
@@ -663,11 +525,11 @@ describe('과거 기록 가져오기의 진행 없는 페이지 판정', () => {
 
 		expect(ctx.state.status).toBe('completed');
 		expect(pageFetches(ctx)).toBe(161);
-		expect(ctx.imported.map(input => input.uri)).toEqual(['https://member.test/chat/messages/m1']);
-		expect(await redis.exists(...progressKeys(1))).toBe(0);
+		expect(ctx.imported.map(input => input.sourceUri)).toEqual(['https://member.test/chat/messages/m1']);
+		expect(await redis.exists(progressKey(1))).toBe(0);
 	});
 
-	test('이미 받은 글만 되풀이되는 페이지는 새 글로 세지 않는다', async () => {
+	test('같은 내용이 되풀이되는 페이지는 새 글로 세지 않는다', async () => {
 		const repeated = note('m1');
 		const ctx = setup({ pages: chain(150, new Map(Array.from({ length: 150 }, (_, i) => [i, [repeated]] as [number, IObject[]]))) });
 
@@ -689,24 +551,35 @@ describe('과거 기록 가져오기의 진행 없는 페이지 판정', () => {
 		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(2), [])).toBe(3);
 	});
 
-	test('새 글이 나오면 0으로 돌아가고, 이미 센 글은 다시 나와도 새 글로 세지 않는다', async () => {
+	test('새 내용이면 0으로 돌아가고 같은 내용이 되풀이되면 다시 센다', async () => {
 		const { service } = setup();
 		const progress = service as unknown as Progress;
 
 		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(0), [])).toBe(1);
-		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(1), ['a', 'b'])).toBe(0);
-		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(2), ['a'])).toBe(1);
-		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(3), ['b', 'c'])).toBe(0);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(1), [{ id: 'a' }])).toBe(0);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(2), [{ id: 'a' }])).toBe(1);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(3), [{ id: 'a' }])).toBe(2);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(4), [{ id: 'b' }])).toBe(0);
+	});
+
+	test('서로 다른 내용이 교대로 오면 진행으로 본다 (감사가 수용한 정밀도 손실)', async () => {
+		const { service } = setup();
+		const progress = service as unknown as Progress;
+
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(0), [{ id: 'a' }])).toBe(0);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(1), [{ id: 'b' }])).toBe(0);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(2), [{ id: 'a' }])).toBe(0);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(3), [{ id: 'b' }])).toBe(0);
 	});
 
 	test('처음부터 다시 받는 차례와 다른 그룹은 따로 센다', async () => {
 		const { service } = setup();
 		const progress = service as unknown as Progress;
 
-		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(0), ['a'])).toBe(0);
+		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(0), [{ id: 'a' }])).toBe(0);
 		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(1), [])).toBe(1);
 
-		expect(await progress.pagesWithoutProgress('room1', 2, pageUri(0), ['a'])).toBe(0);
+		expect(await progress.pagesWithoutProgress('room1', 2, pageUri(0), [{ id: 'a' }])).toBe(0);
 		expect(await progress.pagesWithoutProgress('room2', 1, pageUri(0), [])).toBe(1);
 		expect(await progress.pagesWithoutProgress('room1', 1, pageUri(2), [])).toBe(2);
 	});
@@ -715,13 +588,11 @@ describe('과거 기록 가져오기의 진행 없는 페이지 판정', () => {
 		const { service } = setup();
 		const progress = service as unknown as Progress;
 
-		await progress.pagesWithoutProgress('room1', 1, pageUri(0), ['a']);
+		await progress.pagesWithoutProgress('room1', 1, pageUri(0), [{ id: 'a' }]);
 
 		const week = 7 * 24 * 60 * 60;
-		for (const key of progressKeys(1)) {
-			const ttl = await raw.ttl(`${prefix}${key}`);
-			expect(ttl).toBeGreaterThan(week - 60);
-			expect(ttl).toBeLessThanOrEqual(week);
-		}
+		const ttl = await raw.ttl(`${prefix}${progressKey(1)}`);
+		expect(ttl).toBeGreaterThan(week - 60);
+		expect(ttl).toBeLessThanOrEqual(week);
 	});
 });

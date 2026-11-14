@@ -396,7 +396,7 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 
 	const db = {
 		transaction: async <T>(callback: (manager: unknown) => Promise<T>): Promise<T> => {
-			const table = (entity: { name: string }) => entity.name === 'MiChatMessage' ? messages : entity.name === 'MiChatRoom' ? rooms : entity.name === 'MiChatRoomInvitation' ? invitations : entity.name === 'MiChatRoomUnread' || entity.name === 'MiChatRoomUserSettings' ? fakeRepository() : memberships;
+			const table = (entity: { name: string }) => entity.name === 'MiChatMessage' ? messages : entity.name === 'MiChatRoom' ? rooms : entity.name === 'MiChatRoomInvitation' ? invitations : entity.name === 'MiChatRoomUserSettings' ? fakeRepository() : memberships;
 			return await callback({
 				findOne: (entity: { name: string }, options: { where: Record<string, unknown> }) => table(entity).findOneBy(options.where),
 				findBy: (entity: { name: string }, where: Record<string, unknown>) => table(entity).findBy(where),
