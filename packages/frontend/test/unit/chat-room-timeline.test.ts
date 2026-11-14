@@ -169,6 +169,10 @@ import { misskeyApi } from '@/utility/misskey-api.js';
 import { chatLeaveErrors } from '@/pages/chat/chat-errors.js';
 import { installFakeResizeObserver, resizeObserved } from './fake-resize-observer.js';
 
+// 전경 화면 판정은 반응형이어야 스택 복귀 watcher가 움직인다. 라우터 목의 currentRef를 실제 ref로 바꾼다
+// (useRouter 목은 호출 시점에 mocks.routerCurrent를 읽으므로 여기서 바꿔도 된다)
+mocks.routerCurrent = ref(mocks.routerCurrent.value);
+
 // ルーターはページを非同期コンポーネントに包んでからキャッシュする (router.definition.ts の page())。
 // 包まれたページの onActivated を、Vue はページが登録したのと逆の順に呼ぶ。キャッシュから戻る試験は、ルーターと同じ形で置いて確かめる
 const RoutedRoomPage = defineAsyncComponent(() => Promise.resolve(XRoomPage));
@@ -2004,6 +2008,128 @@ describe('the unread sign in realtime mode', () => {
 		await flush();
 
 		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(false);
+	});
+
+	// 스택 라우터: 뒤에 남은 대화는 언마운트/비활성화되지 않으므로 onActivated가 오지 않는다.
+	// 전경으로 돌아온 순간(라우트 복귀)이 재진입 시점이고, 실패한 확인이 되돌린 공백을 이어받아야 한다
+	test('asks again when a stacked conversation becomes frontmost again after a failed check', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		mocks.chatGap = true;
+		mocks.refreshCurrentAccount.mockRejectedValueOnce(new Error('server error'));
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(RoutedRoomPage, { userId: 'alice' });
+			},
+		});
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(true);
+
+		// 대화는 스택에 남은 채 다른 화면이 전경이 된다
+		mocks.routerCurrent.value = { route: { path: '/search' }, props: new Map() };
+		await flush();
+		// 이 대화로 복귀 (언마운트/활성화 없음)
+		mocks.routerCurrent.value = { route: { path: '/chat/user/:userId' }, props: new Map<string, string>([['userId', 'alice']]) };
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledTimes(2);
+		expect(mocks.refreshCurrentAccount).toHaveBeenLastCalledWith({ protectChatUnread: true, rejectOnFailure: true });
+		expect(mocks.chatGap).toBe(false);
+	});
+
+	test('does not ask when a stacked conversation becomes frontmost without a gap', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(RoutedRoomPage, { userId: 'alice' });
+			},
+		});
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+
+		mocks.routerCurrent.value = { route: { path: '/search' }, props: new Map() };
+		await flush();
+		mocks.routerCurrent.value = { route: { path: '/chat/user/:userId' }, props: new Map<string, string>([['userId', 'alice']]) };
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+	});
+
+	// 캐시된 화면이 라우트 복귀와 활성화로 동시에 돌아와도 확인은 한 번만 발행한다
+	test('does not double-ask when a cached conversation returns by both activation and route', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { userId: 'alice' }) : h('div') });
+			},
+		});
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+
+		visible.value = false;
+		await flush();
+		mocks.routerCurrent.value = { route: { path: '/search' }, props: new Map() };
+		mocks.chatGap = true;
+		await flush();
+
+		visible.value = true;
+		mocks.routerCurrent.value = { route: { path: '/chat/user/:userId' }, props: new Map<string, string>([['userId', 'alice']]) };
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(false);
+	});
+
+	// 복귀 순간 읽기가 진행 중이면 그 읽기가 시작 시점의 공백을 보고 확인한다. watcher는 겹쳐 발행하지 않는다
+	test('leaves the recheck to the in-progress read when a stacked conversation becomes frontmost', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		mocks.chatGap = true;
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(RoutedRoomPage, { userId: 'alice' });
+			},
+		});
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(false);
+
+		// 재연결 읽기가 시작됐지만 아직 끝나지 않았다
+		let openGate!: () => void;
+		mocks.timelineGate = new Promise<void>(resolve => { openGate = resolve; });
+		mocks.chatGap = true;
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+
+		// 읽기 중에 스택 왕복
+		mocks.routerCurrent.value = { route: { path: '/search' }, props: new Map() };
+		await flush();
+		mocks.routerCurrent.value = { route: { path: '/chat/user/:userId' }, props: new Map<string, string>([['userId', 'alice']]) };
+		await flush();
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+
+		openGate();
+		await flush();
+		await flush();
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledTimes(2);
 		expect(mocks.chatGap).toBe(false);
 	});
 });

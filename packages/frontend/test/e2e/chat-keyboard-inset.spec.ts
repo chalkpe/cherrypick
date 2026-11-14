@@ -235,4 +235,28 @@ test.describe('the bottom of a conversation while the software keyboard is open'
 		await closeKeyboard(page);
 		await expectGapWhenClosed(page);
 	});
+
+	// 전체 회전: 키보드가 열린 채 방향이 바뀌면 새 방향의 전체 높이를 기준으로 잡아야 한다.
+	// 이전 방향의 전체 높이가 기준으로 남으면 키보드가 닫힌 뒤에도 감지가 유지되어 여백이 돌아오지 않는다
+	test('rotation: closing the keyboard after a full rotation restores the home indicator space', async ({ page }) => {
+		await loadSafeArea(page);
+		await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
+		const input = page.getByPlaceholder('Enter message here');
+		await expect(input).toBeVisible();
+
+		await input.tap();
+		await openKeyboard(page);
+		await expectGapWhenOpen(page);
+
+		// 키보드를 닫지 않은 채 가로로 회전: 전체 높이 390에서 키보드 190만큼 줄어든 200
+		await page.setViewportSize({ width: 844, height: 200 });
+		await expect.poll(() => page.evaluate(() => window.innerHeight)).toBe(200);
+		await expectGapWhenOpen(page);
+
+		// 포커스를 유지한 채 키보드가 닫히면(전체 높이 390) 여백이 돌아와야 한다
+		await page.setViewportSize({ width: 844, height: 390 });
+		await expect.poll(() => page.evaluate(() => window.innerHeight)).toBe(390);
+		await expectGapWhenClosed(page);
+		expect(await page.evaluate(() => window.document.activeElement instanceof HTMLTextAreaElement)).toBe(true);
+	});
 });

@@ -904,6 +904,16 @@ onActivated(() => {
 	}
 });
 
+// 스택 라우터는 뒤에 남은 대화를 언마운트/비활성화하지 않으므로 onActivated가 오지 않는다.
+// 전경으로 돌아온 순간(라우트가 이 대화로 복귀)이 재진입 시점이다. 읽기가 진행 중이면 그 읽기가
+// 시작 시점의 공백을 보고 확인하므로 겹쳐 발행하지 않는다. 공백 확인은 KeepAlive 경로의 onActivated와
+// 같은 판정을 공유하므로, 먼저 발행한 쪽이 공백을 해소하면 다른 쪽은 건너뛴다.
+watch(isFrontmostConversation, (frontmost, wasFrontmost) => {
+	if (!frontmost || wasFrontmost) return;
+	if (!initialized.value || readingAgain) return;
+	if (chatUnreadSubscriptionGap()) recheckUnreadSign(true);
+});
+
 onBeforeUnmount(() => {
 	connection.value?.dispose();
 	listChannel?.dispose();

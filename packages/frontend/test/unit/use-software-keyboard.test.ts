@@ -233,3 +233,68 @@ test('a scoped detector sees a focused input inside its own page', () => {
 	resizeTo(FULL_WIDTH, FULL_HEIGHT - KEYBOARD_HEIGHT);
 	expect(k.isVisible()).toBe(true);
 });
+
+// 회전: 키보드가 열린 채 방향이 바뀌면 새 방향의 전체 높이(직전 너비)를 기준으로 잡아야 한다.
+// 줄어든 현재 높이나 이전 방향의 전체 높이를 기준으로 남기면 키보드가 닫혀도 감지가 떨어지지 않는다
+test('rotation with the keyboard open re-baselines to the new orientation full height', () => {
+	const textarea = makeTextarea(document.body);
+	focusEl(textarea);
+	const k = mountKeyboard();
+	resizeTo(FULL_WIDTH, FULL_HEIGHT - KEYBOARD_HEIGHT);
+	expect(k.isVisible()).toBe(true);
+
+	// 가로 회전: 전체 높이 390, 키보드 190 → 200. 감지 유지
+	resizeTo(FULL_HEIGHT, 200);
+	expect(k.isVisible()).toBe(true);
+
+	// 포커스를 유지한 채 키보드가 닫히면 감지가 떨어져야 한다
+	resizeTo(FULL_HEIGHT, FULL_WIDTH);
+	expect(k.isVisible()).toBe(false);
+});
+
+test('rotation in a visualViewport-only environment converges when the keyboard closes', () => {
+	const vv = installVisualViewport(FULL_HEIGHT);
+	const textarea = makeTextarea(document.body);
+	focusEl(textarea);
+	const k = mountKeyboard();
+	vv.set(FULL_HEIGHT - KEYBOARD_HEIGHT);
+	expect(k.isVisible()).toBe(true);
+
+	// 회전: layout 높이는 새 방향 전체(390), visualViewport는 키보드만큼 축소(200)
+	resizeTo(FULL_HEIGHT, FULL_WIDTH);
+	vv.set(200);
+	expect(k.isVisible()).toBe(true);
+
+	vv.set(FULL_WIDTH);
+	expect(k.isVisible()).toBe(false);
+});
+
+test('rotation with the keyboard open on tablet dimensions keeps detection and converges', () => {
+	setViewport(768, 1024);
+	const textarea = makeTextarea(document.body);
+	focusEl(textarea);
+	const k = mountKeyboard();
+	resizeTo(768, 724);
+	expect(k.isVisible()).toBe(true);
+
+	resizeTo(1024, 468);
+	expect(k.isVisible()).toBe(true);
+
+	resizeTo(1024, 768);
+	expect(k.isVisible()).toBe(false);
+});
+
+// 높이 변화 없는 너비 변경(키보드 열린 채 회전 아님)은 기존 전체 높이 기준을 보존한다
+test('a width-only change while the keyboard is open keeps the previous full-height baseline', () => {
+	const textarea = makeTextarea(document.body);
+	focusEl(textarea);
+	const k = mountKeyboard();
+	resizeTo(FULL_WIDTH, FULL_HEIGHT - KEYBOARD_HEIGHT);
+	expect(k.isVisible()).toBe(true);
+
+	resizeTo(500, FULL_HEIGHT - KEYBOARD_HEIGHT);
+	expect(k.isVisible()).toBe(true);
+
+	resizeTo(500, FULL_HEIGHT);
+	expect(k.isVisible()).toBe(false);
+});

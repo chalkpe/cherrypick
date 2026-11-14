@@ -32,20 +32,26 @@ export function useSoftwareKeyboard(options?: { scope?: () => Element | null }):
 	let listening = false;
 	let baselineWidth = window.innerWidth;
 	let baselineHeight = window.innerHeight;
+	let lastHeight = window.innerHeight;
 
 	function update(): void {
 		const width = window.innerWidth;
 		const height = window.innerHeight;
 
 		// 回転やウィンドウ幅の変化で基準の幅は取り直す。ただしキーボードが開いたまま幅が変わったとき、
-		// 現在の高さはすでにキーボードの分だけ縮んでいて全体高さの基準に使えない。検知中なら直前の全体高さの基準を
-		// 保って検知を維持し、キーボードを検知していないときだけ現在の高さで基準を取り直す。すぐ false を返さず続けて縮小量を計算する。
+		// 現在の高さはすでにキーボードの分だけ縮んでいて全体高さの基準に使えない。
+		// 高さが一緒に変わったなら回転なので、新しい方向の全体高さ (直前の幅と入れ替わる) を基準に確保する。
+		// 高さが変わらない幅だけの変更なら直前の全体高さの基準を保って検知を維持する。
+		// キーボードを検知していないときだけ現在の高さで基準を取り直す。すぐ false を返さず続けて縮小量を計算する。
 		if (width !== baselineWidth) {
-			baselineWidth = width;
-			if (!visible.value) {
+			if (visible.value && height !== lastHeight) {
+				baselineHeight = Math.max(height, baselineWidth);
+			} else if (!visible.value) {
 				baselineHeight = height;
 			}
+			baselineWidth = width;
 		}
+		lastHeight = height;
 
 		if (height > baselineHeight) baselineHeight = height;
 
@@ -85,6 +91,7 @@ export function useSoftwareKeyboard(options?: { scope?: () => Element | null }):
 	onActivated(() => {
 		baselineWidth = window.innerWidth;
 		baselineHeight = window.innerHeight;
+		lastHeight = window.innerHeight;
 		listen();
 		update();
 	});

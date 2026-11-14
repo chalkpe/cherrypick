@@ -7,11 +7,12 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type * as Misskey from 'cherrypick-js';
 
 // どの試験も新しいページで始めた状態から見る。モジュールの状態はページに一つなので、試験ごとに作り直す
-async function boot(options: { realtimeMode?: boolean } = {}) {
+async function boot(options: { realtimeMode?: boolean; streamState?: 'initializing' | 'reconnecting' | 'connected' } = {}) {
 	vi.resetModules();
 	const tracker = await import('@/chat-unread-subscription.js');
 	const streamHandlers = new Map<string, () => void>();
 	const stream = {
+		state: options.streamState,
 		on: vi.fn((event: string, handler: () => void) => { streamHandlers.set(event, handler); }),
 		useChannel: vi.fn(),
 	};
@@ -353,4 +354,40 @@ test('the read-all wait times out while disconnected even after a recheck was is
 	await vi.advanceTimersByTimeAsync(5000);
 	await expect(waiting).resolves.toBe(false);
 	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+});
+
+// 부팅이 늦어 스트림이 이미 연결된 뒤에 핸들러를 등록하는 경우. _connected_는 이미 지나갔으므로
+// 등록 시점의 연결 상태를 채택해야 한다. 부팅 공백 자체는 유지되어 첫 보호 확인의 의무가 남는다
+test('boot adopts an already-connected stream', async () => {
+	const t = await boot({ streamState: 'connected' });
+
+	expect(t.chatUnreadEventsActive()).toBe(true);
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+
+	const first = t.beginChatUnreadRecheck();
+	expect(first.issue).toBe(true);
+	expect(first.failToken).not.toBeNull();
+	expect(t.chatUnreadSubscriptionGap()).toBe(false);
+
+	t.restoreChatUnreadGapIfUnchanged(first.failToken);
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+
+	const retry = t.beginChatUnreadRecheck();
+	expect(retry.issue).toBe(true);
+	expect(t.chatUnreadSubscriptionGap()).toBe(false);
+});
+
+test('boot with a connecting stream keeps the disconnected semantics', async () => {
+	const t = await boot({ streamState: 'reconnecting' });
+
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+	const first = t.beginChatUnreadRecheck();
+	expect(first.issue).toBe(true);
+	expect(first.failToken).toBeNull();
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+	expect(t.beginChatUnreadRecheck().issue).toBe(false);
+
+	t.connected();
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+	expect(t.beginChatUnreadRecheck().issue).toBe(true);
 });

@@ -36,6 +36,9 @@ const gapResolvedWaiters = new Set<() => void>();
 
 export function initChatUnreadSubscription(stream: Misskey.IStream): void {
 	listening = true;
+	// 부팅이 늦으면 스트림이 이미 연결된 뒤에 핸들러를 등록할 수 있다. _connected_는 이미 지나갔으므로
+	// 등록 시점의 연결 상태를 채택한다. 부팅 공백 자체는 유지되어 첫 보호 확인의 의무가 남는다.
+	connected = stream.state === 'connected';
 	stream.on('_connected_', () => {
 		connected = true;
 	});
