@@ -191,6 +191,7 @@ import { deviceKind } from '@/utility/device-kind.js';
 import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { useChatReadingPlace } from '@/composables/use-chat-reading-place.js';
 import { useElementWidth } from '@/composables/use-element-width.js';
+import { useSoftwareKeyboard } from '@/composables/use-software-keyboard.js';
 import { focusTrap } from '@/utility/focus-trap.js';
 import { isTouchUsing } from '@/utility/touch.js';
 import { voiceCallStatusText } from '@/utility/voice-call-status.js';
@@ -205,6 +206,17 @@ const handleResize = () => {
 };
 
 window.addEventListener('resize', handleResize);
+
+// キーボードが出ているあいだはホームインジケーターの領域も覆われるので、チャット画面では下のセーフエリアの余白を無くす。
+// この変数を書くのはこのページだけなので、ほかの画面の余白は変わらない
+const keyboardVisible = useSoftwareKeyboard();
+watch([keyboardVisible, isMobile], ([keyboard, mobile]) => {
+	if (keyboard && mobile) {
+		window.document.body.style.setProperty('--MI-mobileFooterSafeAreaBottom', '0px');
+	} else {
+		window.document.body.style.removeProperty('--MI-mobileFooterSafeAreaBottom');
+	}
+}, { immediate: true });
 
 const $i = ensureSignin();
 const router = useRouter();
@@ -875,6 +887,7 @@ onBeforeUnmount(() => {
 	listChannel?.dispose();
 	useStream().off('_connected_', readAgain);
 	window.document.removeEventListener('visibilitychange', onVisibilitychange);
+	window.document.body.style.removeProperty('--MI-mobileFooterSafeAreaBottom');
 });
 
 async function inviteUser() {
@@ -1249,7 +1262,7 @@ definePage(computed(() => {
 	width: 100%;
 
 	&.isFriendly {
-		padding-bottom: calc(50px + env(safe-area-inset-bottom));
+		padding-bottom: calc(50px + var(--MI-mobileFooterSafeAreaBottom, env(safe-area-inset-bottom, 0px)));
 	}
 }
 
