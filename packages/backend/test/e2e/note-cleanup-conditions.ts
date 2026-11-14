@@ -5,7 +5,6 @@
 
 import { afterAll, afterEach, beforeAll, expect, test, vi } from 'vitest';
 import { Blob } from 'node-fetch';
-import { createHash } from 'node:crypto';
 import { QueueEvents } from 'bullmq';
 import type { entities } from 'cherrypick-js';
 import { IdService } from '@/core/IdService.js';
@@ -240,7 +239,7 @@ test.each(['delete', 'keep'] as const)('기존 잘못된 RE2 식이 든 %s 규�
 	const events = new QueueEvents(system.name, { connection: system.opts.connection, prefix: system.opts.prefix });
 	try {
 		await events.waitUntilReady();
-		const expectedJobId = `note-cleanup-${user.id}-${createHash('sha256').update(deletion.id).digest('hex')}`;
+		const expectedJobId = `note-cleanup-${user.id}`;
 		const completed = new Promise<void>((resolve, reject) => {
 			const timeout = setTimeout(() => reject(new Error('cleanup job timed out')), 30000);
 			events.on('completed', ({ jobId }) => { if (jobId === expectedJobId) { clearTimeout(timeout); resolve(); } });
