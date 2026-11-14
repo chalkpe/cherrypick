@@ -5,7 +5,7 @@
 
 import { vi } from 'vitest';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
-import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_PRUNE_CHANNEL } from '@/core/chat-room-notifications.js';
+import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_MARK, CHAT_UNREAD_PRUNE_CHANNEL, CHAT_UNREAD_PRUNE_ROOM } from '@/core/chat-room-notifications.js';
 import { ChatChannelError } from '@/core/chat-room-channels.js';
 import { MiChatRoom } from '@/models/ChatRoom.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
@@ -75,6 +75,31 @@ export function fakeUnreadRedis() {
 				const [key, expected] = args;
 				return strings.get(key) === expected ? del(key) : 0;
 			}
+			if (script === CHAT_UNREAD_MARK) {
+				const [key, incomingMarker] = args;
+				const currentMarker = strings.get(key);
+				if (currentMarker == null) {
+					strings.set(key, incomingMarker);
+					return 1;
+				}
+				// Lua의 string.match('^(%d+):')는 순번 없는 옛 표식에 nil을 돌려준다
+				const seqOf = (marker: string) => marker.match(/^(\d+):/)?.[1] ?? null;
+				const current = seqOf(currentMarker);
+				const incoming = seqOf(incomingMarker);
+				if (incoming == null) return 0;
+				if (current == null || incoming.length > current.length || (incoming.length === current.length && incoming > current)) {
+					strings.set(key, incomingMarker);
+					return 1;
+				}
+				return 0;
+			}
+			if (script === CHAT_UNREAD_PRUNE_ROOM) {
+				const [roomMessageKey, roomMentionKey, totalsKey, roomEntry] = args;
+				if (!strings.has(roomMessageKey) && !strings.has(roomMentionKey)) {
+					await redis.srem(totalsKey, roomEntry);
+				}
+				return 0;
+			}
 			if (script === CHAT_UNREAD_PRUNE_CHANNEL) {
 				const [setKey, channelMessageKey, channelMentionKey, roomMessageKey, roomMentionKey, totalsKey, channelId, roomEntry] = args;
 				if (strings.has(channelMessageKey) || strings.has(channelMentionKey)) return 0;
@@ -125,9 +150,13 @@ export function notificationServiceOver(chat: ChatService): ChatRoomNotification
 	const manager = {
 		withRepository: (repository: unknown) => repository,
 		findOne: async (entity: unknown, options: { where: { id: string } }) => entity === MiChatRoom ? await dependencies.chatRoomsRepository?.findOneBy?.(options.where) ?? null : null,
-		findOneBy: async (entity: unknown, where: { id: string; roomId: string; userId: string }) => {
-			if (entity === MiChatRoom) return await dependencies.chatRoomsRepository?.findOneBy?.(where) ?? null;
-			if (entity === MiChatRoomMembership) return (await dependencies.chatRoomMembershipsRepository.findBy({ roomId: where.roomId })).find(member => member.userId === where.userId) ?? null;
+		findOneBy: async (entity: unknown, where: { id?: string; roomId?: string; userId?: string; toRoomId?: string }) => {
+			if (entity === MiChatRoom) return await dependencies.chatRoomsRepository?.findOneBy?.({ id: where.id! }) ?? null;
+			if (entity === MiChatRoomMembership) return (await dependencies.chatRoomMembershipsRepository.findBy({ roomId: where.roomId! })).find(member => member.userId === where.userId) ?? null;
+			if (entity === MiChatMessage) {
+				const message = messages.get(where.id!) ?? null;
+				return message != null && (where.toRoomId == null || message.toRoomId === where.toRoomId) ? message : null;
+			}
 			return null;
 		},
 		existsBy: async (_entity: unknown, where: { roomId: string; userId: string }) => (await dependencies.chatRoomMembershipsRepository.findBy({ roomId: where.roomId })).some(member => member.userId === where.userId),
@@ -136,8 +165,10 @@ export function notificationServiceOver(chat: ChatService): ChatRoomNotification
 			if (entity === MiUser) return (await Promise.all(where.id.value.map(id => dependencies.usersRepository.findOneBy({ id })))).filter(user => user != null).map(user => ({ ...user, username: user.username ?? user.id }));
 			return [];
 		},
-		update: async (_entity: unknown, id: string, patch: object) => {
-			Object.assign(messages.get(id)!, patch);
+		update: async (_entity: unknown, idOrWhere: unknown, patch: object) => {
+			// 조건 객체 형태(멤버십 음소거 등)는 설정 행이 이미 수준을 들고 있으므로 건너뛴다
+			if (typeof idOrWhere !== 'string') return { affected: 1 };
+			Object.assign(messages.get(idOrWhere)!, patch);
 			return { affected: 1 };
 		},
 		delete: async (entity: unknown, where: { userId: string; roomId: string }) => {

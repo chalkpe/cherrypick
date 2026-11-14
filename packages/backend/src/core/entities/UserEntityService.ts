@@ -486,6 +486,9 @@ export class UserEntityService implements OnModuleInit {
 
 		const notificationsInfo = isMe && isDetailed ? await this.getNotificationsInfo(user.id) : null;
 
+		// 두 미읽음 플래그가 같은 집계를 두 번 계산하지 않도록 한 번만 시작해 공유한다
+		const chatUnread = isMe && isDetailed ? this.chatService.chatUnreadTotals(user.id) : null;
+
 		// TODO: 例えば avatarUrl: true など間違った型を設定しても型エラーにならないのをどうにかする(ジェネリクス使わない方法で実装するしかなさそう？)
 		const packed = {
 			id: user.id,
@@ -617,8 +620,8 @@ export class UserEntityService implements OnModuleInit {
 				hideOnlineStatus: user.hideOnlineStatus,
 				hasUnreadSpecifiedNotes: false, // 後方互換性のため
 				hasUnreadMentions: false, // 後方互換性のため
-				hasUnreadChatMessages: this.chatService.hasUnreadMessages(user.id),
-				hasUnreadChatNotifications: this.chatService.hasUnreadChatNotifications(user.id),
+				hasUnreadChatMessages: chatUnread!.then(totals => totals.hasUnreadChatMessages),
+				hasUnreadChatNotifications: chatUnread!.then(totals => totals.hasUnreadChatNotifications),
 				hasUnreadAnnouncement: unreadAnnouncements!.length > 0,
 				unreadAnnouncements,
 				hasUnreadAntenna: this.getHasUnreadAntenna(user.id),

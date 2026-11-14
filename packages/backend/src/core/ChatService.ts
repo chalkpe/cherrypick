@@ -17,7 +17,7 @@ import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.
 import { ChatRoomBanService } from '@/core/ChatRoomBanService.js';
 import { ChatChannelError, parseChatChannels } from '@/core/chat-room-channels.js';
 import type { ChatChannelRef } from '@/core/chat-room-channels.js';
-import { CHAT_UNREAD_PRUNE_CHANNEL } from '@/core/chat-room-notifications.js';
+import { CHAT_UNREAD_PRUNE_CHANNEL, chatUnreadMarkerMessageId } from '@/core/chat-room-notifications.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
 import { MiBlocking } from '@/models/Blocking.js';
@@ -768,12 +768,13 @@ export class ChatService {
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));
 		let newMentionUserIds: string[] = [];
+		let markedUserIds: string[] = [];
 		if (message.toRoomId != null) {
 			const saved = await this.saveRoomMessageEdit(message, { text: trimmed, editedAt, emojis, channelRefs });
 			if (saved == null) throw new ChatMessageAccessError('deleted');
 			Object.assign(message, saved.message);
 			newMentionUserIds = saved.newMentionUserIds;
-			await this.chatRoomNotificationService.mark(saved.room, saved.message, saved.recorded, true);
+			markedUserIds = await this.chatRoomNotificationService.mark(saved.room, saved.message, saved.recorded, true);
 		} else {
 			const result = await this.chatMessagesRepository.update({ id: message.id, deletedAt: IsNull(), dice: IsNull() }, { text: trimmed, editedAt, emojis, channelRefs });
 			if (result.affected === 0) throw new ChatMessageAccessError('deleted');
@@ -796,7 +797,8 @@ export class ChatService {
 		} else if (message.toRoomId) {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', { ...payload, newMentionUserIds });
 			await this.chatRoomNotificationService.notify(this.localUserIds(await this.participantsForMessage(message)));
-			if (newMentionUserIds.length) this.scheduleRoomNotification(message.id, newMentionUserIds);
+			// 실제로 표식이 남은 수신자에게만 지연 알림을 예약한다. 끄기 중 수정은 표식이 없어 예약되지 않는다.
+			if (markedUserIds.length) this.scheduleRoomNotification(message.id, markedUserIds);
 		}
 
 		const fromUser = await this.usersRepository.findOneByOrFail({ id: userId });
@@ -1006,14 +1008,10 @@ export class ChatService {
 		return states;
 	}
 
+	/** 두 미읽음 플래그는 같은 집계에서 나오므로 한 번만 계산해 함께 돌려준다. */
 	@bindThis
-	public async hasUnreadMessages(userId: MiUser['id']) {
-		return (await this.chatRoomNotificationService.totals(userId)).hasUnreadChatMessages;
-	}
-
-	@bindThis
-	public async hasUnreadChatNotifications(userId: MiUser['id']) {
-		return (await this.chatRoomNotificationService.totals(userId)).hasUnreadChatNotifications;
+	public async chatUnreadTotals(userId: MiUser['id']) {
+		return await this.chatRoomNotificationService.totals(userId);
 	}
 
 	@bindThis
@@ -1730,7 +1728,8 @@ export class ChatService {
 			if (unread.length === 0) {
 				// 채널 전환 전에 남은 그룹 표식은 그 글이 속한 채널의 표식으로 옮긴다
 				const marker = await this.redisClient.get(roomMessageKey);
-				const message = marker != null ? await this.chatMessagesRepository.findOneBy({ id: marker, toRoomId: room.id }) : null;
+				const markerMessageId = chatUnreadMarkerMessageId(marker);
+				const message = markerMessageId != null ? await this.chatMessagesRepository.findOneBy({ id: markerMessageId, toRoomId: room.id }) : null;
 				if (message?.toRoomChannelId != null) {
 					const channelId = message.toRoomChannelId;
 					await this.redisClient.set(`newRoomChatChannelMessageExists:${userId}:${room.id}:${channelId}`, marker!);
@@ -2033,12 +2032,13 @@ export class ChatService {
 		const channelRefs = room != null && room.hasChannels ? await this.chatRoomChannelService.remoteRefs(room, text, refs) : [];
 
 		let newMentionUserIds: string[] = [];
+		let markedUserIds: string[] = [];
 		if (message.toRoomId != null) {
 			const saved = await this.saveRoomMessageEdit(message, { text: trimmed, editedAt, emojis, channelRefs }, true);
 			if (saved == null) return message;
 			Object.assign(message, saved.message);
 			newMentionUserIds = saved.newMentionUserIds;
-			await this.chatRoomNotificationService.mark(saved.room, saved.message, saved.recorded, true);
+			markedUserIds = await this.chatRoomNotificationService.mark(saved.room, saved.message, saved.recorded, true);
 		} else {
 			const result = await this.chatMessagesRepository.update([
 				{ id: message.id, fromUserId: actor.id, deletedAt: IsNull(), dice: IsNull(), editedAt: IsNull() },
@@ -2064,7 +2064,8 @@ export class ChatService {
 		} else if (message.toRoomId) {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', { ...payload, newMentionUserIds });
 			await this.chatRoomNotificationService.notify(this.localUserIds(await this.participantsForMessage(message)));
-			if (newMentionUserIds.length) this.scheduleRoomNotification(message.id, newMentionUserIds);
+			// 실제로 표식이 남은 수신자에게만 지연 알림을 예약한다. 끄기 중 수정은 표식이 없어 예약되지 않는다.
+			if (markedUserIds.length) this.scheduleRoomNotification(message.id, markedUserIds);
 		}
 
 		if (room != null) await this.relayToOtherServers(room, actor, (owner, toUsers) => this.apRendererService.renderChatRoomRelay(message, room, owner, toUsers, editedAt), message);

@@ -1486,7 +1486,9 @@ export class ApInboxService {
 						throw err;
 					}
 				}
-				if (deleted) return 'ok: chat message deleted';
+				// 같은 주소의 일반 노트(채팅 불가 수신자의 DM 변환)가 있으면 사본 삭제에서 끝내지 않고
+				// 아래의 일반 노트 삭제와 작성자 검사까지 이어져야 한다.
+				if (deleted && await this.apNoteService.fetchNote(uri) == null) return 'ok: chat message deleted';
 			}
 
 			// A chat-disabled recipient stores the object as a private Note instead.
