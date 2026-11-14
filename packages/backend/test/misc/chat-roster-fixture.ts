@@ -4,10 +4,12 @@
  */
 
 import { vi } from 'vitest';
+import { FindOperator } from 'typeorm';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
+import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
 import { notificationServiceOver } from './chat-room-notification-fixture.js';
 import { noChatInviteJoins } from './chat-roster-stub.js';
 import { ChatService } from '@/core/ChatService.js';
@@ -36,6 +38,7 @@ type Row = { id: string; [key: string]: unknown };
 
 function matches(row: Row, where: Record<string, unknown>) {
 	return Object.entries(where).every(([key, value]) => {
+		if (value instanceof FindOperator && value.type === 'isNull') return row[key] == null;
 		if (value != null && typeof value === 'object' && '_value' in value) return ((value as { _value: unknown[] })._value).includes(row[key]);
 		return row[key] === value;
 	});
@@ -474,6 +477,8 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 		chatRoomInvitationsRepository: invitations,
 		chatRoomMembershipsRepository: memberships,
 		chatService,
+		// 사본 조회만 쓰는 실제 서비스. 저장소는 이 fixture의 가짜 행을 본다
+		chatRoomHistoryService: Object.assign(Object.create(ChatRoomHistoryService.prototype), { config, chatMessagesRepository: messages }) as ChatRoomHistoryService,
 		apChatRoomStateService: Object.assign(Object.create(ApChatRoomStateService.prototype), { chatService }),
 		chatRosterService,
 		chatInviteLinkService: noChatInviteJoins(),

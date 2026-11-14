@@ -102,6 +102,13 @@ export class MiChatMessage {
 	})
 	public uri: string | null;
 
+	/** 보관 사본이면 원래 작성자 서버의 메시지 주소. 사본이 아닌 글과 업그레이드된 글은 null이다. */
+	@Index()
+	@Column('varchar', {
+		length: 512, nullable: true,
+	})
+	public sourceUri: string | null;
+
 	@Column('timestamp with time zone', {
 		nullable: true,
 	})

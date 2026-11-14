@@ -44,6 +44,10 @@ function note(id: string, overrides: Record<string, unknown> = {}): IObject {
 
 type Setup = {
 	pages?: Map<string, IObject | Error>;
+	/** 출처 조회의 기본 응답. 없으면 페이지가 싣는 항목을 id로 내준다 */
+	sources?: Map<string, IObject | Error>;
+	/** 서명자별 출처 응답. 첫 서명자만 모르는 작성자 서버 등을 재현한다 */
+	signerSources?: Map<string, Map<string, IObject | Error>>;
 	accounts?: Map<string, unknown>;
 	cachedAccounts?: Map<string, unknown>;
 	existing?: Set<string>;
@@ -75,7 +79,14 @@ function setup(options: Setup = {}) {
 		}),
 		enqueueImport: vi.fn(async () => {}),
 	};
+	let signedAs: string | null = null;
+	const signAs = vi.fn((user: { id: string }) => {
+		signedAs = user.id;
+	});
 	const resolve = vi.fn(async (url: string) => {
+		const source = options.signerSources?.get(signedAs ?? '')?.get(url) ?? options.sources?.get(url);
+		if (source instanceof Error) throw source;
+		if (source != null) return source;
 		const page = options.pages?.get(url);
 		if (page instanceof Error) throw page;
 		if (page != null) return page;
@@ -112,7 +123,7 @@ function setup(options: Setup = {}) {
 		},
 		chatRoomHistoryService: history,
 		chatRoomRosterSyncProcessorService: { syncRoom },
-		apResolverService: { createResolver: async () => ({ signAs: vi.fn(), resolve }) },
+		apResolverService: { createResolver: async () => ({ signAs, resolve }) },
 		apDbResolverService: { getUserFromApId: vi.fn(async (uri: string) => options.cachedAccounts?.get(uri) ?? null) },
 		apPersonService: { resolvePerson },
 		apInboxService: { resolveChatAttachments: vi.fn(async () => ({ files: [], failed: true, temporarilyFailed: false })) },
@@ -130,7 +141,7 @@ function setup(options: Setup = {}) {
 
 	const moveToDelayed = vi.fn(async () => {});
 	const run = (attemptsMade = 0) => service.process({ data: { roomId: 'room1' }, attemptsMade, opts: { attempts: 8 }, token: 'job-token', moveToDelayed } as never);
-	return { service, run, state, history, imported, resolve, resolvePerson, syncRoom, applyPendingChatReactions, moveToDelayed };
+	return { service, run, state, history, imported, resolve, resolvePerson, syncRoom, applyPendingChatReactions, moveToDelayed, signAs };
 }
 
 const lockKey = 'chat_room_history_lock:room1';
@@ -344,12 +355,13 @@ describe('과거 기록 가져오기 작업', () => {
 		['완전한 보관 정보', { name: '지난 이름', username: 'gone', host: 'member.test' }, { name: '지난 이름', username: 'gone' }],
 		['보관 정보 없음', undefined, { name: null, username: null }],
 		['형식이 틀린 보관 정보', { name: 1, username: 'gone', host: 'member.test' }, { name: null, username: null }],
-	])('보관 표시가 있는 기록은 %s이어도 캐시된 계정 대신 보관 작성자로 받는다', async (_label, authorInfo, expected) => {
+	])('작성자 서버가 내주지 않는(404) 보관 기록은 %s이어도 캐시된 계정 대신 보관 작성자로 받는다', async (_label, authorInfo, expected) => {
 		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
 			_misskey_chatAuthorArchived: true,
 			_misskey_chatAuthor: authorInfo,
 		})], null));
 		pages.set(author.uri, { id: author.uri, type: 'Person' } as IObject);
+		pages.set('https://member.test/chat/messages/m1', new StatusError('Not Found', 404));
 		const ctx = setup({ pages, cachedAccounts: new Map([[author.uri, author]]) });
 
 		await ctx.run();
@@ -433,6 +445,54 @@ describe('과거 기록 가져오기 작업', () => {
 			expect(imported[0]).toMatchObject({ uri: messageUri, sourceUri: messageUri, authorId: author.id, archivedAuthor: null });
 		});
 
+		test('소유 서버가 본문을 바꿔 내줘도 작성자 서버가 확인한 본문으로 받는다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+				_misskey_content: 'forged text',
+				_misskey_chatReactions: [{ actor: reactor.uri, reaction: '👍' }],
+			})], null));
+			const sources = new Map<string, IObject | Error>([[messageUri, note('m1')]]);
+			const { run, imported } = setup({ pages, sources });
+
+			await run();
+
+			// 리액션은 소유 서버만 아는 기록이므로 그대로 유지한다
+			expect(imported[0]).toMatchObject({ uri: messageUri, text: 'text m1', reactions: [`${reactor.id}/👍`] });
+		});
+
+		test('소유 서버가 첨부·게시 시각을 바꿔 내줘도 출처의 것으로 받는다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+				published: '2026-11-02T00:00:00.000Z',
+				updated: '2026-11-03T00:00:00.000Z',
+				attachment: [
+					{ type: 'Document', url: 'https://member.test/files/forged1.png' },
+					{ type: 'Document', url: 'https://member.test/files/forged2.png' },
+				],
+			})], null));
+			const sources = new Map<string, IObject | Error>([[messageUri, note('m1', {
+				published: '2026-11-01T00:00:00.000Z',
+				attachment: [{ type: 'Document', url: 'https://member.test/files/real.png' }],
+			})]]);
+			const { run, imported } = setup({ pages, sources });
+
+			await run();
+
+			expect(imported[0]).toMatchObject({
+				published: new Date('2026-11-01T00:00:00.000Z'),
+				editedAt: null,
+				unavailableFileCount: 1,
+			});
+		});
+
+		test('출처 객체가 기록으로 읽을 수 없으면 그 글은 버린다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
+			const sources = new Map<string, IObject | Error>([[messageUri, note('m1', { published: 'not a date' })]]);
+			const { run, imported } = setup({ pages, sources });
+
+			await run();
+
+			expect(imported).toEqual([]);
+		});
+
 		test.each([
 			['다른 id의 객체', { id: 'https://member.test/notes/other', type: 'Note', _misskey_talk: true, context: roomUri, attributedTo: author.uri }],
 			['채팅이 아닌 일반 노트', { id: messageUri, type: 'Note', attributedTo: author.uri }],
@@ -468,6 +528,63 @@ describe('과거 기록 가져오기 작업', () => {
 			});
 		});
 
+		test('첫 서명자를 모르는 작성자 서버라도 다른 서명자로 확인하면 원래 URI로 받는다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
+			const signerSources = new Map<string, Map<string, IObject | Error>>([
+				['me', new Map([[messageUri, new StatusError('Not Found', 404)]])],
+				['me2', new Map([[messageUri, note('m1')]])],
+			]);
+			const { run, imported, signAs } = setup({ pages, signers: [signer, { ...signer, id: 'me2' }], signerSources });
+
+			await run();
+
+			expect(imported[0]).toMatchObject({ uri: messageUri, sourceUri: messageUri, authorId: author.id, archivedAuthor: null });
+			expect(signAs.mock.calls.map(([user]) => (user as { id: string }).id)).toContain('me2');
+		});
+
+		test('모든 서명자가 내주지 않으면(404/410) 보관 표시가 있을 때 사본으로 보존한다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+				_misskey_chatAuthorArchived: true,
+				_misskey_chatAuthor: { name: '지난 이름', username: 'gone', host: 'member.test' },
+			})], null));
+			const signerSources = new Map<string, Map<string, IObject | Error>>([
+				['me', new Map([[messageUri, new StatusError('Not Found', 404)]])],
+				['me2', new Map([[messageUri, new StatusError('Gone', 410)]])],
+			]);
+			const { run, imported, signAs } = setup({ pages, signers: [signer, { ...signer, id: 'me2' }], signerSources });
+
+			await run();
+
+			expect(imported[0]).toMatchObject({ uri: copyUri, sourceUri: messageUri, authorId: null, archivedAuthor: { uri: author.uri, username: 'gone', name: '지난 이름' } });
+			expect(signAs.mock.calls.map(([user]) => (user as { id: string }).id)).toContain('me2');
+		});
+
+		test('보관 표시 없이 모든 서명자가 내주지 않으면(404) 다 같이 물어본 뒤 다시 시도한다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
+			const signerSources = new Map<string, Map<string, IObject | Error>>([
+				['me', new Map([[messageUri, new StatusError('Not Found', 404)]])],
+				['me2', new Map([[messageUri, new StatusError('Not Found', 404)]])],
+			]);
+			const ctx = setup({ pages, signers: [signer, { ...signer, id: 'me2' }], signerSources });
+
+			await expect(ctx.run(0)).rejects.toThrow();
+			expect(ctx.imported).toEqual([]);
+			expect(ctx.resolve.mock.calls.filter(([url]) => url === messageUri)).toHaveLength(2);
+		});
+
+		test('다른 서명자가 Tombstone을 내주면 보관 표시가 있어도 버린다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', { _misskey_chatAuthorArchived: true })], null));
+			const signerSources = new Map<string, Map<string, IObject | Error>>([
+				['me', new Map([[messageUri, new StatusError('Not Found', 404)]])],
+				['me2', new Map([[messageUri, { id: messageUri, type: 'Tombstone' } as IObject]])],
+			]);
+			const { run, imported } = setup({ pages, signers: [signer, { ...signer, id: 'me2' }], signerSources });
+
+			await run();
+
+			expect(imported).toEqual([]);
+		});
+
 		test('보관 표시 없이 확인할 수 없으면(404) 다시 시도하고 마지막 시도에서 사본으로 보존한다', async () => {
 			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1')], null));
 			pages.set(messageUri, new StatusError('Not Found', 404));
@@ -492,7 +609,7 @@ describe('과거 기록 가져오기 작업', () => {
 			expect(ctx.imported[0]).toMatchObject({ uri: copyUri, sourceUri: messageUri, authorId: null, archivedAuthor: { uri: author.uri, username: null, name: null, host: 'member.test' } });
 		});
 
-		test('확인한 글에 보관 표시가 있으면 실제 계정 대신 보관 작성자로 받는다', async () => {
+		test('확인한 글에 보관 표시가 있어도 실제 작성자로 받는다', async () => {
 			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
 				_misskey_chatAuthorArchived: true,
 				_misskey_chatAuthor: { name: '지난 이름', username: 'gone', host: 'member.test' },
@@ -501,7 +618,7 @@ describe('과거 기록 가져오기 작업', () => {
 
 			await run();
 
-			expect(imported[0]).toMatchObject({ uri: messageUri, sourceUri: messageUri, authorId: null, archivedAuthor: { uri: author.uri, username: 'gone', name: '지난 이름' } });
+			expect(imported[0]).toMatchObject({ uri: messageUri, sourceUri: messageUri, authorId: author.id, archivedAuthor: null });
 		});
 	});
 });

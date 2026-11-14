@@ -22,6 +22,7 @@ import { NoteCreateService } from '@/core/NoteCreateService.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ChatMessageAccessError, ChatService, MAX_CHAT_MESSAGE_TEXT_LENGTH, MAX_REMOTE_CHAT_MESSAGE_FILES, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
+import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { isTemporaryFetchFailure } from '@/misc/is-temporary-fetch-failure.js';
@@ -138,6 +139,7 @@ export class ApInboxService {
 		private chatInviteLinkService: ChatInviteLinkService,
 		private chatRoomBanService: ChatRoomBanService,
 		private chatRosterService: ChatRosterService,
+		private chatRoomHistoryService: ChatRoomHistoryService,
 		private chatVoiceService: ChatVoiceService,
 		private liveKitService: LiveKitService,
 		private roleService: RoleService,
@@ -776,6 +778,18 @@ export class ApInboxService {
 		try {
 			const message = await this.chatService.findMessageByUri(messageUri);
 			if (message == null) {
+				// The relay names the original URI; only copies kept in this room may be touched by it.
+				let deleted = false;
+				for (const copy of (await this.chatRoomHistoryService.findArchivedCopiesBySourceUri(messageUri)).filter(copy => copy.toRoomId === room.id)) {
+					try {
+						await this.chatService.deleteRemoteMessage(doer, copy);
+						deleted = true;
+					} catch (err) {
+						if (err instanceof ChatMessageAccessError || err instanceof ChatChannelError) continue;
+						throw err;
+					}
+				}
+				if (deleted) return 'ok: chat message deleted';
 				if (!this.isOnActorHost(messageUri, doer)) return 'skip: message is not on the actor\'s server';
 				await this.assertKnownInRoom(room, doer);
 				if (!await this.chatService.isRoomMember(room, doer.id)) return 'skip: not a member of the room';
@@ -1454,6 +1468,21 @@ export class ApInboxService {
 					if (err instanceof ChatMessageAccessError || err instanceof ChatChannelError) return `skip: ${err.message}`;
 					throw err;
 				}
+			}
+
+			// Archived copies never take the original URI, so the author's Delete has to reach them by sourceUri.
+			if (isChatUri) {
+				let deleted = false;
+				for (const copy of await this.chatRoomHistoryService.findArchivedCopiesBySourceUri(uri)) {
+					try {
+						await this.chatService.deleteRemoteMessage(actor, copy, { activity });
+						deleted = true;
+					} catch (err) {
+						if (err instanceof ChatMessageAccessError || err instanceof ChatChannelError) continue;
+						throw err;
+					}
+				}
+				if (deleted) return 'ok: chat message deleted';
 			}
 
 			// A chat-disabled recipient stores the object as a private Note instead.

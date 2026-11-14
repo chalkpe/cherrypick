@@ -44,6 +44,7 @@ function fixture(options: { beforeNoteInsert?: () => Promise<void>; resolveImage
 		},
 		reactionService,
 		chatMessagesRepository: { findOneBy: async () => null },
+		chatRoomHistoryService: { findArchivedCopiesBySourceUri: async () => [] },
 		redisClient: {
 			get: async (key: string) => locks.get(key) ?? tombstones.get(key) ?? null,
 			set: async (key: string, value: string) => {

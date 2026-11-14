@@ -104,6 +104,7 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		globalEventService: { publishChatUserStream: () => {}, publishChatRoomStream: () => {} },
 		redisClient,
 		chatRosterService: chatRosterOver(redisClient),
+		chatRoomHistoryService: { findArchivedCopiesBySourceUri: async () => [] },
 		chatRoomsRepository: { findOneBy: async () => ({ id: 'room1', ownerId: owner.id }) },
 		chatRoomMembershipsRepository: {
 			findOneBy: async ({ userId }: { userId: string }) => memberships.find(member => member.userId === userId) ?? null,

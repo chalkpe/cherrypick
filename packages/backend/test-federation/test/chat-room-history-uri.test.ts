@@ -13,7 +13,8 @@ import { createAccount, fetchAdmin, resolveRemoteUser, waitForFollowRelation, WA
 
 /**
  * 소유 서버는 과거 기록으로 제3 서버 메시지의 URI를 선점할 수 없다.
- * 실제 HTTPS 요청으로 일반 노트 삭제, 제3 서버 채팅 검증, 보관 사본, 삭제된 글 거부를 확인한다.
+ * 실제 HTTPS 요청으로 일반 노트 삭제, 제3 서버 채팅 검증, 본문 위조 거부, 서명자별 정지 대체,
+ * 보관 사본의 업그레이드와 삭제, 삭제된 글 거부를 확인한다.
  */
 const FAKE = 'https://fake.test';
 const AS = 'https://www.w3.org/ns/activitystreams';
@@ -24,15 +25,26 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', {
 	publicKeyEncoding: { type: 'spki', format: 'pem' },
 	privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
 });
+// 보관 사본에 닿으면 안 되는 무관한 제3자. 소유자와 다른 키로 서명한다
+const { privateKey: malloryPrivateKey, publicKey: malloryPublicKey } = generateKeyPairSync('rsa', {
+	modulusLength: 2048,
+	publicKeyEncoding: { type: 'spki', format: 'pem' },
+	privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+});
 
 const ownerName = `owner${crypto.randomUUID().replaceAll('-', '')}`;
 const owner = `${FAKE}/users/${ownerName}`;
+const malloryName = `mallory${crypto.randomUUID().replaceAll('-', '')}`;
+const mallory = `${FAKE}/users/${malloryName}`;
 const attackRoom = `r${Date.now()}`;
 const legitRoom = `r${Date.now() + 1}`;
 const archivedRoom = `r${Date.now() + 2}`;
 const tombstoneRoom = `r${Date.now() + 3}`;
+const forgedRoom = `r${Date.now() + 4}`;
+const signerRoom = `r${Date.now() + 5}`;
+const upgradeRoom = `r${Date.now() + 6}`;
 
-function person(username: string) {
+function person(username: string, publicKeyPem: string) {
 	const id = `${FAKE}/users/${username}`;
 	return {
 		'@context': [AS, 'https://w3id.org/security/v1'],
@@ -43,7 +55,7 @@ function person(username: string) {
 		inbox: `${id}/inbox`,
 		outbox: `${id}/outbox`,
 		endpoints: { sharedInbox: `${FAKE}/inbox` },
-		publicKey: { id: `${id}#main-key`, owner: id, publicKeyPem: publicKey },
+		publicKey: { id: `${id}#main-key`, owner: id, publicKeyPem },
 	};
 }
 
@@ -68,21 +80,21 @@ function page(roomUri: string, items: unknown[]) {
 	return { '@context': AS, id: `${roomUri}/history`, type: 'OrderedCollectionPage', partOf: `${roomUri}/history`, orderedItems: items };
 }
 
-/** 받는 서버의 받은편지함은 서명을 확인하므로 가짜 소유자의 키로 서명해 보낸다 */
-async function deliver(inbox: string, activity: object): Promise<void> {
+/** 받는 서버의 받은편지함은 서명을 확인하므로 지정한 가짜 계정의 키로 서명해 보낸다 */
+async function deliver(inbox: string, activity: object, signer: { uri: string; privateKey: string } = { uri: owner, privateKey }): Promise<void> {
 	const body = JSON.stringify(activity);
 	const url = new URL(inbox);
 	const date = new Date().toUTCString();
 	const digest = `SHA-256=${createHash('sha256').update(body).digest('base64')}`;
 	const signed = `(request-target): post ${url.pathname}\nhost: ${url.host}\ndate: ${date}\ndigest: ${digest}`;
-	const signature = createSign('sha256').update(signed).sign(privateKey, 'base64');
+	const signature = createSign('sha256').update(signed).sign(signer.privateKey, 'base64');
 	const res = await fetch(inbox, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/activity+json',
 			Date: date,
 			Digest: digest,
-			Signature: `keyId="${owner}#main-key",algorithm="rsa-sha256",headers="(request-target) host date digest",signature="${signature}"`,
+			Signature: `keyId="${signer.uri}#main-key",algorithm="rsa-sha256",headers="(request-target) host date digest",signature="${signature}"`,
 		},
 		body,
 	});
@@ -117,7 +129,8 @@ describe('Chat room history and third-party message URIs', () => {
 			res.end(JSON.stringify({ subject: `acct:${name}@fake.test`, links: [{ rel: 'self', type: 'application/activity+json', href: `${FAKE}/users/${name}` }] }));
 			return;
 		}
-		if (url.pathname === `/users/${ownerName}`) return json(res, 200, person(ownerName));
+		if (url.pathname === `/users/${ownerName}`) return json(res, 200, person(ownerName, publicKey));
+		if (url.pathname === `/users/${malloryName}`) return json(res, 200, person(malloryName, malloryPublicKey));
 		const pageBody = pages.get(`${FAKE}${url.pathname}${url.search}`);
 		if (pageBody != null) return json(res, 200, pageBody);
 		const room = url.pathname.match(/^\/chat\/rooms\/(r\d+)$/)?.[1];
@@ -286,7 +299,7 @@ describe('Chat room history and third-party message URIs', () => {
 	});
 
 	// 정지는 작성자 서버가 아는 모든 받은편지함으로 작성자 Delete를 보내므로, 정지되는 작성자는 이 시험에서만 쓰는 계정으로 둔다.
-	test('확인할 수 없는 메시지는 보관 사본으로 남고 원래 URI의 삭제에 지워지지 않는다', async () => {
+	test('보관 사본은 무관한 Delete에 지워지지 않고 작성자의 Delete에 지워진다', async () => {
 		const roomUri = `${FAKE}/chat/rooms/${archivedRoom}`;
 		const charlie = await createAccount('a.test');
 		const charlieUri = `https://a.test/users/${charlie.id}`;
@@ -308,6 +321,7 @@ describe('Chat room history and third-party message URIs', () => {
 		// 작성자가 정지되면 작성자 서버가 메시지를 내주지 않는다(404)
 		const adminA = await fetchAdmin('a.test');
 		await adminA.client.request('admin/suspend-user', { userId: charlie.id });
+		let mirrorId: string;
 		try {
 			pages.set(`${roomUri}/history`, page(roomUri, [
 				message(roomUri, messageUri, charlieUri, 'archived original', {
@@ -315,7 +329,7 @@ describe('Chat room history and third-party message URIs', () => {
 					_misskey_chatAuthor: { name: 'Archived Charlie', username: charlie.username, host: 'a.test' },
 				}),
 			]));
-			const mirrorId = await invite('b.test', bob, roomUri, `archived ${crypto.randomUUID()}`);
+			mirrorId = await invite('b.test', bob, roomUri, `archived ${crypto.randomUUID()}`);
 			// 실시간 수신은 보낸이를 멤버로 확인하므로 소유 서버가 alice를 알린다
 			await addMember(roomUri, aliceUri, 'https://b.test/inbox');
 			await vi.waitFor(async () => {
@@ -330,31 +344,165 @@ describe('Chat room history and third-party message URIs', () => {
 			strictEqual(messages[0].fromUser, null);
 			deepStrictEqual(messages[0].archivedAuthor, { name: 'Archived Charlie', username: charlie.username, host: 'a.test' });
 
-			// 소유 서버가 원래 URI로 지우는 것도 보관 사본에는 닿지 않는다. 소유자의 그룹 관리 권한은 사본의 로컬 식별자로만 행사한다
+			// 무관한 제3자가 원래 URI로 보내는 Delete는 사본을 지우지 못한다
 			await deliver('https://b.test/inbox', {
 				'@context': AS,
 				id: `${FAKE}/deletes/${crypto.randomUUID()}`,
 				type: 'Delete',
-				actor: owner,
+				actor: mallory,
 				object: messageUri,
 				published: new Date().toISOString(),
-			});
+			}, { uri: mallory, privateKey: malloryPrivateKey });
 			// 삭제 처리가 지나갔음을 새 메시지의 도착으로 확인한다
-			await alice.client.request('chat/messages/create-to-room', { toRoomId: aliceMirror, text: 'after the delete' });
+			await alice.client.request('chat/messages/create-to-room', { toRoomId: aliceMirror, text: 'after the unrelated delete' });
 			await vi.waitFor(async () => {
 				const later = await timeline(bob, mirrorId);
-				strictEqual(later.some(m => m.text === 'after the delete'), true);
+				strictEqual(later.some(m => m.text === 'after the unrelated delete'), true);
 			}, WAIT_FOR_FEDERATION);
 			await new Promise(resolve => setTimeout(resolve, 2000));
 
-			// 보관 사본은 로컬 URI로 남아 원래 URI의 Delete에 지워지지 않는다
 			const kept = await timeline(bob, mirrorId);
 			const archived = kept.find(m => m.text === 'archived original');
-			strictEqual(archived != null, true, 'the archived copy was deleted through the original URI');
+			strictEqual(archived != null, true, 'the archived copy was deleted by an unrelated Delete');
 			strictEqual(archived!.fromUser, null);
 		} finally {
 			await adminA.client.request('admin/unsuspend-user', { userId: charlie.id }).catch(() => {});
 		}
+
+		// 정지가 풀린 작성자가 원래 URI로 지우면 보관 사본도 지워진다
+		await charlie.client.request('chat/messages/delete', { messageId: sent.id });
+		await vi.waitFor(async () => {
+			const after = await timeline(bob, mirrorId);
+			strictEqual(after.some(m => m.text === 'archived original'), false);
+		}, WAIT_FOR_FEDERATION);
+	});
+
+	test('소유 서버가 바꾼 본문은 저장하지 않고 작성자 서버가 확인한 본문으로 받는다', async () => {
+		const roomUri = `${FAKE}/chat/rooms/${forgedRoom}`;
+		rosters.set(roomUri, [aliceUri, bobUri]);
+
+		const aliceMirror = await invite('a.test', alice, roomUri, `forged ${crypto.randomUUID()}`);
+		const sent = await alice.client.request('chat/messages/create-to-room', { toRoomId: aliceMirror, text: 'the real text' });
+		const messageUri = `https://a.test/chat/messages/${sent.id}`;
+
+		await addMember(roomUri, bobUri, 'https://a.test/inbox');
+		await vi.waitFor(async () => {
+			const members = await alice.client.request('chat/rooms/members', { roomId: aliceMirror, limit: 100 });
+			strictEqual(members.some(member => member.userId === bobOnA.id), true);
+		}, WAIT_FOR_FEDERATION);
+
+		// 소유 서버의 기록은 본문을 바꿔 싣는다
+		pages.set(`${roomUri}/history`, page(roomUri, [
+			message(roomUri, messageUri, aliceUri, 'forged by the owner'),
+		]));
+		const mirrorId = await invite('b.test', bob, roomUri, `forged ${crypto.randomUUID()}`);
+		await waitCompleted(bob, mirrorId);
+
+		const messages = await timeline(bob, mirrorId);
+		strictEqual(messages.length, 1);
+		strictEqual(messages[0].text, 'the real text');
+		strictEqual(messages[0].fromUser?.id, aliceOnB.id);
+	});
+
+	test('첫 서명자가 작성자 서버에서 정지되어도 다른 서명자로 확인해 원래 URI로 받는다', async () => {
+		const roomUri = `${FAKE}/chat/rooms/${signerRoom}`;
+		const bob2 = await createAccount('b.test');
+		const bob2Uri = `https://b.test/users/${bob2.id}`;
+		rosters.set(roomUri, [aliceUri, bobUri, bob2Uri]);
+
+		const aliceMirror = await invite('a.test', alice, roomUri, `signer ${crypto.randomUUID()}`);
+		const sent = await alice.client.request('chat/messages/create-to-room', { toRoomId: aliceMirror, text: 'signed by another member' });
+		const messageUri = `https://a.test/chat/messages/${sent.id}`;
+
+		// bob이 먼저 참여해 첫 서명자가 되고, bob2가 그 다음 서명자가 된다
+		await addMember(roomUri, bobUri, 'https://a.test/inbox');
+		await addMember(roomUri, bob2Uri, 'https://a.test/inbox');
+		const bob2OnA = await resolveRemoteUser('b.test', bob2.id, alice);
+		await vi.waitFor(async () => {
+			const members = await alice.client.request('chat/rooms/members', { roomId: aliceMirror, limit: 100 });
+			strictEqual(members.some(member => member.userId === bobOnA.id), true);
+			strictEqual(members.some(member => member.userId === bob2OnA.id), true);
+		}, WAIT_FOR_FEDERATION);
+
+		// 첫 서명자를 작성자 서버에서 정지하면 그 서명의 조회는 404가 된다
+		const adminA = await fetchAdmin('a.test');
+		await adminA.client.request('admin/suspend-user', { userId: bobOnA.id });
+		try {
+			pages.set(`${roomUri}/history`, page(roomUri, [
+				message(roomUri, messageUri, aliceUri, 'signed by another member', {
+					_misskey_chatAuthorArchived: true,
+					_misskey_chatAuthor: { name: 'Archived Alice', username: alice.username, host: 'a.test' },
+				}),
+			]));
+			const mirrorId = await invite('b.test', bob, roomUri, `signer ${crypto.randomUUID()}`);
+			await invite('b.test', bob2, roomUri, `signer ${crypto.randomUUID()}`);
+			await waitCompleted(bob, mirrorId);
+
+			const messages = await timeline(bob, mirrorId);
+			strictEqual(messages.length, 1);
+			strictEqual(messages[0].text, 'signed by another member');
+			// 보관 표시가 있어도 다른 서명자로 확인했으면 실제 작성자의 원래 URI다
+			strictEqual(messages[0].fromUser?.id, aliceOnB.id);
+		} finally {
+			await adminA.client.request('admin/unsuspend-user', { userId: bobOnA.id }).catch(() => {});
+		}
+	});
+
+	test('사본으로 남은 글은 작성자 회복 뒤 다시 받으면 같은 행이 원래 URI로 업그레이드된다', async () => {
+		const roomUri = `${FAKE}/chat/rooms/${upgradeRoom}`;
+		const charlie = await createAccount('a.test');
+		const charlieUri = `https://a.test/users/${charlie.id}`;
+		const bob2 = await createAccount('b.test');
+		const bob2Uri = `https://b.test/users/${bob2.id}`;
+		rosters.set(roomUri, [charlieUri, bobUri, bob2Uri]);
+
+		const charlieMirror = await invite('a.test', charlie, roomUri, `upgrade ${crypto.randomUUID()}`);
+		const sent = await charlie.client.request('chat/messages/create-to-room', { toRoomId: charlieMirror, text: 'upgrade me' });
+		const messageUri = `https://a.test/chat/messages/${sent.id}`;
+
+		await addMember(roomUri, bobUri, 'https://a.test/inbox');
+		await addMember(roomUri, bob2Uri, 'https://a.test/inbox');
+		const bob2OnA = await resolveRemoteUser('b.test', bob2.id, charlie);
+		await vi.waitFor(async () => {
+			const members = await charlie.client.request('chat/rooms/members', { roomId: charlieMirror, limit: 100 });
+			strictEqual(members.some(member => member.userId === bobOnA.id), true);
+			strictEqual(members.some(member => member.userId === bob2OnA.id), true);
+		}, WAIT_FOR_FEDERATION);
+
+		const adminA = await fetchAdmin('a.test');
+		await adminA.client.request('admin/suspend-user', { userId: charlie.id });
+		let mirrorId: string;
+		let copyId: string;
+		try {
+			pages.set(`${roomUri}/history`, page(roomUri, [
+				message(roomUri, messageUri, charlieUri, 'upgrade me', {
+					_misskey_chatAuthorArchived: true,
+					_misskey_chatAuthor: { name: 'Archived Charlie', username: charlie.username, host: 'a.test' },
+				}),
+			]));
+			mirrorId = await invite('b.test', bob, roomUri, `upgrade ${crypto.randomUUID()}`);
+			await waitCompleted(bob, mirrorId);
+
+			const copies = await timeline(bob, mirrorId);
+			strictEqual(copies.length, 1);
+			strictEqual(copies[0].fromUser, null);
+			strictEqual(copies[0].text, 'upgrade me');
+			copyId = copies[0].id;
+		} finally {
+			await adminA.client.request('admin/unsuspend-user', { userId: charlie.id }).catch(() => {});
+		}
+
+		// 작성자가 회복된 뒤 다른 로컬 사용자가 참여하면 처음부터 다시 받는다
+		await invite('b.test', bob2, roomUri, `upgrade ${crypto.randomUUID()}`);
+		await waitCompleted(bob, mirrorId);
+
+		const charlieOnB = await resolveRemoteUser('a.test', charlie.id, bob);
+		const messages = await timeline(bob, mirrorId);
+		// 사본과 원본 두 행이 아니라 같은 행이 업그레이드되어야 한다
+		strictEqual(messages.length, 1);
+		strictEqual(messages[0].id, copyId);
+		strictEqual(messages[0].text, 'upgrade me');
+		strictEqual(messages[0].fromUser?.id, charlieOnB.id);
 	});
 
 	test('참여 전에 삭제된 메시지는 Tombstone 확인으로 거부한다', async () => {

@@ -1255,9 +1255,10 @@ describe('ApInboxService chat activity routing', () => {
 			userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null, isRemoteUser: (user: { host: string | null }) => user.host != null },
 			chatRoomsRepository,
 			chatMessagesRepository: { findOneBy: vi.fn().mockResolvedValue(null), existsBy: vi.fn().mockResolvedValue(false) },
+			chatRoomHistoryService: { findArchivedCopiesBySourceUri: vi.fn().mockResolvedValue([]) },
 		}) as ApInboxService;
 
-		return { inbox, actor, message, chatService, redisClient, chatRoomsRepository, localUser };
+		return { inbox, actor, message, chatService, redisClient, chatRoomsRepository, localUser, chatRoomHistoryService: (inbox as never as { chatRoomHistoryService: { findArchivedCopiesBySourceUri: ReturnType<typeof vi.fn> } }).chatRoomHistoryService };
 	}
 
 	describe('a message with nothing to show', () => {
@@ -1578,6 +1579,53 @@ describe('ApInboxService chat activity routing', () => {
 			6 * 60 * 60,
 			f.actor.uri,
 		);
+	});
+
+	describe('Delete of an archived copy through the original URI', () => {
+		const copy = {
+			id: 'copy1',
+			uri: 'https://local.test/chat/history/copy1',
+			sourceUri: 'https://remote.test/chat/messages/m1',
+			fromUserId: null,
+			archivedAuthor: { uri: 'https://remote.test/users/someone-else', username: 'someone-else', name: null, host: 'remote.test' },
+			toRoomId: 'r1',
+			reactions: [] as string[],
+		};
+		const activity = (uri: string) => ({ type: 'Delete', actor: 'https://remote.test/users/remote-user', object: { id: uri, type: 'Tombstone', formerType: 'Note' } });
+		const deleteIt = (f: ReturnType<typeof createInbox>, uri: string) => (f.inbox as never as { delete: (...args: unknown[]) => Promise<string> }).delete(f.actor, activity(uri));
+
+		test('deletes the copy when the original message is not stored', async () => {
+			const f = createInbox();
+			f.chatService.findMessageByUri.mockResolvedValue(null);
+			f.chatRoomHistoryService.findArchivedCopiesBySourceUri.mockResolvedValue([copy]);
+
+			const result = await deleteIt(f, copy.sourceUri);
+
+			expect(result).toBe('ok: chat message deleted');
+			expect(f.chatRoomHistoryService.findArchivedCopiesBySourceUri).toHaveBeenCalledWith(copy.sourceUri);
+			expect(f.chatService.deleteRemoteMessage).toHaveBeenCalledWith(f.actor, copy, expect.anything());
+		});
+
+		test('leaves the copy alone when the actor may not delete it', async () => {
+			const f = createInbox();
+			f.chatService.findMessageByUri.mockResolvedValue(null);
+			f.chatRoomHistoryService.findArchivedCopiesBySourceUri.mockResolvedValue([copy]);
+			f.chatService.deleteRemoteMessage.mockRejectedValue(new ChatMessageAccessError('cannot delete'));
+
+			const result = await deleteIt(f, copy.sourceUri);
+
+			expect(f.chatRoomHistoryService.findArchivedCopiesBySourceUri).toHaveBeenCalledWith(copy.sourceUri);
+			expect(result).toBe('ok: chat message tombstone stored');
+		});
+
+		test('does not look for copies when an ordinary note is deleted', async () => {
+			const f = createInbox();
+			f.chatService.findMessageByUri.mockResolvedValue(null);
+
+			await deleteIt(f, 'https://remote.test/notes/n1').catch(() => undefined);
+
+			expect(f.chatRoomHistoryService.findArchivedCopiesBySourceUri).not.toHaveBeenCalled();
+		});
 	});
 
 	test('routes EmojiReact to reactRemote', async () => {

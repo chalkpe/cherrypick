@@ -286,6 +286,7 @@ export class ChatRoomHistorySyncProcessorService {
 		// 확인할 수 없는 글은 원래 URI를 선점하지 않는 보관 사본으로 남긴다.
 		let uri = item.uri;
 		let archived = item.note._misskey_chatAuthorArchived === true;
+		let source = item;
 		if (host !== run.ownerHost) {
 			const verdict = await this.verifySource(room, item, run);
 			if (verdict === 'reject') {
@@ -295,28 +296,39 @@ export class ChatRoomHistorySyncProcessorService {
 			if (verdict === 'archive') {
 				uri = chatHistoryCopyUri(this.config.url, room.id, item.uri);
 				archived = true;
+			} else {
+				// 검증된 글의 본문·첨부·시각은 소유 서버의 기록이 아니라 출처 객체에서 다시 읽는다.
+				const verified = parseChatHistoryItem(verdict, this.itemContext(room));
+				if ('skip' in verified) {
+					this.logger.debug(`Skipped a history item of ${room.uri}: the verified source is not readable: ${verified.skip}`);
+					return;
+				}
+				source = verified;
+				// 확인에 성공했으므로 보관 표시가 있어도 실제 작성자의 글로 받는다.
+				archived = false;
 			}
 		}
 
-		const channel = await this.resolveChannel(room, item.note, run);
+		const channel = await this.resolveChannel(room, source.note, run);
 		if (channel === false) return;
 
 		const author = archived ? null : await this.resolveAccount(item.authorUri, run, true);
-		const text = item.text;
-		const attachments = toArray(item.note.attachment).filter(attach => attach != null && typeof attach === 'object').slice(0, MAX_REMOTE_CHAT_MESSAGE_FILES);
+		const text = source.text;
+		const attachments = toArray(source.note.attachment).filter(attach => attach != null && typeof attach === 'object').slice(0, MAX_REMOTE_CHAT_MESSAGE_FILES);
 		let fileIds: string[] = [];
 		let unavailableFileCount = attachments.length;
 		if (author != null && attachments.length > 0) {
-			const resolved = await this.apInboxService.resolveChatAttachments(author, { ...item.note, attachment: attachments });
+			const resolved = await this.apInboxService.resolveChatAttachments(author, { ...source.note, attachment: attachments });
 			if (resolved.temporarilyFailed && !run.lastAttempt) throw new Error('a history attachment is temporarily unavailable');
 			fileIds = resolved.files.map(file => file.id);
 			unavailableFileCount = Math.max(0, attachments.length - fileIds.length);
 		}
 		if ((text == null || text.trim() === '') && fileIds.length === 0 && unavailableFileCount === 0) return;
 
-		const emojis = await this.confirmedEmojis(item.note, author?.host ?? host, run);
+		const emojis = await this.confirmedEmojis(source.note, author?.host ?? host, run);
+		// 리액션과 작성자 스냅샷은 소유 서버만 아는 기록이므로 기록 항목의 것을 유지한다.
 		const reactions = await this.resolveReactions(item, author, run);
-		const channelRefs = room.hasChannels ? await this.chatRoomChannelService.remoteRefs(room, text ?? '', item.note._misskey_chatChannelRefs) : [];
+		const channelRefs = room.hasChannels ? await this.chatRoomChannelService.remoteRefs(room, text ?? '', source.note._misskey_chatChannelRefs) : [];
 
 		const unlock = await acquireApObjectLock(this.redisClient, item.uri);
 		try {
@@ -326,10 +338,10 @@ export class ChatRoomHistorySyncProcessorService {
 				authorUri: item.authorUri,
 				authorId: author?.id ?? null,
 				archivedAuthor: author == null ? { uri: item.authorUri, username: item.author?.username ?? null, name: item.author?.name ?? null, host } : null,
-				published: item.published,
-				editedAt: item.editedAt,
+				published: source.published,
+				editedAt: source.editedAt,
 				text,
-				dice: parseChatDiceResult(item.note._misskey_dice),
+				dice: parseChatDiceResult(source.note._misskey_dice),
 				fileIds,
 				unavailableFileCount,
 				emojis,
@@ -350,9 +362,10 @@ export class ChatRoomHistorySyncProcessorService {
 
 	/**
 	 * 제3 서버의 글은 작성자 서버에 이 서버의 멤버로 서명해 직접 확인한다. 소유 서버가 대신 말할 수 없다.
-	 * 확인하면 원래 URI로 받고, 어긋나면 버리며, 확인할 수 없으면 보관 사본으로 남긴다.
+	 * 확인하면 검증된 출처 객체를 돌려주고, 어긋나면 버리며, 확인할 수 없으면 보관 사본으로 남긴다.
 	 */
-	private async verifySource(room: MiChatRoom & { uri: string }, item: ChatHistoryItem, run: ImportRun): Promise<'verified' | 'reject' | 'archive'> {
+	private async verifySource(room: MiChatRoom & { uri: string }, item: ChatHistoryItem, run: ImportRun): Promise<IPost | 'reject' | 'archive'> {
+		let denied: StatusError | null = null;
 		for (const signer of run.signers.slice(0, MAX_SIGNERS)) {
 			const resolver = await this.apResolverService.createResolver();
 			resolver.signAs(signer as MiLocalUser);
@@ -368,12 +381,12 @@ export class ChatRoomHistorySyncProcessorService {
 				} catch {
 					return 'reject';
 				}
-				return 'verified';
+				return note;
 			} catch (err) {
-				// 작성자 서버가 글을 내주지 않으면(404/410) 보관 표시가 있는 경우 바로 사본으로 남긴다.
+				// 작성자 서버가 글을 내주지 않으면(404/410) 다른 서명자로도 물어본다. 서명자가 정지되었을 수 있다.
 				if (err instanceof StatusError && (err.statusCode === 404 || err.statusCode === 410)) {
-					if (item.note._misskey_chatAuthorArchived === true || run.lastAttempt) return 'archive';
-					throw err;
+					denied = err;
+					continue;
 				}
 				if (isTemporaryFetchFailure(err)) {
 					if (run.lastAttempt) return 'archive';
@@ -385,8 +398,9 @@ export class ChatRoomHistorySyncProcessorService {
 				throw err;
 			}
 		}
-		if (run.lastAttempt) return 'archive';
-		throw new Error('the author\'s server does not count anyone here as a member yet');
+		// 모든 서명자가 내주지 않았어도 보관 표시가 있으면 사본으로 남기고, 아니면 큐의 재시도로 다시 묻는다.
+		if (run.lastAttempt || (denied != null && item.note._misskey_chatAuthorArchived === true)) return 'archive';
+		throw denied ?? new Error('the author\'s server does not count anyone here as a member yet');
 	}
 
 	/** 실시간 수신과 같은 채널 판정. 모르는 채널이면 그룹 객체를 한 번 다시 읽고, 그래도 없으면 그 글을 버린다. */

@@ -229,6 +229,7 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 
 			expect(stored).not.toBeNull();
 			expect(stored!.id < live).toBe(true);
+			expect(stored!.sourceUri).toBeNull();
 			expect(idService.parse(stored!.id).date.toISOString()).toBe('2025-01-01T00:00:00.000Z');
 			expect(stored!.importedAt).toBeInstanceOf(Date);
 			expect(publishChatRoomStream).not.toHaveBeenCalled();
@@ -283,15 +284,60 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 				expect(await chatMessagesRepository.findOneByOrFail({ uri: sourceUri })).toMatchObject({ text: 'original' });
 			});
 
-			test('사본은 사본 URI로 저장하고 원래 URI의 실시간 수신을 막지 않는다', async () => {
+			test('사본은 사본 URI와 원래 주소를 기록해 저장한다', async () => {
 				const { room } = await mirrorRoom();
 				const service = historyService();
 
 				const stored = await service.importMessage(room, importInput(room, { uri: copyUriOf(room.id), sourceUri, authorId: null, archivedAuthor: { uri: member.uri!, username: member.username, name: member.name, host: 'member.test' } }));
 
-				expect(stored).toMatchObject({ uri: copyUriOf(room.id), fromUserId: null });
-				const live = await service.importMessage(room, importInput(room, { uri: sourceUri, sourceUri }));
-				expect(live).toMatchObject({ uri: sourceUri, fromUserId: member.id });
+				expect(stored).toMatchObject({ uri: copyUriOf(room.id), sourceUri, fromUserId: null });
+			});
+
+			test('검증된 원본이 오면 살아있는 사본은 같은 행에서 원래 URI로 업그레이드한다', async () => {
+				const { room } = await mirrorRoom();
+				const service = historyService();
+				const stored = await service.importMessage(room, importInput(room, { uri: copyUriOf(room.id), sourceUri, authorId: null, archivedAuthor: { uri: member.uri!, username: member.username, name: member.name, host: 'member.test' }, text: 'archived text' }));
+				await chatMessagesRepository.update(stored!.id, { reads: [owner.id] });
+
+				const live = await service.importMessage(room, importInput(room, { uri: sourceUri, sourceUri, text: 'verified text', reactions: [`${reactor.id}/👍`] }));
+
+				// 미읽음·알림을 만들지 않도록 행과 가져온 시각은 그대로 둔다
+				expect(live).toMatchObject({
+					id: stored!.id,
+					uri: sourceUri,
+					sourceUri: null,
+					fromUserId: member.id,
+					text: 'verified text',
+					reactions: [`${reactor.id}/👍`],
+					reads: [owner.id],
+					importedAt: stored!.importedAt,
+				});
+				expect(live!.archivedAuthor).toMatchObject({ uri: member.uri!, username: member.username, host: 'member.test' });
+				expect(await chatMessagesRepository.existsBy({ uri: copyUriOf(room.id) })).toBe(false);
+				expect(await chatMessagesRepository.countBy({ toRoomId: room.id })).toBe(1);
+			});
+
+			test('삭제된 사본은 검증된 원본이 와도 되살아나지 않는다', async () => {
+				const { room } = await mirrorRoom();
+				const service = historyService();
+				const stored = await service.importMessage(room, importInput(room, { uri: copyUriOf(room.id), sourceUri, authorId: null, archivedAuthor: { uri: member.uri!, username: null, name: null, host: 'member.test' } }));
+				await chatMessagesRepository.update(stored!.id, { deletedAt: new Date(), text: null });
+
+				expect(await service.importMessage(room, importInput(room, { uri: sourceUri, sourceUri }))).toBeNull();
+
+				expect(await chatMessagesRepository.existsBy({ uri: sourceUri })).toBe(false);
+				expect(await chatMessagesRepository.findOneByOrFail({ id: stored!.id })).toMatchObject({ deletedAt: expect.any(Date), text: null });
+			});
+
+			test('삭제된 사본은 같은 사본 가져오기로도 되살아나지 않는다', async () => {
+				const { room } = await mirrorRoom();
+				const service = historyService();
+				const input = importInput(room, { uri: copyUriOf(room.id), sourceUri, authorId: null, archivedAuthor: { uri: member.uri!, username: null, name: null, host: 'member.test' } });
+				const stored = await service.importMessage(room, input);
+				await chatMessagesRepository.update(stored!.id, { deletedAt: new Date(), text: null });
+
+				expect(await service.importMessage(room, input)).toBeNull();
+				expect(await chatMessagesRepository.countBy({ toRoomId: room.id })).toBe(1);
 			});
 		});
 

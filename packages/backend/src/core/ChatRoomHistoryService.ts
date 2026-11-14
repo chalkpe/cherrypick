@@ -16,7 +16,7 @@ import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
-import { buildChatHistoryPage, CHAT_HISTORY_PAGE_SIZE, chatHistoryNoteFields } from '@/core/activitypub/misc/chat-history.js';
+import { buildChatHistoryPage, CHAT_HISTORY_PAGE_SIZE, chatHistoryCopyUri, chatHistoryNoteFields } from '@/core/activitypub/misc/chat-history.js';
 import type { ChatHistoryAuthor, ChatHistoryReaction } from '@/core/activitypub/misc/chat-history.js';
 import { chatActorUri, chatMessageUri } from '@/core/activitypub/misc/chat-payloads.js';
 import type { IObject } from '@/core/activitypub/type.js';
@@ -293,13 +293,23 @@ export class ChatRoomHistoryService {
 	/**
 	 * 소유 서버가 내준 글 하나를 저장한다. 호출자는 실시간 수신과 같은 메시지 잠금을 잡고 있어야 한다.
 	 * 이미 있는 글(삭제 표시 포함)과 삭제가 먼저 도착한 글은 건드리지 않는다.
-	 * @returns 새로 저장한 글. 저장하지 않았으면 null
+	 * 검증된 원본이 오면 살아있는 보관 사본은 같은 행에서 원래 URI로 업그레이드한다.
+	 * @returns 새로 저장하거나 업그레이드한 글. 저장하지 않았으면 null
 	 */
 	@bindThis
 	public async importMessage(room: MiChatRoom, input: ChatHistoryImport): Promise<MiChatMessage | null> {
 		// 보관 사본은 원래 URI와 별개이지만, 원래 URI의 글이 이미 있거나 삭제가 먼저 도착했으면 사본도 저장하지 않는다.
-		const uris = input.uri === input.sourceUri ? [input.uri] : [input.uri, input.sourceUri];
-		if (await this.chatMessagesRepository.existsBy({ uri: In(uris) })) return null;
+		const isCopy = input.uri !== input.sourceUri;
+		const copyUri = isCopy ? input.uri : chatHistoryCopyUri(this.config.url, room.id, input.sourceUri);
+		const uris = isCopy ? [input.uri, input.sourceUri] : [input.uri, copyUri];
+		const existing = await this.chatMessagesRepository.findBy({ uri: In(uris) });
+		let liveCopy: MiChatMessage | null = null;
+		if (existing.length > 0) {
+			// 원래 URI의 글(삭제 표시 포함)은 그대로 두고, 삭제된 사본도 되살리지 않는다.
+			if (isCopy || existing.some(m => m.uri === input.sourceUri)) return null;
+			liveCopy = existing.find(m => m.deletedAt == null) ?? null;
+			if (liveCopy == null) return null;
+		}
 		for (const uri of uris) {
 			const tombstone = `chat_delete_upon_arrival:${uri}:${encodeURIComponent(input.authorUri)}`;
 			const [direct, relayed] = await this.redisClient.mget(tombstone, `${tombstone}:room:${room.id}`);
@@ -308,23 +318,41 @@ export class ChatRoomHistoryService {
 
 		const reactions = [...new Set(input.reactions)].slice(0, MAX_REACTIONS_PER_MESSAGE);
 		const author = input.authorId != null ? await this.usersRepository.findOneBy({ id: input.authorId }) : null;
-		const message = {
-			id: this.idService.gen(input.published.getTime()),
-			fromUserId: input.authorId,
-			archivedAuthor: author != null ? { uri: input.authorUri, username: author.username, name: author.name, host: author.host } : input.archivedAuthor,
-			toRoomId: room.id,
+		const archivedAuthor = author != null ? { uri: input.authorUri, username: author.username, name: author.name, host: author.host } : input.archivedAuthor;
+		const content = {
 			toRoomChannelId: input.toRoomChannelId,
 			channelRefs: input.channelRefs,
 			text: input.text != null ? input.text.trim() : null,
 			dice: input.dice,
-			uri: input.uri,
 			editedAt: input.editedAt,
 			fileIds: input.fileIds,
 			unavailableFileCount: input.unavailableFileCount,
 			emojis: input.emojis,
 			reactions,
+		};
+
+		if (liveCopy != null) {
+			// id·읽음·가져온 시각은 그대로 두어 미읽음·알림을 만들지 않는다.
+			await this.chatMessagesRepository.update({ id: liveCopy.id }, {
+				uri: input.uri,
+				sourceUri: null,
+				fromUserId: input.authorId,
+				archivedAuthor,
+				...content,
+			});
+			return Object.assign(liveCopy, { uri: input.uri, sourceUri: null, fromUserId: input.authorId, archivedAuthor, ...content });
+		}
+
+		const message = {
+			id: this.idService.gen(input.published.getTime()),
+			fromUserId: input.authorId,
+			archivedAuthor,
+			toRoomId: room.id,
+			uri: input.uri,
+			sourceUri: isCopy ? input.sourceUri : null,
 			reads: [],
 			importedAt: new Date(),
+			...content,
 		} satisfies Partial<MiChatMessage>;
 
 		try {
@@ -334,6 +362,12 @@ export class ChatRoomHistoryService {
 			if (isDuplicateKeyValueError(err) || (err as { code?: string }).code === '23503') return null;
 			throw err;
 		}
+	}
+
+	/** 원래 URI로 도착한 Delete가 닿을 수 있는, 삭제되지 않은 보관 사본들 */
+	@bindThis
+	public findArchivedCopiesBySourceUri(sourceUri: string): Promise<MiChatMessage[]> {
+		return this.chatMessagesRepository.findBy({ sourceUri, deletedAt: IsNull() });
 	}
 
 	//#endregion

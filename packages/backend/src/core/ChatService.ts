@@ -2106,11 +2106,15 @@ export class ChatService {
 	@bindThis
 	public async deleteRemoteMessage(actor: MiUser, message: MiChatMessage, options?: { activity?: IObject }): Promise<MiChatMessage> {
 		if (message.fromUserId !== actor.id) {
-			const author = message.fromUserId != null ? await this.usersRepository.findOneBy({ id: message.fromUserId }) : null;
-			if (message.fromUserId != null ? author == null || this.userEntityService.isLocalUser(author) : message.archivedAuthor?.host == null) throw new ChatMessageAccessError('cannot delete');
-			// The room's owner moderates it, including what someone else wrote.
-			const room = message.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
-			if (room?.ownerId !== actor.id) throw new ChatMessageAccessError('cannot delete');
+			// The author of an archived copy may remove their own copy even though the account is gone.
+			const ownArchivedCopy = message.fromUserId == null && message.sourceUri != null && message.archivedAuthor?.uri === actor.uri;
+			if (!ownArchivedCopy) {
+				const author = message.fromUserId != null ? await this.usersRepository.findOneBy({ id: message.fromUserId }) : null;
+				if (message.fromUserId != null ? author == null || this.userEntityService.isLocalUser(author) : message.archivedAuthor?.host == null) throw new ChatMessageAccessError('cannot delete');
+				// The room's owner moderates it, including what someone else wrote.
+				const room = message.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
+				if (room?.ownerId !== actor.id) throw new ChatMessageAccessError('cannot delete');
+			}
 		}
 		if (message.deletedAt != null) return message;
 

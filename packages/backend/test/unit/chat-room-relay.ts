@@ -21,6 +21,18 @@ function storedMessage(overrides: Record<string, unknown> = {}) {
 	return { id: 'm1', uri: carolMessageUri, fromUserId: carol.id, toRoomId: 'mirror', toUserId: null, text: 'hello', reactions: [] as string[], deletedAt: null, editedAt: null, fileIds: [], emojis: [], ...overrides };
 }
 
+/** 원래 URI를 선점하지 않는 보관 사본. 작성자 계정은 없어진 상태다 */
+function archivedCopy(overrides: Record<string, unknown> = {}) {
+	return storedMessage({
+		id: 'copy1',
+		uri: `${LOCAL}/chat/history/copy1`,
+		sourceUri: carolMessageUri,
+		fromUserId: null,
+		archivedAuthor: { uri: carol.uri, username: 'carol', name: null, host: 'other.test' },
+		...overrides,
+	});
+}
+
 describe('the owner passes on what a member did', () => {
 	const roomOwnedHere = [['localroom', carol.id], ['localroom', erin.id], ['localroom', dave.id]] as [string, string][];
 	const message = () => storedMessage({ toRoomId: 'localroom' });
@@ -297,6 +309,24 @@ describe('receiving what the owner passed on', () => {
 			const result = await announce(f, relay(deletion(erin)));
 
 			expect(result).toMatch(/^skip:/);
+			expect(f.messages.rows[0].deletedAt).toBeNull();
+		});
+
+		test('of an archived copy, by the author through the original URI', async () => {
+			const f = chatRosterFixture({ memberships: members, messages: [archivedCopy()] });
+
+			const result = await announce(f, relay(deletion()));
+
+			expect(result).toBe('ok: chat message deleted');
+			expect(f.messages.rows[0].deletedAt).not.toBeNull();
+		});
+
+		test('a relay cannot delete an archived copy kept in another room', async () => {
+			const f = chatRosterFixture({ memberships: [...members, ['localroom', carol.id]], messages: [archivedCopy({ toRoomId: 'localroom' })] });
+
+			const result = await announce(f, relay(deletion()));
+
+			expect(result).toBe('ok: chat message tombstone stored');
 			expect(f.messages.rows[0].deletedAt).toBeNull();
 		});
 
@@ -614,6 +644,44 @@ describe('what comes straight from a member\'s server', () => {
 
 		expect(result).toMatch(/^skip:/);
 		expect(f.messages.rows[0].deletedAt).toBeNull();
+	});
+
+	test('the author can delete an archived copy through the original URI', async () => {
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id], ['mirror', carol.id]], messages: [archivedCopy()] });
+
+		const result = await f.inbox.delete(carol, { type: 'Delete', actor: carol.uri, object: { id: carolMessageUri, type: 'Tombstone', formerType: 'Note' } });
+
+		expect(result).toBe('ok: chat message deleted');
+		expect(f.messages.rows[0].deletedAt).not.toBeNull();
+	});
+
+	test('the room owner can delete an archived copy through the original URI', async () => {
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id], ['mirror', carol.id]], messages: [archivedCopy()] });
+
+		const result = await f.inbox.delete(bob, { type: 'Delete', actor: bob.uri, object: { id: carolMessageUri, type: 'Tombstone', formerType: 'Note' } });
+
+		expect(result).toBe('ok: chat message deleted');
+		expect(f.messages.rows[0].deletedAt).not.toBeNull();
+	});
+
+	test('an unrelated actor cannot delete an archived copy through the original URI', async () => {
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id], ['mirror', carol.id], ['mirror', erin.id]], messages: [archivedCopy()] });
+
+		const result = await f.inbox.delete(erin, { type: 'Delete', actor: erin.uri, object: { id: carolMessageUri, type: 'Tombstone', formerType: 'Note' } });
+
+		expect(result).toMatch(/^skip:/);
+		expect(f.messages.rows[0].deletedAt).toBeNull();
+	});
+
+	test('the archived author can delete their copy directly, but not an archived message that is no copy', async () => {
+		const archived = storedMessage({ id: 'archived1', uri: `${LOCAL}/chat/history/archived1`, fromUserId: null, archivedAuthor: { uri: carol.uri, username: 'carol', name: null, host: 'other.test' } });
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id], ['mirror', carol.id]], messages: [archivedCopy(), archived] });
+
+		await f.chatService.deleteRemoteMessage(carol as never, f.messages.rows[0] as never);
+		expect(f.messages.rows[0].deletedAt).not.toBeNull();
+
+		await expect(f.chatService.deleteRemoteMessage(carol as never, f.messages.rows[1] as never)).rejects.toThrow('cannot delete');
+		expect(f.messages.rows[1].deletedAt).toBeNull();
 	});
 });
 
