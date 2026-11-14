@@ -14,6 +14,7 @@ import { isApiError } from '@/utility/api-error.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
+import { userNameForLabel } from '@/filters/user.js';
 import { createRecordingSegments, recordingSegmentBytes } from '@/utility/recording-recorder.js';
 
 export type VoiceCallStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting';
@@ -147,13 +148,14 @@ let statusDelivery: StatusDelivery | null = null;
 // スピーカーを切り替えた回数。マイクを入れるのを待つあいだに切り替えられたかを見分ける
 let deafenRevision = 0;
 
-// record the call in separate tracks (my microphone, the other side, video when present)
-type RecordingPartKind = 'mic' | 'others' | 'video';
+// record the whole call as one file: a single recorder mixes every voice and, when present, the shared screens
 type RecordingUploadReason = 'noFreeSpace' | 'tooLarge' | 'network' | null;
-type FailedRecording = { blob: Blob; name: string; reason: RecordingUploadReason; fileId?: string };
+// a failed part keeps its blob only when the upload itself failed; once the original reached the drive the blob is
+// released and a device download fetches it back from `url`
+type FailedRecording = { blob: Blob | null; name: string; ext: string; reason: RecordingUploadReason; fileId?: string; url?: string | null };
 
 class RecordingUploadError extends Error {
-	constructor(public reason: RecordingUploadReason, public fileId?: string) {
+	constructor(public reason: RecordingUploadReason, public fileId?: string, public url?: string | null) {
 		super('Failed to save or convert the recording');
 	}
 }
@@ -166,18 +168,24 @@ type RecordingSession = {
 	failed: FailedRecording[];
 	stopping: boolean;
 	micRevision: number;
+	// uploaded originals held back until we know whether the call ever has video
+	pending: { fileId: string; name: string; url: string | null }[];
+	hasVideo: boolean;
+	folderId: string | null;
+	folderName: string | null;
+	name: string;
+	ext: string;
 };
 type RecordingPart = {
 	stop: () => void;
 	name: string;
 };
-const recordingParts = new Map<RecordingPartKind, RecordingPart>();
+let recordingPart: RecordingPart | null = null;
 let recordingSession: RecordingSession | null = null;
 // サーバーが録画を受け付けるのを待っているあいだ。二重に始めない
 let recordingStarting: object | null = null;
 let recordingContext: AudioContext | null = null;
 let recordingMicBus: GainNode | null = null;
-let recordingOthersBus: GainNode | null = null;
 let recordingMixedDest: MediaStreamAudioDestinationNode | null = null;
 let recordingConversions: Promise<void> = Promise.resolve();
 let recordingRawMicStream: MediaStream | null = null;
@@ -189,12 +197,12 @@ const recordingVideos = new Map<MediaStreamTrack, { element: HTMLVideoElement; s
 
 function recordingMimeType(): string | undefined {
 	if (typeof MediaRecorder === 'undefined') return undefined;
-	return ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'].find(type => MediaRecorder.isTypeSupported(type));
+	return ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'].find(type => MediaRecorder.isTypeSupported(type));
 }
 
 function recordingVideoMimeType(): string | undefined {
 	if (typeof MediaRecorder === 'undefined') return undefined;
-	return ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(type => MediaRecorder.isTypeSupported(type));
+	return ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'].find(type => MediaRecorder.isTypeSupported(type));
 }
 
 function addRecordingVideo(track: MediaStreamTrack, screen: boolean): void {
@@ -210,7 +218,7 @@ function addRecordingVideo(track: MediaStreamTrack, screen: boolean): void {
 	void element.play().catch(() => {});
 	recordingVideos.set(track, { element, screen });
 	watchRecordingVideo(track, element);
-	ensureRecordingVideoPart();
+	markRecordingVideo();
 }
 
 /** redraw whenever the source produces a frame; background tabs throttle timers */
@@ -231,26 +239,34 @@ function watchRecordingVideo(track: MediaStreamTrack, video: HTMLVideoElement): 
 	schedule();
 }
 
-/** start the video part when the first video track appears, even after recording began */
-function ensureRecordingVideoPart(): void {
-	const session = recordingSession;
-	if (session == null || session.stopping || recordingParts.has('video') || recordingMixedDest == null || recordingContext == null) return;
-	if (recordingCanvas == null) {
+/** capture the compositing canvas from the start so a share that appears mid-recording lands in the same file */
+function createRecordingCanvas(): MediaStream | null {
+	try {
 		const canvas = window.document.createElement('canvas');
 		canvas.width = 1920;
 		canvas.height = 1080;
+		const stream = canvas.captureStream(30);
 		recordingCanvas = canvas;
-		recordingCanvasStream = canvas.captureStream(30);
 		if (typeof HTMLVideoElement.prototype.requestVideoFrameCallback !== 'function') {
 			recordingDrawTimer = window.setInterval(drawRecordingFrame, 33);
 		}
 		drawRecordingFrame();
+		return stream;
+	} catch (err) {
+		// without a canvas we cannot add video later; this stays an audio-only recording
+		console.warn('[recording] could not capture the canvas; recording audio only', err);
+		recordingCanvas = null;
+		return null;
 	}
-	const base = recordingParts.get('mic')?.name ?? `voice-${recordingStamp(new Date())}`;
-	createRecordingPart(session, 'video', new MediaStream([
-		...recordingMixedDest.stream.getAudioTracks(),
-		...recordingCanvasStream!.getVideoTracks(),
-	]), recordingVideoMimeType(), 12_000_000, `${base.replace(/-mic$/, '')}-video-${recordingStamp(new Date())}`);
+}
+
+/** note that the call now has video; held originals are converted as video from here on */
+function markRecordingVideo(): void {
+	const session = recordingSession;
+	if (session == null || session.stopping || session.hasVideo || recordingCanvasStream == null) return;
+	session.hasVideo = true;
+	flushPendingRecordings(session, true);
+	drawRecordingFrame();
 }
 
 function removeRecordingVideo(track: MediaStreamTrack): void {
@@ -259,6 +275,7 @@ function removeRecordingVideo(track: MediaStreamTrack): void {
 	entry.element.pause();
 	entry.element.srcObject = null;
 	recordingVideos.delete(track);
+	drawRecordingFrame();
 }
 
 function drawRecordingFrame(): void {
@@ -295,11 +312,12 @@ function drawRecordingFrame(): void {
 
 function addRecordingTrack(track: MediaStreamTrack, kind: 'mic' | 'others'): void {
 	if (recordingSession?.stopping !== false || recordingContext == null) return;
-	const bus = kind === 'mic' ? recordingMicBus : recordingOthersBus;
-	if (bus == null || recordingSources.has(track)) return;
+	// the microphone passes through a gain bus so muting stays in sync; other voices feed the mix directly
+	const dest = kind === 'mic' ? recordingMicBus : recordingMixedDest;
+	if (dest == null || recordingSources.has(track)) return;
 	try {
 		const source = recordingContext.createMediaStreamSource(new MediaStream([track]));
-		source.connect(bus);
+		source.connect(dest);
 		recordingSources.set(track, { source, kind });
 	} catch (err) {
 		console.warn('[recording] could not connect a track', err);
@@ -318,38 +336,104 @@ function recordingStamp(date: Date): string {
 	return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-/** 녹화 원본을 독립적으로 저장하고 변환한다. 재시도할 때는 이미 저장된 원본을 다시 사용한다. */
-async function uploadRecording(blob: Blob, name: string, originalFileId?: string): Promise<void> {
-	if (blob.size === 0) return;
-	let fileId = originalFileId;
-	if (fileId == null) {
-		const form = new FormData();
-		form.append('file', blob, `${name}.webm`);
-		// 변환 후 정리할 원본이 기존 첨부와 공유되지 않도록 독립 파일로 저장한다.
-		form.append('force', 'true');
-		if ($i != null) form.append('i', $i.token);
-		let res: Response;
-		try {
-			res = await window.fetch(apiUrl + '/drive/files/create', { method: 'POST', body: form, credentials: 'omit' });
-		} catch {
-			throw new RecordingUploadError('network');
-		}
-		if (!res.ok) {
-			const body = await res.json().catch(() => null) as { error?: { id?: string } } | null;
-			const id = body?.error?.id;
-			const reason = id === 'd08dbc37-a6a9-463a-8c47-96c32ab5f064' ? 'noFreeSpace'
-				: res.status === 413 || id === 'b9d8c348-33f0-4673-b9a9-5d4da058977a' ? 'tooLarge' : null;
-			throw new RecordingUploadError(reason);
-		}
-		const file = await res.json() as Misskey.entities.DriveFile;
-		fileId = file.id;
+// ドライブのファイル名規則 (200 文字以内、\ / .. は使えない) に合わせ、絵文字のshortcodeと零幅文字も落とす。
+// 末尾の -NNN と拡張子を入れても 200 に収まるよう、名前の部分は 175 文字までに切る
+const RECORDING_NAME_MAX = 175;
+
+function sanitizeRecordingName(name: string): string {
+	let cleaned = name
+		.replace(/:[\w+-]+(?:@[\w.-]+)?:/g, ' ')
+		.replace(/[\u200b-\u200d\u2060\ufeff]/g, '')
+		.replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, ' ')
+		.replace(/\.\./g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+	if (cleaned.length > RECORDING_NAME_MAX) {
+		cleaned = cleaned.slice(0, RECORDING_NAME_MAX);
+		// 代理pairの途中で切らない
+		const last = cleaned.charCodeAt(cleaned.length - 1);
+		if (last >= 0xd800 && last <= 0xdbff) cleaned = cleaned.slice(0, -1);
+		cleaned = cleaned.trim();
 	}
-	const uploadedFileId = fileId;
+	return cleaned;
+}
+
+/** 1:1 なら相手の名前、それ以外ならルーム名で録画ファイルを名付ける */
+async function recordingFileLabel(room: Room, roomId: string): Promise<string> {
+	const fallback = sanitizeRecordingName(state.room?.name ?? '') || 'voice';
+	if (room.remoteParticipants.size !== 1) return fallback;
+	const otherIdentity = [...room.remoteParticipants.keys()][0];
+	try {
+		const states = await misskeyApi('chat/rooms/voice/states', { roomIds: [roomId] });
+		const voiceState = Array.isArray(states) ? states.find(candidate => candidate.roomId === roomId) : null;
+		const other = voiceState?.participants.find(participant => participant.identity === otherIdentity);
+		if (other != null) return sanitizeRecordingName(userNameForLabel(other.user)) || fallback;
+	} catch {
+		// 参加者一覧が取れなければルーム名で保存する
+	}
+	return fallback;
+}
+
+/** 利用者の言語の録画フォルダを探す。無ければ作り、どちらも駄目ならルートに保存する */
+async function findRecordingFolder(): Promise<{ id: string; name: string } | null> {
+	const name = i18n.ts._voiceCall.recordingFolderName;
+	try {
+		const found = await misskeyApi('drive/folders/find', { name, parentId: null });
+		if (Array.isArray(found)) {
+			const match = found.find(folder => folder.name === name);
+			if (match?.id != null) return { id: match.id, name };
+		}
+		const created = await misskeyApi('drive/folders/create', { name });
+		if (created?.id != null) return { id: created.id, name };
+		return null;
+	} catch (err) {
+		console.warn('[recording] could not prepare the recordings folder; saving to the drive root', err);
+		return null;
+	}
+}
+
+/** 녹화 원본을 드라이브에 올린다. 변환은 따로 처리하며, 이미 올라간 원본은 다시 올리지 않는다. */
+async function uploadRecordingOriginal(session: RecordingSession, blob: Blob, name: string): Promise<{ fileId: string; url: string | null }> {
+	const form = new FormData();
+	form.append('file', new File([blob], `${name}${session.ext}`, { type: blob.type }));
+	// 변환 후 정리할 원본이 기존 첨부와 공유되지 않도록 독립 파일로 저장한다.
+	form.append('force', 'true');
+	if (session.folderId != null) form.append('folderId', session.folderId);
+	if ($i != null) form.append('i', $i.token);
+	let res: Response;
+	try {
+		res = await window.fetch(apiUrl + '/drive/files/create', { method: 'POST', body: form, credentials: 'omit' });
+	} catch {
+		throw new RecordingUploadError('network');
+	}
+	if (!res.ok) {
+		const body = await res.json().catch(() => null) as { error?: { id?: string } } | null;
+		const id = body?.error?.id;
+		const reason = id === 'd08dbc37-a6a9-463a-8c47-96c32ab5f064' ? 'noFreeSpace'
+			: res.status === 413 || id === 'b9d8c348-33f0-4673-b9a9-5d4da058977a' ? 'tooLarge' : null;
+		throw new RecordingUploadError(reason);
+	}
+	const file = await res.json() as Misskey.entities.DriveFile;
+	return { fileId: file.id, url: file.url ?? null };
+}
+
+/** 올라간 원본을 변환한다. 폴더가 사라졌으면 루트로 한 번만 다시 시도한다. */
+async function convertRecordingOriginal(session: RecordingSession, fileId: string, url: string | null, video: boolean): Promise<void> {
 	// the server converts one recording per user at a time, so convert the parts one after another
 	const conversion = recordingConversions.then(async () => {
-		const converted = await misskeyApi('chat/rooms/voice/convert-recording', { fileId: uploadedFileId });
-		if (converted?.id == null || converted.id === uploadedFileId) return;
-		await misskeyApi('drive/files/delete', { fileId: uploadedFileId }).catch(error => {
+		let converted: Misskey.entities.DriveFile | null;
+		try {
+			converted = await misskeyApi('chat/rooms/voice/convert-recording', { fileId, video, folderId: session.folderId });
+		} catch (error) {
+			if (isApiError(error) && error.code === 'NO_SUCH_FOLDER') {
+				session.folderId = null;
+				converted = await misskeyApi('chat/rooms/voice/convert-recording', { fileId, video, folderId: null });
+			} else {
+				throw error;
+			}
+		}
+		if (converted?.id == null || converted.id === fileId) return;
+		await misskeyApi('drive/files/delete', { fileId }).catch(error => {
 			console.warn('[recording] could not delete the converted original', error);
 		});
 	});
@@ -359,33 +443,71 @@ async function uploadRecording(blob: Blob, name: string, originalFileId?: string
 	} catch (error) {
 		const code = isApiError(error) ? error.code : null;
 		const reason = code === 'OUTPUT_TOO_LARGE' ? 'tooLarge' : code === 'NO_FREE_SPACE' ? 'noFreeSpace' : null;
-		throw new RecordingUploadError(reason, uploadedFileId);
+		throw new RecordingUploadError(reason, fileId, url);
 	}
 }
 
-/** 上げた結果を録画ごとに数える。失敗した部分は捨てずに残し、録画が終わった後で再試行できるようにする */
-function trackRecordingUpload(session: RecordingSession, blob: Blob, name: string): void {
-	session.uploads.push(uploadRecording(blob, name).then(() => true, err => {
+/** 変換結果を録画ごとに数える。失敗した部分は捨てずに残し、録画が終わった後で再試行できるようにする */
+function convertAndTrack(session: RecordingSession, entry: { fileId: string; name: string; url: string | null }, video: boolean): void {
+	session.uploads.push(convertRecordingOriginal(session, entry.fileId, entry.url, video).then(() => true, err => {
 		console.error(err);
-		session.failed.push({ blob, name, reason: err instanceof RecordingUploadError ? err.reason : null, fileId: err instanceof RecordingUploadError ? err.fileId : undefined });
+		session.failed.push({ blob: null, name: entry.name, ext: session.ext, reason: err instanceof RecordingUploadError ? err.reason : null, fileId: err instanceof RecordingUploadError ? (err.fileId ?? entry.fileId) : entry.fileId, url: entry.url });
 		return false;
 	}));
 }
 
-function createRecordingPart(session: RecordingSession, kind: RecordingPartKind, stream: MediaStream, mime: string | undefined, bits: number, name: string): void {
-	const options: MediaRecorderOptions = { ...(mime != null ? { mimeType: mime } : {}) };
-	if (kind === 'video') {
-		options.videoBitsPerSecond = bits;
-		options.audioBitsPerSecond = 192_000;
-	} else {
-		options.audioBitsPerSecond = bits;
+/** 아직 영상이 나오지 않는 동안 올려 둔 원본을, 영상 유무가 정해진 시점에 변환한다 */
+function flushPendingRecordings(session: RecordingSession, video: boolean): void {
+	const pending = session.pending;
+	session.pending = [];
+	for (const entry of pending) convertAndTrack(session, entry, video);
+}
+
+/** 올린 결과를 녹화ごとに 센다. 아직 영상이 없으면 변환을 미루고, 녹화가 끝나거나 영상이 나오면 변환한다 */
+function trackRecordingUpload(session: RecordingSession, blob: Blob, name: string): void {
+	if (blob.size === 0) return;
+	session.uploads.push((async () => {
+		try {
+			const { fileId, url } = await uploadRecordingOriginal(session, blob, name);
+			if (session.hasVideo) {
+				await convertRecordingOriginal(session, fileId, url, true);
+			} else if (session.stopping) {
+				await convertRecordingOriginal(session, fileId, url, false);
+			} else {
+				session.pending.push({ fileId, name, url });
+			}
+			return true;
+		} catch (err) {
+			console.error(err);
+			const fileId = err instanceof RecordingUploadError ? err.fileId : undefined;
+			// 변환 실패는 원본이 이미 드라이브에 있으므로 blob을 해제하고, 업로드 실패는 blob을 유지한다
+			session.failed.push({ blob: fileId != null ? null : blob, name, ext: session.ext, reason: err instanceof RecordingUploadError ? err.reason : null, fileId, url: err instanceof RecordingUploadError ? err.url : undefined });
+			return false;
+		}
+	})());
+}
+
+/** 재시도: 올라간 원본은 다시変換만 하고, 업로드 실패는 처음부터 다시 올린다 */
+async function retryRecording(session: RecordingSession, recording: FailedRecording): Promise<void> {
+	let fileId = recording.fileId;
+	let url = recording.url ?? null;
+	if (fileId == null) {
+		const uploaded = await uploadRecordingOriginal(session, recording.blob!, recording.name);
+		fileId = uploaded.fileId;
+		url = uploaded.url;
 	}
+	await convertRecordingOriginal(session, fileId, url, session.hasVideo);
+}
+
+function createRecordingPart(session: RecordingSession, stream: MediaStream, mime: string | undefined, video: boolean): void {
+	const options: MediaRecorderOptions = { ...(mime != null ? { mimeType: mime } : {}), audioBitsPerSecond: 256_000 };
+	if (video) options.videoBitsPerSecond = 12_000_000;
 	if ($i == null) throw new Error('Recording requires an authenticated user');
 	const recorder = createRecordingSegments(stream, options, recordingSegmentBytes($i.policies.maxFileSizeMb, instance.maxFileSize), {
-		onSegment: (blob, index) => trackRecordingUpload(session, blob, index === 1 ? name : `${name}-${String(index).padStart(3, '0')}`),
+		onSegment: (blob, index) => trackRecordingUpload(session, blob, index === 1 ? session.name : `${session.name}-${String(index).padStart(3, '0')}`),
 		onStop: () => {
-			recordingParts.delete(kind);
-			if (recordingParts.size === 0) teardownRecording();
+			recordingPart = null;
+			teardownRecording();
 		},
 		onError: error => {
 			console.error(error);
@@ -393,7 +515,7 @@ function createRecordingPart(session: RecordingSession, kind: RecordingPartKind,
 			os.toast(i18n.ts._voiceCall.recordingStopped);
 		},
 	});
-	recordingParts.set(kind, { stop: recorder.stop, name });
+	recordingPart = { stop: recorder.stop, name: session.name };
 }
 
 function stopRecordingVideo(): void {
@@ -413,7 +535,6 @@ function teardownRecording(): void {
 	recordingSession = null;
 	if (session != null) void finishRecordingSession(session);
 	recordingMicBus = null;
-	recordingOthersBus = null;
 	recordingMixedDest = null;
 	recordingRawMicStream?.getTracks().forEach(track => track.stop());
 	recordingRawMicStream = null;
@@ -424,20 +545,45 @@ function teardownRecording(): void {
 
 /** 録画のすべての部分を上げ終えてから知らせる。保存できたと言うのは、本当に全部保存できたときだけ */
 async function finishRecordingSession(session: RecordingSession): Promise<void> {
+	// 通常は停止時に片付いているが、取りこぼした保留分もここで変換する
+	flushPendingRecordings(session, session.hasVideo);
 	if (session.uploads.length === 0) return;
 	await Promise.all(session.uploads);
 	if (session.failed.length === 0) {
-		os.toast(i18n.ts._voiceCall.recordingSaved);
+		toastRecordingSaved(session);
 		return;
 	}
-	await offerFailedRecordings(session.failed);
+	await offerFailedRecordings(session);
 }
 
-function downloadRecording(recording: FailedRecording): void {
-	const objectUrl = URL.createObjectURL(recording.blob);
+function toastRecordingSaved(session: RecordingSession): void {
+	os.toast(session.folderName != null
+		? i18n.tsx._voiceCall.recordingSavedToFolder({ folder: session.folderName })
+		: i18n.ts._voiceCall.recordingSaved);
+}
+
+async function downloadRecording(recording: FailedRecording): Promise<void> {
+	let blob = recording.blob;
+	// 변환 실패로 blob을 놓아준 원본은 드라이브에서 다시 받아온다
+	if (blob == null) {
+		if (recording.url == null) {
+			os.toast(i18n.ts._voiceCall.recordingDownloadFailed);
+			return;
+		}
+		try {
+			const res = await window.fetch(recording.url, { credentials: 'omit' });
+			if (!res.ok) throw new Error(`download failed: ${res.status}`);
+			blob = await res.blob();
+		} catch (err) {
+			console.warn('[recording] could not download the original from the drive', err);
+			os.toast(i18n.ts._voiceCall.recordingDownloadFailed);
+			return;
+		}
+	}
+	const objectUrl = URL.createObjectURL(blob);
 	const a = window.document.createElement('a');
 	a.href = objectUrl;
-	a.download = `${recording.name}.webm`;
+	a.download = `${recording.name}${recording.ext}`;
 	a.click();
 	window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 }
@@ -460,8 +606,8 @@ async function discardUploadedOriginals(failed: FailedRecording[]): Promise<Fail
 }
 
 /** 保存できなかった部分は、利用者が選ぶまで手元に残す (もう一度上げる・この機器に保存する・捨てる) */
-async function offerFailedRecordings(initial: FailedRecording[]): Promise<void> {
-	let failed = initial;
+async function offerFailedRecordings(session: RecordingSession): Promise<void> {
+	let failed = session.failed;
 	while (failed.length > 0) {
 		const reason = (['noFreeSpace', 'tooLarge', 'network'] as const).find(candidate => failed.some(recording => recording.reason === candidate));
 		const failedPart = failed.find(recording => recording.reason === reason);
@@ -486,7 +632,7 @@ async function offerFailedRecordings(initial: FailedRecording[]): Promise<void> 
 		// 閉じただけでは捨てない。選ぶまでもう一度聞く
 		if (canceled) continue;
 		if (result === 'download') {
-			for (const recording of failed) downloadRecording(recording);
+			for (const recording of failed) await downloadRecording(recording);
 			return;
 		}
 		if (result === 'discard') {
@@ -503,12 +649,13 @@ async function offerFailedRecordings(initial: FailedRecording[]): Promise<void> 
 		}
 		const retrying = failed;
 		failed = [];
-		const results = await os.promiseDialog(Promise.all(retrying.map(recording => uploadRecording(recording.blob, recording.name, recording.fileId).then(() => true, err => {
+		const results = await os.promiseDialog(Promise.all(retrying.map(recording => retryRecording(session, recording).then(() => true, err => {
 			console.error(err);
-			failed.push({ ...recording, reason: err instanceof RecordingUploadError ? err.reason : null, fileId: err instanceof RecordingUploadError ? err.fileId : recording.fileId });
+			const fileId = err instanceof RecordingUploadError ? (err.fileId ?? recording.fileId) : recording.fileId;
+			failed.push({ blob: fileId != null ? null : recording.blob, name: recording.name, ext: recording.ext, reason: err instanceof RecordingUploadError ? err.reason : null, fileId, url: err instanceof RecordingUploadError ? (err.url ?? recording.url) : recording.url });
 			return false;
 		}))), null, null);
-		if (results.every(ok => ok)) os.toast(i18n.ts._voiceCall.recordingSaved);
+		if (results.every(ok => ok)) toastRecordingSaved(session);
 	}
 }
 
@@ -694,11 +841,11 @@ async function disconnectCurrentRoom(): Promise<void> {
 	}
 }
 
-/** start recording the call in separate tracks (microphone, the other side, video when present) */
+/** start recording the whole call as one file (every voice, plus the shared screens when present) */
 export async function startRecording(): Promise<void> {
 	const room = current;
 	const roomId = state.room?.id;
-	if (room == null || roomId == null || recordingStarting || recordingParts.size > 0 || state.status !== 'connected' || !state.recordingAllowed) return;
+	if (room == null || roomId == null || recordingStarting || recordingPart != null || state.status !== 'connected' || !state.recordingAllowed) return;
 	const Context = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
 	if (Context == null || typeof MediaRecorder === 'undefined') return;
 
@@ -719,7 +866,7 @@ export async function startRecording(): Promise<void> {
 			if (current === room && recordingStarting == null && recordingSession == null) reportStatus(room, true);
 			return;
 		}
-		const session: RecordingSession = { roomId, uploads: [], failed: [], stopping: false, micRevision: 0 };
+		const session: RecordingSession = { roomId, uploads: [], failed: [], stopping: false, micRevision: 0, pending: [], hasVideo: false, folderId: null, folderName: null, name: 'voice', ext: '.webm' };
 		recordingSession = session;
 
 		const context = new Context();
@@ -728,42 +875,37 @@ export async function startRecording(): Promise<void> {
 		await context.resume();
 		if (!active()) return;
 
-		const micDest = context.createMediaStreamDestination();
-		const othersDest = context.createMediaStreamDestination();
 		const mixedDest = context.createMediaStreamDestination();
-		for (const dest of [micDest, othersDest, mixedDest]) {
-			dest.channelCount = 2;
-			dest.channelCountMode = 'explicit';
-		}
+		mixedDest.channelCount = 2;
+		mixedDest.channelCountMode = 'explicit';
 		const micBus = context.createGain();
-		const othersBus = context.createGain();
-		micBus.connect(micDest);
 		micBus.connect(mixedDest);
-		othersBus.connect(othersDest);
-		othersBus.connect(mixedDest);
 		recordingMixedDest = mixedDest;
 		recordingMicBus = micBus;
-		recordingOthersBus = othersBus;
 		recordingSources.clear();
 
 		syncRecordingMicrophone();
-		const base = recordingStamp(new Date());
-		createRecordingPart(session, 'mic', micDest.stream, recordingMimeType(), 192_000, `voice-${base}-mic`);
-		createRecordingPart(session, 'others', othersDest.stream, recordingMimeType(), 256_000, `voice-${base}-call`);
 
-		const lk = livekit;
-		let hasVideo = false;
+		// 저장 폴더와 파일 이름을 미리 준비한다. 폴더가 없으면 루트에 저장한다
+		const [folder, label] = await Promise.all([findRecordingFolder(), recordingFileLabel(room, roomId)]);
+		if (!active()) return;
+		session.folderId = folder?.id ?? null;
+		session.folderName = folder?.name ?? null;
+		const startedAt = new Date();
+		session.name = `${label}-${recordingStamp(startedAt)}`;
+
+		// 처음부터 캔버스를 capture해 두면, 녹음 중간에 나타난 화면도 같은 파일에 담긴다
+		recordingCanvasStream = createRecordingCanvas();
+
 		await captureRecordingMicrophone(session, room);
 		if (!active()) return;
+		const lk = livekit;
 		if (lk != null) {
 			// my own tab audio is not played to my speakers, so it only reaches the recording here
 			const shareAudio = room.localParticipant.getTrackPublication(lk.Track.Source.ScreenShareAudio)?.track;
 			if (shareAudio?.mediaStreamTrack != null) addRecordingTrack(shareAudio.mediaStreamTrack, 'others');
 			const shareVideo = room.localParticipant.getTrackPublication(lk.Track.Source.ScreenShare)?.track;
-			if (shareVideo?.mediaStreamTrack != null) {
-				addRecordingVideo(shareVideo.mediaStreamTrack, true);
-				hasVideo = true;
-			}
+			if (shareVideo?.mediaStreamTrack != null) addRecordingVideo(shareVideo.mediaStreamTrack, true);
 			for (const participant of room.remoteParticipants.values()) {
 				for (const publication of participant.trackPublications.values()) {
 					const track = publication.track?.mediaStreamTrack;
@@ -772,23 +914,26 @@ export async function startRecording(): Promise<void> {
 						addRecordingTrack(track, 'others');
 					} else if (publication.kind === lk.Track.Kind.Video) {
 						addRecordingVideo(track, publication.source === lk.Track.Source.ScreenShare);
-						hasVideo = true;
 					}
 				}
 			}
 			for (const track of screenShareTracks.values()) {
-				if (track.mediaStreamTrack != null) {
-					addRecordingVideo(track.mediaStreamTrack, true);
-					hasVideo = true;
-				}
+				if (track.mediaStreamTrack != null) addRecordingVideo(track.mediaStreamTrack, true);
 			}
 		}
 
-		// only composite video when there is something to show; otherwise this stays an audio recording
-		if (hasVideo) ensureRecordingVideoPart();
+		// 하나의 recorder가 섞인 음성과 (캔버스가 있으면) 화면을 함께 녹음한다. 화면이 없으면 검은 화면이고, 서버가 음성만 뽑아 mp3로 만든다
+		const video = recordingCanvasStream != null;
+		const stream = new MediaStream([
+			...mixedDest.stream.getAudioTracks(),
+			...(recordingCanvasStream?.getVideoTracks() ?? []),
+		]);
+		const mime = video ? recordingVideoMimeType() : recordingMimeType();
+		session.ext = mime != null && (mime.startsWith('video/mp4') || mime.startsWith('audio/mp4')) ? '.mp4' : '.webm';
+		createRecordingPart(session, stream, mime, video);
 
 		state.recording = true;
-		state.recordingStartedAt = Date.now();
+		state.recordingStartedAt = startedAt.getTime();
 		reportStatus(room, true);
 	} catch (err) {
 		if (recordingStarting === attempt) {
@@ -818,18 +963,22 @@ export function stopRecording(): void {
 		statusDelivery.approval.reject(new Error('Recording approval canceled'));
 		statusDelivery.approval = null;
 	}
-	if (session != null) session.stopping = true;
+	if (session != null) {
+		session.stopping = true;
+		// 보류 중인 원본을 먼저 변환해, 마지막 조각보다 앞선 순서를 지키게 한다
+		flushPendingRecordings(session, session.hasVideo);
+	}
 	state.recording = false;
 	state.recordingStartedAt = null;
 	if (hadRecording && current != null) reportStatus(current, true);
 	try {
-		for (const part of recordingParts.values()) part.stop();
+		recordingPart?.stop();
 	} finally {
 		// 종료 요청 뒤 원본 마이크 점유는 바로 해제한다. 녹음 destination과 복제 트랙은 최종 이벤트까지 별도로 유지한다.
 		recordingRawMicStream?.getTracks().forEach(track => track.stop());
 		recordingRawMicStream = null;
 	}
-	if (recordingParts.size === 0) teardownRecording();
+	if (recordingPart == null) teardownRecording();
 }
 
 function clearRecordingMicrophone(): void {

@@ -9699,6 +9699,18 @@ export interface Locale extends ILocale {
          */
         "recordingSaved": string;
         /**
+         * 通話録画
+         */
+        "recordingFolderName": string;
+        /**
+         * 録画ファイルをドライブの「{folder}」フォルダーに保存しました
+         */
+        "recordingSavedToFolder": ParameterizedString<"folder">;
+        /**
+         * 録画ファイルをこの端末に保存できませんでした
+         */
+        "recordingDownloadFailed": string;
+        /**
          * 録画を開始
          */
         "startRecording": string;

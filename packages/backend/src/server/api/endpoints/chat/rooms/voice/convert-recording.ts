@@ -24,7 +24,7 @@ import { RoleService } from '@/core/RoleService.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
 import type { Config } from '@/config.js';
 
-// Turns a recorded voice call (WebM) into MP3, or MP4 when it has video, which players handle more widely
+// Turns a recorded voice call (WebM, or MP4 from browsers that cannot record WebM) into MP3, or MP4 when it has video, which players handle more widely
 const execFileAsync = promisify(execFile);
 
 const CONVERSION_TIMEOUT_MS = 10 * 60 * 1000;
@@ -100,6 +100,11 @@ export const meta = {
 			code: 'CONVERSION_FAILED',
 			id: 'febe7309-ae3e-47d1-bae1-d393ec0bb877',
 		},
+		noSuchFolder: {
+			message: 'No such folder.',
+			code: 'NO_SUCH_FOLDER',
+			id: '94dbf480-1bb3-4aae-9dd8-c89931f5fba4',
+		},
 	},
 } as const;
 
@@ -107,6 +112,9 @@ export const paramDef = {
 	type: 'object',
 	properties: {
 		fileId: { type: 'string', format: 'misskey:id' },
+		// whether the saved file should keep video; defaults to whether the uploaded recording has video
+		video: { type: 'boolean' },
+		folderId: { type: 'string', format: 'misskey:id', nullable: true, default: null },
 	},
 	required: ['fileId'],
 } as const;
@@ -137,9 +145,11 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (file == null || file.userId !== me.id) throw new ApiError(meta.errors.noSuchFile);
 			if (!file.storedInternal || file.accessKey == null) throw new ApiError(meta.errors.conversionFailed);
 			// already converted, or not a recording
-			const isAudio = file.type.startsWith('audio/webm');
-			const isVideo = file.type.startsWith('video/webm');
+			const isAudio = file.type.startsWith('audio/webm') || file.type.startsWith('audio/mp4');
+			const isVideo = file.type.startsWith('video/webm') || file.type.startsWith('video/mp4');
 			if (!isAudio && !isVideo) return null;
+			// a recording that never had video is saved as audio only, even if the recorder captured a black canvas
+			const hasVideo = ps.video ?? isVideo;
 			// conversion turned off by the admin: keep the WebM as it is
 			const maxConversions = this.serverSettings.voiceCallMaxRecordingConversions;
 			if (maxConversions <= 0) return null;
@@ -155,12 +165,12 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			try {
 				src = this.internalStorageService.resolvePath(file.accessKey);
 				dir = fs.mkdtempSync(Path.join(os.tmpdir(), 'voice-recording-'));
-				dst = Path.join(dir, isVideo ? 'recording.mp4' : 'recording.mp3');
-				await execFileAsync('ffmpeg', recordingConversionArgs(src, dst, isVideo), { timeout: CONVERSION_TIMEOUT_MS });
+				dst = Path.join(dir, hasVideo ? 'recording.mp4' : 'recording.mp3');
+				await execFileAsync('ffmpeg', recordingConversionArgs(src, dst, hasVideo), { timeout: CONVERSION_TIMEOUT_MS });
 				outputBytes = fs.statSync(dst).size;
 				if (outputBytes > this.config.maxFileSize) throw new ApiError(meta.errors.outputTooLarge);
-				const name = file.name.replace(/\.[^.]+$/, '') + (isVideo ? '.mp4' : '.mp3');
-				const converted = await this.driveService.addFile({ user: me, path: dst, name, force: true });
+				const name = file.name.replace(/\.[^.]+$/, '') + (hasVideo ? '.mp4' : '.mp3');
+				const converted = await this.driveService.addFile({ user: me, path: dst, name, folderId: ps.folderId, force: true });
 				return await this.driveFileEntityService.pack(converted, { self: true });
 			} catch (error) {
 				const identifiableId = error instanceof IdentifiableError ? error.id : null;
@@ -171,6 +181,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				if (stderr && dst) stderr = stderr.replaceAll(dst, '[output]');
 				this.apiLoggerService.logger.warn(`Recording conversion failed: ${JSON.stringify({ fileId: file.id, inputBytes: file.size, outputBytes, serverMaxBytes: this.config.maxFileSize, roleMaxBytes: policies ? policies.maxFileSizeMb * 1024 * 1024 : null, driveCapacityBytes: policies ? policies.driveCapacityMb * 1024 * 1024 : null, identifiableId, code: failure?.code, signal: failure?.signal, killed: failure?.killed, stderr })}`);
 				if (error instanceof ApiError) throw error;
+				if (error instanceof Error && error.message === 'folder-not-found') throw new ApiError(meta.errors.noSuchFolder);
 				if (identifiableId === 'f9e4e5f3-4df4-40b5-b400-f236945f7073') throw new ApiError(meta.errors.outputTooLarge);
 				if (identifiableId === 'c6244ed2-a39a-4e1c-bf93-f0fbd7764fa6') throw new ApiError(meta.errors.noFreeSpace);
 				throw new ApiError(meta.errors.conversionFailed);

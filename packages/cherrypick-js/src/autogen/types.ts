@@ -20780,6 +20780,12 @@ export interface operations {
                 'application/json': {
                     /** Format: misskey:id */
                     fileId: string;
+                    video?: boolean;
+                    /**
+                     * Format: misskey:id
+                     * @default null
+                     */
+                    folderId?: string | null;
                 };
             };
         };
