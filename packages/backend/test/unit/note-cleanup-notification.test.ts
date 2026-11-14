@@ -24,13 +24,13 @@ vi.mock('../../src/misc/promise-tracker.js', () => ({ trackPromise: (promise: Pr
 
 // detached: 실제 DB처럼 조회 결과를 저장 행과 분리한 복사본으로 돌려준다.
 function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0) } = {}) {
-	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, migrated: true }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
+	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, migrated: true, manualRequest: null }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
 	const failing = new Set<string>();
 	const noteReads: string[][] = [];
 	// failingWrites: 해당 엔티티의 쓰기 실패를 주입한다.
 	const failingWrites = new Set<string>();
 	const write = (name: string, input: any) => {
-		if (name === 'Rule' && input.protectionNotification?.status === 'notified' && delivery.ackFailure) throw new Error('ack unavailable');
+		if (name === 'Rule' && input.protectionNotified === true && delivery.ackFailure) throw new Error('ack unavailable');
 		if (failingWrites.has(name)) throw new Error(`${name} write unavailable`);
 		// PostgreSQL integer 열처럼 정수가 아닌 구 기간 값을 거부한다.
 		if (name === 'MiUser' && input.autoDeleteNotesAfterDays != null && !Number.isInteger(input.autoDeleteNotesAfterDays)) throw new Error('invalid input syntax for type integer');
@@ -77,7 +77,7 @@ function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0)
 	const db = { getRepository: repository, transaction, createQueryRunner: () => ({ connect: async () => {}, query: async (sql: string) => { if (sql.includes('pg_advisory_unlock')) { lock.held = false; return []; } const acquired = lock.available && !lock.held; if (acquired) lock.held = true; return [{ locked: acquired }]; }, release: async () => { lock.released++; } }) };
 	let nextId = 0;
 	const notifications: any[] = [];
-	const delivery = { profileFailure: false, storageFailure: false, packFailure: false, disabled: false, ackFailure: false, pushFailure: false };
+	const delivery = { profileFailure: false, storageFailure: false, packFailure: false, ackFailure: false, pushFailure: false };
 	const xadd = async (...args: any[]) => {
 		if (delivery.storageFailure) throw new Error('XADD unavailable');
 		notifications.push(JSON.parse(args.at(-1)));
@@ -87,7 +87,7 @@ function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0)
 	const redis = { xadd, get: async () => null };
 	const cache = { userProfileCache: { fetch: async () => {
 		if (delivery.profileFailure) throw new Error('profile unavailable');
-		return { notificationRecieveConfig: delivery.disabled ? { noteCleanupProtectionFailed: { type: 'never' } } : {} };
+		return {};
 	} } };
 	// 보존 한도는 실제 기본값(500)을 쓴다. 최신 50개 밖의 세대도 스트림에는 남아 있을 수 있다.
 	const notificationService = new NotificationService({ perUserNotificationsMaxCount: 500 } as any, redis as any, {} as any,
@@ -100,7 +100,7 @@ function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0)
 	const buffered = new Map<string, { deltas: Record<string, number>; pairs: [string, string][] }>();
 	const buffering = Object.create(ReactionsBufferingService.prototype) as ReactionsBufferingService;
 	Object.defineProperty(buffering, 'getMany', { value: async () => buffered, writable: true });
-	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, notificationService, { eval: async () => 5 } as any, meta as any, buffering, cache as any);
+	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, notificationService, { eval: async () => 5 } as any, meta as any, buffering);
 	const condition = { type: 'age', operator: 'gte', seconds: 60 };
 	return { rows, service, notificationService, delivery, notifications, jobs, failing, failingWrites, lock, meta, buffered, buffering, noteReads, input: { name: '정리', action: 'delete' as const, condition } };
 }
@@ -116,20 +116,20 @@ test.each(['packFailure', 'pushFailure'] as const)('저장 뒤 %s는 같은 오�
 	await service.list('alice');
 	await service.list('alice');
 
-	expect(rows.Rule[0].protectionNotification.status).toBe('notified');
+	expect(rows.Rule[0].protectionNotified).toBe(true);
 	expect(notifications).toHaveLength(1);
 });
 
-test('오류만 남고 접수 마커가 없는 상태는 한 번 재접수하고 내부 상태를 공개 응답에서 제외한다', async () => {
+test('오류만 남고 접수 비트가 없는 상태는 한 번 재접수하고 내부 상태를 공개 응답에서 제외한다', async () => {
 	const { rows, service, notifications } = fixture();
-	rows.Rule.push({ ...keep(), lastError: { ruleId: 'keep', code: 'MISSING_CLIP', path: 'condition', message: 'MISSING_CLIP', referenceType: 'clip', referenceId: 'gone', userActionable: true } });
+	rows.Rule.push({ ...keep(), lastError: { ruleId: 'keep', code: 'MISSING_CLIP', path: 'condition', message: 'MISSING_CLIP', referenceType: 'clip', referenceId: 'gone' } });
 
 	const response = await service.list('alice');
 	await service.list('alice');
 
 	expect(notifications).toHaveLength(1);
-	expect(response.rules[0]).not.toHaveProperty('protectionNotification');
-	expect(JSON.stringify(response)).not.toContain('protectionNotification');
+	expect(response.rules[0]).not.toHaveProperty('protectionNotified');
+	expect(JSON.stringify(response)).not.toContain('protectionNotified');
 });
 
 test('지우기 규칙 오류와 규칙 조회 인프라 실패에는 보호 알림을 만들지 않는다', async () => {
@@ -171,50 +171,46 @@ test('새 오류 identity와 해결 후 같은 오류 재발은 각각 최초 �
 	await service.list('alice');
 
 	expect(notifications).toHaveLength(3);
-	expect(rows.Rule[0].protectionNotification.status).toBe('notified');
+	expect(rows.Rule[0].protectionNotified).toBe(true);
 });
 
-test('일반 createNotification 호출은 기존 XADD와 수신 설정을 사용한다', async () => {
-	const { notificationService, notifications, delivery } = fixture();
+test('보호 실패 알림은 별도 수신 설정 없이 항상 발송한다', async () => {
+	const { notificationService, notifications } = fixture();
 
 	notificationService.createNotification('alice', 'noteCleanupProtectionFailed', { ruleId: 'ordinary', errorCode: 'MISSING_CLIP' });
 	await vi.waitFor(() => expect(notifications).toHaveLength(1));
-	delivery.disabled = true;
-	notificationService.createNotification('alice', 'noteCleanupProtectionFailed', { ruleId: 'ordinary', errorCode: 'MISSING_CLIP' });
-	await new Promise<void>(resolve => setImmediate(resolve));
 
-	expect(notifications).toHaveLength(1);
+	expect(notifications[0]).toMatchObject({ type: 'noteCleanupProtectionFailed', ruleId: 'ordinary', errorCode: 'MISSING_CLIP' });
 });
 
 test('규칙 삭제는 규칙에 보관한 중복 억제 상태도 제거한다', async () => {
 	const { rows, service } = fixture();
 	rows.Rule.push(keep());
 	await service.list('alice');
-	expect(rows.Rule[0].protectionNotification.status).toBe('notified');
+	expect(rows.Rule[0].protectionNotified).toBe(true);
 
 	await service.remove('alice', 'keep');
 
 	expect(rows.Rule).toHaveLength(0);
 });
 
-// === 최종 검토 지적 재현 (review-fix) ===
-
-test('Sol1: 프로필 조회 실패로 저장되지 않은 알림은 다음 검사에서 다시 접수한다', async () => {
+test('접수 비트를 먼저 남기므로 프로필 조회 실패 알림은 유실을 허용하고 재발송하지 않는다', async () => {
 	const { rows, service, notifications, delivery } = fixture();
 	rows.Rule.push(keep());
 	delivery.profileFailure = true;
 
 	await service.list('alice');
+	await new Promise<void>(resolve => setImmediate(resolve));
 	expect(notifications).toHaveLength(0);
-	expect(rows.Rule[0].protectionNotification).toBeNull();
+	expect(rows.Rule[0].protectionNotified).toBe(true);
 	delivery.profileFailure = false;
 	await service.list('alice');
+	await new Promise<void>(resolve => setImmediate(resolve));
 
-	expect(notifications).toHaveLength(1);
-	expect(rows.Rule[0].protectionNotification.status).toBe('notified');
+	expect(notifications).toHaveLength(0);
 });
 
-test('Sol1: 마커를 먼저 남기므로 저장 실패 알림은 유실을 허용하고 재발송하지 않는다', async () => {
+test('마커를 먼저 남기므로 저장 실패 알림은 유실을 허용하고 재발송하지 않는다', async () => {
 	const { rows, service, notifications, delivery } = fixture();
 	rows.Rule.push(keep());
 	delivery.storageFailure = true;
@@ -222,7 +218,7 @@ test('Sol1: 마커를 먼저 남기므로 저장 실패 알림은 유실을 허�
 	await service.list('alice');
 	await new Promise<void>(resolve => setImmediate(resolve));
 	expect(notifications).toHaveLength(0);
-	expect(rows.Rule[0].protectionNotification.status).toBe('notified');
+	expect(rows.Rule[0].protectionNotified).toBe(true);
 	delivery.storageFailure = false;
 	await service.list('alice');
 	await new Promise<void>(resolve => setImmediate(resolve));
@@ -230,21 +226,7 @@ test('Sol1: 마커를 먼저 남기므로 저장 실패 알림은 유실을 허�
 	expect(notifications).toHaveLength(0);
 });
 
-test('Sol1: 수신을 끈 사용자는 발송 없이 억제 상태로 구분하고 같은 오류를 재발송하지 않는다', async () => {
-	const { rows, service, notifications, delivery } = fixture();
-	rows.Rule.push(keep());
-	delivery.disabled = true;
-
-	await service.list('alice');
-
-	expect(notifications).toHaveLength(0);
-	expect(rows.Rule[0].protectionNotification.status).toBe('suppressed');
-	delivery.disabled = false;
-	await service.list('alice');
-	expect(notifications).toHaveLength(0);
-});
-
-test('Sol1: 접수 마커 쓰기가 실패하면 발송하지 않고 다음 검사에서 한 번만 접수한다', async () => {
+test('접수 마커 쓰기가 실패하면 발송하지 않고 다음 검사에서 한 번만 접수한다', async () => {
 	const { rows, service, notifications, delivery } = fixture();
 	rows.Rule.push(keep());
 	delivery.ackFailure = true;
@@ -254,10 +236,10 @@ test('Sol1: 접수 마커 쓰기가 실패하면 발송하지 않고 다음 검�
 	await new Promise<void>(resolve => setImmediate(resolve));
 
 	expect(notifications).toHaveLength(0);
-	expect(rows.Rule[0].protectionNotification).toBeNull();
+	expect(rows.Rule[0].protectionNotified).toBeFalsy();
 	delivery.ackFailure = false;
 	await service.list('alice');
 	await new Promise<void>(resolve => setImmediate(resolve));
 	expect(notifications).toHaveLength(1);
-	expect(rows.Rule[0].protectionNotification.status).toBe('notified');
+	expect(rows.Rule[0].protectionNotified).toBe(true);
 });

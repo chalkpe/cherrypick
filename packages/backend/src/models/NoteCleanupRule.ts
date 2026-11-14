@@ -8,9 +8,6 @@ import type { CleanupCondition } from '@/core/NoteCleanupCondition.js';
 import { MiUser } from './User.js';
 import { id } from './util/id.js';
 
-// 자료 오류는 실패한 페이지의 노트 ID를 항상 기록한다. 참조 오류는 남아 있던 자료 오류의 범위를 이어받을 수 있다.
-export type NoteCleanupRecovery = { source: 'reference'; noteIds?: string[] } | { source: 'data'; noteIds: string[] };
-
 @Entity('note_cleanup_rule')
 @Index(['userId', 'id'])
 export class MiNoteCleanupRule {
@@ -46,12 +43,13 @@ export class MiNoteCleanupRule {
 	@Column('jsonb')
 	public condition: CleanupCondition;
 
+	// 사용자가 고칠 수 있는 참조·조건 오류만 저장한다. 일시 장애는 저장하지 않고 작업 재시도로 넘긴다.
 	@Column('jsonb', { nullable: true })
-	public lastError: { ruleId: string; code: string; path: string; message: string; referenceType?: string; referenceId?: string; userActionable: boolean; recovery: NoteCleanupRecovery } | null;
+	public lastError: { ruleId: string; code: string; path: string; message: string; referenceType?: string; referenceId?: string } | null;
 
-	// 보호 실패 최초 통지 접수 마커. 같은 미해결 오류(identity)는 한 번만 통지하고, 오류가 해결되면 지운다.
-	@Column('jsonb', { nullable: true })
-	public protectionNotification: { identity: string; status: 'notified' | 'suppressed' } | null;
+	// 현재 오류에 대한 보호 실패 통지 접수 여부. 오류가 바뀌거나 해결되면 false로 돌아가 새 오류를 한 번 통지한다.
+	@Column('boolean', { default: false })
+	public protectionNotified: boolean;
 
 	@Column('varchar', { length: 16, nullable: true })
 	public legacy: 'age' | 'favorite' | null;
@@ -75,12 +73,6 @@ export class MiNoteCleanupState {
 	@Index()
 	@Column('timestamp with time zone', { default: () => "'1970-01-01 00:00:00+00'" })
 	public lastRunAt: Date;
-
-	@Column('varchar', { length: 64, nullable: true })
-	public previewToken: string | null;
-
-	@Column('timestamp with time zone', { nullable: true })
-	public previewAt: Date | null;
 
 	// 수동 정리 요청의 대기 마커. 완료·종료 실패 때 지우고, 일시 실패·예산 대기는 커서를 남겨 다음 회차가 잇는다.
 	@Column('jsonb', { nullable: true })

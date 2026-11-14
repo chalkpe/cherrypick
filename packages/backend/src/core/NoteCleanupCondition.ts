@@ -13,7 +13,7 @@ export type CleanupCondition = entities.NoteCleanupCondition;
 export type CleanupContext = {
 	text: string | null; cw: string | null; poll: string[]; fileComment: string[]; fileName: string[];
 	age: number; reactions: number; renotes: number; flags: Partial<Record<CleanupFlag, boolean>>;
-	visibility: string; channelId: string | null; clipIds: string[]; tags: string[]; errors?: Record<string, string>;
+	visibility: string; channelId: string | null; clipIds: string[]; tags: string[];
 };
 export type CleanupEvaluationRule = { id: string; action: 'keep' | 'delete'; condition: unknown; error?: string };
 export type CleanupError = { ruleId: string; action: 'keep' | 'delete'; message: string };
@@ -25,27 +25,42 @@ export class CleanupConditionError extends Error {
 	constructor(public path: string) { super('Invalid cleanup condition'); }
 }
 
+// 키워드 입력은 줄마다 키워드 하나다. 빈 줄은 제외하고 줄 안의 공백은 구절의 일부로 유지한다.
+export function cleanupKeywordLines(value: string): string[] {
+	return value.split('\n').filter(line => line.length > 0);
+}
+
 export function validateCleanupCondition(input: unknown): asserts input is CleanupCondition {
 	let nodes = 0;
 	let currentPath = 'condition';
-	const fail = (): never => { throw new CleanupConditionError(currentPath); };
-	const strings = (v: unknown): v is string[] => Array.isArray(v) && v.length > 0 && v.length <= 32 && v.every(s => typeof s === 'string' && s.length > 0 && s.length <= 128);
+
+	function fail(): never { throw new CleanupConditionError(currentPath); }
+
+	function strings(v: unknown): v is string[] { return Array.isArray(v) && v.length > 0 && v.length <= 32 && v.every(s => typeof s === 'string' && s.length > 0 && s.length <= 128); }
+
 	const visit = (value: unknown, depth: number, path: string): void => {
 		currentPath = path;
 		if (++nodes > 128 || depth > 8 || !value || typeof value !== 'object' || Array.isArray(value)) fail();
 		const c = value as Record<string, unknown>;
-		const keys: Record<string, string[]> = { all: ['children'], any: ['children'], not: ['child'], keyword: ['mode', 'value', 'flags', 'targets'], age: ['operator', 'seconds'], count: ['field', 'operator', 'value'], flag: ['field', 'value'], visibility: ['values'], channel: ['ids'], clip: ['ids'], hashtag: ['value'] };
+		const keys: Record<string, string[]> = { all: ['children'], any: ['children'], keyword: ['mode', 'value', 'flags', 'targets'], age: ['operator', 'seconds'], count: ['field', 'operator', 'value'], flag: ['field', 'value'], visibility: ['values'], channel: ['ids'], clip: ['ids'], hashtag: ['value'] };
 		if (!keys[c.type as string] || Object.keys(c).some(k => k !== 'type' && !keys[c.type as string].includes(k))) fail();
 		switch (c.type) {
 			case 'all': case 'any':
 				if (!Array.isArray(c.children) || c.children.length === 0 || c.children.length > 32) fail();
 				(c.children as unknown[]).forEach((child, index) => visit(child, depth + 1, `${path}.children.${index}`));
 				break;
-			case 'not': visit(c.child, depth + 1, `${path}.child`); break;
-			case 'keyword':
-				if (typeof c.value !== 'string' || !c.value.length || c.value.length > 512 || !strings(c.targets) || !c.targets.every(t => targets.includes(t)) || typeof c.flags !== 'string') fail();
-				if (c.mode === 'regex') { try { new RE2(c.value as string, c.flags as string); } catch { fail(); } } else if (c.mode !== 'literal' || c.flags !== '') fail();
+			case 'keyword': {
+				const keywordValue = c.value;
+				const keywordTargets = c.targets;
+				const keywordFlags = c.flags;
+				if (typeof keywordValue !== 'string' || !strings(keywordTargets) || !keywordTargets.every(t => targets.includes(t)) || typeof keywordFlags !== 'string') fail();
+				const lines = cleanupKeywordLines(keywordValue);
+				if (!lines.length || lines.length > 32 || lines.some(line => line.length > 128)) fail();
+				if (c.mode === 'regex') {
+					for (const line of lines) { try { new RE2(line, keywordFlags); } catch { fail(); } }
+				} else if (c.mode !== 'literal' || keywordFlags !== '') fail();
 				break;
+			}
 			case 'age': case 'count': {
 				const n = c.type === 'age' ? c.seconds : c.value;
 				if (typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > Number.MAX_SAFE_INTEGER || !['gt', 'gte', 'lt', 'lte'].includes(c.operator as string)) fail();
@@ -66,7 +81,6 @@ export function validateCleanupCondition(input: unknown): asserts input is Clean
 
 export function cleanupReferences(condition: CleanupCondition, path = 'condition'): { type: 'clip' | 'channel'; ids: string[]; path: string }[] {
 	if (condition.type === 'all' || condition.type === 'any') return condition.children.flatMap((child, index) => cleanupReferences(child, `${path}.children.${index}`));
-	if (condition.type === 'not') return cleanupReferences(condition.child, `${path}.child`);
 	if (condition.type === 'channel' || (condition.type === 'clip' && condition.ids !== null)) return [{ type: condition.type, ids: condition.ids!, path }];
 	return [];
 }
@@ -77,18 +91,21 @@ function compare(a: number, op: CleanupOperator, b: number): boolean {
 
 export function compileCleanupCondition(input: unknown): (context: CleanupContext) => boolean {
 	validateCleanupCondition(input);
-	const expressions = new Map<CleanupCondition, RE2>();
+	const expressions = new Map<string, RE2>();
 	const match = (c: CleanupCondition, context: CleanupContext): boolean => {
 		switch (c.type) {
 			case 'all': return c.children.map(child => match(child, context)).every(Boolean);
 			case 'any': return c.children.map(child => match(child, context)).some(Boolean);
-			case 'not': return !match(c.child, context);
 			case 'keyword': {
 				const texts = c.targets.flatMap(t => context[t] ?? []);
-				if (c.mode === 'literal') return texts.some(t => normalize(t).includes(normalize(c.value)));
-				let expression = expressions.get(c);
-				if (!expression) { expression = new RE2(c.value.normalize('NFC'), c.flags); expressions.set(c, expression); }
-				return texts.some(t => { expression.lastIndex = 0; return expression.test(t.normalize('NFC')); });
+				const lines = cleanupKeywordLines(c.value);
+				if (c.mode === 'literal') return texts.some(t => lines.some(line => normalize(t).includes(normalize(line))));
+				return texts.some(t => lines.some(line => {
+					let expression = expressions.get(line);
+					if (!expression) { expression = new RE2(line.normalize('NFC'), c.flags); expressions.set(line, expression); }
+					expression.lastIndex = 0;
+					return expression.test(t.normalize('NFC'));
+				}));
 			}
 			case 'age': return compare(context.age, c.operator, c.seconds);
 			case 'count':
@@ -101,18 +118,13 @@ export function compileCleanupCondition(input: unknown): (context: CleanupContex
 			case 'hashtag': return context.tags.some(t => normalize(t) === normalize(c.value.replace(/^#/, '')));
 		}
 	};
-	const dependencies = cleanupDependencies(input);
-	return context => {
-		for (const source of dependencies) if (context.errors?.[source]) throw new Error(context.errors[source]);
-		return match(input, context);
-	};
+	return context => match(input, context);
 }
 
-// 조건이 판정에 쓰는 자료 출처. 보호 실패 기록은 실패한 출처에 의존하는 규칙에만 남긴다.
+// 조건이 판정에 쓰는 자료 출처. 필요한 조회만 골라 실행하는 데 쓴다.
 // 노트 자체 필드만 쓰는 조건(flag poll·files·reply·quote·cw·localOnly, count renotes, keyword text·cw)은 외부 조회 출처가 없다.
 export function cleanupDependencies(c: CleanupCondition): string[] {
 	if (c.type === 'all' || c.type === 'any') return c.children.flatMap(cleanupDependencies);
-	if (c.type === 'not') return cleanupDependencies(c.child);
 	if (c.type === 'count') return c.field === 'reactions' ? [c.field] : [];
 	if (c.type === 'flag') return ['pinned', 'favorite', 'selfReaction', 'selfRenote'].includes(c.field) ? [c.field] : [];
 	if (c.type === 'clip') return ['clip'];

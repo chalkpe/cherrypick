@@ -10,6 +10,5 @@ export const ruleInputProperties = {
 	enabled: { type: 'boolean' },
 	automatic: { type: 'boolean' },
 	confirmed: { type: 'boolean' },
-	previewToken: { type: 'string', maxLength: 64 },
 } as const;
 export const ruleIdsProperty = { type: 'array', minItems: 1, maxItems: 34, uniqueItems: true, items: { type: 'string', format: 'misskey:id' } } as const;

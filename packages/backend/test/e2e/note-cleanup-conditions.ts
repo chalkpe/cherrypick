@@ -18,8 +18,7 @@ import type { INestApplicationContext } from '@nestjs/common';
 
 type Condition = entities.NoteCleanupCondition;
 type Rule = { id: string; condition: Condition; action: 'keep' | 'delete' };
-type Item = { noteId: string; decision: 'keep' | 'delete'; reason: string; keepRuleIds: string[]; deleteRuleIds: string[] };
-type Response = { rule: Rule; rules: Rule[]; items: Item[]; errors: { ruleId: string; code: string }[]; complete: boolean; queued: boolean; jobId: string; error: { code: string; info: { code: string } } };
+type Response = { rule: Rule; rules: Rule[]; notes: { id: string }[]; errors: { ruleId: string; code: string }[]; complete: boolean; queued: boolean; jobId: string; error: { code: string; info: { code: string } } };
 let queue: INestApplicationContext;
 const accounts: Awaited<ReturnType<typeof signup>>[] = [];
 
@@ -60,12 +59,13 @@ async function rule(user: UserToken, condition: Condition, action: 'keep' | 'del
 	return created.body.rule;
 }
 
+// 미리 보기는 지워질 노트만 돌려준다.
 async function preview(user: UserToken, ids: string[]) {
 	const res = await cleanup('preview', { ruleIds: ids }, user);
 	expect(res.status).toBe(200);
 	expect(res.body.errors).toEqual([]);
 	expect(res.body.complete).toBe(true);
-	return res.body.items;
+	return res.body.notes.map(note => note.id);
 }
 
 async function exists(user: UserToken, id: string, present: boolean) {
@@ -92,17 +92,10 @@ async function execute(user: UserToken, ids: string[], deleted: string[], retain
 async function check(user: UserToken, condition: Condition, matched: string[], unmatched: string[], action: 'keep' | 'delete' = 'delete') {
 	const tested = await rule(user, condition, action);
 	const deletion = action === 'keep' ? await rule(user, allVisibility) : tested;
-	const items = await preview(user, [deletion.id]);
-	for (const id of matched) {
-		const item = items.find(i => i.noteId === id);
-		expect(item?.[action === 'keep' ? 'keepRuleIds' : 'deleteRuleIds']).toContain(tested.id);
-		expect(item?.decision).toBe(action === 'keep' ? 'keep' : 'delete');
-	}
-	for (const id of unmatched) {
-		const item = items.find(i => i.noteId === id);
-		expect(item?.[action === 'keep' ? 'keepRuleIds' : 'deleteRuleIds']).not.toContain(tested.id);
-		expect(item?.decision).toBe(action === 'keep' ? 'delete' : 'keep');
-	}
+	const ids = await preview(user, [deletion.id]);
+	// 남기기 조건은 일치 노트를 삭제 후보에서 빼고, 지우기 조건은 일치 노트만 후보에 넣는다.
+	for (const id of action === 'keep' ? unmatched : matched) expect(ids).toContain(id);
+	for (const id of action === 'keep' ? matched : unmatched) expect(ids).not.toContain(id);
 
 	await execute(user, [deletion.id], action === 'keep' ? unmatched : matched, action === 'keep' ? matched : unmatched);
 }
@@ -153,21 +146,17 @@ test('중첩 저장과 재조회, 공통 보호, 개별 요청과 미해당 보�
 	const c = await post(user, { text: '다른 규칙 전용' });
 	const d = await post(user, { text: '미해당' });
 	const e = await post(user, { text: '보존만' });
-	const condition: Condition = { type: 'all', children: [literal('대상'), { type: 'any', children: [literal('하나'), literal('둘')] }, { type: 'not', child: literal('제외') }] };
+	const condition: Condition = { type: 'all', children: [literal('대상'), { type: 'any', children: [literal('하나'), literal('둘')] }] };
 	const selected = await rule(user, literal('편집 전'));
 	const updated = await cleanup('update', { ruleId: selected.id, name: '중첩 편집', action: 'delete', condition }, user);
 	expect(updated.status).toBe(200);
 	expect((await cleanup('list', {}, user)).body.rules.find(r => r.id === selected.id)?.condition).toEqual(condition);
-	const omitted = await rule(user, literal('다른 규칙'));
-	const overlapping = await rule(user, literal('대상'));
-	const keep = await rule(user, literal('보존'), 'keep');
-	const items = await preview(user, [selected.id]);
-	expect(items.find(i => i.noteId === a.id)).toMatchObject({ decision: 'delete', deleteRuleIds: [selected.id], keepRuleIds: [] });
-	expect(items.find(i => i.noteId === b.id)).toMatchObject({ decision: 'keep', reason: 'protected', deleteRuleIds: [selected.id], keepRuleIds: [keep.id] });
-	for (const id of [c.id, d.id]) expect(items.find(i => i.noteId === id)).toMatchObject({ reason: 'unmatched', deleteRuleIds: [] });
-	expect(items.find(i => i.noteId === e.id)).toMatchObject({ reason: 'protected', deleteRuleIds: [], keepRuleIds: [keep.id] });
-	expect(items.flatMap(i => i.deleteRuleIds)).not.toContain(omitted.id);
-	expect(items.flatMap(i => i.deleteRuleIds)).not.toContain(overlapping.id);
+	await rule(user, literal('다른 규칙'));
+	await rule(user, literal('대상'));
+	await rule(user, literal('보존'), 'keep');
+	const ids = await preview(user, [selected.id]);
+	expect(ids).toContain(a.id);
+	for (const id of [b.id, c.id, d.id, e.id]) expect(ids).not.toContain(id);
 
 	await execute(user, [selected.id], [a.id], [b.id, c.id, d.id, e.id]);
 }, 240000);
@@ -177,7 +166,8 @@ const strings: { name: string; condition: Condition; yes: string; no: string }[]
 	{ name: 'NFC', condition: literal('한글'), yes: '한글'.normalize('NFD'), no: '다른 글' },
 	{ name: '대소문자', condition: literal('AbC'), yes: '앞 abc 뒤', no: 'abd' },
 	{ name: '공백 유지', condition: literal('두  칸'), yes: '두  칸', no: '두 칸' },
-	{ name: '줄바꿈 유지', condition: literal('첫\n줄'), yes: '첫\n줄', no: '첫 줄' },
+	{ name: '여러 줄은 줄마다 하나씩', condition: literal('사과\n배'), yes: '배를 먹었다', no: '포도를 먹었다' },
+	{ name: '빈 줄은 제외', condition: literal('\n사과\n\n'), yes: '사과를 먹었다', no: '배를 먹었다' },
 	{ name: 'NFKC 확장 없음', condition: literal('ABC'), yes: 'ABC', no: 'ＡＢＣ' },
 	{ name: '유사어 확장 없음', condition: literal('자동차'), yes: '자동차', no: '차량' },
 	{ name: '발음 확장 없음', condition: literal('같이'), yes: '같이', no: '가치' },
@@ -185,6 +175,7 @@ const strings: { name: string; condition: Condition; yes: string; no: string }[]
 	{ name: '슬래시와 메타문자', condition: literal('/a.b/'), yes: '/a.b/', no: 'axb' },
 	{ name: '명시적 RE2', condition: { type: 'keyword', mode: 'regex', value: '^a.b$', flags: '', targets: ['text'] }, yes: 'axb', no: 'AXB' },
 	{ name: 'RE2 i 플래그', condition: { type: 'keyword', mode: 'regex', value: '^abc$', flags: 'i', targets: ['text'] }, yes: 'ABC', no: 'abcd' },
+	{ name: 'RE2 여러 줄 중 하나', condition: { type: 'keyword', mode: 'regex', value: '^사과$\n^배$', flags: '', targets: ['text'] }, yes: '배', no: '포도' },
 ];
 
 test.each(strings)('$name 저장·조회·미리 보기·삭제', async ({ condition, yes, no }) => {
@@ -207,6 +198,14 @@ test.each(['[', '(a)\\1', '(?=a)'])('잘못된 RE2 저장 차단: %s', async val
 	expect((await cleanup('list', {}, user)).body.rules).toEqual([]);
 }, 240000);
 
+test('여러 줄 중 한 줄이라도 잘못된 RE2면 저장을 차단한다', async () => {
+	const user = await owner();
+	const condition = { type: 'keyword', mode: 'regex', value: '^정상$\n[', flags: '', targets: ['text'] };
+	const res = await cleanup('create', { name: '거절', action: 'delete', condition }, user);
+	expect(res.status).toBe(400);
+	expect(res.body.error.info.code).toBe('INVALID_CONDITION');
+}, 240000);
+
 test.each(['z', 'x', 'v', 'iz', 'ii'])('단어 뮤트와 같이 RE2가 받는 플래그 %s를 저장하고 판정한다', async flags => {
 	const user = await owner();
 	const positive = await post(user, { text: 'flagprobe' });
@@ -223,17 +222,19 @@ test.each(['delete', 'keep'] as const)('기존 잘못된 RE2 식이 든 %s 규�
 	const user = await owner();
 	const note = await post(user, { text: 'flagprobe' });
 	const valid: Condition = { type: 'keyword', mode: 'regex', value: action === 'delete' ? '^never$' : '^flagprobe$', flags: '', targets: ['text'] };
-	const invalid = await rule(user, { type: 'not', child: valid }, action);
+	const invalid = await rule(user, { type: 'all', children: [valid] }, action);
 	const deletion = action === 'delete' ? invalid : await rule(user, allVisibility);
 	const db = await initTestDb(true);
 	try {
 		// 이전 버전에서 저장된 잘못된 조건을 재현하는 fixture다.
-		await db.getRepository(MiNoteCleanupRule).update(invalid.id, { condition: { type: 'not', child: { ...valid, value: '[' } } });
+		await db.getRepository(MiNoteCleanupRule).update(invalid.id, { condition: { type: 'all', children: [{ ...valid, value: '[' }] } });
 	} finally {
 		await db.destroy();
 	}
 	const result = await cleanup('preview', { ruleIds: [deletion.id] }, user);
 	expect(result.status).toBe(200);
+	expect(result.body.notes.some(n => n.id === note.id)).toBe(false);
+	expect(result.body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: invalid.id, code: 'INVALID_CONDITION' })]));
 
 	const system = queue.get(QueueService).systemQueue;
 	const events = new QueueEvents(system.name, { connection: system.opts.connection, prefix: system.opts.prefix });
@@ -253,14 +254,12 @@ test.each(['delete', 'keep'] as const)('기존 잘못된 RE2 식이 든 %s 규�
 		await events.close();
 	}
 	await exists(user, note.id, true);
-	expect(result.body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: invalid.id, code: 'INVALID_CONDITION' })]));
-	expect(result.body.items.find(item => item.noteId === note.id)).toMatchObject({ decision: 'keep', reason: action === 'keep' ? 'blocked' : 'unmatched' });
 }, 240000);
 
 test('빈 묶음·불완전·과대·과심도 조건을 저장하지 않는다', async () => {
 	const user = await owner();
 	let deep: Condition = literal('끝');
-	for (let i = 0; i < 10; i++) deep = { type: 'not', child: deep };
+	for (let i = 0; i < 9; i++) deep = { type: i % 2 ? 'any' : 'all', children: [deep] };
 	for (const condition of [{ type: 'all', children: [] }, { type: 'keyword' }, { type: 'any', children: Array.from({ length: 33 }, () => literal('큰 묶음')) }, deep]) {
 		expect((await cleanup('create', { name: '거절', action: 'delete', condition }, user)).status).toBe(400);
 	}
@@ -272,7 +271,7 @@ test.each(['text', 'cw', 'poll'] as const)('기본 검색 범위 %s와 제외 �
 	const positive = await post(user, target === 'poll' ? { text: '설문', poll: { choices: ['검색문자', '다른 선택지'] } } : target === 'cw' ? { text: '본문', cw: '검색문자' } : { text: '검색문자' });
 	const negative = await post(user, { text: '미해당' });
 	const excluded = await rule(user, literal('검색문자', target === 'text' ? ['cw'] : ['text']));
-	expect((await preview(user, [excluded.id])).find(i => i.noteId === positive.id)?.decision).toBe('keep');
+	expect(await preview(user, [excluded.id])).not.toContain(positive.id);
 
 	await check(user, literal('검색문자'), [positive.id], [negative.id]);
 }, 240000);
@@ -286,12 +285,13 @@ test.each(['fileComment', 'fileName'] as const)('공유 첨부의 %s 선택·제
 	const b = await post(user, { text: '첨부 둘', fileIds: [fileId] });
 	const c = await post(user, { text: '첨부 없음' });
 	const selected = await rule(user, literal('변경표식', [target]));
-	expect((await preview(user, [selected.id])).filter(i => i.decision === 'delete')).toEqual([]);
+	expect(await preview(user, [selected.id])).toEqual([]);
 	expect((await api('drive/files/update', { fileId, ...(target === 'fileName' ? { name: '변경표식.txt' } : { comment: '변경표식' }) }, user)).status).toBe(200);
 	const excluded = await rule(user, literal('변경표식'));
-	expect((await preview(user, [excluded.id])).filter(i => i.decision === 'delete')).toEqual([]);
-	const items = await preview(user, [selected.id]);
-	for (const id of [a.id, b.id]) expect(items.find(i => i.noteId === id)?.decision).toBe('delete');
+	expect(await preview(user, [excluded.id])).toEqual([]);
+	const ids = await preview(user, [selected.id]);
+	for (const id of [a.id, b.id]) expect(ids).toContain(id);
+	expect(ids).not.toContain(c.id);
 
 	await execute(user, [selected.id], [a.id, b.id], [c.id]);
 	expect((await api('drive/files/delete', { fileId }, user)).status).toBe(204);
@@ -366,8 +366,8 @@ test.each(['poll', 'files', 'cw', 'reply', 'quote', 'localOnly'] as const)('%s �
 	const negative = await post(user, { text: '조건 없음' });
 	const inverse = await rule(user, flag(field, false));
 	const inverted = await preview(user, [inverse.id]);
-	expect(inverted.find(i => i.noteId === positive.id)?.decision).toBe('keep');
-	expect(inverted.find(i => i.noteId === negative.id)?.decision).toBe('delete');
+	expect(inverted).not.toContain(positive.id);
+	expect(inverted).toContain(negative.id);
 
 	await check(user, flag(field), [positive.id], [negative.id, parent.id]);
 	if (fileId) expect((await api('drive/files/delete', { fileId }, user)).status).toBe(204);
@@ -423,8 +423,7 @@ test.each(['reactions', 'renotes'] as const)('받은 %s 수의 이상·초과·�
 	}, { timeout: 30000, interval: 100 }).toBe(1);
 	for (const [operator, expected] of [['gte', [one.id, two.id]], ['gt', [two.id]], ['lte', [zero.id, one.id]], ['lt', [zero.id]]] as const) {
 		const tested = await rule(user, { type: 'count', field, operator, value: 1 });
-		const items = await preview(user, [tested.id]);
-		expect(items.filter(i => i.decision === 'delete').map(i => i.noteId).sort()).toEqual([...expected].sort());
+		expect((await preview(user, [tested.id])).sort()).toEqual([...expected].sort());
 	}
 
 	await check(user, { type: 'count', field, operator: 'gte', value: 1 }, [one.id, two.id], [zero.id]);
@@ -452,9 +451,9 @@ test.each([600, 3600, 86400] as const)('작성 시각 기준 %s초 전후와 네
 	expect(edited.status).toBe(200);
 	for (const operator of ['gt', 'gte', 'lt', 'lte'] as const) {
 		const tested = await rule(user, { type: 'age', operator, seconds });
-		const items = await preview(user, [tested.id]);
-		expect(items.find(i => i.noteId === oldId)?.decision).toBe(operator === 'gt' || operator === 'gte' ? 'delete' : 'keep');
-		expect(items.find(i => i.noteId === youngId)?.decision).toBe(operator === 'lt' || operator === 'lte' ? 'delete' : 'keep');
+		const ids = await preview(user, [tested.id]);
+		expect(ids.includes(oldId)).toBe(operator === 'gt' || operator === 'gte');
+		expect(ids.includes(youngId)).toBe(operator === 'lt' || operator === 'lte');
 	}
 
 	await check(user, { type: 'age', operator: 'gte', seconds }, [oldId], [youngId, template.id]);
@@ -466,9 +465,9 @@ test('클립에서 빼는 API 변경이 이후 판정에 반영된다', async ()
 	const note = await post(user, { text: '클립 관계 변경' });
 	expect((await api('clips/add-note', { clipId: resource.id, noteId: note.id }, user)).status).toBe(204);
 	const tested = await rule(user, { type: 'clip', ids: null });
-	expect((await preview(user, [tested.id])).find(i => i.noteId === note.id)?.decision).toBe('delete');
+	expect(await preview(user, [tested.id])).toContain(note.id);
 	expect((await api('clips/remove-note', { clipId: resource.id, noteId: note.id }, user)).status).toBe(204);
-	expect((await preview(user, [tested.id])).find(i => i.noteId === note.id)?.decision).toBe('keep');
+	expect(await preview(user, [tested.id])).not.toContain(note.id);
 
 	await execute(user, [tested.id], [], [note.id]);
 	expect((await api('clips/delete', { clipId: resource.id }, user)).status).toBe(204);

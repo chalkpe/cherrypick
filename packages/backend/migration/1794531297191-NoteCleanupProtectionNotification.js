@@ -7,10 +7,10 @@ export class NoteCleanupProtectionNotification1794531297191 {
     name = 'NoteCleanupProtectionNotification1794531297191';
 
     async up(queryRunner) {
-        await queryRunner.query('ALTER TABLE "note_cleanup_rule" ADD "protectionNotification" jsonb');
+        await queryRunner.query('ALTER TABLE "note_cleanup_rule" ADD "protectionNotified" boolean NOT NULL DEFAULT false');
     }
 
     async down(queryRunner) {
-        await queryRunner.query('ALTER TABLE "note_cleanup_rule" DROP COLUMN "protectionNotification"');
+        await queryRunner.query('ALTER TABLE "note_cleanup_rule" DROP COLUMN "protectionNotified"');
     }
 }

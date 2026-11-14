@@ -229,7 +229,6 @@ export const paramDef = {
 				quote: notificationRecieveConfig,
 				reaction: notificationRecieveConfig,
 				pollEnded: notificationRecieveConfig,
-				noteCleanupProtectionFailed: notificationRecieveConfig,
 				scheduledNotePosted: notificationRecieveConfig,
 				scheduledNotePostFailed: notificationRecieveConfig,
 				receiveFollowRequest: notificationRecieveConfig,

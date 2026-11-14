@@ -9,7 +9,6 @@ export const cleanupErrorSchema = {
 		code: { type: 'string', optional: false, nullable: false },
 		path: { type: 'string', optional: false, nullable: false },
 		message: { type: 'string', optional: false, nullable: false },
-		userActionable: { type: 'boolean', optional: false, nullable: false },
 		referenceId: { type: 'string', optional: true, nullable: false },
 		referenceType: { type: 'string', optional: true, nullable: false },
 	},

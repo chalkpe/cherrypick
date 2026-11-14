@@ -28,8 +28,6 @@ export class NoteCleanupRules1794504882218 {
 			{ name: 'migrated', type: 'boolean', default: false },
 			{ name: 'cursor', type: 'varchar', length: '32', isNullable: true },
 			{ name: 'lastRunAt', type: 'timestamp with time zone', default: "'1970-01-01 00:00:00+00'" },
-			{ name: 'previewToken', type: 'varchar', length: '64', isNullable: true },
-			{ name: 'previewAt', type: 'timestamp with time zone', isNullable: true },
 		] }));
 		await queryRunner.createIndex('note_cleanup_state', new TableIndex({ columnNames: ['lastRunAt'] }));
 		await queryRunner.createForeignKey('note_cleanup_state', new TableForeignKey({ columnNames: ['userId'], referencedTableName: 'user', referencedColumnNames: ['id'], onDelete: 'CASCADE' }));

@@ -10,7 +10,6 @@ vi.mock('../../src/logger.js', () => ({ default: class { error() {} warn() {} } 
 vi.mock('../../src/core/QueueService.js', () => ({ QueueService: class {} }));
 vi.mock('../../src/core/NoteDeleteService.js', () => ({ NoteDeleteService: class {} }));
 vi.mock('../../src/core/NotificationService.js', () => ({ NotificationService: class {} }));
-vi.mock('../../src/core/CacheService.js', () => ({ CacheService: class {} }));
 vi.mock('../../src/core/IdService.js', () => ({ IdService: class {} }));
 import { ReactionsBufferingService } from '../../src/core/ReactionsBufferingService.js';
 import { NOTE_CLEANUP_LIMITS, NoteCleanupService } from '../../src/core/NoteCleanupService.js';
@@ -30,8 +29,8 @@ const keepAll = (userId: string, id: string) => ({ id, userId, name: id, action:
 const noteId = (userId: string, i: number) => `${userId}-${String(i).padStart(5, '0')}`;
 const note = (userId: string, i: number) => ({ id: noteId(userId, i), userId, text: '정리', cw: null, fileIds: [], hasPoll: false, renoteId: null, replyId: null, channelId: null, localOnly: false, visibility: 'public', reactions: {}, renoteCount: 0, tags: [] });
 
-// 이 Redis는 예약 스크립트의 계약(KEYS별 한도, 부족한 키 번호를 음수로 반환, 반납)을 JS로 흉내 낸 모형이다.
-// 실제 Lua 실행·원자성·만료·클러스터 슬롯은 검증하지 않는다. numKeys=1은 수정 전 전역 300/5 예약 스크립트의 모형이다.
+// 이 Redis는 예약 스크립트의 계약(KEYS별 한도, 부족한 키 번호를 음수로 반환, 허용량 전액 증가)을 JS로 흉내 낸 모형이다.
+// 실제 Lua 실행·원자성·만료·클러스터 슬롯은 검증하지 않는다.
 function fakeRedis() {
 	const store = new Map<string, number>();
 	const get = (key: string) => store.get(key) ?? 0;
@@ -39,17 +38,7 @@ function fakeRedis() {
 		store,
 		eval: async (_script: string, numKeys: number, ...args: (string | number)[]) => {
 			const keys = args.slice(0, numKeys).map(String);
-			const argv = args.slice(numKeys).map(Number);
-			if (numKeys === 1 && argv.length === 0) {
-				if (get(keys[0]) + 5 > 300) return 0;
-				store.set(keys[0], get(keys[0]) + 5);
-				return 5;
-			}
-			if (argv.length === 1) {
-				for (const key of keys) store.set(key, Math.max(0, get(key) - Math.min(argv[0], get(key))));
-				return argv[0];
-			}
-			const [want, , ...limits] = argv;
+			const [want, , ...limits] = args.slice(numKeys).map(Number);
 			let grant = want;
 			for (const [i, key] of keys.entries()) {
 				const left = limits[i] - get(key);
@@ -70,7 +59,7 @@ function fixture() {
 	const failingNotes = new Set<string>();
 	// retryableDeletes: 재시도 가능한 연결 오류로 삭제를 실패시킨다.
 	const retryableDeletes = new Set<string>();
-	const faults = { pageRules: false, noteLookup: false, lastRun: false, contexts: false, release: false };
+	const faults = { pageRules: false, noteLookup: false, lastRun: false, contexts: false };
 	let afterRead: (() => void) | undefined;
 	const deleteAttempts = new Map<string, number>();
 	const matches = (row: any, where: any) => Object.entries(where).every(([k, v]) => typeof v === 'object' && v !== null ? true : row[k] === v);
@@ -134,11 +123,6 @@ function fixture() {
 	const added: string[] = [];
 	const addedJobs: { name: string; data: Record<string, unknown>; options: Record<string, unknown> }[] = [];
 	const redis = fakeRedis();
-	const evaluate = redis.eval;
-	redis.eval = async (script, count, ...args) => {
-		if (faults.release && args.length === count + 1) throw new Error('release failed');
-		return evaluate(script, count, ...args);
-	};
 	const buffering = Object.create(ReactionsBufferingService.prototype) as ReactionsBufferingService;
 	const merge = buffering.mergeReactions.bind(buffering);
 	buffering.mergeReactions = (...args) => {
@@ -170,12 +154,11 @@ function fixture() {
 		inboxQueue: { getWaiting: async () => waiting.inbox.slice(0, 1) },
 	};
 	const notifications: Record<string, unknown>[] = [];
-	const cache = { userProfileCache: { fetch: async () => ({}) } };
-	const service = new NoteCleanupService(db as any, { gen: () => String(Math.random()), parse: () => ({ date: new Date(0) }) } as any, queueService as any, noteDelete as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering, cache as any);
+	const service = new NoteCleanupService(db as any, { gen: () => String(Math.random()), parse: () => ({ date: new Date(0) }) } as any, queueService as any, noteDelete as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering);
 	const processor = new AutoDeleteNotesProcessorService(service, queueService as any);
 	const addUser = (userId: string, lastRunAt = EPOCH) => {
 		rows.MiUser.push({ id: userId, host: null, autoDeleteNotesAfterDays: null, autoDeleteKeepFavorites: false });
-		rows.State.push({ userId, migrated: false, cursor: null, lastRunAt, previewAt: null, previewToken: null, manualRequest: null });
+		rows.State.push({ userId, migrated: false, cursor: null, lastRunAt, manualRequest: null });
 	};
 	const addNotes = (userId: string, count: number) => { for (let i = 0; i < count; i++) rows.MiNote.push(note(userId, i)); };
 	const notesOf = (userId: string) => rows.MiNote.filter(n => n.userId === userId);
@@ -190,6 +173,8 @@ async function run(processor: AutoDeleteNotesProcessorService, job: { data: Reco
 	return result.delayed ? 'delayed' : 'done';
 }
 
+// === 수동 요청과 연합 적체 ===
+
 test('연합 큐가 밀리면 수동 정리 요청은 마커와 커서를 그대로 둔 채 기다리고 작업은 늘지 않으며 해소 후 그 커서부터 잇는다', async () => {
 	const f = fixture();
 	f.addUser('alice');
@@ -202,7 +187,7 @@ test('연합 큐가 밀리면 수동 정리 요청은 마커와 커서를 그대
 	const manual = f.job({ userId: 'alice', manual: true });
 	expect(await run(f.processor, manual)).toBe('delayed');
 	expect(f.notesOf('alice')).toHaveLength(4);
-	expect(f.scanned.get('alice')).toBe(1);
+	expect(f.scanned.get('alice')).toBeUndefined();
 	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 1) });
 	expect(f.added).toHaveLength(1);
 	// 자동 회차도 적체 중에는 건너뛰며 마커·커서·순번을 바꾸지 않는다.
@@ -255,16 +240,14 @@ test('보호만 하는 노트를 오래 검사하는 계정도 계정별 검사 
 	await f.service.request('alice', ['d1']);
 	const manual = f.job({ userId: 'alice', manual: true });
 	expect(await run(f.processor, manual)).toBe('delayed');
-	// 접수 검증 1건을 더해도 계정 검사 한도를 넘지 않는다.
-	expect(f.scanned.get('alice')).toBeGreaterThanOrEqual(1200);
-	expect(f.scanned.get('alice')).toBeLessThanOrEqual(1201);
+	expect(f.scanned.get('alice')).toBe(NOTE_CLEANUP_LIMITS.userScan);
 	expect(f.state('alice').manualRequest.cursor).toEqual(expect.any(String));
 	expect(f.notesOf('alice')).toHaveLength(3000);
 	expect(f.added).toHaveLength(1);
 	// 다음 창에서 같은 마커로 이어 검사하고 다시 한도에서 멈춘다.
 	vi.setSystemTime(NOW + NOTE_CLEANUP_LIMITS.windowMs);
 	expect(await run(f.processor, manual)).toBe('delayed');
-	expect(f.scanned.get('alice')).toBeLessThanOrEqual(2401);
+	expect(f.scanned.get('alice')).toBe(NOTE_CLEANUP_LIMITS.userScan * 2);
 	expect(f.added).toHaveLength(1);
 });
 
@@ -358,6 +341,8 @@ test('설정 수정은 대기 중인 정리 요청을 취소·교체하거나 �
 	expect(f.state('alice').manualRequest).toEqual(marker);
 	expect(f.added).toHaveLength(1);
 });
+
+// === 묶음 처리와 회차 상한 ===
 
 test('삭제 실패 처리기를 주면 실패를 성공으로 세지 않고 예산을 쓴 시도로 보며 다음 노트로 진행한다', async () => {
 	const failures: string[] = [];
@@ -456,6 +441,8 @@ test('이전 자동 회차가 아직 잠금을 쥐고 있으면 새 회차는 �
 	expect(f.state('alice')).toMatchObject({ cursor: null, lastRunAt: EPOCH });
 });
 
+// === 예약 예산 전액 소비 ===
+
 // 서비스는 실제로 실행하고 DB·Redis 경계의 실패만 주입한다. 이 모형은 실제 SQL·Lua 실행 근거가 아니다.
 const scanKey = (scope: string, time = NOW) => `test:system:note-cleanup-budget:{${Math.floor(time / NOTE_CLEANUP_LIMITS.windowMs)}}:scan:${scope}`;
 const scanUsed = (f: ReturnType<typeof fixture>, scope: string, time = NOW) => f.redis.store.get(scanKey(scope, time)) ?? 0;
@@ -470,50 +457,40 @@ function scanFixture(count = 3) {
 	return f;
 }
 
-// 이전 페이지의 실패 노트 2건이 자료 오류 범위로 남아 있어, 본 페이지 전에 그 범위(2건)를 먼저 다시 읽는 계정
-function recoveryFixture() {
-	const f = fixture();
-	f.addUser('alice');
-	const failure = { ruleId: 'keep', code: 'TEMPORARY_FAILURE', path: 'condition', message: 'TEMPORARY_FAILURE', userActionable: false, recovery: { source: 'data', noteIds: [noteId('alice', 1), noteId('alice', 2)] } };
-	f.rows.Rule.push(deleteRule('alice', 'delete'), { ...keepAll('alice', 'keep'), lastError: failure });
-	f.addNotes('alice', 3);
-	return f;
-}
-
 // 다른 계정·요청이 이미 쓴 양을 채워 두어 한도 근처에서 일부만 예약되게 한다.
 const nearLimits = [
-	['global', 'user:alice', NOTE_CLEANUP_LIMITS.globalScan - 10],
-	['user:alice', 'global', NOTE_CLEANUP_LIMITS.userScan - 50],
+	['global', 'user:alice', NOTE_CLEANUP_LIMITS.globalScan - 10, 10],
+	['user:alice', 'global', NOTE_CLEANUP_LIMITS.userScan - 50, 50],
 ] as const;
 
 test.each([
 	['pageRules', 'page rules failed'],
 	['lastRun', 'lastRun write failed'],
-] as const)('검사 전 %s 실패는 예약량 전부를 반환한다', async (fault, message) => {
+] as const)('검사 전 %s 실패도 예약한 검사 예산 전부를 소비한다', async (fault, message) => {
 	const f = scanFixture();
 	f.faults[fault] = true;
 
 	await expect(f.service.processUser('alice')).rejects.toThrow(message);
 
 	expect(f.scanned.get('alice')).toBeUndefined();
-	expect(scanUsed(f, 'global')).toBe(0);
-	expect(scanUsed(f, 'user:alice')).toBe(0);
+	expect(scanUsed(f, 'global')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
+	expect(scanUsed(f, 'user:alice')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
 	expect(f.notesOf('alice')).toHaveLength(3);
 });
 
-test('노트를 불러온 뒤 자료 판정이 실패해도 읽은 수만큼 검사량을 보존한다', async () => {
+test('노트를 불러온 뒤 자료 판정이 실패해도 예약한 검사 예산 전부를 소비한다', async () => {
 	const f = scanFixture();
 	f.faults.contexts = true;
 
 	await expect(f.service.processUser('alice')).rejects.toThrow('context failed');
 
 	expect(f.scanned.get('alice')).toBe(3);
-	expect(scanUsed(f, 'global')).toBe(3);
-	expect(scanUsed(f, 'user:alice')).toBe(3);
+	expect(scanUsed(f, 'global')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
+	expect(scanUsed(f, 'user:alice')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
 	expect(f.notesOf('alice')).toHaveLength(3);
 });
 
-test('대상 조회가 실패해 소비를 확정하지 못하면 예약 상한을 보존한다', async () => {
+test('대상 조회가 실패해도 예약한 검사 예산 전부를 소비한다', async () => {
 	const f = scanFixture();
 	f.faults.noteLookup = true;
 
@@ -523,55 +500,44 @@ test('대상 조회가 실패해 소비를 확정하지 못하면 예약 상한�
 	expect(scanUsed(f, 'user:alice')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
 });
 
-test.each([0, 3, NOTE_CLEANUP_LIMITS.pageSize])('정상 %i건 페이지는 실제 노트 수만 소비한다', async count => {
+test.each([0, 3, NOTE_CLEANUP_LIMITS.pageSize])('정상 %i건 페이지도 예약한 검사 예산 전부를 소비한다', async count => {
 	const f = scanFixture(count);
 
 	await f.service.processUser('alice');
 
-	expect(scanUsed(f, 'global')).toBe(count);
-	expect(scanUsed(f, 'user:alice')).toBe(count);
+	expect(scanUsed(f, 'global')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
+	expect(scanUsed(f, 'user:alice')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
 });
 
-test('실패 중 창이 바뀌어도 미사용량은 원래 창에만 반환한다', async () => {
+test('처리 중 창이 바뀌어도 예약은 원래 창에 기록된다', async () => {
 	const f = scanFixture();
 	f.faults.contexts = true;
 	f.onRead(() => { vi.setSystemTime(NOW + NOTE_CLEANUP_LIMITS.windowMs); });
 
 	await expect(f.service.processUser('alice')).rejects.toThrow('context failed');
 
-	expect(scanUsed(f, 'global')).toBe(3);
+	expect(scanUsed(f, 'global')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
 	expect(f.redis.store.has(scanKey('global', NOW + NOTE_CLEANUP_LIMITS.windowMs))).toBe(false);
 });
 
-test.each([false, true])('반환 Redis 실패는 원래 처리 결과를 바꾸지 않는다: 오류 %s', async fail => {
-	const f = scanFixture();
-	f.faults.release = true;
-	f.faults.contexts = fail;
-
-	if (fail) await expect(f.service.processUser('alice')).rejects.toThrow('context failed');
-	else expect((await f.service.processUser('alice')).deleted).toBe(0);
-
-	expect(scanUsed(f, 'global')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
-	expect(scanUsed(f, 'user:alice')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
-});
-
-test('반복된 검사 전 실패는 같은 계정과 뒤 계정의 검사 자격을 소진하지 않는다', async () => {
+test('검사 전 실패가 반복되면 계정 한도에서 멈추고 뒤 계정은 진행한다', async () => {
 	const f = scanFixture();
 	f.addUser('bob');
 	f.rows.Rule.push(deleteRule('bob', 'bob-delete'));
 	f.addNotes('bob', 1);
 	f.faults.pageRules = true;
-	const attempts = NOTE_CLEANUP_LIMITS.userScan / NOTE_CLEANUP_LIMITS.pageSize + 1;
 
-	for (let i = 0; i < attempts; i++) await expect(f.service.processUser('alice')).rejects.toThrow('page rules failed');
+	for (let i = 0; i < NOTE_CLEANUP_LIMITS.userScan / NOTE_CLEANUP_LIMITS.pageSize; i++) {
+		await expect(f.service.processUser('alice')).rejects.toThrow('page rules failed');
+	}
 	f.faults.pageRules = false;
-	await f.service.processUser('alice');
+	const alice = await f.service.processUser('alice');
 	const bob = await f.service.processUser('bob');
 
+	expect(alice.throttled).toBe('account');
 	expect(bob.deleted).toBe(1);
-	expect(scanUsed(f, 'global')).toBe(4);
-	expect(scanUsed(f, 'user:alice')).toBe(3);
-	expect(scanUsed(f, 'user:bob')).toBe(1);
+	expect(scanUsed(f, 'global')).toBe(NOTE_CLEANUP_LIMITS.userScan + NOTE_CLEANUP_LIMITS.pageSize);
+	expect(scanUsed(f, 'user:alice')).toBe(NOTE_CLEANUP_LIMITS.userScan);
 });
 
 test('불명확한 조회 실패가 반복되면 계정 한도에서 멈추고 뒤 계정은 진행한다', async () => {
@@ -590,125 +556,24 @@ test('불명확한 조회 실패가 반복되면 계정 한도에서 멈추고 �
 
 	expect(alice.throttled).toBe('account');
 	expect(bob.deleted).toBe(1);
-	expect(scanUsed(f, 'global')).toBe(NOTE_CLEANUP_LIMITS.userScan + 1);
+	expect(scanUsed(f, 'global')).toBe(NOTE_CLEANUP_LIMITS.userScan + NOTE_CLEANUP_LIMITS.pageSize);
 	expect(scanUsed(f, 'user:alice')).toBe(NOTE_CLEANUP_LIMITS.userScan);
 });
 
-test.each(nearLimits)('%s 한도 근처에서 일부만 예약하면 검사 전 실패는 받은 양만 반환한다', async (limited, other, used) => {
-	const f = scanFixture();
-	f.redis.store.set(scanKey(limited), used);
-	f.faults.pageRules = true;
+test.each(nearLimits)('%s 한도 근처에서 일부만 예약하면 실패해도 받은 양 전부를 소비한다', async (limited, other, used, grant) => {
+	for (const fault of ['pageRules', 'contexts'] as const) {
+		const f = scanFixture();
+		f.redis.store.set(scanKey(limited), used);
+		f.faults[fault] = true;
 
-	await expect(f.service.processUser('alice')).rejects.toThrow('page rules failed');
+		await expect(f.service.processUser('alice')).rejects.toThrow(fault === 'pageRules' ? 'page rules failed' : 'context failed');
 
-	expect(scanUsed(f, limited)).toBe(used);
-	expect(scanUsed(f, other)).toBe(0);
+		expect(scanUsed(f, limited)).toBe(used + grant);
+		expect(scanUsed(f, other)).toBe(grant);
+	}
 });
 
-test.each(nearLimits)('%s 한도 근처에서 일부만 예약하면 읽은 뒤 실패는 읽은 수만 남긴다', async (limited, other, used) => {
-	const f = scanFixture();
-	f.redis.store.set(scanKey(limited), used);
-	f.faults.contexts = true;
-
-	await expect(f.service.processUser('alice')).rejects.toThrow('context failed');
-
-	expect(scanUsed(f, limited)).toBe(used + 3);
-	expect(scanUsed(f, other)).toBe(3);
-});
-
-test('선행 오류 회복 조회로 읽은 노트도 같은 예약의 검사량으로 센다', async () => {
-	const f = recoveryFixture();
-
-	await f.service.processUser('alice');
-
-	// 회복 범위 2건과 본 페이지 3건
-	expect(f.scanned.get('alice')).toBe(5);
-	expect(scanUsed(f, 'global')).toBe(5);
-	expect(scanUsed(f, 'user:alice')).toBe(5);
-	expect(f.rows.Rule.find(r => r.id === 'keep').lastError).toBeNull();
-});
-
-test('선행 오류 회복 조회 뒤 판정이 실패하면 회복 조회로 읽은 수만 남긴다', async () => {
-	const f = recoveryFixture();
-	f.faults.contexts = true;
-
-	await expect(f.service.processUser('alice')).rejects.toThrow('context failed');
-
-	expect(f.scanned.get('alice')).toBe(2);
-	expect(scanUsed(f, 'global')).toBe(2);
-	expect(scanUsed(f, 'user:alice')).toBe(2);
-});
-
-test('선행 오류 회복 조회가 실패하면 소비를 확정하지 못해 예약 상한을 보존한다', async () => {
-	const f = recoveryFixture();
-	f.faults.noteLookup = true;
-
-	await expect(f.service.processUser('alice')).rejects.toThrow('note lookup failed');
-
-	expect(f.scanned.get('alice')).toBeUndefined();
-	expect(scanUsed(f, 'global')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
-	expect(scanUsed(f, 'user:alice')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
-});
-
-test('회복 조회를 마친 뒤 본 페이지 조회가 실패해도 예약 상한을 보존한다', async () => {
-	const f = recoveryFixture();
-	f.onRead(() => { f.faults.noteLookup = true; });
-
-	await expect(f.service.processUser('alice')).rejects.toThrow('note lookup failed');
-
-	expect(f.scanned.get('alice')).toBe(2);
-	expect(scanUsed(f, 'global')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
-	expect(scanUsed(f, 'user:alice')).toBe(NOTE_CLEANUP_LIMITS.pageSize);
-});
-
-// === 최종 검토 지적 재현 (review-fix) ===
-
-test('Sol3: 회복 조회는 예약된 검사 예산 안에서만 읽고 본 페이지 한도에서 회복 사용량을 뺀다', async () => {
-	const f = recoveryFixture();
-	// 계정 검사 예산을 1개만 남게 채워 둔다. 회복 범위 2건 중 1건만 확인할 수 있다.
-	f.redis.store.set(scanKey('user:alice'), NOTE_CLEANUP_LIMITS.userScan - 1);
-
-	await f.service.processUser('alice');
-
-	// 회복 1건만 읽고 본 페이지는 읽지 않는다. 예약 1개를 초과하지 않는다.
-	expect(f.scanned.get('alice')).toBe(1);
-	expect(scanUsed(f, 'global')).toBe(1);
-	expect(scanUsed(f, 'user:alice')).toBe(NOTE_CLEANUP_LIMITS.userScan);
-	// 일부만 확인했으므로 오류를 해제하지 않고 미확인 범위를 보존한다.
-	const keep = f.rows.Rule.find(r => r.id === 'keep');
-	expect(keep.lastError).not.toBeNull();
-	expect(keep.lastError.recovery.noteIds).toEqual([noteId('alice', 2)]);
-	expect(f.notesOf('alice')).toHaveLength(3);
-});
-
-test('Sol3: 예산이 모자라 일부만 확인한 회복 범위는 다음 회차에 이어서 확인하고 해제한다', async () => {
-	const f = recoveryFixture();
-	f.redis.store.set(scanKey('user:alice'), NOTE_CLEANUP_LIMITS.userScan - 1);
-	await f.service.processUser('alice');
-	expect(f.rows.Rule.find(r => r.id === 'keep').lastError).not.toBeNull();
-
-	// 다음 창에서 남은 미확인 범위 1건을 확인하면 해제한다.
-	vi.setSystemTime(NOW + NOTE_CLEANUP_LIMITS.windowMs);
-	await f.service.processUser('alice');
-	expect(f.rows.Rule.find(r => r.id === 'keep').lastError).toBeNull();
-});
-
-test('Sol3: 여러 규칙의 같은 회복 범위는 한 번만 읽어 예산을 중복 쓰지 않는다', async () => {
-	const f = fixture();
-	f.addUser('alice');
-	const failure = (ruleId: string) => ({ ruleId, code: 'TEMPORARY_FAILURE', path: 'condition', message: 'TEMPORARY_FAILURE', userActionable: false, recovery: { source: 'data', noteIds: [noteId('alice', 1), noteId('alice', 2)] } });
-	f.rows.Rule.push(deleteRule('alice', 'delete'), { ...keepAll('alice', 'keep1'), lastError: failure('keep1') }, { ...keepAll('alice', 'keep2'), lastError: failure('keep2') });
-	f.addNotes('alice', 3);
-
-	await f.service.processUser('alice');
-
-	// 같은 범위 2건을 두 규칙이 공유하므로 회복 2건 + 본 페이지 3건 = 5건만 읽는다.
-	expect(f.scanned.get('alice')).toBe(5);
-	expect(scanUsed(f, 'global')).toBe(5);
-	expect(f.rows.Rule.filter(r => r.action === 'keep').every(r => r.lastError === null)).toBe(true);
-});
-
-test('OC4: 수동 요청의 재시도 가능한 삭제 실패도 시도한 만큼만 삭제 예산을 쓰고 나머지는 반납한다', async () => {
+test('수동 요청의 재시도 가능한 삭제 실패도 예약한 삭제 예산 전부를 소비한다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
@@ -717,13 +582,15 @@ test('OC4: 수동 요청의 재시도 가능한 삭제 실패도 시도한 만�
 
 	await expect(f.service.processUser('alice', ['d1'])).rejects.toThrow('Connection terminated unexpectedly');
 
-	// 노트 0 삭제 성공 + 노트 1 삭제 시도 실패 = 2개만 쓰고 예약 3개 중 1개는 반납한다.
-	expect(deleteUsed(f, 'global')).toBe(2);
-	expect(deleteUsed(f, 'user:alice')).toBe(2);
+	// 노트 0 삭제 성공 + 노트 1 삭제 시도 실패뿐이어도 예약 3개 전부를 소비한다.
+	expect(deleteUsed(f, 'global')).toBe(3);
+	expect(deleteUsed(f, 'user:alice')).toBe(3);
 	expect(f.notesOf('alice').map(n => n.id)).toEqual([noteId('alice', 1), noteId('alice', 2)]);
 });
 
-test('OC1: 수동 요청의 비재시도 오류는 마커를 지우고 종료 실패로 처리해 무한 재시도를 막는다', async () => {
+// === 수동 요청 마커와 깨우기 작업 ===
+
+test('수동 요청의 비재시도 오류는 마커를 지우고 종료 실패로 처리해 무한 재시도를 막는다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
@@ -738,7 +605,7 @@ test('OC1: 수동 요청의 비재시도 오류는 마커를 지우고 종료 �
 	expect(f.added).toHaveLength(1);
 });
 
-test('OC1: 종료 실패로 마커가 지워지면 같은 사용자가 새 요청을 접수할 수 있다', async () => {
+test('종료 실패로 마커가 지워지면 같은 사용자가 새 요청을 접수할 수 있다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
@@ -753,7 +620,7 @@ test('OC1: 종료 실패로 마커가 지워지면 같은 사용자가 새 요�
 	expect(second.jobId).toBe(first.jobId);
 });
 
-test('Sol6: 깨우기 작업은 유한 재시도와 보존 기한을 두고 완료 뒤 자동 제거되며 대기는 작업을 쌓지 않는다', async () => {
+test('깨우기 작업은 유한 재시도와 보존 기한을 두고 완료 뒤 자동 제거되며 대기는 작업을 쌓지 않는다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
@@ -770,7 +637,7 @@ test('Sol6: 깨우기 작업은 유한 재시도와 보존 기한을 두고 완�
 	expect(f.addedJobs).toHaveLength(1);
 });
 
-test('Sol6: 최종 완료는 마커를 지우고 별도 정리 작업을 등록하지 않는다', async () => {
+test('최종 완료는 마커를 지우고 별도 정리 작업을 등록하지 않는다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
@@ -783,8 +650,6 @@ test('Sol6: 최종 완료는 마커를 지우고 별도 정리 작업을 등록�
 	expect(f.notesOf('alice')).toHaveLength(0);
 	expect(f.added).toHaveLength(1);
 });
-
-// === 델타 검토 지적 재현 (review-fix2) ===
 
 // 매 페이지 뒤 회차 시간 상한의 절반만큼 시각을 당겨, 작업 하나가 두 페이지 처리 후 대기하도록 한다.
 function hopFixture() {
@@ -801,7 +666,7 @@ function hopFixture() {
 	return f;
 }
 
-test('N1: 여러 홉으로 이어지는 수동 요청은 마커 하나로 유지되고 대기 동안 작업이 늘지 않으며 중복 접수를 막는다', async () => {
+test('여러 홉으로 이어지는 수동 요청은 마커 하나로 유지되고 대기 동안 작업이 늘지 않으며 중복 접수를 막는다', async () => {
 	const f = hopFixture();
 	const first = await f.service.request('alice', ['d1']);
 	expect(first.jobId).toBe('note-cleanup-alice');
@@ -827,7 +692,7 @@ test('N1: 여러 홉으로 이어지는 수동 요청은 마커 하나로 유지
 	expect(f.added).toHaveLength(2);
 });
 
-test('N1: 깨우기 작업이 중단·유실돼도 마커가 요청을 보존하고 회차가 이어 처리한다', async () => {
+test('깨우기 작업이 중단·유실돼도 마커가 요청을 보존하고 회차가 이어 처리한다', async () => {
 	const f = hopFixture();
 	await f.service.request('alice', ['d1']);
 	const manual = f.job({ userId: 'alice', manual: true });
@@ -846,9 +711,7 @@ test('N1: 깨우기 작업이 중단·유실돼도 마커가 요청을 보존하
 	expect(f.added).toHaveLength(1);
 });
 
-// === 4차 델타 검토 지적 재현 (review-fix4) ===
-
-test('fix4: 수동 요청 접수는 대기 마커를 남기고 사용자별 고정 깨우기 작업을 등록한다', async () => {
+test('수동 요청 접수는 대기 마커를 남기고 사용자별 고정 깨우기 작업을 등록한다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
@@ -863,7 +726,7 @@ test('fix4: 수동 요청 접수는 대기 마커를 남기고 사용자별 고�
 	expect(f.addedJobs[0].options).toMatchObject({ jobId: 'note-cleanup-alice', removeOnComplete: true, attempts: 10, backoff: { type: 'fixed', delay: 5000 }, removeOnFail: { age: 7 * 86400 } });
 });
 
-test('fix4: 깨우기 작업은 접수 직후 시작해 완료까지 처리하고 마커를 지운다', async () => {
+test('깨우기 작업은 접수 직후 시작해 완료까지 처리하고 마커를 지운다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
@@ -877,7 +740,7 @@ test('fix4: 깨우기 작업은 접수 직후 시작해 완료까지 처리하�
 	expect(f.added).toHaveLength(1);
 });
 
-test('fix4: 대기 중인 수동 요청이 있으면 다른 규칙 조합의 재요청도 접수하지 않는다', async () => {
+test('대기 중인 수동 요청이 있으면 다른 규칙 조합의 재요청도 접수하지 않는다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false), deleteRule('alice', 'd2', 120, false));
@@ -891,7 +754,7 @@ test('fix4: 대기 중인 수동 요청이 있으면 다른 규칙 조합의 재
 	expect(f.added).toHaveLength(1);
 });
 
-test('fix4: 일시 DB 장애는 마커를 보존하고 복구 뒤 회차가 같은 커서부터 이어 처리한다', async () => {
+test('일시 DB 장애는 마커를 보존하고 복구 뒤 회차가 같은 커서부터 이어 처리한다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
@@ -911,7 +774,7 @@ test('fix4: 일시 DB 장애는 마커를 보존하고 복구 뒤 회차가 같�
 	expect(f.added).toHaveLength(1);
 });
 
-test('fix4: 회차는 수동 대기 계정을 먼저 처리하고 남은 계정 몫만 자동 검사에 쓴다', async () => {
+test('회차는 수동 대기 계정을 먼저 처리하고 남은 계정 몫만 자동 검사에 쓴다', async () => {
 	const f = fixture();
 	for (let i = 0; i < NOTE_CLEANUP_LIMITS.roundUsers; i++) {
 		const userId = `m${String(i).padStart(2, '0')}`;
@@ -934,7 +797,7 @@ test('fix4: 회차는 수동 대기 계정을 먼저 처리하고 남은 계정 
 	expect(f.notesOf('auto')).toHaveLength(0);
 });
 
-test('fix4: 예산 대기 중인 수동 요청은 다음 창 회차가 마커로 이어 처리한다', async () => {
+test('예산 대기 중인 수동 요청은 다음 창 회차가 마커로 이어 처리한다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
@@ -954,7 +817,7 @@ test('fix4: 예산 대기 중인 수동 요청은 다음 창 회차가 마커로
 	expect(f.added).toHaveLength(1);
 });
 
-test('fix4: 마커가 없는 깨우기 작업은 아무것도 하지 않고 완료한다', async () => {
+test('마커가 없는 깨우기 작업은 아무것도 하지 않고 완료한다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 
@@ -964,7 +827,7 @@ test('fix4: 마커가 없는 깨우기 작업은 아무것도 하지 않고 완�
 	expect(f.scanned.get('alice')).toBeUndefined();
 });
 
-test('fix4: 회차 중 수동 계정의 종료 실패는 같은 회차의 다른 계정을 멈추지 않는다', async () => {
+test('회차 중 수동 계정의 종료 실패는 같은 회차의 다른 계정을 멈추지 않는다', async () => {
 	const f = fixture();
 	f.addUser('gone', new Date(1));
 	f.addUser('ok', new Date(2));

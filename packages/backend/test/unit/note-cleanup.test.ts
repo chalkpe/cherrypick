@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { describe, expect, test } from 'vitest';
-import { decideCleanup, matchesCleanupCondition, validateCleanupCondition } from '../../src/core/NoteCleanupCondition.js';
+import { cleanupKeywordLines, decideCleanup, matchesCleanupCondition, validateCleanupCondition } from '../../src/core/NoteCleanupCondition.js';
 
 const context = { text: '고양이는 HELLO', cw: '보호', poll: ['선택'], fileComment: ['설명'], fileName: ['사진.png'], age: 60, reactions: 3, renotes: 2, flags: { pinned: false }, visibility: 'public', channelId: null, clipIds: [], tags: ['고양이'] };
 const word = (value: string, targets = ['text']) => ({ type: 'keyword', mode: 'literal', value, flags: '', targets });
@@ -31,27 +31,53 @@ describe('노트 정리 판정', () => {
 			expect(matchesCleanupCondition({ type: 'age', operator, seconds: 60 }, { ...context, age })).toBe(expected);
 		}
 	});
-	test('빈 묶음과 알 수 없는 조건 및 반전된 오류는 거부한다', () => {
+	test('빈 묶음과 알 수 없는 조건은 거부한다', () => {
 		expect(() => validateCleanupCondition({ type: 'all', children: [] })).toThrow();
-		expect(() => matchesCleanupCondition({ type: 'not', child: { type: 'unknown' } }, context)).toThrow();
+		expect(() => matchesCleanupCondition({ type: 'unknown' }, context)).toThrow();
 	});
 	test('남기기가 지우기 합집합보다 우선하고 무응답은 삭제를 막지 않는다', () => {
 		expect(decideCleanup([{ id: 'a', action: 'delete', condition: word('고양이') }, { id: 'b', action: 'keep', condition: word('없음') }], [context])[0].decision).toBe('delete');
 		expect(decideCleanup([{ id: 'a', action: 'delete', condition: word('고양이') }, { id: 'b', action: 'keep', condition: word('보호', ['cw']) }], [context])[0].reason).toBe('protected');
 	});
 	test('지우기 오류는 전체 규칙을 제외하고 다른 지우기는 동작한다', () => {
-		const results = decideCleanup([{ id: 'a', action: 'delete', condition: { type: 'not', child: { type: 'unknown' } } }, { id: 'b', action: 'delete', condition: word('고양이') }], [context]);
+		const results = decideCleanup([{ id: 'a', action: 'delete', condition: { type: 'unknown' } }, { id: 'b', action: 'delete', condition: word('고양이') }], [context]);
 		expect(results[0].deleteRuleIds).toEqual(['b']);
 		expect(results[0].errors[0].ruleId).toBe('a');
 	});
 	test('남기기 오류는 다른 노트를 포함한 묶음 전체의 삭제를 막는다', () => {
-		const results = decideCleanup([{ id: 'a', action: 'keep', condition: { type: 'not', child: { type: 'unknown' } } }, { id: 'b', action: 'delete', condition: word('고양이') }], [context, context]);
+		const results = decideCleanup([{ id: 'a', action: 'keep', condition: { type: 'unknown' } }, { id: 'b', action: 'delete', condition: word('고양이') }], [context, context]);
 		expect(results.every(x => x.reason === 'blocked')).toBe(true);
 	});
 });
 
+describe('줄 단위 키워드', () => {
+	test('줄 바꿈으로 구분한 각 줄을 하나의 키워드로 OR 판정한다', () => {
+		expect(cleanupKeywordLines('고양이\n강아지\n')).toEqual(['고양이', '강아지']);
+		expect(matchesCleanupCondition(word('없음\n고양이'), context)).toBe(true);
+		expect(matchesCleanupCondition(word('없음\n강아지'), context)).toBe(false);
+	});
+	test('빈 줄은 제외하고 줄 안의 공백과 공백만 있는 줄은 구절로 유지한다', () => {
+		expect(cleanupKeywordLines('\n고양이\n\nHELLO\n')).toEqual(['고양이', 'HELLO']);
+		expect(matchesCleanupCondition(word('고 양 이\n없음'), context)).toBe(false);
+		expect(matchesCleanupCondition(word(' '), { ...context, text: '띄어쓰기 있음' })).toBe(true);
+		expect(matchesCleanupCondition(word(' '), { ...context, text: '없음' })).toBe(false);
+	});
+	test('정규식도 줄마다 따로 검사해 하나라도 잘못되면 거부한다', () => {
+		expect(matchesCleanupCondition({ type: 'keyword', mode: 'regex', value: '없음\nhello', flags: 'i', targets: ['text'] }, context)).toBe(true);
+		expect(() => validateCleanupCondition({ type: 'keyword', mode: 'regex', value: 'hello\n(?=x)', flags: '', targets: ['text'] })).toThrow();
+	});
+	test('줄 수와 줄 길이의 상한을 적용한다', () => {
+		expect(() => validateCleanupCondition(word(Array.from({ length: 32 }, (_, i) => `단어${i}`).join('\n')))).not.toThrow();
+		expect(() => validateCleanupCondition(word(Array.from({ length: 33 }, (_, i) => `단어${i}`).join('\n')))).toThrow();
+		expect(() => validateCleanupCondition(word('가'.repeat(128)))).not.toThrow();
+		expect(() => validateCleanupCondition(word('가'.repeat(129)))).toThrow();
+		expect(() => validateCleanupCondition(word(''))).toThrow();
+		expect(() => validateCleanupCondition(word('\n\n'))).toThrow();
+	});
+});
+
 test('중첩한 잘못된 입력의 정확한 조건 경로와 비활성 블록을 식별한다', () => {
-	try { validateCleanupCondition({ type: 'all', children: [{ type: 'not', child: { type: 'age', operator: 'gte', seconds: -1 } }] }); throw new Error('accepted'); } catch (error) { expect((error as { path: string }).path).toBe('condition.children.0.child'); }
+	try { validateCleanupCondition({ type: 'all', children: [{ type: 'any', children: [{ type: 'age', operator: 'gte', seconds: -1 }] }] }); throw new Error('accepted'); } catch (error) { expect((error as { path: string }).path).toBe('condition.children.0.children.0'); }
 	expect(() => validateCleanupCondition({ type: 'age', operator: 'gte', seconds: 1, enabled: false })).toThrow();
 });
 
@@ -70,32 +96,29 @@ test('공개 범위·채널·클립·해시태그와 모든 명시적 플래그�
 
 test('과도한 중첩과 미완성 검색 범위를 저장하지 않는다', () => {
 	let c: unknown = { type: 'flag', field: 'pinned', value: true };
-	for (let i = 0; i < 9; i++) c = { type: 'not', child: c };
+	for (let i = 0; i < 9; i++) c = { type: 'all', children: [c] };
 	expect(() => validateCleanupCondition(c)).toThrow();
 	expect(() => validateCleanupCondition(word('x', []))).toThrow();
 });
 
-test('특정 자료 조회 실패는 그 자료를 쓰는 지우기 규칙 전체만 제외한다', () => {
-	const results = decideCleanup([{ id: 'count', action: 'delete', condition: { type: 'not', child: { type: 'count', field: 'reactions', operator: 'gte', value: 2 } } }, { id: 'word', action: 'delete', condition: word('고양이') }], [{ ...context, errors: { reactions: 'TEMPORARY_FAILURE' } }]);
+test('손상된 받은 횟수는 판정 오류로 남아 남기기는 묶음을 막고 지우기는 제외한다', () => {
+	const broken = { ...context, renotes: -1 };
+	expect(decideCleanup([{ id: 'keep', action: 'keep', condition: { type: 'count', field: 'renotes', operator: 'gte', value: 2 } }, { id: 'delete', action: 'delete', condition: word('고양이') }], [broken])[0].reason).toBe('blocked');
+	const results = decideCleanup([{ id: 'count', action: 'delete', condition: { type: 'count', field: 'renotes', operator: 'gte', value: 2 } }, { id: 'word', action: 'delete', condition: word('고양이') }], [broken]);
 	expect(results[0].deleteRuleIds).toEqual(['word']);
 	expect(results[0].errors.map(e => e.ruleId)).toEqual(['count']);
 });
 
-test('해시태그 표지만 입력한 미완성 조건은 NOT 안에서도 저장을 거부한다', () => {
-	expect(() => validateCleanupCondition({ type: 'not', child: { type: 'hashtag', value: '#' } })).toThrow();
+test('해시태그 표지만 입력한 미완성 조건은 저장을 거부한다', () => {
+	expect(() => validateCleanupCondition({ type: 'hashtag', value: '#' })).toThrow();
 });
 
-test('Sol7: 중복 접두 해시태그는 판정과 어긋나므로 저장 전에 거부하고 tag·#tag는 유지한다', () => {
+test('중복 접두 해시태그는 판정과 어긋나므로 저장 전에 거부하고 tag·#tag는 유지한다', () => {
 	expect(() => validateCleanupCondition({ type: 'hashtag', value: '##tag' })).toThrow();
 	expect(() => validateCleanupCondition({ type: 'hashtag', value: '###' })).toThrow();
 	expect(() => validateCleanupCondition({ type: 'hashtag', value: 'tag' })).not.toThrow();
 	expect(() => validateCleanupCondition({ type: 'hashtag', value: '#tag' })).not.toThrow();
 	expect(matchesCleanupCondition({ type: 'hashtag', value: '#tag' }, { ...context, tags: ['tag'] })).toBe(true);
-});
-
-test('손상된 받은 횟수는 불일치나 NOT의 참으로 바꾸지 않는다', () => {
-	const results = decideCleanup([{ id: 'keep', action: 'keep', condition: { type: 'not', child: { type: 'count', field: 'renotes', operator: 'gte', value: 2 } } }, { id: 'delete', action: 'delete', condition: word('고양이') }], [{ ...context, renotes: -1 }]);
-	expect(results[0].reason).toBe('blocked');
 });
 
 test('정규식 플래그는 단어 뮤트와 같은 RE2 생성자를 따른다', () => {

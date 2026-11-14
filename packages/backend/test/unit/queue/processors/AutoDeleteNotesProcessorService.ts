@@ -17,7 +17,6 @@ import { AutoDeleteNotesProcessorService } from '@/queue/processors/AutoDeleteNo
 // 처리기와 정리 서비스가 남기는 오류 기록을 검사한다.
 const logged = vi.hoisted(() => [] as unknown[][]);
 vi.mock('@/logger.js', () => ({ default: class { error(...args: unknown[]) { logged.push(args); } warn() {} info() {} succ() {} } }));
-vi.mock('@/core/CacheService.js', () => ({ CacheService: class {} }));
 
 // 이 처리기는 이제 계정별 정리 규칙을 판정하는 NoteCleanupService에 위임한다.
 // 기존 시험이 확인하던 자동 삭제 의미(정상 삭제 경로·소유자 기준 즐겨찾기 보호·실패 격리·사라진 후보·비활성 설정)를
@@ -125,17 +124,13 @@ async function fixture() {
 		createQueryRunner: () => ({ connect: async () => {}, query: async () => [{ locked: true }], release: async () => {} }),
 	};
 
-	// 예약 스크립트의 계약(키별 한도, 부족한 키 번호를 음수로 반환, 반납)만 흉내 낸 모형이다.
+	// 예약 스크립트의 계약(키별 한도, 부족한 키 번호를 음수로 반환, 허용량 전액 증가)만 흉내 낸 모형이다.
 	const budget = new Map<string, number>();
 	const redis = {
 		eval: async (_script: string, numKeys: number, ...args: (string | number)[]) => {
 			const keys = args.slice(0, numKeys).map(String);
 			const argv = args.slice(numKeys).map(Number);
 			const get = (key: string) => budget.get(key) ?? 0;
-			if (argv.length === 1) {
-				for (const key of keys) budget.set(key, Math.max(0, get(key) - Math.min(argv[0], get(key))));
-				return argv[0];
-			}
 			const [want, , ...limits] = argv;
 			let grant = want;
 			for (const [i, key] of keys.entries()) {
@@ -162,8 +157,7 @@ async function fixture() {
 	const idService = { gen: () => `rule-${String(sequence++).padStart(4, '0')}`, parse: (id: string) => ({ date: new Date(createdAt.get(id) ?? 0) }) };
 	const buffering = Object.create(ReactionsBufferingService.prototype) as ReactionsBufferingService;
 	const notifications: Record<string, unknown>[] = [];
-	const cache = { userProfileCache: { fetch: async () => ({}) } };
-	const service = new NoteCleanupService(db as any, idService as any, queueService as any, { delete: deleteNote } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering, cache as any);
+	const service = new NoteCleanupService(db as any, idService as any, queueService as any, { delete: deleteNote } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering);
 
 	// 처리기의 생성자 의존성을 Nest가 실제로 해석할 수 있는지도 함께 확인한다.
 	const app = await Test.createTestingModule({
@@ -178,9 +172,9 @@ async function fixture() {
 	const user = (id: string, days: number | null = 30, keepFavorites = true) => {
 		const row = { id, host: null, autoDeleteNotesAfterDays: days, autoDeleteKeepFavorites: keepFavorites };
 		table(MiUser).push(row);
-		table(MiNoteCleanupState).push({ userId: id, migrated: true, cursor: null, lastRunAt: new Date(0), previewAt: null, previewToken: null, manualRequest: null });
+		table(MiNoteCleanupState).push({ userId: id, migrated: true, cursor: null, lastRunAt: new Date(0), manualRequest: null });
 		for (const input of initialCleanupRules(true, days, keepFavorites)) {
-			table(MiNoteCleanupRule).push({ ...input, id: idService.gen(), userId: id, lastError: null, automaticConfirmed: input.automatic });
+			table(MiNoteCleanupRule).push({ ...input, id: idService.gen(), userId: id, lastError: null, protectionNotified: false, automaticConfirmed: input.automatic });
 		}
 		return row;
 	};

@@ -10,17 +10,16 @@ vi.mock('../../src/logger.js', () => ({ default: class { error() {} } }));
 vi.mock('../../src/core/QueueService.js', () => ({ QueueService: class {} }));
 vi.mock('../../src/core/NoteDeleteService.js', () => ({ NoteDeleteService: class {} }));
 vi.mock('../../src/core/NotificationService.js', () => ({ NotificationService: class {} }));
-vi.mock('../../src/core/CacheService.js', () => ({ CacheService: class {} }));
 vi.mock('../../src/core/IdService.js', () => ({ IdService: class {} }));
 import { ReactionsBufferingService } from '../../src/core/ReactionsBufferingService.js';
 import { cleanupDependencies } from '../../src/core/NoteCleanupCondition.js';
 import { CleanupInputError, NoteCleanupService } from '../../src/core/NoteCleanupService.js';
 import UpdateAutoDeleteSettings from '../../src/server/api/endpoints/i/update-auto-delete-settings.js';
-import { meta as previewMeta } from '../../src/server/api/endpoints/i/note-cleanup/preview.js';
+import PreviewEndpoint, { meta as previewMeta } from '../../src/server/api/endpoints/i/note-cleanup/preview.js';
 
 // detached: 실제 DB처럼 조회 결과를 저장 행과 분리한 복사본으로 돌려준다.
 function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0) } = {}) {
-	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, migrated: true }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
+	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, migrated: true, manualRequest: null }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
 	const failing = new Set<string>();
 	// retryable: 재시도 가능한 연결 오류로 조회를 실패시킨다.
 	const retryable = new Set<string>();
@@ -84,20 +83,20 @@ function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0
 	const db = { getRepository: repository, transaction, createQueryRunner: () => { if (faults.createQueryRunner) throw new Error('runner unavailable'); return { connect: async () => {}, query: async () => [{ locked: lock.available }], release: async () => { lock.released++; } }; } };
 	let nextId = 0;
 	const notifications: unknown[] = [];
-	const cache = { userProfileCache: { fetch: async () => ({}) } };
 	const jobs = new Map<string, unknown>();
+	const evalCalls: unknown[][] = [];
 	const meta = { enableReactionsBuffering: false };
 	const buffered = new Map<string, { deltas: Record<string, number>; pairs: [string, string][] }>();
 	const buffering = Object.create(ReactionsBufferingService.prototype) as ReactionsBufferingService;
 	Object.defineProperty(buffering, 'getMany', { value: async () => buffered, writable: true });
-	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push([userId, type, data]); } } as any, { eval: async () => 5 } as any, meta as any, buffering, cache as any);
+	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push([userId, type, data]); } } as any, { eval: async (...args: unknown[]) => { evalCalls.push(args); return 5; } } as any, meta as any, buffering);
 	const condition = { type: 'age', operator: 'gte', seconds: 60 };
-	return { rows, service, notifications, jobs, failing, failingWrites, retryable, faults, lock, meta, buffered, buffering, noteReads, input: { name: '정리', action: 'delete' as const, condition } };
+	return { rows, service, notifications, jobs, evalCalls, failing, failingWrites, retryable, faults, lock, meta, buffered, buffering, noteReads, input: { name: '정리', action: 'delete' as const, condition } };
 }
 
 const note = (id: string) => ({ id, userId: 'alice', text: '정리', cw: null, fileIds: [], hasPoll: false, renoteId: null, replyId: null, channelId: null, localOnly: false, visibility: 'public', reactions: {}, renoteCount: 0, tags: [] });
-// 회복 범위를 뺀 공개 응답의 일시 실패 형식
-const temporaryFailure = (ruleId: string) => ({ ruleId, code: 'TEMPORARY_FAILURE', path: 'condition', message: 'TEMPORARY_FAILURE', userActionable: false });
+
+// === 규칙 저장과 권한 ===
 
 test('다른 사용자의 규칙 수정과 삭제는 거부한다', async () => {
 	const { rows, service, input } = fixture();
@@ -117,13 +116,16 @@ test('저장으로 자동 실행을 시작하지 않고 활성 변경은 명시 
 	expect(updated.rule.enabled).toBe(false);
 });
 
-test('부분 페이지 미리 보기 토큰은 현재 규칙만 활성화하며 변경 후에는 무효다', async () => {
+test('최초 자동 실행은 명시 확인으로만 켜고 한 번 확인하면 다시 켤 때 반복 확인하지 않는다', async () => {
 	const { service, input } = fixture();
 	const { rule } = await service.save('alice', input);
 	await expect(service.save('alice', { ...input, automatic: true }, rule.id)).rejects.toThrow('PREVIEW_REQUIRED');
-	const preview = await service.preview('alice', [rule.id], undefined, 1);
-	const updated = await service.save('alice', { ...input, automatic: true, previewToken: preview.previewToken }, rule.id);
-	expect(updated.rule.automatic).toBe(true);
+	const confirmed = await service.save('alice', { ...input, automatic: true, confirmed: true }, rule.id);
+	expect(confirmed.rule.automaticConfirmed).toBe(true);
+	await service.save('alice', { ...input, automatic: false }, rule.id);
+	const again = await service.save('alice', { ...input, automatic: true }, rule.id);
+	expect(again.rule.automatic).toBe(true);
+	expect(again.rule.automaticConfirmed).toBe(true);
 });
 
 test('비활성 지우기와 다른 사용자의 규칙은 미리 보기 및 요청에 사용할 수 없다', async () => {
@@ -132,6 +134,26 @@ test('비활성 지우기와 다른 사용자의 규칙은 미리 보기 및 요
 	await expect(service.preview('alice', ['foreign'])).rejects.toThrow('INVALID_RULE_SELECTION');
 	await expect(service.request('alice', ['foreign'])).rejects.toThrow('INVALID_RULE_SELECTION');
 });
+
+test('요청은 소유권과 활성 선택만 확인하므로 참조 오류가 있어도 접수한다', async () => {
+	const { rows, service, input } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null });
+	expect((await service.request('alice', ['delete'])).queued).toBe(true);
+	expect(rows.State[0].manualRequest).toEqual({ ruleIds: ['delete'], cursor: null });
+});
+
+test('타인 소유의 클립을 보존이나 지우기 조건으로 저장하지 않는다', async () => {
+	const { service, input, rows } = fixture();
+	rows.MiClip = [{ id: 'foreign', userId: 'bob' }];
+	for (const action of ['keep', 'delete'] as const) await expect(service.save('alice', { ...input, action, condition: { type: 'clip', ids: ['foreign'] } })).rejects.toThrow('INVALID_CLIP');
+});
+
+test('반전 조건은 더 이상 지원하지 않아 저장을 거부한다', async () => {
+	const { service, input } = fixture();
+	await expect(service.save('alice', { ...input, condition: { type: 'not', child: { type: 'flag', field: 'pinned', value: true } } })).rejects.toThrow('INVALID_CONDITION');
+});
+
+// === 보호 실패 알림 ===
 
 test('사라진 남기기 참조는 경로와 ID를 표시하고 미해결 알림을 중복하지 않는다', async () => {
 	const { rows, service, notifications } = fixture();
@@ -143,43 +165,382 @@ test('사라진 남기기 참조는 경로와 ID를 표시하고 미해결 알�
 	expect(notifications).toHaveLength(1);
 });
 
+test('같은 오류는 한 번만 알리고 오류가 바뀌거나 해결된 뒤 다시 생기면 새로 알린다', async () => {
+	const { rows, service, notifications } = fixture();
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null, legacy: null });
+	await service.list('alice');
+	await service.list('alice');
+	expect(notifications).toHaveLength(1);
+	expect(rows.Rule[0].protectionNotified).toBe(true);
+	rows.Rule[0].condition = { type: 'clip', ids: ['other'] };
+	await service.list('alice');
+	expect(notifications).toHaveLength(2);
+	rows.MiClip = [{ id: 'other', userId: 'alice' }];
+	expect((await service.list('alice')).blocked).toBe(false);
+	expect(rows.Rule[0].lastError).toBeNull();
+	expect(rows.Rule[0].protectionNotified).toBe(false);
+	rows.MiClip.splice(0);
+	await service.list('alice');
+	expect(notifications).toHaveLength(3);
+});
+
+test('DB JSON 키 순서가 달라도 미해결 알림 중복 억제를 보존한다', async () => {
+	const { rows, service, input, notifications } = fixture();
+	const { rule } = await service.save('alice', input);
+	rows.Rule[0].condition = { seconds: 60, operator: 'gte', type: 'age' };
+	expect((await service.save('alice', { ...input, automatic: true, confirmed: true }, rule.id)).rule.automatic).toBe(true);
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null, legacy: null });
+	await service.list('alice');
+	const error = rows.Rule[1].lastError;
+	rows.Rule[1].lastError = Object.fromEntries(Object.entries(error).sort(([a], [b]) => a.localeCompare(b)));
+	await service.list('alice');
+	expect(notifications).toHaveLength(1);
+});
+
+test('알림 접수 쓰기가 실패하면 발송 없이 유실하고 다음 검사에서 한 번만 접수한다', async () => {
+	const { rows, service, notifications, failingWrites } = fixture({ detached: true });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null, legacy: null });
+	failingWrites.add('Rule');
+	await expect(service.list('alice')).rejects.toThrow('write unavailable');
+	expect(rows.Rule[0].lastError).toBeNull();
+	expect(notifications).toHaveLength(0);
+	failingWrites.clear();
+	await service.list('alice');
+	expect(notifications).toHaveLength(1);
+	await service.list('alice');
+	expect(notifications).toHaveLength(1);
+});
+
+test('이름·활성 저장은 미해결 보호 오류를 보존하고 참조 재확인이 성공한 뒤에만 해제한다', async () => {
+	const { rows, service, input, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	const condition = { type: 'clip', ids: ['gone'] };
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition, lastError: null });
+	rows.MiNote.push(note('0'));
+	expect((await service.list('alice')).blocked).toBe(true);
+	expect(notifications).toHaveLength(1);
+	// 조건이 그대로인 끄기는 참조 검증을 건너뛰어 오류를 보존한다.
+	const stopped = await service.save('alice', { action: 'keep', condition, enabled: false, confirmed: true }, 'keep');
+	expect(stopped.rule.lastError).toMatchObject({ code: 'MISSING_CLIP' });
+	rows.MiClip = [{ id: 'gone', userId: 'alice' }];
+	await service.save('alice', { action: 'keep', condition, enabled: true, confirmed: true }, 'keep');
+	const renamed = await service.save('alice', { name: '새 이름', action: 'keep', condition }, 'keep');
+	expect(renamed.rule.lastError).toMatchObject({ code: 'MISSING_CLIP' });
+	expect(notifications).toHaveLength(1);
+	expect((await service.list('alice')).blocked).toBe(false);
+	expect(rows.Rule.find(r => r.id === 'keep').lastError).toBeNull();
+	rows.MiClip.splice(0);
+	expect((await service.processUser('alice')).deleted).toBe(0);
+	expect(notifications).toHaveLength(2);
+	expect(rows.MiNote).toHaveLength(1);
+});
+
+test('조건·행동 변경은 중지 요청이어도 참조 검증을 건너뛰지 않고 과거 오류는 목록 재확인 뒤 해제한다', async () => {
+	const { rows, service, input, noteReads } = fixture({ detached: true });
+	const old = { ruleId: 'rule', code: 'MISSING_CLIP', path: 'condition.children.0', message: 'MISSING_CLIP', referenceType: 'clip', referenceId: 'gone' };
+	rows.Rule.push({ id: 'rule', userId: 'alice', ...input, enabled: true, automatic: false, lastError: old });
+	rows.MiNote.push(note('0'), note('1'));
+	await expect(service.save('alice', { action: 'delete', condition: { type: 'clip', ids: ['other'] }, automatic: false }, 'rule')).rejects.toThrow('MISSING_CLIP');
+	expect(rows.Rule[0].lastError).toEqual(old);
+	const saved = await service.save('alice', { action: 'keep', condition: input.condition }, 'rule');
+	expect(saved.rule.lastError).toEqual(old);
+	noteReads.length = 0;
+	expect((await service.list('alice')).blocked).toBe(false);
+	// 목록은 참조만 다시 확인하고 노트를 읽지 않는다.
+	expect(noteReads).toEqual([]);
+	expect(rows.Rule[0].lastError).toBeNull();
+});
+
+// === 미리 보기 ===
+
+test('미리 보기는 지워질 노트만 돌려주고 nextCursor로 이어 읽는다', async () => {
+	const { rows, service, input } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: false, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'hashtag', value: '보존' }, lastError: null });
+	for (let i = 0; i < 150; i++) rows.MiNote.push({ ...note(String(i).padStart(3, '0')), tags: i === 5 ? ['보존'] : [] });
+	const first = await service.preview('alice', ['delete'], undefined, 100);
+	expect(first.notes.map(n => n.id)).toEqual(Array.from({ length: 100 }, (_, i) => String(i).padStart(3, '0')).filter(id => id !== '005'));
+	expect(first.nextCursor).toBe('099');
+	expect(first.complete).toBe(false);
+	const second = await service.preview('alice', ['delete'], '099', 100);
+	expect(second.notes).toHaveLength(50);
+	expect(second.complete).toBe(true);
+});
+
+test('미리 보기 응답은 공개 스키마의 최상위 필드만 담는다', async () => {
+	const { rows, service, input } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: false, lastError: null });
+	rows.MiNote.push(note('0'));
+	const endpoint = new PreviewEndpoint(service, { packMany: async (notes: unknown[]) => notes } as any);
+	const result = await endpoint.exec({ ruleIds: ['delete'] }, { id: 'alice' } as any, null, null);
+	expect(Object.keys(result).sort()).toEqual(Object.keys(previewMeta.res.properties).sort());
+	expect(result.notes).toHaveLength(1);
+	expect(result.complete).toBe(true);
+	expect(result.errors).toEqual([]);
+});
+
+test('남기기 참조 오류는 미리 보기의 모든 삭제를 막고 오류를 최상위로 전달한다', async () => {
+	const { rows, service, input, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: false, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null });
+	rows.MiNote.push(note('0'));
+	const preview = await service.preview('alice', ['delete']);
+	expect(preview.notes).toEqual([]);
+	expect(preview.errors).toEqual([expect.objectContaining({ ruleId: 'keep', code: 'MISSING_CLIP' })]);
+	expect((await service.list('alice')).blocked).toBe(true);
+	expect(notifications).toHaveLength(1);
+});
+
+test('참조 오류가 있는 지우기 규칙은 제외하고 다른 지우기는 계속 판정한다', async () => {
+	const { rows, service, input, notifications } = fixture();
+	rows.Rule.push({ id: 'bad', userId: 'alice', ...input, enabled: true, automatic: true, condition: { type: 'clip', ids: ['gone'] }, lastError: null });
+	rows.Rule.push({ id: 'good', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.MiNote.push(note('0'));
+	const preview = await service.preview('alice', ['bad', 'good']);
+	expect(preview.notes.map(n => n.id)).toEqual(['0']);
+	expect(preview.errors).toEqual([expect.objectContaining({ ruleId: 'bad', code: 'MISSING_CLIP' })]);
+	expect((await service.list('alice')).blocked).toBe(false);
+	expect(notifications).toHaveLength(0);
+	expect((await service.processUser('alice')).deleted).toBe(1);
+});
+
+test('DB 미반영 리액션 델타를 공용 버퍼 서비스로 합쳐 보호 임계값을 판정한다', async () => {
+	const { rows, service, input, meta, buffered } = fixture();
+	meta.enableReactionsBuffering = true;
+	buffered.set('0', { deltas: { like: 1 }, pairs: [] });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', action: 'keep', enabled: true, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null });
+	rows.MiNote.push({ ...note('0'), reactions: { like: 1 } });
+	expect((await service.preview('alice', ['delete'])).notes).toEqual([]);
+	expect((await service.processUser('alice')).deleted).toBe(0);
+	expect(rows.MiNote).toHaveLength(1);
+});
+
+test.each([
+	['gt', ['after']],
+	['gte', ['equal', 'after']],
+	['lt', ['before']],
+	['lte', ['before', 'equal']],
+] as const)('작성 ID 시각의 기간 %s는 최근 수정과 관계없이 60초 경계를 판정한다', async (operator, expected) => {
+	vi.useFakeTimers();
+	try {
+		const now = new Date('2026-11-13T00:00:00.000Z');
+		vi.setSystemTime(now);
+		const created = new Map([
+			['before', new Date(now.getTime() - 59999)],
+			['equal', new Date(now.getTime() - 60000)],
+			['after', new Date(now.getTime() - 60001)],
+		]);
+		const { rows, service, input } = fixture({ noteCreatedAt: id => created.get(id)! });
+		for (const id of created.keys()) rows.MiNote.push({ ...note(id), updatedAt: new Date(now.getTime() - 1) });
+		const { rule } = await service.save('alice', { ...input, condition: { type: 'age', operator, seconds: 60 } });
+
+		const result = await service.preview('alice', [rule.id]);
+
+		expect(result.notes.map(n => n.id)).toEqual(expected);
+		expect(result.complete).toBe(true);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+// === 일시 장애 ===
+
+test('남기기 자료 조회의 연결 오류는 오류·알림 없이 묶음을 실패시키고 커서를 진행하지 않는다', async () => {
+	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'selfReaction', value: true }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	retryable.add('MiNoteReaction');
+
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+
+	expect(rows.MiNote).toHaveLength(1);
+	expect(rows.Rule[1].lastError).toBeNull();
+	expect(notifications).toHaveLength(0);
+	expect(rows.State[0].cursor).toBeNull();
+	retryable.clear();
+	expect((await service.processUser('alice')).deleted).toBe(1);
+});
+
+test('참조 조회의 연결 오류도 오류·알림 없이 묶음 전체를 실패시킨다', async () => {
+	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['clip'] }, lastError: null, legacy: null });
+	rows.MiClip = [{ id: 'clip', userId: 'alice' }];
+	rows.MiNote.push(note('0'));
+	retryable.add('MiClip');
+
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+	await expect(service.preview('alice', ['delete'])).rejects.toThrow('Connection terminated');
+
+	expect(rows.Rule[1].lastError).toBeNull();
+	expect(notifications).toHaveLength(0);
+	expect(rows.MiNote).toHaveLength(1);
+});
+
+test('남기기 조건이 쓰지 않는 자료는 조회하지 않아 그 자료의 장애가 정리를 막지 않는다', async () => {
+	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'pinned', value: true }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	retryable.add('MiNoteFavorite');
+
+	expect((await service.processUser('alice')).deleted).toBe(1);
+
+	expect(rows.Rule[1].lastError).toBeNull();
+	expect(notifications).toHaveLength(0);
+});
+
+test('남기기 조건이 쓰는 자료의 연결 오류는 오류·알림 없이 재시도로 중단한다', async () => {
+	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'favorite', value: true }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	retryable.add('MiNoteFavorite');
+
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+
+	expect(rows.MiNote).toHaveLength(1);
+	expect(rows.Rule[1].lastError).toBeNull();
+	expect(notifications).toHaveLength(0);
+	retryable.clear();
+	expect((await service.processUser('alice')).deleted).toBe(1);
+});
+
+test('재시도 불가한 병합 실패도 오류 기록 없이 묶음을 실패시킨다', async () => {
+	const { rows, service, input, buffering, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'count', userId: 'alice', name: '반응 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null, legacy: null });
+	rows.Rule.push({ id: 'pinned', userId: 'alice', name: '고정 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'pinned', value: true }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	// bindThis 접근자 대신 인스턴스 속성으로 교체해 병합 실패를 주입한다.
+	Object.defineProperty(buffering, 'mergeReactions', { value: () => { throw new Error('merge failed'); }, writable: true, configurable: true });
+
+	await expect(service.processUser('alice')).rejects.toThrow('merge failed');
+
+	expect(rows.Rule.find(r => r.id === 'count')!.lastError).toBeNull();
+	expect(rows.Rule.find(r => r.id === 'pinned')!.lastError).toBeNull();
+	expect(notifications).toHaveLength(0);
+	expect(rows.MiNote).toHaveLength(1);
+});
+
+test('참조 검증의 일시 실패는 지우기 규칙도 예외 없이 묶음 전체를 실패시킨다', async () => {
+	const { rows, service, input, failing } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, condition: { type: 'clip', ids: ['gone'] }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	failing.add('MiClip');
+
+	await expect(service.processUser('alice')).rejects.toThrow('lookup unavailable');
+
+	expect(rows.Rule[0].lastError).toBeNull();
+	expect(rows.MiNote).toHaveLength(1);
+	failing.clear();
+	// 조회가 복구되면 일시 실패가 아니라 사용자가 고칠 수 있는 참조 오류로 기록하고 규칙만 제외한다.
+	expect((await service.processUser('alice')).deleted).toBe(0);
+	expect(rows.Rule[0].lastError).toMatchObject({ code: 'MISSING_CLIP' });
+});
+
+test('일시 실패 뒤 새로 확인한 참조 오류는 한 번 알리고 이후 일시 실패는 오류를 보존한다', async () => {
+	const { rows, service, input, failing, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	failing.add('MiClip');
+	await expect(service.processUser('alice')).rejects.toThrow('lookup unavailable');
+	expect(rows.Rule[1].lastError).toBeNull();
+	expect(notifications).toHaveLength(0);
+	failing.delete('MiClip');
+	expect((await service.processUser('alice')).deleted).toBe(0);
+	expect(rows.Rule[1].lastError).toMatchObject({ code: 'MISSING_CLIP', referenceId: 'gone' });
+	expect(notifications).toHaveLength(1);
+	failing.add('MiClip');
+	await expect(service.processUser('alice')).rejects.toThrow('lookup unavailable');
+	expect(rows.Rule[1].lastError).toMatchObject({ code: 'MISSING_CLIP', referenceId: 'gone' });
+	expect(rows.MiNote).toHaveLength(1);
+	expect(notifications).toHaveLength(1);
+});
+
+test('자료 조회 실패는 오류를 저장하지 않고 복구 뒤 바로 삭제한다', async () => {
+	const { rows, service, input, meta, buffering, jobs, notifications } = fixture({ detached: true });
+	meta.enableReactionsBuffering = true;
+	buffering.getMany = async () => { throw new Error('Redis unavailable'); };
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+
+	await expect(service.processUser('alice')).rejects.toThrow('Redis unavailable');
+
+	expect(rows.Rule[1].lastError).toBeNull();
+	expect((await service.list('alice')).blocked).toBe(false);
+	expect(notifications).toHaveLength(0);
+	expect(jobs.size).toBe(0);
+	buffering.getMany = async () => new Map();
+	expect((await service.processUser('alice')).deleted).toBe(1);
+});
+
+// === 처리량 예산 ===
+
 test('실제 처리 서비스는 삭제 경로를 사용하고 소량 예산과 재시도 통계를 지킨다', async () => {
 	const { rows, service, input } = fixture();
 	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	for (let i = 0; i < 7; i++) rows.MiNote.push({ id: String(i), userId: 'alice', text: '정리', cw: null, fileIds: [], hasPoll: false, renoteId: null, replyId: null, channelId: null, localOnly: false, visibility: 'public', reactions: {}, renoteCount: 0, tags: [] });
+	for (let i = 0; i < 7; i++) rows.MiNote.push(note(String(i)));
 	expect((await service.processUser('alice')).deleted).toBe(5);
 	expect(rows.MiNote.map(n => n.id)).toEqual(['5', '6']);
 	expect((await service.processUser('alice')).deleted).toBe(2);
 	expect((await service.processUser('alice')).deleted).toBe(0);
 });
 
+test('예약한 예산은 실제 사용량과 무관하게 전액 소비하고 반납하지 않는다', async () => {
+	const { rows, service, input, evalCalls } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	for (let i = 0; i < 7; i++) rows.MiNote.push(note(String(i)));
+	await service.processUser('alice');
+	// 검사와 삭제 예약 각 한 번뿐이며 반납 실행은 없다.
+	expect(evalCalls).toHaveLength(2);
+	expect(evalCalls.every(call => call[1] === 2 && String(call[0]).includes('INCRBY'))).toBe(true);
+	await service.processUser('alice');
+	expect(evalCalls).toHaveLength(4);
+	// 지울 노트가 없는 페이지는 삭제 예산을 예약하지 않는다.
+	await service.processUser('alice');
+	expect(evalCalls).toHaveLength(5);
+});
+
+test('보존만 하는 페이지는 삭제 예산을 쓰지 않는다', async () => {
+	const { rows, service, input, evalCalls } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'pinned', value: false }, lastError: null });
+	rows.MiNote.push(note('0'));
+	expect((await service.processUser('alice')).deleted).toBe(0);
+	expect(evalCalls).toHaveLength(1);
+	expect(rows.State[0].cursor).toBeNull();
+});
+
 test('남기기 참조 오류는 실제 처리 서비스의 모든 삭제를 막는다', async () => {
 	const { rows, service, input } = fixture();
 	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
 	rows.Rule.push({ id: 'keep', userId: 'alice', action: 'keep', enabled: true, condition: { type: 'channel', ids: ['missing'] }, lastError: null });
-	rows.MiNote.push({ id: '0', userId: 'alice', text: '정리', cw: null, fileIds: [], hasPoll: false, renoteId: null, replyId: null, channelId: null, localOnly: false, visibility: 'public', reactions: {}, renoteCount: 0, tags: [] });
+	rows.MiNote.push(note('0'));
 	expect((await service.processUser('alice')).deleted).toBe(0);
 	expect(rows.MiNote).toHaveLength(1);
 });
 
-test('최초 미리 보기 확인 상태는 서버에 보관하여 자동 실행을 다시 켤 때 반복 확인하지 않는다', async () => {
-	const { service, input } = fixture();
-	const { rule } = await service.save('alice', input);
-	const preview = await service.preview('alice', [rule.id]);
-	await service.save('alice', { ...input, automatic: true, previewToken: preview.previewToken }, rule.id);
-	await service.save('alice', { ...input, automatic: false }, rule.id);
-	const result = await service.save('alice', { ...input, automatic: true }, rule.id);
-	expect(result.rule.automaticConfirmed).toBe(true);
+test('다른 처리가 잠금을 가진 경우 새 판정을 시작하지 않고 DB 연결을 반환한다', async () => {
+	const { service, lock } = fixture();
+	lock.available = false;
+	await expect(service.list('alice')).rejects.toThrow('CLEANUP_BUSY');
+	expect(lock.released).toBe(1);
 });
 
-test('사라진 참조를 가진 보호 규칙도 조건을 잃지 않고 명시 확인 후 비활성화할 수 있다', async () => {
-	const { rows, service } = fixture();
-	const condition = { type: 'clip', ids: ['gone'] };
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition, lastError: null, legacy: null });
-	const result = await service.save('alice', { name: '보호', action: 'keep', enabled: false, condition, confirmed: true }, 'keep');
-	expect(result.rule.enabled).toBe(false);
-	expect(result.rule.condition).toEqual(condition);
+test('createQueryRunner 실패는 잠금 카운터를 새지 않아 이후 정리가 계속 가능하다', async () => {
+	const { service, faults } = fixture();
+	faults.createQueryRunner = true;
+	for (let i = 0; i < 6; i++) await expect(service.list('alice')).rejects.toThrow('runner unavailable');
+	faults.createQueryRunner = false;
+	await expect(service.list('alice')).resolves.toBeDefined();
 });
+
+// === 수동 요청 ===
 
 test('같은 진행 요청은 중복 등록하지 않고 규칙 수정도 큐를 교체하지 않는다', async () => {
 	const { service, input, jobs } = fixture();
@@ -203,141 +564,69 @@ test('대기 마커가 끝날 때까지 같은 요청을 중복 접수하지 않
 	expect((await service.request('alice', [rule.id])).queued).toBe(true);
 });
 
-test('타인 소유의 클립을 보존이나 지우기 조건으로 저장하지 않는다', async () => {
-	const { service, input, rows } = fixture();
-	rows.MiClip = [{ id: 'foreign', userId: 'bob' }];
-	for (const action of ['keep', 'delete'] as const) await expect(service.save('alice', { ...input, action, condition: { type: 'clip', ids: ['foreign'] } })).rejects.toThrow('INVALID_CLIP');
-});
-
-test('DB JSON 키 순서가 달라도 최초 확인과 미해결 알림 중복 억제를 보존한다', async () => {
-	const { rows, service, input, notifications } = fixture();
+test('수동 요청은 회차마다 한 페이지씩 이어 처리하고 완료 때 마커를 지운다', async () => {
+	const { rows, service, input } = fixture();
 	const { rule } = await service.save('alice', input);
-	rows.Rule[0].condition = { seconds: 60, operator: 'gte', type: 'age' };
-	const preview = await service.preview('alice', [rule.id]);
-	expect((await service.save('alice', { ...input, automatic: true, previewToken: preview.previewToken }, rule.id)).rule.automatic).toBe(true);
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null, legacy: null });
-	await service.list('alice');
-	const error = rows.Rule[1].lastError;
-	rows.Rule[1].lastError = Object.fromEntries(Object.entries(error).sort(([a], [b]) => a.localeCompare(b)));
-	await service.list('alice');
-	expect(notifications).toHaveLength(1);
+	for (let i = 0; i < 7; i++) rows.MiNote.push(note(String(i)));
+	await service.request('alice', [rule.id]);
+
+	const first = await service.continueManual('alice');
+	expect(first.deleted).toBe(5);
+	expect(first.complete).toBe(false);
+	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: '4' });
+
+	const second = await service.continueManual('alice');
+	expect(second.deleted).toBe(2);
+	expect(second.complete).toBe(true);
+	expect(rows.State[0].manualRequest).toBeNull();
+	expect(rows.MiNote).toHaveLength(0);
 });
 
-test('다른 처리가 잠금을 가진 경우 새 판정을 시작하지 않고 DB 연결을 반환한다', async () => {
-	const { service, lock } = fixture();
-	lock.available = false;
-	await expect(service.list('alice')).rejects.toThrow('CLEANUP_BUSY');
-	expect(lock.released).toBe(1);
+test('수동 요청의 일시 실패는 마커를 보존하고 복구 뒤 같은 요청을 이어 처리한다', async () => {
+	const { rows, service, input, retryable } = fixture();
+	const { rule } = await service.save('alice', input);
+	for (let i = 0; i < 7; i++) rows.MiNote.push(note(String(i)));
+	await service.request('alice', [rule.id]);
+	retryable.add('MiNote');
+
+	await expect(service.continueManual('alice')).rejects.toThrow('Connection terminated');
+	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: null });
+	expect(rows.MiNote).toHaveLength(7);
+
+	retryable.clear();
+	expect((await service.continueManual('alice')).deleted).toBe(5);
 });
 
-test('DB 미반영 리액션 델타를 공용 버퍼 서비스로 합쳐 보호 임계값을 판정한다', async () => {
-	const { rows, service, input, meta, buffered } = fixture();
-	meta.enableReactionsBuffering = true;
-	buffered.set('0', { deltas: { like: 1 }, pairs: [] });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', action: 'keep', enabled: true, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null });
-	rows.MiNote.push({ id: '0', userId: 'alice', text: '정리', cw: null, fileIds: [], hasPoll: false, renoteId: null, replyId: null, channelId: null, localOnly: false, visibility: 'public', reactions: { like: 1 }, renoteCount: 0, tags: [] });
-	expect((await service.preview('alice', ['delete'])).protectedCount).toBe(1);
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(rows.MiNote).toHaveLength(1);
+test('수동 요청의 비재시도 오류는 마커를 지우고 새 요청을 접수할 수 있게 한다', async () => {
+	const { rows, service, input, failing } = fixture();
+	const { rule } = await service.save('alice', input);
+	rows.MiNote.push(note('0'));
+	await service.request('alice', [rule.id]);
+	failing.add('MiNote');
+
+	await expect(service.continueManual('alice')).rejects.toThrow('lookup unavailable');
+
+	expect(rows.State[0].manualRequest).toBeNull();
+	failing.clear();
+	expect((await service.request('alice', [rule.id])).queued).toBe(true);
 });
 
-test('리액션 버퍼 조회 실패는 보호 실패로 지속 표시하고 새 삭제와 중복 알림을 막는다', async () => {
-	const { rows, service, input, meta, buffering, notifications } = fixture();
-	meta.enableReactionsBuffering = true;
-	buffering.getMany = async () => { throw new Error('Redis unavailable'); };
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', action: 'keep', enabled: true, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null });
-	rows.MiNote.push({ id: '0', userId: 'alice', text: '정리', cw: null, fileIds: [], hasPoll: false, renoteId: null, replyId: null, channelId: null, localOnly: false, visibility: 'public', reactions: {}, renoteCount: 0, tags: [] });
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(rows.MiNote).toHaveLength(1);
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', userActionable: false });
-	expect(notifications).toHaveLength(1);
-});
+// === 구 설정 호환 ===
 
 test('기존 API에서 기간 null은 규칙 없이 유지하고 나중의 유효한 기간은 호환 규칙을 만든다', async () => {
- const { rows, service, jobs } = fixture();
- Object.assign(rows.MiUser[0], { autoDeleteNotesAfterDays: null, autoDeleteKeepFavorites: false });
- await service.updateLegacy('alice', { autoDeleteKeepFavorites: true });
- expect(rows.Rule.map(rule => rule.legacy)).toEqual(['favorite']);
- expect(rows.MiUser[0].autoDeleteNotesAfterDays).toBeNull();
- expect(rows.State[0].migrated).toBe(true);
- await service.updateLegacy('alice', { autoDeleteNotesAfterDays: 30 });
- expect(rows.Rule.find(rule => rule.legacy === 'age')?.condition).toEqual({ type: 'age', operator: 'gt', seconds: 2592000 });
- expect(rows.Rule.find(rule => rule.legacy === 'age')?.automatic).toBe(true);
- await service.updateLegacy('alice', { autoDeleteNotesAfterDays: null });
- expect(rows.Rule.map(rule => rule.legacy)).toEqual(['favorite']);
- expect(rows.Rule[0].enabled).toBe(true);
- expect(jobs.size).toBe(0);
-});
-
-test('이번 참조 검증이 일시 실패한 남기기 규칙은 반복 처리에서도 모든 새 삭제를 막고 알림을 중복하지 않는다', async () => {
-	const { rows, service, input, failing, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	failing.add('MiClip');
-	expect((await service.preview('alice', ['delete'])).deleteCount).toBe(0);
-	for (let i = 0; i < 3; i++) expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(rows.MiNote).toHaveLength(1);
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', userActionable: false });
-	expect((await service.list('alice')).blocked).toBe(true);
-	expect(notifications).toHaveLength(1);
-});
-
-test('이번 참조 검증이 일시 실패한 지우기 규칙은 NOT 조건으로 참 전환되지 않고 규칙 전체가 제외된다', async () => {
-	const { rows, service, failing } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', name: '정리', action: 'delete', enabled: true, automatic: true, condition: { type: 'not', child: { type: 'clip', ids: ['gone'] } }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	failing.add('MiClip');
-	expect((await service.preview('alice', ['delete'])).deleteCount).toBe(0);
-	for (let i = 0; i < 2; i++) expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(rows.MiNote).toHaveLength(1);
-	expect(rows.Rule[0].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE' });
-});
-
-test('지난 일시 실패 뒤 새로 확인한 참조 오류는 지난 오류를 근거로 지우지 않고 같은 오류를 다시 알리지 않는다', async () => {
-	const { rows, service, input, failing, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	// 지난 일시 실패는 현재 참조 조회 실패 writer로 만든다.
-	failing.add('MiClip');
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'reference' } });
-	failing.delete('MiClip');
-	const before = notifications.length;
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'MISSING_CLIP', referenceId: 'gone' });
-	expect((await service.list('alice')).blocked).toBe(true);
-	failing.add('MiClip');
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'MISSING_CLIP', referenceId: 'gone' });
-	expect(rows.MiNote).toHaveLength(1);
-	expect(notifications).toHaveLength(before + 1);
-});
-
-test('저장된 자료 조회 실패는 목록 다시 불러오기에서 자료를 확인한 뒤에만 해제하고 큐를 만들지 않는다', async () => {
-	const { rows, service, input, meta, buffering, jobs, notifications } = fixture({ detached: true });
-	meta.enableReactionsBuffering = true;
-	const available = buffering.getMany;
-	buffering.getMany = async () => { throw new Error('Redis unavailable'); };
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	// 현재 자료 오류 writer가 실패한 페이지 범위를 기록한다.
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
-	expect((await service.list('alice')).blocked).toBe(true);
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE' });
-	buffering.getMany = available;
-	const recovered = await service.list('alice');
-	expect(recovered.blocked).toBe(false);
-	expect(recovered.rules.find(rule => rule.id === 'keep')?.lastError).toBeNull();
+	const { rows, service, jobs } = fixture();
+	Object.assign(rows.MiUser[0], { autoDeleteNotesAfterDays: null, autoDeleteKeepFavorites: false });
+	await service.updateLegacy('alice', { autoDeleteKeepFavorites: true });
+	expect(rows.Rule.map(rule => rule.legacy)).toEqual(['favorite']);
+	expect(rows.MiUser[0].autoDeleteNotesAfterDays).toBeNull();
+	expect(rows.State[0].migrated).toBe(true);
+	await service.updateLegacy('alice', { autoDeleteNotesAfterDays: 30 });
+	expect(rows.Rule.find(rule => rule.legacy === 'age')?.condition).toEqual({ type: 'age', operator: 'gt', seconds: 2592000 });
+	expect(rows.Rule.find(rule => rule.legacy === 'age')?.automatic).toBe(true);
+	await service.updateLegacy('alice', { autoDeleteNotesAfterDays: null });
+	expect(rows.Rule.map(rule => rule.legacy)).toEqual(['favorite']);
+	expect(rows.Rule[0].enabled).toBe(true);
 	expect(jobs.size).toBe(0);
-	expect(notifications).toHaveLength(1);
-	expect((await service.processUser('alice')).deleted).toBe(1);
 });
 
 // 구 API로 호환 기간·즐겨찾기 규칙을 만든 상태에서 시작한다.
@@ -402,7 +691,7 @@ test('즐겨찾기 호환 규칙을 중첩 보호 조건으로 편집한 뒤 구
 	const { rows, service, user, rule, linked } = await legacyFixture(30, true);
 	const favorite = linked('favorite');
 	const age = linked('age');
-	const condition = { type: 'any', children: [{ type: 'flag', field: 'favorite', value: true }, { type: 'all', children: [{ type: 'keyword', mode: 'literal', value: '중요', flags: '', targets: ['text'] }, { type: 'not', child: { type: 'flag', field: 'reply', value: true } }] }] };
+	const condition = { type: 'any', children: [{ type: 'flag', field: 'favorite', value: true }, { type: 'all', children: [{ type: 'keyword', mode: 'literal', value: '중요', flags: '', targets: ['text'] }, { type: 'flag', field: 'reply', value: false }] }] };
 	await service.save('alice', { name: '중요한 글 보호', action: 'keep', condition }, favorite.id);
 	const edited = { name: '중요한 글 보호', action: 'keep', enabled: true, condition };
 	expect(rule(favorite.id)).toMatchObject(edited);
@@ -479,6 +768,33 @@ test('구 API의 소수 일수는 500 대신 INVALID_VALUE로 거부하고 아�
 	expect(rows).toEqual(before);
 });
 
+test('구 API의 빈 호출과 같은 값 저장은 진행 커서를 초기화하지 않는다', async () => {
+	const { rows, service } = await legacyFixture(30, true);
+	rows.State[0].cursor = 'cursor';
+	await service.updateLegacy('alice', {});
+	expect(rows.State[0].cursor).toBe('cursor');
+	await service.updateLegacy('alice', { autoDeleteNotesAfterDays: 30 });
+	expect(rows.State[0].cursor).toBe('cursor');
+	await service.updateLegacy('alice', { autoDeleteNotesAfterDays: 7 });
+	expect(rows.State[0].cursor).toBeNull();
+});
+
+test('구 endpoint의 같은 즐겨찾기 저장은 이름과 규칙을 보존하고 큐를 만들지 않는다', async () => {
+	const { rows, service, linked, jobs } = await legacyFixture(30, true);
+	const favorite = linked('favorite');
+	Object.assign(favorite, { name: '내 보호', defaultName: null });
+	rows.MiNote.push(note('000'));
+
+	await new UpdateAutoDeleteSettings(service).exec({ autoDeleteKeepFavorites: true }, { id: 'alice' } as any, null, null);
+
+	expect(linked('favorite')).toMatchObject({ id: favorite.id, name: '내 보호', defaultName: null, enabled: true });
+	expect(rows.Rule).toHaveLength(2);
+	expect(jobs.size).toBe(0);
+	expect((await service.processUser('alice')).deleted).toBe(1);
+});
+
+// === 신규 계정 기본 보호 ===
+
 // 마이그레이션 뒤 가입해 상태 행이 없는 신규 계정. 구 설정 열은 엔티티 기본값이다.
 function newAccountFixture() {
 	const f = fixture({ detached: true });
@@ -505,7 +821,6 @@ test('상태가 없는 신규 계정은 구 API를 먼저 불러도 신규로 �
 	expect(summary()).toEqual(newDefaults(false));
 	expect(favoriteOnly()).toHaveLength(1);
 	expect(user()).toMatchObject({ autoDeleteNotesAfterDays: null, autoDeleteKeepFavorites: false });
-	expect((await service.list('bob')).migrated).toBe(false);
 	const favoriteId = favoriteOnly()[0].id;
 	await service.updateLegacy('bob', { autoDeleteKeepFavorites: true });
 	expect(summary()).toEqual(newDefaults(true));
@@ -528,7 +843,6 @@ test('상태가 없는 신규 계정이 구 API로 기간만 먼저 설정해도
 test('새 API를 먼저 부른 신규 계정도 같은 기본 보호를 받고, 이후 구 API의 즐겨찾기 변경은 같은 보호 하나만 바꾼다', async () => {
 	const { service, state, summary, favoriteOnly, user, bob } = newAccountFixture();
 	const listed = await service.list('bob');
-	expect(listed.migrated).toBe(false);
 	expect(listed.blocked).toBe(false);
 	expect(summary()).toEqual(newDefaults(true));
 	const favoriteId = favoriteOnly()[0].id;
@@ -574,60 +888,60 @@ test('이관된 상태가 있는 기존 계정은 구 API를 불러도 신규 �
 	expect(rows.State[0].migrated).toBe(true);
 });
 
-test('미리 보기 응답은 공개 스키마의 항목 필드만 담고, 규칙 오류는 최상위 errors와 blocked 판정으로 모두 전달한다', async () => {
-	const { rows, service, input, meta, buffering } = fixture({ detached: true });
-	meta.enableReactionsBuffering = true;
-	buffering.getMany = async () => { throw new Error('Redis unavailable'); };
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: false, lastError: null, legacy: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'), note('1'));
-	const preview = await service.preview('alice', ['delete']);
-	const itemKeys = Object.keys(previewMeta.res.properties.items.items.properties).sort();
-	expect(preview.items).toHaveLength(2);
-	for (const item of preview.items) {
-		expect(Object.keys(item).sort()).toEqual(itemKeys);
-		expect(item).toMatchObject({ decision: 'keep', reason: 'blocked' });
-	}
-	expect(Object.keys(preview).sort()).toEqual(Object.keys(previewMeta.res.properties).sort());
-	// 보호 규칙의 런타임 실패는 저장된 오류로 최상위 errors에 규칙별로 실리고 삭제 수에 들지 않는다.
-	expect(preview.errors).toEqual([expect.objectContaining({ ruleId: 'keep', code: 'TEMPORARY_FAILURE', userActionable: false })]);
-	expect(preview.deleteCount).toBe(0);
-	expect((await service.list('alice')).blocked).toBe(true);
+// === 기본 이름 ===
+
+test('조건만 수정하면 제품 이름을 유지하고 다른 클라이언트의 명시 이름은 같은 문구여도 사용자 이름이다', async () => {
+	const { rows, service, input } = fixture();
+	const created = await service.save('alice', input);
+	Object.assign(rows.Rule[0], { defaultName: 'age' });
+	const { name, ...withoutName } = input;
+	const edited = await service.save('alice', withoutName, created.rule.id);
+	expect(edited.rule.name).toBe(name);
+	expect(edited.rule.defaultName).toBe('age');
+	const renamed = await service.save('alice', { ...input, name }, created.rule.id);
+	expect(renamed.rule.defaultName).toBeNull();
+	await service.updateLegacy('alice', { autoDeleteKeepFavorites: true });
+	expect(rows.Rule.find(r => r.legacy === 'favorite').defaultName).toBe('favorite');
 });
 
- test('조건만 수정하면 제품 이름을 유지하고 다른 클라이언트의 명시 이름은 같은 문구여도 사용자 이름이다', async () => {
- const { rows, service, input } = fixture();
- const created = await service.save('alice', input);
- Object.assign(rows.Rule[0], { defaultName: 'age' });
- const { name, ...withoutName } = input;
- const edited = await service.save('alice', withoutName, created.rule.id);
- expect(edited.rule.name).toBe(name);
- expect(edited.rule.defaultName).toBe('age');
- const renamed = await service.save('alice', { ...input, name }, created.rule.id);
- expect(renamed.rule.defaultName).toBeNull();
- await service.updateLegacy('alice', { autoDeleteKeepFavorites: true });
- expect(rows.Rule.find(r => r.legacy === 'favorite').defaultName).toBe('favorite');
- });
- test('사용자 이름이 기본 문구와 같아도 생성·구 API 수정으로 기본 이름이 되지 않는다', async () => {
- const { rows, service, input } = fixture();
- const result = await service.save('alice', { ...input, name: '내가 즐겨찾기한 내 글', action: 'keep', condition: { type: 'flag', field: 'favorite', value: true } });
- expect(result.rule.defaultName).toBeNull();
- Object.assign(rows.Rule[0], { legacy: 'favorite' });
- await service.updateLegacy('alice', { autoDeleteKeepFavorites: true });
- expect(rows.Rule[0].defaultName).toBeNull();
- });
+test('사용자 이름이 기본 문구와 같아도 생성·구 API 수정으로 기본 이름이 되지 않는다', async () => {
+	const { rows, service, input } = fixture();
+	const result = await service.save('alice', { ...input, name: '내가 즐겨찾기한 내 글', action: 'keep', condition: { type: 'flag', field: 'favorite', value: true } });
+	expect(result.rule.defaultName).toBeNull();
+	Object.assign(rows.Rule[0], { legacy: 'favorite' });
+	await service.updateLegacy('alice', { autoDeleteKeepFavorites: true });
+	expect(rows.Rule[0].defaultName).toBeNull();
+});
 
 test('이름을 생략한 켜기끄기·목록·미리 보기는 기본 이름 출처를 보존한다', async () => {
- const { rows, service, input } = fixture();
- const result = await service.save('alice', input);
- Object.assign(rows.Rule[0], { defaultName: 'age' });
- const { name: _name, ...conditionOnly } = input;
- await service.save('alice', { ...conditionOnly, enabled: false, confirmed: true }, result.rule.id);
- expect(rows.Rule[0].defaultName).toBe('age');
- await service.save('alice', { ...conditionOnly, enabled: true, confirmed: true }, result.rule.id);
- expect((await service.list('alice')).rules[0].defaultName).toBe('age');
- expect((await service.preview('alice', [result.rule.id])).rules[0].defaultName).toBe('age');
+	const { rows, service, input } = fixture();
+	const result = await service.save('alice', input);
+	Object.assign(rows.Rule[0], { defaultName: 'age' });
+	const { name: _name, ...conditionOnly } = input;
+	await service.save('alice', { ...conditionOnly, enabled: false, confirmed: true }, result.rule.id);
+	expect(rows.Rule[0].defaultName).toBe('age');
+	await service.save('alice', { ...conditionOnly, enabled: true, confirmed: true }, result.rule.id);
+	expect((await service.list('alice')).rules[0].defaultName).toBe('age');
+	expect((await service.preview('alice', [result.rule.id])).rules[0].defaultName).toBe('age');
 });
+
+test('기본 이름의 역할과 다른 행동으로 바꾸면 기본 이름을 지운다', async () => {
+	const { rows, service } = fixture();
+	rows.Rule.push({ id: 'pinned', userId: 'alice', name: '고정한 내 글', defaultName: 'pinned', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'pinned', value: true }, lastError: null, legacy: null });
+	const result = await service.save('alice', { action: 'delete', condition: { type: 'flag', field: 'pinned', value: true } }, 'pinned');
+	expect(result.rule.defaultName).toBeNull();
+	expect(result.rule.name).toBe('고정한 내 글');
+});
+
+test('호환 규칙을 일반 규칙으로 전환할 때도 일반 규칙 수 제한을 적용한다', async () => {
+	const { rows, service, linked } = await legacyFixture(30, true);
+	for (let i = 0; i < 32; i++) rows.Rule.push({ id: `g${i}`, userId: 'alice', name: `일반${i}`, action: 'delete', enabled: true, automatic: false, condition: { type: 'age', operator: 'gt', seconds: 60 }, lastError: null, legacy: null });
+	const age = linked('age');
+	await expect(service.save('alice', { name: age.name, action: 'delete', condition: { type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['text'] } }, age.id)).rejects.toThrow('RULE_LIMIT');
+	expect(rows.Rule.filter(r => r.legacy === null)).toHaveLength(32);
+});
+
+// === API 진입점 ===
 
 import CreateEndpoint, { meta as createMeta } from '../../src/server/api/endpoints/i/note-cleanup/create.js';
 
@@ -639,7 +953,7 @@ import ListEndpoint, { meta as listMeta } from '../../src/server/api/endpoints/i
 
 import RequestEndpoint, { meta as requestMeta } from '../../src/server/api/endpoints/i/note-cleanup/request.js';
 
-import PreviewEndpoint from '../../src/server/api/endpoints/i/note-cleanup/preview.js';
+const noteEntityService = { packMany: async (notes: unknown[]) => notes };
 
 for (const [EndpointClass, meta, params] of [
 	[CreateEndpoint, createMeta, { name: '정리', action: 'delete', condition: { type: 'age', operator: 'gt', seconds: 60 } }],
@@ -650,14 +964,14 @@ for (const [EndpointClass, meta, params] of [
 	test(`${meta.errors.invalidCleanup.id}: 실제 endpoint 잠금 충돌은 503 서버 혼잡이다`, async () => {
 		const { service, lock } = fixture();
 		lock.available = false;
-		const endpoint = new EndpointClass(service);
+		const endpoint = new (EndpointClass as any)(service, noteEntityService);
 		await expect(endpoint.exec(params, { id: 'alice' } as any, null, null)).rejects.toMatchObject({ code: 'CLEANUP_BUSY', kind: 'server', httpStatusCode: 503 });
 		expect((meta.errors as any).cleanupBusy).toMatchObject({ code: 'CLEANUP_BUSY', kind: 'server', httpStatusCode: 503 });
 	});
 	test(`${meta.errors.invalidCleanup.id}: 입력 오류 세부 정보와 원래 예외를 보존한다`, async () => {
 		for (const error of [new CleanupInputError('INVALID_CLIP', 'condition'), new Error('database unavailable')]) {
 			const fail = async () => { throw error; };
-			const endpoint = new EndpointClass({ save: fail, remove: fail, list: fail, preview: fail, request: fail } as any);
+			const endpoint = new (EndpointClass as any)({ save: fail, remove: fail, list: fail, preview: fail, request: fail }, noteEntityService);
 			const result = endpoint.exec(params, { id: 'alice' } as any, null, null);
 			if (error instanceof CleanupInputError) await expect(result).rejects.toMatchObject({ code: 'INVALID_CLEANUP', kind: 'client', info: { code: 'INVALID_CLIP', path: 'condition' } });
 			else await expect(result).rejects.toBe(error);
@@ -675,438 +989,46 @@ test('create 진입점은 자동 실행 요청을 명시 거절하고 false·생
 	for (const automatic of [false, undefined]) expect((await endpoint.exec({ ...input, automatic }, { id: 'alice' } as any, null, null)).rule.automatic).toBe(false);
 });
 
-test('이름·실행설정 저장은 미해결 보호 알림을 초기화하지 않고 자료 복구 뒤에만 해제한다', async () => {
-	const { rows, service, input, notifications, meta, buffering } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	const condition = { type: 'count', field: 'reactions', operator: 'gte', value: 2 };
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', defaultName: 'selfReaction', action: 'keep', enabled: true, automatic: false, condition, lastError: null });
-	rows.MiNote.push(note('0'));
-	meta.enableReactionsBuffering = true;
-	buffering.getMany = async () => { throw new Error('Redis unavailable'); };
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(notifications).toHaveLength(1);
-	for (const change of [{ name: '새 이름' }, { enabled: false, confirmed: true }, { enabled: true, confirmed: true }]) {
-		const saved = await service.save('alice', { action: 'keep', condition, ...change }, 'keep');
-		expect(saved.rule.lastError).toEqual(temporaryFailure('keep'));
-	}
-	expect((await service.list('alice')).blocked).toBe(true);
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(notifications).toHaveLength(1);
-	// 조건을 실제로 바꾸어도 저장의 참조 확인만으로 자료 오류를 해소하지 않는다.
-	const changed = { ...condition, value: 3 };
-	expect((await service.save('alice', { action: 'keep', condition: changed }, 'keep')).rule.lastError).toEqual(temporaryFailure('keep'));
-	expect((await service.list('alice')).blocked).toBe(true);
-	expect(notifications).toHaveLength(1);
-	buffering.getMany = async () => new Map();
-	expect((await service.list('alice')).blocked).toBe(false);
-	expect(rows.Rule.find(r => r.id === 'keep').lastError).toBeNull();
-	buffering.getMany = async () => { throw new Error('Redis unavailable again'); };
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(notifications).toHaveLength(2);
-});
-
-test('조건·행동 변경은 중지 요청이어도 참조 검증을 건너뛰지 않고 과거 오류는 자료 확인 뒤 해제한다', async () => {
-	const { rows, service, input, noteReads } = fixture({ detached: true });
-	// 현재 자료 오류 writer가 남기는 실패 페이지 범위를 가진 과거 오류
-	const old = { ...temporaryFailure('rule'), recovery: { source: 'data', noteIds: ['0'] } };
-	rows.Rule.push({ id: 'rule', userId: 'alice', ...input, enabled: true, automatic: false, lastError: old });
-	rows.MiNote.push(note('0'), note('1'));
-	await expect(service.save('alice', { action: 'delete', condition: { type: 'clip', ids: ['gone'] }, automatic: false }, 'rule')).rejects.toThrow('MISSING_CLIP');
-	expect(rows.Rule[0].lastError).toEqual(old);
-	const saved = await service.save('alice', { action: 'keep', condition: input.condition }, 'rule');
-	expect(saved.rule.lastError).toEqual(temporaryFailure('rule'));
-	expect(rows.Rule[0].lastError).toEqual(old);
-	noteReads.length = 0;
-	expect((await service.list('alice')).blocked).toBe(false);
-	expect(noteReads).toEqual([['0']]);
-	expect(rows.Rule[0].lastError).toBeNull();
-});
-
-test('실제 처리 → 이름 저장 → 같은 실패 재처리는 최초 보호 알림을 반복하지 않는다', async () => {
-	const { rows, service, input, notifications, meta, buffering } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	const condition = { type: 'count', field: 'reactions', operator: 'gte', value: 2 };
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition, lastError: null });
-	rows.MiNote.push(note('0'));
-	meta.enableReactionsBuffering = true;
-	buffering.getMany = async () => { throw new Error('Redis unavailable'); };
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(notifications).toHaveLength(1);
-	await service.save('alice', { name: '이름만 수정', action: 'keep', condition }, 'keep');
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(rows.MiNote).toHaveLength(1);
-	expect(notifications).toHaveLength(1);
-});
-
 // 실제 endpoint의 고정 오류 계약을 검사한다. 번역과 오류 해석은 프런트 시험에서 검사한다.
 test.each(['clip', 'channel'] as const)('사라진 %s 저장 오류는 고정 코드와 조건 경로로 안내한다', async type => {
 	const { service, input } = fixture();
-	const { default: Create } = await import('../../src/server/api/endpoints/i/note-cleanup/create.js');
 	const condition = { type: 'all', children: [{ type, ids: ['missing-secret'] }] };
 	let caught: unknown;
-	try { await new Create(service).exec({ ...input, condition } as any, { id: 'alice' } as any, null, null); } catch (error) { caught = error; }
+	try { await new CreateEndpoint(service).exec({ ...input, condition } as any, { id: 'alice' } as any, null, null); } catch (error) { caught = error; }
 
 	expect(caught).toMatchObject({ code: 'INVALID_CLEANUP', info: { code: type === 'clip' ? 'MISSING_CLIP' : 'MISSING_CHANNEL', path: 'condition.children.0' } });
 	expect((caught as any).info.code).not.toContain('missing-secret');
 });
 
-test('구 endpoint의 같은 즐겨찾기 저장은 미해결 보호 오류와 이름을 보존하고 재알림하지 않는다', async () => {
-	const { rows, service, linked, failing, notifications, jobs } = await legacyFixture(30, true);
-	const favorite = linked('favorite');
-	Object.assign(favorite, { name: '내 보호', defaultName: null });
-	rows.MiNote.push(note('000'));
-	failing.add('MiNoteFavorite');
-	await service.preview('alice', [linked('age').id]);
-	const error = structuredClone(linked('favorite').lastError);
+// === 조회 의존성 ===
 
-	await new UpdateAutoDeleteSettings(service).exec({ autoDeleteKeepFavorites: true }, { id: 'alice' } as any, null, null);
-
-	expect(linked('favorite').lastError).toEqual(error);
-	expect(linked('favorite')).toMatchObject({ id: favorite.id, name: '내 보호', defaultName: null });
-	expect(rows.Rule).toHaveLength(2);
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	expect(notifications).toHaveLength(1);
-	expect(jobs.size).toBe(0);
+test('노트 자체 필드만 쓰는 count renotes와 keyword text·cw는 외부 조회 의존성이 없다', () => {
+	expect(cleanupDependencies({ type: 'count', field: 'renotes', operator: 'gte', value: 1 })).toEqual([]);
+	expect(cleanupDependencies({ type: 'count', field: 'reactions', operator: 'gte', value: 1 })).toEqual(['reactions']);
+	expect(cleanupDependencies({ type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['text', 'cw'] })).toEqual([]);
+	// 실제 조회 자료를 쓰는 대상은 의존성을 유지한다.
+	expect(cleanupDependencies({ type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['poll', 'fileComment', 'fileName', 'text'] })).toEqual(['poll', 'files', 'files']);
 });
 
-function latePageFixture() {
-	const f = fixture({ detached: true });
-	f.rows.Rule.push({ id: 'delete', userId: 'alice', ...f.input, enabled: true, automatic: true, lastError: null });
-	f.rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null });
-	for (let i = 0; i < 150; i++) f.rows.MiNote.push(note(String(i).padStart(3, '0')));
-	f.rows.MiNote[125].reactions = { like: -1 };
-	return f;
-}
-
-test('뒤쪽 페이지의 미해결 자료 오류는 첫 정상 100개 목록 확인으로 해제하거나 재알림하지 않는다', async () => {
-	const { rows, service, notifications, jobs } = latePageFixture();
-	await service.preview('alice', ['delete'], '099');
-	expect(notifications).toHaveLength(1);
-
-	expect((await service.list('alice')).blocked).toBe(true);
-	expect((await service.processUser('alice')).deleted).toBe(0);
-	await service.preview('alice', ['delete'], '099');
-
-	expect(rows.MiNote).toHaveLength(150);
-	expect(notifications).toHaveLength(1);
-	expect(jobs.size).toBe(0);
-});
-
-test.each(['repair', 'delete-note', 'delete-page', 'condition'] as const)('실패 자료 범위의 실제 해결 %s 뒤 새 실패에는 최초 알림을 다시 보낸다', async resolution => {
-	const { rows, service, notifications, jobs, noteReads } = latePageFixture();
-	await service.preview('alice', ['delete'], '099');
-	expect(notifications).toHaveLength(1);
-	if (resolution === 'repair') rows.MiNote[125].reactions = {};
-	if (resolution === 'delete-note') rows.MiNote.splice(125, 1);
-	if (resolution === 'delete-page') rows.MiNote.splice(100);
-	if (resolution === 'condition') await service.save('alice', { name: '보호', action: 'keep', condition: { type: 'flag', field: 'favorite', value: true } }, 'keep');
-	noteReads.length = 0;
-
-	const recovered = await service.list('alice');
-
-	expect(recovered.blocked).toBe(false);
-	expect(rows.Rule[1].lastError).toBeNull();
-	expect(noteReads).toHaveLength(1);
-	expect(noteReads[0].every(id => id > '099')).toBe(true);
-	expect(noteReads[0].length).toBeLessThanOrEqual(50);
-	expect(jobs.size).toBe(0);
-	expect(notifications).toHaveLength(1);
-	if (resolution === 'condition') {
-		await service.save('alice', { name: '보호', action: 'keep', condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 } }, 'keep');
-	} else rows.MiNote[0].reactions = { like: -1 };
-	await service.preview('alice', ['delete'], resolution === 'condition' ? '099' : undefined);
-
-	expect(notifications).toHaveLength(2);
-	expect((await service.list('alice')).blocked).toBe(true);
-	expect(notifications).toHaveLength(2);
-});
-
-test('뒤쪽 자료 오류는 무관한 빈 미리 보기와 조건 저장만으로 해제하지 않고 내부 범위는 API에 노출하지 않는다', async () => {
-	const { rows, service, jobs } = latePageFixture();
-	await service.preview('alice', ['delete'], '099');
-	const saved = await service.save('alice', { action: 'keep', condition: rows.Rule[1].condition }, 'keep');
-
-	expect(saved.rule.lastError).not.toHaveProperty('recovery');
-	expect(rows.Rule[1].lastError.recovery).toMatchObject({ source: 'data' });
-	const preview = await service.preview('alice', ['delete'], '999');
-	expect(preview.items).toEqual([]);
-	expect(preview.errors).toHaveLength(1);
-	expect(preview.errors[0]).not.toHaveProperty('recovery');
-	const listed = await service.list('alice');
-	expect(listed.blocked).toBe(true);
-	expect(listed.rules[1].lastError).not.toHaveProperty('recovery');
-	expect(jobs.size).toBe(0);
-});
-
-test('뒤쪽 지우기 자료 오류는 해당 규칙만 제외하고 다른 지우기는 계속 판정한다', async () => {
-	const { rows, service, notifications } = latePageFixture();
-	Object.assign(rows.Rule[1], { action: 'delete' });
-	await service.preview('alice', ['delete', 'keep'], '099');
-
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE' });
-	expect((await service.list('alice')).blocked).toBe(false);
-	const preview = await service.preview('alice', ['delete', 'keep']);
-	expect(preview.items.every(item => item.deleteRuleIds.includes('delete') && !item.deleteRuleIds.includes('keep'))).toBe(true);
-	expect(notifications).toHaveLength(0);
-});
-
-test('참조 조회 실패는 자료 페이지와 구분하여 같은 참조 확인 성공으로 회복한다', async () => {
-	const { rows, service, input, failing, notifications, noteReads } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', action: 'keep', enabled: true, condition: { type: 'clip', ids: ['clip'] }, lastError: null });
-	rows.MiClip = [{ id: 'clip', userId: 'alice' }];
-	failing.add('MiClip');
-	await service.list('alice');
-	expect(rows.Rule[1].lastError.recovery.source).toBe('reference');
-	expect(notifications).toHaveLength(1);
-	failing.clear();
-	noteReads.length = 0;
-
-	expect((await service.list('alice')).blocked).toBe(false);
-	expect(noteReads).toEqual([]);
-	rows.MiClip.splice(0);
-	await service.list('alice');
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'MISSING_CLIP', referenceId: 'clip' });
-	expect(notifications).toHaveLength(2);
-});
-
-test('자료 오류 도중 참조가 사라졌다 복원돼도 원래 실패 범위가 해결되기 전에는 해제하지 않는다', async () => {
-	const { rows, service, notifications } = latePageFixture();
-	rows.MiClip = [{ id: 'clip', userId: 'alice' }];
-	rows.Rule[1].condition = { type: 'all', children: [rows.Rule[1].condition, { type: 'clip', ids: ['clip'] }] };
-	await service.preview('alice', ['delete'], '099');
-	rows.MiClip.splice(0);
-	await service.list('alice');
-	expect(notifications).toHaveLength(2);
-	rows.MiClip.push({ id: 'clip', userId: 'alice' });
-
-	expect((await service.list('alice')).blocked).toBe(true);
-	await service.preview('alice', ['delete'], '099');
-	expect(notifications).toHaveLength(3);
-	rows.MiNote[125].reactions = {};
-	expect((await service.list('alice')).blocked).toBe(false);
-});
-
-test.each([
-	['gt', ['keep', 'keep', 'delete']],
-	['gte', ['keep', 'delete', 'delete']],
-	['lt', ['delete', 'keep', 'keep']],
-	['lte', ['delete', 'delete', 'keep']],
-] as const)('작성 ID 시각의 기간 %s는 최근 수정과 관계없이 60초 경계를 판정한다', async (operator, decisions) => {
-	vi.useFakeTimers();
-	try {
-		const now = new Date('2026-11-13T00:00:00.000Z');
-		vi.setSystemTime(now);
-		const created = new Map([
-			['before', new Date(now.getTime() - 59999)],
-			['equal', new Date(now.getTime() - 60000)],
-			['after', new Date(now.getTime() - 60001)],
-		]);
-		const { rows, service, input } = fixture({ noteCreatedAt: id => created.get(id)! });
-		for (const id of created.keys()) rows.MiNote.push({ ...note(id), updatedAt: new Date(now.getTime() - 1) });
-		const { rule } = await service.save('alice', { ...input, condition: { type: 'age', operator, seconds: 60 } });
-
-		const result = await service.preview('alice', [rule.id]);
-
-		expect(result.items.map(item => item.noteId)).toEqual(['before', 'equal', 'after']);
-		expect(result.items.map(item => item.decision)).toEqual(decisions);
-		expect(result.items.map(item => item.createdAt)).toEqual([...created.values()].map(date => date.toISOString()));
-	} finally {
-		vi.useRealTimers();
-	}
-});
-
-// === 최종 검토 지적 재현 (review-fix) ===
-
-test('OC5: createQueryRunner 실패는 잠금 카운터를 새지 않아 이후 정리가 계속 가능하다', async () => {
-	const { service, faults } = fixture();
-	faults.createQueryRunner = true;
-	for (let i = 0; i < 6; i++) await expect(service.list('alice')).rejects.toThrow('runner unavailable');
-	faults.createQueryRunner = false;
-	await expect(service.list('alice')).resolves.toBeDefined();
-});
-
-test('Sol4: 호환 규칙을 일반 규칙으로 전환할 때도 일반 규칙 수 제한을 적용한다', async () => {
-	const { rows, service, linked } = await legacyFixture(30, true);
-	for (let i = 0; i < 32; i++) rows.Rule.push({ id: `g${i}`, userId: 'alice', name: `일반${i}`, action: 'delete', enabled: true, automatic: false, condition: { type: 'age', operator: 'gt', seconds: 60 }, lastError: null, legacy: null });
-	const age = linked('age');
-	await expect(service.save('alice', { name: age.name, action: 'delete', condition: { type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['text'] } }, age.id)).rejects.toThrow('RULE_LIMIT');
-	expect(rows.Rule.filter(r => r.legacy === null)).toHaveLength(32);
-});
-
-test('OC8: 기본 이름의 역할과 다른 행동으로 바꾸면 기본 이름을 지운다', async () => {
-	const { rows, service } = fixture();
-	rows.Rule.push({ id: 'pinned', userId: 'alice', name: '고정한 내 글', defaultName: 'pinned', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'pinned', value: true }, lastError: null, legacy: null });
-	const result = await service.save('alice', { action: 'delete', condition: { type: 'flag', field: 'pinned', value: true } }, 'pinned');
-	expect(result.rule.defaultName).toBeNull();
-	expect(result.rule.name).toBe('고정한 내 글');
-});
-
-test('OC9: 구 API의 빈 호출과 같은 값 저장은 커서와 미리보기 토큰을 초기화하지 않는다', async () => {
-	const { rows, service } = await legacyFixture(30, true);
-	rows.State[0].cursor = 'cursor';
-	rows.State[0].previewToken = 'token';
-	await service.updateLegacy('alice', {});
-	expect(rows.State[0].cursor).toBe('cursor');
-	expect(rows.State[0].previewToken).toBe('token');
-	await service.updateLegacy('alice', { autoDeleteNotesAfterDays: 30 });
-	expect(rows.State[0].cursor).toBe('cursor');
-	expect(rows.State[0].previewToken).toBe('token');
-	await service.updateLegacy('alice', { autoDeleteNotesAfterDays: 7 });
-	expect(rows.State[0].cursor).toBeNull();
-	expect(rows.State[0].previewToken).toBeNull();
-});
-
-test('Sol3: 검사 예산이 모자란 회복은 확인한 범위만 덜어내고 오류와 알림 세대를 유지한다', async () => {
-	const { rows, service, notifications } = latePageFixture();
-	await service.preview('alice', ['delete'], '099');
-	expect(notifications).toHaveLength(1);
-	// 이 모형의 Redis 예약은 항상 5개만 허용하므로 회복 범위 50건 중 5건만 확인한다.
-	await service.processUser('alice');
-	const error = rows.Rule[1].lastError;
-	expect(error).not.toBeNull();
-	expect(error.recovery.noteIds).toHaveLength(45);
-	expect(error.recovery.noteIds.every((id: string) => id >= '105')).toBe(true);
-	expect(notifications).toHaveLength(1);
-	expect(rows.MiNote).toHaveLength(150);
-
-	// 자료를 고친 뒤 남은 범위를 회차마다 이어서 확인하면 해제한다.
-	rows.MiNote[125].reactions = {};
-	for (let i = 0; i < 9; i++) await service.processUser('alice');
-	expect(rows.Rule[1].lastError).toBeNull();
-	expect(notifications).toHaveLength(1);
-});
-
-test('Sol2: 남기기 자료 조회의 연결 오류는 보호 오류와 최초 알림을 남기고 재시도 경로로 넘긴다', async () => {
+test('자체 필드 조건 남기기는 무관한 조회 실패의 영향을 받지 않고 정상 판정한다', async () => {
 	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
 	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	// 주입 실패원(MiNoteReaction)은 selfReaction 자료이므로 남기기 조건도 같은 자료에 의존해야 한다.
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'selfReaction', value: true }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	retryable.add('MiNoteReaction');
-
-	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
-
-	expect(rows.MiNote).toHaveLength(1);
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', userActionable: false, recovery: { source: 'data', noteIds: ['0'] } });
-	expect(notifications).toHaveLength(1);
-	expect((await service.list('alice')).blocked).toBe(true);
-});
-
-test('Sol2: 참조 조회의 연결 오류도 남기기 규칙의 보호 오류와 최초 알림을 남긴다', async () => {
-	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['clip'] }, lastError: null, legacy: null });
-	rows.MiClip = [{ id: 'clip', userId: 'alice' }];
-	rows.MiNote.push(note('0'));
-	retryable.add('MiClip');
-
-	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
-
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', userActionable: false, recovery: { source: 'reference' } });
-	expect(notifications).toHaveLength(1);
-	expect(rows.MiNote).toHaveLength(1);
-});
-
-test('Sol2: DB까지 중단된 보호 오류 기록은 유실을 허용하고 복구 뒤 첫 검사에서 다시 기록·통지한다', async () => {
-	const { rows, service, input, retryable, failingWrites, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'selfReaction', value: true }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	retryable.add('MiNoteReaction');
-	failingWrites.add('Rule');
-
-	// 기록 쓰기가 실패하면 통지 없이 유실하며, 재시도 경로는 그대로 유지한다.
-	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
-	expect(rows.Rule[1].lastError).toBeNull();
-	expect(notifications).toHaveLength(0);
-
-	failingWrites.clear();
-	// 자료 조회는 아직 실패하므로 복구 뒤 첫 검사가 보호 오류를 기록하고 한 번 통지한다.
-	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
-	expect(notifications).toHaveLength(1);
-	expect((await service.list('alice')).blocked).toBe(true);
-	expect(notifications).toHaveLength(1);
-
-	retryable.clear();
-	expect((await service.list('alice')).blocked).toBe(false);
-	expect(rows.Rule[1].lastError).toBeNull();
-	expect(notifications).toHaveLength(1);
-});
-
-// === 델타 검토 지적 재현 (review-fix2) ===
-
-test('Sol5: 남기기 조건이 쓰지 않는 자료의 연결 오류는 보호 오류·알림 없이 재시도로 중단한다', async () => {
-	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'pinned', value: true }, lastError: null, legacy: null });
+	rows.Rule.push({ id: 'renotes', userId: 'alice', name: '리노트 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'renotes', operator: 'gte', value: 1 }, lastError: null, legacy: null });
+	rows.Rule.push({ id: 'kw', userId: 'alice', name: '본문 키워드 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['text', 'cw'] }, lastError: null, legacy: null });
 	rows.MiNote.push(note('0'));
 	retryable.add('MiNoteFavorite');
 
-	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
-
-	expect(rows.MiNote).toHaveLength(1);
-	expect(rows.Rule[1].lastError).toBeNull();
-	expect(notifications).toHaveLength(0);
-	retryable.clear();
 	expect((await service.processUser('alice')).deleted).toBe(1);
+
+	expect(rows.Rule.find(r => r.id === 'renotes')!.lastError).toBeNull();
+	expect(rows.Rule.find(r => r.id === 'kw')!.lastError).toBeNull();
+	expect(notifications).toHaveLength(0);
 });
 
-test('Sol5: 남기기 조건이 쓰는 자료의 연결 오류는 보호 오류와 최초 알림을 남긴다', async () => {
-	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'favorite', value: true }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	retryable.add('MiNoteFavorite');
-
-	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
-
-	expect(rows.MiNote).toHaveLength(1);
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
-	expect(notifications).toHaveLength(1);
-});
-
-test('Sol5: 재시도 불가한 병합 실패는 반응 수에 의존하는 남기기 규칙만 기록한다', async () => {
-	const { rows, service, input, buffering, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'count', userId: 'alice', name: '반응 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null, legacy: null });
-	rows.Rule.push({ id: 'pinned', userId: 'alice', name: '고정 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'pinned', value: true }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	// bindThis 접근자 대신 인스턴스 속성으로 교체해 병합 실패를 주입한다.
-	Object.defineProperty(buffering, 'mergeReactions', { value: () => { throw new Error('merge failed'); }, writable: true, configurable: true });
-
-	await expect(service.processUser('alice')).rejects.toThrow('merge failed');
-
-	expect(rows.Rule.find(r => r.id === 'count')!.lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
-	expect(rows.Rule.find(r => r.id === 'pinned')!.lastError).toBeNull();
-	expect(notifications).toHaveLength(1);
-});
-
-// === 단순화 라운드 검토 지적 재현 (simplify-concurrency) ===
-
-test('Sol4: 무관한 출처가 먼저 거절해도 함께 실패한 관련 자료의 남기기 규칙은 보호 오류와 최초 알림을 남긴다', async () => {
-	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'favorite', value: true }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	// pinned(무관)과 favorite(관련) 조회가 같은 연결 장애로 함께 실패한다. 조회 배열 순서상 무관한 pinned가 먼저 거절된다.
-	retryable.add('MiUserNotePining');
-	retryable.add('MiNoteFavorite');
-
-	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
-
-	expect(rows.MiNote).toHaveLength(1);
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', userActionable: false, recovery: { source: 'data', noteIds: ['0'] } });
-	expect(notifications).toHaveLength(1);
-	expect((await service.list('alice')).blocked).toBe(true);
-});
-
-test('OC4: 노트 자체 필드만 쓰는 flag poll·files 남기기는 poll·files 조회 실패를 보호 오류로 기록하지 않는다', async () => {
+test('키워드가 쓰는 poll 자료의 조회 실패는 오류·알림 없이 재시도로 중단한다', async () => {
 	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
 	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
 	rows.Rule.push({ id: 'poll', userId: 'alice', name: '투표 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'poll', value: true }, lastError: null, legacy: null });
-	rows.Rule.push({ id: 'files', userId: 'alice', name: '파일 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'files', value: false }, lastError: null, legacy: null });
 	rows.Rule.push({ id: 'kw', userId: 'alice', name: '투표 키워드 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['poll'] }, lastError: null, legacy: null });
 	rows.MiNote.push({ ...note('0'), fileIds: ['f1'] });
 	retryable.add('MiPoll');
@@ -1115,108 +1037,6 @@ test('OC4: 노트 자체 필드만 쓰는 flag poll·files 남기기는 poll·fi
 	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
 
 	expect(rows.Rule.find(r => r.id === 'poll')!.lastError).toBeNull();
-	expect(rows.Rule.find(r => r.id === 'files')!.lastError).toBeNull();
-	// 키워드 poll은 실제 조회 자료를 쓰므로 같은 실패에 보호 오류와 최초 알림을 남긴다.
-	expect(rows.Rule.find(r => r.id === 'kw')!.lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
-	expect(notifications).toHaveLength(1);
-	retryable.clear();
-	expect((await service.processUser('alice')).deleted).toBe(1);
-});
-
-// === 4차 델타 검토 지적 재현 (review-fix4) ===
-
-test('fix4 Sol1: 무관한 출처의 재시도 오류와 관련 출처의 비재시도 오류가 함께 나면 관련 남기기 규칙도 보호 오류와 최초 알림을 남긴다', async () => {
-	const { rows, service, input, failing, retryable, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'favorite', value: true }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	// favorite(관련)은 비재시도, pinned(무관)은 재시도 오류로 함께 실패한다. 재시도 출처만으로는 관련 규칙을 귀인할 수 없다.
-	failing.add('MiNoteFavorite');
-	retryable.add('MiUserNotePining');
-
-	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
-
-	expect(rows.MiNote).toHaveLength(1);
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', userActionable: false, recovery: { source: 'data', noteIds: ['0'] } });
-	expect(notifications).toHaveLength(1);
-	expect((await service.list('alice')).blocked).toBe(true);
-});
-
-test('fix4 Sol1: 관련 출처의 재시도 오류와 무관한 출처의 비재시도 오류가 함께 나도 관련 남기기 규칙은 보호 오류와 최초 알림을 남긴다', async () => {
-	const { rows, service, input, failing, retryable, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'favorite', value: true }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	failing.add('MiUserNotePining');
-	retryable.add('MiNoteFavorite');
-
-	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
-
-	expect(rows.MiNote).toHaveLength(1);
-	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', userActionable: false, recovery: { source: 'data', noteIds: ['0'] } });
-	expect(notifications).toHaveLength(1);
-});
-
-test('fix4 Sol1: 혼합 실패의 같은 오류 재검사는 중복 통지하지 않고 복구 뒤에는 오류와 마커를 해제한다', async () => {
-	const { rows, service, input, failing, retryable, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'favorite', value: true }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	failing.add('MiNoteFavorite');
-	retryable.add('MiUserNotePining');
-
-	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
-	expect(notifications).toHaveLength(1);
-
-	// 같은 혼합 실패 재검사: 접수 마커 보존, 중복 통지 없음.
-	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
-	expect(rows.Rule[1].protectionNotification?.status).toBe('notified');
-	expect(notifications).toHaveLength(1);
-
-	// 두 출처가 모두 복구되면 다음 검사가 오류와 마커를 해제하고 삭제를 진행한다.
-	failing.clear();
-	retryable.clear();
-	expect((await service.processUser('alice')).deleted).toBe(1);
-	expect(rows.Rule[1].lastError).toBeNull();
-	expect(rows.Rule[1].protectionNotification).toBeNull();
-	expect(notifications).toHaveLength(1);
-});
-
-test('fix4 Sol1: 비재시도 조회 실패이 남은 병합 실패도 함께 실패한 출처의 남기기 규칙을 보호 오류로 기록한다', async () => {
-	const { rows, service, input, failing, buffering, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'count', userId: 'alice', name: '반응 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null, legacy: null });
-	rows.Rule.push({ id: 'fav', userId: 'alice', name: '즐겨찾기 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'favorite', value: true }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	failing.add('MiNoteFavorite');
-	Object.defineProperty(buffering, 'mergeReactions', { value: () => { throw new Error('merge failed'); }, writable: true, configurable: true });
-
-	await expect(service.processUser('alice')).rejects.toThrow('merge failed');
-
-	expect(rows.Rule.find(r => r.id === 'count')!.lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
-	expect(rows.Rule.find(r => r.id === 'fav')!.lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
-	expect(notifications).toHaveLength(2);
-});
-
-test('fix4 OC3: 노트 자체 필드만 쓰는 count renotes와 keyword text·cw는 외부 조회 의존성이 없다', () => {
-	expect(cleanupDependencies({ type: 'count', field: 'renotes', operator: 'gte', value: 1 })).toEqual([]);
-	expect(cleanupDependencies({ type: 'count', field: 'reactions', operator: 'gte', value: 1 })).toEqual(['reactions']);
-	expect(cleanupDependencies({ type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['text', 'cw'] })).toEqual([]);
-	// 실제 조회 자료를 쓰는 대상은 의존성을 유지한다.
-	expect(cleanupDependencies({ type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['poll', 'fileComment', 'fileName', 'text'] })).toEqual(['poll', 'files', 'files']);
-});
-
-test('fix4 OC3: 자체 필드 조건 남기기는 무관한 조회 실패에 보호 오류를 기록하지 않고 복구 뒤 정상 판정한다', async () => {
-	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
-	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
-	rows.Rule.push({ id: 'renotes', userId: 'alice', name: '리노트 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'renotes', operator: 'gte', value: 1 }, lastError: null, legacy: null });
-	rows.Rule.push({ id: 'kw', userId: 'alice', name: '본문 키워드 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['text', 'cw'] }, lastError: null, legacy: null });
-	rows.MiNote.push(note('0'));
-	retryable.add('MiNoteFavorite');
-
-	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
-
-	expect(rows.Rule.find(r => r.id === 'renotes')!.lastError).toBeNull();
 	expect(rows.Rule.find(r => r.id === 'kw')!.lastError).toBeNull();
 	expect(notifications).toHaveLength(0);
 	retryable.clear();
