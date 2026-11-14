@@ -27,10 +27,12 @@ import PreviewEndpoint, { meta as previewMeta } from '../../src/server/api/endpo
 
 // detached: 실제 DB처럼 조회 결과를 저장 행과 분리한 복사본으로 돌려준다.
 function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0) } = {}) {
-	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, migrated: true, manualRequest: null, keepDriveFiles: true }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
+	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, manualRequest: null, keepDriveFiles: true }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
 	const failing = new Set<string>();
 	// deleteFailures: 해당 노트의 삭제를 실패시킨다.
 	const deleteFailures = new Set<string>();
+	// retryableDeletes: 해당 노트의 삭제를 재시도 가능한 연결 오류로 실패시킨다.
+	const retryableDeletes = new Set<string>();
 	// retryable: 재시도 가능한 연결 오류로 조회를 실패시킨다.
 	const retryable = new Set<string>();
 	const faults = { createQueryRunner: false };
@@ -120,9 +122,9 @@ function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0
 			return query.andWhere('file.id IN (:...ids)', { ids: unused });
 		},
 	};
-	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { if (deleteFailures.has(note.id)) throw new Error(`note delete unavailable (${note.id})`); rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push([userId, type, data]); } } as any, { eval: async (...args: unknown[]) => { evalCalls.push(args); return 5; } } as any, meta as any, buffering, driveService as any, driveFileUsageService as any);
+	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { if (retryableDeletes.has(note.id)) throw Object.assign(new Error('Connection terminated unexpectedly'), { code: '57P01' }); if (deleteFailures.has(note.id)) throw new Error(`note delete unavailable (${note.id})`); rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push([userId, type, data]); } } as any, { eval: async (...args: unknown[]) => { evalCalls.push(args); return 5; } } as any, meta as any, buffering, driveService as any, driveFileUsageService as any);
 	const condition = { type: 'age', operator: 'gte', seconds: 60 };
-	return { rows, service, notifications, jobs, evalCalls, failing, failingWrites, retryable, faults, lock, meta, buffered, buffering, noteReads, deleteFailures, drive, input: { name: '정리', action: 'delete' as const, condition } };
+	return { rows, service, notifications, jobs, evalCalls, failing, failingWrites, retryable, faults, lock, meta, buffered, buffering, noteReads, deleteFailures, retryableDeletes, drive, input: { name: '정리', action: 'delete' as const, condition } };
 }
 
 beforeEach(() => {
@@ -658,7 +660,7 @@ test('기존 API에서 기간 null은 규칙 없이 유지하고 나중의 유�
 	await service.updateLegacy('alice', { autoDeleteKeepFavorites: true });
 	expect(rows.Rule.map(rule => rule.legacy)).toEqual(['favorite']);
 	expect(rows.MiUser[0].autoDeleteNotesAfterDays).toBeNull();
-	expect(rows.State[0].migrated).toBe(true);
+	expect(rows.State.filter(s => s.userId === 'alice')).toHaveLength(1);
 	await service.updateLegacy('alice', { autoDeleteNotesAfterDays: 30 });
 	expect(rows.Rule.find(rule => rule.legacy === 'age')?.condition).toEqual({ type: 'age', operator: 'gt', seconds: 2592000 });
 	expect(rows.Rule.find(rule => rule.legacy === 'age')?.automatic).toBe(true);
@@ -856,7 +858,7 @@ const newDefaults = (favorite: boolean) => [
 test('상태가 없는 신규 계정은 구 API를 먼저 불러도 신규로 분류되어 기본 보호 4개를 받고, 즐겨찾기 해제는 원래 즐겨찾기 보호에만 적용된다', async () => {
 	const { rows, service, jobs, user, state, favoriteOnly, summary } = newAccountFixture();
 	await service.updateLegacy('bob', { autoDeleteKeepFavorites: false });
-	expect(state()?.migrated).toBe(false);
+	expect(state()?.userId).toBe('bob');
 	expect(summary()).toEqual(newDefaults(false));
 	expect(favoriteOnly()).toHaveLength(1);
 	expect(user()).toMatchObject({ autoDeleteNotesAfterDays: null, autoDeleteKeepFavorites: false });
@@ -867,14 +869,14 @@ test('상태가 없는 신규 계정은 구 API를 먼저 불러도 신규로 �
 	expect(user()?.autoDeleteKeepFavorites).toBe(true);
 	// 기존 계정 상태와 규칙은 건드리지 않는다.
 	expect(rows.Rule.filter(r => r.userId === 'alice')).toEqual([]);
-	expect(rows.State.find(s => s.userId === 'alice')?.migrated).toBe(true);
+	expect(rows.State.filter(s => s.userId === 'alice')).toHaveLength(1);
 	expect(jobs.size).toBe(0);
 });
 
 test('상태가 없는 신규 계정이 구 API로 기간만 먼저 설정해도 기본 보호 4개를 유지한 채 기간 규칙만 더한다', async () => {
 	const { service, state, summary, user } = newAccountFixture();
 	await service.updateLegacy('bob', { autoDeleteNotesAfterDays: 30 });
-	expect(state()?.migrated).toBe(false);
+	expect(state()?.userId).toBe('bob');
 	expect(summary()).toEqual([...newDefaults(true), ['기간이 지난 내 글', 'delete', true, true, 'age']]);
 	expect(user()).toMatchObject({ autoDeleteNotesAfterDays: 30, autoDeleteKeepFavorites: true });
 });
@@ -888,7 +890,7 @@ test('새 API를 먼저 부른 신규 계정도 같은 기본 보호를 받고, 
 	await service.updateLegacy('bob', { autoDeleteKeepFavorites: false });
 	expect(summary()).toEqual(newDefaults(false));
 	expect(favoriteOnly().map(r => r.id)).toEqual([favoriteId]);
-	expect(state()?.migrated).toBe(false);
+	expect(state()?.userId).toBe('bob');
 	expect(user()?.autoDeleteKeepFavorites).toBe(false);
 	// 기본 보호는 각각 편집·삭제할 수 있다.
 	const [pinned, , clip] = bob();
@@ -924,7 +926,6 @@ test('이관된 상태가 있는 기존 계정은 구 API를 불러도 신규 �
 	await service.list('alice');
 	expect(rows.Rule.map(r => [r.id, r.enabled, r.legacy])).toEqual([['favorite', true, 'favorite']]);
 	expect(rows.State).toHaveLength(1);
-	expect(rows.State[0].migrated).toBe(true);
 });
 
 // === 기본 이름 ===
@@ -1219,4 +1220,86 @@ test('드라이브 보존이 꺼져 있어도 다른 사용자의 파일은 삭�
 	expect((await service.processUser('alice')).deleted).toBe(1);
 	expect(drive.deletes).toHaveLength(0);
 	expect(rows.MiDriveFile).toHaveLength(1);
+});
+
+test('수동 묶음이 중간에 일시 실패해도 앞서 지운 노트의 미사용 첨부는 정리한다', async () => {
+	const { rows, service, input, retryableDeletes, drive } = fixture();
+	rows.State[0].keepDriveFiles = false;
+	const { rule } = await service.save('alice', input);
+	rows.MiDriveFile = [{ id: 'f1', userId: 'alice' }, { id: 'f2', userId: 'alice' }];
+	rows.MiNote.push({ ...note('0'), fileIds: ['f1'] }, { ...note('1'), fileIds: ['f2'] });
+	retryableDeletes.add('1');
+	await service.request('alice', [rule.id]);
+
+	await expect(service.continueManual('alice')).rejects.toThrow('Connection terminated');
+
+	// 첫 노트는 이미 지워졌으므로 그 첨부는 이번 회차에서 정리되어야 한다.
+	expect(drive.deletes.map(d => d.fileId)).toEqual(['f1']);
+	expect(rows.MiDriveFile.map(f => f.id)).toEqual(['f2']);
+	// 일시 실패는 마커를 보존해 다음 회차가 잇는다.
+	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: null });
+
+	retryableDeletes.clear();
+	expect((await service.continueManual('alice')).deleted).toBe(1);
+	expect(drive.deletes.map(d => d.fileId)).toEqual(['f1', 'f2']);
+	expect(rows.MiDriveFile).toHaveLength(0);
+	expect(rows.State[0].manualRequest).toBeNull();
+});
+
+// === 손상된 자료의 계정 정리 정체 방지 ===
+
+test('손상된 반응 수 노트는 남기고 로그를 남기며 나머지 정리는 계속한다', async () => {
+	const { rows, service, input, drive } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.MiNote.push({ ...note('0'), reactions: { '👍': -1 } }, { ...note('1') });
+
+	const result = await service.processUser('alice');
+
+	expect(result.deleted).toBe(1);
+	expect(result.complete).toBe(true);
+	expect(rows.MiNote.map(n => n.id)).toEqual(['0']);
+	expect(drive.logs.some(args => (args[1] as { noteId?: string })?.noteId === '0')).toBe(true);
+});
+
+test('손상된 반응 수가 있어도 남기기 규칙은 묶음을 막지 않고 정상 노트는 보호한다', async () => {
+	const { rows, service, input, drive } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '반응 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 1 }, lastError: null, legacy: null });
+	rows.MiNote.push({ ...note('0'), reactions: { '👍': 'broken' } }, { ...note('1'), reactions: { '👍': 2 } });
+
+	const result = await service.processUser('alice');
+
+	expect(result.deleted).toBe(0);
+	expect(result.complete).toBe(true);
+	expect(rows.MiNote.map(n => n.id)).toEqual(['0', '1']);
+	expect(drive.logs.some(args => (args[1] as { noteId?: string })?.noteId === '0')).toBe(true);
+});
+
+test('손상된 리노트 수 노트도 남기고 로그를 남기며 정리를 계속한다', async () => {
+	const { rows, service, input, drive } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '리노트 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'renotes', operator: 'gte', value: 1 }, lastError: null, legacy: null });
+	rows.MiNote.push({ ...note('0'), renoteCount: -1 }, { ...note('1') });
+
+	const result = await service.processUser('alice');
+
+	expect(result.deleted).toBe(1);
+	expect(result.complete).toBe(true);
+	expect(rows.MiNote.map(n => n.id)).toEqual(['0']);
+	expect(drive.logs.some(args => (args[1] as { noteId?: string })?.noteId === '0')).toBe(true);
+});
+
+test('수동 요청도 손상된 반응 수 노트를 남기고 완료한다', async () => {
+	const { rows, service, input, drive } = fixture();
+	const { rule } = await service.save('alice', input);
+	rows.MiNote.push({ ...note('0'), reactions: { '👍': -1 } }, { ...note('1') });
+	await service.request('alice', [rule.id]);
+
+	const result = await service.continueManual('alice');
+
+	expect(result.deleted).toBe(1);
+	expect(result.complete).toBe(true);
+	expect(rows.State[0].manualRequest).toBeNull();
+	expect(rows.MiNote.map(n => n.id)).toEqual(['0']);
+	expect(drive.logs.some(args => (args[1] as { noteId?: string })?.noteId === '0')).toBe(true);
 });

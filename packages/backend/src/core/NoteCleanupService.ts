@@ -97,7 +97,7 @@ export class NoteCleanupService {
 		if (await this.states.existsBy({ userId })) return;
 		const user = await this.repository(MiUser).findOneByOrFail({ id: userId, host: IsNull() });
 		await this.db.transaction(async manager => {
-			await manager.insert(MiNoteCleanupState, { userId, migrated: false, keepDriveFiles: true, cursor: null, manualRequest: null });
+			await manager.insert(MiNoteCleanupState, { userId, keepDriveFiles: true, cursor: null, manualRequest: null });
 			for (const input of initialCleanupRules(false, user.autoDeleteNotesAfterDays, user.autoDeleteKeepFavorites)) {
 				await manager.insert(MiNoteCleanupRule, { ...input, id: this.idService.gen(), userId, lastError: null, protectionNotified: false, automaticConfirmed: false });
 			}
@@ -276,11 +276,22 @@ export class NoteCleanupService {
 		if (afterId) query.andWhere('note.id > :afterId', { afterId });
 		const notes = await query.getMany();
 		const dependencies = new Set(prepared.flatMap(p => cleanupDependencies(p.rule.condition)));
-		const contexts = await this.contexts(userId, notes, dependencies);
+		const { contexts, undecidable } = await this.contexts(userId, notes, dependencies);
 		const rules: CleanupEvaluationRule[] = prepared.map(({ rule, lastError }) => ({ id: rule.id, action: rule.action, condition: rule.condition, error: lastError?.code }));
-		const evaluations = decideCleanup(rules, contexts);
+		// 카운트가 손상된 노트는 판정하지 않고 남긴다. 나머지 노트로만 규칙을 판정해 정체가 계속되지 않게 한다.
+		const decidable = contexts.filter((_, i) => !undecidable.has(notes[i].id));
+		const decided = decideCleanup(rules, decidable);
+		const errors = decided[0]?.errors ?? [];
+		let index = 0;
+		const evaluations = notes.map(note => {
+			if (undecidable.has(note.id)) {
+				this.logger.error('Cleanup note kept with invalid counts', { userId, noteId: note.id });
+				return { keepRuleIds: [], deleteRuleIds: [], decision: 'keep' as const, reason: 'unmatched' as const, errors };
+			}
+			return decided[index++];
+		});
 		// 저장된 오류가 없는 규칙의 판정 실패: 남기기는 묶음을 실패시키고, 지우기는 해당 규칙만 제외한다.
-		const runtimeErrors = evaluations[0]?.errors.filter(e => !rules.find(r => r.id === e.ruleId)?.error) ?? [];
+		const runtimeErrors = errors.filter(e => !rules.find(r => r.id === e.ruleId)?.error);
 		for (const { rule } of prepared) {
 			if (!runtimeErrors.some(e => e.ruleId === rule.id)) continue;
 			if (rule.action === 'keep') throw new Error(`Cleanup keep rule evaluation failed (${rule.id})`);
@@ -310,8 +321,9 @@ export class NoteCleanupService {
 	}
 
 	// 판정에 필요한 자료만 조회한다. 조회 실패는 보호 오류로 기록하지 않고 그대로 던져 묶음 전체를 재시도하게 한다.
-	private async contexts(userId: string, notes: MiNote[], dependencies: Set<string>): Promise<CleanupContext[]> {
-		if (!notes.length) return [];
+	// 반응·리노트 수가 손상된 노트는 판정할 수 없으므로 undecidable로 표시해 판정에서 빼고 남긴다.
+	private async contexts(userId: string, notes: MiNote[], dependencies: Set<string>): Promise<{ contexts: CleanupContext[]; undecidable: Set<string> }> {
+		if (!notes.length) return { contexts: [], undecidable: new Set() };
 		const ids = notes.map(n => n.id);
 		const fileIds = [...new Set(notes.flatMap(n => n.fileIds))];
 		const [pins, favorites, reactions, renotes, polls, files, clips, bufferedReactions] = await Promise.all([
@@ -324,15 +336,23 @@ export class NoteCleanupService {
 			dependencies.has('clip') ? this.repository(MiClipNote).createQueryBuilder('link').innerJoin(MiClip, 'clip', 'clip.id = link.clipId AND clip.userId = :userId', { userId }).where('link.noteId IN (:...ids)', { ids }).getMany() : [],
 			dependencies.has('reactions') && this.meta.enableReactionsBuffering ? this.reactionsBufferingService.getMany(ids) : new Map<string, { deltas: Record<string, number>; pairs: [string, string][] }>(),
 		]);
+		const undecidable = new Set<string>();
 		const reactionCounts = new Map(notes.map(note => {
 			const merged = this.reactionsBufferingService.mergeReactions(note.reactions, bufferedReactions.get(note.id)?.deltas ?? {});
-			if (Object.values(merged).some(count => !Number.isSafeInteger(count) || count < 0)) throw new Error(`Invalid cleanup reaction count (${note.id})`);
+			if (typeof note.reactions !== 'object' || note.reactions === null || Object.values(merged).some(count => !Number.isSafeInteger(count) || count < 0)) {
+				undecidable.add(note.id);
+				return [note.id, 0] as const;
+			}
 			return [note.id, Object.values(merged).reduce((a, b) => a + b, 0)] as const;
 		}));
 		const now = Date.now();
-		return notes.map(note => ({ text: note.text, cw: note.cw, poll: polls.find(p => p.noteId === note.id)?.choices ?? [], fileComment: files.filter(f => note.fileIds.includes(f.id)).map(f => f.comment ?? ''), fileName: files.filter(f => note.fileIds.includes(f.id)).map(f => f.name), age: (now - this.idService.parse(note.id).date.getTime()) / 1000, reactions: reactionCounts.get(note.id)!, renotes: note.renoteCount,
-			flags: { pinned: pins.some(p => p.noteId === note.id), favorite: favorites.some(f => f.noteId === note.id), selfReaction: reactions.some(r => r.noteId === note.id), selfRenote: renotes.some(r => r.renoteId === note.id), reply: note.replyId !== null, quote: isRenote(note) && isQuote(note), poll: note.hasPoll, files: note.fileIds.length > 0, cw: note.cw !== null, localOnly: note.localOnly }, visibility: note.visibility, channelId: note.channelId, clipIds: clips.filter(c => c.noteId === note.id).map(c => c.clipId), tags: note.tags,
-		}));
+		const contexts = notes.map(note => {
+			if (!Number.isSafeInteger(note.renoteCount) || note.renoteCount < 0) undecidable.add(note.id);
+			return { text: note.text, cw: note.cw, poll: polls.find(p => p.noteId === note.id)?.choices ?? [], fileComment: files.filter(f => note.fileIds.includes(f.id)).map(f => f.comment ?? ''), fileName: files.filter(f => note.fileIds.includes(f.id)).map(f => f.name), age: (now - this.idService.parse(note.id).date.getTime()) / 1000, reactions: reactionCounts.get(note.id)!, renotes: note.renoteCount,
+				flags: { pinned: pins.some(p => p.noteId === note.id), favorite: favorites.some(f => f.noteId === note.id), selfReaction: reactions.some(r => r.noteId === note.id), selfRenote: renotes.some(r => r.renoteId === note.id), reply: note.replyId !== null, quote: isRenote(note) && isQuote(note), poll: note.hasPoll, files: note.fileIds.length > 0, cw: note.cw !== null, localOnly: note.localOnly }, visibility: note.visibility, channelId: note.channelId, clipIds: clips.filter(c => c.noteId === note.id).map(c => c.clipId), tags: note.tags,
+			};
+		});
+		return { contexts, undecidable };
 	}
 
 	private async page(userId: string, ruleIds: string[], afterId?: string, limit = 100) {
@@ -348,7 +368,7 @@ export class NoteCleanupService {
 			const { keepRuleIds, deleteRuleIds, decision, reason } = evaluations[i];
 			return { noteId: note.id, text: note.text, cw: note.cw, createdAt: this.idService.parse(note.id).date.toISOString(), keepRuleIds, deleteRuleIds, decision, reason };
 		});
-		return { all, notes, items, scanned: notes.length, deleteCount: items.filter(i => i.decision === 'delete').length, nextCursor: notes.at(-1)?.id ?? null, complete, errors: (await this.rules.findBy({ userId })).filter(r => active.some(a => a.id === r.id) && r.lastError).map(r => r.lastError!) };
+		return { all, notes, items, scanned: notes.length, nextCursor: notes.at(-1)?.id ?? null, complete, errors: (await this.rules.findBy({ userId })).filter(r => active.some(a => a.id === r.id) && r.lastError).map(r => r.lastError!) };
 	}
 
 	// 미리 보기는 지워질 노트만 돌려준다. 판정은 실제 정리와 같은 규칙을 쓴다.
@@ -436,26 +456,31 @@ export class NoteCleanupService {
 		const removal = candidates ? await this.reserveBudget('delete', userId, Math.min(candidates, NOTE_CLEANUP_LIMITS.deleteChunk)) : null;
 		let failed = 0;
 		const removedFileIds: string[] = [];
-		const result = await runCleanupBatch(page.items.map(i => ({ id: i.noteId, decision: i.decision })), removal?.amount ?? 0, async id => {
-			let note: MiNote | null;
-			try {
-				note = await this.repository(MiNote).findOneBy({ id, userId });
-			} catch (error) {
-				throw new CleanupNoteLookupError(error);
-			}
-			if (!note) return false;
-			await this.noteDeleteService.delete(user, note, false);
-			removedFileIds.push(...note.fileIds);
-			return true;
-		}, (noteId, error) => {
-			// 수동 요청은 노트 조회 실패와 재시도 가능한 삭제 실패를 묶음 실패로 올린다. 일시 실패는 마커를 보존해 잇고, 비재시도 오류는 마커를 지워 무한 재시도를 막는다.
-			if (ruleIds && (error instanceof CleanupNoteLookupError || isRetryableCleanupFailure(error))) throw error;
-			// 자동 회차와 지속 삭제 실패는 한 노트의 실패가 뒤 노트와 다른 계정을 멈추지 않게 한다. 커서가 지나가므로 다음 순회에서 다시 검사된다.
-			failed++;
-			this.logger.error('Cleanup note deletion failed', { userId, noteId, error });
-		});
-		// 실제로 지운 노트의 첨부만 대상으로 삼는다. 삭제에 실패한 노트의 첨부는 건드리지 않는다.
-		if (state.keepDriveFiles === false && removedFileIds.length) await this.deleteUnusedAttachments(userId, user, removedFileIds);
+		let result: { cursor: string | null; deleted: number; examined: number };
+		try {
+			result = await runCleanupBatch(page.items.map(i => ({ id: i.noteId, decision: i.decision })), removal?.amount ?? 0, async id => {
+				let note: MiNote | null;
+				try {
+					note = await this.repository(MiNote).findOneBy({ id, userId });
+				} catch (error) {
+					throw new CleanupNoteLookupError(error);
+				}
+				if (!note) return false;
+				await this.noteDeleteService.delete(user, note, false);
+				removedFileIds.push(...note.fileIds);
+				return true;
+			}, (noteId, error) => {
+				// 수동 요청은 노트 조회 실패와 재시도 가능한 삭제 실패를 묶음 실패로 올린다. 일시 실패는 마커를 보존해 잇고, 비재시도 오류는 마커를 지워 무한 재시도를 막는다.
+				if (ruleIds && (error instanceof CleanupNoteLookupError || isRetryableCleanupFailure(error))) throw error;
+				// 자동 회차와 지속 삭제 실패는 한 노트의 실패가 뒤 노트와 다른 계정을 멈추지 않게 한다. 커서가 지나가므로 다음 순회에서 다시 검사된다.
+				failed++;
+				this.logger.error('Cleanup note deletion failed', { userId, noteId, error });
+			});
+		} finally {
+			// 실제로 지운 노트의 첨부만 대상으로 삼는다. 삭제에 실패한 노트의 첨부는 건드리지 않는다.
+			// 묶음이 중간에 실패해도 앞서 지운 노트의 첨부는 이번 회차에서 정리한다.
+			if (state.keepDriveFiles === false && removedFileIds.length) await this.deleteUnusedAttachments(userId, user, removedFileIds);
+		}
 		const complete = page.complete && result.examined === page.scanned;
 		// 첫 노트부터 삭제 예산이 없어 하나도 지나지 못했으면 기존 커서를 유지한다.
 		const next = result.cursor ?? cursor ?? null;

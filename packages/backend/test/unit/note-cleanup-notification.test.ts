@@ -24,7 +24,7 @@ vi.mock('../../src/misc/promise-tracker.js', () => ({ trackPromise: (promise: Pr
 
 // detached: 실제 DB처럼 조회 결과를 저장 행과 분리한 복사본으로 돌려준다.
 function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0) } = {}) {
-	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, migrated: true, manualRequest: null }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
+	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, manualRequest: null }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
 	const failing = new Set<string>();
 	const noteReads: string[][] = [];
 	// failingWrites: 해당 엔티티의 쓰기 실패를 주입한다.

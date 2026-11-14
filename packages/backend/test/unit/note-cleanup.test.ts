@@ -128,3 +128,18 @@ test('정규식 플래그는 단어 뮤트와 같은 RE2 생성자를 따른다'
 		expect(matchesCleanupCondition(condition, { ...context, text: 'HELLO' })).toBe(flags.includes('i'));
 	}
 });
+
+test('같은 패턴이라도 플래그가 다른 조건은 한 규칙 안에서 각자 플래그로 판정한다', () => {
+	const sensitive = { type: 'keyword', mode: 'regex', value: '^abc$', flags: '', targets: ['text'] };
+	const insensitive = { type: 'keyword', mode: 'regex', value: '^abc$', flags: 'i', targets: ['text'] };
+	const upper = { ...context, text: 'ABC' };
+	// 지우기 all: 대소문자 구분 조건이 거짓이면 보존해야 한다. 순서와 무관하게 같아야 한다.
+	expect(matchesCleanupCondition({ type: 'all', children: [insensitive, sensitive] }, upper)).toBe(false);
+	expect(matchesCleanupCondition({ type: 'all', children: [sensitive, insensitive] }, upper)).toBe(false);
+	// 남기기 any: 대소문자 무시 조건이 참이면 보호해야 한다. 순서와 무관하게 같아야 한다.
+	expect(matchesCleanupCondition({ type: 'any', children: [sensitive, insensitive] }, upper)).toBe(true);
+	expect(matchesCleanupCondition({ type: 'any', children: [insensitive, sensitive] }, upper)).toBe(true);
+	// 같은 패턴·같은 플래그의 재사용은 그대로 동작한다.
+	expect(matchesCleanupCondition({ type: 'all', children: [insensitive, { ...insensitive }] }, upper)).toBe(true);
+	expect(matchesCleanupCondition({ type: 'all', children: [sensitive, { ...sensitive }] }, upper)).toBe(false);
+});

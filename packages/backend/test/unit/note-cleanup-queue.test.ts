@@ -158,7 +158,7 @@ function fixture() {
 	const processor = new AutoDeleteNotesProcessorService(service, queueService as any);
 	const addUser = (userId: string, lastRunAt = EPOCH) => {
 		rows.MiUser.push({ id: userId, host: null, autoDeleteNotesAfterDays: null, autoDeleteKeepFavorites: false });
-		rows.State.push({ userId, migrated: false, cursor: null, lastRunAt, manualRequest: null });
+		rows.State.push({ userId, cursor: null, lastRunAt, manualRequest: null });
 	};
 	const addNotes = (userId: string, count: number) => { for (let i = 0; i < count; i++) rows.MiNote.push(note(userId, i)); };
 	const notesOf = (userId: string) => rows.MiNote.filter(n => n.userId === userId);

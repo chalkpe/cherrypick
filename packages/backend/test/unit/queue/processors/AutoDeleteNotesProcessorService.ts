@@ -172,7 +172,7 @@ async function fixture() {
 	const user = (id: string, days: number | null = 30, keepFavorites = true) => {
 		const row = { id, host: null, autoDeleteNotesAfterDays: days, autoDeleteKeepFavorites: keepFavorites };
 		table(MiUser).push(row);
-		table(MiNoteCleanupState).push({ userId: id, migrated: true, cursor: null, lastRunAt: new Date(0), manualRequest: null });
+		table(MiNoteCleanupState).push({ userId: id, cursor: null, lastRunAt: new Date(0), manualRequest: null });
 		for (const input of initialCleanupRules(true, days, keepFavorites)) {
 			table(MiNoteCleanupRule).push({ ...input, id: idService.gen(), userId: id, lastError: null, protectionNotified: false, automaticConfirmed: input.automatic });
 		}

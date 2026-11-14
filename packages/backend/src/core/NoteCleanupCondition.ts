@@ -101,8 +101,10 @@ export function compileCleanupCondition(input: unknown): (context: CleanupContex
 				const lines = cleanupKeywordLines(c.value);
 				if (c.mode === 'literal') return texts.some(t => lines.some(line => normalize(t).includes(normalize(line))));
 				return texts.some(t => lines.some(line => {
-					let expression = expressions.get(line);
-					if (!expression) { expression = new RE2(line.normalize('NFC'), c.flags); expressions.set(line, expression); }
+					// 같은 패턴이라도 플래그가 다르면 다른 정규식이므로 캐시 키에 플래그를 포함한다.
+					const key = `${line}\u0000${c.flags}`;
+					let expression = expressions.get(key);
+					if (!expression) { expression = new RE2(line.normalize('NFC'), c.flags); expressions.set(key, expression); }
 					expression.lastIndex = 0;
 					return expression.test(t.normalize('NFC'));
 				}));
