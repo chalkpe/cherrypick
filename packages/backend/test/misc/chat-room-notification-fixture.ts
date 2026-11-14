@@ -5,7 +5,7 @@
 
 import { vi } from 'vitest';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
-import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_MARK, CHAT_UNREAD_PRUNE_CHANNEL, CHAT_UNREAD_PRUNE_ROOM, CHAT_UNREAD_READ_ALL, CHAT_UNREAD_READ_BOUNDARY } from '@/core/chat-room-notifications.js';
+import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_MARK, CHAT_UNREAD_MOVE_MARKER, CHAT_UNREAD_PRUNE_CHANNEL, CHAT_UNREAD_PRUNE_ROOM, CHAT_UNREAD_READ_ALL } from '@/core/chat-room-notifications.js';
 import { ChatChannelError } from '@/core/chat-room-channels.js';
 import { MiChatRoom } from '@/models/ChatRoom.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
@@ -110,14 +110,24 @@ export function fakeUnreadRedis() {
 				}
 				return 0;
 			}
-			if (script === CHAT_UNREAD_READ_BOUNDARY) {
-				const [key, incoming] = args;
-				const current = strings.get(key);
-				if (current == null || incoming.length > current.length || (incoming.length === current.length && incoming > current)) {
-					strings.set(key, incoming);
-					return 1;
+			if (script === CHAT_UNREAD_MOVE_MARKER) {
+				const [sourceKey, destKey, setKey, totalsKey, expectedMarker, channelId, roomEntry] = args;
+				if (strings.get(sourceKey) !== expectedMarker) return 0;
+				const seqOf = (marker: string) => marker.match(/^(\d+):/)?.[1] ?? null;
+				const currentMarker = strings.get(destKey);
+				if (currentMarker == null) {
+					strings.set(destKey, expectedMarker);
+				} else {
+					const current = seqOf(currentMarker);
+					const incoming = seqOf(expectedMarker);
+					if (incoming != null && (current == null || incoming.length > current.length || (incoming.length === current.length && incoming > current))) {
+						strings.set(destKey, expectedMarker);
+					}
 				}
-				return 0;
+				del(sourceKey);
+				await redis.sadd(setKey, channelId);
+				await redis.sadd(totalsKey, roomEntry);
+				return 1;
 			}
 			if (script === CHAT_UNREAD_READ_ALL) {
 				const keys = args.slice(0, _numKeys - 1);

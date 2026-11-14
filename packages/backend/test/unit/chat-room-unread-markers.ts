@@ -321,4 +321,39 @@ describe('수정 지연 알림의 예약 대상', () => {
 
 		expect(f.notifications).not.toHaveBeenCalled();
 	});
+
+	test('수정 뒤에 같은 글까지 다시 읽으면 발송하지 않는다', async () => {
+		vi.useFakeTimers();
+		const f = editFixture();
+		await f.roomNotifications.setLevel(reader.id, room.id, 'mentions');
+
+		const created = await f.chatService.createMessageToRoom(author, room, { text: '멘션 없는 글' });
+		await vi.advanceTimersByTimeAsync(3000);
+		await f.chatService.readRoomChatMessage(reader.id, room.id, undefined, created.id);
+
+		await f.chatService.updateMessage(author.id, created.id, '@reader 새 멘션');
+		await f.chatService.readRoomChatMessage(reader.id, room.id, undefined, created.id);
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(f.notifications).not.toHaveBeenCalled();
+		expect(f.stream).not.toHaveBeenCalled();
+	});
+
+	test('더 새 미읽음 멘션이 남은 채 수정된 글까지만 읽으면 발송한다', async () => {
+		vi.useFakeTimers();
+		const f = editFixture();
+		await f.roomNotifications.setLevel(reader.id, room.id, 'mentions');
+
+		const first = await f.chatService.createMessageToRoom(author, room, { text: '멘션 없는 첫 글' });
+		const second = await f.chatService.createMessageToRoom(author, room, { text: '@reader 둘째 멘션' });
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(f.notifications).toHaveBeenCalledTimes(1);
+
+		await f.chatService.updateMessage(author.id, first.id, '@reader 첫 멘션 추가');
+		await f.chatService.readRoomChatMessage(reader.id, room.id, undefined, first.id);
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(f.notifications).toHaveBeenCalledTimes(2);
+		expect(f.notifications).toHaveBeenLastCalledWith(reader.id, 'newChatMessage', expect.objectContaining({ id: first.id }));
+	});
 });

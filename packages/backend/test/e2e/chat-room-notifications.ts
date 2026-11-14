@@ -401,6 +401,154 @@ describe('그룹 알림과 채널 읽음', () => {
 		}
 	});
 
+	test.each([false, true])('수정 뒤 지연 중에 같은 글까지 다시 읽으면 알리지 않는다 (채널=%s)', async channels => {
+		const { roomId, general } = await room(channels);
+		await settings(roomId, owner, 'mentions');
+		const received: unknown[] = [];
+		const stream = await connectStream(owner, 'main', event => {
+			if (event.type === 'newChatMessage' && event.body?.toRoomId === roomId) received.push(event.body);
+		});
+		try {
+			const message = await send(roomId, general, '멘션 없는 글');
+			await waitForChatNotificationTurn();
+			expect((await request('read', { roomId, channelId: general, untilId: message.id }, owner)).status).toBe(204);
+
+			expect((await api('chat/messages/update', { messageId: message.id, text: '@notifyowner 새 멘션' }, member)).status).toBe(200);
+			expect((await request('read', { roomId, channelId: general, untilId: message.id }, owner)).status).toBe(204);
+			await waitForChatNotificationTurn();
+
+			expect(received).toHaveLength(0);
+		} finally {
+			stream.close();
+		}
+	});
+
+	test('더 새 미읽음 멘션이 남으면 수정된 글까지만 읽어도 수정 알림은 간다', async () => {
+		const { roomId } = await room();
+		await settings(roomId, owner, 'mentions');
+		const received: { id: string }[] = [];
+		const stream = await connectStream(owner, 'main', event => {
+			if (event.type === 'newChatMessage' && event.body?.toRoomId === roomId) received.push(event.body);
+		});
+		try {
+			const first = await send(roomId, undefined, '멘션 없는 첫 글');
+			const second = await send(roomId, undefined, '@notifyowner 둘째 멘션');
+			await waitForChatNotificationTurn();
+			expect(received.map(message => message.id)).toEqual([second.id]);
+
+			expect((await api('chat/messages/update', { messageId: first.id, text: '@notifyowner 첫 멘션 추가' }, member)).status).toBe(200);
+			expect((await request('read', { roomId, untilId: first.id }, owner)).status).toBe(204);
+			await waitForChatNotificationTurn();
+
+			expect(received.map(message => message.id)).toEqual([second.id, first.id]);
+		} finally {
+			stream.close();
+		}
+	});
+
+	test('수정 지연 중에 그룹을 나가면 알리지 않는다', async () => {
+		const { roomId } = await room();
+		expect((await api('chat/rooms/invitations/create', { roomId, userId: outsider.id }, owner)).status).toBe(200);
+		expect((await api('chat/rooms/join', { roomId }, outsider)).status).toBe(204);
+		await settings(roomId, outsider, 'mentions');
+		const received: unknown[] = [];
+		const stream = await connectStream(outsider, 'main', event => {
+			if (event.type === 'newChatMessage' && event.body?.toRoomId === roomId) received.push(event.body);
+		});
+		try {
+			const message = await send(roomId, undefined, '멘션 없는 글');
+			await waitForChatNotificationTurn();
+
+			expect((await api('chat/messages/update', { messageId: message.id, text: '@notifyoutsider 새 멘션' }, member)).status).toBe(200);
+			expect((await api('chat/rooms/leave', { roomId }, outsider)).status).toBe(204);
+			await waitForChatNotificationTurn();
+
+			expect(received).toHaveLength(0);
+		} finally {
+			stream.close();
+		}
+	});
+
+	test('수정 지연 중에 멘션을 제거하는 수정은 알리지 않는다', async () => {
+		const { roomId } = await room();
+		await settings(roomId, owner, 'mentions');
+		const received: unknown[] = [];
+		const stream = await connectStream(owner, 'main', event => {
+			if (event.type === 'newChatMessage' && event.body?.toRoomId === roomId) received.push(event.body);
+		});
+		try {
+			const message = await send(roomId, undefined, '멘션 없는 글');
+			await waitForChatNotificationTurn();
+
+			expect((await api('chat/messages/update', { messageId: message.id, text: '@notifyowner 새 멘션' }, member)).status).toBe(200);
+			expect((await api('chat/messages/update', { messageId: message.id, text: '멘션을 거둔 본문' }, member)).status).toBe(200);
+			await waitForChatNotificationTurn();
+
+			expect(received).toHaveLength(0);
+		} finally {
+			stream.close();
+		}
+	});
+
+	test.each(['channel', 'all'] as const)('채널 전환 정리가 읽음으로 지워진 출발 표식을 되살리지 않는다 (읽음=%s)', async mode => {
+		const { roomId } = await room();
+		await settings(roomId, owner, 'mentions');
+		const message = await send(roomId, undefined, '@notifyowner 전환 전 멘션');
+		await waitForChatNotificationTurn();
+		const notifications = app.get(ChatRoomNotificationService);
+		const repository = app.get(DI.chatMessagesRepository);
+		const original = repository.findOneBy.bind(repository);
+		let injected = false;
+		let general: string | undefined;
+		// 전환 정리가 출발 표식의 소속을 조회하는 순간에 실제 읽음이 먼저 끝난 순서를 만든다
+		const spy = vi.spyOn(repository, 'findOneBy').mockImplementation(async where => {
+			const condition = where as { id?: string; toRoomId?: string };
+			if (!injected && condition?.id === message.id && condition?.toRoomId === roomId) {
+				injected = true;
+				if (mode === 'channel') await notifications.read(owner.id, roomId, general, message.id);
+				else await notifications.read(owner.id, roomId, undefined, undefined, true);
+			}
+			return original(where);
+		});
+		try {
+			const converted = await app.get(ChatRoomChannelService).convert(owner.id, roomId);
+			general = converted.legacyChannelId!;
+			await app.get(ChatService).notifyRoomChannelsChanged(roomId);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(injected).toBe(true);
+
+		const redis = app.get(DI.redis);
+		expect(await redis.get(`newRoomChatChannelMessageExists:${owner.id}:${roomId}:${general}`)).toBeNull();
+		expect(await redis.get(`newRoomChatChannelMentionExists:${owner.id}:${roomId}:${general}`)).toBeNull();
+		expect(await redis.get(`newRoomChatMessageExists:${owner.id}:${roomId}`)).toBeNull();
+		expect(await redis.get(`newRoomChatMentionExists:${owner.id}:${roomId}`)).toBeNull();
+		expect(await redis.smembers(`newRoomChatUnreadChannels:${owner.id}:${roomId}`)).toEqual([]);
+		expect(await redis.sismember(`newChatMessagesExists:${owner.id}`, `room:${roomId}`)).toBe(0);
+		expect(await unread(roomId)).toMatchObject({ hasUnread: false, hasUnreadNotification: false });
+	});
+
+	test('읽음·수정·채널 전환은 별도의 읽음 경계 키를 만들지 않는다', async () => {
+		const { roomId, general, other } = await room(true);
+		await settings(roomId, owner, 'mentions');
+		const message = await send(roomId, general, '@notifyowner 멘션 글');
+		expect((await request('read', { roomId, channelId: general, untilId: message.id }, owner)).status).toBe(204);
+		await send(roomId, other, '다른 채널 글');
+		expect((await api('chat/messages/update', { messageId: message.id, text: '@notifyowner 수정 멘션' }, member)).status).toBe(200);
+		await waitForChatNotificationTurn();
+		expect((await request('read', { roomId, readAll: true }, owner)).status).toBe(204);
+
+		const plain = await room();
+		const plainMessage = await send(plain.roomId, undefined, '일반 그룹 글');
+		expect((await request('read', { roomId: plain.roomId, untilId: plainMessage.id }, owner)).status).toBe(204);
+		expect((await request('read', { roomId: plain.roomId, readAll: true }, owner)).status).toBe(204);
+
+		const redis = app.get(DI.redis);
+		const keys = (await redis.keys('*')) as string[];
+		expect(keys.filter(key => key.includes('ReadBoundary'))).toEqual([]);
+	});
+
 	test('원격 수정도 더 새 미읽음 멘션 뒤에서 첫 멘션을 알린다', async () => {
 		const { roomId } = await room();
 		await settings(roomId, owner, 'mentions');
