@@ -4,10 +4,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle backFallback="/chat" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
+<PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle backFallback="/chat" :reversed="split" :tabs="headerTabs" :actions="headerActions">
 	<!-- 自分が通話に入っているあいだは、通話 (ステージ) を出す。広いページではステージとチャットを左右に並べ、ステージは一つだけ作ってチャットを置く側の反対へ CSS の順序で移す。
 	狭いページではステージをいっぱいに広げ、チャットはその上に下から重ねるシートとして開く -->
-	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="[$style.chatTab, { [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }]">
+	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="[$style.chatTab, { [$style.single]: !split, [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }]">
 		<XStage v-if="split && room" :room="room" :call="voiceCallState" :class="$style.stage" :chatOpen="chatOpen" @toggleChat="chatOpen = !chatOpen"/>
 		<div v-if="split && voiceInOwnTab && chatOpen" ref="sheetBackdropEl" :class="$style.sheetBackdrop" @click="chatOpen = false"></div>
 		<!-- シートを開いたらすぐ中へフォーカスを移すので、v-show (フォーカスを移す watch より後に表示を切り替える) ではなく style で隠す -->
@@ -33,12 +33,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 				v-tooltip="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight"
 				class="_button" :class="[$style.chatCorner, { [$style.cornerRight]: chatSide === 'left' }]"
 				:aria-label="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight"
+				@mousedown="keepChatInputFocus"
 				@click="swapChatSide"
 			>
 				<i :class="chatSide === 'right' ? 'ti ti-layout-sidebar' : 'ti ti-layout-sidebar-right'" aria-hidden="true"></i>
 			</button>
-			<!-- 並べているときはメッセージの欄だけを自分でスクロールさせる -->
-			<div ref="chatScrollerEl" :class="$style.chatScroller">
+			<!-- iOS Safari에서 역방향 스크롤 안의 sticky 입력란이 키보드를 열 때 사라진다.
+			입력란은 스크롤 영역 밖에 두고 메시지만 역방향으로 스크롤한다. -->
+			<div :class="[$style.chatScroller, { '_pageScrollableReversed': !split }]">
 				<!-- 通話の参加バナーはメッセージをスクロールしてもページヘッダーの下に貼り付ける -->
 				<MkStickyContainer ref="chatStickyEl" class="_spacer" style="--MI_SPACER-w: 700px;">
 					<template #header>
@@ -75,18 +77,19 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</div>
 						</div>
 
-						<div v-else ref="timelineEl" class="_gaps" :class="{ [$style.ownScroller]: split }">
+						<div v-else ref="timelineEl" class="_gaps" :class="$style.ownScroller">
 							<div v-if="canFetchMore" :class="$style.moreRow">
 								<MkButton :class="$style.more" :wait="moreFetching" primary rounded @click="fetchMore">{{ i18n.ts.loadMore }}</MkButton>
 							</div>
 
+							<!-- 過去のメッセージを追加するときは、読んでいる位置を move アニメーションで動かさない。 -->
 							<TransitionGroup
 								ref="timelineItemsEl"
 								:enterActiveClass="prefer.s.animation ? $style.transition_x_enterActive : ''"
 								:leaveActiveClass="prefer.s.animation ? $style.transition_x_leaveActive : ''"
 								:enterFromClass="prefer.s.animation ? $style.transition_x_enterFrom : ''"
 								:leaveToClass="prefer.s.animation ? $style.transition_x_leaveTo : ''"
-								:moveClass="prefer.s.animation ? $style.transition_x_move : ''"
+								:moveClass="prefer.s.animation && !moreFetching ? $style.transition_x_move : ''"
 								tag="div" class="_gaps"
 							>
 								<template v-for="(item, i) in displayTimeline" :key="item.id">
@@ -121,10 +124,18 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</div>
 				</MkStickyContainer>
 			</div>
-			<!-- 並べているときの入力欄の置き場所。入力欄はページの下端 (footer) からここへ移ってくる。
-			v-show は描画のあと (フォーカスを戻す watch より後) に表示を切り替えるので、隠れた所へ focus() してしまう。
-			ブラウザは隠れた要素への focus() を無視するので、表示は style で描画と同時に切り替える -->
-			<div ref="paneFormHostEl" :class="$style.paneFooter" :style="split ? undefined : { display: 'none' }"></div>
+			<div :class="[$style.paneFooter, { [$style.isFriendly]: !split && isMobile && isFriendly().value }]">
+				<div ref="formEl" class="_gaps" :class="$style.formArea" @compositionstart="composing = true" @compositionend="composing = false" @focusout="composing = false">
+					<Transition name="fade">
+						<div v-show="showIndicator" :class="$style.new">
+							<button class="_buttonPrimary" :class="$style.newButton" @click="onIndicatorClick">
+								<i class="ti ti-circle-arrow-down" :class="$style.newIcon" aria-hidden="true"></i>{{ i18n.ts._chat.newMessage }}
+							</button>
+						</div>
+					</Transition>
+					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @sent="onSent"/>
+				</div>
+			</div>
 		</div>
 	</div>
 
@@ -140,25 +151,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<XInfo v-if="room != null" :room="room" @updated="room = $event" @deleting="deletingOwnRoom = $event"/>
 	</div>
 
-	<template #footer>
-		<!-- 表示は v-show ではなく style で切り替える (上の paneFormHostEl と同じ理由) -->
-		<div v-if="tab === 'chat'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]" :style="split ? { display: 'none' } : undefined">
-			<!-- 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (並べているときはメッセージの欄の下へ)。
-			作り直すとフォーカスが外れてページ全体のショートカットが効いてしまい、変換中の文字や送信中の状態も失われる -->
-			<Teleport v-if="paneFormHostEl != null" :to="paneFormHostEl" :disabled="!split">
-				<div ref="formEl" class="_gaps" :class="$style.formArea" @compositionstart="composing = true" @compositionend="composing = false" @focusout="composing = false">
-					<Transition name="fade">
-						<div v-show="showIndicator" :class="$style.new">
-							<button class="_buttonPrimary" :class="$style.newButton" @click="onIndicatorClick">
-								<i class="ti ti-circle-arrow-down" :class="$style.newIcon" aria-hidden="true"></i>{{ i18n.ts._chat.newMessage }}
-							</button>
-						</div>
-					</Transition>
-					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @sent="onSent"/>
-				</div>
-			</Teleport>
-		</div>
-	</template>
 </PageWithHeader>
 </template>
 
@@ -180,12 +172,14 @@ import type { PageHeaderItem } from '@/types/page-header.js';
 import * as os from '@/os.js';
 import { globalEvents } from '@/events.js';
 import { useStream } from '@/stream.js';
+import { chatUnreadEventsActive, chatUnreadSubscriptionGap, beginChatUnreadRecheck, restoreChatUnreadGapIfUnchanged } from '@/chat-unread-subscription.js';
 import * as sound from '@/utility/sound.js';
 import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { definePage } from '@/page.js';
 import { prefer } from '@/preferences.js';
+import { refreshCurrentAccount } from '@/accounts.js';
 import MkButton from '@/components/MkButton.vue';
 import { useRouter } from '@/router.js';
 import MkInfo from '@/components/MkInfo.vue';
@@ -197,6 +191,7 @@ import { deviceKind } from '@/utility/device-kind.js';
 import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { useChatReadingPlace } from '@/composables/use-chat-reading-place.js';
 import { useElementWidth } from '@/composables/use-element-width.js';
+import { useSoftwareKeyboard } from '@/composables/use-software-keyboard.js';
 import { focusTrap } from '@/utility/focus-trap.js';
 import { isTouchUsing } from '@/utility/touch.js';
 import { voiceCallStatusText } from '@/utility/voice-call-status.js';
@@ -212,6 +207,12 @@ const handleResize = () => {
 
 window.addEventListener('resize', handleResize);
 
+// キーボードが出ているあいだはホームインジケーターの領域も覆われるので、チャット画面では下のセーフエリアの余白を無くす。
+// この変数を書くのはこのページだけなので、ほかの画面の余白は変わらない
+const pageEl = useTemplateRef('pageEl');
+// 포커스가 이 페이지 안의 입력란에 있을 때만 키보드로 센다. 스택의 뒤에 남은 대화가 전경 화면의 입력란을 자기 것으로 세지 않는다.
+const keyboardVisible = useSoftwareKeyboard({ scope: () => pageEl.value?.$el ?? null });
+
 const $i = ensureSignin();
 const router = useRouter();
 
@@ -219,6 +220,27 @@ const props = defineProps<{
 	userId?: string;
 	roomId?: string;
 }>();
+
+// 스택 라우터에서는 뒤에 남은 대화가 전경 화면의 하단 안전 영역까지 바꾸지 않도록, 이 대화가 맨 앞일 때만 여백 변수를 소유한다.
+// 라우트가 이 대화인지로 맨 앞을 판단한다 (포커스 포함 관계는 감지기의 scope가 이미 본다).
+const isFrontmostConversation = computed(() => {
+	const current = router.currentRef.value;
+	if (props.userId != null) return current.route.path === '/chat/user/:userId' && current.props.get('userId') === props.userId;
+	if (props.roomId != null) return current.route.path === '/chat/room/:roomId' && current.props.get('roomId') === props.roomId;
+	return false;
+});
+
+// 정리할 때는 이 인스턴스가 소유한 값만 해제한다. 뒤에 남은 다른 인스턴스의 값까지 지우지 않는다.
+let ownsFooterSafeArea = false;
+watch([keyboardVisible, isMobile, isFrontmostConversation], ([keyboard, mobile, frontmost]) => {
+	if (keyboard && mobile && frontmost) {
+		window.document.body.style.setProperty('--MI-mobileFooterSafeAreaBottom', '0px');
+		ownsFooterSafeArea = true;
+	} else if (ownsFooterSafeArea) {
+		window.document.body.style.removeProperty('--MI-mobileFooterSafeAreaBottom');
+		ownsFooterSafeArea = false;
+	}
+}, { immediate: true });
 
 export type NormalizedChatMessage = Omit<Misskey.entities.ChatMessageLite, 'fromUser' | 'reactions'> & {
 	fromUser: Misskey.entities.UserLite;
@@ -348,6 +370,11 @@ function goToNewest() {
 	});
 }
 
+router.useListener('same', () => {
+	if (tab.value !== 'chat' || split.value) return;
+	getScrollContainer(timelineEl.value)?.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
 // スクロールする箱は並べ方で変わるので、箱ごとに付け替えずにまとめて受ける (scroll は上へ伝わらないがキャプチャでは受けられる)
 function onScrollWhileNotified(ev: Event) {
 	if (!showIndicator.value) return;
@@ -390,6 +417,9 @@ async function initialize() {
 	deletingOwnRoom.value = false;
 	leavingRoom.value = false;
 	fetchError.value = null;
+
+	// タイムラインの取得自体が既読にするので、その前に空白を覚えておく
+	const gapAtRead = chatUnreadSubscriptionGap();
 
 	if (props.userId) {
 		const result = await Promise.all([
@@ -512,13 +542,29 @@ async function initialize() {
 	initialized.value = true;
 	membershipEnded.value = false;
 	initializing.value = false;
+
+	recheckUnreadSign(gapAtRead);
 }
 
-let isActivated = true;
+// 既読になった知らせはバージョン付きイベントで届くので、購読が健康なら会話を読んだあとにアカウントを問い合わせない。
+// 聞いていないあいだに出た知らせはあとから流れてこない。リアルタイムモードを切っているあいだと、
+// ページを開いた直後やつなぎ直した直後の購読の空白がそうで、印が点いたまま残る。そのときだけサーバーへ確かめ直す。
+// 空白はこの画面の外 (chat-unread-subscription) で覚えているので、この画面を作る前に起きた空白も確かめ直せる。
+// 読み直し自身も購読と競合する。空白のうちに始めた読み直しがサーバーで既読に変えたあとに出た知らせは、
+// 取得の途中で購読が済んでも届かないことがある。だから確かめ直すかは完了時ではなく読み直しの開始時の空白で決める
+function recheckUnreadSign(gapAtRead: boolean) {
+	if (!$i.hasUnreadChatMessages) return;
+	if (chatUnreadEventsActive() && !gapAtRead) return;
+	// 연결 상태에 따라 공백 해소·중복 억제가 달라진다. 단절 중 발행은 공백을 남겨 복구 뒤 첫 열기의 확인 의무를 유지하고,
+	// 연결 중 발행은 공백을 해소하되 실패하면 되돌린다.
+	const { issue, failToken } = beginChatUnreadRecheck();
+	if (!issue) return;
+	refreshCurrentAccount({ protectChatUnread: true, rejectOnFailure: true })
+		.catch(() => restoreChatUnreadGapIfUnchanged(failToken));
+}
 
-onActivated(() => {
-	isActivated = true;
-});
+// 見ているページかどうか。戻ってきたときに立てるのは、下の onActivated の先頭
+let isActivated = true;
 
 onDeactivated(() => {
 	isActivated = false;
@@ -547,11 +593,14 @@ async function fetchMore() {
 	messages.value.push(...newMessages.map(x => normalizeMessage(x)));
 
 	canFetchMore.value = newMessages.length === LIMIT;
-	moreFetching.value = false;
 
 	await nextTick();
 	earlierLoaded();
+	moreFetching.value = false;
 }
+
+// 見ていないあいだに届いたメッセージは、見に戻ったときに既読にする。サーバーは会話ごとに既読にするので、最後の一通を伝えれば足りる
+let arrivedWhileAway: NormalizedChatMessage['id'] | null = null;
 
 function onMessage(message: Misskey.entities.ChatMessageLite) {
 	// 読み直しのほうが先に届けていることがある
@@ -563,12 +612,27 @@ function onMessage(message: Misskey.entities.ChatMessageLite) {
 	const index = messages.value.findIndex(m => m.id < message.id);
 	messages.value.splice(index === -1 ? messages.value.length : index, 0, normalizeMessage(message));
 
-	// TODO: DOM的にバックグラウンドになっていないかどうかも考慮する
-	if (message.fromUserId !== $i.id && !window.document.hidden && isActivated) {
-		connection.value?.send('read', {
-			id: message.id,
-		});
+	if (message.fromUserId !== $i.id) {
+		// TODO: DOM的にバックグラウンドになっていないかどうかも考慮する
+		if (!window.document.hidden && isActivated) {
+			connection.value?.send('read', {
+				id: message.id,
+			});
+		} else {
+			arrivedWhileAway = message.id;
+		}
 	}
+}
+
+function readWhatArrivedWhileAway() {
+	if (arrivedWhileAway == null || !isActivated || window.document.hidden) return;
+
+	connection.value?.send('read', {
+		id: arrivedWhileAway,
+	});
+	arrivedWhileAway = null;
+	// 이어서 실행하는 catchUp에서 읽기 완료와 계정의 미읽음 상태를 함께 확인한다.
+	eventsMayBeMissing = true;
 }
 
 function onDeleted(id: string) {
@@ -722,6 +786,7 @@ function notifyNewMessage() {
 
 function onVisibilitychange() {
 	if (window.document.hidden) return;
+	readWhatArrivedWhileAway();
 	catchUp();
 }
 
@@ -758,6 +823,8 @@ async function catchUp() {
 /** @returns 一時的な失敗で読めなかったときは false */
 async function readLatest(): Promise<boolean> {
 	const LIMIT = 20;
+	// こちらも取得自体が既読にするので、その前に空白を覚えておく
+	const gapAtRead = chatUnreadSubscriptionGap();
 	let r: Misskey.entities.ChatRoomsShowResponse | null;
 	let m: (Misskey.entities.ChatMessageLite | Misskey.entities.ChatMessage)[];
 	try {
@@ -795,6 +862,7 @@ async function readLatest(): Promise<boolean> {
 		room.value = r;
 		onMembershipChanged();
 	}
+	recheckUnreadSign(gapAtRead);
 	return true;
 }
 
@@ -816,6 +884,10 @@ onUnmounted(() => {
 });
 
 onActivated(() => {
+	// ルーターはページを非同期コンポーネントに包んでキャッシュする。そのとき Vue は onActivated をページが登録したのと逆の順に呼ぶので、
+	// 別の onActivated で立てると、戻ってきたときの処理が「まだ見ていない」と判断して何もしない。同じ場所で先に立てる
+	isActivated = true;
+
 	if (roomDeletedWhileInactive) {
 		roomDeletedWhileInactive = false;
 		notifyRoomClosed(i18n.ts._chat.roomDeleted);
@@ -824,7 +896,11 @@ onActivated(() => {
 	if (!initialized.value) {
 		initialize();
 	} else {
+		readWhatArrivedWhileAway();
 		catchUp();
+		// 실패한 보호 확인이 공백을 되돌렸다면, 다시 들어온 이 대화가 확인 의무를 이어받는다.
+		// catchUp이 읽기를 시작했다면 그 읽기가 시작 시점의 공백을 보고 확인하므로, 여기서는 겹쳐 발행하지 않는다.
+		if (!readingAgain && chatUnreadSubscriptionGap()) recheckUnreadSign(true);
 	}
 });
 
@@ -833,6 +909,10 @@ onBeforeUnmount(() => {
 	listChannel?.dispose();
 	useStream().off('_connected_', readAgain);
 	window.document.removeEventListener('visibilitychange', onVisibilitychange);
+	if (ownsFooterSafeArea) {
+		window.document.body.style.removeProperty('--MI-mobileFooterSafeAreaBottom');
+		ownsFooterSafeArea = false;
+	}
 });
 
 async function inviteUser() {
@@ -991,61 +1071,26 @@ function onSheetEsc(ev: KeyboardEvent) {
 	if (split.value && voiceInOwnTab.value) chatOpen.value = false;
 }
 
-// スクロール先を付け替える前の位置を覚え、描画直後・次のフレームより前に column-reverse の位置を揃える。
-const pageEl = useTemplateRef('pageEl');
 const chatStickyEl = useTemplateRef('chatStickyEl');
-const chatScrollerEl = useTemplateRef('chatScrollerEl');
-let scrollToRestore = 0;
-
-function currentChatScroller(isSplit: boolean) {
-	return isSplit ? chatScrollerEl.value : getScrollContainer(chatScrollerEl.value?.parentElement ?? null);
-}
-
-watch(split, (_next, previous) => {
-	scrollToRestore = currentChatScroller(previous)?.scrollTop ?? 0;
-}, { flush: 'pre' });
-watch(split, next => {
-	// footer とカードの高さも即時に測り直す。通常の ResizeObserver は 100ms 待つため、それだけでは一瞬ずれる。
+watch(split, () => {
+	// 배치가 바뀌면 배너와 페이지 헤더의 높이를 바로 다시 잰다.
 	pageEl.value?.refreshStickyLayout();
 	chatStickyEl.value?.refresh();
-	const scroller = currentChatScroller(next);
-	if (scroller != null) scroller.scrollTop = scrollToRestore;
 }, { flush: 'post' });
 
-// 入力欄を移すと (要素の付け替えで) フォーカスが外れるので、移す前にフォーカスと選択範囲を覚えておき、移したあとに戻す。
-// 戻すのは描画のあと (flush: 'post')。そのときには入力欄の置き場所の表示も描画で切り替わっている
-const paneFormHostEl = useTemplateRef('paneFormHostEl');
 const formEl = useTemplateRef('formEl');
 const chatFormEl = useTemplateRef('chatFormEl');
-let focusToRestore: { el: HTMLElement; selection: [number, number, 'forward' | 'backward' | 'none'] | null } | null = null;
-
-watch(split, () => {
-	const active = window.document.activeElement;
-	if (formEl.value == null || !(active instanceof HTMLElement) || !formEl.value.contains(active)) {
-		focusToRestore = null;
-		return;
-	}
-	focusToRestore = {
-		el: active,
-		selection: active instanceof HTMLTextAreaElement ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null,
-	};
-}, { flush: 'pre' });
-
-watch(split, () => {
-	const target = focusToRestore;
-	focusToRestore = null;
-	if (target == null || !target.el.isConnected || window.document.activeElement === target.el) return;
-	target.el.focus({ preventScroll: true });
-	if (target.selection != null && target.el instanceof HTMLTextAreaElement) {
-		target.el.setSelectionRange(...target.selection);
-	}
-}, { flush: 'post' });
 
 // 設定が変わったらすぐ並びを変えたいので、変更を追える prefer.r を見る
 const chatSide = computed(() => prefer.r['voiceCall.stageChatSide'].value);
 
 function swapChatSide() {
 	prefer.commit('voiceCall.stageChatSide', chatSide.value === 'right' ? 'left' : 'right');
+}
+
+// このページの入力欄はメッセージ入力だけ。送信ボタンと同じく、入力中のフォーカスを奪わない (ソフトウェアキーボードはフォーカスについてくる)
+function keepChatInputFocus(ev: MouseEvent) {
+	if (window.document.activeElement instanceof HTMLTextAreaElement) ev.preventDefault();
 }
 
 // 検索はメニューから開く。開いているあいだだけタブにも出し、いまどこにいるかを分かるようにする
@@ -1173,6 +1218,23 @@ definePage(computed(() => {
 	gap: 8px;
 }
 
+// 일반 채팅과 분할 통화 모두 메시지만 스크롤하고 입력란은 아래에 둔다.
+.single {
+	height: calc(100cqh - var(--MI-stickyTop, 0px) - var(--MI-stickyBottom, 0px));
+
+	.chatPane {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		min-height: 0;
+	}
+
+	.chatScroller {
+		--MI-stickyTop: 0px;
+		--MI-stickyBottom: 0px;
+	}
+}
+
 // 左右に並べるときは、ページヘッダーと下端の間 (スクロールしない高さ) にちょうど収める
 .split {
 	display: flex;
@@ -1200,18 +1262,17 @@ definePage(computed(() => {
 		border-left: none;
 		border-right: solid 0.5px var(--MI_THEME-divider);
 	}
+}
 
-	// ページと同じく、新しいメッセージが下に来るよう逆向きにスクロールさせる
-	.chatScroller {
-		display: flex;
-		flex: 1;
-		flex-direction: column-reverse;
-		min-height: 0;
-		overflow-y: scroll;
-		overscroll-behavior: contain;
-		container-type: inline-size;
-		background: var(--MI_THEME-bg);
-	}
+.chatScroller {
+	display: flex;
+	flex: 1;
+	flex-direction: column-reverse;
+	min-height: 0;
+	overflow-y: scroll;
+	overscroll-behavior: contain;
+	container-type: inline-size;
+	background: var(--MI_THEME-bg);
 }
 
 // メッセージの欄だけがスクロールするので、アイコンはページヘッダーではなく欄の上端を基準に貼り付ける
@@ -1222,14 +1283,10 @@ definePage(computed(() => {
 .paneFooter {
 	flex-shrink: 0;
 	padding-top: 8px;
-}
-
-.footer {
 	width: 100%;
-	padding-top: 8px;
 
 	&.isFriendly {
-		padding-bottom: calc(50px + env(safe-area-inset-bottom));
+		padding-bottom: calc(50px + var(--MI-mobileFooterSafeAreaBottom, env(safe-area-inset-bottom, 0px)));
 	}
 }
 

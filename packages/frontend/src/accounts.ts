@@ -139,8 +139,12 @@ export function replaceCurrentAccountData(accountData: Misskey.entities.MeDetail
 	miLocalStorage.setItem('account', JSON.stringify($i));
 }
 
+let chatUnreadRevision = 0;
+let accountRefreshRevision = 0;
+
 export function updateCurrentAccount(accountData: Partial<Misskey.entities.MeDetailed>) {
 	if (!$i) return;
+	if (accountData.hasUnreadChatMessages !== undefined) chatUnreadRevision++;
 	for (const [key, value] of Object.entries(accountData)) {
 		($i[key as keyof typeof accountData] as any) = value;
 	}
@@ -150,10 +154,17 @@ export function updateCurrentAccount(accountData: Partial<Misskey.entities.MeDet
 	miLocalStorage.setItem('account', JSON.stringify($i));
 }
 
-export async function refreshCurrentAccount() {
+export async function refreshCurrentAccount(options?: { protectChatUnread?: boolean; rejectOnFailure?: boolean }) {
 	if (!$i) return;
 	const me = $i;
-	return fetchAccount($i.token, $i.id).then(replaceCurrentAccountData).catch(reason => {
+	const unreadRevision = chatUnreadRevision;
+	const refreshRevision = options?.protectChatUnread ? ++accountRefreshRevision : null;
+	return fetchAccount($i.token, $i.id).then(account => {
+		if (refreshRevision != null && refreshRevision !== accountRefreshRevision) return;
+		// 조회하는 동안 받은 읽음·새 쪽지 상태는 이전 HTTP 응답으로 덮어쓰지 않는다.
+		if (options?.protectChatUnread && unreadRevision !== chatUnreadRevision) account.hasUnreadChatMessages = me.hasUnreadChatMessages;
+		replaceCurrentAccountData(account);
+	}).catch(reason => {
 		if (reason === isAccountDeleted) {
 			removeAccount(host, me.id);
 			if (Object.keys(store.s.accountTokens).length > 0) {
@@ -161,7 +172,10 @@ export async function refreshCurrentAccount() {
 			} else {
 				signout();
 			}
+			return;
 		}
+		// 쪽지 보호 경로만 옵트인으로 실패를 알려, 호출자가 공백을 되돌릴 수 있게 한다. 공용 갱신의 기존 동작은 바꾸지 않는다.
+		if (options?.rejectOnFailure) throw reason;
 	});
 }
 

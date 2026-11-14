@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
-import { defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
+import { defineAsyncComponent, defineComponent, h, KeepAlive, nextTick, ref } from 'vue';
 
 const mocks = vi.hoisted(() => {
 	class FakeChannel {
@@ -23,7 +23,11 @@ const mocks = vi.hoisted(() => {
 	return {
 		FakeChannel,
 		channel: new FakeChannel(),
-		me: { id: 'me', username: 'me', policies: { chatAvailability: 'available', canVoiceCall: false } },
+		me: { id: 'me', username: 'me', policies: { chatAvailability: 'available', canVoiceCall: false }, hasUnreadChatMessages: false },
+		store: { realtimeMode: true },
+		chatEventsActive: true,
+		chatGap: false,
+		refreshCurrentAccount: vi.fn(),
 		timeline: [] as unknown[],
 		roomMembers: [] as unknown[],
 		sentInvitations: [] as unknown[],
@@ -40,6 +44,7 @@ const mocks = vi.hoisted(() => {
 		streamOff: vi.fn(),
 		routerPush: vi.fn(),
 		routerReplace: vi.fn(),
+		routerCurrent: { value: { route: { path: '/chat/room/:roomId' }, props: new Map<string, string>([['roomId', 'r1']]) } },
 		alert: vi.fn(),
 		confirm: vi.fn(),
 		popupMenu: vi.fn(),
@@ -70,11 +75,21 @@ vi.mock('@/utility/misskey-api.js', () => ({
 		return [];
 	}),
 }));
-vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: mocks.streamOff, useChannel: () => mocks.channel }) }));
+vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: mocks.streamOff, useChannel: () => mocks.channel, state: 'connected' }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
+vi.mock('@/store.js', () => ({ store: { s: mocks.store } }));
+vi.mock('@/accounts.js', () => ({ refreshCurrentAccount: mocks.refreshCurrentAccount }));
+// 購読の空白は会話画面の外で覚えている。試験ではその状態を直接置く
+vi.mock('@/chat-unread-subscription.js', () => ({
+	chatUnreadEventsActive: () => mocks.chatEventsActive,
+	chatUnreadSubscriptionGap: () => mocks.chatGap,
+	resolveChatUnreadGap: () => { mocks.chatGap = false; },
+	beginChatUnreadRecheck: () => { mocks.chatGap = false; return { issue: true, failToken: 1 }; },
+	restoreChatUnreadGapIfUnchanged: () => { mocks.chatGap = true; },
+}));
 vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog, selectUsers: mocks.selectUsers, success: mocks.success, promiseDialog: (promise: Promise<unknown>) => promise }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace, useListener: vi.fn() }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace, useListener: vi.fn(), currentRef: mocks.routerCurrent }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // 通話や入力欄は吹き出しのまとまりと関係ないので空にする
 vi.mock('@/composables/use-chat-room-voice-call.js', async () => {
@@ -154,6 +169,10 @@ import { misskeyApi } from '@/utility/misskey-api.js';
 import { chatLeaveErrors } from '@/pages/chat/chat-errors.js';
 import { installFakeResizeObserver, resizeObserved } from './fake-resize-observer.js';
 
+// ルーターはページを非同期コンポーネントに包んでからキャッシュする (router.definition.ts の page())。
+// 包まれたページの onActivated を、Vue はページが登録したのと逆の順に呼ぶ。キャッシュから戻る試験は、ルーターと同じ形で置いて確かめる
+const RoutedRoomPage = defineAsyncComponent(() => Promise.resolve(XRoomPage));
+
 const apiMock = vi.mocked(misskeyApi).getMockImplementation()!;
 
 const alert = mocks.alert;
@@ -182,6 +201,9 @@ async function flush() {
 }
 
 async function renderRoom(target: 'room' | 'user' = 'room') {
+	mocks.routerCurrent.value = target === 'room'
+		? { route: { path: '/chat/room/:roomId' }, props: new Map<string, string>([['roomId', 'r1']]) }
+		: { route: { path: '/chat/user/:userId' }, props: new Map<string, string>([['userId', 'alice']]) };
 	const host = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
@@ -224,6 +246,11 @@ beforeEach(() => {
 	mocks.apiWithDialog.mockReset().mockResolvedValue(undefined);
 	mocks.selectUsers.mockReset().mockResolvedValue([{ id: 'invitee', username: 'invitee', host: null, name: null }]);
 	mocks.membersMounts.value = 0;
+	mocks.me.hasUnreadChatMessages = false;
+	mocks.store.realtimeMode = true;
+	mocks.chatEventsActive = true;
+	mocks.chatGap = false;
+	mocks.refreshCurrentAccount.mockReset().mockResolvedValue(undefined);
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
 });
@@ -1136,7 +1163,7 @@ describe('following the newest message', () => {
 			const host = defineComponent({
 				setup() {
 					provideMetadataReceiver(() => {});
-					return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+					return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { roomId: 'r1' }) : h('div') });
 				},
 			});
 			const { container } = render(host, { global: { stubs, directives: { tooltip: {} } } });
@@ -1509,7 +1536,7 @@ describe('after the stream reconnects', () => {
 		const page = defineComponent({
 			setup() {
 				provideMetadataReceiver(() => {});
-				return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { roomId: 'r1' }) : h('div') });
 			},
 		});
 		const { container } = render(page, { global: { stubs, directives: { tooltip: {} } } });
@@ -1547,6 +1574,440 @@ describe('after the stream reconnects', () => {
 	});
 });
 
+describe('telling the server what was read', () => {
+	const reads = (send: { mock: { calls: unknown[][] } }) => send.mock.calls.filter(([type]) => type === 'read').map(([, body]) => body);
+
+	async function arrive(newMessage: ReturnType<typeof message>) {
+		mocks.channel.emit('message', newMessage);
+		await flush();
+	}
+
+	async function lookAtTab(hidden: { mockReturnValue: (value: boolean) => unknown }) {
+		hidden.mockReturnValue(false);
+		window.document.dispatchEvent(new Event('visibilitychange'));
+		await flush();
+	}
+
+	function cachedPage() {
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { userId: 'alice' }) : h('div') });
+			},
+		});
+		return { page, visible };
+	}
+
+	test('marks a message read as it arrives in the conversation being looked at', async () => {
+		const send = vi.spyOn(mocks.channel, 'send');
+		await renderRoom('user');
+
+		await arrive(message('m4', 'alice', 3 * MINUTE));
+
+		expect(reads(send)).toEqual([{ id: 'm4' }]);
+	});
+
+	test('leaves a message unread while the tab is hidden, and marks it read once the tab is looked at', async () => {
+		const send = vi.spyOn(mocks.channel, 'send');
+		await renderRoom('user');
+		const hidden = vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
+
+		try {
+			await arrive(message('m4', 'alice', 3 * MINUTE));
+			await arrive(message('m5', 'alice', 4 * MINUTE));
+			expect(reads(send)).toEqual([]);
+
+			await lookAtTab(hidden);
+
+			// サーバーは会話ごとに既読にするので、最後の一通を伝えれば足りる
+			expect(reads(send)).toEqual([{ id: 'm5' }]);
+		} finally {
+			hidden.mockRestore();
+		}
+	});
+
+	test('marks what arrived while another page was open as read once the cached page is opened again', async () => {
+		const send = vi.spyOn(mocks.channel, 'send');
+		const { page, visible } = cachedPage();
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+
+		visible.value = false;
+		await flush();
+		await arrive(message('m4', 'alice', 3 * MINUTE));
+		expect(reads(send)).toEqual([]);
+
+		visible.value = true;
+		await flush();
+
+		expect(reads(send)).toEqual([{ id: 'm4' }]);
+	});
+
+	test('waits for the tab too when a cached page is opened again behind a hidden tab', async () => {
+		const send = vi.spyOn(mocks.channel, 'send');
+		const { page, visible } = cachedPage();
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		visible.value = false;
+		await flush();
+		await arrive(message('m4', 'alice', 3 * MINUTE));
+		const hidden = vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
+
+		try {
+			visible.value = true;
+			await flush();
+			expect(reads(send)).toEqual([]);
+
+			await lookAtTab(hidden);
+
+			expect(reads(send)).toEqual([{ id: 'm4' }]);
+		} finally {
+			hidden.mockRestore();
+		}
+	});
+
+	test('sends nothing on coming back when nothing arrived meanwhile', async () => {
+		const send = vi.spyOn(mocks.channel, 'send');
+		await renderRoom('user');
+		const hidden = vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
+
+		try {
+			// 自分がほかの端末から送ったものは、読むものではない
+			await arrive(message('m4', 'me', 3 * MINUTE));
+			await lookAtTab(hidden);
+			hidden.mockReturnValue(true);
+			await lookAtTab(hidden);
+
+			expect(reads(send)).toEqual([]);
+		} finally {
+			hidden.mockRestore();
+		}
+	});
+
+	test('does not repeat the read each time the tab is looked at', async () => {
+		const send = vi.spyOn(mocks.channel, 'send');
+		await renderRoom('user');
+		const hidden = vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
+
+		try {
+			await arrive(message('m4', 'alice', 3 * MINUTE));
+			await lookAtTab(hidden);
+			hidden.mockReturnValue(true);
+			await lookAtTab(hidden);
+
+			expect(reads(send)).toEqual([{ id: 'm4' }]);
+		} finally {
+			hidden.mockRestore();
+		}
+	});
+});
+
+describe('the unread sign with realtime mode off', () => {
+	// 부팅 때 실시간 모드가 꺼져 있으면 쪽지 이벤트 핸들러가 등록되지 않는다
+	beforeEach(() => {
+		mocks.chatEventsActive = false;
+	});
+
+	test('refreshes the sign after returning to a cached conversation without reconnecting', async () => {
+		mocks.store.realtimeMode = false;
+		mocks.me.hasUnreadChatMessages = true;
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { userId: 'alice' }) : h('div') });
+			},
+		});
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		visible.value = false;
+		await flush();
+		mocks.channel.emit('message', message('m4', 'alice', 3 * MINUTE));
+		await flush();
+		mocks.refreshCurrentAccount.mockClear();
+
+		visible.value = true;
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	// メインのチャンネルを聞いていないので、既読になった知らせは届かない
+	test('asks the server about the sign after a conversation is opened and read', async () => {
+		mocks.store.realtimeMode = false;
+		mocks.me.hasUnreadChatMessages = true;
+
+		await renderRoom('user');
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	test('asks about a room as well', async () => {
+		mocks.store.realtimeMode = false;
+		mocks.me.hasUnreadChatMessages = true;
+
+		await renderRoom('room');
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	test('asks again after reading what came while the stream was away', async () => {
+		mocks.store.realtimeMode = false;
+		mocks.me.hasUnreadChatMessages = true;
+		await renderRoom('user');
+		mocks.refreshCurrentAccount.mockClear();
+
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	test('does not ask while the sign is off', async () => {
+		mocks.store.realtimeMode = false;
+
+		await renderRoom('user');
+
+		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+	});
+});
+
+// 既読になった知らせはバージョン付きイベントで届く。健康的な購読のあいだは会話を読んでもアカウントを問い合わせない。
+// ページを開いた直後やつなぎ直した直後は、購読が済む前にサーバーが知らせを出してしまうことがあり、その知らせはあとから流れてこない
+describe('the unread sign in realtime mode', () => {
+	test.each(['user', 'room'] as const)('trusts the versioned events after a %s conversation is opened and read', async kind => {
+		mocks.me.hasUnreadChatMessages = true;
+
+		await renderRoom(kind);
+
+		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+	});
+
+	test('asks the server when the page opened before the stream connected', async () => {
+		mocks.chatGap = true;
+		mocks.me.hasUnreadChatMessages = true;
+
+		await renderRoom('user');
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	// 会話画面が無いあいだに起きた空白も、あとから開いた画面が確かめ直す
+	test('asks when the gap happened before the conversation was opened', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		mocks.chatGap = true;
+
+		await renderRoom('user');
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(false);
+	});
+
+	// 読み直し自身が購読と競合することがある。最初の取得中に購読が済んでも、
+	// その取得がサーバーで既読に変えたあとに出た知らせは届かないことがあるので、読み直しの開始時点で確かめ直す
+	test('asks when the subscription completes while the first read is in flight', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		mocks.chatGap = true;
+		let openGate!: () => void;
+		mocks.timelineGate = new Promise<void>(resolve => { openGate = resolve; });
+
+		const rendered = renderRoom('user');
+		await flush();
+		// 取得の途中で購読完了の知らせが届く
+		mocks.chatGap = false;
+		openGate();
+		await rendered;
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledWith({ protectChatUnread: true, rejectOnFailure: true });
+	});
+
+	test('asks when the subscription completes while a reconnect read is in flight', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		await renderRoom('user');
+		mocks.refreshCurrentAccount.mockClear();
+
+		mocks.chatGap = true;
+		let openGate!: () => void;
+		mocks.timelineGate = new Promise<void>(resolve => { openGate = resolve; });
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		mocks.chatGap = false;
+		openGate();
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(false);
+	});
+
+	// 부팅 뒤 실시간 모드를 켜고 새로고침을 건너뛰면 이벤트 핸들러가 없는 상태다. 이때도 서버에 확인한다
+	test('asks when realtime mode was turned on after boot without a reload', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		mocks.store.realtimeMode = true;
+		mocks.chatEventsActive = false;
+
+		await renderRoom('user');
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	test('asks again after reading what came while the stream was away', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		await renderRoom('user');
+		mocks.refreshCurrentAccount.mockClear();
+
+		mocks.chatGap = true;
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(false);
+	});
+
+	test('does not ask again once the gap was checked', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		await renderRoom('user');
+
+		mocks.chatGap = true;
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		await flush();
+		mocks.refreshCurrentAccount.mockClear();
+
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+	});
+
+	test('does not ask on returning to a hidden tab when the subscription stayed healthy', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		await renderRoom('user');
+		const hidden = vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
+
+		try {
+			mocks.channel.emit('message', message('m4', 'alice', 3 * MINUTE));
+			await flush();
+			mocks.refreshCurrentAccount.mockClear();
+
+			hidden.mockReturnValue(false);
+			window.document.dispatchEvent(new Event('visibilitychange'));
+			await flush();
+			await flush();
+
+			expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+		} finally {
+			hidden.mockRestore();
+		}
+	});
+
+	test('does not ask while the sign is off', async () => {
+		await renderRoom('user');
+
+		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+	});
+
+	// 실패한 보호 확인이 공백을 되돌리면, 목록에 갔다 같은 대화로 돌아와도 확인 의무가 남아 있어야 한다.
+	// 캐시된 화면은 다시 들어와도 초기화를 거치지 않으므로, 돌아온 화면이 공백을 이어받는다
+	test('asks again on returning to a cached conversation when a failed check restored the gap', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		mocks.chatGap = true;
+		mocks.refreshCurrentAccount.mockRejectedValueOnce(new Error('server error'));
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { userId: 'alice' }) : h('div') });
+			},
+		});
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(true);
+
+		visible.value = false;
+		await flush();
+		visible.value = true;
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledTimes(2);
+		expect(mocks.refreshCurrentAccount).toHaveBeenLastCalledWith({ protectChatUnread: true, rejectOnFailure: true });
+		expect(mocks.chatGap).toBe(false);
+	});
+
+	test('does not ask on returning to a cached conversation when there is no gap', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { userId: 'alice' }) : h('div') });
+			},
+		});
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+
+		visible.value = false;
+		await flush();
+		visible.value = true;
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+	});
+
+	// 돌아온 김에 읽는 대화가 있다면, 그 읽기가 공백을 보고 확인한다. 돌아온 화면이 또 확인하면 요청이 겹친다
+	test('does not double-ask when returning brings a read that checks the gap itself', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { userId: 'alice' }) : h('div') });
+			},
+		});
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+
+		visible.value = false;
+		await flush();
+		mocks.channel.emit('message', message('m4', 'alice', 3 * MINUTE));
+		await flush();
+		mocks.chatGap = true;
+
+		visible.value = true;
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(false);
+	});
+});
+
 test('another member leaving does not close my room', async () => {
 	const { container } = await renderRoom();
 	mocks.channel.emit('membershipEnded', { userId: 'someone-else' });
@@ -1570,7 +2031,7 @@ describe('a deleted room', () => {
 		const page = defineComponent({
 			setup() {
 				provideMetadataReceiver(() => {});
-				return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { roomId: 'r1' }) : h('div') });
 			},
 		});
 		const dispose = vi.spyOn(mocks.channel, 'dispose');
@@ -1622,7 +2083,7 @@ test('returning to a cached room after being removed explains why instead of sho
 	const page = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
-			return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+			return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { roomId: 'r1' }) : h('div') });
 		},
 	});
 	render(page, { global: { stubs, directives: { tooltip: {} } } });
@@ -1652,7 +2113,7 @@ test('someone who moved on before the room answered is told when they return, no
 	const page = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
-			return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+			return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { roomId: 'r1' }) : h('div') });
 		},
 	});
 	render(page, { global: { stubs, directives: { tooltip: {} } } });
@@ -1968,7 +2429,7 @@ test('rejoining a kicked room reinitializes its cached page and subscribes again
 	const page = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
-			return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+			return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { roomId: 'r1' }) : h('div') });
 		},
 	});
 	const result = render(page, { global: { stubs } });

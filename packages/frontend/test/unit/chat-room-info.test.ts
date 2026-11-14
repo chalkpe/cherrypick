@@ -13,7 +13,7 @@ vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog, confirm: mocks.c
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.push }) }));
 
 import XInfo from '@/pages/chat/room.info.vue';
-import { chatRoomDeleteErrors, chatRoomUpdateErrors } from '@/pages/chat/chat-errors.js';
+import { chatMuteErrors, chatRoomDeleteErrors, chatRoomUpdateErrors } from '@/pages/chat/chat-errors.js';
 import XRoom from '@/pages/chat/XRoom.vue';
 import { i18n } from '@/i18n.js';
 
@@ -22,7 +22,7 @@ const stubs = {
 	MkInput: { props: ['modelValue', 'mfmAutocomplete'], emits: ['update:modelValue'], template: '<label><slot name="label"/><input :value="modelValue" :data-autocomplete="JSON.stringify(mfmAutocomplete)" @input="$emit(\'update:modelValue\', $event.target.value)"/><slot name="caption"/></label>' },
 	MkTextarea: { props: { modelValue: String, mfmAutocomplete: Array, mfmPreview: Boolean }, emits: ['update:modelValue'], template: '<label><slot name="label"/><textarea :value="modelValue" :data-autocomplete="JSON.stringify(mfmAutocomplete)" :data-preview="mfmPreview" @input="$emit(\'update:modelValue\', $event.target.value)"/></label>' },
 	MkButton: { emits: ['click'], template: '<button @click="$emit(\'click\')"><slot/></button>' },
-	MkSwitch: true,
+	MkSwitch: { props: ['modelValue'], emits: ['update:modelValue'], template: '<button role="switch" :aria-checked="String(modelValue)" @click="$emit(\'update:modelValue\', !modelValue)"><slot name="label"/></button>' },
 	MkKeyValue: { template: '<div><slot name="key"/><slot name="value"/></div>' },
 	MkAvatar: true,
 	MkA: { template: '<a><slot/></a>' },
@@ -97,6 +97,59 @@ test('an archived room offers unarchiving without a confirmation, and no saving'
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.unarchive }));
 	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/update', { roomId: 'r1', isArchived: false }, undefined, chatRoomUpdateErrors));
 	expect(mocks.confirm).not.toHaveBeenCalled();
+});
+
+// ミュートは見ている本人だけの通知の設定で、持ち主も自分のルームをミュートできる
+test.each([
+	['the owner', 'me'],
+	['a member', 'someone-else'],
+])('%s mutes the room, and the choice propagates to the room page', async (_, ownerId) => {
+	mocks.apiWithDialog.mockResolvedValueOnce(undefined);
+	const shown = { ...room, ownerId, isArchived: false, isMuted: false };
+	const result = render(XInfo, { props: { room: shown }, global: { stubs } });
+	const muteSwitch = screen.getByRole('switch', { name: i18n.ts._chat.muteThisRoom });
+	expect(muteSwitch.getAttribute('aria-checked')).toBe('false');
+
+	await fireEvent.click(muteSwitch);
+
+	// ページが持つルームに伝えないと、タブを切り替えて戻ったときにスイッチが元に戻って見える
+	await waitFor(() => expect(result.emitted().updated).toEqual([[{ ...shown, isMuted: true }]]));
+	expect(mocks.apiWithDialog).toHaveBeenCalledExactlyOnceWith('chat/rooms/mute', { roomId: 'r1', mute: true }, undefined, chatMuteErrors);
+	expect(muteSwitch.getAttribute('aria-checked')).toBe('true');
+});
+
+test('the owner unmutes a room they muted', async () => {
+	mocks.apiWithDialog.mockResolvedValueOnce(undefined);
+	const shown = { ...room, isArchived: false, isMuted: true };
+	const result = render(XInfo, { props: { room: shown }, global: { stubs } });
+	const muteSwitch = screen.getByRole('switch', { name: i18n.ts._chat.muteThisRoom });
+	expect(muteSwitch.getAttribute('aria-checked')).toBe('true');
+
+	await fireEvent.click(muteSwitch);
+
+	await waitFor(() => expect(result.emitted().updated).toEqual([[{ ...shown, isMuted: false }]]));
+	expect(mocks.apiWithDialog).toHaveBeenCalledExactlyOnceWith('chat/rooms/mute', { roomId: 'r1', mute: false }, undefined, chatMuteErrors);
+});
+
+test('a mute that was refused is not passed on to the room page', async () => {
+	mocks.apiWithDialog.mockRejectedValueOnce(new Error('refused'));
+	const result = render(XInfo, { props: { room: { ...room, isArchived: false, isMuted: false } }, global: { stubs } });
+	const muteSwitch = screen.getByRole('switch', { name: i18n.ts._chat.muteThisRoom });
+
+	await fireEvent.click(muteSwitch);
+
+	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalled());
+	await waitFor(() => expect(muteSwitch.getAttribute('aria-checked')).toBe('false'));
+	expect(result.emitted().updated).toBeUndefined();
+});
+
+test('the switch follows the room when the page reads it again', async () => {
+	const shown = { ...room, isArchived: false, isMuted: false };
+	const result = render(XInfo, { props: { room: shown }, global: { stubs } });
+
+	await result.rerender({ room: { ...shown, isMuted: true } });
+
+	expect(screen.getByRole('switch', { name: i18n.ts._chat.muteThisRoom }).getAttribute('aria-checked')).toBe('true');
 });
 
 test('other members cannot archive', () => {

@@ -345,6 +345,9 @@ export class ChatService {
 				if (await this.isFromSuspendedUser(latest)) return;
 
 				const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest, toUser);
+				// 알림을 준비하는 사이에 읽혔으면 표시를 켜지 않는다. 읽음 알림보다 늦게 도착해 표시가 켜진 채 남는 것을 막는다.
+				if (await this.redisClient.get(`newUserChatMessageExists:${toUser.id}:${fromUser.id}`) == null) return;
+				await this.publishChatUnread(toUser.id, true);
 				this.globalEventService.publishMainStream(toUser.id, 'newChatMessage', packedMessageForTo);
 				this.pushNotificationService.pushNotification(toUser.id, 'newChatMessage', packedMessageForTo);
 			}, 3000);
@@ -380,7 +383,7 @@ export class ChatService {
 			isMuted: m.isMuted,
 		})).concat({ // ownerはmembershipレコードを作らないため
 			userId: toRoom.ownerId,
-			isMuted: false,
+			isMuted: toRoom.isMutedByOwner,
 		});
 
 		if (!memberships.some(member => member.userId === fromUser.id)) {
@@ -459,11 +462,18 @@ export class ChatService {
 				const marker = markers[i][1];
 				if (marker == null) continue;
 				const userId = membershipsOtherThanMe[i].userId;
-				if (userId !== toRoom.ownerId) {
+				if (userId === toRoom.ownerId) {
+					// 방장에게 알릴 표식이 있을 때만 방을 다시 조회한다.
+					const currentRoom = await this.chatRoomsRepository.findOneBy({ id: toRoom.id });
+					if (currentRoom == null || currentRoom.isMutedByOwner) continue;
+				} else {
 					const currentMembership = await this.chatRoomMembershipsRepository.findOneBy({ roomId: toRoom.id, userId });
 					if (currentMembership == null || currentMembership.isMuted) continue;
 				}
 
+				// 알림을 준비하는 사이에 읽혔으면 표시를 켜지 않는다.
+				if (await this.redisClient.get(`newRoomChatMessageExists:${userId}:${toRoom.id}`) == null) continue;
+				await this.publishChatUnread(userId, true);
 				this.globalEventService.publishMainStream(userId, 'newChatMessage', packedMessageForTo);
 				this.pushNotificationService.pushNotification(userId, 'newChatMessage', packedMessageForTo);
 			}
@@ -543,7 +553,10 @@ export class ChatService {
 		const redisPipeline = this.redisClient.pipeline();
 		redisPipeline.del(`newUserChatMessageExists:${readerId}:${senderId}`);
 		redisPipeline.srem(`newChatMessagesExists:${readerId}`, `user:${senderId}`);
-		await redisPipeline.exec();
+		const results = await redisPipeline.exec();
+		// 지운 표식이 없으면 미읽음 상태도 그대로다. 다시 계산해 알리는 비용을 내지 않는다.
+		if (results == null || !results.some(([, count]) => Number(count) > 0)) return;
+		await this.announceIfAllRead([readerId]);
 	}
 
 	@bindThis
@@ -554,17 +567,47 @@ export class ChatService {
 		const redisPipeline = this.redisClient.pipeline();
 		redisPipeline.del(`newRoomChatMessageExists:${readerId}:${roomId}`);
 		redisPipeline.srem(`newChatMessagesExists:${readerId}`, `room:${roomId}`);
-		await redisPipeline.exec();
+		const results = await redisPipeline.exec();
+		// 지운 표식이 없으면 미읽음 상태도 그대로다. 다시 계산해 알리는 비용을 내지 않는다.
+		if (results == null || !results.some(([, count]) => Number(count) > 0)) return;
+		await this.announceIfAllRead([readerId]);
 	}
 
 	@bindThis
 	public async readAllChatMessages(
 		readerId: MiUser['id'],
 	): Promise<void> {
+		// 집합에 든 대화의 표식도 함께 지운다. 전체 키를 SCAN하지 않고 집합의 항목만 열거한다.
+		const conversations = await this.redisClient.smembers(`newChatMessagesExists:${readerId}`);
 		const redisPipeline = this.redisClient.pipeline();
-		// TODO: newUserChatMessageExists とか newRoomChatMessageExists も消したい(けどキーの列挙が必要になって面倒)
+		for (const conversation of conversations) {
+			if (conversation.startsWith('user:')) {
+				redisPipeline.del(`newUserChatMessageExists:${readerId}:${conversation.slice('user:'.length)}`);
+			} else if (conversation.startsWith('room:')) {
+				redisPipeline.del(`newRoomChatMessageExists:${readerId}:${conversation.slice('room:'.length)}`);
+			}
+		}
 		redisPipeline.del(`newChatMessagesExists:${readerId}`);
 		await redisPipeline.exec();
+		// 직접 요청한 읽음이므로, 지울 것이 없었더라도 화면에 현재 상태를 알린다.
+		await this.publishChatUnread(readerId, await this.hasUnreadMessages(readerId));
+	}
+
+	/** 읽음으로 미읽음이 모두 사라졌으면 화면에 알린다. 다른 대화가 남았으면 보내지 않는다. */
+	private async announceIfAllRead(readerIds: MiUser['id'][]): Promise<void> {
+		await Promise.all([...new Set(readerIds)].map(async readerId => {
+			if (await this.hasUnreadMessages(readerId)) return;
+			await this.publishChatUnread(readerId, false);
+		}));
+	}
+
+	/**
+	 * 쪽지 미읽음 상태를 버전과 함께 알린다. 버전은 독자별 단조 증가라, 화면은 역순 도착을 건너뛸 수 있다.
+	 * 상태는 발행 직전에 다시 계산한 값이다. 재확인 뒤 이 발행 사이에 읽음이 끼어도 다음 이벤트가 바로잡는다.
+	 */
+	private async publishChatUnread(readerId: MiUser['id'], hasUnreadChatMessages: boolean): Promise<void> {
+		const version = await this.redisClient.incr(`chatUnreadVersion:${readerId}`);
+		this.globalEventService.publishMainStream(readerId, 'chatUnread', { hasUnreadChatMessages, version });
 	}
 
 	@bindThis
@@ -1478,8 +1521,13 @@ export class ChatService {
 	@bindThis
 	public async muteRoom(userId: MiUser['id'], roomId: MiChatRoom['id'], mute: boolean) {
 		const membership = await this.chatRoomMembershipsRepository.findOneBy({ roomId, userId });
-		if (membership == null) throw new ChatRoomAccessError('not a member');
-		await this.chatRoomMembershipsRepository.update(membership.id, { isMuted: mute });
+		if (membership != null) {
+			await this.chatRoomMembershipsRepository.update(membership.id, { isMuted: mute });
+		} else {
+			// 持ち主はメンバーシップを持たないので、ルーム側にミュートを持つ。ほかの参加者には伝えない個人設定
+			const owned = await this.chatRoomsRepository.update({ id: roomId, ownerId: userId }, { isMutedByOwner: mute });
+			if ((owned.affected ?? 0) === 0) throw new ChatRoomAccessError('not a member');
+		}
 	}
 
 	@bindThis

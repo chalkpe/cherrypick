@@ -140,7 +140,7 @@ watch(rootEl, () => {
 .root {
 	position: relative;
 	z-index: 1;
-	padding-bottom: env(safe-area-inset-bottom, 0px);
+	padding-bottom: var(--MI-mobileFooterSafeAreaBottom, env(safe-area-inset-bottom, 0px));
 	display: grid;
 	grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
 	width: 100%;

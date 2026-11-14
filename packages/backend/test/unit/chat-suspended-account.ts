@@ -72,7 +72,8 @@ describe('delayed chat notifications after suspension', () => {
 			chatEntityService: { packMessageLiteForRoom: async (value: unknown) => value, packMessageLiteFor1on1: async (value: unknown) => value, packMessageDetailed: async (value: unknown) => value },
 			globalEventService: { publishChatRoomStream: vi.fn(), publishChatUserStream: vi.fn(), publishMainStream: stream },
 			pushNotificationService: { pushNotification: notifications },
-			redisClient: { pipeline: () => pipeline, get: async () => 'message1' },
+			redisClient: { pipeline: () => pipeline, get: async () => 'message1', incr: async () => 1 },
+			chatRoomsRepository: { findOneBy: async () => room },
 		}) as ChatService;
 		const suspension = Object.assign(Object.create(UserSuspendService.prototype), {
 			usersRepository, userEntityService, chatService,

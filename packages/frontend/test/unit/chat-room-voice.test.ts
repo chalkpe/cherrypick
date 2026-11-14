@@ -58,7 +58,7 @@ vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog, confirm: mocks.c
 vi.mock('@/utility/fullscreen.js', () => ({ requestFullscreen: mocks.requestFullscreen }));
 // 画面遷移の前にシートの focus trap を解放することを確かめるため、router の change リスナーを拾っておく
 const routerListeners = vi.hoisted(() => ({ change: [] as ((payload: unknown) => void)[] }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), useListener: (event: string, listener: (payload: unknown) => void) => { if (event === 'change') routerListeners.change.push(listener); } }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), useListener: (event: string, listener: (payload: unknown) => void) => { if (event === 'change') routerListeners.change.push(listener); }, currentRef: { value: { route: { path: '/chat/room/:roomId' }, props: new Map([['roomId', 'r1']]) } } }) }));
 // ルーム画面のテストでは通話以外の部分は関係ないので空のコンポーネントに差し替える
 vi.mock('@/pages/chat/XMessage.vue', () => ({ default: { render: () => null } }));
 // 入力欄は並べ方が変わっても作り直さないことを確かめるので本物を使う。ブラウザの入力まわりに触る部品だけ差し替える
@@ -530,10 +530,9 @@ describe('voice call on the room page', () => {
 		} finally { window.innerWidth = originalWidth; window.dispatchEvent(new Event('resize')); }
 	});
 	// シートの背景 (v-if) は閉じると先に DOM から消える。その後の解放で周囲の inert が残ると画面全体が操作不能になる
-	// 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (room.vue の Teleport)。変換中の文字や送信中の状態を失わないため
+	// 배치가 바뀌어도 입력란과 작성 중인 내용, 전송 상태를 유지한다.
 	describe('chat form across the layout switch', () => {
 		const theTextarea = () => screen.getByRole('textbox') as HTMLTextAreaElement;
-		const pageFooter = () => screen.getByTestId('page-footer');
 
 		async function callEnds() { Object.assign(callState, { status: 'idle', room: null }); await flush(); }
 
@@ -543,7 +542,9 @@ describe('voice call on the room page', () => {
 			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me)] }]);
 			await setPageWidth(1280);
 			const textarea = theTextarea();
+			await fireEvent.update(textarea, 'draft');
 			textarea.focus();
+			textarea.setSelectionRange(1, 3);
 			await fireEvent.compositionStart(textarea);
 
 			await callEnds();
@@ -554,7 +555,9 @@ describe('voice call on the room page', () => {
 			await flush();
 			expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
 			expect(theTextarea()).toBe(textarea);
-			expect(pageFooter().contains(textarea)).toBe(true);
+			expect(textarea.value).toBe('draft');
+			expect(document.activeElement).toBe(textarea);
+			expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([1, 3]);
 		});
 
 		// 変換を終えないまま (compositionend が届かないまま) ページが裏に回ったら、その変換は忘れる
@@ -590,6 +593,60 @@ describe('voice call on the room page', () => {
 			await fireEvent.click(screen.getByTitle(i18n.ts.send));
 
 			expect(mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/create-to-room')).toHaveLength(1);
+		});
+	});
+
+	// ソフトウェアキーボードは入力欄のフォーカスについてくる。通話中の配置ボタンにフォーカスが移るとキーボードが閉じてしまう
+	describe('the message input focus while pressing the call layout buttons', () => {
+		// 既定の動作を止めれば、ブラウザはフォーカスを動かさない (送信ボタンと同じ仕組み)
+		const pressKeepsFocus = (button: HTMLElement) => {
+			const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+			button.dispatchEvent(press);
+			return press.defaultPrevented;
+		};
+
+		async function renderSplit() {
+			Object.assign(callState, { status: 'connected', room, micEnabled: true });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me), participant(alice)] }]);
+			await setPageWidth(1280);
+			return screen.getByRole('textbox') as HTMLTextAreaElement;
+		}
+
+		test('swapping the chat side keeps focus in the message input', async () => {
+			const textarea = await renderSplit();
+			textarea.focus();
+
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.moveChatLeft }))).toBe(true);
+		});
+
+		test('the call controls keep focus in the message input', async () => {
+			const textarea = await renderSplit();
+			Object.assign(callState, { audioBlocked: true });
+			await flush();
+			textarea.focus();
+
+			for (const name of [i18n.ts._voiceCall.enableAudio, i18n.ts._voiceCall.mute, i18n.ts._voiceCall.deafen, i18n.ts._voiceCall.shareScreen, i18n.ts._voiceCall.settings, i18n.ts._voiceCall.leave]) {
+				expect(pressKeepsFocus(screen.getByRole('button', { name }))).toBe(true);
+			}
+		});
+
+		test('the stage toggles keep focus in the message input', async () => {
+			Object.assign(callState, { status: 'connected', room, watchingIdentities: [identityOf(alice)] });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me), participant(alice, true)] }]);
+			await setPageWidth(1280);
+			const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+			textarea.focus();
+
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.hideParticipants }))).toBe(true);
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.closeChat }))).toBe(true);
+		});
+
+		test('does not pull focus to the input when it was elsewhere', async () => {
+			const textarea = await renderSplit();
+			textarea.blur();
+
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.moveChatLeft }))).toBe(false);
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.mute }))).toBe(false);
 		});
 	});
 
