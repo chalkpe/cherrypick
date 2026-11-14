@@ -195,3 +195,76 @@ test('최상위 수량 편집은 에코 뒤에도 같은 입력란에 포커스�
 	expect(window.document.activeElement).toBe(qty);
 	expect(intact(section, 'top') && intact(qty, 'top')).toBe(true);
 });
+
+// 실제 DataTransfer로 dragstart→dragover→drop을 흘려보내 MkDraggable의 직렬화 경로를 그대로 태운다.
+async function dragSection(container: Element, fromPath: string, toPath: string, backward: boolean) {
+	const from = sectionOf(container, fromPath);
+	const to = sectionOf(container, toPath);
+	const handle = from.querySelector('button[aria-label="Move to another group"]') as HTMLElement;
+	if (!handle) throw new Error(`drag handle not found: ${fromPath}`);
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(handle, { dataTransfer });
+	// MkDraggable은 dragstart 10ms 뒤에야 드롭 영역을 활성화한다.
+	await new Promise(resolve => window.setTimeout(resolve, 30));
+	const wrapper = to.parentElement!.parentElement!;
+	const area = (backward ? wrapper.nextElementSibling : wrapper.previousElementSibling) as HTMLElement;
+	await fireEvent.dragOver(area, { dataTransfer });
+	await fireEvent.drop(area, { dataTransfer });
+	await fireEvent.dragEnd(handle, { dataTransfer });
+}
+
+test('같은 묶음 안 끌어서 옮기기는 조건 노드를 다시 만들지 않는다', async () => {
+	const { view, requests } = renderEdit({ ...base, condition: { type: 'all', children: [
+		{ type: 'keyword', mode: 'literal', value: 'alpha', flags: '', targets: ['text'] },
+		{ type: 'keyword', mode: 'literal', value: 'beta', flags: '', targets: ['text'] },
+	] } });
+	await waitFor(() => expect(view.container.querySelector('[data-condition-path=""]')).toBeTruthy());
+	const alpha = sectionOf(view.container, '0');
+	const beta = sectionOf(view.container, '1');
+	mark(alpha, 'drag'); mark(beta, 'drag');
+	mark(alpha.querySelector('textarea')!, 'drag'); mark(beta.querySelector('textarea')!, 'drag');
+	await dragSection(view.container, '0', '1', true);
+	await waitFor(() => expect((sectionOf(view.container, '0').querySelector('textarea') as HTMLTextAreaElement).value).toBe('beta'));
+	expect((sectionOf(view.container, '1').querySelector('textarea') as HTMLTextAreaElement).value).toBe('alpha');
+	expect(intact(alpha, 'drag') && intact(beta, 'drag')).toBe(true);
+	expect(intact(alpha.querySelector('textarea')!, 'drag') && intact(beta.querySelector('textarea')!, 'drag')).toBe(true);
+	await fireEvent.click(view.getByRole('button', { name: 'Save' }));
+	await waitFor(() => expect(requests.some(request => request.url.endsWith('/update'))).toBe(true));
+	const saved = requests.find(request => request.url.endsWith('/update'))!;
+	expect(saved.body.condition.children.map((child: { value: string }) => child.value)).toEqual(['beta', 'alpha']);
+});
+
+test('묶음째 끌어서 옮겨도 묶음과 하위 조건 노드를 유지한다', async () => {
+	const { view } = renderEdit({ ...base, condition: { type: 'all', children: [
+		{ type: 'keyword', mode: 'literal', value: 'alpha', flags: '', targets: ['text'] },
+		{ type: 'any', children: [{ type: 'keyword', mode: 'literal', value: 'beta', flags: '', targets: ['text'] }] },
+	] } });
+	await waitFor(() => expect(view.container.querySelector('[data-condition-path=""]')).toBeTruthy());
+	const kw = sectionOf(view.container, '0');
+	const group = sectionOf(view.container, '1');
+	const leaf = sectionOf(view.container, '1.0');
+	mark(kw, 'bundle'); mark(group, 'bundle'); mark(leaf, 'bundle');
+	mark(group.querySelector('textarea')!, 'bundle');
+	await dragSection(view.container, '1', '0', false);
+	await waitFor(() => expect(sectionOf(view.container, '0.0')).toBeTruthy());
+	expect((sectionOf(view.container, '0.0').querySelector('textarea') as HTMLTextAreaElement).value).toBe('beta');
+	expect((sectionOf(view.container, '1').querySelector('textarea') as HTMLTextAreaElement).value).toBe('alpha');
+	expect(intact(kw, 'bundle') && intact(group, 'bundle') && intact(leaf, 'bundle')).toBe(true);
+	expect(intact(group.querySelector('textarea')!, 'bundle')).toBe(true);
+});
+
+test('다른 묶음으로 끌기는 옮겨지지 않고 노드를 유지한다', async () => {
+	const { view } = renderEdit({ ...base, condition: { type: 'all', children: [
+		{ type: 'any', children: [{ type: 'keyword', mode: 'literal', value: 'alpha', flags: '', targets: ['text'] }] },
+		{ type: 'any', children: [{ type: 'keyword', mode: 'literal', value: 'beta', flags: '', targets: ['text'] }] },
+	] } });
+	await waitFor(() => expect(view.container.querySelector('[data-condition-path=""]')).toBeTruthy());
+	const left = sectionOf(view.container, '0.0');
+	const right = sectionOf(view.container, '1.0');
+	mark(left, 'cross'); mark(right, 'cross');
+	await dragSection(view.container, '0.0', '1.0', true);
+	await new Promise(resolve => window.setTimeout(resolve, 50));
+	expect((sectionOf(view.container, '0.0').querySelector('textarea') as HTMLTextAreaElement).value).toBe('alpha');
+	expect((sectionOf(view.container, '1.0').querySelector('textarea') as HTMLTextAreaElement).value).toBe('beta');
+	expect(intact(left, 'cross') && intact(right, 'cross')).toBe(true);
+});

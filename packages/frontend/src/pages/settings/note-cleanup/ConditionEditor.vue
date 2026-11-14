@@ -78,7 +78,11 @@ function reorder(items: { id: string; condition: Condition }[]) {
 	if (props.condition.type !== 'all' && props.condition.type !== 'any') return;
 	// 다른 묶음의 드롭은 허용하지 않고 명시적인 이동 메뉴로 처리한다.
 	if (items.length !== draggableChildren.value.length || items.some(item => !draggableChildren.value.some(current => current.id === item.id))) return;
-	emit('change', props.path, { ...props.condition, children: items.map(item => item.condition) });
+	// 끌기 직렬화를 거친 조건 객체는 편집 정체성을 잃으므로, 드롭 순서의 id만 사용해 현재 조건 객체를 다시 배치한다.
+	const byId = new Map(draggableChildren.value.map(child => [child.id, child.condition]));
+	const children = items.map(item => byId.get(item.id)).filter((condition): condition is Condition => condition !== undefined);
+	if (children.length !== draggableChildren.value.length) return;
+	emit('change', props.path, { ...props.condition, children });
 }
 
 function menu() {
