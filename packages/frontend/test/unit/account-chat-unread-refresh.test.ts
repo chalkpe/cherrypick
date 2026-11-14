@@ -94,3 +94,31 @@ test('a deleted account signs out without retrying', async () => {
 	expect(calls).toBe(1);
 	expect(signout).toHaveBeenCalled();
 });
+
+// 쪽지 보호 경로는 옵트인으로 실패를 알려, 호출자가 공백을 되돌릴 수 있게 한다
+test('a protected refresh opts into failure propagation with rejectOnFailure', async () => {
+	vi.spyOn(window, 'fetch').mockResolvedValue(new Response('server error', { status: 500 }));
+
+	await expect(refreshCurrentAccount({ protectChatUnread: true, rejectOnFailure: true })).rejects.toBeTruthy();
+});
+
+test('a protected refresh without rejectOnFailure still swallows a server error', async () => {
+	vi.spyOn(window, 'fetch').mockResolvedValue(new Response('server error', { status: 500 }));
+
+	await expect(refreshCurrentAccount({ protectChatUnread: true })).resolves.toBeUndefined();
+});
+
+test('a network failure propagates only when rejectOnFailure is set', async () => {
+	vi.spyOn(window, 'fetch').mockRejectedValue(new Error('offline'));
+
+	await expect(refreshCurrentAccount({ protectChatUnread: true, rejectOnFailure: true })).rejects.toThrow('offline');
+	await expect(refreshCurrentAccount({ protectChatUnread: true })).resolves.toBeUndefined();
+});
+
+// 삭제된 계정은 rejectOnFailure를 켜도 예외 없이 로그아웃한다 (공용 경로 유지)
+test('a deleted account signs out without throwing even with rejectOnFailure', async () => {
+	vi.spyOn(window, 'fetch').mockResolvedValue(new Response(JSON.stringify({ error: { id: 'e5b3b9f0-2b8f-4b9f-9c1f-8c5c1b2e1b1a' } })));
+
+	await expect(refreshCurrentAccount({ protectChatUnread: true, rejectOnFailure: true })).resolves.toBeUndefined();
+	expect(signout).toHaveBeenCalled();
+});

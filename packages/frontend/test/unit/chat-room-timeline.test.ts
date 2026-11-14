@@ -44,6 +44,7 @@ const mocks = vi.hoisted(() => {
 		streamOff: vi.fn(),
 		routerPush: vi.fn(),
 		routerReplace: vi.fn(),
+		routerCurrent: { value: { route: { path: '/chat/room/:roomId' }, props: new Map<string, string>([['roomId', 'r1']]) } },
 		alert: vi.fn(),
 		confirm: vi.fn(),
 		popupMenu: vi.fn(),
@@ -84,9 +85,11 @@ vi.mock('@/chat-unread-subscription.js', () => ({
 	chatUnreadEventsActive: () => mocks.chatEventsActive,
 	chatUnreadSubscriptionGap: () => mocks.chatGap,
 	resolveChatUnreadGap: () => { mocks.chatGap = false; },
+	beginChatUnreadRecheck: () => { mocks.chatGap = false; return { issue: true, failToken: 1 }; },
+	restoreChatUnreadGapIfUnchanged: () => { mocks.chatGap = true; },
 }));
 vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog, selectUsers: mocks.selectUsers, success: mocks.success, promiseDialog: (promise: Promise<unknown>) => promise }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace, useListener: vi.fn() }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace, useListener: vi.fn(), currentRef: mocks.routerCurrent }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // 通話や入力欄は吹き出しのまとまりと関係ないので空にする
 vi.mock('@/composables/use-chat-room-voice-call.js', async () => {
@@ -198,6 +201,9 @@ async function flush() {
 }
 
 async function renderRoom(target: 'room' | 'user' = 'room') {
+	mocks.routerCurrent.value = target === 'room'
+		? { route: { path: '/chat/room/:roomId' }, props: new Map<string, string>([['roomId', 'r1']]) }
+		: { route: { path: '/chat/user/:userId' }, props: new Map<string, string>([['userId', 'alice']]) };
 	const host = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
@@ -244,7 +250,7 @@ beforeEach(() => {
 	mocks.store.realtimeMode = true;
 	mocks.chatEventsActive = true;
 	mocks.chatGap = false;
-	mocks.refreshCurrentAccount.mockReset();
+	mocks.refreshCurrentAccount.mockReset().mockResolvedValue(undefined);
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
 });
@@ -1822,7 +1828,7 @@ describe('the unread sign in realtime mode', () => {
 		await flush();
 
 		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
-		expect(mocks.refreshCurrentAccount).toHaveBeenCalledWith({ protectChatUnread: true });
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledWith({ protectChatUnread: true, rejectOnFailure: true });
 	});
 
 	test('asks when the subscription completes while a reconnect read is in flight', async () => {
@@ -1919,6 +1925,86 @@ describe('the unread sign in realtime mode', () => {
 		await renderRoom('user');
 
 		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+	});
+
+	// 실패한 보호 확인이 공백을 되돌리면, 목록에 갔다 같은 대화로 돌아와도 확인 의무가 남아 있어야 한다.
+	// 캐시된 화면은 다시 들어와도 초기화를 거치지 않으므로, 돌아온 화면이 공백을 이어받는다
+	test('asks again on returning to a cached conversation when a failed check restored the gap', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		mocks.chatGap = true;
+		mocks.refreshCurrentAccount.mockRejectedValueOnce(new Error('server error'));
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { userId: 'alice' }) : h('div') });
+			},
+		});
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(true);
+
+		visible.value = false;
+		await flush();
+		visible.value = true;
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledTimes(2);
+		expect(mocks.refreshCurrentAccount).toHaveBeenLastCalledWith({ protectChatUnread: true, rejectOnFailure: true });
+		expect(mocks.chatGap).toBe(false);
+	});
+
+	test('does not ask on returning to a cached conversation when there is no gap', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { userId: 'alice' }) : h('div') });
+			},
+		});
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+
+		visible.value = false;
+		await flush();
+		visible.value = true;
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+	});
+
+	// 돌아온 김에 읽는 대화가 있다면, 그 읽기가 공백을 보고 확인한다. 돌아온 화면이 또 확인하면 요청이 겹친다
+	test('does not double-ask when returning brings a read that checks the gap itself', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		const visible = ref(true);
+		const page = defineComponent({
+			setup() {
+				provideMetadataReceiver(() => {});
+				return () => h(KeepAlive, null, { default: () => visible.value ? h(RoutedRoomPage, { userId: 'alice' }) : h('div') });
+			},
+		});
+		render(page, { global: { stubs, directives: { tooltip: {} } } });
+		await flush();
+		await flush();
+
+		visible.value = false;
+		await flush();
+		mocks.channel.emit('message', message('m4', 'alice', 3 * MINUTE));
+		await flush();
+		mocks.chatGap = true;
+
+		visible.value = true;
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(false);
 	});
 });
 

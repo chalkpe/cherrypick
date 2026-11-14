@@ -154,7 +154,7 @@ export function updateCurrentAccount(accountData: Partial<Misskey.entities.MeDet
 	miLocalStorage.setItem('account', JSON.stringify($i));
 }
 
-export async function refreshCurrentAccount(options?: { protectChatUnread?: boolean }) {
+export async function refreshCurrentAccount(options?: { protectChatUnread?: boolean; rejectOnFailure?: boolean }) {
 	if (!$i) return;
 	const me = $i;
 	const unreadRevision = chatUnreadRevision;
@@ -174,6 +174,8 @@ export async function refreshCurrentAccount(options?: { protectChatUnread?: bool
 			}
 			return;
 		}
+		// 쪽지 보호 경로만 옵트인으로 실패를 알려, 호출자가 공백을 되돌릴 수 있게 한다. 공용 갱신의 기존 동작은 바꾸지 않는다.
+		if (options?.rejectOnFailure) throw reason;
 	});
 }
 

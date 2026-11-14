@@ -23,6 +23,8 @@ vi.mock('@/chat-unread-subscription.js', () => ({
 	chatUnreadEventsActive: () => mocks.chatEventsActive,
 	chatUnreadSubscriptionGap: () => mocks.chatGap,
 	resolveChatUnreadGap: () => { mocks.chatGap = false; },
+	beginChatUnreadRecheck: () => { mocks.chatGap = false; return { issue: true, failToken: 1 }; },
+	restoreChatUnreadGapIfUnchanged: () => { mocks.chatGap = true; },
 	waitChatUnreadGapResolved: (timeoutMs: number) => mocks.waitGap(timeoutMs),
 }));
 vi.mock('@/signout.js', () => ({ signout: vi.fn() }));

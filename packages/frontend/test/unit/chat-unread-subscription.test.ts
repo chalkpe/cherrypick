@@ -197,3 +197,160 @@ test('a disconnect during the wait still ends with the versioned event', async (
 	await expect(waiting).resolves.toBe(true);
 	expect(t.chatUnreadSubscriptionGap()).toBe(false);
 });
+
+// 연결 상태와 요청 결과의 구분: 단절 중 발행한 확인은 복구 뒤 첫 열기의 확인 의무를 없애지 않는다
+test('a recheck issued while disconnected keeps the gap for the first open after reconnect', async () => {
+	const t = await boot();
+	t.disconnected();
+
+	const whileDown = t.beginChatUnreadRecheck();
+	expect(whileDown.issue).toBe(true);
+	expect(whileDown.failToken).toBeNull();
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+
+	t.connected();
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+
+	const afterReconnect = t.beginChatUnreadRecheck();
+	expect(afterReconnect.issue).toBe(true);
+	expect(afterReconnect.failToken).not.toBeNull();
+	expect(t.chatUnreadSubscriptionGap()).toBe(false);
+});
+
+test('repeated opens while disconnected suppress duplicate rechecks', async () => {
+	const t = await boot();
+	t.disconnected();
+
+	expect(t.beginChatUnreadRecheck().issue).toBe(true);
+	expect(t.beginChatUnreadRecheck().issue).toBe(false);
+	expect(t.beginChatUnreadRecheck().issue).toBe(false);
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+});
+
+test('the check after reconnect is allowed even though one was issued while down', async () => {
+	const t = await boot();
+	t.disconnected();
+	t.beginChatUnreadRecheck();
+	t.connected();
+
+	const after = t.beginChatUnreadRecheck();
+	expect(after.issue).toBe(true);
+	expect(t.chatUnreadSubscriptionGap()).toBe(false);
+});
+
+test('a new disconnect allows one more recheck while down', async () => {
+	const t = await boot();
+	t.disconnected();
+	expect(t.beginChatUnreadRecheck().issue).toBe(true);
+	expect(t.beginChatUnreadRecheck().issue).toBe(false);
+
+	t.connected();
+	t.disconnected();
+	expect(t.beginChatUnreadRecheck().issue).toBe(true);
+	expect(t.beginChatUnreadRecheck().issue).toBe(false);
+});
+
+// 모두읽음 폴백은 같은 세대에 열기 재확인이 이미 발행됐어도 건너뛰지 않는다
+test('the read-all fallback bypasses the open dedup while disconnected', async () => {
+	const t = await boot();
+	t.disconnected();
+	t.beginChatUnreadRecheck();
+	expect(t.beginChatUnreadRecheck().issue).toBe(false);
+
+	const fallback = t.beginChatUnreadRecheck({ bypassDedup: true });
+	expect(fallback.issue).toBe(true);
+	expect(fallback.failToken).toBeNull();
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+});
+
+test('a failed recheck issued while connected restores the gap', async () => {
+	const t = await boot();
+	t.connected();
+	const { failToken } = t.beginChatUnreadRecheck();
+	expect(t.chatUnreadSubscriptionGap()).toBe(false);
+
+	t.restoreChatUnreadGapIfUnchanged(failToken);
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+});
+
+test('a newer versioned event prevents a failed recheck from restoring the gap', async () => {
+	const t = await boot();
+	t.connected();
+	const { failToken } = t.beginChatUnreadRecheck();
+
+	t.resolveChatUnreadGap();
+	t.restoreChatUnreadGapIfUnchanged(failToken);
+	expect(t.chatUnreadSubscriptionGap()).toBe(false);
+});
+
+test('a newer protected check prevents an older failure from restoring the gap', async () => {
+	const t = await boot();
+	t.connected();
+	const older = t.beginChatUnreadRecheck();
+	const newer = t.beginChatUnreadRecheck();
+
+	t.restoreChatUnreadGapIfUnchanged(older.failToken);
+	expect(t.chatUnreadSubscriptionGap()).toBe(false);
+
+	t.restoreChatUnreadGapIfUnchanged(newer.failToken);
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+});
+
+test('a failed recheck issued while disconnected leaves the gap as it was', async () => {
+	const t = await boot();
+	t.disconnected();
+	const { failToken } = t.beginChatUnreadRecheck();
+	expect(failToken).toBeNull();
+
+	t.restoreChatUnreadGapIfUnchanged(failToken);
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+});
+
+test('after a failed recheck restores the gap, the next open asks again', async () => {
+	const t = await boot();
+	t.connected();
+	const first = t.beginChatUnreadRecheck();
+	t.restoreChatUnreadGapIfUnchanged(first.failToken);
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+
+	const retry = t.beginChatUnreadRecheck();
+	expect(retry.issue).toBe(true);
+	expect(t.chatUnreadSubscriptionGap()).toBe(false);
+});
+
+test('with realtime mode off a recheck always issues and resolves the gap', async () => {
+	const t = await boot({ realtimeMode: false });
+	const first = t.beginChatUnreadRecheck();
+	expect(first.issue).toBe(true);
+	expect(first.failToken).not.toBeNull();
+	expect(t.chatUnreadSubscriptionGap()).toBe(false);
+
+	const second = t.beginChatUnreadRecheck();
+	expect(second.issue).toBe(true);
+});
+
+// 부팅 직후 아직 연결 전이면, 그때 발행한 확인도 부팅 공백을 해소하지 못한다
+test('a recheck issued before the first connection keeps the boot gap', async () => {
+	const t = await boot();
+	const beforeConnect = t.beginChatUnreadRecheck();
+	expect(beforeConnect.issue).toBe(true);
+	expect(beforeConnect.failToken).toBeNull();
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+
+	t.connected();
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+	expect(t.beginChatUnreadRecheck().issue).toBe(true);
+});
+
+// 단절 중 재확인은 공백을 해소하지 않으므로, 모두읽음 대기는 끝내 시간 초과가 되어 폴백으로 이어진다
+test('the read-all wait times out while disconnected even after a recheck was issued', async () => {
+	vi.useFakeTimers();
+	const t = await boot();
+	t.disconnected();
+	t.beginChatUnreadRecheck();
+	const waiting = t.waitChatUnreadGapResolved(5000);
+
+	await vi.advanceTimersByTimeAsync(5000);
+	await expect(waiting).resolves.toBe(false);
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+});

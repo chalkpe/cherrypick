@@ -172,7 +172,7 @@ import type { PageHeaderItem } from '@/types/page-header.js';
 import * as os from '@/os.js';
 import { globalEvents } from '@/events.js';
 import { useStream } from '@/stream.js';
-import { chatUnreadEventsActive, chatUnreadSubscriptionGap, resolveChatUnreadGap } from '@/chat-unread-subscription.js';
+import { chatUnreadEventsActive, chatUnreadSubscriptionGap, beginChatUnreadRecheck, restoreChatUnreadGapIfUnchanged } from '@/chat-unread-subscription.js';
 import * as sound from '@/utility/sound.js';
 import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
@@ -209,14 +209,9 @@ window.addEventListener('resize', handleResize);
 
 // キーボードが出ているあいだはホームインジケーターの領域も覆われるので、チャット画面では下のセーフエリアの余白を無くす。
 // この変数を書くのはこのページだけなので、ほかの画面の余白は変わらない
-const keyboardVisible = useSoftwareKeyboard();
-watch([keyboardVisible, isMobile], ([keyboard, mobile]) => {
-	if (keyboard && mobile) {
-		window.document.body.style.setProperty('--MI-mobileFooterSafeAreaBottom', '0px');
-	} else {
-		window.document.body.style.removeProperty('--MI-mobileFooterSafeAreaBottom');
-	}
-}, { immediate: true });
+const pageEl = useTemplateRef('pageEl');
+// 포커스가 이 페이지 안의 입력란에 있을 때만 키보드로 센다. 스택의 뒤에 남은 대화가 전경 화면의 입력란을 자기 것으로 세지 않는다.
+const keyboardVisible = useSoftwareKeyboard({ scope: () => pageEl.value?.$el ?? null });
 
 const $i = ensureSignin();
 const router = useRouter();
@@ -225,6 +220,27 @@ const props = defineProps<{
 	userId?: string;
 	roomId?: string;
 }>();
+
+// 스택 라우터에서는 뒤에 남은 대화가 전경 화면의 하단 안전 영역까지 바꾸지 않도록, 이 대화가 맨 앞일 때만 여백 변수를 소유한다.
+// 라우트가 이 대화인지로 맨 앞을 판단한다 (포커스 포함 관계는 감지기의 scope가 이미 본다).
+const isFrontmostConversation = computed(() => {
+	const current = router.currentRef.value;
+	if (props.userId != null) return current.route.path === '/chat/user/:userId' && current.props.get('userId') === props.userId;
+	if (props.roomId != null) return current.route.path === '/chat/room/:roomId' && current.props.get('roomId') === props.roomId;
+	return false;
+});
+
+// 정리할 때는 이 인스턴스가 소유한 값만 해제한다. 뒤에 남은 다른 인스턴스의 값까지 지우지 않는다.
+let ownsFooterSafeArea = false;
+watch([keyboardVisible, isMobile, isFrontmostConversation], ([keyboard, mobile, frontmost]) => {
+	if (keyboard && mobile && frontmost) {
+		window.document.body.style.setProperty('--MI-mobileFooterSafeAreaBottom', '0px');
+		ownsFooterSafeArea = true;
+	} else if (ownsFooterSafeArea) {
+		window.document.body.style.removeProperty('--MI-mobileFooterSafeAreaBottom');
+		ownsFooterSafeArea = false;
+	}
+}, { immediate: true });
 
 export type NormalizedChatMessage = Omit<Misskey.entities.ChatMessageLite, 'fromUser' | 'reactions'> & {
 	fromUser: Misskey.entities.UserLite;
@@ -539,9 +555,12 @@ async function initialize() {
 function recheckUnreadSign(gapAtRead: boolean) {
 	if (!$i.hasUnreadChatMessages) return;
 	if (chatUnreadEventsActive() && !gapAtRead) return;
-	// 確かめ直しは保護付きなので、空白はここで解消したことにする
-	resolveChatUnreadGap();
-	refreshCurrentAccount({ protectChatUnread: true });
+	// 연결 상태에 따라 공백 해소·중복 억제가 달라진다. 단절 중 발행은 공백을 남겨 복구 뒤 첫 열기의 확인 의무를 유지하고,
+	// 연결 중 발행은 공백을 해소하되 실패하면 되돌린다.
+	const { issue, failToken } = beginChatUnreadRecheck();
+	if (!issue) return;
+	refreshCurrentAccount({ protectChatUnread: true, rejectOnFailure: true })
+		.catch(() => restoreChatUnreadGapIfUnchanged(failToken));
 }
 
 // 見ているページかどうか。戻ってきたときに立てるのは、下の onActivated の先頭
@@ -879,6 +898,9 @@ onActivated(() => {
 	} else {
 		readWhatArrivedWhileAway();
 		catchUp();
+		// 실패한 보호 확인이 공백을 되돌렸다면, 다시 들어온 이 대화가 확인 의무를 이어받는다.
+		// catchUp이 읽기를 시작했다면 그 읽기가 시작 시점의 공백을 보고 확인하므로, 여기서는 겹쳐 발행하지 않는다.
+		if (!readingAgain && chatUnreadSubscriptionGap()) recheckUnreadSign(true);
 	}
 });
 
@@ -887,7 +909,10 @@ onBeforeUnmount(() => {
 	listChannel?.dispose();
 	useStream().off('_connected_', readAgain);
 	window.document.removeEventListener('visibilitychange', onVisibilitychange);
-	window.document.body.style.removeProperty('--MI-mobileFooterSafeAreaBottom');
+	if (ownsFooterSafeArea) {
+		window.document.body.style.removeProperty('--MI-mobileFooterSafeAreaBottom');
+		ownsFooterSafeArea = false;
+	}
 });
 
 async function inviteUser() {
@@ -1046,7 +1071,6 @@ function onSheetEsc(ev: KeyboardEvent) {
 	if (split.value && voiceInOwnTab.value) chatOpen.value = false;
 }
 
-const pageEl = useTemplateRef('pageEl');
 const chatStickyEl = useTemplateRef('chatStickyEl');
 watch(split, () => {
 	// 배치가 바뀌면 배너와 페이지 헤더의 높이를 바로 다시 잰다.

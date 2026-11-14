@@ -179,7 +179,7 @@ import * as os from '@/os.js';
 import { enableStoragePersistence, getStoragePersistenceStatusRef, storagePersistenceSupported } from '@/utility/storage.js';
 import { ensureSignin } from '@/i.js';
 import { refreshCurrentAccount } from '@/accounts.js';
-import { chatUnreadEventsActive, chatUnreadSubscriptionGap, resolveChatUnreadGap, waitChatUnreadGapResolved } from '@/chat-unread-subscription.js';
+import { chatUnreadEventsActive, chatUnreadSubscriptionGap, beginChatUnreadRecheck, restoreChatUnreadGapIfUnchanged, waitChatUnreadGapResolved } from '@/chat-unread-subscription.js';
 import { i18n } from '@/i18n.js';
 import { definePage } from '@/page.js';
 import { prefer } from '@/preferences.js';
@@ -243,9 +243,7 @@ async function readAllChatMessages() {
 	await os.apiWithDialog('chat/read-all', {});
 	// 실시간 모드 끔이면 이벤트로 상태를 확정할 수 없으므로 서버의 현재 상태로 확인한다.
 	if (!chatUnreadEventsActive()) {
-		// 보호된 재조회이므로 공백은 발행 시점에 해소한 것으로 한다
-		resolveChatUnreadGap();
-		await refreshCurrentAccount({ protectChatUnread: true });
+		await recheckAfterReadAll();
 		return;
 	}
 	// 구독에 공백이 있으면 읽음 알림이 도착하지 않을 수 있다. 모두읽음이 곧 보낼 버전 붙은 이벤트를
@@ -253,10 +251,18 @@ async function readAllChatMessages() {
 	if (chatUnreadSubscriptionGap()) {
 		const resolved = await waitChatUnreadGapResolved(5000);
 		if (!resolved) {
-			resolveChatUnreadGap();
-			await refreshCurrentAccount({ protectChatUnread: true });
+			await recheckAfterReadAll();
 		}
 	}
+}
+
+// 모두읽음 폴백은 열기 중복 억제를 건너뛴다. 같은 세대에 재확인을 이미 발행했어도 모두읽음이 서버 상태를 바꿨으므로 다시 확인한다.
+// 연결 중이면 공백을 해소하고 실패 시 되돌리며, 단절 중이면 공백을 남겨 복구 뒤 첫 열기의 확인 의무를 유지한다.
+async function recheckAfterReadAll() {
+	const { issue, failToken } = beginChatUnreadRecheck({ bypassDedup: true });
+	if (!issue) return;
+	await refreshCurrentAccount({ protectChatUnread: true, rejectOnFailure: true })
+		.catch(() => restoreChatUnreadGapIfUnchanged(failToken));
 }
 
 async function forceCloudBackup() {

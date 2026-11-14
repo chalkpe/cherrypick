@@ -23,9 +23,11 @@ function isTextEditable(el: Element | null): boolean {
  * 画面の高さが最も大きかったときからどれだけ減ったかで判断し、入力要素にフォーカスがあるときだけキーボードとみなす。
  * iOS Safari とホーム画面のウェブアプリ、Android Chrome のいずれでもポーリングなしで動く。
  * KeepAlive でキャッシュされるページでは、離れているあいだ検知を止めて状態を落とす。
+ * scope を渡すと、フォーカスがその要素の中にあるときだけキーボードとみなす (スタックの後ろに残った画面が、前景の画面の入力欄を自分のものとして数えないように)。
  */
-export function useSoftwareKeyboard(): Readonly<Ref<boolean>> {
+export function useSoftwareKeyboard(options?: { scope?: () => Element | null }): Readonly<Ref<boolean>> {
 	const visible = ref(false);
+	const scope = options?.scope;
 
 	let listening = false;
 	let baselineWidth = window.innerWidth;
@@ -35,12 +37,14 @@ export function useSoftwareKeyboard(): Readonly<Ref<boolean>> {
 		const width = window.innerWidth;
 		const height = window.innerHeight;
 
-		// 回転やウィンドウ幅の変化があれば前の高さの基準は使えないので、取り直す
+		// 回転やウィンドウ幅の変化で基準の幅は取り直す。ただしキーボードが開いたまま幅が変わったとき、
+		// 現在の高さはすでにキーボードの分だけ縮んでいて全体高さの基準に使えない。検知中なら直前の全体高さの基準を
+		// 保って検知を維持し、キーボードを検知していないときだけ現在の高さで基準を取り直す。すぐ false を返さず続けて縮小量を計算する。
 		if (width !== baselineWidth) {
 			baselineWidth = width;
-			baselineHeight = height;
-			visible.value = false;
-			return;
+			if (!visible.value) {
+				baselineHeight = height;
+			}
 		}
 
 		if (height > baselineHeight) baselineHeight = height;
@@ -52,7 +56,9 @@ export function useSoftwareKeyboard(): Readonly<Ref<boolean>> {
 			: 0;
 		const shrink = Math.max(baselineHeight - height, visualShrink);
 
-		visible.value = shrink >= KEYBOARD_MIN_HEIGHT && isTextEditable(window.document.activeElement);
+		const active = window.document.activeElement;
+		const inScope = scope == null || (scope()?.contains(active) ?? false);
+		visible.value = shrink >= KEYBOARD_MIN_HEIGHT && isTextEditable(active) && inScope;
 	}
 
 	function listen(): void {

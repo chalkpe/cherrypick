@@ -176,4 +176,63 @@ test.describe('the bottom of a conversation while the software keyboard is open'
 		await closeKeyboard(page);
 		await expectGapWhenClosed(page);
 	});
+
+	// 스택 라우터: 대화가 뒤에 남은 채 다른 화면으로 SPA 이동해도, 전경 화면의 하단 안전 영역은 그대로여야 한다.
+	// page.goto로 새로 로드하면 이전 대화 인스턴스가 사라져 이 경로를 검사할 수 없으므로 SPA 이동을 쓴다.
+	test('stacking: a background conversation keeps the foreground home indicator space', async ({ page }) => {
+		await loadSafeArea(page);
+		// 부팅이 저장한 프로필에서 스택 라우터 설정을 켜고 다시 로드한다
+		await page.evaluate(() => {
+			const p = JSON.parse(window.localStorage.getItem('preferences')!);
+			p.preferences['experimental.stackingRouterView'] = [[{}, true, {}]];
+			window.localStorage.setItem('preferences', JSON.stringify(p));
+		});
+		await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
+		const input = page.getByPlaceholder('Enter message here');
+		await expect(input).toBeVisible();
+
+		// 대화에서 키보드를 열면 자기 여백을 없앤다 (소유 정상 경로)
+		await input.tap();
+		await openKeyboard(page);
+		await expectGapWhenOpen(page);
+		await closeKeyboard(page);
+		await expectGapWhenClosed(page);
+
+		// SPA로 홈 이동. 대화는 스택에 남아 언마운트되지 않는다
+		await page.locator('button:has(i.ti-home)').tap();
+		await expect(page.locator('button:has(i.ti-pencil)')).toBeVisible();
+		expect(await page.locator('textarea').count()).toBeGreaterThanOrEqual(1);
+
+		// 홈의 노트 입력창에 키보드를 띄운다. 전경은 쪽지가 아니다
+		await page.locator('button:has(i.ti-pencil)').tap();
+		const postInput = page.locator('textarea').last();
+		await expect(postInput).toBeVisible();
+		await postInput.tap();
+		await openKeyboard(page);
+
+		// 뒤에 남은 대화가 변수를 쓰지 않으므로 홈은 홈 표시줄 여백을 유지한다
+		await expectGapWhenClosed(page);
+		const bodyVar = await page.evaluate(() => window.document.body.style.getPropertyValue('--MI-mobileFooterSafeAreaBottom'));
+		expect(bodyVar).toBe('');
+	});
+
+	// 회전: 키보드가 열린 채 너비가 바뀌어도 감지가 유지되어야 한다 (줄어든 높이를 전체 기준으로 다시 잡으면 감지가 떨어진다)
+	test('rotation: the keyboard stays detected when the width changes while it is open', async ({ page }) => {
+		await loadSafeArea(page);
+		await page.goto(`${BASE_URL}/chat/user/${bob.id}`);
+		const input = page.getByPlaceholder('Enter message here');
+		await expect(input).toBeVisible();
+
+		await input.tap();
+		await openKeyboard(page);
+		await expectGapWhenOpen(page);
+
+		// 키보드를 닫지 않은 채 너비만 바꾼다 (회전 모사). 높이는 키보드만큼 줄어든 상태 유지
+		const { height } = page.viewportSize()!;
+		await page.setViewportSize({ width: 500, height });
+		await expectGapWhenOpen(page);
+
+		await closeKeyboard(page);
+		await expectGapWhenClosed(page);
+	});
 });
