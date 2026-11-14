@@ -9,7 +9,8 @@ import { createServer } from 'node:https';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { deepStrictEqual, rejects, strictEqual } from 'node:assert';
 import { afterAll, beforeAll, describe, test, vi } from 'vitest';
-import { createAccount, fetchAdmin, resolveRemoteUser, waitForFollowRelation, WAIT_FOR_FEDERATION, type LoginUser } from './utils.js';
+import * as Misskey from 'cherrypick-js';
+import { createAccount, createRole, fetchAdmin, resolveRemoteUser, waitForFollowRelation, WAIT_FOR_FEDERATION, type LoginUser } from './utils.js';
 
 /**
  * 받는 서버는 소유 서버가 보관한 과거 기록을 그대로 믿고 전부 사본으로 저장한다.
@@ -42,6 +43,7 @@ const archivedRoom = `r${Date.now() + 2}`;
 const tombstoneRoom = `r${Date.now() + 3}`;
 const forgedRoom = `r${Date.now() + 4}`;
 const upgradeRoom = `r${Date.now() + 6}`;
+const noteCopyRoom = `r${Date.now() + 7}`;
 
 function person(username: string, publicKeyPem: string) {
 	const id = `${FAKE}/users/${username}`;
@@ -500,5 +502,52 @@ describe('Chat room history and third-party message URIs', () => {
 		const messages = await timeline(bob, mirrorId);
 		strictEqual(messages.length, 1);
 		strictEqual(messages[0].text, 'deleted before join');
+	});
+
+	test('작성자의 Delete는 보관 사본과 같은 주소의 개인 노트를 함께 지운다', async () => {
+		const roomUri = `${FAKE}/chat/rooms/${noteCopyRoom}`;
+		const dmRecipient = await createAccount('b.test');
+		// 기본 chatScope(mutual)이면 보내는 서버에서 먼저 거절하므로 누구나 받을 수 있게 연다
+		await dmRecipient.client.request('i/update', { chatScope: 'everyone' });
+		const adminB = await fetchAdmin('b.test');
+		// policies の型は自動生成で never になるので、実際の形に合わせてキャストする
+		const role = await createRole('b.test', { name: 'Chat disabled', target: 'manual', policies: { chatAvailability: 'unavailable' } as unknown as Misskey.entities.AdminRolesCreateRequest['policies'] });
+		await adminB.client.request('admin/roles/assign', { roleId: role.id, userId: dmRecipient.id });
+
+		// 채팅을 쓸 수 없는 수신자에게 온 DM은 원래 주소의 개인 노트로 저장된다
+		const recipientOnA = await resolveRemoteUser('b.test', dmRecipient.id, alice);
+		const sent = await alice.client.request('chat/messages/create-to-user', { toUserId: recipientOnA.id, text: 'converted dm' });
+		const dmUri = `https://a.test/chat/messages/${sent.id}`;
+		const mirrored = await vi.waitFor(async () => {
+			const shown = await dmRecipient.client.request('ap/show', { uri: dmUri });
+			strictEqual(shown.type, 'Note');
+			return shown.object;
+		}, WAIT_FOR_FEDERATION);
+
+		// 같은 주소를 출처로 하는 보관 사본도 이 서버에 있는 상태
+		rosters.set(roomUri, [aliceUri, bobUri]);
+		pages.set(`${roomUri}/history`, page(roomUri, [
+			message(roomUri, dmUri, aliceUri, 'converted dm'),
+		]));
+		const mirrorId = await invite('b.test', bob, roomUri, `note-copy ${crypto.randomUUID()}`);
+		await waitCompleted(bob, mirrorId);
+		const copies = await timeline(bob, mirrorId);
+		strictEqual(copies.length, 1);
+		strictEqual(copies[0].text, 'converted dm');
+
+		// 작성자의 Delete는 사본 삭제에서 끝나지 않고 개인 노트의 삭제와 작성자 검사까지 이어져야 한다
+		await alice.client.request('chat/messages/delete', { messageId: sent.id });
+		await vi.waitFor(async () => {
+			const after = await timeline(bob, mirrorId);
+			strictEqual(after.some(m => m.text === 'converted dm'), false);
+		}, WAIT_FOR_FEDERATION);
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		await rejects(
+			async () => await dmRecipient.client.request('notes/show', { noteId: mirrored.id }),
+			(err: any) => {
+				strictEqual(err.code, 'NO_SUCH_NOTE');
+				return true;
+			},
+		);
 	});
 });

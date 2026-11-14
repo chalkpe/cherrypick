@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { createECDH, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
@@ -19,6 +19,8 @@ import { IdService } from '@/core/IdService.js';
 import { HttpRequestService } from '@/core/HttpRequestService.js';
 import { PushNotificationService } from '@/core/PushNotificationService.js';
 import { ChatService } from '@/core/ChatService.js';
+import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
+import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import type { Config } from '@/config.js';
 import type * as Redis from 'ioredis';
 import { MiChatMessage, MiChatRoom, MiChatRoomMembership, MiChatRoomUserSettings, MiUser } from '@/models/_.js';
@@ -282,6 +284,90 @@ describe('그룹 알림과 채널 읽음', () => {
 			expect(received).toEqual([{ userId: outsider.id, id: message.id }]);
 		} finally {
 			for (const stream of streams) stream.close();
+		}
+	});
+
+	test('멘션 전용 지연 알림은 뒤따른 일반 글에 묻히지 않는다', async () => {
+		const { roomId } = await room();
+		await settings(roomId, owner, 'mentions');
+		const received: { id: string }[] = [];
+		const stream = await connectStream(owner, 'main', event => {
+			if (event.type === 'newChatMessage' && event.body?.toRoomId === roomId) received.push(event.body);
+		});
+		try {
+			const mention = await send(roomId, undefined, '@notifyowner 먼저 온 멘션');
+			await send(roomId, undefined, '뒤따른 일반 글');
+			await waitForChatNotificationTurn();
+
+			expect(received.map(message => message.id)).toEqual([mention.id]);
+		} finally {
+			stream.close();
+		}
+	});
+
+	test('일반 그룹도 읽음 경계 뒤의 새 글을 보존한다', async () => {
+		const { roomId } = await room();
+		const old = await send(roomId, undefined, '이미 본 글');
+		await send(roomId, undefined, '아직 보지 않은 글');
+
+		expect((await request('read', { roomId, untilId: old.id }, owner)).status).toBe(204);
+		expect((await unread(roomId)).hasUnread).toBe(true);
+
+		expect((await request('read', { roomId, readAll: true }, owner)).status).toBe(204);
+		expect((await unread(roomId)).hasUnread).toBe(false);
+	});
+
+	test('수정 알림은 지연 사이에 읽으면 발송하지 않는다', async () => {
+		const { roomId } = await room();
+		await settings(roomId, owner, 'mentions');
+		const received: unknown[] = [];
+		const stream = await connectStream(owner, 'main', event => {
+			if (event.type === 'newChatMessage' && event.body?.toRoomId === roomId) received.push(event.body);
+		});
+		try {
+			const message = await send(roomId, undefined, '처음에는 멘션 없음');
+			await waitForChatNotificationTurn();
+			expect((await api('chat/messages/update', { messageId: message.id, text: '@notifyowner 새 멘션' }, member)).status).toBe(200);
+			expect((await request('read', { roomId, readAll: true }, owner)).status).toBe(204);
+			await waitForChatNotificationTurn();
+
+			expect(received).toHaveLength(0);
+		} finally {
+			stream.close();
+		}
+	});
+
+	test('알림을 끈 동안의 수정은 다시 켜도 알리지 않는다', async () => {
+		const { roomId } = await room();
+		await settings(roomId, owner, 'none');
+		const received: unknown[] = [];
+		const stream = await connectStream(owner, 'main', event => {
+			if (event.type === 'newChatMessage' && event.body?.toRoomId === roomId) received.push(event.body);
+		});
+		try {
+			const message = await send(roomId, undefined, '끄기 중 온 글');
+			await waitForChatNotificationTurn();
+			expect((await api('chat/messages/update', { messageId: message.id, text: '@notifyowner 새 멘션' }, member)).status).toBe(200);
+			await settings(roomId, owner, 'mentions');
+			await waitForChatNotificationTurn();
+
+			expect(received).toHaveLength(0);
+		} finally {
+			stream.close();
+		}
+	});
+
+	test('MeDetailed 포장은 미읽음 집계를 한 번만 계산한다', async () => {
+		const notifications = app.get(ChatRoomNotificationService);
+		const totals = vi.spyOn(notifications, 'totals');
+		try {
+			const packed = await app.get(UserEntityService).pack(owner.id, owner, { schema: 'MeDetailed' });
+
+			expect(typeof packed.hasUnreadChatMessages).toBe('boolean');
+			expect(typeof packed.hasUnreadChatNotifications).toBe('boolean');
+			expect(totals).toHaveBeenCalledTimes(1);
+		} finally {
+			totals.mockRestore();
 		}
 	});
 
