@@ -168,18 +168,9 @@ function fixture() {
 		deliverQueue: { getWaiting: async () => waiting.deliver.slice(0, 1) },
 		inboxQueue: { getWaiting: async () => waiting.inbox.slice(0, 1) },
 	};
-	// 통지 저장 모형: createNotification이 스트림에 항목을 쌓고 저장 확인 조회가 이를 읽는다.
 	const notifications: Record<string, unknown>[] = [];
-	// 저장 확인 조회는 실제 XREVRANGE 계약처럼 시작 커서('+' 또는 배타적 '(id')와 COUNT 페이지를 따른다.
-	const notificationRedis = { xrevrange: async (_key: string, start: string, _end: string, ...args: unknown[]) => {
-		const count = args[0] === 'COUNT' ? Number(args[1]) : Infinity;
-		const seq = (id: string) => Number(id.split('-')[0]);
-		let entries = notifications.map((payload, i) => [`${i + 1}-0`, ['data', JSON.stringify(payload)]] as [string, string[]]).reverse();
-		if (start !== '+') entries = entries.filter(([id]) => start.startsWith('(') ? seq(id) < seq(start.slice(1)) : seq(id) <= seq(start));
-		return entries.slice(0, count);
-	} };
 	const cache = { userProfileCache: { fetch: async () => ({}) } };
-	const service = new NoteCleanupService(db as any, { gen: () => String(Math.random()), parse: () => ({ date: new Date(0) }) } as any, queueService as any, noteDelete as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering, notificationRedis as any, cache as any);
+	const service = new NoteCleanupService(db as any, { gen: () => String(Math.random()), parse: () => ({ date: new Date(0) }) } as any, queueService as any, noteDelete as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push({ ...data, type, userId, createdAt: new Date().toISOString() }); } } as any, redis as any, { enableReactionsBuffering: false } as any, buffering, cache as any);
 	const processor = new AutoDeleteNotesProcessorService(service, queueService as any);
 	const addUser = (userId: string, lastRunAt = EPOCH) => {
 		rows.MiUser.push({ id: userId, host: null, autoDeleteNotesAfterDays: null, autoDeleteKeepFavorites: false });
@@ -746,7 +737,7 @@ test('OC1: 실패한 요청 작업은 새 요청으로 교체할 수 있다', as
 	expect(second.jobId).toBe(first.jobId);
 });
 
-test('Sol6: 요청 작업은 유한 재시도와 보존 기한을 두고 이어 받기 자식은 완료 뒤 자동 제거한다', async () => {
+test('Sol6: 요청 작업은 유한 재시도와 보존 기한을 두고 이어 받기 자식은 완료 뒤에도 체인 추적용으로 보존한다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
@@ -762,7 +753,7 @@ test('Sol6: 요청 작업은 유한 재시도와 보존 기한을 두고 이어 
 	expect(await run(f.processor, manual)).toBe('delayed');
 
 	const childOptions = f.addedJobs.at(-1)!.options as any;
-	expect(childOptions.removeOnComplete).not.toBe(false);
+	expect(childOptions.removeOnComplete).toBe(false);
 	expect(childOptions.attempts).toBeLessThan(1000);
 	expect(childOptions.removeOnFail).toMatchObject({ age: expect.any(Number) });
 });
@@ -878,7 +869,7 @@ function hopFixture() {
 	return f;
 }
 
-test('N1: 두 번 이어 받은 요청은 루트가 최신 꼬리를 가리켜 중간 자식이 제거돼도 중복 접수를 막는다', async () => {
+test('N1: 두 번 이어 받은 요청은 보존된 자식 체인을 따라 중복 접수를 막고 종료 뒤 루트와 자손을 함께 정리한다', async () => {
 	const f = hopFixture();
 	const first = await f.service.request('alice', ['d1']);
 	const rootId = first.jobId;
@@ -889,27 +880,29 @@ test('N1: 두 번 이어 받은 요청은 루트가 최신 꼬리를 가리켜 �
 	root.getState = async () => 'completed';
 	expect((f.jobs.get(rootId) as any).data.handoff.next.step).toBe(1);
 	const child1Id = `note-cleanup-${requestId}-1`;
-	// 홉 2: 자식 1이 자식 2를 등록하고 완료·자동 제거된다.
+	// 홉 2: 자식 1이 자식 2를 등록하고 완료한다. 완료된 자식은 체인 추적용으로 제거되지 않는다.
 	const child1 = f.jobs.get(child1Id) as any;
 	expect(await run(f.processor, f.job({ ...child1.data }, child1Id))).toBe('delayed');
-	f.jobs.delete(child1Id);
+	child1.getState = async () => 'completed';
 	const child2Id = `note-cleanup-${requestId}-2`;
+	expect(f.jobs.has(child1Id)).toBe(true);
 	expect(f.jobs.has(child2Id)).toBe(true);
-	// 루트는 최신 꼬리(자식 2)를 가리켜야 한다.
-	expect((f.jobs.get(rootId) as any).data.tail).toMatchObject({ requestId, step: 2 });
-	// 꼬리가 진행 중이면 같은 요청을 중복 접수하지 않고, sweep도 건드리지 않는다.
+	// 루트 → 자식 1 → 자식 2의 불변 handoff 포인터를 따라가 꼬리가 진행 중이면 중복 접수하지 않는다.
 	expect((await f.service.request('alice', ['d1'])).queued).toBe(false);
 	await f.service.sweepRequestChain('alice', rootId);
 	expect(f.jobs.has(rootId)).toBe(true);
+	expect(f.jobs.has(child1Id)).toBe(true);
 	expect(f.jobs.has(child2Id)).toBe(true);
-	// 꼬리가 완료·제거되면 종료된 체인을 정리하고 새 요청을 접수한다.
-	f.jobs.delete(child2Id);
+	// 꼬리가 완료되면 종료된 체인의 루트와 자손을 함께 정리하고 새 요청을 접수한다.
+	(f.jobs.get(child2Id) as any).getState = async () => 'completed';
 	await f.service.sweepRequestChain('alice', rootId);
 	expect(f.jobs.has(rootId)).toBe(false);
+	expect(f.jobs.has(child1Id)).toBe(false);
+	expect(f.jobs.has(child2Id)).toBe(false);
 	expect((await f.service.request('alice', ['d1'])).queued).toBe(true);
 });
 
-test('N1: 이어 받기 기록 뒤 중단된 자식은 같은 꼬리를 다시 등록하고 루트 포인터를 유지한다', async () => {
+test('N1: 이어 받기 기록 뒤 중단된 자식은 같은 자식 ID를 다시 등록하고 보존된 체인으로 중복 접수를 막는다', async () => {
 	const f = hopFixture();
 	const first = await f.service.request('alice', ['d1']);
 	const rootId = first.jobId;
@@ -927,8 +920,7 @@ test('N1: 이어 받기 기록 뒤 중단된 자식은 같은 꼬리를 다시 �
 	expect(await f.processor.process(resumed as any)).toMatchObject({ delayed: true });
 	expect(f.added.length).toBe(addedBefore + 1);
 	expect(f.added.at(-1)).toBe(child2Id);
-	expect((f.jobs.get(rootId) as any).data.tail).toMatchObject({ requestId, step: 2 });
-	// 재시도 뒤 자식 1이 완료·제거돼도 꼬리 추적은 유지된다.
-	f.jobs.delete(child1Id);
+	// 재시도 뒤 자식 1이 완료돼도 보존된 자식이 체인을 이어 중복 접수를 막는다.
+	child1.getState = async () => 'completed';
 	expect((await f.service.request('alice', ['d1'])).queued).toBe(false);
 });

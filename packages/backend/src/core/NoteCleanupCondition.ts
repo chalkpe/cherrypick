@@ -109,11 +109,12 @@ export function compileCleanupCondition(input: unknown): (context: CleanupContex
 }
 
 // 조건이 판정에 쓰는 자료 출처. 보호 실패 기록은 실패한 출처에 의존하는 규칙에만 남긴다.
+// flag poll·files·reply·quote·cw·localOnly는 노트 자체 필드만 쓰므로 외부 조회 출처가 없다.
 export function cleanupDependencies(c: CleanupCondition): string[] {
 	if (c.type === 'all' || c.type === 'any') return c.children.flatMap(cleanupDependencies);
 	if (c.type === 'not') return cleanupDependencies(c.child);
 	if (c.type === 'count') return [c.field];
-	if (c.type === 'flag') return [c.field];
+	if (c.type === 'flag') return ['pinned', 'favorite', 'selfReaction', 'selfRenote'].includes(c.field) ? [c.field] : [];
 	if (c.type === 'clip') return ['clip'];
 	if (c.type === 'keyword') return c.targets.map(t => t === 'fileComment' || t === 'fileName' ? 'files' : t);
 	return [];

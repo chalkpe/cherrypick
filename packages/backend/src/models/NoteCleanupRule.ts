@@ -49,9 +49,9 @@ export class MiNoteCleanupRule {
 	@Column('jsonb', { nullable: true })
 	public lastError: { ruleId: string; code: string; path: string; message: string; referenceType?: string; referenceId?: string; userActionable: boolean; recovery: NoteCleanupRecovery } | null;
 
-	// 오류 발생 세대와 최초 통지 접수 상태는 오류 본문과 별도로 보관한다. pendingSince는 저장 확인의 세대 기준 시각이다.
+	// 보호 실패 최초 통지 접수 마커. 같은 미해결 오류(identity)는 한 번만 통지하고, 오류가 해결되면 지운다.
 	@Column('jsonb', { nullable: true })
-	public protectionNotification: { generation: number; identity: string | null; status: 'pending' | 'accepted' | 'suppressed' | 'resolved'; pendingSince?: number } | null;
+	public protectionNotification: { identity: string; status: 'notified' | 'suppressed' } | null;
 
 	@Column('varchar', { length: 16, nullable: true })
 	public legacy: 'age' | 'favorite' | null;

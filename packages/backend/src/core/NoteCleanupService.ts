@@ -4,7 +4,6 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
-import { setTimeout } from 'node:timers/promises';
 import { Inject, Injectable } from '@nestjs/common';
 import type * as Bull from 'bullmq';
 import type * as Redis from 'ioredis';
@@ -41,8 +40,6 @@ export class NoteCleanupService {
 	private activeLocks = 0;
 	private logger = new Logger('note-cleanup');
 	private context = new AsyncLocalStorage<EntityManager>();
-	// DB까지 중단돼 기록하지 못한 보호 오류를 복구 뒤 첫 검사에서 기록하기 위해 보관한다.
-	private pendingProtectionFailures = new Map<string, { userId: string; recovery: NoteCleanupRecovery }>();
 	constructor(
 		@Inject(DI.db) private db: DataSource,
 		private idService: IdService,
@@ -52,7 +49,6 @@ export class NoteCleanupService {
 		@Inject(DI.redisForJobQueue) private redis: Redis.Redis,
 		@Inject(DI.meta) private meta: MiMeta,
 		private reactionsBufferingService: ReactionsBufferingService,
-		@Inject(DI.redis) private notificationRedis: Redis.Redis,
 		private cacheService: CacheService,
 	) {}
 
@@ -194,7 +190,6 @@ export class NoteCleanupService {
 	public async list(userId: string) {
 		return this.locked(userId, async () => {
 			await this.initialize(userId);
-			await this.flushProtectionFailures(userId);
 			const rules = await this.rules.find({ where: { userId }, order: { id: 'ASC' } });
 			const prepared = await this.prepare(rules.filter(r => r.enabled), userId);
 			// 다시 불러오기에서도 자료를 확인한 경우에만 과거 오류를 해제한다. 확인에 실패하면 저장된 오류로 계속 막는다.
@@ -377,8 +372,8 @@ export class NoteCleanupService {
 		let contexts: CleanupContext[];
 		try { contexts = await this.contexts(userId, notes); } catch (error) {
 			// 실패한 자료를 실제로 쓰는 남기기 규칙만 보호 오류로 기록한다. 출처를 모르면 보수적으로 모두 기록한다.
-			const source = (error as { cleanupSource?: string } | null)?.cleanupSource;
-			const affected = prepared.filter(p => p.rule.action === 'keep' && p.lastError === null && (source === undefined || cleanupDependencies(p.rule.condition).includes(source)));
+			const sources = (error as { cleanupSources?: string[] } | null)?.cleanupSources;
+			const affected = prepared.filter(p => p.rule.action === 'keep' && p.lastError === null && (sources === undefined || cleanupDependencies(p.rule.condition).some(source => sources.includes(source))));
 			if (isRetryableCleanupFailure(error)) {
 				// 실제 남기기 자료 확인까지 진행한 뒤의 연결 실패는 보호 오류로 남기고 기존 재시도 경로로 넘긴다.
 				for (const { rule } of affected) await this.recordRetryableProtectionFailure(userId, rule, { source: 'data', noteIds: notes.map(n => n.id) });
@@ -401,47 +396,24 @@ export class NoteCleanupService {
 		await this.notifyProtectionFailure(userId, rule.id);
 	}
 
-	// 재시도 가능한 연결 오류의 보호 실패 기록은 best-effort로 남긴다. DB까지 중단되면 복구 뒤 첫 검사에서 기록할 상태로 보존한다.
+	// 재시도 가능한 연결 오류의 보호 실패 기록은 best-effort로 남긴다. DB까지 중단되면 기록을 유실하며, 장애가 지속되면 다음 검사가 다시 판정한다.
 	private async recordRetryableProtectionFailure(userId: string, rule: MiNoteCleanupRule, recovery: NoteCleanupRecovery) {
 		try {
 			await this.storeFailure(userId, rule, { ruleId: rule.id, code: 'TEMPORARY_FAILURE', path: 'condition', message: 'TEMPORARY_FAILURE', userActionable: false, recovery });
 			await this.notifyProtectionFailure(userId, rule.id);
 		} catch (error) {
-			this.logger.error('Cleanup protection failure recording deferred', { userId, ruleId: rule.id, error });
-			// 보관 상한을 넘으면 가장 오래된 항목부터 버린다. 기록 누락은 다음 자료 확인에서 다시 판정된다.
-			if (this.pendingProtectionFailures.size >= 1000) this.pendingProtectionFailures.delete(this.pendingProtectionFailures.keys().next().value!);
-			this.pendingProtectionFailures.set(rule.id, { userId, recovery });
-		}
-	}
-
-	// 복구 뒤 첫 검사에서, 아직 기록되지 않은 보호 실패만 기록한다. 사라진 규칙·꺼진 규칙·남기기가 아닌 규칙·이미 기록된 오류는 버린다.
-	// 조회·쓰기가 실패하면 항목을 남겨 다음 검사에서 다시 기록한다. 해결된 세대는 새 실패의 해결이 아니므로 폐기 근거가 아니다.
-	private async flushProtectionFailures(userId: string) {
-		for (const [ruleId, pending] of [...this.pendingProtectionFailures]) {
-			if (pending.userId !== userId) continue;
-			try {
-				const current = await this.rules.findOneBy({ id: ruleId, userId });
-				if (!current || !current.enabled || current.action !== 'keep' || current.lastError !== null) {
-					this.pendingProtectionFailures.delete(ruleId);
-					continue;
-				}
-				await this.storeFailure(userId, current, { ruleId, code: 'TEMPORARY_FAILURE', path: 'condition', message: 'TEMPORARY_FAILURE', userActionable: false, recovery: pending.recovery });
-				this.pendingProtectionFailures.delete(ruleId);
-				await this.notifyProtectionFailure(userId, ruleId);
-			} catch (error) {
-				this.logger.error('Cleanup deferred protection failure flush failed', { userId, ruleId, error });
-			}
+			this.logger.error('Cleanup protection failure recording failed', { userId, ruleId: rule.id, error });
 		}
 	}
 
 	// 구 형식의 오류만 있는 행도 다음 기존 검사에서 한 번 접수를 확인한다.
-	// 해결 시 세대 번호는 남겨 같은 오류의 재발을 과거 접수 결과와 구분한다.
+	// 같은 미해결 오류는 접수 마커를 보존하고, 해결·삭제·남기기 아님은 마커를 지운다.
 	private async storeFailure(userId: string, rule: MiNoteCleanupRule, failure: MiNoteCleanupRule['lastError']) {
 		const previous = rule.protectionNotification ?? null;
 		const identity = rule.action === 'keep' && failure ? canonicalJson(publicError(failure)) : null;
-		const protectionNotification: MiNoteCleanupRule['protectionNotification'] = identity === null
-			? previous ? { generation: previous.generation, identity: null, status: 'resolved' } : null
-			: previous?.identity === identity ? previous : { generation: (previous?.generation ?? 0) + 1, identity, status: 'pending', pendingSince: Date.now() };
+		const protectionNotification: MiNoteCleanupRule['protectionNotification'] = identity !== null && previous?.identity === identity
+			? { identity, status: previous.status === 'suppressed' ? 'suppressed' : 'notified' }
+			: null;
 		if (canonicalJson(failure) !== canonicalJson(rule.lastError) || canonicalJson(previous) !== canonicalJson(protectionNotification)) {
 			await this.rules.update({ id: rule.id, userId }, { lastError: failure, protectionNotification });
 		}
@@ -449,63 +421,26 @@ export class NoteCleanupService {
 		rule.protectionNotification = protectionNotification;
 	}
 
+	// 보호 실패 최초 감지 시 한 번만 통지한다. 접수 마커를 먼저 남겨 드문 저장 실패의 유실은 허용하되 중복 발송은 막는다.
+	// 수신을 끈 사용자는 발송 없이 억제 마커를 남기고, 이후 수신을 켜도 같은 오류를 재발송하지 않는다.
 	private async notifyProtectionFailure(userId: string, ruleId: string) {
 		try {
 			const current = await this.rules.findOneBy({ id: ruleId, userId });
-			const pending = current?.protectionNotification;
-			if (!current?.enabled || current.action !== 'keep' || !current.lastError || pending?.status !== 'pending' || pending.identity !== canonicalJson(publicError(current.lastError))) return;
-			// 수신을 끈 사용자는 발송 없이 억제 상태로 구분한다. 접수를 먼저 확정하면 저장 실패와 구별할 수 없다.
+			if (!current?.enabled || current.action !== 'keep' || !current.lastError) return;
+			const identity = canonicalJson(publicError(current.lastError));
+			if (current.protectionNotification?.identity === identity) return;
 			const profile = await this.cacheService.userProfileCache.fetch(userId);
-			if ((profile.notificationRecieveConfig ?? {}).noteCleanupProtectionFailed?.type === 'never') {
-				await this.rules.update({ id: ruleId, userId, protectionNotification: pending }, { protectionNotification: { ...pending, status: 'suppressed' } });
-				return;
-			}
-			const since = pending.pendingSince ?? Date.now();
-			const errorCode = current.lastError.code;
-			// 중단 뒤 재시도에서 이미 저장된 같은 세대 알림은 다시 만들지 않는다.
-			let stored = await this.notificationStored(userId, ruleId, errorCode, since);
-			if (!stored) {
-				this.notificationService.createNotification(userId, 'noteCleanupProtectionFailed', { ruleId, errorCode });
-				// 공통 통지는 비동기 저장하므로 스트림에서 실제 저장을 확인한 뒤에만 접수한다.
-				for (let i = 0; i < 10 && !stored; i++) {
-					await setTimeout(50);
-					stored = await this.notificationStored(userId, ruleId, errorCode, since);
-				}
-			}
-			if (stored) {
-				await this.rules.update({ id: ruleId, userId, protectionNotification: pending }, { protectionNotification: { ...pending, status: 'accepted' } });
-			}
+			const suppressed = (profile.notificationRecieveConfig ?? {}).noteCleanupProtectionFailed?.type === 'never';
+			await this.rules.update({ id: ruleId, userId }, { protectionNotification: { identity, status: suppressed ? 'suppressed' : 'notified' } });
+			if (!suppressed) this.notificationService.createNotification(userId, 'noteCleanupProtectionFailed', { ruleId, errorCode: current.lastError.code });
 		} catch (error) {
-			this.logger.error('Cleanup protection notification acceptance failed', { error });
+			this.logger.error('Cleanup protection notification failed', { error });
 		}
 	}
 
-	// 같은 세대의 보호 실패 알림이 스트림에 저장됐는지 확인한다. 최신 항목부터 페이지로 이어 읽다가 기준 시각 이전 항목을 만나면 멈춘다.
-	private async notificationStored(userId: string, ruleId: string, errorCode: string, since: number): Promise<boolean> {
-		const key = `notificationTimeline:${userId}`;
-		let start = '+';
-		for (;;) {
-			const entries = await this.notificationRedis.xrevrange(key, start, '-', 'COUNT', 100);
-			if (!entries.length) return false;
-			for (const [id, fields] of entries) {
-				const raw = fields[fields.indexOf('data') + 1];
-				if (!raw) continue;
-				try {
-					const data = JSON.parse(raw) as { type?: string; ruleId?: string; errorCode?: string; createdAt?: string };
-					if (!data.createdAt) continue;
-					const createdAt = new Date(data.createdAt).getTime();
-					if (data.type === 'noteCleanupProtectionFailed' && data.ruleId === ruleId && data.errorCode === errorCode && createdAt >= since) return true;
-					// 스트림은 시간순이므로 기준 시각 이전 항목을 만나면 그 뒤에는 같은 세대가 있을 수 없다.
-					if (createdAt < since) return false;
-				} catch { /* 읽을 수 없는 항목은 건너뛴다 */ }
-			}
-			start = `(${entries.at(-1)![0]}`;
-		}
-	}
-
-	// 실패한 자료 출처를 오류에 표시한다. 객체가 아닌 오류는 그대로 두어 출처 미상으로 처리한다.
-	private tagCleanupSource(error: unknown, source: string): unknown {
-		return typeof error === 'object' && error !== null ? Object.assign(error, { cleanupSource: source }) : error;
+	// 실패한 자료 출처들을 오류에 표시한다. 객체가 아닌 오류는 그대로 두어 출처 미상으로 처리한다.
+	private tagCleanupSources(error: unknown, sources: string[]): unknown {
+		return typeof error === 'object' && error !== null ? Object.assign(error, { cleanupSources: sources }) : error;
 	}
 
 	private async contexts(userId: string, notes: MiNote[]): Promise<CleanupContext[]> {
@@ -513,10 +448,16 @@ export class NoteCleanupService {
 		const ids = notes.map(n => n.id);
 		const fileIds = [...new Set(notes.flatMap(n => n.fileIds))];
 		const errors: Record<string, string> = {};
+		const retryableSources: string[] = [];
+		let retryableError: unknown = null;
 		const guarded = async <T>(source: string, value: Promise<T> | T, fallback: T): Promise<T> => {
 			try { return await value; } catch (error) {
-				// 재시도 오류는 실패한 자료 출처를 표시해, 그 자료를 쓰는 남기기 규칙만 보호 오류로 기록하게 한다.
-				if (isRetryableCleanupFailure(error)) throw this.tagCleanupSource(error, source);
+				// 재시도 오류는 실패한 자료 출처를 모두 모은 뒤, 그 자료를 쓰는 남기기 규칙만 보호 오류로 기록하게 한다.
+				if (isRetryableCleanupFailure(error)) {
+					retryableSources.push(source);
+					if (retryableError === null) retryableError = error;
+					return fallback;
+				}
 				this.logger.error(`Cleanup data lookup failed (${source})`, { error });
 				errors[source] = 'TEMPORARY_FAILURE';
 				return fallback;
@@ -532,12 +473,13 @@ export class NoteCleanupService {
 			guarded('clip', this.repository(MiClipNote).createQueryBuilder('link').innerJoin(MiClip, 'clip', 'clip.id = link.clipId AND clip.userId = :userId', { userId }).where('link.noteId IN (:...ids)', { ids }).getMany(), []),
 			guarded('reactions', this.meta.enableReactionsBuffering ? this.reactionsBufferingService.getMany(ids) : new Map(), new Map<string, { deltas: Record<string, number>; pairs: [string, string][] }>()),
 		]);
+		if (retryableError !== null) throw this.tagCleanupSources(retryableError, retryableSources);
 		const reactionCounts = new Map(notes.map(note => {
 			let merged: Record<string, number>;
 			try {
 				merged = this.reactionsBufferingService.mergeReactions(note.reactions, bufferedReactions.get(note.id)?.deltas ?? {});
 			} catch (error) {
-				throw this.tagCleanupSource(error, 'reactions');
+				throw this.tagCleanupSources(error, ['reactions']);
 			}
 			if (Object.values(merged).some(count => !Number.isSafeInteger(count) || count < 0)) {
 				errors.reactions = 'TEMPORARY_FAILURE';
@@ -552,7 +494,6 @@ export class NoteCleanupService {
 	}
 
 	private async page(userId: string, ruleIds: string[], afterId?: string, limit = 100, consumption?: CleanupScanConsumption) {
-		await this.flushProtectionFailures(userId);
 		const all = await this.rules.find({ where: { userId }, order: { id: 'ASC' } });
 		if (!ruleIds.length || ruleIds.length > 34 || ruleIds.some(id => !all.some(r => r.id === id && r.action === 'delete' && r.enabled))) throw new CleanupInputError('INVALID_RULE_SELECTION', 'ruleIds');
 		const active = all.filter(r => r.enabled && (r.action === 'keep' || ruleIds.includes(r.id)));
@@ -602,12 +543,12 @@ export class NoteCleanupService {
 			const state = await current.getState();
 			if (state !== 'completed' && state !== 'failed') return { inFlight: true, jobs };
 			jobs.push(current);
-			// 루트의 tail은 최신 후손을 가리킨다. 완료·제거된 중간 자식을 건너뛰어도 진행 중인 꼬리를 찾을 수 있다.
-			const data = current.data as { handoff?: { next?: { requestId?: unknown; step?: unknown } }; tail?: { requestId?: unknown; step?: unknown } };
-			const next = data.tail ?? data.handoff?.next;
+			// 완료된 자식은 removeOnComplete:false로 남아, 등록 시점에 기록된 불변 handoff 포인터로 체인을 잇는다.
+			const data = current.data as { handoff?: { next?: { requestId?: unknown; step?: unknown } } };
+			const next = data.handoff?.next;
 			if (!next || typeof next.requestId !== 'string' || typeof next.step !== 'number') break;
 			const child = await this.queueService.systemQueue.getJob(`note-cleanup-${next.requestId}-${next.step}`);
-			// 완료 정리나 보존 기한 만료로 사라진 자식은 체인의 끝으로 본다.
+			// 보존 기한 만료로 사라진 자식은 체인의 끝으로 본다.
 			if (!child) break;
 			current = child;
 		}
