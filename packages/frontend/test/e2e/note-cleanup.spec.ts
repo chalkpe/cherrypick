@@ -21,7 +21,10 @@ test('opens note cleanup from the production bundle', async ({ page }) => {
 	await expect(page.getByRole('link', { name: 'Create rule' })).toHaveCount(2);
 	// 목록에는 정리 실행·선택 수단이 없고 편집 화면으로만 들어간다.
 	await expect(page.getByRole('button', { name: 'Clean up now' })).toHaveCount(0);
-	await expect(page.locator('input[type="checkbox"]')).toHaveCount(0);
+	// 유일한 체크박스는 첨부 파일 보존 설정 스위치이며 기본값은 켜짐이다.
+	const keepDriveFiles = page.getByRole('checkbox', { name: 'Keep attachments of deleted notes in the drive' });
+	await expect(keepDriveFiles).toBeChecked();
+	await expect(page.locator('input[type="checkbox"]')).toHaveCount(1);
 });
 
 test('creates a rule from the list and rejects invalid regular expressions before saving', async ({ page }) => {
@@ -61,4 +64,29 @@ test('creates a rule from the list and rejects invalid regular expressions befor
 	await expect(page.getByRole('button', { name: 'Turn off' })).toBeVisible();
 	await page.goto(`${BASE_URL}/settings/note-cleanup`);
 	await expect(page.getByRole('link', { name: 'Regex check' })).toBeVisible();
+});
+
+test('saves the drive files choice from the list switch', async ({ page }) => {
+	await resetState();
+	await registerUser('admin', 'pass', true);
+	await registerUser('alice', 'alice1234');
+	await signIn(page, 'alice', 'alice1234');
+	await closeUserSetupDialog(page);
+	await page.goto(`${BASE_URL}/settings/note-cleanup`);
+	const keepDriveFiles = page.getByRole('checkbox', { name: 'Keep attachments of deleted notes in the drive' });
+	await expect(keepDriveFiles).toBeChecked();
+	const label = page.getByText('Keep attachments of deleted notes in the drive', { exact: true });
+
+	const turnedOff = page.waitForResponse(response => response.url().endsWith('/api/i/note-cleanup/update-settings'));
+	await label.click();
+	await expect(keepDriveFiles).not.toBeChecked();
+	const offResponse = await turnedOff;
+	expect(offResponse.status()).toBe(200);
+	expect(offResponse.request().postDataJSON()).toMatchObject({ keepDriveFiles: false });
+
+	// 새로고침 뒤에도 꺼진 상태가 유지된다.
+	await page.reload();
+	const reloaded = page.getByRole('checkbox', { name: 'Keep attachments of deleted notes in the drive' });
+	await reloaded.waitFor({ state: 'attached' });
+	await expect(reloaded).not.toBeChecked();
 });
