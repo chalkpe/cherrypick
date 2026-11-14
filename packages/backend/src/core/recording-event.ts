@@ -78,6 +78,19 @@ export class PartialRecordingDeliveryError extends Error {
 	}
 }
 
+// 같은 참가자의 녹음 상태 잠금을 다른 업데이트가 잡고 있는 경합. 승인 처리 중 취소 종료처럼 정상 사용 중에도 생기므로,
+// 짧은 서버 대기를 써도 잠금을 못 얻으면 내부 오류 대신 정의된 일시 오류로 답해 클라이언트가 다시 보내게 한다.
+export class RecordingStatusBusyError extends Error {
+	constructor() {
+		super('Recording status is being updated');
+		this.name = 'RecordingStatusBusyError';
+	}
+}
+
+// 잠금 경합 때 서버가 기다리는 예산과 확인 간격. 예산을 넘기면 RecordingStatusBusyError로 답한다.
+export const RECORDING_STATUS_LOCK_WAIT_MS = 2_000;
+export const RECORDING_STATUS_LOCK_POLL_MS = 100;
+
 // 보관 목록이 상한에 차면 가장 오래된 항목을 축출한다. 보관 목록은 읽히지 않고 수명 계산에만 쓰이며,
 // 재시작 방지와 소유권은 결속·활성 키가 지키므로 축출은 안전하다. 축출된 결속은 종료까지 배달한 (stopSent) 경우에만
 // 함께 지워 방별 결속 자원을 상한 안에 묶는다. 활성·미전달 결속은 flush의 종료 배달과 소유권 검사가 아직 필요하므로

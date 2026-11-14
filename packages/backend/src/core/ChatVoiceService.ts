@@ -16,7 +16,7 @@ import type { MiMeta } from '@/models/Meta.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { bindThis } from '@/decorators.js';
-import { ABORT_UNSENT_RECORDING_SCRIPT, ACK_RECORDING_PUBLICATION_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, MAX_RECORDING_IDS, PREPARE_RECORDING_EVENT_SCRIPT, PREPARE_RECORDING_PUBLICATION_SCRIPT, PartialRecordingDeliveryError, RECORDING_ID, RENEW_ACTIVE_RECORDING_SCRIPT, parseRecordingEvent, recordingDeliveryWindowMs, recordingEventDeadline, recordingRetentionSeconds } from '@/core/recording-event.js';
+import { ABORT_UNSENT_RECORDING_SCRIPT, ACK_RECORDING_PUBLICATION_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, MAX_RECORDING_IDS, PREPARE_RECORDING_EVENT_SCRIPT, PREPARE_RECORDING_PUBLICATION_SCRIPT, PartialRecordingDeliveryError, RECORDING_ID, RECORDING_STATUS_LOCK_POLL_MS, RECORDING_STATUS_LOCK_WAIT_MS, RENEW_ACTIVE_RECORDING_SCRIPT, RecordingStatusBusyError, parseRecordingEvent, recordingDeliveryWindowMs, recordingEventDeadline, recordingRetentionSeconds } from '@/core/recording-event.js';
 import type { RecordingBinding, RecordingEvent, RecordingStatus } from '@/core/recording-event.js';
 import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
@@ -608,7 +608,14 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			if (!RECORDING_ID.test(status.recordingId)) return false;
 			const lockKey = `chatVoice:recordingLock:${hashOf([roomId, participant.identity])}`;
 			const token = randomUUID();
-			if (await this.redisClient.set(lockKey, token, 'PX', 30_000, 'NX') !== 'OK') throw new Error('Recording status is being updated');
+			// 같은 참가자의 다른 업데이트 (승인 처리 중 도착한 취소 종료 등) 가 잠금을 잡은 경합은 정상 사용 중에도 생긴다.
+			// 짧은 예산 안에서 기다렸다 잡히면 그대로 적용하고, 끝내 못 잡으면 정의된 일시 오류로 답해 클라이언트가 다시 보내게 한다.
+			// 기다리는 동안에는 토큰을 그대로 써, 잠금을 얻은 경우에만 같은 토큰으로 해제한다.
+			const waitUntil = Date.now() + RECORDING_STATUS_LOCK_WAIT_MS;
+			while (await this.redisClient.set(lockKey, token, 'PX', 30_000, 'NX') !== 'OK') {
+				if (Date.now() >= waitUntil) throw new RecordingStatusBusyError();
+				await new Promise(resolve => setTimeout(resolve, RECORDING_STATUS_LOCK_POLL_MS));
+			}
 			try {
 				const bindingKey = `chatVoice:recording:${status.recordingId}`;
 				const activeKey = `chatVoice:recordingActive:${hashOf([roomId, participant.identity, sessionId])}`;

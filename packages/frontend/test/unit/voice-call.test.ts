@@ -649,7 +649,7 @@ describe('voice call controller', () => {
 			mocks.misskeyApi.mockClear();
 		}
 
-		test.each([new TypeError('Failed to fetch'), { code: 'INTERNAL_ERROR' }, { code: 'REMOTE_HOST_UNREACHABLE' }])('delivers the latest settings after a transient failure: %j', async error => {
+		test.each([new TypeError('Failed to fetch'), { code: 'INTERNAL_ERROR' }, { code: 'REMOTE_HOST_UNREACHABLE' }, { code: 'RECORDING_STATUS_BUSY' }])('delivers the latest settings after a transient failure: %j', async error => {
 			await joinMuted();
 			mocks.misskeyApi.mockRejectedValueOnce(error);
 			setDeafened(true);
@@ -2507,5 +2507,45 @@ describe('call recording lifecycle', () => {
 		expect(rawTrack.stop).toHaveBeenCalledOnce();
 		expect(window.fetch).toHaveBeenCalledTimes(2);
 		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingRejected);
+	});
+
+	// 잠금 경합(BUSY)은 일시 오류다. 같은 ID로 다시 승인받아 시작해야 하며, 거절 토스트를 띄우면 안 된다
+	test('retries a busy recording approval with the same ID and starts without a rejection toast', async () => {
+		await joinRecordingCall();
+		vi.useFakeTimers();
+		try {
+			mocks.misskeyApi.mockRejectedValueOnce({ code: 'RECORDING_STATUS_BUSY' });
+			const starting = startRecording();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(voiceCall.recordingStarting).toBe(true);
+			expect(mocks.toast).not.toHaveBeenCalledWith(i18n.ts._voiceCall.recordingStartRejected);
+			await vi.advanceTimersByTimeAsync(1000);
+			await vi.waitFor(() => expect(voiceCall.recording).toBe(true));
+			await starting;
+			const approvals = mocks.misskeyApi.mock.calls.filter(([endpoint, body]) => endpoint === 'chat/rooms/voice/status' && (body as any)?.recording === true);
+			expect(approvals.length).toBeGreaterThanOrEqual(2);
+			expect(new Set(approvals.map(([, body]) => (body as any).recordingId)).size).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('a canceled busy approval does not retry or revive the recording', async () => {
+		await joinRecordingCall();
+		vi.useFakeTimers();
+		try {
+			mocks.misskeyApi.mockRejectedValueOnce({ code: 'RECORDING_STATUS_BUSY' });
+			const starting = startRecording();
+			await vi.advanceTimersByTimeAsync(0);
+			stopRecording();
+			await vi.advanceTimersByTimeAsync(5000);
+			await starting;
+			expect(voiceCall.recording).toBe(false);
+			expect(voiceCall.recordingStarting).toBe(false);
+			const approvals = mocks.misskeyApi.mock.calls.filter(([endpoint, body]) => endpoint === 'chat/rooms/voice/status' && (body as any)?.recording === true);
+			expect(approvals).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

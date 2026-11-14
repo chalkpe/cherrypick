@@ -6,13 +6,14 @@
 import { describe, expect, test, vi } from 'vitest';
 import StatusEndpoint from '@/server/api/endpoints/chat/rooms/voice/status.js';
 import { RemoteVoiceCallError } from '@/core/RemoteVoiceCallService.js';
+import { RecordingStatusBusyError } from '@/core/recording-event.js';
 import { createFixture, KNOWN_USERS } from '../misc/chat-voice-fixture.js';
 
 const user = { id: 'me', host: null } as any;
 const report = { roomId: 'r1', sessionId: 'PA_1', micMuted: true, deafened: false };
 
 function fixture(member = true, remote = false) {
-	const room = { id: 'r1', ownerId: 'owner', owner: { host: remote ? 'remote.test' : null } };
+	const room = { id: 'r1', ownerId: 'owner', allowRecording: true, owner: { host: remote ? 'remote.test' : null } };
 	const chat = { checkChatAvailability: vi.fn(), findRoomById: vi.fn().mockResolvedValue(room) };
 	const local = { reportStatus: vi.fn().mockResolvedValue(true) };
 	const host = { reportStatus: vi.fn() };
@@ -64,6 +65,13 @@ describe('reported voice status', () => {
 		const f = fixture();
 		f.local.reportStatus.mockResolvedValue(false);
 		await expect(f.endpoint.exec(report, user, null, null)).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
+	});
+
+	// 잠금 경합은 정상 사용 중에도 생긴다 (승인 처리 중 취소 종료 등). 내부 오류 (500) 대신 정의된 일시 오류로 답해야 클라이언트가 재시도한다
+	test('answers a contended recording status update with RECORDING_STATUS_BUSY instead of an internal error', async () => {
+		const f = fixture();
+		f.local.reportStatus.mockRejectedValue(new RecordingStatusBusyError());
+		await expect(f.endpoint.exec({ ...report, recording: true, recordingId: '0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e' }, user, null, null)).rejects.toMatchObject({ code: 'RECORDING_STATUS_BUSY' });
 	});
 
 	// 断ると決められなかった (読めなかった) 報告を ACCESS_DENIED にすると、クライアントは送り直さず設定が古いまま残る

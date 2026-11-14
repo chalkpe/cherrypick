@@ -575,7 +575,7 @@ async function deliverStatus(delivery: StatusDelivery): Promise<void> {
 	} catch (err) {
 		if (statusDelivery !== delivery || current !== delivery.room) return;
 		const code = isApiError(err) ? err.code : null;
-		const permanent = code != null && code !== 'RATE_LIMIT_EXCEEDED' && code !== 'INTERNAL_ERROR' && code !== 'REMOTE_HOST_UNREACHABLE';
+		const permanent = code != null && code !== 'RATE_LIMIT_EXCEEDED' && code !== 'INTERNAL_ERROR' && code !== 'REMOTE_HOST_UNREACHABLE' && code !== 'RECORDING_STATUS_BUSY';
 		if (code === 'RECORDING_NOT_ALLOWED') state.recordingAllowed = false;
 		if (permanent && status.recording === true && (recordingStarting != null || recordingSession != null)) {
 			// 録画していると伝えるのを断られたら (持ち主が許さなくなった・通話の資格を確かめられないなど)、理由によらず録画を止め、止めたことを伝える
@@ -728,7 +728,18 @@ export async function startRecording(): Promise<void> {
 	const active = () => recordingStarting === attempt && current === room && state.room?.id === roomId && state.status === 'connected' && state.recordingAllowed;
 	let approved = false;
 	try {
-		await misskeyApi('chat/rooms/voice/status', { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened, recording: true, recordingId: attempt.id });
+		// 잠금 경합 (BUSY) 은 일시 오류다. 같은 ID로 다시 승인받는다 (같은 clientId의 PREPARE는 멱등이라 기존 결속의 시작 이벤트를 그대로 쓴다).
+		// 취소됐으면 더 시도하지 않고, 예산을 넘겨도 계속 경합이면 거절로 처리한다.
+		for (let busyRetries = 0; ; busyRetries++) {
+			try {
+				await misskeyApi('chat/rooms/voice/status', { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened, recording: true, recordingId: attempt.id });
+				break;
+			} catch (err) {
+				if (!active() || busyRetries >= 2 || !isApiError(err) || err.code !== 'RECORDING_STATUS_BUSY') throw err;
+				await new Promise(resolve => window.setTimeout(resolve, 1000));
+				if (!active()) return;
+			}
+		}
 		approved = true;
 		if (!active()) {
 			if (current === room && recordingStarting == null && recordingSession == null) reportStatus(room, true, attempt.id);

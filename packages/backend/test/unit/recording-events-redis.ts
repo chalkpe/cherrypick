@@ -203,6 +203,59 @@ test('a request that loses its lock cannot clear its replacement recording', asy
 	}
 });
 
+test('a status report waits out a brief lock hold and then applies', async () => {
+	const { fixture } = recordingFixture();
+	const recordingId = randomUUID();
+	const paused = signal();
+	const resume = signal();
+	const evaluate = redis.eval.bind(redis);
+	let intercepted = false;
+	const spy = vi.spyOn(redis, 'eval').mockImplementation(async (...args: any[]) => {
+		if (!intercepted && args[0] === PREPARE_RECORDING_EVENT_SCRIPT) {
+			intercepted = true;
+			paused.resolve();
+			await resume.promise;
+		}
+		return evaluate(...args as Parameters<typeof redis.eval>);
+	});
+	try {
+		const approval = fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId });
+		await paused.promise;
+		// 승인이 처리되는 동안(잠금 보유) 같은 참가자의 다른 보고가 도착한다
+		const stop = fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { micMuted: true, deafened: false, recordingId });
+		await new Promise(resolve => setTimeout(resolve, 300));
+		resume.resolve();
+		await expect(approval).resolves.toBe(true);
+		await expect(stop).resolves.toBe(true);
+		const binding = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+		expect(binding.stop?.recording).toBe(false);
+		expect(binding.stopSent).toBe(true);
+	} finally {
+		resume.resolve();
+		spy.mockRestore();
+	}
+});
+
+test('a status report that cannot take the lock fails with a dedicated busy error', async () => {
+	const { fixture } = recordingFixture();
+	const recordingId = randomUUID();
+	const setSpy = vi.spyOn(redis, 'set');
+	await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId });
+	const lockKey = setSpy.mock.calls.find(call => String(call[0]).startsWith('chatVoice:recordingLock:'))![0] as string;
+	setSpy.mockRestore();
+	// 다른 업데이트가 대기 예산보다 오래 잠금을 잡은 상황
+	await redis.set(lockKey, 'leftover', 'PX', 30_000);
+	try {
+		const failed = await fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { micMuted: true, deafened: false, recordingId }).catch(error => error);
+		expect(failed).toBeInstanceOf(Error);
+		expect(failed.name).toBe('RecordingStatusBusyError');
+		// 실패한 보고는 남의 잠금을 풀지 않는다
+		expect(await redis.get(lockKey)).toBe('leftover');
+	} finally {
+		await redis.del(lockKey);
+	}
+});
+
 test('a new SID for the same identity does not keep the previous recording alive', async () => {
 	const { fixture, participants } = recordingFixture();
 	Object.assign(participants[0], { sessionId: 'PA_1' });

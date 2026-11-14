@@ -6,7 +6,7 @@
 import * as http from 'node:http';
 import * as https from 'node:https';
 import { Inject, Injectable } from '@nestjs/common';
-import { RECORDING_ID } from '@/core/recording-event.js';
+import { RECORDING_ID, RecordingStatusBusyError } from '@/core/recording-event.js';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { bindThis } from '@/decorators.js';
@@ -160,6 +160,8 @@ export class LiveKitServerService {
 				if (roomId == null || !await this.chatVoiceService.reportStatus(user, roomId, sessionId, { micMuted, deafened, recording: typeof recording === 'boolean' ? recording : undefined, ...(typeof recordingId === 'string' ? { recordingId } : {}) })) return reply.code(403).send();
 				return reply.code(200).send({});
 			} catch (err) {
+				// 잠금 경합은 일시 상태다. 내부 오류 (500) 대신 409로 답해, 상대 서버가 도달 불가 (재시도 대상) 로 처리하게 한다
+				if (err instanceof RecordingStatusBusyError) return reply.code(409).send();
 				return reply.code(err instanceof SyntaxError ? 400 : 500).send();
 			}
 		});

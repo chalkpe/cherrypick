@@ -4,7 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import { RECORDING_ID } from '@/core/recording-event.js';
+import { RECORDING_ID, RecordingStatusBusyError } from '@/core/recording-event.js';
 import { DI } from '@/di-symbols.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { ApiError } from '@/server/api/error.js';
@@ -24,6 +24,7 @@ export const meta = {
 		remoteHostUnsupported: { message: 'The server that owns this room does not accept voice call settings.', code: 'REMOTE_HOST_UNSUPPORTED', id: 'e9274dc8-5f4f-48e2-ab52-ceb89b239ef0' },
 		remoteHostUnreachable: { message: 'Could not report the voice call settings to the server that owns this room.', code: 'REMOTE_HOST_UNREACHABLE', id: 'eb2520b1-c21a-48f6-b35f-e1c4d69ceba7' },
 		recordingNotAllowed: { message: 'The owner of this room does not allow recording.', code: 'RECORDING_NOT_ALLOWED', id: '5b567867-18ac-4380-bd0d-742fbb0013db' },
+		recordingStatusBusy: { message: 'The recording status is being updated. Try again in a moment.', code: 'RECORDING_STATUS_BUSY', id: '46aad2f3-9e29-440a-b920-807fefddd510' },
 	},
 } as const;
 
@@ -73,8 +74,16 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					}
 					throw err;
 				}
-			} else if (!await this.chatVoiceService.reportStatus(me, room.id, ps.sessionId, status)) {
-				throw new ApiError(meta.errors.accessDenied);
+			} else {
+				let accepted: boolean;
+				try {
+					accepted = await this.chatVoiceService.reportStatus(me, room.id, ps.sessionId, status);
+				} catch (err) {
+					// 잠금 경합은 정상 사용 중에도 생기는 일시 오류다. 내부 오류 (500) 로 남기지 않고 정의된 오류로 답해 클라이언트가 다시 보내게 한다
+					if (err instanceof RecordingStatusBusyError) throw new ApiError(meta.errors.recordingStatusBusy);
+					throw err;
+				}
+				if (!accepted) throw new ApiError(meta.errors.accessDenied);
 			}
 		});
 	}
