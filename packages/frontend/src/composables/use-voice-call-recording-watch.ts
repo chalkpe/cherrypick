@@ -34,22 +34,36 @@ export function useVoiceCallRecordingWatch() {
 	});
 	const someoneRecording = computed(() => recordingIdentities.value.length > 0);
 
-	// 録画が始まったり終わったりしたら、音と表示で知らせる。同じ一覧の変化で始まりと終わりが重なったら、どちらも知らせる。
+	// 参加者の名前は覚えている。一覧から抜けた人の終了も名前で知らせられるように
+	const participantNames = new Map<string, string>();
+	watch(participants, list => {
+		for (const participant of list) {
+			participantNames.set(participant.identity, userName(participant.user));
+		}
+	}, { immediate: true });
+
+	// 録画が始まったり終わったりしたら、音と表示で知らせる。同じ一覧の変化で始まりと終わりが重なったら、一つの知らせにまとめる。
+	// 音は一度だけ: 録画が続くなら開始音、全部終わったら終了音 (続けて呼ぶと再生ガードに埋もれる)。
 	// 別の通話に移ったときは知らせない
 	watch([recordingIdentities, callRoomId], ([now, roomId], [before, roomIdBefore]) => {
 		if (roomId == null || roomId !== roomIdBefore) return;
 		const started = now.filter(id => !before.includes(id));
 		const stopped = before.filter(id => !now.includes(id));
+		if (started.length === 0 && stopped.length === 0) return;
 		if (started.length > 0) {
 			void playMisskeySfxFile({ type: 'syuilo/up', volume: 1 });
-			for (const id of started) {
-				const participant = participants.value.find(p => p.identity === id);
-				if (participant != null && id !== myIdentity) os.toast(i18n.tsx._voiceCall.recordingStartedBy({ name: userName(participant.user) }));
-			}
-		}
-		if (stopped.length > 0) {
+		} else {
 			void playMisskeySfxFile({ type: 'syuilo/down', volume: 1 });
-			if (stopped.some(id => id !== myIdentity)) os.toast(i18n.ts._voiceCall.recordingStopped);
+		}
+		const startedOthers = started.filter(id => id !== myIdentity);
+		const stoppedOthers = stopped.filter(id => id !== myIdentity);
+		const namesOf = (ids: string[]) => ids.map(id => participantNames.get(id)).filter((name): name is string => name != null).join(', ');
+		if (startedOthers.length > 0 && stoppedOthers.length > 0) {
+			os.toast(i18n.tsx._voiceCall.recordingStoppedAndStarted({ stopped: namesOf(stoppedOthers), started: namesOf(startedOthers) }));
+		} else if (startedOthers.length > 0) {
+			os.toast(i18n.tsx._voiceCall.recordingStartedBy({ name: namesOf(startedOthers) }));
+		} else if (stoppedOthers.length > 0) {
+			os.toast(i18n.ts._voiceCall.recordingStopped);
 		}
 	});
 

@@ -2484,6 +2484,7 @@ _voiceCall:
   recordingJoinNotice: "This call is being recorded. If you join, your voice and any screen you share will also be recorded. Join?"
   recordingStartedBy: "{name} started recording"
   recordingStopped: "Recording ended"
+  recordingStoppedAndStarted: "{stopped} stopped recording and {started} started recording"
   recordingSaveFailed: "Could not save {n} recording file(s) to your drive. What would you like to do?"
   recordingConversionFailed: "Could not convert {n} recording file(s). The originals are saved in your drive. What would you like to do?"
   recordingMixedFailure: "Some recordings could not be uploaded, and others could not be converted. Uploaded originals are saved in your drive. What would you like to do?"

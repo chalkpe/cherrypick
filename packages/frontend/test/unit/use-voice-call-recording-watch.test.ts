@@ -167,7 +167,7 @@ test('announces only the net recording change within one tick', async () => {
 	expect(watch.someoneRecording.value).toBe(true);
 });
 
-test('announces both the stop and the start when one update replaces the recorder', async () => {
+test('merges the stop and the start into one notice when one update replaces the recorder', async () => {
 	start();
 	await flush();
 	const a = { identity: 'user-a', user: { id: 'user-a' } };
@@ -181,11 +181,11 @@ test('announces both the stop and the start when one update replaces the recorde
 	setParticipants('r1', [{ ...b, recording: true }]);
 	await flush();
 
-	expect(mocks.toast.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining([
-		i18n.tsx._voiceCall.recordingStartedBy({ name: 'participant' }),
-		i18n.ts._voiceCall.recordingStopped,
-	]));
-	expect(mocks.sound.mock.calls.map(call => call[0].type)).toEqual(expect.arrayContaining(['syuilo/up', 'syuilo/down']));
+	expect(mocks.toast).toHaveBeenCalledTimes(1);
+	expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingStoppedAndStarted({ stopped: 'participant', started: 'participant' }));
+	// 録画は続いているので開始音一つだけ (終了音を続けて呼ぶと再生ガードに埋もれる)
+	expect(mocks.sound).toHaveBeenCalledTimes(1);
+	expect(mocks.sound).toHaveBeenCalledWith(expect.objectContaining({ type: 'syuilo/up' }));
 });
 
 test('announces another participant stopping when my own recording starts in the same update', async () => {
@@ -204,7 +204,9 @@ test('announces another participant stopping when my own recording starts in the
 
 	expect(mocks.toast).toHaveBeenCalledTimes(1);
 	expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingStopped);
-	expect(mocks.sound.mock.calls.map(call => call[0].type)).toEqual(expect.arrayContaining(['syuilo/up', 'syuilo/down']));
+	// 自分の開始で録画が続くので開始音一つだけ
+	expect(mocks.sound).toHaveBeenCalledTimes(1);
+	expect(mocks.sound).toHaveBeenCalledWith(expect.objectContaining({ type: 'syuilo/up' }));
 });
 
 test('does not announce the previous call recording state after switching calls', async () => {

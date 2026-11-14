@@ -9727,6 +9727,10 @@ export interface Locale extends ILocale {
          */
         "recordingStopped": string;
         /**
+         * {stopped}さんの録画が終了し、{started}さんが録画を開始しました
+         */
+        "recordingStoppedAndStarted": ParameterizedString<"stopped" | "started">;
+        /**
          * 録画ファイルを {n} 個ドライブに保存できませんでした。どうしますか？
          */
         "recordingSaveFailed": ParameterizedString<"n">;

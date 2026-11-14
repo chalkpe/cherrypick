@@ -2519,6 +2519,7 @@ _voiceCall:
   recordingJoinNotice: "この通話は録画されています。参加すると、あなたの声や共有した画面も録画に残ります。参加しますか？"
   recordingStartedBy: "{name}さんが録画を開始しました"
   recordingStopped: "録画が終了しました"
+  recordingStoppedAndStarted: "{stopped}さんの録画が終了し、{started}さんが録画を開始しました"
   recordingSaveFailed: "録画ファイルを {n} 個ドライブに保存できませんでした。どうしますか？"
   recordingConversionFailed: "録画ファイルを {n} 個変換できませんでした。元のファイルはドライブに保存されています。どうしますか？"
   recordingMixedFailure: "アップロードできなかった録画と変換できなかった録画があります。アップロード済みの元のファイルはドライブに保存されています。どうしますか？"
