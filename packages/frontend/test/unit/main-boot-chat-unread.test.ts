@@ -14,6 +14,9 @@ const mocks = vi.hoisted(() => ({
 	misskeyApi: vi.fn(),
 	confirm: vi.fn(async () => ({ canceled: true })),
 	prefer: null as any,
+	initChatUnreadSubscription: vi.fn(),
+	resolveChatUnreadGap: vi.fn(),
+	store: { realtimeMode: true, accountSetupWizard: -1, darkMode: false },
 }));
 
 vi.mock('@/boot/common.js', () => ({ common: vi.fn(async () => ({ isClientUpdated: false, isClientMigrated: false, lastVersion: '2026.11.0' })) }));
@@ -36,7 +39,11 @@ vi.mock('@/stream.js', () => ({
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: mocks.playMisskeySfx }));
 vi.mock('@/i.js', () => ({ $i: { id: 'viewer', token: 'viewer-token', isDeleted: false, loggedInDays: 0, notesCount: 0, followersCount: 0, createdAt: '2026-01-01T00:00:00.000Z', policies: { canSetFederationAvatarShape: false } } }));
 vi.mock('@/instance.js', () => ({ instance: { repositoryUrl: 'https://github.com/chalkpe/cherrypick' } }));
-vi.mock('@/store.js', () => ({ store: { loaded: Promise.resolve(), s: { realtimeMode: true, accountSetupWizard: -1, darkMode: false }, set: vi.fn() } }));
+vi.mock('@/store.js', () => ({ store: { loaded: Promise.resolve(), s: mocks.store, set: vi.fn() } }));
+vi.mock('@/chat-unread-subscription.js', () => ({
+	initChatUnreadSubscription: mocks.initChatUnreadSubscription,
+	resolveChatUnreadGap: mocks.resolveChatUnreadGap,
+}));
 vi.mock('@/utility/reaction-picker.js', () => ({ reactionPicker: { init: vi.fn() } }));
 vi.mock('@/local-storage.js', () => ({ miLocalStorage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } }));
 vi.mock('@/utility/achievements.js', () => ({ claimAchievement: vi.fn(), claimedAchievements: ['client30min', 'client60min', 'justPlainLucky'] }));
@@ -70,6 +77,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.streamHandlers.clear();
 	mocks.channelHandlers.clear();
+	mocks.store.realtimeMode = true;
 	mocks.prefer.reset({
 		menu: [],
 		serverDisconnectedBehavior: 'quiet',
@@ -120,6 +128,31 @@ test('chat events apply the versioned unread state without an account request', 
 	mocks.channelHandlers.get('chatUnread')?.({ version: 1, hasUnreadChatMessages: true });
 	expect(mocks.updateCurrentAccount).toHaveBeenCalledWith({ hasUnreadChatMessages: true });
 	expect(mocks.misskeyApi).not.toHaveBeenCalled();
+});
+
+// 쪽지 구독의 공백 상태는 부팅 때 채팅 이벤트 처리와 함께 시작한다. 재연결 자체에 계정 조회를 넣지 않는다
+test('boot starts the chat unread subscription when realtime mode is on', async () => {
+	await mainBoot();
+
+	expect(mocks.initChatUnreadSubscription).toHaveBeenCalledTimes(1);
+});
+
+test('boot does not start the chat unread subscription when realtime mode was off', async () => {
+	mocks.store.realtimeMode = false;
+	await mainBoot();
+
+	expect(mocks.initChatUnreadSubscription).not.toHaveBeenCalled();
+});
+
+test('applying a chat unread event resolves the subscription gap', async () => {
+	await mainBoot();
+
+	mocks.channelHandlers.get('chatUnread')?.({ version: 2, hasUnreadChatMessages: false });
+	expect(mocks.resolveChatUnreadGap).toHaveBeenCalledTimes(1);
+
+	// 폐기된 옛 버전은 공백을 해소하지 않는다
+	mocks.channelHandlers.get('chatUnread')?.({ version: 1, hasUnreadChatMessages: true });
+	expect(mocks.resolveChatUnreadGap).toHaveBeenCalledTimes(1);
 });
 
 test('an older version arriving late does not overwrite the newer unread state', async () => {

@@ -27,6 +27,7 @@ import { makeHotkey } from '@/utility/hotkey.js';
 import { addCustomEmoji, removeCustomEmojis, updateCustomEmojis } from '@/custom-emojis.js';
 import { prefer } from '@/preferences.js';
 import { updateCurrentAccount } from '@/accounts.js';
+import { initChatUnreadSubscription, resolveChatUnreadGap } from '@/chat-unread-subscription.js';
 import { unisonReload } from '@/utility/unison-reload.js';
 import { isBirthday } from '@/utility/is-birthday.js';
 import { userName } from '@/filters/user.js';
@@ -306,6 +307,9 @@ export async function mainBoot() {
 		if (store.s.realtimeMode) {
 			const stream = useStream();
 
+			// 쪽지 미읽음 구독의 공백 상태를 채팅 이벤트 처리와 함께 관리한다
+			initChatUnreadSubscription(stream);
+
 			let reloadDialogShowing = false;
 			stream.on('_disconnected_', async () => {
 				if (prefer.s.serverDisconnectedBehavior === 'reload') {
@@ -367,6 +371,7 @@ export async function mainBoot() {
 				if (version <= chatUnreadVersion) return;
 				chatUnreadVersion = version;
 				updateCurrentAccount(state);
+				resolveChatUnreadGap();
 			});
 
 			main.on('newChatMessage', () => {

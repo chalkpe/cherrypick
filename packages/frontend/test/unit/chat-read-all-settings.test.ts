@@ -13,9 +13,16 @@ import { i18n } from '@/i18n.js';
 const mocks = vi.hoisted(() => ({
 	apiWithDialog: vi.fn(),
 	store: { accountInfos: {}, realtimeMode: false } as { accountInfos: Record<string, unknown>; realtimeMode: boolean },
-	streamState: 'connected' as 'initializing' | 'reconnecting' | 'connected',
+	chatEventsActive: false,
+	chatGap: true,
 }));
 vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog }));
+// 쪽지 구독의 공백 상태는 화면 밖에서 관리된다. 시험에서는 그 상태를 직접 놓는다
+vi.mock('@/chat-unread-subscription.js', () => ({
+	chatUnreadEventsActive: () => mocks.chatEventsActive,
+	chatUnreadSubscriptionGap: () => mocks.chatGap,
+	resolveChatUnreadGap: () => { mocks.chatGap = false; },
+}));
 vi.mock('@/signout.js', () => ({ signout: vi.fn() }));
 vi.mock('@/utility/show-suspended-dialog.js', () => ({}));
 vi.mock('@/utility/unison-reload.js', () => ({ unisonReload: vi.fn(), reloadChannel: { postMessage: vi.fn() } }));
@@ -24,7 +31,7 @@ vi.mock('@/i.js', () => {
 	return { $i: me, ensureSignin: () => me };
 });
 vi.mock('@/store.js', () => ({ store: { s: mocks.store, set: vi.fn() } }));
-vi.mock('@/stream.js', () => ({ useStream: () => ({ state: mocks.streamState, on: vi.fn(), off: vi.fn(), useChannel: vi.fn() }) }));
+vi.mock('@/stream.js', () => ({ useStream: () => ({ state: 'connected', on: vi.fn(), off: vi.fn(), useChannel: vi.fn() }) }));
 vi.mock('@/preferences.js', async () => {
 	const { ref } = await import('vue');
 	return { prefer: { model: () => ref(false) } };
@@ -44,8 +51,14 @@ afterEach(() => {
 	cleanup();
 	vi.restoreAllMocks();
 	mocks.store.realtimeMode = false;
-	mocks.streamState = 'connected';
+	mocks.chatEventsActive = false;
+	mocks.chatGap = true;
 });
+
+// read-all 완료 뒤의 판단은 Promise 후속 처리에서 일어난다. 실제 시간 대기로 추정하지 않고 명시적으로 비운다
+async function flushContinuations() {
+	for (let i = 0; i < 5; i++) await Promise.resolve();
+}
 
 function renderSettings() {
 	const wrapper = defineComponent({ render: () => h('div', [h(Suspense, null, { default: () => h(SettingsOther) })]) });
@@ -61,6 +74,7 @@ function renderSettings() {
 }
 
 test('a delayed read-all response preserves unread received after the server cleared older messages', async () => {
+	mocks.chatEventsActive = false;
 	let finishRead!: () => void;
 	mocks.apiWithDialog.mockReturnValue(new Promise<void>(resolve => { finishRead = resolve; }));
 	vi.spyOn(window, 'fetch').mockResolvedValue(new Response(JSON.stringify({ id: 'viewer', policies: { chatAvailability: 'available' }, hasUnreadChatMessages: true })));
@@ -78,22 +92,43 @@ test('a delayed read-all response preserves unread received after the server cle
 // 건강한 실시간 구독에서는 버전 붙은 chatUnread 이벤트가 상태를 확정하므로 계정 전체를 다시 조회하지 않는다
 test('a healthy realtime subscription needs no account request after read-all', async () => {
 	mocks.store.realtimeMode = true;
-	mocks.streamState = 'connected';
+	mocks.chatEventsActive = true;
+	mocks.chatGap = false;
+	let finishRead!: () => void;
+	mocks.apiWithDialog.mockReturnValue(new Promise<void>(resolve => { finishRead = resolve; }));
+	vi.spyOn(window, 'fetch').mockResolvedValue(new Response(JSON.stringify({ id: 'viewer', policies: { chatAvailability: 'available' }, hasUnreadChatMessages: false })));
+	const view = renderSettings();
+
+	await fireEvent.click(await view.findByRole('button', { name: i18n.ts.readAllChatMessages }));
+	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/read-all', {}));
+
+	finishRead();
+	await flushContinuations();
+
+	expect(window.fetch).not.toHaveBeenCalled();
+});
+
+// 구독에 공백이 있으면 이벤트가 도착하지 않으므로 서버의 현재 상태로 확인한다
+test('a subscription gap still asks the server after read-all', async () => {
+	mocks.store.realtimeMode = true;
+	mocks.chatEventsActive = true;
+	mocks.chatGap = true;
 	mocks.apiWithDialog.mockResolvedValue(undefined);
 	vi.spyOn(window, 'fetch').mockResolvedValue(new Response(JSON.stringify({ id: 'viewer', policies: { chatAvailability: 'available' }, hasUnreadChatMessages: false })));
 	const view = renderSettings();
 
 	await fireEvent.click(await view.findByRole('button', { name: i18n.ts.readAllChatMessages }));
 
-	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/read-all', {}));
-	await new Promise(resolve => setTimeout(resolve, 50));
-	expect(window.fetch).not.toHaveBeenCalled();
+	await waitFor(() => expect(window.fetch).toHaveBeenCalled());
+	await flushContinuations();
+	expect(mocks.chatGap).toBe(false);
 });
 
-// 구독에 공백이 있으면 이벤트가 도착하지 않으므로 서버의 현재 상태로 확인한다
-test('a disconnected stream still asks the server after read-all', async () => {
+// 부팅 뒤 실시간 모드를 켜고 새로고침을 건너뛰면 이벤트 핸들러가 등록되지 않은 상태다
+test('realtime mode turned on after boot without a reload still asks the server', async () => {
 	mocks.store.realtimeMode = true;
-	mocks.streamState = 'reconnecting';
+	mocks.chatEventsActive = false;
+	mocks.chatGap = false;
 	mocks.apiWithDialog.mockResolvedValue(undefined);
 	vi.spyOn(window, 'fetch').mockResolvedValue(new Response(JSON.stringify({ id: 'viewer', policies: { chatAvailability: 'available' }, hasUnreadChatMessages: false })));
 	const view = renderSettings();
