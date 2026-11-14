@@ -596,6 +596,60 @@ describe('voice call on the room page', () => {
 		});
 	});
 
+	// ソフトウェアキーボードは入力欄のフォーカスについてくる。通話中の配置ボタンにフォーカスが移るとキーボードが閉じてしまう
+	describe('the message input focus while pressing the call layout buttons', () => {
+		// 既定の動作を止めれば、ブラウザはフォーカスを動かさない (送信ボタンと同じ仕組み)
+		const pressKeepsFocus = (button: HTMLElement) => {
+			const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+			button.dispatchEvent(press);
+			return press.defaultPrevented;
+		};
+
+		async function renderSplit() {
+			Object.assign(callState, { status: 'connected', room, micEnabled: true });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me), participant(alice)] }]);
+			await setPageWidth(1280);
+			return screen.getByRole('textbox') as HTMLTextAreaElement;
+		}
+
+		test('swapping the chat side keeps focus in the message input', async () => {
+			const textarea = await renderSplit();
+			textarea.focus();
+
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.moveChatLeft }))).toBe(true);
+		});
+
+		test('the call controls keep focus in the message input', async () => {
+			const textarea = await renderSplit();
+			Object.assign(callState, { audioBlocked: true });
+			await flush();
+			textarea.focus();
+
+			for (const name of [i18n.ts._voiceCall.enableAudio, i18n.ts._voiceCall.mute, i18n.ts._voiceCall.deafen, i18n.ts._voiceCall.shareScreen, i18n.ts._voiceCall.settings, i18n.ts._voiceCall.leave]) {
+				expect(pressKeepsFocus(screen.getByRole('button', { name }))).toBe(true);
+			}
+		});
+
+		test('the stage toggles keep focus in the message input', async () => {
+			Object.assign(callState, { status: 'connected', room, watchingIdentities: [identityOf(alice)] });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me), participant(alice, true)] }]);
+			await setPageWidth(1280);
+			const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+			textarea.focus();
+
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.hideParticipants }))).toBe(true);
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.closeChat }))).toBe(true);
+		});
+
+		test('does not pull focus to the input when it was elsewhere', async () => {
+			const textarea = await renderSplit();
+			textarea.blur();
+
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.moveChatLeft }))).toBe(false);
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.mute }))).toBe(false);
+		});
+	});
+
 	describe('chat sheet focus trap', () => {
 		async function openSheet() {
 			await renderRoom(room, []);

@@ -46,6 +46,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				v-tooltip="membersHidden ? i18n.ts._voiceCall.showParticipants : i18n.ts._voiceCall.hideParticipants"
 				type="button" class="_button" :class="$style.membersToggle"
 				:aria-label="membersHidden ? i18n.ts._voiceCall.showParticipants : i18n.ts._voiceCall.hideParticipants" :aria-expanded="!membersHidden"
+				@mousedown="keepChatInputFocus"
 				@click="membersHidden = !membersHidden"
 			>
 				<i :class="membersHidden ? 'ti ti-chevron-up' : 'ti ti-chevron-down'" aria-hidden="true"></i><i class="ti ti-users" aria-hidden="true"></i>
@@ -54,6 +55,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				v-tooltip="chatOpen ? i18n.ts._voiceCall.closeChat : i18n.ts._voiceCall.openChat"
 				type="button" class="_button" :class="$style.chatToggle"
 				:aria-label="chatOpen ? i18n.ts._voiceCall.closeChat : i18n.ts._voiceCall.openChat" :aria-expanded="chatOpen"
+				@mousedown="keepChatInputFocus"
 				@click="emit('toggleChat')"
 			>
 				<i class="ti ti-messages" aria-hidden="true"></i>
@@ -88,6 +90,11 @@ const showsStatus = computed(() => inThisCall.value && (voiceCall.status === 'co
 let idleTimer: number | undefined;
 
 function showControls() { active.value = true; window.clearTimeout(idleTimer); idleTimer = window.setTimeout(() => { active.value = false; }, 1800); }
+
+// 入力欄で書いているあいだは、配置ボタンがフォーカスを奪わないようにする (ソフトウェアキーボードはフォーカスについてくる)
+function keepChatInputFocus(ev: MouseEvent) {
+	if (window.document.activeElement instanceof HTMLTextAreaElement) ev.preventDefault();
+}
 
 // 最初は操作を出しておき、ポインターが動かなくても少しすれば隠す
 onMounted(showControls);

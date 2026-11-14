@@ -33,6 +33,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				v-tooltip="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight"
 				class="_button" :class="[$style.chatCorner, { [$style.cornerRight]: chatSide === 'left' }]"
 				:aria-label="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight"
+				@mousedown="keepChatInputFocus"
 				@click="swapChatSide"
 			>
 				<i :class="chatSide === 'right' ? 'ti ti-layout-sidebar' : 'ti ti-layout-sidebar-right'" aria-hidden="true"></i>
@@ -171,7 +172,7 @@ import type { PageHeaderItem } from '@/types/page-header.js';
 import * as os from '@/os.js';
 import { globalEvents } from '@/events.js';
 import { useStream } from '@/stream.js';
-import { store } from '@/store.js';
+import { chatUnreadEventsActive, chatUnreadSubscriptionGap, resolveChatUnreadGap } from '@/chat-unread-subscription.js';
 import * as sound from '@/utility/sound.js';
 import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
@@ -389,6 +390,9 @@ async function initialize() {
 	leavingRoom.value = false;
 	fetchError.value = null;
 
+	// タイムラインの取得自体が既読にするので、その前に空白を覚えておく
+	const gapAtRead = chatUnreadSubscriptionGap();
+
 	if (props.userId) {
 		const result = await Promise.all([
 			misskeyApi('users/show', { userId: props.userId }),
@@ -511,24 +515,21 @@ async function initialize() {
 	membershipEnded.value = false;
 	initializing.value = false;
 
-	recheckUnreadSign();
+	recheckUnreadSign(gapAtRead);
 }
 
 // 既読になった知らせはバージョン付きイベントで届くので、購読が健康なら会話を読んだあとにアカウントを問い合わせない。
 // 聞いていないあいだに出た知らせはあとから流れてこない。リアルタイムモードを切っているあいだと、
-// ページを開いた直後やつなぎ直した直後の購読の空白がそうで、印が点いたまま残る。そのときだけサーバーへ確かめ直す
-let subscriptionGap = useStream().state !== 'connected';
-
-function recheckUnreadSign() {
+// ページを開いた直後やつなぎ直した直後の購読の空白がそうで、印が点いたまま残る。そのときだけサーバーへ確かめ直す。
+// 空白はこの画面の外 (chat-unread-subscription) で覚えているので、この画面を作る前に起きた空白も確かめ直せる。
+// 読み直し自身も購読と競合する。空白のうちに始めた読み直しがサーバーで既読に変えたあとに出た知らせは、
+// 取得の途中で購読が済んでも届かないことがある。だから確かめ直すかは完了時ではなく読み直しの開始時の空白で決める
+function recheckUnreadSign(gapAtRead: boolean) {
 	if (!$i.hasUnreadChatMessages) return;
-	if (store.s.realtimeMode && !subscriptionGap) return;
+	if (chatUnreadEventsActive() && !gapAtRead) return;
 	// 確かめ直しは保護付きなので、空白はここで解消したことにする
-	subscriptionGap = false;
+	resolveChatUnreadGap();
 	refreshCurrentAccount({ protectChatUnread: true });
-}
-
-function onStreamDisconnected() {
-	subscriptionGap = true;
 }
 
 // 見ているページかどうか。戻ってきたときに立てるのは、下の onActivated の先頭
@@ -791,6 +792,8 @@ async function catchUp() {
 /** @returns 一時的な失敗で読めなかったときは false */
 async function readLatest(): Promise<boolean> {
 	const LIMIT = 20;
+	// こちらも取得自体が既読にするので、その前に空白を覚えておく
+	const gapAtRead = chatUnreadSubscriptionGap();
 	let r: Misskey.entities.ChatRoomsShowResponse | null;
 	let m: (Misskey.entities.ChatMessageLite | Misskey.entities.ChatMessage)[];
 	try {
@@ -828,7 +831,7 @@ async function readLatest(): Promise<boolean> {
 		room.value = r;
 		onMembershipChanged();
 	}
-	recheckUnreadSign();
+	recheckUnreadSign(gapAtRead);
 	return true;
 }
 
@@ -838,7 +841,6 @@ let listChannel: Misskey.IChannelConnection<Misskey.Channels['main']> | null = n
 onMounted(() => {
 	initialize();
 	useStream().on('_connected_', readAgain);
-	useStream().on('_disconnected_', onStreamDisconnected);
 	if (props.roomId) {
 		listChannel = useStream().useChannel('main');
 		listChannel.on('chatRoomListChanged', refreshRoomPeople);
@@ -872,7 +874,6 @@ onBeforeUnmount(() => {
 	connection.value?.dispose();
 	listChannel?.dispose();
 	useStream().off('_connected_', readAgain);
-	useStream().off('_disconnected_', onStreamDisconnected);
 	window.document.removeEventListener('visibilitychange', onVisibilitychange);
 });
 
@@ -1048,6 +1049,11 @@ const chatSide = computed(() => prefer.r['voiceCall.stageChatSide'].value);
 
 function swapChatSide() {
 	prefer.commit('voiceCall.stageChatSide', chatSide.value === 'right' ? 'left' : 'right');
+}
+
+// このページの入力欄はメッセージ入力だけ。送信ボタンと同じく、入力中のフォーカスを奪わない (ソフトウェアキーボードはフォーカスについてくる)
+function keepChatInputFocus(ev: MouseEvent) {
+	if (window.document.activeElement instanceof HTMLTextAreaElement) ev.preventDefault();
 }
 
 // 検索はメニューから開く。開いているあいだだけタブにも出し、いまどこにいるかを分かるようにする

@@ -25,7 +25,8 @@ const mocks = vi.hoisted(() => {
 		channel: new FakeChannel(),
 		me: { id: 'me', username: 'me', policies: { chatAvailability: 'available', canVoiceCall: false }, hasUnreadChatMessages: false },
 		store: { realtimeMode: true },
-		streamState: 'connected' as 'initializing' | 'reconnecting' | 'connected',
+		chatEventsActive: true,
+		chatGap: false,
 		refreshCurrentAccount: vi.fn(),
 		timeline: [] as unknown[],
 		roomMembers: [] as unknown[],
@@ -73,11 +74,17 @@ vi.mock('@/utility/misskey-api.js', () => ({
 		return [];
 	}),
 }));
-vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: mocks.streamOff, useChannel: () => mocks.channel, state: mocks.streamState }) }));
+vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: mocks.streamOff, useChannel: () => mocks.channel, state: 'connected' }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/store.js', () => ({ store: { s: mocks.store } }));
 vi.mock('@/accounts.js', () => ({ refreshCurrentAccount: mocks.refreshCurrentAccount }));
+// 購読の空白は会話画面の外で覚えている。試験ではその状態を直接置く
+vi.mock('@/chat-unread-subscription.js', () => ({
+	chatUnreadEventsActive: () => mocks.chatEventsActive,
+	chatUnreadSubscriptionGap: () => mocks.chatGap,
+	resolveChatUnreadGap: () => { mocks.chatGap = false; },
+}));
 vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog, selectUsers: mocks.selectUsers, success: mocks.success, promiseDialog: (promise: Promise<unknown>) => promise }));
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace, useListener: vi.fn() }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
@@ -235,7 +242,8 @@ beforeEach(() => {
 	mocks.membersMounts.value = 0;
 	mocks.me.hasUnreadChatMessages = false;
 	mocks.store.realtimeMode = true;
-	mocks.streamState = 'connected';
+	mocks.chatEventsActive = true;
+	mocks.chatGap = false;
 	mocks.refreshCurrentAccount.mockReset();
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
@@ -1692,6 +1700,11 @@ describe('telling the server what was read', () => {
 });
 
 describe('the unread sign with realtime mode off', () => {
+	// 부팅 때 실시간 모드가 꺼져 있으면 쪽지 이벤트 핸들러가 등록되지 않는다
+	beforeEach(() => {
+		mocks.chatEventsActive = false;
+	});
+
 	test('refreshes the sign after returning to a cached conversation without reconnecting', async () => {
 		mocks.store.realtimeMode = false;
 		mocks.me.hasUnreadChatMessages = true;
@@ -1773,8 +1786,71 @@ describe('the unread sign in realtime mode', () => {
 	});
 
 	test('asks the server when the page opened before the stream connected', async () => {
-		mocks.streamState = 'initializing';
+		mocks.chatGap = true;
 		mocks.me.hasUnreadChatMessages = true;
+
+		await renderRoom('user');
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	// 会話画面が無いあいだに起きた空白も、あとから開いた画面が確かめ直す
+	test('asks when the gap happened before the conversation was opened', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		mocks.chatGap = true;
+
+		await renderRoom('user');
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(false);
+	});
+
+	// 読み直し自身が購読と競合することがある。最初の取得中に購読が済んでも、
+	// その取得がサーバーで既読に変えたあとに出た知らせは届かないことがあるので、読み直しの開始時点で確かめ直す
+	test('asks when the subscription completes while the first read is in flight', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		mocks.chatGap = true;
+		let openGate!: () => void;
+		mocks.timelineGate = new Promise<void>(resolve => { openGate = resolve; });
+
+		const rendered = renderRoom('user');
+		await flush();
+		// 取得の途中で購読完了の知らせが届く
+		mocks.chatGap = false;
+		openGate();
+		await rendered;
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledWith({ protectChatUnread: true });
+	});
+
+	test('asks when the subscription completes while a reconnect read is in flight', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		await renderRoom('user');
+		mocks.refreshCurrentAccount.mockClear();
+
+		mocks.chatGap = true;
+		let openGate!: () => void;
+		mocks.timelineGate = new Promise<void>(resolve => { openGate = resolve; });
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		mocks.chatGap = false;
+		openGate();
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(false);
+	});
+
+	// 부팅 뒤 실시간 모드를 켜고 새로고침을 건너뛰면 이벤트 핸들러가 없는 상태다. 이때도 서버에 확인한다
+	test('asks when realtime mode was turned on after boot without a reload', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		mocks.store.realtimeMode = true;
+		mocks.chatEventsActive = false;
 
 		await renderRoom('user');
 
@@ -1786,9 +1862,7 @@ describe('the unread sign in realtime mode', () => {
 		await renderRoom('user');
 		mocks.refreshCurrentAccount.mockClear();
 
-		for (const [event, handler] of mocks.streamOn.mock.calls) {
-			if (event === '_disconnected_') handler();
-		}
+		mocks.chatGap = true;
 		for (const [event, handler] of mocks.streamOn.mock.calls) {
 			if (event === '_connected_') handler();
 		}
@@ -1796,15 +1870,14 @@ describe('the unread sign in realtime mode', () => {
 		await flush();
 
 		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+		expect(mocks.chatGap).toBe(false);
 	});
 
 	test('does not ask again once the gap was checked', async () => {
 		mocks.me.hasUnreadChatMessages = true;
 		await renderRoom('user');
 
-		for (const [event, handler] of mocks.streamOn.mock.calls) {
-			if (event === '_disconnected_') handler();
-		}
+		mocks.chatGap = true;
 		for (const [event, handler] of mocks.streamOn.mock.calls) {
 			if (event === '_connected_') handler();
 		}
