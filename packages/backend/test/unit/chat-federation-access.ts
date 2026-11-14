@@ -8,9 +8,6 @@ import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
-import { meets } from '../misc/chat-repository-match.js';
-import { memoryRedis } from '../misc/chat-unread-redis.js';
-import { chatTransactions } from '../misc/chat-transactions.js';
 
 const owner = { id: 'owner', host: 'owner.test', uri: 'https://owner.test/users/owner' };
 const otherActor = { id: 'other', host: 'owner.test', uri: 'https://owner.test/users/other' };
@@ -32,7 +29,6 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 	let sequence = 0;
 	const pipeline = { set: () => pipeline, sadd: () => pipeline, exec: async () => [] };
 	const redisClient = {
-		eval: memoryRedis().eval,
 		get: async (key: string) => locks.get(key) ?? tombstones.get(key) ?? null,
 		set: async (key: string, value: string, _mode: string, timeout: number) => {
 			if ((lockExpirations.get(key) ?? Infinity) <= Date.now()) locks.delete(key);
@@ -48,7 +44,6 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		sadd: async () => 1,
 		expire: async () => 1,
 		smembers: async () => [],
-		sismember: async () => 0,
 		pipeline: () => pipeline,
 	};
 	// ApInboxService writes memberships inside a transaction, so the fixture has to answer the
@@ -65,16 +60,13 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 		},
 		withRepository: (repository: unknown) => repository,
 	};
-	const db = chatTransactions(transactionManager);
+	const db = {
+		transaction: async <T>(run: (manager: typeof transactionManager) => Promise<T>): Promise<T> => await run(transactionManager),
+	};
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
-		db,
 		config: { url: 'https://local.test' },
-		logger: { info: () => {}, warn: () => {}, debug: () => {}, error: () => {} },
 		chatMessagesRepository: {
-			findOne: async ({ where }: { where: Record<string, unknown> | Record<string, unknown>[] }) => messages.find(message => [where].flat().some(condition => meets({ ...message, fromUser: { isSuspended: false } }, condition))) ?? null,
-			find: async ({ where }: { where: Record<string, unknown> | Record<string, unknown>[] }) => messages.filter(message => [where].flat().some(condition => meets({ ...message, fromUser: { isSuspended: false } }, condition))),
-			findOneBy: async ({ uri, id }: { uri?: string; id?: string }) => messages.find(message => id != null ? message.id === id : message.uri === uri) ?? null,
-			existsBy: async () => true,
+			findOneBy: async ({ uri }: { uri: string }) => messages.find(message => message.uri === uri) ?? null,
 			insertOne: async (message: typeof messages[number]) => {
 				await options.beforeInsert?.();
 				messages.push(message);
@@ -96,7 +88,6 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 				getMany: async () => [{ userId: localUser.id }, { userId: owner.id }],
 			}),
 		},
-		usersRepository: { existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => [...users.values()].some(user => user.id === id && ((user as { isSuspended?: boolean }).isSuspended ?? false) === isSuspended) },
 		userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null },
 		roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 		userBlockingService: { checkBlocked: async () => false },

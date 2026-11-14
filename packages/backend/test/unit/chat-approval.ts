@@ -6,8 +6,6 @@
 import { describe, expect, test } from 'vitest';
 import { QueryFailedError } from 'typeorm';
 import { ChatService } from '@/core/ChatService.js';
-import { memoryRedis } from '../misc/chat-unread-redis.js';
-import { chatTransactions } from '../misc/chat-transactions.js';
 
 const alice = { id: 'alice', host: null, chatScope: 'everyone', isSuspended: false };
 const bob = { id: 'bob', host: null, chatScope: 'everyone', isSuspended: false };
@@ -21,8 +19,8 @@ function fixture(options: { insertApproval?: () => Promise<void> } = {}) {
 	const messages: { id: string; text: string | null }[] = [];
 	const published: unknown[] = [];
 	let sequence = 0;
+	const pipeline = { set: () => pipeline, sadd: () => pipeline, exec: async () => [] };
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
-		db: chatTransactions(),
 		config: { url: 'https://local.test' },
 		chatApprovalsRepository: {
 			createQueryBuilder: () => ({
@@ -41,9 +39,7 @@ function fixture(options: { insertApproval?: () => Promise<void> } = {}) {
 		},
 		chatMessagesRepository: {
 			insertOne: async (message: typeof messages[number]) => { messages.push(message); return message; },
-			findOneBy: async ({ id }: { id: string }) => messages.find(message => message.id === id) ?? null,
 		},
-		usersRepository: { existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => [alice, bob].some(user => user.id === id && user.isSuspended === isSuspended) },
 		userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null, isRemoteUser: (user: { host: string | null }) => user.host != null },
 		roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 		userBlockingService: { checkBlocked: async () => false },
@@ -54,7 +50,7 @@ function fixture(options: { insertApproval?: () => Promise<void> } = {}) {
 			publishChatUserStream: (...args: unknown[]) => { published.push(args); },
 			publishMainStream: () => {},
 		},
-		redisClient: memoryRedis(),
+		redisClient: { pipeline: () => pipeline },
 	});
 	const send = (text: string) => chatService.createMessageToUser(alice, bob, { text });
 	return { send, approvals, messages, published };

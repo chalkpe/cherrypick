@@ -77,12 +77,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.noSuchRoom);
 			}
 
-			const beforeQuery = await this.chatService.captureRoomChatRead(me.id, room.id);
 			const messages = await this.chatService.roomTimeline(room.id, ps.limit, sinceId, untilId, ps.includeDeleted);
 
-			// Done before answering, so that a client asking for its unread state right after gets the new one.
-			// The read covers only what this page holds. A failed read leaves the conversation unread and is tried again.
-			await this.chatService.recordRoomChatRead(me.id, room.id, this.chatService.readBoundaryOf(messages, ps.limit, sinceId, beforeQuery));
+			// 읽음을 마치고 응답한다. 바로 이어서 미읽음 상태를 묻는 화면이 새 상태를 받게 한다.
+			await this.chatService.readRoomChatMessage(me.id, room.id);
 
 			return await this.chatEntityService.packMessagesLiteForRoom(messages);
 		});

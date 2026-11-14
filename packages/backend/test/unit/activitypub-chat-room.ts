@@ -13,7 +13,6 @@ import { JsonLdService } from '@/core/activitypub/JsonLdService.js';
 import { parseChatRoomVoiceState } from '@/core/activitypub/misc/chat-room-voice-state.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { chatRosterOver } from '../misc/chat-roster-stub.js';
-import { memoryRedis } from '../misc/chat-unread-redis.js';
 
 type Row = { id: string; [key: string]: unknown };
 
@@ -148,7 +147,7 @@ function fixture(options: {
 		removeParticipant: vi.fn(async (_roomId: string, _identity: string) => {}),
 		deleteRoom: vi.fn(async (_roomId: string) => {}),
 	};
-	const unread = memoryRedis();
+	const pipeline = { del: vi.fn(), srem: vi.fn(), exec: vi.fn().mockResolvedValue([]) };
 	const globalEventService = { publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() };
 	const resolver = { resolve: vi.fn() };
 	const apResolverService = { createResolver: vi.fn(async () => resolver) };
@@ -257,7 +256,6 @@ function fixture(options: {
 		userBlockingService: { checkBlocked: vi.fn(async (_blockerId: string, _blockeeId: string) => false) },
 	});
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
-		db,
 		chatRoomsRepository: rooms,
 		chatRoomMembershipsRepository: inbox.chatRoomMembershipsRepository,
 		chatRoomInvitationsRepository: { findBy: async (where: Record<string, unknown>) => invitations.rows.filter(row => matches(row, where)) },
@@ -265,7 +263,7 @@ function fixture(options: {
 		userEntityService: inbox.userEntityService,
 		apRendererService: inbox.apRendererService,
 		queueService: inbox.queueService,
-		redisClient: unread,
+		redisClient: { pipeline: () => pipeline },
 		chatRosterService: chatRosterOver({ ...redisClient, pipeline: () => ({ setex: vi.fn(), exec: vi.fn().mockResolvedValue([]) }) }),
 		globalEventService,
 		liveKitService,
@@ -273,7 +271,7 @@ function fixture(options: {
 	inbox.chatService.deleteRoom = chatService.deleteRoom;
 	inbox.chatService.removeRoomMember = chatService.removeRoomMember;
 	inbox.chatService.finishRoomMemberRemoval = chatService.finishRoomMemberRemoval;
-	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, unread, globalEventService, redisClient };
+	return { inbox, rooms, invitations, memberships, notificationService, chatVoiceService, liveKitService, apResolverService, resolver, pipeline, globalEventService, redisClient };
 }
 
 function inviteActivity(actor: { uri: string }, roomUri: string, invitee: string, attributedTo: string | undefined = actor.uri) {
@@ -815,17 +813,12 @@ describe('Chat room federation: Remove by the room owner', () => {
 
 	test('ends a removed local member\'s subscription and unread state', async () => {
 		const f = fixture({ rooms: [mirrorRoom], memberships: [{ id: 'm1', roomId: 'bobroom', userId: alice.id }] });
-		await f.unread.set(`newRoomChatMessageExists:${alice.id}:bobroom`, 'message1');
-		await f.unread.set(`newRoomChatMessageExists:${alice.id}:bobroom:first`, 'message1');
-		await f.unread.sadd(`newChatMessagesExists:${alice.id}`, 'room:bobroom');
 
 		await f.inbox.remove(remoteOwner, kick(remoteOwner, `${LOCAL}/users/${alice.id}`));
 
 		expect(f.memberships.rows).toEqual([]);
 		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('bobroom', 'membershipEnded', { userId: alice.id });
-		expect(await f.unread.get(`newRoomChatMessageExists:${alice.id}:bobroom`)).toBeNull();
-		expect(await f.unread.get(`newRoomChatMessageExists:${alice.id}:bobroom:first`)).toBeNull();
-		expect(await f.unread.smembers(`newChatMessagesExists:${alice.id}`)).toEqual([]);
+		expect(f.pipeline.srem).toHaveBeenCalledWith(`newChatMessagesExists:${alice.id}`, 'room:bobroom');
 	});
 
 	test('a member cannot remove someone else', async () => {
@@ -1276,18 +1269,15 @@ describe('Chat room federation: Add/Update/Delete', () => {
 
 	test('remote room deletion clears unread state, notifies clients and ends the call without forwarding', async () => {
 		const f = fixture({ rooms: [{ id: 'bobroom', ownerId: remoteOwner.id }], memberships: [{ id: 'm1', roomId: 'bobroom', userId: alice.id }] });
-		await f.unread.set('newRoomChatMessageExists:alice:bobroom', 'message1');
-		await f.unread.set('newRoomChatMessageExists:alice:bobroom:first', 'message1');
-		await f.unread.sadd('newChatMessagesExists:alice', 'room:bobroom');
 		await f.inbox.delete(remoteOwner, {
 			type: 'Delete', actor: remoteOwner.uri,
 			object: { id: 'https://remote.test/chat/rooms/bobroom', type: 'Tombstone', formerType: 'Group' },
 		});
 
 		expect(f.rooms.rows.some(room => room.id === 'bobroom')).toBe(false);
-		expect(await f.unread.get('newRoomChatMessageExists:alice:bobroom')).toBeNull();
-		expect(await f.unread.get('newRoomChatMessageExists:alice:bobroom:first')).toBeNull();
-		expect(await f.unread.smembers('newChatMessagesExists:alice')).toEqual([]);
+		expect(f.pipeline.del).toHaveBeenCalledWith('newRoomChatMessageExists:alice:bobroom');
+		expect(f.pipeline.srem).toHaveBeenCalledWith('newChatMessagesExists:alice', 'room:bobroom');
+		expect(f.pipeline.exec).toHaveBeenCalledOnce();
 		expect(f.globalEventService.publishChatRoomStream).toHaveBeenCalledWith('bobroom', 'roomDeleted');
 		expect(f.liveKitService.deleteRoom).toHaveBeenCalledWith('bobroom');
 		expect(f.inbox.queueService.deliver).not.toHaveBeenCalled();

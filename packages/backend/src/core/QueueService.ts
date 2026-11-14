@@ -89,9 +89,6 @@ const REPEATABLE_SYSTEM_JOB_DEF = [{
 	// 毎日午前4時に起動(最も人の少ない時間帯)
 	pattern: '0 4 * * *',
 }, {
-	name: 'cleanLegacyChatUnread',
-	pattern: '* * * * *',
-}, {
 	name: 'autoDeleteNotes',
 	// 매일 오전 3시에 실행
 	pattern: '0 3 * * *',

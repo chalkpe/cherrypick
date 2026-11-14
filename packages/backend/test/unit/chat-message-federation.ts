@@ -11,8 +11,6 @@ import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { Resolver } from '@/core/activitypub/ApResolverService.js';
 import { StatusError } from '@/misc/status-error.js';
 import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
-import { memoryRedis } from '../misc/chat-unread-redis.js';
-import { chatTransactions } from '../misc/chat-transactions.js';
 import {
 	buildChatDelete,
 	buildChatNote,
@@ -295,9 +293,7 @@ describe('ChatService chat federation delivery', () => {
 		const pendingReactionCounts = new Map<string, number>();
 		const reactionActivityIds = new Map<string, string>();
 		const redisClient = {
-			eval: memoryRedis().eval,
 			pipeline: vi.fn(() => redisPipeline),
-			sismember: vi.fn(async () => 0),
 			multi: () => {
 				const commands: (() => unknown)[] = [];
 				const transaction = {
@@ -351,11 +347,9 @@ describe('ChatService chat federation delivery', () => {
 		};
 
 		const service = Object.assign(Object.create(ChatService.prototype), {
-			db: chatTransactions(),
 			config: { url: 'https://local.test' },
 			chatMessagesRepository: {
 				findOneBy: vi.fn(async ({ id }: { id: string }) => messages.get(id) ?? null),
-				existsBy: vi.fn(async () => true),
 				update: vi.fn(async (where: string | { id: string } | { id: string }[], patch: Record<string, unknown>) => {
 					const id = typeof where === 'string' ? where : Array.isArray(where) ? where[0].id : where.id;
 					const target = messages.get(id);
@@ -382,7 +376,6 @@ describe('ChatService chat federation delivery', () => {
 				findOneBy: vi.fn(async ({ id }: { id: string }) => users.get(id) ?? null),
 				findOneByOrFail: vi.fn(async ({ id }: { id: string }) => users.get(id)),
 				findBy: vi.fn(async ({ id }: { id: { value: string[] } }) => (id.value ?? []).map(value => users.get(value)).filter(Boolean)),
-			existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => users.has(id) && ((users.get(id) as { isSuspended?: boolean }).isSuspended ?? false) === isSuspended,
 			},
 			userEntityService: {
 				isLocalUser: (user: { host: string | null }) => user.host == null,
@@ -411,7 +404,7 @@ describe('ChatService chat federation delivery', () => {
 			userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
 		}) as ChatService;
 
-		return { service, messages, alice, bob, carol, directMessage, roomMessage, roomDeleteMessage, room, queueService, apRendererService, globalEventService, redisClient };
+		return { service, alice, bob, carol, directMessage, roomMessage, roomDeleteMessage, room, queueService, apRendererService, globalEventService, redisClient };
 	}
 
 	test('delivers Update to the remote 1:1 counterpart', async () => {
@@ -1017,17 +1010,16 @@ describe('ChatService chat federation delivery', () => {
 			const users = new Map([owner, f.bob, f.carol].map(user => [user.id, user]));
 			const pipeline = { del: vi.fn().mockReturnThis(), srem: vi.fn().mockReturnThis(), exec: vi.fn().mockResolvedValue([]) };
 			Object.assign(f.service, {
-				redisClient: { ...memoryRedis(), pipeline: () => pipeline },
+				redisClient: { pipeline: () => pipeline },
 				liveKitService: { deleteRoom: vi.fn().mockResolvedValue(undefined) },
 				roleService: { isModerator: vi.fn().mockResolvedValue(true) },
 				moderationLogService: { log: vi.fn() },
 			});
 			const s = f.service as never as {
-				chatRoomsRepository: { findOneBy: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+				chatRoomsRepository: { delete: ReturnType<typeof vi.fn> };
 				usersRepository: { findOneBy: ReturnType<typeof vi.fn>; findBy: ReturnType<typeof vi.fn> };
 				apRendererService: { renderChatRoomDelete: ReturnType<typeof vi.fn> };
 			};
-			s.chatRoomsRepository.findOneBy = vi.fn().mockResolvedValue(room);
 			s.chatRoomsRepository.delete = vi.fn().mockResolvedValue({ affected: 1 });
 			s.usersRepository.findOneBy = vi.fn(async ({ id }: { id: string }) => users.get(id) ?? null);
 			s.usersRepository.findBy = vi.fn(async () => [...users.values()]);
@@ -1101,15 +1093,10 @@ describe('ChatService chat federation delivery', () => {
 			});
 			Object.assign((f.service as never as { redisClient: object }).redisClient, { pipeline: () => pipeline });
 			Object.assign((f.service as never as { chatMessagesRepository: object }).chatMessagesRepository, {
-				insertOne: vi.fn(async (message: object) => {
-					const row = { ...f.roomMessage, ...message };
-					f.messages.set(row.id, row);
-					return row;
-				}),
+				insertOne: vi.fn(async (message: object) => message),
 			});
 			Object.assign((f.service as never as { chatRoomMembershipsRepository: object }).chatRoomMembershipsRepository, {
 				findBy: vi.fn(async () => ['alice', 'bob', 'carol', 'dave', 'erin'].filter(id => id !== ownerId).map(userId => ({ roomId: 'r1', userId, isMuted: false }))),
-				findOneBy: async ({ userId }: { userId: string }) => userId !== ownerId && users.has(userId) ? { roomId: 'r1', userId, isMuted: false } : null,
 			});
 			Object.assign((f.service as never as { usersRepository: object }).usersRepository, {
 				findOneBy: vi.fn(async ({ id }: { id: string }) => users.get(id) ?? null),
@@ -1121,7 +1108,6 @@ describe('ChatService chat federation delivery', () => {
 				chatEntityService: { packMessageLiteForRoom: vi.fn(async (message: object) => message) },
 			});
 			const room = { id: 'r1', ownerId, isArchived: false, uri: null };
-			Object.assign((f.service as unknown as { chatRoomsRepository: object }).chatRoomsRepository, { findOneBy: async () => room });
 			return { ...f, room, dave, erin, renderChatRoomRelay };
 		}
 
@@ -1232,10 +1218,8 @@ describe('ApInboxService chat activity routing', () => {
 			},
 		};
 		const chatRoomsRepository = { findOneBy: vi.fn().mockResolvedValue({ id: 'r1', uri: 'https://remote.test/chat/rooms/r1' }) };
-		const chatMessagesRepository = { findOneBy: vi.fn().mockResolvedValue(null) };
 		const apPersonService = { resolvePerson: vi.fn(async (uri: string) => uri === localUser.uri ? localUser : null) };
 		const inbox = Object.assign(Object.create(ApInboxService.prototype), {
-			db: chatTransactions({ withRepository: () => ({ findOneBy: ({ uri }: { uri: string }) => chatService.findMessageByUri(uri) }) }),
 			chatService,
 			chatRosterService: chatRosterOver(forgetfulRedis()),
 			redisClient,
@@ -1251,7 +1235,7 @@ describe('ApInboxService chat activity routing', () => {
 			roleService: { getUserPolicies: vi.fn().mockResolvedValue({ chatAvailability: 'available' }) },
 			userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null, isRemoteUser: (user: { host: string | null }) => user.host != null },
 			chatRoomsRepository,
-			chatMessagesRepository,
+			chatMessagesRepository: { findOneBy: vi.fn().mockResolvedValue(null) },
 		}) as ApInboxService;
 
 		return { inbox, actor, message, chatService, redisClient, chatRoomsRepository, localUser };
@@ -1575,72 +1559,6 @@ describe('ApInboxService chat activity routing', () => {
 			6 * 60 * 60,
 			f.actor.uri,
 		);
-	});
-
-	describe('a Delete for an object with an ordinary Note URI', () => {
-		function withNotes(f: ReturnType<typeof createInbox>, note: { id: string; userId: string; uri: string } | null) {
-			const noteDeleteService = { delete: vi.fn().mockResolvedValue(undefined) };
-			Object.assign(f.inbox, {
-				apNoteService: { fetchNote: vi.fn().mockResolvedValue(note), extractEmojis: vi.fn().mockResolvedValue([]) },
-				apDbResolverService: { getNoteFromApId: vi.fn().mockResolvedValue(note) },
-				noteDeleteService,
-			});
-			f.chatService.findMessageByUri.mockResolvedValue(null);
-			return { noteDeleteService };
-		}
-
-		const deleteOf = (f: ReturnType<typeof createInbox>, object: unknown) => (f.inbox as never as { delete: (...args: unknown[]) => Promise<string> }).delete(f.actor, {
-			type: 'Delete',
-			actor: f.actor.uri,
-			object,
-		});
-
-		test('leaves an unknown ordinary Note on the normal deletion path', async () => {
-			const f = createInbox();
-			const { noteDeleteService } = withNotes(f, null);
-			const transaction = vi.spyOn((f.inbox as never as { db: { transaction: () => unknown } }).db, 'transaction');
-
-			const result = await deleteOf(f, { id: 'https://remote.test/notes/reply', type: 'Tombstone' });
-
-			expect(result).toBe('message not found');
-			expect(f.redisClient.setex).not.toHaveBeenCalled();
-			expect(transaction).not.toHaveBeenCalled();
-			expect(noteDeleteService.delete).not.toHaveBeenCalled();
-		});
-
-		test('deletes a stored Note as before, without a tombstone', async () => {
-			const f = createInbox();
-			const note = { id: 'n1', userId: f.actor.id, uri: 'https://remote.test/notes/n1' };
-			const { noteDeleteService } = withNotes(f, note);
-
-			const result = await deleteOf(f, { id: note.uri, type: 'Tombstone' });
-
-			expect(result).toBe('ok: note deleted');
-			expect(noteDeleteService.delete).toHaveBeenCalledWith(f.actor, note);
-			expect(f.redisClient.setex).not.toHaveBeenCalled();
-		});
-
-		test('keeps a tombstone off another server', async () => {
-			const f = createInbox();
-			withNotes(f, null);
-
-			const result = await deleteOf(f, { id: 'https://elsewhere.test/notes/reply', type: 'Tombstone' });
-
-			expect(result).toBe('message not found');
-			expect(f.redisClient.setex).not.toHaveBeenCalled();
-		});
-
-		test('stores nothing for a room or an actor', async () => {
-			const f = createInbox();
-			withNotes(f, null);
-
-			const room = await deleteOf(f, { id: 'https://remote.test/chat/rooms/r1', type: 'Tombstone', formerType: 'Group' });
-			const actor = await deleteOf(f, { id: 'https://remote.test/users/other', type: 'Tombstone', formerType: 'Person' });
-
-			expect(room).toBe('skip: only the room owner can delete it');
-			expect(actor).toMatch(/^skip: delete actor /);
-			expect(f.redisClient.setex).not.toHaveBeenCalled();
-		});
 	});
 
 	test('routes EmojiReact to reactRemote', async () => {
@@ -2143,11 +2061,10 @@ describe('unread chat notification', () => {
 		const publishMainStream = vi.fn();
 		const pushNotification = vi.fn();
 		const packMessageDetailed = vi.fn(async (message: unknown) => message);
-		let stored: Record<string, unknown> | null = null;
+		const pipeline = { set: () => pipeline, sadd: () => pipeline, exec: async () => [] };
 		const service = Object.assign(Object.create(ChatService.prototype), {
-			db: chatTransactions(),
 			config: { url: 'https://local.test' },
-			usersRepository: { existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => ['alice', 'bob'].includes(id) && !isSuspended },
+			usersRepository: { existsBy: async () => false },
 			chatApprovalsRepository: {
 				createQueryBuilder: () => ({
 					where() { return this; }, orWhere() { return this; }, take() { return this; },
@@ -2155,8 +2072,8 @@ describe('unread chat notification', () => {
 				}),
 			},
 			chatMessagesRepository: {
-				insertOne: async (message: Record<string, unknown>) => (stored = message),
-				findOneBy: async () => stored,
+				insertOne: async (message: unknown) => message,
+				findOneBy: async () => current(),
 			},
 			roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 			userBlockingService: { checkBlocked: async () => false },
@@ -2168,13 +2085,12 @@ describe('unread chat notification', () => {
 			},
 			globalEventService: { publishChatUserStream: vi.fn(), publishMainStream },
 			pushNotificationService: { pushNotification },
-			redisClient: memoryRedis(),
-			mutingsRepository: { existsBy: async () => false },
+			redisClient: { pipeline: () => pipeline, get: async () => 'm1', incr: async () => 1 },
 		});
 		const send = () => service.createMessageToUser(
 			{ id: 'bob', host: 'remote.test' }, { id: 'alice', host: null, chatScope: 'everyone' }, { text: 'secret', uri: 'https://remote.test/chat/messages/m1' },
 		);
-		return { send, publishMainStream, pushNotification, packMessageDetailed, refreshStored: () => { stored = { ...stored, ...current() }; } };
+		return { send, publishMainStream, pushNotification, packMessageDetailed };
 	}
 
 	test('does not push the text of a message deleted before the notification fires', async () => {
@@ -2182,7 +2098,6 @@ describe('unread chat notification', () => {
 		const f = createNotifyingService(() => ({ id: 'm1', text: null, deletedAt: new Date() }));
 
 		await f.send();
-		f.refreshStored();
 		await vi.advanceTimersByTimeAsync(3000);
 
 		expect(f.publishMainStream).not.toHaveBeenCalled();
@@ -2195,10 +2110,9 @@ describe('unread chat notification', () => {
 		const f = createNotifyingService(() => edited);
 
 		await f.send();
-		f.refreshStored();
 		await vi.advanceTimersByTimeAsync(3000);
 
-		expect(f.pushNotification).toHaveBeenCalledWith('alice', 'newChatMessage', expect.objectContaining(edited));
+		expect(f.pushNotification).toHaveBeenCalledWith('alice', 'newChatMessage', edited);
 	});
 });
 
@@ -2243,7 +2157,6 @@ describe('chat custom emoji federation', () => {
 		};
 		const publishChatUserStream = vi.fn();
 		const chatService = Object.assign(Object.create(ChatService.prototype), {
-			db: chatTransactions(),
 			chatMessagesRepository: { findOneBy: async () => chatMessage, createQueryBuilder: () => queryBuilder },
 			globalEventService: { publishChatUserStream },
 			userEntityService: { pack: async (id: string) => ({ id }) },

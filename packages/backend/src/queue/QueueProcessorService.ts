@@ -11,7 +11,6 @@ import { DI } from '@/di-symbols.js';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { TelemetryService } from '@/core/telemetry/TelemetryService.js';
-import { ChatService } from '@/core/ChatService.js';
 import { CheckModeratorsActivityProcessorService } from '@/queue/processors/CheckModeratorsActivityProcessorService.js';
 import { runQueueJob } from './queue-job-runner.js';
 import { UserWebhookDeliverProcessorService } from './processors/UserWebhookDeliverProcessorService.js';
@@ -109,7 +108,6 @@ export class QueueProcessorService implements OnApplicationShutdown {
 
 		private queueLoggerService: QueueLoggerService,
 		private telemetryService: TelemetryService,
-		private chatService: ChatService,
 		private userWebhookDeliverProcessorService: UserWebhookDeliverProcessorService,
 		private systemWebhookDeliverProcessorService: SystemWebhookDeliverProcessorService,
 		private endedPollNotificationProcessorService: EndedPollNotificationProcessorService,
@@ -196,7 +194,6 @@ export class QueueProcessorService implements OnApplicationShutdown {
 					case 'checkModeratorsActivity': return this.checkModeratorsActivityProcessorService.process();
 					case 'clean': return this.cleanProcessorService.process();
 					case 'cleanRemoteNotes': return this.cleanRemoteNotesProcessorService.process(job);
-					case 'cleanLegacyChatUnread': return this.chatService.cleanupLegacyUnreadMarks();
 					case 'autoDeleteNotes': return this.autoDeleteNotesProcessorService.process(job);
 					default: throw new Error(`unrecognized job type ${job.name} for system`);
 				}

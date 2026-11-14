@@ -17,7 +17,6 @@ import { DriveFileUsageService } from '@/core/DriveFileUsageService.js';
 import CreateToRoomEndpoint, { paramDef as createToRoomParams } from '@/server/api/endpoints/chat/messages/create-to-room.js';
 import CreateToUserEndpoint, { paramDef as createToUserParams } from '@/server/api/endpoints/chat/messages/create-to-user.js';
 import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
-import { chatTransactions } from '../misc/chat-transactions.js';
 
 const me = { id: 'me' } as MiLocalUser;
 const document = (name: string) => ({ type: 'Document', url: `https://remote.test/${name}.png`, name });
@@ -243,13 +242,11 @@ describe('storing the attachments of a new message', () => {
 	function createService() {
 		const insertOne = vi.fn(async (message: object) => message);
 		const service = Object.assign(Object.create(ChatService.prototype), {
-			db: chatTransactions(),
 			config: { url: 'https://local.test' },
 			idService: { gen: () => 'generated', parse: () => ({ date: new Date('2026-11-04T00:00:00Z') }) },
 			chatMessagesRepository: { insertOne },
 			chatApprovalsRepository: { createQueryBuilder: () => ({ where() { return this; }, orWhere() { return this; }, take() { return this; }, getMany: async () => [] }), insertOne: vi.fn() },
 			chatRoomMembershipsRepository: { findBy: async () => [] },
-			chatRoomsRepository: { findOneBy: async () => ({ id: 'r1', ownerId: 'bob', isArchived: false }) },
 			chatEntityService: { packMessageLiteFor1on1: async (message: unknown) => message, packMessageLiteForRoom: async (message: unknown) => message },
 			roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 			userBlockingService: { checkBlocked: async () => false },

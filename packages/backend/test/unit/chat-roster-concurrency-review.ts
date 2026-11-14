@@ -8,7 +8,6 @@ import { ChatService } from '@/core/ChatService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import type { IAdd, IRemove } from '@/core/activitypub/type.js';
 import type { MiRemoteUser } from '@/models/User.js';
-import { memoryRedis } from '../misc/chat-unread-redis.js';
 
 describe('concurrent remote room membership changes', () => {
 	test('a newer removal wins when an older addition is paused after its ordering claim', async () => {
@@ -42,7 +41,10 @@ describe('concurrent remote room membership changes', () => {
 			chatRoomMembershipsRepository: memberships,
 			userEntityService: { isLocalUser: () => false },
 			globalEventService: { publishChatRoomStream: vi.fn() },
-			redisClient: memoryRedis(),
+			redisClient: { pipeline: () => {
+				const pipeline = { del: () => pipeline, srem: () => pipeline, exec: async () => [] };
+				return pipeline;
+			} },
 		}) as ChatService;
 		let transactionQueue = Promise.resolve();
 		let transactions = 0;

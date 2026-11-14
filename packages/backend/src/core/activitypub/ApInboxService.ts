@@ -16,7 +16,7 @@ import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NoteCreateService } from '@/core/NoteCreateService.js';
 import { NotificationService } from '@/core/NotificationService.js';
-import { chatMessageUriLockKey, ChatMessageAccessError, ChatService, MAX_CHAT_MESSAGE_TEXT_LENGTH, MAX_REMOTE_CHAT_MESSAGE_FILES, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatService, MAX_CHAT_MESSAGE_TEXT_LENGTH, MAX_REMOTE_CHAT_MESSAGE_FILES, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
@@ -741,24 +741,14 @@ export class ApInboxService {
 
 		const unlock = await acquireApObjectLock(this.redisClient, messageUri);
 		try {
-			// 아래 트랜잭션 안에서는 그 커넥션만 쓴다. 참가 여부는 먼저 읽어 둔다.
-			const isMember = await this.chatService.isRoomMember(room, doer.id);
-			const decision: { message?: MiChatMessage; result?: string; notMember?: boolean } = await this.db.transaction(async manager => {
-				await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [chatMessageUriLockKey(messageUri)]);
-				const message = await manager.withRepository(this.chatMessagesRepository).findOneBy({ uri: messageUri });
-				if (message != null) return { message };
-				if (!this.isOnActorHost(messageUri, doer)) return { result: 'skip: message is not on the actor\'s server' };
-				if (!isMember) return { notMember: true };
-				const stored = await this.storeDeferredChatDelete(doer, messageUri, room.id);
-				return { result: stored ? 'ok: chat message tombstone stored' : 'skip: too many deferred chat deletes' };
-			});
-			if (decision.notMember) {
-				// 이 서버가 참가 소식을 아직 못 받았다면 명단을 다시 받고 재시도한다.
+			const message = await this.chatService.findMessageByUri(messageUri);
+			if (message == null) {
+				if (!this.isOnActorHost(messageUri, doer)) return 'skip: message is not on the actor\'s server';
 				await this.assertKnownInRoom(room, doer);
-				return 'skip: not a member of the room';
+				if (!await this.chatService.isRoomMember(room, doer.id)) return 'skip: not a member of the room';
+				const stored = await this.storeDeferredChatDelete(doer, messageUri, room.id);
+				return stored ? 'ok: chat message tombstone stored' : 'skip: too many deferred chat deletes';
 			}
-			if (decision.message == null) return decision.result!;
-			const message = decision.message;
 			if (message.toRoomId !== room.id) return 'skip: message is from another room';
 			await this.chatService.deleteRemoteMessage(doer, message);
 			return 'ok: chat message deleted';
@@ -1335,7 +1325,6 @@ export class ApInboxService {
 					emojis: apEmojis,
 					editedAt,
 					dice: object._misskey_dice,
-					deleteActorUri: actor.uri,
 				});
 			} else {
 				// Group chat
@@ -1351,7 +1340,6 @@ export class ApInboxService {
 					emojis: apEmojis,
 					editedAt,
 					dice: object._misskey_dice,
-					deleteActorUri: actor.uri,
 				});
 			}
 
@@ -1404,26 +1392,13 @@ export class ApInboxService {
 		}
 
 		// Servers announce deleted accounts to everyone they know, so spare that flood the query.
-		const isChatUri = uri !== actor.uri && (
-			this.isChatMessageUri(uri)
-			|| await this.chatService.findMessageByUri(uri) != null);
+		const isChatUri = uri !== actor.uri && (this.isChatMessageUri(uri) || await this.chatService.findMessageByUri(uri) != null);
 		const unlock = isChatUri ? await acquireApObjectLock(this.redisClient, uri) : null;
 		try {
-			// 채팅을 쓸 수 없는 받는 사람은 쪽지를 비공개 Note로 저장한다. 그 Note는 이 잠금 아래에서 찾는다.
-			// 아래 트랜잭션 안에서 풀의 다른 커넥션을 기다리면, 한꺼번에 들어온 Delete들이 커넥션을 모두 쥔 채 서로를 기다린다.
-			const storedAsNote = isChatUri && await this.apNoteService.fetchNote(uri) != null;
-			const decision: { message?: MiChatMessage; result?: string } = isChatUri && !storedAsNote ? await this.db.transaction(async manager => {
-				await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [chatMessageUriLockKey(uri)]);
-				const message = await manager.withRepository(this.chatMessagesRepository).findOneBy({ uri });
-				if (message != null) return { message };
-				if (!this.isOnActorHost(uri, actor)) return { result: 'skip: message is not on the actor\'s server' };
-				if (await this.namesRoomThatIsGone(activity)) return { result: 'skip: room was deleted' };
-				const stored = await this.storeDeferredChatDelete(actor, uri);
-				return { result: stored ? 'ok: chat message tombstone stored' : 'skip: too many deferred chat deletes' };
-			}) : {};
-			if (decision.message != null) {
+			const chatMessage = isChatUri ? await this.chatService.findMessageByUri(uri) : null;
+			if (chatMessage != null) {
 				try {
-					await this.chatService.deleteRemoteMessage(actor, decision.message, { activity });
+					await this.chatService.deleteRemoteMessage(actor, chatMessage, { activity });
 					return 'ok: chat message deleted';
 				} catch (err) {
 					if (err instanceof ChatMessageAccessError) return `skip: ${err.message}`;
@@ -1431,7 +1406,14 @@ export class ApInboxService {
 				}
 			}
 
-			if (decision.result != null) return decision.result;
+			// A chat-disabled recipient stores the object as a private Note instead.
+			// Let that object use the normal Note deletion and author checks below.
+			if (isChatUri && await this.apNoteService.fetchNote(uri) == null) {
+				if (!this.isOnActorHost(uri, actor)) return 'skip: message is not on the actor\'s server';
+				if (await this.namesRoomThatIsGone(activity)) return 'skip: room was deleted';
+				const stored = await this.storeDeferredChatDelete(actor, uri);
+				return stored ? 'ok: chat message tombstone stored' : 'skip: too many deferred chat deletes';
+			}
 		} finally {
 			if (unlock != null) await unlock();
 		}

@@ -4,13 +4,11 @@
  */
 
 import { vi } from 'vitest';
-import { FindOperator } from 'typeorm';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { UtilityService } from '@/core/UtilityService.js';
-import { memoryRedis } from './chat-unread-redis.js';
 
 export const LOCAL = 'https://local.test';
 export const MIRROR_URI = 'https://remote.test/chat/rooms/mirror';
@@ -35,7 +33,6 @@ type Row = { id: string; [key: string]: unknown };
 
 function matches(row: Row, where: Record<string, unknown>) {
 	return Object.entries(where).every(([key, value]) => {
-		if (value instanceof FindOperator && value.type === 'isNull') return row[key] == null;
 		if (value != null && typeof value === 'object' && '_value' in value) return ((value as { _value: unknown[] })._value).includes(row[key]);
 		return row[key] === value;
 	});
@@ -48,7 +45,6 @@ function fakeRepository(rows: Row[] = []) {
 		findOne: async ({ where }: { where: Record<string, unknown> }) => rows.find(row => matches(row, where)) ?? null,
 		findBy: async (where: Record<string, unknown>) => rows.filter(row => matches(row, where)),
 		countBy: async (where: Record<string, unknown>) => rows.filter(row => matches(row, where)).length,
-		existsBy: async (where: Record<string, unknown> | Record<string, unknown>[]) => [where].flat().some(condition => rows.some(row => matches(row, condition))),
 		insertOne: async (row: Row) => {
 			if (rows.some(existing => existing.roomId === row.roomId && existing.userId === row.userId && row.userId != null)) throw Object.assign(new Error('duplicate'), { code: '23505' });
 			rows.push(row);
@@ -132,7 +128,6 @@ function fakeRedis() {
 	const client = {
 		values,
 		lists,
-		eval: memoryRedis({ strings: values, sets }).eval,
 		ttl: new Map<string, number>(),
 		get: async (key: string) => values.get(key) ?? null,
 		set: async (key: string, value: string, _ex: string, ttl: number, _nx: string) => {
@@ -151,8 +146,6 @@ function fakeRedis() {
 			return had ? 1 : 0;
 		},
 		scard: async (key: string) => sets.get(key)?.size ?? 0,
-		sismember: async (key: string, value: string) => Number(sets.get(key)?.has(value) ?? false),
-		smembers: async (key: string) => [...(sets.get(key) ?? [])],
 		sadd: async (key: string, value: string) => {
 			const set = sets.get(key) ?? new Set<string>();
 			set.add(value);
@@ -398,10 +391,6 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 		transaction: async <T>(callback: (manager: unknown) => Promise<T>): Promise<T> => {
 			const table = (entity: { name: string }) => entity.name === 'MiChatRoomInvitation' ? invitations : memberships;
 			return await callback({
-				query: async (sql: string) => {
-					if (!sql.includes('pg_advisory_xact_lock')) throw new Error(`query not supported in this test: ${sql}`);
-					return [];
-				},
 				findOne: (_entity: unknown, options: { where: Record<string, unknown> }) => rooms.findOneBy(options.where),
 				find: async (_entity: unknown, options: { where: Record<string, unknown> }) => (await memberships.findBy(options.where)).map(membership => ({ ...membership, user: users.get(membership.userId as string) ?? null })),
 				withRepository: (repository: unknown) => repository,
@@ -417,7 +406,6 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 	const roleService = { isModerator: async () => false, getUserPolicies: async () => ({ chatAvailability: 'available' }) };
 
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
-		logger,
 		config,
 		db,
 		redisClient,

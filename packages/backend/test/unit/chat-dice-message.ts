@@ -11,16 +11,14 @@ import CreateToUser, { meta as userMeta } from '@/server/api/endpoints/chat/mess
 import CreateToRoom, { meta as roomMeta } from '@/server/api/endpoints/chat/messages/create-to-room.js';
 import { ChatDiceError } from '@/core/chat-dice.js';
 import type { ChatDiceResult } from '@/core/chat-dice.js';
-import { memoryRedis } from '../misc/chat-unread-redis.js';
-import { chatTransactions } from '../misc/chat-transactions.js';
 import type { MiChatMessage, MiUser } from '@/models/_.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { buildChatNote } from '@/core/activitypub/misc/chat-payloads.js';
 import { CONTEXT, PRELOADED_CONTEXTS } from '@/core/activitypub/misc/contexts.js';
 
 const dice: ChatDiceResult = { version: 1, engine: '@dice-roller/rpg-dice-roller', engineVersion: '5.5.1', notation: '1d6', total: 4, output: '1d6: [4] = 4' };
-const sender = { id: 'sender', host: null, isSuspended: false };
-const recipient = { id: 'recipient', host: null, isSuspended: false };
+const sender = { id: 'sender', host: null };
+const recipient = { id: 'recipient', host: null };
 const room = { id: 'room', ownerId: sender.id, isArchived: false };
 
 afterEach(() => vi.useRealTimers());
@@ -35,9 +33,6 @@ function fixture() {
 			return message;
 		}),
 		findOneBy: vi.fn(async () => rows[0] ?? null),
-		findOne: vi.fn(async () => rows.find(row => row.deletedAt == null) ?? null),
-		find: vi.fn(async () => rows.filter(row => row.deletedAt == null)),
-		existsBy: vi.fn(async () => true),
 		update: vi.fn(async (_query: unknown, patch: object) => { Object.assign(rows[0], patch); return { affected: 1 }; }),
 	};
 	const entity = Object.assign(Object.create(ChatEntityService.prototype), {
@@ -47,21 +42,19 @@ function fixture() {
 		userEntityService: { pack: vi.fn(async (id: string) => ({ id })) },
 		driveFileEntityService: { packManyByIdsMap: vi.fn(async () => new Map()) },
 	}) as ChatEntityService;
-	const stream = { publishChatUserStream: vi.fn(), publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() };
+	const stream = { publishChatUserStream: vi.fn(), publishChatRoomStream: vi.fn() };
 	const roll = vi.fn(async (_id: string, notation: string) => ({ ...dice, notation }));
 	const pipeline = { set: vi.fn(), sadd: vi.fn(), exec: vi.fn() };
 	const dependencies = {
 		config: { url: 'https://local.test' },
-		logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
-		db: chatTransactions(),
 		chatMessagesRepository: repository,
 		chatEntityService: entity,
 		chatDiceService: { roll },
 		chatRoomMembershipsRepository: { findBy: vi.fn(async () => []), findOneBy: vi.fn() },
-		chatRoomsRepository: { findOneBy: vi.fn(async () => room) },
-		usersRepository: { existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => [sender, recipient].some(user => user.id === id && user.isSuspended === isSuspended), findOneBy: vi.fn(async () => sender), findOneByOrFail: vi.fn(async () => sender), findBy: vi.fn(async () => [sender, recipient]) },
+		chatRoomsRepository: { findOneBy: vi.fn() },
+		usersRepository: { findOneBy: vi.fn(async () => sender), findOneByOrFail: vi.fn(async () => sender), findBy: vi.fn(async () => [sender, recipient]) },
 		idService: { gen: () => 'message' },
-		redisClient: { ...memoryRedis(), pipeline: () => pipeline, sismember: async () => 0 },
+		redisClient: { pipeline: () => pipeline },
 		globalEventService: stream,
 		userEntityService: { isLocalUser: (u: { host: string | null }) => u.host == null, isRemoteUser: (u: { host: string | null }) => u.host != null },
 		assertCanSendToUser: vi.fn(async () => ({ iApprovedOther: true })),

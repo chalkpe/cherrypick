@@ -12,8 +12,6 @@ import CreateToUserEndpoint from '@/server/api/endpoints/chat/messages/create-to
 import ShowEndpoint from '@/server/api/endpoints/chat/messages/show.js';
 import InvitationCreateEndpoint from '@/server/api/endpoints/chat/rooms/invitations/create.js';
 import { chatRosterOver, forgetfulRedis } from '../misc/chat-roster-stub.js';
-import { memoryRedis } from '../misc/chat-unread-redis.js';
-import { chatTransactions } from '../misc/chat-transactions.js';
 
 const alice = { id: 'alice', host: null, uri: null, inbox: null, sharedInbox: null, isSuspended: false };
 
@@ -45,17 +43,13 @@ describe('delayed chat notifications after suspension', () => {
 			},
 			existsBy: async ({ id, isSuspended }: { id: string; isSuspended: boolean }) => users.some(user => user.id === id && user.isSuspended === isSuspended),
 			findOneBy: async ({ id }: { id: string }) => users.find(user => user.id === id) ?? null,
-			findBy: async ({ id }: { id: { value: string[] } }) => users.filter(user => id.value.includes(user.id)),
 		};
 		const userEntityService = { isLocalUser: () => true, isRemoteUser: () => false, genLocalUserUri: (id: string) => `https://local.test/users/${id}` };
 		const chatService = Object.assign(Object.create(ChatService.prototype), {
-			db: chatTransactions(),
 			config: { url: 'https://local.test' }, usersRepository, userEntityService,
 			idService: { gen: () => 'message1' },
-			chatRoomsRepository: { findOneBy: async ({ id }: { id: string }) => id === room.id ? room : null },
 			chatRoomMembershipsRepository: {
-				// Like the table, the room's member list no longer has a reader who left.
-				findBy: async () => readerStillMember ? [{ userId: reader.id, isMuted: readerMuted }] : [],
+				findBy: async () => [{ userId: reader.id, isMuted: readerMuted }],
 				findOneBy: async ({ userId }: { userId: string }) => readerStillMember && userId === reader.id ? { userId, isMuted: readerMuted } : null,
 			},
 			chatMessagesRepository: {
@@ -78,8 +72,8 @@ describe('delayed chat notifications after suspension', () => {
 			chatEntityService: { packMessageLiteForRoom: async (value: unknown) => value, packMessageLiteFor1on1: async (value: unknown) => value, packMessageDetailed: async (value: unknown) => value },
 			globalEventService: { publishChatRoomStream: vi.fn(), publishChatUserStream: vi.fn(), publishMainStream: stream },
 			pushNotificationService: { pushNotification: notifications },
-			redisClient: { ...memoryRedis(), pipeline: () => pipeline, get: async () => 'message1', sismember: async () => 1 },
-			mutingsRepository: { existsBy: async () => false },
+			redisClient: { pipeline: () => pipeline, get: async () => 'message1', incr: async () => 1 },
+			chatRoomsRepository: { findOneBy: async () => room },
 		}) as ChatService;
 		const suspension = Object.assign(Object.create(UserSuspendService.prototype), {
 			usersRepository, userEntityService, chatService,
@@ -174,7 +168,6 @@ function createService(invitee?: { id: string }) {
 	const insertOne = vi.fn(async (message: unknown) => message);
 	const insertInvitation = vi.fn(async (invitation: unknown) => invitation);
 	const service = Object.assign(Object.create(ChatService.prototype), {
-		db: chatTransactions(),
 		config: { url: 'https://local.test' },
 		idService: { gen: () => 'generated', parse: () => ({ date: new Date('2026-11-04T00:00:00Z') }) },
 		queueService: { deliver },
@@ -348,7 +341,7 @@ describe('suspending a remote account', () => {
 			},
 			globalEventService: { publishChatRoomStream: vi.fn() },
 			liveKitService: { removeParticipant: vi.fn().mockResolvedValue(undefined), identityOf: (user: { id: string }) => user.id },
-			redisClient: memoryRedis(),
+			redisClient: { pipeline: () => ({ del: vi.fn().mockReturnThis(), srem: vi.fn().mockReturnThis(), exec: vi.fn().mockResolvedValue([]) }) },
 		}) as ChatService;
 		return { service, deliver, removed };
 	}
@@ -435,22 +428,18 @@ describe('suspending a remote account', () => {
 
 describe('the unread marks of a suspended account\'s messages', () => {
 	test('go away, as the conversation they point at is no longer shown', async () => {
-		const redis = memoryRedis();
-		await redis.set('newUserChatMessageExists:reader:suspended', 'message1');
-		await redis.sadd('newChatMessagesExists:reader', 'user:suspended');
+		const pipeline = { del: vi.fn().mockReturnThis(), srem: vi.fn().mockReturnThis(), exec: vi.fn().mockResolvedValue([]) };
 		const service = Object.assign(Object.create(ChatService.prototype), {
-			db: chatTransactions(),
 			chatMessagesRepository: { createQueryBuilder: () => ({ select() { return this; }, where() { return this; }, andWhere() { return this; }, getRawMany: async () => [{ toUserId: 'reader' }] }) },
 			chatRoomMembershipsRepository: { findBy: vi.fn().mockResolvedValue([]) },
 			userEntityService: { isRemoteUser: () => false },
-			redisClient: redis,
-			globalEventService: { publishMainStream: vi.fn() },
+			redisClient: { pipeline: () => pipeline },
 		}) as ChatService;
 
 		await service.handleUserSuspended({ id: 'suspended', host: null } as never);
 
-		expect(await redis.get('newUserChatMessageExists:reader:suspended')).toBeNull();
-		expect(await redis.smembers('newChatMessagesExists:reader')).toEqual([]);
+		expect(pipeline.del).toHaveBeenCalledWith('newUserChatMessageExists:reader:suspended');
+		expect(pipeline.srem).toHaveBeenCalledWith('newChatMessagesExists:reader', 'user:suspended');
 	});
 });
 
@@ -465,7 +454,6 @@ describe('messages from a suspended author', () => {
 			leftJoinAndSelect() { return this; }, select() { return this; }, getQuery: () => 'query', getParameters: () => ({}), getMany: async () => [], getOne: async () => null,
 		};
 		const service = Object.assign(Object.create(ChatService.prototype), {
-			db: chatTransactions(),
 			queryService: { makePaginationQuery: () => builder },
 			chatMessagesRepository: { createQueryBuilder: () => builder },
 			chatRoomMembershipsRepository: { findBy: async () => [{ roomId: 'r1' }], createQueryBuilder: () => builder },
