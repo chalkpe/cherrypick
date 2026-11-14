@@ -103,6 +103,8 @@ const READ_RETRY_DELAYS = [1000, 5000, 30000];
 // 미읽음 ID 창은 최신 1000개만 개별 ID로 남긴다. 여유 256개를 넘기면 오래된 것부터 압축 경계로 모은다.
 const UNREAD_WINDOW_SIZE = 1000;
 const UNREAD_WINDOW_SLACK = 256;
+// 뮤트 제외 구간 목록의 고정 상한. 넘으면 뮤트 중 쪽지를 승격시키지 않는 보수적 덮개 하나로 모은다.
+const MUTE_INTERVAL_CAP = 64;
 // 완료된 레거시 정리는 이 주기가 지나면 다시 훑는다. 구버전 롤백 기간에 생긴 표식을 줍기 위해서다.
 const LEGACY_CLEANUP_RESCAN_INTERVAL = 7 * 24 * 60 * 60 * 1000;
 
@@ -362,6 +364,74 @@ for _, interval in ipairs(redis.call('LRANGE', KEYS[6], 0, -1)) do
  if start and ARGV[2] > start and (stop == '' or ARGV[2] <= stop) then return 0 end
 end
 return 1
+`;
+
+// 뮤트 토글의 구간 기록을 한 번에 끝낸다. 읽기와 쓰기 사이에 다른 토글이 끼지 못한다.
+// 같은 상태 요청은 구간을 늘리지 않고, 목록은 상한 안에서 병합·가지치기된다.
+// KEYS: 제외 구간 목록, 첫 미읽음 ID, 읽음 경계 하한. ARGV: 뮤트 여부(1/0), 토글 시점의 최신 쪽지 ID.
+const RECORD_ROOM_MUTE_INTERVAL = `-- record room mute interval
+local lower = redis.call('GET', KEYS[3]) or redis.call('GET', KEYS[2])
+local latest = ARGV[2]
+local intervals = {}
+local open = 0
+for _, item in ipairs(redis.call('LRANGE', KEYS[1], 0, -1)) do
+ local start, stop = string.match(item, '^([^|]*)|([^|]*)$')
+ if start then
+  if stop == '' then open = open + 1 end
+  table.insert(intervals, {start, stop})
+ end
+end
+if ARGV[1] == '1' then
+ -- 같은 뮤트 요청이 다시 와도 구간을 늘리지 않는다.
+ if open == 0 then table.insert(intervals, {latest, ''}) end
+else
+ -- 해제는 열린 구간을 모두 닫는다. 그사이 새 쪽지가 없으면 빈 구간은 남기지 않는다.
+ local closed = {}
+ for _, interval in ipairs(intervals) do
+  if interval[2] == '' then
+   if latest > interval[1] then table.insert(closed, {interval[1], latest}) end
+  else
+   table.insert(closed, interval)
+  end
+ end
+ intervals = closed
+end
+-- 읽음 경계 아래는 창이 개별 판정하므로 구간에서 뺀다. 아래에서 시작한 구간은 하한으로 올린다.
+local kept = {}
+for _, interval in ipairs(intervals) do
+ local start, stop = interval[1], interval[2]
+ if not lower or stop == '' or stop > lower then
+  if lower and start < lower then start = lower end
+  table.insert(kept, {start, stop})
+ end
+end
+table.sort(kept, function(a, b) return a[1] < b[1] end)
+-- 겹치거나 이어지는 구간은 합친다. 열린 구간은 뒤의 모든 구간을 흡수해 항상 마지막에 하나만 남는다.
+local merged = {}
+for _, interval in ipairs(kept) do
+ local last = merged[#merged]
+ if last and (last[2] == '' or interval[1] <= last[2]) then
+  if interval[2] == '' then
+   last[2] = ''
+  elseif last[2] ~= '' and interval[2] > last[2] then
+   last[2] = interval[2]
+  end
+ else
+  table.insert(merged, {interval[1], interval[2]})
+ end
+end
+-- 상한을 넘으면 뮤트 중 쪽지를 미읽음으로 승격시키지 않는 보수적 덮개 하나로 모은다.
+-- 병합 뒤 구간은 서로 떨어지므로 끝이 가장 큰 마지막 구간의 끝이 덮개의 끝이다.
+if #merged > ${MUTE_INTERVAL_CAP} then
+ merged = {{merged[1][1], merged[#merged][2]}}
+end
+redis.call('DEL', KEYS[1])
+if #merged > 0 then
+ local values = {}
+ for _, interval in ipairs(merged) do table.insert(values, interval[1] .. '|' .. interval[2]) end
+ redis.call('RPUSH', KEYS[1], unpack(values))
+end
+return #merged
 `;
 
 // Check both conditions in the same Redis operation that removes the candidate.
@@ -2376,20 +2446,14 @@ export class ChatService {
 	/**
 	 * 뮤트 중 받은 쪽지는 미읽음이 아니므로, 압축 구간이 그쪽지를 미읽음으로 승격하지 않게 제외 구간을 남긴다.
 	 * 구간은 (시작, 끝]이고 토글 뒤의 최신 쪽지 ID로 경계를 잡는다. 열린 구간은 아직 뮤트 중이라는 뜻이다.
+	 * 열기·닫기는 한 Lua에서 원자적으로 끝나고, 목록은 상한 안에서 병합·가지치기된다.
 	 * 실패는 표시를 과대하게 둘 뿐 미읽음을 잃지 않으므로 알리기만 한다.
 	 */
 	private async recordRoomMuteInterval(userId: MiUser['id'], roomId: MiChatRoom['id'], mute: boolean): Promise<void> {
 		try {
 			const latest = await this.chatMessagesRepository.findOne({ select: { id: true }, where: { toRoomId: roomId }, order: { id: 'DESC' } });
-			const key = `newRoomChatMessageExists:${userId}:${roomId}:excluded`;
-			if (mute) {
-				await this.redisClient.rpush(key, `${latest?.id ?? ''}|`);
-			} else {
-				const open = await this.redisClient.lindex(key, -1);
-				if (open != null && open.endsWith('|')) {
-					await this.redisClient.lset(key, -1, `${open}${latest?.id ?? ''}`);
-				}
-			}
+			const key = `newRoomChatMessageExists:${userId}:${roomId}`;
+			await this.redisClient.eval(RECORD_ROOM_MUTE_INTERVAL, 3, `${key}:excluded`, `${key}:first`, `${key}:readbound`, mute ? '1' : '0', latest?.id ?? '');
 		} catch (error) {
 			this.reportUnreadFailure('room mute interval', error);
 		}

@@ -32,10 +32,10 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 		scard: (key: string): RedisReply => sets.get(key)?.size ?? 0,
 		sismember: (key: string, member: string): RedisReply => Number(sets.get(key)?.has(member) ?? false),
 		smembers: (key: string): RedisReply => [...(sets.get(key) ?? [])],
-		rpush: (key: string, value: string): RedisReply => {
+		rpush: (key: string, ...values: string[]): RedisReply => {
 			const list = lists.get(key) ?? [];
 			lists.set(key, list);
-			list.push(value);
+			list.push(...values);
 			return list.length;
 		},
 		lindex: (key: string, index: number): RedisReply => {
@@ -280,7 +280,11 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 			if (trimmed == null) return 0;
 			const lower = strings.get(readboundKey) ?? first;
 			if (id <= lower || id > trimmed) return 0;
-			for (const interval of lists.get(excludedKey) ?? []) {
+			// Lua가 순회하는 구간 수를 시험에서 고정한다. 실제 Lua는 LRANGE 0 -1 전량을 순회한다.
+			const intervals = lists.get(excludedKey) ?? [];
+			stats.excludedScanned = (stats.excludedScanned ?? 0) + intervals.length;
+			stats.excludedScannedMax = Math.max(stats.excludedScannedMax ?? 0, intervals.length);
+			for (const interval of intervals) {
 				const separator = interval.indexOf('|');
 				if (separator === -1) continue;
 				const start = interval.slice(0, separator);
@@ -288,6 +292,49 @@ export function memoryRedis({ strings = new Map<string, string>(), sets = new Ma
 				if (id > start && (end === '' || id <= end)) return 0;
 			}
 			return 1;
+		},
+		'record room mute interval': ([excludedKey, firstKey, readboundKey], [mute, latest]) => {
+			const lower = strings.get(readboundKey) ?? strings.get(firstKey);
+			const parsed: { start: string; stop: string }[] = [];
+			let open = 0;
+			for (const item of lists.get(excludedKey) ?? []) {
+				const separator = item.indexOf('|');
+				if (separator === -1) continue;
+				const stop = item.slice(separator + 1);
+				if (stop === '') open++;
+				parsed.push({ start: item.slice(0, separator), stop });
+			}
+			let intervals = parsed;
+			if (mute === '1') {
+				// 같은 뮤트 요청이 다시 와도 구간을 늘리지 않는다.
+				if (open === 0) intervals = [...parsed, { start: latest, stop: '' }];
+			} else {
+				// 해제는 열린 구간을 모두 닫는다. 그사이 새 쪽지가 없으면 빈 구간은 남기지 않는다.
+				intervals = parsed.flatMap(interval => interval.stop === ''
+					? (latest > interval.start ? [{ start: interval.start, stop: latest }] : [])
+					: [interval]);
+			}
+			// 읽음 경계 아래는 창이 개별 판정하므로 구간에서 뺀다. 아래에서 시작한 구간은 하한으로 올린다.
+			const kept = intervals
+				.filter(interval => lower == null || interval.stop === '' || interval.stop > lower)
+				.map(interval => ({ start: lower != null && interval.start < lower ? lower : interval.start, stop: interval.stop }))
+				.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+			// 겹치거나 이어지는 구간은 합친다. 열린 구간은 뒤의 모든 구간을 흡수해 항상 마지막에 하나만 남는다.
+			const merged: { start: string; stop: string }[] = [];
+			for (const interval of kept) {
+				const last = merged[merged.length - 1];
+				if (last != null && (last.stop === '' || interval.start <= last.stop)) {
+					if (interval.stop === '') last.stop = '';
+					else if (last.stop !== '' && interval.stop > last.stop) last.stop = interval.stop;
+				} else {
+					merged.push({ ...interval });
+				}
+			}
+			// 상한을 넘으면 보수적 덮개 하나로 모은다. 실제 Lua와 같은 상한(64)이다.
+			const result = merged.length > 64 ? [{ start: merged[0].start, stop: merged[merged.length - 1].stop }] : merged;
+			del(excludedKey);
+			if (result.length > 0) counted.rpush(excludedKey, ...result.map(interval => `${interval.start}|${interval.stop}`));
+			return result.length;
 		},
 		'reconcile chat unread': ([latestKey, firstKey, aggregate, revisionKey, messagesKey, pendingKey, trimmedKey, excludedKey, readboundKey], [marker, first, revision, remaining, conversation, newRevision]) => {
 			if (!sets.get(aggregate)?.has(conversation)) return 0;
