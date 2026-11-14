@@ -31,9 +31,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<template #label>{{ i18n.ts._noteCleanup.notesToDelete }}</template>
 		<fieldset :disabled="dirty || busy" :class="$style.run">
 			<div class="_gaps_m">
-				<Preview :ruleId="rule.id" :version="previewVersion" @ready="previewReady = $event"/>
+				<!-- 목록이 길어도 조작이 바로 보이도록 지워질 노트 목록 위에 둔다. -->
 				<MkButton :disabled="!rule.enabled" @click="requestNow"><i class="ti ti-player-play"></i> {{ i18n.ts._noteCleanup.request }}</MkButton>
 				<MkSwitch :modelValue="rule.automatic" :disabled="dirty || busy || !rule.enabled || (!rule.automaticConfirmed && !previewReady)" @update:modelValue="setAutomatic">{{ i18n.ts._noteCleanup.automatic }}</MkSwitch>
+				<Preview :ruleId="rule.id" :version="previewVersion" @ready="previewReady = $event"/>
 			</div>
 		</fieldset>
 	</FormSection>
