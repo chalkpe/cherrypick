@@ -493,6 +493,8 @@ import type {
 	INoteCleanupRequestResponse,
 	INoteCleanupUpdateRequest,
 	INoteCleanupUpdateResponse,
+	INoteCleanupUpdateSettingsRequest,
+	INoteCleanupUpdateSettingsResponse,
 	INotificationsRequest,
 	INotificationsResponse,
 	INotificationsGroupedRequest,
@@ -1087,6 +1089,7 @@ export type Endpoints = {
 	'i/note-cleanup/preview': { req: INoteCleanupPreviewRequest; res: INoteCleanupPreviewResponse };
 	'i/note-cleanup/request': { req: INoteCleanupRequestRequest; res: INoteCleanupRequestResponse };
 	'i/note-cleanup/update': { req: INoteCleanupUpdateRequest; res: INoteCleanupUpdateResponse };
+	'i/note-cleanup/update-settings': { req: INoteCleanupUpdateSettingsRequest; res: INoteCleanupUpdateSettingsResponse };
 	'i/notifications': { req: INotificationsRequest; res: INotificationsResponse };
 	'i/notifications-grouped': { req: INotificationsGroupedRequest; res: INotificationsGroupedResponse };
 	'i/page-likes': { req: IPageLikesRequest; res: IPageLikesResponse };

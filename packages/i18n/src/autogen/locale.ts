@@ -16339,6 +16339,10 @@ export interface Locale extends ILocale {
          */
         "title": string;
         /**
+         * 削除したノートの添付ファイルをドライブに残す
+         */
+        "keepDriveFiles": string;
+        /**
          * 残す
          */
         "keep": string;

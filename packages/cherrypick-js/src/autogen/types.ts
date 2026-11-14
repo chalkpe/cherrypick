@@ -3005,6 +3005,16 @@ export type paths = {
          */
         post: operations['i___note-cleanup___update'];
     };
+    '/i/note-cleanup/update-settings': {
+        /**
+         * i/note-cleanup/update-settings
+         * @description No description provided.
+         *
+         *     **Internal Endpoint**: This endpoint is an API for the cherrypick mainframe and is not intended for use by third parties.
+         *     **Credential required**: *Yes* / **Permission**: *write:account*
+         */
+        post: operations['i___note-cleanup___update-settings'];
+    };
     '/i/notifications': {
         /**
          * i/notifications
@@ -30148,6 +30158,7 @@ export interface operations {
                             legacy: 'age' | 'favorite' | null;
                         }[];
                         blocked: boolean;
+                        keepDriveFiles: boolean;
                     };
                 };
             };
@@ -30432,6 +30443,82 @@ export interface operations {
                             /** @enum {string|null} */
                             legacy: 'age' | 'favorite' | null;
                         };
+                    };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'i___note-cleanup___update-settings': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    keepDriveFiles: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        keepDriveFiles: boolean;
                     };
                 };
             };

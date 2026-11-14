@@ -20,16 +20,25 @@ vi.mock('@/page.js', () => ({ definePage: () => {} }));
 vi.mock('@/pages/_loading_.vue', () => ({ default: defineComponent({}) }));
 vi.mock('@/pages/_error_.vue', () => ({ default: defineComponent({}) }));
 vi.mock('@/pages/timeline.vue', () => ({ default: defineComponent({}) }));
+const alert = vi.hoisted(() => vi.fn(async (_options: Record<string, unknown>) => {}));
+vi.mock('@/os.js', () => ({ alert }));
 vi.mock('@/components/MkButton.vue', () => ({ default: defineComponent({
 	props: ['disabled'], emits: ['click'],
 	setup: (props, { slots, emit }) => () => h('button', { disabled: props.disabled, onClick: () => emit('click') }, slots.default?.()),
+}) }));
+vi.mock('@/components/MkSwitch.vue', () => ({ default: defineComponent({
+	props: ['modelValue', 'disabled'], emits: ['update:modelValue'],
+	setup: (props, { slots, emit }) => () => h('button', {
+		role: 'switch', 'aria-checked': props.modelValue ? 'true' : 'false', disabled: props.disabled,
+		onClick: () => { if (!props.disabled) emit('update:modelValue', !props.modelValue); },
+	}, slots.default?.()),
 }) }));
 vi.mock('@/components/MkInfo.vue', () => ({ default: defineComponent({ setup: (_, { slots }) => () => h('div', slots.default?.()) }) }));
 import Settings from '@/pages/settings/note-cleanup.vue';
 import { ROUTE_DEF } from '@/router.definition.js';
 import { Nirax } from '@/lib/nirax.js';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); alert.mockClear(); });
 
 const stubs = {
 	SearchMarker: { template: '<div><slot/></div>' },
@@ -96,4 +105,43 @@ test('empty sections still offer creating each rule kind', async () => {
 	await waitFor(() => expect(view.getAllByRole('link', { name: /Create rule/ })).toHaveLength(2));
 	expect(view.getByText('Delete rules')).toBeTruthy();
 	expect(view.getByText('Keep rules')).toBeTruthy();
+});
+
+test('keep-drive-files switch sits above the rule lists and reflects the stored setting', async () => {
+	vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ rules: [], blocked: false, keepDriveFiles: false })));
+	const view = render(Settings, { global: { stubs } });
+	const toggle = await view.findByRole('switch', { name: 'Keep attachments of deleted notes in the drive' });
+	expect(toggle.getAttribute('aria-checked')).toBe('false');
+	const text = view.container.textContent ?? '';
+	expect(text.indexOf('Keep attachments of deleted notes in the drive')).toBeLessThan(text.indexOf('Delete rules'));
+});
+
+test('toggling the switch saves the setting through update-settings', async () => {
+	const requests: { url: string; body: any }[] = [];
+	vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+		const body = init?.body ? JSON.parse(init.body as string) : {};
+		requests.push({ url, body });
+		if (url.endsWith('/update-settings')) return new Response(JSON.stringify({ keepDriveFiles: body.keepDriveFiles }));
+		return new Response(JSON.stringify({ rules: [], blocked: false, keepDriveFiles: true }));
+	});
+	const view = render(Settings, { global: { stubs } });
+	const toggle = await view.findByRole('switch', { name: /Keep attachments/ });
+	expect(toggle.getAttribute('aria-checked')).toBe('true');
+	await fireEvent.click(toggle);
+	await waitFor(() => expect(requests.filter(r => r.url.endsWith('/update-settings'))).toHaveLength(1));
+	const save = requests.find(r => r.url.endsWith('/update-settings'))!;
+	expect(save.url).toBe('https://cleanup.invalid/api/i/note-cleanup/update-settings');
+	expect(save.body).toMatchObject({ keepDriveFiles: false, i: 'dummy-test-token' });
+	expect(toggle.getAttribute('aria-checked')).toBe('false');
+});
+
+test('a failed save reverts the switch and shows the cleanup error', async () => {
+	vi.stubGlobal('fetch', async (url: string) => url.endsWith('/update-settings')
+		? new Response(JSON.stringify({ error: { code: 'CLEANUP_BUSY' } }), { status: 503 })
+		: new Response(JSON.stringify({ rules: [], blocked: false, keepDriveFiles: true })));
+	const view = render(Settings, { global: { stubs } });
+	const toggle = await view.findByRole('switch', { name: /Keep attachments/ });
+	await fireEvent.click(toggle);
+	await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
+	expect(alert).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', text: 'Note cleanup is busy. Please wait a moment and try again.' }));
 });

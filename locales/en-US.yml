@@ -4228,6 +4228,7 @@ _noteCleanup:
     selfReaction: "My notes I reacted to"
     age: "My notes past the retention period"
   title: "Note cleanup"
+  keepDriveFiles: "Keep attachments of deleted notes in the drive"
   keep: "Keep"
   delete: "Delete"
   name: "Rule name"

@@ -4234,6 +4234,7 @@ _noteCleanup:
     selfReaction: "내가 리액션한 내 글"
     age: "기간이 지난 내 글"
   title: "노트 정리"
+  keepDriveFiles: "지운 노트의 첨부 파일은 드라이브에 남기기"
   keep: "남기기"
   delete: "지우기"
   name: "규칙 이름"

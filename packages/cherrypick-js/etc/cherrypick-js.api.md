@@ -2222,6 +2222,8 @@ declare namespace entities {
         INoteCleanupRequestResponse,
         INoteCleanupUpdateRequest,
         INoteCleanupUpdateResponse,
+        INoteCleanupUpdateSettingsRequest,
+        INoteCleanupUpdateSettingsResponse,
         INotificationsRequest,
         INotificationsResponse,
         INotificationsGroupedRequest,
@@ -3007,6 +3009,12 @@ type INoteCleanupUpdateRequest = operations['i___note-cleanup___update']['reques
 
 // @public (undocumented)
 type INoteCleanupUpdateResponse = operations['i___note-cleanup___update']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type INoteCleanupUpdateSettingsRequest = operations['i___note-cleanup___update-settings']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type INoteCleanupUpdateSettingsResponse = operations['i___note-cleanup___update-settings']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type INotificationsGroupedRequest = operations['i___notifications-grouped']['requestBody']['content']['application/json'];

@@ -4366,6 +4366,7 @@ _noteCleanup:
     selfReaction: "リアクションした自分のノート"
     age: "保存期間を過ぎた自分のノート"
   title: "ノート整理"
+  keepDriveFiles: "削除したノートの添付ファイルをドライブに残す"
   keep: "残す"
   delete: "削除する"
   name: "ルール名"

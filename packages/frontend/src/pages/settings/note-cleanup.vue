@@ -12,7 +12,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkButton small @click="load">{{ i18n.ts.retry }}</MkButton>
 		</MkInfo>
 		<template v-else>
-			<FormSection first>
+			<MkSwitch v-model="keepDriveFiles" accessible @update:modelValue="saveKeepDriveFiles">{{ i18n.ts._noteCleanup.keepDriveFiles }}</MkSwitch>
+			<FormSection>
 				<template #label><i class="ti ti-trash"></i> {{ i18n.ts._noteCleanup.deleteRules }}</template>
 				<div class="_gaps_s">
 					<FormLink v-for="rule in deleteRules" :key="rule.id" :to="`/settings/note-cleanup/${rule.id}`">
@@ -49,6 +50,7 @@ import FormSection from '@/components/form/section.vue';
 import FormLink from '@/components/form/link.vue';
 import MkInfo from '@/components/MkInfo.vue';
 import MkButton from '@/components/MkButton.vue';
+import MkSwitch from '@/components/MkSwitch.vue';
 import type { CleanupRule } from '@/utility/note-cleanup-api.js';
 import { cleanupApi } from '@/utility/note-cleanup-api.js';
 import { cleanupErrorMessage, cleanupFailure } from '@/utility/note-cleanup-errors.js';
@@ -56,10 +58,12 @@ import { cleanupRuleName } from '@/utility/note-cleanup-name.js';
 import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
 import { definePage } from '@/page.js';
+import * as os from '@/os.js';
 ensureSignin();
 const rules = shallowRef<CleanupRule[]>([]);
 const loading = ref(true);
 const failed = ref('');
+const keepDriveFiles = ref(true);
 const deleteRules = computed(() => rules.value.filter(rule => rule.action === 'delete'));
 const keepRules = computed(() => rules.value.filter(rule => rule.action === 'keep'));
 
@@ -69,10 +73,21 @@ async function load() {
 	try {
 		const res = await cleanupApi.list();
 		rules.value = res.rules;
+		keepDriveFiles.value = res.keepDriveFiles;
 	} catch (error) {
 		failed.value = cleanupFailure(error).code;
 	} finally {
 		loading.value = false;
+	}
+}
+
+// 저장 실패는 스위치를 되돌리고 오류만 알린다. 목록 전체를 다시 불러오지는 않는다.
+async function saveKeepDriveFiles(value: boolean) {
+	try {
+		await cleanupApi.setKeepDriveFiles(value);
+	} catch (error) {
+		keepDriveFiles.value = !value;
+		await os.alert({ type: 'error', text: cleanupErrorMessage(cleanupFailure(error).code) });
 	}
 }
 

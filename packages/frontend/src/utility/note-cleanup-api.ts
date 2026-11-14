@@ -28,4 +28,5 @@ export const cleanupApi = {
 	setEnabled: (rule: Pick<CleanupRule, 'id' | 'action' | 'condition'>, enabled: boolean) => misskeyApi('i/note-cleanup/update', { ...storedInput(rule), enabled, confirmed: true }),
 	setAutomatic: (rule: Pick<CleanupRule, 'id' | 'action' | 'condition'>, automatic: boolean, confirmed = false) => misskeyApi('i/note-cleanup/update', { ...storedInput(rule), automatic, ...(confirmed ? { confirmed: true } : {}) }),
 	request: (ruleIds: string[]) => misskeyApi('i/note-cleanup/request', { ruleIds }),
+	setKeepDriveFiles: (keepDriveFiles: boolean) => misskeyApi('i/note-cleanup/update-settings', { keepDriveFiles }),
 };
