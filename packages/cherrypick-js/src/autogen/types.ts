@@ -4793,15 +4793,6 @@ export type components = {
                     /** Format: misskey:id */
                     userListId: string;
                 };
-                noteCleanupProtectionFailed?: {
-                    /** @enum {string} */
-                    type: 'all' | 'following' | 'follower' | 'mutualFollow' | 'followingOrFollower' | 'never';
-                } | {
-                    /** @enum {string} */
-                    type: 'list';
-                    /** Format: misskey:id */
-                    userListId: string;
-                };
                 scheduledNotePosted?: {
                     /** @enum {string} */
                     type: 'all' | 'following' | 'follower' | 'mutualFollow' | 'followingOrFollower' | 'never';
@@ -5781,7 +5772,6 @@ export type components = {
                 code: string;
                 path: string;
                 message: string;
-                userActionable: boolean;
                 referenceId?: string;
                 referenceType?: string;
             } | null;
@@ -13488,15 +13478,6 @@ export interface operations {
                                 userListId: string;
                             };
                             pollEnded?: {
-                                /** @enum {string} */
-                                type: 'all' | 'following' | 'follower' | 'mutualFollow' | 'followingOrFollower' | 'never';
-                            } | {
-                                /** @enum {string} */
-                                type: 'list';
-                                /** Format: misskey:id */
-                                userListId: string;
-                            };
-                            noteCleanupProtectionFailed?: {
                                 /** @enum {string} */
                                 type: 'all' | 'following' | 'follower' | 'mutualFollow' | 'followingOrFollower' | 'never';
                             } | {
@@ -29967,7 +29948,6 @@ export interface operations {
                     enabled?: boolean;
                     automatic?: boolean;
                     confirmed?: boolean;
-                    previewToken?: string;
                 };
             };
         };
@@ -29997,7 +29977,6 @@ export interface operations {
                                 code: string;
                                 path: string;
                                 message: string;
-                                userActionable: boolean;
                                 referenceId?: string;
                                 referenceType?: string;
                             } | null;
@@ -30162,7 +30141,6 @@ export interface operations {
                                 code: string;
                                 path: string;
                                 message: string;
-                                userActionable: boolean;
                                 referenceId?: string;
                                 referenceType?: string;
                             } | null;
@@ -30170,7 +30148,6 @@ export interface operations {
                             legacy: 'age' | 'favorite' | null;
                         }[];
                         blocked: boolean;
-                        migrated: boolean;
                     };
                 };
             };
@@ -30258,21 +30235,7 @@ export interface operations {
                             /** @enum {string} */
                             action: 'keep' | 'delete';
                         }[];
-                        items: {
-                            noteId: string;
-                            text: string | null;
-                            cw: string | null;
-                            createdAt: string;
-                            keepRuleIds: string[];
-                            deleteRuleIds: string[];
-                            /** @enum {string} */
-                            decision: 'keep' | 'delete';
-                            /** @enum {string} */
-                            reason: 'protected' | 'unmatched' | 'matched' | 'blocked';
-                        }[];
-                        scanned: number;
-                        deleteCount: number;
-                        protectedCount: number;
+                        notes: components['schemas']['Note'][];
                         nextCursor: string | null;
                         complete: boolean;
                         errors: {
@@ -30280,11 +30243,9 @@ export interface operations {
                             code: string;
                             path: string;
                             message: string;
-                            userActionable: boolean;
                             referenceId?: string;
                             referenceType?: string;
                         }[];
-                        previewToken: string;
                     };
                 };
             };
@@ -30434,7 +30395,6 @@ export interface operations {
                     enabled?: boolean;
                     automatic?: boolean;
                     confirmed?: boolean;
-                    previewToken?: string;
                     /** Format: misskey:id */
                     ruleId: string;
                 };
@@ -30466,7 +30426,6 @@ export interface operations {
                                 code: string;
                                 path: string;
                                 message: string;
-                                userActionable: boolean;
                                 referenceId?: string;
                                 referenceType?: string;
                             } | null;
@@ -31968,15 +31927,6 @@ export interface operations {
                             userListId: string;
                         };
                         pollEnded?: {
-                            /** @enum {string} */
-                            type: 'all' | 'following' | 'follower' | 'mutualFollow' | 'followingOrFollower' | 'never';
-                        } | {
-                            /** @enum {string} */
-                            type: 'list';
-                            /** Format: misskey:id */
-                            userListId: string;
-                        };
-                        noteCleanupProtectionFailed?: {
                             /** @enum {string} */
                             type: 'all' | 'following' | 'follower' | 'mutualFollow' | 'followingOrFollower' | 'never';
                         } | {

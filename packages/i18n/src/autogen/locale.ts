@@ -13303,7 +13303,7 @@ export interface Locale extends ILocale {
              */
             "scheduledNotePostFailed": string;
             /**
-             * ノート保護の判定エラー
+             * ノート整理の中断
              */
             "noteCleanupProtectionFailed": string;
             /**
@@ -16339,14 +16339,6 @@ export interface Locale extends ILocale {
          */
         "title": string;
         /**
-         * 自分が書いたノートだけを整理します。残すルールはすべての実行に共通し、削除より優先します。どの削除ルールにも該当しないノートは残ります。
-         */
-        "intro": string;
-        /**
-         * 残す範囲が広いと、ノートが一切削除されないことがあります。
-         */
-        "broadProtection": string;
-        /**
          * 残す
          */
         "keep": string;
@@ -16363,25 +16355,33 @@ export interface Locale extends ILocale {
          */
         "action": string;
         /**
-         * ルールを追加
+         * ルールを作成
          */
         "newRule": string;
         /**
-         * 保存したルール
+         * 削除ルール
          */
-        "rules": string;
+        "deleteRules": string;
+        /**
+         * 残すルール
+         */
+        "keepRules": string;
+        /**
+         * 自動
+         */
+        "automaticShort": string;
         /**
          * 条件
          */
         "condition": string;
         /**
-         * 条件を検索
+         * 条件を追加
          */
-        "searchCondition": string;
+        "addCondition": string;
         /**
-         * 追加する条件
+         * 削除されるノート
          */
-        "chooseCondition": string;
+        "notesToDelete": string;
         /**
          * すべて満たす
          */
@@ -16390,10 +16390,6 @@ export interface Locale extends ILocale {
          * いずれかを満たす
          */
         "any": string;
-        /**
-         * 条件を反転
-         */
-        "not": string;
         /**
          * キーワード
          */
@@ -16427,27 +16423,19 @@ export interface Locale extends ILocale {
          */
         "hashtag": string;
         /**
-         * 通常のキーワード
+         * 詳細設定
          */
-        "literal": string;
+        "advanced": string;
         /**
-         * 高度な設定: 正規表現
+         * 正規表現を使う
          */
-        "regex": string;
-        /**
-         * 検索方法
-         */
-        "mode": string;
-        /**
-         * キーワード・パターン
-         */
-        "pattern": string;
+        "useRegex": string;
         /**
          * 正規表現のフラグ
          */
         "flags": string;
         /**
-         * 通常のキーワードはNFCで部分一致し、英字の大文字小文字を区別しません。空白・改行は保持し、頭文字・類義語・互換文字は展開しません。スラッシュや記号も文字として扱います。正規表現はサーバーのRE2で検証・判定します。
+         * 改行で区切って複数指定できます。
          */
         "keywordHelp": string;
         /**
@@ -16518,64 +16506,6 @@ export interface Locale extends ILocale {
          * 日
          */
         "days": string;
-        "_duration": {
-            /**
-             * {n}秒
-             */
-            "seconds": ParameterizedString<"n">;
-            /**
-             * {n}分
-             */
-            "minutes": ParameterizedString<"n">;
-            /**
-             * {n}時間
-             */
-            "hours": ParameterizedString<"n">;
-            /**
-             * {n}日
-             */
-            "days": ParameterizedString<"n">;
-        };
-        "_ageSummary": {
-            /**
-             * 経過期間が{duration}以上
-             */
-            "gte": ParameterizedString<"duration">;
-            /**
-             * 経過期間が{duration}を超える
-             */
-            "gt": ParameterizedString<"duration">;
-            /**
-             * 経過期間が{duration}以下
-             */
-            "lte": ParameterizedString<"duration">;
-            /**
-             * 経過期間が{duration}未満
-             */
-            "lt": ParameterizedString<"duration">;
-        };
-        "_countSummary": {
-            /**
-             * {field}が{value}以上
-             */
-            "gte": ParameterizedString<"field" | "value">;
-            /**
-             * {field}が{value}を超える
-             */
-            "gt": ParameterizedString<"field" | "value">;
-            /**
-             * {field}が{value}以下
-             */
-            "lte": ParameterizedString<"field" | "value">;
-            /**
-             * {field}が{value}未満
-             */
-            "lt": ParameterizedString<"field" | "value">;
-        };
-        /**
-         * 元の作成時刻から数えます。1日は24時間です。
-         */
-        "ageHelp": string;
         /**
          * 受け取ったリアクション数
          */
@@ -16633,10 +16563,6 @@ export interface Locale extends ILocale {
          */
         "selectedClips": string;
         /**
-         * 参照を選択・修正
-         */
-        "references": string;
-        /**
          * 名前で検索
          */
         "searchReferences": string;
@@ -16649,13 +16575,9 @@ export interface Locale extends ILocale {
          */
         "referenceError": string;
         /**
-         * 元に戻す
+         * 参照をさらに読み込む
          */
-        "undo": string;
-        /**
-         * やり直す
-         */
-        "redo": string;
+        "moreReferences": string;
         /**
          * 複製
          */
@@ -16677,21 +16599,9 @@ export interface Locale extends ILocale {
          */
         "root": string;
         /**
-         * 条件の種類を変更
-         */
-        "replace": string;
-        /**
-         * この操作で下位条件が置き換わります。元に戻す操作で復元できます。
-         */
-        "replaceWarning": string;
-        /**
          * 未完成の条件があります。値・検索範囲・参照を入力してください。
          */
         "incomplete": string;
-        /**
-         * 最大32ルール、128条件、深さ8、キーワード512文字、参照32件です。
-         */
-        "limits": string;
         /**
          * 条件の数または深さの上限を超えています。
          */
@@ -16701,15 +16611,11 @@ export interface Locale extends ILocale {
          */
         "automatic": string;
         /**
-         * 変更は以後の判定に適用されます。キューは取り消されず、開始済みの少量処理や削除確定後の処理は続く場合があります。
-         */
-        "queueHelp": string;
-        /**
-         * 整理をリクエスト
+         * 今すぐ整理
          */
         "request": string;
         /**
-         * 検査キューへのリクエストを受け付けました。削除完了ではありません。
+         * 整理を開始しました。
          */
         "queued": string;
         /**
@@ -16717,141 +16623,69 @@ export interface Locale extends ILocale {
          */
         "notQueued": string;
         /**
-         * 過去のノートも対象です。表示したページは全体件数ではありません。確認すると今後も自動で検査をリクエストします。
+         * 整理を続けますか？
+         */
+        "automaticConfirmTitle": string;
+        /**
+         * 既に書いたノートも削除されます。今後も条件に合うノートを削除し続けます。
          */
         "automaticConfirm": string;
         /**
-         * 有効にする
+         * オンにする
          */
         "enable": string;
         /**
-         * 無効にする
+         * オフにする
          */
         "disable": string;
         /**
-         * 今後のすべての判定で、このルールの保護を適用します。
+         * 「{name}」ルールをオンにしますか？
+         */
+        "enableConfirm": ParameterizedString<"name">;
+        /**
+         * 「{name}」ルールをオフにしますか？
+         */
+        "disableConfirm": ParameterizedString<"name">;
+        /**
+         * このルールに合うノートは削除しません。
          */
         "enableKeep": string;
         /**
-         * 今後の保護が減り、削除対象が増える可能性があります。
+         * このルールで保護していたノートも削除されることがあります。
          */
         "disableKeep": string;
         /**
-         * 今後のリクエストに参加します。自動整理が設定済みなら、自動リクエストの対象にもなります。
+         * このルールに合うノートを再び削除できるようになります。
          */
         "enableDelete": string;
         /**
-         * 今後の整理リクエストには参加しません。条件と自動整理の設定は保持します。
+         * このルールではノートを削除しなくなります。
          */
         "disableDelete": string;
         /**
-         * 有効
-         */
-        "enabled": string;
-        /**
-         * 無効
-         */
-        "disabled": string;
-        /**
-         * このルールを削除しますか？保持ルールの場合、以後の保護がなくなります。キューは取り消されません。
+         * このルールを削除しますか？
          */
         "removeRule": string;
-        /**
-         * 保存したルールをプレビュー
-         */
-        "preview": string;
-        /**
-         * 変更を保存してからプレビュー・リクエストしてください。
-         */
-        "saveFirst": string;
-        /**
-         * このページ: 検査 {scanned}件、削除候補 {deleted}件、保護 {protectedCount}件（全体件数ではありません）
-         */
-        "pageCounts": ParameterizedString<"scanned" | "deleted" | "protectedCount">;
-        /**
-         * 次の検査ページ
-         */
-        "nextPage": string;
-        /**
-         * この順回の末尾です。最新の状態で結果は変わることがあります。
-         */
-        "complete": string;
-        /**
-         * 削除ルールに該当
-         */
-        "matched": string;
-        /**
-         * 残すルールで保護
-         */
-        "protected": string;
-        /**
-         * 削除ルールに該当せず残す
-         */
-        "unmatched": string;
-        /**
-         * 保護ルールを確認できないため、新しい削除を停止しています。該当するルールの案内を確認してください。
-         */
-        "blocked": string;
-        /**
-         * 以後のリクエストで再び判定できます。自動でリクエストは送りませんでした。
-         */
-        "recovered": string;
         /**
          * 強調された条件を確認し、設定を修正してください。
          */
         "ruleError": string;
         /**
-         * 処理を確認できませんでした。入力を保持しています。再読み込み・再試行してください。
+         * 処理を確認できませんでした。再試行してください。
          */
         "requestError": string;
         /**
-         * 以前の自動削除設定を移しました。元の期間・お気に入り保護・有効状態を保持しています。
-         */
-        "migrated": string;
-        /**
-         * 初めての設定では、固定・自分のお気に入り・自分のクリップ・自分のリアクションの4つを独立した保護ルールとして提供します。各ルールは編集・削除できます。
-         */
-        "defaults": string;
-        /**
-         * 以前の設定から移行
-         */
-        "legacy": string;
-        /**
-         * ノート保護の判定を停止しました
+         * ノート整理を中断しました
          */
         "notification": string;
+        /**
+         * 保護の判定に問題があり、削除を中断しました。
+         */
+        "notificationBody": string;
         /**
          * 条件の位置を変更しました。
          */
         "moved": string;
-        /**
-         * 元に戻す操作は未保存の編集だけが対象です。
-         */
-        "draftOnly": string;
-        /**
-         * 保存していない変更を破棄しますか？
-         */
-        "discardDraft": string;
-        /**
-         * 参照をさらに読み込む
-         */
-        "moreReferences": string;
-        /**
-         * 削除条件にも一致しますが、保持が優先されます
-         */
-        "protectionWins": string;
-        /**
-         * 一時的に保護ルールを確認できないため、安全のため新しい削除を停止しています。しばらくしてから再試行してください。
-         */
-        "temporaryError": string;
-        /**
-         * 一時的にこの削除ルールを確認できないため、このルールを除外しています。他の削除ルールは引き続き適用される場合があります。しばらくしてから再試行してください。
-         */
-        "temporaryDeleteError": string;
-        /**
-         * 一時的にリクエストを処理できません。しばらくしてから再試行してください。
-         */
-        "temporaryRequestError": string;
         /**
          * ノート整理が混み合っています。しばらくしてから再試行してください。
          */
@@ -16865,10 +16699,6 @@ export interface Locale extends ILocale {
          */
         "missingChannelError": string;
         /**
-         * {n}件選択
-         */
-        "selectedReferences": ParameterizedString<"n">;
-        /**
          * 許可された長さでルール名を入力してください。
          */
         "nameError": string;
@@ -16877,11 +16707,11 @@ export interface Locale extends ILocale {
          */
         "ruleLimitError": string;
         /**
-         * 自動整理を有効にする前に、保存したルールを再度プレビューしてください。
+         * 自動整理は確認してからオンにできます。
          */
         "previewRequiredError": string;
         /**
-         * ルールの有効・無効の変更内容を確認して承認してください。
+         * オン・オフの切り替えには確認が必要です。
          */
         "confirmationError": string;
         /**
@@ -16889,7 +16719,7 @@ export interface Locale extends ILocale {
          */
         "selectionError": string;
         /**
-         * 保護ルールはノートを保護します。整理を実行するには削除ルールを選んでください。
+         * 残すルールでは自動整理を使えません。
          */
         "keepRunError": string;
     };

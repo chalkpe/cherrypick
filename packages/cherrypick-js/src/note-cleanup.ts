@@ -4,7 +4,6 @@ export type NoteCleanupTarget = 'text' | 'cw' | 'poll' | 'fileComment' | 'fileNa
 export type NoteCleanupFlag = 'pinned' | 'favorite' | 'selfReaction' | 'selfRenote' | 'reply' | 'quote' | 'poll' | 'files' | 'cw' | 'localOnly';
 export type NoteCleanupCondition =
 	{ type: 'all' | 'any'; children: NoteCleanupCondition[] } |
-	{ type: 'not'; child: NoteCleanupCondition } |
 	{ type: 'keyword'; mode: 'literal' | 'regex'; value: string; flags: string; targets: NoteCleanupTarget[] } |
 	{ type: 'age'; operator: NoteCleanupOperator; seconds: number } |
 	{ type: 'count'; field: 'reactions' | 'renotes'; operator: NoteCleanupOperator; value: number } |

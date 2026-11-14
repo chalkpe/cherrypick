@@ -3294,9 +3294,6 @@ type NoteCleanupCondition = {
     type: 'all' | 'any';
     children: NoteCleanupCondition[];
 } | {
-    type: 'not';
-    child: NoteCleanupCondition;
-} | {
     type: 'keyword';
     mode: 'literal' | 'regex';
     value: string;
