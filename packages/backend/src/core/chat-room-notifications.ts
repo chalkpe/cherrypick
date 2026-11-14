@@ -22,6 +22,13 @@ export const CHAT_UNREAD_PRUNE_ROOM = `if redis.call('GET', KEYS[1]) == false an
  * 순번 없는 옛 표식은 어떤 순번 표식보다 오래된 것으로 본다.
  */
 export const CHAT_UNREAD_MARK = `local marker = redis.call('GET', KEYS[1]); if marker == false then redis.call('SET', KEYS[1], ARGV[1]); return 1 end; local current = string.match(marker, '^(%d+):'); local incoming = string.match(ARGV[1], '^(%d+):'); if incoming == nil then return 0 end; if current == nil or #incoming > #current or (#incoming == #current and incoming > current) then redis.call('SET', KEYS[1], ARGV[1]); return 1 end; return 0`;
+/**
+ * 읽음 경계는 순번 그 자체다. 표식과 따로 남아 표식이 더 새 글로 옮겨져도 수정 알림의 읽음 판단에 쓴다.
+ * 더 큰 순번만 남긴다(원자적 CAS). 순번은 0 없는 십진수라 자리수 비교가 곧 크기 비교다.
+ */
+export const CHAT_UNREAD_READ_BOUNDARY = `local current = redis.call('GET', KEYS[1]); if current == false then redis.call('SET', KEYS[1], ARGV[1]); return 1 end; if #ARGV[1] > #current or (#ARGV[1] == #current and ARGV[1] > current) then redis.call('SET', KEYS[1], ARGV[1]); return 1 end; return 0`;
+/** 전체 읽음은 표식·채널 목록 지우기와 전체 목록 빼기를 한 번에 끝낸다. 그 사이 새 글의 표식 쓰기가 끼어들어도 원자적이다. */
+export const CHAT_UNREAD_READ_ALL = `for i = 1, #KEYS - 1 do redis.call('DEL', KEYS[i]) end; return redis.call('SREM', KEYS[#KEYS], ARGV[1])`;
 
 /** 미읽음 표식 값. 순번이 없는 글(가져온 과거 기록)은 0으로 둔다. */
 export function chatUnreadMarker(sequence: string | null | undefined, messageId: string): string {
@@ -39,6 +46,13 @@ export function chatUnreadMarkerMessageId(marker: string | null): string | null 
 export function chatUnreadMarkerSequence(marker: string): string {
 	const index = marker.indexOf(':');
 	return index < 0 ? '0' : marker.slice(0, index);
+}
+
+/** 두 읽음 경계 중 더 큰 쪽. 경계는 0 없는 십진수 순번이라 자리수 비교가 곧 크기 비교다. */
+export function maxChatReadBoundary(a: string | null, b: string | null): string | null {
+	if (a == null) return b;
+	if (b == null) return a;
+	return b.length > a.length || (b.length === a.length && b > a) ? b : a;
 }
 
 export function effectiveChatNotificationLevel(group: ChatNotificationLevel, channel?: ChatNotificationLevel | null): ChatNotificationLevel {
