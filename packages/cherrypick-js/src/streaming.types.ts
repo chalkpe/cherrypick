@@ -332,6 +332,7 @@ export type Channels = {
 				name: string;
 				description: string;
 				isArchived: boolean;
+				allowRecording: boolean;
 			}) => void;
 			membershipStarted: (payload: { userId: string; }) => void;
 			membershipEnded: (payload: { userId: string; }) => void;

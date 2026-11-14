@@ -22,7 +22,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					@contextmenu="onContextMenu(p, menuable, $event)"
 				>
 					<MkAvatar :user="p.user" :link="false" :decorations="[]" :class="$style.avatar"/>
-					<span :class="$style.status"><i v-if="p.deafened" class="ti ti-headphones-off" role="img" :aria-label="i18n.ts._voiceCall.deafened"></i><i v-else-if="p.micMuted" class="ti ti-microphone-off" role="img" :aria-label="i18n.ts._voiceCall.micMuted"></i></span>
+					<span :class="$style.status"><i v-if="p.recording" class="ti ti-player-record" role="img" :aria-label="i18n.ts._voiceCall.recording" :class="$style.recordingIcon"></i><i v-if="p.deafened" class="ti ti-headphones-off" role="img" :aria-label="i18n.ts._voiceCall.deafened"></i><i v-else-if="p.micMuted" class="ti ti-microphone-off" role="img" :aria-label="i18n.ts._voiceCall.micMuted"></i></span>
 					<MkUserName :user="p.user" :class="$style.name"/><i v-if="menuable" class="ti ti-dots" aria-hidden="true"></i>
 				</component>
 			</div>
@@ -112,5 +112,8 @@ function onContextMenu(p: typeof rows.value[number]['p'], menuable: boolean, ev:
 .status {
 	font-size: 12px;
 	opacity: .75;
+}
+.recordingIcon {
+	color: var(--MI_THEME-error);
 }
 </style>

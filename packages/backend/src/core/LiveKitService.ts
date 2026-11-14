@@ -16,10 +16,12 @@ const ROOM_NAME_PREFIX = 'chatRoom:';
 
 export type LiveKitParticipant = {
 	identity: string;
+	sessionId?: string;
 	userId: MiUser['id'];
 	screenSharing: boolean;
 	micMuted?: boolean;
 	deafened?: boolean;
+	recording?: boolean;
 	canScreenShare?: boolean;
 	micTrackSid: string | null;
 };
@@ -125,6 +127,7 @@ export class LiveKitService {
 			const micTrack = participant.tracks.find(track => track.source === TrackSource.MICROPHONE);
 			result.push({
 				identity: participant.identity,
+				...(participant.sid ? { sessionId: participant.sid } : {}),
 				userId,
 				...reportedVoiceStatus({
 					// 届いているマイクの音は、本人の「切った」という申告より優先する (話しているのに切ったと見せて、誰が話しているか隠させない)
@@ -152,11 +155,15 @@ export class LiveKitService {
 			// 確かめてから書くまでに同じユーザーが入り直していれば、古いセッションの設定を新しいセッションに書いてしまっているので、
 			// 書いた設定を消して (空の値は LiveKit で属性の削除) 報告の無い状態に戻し、受け付けたことにしない。
 			// 消すまでのあいだに新しいセッションが報告した設定も消えうるが、どちらも二つの呼び出しのあいだだけのことで、次の報告で直る
+			const attributes = {
+				'cherrypick.micMuted': String(status.micMuted),
+				'cherrypick.deafened': String(status.deafened),
+			};
 			const updated = await service.updateParticipant(roomName, identity, {
-				attributes: { 'cherrypick.micMuted': String(status.micMuted), 'cherrypick.deafened': String(status.deafened) },
+				attributes,
 			});
 			if (updated.sid === sessionId) return true;
-			await service.updateParticipant(roomName, identity, { attributes: { 'cherrypick.micMuted': '', 'cherrypick.deafened': '' } });
+			await service.updateParticipant(roomName, identity, { attributes: Object.fromEntries(Object.keys(attributes).map(key => [key, ''])) });
 			return false;
 		} catch (err) {
 			if (isNotFound(err)) return false;

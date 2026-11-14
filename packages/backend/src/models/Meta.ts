@@ -871,6 +871,14 @@ export class MiMeta {
 	})
 	public voiceCallMaxParticipants: number;
 
+	/**
+	 * 通話の録画を同時に変換できる数 (サーバー全体)
+	 */
+	@Column('integer', {
+		default: 2,
+	})
+	public voiceCallMaxRecordingConversions: number;
+
 	@Column('varchar', { length: 16, default: 'yaml' })
 	public voiceCallLivekitSource: 'yaml' | 'custom' | 'disabled';
 

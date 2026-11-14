@@ -324,6 +324,7 @@ export class ChatEntityService {
 			isMuted: membership != null ? membership.isMuted : false,
 			invitationExists: invitation != null,
 			isArchived: room.isArchived,
+			allowRecording: room.allowRecording,
 		};
 	}
 

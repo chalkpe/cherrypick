@@ -46,6 +46,14 @@ export class MiChatRoom {
 	public isArchived: boolean;
 
 	/**
+	 * 通話の録画を許すか。ルームの持ち主が決め、既定では許さない
+	 */
+	@Column('boolean', {
+		default: false,
+	})
+	public allowRecording: boolean;
+
+	/**
 	 * リモートのルーム所有者が最後に知らせた、状態の時刻。遅れて届いた古い状態で巻き戻らないようにする
 	 */
 	@Column('timestamp with time zone', {

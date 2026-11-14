@@ -17,6 +17,15 @@ SPDX-License-Identifier: AGPL-3.0-only
      </MkInput>
     </MkFolder>
     <MkFolder accessible>
+     <template #icon><i class="ti ti-video"></i></template>
+     <template #label>{{ i18n.ts._voiceRelay.recordingConversionsTitle }}</template>
+     <template v-if="recordingForm.modified.value" #footer><MkFormFooter :form="recordingForm"/></template>
+     <MkInput v-model="recordingForm.state.limit" accessible type="number" :min="0" :max="16" :step="1">
+      <template #label>{{ i18n.ts._voiceRelay.recordingConversionsTitle }} <span v-if="recordingForm.modifiedStates.limit" class="_modified">{{ i18n.ts.modified }}</span></template>
+      <template #caption>{{ i18n.ts._voiceRelay.recordingConversionsDescription }}</template>
+     </MkInput>
+    </MkFolder>
+    <MkFolder accessible>
      <template #icon><i class="ti ti-phone"></i></template>
      <template #label>{{ i18n.ts._voiceRelay.livekitTitle }}</template>
      <template v-if="livekitForm.modified.value" #footer><MkFormFooter :form="livekitForm"/></template>
@@ -106,6 +115,9 @@ const livekitSecretSet = ref(meta.voiceCallLivekitApiSecretSet);
 const turnSecretSet = ref(meta.voiceCallCloudflareTurnApiTokenSet);
 const capacityForm = useForm({ limit: meta.voiceCallMaxParticipants }, async state => {
  await os.apiWithDialog('admin/update-meta', { voiceCallMaxParticipants: state.limit });
+});
+const recordingForm = useForm({ limit: meta.voiceCallMaxRecordingConversions }, async state => {
+ await os.apiWithDialog('admin/update-meta', { voiceCallMaxRecordingConversions: state.limit });
 });
 const livekitForm = useForm({ source: meta.voiceCallLivekitSource, url: meta.voiceCallLivekitUrl ?? '', key: meta.voiceCallLivekitApiKey ?? '', secret: '', clearSecret: false, preference: (meta.voiceCallPreferRelay == null ? 'yaml' : meta.voiceCallPreferRelay ? 'relay' : 'local') as 'yaml' | 'local' | 'relay' }, async state => {
  const secret = state.secret.trim();

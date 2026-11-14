@@ -9694,6 +9694,110 @@ export interface Locale extends ILocale {
          * チャットを右に移動
          */
         "moveChatRight": string;
+        /**
+         * 録画ファイルをドライブに保存しました
+         */
+        "recordingSaved": string;
+        /**
+         * 通話録画
+         */
+        "recordingFolderName": string;
+        /**
+         * 録画ファイルをドライブの「{folder}」フォルダーに保存しました
+         */
+        "recordingSavedToFolder": ParameterizedString<"folder">;
+        /**
+         * 録画ファイルをこの端末に保存できませんでした
+         */
+        "recordingDownloadFailed": string;
+        /**
+         * 録画を開始
+         */
+        "startRecording": string;
+        /**
+         * 録画を停止
+         */
+        "stopRecording": string;
+        /**
+         * 録画中
+         */
+        "recording": string;
+        /**
+         * この通話は録画されています
+         */
+        "recordingInProgress": string;
+        /**
+         * この通話は録画されています。参加すると、あなたの声や共有した画面も録画に残ります。参加しますか？
+         */
+        "recordingJoinNotice": string;
+        /**
+         * {name}さんが録画を開始しました
+         */
+        "recordingStartedBy": ParameterizedString<"name">;
+        /**
+         * 録画が終了しました
+         */
+        "recordingStopped": string;
+        /**
+         * {stopped}さんの録画が終了し、{started}さんが録画を開始しました
+         */
+        "recordingStoppedAndStarted": ParameterizedString<"stopped" | "started">;
+        /**
+         * 録画ファイルを {n} 個ドライブに保存できませんでした。どうしますか？
+         */
+        "recordingSaveFailed": ParameterizedString<"n">;
+        /**
+         * 録画ファイルを {n} 個変換できませんでした。元のファイルはドライブに保存されています。どうしますか？
+         */
+        "recordingConversionFailed": ParameterizedString<"n">;
+        /**
+         * アップロードできなかった録画と変換できなかった録画があります。アップロード済みの元のファイルはドライブに保存されています。どうしますか？
+         */
+        "recordingMixedFailure": string;
+        /**
+         * 変換後のファイルがファイルサイズの上限を超えています。
+         */
+        "recordingConversionTooLarge": string;
+        /**
+         * 変換後のファイルを保存するドライブの空き容量がありません。
+         */
+        "recordingConversionNoFreeSpace": string;
+        /**
+         * この端末に保存
+         */
+        "recordingSaveToDevice": string;
+        /**
+         * 破棄
+         */
+        "recordingDiscard": string;
+        /**
+         * 保存できなかった録画を破棄しますか？元に戻せません。
+         */
+        "recordingDiscardConfirm": string;
+        /**
+         * 保存できなかった録画を破棄しますか？ドライブにアップロード済みの元のファイルも削除されます。元に戻せません。
+         */
+        "recordingDiscardConfirmUploaded": string;
+        /**
+         * 元のファイルを {n} 個削除できませんでした。削除できなかったファイルはドライブに残っています。もう一度破棄するか、ドライブから直接削除してください。
+         */
+        "recordingDiscardDeleteFailed": ParameterizedString<"n">;
+        /**
+         * サーバーが録画を受け付けなかったため、録画を開始できませんでした
+         */
+        "recordingStartRejected": string;
+        /**
+         * サーバーが録画を受け付けなかったため、録画を停止しました
+         */
+        "recordingRejected": string;
+        /**
+         * 通話の録画を許可
+         */
+        "allowRecording": string;
+        /**
+         * オンにすると、参加者が通話 (声と共有画面) を録画できます。録画が始まると全員に知らされます。
+         */
+        "allowRecordingDescription": string;
     };
     "_role": {
         /**
@@ -16096,6 +16200,14 @@ export interface Locale extends ILocale {
          * 通話の参加定員
          */
         "capacityTitle": string;
+        /**
+         * 録画の同時変換数
+         */
+        "recordingConversionsTitle": string;
+        /**
+         * 通話の録画を MP3/MP4 に変換する処理を同時にいくつまで行うかです。変換は重いので少なめにしてください。0 にすると変換せず、WebM のまま保存します。
+         */
+        "recordingConversionsDescription": string;
         /**
          * ルームの所有者を含む人数です。変更は新しい通話から適用され、進行中の通話の定員は変わりません。レンタルしたインフラを使う通話では、通話ごとにこの人数分の枠を提供元の容量から予約します。
          */

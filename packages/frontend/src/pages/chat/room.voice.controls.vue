@@ -44,6 +44,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<i v-if="voiceCall.screenSharing" class="ti ti-screen-share-off"></i>
 		<i v-else class="ti ti-screen-share"></i>
 	</button>
+	<button
+		v-if="canStopRecording || voiceCall.recordingAllowed"
+		v-tooltip="canStopRecording ? i18n.ts._voiceCall.stopRecording : i18n.ts._voiceCall.startRecording" class="_button"
+		:class="[$style.action, { [$style.on]: canStopRecording }]"
+		:aria-label="canStopRecording ? i18n.ts._voiceCall.stopRecording : i18n.ts._voiceCall.startRecording"
+		@click="canStopRecording ? stopRecording() : startRecording()"
+	>
+		<i v-if="canStopRecording" class="ti ti-player-stop"></i>
+		<i v-else class="ti ti-player-record"></i>
+	</button>
 	</div>
 	<div :class="$style.group">
 	<slot name="leading"></slot>
@@ -70,9 +80,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
+import { computed } from 'vue';
 import { i18n } from '@/i18n.js';
-import { leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, startScreenShare, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
+import { leaveVoiceCall, resumeAudio, setDeafened, setMicEnabled, startRecording, startScreenShare, stopRecording, stopScreenShare, voiceCall } from '@/utility/voice-call.js';
 import { openVoiceCallSettings, screenShareAvailable } from '@/utility/voice-call-settings.js';
+
+const canStopRecording = computed(() => voiceCall.recording || voiceCall.recordingStarting);
 
 withDefaults(defineProps<{
 	hideLeave?: boolean;

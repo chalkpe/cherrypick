@@ -633,6 +633,7 @@ function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['r
 		name: ctx.name,
 		description: ctx.description,
 		isArchived: ctx.isArchived,
+		allowRecording: ctx.allowRecording,
 	};
 }
 

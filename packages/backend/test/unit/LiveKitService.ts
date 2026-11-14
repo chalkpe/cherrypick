@@ -79,7 +79,7 @@ describe('LiveKitService', () => {
 
 	test('reads reported settings without deriving mute from media tracks', async () => {
 		roomService.listParticipants.mockResolvedValue([{
-			identity: 'i1', metadata: '{"userId":"u1"}',
+			identity: 'i1', sid: 'PA_1', metadata: '{"userId":"u1"}',
 			attributes: { 'cherrypick.micMuted': 'false', 'cherrypick.deafened': 'true' },
 			tracks: [],
 		}]);

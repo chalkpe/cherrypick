@@ -27,6 +27,16 @@ export function fakeRedis() {
 		}
 		return store.has(key);
 	};
+	// 集合の寿命 (EXPIRE) も同じく Date.now() で数える
+	const setExpiresAt = new Map<string, number>();
+	const liveSet = (key: string) => {
+		const at = setExpiresAt.get(key);
+		if (at != null && Date.now() > at) {
+			sets.delete(key);
+			setExpiresAt.delete(key);
+		}
+		return sets.has(key);
+	};
 	return {
 		store,
 		sets,
@@ -50,9 +60,20 @@ export function fakeRedis() {
 			let deleted = 0;
 			for (const key of keys) {
 				expiresAt.delete(key);
+				setExpiresAt.delete(key);
 				if (store.delete(key)) deleted++;
+				if (sets.delete(key)) deleted++;
 			}
 			return deleted;
+		}),
+		expire: vi.fn(async (key: string, seconds: number) => {
+			if (liveSet(key)) {
+				setExpiresAt.set(key, Date.now() + seconds * 1000);
+				return 1;
+			}
+			if (!live(key)) return 0;
+			expiresAt.set(key, Date.now() + seconds * 1000);
+			return 1;
 		}),
 		// ミラーの現況を保存するスクリプトと同じ動きをする。他のサーバーの通話を止めた回数 (KEYS[3]) が読んだときのまま (ARGV[5]) で、
 		// 保存済みの現況 (KEYS[1]) と、最後に受け入れた時刻 (KEYS[2]) のどちらよりも新しいときだけ書き、書いたらその時刻も残す。
@@ -65,17 +86,59 @@ export function fakeRedis() {
 		eval: vi.fn(async (_script: string, numKeys: number, ...args: (string | number)[]) => {
 			const [key, lastSeenKey, generationKey] = args.slice(0, numKeys) as string[];
 			if (_script.startsWith('-- GATE_MIRROR_PUBLICATION')) {
-				const [generation, updatedAt, emptyValue, interval, ttl] = args.slice(numKeys);
+				const [generation, updatedAt, emptyValue, interval, ttl, recordingHash] = args.slice(numKeys);
 				if ((live(generationKey) ? store.get(generationKey) : '0') !== generation) return -2;
 				if (!live(lastSeenKey) || JSON.parse(store.get(lastSeenKey)!).updatedAt !== Number(updatedAt)) return -3;
-				const last = live(key) ? JSON.parse(store.get(key)!) as { updatedAt: number; empty: boolean; activeAt?: number } : null;
+				const last = live(key) ? JSON.parse(store.get(key)!) as { updatedAt: number; empty: boolean; activeAt?: number; recordingHash?: string } : null;
 				if (last != null && last.updatedAt >= Number(updatedAt)) return 0;
 				const empty = emptyValue === '1';
 				if (empty && last?.empty) return 0;
-				if (!empty && last?.activeAt != null && Date.now() - last.activeAt < Number(interval)) return Number(interval) - (Date.now() - last.activeAt);
-				store.set(key, JSON.stringify({ updatedAt: Number(updatedAt), empty, activeAt: empty ? last?.activeAt : Date.now() }));
+				// 録画中の参加者の hash が記録と違えば間隔を待たずに通知する。記録に hash が無ければ通常の間隔。
+				// 録画の変化による通知は参加者の通知間隔の時計 (activeAt) を進めない
+				const recordingChanged = last?.recordingHash != null && last.recordingHash !== recordingHash;
+				if (!empty && !recordingChanged && last?.activeAt != null && Date.now() - last.activeAt < Number(interval)) return Number(interval) - (Date.now() - last.activeAt);
+				store.set(key, JSON.stringify({ updatedAt: Number(updatedAt), empty, activeAt: empty || recordingChanged ? last?.activeAt : Date.now(), recordingHash }));
 				expiresAt.set(key, Date.now() + Number(ttl) * 1000);
 				return -1;
+			}
+			// 録音状態を報告する。版を一つ進めて書き、参加者の一覧にも足す
+			if (_script.startsWith('-- STORE_RECORDING_STATE')) {
+				const [sessionId, recording, identity, ttlSeconds] = args.slice(numKeys);
+				const identitiesKey = String(args[1]);
+				let version = 0;
+				if (live(key)) {
+					const state = JSON.parse(store.get(key)!) as { version?: number };
+					if (typeof state.version === 'number') version = state.version;
+				}
+				version += 1;
+				store.set(key, JSON.stringify({ sessionId: String(sessionId), recording: recording === '1', version }));
+				expiresAt.set(key, Date.now() + Number(ttlSeconds) * 1000);
+				liveSet(identitiesKey);
+				if (!sets.has(identitiesKey)) sets.set(identitiesKey, new Set());
+				sets.get(identitiesKey)!.add(String(identity));
+				setExpiresAt.set(identitiesKey, Date.now() + Number(ttlSeconds) * 1000);
+				return version;
+			}
+			// いまの値が同じセッションの録音中のときだけ、状態と一覧の寿命を延ばす
+			if (_script.startsWith('-- RENEW_RECORDING_STATE_IF_CURRENT')) {
+				const [sessionId, ttlSeconds] = args.slice(numKeys);
+				const identitiesKey = String(args[1]);
+				if (!live(key)) return 0;
+				const state = JSON.parse(store.get(key)!) as { sessionId: string; recording: boolean };
+				if (state.sessionId !== String(sessionId) || state.recording !== true) return 0;
+				expiresAt.set(key, Date.now() + Number(ttlSeconds) * 1000);
+				if (liveSet(identitiesKey)) setExpiresAt.set(identitiesKey, Date.now() + Number(ttlSeconds) * 1000);
+				return 1;
+			}
+			// 録音状態を、参加者一覧を読む前に読んだ値 (ARGV[1]、無ければ空文字) のままのときだけ消し、一覧からも外す
+			if (_script.startsWith('-- CLEAR_RECORDING_STATE_IF_CURRENT')) {
+				const [previous, identity] = args.slice(numKeys);
+				const identitiesKey = String(args[1]);
+				if ((live(key) ? store.get(key) : '') !== String(previous)) return 0;
+				store.delete(key);
+				expiresAt.delete(key);
+				if (liveSet(identitiesKey)) sets.get(identitiesKey)!.delete(String(identity));
+				return 1;
 			}
 			if (_script.startsWith('-- CLEAR_MIRROR_IF_CURRENT')) {
 				const [generation, previous, lastSeen] = args.slice(numKeys);
@@ -109,6 +172,7 @@ export function fakeRedis() {
 				if (live(key) && (JSON.parse(store.get(key)!) as { updatedAt: number }).updatedAt >= Number(snapshotUpdatedAt)) return 0;
 				store.set(key, String(snapshot));
 				expiresAt.set(key, Date.now() + Number(snapshotTtlSeconds) * 1000);
+				liveSet(lastSeenKey);
 				if (!sets.has(lastSeenKey)) sets.set(lastSeenKey, new Set());
 				if (String(empty) === '1') sets.get(lastSeenKey)!.delete(String(roomId));
 				else sets.get(lastSeenKey)!.add(String(roomId));
@@ -160,12 +224,13 @@ export function fakeRedis() {
 			return next;
 		}),
 		sadd: vi.fn(async (key: string, member: string) => {
+			liveSet(key);
 			if (!sets.has(key)) sets.set(key, new Set());
 			sets.get(key)!.add(member);
 			return 1;
 		}),
-		srem: vi.fn(async (key: string, member: string) => (sets.get(key)?.delete(member) ? 1 : 0)),
-		smembers: vi.fn(async (key: string) => [...(sets.get(key) ?? [])]),
+		srem: vi.fn(async (key: string, member: string) => (liveSet(key) && sets.get(key)!.delete(member) ? 1 : 0)),
+		smembers: vi.fn(async (key: string) => [...(liveSet(key) ? sets.get(key)! : [])]),
 	};
 }
 

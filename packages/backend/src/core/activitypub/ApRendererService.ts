@@ -976,6 +976,7 @@ export class ApRendererService {
 			summary: room.description ?? '',
 			attributedTo: ownerUri || undefined,
 			_misskey_chatArchived: room.isArchived,
+			allowRecording: room.allowRecording,
 			updated: new Date().toISOString(),
 		};
 	}
@@ -1001,7 +1002,7 @@ export class ApRendererService {
 	 * このサーバーが持つルームの、通話の参加者の現況。participants の id は参加者の identity (LiveKitService.identityOf)
 	 */
 	@bindThis
-	public renderChatRoomVoiceState(room: Pick<MiChatRoom, 'id'>, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[], updatedAt: number): IChatRoomVoiceState {
+	public renderChatRoomVoiceState(room: Pick<MiChatRoom, 'id'>, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number): IChatRoomVoiceState {
 		const roomUri = this.genLocalChatRoomUri(room.id);
 		return {
 			id: chatRoomVoiceStateIdOf(roomUri),

@@ -12,11 +12,17 @@ const mocks = vi.hoisted(() => ({
 	setMicEnabled: vi.fn(),
 	restartMicrophone: vi.fn(),
 	inUse: { audioinput: undefined as string | undefined, audiooutput: undefined as string | undefined },
+	someoneRecording: { value: false },
 }));
 
 vi.mock('@/os.js', () => ({ popupMenu: mocks.popupMenu, claimZIndex: () => 1000 }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer() }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: { policies: { canScreenShare: false } } }));
+// 録画の見張りは use-voice-call-recording-watch のテストの受け持ち。ここでは録画中かどうかだけを決める
+vi.mock('@/composables/use-voice-call-recording-watch.js', async () => {
+	const { computed } = await import('vue');
+	return { useVoiceCallRecordingWatch: () => ({ someoneRecording: computed(() => mocks.someoneRecording.value), recordingIdentities: computed(() => []) }) };
+});
 vi.mock('@/utility/voice-call.js', async importOriginal => {
 	const actual = await importOriginal<typeof import('@/utility/voice-call.js')>();
 	const { reactive } = await import('vue');
@@ -66,6 +72,7 @@ beforeEach(() => {
 	mocks.setMicEnabled.mockReset().mockResolvedValue(undefined);
 	mocks.restartMicrophone.mockReset().mockResolvedValue(undefined);
 	mocks.inUse.audioinput = undefined;
+	mocks.someoneRecording.value = false;
 	prefer.reset({
 		'voiceCall.inputDeviceId': null,
 		'voiceCall.outputDeviceId': null,
@@ -153,5 +160,17 @@ describe('voice call bar microphone activity', () => {
 		} finally {
 			Object.assign(voiceCall, original);
 		}
+	});
+});
+
+describe('voice call bar recording badge', () => {
+	test('shows that the call is being recorded outside the room, and nothing otherwise', () => {
+		render(XVoiceCallBar, { global: { stubs: { MkA: { template: '<a><slot /></a>' } } } });
+		expect(screen.queryByRole('status', { name: i18n.ts._voiceCall.recordingInProgress })).toBeNull();
+		cleanup();
+
+		mocks.someoneRecording.value = true;
+		render(XVoiceCallBar, { global: { stubs: { MkA: { template: '<a><slot /></a>' } } } });
+		expect(screen.getByRole('status', { name: i18n.ts._voiceCall.recordingInProgress }).textContent).toContain(i18n.ts._voiceCall.recording);
 	});
 });

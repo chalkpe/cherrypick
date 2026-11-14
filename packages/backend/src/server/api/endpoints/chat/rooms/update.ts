@@ -50,6 +50,7 @@ export const paramDef = {
 		name: { type: 'string', maxLength: 256 },
 		description: { type: 'string', maxLength: 1024 },
 		isArchived: { type: 'boolean' },
+		allowRecording: { type: 'boolean' },
 	},
 	required: ['roomId'],
 } as const;
@@ -77,6 +78,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				name: ps.name,
 				description: ps.description,
 				isArchived: ps.isArchived,
+				allowRecording: ps.allowRecording,
 			});
 
 			return this.chatEntityService.packRoom(updated, me);

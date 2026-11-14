@@ -1487,6 +1487,7 @@ export class ChatService {
 		name?: string;
 		description?: string;
 		isArchived?: boolean;
+		allowRecording?: boolean;
 	}, options?: { federate?: boolean; remoteUpdatedAt?: Date }): Promise<MiChatRoom> {
 		const wasArchived = room.isArchived;
 		const remoteUpdatedAt = options?.remoteUpdatedAt;
@@ -1513,6 +1514,7 @@ export class ChatService {
 			name: merged.name,
 			description: merged.description,
 			isArchived: merged.isArchived,
+			allowRecording: merged.allowRecording,
 		});
 
 		const owner = await this.usersRepository.findOneBy({ id: merged.ownerId });

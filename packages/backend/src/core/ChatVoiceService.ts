@@ -16,6 +16,8 @@ import type { MiMeta } from '@/models/Meta.js';
 import type { MiLocalUser, MiRemoteUser, MiUser } from '@/models/User.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { bindThis } from '@/decorators.js';
+import { CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT, RENEW_RECORDING_STATE_IF_CURRENT_SCRIPT, STORE_RECORDING_STATE_SCRIPT } from '@/core/recording-state.js';
+import type { RecordingState, RecordingStatus } from '@/core/recording-state.js';
 import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import type Logger from '@/logger.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
@@ -132,7 +134,9 @@ const FEDERATION_STATUS_INTERVAL_MS = 30_000;
 
 // ミラーのメイン通知をルームごと・全ワーカーで制限する。時計は Redis のものを使う。
 // 空の通知は直前に通知した参加者をすぐ消すが、参加者の通知間隔はリセットしない。
-// KEYS: 通知記録、現況、世代。ARGV: 世代、現況の時刻、空なら 1、間隔 ms、記録 TTL 秒。
+// 録画中かどうかの変化 (ARGV[6] の hash が記録と違う) は間隔を待たずにすぐ通知する。記録に hash が無いときは通常の間隔で送り、
+// 録画の変化による通知は参加者の通知間隔の時計を進めない (録画ではない変化の抑制はそのまま)。
+// KEYS: 通知記録、現況、世代。ARGV: 世代、現況の時刻、空なら 1、間隔 ms、記録 TTL 秒、録画中の参加者の hash。
 // -1: 通知する、-2: 世代変更、-3: 現況変更、0: 通知済み/空の繰り返し、正数: 次の参加者通知までの待ち時間。
 const GATE_MIRROR_PUBLICATION_SCRIPT = `-- GATE_MIRROR_PUBLICATION
 if (redis.call('GET', KEYS[3]) or '0') ~= ARGV[1] then return -2 end
@@ -145,14 +149,15 @@ local last = lastRaw and cjson.decode(lastRaw) or nil
 if last and last.updatedAt >= snapshot.updatedAt then return 0 end
 local empty = ARGV[3] == '1'
 if empty and last and last.empty then return 0 end
+local recordingChanged = last and last.recordingHash and last.recordingHash ~= ARGV[6]
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 local activeAt = last and last.activeAt or nil
-if not empty and activeAt and now - activeAt < tonumber(ARGV[4]) then
+if not empty and not recordingChanged and activeAt and now - activeAt < tonumber(ARGV[4]) then
 	return tonumber(ARGV[4]) - (now - activeAt)
 end
-if not empty then activeAt = now end
-redis.call('SET', KEYS[1], cjson.encode({ updatedAt = snapshot.updatedAt, empty = empty, activeAt = activeAt }), 'EX', ARGV[5])
+if not empty and not recordingChanged then activeAt = now end
+redis.call('SET', KEYS[1], cjson.encode({ updatedAt = snapshot.updatedAt, empty = empty, activeAt = activeAt, recordingHash = ARGV[6] }), 'EX', ARGV[5])
 return -1
 `;
 
@@ -291,7 +296,7 @@ const REFRESH_EVENTS = new Set([
 ]);
 
 type VoiceSnapshot = {
-	participants: { identity: string; userId: MiUser['id']; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
+	participants: { identity: string; userId: MiUser['id']; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[];
 	updatedAt: number;
 };
 
@@ -373,13 +378,12 @@ type RoomAudience = {
  */
 export type RemoteSnapshotStoreResult = 'stored' | 'stale' | 'ahead' | 'old' | 'disabled';
 
-/** 他のサーバーに送った現況の記録。at は送った時刻、updatedAt は送った現況の時刻 */
-/** 他のサーバーに最後に送った現況の記録。presenceHash は設定 (micMuted / deafened) を除いた現況の hash (古い記録には無い) */
-type FederatedRecord = { hash: string; presenceHash?: string; at: number; updatedAt: number };
+/** 他のサーバーに最後に送った現況の記録。presenceHash は設定 (micMuted / deafened) を除いた現況 (録画中かどうかは含む) の hash、recordingHash は録画中の参加者の hash (古い記録には無い) */
+type FederatedRecord = { hash: string; presenceHash?: string; recordingHash?: string; at: number; updatedAt: number };
 
 /** 他のサーバーに渡す参加者の現況。userId はこのサーバーの DB の id なので含めない */
 type FederatedVoiceSnapshot = {
-	participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[];
+	participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[];
 	updatedAt: number;
 };
 
@@ -578,7 +582,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	/** Accept only the authenticated user's own connected session and reported settings. */
 	@bindThis
-	public async reportStatus(user: MiUser, roomId: string, sessionId: string, status: { micMuted: boolean; deafened: boolean }): Promise<boolean> {
+	public async reportStatus(user: MiUser, roomId: string, sessionId: string, status: RecordingStatus): Promise<boolean> {
 		if (!this.liveKitService.isEnabled) return false;
 		const participant = { identity: this.liveKitService.identityOf(user), userId: user.id };
 		const context = await this.admissionContextOf(roomId, [participant], new Map());
@@ -589,9 +593,19 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			throw new AggregateError(context.errors, `Failed to read what decides who may report the voice call settings in ${roomId}`);
 		}
 		if (admission === 'denied' || context.room.value == null) return false;
+		// 録画はルームの持ち主が許したときだけ。既定では許さない
+		if (status.recording === true && !context.room.value.allowRecording) return false;
 		const owner = await this.usersRepository.findOneBy({ id: context.room.value.ownerId });
 		if (owner == null || owner.host != null) return false;
-		if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, status)) return false;
+		const { recording, ...settings } = status;
+		if (!await this.liveKitService.setParticipantStatus(roomId, participant.identity, sessionId, settings)) return false;
+		// 録音状態は参加者 (ルーム, identity) ごとに一つだけ持ち、最後の報告が勝つ。recording の無い報告は設定だけで、状態を変えない。
+		// 表示は報告したセッション (SID) がいま接続しているときだけ重なる (participantsWithRecording)
+		if (recording !== undefined) {
+			await this.redisClient.eval(STORE_RECORDING_STATE_SCRIPT, 2,
+				this.recordingStateKeyOf(roomId, participant.identity), this.recordingIdentitiesKeyOf(roomId),
+				sessionId, recording ? '1' : '0', participant.identity, SNAPSHOT_TTL_SECONDS);
+		}
 		this.scheduleRefresh(roomId);
 		return true;
 	}
@@ -779,6 +793,46 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}));
 	}
 
+	private async participantsWithRecording(roomId: string): Promise<LiveKitParticipant[]> {
+		const participants = await this.liveKitService.listParticipants(roomId);
+		const identitiesKey = this.recordingIdentitiesKeyOf(roomId);
+		return await Promise.all(participants.map(async participant => {
+			const stateKey = this.recordingStateKeyOf(roomId, participant.identity);
+			const raw = await this.redisClient.get(stateKey);
+			const state = raw == null ? null : JSON.parse(raw) as RecordingState;
+			// 報告したセッションがいま接続しているときだけ録音中を見せる。新しいセッションは前の状態を引き継がない
+			const recording = state != null && state.sessionId === participant.sessionId && state.recording === true;
+			// 接続が続いている録音は、読み直すたびに寿命を延ばして表示を保つ (定期読み直しは寿命より短い間隔)。
+			// いまの値が同じセッションの録音中のときだけ延ばすので、間に届いた終了報告を昔の録音中で戻さない
+			if (recording) {
+				await this.redisClient.eval(RENEW_RECORDING_STATE_IF_CURRENT_SCRIPT, 2, stateKey, identitiesKey, state.sessionId, SNAPSHOT_TTL_SECONDS);
+			}
+			return { ...participant, recording };
+		}));
+	}
+
+	/** 録音状態を持つ参加者の一覧と、そのときの値 (無ければ null)。参加者一覧より先に読み、整理の基準にする */
+	private async recordingStatesOf(roomId: string): Promise<Map<string, string | null>> {
+		const identities = await this.redisClient.smembers(this.recordingIdentitiesKeyOf(roomId));
+		const entries = await Promise.all(identities.map(async identity =>
+			[identity, await this.redisClient.get(this.recordingStateKeyOf(roomId, identity))] as [string, string | null]));
+		return new Map(entries);
+	}
+
+	/**
+	 * 通話から離れた参加者の録音状態を消す。参加者一覧を読む前に読んだ値のままのときだけ消す (CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT) ので、
+	 * 一覧の後に届いた報告 (新しいセッション・同じ値の再報告) は消さない。状態の寿命が切れた項目も一覧から外す
+	 */
+	private async clearDepartedRecordingStates(roomId: string, participants: { identity: string }[], candidates: Map<string, string | null>): Promise<void> {
+		const current = new Set(participants.map(p => p.identity));
+		const identitiesKey = this.recordingIdentitiesKeyOf(roomId);
+		for (const [identity, raw] of candidates) {
+			if (current.has(identity)) continue;
+			await this.redisClient.eval(CLEAR_RECORDING_STATE_IF_CURRENT_SCRIPT, 2,
+				this.recordingStateKeyOf(roomId, identity), identitiesKey, raw ?? '', identity);
+		}
+	}
+
 	/**
 	 * ルームの参加者を LiveKit から読み直して保存し、メンバーに知らせ、他のサーバーへ送るかを決める。
 	 * refusedHosts を渡すと (定期的な読み直し)、読んだ参加者のうちいまそのルームに残れない者を外し (removeUnadmitted の sweep。
@@ -793,11 +847,14 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		const readAt = await this.allocateStamp(this.localStampKeyOf(roomId), this.decidedKeyOf(roomId), LOCAL_STAMP_TTL_SECONDS);
 		// 最初の読み取りが失敗しても、次の sweep で権限を確かめ直す。
 		await this.redisClient.sadd(ACTIVE_ROOMS_KEY, roomId);
-		const listed = await this.liveKitService.listParticipants(roomId);
+		// 整理の候補は参加者一覧を読む前に読む。一覧より後に承認された報告は、ここで読んだ値と違うので消さない
+		const recordingCandidates = await this.recordingStatesOf(roomId);
+		const listed = await this.participantsWithRecording(roomId);
 		// 残れない参加者を外すのにも、時刻を決めた後に読んだこの一覧を使い、LiveKit を読み直さない。
 		// 外している間に変わった参加者は、その webhook の読み直し (後に決めた時刻) が保存する
 		const removed = refusedHosts != null ? await this.removeUnadmitted(roomId, listed, refusedHosts, 'sweep') : new Set<string>();
 		const participants = listed.filter(p => !removed.has(p.identity));
+		await this.clearDepartedRecordingStates(roomId, participants, recordingCandidates);
 		const snapshot: VoiceSnapshot = {
 			participants: participants.map(p => ({ identity: p.identity, userId: p.userId, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) })),
 			updatedAt: readAt,
@@ -879,7 +936,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * ミラーの通話はこのサーバーの LiveKit には無いので、定期的な読み直し (sweep) の対象には加えない
 	 */
 	@bindThis
-	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[], updatedAt: number): Promise<RemoteSnapshotStoreResult> {
+	public async storeRemoteSnapshot(room: MiChatRoom, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number): Promise<RemoteSnapshotStoreResult> {
 		// このサーバーのルームの現況は LiveKit から読む。ホストの言う現況で上書きさせない
 		if (room.owner == null || room.owner.host == null) {
 			throw new Error(`Voice call participants sent by another server can only be stored for a room owned there: ${room.id}`);
@@ -948,7 +1005,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		if (!(await this.isRoomVoiceVisible(room, undefined, read))) return false;
 		const gate = Number(await this.redisClient.eval(GATE_MIRROR_PUBLICATION_SCRIPT, 3,
 			`chatVoice:mirrorPublished:${room.id}`, this.keyOf(room.id), REMOTE_GENERATION_KEY,
-			generation, snapshot.updatedAt, snapshot.participants.length === 0 ? '1' : '0', FEDERATION_MIN_INTERVAL_MS, REMOTE_SNAPSHOT_TTL_SECONDS));
+			generation, snapshot.updatedAt, snapshot.participants.length === 0 ? '1' : '0', FEDERATION_MIN_INTERVAL_MS, REMOTE_SNAPSHOT_TTL_SECONDS, recordingHashOf(snapshot.participants)));
 		if (gate === -2) return false;
 		if (gate > 0) {
 			this.scheduleIn(this.pendingMirrorPublications, room.id, gate, () => this.flushMirrorPublication(room.id).catch(err => {
@@ -1122,6 +1179,16 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 	private keyOf(roomId: MiChatRoom['id']): string {
 		return `chatVoice:state:${roomId}`;
+	}
+
+	/** 参加者 (ルーム, identity) ごとの録音状態 {sessionId, recording} の鍵 */
+	private recordingStateKeyOf(roomId: MiChatRoom['id'], identity: string): string {
+		return `chatVoice:recordingState:${hashOf([roomId, identity])}`;
+	}
+
+	/** 録音状態を持つ参加者の identity の一覧 (ルームごと)。離れた参加者の状態を消すときに引く */
+	private recordingIdentitiesKeyOf(roomId: MiChatRoom['id']): string {
+		return `chatVoice:recordingIdentities:${roomId}`;
 	}
 
 	/** 他のサーバーの通話を止めた回数 (世代)。一度も止めていなければ '0' */
@@ -1552,7 +1619,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 		let listed: LiveKitParticipant[];
 		try {
-			listed = await this.liveKitService.listParticipants(room.id);
+			listed = await this.participantsWithRecording(room.id);
 		} catch (err) {
 			// 読み直し (refresh) がルームを通話中の一覧から外した後なら、定期的な読み直しはもうこのルームを見ない。間隔を延ばしながら決め直す
 			this.retryFederationLater(room.id);
@@ -1562,7 +1629,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 
 		const sorted = [...participants].sort((a, b) => a.identity.localeCompare(b.identity));
 		const hash = hashOf(sorted);
-		const presenceHash = hashOf(sorted.map(p => ({ identity: p.identity, screenSharing: p.screenSharing })));
+		// 録画の開始と終了は全員に確実に知らせるので、マイクなどの設定とは違って間隔を待たずにすぐ送る (録画していなければ以前と同じ hash)
+		const presenceHash = hashOf(sorted.map(p => ({ identity: p.identity, screenSharing: p.screenSharing, ...(p.recording === true ? { recording: true } : {}) })));
+		const recordingHash = recordingHashOf(sorted);
 		const ended = participants.length === 0;
 
 		const last = ended ? null : await this.lastFederatedOf(room.id);
@@ -1577,8 +1646,11 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			return true;
 		}
 
+		// 録画中の参加者が変わった (記録に hash があるときだけ) なら、間隔の鍵を触らずにすぐ送る。
+		// 鍵を作らないので、録画ではない変化の間隔の時計はそのまま進む。記録に hash が無い (古い記録・初めての送信) ときは通常の間隔で送る
+		const recordingChanged = !ended && last?.recordingHash != null && last.recordingHash !== recordingHash;
 		const gateKey = ended ? `chatVoice:federateEmptyGate:${room.id}` : `chatVoice:federateGate:${room.id}`;
-		const opened = await this.redisClient.set(gateKey, '1', 'PX', FEDERATION_MIN_INTERVAL_MS, 'NX');
+		const opened = recordingChanged ? 'OK' : await this.redisClient.set(gateKey, '1', 'PX', FEDERATION_MIN_INTERVAL_MS, 'NX');
 		if (opened !== 'OK') {
 			// 相手に届いている現況と違うなら、間隔の鍵が切れた後に決め直す (決め直しはルームごとに一つにまとまる)。
 			// 通話の終わりは記録によらず必ず決め直す。送るかどうかは、決め直したときに読む記録で決める
@@ -1612,7 +1684,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 
 		// 順番の鍵が寿命で切れて、ほかのワーカーが後の現況で決めたか記録していれば、書かずに決め直す
-		const record: FederatedRecord = { hash, presenceHash, at: Date.now(), updatedAt };
+		const record: FederatedRecord = { hash, presenceHash, recordingHash, at: Date.now(), updatedAt };
 		const recorded = await this.redisClient.eval(RECORD_FEDERATED_IF_NOT_OLDER_SCRIPT, 3, recordKey, decidedKey, `chatVoice:joinInvalidated:${room.id}`, JSON.stringify(record), updatedAt, FEDERATION_RESEND_INTERVAL_MS / 1000) === 1;
 		if (recorded) this.federationBackoff.delete(room.id);
 		return recorded;
@@ -1629,7 +1701,7 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * 持ち主の名前で Update を作り、メンバーの inbox (共有 inbox があればそちら) ごとに一度だけ送る。
 	 * すべての配送を積み終えるまで待ち、どれかを積めなければ例外を投げる
 	 */
-	private async deliverSnapshot(room: MiChatRoom, audience: RoomAudience, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean }[], updatedAt: number): Promise<void> {
+	private async deliverSnapshot(room: MiChatRoom, audience: RoomAudience, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number): Promise<void> {
 		const owner = audience.localOwner;
 		if (owner == null) return;
 
@@ -1720,6 +1792,11 @@ function isSameList(a: string[] | undefined, b: string[] | undefined): boolean {
 
 function hashOf(value: unknown): string {
 	return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+/** 録画中の参加者の identity の一覧 (順に並べたもの) の hash。録音中の変化を間隔を待たずに送るかの判断に使う */
+function recordingHashOf(participants: { identity: string; recording?: boolean }[]): string {
+	return hashOf(participants.filter(p => p.recording === true).map(p => p.identity).sort());
 }
 
 /** 記録 (last) が、同じ現況 (hash) を FEDERATION_RESEND_INTERVAL_MS のうちに送ったことを示すか */

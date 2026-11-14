@@ -1756,6 +1756,15 @@ export type paths = {
          */
         post: operations['chat___rooms___voice___connection-info'];
     };
+    '/chat/rooms/voice/convert-recording': {
+        /**
+         * chat/rooms/voice/convert-recording
+         * @description Convert a recording without deleting the original. A null response means that no conversion was performed and the original remains.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:drive*
+         */
+        post: operations['chat___rooms___voice___convert-recording'];
+    };
     '/chat/rooms/voice/join': {
         /**
          * chat/rooms/voice/join
@@ -6375,6 +6384,7 @@ export type components = {
             isMuted?: boolean;
             invitationExists?: boolean;
             isArchived: boolean;
+            allowRecording: boolean;
         };
         ChatRoomInvitation: {
             id: string;
@@ -6403,6 +6413,7 @@ export type components = {
                 user: components['schemas']['UserLite'];
                 micMuted?: boolean;
                 deafened?: boolean;
+                recording?: boolean;
                 screenSharing: boolean;
             }[];
             updatedAt: number;
@@ -11024,6 +11035,7 @@ export interface operations {
                         allowExternalApRedirect: boolean;
                         enableRemoteVoiceCall: boolean;
                         voiceCallMaxParticipants: number;
+                        voiceCallMaxRecordingConversions: number;
                         /** @enum {string} */
                         voiceCallLivekitSource: 'yaml' | 'custom' | 'disabled';
                         voiceCallLivekitUrl: string | null;
@@ -14603,6 +14615,7 @@ export interface operations {
                     allowExternalApRedirect?: boolean;
                     enableRemoteVoiceCall?: boolean;
                     voiceCallMaxParticipants?: number;
+                    voiceCallMaxRecordingConversions?: number;
                     /** @enum {string} */
                     voiceCallLivekitSource?: 'yaml' | 'custom' | 'disabled';
                     voiceCallLivekitUrl?: string | null;
@@ -20614,6 +20627,7 @@ export interface operations {
                     name?: string;
                     description?: string;
                     isArchived?: boolean;
+                    allowRecording?: boolean;
                 };
             };
         };
@@ -20702,6 +20716,93 @@ export interface operations {
                     'application/json': {
                         mediaProvider?: string;
                     };
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'chat___rooms___voice___convert-recording': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    /** Format: misskey:id */
+                    fileId: string;
+                    video?: boolean;
+                    /**
+                     * Format: misskey:id
+                     * @default null
+                     */
+                    folderId?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['DriveFile'] | null;
+                };
+            };
+            /** @description OK (without any results) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
                 };
             };
             /** @description Client error */
@@ -21072,6 +21173,7 @@ export interface operations {
                     sessionId: string;
                     micMuted: boolean;
                     deafened: boolean;
+                    recording?: boolean;
                 };
             };
         };

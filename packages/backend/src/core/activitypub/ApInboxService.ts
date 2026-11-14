@@ -2128,6 +2128,7 @@ export class ApInboxService {
 			name: typeof object.name === 'string' ? truncate(object.name, 256) : room.name,
 			description: typeof object.summary === 'string' ? truncate(object.summary, 2048) : room.description,
 			isArchived: typeof object._misskey_chatArchived === 'boolean' ? object._misskey_chatArchived : room.isArchived,
+			allowRecording: typeof object.allowRecording === 'boolean' ? object.allowRecording : room.allowRecording,
 		}, { federate: false, remoteUpdatedAt: this.chatRoomUpdatedAt(object) });
 	}
 
@@ -2303,6 +2304,7 @@ export class ApInboxService {
 					description: roomDescription,
 					ownerId: actor.id,
 					isArchived: roomObject._misskey_chatArchived === true,
+					allowRecording: roomObject.allowRecording === true,
 					uri: roomUri,
 					lastRemoteUpdatedAt: this.chatRoomUpdatedAt(roomObject) ?? null,
 				});

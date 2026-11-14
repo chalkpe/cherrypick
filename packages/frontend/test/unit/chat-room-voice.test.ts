@@ -91,6 +91,7 @@ vi.mock('@/utility/voice-call.js', async () => {
 		watchScreenShare: mocks.watchScreenShare,
 		unwatchScreenShare: mocks.unwatchScreenShare,
 		toggleScreenShareWatch: mocks.toggleScreenShareWatch,
+		setRecordingAllowed: vi.fn(),
 		startScreenShare: mocks.startScreenShare,
 		stopScreenShare: mocks.stopScreenShare,
 		setParticipantVolume: mocks.setParticipantVolume,
