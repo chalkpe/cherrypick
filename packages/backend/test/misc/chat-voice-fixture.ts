@@ -124,7 +124,7 @@ export function fakeRedis() {
 				if (!live(lockKey) || store.get(lockKey) !== String(token)) return 0;
 				if (!live(key)) return 0;
 				const binding = JSON.parse(store.get(key)!);
-				if (binding.startSent || binding.clientId !== String(clientId)) return 0;
+				if (binding.startSent || binding.startPartial || binding.clientId !== String(clientId)) return 0;
 				store.delete(key);
 				expiresAt.delete(key);
 				if (live(lastSeenKey) && store.get(lastSeenKey) === String(clientId)) {

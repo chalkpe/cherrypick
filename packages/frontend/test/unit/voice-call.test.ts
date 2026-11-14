@@ -2386,6 +2386,58 @@ describe('call recording lifecycle', () => {
 		}
 	});
 
+	test('a settings change during an in-flight stop retry is applied after the acceptance', async () => {
+		vi.useFakeTimers();
+		try {
+			await joinRecordingCall();
+			await vi.advanceTimersByTimeAsync(0);
+			await startRecording();
+			await flushRecording();
+			const startReport = mocks.misskeyApi.mock.calls.find(([endpoint, status]) => endpoint === 'chat/rooms/voice/status' && status.recording === true && status.recordingId != null);
+			const recordingId = startReport![1].recordingId;
+			mocks.misskeyApi.mockClear();
+
+			// 첫 종료는 응답만 유실되고, 재시도의 응답은 설정이 바뀌는 동안 보류된다
+			const retryResponse = deferred<unknown>();
+			let stopAttempts = 0;
+			mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+				if (endpoint !== 'chat/rooms/voice/status') return {};
+				if (params.recording === true) return {};
+				if (params.recordingId != null) {
+					stopAttempts += 1;
+					if (stopAttempts === 1) throw new TypeError('Failed to fetch');
+					if (stopAttempts === 2) return await retryResponse.promise;
+					return {};
+				}
+				return {};
+			});
+			stopRecording();
+			await flushRecording();
+			await vi.advanceTimersByTimeAsync(1000);
+			await flushRecording();
+			expect(stopAttempts).toBe(2);
+
+			// 재시도 전송 중에 설정을 바꾸면 대기 보고는 같은 종료 ID로 새 설정을 싣는다
+			setDeafened(true);
+			await flushRecording();
+			retryResponse.resolve({});
+			await flushRecording();
+			await vi.advanceTimersByTimeAsync(0);
+			await flushRecording();
+			await vi.advanceTimersByTimeAsync(0);
+			await flushRecording();
+
+			const reports = mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status').map(([, status]) => status);
+			expect(reports.some(status => status.recordingId === recordingId && status.deafened === true)).toBe(true);
+			// 종료 ID를 실은 보고서의 멱등 수락 뒤에는 ID 없이 최신 설정을 적용하는 보고서가 따라와야 한다
+			const last = reports[reports.length - 1];
+			expect(last.recordingId).toBeUndefined();
+			expect(last.deafened).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test('uploads independent recordings and deletes only their converted originals', async () => {
 		await joinRecordingCall();
 		await startRecording();

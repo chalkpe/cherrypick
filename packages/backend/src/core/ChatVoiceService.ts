@@ -630,8 +630,9 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 					await this.deliverPendingRecordingEvents(context.room.value, binding, bindingKey, lockKey, token);
 				} catch (error) {
 					// 시작을 아직 보내지 못한 결속은 폐기해, 후속 flush가 실제 캡처 없는 시작+종료를 배달하지 못하게 한다.
-					// 이미 시작을 보낸 결속은 남겨 flush가 종료를 마저 보내게 한다. 폐기는 best-effort이며 원래 오류를 그대로 던진다.
-					if (!binding.startSent) {
+					// 이미 시작을 보낸 (startSent) 결속과 일부 대상에게라도 접수된 (startPartial) 결속은 남겨 flush가 종료를 마저 보내게 한다.
+					// 폐기는 best-effort이며 원래 오류를 그대로 던진다.
+					if (!binding.startSent && !binding.startPartial) {
 						if (error instanceof PartialRecordingDeliveryError) {
 							// 일부 대상에게 이미 시작이 접수됐다. 폐기하면 그 대상의 종료를 영원히 만들 수 없으므로,
 							// 결속을 남기되 시작을 다시 발행하지 않도록 표시하고 flush가 종료를 마저 보내게 한다.

@@ -564,9 +564,12 @@ async function deliverStatus(delivery: StatusDelivery): Promise<void> {
 			if (delivery.pendingStops.length > 0 && delivery.pending == null) {
 				reportStatus(delivery.room, true);
 			} else if (delivery.pendingStops.length === 0 && delivery.stopRetried) {
-				// 종료 응답 유실로 재시도된 종료가 수락되면, 함께 실렸던 설정을 ID 없이 한 번 더 보내 적용시킨다
-				delivery.stopRetried = false;
-				if (delivery.pending == null) reportStatus(delivery.room, true);
+				// 종료 응답 유실로 재시도된 종료가 수락되면, 함께 실렸던 설정을 ID 없이 한 번 더 보내 적용시킨다.
+				// 전송 중 병합된 보고가 남아 있으면 그 보고를 먼저 소진하게 표시를 유지한다 (그 보고의 수락에서 이 분기가 다시 열린다)
+				if (delivery.pending == null) {
+					delivery.stopRetried = false;
+					reportStatus(delivery.room, true);
+				}
 			}
 		}
 	} catch (err) {

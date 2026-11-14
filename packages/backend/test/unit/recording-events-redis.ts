@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { afterAll, afterEach, beforeAll, expect, test, vi } from 'vitest';
 import { loadConfig } from '@/config.js';
-import { ACK_RECORDING_PUBLICATION_SCRIPT, CLAIM_RECORDING_EVENT_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, PREPARE_RECORDING_EVENT_SCRIPT, PartialRecordingDeliveryError, RENEW_ACTIVE_RECORDING_SCRIPT } from '@/core/recording-event.js';
+import { ABORT_UNSENT_RECORDING_SCRIPT, ACK_RECORDING_PUBLICATION_SCRIPT, CLAIM_RECORDING_EVENT_SCRIPT, MARK_RECORDING_EVENT_SENT_SCRIPT, PREPARE_RECORDING_EVENT_SCRIPT, PartialRecordingDeliveryError, RENEW_ACTIVE_RECORDING_SCRIPT } from '@/core/recording-event.js';
 import type { RecordingBinding } from '@/core/recording-event.js';
 import { createFixture, KNOWN_USERS } from '../misc/chat-voice-fixture.js';
 
@@ -448,4 +448,59 @@ test('a local-only approval whose acknowledgement fails after the announcement k
 
 	const after = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
 	expect(after.stopSent).toBe(true);
+});
+
+test('Redis abort keeps a binding whose start was partially delivered', async () => {
+	const first = await prepare(true);
+	expect(await redis.eval(MARK_RECORDING_EVENT_SENT_SCRIPT, 2, first.keys[0], first.keys[2], 'owner', 'startPartial', 3600)).toBe(1);
+
+	const aborted = await redis.eval(ABORT_UNSENT_RECORDING_SCRIPT, 5, first.keys[0], first.keys[1], first.keys[2], first.keys[3], first.keys[4], 'owner', 'client-id');
+
+	// 일부 대상이 이미 시작을 받은 결속은 잠금·클라이언트가 일치해도 폐기 대상이 아니다
+	expect(aborted).toBe(0);
+	expect(await redis.get(first.keys[0])).not.toBeNull();
+	expect(await redis.get(first.keys[1])).toBe('client-id');
+	expect(await redis.smembers(first.keys[3])).toEqual(['client-id']);
+	expect(await redis.zscore(first.keys[4], 'client-id')).not.toBeNull();
+});
+
+test('a rollback stop whose delivery fails entirely keeps the partially delivered binding for retry and flush', async () => {
+	const { fixture, participants } = recordingFixture();
+	// 서로 다른 inbox 둘 (remote.test 공유 inbox, far.test 개별 inbox)
+	const findMembers = fixture.chatRoomMembershipsRepository.findBy.getMockImplementation()!;
+	fixture.chatRoomMembershipsRepository.findBy.mockImplementation(async where => where?.userId ? findMembers(where) : [{ userId: 'm1' }, { userId: 'rm1' }, { userId: 'rm3' }]);
+	const recordingId = randomUUID();
+	fixture.queueService.deliver.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('queue unavailable'));
+
+	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { ...recordingStatus, recordingId })).rejects.toThrow(PartialRecordingDeliveryError);
+	const partial = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(partial.startPartial).toBe(true);
+	const startEventId = partial.start.id;
+
+	// 클라이언트 롤백 종료가 sweep보다 먼저 도착하고, 이 종료의 원격 적재는 전부 실패한다
+	fixture.queueService.deliver.mockRejectedValue(new Error('queue unavailable'));
+	await expect(fixture.service.reportStatus(recordingUser as any, 'r1', 'PA_1', { micMuted: false, deafened: false, recordingId })).rejects.toThrow('queue unavailable');
+
+	// 시작을 이미 받은 대상이 있으므로 결속·미완료 목록·보관 목록을 폐기하면 안 된다
+	const keptRaw = await redis.get(`chatVoice:recording:${recordingId}`);
+	expect(keptRaw).not.toBeNull();
+	const kept = JSON.parse(keptRaw!) as RecordingBinding;
+	expect(kept.startPartial).toBe(true);
+	expect(kept.stop?.id).toBe(startEventId);
+	expect(kept.stopSent).toBeUndefined();
+	expect(await redis.smembers(`chatVoice:recordingRoom:r1`)).toContain(recordingId);
+	expect(await redis.zscore(`chatVoice:recordingHistory:r1`, recordingId)).not.toBeNull();
+
+	// 장애 복구 뒤에는 같은 이벤트 ID의 종료만 배달된다 (시작 재발행 없음)
+	fixture.queueService.deliver.mockReset().mockResolvedValue(undefined);
+	await fixture.service.refresh('r1');
+
+	const after = JSON.parse((await redis.get(`chatVoice:recording:${recordingId}`))!) as RecordingBinding;
+	expect(after.stopSent).toBe(true);
+	expect(await redis.smembers(`chatVoice:recordingRoom:r1`)).not.toContain(recordingId);
+	const events = fixture.queueService.deliver.mock.calls.map(call => (call[1] as any).object._misskey_recordingEvent).filter(Boolean);
+	expect(events.length).toBeGreaterThan(0);
+	expect(events.every((event: any) => event.recording === false && event.id === startEventId)).toBe(true);
+	const snapshot = JSON.parse((await redis.get('chatVoice:state:r1'))!);
+	expect(snapshot.participants.find((p: { identity: string }) => p.identity === participants[0].identity).recording).toBeFalsy();
 });

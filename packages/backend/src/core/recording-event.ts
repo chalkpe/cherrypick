@@ -140,15 +140,15 @@ redis.call('SET', KEYS[1], cjson.encode(binding), 'EX', ARGV[3])
 return 1
 `;
 
-// 승인 배달이 실패해 시작을 아직 보내지 못한 결속은 폐기한다. 이미 시작을 보낸 (startSent) 결속은 flush가 종료를 마저 보내도록 남긴다.
-// 잠금 토큰과 클라이언트 ID가 모두 일치할 때만 지워, 잠금이 만료된 사이 다른 요청이 만든 결속을 건드리지 않는다.
+// 승인 배달이 실패해 시작을 아직 보내지 못한 결속은 폐기한다. 이미 시작을 보낸 (startSent) 결속과 일부 대상에게라도 접수된 (startPartial) 결속은
+// flush가 종료를 마저 보내도록 남긴다. 잠금 토큰과 클라이언트 ID가 모두 일치할 때만 지워, 잠금이 만료된 사이 다른 요청이 만든 결속을 건드리지 않는다.
 // KEYS: ID 결속, 세션의 활성 ID, 소유권 잠금, 미완료 목록, 보관 목록. ARGV: 잠금 토큰, 클라이언트 ID.
 export const ABORT_UNSENT_RECORDING_SCRIPT = `-- ABORT_UNSENT_RECORDING
 if redis.call('GET', KEYS[3]) ~= ARGV[1] then return 0 end
 local raw = redis.call('GET', KEYS[1])
 if not raw then return 0 end
 local binding = cjson.decode(raw)
-if binding.startSent or binding.clientId ~= ARGV[2] then return 0 end
+if binding.startSent or binding.startPartial or binding.clientId ~= ARGV[2] then return 0 end
 redis.call('DEL', KEYS[1])
 if redis.call('GET', KEYS[2]) == ARGV[2] then redis.call('DEL', KEYS[2]) end
 redis.call('SREM', KEYS[4], ARGV[2])
