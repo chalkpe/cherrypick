@@ -59,13 +59,9 @@ vi.mock('bullmq', async importOriginal => {
 		on() { return this; }
 	} };
 });
-vi.mock('@/core/NoteCleanupService.js', async () => {
-	const { createHash } = await import('node:crypto');
-	return {
-		NoteCleanupService: class {}, NOTE_CLEANUP_LIMITS: { roundMs: 10000 },
-		noteCleanupRequestJobId: (userId: string, ruleIds: string[]) => `note-cleanup-${userId}-${createHash('sha256').update([...ruleIds].sort().join(',')).digest('hex')}`,
-	};
-});
+vi.mock('@/core/NoteCleanupService.js', () => ({
+	NoteCleanupService: class {}, CleanupInputError: class extends Error {}, NOTE_CLEANUP_LIMITS: { roundMs: 10000 },
+}));
 
 // Worker만 대체하여 실제 system callback → runQueueJob → cleanup processor를 실행한다.
 // telemetry 모형은 span callback의 rejection을 기록한다. 실제 collector는 사용하지 않는다.
@@ -89,10 +85,9 @@ function fixture() {
 	return { errors, captures, spans, other, cleanup, active: () => active, process: workers.get('system')! };
 }
 
-test('수동 정리의 정상 지연은 공통 실행기에 오류를 전달하지 않는다', async () => {
+test('수동 정리의 정상 대기는 공통 실행기에 오류를 전달하지 않는다', async () => {
 	const f = fixture();
-	const job: any = { id: 'job', opts: {}, timestamp: Date.now(), attemptsMade: 0, name: 'autoDeleteNotes', data: { userId: 'alice', ruleIds: ['rule'], requestId: 'request', step: 0 } };
-	job.updateData = async (data: unknown) => { job.data = data; };
+	const job: any = { id: 'job', opts: {}, timestamp: Date.now(), attemptsMade: 0, name: 'autoDeleteNotes', data: { userId: 'alice', manual: true } };
 
 	await expect(f.process(job)).resolves.toMatchObject({ delayed: true });
 

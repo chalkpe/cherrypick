@@ -3,52 +3,60 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { expect, test, vi } from 'vitest';
+import { UnrecoverableError } from 'bullmq';
 import { AutoDeleteNotesProcessorService } from '@/queue/processors/AutoDeleteNotesProcessorService.js';
+import { CleanupInputError } from '@/core/NoteCleanupService.js';
 
-vi.mock('@/core/NoteCleanupService.js', async () => {
-	const { createHash } = await import('node:crypto');
-	return {
-		NoteCleanupService: class {}, CleanupInputError: class extends Error {}, NOTE_CLEANUP_LIMITS: { roundMs: 10000, windowMs: 300000 },
-		noteCleanupRequestJobId: (userId: string, ruleIds: string[]) => `note-cleanup-${userId}-${createHash('sha256').update([...ruleIds].sort().join(',')).digest('hex')}`,
-	};
-});
+vi.mock('@/core/NoteCleanupService.js', () => ({
+	NoteCleanupService: class {},
+	CleanupInputError: class extends Error { constructor(public code: string) { super(code); } },
+	NOTE_CLEANUP_LIMITS: { roundMs: 10000, windowMs: 300000 },
+}));
 vi.mock('@/core/QueueService.js', () => ({ QueueService: class {} }));
 
-test('연합 큐가 밀리면 요청 ID를 보존한 지연 작업을 접수하고 정상 종료한다', async () => {
-	const added: any[] = [];
-	const queue = { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: async (...args: any[]) => { added.push(args); }, getJob: async () => null } };
-	const processor = new AutoDeleteNotesProcessorService({} as any, queue as any);
-	const job: any = { data: { userId: 'alice', ruleIds: ['rule'], requestId: 'request', step: 0 }, updateData: async (data: any) => { job.data = data; } };
-
-	await expect(processor.process(job)).resolves.toBeDefined();
-
-	expect(added).toHaveLength(1);
-	expect(added[0][1]).toMatchObject({ userId: 'alice', ruleIds: ['rule'], requestId: 'request', step: 1 });
-	expect(added[0][2].delay).toBeGreaterThan(0);
-});
-
-test('이어 받기 접수 뒤 부모 작업이 재시작돼도 같은 작업 ID를 다시 사용한다', async () => {
-	const added: any[] = [];
-	const queue = { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: async (...args: any[]) => { added.push(args); }, getJob: async () => null } };
-	const processor = new AutoDeleteNotesProcessorService({} as any, queue as any);
-	const job: any = { data: { userId: 'alice', ruleIds: ['rule'], requestId: 'request', step: 0 }, updateData: async (data: any) => { job.data = data; } };
-
-	await processor.process(job);
-	await processor.process(job);
-
-	expect(added.map(args => args[2].jobId)).toEqual(['note-cleanup-request-1', 'note-cleanup-request-1']);
-	expect(added[1][1]).toEqual(added[0][1]);
-});
-
-test('일시적인 DB 연결 오류는 같은 요청 ID로 다시 접수한다', async () => {
-	const added: any[] = [];
-	const cleanup = { processUser: async () => { throw new Error('Connection terminated unexpectedly'); } };
-	const queue = { deliverQueue: { getWaiting: async () => [] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: async (...args: any[]) => { added.push(args); }, getJob: async () => null } };
+// 수동 요청의 대기 계약: 어떤 대기 경로도 자식 작업을 등록하지 않고 정상 종료해 마커를 다음 회차에 넘긴다.
+function fixture(cleanup: Record<string, unknown>) {
+	const added: unknown[][] = [];
+	const queue = { deliverQueue: { getWaiting: async () => [] as { timestamp: number }[] }, inboxQueue: { getWaiting: async () => [] as { timestamp: number }[] }, systemQueue: { add: async (...args: unknown[]) => { added.push(args); } } };
 	const processor = new AutoDeleteNotesProcessorService(cleanup as any, queue as any);
-	const job: any = { data: { userId: 'alice', ruleIds: ['rule'], requestId: 'request', step: 0 }, updateData: async (data: any) => { job.data = data; } };
+	const job = { data: { userId: 'alice', manual: true } };
+	return { added, queue, processor, job };
+}
 
-	await expect(processor.process(job)).resolves.toMatchObject({ delayed: true });
+test('연합 큐가 밀리면 수동 요청은 작업을 쌓지 않고 정상 종료해 다음 회차에 잇는다', async () => {
+	const cleanup = { continueManual: vi.fn() };
+	const f = fixture(cleanup);
+	f.queue.deliverQueue.getWaiting = async () => [{ timestamp: 0 }];
 
-	expect(added[0][1]).toMatchObject({ requestId: 'request', step: 1, retryFailures: 1 });
-	expect(added[0][2].delay).toBeGreaterThan(0);
+	await expect(f.processor.process(f.job as any)).resolves.toMatchObject({ delayed: true });
+
+	expect(f.added).toHaveLength(0);
+	expect(cleanup.continueManual).not.toHaveBeenCalled();
+});
+
+test('일시적인 DB 연결 오류는 작업을 쌓지 않고 정상 종료해 마커 보존을 서비스에 맡긴다', async () => {
+	const cleanup = { continueManual: async () => { throw Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' }); } };
+	const f = fixture(cleanup);
+
+	await expect(f.processor.process(f.job as any)).resolves.toMatchObject({ delayed: true });
+
+	expect(f.added).toHaveLength(0);
+});
+
+test('잠금 충돌은 실패가 아니라 다음 회차로 넘기는 대기다', async () => {
+	const cleanup = { continueManual: async () => { throw new CleanupInputError('CLEANUP_BUSY'); } };
+	const f = fixture(cleanup);
+
+	await expect(f.processor.process(f.job as any)).resolves.toMatchObject({ delayed: true });
+
+	expect(f.added).toHaveLength(0);
+});
+
+test('비재시도 오류는 작업을 쌓지 않고 종료 실패로 처리한다', async () => {
+	const cleanup = { continueManual: async () => { throw new Error('account gone'); } };
+	const f = fixture(cleanup);
+
+	await expect(f.processor.process(f.job as any)).rejects.toBeInstanceOf(UnrecoverableError);
+
+	expect(f.added).toHaveLength(0);
 });

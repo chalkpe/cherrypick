@@ -3,9 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
-import type * as Bull from 'bullmq';
 import type * as Redis from 'ioredis';
 import { DataSource, In, IsNull } from 'typeorm';
 import type { EntityManager, EntityTarget, ObjectLiteral, Repository, QueryRunner, SelectQueryBuilder } from 'typeorm';
@@ -95,7 +94,7 @@ export class NoteCleanupService {
 		if (await this.states.existsBy({ userId })) return;
 		const user = await this.repository(MiUser).findOneByOrFail({ id: userId, host: IsNull() });
 		await this.db.transaction(async manager => {
-			await manager.insert(MiNoteCleanupState, { userId, migrated: false, cursor: null, previewAt: null, previewToken: null });
+			await manager.insert(MiNoteCleanupState, { userId, migrated: false, cursor: null, previewAt: null, previewToken: null, manualRequest: null });
 			for (const input of initialCleanupRules(false, user.autoDeleteNotesAfterDays, user.autoDeleteKeepFavorites)) {
 				await manager.insert(MiNoteCleanupRule, { ...input, id: this.idService.gen(), userId, lastError: null, automaticConfirmed: false });
 			}
@@ -406,13 +405,12 @@ export class NoteCleanupService {
 		}
 	}
 
-	// 구 형식의 오류만 있는 행도 다음 기존 검사에서 한 번 접수를 확인한다.
 	// 같은 미해결 오류는 접수 마커를 보존하고, 해결·삭제·남기기 아님은 마커를 지운다.
 	private async storeFailure(userId: string, rule: MiNoteCleanupRule, failure: MiNoteCleanupRule['lastError']) {
 		const previous = rule.protectionNotification ?? null;
 		const identity = rule.action === 'keep' && failure ? canonicalJson(publicError(failure)) : null;
 		const protectionNotification: MiNoteCleanupRule['protectionNotification'] = identity !== null && previous?.identity === identity
-			? { identity, status: previous.status === 'suppressed' ? 'suppressed' : 'notified' }
+			? { identity, status: previous.status }
 			: null;
 		if (canonicalJson(failure) !== canonicalJson(rule.lastError) || canonicalJson(previous) !== canonicalJson(protectionNotification)) {
 			await this.rules.update({ id: rule.id, userId }, { lastError: failure, protectionNotification });
@@ -450,9 +448,10 @@ export class NoteCleanupService {
 		const errors: Record<string, string> = {};
 		const retryableSources: string[] = [];
 		let retryableError: unknown = null;
+		// 재시도 여부와 무관하게 실제 실패한 전체 출처 집합. 보호 오류 귀인은 이 집합과 의존성이 겹치는 남기기 규칙에만 남긴다.
+		const failedSources = () => [...new Set([...Object.keys(errors), ...retryableSources])];
 		const guarded = async <T>(source: string, value: Promise<T> | T, fallback: T): Promise<T> => {
 			try { return await value; } catch (error) {
-				// 재시도 오류는 실패한 자료 출처를 모두 모은 뒤, 그 자료를 쓰는 남기기 규칙만 보호 오류로 기록하게 한다.
 				if (isRetryableCleanupFailure(error)) {
 					retryableSources.push(source);
 					if (retryableError === null) retryableError = error;
@@ -473,13 +472,13 @@ export class NoteCleanupService {
 			guarded('clip', this.repository(MiClipNote).createQueryBuilder('link').innerJoin(MiClip, 'clip', 'clip.id = link.clipId AND clip.userId = :userId', { userId }).where('link.noteId IN (:...ids)', { ids }).getMany(), []),
 			guarded('reactions', this.meta.enableReactionsBuffering ? this.reactionsBufferingService.getMany(ids) : new Map(), new Map<string, { deltas: Record<string, number>; pairs: [string, string][] }>()),
 		]);
-		if (retryableError !== null) throw this.tagCleanupSources(retryableError, retryableSources);
+		if (retryableError !== null) throw this.tagCleanupSources(retryableError, failedSources());
 		const reactionCounts = new Map(notes.map(note => {
 			let merged: Record<string, number>;
 			try {
 				merged = this.reactionsBufferingService.mergeReactions(note.reactions, bufferedReactions.get(note.id)?.deltas ?? {});
 			} catch (error) {
-				throw this.tagCleanupSources(error, ['reactions']);
+				throw this.tagCleanupSources(error, [...failedSources(), 'reactions']);
 			}
 			if (Object.values(merged).some(count => !Number.isSafeInteger(count) || count < 0)) {
 				errors.reactions = 'TEMPORARY_FAILURE';
@@ -520,57 +519,34 @@ export class NoteCleanupService {
 		return this.locked(userId, async () => {
 			await this.initialize(userId);
 			await this.page(userId, ruleIds, undefined, 1);
-			const jobId = noteCleanupRequestJobId(userId, ruleIds);
-			const existing = await this.queueService.systemQueue.getJob(jobId);
-			if (existing) {
-				const chain = await this.walkRequestChain(existing);
-				// 진행 중인 작업이 있으면 같은 요청을 중복 접수하지 않는다.
-				if (chain.inFlight) return { queued: false, jobId };
-				// 종료된 체인은 루트와 자손을 함께 정리하고 새 요청을 접수한다.
-				for (const job of chain.jobs.reverse()) await job.remove();
-			}
-			// 루트는 진행 중 요청의 중복 판정 근거로 완료 뒤에도 남기고, 실패 이력은 보존 기한 뒤 자동 제거한다.
-			await this.queueService.systemQueue.add('autoDeleteNotes', { userId, ruleIds, requestId: randomUUID() }, { jobId, removeOnComplete: false, removeOnFail: { age: 7 * 86400 }, attempts: 10, backoff: { type: 'fixed', delay: 5000 } });
+			const jobId = noteCleanupRequestJobId(userId);
+			const state = await this.states.findOneByOrFail({ userId });
+			// 대기 마커가 있으면 규칙 조합이 달라도 중복 접수하지 않는다.
+			if (state.manualRequest) return { queued: false, jobId };
+			// 마커를 먼저 남겨 큐 등록이 실패해도 자동 회차가 요청을 이어받게 한다.
+			await this.states.update(userId, { manualRequest: { ruleIds, cursor: null } });
+			// 깨우기 작업은 완료 뒤 자동 제거하고, 실패 이력은 보존 기한 뒤 자동 제거한다.
+			await this.queueService.systemQueue.add('autoDeleteNotes', { userId, manual: true }, { jobId, removeOnComplete: true, removeOnFail: { age: 7 * 86400 }, attempts: 10, backoff: { type: 'fixed', delay: 5000 } });
 			return { queued: true, jobId };
 		});
 	}
 
-	// 요청 작업의 이어 받기 체인을 따라간다. 진행 중인 작업이 있으면 표시하고, 종료된 작업은 정리 대상으로 모은다.
-	private async walkRequestChain(root: Bull.Job<Record<string, unknown>>): Promise<{ inFlight: boolean; jobs: Bull.Job<Record<string, unknown>>[] }> {
-		const jobs: Bull.Job<Record<string, unknown>>[] = [];
-		let current = root;
-		for (;;) {
-			const state = await current.getState();
-			if (state !== 'completed' && state !== 'failed') return { inFlight: true, jobs };
-			jobs.push(current);
-			// 완료된 자식은 removeOnComplete:false로 남아, 등록 시점에 기록된 불변 handoff 포인터로 체인을 잇는다.
-			const data = current.data as { handoff?: { next?: { requestId?: unknown; step?: unknown } } };
-			const next = data.handoff?.next;
-			if (!next || typeof next.requestId !== 'string' || typeof next.step !== 'number') break;
-			const child = await this.queueService.systemQueue.getJob(`note-cleanup-${next.requestId}-${next.step}`);
-			// 보존 기한 만료로 사라진 자식은 체인의 끝으로 본다.
-			if (!child) break;
-			current = child;
-		}
-		return { inFlight: false, jobs };
-	}
-
-	// 종료된 요청 체인의 루트와 자손을 함께 정리한다. 진행 중인 체인은 건드리지 않는다.
-	public async sweepRequestChain(userId: string, rootJobId: string) {
-		try {
-			await this.locked(userId, async () => {
-				const root = await this.queueService.systemQueue.getJob(rootJobId);
-				if (!root) return;
-				const chain = await this.walkRequestChain(root);
-				if (chain.inFlight) return;
-				for (const job of chain.jobs.reverse()) await job.remove();
-			});
-		} catch (error) {
-			// 잠금 충돌은 재시도하고, 그 밖의 실패는 다음 요청의 체인 정리로 넘긴다.
-			if (error instanceof CleanupInputError && error.code === 'CLEANUP_BUSY') throw error;
-			this.logger.error('Cleanup request chain sweep failed', { userId, error });
-		}
-		return { swept: true };
+	// 수동 요청의 대기 마커를 한 페이지 이어 처리한다. 완료면 마커를 지우고, 일시 실패는 마커를 보존해 다음 회차가 잇는다.
+	// 비재시도 오류는 마커를 지우고 종료 실패로 처리해 무한 재시도를 막는다.
+	public async continueManual(userId: string) {
+		return this.locked(userId, async () => {
+			const state = await this.states.findOneByOrFail({ userId });
+			const marker = state.manualRequest;
+			if (!marker) return done();
+			try {
+				const result = await this.processUserLocked(userId, marker.ruleIds, marker.cursor ?? undefined);
+				await this.states.update(userId, { manualRequest: result.complete ? null : { ruleIds: marker.ruleIds, cursor: result.cursor || marker.cursor } });
+				return result;
+			} catch (error) {
+				if (!isRetryableCleanupFailure(error)) await this.states.update(userId, { manualRequest: null });
+				throw error;
+			}
+		});
 	}
 
 	// 전역 키와 계정 키를 한 번의 Lua 실행으로 함께 확인·증가시킨다(원자적 예약).
@@ -595,58 +571,61 @@ export class NoteCleanupService {
 	// 회차 한 번에 계정마다 한 페이지(검사 최대 pageSize, 삭제 시도 최대 deleteChunk)만 처리한다.
 	// 검사 예산은 실제로 불러온 노트 수, 삭제 예산은 삭제 시도 수(실패 포함)만큼 쓰고 나머지는 반납한다.
 	public async processUser(userId: string, ruleIds?: string[], afterId?: string) {
-		return this.locked(userId, async () => {
-			await this.initialize(userId);
-			const state = await this.states.findOneByOrFail({ userId });
-			const user = await this.repository(MiUser).findOneByOrFail({ id: userId, host: IsNull() });
-			const selected = ruleIds ?? (await this.rules.findBy({ userId, enabled: true, action: 'delete', automatic: true })).map(r => r.id);
-			if (!selected.length) return done();
-			// 큐 등록 후 비활성화된 규칙은 이후 새 판정에 참여하지 않는다.
-			const current = (await this.rules.findBy({ userId, enabled: true, action: 'delete' })).filter(r => selected.includes(r.id)).map(r => r.id);
-			if (!current.length) return done();
-			const cursor = (ruleIds ? afterId : state.cursor) || undefined;
-			const scan = await this.reserveBudget('scan', userId, NOTE_CLEANUP_LIMITS.pageSize);
-			const consumption: CleanupScanConsumption = { used: 0, pending: false };
-			let page: Awaited<ReturnType<NoteCleanupService['page']>>;
-			try {
-				// 전역 한도가 찬 경우에는 이 계정 탓이 아니므로 자동 순번을 그대로 둔다.
-				if (!ruleIds && scan.exhausted !== 'global') await this.states.update(userId, { lastRunAt: new Date() });
-				if (scan.exhausted) return { ...done(), complete: false, cursor: cursor ?? '', throttled: scan.exhausted };
-				page = await this.page(userId, current, cursor, scan.amount, consumption);
-			} finally {
-				// 회복 조회와 본 페이지가 같은 예약을 나눠 쓰므로 사용량은 예약량을 넘지 않는다. 불명확한 조회 실패는 전액을 보수적으로 남긴다.
-				await this.releaseBudget(scan, consumption.pending ? scan.amount : consumption.used);
-			}
-			if (page.items.some(i => i.reason === 'blocked') || page.errors.some(e => activeKeep(e.ruleId, page.all))) return done();
-			// 지울 노트가 있을 때만 그 수만큼 삭제 예산을 예약한다. 보존만 하는 페이지는 삭제 예산을 쓰지 않는다.
-			const candidates = page.items.filter(i => i.decision === 'delete').length;
-			const removal = candidates ? await this.reserveBudget('delete', userId, Math.min(candidates, NOTE_CLEANUP_LIMITS.deleteChunk)) : null;
-			let failed = 0;
-			let attempted = 0;
-			let result: Awaited<ReturnType<typeof runCleanupBatch>>;
-			try {
-				result = await runCleanupBatch(page.items.map(i => ({ id: i.noteId, decision: i.decision })), removal?.amount ?? 0, async id => {
-					const note = await this.repository(MiNote).findOneBy({ id, userId });
-					if (!note) return false;
-					attempted++;
-					return await this.noteDeleteService.delete(user, note, false);
-				}, (noteId, error) => {
-					if (ruleIds && isRetryableCleanupFailure(error)) throw error;
-					// 한 노트의 실패가 뒤 노트와 다른 계정을 멈추지 않게 한다. 커서가 지나가므로 다음 순회에서 다시 검사된다.
-					failed++;
-					this.logger.error('Cleanup note deletion failed', { userId, noteId, error });
-				});
-			} finally {
-				// 삭제 시도가 예외로 중단돼도 예약한 삭제 예산은 실제 시도만큼만 남기고 반납한다.
-				if (removal) await this.releaseBudget(removal, attempted);
-			}
-			const complete = page.complete && result.examined === page.scanned;
-			// 첫 노트부터 삭제 예산이 없어 하나도 지나지 못했으면 기존 커서를 유지한다.
-			const next = result.cursor ?? cursor ?? null;
-			if (!ruleIds) await this.states.update(userId, { cursor: complete ? null : next });
-			const throttled = !complete && removal?.exhausted && result.examined < page.scanned ? removal.exhausted : undefined;
-			return { deleted: result.deleted, failed, examined: result.examined, complete, cursor: complete ? null : next ?? '', throttled };
-		});
+		return this.locked(userId, () => this.processUserLocked(userId, ruleIds, afterId));
+	}
+
+	// 이미 계정 잠금을 가진 경로(수동 마커 이어 처리)에서 쓰는 본체. 잠금을 중첩하지 않는다.
+	private async processUserLocked(userId: string, ruleIds?: string[], afterId?: string) {
+		await this.initialize(userId);
+		const state = await this.states.findOneByOrFail({ userId });
+		const user = await this.repository(MiUser).findOneByOrFail({ id: userId, host: IsNull() });
+		const selected = ruleIds ?? (await this.rules.findBy({ userId, enabled: true, action: 'delete', automatic: true })).map(r => r.id);
+		if (!selected.length) return done();
+		// 큐 등록 후 비활성화된 규칙은 이후 새 판정에 참여하지 않는다.
+		const current = (await this.rules.findBy({ userId, enabled: true, action: 'delete' })).filter(r => selected.includes(r.id)).map(r => r.id);
+		if (!current.length) return done();
+		const cursor = (ruleIds ? afterId : state.cursor) || undefined;
+		const scan = await this.reserveBudget('scan', userId, NOTE_CLEANUP_LIMITS.pageSize);
+		const consumption: CleanupScanConsumption = { used: 0, pending: false };
+		let page: Awaited<ReturnType<NoteCleanupService['page']>>;
+		try {
+			// 전역 한도가 찬 경우에는 이 계정 탓이 아니므로 자동 순번을 그대로 둔다.
+			if (!ruleIds && scan.exhausted !== 'global') await this.states.update(userId, { lastRunAt: new Date() });
+			if (scan.exhausted) return { ...done(), complete: false, cursor: cursor ?? '', throttled: scan.exhausted };
+			page = await this.page(userId, current, cursor, scan.amount, consumption);
+		} finally {
+			// 회복 조회와 본 페이지가 같은 예약을 나눠 쓰므로 사용량은 예약량을 넘지 않는다. 불명확한 조회 실패는 전액을 보수적으로 남긴다.
+			await this.releaseBudget(scan, consumption.pending ? scan.amount : consumption.used);
+		}
+		if (page.items.some(i => i.reason === 'blocked') || page.errors.some(e => activeKeep(e.ruleId, page.all))) return done();
+		// 지울 노트가 있을 때만 그 수만큼 삭제 예산을 예약한다. 보존만 하는 페이지는 삭제 예산을 쓰지 않는다.
+		const candidates = page.items.filter(i => i.decision === 'delete').length;
+		const removal = candidates ? await this.reserveBudget('delete', userId, Math.min(candidates, NOTE_CLEANUP_LIMITS.deleteChunk)) : null;
+		let failed = 0;
+		let attempted = 0;
+		let result: Awaited<ReturnType<typeof runCleanupBatch>>;
+		try {
+			result = await runCleanupBatch(page.items.map(i => ({ id: i.noteId, decision: i.decision })), removal?.amount ?? 0, async id => {
+				const note = await this.repository(MiNote).findOneBy({ id, userId });
+				if (!note) return false;
+				attempted++;
+				return await this.noteDeleteService.delete(user, note, false);
+			}, (noteId, error) => {
+				if (ruleIds && isRetryableCleanupFailure(error)) throw error;
+				// 한 노트의 실패가 뒤 노트와 다른 계정을 멈추지 않게 한다. 커서가 지나가므로 다음 순회에서 다시 검사된다.
+				failed++;
+				this.logger.error('Cleanup note deletion failed', { userId, noteId, error });
+			});
+		} finally {
+			// 삭제 시도가 예외로 중단돼도 예약한 삭제 예산은 실제 시도만큼만 남기고 반납한다.
+			if (removal) await this.releaseBudget(removal, attempted);
+		}
+		const complete = page.complete && result.examined === page.scanned;
+		// 첫 노트부터 삭제 예산이 없어 하나도 지나지 못했으면 기존 커서를 유지한다.
+		const next = result.cursor ?? cursor ?? null;
+		if (!ruleIds) await this.states.update(userId, { cursor: complete ? null : next });
+		const throttled = !complete && removal?.exhausted && result.examined < page.scanned ? removal.exhausted : undefined;
+		return { deleted: result.deleted, failed, examined: result.examined, complete, cursor: complete ? null : next ?? '', throttled };
 	}
 
 	// 자동 회차에서 계정 처리에 실패하면 순번을 뒤로 보내, 실패 계정이 오래된 lastRunAt으로 매번 앞자리를 차지하지 않게 한다.
@@ -654,14 +633,19 @@ export class NoteCleanupService {
 		await this.states.update(userId, { lastRunAt: new Date() });
 	}
 
-	public async automaticUsers(): Promise<string[]> {
-		return (await this.states.createQueryBuilder('state').where('EXISTS (SELECT 1 FROM note_cleanup_rule rule WHERE rule."userId" = state."userId" AND rule.enabled = true AND rule.automatic = true AND rule.action = :action)', { action: 'delete' }).orderBy('state.lastRunAt', 'ASC').addOrderBy('state.userId', 'ASC').take(NOTE_CLEANUP_LIMITS.roundUsers).getMany()).map(s => s.userId);
+	// 수동 대기 마커가 있는 계정 목록. 자동 회차가 먼저 처리하고 남은 몫만 자동 검사에 쓴다.
+	public async manualUsers(): Promise<string[]> {
+		return (await this.states.createQueryBuilder('state').where('state.manualRequest IS NOT NULL').orderBy('state.lastRunAt', 'ASC').addOrderBy('state.userId', 'ASC').take(NOTE_CLEANUP_LIMITS.roundUsers).getMany()).map(s => s.userId);
+	}
+
+	public async automaticUsers(limit: number = NOTE_CLEANUP_LIMITS.roundUsers): Promise<string[]> {
+		return (await this.states.createQueryBuilder('state').where('EXISTS (SELECT 1 FROM note_cleanup_rule rule WHERE rule."userId" = state."userId" AND rule.enabled = true AND rule.automatic = true AND rule.action = :action)', { action: 'delete' }).orderBy('state.lastRunAt', 'ASC').addOrderBy('state.userId', 'ASC').take(limit).getMany()).map(s => s.userId);
 	}
 }
 
-// 수동 요청의 루트 작업 ID. 처리기의 체인 정리도 같은 공식을 쓴다.
-export function noteCleanupRequestJobId(userId: string, ruleIds: string[]) {
-	return `note-cleanup-${userId}-${createHash('sha256').update([...ruleIds].sort().join(',')).digest('hex')}`;
+// 수동 요청의 깨우기 작업 ID. 계정당 하나만 존재해 대기 중 중복 접수를 막는다.
+export function noteCleanupRequestJobId(userId: string) {
+	return `note-cleanup-${userId}`;
 }
 
 // 정리 처리량 상한. 예약 창(windowMs)마다 전역과 계정별로 따로 센다.

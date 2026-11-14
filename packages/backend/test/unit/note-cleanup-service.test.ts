@@ -13,6 +13,7 @@ vi.mock('../../src/core/NotificationService.js', () => ({ NotificationService: c
 vi.mock('../../src/core/CacheService.js', () => ({ CacheService: class {} }));
 vi.mock('../../src/core/IdService.js', () => ({ IdService: class {} }));
 import { ReactionsBufferingService } from '../../src/core/ReactionsBufferingService.js';
+import { cleanupDependencies } from '../../src/core/NoteCleanupCondition.js';
 import { CleanupInputError, NoteCleanupService } from '../../src/core/NoteCleanupService.js';
 import UpdateAutoDeleteSettings from '../../src/server/api/endpoints/i/update-auto-delete-settings.js';
 import { meta as previewMeta } from '../../src/server/api/endpoints/i/note-cleanup/preview.js';
@@ -189,20 +190,16 @@ test('같은 진행 요청은 중복 등록하지 않고 규칙 수정도 큐를
 	expect(jobs.size).toBe(1);
 });
 
-test('지연된 이어 받기가 끝날 때까지 같은 요청을 중복 접수하지 않고 완료 뒤에는 다시 요청할 수 있다', async () => {
-	const { service, input, jobs } = fixture();
+test('대기 마커가 끝날 때까지 같은 요청을 중복 접수하지 않고 완료 뒤에는 다시 요청할 수 있다', async () => {
+	const { rows, service, input } = fixture();
 	const { rule } = await service.save('alice', input);
-	const first = await service.request('alice', [rule.id]);
-	const root = jobs.get(first.jobId) as any;
-	const requestId = root.data.requestId;
-	root.data.handoff = { next: { requestId, step: 1 } };
-	root.getState = async () => 'completed';
-	let childState = 'delayed';
-	const childId = `note-cleanup-${requestId}-1`;
-	jobs.set(childId, { data: { requestId, step: 1 }, getState: async () => childState, remove: async () => { jobs.delete(childId); } });
+	await service.request('alice', [rule.id]);
+	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: null });
 
 	expect((await service.request('alice', [rule.id])).queued).toBe(false);
-	childState = 'completed';
+	await service.continueManual('alice');
+
+	expect(rows.State[0].manualRequest).toBeNull();
 	expect((await service.request('alice', [rule.id])).queued).toBe(true);
 });
 
@@ -1122,6 +1119,106 @@ test('OC4: 노트 자체 필드만 쓰는 flag poll·files 남기기는 poll·fi
 	// 키워드 poll은 실제 조회 자료를 쓰므로 같은 실패에 보호 오류와 최초 알림을 남긴다.
 	expect(rows.Rule.find(r => r.id === 'kw')!.lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
 	expect(notifications).toHaveLength(1);
+	retryable.clear();
+	expect((await service.processUser('alice')).deleted).toBe(1);
+});
+
+// === 4차 델타 검토 지적 재현 (review-fix4) ===
+
+test('fix4 Sol1: 무관한 출처의 재시도 오류와 관련 출처의 비재시도 오류가 함께 나면 관련 남기기 규칙도 보호 오류와 최초 알림을 남긴다', async () => {
+	const { rows, service, input, failing, retryable, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'favorite', value: true }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	// favorite(관련)은 비재시도, pinned(무관)은 재시도 오류로 함께 실패한다. 재시도 출처만으로는 관련 규칙을 귀인할 수 없다.
+	failing.add('MiNoteFavorite');
+	retryable.add('MiUserNotePining');
+
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+
+	expect(rows.MiNote).toHaveLength(1);
+	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', userActionable: false, recovery: { source: 'data', noteIds: ['0'] } });
+	expect(notifications).toHaveLength(1);
+	expect((await service.list('alice')).blocked).toBe(true);
+});
+
+test('fix4 Sol1: 관련 출처의 재시도 오류와 무관한 출처의 비재시도 오류가 함께 나도 관련 남기기 규칙은 보호 오류와 최초 알림을 남긴다', async () => {
+	const { rows, service, input, failing, retryable, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'favorite', value: true }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	failing.add('MiUserNotePining');
+	retryable.add('MiNoteFavorite');
+
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+
+	expect(rows.MiNote).toHaveLength(1);
+	expect(rows.Rule[1].lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', userActionable: false, recovery: { source: 'data', noteIds: ['0'] } });
+	expect(notifications).toHaveLength(1);
+});
+
+test('fix4 Sol1: 혼합 실패의 같은 오류 재검사는 중복 통지하지 않고 복구 뒤에는 오류와 마커를 해제한다', async () => {
+	const { rows, service, input, failing, retryable, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'favorite', value: true }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	failing.add('MiNoteFavorite');
+	retryable.add('MiUserNotePining');
+
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+	expect(notifications).toHaveLength(1);
+
+	// 같은 혼합 실패 재검사: 접수 마커 보존, 중복 통지 없음.
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+	expect(rows.Rule[1].protectionNotification?.status).toBe('notified');
+	expect(notifications).toHaveLength(1);
+
+	// 두 출처가 모두 복구되면 다음 검사가 오류와 마커를 해제하고 삭제를 진행한다.
+	failing.clear();
+	retryable.clear();
+	expect((await service.processUser('alice')).deleted).toBe(1);
+	expect(rows.Rule[1].lastError).toBeNull();
+	expect(rows.Rule[1].protectionNotification).toBeNull();
+	expect(notifications).toHaveLength(1);
+});
+
+test('fix4 Sol1: 비재시도 조회 실패이 남은 병합 실패도 함께 실패한 출처의 남기기 규칙을 보호 오류로 기록한다', async () => {
+	const { rows, service, input, failing, buffering, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'count', userId: 'alice', name: '반응 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 2 }, lastError: null, legacy: null });
+	rows.Rule.push({ id: 'fav', userId: 'alice', name: '즐겨찾기 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'flag', field: 'favorite', value: true }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	failing.add('MiNoteFavorite');
+	Object.defineProperty(buffering, 'mergeReactions', { value: () => { throw new Error('merge failed'); }, writable: true, configurable: true });
+
+	await expect(service.processUser('alice')).rejects.toThrow('merge failed');
+
+	expect(rows.Rule.find(r => r.id === 'count')!.lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
+	expect(rows.Rule.find(r => r.id === 'fav')!.lastError).toMatchObject({ code: 'TEMPORARY_FAILURE', recovery: { source: 'data', noteIds: ['0'] } });
+	expect(notifications).toHaveLength(2);
+});
+
+test('fix4 OC3: 노트 자체 필드만 쓰는 count renotes와 keyword text·cw는 외부 조회 의존성이 없다', () => {
+	expect(cleanupDependencies({ type: 'count', field: 'renotes', operator: 'gte', value: 1 })).toEqual([]);
+	expect(cleanupDependencies({ type: 'count', field: 'reactions', operator: 'gte', value: 1 })).toEqual(['reactions']);
+	expect(cleanupDependencies({ type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['text', 'cw'] })).toEqual([]);
+	// 실제 조회 자료를 쓰는 대상은 의존성을 유지한다.
+	expect(cleanupDependencies({ type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['poll', 'fileComment', 'fileName', 'text'] })).toEqual(['poll', 'files', 'files']);
+});
+
+test('fix4 OC3: 자체 필드 조건 남기기는 무관한 조회 실패에 보호 오류를 기록하지 않고 복구 뒤 정상 판정한다', async () => {
+	const { rows, service, input, retryable, notifications } = fixture({ detached: true });
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'renotes', userId: 'alice', name: '리노트 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'renotes', operator: 'gte', value: 1 }, lastError: null, legacy: null });
+	rows.Rule.push({ id: 'kw', userId: 'alice', name: '본문 키워드 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'keyword', mode: 'literal', value: 'x', flags: '', targets: ['text', 'cw'] }, lastError: null, legacy: null });
+	rows.MiNote.push(note('0'));
+	retryable.add('MiNoteFavorite');
+
+	await expect(service.processUser('alice')).rejects.toThrow('Connection terminated');
+
+	expect(rows.Rule.find(r => r.id === 'renotes')!.lastError).toBeNull();
+	expect(rows.Rule.find(r => r.id === 'kw')!.lastError).toBeNull();
+	expect(notifications).toHaveLength(0);
 	retryable.clear();
 	expect((await service.processUser('alice')).deleted).toBe(1);
 });

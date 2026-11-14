@@ -120,7 +120,7 @@ test.each(['packFailure', 'pushFailure'] as const)('저장 뒤 %s는 같은 오�
 	expect(notifications).toHaveLength(1);
 });
 
-test('오류만 남은 구 형식은 한 번 재접수하고 내부 상태를 공개 응답에서 제외한다', async () => {
+test('오류만 남고 접수 마커가 없는 상태는 한 번 재접수하고 내부 상태를 공개 응답에서 제외한다', async () => {
 	const { rows, service, notifications } = fixture();
 	rows.Rule.push({ ...keep(), lastError: { ruleId: 'keep', code: 'MISSING_CLIP', path: 'condition', message: 'MISSING_CLIP', referenceType: 'clip', referenceId: 'gone', userActionable: true } });
 

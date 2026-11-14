@@ -81,4 +81,8 @@ export class MiNoteCleanupState {
 
 	@Column('timestamp with time zone', { nullable: true })
 	public previewAt: Date | null;
+
+	// 수동 정리 요청의 대기 마커. 완료·종료 실패 때 지우고, 일시 실패·예산 대기는 커서를 남겨 다음 회차가 잇는다.
+	@Column('jsonb', { nullable: true })
+	public manualRequest: { ruleIds: string[]; cursor: string | null } | null;
 }

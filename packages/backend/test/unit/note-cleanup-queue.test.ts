@@ -79,17 +79,21 @@ function fixture() {
 		const builder = () => {
 			const params: Record<string, any> = {};
 			let limit = Infinity;
+			let sql = '';
 			const self: any = {
-				where: (_sql: string, p?: object) => { Object.assign(params, p); return self; },
-				andWhere: (_sql: string, p?: object) => { Object.assign(params, p); return self; },
+				where: (s: string, p?: object) => { sql = s; Object.assign(params, p); return self; },
+				andWhere: (s: string, p?: object) => { sql += ` ${s}`; Object.assign(params, p); return self; },
 				innerJoin: () => self, select: () => self, orderBy: () => self, addOrderBy: () => self,
 				take: (n: number) => { limit = n; return self; },
 				getRawMany: async () => [],
 				getMany: async () => {
 					if (entity.name === 'State') {
+						const order = (a: any, b: any) => a.lastRunAt.getTime() - b.lastRunAt.getTime() || a.userId.localeCompare(b.userId);
+						// manualUsers: 수동 대기 마커가 있는 계정을 lastRunAt, userId 순으로
+						if (sql.includes('manualRequest')) return data.filter(s => s.manualRequest != null).sort(order).slice(0, limit);
 						// automaticUsers: 활성 자동 지우기 규칙이 있는 계정을 lastRunAt, userId 순으로
 						return data.filter(s => rows.Rule.some(r => r.userId === s.userId && r.enabled && r.automatic && r.action === 'delete'))
-							.sort((a, b) => a.lastRunAt.getTime() - b.lastRunAt.getTime() || a.userId.localeCompare(b.userId)).slice(0, limit);
+							.sort(order).slice(0, limit);
 					}
 					if (entity.name !== 'MiNote' || !params.userId) return [];
 					if (faults.noteLookup) throw new Error('note lookup failed');
@@ -149,17 +153,14 @@ function fixture() {
 			rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === target.id), 1);
 		},
 	};
-	let continuation: { data: Record<string, unknown>; delay: number } | undefined;
 	const systemQueue = {
 		toKey: (s: string) => `test:system:${s}`,
 		getJob: async (id: string) => jobs.get(id),
 		add: async (name: string, data: Record<string, unknown>, options: { jobId: string; delay?: number }) => {
 			added.push(options.jobId); addedJobs.push({ name, data, options });
-			// 실제 BullMQ처럼 저장된 작업도 id와 data 갱신을 가진다.
+			// 실제 BullMQ처럼 고정 jobId 재등록은 같은 작업을 덮어쓴다(no-op).
 			const stored: any = { id: options.jobId, name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } };
-			stored.updateData = async (next: Record<string, unknown>) => { stored.data = next; };
 			jobs.set(options.jobId, stored);
-			if (options.delay !== undefined && data.sweep === undefined) continuation = { data, delay: options.delay };
 		},
 	};
 	const waiting = { deliver: [] as { timestamp: number }[], inbox: [] as { timestamp: number }[] };
@@ -174,92 +175,97 @@ function fixture() {
 	const processor = new AutoDeleteNotesProcessorService(service, queueService as any);
 	const addUser = (userId: string, lastRunAt = EPOCH) => {
 		rows.MiUser.push({ id: userId, host: null, autoDeleteNotesAfterDays: null, autoDeleteKeepFavorites: false });
-		rows.State.push({ userId, migrated: false, cursor: null, lastRunAt, previewAt: null, previewToken: null });
+		rows.State.push({ userId, migrated: false, cursor: null, lastRunAt, previewAt: null, previewToken: null, manualRequest: null });
 	};
 	const addNotes = (userId: string, count: number) => { for (let i = 0; i < count; i++) rows.MiNote.push(note(userId, i)); };
 	const notesOf = (userId: string) => rows.MiNote.filter(n => n.userId === userId);
 	const state = (userId: string) => rows.State.find(s => s.userId === userId);
-	// 이어 받기 작업을 같은 시험 핸들로 넘겨 반복 회차를 관찰한다. id를 주면 실제 작업처럼 저장 행과 data를 공유한다.
-	const job = (data: Record<string, unknown>, id?: string) => {
-		const delays: number[] = [];
-		const self = { id, data: { ...data }, delays, updateData: async (next: Record<string, unknown>) => { self.data = next; const stored = id ? jobs.get(id) as any : undefined; if (stored) stored.data = next; }, take: () => continuation };
-		return self;
-	};
+	const job = (data: Record<string, unknown>, id?: string) => ({ id, data: { ...data } });
 	return { faults, onRead: (callback: () => void) => { afterRead = callback; }, rows, busy, scanned, failingNotes, retryableDeletes, deleteAttempts, redis, jobs, added, addedJobs, waiting, service, processor, addUser, addNotes, notesOf, state, job };
 }
 
-// 작업 한 번 실행: 완료면 'done', 이어 받기를 접수하면 'delayed'
-async function run(processor: AutoDeleteNotesProcessorService, job: { data: Record<string, unknown>; delays: number[]; take: () => { data: Record<string, unknown>; delay: number } | undefined }) {
+// 작업 한 번 실행: 완료면 'done', 마커를 남긴 대기면 'delayed'
+async function run(processor: AutoDeleteNotesProcessorService, job: { data: Record<string, unknown> }) {
 	const result = await processor.process(job as any) as { delayed?: boolean };
-	if (!result.delayed) return 'done';
-	const next = job.take()!;
-	job.data = next.data;
-	job.delays.push(Date.now() + next.delay);
-	return 'delayed';
+	return result.delayed ? 'delayed' : 'done';
 }
 
-test('연합 큐가 밀리면 수동 정리 요청도 지우지 않고 요청과 커서를 그대로 둔 채 지연하며 해소 후 그 커서부터 잇는다', async () => {
+test('연합 큐가 밀리면 수동 정리 요청은 마커와 커서를 그대로 둔 채 기다리고 작업은 늘지 않으며 해소 후 그 커서부터 잇는다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
 	f.addNotes('alice', 4);
+	await f.service.request('alice', ['d1']);
+	// 이전 회차가 진행한 커서
+	f.state('alice').manualRequest.cursor = noteId('alice', 1);
 	f.waiting.deliver.push({ timestamp: NOW - 60_000 });
-	const data = { userId: 'alice', ruleIds: ['d1'], afterId: noteId('alice', 1), requestId: 'request' };
-	const manual = f.job(data);
+	const manual = f.job({ userId: 'alice', manual: true });
 	expect(await run(f.processor, manual)).toBe('delayed');
 	expect(f.notesOf('alice')).toHaveLength(4);
-	expect(f.scanned.get('alice') ?? 0).toBe(0);
-	expect(manual.data).toMatchObject(data);
-	expect(manual.delays[0]).toBeGreaterThan(NOW);
-	// 자동 회차도 지연 중에는 커서와 순번을 바꾸지 않는다.
+	expect(f.scanned.get('alice')).toBe(1);
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 1) });
+	expect(f.added).toHaveLength(1);
+	// 자동 회차도 적체 중에는 건너뛰며 마커·커서·순번을 바꾸지 않는다.
 	f.rows.Rule.push(deleteRule('alice', 'auto'));
 	f.state('alice').cursor = noteId('alice', 0);
 	expect(await f.processor.process({ data: {} } as any)).toMatchObject({ skipped: true });
 	expect(f.state('alice')).toMatchObject({ cursor: noteId('alice', 0), lastRunAt: EPOCH });
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 1) });
 	f.waiting.deliver.length = 0;
 	f.rows.Rule.pop();
 	expect(await run(f.processor, manual)).toBe('done');
 	expect(f.notesOf('alice').map(n => n.id)).toEqual([noteId('alice', 0), noteId('alice', 1)]);
+	expect(f.state('alice').manualRequest).toBeNull();
+	expect(f.added).toHaveLength(1);
 });
 
-test('계정별 검사·삭제 한도는 규칙 조합을 나눈 여러 요청에도 공유되고 다른 계정의 몫을 남긴다', async () => {
+test('계정별 검사·삭제 한도는 수동 요청에도 적용되고 다른 계정의 몫을 남긴다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.addUser('bob');
-	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false), deleteRule('alice', 'd2', 120, false), deleteRule('bob', 'b1', 60, false));
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false), deleteRule('bob', 'b1', 60, false));
 	f.addNotes('alice', 300);
 	f.addNotes('bob', 10);
-	const requests = [['d1'], ['d2'], ['d1', 'd2']].map(ruleIds => f.job({ userId: 'alice', ruleIds, requestId: ruleIds.join() }));
-	const pending = new Set(requests);
-	for (let i = 0; i < 200 && pending.size; i++) {
-		for (const request of [...pending]) {
-			const before = request.delays.length;
-			const outcome = await run(f.processor, request);
-			// 다음 5분 창 이후로 미룬 요청은 이 창에서 다시 돌리지 않는다.
-			if (outcome === 'done' || (request.delays.length > before && request.delays.at(-1)! >= NOW - (NOW % 300_000) + 300_000)) pending.delete(request);
-		}
-	}
+	await f.service.request('alice', ['d1']);
+	const manual = f.job({ userId: 'alice', manual: true });
+	expect(await run(f.processor, manual)).toBe('delayed');
 	const aliceDeleted = 300 - f.notesOf('alice').length;
 	expect(aliceDeleted).toBeGreaterThan(0);
 	expect(aliceDeleted).toBeLessThanOrEqual(60);
-	expect(pending.size).toBe(0);
-	expect(await run(f.processor, f.job({ userId: 'bob', ruleIds: ['b1'], requestId: 'bob' }))).toBe('done');
+	expect(f.state('alice').manualRequest).not.toBeNull();
+	expect(f.added).toHaveLength(1);
+	// 같은 창에서 다른 계정은 자기 몫으로 삭제할 수 있다.
+	await f.service.request('bob', ['b1']);
+	expect(await run(f.processor, f.job({ userId: 'bob', manual: true }))).toBe('done');
 	expect(f.notesOf('bob')).toHaveLength(0);
+	// 다음 창에서 이어 처리하면 한도가 다시 적용된다.
+	vi.setSystemTime(NOW + NOTE_CLEANUP_LIMITS.windowMs);
+	expect(await run(f.processor, manual)).toBe('delayed');
+	const total = 300 - f.notesOf('alice').length;
+	expect(total).toBeGreaterThan(aliceDeleted);
+	expect(total).toBeLessThanOrEqual(120);
+	expect(f.added).toHaveLength(2);
 });
 
-test('보호만 하는 노트를 오래 검사하는 계정도 계정별 검사 한도에서 멈추고 다음 창으로 미룬다', async () => {
+test('보호만 하는 노트를 오래 검사하는 계정도 계정별 검사 한도에서 멈추고 마커 커서를 남겨 다음 창에 잇는다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false), keepAll('alice', 'k1'));
-	f.addNotes('alice', 2000);
-	const request = f.job({ userId: 'alice', ruleIds: ['d1'], requestId: 'scan' });
-	let outcome = 'delayed';
-	for (let i = 0; i < 100 && outcome === 'delayed' && !(request.delays.at(-1)! >= NOW - (NOW % 300_000) + 300_000); i++) outcome = await run(f.processor, request);
-	expect(outcome).toBe('delayed');
-	expect(f.scanned.get('alice')).toBeLessThanOrEqual(1200);
-	expect(request.delays.at(-1)).toBeGreaterThanOrEqual(NOW - (NOW % 300_000) + 300_000);
-	expect(typeof request.data.afterId).toBe('string');
-	expect(f.notesOf('alice')).toHaveLength(2000);
+	f.addNotes('alice', 3000);
+	await f.service.request('alice', ['d1']);
+	const manual = f.job({ userId: 'alice', manual: true });
+	expect(await run(f.processor, manual)).toBe('delayed');
+	// 접수 검증 1건을 더해도 계정 검사 한도를 넘지 않는다.
+	expect(f.scanned.get('alice')).toBeGreaterThanOrEqual(1200);
+	expect(f.scanned.get('alice')).toBeLessThanOrEqual(1201);
+	expect(f.state('alice').manualRequest.cursor).toEqual(expect.any(String));
+	expect(f.notesOf('alice')).toHaveLength(3000);
+	expect(f.added).toHaveLength(1);
+	// 다음 창에서 같은 마커로 이어 검사하고 다시 한도에서 멈춘다.
+	vi.setSystemTime(NOW + NOTE_CLEANUP_LIMITS.windowMs);
+	expect(await run(f.processor, manual)).toBe('delayed');
+	expect(f.scanned.get('alice')).toBeLessThanOrEqual(2401);
+	expect(f.added).toHaveLength(1);
 });
 
 test('보존만 하는 계정은 삭제 예산을 쓰지 않아 같은 창의 뒤 계정 삭제를 막지 않는다', async () => {
@@ -296,10 +302,11 @@ test('잠금 충돌·자료 실패 계정이 있어도 같은 회차의 뒤 계�
 	expect(f.notesOf('busy')).toHaveLength(3);
 	expect(f.notesOf('broken')).toHaveLength(3);
 	for (const userId of ['busy', 'broken']) expect(f.state(userId).lastRunAt.getTime()).toBe(NOW);
-	// 수동 요청의 잠금 충돌은 실패가 아니라 요청을 보존한 재시도다.
-	const manual = f.job({ userId: 'busy', ruleIds: ['busy-d'], requestId: 'retry' });
-	expect(await run(f.processor, manual)).toBe('delayed');
-	expect(manual.data).toMatchObject({ userId: 'busy', ruleIds: ['busy-d'], requestId: 'retry' });
+	// 수동 요청의 잠금 충돌은 실패가 아니라 마커를 보존한 채 다음 회차로 넘기는 대기다.
+	f.state('busy').manualRequest = { ruleIds: ['busy-d'], cursor: null };
+	expect(await run(f.processor, f.job({ userId: 'busy', manual: true }))).toBe('delayed');
+	expect(f.state('busy').manualRequest).toEqual({ ruleIds: ['busy-d'], cursor: null });
+	expect(f.added).toHaveLength(0);
 });
 
 test('한 노트의 지속 삭제 실패는 성공으로 세지 않고 뒤 노트를 계속 지우며 다음 순회에서 다시 검사한다', async () => {
@@ -322,18 +329,19 @@ test('한 노트의 지속 삭제 실패는 성공으로 세지 않고 뒤 노�
 	expect(await f.service.processUser('alice')).toMatchObject({ deleted: 1, failed: 0 });
 });
 
-test('수동 요청에서 실패한 노트는 뒤 노트의 삭제를 막지 않고 실패 수를 따로 센다', async () => {
+test('수동 요청에서 실패한 노트는 뒤 노트의 삭제를 막지 않고 실패 수를 따로 세며 완료 뒤 마커를 지운다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
 	f.addNotes('alice', 12);
 	f.failingNotes.add(noteId('alice', 0));
-	const request = f.job({ userId: 'alice', ruleIds: ['d1'], requestId: 'fail' });
-	let outcome = 'delayed';
-	for (let i = 0; i < 20 && outcome === 'delayed'; i++) outcome = await run(f.processor, request);
-	expect(outcome).toBe('done');
+	await f.service.request('alice', ['d1']);
+	const result = await f.processor.process(f.job({ userId: 'alice', manual: true }) as any) as { deleted: number; failed: number };
+	expect(result).toMatchObject({ deleted: 11, failed: 1 });
 	expect(f.notesOf('alice').map(n => n.id)).toEqual([noteId('alice', 0)]);
 	expect(f.deleteAttempts.get(noteId('alice', 0))).toBe(1);
+	expect(f.state('alice').manualRequest).toBeNull();
+	expect(f.added).toHaveLength(1);
 });
 
 test('설정 수정은 대기 중인 정리 요청을 취소·교체하거나 새로 등록하지 않는다', async () => {
@@ -343,9 +351,11 @@ test('설정 수정은 대기 중인 정리 요청을 취소·교체하거나 �
 	f.addNotes('alice', 1);
 	await f.service.request('alice', ['d1']);
 	const snapshot = new Map(f.jobs);
+	const marker = structuredClone(f.state('alice').manualRequest);
 	await f.service.save('alice', { name: '수정', action: 'delete', condition: { type: 'age', operator: 'gt', seconds: 3600 } }, 'd1');
 	await f.service.updateLegacy('alice', { autoDeleteKeepFavorites: true });
 	expect(f.jobs).toEqual(snapshot);
+	expect(f.state('alice').manualRequest).toEqual(marker);
 	expect(f.added).toHaveLength(1);
 });
 
@@ -401,26 +411,28 @@ test('전역 삭제 예산이 다 찬 회차는 뒤 계정의 검사 예산을 �
 	expect(f.state('second').lastRunAt).toEqual(new Date(2));
 });
 
-test('수동 요청은 한 작업에서 회차 시간 상한까지만 이어 처리하고 진행한 커서를 남겨 곧 다시 잇는다', async () => {
+test('수동 요청은 한 작업에서 회차 시간 상한까지만 이어 처리하고 커서를 마커에 남겨 다음 회차가 잇는다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
 	f.addNotes('alice', 30);
-	const original = f.service.processUser.bind(f.service);
-	f.service.processUser = async (...args: Parameters<typeof original>) => {
+	const original = f.service.continueManual.bind(f.service);
+	f.service.continueManual = async (...args: Parameters<typeof original>) => {
 		const result = await original(...args);
 		vi.setSystemTime(Date.now() + NOTE_CLEANUP_LIMITS.roundMs / 2);
 		return result;
 	};
-	const request = f.job({ userId: 'alice', ruleIds: ['d1'], requestId: 'long' });
-	const started = Date.now();
-	expect(await run(f.processor, request)).toBe('delayed');
-	// 두 페이지(삭제 시도 5개씩)를 처리한 뒤 시간 상한에 걸린다. 예산 소진이 아니므로 다음 창까지 기다리지 않는다.
+	await f.service.request('alice', ['d1']);
+	const manual = f.job({ userId: 'alice', manual: true });
+	expect(await run(f.processor, manual)).toBe('delayed');
+	// 두 페이지(삭제 시도 5개씩)를 처리한 뒤 시간 상한에 걸린다. 자식 작업 없이 마커에 커서를 남긴다.
 	expect(f.notesOf('alice')).toHaveLength(20);
-	expect(request.data).toMatchObject({ userId: 'alice', ruleIds: ['d1'], afterId: noteId('alice', 9), requestId: 'long' });
-	expect(request.delays[0] - (started + NOTE_CLEANUP_LIMITS.roundMs)).toBeLessThan(NOTE_CLEANUP_LIMITS.windowMs / 2);
-	expect(await run(f.processor, request)).toBe('delayed');
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 9) });
+	expect(f.added).toHaveLength(1);
+	expect(await run(f.processor, manual)).toBe('delayed');
 	expect(f.notesOf('alice')).toHaveLength(10);
+	expect(f.state('alice').manualRequest.cursor).toBe(noteId('alice', 19));
+	expect(f.added).toHaveLength(1);
 });
 
 test('구 API는 정리 잠금 충돌을 500 대신 기존 API 오류 형식의 CLEANUP_BUSY로 알리고 아무것도 바꾸지 않는다', async () => {
@@ -711,25 +723,29 @@ test('OC4: 수동 요청의 재시도 가능한 삭제 실패도 시도한 만�
 	expect(f.notesOf('alice').map(n => n.id)).toEqual([noteId('alice', 1), noteId('alice', 2)]);
 });
 
-test('OC1: 수동 요청의 비재시도 오류는 종료 실패로 처리해 무한 재시도를 막는다', async () => {
+test('OC1: 수동 요청의 비재시도 오류는 마커를 지우고 종료 실패로 처리해 무한 재시도를 막는다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
 	f.addNotes('alice', 1);
+	await f.service.request('alice', ['d1']);
 	// 큐 등록 뒤 계정이 물리 삭제된 상태
 	f.rows.MiUser.splice(0);
-	const manual = f.job({ userId: 'alice', ruleIds: ['d1'], requestId: 'gone' });
 
-	await expect(f.processor.process(manual as any)).rejects.toBeInstanceOf(UnrecoverableError);
+	await expect(f.processor.process(f.job({ userId: 'alice', manual: true }) as any)).rejects.toBeInstanceOf(UnrecoverableError);
+
+	expect(f.state('alice').manualRequest).toBeNull();
+	expect(f.added).toHaveLength(1);
 });
 
-test('OC1: 실패한 요청 작업은 새 요청으로 교체할 수 있다', async () => {
+test('OC1: 종료 실패로 마커가 지워지면 같은 사용자가 새 요청을 접수할 수 있다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
 	const first = await f.service.request('alice', ['d1']);
-	const root = f.jobs.get(first.jobId) as any;
-	root.getState = async () => 'failed';
+	f.rows.MiUser.splice(0);
+	await expect(f.processor.process(f.job({ userId: 'alice', manual: true }) as any)).rejects.toBeInstanceOf(UnrecoverableError);
+	f.rows.MiUser.push({ id: 'alice', host: null, autoDeleteNotesAfterDays: null, autoDeleteKeepFavorites: false });
 
 	const second = await f.service.request('alice', ['d1']);
 
@@ -737,131 +753,47 @@ test('OC1: 실패한 요청 작업은 새 요청으로 교체할 수 있다', as
 	expect(second.jobId).toBe(first.jobId);
 });
 
-test('Sol6: 요청 작업은 유한 재시도와 보존 기한을 두고 이어 받기 자식은 완료 뒤에도 체인 추적용으로 보존한다', async () => {
+test('Sol6: 깨우기 작업은 유한 재시도와 보존 기한을 두고 완료 뒤 자동 제거되며 대기는 작업을 쌓지 않는다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
 	f.addNotes('alice', 2);
 	await f.service.request('alice', ['d1']);
-	const rootOptions = f.addedJobs[0].options as any;
-	expect(rootOptions.removeOnComplete).toBe(false);
-	expect(rootOptions.attempts).toBeLessThan(1000);
-	expect(rootOptions.removeOnFail).toMatchObject({ age: expect.any(Number) });
+	const options = f.addedJobs[0].options as any;
+	expect(options.removeOnComplete).toBe(true);
+	expect(options.attempts).toBeLessThan(1000);
+	expect(options.removeOnFail).toMatchObject({ age: expect.any(Number) });
 	f.waiting.deliver.push({ timestamp: NOW - 60_000 });
-	const manual = f.job({ userId: 'alice', ruleIds: ['d1'], requestId: 'req' });
 
-	expect(await run(f.processor, manual)).toBe('delayed');
+	expect(await run(f.processor, f.job({ userId: 'alice', manual: true }))).toBe('delayed');
 
-	const childOptions = f.addedJobs.at(-1)!.options as any;
-	expect(childOptions.removeOnComplete).toBe(false);
-	expect(childOptions.attempts).toBeLessThan(1000);
-	expect(childOptions.removeOnFail).toMatchObject({ age: expect.any(Number) });
+	expect(f.addedJobs).toHaveLength(1);
 });
 
-test('OC2: 완료된 이어 받기 체인은 새 요청이 루트와 자손을 함께 정리한다', async () => {
-	const f = fixture();
-	f.addUser('alice');
-	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
-	const first = await f.service.request('alice', ['d1']);
-	const root = f.jobs.get(first.jobId) as any;
-	root.data.handoff = { next: { requestId: 'req', step: 1 } };
-	root.getState = async () => 'completed';
-	const childId = 'note-cleanup-req-1';
-	f.jobs.set(childId, { data: { requestId: 'req', step: 1 }, getState: async () => 'completed', remove: async () => { f.jobs.delete(childId); } });
-
-	const second = await f.service.request('alice', ['d1']);
-
-	expect(second.queued).toBe(true);
-	expect(f.jobs.has(childId)).toBe(false);
-});
-
-test('OC2: 이어 받기 자식이 유실·만료돼도 같은 요청을 다시 접수할 수 있다', async () => {
-	const f = fixture();
-	f.addUser('alice');
-	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
-	const first = await f.service.request('alice', ['d1']);
-	const root = f.jobs.get(first.jobId) as any;
-	root.data.handoff = { next: { requestId: 'req', step: 1 } };
-	root.getState = async () => 'completed';
-	// 자식 작업이 보존 기한 만료 등으로 사라진 상태
-
-	const second = await f.service.request('alice', ['d1']);
-
-	expect(second.queued).toBe(true);
-	expect(f.jobs.has(first.jobId)).toBe(true);
-});
-
-test('OC2: 실패한 이어 받기 자식은 루트와 함께 정리되고 새 요청을 접수한다', async () => {
-	const f = fixture();
-	f.addUser('alice');
-	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
-	const first = await f.service.request('alice', ['d1']);
-	const root = f.jobs.get(first.jobId) as any;
-	root.data.handoff = { next: { requestId: 'req', step: 1 } };
-	root.getState = async () => 'completed';
-	const childId = 'note-cleanup-req-1';
-	f.jobs.set(childId, { data: { requestId: 'req', step: 1 }, getState: async () => 'failed', remove: async () => { f.jobs.delete(childId); } });
-
-	const second = await f.service.request('alice', ['d1']);
-
-	expect(second.queued).toBe(true);
-	expect(f.jobs.has(childId)).toBe(false);
-});
-
-test('Sol6: 최종 완료는 체인 정리를 접수하고 정리 작업은 종료된 루트를 제거한다', async () => {
+test('Sol6: 최종 완료는 마커를 지우고 별도 정리 작업을 등록하지 않는다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
 	f.addNotes('alice', 1);
-	const first = await f.service.request('alice', ['d1']);
-	const root = f.jobs.get(first.jobId) as any;
-	root.getState = async () => 'completed';
-	const manual = f.job({ userId: 'alice', ruleIds: ['d1'], requestId: 'req' });
+	await f.service.request('alice', ['d1']);
 
-	expect(await run(f.processor, manual)).toBe('done');
+	expect(await run(f.processor, f.job({ userId: 'alice', manual: true }))).toBe('done');
 
-	const sweep = f.addedJobs.at(-1)!;
-	expect(sweep.data).toMatchObject({ userId: 'alice', sweep: first.jobId });
-	expect((sweep.options as any).delay).toBeGreaterThan(0);
-	expect((sweep.options as any).removeOnComplete).toBe(true);
-
-	await f.processor.process({ data: sweep.data } as any);
-
-	expect(f.jobs.has(first.jobId)).toBe(false);
-});
-
-test('Sol6: 체인 정리는 진행 중인 체인을 건드리지 않고 종료된 루트와 자손만 제거한다', async () => {
-	const f = fixture();
-	f.addUser('alice');
-	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
-	const first = await f.service.request('alice', ['d1']);
-	const root = f.jobs.get(first.jobId) as any;
-	root.data.handoff = { next: { requestId: 'req', step: 1 } };
-	root.getState = async () => 'completed';
-	let childState = 'delayed';
-	const childId = 'note-cleanup-req-1';
-	f.jobs.set(childId, { data: { requestId: 'req', step: 1 }, getState: async () => childState, remove: async () => { f.jobs.delete(childId); } });
-
-	await f.service.sweepRequestChain('alice', first.jobId);
-	expect(f.jobs.has(childId)).toBe(true);
-	expect(f.jobs.has(first.jobId)).toBe(true);
-
-	childState = 'completed';
-	await f.service.sweepRequestChain('alice', first.jobId);
-	expect(f.jobs.has(childId)).toBe(false);
-	expect(f.jobs.has(first.jobId)).toBe(false);
+	expect(f.state('alice').manualRequest).toBeNull();
+	expect(f.notesOf('alice')).toHaveLength(0);
+	expect(f.added).toHaveLength(1);
 });
 
 // === 델타 검토 지적 재현 (review-fix2) ===
 
-// 매 페이지 뒤 회차 시간 상한의 절반만큼 시각을 당겨, 작업 하나가 두 페이지 처리 후 이어 받기를 만든다.
+// 매 페이지 뒤 회차 시간 상한의 절반만큼 시각을 당겨, 작업 하나가 두 페이지 처리 후 대기하도록 한다.
 function hopFixture() {
 	const f = fixture();
 	f.addUser('alice');
 	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
 	f.addNotes('alice', 30);
-	const original = f.service.processUser.bind(f.service);
-	f.service.processUser = async (...args: Parameters<typeof original>) => {
+	const original = f.service.continueManual.bind(f.service);
+	f.service.continueManual = async (...args: Parameters<typeof original>) => {
 		const result = await original(...args);
 		vi.setSystemTime(Date.now() + NOTE_CLEANUP_LIMITS.roundMs / 2);
 		return result;
@@ -869,58 +801,184 @@ function hopFixture() {
 	return f;
 }
 
-test('N1: 두 번 이어 받은 요청은 보존된 자식 체인을 따라 중복 접수를 막고 종료 뒤 루트와 자손을 함께 정리한다', async () => {
+test('N1: 여러 홉으로 이어지는 수동 요청은 마커 하나로 유지되고 대기 동안 작업이 늘지 않으며 중복 접수를 막는다', async () => {
 	const f = hopFixture();
 	const first = await f.service.request('alice', ['d1']);
-	const rootId = first.jobId;
-	const root = f.jobs.get(rootId) as any;
-	const requestId = root.data.requestId as string;
-	// 홉 1: 루트가 자식 1을 등록하고 완료한다.
-	expect(await run(f.processor, f.job({ ...root.data }, rootId))).toBe('delayed');
-	root.getState = async () => 'completed';
-	expect((f.jobs.get(rootId) as any).data.handoff.next.step).toBe(1);
-	const child1Id = `note-cleanup-${requestId}-1`;
-	// 홉 2: 자식 1이 자식 2를 등록하고 완료한다. 완료된 자식은 체인 추적용으로 제거되지 않는다.
-	const child1 = f.jobs.get(child1Id) as any;
-	expect(await run(f.processor, f.job({ ...child1.data }, child1Id))).toBe('delayed');
-	child1.getState = async () => 'completed';
-	const child2Id = `note-cleanup-${requestId}-2`;
-	expect(f.jobs.has(child1Id)).toBe(true);
-	expect(f.jobs.has(child2Id)).toBe(true);
-	// 루트 → 자식 1 → 자식 2의 불변 handoff 포인터를 따라가 꼬리가 진행 중이면 중복 접수하지 않는다.
-	expect((await f.service.request('alice', ['d1'])).queued).toBe(false);
-	await f.service.sweepRequestChain('alice', rootId);
-	expect(f.jobs.has(rootId)).toBe(true);
-	expect(f.jobs.has(child1Id)).toBe(true);
-	expect(f.jobs.has(child2Id)).toBe(true);
-	// 꼬리가 완료되면 종료된 체인의 루트와 자손을 함께 정리하고 새 요청을 접수한다.
-	(f.jobs.get(child2Id) as any).getState = async () => 'completed';
-	await f.service.sweepRequestChain('alice', rootId);
-	expect(f.jobs.has(rootId)).toBe(false);
-	expect(f.jobs.has(child1Id)).toBe(false);
-	expect(f.jobs.has(child2Id)).toBe(false);
+	expect(first.jobId).toBe('note-cleanup-alice');
+	const manual = f.job({ userId: 'alice', manual: true });
+	// 홉 1: 두 페이지 처리 뒤 시간 상한으로 대기. 자식 작업은 없다.
+	expect(await run(f.processor, manual)).toBe('delayed');
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 9) });
+	expect(f.added).toHaveLength(1);
+	// 진행 중 재요청은 규칙 조합이 달라도 접수하지 않는다.
+	f.rows.Rule.push(deleteRule('alice', 'd2', 120, false));
+	expect((await f.service.request('alice', ['d2'])).queued).toBe(false);
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 9) });
+	expect(f.added).toHaveLength(1);
+	// 홉 2, 홉 3: 같은 마커로 이어 처리하고 완료하면 마커를 지운다.
+	expect(await run(f.processor, manual)).toBe('delayed');
+	expect(f.state('alice').manualRequest.cursor).toBe(noteId('alice', 19));
+	expect(await run(f.processor, manual)).toBe('done');
+	expect(f.state('alice').manualRequest).toBeNull();
+	expect(f.notesOf('alice')).toHaveLength(0);
+	expect(f.added).toHaveLength(1);
+	// 완료 뒤 새 요청은 같은 고정 작업 ID로 다시 접수한다.
 	expect((await f.service.request('alice', ['d1'])).queued).toBe(true);
+	expect(f.added).toHaveLength(2);
 });
 
-test('N1: 이어 받기 기록 뒤 중단된 자식은 같은 자식 ID를 다시 등록하고 보존된 체인으로 중복 접수를 막는다', async () => {
+test('N1: 깨우기 작업이 중단·유실돼도 마커가 요청을 보존하고 회차가 이어 처리한다', async () => {
 	const f = hopFixture();
+	await f.service.request('alice', ['d1']);
+	const manual = f.job({ userId: 'alice', manual: true });
+	expect(await run(f.processor, manual)).toBe('delayed');
+	const cursor = f.state('alice').manualRequest.cursor;
+	// 같은 작업이 스톨 등으로 재실행돼도 마커 커서부터 잇고 작업은 늘지 않는다.
+	expect(await run(f.processor, manual)).toBe('delayed');
+	expect(f.state('alice').manualRequest.cursor).not.toBe(cursor);
+	expect(f.added).toHaveLength(1);
+	// 깨우기 작업이 유실된 상태에서는 자동 회차가 마커를 찾아 이어 처리한다.
+	f.jobs.clear();
+	vi.setSystemTime(NOW + NOTE_CLEANUP_LIMITS.windowMs * 2);
+	expect(await f.processor.process({ data: {} } as any)).toMatchObject({ deletedCount: 10, skipped: false });
+	expect(f.notesOf('alice')).toHaveLength(0);
+	expect(f.state('alice').manualRequest).toBeNull();
+	expect(f.added).toHaveLength(1);
+});
+
+// === 4차 델타 검토 지적 재현 (review-fix4) ===
+
+test('fix4: 수동 요청 접수는 대기 마커를 남기고 사용자별 고정 깨우기 작업을 등록한다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	f.addNotes('alice', 2);
+
+	const result = await f.service.request('alice', ['d1']);
+
+	expect(result).toEqual({ queued: true, jobId: 'note-cleanup-alice' });
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: null });
+	expect(f.addedJobs).toHaveLength(1);
+	expect(f.addedJobs[0].data).toEqual({ userId: 'alice', manual: true });
+	expect(f.addedJobs[0].options).toMatchObject({ jobId: 'note-cleanup-alice', removeOnComplete: true, attempts: 10, backoff: { type: 'fixed', delay: 5000 }, removeOnFail: { age: 7 * 86400 } });
+});
+
+test('fix4: 깨우기 작업은 접수 직후 시작해 완료까지 처리하고 마커를 지운다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	f.addNotes('alice', 3);
+	await f.service.request('alice', ['d1']);
+
+	expect(await run(f.processor, f.job({ userId: 'alice', manual: true }))).toBe('done');
+
+	expect(f.notesOf('alice')).toHaveLength(0);
+	expect(f.state('alice').manualRequest).toBeNull();
+	expect(f.added).toHaveLength(1);
+});
+
+test('fix4: 대기 중인 수동 요청이 있으면 다른 규칙 조합의 재요청도 접수하지 않는다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false), deleteRule('alice', 'd2', 120, false));
+	f.addNotes('alice', 2);
 	const first = await f.service.request('alice', ['d1']);
-	const rootId = first.jobId;
-	const root = f.jobs.get(rootId) as any;
-	const requestId = root.data.requestId as string;
-	expect(await run(f.processor, f.job({ ...root.data }, rootId))).toBe('delayed');
-	root.getState = async () => 'completed';
-	const child1Id = `note-cleanup-${requestId}-1`;
-	const child1 = f.jobs.get(child1Id) as any;
-	expect(await run(f.processor, f.job({ ...child1.data }, child1Id))).toBe('delayed');
-	const child2Id = `note-cleanup-${requestId}-2`;
-	// 자식 1이 완료 전에 중단돼 BullMQ가 같은 작업으로 재시도하는 상황: 저장된 handoff로 다시 접수한다.
-	const addedBefore = f.added.length;
-	const resumed = f.job({ ...(f.jobs.get(child1Id) as any).data }, child1Id);
-	expect(await f.processor.process(resumed as any)).toMatchObject({ delayed: true });
-	expect(f.added.length).toBe(addedBefore + 1);
-	expect(f.added.at(-1)).toBe(child2Id);
-	// 재시도 뒤 자식 1이 완료돼도 보존된 자식이 체인을 이어 중복 접수를 막는다.
-	child1.getState = async () => 'completed';
-	expect((await f.service.request('alice', ['d1'])).queued).toBe(false);
+
+	const second = await f.service.request('alice', ['d2']);
+
+	expect(second).toEqual({ queued: false, jobId: first.jobId });
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: null });
+	expect(f.added).toHaveLength(1);
+});
+
+test('fix4: 일시 DB 장애는 마커를 보존하고 복구 뒤 회차가 같은 커서부터 이어 처리한다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	f.addNotes('alice', 12);
+	await f.service.request('alice', ['d1']);
+	f.state('alice').manualRequest.cursor = noteId('alice', 4);
+	f.retryableDeletes.add(noteId('alice', 5));
+
+	expect(await run(f.processor, f.job({ userId: 'alice', manual: true }))).toBe('delayed');
+
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 4) });
+	expect(f.added).toHaveLength(1);
+	f.retryableDeletes.clear();
+	expect(await f.processor.process({ data: {} } as any)).toMatchObject({ deletedCount: 7, skipped: false });
+	expect(f.notesOf('alice').map(n => n.id)).toEqual([noteId('alice', 0), noteId('alice', 1), noteId('alice', 2), noteId('alice', 3), noteId('alice', 4)]);
+	expect(f.state('alice').manualRequest).toBeNull();
+	expect(f.added).toHaveLength(1);
+});
+
+test('fix4: 회차는 수동 대기 계정을 먼저 처리하고 남은 계정 몫만 자동 검사에 쓴다', async () => {
+	const f = fixture();
+	for (let i = 0; i < NOTE_CLEANUP_LIMITS.roundUsers; i++) {
+		const userId = `m${String(i).padStart(2, '0')}`;
+		f.addUser(userId, new Date(i + 1));
+		f.rows.Rule.push(deleteRule(userId, `${userId}-d`, 60, false));
+		f.addNotes(userId, 1);
+		f.state(userId).manualRequest = { ruleIds: [`${userId}-d`], cursor: null };
+	}
+	f.addUser('auto', new Date(1000));
+	f.rows.Rule.push(deleteRule('auto', 'auto-d'));
+	f.addNotes('auto', 1);
+
+	expect(await f.processor.process({ data: {} } as any)).toMatchObject({ deletedCount: NOTE_CLEANUP_LIMITS.roundUsers, skipped: false });
+
+	expect(f.notesOf('auto')).toHaveLength(1);
+	expect(f.state('auto').lastRunAt).toEqual(new Date(1000));
+	for (let i = 0; i < NOTE_CLEANUP_LIMITS.roundUsers; i++) expect(f.state(`m${String(i).padStart(2, '0')}`).manualRequest).toBeNull();
+	// 다음 회차는 자동 계정을 처리한다.
+	expect(await f.processor.process({ data: {} } as any)).toMatchObject({ deletedCount: 1 });
+	expect(f.notesOf('auto')).toHaveLength(0);
+});
+
+test('fix4: 예산 대기 중인 수동 요청은 다음 창 회차가 마커로 이어 처리한다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+	f.rows.Rule.push(deleteRule('alice', 'd1', 60, false));
+	f.addNotes('alice', 70);
+	await f.service.request('alice', ['d1']);
+	const manual = f.job({ userId: 'alice', manual: true });
+	expect(await run(f.processor, manual)).toBe('delayed');
+	expect(70 - f.notesOf('alice').length).toBe(60);
+	expect(f.state('alice').manualRequest).not.toBeNull();
+
+	// 다음 창 회차가 남은 노트를 이어 지운다.
+	vi.setSystemTime(NOW + NOTE_CLEANUP_LIMITS.windowMs);
+	expect(await f.processor.process({ data: {} } as any)).toMatchObject({ deletedCount: 10, skipped: false });
+
+	expect(f.notesOf('alice')).toHaveLength(0);
+	expect(f.state('alice').manualRequest).toBeNull();
+	expect(f.added).toHaveLength(1);
+});
+
+test('fix4: 마커가 없는 깨우기 작업은 아무것도 하지 않고 완료한다', async () => {
+	const f = fixture();
+	f.addUser('alice');
+
+	expect(await run(f.processor, f.job({ userId: 'alice', manual: true }))).toBe('done');
+
+	expect(f.added).toHaveLength(0);
+	expect(f.scanned.get('alice')).toBeUndefined();
+});
+
+test('fix4: 회차 중 수동 계정의 종료 실패는 같은 회차의 다른 계정을 멈추지 않는다', async () => {
+	const f = fixture();
+	f.addUser('gone', new Date(1));
+	f.addUser('ok', new Date(2));
+	f.rows.Rule.push(deleteRule('gone', 'gone-d', 60, false), deleteRule('ok', 'ok-d', 60, false));
+	f.addNotes('gone', 1);
+	f.addNotes('ok', 1);
+	f.state('gone').manualRequest = { ruleIds: ['gone-d'], cursor: null };
+	f.state('ok').manualRequest = { ruleIds: ['ok-d'], cursor: null };
+	f.rows.MiUser.splice(f.rows.MiUser.findIndex(u => u.id === 'gone'), 1);
+
+	expect(await f.processor.process({ data: {} } as any)).toMatchObject({ deletedCount: 1, skipped: false });
+
+	expect(f.state('gone').manualRequest).toBeNull();
+	expect(f.state('ok').manualRequest).toBeNull();
+	expect(f.notesOf('ok')).toHaveLength(0);
+	expect(f.added).toHaveLength(0);
 });

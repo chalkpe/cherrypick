@@ -2,18 +2,13 @@
  * SPDX-FileCopyrightText: noridev and cherrypick-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import * as Bull from 'bullmq';
-import { CleanupInputError, NOTE_CLEANUP_LIMITS, NoteCleanupService, noteCleanupRequestJobId } from '@/core/NoteCleanupService.js';
+import { CleanupInputError, NOTE_CLEANUP_LIMITS, NoteCleanupService } from '@/core/NoteCleanupService.js';
 import { QueueService } from '@/core/QueueService.js';
 import Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { isRetryableCleanupFailure } from '@/core/NoteCleanupRunner.js';
-
-// 잠금 충돌·회차 시간 초과 뒤 다시 시도하기까지의 지연, 연합 큐 적체가 풀리기를 기다리는 지연
-const RETRY_DELAY = 1000;
-const BACKLOG_DELAY = 60000;
 
 @Injectable()
 export class AutoDeleteNotesProcessorService {
@@ -31,15 +26,12 @@ export class AutoDeleteNotesProcessorService {
 
 	@bindThis
 	public async process(job: Bull.Job<Record<string, unknown>>) {
-		const { userId, ruleIds, afterId, requestId, sweep } = job.data;
-		if (typeof sweep === 'string' && typeof userId === 'string') return this.noteCleanupService.sweepRequestChain(userId, sweep);
-		if (typeof userId === 'string' && Array.isArray(ruleIds) && ruleIds.every(id => typeof id === 'string')) {
-			return this.processRequest(job, userId, ruleIds, typeof afterId === 'string' ? afterId : undefined, requestId);
-		}
+		const { userId, manual } = job.data;
+		if (manual === true && typeof userId === 'string') return this.runManual(userId, Date.now());
 		return this.automaticRound();
 	}
 
-	// 자동 회차: 계정마다 한 페이지씩, 회차 사용자·시간 상한 안에서 처리한다.
+	// 자동 회차: 수동 대기 계정을 먼저 처리하고 남은 계정 몫만 자동 검사에 쓴다. 회차 사용자·시간 상한은 함께 나눈다.
 	private async automaticRound() {
 		try {
 			return await this.noteCleanupService.locked('scheduler', () => this.runRound());
@@ -54,13 +46,29 @@ export class AutoDeleteNotesProcessorService {
 		if (await this.backlogged()) return { deletedCount: 0, skipped: true };
 		const started = Date.now();
 		let deletedCount = 0;
-		for (const id of await this.noteCleanupService.automaticUsers()) {
+		let globalExhausted = false;
+		const manual = await this.noteCleanupService.manualUsers();
+		for (const id of manual) {
 			// system 큐를 오래 점유하지 않도록 회차 시간을 넘기면 남은 계정은 다음 회차로 넘긴다.
+			if (Date.now() - started >= NOTE_CLEANUP_LIMITS.roundMs) break;
+			try {
+				const result = await this.runManual(id, started);
+				deletedCount += result.deleted;
+				// 전역 예산이 다 찼으면 뒤 계정도 처리할 수 없으므로 검사 예산을 더 쓰지 않는다.
+				if (result.throttled === 'global') { globalExhausted = true; break; }
+			} catch (error) {
+				// 한 계정의 종료 실패가 같은 회차의 다른 계정을 멈추지 않게 하고, 순번을 뒤로 보낸다.
+				this.logger.error('Manual note cleanup failed in round', { userId: id, error });
+				try { await this.noteCleanupService.deferUser(id); } catch (deferError) { this.logger.error('Cleanup turn deferral failed', { userId: id, error: deferError }); }
+			}
+		}
+		const remaining = NOTE_CLEANUP_LIMITS.roundUsers - manual.length;
+		const automatic = !globalExhausted && remaining > 0 ? await this.noteCleanupService.automaticUsers(remaining) : [];
+		for (const id of automatic) {
 			if (Date.now() - started >= NOTE_CLEANUP_LIMITS.roundMs) break;
 			try {
 				const result = await this.noteCleanupService.processUser(id);
 				deletedCount += result.deleted;
-				// 전역 예산이 다 찼으면 뒤 계정도 처리할 수 없으므로 검사 예산을 더 쓰지 않는다.
 				if (result.throttled === 'global') break;
 			} catch (error) {
 				// 한 계정의 잠금 충돌이나 자료 실패가 같은 회차의 다른 계정을 멈추지 않게 하고, 순번을 뒤로 보낸다.
@@ -71,65 +79,29 @@ export class AutoDeleteNotesProcessorService {
 		return { deletedCount, skipped: false };
 	}
 
-	// 같은 요청의 이어 받기 작업은 고정 ID로 접수해 재시작 시 중복 등록을 막는다.
-	private async processRequest(job: Bull.Job<Record<string, unknown>>, userId: string, ruleIds: string[], afterId: string | undefined, requestId: unknown) {
-		const started = Date.now();
-		const id = typeof requestId === 'string' ? requestId : randomUUID();
-		const step = typeof job.data.step === 'number' ? job.data.step : 0;
-		let cursor = afterId;
-		let failures = typeof job.data.retryFailures === 'number' ? job.data.retryFailures : 0;
-		const handoff = async (until: number) => {
-			const next = { userId, ruleIds, afterId: cursor, requestId: id, step: step + 1, retryFailures: failures };
-			// 접수 전에 다음 작업을 기록하므로 이 작업이 중단돼도 같은 ID로 다시 접수한다.
-			await job.updateData({ ...job.data, requestId: id, step, handoff: { next, until } });
-			await this.queueService.systemQueue.add('autoDeleteNotes', next, {
-				jobId: `note-cleanup-${id}-${step + 1}`, delay: Math.max(0, until - Date.now()),
-				attempts: 10, backoff: { type: 'fixed', delay: 5000 },
-				// 완료된 자식은 자동 제거하지 않는다. 보존된 자식의 불변 handoff 포인터로 체인을 끝까지 추적해 중복 접수를 막는다.
-				removeOnComplete: false, removeOnFail: { age: 7 * 86400 },
-			});
-			return { delayed: true };
-		};
-		const saved = job.data.handoff as { next?: { afterId?: string; retryFailures?: number }; until?: number } | undefined;
-		if (saved?.next && typeof saved.until === 'number') {
-			cursor = saved.next.afterId;
-			failures = saved.next.retryFailures ?? 0;
-			return handoff(saved.until);
-		}
+	// 수동 요청의 깨우기 작업: 마커를 따라 완료까지 페이지를 잇는다. 대기는 자식 작업 없이 정상 종료해 마커를 다음 회차에 넘긴다.
+	// 잠금 충돌·일시 실패·예산 대기는 모두 마커가 보존하는 대기이며, 비재시도 오류만 종료 실패로 처리한다.
+	private async runManual(userId: string, started: number): Promise<{ deleted: number; failed: number; delayed?: boolean; throttled?: 'global' | 'account' }> {
 		let deleted = 0;
 		let failed = 0;
 		for (;;) {
+			if (await this.backlogged()) return { delayed: true, deleted, failed };
 			let result;
 			try {
-				if (await this.backlogged()) return handoff(Date.now() + BACKLOG_DELAY);
-				result = await this.noteCleanupService.processUser(userId, ruleIds, cursor);
+				result = await this.noteCleanupService.continueManual(userId);
 			} catch (error) {
-				if (error instanceof CleanupInputError && error.code === 'CLEANUP_BUSY') return handoff(Date.now() + RETRY_DELAY);
-				if (!isRetryableCleanupFailure(error)) {
-					// 비재시도 오류는 종료 실패로 처리한다. 무한 재시도는 큐를 점유하고 새 요청을 영구히 막는다.
-					this.logger.error('Manual note cleanup failed permanently', { userId, error });
-					throw new Bull.UnrecoverableError(error instanceof Error ? error.message : String(error));
+				if (error instanceof CleanupInputError && error.code === 'CLEANUP_BUSY') return { delayed: true, deleted, failed };
+				if (isRetryableCleanupFailure(error)) {
+					this.logger.error('Manual note cleanup temporarily failed', { userId, error });
+					return { delayed: true, deleted, failed };
 				}
-				this.logger.error('Manual note cleanup temporarily failed', { userId, error });
-				failures = Math.min(failures + 1, 11);
-				return handoff(Date.now() + Math.min(3600000, 5000 * 2 ** (failures - 1)));
+				this.logger.error('Manual note cleanup failed permanently', { userId, error });
+				throw new Bull.UnrecoverableError(error instanceof Error ? error.message : String(error));
 			}
-			failures = 0;
 			deleted += result.deleted;
 			failed += result.failed;
-			if (result.complete) {
-				// 현재 작업이 완료된 뒤 종료된 체인을 정리하도록 지연 접수한다. 진행 중 작업은 직접 제거할 수 없다.
-				await this.queueService.systemQueue.add('autoDeleteNotes', { userId, sweep: noteCleanupRequestJobId(userId, ruleIds) }, {
-					jobId: `note-cleanup-sweep-${id}-${step}`, delay: 1000,
-					attempts: 3, backoff: { type: 'fixed', delay: 5000 },
-					removeOnComplete: true, removeOnFail: { age: 7 * 86400 },
-				});
-				return { ...result, deleted, failed };
-			}
-			cursor = result.cursor || cursor;
-			await job.updateData({ ...job.data, userId, ruleIds, afterId: cursor, requestId: id, step, retryFailures: failures });
-			if (result.throttled) return handoff((Math.floor(Date.now() / NOTE_CLEANUP_LIMITS.windowMs) + 1) * NOTE_CLEANUP_LIMITS.windowMs);
-			if (Date.now() - started >= NOTE_CLEANUP_LIMITS.roundMs) return handoff(Date.now() + RETRY_DELAY);
+			if (result.complete) return { deleted, failed };
+			if (result.throttled || Date.now() - started >= NOTE_CLEANUP_LIMITS.roundMs) return { delayed: true, deleted, failed, throttled: result.throttled };
 		}
 	}
 }

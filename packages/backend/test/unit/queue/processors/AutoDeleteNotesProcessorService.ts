@@ -69,17 +69,21 @@ async function fixture() {
 		const builder = () => {
 			const params: Record<string, any> = {};
 			let limit = Infinity;
+			let sql = '';
 			const self: any = {
-				where: (_sql: string, p?: object) => { Object.assign(params, p); return self; },
-				andWhere: (_sql: string, p?: object) => { Object.assign(params, p); return self; },
+				where: (s: string, p?: object) => { sql = s; Object.assign(params, p); return self; },
+				andWhere: (s: string, p?: object) => { sql += ` ${s}`; Object.assign(params, p); return self; },
 				innerJoin: () => self, select: () => self, orderBy: () => self, addOrderBy: () => self,
 				take: (n: number) => { limit = n; return self; },
 				getRawMany: async () => [],
 				getMany: async () => {
 					if (entity === MiNoteCleanupState) {
+						const order = (a: any, b: any) => a.lastRunAt.getTime() - b.lastRunAt.getTime() || a.userId.localeCompare(b.userId);
+						// manualUsers: 수동 대기 마커가 있는 계정을 lastRunAt, userId 순으로
+						if (sql.includes('manualRequest')) return data.filter(s => s.manualRequest != null).sort(order).slice(0, limit);
 						// automaticUsers: 활성 자동 지우기 규칙이 있는 계정을 lastRunAt, userId 순으로
 						return data.filter(s => table(MiNoteCleanupRule).some(r => r.userId === s.userId && r.enabled && r.automatic && r.action === 'delete'))
-							.sort((a, b) => a.lastRunAt.getTime() - b.lastRunAt.getTime() || a.userId.localeCompare(b.userId)).slice(0, limit);
+							.sort(order).slice(0, limit);
 					}
 					if (entity !== MiNote) return [];
 					const result = data.filter(n => n.userId === params.userId && (!params.afterId || n.id > params.afterId))
@@ -174,7 +178,7 @@ async function fixture() {
 	const user = (id: string, days: number | null = 30, keepFavorites = true) => {
 		const row = { id, host: null, autoDeleteNotesAfterDays: days, autoDeleteKeepFavorites: keepFavorites };
 		table(MiUser).push(row);
-		table(MiNoteCleanupState).push({ userId: id, migrated: true, cursor: null, lastRunAt: new Date(0), previewAt: null, previewToken: null });
+		table(MiNoteCleanupState).push({ userId: id, migrated: true, cursor: null, lastRunAt: new Date(0), previewAt: null, previewToken: null, manualRequest: null });
 		for (const input of initialCleanupRules(true, days, keepFavorites)) {
 			table(MiNoteCleanupRule).push({ ...input, id: idService.gen(), userId: id, lastError: null, automaticConfirmed: input.automatic });
 		}
