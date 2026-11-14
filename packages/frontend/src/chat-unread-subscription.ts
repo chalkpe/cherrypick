@@ -46,7 +46,7 @@ export function resolveChatUnreadGap(): void {
 export function waitChatUnreadGapResolved(timeoutMs: number): Promise<boolean> {
 	if (!gap) return Promise.resolve(true);
 	return new Promise(resolve => {
-		const timeout: { id: ReturnType<typeof window.setTimeout> | null } = { id: null };
+		const timeout: { id: number | null } = { id: null };
 		const waiter = () => {
 			if (timeout.id != null) window.clearTimeout(timeout.id);
 			resolve(true);
