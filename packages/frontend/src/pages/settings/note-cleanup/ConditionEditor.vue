@@ -94,13 +94,21 @@ function menu() {
 }
 </script>
 <style lang="scss" module>
-.block:focus-within { border-inline-start-color: var(--MI_THEME-accent); }
-.block { min-width: 0; border-inline-start: 2px solid var(--MI_THEME-divider); padding-inline-start: 8px; outline: none; }
-.invalid { border-inline-start-color: var(--MI_THEME-warn); }
+.block { min-width: 0; outline: none; }
+// 상위 .item이 :has()로 이 클래스를 감지해 테두리 색을 바꾸는 상태 표시용 클래스다.
+.invalid {}
 .header { display: flex; align-items: center; margin-block: 8px; }
 .typeSelect { flex: 1; min-width: 0; }
 .dragHandle { cursor: move; margin-left: 10px; }
 .menuButton { margin-left: 10px; }
 .remove { margin-left: 10px; }
-.item { border: solid 2px var(--MI_THEME-divider); border-radius: var(--MI-radius); padding: 12px; }
+.item {
+	border: solid 2px var(--MI_THEME-divider);
+	border-radius: var(--MI-radius);
+	padding: 12px;
+
+	&:hover { border-color: var(--MI_THEME-accent); }
+	&:has(> .invalid) { border-color: var(--MI_THEME-warn); }
+	&:focus-within { border-color: var(--MI_THEME-accent); }
+}
 </style>

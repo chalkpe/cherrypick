@@ -68,5 +68,5 @@ function toggle<T>(values: T[], value: T): T[] { return values.includes(value) ?
 function patch(value: Record<string, unknown>) { emit('update', { ...props.condition, ...value } as Condition); }
 </script>
 <style lang="scss" module>
-.checks { margin: 0; padding: 12px; display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--MI_THEME-divider); border-radius: var(--MI-radius); }
+.checks { margin: 0; padding: 0; border: none; display: flex; flex-direction: column; gap: 12px; }
 </style>
