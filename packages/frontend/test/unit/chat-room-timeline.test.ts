@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
 		channel: new FakeChannel(),
 		me: { id: 'me', username: 'me', policies: { chatAvailability: 'available', canVoiceCall: false }, hasUnreadChatMessages: false },
 		store: { realtimeMode: true },
+		streamState: 'connected' as 'initializing' | 'reconnecting' | 'connected',
 		refreshCurrentAccount: vi.fn(),
 		timeline: [] as unknown[],
 		roomMembers: [] as unknown[],
@@ -72,7 +73,7 @@ vi.mock('@/utility/misskey-api.js', () => ({
 		return [];
 	}),
 }));
-vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: mocks.streamOff, useChannel: () => mocks.channel }) }));
+vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: mocks.streamOff, useChannel: () => mocks.channel, state: mocks.streamState }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/store.js', () => ({ store: { s: mocks.store } }));
@@ -234,6 +235,7 @@ beforeEach(() => {
 	mocks.membersMounts.value = 0;
 	mocks.me.hasUnreadChatMessages = false;
 	mocks.store.realtimeMode = true;
+	mocks.streamState = 'connected';
 	mocks.refreshCurrentAccount.mockReset();
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
@@ -1759,13 +1761,22 @@ describe('the unread sign with realtime mode off', () => {
 	});
 });
 
-// 既読になった知らせはメインのチャンネルで届く。ページを開いた直後やつなぎ直した直後は、購読が済む前に
-// サーバーが知らせを出してしまうことがあり、その知らせはあとから流れてこない
+// 既読になった知らせはバージョン付きイベントで届く。健康的な購読のあいだは会話を読んでもアカウントを問い合わせない。
+// ページを開いた直後やつなぎ直した直後は、購読が済む前にサーバーが知らせを出してしまうことがあり、その知らせはあとから流れてこない
 describe('the unread sign in realtime mode', () => {
-	test.each(['user', 'room'] as const)('asks the server about the sign after a %s conversation is opened and read', async kind => {
+	test.each(['user', 'room'] as const)('trusts the versioned events after a %s conversation is opened and read', async kind => {
 		mocks.me.hasUnreadChatMessages = true;
 
 		await renderRoom(kind);
+
+		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+	});
+
+	test('asks the server when the page opened before the stream connected', async () => {
+		mocks.streamState = 'initializing';
+		mocks.me.hasUnreadChatMessages = true;
+
+		await renderRoom('user');
 
 		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
 	});
@@ -1776,12 +1787,59 @@ describe('the unread sign in realtime mode', () => {
 		mocks.refreshCurrentAccount.mockClear();
 
 		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_disconnected_') handler();
+		}
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
 			if (event === '_connected_') handler();
 		}
 		await flush();
 		await flush();
 
 		expect(mocks.refreshCurrentAccount).toHaveBeenCalledOnce();
+	});
+
+	test('does not ask again once the gap was checked', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		await renderRoom('user');
+
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_disconnected_') handler();
+		}
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		await flush();
+		mocks.refreshCurrentAccount.mockClear();
+
+		for (const [event, handler] of mocks.streamOn.mock.calls) {
+			if (event === '_connected_') handler();
+		}
+		await flush();
+		await flush();
+
+		expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+	});
+
+	test('does not ask on returning to a hidden tab when the subscription stayed healthy', async () => {
+		mocks.me.hasUnreadChatMessages = true;
+		await renderRoom('user');
+		const hidden = vi.spyOn(window.document, 'hidden', 'get').mockReturnValue(true);
+
+		try {
+			mocks.channel.emit('message', message('m4', 'alice', 3 * MINUTE));
+			await flush();
+			mocks.refreshCurrentAccount.mockClear();
+
+			hidden.mockReturnValue(false);
+			window.document.dispatchEvent(new Event('visibilitychange'));
+			await flush();
+			await flush();
+
+			expect(mocks.refreshCurrentAccount).not.toHaveBeenCalled();
+		} finally {
+			hidden.mockRestore();
+		}
 	});
 
 	test('does not ask while the sign is off', async () => {

@@ -9,7 +9,6 @@ import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import type { MiChatMessage, MiChatRoom, MiChatRoomMembership, MiUser } from '@/models/_.js';
 import { meets } from '../misc/chat-repository-match.js';
 import { memoryRedis } from '../misc/chat-unread-redis.js';
-import { chatTransactions } from '../misc/chat-transactions.js';
 
 type Membership = Pick<MiChatRoomMembership, 'id' | 'roomId' | 'userId' | 'isMuted'>;
 
@@ -53,7 +52,6 @@ function fixture() {
 	};
 
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
-		db: chatTransactions(),
 		config: { url: 'https://local.test' },
 		redisClient: memoryRedis(),
 		usersRepository: {
@@ -100,6 +98,7 @@ function fixture() {
 		room,
 		memberships,
 		chatService,
+		chatRoomsRepository,
 		push,
 		/** Sends to the room as the endpoint does: with the room as it is stored at that moment. */
 		say: (from: MiUser, text: string) => chatService.createMessageToRoom(from, { ...room } as unknown as MiChatRoom, { text }),
@@ -245,5 +244,38 @@ describe('muting a chat room', () => {
 		await f.chatService.muteRoom(f.member.id, f.room.id, true);
 
 		expect((await f.shownTo(f.outsider)).isMuted).toBe(false);
+	});
+});
+
+describe('the delayed notice', () => {
+	afterEach(() => vi.useRealTimers());
+
+	test('does not look up the room when the owner has no mark to notify about', async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+		await f.chatService.muteRoom(f.owner.id, f.room.id, true);
+		const roomQuery = vi.spyOn(f.chatRoomsRepository, 'findOneBy');
+
+		await f.say(f.member, 'hello');
+		roomQuery.mockClear();
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(roomQuery).not.toHaveBeenCalled();
+		expect(f.toldTo(f.other)).toEqual(['chatUnread', 'newChatMessage']);
+		expect(f.toldTo(f.owner)).toEqual([]);
+	});
+
+	test('looks up the room when the owner has a mark', async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+		const roomQuery = vi.spyOn(f.chatRoomsRepository, 'findOneBy');
+
+		await f.say(f.member, 'hello');
+		roomQuery.mockClear();
+		await vi.advanceTimersByTimeAsync(3000);
+
+		expect(roomQuery).toHaveBeenCalledWith({ id: f.room.id });
+		expect(f.toldTo(f.owner)).toEqual(['chatUnread', 'newChatMessage']);
+		expect(f.toldTo(f.other)).toEqual(['chatUnread', 'newChatMessage']);
 	});
 });

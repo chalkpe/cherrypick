@@ -171,6 +171,7 @@ import type { PageHeaderItem } from '@/types/page-header.js';
 import * as os from '@/os.js';
 import { globalEvents } from '@/events.js';
 import { useStream } from '@/stream.js';
+import { store } from '@/store.js';
 import * as sound from '@/utility/sound.js';
 import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
@@ -513,12 +514,21 @@ async function initialize() {
 	recheckUnreadSign();
 }
 
-// 既読になった知らせはメインのチャンネルで届くが、聞いていないあいだに出たものは届かない。リアルタイムモードを切っているあいだと、
-// ページを開いた直後やつなぎ直した直後でチャンネルの購読がまだ済んでいないあいだがそうで、印が点いたまま残る。
-// 未読の印が付いているときだけ、会話を読んだあとにサーバーへ確かめ直す
+// 既読になった知らせはバージョン付きイベントで届くので、購読が健康なら会話を読んだあとにアカウントを問い合わせない。
+// 聞いていないあいだに出た知らせはあとから流れてこない。リアルタイムモードを切っているあいだと、
+// ページを開いた直後やつなぎ直した直後の購読の空白がそうで、印が点いたまま残る。そのときだけサーバーへ確かめ直す
+let subscriptionGap = useStream().state !== 'connected';
+
 function recheckUnreadSign() {
 	if (!$i.hasUnreadChatMessages) return;
+	if (store.s.realtimeMode && !subscriptionGap) return;
+	// 確かめ直しは保護付きなので、空白はここで解消したことにする
+	subscriptionGap = false;
 	refreshCurrentAccount({ protectChatUnread: true });
+}
+
+function onStreamDisconnected() {
+	subscriptionGap = true;
 }
 
 // 見ているページかどうか。戻ってきたときに立てるのは、下の onActivated の先頭
@@ -828,6 +838,7 @@ let listChannel: Misskey.IChannelConnection<Misskey.Channels['main']> | null = n
 onMounted(() => {
 	initialize();
 	useStream().on('_connected_', readAgain);
+	useStream().on('_disconnected_', onStreamDisconnected);
 	if (props.roomId) {
 		listChannel = useStream().useChannel('main');
 		listChannel.on('chatRoomListChanged', refreshRoomPeople);
@@ -861,6 +872,7 @@ onBeforeUnmount(() => {
 	connection.value?.dispose();
 	listChannel?.dispose();
 	useStream().off('_connected_', readAgain);
+	useStream().off('_disconnected_', onStreamDisconnected);
 	window.document.removeEventListener('visibilitychange', onVisibilitychange);
 });
 

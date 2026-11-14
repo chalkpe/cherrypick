@@ -457,13 +457,14 @@ export class ChatService {
 			if (await this.isFromSuspendedUser(latest)) return;
 
 			const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest);
-			const currentRoom = await this.chatRoomsRepository.findOneBy({ id: toRoom.id });
 
 			for (let i = 0; i < membershipsOtherThanMe.length; i++) {
 				const marker = markers[i][1];
 				if (marker == null) continue;
 				const userId = membershipsOtherThanMe[i].userId;
 				if (userId === toRoom.ownerId) {
+					// 방장에게 알릴 표식이 있을 때만 방을 다시 조회한다.
+					const currentRoom = await this.chatRoomsRepository.findOneBy({ id: toRoom.id });
 					if (currentRoom == null || currentRoom.isMutedByOwner) continue;
 				} else {
 					const currentMembership = await this.chatRoomMembershipsRepository.findOneBy({ roomId: toRoom.id, userId });
@@ -552,7 +553,9 @@ export class ChatService {
 		const redisPipeline = this.redisClient.pipeline();
 		redisPipeline.del(`newUserChatMessageExists:${readerId}:${senderId}`);
 		redisPipeline.srem(`newChatMessagesExists:${readerId}`, `user:${senderId}`);
-		await redisPipeline.exec();
+		const results = await redisPipeline.exec();
+		// 지운 표식이 없으면 미읽음 상태도 그대로다. 다시 계산해 알리는 비용을 내지 않는다.
+		if (results == null || !results.some(([, count]) => Number(count) > 0)) return;
 		await this.announceIfAllRead([readerId]);
 	}
 
@@ -564,7 +567,9 @@ export class ChatService {
 		const redisPipeline = this.redisClient.pipeline();
 		redisPipeline.del(`newRoomChatMessageExists:${readerId}:${roomId}`);
 		redisPipeline.srem(`newChatMessagesExists:${readerId}`, `room:${roomId}`);
-		await redisPipeline.exec();
+		const results = await redisPipeline.exec();
+		// 지운 표식이 없으면 미읽음 상태도 그대로다. 다시 계산해 알리는 비용을 내지 않는다.
+		if (results == null || !results.some(([, count]) => Number(count) > 0)) return;
 		await this.announceIfAllRead([readerId]);
 	}
 

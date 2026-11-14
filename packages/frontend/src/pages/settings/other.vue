@@ -179,6 +179,8 @@ import * as os from '@/os.js';
 import { enableStoragePersistence, getStoragePersistenceStatusRef, storagePersistenceSupported } from '@/utility/storage.js';
 import { ensureSignin } from '@/i.js';
 import { refreshCurrentAccount } from '@/accounts.js';
+import { store } from '@/store.js';
+import { useStream } from '@/stream.js';
 import { i18n } from '@/i18n.js';
 import { definePage } from '@/page.js';
 import { prefer } from '@/preferences.js';
@@ -240,8 +242,11 @@ function hideAllTips() {
 
 async function readAllChatMessages() {
 	await os.apiWithDialog('chat/read-all', {});
+	// 실시간 모드 끔이거나 쪽지 구독에 공백이 있으면 이벤트로 상태를 확정할 수 없다.
 	// HTTP 완료 전에 도착한 새 쪽지는 서버의 현재 상태로 확인한다.
-	await refreshCurrentAccount({ protectChatUnread: true });
+	if (!store.s.realtimeMode || useStream().state !== 'connected') {
+		await refreshCurrentAccount({ protectChatUnread: true });
+	}
 }
 
 async function forceCloudBackup() {
