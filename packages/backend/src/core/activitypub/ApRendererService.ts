@@ -7,7 +7,6 @@ import { createPublicKey, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { In } from 'typeorm';
 import * as mfm from 'mfc-js';
-import type { RecordingEvent } from '@/core/recording-event.js';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import type { MiPartialLocalUser, MiLocalUser, MiPartialRemoteUser, MiRemoteUser, MiUser } from '@/models/User.js';
@@ -1003,14 +1002,13 @@ export class ApRendererService {
 	 * このサーバーが持つルームの、通話の参加者の現況。participants の id は参加者の identity (LiveKitService.identityOf)
 	 */
 	@bindThis
-	public renderChatRoomVoiceState(room: Pick<MiChatRoom, 'id'>, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number, recordingEvent?: RecordingEvent): IChatRoomVoiceState {
+	public renderChatRoomVoiceState(room: Pick<MiChatRoom, 'id'>, participants: { identity: string; screenSharing: boolean; micMuted?: boolean; deafened?: boolean; recording?: boolean }[], updatedAt: number): IChatRoomVoiceState {
 		const roomUri = this.genLocalChatRoomUri(room.id);
 		return {
 			id: chatRoomVoiceStateIdOf(roomUri),
 			type: 'ChatRoomVoiceState',
 			room: roomUri,
 			participants: participants.map(p => ({ id: p.identity, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) })),
-			...(recordingEvent != null ? { _misskey_recordingEvent: recordingEvent } : {}),
 			updated: new Date(updatedAt).toISOString(),
 		};
 	}

@@ -140,10 +140,8 @@ type StatusDelivery = {
 	retryDelay: number;
 	timer: number | null;
 	stopped: boolean;
-	// 서버가 아직 받아들이지 않은 종료 보고의 녹음 ID. 수락될 때까지 일반 설정 보고에도 실어 보낸다
-	pendingStops: string[];
-	// 종료 보고가 일시 오류로 재시도된 적이 있는지. 응답 유실로 설정이 누락될 수 있어 수락 후 ID 없이 한 번 더 보낸다
-	stopRetried: boolean;
+	// 녹음 시작 승인을 기다리는 쪽. 녹음 보고가 수락되거나 영구 거절되면 알려 준다
+	approval: { resolve: () => void; reject: (err: unknown) => void } | null;
 };
 let statusDelivery: StatusDelivery | null = null;
 // スピーカーを切り替えた回数。マイクを入れるのを待つあいだに切り替えられたかを見分ける
@@ -163,7 +161,6 @@ class RecordingUploadError extends Error {
  * 一回の録画。通話の状態 (state.room) とは別に持ち、通話が終わって状態が片付いた後に届く最後の部分も同じ録画として保存する
  */
 type RecordingSession = {
-	id: string;
 	roomId: string;
 	uploads: Promise<boolean>[];
 	failed: FailedRecording[];
@@ -177,7 +174,7 @@ type RecordingPart = {
 const recordingParts = new Map<RecordingPartKind, RecordingPart>();
 let recordingSession: RecordingSession | null = null;
 // サーバーが録画を受け付けるのを待っているあいだ。二重に始めない
-let recordingStarting: { id: string } | null = null;
+let recordingStarting: object | null = null;
 let recordingContext: AudioContext | null = null;
 let recordingMicBus: GainNode | null = null;
 let recordingOthersBus: GainNode | null = null;
@@ -517,28 +514,26 @@ async function offerFailedRecordings(initial: FailedRecording[]): Promise<void> 
 
 function resetStatusDelivery(): void {
 	if (statusDelivery?.timer != null) window.clearTimeout(statusDelivery.timer);
+	statusDelivery?.approval?.reject(new Error('Recording approval canceled'));
 	statusDelivery = null;
 }
 
 // Keep only the newest settings. A failed report must not leave the server stale for the rest of the call.
-function reportStatus(room: Room, force = false, stoppedRecordingId?: string): void {
+// 録音中かどうかもいまの値一つだけを実って送り、終わった録音の痕跡は残さない
+function reportStatus(room: Room, force = false): void {
 	const roomId = state.room?.id;
 	if (current !== room || roomId == null || state.status === 'connecting') return;
 	const recording = state.recording || recordingStarting != null;
 	const sessionId = room.localParticipant.sid;
 	const prev = statusDelivery != null && statusDelivery.room === room && statusDelivery.latest.sessionId === sessionId ? statusDelivery : null;
-	const pendingStops = prev != null ? prev.pendingStops : [];
-	// 아직 서버가 받아들이지 않은 종료는 설정이 바뀌어 다른 보고로 덮여도 ID를 잃지 않게 모아 둔다
-	if (stoppedRecordingId != null && !pendingStops.includes(stoppedRecordingId)) pendingStops.push(stoppedRecordingId);
-	const recordingId = stoppedRecordingId ?? (recording ? (recordingSession?.id ?? recordingStarting?.id) : pendingStops[0]);
-	const status = { roomId, sessionId, micMuted: !state.micEnabled, deafened: state.deafened, ...(recording ? { recording: true } : {}), ...(recordingId != null ? { recordingId } : {}) };
+	const status = { roomId, sessionId, micMuted: !state.micEnabled, deafened: state.deafened, recording };
 	let delivery: StatusDelivery;
 	if (prev == null) {
 		resetStatusDelivery();
-		delivery = { room, latest: status, pending: status, sending: false, retryDelay: 1000, timer: null, stopped: false, pendingStops, stopRetried: false };
+		delivery = { room, latest: status, pending: status, sending: false, retryDelay: 1000, timer: null, stopped: false, approval: null };
 		statusDelivery = delivery;
 	} else {
-		if (!force && prev.latest.micMuted === status.micMuted && prev.latest.deafened === status.deafened && prev.latest.recording === status.recording && prev.latest.recordingId === status.recordingId) return;
+		if (!force && prev.latest.micMuted === status.micMuted && prev.latest.deafened === status.deafened && prev.latest.recording === status.recording) return;
 		// 止めたのは失敗した報告の再送だけ。設定が変わったら、新しい設定はもう一度だけ送ってみる
 		// (セッションを確かめる一時的な失敗も ACCESS_DENIED になるので、一度の失敗で通話の残りずっと黙らない)
 		prev.stopped = false;
@@ -557,50 +552,36 @@ async function deliverStatus(delivery: StatusDelivery): Promise<void> {
 	try {
 		await misskeyApi('chat/rooms/voice/status', status);
 		delivery.retryDelay = 1000;
-		// 서버가 종료를 받아들였으면 그 ID는 더 실지 않는다. 남은 종료는 이어서 보고한다
-		if (status.recording !== true && status.recordingId != null) {
-			const accepted = delivery.pendingStops.indexOf(status.recordingId);
-			if (accepted !== -1) delivery.pendingStops.splice(accepted, 1);
-			if (delivery.pendingStops.length > 0 && delivery.pending == null) {
-				reportStatus(delivery.room, true);
-			} else if (delivery.pendingStops.length === 0 && delivery.stopRetried) {
-				// 종료 응답 유실로 재시도된 종료가 수락되면, 함께 실렸던 설정을 ID 없이 한 번 더 보내 적용시킨다.
-				// 전송 중 병합된 보고가 남아 있으면 그 보고를 먼저 소진하게 표시를 유지한다 (그 보고의 수락에서 이 분기가 다시 열린다)
-				if (delivery.pending == null) {
-					delivery.stopRetried = false;
-					reportStatus(delivery.room, true);
-				}
-			}
+		// 録音報告が受け付けられたら、開始を待っている側に知らせる
+		if (status.recording === true && delivery.approval != null) {
+			delivery.approval.resolve();
+			delivery.approval = null;
 		}
 	} catch (err) {
 		if (statusDelivery !== delivery || current !== delivery.room) return;
 		const code = isApiError(err) ? err.code : null;
-		const permanent = code != null && code !== 'RATE_LIMIT_EXCEEDED' && code !== 'INTERNAL_ERROR' && code !== 'REMOTE_HOST_UNREACHABLE' && code !== 'RECORDING_STATUS_BUSY';
+		const permanent = code != null && code !== 'RATE_LIMIT_EXCEEDED' && code !== 'INTERNAL_ERROR' && code !== 'REMOTE_HOST_UNREACHABLE';
 		if (code === 'RECORDING_NOT_ALLOWED') state.recordingAllowed = false;
-		if (permanent && status.recording === true && (recordingStarting != null || recordingSession != null)) {
-			// 録画していると伝えるのを断られたら (持ち主が許さなくなった・通話の資格を確かめられないなど)、理由によらず録画を止め、止めたことを伝える
-			stopRecording();
-			os.toast(i18n.ts._voiceCall.recordingRejected);
+		if (permanent && status.recording === true) {
+			if (delivery.approval != null) {
+				// まだ開始を待っているあいだの拒否は、開始側が後片付けして知らせる
+				delivery.approval.reject(err);
+				delivery.approval = null;
+			} else if (recordingStarting != null || recordingSession != null) {
+				// 録画していると伝えるのを断られたら (持ち主が許さなくなった・通話の資格を確かめられないなど)、理由によらず録画を止め、止めたことを伝える
+				stopRecording();
+				os.toast(i18n.ts._voiceCall.recordingRejected);
+			}
 		}
 		if (permanent) {
-			// 영구 오류로 거절된 종료는 더 재시도하지 않는다 (남은 정리는 서버의 sweep이 맡는다)
-			if (status.recording !== true && status.recordingId != null) {
-				const dropped = delivery.pendingStops.indexOf(status.recordingId);
-				if (dropped !== -1) delivery.pendingStops.splice(dropped, 1);
-			}
-			// 거절된 종료를 빼고도 남은 종료가 있으면 이어서 보고한다. 새 녹음 승인이 거절돼도 이전 녹음의 미전달 종료를 멈추지 않는다
-			if (delivery.pending == null && delivery.pendingStops.length > 0) {
-				reportStatus(delivery.room, true);
-			} else if (delivery.pending == null) {
-				// Unsupported hosts and permanent API errors must not generate a retry loop.
-				// 送り直さないのは失敗した設定だけ。送っているあいだに変わった新しい設定は、下でもう一度だけ送ってみる
+			// Unsupported hosts and permanent API errors must not generate a retry loop.
+			// 送り直さないのは失敗した設定だけ。送っているあいだに変わった新しい設定は、下でもう一度だけ送ってみる
+			if (delivery.pending == null) {
 				delivery.stopped = true;
 				return;
 			}
 		} else {
 			delivery.pending ??= status;
-			// 일시 오류로 실패한 종료는 서버에 적용됐어도 응답만 유실됐을 수 있다. 수락 후 설정을 ID 없이 다시 보내게 표시한다
-			if (status.recording !== true && status.recordingId != null) delivery.stopRetried = true;
 			const delay = code === 'RATE_LIMIT_EXCEEDED' ? 60_000 : delivery.retryDelay;
 			delivery.retryDelay = Math.min(delivery.retryDelay * 2, 30_000);
 			delivery.timer = window.setTimeout(() => {
@@ -722,30 +703,23 @@ export async function startRecording(): Promise<void> {
 	if (Context == null || typeof MediaRecorder === 'undefined') return;
 
 	// 시작 전체에 소유권을 두어, 취소한 대기의 continuation이 다음 통화의 자원을 덮어쓰지 못하게 한다.
-	const attempt = { id: window.crypto.randomUUID() };
+	const attempt = {};
 	recordingStarting = attempt;
 	state.recordingStarting = true;
 	const active = () => recordingStarting === attempt && current === room && state.room?.id === roomId && state.status === 'connected' && state.recordingAllowed;
 	let approved = false;
 	try {
-		// 잠금 경합 (BUSY) 은 일시 오류다. 같은 ID로 다시 승인받는다 (같은 clientId의 PREPARE는 멱등이라 기존 결속의 시작 이벤트를 그대로 쓴다).
-		// 취소됐으면 더 시도하지 않고, 예산을 넘겨도 계속 경합이면 거절로 처리한다.
-		for (let busyRetries = 0; ; busyRetries++) {
-			try {
-				await misskeyApi('chat/rooms/voice/status', { roomId, sessionId: room.localParticipant.sid, micMuted: !state.micEnabled, deafened: state.deafened, recording: true, recordingId: attempt.id });
-				break;
-			} catch (err) {
-				if (!active() || busyRetries >= 2 || !isApiError(err) || err.code !== 'RECORDING_STATUS_BUSY') throw err;
-				await new Promise(resolve => window.setTimeout(resolve, 1000));
-				if (!active()) return;
-			}
-		}
+		// 서버가 녹음을 받아들이는지 먼저 보고한다. 수락과 일시 오류 재시도는 상태 보고의 배달 경로가 맡는다
+		reportStatus(room, true);
+		const delivery = statusDelivery;
+		if (delivery == null || delivery.room !== room) return;
+		await new Promise<void>((resolve, reject) => { delivery.approval = { resolve, reject }; });
 		approved = true;
 		if (!active()) {
-			if (current === room && recordingStarting == null && recordingSession == null) reportStatus(room, true, attempt.id);
+			if (current === room && recordingStarting == null && recordingSession == null) reportStatus(room, true);
 			return;
 		}
-		const session: RecordingSession = { id: attempt.id, roomId, uploads: [], failed: [], stopping: false, micRevision: 0 };
+		const session: RecordingSession = { roomId, uploads: [], failed: [], stopping: false, micRevision: 0 };
 		recordingSession = session;
 
 		const context = new Context();
@@ -829,7 +803,7 @@ export async function startRecording(): Promise<void> {
 			state.recordingStarting = false;
 		}
 		// 승인 뒤 실패하거나 취소됐으면 서버에 남은 녹화 표시도 되돌린다.
-		if (approved && !state.recording && current === room && recordingStarting == null && recordingSession == null) reportStatus(room, true, attempt.id);
+		if (approved && !state.recording && current === room && recordingStarting == null && recordingSession == null) reportStatus(room, true);
 	}
 }
 
@@ -837,13 +811,17 @@ export async function startRecording(): Promise<void> {
 export function stopRecording(): void {
 	const session = recordingSession;
 	const hadRecording = recordingStarting != null || session?.stopping === false || state.recording;
-	const recordingId = session?.id ?? recordingStarting?.id;
 	recordingStarting = null;
 	state.recordingStarting = false;
+	// 시작 승인을 기다리는 중이었으면 더 기다리지 않게 한다. 취소는 거절 토스트 없이 끝난다
+	if (statusDelivery?.approval != null) {
+		statusDelivery.approval.reject(new Error('Recording approval canceled'));
+		statusDelivery.approval = null;
+	}
 	if (session != null) session.stopping = true;
 	state.recording = false;
 	state.recordingStartedAt = null;
-	if (hadRecording && current != null) reportStatus(current, true, recordingId);
+	if (hadRecording && current != null) reportStatus(current, true);
 	try {
 		for (const part of recordingParts.values()) part.stop();
 	} finally {

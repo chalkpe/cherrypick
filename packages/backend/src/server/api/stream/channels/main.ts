@@ -53,7 +53,6 @@ export class MainChannel extends Channel {
 	private async onData(data: EventTypesToEventPayload<MainEventTypes>) {
 		if (this.disposed) return;
 		switch (data.type) {
-			case 'chatRoomRecording':
 			case 'chatRoomVoiceState': {
 				if (this.connection.token && !this.connection.token.permission.includes('read:chat')) return;
 				const roomId = data.body.roomId;
@@ -75,9 +74,7 @@ export class MainChannel extends Channel {
 					if (room == null || (room.ownerId !== this.user!.id && !member)) return;
 					if (!(await this.chatService.getChatAvailability(this.user!.id)).read) return;
 					// 空の通知には参加者がいないので、持ち主を許すかは読まない (読んでも送るものは変わらない)
-					if (data.type === 'chatRoomRecording') {
-						if (!(await this.chatVoiceService.isRoomVoiceVisible(room))) return;
-					} else if (data.body.participants.length > 0) {
+					if (data.body.participants.length > 0) {
 						const visibility = await this.chatVoiceService.voiceVisibilityOf(room, data.body.updatedAt);
 						// 新しい現況が保存されていれば、その通知 (待たされたものは後でまとめて送られる) が続くので、この通知を空にして送らない
 						if (visibility === 'superseded') return;

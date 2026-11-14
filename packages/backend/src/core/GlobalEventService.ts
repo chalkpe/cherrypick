@@ -28,7 +28,6 @@ import type { Packed } from '@/misc/json-schema.js';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { bindThis } from '@/decorators.js';
-import { MAX_RECORDING_IDS, PUBLISH_RECORDING_EVENT_SCRIPT } from '@/core/recording-event.js';
 import { Serialized } from '@/types.js';
 import type Emitter from 'strict-event-emitter-types';
 import type { EventEmitter } from 'events';
@@ -75,7 +74,6 @@ export interface MainEventTypes {
 	unreadAntenna: MiAntenna;
 	newChatMessage: Packed<'ChatMessage'>;
 	chatRoomVoiceState: Packed<'ChatRoomVoiceState'>;
-	chatRoomRecording: import('@/core/recording-event.js').RecordingEvent & { roomId: string; user: Packed<'UserLite'> };
 	chatRoomListChanged: undefined;
 	readAllAnnouncements: undefined;
 	myTokenRegenerated: undefined;
@@ -424,15 +422,6 @@ export class GlobalEventService {
 	@bindThis
 	public publishMainStream<K extends keyof MainEventTypes>(userId: MiUser['id'], type: K, value?: MainEventTypes[K]): void {
 		this.publish(`mainStream:${userId}`, type, typeof value === 'undefined' ? null : value);
-	}
-
-	@bindThis
-	public async publishRecordingMainStream(userIds: MiUser['id'][], value: MainEventTypes['chatRoomRecording'], receipt: { id: string; deadline: number }): Promise<void> {
-		const messages = userIds.map(userId => JSON.stringify({ channel: `mainStream:${userId}`, message: { type: 'chatRoomRecording', body: value } }));
-		const result = await this.redisForPub.eval(PUBLISH_RECORDING_EVENT_SCRIPT, 1, `chatVoice:recordingPublished:${value.roomId}`,
-			receipt.id, value.recording ? 1 : 2, Date.now(), receipt.deadline, MAX_RECORDING_IDS, JSON.stringify(messages), this.config.host);
-		if (result === -1) throw new Error('Recording publication capacity is exhausted');
-		if (result !== 0 && result !== 1) throw new Error('Recording publication did not complete');
 	}
 
 	@bindThis

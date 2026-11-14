@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { createHash } from 'node:crypto';
 import { Ajv } from 'ajv';
 import { expect, test, vi } from 'vitest';
 import type { DataSource } from 'typeorm';
@@ -61,7 +62,7 @@ function consumerFixture(recordingStatus: boolean | undefined) {
 	return { consumer, backend, requests };
 }
 
-test('a provider without recording capability accepts recording with its session snapshot', async () => {
+test('a provider without recording capability keeps recording state on the owner server', async () => {
 	const { backend, requests } = consumerFixture(undefined);
 	const fixture = createFixture();
 	Object.assign(fixture.service, { liveKitService: backend });
@@ -70,13 +71,22 @@ test('a provider without recording capability accepts recording with its session
 	fixture.chatRoomsRepository.findOneBy.mockResolvedValue(room);
 	Object.assign(fixture.usersRepository, { findOneBy: vi.fn().mockResolvedValue(KNOWN_USERS.find(user => user.id === 'owner')) });
 	vi.spyOn(fixture.service, 'scheduleRefresh').mockImplementation(() => {});
-	const recordingId = '12345678-1234-4123-8123-123456789abc';
+	const identity = 'https://local.test/users/u1';
+	const stateKey = `chatVoice:recordingState:${createHash('sha256').update(JSON.stringify(['r1', identity])).digest('hex')}`;
 	try {
-		const result = await fixture.service.reportStatus(KNOWN_USERS.find(user => user.id === 'u1')! as any, 'r1', 'PA_1', { micMuted: false, deafened: false, recording: true, recordingId });
+		const result = await fixture.service.reportStatus(KNOWN_USERS.find(user => user.id === 'u1')! as any, 'r1', 'PA_1', { micMuted: false, deafened: false, recording: true });
 
 		expect(result).toBe(true);
-		expect(await fixture.redis.get(`chatVoice:recording:${recordingId}`)).not.toBeNull();
+		expect(JSON.parse((await fixture.redis.get(stateKey))!)).toEqual({ sessionId: 'PA_1', recording: true });
+		// 녹음을 모르는 relay에는 합의한 설정만 보낸다 (엄격한 status 스키마가 recording을 거부한다)
+		expect(requests.filter(request => request.path.endsWith('/participants/status')).map(request => request.body)).toEqual([
+			{ identity, sessionId: 'PA_1', micMuted: false, deafened: false },
+		]);
+
+		await fixture.service.refresh('r1');
 		expect(requests.some(request => request.path.endsWith('/snapshot'))).toBe(true);
+		const snapshot = JSON.parse(fixture.redis.store.get('chatVoice:state:r1')!);
+		expect(snapshot.participants.find((p: { identity: string }) => p.identity === identity).recording).toBe(true);
 	} finally {
 		fixture.service.onApplicationShutdown();
 	}

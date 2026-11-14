@@ -362,7 +362,6 @@ export interface IInvite extends IActivity {
  * id はルームの URI に `/voice` を付けたもの。participants の id は参加者の identity (ユーザーの URI)
  */
 export interface IChatRoomVoiceState extends IObject {
-	_misskey_recordingEvent?: import('@/core/recording-event.js').RecordingEvent;
 	type: 'ChatRoomVoiceState';
 	id: string;
 	room: string;

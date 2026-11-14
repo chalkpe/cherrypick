@@ -18,13 +18,17 @@ const mocks = vi.hoisted(() => {
 		emit(event: string, payload?: unknown) { for (const handler of this.handlers.get(event) ?? []) handler(payload); }
 		dispose = vi.fn();
 	}
-	return { Channel, stream: new Channel(), channel: new Channel(), main: new Channel(), toast: vi.fn(), sound: vi.fn(), api: vi.fn(), setRecordingAllowed: vi.fn() };
+	return { Channel, stream: new Channel(), channel: new Channel(), main: new Channel(), toast: vi.fn(), sound: vi.fn(), api: vi.fn(), setRecordingAllowed: vi.fn(), voiceStates: null as any };
 });
 
 vi.mock('@/stream.js', () => ({ useStream: () => Object.assign(mocks.stream, { useChannel: (name: string) => name === 'main' ? mocks.main : mocks.channel }) }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
 vi.mock('@/utility/voice-call.js', () => ({ voiceCall: reactive({ status: 'connected', room: { id: 'r1' }, recording: false }), setRecordingAllowed: mocks.setRecordingAllowed, localIdentityOf: (id: string) => id }));
-vi.mock('@/composables/use-chat-room-voice-states.js', () => ({ useChatRoomVoiceStates: () => ref(new Map()) }));
+vi.mock('@/composables/use-chat-room-voice-states.js', () => {
+	const states = ref(new Map());
+	mocks.voiceStates = states;
+	return { useChatRoomVoiceStates: () => states };
+});
 vi.mock('@/os.js', () => ({ toast: mocks.toast }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfxFile: mocks.sound }));
 vi.mock('@/filters/user.js', () => ({ userName: () => 'participant' }));
@@ -34,8 +38,14 @@ import { voiceCall } from '@/utility/voice-call.js';
 import { useVoiceCallRecordingWatch } from '@/composables/use-voice-call-recording-watch.js';
 
 let scope: EffectScope;
+
 async function flush() { for (let i = 0; i < 6; i++) { await Promise.resolve(); await nextTick(); } }
+
 function start() { scope = effectScope(); scope.run(useVoiceCallRecordingWatch); }
+
+function setParticipants(roomId: string, participants: { identity: string; recording?: boolean; user?: { id: string } }[]) {
+	mocks.voiceStates.value = new Map([[roomId, { participants }]]);
+}
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -46,6 +56,7 @@ beforeEach(() => {
 	mocks.sound.mockReset();
 	mocks.api.mockReset().mockResolvedValue({ id: 'r1', allowRecording: true });
 	mocks.setRecordingAllowed.mockReset();
+	mocks.voiceStates.value = new Map();
 	Object.assign(voiceCall, { status: 'connected', room: { id: 'r1' }, recording: false });
 });
 
@@ -119,32 +130,66 @@ test('does not apply a response belonging to the previous room', async () => {
 	expect(mocks.setRecordingAllowed).toHaveBeenLastCalledWith('r2', false);
 });
 
+test('announces another participant starting and stopping recording from the participant list', async () => {
+	start();
+	await flush();
+	// 별도의 녹화 이벤트 구독 없이 참가자 목록의 recording 변화만으로 알린다
+	expect(mocks.main.handlers.size).toBe(0);
+	const other = { identity: 'another-user', user: { id: 'another-user' } };
 
-test('announces both recording events in the same Vue tick without changing the snapshot badge', async () => {
+	setParticipants('r1', [{ ...other, recording: true }]);
+	await flush();
+	expect(mocks.toast).toHaveBeenCalledTimes(1);
+	expect(mocks.sound).toHaveBeenCalledTimes(1);
+	expect(mocks.sound).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'syuilo/up' }));
+
+	setParticipants('r1', [{ ...other, recording: false }]);
+	await flush();
+	expect(mocks.toast).toHaveBeenCalledTimes(2);
+	expect(mocks.sound).toHaveBeenCalledTimes(2);
+	expect(mocks.sound).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'syuilo/down' }));
+});
+
+test('announces only the net recording change within one tick', async () => {
 	scope = effectScope();
 	const watch = scope.run(useVoiceCallRecordingWatch)!;
 	await flush();
-	const event = { roomId: 'r1', id: 'id1', identity: 'another-user', user: { id: 'another-user', username: 'participant' }, updatedAt: Date.now() };
+	const other = { identity: 'another-user', user: { id: 'another-user' } };
 
-	mocks.main.emit('chatRoomRecording', { ...event, recording: true });
-	mocks.main.emit('chatRoomRecording', { ...event, recording: false });
-	mocks.main.emit('chatRoomRecording', { ...event, recording: true });
+	setParticipants('r1', [{ ...other, recording: true }]);
+	setParticipants('r1', [{ ...other, recording: false }]);
+	setParticipants('r1', [{ ...other, recording: true }]);
 	await nextTick();
 
-	expect(mocks.toast).toHaveBeenCalledTimes(2);
-	expect(mocks.sound).toHaveBeenCalledTimes(2);
-	expect(watch.someoneRecording.value).toBe(false);
+	expect(mocks.toast).toHaveBeenCalledTimes(1);
+	expect(mocks.sound).toHaveBeenCalledTimes(1);
+	expect(watch.someoneRecording.value).toBe(true);
 });
 
-test('ignores recording events for another call and removes the main listener on disposal', async () => {
+test('does not announce the previous call recording state after switching calls', async () => {
 	start();
 	await flush();
-	const event = { roomId: 'another-room', id: 'id1', identity: 'another-user', recording: true, user: { id: 'another-user' }, updatedAt: Date.now() };
+	setParticipants('r1', [{ identity: 'another-user', recording: true, user: { id: 'another-user' } }]);
+	await flush();
+	expect(mocks.toast).toHaveBeenCalledTimes(1);
 
-	mocks.main.emit('chatRoomRecording', event);
-	scope.stop();
-	mocks.main.emit('chatRoomRecording', { ...event, roomId: 'r1' });
+	Object.assign(voiceCall, { room: { id: 'r2' } });
+	setParticipants('r2', []);
+	await flush();
+
+	expect(mocks.toast).toHaveBeenCalledTimes(1);
+	expect(mocks.sound).toHaveBeenCalledTimes(1);
+});
+
+test('does not toast for my own recording but keeps the badge', async () => {
+	scope = effectScope();
+	const watch = scope.run(useVoiceCallRecordingWatch)!;
+	await flush();
+
+	Object.assign(voiceCall, { recording: true });
+	await flush();
 
 	expect(mocks.toast).not.toHaveBeenCalled();
-	expect(mocks.main.dispose).toHaveBeenCalledOnce();
+	expect(watch.someoneRecording.value).toBe(true);
+	expect(watch.recordingIdentities.value).toEqual(['me']);
 });

@@ -16,9 +16,6 @@ import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 export function fakeRedis() {
 	const store = new Map<string, string>();
 	const sets = new Map<string, Set<string>>();
-	const recordingHistory = new Map<string, Map<string, number>>();
-	const recordingClaims = new Map<string, Map<string, { flags: number; deadline: number }>>();
-	const pendingPublications = new Map<string, Map<string, number>>();
 	// EX / PX の寿命は Date.now() で数えるので、偽のタイマーで時間を進めると切れる。
 	// 本物の Redis と同じく、寿命の時刻ちょうどにはまだ残っていて、それを過ぎると切れる
 	const expiresAt = new Map<string, number>();
@@ -30,20 +27,15 @@ export function fakeRedis() {
 		}
 		return store.has(key);
 	};
-	// 本物の Lua と同じく、保管一覧が上限なら最も古い項目を除き、終了まで配達した (stopSent) 結束だけ一緒に消す。
-	// 活性・未配達の結束は flush の終了配達と所有権検査にまだ必要なので、寿命切れに任せる
-	const evictRecordingHistory = (history: Map<string, number>, capacity: number, bindingPrefix: string) => {
-		if (history.size < capacity) return;
-		let oldest: string | undefined;
-		let oldestDeadline = Infinity;
-		for (const [entry, deadline] of history) if (deadline < oldestDeadline) { oldest = entry; oldestDeadline = deadline; }
-		if (oldest == null) return;
-		history.delete(oldest);
-		const evictedKey = bindingPrefix + oldest;
-		if (live(evictedKey) && JSON.parse(store.get(evictedKey)!).stopSent) {
-			store.delete(evictedKey);
-			expiresAt.delete(evictedKey);
+	// 集合の寿命 (EXPIRE) も同じく Date.now() で数える
+	const setExpiresAt = new Map<string, number>();
+	const liveSet = (key: string) => {
+		const at = setExpiresAt.get(key);
+		if (at != null && Date.now() > at) {
+			sets.delete(key);
+			setExpiresAt.delete(key);
 		}
+		return sets.has(key);
 	};
 	return {
 		store,
@@ -68,9 +60,20 @@ export function fakeRedis() {
 			let deleted = 0;
 			for (const key of keys) {
 				expiresAt.delete(key);
+				setExpiresAt.delete(key);
 				if (store.delete(key)) deleted++;
+				if (sets.delete(key)) deleted++;
 			}
 			return deleted;
+		}),
+		expire: vi.fn(async (key: string, seconds: number) => {
+			if (liveSet(key)) {
+				setExpiresAt.set(key, Date.now() + seconds * 1000);
+				return 1;
+			}
+			if (!live(key)) return 0;
+			expiresAt.set(key, Date.now() + seconds * 1000);
+			return 1;
 		}),
 		// ミラーの現況を保存するスクリプトと同じ動きをする。他のサーバーの通話を止めた回数 (KEYS[3]) が読んだときのまま (ARGV[5]) で、
 		// 保存済みの現況 (KEYS[1]) と、最後に受け入れた時刻 (KEYS[2]) のどちらよりも新しいときだけ書き、書いたらその時刻も残す。
@@ -82,120 +85,29 @@ export function fakeRedis() {
 		// 送る順番の鍵 (chatVoice:federateLock:*) は、自分が取ったもの (ARGV[1]) のときだけ外す
 		eval: vi.fn(async (_script: string, numKeys: number, ...args: (string | number)[]) => {
 			const [key, lastSeenKey, generationKey] = args.slice(0, numKeys) as string[];
-			if (_script.startsWith('-- PREPARE_RECORDING_EVENT')) {
-				const [token, roomId, identity, sessionId, id, starting, now, ttl, eventId, deliveryWindowMs, capacity] = args.slice(numKeys);
-				if (!live(generationKey) || store.get(generationKey) !== token) return '';
-				let binding = live(key) ? JSON.parse(store.get(key)!) : null;
-				const historyKey = String(args[4]);
-				const history = recordingHistory.get(historyKey) ?? new Map<string, number>();
-				recordingHistory.set(historyKey, history);
-				for (const [entry, deadline] of history) if (deadline <= Number(now)) history.delete(entry);
-				const active = live(lastSeenKey) ? store.get(lastSeenKey) : null;
-				if (binding && (binding.roomId !== roomId || binding.identity !== identity || binding.sessionId !== sessionId)) return '';
-				if (starting === '1' && (binding?.stop || (active && active !== id))) return '';
-				if (!binding) {
-					if (starting !== '1') return '';
-					binding = { clientId: id, roomId, identity, sessionId, start: { id: eventId, identity, recording: true, updatedAt: Number(now), deliveryWindowMs: Number(deliveryWindowMs) } };
-				}
-				if (starting === '1') {
-					store.set(lastSeenKey, String(id));
-					expiresAt.set(lastSeenKey, Date.now() + Number(ttl) * 1000);
-				} else {
-					binding.stop ??= { id: binding.start.id, identity, recording: false, updatedAt: Math.max(Number(now), binding.start.updatedAt + 1), deliveryWindowMs: Math.max(binding.start.deliveryWindowMs, Number(deliveryWindowMs)) };
-					if (active === id) store.delete(lastSeenKey);
-				}
-				const activeRoomsKey = String(args[5]);
-				if (!sets.has(activeRoomsKey)) sets.set(activeRoomsKey, new Set());
-				sets.get(activeRoomsKey)!.add(String(roomId));
-				// 上限なら最も古い保管項目を除く。再挿入 (既存 ID の終了・更新) も同じ上限を守り、既にある ID は点数だけ更新する (本物の Lua と同じ)
-				if (!history.has(String(id))) evictRecordingHistory(history, Number(capacity), key.slice(0, key.length - String(id).length));
-				history.set(String(id), Number(now) + Number(ttl) * 1000);
-				const roomKey = String(args[3]);
-				if (!sets.has(roomKey)) sets.set(roomKey, new Set());
-				sets.get(roomKey)!.add(String(id));
-				const result = JSON.stringify(binding);
-				store.set(key, result);
-				expiresAt.set(key, Date.now() + Number(ttl) * 1000);
-				return result;
-			}
-			if (_script.startsWith('-- ABORT_UNSENT_RECORDING')) {
-				const [token, clientId] = args.slice(numKeys);
-				const lockKey = String(args[2]);
-				if (!live(lockKey) || store.get(lockKey) !== String(token)) return 0;
-				if (!live(key)) return 0;
-				const binding = JSON.parse(store.get(key)!);
-				if (binding.startSent || binding.startPartial || binding.clientId !== String(clientId)) return 0;
-				store.delete(key);
-				expiresAt.delete(key);
-				if (live(lastSeenKey) && store.get(lastSeenKey) === String(clientId)) {
-					store.delete(lastSeenKey);
-					expiresAt.delete(lastSeenKey);
-				}
-				sets.get(String(args[3]))?.delete(String(clientId));
-				recordingHistory.get(String(args[4]))?.delete(String(clientId));
-				return 1;
-			}
-			if (_script.startsWith('-- CLAIM_RECORDING_EVENT') || _script.includes('-- PREPARE_RECORDING_PUBLICATION')) {
-				const [id, transition, now, deadline, capacity] = args.slice(numKeys);
-				const claims = recordingClaims.get(key) ?? new Map<string, { flags: number; deadline: number }>();
-				recordingClaims.set(key, claims);
-				const pending = pendingPublications.get(generationKey) ?? new Map<string, number>();
-				if (numKeys === 3) pendingPublications.set(generationKey, pending);
-				for (const [entry, held] of claims) if (held.deadline <= Number(now)) { claims.delete(entry); pending.delete(entry); }
-				const previous = claims.get(String(id));
-				const pendingFlags = pending.get(String(id)) ?? 0;
-				if (previous && (previous.flags & Number(transition)) !== 0 && (pendingFlags & Number(transition)) === 0) return 0;
-				if (!previous && claims.size >= Number(capacity)) {
-					// PREPARE は上限で拒まず最も早い期限の seen 項目を除く。CLAIM (試験専用) はそのまま -1
-					if (numKeys !== 3) return -1;
-					let oldest: string | undefined;
-					let oldestDeadline = Infinity;
-					for (const [entry, held] of claims) if (held.deadline < oldestDeadline) { oldest = entry; oldestDeadline = held.deadline; }
-					if (oldest != null) { claims.delete(oldest); pending.delete(oldest); }
-				}
-				if (numKeys === 3) pending.set(String(id), pendingFlags | Number(transition));
-				claims.set(String(id), { flags: (previous?.flags ?? 0) | Number(transition), deadline: Math.max(previous?.deadline ?? 0, Number(deadline) + 1000) });
-				return (pendingFlags & Number(transition)) !== 0 ? 2 : 1;
-			}
-			if (_script.includes('-- ACK_RECORDING_PUBLICATION')) {
-				const [id, transition] = args.slice(numKeys);
-				const pending = pendingPublications.get(lastSeenKey);
-				const remaining = (pending?.get(String(id)) ?? 0) & ~Number(transition);
-				if (remaining === 0) pending?.delete(String(id));
-				else pending?.set(String(id), remaining);
-				return 1;
-			}
-			if (_script.startsWith('-- RENEW_ACTIVE_RECORDING')) {
-				const [id, ttl, now, capacity] = args.slice(numKeys);
-				if (!live(key) || !live(lastSeenKey) || store.get(lastSeenKey) !== id || JSON.parse(store.get(key)!).stop) return 0;
-				for (const entry of args.slice(0, 3)) expiresAt.set(String(entry), Number(now) + Number(ttl) * 1000);
-				const history = recordingHistory.get(String(args[3])) ?? new Map<string, number>();
-				recordingHistory.set(String(args[3]), history);
-				if (!history.has(String(id))) evictRecordingHistory(history, Number(capacity), key.slice(0, key.length - String(id).length));
-				history.set(String(id), Number(now) + Number(ttl) * 1000);
-				return 1;
-			}
-			if (_script.startsWith('-- MARK_RECORDING_EVENT_SENT')) {
-				const [token, sent, ttl] = args.slice(numKeys);
-				if (!live(lastSeenKey) || store.get(lastSeenKey) !== token || !live(key)) return 0;
-				const binding = JSON.parse(store.get(key)!);
-				binding[String(sent)] = true;
-				store.set(key, JSON.stringify(binding));
-				expiresAt.set(key, Date.now() + Number(ttl) * 1000);
-				return 1;
-			}
 			if (_script.startsWith('-- GATE_MIRROR_PUBLICATION')) {
-				const [generation, updatedAt, emptyValue, interval, ttl] = args.slice(numKeys);
+				const [generation, updatedAt, emptyValue, interval, ttl, recordingHash] = args.slice(numKeys);
 				if ((live(generationKey) ? store.get(generationKey) : '0') !== generation) return -2;
 				if (!live(lastSeenKey) || JSON.parse(store.get(lastSeenKey)!).updatedAt !== Number(updatedAt)) return -3;
-				const last = live(key) ? JSON.parse(store.get(key)!) as { updatedAt: number; empty: boolean; activeAt?: number } : null;
+				const last = live(key) ? JSON.parse(store.get(key)!) as { updatedAt: number; empty: boolean; activeAt?: number; recordingHash?: string } : null;
 				if (last != null && last.updatedAt >= Number(updatedAt)) return 0;
 				const empty = emptyValue === '1';
 				if (empty && last?.empty) return 0;
-				if (!empty && last?.activeAt != null && Date.now() - last.activeAt < Number(interval)) return Number(interval) - (Date.now() - last.activeAt);
-				store.set(key, JSON.stringify({ updatedAt: Number(updatedAt), empty, activeAt: empty ? last?.activeAt : Date.now() }));
+				// 録画中の参加者の hash が記録と違えば間隔を待たずに通知する。記録に hash が無ければ通常の間隔。
+				// 録画の変化による通知は参加者の通知間隔の時計 (activeAt) を進めない
+				const recordingChanged = last?.recordingHash != null && last.recordingHash !== recordingHash;
+				if (!empty && !recordingChanged && last?.activeAt != null && Date.now() - last.activeAt < Number(interval)) return Number(interval) - (Date.now() - last.activeAt);
+				store.set(key, JSON.stringify({ updatedAt: Number(updatedAt), empty, activeAt: empty || recordingChanged ? last?.activeAt : Date.now(), recordingHash }));
 				expiresAt.set(key, Date.now() + Number(ttl) * 1000);
 				return -1;
+			}
+			// 録音状態を、読んだときの値 (ARGV[1]、無ければ空文字) のままのときだけ消す
+			if (_script.startsWith('-- CLEAR_RECORDING_STATE_IF_CURRENT')) {
+				const [previous] = args.slice(numKeys);
+				if ((live(key) ? store.get(key) : '') !== String(previous)) return 0;
+				store.delete(key);
+				expiresAt.delete(key);
+				return 1;
 			}
 			if (_script.startsWith('-- CLEAR_MIRROR_IF_CURRENT')) {
 				const [generation, previous, lastSeen] = args.slice(numKeys);
@@ -223,17 +135,16 @@ export function fakeRedis() {
 				expiresAt.set(key, Date.now() + Number(stampTtlSeconds) * 1000);
 				return stamp;
 			}
-			// このサーバーが持つルームの現況 (KEYS[2] が通話中のルームの一覧、KEYS[3] が未完了録音 ID の集合) は、保存済みのものより新しいときだけ書き、一覧も変える。
-			// 空の現況でも、未完了の録音が残るルームは一覧から外さない (本物の Lua と同じ)
+			// このサーバーが持つルームの現況 (KEYS[2] が通話中のルームの一覧) は、保存済みのものより新しいときだけ書き、一覧も変える
 			if (lastSeenKey === 'chatVoice:active') {
 				const [snapshot, snapshotUpdatedAt, snapshotTtlSeconds, roomId, empty] = args.slice(numKeys);
 				if (live(key) && (JSON.parse(store.get(key)!) as { updatedAt: number }).updatedAt >= Number(snapshotUpdatedAt)) return 0;
 				store.set(key, String(snapshot));
 				expiresAt.set(key, Date.now() + Number(snapshotTtlSeconds) * 1000);
+				liveSet(lastSeenKey);
 				if (!sets.has(lastSeenKey)) sets.set(lastSeenKey, new Set());
-				if (String(empty) === '1') {
-					if ((sets.get(generationKey)?.size ?? 0) === 0) sets.get(lastSeenKey)!.delete(String(roomId));
-				} else sets.get(lastSeenKey)!.add(String(roomId));
+				if (String(empty) === '1') sets.get(lastSeenKey)!.delete(String(roomId));
+				else sets.get(lastSeenKey)!.add(String(roomId));
 				return 1;
 			}
 			if (key.startsWith('chatVoice:federated:')) {
@@ -257,7 +168,7 @@ export function fakeRedis() {
 				expiresAt.set(key, Date.now() + Number(ttlSeconds) * 1000);
 				return count;
 			}
-			if (key.startsWith('chatVoice:federateLock:') || key.startsWith('chatVoice:recordingLock:')) {
+			if (key.startsWith('chatVoice:federateLock:')) {
 				if (!live(key) || store.get(key) !== String(args[numKeys])) return 0;
 				store.delete(key);
 				expiresAt.delete(key);
@@ -282,12 +193,13 @@ export function fakeRedis() {
 			return next;
 		}),
 		sadd: vi.fn(async (key: string, member: string) => {
+			liveSet(key);
 			if (!sets.has(key)) sets.set(key, new Set());
 			sets.get(key)!.add(member);
 			return 1;
 		}),
-		srem: vi.fn(async (key: string, member: string) => (sets.get(key)?.delete(member) ? 1 : 0)),
-		smembers: vi.fn(async (key: string) => [...(sets.get(key) ?? [])]),
+		srem: vi.fn(async (key: string, member: string) => (liveSet(key) && sets.get(key)!.delete(member) ? 1 : 0)),
+		smembers: vi.fn(async (key: string) => [...(liveSet(key) ? sets.get(key)! : [])]),
 	};
 }
 
@@ -377,16 +289,7 @@ export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []
 	const globalEventService = {
 		publishChatRoomStream: vi.fn(),
 		publishMainStream: vi.fn(),
-		publishRecordingMainStream: vi.fn<(userIds: string[], value: any, receipt: { id: string; deadline: number }) => Promise<void>>(),
 	};
-	// 전송 경계의 fixture다. 실제 PubSub Lua·다중 프로세스 검사는 별도 Redis 시험에서 수행한다.
-	const published = new Set<string>();
-	globalEventService.publishRecordingMainStream.mockImplementation(async (userIds, value, receipt) => {
-		const key = `${value.roomId}:${receipt.id}:${value.recording}`;
-		if (published.has(key)) return;
-		for (const userId of userIds) globalEventService.publishMainStream(userId, 'chatRoomRecording', value);
-		published.add(key);
-	});
 	const roleService = {
 		getUserPolicies: vi.fn(async (_userId: string) => ({ canVoiceCall: true, canScreenShare: true, chatAvailability: 'available' })),
 	};

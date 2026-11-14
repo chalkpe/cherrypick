@@ -25,22 +25,22 @@ describe('ChatVoiceService', () => {
 		vi.useRealTimers();
 	});
 
- test('an unreachable delegated call remains explicitly unavailable after its cached roster expires', async () => {
-  Object.assign(f.liveKitService, { isRoomUnavailable: async () => true });
-  expect(await f.service.getStates({ id: 'm1' }, ['r1'])).toEqual([expect.objectContaining({ roomId: 'r1', participants: [], unavailable: true })]);
- });
+	test('an unreachable delegated call remains explicitly unavailable after its cached roster expires', async () => {
+		Object.assign(f.liveKitService, { isRoomUnavailable: async () => true });
+		expect(await f.service.getStates({ id: 'm1' }, ['r1'])).toEqual([expect.objectContaining({ roomId: 'r1', participants: [], unavailable: true })]);
+	});
 
- test('relay outage sends a local stream update even when participant lookup fails', async () => {
-  let unavailable = true;
-  Object.assign(f.liveKitService, { isRoomUnavailable: async () => unavailable });
-  f.liveKitService.listParticipants.mockRejectedValue(new Error('provider offline'));
-  f.relayChange('r1');
-  await vi.waitFor(() => expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('owner', 'chatRoomVoiceState', expect.objectContaining({ roomId: 'r1', unavailable: true })));
-  const before = f.globalEventService.publishMainStream.mock.calls.at(-1)![2].updatedAt;
-  unavailable = false; f.liveKitService.listParticipants.mockResolvedValue([]);
-  f.relayChange('r1');
-  await vi.waitFor(() => expect(f.globalEventService.publishMainStream.mock.calls.some(call => call[2].updatedAt > before && !call[2].unavailable)).toBe(true));
- });
+	test('relay outage sends a local stream update even when participant lookup fails', async () => {
+		let unavailable = true;
+		Object.assign(f.liveKitService, { isRoomUnavailable: async () => unavailable });
+		f.liveKitService.listParticipants.mockRejectedValue(new Error('provider offline'));
+		f.relayChange('r1');
+		await vi.waitFor(() => expect(f.globalEventService.publishMainStream).toHaveBeenCalledWith('owner', 'chatRoomVoiceState', expect.objectContaining({ roomId: 'r1', unavailable: true })));
+		const before = f.globalEventService.publishMainStream.mock.calls.at(-1)![2].updatedAt;
+		unavailable = false; f.liveKitService.listParticipants.mockResolvedValue([]);
+		f.relayChange('r1');
+		await vi.waitFor(() => expect(f.globalEventService.publishMainStream.mock.calls.some(call => call[2].updatedAt > before && !call[2].unavailable)).toBe(true));
+	});
 
 	test('a worker with delayed meta events cannot store or show a host blocked in authoritative settings', async () => {
 		const other = createFixture(f.redis);
@@ -261,7 +261,7 @@ describe('ChatVoiceService', () => {
 
 		await f.service.refresh('r1');
 
-		expect(f.redis.eval).toHaveBeenCalledWith(expect.any(String), 3, 'chatVoice:state:r1', 'chatVoice:active', 'chatVoice:recordingRoom:r1', expect.any(String), TEST_CLOCK, 120, 'r1', '0');
+		expect(f.redis.eval).toHaveBeenCalledWith(expect.any(String), 2, 'chatVoice:state:r1', 'chatVoice:active', expect.any(String), TEST_CLOCK, 120, 'r1', '0');
 	});
 
 	test('tracks rooms with an active call', async () => {
@@ -371,9 +371,11 @@ describe('ChatVoiceService', () => {
 		expect(f.liveKitService.ensureRoom).toHaveBeenCalledTimes(1);
 		expect(result.token).toBe('jwt');
 	});
+
 	function fakeDelegation(provided: { urls: string[]; username?: string; credential?: string }[] | null) {
 		return vi.fn(async (_room: string, _params: unknown, getOwn: () => Promise<{ urls: string[]; username?: string; credential?: string }[] | null>) => ({ token: 'delegated', iceServers: await getOwn() ?? provided, mediaProvider: 'https://relay.test' }));
 	}
+
 	test('a delegated local join prefers this server TURN over provider TURN', async () => {
 		const own = [{ urls: ['turn:own.example:3478'], username: 'own', credential: 'own' }];
 		const provided = [{ urls: ['turn:provider.example:3478'], username: 'provider', credential: 'provider' }];

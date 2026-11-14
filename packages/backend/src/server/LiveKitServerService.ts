@@ -6,7 +6,6 @@
 import * as http from 'node:http';
 import * as https from 'node:https';
 import { Inject, Injectable } from '@nestjs/common';
-import { RECORDING_ID, RecordingStatusBusyError } from '@/core/recording-event.js';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { bindThis } from '@/decorators.js';
@@ -153,15 +152,12 @@ export class LiveKitServerService {
 				if (await this.rateLimiterService.limit(FEDERATION_STATUS_USER_LIMIT, user.id) != null) return reply.code(429).send();
 				const body: unknown = JSON.parse(rawBody);
 				if (body == null || typeof body !== 'object') return reply.code(400).send();
-				const { room, sessionId, micMuted, deafened, recording, recordingId } = body as Record<string, unknown>;
+				const { room, sessionId, micMuted, deafened, recording } = body as Record<string, unknown>;
 				if (typeof room !== 'string' || typeof sessionId !== 'string' || sessionId.length > 128 || typeof micMuted !== 'boolean' || typeof deafened !== 'boolean') return reply.code(400).send();
-				if (recordingId != null && (typeof recordingId !== 'string' || !RECORDING_ID.test(recordingId))) return reply.code(400).send();
 				const roomId = this.localRoomIdOf(room);
-				if (roomId == null || !await this.chatVoiceService.reportStatus(user, roomId, sessionId, { micMuted, deafened, recording: typeof recording === 'boolean' ? recording : undefined, ...(typeof recordingId === 'string' ? { recordingId } : {}) })) return reply.code(403).send();
+				if (roomId == null || !await this.chatVoiceService.reportStatus(user, roomId, sessionId, { micMuted, deafened, recording: typeof recording === 'boolean' ? recording : undefined })) return reply.code(403).send();
 				return reply.code(200).send({});
 			} catch (err) {
-				// 잠금 경합은 일시 상태다. 내부 오류 (500) 대신 409로 답해, 상대 서버가 도달 불가 (재시도 대상) 로 처리하게 한다
-				if (err instanceof RecordingStatusBusyError) return reply.code(409).send();
 				return reply.code(err instanceof SyntaxError ? 400 : 500).send();
 			}
 		});
