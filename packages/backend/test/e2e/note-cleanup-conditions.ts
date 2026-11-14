@@ -1,0 +1,474 @@
+/*
+ * SPDX-FileCopyrightText: syuilo and misskey-project
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+import { afterAll, afterEach, beforeAll, expect, test, vi } from 'vitest';
+import { Blob } from 'node-fetch';
+import { QueueEvents } from 'bullmq';
+import type { entities } from 'cherrypick-js';
+import { IdService } from '@/core/IdService.js';
+import { MiNote } from '@/models/Note.js';
+import { MiNoteCleanupRule } from '@/models/NoteCleanupRule.js';
+import { QueueService } from '@/core/QueueService.js';
+import { CacheService } from '@/core/CacheService.js';
+import { api, channel, clip, initTestDb, post, relativeFetch, signup, startJobQueue, uploadFile } from '../utils.js';
+import type { UserToken } from '../utils.js';
+import type { INestApplicationContext } from '@nestjs/common';
+
+type Condition = entities.NoteCleanupCondition;
+type Rule = { id: string; condition: Condition; action: 'keep' | 'delete' };
+type Response = { rule: Rule; rules: Rule[]; notes: { id: string }[]; errors: { ruleId: string; code: string }[]; complete: boolean; queued: boolean; jobId: string; error: { code: string; info: { code: string } } };
+let queue: INestApplicationContext;
+const accounts: Awaited<ReturnType<typeof signup>>[] = [];
+
+async function account() {
+	const user = await signup();
+	accounts.push(user);
+	return user;
+}
+
+const literal = (value: string, targets: entities.NoteCleanupTarget[] = ['text', 'cw', 'poll']): Condition => ({ type: 'keyword', mode: 'literal', value, flags: '', targets });
+const flag = (field: entities.NoteCleanupFlag, value = true): Condition => ({ type: 'flag', field, value });
+const allVisibility: Condition = { type: 'visibility', values: ['public', 'home', 'followers', 'specified'] };
+const signal = '완료신호전용문자열';
+
+// 생성·관계 변경·정리는 제품 HTTP API를 사용한다.
+async function cleanup(path: string, params: Record<string, unknown>, user: UserToken) {
+	const res = await relativeFetch(`api/i/note-cleanup/${path}`, {
+		method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...params, i: user.token }),
+	});
+	return { status: res.status, body: (res.status === 204 ? null : await res.json()) as Response };
+}
+
+async function owner() {
+	const user = await account();
+	const listed = await cleanup('list', {}, user);
+	expect(listed.status).toBe(200);
+	// 기본 보호를 API로 제거하여 각 조건만 독립적으로 판정한다.
+	for (const rule of listed.body.rules) expect((await cleanup('delete', { ruleId: rule.id }, user)).status).toBe(204);
+	return user;
+}
+
+async function rule(user: UserToken, condition: Condition, action: 'keep' | 'delete' = 'delete') {
+	const created = await cleanup('create', { name: '조건 시험', action, condition, automatic: false }, user);
+	expect(created.status).toBe(200);
+	const listed = await cleanup('list', {}, user);
+	expect(listed.status).toBe(200);
+	expect(listed.body.rules.find(r => r.id === created.body.rule.id)?.condition).toEqual(condition);
+	return created.body.rule;
+}
+
+// 미리 보기는 지워질 노트만 돌려준다.
+async function preview(user: UserToken, ids: string[]) {
+	const res = await cleanup('preview', { ruleIds: ids }, user);
+	expect(res.status).toBe(200);
+	expect(res.body.errors).toEqual([]);
+	expect(res.body.complete).toBe(true);
+	return res.body.notes.map(note => note.id);
+}
+
+async function exists(user: UserToken, id: string, present: boolean) {
+	const res = await api('notes/show', { noteId: id }, user);
+	expect(res.status).toBe(present ? 200 : 400);
+	if (!present) expect((res.body as unknown as { error: { code: string } }).error.code).toBe('NO_SUCH_NOTE');
+}
+
+// 양성 삭제 신호와 모든 삭제 대상을 기다린 뒤 보존 대상을 확인한다.
+async function execute(user: UserToken, ids: string[], deleted: string[], retained: string[]) {
+	const sentinel = await post(user, { text: signal });
+	const completion = await rule(user, literal(signal));
+	const selected = [...ids, completion.id];
+	const requested = await cleanup('request', { ruleIds: selected }, user);
+	expect(requested.status).toBe(200);
+	expect(requested.body.queued).toBe(true);
+	for (const id of [...deleted, sentinel.id]) {
+		await expect.poll(async () => (await api('notes/show', { noteId: id }, user)).status, { timeout: 180000, interval: 250 }).toBe(400);
+		await exists(user, id, false);
+	}
+	for (const id of retained) await exists(user, id, true);
+}
+
+async function check(user: UserToken, condition: Condition, matched: string[], unmatched: string[], action: 'keep' | 'delete' = 'delete') {
+	const tested = await rule(user, condition, action);
+	const deletion = action === 'keep' ? await rule(user, allVisibility) : tested;
+	const ids = await preview(user, [deletion.id]);
+	// 남기기 조건은 일치 노트를 삭제 후보에서 빼고, 지우기 조건은 일치 노트만 후보에 넣는다.
+	for (const id of action === 'keep' ? unmatched : matched) expect(ids).toContain(id);
+	for (const id of action === 'keep' ? matched : unmatched) expect(ids).not.toContain(id);
+
+	await execute(user, [deletion.id], action === 'keep' ? unmatched : matched, action === 'keep' ? matched : unmatched);
+}
+
+beforeAll(async () => {
+	// 큐 시작이 시험 DB를 초기화하므로 그 뒤에 보호할 첫 계정을 준비한다.
+	queue = await startJobQueue();
+	const root = await signup({ username: 'cleanuproot' });
+	await vi.waitFor(async () => expect((await api('admin/meta', {}, root)).status).toBe(200), { timeout: 30000 });
+}, 120000);
+afterEach(async () => {
+	const users = accounts.splice(0);
+	if (!users.length) return;
+	const dbQueue = queue.get(QueueService).dbQueue;
+	const cache = queue.get(CacheService);
+	const events = new QueueEvents(dbQueue.name, { connection: dbQueue.opts.connection, prefix: dbQueue.opts.prefix });
+	await events.waitUntilReady();
+	const addedIds: string[] = [];
+	events.on('added', ({ jobId, name }) => { if (name === 'deleteAccount') addedIds.push(jobId); });
+	await dbQueue.pause();
+	try {
+		for (const user of users) {
+			// 삭제 표시 이벤트와 물리 삭제 이벤트를 각각 관찰해 종료 순서를 확정한다.
+			await cache.findUserById(user.id);
+			expect((await api('i/delete-account', { password: 'test' }, user)).status).toBe(204);
+			await vi.waitFor(() => expect(cache.userByIdCache.get(user.id)?.isDeleted).toBe(true), { timeout: 30000 });
+		}
+		const jobs = await vi.waitFor(async () => {
+			const pending = await Promise.all(addedIds.map(id => dbQueue.getJob(id)));
+			const matching = users.map(user => pending.find(job => job?.data.user.id === user.id));
+			if (matching.some(job => !job)) throw new Error('Account deletion job was not queued');
+			return matching.map(job => job!);
+		}, { timeout: 30000 });
+		await dbQueue.resume();
+		await Promise.all(jobs.map(job => job.waitUntilFinished(events, 30000)));
+		for (const user of users) await vi.waitFor(() => expect(cache.userByIdCache.get(user.id)).toBeUndefined(), { timeout: 30000 });
+	} finally {
+		await dbQueue.resume();
+		await events.close();
+	}
+}, 240000);
+afterAll(async () => { await queue?.close(); });
+
+test('중첩 저장과 재조회, 공통 보호, 개별 요청과 미해당 보존', async () => {
+	const user = await owner();
+	const a = await post(user, { text: '대상 하나' });
+	const b = await post(user, { text: '대상 둘 보존' });
+	const c = await post(user, { text: '다른 규칙 전용' });
+	const d = await post(user, { text: '미해당' });
+	const e = await post(user, { text: '보존만' });
+	const condition: Condition = { type: 'all', children: [literal('대상'), { type: 'any', children: [literal('하나'), literal('둘')] }] };
+	const selected = await rule(user, literal('편집 전'));
+	const updated = await cleanup('update', { ruleId: selected.id, name: '중첩 편집', action: 'delete', condition }, user);
+	expect(updated.status).toBe(200);
+	expect((await cleanup('list', {}, user)).body.rules.find(r => r.id === selected.id)?.condition).toEqual(condition);
+	await rule(user, literal('다른 규칙'));
+	await rule(user, literal('대상'));
+	await rule(user, literal('보존'), 'keep');
+	const ids = await preview(user, [selected.id]);
+	expect(ids).toContain(a.id);
+	for (const id of [b.id, c.id, d.id, e.id]) expect(ids).not.toContain(id);
+
+	await execute(user, [selected.id], [a.id], [b.id, c.id, d.id, e.id]);
+}, 240000);
+
+const strings: { name: string; condition: Condition; yes: string; no: string }[] = [
+	{ name: '조사 부분 일치', condition: literal('사과'), yes: '사과를 먹었다', no: '배를 먹었다' },
+	{ name: 'NFC', condition: literal('한글'), yes: '한글'.normalize('NFD'), no: '다른 글' },
+	{ name: '대소문자', condition: literal('AbC'), yes: '앞 abc 뒤', no: 'abd' },
+	{ name: '공백 유지', condition: literal('두  칸'), yes: '두  칸', no: '두 칸' },
+	{ name: '여러 줄은 줄마다 하나씩', condition: literal('사과\n배'), yes: '배를 먹었다', no: '포도를 먹었다' },
+	{ name: '빈 줄은 제외', condition: literal('\n사과\n\n'), yes: '사과를 먹었다', no: '배를 먹었다' },
+	{ name: 'NFKC 확장 없음', condition: literal('ABC'), yes: 'ABC', no: 'ＡＢＣ' },
+	{ name: '유사어 확장 없음', condition: literal('자동차'), yes: '자동차', no: '차량' },
+	{ name: '발음 확장 없음', condition: literal('같이'), yes: '같이', no: '가치' },
+	{ name: '초성 확장 없음', condition: literal('ㅎㄱ'), yes: 'ㅎㄱ', no: '한글' },
+	{ name: '슬래시와 메타문자', condition: literal('/a.b/'), yes: '/a.b/', no: 'axb' },
+	{ name: '명시적 RE2', condition: { type: 'keyword', mode: 'regex', value: '^a.b$', flags: '', targets: ['text'] }, yes: 'axb', no: 'AXB' },
+	{ name: 'RE2 i 플래그', condition: { type: 'keyword', mode: 'regex', value: '^abc$', flags: 'i', targets: ['text'] }, yes: 'ABC', no: 'abcd' },
+	{ name: 'RE2 여러 줄 중 하나', condition: { type: 'keyword', mode: 'regex', value: '^사과$\n^배$', flags: '', targets: ['text'] }, yes: '배', no: '포도' },
+];
+
+test.each(strings)('$name 저장·조회·미리 보기·삭제', async ({ condition, yes, no }) => {
+	const user = await owner();
+	const positive = await post(user, { text: yes });
+	const negative = await post(user, { text: no });
+
+	expect((await api('notes/show', { noteId: positive.id }, user)).body.text).toBe(yes);
+	await check(user, condition, [positive.id], [negative.id]);
+	expect((await api('notes/show', { noteId: negative.id }, user)).body.text).toBe(no);
+}, 240000);
+
+test.each(['[', '(a)\\1', '(?=a)'])('잘못된 RE2 저장 차단: %s', async value => {
+	const user = await owner();
+	const condition = { type: 'keyword', mode: 'regex', value, flags: '', targets: ['text'] };
+	const res = await cleanup('create', { name: '거절', action: 'delete', condition }, user);
+	expect(res.status).toBe(400);
+	expect(res.body.error.code).toBe('INVALID_CLEANUP');
+	expect(res.body.error.info.code).toBe('INVALID_CONDITION');
+	expect((await cleanup('list', {}, user)).body.rules).toEqual([]);
+}, 240000);
+
+test('여러 줄 중 한 줄이라도 잘못된 RE2면 저장을 차단한다', async () => {
+	const user = await owner();
+	const condition = { type: 'keyword', mode: 'regex', value: '^정상$\n[', flags: '', targets: ['text'] };
+	const res = await cleanup('create', { name: '거절', action: 'delete', condition }, user);
+	expect(res.status).toBe(400);
+	expect(res.body.error.info.code).toBe('INVALID_CONDITION');
+}, 240000);
+
+test.each(['z', 'x', 'v', 'iz', 'ii'])('단어 뮤트와 같이 RE2가 받는 플래그 %s를 저장하고 판정한다', async flags => {
+	const user = await owner();
+	const positive = await post(user, { text: 'flagprobe' });
+	const negative = await post(user, { text: 'other' });
+	const condition: Condition = { type: 'keyword', mode: 'regex', value: '^flagprobe$', flags, targets: ['text'] };
+	const muted = await api('i/update', { mutedWords: [`/^flagprobe$/${flags}`] }, user);
+	expect(muted.status).toBe(200);
+	expect((await api('i/update', { mutedWords: [] }, user)).status).toBe(200);
+
+	await check(user, condition, [positive.id], [negative.id]);
+}, 240000);
+
+test.each(['delete', 'keep'] as const)('기존 잘못된 RE2 식이 든 %s 규칙은 오류로 처리한다', async action => {
+	const user = await owner();
+	const note = await post(user, { text: 'flagprobe' });
+	const valid: Condition = { type: 'keyword', mode: 'regex', value: action === 'delete' ? '^never$' : '^flagprobe$', flags: '', targets: ['text'] };
+	const invalid = await rule(user, { type: 'all', children: [valid] }, action);
+	const deletion = action === 'delete' ? invalid : await rule(user, allVisibility);
+	const db = await initTestDb(true);
+	try {
+		// 이전 버전에서 저장된 잘못된 조건을 재현하는 fixture다.
+		await db.getRepository(MiNoteCleanupRule).update(invalid.id, { condition: { type: 'all', children: [{ ...valid, value: '[' }] } });
+	} finally {
+		await db.destroy();
+	}
+	const result = await cleanup('preview', { ruleIds: [deletion.id] }, user);
+	expect(result.status).toBe(200);
+	expect(result.body.notes.some(n => n.id === note.id)).toBe(false);
+	expect(result.body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: invalid.id, code: 'INVALID_CONDITION' })]));
+
+	const system = queue.get(QueueService).systemQueue;
+	const events = new QueueEvents(system.name, { connection: system.opts.connection, prefix: system.opts.prefix });
+	try {
+		await events.waitUntilReady();
+		const expectedJobId = `note-cleanup-${user.id}`;
+		const completed = new Promise<void>((resolve, reject) => {
+			const timeout = setTimeout(() => reject(new Error('cleanup job timed out')), 30000);
+			events.on('completed', ({ jobId }) => { if (jobId === expectedJobId) { clearTimeout(timeout); resolve(); } });
+			events.on('failed', ({ jobId, failedReason }) => { if (jobId === expectedJobId) { clearTimeout(timeout); reject(new Error(failedReason)); } });
+		});
+		const requested = await cleanup('request', { ruleIds: [deletion.id] }, user);
+		expect(requested.body.queued).toBe(true);
+		expect(requested.body.jobId).toBe(expectedJobId);
+		await completed;
+	} finally {
+		await events.close();
+	}
+	await exists(user, note.id, true);
+}, 240000);
+
+test('빈 묶음·불완전·과대·과심도 조건을 저장하지 않는다', async () => {
+	const user = await owner();
+	let deep: Condition = literal('끝');
+	for (let i = 0; i < 9; i++) deep = { type: i % 2 ? 'any' : 'all', children: [deep] };
+	for (const condition of [{ type: 'all', children: [] }, { type: 'keyword' }, { type: 'any', children: Array.from({ length: 33 }, () => literal('큰 묶음')) }, deep]) {
+		expect((await cleanup('create', { name: '거절', action: 'delete', condition }, user)).status).toBe(400);
+	}
+	expect((await cleanup('list', {}, user)).body.rules).toEqual([]);
+}, 240000);
+
+test.each(['text', 'cw', 'poll'] as const)('기본 검색 범위 %s와 제외 범위를 구분한다', async target => {
+	const user = await owner();
+	const positive = await post(user, target === 'poll' ? { text: '설문', poll: { choices: ['검색문자', '다른 선택지'] } } : target === 'cw' ? { text: '본문', cw: '검색문자' } : { text: '검색문자' });
+	const negative = await post(user, { text: '미해당' });
+	const excluded = await rule(user, literal('검색문자', target === 'text' ? ['cw'] : ['text']));
+	expect(await preview(user, [excluded.id])).not.toContain(positive.id);
+
+	await check(user, literal('검색문자'), [positive.id], [negative.id]);
+}, 240000);
+
+test.each(['fileComment', 'fileName'] as const)('공유 첨부의 %s 선택·제외 및 수정 반영', async target => {
+	const user = await owner();
+	const uploaded = await uploadFile(user, { name: '처음.txt', blob: new Blob(['합성 시험 자료'], { type: 'text/plain' }) });
+	expect(uploaded.status).toBe(200);
+	const fileId = uploaded.body!.id;
+	const a = await post(user, { text: '첨부 하나', fileIds: [fileId] });
+	const b = await post(user, { text: '첨부 둘', fileIds: [fileId] });
+	const c = await post(user, { text: '첨부 없음' });
+	const selected = await rule(user, literal('변경표식', [target]));
+	expect(await preview(user, [selected.id])).toEqual([]);
+	expect((await api('drive/files/update', { fileId, ...(target === 'fileName' ? { name: '변경표식.txt' } : { comment: '변경표식' }) }, user)).status).toBe(200);
+	const excluded = await rule(user, literal('변경표식'));
+	expect(await preview(user, [excluded.id])).toEqual([]);
+	const ids = await preview(user, [selected.id]);
+	for (const id of [a.id, b.id]) expect(ids).toContain(id);
+	expect(ids).not.toContain(c.id);
+
+	await execute(user, [selected.id], [a.id, b.id], [c.id]);
+	expect((await api('drive/files/delete', { fileId }, user)).status).toBe(204);
+}, 240000);
+
+test.each(['pinned', 'favorite', 'selfReaction', 'selfRenote'] as const)('자기 표시 %s와 타인 표시를 구분한다', async field => {
+	const user = await owner();
+	const other = await account();
+	const own = await post(user, { text: '내 표시' });
+	const foreignMark = await post(user, { text: '타인 표시' });
+	const plain = await post(user, { text: '표시 없음' });
+	if (field === 'pinned') {
+		expect((await api('i/pin', { noteId: own.id }, user)).status).toBe(200);
+	} else if (field === 'favorite') {
+		expect((await api('notes/favorites/create', { noteId: own.id }, user)).status).toBe(204);
+		expect((await api('notes/favorites/create', { noteId: foreignMark.id }, other)).status).toBe(204);
+	} else if (field === 'selfReaction') {
+		expect((await api('notes/reactions/create', { noteId: own.id, reaction: '👍' }, user)).status).toBe(204);
+		expect((await api('notes/reactions/create', { noteId: foreignMark.id, reaction: '👍' }, other)).status).toBe(204);
+	} else {
+		expect((await post(user, { renoteId: own.id })).renoteId).toBe(own.id);
+		expect((await post(other, { renoteId: foreignMark.id })).renoteId).toBe(foreignMark.id);
+	}
+
+	await check(user, flag(field), [own.id], [foreignMark.id, plain.id], 'keep');
+}, 240000);
+
+test.each([null, 'public', 'private'] as const)('내 클립 전체/지정 %s와 동명 타인 클립 구분', async selection => {
+	const user = await owner();
+	const other = await account();
+	const pub = await clip(user, { name: '같은 이름', isPublic: true });
+	const priv = await clip(user, { name: '같은 이름', isPublic: false });
+	const theirs = await clip(other, { name: '같은 이름', isPublic: true });
+	const notes = await Promise.all(['공개 클립', '비공개 클립', '타인 클립', '클립 없음'].map(text => post(user, { text })));
+	for (const [index, resource, actor] of [[0, pub, user], [1, priv, user], [2, theirs, other]] as const) {
+		expect((await api('clips/add-note', { clipId: resource.id, noteId: notes[index].id }, actor)).status).toBe(204);
+	}
+	const matches = selection === null ? [0, 1] : selection === 'public' ? [0] : [1];
+
+	await check(user, { type: 'clip', ids: selection === null ? null : [selection === 'public' ? pub.id : priv.id] }, matches.map(i => notes[i].id), notes.filter((_, i) => !matches.includes(i)).map(n => n.id));
+	for (const [resource, actor] of [[pub, user], [priv, user], [theirs, other]] as const) expect((await api('clips/delete', { clipId: resource.id }, actor)).status).toBe(204);
+}, 240000);
+
+test('다른 사용자의 비공개 클립을 지정할 수 없다', async () => {
+	const user = await owner();
+	const other = await account();
+	const resource = await clip(other, { isPublic: false });
+	const res = await cleanup('create', { name: '권한', action: 'delete', condition: { type: 'clip', ids: [resource.id] } }, user);
+	expect(res.status).toBe(400);
+	expect((await cleanup('list', {}, user)).body.rules).toEqual([]);
+	expect((await api('clips/delete', { clipId: resource.id }, other)).status).toBe(204);
+}, 240000);
+
+test.each(['poll', 'files', 'cw', 'reply', 'quote', 'localOnly'] as const)('%s 유무 양쪽을 판정한다', async field => {
+	const user = await owner();
+	const parent = await post(user, { text: '원본' });
+	let fileId: string | undefined;
+	if (field === 'files') {
+		const uploaded = await uploadFile(user, { name: '합성.txt', blob: new Blob(['합성 자료'], { type: 'text/plain' }) });
+		expect(uploaded.status).toBe(200);
+		fileId = uploaded.body!.id;
+	}
+	const positive = await post(user, {
+		text: '조건 있음',
+		...(field === 'poll' ? { poll: { choices: ['선택 하나', '선택 둘'] } } : {}),
+		...(field === 'files' ? { fileIds: [fileId!] } : {}),
+		...(field === 'cw' ? { cw: '경고' } : {}),
+		...(field === 'reply' ? { replyId: parent.id } : {}),
+		...(field === 'quote' ? { renoteId: parent.id } : {}),
+		...(field === 'localOnly' ? { localOnly: true } : {}),
+	});
+	const negative = await post(user, { text: '조건 없음' });
+	const inverse = await rule(user, flag(field, false));
+	const inverted = await preview(user, [inverse.id]);
+	expect(inverted).not.toContain(positive.id);
+	expect(inverted).toContain(negative.id);
+
+	await check(user, flag(field), [positive.id], [negative.id, parent.id]);
+	if (fileId) expect((await api('drive/files/delete', { fileId }, user)).status).toBe(204);
+}, 240000);
+
+test.each(['public', 'home', 'followers', 'specified'] as const)('공개 범위 %s를 다른 범위와 구분한다', async visibility => {
+	const user = await owner();
+	const other = await account();
+	const notes = [];
+	for (const value of ['public', 'home', 'followers', 'specified'] as const) notes.push(await post(user, { text: value, visibility: value, ...(value === 'specified' ? { visibleUserIds: [other.id] } : {}) }));
+
+	await check(user, { type: 'visibility', values: [visibility] }, notes.filter(n => n.visibility === visibility).map(n => n.id), notes.filter(n => n.visibility !== visibility).map(n => n.id));
+}, 240000);
+
+test('지정 채널과 다른 채널·채널 없는 글을 구분한다', async () => {
+	const user = await owner();
+	const first = await channel(user, { name: '첫 채널' });
+	const second = await channel(user, { name: '둘째 채널' });
+	const yes = await post(user, { text: '채널 하나', channelId: first.id });
+	const no = await post(user, { text: '채널 둘', channelId: second.id });
+	const plain = await post(user, { text: '채널 없음' });
+
+	await check(user, { type: 'channel', ids: [first.id] }, [yes.id], [no.id, plain.id]);
+}, 240000);
+
+test('태그 조건은 CW 유무와 독립적이다', async () => {
+	const user = await owner();
+	const tagged = await post(user, { text: '본문 #정리태그' });
+	const cw = await post(user, { text: '본문', cw: '정리태그' });
+	const plain = await post(user, { text: '정리태그' });
+
+	await check(user, { type: 'hashtag', value: '#정리태그' }, [tagged.id], [cw.id, plain.id]);
+}, 240000);
+
+test.each(['reactions', 'renotes'] as const)('받은 %s 수의 이상·초과·이하·미만 경계', async field => {
+	const user = await owner();
+	const other = await account();
+	const zero = await post(user, { text: '반응 없음' });
+	const one = await post(user, { text: '반응 하나' });
+	const two = await post(user, { text: '반응 둘' });
+	const another = await account();
+	if (field === 'reactions') {
+		for (const actor of [other, another]) expect((await api('notes/reactions/create', { noteId: two.id, reaction: '👍' }, actor)).status).toBe(204);
+	} else {
+		for (const actor of [other, another]) expect((await post(actor, { renoteId: two.id })).renoteId).toBe(two.id);
+	}
+	if (field === 'reactions') expect((await api('notes/reactions/create', { noteId: one.id, reaction: '👍' }, other)).status).toBe(204);
+	else expect((await post(other, { renoteId: one.id })).renoteId).toBe(one.id);
+	// 반응 버퍼의 사용 여부는 실행 환경에서 기록한다. 플러시나 설정 변경으로 우회하지 않는다.
+	await expect.poll(async () => {
+		const shown = await api('notes/show', { noteId: one.id }, user);
+		return field === 'reactions' ? Object.values(shown.body.reactions).reduce((sum, n) => sum + n, 0) : shown.body.renoteCount;
+	}, { timeout: 30000, interval: 100 }).toBe(1);
+	for (const [operator, expected] of [['gte', [one.id, two.id]], ['gt', [two.id]], ['lte', [zero.id, one.id]], ['lt', [zero.id]]] as const) {
+		const tested = await rule(user, { type: 'count', field, operator, value: 1 });
+		expect((await preview(user, [tested.id])).sort()).toEqual([...expected].sort());
+	}
+
+	await check(user, { type: 'count', field, operator: 'gte', value: 1 }, [one.id, two.id], [zero.id]);
+}, 240000);
+
+test.each([600, 3600, 86400] as const)('작성 시각 기준 %s초 전후와 네 비교 연산', async seconds => {
+	const user = await owner();
+	const template = await post(user, { text: '과거 작성 fixture' });
+	const db = await initTestDb(true);
+	let oldId: string;
+	let youngId: string;
+	try {
+		// 과거 작성 시각을 넣는 API가 없어 기존 initTestDb 패턴으로만 준비한다.
+		// 제품의 생성·수정 동작을 검증한 것으로 보고하지 않는다.
+		const notes = db.getRepository(MiNote);
+		const source = await notes.findOneByOrFail({ id: template.id });
+		const ids = queue.get(IdService);
+		oldId = ids.gen(Date.now() - (seconds + 300) * 1000);
+		youngId = ids.gen(Date.now() - (seconds - 300) * 1000);
+		await notes.insert([{ ...source, id: oldId }, { ...source, id: youngId }]);
+	} finally {
+		await db.destroy();
+	}
+	const edited = await api('notes/update', { noteId: oldId, text: '방금 수정한 과거 글', cw: null }, user);
+	expect(edited.status).toBe(200);
+	for (const operator of ['gt', 'gte', 'lt', 'lte'] as const) {
+		const tested = await rule(user, { type: 'age', operator, seconds });
+		const ids = await preview(user, [tested.id]);
+		expect(ids.includes(oldId)).toBe(operator === 'gt' || operator === 'gte');
+		expect(ids.includes(youngId)).toBe(operator === 'lt' || operator === 'lte');
+	}
+
+	await check(user, { type: 'age', operator: 'gte', seconds }, [oldId], [youngId, template.id]);
+}, 240000);
+
+test('클립에서 빼는 API 변경이 이후 판정에 반영된다', async () => {
+	const user = await owner();
+	const resource = await clip(user, { isPublic: false });
+	const note = await post(user, { text: '클립 관계 변경' });
+	expect((await api('clips/add-note', { clipId: resource.id, noteId: note.id }, user)).status).toBe(204);
+	const tested = await rule(user, { type: 'clip', ids: null });
+	expect(await preview(user, [tested.id])).toContain(note.id);
+	expect((await api('clips/remove-note', { clipId: resource.id, noteId: note.id }, user)).status).toBe(204);
+	expect(await preview(user, [tested.id])).not.toContain(note.id);
+
+	await execute(user, [tested.id], [], [note.id]);
+	expect((await api('clips/delete', { clipId: resource.id }, user)).status).toBe(204);
+}, 240000);

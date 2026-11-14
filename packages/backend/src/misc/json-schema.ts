@@ -30,6 +30,7 @@ import { packedUserGroupSchema } from '@/models/json-schema/user-group.js';
 import { packedNoteFavoriteSchema } from '@/models/json-schema/note-favorite.js';
 import { packedChannelSchema } from '@/models/json-schema/channel.js';
 import { packedAntennaSchema } from '@/models/json-schema/antenna.js';
+import { packedNoteCleanupRuleSchema } from '@/models/json-schema/note-cleanup.js';
 import { packedClipSchema } from '@/models/json-schema/clip.js';
 import { packedFederationInstanceSchema } from '@/models/json-schema/federation-instance.js';
 import {
@@ -116,6 +117,7 @@ export const refs = {
 	QueueMetrics: packedQueueMetricsSchema,
 	QueueJob: packedQueueJobSchema,
 	Antenna: packedAntennaSchema,
+	NoteCleanupRule: packedNoteCleanupRuleSchema,
 	Clip: packedClipSchema,
 	FederationInstance: packedFederationInstanceSchema,
 	GalleryPost: packedGalleryPostSchema,

@@ -90,8 +90,12 @@ const REPEATABLE_SYSTEM_JOB_DEF = [{
 	pattern: '0 4 * * *',
 }, {
 	name: 'autoDeleteNotes',
-	// 매일 오전 3시에 실행
-	pattern: '0 3 * * *',
+	// 소량 검사와 삭제 예산을 나누어 반복한다.
+	pattern: '*/5 * * * *',
+}, {
+	name: 'autoDeleteNotesManual',
+	// 접수된 수동 요청은 자동 회차(5분)를 기다리지 않고 1분 안에 이어 처리한다.
+	pattern: '* * * * *',
 }];
 
 function parseRedisInfo(infoText: string): Record<string, string> {
