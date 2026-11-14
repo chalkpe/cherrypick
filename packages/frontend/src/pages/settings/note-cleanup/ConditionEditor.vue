@@ -3,93 +3,75 @@ SPDX-FileCopyrightText: syuilo and misskey-project
 SPDX-License-Identifier: AGPL-3.0-only
 -->
 <template>
-<section :data-condition-path="path.join('.')" :class="$style.block" tabindex="-1">
-	<div :class="$style.tools">
-		<MkButton small @click="replacing = !replacing">{{ i18n.ts._noteCleanup.replace }}</MkButton>
-		<MkButton small @click="invert">{{ i18n.ts._noteCleanup.not }}</MkButton>
-		<template v-if="removable">
-			<MkButton small @click="emit('duplicate', path)">{{ i18n.ts._noteCleanup.duplicate }}</MkButton>
-			<MkButton small :disabled="siblingIndex === 0" @click="emit('shift', path, -1)">{{ i18n.ts._noteCleanup.up }}</MkButton>
-			<MkButton small :disabled="siblingIndex === siblingCount - 1" @click="emit('shift', path, 1)">{{ i18n.ts._noteCleanup.down }}</MkButton>
-			<MkButton small @click="emit('move', path, $event)">{{ i18n.ts._noteCleanup.move }}</MkButton>
-			<MkButton small danger @click="emit('remove', path)">{{ i18n.ts.remove }}</MkButton>
-		</template>
+<section :data-condition-path="path.join('.')" :class="[$style.block, { [$style.invalid]: invalid }]" tabindex="-1">
+	<div :class="$style.header">
+		<MkSelect v-select-label="i18n.ts._noteCleanup.condition" :modelValue="typeValue" :items="typeOptions" :class="$style.typeSelect" @update:modelValue="changeType"/>
+		<button v-if="removable" class="_button" :class="$style.dragHandle" :draggable="true" :aria-label="i18n.ts._noteCleanup.move" @dragstart.stop="dragStartCallback"><i class="ti ti-menu-2"></i></button>
+		<button v-if="removable" ref="menuButtonEl" class="_button" :class="$style.menuButton" :aria-label="i18n.ts.menu" @click="menu"><i class="ti ti-dots"></i></button>
+		<button v-if="removable" class="_button" :class="$style.remove" :aria-label="i18n.ts.remove" @click="emit('remove', path)"><i class="ti ti-x"></i></button>
 	</div>
-	<MkFolder accessible :canPage="false" :withSpacer="false" :defaultOpen="true">
-		<template #label>{{ conditionNames[condition.type] }}</template>
-		<template #caption>{{ summary(condition) }}</template>
-		<div class="_gaps_m">
-			<div>{{ i18n.ts._noteCleanup.condition }}: {{ path.length ? path.map(i => i + 1).join(' › ') : i18n.ts._noteCleanup.root }}</div>
-			<MkInfo v-if="invalid" warn>{{ i18n.ts._noteCleanup.incomplete }}</MkInfo>
-			<ConditionPicker v-if="replacing" :label="i18n.ts._noteCleanup.replace" @choose="replace"/>
-			<template v-if="condition.type === 'all' || condition.type === 'any'">
-				<MkSelect v-select-label="i18n.ts._noteCleanup.condition" :modelValue="condition.type" :items="groups" @update:modelValue="emit('change', path, { ...condition, type: $event })"><template #label>{{ i18n.ts._noteCleanup.condition }}</template></MkSelect>
-				<MkDraggable :modelValue="draggableChildren" direction="vertical" withGaps manualDragStart @update:modelValue="reorder">
-					<template #default="{ item, index, dragStart }">
-						<button class="_button" draggable="true" :aria-label="i18n.ts._noteCleanup.move" @dragstart="dragStart"><i class="ti ti-grip-vertical"></i> {{ i18n.ts._noteCleanup.move }}</button>
-						<ConditionEditor
-							:condition="item.condition" :path="[...path, index]" :reveal="reveal" removable :siblingIndex="index" :siblingCount="draggableChildren.length"
-							@change="(p, c, key) => emit('change', p, c, key)" @remove="p => emit('remove', p)" @duplicate="p => emit('duplicate', p)" @shift="(p, delta) => emit('shift', p, delta)" @move="(p, ev) => emit('move', p, ev)"
-						/>
-					</template>
-				</MkDraggable>
-				<MkButton small @click="adding = !adding">{{ i18n.ts.add }}</MkButton>
-				<ConditionPicker v-if="adding" @choose="add"/>
+	<div v-if="condition.type === 'all' || condition.type === 'any'" class="_gaps">
+		<MkDraggable :modelValue="draggableChildren" direction="vertical" withGaps manualDragStart @update:modelValue="reorder">
+			<template #default="{ item, index, dragStart }">
+				<div :class="$style.item">
+					<ConditionEditor
+						:condition="item.condition" :path="[...path, index]" :dragStartCallback="dragStart" removable :siblingIndex="index" :siblingCount="draggableChildren.length"
+						@change="(p: number[], c: Condition, key?: string) => emit('change', p, c, key)" @remove="(p: number[]) => emit('remove', p)" @duplicate="(p: number[]) => emit('duplicate', p)" @shift="(p: number[], delta: number) => emit('shift', p, delta)" @move="(p: number[], anchor: HTMLElement | null) => emit('move', p, anchor)"
+					/>
+				</div>
 			</template>
-			<ConditionEditor
-				v-else-if="condition.type === 'not'" :condition="condition.child" :path="[...path, 0]" :reveal="reveal"
-				@change="(p, c, key) => emit('change', p, c, key)" @remove="p => emit('remove', p)" @duplicate="p => emit('duplicate', p)" @shift="(p, delta) => emit('shift', p, delta)" @move="(p, ev) => emit('move', p, ev)"
-			/>
-			<ConditionFields v-else :condition="condition" @update="emit('change', path, $event, path.join('.'))"/>
-		</div>
-	</MkFolder>
-	<div :class="$style.summary">{{ fullSummary(condition) }}</div>
+		</MkDraggable>
+		<MkButton rounded style="margin: 0 auto;" @click="add"><i class="ti ti-plus"></i> {{ i18n.ts._noteCleanup.addCondition }}</MkButton>
+	</div>
+	<ConditionFields v-else :condition="condition" @update="emit('change', path, $event, path.join('.'))"/>
 </section>
 </template>
 <script lang="ts" setup>
-import { computed, ref } from 'vue';
-import { conditionNames, summary, fullSummary } from './labels.js';
+import { computed, useTemplateRef } from 'vue';
+import { conditionNames, flagNames } from './labels.js';
 import ConditionFields from './ConditionFields.vue';
-import ConditionPicker from './ConditionPicker.vue';
 import { vSelectLabel } from './select-label.js';
-import type { NoteCleanupCondition as Condition } from 'cherrypick-js/entities.js';
-import MkFolder from '@/components/MkFolder.vue';
+import type { NoteCleanupCondition as Condition, NoteCleanupFlag } from 'cherrypick-js/entities.js';
 import MkButton from '@/components/MkButton.vue';
 import MkSelect from '@/components/MkSelect.vue';
 import MkDraggable from '@/components/MkDraggable.vue';
-import MkInfo from '@/components/MkInfo.vue';
 import { i18n } from '@/i18n.js';
 import * as os from '@/os.js';
-import { childrenOf, conditionId, incompletePaths } from '@/utility/note-cleanup-editor.js';
-const props = withDefaults(defineProps<{ condition: Condition; path: number[]; reveal: number; removable?: boolean; siblingIndex?: number; siblingCount?: number }>(), { removable: false, siblingIndex: 0, siblingCount: 1 });
+import { childrenOf, conditionId, createCondition, incompletePaths } from '@/utility/note-cleanup-editor.js';
+const props = withDefaults(defineProps<{ condition: Condition; path: number[]; removable?: boolean; siblingIndex?: number; siblingCount?: number; dragStartCallback?: (ev: DragEvent) => void }>(), { removable: false, siblingIndex: 0, siblingCount: 1 });
 const emit = defineEmits<{
 	(ev: 'change', path: number[], value: Condition, key?: string): void;
 	(ev: 'remove', path: number[]): void;
 	(ev: 'duplicate', path: number[]): void;
 	(ev: 'shift', path: number[], delta: number): void;
-	(ev: 'move', path: number[], event: MouseEvent): void;
+	(ev: 'move', path: number[], anchor: HTMLElement | null): void;
 }>();
-const replacing = ref(false);
-const adding = ref(false);
+const menuButtonEl = useTemplateRef<HTMLElement>('menuButtonEl');
 const invalid = computed(() => incompletePaths(props.condition).some(path => path.length === 0));
-const groups = [{ value: 'all' as const, label: conditionNames.all }, { value: 'any' as const, label: conditionNames.any }];
+const typeOptions = [
+	{ value: 'keyword', label: conditionNames.keyword },
+	{ value: 'age', label: conditionNames.age },
+	{ value: 'count', label: conditionNames.count },
+	...(Object.keys(flagNames) as NoteCleanupFlag[]).map(field => ({ value: `flag:${field}`, label: flagNames[field] })),
+	{ value: 'visibility', label: conditionNames.visibility },
+	{ value: 'channel', label: conditionNames.channel },
+	{ value: 'clip', label: conditionNames.clip },
+	{ value: 'hashtag', label: conditionNames.hashtag },
+	{ value: 'all', label: conditionNames.all },
+	{ value: 'any', label: conditionNames.any },
+];
+const typeValue = computed(() => props.condition.type === 'flag' ? `flag:${props.condition.field}` : props.condition.type);
 const draggableChildren = computed(() => childrenOf(props.condition).map(condition => ({ id: conditionId(condition), condition })));
 
-function invert() { emit('change', props.path, { type: 'not', child: structuredClone(props.condition) }); }
-
-async function replace(value: Condition) {
-	if (childrenOf(props.condition).length) {
-		const { canceled } = await os.confirm({ type: 'warning', text: i18n.ts._noteCleanup.replaceWarning });
-		if (canceled) return;
-	}
-	emit('change', props.path, value);
-	replacing.value = false;
+function changeType(value: string) {
+	// 유형을 바꾸면 하위 조건은 새 유형의 기본값으로 다시 시작한다.
+	const next = value.startsWith('flag:') ? { type: 'flag' as const, field: value.slice(5) as NoteCleanupFlag, value: true } : createCondition(value as Condition['type']);
+	emit('change', props.path, next);
 }
 
-function add(value: Condition) {
+function add() {
 	if (props.condition.type !== 'all' && props.condition.type !== 'any') return;
-	emit('change', props.path, { ...props.condition, children: [...props.condition.children, value] });
-	adding.value = false;
+	emit('change', props.path, { ...props.condition, children: [...props.condition.children, createCondition('keyword')] });
 }
 
 function reorder(items: { id: string; condition: Condition }[]) {
@@ -98,10 +80,27 @@ function reorder(items: { id: string; condition: Condition }[]) {
 	if (items.length !== draggableChildren.value.length || items.some(item => !draggableChildren.value.some(current => current.id === item.id))) return;
 	emit('change', props.path, { ...props.condition, children: items.map(item => item.condition) });
 }
+
+function menu() {
+	os.popupMenu([{
+		icon: 'ti ti-copy', text: i18n.ts._noteCleanup.duplicate, action: () => emit('duplicate', props.path),
+	}, ...(props.siblingIndex > 0 ? [{
+		icon: 'ti ti-arrow-up', text: i18n.ts._noteCleanup.up, action: () => emit('shift', props.path, -1),
+	}] : []), ...(props.siblingIndex < props.siblingCount - 1 ? [{
+		icon: 'ti ti-arrow-down', text: i18n.ts._noteCleanup.down, action: () => emit('shift', props.path, 1),
+	}] : []), {
+		icon: 'ti ti-arrows-move', text: i18n.ts._noteCleanup.move, action: () => emit('move', props.path, menuButtonEl.value),
+	}], menuButtonEl.value);
+}
 </script>
 <style lang="scss" module>
 .block:focus-within { border-inline-start-color: var(--MI_THEME-accent); }
-.block { min-width: 0; border-inline-start: 2px solid var(--MI_THEME-divider); padding-inline-start: 5px; }
-.tools { display: flex; flex-wrap: wrap; gap: 6px; margin-block: 8px; }
-.summary { overflow-wrap: anywhere; white-space: pre-wrap; padding: 8px; font-size: 0.85em; }
+.block { min-width: 0; border-inline-start: 2px solid var(--MI_THEME-divider); padding-inline-start: 8px; outline: none; }
+.invalid { border-inline-start-color: var(--MI_THEME-warn); }
+.header { display: flex; align-items: center; margin-block: 8px; }
+.typeSelect { flex: 1; min-width: 0; }
+.dragHandle { cursor: move; margin-left: 10px; }
+.menuButton { margin-left: 10px; }
+.remove { margin-left: 10px; }
+.item { border: solid 2px var(--MI_THEME-divider); border-radius: var(--MI-radius); padding: 12px; }
 </style>

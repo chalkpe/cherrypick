@@ -10,7 +10,7 @@ export type CleanupRule = Endpoints['i/note-cleanup/list']['res']['rules'][numbe
 export type CleanupPreview = Endpoints['i/note-cleanup/preview']['res'];
 export type CleanupDraft = { name: string; defaultName?: NoteCleanupDefaultName | null; action: 'keep' | 'delete'; condition: NoteCleanupCondition };
 
-function storedInput(rule: Pick<CleanupRule, 'id' | 'name' | 'action' | 'condition'>) {
+function storedInput(rule: Pick<CleanupRule, 'id' | 'action' | 'condition'>) {
 	return { ruleId: rule.id, action: rule.action, condition: rule.condition };
 }
 
@@ -24,10 +24,8 @@ export const cleanupApi = {
 		: misskeyApi('i/note-cleanup/create', { name: input.name, action: input.action, condition: input.condition }),
 	delete: (ruleId: string) => misskeyApi('i/note-cleanup/delete', { ruleId }),
 	preview: (ruleIds: string[], afterId?: string) => misskeyApi('i/note-cleanup/preview', { ruleIds, afterId, limit: 100 }),
-	setEnabled: async (rule: Pick<CleanupRule, 'id' | 'name' | 'action' | 'condition'>, enabled: boolean, confirmed: boolean) => {
-		if (!confirmed) return;
-		return misskeyApi('i/note-cleanup/update', { ...storedInput(rule), enabled, confirmed: true });
-	},
-	setAutomatic: (rule: Pick<CleanupRule, 'id' | 'name' | 'action' | 'condition'>, automatic: boolean, previewToken?: string) => misskeyApi('i/note-cleanup/update', { ...storedInput(rule), automatic, previewToken }),
+	// 화면이 먼저 확인창을 거치므로 항상 confirmed를 붙여 요청한다.
+	setEnabled: (rule: Pick<CleanupRule, 'id' | 'action' | 'condition'>, enabled: boolean) => misskeyApi('i/note-cleanup/update', { ...storedInput(rule), enabled, confirmed: true }),
+	setAutomatic: (rule: Pick<CleanupRule, 'id' | 'action' | 'condition'>, automatic: boolean, confirmed = false) => misskeyApi('i/note-cleanup/update', { ...storedInput(rule), automatic, ...(confirmed ? { confirmed: true } : {}) }),
 	request: (ruleIds: string[]) => misskeyApi('i/note-cleanup/request', { ruleIds }),
 };

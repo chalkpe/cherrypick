@@ -94,10 +94,10 @@ const menuDef = computed<SuperMenuDef[]>(() => [{
 		to: '/settings/privacy',
 		active: currentPage.value?.route.name === 'privacy',
 	}, {
-		icon: 'ti ti-filter',
+		icon: 'ti ti-history',
 		text: i18n.ts._noteCleanup.title,
 		to: '/settings/note-cleanup',
-		active: currentPage.value?.route.name === 'note-cleanup',
+		active: ['note-cleanup', 'note-cleanup-new', 'note-cleanup-edit'].includes(currentPage.value?.route.name ?? ''),
 	}, {
 		icon: 'ti ti-bell',
 		text: i18n.ts.notifications,

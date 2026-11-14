@@ -15,10 +15,9 @@ export function cleanupFailure(error: unknown): CleanupFailure {
 	};
 }
 
-export function cleanupErrorMessage(code: string, action?: 'keep' | 'delete'): string {
+export function cleanupErrorMessage(code: string): string {
 	const text = i18n.ts._noteCleanup;
 	switch (code) {
-		case 'TEMPORARY_FAILURE': return action === 'delete' ? text.temporaryDeleteError : action === 'keep' ? text.temporaryError : text.temporaryRequestError;
 		case 'CLEANUP_BUSY': return text.busyError;
 		case 'MISSING_CLIP': case 'INVALID_CLIP': return text.missingClipError;
 		case 'MISSING_CHANNEL': return text.missingChannelError;
@@ -36,5 +35,5 @@ export function cleanupErrorMessage(code: string, action?: 'keep' | 'delete'): s
 }
 
 export function canRevealCleanupError(code: string, path: string): boolean {
-	return !['TEMPORARY_FAILURE', 'CLEANUP_BUSY'].includes(code) && /^(condition(?:\.|$)|\d+(?:\.|$))/.test(path);
+	return code !== 'CLEANUP_BUSY' && /^(condition(?:\.|$)|\d+(?:\.|$))/.test(path);
 }

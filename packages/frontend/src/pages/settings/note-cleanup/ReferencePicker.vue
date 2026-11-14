@@ -11,7 +11,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<div>{{ known.get(id)?.name ?? i18n.ts._noteCleanup.missingReference }}</div>
 		<div v-if="known.get(id)?.description || known.get(id)?.visibility">{{ known.get(id)?.description }} {{ known.get(id)?.visibility }}</div>
 		<MkA :to="`${kind === 'clip' ? '/clips/' : '/channels/'}${id}`">{{ i18n.ts.details }}</MkA>
-		<MkButton small @click="emit('update:modelValue', modelValue.filter(v => v !== id))">{{ i18n.ts.remove }}</MkButton>
+		<MkButton small iconOnly :aria-label="i18n.ts.remove" @click="emit('update:modelValue', modelValue.filter((v: string) => v !== id))"><i class="ti ti-x"></i></MkButton>
 	</div>
 	<div v-for="item in displayed" :key="item.id" :class="$style.item">
 		<label><input type="checkbox" :checked="modelValue.includes(item.id)" :disabled="!modelValue.includes(item.id) && modelValue.length >= 32" @change="toggle(item.id)"> {{ item.name }}</label>

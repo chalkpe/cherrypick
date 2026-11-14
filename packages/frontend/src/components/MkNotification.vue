@@ -139,8 +139,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<MkButton :class="$style.followRequestCommandButton" rounded danger :disabled="chatRoomInvitePending" @click="rejectChatRoomInvitation()"><i class="ti ti-x"></i> {{ i18n.ts._chat.reject }}</MkButton>
 				</div>
 			</template>
-			<MkA v-else-if="notification.type === 'noteCleanupProtectionFailed'" :class="$style.text" :to="`/settings/note-cleanup?ruleId=${notification.ruleId}`">
-				{{ i18n.ts._noteCleanup.blocked }} {{ cleanupErrorMessage(notification.errorCode, 'keep') }}
+			<MkA v-else-if="notification.type === 'noteCleanupProtectionFailed'" :class="$style.text" :to="`/settings/note-cleanup/${notification.ruleId}`">
+				{{ i18n.ts._noteCleanup.notificationBody }}
 			</MkA>
 			<MkA v-else-if="notification.type === 'achievementEarned'" :class="$style.text" to="/my/achievements">
 				{{ i18n.ts._achievements._types[`_${notification.achievement}`].title }}
@@ -214,7 +214,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { cleanupErrorMessage } from '@/utility/note-cleanup-errors.js';
 import { computed, onBeforeUnmount, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import * as os from '@/os.js';

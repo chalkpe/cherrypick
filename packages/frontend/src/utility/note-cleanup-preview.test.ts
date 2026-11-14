@@ -5,7 +5,7 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import type { Locale } from 'i18n';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
-import { defineComponent, h } from 'vue';
+import { defineComponent, h, onMounted } from 'vue';
 
 vi.mock('@@/js/config.js', () => ({ apiUrl: 'https://cleanup.invalid/api' }));
 vi.mock('@/i.js', () => ({ $i: { token: 'dummy-test-token' } }));
@@ -16,202 +16,121 @@ vi.mock('@/i18n.js', async () => {
 	const locales = Object.fromEntries(['en-US', 'ko-KR', 'ja-JP'].map(language => [language, load(readFileSync(`../../locales/${language}.yml`, 'utf8')) as Locale]));
 	return { i18n: new I18n(locales['en-US'], false) };
 });
-vi.mock('@/components/MkButton.vue', () => ({ default: defineComponent({
- props: ['disabled'], emits: ['click'],
- setup: (props, { slots, emit }) => () => h('button', { disabled: props.disabled, onClick: () => emit('click') }, slots.default?.()),
-}) }));
 vi.mock('@/components/MkInfo.vue', () => ({ default: defineComponent({ setup: (_, { slots }) => () => h('div', slots.default?.()) }) }));
-const confirm = vi.hoisted(() => vi.fn(async () => ({ canceled: true })));
-vi.mock('@/os.js', () => ({ confirm, popupMenu: vi.fn() }));
-vi.mock('@/components/MkInput.vue', () => ({ default: defineComponent({
- props: ['modelValue'], emits: ['update:modelValue'],
- setup: (props, { slots, emit }) => () => h('label', [slots.label?.(), h('input', { value: props.modelValue, onInput: (event: Event) => emit('update:modelValue', (event.target as HTMLInputElement).value) })]),
+// 실제 타임라인 대신 페이지네이터가 공급하는 노트와 다음 페이지 버튼만 그린다.
+vi.mock('@/components/MkNotesTimeline.vue', () => ({ default: defineComponent({
+	props: ['paginator'],
+	setup: (props) => {
+		onMounted(() => props.paginator.init());
+		return () => h('div', [
+			...props.paginator.items.value.map((note: { id: string; text: string }) => h('div', { key: note.id }, note.text)),
+			props.paginator.canFetchNewer.value ? h('button', { onClick: () => props.paginator.fetchNewer() }, 'Load more') : null,
+		]);
+	},
 }) }));
-vi.mock('@/components/MkSelect.vue', () => ({ default: defineComponent({ setup: () => () => h('div') }) }));
-vi.mock('@/pages/settings/note-cleanup/ConditionEditor.vue', () => ({ default: defineComponent({ setup: () => () => h('div') }) }));
-import type { CleanupRule } from '@/utility/note-cleanup-api.js';
-import RuleEditor from '@/pages/settings/note-cleanup/RuleEditor.vue';
+import { CleanupPreviewPaginator } from '@/utility/note-cleanup-preview.js';
 import Preview from '@/pages/settings/note-cleanup/Preview.vue';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); confirm.mockReset(); confirm.mockResolvedValue({ canceled: true }); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-const page = {
- rules: [{ id: 'keep', name: 'Favorites', action: 'keep' }, { id: 'delete', name: 'Old notes', action: 'delete' }],
- items: [
-  { noteId: 'conflict', text: 'both rules', cw: null, createdAt: '2026-01-01T00:00:00.000Z', deleteRuleIds: ['delete'], keepRuleIds: ['keep'], decision: 'keep', reason: 'protected' },
-  { noteId: 'keep-only', text: 'keep only', cw: null, createdAt: '2026-01-02T00:00:00.000Z', deleteRuleIds: [], keepRuleIds: ['keep'], decision: 'keep', reason: 'protected' },
- ],
- scanned: 2, deleteCount: 0, protectedCount: 2, nextCursor: null, complete: true, errors: [], previewToken: 'first',
-};
+const note = (id: string, text: string) => ({ id, text, createdAt: '2026-01-01T00:00:00.000Z', userId: 'me', user: { id: 'me' } });
+const page = (notes: unknown[], nextCursor: string | null, complete: boolean) => ({ notes, nextCursor, complete, errors: [], rules: [{ id: 'delete', name: 'Old notes', defaultName: null, action: 'delete' }] });
 
-test('distinguishes conflicting protection from a keep-only match and includes creation time', async () => {
- vi.stubGlobal('fetch', async () => new Response(JSON.stringify(page)));
- const view = render(Preview, { props: { ruleIds: ['delete'] } });
- await fireEvent.click(view.getByRole('button'));
- await view.findByText('Kept: keep rules take priority over matching delete rules');
- expect(view.getByText('Protected by keep rule')).toBeTruthy();
- expect(view.container.querySelector('time')?.getAttribute('datetime')).toBe('2026-01-01T00:00:00.000Z');
+test('paginator loads delete candidates oldest-first and appends the next page through the cursor', async () => {
+	const requests: { afterId?: string }[] = [];
+	vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+		const body = JSON.parse(init.body as string);
+		requests.push(body);
+		return new Response(JSON.stringify(body.afterId
+			? page([note('n2', 'second page')], null, true)
+			: page([note('n1', 'first page')], 'cursor-1', false)));
+	});
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	expect(paginator.order.value).toBe('oldest');
+	await paginator.init();
+	expect(paginator.items.value.map(item => item.id)).toEqual(['n1']);
+	expect(paginator.canFetchNewer.value).toBe(true);
+	await paginator.fetchNewer();
+	expect(paginator.items.value.map(item => item.id)).toEqual(['n1', 'n2']);
+	expect(paginator.canFetchNewer.value).toBe(false);
+	expect(requests).toEqual([
+		{ ruleIds: ['delete'], limit: 100, i: 'dummy-test-token' },
+		{ ruleIds: ['delete'], afterId: 'cursor-1', limit: 100, i: 'dummy-test-token' },
+	]);
 });
 
-test('failed refresh removes the old preview and invalidates its automatic confirmation token', async () => {
- let calls = 0;
- vi.stubGlobal('fetch', async () => ++calls === 1 ? new Response(JSON.stringify(page)) : new Response(JSON.stringify({ error: { code: 'CLEANUP_BUSY' } }), { status: 400 }));
- const onInvalidated = vi.fn();
- const view = render(Preview, { props: { ruleIds: ['delete'], onInvalidated } });
- await fireEvent.click(view.getByRole('button'));
- await view.findByText('both rules');
- await fireEvent.click(view.getByRole('button', { name: 'Preview saved rules' }));
- await waitFor(() => expect(view.queryByText('both rules')).toBeNull());
- expect(onInvalidated).toHaveBeenCalled();
+test('a complete pass with a leftover cursor offers no next page and sends no extra request', async () => {
+	const fetchMock = vi.fn(async () => new Response(JSON.stringify(page([note('n1', 'only page')], 'stale-cursor', true))));
+	vi.stubGlobal('fetch', fetchMock);
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	await paginator.init();
+	expect(paginator.canFetchNewer.value).toBe(false);
+	await paginator.fetchNewer();
+	expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
-test('last page with a leftover cursor offers no next page and sends no extra preview request', async () => {
- const requests: unknown[] = [];
- vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
-  requests.push(JSON.parse(init.body as string));
-  return new Response(JSON.stringify({ ...page, nextCursor: 'stale-cursor', complete: true }));
- });
- const view = render(Preview, { props: { ruleIds: ['delete'] } });
- await fireEvent.click(view.getByRole('button', { name: 'Preview saved rules' }));
- await view.findByText('both rules');
- expect(view.getByText('End of this pass. Results can change as note state changes.')).toBeTruthy();
- expect(view.queryByRole('button', { name: 'Next inspected page' })).toBeNull();
- expect(requests).toHaveLength(1);
+test('reload starts again from the first page and a failed load raises the error state', async () => {
+	let calls = 0;
+	vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+		const body = JSON.parse(init.body as string);
+		calls++;
+		if (calls === 2) return new Response(JSON.stringify({ error: { code: 'CLEANUP_BUSY' } }), { status: 503 });
+		return new Response(JSON.stringify(page([note(body.afterId ?? 'n1', body.afterId ? 'next' : 'first')], null, true)));
+	});
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	await paginator.init();
+	await paginator.reload();
+	expect(paginator.error.value).toBe(true);
+	await paginator.reload();
+	expect(paginator.error.value).toBe(false);
+	expect(paginator.items.value.map(item => item.id)).toEqual(['n1']);
+	expect(calls).toBe(3);
 });
 
-test('next page requests the cursor and invalidates the previous page and its confirmation token first', async () => {
- const requests: { afterId?: string }[] = [];
- vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
-  const body = JSON.parse(init.body as string);
-  requests.push(body);
-  return new Response(JSON.stringify(body.afterId
-   ? { ...page, items: [{ ...page.items[1], noteId: 'second', text: 'second page' }], previewToken: 'second' }
-   : { ...page, nextCursor: 'cursor-1', complete: false }));
- });
- const onInvalidated = vi.fn();
- const onLoaded = vi.fn();
- const view = render(Preview, { props: { ruleIds: ['delete'], onInvalidated, onLoaded } });
- await fireEvent.click(view.getByRole('button', { name: 'Preview saved rules' }));
- await view.findByText('both rules');
- const invalidatedBefore = onInvalidated.mock.calls.length;
- await fireEvent.click(view.getByRole('button', { name: 'Next inspected page' }));
- await view.findByText('second page');
- expect(view.queryByText('both rules')).toBeNull();
- expect(onInvalidated.mock.calls.length).toBeGreaterThan(invalidatedBefore);
- expect(requests.map(r => r.afterId)).toEqual([undefined, 'cursor-1']);
- expect(onLoaded).toHaveBeenLastCalledWith(expect.objectContaining({ previewToken: 'second' }));
+test('overlapping loads are ignored so pages never duplicate', async () => {
+	let finish!: (response: Response) => void;
+	let calls = 0;
+	const fetchMock = vi.fn(() => ++calls === 1
+		? Promise.resolve(new Response(JSON.stringify(page([note('n1', 'first')], 'cursor-1', false))))
+		: new Promise<Response>(resolve => { finish = resolve; }));
+	vi.stubGlobal('fetch', fetchMock);
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	await paginator.init();
+	const appending = paginator.fetchNewer();
+	await paginator.fetchNewer();
+	expect(fetchMock).toHaveBeenCalledTimes(2);
+	finish(new Response(JSON.stringify(page([note('n2', 'second')], null, true))));
+	await appending;
+	expect(paginator.items.value.map(item => item.id)).toEqual(['n1', 'n2']);
 });
 
-test('발동 규칙도 제품 이름을 번역하고 사용자 이름을 그대로 표시한다', async () => {
- vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ...page, rules: [{ id: 'keep', name: '내가 즐겨찾기한 내 글', defaultName: 'favorite', action: 'keep' }, { id: 'delete', name: '내 사용자 문구', defaultName: null, action: 'delete' }] })));
- const view = render(Preview, { props: { ruleIds: ['delete'] } });
- await fireEvent.click(view.getByRole('button'));
- await waitFor(() => expect(view.container.textContent).toContain('My favorited notes'));
- expect(view.container.textContent).toContain('내 사용자 문구');
+test('preview renders the timeline candidates and links each failing rule to its edit screen', async () => {
+	vi.stubGlobal('fetch', async () => new Response(JSON.stringify({
+		...page([note('n1', 'candidate note')], null, true),
+		errors: [{ ruleId: 'keep', code: 'MISSING_CHANNEL', path: 'condition.children.0', referenceId: 'secret-ref' }],
+		rules: [{ id: 'keep', name: '내가 즐겨찾기한 내 글', defaultName: 'favorite', action: 'keep' }, { id: 'delete', name: 'Old notes', defaultName: null, action: 'delete' }],
+	})));
+	const view = render(Preview, { props: { ruleId: 'delete', version: 0 }, global: { stubs: { MkA: { props: ['to'], template: '<a :href="to"><slot/></a>' } } } });
+	await view.findByText('candidate note');
+	const link = view.getByRole('link', { name: 'My favorited notes' });
+	expect(link.getAttribute('href')).toBe('/settings/note-cleanup/keep');
+	expect(view.getByText('A selected channel is unavailable. Choose another channel or change this condition.')).toBeTruthy();
+	expect(view.container.textContent).not.toMatch(/MISSING_CHANNEL|condition.children.0|secret-ref/);
 });
 
-test.each([{ code: 'CLEANUP_BUSY' }, { code: 'INVALID_CLEANUP', info: { code: 'CLEANUP_BUSY' } }])('503 busy response offers retry guidance', async error => {
- vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ error }), { status: 503 }));
- const view = render(Preview, { props: { ruleIds: ['delete'] } });
- await fireEvent.click(view.getByRole('button'));
- await view.findByText('Note cleanup is busy. Please wait a moment and try again.');
- expect(view.getByRole('button', { name: 'Preview saved rules' }).hasAttribute('disabled')).toBe(false);
- expect(view.container.textContent).not.toMatch(/CLEANUP_BUSY|INVALID_CLEANUP|invalid input/i);
-});
-test('preview explains missing references without diagnostic fields', async () => {
- vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ...page, errors: [{ ruleId: 'keep', code: 'MISSING_CHANNEL', path: 'condition.children.0', referenceId: 'secret-ref' }] })));
- const view = render(Preview, { props: { ruleIds: ['delete'] } });
- await fireEvent.click(view.getByRole('button'));
- await view.findByText('A selected channel is unavailable. Choose another channel or change this condition.');
- expect(view.container.textContent).not.toMatch(/MISSING_CHANNEL|condition.children.0|secret-ref/);
-});
-
-test.each(['keep', 'delete'])('미리 보기는 %s 임시 오류의 실제 영향을 안내한다', async action => {
- vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ...page, errors: [{ ruleId: action, code: 'TEMPORARY_FAILURE', path: 'condition' }] })));
- const view = render(Preview, { props: { ruleIds: ['delete'] } });
- await fireEvent.click(view.getByRole('button'));
- await view.findByText(action === 'keep' ? 'Temporarily unable to check keep rules. New deletions are paused for safety. Try again later.' : 'Temporarily unable to check this delete rule. It is excluded; other delete rules can still apply. Try again later.');
-});
-
-// 선택 변경도 이전 결과와 진행 중인 응답을 무효화한다.
-test('selection changes discard a pending preview before the next result', async () => {
- let finish!: (response: Response) => void;
- let calls = 0;
- vi.stubGlobal('fetch', async () => ++calls === 1
-  ? new Promise<Response>(resolve => { finish = resolve; })
-  : new Response(JSON.stringify(page)));
- const onLoaded = vi.fn();
- const view = render(Preview, { props: { ruleIds: ['old'], onLoaded } });
- await fireEvent.click(view.getByRole('button'));
- await view.rerender({ ruleIds: ['delete'] });
- finish(new Response(JSON.stringify(page)));
- await waitFor(() => expect((view.getByRole('button') as HTMLButtonElement).disabled).toBe(false));
- expect(view.queryByText('both rules')).toBeNull();
- expect(onLoaded).not.toHaveBeenCalled();
- await fireEvent.click(view.getByRole('button'));
- await view.findByText('both rules');
- expect(onLoaded).toHaveBeenCalledTimes(1);
-});
-
-const deleteRule: CleanupRule = {
- id: 'delete', name: 'Old notes', defaultName: null, action: 'delete', enabled: true,
- automatic: false, automaticConfirmed: false, condition: { type: 'age', seconds: 60, operator: 'gte' },
- legacy: null, lastError: null,
-};
-
-test('inactive delete editor blocks the real preview transport without enabling or requesting cleanup', async () => {
- const requests: string[] = [];
- vi.stubGlobal('fetch', async (url: string) => {
-  requests.push(url);
-  return new Response(JSON.stringify({ error: { code: 'INVALID_CLEANUP', info: { code: 'INVALID_RULE_SELECTION', path: 'ruleIds' } } }), { status: 400 });
- });
- const view = render(RuleEditor, { props: { rule: { ...deleteRule, enabled: false } } });
- const preview = view.getByRole('button', { name: 'Preview saved rules' });
-
- expect.soft((preview as HTMLButtonElement).disabled).toBe(true);
- await fireEvent.click(preview);
-
- expect.soft(requests).toEqual([]);
- expect.soft((preview as HTMLButtonElement).disabled).toBe(true);
- expect(view.getByText('Disabled', { exact: true })).toBeTruthy();
-});
-
-test('active delete editor previews through the real transport and dirty drafts cannot preview', async () => {
- const requests: { url: string; body: unknown }[] = [];
- vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
-  requests.push({ url, body: JSON.parse(init.body as string) });
-  return new Response(JSON.stringify(page));
- });
- const view = render(RuleEditor, { props: { rule: deleteRule } });
-
- await fireEvent.click(view.getByRole('button', { name: 'Preview saved rules' }));
- await view.findByText('both rules');
-
- expect(requests).toEqual([{ url: 'https://cleanup.invalid/api/i/note-cleanup/preview', body: { ruleIds: ['delete'], limit: 100, i: 'dummy-test-token' } }]);
- await fireEvent.update(view.getByLabelText('Rule name'), 'Changed draft');
- expect(view.queryByRole('button', { name: 'Preview saved rules' })).toBeNull();
- expect(requests).toHaveLength(1);
-});
-
-test('first automatic cleanup still previews first and waits for explicit confirmation before updating', async () => {
- const requests: { url: string; body: unknown }[] = [];
- vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
-  requests.push({ url, body: JSON.parse(init.body as string) });
-  return new Response(JSON.stringify(url.endsWith('/preview') ? page : { rule: deleteRule }));
- });
- const view = render(RuleEditor, { props: { rule: deleteRule } });
-
- await fireEvent.click(view.getByRole('checkbox', { name: 'Keep cleaning up automatically' }));
- await view.findByText('both rules');
-
- expect(requests.map(request => request.url)).toEqual(['https://cleanup.invalid/api/i/note-cleanup/preview']);
- await fireEvent.click(view.getByRole('button', { name: 'Keep cleaning up automatically' }));
- expect(requests).toHaveLength(1);
- confirm.mockResolvedValue({ canceled: false });
- await fireEvent.click(view.getByRole('button', { name: 'Keep cleaning up automatically' }));
- await waitFor(() => expect(requests).toHaveLength(2));
- expect(requests[1]).toEqual({ url: 'https://cleanup.invalid/api/i/note-cleanup/update', body: {
-  ruleId: 'delete', action: 'delete', condition: { type: 'age', seconds: 60, operator: 'gte' }, automatic: true, previewToken: 'first', i: 'dummy-test-token',
- } });
- expect(requests.some(request => request.url.endsWith('/request'))).toBe(false);
+test('saving the rule bumps the version and the preview reloads from the first page', async () => {
+	const requests: { afterId?: string }[] = [];
+	vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+		const body = JSON.parse(init.body as string);
+		requests.push(body);
+		return new Response(JSON.stringify(page([note('n1', `result ${requests.length}`)], requests.length === 1 ? 'cursor-1' : null, requests.length !== 1)));
+	});
+	const view = render(Preview, { props: { ruleId: 'delete', version: 0 }, global: { stubs: { MkA: { props: ['to'], template: '<a :href="to"><slot/></a>' } } } });
+	await view.findByText('result 1');
+	await fireEvent.click(view.getByRole('button', { name: 'Load more' }));
+	await view.findByText('result 2');
+	await view.rerender({ ruleId: 'delete', version: 1 });
+	await view.findByText('result 3');
+	expect(view.queryByText('result 2')).toBeNull();
+	expect(requests.map(request => request.afterId)).toEqual([undefined, 'cursor-1', undefined]);
 });

@@ -2,6 +2,7 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import { toRaw } from 'vue';
 import type { NoteCleanupCondition as Condition } from 'cherrypick-js/entities.js';
 
 const ids = new WeakMap<object, string>();
@@ -12,18 +13,30 @@ export function conditionId(node: Condition): string {
 	return id;
 }
 
-function cloneWithIds<T>(value: T): T {
-	const clone = structuredClone(value);
-
-	function transfer(source: unknown, target: unknown) {
-		if (!source || !target || typeof source !== 'object' || typeof target !== 'object') return;
-		const id = ids.get(source);
-		if (id) ids.set(target, id);
-		for (const key of Object.keys(source)) transfer((source as Record<string, unknown>)[key], (target as Record<string, unknown>)[key]);
+// 반응형 프록시는 structuredClone으로 복제할 수 없으므로 원본 객체로 풀어 재귀 복제한다.
+function rawClone<T>(value: T, keepIds: boolean): T {
+	function clone(source: unknown): unknown {
+		const raw = toRaw(source);
+		if (!raw || typeof raw !== 'object') return raw;
+		if (Array.isArray(raw)) return raw.map(item => clone(item));
+		const target: Record<string, unknown> = {};
+		if (keepIds) {
+			const id = ids.get(source as object) ?? ids.get(raw);
+			if (id) ids.set(target, id);
+		}
+		for (const key of Object.keys(raw)) target[key] = clone((raw as Record<string, unknown>)[key]);
+		return target;
 	}
 
-	transfer(value, clone);
-	return clone;
+	return clone(value) as T;
+}
+
+function cloneWithIds<T>(value: T): T {
+	return rawClone(value, true);
+}
+
+export function cloneCondition(node: Condition): Condition {
+	return rawClone(node, false);
 }
 
 function inheritId(source: Condition, target: Condition): Condition {
@@ -34,7 +47,6 @@ function inheritId(source: Condition, target: Condition): Condition {
 export function createCondition(type: Condition['type']): Condition {
 	switch (type) {
 		case 'all': case 'any': return { type, children: [createCondition('keyword')] };
-		case 'not': return { type, child: createCondition('keyword') };
 		case 'keyword': return { type, mode: 'literal', value: '', flags: '', targets: ['text', 'cw', 'poll'] };
 		case 'age': return { type, operator: 'gte', seconds: 30 * 86400 };
 		case 'count': return { type, field: 'reactions', operator: 'gte', value: 0 };
@@ -47,7 +59,7 @@ export function createCondition(type: Condition['type']): Condition {
 }
 
 export function childrenOf(node: Condition): Condition[] {
-	return node.type === 'all' || node.type === 'any' ? node.children : node.type === 'not' ? [node.child] : [];
+	return node.type === 'all' || node.type === 'any' ? node.children : [];
 }
 
 export function conditionAt(root: Condition, path: number[]): Condition {
@@ -63,12 +75,9 @@ export function conditionAt(root: Condition, path: number[]): Condition {
 export function replaceCondition(root: Condition, path: number[], value: Condition): Condition {
 	if (path.length === 0) return inheritId(root, cloneWithIds(value));
 	const [index, ...rest] = path;
-	if (root.type === 'all' || root.type === 'any') {
-		if (!root.children[index]) throw new Error('INVALID_PATH');
-		return inheritId(root, { ...root, children: root.children.map((child, i) => i === index ? replaceCondition(child, rest, value) : child) });
-	}
-	if (root.type === 'not' && index === 0) return inheritId(root, { ...root, child: replaceCondition(root.child, rest, value) });
-	throw new Error('INVALID_PATH');
+	if (root.type !== 'all' && root.type !== 'any') throw new Error('INVALID_PATH');
+	if (!root.children[index]) throw new Error('INVALID_PATH');
+	return inheritId(root, { ...root, children: root.children.map((child, i) => i === index ? replaceCondition(child, rest, value) : child) });
 }
 
 export function removeCondition(root: Condition, path: number[]): Condition {
@@ -109,47 +118,33 @@ export function assertSize(root: Condition): void {
 	visit(root, 0);
 }
 
+// 키워드 입력은 줄마다 하나씩이며 빈 줄은 제외한다. 서버 검증과 같은 기준이다.
+export function keywordLines(value: string): string[] {
+	return value.split('\n').filter(line => line.length > 0);
+}
+
 export function incompletePaths(root: Condition, path: number[] = []): number[][] {
 	let invalid = false;
 	switch (root.type) {
 		case 'all': case 'any': invalid = root.children.length === 0 || root.children.length > 32; break;
-		case 'keyword': invalid = !root.value.length || root.value.length > 512 || root.targets.length === 0; break;
+		case 'keyword': {
+			const lines = keywordLines(root.value);
+			invalid = !lines.length || lines.length > 32 || lines.some(line => line.length > 128) || root.targets.length === 0 || root.targets.length > 32;
+			break;
+		}
 		case 'age': invalid = !Number.isFinite(root.seconds) || root.seconds < 0 || root.seconds > Number.MAX_SAFE_INTEGER; break;
-		case 'count': invalid = !Number.isSafeInteger(root.value) || root.value < 0; break;
-		case 'visibility': invalid = root.values.length === 0; break;
+		case 'count': invalid = !Number.isSafeInteger(root.value) || root.value < 0 || root.value > Number.MAX_SAFE_INTEGER; break;
+		case 'visibility': invalid = root.values.length === 0 || root.values.length > 32; break;
 		case 'channel': case 'clip': invalid = root.ids !== null && (root.ids.length === 0 || root.ids.length > 32); break;
-		case 'hashtag': invalid = !root.value.replace(/^#/, '').trim().length || root.value.length > 128; break;
+		case 'hashtag': invalid = !root.value.replace(/^#/, '').trim().length || root.value.replace(/^#/, '').startsWith('#') || root.value.length > 128; break;
 	}
 	return [...(invalid ? [path] : []), ...childrenOf(root).flatMap((child, i) => incompletePaths(child, [...path, i]))];
-}
-
-export function createHistory<T>(initial: T) {
-	const entries = [cloneWithIds(initial)];
-	let index = 0;
-	let lastKey: string | undefined;
-	let lastTime = 0;
-	return {
-		get current() { return cloneWithIds(entries[index]); },
-		get canUndo() { return index > 0; },
-		get canRedo() { return index < entries.length - 1; },
-		push(value: T, key?: string) {
-			if (JSON.stringify(value) === JSON.stringify(entries[index])) return;
-			entries.splice(index + 1);
-			if (key && lastKey === key && Date.now() - lastTime < 800 && index > 0) entries[index] = cloneWithIds(value);
-			else { entries.push(cloneWithIds(value)); index++; }
-			lastKey = key;
-			lastTime = Date.now();
-		},
-		undo() { if (index > 0) index--; lastKey = undefined; return this.current; },
-		redo() { if (index < entries.length - 1) index++; lastKey = undefined; return this.current; },
-	};
 }
 
 export function serverConditionPath(path: string): number[] {
 	const result: number[] = [];
 	for (const part of path.split('.')) {
-		if (part === 'child') result.push(0);
-		else if (/^\d+$/.test(part)) result.push(Number(part));
+		if (/^\d+$/.test(part)) result.push(Number(part));
 	}
 	return result;
 }
