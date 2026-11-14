@@ -19,10 +19,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:inert="watchedParticipants.length > 0 && membersHidden"
 		:aria-hidden="watchedParticipants.length > 0 && membersHidden"
 	>
-		<!-- TransitionGroup は直下の子コンポーネントを毎回描き直させるので、カードは要素で包む -->
-		<component
-			:is="prefer.s.animation ? TransitionGroup : 'div'"
-			v-bind="prefer.s.animation ? { tag: 'div', css: false, moveClass: $style.cardMove } : {}"
+		<!-- カードは要素で包む。位置の移動アニメーションはカード同士を重ねて名前を隠すので使わない -->
+		<div
 			:class="$style.cards"
 			:style="cardStyle"
 			@pointerover="trackHover"
@@ -37,7 +35,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div v-if="hidden.length || shownShares.length < availableShares.length" key="group" :class="$style.card" data-voice-call-card>
 				<XGroup :participants="grouped" @open="call.openRoster()"/>
 			</div>
-		</component>
+		</div>
 	</div>
 	<div :class="$style.controls">
 		<XControls v-if="inThisCall" grouped><template #leading>
@@ -66,7 +64,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </div>
 </template>
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, onMounted, ref, TransitionGroup, useTemplateRef, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue';
 import type * as Misskey from 'cherrypick-js';
 import XTile from './room.voice.tile.vue';
 import XShare from './room.voice.share.vue';
@@ -75,7 +73,6 @@ import XControls from './room.voice.controls.vue';
 import XGroup from './room.voice.group.vue';
 import XBanner from './room.voice.banner.vue';
 import { i18n } from '@/i18n.js';
-import { prefer } from '@/preferences.js';
 import type { ChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { toggleScreenShareWatch, voiceCall } from '@/utility/voice-call.js';
 import { useVoiceCallStatusAnnouncer, voiceCallStatusText } from '@/utility/voice-call-status.js';
@@ -288,10 +285,6 @@ const screenStyle = computed(() => {
 	overflow: clip;
 }
 
-.cardMove {
-	transition: transform .25s;
-}
-
 .cards > .card {
 	flex: 0 1 var(--card-width);
 	width: var(--card-width);
@@ -413,7 +406,7 @@ const screenStyle = computed(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.list, .watching .controls, .screensSpace, .cardMove {
+	.list, .watching .controls, .screensSpace {
 		transition: none;
 	}
 }
