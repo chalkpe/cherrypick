@@ -7,7 +7,6 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatRoomAccessError, ChatService } from '@/core/ChatService.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import type { MiChatMessage, MiChatRoom, MiChatRoomMembership, MiUser } from '@/models/_.js';
-import { meets } from '../misc/chat-repository-match.js';
 import { memoryRedis } from '../misc/chat-unread-redis.js';
 
 type Membership = Pick<MiChatRoomMembership, 'id' | 'roomId' | 'userId' | 'isMuted'>;
@@ -32,7 +31,6 @@ function fixture() {
 
 	const chatRoomsRepository = {
 		findOneBy: async ({ id }: { id: string }) => id === room.id ? { ...room } : null,
-		findBy: async (where: Record<string, unknown>) => meets(room, where) ? [{ ...room }] : [],
 		update: async (where: { id: string; ownerId: string }, values: Partial<MiChatRoom>) => {
 			if (where.id !== room.id || where.ownerId !== room.ownerId) return { affected: 0 };
 			Object.assign(room, values);
@@ -41,7 +39,7 @@ function fixture() {
 	};
 
 	const chatRoomMembershipsRepository = {
-		findBy: async (where: Record<string, unknown>) => memberships.filter(membership => meets(membership, where)).map(membership => ({ ...membership })),
+		findBy: async ({ roomId }: { roomId: string }) => memberships.filter(membership => membership.roomId === roomId).map(membership => ({ ...membership })),
 		findOneBy: async ({ roomId, userId }: { roomId: string; userId: string }) => {
 			const found = memberships.find(membership => membership.roomId === roomId && membership.userId === userId);
 			return found != null ? { ...found } : null;
@@ -57,7 +55,6 @@ function fixture() {
 		usersRepository: {
 			findOneBy: async ({ id }: { id: string }) => users.find(user => user.id === id) ?? null,
 			findOneByOrFail: async ({ id }: { id: string }) => users.find(user => user.id === id)!,
-			findBy: async ({ id }: { id: { value: string[] } }) => users.filter(user => id.value.includes(user.id)),
 			existsBy: async () => false,
 		},
 		userEntityService: { isLocalUser: () => true, isRemoteUser: () => false },
@@ -68,13 +65,9 @@ function fixture() {
 				return message;
 			},
 			findOneBy: async ({ id }: { id: string }) => messages.find(message => message.id === id) ?? null,
-			findOne: async ({ where }: { where: Record<string, unknown> }) => messages.find(row => meets({ ...row, fromUser: { isSuspended: false } }, where)) ?? null,
-			find: async ({ where }: { where: Record<string, unknown> }) => messages.filter(row => meets({ ...row, fromUser: { isSuspended: false } }, where)),
-			existsBy: async (where: Record<string, unknown>) => messages.some(row => meets({ ...row, fromUser: { isSuspended: false } }, where)),
 		},
 		chatRoomsRepository,
 		chatRoomMembershipsRepository,
-		mutingsRepository: { findBy: async () => [], existsBy: async () => false },
 		chatEntityService: {
 			packMessageLiteForRoom: async (message: unknown) => message,
 			packMessageDetailed: async (message: unknown) => message,
