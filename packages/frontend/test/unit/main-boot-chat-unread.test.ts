@@ -113,7 +113,7 @@ test('the disconnect dialog still asks to reload', async () => {
 	expect(mocks.updateCurrentAccount).not.toHaveBeenCalled();
 });
 
-// Sol4/OC5.3: 쪽지 이벤트는 버전 붙은 상태를 직접 적용한다. 이벤트마다 계정 전체를 재조회하지 않는다.
+// 쪽지 이벤트는 버전 붙은 상태를 직접 적용한다. 이벤트마다 계정 전체를 재조회하지 않는다.
 test('chat events apply the versioned unread state without an account request', async () => {
 	await mainBoot();
 
