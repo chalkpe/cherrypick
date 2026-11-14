@@ -14,11 +14,10 @@ import type { Config } from '@/config.js';
 import { QueueService } from '@/core/QueueService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
-import type { ChatRoomEditRecipient } from '@/core/ChatRoomNotificationService.js';
 import { ChatRoomBanService } from '@/core/ChatRoomBanService.js';
 import { ChatChannelError, parseChatChannels } from '@/core/chat-room-channels.js';
 import type { ChatChannelRef } from '@/core/chat-room-channels.js';
-import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_MARK, CHAT_UNREAD_PRUNE_CHANNEL, chatUnreadMarkerMessageId } from '@/core/chat-room-notifications.js';
+import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_MOVE_MARKER, CHAT_UNREAD_PRUNE_CHANNEL, chatUnreadMarkerMessageId } from '@/core/chat-room-notifications.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
 import { MiBlocking } from '@/models/Blocking.js';
@@ -630,7 +629,7 @@ export class ChatService {
 		return message != null && await this.chatRoomNotificationService.shouldNotify(userId, message);
 	}
 
-	private scheduleRoomNotification(messageId: string, editRecipients?: ChatRoomEditRecipient[]): void {
+	private scheduleRoomNotification(messageId: string, editRecipients?: string[]): void {
 		setTimeout(async () => {
 			if (editRecipients?.length === 0) return;
 			// 지연 후 한 번만 최신 내용을 읽어 포장한다. 그동안의 수정은 이 읽기에 모두 담긴다.
@@ -769,7 +768,7 @@ export class ChatService {
 		const editedAt = new Date();
 		const emojis = extractCustomEmojisFromMfm(mfm.parse(trimmed));
 		let newMentionUserIds: string[] = [];
-		let editRecipients: ChatRoomEditRecipient[] = [];
+		let editRecipients: string[] = [];
 		if (message.toRoomId != null) {
 			const saved = await this.saveRoomMessageEdit(message, { text: trimmed, editedAt, emojis, channelRefs });
 			if (saved == null) throw new ChatMessageAccessError('deleted');
@@ -798,7 +797,7 @@ export class ChatService {
 		} else if (message.toRoomId) {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', { ...payload, newMentionUserIds });
 			await this.chatRoomNotificationService.notify(this.localUserIds(await this.participantsForMessage(message)));
-			// 수정 알림은 표식 CAS와 무관하게 예약하고 발송 시점에 읽음 경계로 걸른다. 끄기 중 수정은 예약되지 않는다.
+			// 수정 알림은 표식 CAS와 무관하게 예약하고 발송 시점에 멘션 표식 존재로 걸른다. 끄기 중 수정은 예약되지 않는다.
 			if (editRecipients.length) this.scheduleRoomNotification(message.id, editRecipients);
 		}
 
@@ -1726,7 +1725,8 @@ export class ChatService {
 			const roomMessageKey = `newRoomChatMessageExists:${userId}:${room.id}`;
 			const roomMentionKey = `newRoomChatMentionExists:${userId}:${room.id}`;
 			// 채널 전환 전에 남은 그룹 표식은 그 글이 속한 채널의 표식으로 옮긴다. 채널 표식이 이미 있어도
-			// 순번 CAS로 더 새 것만 남기고, 메시지·멘션 표식은 각각 옮긴다. 출발지는 값이 그대로일 때만 지운다.
+			// 순번 CAS로 더 새 것만 남기고, 메시지·멘션 표식은 각각 옮긴다. 출발 표식이 조회 시점과 그대로일 때만
+			// 옮기고 지운다. 그 사이 읽음이 출발 표식을 지웠으면 되살리지 않는다.
 			const moveMarker = async (sourceKey: string, channelKeyOf: (channelId: string) => string) => {
 				const marker = await this.redisClient.get(sourceKey);
 				const markerMessageId = chatUnreadMarkerMessageId(marker);
@@ -1739,9 +1739,7 @@ export class ChatService {
 				}
 				if (message.toRoomChannelId == null) return;
 				const channelId = message.toRoomChannelId;
-				await this.redisClient.eval(CHAT_UNREAD_MARK, 1, channelKeyOf(channelId), marker!);
-				await this.redisClient.eval(CHAT_UNREAD_GUARDED_DEL, 1, sourceKey, marker!);
-				await this.redisClient.sadd(key, channelId);
+				await this.redisClient.eval(CHAT_UNREAD_MOVE_MARKER, 4, sourceKey, channelKeyOf(channelId), key, `newChatMessagesExists:${userId}`, marker!, channelId, `room:${room.id}`);
 			};
 			await moveMarker(roomMessageKey, channelId => `newRoomChatChannelMessageExists:${userId}:${room.id}:${channelId}`);
 			await moveMarker(roomMentionKey, channelId => `newRoomChatChannelMentionExists:${userId}:${room.id}:${channelId}`);
@@ -2037,7 +2035,7 @@ export class ChatService {
 		const channelRefs = room != null && room.hasChannels ? await this.chatRoomChannelService.remoteRefs(room, text, refs) : [];
 
 		let newMentionUserIds: string[] = [];
-		let editRecipients: ChatRoomEditRecipient[] = [];
+		let editRecipients: string[] = [];
 		if (message.toRoomId != null) {
 			const saved = await this.saveRoomMessageEdit(message, { text: trimmed, editedAt, emojis, channelRefs }, true);
 			if (saved == null) return message;
@@ -2069,7 +2067,7 @@ export class ChatService {
 		} else if (message.toRoomId) {
 			this.globalEventService.publishChatRoomStream(message.toRoomId, 'updated', { ...payload, newMentionUserIds });
 			await this.chatRoomNotificationService.notify(this.localUserIds(await this.participantsForMessage(message)));
-			// 수정 알림은 표식 CAS와 무관하게 예약하고 발송 시점에 읽음 경계로 걸른다. 끄기 중 수정은 예약되지 않는다.
+			// 수정 알림은 표식 CAS와 무관하게 예약하고 발송 시점에 멘션 표식 존재로 걸른다. 끄기 중 수정은 예약되지 않는다.
 			if (editRecipients.length) this.scheduleRoomNotification(message.id, editRecipients);
 		}
 

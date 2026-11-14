@@ -23,10 +23,11 @@ export const CHAT_UNREAD_PRUNE_ROOM = `if redis.call('GET', KEYS[1]) == false an
  */
 export const CHAT_UNREAD_MARK = `local marker = redis.call('GET', KEYS[1]); if marker == false then redis.call('SET', KEYS[1], ARGV[1]); return 1 end; local current = string.match(marker, '^(%d+):'); local incoming = string.match(ARGV[1], '^(%d+):'); if incoming == nil then return 0 end; if current == nil or #incoming > #current or (#incoming == #current and incoming > current) then redis.call('SET', KEYS[1], ARGV[1]); return 1 end; return 0`;
 /**
- * 읽음 경계는 순번 그 자체다. 표식과 따로 남아 표식이 더 새 글로 옮겨져도 수정 알림의 읽음 판단에 쓴다.
- * 더 큰 순번만 남긴다(원자적 CAS). 순번은 0 없는 십진수라 자리수 비교가 곧 크기 비교다.
+ * 채널 전환으로 그룹 표식을 채널 표식으로 옮긴다. 출발 표식이 조회 시점과 그대로일 때만
+ * 목적지에 순번 CAS로 병합하고 출발지를 지운다. 그 사이 읽음이 출발 표식을 지웠으면 되살리지 않는다.
+ * KEYS=[출발, 목적지, 채널 목록, 전체 목록], ARGV=[기대 표식, channelId, 방 항목].
  */
-export const CHAT_UNREAD_READ_BOUNDARY = `local current = redis.call('GET', KEYS[1]); if current == false then redis.call('SET', KEYS[1], ARGV[1]); return 1 end; if #ARGV[1] > #current or (#ARGV[1] == #current and ARGV[1] > current) then redis.call('SET', KEYS[1], ARGV[1]); return 1 end; return 0`;
+export const CHAT_UNREAD_MOVE_MARKER = `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end; local dest = redis.call('GET', KEYS[2]); if dest == false then redis.call('SET', KEYS[2], ARGV[1]) else local current = string.match(dest, '^(%d+):'); local incoming = string.match(ARGV[1], '^(%d+):'); if incoming ~= nil and (current == nil or #incoming > #current or (#incoming == #current and incoming > current)) then redis.call('SET', KEYS[2], ARGV[1]) end end; redis.call('DEL', KEYS[1]); redis.call('SADD', KEYS[3], ARGV[2]); redis.call('SADD', KEYS[4], ARGV[3]); return 1`;
 /** 전체 읽음은 표식·채널 목록 지우기와 전체 목록 빼기를 한 번에 끝낸다. 그 사이 새 글의 표식 쓰기가 끼어들어도 원자적이다. */
 export const CHAT_UNREAD_READ_ALL = `for i = 1, #KEYS - 1 do redis.call('DEL', KEYS[i]) end; return redis.call('SREM', KEYS[#KEYS], ARGV[1])`;
 
@@ -46,13 +47,6 @@ export function chatUnreadMarkerMessageId(marker: string | null): string | null 
 export function chatUnreadMarkerSequence(marker: string): string {
 	const index = marker.indexOf(':');
 	return index < 0 ? '0' : marker.slice(0, index);
-}
-
-/** 두 읽음 경계 중 더 큰 쪽. 경계는 0 없는 십진수 순번이라 자리수 비교가 곧 크기 비교다. */
-export function maxChatReadBoundary(a: string | null, b: string | null): string | null {
-	if (a == null) return b;
-	if (b == null) return a;
-	return b.length > a.length || (b.length === a.length && b > a) ? b : a;
 }
 
 export function effectiveChatNotificationLevel(group: ChatNotificationLevel, channel?: ChatNotificationLevel | null): ChatNotificationLevel {

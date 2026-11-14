@@ -17,7 +17,7 @@ import { MiUser } from '@/models/User.js';
 import type { ChatRoomUserSettingsRepository } from '@/models/_.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
-import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_MARK, CHAT_UNREAD_PRUNE_CHANNEL, CHAT_UNREAD_PRUNE_ROOM, CHAT_UNREAD_READ_ALL, CHAT_UNREAD_READ_BOUNDARY, chatMentionedUserIds, chatUnreadMarker, chatUnreadMarkerMessageId, chatUnreadMarkerSequence, effectiveChatNotificationLevel, maxChatReadBoundary, newlyMentionedUserIds } from '@/core/chat-room-notifications.js';
+import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_MARK, CHAT_UNREAD_PRUNE_CHANNEL, CHAT_UNREAD_PRUNE_ROOM, CHAT_UNREAD_READ_ALL, chatMentionedUserIds, chatUnreadMarker, chatUnreadMarkerMessageId, chatUnreadMarkerSequence, effectiveChatNotificationLevel, newlyMentionedUserIds } from '@/core/chat-room-notifications.js';
 import type { ChatNotificationLevel } from '@/core/chat-room-notifications.js';
 import { ChatChannelError } from '@/core/chat-room-channels.js';
 
@@ -31,8 +31,6 @@ export type ChatRoomNotificationSettings = {
 };
 /** record가 트랜잭션 안에서 계산해 커밋 후 mark에 넘기는 결과. */
 export type ChatRoomRecordResult = { added: string[]; mentioned: string[]; recipients: string[] };
-/** 수정 지연 알림의 예약 대상. 수정 시점의 읽음 경계를 함께 실어 발송 시점의 읽음 판단에 쓴다. */
-export type ChatRoomEditRecipient = { userId: string; readBoundary: string | null };
 
 @Injectable()
 export class ChatRoomNotificationService {
@@ -63,14 +61,6 @@ export class ChatRoomNotificationService {
 
 	private channelSetKey(userId: string, roomId: string) {
 		return `newRoomChatUnreadChannels:${userId}:${roomId}`;
-	}
-
-	private roomBoundaryKey(userId: string, roomId: string) {
-		return `newRoomChatReadBoundary:${userId}:${roomId}`;
-	}
-
-	private channelBoundaryKey(userId: string, roomId: string, channelId: string) {
-		return `newRoomChatChannelReadBoundary:${userId}:${roomId}:${channelId}`;
 	}
 
 	private totalsKey(userId: string) {
@@ -129,7 +119,7 @@ export class ChatRoomNotificationService {
 		const added = newlyMentionedUserIds(mentioned, previousMentions ?? []);
 		const remembered = [...new Set([...(previousMentions ?? []), ...mentioned])];
 		// 수정은 새 글이 아니므로 그룹 순번을 새로 받지 않는다. 순번을 올리면 지난 글이 화면 뒤의 새 글보다 뒤로 가서
-		// 그 글까지 읽을 때 아직 보지 않은 새 글도 읽음이 된다. 순번이 없는 글(가져온 과거 기록)은 어떤 읽음 경계에도 포함된다
+		// 그 글까지 읽을 때 아직 보지 않은 새 글도 읽음이 된다. 순번이 없는 글(가져온 과거 기록)은 0으로 두어 어떤 읽음에도 포함된다
 		let roomMessageSequence: string;
 		if (previousMentions != null) {
 			roomMessageSequence = message.roomMessageSequence ?? '0';
@@ -148,13 +138,13 @@ export class ChatRoomNotificationService {
 	/**
 	 * 커밋 후 미읽음 표식을 남긴다. 알림 끄기는 표식도 남기지 않는다.
 	 * 표식은 순번 CAS로 더 새 글의 것만 유지하므로, 늦게 도착한 이전 글이 표식을 되돌리지 않는다.
-	 * 생성은 실제로 표식을 남긴 수신자를 돌려준다. 수정은 표식 CAS와 무관하게 알림 대상 수신자를
-	 * 그 시점의 읽음 경계와 함께 돌려준다. 더 새 글이 표식을 가져갔어도 읽지 않았다면 수정 알림은 가야 하기 때문이다.
+	 * 생성은 실제로 표식을 남긴 수신자를 돌려준다. 수정은 표식 CAS와 무관하게 새로 멘션된 수신자를 돌려준다.
+	 * 더 새 글이 표식을 가져갔어도 읽지 않았다면 수정 알림은 가야 하기 때문이다.
 	 */
-	public async mark(room: MiChatRoom, message: MiChatMessage, recorded: ChatRoomRecordResult, edit = false): Promise<ChatRoomEditRecipient[]> {
+	public async mark(room: MiChatRoom, message: MiChatMessage, recorded: ChatRoomRecordResult, edit = false): Promise<string[]> {
 		const channelId = message.toRoomChannelId ?? null;
 		const marker = chatUnreadMarker(message.roomMessageSequence, message.id);
-		const marked: ChatRoomEditRecipient[] = [];
+		const marked: string[] = [];
 		for (const userId of recorded.recipients) {
 			const settings = await this.settings(userId, room.id);
 			const level = effectiveChatNotificationLevel(settings.notificationLevel, channelId != null ? settings.channelOverrides[channelId] : null);
@@ -163,12 +153,7 @@ export class ChatRoomNotificationService {
 			const mentionKey = channelId != null ? this.channelMentionKey(userId, room.id, channelId) : this.roomMentionKey(userId, room.id);
 			const messageMarked = await this.redis.eval(CHAT_UNREAD_MARK, 1, messageKey, marker) === 1;
 			if (recorded.mentioned.includes(userId)) await this.redis.eval(CHAT_UNREAD_MARK, 1, mentionKey, marker);
-			if (edit) {
-				const boundaries = await this.redis.mget(this.roomBoundaryKey(userId, room.id), ...(channelId != null ? [this.channelBoundaryKey(userId, room.id, channelId)] : []));
-				marked.push({ userId, readBoundary: maxChatReadBoundary(boundaries[0], boundaries[1] ?? null) });
-			} else if (messageMarked) {
-				marked.push({ userId, readBoundary: null });
-			}
+			if (edit || messageMarked) marked.push(userId);
 			if (channelId != null) await this.redis.sadd(this.channelSetKey(userId, room.id), channelId);
 			await this.redis.sadd(this.totalsKey(userId), `room:${room.id}`);
 		}
@@ -189,37 +174,32 @@ export class ChatRoomNotificationService {
 	 * 지연 알림 시점에 아직 알릴 수신자를 고른다. 설정·멤버십은 지금 다시 조회한다.
 	 * 생성은 표식이 이 글을 가리키는(아직 읽지 않은) 사람에게만 간다. 멘션 전용 수신자는 멘션 표식으로 판단하므로
 	 * 뒤따른 일반 글이 메시지 표식을 옮겨도 멘션 알림은 묻히지 않는다.
-	 * 수정은 새로 멘션된 사람에게만 가되, 표식이 더 새 글로 옮겨졌어도 읽지 않았다면 알린다.
-	 * 읽음 판단은 표식이 아니라 읽음 경계로 한다: 경계가 이 글의 순번 이상이고 수정 시점보다 나아갔으면 읽은 것이다.
+	 * 수정은 새로 멘션된 사람에게만 가되, 멘션 표식이 남아 있으면(어떤 글을 가리키든 아직 읽지 않았으면) 알린다.
+	 * 수정된 글까지 읽었으면 멘션 표식이 지워져 알림이 가지 않는다.
 	 */
-	public async notificationRecipients(message: MiChatMessage, room: MiChatRoom, editRecipients?: ChatRoomEditRecipient[]): Promise<string[]> {
+	public async notificationRecipients(message: MiChatMessage, room: MiChatRoom, editRecipients?: string[]): Promise<string[]> {
 		if (editRecipients != null && editRecipients.length === 0) return [];
 		const members = await this.participants(room);
 		const mentioned = editRecipients != null ? this.mentioned(message, members) : null;
 		const recipients: string[] = [];
 		for (const member of members) {
 			if (member.host != null || member.id === message.fromUserId) continue;
-			const editRecipient = editRecipients?.find(candidate => candidate.userId === member.id);
-			if (editRecipients != null && editRecipient == null) continue;
+			if (editRecipients != null && !editRecipients.includes(member.id)) continue;
 			const settings = await this.settings(member.id, room.id);
 			const channelId = message.toRoomChannelId;
 			const level = effectiveChatNotificationLevel(settings.notificationLevel, channelId != null ? settings.channelOverrides[channelId] : null);
 			if (level === 'none') continue;
+			const mentionKey = channelId != null ? this.channelMentionKey(member.id, room.id, channelId) : this.roomMentionKey(member.id, room.id);
 			if (editRecipients != null) {
 				// 수정 사이에 멘션이 사라졌으면 알리지 않는다
 				if (!mentioned!.includes(member.id)) continue;
-				// 수정 사이에 이 글까지 읽었으면 알리지 않는다. 수정 전에 이미 읽은 글은 경계가 나아가지 않았으므로 알린다
-				const boundaries = await this.redis.mget(this.roomBoundaryKey(member.id, room.id), ...(channelId != null ? [this.channelBoundaryKey(member.id, room.id, channelId)] : []));
-				const boundary = maxChatReadBoundary(boundaries[0], boundaries[1] ?? null);
-				if (boundary != null && BigInt(boundary) >= BigInt(message.roomMessageSequence ?? '0') && (editRecipient!.readBoundary == null || BigInt(boundary) > BigInt(editRecipient!.readBoundary))) continue;
+				// 멘션 표식이 남아 있어야 아직 읽지 않은 것이다. 표식이 어떤 글을 가리키는지는 묻지 않는다
+				if (await this.redis.get(mentionKey) == null) continue;
+			} else if (level === 'mentions') {
+				if (chatUnreadMarkerMessageId(await this.redis.get(mentionKey)) !== message.id) continue;
 			} else {
-				const mentionKey = channelId != null ? this.channelMentionKey(member.id, room.id, channelId) : this.roomMentionKey(member.id, room.id);
-				if (level === 'mentions') {
-					if (chatUnreadMarkerMessageId(await this.redis.get(mentionKey)) !== message.id) continue;
-				} else {
-					const messageKey = channelId != null ? this.channelMessageKey(member.id, room.id, channelId) : this.roomMessageKey(member.id, room.id);
-					if (chatUnreadMarkerMessageId(await this.redis.get(messageKey)) !== message.id) continue;
-				}
+				const messageKey = channelId != null ? this.channelMessageKey(member.id, room.id, channelId) : this.roomMessageKey(member.id, room.id);
+				if (chatUnreadMarkerMessageId(await this.redis.get(messageKey)) !== message.id) continue;
 			}
 			recipients.push(member.id);
 		}
@@ -310,14 +290,11 @@ export class ChatRoomNotificationService {
 				}
 				// 지우기와 전체 목록 빼기를 한 스크립트로 묶는다. 그 사이 새 글의 표식 쓰기가 끼어들어도 표식과 목록이 함께 남는다
 				await this.redis.eval(CHAT_UNREAD_READ_ALL, keys.length + 1, ...keys, this.totalsKey(userId), `room:${roomId}`);
-				await this.redis.eval(CHAT_UNREAD_READ_BOUNDARY, 1, this.roomBoundaryKey(userId, roomId), String(room.messageSequence));
 			} else if (!room.hasChannels) {
 				// 일반 그룹도 경계 뒤의 새 글은 남긴다. 두 표식이 모두 사라졌을 때만 전체 목록에서 뺀다.
 				await clearMarker(this.roomMessageKey(userId, roomId));
 				await clearMarker(this.roomMentionKey(userId, roomId));
 				await this.redis.eval(CHAT_UNREAD_PRUNE_ROOM, 3, this.roomMessageKey(userId, roomId), this.roomMentionKey(userId, roomId), this.totalsKey(userId), `room:${roomId}`);
-				// 읽음 경계는 표식과 따로 남긴다. 표식이 더 새 글로 옮겨져도 수정 알림의 읽음 판단에 쓴다
-				await this.redis.eval(CHAT_UNREAD_READ_BOUNDARY, 1, this.roomBoundaryKey(userId, roomId), untilId != null ? String(boundarySequence) : String(room.messageSequence));
 			} else {
 				await clearMarker(this.channelMessageKey(userId, roomId, selected!));
 				await clearMarker(this.channelMentionKey(userId, roomId, selected!));
@@ -325,20 +302,17 @@ export class ChatRoomNotificationService {
 					CHAT_UNREAD_PRUNE_CHANNEL,
 					6, this.channelSetKey(userId, roomId), this.channelMessageKey(userId, roomId, selected!), this.channelMentionKey(userId, roomId, selected!), this.roomMessageKey(userId, roomId), this.roomMentionKey(userId, roomId), this.totalsKey(userId), selected!, `room:${roomId}`,
 				);
-				await this.redis.eval(CHAT_UNREAD_READ_BOUNDARY, 1, this.channelBoundaryKey(userId, roomId, selected!), untilId != null ? String(boundarySequence) : String(room.messageSequence));
 			}
 		});
 		await this.notify([userId]);
 	}
 
-	/** 그룹을 떠나거나 사라진 사람의 미읽음 표식과 읽음 경계를 지운다. deleteRoom/leave/kick/forget이 함께 쓴다. */
+	/** 그룹을 떠나거나 사라진 사람의 미읽음 표식을 지운다. deleteRoom/leave/kick/forget이 함께 쓴다. */
 	public async clearRoom(roomId: string, userIds: string[]): Promise<void> {
-		const channelIds = new Set((await this.channels.list(roomId)).map(channel => channel.id));
 		for (const userId of new Set(userIds)) {
-			const keys = [this.roomMessageKey(userId, roomId), this.roomMentionKey(userId, roomId), this.channelSetKey(userId, roomId), this.roomBoundaryKey(userId, roomId)];
-			for (const channelId of await this.redis.smembers(this.channelSetKey(userId, roomId))) channelIds.add(channelId);
-			for (const channelId of channelIds) {
-				keys.push(this.channelMessageKey(userId, roomId, channelId), this.channelMentionKey(userId, roomId, channelId), this.channelBoundaryKey(userId, roomId, channelId));
+			const keys = [this.roomMessageKey(userId, roomId), this.roomMentionKey(userId, roomId), this.channelSetKey(userId, roomId)];
+			for (const channelId of await this.redis.smembers(this.channelSetKey(userId, roomId))) {
+				keys.push(this.channelMessageKey(userId, roomId, channelId), this.channelMentionKey(userId, roomId, channelId));
 			}
 			await this.redis.del(...keys);
 			await this.redis.srem(this.totalsKey(userId), `room:${roomId}`);
