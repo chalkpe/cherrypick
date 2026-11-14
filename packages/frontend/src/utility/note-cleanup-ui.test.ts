@@ -5,7 +5,7 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import type { Locale } from 'i18n';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
-import { Suspense, defineComponent, h } from 'vue';
+import { Suspense, defineComponent, h, onMounted, watch } from 'vue';
 
 vi.mock('@@/js/config.js', () => ({ apiUrl: 'https://cleanup.invalid/api' }));
 vi.mock('@/i.js', () => ({ $i: { token: 'dummy-test-token' }, ensureSignin: () => ({ id: 'me' }) }));
@@ -47,9 +47,16 @@ vi.mock('@/components/MkSwitch.vue', () => ({ default: defineComponent({
 	}, slots.default?.()),
 }) }));
 vi.mock('@/components/MkInfo.vue', () => ({ default: defineComponent({ setup: (_, { slots }) => () => h('div', slots.default?.()) }) }));
+// 미리 보기 준비 상태는 시험에서 제어한다. 실제 준비 판정은 미리 보기 전용 시험에서 다룬다.
+const previewControl = vi.hoisted(() => ({ ready: true, emit: null as null | ((value: boolean) => void) }));
 vi.mock('@/pages/settings/note-cleanup/Preview.vue', () => ({ default: defineComponent({
-	props: ['ruleId', 'version'],
-	setup: (props) => () => h('div', { 'data-testid': 'preview', 'data-version': props.version }),
+	props: ['ruleId', 'version'], emits: ['ready'],
+	setup: (props, { emit }) => {
+		previewControl.emit = (value: boolean) => emit('ready', value);
+		onMounted(() => emit('ready', previewControl.ready));
+		watch(() => props.version, () => emit('ready', previewControl.ready));
+		return () => h('div', { 'data-testid': 'preview', 'data-version': props.version });
+	},
 }) }));
 vi.mock('@/pages/settings/note-cleanup/ConditionEditor.vue', () => ({ default: defineComponent({
 	props: ['condition'], emits: ['change'],
@@ -62,7 +69,7 @@ vi.mock('@/pages/settings/note-cleanup/ConditionEditor.vue', () => ({ default: d
 import type { CleanupRule } from '@/utility/note-cleanup-api.js';
 import EditPage from '@/pages/settings/note-cleanup.edit.vue';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); popupMenu.mockReset(); confirm.mockReset(); confirm.mockResolvedValue({ canceled: true }); alert.mockClear(); toast.mockClear(); push.mockClear(); activeLocale.current = 'en-US'; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); popupMenu.mockReset(); confirm.mockReset(); confirm.mockResolvedValue({ canceled: true }); alert.mockClear(); toast.mockClear(); push.mockClear(); activeLocale.current = 'en-US'; previewControl.ready = true; previewControl.emit = null; });
 
 const deleteRule: CleanupRule = {
 	id: 'delete', name: 'Old notes', defaultName: null, action: 'delete', enabled: true,
@@ -183,6 +190,50 @@ test('first automatic cleanup waits for explicit confirmation and sends confirme
 	});
 	expect(requests.some(request => request.url.endsWith('/request'))).toBe(false);
 	await waitFor(() => expect(view.getByRole('switch', { name: 'Keep cleaning up automatically' }).getAttribute('aria-checked')).toBe('true'));
+});
+
+test('first automatic cleanup stays blocked until the current preview succeeds', async () => {
+	previewControl.ready = false;
+	const view = renderEdit({ ruleId: 'delete' });
+	await view.findByLabelText('Rule name');
+	const toggle = () => view.getByRole('switch', { name: 'Keep cleaning up automatically' });
+	// 미리 보기가 로딩 중이거나 실패한 상태에서는 최초 자동 켜기가 불가능하다.
+	expect((toggle() as HTMLButtonElement).disabled).toBe(true);
+	await fireEvent.click(toggle());
+	expect(confirm).not.toHaveBeenCalled();
+	// 현재 미리 보기가 성공하면 기존 확인창 하나로 켤 수 있다.
+	previewControl.emit!(true);
+	await waitFor(() => expect((toggle() as HTMLButtonElement).disabled).toBe(false));
+	confirm.mockResolvedValue({ canceled: false });
+	await fireEvent.click(toggle());
+	await waitFor(() => expect(toggle().getAttribute('aria-checked')).toBe('true'));
+});
+
+test('a new save blocks first automatic cleanup again until the preview reloads successfully', async () => {
+	const view = renderEdit({ ruleId: 'delete' });
+	await view.findByLabelText('Rule name');
+	const toggle = () => view.getByRole('switch', { name: 'Keep cleaning up automatically' });
+	await waitFor(() => expect((toggle() as HTMLButtonElement).disabled).toBe(false));
+	// 저장으로 미리 보기가 무효화되면 준비 상태가 사라지고 다시 막힌다.
+	previewControl.ready = false;
+	await fireEvent.click(view.getByRole('button', { name: 'Save' }));
+	// 저장이 끝나 미리 보기 버전이 오른 뒤 준비 상태를 다시 보낸다.
+	await waitFor(() => expect(view.getByTestId('preview').getAttribute('data-version')).toBe('1'));
+	await waitFor(() => expect((toggle() as HTMLButtonElement).disabled).toBe(true));
+	previewControl.emit!(true);
+	await waitFor(() => expect((toggle() as HTMLButtonElement).disabled).toBe(false));
+});
+
+test('already confirmed rules toggle automatic without waiting for the preview', async () => {
+	previewControl.ready = false;
+	const confirmed = { ...deleteRule, automatic: true, automaticConfirmed: true };
+	const view = renderEdit({ ruleId: 'delete' }, [confirmed]);
+	await view.findByLabelText('Rule name');
+	const toggle = () => view.getByRole('switch', { name: 'Keep cleaning up automatically' });
+	expect((toggle() as HTMLButtonElement).disabled).toBe(false);
+	await fireEvent.click(toggle());
+	await waitFor(() => expect(toggle().getAttribute('aria-checked')).toBe('false'));
+	expect(confirm).not.toHaveBeenCalled();
 });
 
 test('manual cleanup reports queued and duplicate requests through toasts', async () => {

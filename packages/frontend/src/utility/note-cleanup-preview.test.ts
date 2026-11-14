@@ -17,6 +17,12 @@ vi.mock('@/i18n.js', async () => {
 	return { i18n: new I18n(locales['en-US'], false) };
 });
 vi.mock('@/components/MkInfo.vue', () => ({ default: defineComponent({ setup: (_, { slots }) => () => h('div', slots.default?.()) }) }));
+// 이 시험의 버튼은 타임라인 흉내가 그리므로 미리 보기의 버튼·로딩은 말단만 대체한다.
+vi.mock('@/components/MkButton.vue', () => ({ default: defineComponent({
+	props: ['disabled'], emits: ['click'],
+	setup: (props, { slots, emit }) => () => h('button', { disabled: props.disabled, onClick: () => emit('click') }, slots.default?.()),
+}) }));
+vi.mock('@/components/global/MkLoading.vue', () => ({ default: defineComponent({ setup: () => () => h('div', 'loading') }) }));
 // 실제 타임라인 대신 페이지네이터가 공급하는 노트와 다음 페이지 버튼만 그린다.
 vi.mock('@/components/MkNotesTimeline.vue', () => ({ default: defineComponent({
 	props: ['paginator'],
@@ -133,4 +139,78 @@ test('saving the rule bumps the version and the preview reloads from the first p
 	await view.findByText('result 3');
 	expect(view.queryByText('result 2')).toBeNull();
 	expect(requests.map(request => request.afterId)).toEqual([undefined, 'cursor-1', undefined]);
+});
+
+test('a delayed first response never overwrites the preview reloaded after a save', async () => {
+	let finishOld!: (response: Response) => void;
+	let calls = 0;
+	vi.stubGlobal('fetch', () => ++calls === 1
+		? new Promise<Response>(resolve => { finishOld = resolve; })
+		: Promise.resolve(new Response(JSON.stringify(page([note('new', 'new rule result')], null, true)))));
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	const initing = paginator.init();
+	// 저장이 먼저 끝나 새 첫 페이지를 읽은 뒤, 이전 응답이 늦게 도착하는 순서.
+	await paginator.reload();
+	expect(paginator.items.value.map(item => item.id)).toEqual(['new']);
+	finishOld(new Response(JSON.stringify(page([note('old', 'stale result')], 'old-cursor', false))));
+	await initing;
+	expect(paginator.items.value.map(item => item.id)).toEqual(['new']);
+	expect(paginator.complete.value).toBe(true);
+	expect(paginator.canFetchNewer.value).toBe(false);
+	expect(paginator.error.value).toBe(false);
+	expect(calls).toBe(2);
+});
+
+test('a delayed append response never lands in the preview reloaded after a save', async () => {
+	let finishAppend!: (response: Response) => void;
+	let calls = 0;
+	vi.stubGlobal('fetch', () => {
+		calls++;
+		if (calls === 1) return Promise.resolve(new Response(JSON.stringify(page([note('n1', 'first')], 'cursor-1', false))));
+		if (calls === 2) return new Promise<Response>(resolve => { finishAppend = resolve; });
+		return Promise.resolve(new Response(JSON.stringify(page([note('new', 'new rule result')], null, true))));
+	});
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	await paginator.init();
+	const appending = paginator.fetchNewer();
+	await paginator.reload();
+	expect(paginator.items.value.map(item => item.id)).toEqual(['new']);
+	finishAppend(new Response(JSON.stringify(page([note('n2', 'stale append')], null, true))));
+	await appending;
+	expect(paginator.items.value.map(item => item.id)).toEqual(['new']);
+	expect(paginator.complete.value).toBe(true);
+	expect(paginator.canFetchNewer.value).toBe(false);
+});
+
+test('a failed reload keeps the error state and a later successful reload clears it', async () => {
+	let calls = 0;
+	vi.stubGlobal('fetch', () => ++calls === 1
+		? Promise.resolve(new Response(JSON.stringify(page([note('n1', 'first')], null, true))))
+		: calls === 2
+			? Promise.resolve(new Response(JSON.stringify({ error: { code: 'CLEANUP_BUSY' } }), { status: 503 }))
+			: Promise.resolve(new Response(JSON.stringify(page([note('n2', 'recovered')], null, true)))));
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	await paginator.init();
+	await paginator.reload();
+	expect(paginator.error.value).toBe(true);
+	await paginator.reload();
+	expect(paginator.error.value).toBe(false);
+	expect(paginator.items.value.map(item => item.id)).toEqual(['n2']);
+});
+
+test('readiness tracks the current first page and clears while a reload is in flight', async () => {
+	let finishReload!: (response: Response) => void;
+	let calls = 0;
+	vi.stubGlobal('fetch', () => ++calls === 1
+		? Promise.resolve(new Response(JSON.stringify(page([note('n1', 'first')], null, true))))
+		: new Promise<Response>(resolve => { finishReload = resolve; }));
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	expect(paginator.ready.value).toBe(false);
+	await paginator.init();
+	expect(paginator.ready.value).toBe(true);
+	const reloading = paginator.reload();
+	expect(paginator.ready.value).toBe(false);
+	finishReload(new Response(JSON.stringify(page([note('n2', 'second')], null, true))));
+	await reloading;
+	expect(paginator.ready.value).toBe(true);
 });

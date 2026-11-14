@@ -12,7 +12,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkButton small @click="load">{{ i18n.ts.retry }}</MkButton>
 		</MkInfo>
 		<template v-else>
-			<MkSwitch v-model="keepDriveFiles" accessible @update:modelValue="saveKeepDriveFiles">{{ i18n.ts._noteCleanup.keepDriveFiles }}</MkSwitch>
+			<MkSwitch v-model="keepDriveFiles" accessible :disabled="savingKeepDriveFiles" @update:modelValue="saveKeepDriveFiles">{{ i18n.ts._noteCleanup.keepDriveFiles }}</MkSwitch>
 			<FormSection>
 				<template #label><i class="ti ti-trash"></i> {{ i18n.ts._noteCleanup.deleteRules }}</template>
 				<div class="_gaps_s">
@@ -64,6 +64,9 @@ const rules = shallowRef<CleanupRule[]>([]);
 const loading = ref(true);
 const failed = ref('');
 const keepDriveFiles = ref(true);
+// 저장 중에는 스위치를 잠그고, 실패하면 낙관적 값이 아니라 마지막 확인된 서버 값으로 돌린다.
+const savingKeepDriveFiles = ref(false);
+const confirmedKeepDriveFiles = ref(true);
 const deleteRules = computed(() => rules.value.filter(rule => rule.action === 'delete'));
 const keepRules = computed(() => rules.value.filter(rule => rule.action === 'keep'));
 
@@ -74,6 +77,7 @@ async function load() {
 		const res = await cleanupApi.list();
 		rules.value = res.rules;
 		keepDriveFiles.value = res.keepDriveFiles;
+		confirmedKeepDriveFiles.value = res.keepDriveFiles;
 	} catch (error) {
 		failed.value = cleanupFailure(error).code;
 	} finally {
@@ -83,11 +87,15 @@ async function load() {
 
 // 저장 실패는 스위치를 되돌리고 오류만 알린다. 목록 전체를 다시 불러오지는 않는다.
 async function saveKeepDriveFiles(value: boolean) {
+	savingKeepDriveFiles.value = true;
 	try {
 		await cleanupApi.setKeepDriveFiles(value);
+		confirmedKeepDriveFiles.value = value;
 	} catch (error) {
-		keepDriveFiles.value = !value;
+		keepDriveFiles.value = confirmedKeepDriveFiles.value;
 		await os.alert({ type: 'error', text: cleanupErrorMessage(cleanupFailure(error).code) });
+	} finally {
+		savingKeepDriveFiles.value = false;
 	}
 }
 

@@ -5,7 +5,7 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import type { Locale } from 'i18n';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
-import { Suspense, defineComponent, h } from 'vue';
+import { Suspense, defineComponent, h, onMounted, watch } from 'vue';
 
 vi.mock('@@/js/config.js', () => ({ apiUrl: 'https://cleanup.invalid/api' }));
 vi.mock('@/i.js', () => ({ $i: { token: 'dummy-test-token' }, ensureSignin: () => ({ id: 'me' }) }));
@@ -42,10 +42,14 @@ vi.mock('@/components/MkSwitch.vue', () => ({ default: defineComponent({
 	}, slots.default?.()),
 }) }));
 vi.mock('@/components/MkInfo.vue', () => ({ default: defineComponent({ setup: (_, { slots }) => () => h('div', slots.default?.()) }) }));
-// 미리 보기 자체는 별도 시험에서 다루므로 여기서는 버전 전달만 관찰한다.
+// 미리 보기 자체는 별도 시험에서 다루므로 여기서는 버전 전달만 관찰한다. 준비 상태는 항상 성공으로 본다.
 vi.mock('@/pages/settings/note-cleanup/Preview.vue', () => ({ default: defineComponent({
-	props: ['ruleId', 'version'],
-	setup: (props) => () => h('div', { 'data-testid': 'preview', 'data-version': props.version, 'data-rule-id': props.ruleId }),
+	props: ['ruleId', 'version'], emits: ['ready'],
+	setup: (props, { emit }) => {
+		onMounted(() => emit('ready', true));
+		watch(() => props.version, () => emit('ready', true));
+		return () => h('div', { 'data-testid': 'preview', 'data-version': props.version, 'data-rule-id': props.ruleId });
+	},
 }) }));
 vi.mock('@/pages/settings/note-cleanup/ConditionEditor.vue', () => ({ default: defineComponent({
 	props: ['condition'], emits: ['change'],

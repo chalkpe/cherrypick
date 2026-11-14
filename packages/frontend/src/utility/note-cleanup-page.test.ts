@@ -145,3 +145,29 @@ test('a failed save reverts the switch and shows the cleanup error', async () =>
 	await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
 	expect(alert).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', text: 'Note cleanup is busy. Please wait a moment and try again.' }));
 });
+
+test('the switch locks while saving and a failed save restores the last confirmed value', async () => {
+	let failSave!: () => void;
+	let saves = 0;
+	vi.stubGlobal('fetch', async (url: string) => {
+		if (url.endsWith('/update-settings')) {
+			saves++;
+			return new Promise<Response>(resolve => { failSave = () => resolve(new Response(JSON.stringify({ error: { code: 'CLEANUP_BUSY' } }), { status: 503 })); });
+		}
+		return new Response(JSON.stringify({ rules: [], blocked: false, keepDriveFiles: true }));
+	});
+	const view = render(Settings, { global: { stubs } });
+	const toggle = await view.findByRole('switch', { name: /Keep attachments/ });
+	expect(toggle.getAttribute('aria-checked')).toBe('true');
+	await fireEvent.click(toggle);
+	await waitFor(() => expect(saves).toBe(1));
+	// 저장 중에는 다시 토글할 수 없어 요청이 겹치지 않는다.
+	expect((toggle as HTMLButtonElement).disabled).toBe(true);
+	await fireEvent.click(toggle);
+	expect(saves).toBe(1);
+	failSave();
+	// 실패하면 낙관적 값이 아니라 마지막 확인된 서버 값으로 돌아간다.
+	await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
+	expect((toggle as HTMLButtonElement).disabled).toBe(false);
+	expect(alert).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+});

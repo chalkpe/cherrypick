@@ -31,9 +31,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<template #label>{{ i18n.ts._noteCleanup.notesToDelete }}</template>
 		<fieldset :disabled="dirty || busy" :class="$style.run">
 			<div class="_gaps_m">
-				<Preview :ruleId="rule.id" :version="previewVersion"/>
+				<Preview :ruleId="rule.id" :version="previewVersion" @ready="previewReady = $event"/>
 				<MkButton :disabled="!rule.enabled" @click="requestNow"><i class="ti ti-player-play"></i> {{ i18n.ts._noteCleanup.request }}</MkButton>
-				<MkSwitch :modelValue="rule.automatic" :disabled="dirty || busy || !rule.enabled" @update:modelValue="setAutomatic">{{ i18n.ts._noteCleanup.automatic }}</MkSwitch>
+				<MkSwitch :modelValue="rule.automatic" :disabled="dirty || busy || !rule.enabled || (!rule.automaticConfirmed && !previewReady)" @update:modelValue="setAutomatic">{{ i18n.ts._noteCleanup.automatic }}</MkSwitch>
 			</div>
 		</fieldset>
 	</FormSection>
@@ -81,6 +81,8 @@ const savedSnapshot = ref(snapshot());
 const busy = ref(false);
 const error = ref<CleanupFailure | null>(null);
 const previewVersion = ref(0);
+// 현재 미리 보기 첫 페이지의 성공 여부. 최초 자동 켜기는 이 값이 참일 때만 허용한다.
+const previewReady = ref(false);
 const editorRootEl = useTemplateRef<HTMLElement>('editorRootEl');
 const actions = [
 	{ value: 'delete' as const, label: i18n.ts._noteCleanup.delete },
@@ -237,6 +239,11 @@ async function toggleEnabled() {
 async function setAutomatic(value: boolean) {
 	const current = rule.value;
 	if (!current) return;
+	// 화면 우회라도 현재 미리 보기 성공 전에는 최초 자동 켜기를 허용하지 않는다.
+	if (value && !current.automaticConfirmed && !previewReady.value) {
+		error.value = { code: 'PREVIEW_REQUIRED', path: 'confirmed' };
+		return;
+	}
 	if (value) {
 		const { canceled } = await os.confirm({
 			type: 'warning',

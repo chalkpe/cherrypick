@@ -32,9 +32,12 @@ export class CleanupPreviewPaginator implements IPaginator<Misskey.entities.Note
 	public errors: Ref<CleanupPreview['errors']> = ref([]);
 	public rules: Ref<CleanupPreview['rules']> = ref([]);
 	public complete = ref(false);
+	// 현재 첫 페이지가 성공적으로 읽혔는지. 저장 뒤 다시 읽는 동안에는 거짓이다.
+	public ready = ref(false);
 
 	private cursor: string | null = null;
-	private loading = false;
+	private generation = 0;
+	private appending = false;
 
 	constructor(private ruleIds: string[]) {}
 
@@ -43,32 +46,46 @@ export class CleanupPreviewPaginator implements IPaginator<Misskey.entities.Note
 	}
 
 	public async reload(): Promise<void> {
+		// 진행 중인 응답은 세대가 바뀌어 버린다. 첫 페이지 읽는 중이어도 새 첫 페이지를 바로 요청한다.
+		this.generation++;
 		this.cursor = null;
+		this.appending = false;
+		this.ready.value = false;
 		this.complete.value = false;
 		this.canFetchNewer.value = false;
 		await this.load(false);
 	}
 
 	private async load(append: boolean): Promise<void> {
-		if (this.loading) return;
-		this.loading = true;
+		if (append) {
+			if (this.appending) return;
+			this.appending = true;
+		}
+		const generation = this.generation;
 		this.error.value = false;
 		if (append) this.fetchingNewer.value = true;
 		else this.fetching.value = true;
 		try {
 			const page = await cleanupApi.preview(this.ruleIds, append ? this.cursor ?? undefined : undefined);
+			// 저장 뒤 도착한 낡은 응답은 항목·커서·오류 어느 것도 건드리지 않는다.
+			if (generation !== this.generation) return;
 			this.errors.value = page.errors;
 			this.rules.value = page.rules;
 			this.complete.value = page.complete;
 			this.cursor = page.nextCursor;
 			this.canFetchNewer.value = !page.complete && page.nextCursor != null;
 			this.items.value = append ? [...this.items.value, ...page.notes] : page.notes;
+			if (!append) this.ready.value = true;
 		} catch {
+			if (generation !== this.generation) return;
 			this.error.value = true;
+			if (!append) this.ready.value = false;
 		} finally {
-			this.fetching.value = false;
-			this.fetchingNewer.value = false;
-			this.loading = false;
+			if (generation === this.generation) {
+				this.fetching.value = false;
+				this.fetchingNewer.value = false;
+				if (append) this.appending = false;
+			}
 		}
 	}
 
