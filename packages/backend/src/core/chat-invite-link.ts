@@ -5,6 +5,7 @@
 
 import { secureRndstr } from '@/misc/secure-rndstr.js';
 import { truncate } from '@/misc/truncate.js';
+import { isStorableText } from '@/core/chat-room-channels.js';
 import type { IObject, IReject } from '@/core/activitypub/type.js';
 
 /** 그룹 서버가 링크 참여에 답해 보낸 초대를 찾는다. */
@@ -127,6 +128,8 @@ export type ChatInvitePreview = {
 /** 같은 호스트의 https 주소인가. 요청을 보낼 곳과 확인한 곳을 같게 한다 */
 function isSameSecureHost(value: unknown, host: string, path?: RegExp): value is string {
 	if (typeof value !== 'string') return false;
+	// 파싱 결과는 앞뒤 제어 문자를 떼어 내므로, 원문을 그대로 쓰는 조회·전송을 위해 원문도 검사한다.
+	if (!isStorableText(value)) return false;
 	try {
 		const url = new URL(value);
 		return url.protocol === 'https:' && url.host === host && url.username === '' && url.password === '' && url.search === '' && url.hash === '' && (path == null || path.test(url.pathname));

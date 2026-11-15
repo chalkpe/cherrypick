@@ -124,6 +124,7 @@ function createFixture(options: { baseUrl?: string; mirror?: boolean } = {}) {
 	const signedGetJson = vi.fn(async (_actor: unknown, url: string): Promise<unknown> => previewDoc({ id: url }));
 	const isRefusedRemoteHost = vi.fn(async () => false);
 	const mirror = { id: 'mirror1', uri: roomUri, ownerId: 'ownerA' };
+	const roomsFindOneBy = vi.fn(async (where: { uri?: string; id?: string }) => (options.mirror !== false && (where.uri === roomUri || where.id === mirror.id)) ? mirror : null);
 	const config = { url: baseUrl, host: new URL(baseUrl).host, mediaProxy: `${baseUrl}/proxy` };
 	const avatar = Object.assign(Object.create(AvatarDecorationService.prototype), { config }) as AvatarDecorationService;
 	const icons = Object.assign(Object.create(ChatRoomIconEntityService.prototype), {
@@ -135,7 +136,7 @@ function createFixture(options: { baseUrl?: string; mirror?: boolean } = {}) {
 		config,
 		redisClient: redis,
 		chatRoomsRepository: {
-			findOneBy: vi.fn(async (where: { uri?: string; id?: string }) => (options.mirror !== false && (where.uri === roomUri || where.id === mirror.id)) ? mirror : null),
+			findOneBy: roomsFindOneBy,
 		},
 		chatRoomInviteLinksRepository: { findOneBy: vi.fn(async () => null) },
 		chatRoomInvitationsRepository: { existsBy: vi.fn(async () => false) },
@@ -160,7 +161,7 @@ function createFixture(options: { baseUrl?: string; mirror?: boolean } = {}) {
 		id: 'https://a.example/activities/reject',
 	});
 
-	return { service, redis, deliver, publishMainStream, membership, joinToRoom, isRoomMember, signedGetJson, isRefusedRemoteHost, mirror, sentJoins, reject };
+	return { service, redis, deliver, publishMainStream, membership, joinToRoom, isRoomMember, signedGetJson, isRefusedRemoteHost, roomsFindOneBy, mirror, sentJoins, reject };
 }
 
 describe('사본 서버의 참여 요청', () => {
@@ -226,6 +227,20 @@ describe('사본 서버의 참여 요청', () => {
 
 		await expect(service.join(user, inviteUrl)).rejects.toBeInstanceOf(ChatInviteRemoteUnavailableError);
 		expect(deliver).not.toHaveBeenCalled();
+	});
+
+	test.each([
+		['그룹 URI 끝의 NUL', previewDoc({ object: { id: `${roomUri}\u0000`, type: 'Group', name: '모임', summary: '', _misskey_chatArchived: false, _misskey_chatRoomMembersCount: 3 } })],
+		['그룹 URI 앞의 NUL', previewDoc({ object: { id: `\u0000${roomUri}`, type: 'Group', name: '모임', summary: '', _misskey_chatArchived: false, _misskey_chatRoomMembersCount: 3 } })],
+		['받은편지함 끝의 NUL', previewDoc({ endpoints: { sharedInbox: 'https://a.example/inbox\u0000' } })],
+	])('미리보기에 %s이 있으면 거절하고 그룹 조회·의사 기록·Join 전송을 하지 않는다', async (_, doc) => {
+		const { service, signedGetJson, deliver, roomsFindOneBy } = createFixture();
+		signedGetJson.mockResolvedValueOnce(doc);
+
+		await expect(service.join(user, inviteUrl)).rejects.toBeInstanceOf(ChatInviteRemoteUnavailableError);
+		expect(roomsFindOneBy).not.toHaveBeenCalled();
+		expect(deliver).not.toHaveBeenCalled();
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'none', roomId: null, reason: null, membersCount: null });
 	});
 
 	test('연합을 거부한 서버에는 미리보기 조회도 하지 않는다', async () => {
@@ -493,6 +508,8 @@ describe('그룹 서버가 받은 Join', () => {
 		['다른 actor', { ...join, actor: 'https://b.example/users/u2' }],
 		['다른 서버의 초대 주소', { ...join, object: `https://c.example/chat/invite/${code}` }],
 		['초대 주소가 아님', { ...join, object: 'https://a.example/chat/rooms/room1' }],
+		['Join id 끝의 NUL', { ...join, id: 'https://b.example/activities/join1\u0000' }],
+		['Join id의 짝 없는 surrogate', { ...join, id: 'https://b.example/activities/join1\ud800' }],
 	])('%s이면 아무것도 보내지 않는다', async (_, activity) => {
 		const { service, deliver } = createFixture({ baseUrl: 'https://a.example' });
 

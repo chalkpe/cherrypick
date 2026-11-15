@@ -64,7 +64,7 @@ function fixture() {
 		return (inbox as any).update(actor, { type: 'Update', actor: actor.uri, object: { type: 'Group', id: uri, ...object } }, { resolve: async (value: unknown) => value });
 	}
 
-	return { state, catalog, resolveImage, update };
+	return { state, catalog, resolveImage, stateService, update };
 }
 
 describe('그룹 아이콘 수신', () => {
@@ -89,6 +89,22 @@ describe('그룹 아이콘 수신', () => {
 
 		expect(f.state.iconId).toBeNull();
 		expect(f.state.iconDecorations).toEqual([]);
+	});
+
+	test('저장할 수 없는 아이콘 주소는 조회에 쓰지 않고 함께 온 이름·판번호만 적용한다', async () => {
+		const f = fixture();
+		// PostgreSQL은 NUL이 든 문자열 바인딩을 거부한다. 실제 조회처럼 예외를 내는 대역으로 경계를 확인한다.
+		(f.stateService as any).apImageService.findStoredImage = async (_actor: unknown, value: { url?: unknown }) => {
+			if (typeof value.url === 'string' && (value.url.includes('\u0000') || !value.url.isWellFormed())) throw new Error('invalid byte sequence for encoding "UTF8": 0x00');
+			return null;
+		};
+
+		await f.update({ name: 'renamed', updated: newDate, icon: { type: 'Image', url: 'https://remote.example/icon\u0000.png' } });
+
+		expect(f.state.name).toBe('renamed');
+		expect(f.state.lastRemoteUpdatedAt?.toISOString()).toBe(newDate);
+		expect(f.state.iconId).toBe('initial');
+		expect(f.resolveImage).not.toHaveBeenCalled();
 	});
 
 	test('이미지가 늦게 도착한 옛 상태가 최신 장식 주소를 되돌리지 않는다', async () => {
