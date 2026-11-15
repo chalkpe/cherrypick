@@ -35,6 +35,9 @@ test.runIf(pr49Host == null)('section structure and order reach the member serve
 	const owner = await createAccount('a.test');
 	const member = await createAccount('b.test');
 	const { roomId, mirrorId } = await joinedRoom(owner, member);
+	// 전환이 만든 기본 채널도 배치에 정확히 한 번 포함해야 한다.
+	const [general] = await owner.client.request('chat/rooms/channels/list', { roomId });
+	strictEqual(general.name, 'general');
 	const names = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
 	const channels = [];
 	for (const name of names) channels.push(await owner.client.request('chat/rooms/channels/create', { roomId, name }));
@@ -42,7 +45,7 @@ test.runIf(pr49Host == null)('section structure and order reach the member serve
 	const sectionB = await owner.client.request('chat/rooms/sections/create', { roomId, name: crypto.randomUUID() });
 	await owner.client.request('chat/rooms/channels/arrange', {
 		roomId,
-		ungrouped: [],
+		ungrouped: [general.id],
 		sections: [
 			{ sectionId: sectionB.id, channelIds: [channels[2].id] },
 			{ sectionId: sectionA.id, channelIds: [channels[0].id, channels[1].id] },
@@ -55,8 +58,8 @@ test.runIf(pr49Host == null)('section structure and order reach the member serve
 	}, WAIT_FOR_SLOW_FEDERATION);
 	const memberSections = await member.client.request('chat/rooms/sections/list', { roomId: mirrorId });
 	const memberChannels = await member.client.request('chat/rooms/channels/list', { roomId: mirrorId });
-	deepStrictEqual(memberChannels.map(channel => channel.name), [names[2], names[0], names[1]]);
-	deepStrictEqual(memberChannels.map(channel => channel.sectionId), [memberSections[0].id, memberSections[1].id, memberSections[1].id]);
+	deepStrictEqual(memberChannels.map(channel => channel.name), [general.name, names[2], names[0], names[1]]);
+	deepStrictEqual(memberChannels.map(channel => channel.sectionId), [null, memberSections[0].id, memberSections[1].id, memberSections[1].id]);
 
 	const renamed = crypto.randomUUID();
 	await owner.client.request('chat/rooms/sections/update', { sectionId: sectionA.id, name: renamed });
@@ -70,8 +73,8 @@ test.runIf(pr49Host == null)('section structure and order reach the member serve
 		const sections = await member.client.request('chat/rooms/sections/list', { roomId: mirrorId });
 		deepStrictEqual(sections.map(section => section.name), [renamed]);
 		const list = await member.client.request('chat/rooms/channels/list', { roomId: mirrorId });
-		deepStrictEqual(list.map(channel => channel.name), [names[2], names[0], names[1]]);
-		deepStrictEqual(list.map(channel => channel.sectionId), [null, sections[0].id, sections[0].id]);
+		deepStrictEqual(list.map(channel => channel.name), [general.name, names[2], names[0], names[1]]);
+		deepStrictEqual(list.map(channel => channel.sectionId), [null, null, sections[0].id, sections[0].id]);
 	}, WAIT_FOR_SLOW_FEDERATION);
 
 	await owner.client.request('chat/rooms/channels/delete', { channelId: channels[0].id });
@@ -79,8 +82,8 @@ test.runIf(pr49Host == null)('section structure and order reach the member serve
 		const sections = await member.client.request('chat/rooms/sections/list', { roomId: mirrorId });
 		deepStrictEqual(sections.map(section => section.name), [renamed]);
 		const list = await member.client.request('chat/rooms/channels/list', { roomId: mirrorId });
-		deepStrictEqual(list.map(channel => channel.name), [names[2], names[1]]);
-		deepStrictEqual(list.map(channel => channel.sectionId), [null, sections[0].id]);
+		deepStrictEqual(list.map(channel => channel.name), [general.name, names[2], names[1]]);
+		deepStrictEqual(list.map(channel => channel.sectionId), [null, null, sections[0].id]);
 	}, WAIT_FOR_SLOW_FEDERATION);
 }, 180_000);
 
@@ -88,17 +91,20 @@ test.runIf(pr49Host === 'b.test')('a server without section support sees the sam
 	const owner = await createAccount('a.test');
 	const member = await createAccount('b.test');
 	const { roomId, mirrorId } = await joinedRoom(owner, member);
+	// 전환이 만든 기본 채널도 배치에 정확히 한 번 포함해야 한다.
+	const [general] = await owner.client.request('chat/rooms/channels/list', { roomId });
+	strictEqual(general.name, 'general');
 	const names = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
 	const channels = [];
 	for (const name of names) channels.push(await owner.client.request('chat/rooms/channels/create', { roomId, name }));
 	const section = await owner.client.request('chat/rooms/sections/create', { roomId, name: crypto.randomUUID() });
 	await owner.client.request('chat/rooms/channels/arrange', {
 		roomId,
-		ungrouped: [channels[0].id],
+		ungrouped: [general.id, channels[0].id],
 		sections: [{ sectionId: section.id, channelIds: [channels[2].id, channels[1].id] }],
 	});
 	const ownerOrder = await channelNames(owner, roomId);
-	deepStrictEqual(ownerOrder, [names[0], names[2], names[1]]);
+	deepStrictEqual(ownerOrder, [general.name, names[0], names[2], names[1]]);
 
 	await vi.waitFor(async () => {
 		deepStrictEqual(await channelNames(member, mirrorId), ownerOrder);
