@@ -377,6 +377,26 @@ test('boot adopts an already-connected stream', async () => {
 	expect(t.chatUnreadSubscriptionGap()).toBe(false);
 });
 
+// 부팅이 늦어 추적기 등록 전에 대화 화면의 보호 확인이 먼저 끝난 경우. 등록 전 확인은 등록 직전까지의
+// 이벤트 유실을 덮지 못하므로, 등록은 새 신뢰 구간의 시작이고 공백을 다시 남겨 첫 보호 확인의 의무를 유지한다
+test('registration after a pre-registration check keeps the boot gap', async () => {
+	const t = await boot({ realtimeMode: false, streamState: 'connected' });
+
+	const before = t.beginChatUnreadRecheck();
+	expect(before.issue).toBe(true);
+	expect(t.chatUnreadSubscriptionGap()).toBe(false);
+
+	t.initChatUnreadSubscription(t.stream as unknown as Misskey.IStream);
+
+	expect(t.chatUnreadEventsActive()).toBe(true);
+	expect(t.chatUnreadSubscriptionGap()).toBe(true);
+
+	const first = t.beginChatUnreadRecheck();
+	expect(first.issue).toBe(true);
+	expect(first.failToken).not.toBeNull();
+	expect(t.chatUnreadSubscriptionGap()).toBe(false);
+});
+
 test('boot with a connecting stream keeps the disconnected semantics', async () => {
 	const t = await boot({ streamState: 'reconnecting' });
 
