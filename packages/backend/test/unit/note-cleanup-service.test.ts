@@ -577,19 +577,25 @@ test('남기기 참조 오류는 실제 처리 서비스의 모든 삭제를 막
 	expect(rows.MiNote).toHaveLength(1);
 });
 
-test('다른 처리가 잠금을 가진 경우 새 판정을 시작하지 않고 DB 연결을 반환한다', async () => {
-	const { service, lock } = fixture();
+test('잠금을 가진 동안 읽기는 성공하고 쓰기·정리 요청은 혼잡으로 실패한다', async () => {
+	const { rows, service, lock, input } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: false, lastError: null });
 	lock.available = false;
-	await expect(service.list('alice')).rejects.toThrow('CLEANUP_BUSY');
-	expect(lock.released).toBe(1);
+	// 목록·미리 보기는 처음 기본 규칙을 만들 때만 잠금을 쓰므로 진행 중인 정리와 겹쳐도 읽을 수 있다.
+	await expect(service.list('alice')).resolves.toBeDefined();
+	await expect(service.preview('alice', ['delete'])).resolves.toBeDefined();
+	// 저장·정리 요청은 여전히 사용자 잠금을 쓰므로 혼잡으로 실패하고 연결을 반환한다.
+	await expect(service.save('alice', input)).rejects.toThrow('CLEANUP_BUSY');
+	await expect(service.request('alice', ['delete'])).rejects.toThrow('CLEANUP_BUSY');
+	expect(lock.released).toBe(2);
 });
 
 test('createQueryRunner 실패는 잠금 카운터를 새지 않아 이후 정리가 계속 가능하다', async () => {
 	const { service, faults } = fixture();
 	faults.createQueryRunner = true;
-	for (let i = 0; i < 6; i++) await expect(service.list('alice')).rejects.toThrow('runner unavailable');
+	for (let i = 0; i < 6; i++) await expect(service.updateSettings('alice', true)).rejects.toThrow('runner unavailable');
 	faults.createQueryRunner = false;
-	await expect(service.list('alice')).resolves.toBeDefined();
+	await expect(service.updateSettings('alice', true)).resolves.toBeDefined();
 });
 
 // === 수동 요청 ===
@@ -1008,14 +1014,15 @@ import UpdateSettingsEndpoint, { meta as updateSettingsMeta, paramDef as updateS
 
 const noteEntityService = { packMany: async (notes: unknown[]) => notes };
 
-for (const [EndpointClass, meta, params] of [
-	[CreateEndpoint, createMeta, { name: '정리', action: 'delete', condition: { type: 'age', operator: 'gt', seconds: 60 } }],
-	[UpdateEndpoint, updateMeta, { ruleId: 'rule', action: 'delete', condition: { type: 'age', operator: 'gt', seconds: 60 } }],
-	[DeleteEndpoint, deleteMeta, { ruleId: 'rule' }], [ListEndpoint, listMeta, {}],
-	[PreviewEndpoint, previewMeta, { ruleIds: ['rule'] }], [RequestEndpoint, requestMeta, { ruleIds: ['rule'] }],
-	[UpdateSettingsEndpoint, updateSettingsMeta, { keepDriveFiles: false }],
+for (const [EndpointClass, meta, params, isRead] of [
+	[CreateEndpoint, createMeta, { name: '정리', action: 'delete', condition: { type: 'age', operator: 'gt', seconds: 60 } }, false],
+	[UpdateEndpoint, updateMeta, { ruleId: 'rule', action: 'delete', condition: { type: 'age', operator: 'gt', seconds: 60 } }, false],
+	[DeleteEndpoint, deleteMeta, { ruleId: 'rule' }, false], [ListEndpoint, listMeta, {}, true],
+	[PreviewEndpoint, previewMeta, { ruleIds: ['rule'] }, true], [RequestEndpoint, requestMeta, { ruleIds: ['rule'] }, false],
+	[UpdateSettingsEndpoint, updateSettingsMeta, { keepDriveFiles: false }, false],
 ] as const) {
-	test(`${meta.errors.invalidCleanup.id}: 실제 endpoint 잠금 충돌은 503 서버 혼잡이다`, async () => {
+	// 읽기 경로(목록·미리 보기)는 잠금을 잡지 않으므로 잠금 충돌 혼잡 시험에서 제외한다.
+	if (!isRead) test(`${meta.errors.invalidCleanup.id}: 실제 endpoint 잠금 충돌은 503 서버 혼잡이다`, async () => {
 		const { service, lock } = fixture();
 		lock.available = false;
 		const endpoint = new (EndpointClass as any)(service, noteEntityService);

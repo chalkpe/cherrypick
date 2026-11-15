@@ -92,6 +92,16 @@ export class NoteCleanupService {
 		} finally { await runner.release(); }
 	}
 
+	// 목록·미리 보기 같은 읽기 경로는 처음 기본 규칙을 만들어야 할 때만 사용자 잠금을 쓴다.
+	// 자동 정리 회차나 정리 요청이 잠금을 잡은 동안에도 읽기 화면은 혼잡으로 실패하지 않는다.
+	private async readInitialized<T>(userId: string, work: () => Promise<T>): Promise<T> {
+		if (await this.states.existsBy({ userId })) return work();
+		return this.locked(userId, async () => {
+			await this.initialize(userId);
+			return work();
+		});
+	}
+
 	// 기존 로컬 계정의 상태는 마이그레이션이 모두 만들었으므로, 상태가 없는 계정은 어떤 API를 먼저 불렀든 신규 계정이다.
 	private async initialize(userId: string) {
 		if (await this.states.existsBy({ userId })) return;
@@ -186,8 +196,7 @@ export class NoteCleanupService {
 	}
 
 	public async list(userId: string) {
-		return this.locked(userId, async () => {
-			await this.initialize(userId);
+		return this.readInitialized(userId, async () => {
 			const rules = await this.rules.find({ where: { userId }, order: { id: 'ASC' } });
 			const prepared = await this.prepare(rules.filter(r => r.enabled), userId);
 			for (const item of prepared) await this.notifyProtectionFailure(userId, item.rule.id);
@@ -391,8 +400,7 @@ export class NoteCleanupService {
 
 	// 미리 보기는 지워질 노트만 돌려준다. 판정은 실제 정리와 같은 규칙을 쓴다. 꺼 둔 규칙도 편집 중 미리 볼 수 있다.
 	public async preview(userId: string, ruleIds: string[], afterId?: string, limit = 100) {
-		return this.locked(userId, async () => {
-			await this.initialize(userId);
+		return this.readInitialized(userId, async () => {
 			const { all, notes, items, nextCursor, complete, errors } = await this.page(userId, ruleIds, afterId, limit, true);
 			return { notes: notes.filter((_, i) => items[i].decision === 'delete'), nextCursor, complete, errors, rules: all.map(r => ({ id: r.id, name: r.name, defaultName: r.defaultName, action: r.action })) };
 		});
