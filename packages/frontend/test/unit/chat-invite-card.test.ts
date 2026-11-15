@@ -324,11 +324,38 @@ describe('초대 카드', () => {
 
 		await fireEvent.click(await joinButton());
 		await screen.findByText(t().pending);
-		emitJoinResult({ url: REMOTE.url, status: 'joined', roomId: 'r9', reason: null });
+		vi.useFakeTimers({ toFake: ['setTimeout'] });
+		try {
+			emitJoinResult({ url: REMOTE.url, status: 'joined', roomId: 'r9', reason: null });
+			for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1500);
+		} finally {
+			vi.useRealTimers();
+		}
 
-		await screen.findByText(i18n.tsx._chat._inviteLink.membersCount({ n: 4 }), { exact: false }, { timeout: 8000 });
+		await screen.findByText(i18n.tsx._chat._inviteLink.membersCount({ n: 4 }), { exact: false });
 		expect(requestsTo('chat/invite-link/join-status').filter(request => request.body.withMembersCount === true)).toHaveLength(3);
-	}, 15000);
+	});
+
+	test('나갔다가 같은 링크로 다시 참여하면 첫 참여의 인원 수가 아니라 새 값을 받는다', async () => {
+		let joined = false;
+		let count = 8;
+		mocks.handlers.set('chat/invite-link/join', () => { joined = true; return json({ status: 'joined', roomId: 'r1' }); });
+		mocks.handlers.set('chat/invite-link/join-status', body => joined
+			? json({ status: 'joined', roomId: 'r1', reason: null, membersCount: body.withMembersCount === true ? count : null })
+			: json({ status: 'none', roomId: null, reason: null, membersCount: null }));
+		renderCard(LOCAL);
+		await fireEvent.click(await joinButton());
+		await screen.findByText(i18n.tsx._chat._inviteLink.membersCount({ n: 8 }), { exact: false });
+
+		// 나간 뒤 다른 사람이 참여해 인원 수가 달라지고, 카드가 다시 붙는다
+		cleanup();
+		joined = false;
+		count = 11;
+		renderCard(LOCAL);
+		await fireEvent.click(await joinButton());
+
+		await screen.findByText(i18n.tsx._chat._inviteLink.membersCount({ n: 11 }), { exact: false });
+	});
 
 	test('이미 멤버인 카드는 열 때 인원 수를 따로 묻지 않고 캐시된 값을 그대로 둔다', async () => {
 		mocks.handlers.set('chat/invite-link/join-status', () => json({ status: 'joined', roomId: 'r1', reason: null, membersCount: null }));

@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, test } from 'vitest';
-import { CHAT_RECEIVED_MAX_AGE_MS, CHAT_RECEIVED_MAX_SKEW_MS, chatReceivedTime } from '@/misc/chat-received-time.js';
+import { CHAT_RECEIVED_MAX_AGE_MS, chatReceivedTime } from '@/misc/chat-received-time.js';
 
 const now = Date.parse('2026-11-15T00:00:00.000Z');
 
@@ -20,8 +20,9 @@ describe('받은 글의 정렬 시각', () => {
 		expect(chatReceivedTime(new Date(NaN), now)).toBe(now);
 	});
 
-	test('먼 미래의 쓴 시각은 시계 차이 허용 폭까지만 쓴다', () => {
-		expect(chatReceivedTime(new Date(now + 10 * 365 * 24 * 3600 * 1000), now)).toBe(now + CHAT_RECEIVED_MAX_SKEW_MS);
+	test('미래의 쓴 시각은 도착 시각을 쓴다', () => {
+		expect(chatReceivedTime(new Date(now + 1), now)).toBe(now);
+		expect(chatReceivedTime(new Date(now + 10 * 365 * 24 * 3600 * 1000), now)).toBe(now);
 	});
 
 	test('비정상적으로 먼 과거의 쓴 시각은 허용 기간까지만 쓴다', () => {

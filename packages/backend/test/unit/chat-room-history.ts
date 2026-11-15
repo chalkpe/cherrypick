@@ -240,6 +240,23 @@ describe('그룹 과거 기록의 저장과 조회', () => {
 			expect(await redisClient.sismember(`newChatMessagesExists:${owner.id}`, `room:${room.id}`)).toBe(0);
 		});
 
+		test('같은 시각의 다른 글과 ID가 겹치면 도착 시각 ID로 저장하고 같은 글은 한 번만 저장한다', async () => {
+			const { room } = await mirrorRoom();
+			const taken = await insertMessage(room, member);
+			const service = historyService();
+			const input = importInput(room);
+			const gen = vi.spyOn(idService, 'gen').mockReturnValueOnce(taken);
+
+			const stored = await service.importMessage(room, input);
+			gen.mockRestore();
+
+			expect(stored).not.toBeNull();
+			expect(stored!.id).not.toBe(taken);
+			expect(stored!.uri).toBe(copyUriOf(room.id, input.sourceUri));
+			expect(await service.importMessage(room, input)).toBeNull();
+			expect(await chatMessagesRepository.countBy({ toRoomId: room.id })).toBe(2);
+		});
+
 		test('이미 있는 글과 삭제 표시는 소유 서버가 다른 내용을 내줘도 바꾸거나 되살리지 않는다', async () => {
 			const { room } = await mirrorRoom();
 			const uri = 'https://member.test/chat/messages/kept';

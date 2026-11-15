@@ -309,6 +309,37 @@ test('가져온 기록이 한 페이지보다 많아도 열린 범위까지 이�
 	}
 });
 
+test('화면의 가장 오래된 글보다 앞에 놓이는 글이 실시간으로 도착해도 더 불러오기가 빠짐없이 이어진다', async () => {
+	const all = Array.from({ length: 45 }, (_, i) => message(`e${String(45 - i).padStart(2, '0')}`, 'alice', (45 - i) * MINUTE));
+	vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+		if (endpoint === 'chat/messages/room-timeline') {
+			const { untilId = null, limit = 20 } = (params ?? {}) as { untilId?: string | null; limit?: number };
+			return all.filter(m => untilId == null || m.id < untilId).slice(0, limit) as never;
+		}
+		return apiMock(endpoint, params);
+	});
+	try {
+		const { container } = await renderRoom();
+		const more = () => [...container.querySelectorAll('button')].find(button => button.textContent.includes(i18n.ts.loadMore));
+
+		// 첫 화면에 없는 구간(e05와 e06 사이)에 쓴 글이 뒤늦게 도착한다
+		mocks.channel.emit('message', message('e05b', 'alice', 5 * MINUTE + 1000));
+		await flush();
+		await flush();
+		for (let i = 0; i < 5 && more() != null; i++) {
+			await fireEvent.click(more()!);
+			await flush();
+			await flush();
+		}
+
+		const shown = [...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'));
+		expect(shown).toEqual([...all.map(m => m.id), 'e05b'].toSorted());
+		expect(more()).toBeUndefined();
+	} finally {
+		vi.mocked(misskeyApi).mockImplementation(apiMock);
+	}
+});
+
 describe('following the newest message', () => {
 	const FULL_PAGE = 20;
 
