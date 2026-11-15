@@ -195,3 +195,25 @@ test('keeps channel notification options in sync with the parent management list
 	await view.rerender({ channels: [{ id: 'new', roomId: 'r1', name: 'Added' }] });
 	expect(screen.queryByRole('combobox', { name: '#Renamed' })).toBeNull();
 });
+
+test('그룹장 화면은 구분선으로 나눈 구역 순서로 보관과 삭제를 맨 아래에 둔다', async () => {
+	mocks.api.mockResolvedValue(null);
+	const { container } = render(XInfo, { props: { room: { ...room, notificationLevel: 'all' } }, global: { stubs } });
+	await nextTick();
+	const root = container.firstElementChild as HTMLElement;
+	expect([...root.querySelectorAll(':scope > hr')]).toHaveLength(4);
+	const order = (node: Element) => [...root.children].findIndex(child => child === node || child.contains(node));
+	const notification = order(screen.getByRole('combobox', { name: i18n.ts.notificationSetting }));
+	const archive = order(screen.getByRole('button', { name: i18n.ts.archive }));
+	const remove = order(screen.getByRole('button', { name: i18n.ts._chat.deleteRoom }));
+	const lastSeparator = [...root.children].map(child => child.tagName).lastIndexOf('HR');
+	expect(notification).toBeLessThan(lastSeparator);
+	expect(lastSeparator).toBeLessThan(archive);
+	expect(archive).toBeLessThan(remove);
+});
+
+test('멤버 화면은 정보와 알림 두 구역만 구분선으로 나눈다', () => {
+	const { container } = render(XInfo, { props: { room: { ...room, ownerId: 'someone-else', notificationLevel: 'all' } }, global: { stubs } });
+	expect(container.querySelectorAll('hr')).toHaveLength(1);
+	expect(screen.queryByRole('button', { name: i18n.ts._chat.deleteRoom })).toBeNull();
+});

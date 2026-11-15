@@ -30,35 +30,37 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkKeyValue><template #key>{{ i18n.ts.description }}</template><template #value><Mfm v-if="room.description" :text="room.description" :author="room.owner"/><template v-else>{{ i18n.ts.noDescription }}</template></template></MkKeyValue>
 	</template>
 
-	<XChannelManagement :room="room" :channels="channels" @updated="emit('updated', $event)" @channelsUpdated="emit('channelsUpdated')"/>
+	<template v-if="isOwner">
+		<hr>
+
+		<XChannelManagement :room="room" :channels="channels" @updated="emit('updated', $event)" @channelsUpdated="emit('channelsUpdated')"/>
+
+		<hr>
+
+		<!-- 활성 초대 링크는 하나뿐이다. 발급과 폐기는 서로 다른 동작이며 자동으로 바꾸거나 다시 발급하지 않는다 -->
+		<div class="_gaps_s">
+			<MkKeyValue>
+				<template #key>{{ i18n.ts._chat._inviteLink.title }}</template>
+				<template #value>
+					<MkEllipsis v-if="inviteLink === undefined && inviteLinkError == null"/>
+					<template v-else-if="inviteLinkError != null">{{ inviteLinkError }}</template>
+					<span v-else-if="inviteLink != null" :class="$style.inviteLinkUrl">{{ inviteLink.url }}</span>
+					<template v-else>{{ i18n.ts._chat._inviteLink.none }}</template>
+				</template>
+			</MkKeyValue>
+			<div class="_buttons">
+				<template v-if="inviteLink != null">
+					<MkButton @click="copyInviteLink"><i class="ti ti-copy"></i> {{ i18n.ts.copyLink }}</MkButton>
+					<MkButton danger :disabled="room.isArchived || inviteLinkBusy" @click="revokeInviteLink"><i class="ti ti-link-off"></i> {{ i18n.ts._chat._inviteLink.revoke }}</MkButton>
+				</template>
+				<MkButton v-else-if="inviteLink === null" primary :disabled="room.isArchived || inviteLinkBusy" @click="createInviteLink"><i class="ti ti-link"></i> {{ i18n.ts._chat._inviteLink.create }}</MkButton>
+			</div>
+			<MkInfo v-if="room.isArchived" warn>{{ i18n.ts._chat._inviteLink.archivedNote }}</MkInfo>
+			<MkInfo v-else>{{ i18n.ts._chat._inviteLink.description }}</MkInfo>
+		</div>
+	</template>
 
 	<hr>
-
-	<!-- 활성 초대 링크는 하나뿐이다. 발급과 폐기는 서로 다른 동작이며 자동으로 바꾸거나 다시 발급하지 않는다 -->
-	<div v-if="isOwner" class="_gaps_s">
-		<MkKeyValue>
-			<template #key>{{ i18n.ts._chat._inviteLink.title }}</template>
-			<template #value>
-				<MkEllipsis v-if="inviteLink === undefined && inviteLinkError == null"/>
-				<template v-else-if="inviteLinkError != null">{{ inviteLinkError }}</template>
-				<span v-else-if="inviteLink != null" :class="$style.inviteLinkUrl">{{ inviteLink.url }}</span>
-				<template v-else>{{ i18n.ts._chat._inviteLink.none }}</template>
-			</template>
-		</MkKeyValue>
-		<div class="_buttons">
-			<template v-if="inviteLink != null">
-				<MkButton @click="copyInviteLink"><i class="ti ti-copy"></i> {{ i18n.ts.copyLink }}</MkButton>
-				<MkButton danger :disabled="room.isArchived || inviteLinkBusy" @click="revokeInviteLink"><i class="ti ti-link-off"></i> {{ i18n.ts._chat._inviteLink.revoke }}</MkButton>
-			</template>
-			<MkButton v-else-if="inviteLink === null" primary :disabled="room.isArchived || inviteLinkBusy" @click="createInviteLink"><i class="ti ti-link"></i> {{ i18n.ts._chat._inviteLink.create }}</MkButton>
-		</div>
-		<MkInfo v-if="room.isArchived" warn>{{ i18n.ts._chat._inviteLink.archivedNote }}</MkInfo>
-		<MkInfo v-else>{{ i18n.ts._chat._inviteLink.description }}</MkInfo>
-	</div>
-
-	<MkButton v-if="isOwner" @click="setArchived(!room.isArchived)"><i :class="room.isArchived ? 'ti ti-archive-off' : 'ti ti-archive'"></i> {{ room.isArchived ? i18n.ts.unarchive : i18n.ts.archive }}</MkButton>
-
-	<MkButton v-if="isOwner || ($i.isAdmin || $i.isModerator)" danger @click="del">{{ i18n.ts._chat.deleteRoom }}</MkButton>
 
 	<MkSelect :modelValue="notificationLevel" :items="groupNotificationItems" :disabled="savingNotification" @update:modelValue="setNotificationLevel">
 		<template #label>{{ i18n.ts.notificationSetting }}</template>
@@ -69,6 +71,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</MkSelect>
 	</template>
 	<MkButton @click="readAll"><i class="ti ti-checks"></i> {{ i18n.ts._chat.readAllRoom }}</MkButton>
+
+	<template v-if="isOwner || ($i.isAdmin || $i.isModerator)">
+		<hr>
+
+		<MkButton v-if="isOwner" @click="setArchived(!room.isArchived)"><i :class="room.isArchived ? 'ti ti-archive-off' : 'ti ti-archive'"></i> {{ room.isArchived ? i18n.ts.unarchive : i18n.ts.archive }}</MkButton>
+
+		<MkButton danger @click="del">{{ i18n.ts._chat.deleteRoom }}</MkButton>
+	</template>
 </div>
 </template>
 
