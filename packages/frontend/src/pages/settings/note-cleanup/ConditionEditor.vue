@@ -24,6 +24,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkButton rounded style="margin: 0 auto;" @click="add"><i class="ti ti-plus"></i> {{ i18n.ts._noteCleanup.addCondition }}</MkButton>
 	</div>
 	<ConditionFields v-else :key="condition.type" :condition="condition" @update="emit('change', path, $event, path.join('.'))"/>
+	<MkButton v-if="isRootLeaf" rounded style="margin: 8px auto 0;" @click="wrapAndAdd"><i class="ti ti-plus"></i> {{ i18n.ts._noteCleanup.addCondition }}</MkButton>
 </section>
 </template>
 <script lang="ts" setup>
@@ -62,6 +63,8 @@ const typeOptions = [
 ];
 const typeValue = computed(() => props.condition.type === 'flag' ? `flag:${props.condition.field}` : props.condition.type);
 const draggableChildren = computed(() => childrenOf(props.condition).map(condition => ({ id: conditionId(condition), condition })));
+// 조건이 하나뿐인 최상위 잎에서도 조건 추가 버튼을 보여 준다.
+const isRootLeaf = computed(() => props.path.length === 0 && props.condition.type !== 'all' && props.condition.type !== 'any');
 
 function changeType(value: string) {
 	// 유형을 바꾸면 하위 조건은 새 유형의 기본값으로 다시 시작한다.
@@ -72,6 +75,12 @@ function changeType(value: string) {
 function add() {
 	if (props.condition.type !== 'all' && props.condition.type !== 'any') return;
 	emit('change', props.path, { ...props.condition, children: [...props.condition.children, createCondition('keyword')] });
+}
+
+// 최상위 잎 조건을 모두 충족 묶음으로 감싸고 두 번째 조건을 더한다. 묶음 종류는 나중에 바꿀 수 있다.
+function wrapAndAdd() {
+	if (!isRootLeaf.value) return;
+	emit('change', props.path, { type: 'all', children: [props.condition, createCondition('keyword')] });
 }
 
 function reorder(items: { id: string; condition: Condition }[]) {

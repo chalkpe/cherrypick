@@ -105,6 +105,26 @@ test('keyword fields accept multiple lines and regex lives in the advanced folde
 	expect(onUpdate).toHaveBeenCalledWith({ type: 'keyword', mode: 'regex', value: '', flags: '', targets: ['text'] });
 });
 
+test('keyword search targets use the existing content-warning notation instead of raw CW', async () => {
+	const view = render(ConditionFields, { props: { condition: { type: 'keyword', mode: 'literal', value: '', flags: '', targets: ['text'] }, onUpdate: vi.fn() } });
+	expect(view.getByText('Hide content')).toBeTruthy();
+	expect(view.queryByText('CW')).toBeNull();
+});
+
+test('a single root condition offers an add button that wraps it into an all group with a second condition', async () => {
+	const onChange = vi.fn();
+	const condition: Condition = { type: 'keyword', mode: 'literal', value: '사과', flags: '', targets: ['text'] };
+	const view = render(ConditionEditor, { props: { condition, path: [], onChange } });
+	await fireEvent.click(view.getByRole('button', { name: 'Add condition' }));
+	expect(onChange).toHaveBeenCalledWith([], { type: 'all', children: [condition, { type: 'keyword', mode: 'literal', value: '', flags: '', targets: ['text', 'cw', 'poll'] }] });
+});
+
+test('a leaf inside a group does not render its own add button', async () => {
+	const condition: Condition = { type: 'all', children: [{ type: 'keyword', mode: 'literal', value: '사과', flags: '', targets: ['text'] }] };
+	const view = render(ConditionEditor, { props: { condition, path: [], onChange: vi.fn() } });
+	expect(view.getAllByRole('button', { name: 'Add condition' })).toHaveLength(1);
+});
+
 // 해시태그 입력은 원문 그대로 내보내고 어떤 조건도 입력값 요약 줄을 만들지 않는다.
 test.each([['tag'], ['#tag'], ['##tag']])('hashtag input keeps the raw value %s without a summary line', async value => {
 	const onUpdate = vi.fn();

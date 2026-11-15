@@ -19,7 +19,7 @@ export const conditionNames: Record<Condition['type'], string> = {
 	channel: i18n.ts._noteCleanup.channel, clip: i18n.ts._noteCleanup.clip, hashtag: i18n.ts._noteCleanup.hashtag,
 };
 export const targetNames = {
-	text: i18n.ts._noteCleanup.text, cw: i18n.ts._noteCleanup.cw, poll: i18n.ts._noteCleanup.poll,
+	text: i18n.ts._noteCleanup.text, cw: i18n.ts.useCw, poll: i18n.ts._noteCleanup.poll,
 	fileComment: i18n.ts._noteCleanup.fileComment, fileName: i18n.ts._noteCleanup.fileName,
 };
 // 조건 입력란과 같은 기준으로 나누어떨어지는 가장 큰 단위를 고르며, 저장된 초 값은 반올림하지 않는다.
