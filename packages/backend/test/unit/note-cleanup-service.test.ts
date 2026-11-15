@@ -1349,3 +1349,60 @@ test('버퍼 델타를 더한 반응 수 합이 범위를 넘으면 판정하지
 	expect(rows.MiNote.map(n => n.id)).toEqual(['0']);
 	expect(drive.logs.some(args => (args[1] as { noteId?: string })?.noteId === '0')).toBe(true);
 });
+
+test('원시 값으로 바꿀 수 없는 손상 반응 값 노트는 남기고 정리를 계속한다', async () => {
+	const { rows, service, input, drive } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '반응 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 100 }, lastError: null, legacy: null });
+	rows.MiNote.push({ ...note('0'), reactions: { '👍': { toString: null } } }, { ...note('1') });
+
+	const result = await service.processUser('alice');
+
+	expect(result.deleted).toBe(1);
+	expect(result.complete).toBe(true);
+	expect(rows.MiNote.map(n => n.id)).toEqual(['0']);
+	expect(drive.logs.some(args => (args[1] as { noteId?: string })?.noteId === '0')).toBe(true);
+});
+
+test('수동 요청도 원시 값으로 바꿀 수 없는 손상 반응 값 노트를 남기고 완료한다', async () => {
+	const { rows, service, input, drive } = fixture();
+	rows.Rule.push({ id: 'keep', userId: 'alice', name: '반응 보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'count', field: 'reactions', operator: 'gte', value: 100 }, lastError: null, legacy: null });
+	const { rule } = await service.save('alice', input);
+	rows.MiNote.push({ ...note('0'), reactions: { '👍': { toString: null } } }, { ...note('1') });
+	await service.request('alice', [rule.id]);
+
+	const result = await service.continueManual('alice');
+
+	expect(result.deleted).toBe(1);
+	expect(result.complete).toBe(true);
+	expect(rows.State[0].manualRequest).toBeNull();
+	expect(rows.MiNote.map(n => n.id)).toEqual(['0']);
+	expect(drive.logs.some(args => (args[1] as { noteId?: string })?.noteId === '0')).toBe(true);
+});
+
+test('미리 보기는 원시 값으로 바꿀 수 없는 손상 반응 값 노트를 건너뛰고 나머지 후보를 돌려준다', async () => {
+	const { rows, service, input } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: false, lastError: null });
+	rows.MiNote.push({ ...note('0'), reactions: { '👍': { toString: null } } }, { ...note('1') });
+
+	const preview = await service.preview('alice', ['delete']);
+
+	expect(preview.notes.map(n => n.id)).toEqual(['1']);
+	expect(preview.nextCursor).toBe('1');
+	expect(preview.complete).toBe(true);
+});
+
+test('다른 반응 키의 버퍼 델타가 있어도 원시 값으로 바꿀 수 없는 손상 반응 값 노트는 남긴다', async () => {
+	const { rows, service, input, drive, meta, buffered } = fixture();
+	meta.enableReactionsBuffering = true;
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.MiNote.push({ ...note('0'), reactions: { '👍': { toString: null } } }, { ...note('1') });
+	buffered.set('0', { deltas: { '❤️': 1 }, pairs: [] });
+
+	const result = await service.processUser('alice');
+
+	expect(result.deleted).toBe(1);
+	expect(result.complete).toBe(true);
+	expect(rows.MiNote.map(n => n.id)).toEqual(['0']);
+	expect(drive.logs.some(args => (args[1] as { noteId?: string })?.noteId === '0')).toBe(true);
+});

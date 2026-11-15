@@ -339,9 +339,15 @@ export class NoteCleanupService {
 		const undecidable = new Set<string>();
 		const reactionCounts = new Map(notes.map(note => {
 			const merged = this.reactionsBufferingService.mergeReactions(note.reactions, bufferedReactions.get(note.id)?.deltas ?? {});
-			const total = Object.values(merged).reduce((a, b) => a + b, 0);
-			// 개별 반응 수가 안전 정수여도 합계가 넘칠 수 있으므로 합계도 같은 기준으로 검사한다.
-			if (typeof note.reactions !== 'object' || note.reactions === null || Object.values(merged).some(count => !Number.isSafeInteger(count) || count < 0) || !Number.isSafeInteger(total) || total < 0) {
+			const counts = Object.values(merged);
+			// 원시 값으로 바꿀 수 없는 손상 값이 합산에서 묶음 전체를 실패시키지 않도록 개별 값을 먼저 검사한다.
+			if (typeof note.reactions !== 'object' || note.reactions === null || counts.some(count => !Number.isSafeInteger(count) || count < 0)) {
+				undecidable.add(note.id);
+				return [note.id, 0] as const;
+			}
+			// 개별 반응 수가 안전 정수여도 합계가 넘칠 수 있으므로 통과한 값만 합산해 합계도 같은 기준으로 검사한다.
+			const total = counts.reduce((a, b) => a + b, 0);
+			if (!Number.isSafeInteger(total) || total < 0) {
 				undecidable.add(note.id);
 				return [note.id, 0] as const;
 			}
