@@ -57,6 +57,32 @@ async function send(page: Page, text: string) {
 	return { message: await sent.json() as Misskey.entities.ChatMessage, request: sent.request().postDataJSON() };
 }
 
+type SocketTrackingWindow = Window & { __ws: WebSocket[] };
+
+// 생성되는 WebSocket을 추적한다. 오프라인만으로는 기존 소켓이 닫히지 않아 재연결을 만들 수 없다.
+async function trackSockets(page: Page) {
+	await page.addInitScript(() => {
+		const w = window as unknown as SocketTrackingWindow;
+		w.__ws = [];
+		const Native = window.WebSocket;
+		const Wrapped = function (url: string | URL, protocols?: string | string[]) {
+			const ws = new Native(url, protocols);
+			w.__ws.push(ws);
+			return ws;
+		} as unknown as typeof WebSocket;
+		Object.assign(Wrapped, { prototype: Native.prototype, CONNECTING: Native.CONNECTING, OPEN: Native.OPEN, CLOSING: Native.CLOSING, CLOSED: Native.CLOSED });
+		window.WebSocket = Wrapped;
+	});
+}
+
+async function cutStream(page: Page) {
+	await page.context().setOffline(true);
+	await page.evaluate(() => {
+		const w = window as unknown as SocketTrackingWindow;
+		for (const ws of w.__ws) if (ws.readyState <= WebSocket.OPEN) ws.close();
+	});
+}
+
 test.beforeAll(async () => {
 	const fixtureFile = process.env.CHAT_CHANNEL_FIXTURE;
 	if (fixtureFile && existsSync(fixtureFile)) {
@@ -347,6 +373,143 @@ test('members cannot drag channels in the rail or the management screen', async 
 	await page.getByText('About', { exact: true }).click();
 	await expect(page.getByRole('button', { name: 'Create channel' })).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Drag to reorder' })).toHaveCount(0);
+});
+
+test('rail dots blink only for notification targets and the current channel is marked', async ({ page }) => {
+	const room = await createGroup('Evening plans');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const quiet = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	const loud = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'gamma' });
+	await api(base, 'chat/rooms/notifications', { i: owner.token, roomId: room.id, channelId: quiet.id, level: 'mentions' });
+	await api(base, 'chat/rooms/notifications', { i: member.token, roomId: room.id, channelId: quiet.id, level: 'mentions' });
+	await api(base, 'chat/messages/create-to-room', { i: member.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: 'plain update' });
+	await api(base, 'chat/messages/create-to-room', { i: member.token, toRoomId: room.id, toRoomChannelId: loud.id, text: 'another update' });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: 'reply one' });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: loud.id, text: 'reply two' });
+
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	for (const account of [owner, member]) {
+		await login(page, account, 'en-US');
+		await open(page, path(room.id, general.id));
+		const rail = page.getByRole('navigation', { name: 'Channels' });
+		const quietLink = rail.locator(`a[href="${path(room.id, quiet.id)}"]`);
+		const loudLink = rail.locator(`a[href="${path(room.id, loud.id)}"]`);
+		await expect(quietLink.locator('.itemIndicator')).toBeVisible();
+		await expect(quietLink.locator('.itemIndicator')).not.toHaveClass(/_blink/);
+		await expect(loudLink.locator('.itemIndicator')).toHaveClass(/_blink/);
+		await expect(rail.locator(`a[href="${path(room.id, general.id)}"]`)).toHaveAttribute('aria-current', 'page');
+		await expect(quietLink).not.toHaveAttribute('aria-current', 'page');
+		await expect(loudLink).not.toHaveAttribute('aria-current', 'page');
+	}
+});
+
+test('the narrow channel list re-reads unread markers after the stream reconnects', async ({ page }) => {
+	const room = await createGroup('Reconnect markers');
+	const quiet = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	await api(base, 'chat/rooms/notifications', { i: member.token, roomId: room.id, channelId: quiet.id, level: 'mentions' });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: 'plain note' });
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	await login(page, member, 'en-US');
+	await trackSockets(page);
+	await open(page, path(room.id));
+	const list = page.getByRole('navigation', { name: 'Channels' });
+	const quietLink = list.locator(`a[href="${path(room.id, quiet.id)}"]`);
+	await expect(quietLink.locator('.itemIndicator')).toBeVisible();
+	await expect(quietLink.locator('.itemIndicator')).not.toHaveClass(/_blink/);
+
+	// 연결을 끊는 동안 다른 계정의 실제 API로 멘션이 도착한다.
+	await cutStream(page);
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: `ping @${member.username}` });
+	const unreadAfterReconnect = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/unread') && response.request().method() === 'POST', { timeout: 15_000 });
+	await page.context().setOffline(false);
+	await unreadAfterReconnect;
+	await expect(quietLink.locator('.itemIndicator')).toHaveClass(/_blink/);
+});
+
+test('the narrow channel list clears unread markers after the stream reconnects when read elsewhere', async ({ page }) => {
+	const room = await createGroup('Reconnect clear');
+	const loud = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'gamma' });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: loud.id, text: 'news' });
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	await login(page, member, 'en-US');
+	await trackSockets(page);
+	await open(page, path(room.id));
+	const list = page.getByRole('navigation', { name: 'Channels' });
+	const loudLink = list.locator(`a[href="${path(room.id, loud.id)}"]`);
+	await expect(loudLink.locator('.itemIndicator')).toHaveClass(/_blink/);
+
+	// 끊긴 동안 같은 계정이 다른 기기에서 읽는다.
+	await cutStream(page);
+	await api(base, 'chat/rooms/read', { i: member.token, roomId: room.id, channelId: loud.id });
+	const unreadAfterReconnect = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/unread') && response.request().method() === 'POST', { timeout: 15_000 });
+	await page.context().setOffline(false);
+	await unreadAfterReconnect;
+	await expect(loudLink.locator('.itemIndicator')).toHaveCount(0);
+});
+
+test('the wide rail re-reads unread markers after the stream reconnects', async ({ page }) => {
+	const room = await createGroup('Reconnect rail');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const quiet = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	await api(base, 'chat/rooms/notifications', { i: member.token, roomId: room.id, channelId: quiet.id, level: 'mentions' });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: 'plain note' });
+
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	await login(page, member, 'en-US');
+	await trackSockets(page);
+	await open(page, path(room.id, general.id));
+	const rail = page.getByRole('navigation', { name: 'Channels' });
+	const quietLink = rail.locator(`a[href="${path(room.id, quiet.id)}"]`);
+	await expect(quietLink.locator('.itemIndicator')).toBeVisible();
+	await expect(quietLink.locator('.itemIndicator')).not.toHaveClass(/_blink/);
+
+	await cutStream(page);
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: `ping @${member.username}` });
+	const unreadAfterReconnect = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/unread') && response.request().method() === 'POST', { timeout: 15_000 });
+	await page.context().setOffline(false);
+	await unreadAfterReconnect;
+	await expect(quietLink.locator('.itemIndicator')).toHaveClass(/_blink/);
+});
+
+test('long channel names wrap within the rail and the narrow list', async ({ page }) => {
+	const room = await createGroup('Weekend notes');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const longName = 'abcdefghijklmnopqrstuvwxyz'.repeat(5).slice(0, 128);
+	const long = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: longName });
+	const measure = (nav: Locator) => nav.evaluate(navEl => {
+		const container = navEl.closest('aside') ?? navEl;
+		const cr = container.getBoundingClientRect();
+		const items = [...navEl.querySelectorAll('.item')].map(item => {
+			const text = item.querySelector('.text')!;
+			const tr = text.getBoundingClientRect();
+			return { length: text.textContent!.length, height: tr.height, rightOver: +(tr.right - cr.right).toFixed(1) };
+		});
+		return { scrollWidth: container.scrollWidth, clientWidth: container.clientWidth, pageScrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth, items };
+	});
+
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	for (const account of [owner, member]) {
+		await login(page, account, 'en-US');
+		await open(page, path(room.id, general.id));
+		const rail = page.getByRole('navigation', { name: 'Channels' });
+		await expect(rail.locator(`a[href="${path(room.id, long.id)}"]`)).toBeVisible();
+		const wide = await measure(rail);
+		expect(wide.scrollWidth).toBeLessThanOrEqual(wide.clientWidth);
+		const longItem = wide.items.find(item => item.length === 128)!;
+		expect(longItem.rightOver).toBeLessThanOrEqual(0);
+		expect(longItem.height).toBeGreaterThan(30);
+	}
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	await login(page, owner, 'en-US');
+	await open(page, path(room.id));
+	const grid = page.getByRole('navigation', { name: 'Channels' });
+	await expect(grid.locator(`a[href="${path(room.id, long.id)}"]`)).toBeVisible();
+	const narrow = await measure(grid);
+	expect(narrow.pageScrollWidth).toBeLessThanOrEqual(narrow.innerWidth);
+	expect(narrow.items.find(item => item.length === 128)!.height).toBeGreaterThan(30);
 });
 
 test('a newly accepted invitation opens the first channel conversation', async ({ page }) => {

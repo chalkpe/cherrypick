@@ -15,6 +15,7 @@ import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { DriveFileEntityService } from '@/core/entities/DriveFileEntityService.js';
 import { truncate } from '@/misc/truncate.js';
 import { acquireApObjectLock } from '@/misc/distributed-lock.js';
+import { isStorableText } from '@/core/chat-room-channels.js';
 import { isFutureRemoteChatDate, parseRemoteChatDate } from './misc/chat-remote-date.js';
 import { getApId } from './type.js';
 import type { IObject } from './type.js';
@@ -81,6 +82,9 @@ export class ApChatRoomStateService {
 		let icon = object.icon;
 		if (Array.isArray(icon)) icon = icon.find(item => item && typeof item === 'object' && item.url) ?? null;
 		if (icon == null || (typeof icon === 'object' && icon.url == null)) return { iconId: null, iconUrl: null, iconBlurhash: null };
+		// 저장할 수 없는 주소는 조회에 쓰지 않는다. 아이콘 갱신만 무시하고 기존 아이콘은 그대로 둔다(해제와 다르다).
+		const iconUrl = typeof icon === 'string' ? icon : icon.url;
+		if (typeof iconUrl !== 'string' || !isStorableText(iconUrl)) return {};
 		if (!(await this.roleService.getUserPolicies(owner.id)).canUpdateBioMedia) return {};
 		const file = await this.apImageService.findStoredImage(owner, icon) ?? await this.apImageService.resolveImage(owner, icon).catch(() => null);
 		return file != null && file.type.startsWith('image/') ? { iconId: file.id, iconUrl: this.driveFileEntityService.getPublicUrl(file, 'avatar'), iconBlurhash: file.blurhash } : {};

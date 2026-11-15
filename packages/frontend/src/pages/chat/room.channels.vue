@@ -73,7 +73,9 @@ const channels = ref<Misskey.entities.ChatRoomChannel[]>([]);
 const loading = ref(false);
 const failed = ref(false);
 const fetchedUnreadChannelIds = ref<string[]>([]);
+const fetchedNotificationChannelIds = ref<string[]>([]);
 const displayUnreadChannelIds = computed(() => props.unreadChannelIds ?? fetchedUnreadChannelIds.value);
+const displayNotificationChannelIds = computed(() => fetchedNotificationChannelIds.value);
 const showInfo = ref(false);
 const deletingOwnRoom = ref(false);
 const selectedChannel = computed(() => channels.value.find(channel => channel.id === props.channelId && channel.roomId === props.roomId));
@@ -87,6 +89,9 @@ const menuDef = computed<SuperMenuDef[]>(() => [{
 		text: channel.name,
 		active: channel.id === props.channelId,
 		indicated: displayUnreadChannelIds.value.includes(channel.id),
+		// 알림 대상(모두 받기의 미읽음, 멘션만 받기의 멘션)만 깜빡이고 나머지는 정적으로 보여준다.
+		pulsing: displayNotificationChannelIds.value.includes(channel.id),
+		ariaCurrent: channel.id === props.channelId ? 'page' : undefined,
 	})),
 }]);
 let request = 0;
@@ -113,6 +118,7 @@ async function refreshUnread() {
 		const state = await misskeyApi('chat/rooms/unread', { roomId: target });
 		if (version !== unreadRequest || !active || target !== props.roomId) return;
 		fetchedUnreadChannelIds.value = state.unreadChannelIds;
+		fetchedNotificationChannelIds.value = state.notificationChannelIds;
 	} catch {
 		// Preserve the current static display until the next unread or reconnect event.
 	}
@@ -168,10 +174,11 @@ async function refresh() {
 		mainSubscription?.dispose();
 		mainSubscription = useStream().useChannel('main');
 		mainSubscription.on('chatUnread', () => { if (active && target === props.roomId) void refreshUnread(); });
-		mainSubscription.on('_subscribed_', () => { if (active && target === props.roomId) void refreshUnread(); });
 		subscription?.dispose();
 		// 목록을 보는 것만으로는 메시지를 읽지 않는다. read는 대화의 구독에서만 보낸다.
 		subscription = useStream().useChannel('chatRoom', { roomId: target, channelId: channels.value[0]?.id });
+		// 매개변수 있는 이 구독만 재연결 때 구독 확인(_subscribed_)을 받는다. 끊긴 동안 달라진 미읽음·알림 대상을 다시 읽는다.
+		subscription.on('_subscribed_', () => { if (active && target === props.roomId) void refreshUnread(); });
 		subscription.on('channelsUpdated', () => { if (active && target === props.roomId) void refresh(); });
 		subscription.on('roomUpdated', () => { if (active && target === props.roomId) void refresh(); });
 		subscription.on('roomDeleted', () => {
@@ -199,7 +206,7 @@ function closeList(text: string) {
 	router.replace('/chat');
 }
 
-watch(() => props.roomId, () => { room.value = null; channels.value = []; fetchedUnreadChannelIds.value = []; unreadRequest++; showInfo.value = false; void refresh(); }, { immediate: true });
+watch(() => props.roomId, () => { room.value = null; channels.value = []; fetchedUnreadChannelIds.value = []; fetchedNotificationChannelIds.value = []; unreadRequest++; showInfo.value = false; void refresh(); }, { immediate: true });
 watch(() => props.channelId, () => { if (room.value?.id === props.roomId) void refresh(); });
 watch(narrow, selectFirst);
 onDeactivated(() => { active = false; request++; unreadRequest++; subscription?.dispose(); subscription = null; mainSubscription?.dispose(); mainSubscription = null; });
@@ -231,6 +238,15 @@ definePage(computed(() => ({ title: room.value?.name ?? i18n.ts._chat._channels.
 	border-right: solid 0.5px var(--MI_THEME-divider);
 	overflow: auto;
 	height: 100cqh;
+
+	// 긴 채널 이름이 레일 가로폭을 늘리지 않도록 이 메뉴에서만 이름 줄바꿈을 허용한다.
+	:global(.item > span:not(.itemIndicator)) {
+		min-width: 0;
+	}
+
+	:global(.item .text) {
+		overflow-wrap: anywhere;
+	}
 }
 
 .banner {

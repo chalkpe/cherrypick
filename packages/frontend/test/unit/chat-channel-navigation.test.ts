@@ -7,13 +7,36 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/vue';
 import { ref } from 'vue';
 
-const mocks = vi.hoisted(() => ({ api: vi.fn().mockResolvedValue([]), replace: vi.fn(), alert: vi.fn(), width: 400, me: { id: 'me', policies: { chatAvailability: 'available' } }, handlers: new Map<string, (data: unknown) => void>() }));
+const mocks = vi.hoisted(() => {
+	type Handler = (data: unknown) => void;
+	const connections: { channel: string; params: unknown; handlers: Map<string, Handler>; disposed: boolean }[] = [];
+	return {
+		api: vi.fn().mockResolvedValue([]), replace: vi.fn(), alert: vi.fn(), width: 400,
+		me: { id: 'me', policies: { chatAvailability: 'available' } },
+		handlers: new Map<string, Handler>(),
+		connections,
+		// 매개변수 없는 공유 연결은 구독 확인(_subscribed_)을 받지 않고, 매개변수 있는 비공유 연결만 재연결 때 받는다.
+		reconnect() {
+			for (const connection of connections) {
+				if (!connection.disposed && connection.params != null) connection.handlers.get('_subscribed_')?.(undefined);
+			}
+		},
+	};
+});
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
 vi.mock('@/router.js', () => ({ useRouter: () => ({ replace: mocks.replace, replaceByPath: mocks.replace }) }));
 vi.mock('@/os.js', () => ({ alert: mocks.alert }));
 vi.mock('@/i.js', () => ({ ensureSignin: () => mocks.me }));
 vi.mock('@/composables/use-element-width.js', () => ({ useElementWidth: () => ref(mocks.width) }));
-vi.mock('@/stream.js', () => ({ useStream: () => ({ useChannel: () => ({ on: (name: string, handler: (data: unknown) => void) => mocks.handlers.set(name, handler), dispose: vi.fn() }) }) }));
+vi.mock('@/stream.js', () => ({ useStream: () => ({ useChannel: (channel: string, params?: unknown) => {
+	const handlers = new Map<string, (data: unknown) => void>();
+	const connection = { channel, params, handlers, disposed: false };
+	mocks.connections.push(connection);
+	return {
+		on: (name: string, handler: (data: unknown) => void) => { handlers.set(name, handler); mocks.handlers.set(name, handler); },
+		dispose: () => { connection.disposed = true; },
+	};
+} }) }));
 vi.mock('@/pages/chat/room.vue', () => ({ default: { props: ['roomId', 'channelId'], template: '<div data-testid="conversation">{{ roomId }}/{{ channelId }}</div>' } }));
 vi.mock('@/pages/chat/room.info.vue', () => ({ default: { template: '<div/>' } }));
 vi.mock('@/page.js', () => ({ definePage: vi.fn() }));
@@ -25,7 +48,7 @@ import { i18n } from '@/i18n.js';
 const room = { id: 'r', hasChannels: true, name: 'Group' };
 const channels = [{ id: 'c1', roomId: 'r', name: 'First' }, { id: 'c2', roomId: 'r', name: 'Second' }];
 const stubs = { PageWithHeader: { template: '<main><slot/></main>' }, MkA: { props: ['to'], template: '<a :href="to"><slot/></a>' }, MkLoading: true, MkResult: true, MkAvatar: true };
-beforeEach(() => { vi.clearAllMocks(); mocks.width = 400; mocks.me.policies.chatAvailability = 'available'; mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : channels); });
+beforeEach(() => { vi.clearAllMocks(); mocks.width = 400; mocks.connections.length = 0; mocks.me.policies.chatAvailability = 'available'; mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : channels); });
 afterEach(cleanup);
 
 test('opens a channel list at narrow width without fetching or reading a timeline', async () => {
@@ -125,6 +148,59 @@ test('does not apply another group’s late unread response', async () => {
 	finish({ unreadChannelIds: ['oc'], notificationChannelIds: ['oc'] });
 	await Promise.resolve();
 	expect(other.querySelector('.itemIndicator')).toBeNull();
+});
+
+test('re-reads unread markers after the stream reconnects on the narrow channel list', async () => {
+	let unreadChannelIds: string[] = [];
+	let notificationChannelIds: string[] = [];
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : channels);
+	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	const second = await screen.findByRole('link', { name: 'Second' });
+	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
+	expect(second.querySelector('.itemIndicator')).toBeNull();
+
+	// 연결이 끊긴 동안 다른 계정이 멘션만 받는 채널에 멘션을 만들었다.
+	unreadChannelIds = ['c2'];
+	notificationChannelIds = ['c2'];
+	mocks.reconnect();
+
+	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
+	expect(second.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
+});
+
+test('clears unread markers after the stream reconnects when another device read them', async () => {
+	let unreadChannelIds = ['c2'];
+	let notificationChannelIds = ['c2'];
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : channels);
+	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	const second = await screen.findByRole('link', { name: 'Second' });
+	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
+	expect(second.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
+
+	// 끊긴 동안 다른 기기에서 읽었다.
+	unreadChannelIds = [];
+	notificationChannelIds = [];
+	mocks.reconnect();
+
+	await waitFor(() => expect(second.querySelector('.itemIndicator')).toBeNull());
+});
+
+test('re-reads unread markers after the stream reconnects in the wide rail', async () => {
+	mocks.width = 1000;
+	let unreadChannelIds: string[] = [];
+	let notificationChannelIds: string[] = [];
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' } : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : channels);
+	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	const second = await screen.findByRole('link', { name: 'Second' });
+	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
+	expect(second.querySelector('.itemIndicator')).toBeNull();
+
+	unreadChannelIds = ['c2'];
+	notificationChannelIds = ['c2'];
+	mocks.reconnect();
+
+	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
+	expect(second.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
 });
 
 const ownedRoom = { ...room, ownerId: 'me' };
@@ -287,4 +363,68 @@ test('super menu emits the reordered items when dragging is enabled', async () =
 	const item = links[1].parentElement!.parentElement!.parentElement!;
 	await fireEvent.drop(item.lastElementChild!, { dataTransfer });
 	expect(view.emitted('reorder')).toEqual([[0, [items[1], items[0]]]]);
+});
+
+test('blinks unread dots only for notification targets in the member rail', async () => {
+	mocks.width = 1000;
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' } : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c1', 'c2'], notificationChannelIds: ['c1'] } : channels);
+	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	const first = await screen.findByRole('link', { name: 'First' });
+	await waitFor(() => expect(first.querySelector('.itemIndicator')).not.toBeNull());
+	expect(first.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
+	const second = screen.getByRole('link', { name: 'Second' });
+	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
+	expect(second.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(false);
+});
+
+test('keeps mention-only unread dots static and marks the current channel in the drag rail', async () => {
+	mocks.width = 1000;
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? ownedRoom : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c2'], notificationChannelIds: [] } : channels);
+	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	const first = await screen.findByRole('link', { name: 'First' });
+	const second = screen.getByRole('link', { name: 'Second' });
+	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
+	expect(second.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(false);
+	expect(first.getAttribute('aria-current')).toBe('page');
+	expect(second.getAttribute('aria-current')).toBeNull();
+});
+
+test('marks the current channel link with aria-current in the member rail', async () => {
+	mocks.width = 1000;
+	mockRoom({ ...room, ownerId: 'other' });
+	render(Channels, { props: { roomId: 'r', channelId: 'c2' }, global: { stubs } });
+	const second = await screen.findByRole('link', { name: 'Second' });
+	expect(second.getAttribute('aria-current')).toBe('page');
+	expect(screen.getByRole('link', { name: 'First' }).getAttribute('aria-current')).toBeNull();
+});
+
+test('shows static unread dots for mention-only channels in the narrow grid', async () => {
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c2'], notificationChannelIds: [] } : channels);
+	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	const second = await screen.findByRole('link', { name: 'Second' });
+	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
+	expect(second.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(false);
+});
+
+test('super menu blinks indicated items by default and leaves aria-current unset', () => {
+	render(MkSuperMenu, { props: { def: [{ items: [{ id: 'a', to: '/a', icon: 'ti ti-hash', text: 'A', indicated: true }] }] }, global: { stubs } });
+	const link = screen.getByRole('link', { name: 'A' });
+	expect(link.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
+	expect(link.getAttribute('aria-current')).toBeNull();
+});
+
+test('super menu shows a static dot when pulsing is off and passes aria-current through', () => {
+	render(MkSuperMenu, { props: { def: [{ items: [{ id: 'a', to: '/a', icon: 'ti ti-hash', text: 'A', indicated: true, pulsing: false, ariaCurrent: 'page' }] }] }, global: { stubs } });
+	const link = screen.getByRole('link', { name: 'A' });
+	expect(link.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(false);
+	expect(link.getAttribute('aria-current')).toBe('page');
+});
+
+test('super menu keeps static dots and aria-current in drag mode', () => {
+	render(MkSuperMenu, { props: { def: [{ items: [{ id: 'a', to: '/a', icon: 'ti ti-hash', text: 'A', indicated: true, pulsing: false, ariaCurrent: 'page' }, { id: 'b', to: '/b', icon: 'ti ti-hash', text: 'B', indicated: true }] }], draggable: true }, global: { stubs } });
+	const links = screen.getAllByRole('link');
+	expect(links[0].querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(false);
+	expect(links[0].getAttribute('aria-current')).toBe('page');
+	expect(links[1].querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
+	expect(links[1].getAttribute('aria-current')).toBeNull();
 });
