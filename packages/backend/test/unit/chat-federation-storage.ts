@@ -454,50 +454,137 @@ describe('chat federation storage', () => {
 		});
 
 		test('NUL 문자가 든 섹션 이름은 무시하고 함께 온 채널 목록만 적용한다', async () => {
-		const room = await createMirrorRoom();
-		const c1 = `${room.uri}/channels/c1`;
-		const c2 = `${room.uri}/channels/c2`;
-		const s1 = `${room.uri}/sections/s1`;
-		await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
-			{ id: s1, name: '운영', channels: [c2] },
-		]), older);
-		const before = await storedSections(room.id);
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+			const before = await storedSections(room.id);
 
-		await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '나' }], [
-			{ id: s1, name: '운영\u0000', channels: [c2] },
-		]), newer);
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '나' }], [
+				{ id: s1, name: '운영\u0000', channels: [c2] },
+			]), newer);
 
-		const sections = await storedSections(room.id);
-		expect(sections.map(section => section.id)).toEqual(before.map(section => section.id));
-		expect(sections.map(section => section.name)).toEqual(['운영']);
-		const channels = await app.get(ChatRoomChannelService).list(room.id);
-		expect(channels.map(channel => channel.name)).toEqual(['general', '나']);
-		expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
-	});
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => section.id)).toEqual(before.map(section => section.id));
+			expect(sections.map(section => section.name)).toEqual(['운영']);
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.name)).toEqual(['general', '나']);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+		});
 
-	test('NUL 문자가 든 섹션 URI는 무시하고 함께 온 채널 목록만 적용한다', async () => {
-		const room = await createMirrorRoom();
-		const c1 = `${room.uri}/channels/c1`;
-		const c2 = `${room.uri}/channels/c2`;
-		const s1 = `${room.uri}/sections/s1`;
-		await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
-			{ id: s1, name: '운영', channels: [c2] },
-		]), older);
-		const before = await storedSections(room.id);
+		test('NUL 문자가 든 섹션 URI는 무시하고 함께 온 채널 목록만 적용한다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+			const before = await storedSections(room.id);
 
-		await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '다' }], [
-			{ id: `${room.uri}/sections/s\u00002`, name: '둘째', channels: [c2] },
-		]), newer);
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '다' }], [
+				{ id: `${room.uri}/sections/s\u00002`, name: '둘째', channels: [c2] },
+			]), newer);
 
-		const sections = await storedSections(room.id);
-		expect(sections.map(section => section.id)).toEqual(before.map(section => section.id));
-		expect(sections.map(section => section.uri)).toEqual([s1]);
-		const channels = await app.get(ChatRoomChannelService).list(room.id);
-		expect(channels.map(channel => channel.name)).toEqual(['general', '다']);
-		expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
-	});
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => section.id)).toEqual(before.map(section => section.id));
+			expect(sections.map(section => section.uri)).toEqual([s1]);
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.name)).toEqual(['general', '다']);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+		});
 
-	test('늦게 온 옛 판번호의 섹션 목록은 통째로 버린다', async () => {
+		test('UTF-8 바이트 한도를 넘는 섹션 URI는 무시하고 함께 온 채널·그룹 갱신은 적용한다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+			const before = await storedSections(room.id);
+			const longUri = `${room.uri}/sections/${Array.from({ length: 940 }, (_, i) => String.fromCodePoint(0x800 + i)).join('')}`;
+			expect(longUri.length).toBeLessThanOrEqual(1024);
+			expect(Buffer.byteLength(longUri)).toBeGreaterThan(2700);
+
+			await createService().updateRoom(room, { name: '새 그룹 이름' }, { federate: false, remoteUpdatedAt: newer, remoteGroup: group(room, [{ id: c1, name: 'general' }, { id: c2, name: '나' }], [
+				{ id: longUri, name: '둘째', channels: [c2] },
+			]) as never });
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => [section.id, section.uri, section.name])).toEqual(before.map(section => [section.id, section.uri, section.name]));
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.name)).toEqual(['general', '나']);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+			expect(await chatRoomsRepository.findOneByOrFail({ id: room.id })).toMatchObject({ name: '새 그룹 이름', lastRemoteUpdatedAt: newer });
+		});
+
+		test('짝 없는 surrogate URI와 U+FFFD URI가 함께 와도 무시하고 채널·그룹 갱신은 적용한다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+			const before = await storedSections(room.id);
+
+			await createService().updateRoom(room, { name: '새 그룹 이름' }, { federate: false, remoteUpdatedAt: newer, remoteGroup: group(room, [{ id: c1, name: 'general' }, { id: c2, name: '나' }], [
+				{ id: `${room.uri}/sections/s\ud800`, name: 'first', channels: [] },
+				{ id: `${room.uri}/sections/s\ufffd`, name: 'second', channels: [c2] },
+			]) as never });
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => [section.id, section.uri, section.name])).toEqual(before.map(section => [section.id, section.uri, section.name]));
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.name)).toEqual(['general', '나']);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+			expect(await chatRoomsRepository.findOneByOrFail({ id: room.id })).toMatchObject({ name: '새 그룹 이름', lastRemoteUpdatedAt: newer });
+		});
+
+		test('짝 없는 surrogate 섹션 URI를 더 새 판번호로 다시 받아도 기존 섹션은 그대로다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+			const before = await storedSections(room.id);
+			const object = group(room, [{ id: c1, name: 'general' }, { id: c2, name: '나' }], [
+				{ id: `${room.uri}/sections/s\ud800`, name: '둘째', channels: [c2] },
+			]);
+
+			await createService().updateRoom(room, { name: '새 그룹 이름' }, { federate: false, remoteUpdatedAt: newer, remoteGroup: object as never });
+			await createService().updateRoom(room, { name: '새 그룹 이름' }, { federate: false, remoteUpdatedAt: new Date(newer.getTime() + 10000), remoteGroup: object as never });
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => [section.id, section.uri, section.name])).toEqual(before.map(section => [section.id, section.uri, section.name]));
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.name)).toEqual(['general', '나']);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+			expect(await chatRoomsRepository.findOneByOrFail({ id: room.id })).toMatchObject({ name: '새 그룹 이름', lastRemoteUpdatedAt: new Date(newer.getTime() + 10000) });
+		});
+
+		test('이모지가 든 섹션 URI와 이름은 그대로 저장한다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: `${room.uri}/sections/s😀`, name: '묶음 😀', channels: [c2] },
+			]), newer);
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => [section.uri, section.name])).toEqual([[`${room.uri}/sections/s😀`, '묶음 😀']]);
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+		});
+
+		test('늦게 온 옛 판번호의 섹션 목록은 통째로 버린다', async () => {
 			const room = await createMirrorRoom();
 			const c1 = `${room.uri}/channels/c1`;
 			const s1 = `${room.uri}/sections/s1`;

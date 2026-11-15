@@ -374,6 +374,23 @@ describe('그룹 채널 API', () => {
 		expect((await listSections(roomId)).map(item => item.name)).toEqual(['묶음']);
 	});
 
+	test('섹션 이름에 짝 없는 surrogate가 있으면 만들기와 이름 바꾸기를 거부한다', async () => {
+		const roomId = await createRoom(false);
+		await convert(roomId);
+		const section = await createSection(roomId, '묶음');
+
+		for (const name of ['묶\ud800음', '\udc00', '묶음\ud800']) {
+			const created = await api('chat/rooms/sections/create', { roomId, name }, owner);
+			expect(created.status).toBe(400);
+			expect((created.body as unknown as { error: { code: string } }).error.code).toBe('INVALID_SECTION_NAME');
+			const updated = await api('chat/rooms/sections/update', { sectionId: section.id, name }, owner);
+			expect(updated.status).toBe(400);
+			expect((updated.body as unknown as { error: { code: string } }).error.code).toBe('INVALID_SECTION_NAME');
+		}
+
+		expect((await listSections(roomId)).map(item => item.name)).toEqual(['묶음']);
+	});
+
 	test('채널 목록은 섹션 소속을 싣고 새 채널은 만드는 곳의 맨 아래에 온다', async () => {
 		const roomId = await createRoom(false);
 		const general = await convert(roomId);
