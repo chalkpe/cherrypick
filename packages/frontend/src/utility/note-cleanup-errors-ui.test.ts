@@ -46,6 +46,16 @@ test.each(['en-US', 'ja-JP', 'ko-KR'] as const)('notification links the stopped 
 	expect(view.container.textContent).not.toMatch(/MISSING_CLIP|errorCode|secret/);
 });
 
+test.each(['en-US', 'ja-JP', 'ko-KR'] as const)('completion notification reports the deleted count in %s and links to note cleanup', async language => {
+	activeLocale.current = language;
+	const { i18n } = await import('@/i18n.js');
+	const view = render(MkNotification, { props: { notification: { type: 'noteCleanupCompleted', id: 'n', createdAt: '2026-01-01T00:00:00Z', count: 7 } as never }, global: { stubs: { MkA: { props: ['to'], template: '<a :href="to"><slot/></a>' }, MkAvatar: true } } });
+	const link = view.getByRole('link');
+	expect(link.textContent).toBe(i18n.tsx._noteCleanup.completedNotificationBody({ n: 7 }));
+	expect(link.getAttribute('href')).toBe('/settings/note-cleanup');
+	expect(view.container.textContent).toContain(i18n.ts._noteCleanup.completedNotification);
+});
+
 test('channel without description has no empty description line or raw reference ID', async () => {
 	vi.stubGlobal('fetch', async () => new Response(JSON.stringify([{ id: 'secret-channel', name: 'Channel name', description: null }])));
 	const view = render(ReferencePicker, { props: { kind: 'channel', modelValue: [] } });

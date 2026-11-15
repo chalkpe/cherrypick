@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <div :class="[$style.root, { [$style.contentVisibilityAuto]: contentVisibilityAuto }]">
 	<div :class="$style.head">
 		<MkAvatar v-if="['pollEnded', 'note'].includes(notification.type) && 'note' in notification" :class="$style.icon" :user="notification.note.user" link preview/>
-		<MkAvatar v-else-if="['roleAssigned', 'achievementEarned', 'exportCompleted', 'login', 'createToken', 'scheduledNotePosted', 'scheduledNotePostFailed', 'noteCleanupProtectionFailed'].includes(notification.type)" :class="$style.icon" :user="$i" link preview/>
+		<MkAvatar v-else-if="['roleAssigned', 'achievementEarned', 'exportCompleted', 'login', 'createToken', 'scheduledNotePosted', 'scheduledNotePostFailed', 'noteCleanupProtectionFailed', 'noteCleanupCompleted'].includes(notification.type)" :class="$style.icon" :user="$i" link preview/>
 		<div v-else-if="notification.type === 'reaction:grouped' && notification.note.reactionAcceptance === 'likeOnly'" :class="[$style.icon, $style.icon_reactionGroupHeart]"><i class="ti ti-heart" style="line-height: 1;"></i></div>
 		<div v-else-if="notification.type === 'reaction:grouped'" :class="[$style.icon, $style.icon_reactionGroup]"><i class="ti ti-plus" style="line-height: 1;"></i></div>
 		<div v-else-if="notification.type === 'renote:grouped'" :class="[$style.icon, $style.icon_renoteGroup]"><i class="ti ti-repeat" style="line-height: 1;"></i></div>
@@ -28,6 +28,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				[$style.t_scheduledNotePosted]: notification.type === 'scheduledNotePosted',
 				[$style.t_scheduledNotePostFailed]: notification.type === 'scheduledNotePostFailed',
 				[$style.t_noteCleanupProtectionFailed]: notification.type === 'noteCleanupProtectionFailed',
+				[$style.t_noteCleanupCompleted]: notification.type === 'noteCleanupCompleted',
 				[$style.t_achievementEarned]: notification.type === 'achievementEarned',
 				[$style.t_exportCompleted]: notification.type === 'exportCompleted',
 				[$style.t_login]: notification.type === 'login',
@@ -48,6 +49,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<i v-else-if="notification.type === 'scheduledNotePosted'" class="ti ti-send"></i>
 			<i v-else-if="notification.type === 'scheduledNotePostFailed'" class="ti ti-alert-triangle"></i>
 			<i v-else-if="notification.type === 'noteCleanupProtectionFailed'" class="ti ti-shield-exclamation"></i>
+			<i v-else-if="notification.type === 'noteCleanupCompleted'" class="ti ti-check"></i>
 			<i v-else-if="notification.type === 'achievementEarned'" class="ti ti-medal"></i>
 			<i v-else-if="notification.type === 'exportCompleted'" class="ti ti-archive"></i>
 			<i v-else-if="notification.type === 'login'" class="ti ti-login-2"></i>
@@ -72,6 +74,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<span v-else-if="notification.type === 'scheduledNotePosted'" :class="$style.headerText">{{ i18n.ts._notification.scheduledNotePosted }}</span>
 			<span v-else-if="notification.type === 'scheduledNotePostFailed'" :class="$style.headerText">{{ i18n.ts._notification.scheduledNotePostFailed }}</span>
 			<span v-else-if="notification.type === 'noteCleanupProtectionFailed'" :class="$style.headerText">{{ i18n.ts._noteCleanup.notification }}</span>
+			<span v-else-if="notification.type === 'noteCleanupCompleted'" :class="$style.headerText">{{ i18n.ts._noteCleanup.completedNotification }}</span>
 			<span v-else-if="notification.type === 'note'" :class="$style.headerText">{{ i18n.ts._notification.newNote }}: <MkUserName :user="notification.note.user"/></span>
 			<span v-else-if="notification.type === 'roleAssigned'" :class="$style.headerText">{{ i18n.ts._notification.roleAssigned }}</span>
 			<span v-else-if="notification.type === 'chatRoomInvitationReceived'" :class="$style.headerText">{{ i18n.ts._notification.chatRoomInvitationReceived }}</span>
@@ -141,6 +144,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</template>
 			<MkA v-else-if="notification.type === 'noteCleanupProtectionFailed'" :class="$style.text" :to="`/settings/note-cleanup/${notification.ruleId}`">
 				{{ i18n.ts._noteCleanup.notificationBody }}
+			</MkA>
+			<MkA v-else-if="notification.type === 'noteCleanupCompleted'" :class="$style.text" to="/settings/note-cleanup">
+				{{ i18n.tsx._noteCleanup.completedNotificationBody({ n: notification.count }) }}
 			</MkA>
 			<MkA v-else-if="notification.type === 'achievementEarned'" :class="$style.text" to="/my/achievements">
 				{{ i18n.ts._achievements._types[`_${notification.achievement}`].title }}
@@ -481,6 +487,11 @@ const rejectChatRoomInvitation = () => respondToChatRoomInvitation('chat/rooms/i
 
 .t_noteCleanupProtectionFailed {
 	background: var(--MI_THEME-warn);
+	pointer-events: none;
+}
+
+.t_noteCleanupCompleted {
+	background: var(--MI_THEME-accent);
 	pointer-events: none;
 }
 

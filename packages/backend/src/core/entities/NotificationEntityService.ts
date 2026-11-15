@@ -223,6 +223,7 @@ export class NotificationEntityService implements OnModuleInit {
 				ip: notification.userIp,
 			} : {}),
 			...(notification.type === 'noteCleanupProtectionFailed' ? { ruleId: notification.ruleId, errorCode: notification.errorCode } : {}),
+			...(notification.type === 'noteCleanupCompleted' ? { count: notification.count } : {}),
 			...(notification.type === 'app' ? {
 				body: notification.customBody,
 				header: notification.customHeader,

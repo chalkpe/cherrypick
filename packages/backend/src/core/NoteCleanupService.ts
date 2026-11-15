@@ -320,6 +320,15 @@ export class NoteCleanupService {
 		}
 	}
 
+	// 지금 정리하기로 요청한 정리가 끝나면 지운 수를 한 번 알린다. 마커를 지운 뒤라 중복 발송이 없고, 자동 회차는 이 경로를 쓰지 않는다.
+	private notifyCleanupCompleted(userId: string, deleted: number) {
+		try {
+			this.notificationService.createNotification(userId, 'noteCleanupCompleted', { count: deleted });
+		} catch (error) {
+			this.logger.error('Cleanup completion notification failed', { error });
+		}
+	}
+
 	// 판정에 필요한 자료만 조회한다. 조회 실패는 보호 오류로 기록하지 않고 그대로 던져 묶음 전체를 재시도하게 한다.
 	// 반응·리노트 수가 손상된 노트는 판정할 수 없으므로 undecidable로 표시해 판정에서 빼고 남긴다.
 	private async contexts(userId: string, notes: MiNote[], dependencies: Set<string>): Promise<{ contexts: CleanupContext[]; undecidable: Set<string> }> {
@@ -399,7 +408,7 @@ export class NoteCleanupService {
 			// 대기 마커가 있으면 규칙 조합이 달라도 중복 접수하지 않는다.
 			if (state.manualRequest) return { queued: false, jobId };
 			// 마커를 먼저 남겨 큐 등록이 실패해도 자동 회차가 요청을 이어받게 한다.
-			await this.states.update(userId, { manualRequest: { ruleIds, cursor: null } });
+			await this.states.update(userId, { manualRequest: { ruleIds, cursor: null, deleted: 0 } });
 			// 깨우기 작업은 완료 뒤 자동 제거하고, 실패 이력은 보존 기한 뒤 자동 제거한다.
 			await this.queueService.systemQueue.add('autoDeleteNotes', { userId, manual: true }, { jobId, removeOnComplete: true, removeOnFail: { age: 7 * 86400 }, attempts: 10, backoff: { type: 'fixed', delay: 5000 } });
 			return { queued: true, jobId };
@@ -415,7 +424,14 @@ export class NoteCleanupService {
 			if (!marker) return done();
 			try {
 				const result = await this.processUserLocked(userId, marker.ruleIds, marker.cursor ?? undefined);
-				await this.states.update(userId, { manualRequest: result.complete ? null : { ruleIds: marker.ruleIds, cursor: result.cursor || marker.cursor } });
+				// 요청이 시작한 뒤로 지운 수를 마커에 누적해, 여러 회차·재시도를 거쳐도 완료 알림은 총합으로 한 번만 보낸다.
+				const deleted = (marker.deleted ?? 0) + result.deleted;
+				if (result.complete) {
+					await this.states.update(userId, { manualRequest: null });
+					this.notifyCleanupCompleted(userId, deleted);
+				} else {
+					await this.states.update(userId, { manualRequest: { ruleIds: marker.ruleIds, cursor: result.cursor || marker.cursor, deleted } });
+				}
 				return result;
 			} catch (error) {
 				if (!isRetryableCleanupFailure(error)) await this.states.update(userId, { manualRequest: null });

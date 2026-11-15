@@ -76,6 +76,7 @@ export class MiNoteCleanupState {
 	public lastRunAt: Date;
 
 	// 수동 정리 요청의 대기 마커. 완료·종료 실패 때 지우고, 일시 실패·예산 대기는 커서를 남겨 다음 회차가 잇는다.
+	// deleted는 요청이 시작한 뒤로 지운 노트 누적 수로, 완료 알림 한 번에 실린다.
 	@Column('jsonb', { nullable: true })
-	public manualRequest: { ruleIds: string[]; cursor: string | null } | null;
+	public manualRequest: { ruleIds: string[]; cursor: string | null; deleted?: number } | null;
 }

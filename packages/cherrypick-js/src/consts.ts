@@ -26,6 +26,7 @@ export const notificationTypes = [
 	'reaction',
 	'pollEnded',
 	'noteCleanupProtectionFailed',
+	'noteCleanupCompleted',
 	'scheduledNotePosted',
 	'scheduledNotePostFailed',
 	'receiveFollowRequest',

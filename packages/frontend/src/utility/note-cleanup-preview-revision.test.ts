@@ -175,6 +175,7 @@ test('a rejected save keeps the preview version and the draft until a later save
 test('manual cleanup reports acceptance without resetting the preview', async () => {
 	const { view, requests } = renderEdit();
 	await view.findByLabelText('Rule name');
+	confirm.mockResolvedValue({ canceled: false });
 	await fireEvent.click(view.getByRole('button', { name: 'Clean up now' }));
 	await waitFor(() => expect(toast).toHaveBeenCalledWith('Cleanup started.'));
 	expect(version(view)).toBe(0);

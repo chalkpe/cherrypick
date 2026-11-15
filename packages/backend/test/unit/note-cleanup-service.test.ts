@@ -180,7 +180,7 @@ test('요청은 소유권과 활성 선택만 확인하므로 참조 오류가 �
 	const { rows, service, input } = fixture();
 	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null });
 	expect((await service.request('alice', ['delete'])).queued).toBe(true);
-	expect(rows.State[0].manualRequest).toEqual({ ruleIds: ['delete'], cursor: null });
+	expect(rows.State[0].manualRequest).toEqual({ ruleIds: ['delete'], cursor: null, deleted: 0 });
 });
 
 test('타인 소유의 클립을 보존이나 지우기 조건으로 저장하지 않는다', async () => {
@@ -596,7 +596,7 @@ test('대기 마커가 끝날 때까지 같은 요청을 중복 접수하지 않
 	const { rows, service, input } = fixture();
 	const { rule } = await service.save('alice', input);
 	await service.request('alice', [rule.id]);
-	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: null });
+	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: null, deleted: 0 });
 
 	expect((await service.request('alice', [rule.id])).queued).toBe(false);
 	await service.continueManual('alice');
@@ -614,7 +614,7 @@ test('수동 요청은 회차마다 한 페이지씩 이어 처리하고 완료 
 	const first = await service.continueManual('alice');
 	expect(first.deleted).toBe(5);
 	expect(first.complete).toBe(false);
-	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: '4' });
+	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: '4', deleted: 5 });
 
 	const second = await service.continueManual('alice');
 	expect(second.deleted).toBe(2);
@@ -631,7 +631,7 @@ test('수동 요청의 일시 실패는 마커를 보존하고 복구 뒤 같은
 	retryable.add('MiNote');
 
 	await expect(service.continueManual('alice')).rejects.toThrow('Connection terminated');
-	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: null });
+	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: null, deleted: 0 });
 	expect(rows.MiNote).toHaveLength(7);
 
 	retryable.clear();
@@ -1237,7 +1237,7 @@ test('수동 묶음이 중간에 일시 실패해도 앞서 지운 노트의 미
 	expect(drive.deletes.map(d => d.fileId)).toEqual(['f1']);
 	expect(rows.MiDriveFile.map(f => f.id)).toEqual(['f2']);
 	// 일시 실패는 마커를 보존해 다음 회차가 잇는다.
-	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: null });
+	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: null, deleted: 0 });
 
 	retryableDeletes.clear();
 	expect((await service.continueManual('alice')).deleted).toBe(1);

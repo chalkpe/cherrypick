@@ -26,6 +26,8 @@ vi.mock('../../src/misc/promise-tracker.js', () => ({ trackPromise: (promise: Pr
 function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0) } = {}) {
 	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, manualRequest: null }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
 	const failing = new Set<string>();
+	// retryable: 재시도 가능한 연결 오류로 조회를 실패시킨다.
+	const retryable = new Set<string>();
 	const noteReads: string[][] = [];
 	// failingWrites: 해당 엔티티의 쓰기 실패를 주입한다.
 	const failingWrites = new Set<string>();
@@ -58,7 +60,7 @@ function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0)
 				let ids: string[] | undefined;
 				let limit = Infinity;
 				const filter = (_sql: string, params?: { afterId?: string; ids?: string[] }) => { afterId = params?.afterId ?? afterId; ids = params?.ids ?? ids; return builder; };
-				const builder: any = { where: filter, andWhere: filter, innerJoin: () => builder, orderBy: () => builder, take: (value: number) => { limit = value; return builder; }, select: () => builder, getRawMany: async () => [], getMany: async () => { if (failing.has(entity.name)) throw new Error(`${entity.name} query unavailable`); const result = copy(data.filter(row => (!afterId || row.id > afterId) && (!ids || ids.includes(row.id))).slice(0, limit)); if (entity.name === 'MiNote') noteReads.push(result.map(row => row.id)); return result; } };
+				const builder: any = { where: filter, andWhere: filter, innerJoin: () => builder, orderBy: () => builder, take: (value: number) => { limit = value; return builder; }, select: () => builder, getRawMany: async () => [], getMany: async () => { if (failing.has(entity.name)) throw new Error(`${entity.name} query unavailable`); if (retryable.has(entity.name)) throw Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' }); const result = copy(data.filter(row => (!afterId || row.id > afterId) && (!ids || ids.includes(row.id))).slice(0, limit)); if (entity.name === 'MiNote') noteReads.push(result.map(row => row.id)); return result; } };
 				return builder;
 			},
 		};
@@ -102,7 +104,7 @@ function fixture({ detached = true, noteCreatedAt = (_id: string) => new Date(0)
 	Object.defineProperty(buffering, 'getMany', { value: async () => buffered, writable: true });
 	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, notificationService, { eval: async () => 5 } as any, meta as any, buffering, {} as any, {} as any);
 	const condition = { type: 'age', operator: 'gte', seconds: 60 };
-	return { rows, service, notificationService, delivery, notifications, jobs, failing, failingWrites, lock, meta, buffered, buffering, noteReads, input: { name: '정리', action: 'delete' as const, condition } };
+	return { rows, service, notificationService, delivery, notifications, jobs, failing, failingWrites, retryable, lock, meta, buffered, buffering, noteReads, input: { name: '정리', action: 'delete' as const, condition } };
 }
 
 const keep = () => ({ id: 'keep', userId: 'alice', name: '보호', action: 'keep', enabled: true, automatic: false, condition: { type: 'clip', ids: ['gone'] }, lastError: null, legacy: null });
@@ -242,4 +244,76 @@ test('접수 마커 쓰기가 실패하면 발송하지 않고 다음 검사에�
 	await new Promise<void>(resolve => setImmediate(resolve));
 	expect(notifications).toHaveLength(1);
 	expect(rows.Rule[0].protectionNotified).toBe(true);
+});
+
+// === 정리 완료 알림 ===
+
+const cleanupNote = (id: string) => ({ id, userId: 'alice', text: '정리', cw: null, fileIds: [], hasPoll: false, renoteId: null, replyId: null, channelId: null, localOnly: false, visibility: 'public', reactions: {}, renoteCount: 0, tags: [] });
+const completedNotifications = (notifications: any[]) => notifications.filter(n => n.type === 'noteCleanupCompleted');
+
+test('지금 정리하기 요청이 완료되면 지운 총 수로 완료 알림을 한 번 보낸다', async () => {
+	const { rows, service, notifications, input } = fixture();
+	const { rule } = await service.save('alice', input);
+	for (let i = 0; i < 7; i++) rows.MiNote.push(cleanupNote(String(i)));
+	await service.request('alice', [rule.id]);
+
+	await service.continueManual('alice');
+	await service.continueManual('alice');
+	await vi.waitFor(() => expect(completedNotifications(notifications)).toHaveLength(1));
+
+	expect(rows.State[0].manualRequest).toBeNull();
+	expect(completedNotifications(notifications)[0]).toMatchObject({ type: 'noteCleanupCompleted', count: 7 });
+	expect(rows.MiNote).toHaveLength(0);
+});
+
+test('자동 회차는 정리 완료 알림을 보내지 않는다', async () => {
+	const { rows, service, notifications, input } = fixture();
+	await service.save('alice', { ...input, automatic: true, confirmed: true });
+	for (let i = 0; i < 3; i++) rows.MiNote.push(cleanupNote(String(i)));
+
+	await service.processUser('alice');
+	await new Promise<void>(resolve => setImmediate(resolve));
+
+	expect(rows.MiNote).toHaveLength(0);
+	expect(completedNotifications(notifications)).toHaveLength(0);
+});
+
+test('지운 노트가 0개여도 요청이 완료되면 완료 알림을 보낸다', async () => {
+	const { service, notifications, input } = fixture();
+	const { rule } = await service.save('alice', input);
+	await service.request('alice', [rule.id]);
+
+	await service.continueManual('alice');
+	await vi.waitFor(() => expect(completedNotifications(notifications)).toHaveLength(1));
+
+	expect(completedNotifications(notifications)[0]).toMatchObject({ type: 'noteCleanupCompleted', count: 0 });
+});
+
+test('일시 실패 뒤 재시도로 완료되면 완료 알림을 한 번만 보낸다', async () => {
+	const { rows, service, notifications, input, retryable } = fixture();
+	const { rule } = await service.save('alice', input);
+	for (let i = 0; i < 3; i++) rows.MiNote.push(cleanupNote(String(i)));
+	await service.request('alice', [rule.id]);
+	retryable.add('MiNote');
+
+	await expect(service.continueManual('alice')).rejects.toThrow('Connection terminated');
+	await new Promise<void>(resolve => setImmediate(resolve));
+	expect(completedNotifications(notifications)).toHaveLength(0);
+	expect(rows.State[0].manualRequest).toEqual({ ruleIds: [rule.id], cursor: null, deleted: 0 });
+
+	retryable.clear();
+	await service.continueManual('alice');
+	await vi.waitFor(() => expect(completedNotifications(notifications)).toHaveLength(1));
+
+	expect(completedNotifications(notifications)[0]).toMatchObject({ type: 'noteCleanupCompleted', count: 3 });
+	expect(rows.State[0].manualRequest).toBeNull();
+});
+
+test('정리 완료 알림은 별도 수신 설정 없이 항상 발송한다', async () => {
+	const { notificationService, notifications } = fixture();
+
+	notificationService.createNotification('alice', 'noteCleanupCompleted', { count: 4 });
+	await vi.waitFor(() => expect(notifications).toHaveLength(1));
+
+	expect(notifications[0]).toMatchObject({ type: 'noteCleanupCompleted', count: 4 });
 });

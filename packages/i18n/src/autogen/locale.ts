@@ -13307,6 +13307,10 @@ export interface Locale extends ILocale {
              */
             "noteCleanupProtectionFailed": string;
             /**
+             * ノート整理の完了
+             */
+            "noteCleanupCompleted": string;
+            /**
              * フォロー申請を受け取った
              */
             "receiveFollowRequest": string;
@@ -16627,6 +16631,10 @@ export interface Locale extends ILocale {
          */
         "notQueued": string;
         /**
+         * 削除されるノートを今すぐ削除しますか？
+         */
+        "requestConfirm": string;
+        /**
          * 整理を続けますか？
          */
         "automaticConfirmTitle": string;
@@ -16686,6 +16694,14 @@ export interface Locale extends ILocale {
          * 保護の判定に問題があり、削除を中断しました。
          */
         "notificationBody": string;
+        /**
+         * ノート整理が完了しました
+         */
+        "completedNotification": string;
+        /**
+         * ノート{n}件を整理しました。
+         */
+        "completedNotificationBody": ParameterizedString<"n">;
         /**
          * 条件の位置を変更しました。
          */

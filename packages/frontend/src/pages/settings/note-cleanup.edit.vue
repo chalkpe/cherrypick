@@ -267,6 +267,8 @@ async function setAutomatic(value: boolean) {
 async function requestNow() {
 	const current = rule.value;
 	if (!current) return;
+	const { canceled } = await os.confirm({ type: 'warning', text: i18n.ts._noteCleanup.requestConfirm });
+	if (canceled) return;
 	busy.value = true;
 	try {
 		const { queued } = await cleanupApi.request([current.id]);

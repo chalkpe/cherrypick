@@ -40,6 +40,13 @@ export const packedNotificationSchema = {
 		type: 'object',
 		properties: {
 			...baseSchema.properties,
+			type: { type: 'string', optional: false, nullable: false, enum: ['noteCleanupCompleted'] },
+			count: { type: 'number', optional: false, nullable: false },
+		},
+	}, {
+		type: 'object',
+		properties: {
+			...baseSchema.properties,
 			type: {
 				type: 'string',
 				optional: false, nullable: false,

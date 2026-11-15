@@ -69,6 +69,11 @@ export type MiNotification = {
 	ruleId: string;
 	errorCode: string;
 } | {
+	type: 'noteCleanupCompleted';
+	id: string;
+	createdAt: string;
+	count: number;
+} | {
 	type: 'scheduledNotePosted';
 	id: string;
 	createdAt: string;

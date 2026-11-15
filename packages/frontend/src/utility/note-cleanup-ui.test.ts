@@ -256,11 +256,33 @@ test('manual cleanup reports queued and duplicate requests through toasts', asyn
 		if (url.endsWith('/request')) return new Response(JSON.stringify({ queued, jobId: 'job-1' }));
 		return new Response(JSON.stringify({ rule: deleteRule }));
 	});
+	confirm.mockResolvedValue({ canceled: false });
 	await fireEvent.click(view.getByRole('button', { name: 'Clean up now' }));
 	await waitFor(() => expect(toast).toHaveBeenCalledWith('Cleanup started.'));
 	queued = false;
 	await fireEvent.click(view.getByRole('button', { name: 'Clean up now' }));
 	await waitFor(() => expect(toast).toHaveBeenCalledWith('No new work was queued this time.'));
+});
+
+test('manual cleanup asks for confirmation with a single result sentence before requesting', async () => {
+	const view = renderEdit({ ruleId: 'delete' });
+	await view.findByLabelText('Rule name');
+	const requests: string[] = [];
+	vi.stubGlobal('fetch', async (url: string) => {
+		requests.push(url);
+		if (url.endsWith('/list')) return new Response(JSON.stringify({ rules: [deleteRule], blocked: false }));
+		if (url.endsWith('/request')) return new Response(JSON.stringify({ queued: true, jobId: 'job-1' }));
+		return new Response(JSON.stringify({ rule: deleteRule }));
+	});
+	// 취소하면 요청을 보내지 않는다.
+	await fireEvent.click(view.getByRole('button', { name: 'Clean up now' }));
+	await waitFor(() => expect(confirm).toHaveBeenCalled());
+	expect(confirm.mock.calls[0][0]).toMatchObject({ type: 'warning', text: 'Delete these notes now?' });
+	expect(requests.some(url => url.endsWith('/request'))).toBe(false);
+	// 확인하면 요청을 보낸다.
+	confirm.mockResolvedValue({ canceled: false });
+	await fireEvent.click(view.getByRole('button', { name: 'Clean up now' }));
+	await waitFor(() => expect(requests.some(url => url.endsWith('/request'))).toBe(true));
 });
 
 test('disabled rules cannot request cleanup and dirty drafts disable the whole run section', async () => {
