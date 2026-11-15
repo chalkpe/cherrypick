@@ -277,7 +277,7 @@ describe('TURN credential refresh', () => {
 		let joins = 0;
 		mocks.misskeyApi.mockImplementation(async endpoint => endpoint === 'chat/rooms/voice/join'
 			? { ...credentials(joins++ === 0 ? oldIce : freshIce), mediaProvider: joins === 1 ? 'https://provider-one.test' : 'https://provider-two.test' } : {});
-		await joinVoiceCall(room1, { micEnabled: false, approvedMediaProvider: 'https://provider-one.test' }); const room = lastRoom();
+		await joinVoiceCall(room1, { micEnabled: false }); const room = lastRoom();
 		await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
 		expect(joins).toBe(2); expect(room.engine.rtcConfig.iceServers).toEqual(oldIce); expect(room.publisher.setConfiguration).not.toHaveBeenCalled(); expect(room.disconnect).not.toHaveBeenCalled();
 		await vi.advanceTimersByTimeAsync(60 * 60 * 1000); expect(joins).toBe(2);
@@ -1070,7 +1070,7 @@ describe('screen sharing', () => {
 	test('applies delegated limits when sharing the screen', async () => {
 		const limits = { maxWidth: 1280, maxHeight: 720, maxFrameRate: 10, maxBitrate: 500000 };
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: limits });
-		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1);
 
 		await startScreenShare();
 
@@ -1082,7 +1082,7 @@ describe('screen sharing', () => {
 
 	test('keeps the existing screen share options when a relay has no policy', async () => {
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test' });
-		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1);
 
 		await startScreenShare();
 
@@ -1095,7 +1095,7 @@ describe('screen sharing', () => {
 	test('accepts a relay policy above 1080p60 while retaining the selected preset', async () => {
 		const limits = { maxWidth: 3840, maxHeight: 2160, maxFrameRate: 120, maxBitrate: 16000000 };
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: limits });
-		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1);
 
 		await startScreenShare();
 
@@ -1107,7 +1107,7 @@ describe('screen sharing', () => {
 	test('keeps delegated limits after stopping, reconnecting, and sharing again', async () => {
 		const limits = { maxWidth: 1280, maxHeight: 720, maxFrameRate: 10, maxBitrate: 500000 };
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: limits });
-		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1);
 		const room = lastRoom();
 
 		await startScreenShare();
@@ -1124,7 +1124,7 @@ describe('screen sharing', () => {
 	test('does not publish a capture that fails to meet delegated limits', async () => {
 		const limits = { maxWidth: 1280, maxHeight: 720, maxFrameRate: 10, maxBitrate: 500000 };
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: limits });
-		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1);
 		const participant = lastRoom().localParticipant;
 		participant.screenVideo.mediaStreamTrack.getSettings.mockReturnValue({ width: 1920, height: 1080, frameRate: 30 });
 
@@ -1137,7 +1137,7 @@ describe('screen sharing', () => {
 
 	test('reports screen capture permission denial on the delegated path', async () => {
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: { maxWidth: 1920, maxHeight: 1080, maxFrameRate: 60, maxBitrate: 8000000 } });
-		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1);
 		const participant = lastRoom().localParticipant;
 		participant.createScreenTracks.mockRejectedValueOnce(new DOMException('Permission denied', 'NotAllowedError'));
 
@@ -1686,12 +1686,22 @@ test('initial screen audio is silent, late audio follows watch, and video remova
 	expect(late.setSubscribed).toHaveBeenLastCalledWith(false);
 });
 
- test('declining the delegated media provider prevents any media connection', async () => {
+ test('joins a delegated media provider without asking and records it', async () => {
   mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://delegated.test' });
-  mocks.confirm.mockResolvedValue({ canceled: true });
   await joinVoiceCall(room1);
-  expect(lk.FakeRoom.instances).toHaveLength(0);
-  expect(voiceCall.status).toBe('idle');
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  expect(lk.FakeRoom.instances).toHaveLength(1);
+  expect(voiceCall.status).toBe('connected');
+  expect(voiceCall.mediaProvider).toBe('https://delegated.test');
+ });
+
+ test('joins a room whose media is on this server without asking', async () => {
+  mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't' });
+  await joinVoiceCall(room1);
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  expect(lk.FakeRoom.instances).toHaveLength(1);
+  expect(voiceCall.status).toBe('connected');
+  expect(voiceCall.mediaProvider).toBe('https://local.test');
  });
 
  test.each([

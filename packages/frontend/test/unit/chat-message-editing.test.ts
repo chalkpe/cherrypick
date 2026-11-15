@@ -33,6 +33,7 @@ import XMessage from '@/pages/chat/XMessage.vue';
 import { i18n } from '@/i18n.js';
 import * as os from '@/os.js';
 import { DI } from '@/di.js';
+import { preferState } from '../setup.unit.js';
 
 const driveFile = {
 	id: 'draft-file', createdAt: '2026-11-01T00:00:00.000Z', name: 'draft.png', type: 'image/png',
@@ -1264,6 +1265,165 @@ describe('letters still in composition', () => {
 		await fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
 
 		expect(mocks.api).not.toHaveBeenCalled();
+	});
+});
+
+// 送信のキーが改行も入れると、入力欄が「送った文字 + 改行」になって送ったあとも残り、次のメッセージに付いて送られる。
+// jsdom はキーの既定の動作 (改行の挿入) を行わない。ここで確かめるのは既定の動作を止めたかどうかで、
+// ブラウザが実際に改行を入れないことは実際のブラウザで確かめる
+describe('the key that sends does not also break the line', () => {
+	// 止められなかった Enter はブラウザが改行にする。その動きをまねる
+	async function pressEnter(textarea: HTMLTextAreaElement, init: KeyboardEventInit = {}) {
+		const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init });
+		textarea.dispatchEvent(event);
+		if (!event.defaultPrevented) {
+			textarea.value += '\n';
+			await fireEvent.input(textarea);
+		}
+		await nextTick();
+		return event.defaultPrevented;
+	}
+
+	afterEach(() => {
+		delete preferState['chat.sendOnEnter'];
+	});
+
+	describe('when Enter sends', () => {
+		beforeEach(() => {
+			preferState['chat.sendOnEnter'] = true;
+		});
+
+		test.each(['user', 'room'] as const)('Enter sends to a %s and leaves the box empty for the next message', async target => {
+			mocks.api.mockResolvedValueOnce({ id: 'sent-1' }).mockResolvedValueOnce({ id: 'sent-2' });
+			const form = renderForm(target);
+			const endpoint = target === 'user' ? 'chat/messages/create-to-user' : 'chat/messages/create-to-room';
+
+			await fireEvent.update(form.textarea, 'alpha one');
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			await waitFor(() => expect(form.textarea.value).toBe(''));
+			expect(storedDraft(target)).toBeUndefined();
+
+			await fireEvent.update(form.textarea, 'beta two');
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			await waitFor(() => expect(form.textarea.value).toBe(''));
+			expect(mocks.api.mock.calls.map(call => [call[0], call[1].text])).toEqual([[endpoint, 'alpha one'], [endpoint, 'beta two']]);
+		});
+
+		test('Enter saves an edit and closes it', async () => {
+			const form = renderForm('room', message);
+
+			await fireEvent.update(form.textarea, 'Changed message');
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			await waitFor(() => expect(form.editing.value).toBeNull());
+			expect(mocks.api).toHaveBeenCalledExactlyOnceWith('chat/messages/update', { messageId: message.id, text: 'Changed message' });
+		});
+
+		test.each([
+			['Shift', { shiftKey: true }],
+			['Ctrl', { ctrlKey: true }],
+			['Meta', { metaKey: true }],
+		] as const)('%s+Enter is left to the browser and sends nothing', async (_, modifier) => {
+			const form = renderForm();
+			await fireEvent.update(form.textarea, 'line one');
+
+			expect(await pressEnter(form.textarea, modifier)).toBe(false);
+
+			expect(mocks.api).not.toHaveBeenCalled();
+		});
+
+		test.each([
+			['isComposing', { isComposing: true }],
+			['the key code of an input method', { keyCode: 229 }],
+			['the Process key', { key: 'Process' }],
+		] as const)('a key still in composition (%s) is left to the input method', async (_, init) => {
+			const form = renderForm();
+			await fireEvent.update(form.textarea, '안녕');
+
+			const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init });
+			form.textarea.dispatchEvent(event);
+
+			expect(event.defaultPrevented).toBe(false);
+			expect(mocks.api).not.toHaveBeenCalled();
+		});
+
+		test('Enter on an empty box does nothing, like the send button', async () => {
+			const form = renderForm();
+
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			expect(form.textarea.value).toBe('');
+			expect(mocks.api).not.toHaveBeenCalled();
+		});
+
+		test('Enter over the length limit does nothing', async () => {
+			const form = renderForm();
+			await fireEvent.update(form.textarea, 'x'.repeat(4097));
+
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			expect(form.textarea.value).toBe('x'.repeat(4097));
+			expect(mocks.api).not.toHaveBeenCalled();
+		});
+
+		test('Enter while a message is on its way sends nothing more and keeps what was written meanwhile', async () => {
+			const sent = deferred<{ id: string }>();
+			mocks.api.mockReturnValueOnce(sent.promise);
+			const form = renderForm();
+			await fireEvent.update(form.textarea, 'alpha one');
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			await fireEvent.update(form.textarea, 'alpha one and more');
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			expect(mocks.api).toHaveBeenCalledTimes(1);
+			sent.resolve({ id: 'sent-1' });
+			await waitFor(() => expect(screen.getByTitle(i18n.ts.send).getAttribute('aria-disabled')).toBe('false'));
+			expect(form.textarea.value).toBe('alpha one and more');
+		});
+	});
+
+	describe('when Ctrl+Enter or Meta+Enter sends', () => {
+		beforeEach(() => {
+			preferState['chat.sendOnEnter'] = false;
+		});
+
+		test.each([
+			['Ctrl', { ctrlKey: true }],
+			['Meta', { metaKey: true }],
+		] as const)('%s+Enter sends and leaves the box empty', async (_, modifier) => {
+			mocks.api.mockResolvedValueOnce({ id: 'sent-1' });
+			const form = renderForm();
+			await fireEvent.update(form.textarea, 'alpha one');
+
+			expect(await pressEnter(form.textarea, modifier)).toBe(true);
+
+			await waitFor(() => expect(form.textarea.value).toBe(''));
+			expect(mocks.api).toHaveBeenCalledExactlyOnceWith('chat/messages/create-to-room', expect.objectContaining({ text: 'alpha one' }));
+		});
+
+		test.each([
+			['Enter', {}],
+			['Shift+Enter', { shiftKey: true }],
+		] as const)('%s breaks the line and sends nothing', async (_, modifier) => {
+			const form = renderForm();
+			await fireEvent.update(form.textarea, 'line one');
+
+			expect(await pressEnter(form.textarea, modifier)).toBe(false);
+
+			expect(form.textarea.value).toBe('line one\n');
+			expect(mocks.api).not.toHaveBeenCalled();
+		});
+
+		test('Ctrl+Enter on an empty box does nothing', async () => {
+			const form = renderForm();
+
+			expect(await pressEnter(form.textarea, { ctrlKey: true })).toBe(true);
+
+			expect(mocks.api).not.toHaveBeenCalled();
+		});
 	});
 });
 

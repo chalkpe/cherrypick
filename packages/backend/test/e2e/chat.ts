@@ -462,13 +462,18 @@ describe('chat/messages/update', () => {
 			assertRefused(await api('chat/rooms/invitations/reject', { roomId }, bob), 'NO_SUCH_ROOM');
 		});
 
-		test('leaving and muting need a membership, which the owner does not have', async () => {
+		test('leaving needs a membership, which the owner does not have', async () => {
 			const roomId = await createRoom(alice);
 
 			assertRefused(await api('chat/rooms/leave', { roomId }, bob), 'NO_SUCH_ROOM');
-			assertRefused(await api('chat/rooms/mute', { roomId, mute: true }, bob), 'NO_SUCH_ROOM');
 			assertRefused(await api('chat/rooms/leave', { roomId }, alice), 'NO_SUCH_ROOM');
-			assertRefused(await api('chat/rooms/mute', { roomId, mute: true }, alice), 'NO_SUCH_ROOM');
+		});
+
+		test('muting needs to be in the room, as a member or as its owner', async () => {
+			const roomId = await createRoom(alice);
+
+			assertRefused(await api('chat/rooms/mute', { roomId, mute: true }, bob), 'NO_SUCH_ROOM');
+			assert.strictEqual((await api('chat/rooms/mute', { roomId, mute: true }, alice)).status, 204);
 		});
 
 		test('only the owner can cancel an invitation', async () => {

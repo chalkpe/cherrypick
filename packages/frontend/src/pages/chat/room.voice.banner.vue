@@ -3,7 +3,8 @@ SPDX-FileCopyrightText: syuilo and misskey-project
 SPDX-License-Identifier: AGPL-3.0-only
 -->
 <template>
-<section v-if="call.available.value && !call.inThisCall.value" :class="[$style.root, { [$style.unavailable]: call.providerUnavailable?.value || call.someoneRecording?.value }]" :aria-label="empty ? undefined : i18n.tsx._voiceCall.inCallCount({ n: call.participants.value.length })">
+<!-- 誰も通話していないときはパネルを出さず、開始はルームのヘッダーボタンに任せる。誰かが通話中 (または relay が到達不能) のときだけ参加のパネルを出す -->
+<section v-if="call.available.value && !call.inThisCall.value && (call.participants.value.length > 0 || call.providerUnavailable?.value)" :class="[$style.root, { [$style.unavailable]: call.providerUnavailable?.value || call.someoneRecording?.value }]" :aria-label="empty ? undefined : i18n.tsx._voiceCall.inCallCount({ n: call.participants.value.length })">
 	<p v-if="call.providerUnavailable?.value" :class="$style.notice" role="status">{{ i18n.ts._voiceRelay.unreachable }}</p>
 	<!-- 録画している人がいることは、入る前に分かるようにする -->
 	<p v-if="call.someoneRecording?.value" :class="[$style.notice, $style.recordingNotice]" role="status"><i class="ti ti-player-record" aria-hidden="true"></i> {{ i18n.ts._voiceCall.recordingInProgress }}</p>
@@ -37,7 +38,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	>
 		<i :class="call.prejoinMicEnabled.value ? 'ti ti-microphone' : 'ti ti-microphone-off'" aria-hidden="true"></i>
 	</button>
-	<MkButton primary :class="$style.join" @click="call.join()"><i class="ti ti-phone" aria-hidden="true"></i> {{ call.providerUnavailable?.value ? i18n.ts.retry : empty ? i18n.ts._voiceCall.start : i18n.ts._voiceCall.join }}</MkButton>
+	<MkButton primary :class="$style.join" @click="call.join()"><i class="ti ti-phone" aria-hidden="true"></i> {{ call.providerUnavailable?.value ? i18n.ts.retry : i18n.ts._voiceCall.join }}</MkButton>
 </section>
 </template>
 <script lang="ts" setup>

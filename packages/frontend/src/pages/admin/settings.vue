@@ -338,7 +338,6 @@ SPDX-License-Identifier: AGPL-3.0-only
 							<SearchMarker :keywords="['remote', 'voice', 'call']">
 								<MkSwitch v-model="federationForm.state.enableRemoteVoiceCall">
 									<template #label><SearchLabel>{{ i18n.ts._serverSettings.enableRemoteVoiceCall }}</SearchLabel><span v-if="federationForm.modifiedStates.enableRemoteVoiceCall" class="_modified">{{ i18n.ts.modified }}</span></template>
-									<template #caption><SearchText>{{ i18n.ts._serverSettings.enableRemoteVoiceCallDescription }}</SearchText></template>
 								</MkSwitch>
 							</SearchMarker>
 

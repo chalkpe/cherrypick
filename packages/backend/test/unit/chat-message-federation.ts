@@ -2085,7 +2085,7 @@ describe('unread chat notification', () => {
 			},
 			globalEventService: { publishChatUserStream: vi.fn(), publishMainStream },
 			pushNotificationService: { pushNotification },
-			redisClient: { pipeline: () => pipeline, get: async () => 'm1' },
+			redisClient: { pipeline: () => pipeline, get: async () => 'm1', incr: async () => 1 },
 		});
 		const send = () => service.createMessageToUser(
 			{ id: 'bob', host: 'remote.test' }, { id: 'alice', host: null, chatScope: 'everyone' }, { text: 'secret', uri: 'https://remote.test/chat/messages/m1' },

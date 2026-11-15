@@ -287,17 +287,17 @@ defineExpose({ onDragover, onDrop });
 
 function onKeydown(ev: KeyboardEvent) {
 	if (ev.isComposing || ev.key === 'Process' || ev.keyCode === 229) return;
-	if (ev.key === 'Enter') {
-		if (prefer.s['chat.sendOnEnter']) {
-			if (!(ev.ctrlKey || ev.metaKey || ev.shiftKey)) {
-				send();
-			}
-		} else {
-			if ((ev.ctrlKey || ev.metaKey)) {
-				send();
-			}
-		}
-	}
+	if (ev.key !== 'Enter') return;
+
+	const isSendKey = prefer.s['chat.sendOnEnter']
+		? !(ev.ctrlKey || ev.metaKey || ev.shiftKey)
+		: (ev.ctrlKey || ev.metaKey);
+	if (!isSendKey) return;
+
+	// 送信のキーがそのまま改行も入れると、入力欄が「送った文字 + 改行」になり、送った文字と同じときだけ空にする後始末 (send) が働かない。
+	// 送れないあいだ (空・送信中・文字数超過) も送信ボタンと同じく何もしない。改行は Shift+Enter (設定が切のときは Enter) で入れる
+	ev.preventDefault();
+	send();
 }
 
 function chooseFile(ev: PointerEvent) {

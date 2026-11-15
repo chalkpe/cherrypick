@@ -77,7 +77,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			const messages = await this.chatService.userTimeline(me.id, other.id, ps.limit, sinceId, untilId, ps.includeDeleted);
 
-			this.chatService.readUserChatMessage(me.id, other.id);
+			// 읽음을 마치고 응답한다. 바로 이어서 미읽음 상태를 묻는 화면이 새 상태를 받게 한다.
+			await this.chatService.readUserChatMessage(me.id, other.id);
 
 			return await this.chatEntityService.packMessagesLiteFor1on1(messages);
 		});
