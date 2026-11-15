@@ -91,18 +91,25 @@ describe('chat/rooms/voice/recording-part', () => {
 		expect(f.recordingStorage.storePart).not.toHaveBeenCalled();
 	});
 
-	test('rejects a room that does not allow recording', async () => {
+	test('accepts a part from a room that does not allow recording', async () => {
 		const f = fixture({ room: { id: 'room1', ownerId: 'me', isArchived: false, allowRecording: false } });
 
-		await expect(f.endpoint.exec({ roomId: 'room1' }, me, null, null, partFile())).rejects.toMatchObject({ code: 'RECORDING_NOT_ALLOWED' });
-		expect(f.recordingStorage.storePart).not.toHaveBeenCalled();
+		await expect(f.endpoint.exec({ roomId: 'room1' }, me, null, null, partFile())).resolves.toEqual({ id: 'part-1', size: 8 });
+		expect(f.recordingStorage.storePart).toHaveBeenCalled();
 	});
 
-	test('rejects an archived room', async () => {
+	test('accepts a part from an archived room', async () => {
 		const f = fixture({ room: { id: 'room1', ownerId: 'me', isArchived: true, allowRecording: true } });
 
-		await expect(f.endpoint.exec({ roomId: 'room1' }, me, null, null, partFile())).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
-		expect(f.recordingStorage.storePart).not.toHaveBeenCalled();
+		await expect(f.endpoint.exec({ roomId: 'room1' }, me, null, null, partFile())).resolves.toEqual({ id: 'part-1', size: 8 });
+		expect(f.recordingStorage.storePart).toHaveBeenCalled();
+	});
+
+	test('accepts a part after the owner withdraws recording permission', async () => {
+		const f = fixture({ room: { id: 'room1', ownerId: 'owner', isArchived: false, allowRecording: false }, member: true });
+
+		await expect(f.endpoint.exec({ roomId: 'room1' }, me, null, null, partFile())).resolves.toEqual({ id: 'part-1', size: 8 });
+		expect(f.recordingStorage.storePart).toHaveBeenCalled();
 	});
 
 	test('rejects a room that does not exist', async () => {

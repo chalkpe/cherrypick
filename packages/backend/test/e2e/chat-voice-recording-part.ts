@@ -38,6 +38,7 @@ describe('recording part upload room permission', () => {
 	let recordingRoom: string;
 	let quietRoom: string;
 	let archivedRoom: string;
+	let withdrawnRoom: string;
 
 	beforeAll(async () => {
 		alice = await signup({ username: 'alice' });
@@ -66,6 +67,15 @@ describe('recording part upload room permission', () => {
 		assert.strictEqual((await api('chat/rooms/invitations/create', { roomId: archivedRoom, userId: bob.id }, alice)).status, 200);
 		assert.strictEqual((await api('chat/rooms/join', { roomId: archivedRoom }, bob)).status, 204);
 		assert.strictEqual((await api('chat/rooms/update', { roomId: archivedRoom, isArchived: true }, alice)).status, 200);
+
+		// 녹화를 허용했다가 소유자가 도중에 끄는 방
+		const withdrawn = await api('chat/rooms/create', { name: 'withdrawn recording room' }, alice);
+		assert.strictEqual(withdrawn.status, 200, JSON.stringify(withdrawn.body));
+		withdrawnRoom = withdrawn.body.id;
+		assert.strictEqual((await api('chat/rooms/update', { roomId: withdrawnRoom, allowRecording: true }, alice)).status, 200);
+		assert.strictEqual((await api('chat/rooms/invitations/create', { roomId: withdrawnRoom, userId: bob.id }, alice)).status, 200);
+		assert.strictEqual((await api('chat/rooms/join', { roomId: withdrawnRoom }, bob)).status, 204);
+		assert.strictEqual((await api('chat/rooms/update', { roomId: withdrawnRoom, allowRecording: false }, alice)).status, 200);
 	}, 1000 * 60 * 2);
 
 	test('an unauthenticated upload is refused', async () => {
@@ -82,11 +92,20 @@ describe('recording part upload room permission', () => {
 		assert.strictEqual(castAsError(res.body).error.code, 'ACCESS_DENIED');
 	});
 
-	test('a member of a room that does not allow recording cannot store a part', async () => {
+	test('a member of a room that does not allow recording can finalize a part', async () => {
 		const res = await uploadPart(dave, quietRoom);
 
-		assert.strictEqual(res.status, 400, JSON.stringify(res.body));
-		assert.strictEqual(castAsError(res.body).error.code, 'RECORDING_NOT_ALLOWED');
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+		assert.strictEqual(typeof res.body.id, 'string');
+		assert.strictEqual(res.body.size, 8879);
+	});
+
+	test('a member can finalize a part after the owner withdraws recording permission', async () => {
+		const res = await uploadPart(bob, withdrawnRoom);
+
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+		assert.strictEqual(typeof res.body.id, 'string');
+		assert.strictEqual(res.body.size, 8879);
 	});
 
 	test('a member can store a part without a connected call session', async () => {
@@ -104,11 +123,12 @@ describe('recording part upload room permission', () => {
 		assert.strictEqual(typeof res.body.id, 'string');
 	});
 
-	test('an archived room refuses a part', async () => {
+	test('a member can finalize a part after the room is archived', async () => {
 		const res = await uploadPart(bob, archivedRoom);
 
-		assert.strictEqual(res.status, 400, JSON.stringify(res.body));
-		assert.strictEqual(castAsError(res.body).error.code, 'ACCESS_DENIED');
+		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+		assert.strictEqual(typeof res.body.id, 'string');
+		assert.strictEqual(res.body.size, 8879);
 	});
 
 	test('a room that does not exist refuses a part', async () => {

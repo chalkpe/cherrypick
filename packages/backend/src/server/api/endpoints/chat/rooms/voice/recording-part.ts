@@ -20,7 +20,7 @@ import { ApiError } from '@/server/api/error.js';
 // 공통 드라이브 업로드를 거치지 않으므로 용량 부족과 무관하게 조각을 받을 수 있다.
 export const meta = {
 	tags: ['chat'],
-	description: 'Upload a recording part into the temporary recording storage, for parts that could not be stored in the drive. The caller must be a member of the given room and the room must allow recording. The conversion step concatenates these parts with the uploaded ones into a single final file.',
+	description: 'Upload a recording part into the temporary recording storage, for parts that could not be stored in the drive. The caller must be a member of the given room. The conversion step concatenates these parts with the uploaded ones into a single final file.',
 
 	requireCredential: true,
 
@@ -47,11 +47,6 @@ export const meta = {
 			message: 'You are not a member of this room.',
 			code: 'ACCESS_DENIED',
 			id: '8864d1fa-fb02-492c-828f-7621f96ba4a5',
-		},
-		recordingNotAllowed: {
-			message: 'The owner of this room does not allow recording.',
-			code: 'RECORDING_NOT_ALLOWED',
-			id: '385748e1-0207-4e16-9e12-51c4d8a6866f',
 		},
 		invalidFileType: {
 			message: 'Not a recording file.',
@@ -96,15 +91,15 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 	) {
 		super(meta, paramDef, async (ps, me, _token, _flash, file, cleanup) => {
 			try {
-				// 녹화 승인(status)과 같은 조건으로 방 참가와 녹화 허용을 확인한다.
+				// 이미 승인되어 녹화한 내용을 마무리하는 단계이므로 방 참가 자격과 채팅 이용 가능만 확인한다.
+				// 녹화 허용·보관 여부는 녹화 시작 승인(status)에서만 막고, 캡처가 끝난 조각의 마무리는 막지 않는다.
 				// 녹화를 멈추고 통화를 떠난 뒤에 마지막 조각을 올리므로 세션 연결 여부는 보지 않는다.
 				await this.chatService.checkChatAvailability(me.id, 'write');
 				const [room, member] = await Promise.all([
 					this.chatService.findRoomById(ps.roomId),
 					this.chatRoomMembershipsRepository.exists({ where: { roomId: ps.roomId, userId: me.id } }),
 				]);
-				if (room == null || room.isArchived || me.isSuspended || me.isDeleted || (room.ownerId !== me.id && !member)) throw new ApiError(meta.errors.accessDenied);
-				if (!room.allowRecording) throw new ApiError(meta.errors.recordingNotAllowed);
+				if (room == null || me.isSuspended || me.isDeleted || (room.ownerId !== me.id && !member)) throw new ApiError(meta.errors.accessDenied);
 				const size = fs.statSync(file!.path).size;
 				const policies = await this.roleService.getUserPolicies(me.id);
 				if (size > Math.min(this.config.maxFileSize, policies.maxFileSizeMb * 1024 * 1024)) throw new ApiError(meta.errors.tooLarge);

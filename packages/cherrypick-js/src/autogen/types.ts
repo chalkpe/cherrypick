@@ -1813,7 +1813,7 @@ export type paths = {
     '/chat/rooms/voice/recording-part': {
         /**
          * chat/rooms/voice/recording-part
-         * @description Upload a recording part into the temporary recording storage, for parts that could not be stored in the drive. The caller must be a member of the given room and the room must allow recording. The conversion step concatenates these parts with the uploaded ones into a single final file.
+         * @description Upload a recording part into the temporary recording storage, for parts that could not be stored in the drive. The caller must be a member of the given room. The conversion step concatenates these parts with the uploaded ones into a single final file.
          *
          *     **Credential required**: *Yes* / **Permission**: *write:drive*
          */
