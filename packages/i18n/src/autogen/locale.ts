@@ -6861,7 +6861,7 @@ export interface Locale extends ILocale {
              */
             "sectionLimit": string;
             /**
-             * {name} セクションを削除しますか？中のチャンネルとメッセージはそのまま残ります。
+             * {name} セクションを削除しますか？
              */
             "deleteSectionConfirm": ParameterizedString<"name">;
             /**
