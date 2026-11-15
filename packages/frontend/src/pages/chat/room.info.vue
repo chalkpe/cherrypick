@@ -204,6 +204,11 @@ const channelNotificationItems = [
 ] satisfies MkSelectItem<NotificationLevel | 'inherit'>[];
 const notificationLevel = ref<NotificationLevel>(props.room.notificationLevel ?? (props.room.isMuted ? 'none' : 'all'));
 const savingNotification = ref(false);
+
+// ページがルームを読み直したら、選択もそれに合わせる
+watch(() => [props.room.notificationLevel, props.room.isMuted], () => {
+	notificationLevel.value = props.room.notificationLevel ?? (props.room.isMuted ? 'none' : 'all');
+});
 const listedChannels = ref<Misskey.entities.ChatRoomChannel[]>([]);
 const notificationChannels = computed(() => props.channels ?? listedChannels.value);
 let notificationRequest = 0;
