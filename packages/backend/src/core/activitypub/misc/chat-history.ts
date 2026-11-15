@@ -5,6 +5,7 @@
 
 import { createHash } from 'node:crypto';
 import { toArray } from '@/misc/prelude/array.js';
+import { isStorableText } from '@/core/chat-room-channels.js';
 import { getApType, getOneApId } from '../type.js';
 import { parseRemoteChatDate } from './chat-remote-date.js';
 import type { IObject, IPost } from '../type.js';
@@ -145,8 +146,8 @@ function parseAuthor(value: unknown, authorHost: string, ctx: ChatHistoryItemCon
 	if (value == null || typeof value !== 'object') return null;
 	const { name, username, host } = value as { name?: unknown; username?: unknown; host?: unknown };
 	if (typeof host !== 'string' || host.toLowerCase() !== authorHost || ctx.isLocalHost(authorHost)) return null;
-	if (name != null && (typeof name !== 'string' || Array.from(name).length > MAX_AUTHOR_NAME_LENGTH)) return null;
-	if (username != null && (typeof username !== 'string' || username.length === 0 || username.length > MAX_AUTHOR_USERNAME_LENGTH || /[\s@]/u.test(username))) return null;
+	if (name != null && (typeof name !== 'string' || !isStorableText(name) || Array.from(name).length > MAX_AUTHOR_NAME_LENGTH)) return null;
+	if (username != null && (typeof username !== 'string' || username.length === 0 || username.length > MAX_AUTHOR_USERNAME_LENGTH || !isStorableText(username) || /[\s@]/u.test(username))) return null;
 	return { name: name ?? null, username: username ?? null, host: authorHost };
 }
 
@@ -156,8 +157,8 @@ function parseReactions(value: unknown, ctx: ChatHistoryItemContext): ChatHistor
 	for (const entry of value) {
 		if (entry == null || typeof entry !== 'object') continue;
 		const { actor, reaction, tag } = entry as { actor?: unknown; reaction?: unknown; tag?: unknown };
-		if (typeof actor !== 'string' || actor.length > MAX_ACTOR_URI_LENGTH) continue;
-		if (typeof reaction !== 'string' || reaction.length === 0 || reaction.length > MAX_REACTION_LENGTH) continue;
+		if (typeof actor !== 'string' || actor.length > MAX_ACTOR_URI_LENGTH || !isStorableText(actor)) continue;
+		if (typeof reaction !== 'string' || reaction.length === 0 || reaction.length > MAX_REACTION_LENGTH || !isStorableText(reaction)) continue;
 		const host = ctx.hostOf(actor);
 		// 받는 서버의 사용자는 자기 리액션을 원본으로 갖고 있다. 다른 서버가 대신 말할 수 없다.
 		if (host == null || ctx.isLocalHost(host)) continue;
@@ -171,7 +172,7 @@ export function parseChatHistoryItem(value: unknown, ctx: ChatHistoryItemContext
 	if (value == null || typeof value !== 'object') return { skip: 'not an object' };
 	const note = value as IPost;
 	if (getApType(note) !== 'Note' || note._misskey_talk !== true) return { skip: 'not a chat message' };
-	if (typeof note.id !== 'string' || note.id.length > 1024 || Array.from(note.id).length > MAX_MESSAGE_URI_LENGTH) return { skip: 'invalid id' };
+	if (typeof note.id !== 'string' || note.id.length > 1024 || Array.from(note.id).length > MAX_MESSAGE_URI_LENGTH || !isStorableText(note.id)) return { skip: 'invalid id' };
 	if (roomUriOf(note) !== ctx.roomUri) return { skip: 'another room' };
 
 	const host = ctx.hostOf(note.id);
@@ -185,12 +186,14 @@ export function parseChatHistoryItem(value: unknown, ctx: ChatHistoryItemContext
 	} catch {
 		return { skip: 'no author' };
 	}
+	if (!isStorableText(authorUri)) return { skip: 'no author' };
 	if (ctx.hostOf(authorUri) !== host) return { skip: 'author is on another server' };
 
 	const published = parseRemoteChatDate(note.published, ctx.now);
 	if (published == null || !ctx.isSafeTime(published.getTime())) return { skip: 'invalid published' };
 
 	const text = ctx.text(note);
+	if (text != null && !isStorableText(text)) return { skip: 'invalid text' };
 	if (text != null && Array.from(text.trim()).length > MAX_MESSAGE_TEXT_LENGTH) return { skip: 'too long' };
 
 	return {
