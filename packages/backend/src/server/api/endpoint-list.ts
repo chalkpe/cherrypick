@@ -490,6 +490,8 @@ export * as 'chat/rooms/voice/kick' from './endpoints/chat/rooms/voice/kick.js';
 export * as 'chat/rooms/voice/status' from './endpoints/chat/rooms/voice/status.js';
 export * as 'chat/rooms/voice/convert-recording' from './endpoints/chat/rooms/voice/convert-recording.js';
 export * as 'chat/rooms/voice/recording-folder' from './endpoints/chat/rooms/voice/recording-folder.js';
+export * as 'chat/rooms/voice/recording-result' from './endpoints/chat/rooms/voice/recording-result.js';
+export * as 'chat/rooms/voice/recording-discard' from './endpoints/chat/rooms/voice/recording-discard.js';
 export * as 'chat/rooms/voice/mute' from './endpoints/chat/rooms/voice/mute.js';
 export * as 'chat/rooms/invitations/create' from './endpoints/chat/rooms/invitations/create.js';
 export * as 'chat/rooms/invitations/cancel' from './endpoints/chat/rooms/invitations/cancel.js';

@@ -50,6 +50,25 @@ export function recordingOutputLimitBytes(serverMaxBytes: number, roleMaxFileSiz
 	return Math.min(serverMaxBytes, roleMaxFileSizeMb * 1024 * 1024);
 }
 
+// 변환 시간 상한. 실측(720p/15fps, libx264 veryfast 2스레드): 단순 화면 내용 약 580fps,
+// 최악 내용(노이즈) 약 75fps, 음성만 mp3 약 320배 속도. 영상은 입력 길이에 비례해 늘리고
+// 최악 실측의 2.5배 여유(초당 입력을 2초 만에 인코딩한다고 가정)를 둔다. 음성만은 기본 상한으로 충분하다.
+export const RECORDING_CONVERSION_BASE_TIMEOUT_MS = 10 * 60 * 1000;
+export const RECORDING_CONVERSION_MAX_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+const VIDEO_TIMEOUT_SECONDS_PER_INPUT_SECOND = 2;
+
+export function recordingConversionTimeoutMs(durationSec: number, hasVideo: boolean): number {
+	if (!hasVideo || !Number.isFinite(durationSec)) return RECORDING_CONVERSION_BASE_TIMEOUT_MS;
+	const scaled = RECORDING_CONVERSION_BASE_TIMEOUT_MS + durationSec * VIDEO_TIMEOUT_SECONDS_PER_INPUT_SECOND * 1000;
+	return Math.min(RECORDING_CONVERSION_MAX_TIMEOUT_MS, Math.max(RECORDING_CONVERSION_BASE_TIMEOUT_MS, scaled));
+}
+
+// 드라이브 한도를 넘은 최종 파일을 임시 보관할 수 있을 때의 출력 상한.
+// 서버 파일 한도에 비례해 늘리되, 변환 중 임시 디스크 사용은 8GiB로 묶는다.
+export function recordingTempOutputLimitBytes(serverMaxBytes: number): number {
+	return Math.max(1024 * 1024 * 1024, Math.min(serverMaxBytes * 4, 8 * 1024 * 1024 * 1024));
+}
+
 export type RecordingProbe = {
 	durationSec: number;
 	width: number;

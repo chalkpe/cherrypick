@@ -7,6 +7,8 @@ import * as fs from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import ConvertRecordingEndpoint, { meta } from '@/server/api/endpoints/chat/rooms/voice/convert-recording.js';
+import { RecordingStorageFullError, type RecordingResult } from '@/core/RecordingStorageService.js';
+import { IdentifiableError } from '@/misc/identifiable-error.js';
 
 const childProcess = vi.hoisted(() => ({ execFile: vi.fn(), spawn: vi.fn() }));
 vi.mock('node:child_process', async importOriginal => ({
@@ -16,8 +18,9 @@ vi.mock('node:child_process', async importOriginal => ({
 }));
 
 const me = { id: 'me', host: null } as any;
+const requestId = '11111111-1111-4111-8111-111111111111';
 
-function fixture(overrides: { types?: string[]; names?: string[]; conversions?: number; addFileError?: Error; probe?: object } = {}) {
+function fixture(overrides: { types?: string[]; names?: string[]; conversions?: number; addFileError?: Error; remembered?: RecordingResult | null; storeError?: Error; deleteFails?: string[]; serverMaxBytes?: number } = {}) {
 	const types = overrides.types ?? ['audio/webm'];
 	const files = types.map((type, i) => ({
 		id: `original${i}`,
@@ -34,24 +37,40 @@ function fixture(overrides: { types?: string[]; names?: string[]; conversions?: 
 		addFile: overrides.addFileError != null
 			? vi.fn().mockRejectedValue(overrides.addFileError)
 			: vi.fn().mockResolvedValue({ id: 'converted', folderId: 'folder1' }),
-		deleteFile: vi.fn().mockResolvedValue(undefined),
+		deleteFile: vi.fn(async (file: { id: string }) => {
+			if (overrides.deleteFails?.includes(file.id)) throw new Error('delete unavailable');
+		}),
 	};
 	const internalStorageService = { resolvePath: vi.fn((key: string) => `/recordings/${key}.webm`) };
 	const driveFileEntityService = { pack: vi.fn(async (packed: { id: string }) => ({ id: packed.id })) };
 	const roleService = { getUserPolicies: vi.fn().mockResolvedValue({ maxFileSizeMb: 100, driveCapacityMb: 1000 }) };
 	const apiLoggerService = { logger: { warn: vi.fn() } };
+	const results = new Map<string, RecordingResult>();
+	if (overrides.remembered != null) results.set(requestId, overrides.remembered);
+	const recordingStorage = {
+		getResult: vi.fn(async (_userId: string, id: string) => results.get(id) ?? null),
+		setResult: vi.fn(async (_userId: string, id: string, value: RecordingResult) => { results.set(id, value); }),
+		clearResult: vi.fn(async (_userId: string, id: string) => { results.delete(id); }),
+		store: overrides.storeError != null
+			? vi.fn().mockRejectedValue(overrides.storeError)
+			: vi.fn(async (_userId: string, _requestId: string, _src: string, name: string) => ({ id: 'dl-1', userId: 'me', requestId, path: '/tmp/dl-1', name, size: 2048 })),
+		getDownload: vi.fn().mockResolvedValue(null),
+		retryPartCleanup: vi.fn().mockResolvedValue(undefined),
+		removeDownload: vi.fn().mockResolvedValue(undefined),
+	};
 	const endpoint = new ConvertRecordingEndpoint(
-		{ maxFileSize: 100 * 1024 * 1024 } as any,
+		{ maxFileSize: overrides.serverMaxBytes ?? 100 * 1024 * 1024 } as any,
 		{ voiceCallMaxRecordingConversions: overrides.conversions ?? 2 } as any,
 		driveFilesRepository as any,
 		redisClient as any,
 		driveService as any,
 		internalStorageService as any,
 		driveFileEntityService as any,
+		recordingStorage as any,
 		roleService as any,
 		apiLoggerService as any,
 	);
-	return { endpoint, driveService, driveFilesRepository, files };
+	return { endpoint, driveService, driveFilesRepository, recordingStorage, results, files };
 }
 
 function mockProbe(probe?: object) {
@@ -86,18 +105,19 @@ describe('chat/rooms/voice/convert-recording', () => {
 	test('converts a single audio recording to mp3 in the requested folder and deletes the original', async () => {
 		const f = fixture();
 
-		await expect(f.endpoint.exec({ fileIds: ['original0'], video: false, folderId: 'folder1' }, me, null, null)).resolves.toEqual({ id: 'converted' });
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false, folderId: 'folder1' }, me, null, null)).resolves.toEqual({ file: { id: 'converted' }, download: null });
 
 		const args = childProcess.spawn.mock.calls[0][1] as string[];
 		expect(args).toContain('-vn');
 		expect(f.driveService.addFile).toHaveBeenCalledWith(expect.objectContaining({ name: 'room 1-20261115-090807.mp3', folderId: 'folder1', force: true }));
 		expect(f.driveService.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ id: 'original0' }), false, me);
+		expect(f.results.get(requestId)).toMatchObject({ fileId: 'converted', remainingParts: [] });
 	});
 
 	test('concatenates several parts in order into one file and deletes every part', async () => {
 		const f = fixture({ types: ['audio/webm', 'audio/webm', 'audio/webm'] });
 
-		await f.endpoint.exec({ fileIds: ['original0', 'original1', 'original2'], video: false, folderId: 'folder1' }, me, null, null);
+		await f.endpoint.exec({ fileIds: ['original0', 'original1', 'original2'], requestId, video: false, folderId: 'folder1' }, me, null, null);
 
 		const args = childProcess.spawn.mock.calls[0][1] as string[];
 		expect(args).toContain('concat');
@@ -109,7 +129,7 @@ describe('chat/rooms/voice/convert-recording', () => {
 	test('keeps the video of a video recording by default', async () => {
 		const f = fixture({ types: ['video/webm'] });
 
-		await f.endpoint.exec({ fileIds: ['original0'] }, me, null, null);
+		await f.endpoint.exec({ fileIds: ['original0'], requestId }, me, null, null);
 
 		const args = childProcess.spawn.mock.calls[0][1] as string[];
 		expect(args).toContain('libx264');
@@ -119,7 +139,7 @@ describe('chat/rooms/voice/convert-recording', () => {
 	test('discards the black video lead-in when the caller asks for audio only', async () => {
 		const f = fixture({ types: ['video/webm'] });
 
-		await f.endpoint.exec({ fileIds: ['original0'], video: false }, me, null, null);
+		await f.endpoint.exec({ fileIds: ['original0'], requestId, video: false }, me, null, null);
 
 		const args = childProcess.spawn.mock.calls[0][1] as string[];
 		expect(args).toContain('-vn');
@@ -131,7 +151,7 @@ describe('chat/rooms/voice/convert-recording', () => {
 	])('accepts %s recordings from browsers that cannot record webm', async (type, name) => {
 		const f = fixture({ types: [type], names: ['room 1-20261115-090807.mp4'] });
 
-		await expect(f.endpoint.exec({ fileIds: ['original0'] }, me, null, null)).resolves.toEqual({ id: 'converted' });
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId }, me, null, null)).resolves.toEqual({ file: { id: 'converted' }, download: null });
 
 		expect(f.driveService.addFile).toHaveBeenCalledWith(expect.objectContaining({ name }));
 	});
@@ -139,7 +159,7 @@ describe('chat/rooms/voice/convert-recording', () => {
 	test('reports a missing folder instead of a generic conversion failure', async () => {
 		const f = fixture({ addFileError: new Error('folder-not-found') });
 
-		await expect(f.endpoint.exec({ fileIds: ['original0'], folderId: 'gone' }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_FOLDER' });
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, folderId: 'gone' }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_FOLDER' });
 		expect(meta.errors).toHaveProperty('noSuchFolder');
 	});
 
@@ -147,7 +167,7 @@ describe('chat/rooms/voice/convert-recording', () => {
 		const f = fixture();
 		mockProbe({ format: { duration: String(5 * 60 * 60) }, streams: [{ codec_type: 'audio' }] });
 
-		await expect(f.endpoint.exec({ fileIds: ['original0'] }, me, null, null)).rejects.toMatchObject({ code: 'INPUT_TOO_LARGE' });
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId }, me, null, null)).rejects.toMatchObject({ code: 'INPUT_TOO_LARGE' });
 		expect(childProcess.spawn).not.toHaveBeenCalled();
 		expect(f.driveService.deleteFile).not.toHaveBeenCalled();
 	});
@@ -156,35 +176,111 @@ describe('chat/rooms/voice/convert-recording', () => {
 		const f = fixture({ types: ['video/webm'] });
 		mockProbe({ format: { duration: '10' }, streams: [{ codec_type: 'audio' }, { codec_type: 'video', width: 3840, height: 2160 }] });
 
-		await expect(f.endpoint.exec({ fileIds: ['original0'] }, me, null, null)).rejects.toMatchObject({ code: 'INPUT_TOO_LARGE' });
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId }, me, null, null)).rejects.toMatchObject({ code: 'INPUT_TOO_LARGE' });
 		expect(childProcess.spawn).not.toHaveBeenCalled();
 	});
 
-	test('stops and reports when the output grows past the limit while running', async () => {
+	test('rejects duplicate part ids instead of probing the same file again and again', async () => {
 		const f = fixture();
-		// role cap 100MB but server cap small; write a big output so the watchdog trips
-		const endpoint = new ConvertRecordingEndpoint(
-			{ maxFileSize: 100 } as any,
-			{ voiceCallMaxRecordingConversions: 2 } as any,
-			f.driveFilesRepository as any,
-			{ eval: vi.fn().mockResolvedValue(1) } as any,
-			f.driveService as any,
-			{ resolvePath: vi.fn(() => '/recordings/a.webm') } as any,
-			{ pack: vi.fn(async (p: { id: string }) => ({ id: p.id })) } as any,
-			{ getUserPolicies: vi.fn().mockResolvedValue({ maxFileSizeMb: 100, driveCapacityMb: 1000 }) } as any,
-			{ logger: { warn: vi.fn() } } as any,
-		);
+
+		await expect(f.endpoint.exec({ fileIds: ['original0', 'original0'], requestId }, me, null, null)).rejects.toMatchObject({ code: 'DUPLICATE_FILE' });
+		expect(childProcess.execFile).not.toHaveBeenCalled();
+		expect(childProcess.spawn).not.toHaveBeenCalled();
+	});
+
+	test('probes many parts with a small bounded concurrency', async () => {
+		const types = Array.from({ length: 20 }, () => 'audio/webm');
+		const f = fixture({ types });
+		let active = 0;
+		let max = 0;
+		childProcess.execFile.mockImplementation((_cmd: string, _args: string[], _options: unknown, callback: (err: Error | null, stdout: string, stderr: string) => void) => {
+			active += 1;
+			max = Math.max(max, active);
+			setTimeout(() => {
+				active -= 1;
+				callback(null, JSON.stringify({ format: { duration: '1' }, streams: [{ codec_type: 'audio' }] }), '');
+			}, 5);
+		});
+
+		await f.endpoint.exec({ fileIds: types.map((_, i) => `original${i}`), requestId, video: false }, me, null, null);
+
+		expect(max).toBeLessThanOrEqual(4);
+		expect(max).toBeGreaterThan(1);
+	});
+
+	test('waits for running probes before giving the slot back when one fails', async () => {
+		const types = Array.from({ length: 8 }, () => 'audio/webm');
+		const f = fixture({ types });
+		let started = 0;
+		let finished = 0;
+		childProcess.execFile.mockImplementation((_cmd: string, _args: string[], _options: unknown, callback: (err: Error | null, stdout: string, stderr: string) => void) => {
+			started += 1;
+			const fail = started === 1;
+			setTimeout(() => {
+				finished += 1;
+				callback(fail ? new Error('probe failed') : null, JSON.stringify({ format: { duration: '1' }, streams: [{ codec_type: 'audio' }] }), '');
+			}, 10);
+		});
+
+		await expect(f.endpoint.exec({ fileIds: types.map((_, i) => `original${i}`), requestId, video: false }, me, null, null)).rejects.toMatchObject({ code: 'CONVERSION_FAILED' });
+		// 실패 뒤에 남은 probe를 시작하지 않고, 실행 중이던 것은 끝까지 기다린다
+		expect(started).toBeLessThanOrEqual(4);
+		expect(finished).toBe(started);
+		expect(childProcess.spawn).not.toHaveBeenCalled();
+	});
+
+	test('returns the remembered final file for a repeated request without converting again', async () => {
+		const f = fixture({ remembered: { fileId: 'converted', folderId: 'folder1', remainingParts: ['original0'] } });
+		f.driveFilesRepository.findOneBy.mockResolvedValue({ id: 'converted', userId: 'me' });
+
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false }, me, null, null)).resolves.toEqual({ file: { id: 'converted' }, download: null });
+
+		expect(childProcess.spawn).not.toHaveBeenCalled();
+		expect(f.driveService.addFile).not.toHaveBeenCalled();
+		expect(f.recordingStorage.retryPartCleanup).toHaveBeenCalledWith('me', requestId, expect.objectContaining({ remainingParts: ['original0'] }));
+	});
+
+	test('keeps an over-limit final file for a one-time download instead of the drive', async () => {
+		const f = fixture({ serverMaxBytes: 100 });
 		mockFfmpeg(1024); // > 100 byte server cap
 
-		await expect(endpoint.exec({ fileIds: ['original0'] }, me, null, null)).rejects.toMatchObject({ code: 'OUTPUT_TOO_LARGE' });
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false }, me, null, null))
+			.resolves.toEqual({ file: null, download: { id: 'dl-1', name: 'room 1-20261115-090807.mp3', size: 2048, reason: 'tooLarge' } });
+
 		expect(f.driveService.addFile).not.toHaveBeenCalled();
+		expect(f.recordingStorage.store).toHaveBeenCalled();
+		expect(f.driveService.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ id: 'original0' }), false, me);
+		expect(f.results.get(requestId)).toMatchObject({ download: { id: 'dl-1', reason: 'tooLarge' }, remainingParts: [] });
+	});
+
+	test('offers the kept download when the drive has no free space for the final file', async () => {
+		const f = fixture({ addFileError: new IdentifiableError('c6244ed2-a39a-4e1c-bf93-f0fbd7764fa6', 'No free space.') });
+
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false }, me, null, null))
+			.resolves.toMatchObject({ file: null, download: { id: 'dl-1', reason: 'noFreeSpace' } });
+	});
+
+	test('keeps the originals when the temporary download storage is full', async () => {
+		const f = fixture({ serverMaxBytes: 100, storeError: new RecordingStorageFullError() });
+		mockFfmpeg(1024);
+
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false }, me, null, null)).rejects.toMatchObject({ code: 'OUTPUT_TOO_LARGE' });
 		expect(f.driveService.deleteFile).not.toHaveBeenCalled();
+	});
+
+	test('records leftover parts when a deletion fails and still reports the saved file', async () => {
+		const f = fixture({ types: ['audio/webm', 'audio/webm'], deleteFails: ['original1'] });
+
+		await expect(f.endpoint.exec({ fileIds: ['original0', 'original1'], requestId, video: false }, me, null, null))
+			.resolves.toEqual({ file: { id: 'converted' }, download: null });
+
+		expect(f.results.get(requestId)).toMatchObject({ fileId: 'converted', remainingParts: ['original1'] });
 	});
 
 	test('leaves files that are not recordings alone', async () => {
 		const f = fixture({ types: ['image/png'] });
 
-		await expect(f.endpoint.exec({ fileIds: ['original0'] }, me, null, null)).resolves.toBeNull();
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId }, me, null, null)).resolves.toBeNull();
 
 		expect(childProcess.spawn).not.toHaveBeenCalled();
 		expect(f.driveService.addFile).not.toHaveBeenCalled();
@@ -193,7 +289,7 @@ describe('chat/rooms/voice/convert-recording', () => {
 	test('keeps the originals when conversion is turned off', async () => {
 		const f = fixture({ conversions: 0 });
 
-		await expect(f.endpoint.exec({ fileIds: ['original0'] }, me, null, null)).resolves.toBeNull();
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId }, me, null, null)).resolves.toBeNull();
 
 		expect(childProcess.spawn).not.toHaveBeenCalled();
 		expect(f.driveService.addFile).not.toHaveBeenCalled();

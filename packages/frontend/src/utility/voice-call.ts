@@ -152,6 +152,8 @@ let deafenRevision = 0;
 type RecordingUploadReason = 'noFreeSpace' | 'tooLarge' | 'network' | null;
 // 업로드된 임시 조각 원본. 변환 단계에서 순서대로 이어 붙여 최종 파일 하나를 만들고 지운다.
 type RecordingPartRef = { fileId: string; url: string | null; name: string; index: number };
+// 드라이브 파일 한도를 넘은 최종 파일의 임시 내려받기. 본인만 한 번 받을 수 있다.
+type RecordingDownloadRef = { id: string; name: string; size: number; reason: 'noFreeSpace' | 'tooLarge' };
 // 저장에 실패한 녹화 전체. 올라간 조각은 드라이브에, 못 올린 조각은 blob으로 남겨 재시도·기기 저장·버리기를 제공한다.
 type FailedRecording = {
 	reason: RecordingUploadReason;
@@ -170,6 +172,8 @@ class RecordingUploadError extends Error {
  */
 type RecordingSession = {
 	roomId: string;
+	// 같은 녹화의 변환 재시도는 같은 requestId를 쓴다. 응답을 잃어도 서버가 이전 결과를 돌려준다.
+	requestId: string;
 	uploads: Promise<boolean>[];
 	failed: FailedRecording[];
 	stopping: boolean;
@@ -180,6 +184,8 @@ type RecordingSession = {
 	hasVideo: boolean;
 	folderId: string | null;
 	folderName: string | null;
+	// 한도 초과로 드라이브 대신 임시 보관된 최종 파일. 기기 저장은 이 한 파일을 받는다.
+	pendingDownload: RecordingDownloadRef | null;
 	name: string;
 	ext: string;
 };
@@ -259,8 +265,6 @@ function createRecordingCanvas(): MediaStream | null {
 		const stream = canvas.captureStream(15);
 		recordingCanvas = canvas;
 		drawRecordingFrame();
-		// 준비 구간 동안 이미 들어온 공유가 있으면 캔버스가 생긴 지금 영상으로 확정한다.
-		if (recordingVideos.size > 0) markRecordingVideo();
 		return stream;
 	} catch (err) {
 		// without a canvas we cannot add video later; this stays an audio-only recording
@@ -426,36 +430,50 @@ async function convertRecording(session: RecordingSession): Promise<Misskey.enti
 	const fileIds = [...session.parts].sort((a, b) => a.index - b.index).map(part => part.fileId);
 	// the server converts one recording per user at a time, so serialize conversions
 	const conversion = recordingConversions.then(async () => {
-		let converted: Misskey.entities.DriveFile | null;
+		let result: Misskey.Endpoints['chat/rooms/voice/convert-recording']['res'];
 		try {
-			converted = await misskeyApi('chat/rooms/voice/convert-recording', { fileIds, video: session.hasVideo, folderId: session.folderId });
+			result = await misskeyApi('chat/rooms/voice/convert-recording', { fileIds, requestId: session.requestId, video: session.hasVideo, folderId: session.folderId });
 		} catch (error) {
 			if (isApiError(error) && error.code === 'NO_SUCH_FOLDER') {
 				// 폴더가 사라졌으면 다시 확보(재생성)하고, 그래도 없으면 루트로 한 번만 재시도
 				const folder = await ensureRecordingFolder();
 				session.folderId = folder?.id ?? null;
 				session.folderName = folder?.name ?? null;
-				converted = await misskeyApi('chat/rooms/voice/convert-recording', { fileIds, video: session.hasVideo, folderId: session.folderId });
+				result = await misskeyApi('chat/rooms/voice/convert-recording', { fileIds, requestId: session.requestId, video: session.hasVideo, folderId: session.folderId });
 			} else {
 				throw error;
 			}
 		}
-		return converted;
+		return result;
 	});
 	recordingConversions = conversion.then(() => {}, () => {});
 	try {
-		const converted = await conversion;
+		const result = await conversion;
+		if (result == null) return null;
+		if (result.download != null) {
+			// 드라이브 한도 초과: 최종 파일은 서버가 잠시 보관한다. 기기 저장은 이 한 파일을 받는다.
+			session.pendingDownload = result.download;
+			throw new RecordingUploadError(result.download.reason);
+		}
+		const converted = result.file;
 		// 저장 안내는 실제 저장 위치를 기준으로 한다
 		if (converted != null) {
+			session.pendingDownload = null;
 			session.folderId = converted.folderId ?? null;
 			session.folderName = converted.folderId != null ? session.folderName : null;
 		}
 		return converted;
 	} catch (error) {
+		if (error instanceof RecordingUploadError) throw error;
 		const code = isApiError(error) ? error.code : null;
 		const reason = code === 'OUTPUT_TOO_LARGE' || code === 'INPUT_TOO_LARGE' ? 'tooLarge' : code === 'NO_FREE_SPACE' ? 'noFreeSpace' : null;
 		throw new RecordingUploadError(reason);
 	}
+}
+
+/** 응답 유실 뒤에도 실제 남은 결과를 찾는다. 변환을 다시 실행하지 않는 조회 경로. */
+async function fetchRecordingResult(session: RecordingSession): Promise<Misskey.Endpoints['chat/rooms/voice/recording-result']['res']> {
+	return await misskeyApi('chat/rooms/voice/recording-result', { requestId: session.requestId });
 }
 
 /** 조각을 올리는 대로 임시 원본으로 모아 둔다. 변환은 녹화가 끝난 뒤 한 번만 한다 */
@@ -567,38 +585,84 @@ function toastRecordingSaved(session: RecordingSession): void {
 		: i18n.ts._voiceCall.recordingSaved);
 }
 
-/** 기기 저장: 못 올린 조각은 blob으로, 올라간 조각은 드라이브에서 다시 받아 저장한다. 모두 성공했는지 돌려준다 */
-async function downloadRecording(recording: FailedRecording): Promise<boolean> {
-	let ok = true;
-	const save = (blob: Blob, name: string) => {
+/** 기기 저장: 최종 결과가 있으면 그 한 파일을, 없으면 못 올린 조각은 blob으로·올라간 조각은 드라이브에서 받아 저장한다. 모두 성공했는지 돌려준다 */
+async function downloadRecording(recording: FailedRecording, session: RecordingSession): Promise<boolean> {
+	const save = (blob: Blob, filename: string) => {
 		const objectUrl = URL.createObjectURL(blob);
 		const a = window.document.createElement('a');
 		a.href = objectUrl;
-		a.download = `${name}${recording.ext}`;
+		a.download = filename;
 		a.click();
 		window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 	};
-	for (const part of recording.pending) save(part.blob, part.name);
+	const saveFromUrl = async (url: string, filename: string): Promise<boolean> => {
+		try {
+			const res = await window.fetch(url, { credentials: 'omit' });
+			if (!res.ok) throw new Error(`download failed: ${res.status}`);
+			save(await res.blob(), filename);
+			return true;
+		} catch (err) {
+			console.warn('[recording] could not download the recording', err);
+			return false;
+		}
+	};
+	// 응답을 잃었거나 한도 초과인 경우, 실제 남은 최종 파일 한 개를 받는다 (조각이 이미 지워졌을 수 있다)
+	const result = await fetchRecordingResult(session).catch(() => null);
+	if (result?.file != null) {
+		const ok = result.file.url != null && await saveFromUrl(result.file.url, result.file.name);
+		if (!ok) os.toast(i18n.ts._voiceCall.recordingDownloadFailed);
+		return ok;
+	}
+	const download = result?.download ?? session.pendingDownload;
+	if (download != null) {
+		if ($i == null) return false;
+		try {
+			const res = await window.fetch(`${url}/recording-download/${download.id}`, { headers: { Authorization: `Bearer ${$i.token}` } });
+			if (!res.ok) throw new Error(`download failed: ${res.status}`);
+			save(await res.blob(), download.name);
+			return true;
+		} catch (err) {
+			console.warn('[recording] could not download the kept recording', err);
+			os.toast(i18n.ts._voiceCall.recordingDownloadFailed);
+			return false;
+		}
+	}
+	let ok = true;
+	for (const part of recording.pending) save(part.blob, `${part.name}${recording.ext}`);
 	for (const part of recording.uploaded) {
 		if (part.url == null) { ok = false; continue; }
-		try {
-			const res = await window.fetch(part.url, { credentials: 'omit' });
-			if (!res.ok) throw new Error(`download failed: ${res.status}`);
-			save(await res.blob(), part.name);
-		} catch (err) {
-			console.warn('[recording] could not download the original from the drive', err);
-			ok = false;
-		}
+		if (!await saveFromUrl(part.url, `${part.name}${recording.ext}`)) ok = false;
 	}
 	if (!ok) os.toast(i18n.ts._voiceCall.recordingDownloadFailed);
 	return ok;
 }
 
-/** 버리기를 확정하면 드라이브에 올라간 임시 조각도 지운다. 삭제에 실패한 원본은 목록에 남도록 돌려준다. */
-async function discardUploadedOriginals(failed: FailedRecording[]): Promise<FailedRecording[]> {
+/** 버리기를 확정하면 실제 남은 자료를 지운다: 최종 결과(응답 유실 뒤 드라이브에 남은 파일·임시 보관)와 임시 조각. 삭제에 실패한 원본은 목록에 남도록 돌려준다. */
+async function discardUploadedOriginals(failed: FailedRecording[], session: RecordingSession): Promise<FailedRecording[]> {
+	let resultDeleted = true;
+	const result = await fetchRecordingResult(session).catch(() => null);
+	if (result?.file != null) {
+		try {
+			await misskeyApi('drive/files/delete', { fileId: result.file.id });
+		} catch (error) {
+			if (!(isApiError(error) && error.code === 'NO_SUCH_FILE')) {
+				console.warn('[recording] could not delete the converted recording', error);
+				resultDeleted = false;
+			}
+		}
+	}
+	const download = result?.download ?? session.pendingDownload;
+	if (download != null) {
+		try {
+			await misskeyApi('chat/rooms/voice/recording-discard', { id: download.id });
+		} catch (error) {
+			console.warn('[recording] could not discard the kept recording', error);
+			resultDeleted = false;
+		}
+	}
 	const undeleted: FailedRecording[] = [];
 	await Promise.all(failed.map(async recording => {
-		let allDeleted = true;
+		let allDeleted = resultDeleted;
 		for (const part of recording.uploaded) {
 			try {
 				await misskeyApi('drive/files/delete', { fileId: part.fileId });
@@ -640,7 +704,7 @@ async function offerFailedRecordings(session: RecordingSession): Promise<void> {
 		// 閉じただけでは捨てない。選ぶまでもう一度聞く
 		if (canceled) continue;
 		if (result === 'download') {
-			const results = await Promise.all(failed.map(recording => downloadRecording(recording)));
+			const results = await Promise.all(failed.map(recording => downloadRecording(recording, session)));
 			// 다운로드에 실패한 항목은 다시 고를 수 있게 선택창을 유지한다
 			failed = failed.filter((_, i) => !results[i]);
 			if (failed.length === 0) return;
@@ -649,7 +713,7 @@ async function offerFailedRecordings(session: RecordingSession): Promise<void> {
 		if (result === 'discard') {
 			const confirmed = await os.confirm({ type: 'warning', text: hasOriginal ? i18n.ts._voiceCall.recordingDiscardConfirmUploaded : i18n.ts._voiceCall.recordingDiscardConfirm });
 			if (!confirmed.canceled) {
-				const undeleted = await discardUploadedOriginals(failed);
+				const undeleted = await discardUploadedOriginals(failed, session);
 				if (undeleted.length === 0) return;
 				// 삭제에 실패한 원본은 드라이브에 남는다. 오류로 알리고 다시 버릴 수 있게 목록을 유지한다.
 				// 알림이 닫힌 뒤에 목록을 다시 띄운다. 바로 띄우면 알림이 목록 뒤에 가려져 보이지 않는다
@@ -877,7 +941,7 @@ export async function startRecording(): Promise<void> {
 			if (current === room && recordingStarting == null && recordingSession == null) reportStatus(room, true);
 			return;
 		}
-		const session: RecordingSession = { roomId, uploads: [], failed: [], stopping: false, micRevision: 0, parts: [], failedUploads: [], hasVideo: false, folderId: null, folderName: null, name: 'voice', ext: '.webm' };
+		const session: RecordingSession = { roomId, requestId: crypto.randomUUID(), uploads: [], failed: [], stopping: false, micRevision: 0, parts: [], failedUploads: [], hasVideo: false, folderId: null, folderName: null, pendingDownload: null, name: 'voice', ext: '.webm' };
 		recordingSession = session;
 		// 녹화 중에는 시청 여부와 무관하게 원격 공유를 구독한다. 준비 구간 동안 들어온 공유도 놓치지 않는다.
 		resyncAllSubscriptions();
@@ -909,6 +973,8 @@ export async function startRecording(): Promise<void> {
 
 		// 처음부터 캔버스를 capture해 두면, 녹음 중간에 나타난 화면도 같은 파일에 담긴다
 		recordingCanvasStream = createRecordingCanvas();
+		// 준비 구간 동안 이미 들어온 공유는 캔버스가 생긴 지금 영상으로 확정한다.
+		if (recordingCanvasStream != null && recordingVideos.size > 0) markRecordingVideo();
 
 		await captureRecordingMicrophone(session, room);
 		if (!active()) return;
@@ -1416,6 +1482,9 @@ function syncScreenShareSubscription(identity: string): void {
 	const watched = state.watchingIdentities.includes(identity);
 	const recording = isRecordingActive();
 	const wanted = watched || recording;
+	// 시청 시작·종료에 맞춰 공유 소리의 재생 여부도 갱신한다 (녹화 중 구독은 유지)
+	const participant = current.remoteParticipants.get(identity);
+	if (participant != null) applyVolume(participant);
 	for (const publication of current.remoteParticipants.get(identity)?.trackPublications.values() ?? []) {
 		if (publication.source === livekit.Track.Source.ScreenShareAudio) publication.setSubscribed(wanted);
 	}
@@ -1501,7 +1570,9 @@ function volumeOf(identity: string, audio: ParticipantAudio): number {
 function applyVolume(participant: RemoteParticipant): void {
 	const { Track } = livekit!;
 	participant.setVolume(volumeOf(participant.identity, 'voice'), Track.Source.Microphone);
-	participant.setVolume(volumeOf(participant.identity, 'screenShare'), Track.Source.ScreenShareAudio);
+	// 녹화 때문에 구독한 공유 소리는 시청할 때만 스피커로 재생한다. 녹화 입력은 별도의 탭이라 음량과 무관하다.
+	const watching = state.watchingIdentities.includes(participant.identity);
+	participant.setVolume(watching ? volumeOf(participant.identity, 'screenShare') : 0, Track.Source.ScreenShareAudio);
 }
 
 function applySubscription(lk: LiveKit, publication: TrackPublication, participant: RemoteParticipant): void {

@@ -295,6 +295,11 @@ import type {
 	ChatRoomsVoiceJoinResponse,
 	ChatRoomsVoiceKickRequest,
 	ChatRoomsVoiceMuteRequest,
+	ChatRoomsVoiceRecordingDiscardRequest,
+	ChatRoomsVoiceRecordingFolderRequest,
+	ChatRoomsVoiceRecordingFolderResponse,
+	ChatRoomsVoiceRecordingResultRequest,
+	ChatRoomsVoiceRecordingResultResponse,
 	ChatRoomsVoiceStatesRequest,
 	ChatRoomsVoiceStatesResponse,
 	ChatRoomsVoiceStatusRequest,
@@ -948,6 +953,9 @@ export type Endpoints = {
 	'chat/rooms/voice/join': { req: ChatRoomsVoiceJoinRequest; res: ChatRoomsVoiceJoinResponse };
 	'chat/rooms/voice/kick': { req: ChatRoomsVoiceKickRequest; res: EmptyResponse };
 	'chat/rooms/voice/mute': { req: ChatRoomsVoiceMuteRequest; res: EmptyResponse };
+	'chat/rooms/voice/recording-discard': { req: ChatRoomsVoiceRecordingDiscardRequest; res: EmptyResponse };
+	'chat/rooms/voice/recording-folder': { req: ChatRoomsVoiceRecordingFolderRequest; res: ChatRoomsVoiceRecordingFolderResponse };
+	'chat/rooms/voice/recording-result': { req: ChatRoomsVoiceRecordingResultRequest; res: ChatRoomsVoiceRecordingResultResponse };
 	'chat/rooms/voice/states': { req: ChatRoomsVoiceStatesRequest; res: ChatRoomsVoiceStatesResponse };
 	'chat/rooms/voice/status': { req: ChatRoomsVoiceStatusRequest; res: EmptyResponse };
 	'clips/add-note': { req: ClipsAddNoteRequest; res: EmptyResponse };

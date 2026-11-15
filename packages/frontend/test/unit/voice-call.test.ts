@@ -488,6 +488,8 @@ describe('voice call controller', () => {
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
 		const b = remoteParticipant('b');
+		watchScreenShare('a');
+		watchScreenShare('b');
 
 		setDeafened(true);
 		await Promise.resolve();
@@ -512,6 +514,7 @@ describe('voice call controller', () => {
 		prefer.commit('voiceCall.participantVolumes', { a: 0.5 });
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
+		watchScreenShare('a');
 		setDeafened(true);
 		await Promise.resolve();
 		expect(voiceCall).toMatchObject({ deafened: true, micEnabled: false });
@@ -895,6 +898,8 @@ describe('voice call controller', () => {
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
 		const b = remoteParticipant('b');
+		watchScreenShare('a');
+		watchScreenShare('b');
 
 		setParticipantVolume('a', 'voice', 1.5);
 		expect(prefer.s['voiceCall.participantVolumes']).toMatchObject({ a: 1 });
@@ -916,6 +921,7 @@ describe('voice call controller', () => {
 	test('keeps the voice and the shared screen audio of a participant at separate volumes', async () => {
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
+		watchScreenShare('a');
 
 		setParticipantVolume('a', 'voice', 0.4);
 		expect(a.setVolume).toHaveBeenCalledWith(0.4, lk.Track.Source.Microphone);
@@ -1820,7 +1826,8 @@ describe('call recording lifecycle', () => {
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
 			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
 			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
-			if (endpoint === 'chat/rooms/voice/convert-recording') return { id: 'converted-file', folderId: 'recording-folder' };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: { id: 'converted-file', folderId: 'recording-folder' }, download: null };
 			return {};
 		});
 		mocks.actions.mockReset().mockResolvedValue({ canceled: false, result: 'retry' });
@@ -2133,7 +2140,7 @@ describe('call recording lifecycle', () => {
 			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
 			if (endpoint !== 'chat/rooms/voice/convert-recording') return {};
 			if (++attempts <= 1) throw Object.assign(new Error(code), { code });
-			return { id: 'converted-file', folderId: 'recording-folder' };
+			return { file: { id: 'converted-file', folderId: 'recording-folder' }, download: null };
 		});
 
 		stopRecording();
@@ -2333,7 +2340,8 @@ describe('call recording lifecycle', () => {
 			.mockResolvedValue({ ok: true, json: async () => ({ id: 'original-file' }) } as Response);
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
 			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
-			if (endpoint === 'chat/rooms/voice/convert-recording') return { id: 'converted-file', folderId: 'recording-folder' };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: { id: 'converted-file', folderId: 'recording-folder' }, download: null };
 			return {};
 		});
 
@@ -2470,7 +2478,7 @@ describe('call recording lifecycle', () => {
 		const form = vi.mocked(window.fetch).mock.calls[0][1]!.body as FormData;
 		expect(form.get('folderId')).toBe('recording-folder');
 		expect(form.get('force')).toBe('true');
-		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileIds: ['recording-file'], video: false, folderId: 'recording-folder' });
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileIds: ['recording-file'], requestId: expect.any(String), video: false, folderId: 'recording-folder' });
 		expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName }));
 	});
 
@@ -2569,7 +2577,7 @@ describe('call recording lifecycle', () => {
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
 			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
 			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'new-folder', name: params.name };
-			if (endpoint === 'chat/rooms/voice/convert-recording') return { id: 'converted-file', folderId: 'new-folder' };
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: { id: 'converted-file', folderId: 'new-folder' }, download: null };
 			return {};
 		});
 		await joinRecordingCall();
@@ -2580,7 +2588,7 @@ describe('call recording lifecycle', () => {
 		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/recording-folder', { name: i18n.ts._voiceCall.recordingFolderName });
 		const form = vi.mocked(window.fetch).mock.calls[0][1]!.body as FormData;
 		expect(form.get('folderId')).toBe('new-folder');
-		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileIds: ['recording-file'], video: false, folderId: 'new-folder' });
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileIds: ['recording-file'], requestId: expect.any(String), video: false, folderId: 'new-folder' });
 		expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName }));
 	});
 
@@ -2598,7 +2606,7 @@ describe('call recording lifecycle', () => {
 
 		const form = vi.mocked(window.fetch).mock.calls[0][1]!.body as FormData;
 		expect(form.get('folderId')).toBeNull();
-		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileIds: ['recording-file'], video: false, folderId: null });
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileIds: ['recording-file'], requestId: expect.any(String), video: false, folderId: null });
 		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved);
 	});
 
@@ -2719,7 +2727,7 @@ describe('call recording lifecycle', () => {
 			if (endpoint === 'chat/rooms/voice/convert-recording') {
 				attempts += 1;
 				if (attempts === 1) { folderGone = true; throw Object.assign(new Error('NO_SUCH_FOLDER'), { code: 'NO_SUCH_FOLDER' }); }
-				return { id: 'converted-file', folderId: null };
+				return { file: { id: 'converted-file', folderId: null }, download: null };
 			}
 			return {};
 		});
@@ -2791,5 +2799,135 @@ describe('call recording lifecycle', () => {
 		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
 		secondChoice.resolve({ canceled: false, result: 'discard' });
 		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'original-file' }));
+	});
+
+	test('recording keeps an unwatched share subscribed but silent, and plays it while watched', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		const a = remoteParticipant('a');
+		const publication = { source: lk.Track.Source.ScreenShareAudio, kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() };
+		lastRoom().emit(lk.RoomEvent.TrackPublished, publication, a);
+		// 녹화는 시청 여부와 무관하게 공유 소리를 구독한다
+		expect(publication.setSubscribed).toHaveBeenCalledWith(true);
+
+		const element = document.createElement('audio');
+		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: { kind: 'audio' }, attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, publication, a);
+		// 시청하지 않는 공유 소리는 스피커로 재생하지 않는다
+		expect(a.setVolume).toHaveBeenLastCalledWith(0, lk.Track.Source.ScreenShareAudio);
+		// 녹화 입력은 재생 음량과 무관하게 연결된다
+		expect(RecordingContext.instances.at(-1)!.createMediaStreamSource).toHaveBeenCalled();
+
+		watchScreenShare('a');
+		expect(a.setVolume).toHaveBeenLastCalledWith(1, lk.Track.Source.ScreenShareAudio);
+		unwatchScreenShare('a');
+		expect(a.setVolume).toHaveBeenLastCalledWith(0, lk.Track.Source.ScreenShareAudio);
+
+		stopRecording();
+		await flushRecording();
+	});
+
+	test('retries a conversion with the same request id so a lost response can be recovered', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		let attempts = 0;
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			if (endpoint !== 'chat/rooms/voice/convert-recording') return {};
+			if (++attempts <= 1) throw new TypeError('Failed to fetch');
+			return { file: { id: 'converted-file', folderId: 'recording-folder' }, download: null };
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'retry' });
+		await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName })));
+
+		expect(conversionCalls()).toHaveLength(2);
+		const [first, second] = conversionCalls().map(([, params]) => params.requestId);
+		expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+		expect(second).toBe(first);
+	});
+
+	test('device save after a lost response downloads the remembered final file, not the deleted parts', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file', url: 'https://local.test/files/original-file' }) } as Response)
+			.mockResolvedValueOnce({ ok: true, blob: async () => new Blob(['final'], { type: 'audio/mpeg' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw new TypeError('Failed to fetch');
+			if (endpoint === 'chat/rooms/voice/recording-result') return { file: { id: 'final-file', url: 'https://local.test/files/final-file', name: 'room 1-20261115-090807.mp3' }, download: null };
+			return {};
+		});
+		const downloads: { href: string; download: string }[] = [];
+		vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+			downloads.push({ href: this.href, download: this.download });
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'download' });
+		await vi.waitFor(() => expect(downloads).toHaveLength(1));
+
+		expect(window.fetch).toHaveBeenCalledWith('https://local.test/files/final-file', expect.objectContaining({ credentials: 'omit' }));
+		expect(downloads[0].download).toBe('room 1-20261115-090807.mp3');
+	});
+
+	test('an over-limit recording is saved to the device as one kept file', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file', url: 'https://local.test/files/original-file' }) } as Response)
+			.mockResolvedValueOnce({ ok: true, blob: async () => new Blob(['kept'], { type: 'video/mp4' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: null, download: { id: 'dl-1', name: 'room 1-20261115-090807.mp4', size: 123, reason: 'tooLarge' } };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			return {};
+		});
+		const downloads: { href: string; download: string }[] = [];
+		vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+			downloads.push({ href: this.href, download: this.download });
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		expect(mocks.actions).toHaveBeenCalledWith(expect.objectContaining({ caption: i18n.ts._voiceCall.recordingConversionTooLarge }));
+		choice.resolve({ canceled: false, result: 'download' });
+		await vi.waitFor(() => expect(downloads).toHaveLength(1));
+
+		// 조각이 아니라 서버가 보관한 최종 파일 한 개를 본인 인증으로 받는다
+		expect(window.fetch).toHaveBeenCalledWith(expect.stringContaining('/recording-download/dl-1'), expect.objectContaining({ headers: { Authorization: 'Bearer test-token' } }));
+		expect(downloads[0].download).toBe('room 1-20261115-090807.mp4');
+	});
+
+	test('discarding an over-limit recording discards the kept file', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: null, download: { id: 'dl-1', name: 'room 1-20261115-090807.mp4', size: 123, reason: 'tooLarge' } };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+
+		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/recording-discard', { id: 'dl-1' }));
 	});
 });

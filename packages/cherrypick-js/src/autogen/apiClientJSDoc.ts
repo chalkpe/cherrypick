@@ -2144,7 +2144,7 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * Convert a recording without deleting the original. A null response means that no conversion was performed and the original remains.
+     * Convert recording parts into a single file without deleting the originals until it succeeds. A null response means that no conversion was performed and the originals remain. A download response means the file exceeds the drive file size limit and is kept for a one-time download instead. Repeating the same requestId returns the earlier result, so a lost response can be recovered.
      *
      * **Credential required**: *Yes* / **Permission**: *write:drive*
      */
@@ -2182,6 +2182,39 @@ declare module '../api.js' {
      * **Credential required**: *Yes* / **Permission**: *write:chat*
      */
     request<E extends 'chat/rooms/voice/mute', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Discard a temporarily kept recording download owned by the caller. Already gone is treated as success.
+     *
+     * **Credential required**: *Yes* / **Permission**: *write:drive*
+     */
+    request<E extends 'chat/rooms/voice/recording-discard', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Return the account's single remembered call-recording folder, creating it on first use. Serialized per user so concurrent first recordings do not create duplicates.
+     *
+     * **Credential required**: *Yes* / **Permission**: *write:drive*
+     */
+    request<E extends 'chat/rooms/voice/recording-folder', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Look up the result of an earlier recording conversion by requestId without converting again. Returns null when nothing is remembered.
+     *
+     * **Credential required**: *Yes* / **Permission**: *read:drive*
+     */
+    request<E extends 'chat/rooms/voice/recording-result', P extends Endpoints[E]['req']>(
       endpoint: E,
       params: P,
       credential?: string | null,
