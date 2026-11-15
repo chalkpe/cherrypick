@@ -241,7 +241,15 @@ const props = defineProps<{
 const isFrontmostConversation = computed(() => {
 	const current = router.currentRef.value;
 	if (props.userId != null) return current.route.path === '/chat/user/:userId' && current.props.get('userId') === props.userId;
-	if (props.roomId != null) return current.route.path === '/chat/room/:roomId' && current.props.get('roomId') === props.roomId;
+	if (props.roomId != null) {
+		// 채널 대화는 채널 경로로 열린다. 채널 화면에서도 이 대화가 맨 앞이면 여백 변수를 소유한다.
+		if (props.channelId != null) {
+			return current.route.path === '/chat/room/:roomId/channels/:channelId?'
+				&& current.props.get('roomId') === props.roomId
+				&& current.props.get('channelId') === props.channelId;
+		}
+		return current.route.path === '/chat/room/:roomId' && current.props.get('roomId') === props.roomId;
+	}
 	return false;
 });
 
