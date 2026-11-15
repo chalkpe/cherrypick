@@ -400,10 +400,12 @@ test('saving an existing rule keeps the scroll position and the editor nodes', a
 	await page.getByRole('button', { name: 'Save' }).click();
 	expect((await saved).status()).toBe(200);
 	expect((await listed).status()).toBe(200);
-	// 목록 응답 뒤 applyRule이 끝나 저장 완료 알림이 뜨고, 이어지는 미리 보기 응답이 화면에 그려질 때까지 기다린다.
+	// 목록 응답 뒤 applyRule이 끝나 저장 완료 알림이 뜨고, 미리 보기 다시 읽기가 끝나 빈 결과가 화면에 자리 잡은 뒤에 위치와 노드를 비교한다.
 	await expect(page.getByText('Saved', { exact: true })).toBeVisible();
 	expect((await previewed).status()).toBe(200);
-	await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+	const previewSection = page.getByText('Notes to be deleted', { exact: true }).locator('..');
+	await expect(previewSection.getByText('No notes', { exact: true })).toBeVisible();
+	await expect(previewSection.locator('svg[viewBox="0 0 50 50"]')).toHaveCount(0);
 	expect(listFinishedAt).toBeGreaterThan(0);
 	const after = await page.evaluate(() => ({ top: document.querySelector('._pageScrollable')!.scrollTop, markAlive: document.querySelector('textarea[data-mark="1"]')?.isConnected ?? false }));
 	expect(Math.abs(after.top - before)).toBeLessThanOrEqual(2);
@@ -546,18 +548,20 @@ test('first save keeps scroll when a cached settings page sits behind the notifi
 	const count = await textareas.count();
 	for (let i = 1; i < count; i++) await textareas.nth(i).fill(`beta ${i}`);
 	await page.evaluate(() => { const sc = document.querySelector('._pageScrollable')!; sc.scrollTop = sc.scrollHeight; });
-	await page.waitForTimeout(300);
+	await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 	const before = await page.evaluate(() => document.querySelector('._pageScrollable')!.scrollTop);
 	expect(before).toBeGreaterThan(100);
 	const listRequests: number[] = [];
 	page.on('request', request => { if (request.url().endsWith('/api/i/note-cleanup/list')) listRequests.push(Date.now()); });
 	const saveAt = Date.now();
-	// 첫 저장 뒤 같은 화면에 그려지는 미리 보기의 첫 응답까지 기다린 다음 스크롤과 목록 요청을 본다.
+	// 첫 저장 뒤 같은 화면의 미리 보기 첫 응답을 받고, 로딩이 빈 결과로 바뀌는 렌더까지 끝난 뒤에 스크롤과 목록 요청을 본다.
 	const previewed = page.waitForResponse(response => response.url().endsWith('/api/i/note-cleanup/preview'));
 	await page.getByRole('button', { name: 'Save' }).click();
 	await expect(page.getByRole('button', { name: 'Clean up now' })).toBeVisible();
 	expect((await previewed).status()).toBe(200);
-	await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+	const previewSection = page.getByText('Notes to be deleted', { exact: true }).locator('..');
+	await expect(previewSection.getByText('No notes', { exact: true })).toBeVisible();
+	await expect(previewSection.locator('svg[viewBox="0 0 50 50"]')).toHaveCount(0);
 	const after = await page.evaluate(() => document.querySelector('._pageScrollable')!.scrollTop);
 	// 보이는 편집 화면이 전달값을 받아 스크롤이 유지되고 목록을 다시 읽지 않는다.
 	expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
