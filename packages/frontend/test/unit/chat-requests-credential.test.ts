@@ -37,7 +37,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/stream.js', () => ({ useStream: () => ({ on: vi.fn(), off: vi.fn(), useChannel: () => ({ on: vi.fn(), off: vi.fn(), send: vi.fn(), dispose: vi.fn() }) }) }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn(), useListener: vi.fn() }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn(), useListener: vi.fn(), currentRef: { value: { route: { path: '/chat/room/:roomId' }, props: new Map([['roomId', 'r1']]) } } }) }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: false, 'voiceCall.stageChatSide': 'right' }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // apiWithDialog は本物のまま。利用者の答えを待つものだけを差し替える

@@ -321,7 +321,8 @@ export class ChatEntityService {
 			description: room.description,
 			ownerId: room.ownerId,
 			owner: options?._hint_?.packedOwners.get(room.ownerId) ?? (await this.userEntityService.pack(room.owner ?? room.ownerId, me)),
-			isMuted: membership != null ? membership.isMuted : false,
+			// 持ち主にはメンバーシップがないので、持ち主のミュートはルームが持つ。どちらも見ている本人のものだけを返す
+			isMuted: me != null && me.id === room.ownerId ? room.isMutedByOwner : (membership != null ? membership.isMuted : false),
 			invitationExists: invitation != null,
 			isArchived: room.isArchived,
 		};

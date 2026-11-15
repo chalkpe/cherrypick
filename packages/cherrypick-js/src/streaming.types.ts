@@ -53,6 +53,7 @@ export type Channels = {
 			notificationFlushed: () => void;
 			unreadAntenna: (payload: Antenna) => void;
 			newChatMessage: (payload: ChatMessage) => void;
+			chatUnread: (payload: { hasUnreadChatMessages: boolean; version: number }) => void;
 			chatRoomVoiceState: (payload: ChatRoomVoiceState) => void;
 			chatRoomListChanged: () => void;
 			readAllAnnouncements: () => void;

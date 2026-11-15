@@ -12,6 +12,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		v-tooltip="i18n.ts._voiceCall.enableAudio" class="_buttonPrimary"
 		:class="[$style.action, $style.enableAudio]"
 		:aria-label="i18n.ts._voiceCall.enableAudio"
+		@mousedown="keepChatInputFocus"
 		@click="resumeAudio"
 	>
 		<i class="ti ti-volume"></i>
@@ -20,6 +21,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		v-tooltip="voiceCall.micEnabled ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute" class="_button"
 		:class="[$style.action, { [$style.off]: !voiceCall.micEnabled }]"
 		:aria-label="voiceCall.micEnabled ? i18n.ts._voiceCall.mute : i18n.ts._voiceCall.unmute"
+		@mousedown="keepChatInputFocus"
 		@click="setMicEnabled(!voiceCall.micEnabled)"
 	>
 		<i v-if="voiceCall.micEnabled" class="ti ti-microphone"></i>
@@ -29,6 +31,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		v-tooltip="voiceCall.deafened ? i18n.ts._voiceCall.undeafen : i18n.ts._voiceCall.deafen" class="_button"
 		:class="[$style.action, { [$style.off]: voiceCall.deafened }]"
 		:aria-label="voiceCall.deafened ? i18n.ts._voiceCall.undeafen : i18n.ts._voiceCall.deafen"
+		@mousedown="keepChatInputFocus"
 		@click="setDeafened(!voiceCall.deafened)"
 	>
 		<i v-if="voiceCall.deafened" class="ti ti-headphones-off"></i>
@@ -39,6 +42,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		v-tooltip="voiceCall.screenSharing ? i18n.ts._voiceCall.stopSharing : i18n.ts._voiceCall.shareScreen" class="_button"
 		:class="[$style.action, { [$style.on]: voiceCall.screenSharing }]"
 		:aria-label="voiceCall.screenSharing ? i18n.ts._voiceCall.stopSharing : i18n.ts._voiceCall.shareScreen"
+		@mousedown="keepChatInputFocus"
 		@click="voiceCall.screenSharing ? stopScreenShare() : startScreenShare()"
 	>
 		<i v-if="voiceCall.screenSharing" class="ti ti-screen-share-off"></i>
@@ -51,6 +55,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		v-tooltip="i18n.ts._voiceCall.settings" class="_button"
 		:class="$style.action"
 		:aria-label="i18n.ts._voiceCall.settings"
+		@mousedown="keepChatInputFocus"
 		@click="openVoiceCallSettings"
 	>
 		<i class="ti ti-settings"></i>
@@ -61,6 +66,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		v-tooltip="i18n.ts._voiceCall.leave" class="_button"
 		:class="[$style.action, $style.leave]"
 		:aria-label="i18n.ts._voiceCall.leave"
+		@mousedown="keepChatInputFocus"
 		@click="leaveVoiceCall()"
 	>
 		<i class="ti ti-phone-off"></i>
@@ -78,6 +84,11 @@ withDefaults(defineProps<{
 	hideLeave?: boolean;
 	grouped?: boolean;
 }>(), { hideLeave: false, grouped: false });
+
+// 入力欄で書いているあいだは、操作ボタンがフォーカスを奪わないようにする (ソフトウェアキーボードはフォーカスについてくる)
+function keepChatInputFocus(ev: MouseEvent) {
+	if (window.document.activeElement instanceof HTMLTextAreaElement) ev.preventDefault();
+}
 </script>
 
 <style lang="scss" module>

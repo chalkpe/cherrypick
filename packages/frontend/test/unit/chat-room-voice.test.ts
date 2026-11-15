@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => {
 		me: { id: 'me', username: 'me', policies: { canVoiceCall: true, canScreenShare: true, chatAvailability: 'available' } },
 		joinVoiceCall: vi.fn(),
 		leaveVoiceCall: vi.fn(),
+		notifyVoiceCallFailure: vi.fn(),
 		setMicEnabled: vi.fn(),
 		setDeafened: vi.fn(),
 		resumeAudio: vi.fn(),
@@ -58,7 +59,7 @@ vi.mock('@/os.js', () => ({ apiWithDialog: mocks.apiWithDialog, confirm: mocks.c
 vi.mock('@/utility/fullscreen.js', () => ({ requestFullscreen: mocks.requestFullscreen }));
 // 画面遷移の前にシートの focus trap を解放することを確かめるため、router の change リスナーを拾っておく
 const routerListeners = vi.hoisted(() => ({ change: [] as ((payload: unknown) => void)[] }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), useListener: (event: string, listener: (payload: unknown) => void) => { if (event === 'change') routerListeners.change.push(listener); } }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn(), useListener: (event: string, listener: (payload: unknown) => void) => { if (event === 'change') routerListeners.change.push(listener); }, currentRef: { value: { route: { path: '/chat/room/:roomId' }, props: new Map([['roomId', 'r1']]) } } }) }));
 // ルーム画面のテストでは通話以外の部分は関係ないので空のコンポーネントに差し替える
 vi.mock('@/pages/chat/XMessage.vue', () => ({ default: { render: () => null } }));
 // 入力欄は並べ方が変わっても作り直さないことを確かめるので本物を使う。ブラウザの入力まわりに触る部品だけ差し替える
@@ -85,6 +86,7 @@ vi.mock('@/utility/voice-call.js', async () => {
 		voiceCall,
 		joinVoiceCall: mocks.joinVoiceCall,
 		leaveVoiceCall: mocks.leaveVoiceCall,
+		notifyVoiceCallFailure: mocks.notifyVoiceCallFailure,
 		setMicEnabled: mocks.setMicEnabled,
 		setDeafened: mocks.setDeafened,
 		resumeAudio: mocks.resumeAudio,
@@ -177,7 +179,6 @@ beforeEach(() => {
 	mocks.instance.features.voiceCall = true;
 	mocks.instance.features.remoteVoiceCall = false;
 	prefer.reset({
-		'voiceCall.acknowledgedRemoteHosts': [],
 		'voiceCall.inputDeviceId': null,
 		'voiceCall.outputDeviceId': null,
 		'voiceCall.echoCancellation': true,
@@ -191,7 +192,7 @@ beforeEach(() => {
 		'voiceCall.stageChatSide': 'right',
 	});
 	mocks.misskeyApi.mockReset().mockResolvedValue([]);
-	for (const fn of [mocks.joinVoiceCall, mocks.leaveVoiceCall, mocks.setMicEnabled, mocks.setDeafened, mocks.resumeAudio, mocks.watchScreenShare, mocks.unwatchScreenShare, mocks.toggleScreenShareWatch, mocks.startScreenShare, mocks.stopScreenShare, mocks.apiWithDialog, mocks.confirm, mocks.popupMenu]) fn.mockReset();
+	for (const fn of [mocks.joinVoiceCall, mocks.leaveVoiceCall, mocks.notifyVoiceCallFailure, mocks.setMicEnabled, mocks.setDeafened, mocks.resumeAudio, mocks.watchScreenShare, mocks.unwatchScreenShare, mocks.toggleScreenShareWatch, mocks.startScreenShare, mocks.stopScreenShare, mocks.apiWithDialog, mocks.confirm, mocks.popupMenu]) fn.mockReset();
 	mocks.attachScreenShare.mockClear();
 	Object.assign(callState, { status: 'idle', room: null, micEnabled: false, deafened: false, audioBlocked: false, speakingIdentities: [], screenSharing: false, screenShareIdentities: [], watchingIdentities: [] });
 });
@@ -317,6 +318,7 @@ async function openTab(title: string) {
 }
 
 const headerJoin = () => within(screen.getByTestId('header-actions')).queryByLabelText(i18n.ts._voiceCall.join);
+const headerStart = () => within(screen.getByTestId('header-actions')).queryByLabelText(i18n.ts._voiceCall.start);
 const stickyCard = () => within(screen.getByTestId('sticky-header'));
 
 async function setPageWidth(width: number) { resizeObserved(width); await flush(); }
@@ -339,32 +341,58 @@ describe('voice call on the room page', () => {
 	// 誰もいない通話は「参加」ではなく「開始」と呼ぶ。既存の通話に入るのか自分が始めるのかを迷わせない
 	test('offers to start, not join, the call while nobody is in it', async () => {
 		await renderRoom(room, []);
-		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.start })).toBeTruthy();
+		// 誰も通話していなければ参加のパネルは無く、開始ボタンはヘッダーにある
+		expect(headerStart()).toBeTruthy();
+		expect(stickyCard().queryByRole('button', { name: i18n.ts._voiceCall.start })).toBeNull();
+		expect(stickyCard().queryByRole('button', { name: i18n.ts._voiceCall.join })).toBeNull();
 		expect(screen.queryByRole('button', { name: i18n.ts._voiceCall.join })).toBeNull();
-		expect(stickyCard().queryByRole('button', { name: alice.name })).toBeNull();
 		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [participant(alice)] });
 		await flush();
-		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.join })).toBeTruthy();
+		// 誰かが通話中になれば参加のパネルが出て、メッセージタブのヘッダーボタンは隠れる
+		expect(stickyCard().getByRole('button', { name: i18n.ts._voiceCall.join })).toBeTruthy();
 		expect(screen.queryByRole('button', { name: i18n.ts._voiceCall.start })).toBeNull();
+		expect(headerJoin()).toBeNull();
 	});
-	test('joins with the mic on by default and remembers the prejoin choice for the next call', async () => {
+	test('starts the call with one press of the header button, with the mic on by default', async () => {
 		await renderRoom(room, []);
-		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
+		await fireEvent.click(headerStart()!);
+		await flush();
+		expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
 		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: true });
-		const micToggle = screen.getByRole('button', { name: i18n.ts._voiceCall.micMuted });
-		expect(micToggle.getAttribute('aria-pressed')).toBe('false');
-		await fireEvent.click(micToggle);
-		expect(prefer.commit).toHaveBeenLastCalledWith('voiceCall.micEnabled', false);
-		expect(micToggle.getAttribute('aria-pressed')).toBe('true');
-		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
-		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: false });
+		// 開始はメニューも確認も経由せず、メディア提供サーバーの事前照会も無い
+		expect(mocks.popupMenu).not.toHaveBeenCalled();
+		expect(mocks.confirm).not.toHaveBeenCalled();
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/connection-info', expect.anything());
 	});
-	test('starts the banner with the mic choice remembered from the last call', async () => {
+	test('joins an ongoing same-server call from the panel without asking', async () => {
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+		await fireEvent.click(stickyCard().getByRole('button', { name: i18n.ts._voiceCall.join }));
+		await flush();
+		expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
+		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: true });
+		expect(mocks.confirm).not.toHaveBeenCalled();
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/connection-info', expect.anything());
+	});
+	test('starts the call with the mic choice remembered from the last call', async () => {
 		prefer.reset({ ...prefer.s, 'voiceCall.micEnabled': false });
 		await renderRoom(room, []);
-		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.micMuted, pressed: true })).toBeTruthy();
-		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
+		await fireEvent.click(headerStart()!);
+		await flush();
 		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: false });
+		expect(mocks.popupMenu).not.toHaveBeenCalled();
+	});
+	test('keeps the retry panel and hides the header button when the relay cannot be reached', async () => {
+		await renderRoom(room, [{ roomId: 'r1', participants: [], unavailable: true }]);
+		expect(stickyCard().getByRole('button', { name: i18n.ts.retry })).toBeTruthy();
+		expect(headerStart()).toBeNull();
+		expect(headerJoin()).toBeNull();
+	});
+	test('keeps the header join button on other tabs while the join panel is showing', async () => {
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+		await openTab(i18n.ts._chat.members);
+		expect(headerJoin()).toBeTruthy();
+		// 参加のパネルはメッセージタブにだけある
+		expect(screen.queryByTestId('sticky-header')).toBeNull();
 	});
 	test('has one messages tab and puts search in the room menu', async () => {
 		await renderRoom(room, []);
@@ -502,7 +530,9 @@ describe('voice call on the room page', () => {
 		await flush();
 		expect(screen.getByRole('textbox')).toBe(textarea);
 		expect(textarea.value).toBe('still here');
-		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.start })).toBeTruthy();
+		// 通話が終われば開始ボタンはヘッダーに戻り、参加のパネルは無い
+		expect(headerStart()).toBeTruthy();
+		expect(stickyCard().queryByRole('button', { name: i18n.ts._voiceCall.start })).toBeNull();
 	});
 	test('mobile joins into the call and opens chat as a sheet', async () => {
 		const originalWidth = window.innerWidth;
@@ -530,10 +560,9 @@ describe('voice call on the room page', () => {
 		} finally { window.innerWidth = originalWidth; window.dispatchEvent(new Event('resize')); }
 	});
 	// シートの背景 (v-if) は閉じると先に DOM から消える。その後の解放で周囲の inert が残ると画面全体が操作不能になる
-	// 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (room.vue の Teleport)。変換中の文字や送信中の状態を失わないため
+	// 배치가 바뀌어도 입력란과 작성 중인 내용, 전송 상태를 유지한다.
 	describe('chat form across the layout switch', () => {
 		const theTextarea = () => screen.getByRole('textbox') as HTMLTextAreaElement;
-		const pageFooter = () => screen.getByTestId('page-footer');
 
 		async function callEnds() { Object.assign(callState, { status: 'idle', room: null }); await flush(); }
 
@@ -543,7 +572,9 @@ describe('voice call on the room page', () => {
 			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me)] }]);
 			await setPageWidth(1280);
 			const textarea = theTextarea();
+			await fireEvent.update(textarea, 'draft');
 			textarea.focus();
+			textarea.setSelectionRange(1, 3);
 			await fireEvent.compositionStart(textarea);
 
 			await callEnds();
@@ -554,7 +585,9 @@ describe('voice call on the room page', () => {
 			await flush();
 			expect(screen.queryByLabelText(i18n.ts._voiceCall.moveChatLeft)).toBeNull();
 			expect(theTextarea()).toBe(textarea);
-			expect(pageFooter().contains(textarea)).toBe(true);
+			expect(textarea.value).toBe('draft');
+			expect(document.activeElement).toBe(textarea);
+			expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([1, 3]);
 		});
 
 		// 変換を終えないまま (compositionend が届かないまま) ページが裏に回ったら、その変換は忘れる
@@ -590,6 +623,60 @@ describe('voice call on the room page', () => {
 			await fireEvent.click(screen.getByTitle(i18n.ts.send));
 
 			expect(mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/create-to-room')).toHaveLength(1);
+		});
+	});
+
+	// ソフトウェアキーボードは入力欄のフォーカスについてくる。通話中の配置ボタンにフォーカスが移るとキーボードが閉じてしまう
+	describe('the message input focus while pressing the call layout buttons', () => {
+		// 既定の動作を止めれば、ブラウザはフォーカスを動かさない (送信ボタンと同じ仕組み)
+		const pressKeepsFocus = (button: HTMLElement) => {
+			const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+			button.dispatchEvent(press);
+			return press.defaultPrevented;
+		};
+
+		async function renderSplit() {
+			Object.assign(callState, { status: 'connected', room, micEnabled: true });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me), participant(alice)] }]);
+			await setPageWidth(1280);
+			return screen.getByRole('textbox') as HTMLTextAreaElement;
+		}
+
+		test('swapping the chat side keeps focus in the message input', async () => {
+			const textarea = await renderSplit();
+			textarea.focus();
+
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.moveChatLeft }))).toBe(true);
+		});
+
+		test('the call controls keep focus in the message input', async () => {
+			const textarea = await renderSplit();
+			Object.assign(callState, { audioBlocked: true });
+			await flush();
+			textarea.focus();
+
+			for (const name of [i18n.ts._voiceCall.enableAudio, i18n.ts._voiceCall.mute, i18n.ts._voiceCall.deafen, i18n.ts._voiceCall.shareScreen, i18n.ts._voiceCall.settings, i18n.ts._voiceCall.leave]) {
+				expect(pressKeepsFocus(screen.getByRole('button', { name }))).toBe(true);
+			}
+		});
+
+		test('the stage toggles keep focus in the message input', async () => {
+			Object.assign(callState, { status: 'connected', room, watchingIdentities: [identityOf(alice)] });
+			await renderRoom(room, [{ roomId: 'r1', participants: [participant(me), participant(alice, true)] }]);
+			await setPageWidth(1280);
+			const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+			textarea.focus();
+
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.hideParticipants }))).toBe(true);
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.closeChat }))).toBe(true);
+		});
+
+		test('does not pull focus to the input when it was elsewhere', async () => {
+			const textarea = await renderSplit();
+			textarea.blur();
+
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.moveChatLeft }))).toBe(false);
+			expect(pressKeepsFocus(screen.getByRole('button', { name: i18n.ts._voiceCall.mute }))).toBe(false);
 		});
 	});
 
@@ -709,68 +796,54 @@ describe('voice call on the room page', () => {
 			expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/states', expect.anything());
 		});
 
-		test('asks once before joining a call on another server', async () => {
+		test('joins a call on another server without asking', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
-			mocks.confirm.mockResolvedValue({ canceled: false });
 			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
 
 			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
 			await flush();
-			expect(mocks.confirm).toHaveBeenCalledTimes(1);
-			expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.remoteHostNotice({ host: 'remote.test' }) }));
-			expect(prefer.commit).toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', ['remote.test']);
+			expect(mocks.confirm).not.toHaveBeenCalled();
+			expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/connection-info', expect.anything());
 			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
 			expect(mocks.joinVoiceCall).toHaveBeenCalledWith(mirror, { micEnabled: true });
 
 			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
 			await flush();
-			expect(mocks.confirm).toHaveBeenCalledTimes(1);
+			expect(mocks.confirm).not.toHaveBeenCalled();
 			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(2);
 		});
 
-		test('ignores a second click while the notice is still open', async () => {
+		test('ignores a second click while the join is still in progress', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
-			let answer!: (value: { canceled: boolean }) => void;
-			mocks.confirm.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+			let finish!: () => void;
+			mocks.joinVoiceCall.mockReturnValue(new Promise<void>(resolve => { finish = resolve; }));
 			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
 
 			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
 			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
-			answer({ canceled: false });
+			finish();
 			await flush();
 
-			expect(mocks.confirm).toHaveBeenCalledTimes(1);
 			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
 		});
 
-		test('does not join when the notice is cancelled', async () => {
-			mocks.instance.features.remoteVoiceCall = true;
-			mocks.confirm.mockResolvedValue({ canceled: true });
-			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
-
-			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
-			await flush();
-			expect(mocks.joinVoiceCall).not.toHaveBeenCalled();
-			expect(prefer.commit).not.toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', expect.anything());
-		});
-
 		// ヘッダーの参加ボタンは、通話に入れたときだけメッセージのタブへ移す。やめたり失敗したりしたのに読んでいたタブから追い出さない
-		test('stays on the members tab when the header join is cancelled', async () => {
+		test('stays on the members tab when the header join fails', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
-			mocks.confirm.mockResolvedValue({ canceled: true });
+			mocks.joinVoiceCall.mockRejectedValue(new Error('connect failed'));
 			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
 			await openTab(i18n.ts._chat.members);
 
 			await fireEvent.click(headerJoin()!);
 			await flush();
 
-			expect(mocks.joinVoiceCall).not.toHaveBeenCalled();
+			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
+			expect(mocks.notifyVoiceCallFailure).toHaveBeenCalledTimes(1);
 			expect(screen.getByRole('tab', { name: i18n.ts._chat.members }).getAttribute('aria-selected')).toBe('true');
 		});
 
 		test('moves to the messages tab once the header join has put me in the call', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
-			mocks.confirm.mockResolvedValue({ canceled: false });
 			mocks.joinVoiceCall.mockImplementation(async () => { Object.assign(callState, { status: 'connected', room: mirror }); });
 			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
 			await openTab(i18n.ts._chat.members);
