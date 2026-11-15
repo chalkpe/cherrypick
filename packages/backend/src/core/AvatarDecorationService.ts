@@ -19,6 +19,7 @@ import { appendQuery, query } from '@/misc/prelude/url.js';
 import type { Config } from '@/config.js';
 import { normalizeAvatarDecoration } from '@/core/avatar-decoration.js';
 import { checkHttps } from '@/misc/check-https.js';
+import { isStorableText } from '@/core/chat-room-channels.js';
 
 // Software that serves the Misskey API, which avatar decorations are fetched through, without saying so
 const DECORATION_SOFTWARE = ['misskey', 'cherrypick', 'sharkey'];
@@ -173,15 +174,15 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		if (!Array.isArray(value) || value.length > 16) return undefined;
 		const result: MiUser['avatarDecorations'] = [];
 		for (const item of value) {
-			if (item == null || typeof item !== 'object' || typeof item.id !== 'string' || item.id.length === 0 || item.id.length > 32) continue;
-			if (typeof item.url !== 'string' || item.url.length > 4096 || !checkHttps(item.url)) continue;
+			if (item == null || typeof item !== 'object' || typeof item.id !== 'string' || item.id.length === 0 || item.id.length > 32 || !isStorableText(item.id)) continue;
+			if (typeof item.url !== 'string' || item.url.length > 4096 || !isStorableText(item.url) || !checkHttps(item.url)) continue;
 			try {
 				const url = new URL(item.url);
 				if (url.username || url.password || this.getProxiedUrl(item.url, 'avatar').length > 1024) continue;
 			} catch {
 				continue;
 			}
-			if (typeof item.name !== 'string' || item.name.length > 256) continue;
+			if (typeof item.name !== 'string' || item.name.length > 256 || !isStorableText(item.name)) continue;
 			if (item.flipH != null && typeof item.flipH !== 'boolean') continue;
 			const ranges = { angle: [-0.5, 0.5], offsetX: [-0.25, 0.25], offsetY: [-0.25, 0.25], scale: [0.5, 1.5], opacity: [0.1, 1] };
 			if (Object.entries(ranges).some(([key, [min, max]]) => item[key] != null && (typeof item[key] !== 'number' || !Number.isFinite(item[key]) || item[key] < min || item[key] > max))) continue;

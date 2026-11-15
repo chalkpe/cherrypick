@@ -6,10 +6,17 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <div ref="rootEl" :class="[$style.root, { [$style.wide]: !narrow }]">
 	<aside v-if="!narrow && room && channels.length" :class="$style.rail">
-		<div :class="$style.groupHeading"><MkAvatar :room="room" :class="$style.groupAvatar"/><strong :class="$style.groupName">{{ room.name }}</strong></div>
-		<nav :aria-label="i18n.ts._chat._channels.channels" class="_gaps_s">
-			<MkA v-for="channel in channels" :key="channel.id" :to="channelConversationPath(room.id, channel.id)" :class="[$style.channel, { [$style.selected]: channel.id === channelId, [$style.unread]: displayUnreadChannelIds.includes(channel.id) }]" :aria-current="channel.id === channelId ? 'page' : undefined">#{{ channel.name }}</MkA>
-		</nav>
+		<div class="_spacer" style="--MI_SPACER-w: 700px; --MI_SPACER-min: 16px;">
+			<div class="_gaps">
+				<div :class="$style.banner">
+					<MkAvatar :room="room" :class="$style.bannerAvatar"/>
+					<div :class="$style.bannerName">{{ room.name }}</div>
+				</div>
+				<nav :aria-label="i18n.ts._chat._channels.channels">
+					<MkSuperMenu :def="menuDef" :draggable="canReorder && !railBusy" @reorder="onRailReorder"/>
+				</nav>
+			</div>
+		</div>
 	</aside>
 	<XConversation
 		v-if="room && selectedChannel"
@@ -28,8 +35,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkResult v-else-if="failed" type="error"/>
 			<template v-else-if="room">
 				<XInfo v-if="showInfo" :room="room" :channels="channels" @updated="refresh" @channelsUpdated="refresh" @deleting="deletingOwnRoom = $event"/>
-				<nav v-else :aria-label="i18n.ts._chat._channels.channels" class="_gaps_s">
-					<MkA v-for="channel in channels" :key="channel.id" :to="channelConversationPath(room.id, channel.id)" class="_panel" :class="[$style.channel, { [$style.unread]: displayUnreadChannelIds.includes(channel.id) }]">#{{ channel.name }} <i class="ti ti-chevron-right" aria-hidden="true"></i></MkA>
+				<nav v-else :aria-label="i18n.ts._chat._channels.channels">
+					<MkSuperMenu :def="menuDef" grid/>
 				</nav>
 			</template>
 		</div>
@@ -43,6 +50,9 @@ import type * as Misskey from 'cherrypick-js';
 import XConversation from './room.vue';
 import XInfo from './room.info.vue';
 import { channelConversationPath } from './chat-channel-references.js';
+import { chatErrorText } from './chat-errors.js';
+import type { SuperMenuDef } from '@/components/MkSuperMenu.vue';
+import MkSuperMenu from '@/components/MkSuperMenu.vue';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { useRouter } from '@/router.js';
@@ -67,6 +77,18 @@ const displayUnreadChannelIds = computed(() => props.unreadChannelIds ?? fetched
 const showInfo = ref(false);
 const deletingOwnRoom = ref(false);
 const selectedChannel = computed(() => channels.value.find(channel => channel.id === props.channelId && channel.roomId === props.roomId));
+const railBusy = ref(false);
+const canReorder = computed(() => room.value != null && room.value.ownerId === $i.id && !room.value.isArchived && $i.policies.chatAvailability === 'available');
+const menuDef = computed<SuperMenuDef[]>(() => [{
+	items: channels.value.map(channel => ({
+		id: channel.id,
+		to: channelConversationPath(props.roomId, channel.id),
+		icon: 'ti ti-hash',
+		text: channel.name,
+		active: channel.id === props.channelId,
+		indicated: displayUnreadChannelIds.value.includes(channel.id),
+	})),
+}]);
 let request = 0;
 let active = true;
 let unreadRequest = 0;
@@ -93,6 +115,35 @@ async function refreshUnread() {
 		fetchedUnreadChannelIds.value = state.unreadChannelIds;
 	} catch {
 		// Preserve the current static display until the next unread or reconnect event.
+	}
+}
+
+function onRailReorder(_groupIndex: number, items: SuperMenuDef['items']) {
+	const byId = new Map(channels.value.map(channel => [channel.id, channel]));
+	const next = items.flatMap(item => {
+		const channel = item.id != null ? byId.get(item.id) : undefined;
+		return channel ? [channel] : [];
+	});
+	void reorderChannels(next);
+}
+
+async function reorderChannels(newList: Misskey.entities.ChatRoomChannel[]) {
+	if (!canReorder.value || railBusy.value || !active) return;
+	const target = props.roomId;
+	const previous = channels.value;
+	const ids = newList.map(channel => channel.id);
+	channels.value = newList;
+	railBusy.value = true;
+	try {
+		await misskeyApi('chat/rooms/channels/reorder', { roomId: target, channelIds: ids });
+	} catch (err) {
+		if (active && target === props.roomId) {
+			channels.value = previous;
+			os.alert({ type: 'error', text: chatErrorText(err) });
+			void refresh();
+		}
+	} finally {
+		railBusy.value = false;
 	}
 }
 
@@ -173,54 +224,31 @@ definePage(computed(() => ({ title: room.value?.name ?? i18n.ts._chat._channels.
 .rail {
 	position: sticky;
 	top: 0;
-	align-self: flex-start;
 	box-sizing: border-box;
-	width: 220px;
-	max-height: 100cqh;
+	width: 32%;
+	max-width: 280px;
 	flex-shrink: 0;
-	overflow-y: auto;
-	padding: 16px 8px;
-	border-right: 1px solid var(--MI_THEME-divider);
-	background: var(--MI_THEME-panel);
+	border-right: solid 0.5px var(--MI_THEME-divider);
+	overflow: auto;
+	height: 100cqh;
 }
 
-.groupHeading {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	padding: 8px;
+.banner {
+	margin: 16px;
 }
 
-.groupAvatar {
-	width: 36px;
-	height: 36px;
-	flex-shrink: 0;
-}
-
-.groupName {
+.bannerAvatar {
 	display: block;
-	min-width: 0;
-	overflow-wrap: anywhere;
+	margin: auto;
+	width: 54px;
+	height: 54px;
 }
 
-.channel {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 8px;
-	padding: 14px;
-	white-space: pre-wrap;
+.bannerName {
+	margin-top: 8px;
+	text-align: center;
+	font-weight: bold;
 	overflow-wrap: anywhere;
-	font-weight: normal;
-
-	&.selected {
-		background: var(--MI_THEME-accentedBg);
-		color: var(--MI_THEME-accent);
-	}
-
-	&.unread {
-		font-weight: bold;
-	}
 }
 
 .conversation, .listPage {

@@ -11,6 +11,8 @@ export const MAX_REMOTE_CHAT_ROOM_CHANNEL_NAME_LENGTH = 4096;
 // 섹션은 채널과 같은 이름·개수 규칙을 쓴다.
 export const MAX_CHAT_ROOM_SECTIONS = 128;
 export const MAX_REMOTE_CHAT_ROOM_SECTIONS = 1024;
+// 채널 URI의 유일 색인 항목이 PostgreSQL B-tree 한도(기본 페이지에서 약 2.7KB)를 넘지 않도록 UTF-8 바이트로 묶는다.
+export const MAX_CHAT_ROOM_CHANNEL_URI_BYTES = 1024;
 
 export type ChatChannelRef = { channelId: string; start: number; length: number; uri?: string };
 export type RemoteChatChannelRef = { id: string; start: number; length: number };
@@ -23,9 +25,18 @@ export class ChatChannelError extends Error {
 	}
 }
 
+/**
+ * DB에 그대로 저장할 수 있는 문자열인지. NUL은 PostgreSQL 문자열에 들어가지 못하고,
+ * 짝 없는 surrogate는 UTF-8 변환에서 U+FFFD로 바뀌어 다른 값과 같아진다. maxBytes를 주면 UTF-8 길이도 묶는다.
+ * 값을 고쳐 쓰지 않으므로 호출하는 쪽이 해당 필드를 버린다.
+ */
+export function isStorableText(value: string, maxBytes?: number): boolean {
+	return !value.includes('\u0000') && value.isWellFormed() && (maxBytes == null || Buffer.byteLength(value, 'utf8') <= maxBytes);
+}
+
 export function normalizeChatChannelName(name: string): string {
 	const trimmed = name.trim();
-	if (trimmed.length === 0 || Array.from(trimmed).length > MAX_CHAT_ROOM_CHANNEL_NAME_LENGTH) throw new ChatChannelError('INVALID_CHANNEL_NAME');
+	if (!isStorableText(trimmed) || trimmed.length === 0 || Array.from(trimmed).length > MAX_CHAT_ROOM_CHANNEL_NAME_LENGTH) throw new ChatChannelError('INVALID_CHANNEL_NAME');
 	return trimmed;
 }
 
@@ -53,7 +64,7 @@ function isChatSubUri(roomUri: string, value: unknown, kind: 'channels' | 'secti
 }
 
 export function isChatChannelUri(roomUri: string, value: unknown): value is string {
-	return isChatSubUri(roomUri, value, 'channels');
+	return isChatSubUri(roomUri, value, 'channels') && isStorableText(value, MAX_CHAT_ROOM_CHANNEL_URI_BYTES);
 }
 
 export function isChatSectionUri(roomUri: string, value: unknown): value is string {
@@ -67,7 +78,7 @@ export function parseChatChannels(group: { _misskey_chatChannels?: unknown; _mis
 	const seen = new Set<string>();
 	for (const channel of channels) {
 		if (channel == null || typeof channel !== 'object' || !isChatChannelUri(roomUri, channel.id) || seen.has(channel.id) ||
-			typeof channel.name !== 'string' || channel.name.trim().length === 0 || Array.from(channel.name).length > MAX_REMOTE_CHAT_ROOM_CHANNEL_NAME_LENGTH) return null;
+			typeof channel.name !== 'string' || !isStorableText(channel.name) || channel.name.trim().length === 0 || Array.from(channel.name).length > MAX_REMOTE_CHAT_ROOM_CHANNEL_NAME_LENGTH) return null;
 		seen.add(channel.id);
 	}
 	const legacy = group._misskey_chatLegacyChannel;

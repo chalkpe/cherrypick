@@ -15,7 +15,7 @@ import { bindThis } from '@/decorators.js';
 import { ChatService } from '@/core/ChatService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
-import { ChatChannelError } from '@/core/chat-room-channels.js';
+import { ChatChannelError, isStorableText } from '@/core/chat-room-channels.js';
 import { parseChatDiceResult } from '@/core/chat-dice.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { IdService } from '@/core/IdService.js';
@@ -382,7 +382,7 @@ export class ChatRoomHistorySyncProcessorService {
 	private async confirmedEmojis(note: IPost, host: string, run: ImportRun): Promise<string[]> {
 		const tags = toArray(note.tag).filter(tag => tag != null && typeof tag === 'object' && getApType(tag) === 'Emoji');
 		for (const tag of tags) await this.confirmEmoji(tag, host, run);
-		const names = tags.map(tag => typeof tag.name === 'string' ? tag.name.replaceAll(':', '') : null).filter((name): name is string => name != null && name.length > 0);
+		const names = tags.map(tag => typeof tag.name === 'string' ? tag.name.replaceAll(':', '') : null).filter((name): name is string => name != null && name.length > 0 && isStorableText(name));
 		if (names.length === 0) return [];
 		return (await this.emojisRepository.findBy({ host, name: In(names) })).map(emoji => emoji.name);
 	}

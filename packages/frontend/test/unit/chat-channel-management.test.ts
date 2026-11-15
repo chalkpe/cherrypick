@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/vue';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/vue';
 import type * as Misskey from 'cherrypick-js';
 
 const mocks = vi.hoisted(() => ({ api: vi.fn().mockResolvedValue([]), confirm: vi.fn(), inputText: vi.fn(), alert: vi.fn(), me: { id: 'owner', policies: { chatAvailability: 'available' } } }));
@@ -90,4 +90,51 @@ test('rechecks archive and owner state after a pending confirmation', async () =
 	await Promise.resolve();
 
 	expect(mocks.api).not.toHaveBeenCalled();
+});
+
+function rowOf(container: Element, id: string): HTMLElement {
+	return container.querySelector(`[data-chat-channel-id="${id}"]`) as HTMLElement;
+}
+
+function dragHandleOf(row: HTMLElement): HTMLElement {
+	return within(row).getByRole('button', { name: i18n.ts.dragToReorder });
+}
+
+function dropAreaOf(row: HTMLElement, side: 'forward' | 'backward'): HTMLElement {
+	const item = row.parentElement!.parentElement!;
+	return (side === 'forward' ? item.firstElementChild : item.lastElementChild) as HTMLElement;
+}
+
+async function dragRow(source: HTMLElement, target: HTMLElement, side: 'forward' | 'backward' = 'backward') {
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(dragHandleOf(source), { dataTransfer });
+	await fireEvent.drop(dropAreaOf(target, side), { dataTransfer });
+}
+
+test('reorders channels by dragging one onto another and submits the full ID list', async () => {
+	const view = render(Management, { props: { room: { ...room, hasChannels: true }, channels }, global: { stubs } });
+	await dragRow(rowOf(view.container, 'c1'), rowOf(view.container, 'c2'), 'backward');
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/channels/reorder', { roomId: 'r', channelIds: ['c2', 'c1'] }));
+});
+
+test('does not start a drag when the room is archived', () => {
+	const view = render(Management, { props: { room: { ...room, hasChannels: true, isArchived: true }, channels }, global: { stubs } });
+	const handle = dragHandleOf(rowOf(view.container, 'c1')) as HTMLButtonElement;
+	expect(handle.disabled).toBe(true);
+	expect(handle.getAttribute('draggable')).toBe('false');
+});
+
+test('restores the server order and alerts when a drag reorder fails', async () => {
+	mocks.api.mockImplementation(async (endpoint: string) => {
+		if (endpoint === 'chat/rooms/channels/reorder') throw new Error('reorder failed');
+		return [];
+	});
+	const view = render(Management, { props: { room: { ...room, hasChannels: true }, channels }, global: { stubs } });
+	await dragRow(rowOf(view.container, 'c1'), rowOf(view.container, 'c2'), 'backward');
+	await waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.ts._chat.actionFailed }));
+	await waitFor(() => expect(view.emitted('channelsUpdated')).toHaveLength(1));
+	await waitFor(() => {
+		const ids = Array.from(view.container.querySelectorAll('[data-chat-channel-id]')).map(el => el.getAttribute('data-chat-channel-id'));
+		expect(ids).toEqual(['c1', 'c2']);
+	});
 });
