@@ -6840,6 +6840,42 @@ export interface Locale extends ILocale {
              * チャンネル一覧
              */
             "openList": string;
+            /**
+             * セクション
+             */
+            "section": string;
+            /**
+             * セクションを作成
+             */
+            "createSection": string;
+            /**
+             * セクション名
+             */
+            "sectionName": string;
+            /**
+             * セクション名は前後の空白を除いて1〜128文字で入力してください。
+             */
+            "sectionNameLimit": string;
+            /**
+             * セクションは128個まで作成できます。
+             */
+            "sectionLimit": string;
+            /**
+             * {name} セクションを削除しますか？中のチャンネルとメッセージはそのまま残ります。
+             */
+            "deleteSectionConfirm": ParameterizedString<"name">;
+            /**
+             * セクションを移動
+             */
+            "moveSection": string;
+            /**
+             * セクションなし
+             */
+            "noSection": string;
+            /**
+             * このセクションにチャンネルを作成
+             */
+            "createChannelInSection": string;
         };
         /**
          * すべて受け取る

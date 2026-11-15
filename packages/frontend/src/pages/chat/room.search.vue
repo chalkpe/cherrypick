@@ -45,7 +45,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { computed, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import XMessage from './XMessage.vue';
+import { groupChannelsBySection } from './chat-channel-sections.js';
 import MkSelect from '@/components/MkSelect.vue';
+import type { MkSelectItem } from '@/components/MkSelect.vue';
 import * as os from '@/os.js';
 import { chatErrorText } from './chat-errors.js';
 import { i18n } from '@/i18n.js';
@@ -60,7 +62,33 @@ const props = defineProps<{
 }>();
 
 const channelId = ref('');
-const channelItems = computed(() => [{ value: '', label: i18n.ts._chat._channels.all }, ...(props.channels ?? []).map((channel, index) => ({ value: channel.id, label: `#${channel.name} · ${index + 1}`, caption: channel.id }))]);
+const sections = ref<Misskey.entities.ChatRoomChannelSection[]>([]);
+let sectionRequest = 0;
+
+// 섹션 묶음은 보여 주기 위한 것이다. 읽기에 실패하면 섹션 없이 평평하게 보인다.
+watch([() => props.roomId, () => props.channels], async ([roomId, channels]) => {
+	const request = ++sectionRequest;
+	sections.value = [];
+	if (roomId == null || channels == null || channels.length === 0) return;
+	try {
+		const fetched = await misskeyApi('chat/rooms/sections/list', { roomId });
+		if (request === sectionRequest) sections.value = fetched;
+	} catch {
+		// 평평한 목록으로 대체한다.
+	}
+}, { immediate: true });
+
+const channelItems = computed<MkSelectItem<string>[]>(() => {
+	const channels = props.channels ?? [];
+	const position = new Map(channels.map((channel, index) => [channel.id, index + 1]));
+	const option = (channel: Misskey.entities.ChatRoomChannel) => ({ value: channel.id, label: `#${channel.name} · ${position.get(channel.id)}`, caption: channel.id });
+	const { ungrouped, sectionGroups } = groupChannelsBySection(channels, sections.value);
+	const items: MkSelectItem<string>[] = [{ value: '', label: i18n.ts._chat._channels.all }, ...ungrouped.map(option)];
+	for (const group of sectionGroups) {
+		items.push({ type: 'group', label: group.section.name, items: group.channels.map(option) });
+	}
+	return items;
+});
 const searchQuery = ref('');
 const searchQueryEl = useTemplateRef('searchQueryEl');
 let version = 0;

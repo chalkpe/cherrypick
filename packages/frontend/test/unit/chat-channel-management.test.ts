@@ -7,10 +7,10 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/vue';
 import type * as Misskey from 'cherrypick-js';
 
-const mocks = vi.hoisted(() => ({ api: vi.fn().mockResolvedValue([]), confirm: vi.fn(), inputText: vi.fn(), alert: vi.fn(), me: { id: 'owner', policies: { chatAvailability: 'available' } } }));
+const mocks = vi.hoisted(() => ({ api: vi.fn().mockResolvedValue([]), confirm: vi.fn(), inputText: vi.fn(), select: vi.fn(), alert: vi.fn(), me: { id: 'owner', policies: { chatAvailability: 'available' } } }));
 vi.mock('@/i.js', async original => ({ ...await original<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
-vi.mock('@/os.js', () => ({ confirm: mocks.confirm, inputText: mocks.inputText, alert: mocks.alert }));
+vi.mock('@/os.js', () => ({ confirm: mocks.confirm, inputText: mocks.inputText, select: mocks.select, alert: mocks.alert }));
 
 vi.mock('@/components/MkButton.vue', () => ({ default: { template: '<button><slot/></button>' } }));
 
@@ -62,7 +62,7 @@ test('blocks the last deletion and creating a 129th channel', () => {
 	const many = Array.from({ length: 128 }, (_, index) => ({ ...channels[0], id: `c${index}` }));
 	render(Management, { props: { room: { ...room, hasChannels: true }, channels: many }, global: { stubs } });
 	expect((screen.getByRole('button', { name: i18n.ts._chat._channels.create }) as HTMLButtonElement).disabled).toBe(true);
-	expect(mocks.api).not.toHaveBeenCalled();
+	expect(mocks.api.mock.calls.some(([endpoint]) => endpoint !== 'chat/rooms/sections/list')).toBe(false);
 });
 
 test('counts names in code points and preserves internal whitespace', async () => {
@@ -77,7 +77,7 @@ test('counts names in code points and preserves internal whitespace', async () =
 	render(Management, { props: { room: { ...room, hasChannels: true }, channels }, global: { stubs } });
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat._channels.create }));
 	await waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.ts._chat._channels.nameLimit }));
-	expect(mocks.api).not.toHaveBeenCalled();
+	expect(mocks.api.mock.calls.some(([endpoint]) => endpoint !== 'chat/rooms/sections/list')).toBe(false);
 });
 
 test('rechecks archive and owner state after a pending confirmation', async () => {
@@ -137,4 +137,187 @@ test('restores the server order and alerts when a drag reorder fails', async () 
 		const ids = Array.from(view.container.querySelectorAll('[data-chat-channel-id]')).map(el => el.getAttribute('data-chat-channel-id'));
 		expect(ids).toEqual(['c1', 'c2']);
 	});
+});
+
+const sectionList = [{ id: 's1', roomId: 'r', name: '운영' }, { id: 's2', roomId: 'r', name: '행사' }];
+const sectionedChannels = [
+	{ id: 'c1', roomId: 'r', name: 'First', isLegacy: false, sectionId: null },
+	{ id: 'c2', roomId: 'r', name: 'Second', isLegacy: false, sectionId: 's1' },
+	{ id: 'c3', roomId: 'r', name: 'Third', isLegacy: false, sectionId: 's2' },
+];
+
+function mockSections(options: { sections?: unknown[]; channels?: unknown[] } = {}) {
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/sections/list' ? (options.sections ?? sectionList) : (options.channels ?? []));
+}
+
+function sectionRowOf(container: Element, id: string): HTMLElement {
+	return container.querySelector(`[data-chat-section-id="${id}"]`) as HTMLElement;
+}
+
+function renderSectioned(extra: Record<string, unknown> = {}) {
+	mockSections();
+	return render(Management, { props: { room: { ...room, hasChannels: true }, channels: sectionedChannels, ...extra }, global: { stubs } });
+}
+
+test('shows section rows with their management buttons and channel rows inside sections', async () => {
+	const view = renderSectioned();
+	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
+	const section = within(sectionRowOf(view.container, 's1'));
+	expect(section.getByRole('button', { name: i18n.ts._chat._channels.moveUp })).toBeTruthy();
+	expect(section.getByRole('button', { name: i18n.ts._chat._channels.moveDown })).toBeTruthy();
+	expect(section.getByRole('button', { name: i18n.ts._chat._channels.createChannelInSection })).toBeTruthy();
+	expect(section.getByRole('button', { name: i18n.ts.rename })).toBeTruthy();
+	expect(section.getByRole('button', { name: i18n.ts.delete })).toBeTruthy();
+	const channel = within(rowOf(view.container, 'c2'));
+	expect(channel.getByRole('button', { name: i18n.ts._chat._channels.moveSection })).toBeTruthy();
+	expect(sectionRowOf(view.container, 's1').parentElement!.querySelector('[data-chat-channel-id="c2"]')).not.toBeNull();
+	expect(sectionRowOf(view.container, 's2').parentElement!.querySelector('[data-chat-channel-id="c3"]')).not.toBeNull();
+});
+
+test('creates a section with trimmed name and rejects names over 128 code points', async () => {
+	mocks.inputText.mockResolvedValueOnce({ canceled: false, result: '  운영  ' });
+	const view = renderSectioned();
+	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat._channels.createSection }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/sections/create', { roomId: 'r', name: '운영' }));
+	expect(mocks.inputText.mock.lastCall![0].title).toBe(i18n.ts._chat._channels.sectionName);
+	view.unmount();
+
+	mocks.api.mockClear();
+	mocks.inputText.mockResolvedValueOnce({ canceled: false, result: 'x'.repeat(129) });
+	const view2 = renderSectioned();
+	await waitFor(() => expect(sectionRowOf(view2.container, 's1')).not.toBeNull());
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts._chat._channels.createSection }));
+	await waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.ts._chat._channels.sectionNameLimit }));
+	expect(mocks.api.mock.calls.some(([endpoint]) => endpoint === 'chat/rooms/sections/create')).toBe(false);
+});
+
+test('renames a section and deletes it after confirmation', async () => {
+	mocks.inputText.mockResolvedValueOnce({ canceled: false, result: '새 이름' });
+	const view = renderSectioned();
+	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
+	await fireEvent.click(within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts.rename }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/sections/update', { sectionId: 's1', name: '새 이름' }));
+
+	await waitFor(() => expect((within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts.delete }) as HTMLButtonElement).disabled).toBe(false));
+	await fireEvent.click(within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts.delete }));
+	await waitFor(() => expect(mocks.confirm).toHaveBeenCalled());
+	expect(mocks.confirm.mock.lastCall![0].text).toBe(i18n.tsx._chat._channels.deleteSectionConfirm({ name: '운영' }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/sections/delete', { sectionId: 's1' }));
+});
+
+test('creates a channel inside the section from its row', async () => {
+	mocks.inputText.mockResolvedValueOnce({ canceled: false, result: '자료' });
+	const view = renderSectioned();
+	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
+	await fireEvent.click(within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts._chat._channels.createChannelInSection }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/channels/create', { roomId: 'r', name: '자료', sectionId: 's1' }));
+});
+
+test('moves a channel to another section through the select and appends it there', async () => {
+	mocks.select.mockResolvedValueOnce({ canceled: false, result: 's2' });
+	const view = renderSectioned();
+	await waitFor(() => expect(rowOf(view.container, 'c2')).not.toBeNull());
+	await fireEvent.click(within(rowOf(view.container, 'c2')).getByRole('button', { name: i18n.ts._chat._channels.moveSection }));
+	await waitFor(() => expect(mocks.select).toHaveBeenCalled());
+	const items = mocks.select.mock.lastCall![0].items as { value: string; label: string }[];
+	expect(items[0]).toEqual({ value: '', label: i18n.ts._chat._channels.noSection });
+	expect(items.some(item => item.value === 's1' && item.label === '운영')).toBe(true);
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/channels/arrange', {
+		roomId: 'r',
+		ungrouped: ['c1'],
+		sections: [{ sectionId: 's1', channelIds: [] }, { sectionId: 's2', channelIds: ['c3', 'c2'] }],
+	}));
+});
+
+test('moves a channel up and down within its own section only', async () => {
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/sections/list' ? [{ id: 's1', roomId: 'r', name: '운영' }] : []);
+	const two = [
+		{ id: 'c1', roomId: 'r', name: 'First', isLegacy: false, sectionId: null },
+		{ id: 'c2', roomId: 'r', name: 'Second', isLegacy: false, sectionId: 's1' },
+		{ id: 'c3', roomId: 'r', name: 'Third', isLegacy: false, sectionId: 's1' },
+	];
+	const view = render(Management, { props: { room: { ...room, hasChannels: true }, channels: two }, global: { stubs } });
+	await waitFor(() => expect(rowOf(view.container, 'c2')).not.toBeNull());
+	await fireEvent.click(within(rowOf(view.container, 'c2')).getByRole('button', { name: i18n.ts._chat._channels.moveDown }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/channels/arrange', {
+		roomId: 'r',
+		ungrouped: ['c1'],
+		sections: [{ sectionId: 's1', channelIds: ['c3', 'c2'] }],
+	}));
+});
+
+test('reorders sections with the up and down buttons', async () => {
+	const view = renderSectioned();
+	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
+	await fireEvent.click(within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts._chat._channels.moveDown }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/channels/arrange', {
+		roomId: 'r',
+		ungrouped: ['c1'],
+		sections: [{ sectionId: 's2', channelIds: ['c3'] }, { sectionId: 's1', channelIds: ['c2'] }],
+	}));
+});
+
+test('drags a channel across sections with a single arrange request', async () => {
+	const view = renderSectioned();
+	await waitFor(() => expect(rowOf(view.container, 'c2')).not.toBeNull());
+	await dragRow(rowOf(view.container, 'c2'), rowOf(view.container, 'c3'), 'backward');
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/channels/arrange', {
+		roomId: 'r',
+		ungrouped: ['c1'],
+		sections: [{ sectionId: 's1', channelIds: [] }, { sectionId: 's2', channelIds: ['c3', 'c2'] }],
+	}));
+	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/channels/arrange')).toHaveLength(1);
+});
+
+test('drags a section by its handle to reorder sections with a single arrange request', async () => {
+	const view = renderSectioned();
+	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
+	const source = sectionRowOf(view.container, 's1');
+	const target = sectionRowOf(view.container, 's2');
+	const handle = within(source).getAllByRole('button', { name: i18n.ts.dragToReorder })[0];
+	const targetItem = target.parentElement!.parentElement!.parentElement!;
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(handle, { dataTransfer });
+	await fireEvent.drop(targetItem.lastElementChild!, { dataTransfer });
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/channels/arrange', {
+		roomId: 'r',
+		ungrouped: ['c1'],
+		sections: [{ sectionId: 's2', channelIds: ['c3'] }, { sectionId: 's1', channelIds: ['c2'] }],
+	}));
+	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/channels/arrange')).toHaveLength(1);
+});
+
+test('disables every management control while the room is archived', async () => {
+	const view = renderSectioned({ room: { ...room, hasChannels: true, isArchived: true } });
+	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
+	const buttons = screen.getAllByRole('button') as HTMLButtonElement[];
+	expect(buttons.length).toBeGreaterThan(0);
+	for (const button of buttons) expect(button.disabled).toBe(true);
+});
+
+test('restores the server state and alerts when an arrange fails', async () => {
+	mocks.api.mockImplementation(async (endpoint: string) => {
+		if (endpoint === 'chat/rooms/sections/list') return sectionList;
+		if (endpoint === 'chat/rooms/channels/arrange') throw new Error('arrange failed');
+		return [];
+	});
+	const view = render(Management, { props: { room: { ...room, hasChannels: true }, channels: sectionedChannels }, global: { stubs } });
+	await waitFor(() => expect(rowOf(view.container, 'c2')).not.toBeNull());
+	await dragRow(rowOf(view.container, 'c2'), rowOf(view.container, 'c3'), 'backward');
+	await waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.ts._chat.actionFailed }));
+	await waitFor(() => expect(view.emitted('channelsUpdated')).toBeTruthy());
+	await waitFor(() => {
+		expect(sectionRowOf(view.container, 's1').parentElement!.querySelector('[data-chat-channel-id="c2"]')).not.toBeNull();
+		expect(sectionRowOf(view.container, 's2').parentElement!.querySelector('[data-chat-channel-id="c3"]')).not.toBeNull();
+	});
+});
+
+test('limits sections to 128 and shows the limit notice', async () => {
+	const many = Array.from({ length: 128 }, (_, index) => ({ id: `s${index}`, roomId: 'r', name: `묶음 ${index}` }));
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/sections/list' ? many : []);
+	const view = render(Management, { props: { room: { ...room, hasChannels: true }, channels: sectionedChannels }, global: { stubs } });
+	await waitFor(() => expect(sectionRowOf(view.container, 's0')).not.toBeNull());
+	expect((screen.getByRole('button', { name: i18n.ts._chat._channels.createSection }) as HTMLButtonElement).disabled).toBe(true);
+	expect(screen.getByText(i18n.ts._chat._channels.sectionLimit)).toBeTruthy();
 });

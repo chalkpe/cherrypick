@@ -66,9 +66,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<template #label>{{ i18n.ts.notificationSetting }}</template>
 	</MkSelect>
 	<template v-if="room.hasChannels">
-		<MkSelect v-for="channel in notificationChannels" :key="channel.id" :modelValue="channelLevels[channel.id] ?? 'inherit'" :items="channelNotificationItems" :disabled="savingNotification" @update:modelValue="level => setChannelNotification(channel.id, level)">
+		<MkSelect v-for="channel in notificationGroups.ungrouped" :key="channel.id" :modelValue="channelLevels[channel.id] ?? 'inherit'" :items="channelNotificationItems" :disabled="savingNotification" @update:modelValue="level => setChannelNotification(channel.id, level)">
 			<template #label>#{{ channel.name }}</template>
 		</MkSelect>
+		<template v-for="group in notificationGroups.sectionGroups" :key="group.section.id">
+			<div :class="$style.sectionLabel">{{ group.section.name }}</div>
+			<MkSelect v-for="channel in group.channels" :key="channel.id" :modelValue="channelLevels[channel.id] ?? 'inherit'" :items="channelNotificationItems" :disabled="savingNotification" @update:modelValue="level => setChannelNotification(channel.id, level)">
+				<template #label>#{{ channel.name }}</template>
+			</MkSelect>
+		</template>
 	</template>
 	<MkButton @click="readAll"><i class="ti ti-checks"></i> {{ i18n.ts._chat.readAllRoom }}</MkButton>
 
@@ -100,6 +106,7 @@ import MkKeyValue from '@/components/MkKeyValue.vue';
 import MkInfo from '@/components/MkInfo.vue';
 import { useRouter } from '@/router.js';
 import { chatInviteLinkManageErrorText, chatNotificationErrors, chatRoomDeleteErrors, chatRoomUpdateErrors } from './chat-errors.js';
+import { groupChannelsBySection } from './chat-channel-sections.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { copyToClipboard } from '@/utility/copy-to-clipboard.js';
 
@@ -210,23 +217,28 @@ watch(() => [props.room.notificationLevel, props.room.isMuted], () => {
 	notificationLevel.value = props.room.notificationLevel ?? (props.room.isMuted ? 'none' : 'all');
 });
 const listedChannels = ref<Misskey.entities.ChatRoomChannel[]>([]);
+const listedSections = ref<Misskey.entities.ChatRoomChannelSection[]>([]);
 const notificationChannels = computed(() => props.channels ?? listedChannels.value);
+const notificationGroups = computed(() => groupChannelsBySection(notificationChannels.value, listedSections.value));
 let notificationRequest = 0;
 const channelLevels = ref<Record<string, NotificationLevel | 'inherit'>>({});
 
 watch([() => props.room.id, () => props.room.hasChannels], async ([roomId, hasChannels]) => {
 	const request = ++notificationRequest;
 	listedChannels.value = [];
+	listedSections.value = [];
 	channelLevels.value = {};
 	notificationLevel.value = props.room.notificationLevel ?? (props.room.isMuted ? 'none' : 'all');
 	if (!hasChannels) return;
 	try {
-		const [listed, settings] = await Promise.all([
+		const [listed, sectionList, settings] = await Promise.all([
 			props.channels ?? misskeyApi('chat/rooms/channels/list', { roomId }),
+			misskeyApi('chat/rooms/sections/list', { roomId }),
 			misskeyApi('chat/rooms/notifications', { roomId }),
 		]);
 		if (request !== notificationRequest || roomClosed || props.room.id !== roomId) return;
 		listedChannels.value = listed;
+		listedSections.value = sectionList;
 		channelLevels.value = Object.fromEntries(settings.channelOverrides.map(setting => [setting.channelId, setting.level]));
 	} catch {
 		if (request === notificationRequest && !roomClosed && props.room.id === roomId) await os.alert({ type: 'error', text: i18n.ts._chat.roomUnavailable });
@@ -350,6 +362,12 @@ async function readAll() {
 }
 
 .inviteLinkUrl {
+	overflow-wrap: anywhere;
+}
+
+.sectionLabel {
+	font-size: 0.85em;
+	opacity: 0.7;
 	overflow-wrap: anywhere;
 }
 

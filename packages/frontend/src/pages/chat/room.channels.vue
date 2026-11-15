@@ -13,7 +13,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<div :class="$style.bannerName">{{ room.name }}</div>
 				</div>
 				<nav :aria-label="i18n.ts._chat._channels.channels">
-					<MkSuperMenu :def="menuDef" :draggable="canReorder && !railBusy" @reorder="onRailReorder"/>
+					<MkSuperMenu :def="menuDef" :draggable="canReorder && !railBusy" draggableGroups collapsibleTitles @reorder="onRailReorder" @reorderGroups="onRailReorderGroups" @toggleGroup="onToggleGroup"/>
 				</nav>
 			</div>
 		</div>
@@ -36,7 +36,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<template v-else-if="room">
 				<XInfo v-if="showInfo" :room="room" :channels="channels" @updated="refresh" @channelsUpdated="refresh" @deleting="deletingOwnRoom = $event"/>
 				<nav v-else :aria-label="i18n.ts._chat._channels.channels">
-					<MkSuperMenu :def="menuDef" grid/>
+					<MkSuperMenu :def="menuDef" grid collapsibleTitles @toggleGroup="onToggleGroup"/>
 				</nav>
 			</template>
 		</div>
@@ -45,12 +45,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, onActivated, onBeforeUnmount, onDeactivated, ref, useTemplateRef, watch } from 'vue';
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, ref, useTemplateRef, watch } from 'vue';
 import type * as Misskey from 'cherrypick-js';
 import XConversation from './room.vue';
 import XInfo from './room.info.vue';
 import { channelConversationPath } from './chat-channel-references.js';
 import { chatErrorText } from './chat-errors.js';
+import { arrangePayload, flattenArrangement, foldedSectionDisplay, groupChannelsBySection, isSectionExpanded, saveSectionExpanded } from './chat-channel-sections.js';
 import type { SuperMenuDef } from '@/components/MkSuperMenu.vue';
 import MkSuperMenu from '@/components/MkSuperMenu.vue';
 import { i18n } from '@/i18n.js';
@@ -70,6 +71,8 @@ const width = useElementWidth(rootEl);
 const narrow = computed(() => (width.value ?? 0) < 800);
 const room = ref<Misskey.entities.ChatRoom | null>(null);
 const channels = ref<Misskey.entities.ChatRoomChannel[]>([]);
+const sections = ref<Misskey.entities.ChatRoomChannelSection[]>([]);
+const foldedSections = ref<Record<string, boolean>>({});
 const loading = ref(false);
 const failed = ref(false);
 const fetchedUnreadChannelIds = ref<string[]>([]);
@@ -81,8 +84,9 @@ const deletingOwnRoom = ref(false);
 const selectedChannel = computed(() => channels.value.find(channel => channel.id === props.channelId && channel.roomId === props.roomId));
 const railBusy = ref(false);
 const canReorder = computed(() => room.value != null && room.value.ownerId === $i.id && !room.value.isArchived && $i.policies.chatAvailability === 'available');
-const menuDef = computed<SuperMenuDef[]>(() => [{
-	items: channels.value.map(channel => ({
+
+function channelItem(channel: Misskey.entities.ChatRoomChannel) {
+	return {
 		id: channel.id,
 		to: channelConversationPath(props.roomId, channel.id),
 		icon: 'ti ti-hash',
@@ -91,9 +95,37 @@ const menuDef = computed<SuperMenuDef[]>(() => [{
 		indicated: displayUnreadChannelIds.value.includes(channel.id),
 		// 알림 대상(모두 받기의 미읽음, 멘션만 받기의 멘션)만 깜빡이고 나머지는 정적으로 보여준다.
 		pulsing: displayNotificationChannelIds.value.includes(channel.id),
-		ariaCurrent: channel.id === props.channelId ? 'page' : undefined,
-	})),
-}]);
+		ariaCurrent: channel.id === props.channelId ? 'page' as const : undefined,
+	};
+}
+
+const menuDef = computed<SuperMenuDef[]>(() => {
+	const { ungrouped, sectionGroups } = groupChannelsBySection(channels.value, sections.value);
+	const groups: SuperMenuDef[] = [{ items: ungrouped.map(channelItem) }];
+	for (const { section, channels: sectionChannels } of sectionGroups) {
+		const expanded = !foldedSections.value[section.id];
+		const folded = expanded ? null : foldedSectionDisplay(sectionChannels, props.channelId, displayUnreadChannelIds.value, displayNotificationChannelIds.value);
+		groups.push({
+			id: section.id,
+			title: section.name,
+			foldable: true,
+			expanded,
+			indicated: folded?.hiddenUnread ?? false,
+			pulsing: folded?.hiddenNotification ?? false,
+			items: (folded ? folded.visibleChannels : sectionChannels).map(channelItem),
+		});
+	}
+	return groups;
+});
+
+function onToggleGroup(groupIndex: number) {
+	const group = menuDef.value[groupIndex];
+	if (group?.id == null) return;
+	const expanded = group.expanded !== false;
+	foldedSections.value = { ...foldedSections.value, [group.id]: expanded };
+	saveSectionExpanded($i.id, group.id, !expanded);
+}
+
 let request = 0;
 let active = true;
 let unreadRequest = 0;
@@ -124,13 +156,83 @@ async function refreshUnread() {
 	}
 }
 
-function onRailReorder(_groupIndex: number, items: SuperMenuDef['items']) {
-	const byId = new Map(channels.value.map(channel => [channel.id, channel]));
-	const next = items.flatMap(item => {
+// 끌기 한 번에 두 목록(옮긴 채널의 원래 묶음과 받은 묶음)이 각각 바뀐다. 한 번의 arrange로 묶어 보낸다.
+let pendingRailGroups: Map<number, SuperMenuDef['items']> | null = null;
+let pendingSectionOrder: number[] | null = null;
+let railFlushScheduled = false;
+
+function onRailReorder(groupIndex: number, items: SuperMenuDef['items']) {
+	(pendingRailGroups ??= new Map()).set(groupIndex, items);
+	scheduleRailFlush();
+}
+
+function onRailReorderGroups(groupIndices: number[]) {
+	pendingSectionOrder = groupIndices;
+	scheduleRailFlush();
+}
+
+function scheduleRailFlush() {
+	if (railFlushScheduled) return;
+	railFlushScheduled = true;
+	void nextTick(() => {
+		railFlushScheduled = false;
+		void flushRailArrange();
+	});
+}
+
+function itemsToChannels(items: SuperMenuDef['items'], byId: Map<string, Misskey.entities.ChatRoomChannel>): Misskey.entities.ChatRoomChannel[] {
+	return items.flatMap(item => {
 		const channel = item.id != null ? byId.get(item.id) : undefined;
 		return channel ? [channel] : [];
 	});
-	void reorderChannels(next);
+}
+
+async function flushRailArrange() {
+	const changedGroups = pendingRailGroups;
+	const sectionOrder = pendingSectionOrder;
+	pendingRailGroups = null;
+	pendingSectionOrder = null;
+	if (!canReorder.value || railBusy.value || !active || changedGroups == null && sectionOrder == null) return;
+	const byId = new Map(channels.value.map(channel => [channel.id, channel]));
+
+	if (sections.value.length === 0) {
+		// 섹션이 없으면 PR49와 같은 평평한 순서 바꾸기다.
+		const items = changedGroups?.get(0);
+		if (items) await reorderChannels(itemsToChannels(items, byId));
+		return;
+	}
+
+	const target = props.roomId;
+	const previousChannels = channels.value;
+	const previousSections = sections.value;
+	const { ungrouped, sectionGroups } = groupChannelsBySection(channels.value, sections.value);
+	const currentDef = menuDef.value;
+	const nextGroups = sectionGroups.map((group, index) => ({
+		section: group.section,
+		channels: changedGroups?.has(index + 1) ? itemsToChannels(changedGroups.get(index + 1)!, byId) : group.channels,
+	}));
+	const orderedGroups = sectionOrder != null
+		? sectionOrder.filter(index => currentDef[index]?.id != null).map(index => nextGroups.find(group => group.section.id === currentDef[index].id)!)
+		: nextGroups;
+	const arrangement = {
+		ungrouped: changedGroups?.has(0) ? itemsToChannels(changedGroups.get(0)!, byId) : ungrouped,
+		sectionGroups: orderedGroups,
+	};
+	channels.value = flattenArrangement(arrangement);
+	sections.value = orderedGroups.map(group => group.section);
+	railBusy.value = true;
+	try {
+		await misskeyApi('chat/rooms/channels/arrange', arrangePayload(target, arrangement));
+	} catch (err) {
+		if (active && target === props.roomId) {
+			channels.value = previousChannels;
+			sections.value = previousSections;
+			os.alert({ type: 'error', text: chatErrorText(err) });
+			void refresh();
+		}
+	} finally {
+		railBusy.value = false;
+	}
 }
 
 async function reorderChannels(newList: Misskey.entities.ChatRoomChannel[]) {
@@ -165,10 +267,17 @@ async function refresh() {
 			router.replaceByPath(`/chat/room/${target}`);
 			return;
 		}
-		const list = await misskeyApi('chat/rooms/channels/list', { roomId: target });
+		const [list, sectionList] = await Promise.all([
+			misskeyApi('chat/rooms/channels/list', { roomId: target }),
+			misskeyApi('chat/rooms/sections/list', { roomId: target }),
+		]);
 		if (version !== request || !active) return;
 		room.value = fetched;
 		channels.value = list.filter(channel => channel.roomId === target);
+		sections.value = sectionList.filter(section => section.roomId === target);
+		const folded: Record<string, boolean> = {};
+		for (const section of sections.value) folded[section.id] = !isSectionExpanded($i.id, section.id);
+		foldedSections.value = folded;
 		selectFirst();
 		void refreshUnread();
 		mainSubscription?.dispose();
@@ -206,7 +315,7 @@ function closeList(text: string) {
 	router.replace('/chat');
 }
 
-watch(() => props.roomId, () => { room.value = null; channels.value = []; fetchedUnreadChannelIds.value = []; fetchedNotificationChannelIds.value = []; unreadRequest++; showInfo.value = false; void refresh(); }, { immediate: true });
+watch(() => props.roomId, () => { room.value = null; channels.value = []; sections.value = []; foldedSections.value = {}; fetchedUnreadChannelIds.value = []; fetchedNotificationChannelIds.value = []; unreadRequest++; showInfo.value = false; void refresh(); }, { immediate: true });
 watch(() => props.channelId, () => { if (room.value?.id === props.roomId) void refresh(); });
 watch(narrow, selectFirst);
 onDeactivated(() => { active = false; request++; unreadRequest++; subscription?.dispose(); subscription = null; mainSubscription?.dispose(); mainSubscription = null; });

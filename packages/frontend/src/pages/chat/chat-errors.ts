@@ -13,6 +13,8 @@ export function chatErrorText(err: unknown): string {
 		case 'NO_SUCH_CHANNEL': return i18n.ts._chat._channels.deleted;
 		case 'INVALID_CHANNEL_NAME': return i18n.ts._chat._channels.nameLimit;
 		case 'TOO_MANY_CHANNELS': return i18n.ts._chat._channels.limit;
+		case 'INVALID_SECTION_NAME': return i18n.ts._chat._channels.sectionNameLimit;
+		case 'TOO_MANY_SECTIONS': return i18n.ts._chat._channels.sectionLimit;
 		case 'LAST_CHANNEL': return i18n.ts._chat._channels.lastChannel;
 		case 'DICE_INVALID': return i18n.ts._chat.diceInvalid;
 		case 'DICE_LIMIT': return i18n.ts._chat.diceLimit;
