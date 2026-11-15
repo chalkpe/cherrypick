@@ -270,6 +270,8 @@ import type {
 	ChatRoomsBansDeleteRequest,
 	ChatRoomsBansListRequest,
 	ChatRoomsBansListResponse,
+	ChatRoomsChannelsArrangeRequest,
+	ChatRoomsChannelsArrangeResponse,
 	ChatRoomsChannelsCreateRequest,
 	ChatRoomsChannelsCreateResponse,
 	ChatRoomsChannelsDeleteRequest,
@@ -311,6 +313,13 @@ import type {
 	ChatRoomsOwnedRequest,
 	ChatRoomsOwnedResponse,
 	ChatRoomsReadRequest,
+	ChatRoomsSectionsCreateRequest,
+	ChatRoomsSectionsCreateResponse,
+	ChatRoomsSectionsDeleteRequest,
+	ChatRoomsSectionsListRequest,
+	ChatRoomsSectionsListResponse,
+	ChatRoomsSectionsUpdateRequest,
+	ChatRoomsSectionsUpdateResponse,
 	ChatRoomsShowRequest,
 	ChatRoomsShowResponse,
 	ChatRoomsUnreadRequest,
@@ -959,6 +968,7 @@ export type Endpoints = {
 	'chat/read-all': { req: EmptyRequest; res: EmptyResponse };
 	'chat/rooms/bans/delete': { req: ChatRoomsBansDeleteRequest; res: EmptyResponse };
 	'chat/rooms/bans/list': { req: ChatRoomsBansListRequest; res: ChatRoomsBansListResponse };
+	'chat/rooms/channels/arrange': { req: ChatRoomsChannelsArrangeRequest; res: ChatRoomsChannelsArrangeResponse };
 	'chat/rooms/channels/create': { req: ChatRoomsChannelsCreateRequest; res: ChatRoomsChannelsCreateResponse };
 	'chat/rooms/channels/delete': { req: ChatRoomsChannelsDeleteRequest; res: EmptyResponse };
 	'chat/rooms/channels/list': { req: ChatRoomsChannelsListRequest; res: ChatRoomsChannelsListResponse };
@@ -985,6 +995,10 @@ export type Endpoints = {
 	'chat/rooms/notifications': { req: ChatRoomsNotificationsRequest; res: ChatRoomsNotificationsResponse };
 	'chat/rooms/owned': { req: ChatRoomsOwnedRequest; res: ChatRoomsOwnedResponse };
 	'chat/rooms/read': { req: ChatRoomsReadRequest; res: EmptyResponse };
+	'chat/rooms/sections/create': { req: ChatRoomsSectionsCreateRequest; res: ChatRoomsSectionsCreateResponse };
+	'chat/rooms/sections/delete': { req: ChatRoomsSectionsDeleteRequest; res: EmptyResponse };
+	'chat/rooms/sections/list': { req: ChatRoomsSectionsListRequest; res: ChatRoomsSectionsListResponse };
+	'chat/rooms/sections/update': { req: ChatRoomsSectionsUpdateRequest; res: ChatRoomsSectionsUpdateResponse };
 	'chat/rooms/show': { req: ChatRoomsShowRequest; res: ChatRoomsShowResponse };
 	'chat/rooms/unread': { req: ChatRoomsUnreadRequest; res: ChatRoomsUnreadResponse };
 	'chat/rooms/update': { req: ChatRoomsUpdateRequest; res: ChatRoomsUpdateResponse };
