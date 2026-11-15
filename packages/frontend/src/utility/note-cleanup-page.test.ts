@@ -87,16 +87,24 @@ test('목록은 기본 이름만 영어로 표시하고 같은 한국어 사용�
 	expect(view.getByRole('link', { name: /고정한 내 글/ })).toBeTruthy();
 });
 
-test('list busy failure keeps retry available and recovers on the next load', async () => {
-	let calls = 0;
-	vi.stubGlobal('fetch', async () => ++calls === 1
-		? new Response(JSON.stringify({ error: { code: 'CLEANUP_BUSY' } }), { status: 503 })
-		: new Response(JSON.stringify({ rules: [{ id: 'd1', name: 'Recovered rule', action: 'delete', enabled: true }], blocked: false })));
+test('list busy failure shows the message without a retry button', async () => {
+	vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ error: { code: 'CLEANUP_BUSY' } }), { status: 503 }));
 	const view = render(Settings, { global: { stubs } });
 	await view.findByText('Note cleanup is busy. Please wait a moment and try again.');
+	// 혼잡 오류에는 다시 시도 버튼을 두지 않는다.
+	expect(view.queryByRole('button', { name: 'Retry' })).toBeNull();
+});
+
+test('list non-busy failure keeps retry available and recovers on the next load', async () => {
+	let calls = 0;
+	vi.stubGlobal('fetch', async () => ++calls === 1
+		? new Response(JSON.stringify({ error: { code: 'INTERNAL_ERROR' } }), { status: 500 })
+		: new Response(JSON.stringify({ rules: [{ id: 'd1', name: 'Recovered rule', action: 'delete', enabled: true }], blocked: false })));
+	const view = render(Settings, { global: { stubs } });
+	await view.findByText('Could not confirm the operation. Please retry.');
 	await fireEvent.click(view.getByRole('button', { name: 'Retry' }));
 	await view.findByRole('link', { name: /Recovered rule/ });
-	expect(view.queryByText('Note cleanup is busy. Please wait a moment and try again.')).toBeNull();
+	expect(view.queryByText('Could not confirm the operation. Please retry.')).toBeNull();
 });
 
 test('empty sections still offer creating each rule kind', async () => {
