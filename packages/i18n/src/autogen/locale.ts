@@ -7229,7 +7229,7 @@ export interface Locale extends ILocale {
          */
         "editingMessage": string;
         /**
-         * このグループから退出しました。再参加するには招待が必要です。
+         * このグループには参加していません。
          */
         "removedFromRoom": string;
         /**

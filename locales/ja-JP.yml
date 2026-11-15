@@ -1813,7 +1813,7 @@ _chat:
   cannotInviteBannedUser: "このグループから外したユーザーです。再参加を許可すると招待できます。"
   banAlreadyLifted: "このユーザーはすでに再参加が許可されています。"
   editingMessage: "メッセージを編集中"
-  removedFromRoom: "このグループから退出しました。再参加するには招待が必要です。"
+  removedFromRoom: "このグループには参加していません。"
   roomUnavailable: "このグループを開けません。削除されたか、参加していないグループです。"
   invitationCancelAreYouSure: "{x}さんに送信された招待をキャンセルしますか？"
   cancelInvitationTo: "{x}さんへの招待をキャンセル"

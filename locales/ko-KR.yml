@@ -1808,7 +1808,7 @@ _chat:
   cannotInviteBannedUser: "이 그룹에서 내보낸 사람이에요. 사면하면 초대할 수 있어요."
   banAlreadyLifted: "이미 사면된 사람이에요."
   editingMessage: "쪽지 수정 중"
-  removedFromRoom: "이 그룹에서 나갔어요. 다시 참여하려면 초대가 필요해요."
+  removedFromRoom: "이 그룹에 더 이상 참여하고 있지 않아요."
   roomUnavailable: "이 그룹을 열 수 없어요. 삭제되었거나 참여 중인 그룹이 아니에요."
   invitationCancelAreYouSure: "{x}님에게 보낸 초대를 취소할까요?"
   cancelInvitationTo: "{x}님에게 보낸 초대 취소"
