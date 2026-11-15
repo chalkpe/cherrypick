@@ -177,8 +177,6 @@ async function refresh() {
 		subscription?.dispose();
 		// 목록을 보는 것만으로는 메시지를 읽지 않는다. read는 대화의 구독에서만 보낸다.
 		subscription = useStream().useChannel('chatRoom', { roomId: target, channelId: channels.value[0]?.id });
-		// 매개변수 있는 이 구독만 재연결 때 구독 확인(_subscribed_)을 받는다. 끊긴 동안 달라진 미읽음·알림 대상을 다시 읽는다.
-		subscription.on('_subscribed_', () => { if (active && target === props.roomId) void refreshUnread(); });
 		subscription.on('channelsUpdated', () => { if (active && target === props.roomId) void refresh(); });
 		subscription.on('roomUpdated', () => { if (active && target === props.roomId) void refresh(); });
 		subscription.on('roomDeleted', () => {
@@ -206,12 +204,19 @@ function closeList(text: string) {
 	router.replace('/chat');
 }
 
+// 끊긴 동안 구독 기준 채널이 삭제되면 서버가 구독을 거부해 확인(_subscribed_)이 오지 않는다.
+// 연결 복구 자체를 기준으로 목록과 미읽음을 한 곳에서 다시 읽고, 구독 대상도 남은 채널로 다시 고른다.
+function onStreamConnected() {
+	if (active) void refresh();
+}
+
+useStream().on('_connected_', onStreamConnected);
 watch(() => props.roomId, () => { room.value = null; channels.value = []; fetchedUnreadChannelIds.value = []; fetchedNotificationChannelIds.value = []; unreadRequest++; showInfo.value = false; void refresh(); }, { immediate: true });
 watch(() => props.channelId, () => { if (room.value?.id === props.roomId) void refresh(); });
 watch(narrow, selectFirst);
-onDeactivated(() => { active = false; request++; unreadRequest++; subscription?.dispose(); subscription = null; mainSubscription?.dispose(); mainSubscription = null; });
-onActivated(() => { if (!active) { active = true; void refresh(); } });
-onBeforeUnmount(() => { active = false; request++; unreadRequest++; subscription?.dispose(); mainSubscription?.dispose(); });
+onDeactivated(() => { active = false; request++; unreadRequest++; useStream().off('_connected_', onStreamConnected); subscription?.dispose(); subscription = null; mainSubscription?.dispose(); mainSubscription = null; });
+onActivated(() => { if (!active) { active = true; useStream().on('_connected_', onStreamConnected); void refresh(); } });
+onBeforeUnmount(() => { active = false; request++; unreadRequest++; useStream().off('_connected_', onStreamConnected); subscription?.dispose(); mainSubscription?.dispose(); });
 
 const actions = computed(() => room.value ? [{ icon: showInfo.value ? 'ti ti-hash' : 'ti ti-info-circle', text: showInfo.value ? i18n.ts._chat._channels.channels : i18n.ts.info, handler: () => { showInfo.value = !showInfo.value; } }] : []);
 definePage(computed(() => ({ title: room.value?.name ?? i18n.ts._chat._channels.channels, subtitle: i18n.ts._chat._channels.channels, mobileFooterInFlow: true, ...(room.value ? { roomAvatar: room.value } : { icon: 'ti ti-users' }) })));

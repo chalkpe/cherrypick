@@ -473,6 +473,65 @@ test('the wide rail re-reads unread markers after the stream reconnects', async 
 	await expect(quietLink.locator('.itemIndicator')).toHaveClass(/_blink/);
 });
 
+test('the narrow channel list drops a channel deleted while the stream was down after reconnecting', async ({ page }) => {
+	const room = await createGroup('Reconnect delete');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const quiet = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	await api(base, 'chat/rooms/notifications', { i: member.token, roomId: room.id, channelId: quiet.id, level: 'mentions' });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: 'plain note' });
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	await login(page, member, 'en-US');
+	await trackSockets(page);
+	await open(page, path(room.id));
+	const list = page.getByRole('navigation', { name: 'Channels' });
+	const generalLink = list.locator(`a[href="${path(room.id, general.id)}"]`);
+	const quietLink = list.locator(`a[href="${path(room.id, quiet.id)}"]`);
+	await expect(generalLink).toBeVisible();
+	await expect(quietLink.locator('.itemIndicator')).toBeVisible();
+	await expect(quietLink.locator('.itemIndicator')).not.toHaveClass(/_blink/);
+
+	// 끊긴 동안 그룹장이 실제 API로 맨 위 채널을 삭제하고, 남은 채널에 멘션이 도착한다.
+	await cutStream(page);
+	await api(base, 'chat/rooms/channels/delete', { i: owner.token, channelId: general.id });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: `ping @${member.username}` });
+	const unreadAfterReconnect = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/unread') && response.request().method() === 'POST', { timeout: 15_000 });
+	await page.context().setOffline(false);
+	await unreadAfterReconnect;
+	await expect(generalLink).toHaveCount(0);
+	await expect(quietLink.locator('.itemIndicator')).toHaveClass(/_blink/);
+});
+
+test('the wide rail drops a channel deleted while the stream was down after reconnecting', async ({ page }) => {
+	const room = await createGroup('Reconnect rail delete');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const quiet = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	const loud = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'gamma' });
+	await api(base, 'chat/rooms/notifications', { i: member.token, roomId: room.id, channelId: quiet.id, level: 'mentions' });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: 'plain note' });
+
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	await login(page, member, 'en-US');
+	await trackSockets(page);
+	// 구독 기준(맨 위 general)이 아닌 quiet 대화를 열어 레일을 본다.
+	await open(page, path(room.id, quiet.id));
+	const rail = page.getByRole('navigation', { name: 'Channels' });
+	const generalLink = rail.locator(`a[href="${path(room.id, general.id)}"]`);
+	const loudLink = rail.locator(`a[href="${path(room.id, loud.id)}"]`);
+	await expect(generalLink).toBeVisible();
+	await expect(loudLink.locator('.itemIndicator')).toHaveCount(0);
+
+	await cutStream(page);
+	await api(base, 'chat/rooms/channels/delete', { i: owner.token, channelId: general.id });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: loud.id, text: `ping @${member.username}` });
+	const unreadAfterReconnect = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/unread') && response.request().method() === 'POST', { timeout: 15_000 });
+	await page.context().setOffline(false);
+	await unreadAfterReconnect;
+	await expect(generalLink).toHaveCount(0);
+	await expect(loudLink.locator('.itemIndicator')).toHaveClass(/_blink/);
+	await expect(page).toHaveURL(base + path(room.id, quiet.id));
+});
+
 test('long channel names wrap within the rail and the narrow list', async ({ page }) => {
 	const room = await createGroup('Weekend notes');
 	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];

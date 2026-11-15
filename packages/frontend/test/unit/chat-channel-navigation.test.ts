@@ -10,15 +10,24 @@ import { ref } from 'vue';
 const mocks = vi.hoisted(() => {
 	type Handler = (data: unknown) => void;
 	const connections: { channel: string; params: unknown; handlers: Map<string, Handler>; disposed: boolean }[] = [];
+	const streamHandlers = new Map<string, Set<Handler>>();
+	// 서버가 현재 가진 채널. 재연결 때 이 목록에 없는 채널의 구독은 실제 서버처럼 거부(NO_SUCH_CHANNEL)해 확인을 보내지 않는다.
+	let serverChannelIds = ['c1', 'c2'];
 	return {
 		api: vi.fn().mockResolvedValue([]), replace: vi.fn(), alert: vi.fn(), width: 400,
 		me: { id: 'me', policies: { chatAvailability: 'available' } },
 		handlers: new Map<string, Handler>(),
 		connections,
-		// 매개변수 없는 공유 연결은 구독 확인(_subscribed_)을 받지 않고, 매개변수 있는 비공유 연결만 재연결 때 받는다.
+		streamHandlers,
+		setServerChannelIds(ids: string[]) { serverChannelIds = ids; },
+		// 연결 복구(_connected_)를 먼저 알리고, 서버가 승인하는 구독에만 확인(_subscribed_)을 보낸다.
 		reconnect() {
+			for (const handler of streamHandlers.get('_connected_') ?? []) handler(undefined);
 			for (const connection of connections) {
-				if (!connection.disposed && connection.params != null) connection.handlers.get('_subscribed_')?.(undefined);
+				if (connection.disposed || connection.params == null) continue;
+				const channelId = (connection.params as { channelId?: string }).channelId;
+				if (channelId != null && !serverChannelIds.includes(channelId)) continue;
+				connection.handlers.get('_subscribed_')?.(undefined);
 			}
 		},
 	};
@@ -36,7 +45,14 @@ vi.mock('@/stream.js', () => ({ useStream: () => ({ useChannel: (channel: string
 		on: (name: string, handler: (data: unknown) => void) => { handlers.set(name, handler); mocks.handlers.set(name, handler); },
 		dispose: () => { connection.disposed = true; },
 	};
-} }) }));
+},
+on: (name: string, handler: (data: unknown) => void) => {
+	let handlers = mocks.streamHandlers.get(name);
+	if (!handlers) { handlers = new Set(); mocks.streamHandlers.set(name, handlers); }
+	handlers.add(handler);
+},
+off: (name: string, handler: (data: unknown) => void) => { mocks.streamHandlers.get(name)?.delete(handler); },
+}) }));
 vi.mock('@/pages/chat/room.vue', () => ({ default: { props: ['roomId', 'channelId'], template: '<div data-testid="conversation">{{ roomId }}/{{ channelId }}</div>' } }));
 vi.mock('@/pages/chat/room.info.vue', () => ({ default: { template: '<div/>' } }));
 vi.mock('@/page.js', () => ({ definePage: vi.fn() }));
@@ -48,7 +64,7 @@ import { i18n } from '@/i18n.js';
 const room = { id: 'r', hasChannels: true, name: 'Group' };
 const channels = [{ id: 'c1', roomId: 'r', name: 'First' }, { id: 'c2', roomId: 'r', name: 'Second' }];
 const stubs = { PageWithHeader: { template: '<main><slot/></main>' }, MkA: { props: ['to'], template: '<a :href="to"><slot/></a>' }, MkLoading: true, MkResult: true, MkAvatar: true };
-beforeEach(() => { vi.clearAllMocks(); mocks.width = 400; mocks.connections.length = 0; mocks.me.policies.chatAvailability = 'available'; mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : channels); });
+beforeEach(() => { vi.clearAllMocks(); mocks.width = 400; mocks.connections.length = 0; mocks.streamHandlers.clear(); mocks.setServerChannelIds(['c1', 'c2']); mocks.me.policies.chatAvailability = 'available'; mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : channels); });
 afterEach(cleanup);
 
 test('opens a channel list at narrow width without fetching or reading a timeline', async () => {
@@ -201,6 +217,86 @@ test('re-reads unread markers after the stream reconnects in the wide rail', asy
 
 	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
 	expect(second.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
+});
+
+test('re-reads the list and unread markers after the stream reconnects when the subscribed channel was deleted', async () => {
+	let list = channels;
+	let unreadChannelIds: string[] = [];
+	let notificationChannelIds: string[] = [];
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : list);
+	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	await screen.findByRole('link', { name: 'First' });
+	await screen.findByRole('link', { name: 'Second' });
+	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
+
+	// 끊긴 동안 그룹장이 구독 기준인 맨 위 채널을 삭제하고, 남은 채널에 멘션이 도착했다.
+	list = [channels[1]];
+	mocks.setServerChannelIds(['c2']);
+	unreadChannelIds = ['c2'];
+	notificationChannelIds = ['c2'];
+	mocks.reconnect();
+
+	await waitFor(() => expect(screen.queryByRole('link', { name: 'First' })).toBeNull());
+	await waitFor(() => expect(screen.getByRole('link', { name: 'Second' }).querySelector('.itemIndicator')?.classList.contains('_blink')).toBe(true));
+	// 재연결 한 번에 다시 읽기는 한 번이고, 구독 대상은 남은 채널로 다시 고른다.
+	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(2);
+	const live = mocks.connections.filter(connection => !connection.disposed && connection.channel === 'chatRoom');
+	expect(live.at(-1)?.params).toEqual({ roomId: 'r', channelId: 'c2' });
+});
+
+test('re-reads the rail list and unread markers after the stream reconnects when the subscribed channel was deleted', async () => {
+	mocks.width = 1000;
+	let list = channels;
+	let unreadChannelIds: string[] = [];
+	let notificationChannelIds: string[] = [];
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' } : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : list);
+	render(Channels, { props: { roomId: 'r', channelId: 'c2' }, global: { stubs } });
+	await screen.findByText('r/c2');
+	await screen.findByRole('link', { name: 'Second' });
+	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
+
+	// 끊긴 동안 구독 기준인 맨 위 채널이 삭제되고, 보고 있는 채널에 멘션이 도착했다.
+	list = [channels[1]];
+	mocks.setServerChannelIds(['c2']);
+	unreadChannelIds = ['c2'];
+	notificationChannelIds = ['c2'];
+	mocks.reconnect();
+
+	await waitFor(() => expect(screen.queryByRole('link', { name: 'First' })).toBeNull());
+	await waitFor(() => expect(screen.getByRole('link', { name: 'Second' }).querySelector('.itemIndicator')?.classList.contains('_blink')).toBe(true));
+	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(2);
+	const live = mocks.connections.filter(connection => !connection.disposed && connection.channel === 'chatRoom');
+	expect(live.at(-1)?.params).toEqual({ roomId: 'r', channelId: 'c2' });
+});
+
+test('stops re-reading on reconnect after the list unmounts', async () => {
+	const view = render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	await screen.findByRole('link', { name: 'First' });
+	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
+	view.unmount();
+	const callsAfterUnmount = mocks.api.mock.calls.length;
+
+	mocks.reconnect();
+	await Promise.resolve();
+
+	expect(mocks.api.mock.calls.length).toBe(callsAfterUnmount);
+});
+
+test('stops re-reading on reconnect while the list is deactivated and resumes on activation', async () => {
+	const wrapper = { props: ['show'], components: { Channels }, template: '<KeepAlive><Channels v-if="show" roomId="r"/></KeepAlive>' };
+	const view = render(wrapper, { props: { show: true }, global: { stubs } });
+	await screen.findByRole('link', { name: 'First' });
+	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
+	await view.rerender({ show: false });
+	const callsAfterDeactivate = mocks.api.mock.calls.length;
+
+	mocks.reconnect();
+	await Promise.resolve();
+	expect(mocks.api.mock.calls.length).toBe(callsAfterDeactivate);
+
+	await view.rerender({ show: true });
+	await screen.findByRole('link', { name: 'First' });
+	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread').length).toBeGreaterThan(1));
 });
 
 const ownedRoom = { ...room, ownerId: 'me' };
