@@ -151,7 +151,7 @@ function mockSections(options: { sections?: unknown[]; channels?: unknown[] } = 
 }
 
 function sectionRowOf(container: Element, id: string): HTMLElement {
-	return container.querySelector(`[data-chat-section-id="${id}"]`) as HTMLElement;
+	return container.querySelector(`[data-chat-manage-section-id="${id}"]`) as HTMLElement;
 }
 
 function renderSectioned(extra: Record<string, unknown> = {}) {

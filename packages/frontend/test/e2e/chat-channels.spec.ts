@@ -702,7 +702,7 @@ test('owner manages sections with buttons and the structure persists', async ({ 
 	await fillDialog(page, 'Section name', '  Notices  ');
 	const section = await (await created).json();
 	expect(section.name).toBe('Notices');
-	const row = page.locator(`[data-chat-section-id="${section.id}"]`);
+	const row = page.locator(`[data-chat-manage-section-id="${section.id}"]`);
 	await expect(row).toBeVisible();
 
 	await row.getByRole('button', { name: 'Create channel in this section', exact: true }).click();
@@ -726,22 +726,23 @@ test('owner manages sections with buttons and the structure persists', async ({ 
 	expect((await (await renamed).json()).name).toBe('Announcements');
 
 	const second = await api(base, 'chat/rooms/sections/create', { i: owner.token, roomId: room.id, name: 'Events' });
-	await expect(page.locator(`[data-chat-section-id="${second.id}"]`)).toBeVisible();
-	await page.locator(`[data-chat-section-id="${second.id}"]`).getByRole('button', { name: 'Move up', exact: true }).click();
+	await expect(page.locator(`[data-chat-manage-section-id="${second.id}"]`)).toBeVisible();
+	await page.locator(`[data-chat-manage-section-id="${second.id}"]`).getByRole('button', { name: 'Move up', exact: true }).click();
 	await expect.poll(async () => (await api(base, 'chat/rooms/sections/list', { i: owner.token, roomId: room.id }))[0].id).toBe(second.id);
 
-	await page.locator(`[data-chat-section-id="${second.id}"]`).getByRole('button', { name: 'Delete', exact: true }).click();
+	await page.locator(`[data-chat-manage-section-id="${second.id}"]`).getByRole('button', { name: 'Delete', exact: true }).click();
 	const deleteDialog = page.getByText('Delete section Events?', { exact: false }).locator('xpath=ancestor::div[.//button[@data-testid="modal-dialog-ok"]][1]');
 	const deleted = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/sections/delete'));
 	await deleteDialog.getByTestId('modal-dialog-ok').click();
 	expect((await deleted).status()).toBe(204);
-	await expect(page.locator(`[data-chat-section-id="${second.id}"]`)).toHaveCount(0);
+	await expect(page.locator(`[data-chat-manage-section-id="${second.id}"]`)).toHaveCount(0);
 
 	const stored = await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id });
 	expect(stored.map((channel: Misskey.entities.ChatRoomChannel) => channel.id)).toEqual([general.id, docs.id, beta.id]);
 	await page.reload();
-	await expect(page.locator(`[data-chat-section-id="${section.id}"]`)).toBeVisible();
-	await expect(page.locator(`[data-chat-section-id="${section.id}"]`).locator('xpath=..').locator(`[data-chat-channel-id="${beta.id}"]`)).toBeVisible();
+	await page.getByText('About', { exact: true }).click();
+	await expect(page.locator(`[data-chat-manage-section-id="${section.id}"]`)).toBeVisible();
+	await expect(page.locator(`[data-chat-manage-section-id="${section.id}"]`).locator('xpath=..').locator(`[data-chat-channel-id="${beta.id}"]`)).toBeVisible();
 });
 
 test('section changes reach other members without a reload', async ({ page }) => {
@@ -883,7 +884,7 @@ test('archived rooms disable section management', async ({ page }) => {
 	await expect(page.getByRole('button', { name: 'Create section', exact: true })).toBeDisabled();
 	await expect(page.getByRole('button', { name: 'Create channel', exact: true })).toBeDisabled();
 	const section = (await api(base, 'chat/rooms/sections/list', { i: owner.token, roomId: room.id }))[0];
-	const row = page.locator(`[data-chat-section-id="${section.id}"]`);
+	const row = page.locator(`[data-chat-manage-section-id="${section.id}"]`);
 	await expect(row.getByRole('button', { name: 'Rename', exact: true })).toBeDisabled();
 	await expect(row.getByRole('button', { name: 'Delete', exact: true })).toBeDisabled();
 	await expect(row.getByRole('button', { name: 'Drag to reorder' })).toBeDisabled();
@@ -901,8 +902,11 @@ test('a failed rail arrange restores the server order', async ({ page }) => {
 	await open(page, path(room.id, general.id));
 	await expect(sectionHeader(page, 'Notices')).toBeVisible();
 
-	// 드롭 직전에 보관으로 바꿔 실제 서버가 거절하게 한다.
-	await api(base, 'chat/rooms/update', { i: owner.token, roomId: room.id, isArchived: true });
+	// 요청이 서버에 닿기 직전에 보관으로 바꿔 실제 서버가 거절하게 한다.
+	await page.route('**/api/chat/rooms/channels/arrange', async route => {
+		await api(base, 'chat/rooms/update', { i: owner.token, roomId: room.id, isArchived: true });
+		await route.continue();
+	});
 	await dispatchRailDragIntoSection(page, railHandleFor(page, 'beta'), sectionHeader(page, 'Events'));
 	await expect(page.getByText('This room has been archived', { exact: false })).toBeVisible();
 	await expect.poll(async () => (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id })).find((channel: Misskey.entities.ChatRoomChannel) => channel.id === beta.id).sectionId).toBe(first.id);
@@ -965,7 +969,7 @@ test('search and notification selects group channels by section', async ({ page 
 	await page.getByRole('menuitem', { name: /Search$/ }).click();
 	await page.getByText('All channels', { exact: true }).locator('xpath=ancestor::div[@tabindex="0"][1]').click();
 	await expect(page.getByRole('menuitem', { name: 'Notices', exact: true })).toBeVisible();
-	await page.getByRole('menuitem', { name: '#docs · 2', exact: true }).click();
+	await page.getByText('#docs · 2', { exact: true }).click();
 	await page.getByPlaceholder('Search messages').fill('grouped needle');
 	await page.getByRole('button', { name: 'Search', exact: true }).click();
 	await expect(page.getByText('grouped needle', { exact: true })).toBeVisible();

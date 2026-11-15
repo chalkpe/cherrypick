@@ -30,7 +30,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			@update:modelValue="entries => emit('reorderGroups', entries.map(entry => entry.index))"
 		>
 			<template #default="{ item: entry, dragStart }">
-				<div class="group" :data-chat-section-id="entry.group.id">
+				<div class="group" :class="entry.group.title ? 'titled' : 'untitled'" :data-chat-section-id="entry.group.id">
 					<div v-if="entry.group.title" class="titleRow">
 						<button class="_button dragHandle" draggable="true" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="dragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
 						<button v-if="collapsibleTitles && entry.group.foldable" class="_button titleButton" :aria-expanded="entry.group.expanded !== false" @click="emit('toggleGroup', entry.index)">
@@ -596,10 +596,20 @@ function searchOnKeyDown(ev: KeyboardEvent) {
 	}
 
 	// 바깥 끌기 목록에서는 묶음이 항목 안에 들어가므로 구분선을 항목 사이에 둔다.
+	// 바깥 놓기 영역(위·아래 30px)이 안쪽 채널 행을 덮지 않도록 묶음 아래에 같은 높이의 여백을 둔다.
 	> .groupList > div + div > .group {
-		margin-top: 16px;
 		padding-top: 16px;
 		border-top: solid 0.5px var(--MI_THEME-divider);
+	}
+
+	> .groupList > div > .group.titled {
+		padding-bottom: 30px;
+	}
+
+	// 제목 없는 묶음은 끌 수 없으므로 바깥 놓기 영역을 두지 않는다.
+	> .groupList > :deep(div:has(> div > .group.untitled) > div:first-child),
+	> .groupList > :deep(div:has(> div > .group.untitled) > div:last-child) {
+		display: none;
 	}
 
 	&.grid {

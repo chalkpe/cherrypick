@@ -11,24 +11,47 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</template>
 	<template v-else>
 		<MkLoading v-if="loading"/>
-		<!-- 섹션 없는 채널 묶음과 섹션들을 바깥 목록으로 두고, 각 묶음의 채널을 안쪽 목록으로 끈다. -->
+		<!-- 섹션 없는 채널 목록 아래에 섹션들을 바깥 목록으로 두고, 각 목록의 채널을 안쪽에서 끈다. -->
 		<MkDraggable
-			v-if="list.length"
-			:modelValue="manageGroups"
+			v-if="list.length || sections.length"
+			:modelValue="ungroupedChannels"
+			direction="vertical"
+			manualDragStart
+			canNest
+			:group="channelDragGroup"
+			@update:modelValue="items => onChannelDrag('ungrouped', items)"
+		>
+			<template #default="{ item: channel, index: channelIndex, dragStart: channelDragStart }">
+				<div :data-chat-channel-id="channel.id" :class="$style.channel">
+					<button class="_button" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="channelDragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
+					<span :class="$style.name">#{{ channel.name }}</span>
+					<div :class="$style.actions">
+						<button class="_button" :disabled="!canManage || busy || channelIndex === 0" :aria-label="i18n.ts._chat._channels.moveUp" @click="moveChannel(channel, -1)"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
+						<button class="_button" :disabled="!canManage || busy || channelIndex === ungroupedChannels.length - 1" :aria-label="i18n.ts._chat._channels.moveDown" @click="moveChannel(channel, 1)"><i class="ti ti-arrow-down" aria-hidden="true"></i></button>
+						<button v-if="sections.length" class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts._chat._channels.moveSection" @click="moveChannelToSection(channel)"><i class="ti ti-folder" aria-hidden="true"></i></button>
+						<button class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.rename" @click="rename(channel)"><i class="ti ti-pencil" aria-hidden="true"></i></button>
+						<button class="_button" :disabled="!canManage || busy || list.length <= 1" :aria-label="i18n.ts.delete" :title="list.length <= 1 ? i18n.ts._chat._channels.lastChannel : undefined" @click="remove(channel)"><i class="ti ti-trash" aria-hidden="true"></i></button>
+					</div>
+				</div>
+			</template>
+		</MkDraggable>
+		<MkDraggable
+			v-if="sectionGroups.length"
+			:modelValue="sectionGroups"
 			direction="vertical"
 			manualDragStart
 			canNest
 			:group="sectionDragGroup"
-			@update:modelValue="onGroupDrag"
+			@update:modelValue="onSectionDrag"
 		>
 			<template #default="{ item: group, index, dragStart }">
-				<div>
-					<div v-if="group.section" :class="$style.section" :data-chat-section-id="group.section.id">
+				<div :class="$style.sectionBlock">
+					<div :class="$style.section" :data-chat-manage-section-id="group.section.id">
 						<button class="_button" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="dragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
 						<span :class="$style.name">{{ group.section.name }}</span>
 						<div :class="$style.actions">
-							<button class="_button" :disabled="!canManage || busy || index <= 1" :aria-label="i18n.ts._chat._channels.moveUp" @click="moveSection(group.section, -1)"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
-							<button class="_button" :disabled="!canManage || busy || index >= manageGroups.length - 1" :aria-label="i18n.ts._chat._channels.moveDown" @click="moveSection(group.section, 1)"><i class="ti ti-arrow-down" aria-hidden="true"></i></button>
+							<button class="_button" :disabled="!canManage || busy || index === 0" :aria-label="i18n.ts._chat._channels.moveUp" @click="moveSection(group.section, -1)"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
+							<button class="_button" :disabled="!canManage || busy || index === sectionGroups.length - 1" :aria-label="i18n.ts._chat._channels.moveDown" @click="moveSection(group.section, 1)"><i class="ti ti-arrow-down" aria-hidden="true"></i></button>
 							<button class="_button" :disabled="!canManage || busy || list.length >= 128" :aria-label="i18n.ts._chat._channels.createChannelInSection" @click="createChannel(group.section.id)"><i class="ti ti-plus" aria-hidden="true"></i></button>
 							<button class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.rename" @click="renameSection(group.section)"><i class="ti ti-pencil" aria-hidden="true"></i></button>
 							<button class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.delete" @click="removeSection(group.section)"><i class="ti ti-trash" aria-hidden="true"></i></button>
@@ -40,10 +63,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 						manualDragStart
 						canNest
 						:group="channelDragGroup"
-						@update:modelValue="items => onChannelDrag(group.id, items)"
+						@update:modelValue="items => onChannelDrag(group.section.id, items)"
 					>
 						<template #default="{ item: channel, index: channelIndex, dragStart: channelDragStart }">
-							<div :data-chat-channel-id="channel.id" :class="$style.channel">
+							<div :data-chat-channel-id="channel.id" :class="[$style.channel, $style.sectionChannel]">
 								<button class="_button" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="channelDragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
 								<span :class="$style.name">#{{ channel.name }}</span>
 								<div :class="$style.actions">
@@ -85,6 +108,7 @@ import MkInfo from '@/components/MkInfo.vue';
 import MkDraggable from '@/components/MkDraggable.vue';
 
 type ManageGroup = { id: string; section: ChatChannelSection | null; channels: ChatChannel[] };
+type SectionManageGroup = ManageGroup & { section: ChatChannelSection };
 
 const props = defineProps<{ room: Misskey.entities.ChatRoom; channels?: Misskey.entities.ChatRoomChannel[] }>();
 const emit = defineEmits<{
@@ -109,6 +133,9 @@ const manageGroups = computed<ManageGroup[]>(() => {
 	const { ungrouped, sectionGroups } = groupChannelsBySection(list.value, sections.value);
 	return [{ id: 'ungrouped', section: null, channels: ungrouped }, ...sectionGroups.map(group => ({ id: group.section.id, section: group.section, channels: group.channels }))];
 });
+
+const ungroupedChannels = computed(() => manageGroups.value[0].channels);
+const sectionGroups = computed(() => manageGroups.value.slice(1) as SectionManageGroup[]);
 
 async function loadSections() {
 	const request = ++sectionVersion;
@@ -313,8 +340,8 @@ function onChannelDrag(groupId: string, items: ChatChannel[]) {
 	scheduleFlush();
 }
 
-function onGroupDrag(entries: ManageGroup[]) {
-	pendingGroupOrder = entries.map(entry => entry.id);
+function onSectionDrag(entries: ManageGroup[]) {
+	pendingGroupOrder = ['ungrouped', ...entries.map(entry => entry.id)];
 	scheduleFlush();
 }
 
@@ -378,6 +405,15 @@ async function removeSection(section: ChatChannelSection) {
 </script>
 
 <style lang="scss" module>
+// 바깥 끌기 영역(위·아래 30px)이 안쪽 채널 행을 덮지 않게 섹션 아래에 같은 높이의 여백을 둔다.
+.sectionBlock {
+	padding-bottom: 30px;
+}
+
+.sectionChannel {
+	padding-left: 12px;
+}
+
 .section {
 	display: flex;
 	align-items: center;
