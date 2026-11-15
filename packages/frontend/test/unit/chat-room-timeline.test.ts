@@ -340,6 +340,48 @@ test('화면의 가장 오래된 글보다 앞에 놓이는 글이 실시간으�
 	}
 });
 
+test('가져온 기록을 합친 뒤 더 불러오기는 합친 구간의 가장 오래된 글에서 이어진다', async () => {
+	const all = Array.from({ length: 200 }, (_, i) => message(`m${String(200 - i).padStart(3, '0')}`, 'alice', (200 - i) * MINUTE));
+	vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+		if (endpoint === 'chat/messages/room-timeline') {
+			const { untilId = null, limit = 20 } = (params ?? {}) as { untilId?: string | null; limit?: number };
+			return all.filter(m => untilId == null || m.id < untilId).slice(0, limit) as never;
+		}
+		return apiMock(endpoint, params);
+	});
+	try {
+		const { container } = await renderRoom();
+		const more = () => [...container.querySelectorAll('button')].find(button => button.textContent.includes(i18n.ts.loadMore));
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(20);
+
+		mocks.channel.emit('historyImported', { status: 'completed' });
+		await waitFor(() => expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(100));
+		const merged = [...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'));
+		expect(merged[0]).toBe('m101');
+		vi.mocked(misskeyApi).mockClear();
+
+		await fireEvent.click(more()!);
+		await flush();
+		await flush();
+
+		// 첫 요청이 초기 페이지 끝이 아니라 합친 구간의 끝에서 이어져야 새 글이 추가된다
+		const reads = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline');
+		expect(reads[0][1]).toMatchObject({ untilId: 'm101' });
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(130);
+
+		for (let i = 0; i < 10 && more() != null; i++) {
+			await fireEvent.click(more()!);
+			await flush();
+			await flush();
+		}
+		const shown = [...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'));
+		expect(shown).toEqual(all.map(m => m.id).toSorted());
+		expect(more()).toBeUndefined();
+	} finally {
+		vi.mocked(misskeyApi).mockImplementation(apiMock);
+	}
+});
+
 describe('following the newest message', () => {
 	const FULL_PAGE = 20;
 

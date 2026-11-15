@@ -783,6 +783,11 @@ async function refreshImportedHistory() {
 			room.value = { ...room.value!, historyImportStatus: 'completed' };
 			canFetchMore.value = true;
 			messages.value = [...messages.value, ...added].toSorted((a, b) => a.id < b.id ? 1 : -1);
+			// 더 불러오기 기준도 합친 연속 구간의 끝으로 옮긴다. 이미 더 오래된 위치까지 받은 커서는 되돌리지 않는다
+			const mergedOldest = messages.value.at(-1)?.id;
+			if (mergedOldest != null && (olderCursorId == null || mergedOldest < olderCursorId)) {
+				olderCursorId = mergedOldest;
+			}
 			await nextTick();
 			restore();
 			mergingHistory = false;
