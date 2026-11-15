@@ -307,7 +307,7 @@ async function renderRoom(target: typeof room, states: unknown[] | Promise<unkno
 	return result;
 }
 
-const openedItems = () => mocks.popupMenu.mock.calls.at(-1)![0] as { type?: string; text?: string; action?: () => unknown; props?: any }[];
+const openedItems = () => mocks.popupMenu.mock.calls.at(-1)![0] as { type?: string; text?: string; action?: () => unknown; props?: any; ref?: { value: boolean } }[];
 const menuButtonOf = (user: typeof alice) => within(participantGroup(user)).getByRole('button', { name: i18n.ts.menu });
 const headerIcons = () => [...screen.getByTestId('header-actions').querySelectorAll('button')].map(el => el.querySelector('i')!.className);
 
@@ -318,6 +318,9 @@ async function openTab(title: string) {
 
 const headerJoin = () => within(screen.getByTestId('header-actions')).queryByLabelText(i18n.ts._voiceCall.join);
 const stickyCard = () => within(screen.getByTestId('sticky-header'));
+// ヘッダーの通話ボタンが開くメニュー: 参加前のマイク選択 (switch) と開始/参加のアクション
+const callMenuMic = () => openedItems().find(item => item.type === 'switch')!;
+const callMenuStart = () => openedItems().find(item => item.text === i18n.ts._voiceCall.start || item.text === i18n.ts._voiceCall.join)!;
 
 async function setPageWidth(width: number) { resizeObserved(width); await flush(); }
 
@@ -349,21 +352,23 @@ describe('voice call on the room page', () => {
 	});
 	test('joins with the mic on by default and remembers the prejoin choice for the next call', async () => {
 		await renderRoom(room, []);
+		// 誰も通話していないとき、開始はヘッダーのボタン。押すと参加前のマイク選択と開始をメニューに出す
 		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
+		expect(callMenuMic().ref!.value).toBe(true);
+		await callMenuStart().action!();
 		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: true });
-		const micToggle = screen.getByRole('button', { name: i18n.ts._voiceCall.micMuted });
-		expect(micToggle.getAttribute('aria-pressed')).toBe('false');
-		await fireEvent.click(micToggle);
-		expect(prefer.commit).toHaveBeenLastCalledWith('voiceCall.micEnabled', false);
-		expect(micToggle.getAttribute('aria-pressed')).toBe('true');
 		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
+		callMenuMic().ref!.value = false;
+		expect(prefer.commit).toHaveBeenLastCalledWith('voiceCall.micEnabled', false);
+		await callMenuStart().action!();
 		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: false });
 	});
-	test('starts the banner with the mic choice remembered from the last call', async () => {
+	test('starts the call with the mic choice remembered from the last call', async () => {
 		prefer.reset({ ...prefer.s, 'voiceCall.micEnabled': false });
 		await renderRoom(room, []);
-		expect(screen.getByRole('button', { name: i18n.ts._voiceCall.micMuted, pressed: true })).toBeTruthy();
 		await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.start }));
+		expect(callMenuMic().ref!.value).toBe(false);
+		await callMenuStart().action!();
 		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: false });
 	});
 	test('has one messages tab and puts search in the room menu', async () => {
@@ -819,6 +824,7 @@ describe('voice call on the room page', () => {
 			await openTab(i18n.ts._chat.members);
 
 			await fireEvent.click(headerJoin()!);
+			await callMenuStart().action!();
 			await flush();
 
 			expect(mocks.joinVoiceCall).not.toHaveBeenCalled();
@@ -833,6 +839,7 @@ describe('voice call on the room page', () => {
 			await openTab(i18n.ts._chat.members);
 
 			await fireEvent.click(headerJoin()!);
+			await callMenuStart().action!();
 			await flush();
 
 			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);

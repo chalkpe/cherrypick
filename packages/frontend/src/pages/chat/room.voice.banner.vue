@@ -3,7 +3,8 @@ SPDX-FileCopyrightText: syuilo and misskey-project
 SPDX-License-Identifier: AGPL-3.0-only
 -->
 <template>
-<section v-if="call.available.value && !call.inThisCall.value" :class="[$style.root, { [$style.unavailable]: call.providerUnavailable?.value }]" :aria-label="empty ? undefined : i18n.tsx._voiceCall.inCallCount({ n: call.participants.value.length })">
+<!-- 誰も通話していないときはパネルを出さず、開始はルームのヘッダーボタンに任せる。誰かが通話中 (または relay が到達不能) のときだけ参加のパネルを出す -->
+<section v-if="call.available.value && !call.inThisCall.value && (call.participants.value.length > 0 || call.providerUnavailable?.value)" :class="[$style.root, { [$style.unavailable]: call.providerUnavailable?.value }]" :aria-label="empty ? undefined : i18n.tsx._voiceCall.inCallCount({ n: call.participants.value.length })">
 	<p v-if="call.providerUnavailable?.value" :class="$style.notice" role="status">{{ i18n.ts._voiceRelay.unreachable }}</p>
 	<div ref="avatarsEl" :class="$style.avatars">
 		<!-- メニューに出すものが無い参加者 (通話に入っておらず持ち主でもないとき) は、押しても何も起きないボタンにせず、名前の付いた絵として出す -->
@@ -35,7 +36,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	>
 		<i :class="call.prejoinMicEnabled.value ? 'ti ti-microphone' : 'ti ti-microphone-off'" aria-hidden="true"></i>
 	</button>
-	<MkButton primary :class="$style.join" @click="call.join()"><i class="ti ti-phone" aria-hidden="true"></i> {{ call.providerUnavailable?.value ? i18n.ts.retry : empty ? i18n.ts._voiceCall.start : i18n.ts._voiceCall.join }}</MkButton>
+	<MkButton primary :class="$style.join" @click="call.join()"><i class="ti ti-phone" aria-hidden="true"></i> {{ call.providerUnavailable?.value ? i18n.ts.retry : i18n.ts._voiceCall.join }}</MkButton>
 </section>
 </template>
 <script lang="ts" setup>
