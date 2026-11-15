@@ -349,6 +349,73 @@ test('members cannot drag channels in the rail or the management screen', async 
 	await expect(page.getByRole('button', { name: 'Drag to reorder' })).toHaveCount(0);
 });
 
+test('rail dots blink only for notification targets and the current channel is marked', async ({ page }) => {
+	const room = await createGroup('Evening plans');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const quiet = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	const loud = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'gamma' });
+	await api(base, 'chat/rooms/notifications', { i: owner.token, roomId: room.id, channelId: quiet.id, level: 'mentions' });
+	await api(base, 'chat/rooms/notifications', { i: member.token, roomId: room.id, channelId: quiet.id, level: 'mentions' });
+	await api(base, 'chat/messages/create-to-room', { i: member.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: 'plain update' });
+	await api(base, 'chat/messages/create-to-room', { i: member.token, toRoomId: room.id, toRoomChannelId: loud.id, text: 'another update' });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: 'reply one' });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: loud.id, text: 'reply two' });
+
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	for (const account of [owner, member]) {
+		await login(page, account, 'en-US');
+		await open(page, path(room.id, general.id));
+		const rail = page.getByRole('navigation', { name: 'Channels' });
+		const quietLink = rail.locator(`a[href="${path(room.id, quiet.id)}"]`);
+		const loudLink = rail.locator(`a[href="${path(room.id, loud.id)}"]`);
+		await expect(quietLink.locator('.itemIndicator')).toBeVisible();
+		await expect(quietLink.locator('.itemIndicator')).not.toHaveClass(/_blink/);
+		await expect(loudLink.locator('.itemIndicator')).toHaveClass(/_blink/);
+		await expect(rail.locator(`a[href="${path(room.id, general.id)}"]`)).toHaveAttribute('aria-current', 'page');
+		await expect(quietLink).not.toHaveAttribute('aria-current', 'page');
+		await expect(loudLink).not.toHaveAttribute('aria-current', 'page');
+	}
+});
+
+test('long channel names wrap within the rail and the narrow list', async ({ page }) => {
+	const room = await createGroup('Weekend notes');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const longName = 'abcdefghijklmnopqrstuvwxyz'.repeat(5).slice(0, 128);
+	const long = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: longName });
+	const measure = (nav: Locator) => nav.evaluate(navEl => {
+		const container = navEl.closest('aside') ?? navEl;
+		const cr = container.getBoundingClientRect();
+		const items = [...navEl.querySelectorAll('.item')].map(item => {
+			const text = item.querySelector('.text')!;
+			const tr = text.getBoundingClientRect();
+			return { length: text.textContent!.length, height: tr.height, rightOver: +(tr.right - cr.right).toFixed(1) };
+		});
+		return { scrollWidth: container.scrollWidth, clientWidth: container.clientWidth, pageScrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth, items };
+	});
+
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	for (const account of [owner, member]) {
+		await login(page, account, 'en-US');
+		await open(page, path(room.id, general.id));
+		const rail = page.getByRole('navigation', { name: 'Channels' });
+		await expect(rail.locator(`a[href="${path(room.id, long.id)}"]`)).toBeVisible();
+		const wide = await measure(rail);
+		expect(wide.scrollWidth).toBeLessThanOrEqual(wide.clientWidth);
+		const longItem = wide.items.find(item => item.length === 128)!;
+		expect(longItem.rightOver).toBeLessThanOrEqual(0);
+		expect(longItem.height).toBeGreaterThan(30);
+	}
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	await login(page, owner, 'en-US');
+	await open(page, path(room.id));
+	const grid = page.getByRole('navigation', { name: 'Channels' });
+	await expect(grid.locator(`a[href="${path(room.id, long.id)}"]`)).toBeVisible();
+	const narrow = await measure(grid);
+	expect(narrow.pageScrollWidth).toBeLessThanOrEqual(narrow.innerWidth);
+	expect(narrow.items.find(item => item.length === 128)!.height).toBeGreaterThan(30);
+});
+
 test('a newly accepted invitation opens the first channel conversation', async ({ page }) => {
 	const room = await api(base, 'chat/rooms/create', { i: owner.token, name: 'Join channels' });
 	await api(base, 'chat/rooms/convert-to-channels', { i: owner.token, roomId: room.id });

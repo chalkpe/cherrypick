@@ -23,26 +23,26 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 			<div v-if="!draggable" class="items">
 				<template v-for="(item, i) in group.items">
-					<a v-if="item.type === 'a'" :href="item.href" :target="item.target" class="_button item" :class="{ danger: item.danger, active: item.active }">
+					<a v-if="item.type === 'a'" :href="item.href" :target="item.target" :aria-current="item.ariaCurrent" class="_button item" :class="{ danger: item.danger, active: item.active }">
 						<span>
 							<span v-if="item.icon" class="icon"><i :class="item.icon" class="ti-fw"></i></span>
 							<span class="text">{{ item.text }}</span>
 						</span>
-						<span v-if="'indicated' in item && item.indicated" class="itemIndicator _blink"><i class="_indicatorCircle"></i></span>
+						<span v-if="'indicated' in item && item.indicated" class="itemIndicator" :class="{ _blink: item.pulsing !== false }"><i class="_indicatorCircle"></i></span>
 					</a>
-					<button v-else-if="item.type === 'button'" class="_button item" :class="{ danger: item.danger, active: item.active }" :disabled="item.active" @click="ev => item.action(ev)">
+					<button v-else-if="item.type === 'button'" class="_button item" :class="{ danger: item.danger, active: item.active }" :disabled="item.active" :aria-current="item.ariaCurrent" @click="ev => item.action(ev)">
 						<span>
 							<span v-if="item.icon" class="icon"><i :class="item.icon" class="ti-fw"></i></span>
 							<span class="text">{{ item.text }}</span>
 						</span>
-						<span v-if="item.indicated" class="itemIndicator _blink"><i class="_indicatorCircle"></i></span>
+						<span v-if="item.indicated" class="itemIndicator" :class="{ _blink: item.pulsing !== false }"><i class="_indicatorCircle"></i></span>
 					</button>
-					<MkA v-else :to="item.to" class="_button item" :class="{ danger: item.danger, active: item.active }">
+					<MkA v-else :to="item.to" :aria-current="item.ariaCurrent" class="_button item" :class="{ danger: item.danger, active: item.active }">
 						<span>
 							<span v-if="item.icon" class="icon"><i :class="item.icon" class="ti-fw"></i></span>
 							<span class="text">{{ item.text }}</span>
 						</span>
-						<span v-if="item.indicated" class="itemIndicator _blink"><i class="_indicatorCircle"></i></span>
+						<span v-if="item.indicated" class="itemIndicator" :class="{ _blink: item.pulsing !== false }"><i class="_indicatorCircle"></i></span>
 					</MkA>
 				</template>
 			</div>
@@ -57,26 +57,26 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<template #default="{ item: entry, dragStart }">
 					<div class="dragRow">
 						<button class="_button dragHandle" draggable="true" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="dragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
-						<a v-if="entry.item.type === 'a'" :href="entry.item.href" :target="entry.item.target" :draggable="false" class="_button item" :class="{ danger: entry.item.danger, active: entry.item.active }">
+						<a v-if="entry.item.type === 'a'" :href="entry.item.href" :target="entry.item.target" :draggable="false" :aria-current="entry.item.ariaCurrent" class="_button item" :class="{ danger: entry.item.danger, active: entry.item.active }">
 							<span>
 								<span v-if="entry.item.icon" class="icon"><i :class="entry.item.icon" class="ti-fw"></i></span>
 								<span class="text">{{ entry.item.text }}</span>
 							</span>
-							<span v-if="'indicated' in entry.item && entry.item.indicated" class="itemIndicator _blink"><i class="_indicatorCircle"></i></span>
+							<span v-if="'indicated' in entry.item && entry.item.indicated" class="itemIndicator" :class="{ _blink: entry.item.pulsing !== false }"><i class="_indicatorCircle"></i></span>
 						</a>
-						<button v-else-if="entry.item.type === 'button'" class="_button item" :class="{ danger: entry.item.danger, active: entry.item.active }" :disabled="entry.item.active" @click="ev => invokeAction(entry.item, ev)">
+						<button v-else-if="entry.item.type === 'button'" class="_button item" :class="{ danger: entry.item.danger, active: entry.item.active }" :disabled="entry.item.active" :aria-current="entry.item.ariaCurrent" @click="ev => invokeAction(entry.item, ev)">
 							<span>
 								<span v-if="entry.item.icon" class="icon"><i :class="entry.item.icon" class="ti-fw"></i></span>
 								<span class="text">{{ entry.item.text }}</span>
 							</span>
-							<span v-if="entry.item.indicated" class="itemIndicator _blink"><i class="_indicatorCircle"></i></span>
+							<span v-if="entry.item.indicated" class="itemIndicator" :class="{ _blink: entry.item.pulsing !== false }"><i class="_indicatorCircle"></i></span>
 						</button>
-						<MkA v-else :to="entry.item.to" :draggable="false" class="_button item" :class="{ danger: entry.item.danger, active: entry.item.active }">
+						<MkA v-else :to="entry.item.to" :draggable="false" :aria-current="entry.item.ariaCurrent" class="_button item" :class="{ danger: entry.item.danger, active: entry.item.active }">
 							<span>
 								<span v-if="entry.item.icon" class="icon"><i :class="entry.item.icon" class="ti-fw"></i></span>
 								<span class="text">{{ entry.item.text }}</span>
 							</span>
-							<span v-if="entry.item.indicated" class="itemIndicator _blink"><i class="_indicatorCircle"></i></span>
+							<span v-if="entry.item.indicated" class="itemIndicator" :class="{ _blink: entry.item.pulsing !== false }"><i class="_indicatorCircle"></i></span>
 						</MkA>
 					</div>
 				</template>
@@ -123,6 +123,8 @@ export type SuperMenuDef = {
 		danger?: boolean;
 		active?: boolean;
 		indicated?: boolean;
+		pulsing?: boolean;
+		ariaCurrent?: 'page' | 'step' | 'location' | 'date' | 'time' | boolean;
 	} | {
 		type: 'button';
 		id?: string;
@@ -132,6 +134,8 @@ export type SuperMenuDef = {
 		active?: boolean;
 		action: (ev: PointerEvent) => Awaitable<void>;
 		indicated?: boolean;
+		pulsing?: boolean;
+		ariaCurrent?: 'page' | 'step' | 'location' | 'date' | 'time' | boolean;
 	} | {
 		type?: 'link';
 		id?: string;
@@ -141,6 +145,8 @@ export type SuperMenuDef = {
 		danger?: boolean;
 		active?: boolean;
 		indicated?: boolean;
+		pulsing?: boolean;
+		ariaCurrent?: 'page' | 'step' | 'location' | 'date' | 'time' | boolean;
 	})[];
 };
 </script>
@@ -394,7 +400,6 @@ function searchOnKeyDown(ev: KeyboardEvent) {
           left: 18px;
           color: var(--MI_THEME-navIndicator);
           font-size: 8px;
-          animation: blink 1s infinite;
         }
 			}
 		}
@@ -553,7 +558,6 @@ function searchOnKeyDown(ev: KeyboardEvent) {
 			left: 18px;
 			color: var(--MI_THEME-navIndicator);
 			font-size: 8px;
-			animation: blink 1s infinite;
 		}
 	}
 }

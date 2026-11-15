@@ -288,3 +288,67 @@ test('super menu emits the reordered items when dragging is enabled', async () =
 	await fireEvent.drop(item.lastElementChild!, { dataTransfer });
 	expect(view.emitted('reorder')).toEqual([[0, [items[1], items[0]]]]);
 });
+
+test('blinks unread dots only for notification targets in the member rail', async () => {
+	mocks.width = 1000;
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' } : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c1', 'c2'], notificationChannelIds: ['c1'] } : channels);
+	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	const first = await screen.findByRole('link', { name: 'First' });
+	await waitFor(() => expect(first.querySelector('.itemIndicator')).not.toBeNull());
+	expect(first.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
+	const second = screen.getByRole('link', { name: 'Second' });
+	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
+	expect(second.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(false);
+});
+
+test('keeps mention-only unread dots static and marks the current channel in the drag rail', async () => {
+	mocks.width = 1000;
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? ownedRoom : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c2'], notificationChannelIds: [] } : channels);
+	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	const first = await screen.findByRole('link', { name: 'First' });
+	const second = screen.getByRole('link', { name: 'Second' });
+	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
+	expect(second.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(false);
+	expect(first.getAttribute('aria-current')).toBe('page');
+	expect(second.getAttribute('aria-current')).toBeNull();
+});
+
+test('marks the current channel link with aria-current in the member rail', async () => {
+	mocks.width = 1000;
+	mockRoom({ ...room, ownerId: 'other' });
+	render(Channels, { props: { roomId: 'r', channelId: 'c2' }, global: { stubs } });
+	const second = await screen.findByRole('link', { name: 'Second' });
+	expect(second.getAttribute('aria-current')).toBe('page');
+	expect(screen.getByRole('link', { name: 'First' }).getAttribute('aria-current')).toBeNull();
+});
+
+test('shows static unread dots for mention-only channels in the narrow grid', async () => {
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c2'], notificationChannelIds: [] } : channels);
+	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	const second = await screen.findByRole('link', { name: 'Second' });
+	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
+	expect(second.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(false);
+});
+
+test('super menu blinks indicated items by default and leaves aria-current unset', () => {
+	render(MkSuperMenu, { props: { def: [{ items: [{ id: 'a', to: '/a', icon: 'ti ti-hash', text: 'A', indicated: true }] }] }, global: { stubs } });
+	const link = screen.getByRole('link', { name: 'A' });
+	expect(link.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
+	expect(link.getAttribute('aria-current')).toBeNull();
+});
+
+test('super menu shows a static dot when pulsing is off and passes aria-current through', () => {
+	render(MkSuperMenu, { props: { def: [{ items: [{ id: 'a', to: '/a', icon: 'ti ti-hash', text: 'A', indicated: true, pulsing: false, ariaCurrent: 'page' }] }] }, global: { stubs } });
+	const link = screen.getByRole('link', { name: 'A' });
+	expect(link.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(false);
+	expect(link.getAttribute('aria-current')).toBe('page');
+});
+
+test('super menu keeps static dots and aria-current in drag mode', () => {
+	render(MkSuperMenu, { props: { def: [{ items: [{ id: 'a', to: '/a', icon: 'ti ti-hash', text: 'A', indicated: true, pulsing: false, ariaCurrent: 'page' }, { id: 'b', to: '/b', icon: 'ti ti-hash', text: 'B', indicated: true }] }], draggable: true }, global: { stubs } });
+	const links = screen.getAllByRole('link');
+	expect(links[0].querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(false);
+	expect(links[0].getAttribute('aria-current')).toBe('page');
+	expect(links[1].querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
+	expect(links[1].getAttribute('aria-current')).toBeNull();
+});
