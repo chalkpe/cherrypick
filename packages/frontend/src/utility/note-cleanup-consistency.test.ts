@@ -119,6 +119,25 @@ test('a single root condition offers an add button that wraps it into an all gro
 	expect(onChange).toHaveBeenCalledWith([], { type: 'all', children: [condition, { type: 'keyword', mode: 'literal', value: '', flags: '', targets: ['text', 'cw', 'poll'] }] });
 });
 
+test.each([['all', 'any'], ['any', 'all']] as const)('switching a %s group to %s keeps its conditions', async (from, to) => {
+	const children: Condition[] = [
+		{ type: 'keyword', mode: 'literal', value: '사과', flags: '', targets: ['text'] },
+		{ type: 'keyword', mode: 'literal', value: '배', flags: '', targets: ['text'] },
+	];
+	const onChange = vi.fn();
+	const view = render(ConditionEditor, { props: { condition: { type: from, children }, path: [], onChange } });
+	await fireEvent.update(view.container.querySelector('select')!, to);
+	expect(onChange).toHaveBeenCalledWith([], { type: to, children });
+});
+
+test('switching a group to a leaf type still starts from a fresh condition', async () => {
+	const onChange = vi.fn();
+	const children: Condition[] = [{ type: 'keyword', mode: 'literal', value: '사과', flags: '', targets: ['text'] }];
+	const view = render(ConditionEditor, { props: { condition: { type: 'all', children }, path: [], onChange } });
+	await fireEvent.update(view.container.querySelector('select')!, 'age');
+	expect(onChange).toHaveBeenCalledWith([], { type: 'age', operator: 'gte', seconds: 30 * 86400 });
+});
+
 test('a leaf inside a group does not render its own add button', async () => {
 	const condition: Condition = { type: 'all', children: [{ type: 'keyword', mode: 'literal', value: '사과', flags: '', targets: ['text'] }] };
 	const view = render(ConditionEditor, { props: { condition, path: [], onChange: vi.fn() } });

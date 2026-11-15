@@ -192,6 +192,54 @@ test('dragging a condition within a group keeps nodes, editor state and saved fo
 	expect(response.request().postDataJSON().condition).toEqual({ type: 'all', children: [keywordCondition('seed'), { type: 'age', seconds: 86400, operator: 'gte' }] });
 });
 
+test('switching a group between match all and match any keeps its conditions', async ({ page }) => {
+	await resetState();
+	await registerUser('admin', 'pass', true);
+	const alice = await registerUser('alice', 'alice1234');
+	await signIn(page, 'alice', 'alice1234');
+	await closeUserSetupDialog(page);
+	const { rule } = await api(BASE_URL, 'i/note-cleanup/create', { i: alice.token, name: 'Switch check', action: 'delete', condition: keywordCondition('apple') });
+	await page.goto(`${BASE_URL}/settings/note-cleanup/${rule.id}`);
+	const root = page.locator('[data-condition-path=""]');
+	await root.locator('textarea').waitFor();
+	await page.getByRole('button', { name: 'Add condition' }).click();
+	const first = page.locator('[data-condition-path="0"]');
+	const second = page.locator('[data-condition-path="1"]');
+	await expect(second.locator('textarea')).toBeVisible();
+	await second.locator('textarea').fill('pear');
+	const firstHandle = (await first.elementHandle())!;
+	const secondHandle = (await second.elementHandle())!;
+	await markHandle(firstHandle, 'switch');
+	await markHandle(secondHandle, 'switch');
+	const typeSelect = root.locator('> div:first-child [aria-label="Condition"][role="button"]');
+	await typeSelect.click();
+	const anyItem = page.getByRole('menuitem', { name: 'Match any', exact: true });
+	await expect(anyItem).toHaveCount(1);
+	await anyItem.click();
+	await expect(typeSelect).toHaveText('Match any');
+	await expect(first.locator('textarea')).toHaveValue('apple');
+	await expect(second.locator('textarea')).toHaveValue('pear');
+	await typeSelect.click();
+	const allItem = page.getByRole('menuitem', { name: 'Match all', exact: true });
+	await expect(allItem).toHaveCount(1);
+	await allItem.click();
+	await expect(typeSelect).toHaveText('Match all');
+	await expect(first.locator('textarea')).toHaveValue('apple');
+	await expect(second.locator('textarea')).toHaveValue('pear');
+	expect(await intactHandle(firstHandle, 'switch')).toBe(true);
+	expect(await intactHandle(secondHandle, 'switch')).toBe(true);
+	await dragCondition(page, '1', '0', false, async () => (await page.locator('[data-condition-path="0"] textarea').inputValue()) === 'pear');
+	const saved = page.waitForResponse(response => response.url().endsWith('/api/i/note-cleanup/update'));
+	await page.getByRole('button', { name: 'Save' }).click();
+	const response = await saved;
+	expect(response.status()).toBe(200);
+	const target = { mode: 'literal', flags: '', targets: ['text', 'cw', 'poll'] };
+	expect(response.request().postDataJSON().condition).toEqual({
+		type: 'all',
+		children: [{ type: 'keyword', value: 'pear', ...target }, { type: 'keyword', value: 'apple', mode: 'literal', flags: '', targets: ['text'] }],
+	});
+});
+
 test('editing a keyword inside a group keeps focus and nodes', async ({ page }) => {
 	await resetState();
 	await registerUser('admin', 'pass', true);

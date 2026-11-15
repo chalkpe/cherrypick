@@ -67,7 +67,12 @@ const draggableChildren = computed(() => childrenOf(props.condition).map(conditi
 const isRootLeaf = computed(() => props.path.length === 0 && props.condition.type !== 'all' && props.condition.type !== 'any');
 
 function changeType(value: string) {
-	// 유형을 바꾸면 하위 조건은 새 유형의 기본값으로 다시 시작한다.
+	// 모두 충족과 하나라도 충족 사이의 전환은 하위 조건을 그대로 둔다.
+	if ((props.condition.type === 'all' || props.condition.type === 'any') && (value === 'all' || value === 'any')) {
+		emit('change', props.path, { ...props.condition, type: value });
+		return;
+	}
+	// 그 밖의 유형 변경은 하위 조건을 새 유형의 기본값으로 다시 시작한다.
 	const next = value.startsWith('flag:') ? { type: 'flag' as const, field: value.slice(5) as NoteCleanupFlag, value: true } : createCondition(value as Condition['type']);
 	emit('change', props.path, next);
 }
