@@ -184,7 +184,7 @@ describe('사본 서버의 참여 요청', () => {
 		expect(deliver.mock.calls[0][0]).toBe(user);
 		expect(deliver.mock.calls[0][2]).toBe('https://a.example/inbox');
 		expect(sentJoins()[0]).toMatchObject({ type: 'Join', actor: userUri, object: inviteUrl });
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'pending', roomId: null, reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'pending', roomId: null, reason: null, membersCount: null });
 	});
 
 	test('대기 중에 다시 눌러도 새 Join을 보내지 않는다', async () => {
@@ -205,7 +205,7 @@ describe('사본 서버의 참여 요청', () => {
 
 		expect(results).toEqual([{ status: 'pending', roomId: null }, { status: 'pending', roomId: null }]);
 		expect(sentJoins()).toHaveLength(1);
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'pending', roomId: null, reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'pending', roomId: null, reason: null, membersCount: null });
 	});
 
 	test('발급 서버가 없는 링크라고 답하면 폐기 사유로 거절하고 Join을 보내지 않는다', async () => {
@@ -244,13 +244,34 @@ describe('사본 서버의 참여 요청', () => {
 		expect(deliver).not.toHaveBeenCalled();
 	});
 
+	test('참여한 멤버의 상태 조회는 발급 서버의 현재 인원 수를 내준다', async () => {
+		const { service, membership, signedGetJson } = createFixture();
+		membership.add(user.id);
+		await service.join(user, inviteUrl);
+		signedGetJson.mockClear();
+		signedGetJson.mockResolvedValueOnce(previewDoc({ object: { id: roomUri, type: 'Group', name: '모임', summary: '', _misskey_chatArchived: false, _misskey_chatRoomMembersCount: 4 } }));
+
+		expect(await service.joinStatus(user, inviteUrl, { withMembersCount: true })).toEqual({ status: 'joined', roomId: 'mirror1', reason: null, membersCount: 4 });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1', reason: null, membersCount: null });
+		expect(signedGetJson).toHaveBeenCalledTimes(1);
+	});
+
+	test('발급 서버의 미리보기를 읽을 수 없으면 인원 수만 비우고 참여 상태는 그대로 알린다', async () => {
+		const { service, membership, signedGetJson } = createFixture();
+		membership.add(user.id);
+		await service.join(user, inviteUrl);
+		signedGetJson.mockRejectedValueOnce(new Error('unreachable'));
+
+		expect(await service.joinStatus(user, inviteUrl, { withMembersCount: true })).toEqual({ status: 'joined', roomId: 'mirror1', reason: null, membersCount: null });
+	});
+
 	test('이미 멤버라고 답한 참여 요청은 이어지는 상태 조회에도 같은 멤버십을 알린다', async () => {
 		const { service, membership } = createFixture();
 		membership.add(user.id);
 
 		expect(await service.join(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1' });
 
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1', reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1', reason: null, membersCount: null });
 	});
 
 	test.each([
@@ -273,7 +294,7 @@ describe('사본 서버가 받은 거절', () => {
 
 		expect(result).toBe('ok: Join refused (banned)');
 		expect(publishMainStream).toHaveBeenCalledWith(user.id, 'chatInviteJoinResult', { url: inviteUrl, status: 'refused', roomId: null, reason: 'banned' });
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'refused', roomId: null, reason: 'banned' });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'refused', roomId: null, reason: 'banned', membersCount: null });
 		expect(joinToRoom).not.toHaveBeenCalled();
 	});
 
@@ -288,7 +309,7 @@ describe('사본 서버가 받은 거절', () => {
 
 		expect(result).toMatch(/^skip:/);
 		expect(publishMainStream).not.toHaveBeenCalled();
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'pending', roomId: null, reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'pending', roomId: null, reason: null, membersCount: null });
 	});
 
 	test('같은 그룹에 다른 코드로 다시 요청했으면 예전 코드의 거절과 상태를 쓰지 않는다', async () => {
@@ -302,8 +323,8 @@ describe('사본 서버가 받은 거절', () => {
 		const late = await service.receiveJoinReject(groupServer, reject(oldJoin, 'revoked'));
 
 		expect(late).toMatch(/^skip:/);
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'none', roomId: null, reason: null });
-		expect(await service.joinStatus(user, otherInviteUrl)).toEqual({ status: 'pending', roomId: null, reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'none', roomId: null, reason: null, membersCount: null });
+		expect(await service.joinStatus(user, otherInviteUrl)).toEqual({ status: 'pending', roomId: null, reason: null, membersCount: null });
 	});
 
 	test('발급 서버가 아닌 곳이 서명한 거절은 받지 않는다', async () => {
@@ -315,7 +336,7 @@ describe('사본 서버가 받은 거절', () => {
 
 		expect(result).toMatch(/^skip:/);
 		expect(publishMainStream).not.toHaveBeenCalled();
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'pending', roomId: null, reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'pending', roomId: null, reason: null, membersCount: null });
 	});
 
 	test('자동 수락 뒤의 거절은 상태만 바꾸고 멤버십은 그룹 서버의 Remove에 맡긴다', async () => {
@@ -327,7 +348,7 @@ describe('사본 서버가 받은 거절', () => {
 
 		expect(membership.has(user.id)).toBe(true);
 		expect(publishMainStream).toHaveBeenLastCalledWith(user.id, 'chatInviteJoinResult', { url: inviteUrl, status: 'refused', roomId: null, reason: 'full' });
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'refused', roomId: null, reason: 'full' });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'refused', roomId: null, reason: 'full', membersCount: null });
 	});
 
 	test('그 사이 다른 경로로 멤버가 됐으면 거절이 와도 그 멤버십을 참여로 알린다', async () => {
@@ -339,7 +360,7 @@ describe('사본 서버가 받은 거절', () => {
 
 		expect(membership.has(user.id)).toBe(true);
 		expect(publishMainStream).toHaveBeenLastCalledWith(user.id, 'chatInviteJoinResult', { url: inviteUrl, status: 'joined', roomId: 'mirror1', reason: null });
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1', reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1', reason: null, membersCount: null });
 	});
 
 	test('자동 수락 기록 뒤 개별 초대로 재가입한 현재 멤버는 예전 Join 거절에 가려지지 않는다', async () => {
@@ -354,7 +375,7 @@ describe('사본 서버가 받은 거절', () => {
 
 		expect(membership.has(user.id)).toBe(true);
 		expect(publishMainStream).toHaveBeenLastCalledWith(user.id, 'chatInviteJoinResult', { url: inviteUrl, status: 'joined', roomId: mirror.id, reason: null });
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: mirror.id, reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: mirror.id, reason: null, membersCount: null });
 	});
 
 	test('자동 수락에 실패한 뒤 다른 경로로 가입한 멤버도 예전 Join 거절에 가려지지 않는다', async () => {
@@ -367,7 +388,7 @@ describe('사본 서버가 받은 거절', () => {
 		await service.receiveJoinReject(groupServer, reject(sentJoins()[0], 'archived'));
 
 		expect(publishMainStream).toHaveBeenLastCalledWith(user.id, 'chatInviteJoinResult', { url: inviteUrl, status: 'joined', roomId: mirror.id, reason: null });
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: mirror.id, reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: mirror.id, reason: null, membersCount: null });
 	});
 
 	test('대기 중 다른 경로로 이미 멤버가 되었다면 다시 참여해도 대기로 돌아가지 않는다', async () => {
@@ -377,7 +398,7 @@ describe('사본 서버가 받은 거절', () => {
 
 		expect(await service.join(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1' });
 		expect(sentJoins()).toHaveLength(1);
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1', reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1', reason: null, membersCount: null });
 	});
 
 	test('대기 중 개별 초대를 자동 수락한 멤버는 다시 참여해도 대기로 돌아가지 않는다', async () => {
@@ -388,7 +409,7 @@ describe('사본 서버가 받은 거절', () => {
 
 		expect(await service.join(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1' });
 		expect(sentJoins()).toHaveLength(1);
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1', reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1', reason: null, membersCount: null });
 	});
 
 	test('같은 거절이 두 번 와도 한 번만 처리한다', async () => {
@@ -420,7 +441,7 @@ describe('사본 서버가 받은 초대', () => {
 		expect(await service.acceptAwaitedInvite(user, mirror as never, roomUri)).toBe('joined');
 		expect(joinToRoom).toHaveBeenCalledWith(user.id, 'mirror1');
 		expect(publishMainStream).toHaveBeenCalledWith(user.id, 'chatInviteJoinResult', { url: inviteUrl, status: 'joined', roomId: 'mirror1', reason: null });
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1', reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'joined', roomId: 'mirror1', reason: null, membersCount: null });
 	});
 
 	test('거절된 뒤에 온 초대는 보통의 초대로 남긴다', async () => {
@@ -440,7 +461,7 @@ describe('사본 서버가 받은 초대', () => {
 
 		expect(await service.acceptAwaitedInvite(user, mirror as never, roomUri)).toBe('none');
 		expect(joinToRoom).not.toHaveBeenCalled();
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'none', roomId: null, reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'none', roomId: null, reason: null, membersCount: null });
 	});
 
 	test('자동 수락이 실패하면 보통의 초대로 남았다고 알린다', async () => {
@@ -450,7 +471,7 @@ describe('사본 서버가 받은 초대', () => {
 
 		expect(await service.acceptAwaitedInvite(user, mirror as never, roomUri)).toBe('invited');
 		expect(publishMainStream).toHaveBeenCalledWith(user.id, 'chatInviteJoinResult', { url: inviteUrl, status: 'invited', roomId: 'mirror1', reason: null });
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'invited', roomId: 'mirror1', reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'invited', roomId: 'mirror1', reason: null, membersCount: null });
 	});
 
 	test('예상하지 못한 오류는 inbox가 다시 시도하도록 그대로 던진다', async () => {
@@ -459,7 +480,7 @@ describe('사본 서버가 받은 초대', () => {
 		joinToRoom.mockRejectedValueOnce(new Error('database is down'));
 
 		await expect(service.acceptAwaitedInvite(user, mirror as never, roomUri)).rejects.toThrow('database is down');
-		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'pending', roomId: null, reason: null });
+		expect(await service.joinStatus(user, inviteUrl)).toEqual({ status: 'pending', roomId: null, reason: null, membersCount: null });
 	});
 });
 

@@ -300,6 +300,47 @@ describe('초대 카드', () => {
 		expect(mocks.push).toHaveBeenCalledWith('/chat/room/:roomId', { params: { roomId: 'r9' } });
 	});
 
+	test('이 화면에서 참여하면 그 카드의 인원 수가 발급 서버의 최신 값으로 바뀐다', async () => {
+		let joined = false;
+		mocks.handlers.set('chat/invite-link/join', () => { joined = true; return json({ status: 'joined', roomId: 'r1' }); });
+		mocks.handlers.set('chat/invite-link/join-status', body => joined
+			? json({ status: 'joined', roomId: 'r1', reason: null, membersCount: body.withMembersCount === true ? 8 : null })
+			: json({ status: 'none', roomId: null, reason: null, membersCount: null }));
+		renderCard(LOCAL);
+
+		await fireEvent.click(await joinButton());
+
+		await screen.findByText(i18n.tsx._chat._inviteLink.membersCount({ n: 8 }), { exact: false });
+		expect(requestsTo('chat/invite-link/join-status').some(request => request.body.withMembersCount === true)).toBe(true);
+	});
+
+	test('다른 서버 그룹은 발급 서버가 멤버로 올릴 때까지 다시 물어 늘어난 인원 수를 보인다', async () => {
+		const counts = [3, 3, 4];
+		mocks.handlers.set('chat/invite-link/join', () => json({ status: 'pending', roomId: null }));
+		mocks.handlers.set('chat/invite-link/join-status', body => body.withMembersCount === true
+			? json({ status: 'joined', roomId: 'r9', reason: null, membersCount: counts.shift() ?? 4 })
+			: json({ status: 'pending', roomId: null, reason: null, membersCount: null }));
+		renderCard(REMOTE);
+
+		await fireEvent.click(await joinButton());
+		await screen.findByText(t().pending);
+		emitJoinResult({ url: REMOTE.url, status: 'joined', roomId: 'r9', reason: null });
+
+		await screen.findByText(i18n.tsx._chat._inviteLink.membersCount({ n: 4 }), { exact: false }, { timeout: 8000 });
+		expect(requestsTo('chat/invite-link/join-status').filter(request => request.body.withMembersCount === true)).toHaveLength(3);
+	}, 15000);
+
+	test('이미 멤버인 카드는 열 때 인원 수를 따로 묻지 않고 캐시된 값을 그대로 둔다', async () => {
+		mocks.handlers.set('chat/invite-link/join-status', () => json({ status: 'joined', roomId: 'r1', reason: null, membersCount: null }));
+		renderCard(REMOTE);
+
+		await openButton();
+		await flush();
+
+		screen.getByText(i18n.tsx._chat._inviteLink.membersCount({ n: 3 }), { exact: false });
+		expect(requestsTo('chat/invite-link/join-status').every(request => request.body.withMembersCount == null)).toBe(true);
+	});
+
 	test('다른 주소의 스트림 결과는 이 카드를 바꾸지 않는다', async () => {
 		renderCard(REMOTE);
 		await joinButton();

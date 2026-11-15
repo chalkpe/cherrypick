@@ -118,7 +118,7 @@ describe('초대 요청과 현재 멤버십의 상태', () => {
 			expect(await refuse(f)).toBe('ok: Join refused (full)');
 
 			expect(await isMember(f)).toBe(true);
-			expect(await status(f)).toEqual({ status: 'joined', roomId: f.room.id, reason: null });
+			expect(await status(f)).toEqual({ status: 'joined', roomId: f.room.id, reason: null , membersCount: null });
 			await expect.poll(() => received.length).toBe(1);
 			expect(received[0]).toEqual({ url: f.url, status: 'joined', roomId: f.room.id, reason: null });
 		} finally {
@@ -154,13 +154,13 @@ describe('초대 요청과 현재 멤버십의 상태', () => {
 			// 로컬 가입 직후: 기존 개별 초대 수락처럼 이 서버에 멤버십을 만들고 Accept는 비동기로 보낸다. 호스트 처리는 아직이다
 			expect(await app.get(ApInboxService).performOneActivity(f.owner, invitation(f, new Date(invitedAt).toISOString()))).toBe('ok: joined through an invite link');
 			expect(await isMember(f)).toBe(true);
-			expect(await status(f)).toEqual({ status: 'joined', roomId: f.room.id, reason: null });
+			expect(await status(f)).toEqual({ status: 'joined', roomId: f.room.id, reason: null , membersCount: null });
 			await expect.poll(() => received.length).toBe(1);
 			expect(received[0]).toEqual({ url: f.url, status: 'joined', roomId: f.room.id, reason: null });
 
 			// 호스트 처리 완료(거절): 사유를 담은 Reject가 Remove보다 먼저 와도 그 자동 수락 멤버십의 거절로 알린다
 			expect(await refuse(f)).toBe('ok: Join refused (full)');
-			expect(await status(f)).toEqual({ status: 'refused', roomId: null, reason: 'full' });
+			expect(await status(f)).toEqual({ status: 'refused', roomId: null, reason: 'full' , membersCount: null });
 			await expect.poll(() => received.length).toBe(2);
 			expect(received[1]).toEqual({ url: f.url, status: 'refused', roomId: null, reason: 'full' });
 
@@ -171,7 +171,7 @@ describe('초대 요청과 현재 멤버십의 상태', () => {
 			} as IObject);
 			expect(removed).toBe('ok: removed from chat room');
 			expect(await isMember(f)).toBe(false);
-			expect(await status(f)).toEqual({ status: 'refused', roomId: null, reason: 'full' });
+			expect(await status(f)).toEqual({ status: 'refused', roomId: null, reason: 'full' , membersCount: null });
 		} finally {
 			stream.close();
 		}
@@ -184,7 +184,7 @@ describe('초대 요청과 현재 멤버십의 상태', () => {
 		await refuse(f);
 
 		expect(await isMember(f)).toBe(false);
-		expect(await status(f)).toEqual({ status: 'refused', roomId: null, reason: 'full' });
+		expect(await status(f)).toEqual({ status: 'refused', roomId: null, reason: 'full' , membersCount: null });
 	});
 
 	test('같은 주소로 다시 보낸 새 Join이 있으면 오래된 Join의 거절을 무시한다', async () => {
@@ -195,7 +195,7 @@ describe('초대 요청과 현재 멤버십의 상태', () => {
 		expect(await refuse(f)).toMatch(/^skip:/);
 
 		expect(await isMember(f)).toBe(false);
-		expect(await status(f)).toEqual({ status: 'pending', roomId: null, reason: null });
+		expect(await status(f)).toEqual({ status: 'pending', roomId: null, reason: null , membersCount: null });
 	});
 
 	test('그룹 호스트의 정상 Remove는 실제 멤버십을 제거하고 늦은 Join 거절과 구분된다', async () => {
@@ -214,7 +214,7 @@ describe('초대 요청과 현재 멤버십의 상태', () => {
 
 		expect(result).toBe('ok: removed from chat room');
 		expect(await isMember(f)).toBe(false);
-		expect(await status(f)).toEqual({ status: 'refused', roomId: null, reason: 'full' });
+		expect(await status(f)).toEqual({ status: 'refused', roomId: null, reason: 'full' , membersCount: null });
 	});
 
 	async function hostedJoin() {

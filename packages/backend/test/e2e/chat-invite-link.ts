@@ -199,7 +199,9 @@ describe('그룹 초대 링크', () => {
 			expect(await memberIds(room.id)).toEqual([outsider.id]);
 			expect(timeline.status).toBe(200);
 			expect(timeline.body.map(message => message.id)).toContain(before.body.id);
-			expect((await api('chat/invite-link/join-status', { url: link.url }, outsider)).body).toEqual({ status: 'joined', roomId: room.id, reason: null });
+			expect((await api('chat/invite-link/join-status', { url: link.url }, outsider)).body).toEqual({ status: 'joined', roomId: room.id, reason: null, membersCount: null });
+			// 참여한 멤버가 요청하면 발급 서버의 현재 인원 수도 받는다(그룹장 포함 2명)
+			expect((await api('chat/invite-link/join-status', { url: link.url, withMembersCount: true }, outsider)).body).toEqual({ status: 'joined', roomId: room.id, reason: null, membersCount: 2 });
 			expect((await api('chat/rooms/leave', { roomId: room.id }, outsider)).status).toBe(204);
 		});
 

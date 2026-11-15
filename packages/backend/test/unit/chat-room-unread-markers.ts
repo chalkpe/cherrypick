@@ -141,6 +141,26 @@ describe('일반 그룹의 경계 읽음', () => {
 	});
 });
 
+describe('쓴 시각으로 정렬된 글의 경계 읽음', () => {
+	test('나중에 도착했지만 더 앞에 놓인 글도 그 뒤 글까지 읽으면 미읽음에서 빠진다', async () => {
+		const service = serviceFixture();
+		// 다른 서버에서 쓴 시각 기준으로 정렬되면 순번이 더 큰 글이 목록에서는 앞에 놓일 수 있다
+		const placedLater = message('목록에서 뒤에 놓인 글');
+		placedLater.id = 'z-placed-later';
+		const arrivedLater = message('나중에 도착했지만 앞에 놓인 글');
+		arrivedLater.id = 'a-placed-earlier';
+		const first = await service.record({} as EntityManager, room, placedLater);
+		await service.mark(room, placedLater, first);
+		const second = await service.record({} as EntityManager, room, arrivedLater);
+		await service.mark(room, arrivedLater, second);
+		expect((await service.state(reader.id, room)).hasUnread).toBe(true);
+
+		await service.read(reader.id, room.id, undefined, placedLater.id);
+
+		expect((await service.state(reader.id, room)).hasUnread).toBe(false);
+	});
+});
+
 describe('수정 지연 알림의 예약 대상', () => {
 	afterEach(() => vi.useRealTimers());
 
