@@ -4220,7 +4220,7 @@ _voiceRelay:
   revoked: "Voice lending approval or credentials are no longer valid. Please contact an administrator."
 
   recordingConversionsTitle: "Concurrent recording conversions"
-  recordingConversionsDescription: "How many call recordings may be converted to MP3/MP4 at the same time. Conversion is heavy, so keep this low. Set to 0 to skip conversion and keep the original file (WebM/MP4)."
+  recordingConversionsDescription: "How many call recordings may be converted to MP3/MP4 at the same time. Conversion is heavy, so keep this low."
 _driveDeletion:
   selectedCount: "Selected: {count}"
   filesConfirm: "Delete {count} selected files? This cannot be undone."

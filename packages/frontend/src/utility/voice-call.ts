@@ -152,6 +152,8 @@ let deafenRevision = 0;
 type RecordingUploadReason = 'noFreeSpace' | 'tooLarge' | 'network' | null;
 // 업로드된 임시 조각 원본. 변환 단계에서 순서대로 이어 붙여 최종 파일 하나를 만들고 지운다.
 type RecordingPartRef = { fileId: string; url: string | null; name: string; index: number };
+// 드라이브에 못 올라가 서버의 녹화 전용 임시 보관에 있는 조각. 변환가 드라이브 조각과 함께 이어 붙인다.
+type RecordingTempPartRef = { partId: string; name: string; index: number };
 // 드라이브 파일 한도를 넘은 최종 파일의 임시 내려받기. 본인만 한 번 받을 수 있다.
 type RecordingDownloadRef = { id: string; name: string; size: number; reason: 'noFreeSpace' | 'tooLarge' };
 // 저장에 실패한 녹화 전체. 올라간 조각은 드라이브에, 못 올린 조각은 blob으로 남겨 재시도·기기 저장·버리기를 제공한다.
@@ -180,6 +182,8 @@ type RecordingSession = {
 	micRevision: number;
 	// 올라간 임시 조각들. 녹화가 끝나면 순서대로 이어 붙여 변환한다.
 	parts: RecordingPartRef[];
+	// 드라이브에 못 올려 녹화 전용 임시 보관에 올린 조각들.
+	tempParts: RecordingTempPartRef[];
 	failedUploads: { blob: Blob; name: string; index: number; reason: RecordingUploadReason }[];
 	hasVideo: boolean;
 	folderId: string | null;
@@ -425,9 +429,51 @@ async function uploadRecordingOriginal(session: RecordingSession, blob: Blob, na
 	return { fileId: file.id, url: file.url ?? null };
 }
 
+/** 드라이브에 못 올린 조각을 녹화 전용 임시 보관에 올린다. 변환가 이 조각을 이어 붙여 최종 파일 하나를 만든다. */
+async function uploadRecordingTempPart(session: RecordingSession, blob: Blob, name: string): Promise<string> {
+	const form = new FormData();
+	form.append('file', new File([blob], `${name}${session.ext}`, { type: blob.type }));
+	if ($i != null) form.append('i', $i.token);
+	let res: Response;
+	try {
+		res = await window.fetch(apiUrl + '/chat/rooms/voice/recording-part', { method: 'POST', body: form, credentials: 'omit' });
+	} catch {
+		throw new RecordingUploadError('network');
+	}
+	if (!res.ok) {
+		const body = await res.json().catch(() => null) as { error?: { id?: string } } | null;
+		const reason = body?.error?.id === '6f4860e9-3726-4f2c-9bef-4d812f810018' ? 'tooLarge' : null;
+		throw new RecordingUploadError(reason);
+	}
+	const part = await res.json() as { id: string };
+	return part.id;
+}
+
+/** 못 올린 조각들을 임시 보관으로 올린다. 올린 조각은 목록에서 빼고, 못 올린 조각이 남으면 실패로 알린다. */
+async function uploadPendingToRecordingStorage(session: RecordingSession, pending: { blob: Blob; name: string; index: number }[]): Promise<void> {
+	let firstError: RecordingUploadError | null = null;
+	const left: typeof pending = [];
+	for (const part of pending) {
+		try {
+			const partId = await uploadRecordingTempPart(session, part.blob, part.name);
+			session.tempParts.push({ partId, name: part.name, index: part.index });
+		} catch (err) {
+			if (firstError == null) firstError = err instanceof RecordingUploadError ? err : new RecordingUploadError('network');
+			left.push(part);
+		}
+	}
+	pending.length = 0;
+	pending.push(...left);
+	if (firstError != null) throw firstError;
+}
+
 /** 올라간 임시 조각들을 순서대로 이어 붙여 최종 파일 하나로 변환한다. 서버가 성공 뒤에 조각을 지운다. */
-async function convertRecording(session: RecordingSession): Promise<Misskey.entities.DriveFile | null> {
-	const fileIds = [...session.parts].sort((a, b) => a.index - b.index).map(part => part.fileId);
+async function convertRecording(session: RecordingSession): Promise<Misskey.entities.DriveFile> {
+	// 드라이브 조각과 임시 보관 조각을 녹화 순서대로 섞어 넘긴다. 서버가 이어 붙여 파일 하나를 만든다.
+	const fileIds = [
+		...session.parts.map(part => ({ id: part.fileId, index: part.index })),
+		...session.tempParts.map(part => ({ id: part.partId, index: part.index })),
+	].sort((a, b) => a.index - b.index).map(part => part.id);
 	// the server converts one recording per user at a time, so serialize conversions
 	const conversion = recordingConversions.then(async () => {
 		let result: Misskey.Endpoints['chat/rooms/voice/convert-recording']['res'];
@@ -449,19 +495,19 @@ async function convertRecording(session: RecordingSession): Promise<Misskey.enti
 	recordingConversions = conversion.then(() => {}, () => {});
 	try {
 		const result = await conversion;
-		if (result == null) return null;
+		// 최종 파일이 만들어지지 않았으면 저장 성공으로 처리하지 않는다.
+		if (result == null) throw new RecordingUploadError(null);
 		if (result.download != null) {
 			// 드라이브 한도 초과: 최종 파일은 서버가 잠시 보관한다. 기기 저장은 이 한 파일을 받는다.
 			session.pendingDownload = result.download;
 			throw new RecordingUploadError(result.download.reason);
 		}
 		const converted = result.file;
+		if (converted == null) throw new RecordingUploadError(null);
 		// 저장 안내는 실제 저장 위치를 기준으로 한다
-		if (converted != null) {
-			session.pendingDownload = null;
-			session.folderId = converted.folderId ?? null;
-			session.folderName = converted.folderId != null ? session.folderName : null;
-		}
+		session.pendingDownload = null;
+		session.folderId = converted.folderId ?? null;
+		session.folderName = converted.folderId != null ? session.folderName : null;
 		return converted;
 	} catch (error) {
 		if (error instanceof RecordingUploadError) throw error;
@@ -507,7 +553,8 @@ async function retryRecording(session: RecordingSession, recording: FailedRecord
 		}
 	}
 	recording.pending = stillPending;
-	if (stillPending.length > 0) throw new RecordingUploadError(recording.reason ?? 'network');
+	// 드라이브에 여전히 못 올리는 조각은 녹화 전용 임시 보관으로 받아 최종 파일 하나를 만든다.
+	await uploadPendingToRecordingStorage(session, recording.pending);
 	session.parts = recording.uploaded;
 	await convertRecording(session);
 }
@@ -558,12 +605,20 @@ async function finishRecordingSession(session: RecordingSession): Promise<void> 
 	if (session.uploads.length === 0 && session.parts.length === 0 && session.failedUploads.length === 0) return;
 	await Promise.all(session.uploads);
 	if (session.failedUploads.length > 0) {
-		session.failed.push({
-			reason: session.failedUploads[0].reason,
-			uploaded: [...session.parts],
-			pending: session.failedUploads.map(({ blob, name, index }) => ({ blob, name, index })),
-			ext: session.ext,
-		});
+		// 드라이브에 못 올린 조각은 녹화 전용 임시 보관으로 받아, 이미 올라간 조각과 함께 이어 붙여 최종 파일 하나를 만든다.
+		const pending = session.failedUploads.map(({ blob, name, index }) => ({ blob, name, index }));
+		try {
+			await uploadPendingToRecordingStorage(session, pending);
+			await convertRecording(session);
+		} catch (err) {
+			console.error(err);
+			session.failed.push({
+				reason: err instanceof RecordingUploadError ? err.reason : session.failedUploads[0].reason,
+				uploaded: [...session.parts],
+				pending,
+				ext: session.ext,
+			});
+		}
 	} else if (session.parts.length > 0) {
 		try {
 			await convertRecording(session);
@@ -585,7 +640,7 @@ function toastRecordingSaved(session: RecordingSession): void {
 		: i18n.ts._voiceCall.recordingSaved);
 }
 
-/** 기기 저장: 최종 결과가 있으면 그 한 파일을, 없으면 못 올린 조각은 blob으로·올라간 조각은 드라이브에서 받아 저장한다. 모두 성공했는지 돌려준다 */
+/** 기기 저장: 서버가 만든 최종 파일 한 개만 받는다. 아직 없으면 변환을 시도하고, 끝내 없으면 실패로 알린다. 여러 원본 조각을 내려주지 않는다. */
 async function downloadRecording(recording: FailedRecording, session: RecordingSession): Promise<boolean> {
 	const save = (blob: Blob, filename: string) => {
 		const objectUrl = URL.createObjectURL(blob);
@@ -606,15 +661,7 @@ async function downloadRecording(recording: FailedRecording, session: RecordingS
 			return false;
 		}
 	};
-	// 응답을 잃었거나 한도 초과인 경우, 실제 남은 최종 파일 한 개를 받는다 (조각이 이미 지워졌을 수 있다)
-	const result = await fetchRecordingResult(session).catch(() => null);
-	if (result?.file != null) {
-		const ok = result.file.url != null && await saveFromUrl(result.file.url, result.file.name);
-		if (!ok) os.toast(i18n.ts._voiceCall.recordingDownloadFailed);
-		return ok;
-	}
-	const download = result?.download ?? session.pendingDownload;
-	if (download != null) {
+	const saveDownload = async (download: RecordingDownloadRef): Promise<boolean> => {
 		if ($i == null) return false;
 		try {
 			const res = await window.fetch(`${url}/recording-download/${download.id}`, { headers: { Authorization: `Bearer ${$i.token}` } });
@@ -623,18 +670,36 @@ async function downloadRecording(recording: FailedRecording, session: RecordingS
 			return true;
 		} catch (err) {
 			console.warn('[recording] could not download the kept recording', err);
-			os.toast(i18n.ts._voiceCall.recordingDownloadFailed);
 			return false;
 		}
+	};
+	const fail = () => {
+		os.toast(i18n.ts._voiceCall.recordingDownloadFailed);
+		return false;
+	};
+	// 응답을 잃었거나 한도 초과인 경우, 실제 남은 최종 파일 한 개를 받는다 (조각이 이미 지워졌을 수 있다)
+	const result = await fetchRecordingResult(session).catch(() => null);
+	if (result?.file != null) {
+		return result.file.url != null && await saveFromUrl(result.file.url, result.file.name) ? true : fail();
 	}
-	let ok = true;
-	for (const part of recording.pending) save(part.blob, `${part.name}${recording.ext}`);
-	for (const part of recording.uploaded) {
-		if (part.url == null) { ok = false; continue; }
-		if (!await saveFromUrl(part.url, `${part.name}${recording.ext}`)) ok = false;
+	const download = result?.download ?? session.pendingDownload;
+	if (download != null) {
+		return await saveDownload(download) ? true : fail();
 	}
-	if (!ok) os.toast(i18n.ts._voiceCall.recordingDownloadFailed);
-	return ok;
+	// 아직 최종 파일이 없으면 못 올린 조각까지 임시 보관으로 올려 변환을 시도한다.
+	try {
+		await uploadPendingToRecordingStorage(session, recording.pending);
+		session.parts = recording.uploaded;
+		const converted = await convertRecording(session);
+		return converted.url != null && await saveFromUrl(converted.url, converted.name) ? true : fail();
+	} catch (err) {
+		console.warn('[recording] could not prepare the final recording file', err);
+		// 변환이 드라이브 한도 초과로 끝나면 서버가 보관한 최종 파일 한 개를 받는다.
+		if (session.pendingDownload != null) {
+			return await saveDownload(session.pendingDownload) ? true : fail();
+		}
+		return fail();
+	}
 }
 
 /** 버리기를 확정하면 실제 남은 자료를 지운다: 최종 결과(응답 유실 뒤 드라이브에 남은 파일·임시 보관)와 임시 조각. 삭제에 실패한 원본은 목록에 남도록 돌려준다. */
@@ -657,9 +722,12 @@ async function discardUploadedOriginals(failed: FailedRecording[], session: Reco
 		}
 	}
 	const download = result?.download ?? session.pendingDownload;
-	if (download != null) {
+	if (download != null || session.tempParts.length > 0) {
 		try {
-			await misskeyApi('chat/rooms/voice/recording-discard', { id: download.id });
+			await misskeyApi('chat/rooms/voice/recording-discard', {
+				...(download != null ? { id: download.id } : {}),
+				...(session.tempParts.length > 0 ? { partIds: session.tempParts.map(part => part.partId) } : {}),
+			});
 		} catch (error) {
 			console.warn('[recording] could not discard the kept recording', error);
 			resultDeleted = false;
@@ -946,7 +1014,7 @@ export async function startRecording(): Promise<void> {
 			if (current === room && recordingStarting == null && recordingSession == null) reportStatus(room, true);
 			return;
 		}
-		const session: RecordingSession = { roomId, requestId: crypto.randomUUID(), uploads: [], failed: [], stopping: false, micRevision: 0, parts: [], failedUploads: [], hasVideo: false, folderId: null, folderName: null, pendingDownload: null, name: 'voice', ext: '.webm' };
+		const session: RecordingSession = { roomId, requestId: crypto.randomUUID(), uploads: [], failed: [], stopping: false, micRevision: 0, parts: [], tempParts: [], failedUploads: [], hasVideo: false, folderId: null, folderName: null, pendingDownload: null, name: 'voice', ext: '.webm' };
 		recordingSession = session;
 		// 녹화 중에는 시청 여부와 무관하게 원격 공유를 구독한다. 준비 구간 동안 들어온 공유도 놓치지 않는다.
 		resyncAllSubscriptions();

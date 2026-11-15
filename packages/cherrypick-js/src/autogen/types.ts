@@ -1759,7 +1759,7 @@ export type paths = {
     '/chat/rooms/voice/convert-recording': {
         /**
          * chat/rooms/voice/convert-recording
-         * @description Convert recording parts into a single file without deleting the originals until it succeeds. A null response means that no conversion was performed and the originals remain. A download response means the file exceeds the drive file size limit and is kept for a one-time download instead. Repeating the same requestId returns the earlier result, so a lost response can be recovered.
+         * @description Convert recording parts into a single file without deleting the originals until it succeeds. Each id is either an uploaded drive file or a part kept in the temporary recording storage, in recording order. A null response means that no conversion was performed and the originals remain. A download response means the file exceeds the drive file size limit and is kept for a one-time download instead. Repeating the same requestId returns the earlier result, so a lost response can be recovered.
          *
          *     **Credential required**: *Yes* / **Permission**: *write:drive*
          */
@@ -1795,7 +1795,7 @@ export type paths = {
     '/chat/rooms/voice/recording-discard': {
         /**
          * chat/rooms/voice/recording-discard
-         * @description Discard a temporarily kept recording download owned by the caller. Already gone is treated as success.
+         * @description Discard a temporarily kept recording download and temporary recording parts owned by the caller. Already gone is treated as success.
          *
          *     **Credential required**: *Yes* / **Permission**: *write:drive*
          */
@@ -1809,6 +1809,15 @@ export type paths = {
          *     **Credential required**: *Yes* / **Permission**: *write:drive*
          */
         post: operations['chat___rooms___voice___recording-folder'];
+    };
+    '/chat/rooms/voice/recording-part': {
+        /**
+         * chat/rooms/voice/recording-part
+         * @description Upload a recording part into the temporary recording storage, for parts that could not be stored in the drive. The conversion step concatenates these parts with the uploaded ones into a single final file.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:drive*
+         */
+        post: operations['chat___rooms___voice___recording-part'];
     };
     '/chat/rooms/voice/recording-result': {
         /**
@@ -21139,7 +21148,10 @@ export interface operations {
         requestBody: {
             content: {
                 'application/json': {
-                    id: string;
+                    /** @default null */
+                    id?: string | null;
+                    /** @default [] */
+                    partIds?: string[];
                 };
             };
         };
@@ -21222,6 +21234,87 @@ export interface operations {
                 };
                 content: {
                     'application/json': components['schemas']['DriveFolder'];
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'chat___rooms___voice___recording-part': {
+        requestBody: {
+            content: {
+                'multipart/form-data': {
+                    /**
+                     * Format: binary
+                     * @description The file contents.
+                     */
+                    file: Blob;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': {
+                        id: string;
+                        size: number;
+                    };
                 };
             };
             /** @description Client error */

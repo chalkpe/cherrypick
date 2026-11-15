@@ -20,7 +20,7 @@ SPDX-License-Identifier: AGPL-3.0-only
      <template #icon><i class="ti ti-video"></i></template>
      <template #label>{{ i18n.ts._voiceRelay.recordingConversionsTitle }}</template>
      <template v-if="recordingForm.modified.value" #footer><MkFormFooter :form="recordingForm"/></template>
-     <MkInput v-model="recordingForm.state.limit" accessible type="number" :min="0" :max="16" :step="1">
+     <MkInput v-model="recordingForm.state.limit" accessible type="number" :min="1" :max="16" :step="1">
       <template #label>{{ i18n.ts._voiceRelay.recordingConversionsTitle }} <span v-if="recordingForm.modifiedStates.limit" class="_modified">{{ i18n.ts.modified }}</span></template>
       <template #caption>{{ i18n.ts._voiceRelay.recordingConversionsDescription }}</template>
      </MkInput>

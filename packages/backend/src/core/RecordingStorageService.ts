@@ -18,6 +18,7 @@ import type Logger from '@/logger.js';
 
 // 드라이브 파일 한도를 넘은 최종 녹화는 드라이브에 넣지 않고 여기 잠시 보관한다.
 // 녹화한 본인만 한 번 내려받을 수 있고, 내려받거나 기한이 지나면 지운다.
+// 드라이브에 올리지 못한 녹화 조각도 같은 상한·기한으로 여기 보관했다가 변환에 쓴다.
 export const RECORDING_DOWNLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 // 변환 결과(최종 파일 또는 임시 내려받기)는 응답 유실 뒤 재시도가 찾을 수 있도록 하루 동안 기억한다.
 export const RECORDING_RESULT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -26,8 +27,10 @@ export const RECORDING_DOWNLOAD_STORAGE_MAX_BYTES = 1024 * 1024 * 1024;
 const SWEEP_INTERVAL_MS = 60 * 1000;
 
 const downloadKey = (id: string) => `chatVoice:recordingDownload:${id}`;
+const partKey = (id: string) => `chatVoice:recordingPart:${id}`;
 const resultKey = (userId: string, requestId: string) => `chatVoice:recordingResult:${userId}:${requestId}`;
 const DOWNLOAD_PREFIX = 'chatVoice:recordingDownload:';
+const PART_PREFIX = 'chatVoice:recordingPart:';
 const RESULT_PREFIX = 'chatVoice:recordingResult:';
 
 export type RecordingDownload = {
@@ -37,6 +40,16 @@ export type RecordingDownload = {
 	path: string;
 	name: string;
 	size: number;
+};
+
+// 드라이브에 올리지 못한 녹화 조각. 변환가 이미 올라간 조각과 이어 붙여 최종 파일 하나를 만든다.
+export type RecordingPart = {
+	id: string;
+	userId: string;
+	path: string;
+	name: string;
+	size: number;
+	type: string;
 };
 
 export type RecordingResult = {
@@ -135,6 +148,39 @@ export class RecordingStorageService implements OnModuleInit, OnApplicationShutd
 		}
 	}
 
+	/** 드라이브에 올리지 못한 조각을 임시 보관에 넣는다. 최종 내려받기와 같은 총량 상한·기한을 쓴다. */
+	@bindThis
+	public async storePart(userId: string, srcPath: string, name: string, type: string): Promise<RecordingPart> {
+		const size = fs.statSync(srcPath).size;
+		const usage = await this.storageUsage();
+		if (usage + size > RECORDING_DOWNLOAD_STORAGE_MAX_BYTES) throw new RecordingStorageFullError();
+		// 조각 id는 변환 요청의 fileIds(misskey:id 형식)에 섞여 들어가므로 대시 없는 식별자를 쓴다.
+		const id = randomUUID().replaceAll('-', '');
+		const path = Path.join(this.dir, id);
+		fs.copyFileSync(srcPath, path);
+		const record: RecordingPart = { id, userId, path, name, size, type };
+		await this.redisClient.set(partKey(id), JSON.stringify(record), 'PX', RECORDING_DOWNLOAD_TTL_MS);
+		return record;
+	}
+
+	@bindThis
+	public async getPart(id: string): Promise<RecordingPart | null> {
+		const raw = await this.redisClient.get(partKey(id));
+		if (raw == null) return null;
+		try {
+			return JSON.parse(raw) as RecordingPart;
+		} catch {
+			return null;
+		}
+	}
+
+	@bindThis
+	public async removePart(id: string): Promise<void> {
+		const record = await this.getPart(id);
+		await this.redisClient.del(partKey(id));
+		if (record != null) this.unlink(record.path);
+	}
+
 	@bindThis
 	public async getResult(userId: string, requestId: string): Promise<RecordingResult | null> {
 		const raw = await this.redisClient.get(resultKey(userId, requestId));
@@ -177,12 +223,14 @@ export class RecordingStorageService implements OnModuleInit, OnApplicationShutd
 	@bindThis
 	private async storageUsage(): Promise<number> {
 		let usage = 0;
-		for await (const key of this.scanKeys(DOWNLOAD_PREFIX)) {
-			const raw = await this.redisClient.get(key);
-			if (raw == null) continue;
-			try {
-				usage += (JSON.parse(raw) as RecordingDownload).size;
-			} catch { /* ignore malformed */ }
+		for (const prefix of [DOWNLOAD_PREFIX, PART_PREFIX]) {
+			for await (const key of this.scanKeys(prefix)) {
+				const raw = await this.redisClient.get(key);
+				if (raw == null) continue;
+				try {
+					usage += (JSON.parse(raw) as { size: number }).size;
+				} catch { /* ignore malformed */ }
+			}
 		}
 		return usage;
 	}
@@ -191,12 +239,14 @@ export class RecordingStorageService implements OnModuleInit, OnApplicationShutd
 	private async sweep(): Promise<void> {
 		// 기록이 만료된 임시 파일은 지운다
 		const live = new Set<string>();
-		for await (const key of this.scanKeys(DOWNLOAD_PREFIX)) {
-			const raw = await this.redisClient.get(key);
-			if (raw == null) continue;
-			try {
-				live.add((JSON.parse(raw) as RecordingDownload).path);
-			} catch { /* ignore malformed */ }
+		for (const prefix of [DOWNLOAD_PREFIX, PART_PREFIX]) {
+			for await (const key of this.scanKeys(prefix)) {
+				const raw = await this.redisClient.get(key);
+				if (raw == null) continue;
+				try {
+					live.add((JSON.parse(raw) as { path: string }).path);
+				} catch { /* ignore malformed */ }
+			}
 		}
 		for (const entry of fs.readdirSync(this.dir)) {
 			const path = Path.join(this.dir, entry);

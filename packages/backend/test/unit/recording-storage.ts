@@ -245,3 +245,58 @@ test('instances with different key prefixes do not remove each other\'s kept fil
 	expect(fs.existsSync(record.path)).toBe(true);
 	expect(await owner.getDownload(record.id)).not.toBeNull();
 });
+
+test('a stored part is found again and shares the storage cap with kept files', async () => {
+	const service = makeService();
+	const kept = await service.store('u1', 'r1', writeSource('kept.bin', 4096), 'kept.mp4');
+	const part = await service.storePart('u1', writeSource('part.bin', 2048), 'room 1-20261116-120000-002.webm', 'audio/webm');
+
+	expect(fs.existsSync(part.path)).toBe(true);
+	expect(await service.getPart(part.id)).toMatchObject({ id: part.id, userId: 'u1', size: 2048, type: 'audio/webm' });
+	expect(await (service as any).storageUsage()).toBe(4096 + 2048);
+	expect(fs.existsSync(kept.path)).toBe(true);
+});
+
+test('storage full is decided against kept files and parts together', async () => {
+	const service = makeService();
+	await redis.set('chatVoice:recordingPart:big', JSON.stringify({ id: 'big', userId: 'u1', path: '/nonexistent', name: 'big.webm', size: RECORDING_DOWNLOAD_STORAGE_MAX_BYTES - 1024, type: 'audio/webm' }), 'PX', 60_000);
+
+	await expect(service.storePart('u1', writeSource('over.bin', 2048), 'over.webm', 'audio/webm'))
+		.rejects.toBeInstanceOf(RecordingStorageFullError);
+});
+
+test('removing a part deletes the file and the record', async () => {
+	const service = makeService();
+	const part = await service.storePart('u1', writeSource('part.bin', 1024), 'part.webm', 'audio/webm');
+
+	await service.removePart(part.id);
+
+	expect(fs.existsSync(part.path)).toBe(false);
+	expect(await service.getPart(part.id)).toBeNull();
+});
+
+test('the sweep keeps a live part and removes an expired one', async () => {
+	const service = makeService();
+	const live = await service.storePart('u1', writeSource('live.bin', 2048), 'live.webm', 'audio/webm');
+	const expired = await service.storePart('u1', writeSource('expired.bin', 2048), 'expired.webm', 'audio/webm');
+	await redis.pexpire(`chatVoice:recordingPart:${expired.id}`, 1);
+	await new Promise(resolve => setTimeout(resolve, 20));
+
+	await (service as any).sweep();
+
+	expect(fs.existsSync(live.path)).toBe(true);
+	expect(fs.existsSync(expired.path)).toBe(false);
+	expect(await service.getPart(live.id)).not.toBeNull();
+});
+
+test('initialization removes part files that have no record', async () => {
+	const service = makeService();
+	await service.onModuleInit();
+	const orphan = path.join(dirOf(service), 'orphan-part.bin');
+	fs.writeFileSync(orphan, 'x');
+
+	const restarted = makeService();
+	await restarted.onModuleInit();
+
+	expect(fs.existsSync(orphan)).toBe(false);
+});

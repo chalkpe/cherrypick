@@ -2144,7 +2144,7 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * Convert recording parts into a single file without deleting the originals until it succeeds. A null response means that no conversion was performed and the originals remain. A download response means the file exceeds the drive file size limit and is kept for a one-time download instead. Repeating the same requestId returns the earlier result, so a lost response can be recovered.
+     * Convert recording parts into a single file without deleting the originals until it succeeds. Each id is either an uploaded drive file or a part kept in the temporary recording storage, in recording order. A null response means that no conversion was performed and the originals remain. A download response means the file exceeds the drive file size limit and is kept for a one-time download instead. Repeating the same requestId returns the earlier result, so a lost response can be recovered.
      *
      * **Credential required**: *Yes* / **Permission**: *write:drive*
      */
@@ -2188,7 +2188,7 @@ declare module '../api.js' {
     ): Promise<SwitchCaseResponseType<E, P>>;
 
     /**
-     * Discard a temporarily kept recording download owned by the caller. Already gone is treated as success.
+     * Discard a temporarily kept recording download and temporary recording parts owned by the caller. Already gone is treated as success.
      *
      * **Credential required**: *Yes* / **Permission**: *write:drive*
      */
@@ -2204,6 +2204,17 @@ declare module '../api.js' {
      * **Credential required**: *Yes* / **Permission**: *write:drive*
      */
     request<E extends 'chat/rooms/voice/recording-folder', P extends Endpoints[E]['req']>(
+      endpoint: E,
+      params: P,
+      credential?: string | null,
+    ): Promise<SwitchCaseResponseType<E, P>>;
+
+    /**
+     * Upload a recording part into the temporary recording storage, for parts that could not be stored in the drive. The conversion step concatenates these parts with the uploaded ones into a single final file.
+     *
+     * **Credential required**: *Yes* / **Permission**: *write:drive*
+     */
+    request<E extends 'chat/rooms/voice/recording-part', P extends Endpoints[E]['req']>(
       endpoint: E,
       params: P,
       credential?: string | null,

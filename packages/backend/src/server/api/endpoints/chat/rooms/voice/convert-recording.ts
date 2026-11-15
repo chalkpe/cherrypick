@@ -41,7 +41,7 @@ const execFileAsync = promisify(execFile);
 
 // 조각 검사(ffprobe)는 변환 슬롯 안에서 작은 상한으로만 동시에 실행한다.
 const PROBE_CONCURRENCY = 4;
-// ffmpeg is expensive: the control panel sets how many conversions may run at once on the whole server (voiceCallMaxRecordingConversions; 0 turns conversion off).
+// ffmpeg is expensive: the control panel sets how many conversions may run at once on the whole server (voiceCallMaxRecordingConversions).
 // The API can run in several processes, so the slots live in Redis rather than in this process's memory.
 // Each slot expires a little after the ffmpeg timeout, so a slot held by a process that died is given back.
 const CONVERSION_SLOT_MARGIN_MS = 60 * 1000;
@@ -83,7 +83,7 @@ return 1
 
 export const meta = {
 	tags: ['chat'],
-	description: 'Convert recording parts into a single file without deleting the originals until it succeeds. A null response means that no conversion was performed and the originals remain. A download response means the file exceeds the drive file size limit and is kept for a one-time download instead. Repeating the same requestId returns the earlier result, so a lost response can be recovered.',
+	description: 'Convert recording parts into a single file without deleting the originals until it succeeds. Each id is either an uploaded drive file or a part kept in the temporary recording storage, in recording order. A null response means that no conversion was performed and the originals remain. A download response means the file exceeds the drive file size limit and is kept for a one-time download instead. Repeating the same requestId returns the earlier result, so a lost response can be recovered.',
 
 	requireCredential: true,
 
@@ -163,7 +163,8 @@ export const meta = {
 export const paramDef = {
 	type: 'object',
 	properties: {
-		// 업로드 순서대로 정렬된 임시 조각 원본들. 하나로 이어 붙여 최종 파일 하나를 만든다.
+		// 업로드 순서대로 정렬된 조각들. 드라이브 파일 id와 임시 보관 조각 id를 순서대로 섞어 넣는다.
+		// 하나로 이어 붙여 최종 파일 하나를 만든다.
 		fileIds: { type: 'array', items: { type: 'string', format: 'misskey:id' }, minItems: 1, maxItems: 512 },
 		// 같은 녹화의 재시도는 같은 requestId를 쓴다. 응답을 잃어도 서버가 이전 결과를 돌려준다.
 		requestId: { type: 'string', pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' },
@@ -177,6 +178,16 @@ export const paramDef = {
 type ConversionResponse = {
 	file: Packed<'DriveFile'> | null;
 	download: { id: string; name: string; size: number; reason: 'tooLarge' | 'noFreeSpace' } | null;
+};
+
+// 변환 입력 조각. 드라이브에 올라간 파일이거나, 드라이브에 못 올라가 임시 보관에 있는 조각이다.
+type ConversionSource = {
+	path: string;
+	type: string;
+	name: string;
+	size: number;
+	driveFile: MiDriveFile | null;
+	partId: string | null;
 };
 
 @Injectable()
@@ -212,21 +223,30 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (new Set(ps.fileIds).size !== ps.fileIds.length) throw new ApiError(meta.errors.duplicateFile);
 			const files = await this.driveFilesRepository.findBy({ id: In(ps.fileIds) } as any);
 			const byId = new Map(files.map(f => [f.id, f]));
-			const parts = ps.fileIds.map(id => byId.get(id));
-			if (parts.some(f => f == null || f.userId !== me.id)) throw new ApiError(meta.errors.noSuchFile);
-			const originals = parts as NonNullable<typeof parts[number]>[];
-			if (originals.some(f => !f.storedInternal || f.accessKey == null)) throw new ApiError(meta.errors.conversionFailed);
+			const sources: ConversionSource[] = [];
+			for (const id of ps.fileIds) {
+				const file = byId.get(id);
+				if (file != null) {
+					if (file.userId !== me.id) throw new ApiError(meta.errors.noSuchFile);
+					if (!file.storedInternal || file.accessKey == null) throw new ApiError(meta.errors.conversionFailed);
+					sources.push({ path: this.internalStorageService.resolvePath(file.accessKey), type: file.type, name: file.name, size: file.size, driveFile: file, partId: null });
+				} else {
+					// 드라이브에 올리지 못했던 조각은 녹화 전용 임시 보관에서 찾는다.
+					const part = await this.recordingStorage.getPart(id);
+					if (part == null || part.userId !== me.id || !fs.existsSync(part.path)) throw new ApiError(meta.errors.noSuchFile);
+					sources.push({ path: part.path, type: part.type, name: part.name, size: part.size, driveFile: null, partId: id });
+				}
+			}
 			// already converted, or not a recording
 			const isRecordingType = (t: string) => t.startsWith('audio/webm') || t.startsWith('audio/mp4') || t.startsWith('video/webm') || t.startsWith('video/mp4');
-			if (originals.some(f => !isRecordingType(f.type))) return null;
-			const isVideo = originals[0].type.startsWith('video/');
+			if (sources.some(s => !isRecordingType(s.type))) return null;
+			const isVideo = sources[0].type.startsWith('video/');
 			// a recording that never had video is saved as audio only, even if the recorder captured a black canvas
 			const hasVideo = ps.video ?? isVideo;
-			// conversion turned off by the admin: keep the originals as they are
-			const maxConversions = this.serverSettings.voiceCallMaxRecordingConversions;
-			if (maxConversions <= 0) return null;
+			// 동시 변환 수 설정이 0으로 저장되어 있어도 최종 파일 하나는 만든다. 최소 1로 취급한다.
+			const maxConversions = Math.max(1, this.serverSettings.voiceCallMaxRecordingConversions);
 
-			const srcs = originals.map(f => this.internalStorageService.resolvePath(f.accessKey!));
+			const srcs = sources.map(s => s.path);
 
 			const token = randomUUID();
 			const slots = [CONVERSION_SLOTS_KEY, conversionUserKey(me.id)];
@@ -270,9 +290,9 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				}
 				await runRecordingFfmpeg(args, dst, outputCapBytes, timeoutMs);
 				outputBytes = fs.statSync(dst).size;
-				const name = originals[0].name.replace(/\.[^.]+$/, '') + (hasVideo ? '.mp4' : '.mp3');
+				const name = sources[0].name.replace(/\.[^.]+$/, '') + (hasVideo ? '.mp4' : '.mp3');
 				if (outputBytes > limitBytes) {
-					return await this.keepForDownload(me, ps.requestId, dst, name, originals, 'tooLarge');
+					return await this.keepForDownload(me, ps.requestId, dst, name, sources, 'tooLarge');
 				}
 				let converted;
 				try {
@@ -281,16 +301,16 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					const identifiableId = error instanceof IdentifiableError ? error.id : null;
 					// 파일 한도·용량 초과도 최종 파일은 만들어졌으므로 임시 보관으로 돌려준다.
 					if (identifiableId === 'f9e4e5f3-4df4-40b5-b400-f236945f7073') {
-						return await this.keepForDownload(me, ps.requestId, dst, name, originals, 'tooLarge');
+						return await this.keepForDownload(me, ps.requestId, dst, name, sources, 'tooLarge');
 					}
 					if (identifiableId === 'c6244ed2-a39a-4e1c-bf93-f0fbd7764fa6') {
-						return await this.keepForDownload(me, ps.requestId, dst, name, originals, 'noFreeSpace');
+						return await this.keepForDownload(me, ps.requestId, dst, name, sources, 'noFreeSpace');
 					}
 					throw error;
 				}
 				// 최종 파일 하나가 저장된 뒤에만 임시 조각을 지운다. 실패하면 원본을 유지해 재시도·기기 저장·버리기가 가능하다.
-				await this.recordingStorage.setResult(me.id, ps.requestId, { fileId: converted.id, folderId: converted.folderId, remainingParts: originals.map(f => f.id) });
-				await this.deleteParts(me, ps.requestId, originals);
+				await this.recordingStorage.setResult(me.id, ps.requestId, { fileId: converted.id, folderId: converted.folderId, remainingParts: sources.filter(s => s.driveFile != null).map(s => s.driveFile!.id) });
+				await this.deleteParts(me, ps.requestId, sources);
 				return { file: await this.driveFileEntityService.pack(converted, { self: true }), download: null };
 			} catch (error) {
 				const identifiableId = error instanceof IdentifiableError ? error.id : null;
@@ -301,7 +321,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					if (dst) stderr = stderr.replaceAll(dst, '[output]');
 					for (const src of srcs) stderr = stderr.replaceAll(src, '[input]');
 				}
-				this.apiLoggerService.logger.warn(`Recording conversion failed: ${JSON.stringify({ fileIds: ps.fileIds, inputBytes: originals.reduce((s, f) => s + f.size, 0), outputBytes, serverMaxBytes: this.config.maxFileSize, roleMaxBytes: policies ? policies.maxFileSizeMb * 1024 * 1024 : null, driveCapacityBytes: policies ? policies.driveCapacityMb * 1024 * 1024 : null, identifiableId, code: failure?.code, signal: failure?.signal, killed: failure?.killed, stderr })}`);
+				this.apiLoggerService.logger.warn(`Recording conversion failed: ${JSON.stringify({ fileIds: ps.fileIds, inputBytes: sources.reduce((s, x) => s + x.size, 0), outputBytes, serverMaxBytes: this.config.maxFileSize, roleMaxBytes: policies ? policies.maxFileSizeMb * 1024 * 1024 : null, driveCapacityBytes: policies ? policies.driveCapacityMb * 1024 * 1024 : null, identifiableId, code: failure?.code, signal: failure?.signal, killed: failure?.killed, stderr })}`);
 				if (error instanceof ApiError) throw error;
 				if (error instanceof RecordingOutputLimitError) throw new ApiError(meta.errors.outputTooLarge);
 				if (error instanceof RecordingInputLimitError) throw new ApiError(meta.errors.inputTooLarge);
@@ -340,7 +360,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 	}
 
 	/** 드라이브에 넣을 수 없는 최종 파일을 임시 보관하고, 본인만 한 번 내려받을 수 있게 한다. */
-	private async keepForDownload(me: MiLocalUser, requestId: string, dst: string, name: string, originals: MiDriveFile[], reason: 'tooLarge' | 'noFreeSpace'): Promise<ConversionResponse> {
+	private async keepForDownload(me: MiLocalUser, requestId: string, dst: string, name: string, sources: ConversionSource[], reason: 'tooLarge' | 'noFreeSpace'): Promise<ConversionResponse> {
 		let record;
 		try {
 			record = await this.recordingStorage.store(me.id, requestId, dst, name);
@@ -349,20 +369,27 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			throw error;
 		}
 		const download = { id: record.id, name: record.name, size: record.size, reason };
-		await this.recordingStorage.setResult(me.id, requestId, { download, remainingParts: originals.map(f => f.id) });
-		await this.deleteParts(me, requestId, originals);
+		await this.recordingStorage.setResult(me.id, requestId, { download, remainingParts: sources.filter(s => s.driveFile != null).map(s => s.driveFile!.id) });
+		await this.deleteParts(me, requestId, sources);
 		return { file: null, download };
 	}
 
-	/** 임시 조각을 지우고, 실패한 조각은 결과 기록에 남겨 이후 정리(재시도·주기 정리)가 이어받게 한다. */
-	private async deleteParts(me: MiLocalUser, requestId: string, originals: MiDriveFile[]): Promise<void> {
+	/** 임시 조각을 지우고, 실패한 드라이브 조각은 결과 기록에 남겨 이후 정리(재시도·주기 정리)가 이어받게 한다. */
+	private async deleteParts(me: MiLocalUser, requestId: string, sources: ConversionSource[]): Promise<void> {
 		const left: string[] = [];
-		await Promise.all(originals.map(async f => {
-			try {
-				await this.driveService.deleteFile(f, false, me);
-			} catch (error) {
-				this.apiLoggerService.logger.warn(`Could not delete a recording part: ${JSON.stringify({ fileId: f.id, error: String(error) })}`);
-				left.push(f.id);
+		await Promise.all(sources.map(async s => {
+			if (s.driveFile != null) {
+				try {
+					await this.driveService.deleteFile(s.driveFile, false, me);
+				} catch (error) {
+					this.apiLoggerService.logger.warn(`Could not delete a recording part: ${JSON.stringify({ fileId: s.driveFile.id, error: String(error) })}`);
+					left.push(s.driveFile.id);
+				}
+			} else if (s.partId != null) {
+				// 임시 보관 조각은 기록과 파일을 바로 지운다. 지우지 못해도 기한 만료 뒤 주기 정리가 거둔다.
+				await this.recordingStorage.removePart(s.partId).catch(error => {
+					this.apiLoggerService.logger.warn(`Could not delete a kept recording part: ${JSON.stringify({ partId: s.partId, error: String(error) })}`);
+				});
 			}
 		}));
 		const result = await this.recordingStorage.getResult(me.id, requestId);

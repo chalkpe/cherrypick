@@ -17,14 +17,18 @@ vi.mock('node:fs', async importOriginal => ({
 const me = { id: 'me', host: null } as any;
 const requestId = '11111111-1111-4111-8111-111111111111';
 const downloadId = '22222222-2222-4222-8222-222222222222';
+// 임시 조각 id는 변환 요청의 fileIds 형식(misskey:id)을 따라 대시가 없다
+const partId = '33333333333343338333333333333333';
 
-function fixture(overrides: { result?: RecordingResult | null; download?: { id: string; userId: string; path: string; name: string; size: number } | null; fileExists?: boolean } = {}) {
+function fixture(overrides: { result?: RecordingResult | null; download?: { id: string; userId: string; path: string; name: string; size: number } | null; fileExists?: boolean; part?: { id: string; userId: string } | null } = {}) {
 	const driveFilesRepository = { findOneBy: vi.fn().mockResolvedValue({ id: 'final-file', userId: 'me' }) };
 	const driveFileEntityService = { pack: vi.fn(async (f: { id: string }) => ({ id: f.id })) };
 	const recordingStorage = {
 		getResult: vi.fn().mockResolvedValue(overrides.result ?? null),
 		getDownload: vi.fn().mockResolvedValue(overrides.download ?? null),
 		removeDownload: vi.fn().mockResolvedValue(undefined),
+		getPart: vi.fn().mockResolvedValue(overrides.part ?? null),
+		removePart: vi.fn().mockResolvedValue(undefined),
 	};
 	const resultEndpoint = new RecordingResultEndpoint(driveFilesRepository as any, driveFileEntityService as any, recordingStorage as any);
 	const discardEndpoint = new RecordingDiscardEndpoint(recordingStorage as any);
@@ -93,5 +97,27 @@ describe('chat/rooms/voice/recording-discard', () => {
 
 		await expect(f.discardEndpoint.exec({ id: downloadId }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_DOWNLOAD' });
 		expect(f.recordingStorage.removeDownload).not.toHaveBeenCalled();
+	});
+
+	test('discards temporary recording parts owned by the caller', async () => {
+		const f = fixture({ part: { id: partId, userId: 'me' } });
+
+		await f.discardEndpoint.exec({ partIds: [partId] }, me, null, null);
+
+		expect(f.recordingStorage.removePart).toHaveBeenCalledWith(partId);
+	});
+
+	test('treats an already gone part as success', async () => {
+		const f = fixture();
+
+		await expect(f.discardEndpoint.exec({ partIds: [partId] }, me, null, null)).resolves.toBeUndefined();
+		expect(f.recordingStorage.removePart).not.toHaveBeenCalled();
+	});
+
+	test('does not delete another user\'s temporary part', async () => {
+		const f = fixture({ part: { id: partId, userId: 'someone-else' } });
+
+		await expect(f.discardEndpoint.exec({ partIds: [partId] }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_PART' });
+		expect(f.recordingStorage.removePart).not.toHaveBeenCalled();
 	});
 });

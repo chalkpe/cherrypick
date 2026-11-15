@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import ConvertRecordingEndpoint, { meta } from '@/server/api/endpoints/chat/rooms/voice/convert-recording.js';
 import { RecordingStorageFullError, type RecordingResult } from '@/core/RecordingStorageService.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
@@ -21,8 +21,11 @@ vi.mock('node:child_process', async importOriginal => ({
 
 const me = { id: 'me', host: null } as any;
 const requestId = '11111111-1111-4111-8111-111111111111';
+const tempDirs: string[] = [];
 
-function fixture(overrides: { types?: string[]; names?: string[]; conversions?: number; addFileError?: Error; remembered?: RecordingResult | null; storeError?: Error; deleteFails?: string[]; serverMaxBytes?: number } = {}) {
+function fixture(overrides: { types?: string[]; names?: string[]; conversions?: number; addFileError?: Error; remembered?: RecordingResult | null; storeError?: Error; deleteFails?: string[]; serverMaxBytes?: number; tempParts?: { id: string; userId?: string; type?: string; name?: string }[] } = {}) {
+	const partDir = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-recording-parts-'));
+	tempDirs.push(partDir);
 	const types = overrides.types ?? ['audio/webm'];
 	const files = types.map((type, i) => ({
 		id: `original${i}`,
@@ -49,6 +52,8 @@ function fixture(overrides: { types?: string[]; names?: string[]; conversions?: 
 	const apiLoggerService = { logger: { warn: vi.fn() } };
 	const results = new Map<string, RecordingResult>();
 	if (overrides.remembered != null) results.set(requestId, overrides.remembered);
+	// 임시 보관 조각은 실제 파일이 있어야 변환 입력으로 인정된다
+	const partPaths = new Map<string, string>();
 	const recordingStorage = {
 		getResult: vi.fn(async (_userId: string, id: string) => results.get(id) ?? null),
 		setResult: vi.fn(async (_userId: string, id: string, value: RecordingResult) => { results.set(id, value); }),
@@ -57,6 +62,15 @@ function fixture(overrides: { types?: string[]; names?: string[]; conversions?: 
 			? vi.fn().mockRejectedValue(overrides.storeError)
 			: vi.fn(async (_userId: string, _requestId: string, _src: string, name: string) => ({ id: 'dl-1', userId: 'me', requestId, path: '/tmp/dl-1', name, size: 2048 })),
 		getDownload: vi.fn().mockResolvedValue(null),
+		getPart: vi.fn(async (id: string) => {
+			const part = (overrides.tempParts ?? []).find(p => p.id === id);
+			if (part == null) return null;
+			const partPath = path.join(partDir, `${id}.webm`);
+			fs.writeFileSync(partPath, 'x');
+			partPaths.set(id, partPath);
+			return { id: part.id, userId: part.userId ?? 'me', path: partPath, name: part.name ?? `room 1-20261115-090807-${part.id}.webm`, size: 1024, type: part.type ?? 'audio/webm' };
+		}),
+		removePart: vi.fn().mockResolvedValue(undefined),
 		retryPartCleanup: vi.fn().mockResolvedValue(undefined),
 		removeDownload: vi.fn().mockResolvedValue(undefined),
 	};
@@ -72,7 +86,7 @@ function fixture(overrides: { types?: string[]; names?: string[]; conversions?: 
 		roleService as any,
 		apiLoggerService as any,
 	);
-	return { endpoint, driveService, driveFilesRepository, recordingStorage, results, files };
+	return { endpoint, driveService, driveFilesRepository, recordingStorage, results, files, partPaths };
 }
 
 function mockProbe(probe?: object) {
@@ -82,8 +96,9 @@ function mockProbe(probe?: object) {
 	});
 }
 
-function mockFfmpeg(writeBytes = 10) {
+function mockFfmpeg(writeBytes = 10, onSpawn?: (args: string[]) => void) {
 	childProcess.spawn.mockImplementation((_cmd: string, args: string[]) => {
+		onSpawn?.(args);
 		const dst = args[args.length - 1];
 		const child = new EventEmitter() as any;
 		child.stderr = new EventEmitter();
@@ -101,6 +116,10 @@ beforeEach(() => {
 	childProcess.spawn.mockReset();
 	mockProbe();
 	mockFfmpeg();
+});
+
+afterEach(() => {
+	for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe('chat/rooms/voice/convert-recording', () => {
@@ -316,13 +335,64 @@ describe('chat/rooms/voice/convert-recording', () => {
 		expect(f.driveService.addFile).not.toHaveBeenCalled();
 	});
 
-	test('keeps the originals when conversion is turned off', async () => {
-		const f = fixture({ conversions: 0 });
+	test('still produces one final file when the stored conversion limit is zero', async () => {
+		const f = fixture({ types: ['audio/webm', 'audio/webm'], conversions: 0 });
 
-		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId }, me, null, null)).resolves.toBeNull();
+		await expect(f.endpoint.exec({ fileIds: ['original0', 'original1'], requestId, video: false }, me, null, null))
+			.resolves.toEqual({ file: { id: 'converted' }, download: null });
 
+		expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+		expect(f.driveService.addFile).toHaveBeenCalledTimes(1);
+		expect(f.driveService.deleteFile).toHaveBeenCalledTimes(2);
+	});
+
+	test('concatenates drive parts with parts kept in the recording storage, in order, and deletes both', async () => {
+		const f = fixture({ types: ['audio/webm', 'audio/webm'], tempParts: [{ id: 'temp1' }] });
+		// 두 번째 조각은 드라이브에 올라가지 못해 임시 보관에 있다
+		f.driveFilesRepository.findBy.mockResolvedValue([f.files[0]]);
+		const listWrites: string[] = [];
+		mockFfmpeg(10, args => {
+			const listPath = args[args.indexOf('-i') + 1];
+			if (listPath.endsWith('parts.txt')) listWrites.push(fs.readFileSync(listPath, 'utf8'));
+		});
+
+		await expect(f.endpoint.exec({ fileIds: ['original0', 'temp1'], requestId, video: false }, me, null, null))
+			.resolves.toEqual({ file: { id: 'converted' }, download: null });
+
+		expect(listWrites).toHaveLength(1);
+		expect(listWrites[0].indexOf('/recordings/access-key0.webm')).toBeGreaterThanOrEqual(0);
+		expect(listWrites[0].indexOf(f.partPaths.get('temp1')!)).toBeGreaterThan(listWrites[0].indexOf('/recordings/access-key0.webm'));
+		expect(f.driveService.addFile).toHaveBeenCalledTimes(1);
+		expect(f.driveService.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ id: 'original0' }), false, me);
+		expect(f.recordingStorage.removePart).toHaveBeenCalledWith('temp1');
+		expect(f.results.get(requestId)).toMatchObject({ fileId: 'converted', remainingParts: [] });
+	});
+
+	test('keeps an over-limit final file from mixed sources for a one-time download and deletes both kinds of parts', async () => {
+		const f = fixture({ types: ['audio/webm'], tempParts: [{ id: 'temp1' }], serverMaxBytes: 100 });
+		f.driveFilesRepository.findBy.mockResolvedValue([f.files[0]]);
+		mockFfmpeg(1024);
+
+		await expect(f.endpoint.exec({ fileIds: ['original0', 'temp1'], requestId, video: false }, me, null, null))
+			.resolves.toMatchObject({ file: null, download: { id: 'dl-1', reason: 'tooLarge' } });
+
+		expect(f.driveService.deleteFile).toHaveBeenCalledWith(expect.objectContaining({ id: 'original0' }), false, me);
+		expect(f.recordingStorage.removePart).toHaveBeenCalledWith('temp1');
+	});
+
+	test('rejects a part id that is not in the recording storage', async () => {
+		const f = fixture();
+		f.driveFilesRepository.findBy.mockResolvedValue([]);
+
+		await expect(f.endpoint.exec({ fileIds: ['gone'], requestId }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_FILE' });
 		expect(childProcess.spawn).not.toHaveBeenCalled();
-		expect(f.driveService.addFile).not.toHaveBeenCalled();
-		expect(f.driveService.deleteFile).not.toHaveBeenCalled();
+	});
+
+	test('rejects a recording-storage part owned by someone else', async () => {
+		const f = fixture({ tempParts: [{ id: 'temp1', userId: 'other' }] });
+		f.driveFilesRepository.findBy.mockResolvedValue([]);
+
+		await expect(f.endpoint.exec({ fileIds: ['temp1'], requestId }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_FILE' });
+		expect(childProcess.spawn).not.toHaveBeenCalled();
 	});
 });

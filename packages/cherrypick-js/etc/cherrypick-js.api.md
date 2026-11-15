@@ -1385,6 +1385,12 @@ type ChatRoomsVoiceRecordingFolderRequest = operations['chat___rooms___voice___r
 type ChatRoomsVoiceRecordingFolderResponse = operations['chat___rooms___voice___recording-folder']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
+type ChatRoomsVoiceRecordingPartRequest = operations['chat___rooms___voice___recording-part']['requestBody']['content']['multipart/form-data'];
+
+// @public (undocumented)
+type ChatRoomsVoiceRecordingPartResponse = operations['chat___rooms___voice___recording-part']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
 type ChatRoomsVoiceRecordingResultRequest = operations['chat___rooms___voice___recording-result']['requestBody']['content']['application/json'];
 
 // @public (undocumented)
@@ -2050,6 +2056,8 @@ declare namespace entities {
         ChatRoomsVoiceRecordingDiscardRequest,
         ChatRoomsVoiceRecordingFolderRequest,
         ChatRoomsVoiceRecordingFolderResponse,
+        ChatRoomsVoiceRecordingPartRequest,
+        ChatRoomsVoiceRecordingPartResponse,
         ChatRoomsVoiceRecordingResultRequest,
         ChatRoomsVoiceRecordingResultResponse,
         ChatRoomsVoiceStatesRequest,
