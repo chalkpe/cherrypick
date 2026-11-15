@@ -4459,6 +4459,7 @@ _noteCleanup:
   completedNotificationBody: "ノート{n}件を整理しました。"
   moved: "条件の位置を変更しました。"
   busyError: "ノート整理が混み合っています。しばらくしてから再試行してください。"
+  inProgressError: "今ノートを整理しています。整理が終わってから再度操作できます。"
   missingClipError: "選択したクリップを利用できません。別のクリップを選ぶか、この条件を修正してください。"
   missingChannelError: "選択したチャンネルを利用できません。別のチャンネルを選ぶか、この条件を修正してください。"
   nameError: "許可された長さでルール名を入力してください。"

@@ -4321,6 +4321,7 @@ _noteCleanup:
   completedNotificationBody: "Cleaned up {n} notes."
   moved: "Condition moved."
   busyError: "Note cleanup is busy. Please wait a moment and try again."
+  inProgressError: "Note cleanup is running now. You can do this once it finishes."
   missingClipError: "A selected clip is unavailable. Choose another clip or change this condition."
   missingChannelError: "A selected channel is unavailable. Choose another channel or change this condition."
   nameError: "Enter a rule name within the allowed length."

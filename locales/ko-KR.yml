@@ -4327,6 +4327,7 @@ _noteCleanup:
   completedNotificationBody: "노트 {n}개를 정리했어요."
   moved: "조건 위치를 바꿨어요."
   busyError: "노트 정리 요청이 몰리고 있어요. 잠시 후 다시 시도해 주세요."
+  inProgressError: "지금 노트를 정리하고 있어요. 정리가 끝나면 다시 할 수 있어요."
   missingClipError: "선택한 클립을 사용할 수 없어요. 다른 클립을 선택하거나 이 조건을 수정해 주세요."
   missingChannelError: "선택한 채널을 사용할 수 없어요. 다른 채널을 선택하거나 이 조건을 수정해 주세요."
   nameError: "허용된 길이 안에서 규칙 이름을 입력해 주세요."

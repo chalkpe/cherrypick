@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<MkLoading v-if="loading"/>
 	<MkInfo v-else-if="loadFailed" warn role="alert">
 		{{ cleanupErrorMessage(loadFailed.code) }}
-		<MkButton small @click="retryLoad">{{ i18n.ts.retry }}</MkButton>
+		<MkButton v-if="!isCleanupBusyError(loadFailed.code)" small @click="retryLoad">{{ i18n.ts.retry }}</MkButton>
 	</MkInfo>
 	<template v-else>
 		<MkInput v-model="draft.name" @update:modelValue="draft.defaultName = null">
@@ -62,7 +62,7 @@ import { conditionNames } from './note-cleanup/labels.js';
 import type { CleanupDraft, CleanupRule } from '@/utility/note-cleanup-api.js';
 import { cleanupApi } from '@/utility/note-cleanup-api.js';
 import type { CleanupFailure } from '@/utility/note-cleanup-errors.js';
-import { canRevealCleanupError, cleanupErrorMessage, cleanupFailure } from '@/utility/note-cleanup-errors.js';
+import { canRevealCleanupError, cleanupErrorMessage, cleanupFailure, isCleanupBusyError } from '@/utility/note-cleanup-errors.js';
 import { childrenOf, cloneCondition, conditionAt, createCondition, groupPaths, incompletePaths, keywordLines, moveCondition, refreshCondition, removeCondition, replaceCondition, serverConditionPath } from '@/utility/note-cleanup-editor.js';
 import { cleanupRuleName } from '@/utility/note-cleanup-name.js';
 import { i18n } from '@/i18n.js';

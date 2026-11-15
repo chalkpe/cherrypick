@@ -32,7 +32,7 @@ vi.mock('@/preferences.js', () => ({ prefer: { s: {} } }));
 vi.mock('@/events.js', () => ({ globalEvents: { on: () => {}, off: () => {} } }));
 import MkNotification from '@/components/MkNotification.vue';
 import ReferencePicker from '@/pages/settings/note-cleanup/ReferencePicker.vue';
-import { cleanupErrorMessage, cleanupFailure } from '@/utility/note-cleanup-errors.js';
+import { canRevealCleanupError, cleanupErrorMessage, cleanupFailure, isCleanupBusyError } from '@/utility/note-cleanup-errors.js';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); activeLocale.current = 'en-US'; });
 
 test.each(['en-US', 'ja-JP', 'ko-KR'] as const)('notification links the stopped cleanup to its rule in %s with one result sentence', async language => {
@@ -100,5 +100,24 @@ test.each(['en-US', 'ja-JP', 'ko-KR'] as const)('사용자가 고칠 수 없는 
 		expect(cleanupErrorMessage(code)).toBe(i18n.ts._noteCleanup.requestError);
 	}
 	expect(cleanupErrorMessage('CLEANUP_BUSY')).toBe(i18n.ts._noteCleanup.busyError);
+	expect(cleanupErrorMessage('CLEANUP_IN_PROGRESS')).toBe(i18n.ts._noteCleanup.inProgressError);
 	expect(cleanupErrorMessage('KEEP_CANNOT_RUN')).toBe(i18n.ts._noteCleanup.keepRunError);
+});
+
+test('혼잡 오류는 두 코드 모두 다시 시도 버튼을 두지 않고 조건 공개 대상에서도 제외한다', () => {
+	for (const code of ['CLEANUP_BUSY', 'CLEANUP_IN_PROGRESS']) {
+		expect(isCleanupBusyError(code)).toBe(true);
+		expect(canRevealCleanupError(code, 'condition.children.0')).toBe(false);
+	}
+	expect(isCleanupBusyError('MISSING_CLIP')).toBe(false);
+	expect(canRevealCleanupError('MISSING_CLIP', 'condition.children.0')).toBe(true);
+});
+
+test.each([['en-US', 'busy'], ['ja-JP', '混み合'], ['ko-KR', '몰리']] as const)('진행 중 혼잡 문구는 %s에서 요청 몰림 표현을 쓰지 않는다', async (language, busyWord) => {
+	activeLocale.current = language;
+	const { i18n } = await import('@/i18n.js');
+	const text = cleanupErrorMessage('CLEANUP_IN_PROGRESS');
+	expect(text).toBe(i18n.ts._noteCleanup.inProgressError);
+	expect(text).not.toContain(busyWord);
+	expect(text).not.toBe(i18n.ts._noteCleanup.busyError);
 });

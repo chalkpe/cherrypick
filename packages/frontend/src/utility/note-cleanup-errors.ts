@@ -19,6 +19,7 @@ export function cleanupErrorMessage(code: string): string {
 	const text = i18n.ts._noteCleanup;
 	switch (code) {
 		case 'CLEANUP_BUSY': return text.busyError;
+		case 'CLEANUP_IN_PROGRESS': return text.inProgressError;
 		case 'MISSING_CLIP': case 'INVALID_CLIP': return text.missingClipError;
 		case 'MISSING_CHANNEL': return text.missingChannelError;
 		case 'INVALID_CONDITION': case 'INVALID_VALUE': case 'INVALID_CLEANUP': return text.ruleError;
@@ -34,6 +35,11 @@ export function cleanupErrorMessage(code: string): string {
 	}
 }
 
+// 혼잡 오류(서버 전체 상한·같은 계정 정리 진행 중)는 바로 다시 누르는 버튼을 두지 않는다. 다시 시도는 다른 오류에만 둔다.
+export function isCleanupBusyError(code: string): boolean {
+	return code === 'CLEANUP_BUSY' || code === 'CLEANUP_IN_PROGRESS';
+}
+
 export function canRevealCleanupError(code: string, path: string): boolean {
-	return code !== 'CLEANUP_BUSY' && /^(condition(?:\.|$)|\d+(?:\.|$))/.test(path);
+	return !isCleanupBusyError(code) && /^(condition(?:\.|$)|\d+(?:\.|$))/.test(path);
 }

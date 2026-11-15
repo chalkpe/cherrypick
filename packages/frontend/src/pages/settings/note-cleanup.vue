@@ -9,7 +9,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkLoading v-if="loading"/>
 		<MkInfo v-else-if="failed" warn role="alert">
 			{{ cleanupErrorMessage(failed) }}
-			<MkButton small @click="load">{{ i18n.ts.retry }}</MkButton>
+			<MkButton v-if="!isCleanupBusyError(failed)" small @click="load">{{ i18n.ts.retry }}</MkButton>
 		</MkInfo>
 		<template v-else>
 			<MkSwitch v-model="keepDriveFiles" accessible :disabled="savingKeepDriveFiles" @update:modelValue="saveKeepDriveFiles">{{ i18n.ts._noteCleanup.keepDriveFiles }}</MkSwitch>
@@ -53,7 +53,7 @@ import MkButton from '@/components/MkButton.vue';
 import MkSwitch from '@/components/MkSwitch.vue';
 import type { CleanupRule } from '@/utility/note-cleanup-api.js';
 import { cleanupApi } from '@/utility/note-cleanup-api.js';
-import { cleanupErrorMessage, cleanupFailure } from '@/utility/note-cleanup-errors.js';
+import { cleanupErrorMessage, cleanupFailure, isCleanupBusyError } from '@/utility/note-cleanup-errors.js';
 import { cleanupRuleName } from '@/utility/note-cleanup-name.js';
 import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';

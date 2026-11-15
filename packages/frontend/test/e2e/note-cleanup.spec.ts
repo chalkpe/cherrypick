@@ -372,6 +372,8 @@ test('saving an existing rule keeps the scroll position and the editor nodes', a
 	await page.goto(`${BASE_URL}/settings/note-cleanup/${rule.id}`);
 	await page.locator('textarea').first().waitFor();
 	await page.getByText('Notes to be deleted', { exact: true }).waitFor();
+	// 미리 보기 첫 읽기가 끝나 빈 문구가 자리 잡은 뒤 위치를 잰다.
+	await page.getByText('No notes', { exact: true }).waitFor();
 	await page.locator('textarea').first().fill('seed edited');
 	// 저장 버튼이 보이는 편집 화면 아래쪽으로 스크롤한 상태에서 저장한다.
 	await page.evaluate(() => {
@@ -402,20 +404,67 @@ test('the rule editor shows an error and retry when loading fails instead of a b
 	let failList = true;
 	await page.route('**/api/i/note-cleanup/list', async route => {
 		if (failList) {
-			await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Note cleanup is busy.', code: 'CLEANUP_BUSY', id: 'a9266652-f942-4021-8677-2ca26e50c344' } }) });
+			await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Internal error.', code: 'INTERNAL_ERROR', id: '5d37db75-3b73-4f9b-9a8e-2c1f4a6b8d0e' } }) });
 			return;
 		}
 		await route.continue();
 	});
 	await page.goto(`${BASE_URL}/settings/note-cleanup/${rule.id}`);
 	// 빈 화면이 아니라 목록과 같은 방식의 오류와 다시 시도를 보인다.
-	await expect(page.getByRole('alert')).toContainText('Note cleanup is busy. Please wait a moment and try again.');
+	await expect(page.getByRole('alert')).toContainText('Could not confirm the operation. Please retry.');
 	await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
 	expect(await page.locator('textarea').count()).toBe(0);
 	failList = false;
 	await page.getByRole('button', { name: 'Retry' }).click();
 	await page.locator('textarea').first().waitFor();
 	await expect(page.getByText('Notes to be deleted', { exact: true })).toBeVisible();
+});
+
+test('busy errors show the right message without a retry button', async ({ page }) => {
+	await resetState();
+	await registerUser('admin', 'pass', true);
+	const alice = await registerUser('alice', 'alice1234');
+	const { rule } = await api(BASE_URL, 'i/note-cleanup/create', { i: alice.token, name: 'Busy check', action: 'delete', condition: keywordCondition('seed') });
+	await signIn(page, 'alice', 'alice1234');
+	await closeUserSetupDialog(page);
+	// 읽기 화면 혼잡(첫 방문 초기화 예외): 다시 시도 버튼 없이 문구만 보인다.
+	await page.route('**/api/i/note-cleanup/list', async route => {
+		await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'x', code: 'CLEANUP_BUSY', id: 'x', kind: 'server' } }) });
+	});
+	await page.goto(`${BASE_URL}/settings/note-cleanup/${rule.id}`);
+	await expect(page.getByRole('alert')).toContainText('Note cleanup is busy. Please wait a moment and try again.');
+	expect(await page.getByRole('button', { name: 'Retry' }).count()).toBe(0);
+	await page.unroute('**/api/i/note-cleanup/list');
+	// 쓰기 혼잡: 같은 계정 진행 중과 서버 전체 상한을 구분해 알리고 둘 다 다시 시도 버튼이 없다.
+	for (const [code, message] of [
+		['CLEANUP_IN_PROGRESS', 'Note cleanup is running now. You can do this once it finishes.'],
+		['CLEANUP_BUSY', 'Note cleanup is busy. Please wait a moment and try again.'],
+	] as const) {
+		await page.route('**/api/i/note-cleanup/update', async route => {
+			await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'x', code, id: 'x', kind: 'server' } }) });
+		});
+		await page.goto(`${BASE_URL}/settings/note-cleanup/${rule.id}`);
+		await page.locator('textarea').first().waitFor();
+		await page.getByRole('button', { name: 'Save' }).click();
+		const alert = page.getByRole('alert');
+		await expect(alert).toContainText(message);
+		expect(await alert.getByRole('button').count()).toBe(0);
+		await page.unroute('**/api/i/note-cleanup/update');
+	}
+});
+
+test('the rule list hides retry for busy errors', async ({ page }) => {
+	await resetState();
+	await registerUser('admin', 'pass', true);
+	await registerUser('alice', 'alice1234');
+	await signIn(page, 'alice', 'alice1234');
+	await closeUserSetupDialog(page);
+	await page.route('**/api/i/note-cleanup/list', async route => {
+		await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'x', code: 'CLEANUP_BUSY', id: 'x', kind: 'server' } }) });
+	});
+	await page.goto(`${BASE_URL}/settings/note-cleanup`);
+	await expect(page.getByRole('alert')).toContainText('Note cleanup is busy. Please wait a moment and try again.');
+	expect(await page.getByRole('button', { name: 'Retry' }).count()).toBe(0);
 });
 
 test('first save keeps scroll when a cached settings page sits behind the notification link', async ({ page }) => {
