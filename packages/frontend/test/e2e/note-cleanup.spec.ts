@@ -282,6 +282,112 @@ test('preview reads on past a range with no matching notes', async ({ page }) =>
 	await expect(page.getByText('needle target')).toBeVisible();
 });
 
+test('preview stops auto-reading after a few empty ranges and continues from the cursor after a failure', async ({ page }) => {
+	test.setTimeout(180_000);
+	await resetState();
+	await registerUser('admin', 'pass', true);
+	const alice = await registerUser('alice', 'alice1234');
+	// 첫 후보 앞에 일치하지 않는 노트가 자동으로 이어 읽는 범위보다 많다.
+	for (let batch = 0; batch < 35; batch++) {
+		await Promise.all(Array.from({ length: 10 }, (_, j) => api(BASE_URL, 'notes/create', { i: alice.token, text: `plain note ${batch * 10 + j}` })));
+	}
+	await api(BASE_URL, 'notes/create', { i: alice.token, text: 'needle target' });
+	const { rule } = await api(BASE_URL, 'i/note-cleanup/create', { i: alice.token, name: 'Cap check', action: 'delete', condition: keywordCondition('needle') });
+	const afterIds: (string | null)[] = [];
+	let failed = false;
+	await page.route('**/api/i/note-cleanup/preview', async route => {
+		const afterId = route.request().postDataJSON().afterId ?? null;
+		afterIds.push(afterId);
+		// 네 번째 요청은 요청 한도에 걸린 것처럼 한 번 실패시킨다.
+		if (afterIds.length === 4 && !failed) {
+			failed = true;
+			await route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Rate limit exceeded', code: 'RATE_LIMIT_EXCEEDED', id: 'd5e5b2a5-f0cd-4f6b-9cb6-9b6a6a8a1d11' } }) });
+			return;
+		}
+		await route.continue();
+	});
+	await signIn(page, 'alice', 'alice1234');
+	await closeUserSetupDialog(page);
+	await page.goto(`${BASE_URL}/settings/note-cleanup/${rule.id}`);
+	const section = page.getByText('Notes to be deleted', { exact: true }).locator('..');
+	const more = section.getByRole('button', { name: 'Load more' });
+	await expect(more).toBeVisible();
+	// 자동으로는 3번까지만 읽고, 빈 문구 없이 더 보기만 보인다.
+	expect(afterIds).toHaveLength(3);
+	await expect(section.getByText('No notes', { exact: true })).toHaveCount(0);
+	await more.click();
+	await expect(section.getByRole('button', { name: 'Retry' })).toBeVisible();
+	await section.getByRole('button', { name: 'Retry' }).click();
+	// 다시 시도는 처음이 아니라 실패한 요청의 커서에서 이어 읽는다.
+	await expect(page.getByText('needle target')).toBeVisible();
+	expect(afterIds[4]).toBe(afterIds[3]);
+	expect(afterIds[3]).not.toBeNull();
+});
+
+test('first save moves the current router to the edit path in the page and in an app window', async ({ page }) => {
+	test.setTimeout(120_000);
+	await resetState();
+	await registerUser('admin', 'pass', true);
+	await registerUser('alice', 'alice1234');
+	await signIn(page, 'alice', 'alice1234');
+	await closeUserSetupDialog(page);
+	const fillAndSave = async () => {
+		await page.getByText('Rule name', { exact: true }).locator('..').locator('input').fill('Router check');
+		await page.locator('textarea').fill('apple');
+		await page.getByRole('button', { name: 'Save' }).click();
+		await expect(page.getByRole('button', { name: 'Clean up now' })).toBeVisible();
+	};
+	// 본 화면: 주소와 라우터의 현재 경로가 편집 경로가 되고, 뒤로 가기는 목록으로 간다.
+	await page.goto(`${BASE_URL}/settings/note-cleanup`);
+	await page.getByRole('link', { name: 'Create rule' }).first().click();
+	await fillAndSave();
+	await expect(page).toHaveURL(/\/settings\/note-cleanup\/(?!new)[^/?]+$/);
+	const editPath = new URL(page.url()).pathname;
+	await page.getByText('Notes to be deleted', { exact: true }).click({ button: 'right' });
+	await expect(page.getByText(editPath, { exact: true })).toBeVisible();
+	await page.keyboard.press('Escape');
+	await page.goBack();
+	await expect(page).toHaveURL(`${BASE_URL}/settings/note-cleanup`);
+	// 앱 안 창: 뒤의 본 화면 주소는 그대로이고 창의 경로가 편집 경로가 되어 다시 읽어도 저장된 규칙이 열린다.
+	await page.getByRole('link', { name: 'Router check' }).first().waitFor();
+	await page.getByRole('link', { name: 'Create rule' }).first().click({ modifiers: ['Shift'] });
+	await page.locator('textarea').waitFor();
+	await fillAndSave();
+	await expect(page).toHaveURL(`${BASE_URL}/settings/note-cleanup`);
+	await page.locator('i.ti-reload').first().click();
+	await expect(page.getByRole('button', { name: 'Clean up now' })).toBeVisible();
+	await expect(page.getByText('Rule name', { exact: true }).locator('..').locator('input')).toHaveValue('Router check');
+});
+
+test.describe('phone', () => {
+	test.use({
+		viewport: { width: 390, height: 844 },
+		userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+		hasTouch: true,
+	});
+
+	test('the settings top screen keeps its footer layout after leaving the rule editor', async ({ page }) => {
+		test.setTimeout(120_000);
+		await resetState();
+		await registerUser('admin', 'pass', true);
+		await registerUser('alice', 'alice1234');
+		await signIn(page, 'alice', 'alice1234');
+		await closeUserSetupDialog(page);
+		const bodyHeight = () => page.evaluate(() => document.querySelector('._pageScrollable')?.clientHeight ?? -1);
+		await page.goto(`${BASE_URL}/settings`);
+		await page.locator('a[href="/settings/note-cleanup"]').first().waitFor();
+		const fresh = await bodyHeight();
+		await page.locator('a[href="/settings/note-cleanup"]').first().click();
+		await page.getByRole('link', { name: 'Create rule' }).first().click();
+		await page.locator('textarea').waitFor();
+		// 편집 화면은 하단 메뉴를 흐름 안에 둬 본문이 그만큼 줄어든다.
+		expect(await bodyHeight()).toBeLessThan(fresh);
+		await page.evaluate(() => history.go(-2));
+		await expect(page).toHaveURL(`${BASE_URL}/settings`);
+		await expect.poll(bodyHeight).toBe(fresh);
+	});
+});
+
 test('first automatic enable waits for a successful preview', async ({ page }) => {
 	await resetState();
 	await registerUser('admin', 'pass', true);

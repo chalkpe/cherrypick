@@ -34,6 +34,7 @@ vi.mock('@/components/MkPaginationControl.vue', () => ({ default: defineComponen
 vi.mock('@/preferences.js', () => ({ prefer: { s: { animation: false, enablePullToRefresh: false }, r: { enableInfiniteScroll: { value: false } } } }));
 vi.mock('@/events.js', () => ({ globalEvents: { on: () => {}, off: () => {}, emit: () => {} }, useGlobalEvent: () => {} }));
 vi.mock('@/os.js', () => ({ contextMenu: vi.fn() }));
+import { CleanupPreviewPaginator } from '@/utility/note-cleanup-preview.js';
 import Preview from '@/pages/settings/note-cleanup/Preview.vue';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -106,4 +107,54 @@ test('candidates on the first page keep the normal timeline pagination', async (
 	await view.findByText('second page');
 	expect(requests.map(request => request.afterId)).toEqual([undefined, 'cursor-1']);
 	expect(view.getAllByTestId('note')).toHaveLength(2);
+});
+
+test('empty ranges beyond the auto-read cap show only load more, then continue from the cursor', async () => {
+	const requests: { afterId?: string }[] = [];
+	vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+		const body = JSON.parse(init.body as string);
+		requests.push(body);
+		const n = body.afterId ? Number(body.afterId.slice(2)) : 0;
+		return new Response(JSON.stringify(n >= 400 ? page([note('n500', 'late candidate')], null, true) : page([], `c-${n + 100}`, false)));
+	});
+	const view = renderPreview();
+	const more = await view.findByRole('button', { name: 'Load more' });
+	expect(requests.map(request => request.afterId)).toEqual([undefined, 'c-100', 'c-200']);
+	// 빈 문구는 숨겨져 있어야 한다.
+	expect(view.queryByTestId('result')?.closest('[style*="display: none"]')).not.toBeNull();
+	await fireEvent.click(more);
+	await view.findByText('late candidate');
+	expect(requests.map(request => request.afterId)).toEqual([undefined, 'c-100', 'c-200', 'c-300', 'c-400']);
+});
+
+test('a failed read keeps the progress and the retry continues from the last cursor', async () => {
+	const requests: { afterId?: string }[] = [];
+	let failNext = true;
+	vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+		const body = JSON.parse(init.body as string);
+		requests.push(body);
+		if (body.afterId === 'c-200' && failNext) { failNext = false; return new Response(JSON.stringify({ error: { code: 'RATE_LIMIT_EXCEEDED', message: 'x', id: 'x' } }), { status: 429 }); }
+		const n = body.afterId ? Number(body.afterId.slice(2)) : 0;
+		return new Response(JSON.stringify(n >= 200 ? page([note('n300', 'resumed candidate')], null, true) : page([], `c-${n + 100}`, false)));
+	});
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	await paginator.init();
+	expect(paginator.error.value).toBe(true);
+	expect(paginator.ready.value).toBe(false);
+	await paginator.init();
+	expect(paginator.items.value.map(item => item.id)).toEqual(['n300']);
+	expect(requests.map(request => request.afterId)).toEqual([undefined, 'c-100', 'c-200', 'c-200']);
+});
+
+test('a first read that is capped without candidates is ready so the first automatic switch is not blocked', async () => {
+	vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+		const body = JSON.parse(init.body as string);
+		const n = body.afterId ? Number(body.afterId.slice(2)) : 0;
+		return new Response(JSON.stringify(page([], `c-${n + 100}`, false)));
+	});
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	await paginator.init();
+	expect(paginator.ready.value).toBe(true);
+	expect(paginator.complete.value).toBe(false);
+	expect(paginator.canFetchNewer.value).toBe(true);
 });

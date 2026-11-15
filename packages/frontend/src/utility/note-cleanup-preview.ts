@@ -9,6 +9,9 @@ import type { IPaginator } from '@/utility/paginator.js';
 import { cleanupApi } from '@/utility/note-cleanup-api.js';
 import type { CleanupPreview } from '@/utility/note-cleanup-api.js';
 
+// 후보가 없는 범위를 자동으로 이어 읽는 최대 요청 수. 요청 한도에 걸리지 않게 작게 둔다.
+const MAX_AUTO_REQUESTS = 3;
+
 // 저장된 규칙의 미리 보기를 기존 노트 타임라인 페이지네이션에 연결한다.
 // 서버는 오래된 노트부터 지워질 노트만 돌려주며, 다음 페이지는 nextCursor로 잇는다.
 export class CleanupPreviewPaginator implements IPaginator<Misskey.entities.Note> {
@@ -66,14 +69,18 @@ export class CleanupPreviewPaginator implements IPaginator<Misskey.entities.Note
 		if (append) this.fetchingNewer.value = true;
 		else this.fetching.value = true;
 		try {
-			let page = await cleanupApi.preview(this.ruleIds, append ? this.cursor ?? undefined : undefined);
+			// 후보 없이 끝난 읽기(오류 포함)는 읽은 데까지의 커서에서 이어 읽는다.
+			const resume = !append && this.items.value.length === 0 && !this.complete.value;
+			let page = await cleanupApi.preview(this.ruleIds, append || resume ? this.cursor ?? undefined : undefined);
 			// 저장 뒤 도착한 낡은 응답은 항목·커서·오류 어느 것도 건드리지 않는다.
 			if (generation !== this.generation) return;
-			// 첫 검사 범위에 지워질 후보가 없으면 후보가 나오거나 마지막 범위까지 이어 읽는다. 읽는 동안에는 로딩 표시를 유지해 빈 목록과 더 보기가 함께 보이지 않게 한다.
-			while (!append && page.notes.length === 0 && !page.complete && page.nextCursor != null) {
+			// 보이는 후보가 없는 범위는 작은 상한까지만 이어 읽는다. 남은 범위는 더 보기로 이어 읽는다.
+			let requests = 1;
+			while (page.notes.length === 0 && (append ? this.items.value.length === 0 : true) && !page.complete && page.nextCursor != null && requests < MAX_AUTO_REQUESTS) {
 				this.cursor = page.nextCursor;
 				page = await cleanupApi.preview(this.ruleIds, this.cursor);
 				if (generation !== this.generation) return;
+				requests++;
 			}
 			this.errors.value = page.errors;
 			this.rules.value = page.rules;

@@ -26,9 +26,8 @@ vi.mock('@/i18n.js', async () => {
 });
 vi.mock('@/page.js', () => ({ definePage: () => {} }));
 const push = vi.hoisted(() => vi.fn());
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push }) }));
 const replaceHistory = vi.hoisted(() => vi.fn());
-vi.mock('@/utility/app-history.js', () => ({ replaceAppHistory: replaceHistory }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push, replace: replaceHistory }) }));
 const confirm = vi.hoisted(() => vi.fn(async () => ({ canceled: true })));
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('@/os.js', () => ({ confirm, popupMenu: vi.fn(), alert: vi.fn(async () => {}), toast }));
@@ -223,7 +222,7 @@ test('saving a new rule switches to its edit state in place and points back at t
 	await waitFor(() => expect(view.queryByTestId('preview')).not.toBeNull());
 	expect(view.getByTestId('preview').getAttribute('data-rule-id')).toBe('new-rule');
 	// 작성 화면을 히스토리에 쌓지 않고 주소만 편집 경로로 바꿔 뒤로 가기가 목록으로 가게 한다.
-	expect(replaceHistory).toHaveBeenCalledWith('/settings/note-cleanup/new-rule');
+	expect(replaceHistory).toHaveBeenCalledWith('/settings/note-cleanup/:ruleId', { params: { ruleId: 'new-rule' } });
 	expect(push).not.toHaveBeenCalled();
 	expect(toast).toHaveBeenCalledWith('Saved');
 });

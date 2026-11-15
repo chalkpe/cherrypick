@@ -41,7 +41,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </div>
 </template>
 <script lang="ts" setup>
-import { computed, nextTick, onUnmounted, ref, shallowRef, useTemplateRef } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, useTemplateRef } from 'vue';
 import type { NoteCleanupCondition as Condition } from 'cherrypick-js/entities.js';
 import MkInput from '@/components/MkInput.vue';
 import MkSelect from '@/components/MkSelect.vue';
@@ -62,18 +62,25 @@ import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
 import { definePage } from '@/page.js';
 import { useRouter } from '@/router.js';
+import { handOffSavedRule, takeSavedRule } from '@/utility/note-cleanup-handoff.js';
 import { useStream } from '@/stream.js';
-import { replaceAppHistory } from '@/utility/app-history.js';
 import * as os from '@/os.js';
 const props = defineProps<{ ruleId?: string; action?: string }>();
 ensureSignin();
 const router = useRouter();
 
 let loaded: CleanupRule | undefined;
+let restoreScrollTop: number | null = null;
 if (props.ruleId != null) {
-	const { rules } = await cleanupApi.list();
-	loaded = rules.find(rule => rule.id === props.ruleId);
-	if (!loaded) throw new Error('NO_SUCH_RULE');
+	const handedOff = takeSavedRule(props.ruleId);
+	if (handedOff) {
+		loaded = handedOff.rule;
+		restoreScrollTop = handedOff.scrollTop;
+	} else {
+		const { rules } = await cleanupApi.list();
+		loaded = rules.find(rule => rule.id === props.ruleId);
+		if (!loaded) throw new Error('NO_SUCH_RULE');
+	}
 }
 
 const rule = shallowRef<CleanupRule | null>(loaded ?? null);
@@ -92,6 +99,11 @@ streamConnection.on('notification', notification => {
 	if (notification.type === 'noteCleanupCompleted') previewVersion.value++;
 });
 onUnmounted(() => streamConnection.dispose());
+onMounted(() => {
+	if (restoreScrollTop == null) return;
+	const top = restoreScrollTop;
+	nextTick(() => { editorRootEl.value?.closest('._pageScrollable')?.scrollTo({ top }); });
+});
 const editorRootEl = useTemplateRef<HTMLElement>('editorRootEl');
 const actions = [
 	{ value: 'delete' as const, label: i18n.ts._noteCleanup.delete },
@@ -206,8 +218,9 @@ async function save() {
 		if (!rule.value) {
 			// 새 규칙은 같은 화면에서 편집 상태로 전환해 미리 보기와 정리 조작을 바로 보여 준다.
 			applyRule(res.rule);
-			// 주소만 편집 경로로 바꿔 뒤로 가기가 규칙 목록으로 가게 한다(화면을 다시 마운트하지 않는다).
-			replaceAppHistory(`/settings/note-cleanup/${res.rule.id}`);
+			// 현재 라우터의 경로를 편집 경로로 바꿔 주소·링크 복사·다시 읽기가 저장된 규칙을 가리키게 한다. 뒤로 가기는 규칙 목록으로 간다.
+			handOffSavedRule(res.rule, editorRootEl.value?.closest('._pageScrollable')?.scrollTop ?? 0);
+			router.replace('/settings/note-cleanup/:ruleId', { params: { ruleId: res.rule.id } });
 			os.toast(i18n.ts.saved);
 			return;
 		}

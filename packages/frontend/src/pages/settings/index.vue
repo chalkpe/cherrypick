@@ -241,6 +241,8 @@ onUnmounted(() => {
 });
 
 watch(router.currentRef, (to) => {
+	// 이름 있는 자식 화면이 없으면 직전 자식이 켠 하단 메뉴 배치를 해제한다.
+	if (to.child?.route.name == null) INFO.value.mobileFooterInFlow = undefined;
 	if (to.route.name === 'settings' && to.child?.route.name == null && !narrow.value) {
 		router.replace('/settings/profile');
 	}
@@ -252,6 +254,7 @@ provideMetadataReceiver((metadataGetter) => {
 	const info = metadataGetter();
 	if (info == null) {
 		childInfo.value = null;
+		INFO.value.mobileFooterInFlow = undefined;
 	} else {
 		childInfo.value = info;
 		INFO.value.needWideArea = info.needWideArea ?? undefined;

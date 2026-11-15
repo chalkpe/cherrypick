@@ -29,9 +29,8 @@ vi.mock('@/i18n.js', async () => {
 });
 vi.mock('@/page.js', () => ({ definePage: () => {} }));
 const push = vi.hoisted(() => vi.fn());
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push }) }));
 const replaceHistory = vi.hoisted(() => vi.fn());
-vi.mock('@/utility/app-history.js', () => ({ replaceAppHistory: replaceHistory }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push, replace: replaceHistory }) }));
 const popupMenu = vi.hoisted(() => vi.fn());
 const alert = vi.hoisted(() => vi.fn(async (_options: Record<string, unknown>) => {}));
 const confirm = vi.hoisted(() => vi.fn(async (_options: Record<string, unknown>) => ({ canceled: true })));
@@ -118,7 +117,7 @@ test('saving an incomplete draft sends no request; a complete draft reaches crea
 	await fireEvent.click(view.getByRole('button', { name: 'Save' }));
 	// 저장 뒤 같은 화면에서 편집 상태로 바뀌어 미리 보기 구획이 나타나고, 주소만 편집 경로로 바뀐다.
 	await waitFor(() => expect(view.queryByTestId('preview')).not.toBeNull());
-	expect(replaceHistory).toHaveBeenCalledWith('/settings/note-cleanup/created');
+	expect(replaceHistory).toHaveBeenCalledWith('/settings/note-cleanup/:ruleId', { params: { ruleId: 'created' } });
 	expect(push).not.toHaveBeenCalled();
 	expect(requests.filter(url => url.endsWith('/create'))).toHaveLength(1);
 });
