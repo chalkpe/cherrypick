@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => {
 		me: { id: 'me', username: 'me', policies: { canVoiceCall: true, canScreenShare: true, chatAvailability: 'available' } },
 		joinVoiceCall: vi.fn(),
 		leaveVoiceCall: vi.fn(),
+		notifyVoiceCallFailure: vi.fn(),
 		setMicEnabled: vi.fn(),
 		setDeafened: vi.fn(),
 		resumeAudio: vi.fn(),
@@ -85,6 +86,7 @@ vi.mock('@/utility/voice-call.js', async () => {
 		voiceCall,
 		joinVoiceCall: mocks.joinVoiceCall,
 		leaveVoiceCall: mocks.leaveVoiceCall,
+		notifyVoiceCallFailure: mocks.notifyVoiceCallFailure,
 		setMicEnabled: mocks.setMicEnabled,
 		setDeafened: mocks.setDeafened,
 		resumeAudio: mocks.resumeAudio,
@@ -177,7 +179,6 @@ beforeEach(() => {
 	mocks.instance.features.voiceCall = true;
 	mocks.instance.features.remoteVoiceCall = false;
 	prefer.reset({
-		'voiceCall.acknowledgedRemoteHosts': [],
 		'voiceCall.inputDeviceId': null,
 		'voiceCall.outputDeviceId': null,
 		'voiceCall.echoCancellation': true,
@@ -191,7 +192,7 @@ beforeEach(() => {
 		'voiceCall.stageChatSide': 'right',
 	});
 	mocks.misskeyApi.mockReset().mockResolvedValue([]);
-	for (const fn of [mocks.joinVoiceCall, mocks.leaveVoiceCall, mocks.setMicEnabled, mocks.setDeafened, mocks.resumeAudio, mocks.watchScreenShare, mocks.unwatchScreenShare, mocks.toggleScreenShareWatch, mocks.startScreenShare, mocks.stopScreenShare, mocks.apiWithDialog, mocks.confirm, mocks.popupMenu]) fn.mockReset();
+	for (const fn of [mocks.joinVoiceCall, mocks.leaveVoiceCall, mocks.notifyVoiceCallFailure, mocks.setMicEnabled, mocks.setDeafened, mocks.resumeAudio, mocks.watchScreenShare, mocks.unwatchScreenShare, mocks.toggleScreenShareWatch, mocks.startScreenShare, mocks.stopScreenShare, mocks.apiWithDialog, mocks.confirm, mocks.popupMenu]) fn.mockReset();
 	mocks.attachScreenShare.mockClear();
 	Object.assign(callState, { status: 'idle', room: null, micEnabled: false, deafened: false, audioBlocked: false, speakingIdentities: [], screenSharing: false, screenShareIdentities: [], watchingIdentities: [] });
 });
@@ -358,8 +359,19 @@ describe('voice call on the room page', () => {
 		await flush();
 		expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
 		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: true });
-		// 開始はメニューを経由しない
+		// 開始はメニューも確認も経由せず、メディア提供サーバーの事前照会も無い
 		expect(mocks.popupMenu).not.toHaveBeenCalled();
+		expect(mocks.confirm).not.toHaveBeenCalled();
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/connection-info', expect.anything());
+	});
+	test('joins an ongoing same-server call from the panel without asking', async () => {
+		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice)] }]);
+		await fireEvent.click(stickyCard().getByRole('button', { name: i18n.ts._voiceCall.join }));
+		await flush();
+		expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
+		expect(mocks.joinVoiceCall).toHaveBeenLastCalledWith(room, { micEnabled: true });
+		expect(mocks.confirm).not.toHaveBeenCalled();
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/connection-info', expect.anything());
 	});
 	test('starts the call with the mic choice remembered from the last call', async () => {
 		prefer.reset({ ...prefer.s, 'voiceCall.micEnabled': false });
@@ -784,68 +796,54 @@ describe('voice call on the room page', () => {
 			expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/states', expect.anything());
 		});
 
-		test('asks once before joining a call on another server', async () => {
+		test('joins a call on another server without asking', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
-			mocks.confirm.mockResolvedValue({ canceled: false });
 			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
 
 			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
 			await flush();
-			expect(mocks.confirm).toHaveBeenCalledTimes(1);
-			expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.remoteHostNotice({ host: 'remote.test' }) }));
-			expect(prefer.commit).toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', ['remote.test']);
+			expect(mocks.confirm).not.toHaveBeenCalled();
+			expect(mocks.misskeyApi).not.toHaveBeenCalledWith('chat/rooms/voice/connection-info', expect.anything());
 			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
 			expect(mocks.joinVoiceCall).toHaveBeenCalledWith(mirror, { micEnabled: true });
 
 			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
 			await flush();
-			expect(mocks.confirm).toHaveBeenCalledTimes(1);
+			expect(mocks.confirm).not.toHaveBeenCalled();
 			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(2);
 		});
 
-		test('ignores a second click while the notice is still open', async () => {
+		test('ignores a second click while the join is still in progress', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
-			let answer!: (value: { canceled: boolean }) => void;
-			mocks.confirm.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+			let finish!: () => void;
+			mocks.joinVoiceCall.mockReturnValue(new Promise<void>(resolve => { finish = resolve; }));
 			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
 
 			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
 			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
-			answer({ canceled: false });
+			finish();
 			await flush();
 
-			expect(mocks.confirm).toHaveBeenCalledTimes(1);
 			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
 		});
 
-		test('does not join when the notice is cancelled', async () => {
-			mocks.instance.features.remoteVoiceCall = true;
-			mocks.confirm.mockResolvedValue({ canceled: true });
-			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
-
-			await fireEvent.click(screen.getByRole('button', { name: i18n.ts._voiceCall.join }));
-			await flush();
-			expect(mocks.joinVoiceCall).not.toHaveBeenCalled();
-			expect(prefer.commit).not.toHaveBeenCalledWith('voiceCall.acknowledgedRemoteHosts', expect.anything());
-		});
-
 		// ヘッダーの参加ボタンは、通話に入れたときだけメッセージのタブへ移す。やめたり失敗したりしたのに読んでいたタブから追い出さない
-		test('stays on the members tab when the header join is cancelled', async () => {
+		test('stays on the members tab when the header join fails', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
-			mocks.confirm.mockResolvedValue({ canceled: true });
+			mocks.joinVoiceCall.mockRejectedValue(new Error('connect failed'));
 			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
 			await openTab(i18n.ts._chat.members);
 
 			await fireEvent.click(headerJoin()!);
 			await flush();
 
-			expect(mocks.joinVoiceCall).not.toHaveBeenCalled();
+			expect(mocks.joinVoiceCall).toHaveBeenCalledTimes(1);
+			expect(mocks.notifyVoiceCallFailure).toHaveBeenCalledTimes(1);
 			expect(screen.getByRole('tab', { name: i18n.ts._chat.members }).getAttribute('aria-selected')).toBe('true');
 		});
 
 		test('moves to the messages tab once the header join has put me in the call', async () => {
 			mocks.instance.features.remoteVoiceCall = true;
-			mocks.confirm.mockResolvedValue({ canceled: false });
 			mocks.joinVoiceCall.mockImplementation(async () => { Object.assign(callState, { status: 'connected', room: mirror }); });
 			await renderRoom(mirror, [{ roomId: 'r1', participants: [participant(alice)] }]);
 			await openTab(i18n.ts._chat.members);
