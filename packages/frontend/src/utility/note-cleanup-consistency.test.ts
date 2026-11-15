@@ -8,6 +8,14 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
 import { Suspense, defineComponent, h } from 'vue';
 
 vi.mock('@@/js/config.js', () => ({ apiUrl: 'https://cleanup.invalid/api' }));
+const cleanupStream = vi.hoisted(() => {
+	const connections = new Set<{ handlers: Map<string, ((payload: unknown) => void)[]> }>();
+	return {
+		useStream: () => ({ useChannel: () => { const conn = { handlers: new Map<string, ((payload: unknown) => void)[]>() }; connections.add(conn); return { on: (event: string, fn: (payload: unknown) => void) => { const list = conn.handlers.get(event) ?? []; list.push(fn); conn.handlers.set(event, list); }, dispose: () => { connections.delete(conn); } }; } }),
+		emit: (event: string, payload: unknown) => { for (const conn of connections) for (const fn of conn.handlers.get(event) ?? []) fn(payload); },
+	};
+});
+vi.mock('@/stream.js', () => ({ useStream: cleanupStream.useStream }));
 vi.mock('@/i.js', () => ({ $i: { token: 'dummy-test-token' }, ensureSignin: () => ({ id: 'me' }) }));
 vi.mock('@/i18n.js', async () => {
 	const { I18n } = await import('@@/js/i18n.js');

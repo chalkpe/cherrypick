@@ -372,10 +372,11 @@ export class NoteCleanupService {
 		return { contexts, undecidable };
 	}
 
-	private async page(userId: string, ruleIds: string[], afterId?: string, limit = 100) {
+	private async page(userId: string, ruleIds: string[], afterId?: string, limit = 100, allowDisabled = false) {
 		const all = await this.rules.find({ where: { userId }, order: { id: 'ASC' } });
-		if (!ruleIds.length || ruleIds.length > 34 || ruleIds.some(id => !all.some(r => r.id === id && r.action === 'delete' && r.enabled))) throw new CleanupInputError('INVALID_RULE_SELECTION', 'ruleIds');
-		const active = all.filter(r => r.enabled && (r.action === 'keep' || ruleIds.includes(r.id)));
+		if (!ruleIds.length || ruleIds.length > 34 || ruleIds.some(id => !all.some(r => r.id === id && r.action === 'delete' && (allowDisabled || r.enabled)))) throw new CleanupInputError('INVALID_RULE_SELECTION', 'ruleIds');
+		// 미리 보기는 꺼 둔 지우기 규칙도 판정하되, 남기기는 켜진 규칙만 보호에 참여한다.
+		const active = all.filter(r => r.action === 'keep' ? r.enabled : (ruleIds.includes(r.id) && (allowDisabled || r.enabled)));
 		const prepared = await this.prepare(active, userId);
 		// 목록 밖의 경로(미리 보기·정리 회차)에서 처음 확인한 보호 오류도 한 번 알린다.
 		for (const item of prepared) await this.notifyProtectionFailure(userId, item.rule.id);
@@ -388,11 +389,11 @@ export class NoteCleanupService {
 		return { all, notes, items, scanned: notes.length, nextCursor: notes.at(-1)?.id ?? null, complete, errors: (await this.rules.findBy({ userId })).filter(r => active.some(a => a.id === r.id) && r.lastError).map(r => r.lastError!) };
 	}
 
-	// 미리 보기는 지워질 노트만 돌려준다. 판정은 실제 정리와 같은 규칙을 쓴다.
+	// 미리 보기는 지워질 노트만 돌려준다. 판정은 실제 정리와 같은 규칙을 쓴다. 꺼 둔 규칙도 편집 중 미리 볼 수 있다.
 	public async preview(userId: string, ruleIds: string[], afterId?: string, limit = 100) {
 		return this.locked(userId, async () => {
 			await this.initialize(userId);
-			const { all, notes, items, nextCursor, complete, errors } = await this.page(userId, ruleIds, afterId, limit);
+			const { all, notes, items, nextCursor, complete, errors } = await this.page(userId, ruleIds, afterId, limit, true);
 			return { notes: notes.filter((_, i) => items[i].decision === 'delete'), nextCursor, complete, errors, rules: all.map(r => ({ id: r.id, name: r.name, defaultName: r.defaultName, action: r.action })) };
 		});
 	}

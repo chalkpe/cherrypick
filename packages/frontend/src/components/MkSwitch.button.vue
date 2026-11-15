@@ -9,7 +9,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 	:class="{
 		[$style.button]: true,
 		[$style.buttonChecked]: checked,
-		[$style.buttonDisabled]: props.disabled
+		[$style.buttonDisabled]: props.disabled,
+		[$style.buttonMuted]: props.disabled && props.muted
 	}"
 	data-testid="switch-toggle"
 	@click.prevent.stop="toggle"
@@ -27,8 +28,11 @@ import { haptic } from '@/utility/haptic.js';
 const props = withDefaults(defineProps<{
 	checked: boolean | Ref<boolean>;
 	disabled?: boolean | Ref<boolean>;
+	/** 비활성 동안 켜진 색을 흐리게 보여 주어 실제로 동작하지 않는 스위치임을 드러낸다. */
+	muted?: boolean;
 }>(), {
 	disabled: false,
+	muted: false,
 });
 
 const emit = defineEmits<{
@@ -71,6 +75,10 @@ const toggle = () => {
 
 .buttonDisabled {
 	cursor: not-allowed;
+}
+
+.buttonMuted {
+	filter: grayscale(1);
 }
 
 .knob {

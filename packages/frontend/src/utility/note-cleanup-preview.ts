@@ -66,9 +66,15 @@ export class CleanupPreviewPaginator implements IPaginator<Misskey.entities.Note
 		if (append) this.fetchingNewer.value = true;
 		else this.fetching.value = true;
 		try {
-			const page = await cleanupApi.preview(this.ruleIds, append ? this.cursor ?? undefined : undefined);
+			let page = await cleanupApi.preview(this.ruleIds, append ? this.cursor ?? undefined : undefined);
 			// 저장 뒤 도착한 낡은 응답은 항목·커서·오류 어느 것도 건드리지 않는다.
 			if (generation !== this.generation) return;
+			// 첫 검사 범위에 지워질 후보가 없으면 후보가 나오거나 마지막 범위까지 이어 읽는다. 읽는 동안에는 로딩 표시를 유지해 빈 목록과 더 보기가 함께 보이지 않게 한다.
+			while (!append && page.notes.length === 0 && !page.complete && page.nextCursor != null) {
+				this.cursor = page.nextCursor;
+				page = await cleanupApi.preview(this.ruleIds, this.cursor);
+				if (generation !== this.generation) return;
+			}
 			this.errors.value = page.errors;
 			this.rules.value = page.rules;
 			this.complete.value = page.complete;

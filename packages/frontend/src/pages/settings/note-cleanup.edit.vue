@@ -33,7 +33,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<div class="_gaps_m">
 				<!-- 목록이 길어도 조작이 바로 보이도록 지워질 노트 목록 위에 둔다. -->
 				<MkButton :disabled="!rule.enabled" @click="requestNow"><i class="ti ti-player-play"></i> {{ i18n.ts._noteCleanup.request }}</MkButton>
-				<MkSwitch :modelValue="rule.automatic" :disabled="dirty || busy || !rule.enabled || (!rule.automaticConfirmed && !previewReady)" @update:modelValue="setAutomatic">{{ i18n.ts._noteCleanup.automatic }}</MkSwitch>
+				<MkSwitch :modelValue="rule.automatic" :disabled="dirty || busy || !rule.enabled || (!rule.automaticConfirmed && !previewReady)" mutedDisabled @update:modelValue="setAutomatic">{{ i18n.ts._noteCleanup.automatic }}</MkSwitch>
 				<Preview :ruleId="rule.id" :version="previewVersion" @ready="previewReady = $event"/>
 			</div>
 		</fieldset>
@@ -41,7 +41,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </div>
 </template>
 <script lang="ts" setup>
-import { computed, nextTick, ref, shallowRef, useTemplateRef } from 'vue';
+import { computed, nextTick, onUnmounted, ref, shallowRef, useTemplateRef } from 'vue';
 import type { NoteCleanupCondition as Condition } from 'cherrypick-js/entities.js';
 import MkInput from '@/components/MkInput.vue';
 import MkSelect from '@/components/MkSelect.vue';
@@ -62,6 +62,8 @@ import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
 import { definePage } from '@/page.js';
 import { useRouter } from '@/router.js';
+import { useStream } from '@/stream.js';
+import { replaceAppHistory } from '@/utility/app-history.js';
 import * as os from '@/os.js';
 const props = defineProps<{ ruleId?: string; action?: string }>();
 ensureSignin();
@@ -84,6 +86,12 @@ const error = ref<CleanupFailure | null>(null);
 const previewVersion = ref(0);
 // 현재 미리 보기 첫 페이지의 성공 여부. 최초 자동 켜기는 이 값이 참일 때만 허용한다.
 const previewReady = ref(false);
+// 지금 정리하기로 요청한 정리가 끝나면 완료 알림이 온다. 그 신호로 미리 보기를 다시 읽는다.
+const streamConnection = useStream().useChannel('main');
+streamConnection.on('notification', notification => {
+	if (notification.type === 'noteCleanupCompleted') previewVersion.value++;
+});
+onUnmounted(() => streamConnection.dispose());
 const editorRootEl = useTemplateRef<HTMLElement>('editorRootEl');
 const actions = [
 	{ value: 'delete' as const, label: i18n.ts._noteCleanup.delete },
@@ -196,7 +204,11 @@ async function save() {
 	try {
 		const res = await cleanupApi.save(draft.value, rule.value?.id);
 		if (!rule.value) {
-			router.push('/settings/note-cleanup/:ruleId', { params: { ruleId: res.rule.id } });
+			// 새 규칙은 같은 화면에서 편집 상태로 전환해 미리 보기와 정리 조작을 바로 보여 준다.
+			applyRule(res.rule);
+			// 주소만 편집 경로로 바꿔 뒤로 가기가 규칙 목록으로 가게 한다(화면을 다시 마운트하지 않는다).
+			replaceAppHistory(`/settings/note-cleanup/${res.rule.id}`);
+			os.toast(i18n.ts.saved);
 			return;
 		}
 		// 저장 뒤 다시 읽어 오류 해제와 기본 이름 유지 여부를 반영한다.
@@ -298,6 +310,8 @@ async function del() {
 definePage(() => ({
 	title: rule.value ? cleanupRuleName(rule.value, i18n.ts._noteCleanup) : i18n.ts._noteCleanup.newRule,
 	icon: 'ti ti-history',
+	// 휴대폰에서 저장 버튼이 하단 탐색 막대에 가리지 않도록 막대를 항상 흐름 안에 둔다.
+	mobileFooterInFlow: true,
 }));
 </script>
 <style lang="scss" module>

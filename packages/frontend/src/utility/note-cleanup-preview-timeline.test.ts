@@ -50,7 +50,7 @@ const renderPreview = () => render(Preview, {
 	global: { components: { MkResult }, stubs: { MkA: { props: ['to'], template: '<a :href="to"><slot/></a>' } }, directives: { appear: {} } },
 });
 
-test('an empty first candidate page still offers loading the next scan range', async () => {
+test('an empty first candidate page reads on to the next scan range', async () => {
 	const requests: { afterId?: string }[] = [];
 	vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
 		const body = JSON.parse(init.body as string);
@@ -60,12 +60,25 @@ test('an empty first candidate page still offers loading the next scan range', a
 			: page([], 'cursor-100', false)));
 	});
 	const view = renderPreview();
-	await view.findByTestId('result');
-	expect(view.getByTestId('result').textContent).toBe('No notes');
-	// 첫 검사 범위에 후보가 없어도 다음 범위로 갈 수 있어야 한다.
-	await fireEvent.click(view.getByRole('button', { name: 'Load more' }));
+	// 빈 첫 범위는 후보가 나올 때까지 다음 범위를 이어 읽어 빈 목록과 더 보기가 함께 보이지 않게 한다.
 	await view.findByText('later candidate');
 	expect(requests.map(request => request.afterId)).toEqual([undefined, 'cursor-100']);
+	expect(view.queryByTestId('result')).toBeNull();
+	expect(view.queryByRole('button', { name: 'Load more' })).toBeNull();
+});
+
+test('several empty candidate pages read on until a candidate appears', async () => {
+	const requests: { afterId?: string }[] = [];
+	vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+		const body = JSON.parse(init.body as string);
+		requests.push(body);
+		if (!body.afterId) return new Response(JSON.stringify(page([], 'cursor-100', false)));
+		if (body.afterId === 'cursor-100') return new Response(JSON.stringify(page([], 'cursor-200', false)));
+		return new Response(JSON.stringify(page([note('n201', 'final candidate')], null, true)));
+	});
+	const view = renderPreview();
+	await view.findByText('final candidate');
+	expect(requests.map(request => request.afterId)).toEqual([undefined, 'cursor-100', 'cursor-200']);
 	expect(view.queryByTestId('result')).toBeNull();
 });
 

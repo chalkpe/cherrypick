@@ -255,6 +255,7 @@ provideMetadataReceiver((metadataGetter) => {
 	} else {
 		childInfo.value = info;
 		INFO.value.needWideArea = info.needWideArea ?? undefined;
+		INFO.value.mobileFooterInFlow = info.mobileFooterInFlow;
 	}
 });
 provideReactiveMetadata(INFO);

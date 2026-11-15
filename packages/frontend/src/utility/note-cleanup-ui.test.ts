@@ -8,6 +8,14 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
 import { Suspense, defineComponent, h, onMounted, watch } from 'vue';
 
 vi.mock('@@/js/config.js', () => ({ apiUrl: 'https://cleanup.invalid/api' }));
+const cleanupStream = vi.hoisted(() => {
+	const connections = new Set<{ handlers: Map<string, ((payload: unknown) => void)[]> }>();
+	return {
+		useStream: () => ({ useChannel: () => { const conn = { handlers: new Map<string, ((payload: unknown) => void)[]>() }; connections.add(conn); return { on: (event: string, fn: (payload: unknown) => void) => { const list = conn.handlers.get(event) ?? []; list.push(fn); conn.handlers.set(event, list); }, dispose: () => { connections.delete(conn); } }; } }),
+		emit: (event: string, payload: unknown) => { for (const conn of connections) for (const fn of conn.handlers.get(event) ?? []) fn(payload); },
+	};
+});
+vi.mock('@/stream.js', () => ({ useStream: cleanupStream.useStream }));
 vi.mock('@/i.js', () => ({ $i: { token: 'dummy-test-token' }, ensureSignin: () => ({ id: 'me' }) }));
 // 언어별 문구를 확인하도록 호출 시점의 locale을 바꿀 수 있게 한다.
 const activeLocale = vi.hoisted(() => ({ current: 'en-US' as 'en-US' | 'ko-KR' | 'ja-JP' }));
@@ -22,6 +30,8 @@ vi.mock('@/i18n.js', async () => {
 vi.mock('@/page.js', () => ({ definePage: () => {} }));
 const push = vi.hoisted(() => vi.fn());
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push }) }));
+const replaceHistory = vi.hoisted(() => vi.fn());
+vi.mock('@/utility/app-history.js', () => ({ replaceAppHistory: replaceHistory }));
 const popupMenu = vi.hoisted(() => vi.fn());
 const alert = vi.hoisted(() => vi.fn(async (_options: Record<string, unknown>) => {}));
 const confirm = vi.hoisted(() => vi.fn(async (_options: Record<string, unknown>) => ({ canceled: true })));
@@ -69,7 +79,7 @@ vi.mock('@/pages/settings/note-cleanup/ConditionEditor.vue', () => ({ default: d
 import type { CleanupRule } from '@/utility/note-cleanup-api.js';
 import EditPage from '@/pages/settings/note-cleanup.edit.vue';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); popupMenu.mockReset(); confirm.mockReset(); confirm.mockResolvedValue({ canceled: true }); alert.mockClear(); toast.mockClear(); push.mockClear(); activeLocale.current = 'en-US'; previewControl.ready = true; previewControl.emit = null; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); popupMenu.mockReset(); confirm.mockReset(); confirm.mockResolvedValue({ canceled: true }); alert.mockClear(); toast.mockClear(); push.mockClear(); replaceHistory.mockClear(); activeLocale.current = 'en-US'; previewControl.ready = true; previewControl.emit = null; });
 
 const deleteRule: CleanupRule = {
 	id: 'delete', name: 'Old notes', defaultName: null, action: 'delete', enabled: true,
@@ -91,7 +101,7 @@ function renderEdit(props: { ruleId?: string; action?: string } = {}, rules: Cle
 	return render(Host);
 }
 
-test('saving an incomplete draft sends no request; a complete draft reaches create and opens the new rule', async () => {
+test('saving an incomplete draft sends no request; a complete draft reaches create and switches to the new rule in place', async () => {
 	const view = renderEdit({ action: 'delete' });
 	await view.findByLabelText('Rule name');
 	const requests: string[] = [];
@@ -106,7 +116,10 @@ test('saving an incomplete draft sends no request; a complete draft reaches crea
 	await fireEvent.update(view.getByLabelText('Rule name'), '기록');
 	await fireEvent.click(view.getByRole('button', { name: 'Enter condition' }));
 	await fireEvent.click(view.getByRole('button', { name: 'Save' }));
-	await waitFor(() => expect(push).toHaveBeenCalledWith('/settings/note-cleanup/:ruleId', { params: { ruleId: 'created' } }));
+	// 저장 뒤 같은 화면에서 편집 상태로 바뀌어 미리 보기 구획이 나타나고, 주소만 편집 경로로 바뀐다.
+	await waitFor(() => expect(view.queryByTestId('preview')).not.toBeNull());
+	expect(replaceHistory).toHaveBeenCalledWith('/settings/note-cleanup/created');
+	expect(push).not.toHaveBeenCalled();
 	expect(requests.filter(url => url.endsWith('/create'))).toHaveLength(1);
 });
 

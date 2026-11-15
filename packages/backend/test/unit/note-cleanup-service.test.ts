@@ -320,6 +320,17 @@ test('미리 보기 응답은 공개 스키마의 최상위 필드만 담는다'
 	expect(result.errors).toEqual([]);
 });
 
+test('꺼 둔 지우기 규칙도 미리 보기로 판정하되 정리 요청은 받지 않는다', async () => {
+	const { rows, service, input } = fixture();
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: false, automatic: false, lastError: null });
+	rows.MiNote.push(note('0'));
+	// 꺼 둔 규칙도 편집 중에는 지워질 노트를 미리 볼 수 있다.
+	const preview = await service.preview('alice', ['delete']);
+	expect(preview.notes.map(n => n.id)).toEqual(['0']);
+	// 실제 정리 요청은 꺼 둔 규칙을 받지 않는다.
+	await expect(service.request('alice', ['delete'])).rejects.toThrow('INVALID_RULE_SELECTION');
+});
+
 test('남기기 참조 오류는 미리 보기의 모든 삭제를 막고 오류를 최상위로 전달한다', async () => {
 	const { rows, service, input, notifications } = fixture({ detached: true });
 	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: false, lastError: null });

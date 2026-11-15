@@ -8,6 +8,14 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
 import { Suspense, defineComponent, h, onMounted, watch } from 'vue';
 
 vi.mock('@@/js/config.js', () => ({ apiUrl: 'https://cleanup.invalid/api' }));
+const cleanupStream = vi.hoisted(() => {
+	const connections = new Set<{ handlers: Map<string, ((payload: unknown) => void)[]> }>();
+	return {
+		useStream: () => ({ useChannel: () => { const conn = { handlers: new Map<string, ((payload: unknown) => void)[]>() }; connections.add(conn); return { on: (event: string, fn: (payload: unknown) => void) => { const list = conn.handlers.get(event) ?? []; list.push(fn); conn.handlers.set(event, list); }, dispose: () => { connections.delete(conn); } }; } }),
+		emit: (event: string, payload: unknown) => { for (const conn of connections) for (const fn of conn.handlers.get(event) ?? []) fn(payload); },
+	};
+});
+vi.mock('@/stream.js', () => ({ useStream: cleanupStream.useStream }));
 vi.mock('@/i.js', () => ({ $i: { token: 'dummy-test-token' }, ensureSignin: () => ({ id: 'me' }) }));
 vi.mock('@/i18n.js', async () => {
 	const { I18n } = await import('@@/js/i18n.js');
@@ -19,6 +27,8 @@ vi.mock('@/i18n.js', async () => {
 vi.mock('@/page.js', () => ({ definePage: () => {} }));
 const push = vi.hoisted(() => vi.fn());
 vi.mock('@/router.js', () => ({ useRouter: () => ({ push }) }));
+const replaceHistory = vi.hoisted(() => vi.fn());
+vi.mock('@/utility/app-history.js', () => ({ replaceAppHistory: replaceHistory }));
 const confirm = vi.hoisted(() => vi.fn(async () => ({ canceled: true })));
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('@/os.js', () => ({ confirm, popupMenu: vi.fn(), alert: vi.fn(async () => {}), toast }));
@@ -58,7 +68,7 @@ vi.mock('@/pages/settings/note-cleanup/ConditionEditor.vue', () => ({ default: d
 import type { CleanupRule } from '@/utility/note-cleanup-api.js';
 import EditPage from '@/pages/settings/note-cleanup.edit.vue';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); confirm.mockReset(); confirm.mockResolvedValue({ canceled: true }); toast.mockClear(); push.mockClear(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); confirm.mockReset(); confirm.mockResolvedValue({ canceled: true }); toast.mockClear(); push.mockClear(); replaceHistory.mockClear(); });
 
 const baseRule: CleanupRule = {
 	id: 'delete', name: 'Old notes', defaultName: null, action: 'delete', enabled: true,
@@ -181,4 +191,39 @@ test('manual cleanup reports acceptance without resetting the preview', async ()
 	expect(version(view)).toBe(0);
 	expect(requests.filter(request => request.url.endsWith('/update'))).toHaveLength(0);
 	expect(requests.filter(request => request.url.endsWith('/request'))).toHaveLength(1);
+});
+
+test('a cleanup completion notification re-reads the preview', async () => {
+	const { view } = renderEdit();
+	await view.findByLabelText('Rule name');
+	expect(version(view)).toBe(0);
+	cleanupStream.emit('notification', { type: 'noteCleanupCompleted', id: 'n1', createdAt: '2026-01-01T00:00:00Z', count: 3 });
+	await waitFor(() => expect(version(view)).toBe(1));
+	// 정리 완료가 아닌 알림은 미리 보기를 다시 읽지 않는다.
+	cleanupStream.emit('notification', { type: 'follow', id: 'n2', createdAt: '2026-01-01T00:00:00Z' });
+	expect(version(view)).toBe(1);
+});
+
+test('saving a new rule switches to its edit state in place and points back at the list', async () => {
+	const serverRule = { ...baseRule, id: 'new-rule' };
+	vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+		if (url.endsWith('/create')) return new Response(JSON.stringify({ rule: serverRule }));
+		if (url.endsWith('/list')) return new Response(JSON.stringify({ rules: [serverRule], blocked: false }));
+		return new Response(JSON.stringify({}));
+	});
+	const Host = defineComponent({ setup: () => () => h('div', [h(Suspense, null, { default: () => h(EditPage, {}), fallback: () => h('div', 'loading') })]) });
+	const view = render(Host);
+	await view.findByLabelText('Rule name');
+	// 새 규칙 작성 화면에는 아직 미리 보기 구획이 없다.
+	expect(view.queryByTestId('preview')).toBeNull();
+	await fireEvent.update(view.getByLabelText('Rule name'), 'New rule');
+	await fireEvent.click(view.getByRole('button', { name: 'Enter condition' }));
+	await fireEvent.click(view.getByRole('button', { name: 'Save' }));
+	// 저장 뒤 같은 화면에서 편집 상태로 바뀌어 미리 보기와 정리 조작이 나타난다.
+	await waitFor(() => expect(view.queryByTestId('preview')).not.toBeNull());
+	expect(view.getByTestId('preview').getAttribute('data-rule-id')).toBe('new-rule');
+	// 작성 화면을 히스토리에 쌓지 않고 주소만 편집 경로로 바꿔 뒤로 가기가 목록으로 가게 한다.
+	expect(replaceHistory).toHaveBeenCalledWith('/settings/note-cleanup/new-rule');
+	expect(push).not.toHaveBeenCalled();
+	expect(toast).toHaveBeenCalledWith('Saved');
 });
