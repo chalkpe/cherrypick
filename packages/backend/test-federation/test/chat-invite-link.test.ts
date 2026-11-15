@@ -73,7 +73,7 @@ describe('Chat invite link', () => {
 		strictEqual(html.includes('<meta name="robots" content="noindex"'), true);
 		deepStrictEqual(await membersOnA(room.id), []);
 		deepStrictEqual(await alice.client.request('chat/rooms/invitations/outbox', { roomId: room.id }), []);
-		deepStrictEqual(await bob.client.request('chat/invite-link/join-status', { url }), { status: 'none', roomId: null, reason: null });
+		deepStrictEqual(await bob.client.request('chat/invite-link/join-status', { url }), { status: 'none', roomId: null, reason: null, membersCount: null });
 	});
 
 	test.each([false, true])('실제 그룹 아이콘과 장식은 다른 서버 카드에서도 기존 미디어 경로로 조회한다 (채널: %s)', async channels => {
@@ -225,7 +225,7 @@ describe('Chat invite link', () => {
 
 		deepStrictEqual(await dave.client.request('chat/invite-link/join', { url }), { status: 'pending', roomId: null });
 
-		deepStrictEqual(await settled(dave, url), { status: 'refused', roomId: null, reason: 'archived' });
+		deepStrictEqual(await settled(dave, url), { status: 'refused', roomId: null, reason: 'archived', membersCount: null });
 		deepStrictEqual(await membersOnA(room.id), []);
 	});
 
@@ -245,7 +245,7 @@ describe('Chat invite link', () => {
 		await blockedByOwner.client.request('chat/invite-link/join', { url });
 		await blocksOwner.client.request('chat/invite-link/join', { url });
 
-		deepStrictEqual(await settled(blockedByOwner, url), { status: 'refused', roomId: null, reason: 'blocked' });
+		deepStrictEqual(await settled(blockedByOwner, url), { status: 'refused', roomId: null, reason: 'blocked', membersCount: null });
 		strictEqual((await settled(blocksOwner, url)).status, 'joined');
 		deepStrictEqual(await membersOnA(room.id), [await idOnA(blocksOwner)]);
 	});
@@ -290,7 +290,11 @@ describe('Chat invite link', () => {
 		}, WAIT_FOR_FEDERATION);
 
 		deepStrictEqual(await gina.client.request('chat/invite-link/join', { url }), { status: 'joined', roomId: mirrorId });
-		deepStrictEqual(await gina.client.request('chat/invite-link/join-status', { url }), { status: 'joined', roomId: mirrorId, reason: null });
+		deepStrictEqual(await gina.client.request('chat/invite-link/join-status', { url }), { status: 'joined', roomId: mirrorId, reason: null, membersCount: null });
+		// 참여한 멤버가 요청하면 그룹 서버의 현재 인원 수(그룹장 포함 2명 이상)를 받는다
+		const counted = await gina.client.request('chat/invite-link/join-status', { url, withMembersCount: true });
+		strictEqual(typeof counted.membersCount, 'number');
+		strictEqual(counted.membersCount! >= 2, true);
 
 		await vi.waitFor(async () => deepStrictEqual(await membersOnA(room.id), [await idOnA(gina)]), WAIT_FOR_FEDERATION);
 	});
@@ -313,6 +317,6 @@ describe('Chat invite link', () => {
 		await vi.waitFor(async () => strictEqual((await membersOnA(room.id)).length, 50), WAIT_FOR_FEDERATION);
 		const loser = results[0].status === 'refused' ? harry : iris;
 		strictEqual((await membersOnA(room.id)).includes(await idOnA(loser)), false);
-		await vi.waitFor(async () => deepStrictEqual(await loser.client.request('chat/invite-link/join-status', { url }), { status: 'refused', roomId: null, reason: 'full' }), WAIT_FOR_FEDERATION);
+		await vi.waitFor(async () => deepStrictEqual(await loser.client.request('chat/invite-link/join-status', { url }), { status: 'refused', roomId: null, reason: 'full', membersCount: null }), WAIT_FOR_FEDERATION);
 	}, 240_000);
 });
