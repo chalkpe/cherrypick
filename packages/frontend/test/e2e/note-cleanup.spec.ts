@@ -102,7 +102,7 @@ async function intactHandle(handle: ElementHandle, token: string): Promise<boole
 	return handle.evaluate((el, t) => el.isConnected && (el as Element).getAttribute('data-e2e-mark') === t, token).catch(() => false);
 }
 
-// 실제 마우스 끌기를 먼저 시도하고, 순서 변경가 확인되지 않으면 같은 경로를 실제 DataTransfer를 실은 DragEvent로 흘려보낸다.
+// 실제 마우스 끌기를 먼저 시도하고, 순서 변경이 확인되지 않으면 같은 경로를 실제 DataTransfer를 실은 DragEvent로 흘려보낸다.
 // 두 경로 모두 앱의 setDragData/getDragData 직렬화를 그대로 지난다.
 async function dragCondition(page: Page, fromPath: string, toPath: string, backward: boolean, reordered: () => Promise<boolean>): Promise<'native' | 'dispatched'> {
 	const handle = page.locator(`[data-condition-path="${fromPath}"] button[aria-label="Move to another group"]`);
