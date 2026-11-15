@@ -277,7 +277,9 @@ export class ChatRoomNotificationService {
 				}
 				const marker = await this.redis.get(key);
 				if (marker == null) return;
-				if (BigInt(chatUnreadMarkerSequence(marker)) <= boundarySequence) {
+				// 받은 글은 쓴 시각으로 정렬되어 나중에 도착해도 경계보다 앞에 놓일 수 있으므로, 순번 말고 글의 위치(ID)로도 경계 안인지 본다.
+				const messageId = chatUnreadMarkerMessageId(marker);
+				if (BigInt(chatUnreadMarkerSequence(marker)) <= boundarySequence || (messageId != null && messageId <= untilId)) {
 					await this.redis.eval(CHAT_UNREAD_GUARDED_DEL, 1, key, marker);
 				}
 			};

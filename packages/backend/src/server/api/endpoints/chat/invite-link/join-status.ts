@@ -30,6 +30,7 @@ export const meta = {
 			status: { type: 'string', optional: false, nullable: false, enum: ['none', 'pending', 'joined', 'invited', 'refused'] },
 			roomId: { type: 'string', optional: false, nullable: true, format: 'misskey:id' },
 			reason: { type: 'string', optional: false, nullable: true, enum: ['revoked', 'archived', 'banned', 'blocked', 'full', 'unknown', null] },
+			membersCount: { type: 'integer', optional: false, nullable: true },
 		},
 	},
 
@@ -42,6 +43,8 @@ export const paramDef = {
 	type: 'object',
 	properties: {
 		url: { type: 'string', minLength: 1, maxLength: 2048 },
+		// 참여한 멤버에게 발급 서버의 현재 인원 수도 내준다. 참여 직후 카드가 갱신할 때만 켠다
+		withMembersCount: { type: 'boolean', default: false },
 	},
 	required: ['url'],
 } as const;
@@ -56,7 +59,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		super(meta, paramDef, async (ps, me) => {
 			await this.chatService.checkChatAvailability(me.id, 'read');
 			try {
-				return await this.chatInviteLinkService.joinStatus(me, ps.url);
+				return await this.chatInviteLinkService.joinStatus(me, ps.url, { withMembersCount: ps.withMembersCount });
 			} catch (err) {
 				if (err instanceof ChatInviteInvalidUrlError) throw new ApiError(meta.errors.invalidInviteLink);
 				throw err;

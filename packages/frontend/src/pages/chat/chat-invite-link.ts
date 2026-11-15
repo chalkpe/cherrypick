@@ -39,6 +39,10 @@ export type ChatInviteJoinState = {
 	roomId: string | null;
 	reason: JoinStatusResponse['reason'];
 	joining: boolean;
+	// 참여 성공 뒤 서버가 알려준 최신 인원 수. 아직 없으면 null(캐시된 카드 값을 그대로 표시)
+	membersCount: number | null;
+	// 이 화면에서 참여 요청을 보내 막 멤버가 됐으면 true. 이미 멤버인 카드와 구분해 인원 수를 갱신할 때 쓴다
+	joinedHere: boolean;
 };
 
 export type ChatInviteJoinOutcome =
@@ -94,7 +98,7 @@ function entryOf(accountId: string, url: string): Entry {
 	const key = `${accountId}\n${url}`;
 	let entry = entries.get(key);
 	if (entry == null) {
-		entry = { accountId, url, state: reactive({ status: null, roomId: null, reason: null, joining: false }), applied: 0, checking: false };
+		entry = { accountId, url, state: reactive({ status: null, roomId: null, reason: null, joining: false, membersCount: null, joinedHere: false }), applied: 0, checking: false };
 		entries.set(key, entry);
 	}
 	return entry;
@@ -102,13 +106,16 @@ function entryOf(accountId: string, url: string): Entry {
 
 // 요청은 보낸 순서, 스트림 결과는 도착한 순서로 줄을 세워 더 늦은 것만 반영한다.
 // 늦게 도착한 오래된 답이 그 뒤의 결과를 덮지 않게 한다
-function apply(entry: Entry, order: number, next: Pick<ChatInviteJoinState, 'status' | 'roomId' | 'reason'>) {
+function apply(entry: Entry, order: number, next: Pick<ChatInviteJoinState, 'status' | 'roomId' | 'reason'> & { membersCount?: number | null }) {
 	if (order <= entry.applied) return;
 	entry.applied = order;
 	const joinedNow = next.status === 'joined' && entry.state.status !== 'joined';
+	if (joinedNow && (entry.state.joining || entry.state.status === 'pending')) entry.state.joinedHere = true;
 	entry.state.status = next.status;
 	entry.state.roomId = next.roomId;
 	entry.state.reason = next.reason;
+	// 인원 수는 최신 답이 숫자로 실어 왔을 때만 바꾼다. 요청하지 않은 조회나 참여 결과 이벤트처럼 없는 답은 기존 값을 유지한다
+	if (next.membersCount != null) entry.state.membersCount = next.membersCount;
 	// 링크로 참여하면 남아 있던 개별 초대도 정리된다. 다른 참여 경로처럼 초대 알림에 알린다
 	if (joinedNow && next.roomId != null) globalEvents.emit('chatRoomInvitationHandled', next.roomId, 'joined');
 }
@@ -124,24 +131,43 @@ export function chatInviteJoinState(url: string): ChatInviteJoinState | null {
 /**
  * 참여 결과를 서버에 다시 묻는다. 새로고침 뒤나 스트림을 놓쳤을 때 쓴다. 부작용이 없는 조회다
  */
-export function refreshChatInviteJoinStatus(url: string): void {
-	if ($i == null) return;
+export function refreshChatInviteJoinStatus(url: string, options: { withMembersCount?: boolean } = {}): Promise<void> {
+	if ($i == null) return Promise.resolve();
 	const accountId = $i.id;
 	const entry = entryOf(accountId, url);
 	// 참여 요청의 답이 더 새로운 판정이다. 그동안에는 따로 묻지 않는다
-	if (entry.state.joining || entry.checking) return;
+	if (entry.state.joining || entry.checking) return Promise.resolve();
 
 	const order = ++sequence;
 	entry.checking = true;
-	misskeyApi('chat/invite-link/join-status', { url }).then(res => {
+	return misskeyApi('chat/invite-link/join-status', options.withMembersCount ? { url, withMembersCount: true } : { url }).then(res => {
 		// 그사이 계정이 바뀌었으면 다른 사람의 상태다
 		if ($i?.id !== accountId) return;
-		apply(entry, order, { status: res.status, roomId: res.roomId, reason: res.reason });
+		apply(entry, order, { status: res.status, roomId: res.roomId, reason: res.reason, membersCount: res.membersCount });
 	}, () => {
 		// 다음에 카드가 붙거나 스트림이 다시 연결될 때 다시 묻는다
 	}).finally(() => {
 		entry.checking = false;
 	});
+}
+
+const MEMBERS_COUNT_RETRIES = 4;
+const MEMBERS_COUNT_RETRY_INTERVAL_MS = 1500;
+
+/**
+ * 참여한 직후 카드의 인원 수를 발급 서버의 최신 값으로 갱신한다.
+ * 다른 서버의 그룹은 이쪽 참여가 확정된 뒤 발급 서버가 멤버로 올리므로, 카드의 값보다 늘 때까지 잠시 간격을 두고 다시 묻는다
+ */
+export async function refreshChatInviteMembersCount(url: string, shownCount: number): Promise<void> {
+	if ($i == null) return;
+	const accountId = $i.id;
+	for (let attempt = 0; attempt < MEMBERS_COUNT_RETRIES; attempt++) {
+		await refreshChatInviteJoinStatus(url, { withMembersCount: true });
+		if ($i?.id !== accountId) return;
+		const count = entryOf(accountId, url).state.membersCount;
+		if (count != null && count > shownCount) return;
+		await new Promise(resolve => window.setTimeout(resolve, MEMBERS_COUNT_RETRY_INTERVAL_MS));
+	}
 }
 
 /**

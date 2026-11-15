@@ -76,7 +76,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<p v-if="unknownUrl" :class="$style.siteName">{{ requestUrl.host }}</p>
 				<p v-else-if="fetching" :class="$style.siteName"><MkEllipsis/></p>
 				<p v-else :class="$style.siteName" :title="sitename ?? requestUrl.host">{{ sitename ?? requestUrl.host }}</p>
-				<p v-if="chatInvite" :class="[$style.siteName, $style.inviteMembers]">{{ i18n.tsx._chat._inviteLink.membersCount({ n: chatInvite.membersCount }) }}</p>
+				<p v-if="chatInvite" :class="[$style.siteName, $style.inviteMembers]">{{ i18n.tsx._chat._inviteLink.membersCount({ n: inviteMembersCount }) }}</p>
 			</footer>
 		</article>
 	</component>
@@ -105,7 +105,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, defineAsyncComponent, onDeactivated, onUnmounted, ref } from 'vue';
+import { computed, defineAsyncComponent, onDeactivated, onUnmounted, ref, watch } from 'vue';
 import { maybeMakeRelative } from '@@/js/url.js';
 import { url as local } from '@@/js/config.js';
 import { versatileLang } from '@@/js/intl-const.js';
@@ -117,7 +117,7 @@ import { transformPlayerUrl } from '@/utility/url-preview.js';
 import { store } from '@/store.js';
 import { prefer } from '@/preferences.js';
 import { warningExternalWebsite } from '@/utility/warning-external-website.js';
-import { chatInviteAvatar, getChatInviteSummary } from '@/pages/chat/chat-invite-link.js';
+import { chatInviteAvatar, chatInviteJoinState, getChatInviteSummary, refreshChatInviteMembersCount } from '@/pages/chat/chat-invite-link.js';
 import type { SummalyResultWithChatInvite } from '@/pages/chat/chat-invite-link.js';
 
 // 그룹 초대 카드에서만 쓰므로, 다른 링크 카드에는 불러오지 않는다
@@ -152,6 +152,15 @@ const sensitive = computed(() => summalyResult.value?.sensitive ?? false);
 const player = computed(() => summalyResult.value?.player ?? { url: null, width: null, height: null });
 const chatInvite = computed(() => getChatInviteSummary(summalyResult.value));
 const inviteAvatar = computed(() => chatInvite.value == null ? null : chatInviteAvatar(chatInvite.value, chatInvite.value.url, chatInvite.value.isLocal ? null : chatInvite.value.host));
+// 참여한 카드만 최신 인원 수로 갱신한다. 캐시된 미리보기 값은 그대로 두고, 참여 성공 뒤 서버가 알려준 값을 덮어 쓴다
+const inviteJoinState = computed(() => chatInvite.value == null ? null : chatInviteJoinState(chatInvite.value.url));
+const inviteMembersCount = computed(() => inviteJoinState.value?.membersCount ?? chatInvite.value?.membersCount ?? 0);
+// 이 화면에서 참여한 카드가 아직 최신 인원 수를 받지 못했으면 한 번 갱신한다. 참여 직후 다른 화면으로 갔다가 돌아온 카드도 포함한다
+watch(() => inviteJoinState.value?.joinedHere === true && inviteJoinState.value.membersCount == null, needsRefresh => {
+	if (needsRefresh && chatInvite.value != null) {
+		void refreshChatInviteMembersCount(chatInvite.value.url, chatInvite.value.membersCount);
+	}
+}, { immediate: true });
 const playerEnabled = ref(false);
 const embedId = `embed${Math.random().toString().replace(/\D/, '')}`;
 

@@ -18946,6 +18946,8 @@ export interface operations {
             content: {
                 'application/json': {
                     url: string;
+                    /** @default false */
+                    withMembersCount?: boolean;
                 };
             };
         };
@@ -18963,6 +18965,7 @@ export interface operations {
                         roomId: string | null;
                         /** @enum {string|null} */
                         reason: 'revoked' | 'archived' | 'banned' | 'blocked' | 'full' | 'unknown' | null;
+                        membersCount: number | null;
                     };
                 };
             };

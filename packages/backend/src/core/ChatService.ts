@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { chatReceivedTime } from '@/misc/chat-received-time.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import * as mfm from 'mfc-js';
@@ -443,6 +444,7 @@ export class ChatService {
 		toRoomChannelId?: string | null;
 		channelRefs?: ChatChannelRef[];
 		remoteChannelRefs?: unknown;
+		published?: Date | null;
 	}): Promise<Packed<'ChatMessageLiteForRoom'>> {
 		let memberships = (await this.chatRoomMembershipsRepository.findBy({ roomId: toRoom.id })).map(m => ({
 			userId: m.userId,
@@ -475,7 +477,9 @@ export class ChatService {
 		const dice = fromUser.host == null
 			? (notation != null ? await this.chatDiceService.roll(fromUser.id, notation) : null)
 			: parseChatDiceResult(params.dice);
-		const id = this.idService.gen();
+		// 받은 글은 쓴 시각(published)으로 id를 만들어 호스트와 같은 순서로 정렬한다. 도착 시각으로 만들면 전달 순서에 따라 순서가 갈린다.
+		// 값은 도착 시각 기준 범위로 제한한다. 로컬 글은 published가 없어 현재 시각을 쓴다.
+		const id = this.idService.gen(params.published !== undefined ? chatReceivedTime(params.published, Date.now()) : undefined);
 		const message = {
 			id,
 			fromUserId: fromUser.id,

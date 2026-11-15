@@ -77,6 +77,8 @@ export type ChatInviteJoinStatus = {
 	status: 'none' | 'pending' | 'joined' | 'invited' | 'refused';
 	roomId: string | null;
 	reason: ChatJoinRefusalReceived | null;
+	/** 참여에 성공한 뒤 카드가 갱신할 최신 인원 수. joined가 아니면 null */
+	membersCount: number | null;
 };
 
 export type ChatInviteSummary = SummalyResult & {
@@ -481,11 +483,28 @@ export class ChatInviteLinkService {
 	/**
 	 * 부작용 없는 상태 조회. 이 서버에서 그 그룹의 멤버면 joined, 아니면 최근 참여 요청의 상태.
 	 * 자동 수락 뒤 그룹 서버가 Accept를 거절했으면 Remove가 늦게 와도 refused다.
+	 * withMembersCount가 켜져 있고 joined면 발급 서버의 현재 인원 수를 함께 내준다. 참여한 카드가 캐시된 미리보기의 옛 인원 수를 갱신하는 데 쓴다.
 	 */
 	@bindThis
-	public async joinStatus(user: MiLocalUser, url: string): Promise<ChatInviteJoinStatus> {
+	public async joinStatus(user: MiLocalUser, url: string, options: { withMembersCount?: boolean } = {}): Promise<ChatInviteJoinStatus> {
 		const resolved = this.resolveTarget(url);
 		if (resolved == null) throw new ChatInviteInvalidUrlError();
+		const status = await this.joinStatusOf(user, resolved);
+		const membersCount = options.withMembersCount === true && status.status === 'joined' ? await this.freshMembersCount(resolved).catch(() => null) : null;
+		return { ...status, membersCount };
+	}
+
+	/** 발급 서버의 현재 인원 수. 로컬은 DB, 원격은 미리보기 문서를 캐시 없이 다시 읽는다. */
+	private async freshMembersCount(resolved: { target: ParsedChatInviteUrl; isLocal: boolean }): Promise<number | null> {
+		if (resolved.isLocal) {
+			const invite = await this.findLocalInvite(resolved.target.code);
+			return invite?.membersCount ?? null;
+		}
+		const preview = await this.fetchRemotePreview(resolved.target);
+		return preview != null && preview !== 'gone' ? preview.membersCount : null;
+	}
+
+	private async joinStatusOf(user: MiLocalUser, resolved: { target: ParsedChatInviteUrl; isLocal: boolean }): Promise<Omit<ChatInviteJoinStatus, 'membersCount'>> {
 		const none = { status: 'none', roomId: null, reason: null } as const;
 
 		if (resolved.isLocal) {

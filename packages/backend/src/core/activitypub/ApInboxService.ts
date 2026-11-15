@@ -1266,6 +1266,8 @@ export class ApInboxService {
 		if (text != null && Array.from(text.trim()).length > MAX_CHAT_MESSAGE_TEXT_LENGTH) return 'skip: chat message is too long';
 		const uri = object.id;
 		const editedAt = this.parseRemoteDate(object.updated);
+		// 글쓴 시각. 받는 서버가 이 시각으로 정렬해 호스트와 대화 순서를 맞춘다.
+		const published = this.parseRemoteDate(object.published);
 
 		const contextUri = this.chatRoomUriOf(object);
 		const isGroup = contextUri != null;
@@ -1393,6 +1395,7 @@ export class ApInboxService {
 					emojis: apEmojis,
 					editedAt,
 					dice: object._misskey_dice,
+					published,
 				});
 			}
 
