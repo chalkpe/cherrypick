@@ -188,14 +188,14 @@ test('연합 큐가 밀리면 수동 정리 요청은 마커와 커서를 그대
 	expect(await run(f.processor, manual)).toBe('delayed');
 	expect(f.notesOf('alice')).toHaveLength(4);
 	expect(f.scanned.get('alice')).toBeUndefined();
-	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 1) });
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 1), deleted: 0 });
 	expect(f.added).toHaveLength(1);
 	// 자동 회차도 적체 중에는 건너뛰며 마커·커서·순번을 바꾸지 않는다.
 	f.rows.Rule.push(deleteRule('alice', 'auto'));
 	f.state('alice').cursor = noteId('alice', 0);
 	expect(await f.processor.process({ data: {} } as any)).toMatchObject({ skipped: true });
 	expect(f.state('alice')).toMatchObject({ cursor: noteId('alice', 0), lastRunAt: EPOCH });
-	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 1) });
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 1), deleted: 0 });
 	f.waiting.deliver.length = 0;
 	f.rows.Rule.pop();
 	expect(await run(f.processor, manual)).toBe('done');
@@ -412,7 +412,7 @@ test('수동 요청은 한 작업에서 회차 시간 상한까지만 이어 처
 	expect(await run(f.processor, manual)).toBe('delayed');
 	// 두 페이지(삭제 시도 5개씩)를 처리한 뒤 시간 상한에 걸린다. 자식 작업 없이 마커에 커서를 남긴다.
 	expect(f.notesOf('alice')).toHaveLength(20);
-	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 9) });
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 9), deleted: 10 });
 	expect(f.added).toHaveLength(1);
 	expect(await run(f.processor, manual)).toBe('delayed');
 	expect(f.notesOf('alice')).toHaveLength(10);
@@ -673,12 +673,12 @@ test('여러 홉으로 이어지는 수동 요청은 마커 하나로 유지되�
 	const manual = f.job({ userId: 'alice', manual: true });
 	// 홉 1: 두 페이지 처리 뒤 시간 상한으로 대기. 자식 작업은 없다.
 	expect(await run(f.processor, manual)).toBe('delayed');
-	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 9) });
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 9), deleted: 10 });
 	expect(f.added).toHaveLength(1);
 	// 진행 중 재요청은 규칙 조합이 달라도 접수하지 않는다.
 	f.rows.Rule.push(deleteRule('alice', 'd2', 120, false));
 	expect((await f.service.request('alice', ['d2'])).queued).toBe(false);
-	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 9) });
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 9), deleted: 10 });
 	expect(f.added).toHaveLength(1);
 	// 홉 2, 홉 3: 같은 마커로 이어 처리하고 완료하면 마커를 지운다.
 	expect(await run(f.processor, manual)).toBe('delayed');
@@ -720,7 +720,7 @@ test('수동 요청 접수는 대기 마커를 남기고 사용자별 고정 깨
 	const result = await f.service.request('alice', ['d1']);
 
 	expect(result).toEqual({ queued: true, jobId: 'note-cleanup-alice' });
-	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: null });
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: null, deleted: 0 });
 	expect(f.addedJobs).toHaveLength(1);
 	expect(f.addedJobs[0].data).toEqual({ userId: 'alice', manual: true });
 	expect(f.addedJobs[0].options).toMatchObject({ jobId: 'note-cleanup-alice', removeOnComplete: true, attempts: 10, backoff: { type: 'fixed', delay: 5000 }, removeOnFail: { age: 7 * 86400 } });
@@ -750,7 +750,7 @@ test('대기 중인 수동 요청이 있으면 다른 규칙 조합의 재요청
 	const second = await f.service.request('alice', ['d2']);
 
 	expect(second).toEqual({ queued: false, jobId: first.jobId });
-	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: null });
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: null, deleted: 0 });
 	expect(f.added).toHaveLength(1);
 });
 
@@ -765,7 +765,7 @@ test('일시 DB 장애는 마커를 보존하고 복구 뒤 회차가 같은 커
 
 	expect(await run(f.processor, f.job({ userId: 'alice', manual: true }))).toBe('delayed');
 
-	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 4) });
+	expect(f.state('alice').manualRequest).toEqual({ ruleIds: ['d1'], cursor: noteId('alice', 4), deleted: 0 });
 	expect(f.added).toHaveLength(1);
 	f.retryableDeletes.clear();
 	expect(await f.processor.process({ data: {} } as any)).toMatchObject({ deletedCount: 7, skipped: false });
