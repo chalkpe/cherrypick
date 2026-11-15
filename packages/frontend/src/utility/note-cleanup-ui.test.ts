@@ -144,6 +144,21 @@ test('server rejection retains the draft and explains the invalid condition with
 	await view.findByText('Check the highlighted condition and correct its settings.');
 	expect((view.getByLabelText('Rule name') as HTMLInputElement).value).toBe('실패해도 보존');
 	expect(view.container.textContent).not.toMatch(/INVALID_CONDITION|condition.children.0/);
+	// 조건 오류는 대화상자가 아니라 조건 구역에 보인다.
+	expect(alert).not.toHaveBeenCalled();
+});
+
+test('non-condition write failures alert once instead of showing in the condition section', async () => {
+	const view = renderEdit({ ruleId: 'delete' });
+	await view.findByLabelText('Rule name');
+	vi.stubGlobal('fetch', async (url: string) => url.endsWith('/list')
+		? new Response(JSON.stringify({ rules: [deleteRule], blocked: false }))
+		: new Response(JSON.stringify({ error: { code: 'CLEANUP_BUSY' } }), { status: 503 }));
+	await fireEvent.click(view.getByRole('button', { name: 'Save' }));
+	await waitFor(() => expect(alert).toHaveBeenCalledOnce());
+	expect(alert.mock.calls[0][0]).toMatchObject({ type: 'error', text: 'Note cleanup is busy. Please wait a moment and try again.' });
+	// 혼잡 오류는 조건 구역에 보이지 않는다.
+	expect(view.container.textContent).not.toContain('Note cleanup is busy');
 });
 
 test('잘못된 정규식은 중첩 조건에서도 대화상자를 띄우고 저장하지 않는다', async () => {

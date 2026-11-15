@@ -19,7 +19,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<FormSection>
 			<template #label>{{ i18n.ts._noteCleanup.condition }}</template>
 			<div class="_gaps_m">
-				<MkInfo v-if="activeError" warn role="alert">
+				<MkInfo v-if="activeError && isConditionCleanupError(activeError.code, activeError.path)" warn role="alert">
 					{{ cleanupErrorMessage(activeError.code) }}
 					<MkButton v-if="canRevealCleanupError(activeError.code, activeError.path)" small @click="revealError">{{ i18n.ts.edit }}</MkButton>
 				</MkInfo>
@@ -62,7 +62,7 @@ import { conditionNames } from './note-cleanup/labels.js';
 import type { CleanupDraft, CleanupRule } from '@/utility/note-cleanup-api.js';
 import { cleanupApi } from '@/utility/note-cleanup-api.js';
 import type { CleanupFailure } from '@/utility/note-cleanup-errors.js';
-import { canRevealCleanupError, cleanupErrorMessage, cleanupFailure, isCleanupBusyError } from '@/utility/note-cleanup-errors.js';
+import { canRevealCleanupError, cleanupErrorMessage, cleanupFailure, isCleanupBusyError, isConditionCleanupError } from '@/utility/note-cleanup-errors.js';
 import { childrenOf, cloneCondition, conditionAt, createCondition, groupPaths, incompletePaths, keywordLines, moveCondition, refreshCondition, removeCondition, replaceCondition, serverConditionPath } from '@/utility/note-cleanup-editor.js';
 import { cleanupRuleName } from '@/utility/note-cleanup-name.js';
 import { i18n } from '@/i18n.js';
@@ -228,6 +228,18 @@ function revealError() {
 	if (activeError.value) focus(serverConditionPath(activeError.value.path));
 }
 
+// 쓰기 실패 중 조건과 관련된 오류만 조건 구역에 남기고, 나머지는 목록 화면처럼 대화상자로 그 순간 한 번 알린다.
+async function reportWriteFailure(e: unknown) {
+	const failure = cleanupFailure(e);
+	if (isConditionCleanupError(failure.code, failure.path)) {
+		error.value = failure;
+		// 조건 위치로의 이동은 busy 해제를 막지 않게 비동기로 흘린다.
+		if (canRevealCleanupError(failure.code, failure.path)) void focus(serverConditionPath(failure.path));
+	} else {
+		await os.alert({ type: 'error', text: cleanupErrorMessage(failure.code) });
+	}
+}
+
 // 서버는 줄마다 RE2로 검사하지만 저장은 브라우저 정규식으로 먼저 걸러 명백한 오류를 바로 알린다.
 function hasInvalidRegex(root: Condition): boolean {
 	if (root.type === 'keyword' && root.mode === 'regex') {
@@ -266,8 +278,7 @@ async function save() {
 		applyRule(rules.find(item => item.id === res.rule.id) ?? res.rule);
 		os.toast(i18n.ts.saved);
 	} catch (e) {
-		error.value = cleanupFailure(e);
-		if (canRevealCleanupError(error.value.code, error.value.path)) await focus(serverConditionPath(error.value.path));
+		await reportWriteFailure(e);
 	} finally {
 		busy.value = false;
 	}
@@ -293,7 +304,7 @@ async function toggleEnabled() {
 		const res = await cleanupApi.setEnabled(current, enabling);
 		applyRule(res.rule);
 	} catch (e) {
-		error.value = cleanupFailure(e);
+		await reportWriteFailure(e);
 	} finally {
 		busy.value = false;
 	}
@@ -304,7 +315,7 @@ async function setAutomatic(value: boolean) {
 	if (!current) return;
 	// 화면 우회라도 현재 미리 보기 성공 전에는 최초 자동 켜기를 허용하지 않는다.
 	if (value && !current.automaticConfirmed && !previewReady.value) {
-		error.value = { code: 'PREVIEW_REQUIRED', path: 'confirmed' };
+		await os.alert({ type: 'error', text: cleanupErrorMessage('PREVIEW_REQUIRED') });
 		return;
 	}
 	if (value) {
@@ -320,7 +331,7 @@ async function setAutomatic(value: boolean) {
 		const res = await cleanupApi.setAutomatic(current, value, value);
 		applyRule(res.rule);
 	} catch (e) {
-		error.value = cleanupFailure(e);
+		await reportWriteFailure(e);
 	} finally {
 		busy.value = false;
 	}
@@ -336,7 +347,7 @@ async function requestNow() {
 		const { queued } = await cleanupApi.request([current.id]);
 		os.toast(queued ? i18n.ts._noteCleanup.queued : i18n.ts._noteCleanup.notQueued);
 	} catch (e) {
-		error.value = cleanupFailure(e);
+		await reportWriteFailure(e);
 	} finally {
 		busy.value = false;
 	}
@@ -352,7 +363,7 @@ async function del() {
 		await cleanupApi.delete(current.id);
 		router.push('/settings/note-cleanup');
 	} catch (e) {
-		error.value = cleanupFailure(e);
+		await reportWriteFailure(e);
 		busy.value = false;
 	}
 }

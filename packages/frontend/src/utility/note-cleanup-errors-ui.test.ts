@@ -32,7 +32,7 @@ vi.mock('@/preferences.js', () => ({ prefer: { s: {} } }));
 vi.mock('@/events.js', () => ({ globalEvents: { on: () => {}, off: () => {} } }));
 import MkNotification from '@/components/MkNotification.vue';
 import ReferencePicker from '@/pages/settings/note-cleanup/ReferencePicker.vue';
-import { canRevealCleanupError, cleanupErrorMessage, cleanupFailure, isCleanupBusyError } from '@/utility/note-cleanup-errors.js';
+import { canRevealCleanupError, cleanupErrorMessage, cleanupFailure, isCleanupBusyError, isConditionCleanupError } from '@/utility/note-cleanup-errors.js';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); activeLocale.current = 'en-US'; });
 
 test.each(['en-US', 'ja-JP', 'ko-KR'] as const)('notification links the stopped cleanup to its rule in %s with one result sentence', async language => {
@@ -111,6 +111,19 @@ test('혼잡 오류는 두 코드 모두 다시 시도 버튼을 두지 않고 �
 	}
 	expect(isCleanupBusyError('MISSING_CLIP')).toBe(false);
 	expect(canRevealCleanupError('MISSING_CLIP', 'condition.children.0')).toBe(true);
+});
+
+test('조건 구역 오류는 조건 관련 코드와 조건 경로만 해당한다', () => {
+	for (const code of ['INCOMPLETE', 'LIMIT', 'REFERENCE_LIMIT', 'INVALID_CONDITION', 'MISSING_CLIP', 'INVALID_CLIP', 'MISSING_CHANNEL']) {
+		expect(isConditionCleanupError(code, '')).toBe(true);
+	}
+	// 서버가 조건 경로로 알려주는 오류도 조건 문제로 본다.
+	expect(isConditionCleanupError('SOMETHING_NEW', 'condition.children.0')).toBe(true);
+	// 혼잡·이름·규칙 개수 한도·미리보기 필요 등은 조건과 무관하다. 규칙 한도는 경로가 condition이어도 제외한다.
+	for (const code of ['CLEANUP_BUSY', 'CLEANUP_IN_PROGRESS', 'INVALID_NAME', 'RULE_LIMIT', 'PREVIEW_REQUIRED', 'CONFIRMATION_REQUIRED', 'KEEP_CANNOT_RUN', 'NO_SUCH_RULE', '']) {
+		expect(isConditionCleanupError(code, 'condition')).toBe(false);
+	}
+	expect(canRevealCleanupError('LIMIT', '')).toBe(false);
 });
 
 test.each([['en-US', 'busy'], ['ja-JP', '混み合'], ['ko-KR', '몰리']] as const)('진행 중 혼잡 문구는 %s에서 요청 몰림 표현을 쓰지 않는다', async (language, busyWord) => {

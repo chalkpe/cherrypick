@@ -40,6 +40,17 @@ export function isCleanupBusyError(code: string): boolean {
 	return code === 'CLEANUP_BUSY' || code === 'CLEANUP_IN_PROGRESS';
 }
 
+// 조건 구역에 보일 오류: 조건 자체의 문제(미완성·이동/참조 한도·잘못된 조건·사라진 참조)만 해당한다.
+// 혼잡·이름·규칙 개수 한도·미리보기 필요 등 조건과 무관한 오류는 대화상자로 알린다.
+export function isConditionCleanupError(code: string, path: string): boolean {
+	if (['INCOMPLETE', 'LIMIT', 'REFERENCE_LIMIT', 'INVALID_CONDITION', 'MISSING_CLIP', 'INVALID_CLIP', 'MISSING_CHANNEL'].includes(code)) return true;
+	if (['CLEANUP_BUSY', 'CLEANUP_IN_PROGRESS', 'INVALID_NAME', 'RULE_LIMIT', 'PREVIEW_REQUIRED', 'CONFIRMATION_REQUIRED', 'KEEP_CANNOT_RUN', 'NO_SUCH_RULE', 'INVALID_RULE_SELECTION'].includes(code)) return false;
+	// 코드를 읽지 못한 일반 실패는 조건과 무관하다.
+	if (!code) return false;
+	// 그 밖에 서버가 조건 경로로 알려주는 오류는 조건 문제로 본다.
+	return /^(condition(?:\.|$)|\d+(?:\.|$))/.test(path);
+}
+
 export function canRevealCleanupError(code: string, path: string): boolean {
-	return !isCleanupBusyError(code) && /^(condition(?:\.|$)|\d+(?:\.|$))/.test(path);
+	return isConditionCleanupError(code, path) && /^(condition(?:\.|$)|\d+(?:\.|$))/.test(path);
 }

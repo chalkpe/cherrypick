@@ -446,11 +446,43 @@ test('busy errors show the right message without a retry button', async ({ page 
 		await page.goto(`${BASE_URL}/settings/note-cleanup/${rule.id}`);
 		await page.locator('textarea').first().waitFor();
 		await page.getByRole('button', { name: 'Save' }).click();
-		const alert = page.getByRole('alert');
-		await expect(alert).toContainText(message);
-		expect(await alert.getByRole('button').count()).toBe(0);
+		// 혼잡 오류는 조건 구역이 아니라 오류 대화상자로 한 번 보이고, 다시 시도 버튼이 없다.
+		await expect(page.getByTestId('modal-dialog-ok')).toBeVisible();
+		await expect(page.getByText(message, { exact: true })).toBeVisible();
+		expect(await page.getByRole('alert').count()).toBe(0);
+		await page.getByTestId('modal-dialog-ok').click();
 		await page.unroute('**/api/i/note-cleanup/update');
 	}
+});
+
+test('condition errors stay in the condition section while other write failures alert', async ({ page }) => {
+	await resetState();
+	await registerUser('admin', 'pass', true);
+	const alice = await registerUser('alice', 'alice1234');
+	const { rule } = await api(BASE_URL, 'i/note-cleanup/create', { i: alice.token, name: 'Condition check', action: 'delete', condition: keywordCondition('seed') });
+	await signIn(page, 'alice', 'alice1234');
+	await closeUserSetupDialog(page);
+	// 조건 오류(사라진 클립 참조)는 조건 구역 경고로 보이고 대화상자는 뜨지 않는다.
+	await page.route('**/api/i/note-cleanup/update', async route => {
+		await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: { code: 'INVALID_CLEANUP', info: { code: 'MISSING_CLIP', path: 'condition.children.0', referenceId: 'secret' } } }) });
+	});
+	await page.goto(`${BASE_URL}/settings/note-cleanup/${rule.id}`);
+	await page.locator('textarea').first().waitFor();
+	await page.getByRole('button', { name: 'Save' }).click();
+	await expect(page.getByRole('alert')).toContainText('A selected clip is unavailable.');
+	expect(await page.getByTestId('modal-dialog-ok').count()).toBe(0);
+	await page.unroute('**/api/i/note-cleanup/update');
+	// 조건과 무관한 일반 실패는 대화상자로 한 번 보인다.
+	await page.route('**/api/i/note-cleanup/update', async route => {
+		await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: 'x', id: 'x' } }) });
+	});
+	await page.goto(`${BASE_URL}/settings/note-cleanup/${rule.id}`);
+	await page.locator('textarea').first().waitFor();
+	await page.getByRole('button', { name: 'Save' }).click();
+	await expect(page.getByTestId('modal-dialog-ok')).toBeVisible();
+	await expect(page.getByText('Could not confirm the operation. Please retry.', { exact: true })).toBeVisible();
+	expect(await page.getByRole('alert').count()).toBe(0);
+	await page.getByTestId('modal-dialog-ok').click();
 });
 
 test('the rule list hides retry for busy errors', async ({ page }) => {
