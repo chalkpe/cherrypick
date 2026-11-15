@@ -20,7 +20,7 @@ installFakeResizeObserver();
 import Search from '@/pages/chat/room.search.vue';
 import { i18n } from '@/i18n.js';
 
-const channels = [{ id: 'first', roomId: 'r', name: 'same', isLegacy: true }, { id: 'second', roomId: 'r', name: 'same', isLegacy: false }];
+const channels = [{ id: 'first', roomId: 'r', name: 'same', isLegacy: true, sectionId: null }, { id: 'second', roomId: 'r', name: 'same', isLegacy: false, sectionId: null }];
 beforeEach(() => {
 	state.requests.length = 0;
 	state.popupMenu.mockClear();

@@ -18,7 +18,7 @@ import Management from '@/pages/chat/room.channels.manage.vue';
 import { i18n } from '@/i18n.js';
 
 const room = { id: 'r', name: 'Group', ownerId: 'owner', isArchived: false, hasChannels: false, legacyChannelId: 'c1' } as Misskey.entities.ChatRoom;
-const channels = [{ id: 'c1', roomId: 'r', name: 'same', isLegacy: true }, { id: 'c2', roomId: 'r', name: 'same', isLegacy: false }];
+const channels = [{ id: 'c1', roomId: 'r', name: 'same', isLegacy: true, sectionId: null }, { id: 'c2', roomId: 'r', name: 'same', isLegacy: false, sectionId: null }];
 const stubs = { MkButton: { props: ['disabled'], template: '<button :disabled="disabled"><slot/></button>' }, MkInfo: { template: '<div><slot/></div>' } };
 beforeEach(() => { vi.resetAllMocks(); mocks.confirm.mockResolvedValue({ canceled: false }); mocks.api.mockResolvedValue([]); });
 afterEach(cleanup);

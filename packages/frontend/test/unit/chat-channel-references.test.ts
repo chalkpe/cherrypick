@@ -32,7 +32,7 @@ describe('selected channel references', () => {
 
 	test('renders the current name as plain text inside surrounding MFM and tombstones deleted IDs', () => {
 		const refs = [{ channelId: 'live', start: 2, length: 4 }, { channelId: 'gone', start: 7, length: 5 }];
-		const nodes = channelReferenceNodes('**#old #gone**', refs, [{ id: 'live', roomId: 'r', name: '[new](https://evil.test)', isLegacy: false }], 'r', 'Deleted channel');
+		const nodes = channelReferenceNodes('**#old #gone**', refs, [{ id: 'live', roomId: 'r', name: '[new](https://evil.test)', isLegacy: false, sectionId: null }], 'r', 'Deleted channel');
 
 		expect(nodes[0].type).toBe('bold');
 		const children = (nodes[0] as mfm.MfmBold).children;
@@ -45,7 +45,7 @@ describe('selected channel references', () => {
 		const plain = channelReferenceNodes('#typed', [], [], 'r', 'Deleted');
 		expect(plain).toEqual([{ type: 'text', props: { text: '#typed' } }]);
 
-		const code = channelReferenceNodes('`#x`', [{ channelId: 'c', start: 1, length: 2 }], [{ id: 'c', roomId: 'r', name: 'Renamed', isLegacy: false }], 'r', 'Deleted');
+		const code = channelReferenceNodes('`#x`', [{ channelId: 'c', start: 1, length: 2 }], [{ id: 'c', roomId: 'r', name: 'Renamed', isLegacy: false, sectionId: null }], 'r', 'Deleted');
 		expect(JSON.stringify(code)).not.toContain('CHERRYCHANNELREFERENCE');
 		expect(JSON.stringify(code)).toContain('/channels/c');
 	});
