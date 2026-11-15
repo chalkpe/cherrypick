@@ -71,7 +71,9 @@ export class ChatRoomNotificationService {
 		const stored = await manager.withRepository(this.settingsRepository).findOneBy({ userId, roomId });
 		if (stored != null) return stored;
 		const membership = await manager.findOneBy(MiChatRoomMembership, { userId, roomId });
-		return { userId, roomId, membershipId: membership?.id ?? null, notificationLevel: membership?.isMuted ? 'none' as const : 'all' as const, channelOverrides: {} as Record<string, ChatNotificationLevel> };
+		// 방장에게는 멤버십이 없다. 방에 둔 방장 음소거(isMutedByOwner)를 설정이 없을 때의 기본값으로 잇는다.
+		const mutedByOwner = membership == null && await manager.existsBy(MiChatRoom, { id: roomId, ownerId: userId, isMutedByOwner: true });
+		return { userId, roomId, membershipId: membership?.id ?? null, notificationLevel: membership?.isMuted || mutedByOwner ? 'none' as const : 'all' as const, channelOverrides: {} as Record<string, ChatNotificationLevel> };
 	}
 
 	public async setLevel(userId: string, roomId: string, level?: ChatNotificationLevel | 'inherit', channelId?: string): Promise<ChatRoomNotificationSettings> {
@@ -87,6 +89,7 @@ export class ChatRoomNotificationService {
 				else settings.channelOverrides[channelId] = level;
 				await manager.withRepository(this.settingsRepository).upsert(settings, ['userId', 'roomId']);
 				if (channelId == null) await manager.update(MiChatRoomMembership, { userId, roomId }, { isMuted: level === 'none' });
+				if (channelId == null && room.ownerId === userId) await manager.update(MiChatRoom, { id: roomId }, { isMutedByOwner: level === 'none' });
 			}
 			return {
 				roomId,
