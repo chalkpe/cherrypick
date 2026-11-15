@@ -263,7 +263,7 @@ test('editing a keyword inside a group keeps focus and nodes', async ({ page }) 
 	expect(await intactHandle(textareaHandle, 'edit')).toBe(true);
 });
 
-test('preview advances past a range with no matching notes', async ({ page }) => {
+test('preview reads on past a range with no matching notes', async ({ page }) => {
 	test.setTimeout(120_000);
 	await resetState();
 	await registerUser('admin', 'pass', true);
@@ -278,9 +278,7 @@ test('preview advances past a range with no matching notes', async ({ page }) =>
 	await closeUserSetupDialog(page);
 	await page.goto(`${BASE_URL}/settings/note-cleanup/${rule.id}`);
 	await page.getByText('Notes to be deleted', { exact: true }).waitFor();
-	const more = page.locator('fieldset').getByRole('button', { name: 'Load more', exact: true });
-	await expect(more).toBeVisible();
-	await more.click();
+	// 첫 범위가 비어 있으면 후보가 나올 때까지 이어 읽는다.
 	await expect(page.getByText('needle target')).toBeVisible();
 });
 
