@@ -488,10 +488,12 @@ function searchOnKeyDown(ev: KeyboardEvent) {
 				flex: 1;
 				min-width: 0;
 				margin: 0;
+				opacity: 0.7;
+				font-size: 0.9em;
 			}
 		}
 
-		> .titleButton {
+		.titleButton {
 			position: relative;
 			display: flex;
 			align-items: center;
