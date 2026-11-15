@@ -479,8 +479,7 @@ export class ChatService {
 			: parseChatDiceResult(params.dice);
 		// 받은 글은 쓴 시각(published)으로 id를 만들어 호스트와 같은 순서로 정렬한다. 도착 시각으로 만들면 전달 순서에 따라 순서가 갈린다.
 		// 값은 도착 시각 기준 범위로 제한한다. 로컬 글은 published가 없어 현재 시각을 쓴다.
-		const id = this.idService.gen(params.published !== undefined ? chatReceivedTime(params.published, Date.now()) : undefined);
-		const message = {
+		const messageWith = (id: string) => ({
 			id,
 			fromUserId: fromUser.id,
 			toRoomId: toRoom.id,
@@ -491,9 +490,11 @@ export class ChatService {
 			uri: chatMessageUri({ id, uri: params.uri }, this.config.url),
 			editedAt: params.editedAt ?? null,
 			emojis,
-		} satisfies Partial<MiChatMessage>;
+		}) satisfies Partial<MiChatMessage>;
+		const id = this.idService.gen(params.published !== undefined ? chatReceivedTime(params.published, Date.now()) : undefined);
 
-		const { inserted, recorded } = await this.db.transaction(async manager => {
+		const save = (messageId: string) => this.db.transaction(async manager => {
+			const message = messageWith(messageId);
 			const current = await manager.findOne(MiChatRoom, { where: { id: toRoom.id }, lock: { mode: 'pessimistic_write' } });
 			if (current == null || (current.ownerId !== fromUser.id && !await manager.existsBy(MiChatRoomMembership, { roomId: current.id, userId: fromUser.id }))) throw new ChatMessageAccessError('you are not a member of the room');
 			if (current.isArchived) {
@@ -513,6 +514,16 @@ export class ChatService {
 			Object.assign(toRoom, current);
 			return { inserted, recorded };
 		});
+		let saved: Awaited<ReturnType<typeof save>>;
+		try {
+			saved = await save(id);
+		} catch (err) {
+			// 같은 글쓴 시각의 다른 글과 id가 겹쳤다. 같은 URI를 다시 받은 것이 아니면 도착 시각 id로 다시 저장한다.
+			if (params.published === undefined || !isDuplicateKeyValueError(err)) throw err;
+			if (params.uri != null && await this.chatMessagesRepository.existsBy({ uri: params.uri })) throw err;
+			saved = await save(this.idService.gen());
+		}
+		const { inserted, recorded } = saved;
 		await this.chatRoomNotificationService.mark(toRoom, inserted, recorded);
 
 		const membershipsOtherThanMe = memberships.filter(member => member.userId !== fromUser.id);

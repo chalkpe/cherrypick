@@ -267,6 +267,8 @@ function onCancelEdit() {
 }
 
 const canFetchMore = ref(false);
+// 더 불러오기로 이어 읽을 기준. 페이지로 받은 연속 구간의 가장 오래된 글이며, 실시간으로 끼어든 글과 무관하다
+let olderCursorId: string | null = null;
 const user = ref<Misskey.entities.UserDetailed | null>(null);
 const room = ref<Misskey.entities.ChatRoom | null>(null);
 // 다른 서버가 소유한 그룹의 과거 기록 가져오기
@@ -441,6 +443,7 @@ async function initialize() {
 	leavingRoom.value = false;
 	fetchError.value = null;
 	messages.value = [];
+	olderCursorId = null;
 	editingMessage.value = null;
 	user.value = null;
 	room.value = null;
@@ -486,6 +489,7 @@ async function initialize() {
 			if (!current()) return;
 			room.value = r;
 			messages.value = m.map(normalizeMessage);
+			olderCursorId = m.at(-1)?.id ?? null;
 			void refreshRoomPeople();
 			roomConnection = useStream().useChannel('chatRoom', { roomId: r.id, ...(props.channelId ? { channelId: props.channelId } : {}) });
 			connection.value = roomConnection;
@@ -557,11 +561,22 @@ async function fetchMore() {
 		const newMessages = props.userId ? await misskeyApi('chat/messages/user-timeline', {
 			userId: user.value!.id, limit: LIMIT, untilId: messages.value[messages.value.length - 1].id, includeDeleted: true,
 		}) : await misskeyApi('chat/messages/room-timeline', {
-			roomId: room.value!.id, ...(props.channelId ? { channelId: props.channelId } : {}), limit: LIMIT, untilId: messages.value[messages.value.length - 1].id, includeDeleted: true,
+			roomId: room.value!.id, ...(props.channelId ? { channelId: props.channelId } : {}), limit: LIMIT, untilId: olderCursorId ?? messages.value[messages.value.length - 1].id, includeDeleted: true,
 		});
 		if (destroyed || version !== conversationVersion) return;
 		const earlierLoaded = readingPlace.whileLoadingEarlier();
-		messages.value.push(...newMessages.map(normalizeMessage));
+		if (props.userId) {
+			messages.value.push(...newMessages.map(normalizeMessage));
+		} else {
+			// 기준 뒤에는 실시간으로 먼저 끼어든 옛 글이 있을 수 있다. 받은 페이지와 겹치지 않게 id로 합쳐 정렬한다
+			const existing = new Set(messages.value.map(message => message.id));
+			const added = newMessages.filter(message => !existing.has(message.id)).map(normalizeMessage);
+			const cursorIndex = olderCursorId == null ? -1 : messages.value.findIndex(message => message.id === olderCursorId);
+			const live = cursorIndex === -1 ? [] : messages.value.slice(cursorIndex + 1);
+			if (live.length === 0) messages.value.push(...added);
+			else messages.value = [...messages.value.slice(0, cursorIndex + 1), ...[...live, ...added].toSorted((a, b) => a.id < b.id ? 1 : -1)];
+			olderCursorId = newMessages.at(-1)?.id ?? olderCursorId;
+		}
 		canFetchMore.value = newMessages.length === LIMIT;
 		await nextTick();
 		earlierLoaded();
@@ -889,7 +904,10 @@ async function readLatest(): Promise<boolean> {
 	const hasGap = latest.length === LIMIT && !messages.value.some(x => x.id === latest[LIMIT - 1].id);
 	const kept = messages.value.filter(x => !latestIds.has(x.id) && (!hasGap || x.id > latest[0].id));
 	messages.value = [...kept, ...latest].toSorted((a, b) => a.id < b.id ? 1 : -1);
-	if (hasGap) canFetchMore.value = true;
+	if (hasGap) {
+		canFetchMore.value = true;
+		olderCursorId = latest.at(-1)?.id ?? null;
+	}
 	if (messages.value.find(x => x.id === editingMessage.value?.id)?.deletedAt != null) editingMessage.value = null;
 
 	if (r != null) {

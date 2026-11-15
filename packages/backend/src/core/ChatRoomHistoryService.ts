@@ -310,8 +310,8 @@ export class ChatRoomHistoryService {
 		const reactions = [...new Set(input.reactions)].slice(0, MAX_REACTIONS_PER_MESSAGE);
 		const author = input.authorId != null ? await this.usersRepository.findOneBy({ id: input.authorId }) : null;
 		const archivedAuthor = author != null ? { uri: input.authorUri, username: author.username, name: author.name, host: author.host } : input.archivedAuthor;
-		const message = {
-			id: this.idService.gen(input.published.getTime()),
+		const messageWith = (id: string) => ({
+			id,
 			fromUserId: input.authorId,
 			archivedAuthor,
 			toRoomId: room.id,
@@ -328,10 +328,16 @@ export class ChatRoomHistoryService {
 			unavailableFileCount: input.unavailableFileCount,
 			emojis: input.emojis,
 			reactions,
-		} satisfies Partial<MiChatMessage>;
+		}) satisfies Partial<MiChatMessage>;
 
 		try {
-			return await this.chatMessagesRepository.insertOne(message);
+			try {
+				return await this.chatMessagesRepository.insertOne(messageWith(this.idService.gen(input.published.getTime())));
+			} catch (err) {
+				// 같은 글쓴 시각의 다른 글과 id가 겹쳤다. 같은 글을 다른 작업자가 저장한 것이 아니면 도착 시각 id로 다시 저장한다.
+				if (!isDuplicateKeyValueError(err) || await this.chatMessagesRepository.existsBy({ uri: copyUri })) throw err;
+				return await this.chatMessagesRepository.insertOne(messageWith(this.idService.gen()));
+			}
 		} catch (err) {
 			// 다른 작업자가 먼저 저장했거나, 그 사이 그룹이나 채널이 지워졌다
 			if (isDuplicateKeyValueError(err) || (err as { code?: string }).code === '23503') return null;

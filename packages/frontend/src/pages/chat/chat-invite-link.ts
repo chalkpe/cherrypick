@@ -114,6 +114,11 @@ function apply(entry: Entry, order: number, next: Pick<ChatInviteJoinState, 'sta
 	entry.state.status = next.status;
 	entry.state.roomId = next.roomId;
 	entry.state.reason = next.reason;
+	// 참여 상태에서 벗어나면 이전 참여의 인원 수 갱신 상태를 비운다. 다음 참여가 새 값을 한 번 받게 한다
+	if (next.status !== 'joined') {
+		entry.state.joinedHere = false;
+		entry.state.membersCount = null;
+	}
 	// 인원 수는 최신 답이 숫자로 실어 왔을 때만 바꾼다. 요청하지 않은 조회나 참여 결과 이벤트처럼 없는 답은 기존 값을 유지한다
 	if (next.membersCount != null) entry.state.membersCount = next.membersCount;
 	// 링크로 참여하면 남아 있던 개별 초대도 정리된다. 다른 참여 경로처럼 초대 알림에 알린다
