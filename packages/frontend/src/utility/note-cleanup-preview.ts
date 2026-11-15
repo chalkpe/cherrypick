@@ -105,7 +105,8 @@ export class CleanupPreviewPaginator implements IPaginator<Misskey.entities.Note
 	public async fetchOlder(): Promise<void> {}
 
 	public async fetchNewer(): Promise<void> {
-		if (this.canFetchNewer.value) await this.load(true);
+		// 첫 페이지를 다시 읽는 동안에는 옛 커서로 이어 읽지 않는다. 읽기가 끝나 ready가 되면 새 커서부터 잇는다.
+		if (this.ready.value && this.canFetchNewer.value) await this.load(true);
 	}
 
 	public trim(): void {}

@@ -232,3 +232,51 @@ test('a reload keeps the visible list instead of collapsing it to a spinner', as
 	await reloading;
 	expect(paginator.items.value.map(item => item.id)).toEqual(['n2']);
 });
+
+test('load more is ignored while the first page is being read again and continues once from the new cursor', async () => {
+	let finishReload!: (response: Response) => void;
+	const requests: Array<string | undefined> = [];
+	vi.stubGlobal('fetch', (_url: string, init: RequestInit) => {
+		requests.push(JSON.parse(init.body as string).afterId);
+		return requests.length === 1
+			? Promise.resolve(new Response(JSON.stringify(page([note('n1', 'first')], 'cursor-1', false))))
+			: requests.length === 2
+				? new Promise<Response>(resolve => { finishReload = resolve; })
+				: Promise.resolve(new Response(JSON.stringify(page([note('n3', 'third')], null, true))));
+	});
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	await paginator.init();
+	const reloading = paginator.reload();
+	// 다시 읽는 동안 옛 목록과 더 보기는 남지만 이어 읽기는 받지 않는다.
+	expect(paginator.canFetchNewer.value).toBe(true);
+	await paginator.fetchNewer();
+	expect(requests).toEqual([undefined, undefined]);
+	finishReload(new Response(JSON.stringify(page([note('n1', 'first')], 'cursor-2', false))));
+	await reloading;
+	await paginator.fetchNewer();
+	expect(requests).toEqual([undefined, undefined, 'cursor-2']);
+	expect(paginator.items.value.map(item => item.id)).toEqual(['n1', 'n3']);
+});
+
+test('load more is ignored while the retry after a failed first page is in flight', async () => {
+	let finishRetry!: (response: Response) => void;
+	const requests: Array<string | undefined> = [];
+	vi.stubGlobal('fetch', (_url: string, init: RequestInit) => {
+		requests.push(JSON.parse(init.body as string).afterId);
+		return requests.length === 1
+			? Promise.resolve(new Response(JSON.stringify(page([note('n1', 'first')], 'cursor-1', false))))
+			: requests.length === 2
+				? Promise.resolve(new Response(JSON.stringify({ error: { code: 'INTERNAL_ERROR' } }), { status: 500 }))
+				: new Promise<Response>(resolve => { finishRetry = resolve; });
+	});
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	await paginator.init();
+	await paginator.reload();
+	expect(paginator.error.value).toBe(true);
+	const retrying = paginator.init();
+	await paginator.fetchNewer();
+	expect(requests).toHaveLength(3);
+	finishRetry(new Response(JSON.stringify(page([note('n1', 'first')], 'cursor-2', false))));
+	await retrying;
+	expect(paginator.ready.value).toBe(true);
+});
