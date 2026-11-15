@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div ref="rootEl" class="rrevdjwu" :class="{ grid }">
+<div ref="rootEl" class="rrevdjwu" :class="{ grid, draggable }">
 	<MkInput
 		v-if="searchIndex && searchIndex.length > 0"
 		v-model="searchQuery"
@@ -18,10 +18,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</MkInput>
 
 	<template v-if="rawSearchQuery == ''">
-		<div v-for="group in def" class="group">
+		<div v-for="(group, groupIndex) in def" class="group">
 			<div v-if="group.title" class="title">{{ group.title }}</div>
 
-			<div class="items">
+			<div v-if="!draggable" class="items">
 				<template v-for="(item, i) in group.items">
 					<a v-if="item.type === 'a'" :href="item.href" :target="item.target" class="_button item" :class="{ danger: item.danger, active: item.active }">
 						<span>
@@ -46,6 +46,41 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</MkA>
 				</template>
 			</div>
+			<MkDraggable
+				v-else
+				class="items"
+				:modelValue="draggableItems(group.items)"
+				direction="vertical"
+				manualDragStart
+				@update:modelValue="entries => emit('reorder', groupIndex, entries.map(entry => entry.item))"
+			>
+				<template #default="{ item: entry, dragStart }">
+					<div class="dragRow">
+						<button class="_button dragHandle" draggable="true" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="dragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
+						<a v-if="entry.item.type === 'a'" :href="entry.item.href" :target="entry.item.target" :draggable="false" class="_button item" :class="{ danger: entry.item.danger, active: entry.item.active }">
+							<span>
+								<span v-if="entry.item.icon" class="icon"><i :class="entry.item.icon" class="ti-fw"></i></span>
+								<span class="text">{{ entry.item.text }}</span>
+							</span>
+							<span v-if="'indicated' in entry.item && entry.item.indicated" class="itemIndicator _blink"><i class="_indicatorCircle"></i></span>
+						</a>
+						<button v-else-if="entry.item.type === 'button'" class="_button item" :class="{ danger: entry.item.danger, active: entry.item.active }" :disabled="entry.item.active" @click="ev => invokeAction(entry.item, ev)">
+							<span>
+								<span v-if="entry.item.icon" class="icon"><i :class="entry.item.icon" class="ti-fw"></i></span>
+								<span class="text">{{ entry.item.text }}</span>
+							</span>
+							<span v-if="entry.item.indicated" class="itemIndicator _blink"><i class="_indicatorCircle"></i></span>
+						</button>
+						<MkA v-else :to="entry.item.to" :draggable="false" class="_button item" :class="{ danger: entry.item.danger, active: entry.item.active }">
+							<span>
+								<span v-if="entry.item.icon" class="icon"><i :class="entry.item.icon" class="ti-fw"></i></span>
+								<span class="text">{{ entry.item.text }}</span>
+							</span>
+							<span v-if="entry.item.indicated" class="itemIndicator _blink"><i class="_indicatorCircle"></i></span>
+						</MkA>
+					</div>
+				</template>
+			</MkDraggable>
 		</div>
 	</template>
 	<template v-else>
@@ -80,6 +115,7 @@ export type SuperMenuDef = {
 	title?: string;
 	items: ({
 		type: 'a';
+		id?: string;
 		href: string;
 		target?: string;
 		icon?: string;
@@ -89,6 +125,7 @@ export type SuperMenuDef = {
 		indicated?: boolean;
 	} | {
 		type: 'button';
+		id?: string;
 		icon?: string;
 		text: string;
 		danger?: boolean;
@@ -97,6 +134,7 @@ export type SuperMenuDef = {
 		indicated?: boolean;
 	} | {
 		type?: 'link';
+		id?: string;
 		to: string;
 		icon?: string;
 		text: string;
@@ -113,6 +151,7 @@ import { throttle } from 'throttle-debounce';
 import { getScrollContainer } from '@@/js/scroll.js';
 import type { SearchIndexItem } from '@/utility/inapp-search.js';
 import MkInput from '@/components/MkInput.vue';
+import MkDraggable from '@/components/MkDraggable.vue';
 import { i18n } from '@/i18n.js';
 import { useRouter } from '@/router.js';
 import { initIntlString, compareStringIncludes } from '@/utility/intl-string.js';
@@ -121,7 +160,20 @@ const props = defineProps<{
 	def: SuperMenuDef[];
 	grid?: boolean;
 	searchIndex?: SearchIndexItem[];
+	draggable?: boolean;
 }>();
+
+const emit = defineEmits<{
+	(ev: 'reorder', groupIndex: number, items: SuperMenuDef['items']): void;
+}>();
+
+function draggableItems(items: SuperMenuDef['items']): { id: string; item: SuperMenuDef['items'][number] }[] {
+	return items.map((item, index) => ({ id: item.id ?? ('to' in item ? item.to : undefined) ?? `${index}`, item }));
+}
+
+function invokeAction(item: SuperMenuDef['items'][number], ev: PointerEvent) {
+	if (item.type === 'button') void item.action(ev);
+}
 
 type SearchResultItem = {
 	id: string;
@@ -289,7 +341,8 @@ function searchOnKeyDown(ev: KeyboardEvent) {
 		}
 
 		> .items {
-			> .item {
+			.item {
+				position: relative;
 				display: flex;
 				align-items: center;
 				width: 100%;
@@ -336,9 +389,9 @@ function searchOnKeyDown(ev: KeyboardEvent) {
 				}
 
         > .itemIndicator {
-          position: relative;
-					top: -10px;
-          left: -72.5px;
+          position: absolute;
+					top: 6px;
+          left: 18px;
           color: var(--MI_THEME-navIndicator);
           font-size: 8px;
           animation: blink 1s infinite;
@@ -373,6 +426,7 @@ function searchOnKeyDown(ev: KeyboardEvent) {
 					flex-direction: column;
 					text-align: center;
 					padding: 0;
+					position: relative;
 
 					&:hover {
 						text-decoration: none;
@@ -411,8 +465,8 @@ function searchOnKeyDown(ev: KeyboardEvent) {
 
           > .itemIndicator {
 						display: flex;
-						top: -80px;
-            left: -22.5px;
+						top: 0;
+            left: calc(50% - 30px);
             font-size: 0.8em;
           }
 				}
@@ -420,7 +474,34 @@ function searchOnKeyDown(ev: KeyboardEvent) {
 		}
 	}
 
+	&.draggable {
+		> .group {
+			> .items {
+				.dragRow {
+					display: flex;
+					align-items: center;
+					gap: 2px;
+					min-width: 0;
+				}
+
+				.dragHandle {
+					flex-shrink: 0;
+					padding: 8px;
+					cursor: move;
+					opacity: 0.5;
+				}
+
+				.item {
+					flex: 1;
+					min-width: 0;
+					width: auto;
+				}
+			}
+		}
+	}
+
 	.searchResultItem {
+		position: relative;
 		display: flex;
 		align-items: center;
 		width: 100%;
@@ -464,6 +545,15 @@ function searchOnKeyDown(ev: KeyboardEvent) {
 			white-space: normal;
 			padding-right: 12px;
 			flex-shrink: 1;
+		}
+
+		> .itemIndicator {
+			position: absolute;
+			top: 6px;
+			left: 18px;
+			color: var(--MI_THEME-navIndicator);
+			font-size: 8px;
+			animation: blink 1s infinite;
 		}
 	}
 }

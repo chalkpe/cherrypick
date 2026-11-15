@@ -988,6 +988,10 @@ export interface Locale extends ILocale {
      */
     "download": string;
     /**
+     * ドラッグして順序を変更
+     */
+    "dragToReorder": string;
+    /**
      * ファイル「{name}」を削除しますか？このファイルを使用した一部のコンテンツも削除されます。
      */
     "driveFileDeleteConfirm": ParameterizedString<"name">;

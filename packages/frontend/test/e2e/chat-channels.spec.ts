@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { test, expect } from './fixtures.js';
 import { api, resetState, ADMIN_SETUP_PASSWORD } from './shared.js';
-import type { Page } from 'playwright';
+import type { Locator, Page } from 'playwright';
 import type * as Misskey from 'cherrypick-js';
 
 type Account = Misskey.entities.MeDetailed & { token: string };
@@ -35,6 +35,11 @@ async function login(page: Page, account = owner, lang = 'en-US') {
 		localStorage.setItem('neverShowDonationInfo', 'true');
 		localStorage.setItem('modifiedVersionMustProminentlyOfferInAgplV3Section13Read', 'true');
 	}, { account, lang });
+}
+
+// 메뉴 항목의 접근성 이름은 아이콘 글리프 뒤에 채널 이름이 붙는다.
+function channelLink(page: Page, name: string) {
+	return page.getByRole('link', { name: new RegExp(`(^|\\s)${name}$`) });
 }
 
 async function open(page: Page, target: string) {
@@ -109,7 +114,8 @@ test.beforeEach(async ({ page }) => {
 
 test.afterEach(async ({ page }, testInfo) => {
 	const evidence = networkEvidence.get(page)!;
-	await Promise.allSettled(evidence.responses);
+	// 페이지 이동으로 끊긴 응답 본문을 기다리다 시험이 멈추지 않게 대기 시간을 제한한다.
+	await Promise.race([Promise.allSettled(evidence.responses), new Promise(resolve => setTimeout(resolve, 5000))]);
 	await testInfo.attach('chat-http-stream', { body: JSON.stringify(evidence.records, null, 2), contentType: 'application/json' });
 });
 
@@ -120,12 +126,12 @@ test('narrow navigation has separate group, channel and conversation depths', as
 	await page.locator(`a[href="${path(group.id)}"]`).click();
 	await expect(page).toHaveURL(base + path(group.id));
 	await expect(page.getByPlaceholder('Enter message here')).toHaveCount(0);
-	await page.getByRole('link', { name: '#work', exact: true }).click();
+	await channelLink(page, 'work').click();
 	await expect(page).toHaveURL(base + path(group.id, channels[1].id));
 	await expect(page.getByText('scope needle work', { exact: true })).toBeVisible();
 	await page.locator('button:has(.ti-arrow-left):visible').last().click();
 	await expect(page).toHaveURL(base + path(group.id));
-	await expect(page.getByRole('link', { name: '#general', exact: true })).toBeVisible();
+	await expect(channelLink(page, 'general')).toBeVisible();
 });
 
 test('direct addresses, refresh and browser history retain the selected channel', async ({ page }) => {
@@ -140,7 +146,7 @@ test('direct addresses, refresh and browser history retain the selected channel'
 	await expect(page.getByText('channel-specific message', { exact: true })).toBeVisible();
 	await page.locator('button:has(.ti-arrow-left):visible').last().click();
 	await expect(page).toHaveURL(base + path(group.id));
-	await page.getByRole('link', { name: '#general', exact: true }).click();
+	await channelLink(page, 'general').click();
 	await expect(page.getByText('scope needle general', { exact: true })).toBeVisible();
 	await expect(page.getByText('channel-specific message', { exact: true })).toHaveCount(0);
 	await page.goBack();
@@ -159,8 +165,8 @@ test('the wide conversation shows the channel rail and navigates between channel
 	await page.setViewportSize({ width: 2000, height: 1000 });
 	await login(page);
 	await open(page, path(group.id, channels[1].id));
-	await expect(page.getByRole('link', { name: '#work', exact: true })).toBeVisible();
-	await page.getByRole('link', { name: '#general', exact: true }).click();
+	await expect(channelLink(page, 'work')).toBeVisible();
+	await channelLink(page, 'general').click();
 	await expect(page).toHaveURL(base + path(group.id, channels[0].id));
 	await expect(page.getByText('scope needle general', { exact: true })).toBeVisible();
 	await expect(page.locator('#splash')).toHaveCount(0);
@@ -270,6 +276,77 @@ test('conversion shows the confirmed Korean warning and management uses channel 
 	await expect(page.locator(`[data-chat-channel-id="${legacy.id}"]`).getByRole('button', { name: '삭제', exact: true })).toBeDisabled();
 	await api(base, 'chat/rooms/update', { i: owner.token, roomId: room.id, isArchived: true });
 	await expect(page.getByRole('button', { name: '채널 만들기', exact: true })).toBeDisabled();
+});
+
+async function dragByMouse(page: Page, source: Locator, target: Locator) {
+	const s = await source.boundingBox();
+	const t = await target.boundingBox();
+	if (!s || !t) throw new Error('drag bounds missing');
+	await page.mouse.move(s.x + s.width / 2, s.y + s.height / 2);
+	await page.mouse.down();
+	await page.mouse.move(s.x + s.width / 2, s.y + s.height / 2 + 12, { steps: 6 });
+	await page.waitForTimeout(80);
+	await page.mouse.move(t.x + t.width / 2, t.y + t.height - 4, { steps: 24 });
+	await page.waitForTimeout(80);
+	await page.mouse.up();
+}
+
+// 레일은 overflow-y:auto 스크롤 컨테이너라 headless Chromium에서 네이티브 끌기 시작이 막힌다.
+// 실제 DragEvent를 흘려 MkDraggable의 끌기 처리를 그대로 검증한다.
+async function dispatchRailDrag(page: Page, source: Locator, target: Locator) {
+	const s = await source.elementHandle();
+	const t = await target.elementHandle();
+	await page.evaluate(([sEl, tEl]) => {
+		const item = tEl.parentElement!.parentElement!.parentElement!;
+		const area = item.lastElementChild as HTMLElement;
+		const dataTransfer = new DataTransfer();
+		sEl.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer }));
+		area.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer }));
+		area.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+	}, [s, t]);
+}
+
+test('owner reorders channels by dragging in management and the wide rail, and the order persists', async ({ page }) => {
+	const room = await createGroup('Drag reorder');
+	const beta = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	const initial = await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id });
+	await login(page, owner, 'en-US');
+	await page.setViewportSize({ width: 2000, height: 1000 });
+
+	// Management screen: drag the first channel below the second.
+	await open(page, `/chat/room/${room.id}`);
+	await page.getByText('About', { exact: true }).click();
+	const rows = page.locator('[data-chat-channel-id]');
+	await expect(rows).toHaveCount(2);
+	await dragByMouse(page, rows.nth(0).getByRole('button', { name: 'Drag to reorder' }), rows.nth(1));
+	await expect.poll(async () => (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0].id).toBe(beta.id);
+
+	// Wide rail: drag the first channel below the second to swap back.
+	await open(page, path(room.id, beta.id));
+	const rail = page.getByRole('navigation', { name: 'Channels' });
+	const railLinks = rail.getByRole('link');
+	await expect(railLinks).toHaveCount(2);
+	await dispatchRailDrag(page, rail.getByRole('button', { name: 'Drag to reorder' }).nth(0), railLinks.nth(1));
+	await expect.poll(async () => (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0].id).toBe(initial[0].id);
+
+	// The new order survives a reload.
+	await page.waitForLoadState('networkidle');
+	await page.reload();
+	await expect(railLinks.nth(0)).toHaveText(initial[0].name);
+});
+
+test('members cannot drag channels in the rail or the management screen', async ({ page }) => {
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	await login(page, member, 'en-US');
+	await open(page, path(group.id, channels[1].id));
+	const rail = page.getByRole('navigation', { name: 'Channels' });
+	const link = rail.getByRole('link').first();
+	await expect(link).toBeVisible();
+	expect(await link.getAttribute('draggable')).not.toBe('true');
+
+	await page.getByText('About', { exact: true }).click();
+	await expect(page.getByRole('button', { name: 'Create channel' })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Drag to reorder' })).toHaveCount(0);
 });
 
 test('a newly accepted invitation opens the first channel conversation', async ({ page }) => {
