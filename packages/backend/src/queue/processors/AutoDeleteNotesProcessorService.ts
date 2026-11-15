@@ -4,7 +4,7 @@
  */
 import { Injectable } from '@nestjs/common';
 import * as Bull from 'bullmq';
-import { CleanupInputError, NOTE_CLEANUP_LIMITS, NoteCleanupService } from '@/core/NoteCleanupService.js';
+import { isCleanupBusyError, NOTE_CLEANUP_LIMITS, NoteCleanupService } from '@/core/NoteCleanupService.js';
 import { QueueService } from '@/core/QueueService.js';
 import Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
@@ -38,7 +38,7 @@ export class AutoDeleteNotesProcessorService {
 		try {
 			return await this.noteCleanupService.locked('scheduler', () => this.runManualRound());
 		} catch (error) {
-			if (error instanceof CleanupInputError && error.code === 'CLEANUP_BUSY') return { deletedCount: 0, skipped: true };
+			if (isCleanupBusyError(error)) return { deletedCount: 0, skipped: true };
 			throw error;
 		}
 	}
@@ -55,7 +55,7 @@ export class AutoDeleteNotesProcessorService {
 			return await this.noteCleanupService.locked('scheduler', () => this.runRound());
 		} catch (error) {
 			// 이전 회차가 아직 진행 중이거나 정리 연결이 모두 쓰이는 중이면 정상 혼잡이므로 이번 회차를 건너뛴다.
-			if (error instanceof CleanupInputError && error.code === 'CLEANUP_BUSY') return { deletedCount: 0, skipped: true };
+			if (isCleanupBusyError(error)) return { deletedCount: 0, skipped: true };
 			throw error;
 		}
 	}
@@ -75,7 +75,7 @@ export class AutoDeleteNotesProcessorService {
 				if (result.throttled === 'global') break;
 			} catch (error) {
 				// 한 계정의 잠금 충돌이나 자료 실패가 같은 회차의 다른 계정을 멈추지 않게 하고, 순번을 뒤로 보낸다.
-				if (!(error instanceof CleanupInputError && error.code === 'CLEANUP_BUSY')) this.logger.error('Automatic note cleanup failed', { userId: id, error });
+				if (!isCleanupBusyError(error)) this.logger.error('Automatic note cleanup failed', { userId: id, error });
 				try { await this.noteCleanupService.deferUser(id); } catch (deferError) { this.logger.error('Cleanup turn deferral failed', { userId: id, error: deferError }); }
 			}
 		}
@@ -115,7 +115,7 @@ export class AutoDeleteNotesProcessorService {
 			try {
 				result = await this.noteCleanupService.continueManual(userId);
 			} catch (error) {
-				if (error instanceof CleanupInputError && error.code === 'CLEANUP_BUSY') return { delayed: true, deleted, failed };
+				if (isCleanupBusyError(error)) return { delayed: true, deleted, failed };
 				if (isRetryableCleanupFailure(error)) {
 					this.logger.error('Manual note cleanup temporarily failed', { userId, error });
 					return { delayed: true, deleted, failed };

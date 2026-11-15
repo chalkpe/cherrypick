@@ -26,7 +26,7 @@ import UpdateAutoDeleteSettings from '../../src/server/api/endpoints/i/update-au
 import PreviewEndpoint, { meta as previewMeta } from '../../src/server/api/endpoints/i/note-cleanup/preview.js';
 
 // detached: 실제 DB처럼 조회 결과를 저장 행과 분리한 복사본으로 돌려준다.
-function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0) } = {}) {
+function fixture({ detached = false, poolMax = 10, noteCreatedAt = (_id: string) => new Date(0) } = {}) {
 	const rows: Record<string, any[]> = { Rule: [], State: [{ userId: 'alice', cursor: null, manualRequest: null, keepDriveFiles: true }], MiUser: [{ id: 'alice', host: null }], MiNote: [] };
 	const failing = new Set<string>();
 	// deleteFailures: 해당 노트의 삭제를 실패시킨다.
@@ -94,7 +94,7 @@ function fixture({ detached = false, noteCreatedAt = (_id: string) => new Date(0
 			throw error;
 		}
 	};
-	const db = { getRepository: repository, transaction, createQueryRunner: () => { if (faults.createQueryRunner) throw new Error('runner unavailable'); return { connect: async () => {}, query: async () => [{ locked: lock.available }], release: async () => { lock.released++; } }; } };
+	const db = { driver: { master: { options: { max: poolMax } } }, getRepository: repository, transaction, createQueryRunner: () => { if (faults.createQueryRunner) throw new Error('runner unavailable'); return { connect: async () => {}, query: async () => [{ locked: lock.available }], release: async () => { lock.released++; } }; } };
 	let nextId = 0;
 	const notifications: unknown[] = [];
 	const jobs = new Map<string, unknown>();
@@ -577,17 +577,24 @@ test('남기기 참조 오류는 실제 처리 서비스의 모든 삭제를 막
 	expect(rows.MiNote).toHaveLength(1);
 });
 
-test('잠금을 가진 동안 읽기는 성공하고 쓰기·정리 요청은 혼잡으로 실패한다', async () => {
+test('같은 계정 정리가 진행 중이면 읽기는 성공하고 쓰기는 진행 중 혼잡으로 실패한다', async () => {
 	const { rows, service, lock, input } = fixture();
 	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: false, lastError: null });
 	lock.available = false;
 	// 목록·미리 보기는 처음 기본 규칙을 만들 때만 잠금을 쓰므로 진행 중인 정리와 겹쳐도 읽을 수 있다.
 	await expect(service.list('alice')).resolves.toBeDefined();
 	await expect(service.preview('alice', ['delete'])).resolves.toBeDefined();
-	// 저장·정리 요청은 여전히 사용자 잠금을 쓰므로 혼잡으로 실패하고 연결을 반환한다.
-	await expect(service.save('alice', input)).rejects.toThrow('CLEANUP_BUSY');
-	await expect(service.request('alice', ['delete'])).rejects.toThrow('CLEANUP_BUSY');
+	// 저장·정리 요청은 같은 계정 잠금을 못 잡으면 진행 중 혼잡(CLEANUP_IN_PROGRESS)으로 실패하고 연결을 반환한다.
+	await expect(service.save('alice', input)).rejects.toThrow('CLEANUP_IN_PROGRESS');
+	await expect(service.request('alice', ['delete'])).rejects.toThrow('CLEANUP_IN_PROGRESS');
 	expect(lock.released).toBe(2);
+});
+
+test('서버 전체 동시 처리 상한에 걸리면 쓰기는 요청 몰림 혼잡으로 실패한다', async () => {
+	const { service, input } = fixture({ poolMax: 2 });
+	// 풀 상한이 작아 동시 처리 한도가 0이면 잠금을 잡기 전에 CLEANUP_BUSY로 실패한다.
+	await expect(service.save('alice', input)).rejects.toThrow('CLEANUP_BUSY');
+	await expect(service.updateSettings('alice', true)).rejects.toThrow('CLEANUP_BUSY');
 });
 
 test('createQueryRunner 실패는 잠금 카운터를 새지 않아 이후 정리가 계속 가능하다', async () => {
@@ -1026,8 +1033,8 @@ for (const [EndpointClass, meta, params, isRead] of [
 		const { service, lock } = fixture();
 		lock.available = false;
 		const endpoint = new (EndpointClass as any)(service, noteEntityService);
-		await expect(endpoint.exec(params, { id: 'alice' } as any, null, null)).rejects.toMatchObject({ code: 'CLEANUP_BUSY', kind: 'server', httpStatusCode: 503 });
-		expect((meta.errors as any).cleanupBusy).toMatchObject({ code: 'CLEANUP_BUSY', kind: 'server', httpStatusCode: 503 });
+		await expect(endpoint.exec(params, { id: 'alice' } as any, null, null)).rejects.toMatchObject({ code: 'CLEANUP_IN_PROGRESS', kind: 'server', httpStatusCode: 503 });
+		expect((meta.errors as any).cleanupInProgress).toMatchObject({ code: 'CLEANUP_IN_PROGRESS', kind: 'server', httpStatusCode: 503 });
 	});
 	test(`${meta.errors.invalidCleanup.id}: 입력 오류 세부 정보와 원래 예외를 보존한다`, async () => {
 		for (const error of [new CleanupInputError('INVALID_CLIP', 'condition'), new Error('database unavailable')]) {

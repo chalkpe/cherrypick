@@ -10,12 +10,12 @@ import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { cleanupDefaultNameSchema, cleanupErrorSchema } from '@/models/json-schema/note-cleanup.js';
 import { ruleIdsProperty } from './schema.js';
 
-import { cleanupBusyError, rethrowCleanupError } from './errors.js';
+import { cleanupBusyError, cleanupInProgressError, rethrowCleanupError } from './errors.js';
 
 export const meta = {
 	tags: ['account'], requireCredential: true, kind: 'read:account',
 	limit: { duration: 60000, max: 10 },
-	errors: { cleanupBusy: { ...cleanupBusyError, id: '1090e78b-ddc0-4f8d-9ea3-116e5221ab73' }, invalidCleanup: { message: 'Invalid note cleanup request.', code: 'INVALID_CLEANUP', id: '979d5aa6-0f77-46e7-87b4-65cadd72639e' } },
+	errors: { cleanupBusy: { ...cleanupBusyError, id: '1090e78b-ddc0-4f8d-9ea3-116e5221ab73' }, cleanupInProgress: { ...cleanupInProgressError, id: 'c53b34c1-a0f6-477e-b665-574c25355878' }, invalidCleanup: { message: 'Invalid note cleanup request.', code: 'INVALID_CLEANUP', id: '979d5aa6-0f77-46e7-87b4-65cadd72639e' } },
 	res: { type: 'object', properties: {
 		rules: { type: 'array', optional: false, nullable: false, items: { type: 'object', properties: { id: { type: 'string', optional: false, nullable: false }, name: { type: 'string', optional: false, nullable: false }, defaultName: cleanupDefaultNameSchema, action: { type: 'string', enum: ['keep', 'delete'], optional: false, nullable: false } } } },
 		notes: { type: 'array', optional: false, nullable: false, items: { type: 'object', optional: false, nullable: false, ref: 'Note' } },
@@ -37,7 +37,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				const { notes, ...page } = await this.noteCleanupService.preview(me.id, ps.ruleIds, ps.afterId, ps.limit);
 				return { ...page, notes: await this.noteEntityService.packMany(notes, me) };
 			} catch (error) {
-				rethrowCleanupError(error, meta.errors.invalidCleanup, meta.errors.cleanupBusy);
+				rethrowCleanupError(error, meta.errors.invalidCleanup, meta.errors.cleanupBusy, meta.errors.cleanupInProgress);
 			}
 		});
 	}

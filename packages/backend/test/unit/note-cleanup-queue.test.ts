@@ -420,13 +420,13 @@ test('수동 요청은 한 작업에서 회차 시간 상한까지만 이어 처
 	expect(f.added).toHaveLength(1);
 });
 
-test('구 API는 정리 잠금 충돌을 500 대신 기존 API 오류 형식의 CLEANUP_BUSY로 알리고 아무것도 바꾸지 않는다', async () => {
+test('구 API는 같은 계정 정리 잠금 충돌을 500 대신 진행 중 혼잡으로 알리고 아무것도 바꾸지 않는다', async () => {
 	const f = fixture();
 	f.addUser('alice');
 	f.busy.add('note-cleanup-alice');
 	const before = structuredClone(f.rows);
 	const endpoint = new UpdateAutoDeleteSettings(f.service);
-	await expect(endpoint.exec({ autoDeleteNotesAfterDays: 30 }, { id: 'alice' } as any, null, null)).rejects.toMatchObject({ code: 'CLEANUP_BUSY', id: 'ef801a30-12f2-4f79-a60d-2a94c8c42302', kind: 'server', httpStatusCode: 503 });
+	await expect(endpoint.exec({ autoDeleteNotesAfterDays: 30 }, { id: 'alice' } as any, null, null)).rejects.toMatchObject({ code: 'CLEANUP_IN_PROGRESS', id: 'a648a370-aba3-4dc8-944f-907cd88e850b', kind: 'server', httpStatusCode: 503 });
 	expect(f.rows).toEqual(before);
 });
 

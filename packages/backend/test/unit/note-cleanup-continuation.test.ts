@@ -7,11 +7,15 @@ import { UnrecoverableError } from 'bullmq';
 import { AutoDeleteNotesProcessorService } from '@/queue/processors/AutoDeleteNotesProcessorService.js';
 import { CleanupInputError } from '@/core/NoteCleanupService.js';
 
-vi.mock('@/core/NoteCleanupService.js', () => ({
-	NoteCleanupService: class {},
-	CleanupInputError: class extends Error { constructor(public code: string) { super(code); } },
-	NOTE_CLEANUP_LIMITS: { roundMs: 10000, windowMs: 300000 },
-}));
+vi.mock('@/core/NoteCleanupService.js', () => {
+	class CleanupInputError extends Error { constructor(public code: string) { super(code); } }
+	return {
+		NoteCleanupService: class {},
+		CleanupInputError,
+		isCleanupBusyError: (error: unknown) => error instanceof CleanupInputError && (error.code === 'CLEANUP_BUSY' || error.code === 'CLEANUP_IN_PROGRESS'),
+		NOTE_CLEANUP_LIMITS: { roundMs: 10000, windowMs: 300000 },
+	};
+});
 vi.mock('@/core/QueueService.js', () => ({ QueueService: class {} }));
 
 // 수동 요청의 대기 계약: 어떤 대기 경로도 자식 작업을 등록하지 않고 정상 종료해 마커를 다음 회차에 넘긴다.
@@ -43,8 +47,8 @@ test('일시적인 DB 연결 오류는 작업을 쌓지 않고 정상 종료해 
 	expect(f.added).toHaveLength(0);
 });
 
-test('잠금 충돌은 실패가 아니라 다음 회차로 넘기는 대기다', async () => {
-	const cleanup = { continueManual: async () => { throw new CleanupInputError('CLEANUP_BUSY'); } };
+test.each(['CLEANUP_BUSY', 'CLEANUP_IN_PROGRESS'])('잠금 충돌(%s)은 실패가 아니라 다음 회차로 넘기는 대기다', async (code) => {
+	const cleanup = { continueManual: async () => { throw new CleanupInputError(code); } };
 	const f = fixture(cleanup);
 
 	await expect(f.processor.process(f.job as any)).resolves.toMatchObject({ delayed: true });
@@ -96,9 +100,9 @@ test('수동 전용 회차도 연합 큐가 밀리면 작업을 쌓지 않고 �
 	expect(f.added).toHaveLength(0);
 });
 
-test('수동 전용 회차는 scheduler 잠금 혼잡 시 건너뛴다', async () => {
+test.each(['CLEANUP_BUSY', 'CLEANUP_IN_PROGRESS'])('수동 전용 회차는 scheduler 잠금 혼잡(%s) 시 건너뛴다', async (code) => {
 	const cleanup = {
-		locked: async () => { throw new CleanupInputError('CLEANUP_BUSY'); },
+		locked: async () => { throw new CleanupInputError(code); },
 		manualUsers: vi.fn(),
 	};
 	const f = fixture(cleanup);

@@ -28,6 +28,10 @@ import { runCleanupBatch, initialCleanupRules, isRetryableCleanupFailure } from 
 export class CleanupInputError extends Error {
 	constructor(public code: string, public path = 'condition', public referenceId?: string) { super(code); }
 }
+// 서버 전체 동시 처리 상한(CLEANUP_BUSY)과 같은 계정 정리 진행 중(CLEANUP_IN_PROGRESS)은 모두 정상 혼잡이다.
+export function isCleanupBusyError(error: unknown): boolean {
+	return error instanceof CleanupInputError && (error.code === 'CLEANUP_BUSY' || error.code === 'CLEANUP_IN_PROGRESS');
+}
 // 노트 조회 실패는 삭제 실패와 구분한다. 원인 오류를 보존해 재시도 가능 여부와 메시지를 그대로 판정한다.
 export class CleanupNoteLookupError extends Error {
 	constructor(cause: unknown) { super(cause instanceof Error ? cause.message : 'Cleanup note lookup failed', { cause }); }
@@ -66,6 +70,7 @@ export class NoteCleanupService {
 		const pool = (this.db.driver as unknown as { master?: { options: { max?: number } } } | undefined)?.master;
 		const maximum = pool?.options.max ?? 10;
 		const limit = maximum < 3 ? 0 : Math.max(2, Math.floor((maximum - 1) / 2));
+		// 서버 전체의 동시 처리 상한에 걸린 경우다. 여러 계정의 정리 요청이 몰린다는 뜻으로 알린다.
 		if (this.activeLocks >= limit) throw new CleanupInputError('CLEANUP_BUSY', 'request');
 		// 커넥션 생성이 실패하면 카운터를 올리지 않는다. 올려두면 복구 경로 없이 혼잡이 영구화된다.
 		const runner = this.db.createQueryRunner('master');
@@ -75,7 +80,8 @@ export class NoteCleanupService {
 			await runner.connect();
 			const [result] = await runner.query('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked', [`note-cleanup-${userId}`]);
 			acquired = result.locked;
-			if (!acquired) throw new CleanupInputError('CLEANUP_BUSY', 'request');
+			// 같은 계정의 정리가 진행 중이라 잠금을 못 잡은 경우다. 그 정리가 끝나면 다시 할 수 있다는 뜻으로 알린다.
+			if (!acquired) throw new CleanupInputError('CLEANUP_IN_PROGRESS', 'request');
 			return await this.context.run(runner.manager, work);
 		} finally {
 			try { await this.releaseLock(runner, userId, acquired); } finally { this.activeLocks--; }
