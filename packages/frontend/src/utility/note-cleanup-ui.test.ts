@@ -56,6 +56,7 @@ vi.mock('@/components/MkSwitch.vue', () => ({ default: defineComponent({
 	}, slots.default?.()),
 }) }));
 vi.mock('@/components/MkInfo.vue', () => ({ default: defineComponent({ setup: (_, { slots }) => () => h('div', slots.default?.()) }) }));
+vi.mock('@/components/global/MkLoading.vue', () => ({ default: defineComponent({ setup: () => () => h('div', 'loading') }) }));
 // 미리 보기 준비 상태는 시험에서 제어한다. 실제 준비 판정은 미리 보기 전용 시험에서 다룬다.
 const previewControl = vi.hoisted(() => ({ ready: true, emit: null as null | ((value: boolean) => void) }));
 vi.mock('@/pages/settings/note-cleanup/Preview.vue', () => ({ default: defineComponent({
@@ -76,9 +77,10 @@ vi.mock('@/pages/settings/note-cleanup/ConditionEditor.vue', () => ({ default: d
 	]),
 }) }));
 import type { CleanupRule } from '@/utility/note-cleanup-api.js';
+import { takeSavedRule } from '@/utility/note-cleanup-handoff.js';
 import EditPage from '@/pages/settings/note-cleanup.edit.vue';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); popupMenu.mockReset(); confirm.mockReset(); confirm.mockResolvedValue({ canceled: true }); alert.mockClear(); toast.mockClear(); push.mockClear(); replaceHistory.mockClear(); activeLocale.current = 'en-US'; previewControl.ready = true; previewControl.emit = null; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); popupMenu.mockReset(); confirm.mockReset(); confirm.mockResolvedValue({ canceled: true }); alert.mockClear(); toast.mockClear(); push.mockClear(); replaceHistory.mockClear(); activeLocale.current = 'en-US'; previewControl.ready = true; previewControl.emit = null; takeSavedRule(''); });
 
 const deleteRule: CleanupRule = {
 	id: 'delete', name: 'Old notes', defaultName: null, action: 'delete', enabled: true,

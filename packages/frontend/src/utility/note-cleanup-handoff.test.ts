@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { afterEach, expect, test, vi } from 'vitest';
-import { handOffSavedRule, takeSavedRule } from '@/utility/note-cleanup-handoff.js';
+import { handOffSavedRule, peekSavedRule, takeSavedRule } from '@/utility/note-cleanup-handoff.js';
 import type { CleanupRule } from '@/utility/note-cleanup-api.js';
 
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); takeSavedRule(''); });
 
 const rule = (id: string) => ({ id }) as CleanupRule;
 
@@ -25,4 +25,14 @@ test('a handed over rule expires when nothing takes it', () => {
 	handOffSavedRule(rule('a'), 0);
 	vi.advanceTimersByTime(6000);
 	expect(takeSavedRule('a')).toBeNull();
+});
+
+test('peeking reads the value without consuming it so only the visible screen takes it', () => {
+	handOffSavedRule(rule('a'), 40);
+	// 숨은 화면이 먼저 읽어도 슬롯은 그대로 남아 보이는 화면이 가져갈 수 있다.
+	expect(peekSavedRule('a')).toEqual({ rule: rule('a'), scrollTop: 40 });
+	expect(peekSavedRule('a')).toEqual({ rule: rule('a'), scrollTop: 40 });
+	expect(peekSavedRule('b')).toBeNull();
+	expect(takeSavedRule('a')).toEqual({ rule: rule('a'), scrollTop: 40 });
+	expect(peekSavedRule('a')).toBeNull();
 });

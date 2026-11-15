@@ -314,7 +314,9 @@ test('preview stops auto-reading after a few empty ranges and continues from the
 	await expect(more).toBeVisible();
 	// 자동으로는 3번까지만 읽고, 빈 문구 없이 더 보기만 보인다.
 	expect(afterIds).toHaveLength(3);
-	await expect(section.getByText('No notes', { exact: true })).toHaveCount(0);
+	// 빈 문구는 타임라인이 마운트된 채 DOM에 남아 있되 숨겨져 있어야 한다.
+	await expect(section.getByText('No notes', { exact: true })).toBeAttached();
+	await expect(section.getByText('No notes', { exact: true })).toBeHidden();
 	await more.click();
 	await expect(section.getByRole('button', { name: 'Retry' })).toBeVisible();
 	await section.getByRole('button', { name: 'Retry' }).click();
@@ -357,6 +359,109 @@ test('first save moves the current router to the edit path in the page and in an
 	await page.locator('i.ti-reload').first().click();
 	await expect(page.getByRole('button', { name: 'Clean up now' })).toBeVisible();
 	await expect(page.getByText('Rule name', { exact: true }).locator('..').locator('input')).toHaveValue('Router check');
+});
+
+test('saving an existing rule keeps the scroll position and the editor nodes', async ({ page }) => {
+	await resetState();
+	await registerUser('admin', 'pass', true);
+	const alice = await registerUser('alice', 'alice1234');
+	const condition = { type: 'all', children: [keywordCondition('seed'), { type: 'age', seconds: 86400, operator: 'gte' }, { type: 'count', field: 'reactions', operator: 'gte', value: 0 }] };
+	const { rule } = await api(BASE_URL, 'i/note-cleanup/create', { i: alice.token, name: 'Scroll check', action: 'delete', condition });
+	await signIn(page, 'alice', 'alice1234');
+	await closeUserSetupDialog(page);
+	await page.goto(`${BASE_URL}/settings/note-cleanup/${rule.id}`);
+	await page.locator('textarea').first().waitFor();
+	await page.getByText('Notes to be deleted', { exact: true }).waitFor();
+	await page.locator('textarea').first().fill('seed edited');
+	// 저장 버튼이 보이는 편집 화면 아래쪽으로 스크롤한 상태에서 저장한다.
+	await page.evaluate(() => {
+		const sc = document.querySelector('._pageScrollable')!;
+		const btn = Array.from(document.querySelectorAll('button')).find(b => (b.textContent ?? '').trim() === 'Save')!;
+		sc.scrollTop = btn.getBoundingClientRect().top + sc.scrollTop - sc.getBoundingClientRect().top - 200;
+		document.querySelector('textarea')!.setAttribute('data-mark', '1');
+	});
+	await page.waitForTimeout(300);
+	const before = await page.evaluate(() => document.querySelector('._pageScrollable')!.scrollTop);
+	expect(before).toBeGreaterThan(100);
+	const saved = page.waitForResponse(response => response.url().endsWith('/api/i/note-cleanup/update'));
+	await page.getByRole('button', { name: 'Save' }).click();
+	expect((await saved).status()).toBe(200);
+	await page.waitForTimeout(800);
+	const after = await page.evaluate(() => ({ top: document.querySelector('._pageScrollable')!.scrollTop, markAlive: document.querySelector('textarea[data-mark="1"]')?.isConnected ?? false }));
+	expect(Math.abs(after.top - before)).toBeLessThanOrEqual(2);
+	expect(after.markAlive).toBe(true);
+});
+
+test('the rule editor shows an error and retry when loading fails instead of a blank screen', async ({ page }) => {
+	await resetState();
+	await registerUser('admin', 'pass', true);
+	const alice = await registerUser('alice', 'alice1234');
+	const { rule } = await api(BASE_URL, 'i/note-cleanup/create', { i: alice.token, name: 'Load check', action: 'delete', condition: keywordCondition('seed') });
+	await signIn(page, 'alice', 'alice1234');
+	await closeUserSetupDialog(page);
+	let failList = true;
+	await page.route('**/api/i/note-cleanup/list', async route => {
+		if (failList) {
+			await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Note cleanup is busy.', code: 'CLEANUP_BUSY', id: 'a9266652-f942-4021-8677-2ca26e50c344' } }) });
+			return;
+		}
+		await route.continue();
+	});
+	await page.goto(`${BASE_URL}/settings/note-cleanup/${rule.id}`);
+	// 빈 화면이 아니라 목록과 같은 방식의 오류와 다시 시도를 보인다.
+	await expect(page.getByRole('alert')).toContainText('Note cleanup is busy. Please wait a moment and try again.');
+	await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
+	expect(await page.locator('textarea').count()).toBe(0);
+	failList = false;
+	await page.getByRole('button', { name: 'Retry' }).click();
+	await page.locator('textarea').first().waitFor();
+	await expect(page.getByText('Notes to be deleted', { exact: true })).toBeVisible();
+});
+
+test('first save keeps scroll when a cached settings page sits behind the notification link', async ({ page }) => {
+	test.setTimeout(120_000);
+	await resetState();
+	await registerUser('admin', 'pass', true);
+	const alice = await registerUser('alice', 'alice1234');
+	// 완료 알림을 만들어 알림 화면에서 노트 정리 목록으로 들어가는 링크를 둔다.
+	for (let i = 0; i < 6; i++) await api(BASE_URL, 'notes/create', { i: alice.token, text: `alpha plain ${i}` });
+	const { rule: seed } = await api(BASE_URL, 'i/note-cleanup/create', { i: alice.token, name: 'alpha seed', action: 'delete', condition: keywordCondition('alpha') });
+	await api(BASE_URL, 'i/note-cleanup/update', { i: alice.token, ruleId: seed.id, action: 'delete', condition: keywordCondition('alpha'), enabled: true, confirmed: true });
+	await api(BASE_URL, 'i/note-cleanup/request', { i: alice.token, ruleIds: [seed.id] });
+	await expect.poll(async () => {
+		const notes = await api(BASE_URL, 'i/notifications', { i: alice.token, limit: 20 });
+		return notes.some((n: { type: string }) => n.type === 'noteCleanupCompleted');
+	}, { timeout: 60_000 }).toBe(true);
+	await signIn(page, 'alice', 'alice1234');
+	await closeUserSetupDialog(page);
+	// 설정을 한 번 연 뒤 알림으로 나갔다가 완료 알림 링크로 목록에 들어가면 설정 부모가 둘 캐시된다.
+	await page.goto(`${BASE_URL}/settings`);
+	await page.locator('a[href="/my/notifications"]').first().click();
+	await page.getByText('Note cleanup finished', { exact: true }).first().waitFor();
+	await page.locator('a[href="/settings/note-cleanup"]').first().click();
+	await page.getByRole('heading', { name: 'Note cleanup', exact: true }).waitFor();
+	await page.getByRole('link', { name: 'Create rule' }).first().click();
+	await page.locator('textarea').first().waitFor();
+	await page.getByText('Rule name', { exact: true }).locator('..').locator('input').fill('Cached parent');
+	await page.locator('textarea').first().fill('beta');
+	for (let i = 0; i < 12; i++) await page.getByRole('button', { name: 'Add condition' }).last().click();
+	const textareas = page.locator('textarea');
+	const count = await textareas.count();
+	for (let i = 1; i < count; i++) await textareas.nth(i).fill(`beta ${i}`);
+	await page.evaluate(() => { const sc = document.querySelector('._pageScrollable')!; sc.scrollTop = sc.scrollHeight; });
+	await page.waitForTimeout(300);
+	const before = await page.evaluate(() => document.querySelector('._pageScrollable')!.scrollTop);
+	expect(before).toBeGreaterThan(100);
+	const listRequests: number[] = [];
+	page.on('request', request => { if (request.url().endsWith('/api/i/note-cleanup/list')) listRequests.push(Date.now()); });
+	const saveAt = Date.now();
+	await page.getByRole('button', { name: 'Save' }).click();
+	await expect(page.getByRole('button', { name: 'Clean up now' })).toBeVisible();
+	await page.waitForTimeout(1000);
+	const after = await page.evaluate(() => document.querySelector('._pageScrollable')!.scrollTop);
+	// 보이는 편집 화면이 전달값을 받아 스크롤이 유지되고 목록을 다시 읽지 않는다.
+	expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
+	expect(listRequests.filter(t => t >= saveAt)).toHaveLength(0);
 });
 
 test.describe('phone', () => {

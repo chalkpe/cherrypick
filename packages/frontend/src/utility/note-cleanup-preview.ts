@@ -45,7 +45,7 @@ export class CleanupPreviewPaginator implements IPaginator<Misskey.entities.Note
 	constructor(private ruleIds: string[]) {}
 
 	public async init(): Promise<void> {
-		await this.load(false);
+		await this.load(false, false);
 	}
 
 	public async reload(): Promise<void> {
@@ -54,12 +54,11 @@ export class CleanupPreviewPaginator implements IPaginator<Misskey.entities.Note
 		this.cursor = null;
 		this.appending = false;
 		this.ready.value = false;
-		this.complete.value = false;
-		this.canFetchNewer.value = false;
-		await this.load(false);
+		// 새 응답이 올 때까지 지금 보이는 목록·더 보기·빈 문구를 그대로 둔다. 먼저 비우면 높이가 줄어 스크롤 위치가 잘린다.
+		await this.load(false, true);
 	}
 
-	private async load(append: boolean): Promise<void> {
+	private async load(append: boolean, reload = false): Promise<void> {
 		if (append) {
 			if (this.appending) return;
 			this.appending = true;
@@ -67,7 +66,8 @@ export class CleanupPreviewPaginator implements IPaginator<Misskey.entities.Note
 		const generation = this.generation;
 		this.error.value = false;
 		if (append) this.fetchingNewer.value = true;
-		else this.fetching.value = true;
+		// 다시 읽기는 로딩으로 바꾸지 않는다. 보이는 목록(빈 문구 포함)을 그대로 둬야 스크롤 위치가 유지된다.
+		else this.fetching.value = reload ? false : this.items.value.length === 0;
 		try {
 			// 후보 없이 끝난 읽기(오류 포함)는 읽은 데까지의 커서에서 이어 읽는다.
 			const resume = !append && this.items.value.length === 0 && !this.complete.value;

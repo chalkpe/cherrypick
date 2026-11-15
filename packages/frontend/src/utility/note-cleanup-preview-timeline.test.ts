@@ -120,8 +120,9 @@ test('empty ranges beyond the auto-read cap show only load more, then continue f
 	const view = renderPreview();
 	const more = await view.findByRole('button', { name: 'Load more' });
 	expect(requests.map(request => request.afterId)).toEqual([undefined, 'c-100', 'c-200']);
-	// 빈 문구는 숨겨져 있어야 한다.
-	expect(view.queryByTestId('result')?.closest('[style*="display: none"]')).not.toBeNull();
+	// 빈 문구는 DOM에 남아 있되 숨겨져 있어야 한다. 요소가 실제로 있는지 먼저 확인한다.
+	const emptyResult = view.getByTestId('result');
+	expect(emptyResult.closest('[style*="display: none"]')).not.toBeNull();
 	await fireEvent.click(more);
 	await view.findByText('late candidate');
 	expect(requests.map(request => request.afterId)).toEqual([undefined, 'c-100', 'c-200', 'c-300', 'c-400']);

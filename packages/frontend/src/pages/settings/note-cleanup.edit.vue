@@ -4,40 +4,47 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 <template>
 <div class="_gaps_m">
-	<MkInput v-model="draft.name" @update:modelValue="draft.defaultName = null">
-		<template #label>{{ i18n.ts._noteCleanup.name }}</template>
-	</MkInput>
-	<MkSelect v-model="draft.action" :items="actions">
-		<template #label>{{ i18n.ts._noteCleanup.action }}</template>
-	</MkSelect>
-	<FormSection>
-		<template #label>{{ i18n.ts._noteCleanup.condition }}</template>
-		<div class="_gaps_m">
-			<MkInfo v-if="activeError" warn role="alert">
-				{{ cleanupErrorMessage(activeError.code) }}
-				<MkButton v-if="canRevealCleanupError(activeError.code, activeError.path)" small @click="revealError">{{ i18n.ts.edit }}</MkButton>
-			</MkInfo>
-			<div ref="editorRootEl">
-				<ConditionEditor :condition="draft.condition" :path="[]" @change="change" @remove="remove" @duplicate="duplicate" @shift="shift" @move="move"/>
-			</div>
-		</div>
-	</FormSection>
-	<div class="_buttons">
-		<MkButton primary inline :disabled="busy || !draft.name.trim()" @click="save"><i class="ti ti-device-floppy"></i> {{ i18n.ts.save }}</MkButton>
-		<MkButton v-if="rule" inline :disabled="busy || dirty" @click="toggleEnabled"><i :class="rule.enabled ? 'ti ti-player-pause' : 'ti ti-player-play'"></i> {{ rule.enabled ? i18n.ts._noteCleanup.disable : i18n.ts._noteCleanup.enable }}</MkButton>
-		<MkButton v-if="rule" danger inline :disabled="busy" @click="del"><i class="ti ti-trash"></i> {{ i18n.ts.delete }}</MkButton>
-	</div>
-	<FormSection v-if="rule && draft.action === 'delete'">
-		<template #label>{{ i18n.ts._noteCleanup.notesToDelete }}</template>
-		<fieldset :disabled="dirty || busy" :class="$style.run">
+	<MkLoading v-if="loading"/>
+	<MkInfo v-else-if="loadFailed" warn role="alert">
+		{{ cleanupErrorMessage(loadFailed.code) }}
+		<MkButton small @click="retryLoad">{{ i18n.ts.retry }}</MkButton>
+	</MkInfo>
+	<template v-else>
+		<MkInput v-model="draft.name" @update:modelValue="draft.defaultName = null">
+			<template #label>{{ i18n.ts._noteCleanup.name }}</template>
+		</MkInput>
+		<MkSelect v-model="draft.action" :items="actions">
+			<template #label>{{ i18n.ts._noteCleanup.action }}</template>
+		</MkSelect>
+		<FormSection>
+			<template #label>{{ i18n.ts._noteCleanup.condition }}</template>
 			<div class="_gaps_m">
-				<!-- 목록이 길어도 조작이 바로 보이도록 지워질 노트 목록 위에 둔다. -->
-				<MkButton :disabled="!rule.enabled" @click="requestNow"><i class="ti ti-player-play"></i> {{ i18n.ts._noteCleanup.request }}</MkButton>
-				<MkSwitch :modelValue="rule.automatic" :disabled="dirty || busy || !rule.enabled || (!rule.automaticConfirmed && !previewReady)" mutedDisabled @update:modelValue="setAutomatic">{{ i18n.ts._noteCleanup.automatic }}</MkSwitch>
-				<Preview :ruleId="rule.id" :version="previewVersion" @ready="previewReady = $event"/>
+				<MkInfo v-if="activeError" warn role="alert">
+					{{ cleanupErrorMessage(activeError.code) }}
+					<MkButton v-if="canRevealCleanupError(activeError.code, activeError.path)" small @click="revealError">{{ i18n.ts.edit }}</MkButton>
+				</MkInfo>
+				<div ref="editorRootEl">
+					<ConditionEditor :condition="draft.condition" :path="[]" @change="change" @remove="remove" @duplicate="duplicate" @shift="shift" @move="move"/>
+				</div>
 			</div>
-		</fieldset>
-	</FormSection>
+		</FormSection>
+		<div class="_buttons">
+			<MkButton primary inline :disabled="busy || !draft.name.trim()" @click="save"><i class="ti ti-device-floppy"></i> {{ i18n.ts.save }}</MkButton>
+			<MkButton v-if="rule" inline :disabled="busy || dirty" @click="toggleEnabled"><i :class="rule.enabled ? 'ti ti-player-pause' : 'ti ti-player-play'"></i> {{ rule.enabled ? i18n.ts._noteCleanup.disable : i18n.ts._noteCleanup.enable }}</MkButton>
+			<MkButton v-if="rule" danger inline :disabled="busy" @click="del"><i class="ti ti-trash"></i> {{ i18n.ts.delete }}</MkButton>
+		</div>
+		<FormSection v-if="rule && draft.action === 'delete'">
+			<template #label>{{ i18n.ts._noteCleanup.notesToDelete }}</template>
+			<fieldset :disabled="dirty || busy" :class="$style.run">
+				<div class="_gaps_m">
+					<!-- 목록이 길어도 조작이 바로 보이도록 지워질 노트 목록 위에 둔다. -->
+					<MkButton :disabled="!rule.enabled" @click="requestNow"><i class="ti ti-player-play"></i> {{ i18n.ts._noteCleanup.request }}</MkButton>
+					<MkSwitch :modelValue="rule.automatic" :disabled="dirty || busy || !rule.enabled || (!rule.automaticConfirmed && !previewReady)" mutedDisabled @update:modelValue="setAutomatic">{{ i18n.ts._noteCleanup.automatic }}</MkSwitch>
+					<Preview :ruleId="rule.id" :version="previewVersion" @ready="previewReady = $event"/>
+				</div>
+			</fieldset>
+		</FormSection>
+	</template>
 </div>
 </template>
 <script lang="ts" setup>
@@ -56,13 +63,13 @@ import type { CleanupDraft, CleanupRule } from '@/utility/note-cleanup-api.js';
 import { cleanupApi } from '@/utility/note-cleanup-api.js';
 import type { CleanupFailure } from '@/utility/note-cleanup-errors.js';
 import { canRevealCleanupError, cleanupErrorMessage, cleanupFailure } from '@/utility/note-cleanup-errors.js';
-import { childrenOf, cloneCondition, conditionAt, createCondition, groupPaths, incompletePaths, keywordLines, moveCondition, removeCondition, replaceCondition, serverConditionPath } from '@/utility/note-cleanup-editor.js';
+import { childrenOf, cloneCondition, conditionAt, createCondition, groupPaths, incompletePaths, keywordLines, moveCondition, refreshCondition, removeCondition, replaceCondition, serverConditionPath } from '@/utility/note-cleanup-editor.js';
 import { cleanupRuleName } from '@/utility/note-cleanup-name.js';
 import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
 import { definePage } from '@/page.js';
 import { useRouter } from '@/router.js';
-import { handOffSavedRule, takeSavedRule } from '@/utility/note-cleanup-handoff.js';
+import { handOffSavedRule, peekSavedRule, takeSavedRule } from '@/utility/note-cleanup-handoff.js';
 import { useStream } from '@/stream.js';
 import * as os from '@/os.js';
 const props = defineProps<{ ruleId?: string; action?: string }>();
@@ -71,15 +78,23 @@ const router = useRouter();
 
 let loaded: CleanupRule | undefined;
 let restoreScrollTop: number | null = null;
+let handoffPending = false;
+const loadFailed = ref<CleanupFailure | null>(null);
+const loading = ref(false);
 if (props.ruleId != null) {
-	const handedOff = takeSavedRule(props.ruleId);
+	const handedOff = peekSavedRule(props.ruleId);
 	if (handedOff) {
 		loaded = handedOff.rule;
 		restoreScrollTop = handedOff.scrollTop;
+		handoffPending = true;
 	} else {
-		const { rules } = await cleanupApi.list();
-		loaded = rules.find(rule => rule.id === props.ruleId);
-		if (!loaded) throw new Error('NO_SUCH_RULE');
+		try {
+			const { rules } = await cleanupApi.list();
+			loaded = rules.find(rule => rule.id === props.ruleId);
+			if (!loaded) throw new Error('NO_SUCH_RULE');
+		} catch (e) {
+			loadFailed.value = cleanupFailure(e);
+		}
 	}
 }
 
@@ -100,6 +115,11 @@ streamConnection.on('notification', notification => {
 });
 onUnmounted(() => streamConnection.dispose());
 onMounted(() => {
+	if (handoffPending) {
+		// 페이지 캐시에 남아 문서에서 떨어진 숨은 설정 화면의 자식은 전달값을 소비하지 않는다. 보이는 화면만 가져간다.
+		if (!editorRootEl.value?.closest('._pageScrollable')?.isConnected) return;
+		if (props.ruleId != null) takeSavedRule(props.ruleId);
+	}
 	if (restoreScrollTop == null) return;
 	const top = restoreScrollTop;
 	nextTick(() => { editorRootEl.value?.closest('._pageScrollable')?.scrollTo({ top }); });
@@ -118,10 +138,27 @@ function snapshot(): string {
 
 function applyRule(next: CleanupRule) {
 	rule.value = next;
-	draft.value = { name: cleanupRuleName(next, i18n.ts._noteCleanup), defaultName: next.defaultName, action: next.action, condition: structuredClone(next.condition) as Condition };
+	draft.value = { name: cleanupRuleName(next, i18n.ts._noteCleanup), defaultName: next.defaultName, action: next.action, condition: refreshCondition(draft.value.condition, next.condition as Condition) };
 	savedSnapshot.value = snapshot();
 	error.value = null;
 	previewVersion.value++;
+}
+
+// 불러오기에 실패하면 빈 화면 대신 목록과 같은 방식으로 오류와 다시 시도를 보인다.
+async function retryLoad() {
+	if (props.ruleId == null) return;
+	loading.value = true;
+	try {
+		const { rules } = await cleanupApi.list();
+		const found = rules.find(rule => rule.id === props.ruleId);
+		if (!found) throw new Error('NO_SUCH_RULE');
+		applyRule(found);
+		loadFailed.value = null;
+	} catch (e) {
+		loadFailed.value = cleanupFailure(e);
+	} finally {
+		loading.value = false;
+	}
 }
 
 function change(path: number[], value: Condition) {

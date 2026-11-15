@@ -11,9 +11,15 @@ export function handOffSavedRule(rule: CleanupRule, scrollTop: number): void {
 	pending = { rule, scrollTop, expires: Date.now() + 5000 };
 }
 
-export function takeSavedRule(ruleId: string): { rule: CleanupRule; scrollTop: number } | null {
+// 슬롯을 비우지 않고 같은 규칙의 전달값만 읽는다. 페이지 캐시에 남은 숨은 화면과 보이는 화면이 모두 setup에서 값을 확인하되, 소비는 보이는 화면만 하도록 한다.
+export function peekSavedRule(ruleId: string): { rule: CleanupRule; scrollTop: number } | null {
 	const value = pending;
-	pending = null;
 	if (value == null || value.rule.id !== ruleId || value.expires < Date.now()) return null;
 	return { rule: value.rule, scrollTop: value.scrollTop };
+}
+
+export function takeSavedRule(ruleId: string): { rule: CleanupRule; scrollTop: number } | null {
+	const value = peekSavedRule(ruleId);
+	pending = null;
+	return value;
 }

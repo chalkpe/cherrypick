@@ -51,6 +51,7 @@ vi.mock('@/components/MkSwitch.vue', () => ({ default: defineComponent({
 	}, slots.default?.()),
 }) }));
 vi.mock('@/components/MkInfo.vue', () => ({ default: defineComponent({ setup: (_, { slots }) => () => h('div', slots.default?.()) }) }));
+vi.mock('@/components/global/MkLoading.vue', () => ({ default: defineComponent({ setup: () => () => h('div', 'loading') }) }));
 // 미리 보기 자체는 별도 시험에서 다루므로 여기서는 버전 전달만 관찰한다. 준비 상태는 항상 성공으로 본다.
 vi.mock('@/pages/settings/note-cleanup/Preview.vue', () => ({ default: defineComponent({
 	props: ['ruleId', 'version'], emits: ['ready'],
@@ -65,9 +66,10 @@ vi.mock('@/pages/settings/note-cleanup/ConditionEditor.vue', () => ({ default: d
 	setup: (_, { emit }) => () => h('button', { onClick: () => emit('change', [], { type: 'keyword', mode: 'literal', value: '고양이', flags: '', targets: ['text', 'cw', 'poll'] }) }, 'Enter condition'),
 }) }));
 import type { CleanupRule } from '@/utility/note-cleanup-api.js';
+import { takeSavedRule } from '@/utility/note-cleanup-handoff.js';
 import EditPage from '@/pages/settings/note-cleanup.edit.vue';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); confirm.mockReset(); confirm.mockResolvedValue({ canceled: true }); toast.mockClear(); push.mockClear(); replaceHistory.mockClear(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); confirm.mockReset(); confirm.mockResolvedValue({ canceled: true }); toast.mockClear(); push.mockClear(); replaceHistory.mockClear(); takeSavedRule(''); });
 
 const baseRule: CleanupRule = {
 	id: 'delete', name: 'Old notes', defaultName: null, action: 'delete', enabled: true,

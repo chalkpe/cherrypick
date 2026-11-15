@@ -5,7 +5,7 @@
 import type { NoteCleanupCondition as Condition } from 'cherrypick-js/entities.js';
 import { describe, expect, test } from 'vitest';
 import { labelSelect } from '../pages/settings/note-cleanup/select-label.js';
-import { assertSize, conditionAt, conditionId, createCondition, groupPaths, incompletePaths, keywordLines, moveCondition, removeCondition, replaceCondition, serverConditionPath } from './note-cleanup-editor.js';
+import { assertSize, conditionAt, conditionId, createCondition, groupPaths, incompletePaths, keywordLines, moveCondition, refreshCondition, removeCondition, replaceCondition, serverConditionPath } from './note-cleanup-editor.js';
 
 describe('note cleanup editing', () => {
 	test('keeps slashes literal and defaults to text, CW and poll', () => {
@@ -42,6 +42,21 @@ test('keeps UI identities through edits without serializing them', () => {
 	expect(conditionId(replaced)).toBe(originalId);
 	expect(conditionId(structuredClone(node))).not.toBe(originalId);
 	expect(JSON.stringify(node)).not.toContain(originalId);
+});
+
+test('refreshing a draft from the server keeps unchanged condition nodes mounted', () => {
+	const current = { type: 'all' as const, children: [{ type: 'keyword' as const, mode: 'literal' as const, value: '아침', flags: '', targets: ['text' as const] }, { type: 'age' as const, seconds: 86400, operator: 'gte' as const }] };
+	const keywordId = conditionId(current.children[0]);
+	const ageId = conditionId(current.children[1]);
+	// 값이 그대로면 객체 자체를 돌려줘 편집 화면이 다시 마운트되지 않는다.
+	expect(refreshCondition(current, structuredClone(current))).toBe(current);
+	// 한 조건만 바뀌면 바뀌지 않은 형제 노드의 정체성은 그대로다.
+	const next = { type: 'all' as const, children: [{ type: 'keyword' as const, mode: 'literal' as const, value: '아침\n일상', flags: '', targets: ['text' as const] }, { type: 'age' as const, seconds: 86400, operator: 'gte' as const }] };
+	const refreshed = refreshCondition(current, next);
+	expect(conditionAt(refreshed, [1])).toBe(current.children[1]);
+	expect(conditionId(conditionAt(refreshed, [1]))).toBe(ageId);
+	expect(conditionId(conditionAt(refreshed, [0]))).toBe(keywordId);
+	expect((conditionAt(refreshed, [0]) as { value: string }).value).toBe('아침\n일상');
 });
 
 test('preserves fractional ages accepted by the server and rejects incomplete drafts', () => {

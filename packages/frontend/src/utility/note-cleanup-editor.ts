@@ -4,6 +4,7 @@
  */
 import { toRaw } from 'vue';
 import type { NoteCleanupCondition as Condition } from 'cherrypick-js/entities.js';
+import { deepEqual } from '@/utility/deep-equal.js';
 
 const ids = new WeakMap<object, string>();
 let sequence = 0;
@@ -39,6 +40,20 @@ function cloneWithIds<T>(value: T): T {
 
 export function cloneCondition(node: Condition): Condition {
 	return rawClone(node, false);
+}
+
+// 서버에서 다시 읽은 조건으로 초안을 갱신할 때, 값이 같은 노드는 기존 객체와 정체성을 그대로 이어 쓴다.
+// 저장·끄기·켜기 뒤 편집 화면의 조건 노드가 전부 다시 마운트되면서 화면 높이가 출렁이고 스크롤이 맨 위로 가는 것을 막는다.
+export function refreshCondition(current: Condition, next: Condition): Condition {
+	if (deepEqual(current, next)) return current;
+	if ((current.type === 'all' || current.type === 'any') && (next.type === 'all' || next.type === 'any')) {
+		const children = next.children.map((child, index) => {
+			const old = current.children[index];
+			return old ? refreshCondition(old, child) : child;
+		});
+		return inheritId(current, { ...next, children });
+	}
+	return inheritId(current, next);
 }
 
 function inheritId(source: Condition, target: Condition): Condition {

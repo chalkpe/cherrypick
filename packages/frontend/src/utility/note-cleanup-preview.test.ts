@@ -214,3 +214,21 @@ test('readiness tracks the current first page and clears while a reload is in fl
 	await reloading;
 	expect(paginator.ready.value).toBe(true);
 });
+
+test('a reload keeps the visible list instead of collapsing it to a spinner', async () => {
+	let finishReload!: (response: Response) => void;
+	let calls = 0;
+	vi.stubGlobal('fetch', () => ++calls === 1
+		? Promise.resolve(new Response(JSON.stringify(page([note('n1', 'first')], null, true))))
+		: new Promise<Response>(resolve => { finishReload = resolve; }));
+	const paginator = new CleanupPreviewPaginator(['delete']);
+	await paginator.init();
+	expect(paginator.fetching.value).toBe(false);
+	const reloading = paginator.reload();
+	// 다시 읽는 동안에도 기존 목록이 그대로 보여 스크롤 위치가 잘리지 않는다.
+	expect(paginator.fetching.value).toBe(false);
+	expect(paginator.items.value.map(item => item.id)).toEqual(['n1']);
+	finishReload(new Response(JSON.stringify(page([note('n2', 'second')], null, true))));
+	await reloading;
+	expect(paginator.items.value.map(item => item.id)).toEqual(['n2']);
+});
