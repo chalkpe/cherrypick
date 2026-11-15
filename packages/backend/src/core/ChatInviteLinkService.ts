@@ -32,6 +32,7 @@ import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatRoomBanService } from '@/core/ChatRoomBanService.js';
 import { ChatRoomAccessError, ChatRoomArchivedError, ChatRoomFullError, ChatService, MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
+import { isStorableText } from '@/core/chat-room-channels.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import type Logger from '@/logger.js';
 import { StatusError } from '@/misc/status-error.js';
@@ -548,7 +549,7 @@ export class ChatInviteLinkService {
 	@bindThis
 	public async receiveJoin(actor: MiRemoteUser, activity: IObject): Promise<string> {
 		const joinId = activity.id;
-		if (typeof joinId !== 'string' || joinId.length > 2048 || !this.isOnHostOf(joinId, actor.uri)) return 'skip: invalid Join id';
+		if (typeof joinId !== 'string' || joinId.length > 2048 || !isStorableText(joinId) || !this.isOnHostOf(joinId, actor.uri)) return 'skip: invalid Join id';
 		if (apIdOf((activity as { actor?: unknown }).actor) !== actor.uri) return 'skip: invalid actor';
 
 		const url = apIdOf((activity as { object?: unknown }).object);

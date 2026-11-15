@@ -7,9 +7,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import { Test } from '@nestjs/testing';
 import type * as Redis from 'ioredis';
 import type { TestingModule } from '@nestjs/testing';
-import type { ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomRosterStatesRepository, ChatRoomsRepository, MiChatRoom, MiUser, UsersRepository } from '@/models/_.js';
+import type { ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomRosterStatesRepository, ChatRoomsRepository, DriveFilesRepository, MiChatRoom, MiUser, UsersRepository } from '@/models/_.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateService.js';
+import { ApImageService } from '@/core/activitypub/models/ApImageService.js';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
@@ -315,6 +316,136 @@ describe('chat federation storage', () => {
 			await service.updateRoom(room, { name: 'unversioned' }, { federate: false });
 
 			expect(await chatRoomsRepository.findOneByOrFail({ id: room.id })).toMatchObject({ name: 'unversioned', lastRemoteUpdatedAt: newer });
+		});
+	});
+
+	describe('remote room icon updates', () => {
+		let driveFilesRepository: DriveFilesRepository;
+		const iconFiles: string[] = [];
+		const newer = new Date('2026-11-03T00:00:10.000Z');
+
+		async function createRoomWithIcon() {
+			const roomId = idService.gen();
+			const iconId = idService.gen();
+			iconFiles.push(iconId);
+			await driveFilesRepository.insert({ id: iconId, userId: bob.id, userHost: 'remote.test', md5: 'icon', name: 'icon.png', type: 'image/png', size: 1, storedInternal: false, url: `https://remote.test/icons/${iconId}.png`, isLink: true });
+			await chatRoomsRepository.insert({ id: roomId, name: 'initial', ownerId: bob.id, description: '', uri: `https://remote.test/chat/rooms/${roomId}`, iconId, iconUrl: `https://local.test/files/${iconId}` });
+			return chatRoomsRepository.findOneByOrFail({ id: roomId });
+		}
+
+		async function storeRemoteIcon(uri: string) {
+			const fileId = idService.gen();
+			iconFiles.push(fileId);
+			await driveFilesRepository.insert({ id: fileId, userId: bob.id, userHost: 'remote.test', md5: 'icon', name: 'icon.png', type: 'image/png', size: 1, storedInternal: false, url: uri, uri, isLink: true });
+			return fileId;
+		}
+
+		function createStateService() {
+			const apImageService = Object.create(ApImageService.prototype) as ApImageService;
+			Object.assign(apImageService, { driveFilesRepository });
+			Object.defineProperty(apImageService, 'resolveImage', { value: vi.fn(async () => null), configurable: true, writable: true });
+			const chatService = createService();
+			Object.assign(chatService, { chatEntityService: { packRoomIcon: vi.fn(async () => ({ iconId: null, iconUrl: null, iconBlurhash: null, iconDecorations: [] })) } });
+			const stateService = Object.assign(Object.create(ApChatRoomStateService.prototype), {
+				redisClient,
+				chatRoomsRepository,
+				usersRepository,
+				chatService,
+				queueService: { createChatRoomChannelRefreshJob: vi.fn(async () => {}) },
+				roleService: { getUserPolicies: vi.fn(async () => ({ canUpdateBioMedia: true })) },
+				userEntityService: { isRemoteUser: (user: MiUser) => user.host != null },
+				apImageService,
+				driveFileEntityService: { getPublicUrl: (file: { id: string }) => `https://local.test/files/${file.id}` },
+				avatarDecorationService: { resolveChatDecorations: vi.fn(async () => undefined) },
+			}) as ApChatRoomStateService;
+			return { stateService, apImageService };
+		}
+
+		function groupUpdate(room: MiChatRoom, iconUrl: string, updated: Date) {
+			const channelUri = `${room.uri}/channels/general`;
+			return {
+				id: room.uri!, type: 'Group', name: 'renamed', updated: updated.toISOString(),
+				icon: { type: 'Image', url: iconUrl },
+				_misskey_chatChannels: [{ id: channelUri, name: 'general' }], _misskey_chatLegacyChannel: channelUri,
+			};
+		}
+
+		beforeEach(() => {
+			driveFilesRepository = app.get(DI.driveFilesRepository);
+		});
+
+		afterEach(async () => {
+			if (iconFiles.length > 0) await driveFilesRepository.delete(iconFiles.splice(0));
+		});
+
+		test.each([
+			['끝', (uri: string) => `${uri}\u0000`],
+			['앞', (uri: string) => `\u0000${uri}`],
+			['중간', (uri: string) => uri.replace('/icons/', '/ico\u0000ns/')],
+		])('아이콘 주소에 %s NUL이 있으면 아이콘만 무시하고 이름·채널·판번호는 적용한다', async (_, mutate) => {
+			const room = await createRoomWithIcon();
+			const { stateService, apImageService } = createStateService();
+			const object = groupUpdate(room, mutate(`https://remote.test/icons/${room.id}.png`), newer);
+
+			await stateService.apply(room, object);
+
+			const stored = await chatRoomsRepository.findOneByOrFail({ id: room.id });
+			expect(stored.name).toBe('renamed');
+			expect(stored.lastRemoteUpdatedAt).toEqual(newer);
+			expect(stored.hasChannels).toBe(true);
+			expect(stored.iconId).toBe(room.iconId);
+			expect(stored.iconUrl).toBe(room.iconUrl);
+			expect(apImageService.resolveImage).not.toHaveBeenCalled();
+		});
+
+		test('짝 없는 surrogate가 든 아이콘 주소는 조회에 쓰지 않고 아이콘을 그대로 둔다', async () => {
+			const room = await createRoomWithIcon();
+			const { stateService } = createStateService();
+
+			await stateService.apply(room, groupUpdate(room, `https://remote.test/icons/${room.id}\ud800.png`, newer));
+
+			const stored = await chatRoomsRepository.findOneByOrFail({ id: room.id });
+			expect(stored.name).toBe('renamed');
+			expect(stored.iconId).toBe(room.iconId);
+		});
+
+		test('올바른 이모지 pair가 든 아이콘 주소는 이미 저장된 파일을 찾아 아이콘을 바꾼다', async () => {
+			const room = await createRoomWithIcon();
+			const { stateService, apImageService } = createStateService();
+			const uri = `https://remote.test/icons/🍀-${room.id}.png`;
+			const fileId = await storeRemoteIcon(uri);
+
+			await stateService.apply(room, groupUpdate(room, uri, newer));
+
+			const stored = await chatRoomsRepository.findOneByOrFail({ id: room.id });
+			expect(stored.iconId).toBe(fileId);
+			expect(stored.iconUrl).toBe(`https://local.test/files/${fileId}`);
+			expect(apImageService.resolveImage).not.toHaveBeenCalled();
+		});
+
+		test('저장할 수 없는 아이콘 주소를 새 판번호로 다시 받아도 아이콘은 그대로다', async () => {
+			const room = await createRoomWithIcon();
+			const { stateService } = createStateService();
+			const iconUrl = `https://remote.test/icons/${room.id}.png\u0000`;
+
+			await stateService.apply(room, groupUpdate(room, iconUrl, newer));
+			await stateService.apply(room, groupUpdate(room, iconUrl, new Date(newer.getTime() + 1000)));
+
+			const stored = await chatRoomsRepository.findOneByOrFail({ id: room.id });
+			expect(stored.name).toBe('renamed');
+			expect(stored.lastRemoteUpdatedAt).toEqual(new Date(newer.getTime() + 1000));
+			expect(stored.iconId).toBe(room.iconId);
+		});
+
+		test('명시적인 아이콘 해제는 저장 불가 주소의 무시와 달리 아이콘을 비운다', async () => {
+			const room = await createRoomWithIcon();
+			const { stateService } = createStateService();
+
+			await stateService.apply(room, { id: room.uri!, type: 'Group', name: 'renamed', updated: newer.toISOString(), icon: null });
+
+			const stored = await chatRoomsRepository.findOneByOrFail({ id: room.id });
+			expect(stored.iconId).toBeNull();
+			expect(stored.iconUrl).toBeNull();
 		});
 	});
 
