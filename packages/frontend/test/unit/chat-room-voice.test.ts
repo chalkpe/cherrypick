@@ -400,6 +400,15 @@ describe('voice call on the room page', () => {
 		expect((textarea as HTMLTextAreaElement).value).toBe('draft before joining');
 		expect(screen.queryByRole('button', { name: i18n.ts._voiceCall.join })).toBeNull();
 	});
+	test('marks the recording participant\'s card from the call state and clears it when the recording stops', async () => {
+		Object.assign(callState, { status: 'connected', room });
+		await renderRoom(room, [{ roomId: 'r1', participants: [{ ...participant(alice), recording: true }, participant(me)] }]);
+		expect(within(participantGroup(alice)).getByLabelText(i18n.ts._voiceCall.recording)).toBeTruthy();
+		expect(within(participantGroup(me)).queryByLabelText(i18n.ts._voiceCall.recording)).toBeNull();
+		mocks.channel.emit('chatRoomVoiceState', { roomId: 'r1', participants: [participant(alice), participant(me)] });
+		await flush();
+		expect(within(participantGroup(alice)).queryByLabelText(i18n.ts._voiceCall.recording)).toBeNull();
+	});
 	test('puts my card after shared screens and before other speakers', async () => {
 		Object.assign(callState, { status: 'connected', room, micEnabled: true, speakingIdentities: [identityOf(alice)] });
 		await renderRoom(room, [{ roomId: 'r1', participants: [participant(alice, true), participant(bob), participant(me)] }]);
@@ -1567,6 +1576,26 @@ describe('tile status and volume controls', () => {
 		render(XTile, { props: { participant: participant(alice), speaking: false }, global: { directives: { tooltip: {} }, stubs } });
 		expect(screen.queryByLabelText(i18n.ts._voiceCall.micMuted)).toBeNull();
 		expect(screen.queryByLabelText(i18n.ts._voiceCall.deafened)).toBeNull();
+	});
+
+	test('shows a recording indicator on the card of a participant who is recording', () => {
+		render(XTile, { props: { participant: { ...participant(alice), recording: true }, speaking: false }, global: { directives: { tooltip: {} }, stubs } });
+		const indicator = screen.getByLabelText(i18n.ts._voiceCall.recording);
+		expect(indicator.classList.contains('ti-player-record')).toBe(true);
+		expect(hasClass(indicator, 'recordingIcon')).toBe(true);
+		expect(indicator.closest('button')).toBeNull();
+	});
+
+	test('shows no recording indicator when the participant is not recording', () => {
+		render(XTile, { props: { participant: participant(alice), speaking: false }, global: { directives: { tooltip: {} }, stubs } });
+		expect(screen.queryByLabelText(i18n.ts._voiceCall.recording)).toBeNull();
+	});
+
+	test('keeps the recording indicator next to the deafened indicator', () => {
+		render(XTile, { props: { participant: { ...participant(alice), recording: true, deafened: true }, speaking: false }, global: { directives: { tooltip: {} }, stubs } });
+		expect(screen.getByLabelText(i18n.ts._voiceCall.recording)).toBeTruthy();
+		expect(screen.getByLabelText(i18n.ts._voiceCall.deafened)).toBeTruthy();
+		expect(screen.queryByLabelText(i18n.ts._voiceCall.micMuted)).toBeNull();
 	});
 });
 
