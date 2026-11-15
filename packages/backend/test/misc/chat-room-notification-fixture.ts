@@ -241,3 +241,40 @@ export function notificationServiceOver(chat: ChatService): ChatRoomNotification
 	});
 	return service;
 }
+
+/** 읽음·미읽음 발행까지 실제로 검사하는 시험용. notify를 살리고 ChatService와 같은 Redis를 쓰게 한다. */
+export function liveNotificationServiceOver(
+	chat: ChatService,
+	redis: ReturnType<typeof fakeUnreadRedis>,
+	publishMainStream: (userId: string, type: string, payload?: unknown) => void,
+): ChatRoomNotificationService {
+	const service = notificationServiceOver(chat);
+	const dependencies = chat as unknown as {
+		chatRoomsRepository?: { findOneBy?(where: { id: string }): Promise<MiChatRoom | null> };
+		chatRoomMembershipsRepository: { findBy(where: { roomId: string }): Promise<MiChatRoomMembership[]> };
+		usersRepository: { findOneBy(where: { id: string }): Promise<MiUser | null> };
+	};
+	const manager = (service as unknown as { db: { manager: { existsBy: unknown } } }).db.manager;
+	manager.existsBy = async (entity: unknown, where: { id?: string; roomId?: string; userId?: string; ownerId?: string; isMutedByOwner?: boolean }) => {
+		if (entity === MiUser) {
+			const user = await dependencies.usersRepository.findOneBy({ id: where.id! });
+			return user != null && user.host == null;
+		}
+		if (entity === MiChatRoomMembership) {
+			return (await dependencies.chatRoomMembershipsRepository.findBy({ roomId: where.roomId! })).some(member => member.userId === where.userId);
+		}
+		if (entity === MiChatRoom) {
+			const room = await dependencies.chatRoomsRepository?.findOneBy?.({ id: where.id! });
+			return room != null
+				&& (where.ownerId == null || room.ownerId === where.ownerId)
+				&& (where.isMutedByOwner == null || room.isMutedByOwner === where.isMutedByOwner);
+		}
+		return false;
+	};
+	Object.assign(service, {
+		redis,
+		events: { publishMainStream },
+		notify: ChatRoomNotificationService.prototype.notify.bind(service),
+	});
+	return service;
+}

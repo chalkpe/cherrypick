@@ -2200,6 +2200,7 @@ describe('unread chat notification', () => {
 			},
 			globalEventService: { publishChatUserStream: vi.fn(), publishMainStream },
 			pushNotificationService: { pushNotification },
+			chatRoomNotificationService: { notify: vi.fn(async () => {}) },
 			redisClient: { pipeline: () => pipeline, get: async () => 'm1', incr: async () => 1 },
 		});
 		const send = () => service.createMessageToUser(

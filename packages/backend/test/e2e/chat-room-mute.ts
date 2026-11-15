@@ -172,7 +172,7 @@ describe('muting a chat room', () => {
 		assert.strictEqual(await hasUnread(owner), true);
 	});
 
-	test('a mark from before the mute stays in the list until the owner reads the room', async () => {
+	test('a mark from before the mute is hidden while muted and shows again when unmuted', async () => {
 		const [owner, speaker] = [await person(), await person()];
 		const room = await roomOf(owner, speaker);
 		await say(speaker, room, 'hello');
@@ -180,6 +180,12 @@ describe('muting a chat room', () => {
 
 		await setMuted(owner, room, true);
 
+		// 알림을 끄면 그 전에 생긴 미읽음 표식도 보이지 않는다
+		assert.strictEqual(await hasUnread(owner), false);
+
+		await setMuted(owner, room, false);
+
+		// 다시 켜면 끄기 전의 표식이 그대로 보인다
 		assert.strictEqual(await hasUnread(owner), true);
 		assert.deepStrictEqual(await roomIsRead(owner), [false]);
 
