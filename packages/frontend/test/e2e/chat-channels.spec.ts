@@ -57,6 +57,32 @@ async function send(page: Page, text: string) {
 	return { message: await sent.json() as Misskey.entities.ChatMessage, request: sent.request().postDataJSON() };
 }
 
+type SocketTrackingWindow = Window & { __ws: WebSocket[] };
+
+// 생성되는 WebSocket을 추적한다. 오프라인만으로는 기존 소켓이 닫히지 않아 재연결을 만들 수 없다.
+async function trackSockets(page: Page) {
+	await page.addInitScript(() => {
+		const w = window as unknown as SocketTrackingWindow;
+		w.__ws = [];
+		const Native = window.WebSocket;
+		const Wrapped = function (url: string | URL, protocols?: string | string[]) {
+			const ws = new Native(url, protocols);
+			w.__ws.push(ws);
+			return ws;
+		} as unknown as typeof WebSocket;
+		Object.assign(Wrapped, { prototype: Native.prototype, CONNECTING: Native.CONNECTING, OPEN: Native.OPEN, CLOSING: Native.CLOSING, CLOSED: Native.CLOSED });
+		window.WebSocket = Wrapped;
+	});
+}
+
+async function cutStream(page: Page) {
+	await page.context().setOffline(true);
+	await page.evaluate(() => {
+		const w = window as unknown as SocketTrackingWindow;
+		for (const ws of w.__ws) if (ws.readyState <= WebSocket.OPEN) ws.close();
+	});
+}
+
 test.beforeAll(async () => {
 	const fixtureFile = process.env.CHAT_CHANNEL_FIXTURE;
 	if (fixtureFile && existsSync(fixtureFile)) {
@@ -375,6 +401,76 @@ test('rail dots blink only for notification targets and the current channel is m
 		await expect(quietLink).not.toHaveAttribute('aria-current', 'page');
 		await expect(loudLink).not.toHaveAttribute('aria-current', 'page');
 	}
+});
+
+test('the narrow channel list re-reads unread markers after the stream reconnects', async ({ page }) => {
+	const room = await createGroup('Reconnect markers');
+	const quiet = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	await api(base, 'chat/rooms/notifications', { i: member.token, roomId: room.id, channelId: quiet.id, level: 'mentions' });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: 'plain note' });
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	await login(page, member, 'en-US');
+	await trackSockets(page);
+	await open(page, path(room.id));
+	const list = page.getByRole('navigation', { name: 'Channels' });
+	const quietLink = list.locator(`a[href="${path(room.id, quiet.id)}"]`);
+	await expect(quietLink.locator('.itemIndicator')).toBeVisible();
+	await expect(quietLink.locator('.itemIndicator')).not.toHaveClass(/_blink/);
+
+	// 연결을 끊는 동안 다른 계정의 실제 API로 멘션이 도착한다.
+	await cutStream(page);
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: `ping @${member.username}` });
+	const unreadAfterReconnect = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/unread') && response.request().method() === 'POST', { timeout: 15_000 });
+	await page.context().setOffline(false);
+	await unreadAfterReconnect;
+	await expect(quietLink.locator('.itemIndicator')).toHaveClass(/_blink/);
+});
+
+test('the narrow channel list clears unread markers after the stream reconnects when read elsewhere', async ({ page }) => {
+	const room = await createGroup('Reconnect clear');
+	const loud = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'gamma' });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: loud.id, text: 'news' });
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	await login(page, member, 'en-US');
+	await trackSockets(page);
+	await open(page, path(room.id));
+	const list = page.getByRole('navigation', { name: 'Channels' });
+	const loudLink = list.locator(`a[href="${path(room.id, loud.id)}"]`);
+	await expect(loudLink.locator('.itemIndicator')).toHaveClass(/_blink/);
+
+	// 끊긴 동안 같은 계정이 다른 기기에서 읽는다.
+	await cutStream(page);
+	await api(base, 'chat/rooms/read', { i: member.token, roomId: room.id, channelId: loud.id });
+	const unreadAfterReconnect = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/unread') && response.request().method() === 'POST', { timeout: 15_000 });
+	await page.context().setOffline(false);
+	await unreadAfterReconnect;
+	await expect(loudLink.locator('.itemIndicator')).toHaveCount(0);
+});
+
+test('the wide rail re-reads unread markers after the stream reconnects', async ({ page }) => {
+	const room = await createGroup('Reconnect rail');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const quiet = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	await api(base, 'chat/rooms/notifications', { i: member.token, roomId: room.id, channelId: quiet.id, level: 'mentions' });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: 'plain note' });
+
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	await login(page, member, 'en-US');
+	await trackSockets(page);
+	await open(page, path(room.id, general.id));
+	const rail = page.getByRole('navigation', { name: 'Channels' });
+	const quietLink = rail.locator(`a[href="${path(room.id, quiet.id)}"]`);
+	await expect(quietLink.locator('.itemIndicator')).toBeVisible();
+	await expect(quietLink.locator('.itemIndicator')).not.toHaveClass(/_blink/);
+
+	await cutStream(page);
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: quiet.id, text: `ping @${member.username}` });
+	const unreadAfterReconnect = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/unread') && response.request().method() === 'POST', { timeout: 15_000 });
+	await page.context().setOffline(false);
+	await unreadAfterReconnect;
+	await expect(quietLink.locator('.itemIndicator')).toHaveClass(/_blink/);
 });
 
 test('long channel names wrap within the rail and the narrow list', async ({ page }) => {

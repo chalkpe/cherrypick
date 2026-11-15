@@ -174,10 +174,11 @@ async function refresh() {
 		mainSubscription?.dispose();
 		mainSubscription = useStream().useChannel('main');
 		mainSubscription.on('chatUnread', () => { if (active && target === props.roomId) void refreshUnread(); });
-		mainSubscription.on('_subscribed_', () => { if (active && target === props.roomId) void refreshUnread(); });
 		subscription?.dispose();
 		// 목록을 보는 것만으로는 메시지를 읽지 않는다. read는 대화의 구독에서만 보낸다.
 		subscription = useStream().useChannel('chatRoom', { roomId: target, channelId: channels.value[0]?.id });
+		// 매개변수 있는 이 구독만 재연결 때 구독 확인(_subscribed_)을 받는다. 끊긴 동안 달라진 미읽음·알림 대상을 다시 읽는다.
+		subscription.on('_subscribed_', () => { if (active && target === props.roomId) void refreshUnread(); });
 		subscription.on('channelsUpdated', () => { if (active && target === props.roomId) void refresh(); });
 		subscription.on('roomUpdated', () => { if (active && target === props.roomId) void refresh(); });
 		subscription.on('roomDeleted', () => {
