@@ -110,6 +110,22 @@ describe('그룹 채널 API', () => {
 		expect((await api('chat/rooms/channels/create', { roomId, name: '   ' }, owner)).status).toBe(400);
 	});
 
+	test('저장할 수 없는 이름은 만들기와 이름 바꾸기에서 INVALID_CHANNEL_NAME으로 거부한다', async () => {
+		const roomId = await createRoom(false);
+		await convert(roomId);
+		const channel = await createChannel(roomId, '정상');
+		const invalid = ['가\u0000나', '\u0000', '가\ud800', '\udc00가'];
+
+		for (const name of invalid) {
+			const created = await api('chat/rooms/channels/create', { roomId, name }, owner);
+			const renamed = await api('chat/rooms/channels/update', { channelId: channel.id, name }, owner);
+			expect([created.status, (created.body as unknown as { error?: { code: string } }).error?.code], JSON.stringify(name)).toEqual([400, 'INVALID_CHANNEL_NAME']);
+			expect([renamed.status, (renamed.body as unknown as { error?: { code: string } }).error?.code], JSON.stringify(name)).toEqual([400, 'INVALID_CHANNEL_NAME']);
+		}
+		expect((await api('chat/rooms/channels/list', { roomId }, owner)).body.map((c: { name: string }) => c.name)).toEqual(['general', '정상']);
+		expect((await api('chat/rooms/channels/create', { roomId, name: '😀' }, owner)).status).toBe(200);
+	});
+
 	test('128개 경계에서 동시에 생성해도 한도를 넘지 않으며 새 채널은 맨 아래에 온다', async () => {
 		const roomId = await createRoom(false);
 		await convert(roomId);

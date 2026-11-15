@@ -72,6 +72,12 @@ describe('AvatarDecorationService', () => {
 			{ id: 'remote1', url: 'https://%', name: 'frame' },
 			{ id: 'remote1', url: 'https://user:password@remote.example/frame.png', name: 'frame' },
 			{ id: 'remote1', url: 'https://remote.example/frame.png', name: 'frame', angle: Number.NaN },
+			{ id: 'remote\u00001', url: 'https://remote.example/frame.png', name: 'frame' },
+			{ id: 'remote\ud800', url: 'https://remote.example/frame.png', name: 'frame' },
+			{ id: 'remote1', url: 'https://remote.example/frame\u0000.png', name: 'frame' },
+			{ id: 'remote1', url: 'https://remote.example/frame\udc00.png', name: 'frame' },
+			{ id: 'remote1', url: 'https://remote.example/frame.png', name: 'fra\u0000me' },
+			{ id: 'remote1', url: 'https://remote.example/frame.png', name: 'fra\ud800me' },
 		])('discards an invalid or unrepresentable remote decoration: %j', async value => {
 			vi.stubEnv('NODE_ENV', 'production');
 			try {
