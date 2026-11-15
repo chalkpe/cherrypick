@@ -291,12 +291,12 @@ describe('Chat invite link', () => {
 
 		deepStrictEqual(await gina.client.request('chat/invite-link/join', { url }), { status: 'joined', roomId: mirrorId });
 		deepStrictEqual(await gina.client.request('chat/invite-link/join-status', { url }), { status: 'joined', roomId: mirrorId, reason: null, membersCount: null });
-		// 참여한 멤버가 요청하면 그룹 서버의 현재 인원 수(그룹장 포함 2명 이상)를 받는다
-		const counted = await gina.client.request('chat/invite-link/join-status', { url, withMembersCount: true });
-		strictEqual(typeof counted.membersCount, 'number');
-		strictEqual(counted.membersCount! >= 2, true);
-
 		await vi.waitFor(async () => deepStrictEqual(await membersOnA(room.id), [await idOnA(gina)]), WAIT_FOR_FEDERATION);
+		// 참여한 멤버가 요청하면 그룹 서버의 현재 인원 수를 받는다. 그룹 서버가 멤버로 올린 뒤에는 그룹장 포함 2명이다
+		await vi.waitFor(async () => {
+			const counted = await gina.client.request('chat/invite-link/join-status', { url, withMembersCount: true });
+			strictEqual(counted.membersCount, 2);
+		}, WAIT_FOR_FEDERATION);
 	});
 
 	test('정원 직전에 두 서버 계정이 함께 참여하면 한 명만 들어가고 다른 한 명은 정원 사유를 받는다', async () => {
