@@ -4,6 +4,8 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import ConvertRecordingEndpoint, { meta } from '@/server/api/endpoints/chat/rooms/voice/convert-recording.js';
@@ -238,6 +240,34 @@ describe('chat/rooms/voice/convert-recording', () => {
 		expect(childProcess.spawn).not.toHaveBeenCalled();
 		expect(f.driveService.addFile).not.toHaveBeenCalled();
 		expect(f.recordingStorage.retryPartCleanup).toHaveBeenCalledWith('me', requestId, expect.objectContaining({ remainingParts: ['original0'] }));
+	});
+
+	test('returns the kept download again while it is alive', async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-recording-test-'));
+		const kept = path.join(dir, 'kept.mp3');
+		fs.writeFileSync(kept, 'x');
+		const f = fixture({ remembered: { download: { id: 'dl-1', name: 'room.mp3', size: 1, reason: 'tooLarge' }, remainingParts: [] } });
+		f.recordingStorage.getDownload.mockResolvedValue({ id: 'dl-1', userId: 'me', requestId, path: kept, name: 'room.mp3', size: 1 });
+
+		try {
+			await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false }, me, null, null))
+				.resolves.toEqual({ file: null, download: { id: 'dl-1', name: 'room.mp3', size: 1, reason: 'tooLarge' } });
+			expect(f.recordingStorage.clearResult).not.toHaveBeenCalled();
+			expect(childProcess.spawn).not.toHaveBeenCalled();
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('a retry after the download expired keeps the leftover-part cleanup record', async () => {
+		// 내려받기가 만료되고 원본 조각도 이미 사라진 경우: 재시도는 실패하더라도 남은 조각 정리 기록은 남아야 한다
+		const f = fixture({ remembered: { download: { id: 'dl-1', name: 'room.mp3', size: 2048, reason: 'tooLarge' }, remainingParts: ['original1'] } });
+		f.driveFilesRepository.findBy.mockResolvedValue([]);
+
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_FILE' });
+
+		expect(f.results.get(requestId)).toMatchObject({ remainingParts: ['original1'] });
+		expect(f.recordingStorage.retryPartCleanup).toHaveBeenCalledWith('me', requestId, expect.objectContaining({ remainingParts: ['original1'] }));
 	});
 
 	test('keeps an over-limit final file for a one-time download instead of the drive', async () => {

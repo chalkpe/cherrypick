@@ -230,3 +230,31 @@ test('an interrupted transfer leaves the kept file for a retry', async () => {
 	expect(res.status).toBe(200);
 	expect(Buffer.from(await res.arrayBuffer()).length).toBe(record.size);
 });
+
+test('a file read error does not consume the kept download and a later retry succeeds', async () => {
+	const storage = makeStorage();
+	const record = await keptFile(storage);
+
+	// 파일 자리에 디렉터리를 두어 읽기 스트림이 첫 본문 전에 오류(EISDIR)를 내게 한다
+	fs.rmSync(record.path);
+	fs.mkdirSync(record.path);
+
+	const res = await get(`/recording-download/${record.id}`, { headers: { Authorization: 'Bearer native-owner' } });
+	expect(res.status).toBe(500);
+	expect(Buffer.from(await res.arrayBuffer()).length).toBe(0);
+	await new Promise(resolve => setTimeout(resolve, 300));
+
+	// 오류 응답 뒤에도 기록과 파일이 남아 있어야 한다
+	expect(await storage.getDownload(record.id)).not.toBeNull();
+	expect(fs.existsSync(record.path)).toBe(true);
+
+	// 오류가 회복되면 같은 ID로 다시 받을 수 있어야 한다
+	fs.rmSync(record.path, { recursive: true });
+	fs.writeFileSync(record.path, Buffer.alloc(record.size, 3));
+	const retry = await get(`/recording-download/${record.id}`, { headers: { Authorization: 'Bearer native-owner' } });
+	expect(retry.status).toBe(200);
+	expect(Buffer.from(await retry.arrayBuffer()).length).toBe(record.size);
+
+	await waitUntil(async () => (await storage.getDownload(record.id)) == null);
+	expect(fs.existsSync(record.path)).toBe(false);
+});

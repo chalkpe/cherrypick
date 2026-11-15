@@ -18,6 +18,7 @@ let tmpRoot: string;
 let previousTmpdir: string | undefined;
 const prefix = `test-recording-storage-${randomUUID()}:`;
 const services: RecordingStorageService[] = [];
+const extraClients: Redis[] = [];
 
 function loggerService() {
 	return { getLogger: () => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() }) } as any;
@@ -26,6 +27,22 @@ function loggerService() {
 function makeService() {
 	const service = new RecordingStorageService(
 		redis,
+		{ findOneBy: vi.fn(async () => null) } as any,
+		{ deleteFile: vi.fn(async () => {}) } as any,
+		loggerService(),
+	);
+	fs.mkdirSync(dirOf(service), { recursive: true });
+	services.push(service);
+	return service;
+}
+
+// 다른 keyPrefix를 쓰는 인스턴스(별도 클라이언트)를 만든다
+async function makeServiceWithPrefix(otherPrefix: string) {
+	const client = new Redis({ ...loadConfig().redis, keyPrefix: otherPrefix, lazyConnect: true, maxRetriesPerRequest: 1, connectTimeout: 3000 });
+	await client.connect();
+	extraClients.push(client);
+	const service = new RecordingStorageService(
+		client,
 		{ findOneBy: vi.fn(async () => null) } as any,
 		{ deleteFile: vi.fn(async () => {}) } as any,
 		loggerService(),
@@ -60,8 +77,21 @@ afterEach(async () => {
 		const keys = await redis.keys(`${prefix}*`);
 		if (keys.length > 0) await redis.del(...keys.map(name => name.slice(prefix.length)));
 	}
-	const dir = path.join(tmpRoot, 'cherrypick-recording-downloads');
-	if (fs.existsSync(dir)) for (const entry of fs.readdirSync(dir)) fs.rmSync(path.join(dir, entry), { force: true });
+	for (const client of extraClients.splice(0)) {
+		if (client.status === 'ready') {
+			const keyPrefix = client.options.keyPrefix ?? '';
+			const keys = await client.keys('*');
+			const mine = keys.filter(name => name.startsWith(keyPrefix));
+			if (mine.length > 0) await client.del(...mine.map(name => name.slice(keyPrefix.length)));
+		}
+		client.disconnect();
+	}
+	// 인스턴스별 보관 폴더(이름에 인스턴스 식별자가 붙는다)를 모두 정리한다
+	for (const entry of fs.readdirSync(tmpRoot)) {
+		if (!entry.startsWith('cherrypick-recording-downloads')) continue;
+		const dir = path.join(tmpRoot, entry);
+		for (const file of fs.readdirSync(dir)) fs.rmSync(path.join(dir, file), { force: true });
+	}
 });
 
 afterAll(() => {
@@ -187,4 +217,31 @@ test('the sweep removes a result whose download vanished with no parts left', as
 	await (service as any).sweep();
 
 	expect(await service.getResult('u1', 'r1')).toBeNull();
+});
+
+test('a key prefix with glob characters still finds its own kept files', async () => {
+	// 대괄호·별표·물음표·역슬래시가 든 prefix도 SCAN MATCH에서 리터럴로 검색되어야 한다
+	const globPrefix = `test-recording-glob-[x]*?\\-${randomUUID()}:`;
+	const service = await makeServiceWithPrefix(globPrefix);
+	const record = await service.store('u1', 'r1', writeSource('glob.bin', 4096), 'glob.mp4');
+
+	expect(await (service as any).storageUsage()).toBe(4096);
+
+	await (service as any).sweep();
+
+	expect(fs.existsSync(record.path)).toBe(true);
+	expect(await service.getDownload(record.id)).not.toBeNull();
+});
+
+test('instances with different key prefixes do not remove each other\'s kept files in a shared temp directory', async () => {
+	// 같은 호스트의 두 인스턴스가 같은 임시 폴더를 써도 보관 폴더가 인스턴스별로 나뉘어야 한다
+	const owner = makeService();
+	const record = await owner.store('u1', 'r1', writeSource('shared.bin', 2048), 'shared.mp4');
+
+	const other = await makeServiceWithPrefix(`test-recording-storage-other-${randomUUID()}:`);
+	await other.onModuleInit();
+	await (other as any).sweep();
+
+	expect(fs.existsSync(record.path)).toBe(true);
+	expect(await owner.getDownload(record.id)).not.toBeNull();
 });

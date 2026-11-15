@@ -54,12 +54,17 @@ export class RecordingDownloadServerService {
 			reply.header('Cache-Control', 'no-store');
 			const stream = fs.createReadStream(download.path);
 			// GET 본문 전달이 끝까지 성공했을 때만 한 번 내려받은 것으로 보고 지운다. 중단되면 기한까지 다시 받을 수 있다.
+			// 파일 읽기 오류의 500 응답도 finish가 나므로, 스트림이 오류 없이 끝났는지 함께 확인한다.
+			let streamCompleted = false;
+			stream.on('end', () => { streamCompleted = true; });
+			stream.on('error', () => {
+				streamCompleted = false;
+				if (!reply.sent) reply.code(500).send();
+			});
 			reply.raw.on('finish', () => {
 				if (request.method !== 'GET') return;
+				if (!streamCompleted || reply.statusCode >= 400) return;
 				this.recordingStorage.removeDownload(download.id).catch(() => {});
-			});
-			stream.on('error', () => {
-				if (!reply.sent) reply.code(500).send();
 			});
 			return reply.send(stream);
 		});

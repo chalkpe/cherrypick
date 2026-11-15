@@ -60,7 +60,8 @@ const VIDEO_TIMEOUT_SECONDS_PER_INPUT_SECOND = 2;
 export function recordingConversionTimeoutMs(durationSec: number, hasVideo: boolean): number {
 	if (!hasVideo || !Number.isFinite(durationSec)) return RECORDING_CONVERSION_BASE_TIMEOUT_MS;
 	const scaled = RECORDING_CONVERSION_BASE_TIMEOUT_MS + durationSec * VIDEO_TIMEOUT_SECONDS_PER_INPUT_SECOND * 1000;
-	return Math.min(RECORDING_CONVERSION_MAX_TIMEOUT_MS, Math.max(RECORDING_CONVERSION_BASE_TIMEOUT_MS, scaled));
+	// 슬롯 만료 갱신이 이 값을 Redis PEXPIRE에 넘기므로 정수 밀리초로 올림한다
+	return Math.min(RECORDING_CONVERSION_MAX_TIMEOUT_MS, Math.max(RECORDING_CONVERSION_BASE_TIMEOUT_MS, Math.ceil(scaled)));
 }
 
 export type RecordingProbe = {

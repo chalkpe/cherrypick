@@ -314,7 +314,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		});
 	}
 
-	/** 이전에 만든 결과를 돌려준다. 최종 파일이나 임시 보관이 사라졌으면 기록을 지우고 새로 변환하게 한다. */
+	/** 이전에 만든 결과를 돌려준다. 최종 파일이나 임시 보관이 사라졌으면 새로 변환하게 하되, 남은 조각 정리 기록은 유지한다. */
 	private async reuseResult(me: MiLocalUser, requestId: string, result: RecordingResult): Promise<ConversionResponse | null> {
 		if (result.fileId != null) {
 			const file = await this.driveFilesRepository.findOneBy({ id: result.fileId, userId: me.id });
@@ -327,6 +327,13 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (download != null && download.userId === me.id && fs.existsSync(download.path)) {
 				return { file: null, download: { id: download.id, name: download.name, size: download.size, reason: result.download.reason } };
 			}
+		}
+		if (result.remainingParts.length > 0) {
+			// 최종 파일·내려받기가 사라졌어도 남은 조각 정리가 이어지도록 기록을 유지한다
+			const kept: RecordingResult = { ...result, fileId: undefined, download: undefined };
+			await this.recordingStorage.setResult(me.id, requestId, kept);
+			await this.recordingStorage.retryPartCleanup(me.id, requestId, kept);
+			return null;
 		}
 		await this.recordingStorage.clearResult(me.id, requestId);
 		return null;

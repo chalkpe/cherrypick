@@ -48,6 +48,14 @@ test('scales the conversion timeout with the input length for video, keeps the b
 	expect(recordingConversionTimeoutMs(4 * 60 * 60, true)).toBe(RECORDING_CONVERSION_MAX_TIMEOUT_MS);
 });
 
+test('the conversion timeout is a whole number of milliseconds for fractional input lengths', () => {
+	// 소수 초 길이(예: 10.032993초)의 영상도 정수 밀리초 상한을 만들어야 슬롯 만료 갱신이 거절되지 않는다
+	expect(recordingConversionTimeoutMs(10.032993, true)).toBe(620_066);
+	expect(Number.isInteger(recordingConversionTimeoutMs(10.032993, true))).toBe(true);
+	expect(Number.isInteger(recordingConversionTimeoutMs(0.0005, true))).toBe(true);
+	expect(Number.isInteger(recordingConversionTimeoutMs(123.456789, true))).toBe(true);
+});
+
 test('kills the conversion and reports when it runs past the timeout', async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recording-conversion-test-'));
 	const src = path.join(dir, 'noise.mp4');

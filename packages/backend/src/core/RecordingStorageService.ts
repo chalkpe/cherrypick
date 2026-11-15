@@ -8,7 +8,7 @@ import * as os from 'node:os';
 import * as Path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown, type OnModuleInit } from '@nestjs/common';
 import * as Redis from 'ioredis';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { DI } from '@/di-symbols.js';
 import type { DriveFilesRepository } from '@/models/_.js';
 import { DriveService } from '@/core/DriveService.js';
@@ -69,7 +69,12 @@ export class RecordingStorageService implements OnModuleInit, OnApplicationShutd
 		private loggerService: LoggerService,
 	) {
 		this.logger = this.loggerService.getLogger('recording', 'cyan');
-		this.dir = Path.join(os.tmpdir(), 'cherrypick-recording-downloads');
+		// 같은 호스트의 다른 인스턴스가 임시 폴더를 공유하면 서로의 보관 파일을 기록 없는 파일로 보고 지운다.
+		// 스윕이 자기 기록만 보는 범위에 맞추어 보관 폴더를 인스턴스(Redis keyPrefix)별로 나눈다.
+		const instancePrefix = this.redisClient.options.keyPrefix ?? '';
+		const instanceLabel = instancePrefix.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
+		const instanceHash = createHash('sha256').update(instancePrefix).digest('hex').slice(0, 8);
+		this.dir = Path.join(os.tmpdir(), `cherrypick-recording-downloads-${instanceLabel}-${instanceHash}`);
 	}
 
 	@bindThis
@@ -236,9 +241,12 @@ export class RecordingStorageService implements OnModuleInit, OnApplicationShutd
 		// 돌려받은 키는 이후 GET/DEL에서 prefix가 다시 붙지 않도록 논리 키로 돌린다.
 		// https://github.com/redis/ioredis#transparent-key-prefixing
 		const keyPrefix = this.redisClient.options.keyPrefix ?? '';
+		// MATCH는 glob 패턴이므로 keyPrefix에 든 glob 문자는 리터럴로 이스케이프한다.
+		// 돌려받은 키에서 prefix를 뗄 때는 이스케이프하지 않은 원래 keyPrefix를 쓴다.
+		const matchPrefix = keyPrefix.replace(/[\\*?[\]]/g, ch => `\\${ch}`);
 		let cursor = '0';
 		do {
-			const [next, keys] = await this.redisClient.scan(cursor, 'MATCH', `${keyPrefix}${prefix}*`, 'COUNT', 500);
+			const [next, keys] = await this.redisClient.scan(cursor, 'MATCH', `${matchPrefix}${prefix}*`, 'COUNT', 500);
 			cursor = next;
 			for (const key of keys) yield key.startsWith(keyPrefix) ? key.slice(keyPrefix.length) : key;
 		} while (cursor !== '0');
