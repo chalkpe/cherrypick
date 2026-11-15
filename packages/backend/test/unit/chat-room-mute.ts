@@ -161,7 +161,9 @@ describe('muting a chat room', () => {
 			await vi.advanceTimersByTimeAsync(3000);
 
 			expect(await f.unread(f.member)).toBe(false);
-			expect(f.toldTo(f.member)).toEqual([]);
+			// 알림을 끈 멤버에게도 미읽음 상태(없음)는 동기화되지만, 새 쪽지 알림과 푸시는 가지 않는다
+			expect(f.toldTo(f.member)).toEqual(['chatUnread']);
+			expect(f.main).toHaveBeenCalledWith(f.member.id, 'chatUnread', expect.objectContaining({ hasUnreadChatMessages: false }));
 			expect(f.pushedTo(f.member)).toEqual([]);
 		});
 
@@ -196,7 +198,8 @@ describe('muting a chat room', () => {
 
 			expect(await f.unread(f.owner)).toBe(false);
 			expect(await f.chatService.getRoomReadStateMap(f.owner.id, [f.room.id])).toEqual({ room1: true });
-			expect(f.toldTo(f.owner)).toEqual([]);
+			expect(f.toldTo(f.owner)).toEqual(['chatUnread']);
+			expect(f.main).toHaveBeenCalledWith(f.owner.id, 'chatUnread', expect.objectContaining({ hasUnreadChatMessages: false }));
 			expect(f.pushedTo(f.owner)).toEqual([]);
 		});
 
