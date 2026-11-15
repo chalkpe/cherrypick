@@ -452,7 +452,7 @@ function searchOnKeyDown(ev: KeyboardEvent) {
 
 <style lang="scss" scoped>
 .rrevdjwu {
-	> .group, > .groupList > div > .group {
+	> .group, > .groupList > div > div > .group {
 		& + .group {
 			margin-top: 16px;
 			padding-top: 16px;
@@ -597,12 +597,12 @@ function searchOnKeyDown(ev: KeyboardEvent) {
 
 	// 바깥 끌기 목록에서는 묶음이 항목 안에 들어가므로 구분선을 항목 사이에 둔다.
 	// 바깥 놓기 영역(위·아래 30px)이 안쪽 채널 행을 덮지 않도록 묶음 아래에 같은 높이의 여백을 둔다.
-	> .groupList > div + div > .group {
+	> .groupList > div + div > div > .group {
 		padding-top: 16px;
 		border-top: solid 0.5px var(--MI_THEME-divider);
 	}
 
-	> .groupList > div > .group.titled {
+	> .groupList > div > div > .group.titled {
 		padding-bottom: 30px;
 	}
 
@@ -704,7 +704,7 @@ function searchOnKeyDown(ev: KeyboardEvent) {
 	}
 
 	&.draggable {
-		> .group > .items, > .groupList > div > .group > .items {
+		> .group > .items, > .groupList > div > div > .group > .items {
 			.dragRow {
 				display: flex;
 				align-items: center;
