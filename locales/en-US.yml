@@ -1711,7 +1711,7 @@ _chat:
     sectionName: "Section name"
     sectionNameLimit: "Enter a section name of 1–128 characters, excluding surrounding whitespace."
     sectionLimit: "You can create up to 128 sections."
-    deleteSectionConfirm: "Delete section {name}? Channels and messages in it will remain."
+    deleteSectionConfirm: "Delete section {name}?"
     moveSection: "Move to section"
     noSection: "No section"
     createChannelInSection: "Create channel in this section"
