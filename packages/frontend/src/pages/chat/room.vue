@@ -575,7 +575,11 @@ async function fetchMore() {
 			const live = cursorIndex === -1 ? [] : messages.value.slice(cursorIndex + 1);
 			if (live.length === 0) messages.value.push(...added);
 			else messages.value = [...messages.value.slice(0, cursorIndex + 1), ...[...live, ...added].toSorted((a, b) => a.id < b.id ? 1 : -1)];
-			olderCursorId = newMessages.at(-1)?.id ?? olderCursorId;
+			// 병합 등으로 이미 더 오래된 위치까지 내려간 커서는 늦게 돌아온 응답으로 되돌리지 않는다
+			const pageOldest = newMessages.at(-1)?.id;
+			if (pageOldest != null && (olderCursorId == null || pageOldest < olderCursorId)) {
+				olderCursorId = pageOldest;
+			}
 		}
 		canFetchMore.value = newMessages.length === LIMIT;
 		await nextTick();
@@ -783,8 +787,8 @@ async function refreshImportedHistory() {
 			room.value = { ...room.value!, historyImportStatus: 'completed' };
 			canFetchMore.value = true;
 			messages.value = [...messages.value, ...added].toSorted((a, b) => a.id < b.id ? 1 : -1);
-			// 더 불러오기 기준도 합친 연속 구간의 끝으로 옮긴다. 이미 더 오래된 위치까지 받은 커서는 되돌리지 않는다
-			const mergedOldest = messages.value.at(-1)?.id;
+			// 더 불러오기 기준은 이번에 받은 페이지의 끝으로 옮긴다. 화면 배열 끝은 실시간으로 끼어든 글일 수 있어 연속 구간의 증거가 아니다. 이미 더 오래된 위치까지 받은 커서는 되돌리지 않는다
+			const mergedOldest = imported.at(-1)?.id;
 			if (mergedOldest != null && (olderCursorId == null || mergedOldest < olderCursorId)) {
 				olderCursorId = mergedOldest;
 			}

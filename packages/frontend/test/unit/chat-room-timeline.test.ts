@@ -382,6 +382,110 @@ test('가져온 기록을 합친 뒤 더 불러오기는 합친 구간의 가장
 	}
 });
 
+test('기록 재조회를 기다리는 동안 더 오래된 글이 실시간으로 도착해도 더 불러오기가 빠짐없이 이어진다', async () => {
+	const all = Array.from({ length: 200 }, (_, i) => message(`m${String(200 - i).padStart(3, '0')}`, 'alice', (200 - i) * MINUTE));
+	const late = message('m050b', 'alice', 50 * MINUTE + 1000);
+	const server = [...all.slice(0, 150), late, ...all.slice(150)];
+	let releaseRefresh: (() => void) | null = null;
+	const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+	vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+		if (endpoint === 'chat/messages/room-timeline') {
+			const { untilId = null, limit = 20 } = (params ?? {}) as { untilId?: string | null; limit?: number };
+			if (limit === 100) await refreshGate;
+			return server.filter(m => untilId == null || m.id < untilId).slice(0, limit) as never;
+		}
+		return apiMock(endpoint, params);
+	});
+	try {
+		const { container } = await renderRoom();
+		const more = () => [...container.querySelectorAll('button')].find(button => button.textContent.includes(i18n.ts.loadMore));
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(20);
+
+		mocks.channel.emit('historyImported', { status: 'completed' });
+		await waitFor(() => expect(vi.mocked(misskeyApi).mock.calls.some(([endpoint, params]) => endpoint === 'chat/messages/room-timeline' && (params as { limit?: number })?.limit === 100)).toBe(true));
+
+		// 재조회 응답을 기다리는 동안, 받은 구간보다 오래된 글이 실시간으로 도착한다
+		mocks.channel.emit('message', late);
+		await flush();
+		await flush();
+		releaseRefresh!();
+		await waitFor(() => expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(101));
+		vi.mocked(misskeyApi).mockClear();
+
+		await fireEvent.click(more()!);
+		await flush();
+		await flush();
+
+		// 커서는 실시간으로 끼어든 글이 아니라 실제로 받은 페이지의 끝에서 이어져야 한다
+		const reads = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline');
+		expect(reads[0][1]).toMatchObject({ untilId: 'm101' });
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(131);
+
+		for (let i = 0; i < 10 && more() != null; i++) {
+			await fireEvent.click(more()!);
+			await flush();
+			await flush();
+		}
+		const shown = [...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'));
+		expect(shown).toEqual(server.map(m => m.id).toSorted());
+		expect(more()).toBeUndefined();
+	} finally {
+		vi.mocked(misskeyApi).mockImplementation(apiMock);
+	}
+});
+
+test('더 불러오기 응답이 늦게 돌아와도 기록 병합으로 내려간 더 불러오기 위치를 되돌리지 않는다', async () => {
+	const all = Array.from({ length: 200 }, (_, i) => message(`m${String(200 - i).padStart(3, '0')}`, 'alice', (200 - i) * MINUTE));
+	let releaseMore: (() => void) | null = null;
+	const moreGate = new Promise<void>(resolve => { releaseMore = resolve; });
+	let holdMore = true;
+	vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+		if (endpoint === 'chat/messages/room-timeline') {
+			const { untilId = null, limit = 20 } = (params ?? {}) as { untilId?: string | null; limit?: number };
+			if (limit === 30 && holdMore) await moreGate;
+			return all.filter(m => untilId == null || m.id < untilId).slice(0, limit) as never;
+		}
+		return apiMock(endpoint, params);
+	});
+	try {
+		const { container } = await renderRoom();
+		const more = () => [...container.querySelectorAll('button')].find(button => button.textContent.includes(i18n.ts.loadMore));
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(20);
+
+		// 더 불러오기 응답을 늦게 받는 동안 기록 병합이 먼저 끝난다
+		await fireEvent.click(more()!);
+		await waitFor(() => expect(vi.mocked(misskeyApi).mock.calls.some(([endpoint, params]) => endpoint === 'chat/messages/room-timeline' && (params as { limit?: number })?.limit === 30)).toBe(true));
+		mocks.channel.emit('historyImported', { status: 'completed' });
+		await waitFor(() => expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(100));
+		holdMore = false;
+		releaseMore!();
+		await flush();
+		await flush();
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(100);
+		vi.mocked(misskeyApi).mockClear();
+
+		await fireEvent.click(more()!);
+		await flush();
+		await flush();
+
+		// 늦게 돌아온 응답이 커서를 되돌렸다면 이미 보이는 글만 다시 받는다
+		const reads = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline');
+		expect(reads[0][1]).toMatchObject({ untilId: 'm101' });
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(130);
+
+		for (let i = 0; i < 10 && more() != null; i++) {
+			await fireEvent.click(more()!);
+			await flush();
+			await flush();
+		}
+		const shown = [...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'));
+		expect(shown).toEqual(all.map(m => m.id).toSorted());
+		expect(more()).toBeUndefined();
+	} finally {
+		vi.mocked(misskeyApi).mockImplementation(apiMock);
+	}
+});
+
 describe('following the newest message', () => {
 	const FULL_PAGE = 20;
 
