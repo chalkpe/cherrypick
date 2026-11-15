@@ -31,7 +31,8 @@ export function normalizeChatChannelName(name: string): string {
 
 export function normalizeChatSectionName(name: string): string {
 	const trimmed = name.trim();
-	if (trimmed.length === 0 || Array.from(trimmed).length > MAX_CHAT_ROOM_CHANNEL_NAME_LENGTH) throw new ChatChannelError('INVALID_SECTION_NAME');
+	// PostgreSQL 문자열은 NUL을 저장할 수 없으므로 저장 전에 거부한다.
+	if (trimmed.length === 0 || trimmed.includes('\u0000') || Array.from(trimmed).length > MAX_CHAT_ROOM_CHANNEL_NAME_LENGTH) throw new ChatChannelError('INVALID_SECTION_NAME');
 	return trimmed;
 }
 
@@ -56,7 +57,8 @@ export function isChatChannelUri(roomUri: string, value: unknown): value is stri
 }
 
 export function isChatSectionUri(roomUri: string, value: unknown): value is string {
-	return isChatSubUri(roomUri, value, 'sections');
+	// PostgreSQL 문자열은 NUL을 저장할 수 없으므로 URI에서도 거부한다.
+	return isChatSubUri(roomUri, value, 'sections') && !value.includes('\u0000');
 }
 
 export function parseChatChannels(group: { _misskey_chatChannels?: unknown; _misskey_chatLegacyChannel?: unknown }, roomUri: string): RemoteChatChannels | null {
@@ -92,7 +94,7 @@ export function parseChatChannelSections(value: unknown, roomUri: string, channe
 		if (section == null || typeof section !== 'object') return reject('not-an-object');
 		if (!isChatSectionUri(roomUri, section.id)) return reject('foreign-section-uri');
 		if (seenSections.has(section.id)) return reject('duplicate-section');
-		if (typeof section.name !== 'string' || section.name.trim().length === 0 || Array.from(section.name).length > MAX_REMOTE_CHAT_ROOM_CHANNEL_NAME_LENGTH) return reject('invalid-name');
+		if (typeof section.name !== 'string' || section.name.trim().length === 0 || section.name.includes('\u0000') || Array.from(section.name).length > MAX_REMOTE_CHAT_ROOM_CHANNEL_NAME_LENGTH) return reject('invalid-name');
 		if (!Array.isArray(section.channels)) return reject('invalid-channels');
 		seenSections.add(section.id);
 		for (const channelUri of section.channels) {

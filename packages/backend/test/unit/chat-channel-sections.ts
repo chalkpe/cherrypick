@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, test } from 'vitest';
-import { chatChannelDisplayOrder, chatSectionUri, isChatSectionUri, parseChatChannelSections } from '@/core/chat-room-channels.js';
+import { chatChannelDisplayOrder, chatSectionUri, isChatSectionUri, normalizeChatSectionName, parseChatChannelSections } from '@/core/chat-room-channels.js';
 
 describe('채널 섹션 연합 필드 해석', () => {
 	const roomUri = 'https://remote.test/chat/rooms/room1';
@@ -60,6 +60,14 @@ describe('채널 섹션 연합 필드 해석', () => {
 		expect(parseChatChannelSections([section({ name: '가'.repeat(4096) })], roomUri, channelUris)).not.toBeNull();
 	});
 
+	test('이름이나 URI에 NUL 문자가 있으면 무시한다', () => {
+		expect(parseChatChannelSections([section({ name: '\u0000' })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ name: '운영\u0000' })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ name: '운\u0000영' })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ id: `${roomUri}/sections/s\u00001` })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ id: `${roomUri}/sections/s1\u0000` })], roomUri, channelUris)).toBeNull();
+	});
+
 	test('목록에 없는 채널이나 두 섹션에 걸친 채널이 있으면 무시한다', () => {
 		expect(parseChatChannelSections([section({ channels: [`${roomUri}/channels/missing`] })], roomUri, channelUris)).toBeNull();
 		expect(parseChatChannelSections([section({ channels: ['https://other.test/chat/rooms/room1/channels/c1'] })], roomUri, channelUris)).toBeNull();
@@ -76,6 +84,20 @@ describe('채널 섹션 연합 필드 해석', () => {
 		expect(isChatSectionUri(roomUri, sectionUri)).toBe(true);
 		expect(isChatSectionUri(roomUri, `${roomUri}/channels/s1`)).toBe(false);
 		expect(isChatSectionUri(roomUri, null)).toBe(false);
+		expect(isChatSectionUri(roomUri, `${roomUri}/sections/s\u00001`)).toBe(false);
+	});
+});
+
+describe('섹션 이름 정규화', () => {
+	test('앞뒤 공백을 제거하고 NUL이 없는 이름은 그대로 받는다', () => {
+		expect(normalizeChatSectionName('  운영  ')).toBe('운영');
+		expect(normalizeChatSectionName('A #한글 / 😀')).toBe('A #한글 / 😀');
+	});
+
+	test('NUL 문자가 든 이름은 잘못된 이름으로 거부한다', () => {
+		for (const name of ['\u0000', '운영\u0000', '운\u0000영', '  운\u0000영  ']) {
+			expect(() => normalizeChatSectionName(name)).toThrow(expect.objectContaining({ reason: 'INVALID_SECTION_NAME' }));
+		}
 	});
 });
 

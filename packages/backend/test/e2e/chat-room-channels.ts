@@ -341,6 +341,23 @@ describe('그룹 채널 API', () => {
 		expect(await listSections(roomId)).toHaveLength(128);
 	});
 
+	test('섹션 이름에 NUL 문자가 있으면 만들기와 이름 바꾸기를 거부한다', async () => {
+		const roomId = await createRoom(false);
+		await convert(roomId);
+		const section = await createSection(roomId, '묶음');
+
+		for (const name of ['\u0000', '묶\u0000음', '묶음\u0000']) {
+			const created = await api('chat/rooms/sections/create', { roomId, name }, owner);
+			expect(created.status).toBe(400);
+			expect((created.body as unknown as { error: { code: string } }).error.code).toBe('INVALID_SECTION_NAME');
+			const updated = await api('chat/rooms/sections/update', { sectionId: section.id, name }, owner);
+			expect(updated.status).toBe(400);
+			expect((updated.body as unknown as { error: { code: string } }).error.code).toBe('INVALID_SECTION_NAME');
+		}
+
+		expect((await listSections(roomId)).map(item => item.name)).toEqual(['묶음']);
+	});
+
 	test('채널 목록은 섹션 소속을 싣고 새 채널은 만드는 곳의 맨 아래에 온다', async () => {
 		const roomId = await createRoom(false);
 		const general = await convert(roomId);
@@ -398,7 +415,8 @@ describe('그룹 채널 API', () => {
 		const c = await createChannel(roomId, '다');
 		const s1 = await createSection(roomId, '첫째');
 		const s2 = await createSection(roomId, '둘째');
-		await arrange(roomId, [general.id, a.id], [{ sectionId: s1.id, channelIds: [b.id] }, { sectionId: s2.id, channelIds: [c.id] }]);
+		const arranged = await arrange(roomId, [general.id, a.id], [{ sectionId: s1.id, channelIds: [b.id] }, { sectionId: s2.id, channelIds: [c.id] }]);
+		expect(arranged.status, JSON.stringify(arranged.body)).toBe(200);
 
 		const reordered = await api('chat/rooms/channels/reorder', { roomId, channelIds: [a.id, general.id, c.id, b.id] }, owner);
 		expect(reordered.status, JSON.stringify(reordered.body)).toBe(200);
@@ -415,7 +433,8 @@ describe('그룹 채널 API', () => {
 		const c = await createChannel(roomId, '다');
 		const s1 = await createSection(roomId, '첫째');
 		const s2 = await createSection(roomId, '둘째');
-		await arrange(roomId, [general.id, a.id], [{ sectionId: s1.id, channelIds: [b.id] }, { sectionId: s2.id, channelIds: [c.id] }]);
+		const arranged = await arrange(roomId, [general.id, a.id], [{ sectionId: s1.id, channelIds: [b.id] }, { sectionId: s2.id, channelIds: [c.id] }]);
+		expect(arranged.status, JSON.stringify(arranged.body)).toBe(200);
 
 		expect((await api('chat/rooms/sections/delete', { sectionId: s1.id }, owner)).status).toBe(204);
 
@@ -427,10 +446,12 @@ describe('그룹 채널 API', () => {
 
 	test('채널을 삭제해도 섹션은 남고 빈 섹션을 허용한다', async () => {
 		const roomId = await createRoom(false);
-		await convert(roomId);
+		const general = await convert(roomId);
 		const target = await createChannel(roomId, '대상');
 		const section = await createSection(roomId);
-		await arrange(roomId, [], [{ sectionId: section.id, channelIds: [target.id] }]);
+		const arranged = await arrange(roomId, [general.id], [{ sectionId: section.id, channelIds: [target.id] }]);
+		expect(arranged.status, JSON.stringify(arranged.body)).toBe(200);
+		expect((await listChannels(roomId)).find(channel => channel.id === target.id)?.sectionId).toBe(section.id);
 		const empty = await createSection(roomId, '빈 묶음');
 
 		expect((await api('chat/rooms/channels/delete', { channelId: target.id }, owner)).status).toBe(204);
