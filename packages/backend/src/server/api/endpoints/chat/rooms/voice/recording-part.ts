@@ -8,6 +8,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
+import type { ChatRoomMembershipsRepository } from '@/models/_.js';
+import { ChatService } from '@/core/ChatService.js';
 import { FileInfoService } from '@/core/FileInfoService.js';
 import { RoleService } from '@/core/RoleService.js';
 import { RecordingStorageService, RecordingStorageFullError } from '@/core/RecordingStorageService.js';
@@ -18,7 +20,7 @@ import { ApiError } from '@/server/api/error.js';
 // 공통 드라이브 업로드를 거치지 않으므로 용량 부족과 무관하게 조각을 받을 수 있다.
 export const meta = {
 	tags: ['chat'],
-	description: 'Upload a recording part into the temporary recording storage, for parts that could not be stored in the drive. The conversion step concatenates these parts with the uploaded ones into a single final file.',
+	description: 'Upload a recording part into the temporary recording storage, for parts that could not be stored in the drive. The caller must be a member of the given room and the room must allow recording. The conversion step concatenates these parts with the uploaded ones into a single final file.',
 
 	requireCredential: true,
 
@@ -41,6 +43,16 @@ export const meta = {
 	},
 
 	errors: {
+		accessDenied: {
+			message: 'You are not a member of this room.',
+			code: 'ACCESS_DENIED',
+			id: '8864d1fa-fb02-492c-828f-7621f96ba4a5',
+		},
+		recordingNotAllowed: {
+			message: 'The owner of this room does not allow recording.',
+			code: 'RECORDING_NOT_ALLOWED',
+			id: '385748e1-0207-4e16-9e12-51c4d8a6866f',
+		},
 		invalidFileType: {
 			message: 'Not a recording file.',
 			code: 'INVALID_FILE_TYPE',
@@ -62,8 +74,10 @@ export const meta = {
 
 export const paramDef = {
 	type: 'object',
-	properties: {},
-	required: [],
+	properties: {
+		roomId: { type: 'string', format: 'misskey:id' },
+	},
+	required: ['roomId'],
 } as const;
 
 @Injectable()
@@ -72,12 +86,25 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		@Inject(DI.config)
 		private config: Config,
 
+		private chatService: ChatService,
+		@Inject(DI.chatRoomMembershipsRepository)
+		private chatRoomMembershipsRepository: ChatRoomMembershipsRepository,
+
 		private fileInfoService: FileInfoService,
 		private roleService: RoleService,
 		private recordingStorage: RecordingStorageService,
 	) {
-		super(meta, paramDef, async (_ps, me, _token, _flash, file, cleanup) => {
+		super(meta, paramDef, async (ps, me, _token, _flash, file, cleanup) => {
 			try {
+				// 녹화 승인(status)과 같은 조건으로 방 참가와 녹화 허용을 확인한다.
+				// 녹화를 멈추고 통화를 떠난 뒤에 마지막 조각을 올리므로 세션 연결 여부는 보지 않는다.
+				await this.chatService.checkChatAvailability(me.id, 'write');
+				const [room, member] = await Promise.all([
+					this.chatService.findRoomById(ps.roomId),
+					this.chatRoomMembershipsRepository.exists({ where: { roomId: ps.roomId, userId: me.id } }),
+				]);
+				if (room == null || room.isArchived || me.isSuspended || me.isDeleted || (room.ownerId !== me.id && !member)) throw new ApiError(meta.errors.accessDenied);
+				if (!room.allowRecording) throw new ApiError(meta.errors.recordingNotAllowed);
 				const size = fs.statSync(file!.path).size;
 				const policies = await this.roleService.getUserPolicies(me.id);
 				if (size > Math.min(this.config.maxFileSize, policies.maxFileSizeMb * 1024 * 1024)) throw new ApiError(meta.errors.tooLarge);

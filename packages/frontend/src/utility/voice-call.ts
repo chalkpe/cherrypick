@@ -433,6 +433,7 @@ async function uploadRecordingOriginal(session: RecordingSession, blob: Blob, na
 async function uploadRecordingTempPart(session: RecordingSession, blob: Blob, name: string): Promise<string> {
 	const form = new FormData();
 	form.append('file', new File([blob], `${name}${session.ext}`, { type: blob.type }));
+	form.append('roomId', session.roomId);
 	if ($i != null) form.append('i', $i.token);
 	let res: Response;
 	try {
