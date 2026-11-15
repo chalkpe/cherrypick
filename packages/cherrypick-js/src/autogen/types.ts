@@ -1759,7 +1759,7 @@ export type paths = {
     '/chat/rooms/voice/convert-recording': {
         /**
          * chat/rooms/voice/convert-recording
-         * @description Convert a recording without deleting the original. A null response means that no conversion was performed and the original remains.
+         * @description Convert recording parts into a single file without deleting the originals until it succeeds. A null response means that no conversion was performed and the originals remain.
          *
          *     **Credential required**: *Yes* / **Permission**: *write:drive*
          */
@@ -1791,6 +1791,15 @@ export type paths = {
          *     **Credential required**: *Yes* / **Permission**: *write:chat*
          */
         post: operations['chat___rooms___voice___mute'];
+    };
+    '/chat/rooms/voice/recording-folder': {
+        /**
+         * chat/rooms/voice/recording-folder
+         * @description Return the account's single remembered call-recording folder, creating it on first use. Serialized per user so concurrent first recordings do not create duplicates.
+         *
+         *     **Credential required**: *Yes* / **Permission**: *write:drive*
+         */
+        post: operations['chat___rooms___voice___recording-folder'];
     };
     '/chat/rooms/voice/states': {
         /**
@@ -20778,8 +20787,7 @@ export interface operations {
         requestBody: {
             content: {
                 'application/json': {
-                    /** Format: misskey:id */
-                    fileId: string;
+                    fileIds: string[];
                     video?: boolean;
                     /**
                      * Format: misskey:id
@@ -21041,6 +21049,80 @@ export interface operations {
             204: {
                 headers: {
                     [name: string]: unknown;
+                };
+            };
+            /** @description Client error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Authentication error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Forbidden error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description I'm Ai */
+            418: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Too many requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['Error'];
+                };
+            };
+        };
+    };
+    'chat___rooms___voice___recording-folder': {
+        requestBody: {
+            content: {
+                'application/json': {
+                    name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK (with results) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    'application/json': components['schemas']['DriveFolder'];
                 };
             };
             /** @description Client error */

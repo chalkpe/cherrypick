@@ -4329,7 +4329,7 @@ _voiceRelay:
   settingsTitle: "通話設定"
   capacityTitle: "通話の参加定員"
   recordingConversionsTitle: "録画の同時変換数"
-  recordingConversionsDescription: "通話の録画を MP3/MP4 に変換する処理を同時にいくつまで行うかです。変換は重いので少なめにしてください。0 にすると変換せず、WebM のまま保存します。"
+  recordingConversionsDescription: "通話の録画を MP3/MP4 に変換する処理を同時にいくつまで行うかです。変換は重いので少なめにしてください。0 にすると変換せず、元の形式 (WebM/MP4) のまま保存します。"
   capacityDescription: "ルームの所有者を含む人数です。変更は新しい通話から適用され、進行中の通話の定員は変わりません。レンタルしたインフラを使う通話では、通話ごとにこの人数分の枠を提供元の容量から予約します。"
   livekitTitle: "LiveKit接続"
   livekitDescription: "接続と優先する提供方法の変更はサーバーの再起動後に適用されます。他の設定を選ばない場合は従来のサーバー設定ファイルを使います。保存済みのシークレットを削除するには、先に別の設定を選んでください。"

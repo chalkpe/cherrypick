@@ -1819,7 +1819,8 @@ describe('call recording lifecycle', () => {
 		vi.spyOn(window, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ id: 'recording-file', url: 'https://local.test/files/recording-file' }) } as Response);
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
 			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
-			if (endpoint === 'drive/folders/find') return [{ id: 'recording-folder', name: params.name }];
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { id: 'converted-file', folderId: 'recording-folder' };
 			return {};
 		});
 		mocks.actions.mockReset().mockResolvedValue({ canceled: false, result: 'retry' });
@@ -2129,10 +2130,10 @@ describe('call recording lifecycle', () => {
 			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file', url: 'https://local.test/files/original-file' }) } as Response);
 		let attempts = 0;
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
-			if (endpoint === 'drive/folders/find') return [{ id: 'recording-folder', name: params.name }];
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
 			if (endpoint !== 'chat/rooms/voice/convert-recording') return {};
 			if (++attempts <= 1) throw Object.assign(new Error(code), { code });
-			return { id: `${params.fileId}-converted` };
+			return { id: 'converted-file', folderId: 'recording-folder' };
 		});
 
 		stopRecording();
@@ -2142,8 +2143,10 @@ describe('call recording lifecycle', () => {
 
 		choice.resolve({ canceled: false, result: 'retry' });
 		await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName })));
+		// 재시도는 업로드 없이 변환만 다시 한다. 임시 조각 정리는 서버가 맡는다
 		expect(window.fetch).toHaveBeenCalledTimes(1);
-		expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'original-file' });
+		expect(conversionCalls()).toHaveLength(2);
+		expect(conversionCalls()[0][1].fileIds).toEqual(conversionCalls()[1][1].fileIds);
 	});
 
 	test('discarding a failed recording deletes the original already uploaded to the drive', async () => {
@@ -2220,7 +2223,7 @@ describe('call recording lifecycle', () => {
 		expect(mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'drive/files/delete')).toHaveLength(1);
 	});
 
-	test('discarding failed parts keeps the converted results of saved parts', async () => {
+	test('discarding a failed multi-part recording deletes every uploaded part', async () => {
 		await joinRecordingCall();
 		tinySegments();
 		await startRecording();
@@ -2231,8 +2234,8 @@ describe('call recording lifecycle', () => {
 			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'mic-file' }) } as Response)
 			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'call-file' }) } as Response);
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
 			if (endpoint !== 'chat/rooms/voice/convert-recording') return {};
-			if (params.fileId === 'mic-file') return { id: 'mic-converted' };
 			throw Object.assign(new Error('NO_FREE_SPACE'), { code: 'NO_FREE_SPACE' });
 		});
 
@@ -2243,7 +2246,6 @@ describe('call recording lifecycle', () => {
 
 		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'call-file' }));
 		expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'mic-file' });
-		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('drive/files/delete', { fileId: 'mic-converted' });
 	});
 
 	test('the discard confirmation tells that uploaded originals will also be deleted', async () => {
@@ -2324,21 +2326,26 @@ describe('call recording lifecycle', () => {
 		expect(deletes.filter(([, params]) => params.fileId === 'original-file')).toHaveLength(2);
 	});
 
-	test('uploads the recording independently and deletes only its converted original', async () => {
+	test('uploads parts with force and converts them once, leaving part cleanup to the server', async () => {
 		await joinRecordingCall();
 		await startRecording();
 		vi.mocked(window.fetch).mockReset()
 			.mockResolvedValue({ ok: true, json: async () => ({ id: 'original-file' }) } as Response);
-		mocks.misskeyApi.mockImplementation(async endpoint => endpoint === 'chat/rooms/voice/convert-recording' ? { id: 'converted-file' } : {});
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { id: 'converted-file', folderId: 'recording-folder' };
+			return {};
+		});
 
 		await leaveVoiceCall();
-		await vi.waitFor(() => expect(mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'drive/files/delete')).toHaveLength(1));
+		await vi.waitFor(() => expect(conversionCalls()).toHaveLength(1));
 
 		for (const [, options] of vi.mocked(window.fetch).mock.calls) {
 			expect((options!.body as FormData).get('force')).toBe('true');
 		}
-		expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'original-file' });
-		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('drive/files/delete', { fileId: 'converted-file' });
+		expect(conversionCalls()[0][1].fileIds).toEqual(['original-file']);
+		// 임시 조각 삭제는 서버가 변환 성공 뒤에 한다
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('drive/files/delete', expect.anything());
 	});
 
 	test.each([
@@ -2463,7 +2470,7 @@ describe('call recording lifecycle', () => {
 		const form = vi.mocked(window.fetch).mock.calls[0][1]!.body as FormData;
 		expect(form.get('folderId')).toBe('recording-folder');
 		expect(form.get('force')).toBe('true');
-		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileId: 'recording-file', video: false, folderId: 'recording-folder' });
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileIds: ['recording-file'], video: false, folderId: 'recording-folder' });
 		expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName }));
 	});
 
@@ -2495,11 +2502,12 @@ describe('call recording lifecycle', () => {
 		stopRecording();
 		await flushRecording();
 
-		expect(conversionCalls()).toHaveLength(2);
+		// 녹화가 끝나면 모든 조각을 한 번에 변환한다
+		expect(conversionCalls()).toHaveLength(1);
 		expect(conversionCalls().every(([, params]) => params.video === false)).toBe(true);
 	});
 
-	test('converts held originals as video when a screen share appears mid-recording', async () => {
+	test('converts the whole recording as video when a screen share appears mid-recording', async () => {
 		stubCanvasCapture();
 		await joinRecordingCall();
 		tinySegments();
@@ -2510,15 +2518,14 @@ describe('call recording lifecycle', () => {
 		publishLocalScreenShare();
 		await flushRecording();
 
-		// 화면이 나타난 순간부터는 이미 올려 둔 원본도 영상으로 변환한다
-		expect(conversionCalls()).toHaveLength(1);
-		expect(conversionCalls()[0][1]).toMatchObject({ video: true });
+		// 녹음 중에는 변환하지 않고, 영상 여부만 기록한다
+		expect(conversionCalls()).toHaveLength(0);
 
 		stopRecording();
 		await flushRecording();
 
-		expect(conversionCalls()).toHaveLength(2);
-		expect(conversionCalls().every(([, params]) => params.video === true)).toBe(true);
+		expect(conversionCalls()).toHaveLength(1);
+		expect(conversionCalls()[0][1]).toMatchObject({ video: true });
 	});
 
 	test('records video from the start when a share is already running', async () => {
@@ -2531,7 +2538,7 @@ describe('call recording lifecycle', () => {
 
 		expect(Recorder.instances).toHaveLength(1);
 		expect(Recorder.instances[0].stream.getVideoTracks()).toHaveLength(1);
-		expect(Recorder.instances[0].options.videoBitsPerSecond).toBe(12_000_000);
+		expect(Recorder.instances[0].options.videoBitsPerSecond).toBe(2_500_000);
 
 		stopRecording();
 		await flushRecording();
@@ -2561,8 +2568,8 @@ describe('call recording lifecycle', () => {
 	test('creates the recordings folder when it does not exist', async () => {
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
 			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
-			if (endpoint === 'drive/folders/find') return [];
-			if (endpoint === 'drive/folders/create') return { id: 'new-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'new-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { id: 'converted-file', folderId: 'new-folder' };
 			return {};
 		});
 		await joinRecordingCall();
@@ -2570,10 +2577,10 @@ describe('call recording lifecycle', () => {
 		stopRecording();
 		await flushRecording();
 
-		expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/folders/create', { name: i18n.ts._voiceCall.recordingFolderName });
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/recording-folder', { name: i18n.ts._voiceCall.recordingFolderName });
 		const form = vi.mocked(window.fetch).mock.calls[0][1]!.body as FormData;
 		expect(form.get('folderId')).toBe('new-folder');
-		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileId: 'recording-file', video: false, folderId: 'new-folder' });
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileIds: ['recording-file'], video: false, folderId: 'new-folder' });
 		expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName }));
 	});
 
@@ -2581,7 +2588,7 @@ describe('call recording lifecycle', () => {
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
 		mocks.misskeyApi.mockImplementation(async endpoint => {
 			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
-			if (endpoint === 'drive/folders/find') throw new Error('drive unavailable');
+			if (endpoint === 'chat/rooms/voice/recording-folder') throw new Error('drive unavailable');
 			return {};
 		});
 		await joinRecordingCall();
@@ -2591,7 +2598,7 @@ describe('call recording lifecycle', () => {
 
 		const form = vi.mocked(window.fetch).mock.calls[0][1]!.body as FormData;
 		expect(form.get('folderId')).toBeNull();
-		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileId: 'recording-file', video: false, folderId: null });
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileIds: ['recording-file'], video: false, folderId: null });
 		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved);
 	});
 
@@ -2600,7 +2607,7 @@ describe('call recording lifecycle', () => {
 		remoteParticipant('https://remote.test/users/bob');
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
 			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
-			if (endpoint === 'drive/folders/find') return [{ id: 'recording-folder', name: params.name }];
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
 			if (endpoint === 'chat/rooms/voice/states') {
 				return [{
 					roomId: 'r1',
@@ -2625,7 +2632,7 @@ describe('call recording lifecycle', () => {
 		remoteParticipant('https://remote.test/users/bob');
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
 			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
-			if (endpoint === 'drive/folders/find') return [{ id: 'recording-folder', name: params.name }];
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
 			if (endpoint === 'chat/rooms/voice/states') throw new Error('states unavailable');
 			return {};
 		});
@@ -2680,14 +2687,15 @@ describe('call recording lifecycle', () => {
 		stopRecording();
 		await flushRecording();
 
-		expect(conversionCalls().map(([, params]) => params.fileId)).toEqual(['first-file', 'second-file']);
+		expect(conversionCalls()).toHaveLength(1);
+		expect(conversionCalls()[0][1].fileIds).toEqual(['first-file', 'second-file']);
 	});
 
 	test('keeps the original when the server has conversion turned off', async () => {
 		await joinRecordingCall();
 		await startRecording();
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
-			if (endpoint === 'drive/folders/find') return [{ id: 'recording-folder', name: params.name }];
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
 			if (endpoint === 'chat/rooms/voice/convert-recording') return null;
 			return {};
 		});
@@ -2699,16 +2707,19 @@ describe('call recording lifecycle', () => {
 		expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName }));
 	});
 
-	test('saves to the drive root when the recordings folder disappeared mid-recording', async () => {
+	test('saves to the drive root when the recordings folder disappeared and cannot be recreated', async () => {
 		await joinRecordingCall();
 		await startRecording();
 		let attempts = 0;
+		let folderGone = false;
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
-			if (endpoint === 'drive/folders/find') return [{ id: 'recording-folder', name: params.name }];
+			if (endpoint === 'chat/rooms/voice/recording-folder') {
+				return folderGone ? null : { id: 'recording-folder', name: params.name };
+			}
 			if (endpoint === 'chat/rooms/voice/convert-recording') {
 				attempts += 1;
-				if (attempts === 1) throw Object.assign(new Error('NO_SUCH_FOLDER'), { code: 'NO_SUCH_FOLDER' });
-				return { id: 'converted-file' };
+				if (attempts === 1) { folderGone = true; throw Object.assign(new Error('NO_SUCH_FOLDER'), { code: 'NO_SUCH_FOLDER' }); }
+				return { id: 'converted-file', folderId: null };
 			}
 			return {};
 		});
@@ -2719,7 +2730,8 @@ describe('call recording lifecycle', () => {
 		expect(conversionCalls()).toHaveLength(2);
 		expect(conversionCalls()[0][1]).toMatchObject({ folderId: 'recording-folder' });
 		expect(conversionCalls()[1][1]).toMatchObject({ folderId: null });
-		expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName }));
+		// 안내는 실제 저장 위치(루트)를 기준으로 한다
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved);
 	});
 
 	test('downloads a failed conversion from the drive when the original blob was released', async () => {
@@ -2754,12 +2766,14 @@ describe('call recording lifecycle', () => {
 		expect(createObjectURL).toHaveBeenCalledOnce();
 	});
 
-	test('reports when the device download fails', async () => {
+	test('re-offers the choice when the device download fails', async () => {
 		await joinRecordingCall();
 		await startRecording();
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 		const choice = deferred<{ canceled: boolean; result: string }>();
-		mocks.actions.mockReturnValueOnce(choice.promise);
+		const secondChoice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise).mockReturnValueOnce(secondChoice.promise);
+		mocks.confirm.mockResolvedValue({ canceled: false });
 		vi.mocked(window.fetch).mockReset()
 			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file', url: 'https://local.test/files/original-file' }) } as Response)
 			.mockRejectedValueOnce(new Error('download unavailable'));
@@ -2773,5 +2787,9 @@ describe('call recording lifecycle', () => {
 		choice.resolve({ canceled: false, result: 'download' });
 
 		await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingDownloadFailed));
+		// 다운로드에 실패했으므로 선택창을 다시 제공한다
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
+		secondChoice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'original-file' }));
 	});
 });
