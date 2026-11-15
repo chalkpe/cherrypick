@@ -640,7 +640,12 @@ async function downloadRecording(recording: FailedRecording, session: RecordingS
 /** 버리기를 확정하면 실제 남은 자료를 지운다: 최종 결과(응답 유실 뒤 드라이브에 남은 파일·임시 보관)와 임시 조각. 삭제에 실패한 원본은 목록에 남도록 돌려준다. */
 async function discardUploadedOriginals(failed: FailedRecording[], session: RecordingSession): Promise<FailedRecording[]> {
 	let resultDeleted = true;
-	const result = await fetchRecordingResult(session).catch(() => null);
+	// 조회가 실패하면 결과가 없는지 알 수 없으므로 버리기를 실패로 둔다
+	const result = await fetchRecordingResult(session).catch(error => {
+		console.warn('[recording] could not look up the recording result', error);
+		resultDeleted = false;
+		return null;
+	});
 	if (result?.file != null) {
 		try {
 			await misskeyApi('drive/files/delete', { fileId: result.file.id });

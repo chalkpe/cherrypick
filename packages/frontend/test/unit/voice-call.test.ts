@@ -2333,6 +2333,51 @@ describe('call recording lifecycle', () => {
 		expect(deletes.filter(([, params]) => params.fileId === 'original-file')).toHaveLength(2);
 	});
 
+	test('a failed result lookup during discard keeps the choice dialog and the final file', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		const secondChoice = deferred<{ canceled: boolean; result: string }>();
+		const confirmation = deferred<{ canceled: boolean }>();
+		const secondConfirmation = deferred<{ canceled: boolean }>();
+		mocks.actions.mockReturnValueOnce(choice.promise).mockReturnValueOnce(secondChoice.promise);
+		mocks.confirm.mockReturnValueOnce(confirmation.promise).mockReturnValueOnce(secondConfirmation.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file' }) } as Response);
+		let resultLookups = 0;
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			// 변환은 서버에서 끝났지만 응답이 유실된 상황
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw new TypeError('Failed to fetch');
+			if (endpoint === 'chat/rooms/voice/recording-result') {
+				resultLookups += 1;
+				// 첫 조회는 실패하고, 두 번째 조회에서 드라이브에 남은 최종 파일이 확인된다
+				if (resultLookups === 1) throw new TypeError('Failed to fetch');
+				return { file: { id: 'final-file', url: 'https://local.test/files/final-file', name: 'room 1-20261115-090807.mp3' }, download: null };
+			}
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+		confirmation.resolve({ canceled: false });
+
+		// 조회 실패를 결과 없음으로 보지 않는다: 최종 파일을 지우지 않고, 오류로 알린 뒤 선택창을 유지한다
+		await vi.waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardDeleteFailed({ n: 1 }) }));
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('drive/files/delete', { fileId: 'final-file' });
+
+		secondChoice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(2));
+		secondConfirmation.resolve({ canceled: false });
+
+		// 조회가 회복된 뒤에는 실제 최종 파일까지 지우고 끝낸다
+		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'final-file' }));
+	});
+
 	test('uploads parts with force and converts them once, leaving part cleanup to the server', async () => {
 		await joinRecordingCall();
 		await startRecording();

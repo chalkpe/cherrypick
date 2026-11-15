@@ -26,16 +26,21 @@ export class RecordingDownloadServerService {
 
 	@bindThis
 	public createServer(fastify: FastifyInstance, options: FastifyPluginOptions, done: (err?: Error) => void) {
-		fastify.get<{ Params: { id: string }; Querystring: { i?: string } }>('/recording-download/:id', async (request, reply) => {
+		// HEAD가 본문을 내려주지 않고 한 번 내려받기를 소진하지 않도록 자동 HEAD 등록을 끈다.
+		fastify.get<{ Params: { id: string } }>('/recording-download/:id', { exposeHeadRoute: false }, async (request, reply) => {
 			const authorization = request.headers.authorization;
-			const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : request.query.i;
-			let user;
+			const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null;
+			let user, appToken, flashToken;
 			try {
-				[user] = await this.authenticateService.authenticate(token);
+				[user, appToken, flashToken] = await this.authenticateService.authenticate(token);
 			} catch {
 				return reply.code(401).send();
 			}
 			if (user == null) return reply.code(401).send();
+			// 공통 API와 같은 정지 계정·권한 검사를 이 전용 경로에도 적용한다.
+			if (user.isSuspended) return reply.code(403).send();
+			if (appToken != null && !appToken.permission.some(p => p === 'read:drive')) return reply.code(403).send();
+			if (flashToken != null && !flashToken.permissions.some(p => p === 'read:drive')) return reply.code(403).send();
 			if (await this.rateLimiterService.limit(DOWNLOAD_USER_LIMIT, user.id) != null) return reply.code(429).send();
 
 			const download = await this.recordingStorage.getDownload(request.params.id);
@@ -48,8 +53,9 @@ export class RecordingDownloadServerService {
 			reply.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(download.name)}`);
 			reply.header('Cache-Control', 'no-store');
 			const stream = fs.createReadStream(download.path);
-			// 전달이 끝까지 성공했을 때만 한 번 내려받은 것으로 보고 지운다. 중단되면 기한까지 다시 받을 수 있다.
+			// GET 본문 전달이 끝까지 성공했을 때만 한 번 내려받은 것으로 보고 지운다. 중단되면 기한까지 다시 받을 수 있다.
 			reply.raw.on('finish', () => {
+				if (request.method !== 'GET') return;
 				this.recordingStorage.removeDownload(download.id).catch(() => {});
 			});
 			stream.on('error', () => {

@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import { expect, test } from 'vitest';
 import {
 	recordingConversionArgs, runRecordingFfmpeg, RecordingOutputLimitError,
-	recordingConversionTimeoutMs, recordingTempOutputLimitBytes,
+	recordingConversionTimeoutMs,
 	RECORDING_CONVERSION_BASE_TIMEOUT_MS, RECORDING_CONVERSION_MAX_TIMEOUT_MS,
 } from '@/core/recording-conversion.js';
 
@@ -61,11 +61,6 @@ test('kills the conversion and reports when it runs past the timeout', async () 
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
-});
-
-test('bounds the temporary output by the server file size setting', () => {
-	expect(recordingTempOutputLimitBytes(250 * 1024 * 1024)).toBe(1024 * 1024 * 1024);
-	expect(recordingTempOutputLimitBytes(10 * 1024 * 1024 * 1024)).toBe(8 * 1024 * 1024 * 1024);
 });
 
 test('kills the conversion and reports when the output grows past the limit while running', async () => {

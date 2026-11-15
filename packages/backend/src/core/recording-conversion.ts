@@ -63,12 +63,6 @@ export function recordingConversionTimeoutMs(durationSec: number, hasVideo: bool
 	return Math.min(RECORDING_CONVERSION_MAX_TIMEOUT_MS, Math.max(RECORDING_CONVERSION_BASE_TIMEOUT_MS, scaled));
 }
 
-// 드라이브 한도를 넘은 최종 파일을 임시 보관할 수 있을 때의 출력 상한.
-// 서버 파일 한도에 비례해 늘리되, 변환 중 임시 디스크 사용은 8GiB로 묶는다.
-export function recordingTempOutputLimitBytes(serverMaxBytes: number): number {
-	return Math.max(1024 * 1024 * 1024, Math.min(serverMaxBytes * 4, 8 * 1024 * 1024 * 1024));
-}
-
 export type RecordingProbe = {
 	durationSec: number;
 	width: number;

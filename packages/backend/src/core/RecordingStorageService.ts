@@ -23,8 +23,6 @@ export const RECORDING_DOWNLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 export const RECORDING_RESULT_TTL_MS = 24 * 60 * 60 * 1000;
 // 한도 초과 녹화가 임시 보관될 수 있는 총량. 넘으면 변환을 실패시켜 원본을 남긴다.
 export const RECORDING_DOWNLOAD_STORAGE_MAX_BYTES = 1024 * 1024 * 1024;
-// 변환 출력이 임시 보관으로 이어질 수 있을 때의 상한. 드라이브 한도와 무관하게 이보다 큰 출력은 중단한다.
-export const RECORDING_TEMP_OUTPUT_MAX_BYTES = 1024 * 1024 * 1024;
 const SWEEP_INTERVAL_MS = 60 * 1000;
 
 const downloadKey = (id: string) => `chatVoice:recordingDownload:${id}`;
@@ -77,8 +75,9 @@ export class RecordingStorageService implements OnModuleInit, OnApplicationShutd
 	@bindThis
 	public async onModuleInit(): Promise<void> {
 		fs.mkdirSync(this.dir, { recursive: true });
-		// 재시작 뒤에는 이전 임시 보관을 모두 정리한다. 드라이브에 저장된 최종 파일은 그대로 둔다.
-		await this.clearAllDownloads();
+		// 시작할 때는 기록이 없거나 만료된 파일만 지운다. 다른 프로세스가 보관 중인 파일은
+		// 기록이 살아 있으므로 남는다. 재시작 뒤 기록 없는 파일 정리도 이때 함께 이루어진다.
+		await this.sweep();
 		this.sweepTimer = setInterval(() => {
 			this.sweep().catch(err => this.logger.warn(`Recording storage sweep failed: ${String(err)}`));
 		}, SWEEP_INTERVAL_MS);
@@ -118,8 +117,16 @@ export class RecordingStorageService implements OnModuleInit, OnApplicationShutd
 		const record = await this.getDownload(id);
 		await this.redisClient.del(downloadKey(id));
 		if (record != null) {
-			await this.redisClient.del(resultKey(record.userId, record.requestId));
 			this.unlink(record.path);
+			const result = await this.getResult(record.userId, record.requestId);
+			if (result != null) {
+				if (result.remainingParts.length > 0) {
+					// 남은 조각 정리가 이어지도록 내려받기 정보만 지운다
+					await this.setResult(record.userId, record.requestId, { ...result, download: undefined });
+				} else {
+					await this.clearResult(record.userId, record.requestId);
+				}
+			}
 		}
 	}
 
@@ -201,31 +208,20 @@ export class RecordingStorageService implements OnModuleInit, OnApplicationShutd
 				continue;
 			}
 			const userId = key.slice(RESULT_PREFIX.length).split(':')[0];
+			const requestId = key.slice(RESULT_PREFIX.length + userId.length + 1);
 			if (result.download != null && (await this.getDownload(result.download.id)) == null) {
-				await this.redisClient.del(key);
-				continue;
+				if (result.remainingParts.length === 0) {
+					await this.redisClient.del(key);
+					continue;
+				}
+				// 내려받기가 만료됐어도 남은 조각 정리는 계속한다
+				result = { ...result, download: undefined };
+				await this.setResult(userId, requestId, result);
 			}
 			if (result.remainingParts.length > 0) {
-				await this.retryPartCleanup(userId, key.slice(RESULT_PREFIX.length + userId.length + 1), result);
+				await this.retryPartCleanup(userId, requestId, result);
 			}
 		}
-	}
-
-	@bindThis
-	private async clearAllDownloads(): Promise<void> {
-		for (const entry of fs.readdirSync(this.dir)) this.unlink(Path.join(this.dir, entry));
-		const downloadKeys: string[] = [];
-		for await (const key of this.scanKeys(DOWNLOAD_PREFIX)) downloadKeys.push(key);
-		if (downloadKeys.length > 0) await this.redisClient.del(...downloadKeys);
-		const staleResults: string[] = [];
-		for await (const key of this.scanKeys(RESULT_PREFIX)) {
-			const raw = await this.redisClient.get(key);
-			if (raw == null) continue;
-			try {
-				if ((JSON.parse(raw) as RecordingResult).download != null) staleResults.push(key);
-			} catch { /* ignore malformed */ }
-		}
-		if (staleResults.length > 0) await this.redisClient.del(...staleResults);
 	}
 
 	@bindThis
@@ -236,11 +232,15 @@ export class RecordingStorageService implements OnModuleInit, OnApplicationShutd
 	}
 
 	private async *scanKeys(prefix: string): AsyncGenerator<string> {
+		// SCAN의 MATCH에는 ioredis의 keyPrefix가 자동으로 붙지 않으므로 직접 붙이고,
+		// 돌려받은 키는 이후 GET/DEL에서 prefix가 다시 붙지 않도록 논리 키로 돌린다.
+		// https://github.com/redis/ioredis#transparent-key-prefixing
+		const keyPrefix = this.redisClient.options.keyPrefix ?? '';
 		let cursor = '0';
 		do {
-			const [next, keys] = await this.redisClient.scan(cursor, 'MATCH', `${prefix}*`, 'COUNT', 500);
+			const [next, keys] = await this.redisClient.scan(cursor, 'MATCH', `${keyPrefix}${prefix}*`, 'COUNT', 500);
 			cursor = next;
-			for (const key of keys) yield key;
+			for (const key of keys) yield key.startsWith(keyPrefix) ? key.slice(keyPrefix.length) : key;
 		} while (cursor !== '0');
 	}
 }

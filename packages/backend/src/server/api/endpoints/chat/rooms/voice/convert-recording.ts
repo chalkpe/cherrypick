@@ -20,12 +20,12 @@ import type { MiDriveFile } from '@/models/DriveFile.js';
 import { DriveService } from '@/core/DriveService.js';
 import { InternalStorageService } from '@/core/InternalStorageService.js';
 import { DriveFileEntityService } from '@/core/entities/DriveFileEntityService.js';
-import { RecordingStorageService, RecordingStorageFullError, type RecordingResult } from '@/core/RecordingStorageService.js';
+import { RecordingStorageService, RecordingStorageFullError, RECORDING_DOWNLOAD_STORAGE_MAX_BYTES, type RecordingResult } from '@/core/RecordingStorageService.js';
 import { ApiError } from '@/server/api/error.js';
 import type { Packed } from '@/misc/json-schema.js';
 import {
 	recordingConversionArgs, recordingConcatArgs, recordingConcatList, recordingOutputLimitBytes,
-	recordingConversionTimeoutMs, recordingTempOutputLimitBytes, RECORDING_CONVERSION_MAX_TIMEOUT_MS,
+	recordingConversionTimeoutMs, RECORDING_CONVERSION_MAX_TIMEOUT_MS,
 	assertRecordingInput, runRecordingFfmpeg, RecordingOutputLimitError, RecordingInputLimitError,
 	type RecordingProbe,
 } from '@/core/recording-conversion.js';
@@ -65,6 +65,19 @@ return 1
 const RELEASE_CONVERSION_SCRIPT = `
 redis.call('ZREM', KEYS[1], ARGV[1])
 if redis.call('GET', KEYS[2]) == ARGV[1] then redis.call('DEL', KEYS[2]) end
+return 1
+`;
+
+// After the probes the real timeout is known: tighten the already-acquired slot and user lock
+// to it so a dead process is reclaimed quickly. No new keys; the sorted set's lifetime follows
+// its latest slot so another running conversion's slot is never shortened.
+// KEYS[1]: the slots, KEYS[2]: the user's lock. ARGV: token, now, ttl. Returns 0 if the slot is already gone
+const REFRESH_CONVERSION_SCRIPT = `
+if redis.call('ZSCORE', KEYS[1], ARGV[1]) == false then return 0 end
+redis.call('ZADD', KEYS[1], tonumber(ARGV[2]) + tonumber(ARGV[3]), ARGV[1])
+local maxScore = tonumber(redis.call('ZREVRANGE', KEYS[1], 0, 0, 'WITHSCORES')[2])
+redis.call('PEXPIRE', KEYS[1], maxScore - tonumber(ARGV[2]))
+if redis.call('GET', KEYS[2]) == ARGV[1] then redis.call('PEXPIRE', KEYS[2], ARGV[3]) end
 return 1
 `;
 
@@ -217,7 +230,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			const token = randomUUID();
 			const slots = [CONVERSION_SLOTS_KEY, conversionUserKey(me.id)];
-			// 슬롯은 finally에서 반드시 반환하므로, TTL은 최대 변환 시간으로 잡아 죽은 프로세스의 슬롯만 회수한다.
+			// 슬롯은 finally에서 반드시 반환하므로, TTL은 죽은 프로세스의 슬롯 회수용이다.
+			// probe 전에는 실제 상한을 모르므로 최대 시간으로 잡고, probe 뒤 실제 상한으로 줄인다.
 			const acquired = await this.redisClient.eval(ACQUIRE_CONVERSION_SCRIPT, 2, ...slots, token, Date.now(), RECORDING_CONVERSION_MAX_TIMEOUT_MS + CONVERSION_SLOT_MARGIN_MS, maxConversions);
 			if (acquired !== 1) throw new ApiError(meta.errors.busy);
 
@@ -238,9 +252,11 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 				const policies = await this.roleService.getUserPolicies(me.id);
 				const limitBytes = recordingOutputLimitBytes(this.config.maxFileSize, policies.maxFileSizeMb);
-				// 한도 초과 녹화는 임시 보관으로 이어질 수 있으므로, 출력 감시는 드라이브 한도가 아닌 임시 보관 상한으로 건다.
-				const outputCapBytes = Math.max(limitBytes, recordingTempOutputLimitBytes(this.config.maxFileSize));
+				// 한도 초과 녹화는 임시 보관으로 이어질 수 있으므로, 드라이브에 들어가지 않는 출력은
+				// 보관 총량 상한에서 멈춘다. 보관 상한을 넘는 출력은 끝까지 인코딩해도 보관할 수 없다.
+				const outputCapBytes = Math.max(limitBytes, RECORDING_DOWNLOAD_STORAGE_MAX_BYTES);
 				const timeoutMs = recordingConversionTimeoutMs(total.durationSec, hasVideo);
+				await this.redisClient.eval(REFRESH_CONVERSION_SCRIPT, 2, ...slots, token, Date.now(), timeoutMs + CONVERSION_SLOT_MARGIN_MS);
 
 				dir = fs.mkdtempSync(Path.join(os.tmpdir(), 'voice-recording-'));
 				dst = Path.join(dir, hasVideo ? 'recording.mp4' : 'recording.mp3');
