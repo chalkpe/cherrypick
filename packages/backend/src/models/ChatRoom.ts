@@ -82,6 +82,15 @@ export class MiChatRoom {
 	public legacyChannel: MiChatRoomChannel | null;
 
 	/**
+	 * 持ち主がこのルームをミュートしているか。メンバーのミュートはメンバーシップに持つが、持ち主にはメンバーシップがないのでここに持つ。
+	 * 持ち主ひとりの通知の設定で、ほかの参加者にもほかのサーバーにも伝えない
+	 */
+	@Column('boolean', {
+		default: false,
+	})
+	public isMutedByOwner: boolean;
+
+	/**
 	 * リモートのルーム所有者が最後に知らせた、状態の時刻。遅れて届いた古い状態で巻き戻らないようにする
 	 */
 	@Column('timestamp with time zone', {

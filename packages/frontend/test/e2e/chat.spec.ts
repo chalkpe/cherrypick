@@ -74,6 +74,8 @@ test.describe('Chat', () => {
 			// 最初に読み込まれるのは新しい 20 件で、続きの 30 件はボタンで読み込む
 			const oldestLoaded = page.getByText('message 41', { exact: true });
 			await oldestLoaded.waitFor();
+			// 테마 전환 화면이 입력을 가리는 동안에는 클릭을 기다리며 스크롤할 수 있다.
+			await expect(page.locator('html')).not.toHaveClass(/_themeChanging_/);
 			// 横の通知ウィジェットにも、読み込みの途中で同じ名前のボタンが出ることがある
 			const more = page.getByLabel('Messages').getByRole('button', { name: 'Load more', exact: true });
 			await more.scrollIntoViewIfNeeded();
@@ -831,6 +833,22 @@ test.describe('Chat', () => {
 				expect(await page.evaluate(() => Math.abs(window.document.querySelector('._pageScrollableReversed')?.scrollTop ?? 99))).toBeLessThan(3);
 			});
 
+			test('keeps a long draft and its input in place while reading older messages', async ({ page }) => {
+				await roomToReadFarAbove(page);
+				const input = page.getByPlaceholder('Enter message here');
+				const draft = 'A long draft to keep while reading. '.repeat(20);
+				await input.fill(draft);
+				const before = (await input.boundingBox())!;
+
+				await scrollMessagesTo(page, -400);
+				expect(await distanceFromNewest(page)).toBeGreaterThan(300);
+
+				const after = (await input.boundingBox())!;
+				expect(Math.abs(after.y - before.y)).toBeLessThan(2);
+				await expect(input).toBeInViewport();
+				await expect(input).toHaveValue(draft);
+			});
+
 			// 最新から十分に離れて読めるよう、1 通を高くする。開いたときに読み込むのは新しい 20 件
 			async function roomToReadFarAbove(page: Page) {
 				const room = await api(BASE_URL, 'chat/rooms/create', { i: bob.token, name: `far above ${Date.now()}` }) as { id: string };
@@ -851,6 +869,8 @@ test.describe('Chat', () => {
 			/** @returns 読んでいた場所が今どれだけ動いたかを測る関数 */
 			async function readFarAbove(page: Page, reading: Locator): Promise<() => Promise<number>> {
 				await scrollMessagesTo(page, -100000);
+				// 화면이 좁으면 맨 위에 왔을 때 읽을 메시지가 입력란 아래에 있을 수 있다.
+				await reading.scrollIntoViewIfNeeded();
 				await expect(reading).toBeInViewport();
 				expect(await distanceFromNewest(page)).toBeGreaterThan(400);
 				// スクロールしている途中ではなく、止まって読んでいるところ
@@ -966,7 +986,17 @@ test.describe('Chat', () => {
 
 			test('an edit, a reaction, a deletion and loading earlier messages leave the place alone, and say nothing', async ({ page }) => {
 				const room = await roomToReadFarAbove(page);
-				const moved = await readFarAbove(page, room.reading);
+				// 読んでいるメッセージと「もっと見る」を同時に表示してから位置を記録する。
+				const reading = page.getByText(`line 6 of ${room.id}`);
+				const moved = await readFarAbove(page, reading);
+				const more = page.getByLabel('Messages').getByRole('button', { name: 'Load more', exact: true });
+				const buttonBox = (await more.boundingBox())!;
+				const readingBox = (await reading.boundingBox())!;
+				const scrollerBox = (await page.locator('._pageScrollableReversed').boundingBox())!;
+				for (const box of [buttonBox, readingBox]) {
+					expect(box.y).toBeGreaterThanOrEqual(scrollerBox.y);
+					expect(box.y + box.height).toBeLessThanOrEqual(scrollerBox.y + scrollerBox.height);
+				}
 
 				const edited = `edited ${room.id}`;
 				await api(BASE_URL, 'chat/messages/update', { i: bob.token, messageId: room.newest, text: edited });
@@ -979,9 +1009,11 @@ test.describe('Chat', () => {
 				expect(await moved()).toBeLessThan(2);
 				await expect(newMessageNotice(page)).toBeHidden();
 
-				await page.getByLabel('Messages').getByRole('button', { name: 'Load more', exact: true }).click();
+				const worstMove = await watchEveryFrame(reading);
+				await more.click();
 				await page.getByText(`line 1 of ${room.id}`).waitFor({ state: 'attached' });
 				await expect.poll(moved).toBeLessThan(4);
+				expect(await worstMove()).toBeLessThan(4);
 				await expect(newMessageNotice(page)).toBeHidden();
 			});
 

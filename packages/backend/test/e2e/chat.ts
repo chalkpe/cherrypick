@@ -479,12 +479,14 @@ describe('chat/messages/update', () => {
 			const roomId = await createRoom(alice);
 
 			assertRefused(await api('chat/rooms/leave', { roomId }, bob), 'NO_SUCH_ROOM');
-			assertRefused(await api('chat/rooms/mute', { roomId, mute: true }, bob), 'NO_SUCH_ROOM');
 			assertRefused(await api('chat/rooms/leave', { roomId }, alice), 'NO_SUCH_ROOM');
 		});
 
 		test('the owner mutes through the same personal notification setting as members', async () => {
 			const roomId = await createRoom(alice);
+
+			// 멤버도 방장도 아닌 사람은 음소거할 수 없다
+			assertRefused(await api('chat/rooms/mute', { roomId, mute: true }, bob), 'NO_SUCH_ROOM');
 
 			assert.strictEqual((await api('chat/rooms/mute', { roomId, mute: true }, alice)).status, 204);
 			assert.strictEqual((await api('chat/rooms/notifications', { roomId }, alice)).body.level, 'none');

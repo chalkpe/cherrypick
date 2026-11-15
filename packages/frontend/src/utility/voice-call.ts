@@ -287,7 +287,7 @@ async function disconnectCurrentRoom(): Promise<void> {
 	}
 }
 
-export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { micEnabled?: boolean; approvedMediaProvider?: string } = {}): Promise<void> {
+export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { micEnabled?: boolean } = {}): Promise<void> {
 	migrateParticipantVolumes();
 	// 前の通話の切断を待つあいだに別の参加が始まったら、この参加は捨てる。
 	// leaveVoiceCall は joinAttempt を進めるので、ここでは切断だけを行う
@@ -314,11 +314,6 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 	}
 	if (attempt !== joinAttempt) return;
 
-	if (credentials.mediaProvider && credentials.mediaProvider !== url && credentials.mediaProvider !== options.approvedMediaProvider) {
-		const { canceled } = await os.confirm({ type: 'info', text: i18n.tsx._voiceRelay.mediaNotice({ host: new URL(credentials.mediaProvider).host }) });
-		if (attempt !== joinAttempt) return;
-		if (canceled) { resetState(); return; }
-	}
 	state.mediaProvider = credentials.mediaProvider ?? new URL(credentials.url).origin;
 	screenShareLimits = credentials.screenShareLimits;
 	const lkRoom = new lk.Room({ adaptiveStream: true, dynacast: true });

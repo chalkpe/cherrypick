@@ -148,6 +148,58 @@ test('an archived room offers unarchiving without a confirmation, and no saving'
 	expect(mocks.confirm).not.toHaveBeenCalled();
 });
 
+// 알림 끄기는 보는 본인만의 설정이고, 방장도 자기 방을 끌 수 있다
+const notificationSelect = () => screen.getByRole('combobox', { name: i18n.ts.notificationSetting }) as HTMLSelectElement;
+
+test.each([
+	['the owner', 'me'],
+	['a member', 'someone-else'],
+])('%s mutes the room, and the choice propagates to the room page', async (_, ownerId) => {
+	mocks.apiWithDialog.mockResolvedValueOnce(undefined);
+	const shown = { ...room, ownerId, isArchived: false, isMuted: false };
+	const result = render(XInfo, { props: { room: shown }, global: { stubs } });
+	expect(notificationSelect().value).toBe('all');
+
+	await fireEvent.update(notificationSelect(), 'none');
+
+	// ページが持つルームに伝えないと、タブを切り替えて戻ったときに選択が元に戻って見える
+	await waitFor(() => expect(result.emitted().updated).toEqual([[{ ...shown, notificationLevel: 'none', isMuted: true }]]));
+	expect(mocks.apiWithDialog).toHaveBeenCalledExactlyOnceWith('chat/rooms/notifications', { roomId: 'r1', level: 'none' }, undefined, expect.any(Object));
+	expect(notificationSelect().value).toBe('none');
+});
+
+test('the owner unmutes a room they muted', async () => {
+	mocks.apiWithDialog.mockResolvedValueOnce(undefined);
+	const shown = { ...room, isArchived: false, isMuted: true };
+	const result = render(XInfo, { props: { room: shown }, global: { stubs } });
+	expect(notificationSelect().value).toBe('none');
+
+	await fireEvent.update(notificationSelect(), 'all');
+
+	await waitFor(() => expect(result.emitted().updated).toEqual([[{ ...shown, notificationLevel: 'all', isMuted: false }]]));
+	expect(mocks.apiWithDialog).toHaveBeenCalledExactlyOnceWith('chat/rooms/notifications', { roomId: 'r1', level: 'all' }, undefined, expect.any(Object));
+});
+
+test('a mute that was refused is not passed on to the room page', async () => {
+	mocks.apiWithDialog.mockRejectedValueOnce(new Error('refused'));
+	const result = render(XInfo, { props: { room: { ...room, isArchived: false, isMuted: false } }, global: { stubs } });
+
+	await fireEvent.update(notificationSelect(), 'none');
+
+	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalled());
+	await waitFor(() => expect(notificationSelect().value).toBe('all'));
+	expect(result.emitted().updated).toBeUndefined();
+});
+
+test('the notification setting follows the room when the page reads it again', async () => {
+	const shown = { ...room, isArchived: false, isMuted: false };
+	const result = render(XInfo, { props: { room: shown }, global: { stubs } });
+
+	await result.rerender({ room: { ...shown, notificationLevel: 'none', isMuted: true } });
+
+	expect(notificationSelect().value).toBe('none');
+});
+
 test('other members cannot archive', () => {
 	render(XInfo, { props: { room: { ...room, ownerId: 'someone-else', isArchived: false } }, global: { stubs } });
 	expect(screen.queryByRole('button', { name: i18n.ts.archive })).toBeNull();

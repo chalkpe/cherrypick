@@ -412,6 +412,9 @@ export class ChatService {
 				if (await this.isFromSuspendedUser(latest)) return;
 
 				const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest, toUser);
+				// 알림을 준비하는 사이에 읽혔으면 표시를 켜지 않는다. 읽음 알림보다 늦게 도착해 표시가 켜진 채 남는 것을 막는다.
+				if (await this.redisClient.get(`newUserChatMessageExists:${toUser.id}:${fromUser.id}`) == null) return;
+				await this.chatRoomNotificationService.notify([toUser.id]);
 				this.globalEventService.publishMainStream(toUser.id, 'newChatMessage', packedMessageForTo);
 				this.pushNotificationService.pushNotification(toUser.id, 'newChatMessage', packedMessageForTo);
 			}, 3000);
@@ -451,7 +454,7 @@ export class ChatService {
 			isMuted: m.isMuted,
 		})).concat({ // ownerはmembershipレコードを作らないため
 			userId: toRoom.ownerId,
-			isMuted: false,
+			isMuted: toRoom.isMutedByOwner,
 		});
 
 		if (!memberships.some(member => member.userId === fromUser.id)) {
@@ -607,7 +610,9 @@ export class ChatService {
 		const redisPipeline = this.redisClient.pipeline();
 		redisPipeline.del(`newUserChatMessageExists:${readerId}:${senderId}`);
 		redisPipeline.srem(`newChatMessagesExists:${readerId}`, `user:${senderId}`);
-		await redisPipeline.exec();
+		const results = await redisPipeline.exec();
+		// 지운 표식이 없으면 미읽음 상태도 그대로다. 다시 계산해 알리는 비용을 내지 않는다.
+		if (results == null || !results.some(([, count]) => Number(count) > 0)) return;
 		await this.chatRoomNotificationService.notify([readerId]);
 	}
 

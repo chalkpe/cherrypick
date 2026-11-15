@@ -8675,10 +8675,6 @@ export interface Locale extends ILocale {
          */
         "enableRemoteVoiceCall": string;
         /**
-         * 参加者のIPアドレスは通話をホストするサーバーに見えます。
-         */
-        "enableRemoteVoiceCallDescription": string;
-        /**
          * Cloudflare TURN
          */
         "voiceCallCloudflareTurn": string;
@@ -9720,10 +9716,6 @@ export interface Locale extends ILocale {
          * 通話サーバーに接続できませんでした。
          */
         "connectionFailed": string;
-        /**
-         * この通話は{host}で開かれます。{host}にはあなたのIPアドレスが見えます。
-         */
-        "remoteHostNotice": ParameterizedString<"host">;
         /**
          * このグループのサーバーは通話に対応していません。
          */
@@ -16420,10 +16412,6 @@ export interface Locale extends ILocale {
          * 予約 {reserved} / {max}枠・追加予約可能 {remaining}枠
          */
         "capacity": ParameterizedString<"reserved" | "max" | "remaining">;
-        /**
-         * 通話メディアは{host}が提供します。このサーバーにIPアドレスと通話参加情報が伝わります。接続しますか？
-         */
-        "mediaNotice": ParameterizedString<"host">;
         /**
          * メディア提供サーバー: {host}
          */
