@@ -6,10 +6,13 @@
 export const chatChannelApiErrors = {
 	NO_SUCH_ROOM: { message: 'No such room.', code: 'NO_SUCH_ROOM', id: 'ef41ee7c-5e74-48a0-8126-177a2afec201' },
 	NO_SUCH_CHANNEL: { message: 'No such channel.', code: 'NO_SUCH_CHANNEL', id: 'ea728d98-6b11-494d-887e-fae0abeec404' },
+	NO_SUCH_SECTION: { message: 'No such section.', code: 'NO_SUCH_SECTION', id: '03c6c0a7-4169-4ff0-aa5a-a918d278a366' },
 	ROOM_IS_ARCHIVED: { message: 'This room is archived.', code: 'ROOM_IS_ARCHIVED', id: 'e8f14ab5-aea8-499f-b0ea-cbd7761a7fde' },
 	ALREADY_CONVERTED: { message: 'This room already has channels.', code: 'ALREADY_CONVERTED', id: '44c463cc-8b95-4a9d-bb47-ba652f99bf3d' },
 	INVALID_CHANNEL_NAME: { message: 'The channel name must contain 1 to 128 characters.', code: 'INVALID_CHANNEL_NAME', id: 'f0f229a6-501f-4fb1-b184-26546cd744da' },
+	INVALID_SECTION_NAME: { message: 'The section name must contain 1 to 128 characters.', code: 'INVALID_SECTION_NAME', id: '8e2c22f6-91b7-4f30-9532-411fda4199a3' },
 	TOO_MANY_CHANNELS: { message: 'A room can have up to 128 channels.', code: 'TOO_MANY_CHANNELS', id: '35221886-c272-49dd-9719-6be1be204aa6' },
+	TOO_MANY_SECTIONS: { message: 'A room can have up to 128 sections.', code: 'TOO_MANY_SECTIONS', id: 'd70382dc-4dcf-4bb7-b1ba-e0c6527fe830' },
 	INVALID_CHANNEL_ORDER: { message: 'The order must contain every channel exactly once.', code: 'INVALID_CHANNEL_ORDER', id: 'cc082514-3667-4609-9138-ef1212789812' },
 	LAST_CHANNEL: { message: 'The last channel cannot be deleted.', code: 'LAST_CHANNEL', id: '0011f787-3292-49a5-a3ce-1e84969507f0' },
 	INVALID_CHANNEL_REFS: { message: 'Invalid channel references.', code: 'INVALID_CHANNEL_REFS', id: '909567a1-514a-4465-88e2-c78201e3d831' },

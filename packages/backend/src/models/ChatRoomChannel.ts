@@ -6,6 +6,7 @@
 import { PrimaryColumn, Entity, Index, JoinColumn, Column, ManyToOne } from 'typeorm';
 import { id } from './util/id.js';
 import { MiChatRoom } from './ChatRoom.js';
+import { MiChatRoomChannelSection } from './ChatRoomChannelSection.js';
 
 @Entity('chat_room_channel')
 export class MiChatRoomChannel {
@@ -25,6 +26,14 @@ export class MiChatRoomChannel {
 
 	@Column('integer')
 	public position: number;
+
+	@Index()
+	@Column({ ...id(), nullable: true })
+	public sectionId: MiChatRoomChannelSection['id'] | null;
+
+	@ManyToOne(() => MiChatRoomChannelSection, { onDelete: 'SET NULL' })
+	@JoinColumn()
+	public section: MiChatRoomChannelSection | null;
 
 	@Index({ unique: true })
 	@Column('varchar', { length: 1024, nullable: true })

@@ -16,7 +16,7 @@ import { QueueService } from '@/core/QueueService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
 import { ChatRoomBanService } from '@/core/ChatRoomBanService.js';
-import { ChatChannelError, parseChatChannels } from '@/core/chat-room-channels.js';
+import { ChatChannelError, parseChatChannels, parseChatChannelSections } from '@/core/chat-room-channels.js';
 import type { ChatChannelRef } from '@/core/chat-room-channels.js';
 import { CHAT_UNREAD_GUARDED_DEL, CHAT_UNREAD_MOVE_MARKER, CHAT_UNREAD_PRUNE_CHANNEL, chatUnreadMarkerMessageId } from '@/core/chat-room-notifications.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
@@ -1679,7 +1679,10 @@ export class ChatService {
 		const remoteUpdatedAt = options?.remoteUpdatedAt;
 		// TypeORM refuses an UPDATE that has nothing to set.
 		if (remoteUpdatedAt == null && Object.values(params).every(value => value === undefined)) return room;
-		const snapshot = options?.remoteGroup?._misskey_chatChannels !== undefined && remoteUpdatedAt != null ? parseChatChannels(options.remoteGroup, await this.chatRoomChannelService.roomUri(room)) : null;
+		const remoteGroup = options?.remoteGroup;
+		const roomUri = remoteGroup?._misskey_chatChannels !== undefined && remoteUpdatedAt != null ? await this.chatRoomChannelService.roomUri(room) : null;
+		const snapshot = roomUri != null ? parseChatChannels(remoteGroup!, roomUri) : null;
+		const sections = snapshot != null ? parseChatChannelSections(remoteGroup!._misskey_chatChannelSections, roomUri!, new Set(snapshot.channels.map(channel => channel.id)), reason => Logger.warn(`Ignoring chat channel sections of room ${room.id}: ${reason}`, 'ChatService')) : undefined;
 		let resetOwner: MiUser | null = null;
 		const updated = await this.db.transaction(async manager => {
 			const current = await manager.findOne(MiChatRoom, { where: { id: room.id }, lock: { mode: 'pessimistic_write' } });
@@ -1691,7 +1694,7 @@ export class ChatService {
 			const iconFileId = options?.deletedIconId != null || params.iconId === undefined ? current.iconFileId : params.iconId;
 			await manager.update(MiChatRoom, current.id, { ...patch, iconFileId, lastRemoteUpdatedAt: revision });
 			const updated = { ...current, ...patch, iconFileId, lastRemoteUpdatedAt: revision };
-			return snapshot != null ? this.chatRoomChannelService.applyRemote(manager, updated, snapshot) : updated;
+			return snapshot != null ? this.chatRoomChannelService.applyRemote(manager, updated, snapshot, sections) : updated;
 		});
 		if (updated == null) return room;
 

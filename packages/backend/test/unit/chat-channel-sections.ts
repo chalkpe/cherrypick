@@ -1,0 +1,104 @@
+/*
+ * SPDX-FileCopyrightText: syuilo and misskey-project
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+import { describe, expect, test } from 'vitest';
+import { chatChannelDisplayOrder, chatSectionUri, isChatSectionUri, parseChatChannelSections } from '@/core/chat-room-channels.js';
+
+describe('채널 섹션 연합 필드 해석', () => {
+	const roomUri = 'https://remote.test/chat/rooms/room1';
+	const channelUris = new Set([`${roomUri}/channels/c1`, `${roomUri}/channels/c2`, `${roomUri}/channels/c3`]);
+	const sectionUri = `${roomUri}/sections/s1`;
+
+	function section(overrides: Record<string, unknown> = {}) {
+		return { id: sectionUri, name: '운영', channels: [`${roomUri}/channels/c1`], ...overrides };
+	}
+
+	test('키가 없으면 건드리지 않도록 undefined를 돌려준다', () => {
+		expect(parseChatChannelSections(undefined, roomUri, channelUris)).toBeUndefined();
+	});
+
+	test('유효한 목록은 순서대로 해석하고 빈 섹션과 빈 목록을 허용한다', () => {
+		const parsed = parseChatChannelSections([
+			section(),
+			{ id: `${roomUri}/sections/s2`, name: '  자료  ', channels: [`${roomUri}/channels/c3`, `${roomUri}/channels/c2`] },
+			{ id: `${roomUri}/sections/s3`, name: '빈 묶음', channels: [] },
+		], roomUri, channelUris);
+		expect(parsed).toEqual([
+			{ id: sectionUri, name: '운영', channels: [`${roomUri}/channels/c1`] },
+			{ id: `${roomUri}/sections/s2`, name: '  자료  ', channels: [`${roomUri}/channels/c3`, `${roomUri}/channels/c2`] },
+			{ id: `${roomUri}/sections/s3`, name: '빈 묶음', channels: [] },
+		]);
+		expect(parseChatChannelSections([], roomUri, channelUris)).toEqual([]);
+	});
+
+	test('배열이 아니거나 상한을 넘는 목록은 무시한다', () => {
+		expect(parseChatChannelSections(null, roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections('sections', roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections({ id: sectionUri }, roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections(Array.from({ length: 1025 }, (_, i) => section({ id: `${roomUri}/sections/s${i}` })), roomUri, channelUris)).toBeNull();
+	});
+
+	test('섹션 URI가 그룹 주소와 맞지 않거나 서로 겹치면 무시한다', () => {
+		expect(parseChatChannelSections([section({ id: `${roomUri}/channels/s1` })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ id: 'https://other.test/chat/rooms/room1/sections/s1' })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ id: `${roomUri}/sections/` })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ id: `${roomUri}/sections/a/b` })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ id: `${roomUri}/sections/a?b` })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ id: `${roomUri}/sections/a b` })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ id: `${roomUri}/sections/${'a'.repeat(1024)}` })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section(), section()], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ id: 42 })], roomUri, channelUris)).toBeNull();
+	});
+
+	test('이름이 비었거나 받기 한도를 넘으면 무시한다', () => {
+		expect(parseChatChannelSections([section({ name: '' })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ name: '   ' })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ name: 42 })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ name: '가'.repeat(4097) })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ name: '가'.repeat(4096) })], roomUri, channelUris)).not.toBeNull();
+	});
+
+	test('목록에 없는 채널이나 두 섹션에 걸친 채널이 있으면 무시한다', () => {
+		expect(parseChatChannelSections([section({ channels: [`${roomUri}/channels/missing`] })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ channels: ['https://other.test/chat/rooms/room1/channels/c1'] })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ channels: 'c1' })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ channels: [42] })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section(), { id: `${roomUri}/sections/s2`, name: '둘째', channels: [`${roomUri}/channels/c1`] }], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([section({ channels: [`${roomUri}/channels/c1`, `${roomUri}/channels/c1`] })], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections([null], roomUri, channelUris)).toBeNull();
+		expect(parseChatChannelSections(['section'], roomUri, channelUris)).toBeNull();
+	});
+
+	test('섹션 URI 헬퍼는 채널 URI와 같은 모양으로 판별한다', () => {
+		expect(chatSectionUri(roomUri, 's1')).toBe(sectionUri);
+		expect(isChatSectionUri(roomUri, sectionUri)).toBe(true);
+		expect(isChatSectionUri(roomUri, `${roomUri}/channels/s1`)).toBe(false);
+		expect(isChatSectionUri(roomUri, null)).toBe(false);
+	});
+});
+
+describe('채널 섹션 표시 순서', () => {
+	const channels = [
+		{ id: 'u1', sectionId: null },
+		{ id: 'a1', sectionId: 'sa' },
+		{ id: 'u2', sectionId: null },
+		{ id: 'b1', sectionId: 'sb' },
+		{ id: 'a2', sectionId: 'sa' },
+	];
+
+	test('섹션 없는 채널이 맨 위이고 섹션 순서대로 묶는다', () => {
+		expect(chatChannelDisplayOrder(channels, ['sa', 'sb']).map(channel => channel.id)).toEqual(['u1', 'u2', 'a1', 'a2', 'b1']);
+		expect(chatChannelDisplayOrder(channels, ['sb', 'sa']).map(channel => channel.id)).toEqual(['u1', 'u2', 'b1', 'a1', 'a2']);
+	});
+
+	test('섹션이 없으면 입력 순서를 그대로 유지한다', () => {
+		const flat = [{ id: 'u1', sectionId: null }, { id: 'u2', sectionId: null }];
+		expect(chatChannelDisplayOrder(flat, []).map(channel => channel.id)).toEqual(['u1', 'u2']);
+	});
+
+	test('빈 섹션은 순서에 자리를 차지하지 않는다', () => {
+		expect(chatChannelDisplayOrder(channels, ['empty', 'sa', 'sb']).map(channel => channel.id)).toEqual(['u1', 'u2', 'a1', 'a2', 'b1']);
+	});
+});

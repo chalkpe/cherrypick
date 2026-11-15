@@ -10,5 +10,6 @@ export const packedChatRoomChannelSchema = {
 		roomId: { type: 'string', optional: false, nullable: false },
 		name: { type: 'string', optional: false, nullable: false },
 		isLegacy: { type: 'boolean', optional: false, nullable: false },
+		sectionId: { type: 'string', optional: false, nullable: true },
 	},
 } as const;

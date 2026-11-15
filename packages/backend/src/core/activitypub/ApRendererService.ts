@@ -965,7 +965,7 @@ export class ApRendererService {
 	}
 
 	@bindThis
-	public async renderChatRoomUpdate(room: MiChatRoom, owner: MiUser, fields: Pick<IObject, '_misskey_chatChannels' | '_misskey_chatLegacyChannel'> = {}): Promise<IUpdate> {
+	public async renderChatRoomUpdate(room: MiChatRoom, owner: MiUser, fields: Pick<IObject, '_misskey_chatChannels' | '_misskey_chatLegacyChannel' | '_misskey_chatChannelSections'> = {}): Promise<IUpdate> {
 		const now = room.lastRemoteUpdatedAt?.toISOString() ?? new Date().toISOString();
 		const activity = buildChatRoomUpdate(this.chatRoomForRender(room, owner), owner, {
 			baseUrl: this.config.url,

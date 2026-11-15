@@ -86,6 +86,7 @@ import { MiFlashLike } from '@/models/FlashLike.js';
 import { MiUserMemo } from '@/models/UserMemo.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
 import { MiChatRoomChannel } from '@/models/ChatRoomChannel.js';
+import { MiChatRoomChannelSection } from '@/models/ChatRoomChannelSection.js';
 import { MiChatRoomInviteLink } from '@/models/ChatRoomInviteLink.js';
 import { MiChatRoomUserSettings } from '@/models/ChatRoomUserSettings.js';
 import { MiChatRoom } from '@/models/ChatRoom.js';
@@ -269,6 +270,7 @@ export const entities = [
 	MiUserMemo,
 	MiChatMessage,
 	MiChatRoomChannel,
+	MiChatRoomChannelSection,
 	MiChatRoomInviteLink,
 	MiChatRoomUserSettings,
 	MiChatRoom,

@@ -478,7 +478,12 @@ export * as 'chat/rooms/channels/list' from './endpoints/chat/rooms/channels/lis
 export * as 'chat/rooms/channels/create' from './endpoints/chat/rooms/channels/create.js';
 export * as 'chat/rooms/channels/update' from './endpoints/chat/rooms/channels/update.js';
 export * as 'chat/rooms/channels/reorder' from './endpoints/chat/rooms/channels/reorder.js';
+export * as 'chat/rooms/channels/arrange' from './endpoints/chat/rooms/channels/arrange.js';
 export * as 'chat/rooms/channels/delete' from './endpoints/chat/rooms/channels/delete.js';
+export * as 'chat/rooms/sections/list' from './endpoints/chat/rooms/sections/list.js';
+export * as 'chat/rooms/sections/create' from './endpoints/chat/rooms/sections/create.js';
+export * as 'chat/rooms/sections/update' from './endpoints/chat/rooms/sections/update.js';
+export * as 'chat/rooms/sections/delete' from './endpoints/chat/rooms/sections/delete.js';
 export * as 'chat/rooms/create' from './endpoints/chat/rooms/create.js';
 export * as 'chat/rooms/delete' from './endpoints/chat/rooms/delete.js';
 export * as 'chat/rooms/join' from './endpoints/chat/rooms/join.js';
