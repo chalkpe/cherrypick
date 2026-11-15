@@ -1128,22 +1128,41 @@ const headerTabs = computed(() => room.value ? [{
 	icon: 'ti ti-messages',
 }, ...searchTab.value]);
 
-// ヘッダーの参加ボタン。メッセージのタブでは参加バナーから参加できるので出さない。
-// ほかのタブにはバナーが無いので、自分が通話にいなければいつでも出す
-const showHeaderJoin = computed(() => {
+// 参加バナーは誰かが通話中 (または relay が到達不能) のときだけ出す。誰も通話していなければ開始はヘッダーのボタンに任せる
+const joinPanelVisible = computed(() => voiceCallState.participants.value.length > 0 || voiceCallState.providerUnavailable.value);
+
+// ヘッダーの通話ボタン。参加バナーが出ていないとき (誰も通話していないメッセージタブ、またはバナーの無いほかのタブ) に出す
+const showHeaderCall = computed(() => {
 	if (!voiceCallState.available.value || voiceCallState.inThisCall.value) return false;
-	return tab.value !== 'chat';
+	return tab.value !== 'chat' || !joinPanelVisible.value;
 });
 
-const headerActions = computed<PageHeaderItem[]>(() => [
-	...(showHeaderJoin.value ? [{
+// 参加前にマイクを選ぶトグルはバナーからここへ移した。開始/参加と同じメニューに出す
+function openCallMenu(ev: PointerEvent) {
+	const items: MenuItem[] = [{
+		type: 'switch',
+		icon: 'ti ti-microphone',
+		text: i18n.ts._voiceCall.micOn,
+		ref: prefer.model('voiceCall.micEnabled'),
+	}, {
+		type: 'divider',
+	}, {
 		icon: 'ti ti-phone',
 		text: voiceCallState.participants.value.length > 0 ? i18n.ts._voiceCall.join : i18n.ts._voiceCall.start,
-		handler: async () => {
+		action: async () => {
 			await voiceCallState.join();
 			// 通話に入れたときだけメッセージのタブへ。やめたり失敗したりしたのに読んでいたタブから追い出さない
 			if (voiceCallState.inThisCall.value) tab.value = 'chat';
 		},
+	}];
+	os.popupMenu(items, ev.currentTarget ?? ev.target);
+}
+
+const headerActions = computed<PageHeaderItem[]>(() => [
+	...(showHeaderCall.value ? [{
+		icon: 'ti ti-phone',
+		text: voiceCallState.participants.value.length > 0 ? i18n.ts._voiceCall.join : i18n.ts._voiceCall.start,
+		handler: openCallMenu,
 	}] : []),
 	{
 		icon: 'ti ti-dots',
