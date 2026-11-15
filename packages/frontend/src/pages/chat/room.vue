@@ -1137,32 +1137,18 @@ const showHeaderCall = computed(() => {
 	return tab.value !== 'chat' || !joinPanelVisible.value;
 });
 
-// 参加前にマイクを選ぶトグルはバナーからここへ移した。開始/参加と同じメニューに出す
-function openCallMenu(ev: PointerEvent) {
-	const items: MenuItem[] = [{
-		type: 'switch',
-		icon: 'ti ti-microphone',
-		text: i18n.ts._voiceCall.micOn,
-		ref: prefer.model('voiceCall.micEnabled'),
-	}, {
-		type: 'divider',
-	}, {
-		icon: 'ti ti-phone',
-		text: voiceCallState.participants.value.length > 0 ? i18n.ts._voiceCall.join : i18n.ts._voiceCall.start,
-		action: async () => {
-			await voiceCallState.join();
-			// 通話に入れたときだけメッセージのタブへ。やめたり失敗したりしたのに読んでいたタブから追い出さない
-			if (voiceCallState.inThisCall.value) tab.value = 'chat';
-		},
-	}];
-	os.popupMenu(items, ev.currentTarget ?? ev.target);
+// ヘッダーの通話ボタンは押すとすぐ通話を始める。マイクは保存された入/切をそのまま使い、通話中のマイクボタンで変える
+async function startCallFromHeader() {
+	await voiceCallState.join();
+	// 通話に入れたときだけメッセージのタブへ。やめたり失敗したりしたのに読んでいたタブから追い出さない
+	if (voiceCallState.inThisCall.value) tab.value = 'chat';
 }
 
 const headerActions = computed<PageHeaderItem[]>(() => [
 	...(showHeaderCall.value ? [{
 		icon: 'ti ti-phone',
 		text: voiceCallState.participants.value.length > 0 ? i18n.ts._voiceCall.join : i18n.ts._voiceCall.start,
-		handler: openCallMenu,
+		handler: startCallFromHeader,
 	}] : []),
 	{
 		icon: 'ti ti-dots',
