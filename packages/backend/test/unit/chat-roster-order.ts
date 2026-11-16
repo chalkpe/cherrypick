@@ -469,6 +469,19 @@ describe('a message or an edit from someone not known to be in the room', () => 
 		expect(f.messages.rows[0].text).toBe('hello');
 	});
 
+	test('an edit whose message arrives during preparation waits for the roster', async () => {
+		const uri = 'https://third.test/chat/messages/n1';
+		const f = chatRosterFixture({
+			memberships: [['mirror', alice.id]],
+			messages: [{ id: 'n1', uri, fromUserId: erin.id, toRoomId: 'mirror', toUserId: null, text: 'hello', reactions: [], deletedAt: null, editedAt: null, fileIds: [], emojis: [] }],
+		});
+
+		await expect(f.inbox.createChatMessage(f.resolver, erin, note({ _misskey_chatRoom: MIRROR_URI, updated: at(2) }), { type: 'Update' })).rejects.toThrow('chat room membership is not ready');
+
+		expect(f.queueService.createChatRoomRosterSyncJob).toHaveBeenCalledWith('mirror');
+		expect(f.messages.rows[0].text).toBe('hello');
+	});
+
 	test('in a room owned here is skipped: this server knows who is in it', async () => {
 		const f = chatRosterFixture();
 
@@ -665,6 +678,7 @@ describe('every way of becoming a member leaves a record', () => {
 	});
 
 	// The roster job has its own test in chat-roster.ts. A new way of inserting a membership has to be added to these and to the list below.
+	// 초대 링크로 같은 서버 그룹에 참여하는 경로의 기록은 chat-invite-link-service.ts에서 확인한다.
 	test('these are all the ways', () => {
 		const sourceRoot = resolve(import.meta.dirname, '../../src');
 		const inserting = /manager\.insert\(MiChatRoomMembership|chatRoomMembershipsRepository\.(insert|insertOne|save|upsert)\(/g;
@@ -674,6 +688,7 @@ describe('every way of becoming a member leaves a record', () => {
 			.toSorted();
 
 		expect(sites).toEqual([
+			'core/ChatInviteLinkService.ts',
 			'core/ChatService.ts',
 			'core/activitypub/ApInboxService.ts',
 			'core/activitypub/ApInboxService.ts',

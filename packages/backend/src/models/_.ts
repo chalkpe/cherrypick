@@ -27,10 +27,15 @@ import { MiChannelFollowing } from '@/models/ChannelFollowing.js';
 import { MiChannelMuting } from '@/models/ChannelMuting.js';
 import { MiChatApproval } from '@/models/ChatApproval.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
+import { MiChatRoomChannel } from '@/models/ChatRoomChannel.js';
+import { MiChatRoomInviteLink } from '@/models/ChatRoomInviteLink.js';
+import { MiChatRoomUserSettings } from '@/models/ChatRoomUserSettings.js';
 import { MiChatRoom } from '@/models/ChatRoom.js';
+import { MiChatRoomBan } from '@/models/ChatRoomBan.js';
 import { MiChatRoomInvitation } from '@/models/ChatRoomInvitation.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
 import { MiChatRoomRosterState } from '@/models/ChatRoomRosterState.js';
+import { MiChatRoomHistoryState } from '@/models/ChatRoomHistoryState.js';
 import { MiClip } from '@/models/Clip.js';
 import { MiClipFavorite } from '@/models/ClipFavorite.js';
 import { MiClipNote } from '@/models/ClipNote.js';
@@ -179,10 +184,15 @@ export {
 	MiFlashLike,
 	MiUserMemo,
 	MiChatMessage,
+	MiChatRoomChannel,
+	MiChatRoomInviteLink,
+	MiChatRoomUserSettings,
 	MiChatRoom,
 	MiChatRoomMembership,
 	MiChatRoomRosterState,
+	MiChatRoomHistoryState,
 	MiChatRoomInvitation,
+	MiChatRoomBan,
 	MiChatApproval,
 	MiBubbleGameRecord,
 	MiReversiGame,
@@ -265,12 +275,17 @@ export type FlashsRepository = Repository<MiFlash> & MiRepository<MiFlash>;
 export type FlashLikesRepository = Repository<MiFlashLike> & MiRepository<MiFlashLike>;
 export type UserMemoRepository = Repository<MiUserMemo> & MiRepository<MiUserMemo>;
 export type ChatMessagesRepository = Repository<MiChatMessage> & MiRepository<MiChatMessage>;
+export type ChatRoomChannelsRepository = Repository<MiChatRoomChannel> & MiRepository<MiChatRoomChannel>;
+export type ChatRoomInviteLinksRepository = Repository<MiChatRoomInviteLink> & MiRepository<MiChatRoomInviteLink>;
 export type ChatRoomsRepository = Repository<MiChatRoom> & MiRepository<MiChatRoom>;
 export type ChatRoomMembershipsRepository = Repository<MiChatRoomMembership> & MiRepository<MiChatRoomMembership>;
 export type ChatRoomRosterStatesRepository = Repository<MiChatRoomRosterState> & MiRepository<MiChatRoomRosterState>;
+export type ChatRoomHistoryStatesRepository = Repository<MiChatRoomHistoryState> & MiRepository<MiChatRoomHistoryState>;
 export type ChatRoomInvitationsRepository = Repository<MiChatRoomInvitation> & MiRepository<MiChatRoomInvitation>;
+export type ChatRoomBansRepository = Repository<MiChatRoomBan> & MiRepository<MiChatRoomBan>;
 export type ChatApprovalsRepository = Repository<MiChatApproval> & MiRepository<MiChatApproval>;
 export type BubbleGameRecordsRepository = Repository<MiBubbleGameRecord> & MiRepository<MiBubbleGameRecord>;
 export type ReversiGamesRepository = Repository<MiReversiGame> & MiRepository<MiReversiGame>;
 export type NoteHistoryRepository = Repository<NoteHistory> & MiRepository<NoteHistory>;
 
+export type ChatRoomUserSettingsRepository = Repository<MiChatRoomUserSettings> & MiRepository<MiChatRoomUserSettings>;

@@ -19,11 +19,11 @@ NODE_VERSION=$(cat ../../../.node-version) docker compose up --scale tester=0
 
 Then you can run all tests by a following command:
 ```sh
-NODE_VERSION=$(cat ../../../.node-version) docker compose run --no-deps --rm tester
+NODE_VERSION=$(cat ../../../.node-version) docker compose run --no-deps --use-aliases --rm tester
 ```
 
 For testing a specific file, run a following command.
 The path is relative to `packages/backend`, where `test:fed` runs:
 ```sh
-NODE_VERSION=$(cat ../../../.node-version) docker compose run --no-deps --rm tester -- pnpm -F backend test:fed test-federation/test/user.test.ts
+NODE_VERSION=$(cat ../../../.node-version) docker compose run --no-deps --use-aliases --rm tester -- pnpm -F backend test:fed test-federation/test/user.test.ts
 ```

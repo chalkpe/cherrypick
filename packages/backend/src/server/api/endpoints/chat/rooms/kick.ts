@@ -12,6 +12,7 @@ export const meta = {
 	tags: ['chat'],
 	requireCredential: true,
 	kind: 'write:chat',
+	description: 'Removes a member from a room you own. The account cannot join the room again until you pardon it with chat/rooms/bans/delete.',
 	limit: {
 		duration: 60 * 1000,
 		max: 30,

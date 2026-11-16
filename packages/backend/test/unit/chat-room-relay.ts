@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, test, vi } from 'vitest';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { meta as membersMeta } from '@/server/api/endpoints/chat/rooms/members.js';
 import { alice, bob, carol, chatRosterFixture, dave, erin, frank, LOCAL, LOCAL_ROOM_URI, mallory, MIRROR_URI } from '../misc/chat-roster-fixture.js';
 
@@ -18,6 +19,18 @@ test('room member listing requires the chat read permission', () => {
 
 function storedMessage(overrides: Record<string, unknown> = {}) {
 	return { id: 'm1', uri: carolMessageUri, fromUserId: carol.id, toRoomId: 'mirror', toUserId: null, text: 'hello', reactions: [] as string[], deletedAt: null, editedAt: null, fileIds: [], emojis: [], ...overrides };
+}
+
+/** 원래 URI를 선점하지 않는 보관 사본. 작성자 계정은 없어진 상태다 */
+function archivedCopy(overrides: Record<string, unknown> = {}) {
+	return storedMessage({
+		id: 'copy1',
+		uri: `${LOCAL}/chat/history/copy1`,
+		sourceUri: carolMessageUri,
+		fromUserId: null,
+		archivedAuthor: { uri: carol.uri, username: 'carol', name: null, host: 'other.test' },
+		...overrides,
+	});
 }
 
 describe('the owner passes on what a member did', () => {
@@ -296,6 +309,24 @@ describe('receiving what the owner passed on', () => {
 			const result = await announce(f, relay(deletion(erin)));
 
 			expect(result).toMatch(/^skip:/);
+			expect(f.messages.rows[0].deletedAt).toBeNull();
+		});
+
+		test('of an archived copy, by the author through the original URI', async () => {
+			const f = chatRosterFixture({ memberships: members, messages: [archivedCopy()] });
+
+			const result = await announce(f, relay(deletion()));
+
+			expect(result).toBe('ok: chat message deleted');
+			expect(f.messages.rows[0].deletedAt).not.toBeNull();
+		});
+
+		test('a relay cannot delete an archived copy kept in another room', async () => {
+			const f = chatRosterFixture({ memberships: [...members, ['localroom', carol.id]], messages: [archivedCopy({ toRoomId: 'localroom' })] });
+
+			const result = await announce(f, relay(deletion()));
+
+			expect(result).toBe('ok: chat message tombstone stored');
 			expect(f.messages.rows[0].deletedAt).toBeNull();
 		});
 
@@ -614,6 +645,44 @@ describe('what comes straight from a member\'s server', () => {
 		expect(result).toMatch(/^skip:/);
 		expect(f.messages.rows[0].deletedAt).toBeNull();
 	});
+
+	test('the author can delete an archived copy through the original URI', async () => {
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id], ['mirror', carol.id]], messages: [archivedCopy()] });
+
+		const result = await f.inbox.delete(carol, { type: 'Delete', actor: carol.uri, object: { id: carolMessageUri, type: 'Tombstone', formerType: 'Note' } });
+
+		expect(result).toBe('ok: chat message deleted');
+		expect(f.messages.rows[0].deletedAt).not.toBeNull();
+	});
+
+	test('the room owner can delete an archived copy through the original URI', async () => {
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id], ['mirror', carol.id]], messages: [archivedCopy()] });
+
+		const result = await f.inbox.delete(bob, { type: 'Delete', actor: bob.uri, object: { id: carolMessageUri, type: 'Tombstone', formerType: 'Note' } });
+
+		expect(result).toBe('ok: chat message deleted');
+		expect(f.messages.rows[0].deletedAt).not.toBeNull();
+	});
+
+	test('an unrelated actor cannot delete an archived copy through the original URI', async () => {
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id], ['mirror', carol.id], ['mirror', erin.id]], messages: [archivedCopy()] });
+
+		const result = await f.inbox.delete(erin, { type: 'Delete', actor: erin.uri, object: { id: carolMessageUri, type: 'Tombstone', formerType: 'Note' } });
+
+		expect(result).toMatch(/^skip:/);
+		expect(f.messages.rows[0].deletedAt).toBeNull();
+	});
+
+	test('the archived author can delete their copy directly, but not an archived message that is no copy', async () => {
+		const archived = storedMessage({ id: 'archived1', uri: `${LOCAL}/chat/history/archived1`, fromUserId: null, archivedAuthor: { uri: carol.uri, username: 'carol', name: null, host: 'other.test' } });
+		const f = chatRosterFixture({ memberships: [['mirror', alice.id], ['mirror', carol.id]], messages: [archivedCopy(), archived] });
+
+		await f.chatService.deleteRemoteMessage(carol as never, f.messages.rows[0] as never);
+		expect(f.messages.rows[0].deletedAt).not.toBeNull();
+
+		await expect(f.chatService.deleteRemoteMessage(carol as never, f.messages.rows[1] as never)).rejects.toThrow('cannot delete');
+		expect(f.messages.rows[1].deletedAt).toBeNull();
+	});
 });
 
 describe('a server that is not told about Announce with an activity inside', () => {
@@ -622,5 +691,28 @@ describe('a server that is not told about Announce with an activity inside', () 
 		const announced = { id: 'https://remote.test/announces/1', type: 'Announce', actor: bob.uri, object: { id: 'https://remote.test/notes/1', type: 'Delete' } };
 
 		expect(await f.inbox.announce(bob, announced, f.resolver)).toMatch(/^skip: unknown object type/);
+	});
+});
+
+describe('일반 채널 활동의 소유 서버 중계', () => {
+	test.each(['update', 'delete', 'react', 'unreact'] as const)('%s를 미지원 멤버 서버로 중계하지 않는다', async operation => {
+		const source = storedMessage({ toRoomId: 'localroom', toRoomChannelId: 'private', channelRefs: [], reactions: operation === 'unreact' ? [`${carol.id}/👍`] : [] });
+		const f = chatRosterFixture({ memberships: [['localroom', carol.id], ['localroom', erin.id], ['localroom', bob.id]], messages: [source] });
+		Object.assign(f.rooms.rows.find(room => room.id === 'localroom')!, { hasChannels: true, legacyChannelId: 'general' });
+		const channels = Object.assign(Object.create(ChatRoomChannelService.prototype), {
+			remoteRefs: async () => [],
+			fetchInstanceMetadataService: { chatRoomChannelsCapability: async (host: string) => host === erin.host },
+			queueService: f.queueService,
+		});
+		Object.assign(f.chatService, { chatRoomChannelService: channels });
+		const stored = await f.messages.findOneBy({ id: source.id });
+		const like = { id: `${carol.uri}/chat-reactions/channels`, type: 'EmojiReact', actor: carol.uri, object: source.uri, content: '👍' };
+
+		if (operation === 'update') await f.chatService.updateRemoteMessage(carol as never, stored as never, 'edited', new Date());
+		if (operation === 'delete') await f.chatService.deleteRemoteMessage(carol as never, stored as never, { activity: { id: `${source.uri}#delete`, type: 'Delete', actor: carol.uri, object: source.uri } as never });
+		if (operation === 'react') await f.chatService.reactRemote(carol as never, { ...stored, fromUserId: erin.id } as never, '👍', like.id, { activity: like as never });
+		if (operation === 'unreact') await f.chatService.unreactRemote(carol as never, stored as never, '👍', like.id, { activity: { id: `${like.id}/undo`, type: 'Undo', actor: carol.uri, object: like } as never });
+
+		expect(f.delivered().map(delivery => delivery.to)).toEqual([erin.inbox]);
 	});
 });

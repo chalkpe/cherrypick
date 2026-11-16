@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <div ref="rootEl" :class="[$style.root, { [$style.reduceAnimation]: !prefer.s.animation, [$style.showEl]: (showEl && ['hideFloatBtnNavBar', 'hide'].includes(<string>prefer.s.displayHeaderNavBarWhenScroll)) }]">
 	<button v-if="store.s.showMenuButtonInNavbar" :class="$style.item" class="_button" @click="drawerMenuShowing = true">
 		<div :class="$style.itemInner">
-			<i :class="$style.itemIcon" class="ti ti-menu-2"></i><span v-if="menuIndicated" :class="$style.itemIndicator" class="_blink"><i class="_indicatorCircle"></i></span>
+			<i :class="$style.itemIcon" class="ti ti-menu-2"></i><span v-if="menuIndicated" :class="[$style.itemIndicator, { _blink: menuPulsing }]"><i class="_indicatorCircle"></i></span>
 		</div>
 	</button>
 
@@ -42,7 +42,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<button v-if="store.s.showChatButtonInNavbar && $i != null && $i.policies.chatAvailability !== 'unavailable'" :class="$style.item" class="_button" @click="clickChatButton">
 		<div :class="$style.itemInner">
 			<i :class="$style.itemIcon" class="ti ti-messages"></i>
-			<span v-if="$i?.hasUnreadChatMessages" :class="$style.itemIndicator" class="_blink">
+			<span v-if="$i?.hasUnreadChatMessages" :class="[$style.itemIndicator, { _blink: $i?.hasUnreadChatNotifications ?? true }]">
 				<i class="_indicatorCircle"></i>
 			</span>
 		</div>
@@ -68,7 +68,7 @@ import { useMobileFooterHeight } from '@/composables/use-mobile-footer-height.js
 import { $i } from '@/i.js';
 import * as os from '@/os.js';
 import { mainRouter } from '@/router.js';
-import { navbarItemDef } from '@/navbar.js';
+import { isNavbarItemPulsing, navbarItemDef } from '@/navbar.js';
 import { prefer } from '@/preferences.js';
 import { store } from '@/store.js';
 import { scrollToVisibility } from '@/utility/scroll-to-visibility.js';
@@ -82,6 +82,7 @@ const widgetsShowing = defineModel<boolean>('widgetsShowing');
 const rootEl = useTemplateRef('rootEl');
 useMobileFooterHeight(rootEl);
 
+const menuPulsing = computed(() => Object.entries(navbarItemDef).some(([key, item]) => key !== 'notifications' && item.indicated && isNavbarItemPulsing(item)));
 const menuIndicated = computed(() => {
 	for (const def in navbarItemDef) {
 		if (def === 'notifications') continue; // 通知は下にボタンとして表示されてるから

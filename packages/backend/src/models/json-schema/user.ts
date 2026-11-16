@@ -594,6 +594,10 @@ export const packedMeDetailedOnlySchema = {
 			type: 'boolean',
 			nullable: false, optional: false,
 		},
+		hasUnreadChatNotifications: {
+			type: 'boolean',
+			nullable: false, optional: true,
+		},
 		hasUnreadNotification: {
 			type: 'boolean',
 			nullable: false, optional: false,

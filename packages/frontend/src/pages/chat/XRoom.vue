@@ -4,10 +4,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<MkA :to="`/chat/room/${room.id}`" class="_panel _gaps_s" :class="$style.root">
+<MkA :to="room.hasChannels ? channelListPath(room.id) : `/chat/room/${room.id}`" class="_panel _gaps_s" :class="$style.root">
 	<div :class="$style.header">
 		<div style="font-weight: bold;"><Mfm :text="room.name" :plain="true" :nowrap="true" :author="room.owner"/></div>
-		<MkAvatar :user="room.owner" :link="false" :class="$style.headerAvatar"/>
+		<MkAvatar :room="room" :class="$style.headerAvatar"/>
 	</div>
 	<hr>
 	<!-- カード全体がリンクなので、説明の中に URL やメンションのリンクを入れ子にしない -->
@@ -21,6 +21,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
+import { channelListPath } from './chat-channel-references.js';
 import * as Misskey from 'cherrypick-js';
 
 import { i18n } from '@/i18n.js';

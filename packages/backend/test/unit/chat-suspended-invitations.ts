@@ -88,11 +88,11 @@ describe('suspending a remote account with invitations waiting', () => {
 
 	test('handles memberships and invitations of the same account', async () => {
 		const f = createService([{ id: 'invitation', roomId: localRoom.id, userId: suspended.id }], { memberships: [{ roomId: localRoom.id, userId: suspended.id }] });
-		const kick = vi.spyOn(f.service, 'kickRoomMember').mockResolvedValue(true);
+		const evict = vi.spyOn(f.service, 'evictRoomMember').mockResolvedValue(true);
 
 		await f.service.handleUserSuspended(suspended as never);
 
-		expect(kick).toHaveBeenCalledWith(owner, localRoom, suspended.id);
+		expect(evict).toHaveBeenCalledWith(owner, localRoom, suspended.id);
 		expect(f.deleteInvitation).toHaveBeenCalledWith({ id: 'invitation' });
 	});
 

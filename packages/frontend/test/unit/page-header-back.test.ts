@@ -59,6 +59,14 @@ describe.each([
 		await fireEvent.click(container.querySelector('.ti-arrow-left')!.closest('button')!);
 	}
 
+	test('opens the explicit channel list even when browser history has a previous conversation', async () => {
+		pushAppHistory('/chat/room/r1/channels/c1');
+		await clickBack({ backTo: '/chat/room/r1/channels' });
+
+		expect(mocks.pushByPath).toHaveBeenCalledWith('/chat/room/r1/channels');
+		expect(back).not.toHaveBeenCalled();
+	});
+
 	test('goes to the fallback when going back would leave the app', async () => {
 		await clickBack({ backFallback: '/chat' });
 

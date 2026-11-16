@@ -387,9 +387,7 @@ export class PreferencesManager extends EventEmitter<PreferencesManagerEvents> {
 		this.io.save({ profile: this.profile });
 	}
 
-	public getMatchedRecordOf<K extends keyof PREF>(key: K): PrefRecord<K> {
-		const currentAccount = this.currentAccount; // TSを黙らせるため
-
+	public getMatchedRecordOf<K extends keyof PREF>(key: K, currentAccount: { id: string } | null = this.currentAccount): PrefRecord<K> {
 		const records = this.profile.preferences[key];
 
 		if (currentAccount == null) {

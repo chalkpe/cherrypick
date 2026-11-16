@@ -7,7 +7,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { DI } from '@/di-symbols.js';
-import { ChatRoomAccessError, ChatRoomArchivedError, ChatRoomFullError, ChatService } from '@/core/ChatService.js';
+import { ChatRoomAccessError, ChatRoomArchivedError, ChatRoomBannedError, ChatRoomFullError, ChatService } from '@/core/ChatService.js';
 import { ApiError } from '@/server/api/error.js';
 
 export const meta = {
@@ -38,6 +38,11 @@ export const meta = {
 			code: 'ROOM_IS_FULL',
 			id: '56d5a1da-4d30-4f7d-a931-f62e746533f9',
 		},
+		bannedFromRoom: {
+			message: 'The owner removed you from this room, so you cannot join it again.',
+			code: 'BANNED_FROM_ROOM',
+			id: '5ebcda3b-b8cc-4be8-9e3b-6422c7d915ad',
+		},
 	},
 } as const;
 
@@ -63,6 +68,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				if (e instanceof ChatRoomAccessError) throw new ApiError(meta.errors.noSuchRoom);
 				if (e instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);
 				if (e instanceof ChatRoomFullError) throw new ApiError(meta.errors.roomIsFull);
+				if (e instanceof ChatRoomBannedError) throw new ApiError(meta.errors.bannedFromRoom);
 				throw e;
 			}
 		});

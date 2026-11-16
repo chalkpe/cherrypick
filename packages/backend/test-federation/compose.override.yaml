@@ -19,6 +19,9 @@ services:
       external_network:
       internal_network:
         ipv4_address: 172.20.1.1
+        # 과거 기록 위조 시험에서 tester가 가짜 그룹 소유 서버가 된다
+        aliases:
+          - fake.test
     volumes:
       - type: volume
         source: node_modules_dev
