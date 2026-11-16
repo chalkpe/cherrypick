@@ -31,7 +31,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						<button v-tooltip="i18n.ts._chat._channels.moveDown" class="_button" :disabled="!canManage || busy || channelIndex === ungroupedChannels.length - 1" :aria-label="i18n.ts._chat._channels.moveDown" @click="moveChannel(channel, 1)"><i class="ti ti-arrow-down" aria-hidden="true"></i></button>
 						<button v-if="sections.length" v-tooltip="i18n.ts._chat._channels.moveSection" class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts._chat._channels.moveSection" @click="moveChannelToSection(channel)"><i class="ti ti-folder" aria-hidden="true"></i></button>
 						<button v-tooltip="i18n.ts.rename" class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.rename" @click="rename(channel)"><i class="ti ti-pencil" aria-hidden="true"></i></button>
-						<button v-tooltip="i18n.ts.delete" class="_button" :disabled="!canManage || busy || list.length <= 1" :aria-label="i18n.ts.delete" :title="list.length <= 1 ? i18n.ts._chat._channels.lastChannel : undefined" @click="remove(channel)"><i class="ti ti-trash" aria-hidden="true"></i></button>
+						<button v-tooltip="list.length <= 1 ? i18n.ts._chat._channels.lastChannel : i18n.ts.delete" class="_button" :disabled="!canManage || busy || list.length <= 1" :aria-label="i18n.ts.delete" @click="remove(channel)"><i class="ti ti-trash" aria-hidden="true"></i></button>
 					</div>
 				</div>
 			</template>
@@ -77,7 +77,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 									<button v-tooltip="i18n.ts._chat._channels.moveDown" class="_button" :disabled="!canManage || busy || channelIndex === group.channels.length - 1" :aria-label="i18n.ts._chat._channels.moveDown" @click="moveChannel(channel, 1)"><i class="ti ti-arrow-down" aria-hidden="true"></i></button>
 									<button v-tooltip="i18n.ts._chat._channels.moveSection" class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts._chat._channels.moveSection" @click="moveChannelToSection(channel)"><i class="ti ti-folder" aria-hidden="true"></i></button>
 									<button v-tooltip="i18n.ts.rename" class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.rename" @click="rename(channel)"><i class="ti ti-pencil" aria-hidden="true"></i></button>
-									<button v-tooltip="i18n.ts.delete" class="_button" :disabled="!canManage || busy || list.length <= 1" :aria-label="i18n.ts.delete" :title="list.length <= 1 ? i18n.ts._chat._channels.lastChannel : undefined" @click="remove(channel)"><i class="ti ti-trash" aria-hidden="true"></i></button>
+									<button v-tooltip="list.length <= 1 ? i18n.ts._chat._channels.lastChannel : i18n.ts.delete" class="_button" :disabled="!canManage || busy || list.length <= 1" :aria-label="i18n.ts.delete" @click="remove(channel)"><i class="ti ti-trash" aria-hidden="true"></i></button>
 								</div>
 							</div>
 						</template>

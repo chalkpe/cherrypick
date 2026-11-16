@@ -394,3 +394,71 @@ test('관리 줄의 아이콘 단추는 접근성 이름과 같은 도움말을 
 		for (const button of buttons) expect((button as HTMLElement).dataset.tooltip).toBe(button.getAttribute('aria-label'));
 	}
 });
+
+function sectionDropAreaOf(container: Element, sectionId: string, side: 'forward' | 'backward'): HTMLElement {
+	const item = sectionRowOf(container, sectionId).parentElement!.parentElement!.parentElement!;
+	return (side === 'forward' ? item.firstElementChild : item.lastElementChild) as HTMLElement;
+}
+
+function hasDropIndicator(container: Element): boolean {
+	return [...container.querySelectorAll('div')].some(el => /dropReady/.test(el.className));
+}
+
+test('채널 끌기를 섹션 제목 줄 위에 올려도 놓기 표시선을 그리지 않는다', async () => {
+	const view = renderSectioned();
+	await waitFor(() => expect(rowOf(view.container, 'c2')).not.toBeNull());
+	const area = sectionDropAreaOf(view.container, 's2', 'forward');
+	const before = area.className;
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(dragHandleOf(rowOf(view.container, 'c2')), { dataTransfer });
+	await fireEvent.dragOver(area, { dataTransfer });
+	await waitFor(() => expect(area.className).toBe(before));
+	expect(hasDropIndicator(view.container)).toBe(false);
+});
+
+test('섹션 끌기를 채널 행 위에 올려도 놓기 표시선을 그리지 않는다', async () => {
+	const view = renderSectioned();
+	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
+	const area = dropAreaOf(rowOf(view.container, 'c3'), 'backward');
+	const before = area.className;
+	const handle = within(sectionRowOf(view.container, 's1')).getAllByRole('button', { name: i18n.ts.dragToReorder })[0];
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(handle, { dataTransfer });
+	await fireEvent.dragOver(area, { dataTransfer });
+	await waitFor(() => expect(area.className).toBe(before));
+	expect(hasDropIndicator(view.container)).toBe(false);
+});
+
+test('같은 종류 끌기는 채널 행 위에 놓기 표시선을 그린다', async () => {
+	const view = renderSectioned();
+	await waitFor(() => expect(rowOf(view.container, 'c2')).not.toBeNull());
+	const area = dropAreaOf(rowOf(view.container, 'c3'), 'backward');
+	const before = area.className;
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(dragHandleOf(rowOf(view.container, 'c2')), { dataTransfer });
+	await fireEvent.dragOver(area, { dataTransfer });
+	await waitFor(() => expect(area.className).not.toBe(before));
+	expect(hasDropIndicator(view.container)).toBe(true);
+});
+
+const tooltipDirective = {
+	mounted: (el: HTMLElement, binding: { value: string }) => { el.dataset.tooltip = binding.value; },
+	updated: (el: HTMLElement, binding: { value: string }) => { el.dataset.tooltip = binding.value; },
+};
+
+test('마지막 채널 삭제 단추는 기존 안내 문구를 도움말로 쓰고 title을 겹치지 않는다', () => {
+	const view = render(Management, { props: { room: { ...room, hasChannels: true }, channels: channels.slice(0, 1) }, global: { stubs, directives: { tooltip: tooltipDirective } } });
+	const button = screen.getByRole('button', { name: i18n.ts.delete }) as HTMLButtonElement;
+	expect(button.disabled).toBe(true);
+	expect(button.dataset.tooltip).toBe(i18n.ts._chat._channels.lastChannel);
+	expect(button.getAttribute('title')).toBeNull();
+	view.unmount();
+});
+
+test('채널이 여럿이면 삭제 단추 도움말은 삭제이고 title은 없다', async () => {
+	const view = renderSectioned({}, { tooltip: tooltipDirective });
+	await waitFor(() => expect(rowOf(view.container, 'c1')).not.toBeNull());
+	const button = within(rowOf(view.container, 'c1')).getByRole('button', { name: i18n.ts.delete }) as HTMLButtonElement;
+	expect(button.dataset.tooltip).toBe(i18n.ts.delete);
+	expect(button.getAttribute('title')).toBeNull();
+});

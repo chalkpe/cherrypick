@@ -972,6 +972,37 @@ async function dispatchRailDragIntoSection(page: Page, sourceHandle: Locator, he
 	}, [s, t]);
 }
 
+// 끌기 중 놓기 표시선(dropReady 영역의 ::before, z-index 99999·2px accent 선)을 프로덕션 해시 클래스와 무관하게 센다.
+function dropIndicatorCount(page: Page) {
+	return page.evaluate(() => {
+		let count = 0;
+		for (const el of document.querySelectorAll('div')) {
+			const cs = getComputedStyle(el, '::before');
+			if (cs.content !== 'none' && cs.position === 'absolute' && cs.zIndex === '99999' && (cs.height === '2px' || cs.width === '2px')) count++;
+		}
+		return count;
+	});
+}
+
+// 실제 마우스로 손잡이를 끌어 대상 위에 올린 채 놓지 않는다(표시선 확인용).
+async function hoverDragTo(page: Page, source: Locator, target: Locator, offsetY: number) {
+	const s = await source.boundingBox();
+	const t = await target.boundingBox();
+	if (!s || !t) throw new Error('drag bounds missing');
+	await page.mouse.move(s.x + s.width / 2, s.y + s.height / 2);
+	await page.mouse.down();
+	await page.mouse.move(s.x + s.width / 2, s.y + s.height / 2 + 12, { steps: 6 });
+	await page.waitForTimeout(120);
+	await page.mouse.move(t.x + t.width / 2, t.y + offsetY, { steps: 24 });
+	await page.waitForTimeout(320);
+}
+
+async function cancelHoverDrag(page: Page) {
+	await page.keyboard.press('Escape');
+	await page.mouse.up();
+	await page.waitForTimeout(200);
+}
+
 function railHandleFor(page: Page, name: string) {
 	return channelLink(page, name).locator('xpath=..').getByRole('button', { name: 'Drag to reorder' });
 }
@@ -1045,6 +1076,46 @@ test('owner manages sections with buttons and the structure persists', async ({ 
 	await page.getByText('About', { exact: true }).click();
 	await expect(page.locator(`[data-chat-manage-section-id="${section.id}"]`)).toBeVisible();
 	await expect(page.locator(`[data-chat-manage-section-id="${section.id}"]`).locator('xpath=..').locator(`[data-chat-channel-id="${beta.id}"]`)).toBeVisible();
+});
+
+test('a channel drag shows no drop indicator over a section header but does over a channel row', async ({ page }) => {
+	const room = await createGroup('Indicator group');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const beta = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	const section = await api(base, 'chat/rooms/sections/create', { i: owner.token, roomId: room.id, name: 'Notices' });
+	await api(base, 'chat/rooms/channels/arrange', { i: owner.token, roomId: room.id, ungrouped: [general.id], sections: [{ sectionId: section.id, channelIds: [beta.id] }] });
+	await login(page, owner, 'en-US');
+	await page.setViewportSize({ width: 2000, height: 1200 });
+	await open(page, `/chat/room/${room.id}`);
+	await page.getByText('About', { exact: true }).click();
+	const header = page.locator(`[data-chat-manage-section-id="${section.id}"]`);
+	await expect(header).toBeVisible();
+	const source = page.locator(`[data-chat-channel-id="${general.id}"]`).getByRole('button', { name: 'Drag to reorder' });
+
+	// 채널 손잡이를 섹션 제목 줄 위에 올리면 놓을 수 없으므로 표시선이 없어야 한다.
+	await hoverDragTo(page, source, header, 12);
+	expect(await dropIndicatorCount(page)).toBe(0);
+	await cancelHoverDrag(page);
+
+	// 같은 종류인 채널 행 위에는 표시선이 보여야 한다.
+	const betaRow = page.locator(`[data-chat-channel-id="${beta.id}"]`);
+	await hoverDragTo(page, source, betaRow, (await betaRow.boundingBox())!.height - 4);
+	expect(await dropIndicatorCount(page)).toBeGreaterThan(0);
+	await cancelHoverDrag(page);
+});
+
+test('the last channel delete button merges the guidance into one tooltip without a native title', async ({ page }) => {
+	const room = await createGroup('Single channel');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	await login(page, owner, 'en-US');
+	await page.setViewportSize({ width: 2000, height: 1200 });
+	await open(page, `/chat/room/${room.id}`);
+	await page.getByText('About', { exact: true }).click();
+	const button = page.locator(`[data-chat-channel-id="${general.id}"]`).getByRole('button', { name: 'Delete', exact: true });
+	await expect(button).toBeDisabled();
+	expect(await button.getAttribute('title')).toBeNull();
+	await button.hover();
+	await expect(page.locator('div._acrylic', { hasText: 'You cannot delete the last channel.' })).toBeVisible();
 });
 
 test('section changes reach other members without a reload', async ({ page }) => {

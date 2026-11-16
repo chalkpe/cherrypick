@@ -55,6 +55,8 @@ import { ref } from 'vue';
 // 別々のコンポーネントインスタンス間でD&Dを融通するためにグローバルに状態を持っておく必要がある
 const dragging = ref(false);
 let dropCallback: ((targetInstanceId: string) => void) | null = null;
+// 끌기 중에는 dataTransfer 내용을 읽을 수 없으므로, 지금 끌는 항목의 group을 여기에 둔다.
+let draggingGroup: string | null = null;
 </script>
 
 <script lang="ts" setup generic="T extends { id: string; }">
@@ -75,7 +77,7 @@ const props = withDefaults(defineProps<{
 	manualDragStart?: boolean;
 	withGaps?: boolean;
 	canNest?: boolean;
-	// 켜면 빈 목록도 일반 놓기처럼 끌기 group이 다른 항목은 받지 않는다. 중첩 끌기를 쓰는 화면에서만 켠다.
+	// 켜면 끌기 group이 다른 항목은 빈 목록도 받지 않고 놓기 표시선도 그리지 않는다. 중첩 끌기를 쓰는 화면에서만 켠다.
 	strictGroup?: boolean;
 }>(), {
 	group: null,
@@ -97,11 +99,13 @@ function onDragstart(ev: DragEvent, item: T) {
 	if (ev.dataTransfer == null) return;
 	ev.dataTransfer.effectAllowed = 'move';
 	setDragData(ev, 'MkDraggable', { item, instanceId, group });
+	draggingGroup = group;
 
 	const target = ev.target as HTMLElement;
 	target.addEventListener('dragend', (ev) => {
 		dragging.value = false;
 		dropReadyArea.value = [null, null];
+		draggingGroup = null;
 	}, { once: true });
 
 	dropCallback = (targetInstanceId) => {
@@ -119,6 +123,8 @@ function onDragstart(ev: DragEvent, item: T) {
 }
 
 function onDragover(ev: DragEvent, item: T, backward: boolean) {
+	// strictGroup 화면에서는 놓을 수 없는 종류(다른 group)의 끌기에 표시선을 그리지 않는다. 놓기 검사와 같은 기준.
+	if (props.strictGroup && draggingGroup !== group) return;
 	nextTick(() => {
 		dropReadyArea.value = [item.id, backward ? 'backward' : 'forward'];
 	});
