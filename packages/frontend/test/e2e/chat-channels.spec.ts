@@ -1305,10 +1305,7 @@ test('the narrow channel page disables management drag handles but keeps the but
 	await open(page, path(room.id));
 	await page.getByRole('button', { name: 'About', exact: true }).click();
 	await expect(page.getByText('Manage channels', { exact: true })).toBeVisible();
-	const handles = page.getByRole('button', { name: 'Drag to reorder' });
-	await expect(handles.first()).toBeVisible();
-	expect(await handles.count()).toBeGreaterThan(0);
-	for (const handle of await handles.all()) await expect(handle).toHaveAttribute('draggable', 'false');
+	await expect(page.getByRole('button', { name: 'Drag to reorder' })).toHaveCount(0);
 	await expect(page.locator(`[data-chat-manage-section-id="${section.id}"]`).getByRole('button', { name: 'Move up', exact: true })).toBeVisible();
 	await expect(page.locator(`[data-chat-channel-id="${beta.id}"]`).getByRole('button', { name: 'Move to section', exact: true })).toBeVisible();
 

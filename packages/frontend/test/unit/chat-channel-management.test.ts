@@ -366,9 +366,7 @@ test('채널을 빈 섹션으로 놓으면 한 번의 arrange로 옮긴다', asy
 test('좁은 채널 페이지에서는 관리 화면 끌기 손잡이를 끄고 단추는 남긴다', async () => {
 	const view = renderSectioned({ narrow: true });
 	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
-	const handles = screen.getAllByRole('button', { name: i18n.ts.dragToReorder }) as HTMLButtonElement[];
-	expect(handles.length).toBeGreaterThan(0);
-	for (const handle of handles) expect(handle.getAttribute('draggable')).toBe('false');
+	expect(screen.queryAllByRole('button', { name: i18n.ts.dragToReorder })).toHaveLength(0);
 	expect(within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts._chat._channels.moveUp })).toBeTruthy();
 	expect(within(rowOf(view.container, 'c2')).getByRole('button', { name: i18n.ts._chat._channels.moveSection })).toBeTruthy();
 });
