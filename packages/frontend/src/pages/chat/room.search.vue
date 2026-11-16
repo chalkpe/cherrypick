@@ -82,8 +82,11 @@ const channelItems = computed<MkSelectItem<string>[]>(() => {
 	const channels = props.channels ?? [];
 	const position = new Map(channels.map((channel, index) => [channel.id, index + 1]));
 	const option = (channel: Misskey.entities.ChatRoomChannel) => ({ value: channel.id, label: `#${channel.name} · ${position.get(channel.id)}`, caption: channel.id });
-	const { ungrouped, sectionGroups } = groupChannelsBySection(channels, sections.value);
-	const items: MkSelectItem<string>[] = [{ value: '', label: i18n.ts._chat._channels.all }, ...ungrouped.map(option)];
+	const { sectionGroups } = groupChannelsBySection(channels, sections.value);
+	const groupedIds = new Set(sectionGroups.flatMap(group => group.channels.map(channel => channel.id)));
+	// 섹션 목록을 읽지 못했거나 아직 읽는 중이면 섹션을 해석하지 못한 채널도 원래 순서대로 평평한 선택지에 남긴다.
+	const flat = channels.filter(channel => !groupedIds.has(channel.id));
+	const items: MkSelectItem<string>[] = [{ value: '', label: i18n.ts._chat._channels.all }, ...flat.map(option)];
 	for (const group of sectionGroups) {
 		items.push({ type: 'group', label: group.section.name, items: group.channels.map(option) });
 	}

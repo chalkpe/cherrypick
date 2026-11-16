@@ -93,3 +93,24 @@ test('groups the channel select options under section labels', async () => {
 		i18n.ts._chat._channels.all, '#general · 1', '[운영]', '#공지 · 2',
 	]);
 });
+
+test('섹션 목록 조회가 실패해도 섹션 안 채널을 원래 순서대로 평평하게 고를 수 있다', async () => {
+	state.respond = async () => {
+		const last = state.requests[state.requests.length - 1] as Record<string, unknown>;
+		if (!('query' in last)) return new Response(JSON.stringify({ error: { message: 'x', code: 'INTERNAL_ERROR', id: 'x' } }), { status: 500 });
+		return new Response(JSON.stringify(state.answers), { status: 200 });
+	};
+	const sectioned = [
+		{ id: 'first', roomId: 'r', name: 'general', isLegacy: true, sectionId: null },
+		{ id: 'second', roomId: 'r', name: '공지', isLegacy: false, sectionId: 's1' },
+		{ id: 'third', roomId: 'r', name: '자료', isLegacy: false, sectionId: 's1' },
+	];
+	render(Search, { props: { roomId: 'r', channels: sectioned }, global: { stubs: { MkResult: true }, directives: { adaptiveBorder: {} } } });
+	await waitFor(() => expect(state.requests.some(request => !('query' in request))).toBe(true));
+	await new Promise(resolve => setTimeout(resolve, 0));
+	await fireEvent.mouseDown(document.querySelector('[tabindex="0"]')!);
+	const choices = state.popupMenu.mock.lastCall![0] as { type?: string; text: string }[];
+	expect(choices.map(choice => choice.type === 'label' ? `[${choice.text}]` : choice.text)).toEqual([
+		i18n.ts._chat._channels.all, '#general · 1', '#공지 · 2', '#자료 · 3',
+	]);
+});
