@@ -33,7 +33,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<template v-if="isOwner">
 		<hr>
 
-		<XChannelManagement :room="room" :channels="channels" :narrow="narrow" @updated="emit('updated', $event)" @channelsUpdated="emit('channelsUpdated')"/>
+		<XChannelManagement :room="room" :channels="channels" @updated="emit('updated', $event)" @channelsUpdated="emit('channelsUpdated')"/>
 
 		<hr>
 
@@ -117,7 +117,6 @@ const props = defineProps<{
 	room: Misskey.entities.ChatRoom;
 	channels?: Misskey.entities.ChatRoomChannel[];
 	sections?: Misskey.entities.ChatRoomChannelSection[];
-	narrow?: boolean;
 }>();
 
 const isOwner = computed(() => {

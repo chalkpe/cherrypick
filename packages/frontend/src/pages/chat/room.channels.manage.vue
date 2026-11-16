@@ -24,14 +24,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 		>
 			<template #default="{ item: channel, index: channelIndex, dragStart: channelDragStart }">
 				<div :data-chat-channel-id="channel.id" :class="$style.channel">
-					<button v-if="!narrow" class="_button" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy && !narrow" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="channelDragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
+					<button v-if="!isTouchUsing" class="_button" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="channelDragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
 					<span :class="$style.name">#{{ channel.name }}</span>
 					<div :class="$style.actions">
-						<button class="_button" :disabled="!canManage || busy || channelIndex === 0" :aria-label="i18n.ts._chat._channels.moveUp" @click="moveChannel(channel, -1)"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
-						<button class="_button" :disabled="!canManage || busy || channelIndex === ungroupedChannels.length - 1" :aria-label="i18n.ts._chat._channels.moveDown" @click="moveChannel(channel, 1)"><i class="ti ti-arrow-down" aria-hidden="true"></i></button>
-						<button v-if="sections.length" class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts._chat._channels.moveSection" @click="moveChannelToSection(channel)"><i class="ti ti-folder" aria-hidden="true"></i></button>
-						<button class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.rename" @click="rename(channel)"><i class="ti ti-pencil" aria-hidden="true"></i></button>
-						<button class="_button" :disabled="!canManage || busy || list.length <= 1" :aria-label="i18n.ts.delete" :title="list.length <= 1 ? i18n.ts._chat._channels.lastChannel : undefined" @click="remove(channel)"><i class="ti ti-trash" aria-hidden="true"></i></button>
+						<button v-tooltip="i18n.ts._chat._channels.moveUp" class="_button" :disabled="!canManage || busy || channelIndex === 0" :aria-label="i18n.ts._chat._channels.moveUp" @click="moveChannel(channel, -1)"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
+						<button v-tooltip="i18n.ts._chat._channels.moveDown" class="_button" :disabled="!canManage || busy || channelIndex === ungroupedChannels.length - 1" :aria-label="i18n.ts._chat._channels.moveDown" @click="moveChannel(channel, 1)"><i class="ti ti-arrow-down" aria-hidden="true"></i></button>
+						<button v-if="sections.length" v-tooltip="i18n.ts._chat._channels.moveSection" class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts._chat._channels.moveSection" @click="moveChannelToSection(channel)"><i class="ti ti-folder" aria-hidden="true"></i></button>
+						<button v-tooltip="i18n.ts.rename" class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.rename" @click="rename(channel)"><i class="ti ti-pencil" aria-hidden="true"></i></button>
+						<button v-tooltip="i18n.ts.delete" class="_button" :disabled="!canManage || busy || list.length <= 1" :aria-label="i18n.ts.delete" :title="list.length <= 1 ? i18n.ts._chat._channels.lastChannel : undefined" @click="remove(channel)"><i class="ti ti-trash" aria-hidden="true"></i></button>
 					</div>
 				</div>
 			</template>
@@ -49,14 +49,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<template #default="{ item: group, index, dragStart }">
 				<div :class="$style.sectionBlock">
 					<div :class="$style.section" :data-chat-manage-section-id="group.section.id">
-						<button v-if="!narrow" class="_button" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy && !narrow" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="dragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
+						<button v-if="!isTouchUsing" class="_button" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="dragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
 						<span :class="$style.name">{{ group.section.name }}</span>
 						<div :class="$style.actions">
-							<button class="_button" :disabled="!canManage || busy || index === 0" :aria-label="i18n.ts._chat._channels.moveUp" @click="moveSection(group.section, -1)"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
-							<button class="_button" :disabled="!canManage || busy || index === sectionGroups.length - 1" :aria-label="i18n.ts._chat._channels.moveDown" @click="moveSection(group.section, 1)"><i class="ti ti-arrow-down" aria-hidden="true"></i></button>
-							<button class="_button" :disabled="!canManage || busy || list.length >= 128" :aria-label="i18n.ts._chat._channels.createChannelInSection" @click="createChannel(group.section.id)"><i class="ti ti-plus" aria-hidden="true"></i></button>
-							<button class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.rename" @click="renameSection(group.section)"><i class="ti ti-pencil" aria-hidden="true"></i></button>
-							<button class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.delete" @click="removeSection(group.section)"><i class="ti ti-trash" aria-hidden="true"></i></button>
+							<button v-tooltip="i18n.ts._chat._channels.moveUp" class="_button" :disabled="!canManage || busy || index === 0" :aria-label="i18n.ts._chat._channels.moveUp" @click="moveSection(group.section, -1)"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
+							<button v-tooltip="i18n.ts._chat._channels.moveDown" class="_button" :disabled="!canManage || busy || index === sectionGroups.length - 1" :aria-label="i18n.ts._chat._channels.moveDown" @click="moveSection(group.section, 1)"><i class="ti ti-arrow-down" aria-hidden="true"></i></button>
+							<button v-tooltip="i18n.ts._chat._channels.createChannelInSection" class="_button" :disabled="!canManage || busy || list.length >= 128" :aria-label="i18n.ts._chat._channels.createChannelInSection" @click="createChannel(group.section.id)"><i class="ti ti-plus" aria-hidden="true"></i></button>
+							<button v-tooltip="i18n.ts.rename" class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.rename" @click="renameSection(group.section)"><i class="ti ti-pencil" aria-hidden="true"></i></button>
+							<button v-tooltip="i18n.ts.delete" class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.delete" @click="removeSection(group.section)"><i class="ti ti-trash" aria-hidden="true"></i></button>
 						</div>
 					</div>
 					<MkDraggable
@@ -70,14 +70,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 					>
 						<template #default="{ item: channel, index: channelIndex, dragStart: channelDragStart }">
 							<div :data-chat-channel-id="channel.id" :class="[$style.channel, $style.sectionChannel]">
-								<button v-if="!narrow" class="_button" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy && !narrow" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="channelDragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
+								<button v-if="!isTouchUsing" class="_button" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="channelDragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
 								<span :class="$style.name">#{{ channel.name }}</span>
 								<div :class="$style.actions">
-									<button class="_button" :disabled="!canManage || busy || channelIndex === 0" :aria-label="i18n.ts._chat._channels.moveUp" @click="moveChannel(channel, -1)"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
-									<button class="_button" :disabled="!canManage || busy || channelIndex === group.channels.length - 1" :aria-label="i18n.ts._chat._channels.moveDown" @click="moveChannel(channel, 1)"><i class="ti ti-arrow-down" aria-hidden="true"></i></button>
-									<button class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts._chat._channels.moveSection" @click="moveChannelToSection(channel)"><i class="ti ti-folder" aria-hidden="true"></i></button>
-									<button class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.rename" @click="rename(channel)"><i class="ti ti-pencil" aria-hidden="true"></i></button>
-									<button class="_button" :disabled="!canManage || busy || list.length <= 1" :aria-label="i18n.ts.delete" :title="list.length <= 1 ? i18n.ts._chat._channels.lastChannel : undefined" @click="remove(channel)"><i class="ti ti-trash" aria-hidden="true"></i></button>
+									<button v-tooltip="i18n.ts._chat._channels.moveUp" class="_button" :disabled="!canManage || busy || channelIndex === 0" :aria-label="i18n.ts._chat._channels.moveUp" @click="moveChannel(channel, -1)"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
+									<button v-tooltip="i18n.ts._chat._channels.moveDown" class="_button" :disabled="!canManage || busy || channelIndex === group.channels.length - 1" :aria-label="i18n.ts._chat._channels.moveDown" @click="moveChannel(channel, 1)"><i class="ti ti-arrow-down" aria-hidden="true"></i></button>
+									<button v-tooltip="i18n.ts._chat._channels.moveSection" class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts._chat._channels.moveSection" @click="moveChannelToSection(channel)"><i class="ti ti-folder" aria-hidden="true"></i></button>
+									<button v-tooltip="i18n.ts.rename" class="_button" :disabled="!canManage || busy" :aria-label="i18n.ts.rename" @click="rename(channel)"><i class="ti ti-pencil" aria-hidden="true"></i></button>
+									<button v-tooltip="i18n.ts.delete" class="_button" :disabled="!canManage || busy || list.length <= 1" :aria-label="i18n.ts.delete" :title="list.length <= 1 ? i18n.ts._chat._channels.lastChannel : undefined" @click="remove(channel)"><i class="ti ti-trash" aria-hidden="true"></i></button>
 								</div>
 							</div>
 						</template>
@@ -105,6 +105,7 @@ import { ensureSignin } from '@/i.js';
 import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { genId } from '@/utility/id.js';
+import { isTouchUsing } from '@/utility/touch.js';
 import * as os from '@/os.js';
 import MkButton from '@/components/MkButton.vue';
 import MkInfo from '@/components/MkInfo.vue';
@@ -113,7 +114,7 @@ import MkDraggable from '@/components/MkDraggable.vue';
 type ManageGroup = { id: string; section: ChatChannelSection | null; channels: ChatChannel[] };
 type SectionManageGroup = ManageGroup & { section: ChatChannelSection };
 
-const props = defineProps<{ room: Misskey.entities.ChatRoom; channels?: Misskey.entities.ChatRoomChannel[]; narrow?: boolean }>();
+const props = defineProps<{ room: Misskey.entities.ChatRoom; channels?: Misskey.entities.ChatRoomChannel[] }>();
 const emit = defineEmits<{
 	(ev: 'updated', room: Misskey.entities.ChatRoom): void;
 	(ev: 'channelsUpdated'): void;

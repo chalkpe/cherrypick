@@ -158,7 +158,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</div>
 
 	<div v-else-if="tab === 'info'" class="_spacer" style="--MI_SPACER-w: 700px;">
-		<XInfo v-if="room != null" :room="room" :channels="channels" :sections="sections" :narrow="narrow" @updated="onRoomInfoUpdated" @channelsUpdated="emit('channelsUpdated')" @deleting="deletingOwnRoom = $event"/>
+		<XInfo v-if="room != null" :room="room" :channels="channels" :sections="sections" @updated="onRoomInfoUpdated" @channelsUpdated="emit('channelsUpdated')" @deleting="deletingOwnRoom = $event"/>
 	</div>
 
 </PageWithHeader>
@@ -234,7 +234,6 @@ const props = defineProps<{
 	channels?: Misskey.entities.ChatRoomChannel[];
 	sections?: Misskey.entities.ChatRoomChannelSection[];
 	channelListBack?: boolean;
-	narrow?: boolean;
 	mobileFooterInFlow?: boolean;
 }>();
 

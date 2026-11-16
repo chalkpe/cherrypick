@@ -7,10 +7,11 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/vue';
 import type * as Misskey from 'cherrypick-js';
 
-const mocks = vi.hoisted(() => ({ api: vi.fn().mockResolvedValue([]), confirm: vi.fn(), inputText: vi.fn(), select: vi.fn(), alert: vi.fn(), me: { id: 'owner', policies: { chatAvailability: 'available' } } }));
+const mocks = vi.hoisted(() => ({ api: vi.fn().mockResolvedValue([]), confirm: vi.fn(), inputText: vi.fn(), select: vi.fn(), alert: vi.fn(), touch: false, me: { id: 'owner', policies: { chatAvailability: 'available' } } }));
 vi.mock('@/i.js', async original => ({ ...await original<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
 vi.mock('@/os.js', () => ({ confirm: mocks.confirm, inputText: mocks.inputText, select: mocks.select, alert: mocks.alert }));
+vi.mock('@/utility/touch.js', () => ({ get isTouchUsing() { return mocks.touch; } }));
 
 vi.mock('@/components/MkButton.vue', () => ({ default: { template: '<button><slot/></button>' } }));
 
@@ -20,7 +21,7 @@ import { i18n } from '@/i18n.js';
 const room = { id: 'r', name: 'Group', ownerId: 'owner', isArchived: false, hasChannels: false, legacyChannelId: 'c1' } as Misskey.entities.ChatRoom;
 const channels = [{ id: 'c1', roomId: 'r', name: 'same', isLegacy: true, sectionId: null }, { id: 'c2', roomId: 'r', name: 'same', isLegacy: false, sectionId: null }];
 const stubs = { MkButton: { props: ['disabled'], template: '<button :disabled="disabled"><slot/></button>' }, MkInfo: { template: '<div><slot/></div>' } };
-beforeEach(() => { vi.resetAllMocks(); mocks.confirm.mockResolvedValue({ canceled: false }); mocks.api.mockResolvedValue([]); });
+beforeEach(() => { vi.resetAllMocks(); mocks.touch = false; mocks.confirm.mockResolvedValue({ canceled: false }); mocks.api.mockResolvedValue([]); });
 afterEach(cleanup);
 
 test('confirms the one-way conversion and calls the real conversion endpoint', async () => {
@@ -154,9 +155,9 @@ function sectionRowOf(container: Element, id: string): HTMLElement {
 	return container.querySelector(`[data-chat-manage-section-id="${id}"]`) as HTMLElement;
 }
 
-function renderSectioned(extra: Record<string, unknown> = {}) {
+function renderSectioned(extra: Record<string, unknown> = {}, directives: Record<string, unknown> = {}) {
 	mockSections();
-	return render(Management, { props: { room: { ...room, hasChannels: true }, channels: sectionedChannels, ...extra }, global: { stubs } });
+	return render(Management, { props: { room: { ...room, hasChannels: true }, channels: sectionedChannels, ...extra }, global: { stubs, directives } });
 }
 
 test('shows section rows with their management buttons and channel rows inside sections', async () => {
@@ -363,10 +364,32 @@ test('채널을 빈 섹션으로 놓으면 한 번의 arrange로 옮긴다', asy
 	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/channels/arrange')).toHaveLength(1);
 });
 
-test('좁은 채널 페이지에서는 관리 화면 끌기 손잡이를 끄고 단추는 남긴다', async () => {
-	const view = renderSectioned({ narrow: true });
+test('터치 기기에서는 관리 화면 끌기 손잡이를 숨기고 단추는 남긴다', async () => {
+	mocks.touch = true;
+	const view = renderSectioned();
 	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
 	expect(screen.queryAllByRole('button', { name: i18n.ts.dragToReorder })).toHaveLength(0);
 	expect(within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts._chat._channels.moveUp })).toBeTruthy();
+	expect(within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts._chat._channels.createChannelInSection })).toBeTruthy();
 	expect(within(rowOf(view.container, 'c2')).getByRole('button', { name: i18n.ts._chat._channels.moveSection })).toBeTruthy();
+});
+
+test('마우스를 쓰는 데스크톱에서는 관리 화면 끌기 손잡이가 있고 끌 수 있다', async () => {
+	const view = renderSectioned();
+	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
+	const handles = screen.getAllByRole('button', { name: i18n.ts.dragToReorder }) as HTMLButtonElement[];
+	expect(handles.length).toBeGreaterThan(0);
+	for (const handle of handles) expect(handle.getAttribute('draggable')).toBe('true');
+});
+
+test('관리 줄의 아이콘 단추는 접근성 이름과 같은 도움말을 가진다', async () => {
+	const tooltip = { mounted: (el: HTMLElement, binding: { value: string }) => { el.dataset.tooltip = binding.value; } };
+	const view = renderSectioned({}, { tooltip });
+	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
+	const rows = [rowOf(view.container, 'c1'), rowOf(view.container, 'c2'), sectionRowOf(view.container, 's1'), sectionRowOf(view.container, 's2')];
+	for (const row of rows) {
+		const buttons = [...row.querySelectorAll('button[aria-label]')].filter(button => button.getAttribute('aria-label') !== i18n.ts.dragToReorder);
+		expect(buttons.length).toBeGreaterThanOrEqual(5);
+		for (const button of buttons) expect((button as HTMLElement).dataset.tooltip).toBe(button.getAttribute('aria-label'));
+	}
 });

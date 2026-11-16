@@ -1294,27 +1294,85 @@ test('dropping a section header on an empty section channel area is ignored in t
 	expect(arrangeCount).toBe(1);
 });
 
-test('the narrow channel page disables management drag handles but keeps the buttons', async ({ page }) => {
-	const room = await createGroup('Section narrow manage');
+const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1';
+const IPAD_UA = 'Mozilla/5.0 (iPad; CPU OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1';
+
+test('a mouse desktop keeps management drag handles on a narrow channel page and can drag', async ({ page }) => {
+	const room = await createGroup('Narrow desktop manage');
 	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
 	const beta = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
-	const section = await api(base, 'chat/rooms/sections/create', { i: owner.token, roomId: room.id, name: 'Notices' });
-	await api(base, 'chat/rooms/channels/arrange', { i: owner.token, roomId: room.id, ungrouped: [general.id], sections: [{ sectionId: section.id, channelIds: [beta.id] }] });
+	const first = await api(base, 'chat/rooms/sections/create', { i: owner.token, roomId: room.id, name: 'Notices' });
+	const second = await api(base, 'chat/rooms/sections/create', { i: owner.token, roomId: room.id, name: 'Events' });
+	await api(base, 'chat/rooms/channels/arrange', { i: owner.token, roomId: room.id, ungrouped: [general.id], sections: [{ sectionId: first.id, channelIds: [beta.id] }, { sectionId: second.id, channelIds: [] }] });
 	await login(page, owner, 'en-US');
-	await page.setViewportSize({ width: 390, height: 844 });
+	// 알림·위젯 열을 기본값대로 두면 1440×900에서도 채널 페이지가 800px 미만이다.
+	await page.setViewportSize({ width: 1440, height: 900 });
 	await open(page, path(room.id));
+	await expect(page.locator('aside').getByRole('navigation', { name: 'Channels' })).toHaveCount(0);
 	await page.getByRole('button', { name: 'About', exact: true }).click();
 	await expect(page.getByText('Manage channels', { exact: true })).toBeVisible();
-	await expect(page.getByRole('button', { name: 'Drag to reorder' })).toHaveCount(0);
-	await expect(page.locator(`[data-chat-manage-section-id="${section.id}"]`).getByRole('button', { name: 'Move up', exact: true })).toBeVisible();
-	await expect(page.locator(`[data-chat-channel-id="${beta.id}"]`).getByRole('button', { name: 'Move to section', exact: true })).toBeVisible();
+	const handles = page.getByRole('button', { name: 'Drag to reorder' });
+	await expect(handles.first()).toBeVisible();
+	for (const handle of await handles.all()) await expect(handle).toHaveAttribute('draggable', 'true');
 
-	// 넓은 화면에서는 관리 끌기가 그대로 켜져 있다.
-	await page.setViewportSize({ width: 2000, height: 1000 });
-	await open(page, path(room.id, general.id));
-	await page.getByText('About', { exact: true }).click();
-	await expect(page.getByText('Manage channels', { exact: true })).toBeVisible();
-	const wideHandles = page.getByRole('button', { name: 'Drag to reorder' });
-	await expect(wideHandles.first()).toBeVisible();
-	for (const handle of await wideHandles.all()) await expect(handle).toHaveAttribute('draggable', 'true');
+	// 실제 마우스 끌기로 베타 채널을 섹션 없는 목록으로 옮기면 한 번의 arrange로 반영된다.
+	let arrangeCount = 0;
+	page.on('request', request => { if (request.url().endsWith('/api/chat/rooms/channels/arrange')) arrangeCount++; });
+	const arranged = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/channels/arrange'));
+	const source = page.locator(`[data-chat-channel-id="${beta.id}"]`).getByRole('button', { name: 'Drag to reorder' });
+	await source.scrollIntoViewIfNeeded();
+	await dragByMouse(page, source, page.locator(`[data-chat-channel-id="${general.id}"]`));
+	expect((await arranged).request().postDataJSON()).toMatchObject({ roomId: room.id, ungrouped: [general.id, beta.id], sections: [{ sectionId: first.id, channelIds: [] }, { sectionId: second.id, channelIds: [] }] });
+	expect(arrangeCount).toBe(1);
+	await expect.poll(async () => (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id })).find((channel: Misskey.entities.ChatRoomChannel) => channel.id === beta.id).sectionId).toBeNull();
+});
+
+test('touch devices hide management drag handles but keep the buttons', async ({ page }) => {
+	const room = await createGroup('Touch manage');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const beta = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	const first = await api(base, 'chat/rooms/sections/create', { i: owner.token, roomId: room.id, name: 'Notices' });
+	const second = await api(base, 'chat/rooms/sections/create', { i: owner.token, roomId: room.id, name: 'Events' });
+	await api(base, 'chat/rooms/channels/arrange', { i: owner.token, roomId: room.id, ungrouped: [general.id], sections: [{ sectionId: first.id, channelIds: [beta.id] }, { sectionId: second.id, channelIds: [] }] });
+	const browser = page.context().browser()!;
+
+	// iPhone UA 390×844(터치): 손잡이 없이 단추로 순서를 바꾼다.
+	const phoneContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, userAgent: IPHONE_UA, locale: 'en-US' });
+	const phonePage = await phoneContext.newPage();
+	await login(phonePage, owner, 'en-US');
+	await open(phonePage, path(room.id));
+	await phonePage.getByRole('button', { name: 'About', exact: true }).click();
+	await expect(phonePage.getByText('Manage channels', { exact: true })).toBeVisible();
+	await expect(phonePage.getByRole('button', { name: 'Drag to reorder' })).toHaveCount(0);
+	await expect(phonePage.locator(`[data-chat-channel-id="${beta.id}"]`).getByRole('button', { name: 'Move to section', exact: true })).toBeVisible();
+	const moved = phonePage.waitForResponse(response => response.url().endsWith('/api/chat/rooms/channels/arrange'));
+	await phonePage.locator(`[data-chat-manage-section-id="${second.id}"]`).getByRole('button', { name: 'Move up', exact: true }).click();
+	expect((await moved).request().postDataJSON()).toMatchObject({ roomId: room.id, sections: [{ sectionId: second.id }, { sectionId: first.id }] });
+	await expect.poll(async () => (await api(base, 'chat/rooms/sections/list', { i: owner.token, roomId: room.id }))[0].id).toBe(second.id);
+	await phoneContext.close();
+
+	// iPad UA 744×1133(터치): 손잡이 없이 단추가 보인다.
+	const tabletContext = await browser.newContext({ viewport: { width: 744, height: 1133 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, userAgent: IPAD_UA, locale: 'en-US' });
+	const tabletPage = await tabletContext.newPage();
+	await login(tabletPage, owner, 'en-US');
+	await open(tabletPage, path(room.id));
+	await tabletPage.getByRole('button', { name: 'About', exact: true }).click();
+	await expect(tabletPage.getByText('Manage channels', { exact: true })).toBeVisible();
+	await expect(tabletPage.getByRole('button', { name: 'Drag to reorder' })).toHaveCount(0);
+	await expect(tabletPage.locator(`[data-chat-manage-section-id="${first.id}"]`).getByRole('button', { name: 'Move up', exact: true })).toBeVisible();
+	await tabletContext.close();
+
+	// iPad UA라도 채널 페이지가 넓으면(알림·위젯 열 끔) 레일은 나오지만 관리 손잡이는 없다.
+	const wideContext = await browser.newContext({ viewport: { width: 1440, height: 900 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, userAgent: IPAD_UA, locale: 'en-US' });
+	await wideContext.addInitScript(() => {
+		localStorage.setItem('preferences', JSON.stringify({ preferences: { enableWidgetsArea: [[{}, false, {}]], friendlyUiEnableNotificationsArea: [[{}, false, {}]] } }));
+	});
+	const widePage = await wideContext.newPage();
+	await login(widePage, owner, 'en-US');
+	await open(widePage, path(room.id, general.id));
+	await expect(widePage.getByRole('navigation', { name: 'Channels' })).toBeVisible();
+	await widePage.getByText('About', { exact: true }).click();
+	await expect(widePage.getByText('Manage channels', { exact: true })).toBeVisible();
+	await expect(widePage.getByRole('button', { name: 'Drag to reorder' })).toHaveCount(0);
+	await wideContext.close();
 });
