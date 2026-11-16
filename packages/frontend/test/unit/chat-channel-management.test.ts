@@ -5,6 +5,7 @@
 
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/vue';
+import type { Directive } from 'vue';
 import type * as Misskey from 'cherrypick-js';
 
 const mocks = vi.hoisted(() => ({ api: vi.fn().mockResolvedValue([]), confirm: vi.fn(), inputText: vi.fn(), select: vi.fn(), alert: vi.fn(), touch: false, me: { id: 'owner', policies: { chatAvailability: 'available' } } }));
@@ -155,7 +156,7 @@ function sectionRowOf(container: Element, id: string): HTMLElement {
 	return container.querySelector(`[data-chat-manage-section-id="${id}"]`) as HTMLElement;
 }
 
-function renderSectioned(extra: Record<string, unknown> = {}, directives: Record<string, unknown> = {}) {
+function renderSectioned(extra: Record<string, unknown> = {}, directives: Record<string, Directive> = {}) {
 	mockSections();
 	return render(Management, { props: { room: { ...room, hasChannels: true }, channels: sectionedChannels, ...extra }, global: { stubs, directives } });
 }

@@ -1490,6 +1490,8 @@ test('touch devices hide management drag handles but keep the buttons', async ({
 	await expect(widePage.getByRole('navigation', { name: 'Channels' })).toBeVisible();
 	await widePage.getByText('About', { exact: true }).click();
 	await expect(widePage.getByText('Manage channels', { exact: true })).toBeVisible();
-	await expect(widePage.getByRole('button', { name: 'Drag to reorder' })).toHaveCount(0);
+	// 레일의 끌기 손잡이는 그대로이고, 관리 줄의 손잡이만 없다.
+	await expect(widePage.locator('[data-chat-channel-id], [data-chat-manage-section-id]').getByRole('button', { name: 'Drag to reorder' })).toHaveCount(0);
+	await expect(widePage.locator('aside').getByRole('button', { name: 'Drag to reorder' }).first()).toBeVisible();
 	await wideContext.close();
 });
