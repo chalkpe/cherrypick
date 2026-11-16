@@ -6865,7 +6865,7 @@ export interface Locale extends ILocale {
              */
             "deleteSectionConfirm": ParameterizedString<"name">;
             /**
-             * セクションを移動
+             * セクションへ移動
              */
             "moveSection": string;
             /**

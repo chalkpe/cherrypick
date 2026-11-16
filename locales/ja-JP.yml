@@ -1722,7 +1722,7 @@ _chat:
     sectionNameLimit: "セクション名は前後の空白を除いて1〜128文字で入力してください。"
     sectionLimit: "セクションは128個まで作成できます。"
     deleteSectionConfirm: "{name} セクションを削除しますか？"
-    moveSection: "セクションを移動"
+    moveSection: "セクションへ移動"
     noSection: "セクションなし"
     createChannelInSection: "このセクションにチャンネルを作成"
   notificationAll: "すべて受け取る"

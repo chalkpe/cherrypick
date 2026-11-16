@@ -55,7 +55,7 @@ import { ref } from 'vue';
 // 別々のコンポーネントインスタンス間でD&Dを融通するためにグローバルに状態を持っておく必要がある
 const dragging = ref(false);
 let dropCallback: ((targetInstanceId: string) => void) | null = null;
-// 끌기 중에는 dataTransfer 내용을 읽을 수 없으므로, 지금 끌는 항목의 group을 여기에 둔다.
+// 끌기 중에는 dataTransfer 내용을 읽을 수 없으므로, 지금 끄는 항목의 group을 여기에 둔다.
 let draggingGroup: string | null = null;
 </script>
 
