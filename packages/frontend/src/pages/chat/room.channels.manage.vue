@@ -24,7 +24,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		>
 			<template #default="{ item: channel, index: channelIndex, dragStart: channelDragStart }">
 				<div :data-chat-channel-id="channel.id" :class="$style.channel">
-					<button class="_button" v-if="!narrow" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy && !narrow" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="channelDragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
+					<button v-if="!narrow" class="_button" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy && !narrow" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="channelDragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
 					<span :class="$style.name">#{{ channel.name }}</span>
 					<div :class="$style.actions">
 						<button class="_button" :disabled="!canManage || busy || channelIndex === 0" :aria-label="i18n.ts._chat._channels.moveUp" @click="moveChannel(channel, -1)"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
@@ -49,7 +49,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<template #default="{ item: group, index, dragStart }">
 				<div :class="$style.sectionBlock">
 					<div :class="$style.section" :data-chat-manage-section-id="group.section.id">
-						<button class="_button" v-if="!narrow" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy && !narrow" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="dragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
+						<button v-if="!narrow" class="_button" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy && !narrow" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="dragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
 						<span :class="$style.name">{{ group.section.name }}</span>
 						<div :class="$style.actions">
 							<button class="_button" :disabled="!canManage || busy || index === 0" :aria-label="i18n.ts._chat._channels.moveUp" @click="moveSection(group.section, -1)"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
@@ -70,7 +70,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					>
 						<template #default="{ item: channel, index: channelIndex, dragStart: channelDragStart }">
 							<div :data-chat-channel-id="channel.id" :class="[$style.channel, $style.sectionChannel]">
-								<button class="_button" v-if="!narrow" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy && !narrow" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="channelDragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
+								<button v-if="!narrow" class="_button" :class="$style.handle" :disabled="!canManage || busy" :draggable="canManage && !busy && !narrow" tabindex="-1" :aria-label="i18n.ts.dragToReorder" @dragstart.stop="channelDragStart"><i class="ti ti-grip-vertical" aria-hidden="true"></i></button>
 								<span :class="$style.name">#{{ channel.name }}</span>
 								<div :class="$style.actions">
 									<button class="_button" :disabled="!canManage || busy || channelIndex === 0" :aria-label="i18n.ts._chat._channels.moveUp" @click="moveChannel(channel, -1)"><i class="ti ti-arrow-up" aria-hidden="true"></i></button>
