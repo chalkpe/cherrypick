@@ -17,7 +17,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<div class="_spacer" style="--MI_SPACER-min: 20px; --MI_SPACER-max: 28px;">
 			<div style="text-align: center;">
 				<div :class="$style.name">{{ decoration.name }}</div>
-				<MkAvatar style="width: 64px; height: 64px; margin-bottom: 20px;" :user="$i" :decorations="decorationsForPreview" forceShowDecoration/>
+				<MkAvatar style="width: 64px; height: 64px; margin-bottom: 20px;" :user="room ? undefined : $i" :room="room" :decorations="decorationsForPreview" forceShowDecoration/>
 			</div>
 			<div class="_gaps_s">
 				<MkRange v-model="angle" continuousUpdate :min="-0.5" :max="0.5" :step="0.001" :textConverter="(v) => `${Math.round(v * 360)}°`">
@@ -32,7 +32,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<MkRange v-model="scale" continuousUpdate :min="0.5" :max="1.5" :step="0.05" :textConverter="(v) => `${v.toFixed(2)}x`">
 					<template #label>{{ i18n.ts.scale }}</template>
 				</MkRange>
-				<MkRange v-model="opacity" continuousUpdate :min="0" :max="1" :step="0.01" :textConverter="(v) => `${Math.round(v * 100)}%`">
+				<MkRange v-model="opacity" continuousUpdate :min="room ? 0.1 : 0" :max="1" :step="0.01" :textConverter="(v) => `${Math.round(v * 100)}%`">
 					<template #label>{{ i18n.ts.opacity }}</template>
 				</MkRange>
 				<MkSwitch v-model="flipH">
@@ -52,6 +52,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { useTemplateRef, ref, computed } from 'vue';
+import type * as Misskey from 'cherrypick-js';
 import MkButton from '@/components/MkButton.vue';
 import MkModalWindow from '@/components/MkModalWindow.vue';
 import MkSwitch from '@/components/MkSwitch.vue';
@@ -63,6 +64,7 @@ const $i = ensureSignin();
 
 const props = defineProps<{
 	usingIndex: number | null;
+	room?: Misskey.entities.ChatRoom;
 	decoration: {
 		id: string;
 		url: string;
@@ -92,15 +94,16 @@ const emit = defineEmits<{
 	(ev: 'detach'): void;
 }>();
 
+const currentDecorations = computed(() => props.room ? props.room.iconDecorations ?? [] : $i.avatarDecorations);
 const dialog = useTemplateRef('dialog');
-const exceeded = computed(() => ($i.policies.avatarDecorationLimit - $i.avatarDecorations.length) <= 0);
+const exceeded = computed(() => ($i.policies.avatarDecorationLimit - currentDecorations.value.length) <= 0);
 const locked = computed(() => props.decoration.roleIdsThatCanBeUsedThisDecoration.length > 0 && !$i.roles.some(r => props.decoration.roleIdsThatCanBeUsedThisDecoration.includes(r.id)));
-const angle = ref((props.usingIndex != null ? $i.avatarDecorations[props.usingIndex].angle : null) ?? 0);
-const flipH = ref((props.usingIndex != null ? $i.avatarDecorations[props.usingIndex].flipH : null) ?? false);
-const offsetX = ref((props.usingIndex != null ? $i.avatarDecorations[props.usingIndex].offsetX : null) ?? 0);
-const offsetY = ref((props.usingIndex != null ? $i.avatarDecorations[props.usingIndex].offsetY : null) ?? 0);
-const scale = ref((props.usingIndex != null ? $i.avatarDecorations[props.usingIndex].scale : null) ?? 1);
-const opacity = ref((props.usingIndex != null ? $i.avatarDecorations[props.usingIndex].opacity : null) ?? 1);
+const angle = ref((props.usingIndex != null ? currentDecorations.value[props.usingIndex].angle : null) ?? 0);
+const flipH = ref((props.usingIndex != null ? currentDecorations.value[props.usingIndex].flipH : null) ?? false);
+const offsetX = ref((props.usingIndex != null ? currentDecorations.value[props.usingIndex].offsetX : null) ?? 0);
+const offsetY = ref((props.usingIndex != null ? currentDecorations.value[props.usingIndex].offsetY : null) ?? 0);
+const scale = ref((props.usingIndex != null ? currentDecorations.value[props.usingIndex].scale : null) ?? 1);
+const opacity = ref((props.usingIndex != null ? currentDecorations.value[props.usingIndex].opacity : null) ?? 1);
 
 const decorationsForPreview = computed(() => {
 	const decoration = {
@@ -114,7 +117,7 @@ const decorationsForPreview = computed(() => {
 		scale: scale.value,
 		opacity: opacity.value,
 	};
-	const decorations = [...$i.avatarDecorations];
+	const decorations = [...currentDecorations.value];
 	if (props.usingIndex != null) {
 		decorations[props.usingIndex] = decoration;
 	} else {

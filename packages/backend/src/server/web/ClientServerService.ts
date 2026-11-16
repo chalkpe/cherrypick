@@ -10,6 +10,8 @@ import ms from 'ms';
 import sharp from 'sharp';
 import { In, IsNull } from 'typeorm';
 import fastifyStatic from '@fastify/static';
+import fastifyAccepts from '@fastify/accepts';
+import { languages } from 'i18n/const';
 import vary from 'vary';
 import type { Config } from '@/config.js';
 import { DI } from '@/di-symbols.js';
@@ -20,6 +22,8 @@ import { PageEntityService } from '@/core/entities/PageEntityService.js';
 import { GalleryPostEntityService } from '@/core/entities/GalleryPostEntityService.js';
 import { ClipEntityService } from '@/core/entities/ClipEntityService.js';
 import { ChannelEntityService } from '@/core/entities/ChannelEntityService.js';
+import { ChatInviteLinkService } from '@/core/ChatInviteLinkService.js';
+import { chatInviteUrl } from '@/core/chat-invite-link.js';
 import type {
 	AnnouncementsRepository,
 	ChannelsRepository,
@@ -54,6 +58,7 @@ import { ClipPage } from './views/clip.js';
 import { FlashPage } from './views/flash.js';
 import { GalleryPostPage } from './views/gallery-post.js';
 import { ChannelPage } from './views/channel.js';
+import { ChatInvitePage } from './views/chat-invite.js';
 import { ReversiGamePage } from './views/reversi-game.js';
 import { AnnouncementPage } from './views/announcement.js';
 import { BaseEmbed } from './views/base-embed.js';
@@ -124,6 +129,7 @@ export class ClientServerService {
 		private reversiGameEntityService: ReversiGameEntityService,
 		private announcementEntityService: AnnouncementEntityService,
 		private urlPreviewService: UrlPreviewService,
+		private chatInviteLinkService: ChatInviteLinkService,
 		private feedService: FeedService,
 		private htmlTemplateService: HtmlTemplateService,
 		private clientLoggerService: ClientLoggerService,
@@ -204,6 +210,7 @@ export class ClientServerService {
 
 	@bindThis
 	public createServer(fastify: FastifyInstance, options: FastifyPluginOptions, done: (err?: Error) => void) {
+		fastify.register(fastifyAccepts);
 		const configUrl = new URL(this.config.url);
 
 		fastify.addHook('onRequest', (request, reply, done) => {
@@ -752,6 +759,21 @@ export class ClientServerService {
 			} else {
 				return await renderBase(reply);
 			}
+		});
+
+		// 초대 링크 페이지. 여는 것만으로는 참여하지 않고, 로그인한 사용자가 화면에서 참여를 누른다
+		fastify.get<{ Params: { code: string; } }>('/chat/invite/:code', async (request, reply) => {
+			vary(reply.raw, 'Accept');
+			const preview = await this.chatInviteLinkService.previewForViewer(request.params.code, null);
+			if (preview == null) return await renderBase(reply, { noindex: true });
+
+			reply.header('Cache-Control', 'public, max-age=30');
+			vary(reply.raw, 'Accept-Language');
+			return await HtmlTemplateService.replyHtml(reply, ChatInvitePage({
+				invite: { url: chatInviteUrl(this.config.url, request.params.code), name: preview.name, description: preview.description, membersCount: preview.membersCount, iconUrl: preview.iconUrl },
+				language: request.headers['accept-language'] != null ? request.accepts().languages([...languages]) || 'ja-JP' : 'ja-JP',
+				...(await this.htmlTemplateService.getCommonData()),
+			}));
 		});
 
 		// Reversi game

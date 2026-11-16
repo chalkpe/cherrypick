@@ -5,6 +5,7 @@
 
 import { describe, expect, test, vi } from 'vitest';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { ChatMessageAccessError } from '@/core/ChatService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { StatusError } from '@/misc/status-error.js';
 import { getApId } from '@/core/activitypub/type.js';
@@ -23,9 +24,14 @@ const object: IPost = {
 	to: ['https://local.test/users/recipient'],
 };
 
-function fixture(options: { beforeNoteInsert?: () => Promise<void>; resolveImage?: () => Promise<null> } = {}) {
+function fixture(options: { beforeNoteInsert?: () => Promise<void>; resolveImage?: () => Promise<null>; archivedCopy?: boolean } = {}) {
 	type StoredNote = { id: string; uri: string; userId: string; text: string };
+	type StoredCopy = { id: string; uri: string; sourceUri: string; fromUserId: string; toRoomId: string };
 	const notes = new Map<string, StoredNote>();
+	const copies = new Map<string, StoredCopy>();
+	if (options.archivedCopy) {
+		copies.set('copy1', { id: 'copy1', uri: 'https://local.test/chat/messages/copy1', sourceUri: messageUri, fromUserId: actor.id, toRoomId: 'room1' });
+	}
 	const chatTexts: string[] = [];
 	const locks = new Map<string, string>();
 	const tombstones = new Map<string, string>();
@@ -41,9 +47,18 @@ function fixture(options: { beforeNoteInsert?: () => Promise<void>; resolveImage
 			findMessageByUri: async () => null,
 			createMessageToUser: async (_actor: unknown, _recipient: unknown, params: { text: string }) => { chatTexts.push(params.text); },
 			storePendingChatReaction,
+			deleteRemoteMessage: async (deletingActor: { id: string }, copy: StoredCopy) => {
+				if (copy.fromUserId !== deletingActor.id) throw new ChatMessageAccessError('cannot delete');
+				copies.delete(copy.id);
+				return copy;
+			},
 		},
 		reactionService,
 		chatMessagesRepository: { findOneBy: async () => null },
+		chatRoomHistoryService: {
+			findArchivedCopiesBySourceUri: async (uri: string) => [...copies.values()].filter(copy => copy.sourceUri === uri),
+			findExistingCopy: async () => null,
+		},
 		redisClient: {
 			get: async (key: string) => locks.get(key) ?? tombstones.get(key) ?? null,
 			set: async (key: string, value: string) => {
@@ -85,7 +100,7 @@ function fixture(options: { beforeNoteInsert?: () => Promise<void>; resolveImage
 		utilityService: new UtilityService({ host: 'local.test', url: 'https://local.test' } as never, {} as never),
 		logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} },
 	});
-	return { inbox, notes, chatTexts, tombstones, policy, reactionService, storePendingChatReaction, creationAttempts: () => creationAttempts };
+	return { inbox, notes, copies, chatTexts, tombstones, policy, reactionService, storePendingChatReaction, creationAttempts: () => creationAttempts };
 }
 
 describe('ordinary note likes', () => {
@@ -173,6 +188,42 @@ describe('chat messages converted to private notes', () => {
 
 		await f.inbox.delete(otherActor, { type: 'Delete', actor: otherActor.uri, object: messageUri });
 
+		expect(f.notes.get(messageUri)?.text).toBe('original');
+		expect(f.tombstones.size).toBe(0);
+	});
+
+	test('deletes the archived copy and the converted note together on author Delete', async () => {
+		const f = fixture({ archivedCopy: true });
+		await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });
+		expect(f.copies.size).toBe(1);
+
+		await f.inbox.delete(actor, { type: 'Delete', actor: actor.uri, object: messageUri });
+
+		expect(f.copies.size).toBe(0);
+		expect(f.notes.size).toBe(0);
+		expect(f.tombstones.size).toBe(0);
+	});
+
+	test('shares one note lookup between the copy deletion and the fall-through check', async () => {
+		const f = fixture({ archivedCopy: true });
+		await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });
+		const fetchNote = vi.fn(f.inbox.apNoteService.fetchNote);
+		f.inbox.apNoteService.fetchNote = fetchNote;
+
+		await f.inbox.delete(actor, { type: 'Delete', actor: actor.uri, object: messageUri });
+
+		expect(f.copies.size).toBe(0);
+		expect(f.notes.size).toBe(0);
+		expect(fetchNote).toHaveBeenCalledTimes(1);
+	});
+
+	test('keeps both the archived copy and the converted note against an unrelated Delete', async () => {
+		const f = fixture({ archivedCopy: true });
+		await f.inbox.createChatMessage({}, actor, object, { type: 'Create', actor: actor.uri });
+
+		await f.inbox.delete(otherActor, { type: 'Delete', actor: otherActor.uri, object: messageUri });
+
+		expect(f.copies.size).toBe(1);
 		expect(f.notes.get(messageUri)?.text).toBe('original');
 		expect(f.tombstones.size).toBe(0);
 	});

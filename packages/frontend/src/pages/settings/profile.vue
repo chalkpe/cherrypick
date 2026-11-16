@@ -173,6 +173,7 @@ import MkFolder from '@/components/MkFolder.vue';
 import FormSlot from '@/components/form/slot.vue';
 import FormLink from '@/components/form/link.vue';
 import MkDraggable from '@/components/MkDraggable.vue';
+import { chooseAvatar } from '@/utility/choose-avatar.js';
 import { chooseDriveFile } from '@/utility/drive.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
@@ -287,9 +288,9 @@ function save() {
 }
 
 function changeAvatar(ev: PointerEvent) {
-	async function done(driveFile: Misskey.entities.DriveFile) {
+	async function done(id: string) {
 		const i = await os.apiWithDialog('i/update', {
-			avatarId: driveFile.id,
+			avatarId: id,
 		}, undefined, {
 			'71bb5e53-4742-4609-b465-36081e131208': {
 				title: i18n.ts.cannotSelectSensitiveMedia,
@@ -306,63 +307,15 @@ function changeAvatar(ev: PointerEvent) {
 		claimAchievement('profileFilled');
 	}
 
-	os.popupMenu([{
-		text: i18n.ts.avatar,
-		type: 'label',
-	}, {
-		text: i18n.ts.upload,
-		icon: 'ti ti-upload',
-		action: async () => {
-			const files = await os.chooseFileFromPc({ multiple: false });
-			const file = files[0];
-
-			let originalOrCropped = file;
-
-			const { canceled } = await os.confirm({
-				type: 'question',
-				text: i18n.ts.cropImageAsk,
-				okText: i18n.ts.cropYes,
-				cancelText: i18n.ts.cropNo,
-			});
-
-			if (!canceled) {
-				originalOrCropped = await os.cropImageFile(file, {
-					aspectRatio: 1,
-				});
-			}
-
-			const driveFile = (await os.launchUploader([originalOrCropped], { multiple: false }))[0];
-			done(driveFile);
-		},
-	}, {
-		text: i18n.ts.fromDrive,
-		icon: 'ti ti-cloud',
-		action: () => {
-			chooseDriveFile({ multiple: false, excludeSensitive: true }).then(files => {
-				done(files[0]);
-			});
-		},
-	}, ...($i.avatarId != null ? [
-			{ type: 'divider' as const },
-			{
-				type: 'button' as const,
-				text: i18n.ts.detach,
-				icon: 'ti ti-circle-x',
-				action: () => {
-					os.apiWithDialog('i/update', {
-						avatarId: null,
-					}).then((res) => {
-						updateCurrentAccount({
-							avatarId: res.avatarId,
-							avatarUrl: res.avatarUrl,
-							avatarBlurhash: res.avatarBlurhash,
-						});
-					}).catch(() => {
-						// エラーダイアログは apiWithDialog 側で表示済み
-					});
-				},
-			},
-		] : [])], ev.currentTarget ?? ev.target);
+	chooseAvatar(ev.currentTarget ?? ev.target, $i.avatarId, async id => {
+		if (id != null) {
+			await done(id);
+		} else {
+			await os.apiWithDialog('i/update', { avatarId: null }).then(res => {
+				updateCurrentAccount({ avatarId: res.avatarId, avatarUrl: res.avatarUrl, avatarBlurhash: res.avatarBlurhash });
+			}).catch(() => {});
+		}
+	});
 }
 
 function changeBanner(ev: PointerEvent) {

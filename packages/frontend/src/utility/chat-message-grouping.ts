@@ -15,7 +15,7 @@ export type ChatMessageGroupPosition = {
 
 type GroupableTimelineItem = {
 	type: 'item';
-	data: { fromUserId: string; createdAt: string; };
+	data: { fromUserId: string | null; createdAt: string; };
 } | {
 	type: 'date';
 };
@@ -23,7 +23,8 @@ type GroupableTimelineItem = {
 function continuesGroup(prev: GroupableTimelineItem | undefined, next: GroupableTimelineItem | undefined): boolean {
 	// 日付の区切りをまたいではまとめない
 	if (prev?.type !== 'item' || next?.type !== 'item') return false;
-	if (prev.data.fromUserId !== next.data.fromUserId) return false;
+	// 계정이 없어진 작성자의 글은 누가 썼는지 글마다 보이도록 묶지 않는다
+	if (prev.data.fromUserId == null || prev.data.fromUserId !== next.data.fromUserId) return false;
 	return Date.parse(next.data.createdAt) - Date.parse(prev.data.createdAt) <= CHAT_MESSAGE_GROUPING_INTERVAL;
 }
 

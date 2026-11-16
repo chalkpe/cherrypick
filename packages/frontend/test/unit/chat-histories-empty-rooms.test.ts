@@ -37,7 +37,7 @@ import MkChatHistories from '@/components/MkChatHistories.vue';
 
 const stubs = {
 	MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' },
-	MkAvatar: { props: ['user'], template: '<span class="avatar" :data-user="user.id"></span>' },
+	MkAvatar: { props: ['user', 'room'], template: '<span class="avatar" :data-user="user?.id" :data-room="room?.id"></span>' },
 	MkUserName: { template: '<span></span>' },
 	MkAcct: { template: '<span></span>' },
 	MkTime: { template: '<span></span>' },
@@ -89,6 +89,14 @@ afterEach(() => {
 });
 
 describe('chat home with rooms without messages', () => {
+	test('마지막 글이 내 글이어도 다른 채널의 미읽음 표시는 유지한다', async () => {
+		const room = mkRoom('channels', '2026-02-01T00:00:00Z');
+		setup({ history: [{ ...roomMessage(room, room.createdAt), fromUserId: 'me', fromUser: owner, isRead: false }] });
+
+		const { container } = await mount();
+
+		expect(container.querySelector('a[href="/chat/room/channels"]')!.className).toMatch(/unread/);
+	});
 	test('keeps an eleventh messaged room truthful when the history page changes', async () => {
 		const rooms = Array.from({ length: 11 }, (_, i) => mkRoom(`r${i}`, new Date(2026, 0, i + 1).toISOString()));
 		const messages = rooms.map(r => roomMessage(r, r.createdAt)).reverse();
@@ -174,12 +182,12 @@ describe('chat home with rooms without messages', () => {
 		expect(emptyRow.className).not.toMatch(/isRead/);
 	});
 
-	test('uses the owner as the avatar of a room without messages', async () => {
+	test('uses the group icon of a room without messages', async () => {
 		const empty = { ...mkRoom('a1', '2026-01-01T00:00:00Z'), owner: { id: 'the-owner' } };
 		setup({ owned: [empty] });
 		const { container } = await mount();
 
-		expect(container.querySelector('.avatar')!.getAttribute('data-user')).toBe('the-owner');
+		expect(container.querySelector('.avatar')!.getAttribute('data-room')).toBe('a1');
 	});
 
 	test('skips a membership without a room', async () => {
@@ -254,4 +262,15 @@ describe('chat home with rooms without messages', () => {
 		expect(calls('chat/rooms/owned')).toBe(2);
 		expect(calls('chat/rooms/joining')).toBe(2);
 	});
+});
+
+test('shows the latest message channel and opens the channel list for a channel group', async () => {
+	const room = { ...mkRoom('channels', '2026-01-01T00:00:00Z'), hasChannels: true };
+	setup({ history: [{ ...roomMessage(room, '2026-02-01T00:00:00Z'), text: 'latest across channels', toRoomChannelId: 'second', toRoomChannel: { id: 'second', name: 'Second' } }] });
+	const { container } = await mount();
+
+	const entry = container.querySelector('a[href="/chat/room/channels/channels"]')!;
+	expect(entry).toBeTruthy();
+	expect(entry.textContent).toContain('#Second');
+	expect(entry.textContent).toContain('latest across channels');
 });

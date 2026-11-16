@@ -162,7 +162,10 @@ export async function refreshCurrentAccount(options?: { protectChatUnread?: bool
 	return fetchAccount($i.token, $i.id).then(account => {
 		if (refreshRevision != null && refreshRevision !== accountRefreshRevision) return;
 		// 조회하는 동안 받은 읽음·새 쪽지 상태는 이전 HTTP 응답으로 덮어쓰지 않는다.
-		if (options?.protectChatUnread && unreadRevision !== chatUnreadRevision) account.hasUnreadChatMessages = me.hasUnreadChatMessages;
+		if (options?.protectChatUnread && unreadRevision !== chatUnreadRevision) {
+			account.hasUnreadChatMessages = me.hasUnreadChatMessages;
+			account.hasUnreadChatNotifications = me.hasUnreadChatNotifications;
+		}
 		replaceCurrentAccountData(account);
 	}).catch(reason => {
 		if (reason === isAccountDeleted) {

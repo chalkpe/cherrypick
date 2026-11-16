@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => {
 		roomMembers: [] as unknown[],
 		sentInvitations: [] as unknown[],
 		roomIsArchived: false,
+		roomHasChannels: false,
 		roomOwnerId: 'owner',
 		roomShowFails: false,
 		roomInvitationExists: false,
@@ -45,6 +46,7 @@ const mocks = vi.hoisted(() => {
 		routerPush: vi.fn(),
 		routerReplace: vi.fn(),
 		routerCurrent: { value: { route: { path: '/chat/room/:roomId' }, props: new Map<string, string>([['roomId', 'r1']]) } },
+		prefer: null as { s: Record<string, unknown>; commit: (key: string, value: unknown) => void } | null,
 		alert: vi.fn(),
 		confirm: vi.fn(),
 		popupMenu: vi.fn(),
@@ -66,7 +68,8 @@ vi.mock('@/utility/misskey-api.js', () => ({
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowFails) throw new Error('No such room.');
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowError != null) throw mocks.roomShowError;
 		if (endpoint === 'chat/messages/room-timeline' && mocks.timelineError != null) throw mocks.timelineError;
-		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: mocks.roomOwnerId, owner: { id: mocks.roomOwnerId, username: 'owner', host: null }, isArchived: mocks.roomIsArchived, invitationExists: mocks.roomInvitationExists };
+		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: mocks.roomOwnerId, owner: { id: mocks.roomOwnerId, username: 'owner', host: null }, isArchived: mocks.roomIsArchived, hasChannels: mocks.roomHasChannels, invitationExists: mocks.roomInvitationExists };
+		if (endpoint === 'chat/rooms/channels/list') return [{ id: 'first', roomId: 'r1', name: 'First', isLegacy: true }];
 		if (endpoint === 'users/show' && mocks.userShowError != null) throw mocks.userShowError;
 		if (endpoint === 'users/show') return { id: 'alice', username: 'alice', host: null };
 		if (endpoint === 'chat/messages/room-timeline' || endpoint === 'chat/messages/user-timeline') return mocks.timeline;
@@ -76,7 +79,11 @@ vi.mock('@/utility/misskey-api.js', () => ({
 	}),
 }));
 vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: mocks.streamOff, useChannel: () => mocks.channel, state: 'connected' }) }));
-vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
+vi.mock('@/preferences.js', async () => {
+	const prefer = (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' });
+	mocks.prefer = prefer;
+	return { prefer };
+});
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/store.js', () => ({ store: { s: mocks.store } }));
 vi.mock('@/accounts.js', () => ({ refreshCurrentAccount: mocks.refreshCurrentAccount }));
@@ -89,7 +96,7 @@ vi.mock('@/chat-unread-subscription.js', () => ({
 	restoreChatUnreadGapIfUnchanged: () => { mocks.chatGap = true; },
 }));
 vi.mock('@/os.js', () => ({ alert: mocks.alert, confirm: mocks.confirm, popupMenu: mocks.popupMenu, apiWithDialog: mocks.apiWithDialog, selectUsers: mocks.selectUsers, success: mocks.success, promiseDialog: (promise: Promise<unknown>) => promise }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace, useListener: vi.fn(), currentRef: mocks.routerCurrent }) }));
+vi.mock('@/router.js', () => ({ useRouter: () => ({ push: mocks.routerPush, replace: mocks.routerReplace, replaceByPath: mocks.routerReplace, useListener: vi.fn(), currentRef: mocks.routerCurrent }) }));
 vi.mock('@/utility/sound.js', () => ({ playMisskeySfx: vi.fn() }));
 // 通話や入力欄は吹き出しのまとまりと関係ないので空にする
 vi.mock('@/composables/use-chat-room-voice-call.js', async () => {
@@ -168,6 +175,7 @@ import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { chatLeaveErrors } from '@/pages/chat/chat-errors.js';
 import { installFakeResizeObserver, resizeObserved } from './fake-resize-observer.js';
+import { playMisskeySfx } from '@/utility/sound.js';
 
 // 전경 화면 판정은 반응형이어야 스택 복귀 watcher가 움직인다. 라우터 목의 currentRef를 실제 ref로 바꾼다
 // (useRouter 목은 호출 시점에 mocks.routerCurrent를 읽으므로 여기서 바꿔도 된다)
@@ -204,14 +212,16 @@ async function flush() {
 	}
 }
 
-async function renderRoom(target: 'room' | 'user' = 'room') {
+async function renderRoom(target: 'room' | 'user' | 'channel' = 'room') {
 	mocks.routerCurrent.value = target === 'room'
 		? { route: { path: '/chat/room/:roomId' }, props: new Map<string, string>([['roomId', 'r1']]) }
-		: { route: { path: '/chat/user/:userId' }, props: new Map<string, string>([['userId', 'alice']]) };
+		: target === 'channel'
+			? { route: { path: '/chat/room/:roomId/channels/:channelId?' }, props: new Map<string, string>([['roomId', 'r1'], ['channelId', 'first']]) }
+			: { route: { path: '/chat/user/:userId' }, props: new Map<string, string>([['userId', 'alice']]) };
 	const host = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
-			return () => h(XRoomPage, target === 'room' ? { roomId: 'r1' } : { userId: 'alice' });
+			return () => h(XRoomPage, target === 'room' ? { roomId: 'r1' } : target === 'channel' ? { roomId: 'r1', channelId: 'first' } : { userId: 'alice' });
 		},
 	});
 	const result = render(host, { global: { stubs, directives: { tooltip: {} } } });
@@ -227,9 +237,11 @@ const bubbles = (container: Element) => [...container.querySelectorAll('[data-te
 }));
 
 beforeEach(() => {
+	vi.mocked(playMisskeySfx).mockClear();
 	mocks.channel = new mocks.FakeChannel();
 	mocks.renders.clear();
 	mocks.roomIsArchived = false;
+	mocks.roomHasChannels = false;
 	mocks.roomOwnerId = 'owner';
 	mocks.roomShowFails = false;
 	mocks.roomInvitationExists = false;
@@ -254,6 +266,7 @@ beforeEach(() => {
 	mocks.store.realtimeMode = true;
 	mocks.chatEventsActive = true;
 	mocks.chatGap = false;
+	mocks.prefer!.commit('experimental.stackingRouterView', false);
 	mocks.refreshCurrentAccount.mockReset().mockResolvedValue(undefined);
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
@@ -261,6 +274,255 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+});
+
+describe('수신자별 그룹 알림 소리', () => {
+	test.each([false, true])('shouldNotify=%s인 새 메시지의 소리를 따른다', async shouldNotify => {
+		const { container } = await renderRoom();
+
+		mocks.channel.emit('message', { ...message('m4', 'alice', 3 * MINUTE), shouldNotify });
+		await flush();
+
+		expect(container.querySelector('[data-id="m4"]')).not.toBeNull();
+		expect(playMisskeySfx).toHaveBeenCalledTimes(shouldNotify ? 1 : 0);
+	});
+
+	test('일대일과 구버전 스트림의 기존 소리를 유지한다', async () => {
+		await renderRoom('user');
+
+		mocks.channel.emit('message', message('m4', 'alice', 3 * MINUTE));
+		await flush();
+
+		expect(playMisskeySfx).toHaveBeenCalledExactlyOnceWith('chatMessage');
+	});
+
+	test('수정으로 새로 멘션되면 소리를 내며 같은 수정 재수신은 조용하다', async () => {
+		await renderRoom();
+		const edited = { messageId: 'm3', text: '@me 멘션', editedAt: '2026-10-27T12:04:00.000Z', shouldNotify: true };
+
+		mocks.channel.emit('updated', edited);
+		await flush();
+		mocks.channel.emit('updated', edited);
+		await flush();
+
+		expect(playMisskeySfx).toHaveBeenCalledExactlyOnceWith('chatMessage');
+	});
+});
+
+test('가져오기 완료 후 열린 일부 기록의 중간과 최근 글을 읽음 처리 없이 합친다', async () => {
+	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m1', 'bob', 0)];
+	const { container } = await renderRoom();
+	mocks.timeline = [message('m4', 'alice', 3 * MINUTE), message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
+	vi.mocked(misskeyApi).mockClear();
+
+	mocks.channel.emit('historyImported', { status: 'completed' });
+
+	await waitFor(() => {
+		expect([...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'))).toEqual(['m1', 'm2', 'm3', 'm4']);
+	});
+	const reads = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline');
+	expect(reads.length).toBeGreaterThan(0);
+	expect(reads.every(([, params]) => params != null && ('untilDate' in params || 'untilId' in params))).toBe(true);
+	expect(reads[0][1]).toMatchObject({ untilDate: Number.MAX_SAFE_INTEGER });
+	expect(playMisskeySfx).not.toHaveBeenCalled();
+});
+
+test('가져온 기록이 한 페이지보다 많아도 열린 범위까지 이어서 합친다', async () => {
+	mocks.timeline = [message('m151', 'alice', 151 * MINUTE), message('m001', 'bob', MINUTE)];
+	const { container } = await renderRoom();
+	const imported = Array.from({ length: 150 }, (_, i) => message(`m${String(150 - i).padStart(3, '0')}`, 'alice', (150 - i) * MINUTE));
+	vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+		if (endpoint === 'chat/messages/room-timeline') {
+			return (params != null && 'untilId' in params ? imported.slice(100) : imported.slice(0, 100)) as never;
+		}
+		return apiMock(endpoint, params);
+	});
+	try {
+		mocks.channel.emit('historyImported', { status: 'completed' });
+		await waitFor(() => expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(151));
+		const reads = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline');
+		expect(reads.some(([, params]) => params != null && 'untilId' in params && params.untilId === 'm051')).toBe(true);
+		expect(playMisskeySfx).not.toHaveBeenCalled();
+	} finally {
+		vi.mocked(misskeyApi).mockImplementation(apiMock);
+	}
+});
+
+test('화면의 가장 오래된 글보다 앞에 놓이는 글이 실시간으로 도착해도 더 불러오기가 빠짐없이 이어진다', async () => {
+	const all = Array.from({ length: 45 }, (_, i) => message(`e${String(45 - i).padStart(2, '0')}`, 'alice', (45 - i) * MINUTE));
+	vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+		if (endpoint === 'chat/messages/room-timeline') {
+			const { untilId = null, limit = 20 } = (params ?? {}) as { untilId?: string | null; limit?: number };
+			return all.filter(m => untilId == null || m.id < untilId).slice(0, limit) as never;
+		}
+		return apiMock(endpoint, params);
+	});
+	try {
+		const { container } = await renderRoom();
+		const more = () => [...container.querySelectorAll('button')].find(button => button.textContent.includes(i18n.ts.loadMore));
+
+		// 첫 화면에 없는 구간(e05와 e06 사이)에 쓴 글이 뒤늦게 도착한다
+		mocks.channel.emit('message', message('e05b', 'alice', 5 * MINUTE + 1000));
+		await flush();
+		await flush();
+		for (let i = 0; i < 5 && more() != null; i++) {
+			await fireEvent.click(more()!);
+			await flush();
+			await flush();
+		}
+
+		const shown = [...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'));
+		expect(shown).toEqual([...all.map(m => m.id), 'e05b'].toSorted());
+		expect(more()).toBeUndefined();
+	} finally {
+		vi.mocked(misskeyApi).mockImplementation(apiMock);
+	}
+});
+
+test('가져온 기록을 합친 뒤 더 불러오기는 합친 구간의 가장 오래된 글에서 이어진다', async () => {
+	const all = Array.from({ length: 200 }, (_, i) => message(`m${String(200 - i).padStart(3, '0')}`, 'alice', (200 - i) * MINUTE));
+	vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+		if (endpoint === 'chat/messages/room-timeline') {
+			const { untilId = null, limit = 20 } = (params ?? {}) as { untilId?: string | null; limit?: number };
+			return all.filter(m => untilId == null || m.id < untilId).slice(0, limit) as never;
+		}
+		return apiMock(endpoint, params);
+	});
+	try {
+		const { container } = await renderRoom();
+		const more = () => [...container.querySelectorAll('button')].find(button => button.textContent.includes(i18n.ts.loadMore));
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(20);
+
+		mocks.channel.emit('historyImported', { status: 'completed' });
+		await waitFor(() => expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(100));
+		const merged = [...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'));
+		expect(merged[0]).toBe('m101');
+		vi.mocked(misskeyApi).mockClear();
+
+		await fireEvent.click(more()!);
+		await flush();
+		await flush();
+
+		// 첫 요청이 초기 페이지 끝이 아니라 합친 구간의 끝에서 이어져야 새 글이 추가된다
+		const reads = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline');
+		expect(reads[0][1]).toMatchObject({ untilId: 'm101' });
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(130);
+
+		for (let i = 0; i < 10 && more() != null; i++) {
+			await fireEvent.click(more()!);
+			await flush();
+			await flush();
+		}
+		const shown = [...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'));
+		expect(shown).toEqual(all.map(m => m.id).toSorted());
+		expect(more()).toBeUndefined();
+	} finally {
+		vi.mocked(misskeyApi).mockImplementation(apiMock);
+	}
+});
+
+test('기록 재조회를 기다리는 동안 더 오래된 글이 실시간으로 도착해도 더 불러오기가 빠짐없이 이어진다', async () => {
+	const all = Array.from({ length: 200 }, (_, i) => message(`m${String(200 - i).padStart(3, '0')}`, 'alice', (200 - i) * MINUTE));
+	const late = message('m050b', 'alice', 50 * MINUTE + 1000);
+	const server = [...all.slice(0, 150), late, ...all.slice(150)];
+	let releaseRefresh: (() => void) | null = null;
+	const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+	vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+		if (endpoint === 'chat/messages/room-timeline') {
+			const { untilId = null, limit = 20 } = (params ?? {}) as { untilId?: string | null; limit?: number };
+			if (limit === 100) await refreshGate;
+			return server.filter(m => untilId == null || m.id < untilId).slice(0, limit) as never;
+		}
+		return apiMock(endpoint, params);
+	});
+	try {
+		const { container } = await renderRoom();
+		const more = () => [...container.querySelectorAll('button')].find(button => button.textContent.includes(i18n.ts.loadMore));
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(20);
+
+		mocks.channel.emit('historyImported', { status: 'completed' });
+		await waitFor(() => expect(vi.mocked(misskeyApi).mock.calls.some(([endpoint, params]) => endpoint === 'chat/messages/room-timeline' && (params as { limit?: number })?.limit === 100)).toBe(true));
+
+		// 재조회 응답을 기다리는 동안, 받은 구간보다 오래된 글이 실시간으로 도착한다
+		mocks.channel.emit('message', late);
+		await flush();
+		await flush();
+		releaseRefresh!();
+		await waitFor(() => expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(101));
+		vi.mocked(misskeyApi).mockClear();
+
+		await fireEvent.click(more()!);
+		await flush();
+		await flush();
+
+		// 커서는 실시간으로 끼어든 글이 아니라 실제로 받은 페이지의 끝에서 이어져야 한다
+		const reads = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline');
+		expect(reads[0][1]).toMatchObject({ untilId: 'm101' });
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(131);
+
+		for (let i = 0; i < 10 && more() != null; i++) {
+			await fireEvent.click(more()!);
+			await flush();
+			await flush();
+		}
+		const shown = [...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'));
+		expect(shown).toEqual(server.map(m => m.id).toSorted());
+		expect(more()).toBeUndefined();
+	} finally {
+		vi.mocked(misskeyApi).mockImplementation(apiMock);
+	}
+});
+
+test('더 불러오기 응답이 늦게 돌아와도 기록 병합으로 내려간 더 불러오기 위치를 되돌리지 않는다', async () => {
+	const all = Array.from({ length: 200 }, (_, i) => message(`m${String(200 - i).padStart(3, '0')}`, 'alice', (200 - i) * MINUTE));
+	let releaseMore: (() => void) | null = null;
+	const moreGate = new Promise<void>(resolve => { releaseMore = resolve; });
+	let holdMore = true;
+	vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+		if (endpoint === 'chat/messages/room-timeline') {
+			const { untilId = null, limit = 20 } = (params ?? {}) as { untilId?: string | null; limit?: number };
+			if (limit === 30 && holdMore) await moreGate;
+			return all.filter(m => untilId == null || m.id < untilId).slice(0, limit) as never;
+		}
+		return apiMock(endpoint, params);
+	});
+	try {
+		const { container } = await renderRoom();
+		const more = () => [...container.querySelectorAll('button')].find(button => button.textContent.includes(i18n.ts.loadMore));
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(20);
+
+		// 더 불러오기 응답을 늦게 받는 동안 기록 병합이 먼저 끝난다
+		await fireEvent.click(more()!);
+		await waitFor(() => expect(vi.mocked(misskeyApi).mock.calls.some(([endpoint, params]) => endpoint === 'chat/messages/room-timeline' && (params as { limit?: number })?.limit === 30)).toBe(true));
+		mocks.channel.emit('historyImported', { status: 'completed' });
+		await waitFor(() => expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(100));
+		holdMore = false;
+		releaseMore!();
+		await flush();
+		await flush();
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(100);
+		vi.mocked(misskeyApi).mockClear();
+
+		await fireEvent.click(more()!);
+		await flush();
+		await flush();
+
+		// 늦게 돌아온 응답이 커서를 되돌렸다면 이미 보이는 글만 다시 받는다
+		const reads = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/room-timeline');
+		expect(reads[0][1]).toMatchObject({ untilId: 'm101' });
+		expect(container.querySelectorAll('[data-testid="bubble"]').length).toBe(130);
+
+		for (let i = 0; i < 10 && more() != null; i++) {
+			await fireEvent.click(more()!);
+			await flush();
+			await flush();
+		}
+		const shown = [...container.querySelectorAll('[data-testid="bubble"]')].map(el => el.getAttribute('data-id'));
+		expect(shown).toEqual(all.map(m => m.id).toSorted());
+		expect(more()).toBeUndefined();
+	} finally {
+		vi.mocked(misskeyApi).mockImplementation(apiMock);
+	}
 });
 
 describe('following the newest message', () => {
@@ -1241,7 +1503,15 @@ describe('leaving a room from the menu', () => {
 
 		expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/leave', { roomId: 'r1' }, undefined, chatLeaveErrors);
 		expect(mocks.routerPush).not.toHaveBeenCalled();
-		expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.tsx._chat.leaveRoomConfirm({ name: 'room 1' }) });
+		expect(mocks.confirm).toHaveBeenCalledWith({
+			type: 'warning',
+			text: i18n.tsx._chat.leaveRoomConfirm({ name: 'room 1' }),
+			room: {
+				id: 'r1', name: 'room 1', ownerId: 'owner',
+				owner: { id: 'owner', username: 'owner', host: null },
+				isArchived: false, invitationExists: false, hasChannels: false,
+			},
+		});
 		expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
 	});
 
@@ -1428,6 +1698,101 @@ describe('after the stream reconnects', () => {
 		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
 	});
 
+	test('does not read or navigate on reconnect while the conversation is behind another screen in the stacking router', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		mocks.roomHasChannels = true;
+		await renderRoom('channel');
+		// 설정 화면으로 이동해 대화를 스택 뒤에 남긴다. 인스턴스는 마운트된 채 유지된다.
+		mocks.routerCurrent.value = { route: { path: '/settings' }, props: new Map<string, string>() };
+		mocks.roomShowError = Object.assign(new Error('This room was deleted.'), { code: 'ROOM_DELETED' });
+		const callsBefore = vi.mocked(misskeyApi).mock.calls.length;
+
+		await reconnect();
+
+		expect(vi.mocked(misskeyApi).mock.calls.length).toBe(callsBefore);
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
+		expect(mocks.alert).not.toHaveBeenCalled();
+	});
+
+	test('reads and handles the deleted room when the conversation returns to the front in the stacking router', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		mocks.roomHasChannels = true;
+		await renderRoom('channel');
+		mocks.routerCurrent.value = { route: { path: '/settings' }, props: new Map<string, string>() };
+		mocks.roomShowError = Object.assign(new Error('This room was deleted.'), { code: 'ROOM_DELETED' });
+		await reconnect();
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
+
+		// 대화가 현재 경로로 돌아오면 그때 미룬 읽기를 이어 해 삭제를 처리한다.
+		mocks.routerCurrent.value = { route: { path: '/chat/room/:roomId/channels/:channelId?' }, props: new Map<string, string>([['roomId', 'r1'], ['channelId', 'first']]) };
+		await flush();
+		await flush();
+
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('discards a reconnect response that arrives after the conversation left the front in the stacking router', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		mocks.roomHasChannels = true;
+		await renderRoom('channel');
+		let release!: () => void;
+		mocks.roomShowGate = new Promise<void>(resolve => { release = resolve; });
+		mocks.roomShowError = Object.assign(new Error('This room was deleted.'), { code: 'ROOM_DELETED' });
+
+		emitConnected();
+		await flush();
+		// 조회 도중 다른 화면으로 이동한다.
+		mocks.routerCurrent.value = { route: { path: '/settings' }, props: new Map<string, string>() };
+		release();
+		await flush();
+		await flush();
+
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
+		expect(mocks.alert).not.toHaveBeenCalled();
+	});
+
+	test('does not navigate when the recovery re-initialization answers after the conversation left the front in the stacking router', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		await renderRoom();
+		// 첫 복구 조회의 오류는 앞에서 끝나고, 그 오류가 시작한 재초기화 조회만 보류한다.
+		let showCalls = 0;
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; });
+		const deleted = Object.assign(new Error('This room was deleted.'), { code: 'ROOM_DELETED' });
+		vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/show') {
+				showCalls++;
+				if (showCalls > 1) await gate;
+				throw deleted;
+			}
+			if (endpoint === 'chat/messages/room-timeline') return mocks.timeline as never;
+			return apiMock(endpoint, params);
+		});
+		try {
+			emitConnected();
+			await waitFor(() => expect(showCalls).toBeGreaterThanOrEqual(2));
+			// 재초기화 조회가 보류된 동안 다른 화면으로 이동한다.
+			mocks.routerCurrent.value = { route: { path: '/settings' }, props: new Map<string, string>() };
+			release();
+			await flush();
+			await flush();
+
+			expect(mocks.alert).not.toHaveBeenCalled();
+			expect(mocks.routerReplace).not.toHaveBeenCalled();
+
+			// 대화가 현재 경로로 돌아오면 그때 재초기화가 삭제를 처리한다.
+			mocks.routerCurrent.value = { route: { path: '/chat/room/:roomId' }, props: new Map<string, string>([['roomId', 'r1']]) };
+			await flush();
+			await flush();
+
+			expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+			expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
+		} finally {
+			vi.mocked(misskeyApi).mockImplementation(apiMock);
+		}
+	});
+
 	test('says so when the timeline answers first that the room is gone and the room was deleted', async () => {
 		const { container } = await renderRoom();
 		mocks.timelineError = Object.assign(new Error('No such room.'), { code: 'NO_SUCH_ROOM' });
@@ -1575,6 +1940,179 @@ describe('after the stream reconnects', () => {
 		unmount();
 
 		expect(mocks.streamOff).toHaveBeenCalledWith('_connected_', listener);
+	});
+});
+
+describe('a background conversation in the stacking router', () => {
+	const roomRoute = () => { mocks.routerCurrent.value = { route: { path: '/chat/room/:roomId' }, props: new Map<string, string>([['roomId', 'r1']]) }; };
+	const settingsRoute = () => { mocks.routerCurrent.value = { route: { path: '/settings' }, props: new Map<string, string>() }; };
+
+	test('does not announce a realtime deletion or navigate while the conversation is behind another screen', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		await renderRoom();
+		settingsRoute();
+
+		mocks.channel.emit('roomDeleted', undefined);
+		await flush();
+
+		expect(mocks.alert).not.toHaveBeenCalled();
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
+
+		roomRoute();
+		await flush();
+
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('does not announce a realtime removal or navigate while the conversation is behind another screen', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		await renderRoom();
+		settingsRoute();
+
+		mocks.channel.emit('membershipEnded', { userId: 'me' });
+		await flush();
+
+		expect(mocks.alert).not.toHaveBeenCalled();
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
+
+		// 돌아온 시점의 재초기화가 퇴장을 확인해 안내한다.
+		mocks.roomShowError = Object.assign(new Error('No such room.'), { code: 'NO_SUCH_ROOM' });
+		roomRoute();
+		await flush();
+		await flush();
+
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.removedFromRoom });
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('does not open the first channel while a converted conversation is behind another screen', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		await renderRoom();
+		settingsRoute();
+		mocks.roomHasChannels = true;
+
+		mocks.channel.emit('channelsUpdated', undefined);
+		await flush();
+
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
+
+		// 돌아온 시점의 재초기화가 맨 위 채널을 연다.
+		roomRoute();
+		await flush();
+		await flush();
+
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat/room/r1/channels/first');
+	});
+
+	test('still announces a realtime deletion immediately when the conversation is the frontmost screen', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		await renderRoom();
+
+		mocks.channel.emit('roomDeleted', undefined);
+		await flush();
+
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+});
+
+describe('a direct conversation opening behind another screen in the stacking router', () => {
+	const userRoute = () => { mocks.routerCurrent.value = { route: { path: '/chat/user/:userId' }, props: new Map<string, string>([['userId', 'alice']]) }; };
+	const settingsRoute = () => { mocks.routerCurrent.value = { route: { path: '/settings' }, props: new Map<string, string>() }; };
+	const ids = (container: Element) => bubbles(container).map(bubble => bubble.id);
+	const showCalls = () => vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'users/show').length;
+	const timelineCalls = () => vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/user-timeline').length;
+
+	beforeEach(() => {
+		vi.mocked(misskeyApi).mockClear();
+	});
+
+	test('applies the first load answer and connects the subscription while the conversation is behind another screen', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		let release!: () => void;
+		mocks.timelineGate = new Promise<void>(resolve => { release = resolve; });
+		const { container } = await renderRoom('user');
+		expect(container.querySelector('[data-testid="form"]')).toBeNull();
+
+		// 첫 불러오기가 끝나기 전에 다른 화면으로 이동해 대화를 뒤에 남긴다.
+		settingsRoute();
+		mocks.timelineGate = null;
+		release();
+		await flush();
+		await flush();
+
+		// 뒤에서도 받은 대화를 적용하고 구독을 연결한다.
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3']);
+		expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
+		expect(mocks.channel.handlers.has('message')).toBe(true);
+
+		// 뒤에 있는 동안 상대가 보낸 쪽지도 실시간으로 반영한다.
+		mocks.channel.emit('message', message('m4', 'alice', 3 * MINUTE));
+		await flush();
+
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3', 'm4']);
+	});
+
+	test('does not ask for the conversation again when returning to it', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		let release!: () => void;
+		mocks.timelineGate = new Promise<void>(resolve => { release = resolve; });
+		const { container } = await renderRoom('user');
+		settingsRoute();
+		mocks.timelineGate = null;
+		release();
+		await flush();
+		await flush();
+
+		// 구독 확인은 실제 스트림처럼 도착한다. 뒤에서는 복구 읽기를 미룬다.
+		mocks.channel.emit('_subscribed_', undefined);
+		await flush();
+
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3']);
+		expect(timelineCalls()).toBe(1);
+
+		userRoute();
+		await flush();
+		await flush();
+
+		// 복귀는 새 초기화가 아니다. 받은 대화는 그대로 보이고 상대 정보도 다시 묻지 않는다.
+		expect(showCalls()).toBe(1);
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3']);
+		expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
+		// 구독 확인에 따른 기존 타임라인 보완 조회는 새 초기화의 재요청과 다르다.
+		expect(timelineCalls()).toBeLessThanOrEqual(2);
+	});
+
+	test('leaves a failed first load alone when returning, without asking again', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; });
+		const offline = Object.assign(new Error('offline'), { code: 'INTERNAL_ERROR' });
+		vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/messages/user-timeline') { await gate; throw offline; }
+			return apiMock(endpoint, params);
+		});
+		try {
+			const { container } = await renderRoom('user');
+			settingsRoute();
+			release();
+			await flush();
+			await flush();
+
+			// 뒤에서도 실패를 화면에 남긴다.
+			expect(container.querySelector('[role="alert"]')?.getAttribute('data-result-type')).toBe('error');
+
+			userRoute();
+			await flush();
+			await flush();
+
+			// 그룹에서 미룬 초기화를 잇는 복귀 재초기화가 1:1 실패 화면까지 임의로 다시 시작하지 않는다.
+			expect(showCalls()).toBe(1);
+			expect(container.querySelector('[role="alert"]')?.getAttribute('data-result-type')).toBe('error');
+		} finally {
+			vi.mocked(misskeyApi).mockImplementation(apiMock);
+		}
 	});
 });
 
@@ -2787,4 +3325,30 @@ describe.each(['room', 'user'] as const)('a %s conversation that has just opened
 			vi.mocked(misskeyApi).mockImplementation(apiMock);
 		}
 	});
+});
+
+test('a cached pending group response cannot replace the page that was opened afterwards', async () => {
+	let release!: () => void;
+	mocks.roomHasChannels = true;
+	mocks.roomShowGate = new Promise(resolve => { release = resolve; });
+	const visible = ref(true);
+	const host = defineComponent({
+		setup() {
+			provideMetadataReceiver(() => {});
+			return () => h(KeepAlive, null, { default: () => visible.value ? h(XRoomPage, { roomId: 'r1' }) : h('div') });
+		},
+	});
+	render(host, { global: { stubs, directives: { tooltip: {} } } });
+	await flush();
+	visible.value = false;
+	await flush();
+	release();
+	await flush();
+	await flush();
+
+	expect(mocks.routerReplace).not.toHaveBeenCalled();
+	visible.value = true;
+	await flush();
+	await flush();
+	expect(mocks.routerReplace).toHaveBeenCalledWith('/chat/room/r1/channels/first');
 });

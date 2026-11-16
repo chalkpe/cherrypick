@@ -36,6 +36,9 @@ import { ImportCustomEmojisProcessorService } from './processors/ImportCustomEmo
 import { ImportAntennasProcessorService } from './processors/ImportAntennasProcessorService.js';
 import { ImportClipsProcessorService } from './processors/ImportClipsProcessorService.js';
 import { ChatRoomRosterSyncProcessorService } from './processors/ChatRoomRosterSyncProcessorService.js';
+import { ChatChannelDeliverProcessorService } from './processors/ChatChannelDeliverProcessorService.js';
+import { ChatRoomIconDeletedProcessorService } from './processors/ChatRoomIconDeletedProcessorService.js';
+import { ChatRoomHistorySyncProcessorService } from './processors/ChatRoomHistorySyncProcessorService.js';
 import { DeleteAccountProcessorService } from './processors/DeleteAccountProcessorService.js';
 import { TruncateAccountProcessorService } from './processors/TruncateAccountProcessorService.js';
 import { ExportFavoritesProcessorService } from './processors/ExportFavoritesProcessorService.js';
@@ -132,6 +135,9 @@ export class QueueProcessorService implements OnApplicationShutdown {
 		private importAntennasProcessorService: ImportAntennasProcessorService,
 		private importClipsProcessorService: ImportClipsProcessorService,
 		private chatRoomRosterSyncProcessorService: ChatRoomRosterSyncProcessorService,
+		private chatChannelDeliverProcessorService: ChatChannelDeliverProcessorService,
+		private chatRoomIconDeletedProcessorService: ChatRoomIconDeletedProcessorService,
+		private chatRoomHistorySyncProcessorService: ChatRoomHistorySyncProcessorService,
 		private deleteAccountProcessorService: DeleteAccountProcessorService,
 		private truncateAccountProcessorService: TruncateAccountProcessorService,
 		private deleteFileProcessorService: DeleteFileProcessorService,
@@ -252,7 +258,10 @@ export class QueueProcessorService implements OnApplicationShutdown {
 					case 'deleteAccount': return this.deleteAccountProcessorService.process(job);
 					case 'truncateAccount': return this.truncateAccountProcessorService.process(job);
 					case 'reportAbuse': return this.reportAbuseProcessorService.process(job);
+					case 'chatChannelDeliver': return this.chatChannelDeliverProcessorService.process(job);
 					case 'chatRoomRosterSync': return this.chatRoomRosterSyncProcessorService.process(job);
+					case 'chatRoomIconDeleted': return this.chatRoomIconDeletedProcessorService.process(job);
+					case 'chatRoomHistorySync': return this.chatRoomHistorySyncProcessorService.process(job);
 					default: throw new Error(`unrecognized job type ${job.name} for db`);
 				}
 			};

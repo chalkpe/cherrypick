@@ -4,9 +4,14 @@
  */
 
 import { vi } from 'vitest';
+import { FindOperator } from 'typeorm';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
+import { ChatRoomHistoryService } from '@/core/ChatRoomHistoryService.js';
+import { notificationServiceOver } from './chat-room-notification-fixture.js';
+import { noChatInviteJoins } from './chat-roster-stub.js';
 import { ChatService } from '@/core/ChatService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 
@@ -33,6 +38,7 @@ type Row = { id: string; [key: string]: unknown };
 
 function matches(row: Row, where: Record<string, unknown>) {
 	return Object.entries(where).every(([key, value]) => {
+		if (value instanceof FindOperator && value.type === 'isNull') return row[key] == null;
 		if (value != null && typeof value === 'object' && '_value' in value) return ((value as { _value: unknown[] })._value).includes(row[key]);
 		return row[key] === value;
 	});
@@ -45,6 +51,7 @@ function fakeRepository(rows: Row[] = []) {
 		findOne: async ({ where }: { where: Record<string, unknown> }) => rows.find(row => matches(row, where)) ?? null,
 		findBy: async (where: Record<string, unknown>) => rows.filter(row => matches(row, where)),
 		countBy: async (where: Record<string, unknown>) => rows.filter(row => matches(row, where)).length,
+		existsBy: async (where: Record<string, unknown>) => rows.some(row => matches(row, where)),
 		insertOne: async (row: Row) => {
 			if (rows.some(existing => existing.roomId === row.roomId && existing.userId === row.userId && row.userId != null)) throw Object.assign(new Error('duplicate'), { code: '23505' });
 			rows.push(row);
@@ -389,14 +396,16 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 
 	const db = {
 		transaction: async <T>(callback: (manager: unknown) => Promise<T>): Promise<T> => {
-			const table = (entity: { name: string }) => entity.name === 'MiChatRoomInvitation' ? invitations : memberships;
+			const table = (entity: { name: string }) => entity.name === 'MiChatMessage' ? messages : entity.name === 'MiChatRoom' ? rooms : entity.name === 'MiChatRoomInvitation' ? invitations : entity.name === 'MiChatRoomUserSettings' ? fakeRepository() : memberships;
 			return await callback({
-				findOne: (_entity: unknown, options: { where: Record<string, unknown> }) => rooms.findOneBy(options.where),
+				findOne: (entity: { name: string }, options: { where: Record<string, unknown> }) => table(entity).findOneBy(options.where),
+				findBy: (entity: { name: string }, where: Record<string, unknown>) => table(entity).findBy(where),
 				find: async (_entity: unknown, options: { where: Record<string, unknown> }) => (await memberships.findBy(options.where)).map(membership => ({ ...membership, user: users.get(membership.userId as string) ?? null })),
 				withRepository: (repository: unknown) => repository,
 				delete: (entity: { name: string }, where: Record<string, unknown>) => table(entity).delete(where),
 				findOneBy: (entity: { name: string }, where: Record<string, unknown>) => table(entity).findOneBy(where),
-				update: (entity: { name: string }, where: Record<string, unknown>, patch: Record<string, unknown>) => table(entity).update(where, patch),
+				existsBy: async (entity: { name: string }, where: Record<string, unknown>) => await table(entity).findOneBy(where) != null,
+				update: (entity: { name: string }, where: string | Record<string, unknown>, patch: Record<string, unknown>) => table(entity).update(where, patch),
 				countBy: (entity: { name: string }, where: Record<string, unknown>) => table(entity).countBy(where),
 				insert: (entity: { name: string }, row: Row) => table(entity).insertOne(row),
 			});
@@ -404,6 +413,8 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 	};
 
 	const roleService = { isModerator: async () => false, getUserPolicies: async () => ({ chatAvailability: 'available' }) };
+	// 이 fixture에는 내보낸 계정이 없다. 재참여 금지 자체는 chat-room-ban 시험에서 다룬다.
+	const chatRoomBanService = { isBanned: vi.fn(async () => false), ban: vi.fn(async () => {}) };
 
 	const chatService = Object.assign(Object.create(ChatService.prototype), {
 		config,
@@ -426,8 +437,13 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 		notificationService: { createNotification: vi.fn() },
 		liveKitService,
 		chatRosterService,
+		chatRoomBanService,
+		// 다른 서버 그룹 참여 뒤의 과거 기록 가져오기 요청. 명단 시험은 가져오기를 보지 않는다
+		chatRoomHistoryService: { requestImport: vi.fn(async () => {}) },
 		hostPolicyService: { isRefusedRemoteHost: async (host: string) => (options.refusedHosts ?? []).includes(host) },
 	}) as ChatService;
+
+	Object.assign(chatService, { chatRoomNotificationService: notificationServiceOver(chatService) });
 
 	const signers: (string | null)[] = [];
 	const fetched = new Map(Object.entries(options.fetched ?? {}));
@@ -461,7 +477,12 @@ export function chatRosterFixture(options: FixtureOptions = {}) {
 		chatRoomInvitationsRepository: invitations,
 		chatRoomMembershipsRepository: memberships,
 		chatService,
+		// 사본 조회만 쓰는 실제 서비스. 저장소는 이 fixture의 가짜 행을 본다
+		chatRoomHistoryService: Object.assign(Object.create(ChatRoomHistoryService.prototype), { config, chatMessagesRepository: messages }) as ChatRoomHistoryService,
+		apChatRoomStateService: Object.assign(Object.create(ApChatRoomStateService.prototype), { chatService }),
 		chatRosterService,
+		chatInviteLinkService: noChatInviteJoins(),
+		chatRoomBanService,
 		chatVoiceService: {},
 		liveKitService,
 		apRendererService,
