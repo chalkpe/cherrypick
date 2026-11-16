@@ -1780,8 +1780,8 @@ describe('call recording lifecycle', () => {
 		for (let i = 0; i < 40; i++) await Promise.resolve();
 	}
 
-	async function joinRecordingCall(micEnabled = true) {
-		await joinVoiceCall({ ...room1, allowRecording: true }, { micEnabled });
+	async function joinRecordingCall(micEnabled = true, name: string = room1.name) {
+		await joinVoiceCall({ ...room1, name, allowRecording: true }, { micEnabled });
 		// 화면 공유가 없는 통화의 실제 publication 분기를 따른다.
 		lastRoom().localParticipant.getTrackPublication.mockImplementation((source?: string) => source === lk.Track.Source.Microphone
 			? { track: lastRoom().localParticipant.microphoneTrack }
@@ -2715,8 +2715,33 @@ describe('call recording lifecycle', () => {
 		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved);
 	});
 
-	test('names a one-to-one recording after the other participant', async () => {
+	test('names a two-person group recording after the room', async () => {
 		await joinRecordingCall();
+		remoteParticipant('https://remote.test/users/bob');
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/states') {
+				return [{
+					roomId: 'r1',
+					participants: [
+						{ identity: 'https://local.test/users/me', user: { name: 'Me', username: 'me' } },
+						{ identity: 'https://remote.test/users/bob', user: { name: 'Bob :wave:', username: 'bob' } },
+					],
+				}];
+			}
+			return {};
+		});
+
+		await startRecording();
+		stopRecording();
+		await flushRecording();
+
+		expect(uploadedFiles()[0].name).toMatch(/^room 1-\d{8}-\d{6}\.webm$/);
+	});
+
+	test('names a recording without a room name after the other participant', async () => {
+		await joinRecordingCall(true, '');
 		remoteParticipant('https://remote.test/users/bob');
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
 			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
@@ -2740,8 +2765,8 @@ describe('call recording lifecycle', () => {
 		expect(uploadedFiles()[0].name).toMatch(/^Bob-\d{8}-\d{6}\.webm$/);
 	});
 
-	test('falls back to the room name when the participant list is unavailable', async () => {
-		await joinRecordingCall();
+	test('falls back to a generic name when there is no room name and the participant list is unavailable', async () => {
+		await joinRecordingCall(true, '');
 		remoteParticipant('https://remote.test/users/bob');
 		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
 			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
@@ -2754,7 +2779,7 @@ describe('call recording lifecycle', () => {
 		stopRecording();
 		await flushRecording();
 
-		expect(uploadedFiles()[0].name).toMatch(/^room 1-\d{8}-\d{6}\.webm$/);
+		expect(uploadedFiles()[0].name).toMatch(/^voice-\d{8}-\d{6}\.webm$/);
 	});
 
 	test('sanitizes the room name for the drive', async () => {

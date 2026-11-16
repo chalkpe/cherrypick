@@ -378,9 +378,11 @@ function sanitizeRecordingName(name: string): string {
 	return cleaned;
 }
 
-/** 1:1 なら相手の名前、それ以外ならルーム名で録画ファイルを名付ける */
+/** ルーム名で録画ファイルを名付ける。ルーム名がなく相手が一人だけなら相手の名前を使う */
 async function recordingFileLabel(room: Room, roomId: string): Promise<string> {
-	const fallback = sanitizeRecordingName(state.room?.name ?? '') || 'voice';
+	const roomName = sanitizeRecordingName(state.room?.name ?? '');
+	if (roomName) return roomName;
+	const fallback = 'voice';
 	if (room.remoteParticipants.size !== 1) return fallback;
 	const otherIdentity = [...room.remoteParticipants.keys()][0];
 	try {
