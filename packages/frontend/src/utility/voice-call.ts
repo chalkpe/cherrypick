@@ -208,6 +208,7 @@ let recordingRawMicStream: MediaStream | null = null;
 const recordingSources = new Map<MediaStreamTrack, { source: MediaStreamAudioSourceNode; kind: 'mic' | 'others' }>();
 let recordingCanvas: HTMLCanvasElement | null = null;
 let recordingCanvasStream: MediaStream | null = null;
+let recordingCanvasTimer: number | null = null;
 const recordingVideos = new Map<MediaStreamTrack, { element: HTMLVideoElement; screen: boolean }>();
 
 function recordingMimeType(): string | undefined {
@@ -269,6 +270,8 @@ function createRecordingCanvas(): MediaStream | null {
 		const stream = canvas.captureStream(15);
 		recordingCanvas = canvas;
 		drawRecordingFrame();
+		// 화면이 없는 동안에도 프레임을 계속 내보내야 recorder가 조각을 낸다
+		recordingCanvasTimer = window.setInterval(drawRecordingFrame, 1000);
 		return stream;
 	} catch (err) {
 		// without a canvas we cannot add video later; this stays an audio-only recording
@@ -583,6 +586,8 @@ function createRecordingPart(session: RecordingSession, stream: MediaStream, mim
 function stopRecordingVideo(): void {
 	for (const track of [...recordingVideos.keys()]) removeRecordingVideo(track);
 	recordingCanvas = null;
+	if (recordingCanvasTimer != null) window.clearInterval(recordingCanvasTimer);
+	recordingCanvasTimer = null;
 	recordingCanvasStream?.getTracks().forEach(track => track.stop());
 	recordingCanvasStream = null;
 }
