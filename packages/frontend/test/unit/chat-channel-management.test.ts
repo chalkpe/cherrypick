@@ -321,3 +321,54 @@ test('limits sections to 128 and shows the limit notice', async () => {
 	expect((screen.getByRole('button', { name: i18n.ts._chat._channels.createSection }) as HTMLButtonElement).disabled).toBe(true);
 	expect(screen.getByText(i18n.ts._chat._channels.sectionLimit)).toBeTruthy();
 });
+
+function emptyChannelAreaOf(container: Element, sectionId: string): HTMLElement {
+	const block = sectionRowOf(container, sectionId).parentElement!;
+	const inner = [...block.children].find(el => !el.hasAttribute('data-chat-manage-section-id'))!;
+	return inner.firstElementChild as HTMLElement;
+}
+
+const withEmptySection = [
+	{ id: 'c1', roomId: 'r', name: 'First', isLegacy: false, sectionId: null },
+	{ id: 'c2', roomId: 'r', name: 'Second', isLegacy: false, sectionId: 's1' },
+];
+
+test('섹션 머리글을 빈 섹션의 채널 놓기 영역에 놓으면 무시하고 요청하지 않는다', async () => {
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/sections/list' ? sectionList : []);
+	const view = render(Management, { props: { room: { ...room, hasChannels: true }, channels: withEmptySection }, global: { stubs } });
+	await waitFor(() => expect(sectionRowOf(view.container, 's2')).not.toBeNull());
+	const handle = within(sectionRowOf(view.container, 's1')).getAllByRole('button', { name: i18n.ts.dragToReorder })[0];
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(handle, { dataTransfer });
+	await fireEvent.drop(emptyChannelAreaOf(view.container, 's2'), { dataTransfer });
+	await new Promise(resolve => setTimeout(resolve, 50));
+	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/channels/arrange')).toHaveLength(0);
+	expect(mocks.alert).not.toHaveBeenCalled();
+	expect(sectionRowOf(view.container, 's1')).not.toBeNull();
+	expect(sectionRowOf(view.container, 's2')).not.toBeNull();
+});
+
+test('채널을 빈 섹션으로 놓으면 한 번의 arrange로 옮긴다', async () => {
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/sections/list' ? sectionList : []);
+	const view = render(Management, { props: { room: { ...room, hasChannels: true }, channels: withEmptySection }, global: { stubs } });
+	await waitFor(() => expect(rowOf(view.container, 'c2')).not.toBeNull());
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(dragHandleOf(rowOf(view.container, 'c2')), { dataTransfer });
+	await fireEvent.drop(emptyChannelAreaOf(view.container, 's2'), { dataTransfer });
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/channels/arrange', {
+		roomId: 'r',
+		ungrouped: ['c1'],
+		sections: [{ sectionId: 's1', channelIds: [] }, { sectionId: 's2', channelIds: ['c2'] }],
+	}));
+	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/channels/arrange')).toHaveLength(1);
+});
+
+test('좁은 채널 페이지에서는 관리 화면 끌기 손잡이를 끄고 단추는 남긴다', async () => {
+	const view = renderSectioned({ narrow: true });
+	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
+	const handles = screen.getAllByRole('button', { name: i18n.ts.dragToReorder }) as HTMLButtonElement[];
+	expect(handles.length).toBeGreaterThan(0);
+	for (const handle of handles) expect(handle.getAttribute('draggable')).toBe('false');
+	expect(within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts._chat._channels.moveUp })).toBeTruthy();
+	expect(within(rowOf(view.container, 'c2')).getByRole('button', { name: i18n.ts._chat._channels.moveSection })).toBeTruthy();
+});

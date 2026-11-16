@@ -288,3 +288,20 @@ test('채널별 알림 선택을 섹션 이름 소제목으로 묶어 보인다'
 	expect(heading.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 	expect(notice.compareDocumentPosition(files) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
+
+test('부모가 다시 읽은 섹션 목록을 내려주면 알림 묶음이 갱신되고 개인 설정은 유지된다', async () => {
+	mocks.api.mockImplementation(async endpoint => endpoint === 'chat/rooms/sections/list' ? [] : { level: 'all', channelOverrides: [{ channelId: 'c2', level: 'mentions' }] });
+	const view = render(XInfo, { props: { room: { ...room, hasChannels: true }, channels: [{ id: 'c1', roomId: 'r1', name: 'general', sectionId: null }] as any, sections: [] as any }, global: { stubs } });
+	await screen.findByRole('combobox', { name: '#general' });
+
+	// 부모가 섹션을 만들고 채널을 그 안으로 옮긴 뒤 다시 읽은 목록을 내려준다.
+	await view.rerender({
+		channels: [{ id: 'c1', roomId: 'r1', name: 'general', sectionId: null }, { id: 'c2', roomId: 'r1', name: '공지', sectionId: 's1' }] as any,
+		sections: [{ id: 's1', roomId: 'r1', name: '운영' }] as any,
+	});
+
+	const notice = await screen.findByRole('combobox', { name: '#공지' });
+	expect(screen.getByText('운영')).toBeTruthy();
+	expect((notice as HTMLSelectElement).value).toBe('mentions');
+	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/notifications')).toHaveLength(1);
+});

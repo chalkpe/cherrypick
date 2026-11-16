@@ -25,7 +25,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:roomId="room.id"
 		:channelId="selectedChannel.id"
 		:channels="channels"
+		:sections="sections"
 		:channelListBack="narrow"
+		:narrow="narrow"
 		:mobileFooterInFlow="true"
 		@channelsUpdated="refresh"
 	/>
@@ -34,7 +36,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkLoading v-if="loading && !room"/>
 			<MkResult v-else-if="failed" type="error"/>
 			<template v-else-if="room">
-				<XInfo v-if="showInfo" :room="room" :channels="channels" @updated="refresh" @channelsUpdated="refresh" @deleting="deletingOwnRoom = $event"/>
+				<XInfo v-if="showInfo" :room="room" :channels="channels" :sections="sections" :narrow="narrow" @updated="refresh" @channelsUpdated="refresh" @deleting="deletingOwnRoom = $event"/>
 				<nav v-else :aria-label="i18n.ts._chat._channels.channels">
 					<MkSuperMenu :def="menuDef" grid collapsibleTitles @toggleGroup="onToggleGroup"/>
 				</nav>

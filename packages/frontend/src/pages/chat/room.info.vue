@@ -33,7 +33,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<template v-if="isOwner">
 		<hr>
 
-		<XChannelManagement :room="room" :channels="channels" @updated="emit('updated', $event)" @channelsUpdated="emit('channelsUpdated')"/>
+		<XChannelManagement :room="room" :channels="channels" :narrow="narrow" @updated="emit('updated', $event)" @channelsUpdated="emit('channelsUpdated')"/>
 
 		<hr>
 
@@ -116,6 +116,8 @@ const $i = ensureSignin();
 const props = defineProps<{
 	room: Misskey.entities.ChatRoom;
 	channels?: Misskey.entities.ChatRoomChannel[];
+	sections?: Misskey.entities.ChatRoomChannelSection[];
+	narrow?: boolean;
 }>();
 
 const isOwner = computed(() => {
@@ -219,7 +221,9 @@ watch(() => [props.room.notificationLevel, props.room.isMuted], () => {
 const listedChannels = ref<Misskey.entities.ChatRoomChannel[]>([]);
 const listedSections = ref<Misskey.entities.ChatRoomChannelSection[]>([]);
 const notificationChannels = computed(() => props.channels ?? listedChannels.value);
-const notificationGroups = computed(() => groupChannelsBySection(notificationChannels.value, listedSections.value));
+// 부모가 다시 읽은 섹션 목록을 내려주면 그것을 쓰고, 없으면 이 화면이 읽은 목록을 쓴다.
+const notificationSections = computed(() => props.sections ?? listedSections.value);
+const notificationGroups = computed(() => groupChannelsBySection(notificationChannels.value, notificationSections.value));
 let notificationRequest = 0;
 const channelLevels = ref<Record<string, NotificationLevel | 'inherit'>>({});
 
@@ -233,7 +237,7 @@ watch([() => props.room.id, () => props.room.hasChannels], async ([roomId, hasCh
 	try {
 		const [listed, sectionList, settings] = await Promise.all([
 			props.channels ?? misskeyApi('chat/rooms/channels/list', { roomId }),
-			misskeyApi('chat/rooms/sections/list', { roomId }),
+			props.sections ?? misskeyApi('chat/rooms/sections/list', { roomId }),
 			misskeyApi('chat/rooms/notifications', { roomId }),
 		]);
 		if (request !== notificationRequest || roomClosed || props.room.id !== roomId) return;

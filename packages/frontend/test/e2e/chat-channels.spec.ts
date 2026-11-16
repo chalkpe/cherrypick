@@ -1048,3 +1048,150 @@ test('deleting the viewed channel inside a section opens the first remaining cha
 	await page.getByTestId('modal-dialog-ok').click();
 	await expect(page).toHaveURL(base + path(room.id, general.id));
 });
+
+// 정보 탭의 알림 선택 MkSelect 라벨: 라벨 div의 다음 형제가 tabindex=0 입력 칸이다.
+function notificationSelectLabels(page: Page) {
+	return page.evaluate(() => {
+		const leaves = [...document.querySelectorAll('div,span')].filter(el => el.children.length === 0 && el.textContent!.startsWith('#'));
+		return leaves.filter(el => el.nextElementSibling?.getAttribute?.('tabindex') === '0').map(el => el.textContent);
+	});
+}
+
+test('the info tab notification list follows sections created while it stays open', async ({ page }) => {
+	const room = await createGroup('Section info live');
+	await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	await login(page, owner, 'en-US');
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	await open(page, path(room.id));
+	await page.getByText('About', { exact: true }).click();
+	await expect(page.getByText('Manage channels', { exact: true })).toBeVisible();
+	await expect.poll(() => notificationSelectLabels(page)).toContain('#beta');
+
+	await page.getByRole('button', { name: 'Create section', exact: true }).click();
+	await fillDialog(page, 'Section name', 'Notices');
+	const row = page.locator('[data-chat-manage-section-id]').first();
+	await expect(row).toBeVisible();
+	await row.getByRole('button', { name: 'Create channel in this section', exact: true }).click();
+	await fillDialog(page, 'Channel name', 'docs');
+
+	await expect.poll(() => notificationSelectLabels(page)).toContain('#docs');
+	const heading = await page.evaluate(() => {
+		const leaves = [...document.querySelectorAll('div,span')].filter(el => el.children.length === 0 && el.textContent === 'Notices');
+		return leaves.some(el => el.parentElement?.querySelector('[tabindex="0"]'));
+	});
+	expect(heading).toBe(true);
+});
+
+test('the rail re-reads section structure after the stream reconnects', async ({ page }) => {
+	const room = await createGroup('Section reconnect');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const beta = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	const section = await api(base, 'chat/rooms/sections/create', { i: owner.token, roomId: room.id, name: 'Notices' });
+	await api(base, 'chat/rooms/channels/arrange', { i: owner.token, roomId: room.id, ungrouped: [general.id], sections: [{ sectionId: section.id, channelIds: [beta.id] }] });
+	await login(page, member, 'en-US');
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	await trackSockets(page);
+	await open(page, path(room.id, general.id));
+	await expect(sectionHeader(page, 'Notices')).toBeVisible();
+
+	await cutStream(page);
+	await api(base, 'chat/rooms/sections/update', { i: owner.token, sectionId: section.id, name: 'Announcements' });
+	const unreadAfter = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/unread') && response.request().method() === 'POST', { timeout: 15_000 });
+	await page.context().setOffline(false);
+	await unreadAfter;
+	await expect(sectionHeader(page, 'Announcements')).toBeVisible();
+	await expect(sectionHeader(page, 'Notices')).toHaveCount(0);
+});
+
+test('search keeps section channels selectable when the section list fails', async ({ page }) => {
+	const room = await createGroup('Section search fallback');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const section = await api(base, 'chat/rooms/sections/create', { i: owner.token, roomId: room.id, name: 'Notices' });
+	const docs = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'docs', sectionId: section.id });
+	await api(base, 'chat/messages/create-to-room', { i: owner.token, toRoomId: room.id, toRoomChannelId: docs.id, text: 'fallback needle' });
+	await login(page, owner, 'en-US');
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	await open(page, path(room.id, general.id));
+	await expect(page.getByPlaceholder('Enter message here')).toBeInViewport();
+	await page.route('**/api/chat/rooms/sections/list', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { message: 'x', code: 'INTERNAL_ERROR', id: 'x' } }) }));
+	await page.locator('button[aria-label="Menu"]:not([data-chat-message-id] button)').first().click();
+	await page.getByRole('menuitem', { name: /Search$/ }).click();
+	await page.getByText('All channels', { exact: true }).locator('xpath=ancestor::div[@tabindex="0"][1]').click();
+	await expect(page.getByRole('menuitem', { name: /#docs · 2/ })).toBeVisible();
+	await page.getByText('#docs · 2', { exact: true }).click();
+	await page.getByPlaceholder('Search messages').fill('fallback needle');
+	await page.getByRole('button', { name: 'Search', exact: true }).click();
+	await expect(page.getByText('fallback needle', { exact: true })).toBeVisible();
+});
+
+// 섹션 머리글 손잡이를 빈 섹션의 채널 놓기 영역에 놓는다(종류가 다른 잘못된 놓기).
+async function dispatchSectionHandleToEmptyChannelArea(page: Page, sourceHandle: Locator, emptyHeader: Locator) {
+	const s = await sourceHandle.elementHandle();
+	const t = await emptyHeader.elementHandle();
+	await page.evaluate(([sEl, tEl]) => {
+		const inner = tEl.closest('.group')!.querySelector(':scope > .items')!;
+		const area = inner.firstElementChild as HTMLElement;
+		const dataTransfer = new DataTransfer();
+		sEl.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer }));
+		area.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer }));
+		area.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+	}, [s, t]);
+}
+
+test('dropping a section header on an empty section channel area is ignored in the rail', async ({ page }) => {
+	const room = await createGroup('Section wrong drop');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const beta = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	const first = await api(base, 'chat/rooms/sections/create', { i: owner.token, roomId: room.id, name: 'Notices' });
+	const second = await api(base, 'chat/rooms/sections/create', { i: owner.token, roomId: room.id, name: 'Events' });
+	await api(base, 'chat/rooms/channels/arrange', { i: owner.token, roomId: room.id, ungrouped: [general.id], sections: [{ sectionId: first.id, channelIds: [beta.id] }, { sectionId: second.id, channelIds: [] }] });
+	await login(page, owner, 'en-US');
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	const errors: string[] = [];
+	page.on('pageerror', error => errors.push(String(error)));
+	let arrangeCount = 0;
+	page.on('request', request => { if (request.url().endsWith('/api/chat/rooms/channels/arrange')) arrangeCount++; });
+	await open(page, path(room.id, general.id));
+	await expect(sectionHeader(page, 'Events')).toBeVisible();
+
+	await dispatchSectionHandleToEmptyChannelArea(page, sectionHandleFor(page, 'Notices'), sectionHeader(page, 'Events'));
+	await page.waitForTimeout(800);
+	expect(arrangeCount).toBe(0);
+	expect(errors).toEqual([]);
+	await expect(sectionHeader(page, 'Notices')).toBeVisible();
+	await expect(sectionHeader(page, 'Events')).toBeVisible();
+
+	// 채널을 빈 섹션으로 놓는 정상 끌기는 한 번의 arrange로 유지된다.
+	const arranged = page.waitForResponse(response => response.url().endsWith('/api/chat/rooms/channels/arrange'));
+	await dispatchRailDragIntoSection(page, railHandleFor(page, 'beta'), sectionHeader(page, 'Events'));
+	expect((await arranged).request().postDataJSON()).toMatchObject({ roomId: room.id, ungrouped: [general.id], sections: [{ sectionId: first.id, channelIds: [] }, { sectionId: second.id, channelIds: [beta.id] }] });
+	expect(arrangeCount).toBe(1);
+});
+
+test('the narrow channel page disables management drag handles but keeps the buttons', async ({ page }) => {
+	const room = await createGroup('Section narrow manage');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	const beta = await api(base, 'chat/rooms/channels/create', { i: owner.token, roomId: room.id, name: 'beta' });
+	const section = await api(base, 'chat/rooms/sections/create', { i: owner.token, roomId: room.id, name: 'Notices' });
+	await api(base, 'chat/rooms/channels/arrange', { i: owner.token, roomId: room.id, ungrouped: [general.id], sections: [{ sectionId: section.id, channelIds: [beta.id] }] });
+	await login(page, owner, 'en-US');
+	await page.setViewportSize({ width: 390, height: 844 });
+	await open(page, path(room.id));
+	await page.getByRole('button', { name: 'About', exact: true }).click();
+	await expect(page.getByText('Manage channels', { exact: true })).toBeVisible();
+	const handles = page.getByRole('button', { name: 'Drag to reorder' });
+	await expect(handles.first()).toBeVisible();
+	expect(await handles.count()).toBeGreaterThan(0);
+	for (const handle of await handles.all()) await expect(handle).toHaveAttribute('draggable', 'false');
+	await expect(page.locator(`[data-chat-manage-section-id="${section.id}"]`).getByRole('button', { name: 'Move up', exact: true })).toBeVisible();
+	await expect(page.locator(`[data-chat-channel-id="${beta.id}"]`).getByRole('button', { name: 'Move to section', exact: true })).toBeVisible();
+
+	// 넓은 화면에서는 관리 끌기가 그대로 켜져 있다.
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	await open(page, path(room.id, general.id));
+	await page.getByText('About', { exact: true }).click();
+	await expect(page.getByText('Manage channels', { exact: true })).toBeVisible();
+	const wideHandles = page.getByRole('button', { name: 'Drag to reorder' });
+	await expect(wideHandles.first()).toBeVisible();
+	for (const handle of await wideHandles.all()) await expect(handle).toHaveAttribute('draggable', 'true');
+});
