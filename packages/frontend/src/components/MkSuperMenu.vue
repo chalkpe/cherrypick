@@ -26,6 +26,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			direction="vertical"
 			manualDragStart
 			canNest
+			:strictGroup="draggableGroups"
 			:group="`${dragGroup}-groups`"
 			@update:modelValue="entries => emit('reorderGroups', entries.map(entry => entry.index))"
 		>
@@ -73,6 +74,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						:modelValue="draggableItems(entry.group.items)"
 						direction="vertical"
 						manualDragStart
+						:strictGroup="draggableGroups"
 						:group="dragGroup"
 						@update:modelValue="entries => emit('reorder', entry.index, entries.map(itemEntry => itemEntry.item))"
 					>
@@ -147,6 +149,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				:modelValue="draggableItems(group.items)"
 				direction="vertical"
 				manualDragStart
+				:strictGroup="draggableGroups"
 				:group="dragGroup"
 				@update:modelValue="entries => emit('reorder', groupIndex, entries.map(entry => entry.item))"
 			>

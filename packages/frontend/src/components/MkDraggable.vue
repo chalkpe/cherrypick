@@ -75,11 +75,14 @@ const props = withDefaults(defineProps<{
 	manualDragStart?: boolean;
 	withGaps?: boolean;
 	canNest?: boolean;
+	// 켜면 빈 목록도 일반 놓기처럼 끌기 group이 다른 항목은 받지 않는다. 중첩 끌기를 쓰는 화면에서만 켠다.
+	strictGroup?: boolean;
 }>(), {
 	group: null,
 	manualDragStart: false,
 	withGaps: false,
 	canNest: false,
+	strictGroup: false,
 });
 
 const emit = defineEmits<{
@@ -145,7 +148,8 @@ function onDrop(ev: DragEvent, item: T, backward: boolean) {
 
 function onEmptyDrop(ev: DragEvent) {
 	const dragged = getDragData(ev, 'MkDraggable');
-	if (dragged == null) return;
+	// 원래 목록에서 빼기 전에 group을 확인한다. 다르면 요청·예외 없이 무시한다.
+	if (dragged == null || (props.strictGroup && dragged.group !== group)) return;
 	dropCallback?.(instanceId);
 
 	emit('update:modelValue', [dragged.item as T]);

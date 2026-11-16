@@ -799,3 +799,53 @@ test('does not offer section or channel dragging to members in the narrow grid',
 	await screen.findByRole('button', { name: '운영' });
 	expect(screen.queryAllByRole('button', { name: i18n.ts.dragToReorder })).toHaveLength(0);
 });
+test('re-reads the section structure after the stream reconnects', async () => {
+	mocks.width = 1000;
+	let sections: unknown[] = sectionList;
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' }
+		: endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] }
+		: endpoint === 'chat/rooms/sections/list' ? sections
+		: sectionedChannels);
+	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	await screen.findByRole('button', { name: '운영' });
+
+	// 끊긴 동안 다른 계정이 섹션 이름·구성을 바꿨다.
+	sections = [{ id: 's1', roomId: 'r', name: '새 이름' }];
+	mocks.reconnect();
+
+	await screen.findByRole('button', { name: '새 이름' });
+	expect(screen.queryByRole('button', { name: '행사' })).toBeNull();
+});
+
+const nestedDef = [
+	{ items: [{ id: 'a', to: '/a', icon: 'ti ti-hash', text: 'A' }] },
+	{ id: 's1', title: '운영', foldable: true, expanded: true, items: [{ id: 'b', to: '/b', icon: 'ti ti-hash', text: 'B' }] },
+	{ id: 's2', title: '행사', foldable: true, expanded: true, items: [] as { id: string; to: string; icon: string; text: string }[] },
+];
+
+function emptyGroupAreaOf(name: string): HTMLElement {
+	const group = screen.getByRole('button', { name }).closest('.group')!;
+	return group.querySelector(':scope > .items')!.firstElementChild as HTMLElement;
+}
+
+test('super menu ignores a section header dropped on an empty group channel area', async () => {
+	const view = render(MkSuperMenu, { props: { def: nestedDef, draggable: true, draggableGroups: true, collapsibleTitles: true }, global: { stubs } });
+	const handle = screen.getByRole('button', { name: '운영' }).parentElement!.querySelector('[draggable="true"]') as HTMLElement;
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(handle, { dataTransfer });
+	await fireEvent.drop(emptyGroupAreaOf('행사'), { dataTransfer });
+	await new Promise(resolve => setTimeout(resolve, 30));
+	expect(view.emitted('reorder')).toBeUndefined();
+	expect(view.emitted('reorderGroups')).toBeUndefined();
+});
+
+test('super menu still moves a channel into an empty group with one reorder', async () => {
+	const view = render(MkSuperMenu, { props: { def: nestedDef, draggable: true, draggableGroups: true, collapsibleTitles: true }, global: { stubs } });
+	const handle = screen.getByRole('link', { name: 'B' }).parentElement!.querySelector('[draggable="true"]') as HTMLElement;
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(handle, { dataTransfer });
+	await fireEvent.drop(emptyGroupAreaOf('행사'), { dataTransfer });
+	await new Promise(resolve => setTimeout(resolve, 30));
+	// 옮긴 채널의 원래 묶음(운영)은 비고 받은 묶음(행사)에 들어간다. 두 목록이 각각 바뀐다.
+	expect(view.emitted('reorder')).toEqual([[1, []], [2, [{ id: 'b', to: '/b', icon: 'ti ti-hash', text: 'B' }]]]);
+});
