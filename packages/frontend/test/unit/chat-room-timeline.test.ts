@@ -2017,6 +2017,105 @@ describe('a background conversation in the stacking router', () => {
 	});
 });
 
+describe('a direct conversation opening behind another screen in the stacking router', () => {
+	const userRoute = () => { mocks.routerCurrent.value = { route: { path: '/chat/user/:userId' }, props: new Map<string, string>([['userId', 'alice']]) }; };
+	const settingsRoute = () => { mocks.routerCurrent.value = { route: { path: '/settings' }, props: new Map<string, string>() }; };
+	const ids = (container: Element) => bubbles(container).map(bubble => bubble.id);
+	const showCalls = () => vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'users/show').length;
+	const timelineCalls = () => vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/user-timeline').length;
+
+	beforeEach(() => {
+		vi.mocked(misskeyApi).mockClear();
+	});
+
+	test('applies the first load answer and connects the subscription while the conversation is behind another screen', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		let release!: () => void;
+		mocks.timelineGate = new Promise<void>(resolve => { release = resolve; });
+		const { container } = await renderRoom('user');
+		expect(container.querySelector('[data-testid="form"]')).toBeNull();
+
+		// 첫 불러오기가 끝나기 전에 다른 화면으로 이동해 대화를 뒤에 남긴다.
+		settingsRoute();
+		mocks.timelineGate = null;
+		release();
+		await flush();
+		await flush();
+
+		// 뒤에서도 받은 대화를 적용하고 구독을 연결한다.
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3']);
+		expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
+		expect(mocks.channel.handlers.has('message')).toBe(true);
+
+		// 뒤에 있는 동안 상대가 보낸 쪽지도 실시간으로 반영한다.
+		mocks.channel.emit('message', message('m4', 'alice', 3 * MINUTE));
+		await flush();
+
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3', 'm4']);
+	});
+
+	test('does not ask for the conversation again when returning to it', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		let release!: () => void;
+		mocks.timelineGate = new Promise<void>(resolve => { release = resolve; });
+		const { container } = await renderRoom('user');
+		settingsRoute();
+		mocks.timelineGate = null;
+		release();
+		await flush();
+		await flush();
+
+		// 구독 확인은 실제 스트림처럼 도착한다. 뒤에서는 복구 읽기를 미룬다.
+		mocks.channel.emit('_subscribed_', undefined);
+		await flush();
+
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3']);
+		expect(timelineCalls()).toBe(1);
+
+		userRoute();
+		await flush();
+		await flush();
+
+		// 복귀는 새 초기화가 아니다. 받은 대화는 그대로 보이고 상대 정보도 다시 묻지 않는다.
+		expect(showCalls()).toBe(1);
+		expect(ids(container)).toEqual(['m1', 'm2', 'm3']);
+		expect(container.querySelector('[data-testid="form"]')).not.toBeNull();
+		// 구독 확인에 따른 기존 타임라인 보완 조회는 새 초기화의 재요청과 다르다.
+		expect(timelineCalls()).toBeLessThanOrEqual(2);
+	});
+
+	test('leaves a failed first load alone when returning, without asking again', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; });
+		const offline = Object.assign(new Error('offline'), { code: 'INTERNAL_ERROR' });
+		vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/messages/user-timeline') { await gate; throw offline; }
+			return apiMock(endpoint, params);
+		});
+		try {
+			const { container } = await renderRoom('user');
+			settingsRoute();
+			release();
+			await flush();
+			await flush();
+
+			// 뒤에서도 실패를 화면에 남긴다.
+			expect(container.querySelector('[role="alert"]')?.getAttribute('data-result-type')).toBe('error');
+
+			userRoute();
+			await flush();
+			await flush();
+
+			// 그룹에서 미룬 초기화를 잇는 복귀 재초기화가 1:1 실패 화면까지 임의로 다시 시작하지 않는다.
+			expect(showCalls()).toBe(1);
+			expect(container.querySelector('[role="alert"]')?.getAttribute('data-result-type')).toBe('error');
+		} finally {
+			vi.mocked(misskeyApi).mockImplementation(apiMock);
+		}
+	});
+});
+
 describe('telling the server what was read', () => {
 	const reads = (send: { mock: { calls: unknown[][] } }) => send.mock.calls.filter(([type]) => type === 'read').map(([, body]) => body);
 

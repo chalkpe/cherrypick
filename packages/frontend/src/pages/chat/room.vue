@@ -470,8 +470,9 @@ async function initialize() {
 	initializingKey = key;
 	const version = ++conversationVersion;
 	const sameTarget = () => !destroyed && version === conversationVersion && key === conversationKey();
-	// 스택 라우터에서 뒤에 남은 대화는 초기화 응답으로 상태를 적용하거나 안내·이동·구독 연결을 하지 않는다. 돌아온 시점에 다시 초기화한다.
-	const current = () => sameTarget() && isActivated && (!prefer.s['experimental.stackingRouterView'] || isFrontmostConversation.value);
+	// 스택 라우터에서 뒤에 남은 그룹 대화는 초기화 응답으로 상태를 적용하거나 안내·이동·구독 연결을 하지 않는다. 돌아온 시점에 다시 초기화한다.
+	// 1:1 대화는 뒤에서도 받은 응답을 적용하고 구독을 연결한다.
+	const current = () => sameTarget() && isActivated && (props.roomId == null || !prefer.s['experimental.stackingRouterView'] || isFrontmostConversation.value);
 	connection.value?.dispose();
 	connection.value = null;
 	initializing.value = true;
@@ -1065,8 +1066,8 @@ watch(isFrontmostConversation, (frontmost, wasFrontmost) => {
 		}
 		// 스택 라우터는 뒤에 남은 대화를 비활성화하지 않으므로 onActivated가 오지 않는다. 돌아온 시점에 미룬 읽기를 이어 한다.
 		catchUp();
-		// 닫힌 대화는 돌아온 시점에 다시 초기화한다. 진행 중인 초기화는 그 응답이 이어 받는다.
-		if (!initialized.value && !initializing.value) {
+		// 닫힌 그룹 대화는 돌아온 시점에 다시 초기화한다. 진행 중인 초기화는 그 응답이 이어 받는다.
+		if (props.roomId != null && !initialized.value && !initializing.value) {
 			void initialize();
 			return;
 		}
