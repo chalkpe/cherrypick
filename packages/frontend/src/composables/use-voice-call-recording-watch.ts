@@ -71,11 +71,22 @@ export function useVoiceCallRecordingWatch() {
 	watch(callRoomId, (roomId, _before, onCleanup) => {
 		if (roomId == null) return;
 		const stream = useStream();
-		const connection = stream.useChannel('chatRoom', { roomId });
+		let connection: ReturnType<typeof stream.useChannel<'chatRoom'>> | null = null;
+		let subscribedChannelId: string | undefined;
 		let disposed = false;
 		let revision = 0;
 		let timer: number | null = null;
 		let retryDelay = 1000;
+
+		// 기본 채널이 없는 채널형 방은 채널을 지정하지 않으면 구독이 거절되므로, 남은 첫 채널로 구독한다
+		function subscribe(channelId: string | undefined) {
+			connection?.dispose();
+			subscribedChannelId = channelId;
+			connection = stream.useChannel('chatRoom', { roomId: roomId!, channelId });
+			connection.on('roomUpdated', onRoomUpdated);
+			connection.on('channelsUpdated', refreshAllowed);
+			connection.on('_subscribed_', refreshAllowed);
+		}
 
 		async function refreshAllowed() {
 			if (disposed) return;
@@ -84,7 +95,13 @@ export function useVoiceCallRecordingWatch() {
 			const request = ++revision;
 			try {
 				const room = await misskeyApi('chat/rooms/show', { roomId: roomId! });
-				if (disposed || request !== revision) return;
+				if (disposed) return;
+				const channelId = room.hasChannels && room.legacyChannelId == null
+					? (await misskeyApi('chat/rooms/channels/list', { roomId: roomId! })).find(channel => channel.roomId === roomId)?.id
+					: undefined;
+				if (disposed) return;
+				if (channelId !== subscribedChannelId) subscribe(channelId);
+				if (request !== revision) return;
 				retryDelay = 1000;
 				setRecordingAllowed(roomId!, room.allowRecording === true);
 			} catch (err) {
@@ -104,15 +121,14 @@ export function useVoiceCallRecordingWatch() {
 			setRecordingAllowed(ctx.roomId, ctx.allowRecording);
 		}
 
-		connection.on('roomUpdated', onRoomUpdated);
-		connection.on('_subscribed_', refreshAllowed);
+		subscribe(undefined);
 		stream.on('_connected_', refreshAllowed);
 		void refreshAllowed();
 		onCleanup(() => {
 			disposed = true;
 			if (timer != null) window.clearTimeout(timer);
 			stream.off('_connected_', refreshAllowed);
-			connection.dispose();
+			connection?.dispose();
 		});
 	}, { immediate: true });
 

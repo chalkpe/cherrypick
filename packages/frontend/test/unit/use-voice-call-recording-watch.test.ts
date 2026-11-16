@@ -15,13 +15,31 @@ const mocks = vi.hoisted(() => {
 			this.handlers.get(event)!.add(handler);
 		}
 		off(event: string, handler: (payload?: any) => void) { this.handlers.get(event)?.delete(handler); }
-		emit(event: string, payload?: unknown) { for (const handler of this.handlers.get(event) ?? []) handler(payload); }
+		params: { roomId?: string; channelId?: string } | null = null;
+		rejected = false;
+		emit(event: string, payload?: unknown) { if (this.rejected) return; for (const handler of this.handlers.get(event) ?? []) handler(payload); }
 		dispose = vi.fn();
 	}
-	return { Channel, stream: new Channel(), channel: new Channel(), main: new Channel(), toast: vi.fn(), sound: vi.fn(), api: vi.fn(), setRecordingAllowed: vi.fn(), voiceStates: null as any };
+	// 서버의 chatRoom 구독 규칙: 채널형 방은 채널을 지정하지 않으면 기본 채널로 해석하고, 그것이 없거나 지정한 채널이 없으면 거절한다
+	const server = { hasChannels: false, legacyChannelId: null as string | null, channels: [] as { id: string; roomId: string }[] };
+	const subscriptions: InstanceType<typeof Channel>[] = [];
+	return { Channel, server, subscriptions, stream: new Channel(), channel: new Channel(), main: new Channel(), toast: vi.fn(), sound: vi.fn(), api: vi.fn(), setRecordingAllowed: vi.fn(), voiceStates: null as any };
 });
 
-vi.mock('@/stream.js', () => ({ useStream: () => Object.assign(mocks.stream, { useChannel: (name: string) => name === 'main' ? mocks.main : mocks.channel }) }));
+vi.mock('@/stream.js', () => ({
+	useStream: () => Object.assign(mocks.stream, {
+		useChannel: (name: string, params?: { roomId?: string; channelId?: string }) => {
+			if (name === 'main') return mocks.main;
+			const channel = new mocks.Channel();
+			channel.params = params ?? null;
+			const selected = params?.channelId ?? mocks.server.legacyChannelId;
+			channel.rejected = mocks.server.hasChannels && (selected == null || !mocks.server.channels.some(c => c.id === selected));
+			mocks.subscriptions.push(channel);
+			mocks.channel = channel;
+			return channel;
+		},
+	}),
+}));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
 vi.mock('@/utility/voice-call.js', () => ({ voiceCall: reactive({ status: 'connected', room: { id: 'r1' }, recording: false }), setRecordingAllowed: mocks.setRecordingAllowed, localIdentityOf: (id: string) => id }));
 vi.mock('@/composables/use-chat-room-voice-states.js', () => {
@@ -55,7 +73,11 @@ beforeEach(() => {
 	mocks.main = new mocks.Channel();
 	mocks.toast.mockReset();
 	mocks.sound.mockReset();
-	mocks.api.mockReset().mockResolvedValue({ id: 'r1', allowRecording: true });
+	mocks.api.mockReset().mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/channels/list' ? mocks.server.channels : { id: 'r1', allowRecording: true, hasChannels: mocks.server.hasChannels, legacyChannelId: mocks.server.legacyChannelId });
+	mocks.server.hasChannels = false;
+	mocks.server.legacyChannelId = null;
+	mocks.server.channels = [];
+	mocks.subscriptions.length = 0;
 	mocks.setRecordingAllowed.mockReset();
 	mocks.voiceStates.value = new Map();
 	Object.assign(voiceCall, { status: 'connected', room: { id: 'r1' }, recording: false });
@@ -84,6 +106,50 @@ test('loads the latest setting after channel subscription even when the tab is h
 	await flush();
 
 	expect(mocks.setRecordingAllowed).toHaveBeenLastCalledWith('r1', false);
+});
+
+test('receives a recording permission change in a channel group whose default channel was deleted', async () => {
+	mocks.server.hasChannels = true;
+	mocks.server.channels = [{ id: 'c1', roomId: 'r1' }, { id: 'c2', roomId: 'r1' }];
+	start();
+	await flush();
+
+	// 채널을 지정하지 않은 구독은 거절되어 살아 있는 구독은 첫 채널의 것 하나뿐이다
+	const live = mocks.subscriptions.filter(s => !s.rejected && s.dispose.mock.calls.length === 0);
+	expect(live.map(s => s.params?.channelId)).toEqual(['c1']);
+	mocks.channel.emit('roomUpdated', { roomId: 'r1', allowRecording: false });
+	expect(mocks.setRecordingAllowed).toHaveBeenLastCalledWith('r1', false);
+});
+
+test('keeps the channel group watch after the subscribed channel is deleted', async () => {
+	mocks.server.hasChannels = true;
+	mocks.server.channels = [{ id: 'c1', roomId: 'r1' }, { id: 'c2', roomId: 'r1' }];
+	start();
+	await flush();
+	const count = mocks.subscriptions.length;
+
+	// 구성이 바뀌지 않은 알림은 구독을 다시 만들지 않는다
+	mocks.channel.emit('channelsUpdated', { roomId: 'r1' });
+	await flush();
+	expect(mocks.subscriptions.length).toBe(count);
+
+	mocks.server.channels = [{ id: 'c2', roomId: 'r1' }];
+	mocks.channel.emit('channelsUpdated', { roomId: 'r1' });
+	await flush();
+
+	expect(mocks.subscriptions.at(-1)?.params?.channelId).toBe('c2');
+	mocks.channel.emit('roomUpdated', { roomId: 'r1', allowRecording: false });
+	expect(mocks.setRecordingAllowed).toHaveBeenLastCalledWith('r1', false);
+});
+
+test('does not subscribe to a specific channel when the group has a default channel or no channels', async () => {
+	mocks.server.hasChannels = true;
+	mocks.server.legacyChannelId = 'general';
+	mocks.server.channels = [{ id: 'general', roomId: 'r1' }, { id: 'c2', roomId: 'r1' }];
+	start();
+	await flush();
+
+	expect(mocks.subscriptions.map(s => s.params?.channelId)).toEqual([undefined]);
 });
 
 test('a stale settings response cannot undo a newer revocation event', async () => {
