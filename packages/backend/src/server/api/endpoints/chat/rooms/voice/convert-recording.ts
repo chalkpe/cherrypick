@@ -216,7 +216,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			// 응답 유실 뒤 같은 요청이 오면 이미 만든 결과를 돌려준다. 조각은 이미 지워졌을 수 있다.
 			const remembered = await this.recordingStorage.getResult(me.id, ps.requestId);
 			if (remembered != null) {
-				const reused = await this.reuseResult(me, ps.requestId, remembered);
+				const reused = await this.reuseResult(me, ps.requestId, remembered, ps.folderId);
 				if (reused != null) return reused;
 			}
 
@@ -335,7 +335,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 	}
 
 	/** 이전에 만든 결과를 돌려준다. 최종 파일이나 임시 보관이 사라졌으면 새로 변환하게 하되, 남은 조각 정리 기록은 유지한다. */
-	private async reuseResult(me: MiLocalUser, requestId: string, result: RecordingResult): Promise<ConversionResponse | null> {
+	private async reuseResult(me: MiLocalUser, requestId: string, result: RecordingResult, folderId: string | null): Promise<ConversionResponse | null> {
 		if (result.fileId != null) {
 			const file = await this.driveFilesRepository.findOneBy({ id: result.fileId, userId: me.id });
 			if (file != null) {
@@ -345,7 +345,20 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		} else if (result.download != null) {
 			const download = await this.recordingStorage.getDownload(result.download.id);
 			if (download != null && download.userId === me.id && fs.existsSync(download.path)) {
-				return { file: null, download: { id: download.id, name: download.name, size: download.size, reason: result.download.reason } };
+				// 한도를 되돌렸거나 용량을 확보했을 수 있으니 보관한 최종 파일을 드라이브에 다시 저장해 본다.
+				let reason = result.download.reason;
+				try {
+					const converted = await this.driveService.addFile({ user: me, path: download.path, name: download.name, folderId, force: true });
+					await this.recordingStorage.removeDownload(download.id);
+					await this.recordingStorage.setResult(me.id, requestId, { fileId: converted.id, folderId: converted.folderId, remainingParts: result.remainingParts });
+					return { file: await this.driveFileEntityService.pack(converted, { self: true }), download: null };
+				} catch (error) {
+					const identifiableId = error instanceof IdentifiableError ? error.id : null;
+					if (identifiableId === 'f9e4e5f3-4df4-40b5-b400-f236945f7073') reason = 'tooLarge';
+					else if (identifiableId === 'c6244ed2-a39a-4e1c-bf93-f0fbd7764fa6') reason = 'noFreeSpace';
+					else throw error;
+				}
+				return { file: null, download: { id: download.id, name: download.name, size: download.size, reason } };
 			}
 		}
 		if (result.remainingParts.length > 0) {

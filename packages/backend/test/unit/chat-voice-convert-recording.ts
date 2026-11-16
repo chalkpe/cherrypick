@@ -265,13 +265,33 @@ describe('chat/rooms/voice/convert-recording', () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-recording-test-'));
 		const kept = path.join(dir, 'kept.mp3');
 		fs.writeFileSync(kept, 'x');
-		const f = fixture({ remembered: { download: { id: 'dl-1', name: 'room.mp3', size: 1, reason: 'tooLarge' }, remainingParts: [] } });
+		const f = fixture({ addFileError: new IdentifiableError('f9e4e5f3-4df4-40b5-b400-f236945f7073', 'Max file size exceeded.'), remembered: { download: { id: 'dl-1', name: 'room.mp3', size: 1, reason: 'tooLarge' }, remainingParts: [] } });
 		f.recordingStorage.getDownload.mockResolvedValue({ id: 'dl-1', userId: 'me', requestId, path: kept, name: 'room.mp3', size: 1 });
 
 		try {
 			await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false }, me, null, null))
 				.resolves.toEqual({ file: null, download: { id: 'dl-1', name: 'room.mp3', size: 1, reason: 'tooLarge' } });
+			expect(f.recordingStorage.removeDownload).not.toHaveBeenCalled();
 			expect(f.recordingStorage.clearResult).not.toHaveBeenCalled();
+			expect(childProcess.spawn).not.toHaveBeenCalled();
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('saves the kept download to the drive on retry once the limit or space is fixed', async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-recording-test-'));
+		const kept = path.join(dir, 'kept.mp3');
+		fs.writeFileSync(kept, 'x');
+		const f = fixture({ remembered: { download: { id: 'dl-1', name: 'room.mp3', size: 1, reason: 'noFreeSpace' }, remainingParts: [] } });
+		f.recordingStorage.getDownload.mockResolvedValue({ id: 'dl-1', userId: 'me', requestId, path: kept, name: 'room.mp3', size: 1 });
+
+		try {
+			await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false, folderId: 'folder1' }, me, null, null))
+				.resolves.toEqual({ file: { id: 'converted' }, download: null });
+			expect(f.driveService.addFile).toHaveBeenCalledWith(expect.objectContaining({ path: kept, name: 'room.mp3', folderId: 'folder1' }));
+			expect(f.recordingStorage.removeDownload).toHaveBeenCalledWith('dl-1');
+			expect(f.results.get(requestId)).toMatchObject({ fileId: 'converted' });
 			expect(childProcess.spawn).not.toHaveBeenCalled();
 		} finally {
 			fs.rmSync(dir, { recursive: true, force: true });
