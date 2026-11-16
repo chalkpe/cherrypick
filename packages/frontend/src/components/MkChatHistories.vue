@@ -273,8 +273,12 @@ onMounted(() => {
 	font-weight: bold;
 }
 
+// 노트 헤더(MkNoteHeader)와 같은 방식: 계정 주소가 먼저 줄어들고 이름은 나중에 잘린다
 .messageHeaderUsername {
 	margin: 0 8px;
+	flex-shrink: 9999999;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .messageHeaderTime {
