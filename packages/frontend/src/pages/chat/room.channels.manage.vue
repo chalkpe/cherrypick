@@ -258,7 +258,7 @@ function arrangementOf(groups: ManageGroup[]): ChannelArrangement {
 async function submitArrangement(arrangement: ChannelArrangement, optimistic: boolean) {
 	if (!canManage.value || busy.value || closed) return;
 	if (sections.value.length === 0) {
-		// 섹션이 없으면 PR49와 같은 평평한 순서 바꾸기다.
+		// 섹션이 없으면 기존 채널 순서 바꾸기(reorder)를 쓴다.
 		if (optimistic) {
 			await reorderChannels(arrangement.ungrouped);
 		} else {

@@ -207,7 +207,7 @@ async function flushRailArrange() {
 	const byId = new Map(channels.value.map(channel => [channel.id, channel]));
 
 	if (sections.value.length === 0) {
-		// 섹션이 없으면 PR49와 같은 평평한 순서 바꾸기다.
+		// 섹션이 없으면 기존 채널 순서 바꾸기(reorder)를 쓴다.
 		const items = changedGroups?.get(0);
 		if (items) await reorderChannels(itemsToChannels(items, byId));
 		return;
