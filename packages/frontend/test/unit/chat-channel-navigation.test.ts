@@ -479,6 +479,61 @@ test('re-reads on reconnect while the list is the frontmost screen in the stacki
 	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(2);
 });
 
+test('does not close the list on a realtime deletion while it is behind another screen in the stacking router', async () => {
+	mocks.preferS['experimental.stackingRouterView'] = true;
+	renderChannels({ roomId: 'r' });
+	await screen.findByRole('link', { name: 'First' });
+	mocks.navigateAway();
+
+	mocks.handlers.get('roomDeleted')!(undefined);
+	await flush();
+
+	expect(mocks.replace).not.toHaveBeenCalled();
+	expect(mocks.alert).not.toHaveBeenCalled();
+
+	// 목록이 현재 경로로 돌아오면 그때 다시 읽어 삭제를 처리한다.
+	mocks.api.mockImplementation(async (endpoint: string) => {
+		if (endpoint === 'chat/rooms/show') throw roomDeletedError();
+		return endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : channels;
+	});
+	mocks.navigate('r');
+	await waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'info', text: i18n.ts._chat.roomDeleted }));
+	expect(mocks.replace).toHaveBeenCalledWith('/chat');
+});
+
+test('does not close the list on a realtime removal while it is behind another screen in the stacking router', async () => {
+	mocks.preferS['experimental.stackingRouterView'] = true;
+	renderChannels({ roomId: 'r' });
+	await screen.findByRole('link', { name: 'First' });
+	mocks.navigateAway();
+
+	mocks.handlers.get('membershipEnded')!({ userId: 'me' });
+	await flush();
+
+	expect(mocks.replace).not.toHaveBeenCalled();
+	expect(mocks.alert).not.toHaveBeenCalled();
+
+	mocks.api.mockImplementation(async (endpoint: string) => {
+		if (endpoint === 'chat/rooms/show') { const err = new Error('No such room.') as Error & { code: string }; err.code = 'NO_SUCH_ROOM'; throw err; }
+		return endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : channels;
+	});
+	mocks.navigate('r');
+	await waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'info', text: i18n.ts._chat.roomUnavailable }));
+	expect(mocks.replace).toHaveBeenCalledWith('/chat');
+});
+
+test('still closes the list on a realtime deletion while it is the frontmost screen in the stacking router', async () => {
+	mocks.preferS['experimental.stackingRouterView'] = true;
+	renderChannels({ roomId: 'r' });
+	await screen.findByRole('link', { name: 'First' });
+
+	mocks.handlers.get('roomDeleted')!(undefined);
+	await flush();
+
+	expect(mocks.alert).toHaveBeenCalledWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+	expect(mocks.replace).toHaveBeenCalledWith('/chat');
+});
+
 const ownedRoom = { ...room, ownerId: 'me' };
 
 function mockRoom(roomValue: unknown, unreadChannelIds: string[] = []) {
