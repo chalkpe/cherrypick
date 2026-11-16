@@ -46,6 +46,7 @@ const mocks = vi.hoisted(() => {
 		routerPush: vi.fn(),
 		routerReplace: vi.fn(),
 		routerCurrent: { value: { route: { path: '/chat/room/:roomId' }, props: new Map<string, string>([['roomId', 'r1']]) } },
+		prefer: null as { s: Record<string, unknown>; commit: (key: string, value: unknown) => void } | null,
 		alert: vi.fn(),
 		confirm: vi.fn(),
 		popupMenu: vi.fn(),
@@ -78,7 +79,11 @@ vi.mock('@/utility/misskey-api.js', () => ({
 	}),
 }));
 vi.mock('@/stream.js', () => ({ useStream: () => ({ on: mocks.streamOn, off: mocks.streamOff, useChannel: () => mocks.channel, state: 'connected' }) }));
-vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' }) }));
+vi.mock('@/preferences.js', async () => {
+	const prefer = (await import('./fake-prefer.js')).createFakePrefer({ animation: true, 'voiceCall.stageChatSide': 'right' });
+	mocks.prefer = prefer;
+	return { prefer };
+});
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/store.js', () => ({ store: { s: mocks.store } }));
 vi.mock('@/accounts.js', () => ({ refreshCurrentAccount: mocks.refreshCurrentAccount }));
@@ -207,14 +212,16 @@ async function flush() {
 	}
 }
 
-async function renderRoom(target: 'room' | 'user' = 'room') {
+async function renderRoom(target: 'room' | 'user' | 'channel' = 'room') {
 	mocks.routerCurrent.value = target === 'room'
 		? { route: { path: '/chat/room/:roomId' }, props: new Map<string, string>([['roomId', 'r1']]) }
-		: { route: { path: '/chat/user/:userId' }, props: new Map<string, string>([['userId', 'alice']]) };
+		: target === 'channel'
+			? { route: { path: '/chat/room/:roomId/channels/:channelId?' }, props: new Map<string, string>([['roomId', 'r1'], ['channelId', 'first']]) }
+			: { route: { path: '/chat/user/:userId' }, props: new Map<string, string>([['userId', 'alice']]) };
 	const host = defineComponent({
 		setup() {
 			provideMetadataReceiver(() => {});
-			return () => h(XRoomPage, target === 'room' ? { roomId: 'r1' } : { userId: 'alice' });
+			return () => h(XRoomPage, target === 'room' ? { roomId: 'r1' } : target === 'channel' ? { roomId: 'r1', channelId: 'first' } : { userId: 'alice' });
 		},
 	});
 	const result = render(host, { global: { stubs, directives: { tooltip: {} } } });
@@ -259,6 +266,7 @@ beforeEach(() => {
 	mocks.store.realtimeMode = true;
 	mocks.chatEventsActive = true;
 	mocks.chatGap = false;
+	mocks.prefer!.commit('experimental.stackingRouterView', false);
 	mocks.refreshCurrentAccount.mockReset().mockResolvedValue(undefined);
 	// API は新しい順に返す
 	mocks.timeline = [message('m3', 'alice', 2 * MINUTE), message('m2', 'alice', MINUTE), message('m1', 'bob', 0)];
@@ -1688,6 +1696,60 @@ describe('after the stream reconnects', () => {
 		expect(form(container)).toBeNull();
 		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
 		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('does not read or navigate on reconnect while the conversation is behind another screen in the stacking router', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		mocks.roomHasChannels = true;
+		await renderRoom('channel');
+		// 설정 화면으로 이동해 대화를 스택 뒤에 남긴다. 인스턴스는 마운트된 채 유지된다.
+		mocks.routerCurrent.value = { route: { path: '/settings' }, props: new Map<string, string>() };
+		mocks.roomShowError = Object.assign(new Error('This room was deleted.'), { code: 'ROOM_DELETED' });
+		const callsBefore = vi.mocked(misskeyApi).mock.calls.length;
+
+		await reconnect();
+
+		expect(vi.mocked(misskeyApi).mock.calls.length).toBe(callsBefore);
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
+		expect(mocks.alert).not.toHaveBeenCalled();
+	});
+
+	test('reads and handles the deleted room when the conversation returns to the front in the stacking router', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		mocks.roomHasChannels = true;
+		await renderRoom('channel');
+		mocks.routerCurrent.value = { route: { path: '/settings' }, props: new Map<string, string>() };
+		mocks.roomShowError = Object.assign(new Error('This room was deleted.'), { code: 'ROOM_DELETED' });
+		await reconnect();
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
+
+		// 대화가 현재 경로로 돌아오면 그때 미룬 읽기를 이어 해 삭제를 처리한다.
+		mocks.routerCurrent.value = { route: { path: '/chat/room/:roomId/channels/:channelId?' }, props: new Map<string, string>([['roomId', 'r1'], ['channelId', 'first']]) };
+		await flush();
+		await flush();
+
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('discards a reconnect response that arrives after the conversation left the front in the stacking router', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		mocks.roomHasChannels = true;
+		await renderRoom('channel');
+		let release!: () => void;
+		mocks.roomShowGate = new Promise<void>(resolve => { release = resolve; });
+		mocks.roomShowError = Object.assign(new Error('This room was deleted.'), { code: 'ROOM_DELETED' });
+
+		emitConnected();
+		await flush();
+		// 조회 도중 다른 화면으로 이동한다.
+		mocks.routerCurrent.value = { route: { path: '/settings' }, props: new Map<string, string>() };
+		release();
+		await flush();
+		await flush();
+
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
+		expect(mocks.alert).not.toHaveBeenCalled();
 	});
 
 	test('says so when the timeline answers first that the room is gone and the room was deleted', async () => {

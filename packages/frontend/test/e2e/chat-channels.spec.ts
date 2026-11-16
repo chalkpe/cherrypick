@@ -532,6 +532,131 @@ test('the wide rail drops a channel deleted while the stream was down after reco
 	await expect(page).toHaveURL(base + path(room.id, quiet.id));
 });
 
+// 화면 쌓기(experimental.stackingRouterView)에서는 이전 페이지가 마운트된 채 남는다.
+async function enableStacking(page: Page) {
+	await page.addInitScript(() => {
+		const raw = localStorage.getItem('preferences');
+		const profile = raw ? JSON.parse(raw) : { preferences: {} };
+		profile.preferences ??= {};
+		profile.preferences['experimental.stackingRouterView'] = [[{}, true, {}]];
+		localStorage.setItem('preferences', JSON.stringify(profile));
+	});
+}
+
+// 좁은 목록을 스택 뒤에 남기고 설정 화면을 앞에 둔다(실제 화면 조작).
+async function leaveListBehind(page: Page) {
+	await page.locator('button:has(.ti-messages)').click();
+	await expect(page).toHaveURL(base + '/chat');
+	const navButton = page.locator('button:has(img)').first();
+	await expect(navButton).toBeVisible();
+	await navButton.click();
+	const settingsLink = page.getByRole('link', { name: 'Settings' });
+	await expect(settingsLink).toBeVisible();
+	await settingsLink.click();
+	await expect(page).toHaveURL(base + '/settings');
+}
+
+// 연결 복구를 기다린 뒤, 뒤 목록의 재조회가 없는지 관찰 창으로 확인한다.
+async function reconnectAndExpectNoListReread(page: Page, roomId: string) {
+	const roomShows: number[] = [];
+	page.on('request', request => {
+		if (new URL(request.url()).pathname === '/api/chat/rooms/show' && request.postDataJSON()?.roomId === roomId) roomShows.push(Date.now());
+	});
+	const wsCountAtCut = await page.evaluate(() => (window as unknown as SocketTrackingWindow).__ws.length);
+	const mark = Date.now();
+	await page.context().setOffline(false);
+	// 단절 뒤 새로 생긴 소켓이 열릴 때까지 기다린다(재연결 성공 신호).
+	await expect.poll(() => page.evaluate(n => {
+		const sockets = (window as unknown as SocketTrackingWindow).__ws;
+		return sockets.slice(n).some(s => s.readyState === WebSocket.OPEN);
+	}, wsCountAtCut), { timeout: 15_000 }).toBe(true);
+	const openAt = Date.now();
+	// 복구 뒤 뒤 목록의 방 조회가 없어야 한다. 3초는 관찰 창, 10초는 실패 상한이다.
+	await expect.poll(async () => {
+		if (roomShows.some(t => t >= mark)) return 'reread';
+		return Date.now() - openAt >= 3000 ? 'quiet' : 'waiting';
+	}, { timeout: 10_000, intervals: [250] }).toBe('quiet');
+	return mark;
+}
+
+test('a stacked channel list behind another screen keeps the current screen on reconnect after its room was deleted', async ({ page }) => {
+	const room = await createGroup('Weekend catchup');
+	await page.setViewportSize({ width: 390, height: 844 });
+	await login(page, member, 'en-US');
+	await enableStacking(page);
+	await trackSockets(page);
+	await open(page, path(room.id));
+	await expect(channelLink(page, 'general')).toBeVisible();
+	await leaveListBehind(page);
+
+	// 끊긴 동안 그룹장이 실제 API로 그룹을 삭제한다.
+	await cutStream(page);
+	await api(base, 'chat/rooms/delete', { i: owner.token, roomId: room.id });
+	await reconnectAndExpectNoListReread(page, room.id);
+
+	await expect(page).toHaveURL(base + '/settings');
+	await expect(page.getByText('The room was deleted')).toHaveCount(0);
+});
+
+test('returning to a stacked channel list reads the latest state and handles the deleted room', async ({ page }) => {
+	const room = await createGroup('Morning notes');
+	await page.setViewportSize({ width: 390, height: 844 });
+	await login(page, member, 'en-US');
+	await enableStacking(page);
+	await trackSockets(page);
+	await open(page, path(room.id));
+	await expect(channelLink(page, 'general')).toBeVisible();
+	await leaveListBehind(page);
+
+	await cutStream(page);
+	await api(base, 'chat/rooms/delete', { i: owner.token, roomId: room.id });
+	const mark = await reconnectAndExpectNoListReread(page, room.id);
+	await expect(page).toHaveURL(base + '/settings');
+	const okButton = page.locator('[data-testid="modal-dialog-ok"]');
+	if (await okButton.isVisible().catch(() => false)) await okButton.click();
+
+	// 스택 탭을 닫아 목록이 앞에 오게 한다.
+	const roomShows: number[] = [];
+	page.on('request', request => {
+		if (new URL(request.url()).pathname === '/api/chat/rooms/show' && request.postDataJSON()?.roomId === room.id) roomShows.push(Date.now());
+	});
+	await page.locator('button:has(.ti-x)').last().click();
+	await page.waitForURL(url => url.href === base + '/chat' || url.href.startsWith(base + path(room.id)), { timeout: 10_000 });
+	if (page.url() === base + '/chat' && await page.locator('button:has(.ti-x)').count() > 0) {
+		await page.locator('button:has(.ti-x)').last().click();
+	}
+
+	// 돌아온 시점에 최신 상태를 읽어 삭제 안내를 표시하고 목록을 닫는다.
+	await expect(page.getByText('The room was deleted')).toBeVisible({ timeout: 10_000 });
+	await expect(page).toHaveURL(base + '/chat');
+	expect(roomShows.some(t => t >= mark)).toBe(true);
+});
+
+test('a stacked channel rail and conversation behind another screen keep the current screen on reconnect after their room was deleted', async ({ page }) => {
+	const room = await createGroup('Evening catchup');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	await login(page, member, 'en-US');
+	await enableStacking(page);
+	await trackSockets(page);
+	await open(page, path(room.id, general.id));
+	await expect(page.getByRole('navigation', { name: 'Channels' })).toBeVisible();
+	// 넓은 화면에서는 설정 링크가 사이드바에 있다.
+	await page.locator('a[href="/settings"]').first().click();
+	await expect(page).toHaveURL(base + '/settings');
+
+	await cutStream(page);
+	await api(base, 'chat/rooms/delete', { i: owner.token, roomId: room.id });
+	await reconnectAndExpectNoListReread(page, room.id);
+	await expect(page).toHaveURL(base + '/settings');
+	await expect(page.getByText('The room was deleted')).toHaveCount(0);
+
+	// 스택 탭 닫기로 레일과 대화에 돌아오면 그때 삭제를 처리한다.
+	await page.locator('button:has(.ti-x)').last().click();
+	await expect(page.getByText('The room was deleted')).toBeVisible({ timeout: 10_000 });
+	await expect(page).toHaveURL(base + '/chat');
+});
+
 test('long channel names wrap within the rail and the narrow list', async ({ page }) => {
 	const room = await createGroup('Weekend notes');
 	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];

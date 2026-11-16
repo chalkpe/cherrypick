@@ -933,6 +933,8 @@ function noteChangeDuringRead() {
 async function catchUp() {
 	// タイムラインを取得すると既読になるので、見ていないあいだは見に戻るまで待つ
 	if (readingAgain || !eventsMayBeMissing || !initialized.value || !isActivated || window.document.hidden) return;
+	// 스택 라우터에서 뒤에 남은 대화의 복구 읽기는 미룬다. 현재 경로로 돌아온 시점에 이어서 읽는다.
+	if (prefer.s['experimental.stackingRouterView'] && !isFrontmostConversation.value) return;
 	eventsMayBeMissing = false;
 
 	readingAgain = true;
@@ -971,6 +973,11 @@ async function readLatest(): Promise<boolean> {
 			return false;
 		}
 		if (!initialized.value || leavingRoom.value || deletingOwnRoom.value) return true;
+		// 조회 도중 다른 화면으로 바뀌었으면 이 응답으로 닫거나 이동하지 않고, 돌아온 시점으로 미룬다.
+		if (prefer.s['experimental.stackingRouterView'] && !isFrontmostConversation.value) {
+			eventsMayBeMissing = true;
+			return true;
+		}
 		// 外されたか、削除された。どちらなのかと、また招待されているかどうかは initialize が確かめて案内する
 		closeRoom();
 		if (isActivated) initialize();
@@ -1042,6 +1049,8 @@ onActivated(() => {
 // 같은 판정을 공유하므로, 먼저 발행한 쪽이 공백을 해소하면 다른 쪽은 건너뛴다.
 watch(isFrontmostConversation, (frontmost, wasFrontmost) => {
 	if (!frontmost || wasFrontmost) return;
+	// 스택 라우터는 뒤에 남은 대화를 비활성화하지 않으므로 onActivated가 오지 않는다. 돌아온 시점에 미룬 읽기를 이어 한다.
+	if (prefer.s['experimental.stackingRouterView']) catchUp();
 	if (!initialized.value || readingAgain) return;
 	if (chatUnreadSubscriptionGap()) recheckUnreadSign(true);
 });

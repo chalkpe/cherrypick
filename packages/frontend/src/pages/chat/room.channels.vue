@@ -57,6 +57,7 @@ import { i18n } from '@/i18n.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { useRouter } from '@/router.js';
 import { useStream } from '@/stream.js';
+import { prefer } from '@/preferences.js';
 import { useElementWidth } from '@/composables/use-element-width.js';
 import { definePage } from '@/page.js';
 import { ensureSignin } from '@/i.js';
@@ -79,6 +80,14 @@ const displayNotificationChannelIds = computed(() => fetchedNotificationChannelI
 const showInfo = ref(false);
 const deletingOwnRoom = ref(false);
 const selectedChannel = computed(() => channels.value.find(channel => channel.id === props.channelId && channel.roomId === props.roomId));
+// 스택 라우터에서는 뒤에 남은 목록도 마운트가 유지되어 active만으로는 현재 화면을 알 수 없다.
+// 라우트가 이 목록(또는 레일과 대화)인지로 맨 앞을 판단한다.
+const isFrontmost = computed(() => {
+	const current = router.currentRef.value;
+	return current.route.path === '/chat/room/:roomId/channels/:channelId?'
+		&& current.props.get('roomId') === props.roomId
+		&& (current.props.get('channelId') ?? null) === (props.channelId ?? null);
+});
 const railBusy = ref(false);
 const canReorder = computed(() => room.value != null && room.value.ownerId === $i.id && !room.value.isArchived && $i.policies.chatAvailability === 'available');
 const menuDef = computed<SuperMenuDef[]>(() => [{
@@ -101,6 +110,7 @@ let mainSubscription: Misskey.IChannelConnection<Misskey.Channels['main']> | nul
 let subscription: Misskey.IChannelConnection<Misskey.Channels['chatRoom']> | null = null;
 
 function selectFirst() {
+	if (!isFrontmost.value) return;
 	if (room.value?.id !== props.roomId || channels.value.length === 0) return;
 	if (props.channelId != null && !selectedChannel.value) {
 		os.alert({ type: 'info', text: i18n.ts._chat._channels.deletedNotice });
@@ -160,13 +170,13 @@ async function refresh() {
 	failed.value = false;
 	try {
 		const fetched = await misskeyApi('chat/rooms/show', { roomId: target });
-		if (version !== request || !active) return;
+		if (version !== request || !active || !isFrontmost.value) return;
 		if (!fetched.hasChannels || fetched.invitationExists) {
 			router.replaceByPath(`/chat/room/${target}`);
 			return;
 		}
 		const list = await misskeyApi('chat/rooms/channels/list', { roomId: target });
-		if (version !== request || !active) return;
+		if (version !== request || !active || !isFrontmost.value) return;
 		room.value = fetched;
 		channels.value = list.filter(channel => channel.roomId === target);
 		selectFirst();
@@ -188,7 +198,7 @@ async function refresh() {
 			closeList(i18n.ts._chat.removedFromRoom);
 		});
 	} catch (err) {
-		if (version === request && active) {
+		if (version === request && active && isFrontmost.value) {
 			const code = (err as Misskey.api.APIError | null)?.code;
 			if (code === 'ROOM_DELETED') closeList(i18n.ts._chat.roomDeleted);
 			else if (code === 'NO_SUCH_ROOM') closeList(i18n.ts._chat.roomUnavailable);
@@ -206,14 +216,21 @@ function closeList(text: string) {
 
 // 끊긴 동안 구독 기준 채널이 삭제되면 서버가 구독을 거부해 확인(_subscribed_)이 오지 않는다.
 // 연결 복구 자체를 기준으로 목록과 미읽음을 한 곳에서 다시 읽고, 구독 대상도 남은 채널로 다시 고른다.
+// 뒤에 남은 목록이 현재 화면을 바꾸지 않도록 맨 앞 화면일 때만 다시 읽는다.
 function onStreamConnected() {
-	if (active) void refresh();
+	if (active && isFrontmost.value) void refresh();
 }
 
 useStream().on('_connected_', onStreamConnected);
 watch(() => props.roomId, () => { room.value = null; channels.value = []; fetchedUnreadChannelIds.value = []; fetchedNotificationChannelIds.value = []; unreadRequest++; showInfo.value = false; void refresh(); }, { immediate: true });
 watch(() => props.channelId, () => { if (room.value?.id === props.roomId) void refresh(); });
 watch(narrow, selectFirst);
+// 스택 라우터는 뒤에 남은 목록을 언마운트/비활성화하지 않으므로 onActivated가 오지 않는다.
+// 현재 경로로 돌아온 순간이 재진입 시점이라 이때 기존 다시 읽기를 실행한다.
+watch(isFrontmost, (frontmost, wasFrontmost) => {
+	if (!prefer.s['experimental.stackingRouterView']) return;
+	if (frontmost && !wasFrontmost && active) void refresh();
+});
 onDeactivated(() => { active = false; request++; unreadRequest++; useStream().off('_connected_', onStreamConnected); subscription?.dispose(); subscription = null; mainSubscription?.dispose(); mainSubscription = null; });
 onActivated(() => { if (!active) { active = true; useStream().on('_connected_', onStreamConnected); void refresh(); } });
 onBeforeUnmount(() => { active = false; request++; unreadRequest++; useStream().off('_connected_', onStreamConnected); subscription?.dispose(); mainSubscription?.dispose(); });
