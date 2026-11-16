@@ -402,7 +402,8 @@ async function remove(channel: ChatChannel) {
 
 async function removeSection(section: ChatChannelSection) {
 	if (!canManage.value || busy.value) return;
-	const { canceled } = await os.confirm({ type: 'warning', text: i18n.tsx._chat._channels.deleteSectionConfirm({ name: section.name }) });
+	const notice = list.value.some(channel => channel.sectionId === section.id) ? `\n${i18n.ts._chat._channels.deleteSectionChannelsNotice}` : '';
+	const { canceled } = await os.confirm({ type: 'warning', text: i18n.tsx._chat._channels.deleteSectionConfirm({ name: section.name }) + notice });
 	if (canceled || props.room.id !== section.roomId) return;
 	await change(() => misskeyApi('chat/rooms/sections/delete', { sectionId: section.id }));
 }

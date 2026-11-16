@@ -6865,6 +6865,10 @@ export interface Locale extends ILocale {
              */
             "deleteSectionConfirm": ParameterizedString<"name">;
             /**
+             * セクション内のチャンネルはセクションの外に移動します。
+             */
+            "deleteSectionChannelsNotice": string;
+            /**
              * セクションへ移動
              */
             "moveSection": string;

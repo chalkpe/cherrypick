@@ -1717,6 +1717,7 @@ _chat:
     sectionNameLimit: "섹션 이름은 앞뒤 공백을 제외하고 1~128자로 입력해 주세요."
     sectionLimit: "섹션은 최대 128개까지 만들 수 있어요."
     deleteSectionConfirm: "{name} 섹션을 삭제할까요?"
+    deleteSectionChannelsNotice: "안의 채널은 섹션 밖으로 옮겨져요."
     moveSection: "섹션으로 옮기기"
     noSection: "섹션 없음"
     createChannelInSection: "이 섹션에 채널 만들기"

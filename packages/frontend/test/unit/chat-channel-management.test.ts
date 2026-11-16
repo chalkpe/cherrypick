@@ -204,7 +204,7 @@ test('renames a section and deletes it after confirmation', async () => {
 	await waitFor(() => expect((within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts.delete }) as HTMLButtonElement).disabled).toBe(false));
 	await fireEvent.click(within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts.delete }));
 	await waitFor(() => expect(mocks.confirm).toHaveBeenCalled());
-	expect(mocks.confirm.mock.lastCall![0].text).toBe(i18n.tsx._chat._channels.deleteSectionConfirm({ name: '운영' }));
+	expect(mocks.confirm.mock.lastCall![0].text).toBe(`${i18n.tsx._chat._channels.deleteSectionConfirm({ name: '운영' })}\n${i18n.ts._chat._channels.deleteSectionChannelsNotice}`);
 	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/sections/delete', { sectionId: 's1' }));
 });
 
@@ -334,6 +334,20 @@ const withEmptySection = [
 	{ id: 'c1', roomId: 'r', name: 'First', isLegacy: false, sectionId: null },
 	{ id: 'c2', roomId: 'r', name: 'Second', isLegacy: false, sectionId: 's1' },
 ];
+
+test('섹션 삭제 확인은 채널이 든 섹션에만 안의 채널 이동 안내를 덧붙인다', async () => {
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/sections/list' ? sectionList : []);
+	const view = render(Management, { props: { room: { ...room, hasChannels: true }, channels: withEmptySection }, global: { stubs } });
+	await waitFor(() => expect(sectionRowOf(view.container, 's1')).not.toBeNull());
+
+	await fireEvent.click(within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts.delete }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/sections/delete', { sectionId: 's1' }));
+	expect(mocks.confirm.mock.lastCall![0].text).toBe(`${i18n.tsx._chat._channels.deleteSectionConfirm({ name: '운영' })}\n${i18n.ts._chat._channels.deleteSectionChannelsNotice}`);
+
+	await fireEvent.click(within(sectionRowOf(view.container, 's2')).getByRole('button', { name: i18n.ts.delete }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/sections/delete', { sectionId: 's2' }));
+	expect(mocks.confirm.mock.lastCall![0].text).toBe(i18n.tsx._chat._channels.deleteSectionConfirm({ name: '행사' }));
+});
 
 test('섹션 머리글을 빈 섹션의 채널 놓기 영역에 놓으면 무시하고 요청하지 않는다', async () => {
 	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/sections/list' ? sectionList : []);
