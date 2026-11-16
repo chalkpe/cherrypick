@@ -225,8 +225,8 @@ watch(() => [
 	border-radius: 999px;
 	font-size: 0.8em;
 	font-weight: bold;
-	color: var(--MI_THEME-fgOnAccent);
-	background: var(--MI_THEME-error);
+	color: #fff;
+	background: hsl(from var(--MI_THEME-error) h s calc(l - 10));
 }
 
 // 入力欄では点だけにして幅を確保する。文言はアクセシブル名に残す
