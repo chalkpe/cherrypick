@@ -1752,6 +1752,47 @@ describe('after the stream reconnects', () => {
 		expect(mocks.alert).not.toHaveBeenCalled();
 	});
 
+	test('does not navigate when the recovery re-initialization answers after the conversation left the front in the stacking router', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		await renderRoom();
+		// 첫 복구 조회의 오류는 앞에서 끝나고, 그 오류가 시작한 재초기화 조회만 보류한다.
+		let showCalls = 0;
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; });
+		const deleted = Object.assign(new Error('This room was deleted.'), { code: 'ROOM_DELETED' });
+		vi.mocked(misskeyApi).mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/show') {
+				showCalls++;
+				if (showCalls > 1) await gate;
+				throw deleted;
+			}
+			if (endpoint === 'chat/messages/room-timeline') return mocks.timeline as never;
+			return apiMock(endpoint, params);
+		});
+		try {
+			emitConnected();
+			await waitFor(() => expect(showCalls).toBeGreaterThanOrEqual(2));
+			// 재초기화 조회가 보류된 동안 다른 화면으로 이동한다.
+			mocks.routerCurrent.value = { route: { path: '/settings' }, props: new Map<string, string>() };
+			release();
+			await flush();
+			await flush();
+
+			expect(mocks.alert).not.toHaveBeenCalled();
+			expect(mocks.routerReplace).not.toHaveBeenCalled();
+
+			// 대화가 현재 경로로 돌아오면 그때 재초기화가 삭제를 처리한다.
+			mocks.routerCurrent.value = { route: { path: '/chat/room/:roomId' }, props: new Map<string, string>([['roomId', 'r1']]) };
+			await flush();
+			await flush();
+
+			expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+			expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
+		} finally {
+			vi.mocked(misskeyApi).mockImplementation(apiMock);
+		}
+	});
+
 	test('says so when the timeline answers first that the room is gone and the room was deleted', async () => {
 		const { container } = await renderRoom();
 		mocks.timelineError = Object.assign(new Error('No such room.'), { code: 'NO_SUCH_ROOM' });
@@ -1899,6 +1940,80 @@ describe('after the stream reconnects', () => {
 		unmount();
 
 		expect(mocks.streamOff).toHaveBeenCalledWith('_connected_', listener);
+	});
+});
+
+describe('a background conversation in the stacking router', () => {
+	const roomRoute = () => { mocks.routerCurrent.value = { route: { path: '/chat/room/:roomId' }, props: new Map<string, string>([['roomId', 'r1']]) }; };
+	const settingsRoute = () => { mocks.routerCurrent.value = { route: { path: '/settings' }, props: new Map<string, string>() }; };
+
+	test('does not announce a realtime deletion or navigate while the conversation is behind another screen', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		await renderRoom();
+		settingsRoute();
+
+		mocks.channel.emit('roomDeleted', undefined);
+		await flush();
+
+		expect(mocks.alert).not.toHaveBeenCalled();
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
+
+		roomRoute();
+		await flush();
+
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('does not announce a realtime removal or navigate while the conversation is behind another screen', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		await renderRoom();
+		settingsRoute();
+
+		mocks.channel.emit('membershipEnded', { userId: 'me' });
+		await flush();
+
+		expect(mocks.alert).not.toHaveBeenCalled();
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
+
+		// 돌아온 시점의 재초기화가 퇴장을 확인해 안내한다.
+		mocks.roomShowError = Object.assign(new Error('No such room.'), { code: 'NO_SUCH_ROOM' });
+		roomRoute();
+		await flush();
+		await flush();
+
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.removedFromRoom });
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
+	});
+
+	test('does not open the first channel while a converted conversation is behind another screen', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		await renderRoom();
+		settingsRoute();
+		mocks.roomHasChannels = true;
+
+		mocks.channel.emit('channelsUpdated', undefined);
+		await flush();
+
+		expect(mocks.routerReplace).not.toHaveBeenCalled();
+
+		// 돌아온 시점의 재초기화가 맨 위 채널을 연다.
+		roomRoute();
+		await flush();
+		await flush();
+
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat/room/r1/channels/first');
+	});
+
+	test('still announces a realtime deletion immediately when the conversation is the frontmost screen', async () => {
+		mocks.prefer!.commit('experimental.stackingRouterView', true);
+		await renderRoom();
+
+		mocks.channel.emit('roomDeleted', undefined);
+		await flush();
+
+		expect(mocks.alert).toHaveBeenCalledExactlyOnceWith({ type: 'info', text: i18n.ts._chat.roomDeleted });
+		expect(mocks.routerReplace).toHaveBeenCalledExactlyOnceWith('/chat');
 	});
 });
 

@@ -658,6 +658,123 @@ test('a stacked channel rail and conversation behind another screen keep the cur
 	await expect(page).toHaveURL(base + '/chat');
 });
 
+// 연결 중 실시간 이벤트가 뒤에 남은 화면에 닿았는지 프레임으로 확인한다(고정 대기가 아닌 도착 신호).
+function trackStreamTypes(page: Page) {
+	const types: string[] = [];
+	page.on('websocket', ws => ws.on('framereceived', ev => {
+		try {
+			const frame = JSON.parse(ev.payload.toString());
+			// 채널 이벤트는 {type:'channel', body:{type, body}} 형태로 온다.
+			if (frame.type === 'channel' && frame.body?.type) types.push(frame.body.type);
+			else if (frame.type) types.push(frame.type);
+		} catch { /* JSON 외 프레임은 기록하지 않는다. */ }
+	}));
+	return types;
+}
+
+// 뒤에 남은 화면이 실시간 이벤트 뒤에도 현재 화면을 바꾸지 않는지 관찰 창으로 확인한다.
+async function expectFrontStays(page: Page, urlRe: RegExp) {
+	const start = Date.now();
+	await expect.poll(async () => {
+		if (!urlRe.test(page.url())) return 'navigated';
+		if (await page.locator('[data-testid="modal-dialog-ok"]').count() > 0) return 'dialog';
+		return Date.now() - start >= 2500 ? 'stable' : 'waiting';
+	}, { timeout: 12_000, intervals: [250] }).toBe('stable');
+}
+
+test('a stacked channel list behind another screen keeps the current screen when its room is deleted while connected', async ({ page }) => {
+	const room = await createGroup('Connected deletion list');
+	await page.setViewportSize({ width: 390, height: 844 });
+	await login(page, member, 'en-US');
+	await enableStacking(page);
+	const types = trackStreamTypes(page);
+	await open(page, path(room.id));
+	await expect(channelLink(page, 'general')).toBeVisible();
+	await leaveListBehind(page);
+
+	// 연결된 상태에서 그룹장이 실제 API로 그룹을 삭제한다.
+	await api(base, 'chat/rooms/delete', { i: owner.token, roomId: room.id });
+	await expect.poll(() => types.includes('roomDeleted'), { timeout: 10_000 }).toBe(true);
+	await expectFrontStays(page, /\/settings(\/|$)/);
+	await expect(page.getByText('The room was deleted')).toHaveCount(0);
+
+	// 스택 탭을 닫아 목록으로 돌아오면 그때 삭제를 처리한다(중간 /chat 탭이 있으면 함께 닫는다).
+	await page.locator('button:has(.ti-x)').last().click();
+	await page.waitForURL(url => url.href === base + '/chat' || url.href.startsWith(base + path(room.id)), { timeout: 10_000 });
+	if (page.url() === base + '/chat' && await page.locator('button:has(.ti-x)').count() > 0) {
+		await page.locator('button:has(.ti-x)').last().click();
+	}
+	await expect(page.getByText('The room was deleted')).toBeVisible({ timeout: 10_000 });
+	await expect(page).toHaveURL(base + '/chat');
+});
+
+test('a stacked channel list behind another screen keeps the current screen when its member is removed while connected', async ({ page }) => {
+	const room = await createGroup('Connected removal list');
+	await page.setViewportSize({ width: 390, height: 844 });
+	await login(page, member, 'en-US');
+	await enableStacking(page);
+	const types = trackStreamTypes(page);
+	await open(page, path(room.id));
+	await expect(channelLink(page, 'general')).toBeVisible();
+	await leaveListBehind(page);
+
+	await api(base, 'chat/rooms/kick', { i: owner.token, roomId: room.id, userId: member.id });
+	await expect.poll(() => types.includes('membershipEnded'), { timeout: 10_000 }).toBe(true);
+	await expectFrontStays(page, /\/settings(\/|$)/);
+
+	await page.locator('button:has(.ti-x)').last().click();
+	await page.waitForURL(url => url.href === base + '/chat' || url.href.startsWith(base + path(room.id)), { timeout: 10_000 });
+	if (page.url() === base + '/chat' && await page.locator('button:has(.ti-x)').count() > 0) {
+		await page.locator('button:has(.ti-x)').last().click();
+	}
+	await expect(page.getByText('This room cannot be opened.', { exact: false })).toBeVisible({ timeout: 10_000 });
+	await expect(page).toHaveURL(base + '/chat');
+});
+
+test('a stacked channel rail and conversation behind another screen keep the current screen when their room is deleted while connected', async ({ page }) => {
+	const room = await createGroup('Connected deletion rail');
+	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	await page.setViewportSize({ width: 2000, height: 1000 });
+	await login(page, member, 'en-US');
+	await enableStacking(page);
+	const types = trackStreamTypes(page);
+	await open(page, path(room.id, general.id));
+	await expect(page.getByRole('navigation', { name: 'Channels' })).toBeVisible();
+	await page.locator('a[href="/settings"]').first().click();
+	await expect(page).toHaveURL(/\/settings(\/|$)/);
+
+	await api(base, 'chat/rooms/delete', { i: owner.token, roomId: room.id });
+	await expect.poll(() => types.includes('roomDeleted'), { timeout: 10_000 }).toBe(true);
+	await expectFrontStays(page, /\/settings(\/|$)/);
+	await expect(page.getByText('The room was deleted')).toHaveCount(0);
+
+	// 레일과 대화가 각각 안내를 띄울 수 있으므로 첫 안내로 확인한다.
+	await page.locator('button:has(.ti-x)').last().click();
+	await expect(page.getByText('The room was deleted').first()).toBeVisible({ timeout: 10_000 });
+	await expect(page).toHaveURL(base + '/chat');
+});
+
+test('a stacked plain group conversation behind another screen keeps the current screen when converted to channels while connected', async ({ page }) => {
+	const room = await createGroup('Connected conversion', false);
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await login(page, member, 'en-US');
+	await enableStacking(page);
+	const types = trackStreamTypes(page);
+	await open(page, `/chat/room/${room.id}`);
+	await expect(page.getByPlaceholder('Enter message here')).toBeInViewport();
+	await page.locator('a[href="/settings"]').first().click();
+	await expect(page).toHaveURL(/\/settings(\/|$)/);
+
+	await api(base, 'chat/rooms/convert-to-channels', { i: owner.token, roomId: room.id });
+	await expect.poll(() => types.includes('channelsUpdated'), { timeout: 10_000 }).toBe(true);
+	await expectFrontStays(page, /\/settings(\/|$)/);
+
+	// 돌아온 시점의 재초기화가 맨 위 채널을 연다.
+	const first = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];
+	await page.locator('button:has(.ti-x)').last().click();
+	await expect(page).toHaveURL(base + path(room.id, first.id), { timeout: 10_000 });
+});
+
 test('long channel names wrap within the rail and the narrow list', async ({ page }) => {
 	const room = await createGroup('Weekend notes');
 	const general = (await api(base, 'chat/rooms/channels/list', { i: owner.token, roomId: room.id }))[0];

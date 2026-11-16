@@ -301,10 +301,13 @@ async function refresh() {
 		subscription.on('roomUpdated', () => { if (active && target === props.roomId) void refresh(); });
 		subscription.on('roomDeleted', () => {
 			if (!active || target !== props.roomId || selectedChannel.value || deletingOwnRoom.value) return;
+			// 스택 라우터에서 뒤에 남은 목록은 안내·이동을 미룬다. 돌아온 시점의 다시 읽기가 삭제를 처리한다.
+			if (prefer.s['experimental.stackingRouterView'] && !isFrontmost.value) return;
 			closeList(i18n.ts._chat.roomDeleted);
 		});
 		subscription.on('membershipEnded', ctx => {
 			if (!active || target !== props.roomId || selectedChannel.value || ctx.userId !== $i.id) return;
+			if (prefer.s['experimental.stackingRouterView'] && !isFrontmost.value) return;
 			closeList(i18n.ts._chat.removedFromRoom);
 		});
 	} catch (err) {

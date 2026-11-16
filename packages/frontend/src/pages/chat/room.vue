@@ -453,6 +453,8 @@ async function openFirstChannel(target: Misskey.entities.ChatRoom) {
 	const key = conversationKey();
 	const list = await misskeyApi('chat/rooms/channels/list', { roomId: target.id });
 	if (destroyed || !isActivated || version !== conversationVersion || key !== conversationKey() || target.id !== props.roomId) return;
+	// 스택 라우터에서 뒤에 남은 대화는 채널형 전환 이동을 미룬다. 돌아온 시점의 재초기화가 맨 위 채널을 연다.
+	if (prefer.s['experimental.stackingRouterView'] && !isFrontmostConversation.value) return;
 	if (list[0]) router.replaceByPath(channelConversationPath(target.id, list[0].id));
 }
 
@@ -469,7 +471,8 @@ async function initialize() {
 	initializingKey = key;
 	const version = ++conversationVersion;
 	const sameTarget = () => !destroyed && version === conversationVersion && key === conversationKey();
-	const current = () => sameTarget() && isActivated;
+	// 스택 라우터에서 뒤에 남은 대화는 초기화 응답으로 상태를 적용하거나 안내·이동·구독 연결을 하지 않는다. 돌아온 시점에 다시 초기화한다.
+	const current = () => sameTarget() && isActivated && (!prefer.s['experimental.stackingRouterView'] || isFrontmostConversation.value);
 	connection.value?.dispose();
 	connection.value = null;
 	initializing.value = true;
@@ -531,7 +534,8 @@ async function initialize() {
 			roomConnection = useStream().useChannel('chatRoom', { roomId: r.id, ...(props.channelId ? { channelId: props.channelId } : {}) });
 			connection.value = roomConnection;
 			connection.value.on('channelsUpdated', () => {
-				if (!current()) return;
+				// 뒤에서도 재초기화는 시작한다. 초기화가 맨 앞 판정으로 이동을 미루고, 돌아온 시점에 이어 받는다.
+				if (!sameTarget() || !isActivated) return;
 				if (props.channelId) emit('channelsUpdated');
 				else void initialize();
 			});
@@ -572,7 +576,8 @@ async function initialize() {
 		else if (props.channelId && code === 'NO_SUCH_CHANNEL') emit('channelsUpdated');
 		else fetchError.value = toFetchError(err);
 	} finally {
-		if (current()) initializing.value = false;
+		// 뒤에서 미룬 초기화도 initializing을 닫아, 돌아온 시점의 재초기화가 같은 키 재진입 가드에 막히지 않게 한다.
+		if (sameTarget()) initializing.value = false;
 	}
 }
 
@@ -797,7 +802,8 @@ function onMembershipEnded(ctx: Parameters<Misskey.Channels['chatRoom']['events'
 	closeRoom();
 	// 自分で退出したときは、退出の結果として leaveRoom が移動する
 	if (leavingRoom.value) return;
-	if (isActivated) notifyRoomClosed(i18n.ts._chat.removedFromRoom);
+	// 스택 라우터에서 뒤에 남은 대화는 안내·이동을 미룬다. 돌아온 시점의 재초기화가 퇴장을 확인해 안내한다.
+	if (isActivated && (!prefer.s['experimental.stackingRouterView'] || isFrontmostConversation.value)) notifyRoomClosed(i18n.ts._chat.removedFromRoom);
 }
 
 // 가져온 옛 글은 새 글로 알려지지 않는다. 진행을 알려 오면 옛 글을 다시 읽을 수 있게 한다
@@ -874,7 +880,8 @@ function onRoomDeleted() {
 	closeRoom();
 	// 自分で削除したときは、削除の結果として room.info.vue が移動する
 	if (deletingOwnRoom.value) return;
-	if (isActivated) {
+	// 스택 라우터에서 뒤에 남은 대화는 기존 미룸 표식을 세우고, 돌아온 시점에 한 번 안내한다.
+	if (isActivated && (!prefer.s['experimental.stackingRouterView'] || isFrontmostConversation.value)) {
 		notifyRoomClosed(i18n.ts._chat.roomDeleted);
 	} else {
 		roomDeletedWhileInactive = true;
@@ -1050,8 +1057,21 @@ onActivated(() => {
 // 같은 판정을 공유하므로, 먼저 발행한 쪽이 공백을 해소하면 다른 쪽은 건너뛴다.
 watch(isFrontmostConversation, (frontmost, wasFrontmost) => {
 	if (!frontmost || wasFrontmost) return;
-	// 스택 라우터는 뒤에 남은 대화를 비활성화하지 않으므로 onActivated가 오지 않는다. 돌아온 시점에 미룬 읽기를 이어 한다.
-	if (prefer.s['experimental.stackingRouterView']) catchUp();
+	if (prefer.s['experimental.stackingRouterView']) {
+		// 뒤에 있는 동안 미룬 삭제 안내는 돌아온 시점에 한 번 띄운다 (KeepAlive의 onActivated와 같은 처리).
+		if (roomDeletedWhileInactive) {
+			roomDeletedWhileInactive = false;
+			notifyRoomClosed(i18n.ts._chat.roomDeleted);
+			return;
+		}
+		// 스택 라우터는 뒤에 남은 대화를 비활성화하지 않으므로 onActivated가 오지 않는다. 돌아온 시점에 미룬 읽기를 이어 한다.
+		catchUp();
+		// 닫힌 대화는 돌아온 시점에 다시 초기화한다. 진행 중인 초기화는 그 응답이 이어 받는다.
+		if (!initialized.value && !initializing.value) {
+			void initialize();
+			return;
+		}
+	}
 	if (!initialized.value || readingAgain) return;
 	if (chatUnreadSubscriptionGap()) recheckUnreadSign(true);
 });
