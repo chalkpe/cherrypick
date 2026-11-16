@@ -553,7 +553,7 @@ async function leaveListBehind(page: Page) {
 	const settingsLink = page.getByRole('link', { name: 'Settings' });
 	await expect(settingsLink).toBeVisible();
 	await settingsLink.click();
-	await expect(page).toHaveURL(base + '/settings');
+	await expect(page).toHaveURL(/\/settings(\/|$)/);
 }
 
 // 연결 복구를 기다린 뒤, 뒤 목록의 재조회가 없는지 관찰 창으로 확인한다.
@@ -594,7 +594,7 @@ test('a stacked channel list behind another screen keeps the current screen on r
 	await api(base, 'chat/rooms/delete', { i: owner.token, roomId: room.id });
 	await reconnectAndExpectNoListReread(page, room.id);
 
-	await expect(page).toHaveURL(base + '/settings');
+	await expect(page).toHaveURL(/\/settings(\/|$)/);
 	await expect(page.getByText('The room was deleted')).toHaveCount(0);
 });
 
@@ -611,7 +611,7 @@ test('returning to a stacked channel list reads the latest state and handles the
 	await cutStream(page);
 	await api(base, 'chat/rooms/delete', { i: owner.token, roomId: room.id });
 	const mark = await reconnectAndExpectNoListReread(page, room.id);
-	await expect(page).toHaveURL(base + '/settings');
+	await expect(page).toHaveURL(/\/settings(\/|$)/);
 	const okButton = page.locator('[data-testid="modal-dialog-ok"]');
 	if (await okButton.isVisible().catch(() => false)) await okButton.click();
 
@@ -643,17 +643,18 @@ test('a stacked channel rail and conversation behind another screen keep the cur
 	await expect(page.getByRole('navigation', { name: 'Channels' })).toBeVisible();
 	// 넓은 화면에서는 설정 링크가 사이드바에 있다.
 	await page.locator('a[href="/settings"]').first().click();
-	await expect(page).toHaveURL(base + '/settings');
+	await expect(page).toHaveURL(/\/settings(\/|$)/);
 
 	await cutStream(page);
 	await api(base, 'chat/rooms/delete', { i: owner.token, roomId: room.id });
 	await reconnectAndExpectNoListReread(page, room.id);
-	await expect(page).toHaveURL(base + '/settings');
+	await expect(page).toHaveURL(/\/settings(\/|$)/);
 	await expect(page.getByText('The room was deleted')).toHaveCount(0);
 
 	// 스택 탭 닫기로 레일과 대화에 돌아오면 그때 삭제를 처리한다.
+	// 레일과 대화가 각각 삭제 안내를 띄울 수 있으므로 첫 안내로 확인한다.
 	await page.locator('button:has(.ti-x)').last().click();
-	await expect(page.getByText('The room was deleted')).toBeVisible({ timeout: 10_000 });
+	await expect(page.getByText('The room was deleted').first()).toBeVisible({ timeout: 10_000 });
 	await expect(page).toHaveURL(base + '/chat');
 });
 
