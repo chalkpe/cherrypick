@@ -9,17 +9,28 @@ import { ref } from 'vue';
 
 const mocks = vi.hoisted(() => {
 	type Handler = (data: unknown) => void;
+	type RouteLike = { route: { path: string }; props: Map<string, string> };
 	const connections: { channel: string; params: unknown; handlers: Map<string, Handler>; disposed: boolean }[] = [];
 	const streamHandlers = new Map<string, Set<Handler>>();
 	// 서버가 현재 가진 채널. 재연결 때 이 목록에 없는 채널의 구독은 실제 서버처럼 거부(NO_SUCH_CHANNEL)해 확인을 보내지 않는다.
 	let serverChannelIds = ['c1', 'c2'];
+	let routerRef: { value: RouteLike } | null = null;
+	const channelsRoute = (roomId: string, channelId?: string): RouteLike => ({
+		route: { path: '/chat/room/:roomId/channels/:channelId?' },
+		props: new Map(channelId != null ? [['roomId', roomId], ['channelId', channelId]] : [['roomId', roomId]]),
+	});
 	return {
 		api: vi.fn().mockResolvedValue([]), replace: vi.fn(), alert: vi.fn(), width: 400,
 		me: { id: 'me', policies: { chatAvailability: 'available' } },
 		handlers: new Map<string, Handler>(),
 		connections,
 		streamHandlers,
+		preferS: { 'experimental.stackingRouterView': false } as Record<string, boolean>,
 		setServerChannelIds(ids: string[]) { serverChannelIds = ids; },
+		bindRouter(ref: { value: RouteLike }) { routerRef = ref; },
+		// 라우트 이동은 currentRef로 반영한다. 스택 라우터처럼 인스턴스는 마운트된 채 남는다.
+		navigate(roomId: string, channelId?: string) { routerRef!.value = channelsRoute(roomId, channelId); },
+		navigateAway() { routerRef!.value = { route: { path: '/settings' }, props: new Map() }; },
 		// 연결 복구(_connected_)를 먼저 알리고, 서버가 승인하는 구독에만 확인(_subscribed_)을 보낸다.
 		reconnect() {
 			for (const handler of streamHandlers.get('_connected_') ?? []) handler(undefined);
@@ -33,7 +44,12 @@ const mocks = vi.hoisted(() => {
 	};
 });
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
-vi.mock('@/router.js', () => ({ useRouter: () => ({ replace: mocks.replace, replaceByPath: mocks.replace }) }));
+vi.mock('@/router.js', () => {
+	const currentRef = ref({ route: { path: '/chat/room/:roomId/channels/:channelId?' }, props: new Map([['roomId', 'r']]) });
+	mocks.bindRouter(currentRef);
+	return { useRouter: () => ({ replace: mocks.replace, replaceByPath: mocks.replace, pushByPath: mocks.replace, currentRef }) };
+});
+vi.mock('@/preferences.js', () => ({ prefer: { s: mocks.preferS } }));
 vi.mock('@/os.js', () => ({ alert: mocks.alert }));
 vi.mock('@/i.js', () => ({ ensureSignin: () => mocks.me }));
 vi.mock('@/composables/use-element-width.js', () => ({ useElementWidth: () => ref(mocks.width) }));
@@ -64,11 +80,25 @@ import { i18n } from '@/i18n.js';
 const room = { id: 'r', hasChannels: true, name: 'Group' };
 const channels = [{ id: 'c1', roomId: 'r', name: 'First' }, { id: 'c2', roomId: 'r', name: 'Second' }];
 const stubs = { PageWithHeader: { template: '<main><slot/></main>' }, MkA: { props: ['to'], template: '<a :href="to"><slot/></a>' }, MkLoading: true, MkResult: true, MkAvatar: true };
-beforeEach(() => { vi.clearAllMocks(); mocks.width = 400; mocks.connections.length = 0; mocks.streamHandlers.clear(); mocks.setServerChannelIds(['c1', 'c2']); mocks.me.policies.chatAvailability = 'available'; window.localStorage.clear(); mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : endpoint === 'chat/rooms/sections/list' ? [] : channels); });
+beforeEach(() => { vi.clearAllMocks(); mocks.width = 400; mocks.connections.length = 0; mocks.streamHandlers.clear(); mocks.setServerChannelIds(['c1', 'c2']); mocks.me.policies.chatAvailability = 'available'; mocks.preferS['experimental.stackingRouterView'] = false; mocks.navigate('r'); window.localStorage.clear(); mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : endpoint === 'chat/rooms/sections/list' ? [] : channels); });
 afterEach(cleanup);
 
+// 라우트는 렌더하는 목록의 경로와 맞춰 준다(실제 라우터처럼 경로가 props를 결정한다).
+function renderChannels(props: { roomId: string; channelId?: string }) {
+	mocks.navigate(props.roomId, props.channelId);
+	return render(Channels, { props, global: { stubs } });
+}
+
+const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+
+function roomDeletedError() {
+	const err = new Error('room deleted') as Error & { code: string };
+	err.code = 'ROOM_DELETED';
+	return err;
+}
+
 test('opens a channel list at narrow width without fetching or reading a timeline', async () => {
-	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	renderChannels({ roomId: 'r' });
 	await screen.findByRole('link', { name: 'First' });
 
 	expect(screen.getByRole('link', { name: 'Second' }).getAttribute('href')).toBe('/chat/room/r/channels/c2');
@@ -77,9 +107,10 @@ test('opens a channel list at narrow width without fetching or reading a timelin
 });
 
 test('keeps direct addresses and redirects deleted channels to the first remaining one', async () => {
-	const view = render(Channels, { props: { roomId: 'r', channelId: 'c2' }, global: { stubs } });
+	const view = renderChannels({ roomId: 'r', channelId: 'c2' });
 	await screen.findByText('r/c2');
 	expect(mocks.replace).not.toHaveBeenCalled();
+	mocks.navigate('r', 'gone');
 	await view.rerender({ roomId: 'r', channelId: 'gone' });
 
 	await waitFor(() => expect(mocks.replace).toHaveBeenCalledWith('/chat/room/r/channels/c1'));
@@ -88,7 +119,7 @@ test('keeps direct addresses and redirects deleted channels to the first remaini
 
 test('shows the rail on a wide page and opens its first conversation', async () => {
 	mocks.width = 1000;
-	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	renderChannels({ roomId: 'r' });
 
 	await waitFor(() => expect(mocks.replace).toHaveBeenCalledWith('/chat/room/r/channels/c1'));
 });
@@ -100,7 +131,8 @@ test('discards an old room response after navigating to another group', async ()
 		if (params.roomId === 'r' && endpoint === 'chat/rooms/show') return new Promise(resolve => { finish = resolve; });
 		return Promise.resolve(endpoint === 'chat/rooms/show' ? { id: 'other', hasChannels: true, name: 'Other' } : endpoint === 'chat/rooms/sections/list' ? [] : [{ id: 'oc', roomId: 'other', name: 'Other channel' }]);
 	});
-	const view = render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	const view = renderChannels({ roomId: 'r' });
+	mocks.navigate('other');
 	await view.rerender({ roomId: 'other' });
 	await screen.findByRole('link', { name: 'Other channel' });
 	finish(room);
@@ -111,7 +143,7 @@ test('discards an old room response after navigating to another group', async ()
 });
 
 test('preserves the room-deleted notice while viewing the channel list', async () => {
-	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	renderChannels({ roomId: 'r' });
 	await screen.findByRole('link', { name: 'First' });
 	mocks.handlers.get('roomDeleted')!(undefined);
 
@@ -120,7 +152,7 @@ test('preserves the room-deleted notice while viewing the channel list', async (
 });
 
 test('preserves the removal notice while viewing the channel list', async () => {
-	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	renderChannels({ roomId: 'r' });
 	await screen.findByRole('link', { name: 'First' });
 	mocks.handlers.get('membershipEnded')!({ userId: 'me' });
 
@@ -129,7 +161,7 @@ test('preserves the removal notice while viewing the channel list', async () => 
 });
 
 test('lets the conversation handle room closure without a duplicate navigation', async () => {
-	render(Channels, { props: { roomId: 'r', channelId: 'c2' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c2' });
 	await screen.findByText('r/c2');
 	mocks.handlers.get('roomDeleted')!(undefined);
 
@@ -139,7 +171,7 @@ test('lets the conversation handle room closure without a duplicate navigation',
 test('shows static unread channels from the shared API and refreshes after read events', async () => {
 	let unread = ['c2'];
 	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: unread, notificationChannelIds: ['c1'] } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
-	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	renderChannels({ roomId: 'r' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
 	expect(screen.getByRole('link', { name: 'First' }).querySelector('.itemIndicator')).toBeNull();
@@ -156,9 +188,10 @@ test('does not apply another group’s late unread response', async () => {
 		if (endpoint === 'chat/rooms/show') return Promise.resolve(params.roomId === 'r' ? room : { id: 'other', hasChannels: true, name: 'Other' });
 		return Promise.resolve(params.roomId === 'r' ? channels : [{ id: 'oc', roomId: 'other', name: 'Other channel' }]);
 	});
-	const view = render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	const view = renderChannels({ roomId: 'r' });
 	await screen.findByRole('link', { name: 'First' });
 	await waitFor(() => expect(finish).toBeTypeOf('function'));
+	mocks.navigate('other');
 	await view.rerender({ roomId: 'other' });
 	const other = await screen.findByRole('link', { name: 'Other channel' });
 	finish({ unreadChannelIds: ['oc'], notificationChannelIds: ['oc'] });
@@ -170,7 +203,7 @@ test('re-reads unread markers after the stream reconnects on the narrow channel 
 	let unreadChannelIds: string[] = [];
 	let notificationChannelIds: string[] = [];
 	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
-	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	renderChannels({ roomId: 'r' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
 	expect(second.querySelector('.itemIndicator')).toBeNull();
@@ -188,7 +221,7 @@ test('clears unread markers after the stream reconnects when another device read
 	let unreadChannelIds = ['c2'];
 	let notificationChannelIds = ['c2'];
 	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
-	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	renderChannels({ roomId: 'r' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
 	expect(second.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
@@ -206,7 +239,7 @@ test('re-reads unread markers after the stream reconnects in the wide rail', asy
 	let unreadChannelIds: string[] = [];
 	let notificationChannelIds: string[] = [];
 	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' } : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
 	expect(second.querySelector('.itemIndicator')).toBeNull();
@@ -224,7 +257,7 @@ test('re-reads the list and unread markers after the stream reconnects when the 
 	let unreadChannelIds: string[] = [];
 	let notificationChannelIds: string[] = [];
 	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : list);
-	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	renderChannels({ roomId: 'r' });
 	await screen.findByRole('link', { name: 'First' });
 	await screen.findByRole('link', { name: 'Second' });
 	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
@@ -250,7 +283,7 @@ test('re-reads the rail list and unread markers after the stream reconnects when
 	let unreadChannelIds: string[] = [];
 	let notificationChannelIds: string[] = [];
 	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' } : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : list);
-	render(Channels, { props: { roomId: 'r', channelId: 'c2' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c2' });
 	await screen.findByText('r/c2');
 	await screen.findByRole('link', { name: 'Second' });
 	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
@@ -270,7 +303,7 @@ test('re-reads the rail list and unread markers after the stream reconnects when
 });
 
 test('stops re-reading on reconnect after the list unmounts', async () => {
-	const view = render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	const view = renderChannels({ roomId: 'r' });
 	await screen.findByRole('link', { name: 'First' });
 	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
 	view.unmount();
@@ -299,6 +332,153 @@ test('stops re-reading on reconnect while the list is deactivated and resumes on
 	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread').length).toBeGreaterThan(1));
 });
 
+test('does not re-read or navigate on reconnect while the list is behind another screen in the stacking router', async () => {
+	mocks.preferS['experimental.stackingRouterView'] = true;
+	renderChannels({ roomId: 'r' });
+	await screen.findByRole('link', { name: 'First' });
+	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
+
+	// 설정 화면으로 이동해 목록을 스택 뒤에 남긴다. 인스턴스는 마운트된 채 유지된다.
+	mocks.navigateAway();
+	mocks.api.mockImplementation(async (endpoint: string) => {
+		if (endpoint === 'chat/rooms/show') throw roomDeletedError();
+		return endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : channels;
+	});
+	const callsAfterNavigate = mocks.api.mock.calls.length;
+
+	mocks.reconnect();
+	await flush();
+
+	expect(mocks.api.mock.calls.length).toBe(callsAfterNavigate);
+	expect(mocks.replace).not.toHaveBeenCalled();
+	expect(mocks.alert).not.toHaveBeenCalled();
+});
+
+test('does not re-read on reconnect while the rail is behind another screen in the stacking router', async () => {
+	mocks.width = 1000;
+	mocks.preferS['experimental.stackingRouterView'] = true;
+	renderChannels({ roomId: 'r', channelId: 'c2' });
+	await screen.findByText('r/c2');
+	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
+	mocks.navigateAway();
+	const callsAfterNavigate = mocks.api.mock.calls.length;
+
+	mocks.reconnect();
+	await flush();
+
+	expect(mocks.api.mock.calls.length).toBe(callsAfterNavigate);
+	expect(mocks.replace).not.toHaveBeenCalled();
+	expect(mocks.alert).not.toHaveBeenCalled();
+});
+
+test('reads the latest state and handles the deleted room when returning to the front in the stacking router', async () => {
+	mocks.preferS['experimental.stackingRouterView'] = true;
+	renderChannels({ roomId: 'r' });
+	await screen.findByRole('link', { name: 'First' });
+	mocks.navigateAway();
+	mocks.api.mockImplementation(async (endpoint: string) => {
+		if (endpoint === 'chat/rooms/show') throw roomDeletedError();
+		return endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : channels;
+	});
+	mocks.reconnect();
+	await flush();
+	expect(mocks.replace).not.toHaveBeenCalled();
+
+	// 목록이 현재 경로로 돌아오면 그때 최신 상태를 읽어 삭제를 처리한다.
+	mocks.navigate('r');
+	await waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'info', text: i18n.ts._chat.roomDeleted }));
+	expect(mocks.replace).toHaveBeenCalledWith('/chat');
+});
+
+test('re-reads the list when returning to the front in the stacking router', async () => {
+	mocks.preferS['experimental.stackingRouterView'] = true;
+	let unreadChannelIds: string[] = [];
+	let notificationChannelIds: string[] = [];
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : channels);
+	renderChannels({ roomId: 'r' });
+	const second = await screen.findByRole('link', { name: 'Second' });
+	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
+
+	mocks.navigateAway();
+	unreadChannelIds = ['c2'];
+	notificationChannelIds = ['c2'];
+	const callsAway = mocks.api.mock.calls.length;
+	mocks.reconnect();
+	await flush();
+	expect(mocks.api.mock.calls.length).toBe(callsAway);
+
+	mocks.navigate('r');
+	await waitFor(() => expect(second.querySelector('.itemIndicator')?.classList.contains('_blink')).toBe(true));
+});
+
+test('discards a reconnect error response that arrives after leaving the screen in the stacking router', async () => {
+	mocks.preferS['experimental.stackingRouterView'] = true;
+	let delayShow = false;
+	let finish!: () => void;
+	mocks.api.mockImplementation((endpoint: string) => {
+		if (endpoint === 'chat/rooms/show') {
+			if (delayShow) return new Promise((_, reject) => { finish = () => reject(roomDeletedError()); });
+			return Promise.resolve(room);
+		}
+		return Promise.resolve(endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : channels);
+	});
+	renderChannels({ roomId: 'r' });
+	await screen.findByRole('link', { name: 'First' });
+
+	delayShow = true;
+	mocks.reconnect();
+	await waitFor(() => expect(finish).toBeTypeOf('function'));
+	// 조회 도중 다른 화면으로 이동한다.
+	mocks.navigateAway();
+	finish();
+	await flush();
+
+	expect(mocks.replace).not.toHaveBeenCalled();
+	expect(mocks.alert).not.toHaveBeenCalled();
+});
+
+test('does not swap subscriptions when a reconnect list response arrives after leaving the screen', async () => {
+	mocks.preferS['experimental.stackingRouterView'] = true;
+	let delayList = false;
+	let finish!: (value: unknown) => void;
+	mocks.api.mockImplementation((endpoint: string) => {
+		if (endpoint === 'chat/rooms/channels/list' && delayList) return new Promise(resolve => { finish = resolve; });
+		return Promise.resolve(endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : channels);
+	});
+	renderChannels({ roomId: 'r' });
+	await screen.findByRole('link', { name: 'First' });
+	const liveBefore = mocks.connections.filter(connection => !connection.disposed && connection.channel === 'chatRoom');
+	expect(liveBefore.at(-1)?.params).toEqual({ roomId: 'r', channelId: 'c1' });
+
+	delayList = true;
+	mocks.reconnect();
+	await waitFor(() => expect(finish).toBeTypeOf('function'));
+	mocks.navigateAway();
+	finish([channels[1]]);
+	await flush();
+
+	const live = mocks.connections.filter(connection => !connection.disposed && connection.channel === 'chatRoom');
+	expect(live.at(-1)?.params).toEqual({ roomId: 'r', channelId: 'c1' });
+	expect(mocks.replace).not.toHaveBeenCalled();
+});
+
+test('re-reads on reconnect while the list is the frontmost screen in the stacking router', async () => {
+	mocks.preferS['experimental.stackingRouterView'] = true;
+	let unreadChannelIds: string[] = [];
+	let notificationChannelIds: string[] = [];
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : channels);
+	renderChannels({ roomId: 'r' });
+	const second = await screen.findByRole('link', { name: 'Second' });
+	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
+
+	unreadChannelIds = ['c2'];
+	notificationChannelIds = ['c2'];
+	mocks.reconnect();
+
+	await waitFor(() => expect(second.querySelector('.itemIndicator')?.classList.contains('_blink')).toBe(true));
+	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(2);
+});
+
 const ownedRoom = { ...room, ownerId: 'me' };
 
 function mockRoom(roomValue: unknown, unreadChannelIds: string[] = []) {
@@ -317,7 +497,7 @@ function railDropAreaOf(link: HTMLElement, side: 'forward' | 'backward'): HTMLEl
 test('owner reorders rail channels by dragging and keeps the conversation address', async () => {
 	mocks.width = 1000;
 	mockRoom(ownedRoom);
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
 	const second = screen.getByRole('link', { name: 'Second' });
 	expect(first.getAttribute('href')).toBe('/chat/room/r/channels/c1');
@@ -331,14 +511,14 @@ test('owner reorders rail channels by dragging and keeps the conversation addres
 test('rail channels are draggable for the owner but not for other members', async () => {
 	mocks.width = 1000;
 	mockRoom(ownedRoom);
-	const ownerView = render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	const ownerView = renderChannels({ roomId: 'r', channelId: 'c1' });
 	const ownerLink = await screen.findByRole('link', { name: 'First' });
 	expect(railDragSource(ownerLink)).not.toBeNull();
 	expect(ownerLink.getAttribute('draggable')).toBe('false');
 	ownerView.unmount();
 
 	mockRoom({ ...room, ownerId: 'other' });
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const memberLink = await screen.findByRole('link', { name: 'First' });
 	expect(memberLink.closest('[draggable="true"]')).toBeNull();
 });
@@ -346,7 +526,7 @@ test('rail channels are draggable for the owner but not for other members', asyn
 test('keeps unread and current-channel markers on the right channels after a drag', async () => {
 	mocks.width = 1000;
 	mockRoom(ownedRoom, ['c2']);
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
 	const second = screen.getByRole('link', { name: 'Second' });
 	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
@@ -374,7 +554,7 @@ test('restores the server order and alerts when a rail drag reorder fails', asyn
 		if (endpoint === 'chat/rooms/channels/reorder') throw new Error('reorder failed');
 		return endpoint === 'chat/rooms/sections/list' ? [] : channels;
 	});
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
 	const second = screen.getByRole('link', { name: 'Second' });
 
@@ -394,14 +574,14 @@ test('restores the server order and alerts when a rail drag reorder fails', asyn
 test('does not offer rail dragging for an archived room or without chat availability', async () => {
 	mocks.width = 1000;
 	mockRoom({ ...ownedRoom, isArchived: true });
-	const archived = render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	const archived = renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('link', { name: 'First' });
 	expect(screen.queryAllByRole('button', { name: i18n.ts.dragToReorder })).toHaveLength(0);
 	archived.unmount();
 
 	mocks.me.policies.chatAvailability = 'unavailable';
 	mockRoom(ownedRoom);
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('link', { name: 'First' });
 	expect(screen.queryAllByRole('button', { name: i18n.ts.dragToReorder })).toHaveLength(0);
 });
@@ -415,7 +595,7 @@ test('does not offer rail dragging while a reorder is in flight', async () => {
 		if (endpoint === 'chat/rooms/channels/reorder') return new Promise<void>(resolve => { finish = resolve; });
 		return endpoint === 'chat/rooms/sections/list' ? [] : channels;
 	});
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
 	const second = screen.getByRole('link', { name: 'Second' });
 
@@ -428,7 +608,7 @@ test('does not offer rail dragging while a reorder is in flight', async () => {
 });
 
 test('shows the narrow channel list as the settings-style menu grid', async () => {
-	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	renderChannels({ roomId: 'r' });
 	const first = await screen.findByRole('link', { name: 'First' });
 	expect(first.closest('.rrevdjwu')?.classList.contains('grid')).toBe(true);
 });
@@ -436,7 +616,7 @@ test('shows the narrow channel list as the settings-style menu grid', async () =
 test('shows the wide rail as a menu without the grid layout', async () => {
 	mocks.width = 1000;
 	mockRoom({ ...room, ownerId: 'other' });
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
 	const menu = first.closest('.rrevdjwu');
 	expect(menu?.classList.contains('grid')).toBe(false);
@@ -464,7 +644,7 @@ test('super menu emits the reordered items when dragging is enabled', async () =
 test('blinks unread dots only for notification targets in the member rail', async () => {
 	mocks.width = 1000;
 	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' } : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c1', 'c2'], notificationChannelIds: ['c1'] } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
 	await waitFor(() => expect(first.querySelector('.itemIndicator')).not.toBeNull());
 	expect(first.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
@@ -476,7 +656,7 @@ test('blinks unread dots only for notification targets in the member rail', asyn
 test('keeps mention-only unread dots static and marks the current channel in the drag rail', async () => {
 	mocks.width = 1000;
 	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? ownedRoom : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c2'], notificationChannelIds: [] } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
 	const second = screen.getByRole('link', { name: 'Second' });
 	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
@@ -488,7 +668,7 @@ test('keeps mention-only unread dots static and marks the current channel in the
 test('marks the current channel link with aria-current in the member rail', async () => {
 	mocks.width = 1000;
 	mockRoom({ ...room, ownerId: 'other' });
-	render(Channels, { props: { roomId: 'r', channelId: 'c2' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c2' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	expect(second.getAttribute('aria-current')).toBe('page');
 	expect(screen.getByRole('link', { name: 'First' }).getAttribute('aria-current')).toBeNull();
@@ -496,7 +676,7 @@ test('marks the current channel link with aria-current in the member rail', asyn
 
 test('shows static unread dots for mention-only channels in the narrow grid', async () => {
 	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c2'], notificationChannelIds: [] } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
-	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	renderChannels({ roomId: 'r' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
 	expect(second.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(false);
@@ -546,7 +726,7 @@ function sectionTitle(name: string) {
 test('groups rail channels under foldable section titles with ungrouped channels first', async () => {
 	mocks.width = 1000;
 	mockSections({ ...room, ownerId: 'other' });
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
 	await waitFor(() => expect(screen.getByRole('button', { name: '운영' })).toBeTruthy());
 
@@ -561,7 +741,7 @@ test('groups rail channels under foldable section titles with ungrouped channels
 test('folds a section to its header and keeps the current channel below it', async () => {
 	mocks.width = 1000;
 	mockSections({ ...room, ownerId: 'other' });
-	render(Channels, { props: { roomId: 'r', channelId: 'c2' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c2' });
 	await screen.findByRole('link', { name: 'Second' });
 
 	await fireEvent.click(sectionTitle('운영'));
@@ -579,7 +759,7 @@ test('folds a section to its header and keeps the current channel below it', asy
 test('hides every channel of a folded section that does not contain the current one', async () => {
 	mocks.width = 1000;
 	mockSections({ ...room, ownerId: 'other' });
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('link', { name: 'Second' });
 
 	await fireEvent.click(sectionTitle('운영'));
@@ -591,7 +771,7 @@ test('hides every channel of a folded section that does not contain the current 
 test('persists section folds per account in device storage and restores them on reload', async () => {
 	mocks.width = 1000;
 	mockSections({ ...room, ownerId: 'other' });
-	const view = render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	const view = renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('link', { name: 'Second' });
 
 	await fireEvent.click(sectionTitle('운영'));
@@ -600,7 +780,7 @@ test('persists section folds per account in device storage and restores them on 
 	expect(window.localStorage.getItem('ui:folder:chat-section:me:s2')).toBeNull();
 	view.unmount();
 
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('button', { name: '운영' });
 	expect(screen.getByRole('button', { name: '운영' }).getAttribute('aria-expanded')).toBe('false');
 	expect(screen.queryByRole('link', { name: 'Second' })).toBeNull();
@@ -610,7 +790,7 @@ test('persists section folds per account in device storage and restores them on 
 test('shows a blinking dot on a folded section header when a hidden channel is a notification target', async () => {
 	mocks.width = 1000;
 	mockSections({ ...room, ownerId: 'other' }, { unread: ['c2'], notification: ['c2'] });
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('link', { name: 'Second' });
 
 	await fireEvent.click(sectionTitle('운영'));
@@ -623,7 +803,7 @@ test('shows a blinking dot on a folded section header when a hidden channel is a
 test('shows a static dot on a folded section header for hidden mention-only unread channels', async () => {
 	mocks.width = 1000;
 	mockSections({ ...room, ownerId: 'other' }, { unread: ['c2'], notification: [] });
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('link', { name: 'Second' });
 
 	await fireEvent.click(sectionTitle('운영'));
@@ -636,7 +816,7 @@ test('shows a static dot on a folded section header for hidden mention-only unre
 test('does not count the visible current channel toward the folded header dot', async () => {
 	mocks.width = 1000;
 	mockSections({ ...room, ownerId: 'other' }, { unread: ['c2'], notification: ['c2'] });
-	render(Channels, { props: { roomId: 'r', channelId: 'c2' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c2' });
 	await screen.findByRole('link', { name: 'Second' });
 
 	await fireEvent.click(sectionTitle('운영'));
@@ -649,13 +829,13 @@ test('does not count the visible current channel toward the folded header dot', 
 test('shares the fold state between the wide rail and the narrow grid', async () => {
 	mocks.width = 1000;
 	mockSections({ ...room, ownerId: 'other' });
-	const wide = render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	const wide = renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('link', { name: 'Second' });
 	await fireEvent.click(sectionTitle('운영'));
 	wide.unmount();
 
 	mocks.width = 400;
-	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	renderChannels({ roomId: 'r' });
 	await screen.findByRole('button', { name: '운영' });
 	expect(screen.getByRole('button', { name: '운영' }).getAttribute('aria-expanded')).toBe('false');
 	expect(screen.queryByRole('link', { name: 'Second' })).toBeNull();
@@ -666,7 +846,7 @@ test('shares the fold state between the wide rail and the narrow grid', async ()
 test('shows empty sections as headers for every member', async () => {
 	mocks.width = 1000;
 	mockSections({ ...room, ownerId: 'other' }, { sections: [{ id: 's1', roomId: 'r', name: '빈 묶음' }], channels: [{ id: 'c1', roomId: 'r', name: 'First', sectionId: null }] });
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('link', { name: 'First' });
 	expect(screen.getByRole('button', { name: '빈 묶음' }).getAttribute('aria-expanded')).toBe('true');
 });
@@ -674,7 +854,7 @@ test('shows empty sections as headers for every member', async () => {
 test('keeps the sectionless rail flat and reorders through the channel endpoint', async () => {
 	mocks.width = 1000;
 	mockSections(ownedRoom, { sections: [], channels });
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
 	expect(screen.queryByRole('button', { name: /./, expanded: true })).toBeNull();
 	expect(screen.queryByRole('button', { name: /./, expanded: false })).toBeNull();
@@ -690,7 +870,7 @@ test('keeps the sectionless rail flat and reorders through the channel endpoint'
 test('moves a channel into another section with a single arrange request when dragging in the rail', async () => {
 	mocks.width = 1000;
 	mockSections(ownedRoom);
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	const third = screen.getByRole('link', { name: 'Third' });
 
@@ -709,7 +889,7 @@ test('moves a channel into another section with a single arrange request when dr
 test('reorders sections by dragging their headers with a single arrange request', async () => {
 	mocks.width = 1000;
 	mockSections(ownedRoom);
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const firstHeader = await screen.findByRole('button', { name: '운영' });
 	const secondHeader = screen.getByRole('button', { name: '행사' });
 	const handle = firstHeader.parentElement!.querySelector('[draggable="true"]') as HTMLElement;
@@ -730,7 +910,7 @@ test('reorders sections by dragging their headers with a single arrange request'
 test('offers no drop target inside a folded section of the rail', async () => {
 	mocks.width = 1000;
 	mockSections(ownedRoom);
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('link', { name: 'Second' });
 
 	await fireEvent.click(sectionTitle('행사'));
@@ -743,7 +923,7 @@ test('offers no drop target inside a folded section of the rail', async () => {
 test('does not place section management menus in the rail', async () => {
 	mocks.width = 1000;
 	mockSections(ownedRoom);
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('link', { name: 'Second' });
 	expect(screen.queryByRole('button', { name: i18n.ts._chat._channels.createSection })).toBeNull();
 	expect(screen.queryByRole('button', { name: i18n.ts.rename })).toBeNull();
@@ -759,7 +939,7 @@ test('restores the server order and alerts when a rail arrange fails', async () 
 		if (endpoint === 'chat/rooms/channels/arrange') throw new Error('arrange failed');
 		return sectionedChannels;
 	});
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	const third = screen.getByRole('link', { name: 'Third' });
 
@@ -783,7 +963,7 @@ test('re-reads sections when another member changes the channel structure', asyn
 		: endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] }
 		: endpoint === 'chat/rooms/sections/list' ? sections
 		: sectionedChannels);
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('button', { name: '운영' });
 
 	sections = [{ id: 's1', roomId: 'r', name: '새 이름' }];
@@ -795,7 +975,7 @@ test('re-reads sections when another member changes the channel structure', asyn
 
 test('does not offer section or channel dragging to members in the narrow grid', async () => {
 	mockSections(ownedRoom);
-	render(Channels, { props: { roomId: 'r' }, global: { stubs } });
+	renderChannels({ roomId: 'r' });
 	await screen.findByRole('button', { name: '운영' });
 	expect(screen.queryAllByRole('button', { name: i18n.ts.dragToReorder })).toHaveLength(0);
 });
@@ -806,7 +986,7 @@ test('re-reads the section structure after the stream reconnects', async () => {
 		: endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] }
 		: endpoint === 'chat/rooms/sections/list' ? sections
 		: sectionedChannels);
-	render(Channels, { props: { roomId: 'r', channelId: 'c1' }, global: { stubs } });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
 	await screen.findByRole('button', { name: '운영' });
 
 	// 끊긴 동안 다른 계정이 섹션 이름·구성을 바꿨다.
