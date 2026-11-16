@@ -3047,7 +3047,7 @@ describe('call recording lifecycle', () => {
 
 		const tempUploads = vi.mocked(window.fetch).mock.calls.filter(([u]) => String(u).endsWith('/chat/rooms/voice/recording-part'));
 		expect(tempUploads).toHaveLength(1);
-		// 임시 보관 업로드는 녹화 대상 방을 함께 보내 서버가 방 참가·녹화 허용을 확인하게 한다
+		// 임시 보관 업로드는 녹화 대상 방을 함께 보내 서버가 방 참가·채팅 이용 가능을 확인하게 한다
 		expect((tempUploads[0][1]!.body as FormData).get('roomId')).toBe('r1');
 		expect(conversionCalls()).toHaveLength(1);
 		expect(conversionCalls()[0][1].fileIds).toEqual(['first-file', 'temp-part-1']);
