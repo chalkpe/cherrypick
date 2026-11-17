@@ -369,17 +369,23 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				if (download.size > recordingOutputLimitBytes(this.config.maxFileSize, policies.maxFileSizeMb)) {
 					return { file: null, download: { id: download.id, name: download.name, size: download.size, reason: 'tooLarge' } };
 				}
+				let converted;
 				try {
-					const converted = await this.driveService.addFile({ user: me, path: download.path, name: download.name, folderId, force: true });
-					await this.recordingStorage.removeDownload(download.id);
-					await this.recordingStorage.setResult(me.id, requestId, { fileId: converted.id, folderId: converted.folderId, remainingParts: result.remainingParts });
-					return { file: await this.driveFileEntityService.pack(converted, { self: true }), download: null };
+					converted = await this.driveService.addFile({ user: me, path: download.path, name: download.name, folderId, force: true });
 				} catch (error) {
 					const identifiableId = error instanceof IdentifiableError ? error.id : null;
 					if (identifiableId === 'f9e4e5f3-4df4-40b5-b400-f236945f7073') reason = 'tooLarge';
 					else if (identifiableId === 'c6244ed2-a39a-4e1c-bf93-f0fbd7764fa6') reason = 'noFreeSpace';
 					else if (error instanceof Error && error.message === 'folder-not-found') throw new ApiError(meta.errors.noSuchFolder);
-					else throw new ApiError(meta.errors.conversionFailed);
+					else {
+						this.apiLoggerService.logger.warn(`Could not save a kept recording: ${JSON.stringify({ downloadId: download.id, identifiableId, error: String(error) })}`);
+						throw new ApiError(meta.errors.conversionFailed);
+					}
+				}
+				if (converted != null) {
+					await this.recordingStorage.removeDownload(download.id);
+					await this.recordingStorage.setResult(me.id, requestId, { fileId: converted.id, folderId: converted.folderId, remainingParts: result.remainingParts });
+					return { file: await this.driveFileEntityService.pack(converted, { self: true }), download: null };
 				}
 				return { file: null, download: { id: download.id, name: download.name, size: download.size, reason } };
 			}

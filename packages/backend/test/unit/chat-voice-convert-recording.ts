@@ -98,7 +98,7 @@ function fixture(overrides: { types?: string[]; names?: string[]; conversions?: 
 		apiLoggerService as any,
 		downloadService as any,
 	);
-	return { endpoint, downloadService, downloaded, driveService, driveFilesRepository, recordingStorage, results, files, partPaths };
+	return { endpoint, downloadService, downloaded, driveService, driveFilesRepository, recordingStorage, results, files, partPaths, apiLoggerService };
 }
 
 function mockProbe(probe?: object) {
@@ -389,6 +389,37 @@ describe('chat/rooms/voice/convert-recording', () => {
 		try {
 			await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false, folderId: 'gone' }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_FOLDER' });
 			expect(f.recordingStorage.removeDownload).not.toHaveBeenCalled();
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('a retry logs an unexpected save error, reports CONVERSION_FAILED and keeps the download', async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-recording-test-'));
+		const kept = path.join(dir, 'kept.mp3');
+		fs.writeFileSync(kept, 'x');
+		const f = fixture({ addFileError: new Error('storage unavailable'), remembered: { download: { id: 'dl-1', name: 'room.mp3', size: 1, reason: 'tooLarge' }, remainingParts: [] } });
+		f.recordingStorage.getDownload.mockResolvedValue({ id: 'dl-1', userId: 'me', requestId, path: kept, name: 'room.mp3', size: 1 });
+
+		try {
+			await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false }, me, null, null)).rejects.toMatchObject({ code: 'CONVERSION_FAILED' });
+			expect(f.apiLoggerService.logger.warn).toHaveBeenCalledWith(expect.stringContaining('storage unavailable'));
+			expect(f.recordingStorage.removeDownload).not.toHaveBeenCalled();
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('a retry does not report a failure after the file was saved when a later step fails', async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-recording-test-'));
+		const kept = path.join(dir, 'kept.mp3');
+		fs.writeFileSync(kept, 'x');
+		const f = fixture({ remembered: { download: { id: 'dl-1', name: 'room.mp3', size: 1, reason: 'tooLarge' }, remainingParts: [] } });
+		f.recordingStorage.getDownload.mockResolvedValue({ id: 'dl-1', userId: 'me', requestId, path: kept, name: 'room.mp3', size: 1 });
+		f.recordingStorage.setResult.mockRejectedValueOnce(new Error('redis down'));
+
+		try {
+			await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false }, me, null, null)).rejects.toThrow('redis down');
 		} finally {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
