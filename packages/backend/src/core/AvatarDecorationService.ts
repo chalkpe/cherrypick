@@ -184,12 +184,20 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 			}
 			if (typeof item.name !== 'string' || item.name.length > 256 || !isStorableText(item.name)) continue;
 			if (item.flipH != null && typeof item.flipH !== 'boolean') continue;
-			const ranges = { angle: [-0.5, 0.5], offsetX: [-0.25, 0.25], offsetY: [-0.25, 0.25], scale: [0.5, 1.5], opacity: [0.1, 1] };
-			if (Object.entries(ranges).some(([key, [min, max]]) => item[key] != null && (typeof item[key] !== 'number' || !Number.isFinite(item[key]) || item[key] < min || item[key] > max))) continue;
+			if (!this.isDecorationValuesInRange(item)) continue;
 			const id = await this.registerRemote(host, item.id, item.url, item.name, undefined, { preserveDescription: true });
 			result.push(normalizeAvatarDecoration({ id, angle: item.angle, flipH: item.flipH, offsetX: item.offsetX, offsetY: item.offsetY, scale: item.scale, opacity: item.opacity }));
 		}
 		return result;
+	}
+
+	@bindThis
+	private isDecorationValuesInRange(item: Record<string, unknown>): boolean {
+		const ranges = { angle: [-0.5, 0.5], offsetX: [-0.25, 0.25], offsetY: [-0.25, 0.25], scale: [0.5, 1.5], opacity: [0.1, 1] };
+		return !Object.entries(ranges).some(([key, [min, max]]) => {
+			const value = item[key];
+			return value != null && (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max);
+		});
 	}
 
 	/**
@@ -254,6 +262,8 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		updates.avatarDecorations = [];
 
 		for (const avatarDecoration of userAvatarDecorations) {
+			if (avatarDecoration == null || typeof avatarDecoration !== 'object' || !this.isDecorationValuesInRange(avatarDecoration)) continue;
+
 			let name;
 			let description;
 			const avatarDecorationId = avatarDecoration.id;

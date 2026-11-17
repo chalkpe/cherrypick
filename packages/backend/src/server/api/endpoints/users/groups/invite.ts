@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import ms from 'ms';
 import { Inject, Injectable } from '@nestjs/common';
 import type { UserGroupsRepository, UserGroupJoiningsRepository, UserGroupInvitationsRepository } from '@/models/_.js';
 import { IdService } from '@/core/IdService.js';
@@ -10,6 +11,7 @@ import type { MiUserGroupInvitation } from '@/models/UserGroupInvitation.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { GetterService } from '@/server/api/GetterService.js';
 import { NotificationService } from '@/core/NotificationService.js';
+import { UserBlockingService } from '@/core/UserBlockingService.js';
 import { DI } from '@/di-symbols.js';
 import { ApiError } from '../../../error.js';
 
@@ -21,6 +23,11 @@ export const meta = {
 	kind: 'write:user-groups',
 
 	description: 'Invite a user to an existing group.',
+
+	limit: {
+		duration: ms('1hour'),
+		max: 30,
+	},
 
 	errors: {
 		noSuchGroup: {
@@ -39,6 +46,12 @@ export const meta = {
 			message: 'That user has already been added to that group.',
 			code: 'ALREADY_ADDED',
 			id: '7e35c6a0-39b2-4488-aea6-6ee20bd5da2c',
+		},
+
+		youHaveBeenBlocked: {
+			message: 'You cannot invite this user because you have been blocked by this user.',
+			code: 'YOU_HAVE_BEEN_BLOCKED',
+			id: '3f8e1c2a-6b5d-4a7e-9c41-0d2b8f6a7e55',
 		},
 
 		alreadyInvited: {
@@ -73,6 +86,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private idService: IdService,
 		private getterService: GetterService,
 		private notificationService: NotificationService,
+		private userBlockingService: UserBlockingService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			// Fetch the group
@@ -90,6 +104,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				if (err.id === '15348ddd-432d-49c2-8a5a-8069753becff') throw new ApiError(meta.errors.noSuchUser);
 				throw err;
 			});
+
+			if (await this.userBlockingService.checkBlocked(user.id, me.id)) {
+				throw new ApiError(meta.errors.youHaveBeenBlocked);
+			}
 
 			const joining = await this.userGroupJoiningsRepository.findOneBy({
 				userGroupId: userGroup.id,

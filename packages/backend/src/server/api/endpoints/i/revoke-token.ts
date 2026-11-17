@@ -58,9 +58,14 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		@Inject(DI.accessTokensRepository)
 		private accessTokensRepository: AccessTokensRepository,
 	) {
-		super(meta, paramDef, async (ps, me, token) => {
+		super(meta, paramDef, async (ps, me, token, flashToken) => {
 			if (me == null) {
 				throw new ApiError(meta.errors.credentialRequired);
+			}
+
+			// Play のトークンからは他のトークンを失効させられない
+			if (flashToken != null) {
+				throw new ApiError(meta.errors.permissionDenied);
 			}
 
 			let target: MiAccessToken | null = null;

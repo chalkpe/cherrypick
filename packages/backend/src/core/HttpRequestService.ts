@@ -333,14 +333,11 @@ export class HttpRequestService {
 
 		const isLocalAddressAllowed = args.isLocalAddressAllowed ?? false;
 
-		const bearcaps = url.startsWith('bear:?') ? this.parseBearcaps(url) : undefined;
-
-		const res = await fetch(bearcaps?.url ?? url, {
+		const res = await fetch(url, {
 			method: args.method ?? 'GET',
 			headers: {
 				'User-Agent': this.config.userAgent,
 				...(args.headers ?? {}),
-				...(bearcaps?.token ? { Authorization: `Bearer ${bearcaps.token}` } : {}),
 			},
 			body: args.body,
 			size: args.size ?? 10 * 1024 * 1024,
@@ -360,18 +357,5 @@ export class HttpRequestService {
 		}
 
 		return res;
-	}
-
-	// Bearcaps https://docs.joinmastodon.org/spec/bearcaps/
-	// bear:?t=<token>&u=https://example.com/foo'
-	// -> GET https://example.com/foo Authorization: Bearer <token>
-	private parseBearcaps(url: string): { url: string, token: string | undefined } | undefined {
-		const params = new URLSearchParams(url.split('?')[1]);
-		if (!params.has('u')) return undefined;
-
-		return {
-			url: params.get('u')!,
-			token: params.get('t') ?? undefined,
-		};
 	}
 }

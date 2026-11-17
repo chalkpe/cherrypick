@@ -167,6 +167,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			this.queryService.generateVisibilityQuery(query, me);
 			this.queryService.generateBaseNoteFilteringQuery(query, me);
+			if (me == null) this.queryService.generateUgcVisibilityQueryForVisitor(query);
 
 			if (ps.offset) query.skip(ps.offset);
 

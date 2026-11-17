@@ -334,20 +334,22 @@ export class ApPersonService implements OnModuleInit {
 
 		const isBot = getApType(object) === 'Service' || getApType(object) === 'Application';
 
-		const [followingVisibility, followersVisibility] = await Promise.all(
+		const collectionInfos = await Promise.all(
 			[
-				this.isPublicCollection(person.following, resolver),
-				this.isPublicCollection(person.followers, resolver),
-			].map((p): Promise<'public' | 'private'> => p
-				.then(isPublic => isPublic ? 'public' : 'private')
+				this.fetchCollectionInfo(person.following, resolver),
+				this.fetchCollectionInfo(person.followers, resolver),
+			].map((p): Promise<{ visibility: 'public' | 'private', totalItems: number | undefined }> => p
+				.then(info => ({ visibility: info.isPublic ? 'public' as const : 'private' as const, totalItems: info.totalItems }))
 				.catch(err => {
 					if (!(err instanceof StatusError) || err.isRetryable) {
 						this.logger.error('error occurred while fetching following/followers collection', { stack: err });
 					}
-					return 'private';
+					return { visibility: 'private', totalItems: undefined };
 				}),
 			),
 		);
+		const followingVisibility = collectionInfos[0].visibility;
+		const followersVisibility = collectionInfos[1].visibility;
 
 		const bday = person['vcard:bday']?.match(/^\d{4}-\d{2}-\d{2}/);
 
@@ -361,50 +363,9 @@ export class ApPersonService implements OnModuleInit {
 			throw new Error('unexpected schema of person url: ' + url);
 		}
 
-		let followersCount: number | undefined;
-
-		if (typeof person.followers === 'string') {
-			try {
-				const data = await fetch(person.followers, {
-					headers: { Accept: 'application/json' },
-				});
-				const jsonData = JSON.parse(await data.text());
-
-				followersCount = jsonData.totalItems;
-			} catch {
-				followersCount = undefined;
-			}
-		}
-
-		let followingCount: number | undefined;
-
-		if (typeof person.following === 'string') {
-			try {
-				const data = await fetch(person.following, {
-					headers: { Accept: 'application/json' },
-				});
-				const jsonData = JSON.parse(await data.text());
-
-				followingCount = jsonData.totalItems;
-			} catch (e) {
-				followingCount = undefined;
-			}
-		}
-
-		let notesCount: number | undefined;
-
-		if (typeof person.outbox === 'string') {
-			try {
-				const data = await fetch(person.outbox, {
-					headers: { Accept: 'application/json' },
-				});
-				const jsonData = JSON.parse(await data.text());
-
-				notesCount = jsonData.totalItems;
-			} catch (e) {
-				notesCount = undefined;
-			}
-		}
+		const followersCount = collectionInfos[1].totalItems;
+		const followingCount = collectionInfos[0].totalItems;
+		const notesCount = await this.fetchCollectionTotalItems(person.outbox, resolver);
 
 		// Create user
 		let user: MiRemoteUser | null = null;
@@ -604,22 +565,24 @@ export class ApPersonService implements OnModuleInit {
 
 		const tags = extractApHashtags(person.tag).splice(0, 32).map(normalizeTag);
 
-		const [followingVisibility, followersVisibility] = await Promise.all(
+		const collectionInfos = await Promise.all(
 			[
-				this.isPublicCollection(person.following, resolver),
-				this.isPublicCollection(person.followers, resolver),
-			].map((p): Promise<'public' | 'private' | undefined> => p
-				.then(isPublic => isPublic ? 'public' : 'private')
+				this.fetchCollectionInfo(person.following, resolver),
+				this.fetchCollectionInfo(person.followers, resolver),
+			].map((p): Promise<{ visibility: 'public' | 'private' | undefined, totalItems: number | undefined }> => p
+				.then(info => ({ visibility: info.isPublic ? 'public' as const : 'private' as const, totalItems: info.totalItems }))
 				.catch(err => {
 					if (!(err instanceof StatusError) || err.isRetryable) {
 						this.logger.error('error occurred while fetching following/followers collection', { stack: err });
 						// Do not update the visibiility on transient errors.
-						return undefined;
+						return { visibility: undefined, totalItems: undefined };
 					}
-					return 'private';
+					return { visibility: 'private', totalItems: undefined };
 				}),
 			),
 		);
+		const followingVisibility = collectionInfos[0].visibility;
+		const followersVisibility = collectionInfos[1].visibility;
 
 		const bday = person['vcard:bday']?.match(/^\d{4}-\d{2}-\d{2}/);
 
@@ -639,50 +602,9 @@ export class ApPersonService implements OnModuleInit {
 			}
 		}
 
-		let followersCount: number | undefined;
-
-		if (typeof person.followers === 'string') {
-			try {
-				const data = await fetch(person.followers, {
-					headers: { Accept: 'application/json' },
-				});
-				const jsonData = JSON.parse(await data.text());
-
-				followersCount = jsonData.totalItems;
-			} catch {
-				followersCount = undefined;
-			}
-		}
-
-		let followingCount: number | undefined;
-
-		if (typeof person.following === 'string') {
-			try {
-				const data = await fetch(person.following, {
-					headers: { Accept: 'application/json' },
-				});
-				const jsonData = JSON.parse(await data.text());
-
-				followingCount = jsonData.totalItems;
-			} catch {
-				followingCount = undefined;
-			}
-		}
-
-		let notesCount: number | undefined;
-
-		if (typeof person.outbox === 'string') {
-			try {
-				const data = await fetch(person.outbox, {
-					headers: { Accept: 'application/json' },
-				});
-				const jsonData = JSON.parse(await data.text());
-
-				notesCount = jsonData.totalItems;
-			} catch (e) {
-				notesCount = undefined;
-			}
-		}
+		const followersCount = collectionInfos[1].totalItems;
+		const followingCount = collectionInfos[0].totalItems;
+		const notesCount = await this.fetchCollectionTotalItems(person.outbox, resolver);
 
 		const updates = {
 			lastFetchedAt: new Date(),
@@ -954,14 +876,26 @@ export class ApPersonService implements OnModuleInit {
 	}
 
 	@bindThis
-	private async isPublicCollection(collection: string | ICollection | IOrderedCollection | undefined, resolver: Resolver): Promise<boolean> {
+	private async fetchCollectionInfo(collection: string | ICollection | IOrderedCollection | undefined, resolver: Resolver): Promise<{ isPublic: boolean, totalItems: number | undefined }> {
 		if (collection) {
 			const resolved = await resolver.resolveCollection(collection);
-			if (resolved.first || (resolved as ICollection).items || (resolved as IOrderedCollection).orderedItems) {
-				return true;
-			}
+			const isPublic = !!(resolved.first || (resolved as ICollection).items || (resolved as IOrderedCollection).orderedItems);
+			// 컬렉션을 주소로만 주는 서버도 같은 Resolver 경로로 한 번만 가져온다
+			const totalItems = typeof resolved.totalItems === 'number' ? resolved.totalItems : undefined;
+			return { isPublic, totalItems };
 		}
 
-		return false;
+		return { isPublic: false, totalItems: undefined };
+	}
+
+	@bindThis
+	private async fetchCollectionTotalItems(collection: string | ICollection | IOrderedCollection | undefined, resolver: Resolver): Promise<number | undefined> {
+		if (typeof collection !== 'string') return undefined;
+		try {
+			const resolved = await resolver.resolveCollection(collection);
+			return typeof resolved.totalItems === 'number' ? resolved.totalItems : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 }

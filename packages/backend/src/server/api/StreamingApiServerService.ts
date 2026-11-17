@@ -78,7 +78,12 @@ export class StreamingApiServerService {
 				: q.get('i');
 
 			try {
-				[user, app] = await this.authenticateService.authenticate(token);
+				let flashToken;
+				[user, app, flashToken] = await this.authenticateService.authenticate(token);
+
+				if (flashToken != null) {
+					throw new AuthenticationError('Play tokens cannot use the streaming API.');
+				}
 
 				if (app !== null && !app.permission.some(p => p === 'read:account')) {
 					throw new AuthenticationError('Your app does not have necessary permissions to use websocket API.');

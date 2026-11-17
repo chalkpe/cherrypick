@@ -279,7 +279,9 @@ export class CheckModeratorsActivityProcessorService {
 
 	@bindThis
 	private async changeToDisablePublicNote() {
-		await this.metaService.update({ policies: { canPublicNote: false } });
+		// 기존 기본 정책을 유지한 채 canPublicNote만 바꾼다
+		const meta = await this.metaService.fetch(true);
+		await this.metaService.update({ policies: { ...meta.policies, canPublicNote: false } });
 	}
 
 	@bindThis

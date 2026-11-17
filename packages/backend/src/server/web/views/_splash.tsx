@@ -12,7 +12,7 @@ export function Splash(props: {
 	return (
 		<div id="splash">
 			<img id="splashIcon" src={props.icon || '/static-assets/splash.png'} />
-			<span id="splashText">{customSplashText}</span>
+			<span id="splashText" safe>{customSplashText}</span>
 			<div id="splashSpinner">
 				<svg className="spinner" viewBox="0 0 50 50" xmlns="http://www.w3.org/2000/svg">
 					<circle className="path" cx="25" cy="25" r="20" fill="none" stroke-width="6px" style="fill: none; stroke: currentColor; stroke-width: 6px;"></circle>

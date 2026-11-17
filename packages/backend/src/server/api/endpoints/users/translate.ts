@@ -76,8 +76,17 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.unavailable);
 			}
 
+			const targetUser = await this.getterService.getUser(ps.userId).catch(err => {
+				if (err.id === '15348ddd-432d-49c2-8a5a-8069753becff') throw new ApiError(meta.errors.noSuchDescription);
+				throw err;
+			});
+
+			if (targetUser.isDeleted || (targetUser.isSuspended && !(await this.roleService.isModerator(me)))) {
+				throw new ApiError(meta.errors.noSuchDescription);
+			}
+
 			const target = await this.getterService.getUserProfiles(ps.userId).catch(err => {
-				if (err.id === '9725d0ce-ba28-4dde-95a7-2cbb2c15de24') throw new ApiError(meta.errors.noSuchDescription);
+				if (err.id === '15348ddd-432d-49c2-8a5a-8069753becff') throw new ApiError(meta.errors.noSuchDescription);
 				throw err;
 			});
 

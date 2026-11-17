@@ -10,6 +10,8 @@ import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { DI } from '@/di-symbols.js';
 import { EmailService } from '@/core/EmailService.js';
 import { DeleteAccountService } from '@/core/DeleteAccountService.js';
+import { RoleService } from '@/core/RoleService.js';
+import { ApiError } from '../../error.js';
 
 export const meta = {
 	tags: ['admin'],
@@ -17,6 +19,21 @@ export const meta = {
 	requireCredential: true,
 	requireModerator: true,
 	kind: 'write:admin:decline-user',
+
+	errors: {
+		notApprovalSignup: {
+			message: 'User did not sign up through approval.',
+			code: 'NOT_APPROVAL_SIGNUP',
+			id: '3c5a9a2e-6f0b-4d2c-8a41-7b1e6d9f2c10',
+			httpStatusCode: 400,
+		},
+		targetIsModerator: {
+			message: 'User is a moderator.',
+			code: 'TARGET_IS_MODERATOR',
+			id: 'b82d4e57-1a93-4c6f-9e08-5d7a3f1c4b26',
+			httpStatusCode: 400,
+		},
+	},
 } as const;
 
 export const paramDef = {
@@ -42,6 +59,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private moderationLogService: ModerationLogService,
 		private emailService: EmailService,
 		private deleteAccountService: DeleteAccountService,
+		private roleService: RoleService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			const user = await this.usersRepository.findOneBy({ id: ps.userId });
@@ -56,6 +74,15 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 			if (user.host) {
 				throw new Error('user is not local');
+			}
+
+			// 가입 승인 흐름으로 들어온 계정(signupReason이 채워져 있음)만 거부할 수 있다
+			if (user.signupReason == null) {
+				throw new ApiError(meta.errors.notApprovalSignup);
+			}
+
+			if (await this.roleService.isModerator(user)) {
+				throw new ApiError(meta.errors.targetIsModerator);
 			}
 
 			const profile = await this.userProfilesRepository.findOneBy({ userId: ps.userId });

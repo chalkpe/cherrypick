@@ -706,17 +706,22 @@ export function getNoteMenu(props: {
 		}
 
 		if (($i.isModerator || $i.isAdmin) && appearNote.channel == null) {
-			menuItems.push({
-				type: 'parent',
-				icon: 'ti ti-world',
-				text: i18n.ts.changeVisibility,
-				children: (['public', 'home', 'followers', 'specified'] as const).map(visibility => ({
-					text: i18n.ts._visibility[visibility],
-					icon: { public: 'ti ti-world', home: 'ti ti-home', followers: 'ti ti-lock', specified: 'ti ti-mail' }[visibility],
-					disabled: appearNote.visibility === visibility,
-					action: () => changeVisibility(visibility),
-				})),
-			});
+			// 現在より広い公開範囲には変更できない（サーバー側でも拒否される）ので、選べる範囲だけを並べる
+			const visibilityRank = { public: 3, home: 2, followers: 1, specified: 0 } as const;
+			const visibilityChoices = (['public', 'home', 'followers', 'specified'] as const)
+				.filter(visibility => visibilityRank[visibility] < visibilityRank[appearNote.visibility]);
+			if (visibilityChoices.length > 0) {
+				menuItems.push({
+					type: 'parent',
+					icon: 'ti ti-world',
+					text: i18n.ts.changeVisibility,
+					children: visibilityChoices.map(visibility => ({
+						text: i18n.ts._visibility[visibility],
+						icon: { public: 'ti ti-world', home: 'ti ti-home', followers: 'ti ti-lock', specified: 'ti ti-mail' }[visibility],
+						action: () => changeVisibility(visibility),
+					})),
+				});
+			}
 		}
 
 		if (appearNote.userId === $i.id || $i.isModerator || $i.isAdmin) {

@@ -13,9 +13,11 @@ import type { AddressInfo } from 'node:net';
 describe('HttpRequestService.send', () => {
 	let server: http.Server;
 	let origin: string;
+	const requests: { url?: string, authorization?: string }[] = [];
 
 	beforeAll(async () => {
 		server = http.createServer((req, res) => {
+			requests.push({ url: req.url, authorization: req.headers.authorization });
 			if (req.url === '/start') {
 				res.writeHead(302, { location: '/end' });
 				res.end();
@@ -48,5 +50,14 @@ describe('HttpRequestService.send', () => {
 
 		await expect(sent).rejects.toBeInstanceOf(StatusError);
 		await expect(sent).rejects.toMatchObject({ statusCode: 302 });
+	});
+
+	test('does not turn a bear: address into a request to its target', async () => {
+		const service = new HttpRequestService({ userAgent: 'test' } as Config);
+		requests.length = 0;
+
+		await expect(service.send(`bear:?t=secret&u=${encodeURIComponent(`${origin}/end`)}`)).rejects.toBeDefined();
+
+		expect(requests).toEqual([]);
 	});
 });

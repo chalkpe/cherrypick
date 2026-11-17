@@ -75,8 +75,13 @@ function getDecorationUrl(decoration: Omit<Misskey.entities.UserDetailed['avatar
 	return decoration.url;
 }
 
+function clampDecorationValue(value: unknown, defaultValue: number, min: number, max: number): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) return defaultValue;
+	return Math.min(Math.max(value, min), max);
+}
+
 function getDecorationAngle(decoration: Omit<Misskey.entities.UserDetailed['avatarDecorations'][number], 'id'>) {
-	const angle = decoration.angle ?? 0;
+	const angle = clampDecorationValue(decoration.angle, 0, -0.5, 0.5);
 	return angle === 0 ? undefined : `${angle * 360}deg`;
 }
 
@@ -86,18 +91,18 @@ function getDecorationScale(decoration: Omit<Misskey.entities.UserDetailed['avat
 }
 
 function getDecorationOffset(decoration: Omit<Misskey.entities.UserDetailed['avatarDecorations'][number], 'id'>) {
-	const offsetX = decoration.offsetX ?? 0;
-	const offsetY = decoration.offsetY ?? 0;
+	const offsetX = clampDecorationValue(decoration.offsetX, 0, -0.25, 0.25);
+	const offsetY = clampDecorationValue(decoration.offsetY, 0, -0.25, 0.25);
 	return offsetX === 0 && offsetY === 0 ? undefined : `${offsetX * 100}% ${offsetY * 100}%`;
 }
 
 function getDecorationTransform(decoration: Omit<Misskey.entities.UserDetailed['avatarDecorations'][number], 'id'>) {
-	const scale = decoration.scale ?? 1;
+	const scale = clampDecorationValue(decoration.scale, 1, 0.5, 1.5);
 	return `${scale === 1 ? '' : `scale(${scale})`}`;
 }
 
 function getDecorationOpacity(decoration: Omit<Misskey.entities.UserDetailed['avatarDecorations'][number], 'id'>) {
-	const opacity = decoration.opacity ?? 1;
+	const opacity = clampDecorationValue(decoration.opacity, 1, 0, 1);
 	return opacity === 1 ? undefined : opacity;
 }
 </script>

@@ -17,6 +17,7 @@ import { MemoryKVCache, RedisSingleCache } from '@/misc/cache.js';
 import { sqlLikeEscape } from '@/misc/sql-like-escape.js';
 import type { DriveFilesRepository, EmojisRepository, MiMeta, MiRole, MiUser } from '@/models/_.js';
 import type { MiEmoji } from '@/models/Emoji.js';
+import type { MiDriveFile } from '@/models/DriveFile.js';
 import type { Serialized } from '@/types.js';
 import { DriveService } from '@/core/DriveService.js';
 import Logger from '@/logger.js';
@@ -118,9 +119,9 @@ export class CustomEmojiService implements OnApplicationShutdown {
 		isSensitive: boolean;
 		localOnly: boolean;
 		roleIdsThatCanBeUsedThisEmojiAsReaction: MiRole['id'][];
-	}, moderator?: MiUser): Promise<MiEmoji> {
+	}, moderator?: MiUser, intermediateFile?: MiDriveFile): Promise<MiEmoji> {
 		// システムユーザーとして再アップロード
-		const result = await this.reuploadFileAndCleanup({ originalUrl: data.originalUrl, name: data.name }, { name: data.name });
+		const result = await this.reuploadFileAndCleanup({ originalUrl: data.originalUrl, name: data.name }, { name: data.name }, moderator);
 		data.originalUrl = result.url;
 		data.publicUrl = result.webpublicUrl ?? result.url;
 		data.fileType = result.webpublicType ?? result.type;
@@ -140,6 +141,18 @@ export class CustomEmojiService implements OnApplicationShutdown {
 			localOnly: data.localOnly,
 			roleIdsThatCanBeUsedThisEmojiAsReaction: data.roleIdsThatCanBeUsedThisEmojiAsReaction,
 		});
+
+		// 呼び出し元が用意した中間ファイルは、絵文字の登録後に削除する
+		if (intermediateFile != null && intermediateFile.url !== data.originalUrl) {
+			try {
+				await this.driveService.deleteFile(intermediateFile);
+			} catch (e) {
+				this.logger.warn('Failed to delete intermediate emoji file', {
+					error: e instanceof Error ? e.message : String(e),
+					fileId: intermediateFile.id,
+				});
+			}
+		}
 
 		if (data.host == null) {
 			this.localEmojisCache.refresh();
@@ -196,7 +209,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 		// ファイルの更新がある場合
 		if (( data.originalUrl || data.publicUrl || data.fileType ) && emoji.originalUrl !== data.originalUrl) {
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-			const result = await this.reuploadFileAndCleanup({ originalUrl: data.originalUrl!, name: data.name }, { name: data.name });
+			const result = await this.reuploadFileAndCleanup({ originalUrl: data.originalUrl!, name: data.name }, { name: data.name }, moderator);
 			data.originalUrl = result.url;
 			data.publicUrl = result.webpublicUrl ?? result.url;
 			data.fileType = result.webpublicType ?? result.type;
@@ -649,7 +662,7 @@ export class CustomEmojiService implements OnApplicationShutdown {
 	private async reuploadFileAndCleanup(data: {
 		originalUrl: string;
 		name?: string;
-	}, loggerContext: { name?: string }) {
+	}, loggerContext: { name?: string }, moderator?: MiUser) {
 		let retryCount = 0;
 		let copyDriveFile;
 		const MAX_RETRY_COUNT = 3;
@@ -690,9 +703,10 @@ export class CustomEmojiService implements OnApplicationShutdown {
 		}
 
 		const newUrl = copyDriveFile.url;
-		if (originalSourceUrl !== newUrl) {
+		// 원본 파일은 요청한 사람 본인의 파일일 때만 지운다
+		if (originalSourceUrl !== newUrl && moderator != null) {
 			try {
-				const originalDriveFile = await this.driveFilesRepository.findOneBy({ url: originalSourceUrl });
+				const originalDriveFile = await this.driveFilesRepository.findOneBy({ url: originalSourceUrl, userId: moderator.id });
 				if (originalDriveFile && originalDriveFile.id !== copyDriveFile.id) {
 					const referenceCount = await this.driveFilesRepository.count({
 						where: { url: originalSourceUrl, id: Not(originalDriveFile.id) },

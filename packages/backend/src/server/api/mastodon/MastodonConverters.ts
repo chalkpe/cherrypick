@@ -23,6 +23,7 @@ import { MastodonFilterService } from '@/server/api/mastodon/MastodonFilterServi
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { GetterService } from '@/server/api/GetterService.js';
 import { CacheService } from '@/core/CacheService.js';
+import { NoteUpdateService } from '@/core/NoteUpdateService.js';
 import { isRenote } from '@/misc/is-renote.js';
 import { promiseMap } from '@/misc/promise-map.js';
 import { emojiRegex } from '@/misc/emoji-regex.js';
@@ -75,6 +76,7 @@ export class MastodonConverters {
 		private readonly userEntityService: UserEntityService,
 		private readonly cacheService: CacheService,
 		private readonly filterService: MastodonFilterService,
+		private readonly noteUpdateService: NoteUpdateService,
 	) {}
 
 	/**
@@ -246,6 +248,11 @@ export class MastodonConverters {
 	public async getEdits(id: string, me: MiLocalUser | null): Promise<StatusEdit[]> {
 		const note = await this.mastodonDataService.getNote(id, me);
 		if (!note) {
+			return [];
+		}
+
+		// notes/history と同じ閲覧可否の判定を通らなければ空にする
+		if (await this.noteUpdateService.checkRevisionsAccess(note, me?.id ?? null) !== 'ok') {
 			return [];
 		}
 

@@ -80,7 +80,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private signupService: SignupService,
 		private roleService: RoleService,
 	) {
-		super(meta, paramDef, async (ps, _me, token) => {
+		super(meta, paramDef, async (ps, _me, token, flashToken) => {
 			const me = _me ? await this.usersRepository.findOneByOrFail({ id: _me.id }) : null;
 
 			if (this.serverSettings.rootUserId == null && me == null && token == null) {
@@ -95,7 +95,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					// 初期パスワードが設定されていないのに初期パスワードが入力された場合
 					throw new ApiError(meta.errors.wrongInitialPassword);
 				}
-			} else if (token !== null || !(await this.roleService.isAdministrator(me))) {
+			} else if (token !== null || flashToken != null || !(await this.roleService.isAdministrator(me))) {
 				// 初回セットアップではなく、管理者でない場合 or 外部トークンを使用している場合
 				throw new ApiError(meta.errors.accessDenied);
 			}

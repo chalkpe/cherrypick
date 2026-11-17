@@ -279,6 +279,57 @@ describe('ActivityPub', () => {
 		});
 	});
 
+	describe('Remote collection counts', () => {
+		test('Counts of collections given only as URLs are read through the resolver', async () => {
+			const actor = createRandomActor();
+			const collection = (path: string, totalItems: number) => ({
+				'@context': 'https://www.w3.org/ns/activitystreams',
+				id: `${actor.id}/${path}`,
+				type: 'OrderedCollection',
+				totalItems,
+				first: `${actor.id}/${path}?page=1`,
+			});
+			actor.followers = `${actor.id}/followers`;
+			actor.following = `${actor.id}/following`;
+			resolver.register(actor.id, actor);
+			resolver.register(`${actor.id}/followers`, collection('followers', 7));
+			resolver.register(`${actor.id}/following`, collection('following', 5));
+			resolver.register(`${actor.id}/outbox`, collection('outbox', 11));
+
+			const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('global fetch must not be used'));
+			try {
+				const user = await personService.createPerson(actor.id, resolver);
+				const profile = await personService.fetchPerson(actor.id);
+
+				assert.strictEqual(fetchSpy.mock.calls.length, 0);
+				assert.strictEqual(user.followersCount, 7);
+				assert.strictEqual(user.followingCount, 5);
+				assert.strictEqual(user.notesCount, 11);
+				assert.strictEqual(profile?.followersCount, 7);
+
+				resolver.register(`${actor.id}/followers`, collection('followers', 8));
+				await personService.updatePerson(actor.id, resolver, actor);
+				const updated = await personService.fetchPerson(actor.id);
+
+				assert.strictEqual(fetchSpy.mock.calls.length, 0);
+				assert.strictEqual(updated?.followersCount, 8);
+			} finally {
+				fetchSpy.mockRestore();
+			}
+		});
+
+		test('Person is created without counts when the collections cannot be read', async () => {
+			const actor = createRandomActor();
+			actor.followers = `${actor.id}/followers`;
+			resolver.register(actor.id, actor);
+
+			const user = await personService.createPerson(actor.id, resolver);
+
+			assert.strictEqual(user.followersCount, 0);
+			assert.strictEqual(user.notesCount, 0);
+		});
+	});
+
 	describe('Collection visibility', () => {
 		test('Public following/followers', async () => {
 			const actor = createRandomActor();
@@ -348,7 +399,7 @@ describe('ActivityPub', () => {
 			await personService.createPerson(actor.id, resolver);
 
 			// All notes in `featured` are same-origin, no need to fetch notes again
-			assert.deepStrictEqual(resolver.remoteGetTrials(), [actor.id, actor.featured]);
+			assert.deepStrictEqual(resolver.remoteGetTrials(), [actor.id, `${actor.id}/outbox`, actor.featured]);
 
 			// Created notes without resolving anything
 			for (const item of featured.items as IPost[]) {
@@ -381,7 +432,7 @@ describe('ActivityPub', () => {
 			// actor2Note is from a different server and needs to be fetched again
 			assert.deepStrictEqual(
 				resolver.remoteGetTrials(),
-				[actor1.id, actor1.featured, actor2Note.id, actor2.id],
+				[actor1.id, `${actor1.id}/outbox`, actor1.featured, actor2Note.id, actor2.id, `${actor2.id}/outbox`],
 			);
 
 			const note = await noteService.fetchNote(actor2Note.id);

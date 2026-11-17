@@ -73,6 +73,7 @@ describe('notes/events/search endpoint', () => {
 			makePaginationQuery: vi.fn((q: unknown) => q),
 			generateVisibilityQuery: vi.fn(),
 			generateBaseNoteFilteringQuery: vi.fn(),
+			generateUgcVisibilityQueryForVisitor: vi.fn(),
 		} as unknown as QueryService;
 		const roleService = {
 			getUserPolicies: vi.fn().mockResolvedValue({ canSearchNotes: true }),

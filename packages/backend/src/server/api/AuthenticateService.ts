@@ -69,7 +69,25 @@ export class AuthenticateService implements OnApplicationShutdown {
 			if (accessToken == null) {
 				const flashToken = await this.cacheService.flashAccessTokensCache.get(token);
 				if (flashToken !== null && typeof flashToken !== 'undefined') {
-					return [flashToken.user, null, flashToken];
+					// 以前はユーザーオブジェクトごと保存していたため、その形式の値も読めるようにする
+					const stored = flashToken as Partial<FlashToken> & { user?: { id?: string } };
+					const userId = stored.userId ?? stored.user?.id;
+					if (typeof userId !== 'string') {
+						throw new AuthenticationError('invalid signature');
+					}
+
+					// 保存時点のスナップショットではなく、現在のユーザーを読み直す
+					const user = await this.cacheService.localUserByIdCache.fetch(userId,
+						() => this.usersRepository.findOneBy({ id: userId }) as Promise<MiLocalUser>);
+
+					if (user == null || user.isDeleted) {
+						throw new AuthenticationError('user not found');
+					}
+
+					return [user, null, {
+						userId,
+						permissions: Array.isArray(stored.permissions) ? stored.permissions : [],
+					}];
 				} else {
 					throw new AuthenticationError('invalid signature');
 				}

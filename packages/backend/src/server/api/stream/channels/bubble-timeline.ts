@@ -10,6 +10,7 @@ import { MetaService } from '@/core/MetaService.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { bindThis } from '@/decorators.js';
 import { RoleService } from '@/core/RoleService.js';
+import { NoteStreamingHidingService } from '../NoteStreamingHidingService.js';
 import type { MiMeta } from '@/models/Meta.js';
 import { isRenotePacked, isQuotePacked } from '@/misc/is-renote.js';
 import type { JsonObject } from '@/misc/json-value.js';
@@ -33,7 +34,7 @@ export class BubbleTimelineChannel extends Channel {
 		private metaService: MetaService,
 		private roleService: RoleService,
 		private noteEntityService: NoteEntityService,
-
+		private noteStreamingHidingService: NoteStreamingHidingService,
 	) {
 		super(request);
 		//this.onNote = this.onNote.bind(this);
@@ -67,9 +68,14 @@ export class BubbleTimelineChannel extends Channel {
 
 		if (isRenotePacked(note) && !isQuotePacked(note) && !this.withRenotes) return;
 
-		if (!this.following[note.userId] && note.userId !== this.user!.id) return;
+		if (!this.following[note.userId] && note.userId !== this.user?.id) return;
 
 		if (this.isNoteMutedOrBlocked(note)) return;
+
+		const filtered = await this.noteStreamingHidingService.filter(note, this.user?.id ?? null);
+		if (!filtered) return;
+		// eslint-disable-next-line no-param-reassign -- これ以降元の Note オブジェクトは見てはいけないので、いっそ再代入した方が安全
+		note = filtered;
 
 		this.send('note', await this.noteEntityService.withMyRenoteReaction(note, this.user?.id ?? null));
 	}

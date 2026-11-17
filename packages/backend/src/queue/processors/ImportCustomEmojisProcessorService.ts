@@ -216,7 +216,7 @@ export class ImportCustomEmojisProcessorService {
 				isSensitive: emojiInfo.isSensitive,
 				localOnly: emojiInfo.localOnly,
 				roleIdsThatCanBeUsedThisEmojiAsReaction: [],
-			});
+			}, undefined, driveFile);
 		} catch (e) {
 			if (e instanceof Error || typeof e === 'string') {
 				this.logger.error(`couldn't import ${emojiPath} for ${emojiInfo.name}: ${e}`);

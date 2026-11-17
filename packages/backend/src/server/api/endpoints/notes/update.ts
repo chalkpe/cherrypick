@@ -149,6 +149,8 @@ export const paramDef = {
 	required: ['noteId'],
 } as const;
 
+const visibilityRank = { public: 3, home: 2, followers: 1, specified: 0 } as const;
+
 @Injectable()
 export default class extends Endpoint<typeof meta, typeof paramDef> {
 	constructor(
@@ -160,7 +162,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> {
 		private noteEntityService: NoteEntityService,
 		private noteUpdateService: NoteUpdateService,
 	) {
-		super(meta, paramDef, async (ps, me, token) => {
+		super(meta, paramDef, async (ps, me, token, flashToken) => {
 			const note = await this.getterService.getNote(ps.noteId).catch(err => {
 				if (err.id === '9725d0ce-ba28-4dde-95a7-2cbb2c15de24') throw new ApiError(meta.errors.noSuchNote);
 				throw err;
@@ -168,7 +170,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> {
 
 			// Moderation is a separate operation: it must never pass through the content editor.
 			if (ps.visibility !== undefined) {
-				if (token != null || !await this.roleService.isModerator(me)) {
+				if (token != null || flashToken != null || !await this.roleService.isModerator(me)) {
 					throw new ApiError(meta.errors.accessDenied);
 				}
 				if (ps.text !== undefined || ps.cw !== undefined || ps.fileIds !== undefined || ps.mediaIds !== undefined ||
@@ -178,6 +180,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> {
 				// Channel notes have a fixed audience and must remain public within the channel.
 				if (note.channelId != null && ps.visibility !== note.visibility) {
 					throw new ApiError(meta.errors.invalidParam);
+				}
+				// モデレーターは公開範囲を今より狭める方向にしか変更できない
+				if (visibilityRank[ps.visibility] > visibilityRank[note.visibility]) {
+					throw new ApiError(meta.errors.accessDenied);
 				}
 				const updatedNote = await this.noteUpdateService.updateVisibility(me, note, ps.visibility);
 				return { updatedNote: await this.noteEntityService.pack(updatedNote, me) };

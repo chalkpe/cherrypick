@@ -14,7 +14,7 @@ import { IdService } from '@/core/IdService.js';
 import { SignupService } from '@/core/SignupService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { EmailService } from '@/core/EmailService.js';
-import { MiLocalUser } from '@/models/User.js';
+import { MiLocalUser, type MiUser } from '@/models/User.js';
 import { FastifyReplyError } from '@/misc/fastify-reply-error.js';
 import { bindThis } from '@/decorators.js';
 import { L_CHARS, secureRndstr } from '@/misc/secure-rndstr.js';
@@ -22,6 +22,7 @@ import { RoleService } from '@/core/RoleService.js';
 import Logger from '@/logger.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import { getIpHash } from '@/misc/get-ip-hash.js';
+import { escapeHtml } from '@/misc/escape-html.js';
 import { SIGNUP_PENDING_EXPIRES_IN } from '@/const.js';
 import { RateLimiterService } from './RateLimiterService.js';
 import { SigninService } from './SigninService.js';
@@ -270,22 +271,27 @@ export class SignupApiService {
 			reply.code(204);
 			return;
 		} else if (this.meta.approvalRequiredForSignup) {
-			const { account } = await this.signupService.signup({
-				username, password, host, reason,
-			});
-
-			if (emailAddress) {
-				this.emailService.sendEmail(emailAddress, 'Approval pending',
-					'Congratulations! Your account is now pending approval. You will get notified when you have been accepted.',
-					'Congratulations! Your account is now pending approval. You will get notified when you have been accepted.');
+			if (ticket && !await this.claimRegistrationTicket(ticket)) {
+				reply.code(400);
+				return;
 			}
 
-			if (ticket) {
-				await this.registrationTicketsRepository.update(ticket.id, {
-					usedAt: new Date(),
-					usedBy: account,
-					usedById: account.id,
-				});
+			let account: MiUser;
+			try {
+				({ account } = await this.signupService.signup({
+					username, password, host, reason,
+				}));
+
+				if (ticket) {
+					await this.registrationTicketsRepository.update(ticket.id, {
+						usedBy: account,
+						usedById: account.id,
+					});
+				}
+			} catch (err) {
+				// 確保したコードが無駄に消費されたままになるのを防ぐ
+				if (ticket) await this.releaseRegistrationTicket(ticket);
+				throw err;
 			}
 
 			if (this.meta.enableIpLogging) {
@@ -299,7 +305,7 @@ export class SignupApiService {
 
 				if (profile?.email) {
 					this.emailService.sendEmail(profile.email, 'New user awaiting approval',
-						`A new user called ${account.username} is awaiting approval with the following reason: "${reason}"`,
+						`A new user called ${account.username} is awaiting approval with the following reason: "${escapeHtml(reason ?? '')}"`,
 						`A new user called ${account.username} is awaiting approval with the following reason: "${reason}"`);
 				}
 			}
@@ -570,7 +576,7 @@ export class SignupApiService {
 
 					if (profile?.email) {
 						this.emailService.sendEmail(profile.email, 'New user awaiting approval',
-							`A new user called ${pendingUser.username} is awaiting approval with the following reason: "${pendingUser.reason}"`,
+							`A new user called ${pendingUser.username} is awaiting approval with the following reason: "${escapeHtml(pendingUser.reason ?? '')}"`,
 							`A new user called ${pendingUser.username} is awaiting approval with the following reason: "${pendingUser.reason}"`);
 					}
 				}

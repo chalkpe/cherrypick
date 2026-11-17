@@ -135,6 +135,36 @@ describe('AvatarDecorationService', () => {
 			expect(updateUser).not.toHaveBeenCalled();
 		});
 
+		test.each([
+			['angle', 9],
+			['angle', 'abc'],
+			['scale', 1e9],
+			['offsetX', -3],
+			['opacity', 0],
+			['opacity', '1'],
+		])('discards a remote decoration whose %s is %j', async (key, value) => {
+			send.mockImplementation(async (url: string) => {
+				if (url === 'https://remote.example/api/users/show') {
+					return jsonResponse({ avatarDecorations: [
+						{ id: 'remote1', url: 'https://remote.example/files/ears.png', [key]: value },
+						{ id: 'remote2', url: 'https://remote.example/files/tail.png', angle: 0.1 },
+					] });
+				}
+				return jsonResponse([
+					{ id: 'remote1', name: 'Ears', description: '', url: 'https://remote.example/files/ears.png' },
+					{ id: 'remote2', name: 'Tail', description: '', url: 'https://remote.example/files/tail.png' },
+				]);
+			});
+
+			await service.remoteUserUpdate(user);
+
+			expect(updateUser).toHaveBeenCalledTimes(1);
+			const saved = updateUser.mock.calls[0][1].avatarDecorations;
+			expect(saved).toHaveLength(1);
+			expect(saved[0]).toMatchObject({ angle: 0.1 });
+			expect(decorations.map(d => d.remoteId)).toEqual(['remote2']);
+		});
+
 		test('leaves the user alone when an instance advertising avatar decorations fails to serve them', async () => {
 			instance = { ...instance, softwareName: 'mastodon', supportsAvatarDecorations: true };
 			send.mockRejectedValue(new Error('404 Not Found'));

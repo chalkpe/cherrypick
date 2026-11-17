@@ -33,6 +33,18 @@ export class NoteStreamingHidingService {
 		return renoteChain;
 	}
 
+	/** note と、そこから reply / renote を辿って到達できる全てのノートを決まった順序で集める */
+	private collectAllNotes(note: Packed<'Note'>): Packed<'Note'>[] {
+		const notes: Packed<'Note'>[] = [];
+		const walk = (current: Packed<'Note'>) => {
+			notes.push(current);
+			if (current.reply) walk(current.reply);
+			if (current.renote) walk(current.renote);
+		};
+		walk(note);
+		return notes;
+	}
+
 	/**
 	 * ストリーミング配信用にノートの内容を隠す（あるいはそもそも送信しない）判定及び処理を行う。
 	 *
@@ -52,30 +64,27 @@ export class NoteStreamingHidingService {
 		}
 
 		const renoteChain = this.collectRenoteChain(note);
-		const shouldHide = await Promise.all(renoteChain.map(n => this.noteEntityService.shouldHideNote(n, meId)));
-		const shouldHideReply = await Promise.all(renoteChain.map(n => n.reply ? this.noteEntityService.shouldHideNote(n.reply, meId) : false));
+		const allNotes = this.collectAllNotes(note);
+		const shouldHide = await Promise.all(allNotes.map(n => this.noteEntityService.shouldHideNote(n, meId)));
 
-		if (!shouldHide.some(h => h) && !shouldHideReply.some(h => h)) {
+		if (!shouldHide.some(h => h)) {
 			// 隠す必要がない場合は元のノートをそのまま返す
 			return note;
 		}
 
-		if (shouldHide.some(h => h) && renoteChain.some(n => isRenotePacked(n) && !isQuotePacked(n))) {
+		const chainHidden = await Promise.all(renoteChain.map(n => this.noteEntityService.shouldHideNote(n, meId)));
+		if (chainHidden.some(h => h) && renoteChain.some(n => isRenotePacked(n) && !isQuotePacked(n))) {
 			// 純粋リノートの場合は配信をスキップする
 			return null;
 		}
 
 		const clonedNote = deepClone(note);
-		let currentCloned = clonedNote;
+		const clonedNotes = this.collectAllNotes(clonedNote);
 
-		for (let i = 0; i < renoteChain.length; i++) {
+		for (let i = 0; i < clonedNotes.length; i++) {
 			if (shouldHide[i]) {
-				this.noteEntityService.hideNote(currentCloned);
+				this.noteEntityService.hideNote(clonedNotes[i]);
 			}
-			if (shouldHideReply[i] && currentCloned.reply) {
-				this.noteEntityService.hideNote(currentCloned.reply);
-			}
-			currentCloned = currentCloned.renote!;
 		}
 
 		return clonedNote;
