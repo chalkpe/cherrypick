@@ -67,6 +67,11 @@ export const meta = {
 			code: 'ALREADY_MEMBER',
 			id: 'a10a39b2-9ecb-4c77-8827-028bc550f977',
 		},
+		banned: {
+			message: 'You removed that user from this room. Pardon them before inviting them again.',
+			code: 'USER_IS_BANNED',
+			id: 'f76f1893-4efa-4c4c-94ea-a7b47a60e056',
+		},
 		alreadyInvited: {
 			message: 'That user has already been invited to this room.',
 			code: 'ALREADY_INVITED',

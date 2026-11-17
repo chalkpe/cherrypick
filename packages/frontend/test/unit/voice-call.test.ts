@@ -139,14 +139,25 @@ const mocks = vi.hoisted(() => ({
 	toast: vi.fn(),
 	alert: vi.fn(),
 	confirm: vi.fn(),
+	actions: vi.fn(),
+	promiseDialog: vi.fn(promise => promise),
 }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.misskeyApi }));
-vi.mock('@/os.js', () => ({ toast: mocks.toast, alert: mocks.alert, confirm: mocks.confirm }));
+vi.mock('@/os.js', () => ({ toast: mocks.toast, alert: mocks.alert, confirm: mocks.confirm, actions: mocks.actions, promiseDialog: mocks.promiseDialog }));
 vi.mock('@/preferences.js', async () => ({ prefer: (await import('./fake-prefer.js')).createFakePrefer() }));
+vi.mock('@/i.js', async importOriginal => ({
+	...await importOriginal<typeof import('@/i.js')>(),
+	$i: { token: 'test-token', policies: { maxFileSizeMb: 30 } },
+}));
+vi.mock('@/instance.js', async importOriginal => {
+	const original = await importOriginal<typeof import('@/instance.js')>();
+	return { ...original, instance: { ...original.instance, maxFileSize: 262_144_000 } };
+});
 
 import { i18n } from '@/i18n.js';
+import { $i } from '@/i.js';
 import { prefer as mockedPrefer } from '@/preferences.js';
-import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, migrateParticipantVolumes, participantVolume, resumeAudio, selectAudioDevice, setDeafened, setMicEnabled, setParticipantVolume, startScreenShare, stopScreenShare, toggleScreenShareWatch, unwatchScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, migrateParticipantVolumes, participantVolume, resumeAudio, restartMicrophone, selectAudioDevice, setDeafened, setMicEnabled, setParticipantVolume, setRecordingAllowed, startRecording, stopRecording, startScreenShare, stopScreenShare, toggleScreenShareWatch, unwatchScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
 
 const prefer = mockedPrefer as unknown as FakePrefer;
 const room1 = { id: 'r1', name: 'room 1' } as any;
@@ -266,7 +277,7 @@ describe('TURN credential refresh', () => {
 		let joins = 0;
 		mocks.misskeyApi.mockImplementation(async endpoint => endpoint === 'chat/rooms/voice/join'
 			? { ...credentials(joins++ === 0 ? oldIce : freshIce), mediaProvider: joins === 1 ? 'https://provider-one.test' : 'https://provider-two.test' } : {});
-		await joinVoiceCall(room1, { micEnabled: false, approvedMediaProvider: 'https://provider-one.test' }); const room = lastRoom();
+		await joinVoiceCall(room1, { micEnabled: false }); const room = lastRoom();
 		await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
 		expect(joins).toBe(2); expect(room.engine.rtcConfig.iceServers).toEqual(oldIce); expect(room.publisher.setConfiguration).not.toHaveBeenCalled(); expect(room.disconnect).not.toHaveBeenCalled();
 		await vi.advanceTimersByTimeAsync(60 * 60 * 1000); expect(joins).toBe(2);
@@ -477,6 +488,8 @@ describe('voice call controller', () => {
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
 		const b = remoteParticipant('b');
+		watchScreenShare('a');
+		watchScreenShare('b');
 
 		setDeafened(true);
 		await Promise.resolve();
@@ -501,6 +514,7 @@ describe('voice call controller', () => {
 		prefer.commit('voiceCall.participantVolumes', { a: 0.5 });
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
+		watchScreenShare('a');
 		setDeafened(true);
 		await Promise.resolve();
 		expect(voiceCall).toMatchObject({ deafened: true, micEnabled: false });
@@ -600,7 +614,7 @@ describe('voice call controller', () => {
 		await joinVoiceCall(room1);
 		await new Promise(resolve => setTimeout(resolve, 0));
 		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/status', {
-			roomId: 'r1', sessionId: 'PA_local', micMuted: false, deafened: false,
+			roomId: 'r1', sessionId: 'PA_local', micMuted: false, deafened: false, recording: false,
 		});
 		await setMicEnabled(false);
 		setDeafened(true);
@@ -621,7 +635,7 @@ describe('voice call controller', () => {
 		await new Promise(resolve => setTimeout(resolve, 0));
 
 		expect(mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status')).toEqual([
-			['chat/rooms/voice/status', { roomId: 'r1', sessionId: 'PA_local', micMuted: true, deafened: true }],
+			['chat/rooms/voice/status', { roomId: 'r1', sessionId: 'PA_local', micMuted: true, deafened: true, recording: false }],
 		]);
 	});
 
@@ -884,6 +898,8 @@ describe('voice call controller', () => {
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
 		const b = remoteParticipant('b');
+		watchScreenShare('a');
+		watchScreenShare('b');
 
 		setParticipantVolume('a', 'voice', 1.5);
 		expect(prefer.s['voiceCall.participantVolumes']).toMatchObject({ a: 1 });
@@ -905,6 +921,7 @@ describe('voice call controller', () => {
 	test('keeps the voice and the shared screen audio of a participant at separate volumes', async () => {
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
+		watchScreenShare('a');
 
 		setParticipantVolume('a', 'voice', 0.4);
 		expect(a.setVolume).toHaveBeenCalledWith(0.4, lk.Track.Source.Microphone);
@@ -1053,7 +1070,7 @@ describe('screen sharing', () => {
 	test('applies delegated limits when sharing the screen', async () => {
 		const limits = { maxWidth: 1280, maxHeight: 720, maxFrameRate: 10, maxBitrate: 500000 };
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: limits });
-		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1);
 
 		await startScreenShare();
 
@@ -1065,7 +1082,7 @@ describe('screen sharing', () => {
 
 	test('keeps the existing screen share options when a relay has no policy', async () => {
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test' });
-		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1);
 
 		await startScreenShare();
 
@@ -1078,7 +1095,7 @@ describe('screen sharing', () => {
 	test('accepts a relay policy above 1080p60 while retaining the selected preset', async () => {
 		const limits = { maxWidth: 3840, maxHeight: 2160, maxFrameRate: 120, maxBitrate: 16000000 };
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: limits });
-		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1);
 
 		await startScreenShare();
 
@@ -1090,7 +1107,7 @@ describe('screen sharing', () => {
 	test('keeps delegated limits after stopping, reconnecting, and sharing again', async () => {
 		const limits = { maxWidth: 1280, maxHeight: 720, maxFrameRate: 10, maxBitrate: 500000 };
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: limits });
-		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1);
 		const room = lastRoom();
 
 		await startScreenShare();
@@ -1107,7 +1124,7 @@ describe('screen sharing', () => {
 	test('does not publish a capture that fails to meet delegated limits', async () => {
 		const limits = { maxWidth: 1280, maxHeight: 720, maxFrameRate: 10, maxBitrate: 500000 };
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: limits });
-		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1);
 		const participant = lastRoom().localParticipant;
 		participant.screenVideo.mediaStreamTrack.getSettings.mockReturnValue({ width: 1920, height: 1080, frameRate: 30 });
 
@@ -1120,7 +1137,7 @@ describe('screen sharing', () => {
 
 	test('reports screen capture permission denial on the delegated path', async () => {
 		mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://relay.test', screenShareLimits: { maxWidth: 1920, maxHeight: 1080, maxFrameRate: 60, maxBitrate: 8000000 } });
-		await joinVoiceCall(room1, { approvedMediaProvider: 'https://relay.test' });
+		await joinVoiceCall(room1);
 		const participant = lastRoom().localParticipant;
 		participant.createScreenTracks.mockRejectedValueOnce(new DOMException('Permission denied', 'NotAllowedError'));
 
@@ -1669,12 +1686,22 @@ test('initial screen audio is silent, late audio follows watch, and video remova
 	expect(late.setSubscribed).toHaveBeenLastCalledWith(false);
 });
 
- test('declining the delegated media provider prevents any media connection', async () => {
+ test('joins a delegated media provider without asking and records it', async () => {
   mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't', mediaProvider: 'https://delegated.test' });
-  mocks.confirm.mockResolvedValue({ canceled: true });
   await joinVoiceCall(room1);
-  expect(lk.FakeRoom.instances).toHaveLength(0);
-  expect(voiceCall.status).toBe('idle');
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  expect(lk.FakeRoom.instances).toHaveLength(1);
+  expect(voiceCall.status).toBe('connected');
+  expect(voiceCall.mediaProvider).toBe('https://delegated.test');
+ });
+
+ test('joins a room whose media is on this server without asking', async () => {
+  mocks.misskeyApi.mockResolvedValue({ url: 'https://local.test/livekit', token: 't' });
+  await joinVoiceCall(room1);
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  expect(lk.FakeRoom.instances).toHaveLength(1);
+  expect(voiceCall.status).toBe('connected');
+  expect(voiceCall.mediaProvider).toBe('https://local.test');
  });
 
  test.each([
@@ -1682,3 +1709,1591 @@ test('initial screen audio is silent, late audio follows watch, and video remova
  ] as const)('shows a specific delegated failure: %s', async (code, message) => {
   mocks.misskeyApi.mockRejectedValue({ code }); await joinVoiceCall(room1); expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceRelay[message]);
  });
+
+// 이 시험은 실제 통화/녹화 수명 코드를 실행하고 브라우저와 미디어 장치 경계만 대체한다.
+describe('call recording lifecycle', () => {
+	function deferred<T>() {
+		let resolve!: (value: T) => void;
+		let reject!: (err: unknown) => void;
+		const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+		return { promise, resolve, reject };
+	}
+
+	class RecordingStream {
+		constructor(private tracks: { kind: string; enabled: boolean; stop: () => void }[] = []) {}
+		getTracks() { return this.tracks; }
+		getAudioTracks() { return this.tracks.filter(track => track.kind === 'audio'); }
+		getVideoTracks() { return this.tracks.filter(track => track.kind === 'video'); }
+	}
+
+	class RecordingContext {
+		static instances: RecordingContext[] = [];
+		static resume = () => Promise.resolve();
+		state = 'running';
+		close = vi.fn(async () => { this.state = 'closed'; });
+		resume = () => RecordingContext.resume();
+		createMediaStreamDestination = () => ({ stream: new RecordingStream(), channelCount: 2, channelCountMode: 'explicit' });
+		createGain = () => ({ connect: vi.fn(), gain: { value: 1 } });
+		createMediaStreamSource = vi.fn(() => ({ connect: vi.fn(), disconnect: vi.fn() }));
+		constructor() { RecordingContext.instances.push(this); }
+	}
+
+	class Recorder {
+		static instances: Recorder[] = [];
+		static isTypeSupported = () => true;
+		static failStartAt: number | null = null;
+		// 첫 recorder가 시작하자마자 조각 하나를 내보내게 한다 (작은 조각 한도와 함께 여러 파일 시험에 쓴다)
+		static emitOnStart = false;
+		state = 'inactive';
+		mimeType: string;
+		onstop: (() => void) | null = null;
+		ondataavailable: ((event: { data: Blob }) => void) | null = null;
+		constructor(public stream: { getTracks(): unknown[]; getAudioTracks(): unknown[]; getVideoTracks(): unknown[] }, public options: MediaRecorderOptions) {
+			this.mimeType = options?.mimeType ?? 'audio/webm';
+			Recorder.instances.push(this);
+		}
+		start() {
+			if (Recorder.instances.length === Recorder.failStartAt) throw new Error('recorder unavailable');
+			this.state = 'recording';
+			if (Recorder.emitOnStart && Recorder.instances.length === 1) {
+				queueMicrotask(() => this.ondataavailable?.({ data: new Blob(['segment'], { type: this.mimeType }) }));
+			}
+		}
+		requestData() { if (this.state === 'inactive') throw new DOMException('inactive', 'InvalidStateError'); }
+		stop() {
+			if (this.state === 'inactive') throw new DOMException('inactive', 'InvalidStateError');
+			this.state = 'inactive';
+			queueMicrotask(() => {
+				this.ondataavailable?.({ data: new Blob(['last chunk'], { type: this.mimeType }) });
+				this.onstop?.();
+			});
+		}
+	}
+
+	let rawTrack: { kind: string; enabled: boolean; stop: ReturnType<typeof vi.fn<() => void>> };
+	let raw: RecordingStream;
+	let getUserMedia: ReturnType<typeof vi.fn>;
+	// happy-dom은 srcObject에 실제 MediaStream만 받으므로, 스텁 스트림을 쓰도록 원래 정의를 잠시 바꿔 둔다
+	const originalSrcObject = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'srcObject');
+
+	async function flushRecording() {
+		for (let i = 0; i < 40; i++) await Promise.resolve();
+	}
+
+	async function joinRecordingCall(micEnabled = true, name: string = room1.name) {
+		await joinVoiceCall({ ...room1, name, allowRecording: true }, { micEnabled });
+		// 화면 공유가 없는 통화의 실제 publication 분기를 따른다.
+		lastRoom().localParticipant.getTrackPublication.mockImplementation((source?: string) => source === lk.Track.Source.Microphone
+			? { track: lastRoom().localParticipant.microphoneTrack }
+			: undefined as any);
+		await flushRecording();
+	}
+
+	// 조각 한도를 아주 작게 만들어 녹음 중에 파일이 나뉘게 한다
+	function tinySegments() {
+		($i as unknown as { policies: { maxFileSizeMb: number } }).policies.maxFileSizeMb = 2 / (1024 * 1024);
+		Recorder.emitOnStart = true;
+	}
+
+	// happy-dom의 canvas.captureStream은 스텁 MediaStream과 맞지 않으므로, 영상 녹음 시험에서만 직접 스텁한다
+	function stubCanvasCapture() {
+		const videoTrack = (): { kind: string; enabled: boolean; stop: () => void; clone: () => unknown } =>
+			({ kind: 'video', enabled: true, stop: vi.fn<() => void>(), clone: vi.fn(() => videoTrack()) });
+		(HTMLCanvasElement.prototype as unknown as { captureStream: unknown }).captureStream = vi.fn(() => new RecordingStream([videoTrack()]));
+	}
+
+	function publishLocalScreenShare() {
+		const room = lastRoom();
+		room.emit(lk.RoomEvent.LocalTrackPublished, { source: lk.Track.Source.ScreenShare, track: room.localParticipant.screenVideo }, room.localParticipant);
+	}
+
+	const conversionCalls = () => mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/convert-recording');
+	const uploadedFiles = () => vi.mocked(window.fetch).mock.calls
+		.filter(([url]) => String(url).endsWith('/drive/files/create'))
+		.map(([, options]) => (options!.body as FormData).get('file') as File);
+
+	beforeEach(() => {
+		RecordingContext.instances = [];
+		RecordingContext.resume = () => Promise.resolve();
+		Recorder.instances = [];
+		Recorder.failStartAt = null;
+		Recorder.emitOnStart = false;
+		($i as unknown as { policies: { maxFileSizeMb: number } }).policies.maxFileSizeMb = 30;
+		delete (HTMLCanvasElement.prototype as unknown as { captureStream?: unknown }).captureStream;
+		Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', {
+			configurable: true,
+			get(this: { __srcObject?: unknown }) { return this.__srcObject ?? null; },
+			set(this: { __srcObject?: unknown }, value: unknown) { this.__srcObject = value; },
+		});
+		rawTrack = { kind: 'audio', enabled: true, stop: vi.fn() };
+		raw = new RecordingStream([rawTrack]);
+		getUserMedia = vi.fn().mockResolvedValue(raw);
+		vi.stubGlobal('MediaStream', RecordingStream);
+		vi.stubGlobal('MediaRecorder', Recorder);
+		vi.stubGlobal('AudioContext', RecordingContext);
+		Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
+		vi.spyOn(window, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ id: 'recording-file', url: 'https://local.test/files/recording-file' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: { id: 'converted-file', folderId: 'recording-folder' }, download: null };
+			return {};
+		});
+		mocks.actions.mockReset().mockResolvedValue({ canceled: false, result: 'retry' });
+	});
+
+	afterEach(async () => {
+		await leaveVoiceCall();
+		await flushRecording();
+		vi.restoreAllMocks();
+		if (originalSrcObject != null) Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', originalSrcObject);
+		else delete (HTMLMediaElement.prototype as unknown as { srcObject?: unknown }).srcObject;
+	});
+
+	test('exposes a cancelable pending state through server approval and device acquisition', async () => {
+		await joinRecordingCall();
+		const media = deferred<RecordingStream>();
+		getUserMedia.mockReturnValueOnce(media.promise);
+		const starting = startRecording();
+		await flushRecording();
+
+		expect(voiceCall.recordingStarting).toBe(true);
+		stopRecording();
+		expect(voiceCall.recordingStarting).toBe(false);
+		media.resolve(raw);
+		await starting;
+		expect(voiceCall.recordingStarting).toBe(false);
+	});
+
+	test.each(['stop', 'revoke', 'leave', 'switch'] as const)('cancels a pending server approval on %s', async action => {
+		await joinRecordingCall();
+		const approval = deferred<unknown>();
+		mocks.misskeyApi.mockReturnValueOnce(approval.promise);
+		const starting = startRecording();
+
+		if (action === 'stop') stopRecording();
+		if (action === 'revoke') setRecordingAllowed('r1', false);
+		if (action === 'leave') await leaveVoiceCall();
+		if (action === 'switch') await joinVoiceCall({ ...room2, allowRecording: true }, { micEnabled: false });
+		approval.resolve({});
+		await starting;
+
+		expect(voiceCall.recording).toBe(false);
+		expect(getUserMedia).not.toHaveBeenCalled();
+		expect(RecordingContext.instances.every(context => context.state === 'closed')).toBe(true);
+	});
+
+	test.each(['stop', 'revoke', 'leave', 'switch'] as const)('closes a pending AudioContext on %s without reviving the recording', async action => {
+		await joinRecordingCall();
+		const resume = deferred<void>();
+		RecordingContext.resume = () => resume.promise;
+		const starting = startRecording();
+		await flushRecording();
+
+		if (action === 'stop') stopRecording();
+		if (action === 'revoke') setRecordingAllowed('r1', false);
+		if (action === 'leave') await leaveVoiceCall();
+		if (action === 'switch') await joinVoiceCall({ ...room2, allowRecording: true }, { micEnabled: false });
+		resume.resolve();
+		await starting;
+
+		expect(voiceCall.recording).toBe(false);
+		expect(getUserMedia).not.toHaveBeenCalled();
+		expect(RecordingContext.instances.every(context => context.state === 'closed')).toBe(true);
+	});
+
+	test.each(['stop', 'revoke', 'leave', 'switch'] as const)('stops a microphone acquired after %s without reviving the recording', async action => {
+		await joinRecordingCall();
+		const media = deferred<RecordingStream>();
+		getUserMedia.mockReturnValueOnce(media.promise);
+		const starting = startRecording();
+		await flushRecording();
+		expect(getUserMedia).toHaveBeenCalledOnce();
+
+		if (action === 'stop') stopRecording();
+		if (action === 'revoke') setRecordingAllowed('r1', false);
+		if (action === 'leave') await leaveVoiceCall();
+		if (action === 'switch') await joinVoiceCall({ ...room2, allowRecording: true }, { micEnabled: false });
+		await flushRecording();
+		media.resolve(raw);
+		await starting;
+
+		expect(voiceCall.recording).toBe(false);
+		expect(rawTrack.stop).toHaveBeenCalledOnce();
+		expect(RecordingContext.instances.every(context => context.state === 'closed')).toBe(true);
+	});
+
+	test('cancels recording setup as soon as a room switch starts, even if disconnect is pending', async () => {
+		await joinRecordingCall();
+		const resumed = deferred<void>();
+		const disconnected = deferred<void>();
+		RecordingContext.resume = () => resumed.promise;
+		const starting = startRecording();
+		await flushRecording();
+		lastRoom().disconnect.mockImplementationOnce(() => disconnected.promise);
+
+		const switching = joinVoiceCall({ ...room2, allowRecording: true }, { micEnabled: false });
+		await flushRecording();
+		const closedBeforeDisconnect = RecordingContext.instances.every(context => context.state === 'closed');
+		disconnected.resolve();
+		resumed.resolve();
+		await Promise.all([starting, switching]);
+
+		expect(closedBeforeDisconnect).toBe(true);
+		expect(getUserMedia).not.toHaveBeenCalled();
+		expect(voiceCall.room?.id).toBe('r2');
+	});
+
+	test('a second start cannot overtake device acquisition', async () => {
+		await joinRecordingCall();
+		const media = deferred<RecordingStream>();
+		getUserMedia.mockReturnValueOnce(media.promise);
+		const starting = startRecording();
+		await flushRecording();
+
+		await startRecording();
+		media.resolve(raw);
+		await starting;
+
+		expect(getUserMedia).toHaveBeenCalledOnce();
+		expect(voiceCall.recording).toBe(true);
+	});
+
+	test('stop is idempotent while final recorder events are queued and uploads the final chunk', async () => {
+		await joinRecordingCall();
+		await startRecording();
+
+		stopRecording();
+		expect(() => stopRecording()).not.toThrow();
+		await leaveVoiceCall();
+		await flushRecording();
+
+		expect(voiceCall.status).toBe('idle');
+		expect(rawTrack.stop).toHaveBeenCalledOnce();
+		expect(window.fetch).toHaveBeenCalledTimes(1);
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName }));
+	});
+
+	test('a failed stop report retries with the latest settings and no recording ID', async () => {
+		vi.useFakeTimers();
+		try {
+			await joinRecordingCall();
+			await vi.advanceTimersByTimeAsync(0);
+			await startRecording();
+			await flushRecording();
+			expect(voiceCall.recording).toBe(true);
+			mocks.misskeyApi.mockClear();
+
+			// 종료 보고만 전달 전에 일시 오류로 실패한다
+			mocks.misskeyApi.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+			stopRecording();
+			await flushRecording();
+			expect(voiceCall.recording).toBe(false);
+			expect(RecordingContext.instances.every(context => context.state === 'closed')).toBe(true);
+
+			// 재시도 전에 설정을 바꾸면 재시도는 최신 값 (녹음 종료 + 변경된 설정) 하나만 실어 보낸다
+			setDeafened(true);
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(1000);
+
+			const reports = mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status').map(([, status]) => status);
+			expect(reports.length).toBeGreaterThanOrEqual(2);
+			expect(reports.every(status => status.recordingId === undefined)).toBe(true);
+			const last = reports[reports.length - 1];
+			expect(last.recording).toBe(false);
+			expect(last.deafened).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test.each(['deafen', 'forced mute', 'restart', 'failed enable'] as const)('silences the raw recording microphone on %s', async action => {
+		await joinRecordingCall();
+		await startRecording();
+		expect(rawTrack.enabled).toBe(true);
+
+		if (action === 'deafen') setDeafened(true);
+		if (action === 'forced mute') lastRoom().emit(lk.RoomEvent.TrackMuted, { source: lk.Track.Source.Microphone }, lastRoom().localParticipant);
+		if (action === 'restart') {
+			const enable = deferred<void>();
+			lastRoom().localParticipant.setMicrophoneEnabled.mockImplementationOnce(async () => {}).mockImplementationOnce(() => enable.promise);
+			const restarting = restartMicrophone();
+			await flushRecording();
+			expect(rawTrack.enabled).toBe(false);
+			enable.resolve();
+			await restarting;
+			expect(rawTrack.enabled).toBe(true);
+			return;
+		}
+		if (action === 'failed enable') {
+			await setMicEnabled(false);
+			lastRoom().localParticipant.setMicrophoneEnabled.mockRejectedValueOnce(new Error('device unavailable'));
+			await setMicEnabled(true);
+		}
+		await flushRecording();
+
+		expect(voiceCall.micEnabled).toBe(false);
+		expect(rawTrack.enabled).toBe(false);
+	});
+
+	test('replaces the raw input when the call switches microphones', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		const switchedTrack = { kind: 'audio', enabled: true, stop: vi.fn() };
+		getUserMedia.mockResolvedValueOnce(new RecordingStream([switchedTrack]));
+
+		await selectAudioDevice('audioinput', 'second-input');
+
+		expect(rawTrack.stop).toHaveBeenCalledOnce();
+		expect(getUserMedia).toHaveBeenLastCalledWith({ audio: expect.objectContaining({ deviceId: 'second-input' }) });
+		expect(switchedTrack.enabled).toBe(true);
+	});
+
+	test('stops an input acquired after a device switch was canceled by stopping the recording', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		const switchedTrack = { kind: 'audio', enabled: true, stop: vi.fn() };
+		const media = deferred<RecordingStream>();
+		getUserMedia.mockReturnValueOnce(media.promise);
+		const switching = selectAudioDevice('audioinput', 'second-input');
+		await flushRecording();
+
+		stopRecording();
+		media.resolve(new RecordingStream([switchedTrack]));
+		await switching;
+
+		expect(switchedTrack.stop).toHaveBeenCalledOnce();
+		expect(voiceCall.recording).toBe(false);
+	});
+
+	test('does not mix the processed call microphone on top of the raw input when LiveKit republishes it', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		const room = lastRoom();
+		const context = RecordingContext.instances[0];
+		expect(context.createMediaStreamSource).toHaveBeenCalledOnce();
+
+		room.emit(lk.RoomEvent.LocalTrackPublished, { source: lk.Track.Source.Microphone, track: room.localParticipant.microphoneTrack }, room.localParticipant);
+
+		expect(context.createMediaStreamSource).toHaveBeenCalledOnce();
+	});
+
+	test('closes the recording context when the recorder fails to start', async () => {
+		await joinRecordingCall();
+		Recorder.failStartAt = 1;
+
+		await startRecording();
+		await flushRecording();
+
+		expect(voiceCall.recording).toBe(false);
+		expect(RecordingContext.instances.every(context => context.state === 'closed')).toBe(true);
+	});
+
+	test('records the selected microphone instead of reopening the system default', async () => {
+		prefer.commit('voiceCall.inputDeviceId', 'selected-input');
+		await joinRecordingCall();
+
+		await startRecording();
+
+		expect(getUserMedia).toHaveBeenCalledWith({ audio: expect.objectContaining({ deviceId: 'selected-input' }) });
+	});
+
+	test('reports recording for the approval and rolls it back when device setup fails', async () => {
+		await joinRecordingCall();
+		RecordingContext.resume = () => Promise.reject(new Error('audio context failed'));
+
+		await startRecording();
+		await flushRecording();
+
+		const reports = mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/voice/status').map(([, report]) => report);
+		expect(reports.some(report => report.recording === true)).toBe(true);
+		expect(reports.every(report => report.recordingId === undefined)).toBe(true);
+		const last = reports[reports.length - 1];
+		expect(last.recording).toBe(false);
+		expect(voiceCall.recording).toBe(false);
+	});
+
+	test('preserves the failed final chunk and reports success only after its recording-storage upload finishes after leaving', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const retry = deferred<Response>();
+		vi.mocked(window.fetch).mockReset()
+			.mockRejectedValueOnce(new Error('upload unavailable'))
+			.mockReturnValueOnce(retry.promise);
+
+		await leaveVoiceCall();
+		await flushRecording();
+
+		expect(voiceCall.status).toBe('idle');
+		expect(window.fetch).toHaveBeenCalledTimes(2);
+		// 드라이브가 거절한 조각은 임시 보관 업로드로 이어지고, 그 업로드가 끝나기 전에는 성공으로 알리지 않는다
+		expect(String(vi.mocked(window.fetch).mock.calls[1][0])).toContain('/chat/rooms/voice/recording-part');
+		expect(mocks.toast).not.toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved);
+		const firstForm = vi.mocked(window.fetch).mock.calls[0][1]!.body as FormData;
+		const retryForm = vi.mocked(window.fetch).mock.calls[1][1]!.body as FormData;
+		expect(await (retryForm.get('file') as File).text()).toBe(await (firstForm.get('file') as File).text());
+		expect(retryForm.get('roomId')).toBe('r1');
+
+		retry.resolve({ ok: true, json: async () => ({ id: 'temp-part-1', size: 8 }) } as Response);
+		await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName })));
+		expect(conversionCalls()[0][1].fileIds).toEqual(['temp-part-1']);
+	});
+
+	test.each(['OUTPUT_TOO_LARGE', 'NO_FREE_SPACE', 'CONVERSION_FAILED'] as const)('reports %s and retries conversion without uploading the original again', async code => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file', url: 'https://local.test/files/original-file' }) } as Response);
+		let attempts = 0;
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint !== 'chat/rooms/voice/convert-recording') return {};
+			if (++attempts <= 1) throw Object.assign(new Error(code), { code });
+			return { file: { id: 'converted-file', folderId: 'recording-folder' }, download: null };
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		expect(mocks.toast).not.toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved);
+		expect(window.fetch).toHaveBeenCalledTimes(1);
+
+		choice.resolve({ canceled: false, result: 'retry' });
+		await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName })));
+		// 재시도는 업로드 없이 변환만 다시 한다. 임시 조각 정리는 서버가 맡는다
+		expect(window.fetch).toHaveBeenCalledTimes(1);
+		expect(conversionCalls()).toHaveLength(2);
+		expect(conversionCalls()[0][1].fileIds).toEqual(conversionCalls()[1][1].fileIds);
+	});
+
+	test('discarding a failed recording deletes the original already uploaded to the drive', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw Object.assign(new Error('NO_FREE_SPACE'), { code: 'NO_FREE_SPACE' });
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+
+		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'original-file' }));
+	});
+
+	test('canceling the discard confirmation keeps the uploaded original and asks again', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		const secondChoice = deferred<{ canceled: boolean; result: string }>();
+		const confirmation = deferred<{ canceled: boolean }>();
+		mocks.actions.mockReturnValueOnce(choice.promise).mockReturnValueOnce(secondChoice.promise);
+		mocks.confirm.mockReturnValueOnce(confirmation.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw Object.assign(new Error('NO_FREE_SPACE'), { code: 'NO_FREE_SPACE' });
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+		confirmation.resolve({ canceled: true });
+
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('drive/files/delete', expect.anything());
+		secondChoice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(2));
+		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'original-file' }));
+	});
+
+	test('discarding deletes only the originals that reached the drive', async () => {
+		await joinRecordingCall();
+		tinySegments();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockRejectedValueOnce(new Error('upload unavailable'))
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'call-file' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw Object.assign(new Error('NO_FREE_SPACE'), { code: 'NO_FREE_SPACE' });
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+
+		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'call-file' }));
+		expect(mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'drive/files/delete')).toHaveLength(1);
+	});
+
+	test('discarding a failed multi-part recording deletes every uploaded part', async () => {
+		await joinRecordingCall();
+		tinySegments();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'mic-file' }) } as Response)
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'call-file' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint !== 'chat/rooms/voice/convert-recording') return {};
+			throw Object.assign(new Error('NO_FREE_SPACE'), { code: 'NO_FREE_SPACE' });
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+
+		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'call-file' }));
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'mic-file' });
+	});
+
+	test('the discard confirmation tells that uploaded originals will also be deleted', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw Object.assign(new Error('NO_FREE_SPACE'), { code: 'NO_FREE_SPACE' });
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.ts._voiceCall.recordingDiscardConfirmUploaded }));
+	});
+
+	test('the discard confirmation stays unchanged when nothing reached the drive', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset().mockRejectedValue(new Error('upload unavailable'));
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.ts._voiceCall.recordingDiscardConfirm }));
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('drive/files/delete', expect.anything());
+	});
+
+	test('a failed discard delete notifies the user and keeps the original re-discardable', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		const secondChoice = deferred<{ canceled: boolean; result: string }>();
+		const confirmation = deferred<{ canceled: boolean }>();
+		const secondConfirmation = deferred<{ canceled: boolean }>();
+		mocks.actions.mockReturnValueOnce(choice.promise).mockReturnValueOnce(secondChoice.promise);
+		mocks.confirm.mockReturnValueOnce(confirmation.promise).mockReturnValueOnce(secondConfirmation.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file' }) } as Response);
+		let deleteAttempts = 0;
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw Object.assign(new Error('NO_FREE_SPACE'), { code: 'NO_FREE_SPACE' });
+			if (endpoint === 'drive/files/delete' && params.fileId === 'original-file') {
+				deleteAttempts += 1;
+				// 첫 삭제는 서버 도달 전에 실패한다. 두 번째는 성공한다
+				if (deleteAttempts === 1) throw new TypeError('Failed to fetch');
+			}
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+		confirmation.resolve({ canceled: false });
+
+		// 삭제에 실패한 원본은 오류로 알리고, 다시 버릴 수 있게 목록에 남아 있어야 한다
+		await vi.waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardDeleteFailed({ n: 1 }) }));
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
+		secondChoice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(2));
+		secondConfirmation.resolve({ canceled: false });
+
+		await vi.waitFor(() => expect(deleteAttempts).toBe(2));
+		const deletes = mocks.misskeyApi.mock.calls.filter(([endpoint]) => endpoint === 'drive/files/delete');
+		expect(deletes.filter(([, params]) => params.fileId === 'original-file')).toHaveLength(2);
+	});
+
+	test('a failed result lookup during discard keeps the choice dialog and the final file', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		const secondChoice = deferred<{ canceled: boolean; result: string }>();
+		const confirmation = deferred<{ canceled: boolean }>();
+		const secondConfirmation = deferred<{ canceled: boolean }>();
+		mocks.actions.mockReturnValueOnce(choice.promise).mockReturnValueOnce(secondChoice.promise);
+		mocks.confirm.mockReturnValueOnce(confirmation.promise).mockReturnValueOnce(secondConfirmation.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file' }) } as Response);
+		let resultLookups = 0;
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			// 변환은 서버에서 끝났지만 응답이 유실된 상황
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw new TypeError('Failed to fetch');
+			if (endpoint === 'chat/rooms/voice/recording-result') {
+				resultLookups += 1;
+				// 첫 조회는 실패하고, 두 번째 조회에서 드라이브에 남은 최종 파일이 확인된다
+				if (resultLookups === 1) throw new TypeError('Failed to fetch');
+				return { file: { id: 'final-file', url: 'https://local.test/files/final-file', name: 'room 1-20261115-090807.mp3' }, download: null };
+			}
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+		confirmation.resolve({ canceled: false });
+
+		// 조회 실패를 결과 없음으로 보지 않는다: 최종 파일을 지우지 않고, 오류로 알린 뒤 선택창을 유지한다
+		await vi.waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardFailed({ n: 1 }) }));
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('drive/files/delete', { fileId: 'final-file' });
+
+		secondChoice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(2));
+		secondConfirmation.resolve({ canceled: false });
+
+		// 조회가 회복된 뒤에는 실제 최종 파일까지 지우고 끝낸다
+		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'final-file' }));
+	});
+
+	test('uploads parts with force and converts them once, leaving part cleanup to the server', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValue({ ok: true, json: async () => ({ id: 'original-file' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: { id: 'converted-file', folderId: 'recording-folder' }, download: null };
+			return {};
+		});
+
+		await leaveVoiceCall();
+		await vi.waitFor(() => expect(conversionCalls()).toHaveLength(1));
+
+		for (const [, options] of vi.mocked(window.fetch).mock.calls) {
+			expect((options!.body as FormData).get('force')).toBe('true');
+		}
+		expect(conversionCalls()[0][1].fileIds).toEqual(['original-file']);
+		// 임시 조각 삭제는 서버가 변환 성공 뒤에 한다
+		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('drive/files/delete', expect.anything());
+	});
+
+	test.each([
+		[413, 'b9d8c348-33f0-4673-b9a9-5d4da058977a'],
+		[400, 'd08dbc37-a6a9-463a-8c47-96c32ab5f064'],
+	] as const)('rescues a rejected chunk through the recording storage and saves the final file', async (status, id) => {
+		await joinRecordingCall();
+		await startRecording();
+		const rejected = { ok: false, status, json: async () => ({ error: { id } }) } as Response;
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce(rejected)
+			.mockResolvedValue({ ok: true, json: async () => ({ id: 'temp-part-1', size: 8 }) } as Response);
+
+		await leaveVoiceCall();
+		await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName })));
+
+		// 드라이브가 거절한 조각은 녹화 전용 임시 보관으로 올라가 변환에 참여한다
+		expect(window.fetch).toHaveBeenCalledTimes(2);
+		expect(String(vi.mocked(window.fetch).mock.calls[1][0])).toContain('/chat/rooms/voice/recording-part');
+		expect(conversionCalls()[0][1].fileIds).toEqual(['temp-part-1']);
+		expect(mocks.actions).not.toHaveBeenCalled();
+	});
+
+	test('explains a failed save when the rescued recording cannot reach the drive either', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ error: { id: 'd08dbc37-a6a9-463a-8c47-96c32ab5f064' } }) } as Response)
+			.mockResolvedValue({ ok: true, json: async () => ({ id: 'temp-part-1', size: 8 }) } as Response);
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw Object.assign(new Error('NO_FREE_SPACE'), { code: 'NO_FREE_SPACE' });
+			return {};
+		});
+
+		await leaveVoiceCall();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+
+		expect(mocks.actions).toHaveBeenCalledWith(expect.objectContaining({ caption: i18n.ts.cannotUploadBecauseNoFreeSpace }));
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/recording-discard', { partIds: ['temp-part-1'] }));
+	});
+
+	test('a permanent status refusal closes a pending AudioContext before any recorder exists', async () => {
+		await joinRecordingCall();
+		const resumed = deferred<void>();
+		RecordingContext.resume = () => resumed.promise;
+		const starting = startRecording();
+		await flushRecording();
+		mocks.misskeyApi.mockRejectedValueOnce({ code: 'ACCESS_DENIED' });
+
+		await setMicEnabled(false);
+		await flushRecording();
+
+		expect(RecordingContext.instances.every(context => context.state === 'closed')).toBe(true);
+		expect(voiceCall.recordingStarting).toBe(false);
+		resumed.resolve();
+		await starting;
+		expect(getUserMedia).not.toHaveBeenCalled();
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingRejected);
+	});
+
+	test('a server recording refusal stops capture and keeps the final uploads', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		mocks.misskeyApi.mockRejectedValueOnce({ code: 'ACCESS_DENIED' });
+
+		await setMicEnabled(false);
+		await flushRecording();
+
+		expect(voiceCall.recording).toBe(false);
+		expect(rawTrack.stop).toHaveBeenCalledOnce();
+		expect(window.fetch).toHaveBeenCalledTimes(1);
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingRejected);
+	});
+
+	test('a transient approval failure retries through the status delivery and starts without a rejection toast', async () => {
+		await joinRecordingCall();
+		vi.useFakeTimers();
+		try {
+			mocks.misskeyApi.mockRejectedValueOnce({ code: 'INTERNAL_ERROR' });
+			const starting = startRecording();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(voiceCall.recordingStarting).toBe(true);
+			expect(mocks.toast).not.toHaveBeenCalledWith(i18n.ts._voiceCall.recordingStartRejected);
+			await vi.advanceTimersByTimeAsync(1000);
+			await vi.waitFor(() => expect(voiceCall.recording).toBe(true));
+			await starting;
+			const approvals = mocks.misskeyApi.mock.calls.filter(([endpoint, body]) => endpoint === 'chat/rooms/voice/status' && (body as any)?.recording === true);
+			expect(approvals.length).toBeGreaterThanOrEqual(2);
+			expect(approvals.every(([, body]) => (body as any).recordingId === undefined)).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('a permanent refusal while waiting for approval stops the start with the start rejection toast', async () => {
+		await joinRecordingCall();
+		const approval = deferred<unknown>();
+		mocks.misskeyApi.mockReturnValueOnce(approval.promise);
+		const starting = startRecording();
+		await flushRecording();
+		expect(voiceCall.recordingStarting).toBe(true);
+
+		approval.reject(Object.assign(new Error('ACCESS_DENIED'), { code: 'ACCESS_DENIED' }));
+		await starting;
+		await flushRecording();
+
+		expect(voiceCall.recording).toBe(false);
+		expect(voiceCall.recordingStarting).toBe(false);
+		expect(getUserMedia).not.toHaveBeenCalled();
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingStartRejected);
+		expect(mocks.toast).not.toHaveBeenCalledWith(i18n.ts._voiceCall.recordingRejected);
+	});
+
+	test('canceling a pending approval does not toast a rejection', async () => {
+		await joinRecordingCall();
+		const approval = deferred<unknown>();
+		mocks.misskeyApi.mockReturnValueOnce(approval.promise);
+		const starting = startRecording();
+		await flushRecording();
+
+		stopRecording();
+		approval.resolve({});
+		await starting;
+		await flushRecording();
+
+		expect(voiceCall.recording).toBe(false);
+		expect(mocks.toast).not.toHaveBeenCalledWith(i18n.ts._voiceCall.recordingStartRejected);
+		expect(mocks.toast).not.toHaveBeenCalledWith(i18n.ts._voiceCall.recordingRejected);
+	});
+
+	test('records the whole call as one file named after the room and the start time', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		expect(Recorder.instances).toHaveLength(1);
+
+		stopRecording();
+		await flushRecording();
+
+		const files = uploadedFiles();
+		expect(files).toHaveLength(1);
+		expect(files[0].name).toMatch(/^room 1-\d{8}-\d{6}\.webm$/);
+		const form = vi.mocked(window.fetch).mock.calls[0][1]!.body as FormData;
+		expect(form.get('folderId')).toBe('recording-folder');
+		expect(form.get('force')).toBe('true');
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileIds: ['recording-file'], requestId: expect.any(String), video: false, folderId: 'recording-folder' });
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName }));
+	});
+
+	test('names the file with the recording start time', async () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date(2026, 10, 15, 9, 8, 7));
+			await joinRecordingCall();
+			await startRecording();
+			stopRecording();
+			await flushRecording();
+
+			expect(uploadedFiles()[0].name).toBe('room 1-20261115-090807.webm');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('holds the original without converting while the call has no video', async () => {
+		await joinRecordingCall();
+		tinySegments();
+		await startRecording();
+		await flushRecording();
+
+		// 녹음 중에는 조각을 올려 두기만 하고 변환하지 않는다
+		expect(uploadedFiles()).toHaveLength(1);
+		expect(conversionCalls()).toHaveLength(0);
+
+		stopRecording();
+		await flushRecording();
+
+		// 녹화가 끝나면 모든 조각을 한 번에 변환한다
+		expect(conversionCalls()).toHaveLength(1);
+		expect(conversionCalls().every(([, params]) => params.video === false)).toBe(true);
+	});
+
+	test('keeps drawing the recording canvas while no screen is shared so the recorder keeps emitting parts', async () => {
+		vi.useFakeTimers();
+		try {
+			stubCanvasCapture();
+			const fillRect = vi.fn();
+			vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ fillRect, drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+			await joinRecordingCall();
+			await startRecording();
+			const drawn = fillRect.mock.calls.length;
+
+			await vi.advanceTimersByTimeAsync(3000);
+			expect(fillRect.mock.calls.length).toBeGreaterThanOrEqual(drawn + 3);
+
+			stopRecording();
+			await flushRecording();
+			const stopped = fillRect.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(3000);
+			expect(fillRect.mock.calls.length).toBe(stopped);
+			expect(conversionCalls()[0][1]).toMatchObject({ video: false });
+			expect(Recorder.instances[0].stream.getVideoTracks()).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('converts the whole recording as video when a screen share appears mid-recording', async () => {
+		stubCanvasCapture();
+		await joinRecordingCall();
+		tinySegments();
+		await startRecording();
+		await flushRecording();
+		expect(conversionCalls()).toHaveLength(0);
+
+		publishLocalScreenShare();
+		await flushRecording();
+
+		// 녹음 중에는 변환하지 않고, 영상 여부만 기록한다
+		expect(conversionCalls()).toHaveLength(0);
+
+		stopRecording();
+		await flushRecording();
+
+		expect(conversionCalls()).toHaveLength(1);
+		expect(conversionCalls()[0][1]).toMatchObject({ video: true });
+	});
+
+	test('records video from the start when a share is already running', async () => {
+		stubCanvasCapture();
+		await joinRecordingCall();
+		publishLocalScreenShare();
+
+		await startRecording();
+		await flushRecording();
+
+		expect(Recorder.instances).toHaveLength(1);
+		expect(Recorder.instances[0].stream.getVideoTracks()).toHaveLength(1);
+		expect(Recorder.instances[0].options.videoBitsPerSecond).toBe(2_500_000);
+
+		stopRecording();
+		await flushRecording();
+
+		expect(conversionCalls()).toHaveLength(1);
+		expect(conversionCalls()[0][1]).toMatchObject({ video: true });
+	});
+
+	test('falls back to an audio-only recorder when the canvas cannot be captured', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		publishLocalScreenShare();
+		await flushRecording();
+
+		expect(Recorder.instances).toHaveLength(1);
+		expect(Recorder.instances[0].stream.getVideoTracks()).toHaveLength(0);
+		expect(Recorder.instances[0].options.mimeType).toBe('audio/webm;codecs=opus');
+
+		stopRecording();
+		await flushRecording();
+
+		// 캔버스가 없으면 화면이 나타나도 음성만으로 저장한다
+		expect(conversionCalls()).toHaveLength(1);
+		expect(conversionCalls()[0][1]).toMatchObject({ video: false });
+	});
+
+	test('creates the recordings folder when it does not exist', async () => {
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'new-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: { id: 'converted-file', folderId: 'new-folder' }, download: null };
+			return {};
+		});
+		await joinRecordingCall();
+		await startRecording();
+		stopRecording();
+		await flushRecording();
+
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/recording-folder', { name: i18n.ts._voiceCall.recordingFolderName });
+		const form = vi.mocked(window.fetch).mock.calls[0][1]!.body as FormData;
+		expect(form.get('folderId')).toBe('new-folder');
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileIds: ['recording-file'], requestId: expect.any(String), video: false, folderId: 'new-folder' });
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName }));
+	});
+
+	test('records into the drive root when the folder cannot be prepared', async () => {
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
+			if (endpoint === 'chat/rooms/voice/recording-folder') throw new Error('drive unavailable');
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: { id: 'converted-file', folderId: null }, download: null };
+			return {};
+		});
+		await joinRecordingCall();
+		await startRecording();
+		stopRecording();
+		await flushRecording();
+
+		const form = vi.mocked(window.fetch).mock.calls[0][1]!.body as FormData;
+		expect(form.get('folderId')).toBeNull();
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/convert-recording', { fileIds: ['recording-file'], requestId: expect.any(String), video: false, folderId: null });
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved);
+	});
+
+	test('names a two-person group recording after the room', async () => {
+		await joinRecordingCall();
+		remoteParticipant('https://remote.test/users/bob');
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/states') {
+				return [{
+					roomId: 'r1',
+					participants: [
+						{ identity: 'https://local.test/users/me', user: { name: 'Me', username: 'me' } },
+						{ identity: 'https://remote.test/users/bob', user: { name: 'Bob :wave:', username: 'bob' } },
+					],
+				}];
+			}
+			return {};
+		});
+
+		await startRecording();
+		stopRecording();
+		await flushRecording();
+
+		expect(uploadedFiles()[0].name).toMatch(/^room 1-\d{8}-\d{6}\.webm$/);
+	});
+
+	test('names a recording without a room name after the other participant', async () => {
+		await joinRecordingCall(true, '');
+		remoteParticipant('https://remote.test/users/bob');
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/states') {
+				return [{
+					roomId: 'r1',
+					participants: [
+						{ identity: 'https://local.test/users/me', user: { name: 'Me', username: 'me' } },
+						{ identity: 'https://remote.test/users/bob', user: { name: 'Bob :wave:', username: 'bob' } },
+					],
+				}];
+			}
+			return {};
+		});
+
+		await startRecording();
+		stopRecording();
+		await flushRecording();
+
+		expect(uploadedFiles()[0].name).toMatch(/^Bob-\d{8}-\d{6}\.webm$/);
+	});
+
+	test('falls back to a generic name when there is no room name and the participant list is unavailable', async () => {
+		await joinRecordingCall(true, '');
+		remoteParticipant('https://remote.test/users/bob');
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/join') return { url: 'https://local.test/livekit', token: 't' };
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/states') throw new Error('states unavailable');
+			return {};
+		});
+
+		await startRecording();
+		stopRecording();
+		await flushRecording();
+
+		expect(uploadedFiles()[0].name).toMatch(/^voice-\d{8}-\d{6}\.webm$/);
+	});
+
+	test('sanitizes the room name for the drive', async () => {
+		await joinVoiceCall({ ...room1, name: 'weekend / plan: *?"<>|..\\', allowRecording: true }, { micEnabled: true });
+		lastRoom().localParticipant.getTrackPublication.mockImplementation((source?: string) => source === lk.Track.Source.Microphone
+			? { track: lastRoom().localParticipant.microphoneTrack }
+			: undefined as any);
+		await flushRecording();
+
+		await startRecording();
+		stopRecording();
+		await flushRecording();
+
+		expect(uploadedFiles()[0].name).toMatch(/^weekend plan-\d{8}-\d{6}\.webm$/);
+	});
+
+	test('keeps the file name within the drive limit for a long room name', async () => {
+		await joinVoiceCall({ ...room1, name: 'x'.repeat(300), allowRecording: true }, { micEnabled: true });
+		lastRoom().localParticipant.getTrackPublication.mockImplementation((source?: string) => source === lk.Track.Source.Microphone
+			? { track: lastRoom().localParticipant.microphoneTrack }
+			: undefined as any);
+		await flushRecording();
+		tinySegments();
+
+		await startRecording();
+		stopRecording();
+		await flushRecording();
+
+		const files = uploadedFiles();
+		expect(files.length).toBeGreaterThanOrEqual(2);
+		expect(files[0].name.startsWith('x'.repeat(175))).toBe(true);
+		for (const file of files) expect(file.name.length).toBeLessThanOrEqual(200);
+	});
+
+	test('converts segments in recording order', async () => {
+		await joinRecordingCall();
+		tinySegments();
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'first-file' }) } as Response)
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'second-file' }) } as Response);
+		await startRecording();
+		await flushRecording();
+		stopRecording();
+		await flushRecording();
+
+		expect(conversionCalls()).toHaveLength(1);
+		expect(conversionCalls()[0][1].fileIds).toEqual(['first-file', 'second-file']);
+	});
+
+	test('does not report success when the server produced no final file', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/convert-recording') return null;
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+
+		// 최종 파일이 없으면 저장 성공으로 알리지 않는다
+		expect(mocks.toast).not.toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName }));
+		expect(mocks.toast).not.toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved);
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+	});
+
+	test('saves to the drive root when the recordings folder disappeared and cannot be recreated', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		let attempts = 0;
+		let folderGone = false;
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') {
+				return folderGone ? null : { id: 'recording-folder', name: params.name };
+			}
+			if (endpoint === 'chat/rooms/voice/convert-recording') {
+				attempts += 1;
+				if (attempts === 1) { folderGone = true; throw Object.assign(new Error('NO_SUCH_FOLDER'), { code: 'NO_SUCH_FOLDER' }); }
+				return { file: { id: 'converted-file', folderId: null }, download: null };
+			}
+			return {};
+		});
+
+		stopRecording();
+		await flushRecording();
+
+		expect(conversionCalls()).toHaveLength(2);
+		expect(conversionCalls()[0][1]).toMatchObject({ folderId: 'recording-folder' });
+		expect(conversionCalls()[1][1]).toMatchObject({ folderId: null });
+		// 안내는 실제 저장 위치(루트)를 기준으로 한다
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingSaved);
+	});
+
+	test('device save converts again and downloads the final file when the first conversion failed', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file', url: 'https://local.test/files/original-file' }) } as Response)
+			.mockResolvedValueOnce({ ok: true, blob: async () => new Blob(['final'], { type: 'audio/mpeg' }) } as Response);
+		let attempts = 0;
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			if (endpoint === 'chat/rooms/voice/convert-recording') {
+				attempts += 1;
+				if (attempts === 1) throw Object.assign(new Error('CONVERSION_FAILED'), { code: 'CONVERSION_FAILED' });
+				return { file: { id: 'converted-file', url: 'https://local.test/files/converted-file', name: 'room 1-20261116-120000.mp3', folderId: 'recording-folder' }, download: null };
+			}
+			return {};
+		});
+		const createObjectURL = vi.fn(() => 'blob:mock');
+		const revokeObjectURL = vi.fn();
+		Object.defineProperty(URL, 'createObjectURL', { configurable: true, writable: true, value: createObjectURL });
+		Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, writable: true, value: revokeObjectURL });
+		const downloads: { href: string; download: string }[] = [];
+		vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+			downloads.push({ href: this.href, download: this.download });
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'download' });
+		await vi.waitFor(() => expect(downloads).toHaveLength(1));
+
+		// 기기 저장은 원본 조각이 아니라 서버가 만든 최종 파일 한 개를 받는다
+		expect(window.fetch).toHaveBeenCalledWith('https://local.test/files/converted-file', expect.objectContaining({ credentials: 'omit' }));
+		expect(downloads[0].download).toBe('room 1-20261116-120000.mp3');
+		expect(createObjectURL).toHaveBeenCalledOnce();
+		expect(conversionCalls()).toHaveLength(2);
+	});
+
+	test('re-offers the choice when the device download fails', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		const secondChoice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise).mockReturnValueOnce(secondChoice.promise);
+		mocks.confirm.mockResolvedValue({ canceled: false });
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file', url: 'https://local.test/files/original-file' }) } as Response)
+			.mockResolvedValueOnce({ ok: false, status: 500 } as Response);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw Object.assign(new Error('CONVERSION_FAILED'), { code: 'CONVERSION_FAILED' });
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'download' });
+
+		await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingDownloadFailed));
+		// 다운로드에 실패했으므로 선택창을 다시 제공한다
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
+		secondChoice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'original-file' }));
+	});
+
+	test('recording keeps an unwatched share subscribed but silent, and plays it while watched', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		const a = remoteParticipant('a');
+		const publication = { source: lk.Track.Source.ScreenShareAudio, kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() };
+		lastRoom().emit(lk.RoomEvent.TrackPublished, publication, a);
+		// 녹화는 시청 여부와 무관하게 공유 소리를 구독한다
+		expect(publication.setSubscribed).toHaveBeenCalledWith(true);
+
+		const element = document.createElement('audio');
+		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: { kind: 'audio' }, attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, publication, a);
+		// 시청하지 않는 공유 소리는 스피커로 재생하지 않는다
+		expect(a.setVolume).toHaveBeenLastCalledWith(0, lk.Track.Source.ScreenShareAudio);
+		// 녹화 입력은 재생 음량과 무관하게 연결된다
+		expect(RecordingContext.instances.at(-1)!.createMediaStreamSource).toHaveBeenCalled();
+
+		watchScreenShare('a');
+		expect(a.setVolume).toHaveBeenLastCalledWith(1, lk.Track.Source.ScreenShareAudio);
+		unwatchScreenShare('a');
+		expect(a.setVolume).toHaveBeenLastCalledWith(0, lk.Track.Source.ScreenShareAudio);
+
+		stopRecording();
+		await flushRecording();
+	});
+
+	test('retries a conversion with the same request id so a lost response can be recovered', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		let attempts = 0;
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			if (endpoint !== 'chat/rooms/voice/convert-recording') return {};
+			if (++attempts <= 1) throw new TypeError('Failed to fetch');
+			return { file: { id: 'converted-file', folderId: 'recording-folder' }, download: null };
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'retry' });
+		await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName })));
+
+		expect(conversionCalls()).toHaveLength(2);
+		const [first, second] = conversionCalls().map(([, params]) => params.requestId);
+		expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+		expect(second).toBe(first);
+	});
+
+	test('device save after a lost response downloads the remembered final file, not the deleted parts', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file', url: 'https://local.test/files/original-file' }) } as Response)
+			.mockResolvedValueOnce({ ok: true, blob: async () => new Blob(['final'], { type: 'audio/mpeg' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw new TypeError('Failed to fetch');
+			if (endpoint === 'chat/rooms/voice/recording-result') return { file: { id: 'final-file', url: 'https://local.test/files/final-file', name: 'room 1-20261115-090807.mp3' }, download: null };
+			return {};
+		});
+		const downloads: { href: string; download: string }[] = [];
+		vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+			downloads.push({ href: this.href, download: this.download });
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'download' });
+		await vi.waitFor(() => expect(downloads).toHaveLength(1));
+
+		expect(window.fetch).toHaveBeenCalledWith('https://local.test/files/final-file', expect.objectContaining({ credentials: 'omit' }));
+		expect(downloads[0].download).toBe('room 1-20261115-090807.mp3');
+	});
+
+	test('an over-limit recording is saved to the device as one kept file', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file', url: 'https://local.test/files/original-file' }) } as Response)
+			.mockResolvedValueOnce({ ok: true, blob: async () => new Blob(['kept'], { type: 'video/mp4' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: null, download: { id: 'dl-1', name: 'room 1-20261115-090807.mp4', size: 123, reason: 'tooLarge' } };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			return {};
+		});
+		const downloads: { href: string; download: string }[] = [];
+		vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+			downloads.push({ href: this.href, download: this.download });
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		// 서버가 원본 조각을 지우고 최종 파일만 보관하므로 드라이브 저장 실패로 알리고 크기 안내를 붙인다
+		expect(mocks.actions).toHaveBeenCalledWith(expect.objectContaining({
+			text: i18n.tsx._voiceCall.recordingSaveFailed({ n: 1 }),
+			caption: i18n.ts.cannotUploadBecauseExceedsFileSizeLimit,
+		}));
+		choice.resolve({ canceled: false, result: 'download' });
+		await vi.waitFor(() => expect(downloads).toHaveLength(1));
+
+		// 조각이 아니라 서버가 보관한 최종 파일 한 개를 본인 인증으로 받는다
+		expect(window.fetch).toHaveBeenCalledWith(expect.stringContaining('/recording-download/dl-1'), expect.objectContaining({ headers: { Authorization: 'Bearer test-token' } }));
+		expect(downloads[0].download).toBe('room 1-20261115-090807.mp4');
+	});
+
+	test('discarding an over-limit recording discards the kept file', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: null, download: { id: 'dl-1', name: 'room 1-20261115-090807.mp4', size: 123, reason: 'tooLarge' } };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+
+		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/recording-discard', { id: 'dl-1' }));
+		expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.ts._voiceCall.recordingDiscardConfirm });
+	});
+
+	test('a failed discard of a kept recording does not say the original remains in the drive', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		const secondChoice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise).mockReturnValueOnce(secondChoice.promise);
+		let discards = 0;
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: null, download: { id: 'dl-1', name: 'room 1-20261115-090807.mp4', size: 123, reason: 'tooLarge' } };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			if (endpoint === 'chat/rooms/voice/recording-discard') {
+				discards += 1;
+				if (discards === 1) throw new TypeError('Failed to fetch');
+			}
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardFailed({ n: 1 }) }));
+		expect(mocks.alert).not.toHaveBeenCalledWith({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardDeleteFailed({ n: 1 }) });
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
+		secondChoice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(discards).toBe(2));
+	});
+
+	test('a conversion that ends without a server response does not say where the original is', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mocks.actions.mockReturnValueOnce(deferred<{ canceled: boolean; result: string }>().promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw new TypeError('Failed to fetch');
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		expect(mocks.actions).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.recordingSaveFailed({ n: 1 }), caption: i18n.ts.cannotUploadBecauseNetworkError }));
+	});
+
+	test('saving to the device remembers the kept recording found by the lookup', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		const secondChoice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise).mockReturnValueOnce(secondChoice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file' }) } as Response)
+			.mockRejectedValue(new Error('download unavailable'));
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw new TypeError('Failed to fetch');
+			if (endpoint === 'chat/rooms/voice/recording-result') return { file: null, download: { id: 'dl-1', name: 'room 1-20261115-090807.mp4', size: 123, reason: 'tooLarge' } };
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'download' });
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
+		expect(mocks.actions).toHaveBeenLastCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.recordingSaveFailed({ n: 1 }) }));
+	});
+
+	test('uploads parts that failed to reach the drive to the recording storage and converts them into one file', async () => {
+		await joinRecordingCall();
+		tinySegments();
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'first-file' }) } as Response)
+			.mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ error: { id: 'd08dbc37-a6a9-463a-8c47-96c32ab5f064' } }) } as Response)
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'temp-part-1', size: 8 }) } as Response);
+		await startRecording();
+		await flushRecording();
+		stopRecording();
+		await flushRecording();
+
+		const tempUploads = vi.mocked(window.fetch).mock.calls.filter(([u]) => String(u).endsWith('/chat/rooms/voice/recording-part'));
+		expect(tempUploads).toHaveLength(1);
+		// 임시 보관 업로드는 녹화 대상 방을 함께 보내 서버가 방 참가·채팅 이용 가능을 확인하게 한다
+		expect((tempUploads[0][1]!.body as FormData).get('roomId')).toBe('r1');
+		expect(conversionCalls()).toHaveLength(1);
+		expect(conversionCalls()[0][1].fileIds).toEqual(['first-file', 'temp-part-1']);
+		expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName }));
+	});
+
+	test('device save of a partially uploaded recording downloads one kept final file', async () => {
+		await joinRecordingCall();
+		tinySegments();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'first-file', url: 'https://local.test/files/first-file' }) } as Response)
+			.mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ error: { id: 'd08dbc37-a6a9-463a-8c47-96c32ab5f064' } }) } as Response)
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'temp-part-1', size: 8 }) } as Response)
+			.mockResolvedValueOnce({ ok: true, blob: async () => new Blob(['final'], { type: 'audio/mpeg' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: null, download: { id: 'dl-1', name: 'room 1-20261116-120000.mp3', size: 123, reason: 'noFreeSpace' } };
+			return {};
+		});
+		const downloads: { href: string; download: string }[] = [];
+		vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+			downloads.push({ href: this.href, download: this.download });
+		});
+		await startRecording();
+		await flushRecording();
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'download' });
+		await vi.waitFor(() => expect(downloads).toHaveLength(1));
+
+		expect(conversionCalls()[0][1].fileIds).toEqual(['first-file', 'temp-part-1']);
+		expect(window.fetch).toHaveBeenCalledWith(expect.stringContaining('/recording-download/dl-1'), expect.objectContaining({ headers: { Authorization: 'Bearer test-token' } }));
+		expect(downloads[0].download).toBe('room 1-20261116-120000.mp3');
+	});
+
+	test('device save does not hand out multiple originals when no final file can be prepared', async () => {
+		await joinRecordingCall();
+		tinySegments();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		const secondChoice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise).mockReturnValueOnce(secondChoice.promise);
+		mocks.confirm.mockResolvedValue({ canceled: false });
+		vi.mocked(window.fetch).mockReset().mockRejectedValue(new Error('upload unavailable'));
+		const downloads: { href: string; download: string }[] = [];
+		vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+			downloads.push({ href: this.href, download: this.download });
+		});
+		await startRecording();
+		await flushRecording();
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'download' });
+
+		await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(i18n.ts._voiceCall.recordingDownloadFailed));
+		expect(downloads).toHaveLength(0);
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
+		secondChoice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+	});
+
+	test('retry moves parts that still cannot reach the drive into the recording storage and converts', async () => {
+		await joinRecordingCall();
+		tinySegments();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'first-file' }) } as Response)
+			.mockRejectedValueOnce(new Error('network'))
+			.mockRejectedValueOnce(new Error('network'))
+			.mockRejectedValueOnce(new Error('network'))
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'temp-part-1', size: 8 }) } as Response);
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: { id: 'converted-file', folderId: 'recording-folder' }, download: null };
+			return {};
+		});
+		await startRecording();
+		await flushRecording();
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'retry' });
+		await vi.waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(i18n.tsx._voiceCall.recordingSavedToFolder({ folder: i18n.ts._voiceCall.recordingFolderName })));
+
+		expect(conversionCalls()).toHaveLength(1);
+		expect(conversionCalls()[0][1].fileIds).toEqual(['first-file', 'temp-part-1']);
+	});
+
+	test('discarding a rescued recording deletes the temporary parts', async () => {
+		await joinRecordingCall();
+		tinySegments();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'first-file' }) } as Response)
+			.mockRejectedValueOnce(new Error('network'))
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'temp-part-1', size: 8 }) } as Response);
+		mocks.misskeyApi.mockImplementation(async (endpoint, params) => {
+			if (endpoint === 'chat/rooms/voice/recording-folder') return { id: 'recording-folder', name: params.name };
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw Object.assign(new Error('BUSY'), { code: 'BUSY' });
+			return {};
+		});
+		await startRecording();
+		await flushRecording();
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+
+		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/recording-discard', { partIds: ['temp-part-1'] }));
+		expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'first-file' });
+	});
+});

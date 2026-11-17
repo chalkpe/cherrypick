@@ -12,7 +12,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<div :class="$style.body">
 		<div :class="$style.avatarFrame"><MkAvatar :user="participant.user" :link="false" :preview="false" :class="$style.avatar"/></div>
 		<div :class="$style.who">
-			<div v-if="participant.micMuted || participant.deafened" :class="$style.status">
+			<div v-if="participant.recording || participant.micMuted || participant.deafened" :class="$style.status">
+				<i v-if="participant.recording" v-tooltip="i18n.ts._voiceCall.recording" class="ti ti-player-record" role="img" :aria-label="i18n.ts._voiceCall.recording" :class="$style.recordingIcon"></i>
 				<i v-if="participant.micMuted && !participant.deafened" v-tooltip="i18n.ts._voiceCall.micMuted" class="ti ti-microphone-off" role="img" :aria-label="i18n.ts._voiceCall.micMuted"></i>
 				<i v-if="participant.deafened" v-tooltip="i18n.ts._voiceCall.deafened" class="ti ti-headphones-off" role="img" :aria-label="i18n.ts._voiceCall.deafened"></i>
 			</div>
@@ -132,6 +133,10 @@ const emit = defineEmits<{
 	flex: 0 0 auto;
 	color: color-mix(in srgb, var(--MI_THEME-fg) 72%, var(--MI_THEME-panel));
 	font-size: 12px;
+}
+
+.recordingIcon {
+	color: var(--MI_THEME-error);
 }
 
 .name {

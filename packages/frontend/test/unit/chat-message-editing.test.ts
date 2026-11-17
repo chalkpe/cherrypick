@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: mocks.api }));
 vi.mock('@/utility/drive.js', () => ({ selectFile: mocks.selectFile }));
-vi.mock('@/os.js', () => ({ launchUploader: mocks.upload, popupMenu: mocks.popupMenu, contextMenu: mocks.contextMenu, confirm: mocks.confirm, alert: vi.fn() }));
+vi.mock('@/os.js', () => ({ launchUploader: mocks.upload, popupMenu: mocks.popupMenu, contextMenu: mocks.contextMenu, confirm: mocks.confirm, alert: vi.fn(), popup: vi.fn(() => ({ dispose: vi.fn() })) }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: mocks.me, ensureSignin: () => mocks.me }));
 vi.mock('@/utility/emoji-picker.js', () => ({ emojiPicker: { show: vi.fn() } }));
 vi.mock('@/utility/reaction-picker.js', () => ({ reactionPicker: { show: mocks.reactionPicker } }));
@@ -33,6 +33,7 @@ import XMessage from '@/pages/chat/XMessage.vue';
 import { i18n } from '@/i18n.js';
 import * as os from '@/os.js';
 import { DI } from '@/di.js';
+import { preferState } from '../setup.unit.js';
 
 const driveFile = {
 	id: 'draft-file', createdAt: '2026-11-01T00:00:00.000Z', name: 'draft.png', type: 'image/png',
@@ -109,6 +110,44 @@ beforeEach(() => {
 	mocks.upload.mockResolvedValue([driveFile]);
 });
 afterEach(cleanup);
+
+test('sends channel messages and preserves selected references during editing', async () => {
+	const channelMessage = { ...message, text: '😀 #same', channelRefs: [{ channelId: 'same2', start: 3, length: 5 }] };
+	const form = render(XForm, {
+		props: { room: { ...room, hasChannels: true }, channelId: 'same1', editingMessage: channelMessage },
+		global: { stubs },
+	});
+	await fireEvent.update(screen.getByRole('textbox'), 'hello 😀 #same');
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.save }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/messages/update', {
+		messageId: 'm1', text: 'hello 😀 #same', channelRefs: [{ channelId: 'same2', start: 9, length: 5 }],
+	}));
+	form.unmount();
+
+	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'same2' }, global: { stubs } });
+	await fireEvent.update(screen.getByRole('textbox'), '/dice 1d6');
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.send }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/messages/create-to-room', {
+		toRoomId: 'room1', toRoomChannelId: 'same2', text: '/dice 1d6', fileIds: undefined, channelRefs: [],
+	}));
+});
+
+test('connects only the channel selected from the mention-style candidate list', async () => {
+	const channels = [{ id: 'same1', roomId: room.id, name: 'same', isLegacy: true, sectionId: null }, { id: 'same2', roomId: room.id, name: 'same', isLegacy: false, sectionId: null }];
+	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'same1', channels }, global: { stubs } });
+	const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+	await fireEvent.update(textarea, '😀 #sa');
+	textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+	await fireEvent.input(textarea);
+	const popup = vi.mocked(os.popup).mock.lastCall!;
+	expect(popup[1]).toMatchObject({ type: 'chatChannel' });
+	(popup[2] as unknown as { done: (result: unknown) => void }).done({ type: 'chatChannel', value: channels[1] });
+	await nextTick();
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.send }));
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/messages/create-to-room', {
+		toRoomId: 'room1', toRoomChannelId: 'same1', text: '😀 #same ', fileIds: undefined, channelRefs: [{ channelId: 'same2', start: 3, length: 5 }],
+	}));
+});
 
 const dice = { version: 1, engine: '@dice-roller/rpg-dice-roller', engineVersion: '5.5.1', notation: '1d6', total: 4, output: '1d6: [4] = 4 <b>$(spin)</b>' } satisfies NonNullable<Misskey.entities.ChatMessage['dice']>;
 
@@ -1267,6 +1306,165 @@ describe('letters still in composition', () => {
 	});
 });
 
+// 送信のキーが改行も入れると、入力欄が「送った文字 + 改行」になって送ったあとも残り、次のメッセージに付いて送られる。
+// jsdom はキーの既定の動作 (改行の挿入) を行わない。ここで確かめるのは既定の動作を止めたかどうかで、
+// ブラウザが実際に改行を入れないことは実際のブラウザで確かめる
+describe('the key that sends does not also break the line', () => {
+	// 止められなかった Enter はブラウザが改行にする。その動きをまねる
+	async function pressEnter(textarea: HTMLTextAreaElement, init: KeyboardEventInit = {}) {
+		const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init });
+		textarea.dispatchEvent(event);
+		if (!event.defaultPrevented) {
+			textarea.value += '\n';
+			await fireEvent.input(textarea);
+		}
+		await nextTick();
+		return event.defaultPrevented;
+	}
+
+	afterEach(() => {
+		delete preferState['chat.sendOnEnter'];
+	});
+
+	describe('when Enter sends', () => {
+		beforeEach(() => {
+			preferState['chat.sendOnEnter'] = true;
+		});
+
+		test.each(['user', 'room'] as const)('Enter sends to a %s and leaves the box empty for the next message', async target => {
+			mocks.api.mockResolvedValueOnce({ id: 'sent-1' }).mockResolvedValueOnce({ id: 'sent-2' });
+			const form = renderForm(target);
+			const endpoint = target === 'user' ? 'chat/messages/create-to-user' : 'chat/messages/create-to-room';
+
+			await fireEvent.update(form.textarea, 'alpha one');
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			await waitFor(() => expect(form.textarea.value).toBe(''));
+			expect(storedDraft(target)).toBeUndefined();
+
+			await fireEvent.update(form.textarea, 'beta two');
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			await waitFor(() => expect(form.textarea.value).toBe(''));
+			expect(mocks.api.mock.calls.map(call => [call[0], call[1].text])).toEqual([[endpoint, 'alpha one'], [endpoint, 'beta two']]);
+		});
+
+		test('Enter saves an edit and closes it', async () => {
+			const form = renderForm('room', message);
+
+			await fireEvent.update(form.textarea, 'Changed message');
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			await waitFor(() => expect(form.editing.value).toBeNull());
+			expect(mocks.api).toHaveBeenCalledExactlyOnceWith('chat/messages/update', { messageId: message.id, text: 'Changed message' });
+		});
+
+		test.each([
+			['Shift', { shiftKey: true }],
+			['Ctrl', { ctrlKey: true }],
+			['Meta', { metaKey: true }],
+		] as const)('%s+Enter is left to the browser and sends nothing', async (_, modifier) => {
+			const form = renderForm();
+			await fireEvent.update(form.textarea, 'line one');
+
+			expect(await pressEnter(form.textarea, modifier)).toBe(false);
+
+			expect(mocks.api).not.toHaveBeenCalled();
+		});
+
+		test.each([
+			['isComposing', { isComposing: true }],
+			['the key code of an input method', { keyCode: 229 }],
+			['the Process key', { key: 'Process' }],
+		] as const)('a key still in composition (%s) is left to the input method', async (_, init) => {
+			const form = renderForm();
+			await fireEvent.update(form.textarea, '안녕');
+
+			const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init });
+			form.textarea.dispatchEvent(event);
+
+			expect(event.defaultPrevented).toBe(false);
+			expect(mocks.api).not.toHaveBeenCalled();
+		});
+
+		test('Enter on an empty box does nothing, like the send button', async () => {
+			const form = renderForm();
+
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			expect(form.textarea.value).toBe('');
+			expect(mocks.api).not.toHaveBeenCalled();
+		});
+
+		test('Enter over the length limit does nothing', async () => {
+			const form = renderForm();
+			await fireEvent.update(form.textarea, 'x'.repeat(4097));
+
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			expect(form.textarea.value).toBe('x'.repeat(4097));
+			expect(mocks.api).not.toHaveBeenCalled();
+		});
+
+		test('Enter while a message is on its way sends nothing more and keeps what was written meanwhile', async () => {
+			const sent = deferred<{ id: string }>();
+			mocks.api.mockReturnValueOnce(sent.promise);
+			const form = renderForm();
+			await fireEvent.update(form.textarea, 'alpha one');
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			await fireEvent.update(form.textarea, 'alpha one and more');
+			expect(await pressEnter(form.textarea)).toBe(true);
+
+			expect(mocks.api).toHaveBeenCalledTimes(1);
+			sent.resolve({ id: 'sent-1' });
+			await waitFor(() => expect(screen.getByTitle(i18n.ts.send).getAttribute('aria-disabled')).toBe('false'));
+			expect(form.textarea.value).toBe('alpha one and more');
+		});
+	});
+
+	describe('when Ctrl+Enter or Meta+Enter sends', () => {
+		beforeEach(() => {
+			preferState['chat.sendOnEnter'] = false;
+		});
+
+		test.each([
+			['Ctrl', { ctrlKey: true }],
+			['Meta', { metaKey: true }],
+		] as const)('%s+Enter sends and leaves the box empty', async (_, modifier) => {
+			mocks.api.mockResolvedValueOnce({ id: 'sent-1' });
+			const form = renderForm();
+			await fireEvent.update(form.textarea, 'alpha one');
+
+			expect(await pressEnter(form.textarea, modifier)).toBe(true);
+
+			await waitFor(() => expect(form.textarea.value).toBe(''));
+			expect(mocks.api).toHaveBeenCalledExactlyOnceWith('chat/messages/create-to-room', expect.objectContaining({ text: 'alpha one' }));
+		});
+
+		test.each([
+			['Enter', {}],
+			['Shift+Enter', { shiftKey: true }],
+		] as const)('%s breaks the line and sends nothing', async (_, modifier) => {
+			const form = renderForm();
+			await fireEvent.update(form.textarea, 'line one');
+
+			expect(await pressEnter(form.textarea, modifier)).toBe(false);
+
+			expect(form.textarea.value).toBe('line one\n');
+			expect(mocks.api).not.toHaveBeenCalled();
+		});
+
+		test('Ctrl+Enter on an empty box does nothing', async () => {
+			const form = renderForm();
+
+			expect(await pressEnter(form.textarea, { ctrlKey: true })).toBe(true);
+
+			expect(mocks.api).not.toHaveBeenCalled();
+		});
+	});
+});
+
 // iOS 27 の Safari は「haru: …」のように「語:」で始まる文字をコピーすると、同じものを URL (text/uri-list) としても入れ、
 // 普通に貼ると `haru:%20…` のほうが入る
 describe('pasting text that the clipboard also holds as a URL', () => {
@@ -1345,4 +1543,43 @@ describe('pasting text that the clipboard also holds as a URL', () => {
 		expect(event.defaultPrevented).toBe(false);
 		expect(form.textarea.value).toBe('');
 	});
+});
+
+test('keeps the second identical reference when the first plain occurrence is deleted', async () => {
+	const editingMessage = { ...message, text: '#same #same', channelRefs: [{ channelId: 'second', start: 6, length: 5 }] };
+	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'first', editingMessage }, global: { stubs } });
+	const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+	textarea.setSelectionRange(0, 6);
+	await fireEvent(textarea, new InputEvent('beforeinput', { inputType: 'deleteContentBackward', bubbles: true }));
+	await fireEvent.update(textarea, '#same');
+	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.save }));
+
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/messages/update', { messageId: 'm1', text: '#same', channelRefs: [{ channelId: 'second', start: 0, length: 5 }] }));
+});
+
+test('unmatched channel text stays plain and can be sent from the keyboard', async () => {
+	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'first', channels: [{ id: 'first', roomId: room.id, name: 'general', isLegacy: true, sectionId: null }] }, global: { stubs } });
+	const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+	await fireEvent.update(textarea, '#not-a-channel');
+	textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+	await fireEvent.input(textarea);
+	await fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/messages/create-to-room', { toRoomId: room.id, toRoomChannelId: 'first', text: '#not-a-channel', fileIds: undefined, channelRefs: [] }));
+});
+
+test('typing after a selected reference does not reopen its candidate list', async () => {
+	const channels = [{ id: 'first', roomId: room.id, name: 'same', isLegacy: true, sectionId: null }];
+	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'first', channels }, global: { stubs } });
+	const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+	await fireEvent.update(textarea, '#sa');
+	textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+	await fireEvent.input(textarea);
+	const popup = vi.mocked(os.popup).mock.lastCall!;
+	(popup[2] as unknown as { done: (result: unknown) => void }).done({ type: 'chatChannel', value: channels[0] });
+	await nextTick();
+	vi.mocked(os.popup).mockClear();
+	await fireEvent.update(textarea, '#same more words');
+
+	expect(os.popup).not.toHaveBeenCalled();
 });

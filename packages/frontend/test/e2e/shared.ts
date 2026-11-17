@@ -82,9 +82,13 @@ export async function signIn(page: Page, baseUrl: string, username: string, pass
 	await page.keyboard.press('Enter');
 	await page.getByTestId('signin-page-password').waitFor({ state: 'visible', timeout: 10_000 });
 	await locateMkInput(page, 'signin-password').fill(password);
+	await page.evaluate(() => {
+		(window as Window & { __signingIn?: boolean }).__signingIn = true;
+	});
 	const signinResponse = waitApiResponse(page, '/api/signin-flow');
 	await page.keyboard.press('Enter');
 	await signinResponse;
+	await page.waitForFunction(() => !(window as Window & { __signingIn?: boolean }).__signingIn && document.readyState === 'complete', undefined, { timeout: 30_000 });
 }
 
 export async function acceptSignupRules(page: Page): Promise<void> {

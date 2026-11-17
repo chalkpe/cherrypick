@@ -558,3 +558,22 @@ describe('ActivityPub inbox signed date freshness', () => {
 		expect(status).toBe(202);
 	});
 });
+
+describe('채널 메시지의 서명 조회', () => {
+	test.each([false, true])('지원 여부가 %s인 멤버 서버에 일반 채널 조회를 제한한다', async supports => {
+		const app = await startApp({
+			chatMessagesRepository: { findOneBy: async () => ({ ...roomMessage, toRoomChannelId: 'other' }) },
+			chatRoomsRepository: { findOne: async () => ({ id: 'room1', ownerId: alice.id, owner: alice, hasChannels: true, legacyChannelId: 'general' }) },
+			chatRoomChannelService: { deliverableTo: async () => supports },
+		});
+
+		try {
+			const response = await app.inject({ method: 'GET', url: `/chat/messages/${roomMessage.id}`, headers: await signedHeaders(carol, { url: `${LOCAL}/chat/messages/${roomMessage.id}` }) });
+
+			expect(response.statusCode).toBe(supports ? 200 : 404);
+			if (!supports) expect(response.body).not.toContain('secret');
+		} finally {
+			await app.close();
+		}
+	});
+});

@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { ChatChannelError } from '@/core/chat-room-channels.js';
+import { chatChannelApiErrors } from '@/server/api/chat-channel-errors.js';
 import { Inject, Injectable } from '@nestjs/common';
 import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
@@ -34,6 +36,7 @@ export const meta = {
 	},
 
 	errors: {
+		...chatChannelApiErrors,
 		noSuchRoom: {
 			message: 'No such room.',
 			code: 'NO_SUCH_ROOM',
@@ -48,6 +51,7 @@ export const paramDef = {
 		query: { type: 'string', minLength: 1, maxLength: 256 },
 		limit: { type: 'integer', minimum: 1, maximum: 100, default: 10 },
 		userId: { type: 'string', format: 'misskey:id', nullable: true },
+		channelId: { type: 'string', format: 'misskey:id' },
 		roomId: { type: 'string', format: 'misskey:id', nullable: true },
 	},
 	required: ['query'],
@@ -76,6 +80,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			const messages = await this.chatService.searchMessages(me.id, ps.query, ps.limit, {
 				userId: ps.userId,
 				roomId: ps.roomId,
+				channelId: ps.channelId,
+			}).catch(err => {
+				if (err instanceof ChatChannelError) throw new ApiError(meta.errors[err.reason]);
+				throw err;
 			});
 
 			return await this.chatEntityService.packMessagesDetailed(messages, me);

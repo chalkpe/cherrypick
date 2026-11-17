@@ -9,19 +9,22 @@ SPDX-License-Identifier: AGPL-3.0-only
 	@click="emit('click')"
 >
 	<div :class="$style.name"><MkCondensedLine :minScale="0.5">{{ decoration.name }}</MkCondensedLine></div>
-	<MkAvatar style="width: 60px; height: 60px;" :user="$i" :decorations="[{ url: decoration.url, angle, flipH, offsetX, offsetY, scale, opacity }]" forceShowDecoration @click.stop="emit('click')"/>
+	<MkAvatar style="width: 60px; height: 60px;" :user="room ? undefined : $i" :room="room" :decorations="[{ url: decoration.url, angle, flipH, offsetX, offsetY, scale, opacity }]" forceShowDecoration @click.stop="emit('click')"/>
 	<i v-if="locked" :class="$style.lock" class="ti ti-lock"></i>
 </div>
 </template>
 
 <script lang="ts" setup>
 import { computed } from 'vue';
+import type * as Misskey from 'cherrypick-js';
 import { ensureSignin } from '@/i.js';
 
 const $i = ensureSignin();
 
 const props = defineProps<{
 	active?: boolean;
+	/** 그룹 장식을 고를 때는 그룹장 개인 사진 대신 그룹 아이콘 위에 미리 보여 준다. */
+	room?: Misskey.entities.ChatRoom;
 	decoration: {
 		id: string;
 		url: string;

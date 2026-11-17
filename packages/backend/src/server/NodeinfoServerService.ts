@@ -137,6 +137,7 @@ export class NodeinfoServerService {
 					proxyAccountName: proxyAccount.username,
 					themeColor: meta.themeColor ?? '#eab1b7',
 					features: [
+						'chat_room_channels',
 						'enable_wide_emoji',
 						'enable_wide_emoji_reaction',
 						'emoji_reaction',

@@ -4,9 +4,10 @@
  */
 
 /** Keep absent/unsupported settings absent when relaying older participants. */
-export function reportedVoiceStatus(value: { micMuted?: unknown; deafened?: unknown }): { micMuted?: boolean; deafened?: boolean } {
+export function reportedVoiceStatus(value: { micMuted?: unknown; deafened?: unknown; recording?: unknown }): { micMuted?: boolean; deafened?: boolean; recording?: boolean } {
 	return {
 		...(typeof value.micMuted === 'boolean' ? { micMuted: value.micMuted } : {}),
 		...(typeof value.deafened === 'boolean' ? { deafened: value.deafened } : {}),
+		...(typeof value.recording === 'boolean' ? { recording: value.recording } : {}),
 	};
 }

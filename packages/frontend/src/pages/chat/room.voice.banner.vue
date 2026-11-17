@@ -3,8 +3,11 @@ SPDX-FileCopyrightText: syuilo and misskey-project
 SPDX-License-Identifier: AGPL-3.0-only
 -->
 <template>
-<section v-if="call.available.value && !call.inThisCall.value" :class="[$style.root, { [$style.unavailable]: call.providerUnavailable?.value }]" :aria-label="empty ? undefined : i18n.tsx._voiceCall.inCallCount({ n: call.participants.value.length })">
+<!-- 誰も通話していないときはパネルを出さず、開始はルームのヘッダーボタンに任せる。誰かが通話中 (または relay が到達不能) のときだけ参加のパネルを出す -->
+<section v-if="call.available.value && !call.inThisCall.value && (call.participants.value.length > 0 || call.providerUnavailable?.value)" :class="[$style.root, { [$style.unavailable]: call.providerUnavailable?.value || call.someoneRecording?.value }]" :aria-label="empty ? undefined : i18n.tsx._voiceCall.inCallCount({ n: call.participants.value.length })">
 	<p v-if="call.providerUnavailable?.value" :class="$style.notice" role="status">{{ i18n.ts._voiceRelay.unreachable }}</p>
+	<!-- 録画している人がいることは、入る前に分かるようにする -->
+	<p v-if="call.someoneRecording?.value" :class="[$style.notice, $style.recordingNotice]" role="status"><i class="ti ti-player-record" aria-hidden="true"></i> {{ i18n.ts._voiceCall.recordingInProgress }}</p>
 	<div ref="avatarsEl" :class="$style.avatars">
 		<!-- メニューに出すものが無い参加者 (通話に入っておらず持ち主でもないとき) は、押しても何も起きないボタンにせず、名前の付いた絵として出す -->
 		<component
@@ -21,7 +24,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			@contextmenu="onContextMenu(p, menuable, $event)"
 		>
 			<MkAvatar :user="p.user" :link="false" :decorations="[]" :class="$style.avatar"/>
-			<span v-if="p.micMuted || p.deafened" :class="$style.dot" aria-hidden="true"></span>
+			<span v-if="p.micMuted || p.deafened || p.recording" :class="[$style.dot, { [$style.recording]: p.recording }]" aria-hidden="true"></span>
 		</component>
 		<button v-if="hidden > 0" v-tooltip="moreLabel" type="button" class="_button" :class="$style.more" :aria-label="moreLabel" aria-haspopup="dialog" @click="call.openRoster()">+{{ hidden }}</button>
 	</div>
@@ -35,7 +38,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	>
 		<i :class="call.prejoinMicEnabled.value ? 'ti ti-microphone' : 'ti ti-microphone-off'" aria-hidden="true"></i>
 	</button>
-	<MkButton primary :class="$style.join" @click="call.join()"><i class="ti ti-phone" aria-hidden="true"></i> {{ call.providerUnavailable?.value ? i18n.ts.retry : empty ? i18n.ts._voiceCall.start : i18n.ts._voiceCall.join }}</MkButton>
+	<MkButton primary :class="$style.join" @click="call.join()"><i class="ti ti-phone" aria-hidden="true"></i> {{ call.providerUnavailable?.value ? i18n.ts.retry : i18n.ts._voiceCall.join }}</MkButton>
 </section>
 </template>
 <script lang="ts" setup>
@@ -58,7 +61,7 @@ const hidden = computed(() => props.call.participants.value.length - visible.val
 
 // 小さな点だけでは分からないので、マイク・スピーカーの状態は名前に添えて伝える
 function labelOf(p: typeof visible.value[number]['p']): string {
-	const status = p.deafened ? i18n.ts._voiceCall.deafened : p.micMuted ? i18n.ts._voiceCall.micMuted : null;
+	const status = p.recording ? i18n.ts._voiceCall.recording : p.deafened ? i18n.ts._voiceCall.deafened : p.micMuted ? i18n.ts._voiceCall.micMuted : null;
 	return status == null ? userNameForLabel(p.user) : `${userNameForLabel(p.user)} (${status})`;
 }
 
@@ -73,6 +76,7 @@ function onContextMenu(p: typeof visible.value[number]['p'], menuable: boolean, 
 <style lang="scss" module>
 .unavailable { flex-wrap: wrap; }
 .notice { flex-basis: 100%; color: var(--MI_THEME-warn); }
+.recordingNotice { color: var(--MI_THEME-error); font-weight: bold; }
 .root {
 	display: flex;
 	align-items: center;
@@ -121,6 +125,10 @@ function onContextMenu(p: typeof visible.value[number]['p'], menuable: boolean, 
 	border-radius: 50%;
 	background: color-mix(in srgb, var(--MI_THEME-fg) 50%, transparent);
 	box-shadow: 0 0 0 3px var(--MI_THEME-panel);
+}
+
+.recording {
+	background: var(--MI_THEME-error);
 }
 
 .more {

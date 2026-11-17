@@ -5,6 +5,7 @@
 
 import { vi } from 'vitest';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
+import { ChatInviteLinkService } from '@/core/ChatInviteLinkService.js';
 
 /** The service itself over an empty record, for tests about something else: every membership change applies. */
 export function chatRosterOver(redisClient: unknown): ChatRosterService {
@@ -31,3 +32,10 @@ export const forgetfulRedis = () => {
 		pipeline: () => pipeline,
 	};
 };
+
+/** 초대 링크로 참여를 요청한 사람이 없는 서비스. 초대 링크와 관계없는 시험에서 쓴다 */
+export function noChatInviteJoins(): ChatInviteLinkService {
+	return Object.assign(Object.create(ChatInviteLinkService.prototype), {
+		redisClient: { get: async () => null, del: async () => 0, getdel: async () => null },
+	}) as ChatInviteLinkService;
+}

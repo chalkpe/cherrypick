@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { ChatChannelError } from '@/core/chat-room-channels.js';
+import { chatChannelApiErrors } from '@/server/api/chat-channel-errors.js';
 import { Inject, Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { DI } from '@/di-symbols.js';
@@ -29,6 +31,7 @@ export const meta = {
 	},
 
 	errors: {
+		...chatChannelApiErrors,
 		noSuchRoom: {
 			message: 'No such room.',
 			code: 'NO_SUCH_ROOM',
@@ -45,6 +48,7 @@ export const paramDef = {
 		untilId: { type: 'string', format: 'misskey:id' },
 		sinceDate: { type: 'integer' },
 		untilDate: { type: 'integer' },
+		channelId: { type: 'string', format: 'misskey:id' },
 		roomId: { type: 'string', format: 'misskey:id' },
 		includeDeleted: {
 			type: 'boolean',
@@ -77,9 +81,17 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.noSuchRoom);
 			}
 
-			const messages = await this.chatService.roomTimeline(room.id, ps.limit, sinceId, untilId, ps.includeDeleted);
-
-			this.chatService.readRoomChatMessage(me.id, room.id);
+			let messages;
+			try {
+				messages = await this.chatService.roomTimeline(room.id, ps.limit, sinceId, untilId, ps.includeDeleted, ps.channelId);
+				if (messages.length && ps.untilId == null && ps.untilDate == null && await this.chatService.isRoomMember(room, me.id)) {
+					const newest = messages.reduce((latest, message) => BigInt(message.roomMessageSequence ?? '0') > BigInt(latest.roomMessageSequence ?? '0') ? message : latest);
+					await this.chatService.readRoomChatMessage(me.id, room.id, ps.channelId, newest.id);
+				}
+			} catch (err) {
+				if (err instanceof ChatChannelError) throw new ApiError(meta.errors[err.reason]);
+				throw err;
+			}
 
 			return await this.chatEntityService.packMessagesLiteForRoom(messages);
 		});

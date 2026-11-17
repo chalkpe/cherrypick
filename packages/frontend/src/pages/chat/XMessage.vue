@@ -4,12 +4,23 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div :class="[$style.root, { [$style.isMe]: isMe, [$style.continued]: !isFirstInGroup }]">
-	<MkAvatar v-if="!isMe && isFirstInGroup" :class="[$style.avatar, prefer.s.useStickyIcons ? $style.useSticky : null]" :user="message.fromUser!" :link="!isMe" :preview="false"/>
+<div :data-chat-message-id="message.id" :class="[$style.root, { [$style.isMe]: isMe, [$style.continued]: !isFirstInGroup }]">
+	<MkAvatar v-if="!isMe && isFirstInGroup && message.fromUser != null" :class="[$style.avatar, prefer.s.useStickyIcons ? $style.useSticky : null]" :user="message.fromUser" :link="!isMe" :preview="false"/>
+	<!-- 계정이 없어진 작성자는 계정이 아니므로 프로필로 연결하지 않는다 -->
+	<div v-else-if="!isMe && isFirstInGroup" :class="[$style.avatar, $style.archivedAvatar, prefer.s.useStickyIcons ? $style.useSticky : null]" aria-hidden="true"><i class="ti ti-user"></i></div>
 	<!-- まとまりの2つ目以降もアバターの幅だけ空けて、吹き出しの位置を揃える -->
 	<div v-else-if="!isMe" :class="$style.avatarSpace"></div>
 	<div :class="[$style.body, hasFiles ? $style.fullWidth : null]" tabindex="0" aria-haspopup="menu" @keydown.self="onMenuKeydown" @contextmenu.stop="onContextmenu">
-		<div v-if="isFirstInGroup" :class="$style.header"><MkUserName v-if="!isMe && prefer.s['chat.showSenderName'] && message.fromUser != null" :user="message.fromUser"/></div>
+		<div v-if="isFirstInGroup" :class="$style.header">
+			<MkUserName v-if="!isMe && prefer.s['chat.showSenderName'] && message.fromUser != null" :user="message.fromUser"/>
+			<span v-else-if="!isMe && message.fromUser == null" :class="$style.archivedAuthor">
+				<template v-if="archivedName != null">
+					<span>{{ archivedName }}</span>
+					<span v-if="archivedAcct != null" :class="$style.archivedAcct">{{ archivedAcct }}</span>
+				</template>
+				<span v-else>{{ i18n.ts._chat.unknownUser }}</span>
+			</span>
+		</div>
 		<MkFukidashi :class="[$style.fukidashi, { [$style.noTailLeft]: !isFirstInGroup && !isMe }]" :tail="!isFirstInGroup ? 'none' : isMe ? 'right' : 'left'" :fullWidth="hasFiles" :accented="isMe">
 			<span v-if="deletedAt" :class="$style.deletedMessage">{{ i18n.ts._chat.deletedMessage }}</span>
 			<template v-else>
@@ -18,7 +29,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 					ref="text"
 					class="_selectable"
 					:text="message.text"
-					:author="message.fromUser"
+					:parsedNodes="referenceNodes"
+					:author="message.fromUser ?? undefined"
 					:i="$i"
 					:nyaize="'respect'"
 					:emojiUrls="message.emojis"
@@ -27,6 +39,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				/>
 				<XDiceResult v-if="message.dice" :class="$style.dice" :dice="message.dice"/>
 				<MkMediaList v-if="hasFiles" :mediaList="message.files" :user="message.fromUser"/>
+				<div v-if="unavailableFileCount > 0" :class="$style.unavailableFiles"><i class="ti ti-photo-off" aria-hidden="true"></i> {{ i18n.ts._chat.cannotFetchMoreHistory }}</div>
 			</template>
 		</MkFukidashi>
 		<MkUrlPreview v-for="url in urls" :key="url" :url="url" style="margin: 8px 0;"/>
@@ -34,7 +47,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<button class="_textButton" :class="$style.menuButton" style="color: currentColor;" :aria-label="i18n.ts.menu" @click="showMenu"><i class="ti ti-dots-circle-horizontal"></i></button>
 			<MkTime :class="$style.time" :time="message.createdAt"/>
 			<span v-if="editedAt && !deletedAt" :class="$style.edited">{{ i18n.ts.edited }}</span>
-			<MkA v-if="isSearchResult && 'toRoom' in message && message.toRoom != null" :to="`/chat/room/${message.toRoomId}`">{{ message.toRoom.name }}</MkA>
+			<MkA v-if="isSearchResult && 'toRoom' in message && message.toRoom != null" :to="message.toRoomChannelId ? channelConversationPath(message.toRoomId!, message.toRoomChannelId) : `/chat/room/${message.toRoomId}`"><MkAvatar :room="message.toRoom" style="width: 1.3em; height: 1.3em; vertical-align: middle; margin-right: 0.4em;"/>{{ message.toRoom.name }}<template v-if="message.toRoomChannel"> · #{{ message.toRoomChannel.name }}</template></MkA>
 			<MkA v-if="isSearchResult && 'toUser' in message && message.toUser != null && isMe" :to="`/chat/user/${message.toUserId}`">@{{ message.toUser.username }}</MkA>
 		</div>
 		<TransitionGroup
@@ -46,13 +59,23 @@ SPDX-License-Identifier: AGPL-3.0-only
 			:moveClass="prefer.s.animation ? $style.transition_reaction_move : ''"
 			tag="div" :class="$style.reactions"
 		>
-			<div v-for="record in message.reactions" :key="record.reaction + record.user.id" :class="[$style.reaction, record.user.id === $i.id ? $style.reactionMy : null]" @click="onReactionClick(record)">
+			<div
+				v-for="record in message.reactions"
+				:key="record.reaction + record.user.id"
+				:class="[$style.reaction, {
+					[$style.reactionReacted]: record.user.id === $i.id,
+					[$style.reactionCanToggle]: isUsableReaction(record.reaction),
+					[$style.reactionClickable]: isReactionClickable(record),
+					[$style.reactionSmall]: prefer.r.reactionsDisplaySize.value === 'small',
+					[$style.reactionLarge]: prefer.r.reactionsDisplaySize.value === 'large',
+				}]"
+				@click.capture="onReactionClick(record)"
+			>
 				<MkAvatar :user="record.user" :link="false" :class="$style.reactionAvatar"/>
 				<MkReactionIcon
 					:withTooltip="true"
 					:reaction="record.reaction.replace(/^:(\w+):$/, ':$1@.:')"
-					:noStyle="true"
-					:class="$style.reactionIcon"
+					:class="[$style.reactionIcon, prefer.r.limitWidthOfReaction.value ? $style.reactionLimitWidth : '']"
 				/>
 			</div>
 		</TransitionGroup>
@@ -61,14 +84,17 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, defineAsyncComponent, onBeforeUnmount, provide, ref } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, provide, ref, watch } from 'vue';
 import * as mfm from 'mfc-js';
 import * as Misskey from 'cherrypick-js';
 import { url } from '@@/js/config.js';
 import { isLink } from '@@/js/is-link.js';
+import { getUnicodeEmojiOrNull } from '@@/js/emojilist.js';
+import { getEmojiNameFromReaction } from '@@/js/emoji-name.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { NormalizedChatMessage } from './room.vue';
 import { chatErrorText } from './chat-errors.js';
+import { channelConversationPath, channelReferenceNodes } from './chat-channel-references.js';
 import XDiceResult from './XDiceResult.vue';
 import { extractUrlFromMfm } from '@/utility/extract-url-from-mfm.js';
 import MkUrlPreview from '@/components/MkUrlPreview.vue';
@@ -83,6 +109,7 @@ import { reactionPicker } from '@/utility/reaction-picker.js';
 import * as sound from '@/utility/sound.js';
 import MkReactionIcon from '@/components/MkReactionIcon.vue';
 import { prefer } from '@/preferences.js';
+import { customEmojisMap } from '@/custom-emojis.js';
 import { DI } from '@/di.js';
 import { getHTMLElementOrNull } from '@/utility/get-dom-node-or-null.js';
 
@@ -91,6 +118,7 @@ const $i = ensureSignin();
 const props = withDefaults(defineProps<{
 	message: NormalizedChatMessage | Misskey.entities.ChatMessage;
 	isSearchResult?: boolean;
+	channels?: Misskey.entities.ChatRoomChannel[];
 	canEdit?: boolean;
 	// ルームの画面のメッセージには toRoom が付かないので、アーカイブの状態はルームから受け取る
 	roomArchived?: boolean;
@@ -109,7 +137,37 @@ const emit = defineEmits<{
 	(ev: 'edit', message: NormalizedChatMessage | Misskey.entities.ChatMessage): void;
 }>();
 
-const isMe = computed(() => props.message.fromUserId === $i.id);
+const fetchedChannels = ref<Misskey.entities.ChatRoomChannel[] | null>(null);
+let channelListRequest = 0;
+watch(() => [props.message.toRoomId, props.message.channelRefs, props.channels] as const, async () => {
+	const request = ++channelListRequest;
+	fetchedChannels.value = null;
+	if (props.channels || !props.message.toRoomId || !props.message.channelRefs?.length) return;
+	try {
+		const list = await misskeyApi('chat/rooms/channels/list', { roomId: props.message.toRoomId });
+		if (request === channelListRequest) fetchedChannels.value = list;
+	} catch {
+		// 접근할 수 없는 그룹의 채널에는 링크를 만들지 않는다.
+	}
+}, { immediate: true });
+onBeforeUnmount(() => { channelListRequest++; });
+const referenceNodes = computed(() => {
+	const channels = props.channels ?? fetchedChannels.value;
+	return props.message.text && props.message.toRoomId && props.message.toRoomChannelId
+		? channelReferenceNodes(props.message.text, props.message.channelRefs ?? [], channels, props.message.toRoomId, i18n.ts._chat._channels.deleted, url)
+		: undefined;
+});
+
+const isMe = computed(() => props.message.fromUserId != null && props.message.fromUserId === $i.id);
+// 계정이 없어진 작성자는 그룹 소유 서버가 보관한 이름과 계정 주소를 글자로만 보인다
+const archivedAuthor = computed(() => 'archivedAuthor' in props.message ? props.message.archivedAuthor ?? null : null);
+const archivedName = computed(() => archivedAuthor.value?.name ?? archivedAuthor.value?.username ?? null);
+const archivedAcct = computed(() => {
+	const author = archivedAuthor.value;
+	if (author?.username == null) return null;
+	return author.host != null ? `@${author.username}@${author.host}` : `@${author.username}`;
+});
+const unavailableFileCount = computed(() => 'unavailableFileCount' in props.message ? props.message.unavailableFileCount ?? 0 : 0);
 const editedAt = computed(() => (props.message as NormalizedChatMessage).editedAt ?? null);
 const deletedAt = computed(() => (props.message as NormalizedChatMessage).deletedAt ?? null);
 const hasFiles = computed(() => deletedAt.value == null && props.message.files.length > 0);
@@ -152,12 +210,30 @@ function react(ev: PointerEvent) {
 	});
 }
 
+// 他サーバーのカスタム絵文字はこのサーバーからはリアクションできない
+function isRemoteCustomEmoji(reaction: string): boolean {
+	return /@[\w.-]/.test(reaction);
+}
+
+// ノートのリアクション (MkReactionsViewer.reaction.vue の canToggle) と同じく、このサーバーで使える絵文字かどうか
+function isUsableReaction(reaction: string): boolean {
+	if (reaction[0] !== ':') return getUnicodeEmojiOrNull(reaction) != null;
+	if (isRemoteCustomEmoji(reaction)) return false;
+	return customEmojisMap.has(getEmojiNameFromReaction(reaction));
+}
+
+// 押すと何かが起きるリアクション。onReactionClick が何もしないものには、押せる見た目を付けない
+function isReactionClickable(record: Misskey.entities.ChatMessage['reactions'][0]): boolean {
+	return canReact.value && (record.user.id === $i.id || !isRemoteCustomEmoji(record.reaction));
+}
+
+// 絵文字 (MkEmoji / MkCustomEmoji) は自分でクリックの伝播を止めるので、テンプレートではキャプチャで受けて絵文字の上を押しても反応するようにしている
 function onReactionClick(record: Misskey.entities.ChatMessage['reactions'][0]) {
 	if (!canReact.value) return;
 
 	if (record.user.id === $i.id) {
 		sendReaction('chat/messages/unreact', record.reaction);
-	} else if (!/@[\w.-]/.test(record.reaction)) { // 他サーバーのカスタム絵文字はこのサーバーからはリアクションできない
+	} else if (!isRemoteCustomEmoji(record.reaction)) {
 		if (!props.message.reactions.some(r => r.user.id === $i.id && r.reaction === record.reaction)) {
 			sound.playMisskeySfx('reaction');
 			sendReaction('chat/messages/react', record.reaction);
@@ -324,6 +400,36 @@ function getMenu(): MenuItem[] {
 	width: 50px;
 }
 
+.archivedAvatar {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 100%;
+	// 설정의 계정 목록에서 정보를 불러오지 못한 계정과 같은 모양
+	background-color: color-mix(in srgb, var(--MI_THEME-fg), transparent 85%);
+	color: color-mix(in srgb, var(--MI_THEME-fg), transparent 25%);
+	font-size: 1.4em;
+}
+
+.archivedAuthor {
+	display: inline-flex;
+	flex-wrap: wrap;
+	gap: 0 6px;
+	font-weight: bold;
+}
+
+.archivedAcct {
+	font-weight: normal;
+	opacity: 0.7;
+}
+
+.unavailableFiles {
+	margin-top: 4px;
+	font-size: 0.9em;
+	opacity: 0.7;
+}
+
 @container (max-width: 450px) {
 	.root {
 		&.isMe {
@@ -342,12 +448,15 @@ function getMenu(): MenuItem[] {
 		width: 42px;
 	}
 
-	.fukidashi {
+	// リアクションはノートと同じく本文の文字の大きさに合わせる
+	.fukidashi,
+	.reactions {
 		font-size: 90%;
 	}
 }
 
 .body {
+	min-width: 0;
 	padding-top: 4px;
 	margin: 0 12px;
 	box-sizing: border-box;
@@ -429,11 +538,13 @@ function getMenu(): MenuItem[] {
 	font-style: italic;
 }
 
+// リアクションの見た目はノートのもの (MkReactionsViewer.vue / MkReactionsViewer.reaction.vue) に揃える。
+// 大きさ・背景・自分のリアクションの強調は、誰が送ったメッセージかによらず同じにする
 .reactions {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
-	gap: 8px;
+	gap: 4px;
 	margin-top: 8px;
 
 	&:empty {
@@ -442,25 +553,66 @@ function getMenu(): MenuItem[] {
 }
 
 .reaction {
-	display: flex;
-	align-items: center;
-	border: solid 1px var(--MI_THEME-divider);
+	display: inline-flex;
+	max-width: 100%;
+	height: 38px;
+	padding: 0 12px;
+	font-size: 1.35em;
 	border-radius: 999px;
-	padding: 8px;
+	align-items: center;
+	justify-content: center;
+	// ノートのリアクションは button なので、高さに余白を含める計算を揃える
+	box-sizing: border-box;
 
-	&.reactionMy {
-		border-color: var(--MI_THEME-accent);
+	&.reactionCanToggle {
+		background: var(--MI_THEME-buttonBg);
+	}
+
+	&.reactionClickable {
+		cursor: pointer;
+	}
+
+	&.reactionCanToggle.reactionClickable:hover {
+		background: var(--MI_THEME-buttonHoverBg);
+	}
+
+	&.reactionSmall {
+		height: 30px;
+		font-size: 1em;
+	}
+
+	&.reactionLarge {
+		height: 46px;
+		font-size: 1.8em;
+		padding: 4px 16px;
+
+		> .reactionAvatar {
+			margin: 0 8px 0 0;
+		}
+	}
+
+	&.reactionReacted, &.reactionReacted.reactionClickable:hover {
+		background: var(--MI_THEME-accentedBg);
+		color: var(--MI_THEME-accent);
+		box-shadow: 0 0 0 1px var(--MI_THEME-accent) inset;
 	}
 }
 
+// 誰のリアクションかは、絵文字と同じ高さのアバターで示す。絵文字との間隔はノートのリアクション数と同じにする
 .reactionAvatar {
-	width: 24px;
-	height: 24px;
-	margin-right: 8px;
+	width: 1.25em;
+	height: 1.25em;
+	margin: 0 5px 0 0;
 }
 
+.reactionLimitWidth {
+	max-width: 70px;
+	object-fit: contain;
+}
+
+// 폭 제한을 꺼도 칩 안에서 줄어들 수 있게 하여 좁은 화면에서 이미지를 자르지 않는다.
 .reactionIcon {
-	width: 24px;
-	height: 24px;
+	min-width: 0;
+	object-fit: contain;
 }
 </style>

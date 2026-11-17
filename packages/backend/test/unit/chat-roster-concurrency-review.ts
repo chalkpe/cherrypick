@@ -37,8 +37,10 @@ describe('concurrent remote room membership changes', () => {
 				return { affected: before - rows.length };
 			},
 		};
+		const forget = vi.fn<(userId: string, roomId: string) => Promise<void>>(async () => {});
 		const chatService = Object.assign(Object.create(ChatService.prototype), {
 			chatRoomMembershipsRepository: memberships,
+			chatRoomNotificationService: { forget },
 			userEntityService: { isLocalUser: () => false },
 			globalEventService: { publishChatRoomStream: vi.fn() },
 			redisClient: { pipeline: () => {
@@ -107,6 +109,7 @@ describe('concurrent remote room membership changes', () => {
 		await Promise.all([adding, removing]);
 
 		expect(rows).toEqual([]);
+		expect(forget).toHaveBeenCalledWith(member.id, room.id);
 	});
 
 	test('an Add can be retried after its membership insertion fails', async () => {

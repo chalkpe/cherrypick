@@ -14,6 +14,7 @@ import type { MiMeta, MiSwSubscription, SwSubscriptionsRepository } from '@/mode
 import { bindThis } from '@/decorators.js';
 import { RedisKVCache } from '@/misc/cache.js';
 import { HttpRequestService } from '@/core/HttpRequestService.js';
+import { compactChatRoomForPush } from '@/core/push-chat-room.js';
 
 // Defined also packages/sw/types.ts#L13
 type PushNotificationsTypes = {
@@ -27,13 +28,17 @@ type PushNotificationsTypes = {
 };
 
 // Reduce length because push message servers have character limits
-function truncateBody<T extends keyof PushNotificationsTypes>(type: T, body: PushNotificationsTypes[T]): PushNotificationsTypes[T] {
+function truncateBody<T extends keyof PushNotificationsTypes>(type: T, body: PushNotificationsTypes[T]): unknown {
 	if (typeof body !== 'object') return body;
 
 	return {
 		...body,
 		// 굴림 내역은 Web Push 크기 한도를 넘을 수 있으므로 채팅 화면에서 저장값을 조회한다.
 		...(type === 'newChatMessage' ? { dice: undefined } : {}),
+		...(type === 'newChatMessage' && 'toRoom' in body && body.toRoom != null ? { toRoom: compactChatRoomForPush(body.toRoom) } : {}),
+		...(type === 'notification' && 'type' in body && body.type === 'chatRoomInvitationReceived' ? {
+			invitation: { ...body.invitation, room: compactChatRoomForPush(body.invitation.room) },
+		} : {}),
 		...(('note' in body && body.note) ? {
 			note: {
 				...body.note,

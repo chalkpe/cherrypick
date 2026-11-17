@@ -86,10 +86,16 @@ import { MiFlash } from '@/models/Flash.js';
 import { MiFlashLike } from '@/models/FlashLike.js';
 import { MiUserMemo } from '@/models/UserMemo.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
+import { MiChatRoomChannel } from '@/models/ChatRoomChannel.js';
+import { MiChatRoomChannelSection } from '@/models/ChatRoomChannelSection.js';
+import { MiChatRoomInviteLink } from '@/models/ChatRoomInviteLink.js';
+import { MiChatRoomUserSettings } from '@/models/ChatRoomUserSettings.js';
 import { MiChatRoom } from '@/models/ChatRoom.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
 import { MiChatRoomRosterState } from '@/models/ChatRoomRosterState.js';
+import { MiChatRoomHistoryState } from '@/models/ChatRoomHistoryState.js';
 import { MiChatRoomInvitation } from '@/models/ChatRoomInvitation.js';
+import { MiChatRoomBan } from '@/models/ChatRoomBan.js';
 import { MiBubbleGameRecord } from '@/models/BubbleGameRecord.js';
 import { MiReversiGame } from '@/models/ReversiGame.js';
 import { MiChatApproval } from '@/models/ChatApproval.js';
@@ -266,10 +272,16 @@ export const entities = [
 	MiFlashLike,
 	MiUserMemo,
 	MiChatMessage,
+	MiChatRoomChannel,
+	MiChatRoomChannelSection,
+	MiChatRoomInviteLink,
+	MiChatRoomUserSettings,
 	MiChatRoom,
 	MiChatRoomMembership,
 	MiChatRoomRosterState,
+	MiChatRoomHistoryState,
 	MiChatRoomInvitation,
+	MiChatRoomBan,
 	MiChatApproval,
 	MiBubbleGameRecord,
 	MiReversiGame,

@@ -463,6 +463,8 @@ export class DriveService {
 			q.andWhere('file.id != :bannerId', { bannerId: user.bannerId });
 		}
 
+		q.andWhere('NOT EXISTS (SELECT 1 FROM "chat_room" WHERE "chat_room"."iconId" = file.id)');
+
 		//This selete is hard coded, be careful if change database schema
 		q.addSelect('SUM("file"."size") OVER (ORDER BY "file"."id" DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)', 'acc_usage');
 		q.orderBy('file.id', 'ASC');

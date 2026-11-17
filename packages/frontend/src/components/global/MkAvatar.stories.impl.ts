@@ -69,3 +69,12 @@ export const ProfilePageCat = {
 		},
 	},
 } satisfies StoryObj<typeof MkAvatar>;
+
+export const ChatRoomIcon = {
+	...ProfilePage,
+	args: {
+		...ProfilePage.args,
+		user: undefined,
+		room: { id: 'group', name: 'Group', owner: { host: null }, iconUrl: '/identicon/chat-room', iconBlurhash: null, iconDecorations: [] },
+	},
+} satisfies StoryObj<typeof MkAvatar>;

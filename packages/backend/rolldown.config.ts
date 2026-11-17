@@ -25,6 +25,8 @@ export default defineConfig((args) => {
 		'mock-aws-s3',
 		'aws-sdk',
 		'nock',
+		// i18n 번역 파일은 패키지의 실행 경로에서 읽는다
+		/^i18n(?:\/.*)?$/,
 		'sharp',
 		'jsdom',
 		're2',

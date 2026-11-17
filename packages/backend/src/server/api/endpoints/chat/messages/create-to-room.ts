@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { ChatChannelError, chatChannelRefsParam } from '@/core/chat-room-channels.js';
+import { chatChannelApiErrors } from '@/server/api/chat-channel-errors.js';
 import { Injectable } from '@nestjs/common';
 import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
@@ -32,6 +34,7 @@ export const meta = {
 	},
 
 	errors: {
+		...chatChannelApiErrors,
 		...createChatDiceApiErrors({
 			invalid: '36f66b2a-ca87-48d2-bd95-b2672d3f76be',
 			limit: '666fe612-0d72-405b-b161-f7c2326b977c',
@@ -72,6 +75,7 @@ export const meta = {
 export const paramDef = {
 	type: 'object',
 	properties: {
+		channelRefs: chatChannelRefsParam,
 		text: { type: 'string', nullable: true, maxLength: MAX_CHAT_MESSAGE_TEXT_LENGTH },
 		fileId: { type: 'string', format: 'misskey:id' },
 		fileIds: {
@@ -81,6 +85,7 @@ export const paramDef = {
 			maxItems: MAX_CHAT_MESSAGE_FILES,
 			items: { type: 'string', format: 'misskey:id' },
 		},
+		toRoomChannelId: { type: 'string', format: 'misskey:id' },
 		toRoomId: { type: 'string', format: 'misskey:id' },
 	},
 	required: ['toRoomId'],
@@ -120,9 +125,12 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			try {
 				return await this.chatService.createMessageToRoom(me, room, {
 					text: ps.text,
+					toRoomChannelId: ps.toRoomChannelId,
+					channelRefs: ps.channelRefs,
 					files,
 				});
 			} catch (e) {
+				if (e instanceof ChatChannelError) throw new ApiError(meta.errors[e.reason]);
 				if (e instanceof ChatDiceError) throw new ApiError(e.reason === 'invalid' ? meta.errors.diceInvalid : e.reason === 'limit' ? meta.errors.diceLimit : meta.errors.diceBusy);
 				if (e instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);
 				if (e instanceof ChatMessageAccessError) throw new ApiError(meta.errors.noSuchRoom);

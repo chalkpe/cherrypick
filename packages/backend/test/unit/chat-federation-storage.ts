@@ -7,15 +7,24 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import { Test } from '@nestjs/testing';
 import type * as Redis from 'ioredis';
 import type { TestingModule } from '@nestjs/testing';
-import type { ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomRosterStatesRepository, ChatRoomsRepository, MiChatRoom, MiUser, UsersRepository } from '@/models/_.js';
+import type { ChatMessagesRepository, ChatRoomInvitationsRepository, ChatRoomMembershipsRepository, ChatRoomRosterStatesRepository, ChatRoomsRepository, DriveFilesRepository, MiChatRoom, MiUser, UsersRepository } from '@/models/_.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
+import { ApChatRoomStateService } from '@/core/activitypub/ApChatRoomStateService.js';
+import { ApImageService } from '@/core/activitypub/models/ApImageService.js';
+import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
+import { GlobalEventService } from '@/core/GlobalEventService.js';
+import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
+import { QueueService } from '@/core/QueueService.js';
+import { FetchInstanceMetadataService } from '@/core/FetchInstanceMetadataService.js';
 import { ChatRosterService } from '@/core/ChatRosterService.js';
 import { ChatService, ChatTooManyReactionsError } from '@/core/ChatService.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { DI } from '@/di-symbols.js';
 import { GlobalModule } from '@/GlobalModule.js';
 import { IdService } from '@/core/IdService.js';
+import { noChatInviteJoins } from '../misc/chat-roster-stub.js';
 import { ChatMessageUriUnique1793708299161 } from '../../migration/1793708299161-chat-message-uri-unique.js';
+import { MiChatRoomChannelSection } from '@/models/ChatRoomChannelSection.js';
 
 // These cases depend on what PostgreSQL and Redis do with the query, so they use the real ones.
 describe('chat federation storage', () => {
@@ -41,6 +50,9 @@ describe('chat federation storage', () => {
 		return Object.assign(Object.create(ChatService.prototype), {
 			userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
 			config: { url: 'https://local.test' },
+			db: app.get(DI.db),
+			chatRoomChannelService: app.get(ChatRoomChannelService),
+			chatRoomNotificationService: app.get(ChatRoomNotificationService),
 			usersRepository,
 			chatMessagesRepository,
 			chatRoomsRepository,
@@ -78,7 +90,7 @@ describe('chat federation storage', () => {
 	}
 
 	beforeAll(async () => {
-		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService] }).compile();
+		app = await Test.createTestingModule({ imports: [GlobalModule], providers: [IdService, ChatRoomChannelService, { provide: QueueService, useValue: {} }, ChatRoomNotificationService, GlobalEventService, { provide: FetchInstanceMetadataService, useValue: { chatRoomChannelsCapability: vi.fn(async () => false) } }] }).compile();
 		await app.init();
 		idService = app.get(IdService);
 		usersRepository = app.get(DI.usersRepository);
@@ -220,6 +232,61 @@ describe('chat federation storage', () => {
 		const newer = new Date('2026-11-03T00:00:10.000Z');
 		const older = new Date('2026-11-03T00:00:05.000Z');
 
+		test('채널 전환 목록을 동일 트랜잭션에서 적용하고 기존 메시지를 legacy 채널로 옮긴다', async () => {
+			const room = await createMirrorRoom();
+			const messageId = idService.gen();
+			await chatMessagesRepository.insert({ id: messageId, fromUserId: bob.id, toRoomId: room.id, text: 'before conversion' });
+			const generalUri = `${room.uri}/channels/same-number`;
+			const service = createService();
+
+			const applied = await service.updateRoom(room, {}, { federate: false, remoteUpdatedAt: newer, remoteGroup: { type: 'Group',
+				_misskey_chatChannels: [{ id: generalUri, name: 'renamed general' }], _misskey_chatLegacyChannel: generalUri,
+			} });
+
+			expect(applied.hasChannels).toBe(true);
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels).toHaveLength(1);
+			expect(channels[0].id).not.toBe('same-number');
+			expect((await chatMessagesRepository.findOneByOrFail({ id: messageId })).toRoomChannelId).toBe(channels[0].id);
+		});
+
+		test('지연된 목록이나 잘못된 목록이 최신 채널을 삭제하지 않는다', async () => {
+			const room = await createMirrorRoom();
+			const uri = `${room.uri}/channels/general`;
+			const service = createService();
+			await service.updateRoom(room, {}, { federate: false, remoteUpdatedAt: newer, remoteGroup: { type: 'Group', _misskey_chatChannels: [{ id: uri, name: 'newest' }], _misskey_chatLegacyChannel: uri } });
+
+			await service.updateRoom(room, {}, { federate: false, remoteUpdatedAt: older, remoteGroup: { type: 'Group', _misskey_chatChannels: [{ id: uri, name: 'old' }], _misskey_chatLegacyChannel: uri } });
+			await service.updateRoom(room, {}, { federate: false, remoteUpdatedAt: new Date(newer.getTime() + 1000), remoteGroup: { type: 'Group', _misskey_chatChannels: [], _misskey_chatLegacyChannel: null } });
+			await service.updateRoom(room, { name: 'unversioned' }, { federate: false });
+
+			expect((await app.get(ChatRoomChannelService).list(room.id)).map(channel => channel.name)).toEqual(['newest']);
+			expect((await chatRoomsRepository.findOneByOrFail({ id: room.id })).hasChannels).toBe(true);
+		});
+
+		test('원격 목록에서 삭제된 채널의 메시지는 삭제하고 다른 메시지의 참조 JSON은 보존한다', async () => {
+			const room = await createMirrorRoom();
+			const legacyUri = `${room.uri}/channels/general`;
+			const otherUri = `${room.uri}/channels/other`;
+			const service = createService();
+			await service.updateRoom(room, {}, { federate: false, remoteUpdatedAt: older, remoteGroup: { type: 'Group', _misskey_chatChannels: [{ id: legacyUri, name: 'general' }, { id: otherUri, name: 'other' }], _misskey_chatLegacyChannel: legacyUri } });
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			const general = channels.find(channel => channel.uri === legacyUri)!;
+			const other = channels.find(channel => channel.uri === otherUri)!;
+			const removedId = idService.gen();
+			const preservedId = idService.gen();
+			const refs = [{ channelId: other.id, uri: otherUri, start: 0, length: 2 }];
+			await chatMessagesRepository.insert([
+				{ id: removedId, fromUserId: bob.id, toRoomId: room.id, toRoomChannelId: other.id, text: 'removed' },
+				{ id: preservedId, fromUserId: bob.id, toRoomId: room.id, toRoomChannelId: general.id, text: '#가', channelRefs: refs },
+			]);
+
+			await service.updateRoom(room, {}, { federate: false, remoteUpdatedAt: newer, remoteGroup: { type: 'Group', _misskey_chatChannels: [{ id: legacyUri, name: 'renamed' }], _misskey_chatLegacyChannel: legacyUri } });
+
+			expect(await chatMessagesRepository.findOneBy({ id: removedId })).toBeNull();
+			expect((await chatMessagesRepository.findOneByOrFail({ id: preservedId })).channelRefs).toEqual(refs);
+		});
+
 		test('a delayed older update does not overwrite a newer one', async () => {
 			const room = await createMirrorRoom();
 			const service = createService();
@@ -253,6 +320,439 @@ describe('chat federation storage', () => {
 		});
 	});
 
+	describe('remote channel sections', () => {
+		async function createMirrorRoom() {
+			const id = idService.gen();
+			await chatRoomsRepository.insert({ id, name: 'initial', ownerId: bob.id, description: '', uri: `https://remote.test/chat/rooms/${id}` });
+			return chatRoomsRepository.findOneByOrFail({ id });
+		}
+
+		const newer = new Date('2026-11-03T00:00:10.000Z');
+		const older = new Date('2026-11-03T00:00:05.000Z');
+
+		function group(room: MiChatRoom, channels: { id: string; name: string }[], sections?: unknown) {
+			return {
+				type: 'Group',
+				_misskey_chatChannels: channels,
+				_misskey_chatLegacyChannel: channels[0]?.id ?? null,
+				...(sections !== undefined ? { _misskey_chatChannelSections: sections } : {}),
+			};
+		}
+
+		async function apply(room: MiChatRoom, object: unknown, at: Date) {
+			return createService().updateRoom(room, {}, { federate: false, remoteUpdatedAt: at, remoteGroup: object as never });
+		}
+
+		async function storedSections(roomId: string): Promise<MiChatRoomChannelSection[]> {
+			return app.get(DI.db).manager.find(MiChatRoomChannelSection, { where: { roomId }, order: { position: 'ASC' } });
+		}
+
+		test('유효한 섹션 목록은 지역 id로 저장하고 채널 순서를 표시 순서로 매긴다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const c3 = `${room.uri}/channels/c3`;
+			const s1 = `${room.uri}/sections/s1`;
+
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '공지' }, { id: c3, name: '자료' }], [
+				{ id: s1, name: '운영', channels: [c2, c3] },
+			]), newer);
+
+			const sections = await storedSections(room.id);
+			expect(sections).toHaveLength(1);
+			expect(sections[0]).toMatchObject({ uri: s1, name: '운영', position: 0 });
+			expect(sections[0].id).not.toBe('s1');
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.uri)).toEqual([c1, c2, c3]);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id, sections[0].id]);
+			expect(channels.map(channel => channel.position)).toEqual([0, 1, 2]);
+		});
+
+		test('섹션 이름·순서는 URI로 같은 섹션을 찾아 바꾸고 목록에 없는 섹션은 지운다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const c3 = `${room.uri}/channels/c3`;
+			const s1 = `${room.uri}/sections/s1`;
+			const s2 = `${room.uri}/sections/s2`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }, { id: c3, name: '나' }], [
+				{ id: s1, name: '첫째', channels: [c2] },
+				{ id: s2, name: '둘째', channels: [c3] },
+			]), older);
+			const before = await storedSections(room.id);
+			const firstId = before.find(section => section.uri === s1)!.id;
+
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }, { id: c3, name: '나' }], [
+				{ id: s2, name: '둘째 새 이름', channels: [c3] },
+				{ id: s1, name: '첫째', channels: [] },
+			]), newer);
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => section.uri)).toEqual([s2, s1]);
+			expect(sections.find(section => section.uri === s1)!.id).toBe(firstId);
+			expect(sections.find(section => section.uri === s2)!.name).toBe('둘째 새 이름');
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.uri)).toEqual([c1, c2, c3]);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, null, sections[0].id]);
+		});
+
+		test('섹션이 사라지면 그 채널은 섹션 없는 채널로 남는다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], []), newer);
+
+			expect(await storedSections(room.id)).toEqual([]);
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, null]);
+			expect(channels.map(channel => channel.position)).toEqual([0, 1]);
+		});
+
+		test('섹션 키가 없으면 섹션을 건드리지 않고 채널 목록만 적용한다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+			const before = await storedSections(room.id);
+
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '나' }]), newer);
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => section.id)).toEqual(before.map(section => section.id));
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.name)).toEqual(['general', '나']);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+		});
+
+		test('잘못된 섹션 필드는 지금 섹션을 유지한 채 채널 목록만 적용한다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+			const before = await storedSections(room.id);
+
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '나' }], [
+				{ id: s1, name: '운영', channels: [c1, c2] },
+				{ id: `${room.uri}/sections/s2`, name: '둘째', channels: [c2] },
+			]), newer);
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => section.id)).toEqual(before.map(section => section.id));
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.name)).toEqual(['general', '나']);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+		});
+
+		test('NUL 문자가 든 섹션 이름은 무시하고 함께 온 채널 목록만 적용한다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+			const before = await storedSections(room.id);
+
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '나' }], [
+				{ id: s1, name: '운영\u0000', channels: [c2] },
+			]), newer);
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => section.id)).toEqual(before.map(section => section.id));
+			expect(sections.map(section => section.name)).toEqual(['운영']);
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.name)).toEqual(['general', '나']);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+		});
+
+		test('NUL 문자가 든 섹션 URI는 무시하고 함께 온 채널 목록만 적용한다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+			const before = await storedSections(room.id);
+
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '다' }], [
+				{ id: `${room.uri}/sections/s\u00002`, name: '둘째', channels: [c2] },
+			]), newer);
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => section.id)).toEqual(before.map(section => section.id));
+			expect(sections.map(section => section.uri)).toEqual([s1]);
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.name)).toEqual(['general', '다']);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+		});
+
+		test('UTF-8 바이트 한도를 넘는 섹션 URI는 무시하고 함께 온 채널·그룹 갱신은 적용한다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+			const before = await storedSections(room.id);
+			const longUri = `${room.uri}/sections/${Array.from({ length: 940 }, (_, i) => String.fromCodePoint(0x800 + i)).join('')}`;
+			expect(longUri.length).toBeLessThanOrEqual(1024);
+			expect(Buffer.byteLength(longUri)).toBeGreaterThan(2700);
+
+			await createService().updateRoom(room, { name: '새 그룹 이름' }, { federate: false, remoteUpdatedAt: newer, remoteGroup: group(room, [{ id: c1, name: 'general' }, { id: c2, name: '나' }], [
+				{ id: longUri, name: '둘째', channels: [c2] },
+			]) as never });
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => [section.id, section.uri, section.name])).toEqual(before.map(section => [section.id, section.uri, section.name]));
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.name)).toEqual(['general', '나']);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+			expect(await chatRoomsRepository.findOneByOrFail({ id: room.id })).toMatchObject({ name: '새 그룹 이름', lastRemoteUpdatedAt: newer });
+		});
+
+		test('짝 없는 surrogate URI와 U+FFFD URI가 함께 와도 무시하고 채널·그룹 갱신은 적용한다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+			const before = await storedSections(room.id);
+
+			await createService().updateRoom(room, { name: '새 그룹 이름' }, { federate: false, remoteUpdatedAt: newer, remoteGroup: group(room, [{ id: c1, name: 'general' }, { id: c2, name: '나' }], [
+				{ id: `${room.uri}/sections/s\ud800`, name: 'first', channels: [] },
+				{ id: `${room.uri}/sections/s\ufffd`, name: 'second', channels: [c2] },
+			]) as never });
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => [section.id, section.uri, section.name])).toEqual(before.map(section => [section.id, section.uri, section.name]));
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.name)).toEqual(['general', '나']);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+			expect(await chatRoomsRepository.findOneByOrFail({ id: room.id })).toMatchObject({ name: '새 그룹 이름', lastRemoteUpdatedAt: newer });
+		});
+
+		test('짝 없는 surrogate 섹션 URI를 더 새 판번호로 다시 받아도 기존 섹션은 그대로다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]), older);
+			const before = await storedSections(room.id);
+			const object = group(room, [{ id: c1, name: 'general' }, { id: c2, name: '나' }], [
+				{ id: `${room.uri}/sections/s\ud800`, name: '둘째', channels: [c2] },
+			]);
+
+			await createService().updateRoom(room, { name: '새 그룹 이름' }, { federate: false, remoteUpdatedAt: newer, remoteGroup: object as never });
+			await createService().updateRoom(room, { name: '새 그룹 이름' }, { federate: false, remoteUpdatedAt: new Date(newer.getTime() + 10000), remoteGroup: object as never });
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => [section.id, section.uri, section.name])).toEqual(before.map(section => [section.id, section.uri, section.name]));
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.name)).toEqual(['general', '나']);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+			expect(await chatRoomsRepository.findOneByOrFail({ id: room.id })).toMatchObject({ name: '새 그룹 이름', lastRemoteUpdatedAt: new Date(newer.getTime() + 10000) });
+		});
+
+		test('이모지가 든 섹션 URI와 이름은 그대로 저장한다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+
+			await apply(room, group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: `${room.uri}/sections/s😀`, name: '묶음 😀', channels: [c2] },
+			]), newer);
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => [section.uri, section.name])).toEqual([[`${room.uri}/sections/s😀`, '묶음 😀']]);
+			const channels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(channels.map(channel => channel.sectionId)).toEqual([null, sections[0].id]);
+		});
+
+		test('늦게 온 옛 판번호의 섹션 목록은 통째로 버린다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const s1 = `${room.uri}/sections/s1`;
+			await apply(room, group(room, [{ id: c1, name: 'general' }], [
+				{ id: s1, name: '최신', channels: [] },
+			]), newer);
+
+			await apply(room, group(room, [{ id: c1, name: 'old' }], [
+				{ id: `${room.uri}/sections/old`, name: '옛 섹션', channels: [c1] },
+			]), older);
+
+			const sections = await storedSections(room.id);
+			expect(sections.map(section => section.name)).toEqual(['최신']);
+			expect((await app.get(ChatRoomChannelService).list(room.id)).map(channel => channel.name)).toEqual(['general']);
+		});
+
+		test('같은 활동을 두 번 받아도 결과가 같다', async () => {
+			const room = await createMirrorRoom();
+			const c1 = `${room.uri}/channels/c1`;
+			const c2 = `${room.uri}/channels/c2`;
+			const s1 = `${room.uri}/sections/s1`;
+			const object = group(room, [{ id: c1, name: 'general' }, { id: c2, name: '가' }], [
+				{ id: s1, name: '운영', channels: [c2] },
+			]);
+			await apply(room, object, newer);
+			const first = await storedSections(room.id);
+			const firstChannels = await app.get(ChatRoomChannelService).list(room.id);
+
+			await apply(room, object, newer);
+
+			const second = await storedSections(room.id);
+			const secondChannels = await app.get(ChatRoomChannelService).list(room.id);
+			expect(second.map(section => section.id)).toEqual(first.map(section => section.id));
+			expect(secondChannels.map(channel => [channel.id, channel.sectionId, channel.position])).toEqual(firstChannels.map(channel => [channel.id, channel.sectionId, channel.position]));
+		});
+	});
+
+	describe('remote room icon updates', () => {
+		let driveFilesRepository: DriveFilesRepository;
+		const iconFiles: string[] = [];
+		const newer = new Date('2026-11-03T00:00:10.000Z');
+
+		async function createRoomWithIcon() {
+			const roomId = idService.gen();
+			const iconId = idService.gen();
+			iconFiles.push(iconId);
+			await driveFilesRepository.insert({ id: iconId, userId: bob.id, userHost: 'remote.test', md5: 'icon', name: 'icon.png', type: 'image/png', size: 1, storedInternal: false, url: `https://remote.test/icons/${iconId}.png`, isLink: true });
+			await chatRoomsRepository.insert({ id: roomId, name: 'initial', ownerId: bob.id, description: '', uri: `https://remote.test/chat/rooms/${roomId}`, iconId, iconUrl: `https://local.test/files/${iconId}` });
+			return chatRoomsRepository.findOneByOrFail({ id: roomId });
+		}
+
+		async function storeRemoteIcon(uri: string) {
+			const fileId = idService.gen();
+			iconFiles.push(fileId);
+			await driveFilesRepository.insert({ id: fileId, userId: bob.id, userHost: 'remote.test', md5: 'icon', name: 'icon.png', type: 'image/png', size: 1, storedInternal: false, url: uri, uri, isLink: true });
+			return fileId;
+		}
+
+		function createStateService() {
+			const apImageService = Object.create(ApImageService.prototype) as ApImageService;
+			Object.assign(apImageService, { driveFilesRepository });
+			Object.defineProperty(apImageService, 'resolveImage', { value: vi.fn(async () => null), configurable: true, writable: true });
+			const chatService = createService();
+			Object.assign(chatService, { chatEntityService: { packRoomIcon: vi.fn(async () => ({ iconId: null, iconUrl: null, iconBlurhash: null, iconDecorations: [] })) } });
+			const stateService = Object.assign(Object.create(ApChatRoomStateService.prototype), {
+				redisClient,
+				chatRoomsRepository,
+				usersRepository,
+				chatService,
+				queueService: { createChatRoomChannelRefreshJob: vi.fn(async () => {}) },
+				roleService: { getUserPolicies: vi.fn(async () => ({ canUpdateBioMedia: true })) },
+				userEntityService: { isRemoteUser: (user: MiUser) => user.host != null },
+				apImageService,
+				driveFileEntityService: { getPublicUrl: (file: { id: string }) => `https://local.test/files/${file.id}` },
+				avatarDecorationService: { resolveChatDecorations: vi.fn(async () => undefined) },
+			}) as ApChatRoomStateService;
+			return { stateService, apImageService };
+		}
+
+		function groupUpdate(room: MiChatRoom, iconUrl: string, updated: Date) {
+			const channelUri = `${room.uri}/channels/general`;
+			return {
+				id: room.uri!, type: 'Group', name: 'renamed', updated: updated.toISOString(),
+				icon: { type: 'Image', url: iconUrl },
+				_misskey_chatChannels: [{ id: channelUri, name: 'general' }], _misskey_chatLegacyChannel: channelUri,
+			};
+		}
+
+		beforeEach(() => {
+			driveFilesRepository = app.get(DI.driveFilesRepository);
+		});
+
+		afterEach(async () => {
+			if (iconFiles.length > 0) await driveFilesRepository.delete(iconFiles.splice(0));
+		});
+
+		test.each([
+			['끝', (uri: string) => `${uri}\u0000`],
+			['앞', (uri: string) => `\u0000${uri}`],
+			['중간', (uri: string) => uri.replace('/icons/', '/ico\u0000ns/')],
+		])('아이콘 주소에 %s NUL이 있으면 아이콘만 무시하고 이름·채널·판번호는 적용한다', async (_, mutate) => {
+			const room = await createRoomWithIcon();
+			const { stateService, apImageService } = createStateService();
+			const object = groupUpdate(room, mutate(`https://remote.test/icons/${room.id}.png`), newer);
+
+			await stateService.apply(room, object);
+
+			const stored = await chatRoomsRepository.findOneByOrFail({ id: room.id });
+			expect(stored.name).toBe('renamed');
+			expect(stored.lastRemoteUpdatedAt).toEqual(newer);
+			expect(stored.hasChannels).toBe(true);
+			expect(stored.iconId).toBe(room.iconId);
+			expect(stored.iconUrl).toBe(room.iconUrl);
+			expect(apImageService.resolveImage).not.toHaveBeenCalled();
+		});
+
+		test('짝 없는 surrogate가 든 아이콘 주소는 조회에 쓰지 않고 아이콘을 그대로 둔다', async () => {
+			const room = await createRoomWithIcon();
+			const { stateService } = createStateService();
+
+			await stateService.apply(room, groupUpdate(room, `https://remote.test/icons/${room.id}\ud800.png`, newer));
+
+			const stored = await chatRoomsRepository.findOneByOrFail({ id: room.id });
+			expect(stored.name).toBe('renamed');
+			expect(stored.iconId).toBe(room.iconId);
+		});
+
+		test('올바른 이모지 pair가 든 아이콘 주소는 이미 저장된 파일을 찾아 아이콘을 바꾼다', async () => {
+			const room = await createRoomWithIcon();
+			const { stateService, apImageService } = createStateService();
+			const uri = `https://remote.test/icons/🍀-${room.id}.png`;
+			const fileId = await storeRemoteIcon(uri);
+
+			await stateService.apply(room, groupUpdate(room, uri, newer));
+
+			const stored = await chatRoomsRepository.findOneByOrFail({ id: room.id });
+			expect(stored.iconId).toBe(fileId);
+			expect(stored.iconUrl).toBe(`https://local.test/files/${fileId}`);
+			expect(apImageService.resolveImage).not.toHaveBeenCalled();
+		});
+
+		test('저장할 수 없는 아이콘 주소를 새 판번호로 다시 받아도 아이콘은 그대로다', async () => {
+			const room = await createRoomWithIcon();
+			const { stateService } = createStateService();
+			const iconUrl = `https://remote.test/icons/${room.id}.png\u0000`;
+
+			await stateService.apply(room, groupUpdate(room, iconUrl, newer));
+			await stateService.apply(room, groupUpdate(room, iconUrl, new Date(newer.getTime() + 1000)));
+
+			const stored = await chatRoomsRepository.findOneByOrFail({ id: room.id });
+			expect(stored.name).toBe('renamed');
+			expect(stored.lastRemoteUpdatedAt).toEqual(new Date(newer.getTime() + 1000));
+			expect(stored.iconId).toBe(room.iconId);
+		});
+
+		test('명시적인 아이콘 해제는 저장 불가 주소의 무시와 달리 아이콘을 비운다', async () => {
+			const room = await createRoomWithIcon();
+			const { stateService } = createStateService();
+
+			await stateService.apply(room, { id: room.uri!, type: 'Group', name: 'renamed', updated: newer.toISOString(), icon: null });
+
+			const stored = await chatRoomsRepository.findOneByOrFail({ id: room.id });
+			expect(stored.iconId).toBeNull();
+			expect(stored.iconUrl).toBeNull();
+		});
+	});
+
 	describe('invitations to a room this server has not seen', () => {
 		let carol: MiUser;
 		const createNotification = vi.fn();
@@ -262,6 +762,7 @@ describe('chat federation storage', () => {
 				[`https://local.test/users/${alice.id}`, alice],
 				[`https://local.test/users/${carol.id}`, carol],
 			]);
+			const chatService = createService();
 			const inbox = Object.assign(Object.create(ApInboxService.prototype), {
 				db: app.get(DI.db),
 				utilityService: { punyHost: (url: string) => new URL(url).host },
@@ -273,7 +774,9 @@ describe('chat federation storage', () => {
 				chatRoomInvitationsRepository,
 				idService,
 				redisClient,
-				chatService: createService(),
+				chatService,
+				apChatRoomStateService: Object.assign(Object.create(ApChatRoomStateService.prototype), { chatService }),
+				chatInviteLinkService: noChatInviteJoins(),
 				notificationService: { createNotification },
 				logger: { info: vi.fn(), warn: vi.fn() },
 			});

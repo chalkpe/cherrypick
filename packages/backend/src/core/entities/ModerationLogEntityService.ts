@@ -14,6 +14,7 @@ import { IdService } from '@/core/IdService.js';
 import type { Packed } from '@/misc/json-schema.js';
 import { redactServerSettingsLog } from '@/misc/redact-server-settings-log.js';
 import { UserEntityService } from './UserEntityService.js';
+import { ChatRoomIconEntityService } from './ChatRoomIconEntityService.js';
 
 @Injectable()
 export class ModerationLogEntityService {
@@ -23,6 +24,7 @@ export class ModerationLogEntityService {
 
 		private userEntityService: UserEntityService,
 		private idService: IdService,
+		private chatRoomIconEntityService: ChatRoomIconEntityService,
 	) {
 	}
 
@@ -40,7 +42,7 @@ export class ModerationLogEntityService {
 			createdAt: this.idService.parse(log.id).date.toISOString(),
 			type: log.type,
 			// 伏せるようにする前に残されたサーバー設定の変更履歴も、認証情報を伏せて返す
-			info: log.type === 'updateServerSettings' ? redactServerSettingsLog(log.info) : log.info,
+			info: log.type === 'updateServerSettings' ? redactServerSettingsLog(log.info) : log.type === 'deleteChatRoom' ? this.chatRoomIconEntityService.packDeletedRoom(log.info) : log.info,
 			userId: log.userId,
 			user: hint?.packedUser ?? this.userEntityService.pack(log.user ?? log.userId, null, {
 				schema: 'UserDetailedNotMe',

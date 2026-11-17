@@ -4,10 +4,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle backFallback="/chat" :reversed="tab === 'chat'" :tabs="headerTabs" :actions="headerActions">
+<PageWithHeader ref="pageEl" v-model:tab="tab" centerTitle backFallback="/chat" :backTo="channelId && channelListBack ? channelListPath(roomId!) : undefined" :reversed="split" :tabs="headerTabs" :actions="headerActions">
 	<!-- 自分が通話に入っているあいだは、通話 (ステージ) を出す。広いページではステージとチャットを左右に並べ、ステージは一つだけ作ってチャットを置く側の反対へ CSS の順序で移す。
 	狭いページではステージをいっぱいに広げ、チャットはその上に下から重ねるシートとして開く -->
-	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="[$style.chatTab, { [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }]">
+	<div v-if="tab === 'chat'" ref="chatTabEl" :style="{ '--voiceCallBottomSpacing': isMobile && isFriendly().value && !mobileFooterInFlow ? 'var(--MI-mobileFooterHeight, 0px)' : '0px' }" :class="[$style.chatTab, { [$style.single]: !split, [$style.split]: split, [$style.narrowCall]: split && voiceInOwnTab, [$style.chatLeft]: split && chatSide === 'left' }]">
 		<XStage v-if="split && room" :room="room" :call="voiceCallState" :class="$style.stage" :chatOpen="chatOpen" @toggleChat="chatOpen = !chatOpen"/>
 		<div v-if="split && voiceInOwnTab && chatOpen" ref="sheetBackdropEl" :class="$style.sheetBackdrop" @click="chatOpen = false"></div>
 		<!-- シートを開いたらすぐ中へフォーカスを移すので、v-show (フォーカスを移す watch より後に表示を切り替える) ではなく style で隠す -->
@@ -33,12 +33,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 				v-tooltip="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight"
 				class="_button" :class="[$style.chatCorner, { [$style.cornerRight]: chatSide === 'left' }]"
 				:aria-label="chatSide === 'right' ? i18n.ts._voiceCall.moveChatLeft : i18n.ts._voiceCall.moveChatRight"
+				@mousedown="keepChatInputFocus"
 				@click="swapChatSide"
 			>
 				<i :class="chatSide === 'right' ? 'ti ti-layout-sidebar' : 'ti ti-layout-sidebar-right'" aria-hidden="true"></i>
 			</button>
-			<!-- 並べているときはメッセージの欄だけを自分でスクロールさせる -->
-			<div ref="chatScrollerEl" :class="$style.chatScroller">
+			<!-- iOS Safari에서 역방향 스크롤 안의 sticky 입력란이 키보드를 열 때 사라진다.
+			입력란은 스크롤 영역 밖에 두고 메시지만 역방향으로 스크롤한다. -->
+			<div :class="[$style.chatScroller, { '_pageScrollableReversed': !split }]">
 				<!-- 通話の参加バナーはメッセージをスクロールしてもページヘッダーの下に貼り付ける -->
 				<MkStickyContainer ref="chatStickyEl" class="_spacer" style="--MI_SPACER-w: 700px;">
 					<template #header>
@@ -51,9 +53,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 						<MkResult v-else-if="fetchError != null" :type="fetchError"/>
 
+						<!-- 다른 서버의 그룹에 막 참여했으면 소유 서버의 기록을 가져오는 동안 기다린다 -->
+						<div v-else-if="messages.length === 0 && historyImportStatus === 'running'">
+							<MkLoading/>
+						</div>
+
 						<div v-else-if="messages.length === 0">
 							<div class="_gaps" style="text-align: center;">
 								<div>{{ i18n.ts._chat.noMessagesYet }}</div>
+								<div v-if="historyImportStatus === 'unavailable'" :class="$style.historyEnd">{{ i18n.ts._chat.cannotFetchMoreHistory }}</div>
 								<template v-if="user">
 									<div v-if="user.chatScope === 'followers'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromFollowers }}</div>
 									<div v-else-if="user.chatScope === 'following'">{{ i18n.ts._chat.thisUserAllowsChatOnlyFromFollowing }}</div>
@@ -75,18 +83,22 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</div>
 						</div>
 
-						<div v-else ref="timelineEl" class="_gaps" :class="{ [$style.ownScroller]: split }">
+						<div v-else ref="timelineEl" class="_gaps" :class="$style.ownScroller">
 							<div v-if="canFetchMore" :class="$style.moreRow">
 								<MkButton :class="$style.more" :wait="moreFetching" primary rounded @click="fetchMore">{{ i18n.ts.loadMore }}</MkButton>
 							</div>
+							<!-- 손에 있는 옛 글을 다 보였을 때, 소유 서버의 기록을 아직 가져오는 중인지 더 가져올 수 없는지 -->
+							<MkLoading v-else-if="historyImportStatus === 'running'" :em="true"/>
+							<div v-else-if="historyImportStatus === 'unavailable'" :class="$style.historyEnd">{{ i18n.ts._chat.cannotFetchMoreHistory }}</div>
 
+							<!-- 過去のメッセージを追加するときは、読んでいる位置を move アニメーションで動かさない。 -->
 							<TransitionGroup
 								ref="timelineItemsEl"
 								:enterActiveClass="prefer.s.animation ? $style.transition_x_enterActive : ''"
 								:leaveActiveClass="prefer.s.animation ? $style.transition_x_leaveActive : ''"
 								:enterFromClass="prefer.s.animation ? $style.transition_x_enterFrom : ''"
 								:leaveToClass="prefer.s.animation ? $style.transition_x_leaveTo : ''"
-								:moveClass="prefer.s.animation ? $style.transition_x_move : ''"
+								:moveClass="prefer.s.animation && !moreFetching ? $style.transition_x_move : ''"
 								tag="div" class="_gaps"
 							>
 								<template v-for="(item, i) in displayTimeline" :key="item.id">
@@ -95,6 +107,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 									<div v-if="item.type === 'item'" :class="{ [$style.stackedMessage]: groupPositions[i]?.first === false }">
 										<XMessage
 											:message="item.data"
+											:channels="channels"
 											:canEdit="true"
 											:roomArchived="room?.isArchived === true"
 											:firstInGroup="groupPositions[i]?.first ?? true"
@@ -121,31 +134,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</div>
 				</MkStickyContainer>
 			</div>
-			<!-- 並べているときの入力欄の置き場所。入力欄はページの下端 (footer) からここへ移ってくる。
-			v-show は描画のあと (フォーカスを戻す watch より後) に表示を切り替えるので、隠れた所へ focus() してしまう。
-			ブラウザは隠れた要素への focus() を無視するので、表示は style で描画と同時に切り替える -->
-			<div ref="paneFormHostEl" :class="$style.paneFooter" :style="split ? undefined : { display: 'none' }"></div>
-		</div>
-	</div>
-
-	<div v-if="tab === 'search'" class="_spacer" style="--MI_SPACER-w: 700px;">
-		<XSearch :userId="userId" :roomId="roomId"/>
-	</div>
-
-	<div v-else-if="tab === 'members'" class="_spacer" style="--MI_SPACER-w: 700px;">
-		<XMembers v-if="room != null" :key="membershipVersion" :room="room" @inviteUser="inviteUser"/>
-	</div>
-
-	<div v-else-if="tab === 'info'" class="_spacer" style="--MI_SPACER-w: 700px;">
-		<XInfo v-if="room != null" :room="room" @updated="room = $event" @deleting="deletingOwnRoom = $event"/>
-	</div>
-
-	<template #footer>
-		<!-- 表示は v-show ではなく style で切り替える (上の paneFormHostEl と同じ理由) -->
-		<div v-if="tab === 'chat'" :class="[$style.footer, {[$style.isFriendly]: isMobile && isFriendly().value }]" :style="split ? { display: 'none' } : undefined">
-			<!-- 入力欄は 1 つだけ作り、並べ方が変わっても作り直さずに置き場所だけを移す (並べているときはメッセージの欄の下へ)。
-			作り直すとフォーカスが外れてページ全体のショートカットが効いてしまい、変換中の文字や送信中の状態も失われる -->
-			<Teleport v-if="paneFormHostEl != null" :to="paneFormHostEl" :disabled="!split">
+			<div :class="[$style.paneFooter, { [$style.isFriendly]: !split && isMobile && isFriendly().value && !mobileFooterInFlow }]">
 				<div ref="formEl" class="_gaps" :class="$style.formArea" @compositionstart="composing = true" @compositionend="composing = false" @focusout="composing = false">
 					<Transition name="fade">
 						<div v-show="showIndicator" :class="$style.new">
@@ -154,11 +143,24 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</button>
 						</div>
 					</Transition>
-					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @sent="onSent"/>
+					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :key="channelId ?? roomId ?? userId" :channelId="channelId" :channels="channels" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @sent="onSent"/>
 				</div>
-			</Teleport>
+			</div>
 		</div>
-	</template>
+	</div>
+
+	<div v-if="tab === 'search'" class="_spacer" style="--MI_SPACER-w: 700px;">
+		<XSearch :key="roomId ?? userId" :userId="userId" :roomId="roomId" :channels="channels"/>
+	</div>
+
+	<div v-else-if="tab === 'members'" class="_spacer" style="--MI_SPACER-w: 700px;">
+		<XMembers v-if="room != null" :key="membershipVersion" :room="room" @inviteUser="inviteUser"/>
+	</div>
+
+	<div v-else-if="tab === 'info'" class="_spacer" style="--MI_SPACER-w: 700px;">
+		<XInfo v-if="room != null" :room="room" :channels="channels" :sections="sections" @updated="onRoomInfoUpdated" @channelsUpdated="emit('channelsUpdated')" @deleting="deletingOwnRoom = $event"/>
+	</div>
+
 </PageWithHeader>
 </template>
 
@@ -166,6 +168,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { ref, useTemplateRef, computed, watch, nextTick, onMounted, onBeforeUnmount, onDeactivated, onActivated, onUnmounted } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { getScrollContainer } from '@@/js/scroll.js';
+import { channelConversationPath, channelListPath } from './chat-channel-references.js';
 import XMessage from './XMessage.vue';
 import XForm from './room.form.vue';
 import XSearch from './room.search.vue';
@@ -180,12 +183,14 @@ import type { PageHeaderItem } from '@/types/page-header.js';
 import * as os from '@/os.js';
 import { globalEvents } from '@/events.js';
 import { useStream } from '@/stream.js';
+import { chatUnreadEventsActive, chatUnreadSubscriptionGap, beginChatUnreadRecheck, restoreChatUnreadGapIfUnchanged } from '@/chat-unread-subscription.js';
 import * as sound from '@/utility/sound.js';
 import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { definePage } from '@/page.js';
 import { prefer } from '@/preferences.js';
+import { refreshCurrentAccount } from '@/accounts.js';
 import MkButton from '@/components/MkButton.vue';
 import { useRouter } from '@/router.js';
 import MkInfo from '@/components/MkInfo.vue';
@@ -197,6 +202,7 @@ import { deviceKind } from '@/utility/device-kind.js';
 import { useChatRoomVoiceCall } from '@/composables/use-chat-room-voice-call.js';
 import { useChatReadingPlace } from '@/composables/use-chat-reading-place.js';
 import { useElementWidth } from '@/composables/use-element-width.js';
+import { useSoftwareKeyboard } from '@/composables/use-software-keyboard.js';
 import { focusTrap } from '@/utility/focus-trap.js';
 import { isTouchUsing } from '@/utility/touch.js';
 import { voiceCallStatusText } from '@/utility/voice-call-status.js';
@@ -212,16 +218,58 @@ const handleResize = () => {
 
 window.addEventListener('resize', handleResize);
 
+// キーボードが出ているあいだはホームインジケーターの領域も覆われるので、チャット画面では下のセーフエリアの余白を無くす。
+// この変数を書くのはこのページだけなので、ほかの画面の余白は変わらない
+const pageEl = useTemplateRef('pageEl');
+// 포커스가 이 페이지 안의 입력란에 있을 때만 키보드로 센다. 스택의 뒤에 남은 대화가 전경 화면의 입력란을 자기 것으로 세지 않는다.
+const keyboardVisible = useSoftwareKeyboard({ scope: () => pageEl.value?.$el ?? null });
+
 const $i = ensureSignin();
 const router = useRouter();
 
 const props = defineProps<{
 	userId?: string;
 	roomId?: string;
+	channelId?: string;
+	channels?: Misskey.entities.ChatRoomChannel[];
+	sections?: Misskey.entities.ChatRoomChannelSection[];
+	channelListBack?: boolean;
+	mobileFooterInFlow?: boolean;
 }>();
 
+// 스택 라우터에서는 뒤에 남은 대화가 전경 화면의 하단 안전 영역까지 바꾸지 않도록, 이 대화가 맨 앞일 때만 여백 변수를 소유한다.
+// 라우트가 이 대화인지로 맨 앞을 판단한다 (포커스 포함 관계는 감지기의 scope가 이미 본다).
+const isFrontmostConversation = computed(() => {
+	const current = router.currentRef.value;
+	if (props.userId != null) return current.route.path === '/chat/user/:userId' && current.props.get('userId') === props.userId;
+	if (props.roomId != null) {
+		// 채널 대화는 채널 경로로 열린다. 채널 화면에서도 이 대화가 맨 앞이면 여백 변수를 소유한다.
+		if (props.channelId != null) {
+			return current.route.path === '/chat/room/:roomId/channels/:channelId?'
+				&& current.props.get('roomId') === props.roomId
+				&& current.props.get('channelId') === props.channelId;
+		}
+		return current.route.path === '/chat/room/:roomId' && current.props.get('roomId') === props.roomId;
+	}
+	return false;
+});
+
+// 정리할 때는 이 인스턴스가 소유한 값만 해제한다. 뒤에 남은 다른 인스턴스의 값까지 지우지 않는다.
+let ownsFooterSafeArea = false;
+watch([keyboardVisible, isMobile, isFrontmostConversation], ([keyboard, mobile, frontmost]) => {
+	if (keyboard && mobile && frontmost) {
+		window.document.body.style.setProperty('--MI-mobileFooterSafeAreaBottom', '0px');
+		ownsFooterSafeArea = true;
+	} else if (ownsFooterSafeArea) {
+		window.document.body.style.removeProperty('--MI-mobileFooterSafeAreaBottom');
+		ownsFooterSafeArea = false;
+	}
+}, { immediate: true });
+const emit = defineEmits<{ (ev: 'channelsUpdated'): void }>();
+
 export type NormalizedChatMessage = Omit<Misskey.entities.ChatMessageLite, 'fromUser' | 'reactions'> & {
-	fromUser: Misskey.entities.UserLite;
+	// 그룹 메시지의 작성자 계정이 없어졌으면 null이고 archivedAuthor로 표시한다
+	fromUser: Misskey.entities.UserLite | null;
 	editedAt?: string | null;
 	deletedAt?: string | null;
 	reactions: (Misskey.entities.ChatMessageLite['reactions'][number] & {
@@ -249,8 +297,12 @@ function onCancelEdit() {
 }
 
 const canFetchMore = ref(false);
+// 더 불러오기로 이어 읽을 기준. 페이지로 받은 연속 구간의 가장 오래된 글이며, 실시간으로 끼어든 글과 무관하다
+let olderCursorId: string | null = null;
 const user = ref<Misskey.entities.UserDetailed | null>(null);
 const room = ref<Misskey.entities.ChatRoom | null>(null);
+// 다른 서버가 소유한 그룹의 과거 기록 가져오기
+const historyImportStatus = computed(() => room.value?.historyImportStatus ?? null);
 const joinedMemberCount = ref(0);
 const sentInvitationCount = ref(0);
 const membershipVersion = ref(0);
@@ -290,6 +342,7 @@ watch([displayTimeline, groupPositions], () => {
 // ボタンを押している途中に動かすと、ボタンが逃げて押せなくなる
 const newestMessageId = computed(() => messages.value[0]?.id);
 let wasNearNewest = true;
+let mergingHistory = false;
 
 // 描画のあとに測ると、読んでいた場所を保つためにブラウザが新着の高さの分だけ動かしたあとの位置になり、
 // 新着が高いと最下部の近くにいても遠くにいたことになってしまう。column-reverseなのでscrollTopは負になる
@@ -301,6 +354,7 @@ watch(newestMessageId, () => {
 // column-reverseなので本来はスクロール位置の最下部への追従は不要なはずだが、おそらくブラウザのバグにより、最下部にスクロールした状態でも追従されない場合がある(スクロール位置が少数になることがあるのが関わっていそう)
 // そのため補助として描画のあとに追従を行う
 watch(newestMessageId, (_newest, previous) => {
+	if (mergingHistory) return;
 	// KeepAlive で裏に回っているあいだや、ほかのタブを見ているあいだは、スクロールする箱がない
 	const scrollContainer = getScrollContainer(timelineEl.value);
 	if (scrollContainer == null) return;
@@ -348,6 +402,11 @@ function goToNewest() {
 	});
 }
 
+router.useListener('same', () => {
+	if (tab.value !== 'chat' || split.value) return;
+	getScrollContainer(timelineEl.value)?.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
 // スクロールする箱は並べ方で変わるので、箱ごとに付け替えずにまとめて受ける (scroll は上へ伝わらないがキャプチャでは受けられる)
 function onScrollWhileNotified(ev: Event) {
 	if (!showIndicator.value) return;
@@ -367,7 +426,8 @@ watch(timelineEl, el => {
 function normalizeMessage(message: Misskey.entities.ChatMessageLite | Misskey.entities.ChatMessage): NormalizedChatMessage {
 	return {
 		...message,
-		fromUser: message.fromUser ?? (message.fromUserId === $i.id ? $i : user.value!),
+		// 일대일 메시지에는 작성자가 실리지 않는다. 그룹 메시지의 null은 계정이 없어진 작성자다
+		fromUser: message.fromUser !== undefined ? message.fromUser : (message.fromUserId === $i.id ? $i : user.value!),
 		reactions: message.reactions.map(record => ({
 			...record,
 			user: record.user ?? (message.fromUserId === $i.id ? user.value! : $i),
@@ -380,195 +440,253 @@ function toFetchError(err: unknown): 'notFound' | 'error' {
 	return code === 'NO_SUCH_ROOM' || code === 'NO_SUCH_USER' ? 'notFound' : 'error';
 }
 
+let conversationVersion = 0;
+let initializingKey = '';
+let destroyed = false;
+
+function conversationKey() {
+	return `${props.userId ?? ''}:${props.roomId ?? ''}:${props.channelId ?? ''}`;
+}
+
+async function openFirstChannel(target: Misskey.entities.ChatRoom) {
+	const version = conversationVersion;
+	const key = conversationKey();
+	const list = await misskeyApi('chat/rooms/channels/list', { roomId: target.id });
+	if (destroyed || !isActivated || version !== conversationVersion || key !== conversationKey() || target.id !== props.roomId) return;
+	// 스택 라우터에서 뒤에 남은 대화는 채널형 전환 이동을 미룬다. 돌아온 시점의 재초기화가 맨 위 채널을 연다.
+	if (prefer.s['experimental.stackingRouterView'] && !isFrontmostConversation.value) return;
+	if (list[0]) router.replaceByPath(channelConversationPath(target.id, list[0].id));
+}
+
+function onRoomInfoUpdated(updated: Misskey.entities.ChatRoom) {
+	if (updated.id !== props.roomId) return;
+	room.value = updated;
+	if (updated.hasChannels && !props.channelId) void openFirstChannel(updated);
+}
+
 async function initialize() {
 	const LIMIT = 20;
-
-	if (initializing.value) return;
-
+	const key = conversationKey();
+	if (destroyed || !isActivated || (initializing.value && initializingKey === key)) return;
+	initializingKey = key;
+	const version = ++conversationVersion;
+	const sameTarget = () => !destroyed && version === conversationVersion && key === conversationKey();
+	// 스택 라우터에서 뒤에 남은 그룹 대화는 초기화 응답으로 상태를 적용하거나 안내·이동·구독 연결을 하지 않는다. 돌아온 시점에 다시 초기화한다.
+	// 1:1 대화는 뒤에서도 받은 응답을 적용하고 구독을 연결한다.
+	const current = () => sameTarget() && isActivated && (props.roomId == null || !prefer.s['experimental.stackingRouterView'] || isFrontmostConversation.value);
+	connection.value?.dispose();
+	connection.value = null;
 	initializing.value = true;
 	initialized.value = false;
 	deletingOwnRoom.value = false;
 	leavingRoom.value = false;
 	fetchError.value = null;
-
-	if (props.userId) {
-		const result = await Promise.all([
-			misskeyApi('users/show', { userId: props.userId }),
-			misskeyApi('chat/messages/user-timeline', { userId: props.userId, limit: LIMIT, includeDeleted: true }),
-		]).catch(err => {
-			fetchError.value = toFetchError(err);
-			return null;
-		});
-
-		if (result == null) {
-			initializing.value = false;
-			return;
-		}
-
-		const [u, m] = result;
-
-		user.value = u;
-		messages.value = m.map(x => normalizeMessage(x));
-
-		if (messages.value.length === LIMIT) {
-			canFetchMore.value = true;
-		}
-
-		connection.value = useStream().useChannel('chatUser', {
-			otherId: user.value.id,
-		});
-		connection.value.on('_subscribed_', readAgain);
-		connection.value.on('message', onMessage);
-		connection.value.on('deleted', onDeleted);
-		connection.value.on('react', onReact);
-		connection.value.on('unreact', onUnreact);
-		connection.value.on('updated', onUpdated);
-	} else if (props.roomId) {
-		const [rResult, mResult] = await Promise.allSettled([
-			misskeyApi('chat/rooms/show', { roomId: props.roomId }),
-			misskeyApi('chat/messages/room-timeline', { roomId: props.roomId, limit: LIMIT, includeDeleted: true }),
-		]);
-
-		if (rResult.status === 'rejected') {
-			const code = (rResult.reason as Misskey.api.APIError | null | undefined)?.code;
-			if (code === 'ROOM_DELETED') {
-				notifyRoomClosed(i18n.ts._chat.roomDeleted);
-			} else if (membershipEnded.value) {
-				// 別のページを見ているあいだに外された
-				notifyRoomClosed(i18n.ts._chat.removedFromRoom);
-			} else if (code === 'NO_SUCH_ROOM') {
-				// 外されたあとの削除はこのサーバーに届かないことがあり、削除されたのか外されただけなのかは分からない
-				notifyRoomClosed(i18n.ts._chat.roomUnavailable);
-			} else {
-				fetchError.value = toFetchError(rResult.reason);
-			}
-			initializing.value = false;
-			return;
-		}
-
-		const r = rResult.value as Misskey.entities.ChatRoomsShowResponse;
-
-		if (r.invitationExists) {
-			const confirm = await os.confirm({
-				type: 'question',
-				title: r.name,
-				text: i18n.ts._chat.youAreNotAMemberOfThisRoomButInvited + '\n' + i18n.ts._chat.doYouAcceptInvitation,
-			});
-			if (confirm.canceled) {
-				initializing.value = false;
-				router.push('/chat');
-				return;
-			} else {
+	// タイムラインの取得自体が既読にするので、その前に空白を覚えておく
+	const gapAtRead = chatUnreadSubscriptionGap();
+	messages.value = [];
+	olderCursorId = null;
+	editingMessage.value = null;
+	user.value = null;
+	room.value = null;
+	canFetchMore.value = false;
+	moreFetching.value = false;
+	latestRoomPeopleRequest++;
+	// 일대일과 그룹의 연결은 같은 이름의 쪽지 이벤트를 쓰지만 타입이 달라 연결마다 따로 등록한다
+	let userConnection: Misskey.IChannelConnection<Misskey.Channels['chatUser']> | null = null;
+	let roomConnection: Misskey.IChannelConnection<Misskey.Channels['chatRoom']> | null = null;
+	try {
+		if (props.userId) {
+			const [u, m] = await Promise.all([
+				misskeyApi('users/show', { userId: props.userId }),
+				misskeyApi('chat/messages/user-timeline', { userId: props.userId, limit: LIMIT, includeDeleted: true }),
+			]);
+			if (!current()) return;
+			user.value = u;
+			messages.value = m.map(normalizeMessage);
+			userConnection = useStream().useChannel('chatUser', { otherId: u.id });
+			connection.value = userConnection;
+		} else if (props.roomId) {
+			const r = await misskeyApi('chat/rooms/show', { roomId: props.roomId });
+			if (!current()) return;
+			if (r.invitationExists) {
+				const { canceled } = await os.confirm({ type: 'question', title: r.name, room: r, text: i18n.ts._chat.youAreNotAMemberOfThisRoomButInvited + '\n' + i18n.ts._chat.doYouAcceptInvitation });
+				if (!current()) return;
+				if (canceled) { router.push('/chat'); return; }
 				try {
 					await os.apiWithDialog('chat/rooms/join', { roomId: r.id }, undefined, chatJoinErrors);
 					globalEvents.emit('chatRoomInvitationHandled', r.id, 'joined');
 				} catch {
-					// The dialog already explained the refusal, and this page has nothing to show a non-member.
-					initializing.value = false;
-					router.push('/chat');
+					if (current()) router.push('/chat');
 					return;
 				}
-				initializing.value = false;
-				initialize();
+				if (current()) { initializing.value = false; void initialize(); }
 				return;
 			}
+			if (r.hasChannels && !props.channelId) {
+				await openFirstChannel(r);
+				return;
+			}
+			const m = await misskeyApi('chat/messages/room-timeline', { roomId: r.id, ...(props.channelId ? { channelId: props.channelId } : {}), limit: LIMIT, includeDeleted: true });
+			if (!current()) return;
+			room.value = r;
+			messages.value = m.map(normalizeMessage);
+			olderCursorId = m.at(-1)?.id ?? null;
+			void refreshRoomPeople();
+			roomConnection = useStream().useChannel('chatRoom', { roomId: r.id, ...(props.channelId ? { channelId: props.channelId } : {}) });
+			connection.value = roomConnection;
+			connection.value.on('channelsUpdated', () => {
+				// 뒤에서도 재초기화는 시작한다. 초기화가 맨 앞 판정으로 이동을 미루고, 돌아온 시점에 이어 받는다.
+				if (!sameTarget() || !isActivated) return;
+				if (props.channelId) emit('channelsUpdated');
+				else void initialize();
+			});
+			connection.value.on('roomUpdated', onRoomUpdated);
+			connection.value.on('membershipStarted', onMembershipChanged);
+			connection.value.on('membershipEnded', onMembershipEnded);
+			connection.value.on('roomDeleted', onRoomDeleted);
+			connection.value.on('historyImported', onHistoryImported);
 		}
-
-		// ルーム情報は取れても、タイムラインの取得だけ失敗することがある（通信エラーなど）
-		if (mResult.status === 'rejected') {
-			fetchError.value = toFetchError(mResult.reason);
-			initializing.value = false;
-			return;
+		if (!current()) return;
+		canFetchMore.value = messages.value.length === LIMIT;
+		if (userConnection != null) {
+			userConnection.on('_subscribed_', readAgain);
+			userConnection.on('message', payload => { if (sameTarget()) onMessage(payload); });
+			userConnection.on('deleted', payload => { if (sameTarget()) onDeleted(payload); });
+			userConnection.on('react', payload => { if (sameTarget()) onReact(payload); });
+			userConnection.on('unreact', payload => { if (sameTarget()) onUnreact(payload); });
+			userConnection.on('updated', payload => { if (sameTarget()) onUpdated(payload); });
 		}
-
-		const m = mResult.value as Misskey.entities.ChatMessagesRoomTimelineResponse;
-
-		room.value = r;
-		messages.value = m.map(x => normalizeMessage(x));
-
-		await refreshRoomPeople();
-
-		if (messages.value.length === LIMIT) {
-			canFetchMore.value = true;
+		if (roomConnection != null) {
+			roomConnection.on('_subscribed_', readAgain);
+			roomConnection.on('message', payload => { if (sameTarget()) onMessage(payload); });
+			roomConnection.on('deleted', payload => { if (sameTarget()) onDeleted(payload); });
+			roomConnection.on('react', payload => { if (sameTarget()) onReact(payload); });
+			roomConnection.on('unreact', payload => { if (sameTarget()) onUnreact(payload); });
+			roomConnection.on('updated', payload => { if (sameTarget()) onUpdated(payload); });
 		}
-
-		connection.value = useStream().useChannel('chatRoom', {
-			roomId: room.value.id,
-		});
-		connection.value.on('_subscribed_', readAgain);
-		connection.value.on('message', onMessage);
-		connection.value.on('deleted', onDeleted);
-		connection.value.on('react', onReact);
-		connection.value.on('unreact', onUnreact);
-		connection.value.on('updated', onUpdated);
-		connection.value.on('roomUpdated', onRoomUpdated);
-		connection.value.on('membershipStarted', onMembershipChanged);
-		connection.value.on('membershipEnded', onMembershipEnded);
-		connection.value.on('roomDeleted', onRoomDeleted);
+		window.document.addEventListener('visibilitychange', onVisibilitychange);
+		initialized.value = true;
+		membershipEnded.value = false;
+		recheckUnreadSign(gapAtRead);
+	} catch (err) {
+		if (!current()) return;
+		const code = (err as Misskey.api.APIError | null)?.code;
+		if (props.roomId && code === 'ROOM_DELETED') notifyRoomClosed(i18n.ts._chat.roomDeleted);
+		else if (props.roomId && membershipEnded.value) notifyRoomClosed(i18n.ts._chat.removedFromRoom);
+		else if (props.roomId && code === 'NO_SUCH_ROOM') notifyRoomClosed(membershipEnded.value ? i18n.ts._chat.removedFromRoom : i18n.ts._chat.roomUnavailable);
+		else if (props.channelId && code === 'NO_SUCH_CHANNEL') emit('channelsUpdated');
+		else fetchError.value = toFetchError(err);
+	} finally {
+		// 뒤에서 미룬 초기화도 initializing을 닫아, 돌아온 시점의 재초기화가 같은 키 재진입 가드에 막히지 않게 한다.
+		if (sameTarget()) initializing.value = false;
 	}
-
-	window.document.addEventListener('visibilitychange', onVisibilitychange);
-
-	initialized.value = true;
-	membershipEnded.value = false;
-	initializing.value = false;
 }
 
-let isActivated = true;
+watch(() => [props.userId, props.roomId, props.channelId], () => { void initialize(); });
 
-onActivated(() => {
-	isActivated = true;
-});
+// 既読になった知らせはバージョン付きイベントで届くので、購読が健康なら会話を読んだあとにアカウントを問い合わせない。
+// 聞いていないあいだに出た知らせはあとから流れてこない。リアルタイムモードを切っているあいだと、
+// ページを開いた直後やつなぎ直した直後の購読の空白がそうで、印が点いたまま残る。そのときだけサーバーへ確かめ直す。
+// 空白はこの画面の外 (chat-unread-subscription) で覚えているので、この画面を作る前に起きた空白も確かめ直せる。
+// 読み直し自身も購読と競合する。だから確かめ直すかは完了時ではなく読み直しの開始時の空白で決める
+function recheckUnreadSign(gapAtRead: boolean) {
+	if (!$i.hasUnreadChatMessages) return;
+	if (chatUnreadEventsActive() && !gapAtRead) return;
+	// 연결 상태에 따라 공백 해소·중복 억제가 달라진다. 단절 중 발행은 공백을 남겨 복구 뒤 첫 열기의 확인 의무를 유지하고,
+	// 연결 중 발행은 공백을 해소하되 실패하면 되돌린다.
+	const { issue, failToken } = beginChatUnreadRecheck();
+	if (!issue) return;
+	refreshCurrentAccount({ protectChatUnread: true, rejectOnFailure: true })
+		.catch(() => restoreChatUnreadGapIfUnchanged(failToken));
+}
+
+// 見ているページかどうか。戻ってきたときに立てるのは、下の onActivated の先頭
+let isActivated = true;
 
 onDeactivated(() => {
 	isActivated = false;
+	if (initializing.value) { conversationVersion++; initializing.value = false; }
 	showIndicator.value = false;
 });
 
 async function fetchMore() {
 	const LIMIT = 30;
-
+	const version = conversationVersion;
+	if (moreFetching.value || !messages.value.length) return;
 	moreFetching.value = true;
-
-	const newMessages = props.userId ? await misskeyApi('chat/messages/user-timeline', {
-		userId: user.value!.id,
-		limit: LIMIT,
-		untilId: messages.value[messages.value.length - 1].id,
-		includeDeleted: true,
-	}) : await misskeyApi('chat/messages/room-timeline', {
-		roomId: room.value!.id,
-		limit: LIMIT,
-		untilId: messages.value[messages.value.length - 1].id,
-		includeDeleted: true,
-	});
-
-	const earlierLoaded = readingPlace.whileLoadingEarlier();
-
-	messages.value.push(...newMessages.map(x => normalizeMessage(x)));
-
-	canFetchMore.value = newMessages.length === LIMIT;
-	moreFetching.value = false;
-
-	await nextTick();
-	earlierLoaded();
+	try {
+		const newMessages = props.userId ? await misskeyApi('chat/messages/user-timeline', {
+			userId: user.value!.id, limit: LIMIT, untilId: messages.value[messages.value.length - 1].id, includeDeleted: true,
+		}) : await misskeyApi('chat/messages/room-timeline', {
+			roomId: room.value!.id, ...(props.channelId ? { channelId: props.channelId } : {}), limit: LIMIT, untilId: olderCursorId ?? messages.value[messages.value.length - 1].id, includeDeleted: true,
+		});
+		if (destroyed || version !== conversationVersion) return;
+		const earlierLoaded = readingPlace.whileLoadingEarlier();
+		if (props.userId) {
+			messages.value.push(...newMessages.map(normalizeMessage));
+		} else {
+			// 기준 뒤에는 실시간으로 먼저 끼어든 옛 글이 있을 수 있다. 받은 페이지와 겹치지 않게 id로 합쳐 정렬한다
+			const existing = new Set(messages.value.map(message => message.id));
+			const added = newMessages.filter(message => !existing.has(message.id)).map(normalizeMessage);
+			const cursorIndex = olderCursorId == null ? -1 : messages.value.findIndex(message => message.id === olderCursorId);
+			const live = cursorIndex === -1 ? [] : messages.value.slice(cursorIndex + 1);
+			if (live.length === 0) messages.value.push(...added);
+			else messages.value = [...messages.value.slice(0, cursorIndex + 1), ...[...live, ...added].toSorted((a, b) => a.id < b.id ? 1 : -1)];
+			// 병합 등으로 이미 더 오래된 위치까지 내려간 커서는 늦게 돌아온 응답으로 되돌리지 않는다
+			const pageOldest = newMessages.at(-1)?.id;
+			if (pageOldest != null && (olderCursorId == null || pageOldest < olderCursorId)) {
+				olderCursorId = pageOldest;
+			}
+		}
+		canFetchMore.value = newMessages.length === LIMIT;
+		await nextTick();
+		earlierLoaded();
+	} catch (err) {
+		if (!destroyed && version === conversationVersion) {
+			if ((err as Misskey.api.APIError | null)?.code === 'NO_SUCH_CHANNEL') emit('channelsUpdated');
+			else os.alert({ type: 'error', text: i18n.ts._chat.actionFailed });
+		}
+	} finally {
+		if (version === conversationVersion) moreFetching.value = false;
+	}
 }
 
+// 見ていないあいだに届いたメッセージは、見に戻ったときに既読にする。サーバーは会話ごとに既読にするので、最後の一通を伝えれば足りる
+let arrivedWhileAway: NormalizedChatMessage['id'] | null = null;
+
 function onMessage(message: Misskey.entities.ChatMessageLite) {
+	if (props.roomId && message.toRoomId != null && message.toRoomId !== props.roomId) return;
+	if (props.channelId && message.toRoomChannelId !== props.channelId) return;
 	// 読み直しのほうが先に届けていることがある
 	if (messages.value.some(m => m.id === message.id)) return;
 
-	sound.playMisskeySfx('chatMessage');
+	if (!('shouldNotify' in message) || message.shouldNotify !== false) sound.playMisskeySfx('chatMessage');
 
 	// 読み直しで手元にもっと新しいものが入っていても、順番を崩さない
 	const index = messages.value.findIndex(m => m.id < message.id);
 	messages.value.splice(index === -1 ? messages.value.length : index, 0, normalizeMessage(message));
 
-	// TODO: DOM的にバックグラウンドになっていないかどうかも考慮する
-	if (message.fromUserId !== $i.id && !window.document.hidden && isActivated) {
-		connection.value?.send('read', {
-			id: message.id,
-		});
+	if (message.fromUserId !== $i.id) {
+		// TODO: DOM的にバックグラウンドになっていないかどうかも考慮する
+		if (!window.document.hidden && isActivated) {
+			connection.value?.send('read', {
+				id: message.id,
+			});
+		} else {
+			arrivedWhileAway = message.id;
+		}
 	}
+}
+
+function readWhatArrivedWhileAway() {
+	if (arrivedWhileAway == null || !isActivated || window.document.hidden) return;
+
+	connection.value?.send('read', {
+		id: arrivedWhileAway,
+	});
+	arrivedWhileAway = null;
+	// 이어서 실행하는 catchUp에서 읽기 완료와 계정의 미읽음 상태를 함께 확인한다.
+	eventsMayBeMissing = true;
 }
 
 function onDeleted(id: string) {
@@ -614,13 +732,15 @@ function onUnreact(ctx: Parameters<Misskey.Channels['chatUser']['events']['unrea
 	}
 }
 
-function onUpdated(ctx: Parameters<Misskey.Channels['chatUser']['events']['updated']>[0]) {
+function onUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['updated']>[0] & { shouldNotify?: boolean }) {
 	noteChangeDuringRead();
 	const message = messages.value.find(m => m.id === ctx.messageId);
 	if (message && !message.deletedAt) {
 		if (message.editedAt && Date.parse(ctx.editedAt) <= Date.parse(message.editedAt)) return;
+		if (ctx.shouldNotify === true) sound.playMisskeySfx('chatMessage');
 		message.text = ctx.text;
 		message.editedAt = ctx.editedAt;
+		if (ctx.channelRefs != null) message.channelRefs = ctx.channelRefs;
 		if (ctx.emojis != null) message.emojis = ctx.emojis;
 	}
 }
@@ -633,6 +753,14 @@ function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['r
 		name: ctx.name,
 		description: ctx.description,
 		isArchived: ctx.isArchived,
+		allowRecording: ctx.allowRecording,
+		// 아이콘 필드는 아이콘이나 장식이 바뀐 갱신에만 함께 온다.
+		...(ctx.iconUrl !== undefined ? {
+			iconId: ctx.iconId,
+			iconUrl: ctx.iconUrl,
+			iconBlurhash: ctx.iconBlurhash,
+			iconDecorations: ctx.iconDecorations,
+		} : {}),
 	};
 }
 
@@ -660,7 +788,7 @@ async function refreshRoomPeople() {
 			misskeyApi('chat/rooms/invitations/outbox', { roomId: target.id, limit: 50 }),
 		]);
 		// 遅れて返ってきた古い人数で、新しい人数を置き換えない
-		if (request !== latestRoomPeopleRequest) return;
+		if (request !== latestRoomPeopleRequest || target.id !== room.value?.id || destroyed) return;
 		joinedMemberCount.value = members.filter(member => member.userId !== target.ownerId).length;
 		sentInvitationCount.value = invitations.length;
 	} catch {
@@ -676,14 +804,86 @@ function onMembershipEnded(ctx: Parameters<Misskey.Channels['chatRoom']['events'
 	closeRoom();
 	// 自分で退出したときは、退出の結果として leaveRoom が移動する
 	if (leavingRoom.value) return;
-	if (isActivated) notifyRoomClosed(i18n.ts._chat.removedFromRoom);
+	// 스택 라우터에서 뒤에 남은 대화는 안내·이동을 미룬다. 돌아온 시점의 재초기화가 퇴장을 확인해 안내한다.
+	if (isActivated && (!prefer.s['experimental.stackingRouterView'] || isFrontmostConversation.value)) notifyRoomClosed(i18n.ts._chat.removedFromRoom);
+}
+
+// 가져온 옛 글은 새 글로 알려지지 않는다. 진행을 알려 오면 옛 글을 다시 읽을 수 있게 한다
+function onHistoryImported(ctx: Parameters<Misskey.Channels['chatRoom']['events']['historyImported']>[0]) {
+	if (room.value == null) return;
+	if (messages.value.length > 0 && ctx.status === 'completed') {
+		void refreshImportedHistory();
+	} else {
+		room.value = { ...room.value, historyImportStatus: ctx.status };
+		if (messages.value.length > 0) return;
+		readAgain();
+	}
+}
+
+let refreshingImportedHistory = false;
+let importedHistoryRefreshPending = false;
+
+async function refreshImportedHistory() {
+	importedHistoryRefreshPending = true;
+	if (refreshingImportedHistory) return;
+	refreshingImportedHistory = true;
+	try {
+		while (importedHistoryRefreshPending && room.value != null && messages.value.length > 0) {
+			importedHistoryRefreshPending = false;
+			const version = conversationVersion;
+			const roomId = room.value.id;
+			const channelId = props.channelId;
+			const oldest = messages.value[messages.value.length - 1].id;
+			const imported: Misskey.entities.ChatMessageLiteForRoom[] = [];
+			let untilId: string | undefined;
+			try {
+				for (;;) {
+					// untilDate / untilId を付けると、履歴の再取得で既読にならない。未来の日付はサーバーの現在時刻に丸められる。
+					const page = await misskeyApi('chat/messages/room-timeline', {
+						roomId, ...(channelId ? { channelId } : {}), limit: 100, includeDeleted: true,
+						...(untilId ? { untilId } : { untilDate: Number.MAX_SAFE_INTEGER }),
+					});
+					if (destroyed || version !== conversationVersion) return;
+					imported.push(...page);
+					const last = page.at(-1)?.id;
+					if (page.length < 100 || last == null || last <= oldest || last === untilId) break;
+					untilId = last;
+				}
+			} catch {
+				// 取得できなかった範囲は、次の読み直しで再試行できる。
+				if (!destroyed && version === conversationVersion && room.value != null) {
+					room.value = { ...room.value, historyImportStatus: 'completed' };
+					canFetchMore.value = true;
+				}
+				return;
+			}
+			const existing = new Set(messages.value.map(message => message.id));
+			const added = imported.filter(message => !existing.has(message.id)).map(normalizeMessage);
+			const restore = readingPlace.whileMergingHistory();
+			mergingHistory = true;
+			room.value = { ...room.value!, historyImportStatus: 'completed' };
+			canFetchMore.value = true;
+			messages.value = [...messages.value, ...added].toSorted((a, b) => a.id < b.id ? 1 : -1);
+			// 더 불러오기 기준은 이번에 받은 페이지의 끝으로 옮긴다. 화면 배열 끝은 실시간으로 끼어든 글일 수 있어 연속 구간의 증거가 아니다. 이미 더 오래된 위치까지 받은 커서는 되돌리지 않는다
+			const mergedOldest = imported.at(-1)?.id;
+			if (mergedOldest != null && (olderCursorId == null || mergedOldest < olderCursorId)) {
+				olderCursorId = mergedOldest;
+			}
+			await nextTick();
+			restore();
+			mergingHistory = false;
+		}
+	} finally {
+		refreshingImportedHistory = false;
+	}
 }
 
 function onRoomDeleted() {
 	closeRoom();
 	// 自分で削除したときは、削除の結果として room.info.vue が移動する
 	if (deletingOwnRoom.value) return;
-	if (isActivated) {
+	// 스택 라우터에서 뒤에 남은 대화는 기존 미룸 표식을 세우고, 돌아온 시점에 한 번 안내한다.
+	if (isActivated && (!prefer.s['experimental.stackingRouterView'] || isFrontmostConversation.value)) {
 		notifyRoomClosed(i18n.ts._chat.roomDeleted);
 	} else {
 		roomDeletedWhileInactive = true;
@@ -722,6 +922,7 @@ function notifyNewMessage() {
 
 function onVisibilitychange() {
 	if (window.document.hidden) return;
+	readWhatArrivedWhileAway();
 	catchUp();
 }
 
@@ -742,6 +943,8 @@ function noteChangeDuringRead() {
 async function catchUp() {
 	// タイムラインを取得すると既読になるので、見ていないあいだは見に戻るまで待つ
 	if (readingAgain || !eventsMayBeMissing || !initialized.value || !isActivated || window.document.hidden) return;
+	// 스택 라우터에서 뒤에 남은 대화의 복구 읽기는 미룬다. 현재 경로로 돌아온 시점에 이어서 읽는다.
+	if (prefer.s['experimental.stackingRouterView'] && !isFrontmostConversation.value) return;
 	eventsMayBeMissing = false;
 
 	readingAgain = true;
@@ -758,16 +961,21 @@ async function catchUp() {
 /** @returns 一時的な失敗で読めなかったときは false */
 async function readLatest(): Promise<boolean> {
 	const LIMIT = 20;
+	// こちらも取得自体が既読にするので、その前に空白を覚えておく
+	const gapAtRead = chatUnreadSubscriptionGap();
+	const version = conversationVersion;
 	let r: Misskey.entities.ChatRoomsShowResponse | null;
 	let m: (Misskey.entities.ChatMessageLite | Misskey.entities.ChatMessage)[];
 	try {
 		[r, m] = await Promise.all([
 			props.roomId ? misskeyApi('chat/rooms/show', { roomId: props.roomId }) : null,
 			props.roomId
-				? misskeyApi('chat/messages/room-timeline', { roomId: props.roomId, limit: LIMIT, includeDeleted: true })
+				? misskeyApi('chat/messages/room-timeline', { roomId: props.roomId, ...(props.channelId ? { channelId: props.channelId } : {}), limit: LIMIT, includeDeleted: true })
 				: misskeyApi('chat/messages/user-timeline', { userId: props.userId!, limit: LIMIT, includeDeleted: true }),
 		]);
 	} catch (err) {
+		if (destroyed || version !== conversationVersion) return true;
+		if ((err as Misskey.api.APIError | null)?.code === 'NO_SUCH_CHANNEL') { emit('channelsUpdated'); return true; }
 		// 一時的な失敗なら、次の機会まで今の表示のままにする
 		const code = (err as Misskey.api.APIError | null | undefined)?.code;
 		if (code !== 'NO_SUCH_ROOM' && code !== 'ROOM_DELETED') {
@@ -775,12 +983,17 @@ async function readLatest(): Promise<boolean> {
 			return false;
 		}
 		if (!initialized.value || leavingRoom.value || deletingOwnRoom.value) return true;
+		// 조회 도중 다른 화면으로 바뀌었으면 이 응답으로 닫거나 이동하지 않고, 돌아온 시점으로 미룬다.
+		if (prefer.s['experimental.stackingRouterView'] && !isFrontmostConversation.value) {
+			eventsMayBeMissing = true;
+			return true;
+		}
 		// 外されたか、削除された。どちらなのかと、また招待されているかどうかは initialize が確かめて案内する
 		closeRoom();
 		if (isActivated) initialize();
 		return true;
 	}
-	if (!initialized.value) return true;
+	if (!initialized.value || destroyed || version !== conversationVersion) return true;
 
 	const latest = m.map(x => normalizeMessage(x));
 	const latestIds = new Set(latest.map(x => x.id));
@@ -788,13 +1001,17 @@ async function readLatest(): Promise<boolean> {
 	const hasGap = latest.length === LIMIT && !messages.value.some(x => x.id === latest[LIMIT - 1].id);
 	const kept = messages.value.filter(x => !latestIds.has(x.id) && (!hasGap || x.id > latest[0].id));
 	messages.value = [...kept, ...latest].toSorted((a, b) => a.id < b.id ? 1 : -1);
-	if (hasGap) canFetchMore.value = true;
+	if (hasGap) {
+		canFetchMore.value = true;
+		olderCursorId = latest.at(-1)?.id ?? null;
+	}
 	if (messages.value.find(x => x.id === editingMessage.value?.id)?.deletedAt != null) editingMessage.value = null;
 
 	if (r != null) {
 		room.value = r;
 		onMembershipChanged();
 	}
+	recheckUnreadSign(gapAtRead);
 	return true;
 }
 
@@ -816,6 +1033,10 @@ onUnmounted(() => {
 });
 
 onActivated(() => {
+	// ルーターはページを非同期コンポーネントに包んでキャッシュする。そのとき Vue は onActivated をページが登録したのと逆の順に呼ぶので、
+	// 別の onActivated で立てると、戻ってきたときの処理が「まだ見ていない」と判断して何もしない。同じ場所で先に立てる
+	isActivated = true;
+
 	if (roomDeletedWhileInactive) {
 		roomDeletedWhileInactive = false;
 		notifyRoomClosed(i18n.ts._chat.roomDeleted);
@@ -824,15 +1045,51 @@ onActivated(() => {
 	if (!initialized.value) {
 		initialize();
 	} else {
+		readWhatArrivedWhileAway();
 		catchUp();
+		// 실패한 보호 확인이 공백을 되돌렸다면, 다시 들어온 이 대화가 확인 의무를 이어받는다.
+		// catchUp이 읽기를 시작했다면 그 읽기가 시작 시점의 공백을 보고 확인하므로, 여기서는 겹쳐 발행하지 않는다.
+		if (!readingAgain && chatUnreadSubscriptionGap()) recheckUnreadSign(true);
 	}
 });
 
+// 스택 라우터는 뒤에 남은 대화를 언마운트/비활성화하지 않으므로 onActivated가 오지 않는다.
+// 전경으로 돌아온 순간(라우트가 이 대화로 복귀)이 재진입 시점이다. 읽기가 진행 중이면 그 읽기가
+// 시작 시점의 공백을 보고 확인하므로 겹쳐 발행하지 않는다. 공백 확인은 KeepAlive 경로의 onActivated와
+// 같은 판정을 공유하므로, 먼저 발행한 쪽이 공백을 해소하면 다른 쪽은 건너뛴다.
+watch(isFrontmostConversation, (frontmost, wasFrontmost) => {
+	if (!frontmost || wasFrontmost) return;
+	if (prefer.s['experimental.stackingRouterView']) {
+		// 뒤에 있는 동안 미룬 삭제 안내는 돌아온 시점에 한 번 띄운다 (KeepAlive의 onActivated와 같은 처리).
+		if (roomDeletedWhileInactive) {
+			roomDeletedWhileInactive = false;
+			notifyRoomClosed(i18n.ts._chat.roomDeleted);
+			return;
+		}
+		// 스택 라우터는 뒤에 남은 대화를 비활성화하지 않으므로 onActivated가 오지 않는다. 돌아온 시점에 미룬 읽기를 이어 한다.
+		catchUp();
+		// 닫힌 그룹 대화는 돌아온 시점에 다시 초기화한다. 진행 중인 초기화는 그 응답이 이어 받는다.
+		if (props.roomId != null && !initialized.value && !initializing.value) {
+			void initialize();
+			return;
+		}
+	}
+	if (!initialized.value || readingAgain) return;
+	if (chatUnreadSubscriptionGap()) recheckUnreadSign(true);
+});
+
 onBeforeUnmount(() => {
+	destroyed = true;
+	conversationVersion++;
+	latestRoomPeopleRequest++;
 	connection.value?.dispose();
 	listChannel?.dispose();
 	useStream().off('_connected_', readAgain);
 	window.document.removeEventListener('visibilitychange', onVisibilitychange);
+	if (ownsFooterSafeArea) {
+		window.document.body.style.removeProperty('--MI-mobileFooterSafeAreaBottom');
+		ownsFooterSafeArea = false;
+	}
 });
 
 async function inviteUser() {
@@ -851,6 +1108,7 @@ async function leaveRoom() {
 	const { canceled } = await os.confirm({
 		type: 'warning',
 		text: i18n.tsx._chat.leaveRoomConfirm({ name: room.value.name }),
+		room: room.value,
 	});
 	if (canceled) return;
 
@@ -881,6 +1139,14 @@ function showMenu(ev: PointerEvent) {
 					},
 				});
 			}
+			// 초대 링크는 정보 탭에서 관리한다. 보관 중에도 링크를 볼 수 있다
+			menuItems.push({
+				text: i18n.ts._chat._inviteLink.title,
+				icon: 'ti ti-link',
+				action: () => {
+					tab.value = 'info';
+				},
+			});
 			// 削除は情報タブにある。メニューから探す人のために、そこへの道を置く
 			menuItems.push({
 				text: i18n.ts._chat.roomInfoAndDelete,
@@ -991,61 +1257,26 @@ function onSheetEsc(ev: KeyboardEvent) {
 	if (split.value && voiceInOwnTab.value) chatOpen.value = false;
 }
 
-// スクロール先を付け替える前の位置を覚え、描画直後・次のフレームより前に column-reverse の位置を揃える。
-const pageEl = useTemplateRef('pageEl');
 const chatStickyEl = useTemplateRef('chatStickyEl');
-const chatScrollerEl = useTemplateRef('chatScrollerEl');
-let scrollToRestore = 0;
-
-function currentChatScroller(isSplit: boolean) {
-	return isSplit ? chatScrollerEl.value : getScrollContainer(chatScrollerEl.value?.parentElement ?? null);
-}
-
-watch(split, (_next, previous) => {
-	scrollToRestore = currentChatScroller(previous)?.scrollTop ?? 0;
-}, { flush: 'pre' });
-watch(split, next => {
-	// footer とカードの高さも即時に測り直す。通常の ResizeObserver は 100ms 待つため、それだけでは一瞬ずれる。
+watch(split, () => {
+	// 배치가 바뀌면 배너와 페이지 헤더의 높이를 바로 다시 잰다.
 	pageEl.value?.refreshStickyLayout();
 	chatStickyEl.value?.refresh();
-	const scroller = currentChatScroller(next);
-	if (scroller != null) scroller.scrollTop = scrollToRestore;
 }, { flush: 'post' });
 
-// 入力欄を移すと (要素の付け替えで) フォーカスが外れるので、移す前にフォーカスと選択範囲を覚えておき、移したあとに戻す。
-// 戻すのは描画のあと (flush: 'post')。そのときには入力欄の置き場所の表示も描画で切り替わっている
-const paneFormHostEl = useTemplateRef('paneFormHostEl');
 const formEl = useTemplateRef('formEl');
 const chatFormEl = useTemplateRef('chatFormEl');
-let focusToRestore: { el: HTMLElement; selection: [number, number, 'forward' | 'backward' | 'none'] | null } | null = null;
-
-watch(split, () => {
-	const active = window.document.activeElement;
-	if (formEl.value == null || !(active instanceof HTMLElement) || !formEl.value.contains(active)) {
-		focusToRestore = null;
-		return;
-	}
-	focusToRestore = {
-		el: active,
-		selection: active instanceof HTMLTextAreaElement ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null,
-	};
-}, { flush: 'pre' });
-
-watch(split, () => {
-	const target = focusToRestore;
-	focusToRestore = null;
-	if (target == null || !target.el.isConnected || window.document.activeElement === target.el) return;
-	target.el.focus({ preventScroll: true });
-	if (target.selection != null && target.el instanceof HTMLTextAreaElement) {
-		target.el.setSelectionRange(...target.selection);
-	}
-}, { flush: 'post' });
 
 // 設定が変わったらすぐ並びを変えたいので、変更を追える prefer.r を見る
 const chatSide = computed(() => prefer.r['voiceCall.stageChatSide'].value);
 
 function swapChatSide() {
 	prefer.commit('voiceCall.stageChatSide', chatSide.value === 'right' ? 'left' : 'right');
+}
+
+// このページの入力欄はメッセージ入力だけ。送信ボタンと同じく、入力中のフォーカスを奪わない (ソフトウェアキーボードはフォーカスについてくる)
+function keepChatInputFocus(ev: MouseEvent) {
+	if (window.document.activeElement instanceof HTMLTextAreaElement) ev.preventDefault();
 }
 
 // 検索はメニューから開く。開いているあいだだけタブにも出し、いまどこにいるかを分かるようにする
@@ -1073,22 +1304,27 @@ const headerTabs = computed(() => room.value ? [{
 	icon: 'ti ti-messages',
 }, ...searchTab.value]);
 
-// ヘッダーの参加ボタン。メッセージのタブでは参加バナーから参加できるので出さない。
-// ほかのタブにはバナーが無いので、自分が通話にいなければいつでも出す
-const showHeaderJoin = computed(() => {
+// 参加バナーは誰かが通話中 (または relay が到達不能) のときだけ出す。誰も通話していなければ開始はヘッダーのボタンに任せる
+const joinPanelVisible = computed(() => voiceCallState.participants.value.length > 0 || voiceCallState.providerUnavailable.value);
+
+// ヘッダーの通話ボタン。参加バナーが出ていないとき (誰も通話していないメッセージタブ、またはバナーの無いほかのタブ) に出す
+const showHeaderCall = computed(() => {
 	if (!voiceCallState.available.value || voiceCallState.inThisCall.value) return false;
-	return tab.value !== 'chat';
+	return tab.value !== 'chat' || !joinPanelVisible.value;
 });
 
+// ヘッダーの通話ボタンは押すとすぐ通話を始める。マイクは保存された入/切をそのまま使い、通話中のマイクボタンで変える
+async function startCallFromHeader() {
+	await voiceCallState.join();
+	// 通話に入れたときだけメッセージのタブへ。やめたり失敗したりしたのに読んでいたタブから追い出さない
+	if (voiceCallState.inThisCall.value) tab.value = 'chat';
+}
+
 const headerActions = computed<PageHeaderItem[]>(() => [
-	...(showHeaderJoin.value ? [{
+	...(showHeaderCall.value ? [{
 		icon: 'ti ti-phone',
 		text: voiceCallState.participants.value.length > 0 ? i18n.ts._voiceCall.join : i18n.ts._voiceCall.start,
-		handler: async () => {
-			await voiceCallState.join();
-			// 通話に入れたときだけメッセージのタブへ。やめたり失敗したりしたのに読んでいたタブから追い出さない
-			if (voiceCallState.inThisCall.value) tab.value = 'chat';
-		},
+		handler: startCallFromHeader,
 	}] : []),
 	{
 		icon: 'ti ti-dots',
@@ -1098,9 +1334,11 @@ const headerActions = computed<PageHeaderItem[]>(() => [
 ]);
 
 definePage(computed(() => {
+	const footerMetadata = props.mobileFooterInFlow ? { mobileFooterInFlow: true } : {};
 	if (initialized.value) {
 		if (user.value) {
 			return {
+				...footerMetadata,
 				userName: user.value,
 				title: user.value.name ? `${user.value.name} (@${user.value.username})` : `@${user.value.username}`,
 				subtitle: `@${getAcct(user.value)}`,
@@ -1108,18 +1346,22 @@ definePage(computed(() => {
 			};
 		} else if (room.value) {
 			return {
-				title: room.value.name,
-				titleAsMfm: true,
+				...footerMetadata,
+				title: props.channelId ? `#${props.channels?.find(channel => channel.id === props.channelId)?.name ?? ''}` : room.value.name,
+				subtitle: props.channelId ? room.value.name : undefined,
+				titleAsMfm: !props.channelId,
 				titleMfmAuthor: room.value.owner,
-				icon: 'ti ti-users',
+				roomAvatar: room.value,
 			};
 		} else {
 			return {
+				...footerMetadata,
 				title: i18n.ts.directMessage,
 			};
 		}
 	} else {
 		return {
+			...footerMetadata,
 			title: i18n.ts.directMessage,
 		};
 	}
@@ -1166,11 +1408,35 @@ definePage(computed(() => {
 	margin: 0 auto;
 }
 
+.historyEnd {
+	overflow-anchor: none;
+	text-align: center;
+	font-size: 0.9em;
+	opacity: 0.7;
+}
+
 .emptyActions {
 	display: flex;
 	flex-wrap: wrap;
 	justify-content: center;
 	gap: 8px;
+}
+
+// 일반 채팅과 분할 통화 모두 메시지만 스크롤하고 입력란은 아래에 둔다.
+.single {
+	height: calc(100cqh - var(--MI-stickyTop, 0px) - var(--MI-stickyBottom, 0px));
+
+	.chatPane {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		min-height: 0;
+	}
+
+	.chatScroller {
+		--MI-stickyTop: 0px;
+		--MI-stickyBottom: 0px;
+	}
 }
 
 // 左右に並べるときは、ページヘッダーと下端の間 (スクロールしない高さ) にちょうど収める
@@ -1200,18 +1466,17 @@ definePage(computed(() => {
 		border-left: none;
 		border-right: solid 0.5px var(--MI_THEME-divider);
 	}
+}
 
-	// ページと同じく、新しいメッセージが下に来るよう逆向きにスクロールさせる
-	.chatScroller {
-		display: flex;
-		flex: 1;
-		flex-direction: column-reverse;
-		min-height: 0;
-		overflow-y: scroll;
-		overscroll-behavior: contain;
-		container-type: inline-size;
-		background: var(--MI_THEME-bg);
-	}
+.chatScroller {
+	display: flex;
+	flex: 1;
+	flex-direction: column-reverse;
+	min-height: 0;
+	overflow-y: scroll;
+	overscroll-behavior: contain;
+	container-type: inline-size;
+	background: var(--MI_THEME-bg);
 }
 
 // メッセージの欄だけがスクロールするので、アイコンはページヘッダーではなく欄の上端を基準に貼り付ける
@@ -1222,14 +1487,10 @@ definePage(computed(() => {
 .paneFooter {
 	flex-shrink: 0;
 	padding-top: 8px;
-}
-
-.footer {
 	width: 100%;
-	padding-top: 8px;
 
 	&.isFriendly {
-		padding-bottom: calc(50px + env(safe-area-inset-bottom));
+		padding-bottom: calc(50px + var(--MI-mobileFooterSafeAreaBottom, env(safe-area-inset-bottom, 0px)));
 	}
 }
 

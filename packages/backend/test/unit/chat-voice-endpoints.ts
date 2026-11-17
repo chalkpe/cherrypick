@@ -11,6 +11,7 @@ import KickEndpoint, { meta as kickMeta } from '@/server/api/endpoints/chat/room
 import MuteEndpoint, { meta as muteMeta } from '@/server/api/endpoints/chat/rooms/voice/mute.js';
 import { meta as statusMeta } from '@/server/api/endpoints/chat/rooms/voice/status.js';
 import { ChatService } from '@/core/ChatService.js';
+import { MiChatRoomMembership, MiChatRoomUserSettings } from '@/models/_.js';
 import { MetaEntityService } from '@/core/entities/MetaEntityService.js';
 import { RemoteVoiceCallError } from '@/core/RemoteVoiceCallService.js';
 import { VoiceRelayError } from '@/core/VoiceRelayClient.js';
@@ -421,6 +422,7 @@ function chatServiceFixture() {
 	const service = Object.assign(Object.create(ChatService.prototype), {
 		liveKitService,
 		globalEventService: { publishChatRoomStream: vi.fn(), publishMainStream: vi.fn() },
+		chatRoomNotificationService: { notify: vi.fn<(userIds: string[]) => Promise<void>>(async () => {}), clearRoom: vi.fn(async () => {}) },
 		chatRosterService: chatRosterOver(forgetfulRedis()),
 		chatRoomInvitationsRepository: { findBy: vi.fn(async () => []) },
 		chatRoomMembershipsRepository: {
@@ -448,12 +450,17 @@ function chatServiceFixture() {
 			isRemoteUser: (user: { host: string | null }) => user.host != null,
 		},
 	});
+	const deleted: unknown[] = [];
 	service.db = { transaction: async <T>(callback: (manager: unknown) => Promise<T>) => callback({
 		findOne: async () => room,
 		withRepository: (repository: unknown) => repository,
-		delete: async (_entity: unknown, where: unknown) => service.chatRoomMembershipsRepository.delete(where),
+		delete: async (entity: unknown, where: unknown) => {
+			if (entity === MiChatRoomMembership) return service.chatRoomMembershipsRepository.delete(where);
+			deleted.push(entity);
+			return { affected: 0 };
+		},
 	}) };
-	return { service, liveKitService, room };
+	return { service, liveKitService, room, deleted };
 }
 
 describe.each([
@@ -501,6 +508,17 @@ describe('ChatService room control publication', () => {
 		expect(log).not.toHaveBeenCalled();
 		log.mockRestore();
 		expect(publish).toHaveBeenCalledExactlyOnceWith('r1', 'membershipEnded', { userId: 'u1' });
+	});
+
+	test('leaving clears my unread flags and deletes notification settings in the same transaction', async () => {
+		const f = chatServiceFixture();
+		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+		await f.service.leaveRoom('u1', 'r1');
+		log.mockRestore();
+
+		expect(f.deleted).toEqual([MiChatRoomUserSettings]);
+		expect(f.service.chatRoomNotificationService.clearRoom).toHaveBeenCalledWith('r1', ['u1']);
+		expect(f.service.chatRoomNotificationService.notify).toHaveBeenCalledWith(['u1']);
 	});
 
 	test('failed membership deletion never publishes a control event', async () => {

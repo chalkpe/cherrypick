@@ -30,6 +30,7 @@ import { WellKnownServerService } from './WellKnownServerService.js';
 import { FileServerService } from './FileServerService.js';
 import { HealthServerService } from './HealthServerService.js';
 import { LiveKitServerService } from './LiveKitServerService.js';
+import { RecordingDownloadServerService } from './RecordingDownloadServerService.js';
 import { ClientServerService } from './web/ClientServerService.js';
 import { OpenApiServerService } from './api/openapi/OpenApiServerService.js';
 import { OAuth2ProviderService } from './oauth/OAuth2ProviderService.js';
@@ -69,6 +70,7 @@ export class ServerService implements OnApplicationShutdown {
 		private fileServerService: FileServerService,
 		private healthServerService: HealthServerService,
 		private liveKitServerService: LiveKitServerService,
+		private recordingDownloadServerService: RecordingDownloadServerService,
 		private clientServerService: ClientServerService,
 		private globalEventService: GlobalEventService,
 		private loggerService: LoggerService,
@@ -169,6 +171,7 @@ export class ServerService implements OnApplicationShutdown {
 		fastify.register(this.oauth2ProviderService.createRevokeServer, { prefix: '/oauth/revoke' });
 		fastify.register(this.healthServerService.createServer, { prefix: '/healthz' });
 		fastify.register(this.liveKitServerService.createServer, { prefix: '/livekit' });
+		fastify.register(this.recordingDownloadServerService.createServer);
 
 		fastify.get<{ Params: { path: string }; Querystring: { static?: any; badge?: any; }; }>('/emoji/:path(.*)', async (request, reply) => {
 			const path = request.params.path;

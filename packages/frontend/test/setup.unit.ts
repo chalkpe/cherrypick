@@ -68,6 +68,10 @@ export const preferState: Record<string, unknown> = {
 	showAvatarDecorations: true,
 	showRemoteAvatarDecorations: true,
 	friendlyUiShowAvatarDecorationsInNavBtn: false,
+
+	// チャットのリアクションはこの2つを prefer.r から読む
+	reactionsDisplaySize: 'small',
+	limitWidthOfReaction: true,
 };
 
 export const preferReactive: Record<string, Ref<unknown>> = {};

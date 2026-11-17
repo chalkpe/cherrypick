@@ -8,7 +8,6 @@ import type { MaybeRefOrGetter } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import type { MenuItem } from '@/types/menu.js';
 import * as os from '@/os.js';
-import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
 import { ensureSignin } from '@/i.js';
@@ -62,7 +61,18 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 			.filter((participant): participant is Participant => participant != null);
 	});
 
-	// 他のサーバーで開かれる通話には相手のサーバーに IP アドレスが見えるので、ホストごとに初回だけ確認する
+	// 録画している人。自分の分は手元の状態に合わせ、届くのを待たずに知らせる
+	const recordingIdentities = computed(() => {
+		const ids = participants.value.filter(participant => participant.recording === true && participant.identity !== myIdentity).map(participant => participant.identity);
+		if (inThisCall.value && voiceCall.recording) ids.push(myIdentity);
+		return ids;
+	});
+	const someoneRecording = computed(() => recordingIdentities.value.length > 0);
+
+	// 録画の始まりと終わりの知らせ、持ち主が録画を許さなくなったときの停止は、通話の続くあいだずっとある通話バー
+	// (use-voice-call-recording-watch.ts) が受け持つ。ルーム画面を離れても通話は続くため
+
+	// 参加の二重押しを防ぐ
 	let joining = false;
 
 	// 参加前に選ぶマイクの入/切。最後に自分で選んだもの (通話中の切り替えも含む) を覚えておき、次の参加でも使う
@@ -76,25 +86,12 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		if (target == null || joining) return;
 		joining = true;
 		try {
-			const host = target.owner.host;
-			if (host != null && !prefer.s['voiceCall.acknowledgedRemoteHosts'].includes(host)) {
-				const { canceled } = await os.confirm({
-					type: 'info',
-					text: i18n.tsx._voiceCall.remoteHostNotice({ host }),
-				});
+			// 録画している人がいれば、入る前に知らせる。入ると自分の声や画面も録画に残る
+			if (someoneRecording.value) {
+				const { canceled } = await os.confirm({ type: 'warning', text: i18n.ts._voiceCall.recordingJoinNotice });
 				if (canceled) return;
-				prefer.commit('voiceCall.acknowledgedRemoteHosts', [...prefer.s['voiceCall.acknowledgedRemoteHosts'], host]);
 			}
-			let approvedMediaProvider: string | undefined;
-			if (host == null) {
-				const info = await misskeyApi('chat/rooms/voice/connection-info', { roomId: target.id });
-				if (info?.mediaProvider) {
-					const { canceled } = await os.confirm({ type: 'info', text: i18n.tsx._voiceRelay.mediaNotice({ host: new URL(info.mediaProvider).host }) });
-					if (canceled) return;
-					approvedMediaProvider = info.mediaProvider;
-				}
-			}
-			await joinVoiceCall(target, { micEnabled: prejoinMicEnabled.value, approvedMediaProvider });
+			await joinVoiceCall(target, { micEnabled: prejoinMicEnabled.value });
 		} catch (error) {
 			notifyVoiceCallFailure(error);
 		} finally {
@@ -161,7 +158,7 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 		const { dispose } = os.popup(XRoster, { call: markRaw(call) }, { closed: () => dispose() });
 	}
 
-	const call = { providerUnavailable, available, inThisCall, participants, watchedParticipants, join, prejoinMicEnabled, myIdentity, isOwner, hasParticipantMenu, openParticipantMenu, openRoster };
+	const call = { providerUnavailable, available, inThisCall, participants, watchedParticipants, someoneRecording, join, prejoinMicEnabled, myIdentity, isOwner, hasParticipantMenu, openParticipantMenu, openRoster };
 	return call;
 }
 

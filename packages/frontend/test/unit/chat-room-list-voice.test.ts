@@ -40,7 +40,7 @@ import XJoiningRooms from '@/pages/chat/home.joiningRooms.vue';
 
 const stubs = {
 	MkA: { props: ['to'], template: '<a :href="to"><slot /></a>' },
-	MkAvatar: { props: ['user'], template: '<span class="avatar" :data-user="user.id"></span>' },
+	MkAvatar: { props: ['user', 'room'], template: '<span class="avatar" :data-user="user?.id" :data-room="room?.id"></span>' },
 };
 
 const room = { id: 'r1', name: 'room 1', description: '', owner: { id: 'owner', username: 'owner' } } as any;

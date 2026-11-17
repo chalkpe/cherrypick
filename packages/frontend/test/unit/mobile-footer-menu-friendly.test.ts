@@ -10,7 +10,7 @@ import type { MenuItem } from '@/types/menu.js';
 import MobileFooterMenuFriendly from '@/ui/friendly/mobile-footer-menu-friendly.vue';
 import { prefer } from '@/preferences.js';
 
-const mocks = vi.hoisted(() => ({ popupMenu: vi.fn(), popup: vi.fn(), haptic: vi.fn() }));
+const mocks = vi.hoisted(() => ({ popupMenu: vi.fn(), popup: vi.fn(), haptic: vi.fn(), me: { id: 'viewer', username: 'viewer', token: 'viewer-token', policies: {}, hasUnreadChatMessages: true, hasUnreadChatNotifications: false } }));
 vi.mock('@/os.js', () => ({ popupMenu: mocks.popupMenu, popup: mocks.popup }));
 vi.mock('@/utility/haptic.js', () => ({ haptic: mocks.haptic }));
 vi.mock('@/router.js', () => ({ mainRouter: { currentRoute: { value: { name: 'index' } }, push: vi.fn() } }));
@@ -18,11 +18,11 @@ vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: vi.fn(), misskeyApiGet:
 vi.mock('@/signout.js', () => ({ signout: vi.fn() }));
 vi.mock('@/utility/show-suspended-dialog.js', () => ({}));
 vi.mock('@/utility/unison-reload.js', () => ({ unisonReload: vi.fn(), reloadChannel: { postMessage: vi.fn() } }));
-vi.mock('@/i.js', () => ({ $i: { id: 'viewer', username: 'viewer', token: 'viewer-token', policies: {} } }));
+vi.mock('@/i.js', () => ({ $i: mocks.me }));
 vi.mock('@/store.js', async () => {
 	const { ref } = await import('vue');
 	return { store: {
-		s: { showHomeButtonInNavbar: true, accountTokens: {}, accountInfos: {} },
+		s: { showHomeButtonInNavbar: true, showChatButtonInNavbar: true, accountTokens: {}, accountInfos: {} },
 		r: { accountTokens: ref({}), accountInfos: ref({}) },
 	} };
 });
@@ -56,6 +56,14 @@ beforeEach(async () => {
 afterEach(() => {
 	cleanup();
 	vi.useRealTimers();
+});
+
+test('멘션 없는 미읽음은 정적으로 표시한다', () => {
+	const { container } = render(MobileFooterMenuFriendly);
+
+	const chat = container.querySelector('.ti-messages')!.closest('button')!;
+	expect(chat.querySelector('._indicatorCircle')).not.toBeNull();
+	expect(chat.querySelector('._blink')).toBeNull();
 });
 
 test.each([
