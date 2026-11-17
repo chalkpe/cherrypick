@@ -9963,11 +9963,11 @@ export interface Locale extends ILocale {
          */
         "recordingSaveFailed": ParameterizedString<"n">;
         /**
-         * 録画ファイルを {n} 個変換できませんでした。元のファイルはドライブに保存されています。どうしますか？
+         * 録画ファイルを {n} 個変換できませんでした。どうしますか？
          */
         "recordingConversionFailed": ParameterizedString<"n">;
         /**
-         * アップロードできなかった録画と変換できなかった録画があります。アップロード済みの元のファイルはドライブに保存されています。どうしますか？
+         * 録画の一部を保存できませんでした。どうしますか？
          */
         "recordingMixedFailure": string;
         /**
@@ -9995,7 +9995,7 @@ export interface Locale extends ILocale {
          */
         "recordingDiscardConfirmUploaded": string;
         /**
-         * 元のファイルを {n} 個削除できませんでした。削除できなかったファイルはドライブに残っています。もう一度破棄するか、ドライブから直接削除してください。
+         * 元のファイルを {n} 個削除できませんでした。もう一度破棄してください。
          */
         "recordingDiscardDeleteFailed": ParameterizedString<"n">;
         /**
@@ -16425,7 +16425,7 @@ export interface Locale extends ILocale {
          */
         "recordingConversionsTitle": string;
         /**
-         * 通話の録画を MP3/MP4 に変換する処理を同時にいくつまで行うかです。変換は重いので少なめにしてください。
+         * 通話の録画を同時にいくつまで変換するかです。
          */
         "recordingConversionsDescription": string;
         /**
