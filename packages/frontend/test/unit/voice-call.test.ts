@@ -2380,7 +2380,7 @@ describe('call recording lifecycle', () => {
 		confirmation.resolve({ canceled: false });
 
 		// 조회 실패를 결과 없음으로 보지 않는다: 최종 파일을 지우지 않고, 오류로 알린 뒤 선택창을 유지한다
-		await vi.waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardDeleteFailed({ n: 1 }) }));
+		await vi.waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardFailed({ n: 1 }) }));
 		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
 		expect(mocks.misskeyApi).not.toHaveBeenCalledWith('drive/files/delete', { fileId: 'final-file' });
 
@@ -3085,6 +3085,77 @@ describe('call recording lifecycle', () => {
 		await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
 
 		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/recording-discard', { id: 'dl-1' }));
+		expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.ts._voiceCall.recordingDiscardConfirm });
+	});
+
+	test('a failed discard of a kept recording does not say the original remains in the drive', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		const secondChoice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise).mockReturnValueOnce(secondChoice.promise);
+		let discards = 0;
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') return { file: null, download: { id: 'dl-1', name: 'room 1-20261115-090807.mp4', size: 123, reason: 'tooLarge' } };
+			if (endpoint === 'chat/rooms/voice/recording-result') return null;
+			if (endpoint === 'chat/rooms/voice/recording-discard') {
+				discards += 1;
+				if (discards === 1) throw new TypeError('Failed to fetch');
+			}
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardFailed({ n: 1 }) }));
+		expect(mocks.alert).not.toHaveBeenCalledWith({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardDeleteFailed({ n: 1 }) });
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
+		secondChoice.resolve({ canceled: false, result: 'discard' });
+		await vi.waitFor(() => expect(discards).toBe(2));
+	});
+
+	test('a conversion that ends without a server response does not say where the original is', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		mocks.actions.mockReturnValueOnce(deferred<{ canceled: boolean; result: string }>().promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file' }) } as Response);
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw new TypeError('Failed to fetch');
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		expect(mocks.actions).toHaveBeenCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.recordingSaveFailed({ n: 1 }), caption: i18n.ts.cannotUploadBecauseNetworkError }));
+	});
+
+	test('saving to the device remembers the kept recording found by the lookup', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const choice = deferred<{ canceled: boolean; result: string }>();
+		const secondChoice = deferred<{ canceled: boolean; result: string }>();
+		mocks.actions.mockReturnValueOnce(choice.promise).mockReturnValueOnce(secondChoice.promise);
+		vi.mocked(window.fetch).mockReset()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'original-file' }) } as Response)
+			.mockRejectedValue(new Error('download unavailable'));
+		mocks.misskeyApi.mockImplementation(async endpoint => {
+			if (endpoint === 'chat/rooms/voice/convert-recording') throw new TypeError('Failed to fetch');
+			if (endpoint === 'chat/rooms/voice/recording-result') return { file: null, download: { id: 'dl-1', name: 'room 1-20261115-090807.mp4', size: 123, reason: 'tooLarge' } };
+			return {};
+		});
+
+		stopRecording();
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
+		choice.resolve({ canceled: false, result: 'download' });
+		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledTimes(2));
+		expect(mocks.actions).toHaveBeenLastCalledWith(expect.objectContaining({ text: i18n.tsx._voiceCall.recordingSaveFailed({ n: 1 }) }));
 	});
 
 	test('uploads parts that failed to reach the drive to the recording storage and converts them into one file', async () => {

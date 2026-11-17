@@ -518,7 +518,8 @@ async function convertRecording(session: RecordingSession): Promise<Misskey.enti
 	} catch (error) {
 		if (error instanceof RecordingUploadError) throw error;
 		const code = isApiError(error) ? error.code : null;
-		const reason = code === 'OUTPUT_TOO_LARGE' || code === 'INPUT_TOO_LARGE' ? 'tooLarge' : code === 'NO_FREE_SPACE' ? 'noFreeSpace' : null;
+		// 서버 응답 없이 끝난 실패는 서버가 이미 보관을 끝냈을 수 있어 원본 위치를 단정하지 않는다
+		const reason = code === 'OUTPUT_TOO_LARGE' || code === 'INPUT_TOO_LARGE' ? 'tooLarge' : code === 'NO_FREE_SPACE' ? 'noFreeSpace' : !isApiError(error) ? 'network' : null;
 		throw new RecordingUploadError(reason);
 	}
 }
@@ -691,6 +692,7 @@ async function downloadRecording(recording: FailedRecording, session: RecordingS
 		return result.file.url != null && await saveFromUrl(result.file.url, result.file.name) ? true : fail();
 	}
 	const download = result?.download ?? session.pendingDownload;
+	if (download != null) session.pendingDownload = download;
 	if (download != null) {
 		return await saveDownload(download) ? true : fail();
 	}
@@ -730,6 +732,7 @@ async function discardUploadedOriginals(failed: FailedRecording[], session: Reco
 		}
 	}
 	const download = result?.download ?? session.pendingDownload;
+	if (download != null) session.pendingDownload = download;
 	if (download != null || session.tempParts.length > 0) {
 		try {
 			await misskeyApi('chat/rooms/voice/recording-discard', {
@@ -759,13 +762,20 @@ async function discardUploadedOriginals(failed: FailedRecording[], session: Reco
 	return undeleted;
 }
 
+/** 드라이브에 원본이 남아 있다고 말해도 되는지. 서버가 최종 파일을 보관 중이거나, 변환 응답 없이 끝나 서버 상태를 모르면 말하지 않는다 */
+function isOriginalInDrive(failed: FailedRecording[], session: RecordingSession): boolean {
+	if (session.pendingDownload != null) return false;
+	const unknownConversion = failed.some(recording => recording.reason === 'network' && recording.pending.length === 0 && recording.uploaded.length > 0);
+	return !unknownConversion && failed.some(recording => recording.uploaded.length > 0);
+}
+
 /** 저장하지 못한 녹화는 이용자가 고를 때까지 남긴다 (다시 올리기·이 기기에 저장·버리기). 실패한 항목은 선택창을 다시 제공한다 */
 async function offerFailedRecordings(session: RecordingSession): Promise<void> {
 	let failed = session.failed;
 	while (failed.length > 0) {
 		const reason = (['noFreeSpace', 'tooLarge', 'network'] as const).find(candidate => failed.some(recording => recording.reason === candidate));
 		// 서버가 최종 파일을 보관 중이면 원본 조각은 이미 지워졌으므로 드라이브에 원본이 있다고 보지 않는다
-		const hasOriginal = session.pendingDownload == null && failed.some(recording => recording.uploaded.length > 0);
+		const hasOriginal = isOriginalInDrive(failed, session);
 		const hasUploadFailure = failed.some(recording => recording.pending.length > 0);
 		const caption = reason === 'noFreeSpace' ? (hasOriginal ? i18n.ts._voiceCall.recordingConversionNoFreeSpace : i18n.ts.cannotUploadBecauseNoFreeSpace)
 			: reason === 'tooLarge' ? (hasOriginal ? i18n.ts._voiceCall.recordingConversionTooLarge : i18n.ts.cannotUploadBecauseExceedsFileSizeLimit)
@@ -800,7 +810,8 @@ async function offerFailedRecordings(session: RecordingSession): Promise<void> {
 				// 삭제에 실패한 원본은 드라이브에 남는다. 오류로 알리고 다시 버릴 수 있게 목록을 유지한다.
 				// 알림이 닫힌 뒤에 목록을 다시 띄운다. 바로 띄우면 알림이 목록 뒤에 가려져 보이지 않는다
 				failed = undeleted;
-				await os.alert({ type: 'error', text: i18n.tsx._voiceCall.recordingDiscardDeleteFailed({ n: undeleted.length }) });
+				const originalLeft = isOriginalInDrive(undeleted, session);
+				await os.alert({ type: 'error', text: originalLeft ? i18n.tsx._voiceCall.recordingDiscardDeleteFailed({ n: undeleted.length }) : i18n.tsx._voiceCall.recordingDiscardFailed({ n: undeleted.length }) });
 			}
 			continue;
 		}

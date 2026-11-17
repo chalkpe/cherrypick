@@ -2553,6 +2553,7 @@ _voiceCall:
   recordingDiscardConfirm: "Discard the recordings that could not be saved? This cannot be undone."
   recordingDiscardConfirmUploaded: "Discard the recordings that could not be saved? The original files already uploaded to your drive will also be deleted. This cannot be undone."
   recordingDiscardDeleteFailed: "Could not delete {n} original file(s). The files that were not deleted remain in your drive. Discard again or delete them directly from your drive."
+  recordingDiscardFailed: "Could not discard {n} recording(s). Discard again."
   recordingStartRejected: "The server did not accept the recording, so it was not started"
   recordingRejected: "The server did not accept the recording, so it was stopped"
   allowRecording: "Allow call recording"

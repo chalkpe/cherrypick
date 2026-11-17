@@ -9999,6 +9999,10 @@ export interface Locale extends ILocale {
          */
         "recordingDiscardDeleteFailed": ParameterizedString<"n">;
         /**
+         * 録画 {n} 件を破棄できませんでした。もう一度破棄してください。
+         */
+        "recordingDiscardFailed": ParameterizedString<"n">;
+        /**
          * サーバーが録画を受け付けなかったため、録画を開始できませんでした
          */
         "recordingStartRejected": string;
