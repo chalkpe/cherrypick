@@ -46,6 +46,7 @@ import { MfmService } from './MfmService.js';
 import { ModerationLogService } from './ModerationLogService.js';
 import { NoteCreateService } from './NoteCreateService.js';
 import { NoteUpdateService } from './NoteUpdateService.js';
+import { NoteCleanupService } from './NoteCleanupService.js';
 import { NoteDeleteService } from './NoteDeleteService.js';
 import { NotePiningService } from './NotePiningService.js';
 import { NoteDraftService } from './NoteDraftService.js';
@@ -391,6 +392,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ModerationLogService,
 		NoteCreateService,
 		NoteUpdateService,
+		NoteCleanupService,
 		NoteDeleteService,
 		NotePiningService,
 		NoteDraftService,
@@ -741,6 +743,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		ModerationLogService,
 		NoteCreateService,
 		NoteUpdateService,
+		NoteCleanupService,
 		NoteDeleteService,
 		NotePiningService,
 		NoteDraftService,

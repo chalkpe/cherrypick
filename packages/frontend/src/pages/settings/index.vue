@@ -94,6 +94,11 @@ const menuDef = computed<SuperMenuDef[]>(() => [{
 		to: '/settings/privacy',
 		active: currentPage.value?.route.name === 'privacy',
 	}, {
+		icon: 'ti ti-history',
+		text: i18n.ts._noteCleanup.title,
+		to: '/settings/note-cleanup',
+		active: ['note-cleanup', 'note-cleanup-new', 'note-cleanup-edit'].includes(currentPage.value?.route.name ?? ''),
+	}, {
 		icon: 'ti ti-bell',
 		text: i18n.ts.notifications,
 		to: '/settings/notifications',
@@ -236,6 +241,8 @@ onUnmounted(() => {
 });
 
 watch(router.currentRef, (to) => {
+	// 이름 있는 자식 화면이 없으면 직전 자식이 켠 하단 메뉴 배치를 해제한다.
+	if (to.child?.route.name == null) INFO.value.mobileFooterInFlow = undefined;
 	if (to.route.name === 'settings' && to.child?.route.name == null && !narrow.value) {
 		router.replace('/settings/profile');
 	}
@@ -247,9 +254,11 @@ provideMetadataReceiver((metadataGetter) => {
 	const info = metadataGetter();
 	if (info == null) {
 		childInfo.value = null;
+		INFO.value.mobileFooterInFlow = undefined;
 	} else {
 		childInfo.value = info;
 		INFO.value.needWideArea = info.needWideArea ?? undefined;
+		INFO.value.mobileFooterInFlow = info.mobileFooterInFlow;
 	}
 });
 provideReactiveMetadata(INFO);

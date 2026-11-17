@@ -61,6 +61,13 @@ export * as 'admin/emoji/set-category-bulk' from './endpoints/admin/emoji/set-ca
 export * as 'admin/emoji/set-license-bulk' from './endpoints/admin/emoji/set-license-bulk.js';
 export * as 'admin/emoji/steal' from './endpoints/admin/emoji/steal.js';
 export * as 'admin/emoji/update' from './endpoints/admin/emoji/update.js';
+export * as 'i/note-cleanup/list' from './endpoints/i/note-cleanup/list.js';
+export * as 'i/note-cleanup/create' from './endpoints/i/note-cleanup/create.js';
+export * as 'i/note-cleanup/update' from './endpoints/i/note-cleanup/update.js';
+export * as 'i/note-cleanup/delete' from './endpoints/i/note-cleanup/delete.js';
+export * as 'i/note-cleanup/preview' from './endpoints/i/note-cleanup/preview.js';
+export * as 'i/note-cleanup/request' from './endpoints/i/note-cleanup/request.js';
+export * as 'i/note-cleanup/update-settings' from './endpoints/i/note-cleanup/update-settings.js';
 export * as 'i/auto-delete-settings' from './endpoints/i/auto-delete-settings.js';
 export * as 'i/update-auto-delete-settings' from './endpoints/i/update-auto-delete-settings.js';
 export * as 'admin/federation/delete-all-files' from './endpoints/admin/federation/delete-all-files.js';

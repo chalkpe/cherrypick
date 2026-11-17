@@ -35,6 +35,7 @@ export type QueueCount = components['schemas']['QueueCount'];
 export type QueueMetrics = components['schemas']['QueueMetrics'];
 export type QueueJob = components['schemas']['QueueJob'];
 export type Antenna = components['schemas']['Antenna'];
+export type NoteCleanupRule = components['schemas']['NoteCleanupRule'];
 export type Clip = components['schemas']['Clip'];
 export type FederationInstance = components['schemas']['FederationInstance'];
 export type GalleryPost = components['schemas']['GalleryPost'];

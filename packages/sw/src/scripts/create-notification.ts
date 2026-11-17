@@ -297,6 +297,20 @@ async function composeNotification(data: PushNotificationDataMap[keyof PushNotif
 						data,
 					}];
 
+				case 'noteCleanupCompleted':
+					return [i18n.ts._noteCleanup.completedNotification, {
+						body: i18n.tsx._noteCleanup.completedNotificationBody({ n: data.body.count }),
+						badge: iconUrl('circle-check'),
+						data,
+					}];
+
+				case 'noteCleanupProtectionFailed':
+					return [i18n.ts._noteCleanup.notification, {
+						body: i18n.ts._noteCleanup.notificationBody,
+						badge: iconUrl('bell'),
+						data,
+					}];
+
 				case 'test':
 					return [i18n.ts._notification.testNotification, {
 						body: i18n.ts._notification.notificationWillBeDisplayedLikeThis,

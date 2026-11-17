@@ -68,6 +68,8 @@ export const DI = {
 	galleryLikesRepository: Symbol('galleryLikesRepository'),
 	moderationLogsRepository: Symbol('moderationLogsRepository'),
 	clipsRepository: Symbol('clipsRepository'),
+	noteCleanupRulesRepository: Symbol('noteCleanupRulesRepository'),
+	noteCleanupStatesRepository: Symbol('noteCleanupStatesRepository'),
 	clipNotesRepository: Symbol('clipNotesRepository'),
 	clipFavoritesRepository: Symbol('clipFavoritesRepository'),
 	antennasRepository: Symbol('antennasRepository'),

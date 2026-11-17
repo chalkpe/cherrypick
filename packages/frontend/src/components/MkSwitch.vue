@@ -14,7 +14,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:aria-labelledby="accessible && !noBody ? labelId : undefined"
 		@click="toggle"
 	>
-	<XButton :class="$style.toggle" :checked="accessible ? unref(modelValue) : checked" :disabled="disabled" @toggle="toggle"/>
+	<XButton :class="$style.toggle" :checked="accessible ? unref(modelValue) : checked" :disabled="disabled" :muted="mutedDisabled" @toggle="toggle"/>
 	<span v-if="!noBody" :class="$style.body">
 		<!-- TODO: 無名slotの方は廃止 -->
 		<span :class="$style.label">
@@ -37,6 +37,8 @@ import { haptic } from '@/utility/haptic.js';
 const props = defineProps<{
 	modelValue: boolean | Ref<boolean>;
 	disabled?: boolean;
+	/** 비활성 동안 스위치 색을 흐리게 보여 준다. 값은 그대로 유지한다. */
+	mutedDisabled?: boolean;
 	helpText?: string;
 	noBody?: boolean;
 	/** 네이티브 입력에 표시된 이름과 모델의 체크 상태를 연결합니다. */
