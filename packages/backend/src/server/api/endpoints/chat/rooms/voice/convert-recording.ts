@@ -347,6 +347,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			if (download != null && download.userId === me.id && fs.existsSync(download.path)) {
 				// 한도를 되돌렸거나 용량을 확보했을 수 있으니 보관한 최종 파일을 드라이브에 다시 저장해 본다.
 				let reason = result.download.reason;
+				const policies = await this.roleService.getUserPolicies(me.id);
+				if (download.size > recordingOutputLimitBytes(this.config.maxFileSize, policies.maxFileSizeMb)) {
+					return { file: null, download: { id: download.id, name: download.name, size: download.size, reason: 'tooLarge' } };
+				}
 				try {
 					const converted = await this.driveService.addFile({ user: me, path: download.path, name: download.name, folderId, force: true });
 					await this.recordingStorage.removeDownload(download.id);
