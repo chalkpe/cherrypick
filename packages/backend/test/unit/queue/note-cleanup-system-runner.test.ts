@@ -80,7 +80,7 @@ function fixture() {
 	};
 	const cleanup = new AutoDeleteNotesProcessorService({ locked: async (_id: unknown, work: () => Promise<unknown>) => work() } as any, { deliverQueue: { getWaiting: async () => [{ timestamp: 0 }] }, inboxQueue: { getWaiting: async () => [] }, systemQueue: { add: vi.fn(async () => {}), getJob: async () => null } } as any);
 	const other = { process: vi.fn() };
-	const args = [{ redisForJobQueue: {}, outbox: {}, inbox: {} }, {}, { logger }, telemetry, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, cleanup, other, other];
+	const args = [{ redisForJobQueue: {}, outbox: {}, inbox: {} }, {}, { logger }, telemetry, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, other, cleanup, other, other];
 	new (QueueProcessorService as any)(...args);
 	return { errors, captures, spans, other, cleanup, active: () => active, process: workers.get('system')! };
 }
