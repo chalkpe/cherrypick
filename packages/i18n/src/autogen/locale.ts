@@ -17079,6 +17079,10 @@ export interface Locale extends ILocale {
          */
         "busyError": string;
         /**
+         * 今ノートを整理しています。整理が終わってから再度操作できます。
+         */
+        "inProgressError": string;
+        /**
          * 選択したクリップを利用できません。別のクリップを選ぶか、この条件を修正してください。
          */
         "missingClipError": string;
