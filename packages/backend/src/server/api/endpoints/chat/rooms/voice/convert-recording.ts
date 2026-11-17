@@ -19,6 +19,7 @@ import type { MiLocalUser } from '@/models/User.js';
 import type { MiDriveFile } from '@/models/DriveFile.js';
 import { DriveService } from '@/core/DriveService.js';
 import { InternalStorageService } from '@/core/InternalStorageService.js';
+import { DownloadService } from '@/core/DownloadService.js';
 import { DriveFileEntityService } from '@/core/entities/DriveFileEntityService.js';
 import { RecordingStorageService, RecordingStorageFullError, RECORDING_DOWNLOAD_STORAGE_MAX_BYTES, type RecordingResult } from '@/core/RecordingStorageService.js';
 import { ApiError } from '@/server/api/error.js';
@@ -188,6 +189,8 @@ type ConversionSource = {
 	size: number;
 	driveFile: MiDriveFile | null;
 	partId: string | null;
+	// 오브젝트 스토리지에 있는 조각은 변환 전에 서버 임시 폴더로 받아 온다.
+	remoteUrl: string | null;
 };
 
 @Injectable()
@@ -211,6 +214,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private recordingStorage: RecordingStorageService,
 		private roleService: RoleService,
 		private apiLoggerService: ApiLoggerService,
+		private downloadService: DownloadService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			// 응답 유실 뒤 같은 요청이 오면 이미 만든 결과를 돌려준다. 조각은 이미 지워졌을 수 있다.
@@ -228,13 +232,18 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				const file = byId.get(id);
 				if (file != null) {
 					if (file.userId !== me.id) throw new ApiError(meta.errors.noSuchFile);
-					if (!file.storedInternal || file.accessKey == null) throw new ApiError(meta.errors.conversionFailed);
-					sources.push({ path: this.internalStorageService.resolvePath(file.accessKey), type: file.type, name: file.name, size: file.size, driveFile: file, partId: null });
+					if (file.storedInternal && file.accessKey != null) {
+						sources.push({ path: this.internalStorageService.resolvePath(file.accessKey), type: file.type, name: file.name, size: file.size, driveFile: file, partId: null, remoteUrl: null });
+					} else if (file.url) {
+						sources.push({ path: '', type: file.type, name: file.name, size: file.size, driveFile: file, partId: null, remoteUrl: file.url });
+					} else {
+						throw new ApiError(meta.errors.conversionFailed);
+					}
 				} else {
 					// 드라이브에 올리지 못했던 조각은 녹화 전용 임시 보관에서 찾는다.
 					const part = await this.recordingStorage.getPart(id);
 					if (part == null || part.userId !== me.id || !fs.existsSync(part.path)) throw new ApiError(meta.errors.noSuchFile);
-					sources.push({ path: part.path, type: part.type, name: part.name, size: part.size, driveFile: null, partId: id });
+					sources.push({ path: part.path, type: part.type, name: part.name, size: part.size, driveFile: null, partId: id, remoteUrl: null });
 				}
 			}
 			// already converted, or not a recording
@@ -246,7 +255,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			// 동시 변환 수 설정이 0으로 저장되어 있어도 최종 파일 하나는 만든다. 최소 1로 취급한다.
 			const maxConversions = Math.max(1, this.serverSettings.voiceCallMaxRecordingConversions);
 
-			const srcs = sources.map(s => s.path);
+			let srcs = sources.map(s => s.path);
 
 			const token = randomUUID();
 			const slots = [CONVERSION_SLOTS_KEY, conversionUserKey(me.id)];
@@ -259,6 +268,24 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			let dst: string | null = null;
 			let outputBytes: number | null = null;
 			try {
+				const policies = await this.roleService.getUserPolicies(me.id);
+				const limitBytes = recordingOutputLimitBytes(this.config.maxFileSize, policies.maxFileSizeMb);
+				// 한도 초과 녹화는 임시 보관으로 이어질 수 있으므로, 드라이브에 들어가지 않는 출력은
+				// 보관 총량 상한에서 멈춘다. 보관 상한을 넘는 출력은 끝까지 인코딩해도 보관할 수 없다.
+				const outputCapBytes = Math.max(limitBytes, RECORDING_DOWNLOAD_STORAGE_MAX_BYTES);
+
+				dir = fs.mkdtempSync(Path.join(os.tmpdir(), 'voice-recording-'));
+				// 오브젝트 스토리지의 조각은 크기 상한 안에서만 서버 임시 폴더로 받는다. 임시 폴더는 끝날 때 통째로 지운다.
+				const remote = sources.filter(s => s.remoteUrl != null);
+				if (remote.some(s => s.size > limitBytes) || remote.reduce((sum, s) => sum + s.size, 0) > outputCapBytes) throw new ApiError(meta.errors.conversionFailed);
+				for (const [index, source] of remote.entries()) {
+					const partPath = Path.join(dir, `part-${index}`);
+					await this.downloadService.downloadUrl(source.remoteUrl!, partPath);
+					if (fs.statSync(partPath).size > limitBytes) throw new ApiError(meta.errors.conversionFailed);
+					source.path = partPath;
+				}
+				srcs = sources.map(s => s.path);
+
 				// 입력 한도(스트림·길이·해상도)를 실행 전에 검사한다. 조각은 길이를 합산한다.
 				const probes = await this.probeAll(srcs);
 				const total: RecordingProbe = {
@@ -270,15 +297,9 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				};
 				assertRecordingInput(total, hasVideo);
 
-				const policies = await this.roleService.getUserPolicies(me.id);
-				const limitBytes = recordingOutputLimitBytes(this.config.maxFileSize, policies.maxFileSizeMb);
-				// 한도 초과 녹화는 임시 보관으로 이어질 수 있으므로, 드라이브에 들어가지 않는 출력은
-				// 보관 총량 상한에서 멈춘다. 보관 상한을 넘는 출력은 끝까지 인코딩해도 보관할 수 없다.
-				const outputCapBytes = Math.max(limitBytes, RECORDING_DOWNLOAD_STORAGE_MAX_BYTES);
 				const timeoutMs = recordingConversionTimeoutMs(total.durationSec, hasVideo);
 				await this.redisClient.eval(REFRESH_CONVERSION_SCRIPT, 2, ...slots, token, Date.now(), timeoutMs + CONVERSION_SLOT_MARGIN_MS);
 
-				dir = fs.mkdtempSync(Path.join(os.tmpdir(), 'voice-recording-'));
 				dst = Path.join(dir, hasVideo ? 'recording.mp4' : 'recording.mp3');
 				let args: string[];
 				if (srcs.length === 1) {
