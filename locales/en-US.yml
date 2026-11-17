@@ -2545,7 +2545,7 @@ _voiceCall:
   recordingStoppedAndStarted: "{stopped} stopped recording and {started} started recording"
   recordingSaveFailed: "Could not save {n} recording file(s) to your drive. What would you like to do?"
   recordingConversionFailed: "Could not convert {n} recording file(s). What would you like to do?"
-  recordingMixedFailure: "Some recordings could not be saved. What would you like to do?"
+  recordingMixedFailure: "Part of the recording could not be saved. What would you like to do?"
   recordingConversionTooLarge: "The converted file exceeds the file size limit."
   recordingConversionNoFreeSpace: "There is not enough Drive space for the converted file."
   recordingSaveToDevice: "Save to this device"
