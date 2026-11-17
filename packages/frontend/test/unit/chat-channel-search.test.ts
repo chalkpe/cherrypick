@@ -20,7 +20,8 @@ installFakeResizeObserver();
 import Search from '@/pages/chat/room.search.vue';
 import { i18n } from '@/i18n.js';
 
-const channels = [{ id: 'first', roomId: 'r', name: 'same', isLegacy: true }, { id: 'second', roomId: 'r', name: 'same', isLegacy: false }];
+const channels = [{ id: 'first', roomId: 'r', name: 'same', isLegacy: true, sectionId: null }, { id: 'second', roomId: 'r', name: 'same', isLegacy: false, sectionId: null }];
+const searchRequests = () => state.requests.filter(request => 'query' in request);
 beforeEach(() => {
 	state.requests.length = 0;
 	state.popupMenu.mockClear();
@@ -37,15 +38,15 @@ test('sends a credentialed all-channel query by default and filters duplicate na
 	render(Search, { props: { roomId: 'r', channels }, global: { stubs: { MkResult: true }, directives: { adaptiveBorder: {} } } });
 	await fireEvent.update(screen.getByPlaceholderText(i18n.ts._chat.searchMessages), 'needle');
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.search }));
-	await waitFor(() => expect(state.requests).toHaveLength(1));
+	await waitFor(() => expect(searchRequests()).toHaveLength(1));
 
-	expect(state.requests[0]).toEqual({ roomId: 'r', query: 'needle', i: 'unit-token' });
+	expect(searchRequests()[0]).toEqual({ roomId: 'r', query: 'needle', i: 'unit-token' });
 	await fireEvent.mouseDown(document.querySelector('[tabindex="0"]')!);
 	const choices = state.popupMenu.mock.lastCall![0] as { text: string; action?: () => void }[];
 	choices.find(choice => choice.text === '#same · 2')!.action!();
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.search }));
-	await waitFor(() => expect(state.requests).toHaveLength(2));
-	expect(state.requests[1]).toEqual({ roomId: 'r', channelId: 'second', query: 'needle', i: 'unit-token' });
+	await waitFor(() => expect(searchRequests()).toHaveLength(2));
+	expect(searchRequests()[1]).toEqual({ roomId: 'r', channelId: 'second', query: 'needle', i: 'unit-token' });
 });
 
 test('rejects an old search response after switching groups', async () => {
@@ -54,7 +55,7 @@ test('rejects an old search response after switching groups', async () => {
 	const view = render(Search, { props: { roomId: 'r', channels }, global: { stubs: { MkResult: true }, directives: { adaptiveBorder: {} } } });
 	await fireEvent.update(screen.getByPlaceholderText(i18n.ts._chat.searchMessages), 'needle');
 	await fireEvent.click(screen.getByRole('button', { name: i18n.ts.search }));
-	await waitFor(() => expect(state.requests).toHaveLength(1));
+	await waitFor(() => expect(searchRequests()).toHaveLength(1));
 	await view.rerender({ roomId: 'other', channels: [] });
 	resolve(new Response(JSON.stringify([{ id: 'old', text: 'old group secret' }]), { status: 200 }));
 	await waitFor(() => expect(screen.queryByText('old group secret')).toBeNull());
@@ -65,9 +66,51 @@ test('searches on Enter and ignores whitespace-only input', async () => {
 	const input = screen.getByPlaceholderText(i18n.ts._chat.searchMessages);
 	await fireEvent.update(input, '   ');
 	await fireEvent.keyDown(input, { key: 'Enter' });
-	expect(state.requests).toHaveLength(0);
+	expect(searchRequests()).toHaveLength(0);
 	await fireEvent.update(input, ' needle ');
 	await fireEvent.keyDown(input, { key: 'Enter' });
-	await waitFor(() => expect(state.requests).toHaveLength(1));
-	expect(state.requests[0]).toEqual({ roomId: 'r', query: 'needle', i: 'unit-token' });
+	await waitFor(() => expect(searchRequests()).toHaveLength(1));
+	expect(searchRequests()[0]).toEqual({ roomId: 'r', query: 'needle', i: 'unit-token' });
+});
+
+test('groups the channel select options under section labels', async () => {
+	state.respond = async () => {
+		const last = state.requests[state.requests.length - 1] as Record<string, unknown>;
+		if (!('query' in last)) return new Response(JSON.stringify([{ id: 's1', roomId: 'r', name: '운영' }]), { status: 200 });
+		return new Response(JSON.stringify(state.answers), { status: 200 });
+	};
+	const sectioned = [
+		{ id: 'first', roomId: 'r', name: 'general', isLegacy: true, sectionId: null },
+		{ id: 'second', roomId: 'r', name: '공지', isLegacy: false, sectionId: 's1' },
+	];
+	render(Search, { props: { roomId: 'r', channels: sectioned }, global: { stubs: { MkResult: true }, directives: { adaptiveBorder: {} } } });
+	await waitFor(() => expect(state.requests.some(request => !('query' in request))).toBe(true));
+	// 섹션 응답이 반영될 때까지 마이크로태스크를 비운다.
+	await new Promise(resolve => setTimeout(resolve, 0));
+	await fireEvent.mouseDown(document.querySelector('[tabindex="0"]')!);
+	const choices = state.popupMenu.mock.lastCall![0] as { type?: string; text: string }[];
+	expect(choices.map(choice => choice.type === 'label' ? `[${choice.text}]` : choice.text)).toEqual([
+		i18n.ts._chat._channels.all, '#general · 1', '[운영]', '#공지 · 2',
+	]);
+});
+
+test('섹션 목록 조회가 실패해도 섹션 안 채널을 원래 순서대로 평평하게 고를 수 있다', async () => {
+	state.respond = async () => {
+		const last = state.requests[state.requests.length - 1] as Record<string, unknown>;
+		if (!('query' in last)) return new Response(JSON.stringify({ error: { message: 'x', code: 'INTERNAL_ERROR', id: 'x' } }), { status: 500 });
+		return new Response(JSON.stringify(state.answers), { status: 200 });
+	};
+	const sectioned = [
+		{ id: 'first', roomId: 'r', name: 'general', isLegacy: true, sectionId: null },
+		{ id: 'second', roomId: 'r', name: '공지', isLegacy: false, sectionId: 's1' },
+		{ id: 'third', roomId: 'r', name: '자료', isLegacy: false, sectionId: 's1' },
+	];
+	render(Search, { props: { roomId: 'r', channels: sectioned }, global: { stubs: { MkResult: true }, directives: { adaptiveBorder: {} } } });
+	await waitFor(() => expect(state.requests.some(request => !('query' in request))).toBe(true));
+	await new Promise(resolve => setTimeout(resolve, 0));
+	await fireEvent.mouseDown(document.querySelector('[tabindex="0"]')!);
+	const choices = state.popupMenu.mock.lastCall![0] as { type?: string; text: string }[];
+	expect(choices.map(choice => choice.type === 'label' ? `[${choice.text}]` : choice.text)).toEqual([
+		i18n.ts._chat._channels.all, '#general · 1', '#공지 · 2', '#자료 · 3',
+	]);
 });

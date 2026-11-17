@@ -26,6 +26,7 @@ export const paramDef = {
 	properties: {
 		roomId: { type: 'string', format: 'misskey:id' },
 		name: { type: 'string', minLength: 1 },
+		sectionId: { type: 'string', format: 'misskey:id', nullable: true },
 	},
 	required: ['roomId', 'name'],
 } as const;
@@ -39,7 +40,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		super(meta, paramDef, async (ps, me) => {
 			await this.chatService.checkChatAvailability(me.id, 'write');
 			try {
-				const channel = await this.channels.create(me.id, ps.roomId, ps.name);
+				const channel = await this.channels.create(me.id, ps.roomId, ps.name, ps.sectionId);
 				await this.chatService.notifyRoomChannelsChanged(channel.roomId);
 				return this.channels.pack(channel, await this.channels.memberRoom(me.id, channel.roomId));
 			} catch (err) {

@@ -133,7 +133,7 @@ test('sends channel messages and preserves selected references during editing', 
 });
 
 test('connects only the channel selected from the mention-style candidate list', async () => {
-	const channels = [{ id: 'same1', roomId: room.id, name: 'same', isLegacy: true }, { id: 'same2', roomId: room.id, name: 'same', isLegacy: false }];
+	const channels = [{ id: 'same1', roomId: room.id, name: 'same', isLegacy: true, sectionId: null }, { id: 'same2', roomId: room.id, name: 'same', isLegacy: false, sectionId: null }];
 	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'same1', channels }, global: { stubs } });
 	const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
 	await fireEvent.update(textarea, '😀 #sa');
@@ -1558,7 +1558,7 @@ test('keeps the second identical reference when the first plain occurrence is de
 });
 
 test('unmatched channel text stays plain and can be sent from the keyboard', async () => {
-	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'first', channels: [{ id: 'first', roomId: room.id, name: 'general', isLegacy: true }] }, global: { stubs } });
+	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'first', channels: [{ id: 'first', roomId: room.id, name: 'general', isLegacy: true, sectionId: null }] }, global: { stubs } });
 	const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
 	await fireEvent.update(textarea, '#not-a-channel');
 	textarea.setSelectionRange(textarea.value.length, textarea.value.length);
@@ -1569,7 +1569,7 @@ test('unmatched channel text stays plain and can be sent from the keyboard', asy
 });
 
 test('typing after a selected reference does not reopen its candidate list', async () => {
-	const channels = [{ id: 'first', roomId: room.id, name: 'same', isLegacy: true }];
+	const channels = [{ id: 'first', roomId: room.id, name: 'same', isLegacy: true, sectionId: null }];
 	render(XForm, { props: { room: { ...room, hasChannels: true }, channelId: 'first', channels }, global: { stubs } });
 	const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
 	await fireEvent.update(textarea, '#sa');

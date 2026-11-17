@@ -80,7 +80,7 @@ import { i18n } from '@/i18n.js';
 const room = { id: 'r', hasChannels: true, name: 'Group' };
 const channels = [{ id: 'c1', roomId: 'r', name: 'First' }, { id: 'c2', roomId: 'r', name: 'Second' }];
 const stubs = { PageWithHeader: { template: '<main><slot/></main>' }, MkA: { props: ['to'], template: '<a :href="to"><slot/></a>' }, MkLoading: true, MkResult: true, MkAvatar: true };
-beforeEach(() => { vi.clearAllMocks(); mocks.width = 400; mocks.connections.length = 0; mocks.streamHandlers.clear(); mocks.setServerChannelIds(['c1', 'c2']); mocks.me.policies.chatAvailability = 'available'; mocks.preferS['experimental.stackingRouterView'] = false; mocks.navigate('r'); mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : channels); });
+beforeEach(() => { vi.clearAllMocks(); mocks.width = 400; mocks.connections.length = 0; mocks.streamHandlers.clear(); mocks.setServerChannelIds(['c1', 'c2']); mocks.me.policies.chatAvailability = 'available'; mocks.preferS['experimental.stackingRouterView'] = false; mocks.navigate('r'); window.localStorage.clear(); mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] } : endpoint === 'chat/rooms/sections/list' ? [] : channels); });
 afterEach(cleanup);
 
 // 라우트는 렌더하는 목록의 경로와 맞춰 준다(실제 라우터처럼 경로가 props를 결정한다).
@@ -102,7 +102,7 @@ test('opens a channel list at narrow width without fetching or reading a timelin
 	await screen.findByRole('link', { name: 'First' });
 
 	expect(screen.getByRole('link', { name: 'Second' }).getAttribute('href')).toBe('/chat/room/r/channels/c2');
-	expect(mocks.api.mock.calls.map(call => call[0])).toEqual(['chat/rooms/show', 'chat/rooms/channels/list', 'chat/rooms/unread']);
+	expect(mocks.api.mock.calls.map(call => call[0])).toEqual(['chat/rooms/show', 'chat/rooms/channels/list', 'chat/rooms/sections/list', 'chat/rooms/unread']);
 	expect(mocks.replace).not.toHaveBeenCalled();
 });
 
@@ -129,7 +129,7 @@ test('discards an old room response after navigating to another group', async ()
 	mocks.api.mockImplementation((endpoint: string, params: { roomId: string }) => {
 		if (endpoint === 'chat/rooms/unread') return Promise.resolve({ unreadChannelIds: [], notificationChannelIds: [] });
 		if (params.roomId === 'r' && endpoint === 'chat/rooms/show') return new Promise(resolve => { finish = resolve; });
-		return Promise.resolve(endpoint === 'chat/rooms/show' ? { id: 'other', hasChannels: true, name: 'Other' } : [{ id: 'oc', roomId: 'other', name: 'Other channel' }]);
+		return Promise.resolve(endpoint === 'chat/rooms/show' ? { id: 'other', hasChannels: true, name: 'Other' } : endpoint === 'chat/rooms/sections/list' ? [] : [{ id: 'oc', roomId: 'other', name: 'Other channel' }]);
 	});
 	const view = renderChannels({ roomId: 'r' });
 	mocks.navigate('other');
@@ -170,7 +170,7 @@ test('lets the conversation handle room closure without a duplicate navigation',
 
 test('shows static unread channels from the shared API and refreshes after read events', async () => {
 	let unread = ['c2'];
-	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: unread, notificationChannelIds: ['c1'] } : channels);
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: unread, notificationChannelIds: ['c1'] } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
 	renderChannels({ roomId: 'r' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
@@ -202,7 +202,7 @@ test('does not apply another group’s late unread response', async () => {
 test('re-reads unread markers after the stream reconnects on the narrow channel list', async () => {
 	let unreadChannelIds: string[] = [];
 	let notificationChannelIds: string[] = [];
-	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : channels);
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
 	renderChannels({ roomId: 'r' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
@@ -220,7 +220,7 @@ test('re-reads unread markers after the stream reconnects on the narrow channel 
 test('clears unread markers after the stream reconnects when another device read them', async () => {
 	let unreadChannelIds = ['c2'];
 	let notificationChannelIds = ['c2'];
-	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : channels);
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
 	renderChannels({ roomId: 'r' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
@@ -238,7 +238,7 @@ test('re-reads unread markers after the stream reconnects in the wide rail', asy
 	mocks.width = 1000;
 	let unreadChannelIds: string[] = [];
 	let notificationChannelIds: string[] = [];
-	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' } : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : channels);
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' } : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
 	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	await waitFor(() => expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/unread')).toHaveLength(1));
@@ -537,7 +537,7 @@ test('still closes the list on a realtime deletion while it is the frontmost scr
 const ownedRoom = { ...room, ownerId: 'me' };
 
 function mockRoom(roomValue: unknown, unreadChannelIds: string[] = []) {
-	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? roomValue : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds: [] } : channels);
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? roomValue : endpoint === 'chat/rooms/unread' ? { unreadChannelIds, notificationChannelIds: [] } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
 }
 
 function railDragSource(link: HTMLElement): HTMLElement {
@@ -607,7 +607,7 @@ test('restores the server order and alerts when a rail drag reorder fails', asyn
 		if (endpoint === 'chat/rooms/show') return ownedRoom;
 		if (endpoint === 'chat/rooms/unread') return { unreadChannelIds: [], notificationChannelIds: [] };
 		if (endpoint === 'chat/rooms/channels/reorder') throw new Error('reorder failed');
-		return channels;
+		return endpoint === 'chat/rooms/sections/list' ? [] : channels;
 	});
 	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
@@ -648,7 +648,7 @@ test('does not offer rail dragging while a reorder is in flight', async () => {
 		if (endpoint === 'chat/rooms/show') return ownedRoom;
 		if (endpoint === 'chat/rooms/unread') return { unreadChannelIds: [], notificationChannelIds: [] };
 		if (endpoint === 'chat/rooms/channels/reorder') return new Promise<void>(resolve => { finish = resolve; });
-		return channels;
+		return endpoint === 'chat/rooms/sections/list' ? [] : channels;
 	});
 	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
@@ -698,7 +698,7 @@ test('super menu emits the reordered items when dragging is enabled', async () =
 
 test('blinks unread dots only for notification targets in the member rail', async () => {
 	mocks.width = 1000;
-	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' } : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c1', 'c2'], notificationChannelIds: ['c1'] } : channels);
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' } : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c1', 'c2'], notificationChannelIds: ['c1'] } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
 	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
 	await waitFor(() => expect(first.querySelector('.itemIndicator')).not.toBeNull());
@@ -710,7 +710,7 @@ test('blinks unread dots only for notification targets in the member rail', asyn
 
 test('keeps mention-only unread dots static and marks the current channel in the drag rail', async () => {
 	mocks.width = 1000;
-	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? ownedRoom : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c2'], notificationChannelIds: [] } : channels);
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? ownedRoom : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c2'], notificationChannelIds: [] } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
 	renderChannels({ roomId: 'r', channelId: 'c1' });
 	const first = await screen.findByRole('link', { name: 'First' });
 	const second = screen.getByRole('link', { name: 'Second' });
@@ -730,7 +730,7 @@ test('marks the current channel link with aria-current in the member rail', asyn
 });
 
 test('shows static unread dots for mention-only channels in the narrow grid', async () => {
-	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c2'], notificationChannelIds: [] } : channels);
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? room : endpoint === 'chat/rooms/unread' ? { unreadChannelIds: ['c2'], notificationChannelIds: [] } : endpoint === 'chat/rooms/sections/list' ? [] : channels);
 	renderChannels({ roomId: 'r' });
 	const second = await screen.findByRole('link', { name: 'Second' });
 	await waitFor(() => expect(second.querySelector('.itemIndicator')).not.toBeNull());
@@ -758,4 +758,329 @@ test('super menu keeps static dots and aria-current in drag mode', () => {
 	expect(links[0].getAttribute('aria-current')).toBe('page');
 	expect(links[1].querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
 	expect(links[1].getAttribute('aria-current')).toBeNull();
+});
+
+const sectionList = [{ id: 's1', roomId: 'r', name: '운영' }, { id: 's2', roomId: 'r', name: '행사' }];
+const sectionedChannels = [
+	{ id: 'c1', roomId: 'r', name: 'First', sectionId: null },
+	{ id: 'c2', roomId: 'r', name: 'Second', sectionId: 's1' },
+	{ id: 'c3', roomId: 'r', name: 'Third', sectionId: 's2' },
+];
+
+function mockSections(roomValue: unknown, options: { unread?: string[]; notification?: string[]; sections?: unknown[]; channels?: unknown[] } = {}) {
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? roomValue
+		: endpoint === 'chat/rooms/unread' ? { unreadChannelIds: options.unread ?? [], notificationChannelIds: options.notification ?? [] }
+		: endpoint === 'chat/rooms/sections/list' ? (options.sections ?? sectionList)
+		: (options.channels ?? sectionedChannels));
+}
+
+function sectionTitle(name: string) {
+	return screen.getByRole('button', { name, expanded: true });
+}
+
+test('groups rail channels under foldable section titles with ungrouped channels first', async () => {
+	mocks.width = 1000;
+	mockSections({ ...room, ownerId: 'other' });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	const first = await screen.findByRole('link', { name: 'First' });
+	await waitFor(() => expect(screen.getByRole('button', { name: '운영' })).toBeTruthy());
+
+	expect(first.getAttribute('aria-current')).toBe('page');
+	expect(screen.getByRole('button', { name: '운영' }).getAttribute('aria-expanded')).toBe('true');
+	expect(screen.getByRole('button', { name: '행사' }).getAttribute('aria-expanded')).toBe('true');
+	const links = screen.getAllByRole('link').map(link => link.textContent);
+	expect(links).toEqual(['First', 'Second', 'Third']);
+	expect(mocks.api.mock.calls.some(([endpoint]) => endpoint === 'chat/rooms/sections/list')).toBe(true);
+});
+
+test('folds a section to its header and keeps the current channel below it', async () => {
+	mocks.width = 1000;
+	mockSections({ ...room, ownerId: 'other' });
+	renderChannels({ roomId: 'r', channelId: 'c2' });
+	await screen.findByRole('link', { name: 'Second' });
+
+	await fireEvent.click(sectionTitle('운영'));
+
+	expect(screen.getByRole('button', { name: '운영' }).getAttribute('aria-expanded')).toBe('false');
+	expect(screen.getByRole('link', { name: 'Second' }).getAttribute('aria-current')).toBe('page');
+	expect(screen.queryByRole('link', { name: 'Third' })).not.toBeNull();
+	expect(screen.queryByRole('link', { name: 'First' })).not.toBeNull();
+
+	await fireEvent.click(screen.getByRole('button', { name: '운영' }));
+
+	expect(screen.getByRole('button', { name: '운영' }).getAttribute('aria-expanded')).toBe('true');
+});
+
+test('hides every channel of a folded section that does not contain the current one', async () => {
+	mocks.width = 1000;
+	mockSections({ ...room, ownerId: 'other' });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	await screen.findByRole('link', { name: 'Second' });
+
+	await fireEvent.click(sectionTitle('운영'));
+
+	expect(screen.queryByRole('link', { name: 'Second' })).toBeNull();
+	expect(screen.getByRole('link', { name: 'Third' })).not.toBeNull();
+});
+
+test('persists section folds per account in device storage and restores them on reload', async () => {
+	mocks.width = 1000;
+	mockSections({ ...room, ownerId: 'other' });
+	const view = renderChannels({ roomId: 'r', channelId: 'c1' });
+	await screen.findByRole('link', { name: 'Second' });
+
+	await fireEvent.click(sectionTitle('운영'));
+
+	expect(window.localStorage.getItem('ui:folder:chat-section:me:s1')).toBe('f');
+	expect(window.localStorage.getItem('ui:folder:chat-section:me:s2')).toBeNull();
+	view.unmount();
+
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	await screen.findByRole('button', { name: '운영' });
+	expect(screen.getByRole('button', { name: '운영' }).getAttribute('aria-expanded')).toBe('false');
+	expect(screen.queryByRole('link', { name: 'Second' })).toBeNull();
+	expect(window.localStorage.getItem('ui:folder:chat-section:other:s1')).toBeNull();
+});
+
+test('shows a blinking dot on a folded section header when a hidden channel is a notification target', async () => {
+	mocks.width = 1000;
+	mockSections({ ...room, ownerId: 'other' }, { unread: ['c2'], notification: ['c2'] });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	await screen.findByRole('link', { name: 'Second' });
+
+	await fireEvent.click(sectionTitle('운영'));
+
+	const header = screen.getByRole('button', { name: '운영' });
+	await waitFor(() => expect(header.querySelector('.itemIndicator')).not.toBeNull());
+	expect(header.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(true);
+});
+
+test('shows a static dot on a folded section header for hidden mention-only unread channels', async () => {
+	mocks.width = 1000;
+	mockSections({ ...room, ownerId: 'other' }, { unread: ['c2'], notification: [] });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	await screen.findByRole('link', { name: 'Second' });
+
+	await fireEvent.click(sectionTitle('운영'));
+
+	const header = screen.getByRole('button', { name: '운영' });
+	await waitFor(() => expect(header.querySelector('.itemIndicator')).not.toBeNull());
+	expect(header.querySelector('.itemIndicator')!.classList.contains('_blink')).toBe(false);
+});
+
+test('does not count the visible current channel toward the folded header dot', async () => {
+	mocks.width = 1000;
+	mockSections({ ...room, ownerId: 'other' }, { unread: ['c2'], notification: ['c2'] });
+	renderChannels({ roomId: 'r', channelId: 'c2' });
+	await screen.findByRole('link', { name: 'Second' });
+
+	await fireEvent.click(sectionTitle('운영'));
+
+	const header = screen.getByRole('button', { name: '운영' });
+	expect(header.querySelector('.itemIndicator')).toBeNull();
+	expect(screen.getByRole('link', { name: 'Second' }).querySelector('.itemIndicator')).not.toBeNull();
+});
+
+test('shares the fold state between the wide rail and the narrow grid', async () => {
+	mocks.width = 1000;
+	mockSections({ ...room, ownerId: 'other' });
+	const wide = renderChannels({ roomId: 'r', channelId: 'c1' });
+	await screen.findByRole('link', { name: 'Second' });
+	await fireEvent.click(sectionTitle('운영'));
+	wide.unmount();
+
+	mocks.width = 400;
+	renderChannels({ roomId: 'r' });
+	await screen.findByRole('button', { name: '운영' });
+	expect(screen.getByRole('button', { name: '운영' }).getAttribute('aria-expanded')).toBe('false');
+	expect(screen.queryByRole('link', { name: 'Second' })).toBeNull();
+	const menu = screen.getByRole('button', { name: '행사' }).closest('.rrevdjwu');
+	expect(menu?.classList.contains('grid')).toBe(true);
+});
+
+test('shows empty sections as headers for every member', async () => {
+	mocks.width = 1000;
+	mockSections({ ...room, ownerId: 'other' }, { sections: [{ id: 's1', roomId: 'r', name: '빈 묶음' }], channels: [{ id: 'c1', roomId: 'r', name: 'First', sectionId: null }] });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	await screen.findByRole('link', { name: 'First' });
+	expect(screen.getByRole('button', { name: '빈 묶음' }).getAttribute('aria-expanded')).toBe('true');
+});
+
+test('keeps the sectionless rail flat and reorders through the channel endpoint', async () => {
+	mocks.width = 1000;
+	mockSections(ownedRoom, { sections: [], channels });
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	const first = await screen.findByRole('link', { name: 'First' });
+	expect(screen.queryByRole('button', { name: /./, expanded: true })).toBeNull();
+	expect(screen.queryByRole('button', { name: /./, expanded: false })).toBeNull();
+
+	const second = screen.getByRole('link', { name: 'Second' });
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(railDragSource(first), { dataTransfer });
+	await fireEvent.drop(railDropAreaOf(second, 'backward'), { dataTransfer });
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/channels/reorder', { roomId: 'r', channelIds: ['c2', 'c1'] }));
+	expect(mocks.api.mock.calls.some(([endpoint]) => endpoint === 'chat/rooms/channels/arrange')).toBe(false);
+});
+
+test('moves a channel into another section with a single arrange request when dragging in the rail', async () => {
+	mocks.width = 1000;
+	mockSections(ownedRoom);
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	const second = await screen.findByRole('link', { name: 'Second' });
+	const third = screen.getByRole('link', { name: 'Third' });
+
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(railDragSource(second), { dataTransfer });
+	await fireEvent.drop(railDropAreaOf(third, 'backward'), { dataTransfer });
+
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/channels/arrange', {
+		roomId: 'r',
+		ungrouped: ['c1'],
+		sections: [{ sectionId: 's1', channelIds: [] }, { sectionId: 's2', channelIds: ['c3', 'c2'] }],
+	}));
+	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/channels/arrange')).toHaveLength(1);
+});
+
+test('reorders sections by dragging their headers with a single arrange request', async () => {
+	mocks.width = 1000;
+	mockSections(ownedRoom);
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	const firstHeader = await screen.findByRole('button', { name: '운영' });
+	const secondHeader = screen.getByRole('button', { name: '행사' });
+	const handle = firstHeader.parentElement!.querySelector('[draggable="true"]') as HTMLElement;
+	const targetItem = secondHeader.closest('.group')!.parentElement!.parentElement!;
+
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(handle, { dataTransfer });
+	await fireEvent.drop(targetItem.lastElementChild!, { dataTransfer });
+
+	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/channels/arrange', {
+		roomId: 'r',
+		ungrouped: ['c1'],
+		sections: [{ sectionId: 's2', channelIds: ['c3'] }, { sectionId: 's1', channelIds: ['c2'] }],
+	}));
+	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/channels/arrange')).toHaveLength(1);
+});
+
+test('offers no drop target inside a folded section of the rail', async () => {
+	mocks.width = 1000;
+	mockSections(ownedRoom);
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	await screen.findByRole('link', { name: 'Second' });
+
+	await fireEvent.click(sectionTitle('행사'));
+
+	const foldedGroup = screen.getByRole('button', { name: '행사' }).closest('.group')!;
+	expect(foldedGroup.querySelector('.items')!.children).toHaveLength(0);
+	expect(foldedGroup.querySelector('.items [draggable="true"]')).toBeNull();
+});
+
+test('does not place section management menus in the rail', async () => {
+	mocks.width = 1000;
+	mockSections(ownedRoom);
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	await screen.findByRole('link', { name: 'Second' });
+	expect(screen.queryByRole('button', { name: i18n.ts._chat._channels.createSection })).toBeNull();
+	expect(screen.queryByRole('button', { name: i18n.ts.rename })).toBeNull();
+	expect(screen.queryByRole('button', { name: i18n.ts.delete })).toBeNull();
+});
+
+test('restores the server order and alerts when a rail arrange fails', async () => {
+	mocks.width = 1000;
+	mocks.api.mockImplementation(async (endpoint: string) => {
+		if (endpoint === 'chat/rooms/show') return ownedRoom;
+		if (endpoint === 'chat/rooms/unread') return { unreadChannelIds: [], notificationChannelIds: [] };
+		if (endpoint === 'chat/rooms/sections/list') return sectionList;
+		if (endpoint === 'chat/rooms/channels/arrange') throw new Error('arrange failed');
+		return sectionedChannels;
+	});
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	const second = await screen.findByRole('link', { name: 'Second' });
+	const third = screen.getByRole('link', { name: 'Third' });
+
+	const listCallsBefore = mocks.api.mock.calls.filter(call => call[0] === 'chat/rooms/channels/list').length;
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(railDragSource(second), { dataTransfer });
+	await fireEvent.drop(railDropAreaOf(third, 'backward'), { dataTransfer });
+
+	await waitFor(() => expect(mocks.alert).toHaveBeenCalledWith({ type: 'error', text: i18n.ts._chat.actionFailed }));
+	await waitFor(() => expect(mocks.api.mock.calls.filter(call => call[0] === 'chat/rooms/channels/list').length).toBeGreaterThan(listCallsBefore));
+	await waitFor(() => {
+		const links = screen.getAllByRole('link').map(link => link.textContent);
+		expect(links).toEqual(['First', 'Second', 'Third']);
+	});
+});
+
+test('re-reads sections when another member changes the channel structure', async () => {
+	mocks.width = 1000;
+	let sections: unknown[] = sectionList;
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' }
+		: endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] }
+		: endpoint === 'chat/rooms/sections/list' ? sections
+		: sectionedChannels);
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	await screen.findByRole('button', { name: '운영' });
+
+	sections = [{ id: 's1', roomId: 'r', name: '새 이름' }];
+	mocks.handlers.get('channelsUpdated')!(undefined);
+
+	await screen.findByRole('button', { name: '새 이름' });
+	expect(screen.queryByRole('button', { name: '행사' })).toBeNull();
+});
+
+test('does not offer section or channel dragging to members in the narrow grid', async () => {
+	mockSections(ownedRoom);
+	renderChannels({ roomId: 'r' });
+	await screen.findByRole('button', { name: '운영' });
+	expect(screen.queryAllByRole('button', { name: i18n.ts.dragToReorder })).toHaveLength(0);
+});
+test('re-reads the section structure after the stream reconnects', async () => {
+	mocks.width = 1000;
+	let sections: unknown[] = sectionList;
+	mocks.api.mockImplementation(async (endpoint: string) => endpoint === 'chat/rooms/show' ? { ...room, ownerId: 'other' }
+		: endpoint === 'chat/rooms/unread' ? { unreadChannelIds: [], notificationChannelIds: [] }
+		: endpoint === 'chat/rooms/sections/list' ? sections
+		: sectionedChannels);
+	renderChannels({ roomId: 'r', channelId: 'c1' });
+	await screen.findByRole('button', { name: '운영' });
+
+	// 끊긴 동안 다른 계정이 섹션 이름·구성을 바꿨다.
+	sections = [{ id: 's1', roomId: 'r', name: '새 이름' }];
+	mocks.reconnect();
+
+	await screen.findByRole('button', { name: '새 이름' });
+	expect(screen.queryByRole('button', { name: '행사' })).toBeNull();
+});
+
+const nestedDef = [
+	{ items: [{ id: 'a', to: '/a', icon: 'ti ti-hash', text: 'A' }] },
+	{ id: 's1', title: '운영', foldable: true, expanded: true, items: [{ id: 'b', to: '/b', icon: 'ti ti-hash', text: 'B' }] },
+	{ id: 's2', title: '행사', foldable: true, expanded: true, items: [] as { id: string; to: string; icon: string; text: string }[] },
+];
+
+function emptyGroupAreaOf(name: string): HTMLElement {
+	const group = screen.getByRole('button', { name }).closest('.group')!;
+	return group.querySelector(':scope > .items')!.firstElementChild as HTMLElement;
+}
+
+test('super menu ignores a section header dropped on an empty group channel area', async () => {
+	const view = render(MkSuperMenu, { props: { def: nestedDef, draggable: true, draggableGroups: true, collapsibleTitles: true }, global: { stubs } });
+	const handle = screen.getByRole('button', { name: '운영' }).parentElement!.querySelector('[draggable="true"]') as HTMLElement;
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(handle, { dataTransfer });
+	await fireEvent.drop(emptyGroupAreaOf('행사'), { dataTransfer });
+	await new Promise(resolve => setTimeout(resolve, 30));
+	expect(view.emitted('reorder')).toBeUndefined();
+	expect(view.emitted('reorderGroups')).toBeUndefined();
+});
+
+test('super menu still moves a channel into an empty group with one reorder', async () => {
+	const view = render(MkSuperMenu, { props: { def: nestedDef, draggable: true, draggableGroups: true, collapsibleTitles: true }, global: { stubs } });
+	const handle = screen.getByRole('link', { name: 'B' }).parentElement!.querySelector('[draggable="true"]') as HTMLElement;
+	const dataTransfer = new DataTransfer();
+	await fireEvent.dragStart(handle, { dataTransfer });
+	await fireEvent.drop(emptyGroupAreaOf('행사'), { dataTransfer });
+	await new Promise(resolve => setTimeout(resolve, 30));
+	// 옮긴 채널의 원래 묶음(운영)은 비고 받은 묶음(행사)에 들어간다. 두 목록이 각각 바뀐다.
+	expect(view.emitted('reorder')).toEqual([[1, []], [2, [{ id: 'b', to: '/b', icon: 'ti ti-hash', text: 'B' }]]]);
 });

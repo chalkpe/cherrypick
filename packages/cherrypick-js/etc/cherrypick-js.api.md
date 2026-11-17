@@ -1321,6 +1321,9 @@ type ChatRoomBan = components['schemas']['ChatRoomBan'];
 type ChatRoomChannel = components['schemas']['ChatRoomChannel'];
 
 // @public (undocumented)
+type ChatRoomChannelSection = components['schemas']['ChatRoomChannelSection'];
+
+// @public (undocumented)
 type ChatRoomInvitation = components['schemas']['ChatRoomInvitation'];
 
 // @public (undocumented)
@@ -1334,6 +1337,12 @@ type ChatRoomsBansListRequest = operations['chat___rooms___bans___list']['reques
 
 // @public (undocumented)
 type ChatRoomsBansListResponse = operations['chat___rooms___bans___list']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsChannelsArrangeRequest = operations['chat___rooms___channels___arrange']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsChannelsArrangeResponse = operations['chat___rooms___channels___arrange']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type ChatRoomsChannelsCreateRequest = operations['chat___rooms___channels___create']['requestBody']['content']['application/json'];
@@ -1457,6 +1466,27 @@ type ChatRoomsOwnedResponse = operations['chat___rooms___owned']['responses']['2
 
 // @public (undocumented)
 type ChatRoomsReadRequest = operations['chat___rooms___read']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsSectionsCreateRequest = operations['chat___rooms___sections___create']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsSectionsCreateResponse = operations['chat___rooms___sections___create']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsSectionsDeleteRequest = operations['chat___rooms___sections___delete']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsSectionsListRequest = operations['chat___rooms___sections___list']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsSectionsListResponse = operations['chat___rooms___sections___list']['responses']['200']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsSectionsUpdateRequest = operations['chat___rooms___sections___update']['requestBody']['content']['application/json'];
+
+// @public (undocumented)
+type ChatRoomsSectionsUpdateResponse = operations['chat___rooms___sections___update']['responses']['200']['content']['application/json'];
 
 // @public (undocumented)
 type ChatRoomsShowRequest = operations['chat___rooms___show']['requestBody']['content']['application/json'];
@@ -2153,6 +2183,8 @@ declare namespace entities {
         ChatRoomsBansDeleteRequest,
         ChatRoomsBansListRequest,
         ChatRoomsBansListResponse,
+        ChatRoomsChannelsArrangeRequest,
+        ChatRoomsChannelsArrangeResponse,
         ChatRoomsChannelsCreateRequest,
         ChatRoomsChannelsCreateResponse,
         ChatRoomsChannelsDeleteRequest,
@@ -2194,6 +2226,13 @@ declare namespace entities {
         ChatRoomsOwnedRequest,
         ChatRoomsOwnedResponse,
         ChatRoomsReadRequest,
+        ChatRoomsSectionsCreateRequest,
+        ChatRoomsSectionsCreateResponse,
+        ChatRoomsSectionsDeleteRequest,
+        ChatRoomsSectionsListRequest,
+        ChatRoomsSectionsListResponse,
+        ChatRoomsSectionsUpdateRequest,
+        ChatRoomsSectionsUpdateResponse,
         ChatRoomsShowRequest,
         ChatRoomsShowResponse,
         ChatRoomsUnreadRequest,
@@ -2736,6 +2775,7 @@ declare namespace entities {
         ChatMessageLiteForRoom,
         ChatRoom,
         ChatRoomChannel,
+        ChatRoomChannelSection,
         ChatRoomInvitation,
         ChatRoomMembership,
         ChatRoomBan,

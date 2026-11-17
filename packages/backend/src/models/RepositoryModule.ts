@@ -86,6 +86,7 @@ import {
 	MiWebhook,
 	MiChatMessage,
 	MiChatRoomChannel,
+	MiChatRoomChannelSection,
 	MiChatRoomInviteLink,
 	MiChatRoomUserSettings,
 	MiChatRoom,
@@ -556,6 +557,12 @@ const $chatRoomChannelsRepository: Provider = {
 	inject: [DI.db],
 };
 
+const $chatRoomChannelSectionsRepository: Provider = {
+	provide: DI.chatRoomChannelSectionsRepository,
+	useFactory: (db: DataSource) => db.getRepository(MiChatRoomChannelSection).extend(miRepository as MiRepository<MiChatRoomChannelSection>),
+	inject: [DI.db],
+};
+
 const $chatRoomInviteLinksRepository: Provider = {
 	provide: DI.chatRoomInviteLinksRepository,
 	useFactory: (db: DataSource) => db.getRepository(MiChatRoomInviteLink).extend(miRepository as MiRepository<MiChatRoomInviteLink>),
@@ -706,6 +713,7 @@ const $noteHistoryRepository: Provider = {
 		$userMemosRepository,
 		$chatMessagesRepository,
 		$chatRoomChannelsRepository,
+		$chatRoomChannelSectionsRepository,
 		$chatRoomInviteLinksRepository,
 		$chatRoomUserSettingsRepository,
 		$chatRoomsRepository,
@@ -796,6 +804,7 @@ const $noteHistoryRepository: Provider = {
 		$userMemosRepository,
 		$chatMessagesRepository,
 		$chatRoomChannelsRepository,
+		$chatRoomChannelSectionsRepository,
 		$chatRoomInviteLinksRepository,
 		$chatRoomUserSettingsRepository,
 		$chatRoomsRepository,

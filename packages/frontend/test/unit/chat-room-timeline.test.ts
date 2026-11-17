@@ -69,7 +69,7 @@ vi.mock('@/utility/misskey-api.js', () => ({
 		if (endpoint === 'chat/rooms/show' && mocks.roomShowError != null) throw mocks.roomShowError;
 		if (endpoint === 'chat/messages/room-timeline' && mocks.timelineError != null) throw mocks.timelineError;
 		if (endpoint === 'chat/rooms/show') return { id: 'r1', name: 'room 1', ownerId: mocks.roomOwnerId, owner: { id: mocks.roomOwnerId, username: 'owner', host: null }, isArchived: mocks.roomIsArchived, hasChannels: mocks.roomHasChannels, invitationExists: mocks.roomInvitationExists };
-		if (endpoint === 'chat/rooms/channels/list') return [{ id: 'first', roomId: 'r1', name: 'First', isLegacy: true }];
+		if (endpoint === 'chat/rooms/channels/list') return [{ id: 'first', roomId: 'r1', name: 'First', isLegacy: true, sectionId: null }];
 		if (endpoint === 'users/show' && mocks.userShowError != null) throw mocks.userShowError;
 		if (endpoint === 'users/show') return { id: 'alice', username: 'alice', host: null };
 		if (endpoint === 'chat/messages/room-timeline' || endpoint === 'chat/messages/user-timeline') return mocks.timeline;

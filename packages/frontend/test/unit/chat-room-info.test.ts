@@ -40,6 +40,7 @@ afterEach(() => { cleanup(); mocks.apiWithDialog.mockReset(); mocks.api.mockRese
 test('채널 상속과 개별 설정을 한 번의 개인 설정 조회로 표시한다', async () => {
 	mocks.api.mockImplementation(async endpoint => endpoint === 'chat/rooms/channels/list'
 		? [{ id: 'general', name: 'general' }, { id: 'other', name: 'other' }]
+		: endpoint === 'chat/rooms/sections/list' ? []
 		: { level: 'mentions', channelOverrides: [{ channelId: 'other', level: 'all' }] });
 	mocks.apiWithDialog.mockResolvedValueOnce({ level: 'inherit', effectiveLevel: 'mentions' });
 	render(XInfo, { props: { room: { ...room, hasChannels: true, notificationLevel: 'mentions' } }, global: { stubs } });
@@ -236,6 +237,7 @@ test('uses MFM for the room card name and description', () => {
 test('keeps channel notification options in sync with the parent management list', async () => {
 	mocks.api.mockImplementation(async endpoint => endpoint === 'chat/rooms/channels/list'
 		? [{ id: 'stale', name: 'Stale name' }]
+		: endpoint === 'chat/rooms/sections/list' ? []
 		: { level: 'all', channelOverrides: [{ channelId: 'kept', level: 'mentions' }] });
 	const view = render(XInfo, { props: { room: { ...room, hasChannels: true }, channels: [{ id: 'kept', roomId: 'r1', name: 'Current name' }] as any }, global: { stubs } });
 	const kept = await screen.findByRole('combobox', { name: '#Current name' });
@@ -268,6 +270,40 @@ test('멤버 화면은 정보와 알림 두 구역만 구분선으로 나눈다'
 	const { container } = render(XInfo, { props: { room: { ...room, ownerId: 'someone-else', notificationLevel: 'all' } }, global: { stubs } });
 	expect(container.querySelectorAll('hr')).toHaveLength(1);
 	expect(screen.queryByRole('button', { name: i18n.ts._chat.deleteRoom })).toBeNull();
+});
+
+test('채널별 알림 선택을 섹션 이름 소제목으로 묶어 보인다', async () => {
+	mocks.api.mockImplementation(async endpoint => endpoint === 'chat/rooms/channels/list'
+		? [{ id: 'c1', roomId: 'r1', name: 'general', sectionId: null }, { id: 'c2', roomId: 'r1', name: '공지', sectionId: 's1' }, { id: 'c3', roomId: 'r1', name: '자료', sectionId: 's1' }]
+		: endpoint === 'chat/rooms/sections/list' ? [{ id: 's1', roomId: 'r1', name: '운영' }]
+		: { level: 'all', channelOverrides: [] });
+	render(XInfo, { props: { room: { ...room, hasChannels: true, notificationLevel: 'all' } }, global: { stubs } });
+	await screen.findByRole('combobox', { name: '#공지' });
+
+	const heading = screen.getByText('운영');
+	const general = screen.getByRole('combobox', { name: '#general' });
+	const notice = screen.getByRole('combobox', { name: '#공지' });
+	const files = screen.getByRole('combobox', { name: '#자료' });
+	expect(heading.compareDocumentPosition(general) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+	expect(heading.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	expect(notice.compareDocumentPosition(files) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test('부모가 다시 읽은 섹션 목록을 내려주면 알림 묶음이 갱신되고 개인 설정은 유지된다', async () => {
+	mocks.api.mockImplementation(async endpoint => endpoint === 'chat/rooms/sections/list' ? [] : { level: 'all', channelOverrides: [{ channelId: 'c2', level: 'mentions' }] });
+	const view = render(XInfo, { props: { room: { ...room, hasChannels: true }, channels: [{ id: 'c1', roomId: 'r1', name: 'general', sectionId: null }] as any, sections: [] as any }, global: { stubs } });
+	await screen.findByRole('combobox', { name: '#general' });
+
+	// 부모가 섹션을 만들고 채널을 그 안으로 옮긴 뒤 다시 읽은 목록을 내려준다.
+	await view.rerender({
+		channels: [{ id: 'c1', roomId: 'r1', name: 'general', sectionId: null }, { id: 'c2', roomId: 'r1', name: '공지', sectionId: 's1' }] as any,
+		sections: [{ id: 's1', roomId: 'r1', name: '운영' }] as any,
+	});
+
+	const notice = await screen.findByRole('combobox', { name: '#공지' });
+	expect(screen.getByText('운영')).toBeTruthy();
+	expect((notice as HTMLSelectElement).value).toBe('mentions');
+	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/notifications')).toHaveLength(1);
 });
 
 test('그룹장 화면에 녹화 허용 스위치가 실제 컴포넌트로 그려진다', async () => {

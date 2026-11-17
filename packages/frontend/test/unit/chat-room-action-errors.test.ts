@@ -30,7 +30,7 @@ const mocks = vi.hoisted(() => {
 			if (state.refusal.error === 'network') throw new TypeError('Failed to fetch');
 			return new Response(JSON.stringify({ error: state.refusal.error }), { status: 400 });
 		}
-		if (endpoint === 'chat/rooms/channels/list') return new Response(JSON.stringify([{ id: 'first', roomId: 'r1', name: 'First', isLegacy: true }]), { status: 200 });
+		if (endpoint === 'chat/rooms/channels/list') return new Response(JSON.stringify([{ id: 'first', roomId: 'r1', name: 'First', isLegacy: true, sectionId: null }]), { status: 200 });
 		if (endpoint === 'chat/rooms/show') return new Response(JSON.stringify(state.room), { status: 200 });
 		if (endpoint === 'chat/rooms/members') return new Response(JSON.stringify([{ id: 'ms1', userId: 'member', user: { id: 'member', username: 'member', host: null } }]), { status: 200 });
 		if (endpoint === 'chat/rooms/invitations/outbox') return new Response(JSON.stringify([{ id: 'i1', userId: 'invitee', user: { id: 'invitee', username: 'invitee', host: null } }]), { status: 200 });
