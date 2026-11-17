@@ -2602,21 +2602,27 @@ describe('call recording lifecycle', () => {
 
 	test('keeps drawing the recording canvas while no screen is shared so the recorder keeps emitting parts', async () => {
 		vi.useFakeTimers();
-		stubCanvasCapture();
-		const fillRect = vi.fn();
-		vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ fillRect, drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
-		await joinRecordingCall();
-		await startRecording();
-		const drawn = fillRect.mock.calls.length;
+		try {
+			stubCanvasCapture();
+			const fillRect = vi.fn();
+			vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ fillRect, drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+			await joinRecordingCall();
+			await startRecording();
+			const drawn = fillRect.mock.calls.length;
 
-		await vi.advanceTimersByTimeAsync(3000);
-		expect(fillRect.mock.calls.length).toBeGreaterThanOrEqual(drawn + 3);
+			await vi.advanceTimersByTimeAsync(3000);
+			expect(fillRect.mock.calls.length).toBeGreaterThanOrEqual(drawn + 3);
 
-		stopRecording();
-		await flushRecording();
-		const stopped = fillRect.mock.calls.length;
-		await vi.advanceTimersByTimeAsync(3000);
-		expect(fillRect.mock.calls.length).toBe(stopped);
+			stopRecording();
+			await flushRecording();
+			const stopped = fillRect.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(3000);
+			expect(fillRect.mock.calls.length).toBe(stopped);
+			expect(conversionCalls()[0][1]).toMatchObject({ video: false });
+			expect(Recorder.instances[0].stream.getVideoTracks()).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test('converts the whole recording as video when a screen share appears mid-recording', async () => {
