@@ -275,13 +275,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				const outputCapBytes = Math.max(limitBytes, RECORDING_DOWNLOAD_STORAGE_MAX_BYTES);
 
 				dir = fs.mkdtempSync(Path.join(os.tmpdir(), 'voice-recording-'));
-				// 오브젝트 스토리지의 조각은 크기 상한 안에서만 서버 임시 폴더로 받는다. 임시 폴더는 끝날 때 통째로 지운다.
-				const remote = sources.filter(s => s.remoteUrl != null);
-				if (remote.some(s => s.size > limitBytes) || remote.reduce((sum, s) => sum + s.size, 0) > outputCapBytes) throw new ApiError(meta.errors.conversionFailed);
-				for (const [index, source] of remote.entries()) {
+				// 오브젝트 스토리지의 조각은 서버 임시 폴더로 받는다. 임시 폴더는 끝날 때 통째로 지운다.
+				for (const [index, source] of sources.filter(s => s.remoteUrl != null).entries()) {
 					const partPath = Path.join(dir, `part-${index}`);
 					await this.downloadService.downloadUrl(source.remoteUrl!, partPath);
-					if (fs.statSync(partPath).size > limitBytes) throw new ApiError(meta.errors.conversionFailed);
 					source.path = partPath;
 				}
 				srcs = sources.map(s => s.path);
