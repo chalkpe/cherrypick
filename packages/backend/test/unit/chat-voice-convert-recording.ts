@@ -23,7 +23,7 @@ const me = { id: 'me', host: null } as any;
 const requestId = '11111111-1111-4111-8111-111111111111';
 const tempDirs: string[] = [];
 
-function fixture(overrides: { types?: string[]; names?: string[]; conversions?: number; addFileError?: Error; remembered?: RecordingResult | null; storeError?: Error; deleteFails?: string[]; serverMaxBytes?: number; objectStorage?: boolean; downloadFails?: boolean; downloadFailsAt?: number; remoteSize?: number; tempParts?: { id: string; userId?: string; type?: string; name?: string }[] } = {}) {
+function fixture(overrides: { types?: string[]; names?: string[]; conversions?: number; addFileError?: Error; remembered?: RecordingResult | null; storeError?: Error; deleteFails?: string[]; serverMaxBytes?: number; roleMaxFileSizeMb?: number; objectStorage?: boolean; downloadFails?: boolean; downloadFailsAt?: number; remoteSize?: number; tempParts?: { id: string; userId?: string; type?: string; name?: string }[] } = {}) {
 	const partDir = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-recording-parts-'));
 	tempDirs.push(partDir);
 	const types = overrides.types ?? ['audio/webm'];
@@ -59,7 +59,7 @@ function fixture(overrides: { types?: string[]; names?: string[]; conversions?: 
 		}),
 	};
 	const driveFileEntityService = { pack: vi.fn(async (packed: { id: string }) => ({ id: packed.id })) };
-	const roleService = { getUserPolicies: vi.fn().mockResolvedValue({ maxFileSizeMb: 100, driveCapacityMb: 1000 }) };
+	const roleService = { getUserPolicies: vi.fn().mockResolvedValue({ maxFileSizeMb: overrides.roleMaxFileSizeMb ?? 100, driveCapacityMb: 1000 }) };
 	const apiLoggerService = { logger: { warn: vi.fn() } };
 	const results = new Map<string, RecordingResult>();
 	if (overrides.remembered != null) results.set(requestId, overrides.remembered);
@@ -195,7 +195,8 @@ describe('chat/rooms/voice/convert-recording', () => {
 	});
 
 	test('converts parts of object storage that are larger than the drive file limit', async () => {
-		const f = fixture({ objectStorage: true, remoteSize: 200 * 1024 * 1024 });
+		// 서버 한도 이하이면서 역할 한도보다 큰 조각
+		const f = fixture({ objectStorage: true, remoteSize: 20 * 1024 * 1024, serverMaxBytes: 1024 * 1024 * 1024, roleMaxFileSizeMb: 10 });
 
 		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false }, me, null, null)).resolves.toEqual({ file: { id: 'converted' }, download: null });
 		expect(f.downloadService.downloadUrl).toHaveBeenCalledTimes(1);
