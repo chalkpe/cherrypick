@@ -411,7 +411,7 @@ describe('chat/rooms/voice/convert-recording', () => {
 		}
 	});
 
-	test('a retry does not report a failure after the file was saved when a later step fails', async () => {
+	test('a retry passes errors after the file was saved to the common error handling instead of CONVERSION_FAILED', async () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-recording-test-'));
 		const kept = path.join(dir, 'kept.mp3');
 		fs.writeFileSync(kept, 'x');
