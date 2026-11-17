@@ -360,7 +360,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					const identifiableId = error instanceof IdentifiableError ? error.id : null;
 					if (identifiableId === 'f9e4e5f3-4df4-40b5-b400-f236945f7073') reason = 'tooLarge';
 					else if (identifiableId === 'c6244ed2-a39a-4e1c-bf93-f0fbd7764fa6') reason = 'noFreeSpace';
-					else throw error;
+					else if (error instanceof Error && error.message === 'folder-not-found') throw new ApiError(meta.errors.noSuchFolder);
+					else throw new ApiError(meta.errors.conversionFailed);
 				}
 				return { file: null, download: { id: download.id, name: download.name, size: download.size, reason } };
 			}

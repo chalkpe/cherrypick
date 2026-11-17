@@ -315,6 +315,21 @@ describe('chat/rooms/voice/convert-recording', () => {
 		}
 	});
 
+	test('a retry maps a missing folder to NO_SUCH_FOLDER and keeps the download', async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-recording-test-'));
+		const kept = path.join(dir, 'kept.mp3');
+		fs.writeFileSync(kept, 'x');
+		const f = fixture({ addFileError: new Error('folder-not-found'), remembered: { download: { id: 'dl-1', name: 'room.mp3', size: 1, reason: 'tooLarge' }, remainingParts: [] } });
+		f.recordingStorage.getDownload.mockResolvedValue({ id: 'dl-1', userId: 'me', requestId, path: kept, name: 'room.mp3', size: 1 });
+
+		try {
+			await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, video: false, folderId: 'gone' }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_FOLDER' });
+			expect(f.recordingStorage.removeDownload).not.toHaveBeenCalled();
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test('a retry after the download expired keeps the leftover-part cleanup record', async () => {
 		// 내려받기가 만료되고 원본 조각도 이미 사라진 경우: 재시도는 실패하더라도 남은 조각 정리 기록은 남아야 한다
 		const f = fixture({ remembered: { download: { id: 'dl-1', name: 'room.mp3', size: 2048, reason: 'tooLarge' }, remainingParts: ['original1'] } });
