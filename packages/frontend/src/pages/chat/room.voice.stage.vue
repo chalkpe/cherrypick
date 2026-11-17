@@ -254,7 +254,7 @@ const screenStyle = computed(() => {
 	left: 12px;
 	padding: 4px 10px;
 	border-radius: 999px;
-	background: var(--MI_THEME-error);
+	background: hsl(from var(--MI_THEME-error) h s calc(l - 10));
 	color: #fff;
 	font-size: 0.85em;
 	font-weight: bold;
