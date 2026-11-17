@@ -764,7 +764,8 @@ async function offerFailedRecordings(session: RecordingSession): Promise<void> {
 	let failed = session.failed;
 	while (failed.length > 0) {
 		const reason = (['noFreeSpace', 'tooLarge', 'network'] as const).find(candidate => failed.some(recording => recording.reason === candidate));
-		const hasOriginal = failed.some(recording => recording.uploaded.length > 0);
+		// 서버가 최종 파일을 보관 중이면 원본 조각은 이미 지워졌으므로 드라이브에 원본이 있다고 보지 않는다
+		const hasOriginal = session.pendingDownload == null && failed.some(recording => recording.uploaded.length > 0);
 		const hasUploadFailure = failed.some(recording => recording.pending.length > 0);
 		const caption = reason === 'noFreeSpace' ? (hasOriginal ? i18n.ts._voiceCall.recordingConversionNoFreeSpace : i18n.ts.cannotUploadBecauseNoFreeSpace)
 			: reason === 'tooLarge' ? (hasOriginal ? i18n.ts._voiceCall.recordingConversionTooLarge : i18n.ts.cannotUploadBecauseExceedsFileSizeLimit)

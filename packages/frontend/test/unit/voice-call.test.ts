@@ -3054,7 +3054,11 @@ describe('call recording lifecycle', () => {
 
 		stopRecording();
 		await vi.waitFor(() => expect(mocks.actions).toHaveBeenCalledOnce());
-		expect(mocks.actions).toHaveBeenCalledWith(expect.objectContaining({ caption: i18n.ts._voiceCall.recordingConversionTooLarge }));
+		// 서버가 원본 조각을 지우고 최종 파일만 보관하므로 드라이브 저장 실패로 알리고 크기 안내를 붙인다
+		expect(mocks.actions).toHaveBeenCalledWith(expect.objectContaining({
+			text: i18n.tsx._voiceCall.recordingSaveFailed({ n: 1 }),
+			caption: i18n.ts.cannotUploadBecauseExceedsFileSizeLimit,
+		}));
 		choice.resolve({ canceled: false, result: 'download' });
 		await vi.waitFor(() => expect(downloads).toHaveLength(1));
 
