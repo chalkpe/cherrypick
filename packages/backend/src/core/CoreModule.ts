@@ -97,6 +97,7 @@ import { RemoteVoiceCallService } from './RemoteVoiceCallService.js';
 import { CloudflareTurnService } from './CloudflareTurnService.js';
 import { HostPolicyService } from './HostPolicyService.js';
 import { RegistryApiService } from './RegistryApiService.js';
+import { RecordingStorageService } from './RecordingStorageService.js';
 import { ReversiService } from './ReversiService.js';
 import { PageService } from './PageService.js';
 import { ActivityPubAccessControlService } from './ActivityPubAccessControlService.js';
@@ -448,6 +449,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		RemoteVoiceCallService,
 		CloudflareTurnService,
 		HostPolicyService,
+		RecordingStorageService,
 		RegistryApiService,
 		ReversiService,
 		PageService,
@@ -797,6 +799,7 @@ const $ApEventService: Provider = { provide: 'ApEventService', useExisting: ApEv
 		RemoteVoiceCallService,
 		CloudflareTurnService,
 		HostPolicyService,
+		RecordingStorageService,
 		RegistryApiService,
 		ReversiService,
 		PageService,

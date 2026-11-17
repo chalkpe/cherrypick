@@ -52,6 +52,7 @@ export class ApChatRoomStateService {
 			name: typeof object.name === 'string' ? truncate(object.name, 256) : current.name,
 			description: typeof object.summary === 'string' ? truncate(object.summary, 2048) : current.description,
 			isArchived: typeof object._misskey_chatArchived === 'boolean' ? object._misskey_chatArchived : current.isArchived,
+			allowRecording: typeof object.allowRecording === 'boolean' ? object.allowRecording : current.allowRecording,
 			...icon,
 		}, { federate: false, remoteUpdatedAt: updatedAt, remoteGroup: object });
 		if (!Object.hasOwn(object, 'icon') && !Object.hasOwn(object, '_misskey_chatIconDecorations')) return apply(room);

@@ -152,10 +152,10 @@ export class LiveKitServerService {
 				if (await this.rateLimiterService.limit(FEDERATION_STATUS_USER_LIMIT, user.id) != null) return reply.code(429).send();
 				const body: unknown = JSON.parse(rawBody);
 				if (body == null || typeof body !== 'object') return reply.code(400).send();
-				const { room, sessionId, micMuted, deafened } = body as Record<string, unknown>;
+				const { room, sessionId, micMuted, deafened, recording } = body as Record<string, unknown>;
 				if (typeof room !== 'string' || typeof sessionId !== 'string' || sessionId.length > 128 || typeof micMuted !== 'boolean' || typeof deafened !== 'boolean') return reply.code(400).send();
 				const roomId = this.localRoomIdOf(room);
-				if (roomId == null || !await this.chatVoiceService.reportStatus(user, roomId, sessionId, { micMuted, deafened })) return reply.code(403).send();
+				if (roomId == null || !await this.chatVoiceService.reportStatus(user, roomId, sessionId, { micMuted, deafened, recording: typeof recording === 'boolean' ? recording : undefined })) return reply.code(403).send();
 				return reply.code(200).send({});
 			} catch (err) {
 				return reply.code(err instanceof SyntaxError ? 400 : 500).send();

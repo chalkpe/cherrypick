@@ -12,7 +12,7 @@ const user = { id: 'me', host: null } as any;
 const report = { roomId: 'r1', sessionId: 'PA_1', micMuted: true, deafened: false };
 
 function fixture(member = true, remote = false) {
-	const room = { id: 'r1', ownerId: 'owner', owner: { host: remote ? 'remote.test' : null } };
+	const room = { id: 'r1', ownerId: 'owner', allowRecording: true, owner: { host: remote ? 'remote.test' : null } };
 	const chat = { checkChatAvailability: vi.fn(), findRoomById: vi.fn().mockResolvedValue(room) };
 	const local = { reportStatus: vi.fn().mockResolvedValue(true) };
 	const host = { reportStatus: vi.fn() };

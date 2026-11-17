@@ -82,6 +82,14 @@ export class MiChatRoom {
 	public legacyChannel: MiChatRoomChannel | null;
 
 	/**
+	 * 通話の録画を許すか。ルームの持ち主が決め、既定では許さない
+	 */
+	@Column('boolean', {
+		default: false,
+	})
+	public allowRecording: boolean;
+
+	/**
 	 * 持ち主がこのルームをミュートしているか。メンバーのミュートはメンバーシップに持つが、持ち主にはメンバーシップがないのでここに持つ。
 	 * 持ち主ひとりの通知の設定で、ほかの参加者にもほかのサーバーにも伝えない
 	 */

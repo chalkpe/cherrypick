@@ -305,3 +305,13 @@ test('부모가 다시 읽은 섹션 목록을 내려주면 알림 묶음이 갱
 	expect((notice as HTMLSelectElement).value).toBe('mentions');
 	expect(mocks.api.mock.calls.filter(([endpoint]) => endpoint === 'chat/rooms/notifications')).toHaveLength(1);
 });
+
+test('그룹장 화면에 녹화 허용 스위치가 실제 컴포넌트로 그려진다', async () => {
+	mocks.api.mockResolvedValue({ level: 'all', channelOverrides: [] });
+	const { MkSwitch: _omitted, ...withoutSwitch } = stubs;
+	const { container } = render(XInfo, { props: { room: { ...room, allowRecording: true } }, global: { stubs: withoutSwitch } });
+	await nextTick();
+
+	expect(container.querySelector('mkswitch')).toBeNull();
+	expect(screen.getByText(i18n.ts._voiceCall.allowRecording)).toBeTruthy();
+});

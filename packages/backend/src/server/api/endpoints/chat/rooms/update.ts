@@ -60,6 +60,7 @@ export const paramDef = {
 		name: { type: 'string', maxLength: 256 },
 		description: { type: 'string', maxLength: 1024 },
 		isArchived: { type: 'boolean' },
+		allowRecording: { type: 'boolean' },
 		iconId: { type: 'string', format: 'misskey:id', nullable: true },
 		iconDecorations: avatarDecorationsSchema,
 	},
@@ -115,6 +116,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				name: ps.name,
 				description: ps.description,
 				isArchived: ps.isArchived,
+				allowRecording: ps.allowRecording,
 				...icon,
 			}).catch(err => {
 				if (err instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);

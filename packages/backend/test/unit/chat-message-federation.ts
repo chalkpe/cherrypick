@@ -197,6 +197,12 @@ describe('ApRendererService chat wrappers', () => {
 		expect(room.id).toBe('https://remote.test/chat/rooms/r1');
 	});
 
+	test.each([true, false])('a room object carries the recording permission %s', async (allowed) => {
+		const renderer = createRenderer();
+
+		expect((await renderer.renderChatRoom({ id: 'r1', name: 'Room', description: '', allowRecording: allowed }, bob as never)).allowRecording).toBe(allowed);
+	});
+
 	test('a room object always names its description, so that an Invite can clear the one on a mirror', async () => {
 		const renderer = createRenderer();
 
