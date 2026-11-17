@@ -23,18 +23,19 @@ const me = { id: 'me', host: null } as any;
 const requestId = '11111111-1111-4111-8111-111111111111';
 const tempDirs: string[] = [];
 
-function fixture(overrides: { types?: string[]; names?: string[]; conversions?: number; addFileError?: Error; remembered?: RecordingResult | null; storeError?: Error; deleteFails?: string[]; serverMaxBytes?: number; tempParts?: { id: string; userId?: string; type?: string; name?: string }[] } = {}) {
+function fixture(overrides: { types?: string[]; names?: string[]; conversions?: number; addFileError?: Error; remembered?: RecordingResult | null; storeError?: Error; deleteFails?: string[]; serverMaxBytes?: number; objectStorage?: boolean; downloadFails?: boolean; remoteSize?: number; tempParts?: { id: string; userId?: string; type?: string; name?: string }[] } = {}) {
 	const partDir = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-recording-parts-'));
 	tempDirs.push(partDir);
 	const types = overrides.types ?? ['audio/webm'];
 	const files = types.map((type, i) => ({
 		id: `original${i}`,
 		userId: 'me',
-		storedInternal: true,
+		storedInternal: !overrides.objectStorage,
 		accessKey: `access-key${i}`,
+		url: `https://storage.example/part${i}.webm`,
 		type,
 		name: (overrides.names?.[i] ?? `room 1-20261115-090807${i > 0 ? `-${String(i + 1).padStart(3, '0')}` : ''}.webm`),
-		size: 1024,
+		size: overrides.remoteSize ?? 1024,
 	}));
 	const driveFilesRepository = { findBy: vi.fn().mockResolvedValue(files), findOneBy: vi.fn().mockResolvedValue(files[0]) };
 	const redisClient = { eval: vi.fn().mockResolvedValue(1) };
@@ -47,6 +48,15 @@ function fixture(overrides: { types?: string[]; names?: string[]; conversions?: 
 		}),
 	};
 	const internalStorageService = { resolvePath: vi.fn((key: string) => `/recordings/${key}.webm`) };
+	const downloaded: string[] = [];
+	const downloadService = {
+		downloadUrl: vi.fn(async (_url: string, dst: string) => {
+			if (overrides.downloadFails) throw new Error('download failed');
+			fs.writeFileSync(dst, 'x');
+			downloaded.push(dst);
+			return { filename: 'part.webm' };
+		}),
+	};
 	const driveFileEntityService = { pack: vi.fn(async (packed: { id: string }) => ({ id: packed.id })) };
 	const roleService = { getUserPolicies: vi.fn().mockResolvedValue({ maxFileSizeMb: 100, driveCapacityMb: 1000 }) };
 	const apiLoggerService = { logger: { warn: vi.fn() } };
@@ -85,8 +95,9 @@ function fixture(overrides: { types?: string[]; names?: string[]; conversions?: 
 		recordingStorage as any,
 		roleService as any,
 		apiLoggerService as any,
+		downloadService as any,
 	);
-	return { endpoint, driveService, driveFilesRepository, recordingStorage, results, files, partPaths };
+	return { endpoint, downloadService, downloaded, driveService, driveFilesRepository, recordingStorage, results, files, partPaths };
 }
 
 function mockProbe(probe?: object) {
@@ -145,6 +156,34 @@ describe('chat/rooms/voice/convert-recording', () => {
 		// only one final file is added
 		expect(f.driveService.addFile).toHaveBeenCalledTimes(1);
 		expect(f.driveService.deleteFile).toHaveBeenCalledTimes(3);
+	});
+
+	test('downloads parts stored in object storage, converts them into one file and removes the temporary files', async () => {
+		const f = fixture({ types: ['audio/webm', 'audio/webm'], objectStorage: true });
+
+		await expect(f.endpoint.exec({ fileIds: ['original0', 'original1'], requestId, video: false }, me, null, null)).resolves.toEqual({ file: { id: 'converted' }, download: null });
+
+		expect(f.downloadService.downloadUrl).toHaveBeenCalledTimes(2);
+		expect(childProcess.spawn.mock.calls[0][1] as string[]).toContain('concat');
+		expect(f.driveService.addFile).toHaveBeenCalledTimes(1);
+		expect(f.driveService.deleteFile).toHaveBeenCalledTimes(2);
+		expect(f.downloaded.some(p => fs.existsSync(p))).toBe(false);
+	});
+
+	test('keeps the originals and removes downloaded files when a part of object storage cannot be downloaded', async () => {
+		const f = fixture({ types: ['audio/webm', 'audio/webm'], objectStorage: true, downloadFails: true });
+
+		await expect(f.endpoint.exec({ fileIds: ['original0', 'original1'], requestId }, me, null, null)).rejects.toMatchObject({ code: 'CONVERSION_FAILED' });
+		expect(childProcess.spawn).not.toHaveBeenCalled();
+		expect(f.driveService.deleteFile).not.toHaveBeenCalled();
+	});
+
+	test('does not download a part of object storage larger than the output limit', async () => {
+		const f = fixture({ objectStorage: true, remoteSize: 200 * 1024 * 1024 });
+
+		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId }, me, null, null)).rejects.toMatchObject({ code: 'CONVERSION_FAILED' });
+		expect(f.downloadService.downloadUrl).not.toHaveBeenCalled();
+		expect(f.driveService.deleteFile).not.toHaveBeenCalled();
 	});
 
 	test('keeps the video of a video recording by default', async () => {
