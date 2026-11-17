@@ -269,3 +269,13 @@ test('멤버 화면은 정보와 알림 두 구역만 구분선으로 나눈다'
 	expect(container.querySelectorAll('hr')).toHaveLength(1);
 	expect(screen.queryByRole('button', { name: i18n.ts._chat.deleteRoom })).toBeNull();
 });
+
+test('그룹장 화면에 녹화 허용 스위치가 실제 컴포넌트로 그려진다', async () => {
+	mocks.api.mockResolvedValue({ level: 'all', channelOverrides: [] });
+	const { MkSwitch: _omitted, ...withoutSwitch } = stubs;
+	const { container } = render(XInfo, { props: { room: { ...room, allowRecording: true } }, global: { stubs: withoutSwitch } });
+	await nextTick();
+
+	expect(container.querySelector('mkswitch')).toBeNull();
+	expect(screen.getByText(i18n.ts._voiceCall.allowRecording)).toBeTruthy();
+});

@@ -202,7 +202,13 @@ export class VoiceRelayConsumerService implements OnModuleInit, OnApplicationShu
 		return { ...snapshot, participants: snapshot.participants.map(({ allowScreenShare, ...participant }) => ({ ...participant, canScreenShare: allowScreenShare })) };
 	}
 	async participants(roomId: string): Promise<LiveKitParticipant[] | null> { const call = await this.get(roomId); if (!call || call.state === 'ended') return null; return (await this.snapshot(call)).participants; }
-	async participant(roomId: string, action: string, data: unknown): Promise<boolean | null> { const call = await this.get(roomId); if (!call || call.state === 'ended') return null; const result = await this.client.request<{ accepted: boolean }>(await this.authFor(call), 'POST', this.path(call, `/participants/${action}`), data); if (action === 'kick' && (result == null || typeof result.accepted !== 'boolean')) throw new VoiceRelayError('INVALID_RESPONSE'); return result.accepted === true; }
+	async participant(roomId: string, action: string, data: unknown): Promise<boolean | null> {
+		const call = await this.get(roomId);
+		if (!call || call.state === 'ended') return null;
+		const result = await this.client.request<{ accepted: boolean }>(await this.authFor(call), 'POST', this.path(call, `/participants/${action}`), data);
+		if (action === 'kick' && (result == null || typeof result.accepted !== 'boolean')) throw new VoiceRelayError('INVALID_RESPONSE');
+		return result.accepted === true;
+	}
 	async end(roomId: string): Promise<boolean> {
 		return this.storage.lock(`allocation:${roomId}`, async () => {
 			const call = await this.get(roomId); if (!call || call.state === 'ended') return false;

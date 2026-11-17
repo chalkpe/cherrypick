@@ -2395,6 +2395,7 @@ export class ApInboxService {
 					description: roomDescription,
 					ownerId: actor.id,
 					isArchived: roomObject._misskey_chatArchived === true,
+					allowRecording: roomObject.allowRecording === true,
 					uri: roomUri,
 					lastRemoteUpdatedAt: this.chatRoomUpdatedAt(roomObject) ?? null,
 				});

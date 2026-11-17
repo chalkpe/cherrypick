@@ -6,7 +6,7 @@
 import { deepStrictEqual, rejects, strictEqual } from 'node:assert';
 import { beforeAll, describe, test, vi } from 'vitest';
 import * as Misskey from 'cherrypick-js';
-import { createAccount, fetchAdmin, type LoginUser, resolveRemoteUser, WAIT_FOR_FEDERATION } from './utils.js';
+import { createAccount, fetchAdmin, type LoginUser, resolveRemoteUser, waitForFollowRelation, WAIT_FOR_FEDERATION } from './utils.js';
 
 // 큰 기록은 한 번에 받는 25페이지(500글)를 넘겨 이어 받기까지 확인한다
 const WAIT_FOR_HISTORY = { timeout: 180000, interval: 1000 };
@@ -138,6 +138,11 @@ describe('Chat room history', () => {
 			}, WAIT_FOR_FEDERATION);
 
 			const memberAdmin = await fetchAdmin(memberHost);
+			// 삭제된 계정의 Delete는 팔로우 관계로 알려진 shared inbox로 전달된다.
+			// 다른 시험이 만든 팔로우에 기대지 않도록 이 시험에서 직접 팔로우를 만든다.
+			const authorOnHost = await resolveRemoteUser(memberHost, author.id, alice);
+			await alice.client.request('following/create', { userId: authorOnHost.id });
+			await waitForFollowRelation(alice, author, 1);
 			await memberAdmin.client.request('admin/delete-account', { userId: author.id });
 			const hostAdmin = await fetchAdmin(hostOf);
 			await vi.waitFor(async () => {

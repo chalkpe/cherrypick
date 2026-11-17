@@ -67,6 +67,12 @@ describe('그룹 아이콘 표현', () => {
 		});
 	});
 
+	test.each([true, false])('그룹 변경은 녹화 허용 %s을 싣는다', (allowRecording) => {
+		const activity = buildChatRoomUpdate({ id: 'room', name: '그룹', allowRecording }, { id: 'owner', host: null }, { baseUrl: 'https://owner.example' });
+
+		expect(activity.object).toMatchObject({ allowRecording });
+	});
+
 	test('해제된 아이콘과 장식을 생략하지 않는다', () => {
 		const activity = buildChatRoomUpdate({ id: 'room', name: '그룹' }, { id: 'owner', host: null }, { baseUrl: 'https://owner.example', icon: null, iconDecorations: [] });
 

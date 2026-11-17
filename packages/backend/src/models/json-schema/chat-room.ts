@@ -55,5 +55,9 @@ export const packedChatRoomSchema = {
 			type: 'boolean',
 			optional: false, nullable: false,
 		},
+		allowRecording: {
+			type: 'boolean',
+			optional: false, nullable: false,
+		},
 	},
 } as const;

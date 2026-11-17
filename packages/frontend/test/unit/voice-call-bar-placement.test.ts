@@ -20,6 +20,10 @@ vi.mock('@/preferences.js', async () => ({
 }));
 vi.mock('@/i.js', async importOriginal => ({ ...await importOriginal<typeof import('@/i.js')>(), $i: { policies: { canScreenShare: false } } }));
 vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: vi.fn() }));
+vi.mock('@/composables/use-voice-call-recording-watch.js', async () => {
+	const { computed } = await import('vue');
+	return { useVoiceCallRecordingWatch: () => ({ someoneRecording: computed(() => false), recordingIdentities: computed(() => []) }) };
+});
 vi.mock('@/utility/voice-call.js', async () => {
 	const { reactive } = await import('vue');
 	const voiceCall = reactive({ status: 'connected', room: { id: 'r1', name: 'room 1' }, micEnabled: true, deafened: false, audioBlocked: false, screenSharing: false });

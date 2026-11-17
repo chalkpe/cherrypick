@@ -372,6 +372,7 @@ export class ChatEntityService {
 			...(me != null && (me.id === room.ownerId || membership != null) ? { notificationLevel: (await this.chatRoomNotificationService.settings(me.id, room.id)).notificationLevel } : {}),
 			invitationExists: invitation != null,
 			isArchived: room.isArchived,
+			allowRecording: room.allowRecording,
 			hasChannels: room.hasChannels ?? false,
 			legacyChannelId: me != null && (me.id === room.ownerId || membership != null) ? room.legacyChannelId ?? null : null,
 		};

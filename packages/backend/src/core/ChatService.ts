@@ -1673,6 +1673,7 @@ export class ChatService {
 		name?: string;
 		description?: string;
 		isArchived?: boolean;
+		allowRecording?: boolean;
 	} & Partial<Pick<MiChatRoom, 'iconId' | 'iconUrl' | 'iconBlurhash' | 'iconDecorations'>>, options?: { federate?: boolean; remoteUpdatedAt?: Date; remoteGroup?: IObject; deletedIconId?: string }): Promise<MiChatRoom> {
 		const wasArchived = room.isArchived;
 		const patch = Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined)) as typeof params;
@@ -1705,6 +1706,7 @@ export class ChatService {
 			name: merged.name,
 			description: merged.description,
 			isArchived: merged.isArchived,
+			allowRecording: merged.allowRecording,
 			hasChannels: merged.hasChannels,
 			...(params.iconId !== undefined || params.iconDecorations !== undefined ? await this.chatEntityService.packRoomIcon(merged) : {}),
 		});

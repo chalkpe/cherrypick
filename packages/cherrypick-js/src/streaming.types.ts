@@ -344,6 +344,7 @@ export type Channels = {
 				name: string;
 				description: string;
 				isArchived: boolean;
+				allowRecording: boolean;
 				hasChannels?: boolean;
 				iconId?: string | null;
 				iconUrl?: string;

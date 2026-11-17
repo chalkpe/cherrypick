@@ -319,10 +319,19 @@ import type {
 	ChatRoomsUpdateResponse,
 	ChatRoomsVoiceConnectionInfoRequest,
 	ChatRoomsVoiceConnectionInfoResponse,
+	ChatRoomsVoiceConvertRecordingRequest,
+	ChatRoomsVoiceConvertRecordingResponse,
 	ChatRoomsVoiceJoinRequest,
 	ChatRoomsVoiceJoinResponse,
 	ChatRoomsVoiceKickRequest,
 	ChatRoomsVoiceMuteRequest,
+	ChatRoomsVoiceRecordingDiscardRequest,
+	ChatRoomsVoiceRecordingFolderRequest,
+	ChatRoomsVoiceRecordingFolderResponse,
+	ChatRoomsVoiceRecordingPartRequest,
+	ChatRoomsVoiceRecordingPartResponse,
+	ChatRoomsVoiceRecordingResultRequest,
+	ChatRoomsVoiceRecordingResultResponse,
 	ChatRoomsVoiceStatesRequest,
 	ChatRoomsVoiceStatesResponse,
 	ChatRoomsVoiceStatusRequest,
@@ -989,9 +998,14 @@ export type Endpoints = {
 	'chat/rooms/unread': { req: ChatRoomsUnreadRequest; res: ChatRoomsUnreadResponse };
 	'chat/rooms/update': { req: ChatRoomsUpdateRequest; res: ChatRoomsUpdateResponse };
 	'chat/rooms/voice/connection-info': { req: ChatRoomsVoiceConnectionInfoRequest; res: ChatRoomsVoiceConnectionInfoResponse };
+	'chat/rooms/voice/convert-recording': { req: ChatRoomsVoiceConvertRecordingRequest; res: ChatRoomsVoiceConvertRecordingResponse };
 	'chat/rooms/voice/join': { req: ChatRoomsVoiceJoinRequest; res: ChatRoomsVoiceJoinResponse };
 	'chat/rooms/voice/kick': { req: ChatRoomsVoiceKickRequest; res: EmptyResponse };
 	'chat/rooms/voice/mute': { req: ChatRoomsVoiceMuteRequest; res: EmptyResponse };
+	'chat/rooms/voice/recording-discard': { req: ChatRoomsVoiceRecordingDiscardRequest; res: EmptyResponse };
+	'chat/rooms/voice/recording-folder': { req: ChatRoomsVoiceRecordingFolderRequest; res: ChatRoomsVoiceRecordingFolderResponse };
+	'chat/rooms/voice/recording-part': { req: ChatRoomsVoiceRecordingPartRequest; res: ChatRoomsVoiceRecordingPartResponse };
+	'chat/rooms/voice/recording-result': { req: ChatRoomsVoiceRecordingResultRequest; res: ChatRoomsVoiceRecordingResultResponse };
 	'chat/rooms/voice/states': { req: ChatRoomsVoiceStatesRequest; res: ChatRoomsVoiceStatesResponse };
 	'chat/rooms/voice/status': { req: ChatRoomsVoiceStatusRequest; res: EmptyResponse };
 	'clips/add-note': { req: ClipsAddNoteRequest; res: EmptyResponse };
@@ -1293,5 +1307,6 @@ export type Endpoints = {
  * NOTE: The content-type for all endpoints not listed here is application/json.
  */
 export const endpointReqTypes = {
+	'chat/rooms/voice/recording-part': 'multipart/form-data',
 	'drive/files/create': 'multipart/form-data',
 } as const satisfies { [K in keyof Endpoints]?: 'multipart/form-data'; };

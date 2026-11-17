@@ -778,6 +778,24 @@ describe('Chat room federation: voice call state', () => {
 		expect(compacted.object._misskey_chatArchived).toBe(true);
 	});
 
+	test.each([true, false])('the recording permission %s survives JSON-LD compaction of a room Update', async (allowed) => {
+		const renderer = Object.assign(Object.create(ApRendererService.prototype), { config: { url: LOCAL } }) as ApRendererService;
+		const activity = renderer.addContext({
+			id: 'https://remote.test/chat/rooms/bobroom#update',
+			type: 'Update',
+			actor: remoteOwner.uri,
+			object: { id: 'https://remote.test/chat/rooms/bobroom', type: 'Group', name: 'room', allowRecording: allowed },
+		});
+		const jsonLd = new JsonLdService({} as any).use();
+		jsonLd.freeze();
+
+		const compacted = await jsonLd.compact(activity) as { object: Record<string, unknown> };
+		const nquads = await jsonLd.normalize(activity);
+
+		expect(compacted.object.allowRecording).toBe(allowed);
+		expect(nquads).toContain(`<https://remote.test/chat/rooms/bobroom> <https://kokonect.link/ns#allowRecording> "${allowed}"^^<http://www.w3.org/2001/XMLSchema#boolean> .`);
+	});
+
 	test('the voice state keeps its CherryPick terms through JSON-LD processing', async () => {
 		const renderer = Object.assign(Object.create(ApRendererService.prototype), { config: { url: LOCAL } }) as ApRendererService;
 		const activity = renderer.addContext({
@@ -1318,6 +1336,34 @@ describe('Chat room federation: Add/Update/Delete', () => {
 		});
 
 		expect(f.rooms.rows[0]).toMatchObject({ name: 'new name', isArchived: true });
+	});
+
+	test.each([true, false])('Update applies the recording permission %s from the room owner', async (allowed) => {
+		const f = fixture();
+		f.resolver.resolve.mockImplementation(async (value: unknown) => value);
+		f.rooms.rows[0].allowRecording = !allowed;
+
+		await f.inbox.update(ownerActor, {
+			type: 'Update',
+			actor: ownerActor.uri,
+			object: { id: roomUri, type: 'Group', name: 'new name', attributedTo: ownerActor.uri, allowRecording: allowed },
+		});
+
+		expect(f.rooms.rows[0]).toMatchObject({ name: 'new name', allowRecording: allowed });
+	});
+
+	test.each([[undefined], ['true'], [null]])('Update keeps the recording permission when the field is %s', async (value) => {
+		const f = fixture();
+		f.resolver.resolve.mockImplementation(async (resolved: unknown) => resolved);
+		f.rooms.rows[0].allowRecording = true;
+
+		await f.inbox.update(ownerActor, {
+			type: 'Update',
+			actor: ownerActor.uri,
+			object: { id: roomUri, type: 'Group', name: 'new name', attributedTo: ownerActor.uri, allowRecording: value },
+		});
+
+		expect(f.rooms.rows[0]).toMatchObject({ name: 'new name', allowRecording: true });
 	});
 
 	test('Update ignores the archived state from anyone but the room owner', async () => {

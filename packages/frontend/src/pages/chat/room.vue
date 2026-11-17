@@ -752,6 +752,7 @@ function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['r
 		name: ctx.name,
 		description: ctx.description,
 		isArchived: ctx.isArchived,
+		allowRecording: ctx.allowRecording,
 		// 아이콘 필드는 아이콘이나 장식이 바뀐 갱신에만 함께 온다.
 		...(ctx.iconUrl !== undefined ? {
 			iconId: ctx.iconId,
