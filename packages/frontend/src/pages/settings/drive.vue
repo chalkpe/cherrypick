@@ -56,6 +56,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 						{{ i18n.ts.drivecleaner }}
 					</FormLink>
 
+					<SearchMarker :keywords="['delete', 'note', 'file', 'attachment', 'remove']">
+						<MkSwitch v-model="autoDeleteNoteFiles" @update:modelValue="saveProfile()">
+							<template #label><SearchLabel>{{ i18n.ts.autoDeleteNoteFiles }}</SearchLabel></template>
+							<template #caption><SearchText>{{ i18n.ts.autoDeleteNoteFilesDescription }}</SearchText></template>
+						</MkSwitch>
+					</SearchMarker>
+
 					<SearchMarker :keywords="['keep', 'original', 'filename']">
 						<MkPreferenceContainer k="keepOriginalFilename">
 							<MkSwitch v-model="keepOriginalFilename">
@@ -235,6 +242,7 @@ const capacity = ref<number | null>(null);
 const uploadFolder = ref<Misskey.entities.DriveFolder | null>(null);
 const alwaysMarkNsfw = ref($i.alwaysMarkNsfw);
 const autoSensitive = ref($i.autoSensitive);
+const autoDeleteNoteFiles = ref($i.autoDeleteNoteFiles);
 
 const meterStyle = computed(() => {
 	if (!capacity.value || !usage.value) return {};
@@ -386,6 +394,7 @@ function saveProfile() {
 	misskeyApi('i/update', {
 		alwaysMarkNsfw: !!alwaysMarkNsfw.value,
 		autoSensitive: !!autoSensitive.value,
+		autoDeleteNoteFiles: !!autoDeleteNoteFiles.value,
 	}).catch(err => {
 		os.alert({
 			type: 'error',
@@ -393,6 +402,7 @@ function saveProfile() {
 			text: err.message,
 		});
 		alwaysMarkNsfw.value = true;
+		autoDeleteNoteFiles.value = $i.autoDeleteNoteFiles;
 	});
 }
 

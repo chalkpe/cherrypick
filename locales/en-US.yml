@@ -1201,6 +1201,8 @@ cannotUploadBecauseNetworkError: "Unable to upload because the server could not 
 beta: "Beta"
 enableAutoSensitive: "Automatic marking as sensitive"
 enableAutoSensitiveDescription: "Allows automatic detection and marking of sensitive media through Machine Learning where possible. Even if this option is disabled, it may be enabled instance-wide."
+autoDeleteNoteFiles: "Also delete attached files when deleting a note"
+autoDeleteNoteFilesDescription: "Deletes attached files from your Drive when they were used only by the deleted note. Files that are also used elsewhere, such as in other notes, drafts, or your profile picture, are kept. Deleted files cannot be restored. If you use \"Delete & edit\" in another app, the attachments may be lost."
 activeEmailValidationDescription: "Enables stricter validation of email addresses, which includes checking for disposable addresses and by whether it can actually be communicated with. When unchecked, only the format of the email is validated."
 navbar: "Navigation bar"
 shuffle: "Shuffle"

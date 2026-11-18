@@ -8,7 +8,7 @@ import { DI } from '@/di-symbols.js';
 import type { NotesRepository, UsersRepository } from '@/models/_.js';
 import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
-import { NoteDeleteService } from '@/core/NoteDeleteService.js';
+import { NoteAttachedFileService } from '@/core/NoteAttachedFileService.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 import type * as Bull from 'bullmq';
 import type { ScheduledNoteDeleteJobData } from '../types.js';
@@ -24,7 +24,7 @@ export class ScheduledNoteDeleteProcessorService {
 		@Inject(DI.usersRepository)
 		private usersRepository: UsersRepository,
 
-		private noteDeleteService: NoteDeleteService,
+		private noteAttachedFileService: NoteAttachedFileService,
 		private queueLoggerService: QueueLoggerService,
 	) {
 		this.logger = this.queueLoggerService.logger.createSubLogger('scheduled-note-delete');
@@ -54,7 +54,8 @@ export class ScheduledNoteDeleteProcessorService {
 			return;
 		}
 
-		await this.noteDeleteService.delete(user, note);
+		// 예약 삭제는 작성자 본인의 의사로 지워지는 경우다.
+		await this.noteAttachedFileService.deleteOwnNote(user, note);
 		this.logger.info(`Delete note ${note.id}`);
 	}
 }

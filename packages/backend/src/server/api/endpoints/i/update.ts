@@ -206,6 +206,7 @@ export const paramDef = {
 		receiveAnnouncementEmail: { type: 'boolean' },
 		alwaysMarkNsfw: { type: 'boolean' },
 		autoSensitive: { type: 'boolean' },
+		autoDeleteNoteFiles: { type: 'boolean' },
 		followingVisibility: { type: 'string', enum: ['public', 'followers', 'private'] },
 		followersVisibility: { type: 'string', enum: ['public', 'followers', 'private'] },
 		chatScope: { type: 'string', enum: ['everyone', 'followers', 'following', 'mutual', 'none'] },
@@ -391,6 +392,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				profileUpdates.alwaysMarkNsfw = ps.alwaysMarkNsfw;
 			}
 			if (typeof ps.autoSensitive === 'boolean') profileUpdates.autoSensitive = ps.autoSensitive;
+			if (typeof ps.autoDeleteNoteFiles === 'boolean') profileUpdates.autoDeleteNoteFiles = ps.autoDeleteNoteFiles;
 			if (typeof ps.bridgeHomeVisibility === 'boolean') profileUpdates.bridgeHomeVisibility = ps.bridgeHomeVisibility;
 			if (ps.noteVisibilityLimit !== undefined) profileUpdates.noteVisibilityLimit = ps.noteVisibilityLimit;
 			if (ps.emailNotificationTypes !== undefined) profileUpdates.emailNotificationTypes = ps.emailNotificationTypes;

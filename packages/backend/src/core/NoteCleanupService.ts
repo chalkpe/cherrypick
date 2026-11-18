@@ -13,6 +13,7 @@ import { DI } from '@/di-symbols.js';
 import { MiNoteCleanupRule, MiNoteCleanupState } from '@/models/NoteCleanupRule.js';
 import { MiNote, MiUser, MiClip, MiClipNote, MiChannel, MiPoll, MiDriveFile, MiNoteFavorite, MiNoteReaction, MiUserNotePining } from '@/models/_.js';
 import { QueueService } from '@/core/QueueService.js';
+import { NoteAttachedFileService } from '@/core/NoteAttachedFileService.js';
 import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
@@ -50,6 +51,7 @@ export class NoteCleanupService {
 		private idService: IdService,
 		private queueService: QueueService,
 		private noteDeleteService: NoteDeleteService,
+		private noteAttachedFileService: NoteAttachedFileService,
 		private notificationService: NotificationService,
 		@Inject(DI.redisForJobQueue) private redis: Redis.Redis,
 		@Inject(DI.meta) private meta: MiMeta,
@@ -495,6 +497,7 @@ export class NoteCleanupService {
 		const removal = candidates ? await this.reserveBudget('delete', userId, Math.min(candidates, NOTE_CLEANUP_LIMITS.deleteChunk)) : null;
 		let failed = 0;
 		const removedFileIds: string[] = [];
+		let removeFilesWithNote: Promise<boolean> | undefined;
 		let result: { cursor: string | null; deleted: number; examined: number };
 		try {
 			result = await runCleanupBatch(page.items.map(i => ({ id: i.noteId, decision: i.decision })), removal?.amount ?? 0, async id => {
@@ -505,6 +508,13 @@ export class NoteCleanupService {
 					throw new CleanupNoteLookupError(error);
 				}
 				if (!note) return false;
+				// 계정 설정으로 단독 사용 첨부 파일 삭제를 켠 경우에는 함께 지워지는 내 답글·인용 노트의 첨부까지 지운다.
+				// 설정은 첫 삭제 때 한 번만 확인한다.
+				removeFilesWithNote ??= this.noteAttachedFileService.isEnabled(userId);
+				if (await removeFilesWithNote) {
+					await this.noteAttachedFileService.deleteOwnNote(user, note, { enabled: true });
+					return true;
+				}
 				await this.noteDeleteService.delete(user, note, false);
 				removedFileIds.push(...note.fileIds);
 				return true;
