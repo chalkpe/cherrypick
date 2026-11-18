@@ -54,7 +54,8 @@ export class NoteAttachedFileService {
 	 */
 	@bindThis
 	public async deleteOwnNote(user: MiUser, note: MiNote, options: { keepFiles?: boolean } = {}): Promise<void> {
-		const enabled = !options.keepFiles && await this.isEnabled(user.id);
+		// 첨부가 없거나 원격 사용자의 노트면 설정을 조회하지 않고 기존 삭제만 부른다.
+		const enabled = !options.keepFiles && user.host == null && note.fileIds.length > 0 && await this.isEnabled(user.id);
 		// 답글·인용 노트는 원문을 지워도 함께 지워지지 않고 남으므로(DB의 연쇄 삭제 없음) 지우는 노트 자신의 첨부만 대상으로 삼는다.
 		const candidates = enabled ? note.fileIds : [];
 
