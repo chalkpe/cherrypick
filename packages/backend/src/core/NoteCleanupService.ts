@@ -497,7 +497,6 @@ export class NoteCleanupService {
 		const removal = candidates ? await this.reserveBudget('delete', userId, Math.min(candidates, NOTE_CLEANUP_LIMITS.deleteChunk)) : null;
 		let failed = 0;
 		const removedFileIds: string[] = [];
-		let removeFilesWithNote: Promise<boolean> | undefined;
 		let result: { cursor: string | null; deleted: number; examined: number };
 		try {
 			result = await runCleanupBatch(page.items.map(i => ({ id: i.noteId, decision: i.decision })), removal?.amount ?? 0, async id => {
@@ -508,13 +507,6 @@ export class NoteCleanupService {
 					throw new CleanupNoteLookupError(error);
 				}
 				if (!note) return false;
-				// 계정 설정으로 단독 사용 첨부 파일 삭제를 켠 경우에는 함께 지워지는 내 답글·인용 노트의 첨부까지 지운다.
-				// 설정은 첫 삭제 때 한 번만 확인한다.
-				removeFilesWithNote ??= this.noteAttachedFileService.isEnabled(userId);
-				if (await removeFilesWithNote) {
-					await this.noteAttachedFileService.deleteOwnNote(user, note, { enabled: true });
-					return true;
-				}
 				await this.noteDeleteService.delete(user, note, false);
 				removedFileIds.push(...note.fileIds);
 				return true;
@@ -528,7 +520,8 @@ export class NoteCleanupService {
 		} finally {
 			// 실제로 지운 노트의 첨부만 대상으로 삼는다. 삭제에 실패한 노트의 첨부는 건드리지 않는다.
 			// 묶음이 중간에 실패해도 앞서 지운 노트의 첨부는 이번 회차에서 정리한다.
-			if (state.keepDriveFiles === false && removedFileIds.length) await this.deleteUnusedAttachments(userId, user, removedFileIds);
+			// 노트 정리의 설정이 '남기기'여도 계정 설정(노트를 지울 때 첨부 파일도 함께 지우기)이 켜져 있으면 지운다. 계정 설정은 회차당 한 번만 확인한다.
+			if (removedFileIds.length && (state.keepDriveFiles === false || await this.noteAttachedFileService.isEnabled(userId))) await this.deleteUnusedAttachments(userId, user, removedFileIds);
 		}
 		const complete = page.complete && result.examined === page.scanned;
 		// 첫 노트부터 삭제 예산이 없어 하나도 지나지 못했으면 기존 커서를 유지한다.

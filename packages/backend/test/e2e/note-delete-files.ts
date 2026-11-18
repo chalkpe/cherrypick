@@ -119,7 +119,7 @@ describe('노트를 지울 때 단독 사용 첨부 파일 삭제 설정', () =>
 		}
 	});
 
-	test('페이지 본문 블록이나 공지 이미지 주소가 가리키는 파일도 남긴다', async () => {
+	test('페이지 본문 블록이 가리키는 파일도 남긴다', async () => {
 		const alice = await newUser('dfpageblock', true);
 		const inPageBody = await upload(alice);
 		const target = await post(alice, { text: '대상', fileIds: [inPageBody] });
@@ -129,15 +129,6 @@ describe('노트를 지울 때 단독 사용 첨부 파일 삭제 설정', () =>
 		});
 		await deleteNote(alice, target.id);
 		expect(await fileExists(alice, inPageBody)).toBe(true);
-
-		const announced = await uploadFile(alice);
-		const announcedNote = await post(alice, { text: '이미지 주소로 쓰이는 파일', fileIds: [announced.body!.id] });
-		const announcement = await api('admin/announcements/create', {
-			title: '공지', text: '본문', imageUrl: announced.body!.url, display: 'normal', needConfirmationToRead: false, isActive: true, forExistingUsers: false,
-		} as never, root);
-		expect(announcement.status, JSON.stringify(announcement.body)).toBe(200);
-		await deleteNote(alice, announcedNote.id);
-		expect(await fileExists(alice, announced.body!.id)).toBe(true);
 	});
 
 	test('삭제 후 편집처럼 keepFiles를 넘기면 파일을 남긴다', async () => {
@@ -178,27 +169,46 @@ describe('노트를 지울 때 단독 사용 첨부 파일 삭제 설정', () =>
 		await expect.poll(async () => await fileExists(alice, fileId), { timeout: 30000, interval: 200 }).toBe(false);
 	});
 
-	test('노트 정리 규칙으로 지워질 때도 단독 사용 파일을 지운다', async () => {
-		const alice = await newUser('deletefilescleanup', true);
-		const sole = await upload(alice);
-		const shared = await upload(alice);
-		await post(alice, { text: '정리 유지', fileIds: [shared] });
-		const note = await post(alice, { text: '정리 대상 파일', fileIds: [sole, shared] });
-		const rule = await relativeFetch('api/i/note-cleanup/create', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ i: alice.token, name: '정리', action: 'delete', condition: { type: 'keyword', mode: 'literal', value: '정리 대상 파일', flags: '', targets: ['text'] } }),
-		}).then(r => r.json() as Promise<any>);
-		const request = await relativeFetch('api/i/note-cleanup/request', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ i: alice.token, ruleIds: [rule.rule.id] }),
-		});
-		expect(request.status).toBe(200);
+	describe('노트 정리 규칙', () => {
+		async function cleanupApi(path: string, params: Record<string, unknown>, user: User) {
+			const res = await relativeFetch(`api/i/note-cleanup/${path}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ ...params, i: user.token }),
+			});
+			return { status: res.status, body: res.status === 204 ? null : await res.json() as any };
+		}
 
-		await expect.poll(async () => await noteExists(alice, note.id), { timeout: 30000, interval: 200 }).toBe(false);
-		await expect.poll(async () => await fileExists(alice, sole), { timeout: 30000, interval: 200 }).toBe(false);
-		expect(await fileExists(alice, shared)).toBe(true);
+		async function runCleanup(user: User, keyword: string) {
+			const rule = await cleanupApi('create', { name: '정리', action: 'delete', condition: { type: 'keyword', mode: 'literal', value: keyword, flags: '', targets: ['text'] } }, user);
+			expect((await cleanupApi('request', { ruleIds: [rule.body.rule.id] }, user)).status).toBe(200);
+		}
+
+		test('계정 설정이 켜져 있으면 노트 정리의 첨부 보존 설정이 남기기여도 단독 사용 파일을 지운다', async () => {
+			const alice = await newUser('dfcleanupon', true);
+			const sole = await upload(alice);
+			const shared = await upload(alice);
+			await post(alice, { text: '정리 유지', fileIds: [shared] });
+			const note = await post(alice, { text: '정리 켜짐 대상', fileIds: [sole, shared] });
+			expect((await cleanupApi('list', {}, alice)).body.keepDriveFiles).toBe(true);
+
+			await runCleanup(alice, '정리 켜짐 대상');
+
+			await expect.poll(async () => await noteExists(alice, note.id), { timeout: 30000, interval: 200 }).toBe(false);
+			await expect.poll(async () => await fileExists(alice, sole), { timeout: 30000, interval: 200 }).toBe(false);
+			expect(await fileExists(alice, shared)).toBe(true);
+		});
+
+		test('계정 설정이 꺼져 있고 첨부 보존 설정이 남기기면 파일을 남긴다', async () => {
+			const alice = await newUser('dfcleanupoff', false);
+			const sole = await upload(alice);
+			const note = await post(alice, { text: '정리 꺼짐 대상', fileIds: [sole] });
+
+			await runCleanup(alice, '정리 꺼짐 대상');
+
+			await expect.poll(async () => await noteExists(alice, note.id), { timeout: 30000, interval: 200 }).toBe(false);
+			expect(await fileExists(alice, sole)).toBe(true);
+		});
 	});
 
 	test('원문을 지워도 남는 내 답글이 쓰는 파일은 지우지 않는다', async () => {

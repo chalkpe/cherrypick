@@ -4463,6 +4463,7 @@ _noteCleanup:
     age: "保存期間を過ぎた自分のノート"
   title: "ノート整理"
   keepDriveFiles: "削除したノートの添付ファイルをドライブに残す"
+  keepDriveFilesOverridden: "ドライブ設定の「ノートを削除するとき添付ファイルも一緒に削除」がオンのため、削除したノートでしか使っていない添付ファイルも一緒に削除されます。"
   keep: "残す"
   delete: "削除する"
   name: "ルール名"

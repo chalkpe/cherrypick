@@ -4325,6 +4325,7 @@ _noteCleanup:
     age: "My notes past the retention period"
   title: "Note cleanup"
   keepDriveFiles: "Keep attachments of deleted notes in the drive"
+  keepDriveFilesOverridden: "\"Also delete attached files when deleting a note\" is on in the Drive settings, so attachments used only by the deleted notes are deleted too."
   keep: "Keep"
   delete: "Delete"
   name: "Rule name"
