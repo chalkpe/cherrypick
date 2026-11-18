@@ -214,6 +214,11 @@ export class MiUserProfile {
 	@Column('boolean', {
 		default: false,
 	})
+	public autoDeleteNoteFiles: boolean;
+
+	@Column('boolean', {
+		default: false,
+	})
 	public carefulBot: boolean;
 
 	@Column('boolean', {

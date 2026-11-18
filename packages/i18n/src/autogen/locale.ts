@@ -3892,6 +3892,10 @@ export interface Locale extends ILocale {
      */
     "alwaysMarkSensitive": string;
     /**
+     * ロールの設定により、常にオンになっています。
+     */
+    "alwaysMarkSensitiveLockedByRole": string;
+    /**
      * 添付画像のサムネイルをオリジナル画質にする
      */
     "loadRawImages": string;
@@ -4872,6 +4876,14 @@ export interface Locale extends ILocale {
      * 利用可能な場合は、機械学習を利用して自動でメディアにセンシティブフラグを設定します。この機能をオフにしても、サーバーによっては自動で設定されることがあります。
      */
     "enableAutoSensitiveDescription": string;
+    /**
+     * ノートを削除するとき添付ファイルも一緒に削除
+     */
+    "autoDeleteNoteFiles": string;
+    /**
+     * そのノートでしか使っていない添付ファイルを、ドライブからも一緒に削除します。他のアプリで「削除して編集」をすると、添付ファイルが消えることがあります。
+     */
+    "autoDeleteNoteFilesDescription": string;
     /**
      * ユーザーのメールアドレスのバリデーションを、捨てアドかどうかや実際に通信可能かどうかなどを判定しより積極的に行います。オフにすると単に文字列として正しいかどうかのみチェックされます。
      */
@@ -16714,6 +16726,18 @@ export interface Locale extends ILocale {
          * 削除したノートの添付ファイルをドライブに残す
          */
         "keepDriveFiles": string;
+        /**
+         * {link}の「{option}」がオンのため、削除したノートでしか使っていない添付ファイルも一緒に削除されます。
+         */
+        "keepDriveFilesOverridden": ParameterizedString<"link" | "option">;
+        /**
+         * ノート整理で削除されるノートにのみ適用されます。自分で削除するノートの添付ファイルも一緒に削除するには、{link}で「{option}」をオンにしてください。
+         */
+        "keepDriveFilesScope": ParameterizedString<"link" | "option">;
+        /**
+         * ドライブ設定
+         */
+        "driveSettingsLink": string;
         /**
          * 残す
          */

@@ -122,9 +122,11 @@ function fixture({ detached = false, poolMax = 10, noteCreatedAt = (_id: string)
 			return query.andWhere('file.id IN (:...ids)', { ids: unused });
 		},
 	};
-	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { if (retryableDeletes.has(note.id)) throw Object.assign(new Error('Connection terminated unexpectedly'), { code: '57P01' }); if (deleteFailures.has(note.id)) throw new Error(`note delete unavailable (${note.id})`); rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push([userId, type, data]); } } as any, { eval: async (...args: unknown[]) => { evalCalls.push(args); return 5; } } as any, meta as any, buffering, driveService as any, driveFileUsageService as any);
+	// 계정 설정(노트를 지울 때 첨부 파일도 함께 지우기) 조회 흉내
+	const account = { enabled: false, failure: false, lookups: 0 };
+	const service = new NoteCleanupService(db as any, { gen: () => String(++nextId), parse: (id: string) => ({ date: noteCreatedAt(id) }) } as any, { systemQueue: { toKey: (s: string) => s, getJob: async (id: string) => jobs.get(id), add: async (name: string, data: unknown, options: { jobId: string }) => { jobs.set(options.jobId, { name, data, getState: async () => 'waiting', remove: async () => { jobs.delete(options.jobId); } }); } } } as any, { delete: async (_user: unknown, note: { id: string }) => { if (retryableDeletes.has(note.id)) throw Object.assign(new Error('Connection terminated unexpectedly'), { code: '57P01' }); if (deleteFailures.has(note.id)) throw new Error(`note delete unavailable (${note.id})`); rows.MiNote.splice(rows.MiNote.findIndex(n => n.id === note.id), 1); } } as any, { isEnabled: async () => { account.lookups++; if (account.failure) throw new Error('profile lookup unavailable'); return account.enabled; } } as any, { createNotification: (userId: string, type: string, data: Record<string, unknown>) => { notifications.push([userId, type, data]); } } as any, { eval: async (...args: unknown[]) => { evalCalls.push(args); return 5; } } as any, meta as any, buffering, driveService as any, driveFileUsageService as any);
 	const condition = { type: 'age', operator: 'gte', seconds: 60 };
-	return { rows, service, notifications, jobs, evalCalls, failing, failingWrites, retryable, faults, lock, meta, buffered, buffering, noteReads, deleteFailures, retryableDeletes, drive, input: { name: '정리', action: 'delete' as const, condition } };
+	return { account, rows, service, notifications, jobs, evalCalls, failing, failingWrites, retryable, faults, lock, meta, buffered, buffering, noteReads, deleteFailures, retryableDeletes, drive, input: { name: '정리', action: 'delete' as const, condition } };
 }
 
 beforeEach(() => {
@@ -1175,6 +1177,36 @@ test('드라이브 보존이 꺼져 있으면 지운 노트의 미사용 첨부�
 	expect(drive.usageCalls).toEqual(['alice']);
 	expect(drive.deletes).toEqual([{ fileId: 'f1', isExpired: false, deleterId: 'alice' }]);
 	expect(rows.MiDriveFile.map(f => f.id)).toEqual(['f2', 'f3']);
+});
+
+test('드라이브 보존이 남기기여도 계정 설정이 켜져 있으면 지운 노트의 미사용 첨부를 삭제한다', async () => {
+	const { account, rows, service, input, drive } = fixture();
+	account.enabled = true;
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.MiDriveFile = [{ id: 'f1', userId: 'alice' }];
+	rows.MiNote.push({ ...note('0'), fileIds: ['f1'] });
+	expect((await service.processUser('alice')).deleted).toBe(1);
+	expect(drive.deletes.map(d => d.fileId)).toEqual(['f1']);
+	expect(account.lookups).toBe(1);
+});
+
+test('계정 설정을 읽지 못하면 기록하고 파일을 남기며 정리 결과와 커서는 그대로 갱신된다', async () => {
+	const { account, rows, service, input, drive } = fixture();
+	account.failure = true;
+	// 이전 실행이 남긴 커서에서 이어 시작하고, 끝나면 커서가 비워지는지 확인한다.
+	rows.State[0].cursor = '0';
+	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
+	rows.MiDriveFile = [{ id: 'f1', userId: 'alice' }];
+	rows.MiNote.push({ ...note('1'), fileIds: ['f1'] });
+	const result = await service.processUser('alice');
+	expect(result.deleted).toBe(1);
+	expect(result.complete).toBe(true);
+	expect(result.cursor).toBeNull();
+	expect(rows.State[0].cursor).toBeNull();
+	expect(rows.MiNote).toHaveLength(0);
+	expect(rows.MiDriveFile.map(f => f.id)).toEqual(['f1']);
+	expect(drive.deletes).toHaveLength(0);
+	expect(drive.logs.some(args => String(args[0]).includes('setting lookup failed'))).toBe(true);
 });
 
 test('드라이브 보존이 꺼져 있어도 삭제에 실패한 노트의 첨부는 삭제하지 않는다', async () => {

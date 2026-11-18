@@ -56,6 +56,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 						{{ i18n.ts.drivecleaner }}
 					</FormLink>
 
+					<SearchMarker :keywords="['delete', 'note', 'file', 'attachment', 'remove']">
+						<MkSwitch :modelValue="autoDeleteNoteFiles" accessible :disabled="savingAutoDeleteNoteFiles" @update:modelValue="changeAutoDeleteNoteFiles">
+							<template #label><SearchLabel>{{ i18n.ts.autoDeleteNoteFiles }}</SearchLabel></template>
+							<template #caption><SearchText>{{ i18n.ts.autoDeleteNoteFilesDescription }}</SearchText></template>
+						</MkSwitch>
+					</SearchMarker>
+
 					<SearchMarker :keywords="['keep', 'original', 'filename']">
 						<MkPreferenceContainer k="keepOriginalFilename">
 							<MkSwitch v-model="keepOriginalFilename">
@@ -66,13 +73,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</SearchMarker>
 
 					<SearchMarker :keywords="['always', 'default', 'mark', 'nsfw', 'sensitive', 'media', 'file']">
-						<MkSwitch v-model="alwaysMarkNsfw" @update:modelValue="saveProfile()">
+						<MkSwitch :modelValue="alwaysMarkNsfwShown" accessible :disabled="alwaysMarkNsfwLocked || savingAlwaysMarkNsfw" @update:modelValue="changeAlwaysMarkNsfw">
 							<template #label><SearchLabel>{{ i18n.ts.alwaysMarkSensitive }}</SearchLabel></template>
+							<template v-if="alwaysMarkNsfwLocked" #caption>{{ i18n.ts.alwaysMarkSensitiveLockedByRole }}</template>
 						</MkSwitch>
 					</SearchMarker>
 
 					<SearchMarker :keywords="['auto', 'nsfw', 'sensitive', 'media', 'file']">
-						<MkSwitch v-model="autoSensitive" @update:modelValue="saveProfile()">
+						<MkSwitch :modelValue="autoSensitive" accessible :disabled="savingAutoSensitive" @update:modelValue="changeAutoSensitive">
 							<template #label><SearchLabel>{{ i18n.ts.enableAutoSensitive }}</SearchLabel><span class="_beta">{{ i18n.ts.beta }}</span></template>
 							<template #caption><SearchText>{{ i18n.ts.enableAutoSensitiveDescription }}</SearchText></template>
 						</MkSwitch>
@@ -199,7 +207,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, defineAsyncComponent, ref } from 'vue';
+import { computed, defineAsyncComponent, ref, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import tinycolor from 'tinycolor2';
 import XWatermarkItem from './drive.WatermarkItem.vue';
@@ -219,6 +227,7 @@ import MkChart from '@/components/MkChart.vue';
 import { i18n } from '@/i18n.js';
 import { definePage } from '@/page.js';
 import { ensureSignin } from '@/i.js';
+import { updateCurrentAccount } from '@/accounts.js';
 import { prefer } from '@/preferences.js';
 import MkPreferenceContainer from '@/components/MkPreferenceContainer.vue';
 import MkFeatureBanner from '@/components/MkFeatureBanner.vue';
@@ -235,6 +244,41 @@ const capacity = ref<number | null>(null);
 const uploadFolder = ref<Misskey.entities.DriveFolder | null>(null);
 const alwaysMarkNsfw = ref($i.alwaysMarkNsfw);
 const autoSensitive = ref($i.autoSensitive);
+// 서버에 저장된 것으로 확인된 값. 저장에 실패하면 이 값으로 되돌린다.
+let confirmedAlwaysMarkNsfw = !!$i.alwaysMarkNsfw;
+let confirmedAutoSensitive = !!$i.autoSensitive;
+// 세 스위치(열람 주의, 자동 민감 판정, 노트를 지울 때 첨부 파일도 지우기)는 각자 자기 값만 저장한다.
+// 저장에 실패하면 낙관적 값이 아니라 마지막으로 확인된 서버 값으로 되돌린다.
+const autoDeleteNoteFiles = ref($i.autoDeleteNoteFiles);
+const confirmedAutoDeleteNoteFiles = ref($i.autoDeleteNoteFiles);
+const savingAutoDeleteNoteFiles = ref(false);
+const savingAlwaysMarkNsfw = ref(false);
+const savingAutoSensitive = ref(false);
+
+// 역할 정책으로 열람 주의가 강제된 계정은 서버가 이 값의 변경을 거절하므로 켜진 채로 잠근다.
+const alwaysMarkNsfwLocked = computed(() => !!$i.policies.alwaysMarkNsfw);
+const alwaysMarkNsfwShown = computed(() => alwaysMarkNsfwLocked.value || !!alwaysMarkNsfw.value);
+
+// 다른 탭이나 기기에서 바뀐 값이 계정 정보로 들어오면 화면 값도 따라간다.
+// 저장하는 동안에는 늦게 도착한 이전 저장의 갱신이 요청한 값을 덮지 않도록 확인된 값만 갱신한다.
+watch(() => $i.autoDeleteNoteFiles, value => {
+	confirmedAutoDeleteNoteFiles.value = value;
+	if (!savingAutoDeleteNoteFiles.value) autoDeleteNoteFiles.value = value;
+});
+
+// 서버 오류는 Error가 아니라 { message, code, ... } 형태의 일반 객체로 거부된다.
+function errorText(err: unknown): string {
+	if (err != null && typeof err === 'object' && 'message' in err && typeof err.message === 'string') return err.message;
+	return String(err);
+}
+
+function showSaveError(err: unknown) {
+	return os.alert({
+		type: 'error',
+		title: i18n.ts.error,
+		text: errorText(err),
+	});
+}
 
 const meterStyle = computed(() => {
 	if (!capacity.value || !usage.value) return {};
@@ -382,18 +426,58 @@ async function addImageFramePreset() {
 	});
 }
 
-function saveProfile() {
-	misskeyApi('i/update', {
-		alwaysMarkNsfw: !!alwaysMarkNsfw.value,
-		autoSensitive: !!autoSensitive.value,
-	}).catch(err => {
-		os.alert({
-			type: 'error',
-			title: i18n.ts.error,
-			text: err.message,
-		});
-		alwaysMarkNsfw.value = true;
-	});
+async function changeAlwaysMarkNsfw(value: boolean) {
+	if (alwaysMarkNsfwLocked.value) return;
+	alwaysMarkNsfw.value = value;
+	savingAlwaysMarkNsfw.value = true;
+	try {
+		await misskeyApi('i/update', { alwaysMarkNsfw: value });
+		confirmedAlwaysMarkNsfw = value;
+	} catch (err) {
+		alwaysMarkNsfw.value = confirmedAlwaysMarkNsfw;
+		await showSaveError(err);
+	} finally {
+		savingAlwaysMarkNsfw.value = false;
+	}
+}
+
+async function changeAutoSensitive(value: boolean) {
+	autoSensitive.value = value;
+	savingAutoSensitive.value = true;
+	try {
+		await misskeyApi('i/update', { autoSensitive: value });
+		confirmedAutoSensitive = value;
+	} catch (err) {
+		autoSensitive.value = confirmedAutoSensitive;
+		await showSaveError(err);
+	} finally {
+		savingAutoSensitive.value = false;
+	}
+}
+
+async function changeAutoDeleteNoteFiles(value: boolean) {
+	autoDeleteNoteFiles.value = value;
+	savingAutoDeleteNoteFiles.value = true;
+	try {
+		await misskeyApi('i/update', { autoDeleteNoteFiles: value });
+	} catch (err) {
+		autoDeleteNoteFiles.value = confirmedAutoDeleteNoteFiles.value;
+		await showSaveError(err);
+		savingAutoDeleteNoteFiles.value = false;
+		return;
+	}
+
+	confirmedAutoDeleteNoteFiles.value = value;
+	autoDeleteNoteFiles.value = value;
+	try {
+		// 실시간 연결로 계정 정보가 갱신되기를 기다리지 않고 현재 계정 정보에도 바로 반영한다.
+		updateCurrentAccount({ autoDeleteNoteFiles: value });
+	} catch (err) {
+		// 서버 저장은 이미 성공했으므로 저장 실패로 알리지 않고 기록만 남긴다.
+		console.error('failed to update current account', err);
+	} finally {
+		savingAutoDeleteNoteFiles.value = false;
+	}
 }
 
 const headerActions = computed(() => []);

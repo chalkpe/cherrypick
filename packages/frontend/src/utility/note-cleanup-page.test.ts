@@ -8,7 +8,10 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
 import { defineComponent, h } from 'vue';
 
 vi.mock('@@/js/config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('@@/js/config.js')>()), apiUrl: 'https://cleanup.invalid/api' }));
-vi.mock('@/i.js', () => ({ $i: { token: 'dummy-test-token', policies: {} }, ensureSignin: () => {}, iAmModerator: false }));
+vi.mock('@/i.js', () => {
+	const $i = { token: 'dummy-test-token', policies: {}, autoDeleteNoteFiles: false };
+	return { $i, ensureSignin: () => $i, iAmModerator: false };
+});
 vi.mock('@/i18n.js', async () => {
 	const { I18n } = await import('@@/js/i18n.js');
 	const { load } = await import('js-yaml');
@@ -27,14 +30,16 @@ vi.mock('@/components/MkButton.vue', () => ({ default: defineComponent({
 	setup: (props, { slots, emit }) => () => h('button', { disabled: props.disabled, onClick: () => emit('click') }, slots.default?.()),
 }) }));
 vi.mock('@/components/MkSwitch.vue', () => ({ default: defineComponent({
+	inheritAttrs: false,
 	props: ['modelValue', 'disabled'], emits: ['update:modelValue'],
-	setup: (props, { slots, emit }) => () => h('button', {
+	setup: (props, { slots, emit }) => () => [h('button', {
 		role: 'switch', 'aria-checked': props.modelValue ? 'true' : 'false', disabled: props.disabled,
 		onClick: () => { if (!props.disabled) emit('update:modelValue', !props.modelValue); },
-	}, slots.default?.()),
+	}, slots.default?.()), h('div', slots.caption?.())],
 }) }));
 vi.mock('@/components/MkInfo.vue', () => ({ default: defineComponent({ setup: (_, { slots }) => () => h('div', slots.default?.()) }) }));
 import Settings from '@/pages/settings/note-cleanup.vue';
+import I18n from '@/components/global/I18n.vue';
 import { ROUTE_DEF } from '@/router.definition.js';
 import { Nirax } from '@/lib/nirax.js';
 
@@ -46,6 +51,8 @@ const stubs = {
 	MkLoading: { template: '<div>loading</div>' },
 	MkA: { props: ['to'], template: '<a :href="to"><slot/></a>' },
 };
+// I18n은 전역 컴포넌트이므로 화면을 그릴 때 등록해야 설명 문구가 그려진다.
+const globalOptions = { components: { I18n, MkCondensedLine: { template: '<span><slot/></span>' } }, stubs };
 
 test('list, create and edit resolve to separate routes and the create action comes from the query', () => {
 	const list = new Nirax(ROUTE_DEF, '/settings/note-cleanup', true, defineComponent({}));
@@ -65,7 +72,7 @@ test('lists delete and keep rules as links to their edit screens with state icon
 		{ id: 'k1', name: 'Broken clip', defaultName: null, action: 'keep', enabled: true, automatic: false, lastError: { code: 'MISSING_CLIP', path: 'condition' } },
 	];
 	vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ rules, blocked: true })));
-	const view = render(Settings, { global: { stubs } });
+	const view = render(Settings, { global: globalOptions });
 	await view.findByRole('link', { name: /Old notes/ });
 	expect(view.getByRole('link', { name: /Old notes/ }).getAttribute('href')).toBe('/settings/note-cleanup/d1');
 	expect(view.getByRole('link', { name: /Old notes/ }).textContent).toContain('Auto');
@@ -76,20 +83,24 @@ test('lists delete and keep rules as links to their edit screens with state icon
 	expect(view.getAllByRole('link', { name: /Create rule/ })[1].getAttribute('href')).toBe('/settings/note-cleanup/new?action=keep');
 	// 목록에는 정리 실행·미리 보기 수단이 없고 차단 안내도 규칙 화면으로만 보낸다.
 	expect(view.queryByRole('button', { name: 'Clean up now' })).toBeNull();
+	// 첨부 파일 남기기 안내가 I18n 컴포넌트로 실제로 그려지고, 드라이브 설정으로 가는 링크가 걸린다.
+	expect(view.container.textContent).toContain('This applies only to notes deleted by note cleanup.');
+	expect(view.container.textContent).toContain('Also delete attached files when deleting a note');
+	expect(view.container.querySelector('a[href="/settings/drive"]')).toBeTruthy();
 	expect(view.container.textContent).not.toContain('New deletions are paused');
 });
 
 test('목록은 기본 이름만 영어로 표시하고 같은 한국어 사용자 이름은 보존한다', async () => {
 	const rules = [{ id: 'default', name: '고정한 내 글', defaultName: 'pinned', action: 'keep', enabled: true }, { id: 'custom', name: '고정한 내 글', defaultName: null, action: 'keep', enabled: true }];
 	vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ rules, blocked: false })));
-	const view = render(Settings, { global: { stubs } });
+	const view = render(Settings, { global: globalOptions });
 	await view.findByRole('link', { name: /My pinned notes/ });
 	expect(view.getByRole('link', { name: /고정한 내 글/ })).toBeTruthy();
 });
 
 test('list busy failure shows the message without a retry button', async () => {
 	vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ error: { code: 'CLEANUP_BUSY' } }), { status: 503 }));
-	const view = render(Settings, { global: { stubs } });
+	const view = render(Settings, { global: globalOptions });
 	await view.findByText('Note cleanup is busy. Please wait a moment and try again.');
 	// 혼잡 오류에는 다시 시도 버튼을 두지 않는다.
 	expect(view.queryByRole('button', { name: 'Retry' })).toBeNull();
@@ -100,7 +111,7 @@ test('list non-busy failure keeps retry available and recovers on the next load'
 	vi.stubGlobal('fetch', async () => ++calls === 1
 		? new Response(JSON.stringify({ error: { code: 'INTERNAL_ERROR' } }), { status: 500 })
 		: new Response(JSON.stringify({ rules: [{ id: 'd1', name: 'Recovered rule', action: 'delete', enabled: true }], blocked: false })));
-	const view = render(Settings, { global: { stubs } });
+	const view = render(Settings, { global: globalOptions });
 	await view.findByText('Could not confirm the operation. Please retry.');
 	await fireEvent.click(view.getByRole('button', { name: 'Retry' }));
 	await view.findByRole('link', { name: /Recovered rule/ });
@@ -109,7 +120,7 @@ test('list non-busy failure keeps retry available and recovers on the next load'
 
 test('empty sections still offer creating each rule kind', async () => {
 	vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ rules: [], blocked: false })));
-	const view = render(Settings, { global: { stubs } });
+	const view = render(Settings, { global: globalOptions });
 	await waitFor(() => expect(view.getAllByRole('link', { name: /Create rule/ })).toHaveLength(2));
 	expect(view.getByText('Delete rules')).toBeTruthy();
 	expect(view.getByText('Keep rules')).toBeTruthy();
@@ -117,7 +128,7 @@ test('empty sections still offer creating each rule kind', async () => {
 
 test('keep-drive-files switch sits above the rule lists and reflects the stored setting', async () => {
 	vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ rules: [], blocked: false, keepDriveFiles: false })));
-	const view = render(Settings, { global: { stubs } });
+	const view = render(Settings, { global: globalOptions });
 	const toggle = await view.findByRole('switch', { name: 'Keep attachments of deleted notes in the drive' });
 	expect(toggle.getAttribute('aria-checked')).toBe('false');
 	const text = view.container.textContent ?? '';
@@ -132,7 +143,7 @@ test('toggling the switch saves the setting through update-settings', async () =
 		if (url.endsWith('/update-settings')) return new Response(JSON.stringify({ keepDriveFiles: body.keepDriveFiles }));
 		return new Response(JSON.stringify({ rules: [], blocked: false, keepDriveFiles: true }));
 	});
-	const view = render(Settings, { global: { stubs } });
+	const view = render(Settings, { global: globalOptions });
 	const toggle = await view.findByRole('switch', { name: /Keep attachments/ });
 	expect(toggle.getAttribute('aria-checked')).toBe('true');
 	await fireEvent.click(toggle);
@@ -147,7 +158,7 @@ test('a failed save reverts the switch and shows the cleanup error', async () =>
 	vi.stubGlobal('fetch', async (url: string) => url.endsWith('/update-settings')
 		? new Response(JSON.stringify({ error: { code: 'CLEANUP_BUSY' } }), { status: 503 })
 		: new Response(JSON.stringify({ rules: [], blocked: false, keepDriveFiles: true })));
-	const view = render(Settings, { global: { stubs } });
+	const view = render(Settings, { global: globalOptions });
 	const toggle = await view.findByRole('switch', { name: /Keep attachments/ });
 	await fireEvent.click(toggle);
 	await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
@@ -164,7 +175,7 @@ test('the switch locks while saving and a failed save restores the last confirme
 		}
 		return new Response(JSON.stringify({ rules: [], blocked: false, keepDriveFiles: true }));
 	});
-	const view = render(Settings, { global: { stubs } });
+	const view = render(Settings, { global: globalOptions });
 	const toggle = await view.findByRole('switch', { name: /Keep attachments/ });
 	expect(toggle.getAttribute('aria-checked')).toBe('true');
 	await fireEvent.click(toggle);

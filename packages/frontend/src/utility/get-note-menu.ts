@@ -238,8 +238,10 @@ export function getNoteMenu(props: {
 			if (canceled) return;
 			if ($i == null) return;
 
+			// 같은 첨부 파일을 이어서 쓰므로 계정 설정과 관계없이 파일은 지우지 않는다.
 			misskeyApi('notes/delete', {
 				noteId: appearNote.id,
+				keepFiles: true,
 			}).then(() => {
 				globalEvents.emit('noteDeleted', appearNote.id);
 			});

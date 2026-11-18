@@ -13,6 +13,7 @@ import { DI } from '@/di-symbols.js';
 import { MiNoteCleanupRule, MiNoteCleanupState } from '@/models/NoteCleanupRule.js';
 import { MiNote, MiUser, MiClip, MiClipNote, MiChannel, MiPoll, MiDriveFile, MiNoteFavorite, MiNoteReaction, MiUserNotePining } from '@/models/_.js';
 import { QueueService } from '@/core/QueueService.js';
+import { NoteAttachedFileService } from '@/core/NoteAttachedFileService.js';
 import { NoteDeleteService } from '@/core/NoteDeleteService.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
@@ -50,6 +51,7 @@ export class NoteCleanupService {
 		private idService: IdService,
 		private queueService: QueueService,
 		private noteDeleteService: NoteDeleteService,
+		private noteAttachedFileService: NoteAttachedFileService,
 		private notificationService: NotificationService,
 		@Inject(DI.redisForJobQueue) private redis: Redis.Redis,
 		@Inject(DI.meta) private meta: MiMeta,
@@ -60,6 +62,16 @@ export class NoteCleanupService {
 
 	private repository<T extends ObjectLiteral>(target: EntityTarget<T>): Repository<T> {
 		return this.context.getStore()?.getRepository(target) ?? this.db.getRepository(target);
+	}
+
+	// 계정 설정을 읽지 못하면 기록만 하고 파일을 남기는 쪽으로 처리해, 정리 결과와 커서 갱신에 영향이 없게 한다.
+	private async isAccountFileDeletionEnabled(userId: string): Promise<boolean> {
+		try {
+			return await this.noteAttachedFileService.isEnabled(userId);
+		} catch (error) {
+			this.logger.error('Cleanup account file deletion setting lookup failed', { userId, error });
+			return false;
+		}
 	}
 
 	private get rules() { return this.repository(MiNoteCleanupRule); }
@@ -518,7 +530,8 @@ export class NoteCleanupService {
 		} finally {
 			// 실제로 지운 노트의 첨부만 대상으로 삼는다. 삭제에 실패한 노트의 첨부는 건드리지 않는다.
 			// 묶음이 중간에 실패해도 앞서 지운 노트의 첨부는 이번 회차에서 정리한다.
-			if (state.keepDriveFiles === false && removedFileIds.length) await this.deleteUnusedAttachments(userId, user, removedFileIds);
+			// 노트 정리의 설정이 '남기기'여도 계정 설정(노트를 지울 때 첨부 파일도 함께 지우기)이 켜져 있으면 지운다. 계정 설정은 회차당 한 번만 확인한다.
+			if (removedFileIds.length && (state.keepDriveFiles === false || await this.isAccountFileDeletionEnabled(userId))) await this.deleteUnusedAttachments(userId, user, removedFileIds);
 		}
 		const complete = page.complete && result.examined === page.scanned;
 		// 첫 노트부터 삭제 예산이 없어 하나도 지나지 못했으면 기존 커서를 유지한다.

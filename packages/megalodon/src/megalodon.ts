@@ -699,9 +699,10 @@ export interface MegalodonInterface {
    * Delete one of your own statuses.
    *
    * @param id The target status id.
+   * @param options `delete_media`: whether the media attached to the status may be deleted along with it. Media is kept unless it is true.
    * @return Status with source `text`.
    */
-  deleteStatus(id: string): Promise<Response<Entity.StatusWithText>>
+  deleteStatus(id: string, options?: { delete_media?: boolean }): Promise<Response<Entity.StatusWithText>>
   /**
    * Get parent and child statuses in context.
    * View statuses above and below this status in the thread.

@@ -1151,15 +1151,17 @@ export default class Misskey implements MegalodonInterface {
   /**
    * POST /api/notes/delete
    */
-  public async deleteStatus(id: string): Promise<Response<Entity.StatusWithText>> {
+  public async deleteStatus(id: string, options?: { delete_media?: boolean }): Promise<Response<Entity.StatusWithText>> {
     const status = await this.client
       .post<MisskeyAPI.Entity.Note>('/api/notes/show', {
         noteId: id
       })
       .then(res => ({ ...res, data: MisskeyAPI.Converter.noteWithText(res.data, this.baseUrl) }))
 
+    // Mastodon keeps the media unless the client asks to delete it (delete_media), so that delete-and-redraft can reuse it.
     await this.client.post<{}>('/api/notes/delete', {
-      noteId: id
+      noteId: id,
+      keepFiles: options?.delete_media !== true
     })
 
     return status

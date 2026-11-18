@@ -12,7 +12,21 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkButton v-if="!isCleanupBusyError(failed)" small @click="load">{{ i18n.ts.retry }}</MkButton>
 		</MkInfo>
 		<template v-else>
-			<MkSwitch v-model="keepDriveFiles" accessible :disabled="savingKeepDriveFiles" @update:modelValue="saveKeepDriveFiles">{{ i18n.ts._noteCleanup.keepDriveFiles }}</MkSwitch>
+			<MkSwitch :modelValue="deletesFilesWithNote ? false : keepDriveFiles" accessible :disabled="savingKeepDriveFiles || deletesFilesWithNote" @update:modelValue="changeKeepDriveFiles">
+				{{ i18n.ts._noteCleanup.keepDriveFiles }}
+				<template v-if="!deletesFilesWithNote" #caption>
+					<I18n :src="i18n.ts._noteCleanup.keepDriveFilesScope" tag="span">
+						<template #link><MkA to="/settings/drive" class="_link">{{ i18n.ts._noteCleanup.driveSettingsLink }}</MkA></template>
+						<template #option>{{ i18n.ts.autoDeleteNoteFiles }}</template>
+					</I18n>
+				</template>
+			</MkSwitch>
+			<MkInfo v-if="deletesFilesWithNote">
+				<I18n :src="i18n.ts._noteCleanup.keepDriveFilesOverridden" tag="span">
+					<template #link><MkA to="/settings/drive" class="_link">{{ i18n.ts._noteCleanup.driveSettingsLink }}</MkA></template>
+					<template #option>{{ i18n.ts.autoDeleteNoteFiles }}</template>
+				</I18n>
+			</MkInfo>
 			<FormSection>
 				<template #label><i class="ti ti-trash"></i> {{ i18n.ts._noteCleanup.deleteRules }}</template>
 				<div class="_gaps_s">
@@ -59,11 +73,13 @@ import { i18n } from '@/i18n.js';
 import { ensureSignin } from '@/i.js';
 import { definePage } from '@/page.js';
 import * as os from '@/os.js';
-ensureSignin();
+const $i = ensureSignin();
 const rules = shallowRef<CleanupRule[]>([]);
 const loading = ref(true);
 const failed = ref('');
 const keepDriveFiles = ref(true);
+// 드라이브 설정에서 노트와 함께 첨부 파일을 지우도록 했으면 이 스위치는 값과 상관없이 꺼진 모양으로 잠근다(저장된 값은 그대로 둔다).
+const deletesFilesWithNote = computed(() => $i.autoDeleteNoteFiles);
 // 저장 중에는 스위치를 잠그고, 실패하면 낙관적 값이 아니라 마지막 확인된 서버 값으로 돌린다.
 const savingKeepDriveFiles = ref(false);
 const confirmedKeepDriveFiles = ref(true);
@@ -83,6 +99,11 @@ async function load() {
 	} finally {
 		loading.value = false;
 	}
+}
+
+function changeKeepDriveFiles(value: boolean) {
+	keepDriveFiles.value = value;
+	saveKeepDriveFiles(value);
 }
 
 // 저장 실패는 스위치를 되돌리고 오류만 알린다. 목록 전체를 다시 불러오지는 않는다.
