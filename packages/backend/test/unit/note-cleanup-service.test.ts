@@ -1193,9 +1193,11 @@ test('드라이브 보존이 남기기여도 계정 설정이 켜져 있으면 �
 test('계정 설정을 읽지 못하면 기록하고 파일을 남기며 정리 결과와 커서는 그대로 갱신된다', async () => {
 	const { account, rows, service, input, drive } = fixture();
 	account.failure = true;
+	// 이전 실행이 남긴 커서에서 이어 시작하고, 끝나면 커서가 비워지는지 확인한다.
+	rows.State[0].cursor = '0';
 	rows.Rule.push({ id: 'delete', userId: 'alice', ...input, enabled: true, automatic: true, lastError: null });
 	rows.MiDriveFile = [{ id: 'f1', userId: 'alice' }];
-	rows.MiNote.push({ ...note('0'), fileIds: ['f1'] });
+	rows.MiNote.push({ ...note('1'), fileIds: ['f1'] });
 	const result = await service.processUser('alice');
 	expect(result.deleted).toBe(1);
 	expect(result.complete).toBe(true);
