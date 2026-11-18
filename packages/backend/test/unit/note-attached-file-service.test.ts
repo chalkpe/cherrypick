@@ -12,9 +12,9 @@ vi.mock('../../src/core/DriveFileUsageService.js', () => ({ DriveFileUsageServic
 vi.mock('../../src/core/NoteDeleteService.js', () => ({ NoteDeleteService: class {} }));
 import { NoteAttachedFileService } from '../../src/core/NoteAttachedFileService.js';
 
-function fixture({ enabled = true } = {}) {
+function fixture({ enabled = true, cacheEnabled = undefined as boolean | undefined, cacheFails = false, failFileIds = [] as string[] } = {}) {
 	const calls = { profileLookups: 0, cacheLookups: 0, deletedNotes: [] as string[], deletedFiles: [] as string[], usageOwners: [] as string[] };
-	const files = [{ id: 'f1', userId: 'alice' }, { id: 'f2', userId: 'bob' }];
+	const files = [{ id: 'f1', userId: 'alice' }, { id: 'f2', userId: 'bob' }, { id: 'f3', userId: 'alice' }];
 	const profiles = { findOne: async () => { calls.profileLookups++; return { userId: 'alice', autoDeleteNoteFiles: enabled }; } };
 	const driveFiles = {
 		createQueryBuilder: () => {
@@ -28,8 +28,8 @@ function fixture({ enabled = true } = {}) {
 			return builder;
 		},
 	};
-	const cache = { userProfileCache: { fetch: async () => { calls.cacheLookups++; return { autoDeleteNoteFiles: enabled }; } } };
-	const drive = { deleteFile: async (file: { id: string }) => { calls.deletedFiles.push(file.id); } };
+	const cache = { userProfileCache: { fetch: async () => { calls.cacheLookups++; if (cacheFails) throw new Error('cache down'); return { autoDeleteNoteFiles: cacheEnabled ?? enabled }; } } };
+	const drive = { deleteFile: async (file: { id: string }) => { if (failFileIds.includes(file.id)) throw new Error('delete failed'); calls.deletedFiles.push(file.id); } };
 	// 실제 applyUnusedFilter처럼 소유자로 먼저 좁힌다.
 	const usage = { applyUnusedFilter: (query: any, userId: string) => { calls.usageOwners.push(userId); query.setOwner(userId); return query; } };
 	const noteDelete = { delete: async (_user: unknown, note: { id: string }) => { calls.deletedNotes.push(note.id); } };
@@ -94,4 +94,36 @@ test('다른 사람의 파일을 넘겨도 소유자로 좁혀 지우지 않는�
 
 	expect(calls.usageOwners).toEqual(['alice', 'alice']);
 	expect(calls.deletedFiles).toEqual(['f1']);
+});
+
+test('캐시는 켜짐이지만 DB가 꺼짐이면 꺼짐으로 판단해 파일을 남긴다', async () => {
+	const { service, calls } = fixture({ enabled: false, cacheEnabled: true });
+
+	await service.deleteOwnNote(local, note(['f1']));
+
+	expect(calls.cacheLookups).toBe(1);
+	expect(calls.profileLookups).toBe(1);
+	expect(await service.isEnabled('alice')).toBe(false);
+	expect(calls.deletedNotes).toEqual(['n1']);
+	expect(calls.deletedFiles).toEqual([]);
+});
+
+test('캐시 조회가 실패하면 DB 값으로 판단한다', async () => {
+	const on = fixture({ enabled: true, cacheFails: true });
+	const off = fixture({ enabled: false, cacheFails: true });
+
+	expect(await on.service.isEnabled('alice')).toBe(true);
+	expect(await off.service.isEnabled('alice')).toBe(false);
+	await on.service.deleteOwnNote(local, note(['f1']));
+
+	expect(on.calls.profileLookups).toBe(2);
+	expect(on.calls.deletedFiles).toEqual(['f1']);
+});
+
+test('한 파일의 삭제가 실패해도 다음 파일은 계속 지운다', async () => {
+	const { service, calls } = fixture({ failFileIds: ['f1'] });
+
+	await expect(service.deleteUnreferenced(local, ['f1', 'f3'])).resolves.toBeUndefined();
+
+	expect(calls.deletedFiles).toEqual(['f3']);
 });
