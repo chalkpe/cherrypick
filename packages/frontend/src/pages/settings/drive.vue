@@ -73,13 +73,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</SearchMarker>
 
 					<SearchMarker :keywords="['always', 'default', 'mark', 'nsfw', 'sensitive', 'media', 'file']">
-						<MkSwitch v-model="alwaysMarkNsfw" @update:modelValue="saveProfile()">
+						<MkSwitch :modelValue="alwaysMarkNsfwShown" :disabled="alwaysMarkNsfwLocked || savingAlwaysMarkNsfw" @update:modelValue="changeAlwaysMarkNsfw">
 							<template #label><SearchLabel>{{ i18n.ts.alwaysMarkSensitive }}</SearchLabel></template>
 						</MkSwitch>
 					</SearchMarker>
 
 					<SearchMarker :keywords="['auto', 'nsfw', 'sensitive', 'media', 'file']">
-						<MkSwitch v-model="autoSensitive" @update:modelValue="saveProfile()">
+						<MkSwitch :modelValue="autoSensitive" :disabled="savingAutoSensitive" @update:modelValue="changeAutoSensitive">
 							<template #label><SearchLabel>{{ i18n.ts.enableAutoSensitive }}</SearchLabel><span class="_beta">{{ i18n.ts.beta }}</span></template>
 							<template #caption><SearchText>{{ i18n.ts.enableAutoSensitiveDescription }}</SearchText></template>
 						</MkSwitch>
@@ -250,12 +250,33 @@ let confirmedAutoSensitive = !!$i.autoSensitive;
 const autoDeleteNoteFiles = ref($i.autoDeleteNoteFiles);
 const confirmedAutoDeleteNoteFiles = ref($i.autoDeleteNoteFiles);
 const savingAutoDeleteNoteFiles = ref(false);
+const savingAlwaysMarkNsfw = ref(false);
+const savingAutoSensitive = ref(false);
+
+// 역할 정책으로 열람 주의가 강제된 계정은 서버가 이 값의 변경을 거절하므로 켜진 채로 잠근다.
+const alwaysMarkNsfwLocked = computed(() => !!$i.policies.alwaysMarkNsfw);
+const alwaysMarkNsfwShown = computed(() => alwaysMarkNsfwLocked.value || !!alwaysMarkNsfw.value);
 
 // 다른 탭이나 기기에서 바뀐 값이 계정 정보로 들어오면 화면 값도 따라간다.
+// 저장하는 동안에는 늦게 도착한 이전 저장의 갱신이 요청한 값을 덮지 않도록 확인된 값만 갱신한다.
 watch(() => $i.autoDeleteNoteFiles, value => {
 	confirmedAutoDeleteNoteFiles.value = value;
-	autoDeleteNoteFiles.value = value;
+	if (!savingAutoDeleteNoteFiles.value) autoDeleteNoteFiles.value = value;
 });
+
+// 서버 오류는 Error가 아니라 { message, code, ... } 형태의 일반 객체로 거부된다.
+function errorText(err: unknown): string {
+	if (err != null && typeof err === 'object' && 'message' in err && typeof err.message === 'string') return err.message;
+	return String(err);
+}
+
+function showSaveError(err: unknown) {
+	return os.alert({
+		type: 'error',
+		title: i18n.ts.error,
+		text: errorText(err),
+	});
+}
 
 const meterStyle = computed(() => {
 	if (!capacity.value || !usage.value) return {};
@@ -403,20 +424,33 @@ async function addImageFramePreset() {
 	});
 }
 
-function saveProfile() {
-	const requested = { alwaysMarkNsfw: !!alwaysMarkNsfw.value, autoSensitive: !!autoSensitive.value };
-	misskeyApi('i/update', requested).then(() => {
-		confirmedAlwaysMarkNsfw = requested.alwaysMarkNsfw;
-		confirmedAutoSensitive = requested.autoSensitive;
-	}).catch(err => {
-		os.alert({
-			type: 'error',
-			title: i18n.ts.error,
-			text: err.message,
-		});
+async function changeAlwaysMarkNsfw(value: boolean) {
+	if (alwaysMarkNsfwLocked.value) return;
+	alwaysMarkNsfw.value = value;
+	savingAlwaysMarkNsfw.value = true;
+	try {
+		await misskeyApi('i/update', { alwaysMarkNsfw: value });
+		confirmedAlwaysMarkNsfw = value;
+	} catch (err) {
 		alwaysMarkNsfw.value = confirmedAlwaysMarkNsfw;
+		await showSaveError(err);
+	} finally {
+		savingAlwaysMarkNsfw.value = false;
+	}
+}
+
+async function changeAutoSensitive(value: boolean) {
+	autoSensitive.value = value;
+	savingAutoSensitive.value = true;
+	try {
+		await misskeyApi('i/update', { autoSensitive: value });
+		confirmedAutoSensitive = value;
+	} catch (err) {
 		autoSensitive.value = confirmedAutoSensitive;
-	});
+		await showSaveError(err);
+	} finally {
+		savingAutoSensitive.value = false;
+	}
 }
 
 async function changeAutoDeleteNoteFiles(value: boolean) {
@@ -425,13 +459,10 @@ async function changeAutoDeleteNoteFiles(value: boolean) {
 	try {
 		await misskeyApi('i/update', { autoDeleteNoteFiles: value });
 		confirmedAutoDeleteNoteFiles.value = value;
+		autoDeleteNoteFiles.value = value;
 	} catch (err) {
 		autoDeleteNoteFiles.value = confirmedAutoDeleteNoteFiles.value;
-		await os.alert({
-			type: 'error',
-			title: i18n.ts.error,
-			text: err instanceof Error ? err.message : String(err),
-		});
+		await showSaveError(err);
 	} finally {
 		savingAutoDeleteNoteFiles.value = false;
 	}

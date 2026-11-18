@@ -5,7 +5,7 @@
 
 import { afterEach, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/vue';
-import { defineComponent, h, Suspense } from 'vue';
+import { defineComponent, h, nextTick, Suspense } from 'vue';
 import DriveSettings from '@/pages/settings/drive.vue';
 import { i18n } from '@/i18n.js';
 
@@ -15,7 +15,7 @@ const mocks = vi.hoisted(async () => {
 	return {
 		api: vi.fn(),
 		alert: vi.fn(),
-		me: reactive({ id: 'viewer', alwaysMarkNsfw: false, autoSensitive: false, autoDeleteNoteFiles: false, policies: { watermarkAvailable: false } }),
+		me: reactive({ id: 'viewer', alwaysMarkNsfw: false, autoSensitive: false, autoDeleteNoteFiles: false, policies: { watermarkAvailable: false, alwaysMarkNsfw: false } }),
 	};
 });
 
@@ -39,9 +39,20 @@ vi.mock('@/components/global/SearchMarker.vue', () => ({ default: { template: '<
 
 afterEach(cleanup);
 
-async function mountPage() {
+// 대기 중인 프로미스 연쇄가 모두 처리되도록 마이크로태스크를 충분히 비운다.
+async function flushPromises() {
+	for (let i = 0; i < 10; i++) await Promise.resolve();
+}
+
+// 서버가 오류를 돌려줄 때 misskeyApi가 거부하는 값의 실제 모양(Error가 아닌 일반 객체)
+const serverError = { message: 'Rate limit exceeded.', code: 'RATE_LIMIT_EXCEEDED', id: 'rate-limit' };
+
+async function mountPage(initial: { autoDeleteNoteFiles?: boolean; roleForcedNsfw?: boolean } = {}) {
 	const { api, alert, me } = await mocks;
-	me.autoDeleteNoteFiles = false;
+	me.autoDeleteNoteFiles = initial.autoDeleteNoteFiles ?? false;
+	me.alwaysMarkNsfw = false;
+	me.autoSensitive = false;
+	me.policies.alwaysMarkNsfw = initial.roleForcedNsfw ?? false;
 	alert.mockReset();
 	api.mockReset().mockImplementation(async (path: string) => (path === 'drive' ? { usage: 0, capacity: 1 } : undefined));
 	const Host = defineComponent({ render: () => h(Suspense, null, { default: () => h(DriveSettings) }) });
@@ -76,14 +87,14 @@ test('스위치를 켜고 끄면 그때마다 자기 값만 저장한다', async
 test('저장에 실패하면 알리고 마지막으로 확인된 값으로 되돌린다', async () => {
 	const { view, api, alert } = await mountPage();
 	api.mockImplementation(async (path: string) => {
-		if (path === 'i/update') throw new Error('저장 실패');
+		if (path === 'i/update') throw serverError;
 		return { usage: 0, capacity: 1 };
 	});
 
 	await fireEvent.click(view.getByText(i18n.ts.autoDeleteNoteFiles));
 
-	await vi.waitFor(() => expect(alert).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', text: '저장 실패' })));
-	await vi.waitFor(() => expect(switchOf(view, i18n.ts.autoDeleteNoteFiles).checked).toBe(false));
+	await vi.waitFor(() => expect(alert).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', text: serverError.message })));
+	await vi.waitFor(() => expect(shownOn(view, i18n.ts.autoDeleteNoteFiles)).toBe(false));
 });
 
 test('다른 스위치를 저장하는 요청에는 이 옵션의 값이 실리지 않는다', async () => {
@@ -96,7 +107,7 @@ test('다른 스위치를 저장하는 요청에는 이 옵션의 값이 실리�
 
 	await fireEvent.click(view.getByText(i18n.ts.alwaysMarkSensitive));
 
-	await vi.waitFor(() => expect(api).toHaveBeenCalledWith('i/update', { alwaysMarkNsfw: true, autoSensitive: false }));
+	await vi.waitFor(() => expect(api).toHaveBeenCalledWith('i/update', { alwaysMarkNsfw: true }));
 	for (const call of api.mock.calls) expect(call[1]).not.toHaveProperty('autoDeleteNoteFiles');
 });
 
@@ -118,7 +129,7 @@ test('스위치의 설명이 함께 표시된다', async () => {
 test('열람 주의 스위치를 켜는 저장이 실패하면 꺼진 상태로 돌아간다', async () => {
 	const { view, api, alert } = await mountPage();
 	api.mockImplementation(async (path: string) => {
-		if (path === 'i/update') throw new Error('저장 실패');
+		if (path === 'i/update') throw serverError;
 		return { usage: 0, capacity: 1 };
 	});
 
@@ -126,14 +137,15 @@ test('열람 주의 스위치를 켜는 저장이 실패하면 꺼진 상태로 
 
 	await vi.waitFor(() => expect(alert).toHaveBeenCalled());
 	// 화면 갱신이 끝난 뒤의 상태를 확인한다.
-	await new Promise(resolve => setTimeout(resolve, 0));
+	await flushPromises();
+	await nextTick();
 	expect(shownOn(view, i18n.ts.alwaysMarkSensitive)).toBe(false);
 });
 
 test('자동 민감 판정 스위치의 저장 실패는 열람 주의 스위치 모양을 바꾸지 않고 자기 값만 되돌린다', async () => {
 	const { view, api, alert } = await mountPage();
 	api.mockImplementation(async (path: string) => {
-		if (path === 'i/update') throw new Error('저장 실패');
+		if (path === 'i/update') throw serverError;
 		return { usage: 0, capacity: 1 };
 	});
 
@@ -141,7 +153,119 @@ test('자동 민감 판정 스위치의 저장 실패는 열람 주의 스위치
 
 	await vi.waitFor(() => expect(alert).toHaveBeenCalled());
 	// 화면 갱신이 끝난 뒤의 상태를 확인한다.
-	await new Promise(resolve => setTimeout(resolve, 0));
-	expect(switchOf(view, i18n.ts.enableAutoSensitive).checked).toBe(false);
+	await flushPromises();
+	await nextTick();
+	expect(shownOn(view, i18n.ts.enableAutoSensitive)).toBe(false);
 	expect(shownOn(view, i18n.ts.alwaysMarkSensitive)).toBe(false);
+});
+
+test('열람 주의 스위치를 켜도 자동 민감 판정 값은 보내지 않는다', async () => {
+	const { view, api } = await mountPage();
+
+	await fireEvent.click(view.getByText(i18n.ts.alwaysMarkSensitive));
+
+	await vi.waitFor(() => expect(api).toHaveBeenCalledWith('i/update', { alwaysMarkNsfw: true }));
+	expect(api.mock.calls.filter(c => c[0] === 'i/update')).toHaveLength(1);
+});
+
+test('자동 민감 판정 스위치는 자기 값만 저장한다', async () => {
+	const { view, api } = await mountPage();
+
+	await fireEvent.click(view.getByText(i18n.ts.enableAutoSensitive));
+
+	await vi.waitFor(() => expect(api).toHaveBeenCalledWith('i/update', { autoSensitive: true }));
+	expect(api.mock.calls.filter(c => c[0] === 'i/update')).toHaveLength(1);
+});
+
+test('역할로 열람 주의가 강제된 계정은 열람 주의 스위치가 켜진 채 잠기고 요청을 보내지 않는다', async () => {
+	const { view, api } = await mountPage({ roleForcedNsfw: true });
+
+	expect(shownOn(view, i18n.ts.alwaysMarkSensitive)).toBe(true);
+	expect(switchOf(view, i18n.ts.alwaysMarkSensitive).disabled).toBe(true);
+
+	await fireEvent.click(view.getByText(i18n.ts.alwaysMarkSensitive));
+	await flushPromises();
+
+	expect(api.mock.calls.filter(c => c[0] === 'i/update')).toHaveLength(0);
+	expect(shownOn(view, i18n.ts.alwaysMarkSensitive)).toBe(true);
+});
+
+test('역할로 열람 주의가 강제된 계정도 자동 민감 판정은 자기 값만 저장한다', async () => {
+	const { view, api, alert } = await mountPage({ roleForcedNsfw: true });
+
+	await fireEvent.click(view.getByText(i18n.ts.enableAutoSensitive));
+
+	await vi.waitFor(() => expect(api).toHaveBeenCalledWith('i/update', { autoSensitive: true }));
+	await flushPromises();
+	expect(alert).not.toHaveBeenCalled();
+	expect(shownOn(view, i18n.ts.enableAutoSensitive)).toBe(true);
+	expect(shownOn(view, i18n.ts.alwaysMarkSensitive)).toBe(true);
+});
+
+test('열람 주의 스위치는 저장하는 동안 잠긴다', async () => {
+	const { view, api } = await mountPage();
+	let finish!: () => void;
+	api.mockImplementation(async (path: string) => {
+		if (path !== 'i/update') return { usage: 0, capacity: 1 };
+		await new Promise<void>(resolve => { finish = resolve; });
+		return undefined;
+	});
+
+	await fireEvent.click(view.getByText(i18n.ts.alwaysMarkSensitive));
+	await vi.waitFor(() => expect(switchOf(view, i18n.ts.alwaysMarkSensitive).disabled).toBe(true));
+	finish();
+	await vi.waitFor(() => expect(switchOf(view, i18n.ts.alwaysMarkSensitive).disabled).toBe(false));
+});
+
+test('자동 민감 판정 스위치는 저장하는 동안 잠긴다', async () => {
+	const { view, api } = await mountPage();
+	let finish!: () => void;
+	api.mockImplementation(async (path: string) => {
+		if (path !== 'i/update') return { usage: 0, capacity: 1 };
+		await new Promise<void>(resolve => { finish = resolve; });
+		return undefined;
+	});
+
+	await fireEvent.click(view.getByText(i18n.ts.enableAutoSensitive));
+	await vi.waitFor(() => expect(switchOf(view, i18n.ts.enableAutoSensitive).disabled).toBe(true));
+	finish();
+	await vi.waitFor(() => expect(switchOf(view, i18n.ts.enableAutoSensitive).disabled).toBe(false));
+});
+
+test('저장하는 동안 늦게 도착한 계정 정보 갱신이 화면 값을 덮지 않는다', async () => {
+	const { view, api, me } = await mountPage({ autoDeleteNoteFiles: true });
+	const label = view.getByText(i18n.ts.autoDeleteNoteFiles);
+
+	// 첫 저장(끄기)이 성공한다.
+	await fireEvent.click(label);
+	await vi.waitFor(() => expect(api).toHaveBeenLastCalledWith('i/update', { autoDeleteNoteFiles: false }));
+	await vi.waitFor(() => expect(switchOf(view, i18n.ts.autoDeleteNoteFiles).disabled).toBe(false));
+
+	// 두 번째 저장(켜기)이 진행 중일 때 첫 저장의 계정 정보 갱신이 늦게 도착한다.
+	let finish!: () => void;
+	api.mockImplementation(async (path: string) => {
+		if (path !== 'i/update') return { usage: 0, capacity: 1 };
+		await new Promise<void>(resolve => { finish = resolve; });
+		return undefined;
+	});
+	await fireEvent.click(label);
+	await vi.waitFor(() => expect(api).toHaveBeenLastCalledWith('i/update', { autoDeleteNoteFiles: true }));
+	me.autoDeleteNoteFiles = false;
+	await flushPromises();
+	finish();
+
+	await vi.waitFor(() => expect(switchOf(view, i18n.ts.autoDeleteNoteFiles).disabled).toBe(false));
+	expect(shownOn(view, i18n.ts.autoDeleteNoteFiles)).toBe(true);
+});
+
+test('노트 삭제 첨부 옵션 저장 실패 시 서버 오류 객체의 메시지를 알린다', async () => {
+	const { view, api, alert } = await mountPage();
+	api.mockImplementation(async (path: string) => {
+		if (path === 'i/update') throw serverError;
+		return { usage: 0, capacity: 1 };
+	});
+
+	await fireEvent.click(view.getByText(i18n.ts.autoDeleteNoteFiles));
+
+	await vi.waitFor(() => expect(alert).toHaveBeenCalledWith(expect.objectContaining({ text: 'Rate limit exceeded.' })));
 });
