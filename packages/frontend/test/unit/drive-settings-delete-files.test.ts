@@ -15,6 +15,7 @@ const mocks = vi.hoisted(async () => {
 	return {
 		api: vi.fn(),
 		alert: vi.fn(),
+		updateAccount: vi.fn(),
 		me: reactive({ id: 'viewer', alwaysMarkNsfw: false, autoSensitive: false, autoDeleteNoteFiles: false, policies: { watermarkAvailable: false, alwaysMarkNsfw: false } }),
 	};
 });
@@ -27,8 +28,8 @@ vi.mock('@/i.js', async () => {
 });
 vi.mock('@/accounts.js', async () => {
 	const { me } = await mocks;
-	// 실제 갱신 함수처럼 현재 계정 정보 객체에 값을 써 넣는다.
-	return { updateCurrentAccount: (data: Record<string, unknown>) => { Object.assign(me, data); } };
+	const { updateAccount } = await mocks;
+	return { updateCurrentAccount: (data: Record<string, unknown>) => updateAccount(data) };
 });
 vi.mock('@/page.js', () => ({ definePage: vi.fn() }));
 vi.mock('@/preferences.js', async () => {
@@ -53,7 +54,9 @@ async function flushPromises() {
 const serverError = { message: 'Rate limit exceeded.', code: 'RATE_LIMIT_EXCEEDED', id: 'rate-limit' };
 
 async function mountPage(initial: { autoDeleteNoteFiles?: boolean; roleForcedNsfw?: boolean } = {}) {
-	const { api, alert, me } = await mocks;
+	const { api, alert, me, updateAccount } = await mocks;
+	// 실제 갱신 함수처럼 현재 계정 정보 객체에 값을 써 넣는다.
+	updateAccount.mockReset().mockImplementation((data: Record<string, unknown>) => { Object.assign(me, data); });
 	me.autoDeleteNoteFiles = initial.autoDeleteNoteFiles ?? false;
 	me.alwaysMarkNsfw = false;
 	me.autoSensitive = false;
@@ -63,7 +66,7 @@ async function mountPage(initial: { autoDeleteNoteFiles?: boolean; roleForcedNsf
 	const Host = defineComponent({ render: () => h(Suspense, null, { default: () => h(DriveSettings) }) });
 	const view = render(Host, { global: { stubs: { PageWithHeader: { template: '<div><slot /></div>' } } } });
 	await vi.waitFor(() => expect(view.getByText(i18n.ts.autoDeleteNoteFiles)).not.toBeNull());
-	return { view, api, alert, me };
+	return { view, api, alert, me, updateAccount };
 }
 
 function switchOf(view: ReturnType<typeof render>, label: string) {
@@ -104,7 +107,7 @@ test('저장에 실패하면 알리고 마지막으로 확인된 값으로 되�
 
 test('다른 스위치를 저장하는 요청에는 이 옵션의 값이 실리지 않는다', async () => {
 	const { view, api } = await mountPage();
-	// 이 화면에서 옵션을 켠 뒤, 다른 탭에서 꺼진 상태(서버 값)와 화면 값이 어긋난 상황을 만든다.
+	// 이 화면에서 옵션을 켠 뒤, 이 옵션이 켜진 채로 다른 스위치를 저장하는 상황을 만든다.
 	await fireEvent.click(view.getByText(i18n.ts.autoDeleteNoteFiles));
 	await vi.waitFor(() => expect(api).toHaveBeenLastCalledWith('i/update', { autoDeleteNoteFiles: true }));
 	await vi.waitFor(() => expect(switchOf(view, i18n.ts.autoDeleteNoteFiles).disabled).toBe(false));
@@ -311,4 +314,21 @@ test('저장 성공 뒤 화면을 다시 만들어도 스위치가 저장한 값
 
 	expect(me.autoDeleteNoteFiles).toBe(true);
 	expect(switchOf(view, i18n.ts.autoDeleteNoteFiles).checked).toBe(true);
+});
+
+test('저장에 성공한 뒤 현재 계정 정보 갱신이 실패해도 저장 실패로 알리지 않고 요청한 값을 유지한다', async () => {
+	const { view, api, alert, updateAccount } = await mountPage();
+	const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+	updateAccount.mockImplementation(() => { throw new Error('storage failed'); });
+
+	await fireEvent.click(view.getByText(i18n.ts.autoDeleteNoteFiles));
+	await vi.waitFor(() => expect(api).toHaveBeenLastCalledWith('i/update', { autoDeleteNoteFiles: true }));
+
+	await vi.waitFor(() => expect(switchOf(view, i18n.ts.autoDeleteNoteFiles).disabled).toBe(false));
+	await flushPromises();
+	await nextTick();
+	expect(alert).not.toHaveBeenCalled();
+	expect(shownOn(view, i18n.ts.autoDeleteNoteFiles)).toBe(true);
+	expect(error).toHaveBeenCalled();
+	error.mockRestore();
 });

@@ -460,13 +460,21 @@ async function changeAutoDeleteNoteFiles(value: boolean) {
 	savingAutoDeleteNoteFiles.value = true;
 	try {
 		await misskeyApi('i/update', { autoDeleteNoteFiles: value });
-		confirmedAutoDeleteNoteFiles.value = value;
-		autoDeleteNoteFiles.value = value;
-		// 실시간 연결로 계정 정보가 갱신되기를 기다리지 않고 현재 계정 정보에도 바로 반영한다.
-		updateCurrentAccount({ autoDeleteNoteFiles: value });
 	} catch (err) {
 		autoDeleteNoteFiles.value = confirmedAutoDeleteNoteFiles.value;
 		await showSaveError(err);
+		savingAutoDeleteNoteFiles.value = false;
+		return;
+	}
+
+	confirmedAutoDeleteNoteFiles.value = value;
+	autoDeleteNoteFiles.value = value;
+	try {
+		// 실시간 연결로 계정 정보가 갱신되기를 기다리지 않고 현재 계정 정보에도 바로 반영한다.
+		updateCurrentAccount({ autoDeleteNoteFiles: value });
+	} catch (err) {
+		// 서버 저장은 이미 성공했으므로 저장 실패로 알리지 않고 기록만 남긴다.
+		console.error('failed to update current account', err);
 	} finally {
 		savingAutoDeleteNoteFiles.value = false;
 	}
