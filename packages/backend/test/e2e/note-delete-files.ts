@@ -6,6 +6,8 @@
 process.env.NODE_ENV = 'test';
 
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { DI } from '@/di-symbols.js';
+import { NoteAttachedFileService } from '@/core/NoteAttachedFileService.js';
 import { api, galleryPost, page, post, relativeFetch, signup, startJobQueue, uploadFile } from '../utils.js';
 import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 import type { UserToken } from '../utils.js';
@@ -86,7 +88,7 @@ describe('노트를 지울 때 단독 사용 첨부 파일 삭제 설정', () =>
 		expect(await fileExists(alice, sole)).toBe(false);
 	});
 
-	test('다른 곳에서도 쓰이는 파일은 남긴다', async () => {
+	test('다른 곳에서도 쓰이는 파일은 남기고 단독 사용 파일만 지운다', async () => {
 		const alice = await newUser('deletefilesshared', true);
 		const bob = await signup({ username: 'deletefilesshared2' });
 		await api('i/update', { chatScope: 'everyone' }, alice);
@@ -98,7 +100,6 @@ describe('노트를 지울 때 단독 사용 첨부 파일 삭제 설정', () =>
 		const withAvatar = await upload(alice);
 		const withGallery = await upload(alice);
 		const withPage = await upload(alice);
-		const withEdit = await upload(alice);
 
 		await post(alice, { text: '다른 노트', fileIds: [withNote] });
 		expect((await api('notes/drafts/create', { text: '임시', fileIds: [withDraft] }, alice)).status).toBe(200);
@@ -106,28 +107,47 @@ describe('노트를 지울 때 단독 사용 첨부 파일 삭제 설정', () =>
 		expect((await api('i/update', { avatarId: withAvatar }, alice)).status).toBe(200);
 		await galleryPost(alice, { fileIds: [withGallery] });
 		await page(alice, { name: `deletefiles-${Date.now()}`, eyeCatchingImageId: withPage });
-		const editable = await post(alice, { text: '편집 전', fileIds: [withEdit] });
-		expect((await api('notes/update', { noteId: editable.id, text: '편집 후', cw: null, fileIds: [sole] }, alice)).status).toBe(200);
-
 		const target = await post(alice, { text: '대상', fileIds: [sole, withNote, withDraft, withChat, withAvatar, withGallery, withPage] });
+
 		await deleteNote(alice, target.id);
 
 		expect(await noteExists(alice, target.id)).toBe(false);
-		expect(await fileExists(alice, sole)).toBe(true); // 편집 노트가 쓰는 중
+		expect(await fileExists(alice, sole)).toBe(false);
 		for (const kept of [withNote, withDraft, withChat, withAvatar, withGallery, withPage]) {
 			expect(await fileExists(alice, kept)).toBe(true);
 		}
 	});
 
+	test('다른 노트의 예전 편집 이력에만 남아 있는 파일을 붙인 노트를 지워도 그 파일은 남긴다', async () => {
+		const alice = await newUser('dfedithistory', true);
+		const sole = await upload(alice);
+		const onlyInHistory = await upload(alice);
+		const replacement = await upload(alice);
+		const edited = await post(alice, { text: '편집 전', fileIds: [onlyInHistory] });
+		expect((await api('notes/update', { noteId: edited.id, text: '편집 후', cw: null, fileIds: [replacement] }, alice)).status).toBe(200);
+		const target = await post(alice, { text: '대상', fileIds: [sole, onlyInHistory] });
+
+		await deleteNote(alice, target.id);
+
+		expect(await noteExists(alice, target.id)).toBe(false);
+		expect(await fileExists(alice, sole)).toBe(false);
+		expect(await fileExists(alice, onlyInHistory)).toBe(true);
+		expect(await fileExists(alice, replacement)).toBe(true);
+	});
+
 	test('페이지 본문 블록이 가리키는 파일도 남긴다', async () => {
 		const alice = await newUser('dfpageblock', true);
 		const inPageBody = await upload(alice);
-		const target = await post(alice, { text: '대상', fileIds: [inPageBody] });
+		const sole = await upload(alice);
+		const target = await post(alice, { text: '대상', fileIds: [sole, inPageBody] });
 		await page(alice, {
 			name: `deletefiles-body-${Date.now()}`,
 			content: [{ id: '8a3d3f0e-5d6b-4c61-9d2a-0e7c2e6d1b11', type: 'section', title: '구역', children: [{ id: '0f1d3a52-6c0b-4b7e-8d54-6d6f1f1a2c22', type: 'image', fileId: inPageBody }] }] as never,
 		});
+
 		await deleteNote(alice, target.id);
+
+		expect(await fileExists(alice, sole)).toBe(false);
 		expect(await fileExists(alice, inPageBody)).toBe(true);
 	});
 
@@ -245,25 +265,29 @@ describe('노트를 지울 때 단독 사용 첨부 파일 삭제 설정', () =>
 	test('다른 사람이 자기 노트를 지워도 내 답글과 그 첨부는 그대로 남는다', async () => {
 		const alice = await newUser('dfforeign', true);
 		const bob = await newUser('dfforeignbob', true);
-		const bobNote = await post(bob, { text: '남의 노트' });
+		const bobSole = await upload(bob);
+		const bobNote = await post(bob, { text: '남의 노트', fileIds: [bobSole] });
 		const fileId = await upload(alice);
 		const reply = await post(alice, { text: '내 답글', replyId: bobNote.id, fileIds: [fileId] });
 
 		await deleteNote(bob, bobNote.id);
 
+		expect(await fileExists(bob, bobSole)).toBe(false);
 		expect(await noteExists(alice, reply.id)).toBe(true);
 		expect(await fileExists(alice, fileId)).toBe(true);
 	});
 
-	test('다른 사람의 파일이 붙은 노트를 내가 지워도 그 파일은 지우지 않는다', async () => {
+	test('서비스에 다른 사람의 파일을 넘겨도 지우지 않고 내 파일만 지운다', async () => {
 		const alice = await newUser('dfownerA', true);
 		const bob = await newUser('dfownerB', true);
 		const bobFile = await upload(bob);
-		const note = await post(alice, { text: '내 노트' });
-		expect((await api('notes/update', { noteId: note.id, text: '내 노트', cw: null, fileIds: [bobFile] }, alice)).status).toBeLessThan(500);
+		const aliceFile = await upload(alice);
+		const service = queue.get(NoteAttachedFileService);
+		const aliceUser = await queue.get(DI.usersRepository).findOneByOrFail({ id: alice.id });
 
-		await deleteNote(alice, note.id);
+		await service.deleteUnreferenced(aliceUser, [aliceFile, bobFile]);
 
+		expect(await fileExists(alice, aliceFile)).toBe(false);
 		expect(await fileExists(bob, bobFile)).toBe(true);
 	});
 });
