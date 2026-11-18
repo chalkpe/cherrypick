@@ -54,6 +54,12 @@ function switchOf(view: ReturnType<typeof render>, label: string) {
 	return view.getByText(label).closest('div')!.querySelector('input[type="checkbox"]') as HTMLInputElement;
 }
 
+// 화면에 그려지는 스위치의 켜짐 상태. 접근성 옵션이 없는 스위치는 체크박스에 값이 반영되지 않는다.
+function shownOn(view: ReturnType<typeof render>, label: string) {
+	const toggle = view.getByText(label).closest('div')!.querySelector('[data-testid="switch-toggle"]')!;
+	return /buttonChecked/.test(toggle.className);
+}
+
 test('스위치를 켜고 끄면 그때마다 자기 값만 저장한다', async () => {
 	const { view, api } = await mountPage();
 	const label = view.getByText(i18n.ts.autoDeleteNoteFiles);
@@ -107,4 +113,35 @@ test('스위치의 설명이 함께 표시된다', async () => {
 	const { view } = await mountPage();
 
 	expect(view.getByText(i18n.ts.autoDeleteNoteFilesDescription)).not.toBeNull();
+});
+
+test('열람 주의 스위치를 켜는 저장이 실패하면 꺼진 상태로 돌아간다', async () => {
+	const { view, api, alert } = await mountPage();
+	api.mockImplementation(async (path: string) => {
+		if (path === 'i/update') throw new Error('저장 실패');
+		return { usage: 0, capacity: 1 };
+	});
+
+	await fireEvent.click(view.getByText(i18n.ts.alwaysMarkSensitive));
+
+	await vi.waitFor(() => expect(alert).toHaveBeenCalled());
+	// 화면 갱신이 끝난 뒤의 상태를 확인한다.
+	await new Promise(resolve => setTimeout(resolve, 0));
+	expect(shownOn(view, i18n.ts.alwaysMarkSensitive)).toBe(false);
+});
+
+test('자동 민감 판정 스위치의 저장 실패는 열람 주의 스위치 모양을 바꾸지 않고 자기 값만 되돌린다', async () => {
+	const { view, api, alert } = await mountPage();
+	api.mockImplementation(async (path: string) => {
+		if (path === 'i/update') throw new Error('저장 실패');
+		return { usage: 0, capacity: 1 };
+	});
+
+	await fireEvent.click(view.getByText(i18n.ts.enableAutoSensitive));
+
+	await vi.waitFor(() => expect(alert).toHaveBeenCalled());
+	// 화면 갱신이 끝난 뒤의 상태를 확인한다.
+	await new Promise(resolve => setTimeout(resolve, 0));
+	expect(switchOf(view, i18n.ts.enableAutoSensitive).checked).toBe(false);
+	expect(shownOn(view, i18n.ts.alwaysMarkSensitive)).toBe(false);
 });

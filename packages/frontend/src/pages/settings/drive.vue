@@ -242,6 +242,9 @@ const capacity = ref<number | null>(null);
 const uploadFolder = ref<Misskey.entities.DriveFolder | null>(null);
 const alwaysMarkNsfw = ref($i.alwaysMarkNsfw);
 const autoSensitive = ref($i.autoSensitive);
+// 서버에 저장된 것으로 확인된 값. 저장에 실패하면 이 값으로 되돌린다.
+let confirmedAlwaysMarkNsfw = !!$i.alwaysMarkNsfw;
+let confirmedAutoSensitive = !!$i.autoSensitive;
 // 노트를 지울 때 첨부 파일도 지우는 옵션은 다른 스위치와 따로, 자기 값만 저장한다.
 // 저장에 실패하면 낙관적 값이 아니라 마지막으로 확인된 서버 값으로 되돌린다.
 const autoDeleteNoteFiles = ref($i.autoDeleteNoteFiles);
@@ -401,16 +404,18 @@ async function addImageFramePreset() {
 }
 
 function saveProfile() {
-	misskeyApi('i/update', {
-		alwaysMarkNsfw: !!alwaysMarkNsfw.value,
-		autoSensitive: !!autoSensitive.value,
+	const requested = { alwaysMarkNsfw: !!alwaysMarkNsfw.value, autoSensitive: !!autoSensitive.value };
+	misskeyApi('i/update', requested).then(() => {
+		confirmedAlwaysMarkNsfw = requested.alwaysMarkNsfw;
+		confirmedAutoSensitive = requested.autoSensitive;
 	}).catch(err => {
 		os.alert({
 			type: 'error',
 			title: i18n.ts.error,
 			text: err.message,
 		});
-		alwaysMarkNsfw.value = true;
+		alwaysMarkNsfw.value = confirmedAlwaysMarkNsfw;
+		autoSensitive.value = confirmedAutoSensitive;
 	});
 }
 
