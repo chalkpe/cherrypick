@@ -12,8 +12,21 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<MkButton v-if="!isCleanupBusyError(failed)" small @click="load">{{ i18n.ts.retry }}</MkButton>
 		</MkInfo>
 		<template v-else>
-			<MkSwitch :modelValue="deletesFilesWithNote ? false : keepDriveFiles" accessible :disabled="savingKeepDriveFiles || deletesFilesWithNote" @update:modelValue="changeKeepDriveFiles">{{ i18n.ts._noteCleanup.keepDriveFiles }}</MkSwitch>
-			<MkInfo v-if="deletesFilesWithNote">{{ i18n.ts._noteCleanup.keepDriveFilesOverridden }}</MkInfo>
+			<MkSwitch :modelValue="deletesFilesWithNote ? false : keepDriveFiles" accessible :disabled="savingKeepDriveFiles || deletesFilesWithNote" @update:modelValue="changeKeepDriveFiles">
+				{{ i18n.ts._noteCleanup.keepDriveFiles }}
+				<template v-if="!deletesFilesWithNote" #caption>
+					<I18n :src="i18n.ts._noteCleanup.keepDriveFilesScope" tag="span">
+						<template #link><MkA to="/settings/drive" class="_link">{{ i18n.ts._noteCleanup.driveSettingsLink }}</MkA></template>
+						<template #option>{{ i18n.ts.autoDeleteNoteFiles }}</template>
+					</I18n>
+				</template>
+			</MkSwitch>
+			<MkInfo v-if="deletesFilesWithNote">
+				<I18n :src="i18n.ts._noteCleanup.keepDriveFilesOverridden" tag="span">
+					<template #link><MkA to="/settings/drive" class="_link">{{ i18n.ts._noteCleanup.driveSettingsLink }}</MkA></template>
+					<template #option>{{ i18n.ts.autoDeleteNoteFiles }}</template>
+				</I18n>
+			</MkInfo>
 			<FormSection>
 				<template #label><i class="ti ti-trash"></i> {{ i18n.ts._noteCleanup.deleteRules }}</template>
 				<div class="_gaps_s">

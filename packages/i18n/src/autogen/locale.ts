@@ -3892,6 +3892,10 @@ export interface Locale extends ILocale {
      */
     "alwaysMarkSensitive": string;
     /**
+     * ロールの設定により、常にオンになっています。
+     */
+    "alwaysMarkSensitiveLockedByRole": string;
+    /**
      * 添付画像のサムネイルをオリジナル画質にする
      */
     "loadRawImages": string;
@@ -16723,9 +16727,17 @@ export interface Locale extends ILocale {
          */
         "keepDriveFiles": string;
         /**
-         * ドライブ設定の「ノートを削除するとき添付ファイルも一緒に削除」がオンのため、削除したノートでしか使っていない添付ファイルも一緒に削除されます。
+         * {link}の「{option}」がオンのため、削除したノートでしか使っていない添付ファイルも一緒に削除されます。
          */
-        "keepDriveFilesOverridden": string;
+        "keepDriveFilesOverridden": ParameterizedString<"link" | "option">;
+        /**
+         * ノート整理で削除されるノートにのみ適用されます。自分で削除するノートの添付ファイルも一緒に削除するには、{link}で「{option}」をオンにしてください。
+         */
+        "keepDriveFilesScope": ParameterizedString<"link" | "option">;
+        /**
+         * ドライブ設定
+         */
+        "driveSettingsLink": string;
         /**
          * 残す
          */

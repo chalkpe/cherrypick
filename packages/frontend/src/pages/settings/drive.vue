@@ -73,13 +73,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</SearchMarker>
 
 					<SearchMarker :keywords="['always', 'default', 'mark', 'nsfw', 'sensitive', 'media', 'file']">
-						<MkSwitch :modelValue="alwaysMarkNsfwShown" :disabled="alwaysMarkNsfwLocked || savingAlwaysMarkNsfw" @update:modelValue="changeAlwaysMarkNsfw">
+						<MkSwitch :modelValue="alwaysMarkNsfwShown" accessible :disabled="alwaysMarkNsfwLocked || savingAlwaysMarkNsfw" @update:modelValue="changeAlwaysMarkNsfw">
 							<template #label><SearchLabel>{{ i18n.ts.alwaysMarkSensitive }}</SearchLabel></template>
+							<template v-if="alwaysMarkNsfwLocked" #caption>{{ i18n.ts.alwaysMarkSensitiveLockedByRole }}</template>
 						</MkSwitch>
 					</SearchMarker>
 
 					<SearchMarker :keywords="['auto', 'nsfw', 'sensitive', 'media', 'file']">
-						<MkSwitch :modelValue="autoSensitive" :disabled="savingAutoSensitive" @update:modelValue="changeAutoSensitive">
+						<MkSwitch :modelValue="autoSensitive" accessible :disabled="savingAutoSensitive" @update:modelValue="changeAutoSensitive">
 							<template #label><SearchLabel>{{ i18n.ts.enableAutoSensitive }}</SearchLabel><span class="_beta">{{ i18n.ts.beta }}</span></template>
 							<template #caption><SearchText>{{ i18n.ts.enableAutoSensitiveDescription }}</SearchText></template>
 						</MkSwitch>
@@ -245,7 +246,7 @@ const autoSensitive = ref($i.autoSensitive);
 // 서버에 저장된 것으로 확인된 값. 저장에 실패하면 이 값으로 되돌린다.
 let confirmedAlwaysMarkNsfw = !!$i.alwaysMarkNsfw;
 let confirmedAutoSensitive = !!$i.autoSensitive;
-// 노트를 지울 때 첨부 파일도 지우는 옵션은 다른 스위치와 따로, 자기 값만 저장한다.
+// 세 스위치(열람 주의, 자동 민감 판정, 노트를 지울 때 첨부 파일도 지우기)는 각자 자기 값만 저장한다.
 // 저장에 실패하면 낙관적 값이 아니라 마지막으로 확인된 서버 값으로 되돌린다.
 const autoDeleteNoteFiles = ref($i.autoDeleteNoteFiles);
 const confirmedAutoDeleteNoteFiles = ref($i.autoDeleteNoteFiles);

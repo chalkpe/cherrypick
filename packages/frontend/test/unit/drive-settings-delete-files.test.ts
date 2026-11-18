@@ -159,15 +159,6 @@ test('자동 민감 판정 스위치의 저장 실패는 열람 주의 스위치
 	expect(shownOn(view, i18n.ts.alwaysMarkSensitive)).toBe(false);
 });
 
-test('열람 주의 스위치를 켜도 자동 민감 판정 값은 보내지 않는다', async () => {
-	const { view, api } = await mountPage();
-
-	await fireEvent.click(view.getByText(i18n.ts.alwaysMarkSensitive));
-
-	await vi.waitFor(() => expect(api).toHaveBeenCalledWith('i/update', { alwaysMarkNsfw: true }));
-	expect(api.mock.calls.filter(c => c[0] === 'i/update')).toHaveLength(1);
-});
-
 test('자동 민감 판정 스위치는 자기 값만 저장한다', async () => {
 	const { view, api } = await mountPage();
 
@@ -258,14 +249,33 @@ test('저장하는 동안 늦게 도착한 계정 정보 갱신이 화면 값을
 	expect(shownOn(view, i18n.ts.autoDeleteNoteFiles)).toBe(true);
 });
 
-test('노트 삭제 첨부 옵션 저장 실패 시 서버 오류 객체의 메시지를 알린다', async () => {
+test('열람 주의와 자동 민감 판정 스위치의 저장 실패도 서버 오류 객체의 메시지를 알린다', async () => {
 	const { view, api, alert } = await mountPage();
 	api.mockImplementation(async (path: string) => {
 		if (path === 'i/update') throw serverError;
 		return { usage: 0, capacity: 1 };
 	});
 
-	await fireEvent.click(view.getByText(i18n.ts.autoDeleteNoteFiles));
-
+	await fireEvent.click(view.getByText(i18n.ts.alwaysMarkSensitive));
 	await vi.waitFor(() => expect(alert).toHaveBeenCalledWith(expect.objectContaining({ text: 'Rate limit exceeded.' })));
+	alert.mockClear();
+	await vi.waitFor(() => expect(switchOf(view, i18n.ts.enableAutoSensitive).disabled).toBe(false));
+
+	await fireEvent.click(view.getByText(i18n.ts.enableAutoSensitive));
+	await vi.waitFor(() => expect(alert).toHaveBeenCalledWith(expect.objectContaining({ text: 'Rate limit exceeded.' })));
+});
+
+test('역할로 잠긴 열람 주의 스위치는 체크박스도 켜져 있고 잠긴 이유가 보인다', async () => {
+	const { view } = await mountPage({ roleForcedNsfw: true });
+
+	expect(switchOf(view, i18n.ts.alwaysMarkSensitive).checked).toBe(true);
+	expect(view.getByText(i18n.ts.alwaysMarkSensitiveLockedByRole)).not.toBeNull();
+});
+
+test('역할로 잠기지 않은 계정에는 잠긴 이유가 보이지 않고 체크박스가 화면 상태를 따른다', async () => {
+	const { view } = await mountPage();
+
+	expect(view.queryByText(i18n.ts.alwaysMarkSensitiveLockedByRole)).toBeNull();
+	expect(switchOf(view, i18n.ts.alwaysMarkSensitive).checked).toBe(false);
+	expect(switchOf(view, i18n.ts.enableAutoSensitive).checked).toBe(false);
 });

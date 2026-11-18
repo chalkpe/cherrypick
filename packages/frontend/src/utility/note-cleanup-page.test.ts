@@ -8,7 +8,10 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
 import { defineComponent, h } from 'vue';
 
 vi.mock('@@/js/config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('@@/js/config.js')>()), apiUrl: 'https://cleanup.invalid/api' }));
-vi.mock('@/i.js', () => ({ $i: { token: 'dummy-test-token', policies: {} }, ensureSignin: () => {}, iAmModerator: false }));
+vi.mock('@/i.js', () => {
+	const $i = { token: 'dummy-test-token', policies: {}, autoDeleteNoteFiles: false };
+	return { $i, ensureSignin: () => $i, iAmModerator: false };
+});
 vi.mock('@/i18n.js', async () => {
 	const { I18n } = await import('@@/js/i18n.js');
 	const { load } = await import('js-yaml');
@@ -35,6 +38,7 @@ vi.mock('@/components/MkSwitch.vue', () => ({ default: defineComponent({
 }) }));
 vi.mock('@/components/MkInfo.vue', () => ({ default: defineComponent({ setup: (_, { slots }) => () => h('div', slots.default?.()) }) }));
 import Settings from '@/pages/settings/note-cleanup.vue';
+import I18n from '@/components/global/I18n.vue';
 import { ROUTE_DEF } from '@/router.definition.js';
 import { Nirax } from '@/lib/nirax.js';
 
