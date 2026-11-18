@@ -1198,6 +1198,9 @@ test('계정 설정을 읽지 못하면 기록하고 파일을 남기며 정리 
 	rows.MiNote.push({ ...note('0'), fileIds: ['f1'] });
 	const result = await service.processUser('alice');
 	expect(result.deleted).toBe(1);
+	expect(result.complete).toBe(true);
+	expect(result.cursor).toBeNull();
+	expect(rows.State[0].cursor).toBeNull();
 	expect(rows.MiNote).toHaveLength(0);
 	expect(rows.MiDriveFile.map(f => f.id)).toEqual(['f1']);
 	expect(drive.deletes).toHaveLength(0);

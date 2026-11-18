@@ -2,6 +2,7 @@
  * SPDX-FileCopyrightText: syuilo and misskey-project
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+
 import { expect, test, vi } from 'vitest';
 
 vi.mock('../../src/logger.js', () => ({ default: class { error() {} } }));

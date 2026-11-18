@@ -199,6 +199,12 @@ describe('노트를 지울 때 단독 사용 첨부 파일 삭제 설정', () =>
 			return { status: res.status, body: res.status === 204 ? null : await res.json() as any };
 		}
 
+		async function hasCleanupCompletedNotification(user: User): Promise<boolean> {
+			const res = await api('i/notifications', { limit: 100, markAsRead: false } as never, user);
+			expect(res.status).toBe(200);
+			return (res.body as unknown as { type: string }[]).some(n => n.type === 'noteCleanupCompleted');
+		}
+
 		async function runCleanup(user: User, keyword: string) {
 			const rule = await cleanupApi('create', { name: '정리', action: 'delete', condition: { type: 'keyword', mode: 'literal', value: keyword, flags: '', targets: ['text'] } }, user);
 			expect((await cleanupApi('request', { ruleIds: [rule.body.rule.id] }, user)).status).toBe(200);
@@ -227,6 +233,8 @@ describe('노트를 지울 때 단독 사용 첨부 파일 삭제 설정', () =>
 			await runCleanup(alice, '정리 꺼짐 대상');
 
 			await expect.poll(async () => await noteExists(alice, note.id), { timeout: 30000, interval: 200 }).toBe(false);
+			// 노트가 사라진 것만으로는 정리 요청이 끝났다고 볼 수 없으므로 완료 알림을 기다린 뒤 파일을 확인한다.
+			await expect.poll(async () => await hasCleanupCompletedNotification(alice), { timeout: 30000, interval: 200 }).toBe(true);
 			expect(await fileExists(alice, sole)).toBe(true);
 		});
 	});
