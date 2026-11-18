@@ -4873,6 +4873,14 @@ export interface Locale extends ILocale {
      */
     "enableAutoSensitiveDescription": string;
     /**
+     * ノートを削除するとき添付ファイルも一緒に削除
+     */
+    "autoDeleteNoteFiles": string;
+    /**
+     * そのノートでしか使っていない添付ファイルを、ドライブからも一緒に削除します。他のノート、下書き、チャット、プロフィール画像など、ほかの場所で使っているファイルは残ります。デッキの背景や通知音など設定で選んだファイルは削除されることがあり、削除したファイルは元に戻せません。他のアプリで「削除して編集」をすると、添付ファイルが消えることがあります。
+     */
+    "autoDeleteNoteFilesDescription": string;
+    /**
      * ユーザーのメールアドレスのバリデーションを、捨てアドかどうかや実際に通信可能かどうかなどを判定しより積極的に行います。オフにすると単に文字列として正しいかどうかのみチェックされます。
      */
     "activeEmailValidationDescription": string;
@@ -16714,6 +16722,10 @@ export interface Locale extends ILocale {
          * 削除したノートの添付ファイルをドライブに残す
          */
         "keepDriveFiles": string;
+        /**
+         * ドライブ設定の「ノートを削除するとき添付ファイルも一緒に削除」がオンのため、削除したノートでしか使っていない添付ファイルも一緒に削除されます。
+         */
+        "keepDriveFilesOverridden": string;
         /**
          * 残す
          */
