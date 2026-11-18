@@ -57,7 +57,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</FormLink>
 
 					<SearchMarker :keywords="['delete', 'note', 'file', 'attachment', 'remove']">
-						<MkSwitch v-model="autoDeleteNoteFiles" @update:modelValue="saveProfile()">
+						<MkSwitch :modelValue="autoDeleteNoteFiles" accessible :disabled="savingAutoDeleteNoteFiles" @update:modelValue="changeAutoDeleteNoteFiles">
 							<template #label><SearchLabel>{{ i18n.ts.autoDeleteNoteFiles }}</SearchLabel></template>
 							<template #caption><SearchText>{{ i18n.ts.autoDeleteNoteFilesDescription }}</SearchText></template>
 						</MkSwitch>
@@ -206,7 +206,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, defineAsyncComponent, ref } from 'vue';
+import { computed, defineAsyncComponent, ref, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import tinycolor from 'tinycolor2';
 import XWatermarkItem from './drive.WatermarkItem.vue';
@@ -242,7 +242,17 @@ const capacity = ref<number | null>(null);
 const uploadFolder = ref<Misskey.entities.DriveFolder | null>(null);
 const alwaysMarkNsfw = ref($i.alwaysMarkNsfw);
 const autoSensitive = ref($i.autoSensitive);
+// 노트를 지울 때 첨부 파일도 지우는 옵션은 다른 스위치와 따로, 자기 값만 저장한다.
+// 저장에 실패하면 낙관적 값이 아니라 마지막으로 확인된 서버 값으로 되돌린다.
 const autoDeleteNoteFiles = ref($i.autoDeleteNoteFiles);
+const confirmedAutoDeleteNoteFiles = ref($i.autoDeleteNoteFiles);
+const savingAutoDeleteNoteFiles = ref(false);
+
+// 다른 탭이나 기기에서 바뀐 값이 계정 정보로 들어오면 화면 값도 따라간다.
+watch(() => $i.autoDeleteNoteFiles, value => {
+	confirmedAutoDeleteNoteFiles.value = value;
+	autoDeleteNoteFiles.value = value;
+});
 
 const meterStyle = computed(() => {
 	if (!capacity.value || !usage.value) return {};
@@ -394,7 +404,6 @@ function saveProfile() {
 	misskeyApi('i/update', {
 		alwaysMarkNsfw: !!alwaysMarkNsfw.value,
 		autoSensitive: !!autoSensitive.value,
-		autoDeleteNoteFiles: !!autoDeleteNoteFiles.value,
 	}).catch(err => {
 		os.alert({
 			type: 'error',
@@ -402,8 +411,25 @@ function saveProfile() {
 			text: err.message,
 		});
 		alwaysMarkNsfw.value = true;
-		autoDeleteNoteFiles.value = $i.autoDeleteNoteFiles;
 	});
+}
+
+async function changeAutoDeleteNoteFiles(value: boolean) {
+	autoDeleteNoteFiles.value = value;
+	savingAutoDeleteNoteFiles.value = true;
+	try {
+		await misskeyApi('i/update', { autoDeleteNoteFiles: value });
+		confirmedAutoDeleteNoteFiles.value = value;
+	} catch (err) {
+		autoDeleteNoteFiles.value = confirmedAutoDeleteNoteFiles.value;
+		await os.alert({
+			type: 'error',
+			title: i18n.ts.error,
+			text: err instanceof Error ? err.message : String(err),
+		});
+	} finally {
+		savingAutoDeleteNoteFiles.value = false;
+	}
 }
 
 const headerActions = computed(() => []);
