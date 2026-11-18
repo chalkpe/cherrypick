@@ -543,11 +543,15 @@ export class ApiStatusMastodon {
 			return reply.code(422).send({ error: 'Changing who can quote is not supported by this server' });
 		});
 
-		fastify.delete<{ Params: { id?: string } }>('/v1/statuses/:id', async (_request, reply) => {
+		fastify.delete<{ Params: { id?: string }, Querystring: { delete_media?: string | boolean }, Body?: { delete_media?: string | boolean } | null }>('/v1/statuses/:id', async (_request, reply) => {
 			if (!_request.params.id) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required parameter "id"' });
 
+			// Mastodon 4.4 이후 규약: delete_media가 참일 때만 미디어를 함께 지운다. 생략하면 삭제 후 다시 쓰기에서 재사용할 수 있게 남긴다.
+			const flag = (value: unknown): boolean => value === true || (typeof value === 'string' && toBoolean(value) === true);
+			const deleteMedia = flag(_request.body?.delete_media) || flag(_request.query?.delete_media);
+
 			const client = this.clientService.getClient(_request);
-			const data = await client.deleteStatus(_request.params.id);
+			const data = await client.deleteStatus(_request.params.id, { delete_media: deleteMedia });
 
 			return reply.send(data.data);
 		});

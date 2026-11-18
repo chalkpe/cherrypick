@@ -1346,4 +1346,63 @@ describe('Mastodon API', () => {
 			assert.strictEqual(gone.status, 404);
 		});
 	});
+
+	describe('Deleting statuses with attached media', () => {
+		async function setup(username: string, autoDeleteNoteFiles: boolean) {
+			const user = await signup({ username });
+			if (autoDeleteNoteFiles) assert.strictEqual((await api('i/update', { autoDeleteNoteFiles: true }, user)).status, 200);
+			const token = await issueToken(user);
+			const fileId = (await uploadFile(user)).body!.id;
+			const created = await mastodonSend('POST', '/api/v1/statuses', token, { status: 'with media', media_ids: [fileId] });
+			assert.strictEqual(created.status, 200);
+			const status = await created.json() as { id: string };
+			return { user, token, fileId, statusId: status.id };
+		}
+
+		async function fileExists(user: misskey.entities.SignupResponse, fileId: string): Promise<boolean> {
+			return (await api('drive/files/show', { fileId }, user)).status === 200;
+		}
+
+		test('keeps the media when delete_media is omitted, so the status can be redrafted with the same media', async () => {
+			const { user, token, fileId, statusId } = await setup('mastodondelnomedia', true);
+
+			assert.strictEqual((await mastodonSend('DELETE', `/api/v1/statuses/${statusId}`, token)).status, 200);
+
+			assert.strictEqual(await fileExists(user, fileId), true);
+			const redrafted = await mastodonSend('POST', '/api/v1/statuses', token, { status: 'redrafted', media_ids: [fileId] });
+			assert.strictEqual(redrafted.status, 200);
+		});
+
+		test('keeps the media when delete_media is false', async () => {
+			const { user, token, fileId, statusId } = await setup('mastodondelfalse', true);
+
+			assert.strictEqual((await mastodonSend('DELETE', `/api/v1/statuses/${statusId}?delete_media=false`, token)).status, 200);
+
+			assert.strictEqual(await fileExists(user, fileId), true);
+		});
+
+		test('deletes media used only by the status when delete_media is true in the query', async () => {
+			const { user, token, fileId, statusId } = await setup('mastodondelquery', true);
+
+			assert.strictEqual((await mastodonSend('DELETE', `/api/v1/statuses/${statusId}?delete_media=true`, token)).status, 200);
+
+			assert.strictEqual(await fileExists(user, fileId), false);
+		});
+
+		test('deletes media used only by the status when delete_media is true in the body', async () => {
+			const { user, token, fileId, statusId } = await setup('mastodondelbody', true);
+
+			assert.strictEqual((await mastodonSend('DELETE', `/api/v1/statuses/${statusId}`, token, { delete_media: true })).status, 200);
+
+			assert.strictEqual(await fileExists(user, fileId), false);
+		});
+
+		test('keeps the media even with delete_media when the account option is off', async () => {
+			const { user, token, fileId, statusId } = await setup('mastodondeloff', false);
+
+			assert.strictEqual((await mastodonSend('DELETE', `/api/v1/statuses/${statusId}?delete_media=true`, token)).status, 200);
+
+			assert.strictEqual(await fileExists(user, fileId), true);
+		});
+	});
 });
