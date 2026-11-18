@@ -25,6 +25,11 @@ vi.mock('@/i.js', async () => {
 	const { me } = await mocks;
 	return { $i: me, ensureSignin: () => me };
 });
+vi.mock('@/accounts.js', async () => {
+	const { me } = await mocks;
+	// 실제 갱신 함수처럼 현재 계정 정보 객체에 값을 써 넣는다.
+	return { updateCurrentAccount: (data: Record<string, unknown>) => { Object.assign(me, data); } };
+});
 vi.mock('@/page.js', () => ({ definePage: vi.fn() }));
 vi.mock('@/preferences.js', async () => {
 	const { ref } = await import('vue');
@@ -278,4 +283,32 @@ test('역할로 잠기지 않은 계정에는 잠긴 이유가 보이지 않고 
 	expect(view.queryByText(i18n.ts.alwaysMarkSensitiveLockedByRole)).toBeNull();
 	expect(switchOf(view, i18n.ts.alwaysMarkSensitive).checked).toBe(false);
 	expect(switchOf(view, i18n.ts.enableAutoSensitive).checked).toBe(false);
+});
+
+test('저장에 성공하면 계정 정보 갱신 이벤트가 없어도 현재 계정 정보의 값이 바뀐다', async () => {
+	const { view, api, me } = await mountPage();
+	expect(me.autoDeleteNoteFiles).toBe(false);
+
+	await fireEvent.click(view.getByText(i18n.ts.autoDeleteNoteFiles));
+	await vi.waitFor(() => expect(api).toHaveBeenLastCalledWith('i/update', { autoDeleteNoteFiles: true }));
+
+	await vi.waitFor(() => expect(me.autoDeleteNoteFiles).toBe(true));
+});
+
+test('저장 성공 뒤 화면을 다시 만들어도 스위치가 저장한 값으로 보인다', async () => {
+	const first = await mountPage();
+	await fireEvent.click(first.view.getByText(i18n.ts.autoDeleteNoteFiles));
+	await vi.waitFor(() => expect(first.api).toHaveBeenLastCalledWith('i/update', { autoDeleteNoteFiles: true }));
+	await vi.waitFor(() => expect(switchOf(first.view, i18n.ts.autoDeleteNoteFiles).disabled).toBe(false));
+	first.view.unmount();
+
+	// 계정 정보를 초기화하지 않고 같은 값으로 다시 연다.
+	const { api, me } = await mocks;
+	api.mockReset().mockImplementation(async (path: string) => (path === 'drive' ? { usage: 0, capacity: 1 } : undefined));
+	const Host = defineComponent({ render: () => h(Suspense, null, { default: () => h(DriveSettings) }) });
+	const view = render(Host, { global: { stubs: { PageWithHeader: { template: '<div><slot /></div>' } } } });
+	await vi.waitFor(() => expect(view.getByText(i18n.ts.autoDeleteNoteFiles)).not.toBeNull());
+
+	expect(me.autoDeleteNoteFiles).toBe(true);
+	expect(switchOf(view, i18n.ts.autoDeleteNoteFiles).checked).toBe(true);
 });

@@ -227,6 +227,7 @@ import MkChart from '@/components/MkChart.vue';
 import { i18n } from '@/i18n.js';
 import { definePage } from '@/page.js';
 import { ensureSignin } from '@/i.js';
+import { updateCurrentAccount } from '@/accounts.js';
 import { prefer } from '@/preferences.js';
 import MkPreferenceContainer from '@/components/MkPreferenceContainer.vue';
 import MkFeatureBanner from '@/components/MkFeatureBanner.vue';
@@ -461,6 +462,8 @@ async function changeAutoDeleteNoteFiles(value: boolean) {
 		await misskeyApi('i/update', { autoDeleteNoteFiles: value });
 		confirmedAutoDeleteNoteFiles.value = value;
 		autoDeleteNoteFiles.value = value;
+		// 실시간 연결로 계정 정보가 갱신되기를 기다리지 않고 현재 계정 정보에도 바로 반영한다.
+		updateCurrentAccount({ autoDeleteNoteFiles: value });
 	} catch (err) {
 		autoDeleteNoteFiles.value = confirmedAutoDeleteNoteFiles.value;
 		await showSaveError(err);
