@@ -63,19 +63,25 @@ const MAX_REACTIONS_PER_MESSAGE = 100;
 const MAX_EMOJI_LOOKUPS_PER_MESSAGE = 16;
 // 한 글에서 살펴보는 리액션 항목 수. 확인된 리액션의 상한(MAX_REACTIONS_PER_MESSAGE)의 2배까지 본다
 const MAX_REACTION_ENTRIES_PER_MESSAGE = MAX_REACTIONS_PER_MESSAGE * 2;
+// 한 페이지에서 처음 보는 리액션 계정을 원격에 조회하는 횟수 (성공과 실패 모두 센다). 그룹 인원 상한(MAX_ROOM_MEMBERS)과 같다
+const MAX_REACTOR_LOOKUPS_PER_PAGE = 50;
 // Resolver의 조회 횟수 한도에 걸렸을 때의 오류 ID
 const RESOLVER_LIMIT_ERROR_ID = 'd592da9f-822f-4d91-83d7-4ceefabcf3d2';
 
 type ImportRun = {
 	lastAttempt: boolean;
 	accounts: Map<string, MiRemoteUser | null>;
-	/** 리액션한 계정 중 이 서버가 이미 아는 계정. 모르면 null */
-	knownAccounts: Map<string, MiRemoteUser | null>;
+	/** 리액션한 계정의 조회 결과. 조회에 실패했으면 null이고, 한도 때문에 조회하지 못한 계정은 담지 않는다 */
+	reactorAccounts: Map<string, MiRemoteUser | null>;
 	checkedEmojis: Set<string>;
 	/** 한 페이지의 이모지 조회가 함께 쓰는 Resolver. 조회 횟수 한도가 페이지마다 걸린다 */
 	resolver: Resolver | null;
 	/** 한 페이지의 작성자 조회가 함께 쓰는 Resolver. 이모지 조회와 한도를 나누어 쓰지 않는다 */
 	authorResolver: Resolver | null;
+	/** 한 페이지의 리액션 계정 조회가 함께 쓰는 Resolver. 작성자·이모지 조회와 한도를 나누어 쓰지 않는다 */
+	reactorResolver: Resolver | null;
+	/** 한 페이지에서 처음 보는 리액션 계정을 원격에 조회한 횟수 */
+	reactorLookups: number;
 	/** 이번 실행에서 새로 저장한 글 수 */
 	stored: number;
 	channelsRefreshed: boolean;
@@ -159,9 +165,11 @@ export class ChatRoomHistorySyncProcessorService {
 		const run: ImportRun = {
 			lastAttempt: job.attemptsMade + 1 >= (job.opts.attempts ?? 1),
 			accounts: new Map(),
-			knownAccounts: new Map(),
+			reactorAccounts: new Map(),
 			resolver: null,
 			authorResolver: null,
+			reactorResolver: null,
+			reactorLookups: 0,
 			stored: 0,
 			checkedEmojis: new Set(),
 			channelsRefreshed: false,
@@ -189,6 +197,8 @@ export class ChatRoomHistorySyncProcessorService {
 
 				run.resolver = null;
 				run.authorResolver = null;
+				run.reactorResolver = null;
+				run.reactorLookups = 0;
 				try {
 					for (const item of page.items) {
 						await this.importItem(room, item, run);
@@ -401,19 +411,31 @@ export class ChatRoomHistorySyncProcessorService {
 		return run.authorResolver ??= await this.apResolverService.createResolver();
 	}
 
-	/** 리액션한 계정. 이 서버가 이미 아는 계정만 쓰고 원격에서 새로 가져오지 않는다. */
-	private async knownAccount(uri: string, run: ImportRun): Promise<MiRemoteUser | null> {
-		const resolved = run.accounts.get(uri);
-		if (resolved != null) return resolved;
-		if (run.knownAccounts.has(uri)) return run.knownAccounts.get(uri)!;
+	private async reactorResolver(run: ImportRun): Promise<Resolver> {
+		return run.reactorResolver ??= await this.apResolverService.createResolver();
+	}
+
+	/**
+	 * 리액션한 계정. 이 서버가 아는 계정은 그대로 쓰고, 처음 보는 계정은 한 페이지에 정해진 수까지만 원격에서 조회한다.
+	 * 상한이나 Resolver의 조회 횟수 한도에 걸려 조회하지 못한 계정은 null이지만 없는 계정으로 기억하지 않는다.
+	 */
+	private async reactorAccount(uri: string, run: ImportRun): Promise<MiRemoteUser | null> {
+		if (run.accounts.has(uri)) return run.accounts.get(uri)!;
+		if (run.reactorAccounts.has(uri)) return run.reactorAccounts.get(uri)!;
 		let account: MiRemoteUser | null = null;
 		try {
-			const user = await this.apDbResolverService.getUserFromApId(uri);
-			account = user != null && this.userEntityService.isRemoteUser(user) && !user.isDeleted ? user : null;
+			let user = await this.apDbResolverService.getUserFromApId(uri);
+			if (user == null) {
+				if (run.reactorLookups >= MAX_REACTOR_LOOKUPS_PER_PAGE) return null;
+				run.reactorLookups++;
+				user = await this.apPersonService.resolvePerson(uri, await this.reactorResolver(run));
+			}
+			account = this.userEntityService.isRemoteUser(user) && !user.isDeleted ? user : null;
 		} catch (err) {
-			this.logger.info(`Could not look up ${uri} in a chat room history: ${err}`);
+			if (err instanceof IdentifiableError && err.id === RESOLVER_LIMIT_ERROR_ID) return null;
+			this.logger.info(`Could not resolve ${uri} in a chat room history: ${err}`);
 		}
-		run.knownAccounts.set(uri, account);
+		run.reactorAccounts.set(uri, account);
 		return account;
 	}
 
@@ -429,8 +451,8 @@ export class ChatRoomHistorySyncProcessorService {
 			// 거부 대상 서버는 조회하기 전에 거른다
 			const actorHost = this.hostOf(entry.actor);
 			if (actorHost == null || (refused.get(actorHost) ?? true)) continue;
-			// 리액션한 계정을 이 서버가 모르면 그 리액션만 버린다
-			const reactor = await this.knownAccount(entry.actor, run);
+			// 리액션한 계정을 확인할 수 없으면 그 리액션만 버린다
+			const reactor = await this.reactorAccount(entry.actor, run);
 			if (reactor == null || reactor.isSuspended || reactor.id === author?.id) continue;
 			let reactorRefused = refused.get(reactor.host);
 			if (reactorRefused === undefined) {

@@ -419,20 +419,127 @@ describe('과거 기록 가져오기 작업', () => {
 		expect(imported[0].reactions).toEqual([`${reactor.id}/👍`, `${reactor.id}/:blob@third.test:`]);
 	});
 
-	test('리액션한 계정이 이 서버가 모르는 계정이면 원격 조회 없이 그 리액션만 버린다', async () => {
-		const strangers = Array.from({ length: 150 }, (_, n) => ({ actor: `https://stranger.test/users/u${n}`, reaction: '👍' }));
-		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
-			_misskey_chatReactions: [...strangers, { actor: reactor.uri, reaction: '🎉' }],
-		})], null));
-		const { run, imported, resolvePerson, resolve } = setup({ pages, cachedAccounts: new Map([[reactor.uri, reactor]]) });
+	describe('리액션 계정 조회', () => {
+		const reactorOf = (n: number) => ({ id: `x${n}`, host: 'third.test', uri: `https://third.test/users/x${n}`, isSuspended: false });
+		const reactionsOf = (from: number, to: number) => Array.from({ length: to - from }, (_, n) => ({ actor: reactorOf(from + n).uri, reaction: '👍' }));
+		const accountsOf = (to: number) => new Map<string, unknown>([[author.uri, author], ...Array.from({ length: to }, (_, n) => [reactorOf(n).uri, reactorOf(n)] as [string, unknown])]);
+		const reactorLookups = (calls: unknown[][]) => calls.map(call => String(call[0])).filter(uri => uri.startsWith('https://third.test/users/'));
 
-		await run();
+		test('이 서버가 아는 계정의 리액션은 원격 조회 없이 저장한다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', { _misskey_chatReactions: [{ actor: reactor.uri, reaction: '🎉' }] })], null));
+			const { run, imported, resolvePerson } = setup({ pages, cachedAccounts: new Map([[reactor.uri, reactor]]) });
 
-		expect(imported[0].reactions).toEqual([`${reactor.id}/🎉`]);
-		// 작성자 한 명만 원격에서 가져온다
-		expect(resolvePerson).toHaveBeenCalledTimes(1);
-		expect(resolvePerson).toHaveBeenCalledWith(author.uri, expect.anything());
-		expect(resolve.mock.calls.map(call => call[0])).toEqual([first]);
+			await run();
+
+			expect(imported[0].reactions).toEqual([`${reactor.id}/🎉`]);
+			expect(resolvePerson.mock.calls.map(call => call[0])).toEqual([author.uri]);
+		});
+
+		test('처음 보는 계정은 원격에서 조회한 뒤 그 리액션을 저장하고, 조회에 실패한 계정의 리액션만 버린다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+				_misskey_chatReactions: [
+					{ actor: reactor.uri, reaction: '🎉' },
+					{ actor: 'https://stranger.test/users/gone', reaction: '👍' },
+				],
+			})], null));
+			const { run, imported, resolvePerson, resolvers, createResolver } = setup({ pages, personLookups: 1 });
+
+			expect(await run()).toBe('ok: completed');
+
+			expect(imported[0].reactions).toEqual([`${reactor.id}/🎉`]);
+			expect(resolvePerson.mock.calls.map(call => call[0])).toEqual([author.uri, reactor.uri, 'https://stranger.test/users/gone']);
+			// 페이지를 받는 Resolver, 작성자 조회용, 리액션 계정 조회용이 따로 있다
+			expect(createResolver).toHaveBeenCalledTimes(3);
+			expect(resolvePerson.mock.calls[1][1]).toBe(resolvers[2]);
+			expect(resolvePerson.mock.calls[2][1]).toBe(resolvers[2]);
+			expect(resolvePerson.mock.calls[0][1]).toBe(resolvers[1]);
+		});
+
+		test('같은 실행에서 작성자로 조회한 계정의 리액션은 다시 조회하지 않는다', async () => {
+			const other = { id: 'other', host: 'member.test', uri: 'https://member.test/users/other', isSuspended: false };
+			pages.set(first, buildChatHistoryPage(roomUri, null, [
+				note('m0', { attributedTo: other.uri }),
+				note('m1', { _misskey_chatReactions: [{ actor: other.uri, reaction: '🎉' }] }),
+			], null));
+			const { run, imported, resolvePerson } = setup({ pages, accounts: new Map([[author.uri, author], [other.uri, other]]) });
+
+			await run();
+
+			expect(imported[1].reactions).toEqual([`${other.id}/🎉`]);
+			expect(resolvePerson.mock.calls.filter(call => call[0] === other.uri)).toHaveLength(1);
+		});
+
+		test('처음 보는 계정이 한 페이지의 상한보다 많으면 원격 조회는 50번까지만 하고 나머지 리액션만 빠진 채 글은 모두 저장한다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [
+				note('m1', { _misskey_chatReactions: reactionsOf(0, 80) }),
+				note('m2', { _misskey_chatReactions: reactionsOf(80, 90) }),
+			], null));
+			const { run, imported, resolvePerson, resolve, state } = setup({ pages, accounts: accountsOf(90), personLookups: 1 });
+
+			expect(await run()).toBe('ok: completed');
+
+			expect(imported.map(input => input.sourceUri)).toEqual(['m1', 'm2'].map(id => `https://member.test/chat/messages/${id}`));
+			expect(reactorLookups(resolvePerson.mock.calls)).toEqual(reactionsOf(0, 50).map(entry => entry.actor));
+			expect(reactorLookups(resolve.mock.calls)).toEqual(reactionsOf(0, 50).map(entry => entry.actor));
+			expect(imported[0].reactions).toEqual(Array.from({ length: 50 }, (_, n) => `x${n}/👍`));
+			expect(imported[1].reactions).toEqual([]);
+			expect(state.status).toBe('completed');
+		});
+
+		test('조회에 실패한 계정도 상한에 센다', async () => {
+			const missing = Array.from({ length: 70 }, (_, n) => ({ actor: `https://missing.test/users/u${n}`, reaction: '👍' }));
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', { _misskey_chatReactions: [...missing, ...reactionsOf(0, 1)] })], null));
+			const { run, imported, resolvePerson } = setup({ pages, accounts: accountsOf(1) });
+
+			await run();
+
+			expect(resolvePerson.mock.calls.map(call => String(call[0])).filter(uri => uri.startsWith('https://missing.test/'))).toHaveLength(50);
+			expect(imported[0].reactions).toEqual([]);
+		});
+
+		test('다음 페이지에서는 상한을 새로 세고, 앞 페이지에서 한도 때문에 조회하지 못한 계정을 다시 조회한다', async () => {
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m2', { _misskey_chatReactions: reactionsOf(0, 70) })], 'c1'));
+			pages.set(second, buildChatHistoryPage(roomUri, 'c1', [note('m1', { _misskey_chatReactions: reactionsOf(40, 70) })], null));
+			const { run, imported, resolvePerson } = setup({ pages, accounts: accountsOf(70), personLookups: 1 });
+
+			expect(await run()).toBe('ok: completed');
+
+			expect(imported[0].reactions).toHaveLength(50);
+			// 앞 페이지에서 조회한 계정은 다시 조회하지 않고, 조회하지 못한 x50~x69만 새 한도로 조회한다
+			expect(reactorLookups(resolvePerson.mock.calls)).toEqual(reactionsOf(0, 70).map(entry => entry.actor));
+			expect(imported[1].reactions).toEqual(Array.from({ length: 30 }, (_, n) => `x${n + 40}/👍`));
+		});
+
+		test('리액션 계정 조회가 조회 횟수 한도에 걸려도 그 리액션만 빠지고, 작성자 조회는 영향받지 않으며, 그 계정을 없는 계정으로 기억하지 않는다', async () => {
+			const authors = Array.from({ length: 3 }, (_, n) => ({ id: `a${n}`, host: 'member.test', uri: `https://member.test/users/a${n}`, isSuspended: false }));
+			const accounts = accountsOf(8);
+			for (const a of authors) accounts.set(a.uri, a);
+			pages.set(first, buildChatHistoryPage(roomUri, null, authors.map((a, n) => note(`m${n}`, { attributedTo: a.uri, _misskey_chatReactions: reactionsOf(0, 8) })), null));
+			const { run, imported, resolvePerson, resolvers, state } = setup({ pages, accounts, resolverLimit: 5, personLookups: 1 });
+
+			expect(await run()).toBe('ok: completed');
+
+			expect(state.status).toBe('completed');
+			expect(imported).toHaveLength(3);
+			expect(imported.every(input => input.authorId != null && input.archivedAuthor == null)).toBe(true);
+			expect(imported[0].reactions).toEqual(Array.from({ length: 5 }, (_, n) => `x${n}/👍`));
+			// 한도 때문에 조회하지 못한 x5는 다음 글에서도 다시 조회를 시도한다
+			expect(reactorLookups(resolvePerson.mock.calls).filter(uri => uri === reactorOf(5).uri)).toHaveLength(3);
+			const authorCalls = resolvePerson.mock.calls.filter(call => authors.some(a => a.uri === call[0]));
+			expect(authorCalls).toHaveLength(3);
+			expect(authorCalls.every(call => call[1] === resolvers[1])).toBe(true);
+		});
+
+		test('조회에 실패한 같은 주소가 여러 글에 되풀이돼도 조회는 한 번만 한다', async () => {
+			const reactions = [{ actor: 'https://missing.test/users/gone', reaction: '👍' }];
+			pages.set(first, buildChatHistoryPage(roomUri, null, [1, 2, 3].map(n => note(`m${n}`, { _misskey_chatReactions: reactions })), null));
+			const { run, imported, resolvePerson } = setup({ pages });
+
+			await run();
+
+			expect(imported).toHaveLength(3);
+			expect(resolvePerson.mock.calls.filter(call => call[0] === 'https://missing.test/users/gone')).toHaveLength(1);
+		});
 	});
 
 	test('거부 대상 서버의 계정은 조회하기 전에 거른다', async () => {
