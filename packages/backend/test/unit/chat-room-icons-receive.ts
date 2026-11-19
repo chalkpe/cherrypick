@@ -28,6 +28,7 @@ function fixture() {
 		},
 		idService: { gen: () => `local-decoration-${catalog.size}` },
 		globalEventService: { publishInternalEvent: vi.fn() },
+		cache: { delete: vi.fn() },
 		cacheWithRemote: { delete: vi.fn() },
 		urlCache: { delete: vi.fn() },
 	});

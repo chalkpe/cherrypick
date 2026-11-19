@@ -183,6 +183,7 @@ describe('사본 서버의 참여 요청', () => {
 			avatarDecorationsRepository: { findOneBy: vi.fn(async () => null), insertOne, update: written, findBy: vi.fn(async () => []) },
 			idService: { gen: () => 'row1' },
 			globalEventService: { publishInternalEvent: written },
+			cache: { delete: written },
 			cacheWithRemote: { delete: written },
 		});
 		const frame = 'https://a.example/files/frame.png';
